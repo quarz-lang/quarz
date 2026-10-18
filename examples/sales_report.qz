@@ -19,7 +19,7 @@ data Summary(key: String, units: Int, revenue: Float, orders: Int) is
   def average -> Float = orders == 0 ? 0.0 : revenue / orders
 end
 
-def summarize(sales: Array[Sale], &key: (Sale) -> String) -> Array[Summary]
+def summarize(sales: Array[Sale], &: (Sale) -> String) -> Array[Summary]
   groups = sales.group_by { |s| yield(s) }
   groups.map do |pair|
     name = pair[0]

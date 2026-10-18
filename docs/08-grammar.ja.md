@@ -48,7 +48,8 @@ operator       = "+" | "-" | "*" | "/" | "%" | "**" | "==" | "!=" | "<" | "<=" |
 
 param_list     = param { "," param } ;
 param          = positional_param | "*" [ IDENT [ ":" type ] ] | "**" IDENT [ ":" type ]
-               | "&" IDENT [ ":" proc_type ] ;
+               | "&" IDENT [ ":" proc_type ]
+               | "&" ":" proc_type ;
 positional_param = [ "@" ] IDENT [ ":" type ] [ "=" expression ] ;
     (* "*" 単独の後ろの positional_param はキーワード専用引数 *)
 

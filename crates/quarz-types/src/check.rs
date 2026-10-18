@@ -3530,6 +3530,7 @@ impl Checker {
             })
             .collect();
         if let Some((name, t)) = &m.block {
+            let name = if name == "&" { "" } else { name.as_str() };
             parts.push(format!("&{name}: {}", self.world.type_name(t)));
         }
         let ret = match &m.ret {

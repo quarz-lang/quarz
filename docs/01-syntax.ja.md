@@ -252,7 +252,8 @@ def name(a: Int, b: String = "x", *rest: Int, *, flag: Bool, limit: Int? = nil, 
 | `*` | これ以降はキーワード専用(`*rest` の後ろも同様) |
 | `flag: Bool` (`*` の後) | 必須キーワード引数 |
 | `**opts: String` | 残余キーワード。型は `Hash[Symbol, String]` |
-| `&block: (Int) -> Nil` | ブロック引数。型は手続き型 |
+| `&block: (Int) -> Nil` | ブロック引数。型は手続き型で、`block` は手続きの値(`block.call`、`block.()`、`block[]`) |
+| `&: (Int) -> Nil` | 無名のブロック引数。`yield` と `f(&)` での転送からだけ使える |
 | `-> Ret` | 戻り値型。省略すると本体から推論(再帰メソッドでは必須) |
 
 - **引数の型は必須**です(既定値から推論できる場合を除く)。メソッドの境界で型が確定しているため、ファイル単位の分割コンパイルと高速な型検査ができます。
@@ -267,16 +268,22 @@ def name(a: Int, b: String = "x", *rest: Int, *, flag: Bool, limit: Int? = nil, 
 ### ブロック、`yield`、手続き
 
 ```ruby
-def each_pair(&block: (Int, Int) -> Nil) -> Nil
+def each_pair(&: (Int, Int) -> Nil) -> Nil     # 無名ブロック: yield で呼ぶ
   yield 1, 2
   yield 3, 4
 end
 
-def map[U](&block: (T) -> U) -> Array[U]
+def map[U](&: (T) -> U) -> Array[U]
   Array.build do |out|
     each { |x| out << yield(x) }
   end
 end
+
+def twice(&block: (Int) -> Int) -> Int          # 名前付き: 手続きの値として使う
+  block.call(1) + block.(2) + block[3]
+end
+
+def forward(&: (Int) -> Int) -> Int = twice(&)  # `&` は無名ブロックをそのまま渡す
 
 each_pair { |a, b| puts a + b }
 each_pair do |a, b|
@@ -288,7 +295,8 @@ double = ->(x: Int) { x * 2 }          # 手続き(Ruby の lambda に相当)
 [1, 2, 3].map(&:to_s)
 ```
 
-- ブロックの引数型は、呼び出し先の `&block` の型から推論されます。明示したければ `{ |x: Int| ... }` と書けます。
+- ブロックの引数型は、呼び出し先のブロック引数の型から推論されます。明示したければ `{ |x: Int| ... }` と書けます。
+- `yield` にはブロック引数(名前付きでも無名でも)の宣言が必要です。ブロックの型は宣言から決まるためで、ブロックなしでそのメソッドを呼ぶとコンパイルエラーになります。省略可能なブロックは `&block: ((Int) -> Nil)?` と書きます。
 - `yield` で呼ばれるだけのブロック(エスケープしないブロック)は、コンパイラがクロージャを割り当てずに展開します。`&block` を変数に保存したり返したりして**エスケープ**させた場合にだけ、ヒープ上のクロージャになります。
 - ブロックの中の `break`/`next`/`return` の意味は Ruby と同じです。`next` はブロックの値を返し、`break` はブロックを渡した呼び出しから抜け、`return` は囲んでいるメソッドから戻ります。
 - `->(x) { }` は Ruby の lambda と同じ(引数の個数が厳密、`return` は手続きから戻る)。`Proc.new` と `proc` は廃止し、手続きは `->` かブロックから作ります。

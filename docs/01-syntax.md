@@ -254,7 +254,8 @@ def name(a: Int, b: String = "x", *rest: Int, *, flag: Bool, limit: Int? = nil, 
 | `*` | Everything after this is keyword-only (the same holds after `*rest`) |
 | `flag: Bool` (after `*`) | Required keyword parameter |
 | `**opts: String` | Remaining keywords. The type is `Hash[Symbol, String]` |
-| `&block: (Int) -> Nil` | Block parameter. The type is a procedure type |
+| `&block: (Int) -> Nil` | Block parameter. The type is a procedure type; `block` is a procedure value (`block.call`, `block.()`, `block[]`) |
+| `&: (Int) -> Nil` | Anonymous block parameter: only `yield` and forwarding with `f(&)` can use it |
 | `-> Ret` | Return type. If omitted it is inferred from the body (required for recursive methods) |
 
 - **Parameter types are required** (except where they can be inferred from a default value). Because types are fixed at method boundaries, per-file separate compilation and fast type checking are possible.
@@ -269,16 +270,22 @@ def name(a: Int, b: String = "x", *rest: Int, *, flag: Bool, limit: Int? = nil, 
 ### Blocks, `yield` and procedures
 
 ```ruby
-def each_pair(&block: (Int, Int) -> Nil) -> Nil
+def each_pair(&: (Int, Int) -> Nil) -> Nil     # anonymous block: used with yield
   yield 1, 2
   yield 3, 4
 end
 
-def map[U](&block: (T) -> U) -> Array[U]
+def map[U](&: (T) -> U) -> Array[U]
   Array.build do |out|
     each { |x| out << yield(x) }
   end
 end
+
+def twice(&block: (Int) -> Int) -> Int          # named: a procedure value
+  block.call(1) + block.(2) + block[3]
+end
+
+def forward(&: (Int) -> Int) -> Int = twice(&)  # `&` forwards the anonymous block
 
 each_pair { |a, b| puts a + b }
 each_pair do |a, b|
@@ -290,7 +297,8 @@ double = ->(x: Int) { x * 2 }          # a procedure (equivalent to a Ruby lambd
 [1, 2, 3].map(&:to_s)
 ```
 
-- Block parameter types are inferred from the type of the callee's `&block`. To be explicit, write `{ |x: Int| ... }`.
+- Block parameter types are inferred from the type of the callee's block parameter. To be explicit, write `{ |x: Int| ... }`.
+- `yield` requires a block parameter (named or anonymous), since the block's type comes from its declaration; calling such a method without a block is a compile error, so an optional block is written `&block: ((Int) -> Nil)?`.
 - A block that is only invoked with `yield` (a non-escaping block) is expanded by the compiler without allocating a closure. Only when `&block` **escapes**, by being stored in a variable or returned, does it become a heap-allocated closure.
 - `break`/`next`/`return` inside a block mean the same as in Ruby. `next` returns the block's value, `break` exits the call the block was passed to, and `return` returns from the enclosing method.
 - `->(x) { }` is the same as a Ruby lambda (strict arity, `return` returns from the procedure). `Proc.new` and `proc` are dropped; procedures are created with `->` or from blocks.

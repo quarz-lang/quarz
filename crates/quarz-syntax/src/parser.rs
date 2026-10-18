@@ -1422,6 +1422,13 @@ impl<'src> Parser<'src> {
                 let e = self.parse_expr()?;
                 return Ok(Arg::DoubleSplat(e));
             }
+            // `f(&)`: forward the anonymous block.
+            T::Amp if matches!(self.kind_at(1), T::RParen | T::Comma) => {
+                let span = self.bump().span;
+                return Ok(Arg::BlockPass(
+                    self.node(span, ExprKind::Local("&".to_string())),
+                ));
+            }
             T::Amp if !self.peek_at(1).space_before => {
                 self.bump();
                 let e = self.parse_expr()?;
@@ -3373,7 +3380,10 @@ impl<'src> Parser<'src> {
                         self.bump();
                         (ParamKind::Block, name, false)
                     }
-                    _ => return Err(self.error_expected("a name after `&`")),
+                    // `&: (Int) -> Nil`: an anonymous block, used with
+                    // `yield` or forwarded as `f(&)`.
+                    T::Colon => (ParamKind::Block, "&".to_string(), false),
+                    _ => return Err(self.error_expected("a name or `:` after `&`")),
                 }
             }
             T::IVar(name) => {

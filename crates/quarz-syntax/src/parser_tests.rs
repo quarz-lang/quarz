@@ -56,6 +56,14 @@ fn precedence() {
 }
 
 #[test]
+fn anonymous_block_parameter() {
+    assert_eq!(
+        sexp("def f(&: (Int) -> Int) -> Int = g(&)"),
+        "(def f (params &&:(Int) -> Int) -> Int (call _ g (blockpass &)))"
+    );
+}
+
+#[test]
 fn bytes_literals() {
     assert_eq!(sexp("b\"\\x00a\\n\\377\""), "(bytes 00610aff)");
     assert_eq!(sexp("b'\\x41é'"), "(bytes 41c3a9)");

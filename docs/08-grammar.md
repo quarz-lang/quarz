@@ -50,7 +50,8 @@ operator       = "+" | "-" | "*" | "/" | "%" | "**" | "==" | "!=" | "<" | "<=" |
 
 param_list     = param { "," param } ;
 param          = positional_param | "*" [ IDENT [ ":" type ] ] | "**" IDENT [ ":" type ]
-               | "&" IDENT [ ":" proc_type ] ;
+               | "&" IDENT [ ":" proc_type ]
+               | "&" ":" proc_type ;
 positional_param = [ "@" ] IDENT [ ":" type ] [ "=" expression ] ;
     (* a positional_param after a bare "*" is a keyword-only parameter *)
 
