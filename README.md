@@ -97,4 +97,4 @@ puts counter.value        # => 100
 
 ## 状態
 
-この時点では設計文書のみです。実装は [docs/05-execution.md](docs/05-execution.md) §8 の計画に沿って、Ruby で書く stage0 コンパイラ(C 出力)と C のランタイムから始める想定です。
+この時点では設計文書のみです。実装は Rust で行い、[docs/05-execution.md](docs/05-execution.md) §8 の順序(構文解析 → 型検査 → ランタイムの最小部分 → VM → 並行部分)で進める想定です。
