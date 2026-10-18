@@ -3076,7 +3076,8 @@ impl Checker {
                 self.check_args_blindly(call);
                 Type::Nothing
             }
-            Type::Proc(params, ret) if name == "call" => {
+            // `f.call(x)`, `f.(x)` and `f[x]` all call the procedure.
+            Type::Proc(params, ret) if name == "call" || name == "[]" => {
                 let params = params.clone();
                 let ret = (**ret).clone();
                 let positional: Vec<&Expr> = call

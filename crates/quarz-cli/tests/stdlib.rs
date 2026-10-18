@@ -96,6 +96,23 @@ fn json() {
     );
 }
 
+/// The `&block` parameter is an ordinary procedure value: `yield`,
+/// `block.call`, `block.()` and `block[]` are interchangeable, and it can
+/// be forwarded or returned.
+#[test]
+fn block_parameters_are_procedures() {
+    expect(
+        r#"def twice(&block: (Int) -> Int) -> Int = block.call(1) + block.(2) + block[3] + yield(4)
+def forward(&block: (Int) -> Int) -> Int = twice(&block)
+def pick(&block: (Int) -> Int) -> (Int) -> Int = block
+puts twice { |x| x * 10 }
+puts forward { |x| x + 1 }
+puts pick { |x| x - 1 }.call(5)
+"#,
+        "100\n14\n4\n",
+    );
+}
+
 #[test]
 fn backtraces_and_line_numbers() {
     expect(
