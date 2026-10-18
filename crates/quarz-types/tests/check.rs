@@ -179,7 +179,7 @@ fn methods_and_calls() {
     ok("def f(x: Int)\n  x * 2\nend\ny: Int = f(2)");
     err(
         "def f\n  yield\nend",
-        "`yield` in a method without a `&block` parameter",
+        "`yield` in a method without a block parameter",
     );
     ok("def twice(&block: (Int) -> Int) -> Int = yield(yield(1))\nputs twice { |x| x + 1 }");
     err(

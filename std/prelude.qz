@@ -26,12 +26,12 @@ class Object
   native def frozen? -> Bool
   native def dup -> self
 
-  def tap(&block: (self) -> Nil) -> self
+  def tap(&: (self) -> Nil) -> self
     yield self
     self
   end
 
-  def then[U](&block: (self) -> U) -> U = yield(self)
+  def then[U](&: (self) -> U) -> U = yield(self)
 end
 
 class Class
@@ -122,11 +122,11 @@ class Int
   native def lcm(other: Int) -> Int
   native def bit_length -> Int
   native def digits -> Array[Int]
-  native def times(&block: (Int) -> Nil) -> Nil
+  native def times(&: (Int) -> Nil) -> Nil
   native def times -> Enumerator[Int]
-  native def upto(limit: Int, &block: (Int) -> Nil) -> Nil
-  native def downto(limit: Int, &block: (Int) -> Nil) -> Nil
-  native def step(limit: Int, step: Int, &block: (Int) -> Nil) -> Nil
+  native def upto(limit: Int, &: (Int) -> Nil) -> Nil
+  native def downto(limit: Int, &: (Int) -> Nil) -> Nil
+  native def step(limit: Int, step: Int, &: (Int) -> Nil) -> Nil
   native def ms -> Duration
   native def milliseconds -> Duration
   native def second -> Duration
@@ -216,10 +216,10 @@ class Bytes
   native def self.[](*bytes: Int) -> Bytes
   native def self.from(bytes: Array[Int]) -> Bytes
   native def self.from_hex(hex: String) -> Bytes
-  native def self.build(&block: (Bytes::Builder) -> Nil) -> Bytes
+  native def self.build(&: (Bytes::Builder) -> Nil) -> Bytes
 
-  native def each(&block: (Int) -> Nil) -> Nil
-  native def each_byte(&block: (Int) -> Nil) -> Nil
+  native def each(&: (Int) -> Nil) -> Nil
+  native def each_byte(&: (Int) -> Nil) -> Nil
   native def size -> Int
   native def length -> Int
   native def bytesize -> Int
@@ -314,7 +314,7 @@ class String
   include Shareable
   include Comparable[String]
 
-  native def self.build(&block: (String::Builder) -> Nil) -> String
+  native def self.build(&: (String::Builder) -> Nil) -> String
 
   native def +(other: String) -> String
   native def *(count: Int) -> String
@@ -364,8 +364,8 @@ class String
   native def squeeze -> String
   native def count(chars: String) -> Int
   native def reverse -> String
-  native def each_char(&block: (String) -> Nil) -> Nil
-  native def each_line(&block: (String) -> Nil) -> Nil
+  native def each_char(&: (String) -> Nil) -> Nil
+  native def each_line(&: (String) -> Nil) -> Nil
   native def to_i -> Int
   native def to_i(base: Int) -> Int
   native def to_f -> Float
@@ -428,21 +428,21 @@ class MatchData
 end
 
 module Enumerable[out T]
-  abstract def each(&block: (T) -> Nil) -> Nil
+  abstract def each(&: (T) -> Nil) -> Nil
 
-  def map[U](&block: (T) -> U) -> Array[U]
+  def map[U](&: (T) -> U) -> Array[U]
     Array.build do |out|
       each { |x| out << yield(x) }
     end
   end
 
-  def flat_map[U](&block: (T) -> Array[U]) -> Array[U]
+  def flat_map[U](&: (T) -> Array[U]) -> Array[U]
     Array.build do |out|
       each { |x| out.concat(yield(x)) }
     end
   end
 
-  def filter_map[U](&block: (T) -> U?) -> Array[U]
+  def filter_map[U](&: (T) -> U?) -> Array[U]
     Array.build do |out|
       each do |x|
         y = yield(x)
@@ -451,29 +451,29 @@ module Enumerable[out T]
     end
   end
 
-  def select(&block: (T) -> Object) -> Array[T]
+  def select(&: (T) -> Object) -> Array[T]
     Array.build do |out|
       each { |x| out << x if yield(x) }
     end
   end
 
-  def filter(&block: (T) -> Object) -> Array[T] = select { |x| yield(x) }
+  def filter(&: (T) -> Object) -> Array[T] = select { |x| yield(x) }
 
-  def reject(&block: (T) -> Object) -> Array[T]
+  def reject(&: (T) -> Object) -> Array[T]
     Array.build do |out|
       each { |x| out << x unless yield(x) }
     end
   end
 
-  def reduce[U](initial: U, &block: (U, T) -> U) -> U
+  def reduce[U](initial: U, &: (U, T) -> U) -> U
     acc = initial
     each { |x| acc = yield(acc, x) }
     acc
   end
 
-  def inject[U](initial: U, &block: (U, T) -> U) -> U = reduce(initial) { |a, x| yield(a, x) }
+  def inject[U](initial: U, &: (U, T) -> U) -> U = reduce(initial) { |a, x| yield(a, x) }
 
-  def each_with_index(&block: (T, Int) -> Nil) -> Nil
+  def each_with_index(&: (T, Int) -> Nil) -> Nil
     i = 0
     each do |x|
       yield x, i
@@ -481,19 +481,19 @@ module Enumerable[out T]
     end
   end
 
-  def each_with_object[U](memo: U, &block: (T, U) -> Nil) -> U
+  def each_with_object[U](memo: U, &: (T, U) -> Nil) -> U
     each { |x| yield x, memo }
     memo
   end
 
-  def find(&block: (T) -> Object) -> T?
+  def find(&: (T) -> Object) -> T?
     each { |x| return x if yield(x) }
     nil
   end
 
-  def detect(&block: (T) -> Object) -> T? = find { |x| yield(x) }
+  def detect(&: (T) -> Object) -> T? = find { |x| yield(x) }
 
-  def find_index(&block: (T) -> Object) -> Int?
+  def find_index(&: (T) -> Object) -> Int?
     i = 0
     each do |x|
       return i if yield(x)
@@ -513,7 +513,7 @@ module Enumerable[out T]
     n
   end
 
-  def count(&block: (T) -> Object) -> Int
+  def count(&: (T) -> Object) -> Int
     n = 0
     each { |x| n += 1 if yield(x) }
     n
@@ -524,7 +524,7 @@ module Enumerable[out T]
     false
   end
 
-  def any?(&block: (T) -> Object) -> Bool
+  def any?(&: (T) -> Object) -> Bool
     each { |x| return true if yield(x) }
     false
   end
@@ -534,14 +534,14 @@ module Enumerable[out T]
     true
   end
 
-  def all?(&block: (T) -> Object) -> Bool
+  def all?(&: (T) -> Object) -> Bool
     each { |x| return false unless yield(x) }
     true
   end
 
-  def none?(&block: (T) -> Object) -> Bool = !any? { |x| yield(x) }
+  def none?(&: (T) -> Object) -> Bool = !any? { |x| yield(x) }
 
-  def one?(&block: (T) -> Object) -> Bool = count { |x| yield(x) } == 1
+  def one?(&: (T) -> Object) -> Bool = count { |x| yield(x) } == 1
 
   def first -> T?
     each { |x| return x }
@@ -569,7 +569,7 @@ module Enumerable[out T]
     end
   end
 
-  def take_while(&block: (T) -> Object) -> Array[T]
+  def take_while(&: (T) -> Object) -> Array[T]
     Array.build do |out|
       each do |x|
         break unless yield(x)
@@ -578,7 +578,7 @@ module Enumerable[out T]
     end
   end
 
-  def drop_while(&block: (T) -> Object) -> Array[T]
+  def drop_while(&: (T) -> Object) -> Array[T]
     Array.build do |out|
       dropping = true
       each do |x|
@@ -600,7 +600,7 @@ module Enumerable[out T]
     end
   end
 
-  def group_by[K](&block: (T) -> K) -> Hash[K, Array[T]]
+  def group_by[K](&: (T) -> K) -> Hash[K, Array[T]]
     groups = Hash::Builder[K, Array::Builder[T]].new
     each do |x|
       key = yield(x)
@@ -616,7 +616,7 @@ module Enumerable[out T]
     end
   end
 
-  def partition(&block: (T) -> Object) -> [Array[T], Array[T]]
+  def partition(&: (T) -> Object) -> [Array[T], Array[T]]
     yes = Array::Builder[T].new
     no = Array::Builder[T].new
     each do |x|
@@ -629,7 +629,7 @@ module Enumerable[out T]
     [yes.to_a, no.to_a]
   end
 
-  def each_slice(n: Int, &block: (Array[T]) -> Nil) -> Nil
+  def each_slice(n: Int, &: (Array[T]) -> Nil) -> Nil
     chunk = Array::Builder[T].new
     each do |x|
       chunk << x
@@ -663,7 +663,7 @@ module Enumerable[out T]
     end
   end
 
-  def min_by[U: Comparable[U]](&block: (T) -> U) -> T?
+  def min_by[U: Comparable[U]](&: (T) -> U) -> T?
     best: T? = nil
     best_key: U? = nil
     each do |x|
@@ -676,7 +676,7 @@ module Enumerable[out T]
     best
   end
 
-  def max_by[U: Comparable[U]](&block: (T) -> U) -> T?
+  def max_by[U: Comparable[U]](&: (T) -> U) -> T?
     best: T? = nil
     best_key: U? = nil
     each do |x|
@@ -689,7 +689,7 @@ module Enumerable[out T]
     best
   end
 
-  def sort_by[U: Comparable[U]](&block: (T) -> U) -> Array[T]
+  def sort_by[U: Comparable[U]](&: (T) -> U) -> Array[T]
     pairs: Array[[U, T]] = map { |x| [yield(x), x] }
     pairs.sort_pairs.map { |pair| pair[1] }
   end
@@ -720,10 +720,10 @@ class Enumerator[out T]
   include Shareable
   include Enumerable[T]
 
-  native def each(&block: (T) -> Nil) -> Nil
+  native def each(&: (T) -> Nil) -> Nil
   native def next -> T
   native def size -> Int
-  native def with_index(&block: (T, Int) -> Nil) -> Nil
+  native def with_index(&: (T, Int) -> Nil) -> Nil
 end
 
 class Array[out T]
@@ -731,12 +731,12 @@ class Array[out T]
   include Enumerable[T]
 
   native def self.new -> Array[T]
-  native def self.new(size: Int, &block: (Int) -> T) -> Array[T]
-  native def self.build(&block: (Array::Builder[T]) -> Nil) -> Array[T]
+  native def self.new(size: Int, &: (Int) -> T) -> Array[T]
+  native def self.build(&: (Array::Builder[T]) -> Nil) -> Array[T]
 
-  native def each(&block: (T) -> Nil) -> Nil
-  native def each_index(&block: (Int) -> Nil) -> Nil
-  native def reverse_each(&block: (T) -> Nil) -> Nil
+  native def each(&: (T) -> Nil) -> Nil
+  native def each_index(&: (Int) -> Nil) -> Nil
+  native def reverse_each(&: (T) -> Nil) -> Nil
   native def [](index: Int) -> T
   native def [](range: Range[Int]) -> Array[T]
   native def []?(index: Int) -> T?
@@ -780,8 +780,8 @@ class Array[out T]
   native def inspect -> String
   native def ==(other: Object) -> Bool
   native def hash -> Int
-  native def map[U](&block: (T) -> U) -> Array[U]
-  native def select(&block: (T) -> Object) -> Array[T]
+  native def map[U](&: (T) -> U) -> Array[U]
+  native def select(&: (T) -> Object) -> Array[T]
   native def sort_pairs -> Array[T]
 
   class Builder[T]
@@ -810,11 +810,11 @@ class Array[out T]
     native def clear -> self
     native def reverse! -> self
     native def sort! -> self
-    native def map!(&block: (T) -> T) -> self
-    native def select!(&block: (T) -> Object) -> self
-    native def reject!(&block: (T) -> Object) -> self
-    native def each(&block: (T) -> Nil) -> Nil
-    native def each_with_index(&block: (T, Int) -> Nil) -> Nil
+    native def map!(&: (T) -> T) -> self
+    native def select!(&: (T) -> Object) -> self
+    native def reject!(&: (T) -> Object) -> self
+    native def each(&: (T) -> Nil) -> Nil
+    native def each_with_index(&: (T, Int) -> Nil) -> Nil
     native def to_a -> Array[T]
     native def snapshot -> Array[T]
     native def to_s -> String
@@ -827,16 +827,16 @@ class Hash[K, out V]
   include Enumerable[[K, V]]
 
   native def self.new -> Hash[K, V]
-  native def self.build(&block: (Hash::Builder[K, V]) -> Nil) -> Hash[K, V]
+  native def self.build(&: (Hash::Builder[K, V]) -> Nil) -> Hash[K, V]
 
-  native def each(&block: ([K, V]) -> Nil) -> Nil
-  native def each_pair(&block: (K, V) -> Nil) -> Nil
-  native def each_key(&block: (K) -> Nil) -> Nil
-  native def each_value(&block: (V) -> Nil) -> Nil
+  native def each(&: ([K, V]) -> Nil) -> Nil
+  native def each_pair(&: (K, V) -> Nil) -> Nil
+  native def each_key(&: (K) -> Nil) -> Nil
+  native def each_value(&: (V) -> Nil) -> Nil
   native def [](key: K) -> V
   native def []?(key: K) -> V?
   native def fetch(key: K, default: V) -> V
-  native def fetch(key: K, &block: (K) -> V) -> V
+  native def fetch(key: K, &: (K) -> V) -> V
   native def dig(key: K) -> V?
   native def key?(key: K) -> Bool
   native def has_key?(key: K) -> Bool
@@ -850,12 +850,12 @@ class Hash[K, out V]
   native def put(key: K, value: V) -> Hash[K, V]
   native def delete(key: K) -> Hash[K, V]
   native def merge(other: Hash[K, V]) -> Hash[K, V]
-  native def merge(other: Hash[K, V], &block: (K, V, V) -> V) -> Hash[K, V]
-  native def update(key: K, &block: (V?) -> V) -> Hash[K, V]
-  native def select(&block: (K, V) -> Object) -> Hash[K, V]
-  native def reject(&block: (K, V) -> Object) -> Hash[K, V]
-  native def transform_values[U](&block: (V) -> U) -> Hash[K, U]
-  native def transform_keys[U](&block: (K) -> U) -> Hash[U, V]
+  native def merge(other: Hash[K, V], &: (K, V, V) -> V) -> Hash[K, V]
+  native def update(key: K, &: (V?) -> V) -> Hash[K, V]
+  native def select(&: (K, V) -> Object) -> Hash[K, V]
+  native def reject(&: (K, V) -> Object) -> Hash[K, V]
+  native def transform_values[U](&: (V) -> U) -> Hash[K, U]
+  native def transform_keys[U](&: (K) -> U) -> Hash[U, V]
   native def invert -> Hash[V, K]
   native def to_a -> Array[[K, V]]
   native def to_h -> Hash[K, V]
@@ -881,7 +881,7 @@ class Hash[K, out V]
     native def empty? -> Bool
     native def clear -> self
     native def merge!(other: Hash[K, V]) -> self
-    native def each(&block: (K, V) -> Nil) -> Nil
+    native def each(&: (K, V) -> Nil) -> Nil
     native def to_h -> Hash[K, V]
     native def snapshot -> Hash[K, V]
     native def to_s -> String
@@ -895,9 +895,9 @@ class Set[out T]
 
   native def self.new -> Set[T]
   native def self.[](*items: T) -> Set[T]
-  native def self.build(&block: (Set::Builder[T]) -> Nil) -> Set[T]
+  native def self.build(&: (Set::Builder[T]) -> Nil) -> Set[T]
 
-  native def each(&block: (T) -> Nil) -> Nil
+  native def each(&: (T) -> Nil) -> Nil
   native def add(value: T) -> Set[T]
   native def delete(value: T) -> Set[T]
   native def include?(value: Object) -> Bool
@@ -926,7 +926,7 @@ class Set[out T]
     native def include?(value: Object) -> Bool
     native def size -> Int
     native def empty? -> Bool
-    native def each(&block: (T) -> Nil) -> Nil
+    native def each(&: (T) -> Nil) -> Nil
     native def to_set -> Set[T]
     native def to_a -> Array[T]
     native def to_s -> String
@@ -938,7 +938,7 @@ class Range[T]
   include Shareable
   include Enumerable[T]
 
-  native def each(&block: (T) -> Nil) -> Nil
+  native def each(&: (T) -> Nil) -> Nil
   native def begin -> T?
   native def end -> T?
   native def first -> T?
@@ -947,7 +947,7 @@ class Range[T]
   native def include?(value: Object) -> Bool
   native def cover?(value: T) -> Bool
   native def size -> Int
-  native def step(step: Int, &block: (T) -> Nil) -> Nil
+  native def step(step: Int, &: (T) -> Nil) -> Nil
   native def to_a -> Array[T]
   native def to_s -> String
   native def inspect -> String
@@ -1059,14 +1059,14 @@ enum Result[T, E]
     end
   end
 
-  def map[U](&block: (T) -> U) -> Result[U, E]
+  def map[U](&: (T) -> U) -> Result[U, E]
     case self
     in Ok(value:) then Result::Ok[U, E].new(yield(value))
     in Err(error:) then Result::Err[U, E].new(error)
     end
   end
 
-  def and_then[U](&block: (T) -> Result[U, E]) -> Result[U, E]
+  def and_then[U](&: (T) -> Result[U, E]) -> Result[U, E]
     case self
     in Ok(value:) then yield(value)
     in Err(error:) then Result::Err[U, E].new(error)
@@ -1077,12 +1077,12 @@ end
 class Task[out T: Shareable]
   include Shareable
 
-  native def self.scope[R](&block: (Scope) -> R) -> R
+  native def self.scope[R](&: (Scope) -> R) -> R
   native def self.sleep(duration: Duration) -> Nil
   native def self.yield -> Nil
   native def self.current -> Task[Object]
-  native def self.timeout[R](duration: Duration, &block: () -> R) -> R
-  native def self.blocking[R](&block: () -> R) -> R
+  native def self.timeout[R](duration: Duration, &: () -> R) -> R
+  native def self.blocking[R](&: () -> R) -> R
   native def self.check_cancel -> Nil
 
   native def await -> T
@@ -1100,7 +1100,7 @@ end
 class Scope
   include Shareable
 
-  native def spawn[T](&block: () -> T) -> Task[T]
+  native def spawn[T](&: () -> T) -> Task[T]
   native def cancel -> Nil
 end
 
@@ -1109,7 +1109,7 @@ class Channel[T: Shareable]
   include Enumerable[T]
 
   native def self.new(capacity: Int = 0) -> Channel[T]
-  native def self.select_loop(&block: (Selector) -> Nil) -> Nil
+  native def self.select_loop(&: (Selector) -> Nil) -> Nil
 
   native def send(value: T) -> Nil
   native def receive -> T
@@ -1120,7 +1120,7 @@ class Channel[T: Shareable]
   native def closed? -> Bool
   native def empty? -> Bool
   native def size -> Int
-  native def each(&block: (T) -> Nil) -> Nil
+  native def each(&: (T) -> Nil) -> Nil
 
   class Closed < StandardError
   end
@@ -1129,10 +1129,10 @@ end
 class Selector
   include Unshareable
 
-  native def receive[T](channel: Channel[T], &block: (T) -> Nil) -> Nil
-  native def send[T](channel: Channel[T], value: T, &block: () -> Nil) -> Nil
-  native def after(duration: Duration, &block: () -> Nil) -> Nil
-  native def default(&block: () -> Nil) -> Nil
+  native def receive[T](channel: Channel[T], &: (T) -> Nil) -> Nil
+  native def send[T](channel: Channel[T], value: T, &: () -> Nil) -> Nil
+  native def after(duration: Duration, &: () -> Nil) -> Nil
+  native def default(&: () -> Nil) -> Nil
   native def stop -> Nil
 end
 
@@ -1143,7 +1143,7 @@ class Atom[T: Shareable]
   native def value -> T
   native def get -> T
   native def set(value: T) -> Nil
-  native def update(&block: (T) -> T) -> T
+  native def update(&: (T) -> T) -> T
   native def compare_and_set(expected: T, replacement: T) -> Bool
 end
 
@@ -1156,7 +1156,7 @@ class IO
   native def gets -> String
   native def gets? -> String?
   native def read -> String
-  native def each_line(&block: (String) -> Nil) -> Nil
+  native def each_line(&: (String) -> Nil) -> Nil
   native def flush -> Nil
   native def close -> Nil
   native def eof? -> Bool
@@ -1217,13 +1217,13 @@ module Kernel
   native def p(*values: Object) -> Nil
   native def pp[T](value: T) -> T
   native def warn(*args: Object) -> Nil
-  native def loop(&block: () -> Nil) -> Nil
+  native def loop(&: () -> Nil) -> Nil
   native def sleep(duration: Duration) -> Nil
-  native def spawn[T](&block: () -> T) -> Task[T]
-  native def select(&block: (Selector) -> Nil) -> Nil
+  native def spawn[T](&: () -> T) -> Task[T]
+  native def select(&: (Selector) -> Nil) -> Nil
   native def exit(status: Int = 0) -> Nothing
   native def abort(message: String) -> Nothing
-  native def at_exit(&block: () -> Nil) -> Nil
+  native def at_exit(&: () -> Nil) -> Nil
   native def gets -> String
   native def gets? -> String?
   native def rand -> Float

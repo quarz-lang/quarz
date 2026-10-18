@@ -3969,7 +3969,7 @@ impl Checker {
     fn check_yield(&mut self, expr: &Expr, args: &[Arg]) -> Type {
         let Some(bt) = self.env.block_type.clone() else {
             self.error(
-                "`yield` in a method without a `&block` parameter",
+                "`yield` in a method without a block parameter",
                 expr.span,
             );
             self.check_args_blindly(&Call {
