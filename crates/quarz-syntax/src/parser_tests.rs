@@ -300,9 +300,20 @@ fn declarations() {
         "(data P (fields x:Int) (def f (params) (call _ x)))"
     );
     assert_eq!(
-        sexp("enum E[T]\nA\nB(v: T)\ndef f = 1\nend"),
+        sexp("enum E[T]\n  | A\n  | B(v: T)\ndef f = 1\nend"),
         "(enum E (tparams T) (A) (B v:T) (def f (params) 1))"
     );
+    // The variants are one `|`-separated list: on one line, continued on
+    // lines that start with `|`, with or without a leading `|`.
+    assert_eq!(sexp("enum C = A | B(x: Int)"), "(enum C (A) (B x:Int))");
+    assert_eq!(sexp("enum C =\n  | A\n  | B"), "(enum C (A) (B))");
+    assert_eq!(
+        sexp("enum C\n  A | B\n  | D\n  def f = 1\nend"),
+        "(enum C (A) (B) (D) (def f (params) 1))"
+    );
+    assert_eq!(sexp("enum C\n  Only(x: Int)\nend"), "(enum C (Only x:Int))");
+    assert!(errors("enum C\n  A\n  B\nend")[0].contains("separated by `|`"));
+    assert!(errors("enum C =\nputs 1")[0].contains("a variant after `=`"));
     assert_eq!(
         sexp("extension Array[T: Comparable[T]]\ndef m = 1\nend"),
         "(extension Array[T] (tparams T:Comparable[T]) (def m (params) 1))"

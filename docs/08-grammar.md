@@ -31,7 +31,9 @@ data_decl      = "data" CONST [ type_params ] "(" [ field_list ] ")" [ "is" NEWL
 field_list     = field { "," field } ;
 field          = IDENT ":" type [ "=" expression ] ;
 
-enum_decl      = "enum" CONST [ type_params ] NEWLINE { variant NEWLINE } class_body "end" ;
+enum_decl      = "enum" CONST [ type_params ] "=" variants
+               | "enum" CONST [ type_params ] NEWLINE variants NEWLINE class_body "end" ;
+variants       = [ "|" ] variant { [ NEWLINE ] "|" variant } ;
 variant        = CONST [ "(" field_list ")" ] ;
 
 (* ---- extensions ---- *)

@@ -148,13 +148,15 @@ end
 
 ## 5. 列挙型(`enum`)
 
-直和型(代数的データ型)です。各バリアントはデータを持てます。
+直和型(代数的データ型)です。バリアントは合併型と同じく `|` で区切り、それぞれデータを持てます。
 
 ```ruby
+enum Color = Red | Green | Blue              # 本体なし: 一行で書け、end は不要
+
 enum Shape
   Circle(radius: Float)
-  Rect(width: Float, height: Float)
-  Point
+  | Rect(width: Float, height: Float)
+  | Point
 
   def area -> Float
     case self
@@ -172,7 +174,8 @@ s.area
 - バリアントは `Shape::Circle` のように入れ子の型として参照でき、それぞれ `Shape` のサブタイプです。
 - データを持たないバリアント(`Point`)はシングルトンで、`Shape::Point` と書けば値になります。
 - `case/in` は網羅性を検査します。バリアントを取りこぼすとコンパイルエラーです。
-- 標準ライブラリの `Result[T, E]` は `enum Result[T, E]; Ok(value: T); Err(error: E); end` です。
+- バリアント列は `|` で区切った一つの並びです。`|` で始まる行はその続きで、OCaml と同じく最初のバリアントにも `|` を付けてかまいません(`| Circle(...)`)。一行形式 `enum Name = A | B` は本体を持たない enum を宣言し、`end` は不要です。ブロック形式ではバリアント列の後にメソッドを書きます。
+- 標準ライブラリの `Result[T, E]` は `enum Result[T, E] = Ok(value: T) | Err(error: E)` にメソッドを加えたものです。
 
 ## 6. モジュール
 

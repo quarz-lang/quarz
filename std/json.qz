@@ -27,12 +27,12 @@ module JSON
   # `Number`.
   enum Value
     Null
-    Boolean(value: Bool)
-    Integer(value: Int)
-    Number(value: Float)
-    Text(value: String)
-    List(items: Array[Value])
-    Map(members: Hash[String, Value])
+    | Boolean(value: Bool)
+    | Integer(value: Int)
+    | Number(value: Float)
+    | Text(value: String)
+    | List(items: Array[Value])
+    | Map(members: Hash[String, Value])
 
     def null? -> Bool
       case self

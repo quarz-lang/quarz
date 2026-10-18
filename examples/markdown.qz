@@ -5,10 +5,10 @@
 
 enum Block
   Heading(level: Int, text: String)
-  Paragraph(text: String)
-  List(items: Array[String], ordered: Bool)
-  Code(lang: String, lines: Array[String])
-  Rule
+  | Paragraph(text: String)
+  | List(items: Array[String], ordered: Bool)
+  | Code(lang: String, lines: Array[String])
+  | Rule
 end
 
 def escape_html(text: String) -> String

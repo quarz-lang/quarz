@@ -6,7 +6,7 @@ data Job(id: Int, size: Int)
 
 enum Outcome
   Done(id: Int, checksum: Int, worker: Int)
-  Failed(id: Int, reason: String)
+  | Failed(id: Int, reason: String)
 end
 
 # A deterministic "computation" whose cost grows with the job size.

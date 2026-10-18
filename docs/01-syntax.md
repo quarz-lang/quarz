@@ -150,13 +150,15 @@ end
 
 ## 5. Enumerations (`enum`)
 
-Sum types (algebraic data types). Each variant can carry data.
+Sum types (algebraic data types). The variants are separated by `|`, as in a union type; each can carry data.
 
 ```ruby
+enum Color = Red | Green | Blue              # no body: one line, no `end`
+
 enum Shape
   Circle(radius: Float)
-  Rect(width: Float, height: Float)
-  Point
+  | Rect(width: Float, height: Float)
+  | Point
 
   def area -> Float
     case self
@@ -174,7 +176,8 @@ s.area
 - Variants can be referenced as nested types like `Shape::Circle`, and each is a subtype of `Shape`.
 - A variant without data (`Point`) is a singleton; writing `Shape::Point` yields the value.
 - `case/in` checks exhaustiveness. Missing a variant is a compile error.
-- The standard library's `Result[T, E]` is `enum Result[T, E]; Ok(value: T); Err(error: E); end`.
+- The variants form one `|`-separated list. A line that starts with `|` continues it, and the first variant may carry a leading `|` too (`| Circle(...)`), as in OCaml. The one-line form `enum Name = A | B` declares an enum without a body and needs no `end`; the block form holds methods after the variants.
+- The standard library's `Result[T, E]` is `enum Result[T, E] = Ok(value: T) | Err(error: E)` plus its methods.
 
 ## 6. Modules
 
