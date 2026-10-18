@@ -1750,8 +1750,90 @@ impl<'src> Parser<'src> {
                 }
             }
             StringKind::Regexp => ExprKind::Regexp { parts, flags },
+            StringKind::Bytes => ExprKind::Bytes(self.decode_bytes_literal(&parts, span)),
         };
         Ok(self.node(span, kind))
+    }
+
+    /// Decode the escapes of a `b"..."` literal. Characters outside ASCII
+    /// contribute their UTF-8 bytes; `\xNN` and octal escapes any byte.
+    fn decode_bytes_literal(&mut self, parts: &[StrPart], span: Span) -> Vec<u8> {
+        let mut out = Vec::new();
+        for part in parts {
+            let StrPart::Lit(text) = part else { continue };
+            let b = text.as_bytes();
+            let mut i = 0;
+            while i < b.len() {
+                if b[i] != b'\\' {
+                    out.push(b[i]);
+                    i += 1;
+                    continue;
+                }
+                i += 1;
+                let Some(&c) = b.get(i) else {
+                    let _ = self.error_at("invalid escape in a Bytes literal", span);
+                    break;
+                };
+                i += 1;
+                match c {
+                    b'n' => out.push(b'\n'),
+                    b't' => out.push(b'\t'),
+                    b'r' => out.push(b'\r'),
+                    b's' => out.push(b' '),
+                    b'a' => out.push(0x07),
+                    b'b' => out.push(0x08),
+                    b'e' => out.push(0x1b),
+                    b'f' => out.push(0x0c),
+                    b'v' => out.push(0x0b),
+                    b'\n' => {}
+                    b'x' => {
+                        let mut value = 0u32;
+                        let mut count = 0;
+                        while count < 2 && b.get(i).is_some_and(u8::is_ascii_hexdigit) {
+                            value = value * 16 + (b[i] as char).to_digit(16).unwrap();
+                            i += 1;
+                            count += 1;
+                        }
+                        if count == 0 {
+                            let _ = self.error_at("invalid hex escape in a Bytes literal", span);
+                        }
+                        out.push(value as u8);
+                    }
+                    b'0'..=b'7' => {
+                        let mut value = (c - b'0') as u32;
+                        let mut count = 1;
+                        while count < 3 && matches!(b.get(i), Some(b'0'..=b'7')) {
+                            value = value * 8 + (b[i] - b'0') as u32;
+                            i += 1;
+                            count += 1;
+                        }
+                        if value > 0xff {
+                            let _ =
+                                self.error_at("octal escape above \\377 in a Bytes literal", span);
+                        }
+                        out.push(value as u8);
+                    }
+                    b'u' => {
+                        let mut value = 0u32;
+                        let mut count = 0;
+                        while count < 4 && b.get(i).is_some_and(u8::is_ascii_hexdigit) {
+                            value = value * 16 + (b[i] as char).to_digit(16).unwrap();
+                            i += 1;
+                            count += 1;
+                        }
+                        match (count == 4).then(|| char::from_u32(value)).flatten() {
+                            Some(ch) => out.extend_from_slice(ch.to_string().as_bytes()),
+                            None => {
+                                let _ = self
+                                    .error_at("invalid Unicode escape in a Bytes literal", span);
+                            }
+                        }
+                    }
+                    other => out.push(other),
+                }
+            }
+        }
+        out
     }
 
     fn expect_string_end(&mut self) -> PResult<()> {

@@ -68,11 +68,20 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
             .map(Value::string)
             .map_err(|e| i.raise(i.exc.io_error, &format!("{p}: {e}")))
     });
+    m.insert("File.read_bytes", |i, _, a| {
+        let p = string(i, a.arg(0), "path")?;
+        std::fs::read(&*p)
+            .map(Value::bytes)
+            .map_err(|e| i.raise(i.exc.io_error, &format!("{p}: {e}")))
+    });
     m.insert("File.write", |i, _, a| {
         let p = string(i, a.arg(0), "path")?;
-        let c = string(i, a.arg(1), "content")?;
-        std::fs::write(&*p, c.as_bytes())
-            .map(|_| Value::Int(c.len() as i64))
+        let content: Vec<u8> = match a.arg(1) {
+            Value::Bytes(b) => b.to_vec(),
+            v => string(i, v, "content")?.as_bytes().to_vec(),
+        };
+        std::fs::write(&*p, &content)
+            .map(|_| Value::Int(content.len() as i64))
             .map_err(|e| i.raise(i.exc.io_error, &format!("{p}: {e}")))
     });
     m.insert("File.exist?", |i, _, a| {

@@ -1,5 +1,224 @@
-# JSON support. (Parsing and generation are added in a later step.)
+# JSON: parsing into `JSON::Value` and generation from any value.
+#
+#   require "json"
+#   doc = JSON.parse('{"name": "quarz", "tags": ["lang", "vm"]}')
+#   doc["name"].as_s                 # => "quarz"
+#   doc["tags"][1].as_s              # => "vm"
+#   case doc
+#   in JSON::Value::Map(members:) then members.keys
+#   else []
+#   end
+#   JSON.generate({ a: 1, b: [true, nil] })   # => '{"a":1,"b":[true,null]}'
+#
+# `JSON.generate` accepts `nil`, booleans, numbers, strings, symbols, arrays,
+# hashes, sets, `data` values and `JSON::Value`. Other objects are
+# generated from their fields, unless they define `to_json -> String`.
 
 module JSON
-  VERSION = "0.0.1"
+  VERSION = "0.1.0"
+
+  class ParseError < StandardError
+  end
+
+  class GeneratorError < StandardError
+  end
+
+  # A parsed JSON document. Integral numbers are `Integer`, the others
+  # `Number`.
+  enum Value
+    Null
+    Boolean(value: Bool)
+    Integer(value: Int)
+    Number(value: Float)
+    Text(value: String)
+    List(items: Array[Value])
+    Map(members: Hash[String, Value])
+
+    def null? -> Bool
+      case self
+      in Null then true
+      else false
+      end
+    end
+
+    def boolean? -> Bool
+      case self
+      in Boolean then true
+      else false
+      end
+    end
+
+    def number? -> Bool
+      case self
+      in Integer | Number then true
+      else false
+      end
+    end
+
+    def text? -> Bool
+      case self
+      in Text then true
+      else false
+      end
+    end
+
+    def list? -> Bool
+      case self
+      in List then true
+      else false
+      end
+    end
+
+    def map? -> Bool
+      case self
+      in Map then true
+      else false
+      end
+    end
+
+    # Member of an object; raises `KeyError` when missing and `TypeError`
+    # on anything but a `Map`.
+    def [](key: String) -> Value
+      case self
+      in Map(members:) then members[key]
+      else raise TypeError, "not a JSON object: #{inspect}"
+      end
+    end
+
+    # Element of an array; raises `IndexError` when out of range.
+    def [](index: Int) -> Value
+      case self
+      in List(items:) then items[index]
+      else raise TypeError, "not a JSON array: #{inspect}"
+      end
+    end
+
+    def []?(key: String) -> Value?
+      case self
+      in Map(members:) then members[key]?
+      else nil
+      end
+    end
+
+    def []?(index: Int) -> Value?
+      case self
+      in List(items:) then items[index]?
+      else nil
+      end
+    end
+
+    def as_bool -> Bool
+      case self
+      in Boolean(value:) then value
+      else raise TypeError, "not a JSON boolean: #{inspect}"
+      end
+    end
+
+    def as_i -> Int
+      case self
+      in Integer(value:) then value
+      in Number(value:) then value.to_i
+      else raise TypeError, "not a JSON number: #{inspect}"
+      end
+    end
+
+    def as_f -> Float
+      case self
+      in Integer(value:) then value.to_f
+      in Number(value:) then value
+      else raise TypeError, "not a JSON number: #{inspect}"
+      end
+    end
+
+    def as_s -> String
+      case self
+      in Text(value:) then value
+      else raise TypeError, "not a JSON string: #{inspect}"
+      end
+    end
+
+    def as_a -> Array[Value]
+      case self
+      in List(items:) then items
+      else raise TypeError, "not a JSON array: #{inspect}"
+      end
+    end
+
+    def as_h -> Hash[String, Value]
+      case self
+      in Map(members:) then members
+      else raise TypeError, "not a JSON object: #{inspect}"
+      end
+    end
+
+    def as_bool? -> Bool?
+      case self
+      in Boolean(value:) then value
+      else nil
+      end
+    end
+
+    def as_i? -> Int?
+      case self
+      in Integer(value:) then value
+      in Number(value:) then value.to_i
+      else nil
+      end
+    end
+
+    def as_f? -> Float?
+      case self
+      in Integer(value:) then value.to_f
+      in Number(value:) then value
+      else nil
+      end
+    end
+
+    def as_s? -> String?
+      case self
+      in Text(value:) then value
+      else nil
+      end
+    end
+
+    def as_a? -> Array[Value]?
+      case self
+      in List(items:) then items
+      else nil
+      end
+    end
+
+    def as_h? -> Hash[String, Value]?
+      case self
+      in Map(members:) then members
+      else nil
+      end
+    end
+
+    # Number of elements or members.
+    def size -> Int
+      case self
+      in List(items:) then items.size
+      in Map(members:) then members.size
+      else raise TypeError, "not a JSON array or object: #{inspect}"
+      end
+    end
+
+    def to_json -> String = JSON.generate(self)
+
+    def to_s -> String = to_json
+  end
+
+  # Parse a document; raises `JSON::ParseError` on malformed input.
+  native def self.parse(text: String) -> Value
+
+  # The compact JSON text of a value.
+  native def self.generate(value: Object) -> String
+
+  # Indented JSON text (two spaces per level).
+  native def self.pretty_generate(value: Object) -> String
+
+  def self.dump(value: Object) -> String = generate(value)
+
+  def self.load(text: String) -> Value = parse(text)
 end

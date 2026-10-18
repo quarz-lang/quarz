@@ -350,6 +350,12 @@ pub fn expr_to_sexp(expr: &Expr, out: &mut String) {
             let _ = write!(out, "{f:?}");
         }
         Str(parts) => list(out, "str", |o| str_parts(o, parts)),
+        Bytes(bytes) => list(out, "bytes", |o| {
+            o.push(' ');
+            for b in bytes {
+                let _ = write!(o, "{b:02x}");
+            }
+        }),
         Symbol(name) => {
             let simple = name
                 .chars()

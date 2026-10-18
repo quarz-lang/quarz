@@ -5,6 +5,8 @@
 //! the world of classes and methods, plus side tables keyed by AST node
 //! that the evaluator uses (types, call targets, variable slots).
 
+use std::path::{Path, PathBuf};
+
 pub mod check;
 pub mod declare;
 pub mod load;
@@ -12,8 +14,8 @@ pub mod patterns;
 pub mod types;
 pub mod world;
 
-use quarz_syntax::ast::{Expr, Program};
-use quarz_syntax::Diagnostic;
+use quarz_syntax::ast::{Expr, ExprKind, Program};
+use quarz_syntax::{parse_with_bases, Diagnostic, SourceFile};
 
 pub use check::{BlockPass, CallTarget, ConstTarget, Output, VarRef};
 pub use load::{load, LoadedUnit, STD_MODULES};
@@ -52,11 +54,16 @@ pub struct Checked {
 pub type FileDiagnostic = (u32, Diagnostic);
 
 /// An interactive session: declarations and variables accumulate across
-/// inputs, which are all part of unit 1.
+/// inputs, which are all part of unit 1. Libraries and files loaded with
+/// `require` become units 2, 3, ...
 pub struct Session {
     checker: check::Checker,
     main: ClassId,
     inputs: u32,
+    /// Units loaded by `require`: file index, name and pseudo-class.
+    loaded: Vec<(u32, String, ClassId)>,
+    loaded_keys: std::collections::HashSet<String>,
+    sources: Vec<(u32, SourceFile)>,
 }
 
 impl Session {
@@ -84,7 +91,114 @@ impl Session {
             checker,
             main,
             inputs: 0,
+            loaded: Vec::new(),
+            loaded_keys: std::collections::HashSet::new(),
+            sources: Vec::new(),
         })
+    }
+
+    /// The source of a unit loaded by `require`, for rendering diagnostics.
+    pub fn source(&self, file: u32) -> Option<&SourceFile> {
+        self.sources
+            .iter()
+            .find(|(f, _)| *f == file)
+            .map(|(_, s)| s)
+    }
+
+    /// Load a library (`require "name"`) or a file (`require_relative`,
+    /// resolved against `dir`) requested at `span` in unit `from`. Returns
+    /// the newly loaded units in execution order (dependencies first),
+    /// whose top-level statements the caller runs once; an empty list when
+    /// everything was already loaded.
+    pub fn require(
+        &mut self,
+        path: &str,
+        relative: bool,
+        dir: &Path,
+        from: u32,
+        span: quarz_syntax::Span,
+    ) -> Result<Vec<CheckedUnit>, Vec<FileDiagnostic>> {
+        let (key, name, text, module_dir) = if relative {
+            let mut target = dir.join(path);
+            if target.extension().is_none() {
+                target.set_extension("qz");
+            }
+            let text = std::fs::read_to_string(&target).map_err(|e| {
+                let message = format!("cannot read `{}`: {e}", target.display());
+                vec![(from, Diagnostic::error(message, span))]
+            })?;
+            let module_dir = target
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| PathBuf::from("."));
+            (
+                load::canonical(&target),
+                target.display().to_string(),
+                text,
+                module_dir,
+            )
+        } else {
+            let key = format!("<std:{path}>");
+            let Some((_, text)) = STD_MODULES.iter().find(|(n, _)| *n == path) else {
+                let message = format!("unknown library `{path}`");
+                return Err(vec![(from, Diagnostic::error(message, span))]);
+            };
+            (key.clone(), key, text.to_string(), PathBuf::from("."))
+        };
+        if !self.loaded_keys.insert(key) {
+            return Ok(Vec::new());
+        }
+        let file = self.loaded.len() as u32 + 2;
+        let base = self.next_base();
+        self.inputs += 1;
+        let source = SourceFile::with_base(name.clone(), text, base);
+        let parsed = parse_with_bases(&source.text, base, base);
+        self.sources.push((file, source));
+        let mut diagnostics: Vec<FileDiagnostic> = parsed
+            .diagnostics
+            .iter()
+            .map(|d| (file, d.clone()))
+            .collect();
+        if diagnostics.iter().any(|(_, d)| d.is_error()) {
+            return Err(diagnostics);
+        }
+        // Dependencies first.
+        let mut units = Vec::new();
+        for expr in &parsed.program.body {
+            if let ExprKind::Require { path, relative } = &expr.kind {
+                units.extend(self.require(path, *relative, &module_dir, file, expr.span)?);
+            }
+        }
+        let world = std::mem::take(&mut self.checker.world);
+        let mut declarer = declare::Declarer::with_world(world);
+        declarer.collect_unit(&parsed.program, file);
+        declarer.resolve_headers();
+        diagnostics.append(&mut declarer.diagnostics);
+        let main = declarer.units[0].main;
+        let body: Vec<Expr> = declarer.units[0]
+            .body
+            .iter()
+            .map(|e| (*e).clone())
+            .collect();
+        self.checker.world = std::mem::take(&mut declarer.world);
+        self.checker.add_file_main(file, main);
+        self.loaded.push((file, name.clone(), main));
+        if diagnostics.iter().any(|(_, d)| d.is_error()) {
+            return Err(diagnostics);
+        }
+        let refs: Vec<&Expr> = body.iter().collect();
+        self.checker.check_all(&[(file, refs)]);
+        diagnostics.append(&mut self.checker.take_diagnostics());
+        if diagnostics.iter().any(|(_, d)| d.is_error()) {
+            return Err(diagnostics);
+        }
+        units.push(CheckedUnit {
+            file,
+            name,
+            main_class: main,
+            body,
+        });
+        Ok(units)
     }
 
     /// The span/node-id base to parse the next input with.
@@ -135,20 +249,34 @@ impl Session {
     /// Warnings of the last input are returned by `feed` only on error; the
     /// checker's current world and output, cloned for an interpreter.
     pub fn snapshot(&self, body: Vec<Expr>, name: &str) -> Checked {
+        let mut units: Vec<CheckedUnit> = self
+            .loaded
+            .iter()
+            .map(|(file, name, main)| CheckedUnit {
+                file: *file,
+                name: name.clone(),
+                main_class: *main,
+                body: Vec::new(),
+            })
+            .collect();
+        units.push(CheckedUnit {
+            file: 1,
+            name: name.to_string(),
+            main_class: self.main,
+            body,
+        });
         Checked {
             world: self.checker.world.clone(),
             output: self.checker.out.clone(),
-            units: vec![CheckedUnit {
-                file: 1,
-                name: name.to_string(),
-                main_class: self.main,
-                body,
-            }],
+            units,
         }
     }
 }
 
 /// Check a single-file program.
+/// Check a single program against the prelude. The program must have been
+/// parsed with `parse_with_bases(src, load::unit_base(0), load::unit_base(0))`
+/// so that its spans and node ids do not collide with the prelude's.
 pub fn check(prelude: &Program, program: &Program) -> (Option<Checked>, Vec<FileDiagnostic>) {
     let unit = Unit {
         name: "main".to_string(),

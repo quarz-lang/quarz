@@ -9,12 +9,15 @@ use crate::interp::{Args, EvalResult, Flow, Interp, NativeFn, OwnedNativeFn};
 use crate::value::Value;
 use smallvec::smallvec;
 
+pub mod bytes;
 mod collections;
 mod concurrency;
 mod core;
 mod io;
+mod json;
 mod numeric;
 mod string;
+pub mod time;
 
 pub fn registry() -> HashMap<&'static str, NativeFn> {
     let mut m: HashMap<&'static str, NativeFn> = HashMap::new();
@@ -24,6 +27,9 @@ pub fn registry() -> HashMap<&'static str, NativeFn> {
     collections::register(&mut m);
     concurrency::register(&mut m);
     io::register(&mut m);
+    bytes::register(&mut m);
+    time::register(&mut m);
+    json::register(&mut m);
     m
 }
 

@@ -12,7 +12,10 @@ use quarz_syntax::ast::{Expr, ExprKind, Program};
 use quarz_syntax::{parse_with_bases, Diagnostic, SourceFile};
 
 /// Standard library modules available to `require`, by name.
-pub const STD_MODULES: &[(&str, &str)] = &[("json", include_str!("../../../std/json.qz"))];
+pub const STD_MODULES: &[(&str, &str)] = &[
+    ("json", include_str!("../../../std/json.qz")),
+    ("time", include_str!("../../../std/time.qz")),
+];
 
 /// A loaded, parsed file.
 pub struct LoadedUnit {
@@ -68,7 +71,7 @@ pub fn unit_base(n: u32) -> u32 {
     (n + 1) << 26
 }
 
-fn canonical(path: &Path) -> String {
+pub(crate) fn canonical(path: &Path) -> String {
     std::fs::canonicalize(path)
         .map(|p| p.display().to_string())
         .unwrap_or_else(|_| path.display().to_string())

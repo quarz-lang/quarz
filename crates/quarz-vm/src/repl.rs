@@ -2,10 +2,12 @@
 //! time while declarations, variables and tasks persist.
 
 use std::io::Write;
+use std::path::Path;
 use std::rc::Rc;
 
+use quarz_syntax::ast::ExprKind;
 use quarz_syntax::{parse, parse_repl, Diagnostic, SourceFile};
-use quarz_types::{Session, PRELUDE_SOURCE};
+use quarz_types::{CheckedUnit, FileDiagnostic, Session, PRELUDE_SOURCE};
 
 use crate::interp::{Interp, SharedState};
 use crate::value::Frame;
@@ -83,24 +85,34 @@ impl Repl {
             return Outcome::Errors(parsed.diagnostics.iter().map(|d| d.render(&file)).collect());
         }
         self.buffer.clear();
+        // Load what the input requires, running each library's top level
+        // the first time it is loaded.
+        for expr in &parsed.program.body {
+            if let ExprKind::Require { path, relative } = &expr.kind {
+                let loaded = self
+                    .session
+                    .require(path, *relative, Path::new("."), 1, expr.span);
+                match loaded {
+                    Ok(units) => {
+                        for unit in units {
+                            if let Some(outcome) = self.run_unit(unit) {
+                                return outcome;
+                            }
+                        }
+                    }
+                    Err(diags) => return Outcome::Errors(self.render(&diags, &file)),
+                }
+            }
+        }
         let body = match self.session.feed(&parsed.program) {
             Ok(body) => body,
-            Err(diags) => {
-                return Outcome::Errors(
-                    diags
-                        .iter()
-                        .map(|(index, d)| {
-                            if *index == 0 {
-                                d.render(&self.prelude_file)
-                            } else {
-                                d.render(&file)
-                            }
-                        })
-                        .collect(),
-                );
-            }
+            Err(diags) => return Outcome::Errors(self.render(&diags, &file)),
         };
-        if body.is_empty() {
+        // Declarations, `require`s and `using`s have no value to show.
+        if body
+            .iter()
+            .all(|e| matches!(e.kind, ExprKind::Require { .. } | ExprKind::Using(_)))
+        {
             return Outcome::Value(None);
         }
         let checked = self.session.snapshot(Vec::new(), "<repl>");
@@ -114,5 +126,28 @@ impl Repl {
         };
         self.state = interp.shared_state();
         outcome
+    }
+
+    /// Run the top level of a unit loaded by `require`.
+    fn run_unit(&mut self, unit: CheckedUnit) -> Option<Outcome> {
+        let checked = self.session.snapshot(Vec::new(), "<repl>");
+        let interp: Rc<Interp> = Interp::with_state(checked, Vec::new(), self.state.clone());
+        let result = interp.run_repl(unit.file, unit.body);
+        self.state = interp.shared_state();
+        match result {
+            Err(code) => Some(Outcome::Exit(code)),
+            Ok(_) => None,
+        }
+    }
+
+    fn render(&self, diags: &[FileDiagnostic], input: &SourceFile) -> Vec<String> {
+        diags
+            .iter()
+            .map(|(index, d)| match *index {
+                0 => d.render(&self.prelude_file),
+                1 => d.render(input),
+                other => d.render(self.session.source(other).unwrap_or(input)),
+            })
+            .collect()
     }
 }

@@ -19,7 +19,8 @@
 - `Float`: `floor ceil round truncate nan? infinite? to_i to_r`。`Float::INFINITY`、`Float::NAN`。
 - `Math`: `sqrt sin cos atan2 log exp hypot` など。`Math::PI`、`Math::E`。
 - `Random`: `Random.new(seed)`、`rand`、`bytes`。`Random::DEFAULT` はタスクごとに独立したシードを持つ。
-- `Duration`: `100.ms`、`2.seconds`、`1.5.minutes` を `Int`/`Float` への拡張として提供(`using Duration::Literals` で有効化。`require "time"` が自動で行う)。
+- `Duration`: `100.ms`、`2.seconds`、`1.5.minutes`、`3.days` を `Int`/`Float` への拡張として提供(`using Duration::Literals` で有効化。`require "time"` が自動で行う)。
+- `Time`(組み込み、不変): `Time.now utc local at parse iso8601 monotonic`、`year month day hour min sec usec nsec wday yday`、`Duration` との `+`/`-`、時刻同士の `-` は `Duration`、`<=> == hash utc getlocal utc? utc_offset zone strftime iso8601 to_i to_f to_s inspect`。
 
 ## 4. 文字列・シンボル・バイト列
 
@@ -27,7 +28,7 @@
 - `String#[]` は範囲外で `IndexError`、`[]?` は `nil`。`String#%` は書式。
 - `String::Builder`: `<< push append insert delete_at clear to_s size`。`String.build { |b| }`。
 - `Symbol`: `to_s to_proc <=> size`。
-- `Bytes`(不変)、`Bytes::Builder`。`pack`/`unpack` は `Bytes` 上に。
+- `Bytes`(不変): `b"\x00\xff"` リテラル、`Bytes[1, 2]`、`Bytes.from(array)`、`Bytes.from_hex`、`size [] []? slice + <=> == hash each reverse hex to_a decode decode?` + Enumerable。`Bytes::Builder`(`<< push clear to_bytes`)、`Bytes.build { |b| }`。`String#to_bytes`/`encode(encoding)` と `Bytes#decode(encoding)` で相互変換する(UTF-8、ASCII、ISO-8859-1)。`pack`/`unpack` は `Bytes` 上に。
 
 ## 5. コレクション
 
@@ -81,7 +82,7 @@
 
 ## 10. その他(`require` で読み込む)
 
-`json`(`JSON.parse -> JSON::Value`(enum)、`to_json`、`JSON.decode[T](str)` で `data` へ直接デコード)、`time`(`Time`、`Duration`、`Date`)、`set`(組み込み済み)、`digest`、`base64`、`uri`、`net/http`、`csv`、`yaml`、`optparse`、`logger`、`test`(`Test::Unit` 風)、`benchmark`、`ffi`。
+`json`(`JSON.parse -> JSON::Value`。`Null | Boolean | Integer | Number | Text | List | Map` の enum で、`as_s`・`as_i?`・`[]` などのアクセサを持つ。`JSON.generate`/`pretty_generate`、`to_json`。`JSON.decode[T](str)` で `data` へ直接デコード)、`time`(`Time` と `Duration` は組み込み。`Date`)、`set`(組み込み済み)、`digest`、`base64`、`uri`、`net/http`、`csv`、`yaml`、`optparse`、`logger`、`test`(`Test::Unit` 風)、`benchmark`、`ffi`。
 
 ## 11. Ruby の組み込みで提供しないもの
 

@@ -1,14 +1,17 @@
 //! Helpers shared by the interpreter tests.
 
-use quarz_syntax::{parse, SourceFile};
+use quarz_syntax::{parse, parse_with_bases, SourceFile};
+use quarz_types::load::unit_base;
 use quarz_types::PRELUDE_SOURCE;
 
 /// Type-check and run a program, returning the exit code and its standard
 /// output. Panics on compile errors.
 pub fn run(src: &str, argv: &[&str]) -> (i32, String) {
     let prelude = parse(PRELUDE_SOURCE);
-    let parsed = parse(src);
-    let file = SourceFile::new("test", src);
+    // The program's spans and node ids must not collide with the prelude's.
+    let base = unit_base(0);
+    let parsed = parse_with_bases(src, base, base);
+    let file = SourceFile::with_base("test", src, base);
     let errors: Vec<String> = parsed
         .diagnostics
         .iter()

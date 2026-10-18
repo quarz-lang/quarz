@@ -510,7 +510,10 @@ impl<'ast> Declarer<'ast> {
             atom: get(w, "Atom"),
             scope: get(w, "Scope"),
             duration: get(w, "Duration"),
+            bytes: get(w, "Bytes"),
+            time: get(w, "Time"),
             array_builder: 0,
+            bytes_builder: 0,
             hash_builder: 0,
             string_builder: 0,
             set_builder: 0,
@@ -531,6 +534,7 @@ impl<'ast> Declarer<'ast> {
         self.world.builtin.string_builder =
             nested(&self.world, self.world.builtin.string, "Builder");
         self.world.builtin.set_builder = nested(&self.world, self.world.builtin.set, "Builder");
+        self.world.builtin.bytes_builder = nested(&self.world, self.world.builtin.bytes, "Builder");
     }
 
     fn class_scope(&self, id: ClassId) -> TypeScope {
@@ -1128,6 +1132,7 @@ impl<'ast> Declarer<'ast> {
             ExprKind::Int(_) => self.world.int(),
             ExprKind::Float(_) => self.world.float(),
             ExprKind::Str(_) => self.world.string(),
+            ExprKind::Bytes(_) => Type::class(self.world.builtin.bytes),
             ExprKind::Symbol(_) => self.world.symbol(),
             ExprKind::True | ExprKind::False => self.world.bool_(),
             _ => return None,

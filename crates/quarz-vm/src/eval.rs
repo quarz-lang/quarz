@@ -53,6 +53,7 @@ impl Interp {
                 Ok(v)
             }
             Float(f) => Ok(Value::Float(*f)),
+            Bytes(bytes) => Ok(Value::Bytes(Rc::from(&bytes[..]))),
             Str(parts) => {
                 let s = self.eval_str_parts(parts, ctx)?;
                 Ok(Value::string(s))

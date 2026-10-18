@@ -1,0 +1,65 @@
+# JSON and Time: parse a document, walk it with pattern matching and
+# generate a report from it.
+require "json"
+
+INPUT = <<~JSON
+  {
+    "project": "quarz",
+    "released": "2026-10-19T12:00:00Z",
+    "tasks": [
+      {"name": "lexer", "done": true, "hours": 12.5},
+      {"name": "parser", "done": true, "hours": 30},
+      {"name": "jit", "done": false, "hours": null}
+    ]
+  }
+JSON
+
+data Job(name: String, done: Bool, hours: Float?)
+
+def job_from(value: JSON::Value) -> Job
+  Job.new(
+    name: value["name"].as_s,
+    done: value["done"].as_bool,
+    hours: value["hours"].as_f?
+  )
+end
+
+# Every JSON value is one of seven variants, so `case/in` is exhaustive.
+def describe(node: JSON::Value) -> String
+  case node
+  in JSON::Value::Null then "null"
+  in JSON::Value::Boolean(value:) then value ? "yes" : "no"
+  in JSON::Value::Integer(value:) then "int #{value}"
+  in JSON::Value::Number(value:) then "float #{value}"
+  in JSON::Value::Text(value:) then "text #{value.inspect}"
+  in JSON::Value::List(items:) then "list of #{items.size}"
+  in JSON::Value::Map(members:) then "map with #{members.keys.join(", ")}"
+  end
+end
+
+doc = JSON.parse(INPUT)
+tasks = doc["tasks"].as_a.map { |v| job_from(v) }
+released = Time.iso8601(doc["released"].as_s)
+
+puts "#{doc["project"].as_s}, released #{released.strftime("%A %Y-%m-%d")}"
+tasks.each do |t|
+  hours = t.hours
+  puts "- #{t.name}: #{t.done ? "done" : "todo"}#{hours ? " (#{hours}h)" : ""}"
+end
+total = tasks.filter_map(&:hours).sum
+puts "total: #{total}h"
+
+summary = {
+  project: doc["project"].as_s,
+  done: tasks.select(&:done).size,
+  pending: tasks.reject(&:done).map(&:name),
+  total_hours: total,
+  next_release: (released + 30.days).iso8601
+}
+puts JSON.pretty_generate(summary)
+
+puts describe(doc)
+puts describe(doc["tasks"])
+puts describe(doc["tasks"][0]["hours"])
+puts describe(doc["tasks"][1]["hours"])
+puts describe(doc["tasks"][2]["hours"])

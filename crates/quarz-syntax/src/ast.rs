@@ -32,6 +32,8 @@ pub enum ExprKind {
     Int(IntLit),
     Float(f64),
     Str(Vec<StrPart>),
+    /// `b"..."`, decoded.
+    Bytes(Vec<u8>),
     Symbol(String),
     /// `:"..."` with interpolation.
     DSymbol(Vec<StrPart>),

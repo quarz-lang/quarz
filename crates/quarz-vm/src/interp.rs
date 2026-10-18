@@ -922,6 +922,9 @@ impl Interp {
             Value::Duration(_) => b.duration,
             Value::Enumerator(_) => self.rt.enumerator,
             Value::Io(_) => self.rt.io,
+            Value::Bytes(_) => b.bytes,
+            Value::BytesBuilder(_) => b.bytes_builder,
+            Value::Time(_) => b.time,
         }
     }
 
@@ -1012,16 +1015,72 @@ impl Interp {
         if let Some(found) = self.dispatch_cache.borrow().get(&(cid, mid)) {
             return *found;
         }
-        let (min, max) = m.positional_arity();
-        let found = self
-            .find_method(cid, &m.name, min, m.block.is_some())
-            .filter(|f| {
-                let (fmin, fmax) = self.world.method(*f).positional_arity();
-                fmin <= max && fmax >= min
-            })
-            .unwrap_or(mid);
+        let found = self.find_override(cid, mid).unwrap_or(mid);
         self.dispatch_cache.borrow_mut().insert((cid, mid), found);
         found
+    }
+
+    /// A method of `cid` (or of an ancestor before the owner of `mid`)
+    /// that overrides `mid`: same name, and the same signature when the
+    /// name is overloaded.
+    fn find_override(&self, cid: ClassId, mid: MethodId) -> Option<MethodId> {
+        let m = self.world.method(mid);
+        let (min, max) = m.positional_arity();
+        let overloaded = self
+            .world
+            .class(m.owner)
+            .methods
+            .get(&m.name)
+            .is_some_and(|ids| ids.len() > 1);
+        for (anc, _) in self.world.ancestors(cid, &[]) {
+            if anc == m.owner {
+                return None;
+            }
+            let mut candidates: Vec<MethodId> = Vec::new();
+            for ext_id in self.world.active_extension_ids() {
+                let ext = &self.world.extensions[ext_id as usize];
+                if ext.target == anc {
+                    if let Some(ids) = ext.methods.get(&m.name) {
+                        candidates.extend(ids);
+                    }
+                }
+            }
+            if let Some(ids) = self.world.class(anc).methods.get(&m.name) {
+                candidates.extend(ids);
+            }
+            candidates.retain(|c| {
+                let cm = self.world.method(*c);
+                let (cmin, cmax) = cm.positional_arity();
+                cm.block.is_some() == m.block.is_some() && cmin <= max && cmax >= min
+            });
+            if candidates.is_empty() {
+                continue;
+            }
+            if let Some(exact) = candidates.iter().find(|c| self.same_signature(**c, mid)) {
+                return Some(*exact);
+            }
+            if overloaded {
+                // An override of one of the other overloads.
+                continue;
+            }
+            return candidates
+                .iter()
+                .find(|c| self.world.method(**c).positional_arity() == (min, max))
+                .or(candidates.first())
+                .copied();
+        }
+        None
+    }
+
+    fn same_signature(&self, a: MethodId, b: MethodId) -> bool {
+        let (a, b) = (self.world.method(a), self.world.method(b));
+        a.params.len() == b.params.len()
+            && a.params.iter().zip(&b.params).all(|(p, q)| {
+                p.kind == q.kind
+                    && (p.ty == q.ty
+                        || matches!(p.ty, Type::Param(_) | Type::Var(_))
+                        || matches!(q.ty, Type::Param(_) | Type::Var(_)))
+            })
     }
 
     /// Find a method by name on a class (first match in resolution order
@@ -1730,6 +1789,9 @@ impl Interp {
             Value::Duration(ns) => format_duration(*ns),
             Value::Enumerator(e) => format!("#<Enumerator {}>", e.method),
             Value::Io(_) => "#<IO>".to_string(),
+            Value::Bytes(b) => natives::bytes::inspect_bytes(b),
+            Value::BytesBuilder(b) => natives::bytes::inspect_bytes(&b.borrow()),
+            Value::Time(t) => natives::time::time_to_s(t, inspect),
         })
     }
 
@@ -1788,6 +1850,8 @@ impl Interp {
                 return Ok(self.symbol_name(*x).cmp(&self.symbol_name(*y)))
             }
             (Value::Duration(x), Value::Duration(y)) => return Ok(x.cmp(y)),
+            (Value::Bytes(x), Value::Bytes(y)) => return Ok(x.cmp(y)),
+            (Value::Time(x), Value::Time(y)) => return Ok(x.ns.cmp(&y.ns)),
             (Value::Array(x), Value::Array(y)) => {
                 for (p, q) in x.iter().zip(y.iter()) {
                     let o = self.compare(p, q)?;

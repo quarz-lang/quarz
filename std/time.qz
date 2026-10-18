@@ -1,0 +1,2 @@
+# `require "time"` is accepted for compatibility with Ruby; `Time` and
+# `Duration` are built in.

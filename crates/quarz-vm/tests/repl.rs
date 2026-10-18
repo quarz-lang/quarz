@@ -39,6 +39,34 @@ fn values(lines: &[&str]) -> (Vec<String>, String) {
 }
 
 #[test]
+fn require_loads_libraries_once() {
+    let (out, printed) = values(&[
+        "require \"json\"",
+        "JSON.parse(\"[1, 2]\").size",
+        "require \"json\"",
+        "require \"nope\"",
+        "JSON.generate([1, nil])",
+        "require_relative \"../../examples/geometry\"",
+        "Geometry.distance(Point.new(3.0, 4.0), Geometry::ORIGIN)",
+        "require_relative \"../../examples/geometry\"",
+    ]);
+    assert_eq!(
+        out,
+        vec![
+            "",
+            "=> 2",
+            "",
+            "error: <repl>:1:1: error: unknown library `nope`",
+            "=> \"[1,null]\"",
+            "",
+            "=> 5.0",
+            "",
+        ]
+    );
+    assert_eq!(printed, "geometry loaded\n");
+}
+
+#[test]
 fn state_persists_across_inputs() {
     let (out, printed) = values(&[
         "x = 1",

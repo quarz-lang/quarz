@@ -21,7 +21,8 @@ The names of built-in classes and methods follow Ruby. The differences boil down
 - `Float`: `floor ceil round truncate nan? infinite? to_i to_r`. `Float::INFINITY`, `Float::NAN`.
 - `Math`: `sqrt sin cos atan2 log exp hypot` etc. `Math::PI`, `Math::E`.
 - `Random`: `Random.new(seed)`, `rand`, `bytes`. `Random::DEFAULT` has an independent seed per task.
-- `Duration`: `100.ms`, `2.seconds`, `1.5.minutes` are provided as extensions on `Int`/`Float` (enabled with `using Duration::Literals`; `require "time"` does this automatically).
+- `Duration`: `100.ms`, `2.seconds`, `1.5.minutes`, `3.days` are provided as extensions on `Int`/`Float` (enabled with `using Duration::Literals`; `require "time"` does this automatically).
+- `Time` (built in, immutable): `Time.now utc local at parse iso8601 monotonic`, `year month day hour min sec usec nsec wday yday`, `+`/`-` with a `Duration`, `-` between two times gives a `Duration`, `<=> == hash utc getlocal utc? utc_offset zone strftime iso8601 to_i to_f to_s inspect`.
 
 ## 4. Strings, Symbols, Byte Sequences
 
@@ -29,7 +30,7 @@ The names of built-in classes and methods follow Ruby. The differences boil down
 - `String#[]` raises `IndexError` when out of range; `[]?` returns `nil`. `String#%` is formatting.
 - `String::Builder`: `<< push append insert delete_at clear to_s size`. `String.build { |b| }`.
 - `Symbol`: `to_s to_proc <=> size`.
-- `Bytes` (immutable), `Bytes::Builder`. `pack`/`unpack` live on `Bytes`.
+- `Bytes` (immutable): `b"\x00\xff"` literals, `Bytes[1, 2]`, `Bytes.from(array)`, `Bytes.from_hex`, `size [] []? slice + <=> == hash each reverse hex to_a decode decode?` + Enumerable. `Bytes::Builder` (`<< push clear to_bytes`), `Bytes.build { |b| }`. `String#to_bytes`/`encode(encoding)` and `Bytes#decode(encoding)` convert between the two (UTF-8, ASCII, ISO-8859-1). `pack`/`unpack` live on `Bytes`.
 
 ## 5. Collections
 
@@ -83,7 +84,7 @@ Called without a block, they return `Enumerator[T]`. `Enumerator` is a closure (
 
 ## 10. Others (loaded with `require`)
 
-`json` (`JSON.parse -> JSON::Value` (enum), `to_json`, `JSON.decode[T](str)` decodes directly into `data`), `time` (`Time`, `Duration`, `Date`), `set` (built in), `digest`, `base64`, `uri`, `net/http`, `csv`, `yaml`, `optparse`, `logger`, `test` (`Test::Unit`-style), `benchmark`, `ffi`.
+`json` (`JSON.parse -> JSON::Value`, an enum of `Null | Boolean | Integer | Number | Text | List | Map` with accessors such as `as_s`, `as_i?` and `[]`; `JSON.generate`/`pretty_generate`, `to_json`; `JSON.decode[T](str)` decodes directly into `data`), `time` (`Time` and `Duration` are built in; `Date`), `set` (built in), `digest`, `base64`, `uri`, `net/http`, `csv`, `yaml`, `optparse`, `logger`, `test` (`Test::Unit`-style), `benchmark`, `ffi`.
 
 ## 11. Ruby Built-ins Not Provided
 

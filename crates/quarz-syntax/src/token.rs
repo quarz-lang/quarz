@@ -149,6 +149,8 @@ pub enum StringKind {
     String,
     Symbol,
     Regexp,
+    /// `b"..."`: escapes are kept verbatim and decoded by the parser.
+    Bytes,
 }
 
 /// The operator of a compound assignment such as `+=`.

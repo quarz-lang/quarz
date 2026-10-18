@@ -82,6 +82,24 @@ fn multi_file() {
 }
 
 #[test]
+fn json_report() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/json_report.qz");
+    let (code, out) = common::run_path(&path, &[]);
+    assert_eq!(code, 0, "output:\n{out}");
+    assert_eq!(
+        out,
+        concat!(
+            "quarz, released Monday 2026-10-19\n",
+            "- lexer: done (12.5h)\n- parser: done (30.0h)\n- jit: todo\n",
+            "total: 42.5h\n",
+            "{\n  \"project\": \"quarz\",\n  \"done\": 2,\n  \"pending\": [\n    \"jit\"\n  ],\n",
+            "  \"total_hours\": 42.5,\n  \"next_release\": \"2026-11-18T12:00:00Z\"\n}\n",
+            "map with project, released, tasks\nlist of 3\nfloat 12.5\nint 30\nnull\n",
+        )
+    );
+}
+
+#[test]
 fn builder() {
     assert_eq!(
         example("builder", &[]),

@@ -1,7 +1,8 @@
 //! The checker must accept correct programs and reject incorrect ones with
 //! the expected message.
 
-use quarz_syntax::parse;
+use quarz_syntax::{parse, parse_with_bases};
+use quarz_types::load::unit_base;
 use quarz_types::{check, PRELUDE_SOURCE};
 
 fn diagnostics(src: &str) -> Vec<String> {
@@ -11,7 +12,8 @@ fn diagnostics(src: &str) -> Vec<String> {
         "prelude: {:?}",
         prelude.diagnostics
     );
-    let parsed = parse(src);
+    let base = unit_base(0);
+    let parsed = parse_with_bases(src, base, base);
     let errors: Vec<_> = parsed.diagnostics.iter().filter(|d| d.is_error()).collect();
     assert!(errors.is_empty(), "parse errors for {src:?}: {errors:?}");
     let (_, diags) = check(&prelude.program, &parsed.program);

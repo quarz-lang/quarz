@@ -56,6 +56,13 @@ fn precedence() {
 }
 
 #[test]
+fn bytes_literals() {
+    assert_eq!(sexp("b\"\\x00a\\n\\377\""), "(bytes 00610aff)");
+    assert_eq!(sexp("b'\\x41é'"), "(bytes 41c3a9)");
+    assert_eq!(sexp("b\"\\u00e9\\\"\""), "(bytes c3a922)");
+}
+
+#[test]
 fn locals_versus_calls() {
     assert_eq!(sexp("x = 1\nx"), "(= x 1)\nx");
     assert_eq!(sexp("x"), "(call _ x)");

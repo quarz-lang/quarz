@@ -284,6 +284,16 @@ impl Checker {
         self.file_mains.get(file as usize).copied().flatten()
     }
 
+    /// Register the pseudo-class of a file loaded after construction (a
+    /// `require` in the REPL).
+    pub fn add_file_main(&mut self, file: u32, main: ClassId) {
+        let index = file as usize;
+        if self.file_mains.len() <= index {
+            self.file_mains.resize(index + 1, None);
+        }
+        self.file_mains[index] = Some(main);
+    }
+
     /// Check every method body, constant initializer and each file's
     /// top-level statements.
     pub fn check_all(&mut self, units: &[(u32, Vec<&Expr>)]) {
@@ -1308,6 +1318,7 @@ impl Checker {
                 self.check_str_parts(parts);
                 Type::class(self.world.builtin.regexp)
             }
+            Bytes(_) => Type::class(self.world.builtin.bytes),
             Magic(m) => match m {
                 quarz_syntax::ast::Magic::Line => self.world.int(),
                 _ => self.world.string(),

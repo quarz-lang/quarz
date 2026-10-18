@@ -477,6 +477,11 @@ impl<'src> Lexer<'src> {
                 );
                 TokenKind::Error
             }
+            b'b' if matches!(self.peek_at(1), Some(b'"' | b'\'')) => {
+                let quote = self.bytes[start + 1];
+                self.pos += 2;
+                self.push_str(StringKind::Bytes, None, quote, false)
+            }
             b'@' => self.lex_ivar(),
             b'$' => {
                 self.pos += 1;
@@ -1255,6 +1260,15 @@ impl<'src> Lexer<'src> {
             return;
         };
 
+        // Bytes literals keep their escapes; the parser decodes them to
+        // bytes.
+        if kind == StringKind::Bytes {
+            buf.push('\\');
+            self.pos += 1;
+            self.take_char(buf);
+            return;
+        }
+
         // Regexps keep their escapes for the regexp engine, except for the
         // delimiter itself.
         if kind == StringKind::Regexp {
@@ -1743,6 +1757,24 @@ mod tests {
             vec![ident("x"), TokenKind::OpAssign(Op::Percent), int("3"), Eof]
         );
         assert_eq!(kinds("x%w"), vec![ident("x"), Percent, ident("w"), Eof]);
+    }
+
+    #[test]
+    fn bytes_literals() {
+        // Escapes are kept for the parser; `b` with a space is an identifier.
+        assert_eq!(
+            kinds("b\"\\xff\\\"\" b 'x'"),
+            vec![
+                StringBegin(StringKind::Bytes),
+                content("\\xff\\\""),
+                str_end(),
+                ident("b"),
+                StringBegin(StringKind::String),
+                content("x"),
+                str_end(),
+                Eof
+            ]
+        );
     }
 
     #[test]

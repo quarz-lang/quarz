@@ -250,6 +250,20 @@ pub enum Value {
     Duration(i64),
     Enumerator(Rc<EnumeratorVal>),
     Io(Rc<IoVal>),
+    Bytes(Rc<[u8]>),
+    BytesBuilder(Rc<RefCell<Vec<u8>>>),
+    Time(Rc<TimeVal>),
+}
+
+/// A point in time: nanoseconds since the Unix epoch and the UTC offset
+/// it is displayed in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct TimeVal {
+    pub ns: i64,
+    /// Seconds east of UTC.
+    pub offset: i32,
+    /// Displayed as UTC (`Time.utc`, `Time#utc`).
+    pub utc: bool,
 }
 
 impl Value {
@@ -263,6 +277,10 @@ impl Value {
 
     pub fn array(items: Vec<Value>) -> Value {
         Value::Array(Rc::new(items))
+    }
+
+    pub fn bytes(bytes: Vec<u8>) -> Value {
+        Value::Bytes(Rc::from(bytes))
     }
 
     pub fn is_truthy(&self) -> bool {
@@ -316,6 +334,9 @@ impl Value {
             Value::Duration(_) => 24,
             Value::Enumerator(_) => 25,
             Value::Io(_) => 26,
+            Value::Bytes(_) => 27,
+            Value::BytesBuilder(_) => 28,
+            Value::Time(_) => 29,
         }
     }
 
@@ -340,6 +361,9 @@ impl Value {
             (Value::Task(a), Value::Task(b)) => Rc::ptr_eq(a, b),
             (Value::Atom(a), Value::Atom(b)) => Rc::ptr_eq(a, b),
             (Value::Duration(a), Value::Duration(b)) => a == b,
+            (Value::Bytes(a), Value::Bytes(b)) => Rc::ptr_eq(a, b) || a == b,
+            (Value::BytesBuilder(a), Value::BytesBuilder(b)) => Rc::ptr_eq(a, b),
+            (Value::Time(a), Value::Time(b)) => a.ns == b.ns,
             _ => false,
         }
     }
@@ -459,6 +483,14 @@ impl Hash for Value {
                 24u8.hash(state);
                 d.hash(state);
             }
+            Value::Bytes(b) => {
+                27u8.hash(state);
+                b.hash(state);
+            }
+            Value::Time(t) => {
+                29u8.hash(state);
+                t.ns.hash(state);
+            }
             other => {
                 other.type_tag().hash(state);
                 // Identity for the rest.
@@ -470,6 +502,7 @@ impl Hash for Value {
                     Value::Channel(p) => (Rc::as_ptr(p) as usize).hash(state),
                     Value::Task(p) => (Rc::as_ptr(p) as usize).hash(state),
                     Value::Atom(p) => (Rc::as_ptr(p) as usize).hash(state),
+                    Value::BytesBuilder(p) => (Rc::as_ptr(p) as usize).hash(state),
                     _ => {}
                 }
             }

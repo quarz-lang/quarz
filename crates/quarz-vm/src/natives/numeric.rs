@@ -186,6 +186,8 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
         m.insert(key("minutes"), |i, r, _| duration(i, r, 60_000_000_000.0));
         m.insert(key("hour"), |i, r, _| duration(i, r, 3_600_000_000_000.0));
         m.insert(key("hours"), |i, r, _| duration(i, r, 3_600_000_000_000.0));
+        m.insert(key("day"), |i, r, _| duration(i, r, 86_400_000_000_000.0));
+        m.insert(key("days"), |i, r, _| duration(i, r, 86_400_000_000_000.0));
     }
     m.insert("Int#-@", int_neg);
     m.insert("Int#~", |i, r, _| Ok(Value::Int(!int(i, r, "Int")?)));

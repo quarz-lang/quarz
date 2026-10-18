@@ -135,6 +135,8 @@ class Int
   native def minutes -> Duration
   native def hour -> Duration
   native def hours -> Duration
+  native def day -> Duration
+  native def days -> Duration
 end
 
 class Float
@@ -205,6 +207,109 @@ class Duration
   native def to_s -> String
 end
 
+class Bytes
+  include Shareable
+  include Comparable[Bytes]
+  include Enumerable[Int]
+
+  native def self.new -> Bytes
+  native def self.[](*bytes: Int) -> Bytes
+  native def self.from(bytes: Array[Int]) -> Bytes
+  native def self.from_hex(hex: String) -> Bytes
+  native def self.build(&block: (Bytes::Builder) -> Nil) -> Bytes
+
+  native def each(&block: (Int) -> Nil) -> Nil
+  native def each_byte(&block: (Int) -> Nil) -> Nil
+  native def size -> Int
+  native def length -> Int
+  native def bytesize -> Int
+  native def empty? -> Bool
+  native def [](index: Int) -> Int
+  native def [](range: Range[Int]) -> Bytes
+  native def []?(index: Int) -> Int?
+  native def slice(start: Int, length: Int) -> Bytes
+  native def +(other: Bytes) -> Bytes
+  native def ==(other: Object) -> Bool
+  native def <=>(other: Bytes) -> Int
+  native def hash -> Int
+  native def reverse -> Bytes
+  native def to_a -> Array[Int]
+  native def decode -> String
+  native def decode(encoding: String) -> String
+  native def decode? -> String?
+  native def hex -> String
+  native def to_s -> String
+  native def inspect -> String
+
+  class Builder
+    include Unshareable
+
+    native def self.new -> Bytes::Builder
+    native def <<(byte: Int) -> self
+    native def <<(bytes: Bytes) -> self
+    native def <<(text: String) -> self
+    native def push(byte: Int) -> self
+    native def size -> Int
+    native def empty? -> Bool
+    native def clear -> self
+    native def to_bytes -> Bytes
+    native def snapshot -> Bytes
+    native def to_s -> String
+    native def inspect -> String
+  end
+end
+
+class Time
+  include Shareable
+  include Comparable[Time]
+
+  native def self.now -> Time
+  native def self.at(seconds: Int) -> Time
+  native def self.at(seconds: Float) -> Time
+  native def self.utc(year: Int, month: Int = 1, day: Int = 1, hour: Int = 0, min: Int = 0, sec: Int = 0) -> Time
+  native def self.local(year: Int, month: Int = 1, day: Int = 1, hour: Int = 0, min: Int = 0, sec: Int = 0) -> Time
+  native def self.parse(text: String) -> Time
+  native def self.iso8601(text: String) -> Time
+  native def self.monotonic -> Duration
+
+  native def year -> Int
+  native def month -> Int
+  native def day -> Int
+  native def hour -> Int
+  native def min -> Int
+  native def sec -> Int
+  native def usec -> Int
+  native def nsec -> Int
+  native def wday -> Int
+  native def yday -> Int
+  native def sunday? -> Bool
+  native def monday? -> Bool
+  native def tuesday? -> Bool
+  native def wednesday? -> Bool
+  native def thursday? -> Bool
+  native def friday? -> Bool
+  native def saturday? -> Bool
+  native def to_i -> Int
+  native def to_f -> Float
+  native def +(duration: Duration) -> Time
+  native def -(duration: Duration) -> Time
+  native def -(other: Time) -> Duration
+  native def <=>(other: Time) -> Int
+  native def ==(other: Object) -> Bool
+  native def hash -> Int
+  native def utc -> Time
+  native def getlocal -> Time
+  native def localtime -> Time
+  native def utc? -> Bool
+  native def utc_offset -> Int
+  native def zone -> String
+  native def strftime(format: String) -> String
+  native def iso8601 -> String
+  native def iso8601(fraction_digits: Int) -> String
+  native def to_s -> String
+  native def inspect -> String
+end
+
 class String
   include Shareable
   include Comparable[String]
@@ -265,6 +370,8 @@ class String
   native def to_i(base: Int) -> Int
   native def to_f -> Float
   native def to_sym -> Symbol
+  native def to_bytes -> Bytes
+  native def encode(encoding: String = "UTF-8") -> Bytes
   native def to_s -> String
   native def inspect -> String
   native def hash -> Int
@@ -1059,7 +1166,9 @@ class File
   include Unshareable
 
   native def self.read(path: String) -> String
+  native def self.read_bytes(path: String) -> Bytes
   native def self.write(path: String, content: String) -> Int
+  native def self.write(path: String, content: Bytes) -> Int
   native def self.exist?(path: String) -> Bool
   native def self.readlines(path: String) -> Array[String]
   native def self.basename(path: String) -> String
