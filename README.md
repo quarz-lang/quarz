@@ -99,4 +99,12 @@ puts counter.value        # => 100
 
 ## Status
 
-At this point there are only design documents. The implementation will be in Rust, following the order in [docs/05-execution.md](docs/05-execution.md) §8 (parsing → type checking → the minimal runtime → VM → concurrency).
+The interpreter runs every program in [examples/](examples/). It is written in Rust: `quarz-syntax` (lexer, parser), `quarz-types` (type checker) and `quarz-vm` (evaluator, scheduler, built-in classes). See [docs/05-execution.md](docs/05-execution.md) §9 for what the current implementation does and does not do.
+
+```sh
+cargo build --release
+./target/release/quarz run examples/shapes.qz      # type-check and run
+./target/release/quarz check examples/shapes.qz    # type-check only
+./target/release/quarz parse examples/shapes.qz    # print the syntax tree
+cargo test                                         # lexer, parser, checker and interpreter tests
+```

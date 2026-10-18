@@ -97,4 +97,12 @@ puts counter.value        # => 100
 
 ## 状態
 
-この時点では設計文書のみです。実装は Rust で行い、[docs/05-execution.md](docs/05-execution.ja.md) §8 の順序(構文解析 → 型検査 → ランタイムの最小部分 → VM → 並行部分)で進める想定です。
+インタプリタが [examples/](examples/) のすべてのプログラムを実行できます。Rust で書かれており、`quarz-syntax`(字句・構文解析)、`quarz-types`(型検査)、`quarz-vm`(評価器、スケジューラ、組み込みクラス)からなります。現在の実装で出来ること・出来ないことは [docs/05-execution.md](docs/05-execution.ja.md) §9 を参照してください。
+
+```sh
+cargo build --release
+./target/release/quarz run examples/shapes.qz      # 型検査して実行
+./target/release/quarz check examples/shapes.qz    # 型検査のみ
+./target/release/quarz parse examples/shapes.qz    # 構文木を表示
+cargo test                                         # 字句・構文・型検査・インタプリタのテスト
+```
