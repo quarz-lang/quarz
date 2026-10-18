@@ -1241,65 +1241,67 @@ impl Interp {
         args: ArgVec,
         kw: Vec<(Symbol, Value)>,
         block: Option<Value>,
-    ) -> Result<(Vec<Value>, u64), Flow> {
+    ) -> Result<(ArgVec, u64), Flow> {
         let m = self.world.method(mid);
         let n = m.params.len();
-        let mut values = vec![Value::Nil; n + usize::from(m.has_block)];
-        let mut set = vec![false; n];
+        let mut values: ArgVec = smallvec![Value::Nil; n + usize::from(m.has_block)];
+        let mut provided = 0u64;
+        let bit = |i: usize| if i < 64 { 1u64 << i } else { 0 };
         let mut args = args.into_iter();
         for (i, p) in m.params.iter().enumerate() {
             match p.kind {
                 RtParamKind::Positional => {
                     if let Some(a) = args.next() {
                         values[i] = a;
-                        set[i] = true;
+                        provided |= bit(i);
                     }
                 }
                 RtParamKind::Rest => {
                     let rest: Vec<Value> = args.by_ref().collect();
                     values[i] = Value::array(rest);
-                    set[i] = true;
+                    provided |= bit(i);
                 }
                 _ => {}
             }
         }
-        let mut kwrest: Vec<(Symbol, Value)> = Vec::new();
-        for (sym, v) in kw {
-            let name = self.symbol_name(sym);
-            let found = m.params.iter().position(|p| {
-                *p.name == *name
-                    && matches!(p.kind, RtParamKind::Positional | RtParamKind::KeywordOnly)
-            });
-            match found {
-                Some(i) if !set[i] => {
-                    values[i] = v;
-                    set[i] = true;
+        if !kw.is_empty() {
+            let mut kwrest: Vec<(Symbol, Value)> = Vec::new();
+            for (sym, v) in kw {
+                let name = self.symbol_name(sym);
+                let found = m.params.iter().position(|p| {
+                    *p.name == *name
+                        && matches!(p.kind, RtParamKind::Positional | RtParamKind::KeywordOnly)
+                });
+                match found {
+                    Some(i) if provided & bit(i) == 0 => {
+                        values[i] = v;
+                        provided |= bit(i);
+                    }
+                    _ => kwrest.push((sym, v)),
                 }
-                _ => kwrest.push((sym, v)),
             }
-        }
-        for (i, p) in m.params.iter().enumerate() {
-            if p.kind == RtParamKind::KeywordRest && !set[i] {
-                let mut map = indexmap::IndexMap::new();
-                for (sym, v) in kwrest.drain(..) {
-                    map.insert(Value::Symbol(sym), v);
+            for (i, p) in m.params.iter().enumerate() {
+                if p.kind == RtParamKind::KeywordRest && provided & bit(i) == 0 {
+                    let mut map = indexmap::IndexMap::new();
+                    for (sym, v) in kwrest.drain(..) {
+                        map.insert(Value::Symbol(sym), v);
+                    }
+                    values[i] = Value::Hash(Rc::new(map));
+                    provided |= bit(i);
                 }
-                values[i] = Value::Hash(Rc::new(map));
-                set[i] = true;
             }
-        }
-        let mut provided = 0u64;
-        for (i, s) in set.iter().enumerate() {
-            if *s && i < 64 {
-                provided |= 1 << i;
+        } else {
+            for (i, p) in m.params.iter().enumerate() {
+                if p.kind == RtParamKind::KeywordRest {
+                    values[i] = Value::Hash(Rc::new(indexmap::IndexMap::new()));
+                    provided |= bit(i);
+                }
             }
         }
         if m.has_block {
             if let Some(b) = block {
                 values[n] = b;
-                if n < 64 {
-                    provided |= 1 << n;
-                }
+                provided |= bit(n);
             }
         }
         let _ = recv;

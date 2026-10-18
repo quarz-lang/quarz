@@ -237,6 +237,11 @@ pub enum Value {
 /// Tags below this hold no reference-counted payload.
 pub const NEEDS_DROP_FROM: u64 = 7;
 
+/// Size of a value in bytes, as compiled code lays out its registers.
+pub const VALUE_SIZE: usize = 24;
+
+const _: () = assert!(std::mem::size_of::<Value>() == VALUE_SIZE);
+
 /// A point in time: nanoseconds since the Unix epoch and the UTC offset
 /// it is displayed in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

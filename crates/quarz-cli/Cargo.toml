@@ -16,3 +16,4 @@ quarz-types = { workspace = true }
 quarz-vm = { workspace = true }
 quarz-ir = { workspace = true }
 quarz-lower = { workspace = true }
+quarz-aot = { workspace = true }

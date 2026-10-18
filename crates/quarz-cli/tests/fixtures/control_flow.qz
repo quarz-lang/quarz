@@ -1,0 +1,83 @@
+# Control flow that must behave the same compiled and interpreted.
+def risky(n: Int) -> Int
+  raise ArgumentError, "bad #{n}" if n < 0
+  n * 2
+end
+
+def with_ensure(n: Int) -> Int
+  return n if n == 0
+  risky(n)
+ensure
+  puts "ensure #{n}"
+end
+
+attempts = 0
+begin
+  attempts += 1
+  risky(attempts - 3)
+  puts "ok after #{attempts}"
+rescue ArgumentError => e
+  puts "rescued #{e.message}"
+  retry if attempts < 3
+end
+
+puts with_ensure(0)
+puts with_ensure(4)
+begin
+  with_ensure(-1)
+rescue ArgumentError => e
+  puts "outer #{e.message}"
+end
+
+def find_first(xs: Array[Int]) -> Int?
+  xs.each { |x| return x if x > 2 }
+  nil
+end
+p find_first([1, 2, 3, 4])
+p find_first([1])
+r = [1, 2, 3, 4].each { |x| break x * 10 if x == 3 }
+p r
+p [1, 2, 3, 4].map { |x| next 0 if x.even?; x }
+
+i = 0
+total = 0
+while i < 10
+  i += 1
+  next if i % 2 == 0
+  break if i > 7
+  total += i
+end
+p total
+
+def classify(v: Object) -> String
+  case v
+  in Int => n if n > 100 then "big #{n}"
+  in Int | Float then "number"
+  in String => s then "string #{s.size}"
+  in [Int, *rest] then "ints then #{rest.size}"
+  in { name: String => name } then "named #{name}"
+  in nil then "nil"
+  else "other"
+  end
+end
+puts classify(500), classify(1.5), classify("hey"), classify([1, 2, 3]), classify({ name: "x", age: 1 }), classify(nil), classify(:sym)
+
+data P(x: Int, y: Int = 0)
+case P.new(1)
+in P(x:, y:) then puts "p #{x} #{y}"
+end
+big = 2 ** 62 + 2 ** 62
+p big + 1
+p 9_000_000_000_000_000_000 - 1
+f = ->(a: Int) { return a + 1 }
+p f.call(1)
+begin
+  [1, 2][5]
+rescue IndexError => e
+  puts "index: #{e.class.name}"
+ensure
+  puts "cleanup"
+end
+def deep(n: Int) -> Int = n == 0 ? 0 : 1 + deep(n - 1)
+p deep(5000)
+exit 3

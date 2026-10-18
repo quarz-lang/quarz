@@ -27,7 +27,7 @@ pub struct Activation {
     pub method: Option<MethodId>,
     pub file: u32,
     /// Parameters bound by the caller, in declaration order.
-    pub args: Vec<Value>,
+    pub args: ArgVec,
     /// Bit `i` set when parameter `i` was passed.
     pub provided: u64,
 }
@@ -50,11 +50,14 @@ impl Interp {
         self.funcs.borrow()[id as usize].clone()
     }
 
-    /// Run a function to completion.
+    /// Run a function to completion (its machine code when it has some).
     pub fn run_func(&self, fid: FuncId, act: &Activation) -> EvalResult {
+        if let Some(r) = self.run_compiled(fid, act) {
+            return r;
+        }
         let f = self.func(fid);
         let pool = self.pools.borrow()[fid as usize].clone();
-        let mut regs: Vec<Value> = vec![Value::Nil; f.nregs as usize];
+        let mut regs: SmallVec<[Value; 16]> = smallvec![Value::Nil; f.nregs as usize];
         let mut pending: Option<Flow> = None;
         let mut block = 0;
         loop {
@@ -764,7 +767,7 @@ impl Interp {
                         }
                     }
                 }
-                let mut bound: Vec<Value> = Vec::with_capacity(f.param_kinds.len());
+                let mut bound: ArgVec = ArgVec::with_capacity(f.param_kinds.len());
                 let mut provided = 0u64;
                 let mut it = args.into_iter();
                 for (i, kind) in f.param_kinds.iter().enumerate() {
@@ -826,7 +829,7 @@ impl Interp {
             closure_tag: 0,
             method: None,
             file,
-            args: Vec::new(),
+            args: ArgVec::new(),
             provided: 0,
         };
         self.run_func(fid, &act)
@@ -838,7 +841,7 @@ impl Interp {
         mid: MethodId,
         fid: FuncId,
         recv: Value,
-        args: Vec<Value>,
+        args: ArgVec,
         provided: u64,
         block: Option<Value>,
     ) -> EvalResult {
@@ -892,7 +895,7 @@ impl Interp {
             closure_tag: 0,
             method: None,
             file,
-            args: Vec::new(),
+            args: ArgVec::new(),
             provided: 0,
         };
         self.run_func(fid, &act)

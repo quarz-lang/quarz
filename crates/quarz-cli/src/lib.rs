@@ -12,6 +12,12 @@ pub fn run(checked: Checked, argv: Vec<String>) -> i32 {
     quarz_vm::run(module, argv)
 }
 
+/// Compile a checked program to the executable `output`.
+pub fn build(checked: Checked, output: &std::path::Path) -> Result<(), String> {
+    let module = quarz_lower::lower_checked(&checked);
+    quarz_aot::build(&module, output)
+}
+
 /// Lower and run a checked program capturing its standard output.
 pub fn run_capturing(checked: Checked, argv: Vec<String>) -> (i32, String) {
     let module = quarz_lower::lower_checked(&checked);

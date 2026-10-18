@@ -2,6 +2,7 @@
 //! and the native methods. Compiled programs (`quarz build`) link this
 //! crate as their runtime.
 
+pub mod ffi;
 pub mod interp;
 pub mod natives;
 pub mod sched;

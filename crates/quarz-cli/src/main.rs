@@ -14,6 +14,7 @@ commands:
   parse FILE     print the syntax tree of FILE (for debugging the parser)
   check FILE     type-check FILE
   ir FILE        print the QIR of FILE (for debugging the lowering)
+  build FILE [-o OUT]  compile FILE to a native executable (default: FILE without .qz)
   run FILE [ARGS...]   type-check and run FILE
   repl           start an interactive session
 ";
@@ -35,6 +36,22 @@ fn main() -> ExitCode {
         },
         Some("ir") => match args.get(1) {
             Some(path) => ir_file(path),
+            None => usage(),
+        },
+        Some("build") => match args.get(1) {
+            Some(path) => {
+                let out = match args.iter().position(|a| a == "-o") {
+                    Some(i) => match args.get(i + 1) {
+                        Some(o) => std::path::PathBuf::from(o),
+                        None => return usage(),
+                    },
+                    None => {
+                        let p = std::path::Path::new(path);
+                        p.with_extension("")
+                    }
+                };
+                build_file(path, &out)
+            }
             None => usage(),
         },
         Some("repl") => repl::repl(),
@@ -137,6 +154,19 @@ fn ir_file(path: &str) -> ExitCode {
     let module = quarz_lower::lower_checked(&checked);
     print!("{}", quarz_ir::dump::dump_module(&module));
     ExitCode::SUCCESS
+}
+
+fn build_file(path: &str, out: &std::path::Path) -> ExitCode {
+    let Some(checked) = load_and_check(path) else {
+        return ExitCode::FAILURE;
+    };
+    match quarz_cli::build(checked, out) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("quarz: {e}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 fn check_file(path: &str) -> ExitCode {
