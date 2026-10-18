@@ -35,8 +35,9 @@ Of Ruby's reserved words, `defined?`, `undef`, `redo`, `BEGIN`, `END`, `__ENCODI
 
 ## 2. Program structure
 
-- One file = one compilation unit (module). `require "path"` and `require_relative "path"` are resolved **at compile time**, and the dependency graph is determined statically.
-- Statements may appear at the top level. `quarz run hello.qz` runs a one-line script `puts "Hello"`. Top-level statements of a library file are executed once, at `require` time.
+- One file = one compilation unit (module). `require "name"` loads a standard library module (`std/name.qz`, embedded in the interpreter) and `require_relative "path"` loads a file relative to the requiring one (`.qz` is appended when there is no extension). Both are resolved **at compile time**: the dependency graph is determined statically, each file is loaded once, and a circular `require` is an error.
+- Statements may appear at the top level. `quarz run hello.qz` runs a one-line script `puts "Hello"`. The top-level statements of a required file run once, before those of the file that requires it (dependencies first, in depth-first order).
+- Classes, modules, data types, enums, constants and type aliases declared in a required file are visible everywhere; top-level `def`s and `using`s stay private to their file.
 - A top-level `def` becomes a function visible only within that file (it does not become a private method of `Object` as in Ruby).
 - Declarations (`class`/`module`/`data`/`enum`/`def`/`type`/constants) are **hoisted**. They can be referenced from lines before their definition within the file, and mutual recursion can be written.
 - Program arguments are `ARGV`, environment variables are `ENV`, and the standard streams are the constants `STDIN`/`STDOUT`/`STDERR`.

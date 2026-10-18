@@ -72,7 +72,7 @@ impl Interp {
                 Ok(v)
             }
             Magic(m) => Ok(match m {
-                quarz_syntax::ast::Magic::File => Value::str("main"),
+                quarz_syntax::ast::Magic::File => Value::str(&self.file_names[ctx.file as usize]),
                 quarz_syntax::ast::Magic::Line => Value::Int(0),
                 quarz_syntax::ast::Magic::Method => match ctx.method {
                     Some(mid) => Value::str(&self.world.method(mid).name),
@@ -140,6 +140,7 @@ impl Interp {
                     tag,
                     method_block: ctx.block.clone(),
                     method_tag: tag,
+                    file: ctx.file,
                 })))
             }
             Local(name) => match self.out.var_refs.get(&expr.span) {
@@ -192,6 +193,7 @@ impl Interp {
                     tag,
                     method_block: None,
                     method_tag: tag,
+                    file: ctx.file,
                 })))
             }
             Yield(args) => {
@@ -548,6 +550,7 @@ impl Interp {
                                 tag,
                                 method_block: None,
                                 method_tag: tag,
+                                file: ctx.file,
                             }))
                         }
                         _ => self.eval(e, ctx)?,

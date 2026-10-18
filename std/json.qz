@@ -1,0 +1,5 @@
+# JSON support. (Parsing and generation are added in a later step.)
+
+module JSON
+  VERSION = "0.0.1"
+end

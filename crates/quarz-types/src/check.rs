@@ -64,7 +64,8 @@ pub struct Output {
     /// Frame sizes of blocks (keyed by the call node) and lambdas (keyed by
     /// the lambda node).
     pub frame_sizes: HashMap<NodeId, u32>,
-    pub main_frame_size: u32,
+    /// Frame size of each file's top-level statements, by file index.
+    pub unit_frame_sizes: Vec<u32>,
     /// Field index for `@x` reads and writes, keyed by the node.
     pub ivar_fields: HashMap<NodeId, usize>,
     /// Classes referred to by constant patterns, keyed by pattern span.
@@ -202,8 +203,8 @@ pub struct Checker {
     infer: InferTable,
     env: Env,
     touched: Vec<NodeId>,
-    main_class: ClassId,
-    main_extensions: Vec<ExtensionId>,
+    /// The pseudo-class of each file's top-level methods, by file index.
+    file_mains: Vec<Option<ClassId>>,
     /// Methods currently being checked (to detect inference cycles).
     in_progress: Vec<MethodId>,
 }
@@ -218,13 +219,13 @@ struct MatchedArg<'a> {
 }
 
 impl Checker {
-    pub fn new(world: World, main_class: ClassId, main_extensions: Vec<ExtensionId>) -> Checker {
+    pub fn new(world: World, file_mains: Vec<Option<ClassId>>) -> Checker {
         let env = Env {
             frames: vec![Frame {
                 vars: Vec::new(),
                 is_block: false,
             }],
-            self_type: Type::class(main_class),
+            self_type: Type::class(file_mains.iter().flatten().next().copied().unwrap_or(0)),
             class_id: None,
             method: None,
             scope: TypeScope::default(),
@@ -248,8 +249,7 @@ impl Checker {
             infer: InferTable::default(),
             env,
             touched: Vec::new(),
-            main_class,
-            main_extensions,
+            file_mains,
             in_progress: Vec::new(),
         }
     }
@@ -272,8 +272,14 @@ impl Checker {
 
     // ----- entry points ------------------------------------------------------
 
-    /// Check every method body, constant initializer and the main program.
-    pub fn check_all(&mut self, main_body: &[&Expr]) {
+    /// The pseudo-class holding the top-level methods of file `file`.
+    fn file_main(&self, file: u32) -> Option<ClassId> {
+        self.file_mains.get(file as usize).copied().flatten()
+    }
+
+    /// Check every method body, constant initializer and each file's
+    /// top-level statements.
+    pub fn check_all(&mut self, units: &[(u32, Vec<&Expr>)]) {
         let count = self.world.consts.len();
         for cid in 0..count as ConstId {
             self.const_type(cid, Span::empty(0));
@@ -282,16 +288,24 @@ impl Checker {
         for mid in 0..count as MethodId {
             self.ensure_method_checked(mid);
         }
-        self.check_main(main_body);
+        for (file, body) in units {
+            self.check_main(*file, body);
+        }
     }
 
-    fn check_main(&mut self, body: &[&Expr]) {
-        let main = self.main_class;
-        let mut env = self.fresh_env(Type::class(main), Some(main), None, TypeScope::default(), 1);
+    fn check_main(&mut self, file: u32, body: &[&Expr]) {
+        let main = self.file_main(file).unwrap_or(self.world.builtin.object);
+        let mut env = self.fresh_env(
+            Type::class(main),
+            Some(main),
+            None,
+            TypeScope::default(),
+            file,
+        );
         env.ret_expected = Some(self.world.nil());
         let saved_env = std::mem::replace(&mut self.env, env);
         let saved_infer = std::mem::take(&mut self.infer);
-        self.world.active_extensions = self.main_extensions.clone();
+        self.world.active_extensions = self.world.class(main).usings.clone();
         for expr in body {
             let t = self.check_expr(expr, None);
             if t.is_nothing() {
@@ -300,7 +314,11 @@ impl Checker {
             }
         }
         self.finish_frame_types();
-        self.out.main_frame_size = self.env.frames[0].vars.len() as u32;
+        let size = self.env.frames[0].vars.len() as u32;
+        if self.out.unit_frame_sizes.len() <= file as usize {
+            self.out.unit_frame_sizes.resize(file as usize + 1, 0);
+        }
+        self.out.unit_frame_sizes[file as usize] = size;
         self.env = saved_env;
         self.infer = saved_infer;
     }
@@ -478,11 +496,11 @@ impl Checker {
                 narrowed: None,
             });
         }
-        // Active extensions: the class's `using`s (plus the main file's for
-        // user code).
+        // Active extensions: the class's `using`s plus those of the file's
+        // top level.
         let mut active = class.usings.clone();
-        if info.file == 1 {
-            for e in &self.main_extensions {
+        if let Some(fm) = self.file_main(info.file) {
+            for e in &self.world.class(fm).usings {
                 if !active.contains(e) {
                     active.push(*e);
                 }
@@ -622,7 +640,10 @@ impl Checker {
         };
         let self_type = match info.owner {
             Some(o) => Type::ClassObject(o, vec![]),
-            None => Type::class(self.main_class),
+            None => Type::class(
+                self.file_main(info.file)
+                    .unwrap_or(self.world.builtin.object),
+            ),
         };
         let env = self.fresh_env(self_type, info.owner, None, scope, info.file);
         let saved_env = std::mem::replace(&mut self.env, env);
@@ -1459,7 +1480,10 @@ impl Checker {
                     return Type::Nothing;
                 }
                 if self.env.method.is_none()
-                    && self.env.class_id == Some(self.main_class)
+                    && self
+                        .env
+                        .class_id
+                        .is_some_and(|c| self.world.class(c).kind == ClassKind::Main)
                     && self.env.frames.len() == 1
                 {
                     // `return` at the top level ends the program.
@@ -3068,8 +3092,10 @@ impl Checker {
                 let mut cands = self.world.lookup_methods(recv_ty, name);
                 if cands.is_empty() && call.recv.is_none() {
                     // Top-level functions of the file.
-                    let main = Type::class(self.main_class);
-                    cands = self.world.lookup_methods(&main, name);
+                    if let Some(fm) = self.file_main(self.env.file) {
+                        let main = Type::class(fm);
+                        cands = self.world.lookup_methods(&main, name);
+                    }
                 }
                 if cands.is_empty() {
                     let msg = if call.recv.is_none() && call.args.is_empty() && !call.has_parens {

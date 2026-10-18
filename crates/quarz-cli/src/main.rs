@@ -75,30 +75,38 @@ fn parse_file(path: &str) -> ExitCode {
     }
 }
 
-/// Parse the prelude and the user file, then type-check. Returns the
+/// Load the file and everything it requires, then type-check. Returns the
 /// checked program if there were no errors.
-fn load_and_check(file: &SourceFile) -> Option<quarz_types::Checked> {
+fn load_and_check(path: &str) -> Option<quarz_types::Checked> {
     let prelude_file = SourceFile::new("<prelude>", quarz_types::PRELUDE_SOURCE);
     let prelude = parse(&prelude_file.text);
-    let parsed = parse(&file.text);
     let mut failed = false;
     for diag in &prelude.diagnostics {
         eprint!("{}", diag.render(&prelude_file));
         failed |= diag.is_error();
     }
-    for diag in &parsed.diagnostics {
+    let (units, diagnostics) = quarz_types::load(std::path::Path::new(path));
+    for (file, diag) in &diagnostics {
         eprint!("{}", diag.render(file));
         failed |= diag.is_error();
     }
     if failed {
         return None;
     }
-    let (checked, diagnostics) = quarz_types::check(&prelude.program, &parsed.program);
+    let sources: Vec<SourceFile> = units.iter().map(|u| u.source.clone()).collect();
+    let to_check: Vec<quarz_types::Unit> = units
+        .into_iter()
+        .map(|u| quarz_types::Unit {
+            name: u.name,
+            program: u.program,
+        })
+        .collect();
+    let (checked, diagnostics) = quarz_types::check_units(&prelude.program, &to_check);
     for (file_index, diag) in &diagnostics {
         let f = if *file_index == 0 {
             &prelude_file
         } else {
-            file
+            &sources[*file_index as usize - 1]
         };
         eprint!("{}", diag.render(f));
     }
@@ -106,11 +114,7 @@ fn load_and_check(file: &SourceFile) -> Option<quarz_types::Checked> {
 }
 
 fn run_file(path: &str, argv: Vec<String>) -> ExitCode {
-    let file = match read_source(path) {
-        Ok(file) => file,
-        Err(code) => return code,
-    };
-    let Some(checked) = load_and_check(&file) else {
+    let Some(checked) = load_and_check(path) else {
         return ExitCode::FAILURE;
     };
     let code = quarz_vm::run(checked, argv);
@@ -118,11 +122,7 @@ fn run_file(path: &str, argv: Vec<String>) -> ExitCode {
 }
 
 fn check_file(path: &str) -> ExitCode {
-    let file = match read_source(path) {
-        Ok(file) => file,
-        Err(code) => return code,
-    };
-    match load_and_check(&file) {
+    match load_and_check(path) {
         Some(_) => ExitCode::SUCCESS,
         None => ExitCode::FAILURE,
     }

@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 use std::time::Duration;
 
-use quarz_syntax::ast::{Block, Expr, ParamKind};
+use quarz_syntax::ast::{Block, ParamKind};
 use quarz_types::{CallTarget, Checked, ClassId, ClassKind, MethodId, Output, Synth, Type, World};
 
 use crate::natives;
@@ -77,6 +77,8 @@ pub struct Ctx {
     pub method_tag: u64,
     pub breakable: Breakable,
     pub method: Option<MethodId>,
+    /// Source file index of the code being evaluated.
+    pub file: u32,
 }
 
 /// Ids of exception classes the runtime raises.
@@ -119,9 +121,12 @@ pub struct RtClasses {
 pub struct Interp {
     pub world: World,
     pub out: Output,
-    pub main_body: Vec<Expr>,
-    pub main_class: ClassId,
-    pub main_self: Value,
+    /// Compilation units in execution order.
+    pub units: Vec<quarz_types::CheckedUnit>,
+    /// The `self` object of each unit's top level, by file index.
+    unit_selfs: Vec<Value>,
+    /// Display names by file index (0 = the prelude).
+    pub file_names: Vec<String>,
     pub symbols: RefCell<SymbolTable>,
     consts: RefCell<Vec<Option<Value>>>,
     variant_singletons: RefCell<HashMap<ClassId, Value>>,
@@ -160,9 +165,7 @@ impl Interp {
         let Checked {
             world,
             output,
-            main_class,
-            main_body,
-            ..
+            units,
         } = checked;
         let structural: Vec<bool> = world
             .classes
@@ -240,19 +243,24 @@ impl Interp {
             result_ok: class_by_name("Result::Ok"),
             result_err: class_by_name("Result::Err"),
         };
-        let main_self = Value::Object(Rc::new(Object {
-            class: main_class,
-            fields: RefCell::new(Vec::new()),
-            backtrace: RefCell::new(None),
-            cause: RefCell::new(None),
-        }));
+        let mut unit_selfs = vec![Value::Nil; units.len() + 1];
+        let mut file_names = vec!["<prelude>".to_string(); units.len() + 1];
+        for u in &units {
+            unit_selfs[u.file as usize] = Value::Object(Rc::new(Object {
+                class: u.main_class,
+                fields: RefCell::new(Vec::new()),
+                backtrace: RefCell::new(None),
+                cause: RefCell::new(None),
+            }));
+            file_names[u.file as usize] = u.name.clone();
+        }
         let n_consts = world.consts.len();
         let interp = Rc::new(Interp {
             world,
             out: output,
-            main_body,
-            main_class,
-            main_self,
+            units,
+            unit_selfs,
+            file_names,
             symbols: RefCell::new(SymbolTable::default()),
             consts: RefCell::new(vec![None; n_consts]),
             variant_singletons: RefCell::new(HashMap::new()),
@@ -303,22 +311,30 @@ impl Interp {
     pub fn run(self: &Rc<Interp>) -> i32 {
         let me = self.clone();
         let body: Box<dyn FnOnce() -> TaskExit> = Box::new(move || {
-            let frame = Frame::new(me.out.main_frame_size as usize + 8, None);
-            let ctx = Ctx {
-                self_val: me.main_self.clone(),
-                frame,
-                block: None,
-                method_tag: 0,
-                breakable: Breakable::None,
-                method: None,
-            };
             let mut result = Ok(Value::Nil);
-            for e in me.main_body.iter() {
-                match me.eval(e, &ctx) {
-                    Ok(_) => {}
-                    Err(f) => {
-                        result = Err(f);
-                        break;
+            'units: for unit in me.units.iter() {
+                let size = me
+                    .out
+                    .unit_frame_sizes
+                    .get(unit.file as usize)
+                    .copied()
+                    .unwrap_or(0);
+                let ctx = Ctx {
+                    self_val: me.unit_selfs[unit.file as usize].clone(),
+                    frame: Frame::new(size as usize + 8, None),
+                    block: None,
+                    method_tag: 0,
+                    breakable: Breakable::None,
+                    method: None,
+                    file: unit.file,
+                };
+                for e in unit.body.iter() {
+                    match me.eval(e, &ctx) {
+                        Ok(_) => {}
+                        Err(f) => {
+                            result = Err(f);
+                            break 'units;
+                        }
                     }
                 }
             }
@@ -628,7 +644,11 @@ impl Interp {
         };
         let self_val = match info.owner {
             Some(o) => Value::Class(o),
-            None => self.main_self.clone(),
+            None => self
+                .unit_selfs
+                .get(info.file as usize)
+                .cloned()
+                .unwrap_or(Value::Nil),
         };
         let ctx = Ctx {
             self_val,
@@ -637,6 +657,7 @@ impl Interp {
             method_tag: self.new_tag(),
             breakable: Breakable::None,
             method: None,
+            file: info.file,
         };
         let v = self.eval(&value, &ctx)?;
         self.consts.borrow_mut()[cid as usize] = Some(v.clone());
@@ -887,6 +908,7 @@ impl Interp {
             method_tag: tag,
             breakable: Breakable::None,
             method: Some(mid),
+            file: m.file,
         };
         self.bind_params(&ctx, mid, args, kw, block)?;
         self.call_stack.borrow_mut().push(Rc::from(
@@ -960,6 +982,7 @@ impl Interp {
                         method_tag: 0,
                         breakable: Breakable::None,
                         method: None,
+                        file: 0,
                     };
                     values[i] = self.eval(d, &ctx)?;
                 }
@@ -1090,6 +1113,7 @@ impl Interp {
                 method_tag: self.new_tag(),
                 breakable: Breakable::None,
                 method: None,
+                file: self.world.class(class).file,
             };
             for (i, (f, _)) in fields.iter().enumerate() {
                 if let Some(d) = &f.default {
@@ -1118,6 +1142,7 @@ impl Interp {
             tag: self.new_tag(),
             method_block: ctx.block.clone(),
             method_tag: ctx.method_tag,
+            file: ctx.file,
         }))
     }
 
@@ -1185,6 +1210,7 @@ impl Interp {
                         Breakable::Block(closure.tag)
                     },
                     method: None,
+                    file: closure.file,
                 };
                 match self.eval_body(&block.body, &ctx) {
                     Ok(v) => Ok(v),
@@ -1210,6 +1236,7 @@ impl Interp {
             tag,
             method_block: None,
             method_tag: tag,
+            file: 0,
         }))
     }
 

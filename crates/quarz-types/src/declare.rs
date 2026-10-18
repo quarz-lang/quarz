@@ -75,14 +75,19 @@ pub struct Declarer<'ast> {
     file: u32,
     pending: Vec<PendingClass<'ast>>,
     pending_ext: Vec<PendingExtension<'ast>>,
-    /// Top-level statements of the user program.
-    pub main_body: Vec<&'ast Expr>,
-    /// Statements of constant initializers etc. are kept in the world.
-    pub main_class: ClassId,
-    /// `using` paths seen at the top level of the user program.
-    main_usings: Vec<&'ast ConstPath>,
+    /// The user's compilation units (files), in load order.
+    pub units: Vec<UnitDecl<'ast>>,
     class_usings: HashMap<ClassId, Vec<&'ast ConstPath>>,
-    pub main_extensions: Vec<ExtensionId>,
+    builtins_resolved: bool,
+}
+
+/// A file's top-level: its pseudo-class for top-level methods, its
+/// statements and its `using`s.
+pub struct UnitDecl<'ast> {
+    pub file: u32,
+    pub main: ClassId,
+    pub body: Vec<&'ast Expr>,
+    pub usings: Vec<&'ast ConstPath>,
 }
 
 impl<'ast> Declarer<'ast> {
@@ -93,11 +98,9 @@ impl<'ast> Declarer<'ast> {
             file: 0,
             pending: Vec::new(),
             pending_ext: Vec::new(),
-            main_body: Vec::new(),
-            main_class: 0,
-            main_usings: Vec::new(),
+            units: Vec::new(),
             class_usings: HashMap::new(),
-            main_extensions: Vec::new(),
+            builtins_resolved: false,
         }
     }
 
@@ -116,22 +119,27 @@ impl<'ast> Declarer<'ast> {
         }
     }
 
-    /// Register the declarations of the user program; other statements
-    /// become the main body.
-    pub fn collect_main(&mut self, program: &'ast Program) {
-        self.file = 1;
+    /// Register the declarations of a user file (file index `file`, 1 or
+    /// more); its other statements become the unit's body.
+    pub fn collect_unit(&mut self, program: &'ast Program, file: u32) {
+        self.file = file;
         let mut main = World::blank_class("main".to_string(), ClassKind::Main, None, program.span);
-        main.file = 1;
+        main.file = file;
         let id = self.world.add_class(main);
-        self.main_class = id;
         self.pending.push(PendingClass {
             id,
             body: &program.body,
             def: PendingDef::Main,
         });
+        self.units.push(UnitDecl {
+            file,
+            main: id,
+            body: Vec::new(),
+            usings: Vec::new(),
+        });
         for expr in &program.body {
             if !self.collect_item(expr, None, false) {
-                self.main_body.push(expr);
+                self.units.last_mut().unwrap().body.push(expr);
             }
         }
     }
@@ -272,7 +280,11 @@ impl<'ast> Declarer<'ast> {
             }
             ExprKind::Using(path) => match namespace {
                 Some(ns) => self.class_usings.entry(ns).or_default().push(path),
-                None => self.main_usings.push(path),
+                None => {
+                    if let Some(unit) = self.units.last_mut() {
+                        unit.usings.push(path);
+                    }
+                }
             },
             ExprKind::Require { .. } => {
                 // The standard library is implicit; other files are not
@@ -373,7 +385,10 @@ impl<'ast> Declarer<'ast> {
     // ----- phase 2 ---------------------------------------------------------
 
     pub fn resolve_headers(&mut self) {
-        self.find_builtins();
+        if !self.builtins_resolved {
+            self.find_builtins();
+            self.builtins_resolved = true;
+        }
 
         // Type parameters first, so that bounds and superclasses may refer
         // to them in any order.
@@ -428,7 +443,6 @@ impl<'ast> Declarer<'ast> {
             self.file = e.file;
             self.resolve_extension_members(e);
         }
-        self.file = 1;
         self.resolve_usings();
     }
 
@@ -1091,14 +1105,21 @@ impl<'ast> Declarer<'ast> {
     }
 
     fn resolve_usings(&mut self) {
-        let mains = std::mem::take(&mut self.main_usings);
-        let mut ids = Vec::new();
-        for path in mains {
-            if let Some(found) = self.resolve_using(None, path) {
-                ids.extend(found);
+        let unit_usings: Vec<(u32, ClassId, Vec<&'ast ConstPath>)> = self
+            .units
+            .iter_mut()
+            .map(|u| (u.file, u.main, std::mem::take(&mut u.usings)))
+            .collect();
+        for (file, main, paths) in unit_usings {
+            self.file = file;
+            let mut ids = Vec::new();
+            for path in paths {
+                if let Some(found) = self.resolve_using(None, path) {
+                    ids.extend(found);
+                }
             }
+            self.world.class_mut(main).usings = ids;
         }
-        self.main_extensions = ids;
         let per_class = std::mem::take(&mut self.class_usings);
         for (cid, paths) in per_class {
             let mut ids = Vec::new();

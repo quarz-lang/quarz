@@ -24,9 +24,15 @@ pub struct Parsed {
 }
 
 pub fn parse(src: &str) -> Parsed {
-    let mut parser = Parser::new(src);
+    parse_with_bases(src, 0, 0)
+}
+
+/// Parse with spans offset by `span_base` and node ids starting at
+/// `id_base`, so that several files can share the checker's tables.
+pub fn parse_with_bases(src: &str, span_base: u32, id_base: NodeId) -> Parsed {
+    let mut parser = Parser::with_bases(src, span_base, id_base);
     let body = parser.parse_statements(&[]);
-    let span = Span::new(0, src.len());
+    let span = Span::new(span_base as usize, span_base as usize + src.len());
     let eof = parser.peek().clone();
     if !matches!(eof.kind, T::Eof) {
         parser.error_at(format!("unexpected {}", describe(&eof.kind)), eof.span);
@@ -75,14 +81,18 @@ pub struct Parser<'src> {
 
 impl<'src> Parser<'src> {
     pub fn new(src: &'src str) -> Parser<'src> {
-        let mut lexer = Lexer::new(src);
+        Parser::with_bases(src, 0, 0)
+    }
+
+    pub fn with_bases(src: &'src str, span_base: u32, id_base: NodeId) -> Parser<'src> {
+        let mut lexer = Lexer::with_base(src, span_base);
         lexer.locals.push_scope(true);
         Parser {
             lexer,
             tokens: Vec::new(),
             idx: 0,
             diagnostics: Vec::new(),
-            next_id: 0,
+            next_id: id_base,
             no_do: false,
             allow_in_match: true,
             last_span_end: 0,

@@ -1,0 +1,21 @@
+# A small library used by multi_file.qz through `require_relative`.
+# Classes, data types and constants defined here are visible to any file
+# that requires this one; top-level `def`s stay private to this file.
+
+data Point(x: Float, y: Float) do
+  def +(other: Point) -> Point = Point.new(x + other.x, y + other.y)
+  def to_s -> String = "(#{x}, #{y})"
+end
+
+module Geometry
+  ORIGIN = Point.new(0.0, 0.0)
+
+  def self.distance(a: Point, b: Point) -> Float = Math.hypot(a.x - b.x, a.y - b.y)
+
+  def self.describe(p: Point) -> String = "#{p} is #{format_distance(distance(p, ORIGIN))} from the origin"
+end
+
+# Private to this file: callable from Geometry.describe but not from other files.
+def format_distance(d: Float) -> String = "#{d.round(2)} units"
+
+puts "geometry loaded"

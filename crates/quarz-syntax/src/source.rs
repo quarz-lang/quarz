@@ -58,11 +58,19 @@ pub struct LineCol {
 pub struct SourceFile {
     pub name: String,
     pub text: String,
+    /// Offset added to every span of this file, so that spans of different
+    /// files never collide.
+    pub base: u32,
     line_starts: Vec<u32>,
 }
 
 impl SourceFile {
     pub fn new(name: impl Into<String>, text: impl Into<String>) -> SourceFile {
+        SourceFile::with_base(name, text, 0)
+    }
+
+    /// A file whose spans start at `base` rather than 0.
+    pub fn with_base(name: impl Into<String>, text: impl Into<String>, base: u32) -> SourceFile {
         let text = text.into();
         let mut line_starts = vec![0];
         for (i, b) in text.bytes().enumerate() {
@@ -73,12 +81,15 @@ impl SourceFile {
         SourceFile {
             name: name.into(),
             text,
+            base,
             line_starts,
         }
     }
 
     pub fn slice(&self, span: Span) -> &str {
-        &self.text[span.start as usize..span.end as usize]
+        let start = span.start.saturating_sub(self.base) as usize;
+        let end = span.end.saturating_sub(self.base) as usize;
+        self.text.get(start..end).unwrap_or("")
     }
 
     pub fn line_count(&self) -> usize {
@@ -86,6 +97,7 @@ impl SourceFile {
     }
 
     pub fn line_col(&self, offset: u32) -> LineCol {
+        let offset = offset.saturating_sub(self.base).min(self.text.len() as u32);
         let line = match self.line_starts.binary_search(&offset) {
             Ok(i) => i,
             Err(i) => i - 1,

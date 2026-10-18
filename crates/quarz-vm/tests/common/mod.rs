@@ -27,6 +27,36 @@ pub fn run(src: &str, argv: &[&str]) -> (i32, String) {
     quarz_vm::run_capturing(checked.unwrap(), argv)
 }
 
+/// Load a file (and what it requires), check and run it.
+#[allow(dead_code)]
+pub fn run_path(path: &std::path::Path, argv: &[&str]) -> (i32, String) {
+    let prelude = parse(PRELUDE_SOURCE);
+    let (units, diags) = quarz_types::load(path);
+    let errors: Vec<String> = diags
+        .iter()
+        .filter(|(_, d)| d.is_error())
+        .map(|(f, d)| d.render(f))
+        .collect();
+    assert!(errors.is_empty(), "load errors:\n{}", errors.join("\n"));
+    let sources: Vec<SourceFile> = units.iter().map(|u| u.source.clone()).collect();
+    let to_check: Vec<quarz_types::Unit> = units
+        .into_iter()
+        .map(|u| quarz_types::Unit {
+            name: u.name,
+            program: u.program,
+        })
+        .collect();
+    let (checked, diags) = quarz_types::check_units(&prelude.program, &to_check);
+    let errors: Vec<String> = diags
+        .iter()
+        .filter(|(_, d)| d.is_error())
+        .map(|(f, d)| d.render(&sources[(*f as usize).saturating_sub(1)]))
+        .collect();
+    assert!(errors.is_empty(), "check errors:\n{}", errors.join("\n"));
+    let argv = argv.iter().map(|s| s.to_string()).collect();
+    quarz_vm::run_capturing(checked.unwrap(), argv)
+}
+
 /// Run and assert the output.
 #[allow(dead_code)]
 pub fn expect(src: &str, expected: &str) {

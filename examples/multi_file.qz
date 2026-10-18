@@ -1,0 +1,9 @@
+# Using another file: `require_relative` loads geometry.qz (once, before
+# this file's statements run) and makes its classes and constants visible.
+
+require_relative "geometry"
+
+p = Point.new(3.0, 4.0)
+puts p, p + p
+puts Geometry.distance(p, Geometry::ORIGIN)
+puts Geometry.describe(p)

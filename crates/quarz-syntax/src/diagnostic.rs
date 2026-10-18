@@ -54,10 +54,12 @@ impl Diagnostic {
         let line = file.line_text(lc.line);
         let _ = writeln!(out, "  {}", line);
         let width = file
-            .text
-            .get(self.span.start as usize..self.span.end as usize)
-            .map(|s| s.lines().next().unwrap_or("").chars().count())
-            .unwrap_or(0)
+            .slice(self.span)
+            .lines()
+            .next()
+            .unwrap_or("")
+            .chars()
+            .count()
             .max(1);
         let _ = writeln!(out, "  {}{}", " ".repeat(lc.col - 1), "^".repeat(width));
         out

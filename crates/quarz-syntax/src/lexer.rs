@@ -145,6 +145,8 @@ pub struct Lexer<'src> {
     diagnostics: Vec<Diagnostic>,
     comments: Vec<Span>,
     data_offset: Option<usize>,
+    /// Added to every span produced.
+    base: u32,
 }
 
 /// Everything the lexer produced for a source text.
@@ -212,6 +214,11 @@ const OPERATOR_SYMBOLS: &[&str] = &[
 
 impl<'src> Lexer<'src> {
     pub fn new(src: &'src str) -> Lexer<'src> {
+        Lexer::with_base(src, 0)
+    }
+
+    /// A lexer whose spans are offset by `base` (see `SourceFile::base`).
+    pub fn with_base(src: &'src str, base: u32) -> Lexer<'src> {
         Lexer {
             src,
             bytes: src.as_bytes(),
@@ -228,6 +235,14 @@ impl<'src> Lexer<'src> {
             diagnostics: Vec::new(),
             comments: Vec::new(),
             data_offset: None,
+            base,
+        }
+    }
+
+    fn shift(&self, span: Span) -> Span {
+        Span {
+            start: span.start + self.base,
+            end: span.end + self.base,
         }
     }
 
@@ -251,13 +266,14 @@ impl<'src> Lexer<'src> {
     }
 
     pub fn next_token(&mut self) -> Token {
-        let tok = match self.pending.pop_front() {
+        let mut tok = match self.pending.pop_front() {
             Some(tok) => tok,
             None => match self.modes.last() {
                 Some(Mode::Str(_)) => self.lex_string(),
                 _ => self.lex_normal(),
             },
         };
+        tok.span = self.shift(tok.span);
         self.prev_ident = match &tok.kind {
             TokenKind::Ident(name) => Some(name.clone()),
             _ => None,
@@ -299,10 +315,12 @@ impl<'src> Lexer<'src> {
     }
 
     fn error(&mut self, message: impl Into<String>, span: Span) {
+        let span = self.shift(span);
         self.diagnostics.push(Diagnostic::error(message, span));
     }
 
     fn warning(&mut self, message: impl Into<String>, span: Span) {
+        let span = self.shift(span);
         self.diagnostics.push(Diagnostic::warning(message, span));
     }
 
@@ -395,7 +413,8 @@ impl<'src> Lexer<'src> {
                     if end > start && self.bytes[end - 1] == b'\n' {
                         end -= 1;
                     }
-                    self.comments.push(Span::new(start, end));
+                    let span = self.shift(Span::new(start, end));
+                    self.comments.push(span);
                     // Leave the newline for the arm below.
                     self.pos = end;
                 }

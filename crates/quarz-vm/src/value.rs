@@ -167,6 +167,8 @@ pub struct Closure {
     /// The method the block was written in (for `yield` and `return`).
     pub method_block: Option<Value>,
     pub method_tag: u64,
+    /// Source file index (for `__FILE__`).
+    pub file: u32,
 }
 
 #[derive(Debug)]

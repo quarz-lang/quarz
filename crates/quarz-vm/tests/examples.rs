@@ -71,6 +71,17 @@ fn extension() {
 }
 
 #[test]
+fn multi_file() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/multi_file.qz");
+    let (code, out) = common::run_path(&path, &[]);
+    assert_eq!(code, 0);
+    assert_eq!(
+        out,
+        "geometry loaded\n(3.0, 4.0)\n(6.0, 8.0)\n5.0\n(3.0, 4.0) is 5.0 units from the origin\n"
+    );
+}
+
+#[test]
 fn builder() {
     assert_eq!(
         example("builder", &[]),
