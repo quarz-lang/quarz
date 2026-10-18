@@ -1,0 +1,86 @@
+# Aggregating JSON records: group, sum, rank, and print a table plus a
+# JSON summary. Reads a JSON array from the file given on the command
+# line, or uses the built-in data.
+require "json"
+
+data Sale(region: String, product: String, units: Int, price: Float, day: Time)
+
+def sale_from(v: JSON::Value) -> Sale
+  Sale.new(
+    region: v["region"].as_s,
+    product: v["product"].as_s,
+    units: v["units"].as_i,
+    price: v["price"].as_f,
+    day: Time.iso8601(v["day"].as_s)
+  )
+end
+
+data Summary(key: String, units: Int, revenue: Float, orders: Int) do
+  def average -> Float = orders == 0 ? 0.0 : revenue / orders
+end
+
+def summarize(sales: Array[Sale], &key: (Sale) -> String) -> Array[Summary]
+  groups = sales.group_by { |s| yield(s) }
+  groups.map do |pair|
+    name = pair[0]
+    rows = pair[1]
+    Summary.new(
+      key: name,
+      units: rows.map(&:units).sum,
+      revenue: rows.map { |s| s.units * s.price }.sum,
+      orders: rows.size
+    )
+  end.sort_by { |s| -s.revenue }
+end
+
+def money(amount: Float) -> String = format("%.2f", amount)
+
+def print_table(title: String, rows: Array[Summary]) -> Nil
+  puts title
+  puts format("%-12s %6s %10s %6s %9s", "key", "units", "revenue", "orders", "avg")
+  rows.each do |r|
+    puts format("%-12s %6d %10s %6d %9s", r.key, r.units, money(r.revenue), r.orders, money(r.average))
+  end
+  puts
+end
+
+DATA = <<~JSON
+  [
+    {"region": "east", "product": "widget", "units": 10, "price": 2.5, "day": "2026-10-01T00:00:00Z"},
+    {"region": "east", "product": "gadget", "units": 3, "price": 19.99, "day": "2026-10-02T00:00:00Z"},
+    {"region": "west", "product": "widget", "units": 25, "price": 2.5, "day": "2026-10-02T00:00:00Z"},
+    {"region": "west", "product": "gizmo", "units": 1, "price": 99.0, "day": "2026-10-05T00:00:00Z"},
+    {"region": "north", "product": "gadget", "units": 7, "price": 18.5, "day": "2026-10-05T00:00:00Z"},
+    {"region": "east", "product": "widget", "units": 4, "price": 2.75, "day": "2026-10-07T00:00:00Z"}
+  ]
+JSON
+
+text = case ARGV.first?
+       in String => path then File.read(path)
+       in nil then DATA
+       end
+sales = JSON.parse(text).as_a.map { |v| sale_from(v) }
+
+by_region = summarize(sales) { |s| s.region }
+by_product = summarize(sales) { |s| s.product }
+print_table("By region", by_region)
+print_table("By product", by_product)
+
+first = sales.min_by(&:day)
+last = sales.max_by(&:day)
+if first && last
+  span = last.day - first.day
+  puts "period: #{first.day.strftime("%Y-%m-%d")} .. #{last.day.strftime("%Y-%m-%d")} (#{span.to_f / 86400.0} days)"
+end
+
+busiest = sales.group_by { |s| s.day.strftime("%Y-%m-%d") }.max_by { |pair| pair[1].size }
+if busiest
+  puts "busiest day: #{busiest[0]} with #{busiest[1].size} orders"
+end
+
+summary = {
+  total_revenue: money(sales.map { |s| s.units * s.price }.sum),
+  regions: by_region.map { |r| { key: r.key, revenue: r.revenue.round(2) } },
+  top_product: by_product.first&.key
+}
+puts JSON.pretty_generate(summary)

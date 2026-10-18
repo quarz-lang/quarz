@@ -83,6 +83,9 @@ fn examples_compile_and_match_the_vm() {
         "geometry",
         "multi_file",
         "json_report",
+        "markdown",
+        "sales_report",
+        "workers",
     ] {
         same_as_vm(&example(name), &[]);
     }

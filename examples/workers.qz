@@ -1,0 +1,79 @@
+# A worker pool over channels with structured concurrency: jobs fan out
+# to workers, results fan in, a shared Atom remembers which jobs were
+# retried, and a deadline stops the collection.
+
+data Job(id: Int, size: Int)
+
+enum Outcome
+  Done(id: Int, checksum: Int, worker: Int)
+  Failed(id: Int, reason: String)
+end
+
+# A deterministic "computation" whose cost grows with the job size.
+def crunch(job: Job) -> Int
+  acc = 0
+  job.size.times { |i| acc = (acc * 31 + i * job.id) % 1_000_003 }
+  acc
+end
+
+def worker(id: Int, jobs: Channel[Job], results: Channel[Outcome], retried: Atom[Set[Int]]) -> Nil
+  jobs.each do |job|
+    begin
+      raise ArgumentError, "size must be positive" if job.size <= 0
+      # Odd jobs fail once, then succeed when retried.
+      if job.id.odd? && !retried.get.include?(job.id)
+        retried.update { |seen| seen.add(job.id) }
+        raise RuntimeError, "transient error"
+      end
+      results.send(Outcome::Done.new(job.id, crunch(job), id))
+    rescue RuntimeError
+      jobs.send(job) unless jobs.closed?
+    rescue ArgumentError => e
+      results.send(Outcome::Failed.new(job.id, e.message))
+    end
+  end
+end
+
+jobs = Channel[Job].new(capacity: 32)
+results = Channel[Outcome].new(capacity: 32)
+retried = Atom[Set[Int]].new(Set[Int].new)
+job_count = 12
+
+Task.scope do |scope|
+  workers = 3.times.map { |i| scope.spawn { worker(i, jobs, results, retried) } }
+  scope.spawn do
+    job_count.times { |i| jobs.send(Job.new(i, i == 5 ? 0 : 1000 + i * 100)) }
+  end
+
+  outcomes = Array::Builder[Outcome].new
+  Channel.select_loop do |s|
+    s.receive(results) do |outcome|
+      outcomes << outcome
+      if outcomes.size == job_count
+        jobs.close
+        s.stop
+      end
+    end
+    s.after(2.seconds) do
+      warn "deadline reached with #{outcomes.size} results"
+      jobs.close
+      s.stop
+    end
+  end
+  workers.each(&:await)
+
+  done, failed = outcomes.to_a.partition { |o| o.is_a?(Outcome::Done) }
+  done.sort_by { |o| o.as(Outcome::Done).id }.each do |o|
+    case o
+    in Outcome::Done(id:, checksum:) then puts "job #{id}: #{checksum}"
+    in Outcome::Failed then nil
+    end
+  end
+  failed.each do |o|
+    case o
+    in Outcome::Failed(id:, reason:) then puts "job #{id} failed: #{reason}"
+    in Outcome::Done then nil
+    end
+  end
+  puts "done: #{done.size}, failed: #{failed.size}, retried: #{retried.get.sort.inspect}"
+end

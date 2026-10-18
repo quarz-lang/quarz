@@ -298,7 +298,8 @@ impl Value {
         unsafe { *(self as *const Value as *const u64) as u8 }
     }
 
-    /// Identity comparison (`equal?`).
+    /// Identity comparison (`equal?`): values without a heap payload are
+    /// identical when equal, the others when they share the allocation.
     pub fn identical(&self, other: &Value) -> bool {
         match (self, other) {
             (Value::Nil, Value::Nil) => true,
@@ -306,19 +307,29 @@ impl Value {
             (Value::Int(a), Value::Int(b)) => a == b,
             (Value::Float(a), Value::Float(b)) => a.to_bits() == b.to_bits(),
             (Value::Symbol(a), Value::Symbol(b)) => a == b,
+            (Value::Class(a), Value::Class(b)) => a == b,
+            (Value::Duration(a), Value::Duration(b)) => a == b,
+            (Value::BigInt(a), Value::BigInt(b)) => Rc::ptr_eq(a, b) || a == b,
             (Value::Str(a), Value::Str(b)) => Rc::ptr_eq(a, b) || a == b,
             (Value::Array(a), Value::Array(b)) => Rc::ptr_eq(a, b),
             (Value::Hash(a), Value::Hash(b)) => Rc::ptr_eq(a, b),
+            (Value::Set(a), Value::Set(b)) => Rc::ptr_eq(a, b),
+            (Value::Range(a), Value::Range(b)) => Rc::ptr_eq(a, b),
+            (Value::Regexp(a), Value::Regexp(b)) => Rc::ptr_eq(a, b),
+            (Value::MatchData(a), Value::MatchData(b)) => Rc::ptr_eq(a, b),
             (Value::Object(a), Value::Object(b)) => Rc::ptr_eq(a, b),
-            (Value::Class(a), Value::Class(b)) => a == b,
             (Value::Proc(a), Value::Proc(b)) => Rc::ptr_eq(a, b),
             (Value::ArrayBuilder(a), Value::ArrayBuilder(b)) => Rc::ptr_eq(a, b),
             (Value::HashBuilder(a), Value::HashBuilder(b)) => Rc::ptr_eq(a, b),
+            (Value::SetBuilder(a), Value::SetBuilder(b)) => Rc::ptr_eq(a, b),
             (Value::StringBuilder(a), Value::StringBuilder(b)) => Rc::ptr_eq(a, b),
             (Value::Channel(a), Value::Channel(b)) => Rc::ptr_eq(a, b),
             (Value::Task(a), Value::Task(b)) => Rc::ptr_eq(a, b),
+            (Value::Scope(a), Value::Scope(b)) => Rc::ptr_eq(a, b),
             (Value::Atom(a), Value::Atom(b)) => Rc::ptr_eq(a, b),
-            (Value::Duration(a), Value::Duration(b)) => a == b,
+            (Value::Selector(a), Value::Selector(b)) => Rc::ptr_eq(a, b),
+            (Value::Enumerator(a), Value::Enumerator(b)) => Rc::ptr_eq(a, b),
+            (Value::Io(a), Value::Io(b)) => Rc::ptr_eq(a, b),
             (Value::Bytes(a), Value::Bytes(b)) => Rc::ptr_eq(a, b) || a == b,
             (Value::BytesBuilder(a), Value::BytesBuilder(b)) => Rc::ptr_eq(a, b),
             (Value::Time(a), Value::Time(b)) => a.ns == b.ns,
