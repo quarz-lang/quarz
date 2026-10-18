@@ -15,7 +15,7 @@ def sale_from(v: JSON::Value) -> Sale
   )
 end
 
-data Summary(key: String, units: Int, revenue: Float, orders: Int) do
+data Summary(key: String, units: Int, revenue: Float, orders: Int) is
   def average -> Float = orders == 0 ? 0.0 : revenue / orders
 end
 

@@ -1,6 +1,6 @@
 # enum、data、パターンマッチ、Comparable
 
-data Point(x: Float, y: Float) do
+data Point(x: Float, y: Float) is
   def +(other: Point) -> Point = Point.new(x + other.x, y + other.y)
   def distance_to(other: Point) -> Float
     Math.hypot(other.x - x, other.y - y)

@@ -22,6 +22,7 @@ The following words are treated as keywords **only in declaration positions**; e
 | Word | Context in which it is recognized |
 |---|---|
 | `data` | At the start of a line, followed by `data ConstantName(` |
+| `is` | Right after the `)` of a `data` declaration, introducing its body |
 | `enum` | At the start of a line, followed by `enum ConstantName` |
 | `var` | Followed by `var @name` / `var @name:` |
 | `abstract` | `abstract class` / `abstract def` |
@@ -130,7 +131,7 @@ Immutable record types, corresponding to Ruby 3.2's `Data`.
 ```ruby
 data Point(x: Int, y: Int)
 
-data Line(from: Point, to: Point) do
+data Line(from: Point, to: Point) is
   def length -> Float
     Math.sqrt((to.x - from.x) ** 2 + (to.y - from.y) ** 2)
   end
@@ -145,7 +146,7 @@ in Point(x:, y:) then puts "#{x}, #{y}"
 end
 ```
 
-`data` generates the following automatically: fields (immutable), reader methods, `initialize`, `==`/`hash`, `to_s`/`inspect`, `with`, `deconstruct`/`deconstruct_keys`, `to_h`. To add methods, write them in a `do ... end` body. `data` types cannot be inherited (they can `include`).
+`data` generates the following automatically: fields (immutable), reader methods, `initialize`, `==`/`hash`, `to_s`/`inspect`, `with`, `deconstruct`/`deconstruct_keys`, `to_h`. To add methods, write them in an `is ... end` body (`is` is needed because a `data` declaration without a body does not end with `end`, so the parser could not otherwise tell a body from the next statement). `data` types cannot be inherited (they can `include`).
 
 ## 5. Enumerations (`enum`)
 
@@ -188,7 +189,7 @@ module Comparable[T]
   # ...
 end
 
-data Version(major: Int, minor: Int) do
+data Version(major: Int, minor: Int) is
   include Comparable[Version]
   def <=>(other: Version) -> Int
     [major, minor] <=> [other.major, other.minor]

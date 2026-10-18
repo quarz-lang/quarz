@@ -13,7 +13,7 @@ Quarz is the design of a programming language that keeps the feel of writing Rub
 ## Quarz at a glance
 
 ```ruby
-data WordCount(word: String, count: Int) do
+data WordCount(word: String, count: Int) is
   include Comparable[WordCount]
   def <=>(other: WordCount) -> Int = other.count <=> count
 end

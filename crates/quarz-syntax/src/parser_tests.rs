@@ -288,7 +288,7 @@ fn declarations() {
         "(data P (fields x:Int y:Int=0))"
     );
     assert_eq!(
-        sexp("data P(x: Int) do\ndef f = x\nend"),
+        sexp("data P(x: Int) is\ndef f = x\nend"),
         "(data P (fields x:Int) (def f (params) (call _ x)))"
     );
     assert_eq!(

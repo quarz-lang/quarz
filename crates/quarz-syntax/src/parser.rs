@@ -2980,13 +2980,23 @@ impl<'src> Parser<'src> {
         self.expect(&T::LParen, "`(`")?;
         let fields = self.parse_field_list(&T::RParen)?;
         self.expect(&T::RParen, "`)`")?;
-        let body = if self.at_kw(K::Do) {
+        // `data Name(fields) is ... end`: the body is introduced by the
+        // contextual keyword `is`, since without one the next line could
+        // not be told from the next statement.
+        let has_body = matches!(self.kind(), T::Ident(name) if name == "is");
+        let body = if has_body {
             self.bump();
             self.push_scope(true);
             let body = self.parse_statements(&[K::End]);
             self.pop_scope();
             self.expect_kw(K::End)?;
             body
+        } else if self.at_kw(K::Do) {
+            let span = self.peek().span;
+            return Err(self.error_at(
+                "the body of a data type is introduced by `is`, not `do`",
+                span,
+            ));
         } else {
             vec![]
         };

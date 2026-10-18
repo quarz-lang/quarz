@@ -20,6 +20,7 @@ Quarz の文法は Ruby を基礎にし、「静的に定義する」「不変�
 | 語 | 認識される文脈 |
 |---|---|
 | `data` | 行頭で `data 定数名(` が続くとき |
+| `is` | `data` 宣言の `)` の直後で、本体を導くとき |
 | `enum` | 行頭で `enum 定数名` が続くとき |
 | `var` | `var @名前` / `var @名前:` が続くとき |
 | `abstract` | `abstract class` / `abstract def` |
@@ -128,7 +129,7 @@ end
 ```ruby
 data Point(x: Int, y: Int)
 
-data Line(from: Point, to: Point) do
+data Line(from: Point, to: Point) is
   def length -> Float
     Math.sqrt((to.x - from.x) ** 2 + (to.y - from.y) ** 2)
   end
@@ -143,7 +144,7 @@ in Point(x:, y:) then puts "#{x}, #{y}"
 end
 ```
 
-`data` は次を自動生成します: フィールド(不変)、読み出しメソッド、`initialize`、`==`/`hash`、`to_s`/`inspect`、`with`、`deconstruct`/`deconstruct_keys`、`to_h`。メソッドを追加したいときは `do ... end` に書きます。`data` は継承できません(`include` はできます)。
+`data` は次を自動生成します: フィールド(不変)、読み出しメソッド、`initialize`、`==`/`hash`、`to_s`/`inspect`、`with`、`deconstruct`/`deconstruct_keys`、`to_h`。メソッドを追加したいときは `is ... end` の本体に書きます(本体のない `data` は `end` で終わらないので、`is` がないと本体と次の文を区別できません)。`data` は継承できません(`include` はできます)。
 
 ## 5. 列挙型(`enum`)
 
@@ -186,7 +187,7 @@ module Comparable[T]
   # ...
 end
 
-data Version(major: Int, minor: Int) do
+data Version(major: Int, minor: Int) is
   include Comparable[Version]
   def <=>(other: Version) -> Int
     [major, minor] <=> [other.major, other.minor]

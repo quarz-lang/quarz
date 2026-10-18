@@ -144,7 +144,7 @@ fn data_and_enum() {
         "data P(x: Int)\nP.new(\"s\")",
         "expects Int but found String",
     );
-    ok("data P(x: Int) do\n  def double -> P = P.new(x * 2)\nend\nputs P.new(2).double.x");
+    ok("data P(x: Int) is\n  def double -> P = P.new(x * 2)\nend\nputs P.new(2).double.x");
     ok("enum E\n  A\n  B(v: Int)\nend\ndef f(e: E) -> Int\n  case e\n  in E::A then 0\n  in E::B(v:) then v\n  end\nend\nputs f(E::A) + f(E::B.new(3))");
     err(
         "enum E\n  A\n  B\nend\ndef f(e: E) -> Int\n  case e\n  in E::A then 1\n  end\nend",
