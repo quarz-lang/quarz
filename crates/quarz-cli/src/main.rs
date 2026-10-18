@@ -1,14 +1,15 @@
-//! The `quarz` command. Only `quarz tokens FILE` exists so far.
+//! The `quarz` command.
 
 use std::process::ExitCode;
 
-use quarz_syntax::{tokenize, SourceFile, TokenKind};
+use quarz_syntax::{parse, tokenize, SourceFile, TokenKind};
 
 const USAGE: &str = "\
 usage: quarz <command> [args]
 
 commands:
   tokens FILE    print the tokens of FILE (for debugging the lexer)
+  parse FILE     print the syntax tree of FILE (for debugging the parser)
 ";
 
 fn main() -> ExitCode {
@@ -16,6 +17,10 @@ fn main() -> ExitCode {
     match args.first().map(String::as_str) {
         Some("tokens") => match args.get(1) {
             Some(path) => tokens(path),
+            None => usage(),
+        },
+        Some("parse") => match args.get(1) {
+            Some(path) => parse_file(path),
             None => usage(),
         },
         Some("-h" | "--help" | "help") => {
@@ -31,15 +36,40 @@ fn usage() -> ExitCode {
     ExitCode::from(2)
 }
 
-fn tokens(path: &str) -> ExitCode {
-    let text = match std::fs::read_to_string(path) {
-        Ok(text) => text,
+fn read_source(path: &str) -> Result<SourceFile, ExitCode> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => Ok(SourceFile::new(path, text)),
         Err(err) => {
             eprintln!("quarz: {path}: {err}");
-            return ExitCode::FAILURE;
+            Err(ExitCode::FAILURE)
         }
+    }
+}
+
+fn parse_file(path: &str) -> ExitCode {
+    let file = match read_source(path) {
+        Ok(file) => file,
+        Err(code) => return code,
     };
-    let file = SourceFile::new(path, text);
+    let parsed = parse(&file.text);
+    print!("{}", quarz_syntax::sexp::program_to_sexp(&parsed.program));
+    let mut failed = false;
+    for diag in &parsed.diagnostics {
+        eprint!("{}", diag.render(&file));
+        failed |= diag.is_error();
+    }
+    if failed {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+fn tokens(path: &str) -> ExitCode {
+    let file = match read_source(path) {
+        Ok(file) => file,
+        Err(code) => return code,
+    };
     let lexed = tokenize(&file.text);
 
     for tok in &lexed.tokens {

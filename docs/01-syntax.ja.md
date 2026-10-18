@@ -247,7 +247,7 @@ def name(a: Int, b: String = "x", *rest: Int, *, flag: Bool, limit: Int? = nil, 
 | `a: Int` | 必須引数。位置でもキーワード(`name(a: 1)`)でも渡せる |
 | `b: String = "x"` / `b = "x"` | 省略可能引数。既定値から型を推論できるなら型は省略可 |
 | `*rest: Int` | 可変長引数。`rest` の型は `Array[Int]` |
-| `*` | これ以降はキーワード専用 |
+| `*` | これ以降はキーワード専用(`*rest` の後ろも同様) |
 | `flag: Bool` (`*` の後) | 必須キーワード引数 |
 | `**opts: String` | 残余キーワード。型は `Hash[Symbol, String]` |
 | `&block: (Int) -> Nil` | ブロック引数。型は手続き型 |

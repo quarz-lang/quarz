@@ -249,7 +249,7 @@ def name(a: Int, b: String = "x", *rest: Int, *, flag: Bool, limit: Int? = nil, 
 | `a: Int` | Required parameter. Can be passed positionally or by keyword (`name(a: 1)`) |
 | `b: String = "x"` / `b = "x"` | Optional parameter. The type may be omitted if it can be inferred from the default value |
 | `*rest: Int` | Variadic parameter. The type of `rest` is `Array[Int]` |
-| `*` | Everything after this is keyword-only |
+| `*` | Everything after this is keyword-only (the same holds after `*rest`) |
 | `flag: Bool` (after `*`) | Required keyword parameter |
 | `**opts: String` | Remaining keywords. The type is `Hash[Symbol, String]` |
 | `&block: (Int) -> Nil` | Block parameter. The type is a procedure type |

@@ -978,6 +978,14 @@ impl<'src> Lexer<'src> {
         let b = self.bytes[self.pos];
         let n1 = self.peek_at(1);
         let n2 = self.peek_at(2);
+        // Unary operator method names: `def -@`, `def +@`.
+        if matches!(b, b'+' | b'-' | b'!' | b'~')
+            && n1 == Some(b'@')
+            && !n2.is_some_and(is_ident_char)
+        {
+            self.pos += 2;
+            return Ident(format!("{}@", b as char));
+        }
         let (kind, len) = match (b, n1, n2) {
             (b'+', Some(b'='), _) => (OpAssign(self::OpAssign::Plus), 2),
             (b'+', _, _) => (Plus, 1),
