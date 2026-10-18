@@ -18,6 +18,7 @@ mod io;
 mod json;
 mod numeric;
 mod string;
+mod text;
 pub mod time;
 
 pub fn registry() -> HashMap<&'static str, NativeFn> {
@@ -25,6 +26,7 @@ pub fn registry() -> HashMap<&'static str, NativeFn> {
     core::register(&mut m);
     numeric::register(&mut m);
     string::register(&mut m);
+    text::register(&mut m);
     collections::register(&mut m);
     enumerable::register(&mut m);
     concurrency::register(&mut m);

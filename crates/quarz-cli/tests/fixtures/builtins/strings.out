@@ -1,0 +1,110 @@
+"hell"
+"o w"
+nil
+"world"
+"world"
+"ello world"
+[104, 101, 108]
+104
+100
+nil
+[104, 105]
+["a", "👨‍👩‍👧", "é"]
+6
+é|a|
+["hello", " ", "world"]
+["hello world", "", ""]
+["hello w", "o", "rld"]
+["", "", "hello world"]
+["hell", "o ", "world"]
+["hello w", "or", "ld"]
+"body"
+"body"
+"abc"
+true
+-1
+1
+"abXXcd"
+"abcdZ"
+"ab_c"
+"hello world"
+true
+false
+"ba"
+"aaa"
+["a8", "a9", "b0", "b1"]
+"abccc"
+"ab"
+"hello"
+"hello"
+"hi"
+true
+true
+false
+true
+2
+3
+nil
+2
+3
+3
+2
+3
+2
+["a\n", "b\r\n", "c"]
+["a", "b", "c"]
+["a", "b"]
+["a", "b,c,d"]
+["a", "b", "", ""]
+["a", "b"]
+["a", "b22c"]
+["a", "b", "c"]
+"heLlo"
+"he[l][l]o"
+"hellllo"
+"helo"
+"dog cap"
+"-a-b-c-"
+["ONE", "TWO", "THREE"]
+"00042"
+"a and b"
+"3.14"
+"hello, world!?"
+","
+nil
+"hello world!?"
+13
+"?!dlrow olleh"
+"new"
+3
+true
+:ABC
+:abc
+:Abc
+:ba
+true
+true
+/h(?<rest>.+)o/i
+"i"
+"h(?<rest>.+)o"
+["rest"]
+#<MatchData "HELLO" rest:"ELL">
+true
+false
+"a\\.b\\*c"
+/a\.b|(?:c+)|d/
+true
+error: invalid regexp /(/: regex parse error:
+    (
+    ^
+error: unclosed group
+error: unknown regexp option: z
+["first", "last"]
+{"first" => "John", "last" => "Smith"}
+4
+["John Smith 42", "John", "Smith", "42"]
+["John Smith 42", "42", nil]
+#<MatchData "John Smith 42" first:"John" last:"Smith" 3:"42">
+#<MatchData "a" 1:"a" 2:nil>
+["a", "a", nil]
+1

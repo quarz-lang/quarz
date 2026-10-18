@@ -376,9 +376,53 @@ class String
   native def inspect -> String
   native def hash -> Int
   native def succ -> String
+  native def next -> String
   native def ord -> Int
   native def hex -> Int
   native def oct -> Int
+  native def %(arg: Object) -> String
+  native def [](start: Int, length: Int) -> String
+  native def [](pattern: Regexp) -> String?
+  native def slice(start: Int, length: Int) -> String
+  native def slice(range: Range[Int]) -> String
+  native def codepoints -> Array[Int]
+  native def getbyte(index: Int) -> Int?
+  native def each_byte(&: (Int) -> Nil) -> Nil
+  native def each_char -> Enumerator[String]
+  native def graphemes -> Array[String]
+  native def each_grapheme(&: (String) -> Nil) -> Nil
+  native def lines(chomp: Bool) -> Array[String]
+  native def split(separator: String, limit: Int) -> Array[String]
+  native def split(separator: Regexp, limit: Int) -> Array[String]
+  native def partition(separator: String) -> [String, String, String]
+  native def partition(pattern: Regexp) -> [String, String, String]
+  native def rpartition(separator: String) -> [String, String, String]
+  native def rpartition(pattern: Regexp) -> [String, String, String]
+  native def delete_prefix(prefix: String) -> String
+  native def delete_suffix(suffix: String) -> String
+  native def casecmp?(other: String) -> Bool
+  native def casecmp(other: String) -> Int
+  native def insert(index: Int, other: String) -> String
+  native def prepend(other: String) -> String
+  native def ascii_only? -> Bool
+  native def upto(last: String, &: (String) -> Nil) -> Nil
+  native def squeeze(chars: String) -> String
+  native def chomp(suffix: String) -> String
+  native def start_with?(first: String, second: String, *rest: String) -> Bool
+  native def start_with?(pattern: Regexp) -> Bool
+  native def end_with?(first: String, second: String, *rest: String) -> Bool
+  native def index(other: String, start: Int) -> Int?
+  native def index(pattern: Regexp) -> Int?
+  native def index(pattern: Regexp, start: Int) -> Int?
+  native def rindex(other: String, start: Int) -> Int?
+  native def rindex(pattern: Regexp) -> Int?
+  native def rindex(pattern: Regexp, start: Int) -> Int?
+  native def sub(pattern: String, &: (String) -> String) -> String
+  native def sub(pattern: Regexp, &: (String) -> String) -> String
+  native def gsub(pattern: String, &: (String) -> String) -> String
+  native def gsub(pattern: Regexp, &: (String) -> String) -> String
+  native def gsub(pattern: Regexp, replacements: Hash[String, String]) -> String
+  native def scan(pattern: Regexp, &: (String) -> Nil) -> Nil
 
   class Builder
     include Unshareable
@@ -386,8 +430,17 @@ class String
     native def self.new -> String::Builder
     native def <<(piece: String) -> self
     native def push(piece: String) -> self
+    native def append(piece: String) -> self
+    native def prepend(piece: String) -> self
+    native def insert(index: Int, piece: String) -> self
+    native def delete_at(index: Int) -> String?
+    native def replace(text: String) -> self
+    native def reverse! -> self
     native def to_s -> String
+    native def snapshot -> String
+    def freeze -> String = to_s
     native def size -> Int
+    native def bytesize -> Int
     native def empty? -> Bool
     native def clear -> self
   end
@@ -402,16 +455,34 @@ class Symbol
   native def to_sym -> Symbol
   native def inspect -> String
   native def size -> Int
+  native def length -> Int
+  native def empty? -> Bool
+  native def upcase -> Symbol
+  native def downcase -> Symbol
+  native def capitalize -> Symbol
+  native def succ -> Symbol
+  native def start_with?(*prefixes: String) -> Bool
+  native def end_with?(*suffixes: String) -> Bool
 end
 
 class Regexp
   include Shareable
 
+  # `Regexp.new("a+b", "i")`: the options are the literal's flags (i, m, x).
+  native def self.new(source: String, options: String = "") -> Regexp
+  native def self.escape(text: String) -> String
+  native def self.union(*patterns: Object) -> Regexp
+
   native def match(text: String) -> MatchData?
   native def match?(text: String) -> Bool
   native def =~(text: String) -> Int?
   native def source -> String
+  native def options -> String
+  native def names -> Array[String]
   native def to_s -> String
+  native def inspect -> String
+  native def ==(other: Object) -> Bool
+  native def hash -> Int
 end
 
 class MatchData
@@ -422,7 +493,13 @@ class MatchData
   native def pre_match -> String
   native def post_match -> String
   native def captures -> Array[String?]
+  native def named_captures -> Hash[String, String?]
+  native def names -> Array[String]
+  native def values_at(*indices: Int) -> Array[String?]
+  native def to_a -> Array[String?]
+  native def size -> Int
   native def to_s -> String
+  native def inspect -> String
   native def begin(index: Int) -> Int
   native def end(index: Int) -> Int
 end

@@ -1565,10 +1565,26 @@ impl Interp {
                 self.inspect(&r.hi)?
             ),
             Value::Regexp(r) => format!("/{}/{}", r.source, r.flags),
-            Value::MatchData(m) => format!(
-                "#<MatchData {:?}>",
-                &m.text[m.groups[0].map(|(s, e)| s..e).unwrap_or(0..0)]
-            ),
+            Value::MatchData(m) => {
+                let group = |k: usize| -> String {
+                    match m.groups.get(k).copied().flatten() {
+                        Some((s, e)) => inspect_str(&m.text[s..e]),
+                        None => "nil".to_string(),
+                    }
+                };
+                let mut out = format!("#<MatchData {}", group(0));
+                for k in 1..m.groups.len() {
+                    let label = m
+                        .names
+                        .iter()
+                        .find(|(_, idx)| *idx == k)
+                        .map(|(n, _)| n.clone())
+                        .unwrap_or_else(|| k.to_string());
+                    out.push_str(&format!(" {label}:{}", group(k)));
+                }
+                out.push('>');
+                out
+            }
             Value::Object(o) => {
                 let class = self.world.class(o.class);
                 if class.is_exception {

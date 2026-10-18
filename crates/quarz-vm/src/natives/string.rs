@@ -295,25 +295,25 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     });
 }
 
-fn s(interp: &Interp, v: &Value) -> Result<Rc<str>, Flow> {
+pub(super) fn s(interp: &Interp, v: &Value) -> Result<Rc<str>, Flow> {
     string(interp, v, "receiver")
 }
 
-fn sb<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Rc<RefCell<String>>, Flow> {
+pub(super) fn sb<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Rc<RefCell<String>>, Flow> {
     match v {
         Value::StringBuilder(b) => Ok(b),
         _ => Err(interp.err_type("expected a String::Builder")),
     }
 }
 
-fn re<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Rc<RegexpVal>, Flow> {
+pub(super) fn re<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Rc<RegexpVal>, Flow> {
     match v {
         Value::Regexp(r) => Ok(r),
         _ => Err(interp.err_type("expected a Regexp")),
     }
 }
 
-fn md<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Rc<MatchDataVal>, Flow> {
+pub(super) fn md<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Rc<MatchDataVal>, Flow> {
     match v {
         Value::MatchData(m) => Ok(m),
         _ => Err(interp.err_type("expected a MatchData")),
@@ -328,7 +328,7 @@ fn string_build(interp: &Interp, _: &Value, args: Args) -> EvalResult {
     Ok(Value::string(s))
 }
 
-fn sb_push(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
+pub(super) fn sb_push(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let piece = interp.to_s(args.arg(0))?;
     sb(interp, recv)?.borrow_mut().push_str(&piece);
     Ok(recv.clone())
@@ -346,7 +346,7 @@ fn string_format(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
 }
 
 /// Character index (negative counts from the end) into a byte offset.
-fn char_offset(text: &str, index: i64) -> Option<(usize, usize)> {
+pub(super) fn char_offset(text: &str, index: i64) -> Option<(usize, usize)> {
     let n = text.chars().count() as i64;
     let i = if index < 0 { n + index } else { index };
     if i < 0 || i >= n {
@@ -357,7 +357,7 @@ fn char_offset(text: &str, index: i64) -> Option<(usize, usize)> {
     Some((start, start + c.len_utf8()))
 }
 
-fn string_index(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
+pub(super) fn string_index(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let text = s(interp, recv)?;
     match args.arg(0) {
         Value::Int(i) => match char_offset(&text, *i) {
@@ -410,7 +410,7 @@ pub fn range_bounds(
     Ok(Some((lo as usize, hi as usize + 1)))
 }
 
-fn slice_range(interp: &Interp, text: &str, r: &RangeVal) -> Result<String, Flow> {
+pub(super) fn slice_range(interp: &Interp, text: &str, r: &RangeVal) -> Result<String, Flow> {
     let chars: Vec<char> = text.chars().collect();
     match range_bounds(interp, r, chars.len())? {
         Some((st, en)) => Ok(chars[st..en].iter().collect()),
@@ -418,7 +418,7 @@ fn slice_range(interp: &Interp, text: &str, r: &RangeVal) -> Result<String, Flow
     }
 }
 
-fn string_split(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
+pub(super) fn string_split(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let text = s(interp, recv)?;
     let parts: Vec<Value> = match args.pos.first() {
         None => text.split_whitespace().map(Value::str).collect(),
@@ -452,7 +452,7 @@ fn string_split(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     Ok(Value::array(parts))
 }
 
-fn string_scan(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
+pub(super) fn string_scan(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let text = s(interp, recv)?;
     let r = re(interp, args.arg(0))?;
     let out: Vec<Value> = r
@@ -541,7 +541,7 @@ fn md_index(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
 }
 
 /// Convert Ruby-style `\1` references to the regex crate's `$1`.
-fn convert_replacement(rep: &str) -> String {
+pub(super) fn convert_replacement(rep: &str) -> String {
     let mut out = String::new();
     let mut chars = rep.chars().peekable();
     while let Some(c) = chars.next() {
@@ -570,7 +570,7 @@ fn convert_replacement(rep: &str) -> String {
     out
 }
 
-fn string_sub(interp: &Interp, recv: &Value, args: Args, global: bool) -> EvalResult {
+pub(super) fn string_sub(interp: &Interp, recv: &Value, args: Args, global: bool) -> EvalResult {
     let text = s(interp, recv)?;
     let rep = string(interp, args.arg(1), "replacement")?;
     Ok(Value::string(match args.arg(0) {
@@ -727,7 +727,7 @@ fn string_count(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     ))
 }
 
-fn string_each_char(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
+pub(super) fn string_each_char(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let text = s(interp, recv)?;
     let b = block(interp, &args)?;
     for c in text.chars() {
@@ -800,7 +800,7 @@ fn string_to_f(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
     Ok(Value::Float(t[..end].parse().unwrap_or(0.0)))
 }
 
-fn string_succ(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
+pub(super) fn string_succ(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
     let text = s(interp, recv)?;
     let mut chars: Vec<char> = text.chars().collect();
     let mut i = chars.len();

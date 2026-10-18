@@ -1,0 +1,60 @@
+# String, String::Builder, Symbol, Regexp and MatchData: the methods added
+# in the second batch. Expected output in strings.out.
+s = "hello world"
+p s[0, 4], s[/o\s*w/], s[/z/], s.slice(6, 5), s.slice(-5..), s.slice(1, 100)
+p s.codepoints.first(3), s.getbyte(0), s.getbyte(-1), s.getbyte(99)
+bytes = Array::Builder[Int].new
+"hi".each_byte { |b| bytes << b }
+p bytes.to_a, "a👨‍👩‍👧é".graphemes, "a👨‍👩‍👧".chars.size
+"éa".each_grapheme { |g| print g, "|" }
+puts
+p s.partition(" "), s.partition("x"), s.rpartition("o"), s.rpartition("x"), s.partition(/o./), s.rpartition(/o./)
+p "prefix-body".delete_prefix("prefix-"), "body.rb".delete_suffix(".rb"), "abc".delete_prefix("x")
+p "Hello".casecmp?("hELLO"), "a".casecmp("B"), "b".casecmp("A")
+p "abcd".insert(2, "XX"), "abcd".insert(-1, "Z"), "abc".insert(-2, "_"), "world".prepend("hello ")
+p "abc".ascii_only?, "aé".ascii_only?, "az".next, "zz".succ
+ups = Array::Builder[String].new
+"a8".upto("b1") { |x| ups << x }
+p ups.to_a
+p "aaabbbccc".squeeze("ab"), "aaabbb".squeeze, "hello\n".chomp, "hello!".chomp("!"), "hi".chomp("x")
+p "hello".start_with?("x", "he"), "hello".start_with?(/h.l/), "hello".start_with?(/el/), "hello".end_with?("x", "llo")
+p "hello".index("l"), "hello".index("l", 3), "hello".index("l", -1), "hello".index(/l+/), "hello".index(/l/, 3), "hello".rindex("l"), "hello".rindex("l", 2), "hello".rindex(/l/), "hello".rindex(/l/, 2)
+p "a\nb\r\nc".lines, "a\nb\r\nc".lines(chomp: true), "a\nb".lines(true)
+p "a,b,c,d".split(",", 2), "a,b,,".split(",", -1), "a,b,,".split(",", 0), "a1b22c".split(/\d+/, 2), "abc".each_char.to_a
+p "hello".sub(/l/) { |m| m.upcase }, "hello".gsub(/l/) { |m| "[#{m}]" }, "hello".gsub("l") { |m| m * 2 }, "hello".sub("l") { |m| "" }
+p "cat hat".gsub(/[ch]at/, { "cat" => "dog", "hat" => "cap" }), "abc".gsub("", "-")
+words = Array::Builder[String].new
+"one two three".scan(/\w+/) { |w| words << w.upcase }
+p words.to_a
+p "%05d" % 42, "%s and %s" % ["a", "b"], "%.2f" % 3.14159
+b = String::Builder.new
+b << "world"
+b.prepend("hello ").append("!").insert(5, ",").insert(-1, "?")
+p b.snapshot, b.delete_at(5), b.delete_at(99), b.snapshot, b.bytesize
+b.reverse!
+p b.snapshot
+b.replace("new")
+p b.freeze
+p :abc.length, :"".empty?, :abc.upcase, :ABC.downcase, :abc.capitalize, :az.succ, :hello.start_with?("he"), :hello.end_with?("x", "lo")
+re = Regexp.new("h(?<rest>.+)o", "i")
+p re, re.options, re.source, re.names, re.match("HELLO"), Regexp.new("a+") == Regexp.new("a+"), Regexp.new("a") == /a/i
+p Regexp.escape("a.b*c"), Regexp.union("a.b", /c+/, "d"), Regexp.union("a.b", /c+/).match?("xcc")
+begin
+  Regexp.new("(")
+rescue ArgumentError => e
+  puts "error: #{e.message}"
+end
+begin
+  Regexp.new("a", "z")
+rescue ArgumentError => e
+  puts "error: #{e.message}"
+end
+m = "John Smith 42".match(/(?<first>\w+) (?<last>\w+) (\d+)?/)
+if m
+  p m.names, m.named_captures, m.size, m.to_a, m.values_at(0, 3, 9), m
+end
+m2 = "ab".match(/(a)(x)?/)
+if m2
+  p m2, m2.to_a
+end
+p({ /a/ => 1 }[/a/])
