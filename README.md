@@ -1,14 +1,16 @@
 # Quarz
 
-Quarz(クォーツ)は、Ruby の書き心地を保ったまま「静的」「不変」「並行」を言語の基礎に据えたプログラミング言語の設計です。
+日本語版: [README.ja.md](README.ja.md)
 
-- **Ruby に近い文法と組み込みクラス** — `def ... end`、ブロックと `yield`、`case/in`、`#{}`、`Enumerable`/`Comparable`、例外処理はそのまま。
-- **静的なクラス・メソッド定義** — クラスの再オープン、`define_method`、`method_missing`、`eval` はない。メソッド呼び出しはコンパイル時に解決され、クラス階層はプログラム全体で確定する。既存の型への追加は字句スコープに閉じた `extension`/`using` で行う。
-- **原則 immutable な組み込みデータ** — `String`/`Array`/`Hash`/`Set` は永続データ構造で、更新は新しい値を返す。参照が一意ならその場で更新されるので、素直なループが可変配列と同程度に速い。可変が必要な場面には Ruby と同じ API を持つ Builder 型を使う。
-- **軽量タスク** — goroutine / Erlang プロセスのように M:N スケジュールされる `Task`、型付き `Channel`、構造化並行性(`Task.scope`)、不変値を共有する `Atom`。可変オブジェクトはタスク境界を越えられないことを型(`Shareable`)で検査し、データ競合をコンパイル時に排除する。
-- **インタプリタと AOT コンパイラの両立** — 1 つの型付き中間表現(QIR)と 1 つのランタイム(libquarz)を共有し、`quarz run` でその場実行・REPL、`quarz build` で機械語へ。両者の挙動は同一で、差は性能だけ。
+Quarz is the design of a programming language that keeps the feel of writing Ruby while making "static", "immutable" and "concurrent" the foundations of the language.
 
-## 一目でわかる Quarz
+- **Ruby-like syntax and built-in classes** — `def ... end`, blocks and `yield`, `case/in`, `#{}`, `Enumerable`/`Comparable` and exception handling are kept as they are.
+- **Static class and method definitions** — there is no class reopening, no `define_method`, no `method_missing`, no `eval`. Method calls are resolved at compile time and the class hierarchy is fixed for the whole program. Additions to existing types are made with `extension`/`using`, which are confined to a lexical scope.
+- **Immutable built-in data by default** — `String`/`Array`/`Hash`/`Set` are persistent data structures and updates return new values. When a reference is unique the update happens in place, so a straightforward loop is about as fast as one over a mutable array. Where mutation is needed, Builder types with the same API as Ruby are available.
+- **Lightweight tasks** — `Task`s scheduled M:N like goroutines / Erlang processes, typed `Channel`s, structured concurrency (`Task.scope`) and `Atom`s that share immutable values. The type system (`Shareable`) checks that mutable objects never cross task boundaries, eliminating data races at compile time.
+- **Interpreter and AOT compiler together** — one typed intermediate representation (QIR) and one runtime (libquarz) are shared: `quarz run` executes on the spot and gives you a REPL, `quarz build` produces machine code. The behavior of both is identical; only the performance differs.
+
+## Quarz at a glance
 
 ```ruby
 data WordCount(word: String, count: Int) do
@@ -20,7 +22,7 @@ def count_words(text: String) -> Hash[String, Int]
   text.downcase.scan(/[a-z']+/).tally
 end
 
-# ファイルごとに軽量タスクを起こし、全部終わるまで待つ
+# Start a lightweight task per file and wait for all of them
 counts = Task.scope do |scope|
   ARGV.map { |path| scope.spawn { count_words(File.read(path)) } }
       .map(&:await)
@@ -34,7 +36,7 @@ total.map { |word, count| WordCount.new(word, count) }
      .each { |wc| puts "#{wc.word}: #{wc.count}" }
 ```
 
-Ruby との違いが現れているのは、引数の型(`text: String`)と戻り値型(`-> Hash[String, Int]`)、`data` による不変レコード、`Task.scope`/`spawn`/`await` の 3 箇所だけです。残りは Ruby そのものです。
+The differences from Ruby show up in only three places: parameter types (`text: String`) and return types (`-> Hash[String, Int]`), immutable records via `data`, and `Task.scope`/`spawn`/`await`. The rest is Ruby itself.
 
 ```ruby
 enum Shape
@@ -42,7 +44,7 @@ enum Shape
   Rect(width: Float, height: Float)
 
   def area -> Float
-    case self                       # 網羅性はコンパイル時に検査される
+    case self                       # exhaustiveness is checked at compile time
     in Circle(radius:) then Math::PI * radius ** 2
     in Rect(width:, height:) then width * height
     end
@@ -50,8 +52,8 @@ enum Shape
 end
 
 class Account
-  @id: Int                 # 不変フィールド(initialize でのみ代入)
-  var @balance: Int = 0    # 可変フィールド → このクラスは Shareable ではない
+  @id: Int                 # immutable field (assigned only in initialize)
+  var @balance: Int = 0    # mutable field → this class is not Shareable
   attr_reader :id, :balance
   def initialize(@id: Int); end
   def deposit(amount: Int) -> Nil
@@ -66,35 +68,35 @@ end
 puts counter.value        # => 100
 ```
 
-## 設計文書
+## Design documents
 
-| 文書 | 内容 |
+| Document | Contents |
 |---|---|
-| [docs/01-syntax.md](docs/01-syntax.md) | 文法。クラス、`data`、`enum`、`module`、`extension`/`using`、メソッド定義、ブロック、パターンマッチ、例外 |
-| [docs/02-types.md](docs/02-types.md) | 型システム。合併型と nil 安全性、ジェネリクスと変位、推論、フロー型付け、多重定義 |
-| [docs/03-data-model.md](docs/03-data-model.md) | 不変データと Builder、`Shareable` の導出規則、等価性、文字列、Ruby の慣用句の書き換え |
-| [docs/04-concurrency.md](docs/04-concurrency.md) | タスク、構造化並行性とキャンセル、チャネルと `select`、`Atom`、アクターと監視、ランタイム |
-| [docs/05-execution.md](docs/05-execution.md) | インタプリタと AOT コンパイラ、QIR、分割コンパイル、参照カウントによるメモリ管理、ブートストラップ計画 |
-| [docs/06-stdlib.md](docs/06-stdlib.md) | 標準ライブラリ。Ruby の組み込みクラスとの対応 |
-| [docs/07-ruby-diff.md](docs/07-ruby-diff.md) | Ruby からの変更点 早見表 |
-| [docs/08-grammar.md](docs/08-grammar.md) | 文法スケッチ(EBNF) |
-| [examples/](examples/) | サンプルコード(`hello`、`shapes`、`wordcount`、`pipeline`、`bank_actor`、`extension`、`builder`) |
+| [docs/01-syntax.md](docs/01-syntax.md) | Syntax. Classes, `data`, `enum`, `module`, `extension`/`using`, method definitions, blocks, pattern matching, exceptions |
+| [docs/02-types.md](docs/02-types.md) | Type system. Union types and nil safety, generics and variance, inference, flow typing, overloading |
+| [docs/03-data-model.md](docs/03-data-model.md) | Immutable data and Builders, derivation rules for `Shareable`, equality, strings, rewriting Ruby idioms |
+| [docs/04-concurrency.md](docs/04-concurrency.md) | Tasks, structured concurrency and cancellation, channels and `select`, `Atom`, actors and supervision, the runtime |
+| [docs/05-execution.md](docs/05-execution.md) | Interpreter and AOT compiler, QIR, separate compilation, reference-counted memory management, implementation plan |
+| [docs/06-stdlib.md](docs/06-stdlib.md) | Standard library. Correspondence with Ruby's built-in classes |
+| [docs/07-ruby-diff.md](docs/07-ruby-diff.md) | Quick reference of changes from Ruby |
+| [docs/08-grammar.md](docs/08-grammar.md) | Grammar sketch (EBNF) |
+| [examples/](examples/) | Sample code (`hello`, `shapes`, `wordcount`, `pipeline`, `bank_actor`, `extension`, `builder`) |
 
-## 設計上の主な判断
+## Main design decisions
 
-| 判断 | 選んだもの | 理由 |
+| Decision | Choice | Reason |
 |---|---|---|
-| 型注釈の位置 | 引数は必須、戻り値とローカルは推論 | 分割コンパイルと高速な型検査。全体推論(Crystal)はコンパイル時間とエラーの質で不利 |
-| 引数の型の書き方 | `name: Type`、キーワード専用は `*` の後 | Ruby のラベル構文を流用でき、空白に意味を持たせずに済む |
-| `nil` | 独立した型。`T?` でのみ許容 | 実行時の `NoMethodError` をコンパイル時に |
-| 直和型 | `enum` | メッセージ型と `case/in` の網羅性検査のため |
-| 既存クラスの拡張 | `extension` + `using`(静的 refinements) | 再オープンを許さず、影響範囲を字句スコープに限定 |
-| コレクション | 不変の永続データ構造 + Builder | 共有の安全性と、一意性を利用した在場更新による速度 |
-| 共有可変状態 | 禁止。`Atom` と `Channel` のみ | データ競合をコンパイル時に排除。ロック不要 |
-| 軽量スレッド | スタックを持つ M:N タスク(`mmap` 予約 + 遅延コミット) | async/await の色分けなしに Ruby 風の同期コードを書ける |
-| メモリ管理 | 参照カウント + 在場更新 + 可変オブジェクト限定のサイクル回収 | AOT との相性(スタックマップ不要)、停止時間なし、不変値の在場更新 |
-| `arr[i]`/`h[k]` | 範囲外・欠損は例外。`[]?` が `nil` | 静的型の下で `nil` 検査を書く手間を減らす(Crystal の実績) |
+| Where type annotations go | Required on parameters; return types and locals are inferred | Separate compilation and fast type checking. Whole-program inference (Crystal) loses on compile time and error quality |
+| Parameter type syntax | `name: Type`; keyword-only parameters after `*` | Reuses Ruby's label syntax without making whitespace significant |
+| `nil` | A separate type, allowed only via `T?` | Turns runtime `NoMethodError`s into compile-time errors |
+| Sum types | `enum` | For message types and exhaustiveness checking in `case/in` |
+| Extending existing classes | `extension` + `using` (static refinements) | No reopening; the effect is limited to a lexical scope |
+| Collections | Immutable persistent data structures + Builders | Safe sharing, and speed through in-place updates exploiting uniqueness |
+| Shared mutable state | Forbidden. Only `Atom` and `Channel` | Data races eliminated at compile time. No locks |
+| Lightweight threads | Stackful M:N tasks (`mmap` reservation + lazy commit) | Ruby-style synchronous code without async/await function coloring |
+| Memory management | Reference counting + in-place updates + cycle collection limited to mutable objects | Fits AOT (no stack maps), no pause times, in-place updates of immutable values |
+| `arr[i]`/`h[k]` | Out of range / missing key raises. `[]?` returns `nil` | Reduces the nil checks you have to write under static typing (proven by Crystal) |
 
-## 状態
+## Status
 
-この時点では設計文書のみです。実装は Rust で行い、[docs/05-execution.md](docs/05-execution.md) §8 の順序(構文解析 → 型検査 → ランタイムの最小部分 → VM → 並行部分)で進める想定です。
+At this point there are only design documents. The implementation will be in Rust, following the order in [docs/05-execution.md](docs/05-execution.md) §8 (parsing → type checking → the minimal runtime → VM → concurrency).

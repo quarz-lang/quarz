@@ -1,43 +1,45 @@
-# 文法
+# Syntax
 
-Quarz の文法は Ruby を基礎にし、「静的に定義する」「不変を既定とする」ために必要な最小限の変更だけを加えたものです。この文書は Ruby との差分を中心に説明します。Ruby と同じ部分(演算子の優先順位、文字列リテラル、ヒアドキュメント、`%w[]`、`if` 修飾子、`unless`/`until`、`begin/rescue/ensure`、三項演算子、`&.` など)は原則として Ruby 3.x の仕様に従います。
+日本語版: [01-syntax.ja.md](01-syntax.ja.md)
 
-## 1. 字句
+The syntax of Quarz is based on Ruby, with only the minimal changes needed to "define statically" and "default to immutable". This document focuses on the differences from Ruby. Everything that is the same as Ruby (operator precedence, string literals, heredocs, `%w[]`, the `if` modifier, `unless`/`until`, `begin/rescue/ensure`, the ternary operator, `&.`, and so on) follows the Ruby 3.x specification in principle.
 
-- ソースファイルは UTF-8。拡張子は `.qz`。
-- コメントは `#` のみ(`=begin`/`=end` は廃止)。
-- `$` で始まるグローバル変数、`@@` で始まるクラス変数は**存在しない**(共有可変状態を言語から排除するため。代替は [04-concurrency.md](04-concurrency.md) の `Atom`)。
-- 数値リテラル: `42`、`1_000_000`、`0xff`、`0b1010`、`0o755`、`3.14`、`1e-9`。`r`/`i` 接尾辞は廃止。
-- シンボル `:foo`、`:"with space"`、`%i[a b]` はコンパイル時にインターンされる。
-- 正規表現リテラル `/.../`、`%r{...}` はコンパイル時にコンパイルされ、`Regexp` 定数になる。
-- 文字列系のリテラルは `"..."`、`'...'`、`%q()`、`%Q()`、`%()`、`%w[]`、`%i[]`、ヒアドキュメント(`<<~EOS`、`<<-EOS`、`<<EOS`、`<<~'EOS'`)。Ruby の `?a` 文字リテラル、`%W`/`%I`(補間付き配列)、`%s`、`%x`、バッククォートは廃止。
-- `__END__` だけの行で字句解析は終わり、以降は `DATA`(`IO`)として読める。
+## 1. Lexical structure
 
-### 文脈キーワード
+- Source files are UTF-8. The extension is `.qz`.
+- Comments are `#` only (`=begin`/`=end` are dropped).
+- Global variables starting with `$` and class variables starting with `@@` **do not exist** (to remove shared mutable state from the language; the replacement is `Atom` in [04-concurrency.md](04-concurrency.md)).
+- Numeric literals: `42`, `1_000_000`, `0xff`, `0b1010`, `0o755`, `3.14`, `1e-9`. The `r`/`i` suffixes are dropped.
+- Symbols `:foo`, `:"with space"`, `%i[a b]` are interned at compile time.
+- Regexp literals `/.../` and `%r{...}` are compiled at compile time and become `Regexp` constants.
+- String-like literals are `"..."`, `'...'`, `%q()`, `%Q()`, `%()`, `%w[]`, `%i[]` and heredocs (`<<~EOS`, `<<-EOS`, `<<EOS`, `<<~'EOS'`). Ruby's `?a` character literal, `%W`/`%I` (interpolating arrays), `%s`, `%x` and backquotes are dropped.
+- Lexing stops at a line consisting only of `__END__`; the rest can be read as `DATA` (an `IO`).
 
-次の語は**宣言位置でのみ**キーワードとして扱われ、それ以外では通常の識別子として使えます(`type = "json"` や `data = fetch` は有効)。
+### Contextual keywords
 
-| 語 | 認識される文脈 |
+The following words are treated as keywords **only in declaration positions**; elsewhere they are ordinary identifiers (`type = "json"` and `data = fetch` are valid).
+
+| Word | Context in which it is recognized |
 |---|---|
-| `data` | 行頭で `data 定数名(` が続くとき |
-| `enum` | 行頭で `enum 定数名` が続くとき |
-| `var` | `var @名前` / `var @名前:` が続くとき |
+| `data` | At the start of a line, followed by `data ConstantName(` |
+| `enum` | At the start of a line, followed by `enum ConstantName` |
+| `var` | Followed by `var @name` / `var @name:` |
 | `abstract` | `abstract class` / `abstract def` |
 | `override` | `override def` |
-| `extension` | 行頭で `extension 型` が続くとき |
-| `using` | 行頭で `using 定数` が続くとき |
-| `type` | 行頭で `type 定数 =` が続くとき |
-| `extern` | 行頭で `extern def` / `extern "C"` が続くとき |
+| `extension` | At the start of a line, followed by `extension Type` |
+| `using` | At the start of a line, followed by `using Constant` |
+| `type` | At the start of a line, followed by `type Constant =` |
+| `extern` | At the start of a line, followed by `extern def` / `extern "C"` |
 
-Ruby の予約語のうち `defined?`、`undef`、`redo`、`BEGIN`、`END`、`__ENCODING__`、`for` は廃止。それ以外(`alias`、`retry`、`yield`、`super`、`self`、`and`/`or`/`not` など)は維持します。
+Of Ruby's reserved words, `defined?`, `undef`, `redo`, `BEGIN`, `END`, `__ENCODING__` and `for` are dropped. The others (`alias`, `retry`, `yield`, `super`, `self`, `and`/`or`/`not`, etc.) are kept.
 
-## 2. プログラムの構造
+## 2. Program structure
 
-- 1 ファイル = 1 コンパイル単位(モジュール)。`require "path"` と `require_relative "path"` は**コンパイル時**に解決され、依存グラフは静的に決まります。
-- トップレベルには文を書けます。`quarz run hello.qz` で `puts "Hello"` 一行のスクリプトが動きます。ライブラリファイルのトップレベル文は `require` 時に一度だけ実行されます。
-- トップレベルの `def` はそのファイル内でのみ見える関数になります(Ruby のように `Object` のプライベートメソッドにはなりません)。
-- 宣言(`class`/`module`/`data`/`enum`/`def`/`type`/定数)は**巻き上げ**られます。ファイル内で定義より前の行から参照でき、相互再帰も書けます。
-- プログラムの引数は `ARGV`、環境変数は `ENV`、標準入出力は `STDIN`/`STDOUT`/`STDERR` 定数です。
+- One file = one compilation unit (module). `require "path"` and `require_relative "path"` are resolved **at compile time**, and the dependency graph is determined statically.
+- Statements may appear at the top level. `quarz run hello.qz` runs a one-line script `puts "Hello"`. Top-level statements of a library file are executed once, at `require` time.
+- A top-level `def` becomes a function visible only within that file (it does not become a private method of `Object` as in Ruby).
+- Declarations (`class`/`module`/`data`/`enum`/`def`/`type`/constants) are **hoisted**. They can be referenced from lines before their definition within the file, and mutual recursion can be written.
+- Program arguments are `ARGV`, environment variables are `ENV`, and the standard streams are the constants `STDIN`/`STDOUT`/`STDERR`.
 
 ```ruby
 # hello.qz
@@ -50,13 +52,13 @@ end
 puts greet(ARGV.first? || "world")
 ```
 
-## 3. クラス
+## 3. Classes
 
 ```ruby
 class Account
-  @id: Int                 # 不変フィールド。initialize でのみ代入できる
+  @id: Int                 # immutable field; can only be assigned in initialize
   @owner: String
-  var @balance: Int = 0    # 可変フィールド。このクラスは Shareable でなくなる
+  var @balance: Int = 0    # mutable field; this class is no longer Shareable
 
   attr_reader :id, :owner, :balance
 
@@ -78,15 +80,15 @@ acct.deposit(100)
 puts acct          # => alice: 100
 ```
 
-Ruby との違い:
+Differences from Ruby:
 
-- **フィールドは宣言が必要**。`@名前: 型` で宣言し、オブジェクトのレイアウトはコンパイル時に確定します。宣言のないインスタンス変数への代入はコンパイルエラーです。
-- **フィールドは既定で不変**。`initialize` の中でちょうど一度代入しなければなりません(確定代入解析)。初期化子付き(`@tags: Array[String] = []`)なら省略できます。
-- **可変フィールドは `var`** で宣言します。`var` フィールドを持つクラス、または Shareable でない型のフィールドを持つクラスは Shareable になりません([03-data-model.md](03-data-model.md))。
-- **クラスは再オープンできません**。同名のクラスを二度定義するとエラーです。既存クラスへのメソッド追加は `extension`(§7)で行います。
-- **クラス本体は宣言のみ**。フィールド宣言、メソッド定義、`include`/`extend`、`attr_*`、定数、入れ子の型、可視性指定(`private`/`protected`/`public`)が書けます。任意の式は書けません。
-- `attr_reader`/`attr_writer`/`attr_accessor` は組み込みの宣言で、宣言済みのフィールドに対するアクセサメソッドを生成します(`attr_writer`/`attr_accessor` は `var` フィールドにのみ使えます)。
-- `initialize` の引数に `@` を付けると、そのフィールドへの代入を兼ねます(Crystal と同じ):
+- **Fields must be declared.** They are declared with `@name: Type`, and the object layout is fixed at compile time. Assigning to an undeclared instance variable is a compile error.
+- **Fields are immutable by default.** They must be assigned exactly once inside `initialize` (definite assignment analysis). With an initializer (`@tags: Array[String] = []`) the assignment can be omitted.
+- **Mutable fields are declared with `var`.** A class with a `var` field, or with a field of a non-Shareable type, is not Shareable ([03-data-model.md](03-data-model.md)).
+- **Classes cannot be reopened.** Defining a class with the same name twice is an error. Adding methods to an existing class is done with `extension` (§7).
+- **Class bodies contain only declarations.** Field declarations, method definitions, `include`/`extend`, `attr_*`, constants, nested types and visibility specifiers (`private`/`protected`/`public`) are allowed. Arbitrary expressions are not.
+- `attr_reader`/`attr_writer`/`attr_accessor` are built-in declarations that generate accessor methods for declared fields (`attr_writer`/`attr_accessor` can only be used on `var` fields).
+- Prefixing an `initialize` parameter with `@` also assigns the field (same as Crystal):
 
 ```ruby
 class Account
@@ -98,7 +100,7 @@ class Account
 end
 ```
 
-### 継承と抽象クラス
+### Inheritance and abstract classes
 
 ```ruby
 abstract class Shape
@@ -115,14 +117,14 @@ class Circle < Shape
 end
 ```
 
-- 単一継承。`abstract class` はインスタンス化できず、`abstract def` は本体を持ちません。
-- `override` は任意ですが、付けたメソッドが親に存在しなければエラー、付けずに親メソッドを上書きすると警告です。
-- クラス階層はプログラム全体でコンパイル時に確定するので、コンパイラは上書きのないメソッドを自動的に静的呼び出しにします(`final` は不要)。
-- `super` は Ruby 同様。引数なしの `super` は同じ引数を渡します。
+- Single inheritance. An `abstract class` cannot be instantiated and an `abstract def` has no body.
+- `override` is optional, but a method marked with it that does not exist in the parent is an error, and overriding a parent method without it is a warning.
+- Since the class hierarchy is fixed at compile time for the whole program, the compiler automatically turns calls to methods that are never overridden into static calls (no `final` needed).
+- `super` works as in Ruby. A bare `super` passes the same arguments.
 
-## 4. データ型(`data`)
+## 4. Data types (`data`)
 
-不変のレコード型です。Ruby 3.2 の `Data` に相当します。
+Immutable record types, corresponding to Ruby 3.2's `Data`.
 
 ```ruby
 data Point(x: Int, y: Int)
@@ -134,19 +136,19 @@ data Line(from: Point, to: Point) do
 end
 
 p1 = Point.new(1, 2)
-p2 = Point.new(x: 3, y: 4)         # キーワードでも可
-p3 = p1.with(y: 10)                # 一部を変えたコピー
-p1 == Point.new(1, 2)              # => true(構造的等価)
+p2 = Point.new(x: 3, y: 4)         # keywords also work
+p3 = p1.with(y: 10)                # a copy with some fields changed
+p1 == Point.new(1, 2)              # => true (structural equality)
 case p3
 in Point(x:, y:) then puts "#{x}, #{y}"
 end
 ```
 
-`data` は次を自動生成します: フィールド(不変)、読み出しメソッド、`initialize`、`==`/`hash`、`to_s`/`inspect`、`with`、`deconstruct`/`deconstruct_keys`、`to_h`。メソッドを追加したいときは `do ... end` に書きます。`data` は継承できません(`include` はできます)。
+`data` generates the following automatically: fields (immutable), reader methods, `initialize`, `==`/`hash`, `to_s`/`inspect`, `with`, `deconstruct`/`deconstruct_keys`, `to_h`. To add methods, write them in a `do ... end` body. `data` types cannot be inherited (they can `include`).
 
-## 5. 列挙型(`enum`)
+## 5. Enumerations (`enum`)
 
-直和型(代数的データ型)です。各バリアントはデータを持てます。
+Sum types (algebraic data types). Each variant can carry data.
 
 ```ruby
 enum Shape
@@ -167,14 +169,14 @@ s = Shape::Circle.new(2.0)
 s.area
 ```
 
-- バリアントは `Shape::Circle` のように入れ子の型として参照でき、それぞれ `Shape` のサブタイプです。
-- データを持たないバリアント(`Point`)はシングルトンで、`Shape::Point` と書けば値になります。
-- `case/in` は網羅性を検査します。バリアントを取りこぼすとコンパイルエラーです。
-- 標準ライブラリの `Result[T, E]` は `enum Result[T, E]; Ok(value: T); Err(error: E); end` です。
+- Variants can be referenced as nested types like `Shape::Circle`, and each is a subtype of `Shape`.
+- A variant without data (`Point`) is a singleton; writing `Shape::Point` yields the value.
+- `case/in` checks exhaustiveness. Missing a variant is a compile error.
+- The standard library's `Result[T, E]` is `enum Result[T, E]; Ok(value: T); Err(error: E); end`.
 
-## 6. モジュール
+## 6. Modules
 
-Ruby と同じく、名前空間と mixin の両方に使います。抽象メソッドを持つモジュールが Ruby の「ダックタイピングで期待されるインターフェース」の静的な置き換えになります。
+As in Ruby, modules serve both as namespaces and as mixins. A module with abstract methods is the static replacement for Ruby's "interface expected through duck typing".
 
 ```ruby
 module Comparable[T]
@@ -193,13 +195,13 @@ data Version(major: Int, minor: Int) do
 end
 ```
 
-- `include` でインスタンス側に、`extend` でクラス側(`self.` メソッド)に取り込みます。
-- `prepend`、`module_function`、`included` フックなどの動的機構はありません。
-- モジュールは型として使えます(`def sort[T: Comparable[T]](xs: Array[T])`)。
+- `include` mixes into the instance side, `extend` into the class side (`self.` methods).
+- There are no dynamic mechanisms such as `prepend`, `module_function` or the `included` hook.
+- Modules can be used as types (`def sort[T: Comparable[T]](xs: Array[T])`).
 
-## 7. 拡張(`extension`)と `using`
+## 7. Extensions (`extension`) and `using`
 
-既存の型にメソッドを後付けする仕組みです。Ruby の refinements の静的版で、**字句スコープ**に閉じています。
+A mechanism for adding methods to existing types after the fact. It is the static version of Ruby's refinements and is confined to a **lexical scope**.
 
 ```ruby
 module StringShout
@@ -208,7 +210,7 @@ module StringShout
   end
 
   extension Int
-    include Describable           # 既存の型をモジュールに後から適合させる
+    include Describable           # make an existing type conform to a module after the fact
     def describe -> String = "the number #{self}"
   end
 end
@@ -217,13 +219,13 @@ using StringShout
 "hi".shout          # => "HI!"
 ```
 
-- `using` はファイル、または `class`/`module` 本体の中に書け、その字句スコープの末尾まで有効です。
-- 拡張メソッドの解決は**完全にコンパイル時**です。レシーバの静的型と、その位置で有効な `using` だけで決まり、実行時のテーブル書き換えはありません。
-- 拡張で既存メソッドと同名のメソッドを定義すると、そのスコープでは拡張側が静的に選ばれます(Ruby の refinements と同じ「見えている範囲だけ上書き」)。意図しない上書きを防ぐため、`override` がなければ警告です。
-- 拡張の中の `include` により、既存の型を後からモジュールに適合させられます(Swift の `extension Int: Describable` 相当)。これが「自分の書いていないクラスにインターフェースを満たさせる」唯一の方法です。
-- ジェネリック型にも、型引数に制約を付けて拡張できます: `extension Array[T: Describable]; def describe_all -> String = map(&:describe).join(", "); end`。
+- `using` can be written in a file or inside a `class`/`module` body, and is in effect until the end of that lexical scope.
+- Resolution of extension methods is **entirely at compile time**. It is determined only by the static type of the receiver and the `using`s in effect at that position; there is no runtime table rewriting.
+- If an extension defines a method with the same name as an existing one, the extension's method is statically chosen within that scope (the same "override only where visible" as Ruby's refinements). To prevent unintended overrides, a warning is issued unless `override` is present.
+- `include` inside an extension makes an existing type conform to a module after the fact (equivalent to Swift's `extension Int: Describable`). This is the only way to "make a class you did not write satisfy an interface".
+- Generic types can be extended too, with constraints on the type arguments: `extension Array[T: Describable]; def describe_all -> String = map(&:describe).join(", "); end`.
 
-## 8. 型エイリアスと定数
+## 8. Type aliases and constants
 
 ```ruby
 type UserId = Int
@@ -233,36 +235,36 @@ MAX_RETRY = 3
 DEFAULT_HEADERS = { "Content-Type" => "application/json" }
 ```
 
-- 定数は一度だけ束縛され、値は Shareable でなければなりません(定数は全タスクから見えるため)。
-- 定数の初期化子はモジュールのロード時に依存順で一度だけ評価されます。
+- Constants are bound once, and their values must be Shareable (constants are visible from all tasks).
+- Constant initializers are evaluated once, in dependency order, when the module is loaded.
 
-## 9. メソッド定義
+## 9. Method definitions
 
 ```ruby
 def name(a: Int, b: String = "x", *rest: Int, *, flag: Bool, limit: Int? = nil, **opts: String, &block: (Int) -> Nil) -> Ret
 ```
 
-| 構文 | 意味 |
+| Syntax | Meaning |
 |---|---|
-| `a: Int` | 必須引数。位置でもキーワード(`name(a: 1)`)でも渡せる |
-| `b: String = "x"` / `b = "x"` | 省略可能引数。既定値から型を推論できるなら型は省略可 |
-| `*rest: Int` | 可変長引数。`rest` の型は `Array[Int]` |
-| `*` | これ以降はキーワード専用 |
-| `flag: Bool` (`*` の後) | 必須キーワード引数 |
-| `**opts: String` | 残余キーワード。型は `Hash[Symbol, String]` |
-| `&block: (Int) -> Nil` | ブロック引数。型は手続き型 |
-| `-> Ret` | 戻り値型。省略すると本体から推論(再帰メソッドでは必須) |
+| `a: Int` | Required parameter. Can be passed positionally or by keyword (`name(a: 1)`) |
+| `b: String = "x"` / `b = "x"` | Optional parameter. The type may be omitted if it can be inferred from the default value |
+| `*rest: Int` | Variadic parameter. The type of `rest` is `Array[Int]` |
+| `*` | Everything after this is keyword-only |
+| `flag: Bool` (after `*`) | Required keyword parameter |
+| `**opts: String` | Remaining keywords. The type is `Hash[Symbol, String]` |
+| `&block: (Int) -> Nil` | Block parameter. The type is a procedure type |
+| `-> Ret` | Return type. If omitted it is inferred from the body (required for recursive methods) |
 
-- **引数の型は必須**です(既定値から推論できる場合を除く)。メソッドの境界で型が確定しているため、ファイル単位の分割コンパイルと高速な型検査ができます。
-- Ruby 3 の「位置引数とキーワード引数の分離」は、Quarz では引数リストが暗黙に `Hash` になることがないので不要です。`*` より前の引数は位置・キーワードのどちらでも渡せます(Python/Crystal と同じ)。
-- 戻り値型が `Nil` のメソッドは本体の最後の式の値を捨てます(`void` 相当)。
-- 同名メソッドを引数の個数・型で**多重定義**できます。解決はコンパイル時です。
-- `def x -> Int = @x` のような一行定義(endless def)が書けます。
-- 演算子メソッド(`+`、`[]`、`<=>`、`-@`、`==`、`call` など)は Ruby と同じ名前で定義します。`[]=` は可変型にしか定義できません。
-- `def self.create(...)` でクラスメソッド。`private`/`protected`/`public` は Ruby と同じ書き方で、コンパイル時に検査されます。
-- `alias new_name old_name` は静的に別名を作ります。
+- **Parameter types are required** (except where they can be inferred from a default value). Because types are fixed at method boundaries, per-file separate compilation and fast type checking are possible.
+- Ruby 3's "separation of positional and keyword arguments" is unnecessary in Quarz because an argument list never implicitly becomes a `Hash`. Parameters before `*` can be passed either positionally or by keyword (same as Python/Crystal).
+- A method whose return type is `Nil` discards the value of the last expression in its body (equivalent to `void`).
+- Methods of the same name can be **overloaded** by parameter count and types. Resolution is at compile time.
+- One-line definitions (endless def) such as `def x -> Int = @x` are allowed.
+- Operator methods (`+`, `[]`, `<=>`, `-@`, `==`, `call`, etc.) are defined with the same names as in Ruby. `[]=` can only be defined on mutable types.
+- `def self.create(...)` defines a class method. `private`/`protected`/`public` are written as in Ruby and checked at compile time.
+- `alias new_name old_name` creates an alias statically.
 
-### ブロック、`yield`、手続き
+### Blocks, `yield` and procedures
 
 ```ruby
 def each_pair(&block: (Int, Int) -> Nil) -> Nil
@@ -281,50 +283,50 @@ each_pair do |a, b|
   puts a * b
 end
 
-double = ->(x: Int) { x * 2 }          # 手続き(Ruby の lambda に相当)
+double = ->(x: Int) { x * 2 }          # a procedure (equivalent to a Ruby lambda)
 [1, 2, 3].map(&double)
 [1, 2, 3].map(&:to_s)
 ```
 
-- ブロックの引数型は、呼び出し先の `&block` の型から推論されます。明示したければ `{ |x: Int| ... }` と書けます。
-- `yield` で呼ばれるだけのブロック(エスケープしないブロック)は、コンパイラがクロージャを割り当てずに展開します。`&block` を変数に保存したり返したりして**エスケープ**させた場合にだけ、ヒープ上のクロージャになります。
-- ブロックの中の `break`/`next`/`return` の意味は Ruby と同じです。`next` はブロックの値を返し、`break` はブロックを渡した呼び出しから抜け、`return` は囲んでいるメソッドから戻ります。
-- `->(x) { }` は Ruby の lambda と同じ(引数の個数が厳密、`return` は手続きから戻る)。`Proc.new` と `proc` は廃止し、手続きは `->` かブロックから作ります。
-- `&:name` は `{ |x| x.name }` へのコンパイル時変換です。
-- 手続きの型は `(Int, String) -> Bool` のように書きます。ブロックを取らないメソッドにブロックを渡すとコンパイルエラーです。
+- Block parameter types are inferred from the type of the callee's `&block`. To be explicit, write `{ |x: Int| ... }`.
+- A block that is only invoked with `yield` (a non-escaping block) is expanded by the compiler without allocating a closure. Only when `&block` **escapes**, by being stored in a variable or returned, does it become a heap-allocated closure.
+- `break`/`next`/`return` inside a block mean the same as in Ruby. `next` returns the block's value, `break` exits the call the block was passed to, and `return` returns from the enclosing method.
+- `->(x) { }` is the same as a Ruby lambda (strict arity, `return` returns from the procedure). `Proc.new` and `proc` are dropped; procedures are created with `->` or from blocks.
+- `&:name` is a compile-time transformation to `{ |x| x.name }`.
+- Procedure types are written like `(Int, String) -> Bool`. Passing a block to a method that does not take one is a compile error.
 
-## 10. 変数と代入
+## 10. Variables and assignment
 
 ```ruby
-x = 1                  # Int と推論
-x = "one"              # エラー: ローカル変数の型は宣言時に決まる(再代入は同じ型のみ)
-y: Int? = nil          # 型注釈付き
+x = 1                  # inferred as Int
+x = "one"              # error: a local variable's type is fixed at declaration (reassignment must have the same type)
+y: Int? = nil          # with a type annotation
 y = 10                 # OK
-a, b = 1, 2            # 多重代入(タプル)
+a, b = 1, 2            # multiple assignment (tuple)
 first, *rest = [1, 2, 3]
 count += 1
-name ||= "anon"        # name が T? のとき
+name ||= "anon"        # when name is T?
 ```
 
-- ローカル変数の型は最初の代入で決まります。型を広げたいときは注釈(`y: Int? = nil`)を付けます。
-- 代入の後は**フロー型付け**により型が絞り込まれます(`y = 10` の後、`y` は `Int` として扱えます)。
-- 変数の宣言とスコープの規則(`if` の中で代入した変数はその後も見える、ブロックパラメータはブロック内のみ、など)は Ruby と同じです。
-- `@ivar` への代入は、不変フィールドなら `initialize` の中でのみ可能です。
+- The type of a local variable is determined by its first assignment. To widen the type, add an annotation (`y: Int? = nil`).
+- After an assignment the type is narrowed by **flow typing** (after `y = 10`, `y` can be treated as `Int`).
+- The rules for variable declaration and scope (a variable assigned inside an `if` is visible afterwards, block parameters are visible only within the block, etc.) are the same as in Ruby.
+- Assignment to an `@ivar` is only possible inside `initialize` if the field is immutable.
 
-## 11. 式と制御構造
+## 11. Expressions and control structures
 
-Ruby と同じもの: `if`/`unless`/`elsif`/`else`、`while`/`until`、修飾子形式、`case/when`、`case/in`、`begin/rescue/else/ensure`、`loop`、`break`/`next`/`retry`/`return`、`and`/`or`/`not`、`&&`/`||`/`!`、`..`/`...`(端のない範囲を含む)、`&.`、`=>`(右代入・パターン)、`in`(パターン判定)、文字列補間 `#{}`、`__FILE__`/`__LINE__`/`__method__`。
+Same as Ruby: `if`/`unless`/`elsif`/`else`, `while`/`until`, modifier forms, `case/when`, `case/in`, `begin/rescue/else/ensure`, `loop`, `break`/`next`/`retry`/`return`, `and`/`or`/`not`, `&&`/`||`/`!`, `..`/`...` (including endless ranges), `&.`, `=>` (rightward assignment / pattern), `in` (pattern test), string interpolation `#{}`, `__FILE__`/`__LINE__`/`__method__`.
 
-Ruby と違うもの:
+Different from Ruby:
 
-- `for` はありません(`each` を使ってください)。
-- すべての制御構造は式です(Ruby と同じ)が、`if` の各枝の型が異なると結果は合併型になります。`if` に `else` がないときは `T?` です。
-- 真偽判定は Ruby と同じく `nil` と `false` だけが偽です。ただし型から常に真/常に偽と分かる条件(`if 3`、`if some_int`)には警告が出ます。
-- `while` の条件や `if` の条件によって変数の型が絞り込まれます([02-types.md](02-types.md) §6)。
+- There is no `for` (use `each`).
+- All control structures are expressions (as in Ruby), but if the branches of an `if` have different types, the result is a union type. An `if` without `else` has type `T?`.
+- Truthiness is as in Ruby: only `nil` and `false` are falsy. However, a condition that is known from its type to be always true / always false (`if 3`, `if some_int`) produces a warning.
+- Variable types are narrowed by `while` and `if` conditions ([02-types.md](02-types.md) §6).
 
-### パターンマッチ
+### Pattern matching
 
-Ruby 3 の `case/in` をそのまま採用し、静的検査を加えています。
+Ruby 3's `case/in` is adopted as is, with static checks added.
 
 ```ruby
 case event
@@ -339,12 +341,12 @@ in nil then ...
 end
 ```
 
-- 使える型: 値パターン、ピン `^x`、選択 `|`、配列パターン(`*rest`、find パターン)、ハッシュパターン、`Const(...)`/`Const[...]`(`deconstruct`/`deconstruct_keys`)、束縛 `=> name`、ガード `if`/`unless`、`nil`。
-- `data`/`enum`/合併型に対する `case/in` は網羅性を検査します。網羅していないと `else` が必要で、`else` も網羅もないときはコンパイルエラーです。クラス階層に対する `case/in` は開かれているので、`else` がなければ実行時に `NoMatchingPatternError` になります(警告付き)。
-- パターンによって束縛された変数と、絞り込まれたレシーバの型は、その枝の中で静的に分かります。
-- `expr => Point(x:, y:)` は失敗すると例外、`expr in Point` は `Bool` を返して絞り込みます。
+- Available patterns: value patterns, pin `^x`, alternatives `|`, array patterns (`*rest`, find pattern), hash patterns, `Const(...)`/`Const[...]` (`deconstruct`/`deconstruct_keys`), binding `=> name`, guards `if`/`unless`, `nil`.
+- `case/in` on `data`/`enum`/union types checks exhaustiveness. If the patterns are not exhaustive, an `else` is required; without either exhaustiveness or `else` it is a compile error. `case/in` on a class hierarchy is open, so without an `else` it raises `NoMatchingPatternError` at runtime (with a warning).
+- The variables bound by a pattern and the narrowed type of the receiver are statically known within that branch.
+- `expr => Point(x:, y:)` raises on failure; `expr in Point` returns a `Bool` and narrows.
 
-## 12. 例外
+## 12. Exceptions
 
 ```ruby
 class ParseError < StandardError
@@ -368,15 +370,15 @@ ensure
   cleanup
 end
 
-value = risky rescue default   # 修飾子形式も可
+value = risky rescue default   # the modifier form is also allowed
 ```
 
-- 例外階層は Ruby に準じます(`Exception` > `StandardError` > ...)。`raise` の引数は例外クラス、例外オブジェクト、または文字列(`RuntimeError`)。
-- 例外は投げたタスクの中で処理されます。タスクの外に漏れた例外の扱いは [04-concurrency.md](04-concurrency.md)。
-- 例外オブジェクトは Shareable である必要があります(他タスクに伝播するため)。
-- `raise` の型は `Nothing`(ボトム型)なので、`x = arg || raise ArgumentError` のような絞り込みができます。
+- The exception hierarchy follows Ruby (`Exception` > `StandardError` > ...). The argument of `raise` is an exception class, an exception object, or a string (`RuntimeError`).
+- Exceptions are handled within the task that raised them. The handling of exceptions that escape a task is described in [04-concurrency.md](04-concurrency.md).
+- Exception objects must be Shareable (because they propagate to other tasks).
+- The type of `raise` is `Nothing` (the bottom type), so narrowing such as `x = arg || raise ArgumentError` is possible.
 
-## 13. 文字列・配列・ハッシュのリテラル
+## 13. String, array and hash literals
 
 ```ruby
 s  = "name: #{name}\n"     # String
@@ -385,17 +387,17 @@ s3 = <<~EOS
   heredoc
 EOS
 a  = [1, 2, 3]             # Array[Int]
-t  = [1, "a"]              # 文脈がタプル型を要求すれば [Int, String]、さもなくば Array[Int | String]
+t  = [1, "a"]              # [Int, String] if the context requires a tuple type, otherwise Array[Int | String]
 h  = { name: "alice", age: 30 }     # Hash[Symbol, String | Int]
 h2 = { "a" => 1, "b" => 2 }         # Hash[String, Int]
 r  = 1..10                 # Range[Int]
 set = Set[1, 2, 3]         # Set[Int]
-bytes = b"\x00\xff"        # Bytes(バイナリ)
+bytes = b"\x00\xff"        # Bytes (binary)
 ```
 
-- 文字列は常に UTF-8 で、不変です。バイナリデータは別の型 `Bytes` です。
-- リテラルから作られる `Array`/`Hash`/`Set` は不変の永続データ構造です。`[]` や `{}` の空リテラルは文脈から要素型を決めます(§[02-types.md](02-types.md) §5)。
-- `{ a: 1 }` のキーは `Symbol`、`{ "a" => 1 }` のキーは `String` です。混在すると `Hash[Symbol | String, Int]` になります。
+- Strings are always UTF-8 and immutable. Binary data is a separate type, `Bytes`.
+- `Array`/`Hash`/`Set` created from literals are immutable persistent data structures. The empty literals `[]` and `{}` take their element types from the context ([02-types.md](02-types.md) §5).
+- The keys of `{ a: 1 }` are `Symbol`s; the keys of `{ "a" => 1 }` are `String`s. Mixing them gives `Hash[Symbol | String, Int]`.
 
 ## 14. FFI
 
@@ -408,4 +410,4 @@ end
 puts strlen("hello")
 ```
 
-C の関数を直接宣言して呼べます。`CString`、`Pointer[T]`、固定幅整数などの FFI 用の型があります。ブロックする可能性のある C 関数は `Task.blocking { }` の中で呼びます。
+C functions can be declared and called directly. There are FFI types such as `CString`, `Pointer[T]` and the fixed-width integers. C functions that may block are called inside `Task.blocking { }`.

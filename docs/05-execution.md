@@ -1,168 +1,173 @@
-# 実行モデル: インタプリタと AOT コンパイラ
+# Execution Model: Interpreter and AOT Compiler
 
-Quarz は 1 つのフロントエンドと 1 つのランタイムを、2 つのバックエンド(バイトコード VM と機械語)で共有します。開発中は `quarz run` で起動の速さと REPL を、本番は `quarz build` で実行速度を取り、**両者の観測可能な挙動は同一**です。
+日本語版: [05-execution.ja.md](05-execution.ja.md)
+
+Quarz shares one front end and one runtime across two back ends (a bytecode VM and machine code). During development, `quarz run` gives fast startup and a REPL; for production, `quarz build` gives execution speed; and **the observable behavior of the two is identical**.
 
 ```
                     ┌────────────┐   ┌──────────────┐   ┌───────────────┐
-  foo.qz ─────────▶ │ 字句・構文 │─▶ │ 名前解決・型 │─▶ │  QIR(型付き  │
-  (+ .qzi 依存)     │   解析     │   │   検査       │   │   中間表現)   │
+  foo.qz ─────────▶ │ Lexing and │─▶ │ Name resol.  │─▶ │  QIR (typed   │
+  (+ .qzi deps)     │  parsing   │   │ & type check │   │   IR)         │
                     └────────────┘   └──────────────┘   └───────┬───────┘
                                                                  │
                        ┌─────────────────────────────────────────┼─────────────────────┐
                        │ quarz run / repl                        │ quarz build          │
                        ▼                                         ▼                      │
                ┌───────────────┐                     ┌────────────────────┐             │
-               │ レジスタ VM   │                     │ 最適化(脱仮想化、 │             │
-               │ バイトコード  │                     │ インライン化、RC   │             │
-               │ (遅延生成)    │                     │ 省略、非ボックス化)│             │
-               └───────┬───────┘                     └─────────┬──────────┘             │
+               │ Register VM   │                     │ Optimization       │             │
+               │ bytecode      │                     │ (devirtualization, │             │
+               │ (lazily built)│                     │ inlining, RC       │             │
+               └───────┬───────┘                     │ elision, unboxing) │             │
+                       │                             └─────────┬──────────┘             │
                        │                                       ▼                        │
                        │                             ┌────────────────────┐             │
-                       │                             │ LLVM IR → 機械語   │             │
+                       │                             │ LLVM IR → machine  │             │
+                       │                             │ code               │             │
                        │                             └─────────┬──────────┘             │
                        ▼                                       ▼                        │
                ┌──────────────────────────────────────────────────────────┐             │
-               │  libquarz ランタイム(参照カウント、スケジューラ、永続   │ ◀───────────┘
-               │  コレクション、文字列、多倍長整数、IO、チャネル、正規表現)│
+               │  libquarz runtime (reference counting, scheduler,        │ ◀───────────┘
+               │  persistent collections, strings, bignums, IO,           │
+               │  channels, regular expressions)                          │
                └──────────────────────────────────────────────────────────┘
 ```
 
-## 1. コマンド
+## 1. Commands
 
-| コマンド | 動作 |
+| Command | Behavior |
 |---|---|
-| `quarz run app.qz [args]` | 型検査してバイトコードで実行。依存ファイルの型検査結果はキャッシュ(`.quarz/cache`)される |
-| `quarz repl` | REPL。入力ごとに型検査し、定義を追加できる(再定義は不可、代わりに新しい名前を使う) |
-| `quarz check app.qz` | 型検査のみ |
-| `quarz build app.qz -o app` | ネイティブ実行ファイルを生成。`--release` で最適化、`--dev` で高速コンパイル(最適化なし) |
-| `quarz test` | `test/**/*_test.qz` を実行 |
-| `quarz fmt` | 整形 |
-| `quarz pkg add json` | パッケージ管理。マニフェストは `Quarz.toml` |
+| `quarz run app.qz [args]` | Type-check and run as bytecode. Type-check results for dependencies are cached (`.quarz/cache`) |
+| `quarz repl` | REPL. Each input is type-checked, and definitions can be added (redefinition is not allowed; use a new name instead) |
+| `quarz check app.qz` | Type-check only |
+| `quarz build app.qz -o app` | Produce a native executable. `--release` optimizes, `--dev` compiles fast (no optimization) |
+| `quarz test` | Run `test/**/*_test.qz` |
+| `quarz fmt` | Format |
+| `quarz pkg add json` | Package management. The manifest is `Quarz.toml` |
 
-## 2. コンパイル単位と分割コンパイル
+## 2. Compilation Units and Separate Compilation
 
-- 1 ファイル = 1 コンパイル単位。各単位の型検査結果から**インターフェースファイル** `.qzi`(クラス・メソッドのシグネチャ、フィールドのレイアウト、定数の型、`extension` の一覧、インライン化候補の小さなメソッドの QIR)が生成されます。
-- 依存する単位は `.qzi` だけを読みます。引数型が必須なのはこのためで、本体の変更は(シグネチャが変わらない限り)他の単位の再コンパイルを引き起こしません。
-- `quarz build` は最終段でプログラム全体の QIR を集めて、クラス階層解析(CHA)による脱仮想化とクロスモジュールのインライン化を行います。クラスが実行時に作られないため、CHA は完全です。
-- 標準ライブラリは事前に `.qzi` + ネイティブ(`libquarz-std`)として配布され、`quarz run` でも最初から機械語で動きます。
+- One file = one compilation unit. From each unit's type-check results, an **interface file** `.qzi` is generated (class and method signatures, field layouts, constant types, the list of `extension`s, and the QIR of small methods that are inlining candidates).
+- Dependent units read only the `.qzi`. This is why parameter types are mandatory: a change to a body does not trigger recompilation of other units (as long as the signature is unchanged).
+- In its final stage, `quarz build` gathers the QIR of the whole program and performs devirtualization via class hierarchy analysis (CHA) and cross-module inlining. Since no classes are created at runtime, CHA is complete.
+- The standard library is distributed ahead of time as `.qzi` + native code (`libquarz-std`), so it runs as machine code from the start even under `quarz run`.
 
 ## 3. QIR
 
-QIR は型付きの SSA 形式の中間表現です。Ruby 風の構文は QIR に落ちる段階で単純化されます。
+QIR is a typed intermediate representation in SSA form. The Ruby-like syntax is simplified at the point of lowering to QIR.
 
-- メソッド呼び出しはすべて解決済み(`call Account#deposit`、`vcall Shape#area`、`icall Comparable#<=>`)。
-- エスケープしないブロックはインライン展開または静的なローカル関数呼び出し。`break`/`next`/`return` はジャンプに変換。
-- `case/in` は決定木。
-- 合併型の値は `(tag, payload)`。絞り込みは `tag` の検査。
-- `Int` の演算は「あふれ検査付きの 63 ビット加算 → あふれたら多倍長ルーチン」に展開。
-- 参照カウントの `inc`/`dec` が明示的に挿入され、以後の最適化パスで省略される。
-- 安全点(`safepoint`)命令が、ループの後方分岐とメソッド入口に挿入される。
+- All method calls are already resolved (`call Account#deposit`, `vcall Shape#area`, `icall Comparable#<=>`).
+- Non-escaping blocks are inlined or become static local function calls. `break`/`next`/`return` are converted into jumps.
+- `case/in` becomes a decision tree.
+- Values of union types are `(tag, payload)`. Narrowing is a check on `tag`.
+- `Int` arithmetic expands to "63-bit add with overflow check → bignum routine on overflow".
+- Reference-count `inc`/`dec` are inserted explicitly and elided by later optimization passes.
+- `safepoint` instructions are inserted at loop back-edges and method entries.
 
-インタプリタとコンパイラの意味論が一致する根拠は、どちらも同じ QIR を入力にし、同じランタイム関数を呼ぶことです。QIR から先で許される差は性能だけで、CI では同じテストスイートを両モードで実行して差分検査(differential testing)を行います。
+The basis for the interpreter and compiler agreeing on semantics is that both take the same QIR as input and call the same runtime functions. The only difference allowed from QIR onward is performance, and CI runs the same test suite in both modes as differential testing.
 
-## 4. インタプリタ
+## 4. Interpreter
 
-- **レジスタ VM**。QIR の各 SSA 値がレジスタに対応し、型が静的に分かるので、`Int`/`Float`/`Bool` はボックス化せずにレジスタに置かれます。
-- バイトコードはメソッドが初めて呼ばれたときに QIR から生成します(遅延コンパイル)。起動時にやるのは構文解析と型検査だけで、キャッシュが効いていれば数十ミリ秒で動き始めます。
-- ディスパッチは direct threading。`Int#+` や `Array#[]` のような頻出操作は専用命令を持ちます。
-- 型情報があるため、動的言語のインタプリタに必要なインラインキャッシュやガードがありません。目標は Lua/LuaJIT インタプリタ級の速度で、Ruby(YJIT なし)の 3〜10 倍程度を想定しています。
-- 将来、ベースライン JIT(QIR → 機械語をその場で生成)を追加できますが、「本番は AOT」を前提にしているため優先度は低く置いています。
+- **Register VM.** Each SSA value in QIR corresponds to a register, and since types are statically known, `Int`/`Float`/`Bool` are placed in registers without boxing.
+- Bytecode is generated from QIR the first time a method is called (lazy compilation). Startup does only parsing and type checking, and with a warm cache the program starts running within tens of milliseconds.
+- Dispatch is direct threading. Frequent operations like `Int#+` and `Array#[]` have dedicated instructions.
+- Because type information is available, there are none of the inline caches or guards that a dynamic-language interpreter needs. The target is Lua/LuaJIT-interpreter-class speed, roughly 3–10× Ruby (without YJIT).
+- A baseline JIT (generating machine code from QIR on the fly) could be added in the future, but since the premise is "AOT for production," its priority is low.
 
-## 5. メモリ管理
+## 5. Memory Management
 
-**参照カウント(RC)+ 一意性による在場更新 + 可変オブジェクト限定のサイクル回収**を採用します。
+We adopt **reference counting (RC) + in-place updates via uniqueness + cycle collection restricted to mutable objects**.
 
-### なぜ参照カウントか
+### Why Reference Counting
 
-1. **不変値の在場更新**: 参照カウントが 1 の不変値は、「新しい値を返す」操作をその場で破壊的に行えます(Lean 4 / Koka の Perceus)。Quarz の「不変を既定にしつつ速い」はこれに依存しています。
-2. **AOT との相性**: トレース GC はネイティブコードのスタックマップ(LLVM statepoint など)か保守的スキャンが必要で、実装の難所です。RC はどちらも不要で、C FFI との境界も単純です。
-3. **停止時間がない**: スケジューラが多数のタスクを動かすとき、GC のストップ・ザ・ワールドは応答性を損ないます。
-4. **決定的な解放**: `ensure` と組み合わせて、ファイルハンドルなどの資源を予測可能に解放できます。
+1. **In-place updates of immutable values**: an immutable value with a reference count of 1 can perform a "return a new value" operation destructively in place (Perceus, from Lean 4 / Koka). Quarz's "immutable by default yet fast" depends on this.
+2. **Compatibility with AOT**: a tracing GC needs stack maps for native code (LLVM statepoints, etc.) or conservative scanning, which is a hard part of the implementation. RC needs neither, and the boundary with C FFI is simple.
+3. **No pause times**: when the scheduler runs many tasks, a GC stop-the-world hurts responsiveness.
+4. **Deterministic release**: combined with `ensure`, resources like file handles can be released predictably.
 
-### 詳細
+### Details
 
-- **非原子的カウントが既定**。タスク境界を越えた値(チャネル送信、`spawn` の捕捉、`Atom`、定数)は、その時点でオブジェクトグラフをたどって「共有済み」ビットを立て、以後は原子的操作になります。すでに共有済みの部分グラフは再走査しません。不変値は共有済み後も内容が変わらないため、これ以外の同期は不要です。
-- **RC 省略**: 借用推論(引数として渡すだけで保持しない参照に `inc`/`dec` を挿入しない)と、`inc` の直後の `dec` の相殺。
-- **再利用**: `dec` でちょうど 0 になった直後に同じサイズの割り当てがあれば、メモリを再利用します(`data` の `with` や `Array#push` が割り当てなしで済む)。
-- **サイクル回収**: 不変値は作られた時点で自分より古い値しか指せないので、サイクルを作れません。サイクルを作りうるのは `var` フィールドを持つオブジェクトと、再代入される捕捉変数のボックスだけです。これらのオブジェクトだけを候補として、Bacon–Rajan の試行削除を低頻度で走らせます。ほとんどのプログラムでは候補集合が小さく、回収コストは無視できます。
-- **`Int` の小さな値、`Float`(型が静的なとき)、`Bool`、`Nil`、`Symbol`** はカウント対象外です。
-- **弱参照**は提供しません(必要になる状況が可変オブジェクトのサイクルに限られ、サイクル回収で解決するため)。
+- **Non-atomic counting is the default.** A value that crosses a task boundary (channel send, `spawn` capture, `Atom`, constant) has its object graph traversed at that moment to set the "shared" bit, and thereafter uses atomic operations. Subgraphs that are already shared are not rescanned. Since immutable values do not change after being shared, no other synchronization is needed.
+- **RC elision**: borrow inference (no `inc`/`dec` inserted for references that are merely passed as arguments and not retained), and cancellation of a `dec` immediately following an `inc`.
+- **Reuse**: if an allocation of the same size follows immediately after a `dec` that hit exactly 0, the memory is reused (`with` on `data` and `Array#push` complete without allocating).
+- **Cycle collection**: an immutable value can only point to values older than itself at the time it is created, so it cannot form a cycle. The only things that can form cycles are objects with `var` fields and the boxes of captured variables that get reassigned. Only these objects are candidates, and Bacon–Rajan trial deletion runs on them at low frequency. In most programs the candidate set is small and collection cost is negligible.
+- **Small `Int` values, `Float` (when the type is static), `Bool`, `Nil`, `Symbol`** are not counted.
+- **Weak references** are not provided (the situations where they would be needed are limited to cycles among mutable objects, which cycle collection resolves).
 
-### 採用しなかった案
+### Rejected Alternatives
 
-- **世代別トレース GC(Go/Erlang/Ruby)**: 割り当てが速く、カウント操作のオーバーヘッドがありませんが、上の 1〜3 を失います。不変値の在場更新ができないと、永続データ構造のコストを常に払うことになります。
-- **原子的 RC を常時(Swift)**: 単純ですが、原子的操作のコストが全体にかかります。Lean 4 方式の「共有された部分グラフだけ原子的」は、タスク境界が明示的な Quarz に適合します。
+- **Generational tracing GC (Go/Erlang/Ruby)**: fast allocation and no counting overhead, but loses points 1–3 above. Without in-place updates of immutable values, the cost of persistent data structures is paid every time.
+- **Atomic RC at all times (Swift)**: simple, but the cost of atomic operations applies everywhere. The Lean 4 approach of "atomic only for shared subgraphs" fits Quarz, where task boundaries are explicit.
 
-## 6. ネイティブコード生成
+## 6. Native Code Generation
 
-- `--release` では QIR → LLVM IR(`inkwell`)。`--dev` では Cranelift でビルドの速さを優先します。
-- `Int` のあふれ検査は `llvm.sadd.with.overflow`、`Float` は非ボックス、`data` の小さなインスタンスはスカラー置換により構造体として扱われます。
-- 例外は Itanium ABI のゼロコスト例外(landing pad)。`rescue` のない経路にはコストがありません。
-- タスクのスタックは `mmap` で予約されるため、スタック切り替えは SP の差し替えだけです(アセンブリ数十行の `switch_context`)。
-- 出力は静的リンクされた単一バイナリ(libquarz を含む)。`--shared` で共有ライブラリも作れます。
+- Under `--release`, QIR → LLVM IR (`inkwell`). Under `--dev`, Cranelift prioritizes build speed.
+- `Int` overflow checks use `llvm.sadd.with.overflow`, `Float` is unboxed, and small `data` instances are treated as structs via scalar replacement.
+- Exceptions use Itanium ABI zero-cost exceptions (landing pads). Paths without `rescue` carry no cost.
+- Since task stacks are reserved with `mmap`, a stack switch is just a swap of the SP (a `switch_context` of a few dozen lines of assembly).
+- The output is a statically linked single binary (including libquarz). `--shared` can also produce a shared library.
 
-## 7. REPL と開発時の体験
+## 7. REPL and Development Experience
 
-- `quarz repl` は入力を型検査してからバイトコードで実行します。`class` や `def` を対話的に追加でき、既存の定義を変えたいときは REPL が「その定義を使っているものごと」再コンパイルして差し替えます(ホットリロード)。これは REPL だけの機能で、プログラムの意味論には影響しません。
-- 型エラーは Ruby 風の位置表示に、期待型と実際の型、絞り込みのヒント(「ここで `x` は `String?` です。`if x` で絞り込めます」)を添えて出します。
-- `quarz run --watch` でファイル変更時に再実行。
+- `quarz repl` type-checks input and then runs it as bytecode. `class` and `def` can be added interactively, and when you want to change an existing definition, the REPL recompiles and swaps "everything that uses that definition" (hot reload). This is a REPL-only feature and does not affect program semantics.
+- Type errors are shown with Ruby-style location display, along with the expected and actual types and narrowing hints ("`x` is `String?` here. You can narrow it with `if x`").
+- `quarz run --watch` re-runs on file changes.
 
-## 8. 実装言語と構成
+## 8. Implementation Language and Structure
 
-実装言語は **Rust** です。フロントエンド、VM、ランタイムをすべて Rust で書き、`cargo build` で単一バイナリ `quarz` を得ます。
+The implementation language is **Rust**. The front end, VM, and runtime are all written in Rust, and `cargo build` produces a single `quarz` binary.
 
-### なぜ Rust か
+### Why Rust
 
-Quarz の実装で最初から必要になるものを並べると、Rust のエコシステムで埋まる部分が多いことが決め手です。
+Listing what the Quarz implementation needs from the start, the decisive factor is how much of it is covered by the Rust ecosystem.
 
-| 必要なもの | Rust での手当て |
+| Need | Provision in Rust |
 |---|---|
-| スタックフルなタスクの切り替え | `corosensei` |
-| ワークスティーリングスケジューラ、チャネル | `crossbeam` のデック・同期プリミティブ。競合の検出をコンパイラに任せられる |
-| 非同期 IO | `io-uring`、`mio` |
-| 多倍長整数、正規表現、Unicode | `num-bigint`(または `rug`)、`regex`、`unicode-*` |
-| 永続ベクタ・HAMT | RC の一意性で在場更新するため自前。`im`/`rpds` を参考にする |
-| AST・型の処理 | `enum` とパターンマッチ |
-| 後のバックエンド | Cranelift は Rust ネイティブ、LLVM は `inkwell` |
+| Stackful task switching | `corosensei` |
+| Work-stealing scheduler, channels | `crossbeam` deques and synchronization primitives. Race detection can be left to the compiler |
+| Asynchronous IO | `io-uring`, `mio` |
+| Bignums, regular expressions, Unicode | `num-bigint` (or `rug`), `regex`, `unicode-*` |
+| Persistent vector / HAMT | Written in-house, since in-place updates rely on RC uniqueness. `im`/`rpds` serve as references |
+| AST and type processing | `enum` and pattern matching |
+| Later back ends | Cranelift is native Rust; LLVM via `inkwell` |
 
-検討した他の候補:
+Other candidates considered:
 
-- **C**: CRuby と同じ流儀で書けるが、上の表のライブラリ群を vendor する手間と、スケジューラ・チャネルという最もバグを出しやすい部分を安全装置なしで書くことになる点で見送り。
-- **OCaml(フロントエンド)+ C(ランタイム)**: 型検査器を書くには最良だが、Quarz の本体はランタイム寄り(RC、スケジューラ、在場更新)で、そこと型検査器を別言語にするとインタプリタの起動パスが複雑になる。
-- **Zig**: ランタイムには向くが、言語と標準ライブラリの安定性が不足。
-- **Ruby で stage0 を書き、早期にセルフホスト**: Quarz への移植は楽だが、`quarz run` のたびに Ruby で型検査することになり、開発用インタプリタとしての起動の速さを失う。セルフホストは必須ではなく、やるとしても Rust 実装が安定した後とする。
+- **C**: can be written in the same style as CRuby, but passed over because of the effort of vendoring the libraries in the table above and because the scheduler and channels — the parts most prone to bugs — would be written without safety nets.
+- **OCaml (front end) + C (runtime)**: the best for writing a type checker, but the core of Quarz leans toward the runtime (RC, scheduler, in-place updates), and putting the type checker in a different language from that complicates the interpreter's startup path.
+- **Zig**: suited to the runtime, but the language and standard library lack stability.
+- **Write stage0 in Ruby and self-host early**: porting to Quarz would be easy, but every `quarz run` would type-check in Ruby, losing the fast startup of a development interpreter. Self-hosting is not required, and if done at all, it would come after the Rust implementation stabilizes.
 
-### Rust で書く上での方針
+### Guidelines for Writing in Rust
 
-- **`unsafe` はランタイムに閉じ込める。** タグ付きポインタ、RC の非原子/原子切り替え、在場更新は Rust の所有権モデルの外側にあり、ここは「Rust で書く C」になる。`quarz-rt` の内部だけに `unsafe` を置き、VM とフロントエンドには安全な API だけを見せる。
-- **AST と型は arena で持つ。** `Rc<RefCell<_>>` の木は作らず、`Vec` + `NodeId(u32)`/`TypeId(u32)` の index で参照する。借用検査との衝突を避け、QIR への変換やキャッシュの直列化も単純になる。
-- **構文解析器は手書きの再帰下降。** Ruby 系の文法は字句解析器が状態を持つ(`{` のブロック/ハッシュ、`name: Type` のラベル、ヒアドキュメント、文脈キーワード)ので、Prism と同じく手書きが向く。
-- **クレートを分けてコンパイル時間を局所化する。**
+- **Confine `unsafe` to the runtime.** Tagged pointers, switching RC between non-atomic and atomic, and in-place updates lie outside Rust's ownership model; this part becomes "C written in Rust." `unsafe` goes only inside `quarz-rt`, and the VM and front end see only safe APIs.
+- **Hold the AST and types in arenas.** Do not build trees of `Rc<RefCell<_>>`; refer via `Vec` + `NodeId(u32)`/`TypeId(u32)` indices. This avoids fighting the borrow checker and simplifies conversion to QIR and cache serialization.
+- **The parser is hand-written recursive descent.** Ruby-family grammars require a stateful lexer (`{` for block vs. hash, `name: Type` labels, heredocs, contextual keywords), so hand-writing suits it, as with Prism.
+- **Split into crates to localize compile times.**
 
-### クレート構成
+### Crate Layout
 
 ```
 quarz/
-  Cargo.toml          ワークスペース
+  Cargo.toml          workspace
   crates/
-    quarz-syntax      字句・構文解析、AST(位置情報付き)、エラー報告
-    quarz-types       名前解決、型検査、Shareable 導出、QIR 生成、.qzi の読み書き
-    quarz-rt          オブジェクトモデル、RC、永続コレクション、文字列、多倍長整数、
-                      スケジューラ、チャネル、IO(unsafe はここだけ)
-    quarz-vm          QIR → バイトコード、レジスタ VM
+    quarz-syntax      lexing, parsing, AST (with positions), error reporting
+    quarz-types       name resolution, type checking, Shareable derivation, QIR generation, .qzi read/write
+    quarz-rt          object model, RC, persistent collections, strings, bignums,
+                      scheduler, channels, IO (unsafe lives only here)
+    quarz-vm          QIR → bytecode, register VM
     quarz-cli         quarz run / check / repl / fmt
-  std/                標準ライブラリ(Quarz で書く部分)
+  std/                standard library (the part written in Quarz)
   docs/
   examples/
 ```
 
-### 実装の順序
+### Implementation Order
 
-1. `quarz-syntax`: 字句解析器、構文解析器、AST。`examples/` が構文解析を通ることを目標にする。
-2. `quarz-types`: 名前解決と型検査。まず単相のクラス・メソッド・合併型・フロー型付け、次にジェネリクス、`data`/`enum`、パターンの網羅性、`extension`。
-3. `quarz-rt` の最小部分: オブジェクトモデルと RC、`Int`/`String`/`Array`/`Hash`。
-4. `quarz-vm`: QIR とレジスタ VM。`quarz run` で `examples/hello.qz` と `shapes.qz` を動かす。
-5. `quarz-rt` の並行部分: タスク、スケジューラ、チャネル、`Atom`、非同期 IO。`wordcount.qz`、`pipeline.qz`、`bank_actor.qz` を動かす。
-6. 標準ライブラリの拡充、REPL、`.qzi` による分割コンパイルとキャッシュ。
-7. ネイティブバックエンド(Cranelift で `--dev`、LLVM で `--release`)。
-8. パッケージ管理、`fmt`、LSP。
+1. `quarz-syntax`: lexer, parser, AST. The goal is for `examples/` to parse.
+2. `quarz-types`: name resolution and type checking. First monomorphic classes, methods, union types, and flow typing; then generics, `data`/`enum`, pattern exhaustiveness, and `extension`.
+3. The minimal part of `quarz-rt`: object model and RC, `Int`/`String`/`Array`/`Hash`.
+4. `quarz-vm`: QIR and the register VM. Run `examples/hello.qz` and `shapes.qz` with `quarz run`.
+5. The concurrency part of `quarz-rt`: tasks, scheduler, channels, `Atom`, asynchronous IO. Run `wordcount.qz`, `pipeline.qz`, and `bank_actor.qz`.
+6. Expand the standard library, REPL, separate compilation and caching via `.qzi`.
+7. Native back ends (Cranelift for `--dev`, LLVM for `--release`).
+8. Package management, `fmt`, LSP.

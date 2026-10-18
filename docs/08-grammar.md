@@ -1,6 +1,8 @@
-# 文法スケッチ
+# Grammar Sketch
 
-Ruby と異なる部分(宣言、型、引数、パターン)を EBNF 風に示します。式・文・リテラルの文法は Ruby 3.x に準じ、ここでは差分だけを書きます。`NEWLINE` と `;` は文の区切りで、Ruby と同じ規則で省略されます。本格的な文法は実装時に Lrama 形式で書き直す前提の下書きです。
+日本語版: [08-grammar.ja.md](08-grammar.ja.md)
+
+This shows the parts that differ from Ruby (declarations, types, parameters, patterns) in EBNF style. The grammar of expressions, statements and literals follows Ruby 3.x, and only the differences are written here. `NEWLINE` and `;` are statement separators and are omitted under the same rules as in Ruby. This is a draft, on the assumption that the full grammar will be rewritten in Lrama format at implementation time.
 
 ```ebnf
 program        = { toplevel } ;
@@ -10,7 +12,7 @@ declaration    = class_decl | module_decl | data_decl | enum_decl | extension_de
                | method_decl | type_alias | const_decl | using_decl | extern_decl
                | require_stmt ;
 
-(* ---- クラス・モジュール ---- *)
+(* ---- classes and modules ---- *)
 class_decl     = [ "abstract" ] "class" const_path [ type_params ] [ "<" type ] NEWLINE
                  class_body "end" ;
 module_decl    = "module" const_path [ type_params ] NEWLINE class_body "end" ;
@@ -32,11 +34,11 @@ field          = IDENT ":" type [ "=" expression ] ;
 enum_decl      = "enum" CONST [ type_params ] NEWLINE { variant NEWLINE } class_body "end" ;
 variant        = CONST [ "(" field_list ")" ] ;
 
-(* ---- 拡張 ---- *)
+(* ---- extensions ---- *)
 extension_decl = "extension" type NEWLINE class_body "end" ;
 using_decl     = "using" const_path ;
 
-(* ---- メソッド ---- *)
+(* ---- methods ---- *)
 method_decl    = { modifier } "def" [ "self" "." ] method_name [ type_params ]
                  [ "(" [ param_list ] ")" ] [ "->" type ]
                  ( "=" expression | NEWLINE body "end" ) ;
@@ -50,17 +52,17 @@ param_list     = param { "," param } ;
 param          = positional_param | "*" [ IDENT [ ":" type ] ] | "**" IDENT [ ":" type ]
                | "&" IDENT [ ":" proc_type ] ;
 positional_param = [ "@" ] IDENT [ ":" type ] [ "=" expression ] ;
-    (* "*" 単独の後ろの positional_param はキーワード専用引数 *)
+    (* a positional_param after a bare "*" is a keyword-only parameter *)
 
 type_params    = "[" type_param { "," type_param } "]" ;
 type_param     = [ "out" | "in" ] CONST [ ":" type_bound ] ;
 type_bound     = type { "&" type } ;
 
-(* ---- 型 ---- *)
+(* ---- types ---- *)
 type           = union_type ;
 union_type     = primary_type { "|" primary_type } ;
 primary_type   = const_path [ "[" type { "," type } "]" ] [ "?" ]
-               | "[" [ type { "," type } ] "]"                      (* タプル *)
+               | "[" [ type { "," type } ] "]"                      (* tuple *)
                | proc_type [ "?" ]
                | "(" type ")" [ "?" ]
                | "self" | "Nothing" ;
@@ -70,24 +72,24 @@ type_alias     = "type" CONST [ type_params ] "=" type ;
 const_decl     = const_path "=" expression ;
 const_path     = [ "::" ] CONST { "::" CONST } ;
 
-(* ---- 変数の型注釈 ---- *)
-typed_assign   = IDENT ":" type "=" expression ;        (* 文の先頭でのみ *)
+(* ---- type annotations on variables ---- *)
+typed_assign   = IDENT ":" type "=" expression ;        (* only at the start of a statement *)
 
-(* ---- 手続きリテラル ---- *)
+(* ---- procedure literals ---- *)
 lambda         = "->" [ "(" [ param_list ] ")" ] [ "->" type ] ( "{" body "}" | "do" body "end" ) ;
 block          = "{" [ "|" block_params "|" ] body "}" | "do" [ "|" block_params "|" ] body "end" ;
-block_params   = param_list ;                           (* 型は省略可。推論される *)
+block_params   = param_list ;                           (* types may be omitted; they are inferred *)
 method_ref     = expression ".:" method_name ;
 
-(* ---- キャスト・型式 ---- *)
+(* ---- casts and type expressions ---- *)
 cast           = expression "." ( "as" | "as?" ) "(" type ")" ;
-type_expr      = const_path "[" type { "," type } "]" ;  (* 式の位置: Array[Int].new など *)
+type_expr      = const_path "[" type { "," type } "]" ;  (* in expression position: Array[Int].new etc. *)
 
-(* ---- パターン(Ruby 3 の case/in と同一。再掲) ---- *)
+(* ---- patterns (identical to Ruby 3's case/in; repeated here) ---- *)
 pattern        = alt_pattern [ "=>" IDENT ] [ ( "if" | "unless" ) expression ] ;
 alt_pattern    = prim_pattern { "|" prim_pattern } ;
 prim_pattern   = literal | "^" IDENT | "^(" expression ")" | IDENT | "nil"
-               | const_path                                       (* 型・値の一致 *)
+               | const_path                                       (* type / value match *)
                | const_path "(" [ sub_patterns ] ")"              (* deconstruct / deconstruct_keys *)
                | const_path "[" [ sub_patterns ] "]"
                | "[" [ array_sub ] "]"
@@ -103,13 +105,13 @@ key_pattern    = LABEL [ pattern ] ;
 extern_decl    = "extern" STRING NEWLINE { "def" IDENT "(" [ param_list ] ")" "->" type NEWLINE } "end" ;
 ```
 
-## 曖昧さの解消
+## Disambiguation
 
-- **`name: Type` と `name: value`**: 引数リストの中では常に型、ハッシュリテラルとメソッド呼び出しの中では常に値。文の先頭の `ident: Type = expr` は型注釈付き代入。ラベルは字句解析器ではなく構文解析器が「識別子(または文字列)の直後に空白なしで `:` が続く」ことで判定する。これにより `a ? b : c` の三項演算子と衝突しない(`a ? b:c` のように詰めて書くと `b:` はラベルと見なされエラー)。
-- **コマンド呼び出し(括弧なし)の引数と二項演算子**: `foo -x`、`foo *x`、`foo &x`、`foo [1]`、`foo /re/`、`foo %w[a]`、`foo <<EOS` は、識別子の後に空白があり、記号の後に空白がなければ引数(単項・リテラル)、それ以外は二項演算子として扱う(Ruby と同じ規則。字句解析器は各トークンに「直前に空白があったか」を記録する)。
-- **`/` と `%` と `<<`**: 直前のトークンが値(識別子、定数、リテラル、`)`/`]`/`}`、`end`、`self` など)なら演算子、そうでなければ正規表現・`%` リテラル・ヒアドキュメントの開始。上のコマンド呼び出しの規則が優先される。
-- **`->` の二義性**: `def` のシグネチャ中の `->` は戻り値型、式の位置の `->` は lambda。lambda の `->(x: Int) -> Int { }` は 1 つ目が lambda、2 つ目が戻り値型。
-- **`Const[...]`**: 型の位置では型引数。式の位置では、`[` の中身が型として解釈できるなら型式(`Array[Int].new`)、そうでなければ `Const.[](...)` の呼び出し(ユーザー定義の `self.[]`)。組み込みの `Array`/`Hash`/`Set` は `self.[]` を持たないため常に型式。
-- **`{ }` のブロックとハッシュ**: Ruby と同じ規則。
-- **文脈キーワード**: `data`/`enum`/`var`/`abstract`/`override`/`extension`/`using`/`type`/`extern` は、上記の宣言位置で後続トークンが宣言の形を取るときだけキーワード。
-- **`do ... end` の `data`**: `data X(...)` の直後の `do` はブロックではなく本体。`data` が文脈キーワードとして認識された時点でパーサが本体として読む。
+- **`name: Type` vs. `name: value`**: always a type inside a parameter list; always a value inside hash literals and method calls. `ident: Type = expr` at the start of a statement is a type-annotated assignment. Labels are recognized by the parser, not the lexer, by the rule "an identifier (or string) immediately followed by `:` with no intervening whitespace". This avoids conflicts with the ternary operator `a ? b : c` (if written tightly as `a ? b:c`, `b:` is taken as a label and is an error).
+- **Arguments of command calls (no parentheses) vs. binary operators**: in `foo -x`, `foo *x`, `foo &x`, `foo [1]`, `foo /re/`, `foo %w[a]`, `foo <<EOS`, if there is whitespace after the identifier and none after the symbol, it is an argument (unary operator or literal); otherwise it is a binary operator (the same rule as Ruby; the lexer records for each token whether it was preceded by whitespace).
+- **`/`, `%` and `<<`**: if the previous token is a value (identifier, constant, literal, `)`/`]`/`}`, `end`, `self`, etc.) it is an operator; otherwise it starts a regexp, a `%` literal or a heredoc. The command-call rule above takes precedence.
+- **The two meanings of `->`**: `->` in a `def` signature is the return type; `->` in expression position is a lambda. In `->(x: Int) -> Int { }`, the first is the lambda and the second is the return type.
+- **`Const[...]`**: in type position, type arguments. In expression position, a type expression (`Array[Int].new`) if the contents of `[` can be interpreted as types, otherwise a call to `Const.[](...)` (a user-defined `self.[]`). The built-in `Array`/`Hash`/`Set` have no `self.[]`, so they are always type expressions.
+- **`{ }` as block vs. hash**: the same rule as Ruby.
+- **Contextual keywords**: `data`/`enum`/`var`/`abstract`/`override`/`extension`/`using`/`type`/`extern` are keywords only in the declaration positions above, when the following tokens take the form of a declaration.
+- **`do ... end` of `data`**: the `do` immediately after `data X(...)` is the body, not a block. Once `data` has been recognized as a contextual keyword, the parser reads it as the body.

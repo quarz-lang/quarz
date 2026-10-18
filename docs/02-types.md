@@ -1,58 +1,60 @@
-# 型システム
+# Type System
 
-Quarz は静的型付きです。クラス・モジュール・メソッドの構造がコンパイル時に確定し、メソッド呼び出しはすべてコンパイル時に解決されます。ただし Ruby らしい書き心地を保つため、メソッドの境界以外では型を書く必要がほとんどないように設計しています。
+日本語版: [02-types.ja.md](02-types.ja.md)
 
-設計方針:
+Quarz is statically typed. The structure of classes, modules and methods is fixed at compile time, and every method call is resolved at compile time. To keep the Ruby feel, however, the language is designed so that you rarely need to write types anywhere other than at method boundaries.
 
-1. **メソッドの境界では型を書く、中では書かない。** 引数型は必須、戻り値型とローカル変数は推論。これによりファイル単位の分割コンパイルと、インタプリタ起動時の高速な型検査が両立します。
-2. **nil は普通の型の値ではない。** `String` 型の値が `nil` であることはなく、`nil` を取りうるなら `String?` と書きます。
-3. **合併型とフロー型付け。** `Int | String` のような合併型を直接扱え、`if`/`case/in`/`is_a?` で絞り込めます。
-4. **不変なものは共変。** 不変コレクションは要素型について共変なので、`Array[Int]` を `Array[Int | Nil]` として渡せます。
+Design principles:
 
-## 1. 型の構文
+1. **Write types at method boundaries, not inside them.** Parameter types are required; return types and local variables are inferred. This gives us both per-file separate compilation and fast type checking when the interpreter starts.
+2. **nil is not a value of ordinary types.** A value of type `String` is never `nil`; if `nil` is possible, write `String?`.
+3. **Union types and flow typing.** Union types such as `Int | String` can be used directly and narrowed with `if`/`case/in`/`is_a?`.
+4. **Immutable means covariant.** Immutable collections are covariant in their element type, so an `Array[Int]` can be passed where an `Array[Int | Nil]` is expected.
 
-| 型 | 例 | 説明 |
+## 1. Type Syntax
+
+| Type | Example | Description |
 |---|---|---|
-| クラス・モジュール | `Int`、`String`、`Comparable[T]` | 名前的(nominal)型 |
-| ジェネリクス | `Array[Int]`、`Hash[String, Int]` | 角括弧で型引数 |
-| nil 許容 | `String?` | `String \| Nil` の省略形 |
-| 合併 | `Int \| String \| Nil` | |
-| タプル | `[Int, String]` | 長さと各要素の型が固定 |
-| 手続き | `(Int, String) -> Bool`、`() -> Nil` | ブロック・lambda の型 |
-| トップ | `Object` | すべての型のスーパータイプ |
-| ボトム | `Nothing` | `raise`、`exit`、無限ループの型。すべての型のサブタイプ |
-| 型変数 | `T`、`K`、`V` | 宣言した型パラメータ |
-| 自己型 | `self` | `def dup -> self` のように使う |
+| Class / module | `Int`, `String`, `Comparable[T]` | Nominal types |
+| Generics | `Array[Int]`, `Hash[String, Int]` | Type arguments in square brackets |
+| Nilable | `String?` | Shorthand for `String \| Nil` |
+| Union | `Int \| String \| Nil` | |
+| Tuple | `[Int, String]` | Fixed length and per-element types |
+| Procedure | `(Int, String) -> Bool`, `() -> Nil` | Type of blocks and lambdas |
+| Top | `Object` | Supertype of every type |
+| Bottom | `Nothing` | Type of `raise`, `exit` and infinite loops. Subtype of every type |
+| Type variable | `T`, `K`, `V` | Declared type parameters |
+| Self type | `self` | Used as in `def dup -> self` |
 
-式の文脈で `Array[Int]` と書くと型そのものを指す式になり、`Array[Int].new` のように使えます(Ruby の `Array.[]` によるコンストラクタはありません)。
+Writing `Array[Int]` in expression context yields an expression denoting the type itself, so it can be used as in `Array[Int].new` (there is no `Array.[]` constructor as in Ruby).
 
-## 2. 組み込み型
+## 2. Built-in Types
 
-| 型 | Ruby での対応 | 備考 |
+| Type | Ruby counterpart | Notes |
 |---|---|---|
-| `Nil` | `NilClass` | 値は `nil` のみ |
+| `Nil` | `NilClass` | The only value is `nil` |
 | `Bool` | `TrueClass`/`FalseClass` | `true`/`false` |
-| `Int` | `Integer` | **任意精度**。実装は 63 ビットのタグ付き整数をあふれたらヒープ上の多倍長に昇格(Ruby と同じ挙動) |
-| `Int8`..`Int64`、`UInt8`..`UInt64` | - | 固定幅整数。あふれると例外(`--release` では未定義ではなくラップ、ではなく常に例外) |
-| `Float` | `Float` | IEEE 754 倍精度 |
-| `Float32` | - | FFI と数値計算向け |
-| `String` | `String` | 不変。常に UTF-8 |
-| `Bytes` | 文字列(ASCII-8BIT) | 不変のバイト列 |
+| `Int` | `Integer` | **Arbitrary precision**. Implemented as a 63-bit tagged integer that is promoted to a heap bignum on overflow (same behavior as Ruby) |
+| `Int8`..`Int64`, `UInt8`..`UInt64` | - | Fixed-width integers. Overflow raises an exception (always an exception, never undefined behavior or wrapping, even with `--release`) |
+| `Float` | `Float` | IEEE 754 double precision |
+| `Float32` | - | For FFI and numerical computation |
+| `String` | `String` | Immutable. Always UTF-8 |
+| `Bytes` | String (ASCII-8BIT) | Immutable byte sequence |
 | `Symbol` | `Symbol` | |
-| `Array[out T]` | `Array` | 不変・永続 |
-| `Hash[K, out V]` | `Hash` | 不変・永続・挿入順保持 |
-| `Set[out T]` | `Set` | 不変・永続 |
+| `Array[out T]` | `Array` | Immutable, persistent |
+| `Hash[K, out V]` | `Hash` | Immutable, persistent, preserves insertion order |
+| `Set[out T]` | `Set` | Immutable, persistent |
 | `Range[T]` | `Range` | |
-| `Regexp`、`MatchData` | 同名 | |
-| `Proc` = `(A...) -> R` | `Proc` | 手続き型の総称 |
-| `Enumerator[T]`、`Lazy[T]` | 同名 | 外部イテレータ |
-| `Channel[T]`、`Task[T]`、`Atom[T]`、`Scope` | - | 並行プリミティブ |
-| `Array::Builder[T]`、`Hash::Builder[K, V]`、`String::Builder`、`Bytes::Builder`、`Set::Builder[T]` | 可変の `Array` など | 可変・タスク局所 |
-| `Class[T]` | `Class` | `obj.class` の型。`name` などごく限られたリフレクション |
+| `Regexp`, `MatchData` | Same names | |
+| `Proc` = `(A...) -> R` | `Proc` | Generic name for procedure types |
+| `Enumerator[T]`, `Lazy[T]` | Same names | External iterators |
+| `Channel[T]`, `Task[T]`, `Atom[T]`, `Scope` | - | Concurrency primitives |
+| `Array::Builder[T]`, `Hash::Builder[K, V]`, `String::Builder`, `Bytes::Builder`, `Set::Builder[T]` | Mutable `Array` etc. | Mutable, task-local |
+| `Class[T]` | `Class` | The type of `obj.class`. Very limited reflection such as `name` |
 
-数値の演算は Ruby と同じ意味です。`7 / 2` は `3`、`-7 / 2` は `-4`、`7 % -2` は `-1`、`1 + 1.5` は `2.5`。混在演算は `Int#+(Float) -> Float` などの多重定義として定義されています。固定幅整数と `Int` の混在は暗黙には行われず、`to_i`/`to_i64` などで明示的に変換します。
+Numeric operations have the same meaning as in Ruby: `7 / 2` is `3`, `-7 / 2` is `-4`, `7 % -2` is `-1`, `1 + 1.5` is `2.5`. Mixed operations are defined as overloads such as `Int#+(Float) -> Float`. Fixed-width integers and `Int` are never mixed implicitly; convert explicitly with `to_i`/`to_i64` and friends.
 
-## 3. ジェネリクス
+## 3. Generics
 
 ```ruby
 class Stack[T]
@@ -65,18 +67,18 @@ def max_by[T, U: Comparable[U]](xs: Array[T], &key: (T) -> U) -> T?
   ...
 end
 
-module Container[out T]      # 共変
+module Container[out T]      # covariant
   abstract def get -> T
 end
 ```
 
-- クラス、モジュール、`data`、`enum`、メソッドが型パラメータを持てます。
-- 制約は `T: Comparable[T]` のように書きます。複数は `T: Comparable[T] & Hashable`。
-- 変位は `out`(共変)/`in`(反変)で宣言し、無印は不変です。共変の型パラメータはメソッドの引数位置に現れてはならない、といった検査をコンパイラが行います。
-- メソッドの型引数は呼び出し時に推論されます。明示したいときは `max_by[Person, Int](people) { |p| p.age }`。
-- 実装は**単相化**(monomorphization)を既定とし、`Int`/`Float` などの非ボックス型についてはそれぞれ専用のコードが生成されます。参照型どうしはコードを共有します。インタプリタでも同じ方針です。
+- Classes, modules, `data`, `enum` and methods can have type parameters.
+- Constraints are written as `T: Comparable[T]`. Multiple constraints: `T: Comparable[T] & Hashable`.
+- Variance is declared with `out` (covariant) / `in` (contravariant); unmarked parameters are invariant. The compiler checks, for example, that a covariant type parameter does not appear in a parameter position of a method.
+- Type arguments of methods are inferred at the call site. To be explicit: `max_by[Person, Int](people) { |p| p.age }`.
+- The implementation defaults to **monomorphization**: specialized code is generated for each unboxed type such as `Int`/`Float`, while reference types share code. The interpreter follows the same policy.
 
-## 4. 合併型と nil 安全性
+## 4. Union Types and Nil Safety
 
 ```ruby
 def find(id: Int) -> User?
@@ -84,44 +86,44 @@ def find(id: Int) -> User?
 end
 
 user = find(1)
-user.name              # エラー: User? に name はない
-user.name if user      # OK: 絞り込み
+user.name              # error: User? has no method name
+user.name if user      # OK: narrowed
 user&.name             # String?
 name = user&.name || "anon"
-u = find(1) || raise NotFound    # raise の型は Nothing なので u は User
+u = find(1) || raise NotFound    # raise has type Nothing, so u is User
 ```
 
-- `nil` は `Nil` 型の唯一の値で、他のどの型の値でもありません。
-- `T?` は `T | Nil` の糖衣です。`Int | String | Nil` のような任意の合併型も書けます。
-- 合併型の値に対して呼べるのは、すべての構成型に共通する(かつ戻り値型が互換な)メソッドだけです。それ以外は絞り込んでから呼びます。
-- 合併型は正規化されます: `Int | Int` → `Int`、`Int | Object` → `Object`、`(Int | String) | Nil` → `Int | String | Nil`。
+- `nil` is the only value of type `Nil`, and is not a value of any other type.
+- `T?` is sugar for `T | Nil`. Arbitrary unions such as `Int | String | Nil` can also be written.
+- On a value of union type you can only call methods that are common to all member types (with compatible return types). Anything else requires narrowing first.
+- Unions are normalized: `Int | Int` → `Int`, `Int | Object` → `Object`, `(Int | String) | Nil` → `Int | String | Nil`.
 
-## 5. 型推論
+## 5. Type Inference
 
-推論は**双方向・局所的**です。メソッドの引数型が既知なので、推論は 1 メソッド本体で閉じ、プログラム全体の推論は行いません(Crystal のような全体推論は、コードが大きくなるとコンパイル時間が線形以上に伸びるので採用しません)。
+Inference is **bidirectional and local**. Since parameter types are known, inference is confined to a single method body; there is no whole-program inference (whole-program inference as in Crystal is not adopted, because compile time grows superlinearly as the code base grows).
 
-- **ローカル変数**: 最初の代入の型。`x = 1` なら `Int`。
-- **戻り値型**: 省略時は本体の型(`return` の型と最後の式の合併)。再帰呼び出しがあるメソッド、`abstract def`、`extern def`、公開 API として `.qzi` に書き出されるメソッドで戻り値型が推論不能なときはエラーになり、注釈を求めます。
-- **空リテラル**: `[]`、`{}`、`Set[]` は期待型があればそれに従い、なければ `Array[?T]` のような型変数を持ち、同じ文の中で単一化されます。
+- **Local variables**: the type of the first assignment. `x = 1` gives `Int`.
+- **Return type**: when omitted, the type of the body (the union of the `return` types and the last expression). For methods that call themselves recursively, `abstract def`, `extern def`, and methods exported to `.qzi` as public API, an uninferable return type is an error and an annotation is required.
+- **Empty literals**: `[]`, `{}` and `Set[]` follow the expected type if there is one; otherwise they carry a type variable such as `Array[?T]` that is unified within the same statement.
 
 ```ruby
-counts = words.reduce({}) { |h, w| h.put(w, h.fetch(w, 0) + 1) }   # {} は Hash[String, Int]
-names: Array[String] = []          # 期待型から
-xs = []                            # エラー: 要素型が決まらない。xs: Array[Int] = [] と書く
+counts = words.reduce({}) { |h, w| h.put(w, h.fetch(w, 0) + 1) }   # {} is Hash[String, Int]
+names: Array[String] = []          # from the expected type
+xs = []                            # error: element type undetermined. Write xs: Array[Int] = []
 ```
 
-- **ブロックの引数**: 渡し先の `&block` の型から決まります。`[1, 2].map { |x| x * 2 }` の `x` は `Int`。
-- **ジェネリックメソッドの型引数**: 引数とブロックの型から単一化で決まります。
-- **数値リテラル**: 期待型が `Float` なら `1` は `Float` として扱われ、期待型が `Int32` なら `Int32` になります。既定は `Int`/`Float`。
-- **タプルと配列**: `[1, "a"]` は期待型がタプルならタプル、それ以外は `Array[Int | String]`。`return a, b` と多重代入の右辺はタプルです。
+- **Block parameters**: determined by the type of the `&block` they are passed to. In `[1, 2].map { |x| x * 2 }`, `x` is `Int`.
+- **Type arguments of generic methods**: determined by unification from the argument and block types.
+- **Numeric literals**: `1` is treated as a `Float` when the expected type is `Float`, and as an `Int32` when the expected type is `Int32`. The defaults are `Int`/`Float`.
+- **Tuples and arrays**: `[1, "a"]` is a tuple if the expected type is a tuple, otherwise `Array[Int | String]`. `return a, b` and the right-hand side of a multiple assignment are tuples.
 
-## 6. フロー型付け(絞り込み)
+## 6. Flow Typing (Narrowing)
 
-条件分岐によってローカル変数の型が絞り込まれます。
+Conditional branches narrow the types of local variables.
 
 ```ruby
 def describe(x: Int | String | Nil) -> String
-  return "nothing" if x.nil?          # 以降 x: Int | String
+  return "nothing" if x.nil?          # from here on, x: Int | String
   if x.is_a?(Int)
     "int #{x + 1}"                    # x: Int
   else
@@ -134,47 +136,47 @@ in Int => n then n + 1
 in String => s then s.size
 end
 
-while (line = io.gets?)             # line: String(ループ内)
+while (line = io.gets?)             # line: String (inside the loop)
   puts line
 end
 ```
 
-絞り込みが効く条件: 真偽判定(`if x`)、`x.nil?`、`x.is_a?(T)`、`x in Pattern`、`case/in`、`==` によるシングルトン(`nil`/`true`/`false`/enum の空バリアント)との比較、`&&`/`||`/`!`/`and`/`or`/`not` の組み合わせ、`return`/`raise`/`next`/`break` による早期脱出、代入。
+Conditions that narrow: truthiness tests (`if x`), `x.nil?`, `x.is_a?(T)`, `x in Pattern`, `case/in`, `==` comparisons against singletons (`nil`/`true`/`false`/data-less enum variants), combinations with `&&`/`||`/`!`/`and`/`or`/`not`, early exits via `return`/`raise`/`next`/`break`, and assignment.
 
-絞り込まれるのは**ローカル変数、不変フィールド(`@x`)、`data` のフィールド**です。`var` フィールドや任意のメソッド呼び出し結果(`user.name`)は、途中で変わりうるので絞り込まれません。一度ローカル変数に受けてください。可変フィールドを持たない設計が既定なので、Ruby の `@x && @x.foo` のような慣用句の多くはそのまま通ります。
+What gets narrowed: **local variables, immutable fields (`@x`), and `data` fields**. `var` fields and the results of arbitrary method calls (`user.name`) are not narrowed, because they may change in between; assign them to a local variable first. Since the default design has no mutable fields, most Ruby idioms such as `@x && @x.foo` work as is.
 
-## 7. キャスト
+## 7. Casts
 
 ```ruby
-n = obj.as(Int)         # 失敗すると TypeError
+n = obj.as(Int)         # TypeError on failure
 n = obj.as?(Int)        # Int?
-f = n.to_f              # 変換メソッド(キャストではない)
+f = n.to_f              # a conversion method (not a cast)
 ```
 
-ダウンキャストは実行時検査付きです。安全でない再解釈キャストは FFI 層(`Pointer#cast`)にしかありません。
+Downcasts are checked at run time. Unsafe reinterpreting casts exist only in the FFI layer (`Pointer#cast`).
 
-## 8. メソッド解決と多重定義
+## 8. Method Resolution and Overloading
 
-- 呼び出しはレシーバの静的型で解決されます。候補は、そのクラス、スーパークラス、include したモジュール、スコープで有効な `extension` のメソッドです。
-- 同名メソッドの多重定義があるときは、引数の個数、キーワード、型によって最も特定的なものが選ばれます。曖昧ならエラーです。
-- サブクラスで上書きされうるメソッドは仮想呼び出し(vtable)になります。クラス階層はプログラム全体で確定するため、上書きのないメソッドはリンク時に静的呼び出しへ置き換えられます(クラス階層解析)。
-- モジュール型のレシーバへの呼び出しはインターフェース呼び出し(クラスごとのモジュール実装テーブル)です。
-- `respond_to?` はコンパイル時定数に畳まれます。`send`/`public_send`/`method`/`define_method`/`method_missing`/`instance_variable_get` は存在しません。
+- Calls are resolved by the static type of the receiver. The candidates are the methods of that class, its superclasses, the modules it includes, and the `extension`s in effect in the scope.
+- When a method name is overloaded, the most specific overload is chosen by the number of arguments, keywords and types. Ambiguity is an error.
+- Methods that may be overridden in a subclass become virtual calls (vtable). Because the class hierarchy is fixed for the whole program, methods without overrides are replaced by static calls at link time (class hierarchy analysis).
+- Calls on a receiver of module type are interface calls (a per-class module implementation table).
+- `respond_to?` is folded to a compile-time constant. `send`/`public_send`/`method`/`define_method`/`method_missing`/`instance_variable_get` do not exist.
 
-## 9. Shareable(共有可能性)
+## 9. Shareable
 
-`Shareable` はコンパイラが自動的に導出するマーカーモジュールで、「他のタスクに安全に渡せる型」を表します。詳細は [03-data-model.md](03-data-model.md) §5 ですが、型システムの観点では次のように使われます。
+`Shareable` is a marker module derived automatically by the compiler, denoting "a type whose values can safely be passed to another task". The details are in [03-data-model.md](03-data-model.md) §5; from the type system's point of view it is used as follows.
 
 ```ruby
 class Channel[T: Shareable]
 class Atom[T: Shareable]
-def spawn[T: Shareable](&block: () -> T) -> Task[T]   # ブロックの捕捉変数も Shareable である必要がある
+def spawn[T: Shareable](&block: () -> T) -> Task[T]   # the variables captured by the block must be Shareable too
 ```
 
-ユーザーが `include Shareable` と書くことはできません。型の構造から決まります。
+Users cannot write `include Shareable`; it is determined by the structure of the type.
 
-## 10. 採用しなかった案
+## 10. Alternatives Not Adopted
 
-- **構造的型付け(Go のインターフェース、TypeScript)**: ダックタイピングに近く魅力的ですが、Ruby では「`each` を持つ」だけでなく「`each` の意味」を期待しています。名前的なモジュール + `extension` による後付け適合で同じ柔軟性を得つつ、適合の意図を明示させる方を選びました。
-- **動的型 `Dynamic`**: 試作時の手軽さのために検討しましたが、1 つでもあるとすべてのクラスに実行時メソッドテーブルが必要になり、インタプリタと AOT の両方で最適化を妨げます。試作の手軽さは推論の強化で得ることにします。
-- **全体推論(Crystal)**: 引数型を省けますが、コンパイル時間とエラーメッセージの質が犠牲になります。「メソッドの境界では書く」が Quarz の割り切りです。
+- **Structural typing (Go interfaces, TypeScript)**: attractive because it is close to duck typing, but in Ruby what we expect is not merely "has `each`" but "what `each` means". We chose nominal modules plus retroactive conformance via `extension`, which gives the same flexibility while making the intent to conform explicit.
+- **A dynamic type `Dynamic`**: considered for prototyping convenience, but having even one requires run-time method tables for every class and hinders optimization in both the interpreter and the AOT compiler. Prototyping convenience will instead come from stronger inference.
+- **Whole-program inference (Crystal)**: lets you omit parameter types, but sacrifices compile time and the quality of error messages. "Write types at method boundaries" is Quarz's trade-off.

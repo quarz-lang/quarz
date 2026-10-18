@@ -1,33 +1,35 @@
-# 並行プログラミング
+# Concurrent Programming
 
-Quarz の並行モデルは次の 3 つの部品からなります。
+日本語版: [04-concurrency.ja.md](04-concurrency.ja.md)
 
-1. **タスク** — goroutine / Erlang プロセスに相当する軽量スレッド。M:N スケジューリングで、数十万個を同時に動かせる。
-2. **チャネル** — 型付きのメッセージキュー。タスク間の通信と同期はこれで行う。
-3. **Atom** — 不変値を保持する共有セル。CAS による更新で、複数タスクから安全に読み書きできる。
+Quarz's concurrency model consists of three parts.
 
-そして言語全体にわたるルールが 1 つ: **可変オブジェクトはタスクの境界を越えない**([03-data-model.md](03-data-model.md) §5)。これにより、データ競合はコンパイル時に排除されます。ロックは言語レベルでは提供しません(FFI 用の `Mutex` は `FFI` モジュールにあります)。
+1. **Tasks** — lightweight threads corresponding to goroutines / Erlang processes. They are M:N scheduled, and hundreds of thousands can run at once.
+2. **Channels** — typed message queues. All communication and synchronization between tasks goes through them.
+3. **Atom** — a shared cell holding an immutable value. Updated via CAS, so multiple tasks can read and write it safely.
 
-## 1. タスク
+And there is one rule that spans the whole language: **mutable objects never cross task boundaries** ([03-data-model.md](03-data-model.md) §5). This eliminates data races at compile time. The language provides no locks (a `Mutex` for FFI purposes lives in the `FFI` module).
+
+## 1. Tasks
 
 ```ruby
 t = spawn { heavy_computation(42) }   # Task[Int]
-puts t.await                          # 完了を待って値を受け取る
+puts t.await                          # wait for completion and receive the value
 
 Task.sleep(100.ms)
-Task.yield                            # 他のタスクに譲る
-Task.current                          # 自分の Task
+Task.yield                            # yield to other tasks
+Task.current                          # the current Task
 ```
 
-- `spawn { }` は新しいタスクを作ってスケジューラに登録し、すぐ戻ります。戻り値 `Task[T]` の `T` はブロックの型です。
-- ブロックは**値で捕捉**します。外側のローカル変数は spawn の時点の値がコピーされ、ブロック内から外側の変数へ代入することはできません。捕捉される値はすべて Shareable でなければなりません。
-- `await` はタスクの完了を待ち、値を返します。タスクが例外で終わっていれば、その例外を `await` した側で再送出します。
-- タスクはコンパイラが挿入する安全点(メソッド入口、ループの後方分岐、チャネル操作、割り当て)で協調的に切り替わります。純粋な計算ループでもループ境界で切り替わるため、1 つのタスクがスケジューラを占有することはありません。
-- 各タスクは独自のスタックを持ち(§7)、Ruby のメソッドを普通に再帰呼び出しできます。`async`/`await` のような関数の色分けはありません。ブロックする操作(チャネル、IO、`sleep`)はどこからでも呼べ、呼んだタスクだけが停止します。
+- `spawn { }` creates a new task, registers it with the scheduler, and returns immediately. The `T` in the returned `Task[T]` is the type of the block.
+- The block **captures by value**. Outer local variables are copied at the time of `spawn`, and the block cannot assign to outer variables. Every captured value must be Shareable.
+- `await` waits for the task to complete and returns its value. If the task ended with an exception, that exception is re-raised on the side that called `await`.
+- Tasks switch cooperatively at safepoints inserted by the compiler (method entry, loop back-edges, channel operations, allocation). Even a pure computational loop switches at loop boundaries, so no single task can monopolize the scheduler.
+- Each task has its own stack (§7), so Ruby methods can be called recursively as usual. There is no function coloring like `async`/`await`. Blocking operations (channels, IO, `sleep`) can be called from anywhere, and only the calling task stops.
 
-## 2. 構造化並行性(`Task.scope`)
+## 2. Structured Concurrency (`Task.scope`)
 
-実用上のほとんどの並行処理は「いくつか仕事を投げて全部待つ」です。`Task.scope` はそれを安全に書くための基本形です。
+In practice, most concurrent work is "throw out some jobs and wait for all of them." `Task.scope` is the basic form for writing that safely.
 
 ```ruby
 results = Task.scope do |scope|
@@ -36,13 +38,13 @@ results = Task.scope do |scope|
 end
 ```
 
-- `Task.scope` のブロックを抜けるとき、`scope.spawn` で作ったすべてのタスクの完了を待ちます。ブロックの値がそのまま `Task.scope` の値です。
-- スコープ内のタスクが例外で終わると、**残りのタスクはキャンセル**され、完了を待った後、その例外が `Task.scope` の呼び出し元に再送出されます。複数のタスクが失敗した場合は最初の例外が送出され、残りは `cause` 連鎖として付きます。
-- ブロック本体が例外を投げた場合も同様に、子タスクをキャンセルして待ってから伝播します。
-- スコープは入れ子にできます。キャンセルは入れ子の内側へ伝播します。
-- トップレベルの `spawn`(`scope` なし)はプログラムのルートスコープに属します。メインのトップレベルコードが終わるとプログラムは終了し、残っているタスクはキャンセルされます(Ruby のメインスレッド終了と同じ)。長く生きるサービスは明示的に `Task.scope` で待ってください。
+- When leaving the `Task.scope` block, it waits for every task created with `scope.spawn` to complete. The value of the block is the value of `Task.scope`.
+- If a task in the scope ends with an exception, **the remaining tasks are cancelled**, and after waiting for them to complete, the exception is re-raised to the caller of `Task.scope`. If multiple tasks failed, the first exception is raised and the rest are attached as a `cause` chain.
+- If the block body itself raises, the same thing happens: child tasks are cancelled and waited for before the exception propagates.
+- Scopes can be nested. Cancellation propagates inward through nested scopes.
+- A top-level `spawn` (without a `scope`) belongs to the program's root scope. When the main top-level code finishes, the program exits and any remaining tasks are cancelled (the same as Ruby's main thread exiting). Long-lived services should wait explicitly with `Task.scope`.
 
-### キャンセル
+### Cancellation
 
 ```ruby
 Task.scope do |scope|
@@ -51,35 +53,35 @@ Task.scope do |scope|
   worker.cancel
 end
 
-Task.timeout(5.seconds) { slow_call }     # 超過すると Task::Timeout を送出
+Task.timeout(5.seconds) { slow_call }     # raises Task::Timeout when exceeded
 ```
 
-- `cancel` は対象タスクに「キャンセル要求」を立てます。要求されたタスクは、次にブロックする操作(チャネル、IO、`sleep`、`await`)を行う時点、または `Task.check_cancel` を呼んだ時点で `Task::Cancelled` 例外を受け取ります。
-- `Task::Cancelled` は `StandardError` ではなく `Exception` 直下のクラスなので、`rescue => e` では捕まりません。`ensure` は通常どおり実行されるので、後始末はそこに書きます。
-- キャンセルは要求であって強制ではありません。計算のみのループは `Task.check_cancel` を適宜呼ぶ必要があります(安全点で自動的に検査するオプションもあります: `--cancel-at-safepoints`)。
+- `cancel` sets a "cancellation request" on the target task. The requested task receives a `Task::Cancelled` exception at the next blocking operation it performs (channel, IO, `sleep`, `await`), or when it calls `Task.check_cancel`.
+- `Task::Cancelled` is a direct subclass of `Exception`, not `StandardError`, so `rescue => e` does not catch it. `ensure` runs as usual, so cleanup goes there.
+- Cancellation is a request, not a force. Computation-only loops need to call `Task.check_cancel` periodically (there is also an option to check automatically at safepoints: `--cancel-at-safepoints`).
 
-## 3. チャネル
+## 3. Channels
 
 ```ruby
-ch = Channel[String].new               # 容量 0(同期)
-ch = Channel[String].new(capacity: 16) # 有界バッファ
+ch = Channel[String].new               # capacity 0 (synchronous)
+ch = Channel[String].new(capacity: 16) # bounded buffer
 
-ch.send("hello")     # バッファが満杯なら受信されるまで待つ
-msg = ch.receive     # 空なら送信されるまで待つ。閉じていて空なら Channel::Closed
-msg = ch.receive?    # 閉じていて空なら nil(型は String?)
-ch.try_send("x")     # 待たずに Bool を返す
-ch.close             # 以後 send は Channel::Closed。残りの要素は受信できる
-ch.each { |m| ... }  # 閉じられるまで受信し続ける
+ch.send("hello")     # waits until received if the buffer is full
+msg = ch.receive     # waits until sent if empty. Channel::Closed if closed and empty
+msg = ch.receive?    # nil if closed and empty (type is String?)
+ch.try_send("x")     # returns Bool without waiting
+ch.close             # send raises Channel::Closed afterwards. Remaining elements can still be received
+ch.each { |m| ... }  # keeps receiving until closed
 ```
 
-- `Channel[T]` の `T` は Shareable でなければなりません。
-- 容量 0 のチャネルは送信側と受信側のランデブーで、同期に使えます。
-- `send`/`receive` は happens-before を確立します。`send` の前に行った更新は、対応する `receive` の後から見えます。これが Quarz のメモリモデルのすべてです(共有可変状態がないため、他に規定すべきことがありません)。
-- 全タスクがチャネル待ちになってデッドロックした場合、ランタイムは `DeadlockError` でプログラムを停止します(Go の "all goroutines are asleep" と同じ)。
+- The `T` of `Channel[T]` must be Shareable.
+- A channel with capacity 0 is a rendezvous between sender and receiver and can be used for synchronization.
+- `send`/`receive` establish happens-before. Updates made before a `send` are visible after the corresponding `receive`. This is the entirety of Quarz's memory model (since there is no shared mutable state, there is nothing else to specify).
+- If every task is waiting on a channel and the program deadlocks, the runtime stops the program with `DeadlockError` (the same as Go's "all goroutines are asleep").
 
 ### `select`
 
-複数のチャネル操作のうち、最初に可能になったものを 1 つ実行します。
+Executes exactly one of several channel operations, whichever becomes possible first.
 
 ```ruby
 select do |s|
@@ -87,20 +89,20 @@ select do |s|
   s.receive(quit) { |_| done = true }
   s.send(results, value) { puts "sent" }
   s.after(1.second) { puts "timeout" }
-  s.default { puts "nothing ready" }       # あると非ブロッキング
+  s.default { puts "nothing ready" }       # makes it non-blocking when present
 end
 ```
 
-`select` は同じ構造を `loop` の中で使うことが多いので、`Channel.select_loop` も用意しています。ハンドラの中で `s.stop` を呼ぶとループを抜けます(ハンドラはそれぞれ別のブロックなので、Ruby の規則どおり `break` は `s.receive` から抜けるだけで、ループは止まりません)。
+Since `select` is often used in the same shape inside a `loop`, `Channel.select_loop` is provided as well. Calling `s.stop` inside a handler exits the loop (each handler is a separate block, so by Ruby's rules `break` only exits `s.receive` and does not stop the loop).
 
 ## 4. Atom
 
-複数のタスクから更新される状態は `Atom` に入れます。中身は不変値なので、更新は「古い値から新しい値を計算して差し替える」操作になります。
+State that is updated from multiple tasks goes into an `Atom`. Its contents are an immutable value, so an update is the operation "compute a new value from the old one and swap it in."
 
 ```ruby
 counter = Atom.new(0)
-counter.update { |n| n + 1 }         # CAS ループで原子的に更新。衝突したらブロックを再実行
-counter.value                        # 読み出し
+counter.update { |n| n + 1 }         # atomic update via a CAS loop. The block is re-run on conflict
+counter.value                        # read
 counter.set(0)
 counter.compare_and_set(old, new)    # Bool
 
@@ -108,18 +110,18 @@ registry = Atom[Hash[String, Channel[Message]]].new({})
 registry.update { |h| h.put(name, ch) }
 ```
 
-- `update` のブロックは副作用を持たない純粋なものにしてください(再実行されることがあります)。
-- 永続データ構造の更新は構造共有により安価なので、大きな `Hash` を `Atom` に入れても `update` は O(log n) です。
-- `Atom` を定数に入れれば、Ruby のクラス変数やグローバル変数の代替になります。
+- Keep the `update` block pure, without side effects (it may be re-executed).
+- Updates to persistent data structures are cheap thanks to structural sharing, so even with a large `Hash` in an `Atom`, `update` is O(log n).
+- Putting an `Atom` in a constant gives you a replacement for Ruby's class variables and global variables.
 
 ```ruby
 STATS = Atom.new({ requests: 0, errors: 0 })
 STATS.update { |s| s.put(:requests, s[:requests] + 1) }
 ```
 
-## 5. アクターと Erlang 風の設計
+## 5. Actors and Erlang-style Design
 
-Erlang のプロセス + メールボックスは、タスク + 1 本のチャネルで表現できます。メッセージの型は `enum` にすると、`receive` と `case/in` の組み合わせで網羅性が検査されます。
+An Erlang process + mailbox can be expressed as a task + a single channel. If the message type is an `enum`, the combination of `receive` and `case/in` gets exhaustiveness checking.
 
 ```ruby
 enum Msg
@@ -165,11 +167,11 @@ Task.scope do |scope|
 end
 ```
 
-アクターの状態(`balance`)はタスクのローカル変数なので、そのタスク以外からは触れません。Builder などの可変オブジェクトもアクター内に閉じて使う分には問題ありません。
+The actor's state (`balance`) is a local variable of the task, so nothing outside that task can touch it. Mutable objects such as Builders are also fine as long as they are used strictly inside the actor.
 
-### 監視と再起動
+### Supervision and Restart
 
-Erlang のスーパーバイザは、`Task.scope` と再起動ループの組み合わせで書けます。標準ライブラリに `Supervisor` を用意します。
+An Erlang supervisor can be written as a combination of `Task.scope` and a restart loop. The standard library provides `Supervisor`.
 
 ```ruby
 Supervisor.run(strategy: :one_for_one, max_restarts: 5, within: 10.seconds) do |sup|
@@ -178,31 +180,31 @@ Supervisor.run(strategy: :one_for_one, max_restarts: 5, within: 10.seconds) do |
 end
 ```
 
-- 子タスクが例外で終わると、戦略に従って再起動します。
-- `Task#on_exit { |result| }` で終了通知を受け取れます(Erlang の `monitor` 相当)。`link` 相当は `Task.scope` そのものです。
+- When a child task ends with an exception, it is restarted according to the strategy.
+- `Task#on_exit { |result| }` delivers an exit notification (the equivalent of Erlang's `monitor`). The equivalent of `link` is `Task.scope` itself.
 
-## 6. ブロッキング処理と IO
+## 6. Blocking Operations and IO
 
-- 標準ライブラリの IO(`File`、`Socket`、`IO`、`Process`)はすべて非同期ランタイム(io_uring / epoll / kqueue)の上に作られており、呼び出したタスクだけが待ちます。コードは同期的に書けます。
-- `IO` ハンドルは Shareable ではなく、所有するタスクからだけ使えます。他のタスクに読み書きさせたければ、チャネルで仲介します。
-- ブロックする可能性のある C 関数(FFI)や、長い計算を OS スレッドに逃がしたいときは `Task.blocking { }` を使います。専用のスレッドプールで実行され、スケジューラは止まりません。
+- All IO in the standard library (`File`, `Socket`, `IO`, `Process`) is built on the asynchronous runtime (io_uring / epoll / kqueue), and only the calling task waits. Code is written synchronously.
+- `IO` handles are not Shareable and can only be used from the owning task. To let other tasks read or write, mediate through a channel.
+- To push a potentially blocking C function (FFI) or a long computation onto an OS thread, use `Task.blocking { }`. It runs on a dedicated thread pool and the scheduler does not stall.
 
 ```ruby
 rows = Task.blocking { legacy_c_query(sql) }
 ```
 
-## 7. ランタイムの構造
+## 7. Runtime Structure
 
-- **スケジューラ**: OS スレッド(既定で CPU コア数)ごとに実行キューを持つワークスティーリング型。`QUARZ_THREADS=1` で単一スレッドに固定でき、決定性が必要なテストに使えます。
-- **スタック**: タスクごとに仮想メモリを `mmap` で予約(既定 1 MiB、`spawn(stack: 8.mib)` で変更可)し、物理ページは触れたときだけコミットします。先頭にガードページを置き、あふれると `SystemStackError`。64 ビット環境ではアドレス空間が十分にあるため、100 万タスクでも実メモリは実際に使った分(通常 4〜8 KiB/タスク)だけです。Go のようなスタックのコピーは、AOT コンパイルされたコードのスタック内ポインタを書き換える必要があり採用しませんでした。
-- **プリエンプション**: 協調的(安全点)。将来、シグナルによる非同期プリエンプションを追加する余地を残します。
-- **タイマー**: タイミングホイール。`sleep`/`after`/`timeout` が使います。
-- **チャネル**: ロックフリーの MPMC キュー + 待機者リスト。
-- **参照カウントとの関係**: タスク境界を越える値(チャネルで送る、`spawn` で捕捉する、`Atom` に入れる)は、その時点で「共有済み」フラグが立ち、以後の参照カウント操作だけが原子的になります(Lean 4 と同じ方式)。タスク内に閉じた値は非原子的なカウント操作のままです。
+- **Scheduler**: work-stealing, with a run queue per OS thread (defaults to the number of CPU cores). `QUARZ_THREADS=1` pins it to a single thread, which is useful for tests that need determinism.
+- **Stacks**: virtual memory is reserved per task with `mmap` (default 1 MiB, changeable with `spawn(stack: 8.mib)`), and physical pages are committed only when touched. A guard page sits at the top, and overflow raises `SystemStackError`. On 64-bit systems the address space is ample, so even with a million tasks, real memory is only what is actually used (typically 4–8 KiB per task). Stack copying as in Go was not adopted because it would require rewriting pointers into the stack in AOT-compiled code.
+- **Preemption**: cooperative (safepoints). Room is left to add asynchronous signal-based preemption in the future.
+- **Timers**: a timing wheel. Used by `sleep`/`after`/`timeout`.
+- **Channels**: lock-free MPMC queue + waiter list.
+- **Relation to reference counting**: a value that crosses a task boundary (sent on a channel, captured by `spawn`, placed in an `Atom`) gets a "shared" flag set at that moment, and only its subsequent reference-count operations become atomic (the same scheme as Lean 4). Values confined to a task keep non-atomic count operations.
 
-## 8. 採用しなかった案
+## 8. Rejected Alternatives
 
-- **ロックと可変共有メモリ(Java/Go の Mutex)**: Go ですらデータ競合は検出ツール頼みです。可変オブジェクトをタスクに閉じ込め、共有は不変値と `Atom` で行う方が、Ruby プログラマにとっても「ロックを忘れた」バグを根絶できます。
-- **async/await(関数の色分け)**: ブロック操作の呼び出し位置に印をつける必要があり、Ruby 風の素朴なコード(`gets` を呼ぶだけ)が書けなくなります。スタックを持つ軽量タスクはコストが小さく、Ruby らしさを保てます。
-- **Erlang 風のプロセスごとのヒープ**: 不変値を共有できる以上、ヒープを分ける理由はメッセージコピーの回避ではなく GC の独立性ですが、参照カウントなら GC の停止はそもそもありません。
-- **Ruby の Ractor**: 目指すところは近いですが、Quarz は Shareable を型として静的に検査し、実行時のエラーにしません。
+- **Locks and shared mutable memory (Java/Go's Mutex)**: even Go relies on detection tools for data races. Confining mutable objects to tasks and sharing only immutable values and `Atom`s eradicates "forgot the lock" bugs, for Ruby programmers too.
+- **async/await (function coloring)**: requires marking the call sites of blocking operations, making naive Ruby-style code (just calling `gets`) impossible. Lightweight tasks with their own stacks are cheap and preserve the Ruby feel.
+- **Erlang-style per-process heaps**: given that immutable values can be shared, the reason to separate heaps is not to avoid message copying but GC independence; with reference counting there are no GC pauses in the first place.
+- **Ruby's Ractor**: the goals are close, but Quarz checks Shareable statically as a type rather than turning it into a runtime error.

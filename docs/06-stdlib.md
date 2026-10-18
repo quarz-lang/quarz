@@ -1,98 +1,100 @@
-# 標準ライブラリ
+# Standard Library
 
-組み込みクラスの名前とメソッド名は Ruby に合わせます。違いは「破壊的メソッドがない(不変型)」「`nil` を返しうる操作には `?` 付きの版がある」「並行プリミティブが追加される」の 3 点に集約されます。
+日本語版: [06-stdlib.ja.md](06-stdlib.ja.md)
 
-## 1. Kernel(トップレベルで使える関数)
+The names of built-in classes and methods follow Ruby. The differences boil down to three points: "no destructive methods (immutable types)," "operations that may return `nil` have a `?` variant," and "concurrency primitives are added."
 
-`puts`、`print`、`p`、`pp`、`warn`、`raise`、`loop`、`sleep`(= `Task.sleep`)、`spawn`、`select`、`exit`、`abort`、`at_exit`、`require`、`require_relative`、`gets?`、`rand`、`format`/`sprintf`、`Integer(...)`/`Float(...)`/`String(...)`(変換・失敗で例外)。
+## 1. Kernel (functions available at the top level)
 
-`eval`、`send`、`binding`、`method`、`instance_eval`、`define_method`、`ObjectSpace`、`fork`、`system`/バッククォート(`Process.run` に移動)はありません。
+`puts`, `print`, `p`, `pp`, `warn`, `raise`, `loop`, `sleep` (= `Task.sleep`), `spawn`, `select`, `exit`, `abort`, `at_exit`, `require`, `require_relative`, `gets?`, `rand`, `format`/`sprintf`, `Integer(...)`/`Float(...)`/`String(...)` (conversion; raises on failure).
+
+`eval`, `send`, `binding`, `method`, `instance_eval`, `define_method`, `ObjectSpace`, `fork`, `system`/backticks (moved to `Process.run`) do not exist.
 
 ## 2. Object
 
-`==`、`equal?`、`hash`、`to_s`、`inspect`、`class`、`is_a?`、`nil?`、`tap`、`then`、`dup`(可変オブジェクトのみ)、`as`、`as?`、`frozen?`(常に真、互換のため)。
+`==`, `equal?`, `hash`, `to_s`, `inspect`, `class`, `is_a?`, `nil?`, `tap`, `then`, `dup` (mutable objects only), `as`, `as?`, `frozen?` (always true, for compatibility).
 
-## 3. 数値
+## 3. Numbers
 
-- `Int`(任意精度)、`Float`、固定幅 `Int8`…`UInt64`、`Float32`。`Rational`/`Complex` は `require "rational"`/`"complex"`。
-- `Int`: `+ - * / % ** divmod abs gcd lcm pow(mod) bit_length to_s(base) times upto downto step digits chr ord even? odd? zero? clamp` など Ruby と同じ。`Int#/(Float) -> Float` など混在演算の多重定義あり。
-- `Float`: `floor ceil round truncate nan? infinite? to_i to_r`。`Float::INFINITY`、`Float::NAN`。
-- `Math`: `sqrt sin cos atan2 log exp hypot` など。`Math::PI`、`Math::E`。
-- `Random`: `Random.new(seed)`、`rand`、`bytes`。`Random::DEFAULT` はタスクごとに独立したシードを持つ。
-- `Duration`: `100.ms`、`2.seconds`、`1.5.minutes` を `Int`/`Float` への拡張として提供(`using Duration::Literals` で有効化。`require "time"` が自動で行う)。
+- `Int` (arbitrary precision), `Float`, fixed-width `Int8`…`UInt64`, `Float32`. `Rational`/`Complex` via `require "rational"`/`"complex"`.
+- `Int`: `+ - * / % ** divmod abs gcd lcm pow(mod) bit_length to_s(base) times upto downto step digits chr ord even? odd? zero? clamp` and so on, the same as Ruby. Overloads for mixed arithmetic such as `Int#/(Float) -> Float`.
+- `Float`: `floor ceil round truncate nan? infinite? to_i to_r`. `Float::INFINITY`, `Float::NAN`.
+- `Math`: `sqrt sin cos atan2 log exp hypot` etc. `Math::PI`, `Math::E`.
+- `Random`: `Random.new(seed)`, `rand`, `bytes`. `Random::DEFAULT` has an independent seed per task.
+- `Duration`: `100.ms`, `2.seconds`, `1.5.minutes` are provided as extensions on `Int`/`Float` (enabled with `using Duration::Literals`; `require "time"` does this automatically).
 
-## 4. 文字列・シンボル・バイト列
+## 4. Strings, Symbols, Byte Sequences
 
-- `String`(不変、UTF-8): `+ * % == <=> [] []? size bytesize chars bytes graphemes lines split scan match match? =~ sub gsub upcase downcase capitalize swapcase strip lstrip rstrip chomp chop start_with? end_with? include? index rindex center ljust rjust tr delete squeeze count reverse each_char each_line to_i to_f to_sym to_s inspect unpack encode format hex oct succ ord` …
-- `String#[]` は範囲外で `IndexError`、`[]?` は `nil`。`String#%` は書式。
-- `String::Builder`: `<< push append insert delete_at clear to_s size`。`String.build { |b| }`。
-- `Symbol`: `to_s to_proc <=> size`。
-- `Bytes`(不変)、`Bytes::Builder`。`pack`/`unpack` は `Bytes` 上に。
+- `String` (immutable, UTF-8): `+ * % == <=> [] []? size bytesize chars bytes graphemes lines split scan match match? =~ sub gsub upcase downcase capitalize swapcase strip lstrip rstrip chomp chop start_with? end_with? include? index rindex center ljust rjust tr delete squeeze count reverse each_char each_line to_i to_f to_sym to_s inspect unpack encode format hex oct succ ord` …
+- `String#[]` raises `IndexError` when out of range; `[]?` returns `nil`. `String#%` is formatting.
+- `String::Builder`: `<< push append insert delete_at clear to_s size`. `String.build { |b| }`.
+- `Symbol`: `to_s to_proc <=> size`.
+- `Bytes` (immutable), `Bytes::Builder`. `pack`/`unpack` live on `Bytes`.
 
-## 5. コレクション
+## 5. Collections
 
-### Enumerable[T](モジュール)
+### Enumerable[T] (module)
 
-`abstract def each(&block: (T) -> Nil)` を実装すれば使えます。Ruby と同じメソッド群: `map select reject filter_map flat_map reduce inject sum min max min_by max_by sort sort_by group_by partition chunk_while each_slice each_cons each_with_index each_with_object with_index zip take drop take_while drop_while find find_index include? count tally uniq first first(n) to_a to_set to_h lazy any? all? none? one? cycle`。
+Available once you implement `abstract def each(&block: (T) -> Nil)`. The same set of methods as Ruby: `map select reject filter_map flat_map reduce inject sum min max min_by max_by sort sort_by group_by partition chunk_while each_slice each_cons each_with_index each_with_object with_index zip take drop take_while drop_while find find_index include? count tally uniq first first(n) to_a to_set to_h lazy any? all? none? one? cycle`.
 
-ブロックなしで呼ぶと `Enumerator[T]` を返します。`Enumerator` はクロージャ(内部イテレータの一時停止はタスクで実装)で、`next`/`peek`/`rewind` を持ちます。`lazy` は `Lazy[T]` で遅延評価のチェーンを作ります。
+Called without a block, they return `Enumerator[T]`. `Enumerator` is a closure (suspension of the internal iterator is implemented with a task) with `next`/`peek`/`rewind`. `lazy` builds a lazily evaluated chain as `Lazy[T]`.
 
-### Array[out T](不変)
+### Array[out T] (immutable)
 
-- 読み出し: `[] []? at fetch first first? last last? size empty? include? index rindex sample shuffle slice dig values_at each each_index reverse_each bsearch pack join to_a to_h` + Enumerable。
-- 更新(新しい値を返す): `push pop shift unshift insert set delete delete_at delete_if compact flatten reverse rotate sort sort_by uniq + - * & | concat fill(新しい配列) take drop slice`。
-- `Array::Builder[T]`(可変): Ruby の `Array` の破壊的 API。`<< push pop shift unshift insert []= delete delete_at delete_if compact! flatten! reverse! rotate! sort! sort_by! uniq! map! select! reject! concat fill clear replace`。`to_a`/`freeze` で不変化(一回限り)。
-- `Array.build { |b| }`、`Array.new(n) { |i| }`、`Array[Int].new`。
+- Reading: `[] []? at fetch first first? last last? size empty? include? index rindex sample shuffle slice dig values_at each each_index reverse_each bsearch pack join to_a to_h` + Enumerable.
+- Updating (returns a new value): `push pop shift unshift insert set delete delete_at delete_if compact flatten reverse rotate sort sort_by uniq + - * & | concat fill(new array) take drop slice`.
+- `Array::Builder[T]` (mutable): the destructive API of Ruby's `Array`. `<< push pop shift unshift insert []= delete delete_at delete_if compact! flatten! reverse! rotate! sort! sort_by! uniq! map! select! reject! concat fill clear replace`. Made immutable with `to_a`/`freeze` (one time only).
+- `Array.build { |b| }`, `Array.new(n) { |i| }`, `Array[Int].new`.
 
-### Hash[K, out V](不変・挿入順)
+### Hash[K, out V] (immutable, insertion-ordered)
 
-- 読み出し: `[] []? fetch key? value? keys values size empty? each each_pair each_key each_value dig to_a to_h invert min_by` + Enumerable(要素は `[K, V]` タプル)。
-- 更新: `put delete merge(&block) update(k) { |v| } select reject filter_map transform_values transform_keys compact sort_by group_by`。
-- `Hash::Builder[K, V]`: `[]= store delete merge! update clear`。`Hash.build { |b| }`、`Hash.new`(既定値なし。既定値は `fetch(k, default)` や `fetch(k) { }` で)。
-- `Hash#[]` は欠損キーで `KeyError`、`[]?` は `nil`。`default`/`default_proc` はありません。
+- Reading: `[] []? fetch key? value? keys values size empty? each each_pair each_key each_value dig to_a to_h invert min_by` + Enumerable (elements are `[K, V]` tuples).
+- Updating: `put delete merge(&block) update(k) { |v| } select reject filter_map transform_values transform_keys compact sort_by group_by`.
+- `Hash::Builder[K, V]`: `[]= store delete merge! update clear`. `Hash.build { |b| }`, `Hash.new` (no default value; defaults via `fetch(k, default)` or `fetch(k) { }`).
+- `Hash#[]` raises `KeyError` for a missing key; `[]?` returns `nil`. There is no `default`/`default_proc`.
 
-### Set[out T]、Range[T]、Tuple
+### Set[out T], Range[T], Tuple
 
-- `Set`: `add delete include? | & - ^ subset? superset? size each to_a`。`Set::Builder`。
-- `Range`: Ruby と同じ(`each step include? cover? to_a size first last min max sum`)。
-- タプル `[A, B]`: `[0]`(型は静的)、`size`、`to_a`、多重代入、パターン。
+- `Set`: `add delete include? | & - ^ subset? superset? size each to_a`. `Set::Builder`.
+- `Range`: the same as Ruby (`each step include? cover? to_a size first last min max sum`).
+- Tuple `[A, B]`: `[0]` (statically typed), `size`, `to_a`, multiple assignment, patterns.
 
-## 6. 手続き
+## 6. Procs
 
-- 手続き型 `(A...) -> R`。`call`、`()`、`.()`、`[]`、`curry`、`>>`、`<<`、`arity`。
-- `Method` オブジェクトはありません。`obj.method(:foo)` の代わりに `->(x) { obj.foo(x) }` か `obj.:foo`(メソッド参照構文。`&obj.:foo` でブロックに渡せる)。
+- Proc types `(A...) -> R`. `call`, `()`, `.()`, `[]`, `curry`, `>>`, `<<`, `arity`.
+- There are no `Method` objects. Instead of `obj.method(:foo)`, use `->(x) { obj.foo(x) }` or `obj.:foo` (method reference syntax; `&obj.:foo` passes it as a block).
 
-## 7. 制御・エラー
+## 7. Control and Errors
 
-- 例外階層: `Exception` > (`Task::Cancelled`、`NoMemoryError`、`SystemExit`、`SystemStackError`) / `StandardError` > (`ArgumentError`、`TypeError`、`IndexError` > `KeyError`、`RangeError`、`ZeroDivisionError`、`FrozenError`、`IOError`、`SystemCallError`、`RuntimeError`、`NoMatchingPatternError`、`Channel::Closed`、`Task::Timeout`、`DeadlockError`…)。
-- `Exception#message backtrace cause full_message`。
-- `Result[T, E]`(enum): `Ok(value)`/`Err(error)`。`map`、`and_then`、`unwrap`、`unwrap_or`、`ok?`、`err?`。例外を使わないエラー処理に。
+- Exception hierarchy: `Exception` > (`Task::Cancelled`, `NoMemoryError`, `SystemExit`, `SystemStackError`) / `StandardError` > (`ArgumentError`, `TypeError`, `IndexError` > `KeyError`, `RangeError`, `ZeroDivisionError`, `FrozenError`, `IOError`, `SystemCallError`, `RuntimeError`, `NoMatchingPatternError`, `Channel::Closed`, `Task::Timeout`, `DeadlockError`…).
+- `Exception#message backtrace cause full_message`.
+- `Result[T, E]` (enum): `Ok(value)`/`Err(error)`. `map`, `and_then`, `unwrap`, `unwrap_or`, `ok?`, `err?`. For error handling without exceptions.
 
-## 8. 並行
+## 8. Concurrency
 
-`Task[T]`、`Scope`、`Channel[T]`、`Atom[T]`、`Supervisor`、`Task.scope`/`sleep`/`yield`/`timeout`/`blocking`/`current`/`check_cancel`、`select`。詳細は [04-concurrency.md](04-concurrency.md)。
+`Task[T]`, `Scope`, `Channel[T]`, `Atom[T]`, `Supervisor`, `Task.scope`/`sleep`/`yield`/`timeout`/`blocking`/`current`/`check_cancel`, `select`. Details in [04-concurrency.md](04-concurrency.md).
 
-## 9. IO・OS
+## 9. IO and OS
 
-- `IO`、`File`、`Dir`、`Socket`(`TCPSocket`、`TCPServer`、`UDPSocket`、`UNIXSocket`)、`Process`、`Signal`、`ENV`、`ARGV`、`STDIN`/`STDOUT`/`STDERR`。
-- API は Ruby と同じ(`File.read`、`File.open(path, "w") { |f| }`、`IO#gets?`、`each_line`、`write`、`puts`)。すべてタスクを止めるだけの非同期 IO です。
-- `gets`/`read` などの「EOF で nil」を返す操作は `gets?`/`read?` が `nil` を返し、`gets`/`read` は `EOFError` を送出します。
-- ハンドルは Shareable ではなく、作ったタスクが所有します。
+- `IO`, `File`, `Dir`, `Socket` (`TCPSocket`, `TCPServer`, `UDPSocket`, `UNIXSocket`), `Process`, `Signal`, `ENV`, `ARGV`, `STDIN`/`STDOUT`/`STDERR`.
+- The API is the same as Ruby (`File.read`, `File.open(path, "w") { |f| }`, `IO#gets?`, `each_line`, `write`, `puts`). All of it is asynchronous IO that only suspends the task.
+- For operations that "return nil at EOF" such as `gets`/`read`, `gets?`/`read?` return `nil`, while `gets`/`read` raise `EOFError`.
+- Handles are not Shareable and are owned by the task that created them.
 
-## 10. その他(`require` で読み込む)
+## 10. Others (loaded with `require`)
 
-`json`(`JSON.parse -> JSON::Value`(enum)、`to_json`、`JSON.decode[T](str)` で `data` へ直接デコード)、`time`(`Time`、`Duration`、`Date`)、`set`(組み込み済み)、`digest`、`base64`、`uri`、`net/http`、`csv`、`yaml`、`optparse`、`logger`、`test`(`Test::Unit` 風)、`benchmark`、`ffi`。
+`json` (`JSON.parse -> JSON::Value` (enum), `to_json`, `JSON.decode[T](str)` decodes directly into `data`), `time` (`Time`, `Duration`, `Date`), `set` (built in), `digest`, `base64`, `uri`, `net/http`, `csv`, `yaml`, `optparse`, `logger`, `test` (`Test::Unit`-style), `benchmark`, `ffi`.
 
-## 11. Ruby の組み込みで提供しないもの
+## 11. Ruby Built-ins Not Provided
 
-| Ruby | 理由 / 代替 |
+| Ruby | Reason / Replacement |
 |---|---|
-| `Thread`、`Mutex`、`Queue`、`ConditionVariable`、`Fiber`、`Ractor` | `Task`/`Channel`/`Atom` |
-| `ObjectSpace`、`GC` | 参照カウントのため不要。`GC.stat` 相当は `Runtime.stats` |
-| `Binding`、`Method`、`UnboundMethod`、`Module#define_method` ほか動的メタプログラミング | 静的化のため |
-| `Struct`、`OpenStruct`、`Data` | `data` |
-| `Comparable#clamp` 以外のモンキーパッチ的拡張 | `extension` |
-| `Encoding`(多重エンコーディング) | `String` は UTF-8 固定。`Bytes` + `Encoding.decode/encode` |
-| `$stdout`、`$;`、`$,` などのグローバル変数 | 定数 / 明示的引数 |
-| `Kernel#eval`、`instance_eval`、`class_eval` | なし |
-| `Marshal` | `Serialize` モジュール(`data`/`enum` に自動導出) |
+| `Thread`, `Mutex`, `Queue`, `ConditionVariable`, `Fiber`, `Ractor` | `Task`/`Channel`/`Atom` |
+| `ObjectSpace`, `GC` | Unnecessary due to reference counting. The equivalent of `GC.stat` is `Runtime.stats` |
+| `Binding`, `Method`, `UnboundMethod`, `Module#define_method` and other dynamic metaprogramming | For the sake of static definition |
+| `Struct`, `OpenStruct`, `Data` | `data` |
+| Monkey-patch-style extensions other than `Comparable#clamp` | `extension` |
+| `Encoding` (multiple encodings) | `String` is fixed to UTF-8. `Bytes` + `Encoding.decode/encode` |
+| Global variables such as `$stdout`, `$;`, `$,` | Constants / explicit arguments |
+| `Kernel#eval`, `instance_eval`, `class_eval` | None |
+| `Marshal` | `Serialize` module (auto-derived for `data`/`enum`) |
