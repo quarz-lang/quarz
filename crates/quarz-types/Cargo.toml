@@ -8,3 +8,4 @@ repository.workspace = true
 
 [dependencies]
 quarz-syntax = { workspace = true }
+rustc-hash = "2"

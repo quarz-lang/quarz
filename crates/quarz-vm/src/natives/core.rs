@@ -265,7 +265,7 @@ fn kernel_p(interp: &Interp, _: &Value, args: Args) -> EvalResult {
     Ok(match args.pos.len() {
         0 => Value::Nil,
         1 => args.pos[0].clone(),
-        _ => Value::array(args.pos),
+        _ => Value::array(args.pos.into_vec()),
     })
 }
 

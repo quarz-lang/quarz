@@ -7,6 +7,7 @@ use std::rc::Rc;
 
 use crate::interp::{Args, EvalResult, Flow, Interp, NativeFn, OwnedNativeFn};
 use crate::value::Value;
+use smallvec::smallvec;
 
 mod collections;
 mod concurrency;
@@ -99,7 +100,7 @@ pub fn collect(interp: &Interp, recv: &Value) -> Result<Vec<Value>, Flow> {
                     .push(args.into_iter().next().unwrap_or(Value::Nil));
                 Ok(Value::Nil)
             });
-            interp.send(recv, "each", vec![], Some(block))?;
+            interp.send(recv, "each", smallvec![], Some(block))?;
             let v = out.borrow().clone();
             Ok(v)
         }
@@ -113,7 +114,7 @@ pub fn each_value(
     block: &Value,
 ) -> Result<(), Flow> {
     for v in items {
-        interp.call_block(block, vec![v])?;
+        interp.call_block(block, smallvec![v])?;
     }
     Ok(())
 }

@@ -3,6 +3,8 @@
 
 use std::collections::{HashMap, HashSet};
 
+use rustc_hash::FxHashMap;
+
 use quarz_syntax::ast::*;
 use quarz_syntax::token::OpAssign;
 use quarz_syntax::{Diagnostic, Span};
@@ -56,26 +58,28 @@ pub enum ConstTarget {
 /// The checker's output for the evaluator.
 #[derive(Clone, Debug, Default)]
 pub struct Output {
-    pub node_types: HashMap<NodeId, Type>,
-    pub calls: HashMap<NodeId, CallTarget>,
-    pub const_targets: HashMap<NodeId, ConstTarget>,
+    pub node_types: FxHashMap<NodeId, Type>,
+    pub calls: FxHashMap<NodeId, CallTarget>,
+    pub const_targets: FxHashMap<NodeId, ConstTarget>,
     /// Variable occurrences (uses and definitions) keyed by their span.
-    pub var_refs: HashMap<Span, VarRef>,
+    pub var_refs: FxHashMap<Span, VarRef>,
     /// Frame sizes of blocks (keyed by the call node) and lambdas (keyed by
     /// the lambda node).
-    pub frame_sizes: HashMap<NodeId, u32>,
+    pub frame_sizes: FxHashMap<NodeId, u32>,
     /// Frame size of each file's top-level statements, by file index.
     pub unit_frame_sizes: Vec<u32>,
     /// Field index for `@x` reads and writes, keyed by the node.
-    pub ivar_fields: HashMap<NodeId, usize>,
+    pub ivar_fields: FxHashMap<NodeId, usize>,
     /// Classes referred to by constant patterns, keyed by pattern span.
-    pub pattern_classes: HashMap<Span, ClassId>,
+    pub pattern_classes: FxHashMap<Span, ClassId>,
     /// Methods whose `&block` is passed as `&:sym` or `&proc`, by call node.
-    pub block_pass: HashMap<NodeId, BlockPass>,
+    pub block_pass: FxHashMap<NodeId, BlockPass>,
     /// For block parameters that destructure a tuple: the arity.
-    pub block_destructure: HashMap<NodeId, usize>,
+    pub block_destructure: FxHashMap<NodeId, usize>,
     /// Exception classes of each `rescue` clause, keyed by its span.
-    pub rescue_classes: HashMap<Span, Vec<ClassId>>,
+    pub rescue_classes: FxHashMap<Span, Vec<ClassId>>,
+    /// Integer literals typed as `Float` because of their context.
+    pub float_literals: rustc_hash::FxHashSet<NodeId>,
 }
 
 #[derive(Clone, Debug)]
@@ -1284,6 +1288,7 @@ impl Checker {
                 if let Some(e) = expected {
                     let e = self.resolve(e);
                     if e == self.world.float() {
+                        self.out.float_literals.insert(expr.id);
                         return self.world.float();
                     }
                 }

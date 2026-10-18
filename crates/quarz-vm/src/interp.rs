@@ -3,6 +3,9 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+
+use rustc_hash::FxHashMap;
+use smallvec::{smallvec, SmallVec};
 use std::rc::{Rc, Weak};
 use std::time::Duration;
 
@@ -31,9 +34,12 @@ pub enum Flow {
 
 pub type EvalResult = Result<Value, Flow>;
 
+/// Positional arguments, stored inline when there are at most four.
+pub type ArgVec = SmallVec<[Value; 4]>;
+
 /// Arguments to a native method.
 pub struct Args {
-    pub pos: Vec<Value>,
+    pub pos: ArgVec,
     pub kw: Vec<(Symbol, Value)>,
     pub block: Option<Value>,
 }
@@ -56,8 +62,129 @@ pub type NativeFn = fn(&Interp, &Value, Args) -> EvalResult;
 /// back so the caller can restore it.
 pub type OwnedNativeFn = fn(&Interp, Value, Args) -> Result<Value, (Flow, Value)>;
 
-/// Key of the by-name method cache: class, name, arity, block given.
-type NameKey = (ClassId, String, usize, bool);
+/// Key of the by-name method cache: class, arity, block given (the name
+/// is the inner key, so lookups do not allocate).
+type NameKey = (ClassId, usize, bool);
+
+/// Operators of `Int` and `Float` computed without a method call.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FastOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+    Eq,
+    Ne,
+    Cmp,
+}
+
+impl FastOp {
+    pub fn from_name(name: &str) -> Option<FastOp> {
+        Some(match name {
+            "+" => FastOp::Add,
+            "-" => FastOp::Sub,
+            "*" => FastOp::Mul,
+            "/" => FastOp::Div,
+            "%" => FastOp::Mod,
+            "<" => FastOp::Lt,
+            "<=" => FastOp::Le,
+            ">" => FastOp::Gt,
+            ">=" => FastOp::Ge,
+            "==" => FastOp::Eq,
+            "!=" => FastOp::Ne,
+            "<=>" => FastOp::Cmp,
+            _ => return None,
+        })
+    }
+}
+
+/// Apply an operator to two numbers directly. `None` means the generic
+/// path must be taken (overflow, division by zero, other types).
+#[inline]
+pub fn fast_binop(op: FastOp, a: &Value, b: &Value) -> Option<Value> {
+    use std::cmp::Ordering;
+    match (a, b) {
+        (Value::Int(x), Value::Int(y)) => {
+            let (x, y) = (*x, *y);
+            Some(match op {
+                FastOp::Add => Value::Int(x.checked_add(y)?),
+                FastOp::Sub => Value::Int(x.checked_sub(y)?),
+                FastOp::Mul => Value::Int(x.checked_mul(y)?),
+                FastOp::Div => {
+                    if y == 0 || (x == i64::MIN && y == -1) {
+                        return None;
+                    }
+                    // Floor division, as in Ruby.
+                    let q = x / y;
+                    Value::Int(if (x % y != 0) && ((x < 0) != (y < 0)) {
+                        q - 1
+                    } else {
+                        q
+                    })
+                }
+                FastOp::Mod => {
+                    if y == 0 || (x == i64::MIN && y == -1) {
+                        return None;
+                    }
+                    let r = x % y;
+                    Value::Int(if r != 0 && ((r < 0) != (y < 0)) {
+                        r + y
+                    } else {
+                        r
+                    })
+                }
+                FastOp::Lt => Value::Bool(x < y),
+                FastOp::Le => Value::Bool(x <= y),
+                FastOp::Gt => Value::Bool(x > y),
+                FastOp::Ge => Value::Bool(x >= y),
+                FastOp::Eq => Value::Bool(x == y),
+                FastOp::Ne => Value::Bool(x != y),
+                FastOp::Cmp => Value::Int(x.cmp(&y) as i64),
+            })
+        }
+        (Value::Float(_), Value::Float(_))
+        | (Value::Int(_), Value::Float(_))
+        | (Value::Float(_), Value::Int(_)) => {
+            let x = match a {
+                Value::Int(i) => *i as f64,
+                Value::Float(f) => *f,
+                _ => return None,
+            };
+            let y = match b {
+                Value::Int(i) => *i as f64,
+                Value::Float(f) => *f,
+                _ => return None,
+            };
+            Some(match op {
+                FastOp::Add => Value::Float(x + y),
+                FastOp::Sub => Value::Float(x - y),
+                FastOp::Mul => Value::Float(x * y),
+                FastOp::Div => Value::Float(x / y),
+                FastOp::Mod => {
+                    let r = x % y;
+                    Value::Float(if r != 0.0 && ((r < 0.0) != (y < 0.0)) {
+                        r + y
+                    } else {
+                        r
+                    })
+                }
+                FastOp::Lt => Value::Bool(x < y),
+                FastOp::Le => Value::Bool(x <= y),
+                FastOp::Gt => Value::Bool(x > y),
+                FastOp::Ge => Value::Bool(x >= y),
+                FastOp::Eq => Value::Bool(x == y),
+                FastOp::Ne => Value::Bool(x != y),
+                FastOp::Cmp => Value::Int(x.partial_cmp(&y).unwrap_or(Ordering::Equal) as i64),
+            })
+        }
+        _ => None,
+    }
+}
 
 /// Run-time state that outlives one interpreter instance (the REPL creates
 /// an interpreter per input over the same state).
@@ -168,15 +295,22 @@ pub struct Interp {
     variant_singletons: Rc<RefCell<HashMap<ClassId, Value>>>,
     pub natives: Vec<Option<NativeFn>>,
     pub natives_owned: Vec<Option<OwnedNativeFn>>,
+    /// Operators of Int/Float with a direct implementation, by method.
+    pub fast_ops: Vec<Option<FastOp>>,
+    /// Field index of generated readers/writers, by method.
+    synth_field: Vec<Option<usize>>,
+    /// Field layout of every class (own and inherited fields in order).
+    class_fields: Vec<Rc<Vec<quarz_types::FieldInfo>>>,
+    field_indices: Vec<FxHashMap<String, usize>>,
     pub sched: Rc<RefCell<Scheduler>>,
-    dispatch_cache: RefCell<HashMap<(ClassId, MethodId), MethodId>>,
-    name_cache: RefCell<HashMap<NameKey, Option<MethodId>>>,
+    dispatch_cache: RefCell<FxHashMap<(ClassId, MethodId), MethodId>>,
+    name_cache: RefCell<FxHashMap<NameKey, FxHashMap<String, Option<MethodId>>>>,
     regexp_cache: RefCell<HashMap<u32, Value>>,
     next_tag: Rc<Cell<u64>>,
     pub argv: Vec<String>,
     pub exc: ExcClasses,
     pub rt: RtClasses,
-    pub call_stack: RefCell<Vec<Rc<str>>>,
+    pub call_stack: RefCell<Vec<MethodId>>,
     pub at_exit: Rc<RefCell<Vec<Value>>>,
     pub stdout: Rc<RefCell<Box<dyn std::io::Write>>>,
     self_rc: RefCell<Weak<Interp>>,
@@ -224,6 +358,49 @@ impl Interp {
             .map(|m| {
                 if m.is_native && m.synth == Synth::None {
                     registry.get(m.native_key(&world).as_str()).copied()
+                } else {
+                    None
+                }
+            })
+            .collect();
+        // Field layouts and generated accessors.
+        let class_fields: Vec<Rc<Vec<quarz_types::FieldInfo>>> = (0..world.classes.len())
+            .map(|cid| {
+                Rc::new(
+                    world
+                        .all_fields(cid as ClassId)
+                        .into_iter()
+                        .map(|(f, _)| f)
+                        .collect(),
+                )
+            })
+            .collect();
+        let field_indices: Vec<FxHashMap<String, usize>> = class_fields
+            .iter()
+            .map(|fields| {
+                fields
+                    .iter()
+                    .enumerate()
+                    .map(|(i, f)| (f.name.clone(), i))
+                    .collect()
+            })
+            .collect();
+        let synth_field: Vec<Option<usize>> = world
+            .methods
+            .iter()
+            .map(|m| match &m.synth {
+                Synth::FieldGet(name) | Synth::FieldSet(name) => {
+                    field_indices[m.owner as usize].get(name).copied()
+                }
+                _ => None,
+            })
+            .collect();
+        let fast_ops: Vec<Option<FastOp>> = world
+            .methods
+            .iter()
+            .map(|m| {
+                if m.is_native && (m.owner == world.builtin.int || m.owner == world.builtin.float) {
+                    FastOp::from_name(&m.name)
                 } else {
                     None
                 }
@@ -319,9 +496,13 @@ impl Interp {
             variant_singletons: state.variant_singletons,
             natives,
             natives_owned,
+            fast_ops,
+            synth_field,
+            class_fields,
+            field_indices,
             sched: state.sched,
-            dispatch_cache: RefCell::new(HashMap::new()),
-            name_cache: RefCell::new(HashMap::new()),
+            dispatch_cache: RefCell::new(FxHashMap::default()),
+            name_cache: RefCell::new(FxHashMap::default()),
             regexp_cache: RefCell::new(HashMap::new()),
             next_tag: state.next_tag,
             argv,
@@ -565,7 +746,7 @@ impl Interp {
     ) -> Rc<TaskHandle> {
         let me = self.rc();
         let body: Box<dyn FnOnce() -> TaskExit> = Box::new(move || {
-            let r = me.call_block(&closure, vec![]);
+            let r = me.call_block(&closure, smallvec![]);
             match r {
                 Ok(v) => TaskExit::Result(TaskResult::Value(v)),
                 Err(Flow::Raise(e)) => TaskExit::Result(TaskResult::Error(e)),
@@ -644,7 +825,7 @@ impl Interp {
     // ----- exceptions ------------------------------------------------------------------
 
     pub fn make_exception(&self, class: ClassId, message: &str) -> Value {
-        let n = self.world.all_fields(class).len().max(1);
+        let n = self.class_fields(class).len().max(1);
         let mut fields = vec![Value::Nil; n];
         fields[0] = Value::str(message);
         let bt = self.capture_backtrace();
@@ -660,7 +841,15 @@ impl Interp {
     /// off).
     pub fn capture_backtrace(&self) -> Vec<String> {
         let stack = self.call_stack.borrow();
-        let mut bt: Vec<String> = stack.iter().rev().take(32).map(|s| s.to_string()).collect();
+        let mut bt: Vec<String> = stack
+            .iter()
+            .rev()
+            .take(32)
+            .map(|mid| {
+                let m = self.world.method(*mid);
+                format!("{}#{}", self.world.class(m.owner).name, m.name)
+            })
+            .collect();
         if stack.len() > 32 {
             bt.push(format!("... {} more frames", stack.len() - 32));
         }
@@ -738,6 +927,15 @@ impl Interp {
 
     pub fn class_name(&self, v: &Value) -> String {
         self.world.class(self.class_of(v)).name.clone()
+    }
+
+    /// The fields of a class in layout order (inherited first).
+    pub fn class_fields(&self, cid: ClassId) -> Rc<Vec<quarz_types::FieldInfo>> {
+        self.class_fields[cid as usize].clone()
+    }
+
+    pub fn field_index(&self, cid: ClassId, name: &str) -> Option<usize> {
+        self.field_indices[cid as usize].get(name).copied()
     }
 
     /// `value.is_a?(type)`, ignoring type arguments.
@@ -835,8 +1033,8 @@ impl Interp {
         argc: usize,
         with_block: bool,
     ) -> Option<MethodId> {
-        let key = (cid, name.to_string(), argc, with_block);
-        if let Some(found) = self.name_cache.borrow().get(&key) {
+        let key = (cid, argc, with_block);
+        if let Some(found) = self.name_cache.borrow().get(&key).and_then(|m| m.get(name)) {
             return *found;
         }
         let mut found = None;
@@ -882,19 +1080,17 @@ impl Interp {
             }
         }
         let result = found.or(fallback);
-        self.name_cache.borrow_mut().insert(key, result);
+        self.name_cache
+            .borrow_mut()
+            .entry(key)
+            .or_default()
+            .insert(name.to_string(), result);
         result
     }
 
     /// Call a method by name with dynamic lookup (used by `&:sym`,
     /// enumerators, `to_s`, operators in compound assignment).
-    pub fn send(
-        &self,
-        recv: &Value,
-        name: &str,
-        args: Vec<Value>,
-        block: Option<Value>,
-    ) -> EvalResult {
+    pub fn send(&self, recv: &Value, name: &str, args: ArgVec, block: Option<Value>) -> EvalResult {
         let cid = self.class_of(recv);
         let Some(mid) = self.find_method(cid, name, args.len(), block.is_some()) else {
             return Err(self.raise(
@@ -926,7 +1122,7 @@ impl Interp {
         &self,
         mid: MethodId,
         recv: Value,
-        args: Vec<Value>,
+        args: ArgVec,
         kw: Vec<(Symbol, Value)>,
         block: Option<Value>,
     ) -> EvalResult {
@@ -947,14 +1143,18 @@ impl Interp {
                 let Value::Object(o) = &recv else {
                     return Err(self.err_type("field access on a non-object"));
                 };
-                let idx = self.world.field_index(o.class, name).unwrap_or(0);
+                let idx = self.synth_field[mid as usize]
+                    .or_else(|| self.field_index(o.class, name))
+                    .unwrap_or(0);
                 return Ok(o.fields.borrow().get(idx).cloned().unwrap_or(Value::Nil));
             }
             Synth::FieldSet(name) => {
                 let Value::Object(o) = &recv else {
                     return Err(self.err_type("field access on a non-object"));
                 };
-                let idx = self.world.field_index(o.class, name).unwrap_or(0);
+                let idx = self.synth_field[mid as usize]
+                    .or_else(|| self.field_index(o.class, name))
+                    .unwrap_or(0);
                 let v = args.into_iter().next().unwrap_or(Value::Nil);
                 let mut fields = o.fields.borrow_mut();
                 if idx >= fields.len() {
@@ -996,13 +1196,9 @@ impl Interp {
                     return Err(self.err_type("`to_h` on a non-object"));
                 };
                 let mut map = indexmap::IndexMap::new();
-                for (f, v) in self
-                    .world
-                    .all_fields(o.class)
-                    .iter()
-                    .zip(o.fields.borrow().iter())
-                {
-                    map.insert(Value::Symbol(self.intern(&f.0.name)), v.clone());
+                let fields = self.class_fields(o.class);
+                for (f, v) in fields.iter().zip(o.fields.borrow().iter()) {
+                    map.insert(Value::Symbol(self.intern(&f.name)), v.clone());
                 }
                 return Ok(Value::Hash(Rc::new(map)));
             }
@@ -1045,9 +1241,7 @@ impl Interp {
             file: m.file,
         };
         self.bind_params(&ctx, mid, args, kw, block)?;
-        self.call_stack.borrow_mut().push(Rc::from(
-            format!("{}#{}", self.world.class(m.owner).name, m.name).as_str(),
-        ));
+        self.call_stack.borrow_mut().push(mid);
         let body = def.body.as_deref().unwrap_or(&[]);
         let r = self.eval_body(body, &ctx);
         self.call_stack.borrow_mut().pop();
@@ -1063,7 +1257,7 @@ impl Interp {
         &self,
         mid: MethodId,
         recv: Value,
-        args: Vec<Value>,
+        args: ArgVec,
         kw: Vec<(Symbol, Value)>,
     ) -> Result<Value, (Flow, Value)> {
         let mid = self.resolve_dynamic(&recv, mid);
@@ -1088,7 +1282,7 @@ impl Interp {
         &self,
         n: usize,
         params: &[quarz_types::ParamInfo],
-        args: Vec<Value>,
+        args: ArgVec,
         kw: Vec<(Symbol, Value)>,
     ) -> Result<Vec<Value>, Flow> {
         let mut values = vec![Value::Nil; n];
@@ -1130,7 +1324,7 @@ impl Interp {
         &self,
         ctx: &Ctx,
         mid: MethodId,
-        args: Vec<Value>,
+        args: ArgVec,
         kw: Vec<(Symbol, Value)>,
         block: Option<Value>,
     ) -> Result<(), Flow> {
@@ -1201,7 +1395,7 @@ impl Interp {
         for (i, p) in m.params.iter().enumerate() {
             if p.assigns_ivar {
                 if let Value::Object(o) = &ctx.self_val {
-                    if let Some(idx) = self.world.field_index(o.class, &p.name) {
+                    if let Some(idx) = self.field_index(o.class, &p.name) {
                         let v = frame.get(0, i as u32);
                         let mut fields = o.fields.borrow_mut();
                         if idx >= fields.len() {
@@ -1220,11 +1414,11 @@ impl Interp {
         &self,
         class: ClassId,
         init: Option<MethodId>,
-        args: Vec<Value>,
+        args: ArgVec,
         kw: Vec<(Symbol, Value)>,
         block: Option<Value>,
     ) -> EvalResult {
-        let fields = self.world.all_fields(class);
+        let fields = self.class_fields(class);
         let obj = Rc::new(Object {
             class,
             fields: RefCell::new(vec![Value::Nil; fields.len()]),
@@ -1233,7 +1427,7 @@ impl Interp {
         });
         let value = Value::Object(obj.clone());
         // Field defaults.
-        let has_defaults = fields.iter().any(|(f, _)| f.default.is_some());
+        let has_defaults = fields.iter().any(|f| f.default.is_some());
         if has_defaults
             && !matches!(
                 self.world.class(class).kind,
@@ -1249,7 +1443,7 @@ impl Interp {
                 method: None,
                 file: self.world.class(class).file,
             };
-            for (i, (f, _)) in fields.iter().enumerate() {
+            for (i, f) in fields.iter().enumerate() {
                 if let Some(d) = &f.default {
                     let v = self.eval(d, &ctx)?;
                     obj.fields.borrow_mut()[i] = v;
@@ -1282,7 +1476,7 @@ impl Interp {
 
     /// Call a block/procedure value with arguments. `next` yields the
     /// block's value; `break` propagates to the call that received it.
-    pub fn call_block(&self, proc: &Value, mut args: Vec<Value>) -> EvalResult {
+    pub fn call_block(&self, proc: &Value, mut args: ArgVec) -> EvalResult {
         let Value::Proc(closure) = proc else {
             return Err(self.err_type("not a procedure"));
         };
@@ -1306,8 +1500,7 @@ impl Interp {
                 if let Some(n) = closure.destructure {
                     if args.len() == 1 {
                         if let Value::Array(a) = &args[0] {
-                            let items: Vec<Value> = a.iter().cloned().collect();
-                            let mut items = items;
+                            let mut items: ArgVec = a.iter().cloned().collect();
                             items.resize(n.max(items.len()), Value::Nil);
                             args = items;
                         }
@@ -1358,7 +1551,7 @@ impl Interp {
     }
 
     /// A block implemented in Rust.
-    pub fn native_block(&self, f: impl Fn(&Interp, Vec<Value>) -> EvalResult + 'static) -> Value {
+    pub fn native_block(&self, f: impl Fn(&Interp, ArgVec) -> EvalResult + 'static) -> Value {
         let tag = self.new_tag();
         Value::Proc(Rc::new(Closure {
             body: ClosureBody::Native(Rc::new(f)),
@@ -1390,7 +1583,7 @@ impl Interp {
             Value::Str(s) => Ok(s.clone()),
             Value::Object(o) => {
                 if let Some(mid) = self.has_user_method(v, "to_s", 0) {
-                    let r = self.invoke(mid, v.clone(), vec![], vec![], None)?;
+                    let r = self.invoke(mid, v.clone(), smallvec![], vec![], None)?;
                     return self.to_s(&r);
                 }
                 if self.world.is_exception_class(o.class) {
@@ -1405,7 +1598,7 @@ impl Interp {
     pub fn inspect(&self, v: &Value) -> Result<String, Flow> {
         if let Value::Object(_) = v {
             if let Some(mid) = self.has_user_method(v, "inspect", 0) {
-                let r = self.invoke(mid, v.clone(), vec![], vec![], None)?;
+                let r = self.invoke(mid, v.clone(), smallvec![], vec![], None)?;
                 return Ok(self.to_s(&r)?.to_string());
             }
         }
@@ -1495,22 +1688,22 @@ impl Interp {
                 }
                 match class.kind {
                     ClassKind::Data | ClassKind::Variant => {
-                        let fields = self.world.all_fields(o.class);
+                        let fields = self.class_fields(o.class);
                         if fields.is_empty() {
                             return Ok(class.name.clone());
                         }
                         let mut parts = Vec::new();
                         for (f, val) in fields.iter().zip(o.fields.borrow().iter()) {
-                            parts.push(format!("{}: {}", f.0.name, self.inspect(val)?));
+                            parts.push(format!("{}: {}", f.name, self.inspect(val)?));
                         }
                         format!("{}({})", class.name, parts.join(", "))
                     }
                     ClassKind::Main => "main".to_string(),
                     _ => {
-                        let fields = self.world.all_fields(o.class);
+                        let fields = self.class_fields(o.class);
                         let mut parts = Vec::new();
                         for (f, val) in fields.iter().zip(o.fields.borrow().iter()) {
-                            parts.push(format!("@{}={}", f.0.name, self.inspect(val)?));
+                            parts.push(format!("@{}={}", f.name, self.inspect(val)?));
                         }
                         if parts.is_empty() {
                             format!("#<{}>", class.name)
@@ -1569,7 +1762,7 @@ impl Interp {
     pub fn values_equal(&self, a: &Value, b: &Value) -> Result<bool, Flow> {
         if let Value::Object(_) = a {
             if let Some(mid) = self.has_user_method(a, "==", 1) {
-                let r = self.invoke(mid, a.clone(), vec![b.clone()], vec![], None)?;
+                let r = self.invoke(mid, a.clone(), smallvec![b.clone()], vec![], None)?;
                 return Ok(r.is_truthy());
             }
         }
@@ -1606,7 +1799,7 @@ impl Interp {
             }
             _ => {}
         }
-        let r = self.send(a, "<=>", vec![b.clone()], None)?;
+        let r = self.send(a, "<=>", smallvec![b.clone()], None)?;
         match r {
             Value::Int(i) => Ok(i.cmp(&0)),
             _ => Err(self.err_arg(&format!(

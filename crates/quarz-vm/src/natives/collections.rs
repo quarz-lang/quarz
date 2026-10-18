@@ -9,6 +9,7 @@ use indexmap::{IndexMap, IndexSet};
 
 use crate::interp::{Args, EvalResult, Flow, Interp, NativeFn, OwnedNativeFn};
 use crate::value::*;
+use smallvec::smallvec;
 
 use super::{block, collect, int, string};
 
@@ -138,14 +139,14 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     m.insert("Array#each_index", |i, r, a| {
         let b = block(i, &a)?;
         for k in 0..arr(i, r)?.len() {
-            i.call_block(&b, vec![Value::Int(k as i64)])?;
+            i.call_block(&b, smallvec![Value::Int(k as i64)])?;
         }
         Ok(Value::Nil)
     });
     m.insert("Array#reverse_each", |i, r, a| {
         let b = block(i, &a)?;
         for x in arr(i, r)?.iter().rev() {
-            i.call_block(&b, vec![x.clone()])?;
+            i.call_block(&b, smallvec![x.clone()])?;
         }
         Ok(Value::Nil)
     });
@@ -410,7 +411,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
         let items = b.borrow().clone();
         let mut out = Vec::with_capacity(items.len());
         for x in items {
-            out.push(i.call_block(&bl, vec![x])?);
+            out.push(i.call_block(&bl, smallvec![x])?);
         }
         *b.borrow_mut() = out;
         Ok(r.clone())
@@ -421,7 +422,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
         let items = b.borrow().clone();
         let mut out = Vec::new();
         for x in items {
-            if i.call_block(&bl, vec![x.clone()])?.is_truthy() {
+            if i.call_block(&bl, smallvec![x.clone()])?.is_truthy() {
                 out.push(x);
             }
         }
@@ -434,7 +435,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
         let items = b.borrow().clone();
         let mut out = Vec::new();
         for x in items {
-            if !i.call_block(&bl, vec![x.clone()])?.is_truthy() {
+            if !i.call_block(&bl, smallvec![x.clone()])?.is_truthy() {
                 out.push(x);
             }
         }
@@ -445,7 +446,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
         let b = block(i, &a)?;
         let items = ab(i, r)?.borrow().clone();
         for x in items {
-            i.call_block(&b, vec![x])?;
+            i.call_block(&b, smallvec![x])?;
         }
         Ok(Value::Nil)
     });
@@ -453,7 +454,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
         let b = block(i, &a)?;
         let items = ab(i, r)?.borrow().clone();
         for (k, x) in items.into_iter().enumerate() {
-            i.call_block(&b, vec![x, Value::Int(k as i64)])?;
+            i.call_block(&b, smallvec![x, Value::Int(k as i64)])?;
         }
         Ok(Value::Nil)
     });
@@ -477,28 +478,28 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     m.insert("Hash#each", |i, r, a| {
         let b = block(i, &a)?;
         for (k, v) in hash(i, r)?.iter() {
-            i.call_block(&b, vec![Value::array(vec![k.clone(), v.clone()])])?;
+            i.call_block(&b, smallvec![Value::array(vec![k.clone(), v.clone()])])?;
         }
         Ok(Value::Nil)
     });
     m.insert("Hash#each_pair", |i, r, a| {
         let b = block(i, &a)?;
         for (k, v) in hash(i, r)?.iter() {
-            i.call_block(&b, vec![k.clone(), v.clone()])?;
+            i.call_block(&b, smallvec![k.clone(), v.clone()])?;
         }
         Ok(Value::Nil)
     });
     m.insert("Hash#each_key", |i, r, a| {
         let b = block(i, &a)?;
         for k in hash(i, r)?.keys() {
-            i.call_block(&b, vec![k.clone()])?;
+            i.call_block(&b, smallvec![k.clone()])?;
         }
         Ok(Value::Nil)
     });
     m.insert("Hash#each_value", |i, r, a| {
         let b = block(i, &a)?;
         for v in hash(i, r)?.values() {
-            i.call_block(&b, vec![v.clone()])?;
+            i.call_block(&b, smallvec![v.clone()])?;
         }
         Ok(Value::Nil)
     });
@@ -565,7 +566,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
         let b = block(i, &a)?;
         let mut out = IndexMap::new();
         for (k, v) in hash(i, r)?.iter() {
-            out.insert(k.clone(), i.call_block(&b, vec![v.clone()])?);
+            out.insert(k.clone(), i.call_block(&b, smallvec![v.clone()])?);
         }
         Ok(Value::Hash(Rc::new(out)))
     });
@@ -573,7 +574,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
         let b = block(i, &a)?;
         let mut out = IndexMap::new();
         for (k, v) in hash(i, r)?.iter() {
-            out.insert(i.call_block(&b, vec![k.clone()])?, v.clone());
+            out.insert(i.call_block(&b, smallvec![k.clone()])?, v.clone());
         }
         Ok(Value::Hash(Rc::new(out)))
     });
@@ -677,7 +678,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
         for (k, v) in items {
-            i.call_block(&b, vec![k, v])?;
+            i.call_block(&b, smallvec![k, v])?;
         }
         Ok(Value::Nil)
     });
@@ -706,7 +707,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     m.insert("Set#each", |i, r, a| {
         let b = block(i, &a)?;
         for x in set(i, r)?.iter() {
-            i.call_block(&b, vec![x.clone()])?;
+            i.call_block(&b, smallvec![x.clone()])?;
         }
         Ok(Value::Nil)
     });
@@ -800,7 +801,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
         let b = block(i, &a)?;
         let items: Vec<Value> = sb(i, r)?.borrow().iter().cloned().collect();
         for x in items {
-            i.call_block(&b, vec![x])?;
+            i.call_block(&b, smallvec![x])?;
         }
         Ok(Value::Nil)
     });
@@ -863,7 +864,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     m.insert("Enumerator#with_index", |i, r, a| {
         let b = block(i, &a)?;
         for (k, x) in collect(i, r)?.into_iter().enumerate() {
-            i.call_block(&b, vec![x, Value::Int(k as i64)])?;
+            i.call_block(&b, smallvec![x, Value::Int(k as i64)])?;
         }
         Ok(Value::Nil)
     });
@@ -988,7 +989,7 @@ fn array_new(interp: &Interp, _: &Value, args: Args) -> EvalResult {
             let n = int(interp, n, "size")?.max(0);
             let mut out = Vec::with_capacity(n as usize);
             for i in 0..n {
-                out.push(interp.call_block(b, vec![Value::Int(i)])?);
+                out.push(interp.call_block(b, smallvec![Value::Int(i)])?);
             }
             Ok(Value::array(out))
         }
@@ -999,7 +1000,7 @@ fn array_new(interp: &Interp, _: &Value, args: Args) -> EvalResult {
 fn array_build(interp: &Interp, _: &Value, args: Args) -> EvalResult {
     let b = block(interp, &args)?;
     let builder = Rc::new(RefCell::new(Vec::new()));
-    interp.call_block(&b, vec![Value::ArrayBuilder(builder.clone())])?;
+    interp.call_block(&b, smallvec![Value::ArrayBuilder(builder.clone())])?;
     let items = std::mem::take(&mut *builder.borrow_mut());
     Ok(Value::array(items))
 }
@@ -1008,7 +1009,7 @@ fn array_each(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let b = block(interp, &args)?;
     let items = arr(interp, recv)?.clone();
     for x in items.iter() {
-        interp.call_block(&b, vec![x.clone()])?;
+        interp.call_block(&b, smallvec![x.clone()])?;
     }
     Ok(Value::Nil)
 }
@@ -1132,7 +1133,7 @@ fn array_map(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let items = arr(interp, recv)?.clone();
     let mut out = Vec::with_capacity(items.len());
     for x in items.iter() {
-        out.push(interp.call_block(&b, vec![x.clone()])?);
+        out.push(interp.call_block(&b, smallvec![x.clone()])?);
     }
     Ok(Value::array(out))
 }
@@ -1142,7 +1143,7 @@ fn array_select(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let items = arr(interp, recv)?.clone();
     let mut out = Vec::new();
     for x in items.iter() {
-        if interp.call_block(&b, vec![x.clone()])?.is_truthy() {
+        if interp.call_block(&b, smallvec![x.clone()])?.is_truthy() {
             out.push(x.clone());
         }
     }
@@ -1226,7 +1227,7 @@ fn ab_set(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
 fn hash_build(interp: &Interp, _: &Value, args: Args) -> EvalResult {
     let b = block(interp, &args)?;
     let builder = Rc::new(RefCell::new(IndexMap::new()));
-    interp.call_block(&b, vec![Value::HashBuilder(builder.clone())])?;
+    interp.call_block(&b, smallvec![Value::HashBuilder(builder.clone())])?;
     let map = std::mem::take(&mut *builder.borrow_mut());
     Ok(Value::Hash(Rc::new(map)))
 }
@@ -1237,7 +1238,7 @@ fn hash_fetch(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
         return Ok(v.clone());
     }
     match (&args.block, args.pos.get(1)) {
-        (Some(b), _) => interp.call_block(b, vec![args.arg(0).clone()]),
+        (Some(b), _) => interp.call_block(b, smallvec![args.arg(0).clone()]),
         (None, Some(d)) => Ok(d.clone()),
         (None, None) => Err(interp.raise(
             interp.exc.key_error,
@@ -1254,7 +1255,7 @@ fn hash_merge(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     for (k, v) in other.iter() {
         let merged = match (map.get(k), &block) {
             (Some(existing), Some(b)) => {
-                interp.call_block(b, vec![k.clone(), existing.clone(), v.clone()])?
+                interp.call_block(b, smallvec![k.clone(), existing.clone(), v.clone()])?
             }
             _ => v.clone(),
         };
@@ -1267,7 +1268,7 @@ fn hash_update_key(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let b = block(interp, &args)?;
     let key = args.arg(0).clone();
     let current = hash(interp, recv)?.get(&key).cloned().unwrap_or(Value::Nil);
-    let new = interp.call_block(&b, vec![current])?;
+    let new = interp.call_block(&b, smallvec![current])?;
     hash_update(interp, recv, |h| {
         h.insert(key, new);
     })
@@ -1278,7 +1279,7 @@ fn hash_filter(interp: &Interp, recv: &Value, args: Args, keep: bool) -> EvalRes
     let mut out = IndexMap::new();
     for (k, v) in hash(interp, recv)?.iter() {
         if interp
-            .call_block(&b, vec![k.clone(), v.clone()])?
+            .call_block(&b, smallvec![k.clone(), v.clone()])?
             .is_truthy()
             == keep
         {
@@ -1291,7 +1292,7 @@ fn hash_filter(interp: &Interp, recv: &Value, args: Args, keep: bool) -> EvalRes
 fn set_build(interp: &Interp, _: &Value, args: Args) -> EvalResult {
     let b = block(interp, &args)?;
     let builder = Rc::new(RefCell::new(IndexSet::new()));
-    interp.call_block(&b, vec![Value::SetBuilder(builder.clone())])?;
+    interp.call_block(&b, smallvec![Value::SetBuilder(builder.clone())])?;
     let s = std::mem::take(&mut *builder.borrow_mut());
     Ok(Value::Set(Rc::new(s)))
 }
@@ -1319,7 +1320,7 @@ pub fn range_to_vec(interp: &Interp, r: &RangeVal) -> Result<Vec<Value>, Flow> {
                     break;
                 }
                 out.push(cur.clone());
-                cur = interp.send(&cur, "succ", vec![], None)?;
+                cur = interp.send(&cur, "succ", smallvec![], None)?;
                 guard += 1;
                 if guard > 1_000_000 {
                     break;
@@ -1339,27 +1340,27 @@ fn range_each(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
             let end = if r.exclusive { *hi } else { hi + 1 };
             let mut i = *lo;
             while i < end {
-                interp.call_block(&b, vec![Value::Int(i)])?;
+                interp.call_block(&b, smallvec![Value::Int(i)])?;
                 i += 1;
             }
         }
         (Value::Int(lo), Value::Nil) => {
             let mut i = *lo;
             loop {
-                interp.call_block(&b, vec![Value::Int(i)])?;
+                interp.call_block(&b, smallvec![Value::Int(i)])?;
                 i += 1;
             }
         }
         (Value::Int(lo), Value::Float(f)) if f.is_infinite() && *f > 0.0 => {
             let mut i = *lo;
             loop {
-                interp.call_block(&b, vec![Value::Int(i)])?;
+                interp.call_block(&b, smallvec![Value::Int(i)])?;
                 i += 1;
             }
         }
         _ => {
             for v in range_to_vec(interp, r)? {
-                interp.call_block(&b, vec![v])?;
+                interp.call_block(&b, smallvec![v])?;
             }
         }
     }
@@ -1379,7 +1380,7 @@ fn range_step(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let end = if r.exclusive { *hi } else { hi + 1 };
     let mut i = *lo;
     while i < end {
-        interp.call_block(&b, vec![Value::Int(i)])?;
+        interp.call_block(&b, smallvec![Value::Int(i)])?;
         i += step;
     }
     Ok(Value::Nil)
@@ -1392,7 +1393,7 @@ fn enumerator_each(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
         return Err(interp.err_type("expected an Enumerator"));
     };
     let b = block(interp, &args)?;
-    interp.send(&e.recv, &e.method, e.args.clone(), Some(b))
+    interp.send(&e.recv, &e.method, e.args.clone().into(), Some(b))
 }
 
 fn enumerator_next(interp: &Interp, recv: &Value, _: Args) -> EvalResult {

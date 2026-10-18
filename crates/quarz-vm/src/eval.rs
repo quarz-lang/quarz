@@ -5,14 +5,16 @@ use std::rc::Rc;
 use indexmap::IndexMap;
 use quarz_syntax::ast::*;
 use quarz_syntax::token::OpAssign;
-use quarz_types::{CallTarget, ConstTarget, Member, Type};
+use quarz_types::{CallTarget, ConstTarget, Member};
+use smallvec::smallvec;
 
 use crate::interp::*;
+use crate::interp::{fast_binop, ArgVec, FastOp};
 use crate::value::*;
 
 /// Positional arguments, keyword arguments and the `&block` argument of a
 /// call.
-pub type EvaluatedArgs = (Vec<Value>, Vec<(Symbol, Value)>, Option<Value>);
+pub type EvaluatedArgs = (ArgVec, Vec<(Symbol, Value)>, Option<Value>);
 
 impl Interp {
     pub fn eval_body(&self, body: &[Expr], ctx: &Ctx) -> EvalResult {
@@ -31,19 +33,22 @@ impl Interp {
             False => Ok(Value::Bool(false)),
             SelfRef => Ok(ctx.self_val.clone()),
             Int(lit) => {
-                let v = parse_int(&lit.digits, lit.base);
-                if let Some(Type::Class(cid, _)) = self.out.node_types.get(&expr.id) {
-                    if *cid == self.world.builtin.float {
-                        let f = match &v {
-                            Value::Int(i) => *i as f64,
-                            Value::BigInt(b) => {
-                                use num_traits::ToPrimitive;
-                                b.to_f64().unwrap_or(f64::INFINITY)
-                            }
-                            _ => 0.0,
-                        };
-                        return Ok(Value::Float(f));
-                    }
+                let v = match lit.value {
+                    Some(i) => Value::Int(i),
+                    None => parse_int(&lit.digits, lit.base),
+                };
+                // An integer literal in a Float context is a Float.
+                if !self.out.float_literals.is_empty() && self.out.float_literals.contains(&expr.id)
+                {
+                    let f = match &v {
+                        Value::Int(i) => *i as f64,
+                        Value::BigInt(b) => {
+                            use num_traits::ToPrimitive;
+                            b.to_f64().unwrap_or(f64::INFINITY)
+                        }
+                        _ => 0.0,
+                    };
+                    return Ok(Value::Float(f));
                 }
                 Ok(v)
             }
@@ -159,7 +164,7 @@ impl Interp {
                 };
                 let idx = match self.out.ivar_fields.get(&expr.id) {
                     Some(i) => *i,
-                    None => self.world.field_index(o.class, name).unwrap_or(0),
+                    None => self.field_index(o.class, name).unwrap_or(0),
                 };
                 Ok(o.fields.borrow().get(idx).cloned().unwrap_or(Value::Nil))
             }
@@ -220,7 +225,7 @@ impl Interp {
                             );
                         };
                         let m = self.world.method(mid);
-                        let mut pos = Vec::new();
+                        let mut pos = ArgVec::new();
                         let mut kw = Vec::new();
                         for (i, p) in m.params.iter().enumerate() {
                             let v = ctx.frame.get(0, i as u32);
@@ -483,7 +488,7 @@ impl Interp {
                 Value::Str(s) => re.regex.is_match(s),
                 _ => false,
             }),
-            Value::Proc(_) => Ok(self.call_block(pattern, vec![v.clone()])?.is_truthy()),
+            Value::Proc(_) => Ok(self.call_block(pattern, smallvec![v.clone()])?.is_truthy()),
             _ => self.values_equal(pattern, v),
         }
     }
@@ -513,7 +518,7 @@ impl Interp {
     /// Evaluate call arguments into positional, keyword and block-pass
     /// values.
     pub fn eval_args(&self, args: &[Arg], ctx: &Ctx) -> Result<EvaluatedArgs, Flow> {
-        let mut pos = Vec::with_capacity(args.len());
+        let mut pos = ArgVec::new();
         let mut kw = Vec::new();
         let mut block = None;
         for a in args {
@@ -596,6 +601,14 @@ impl Interp {
         };
         match target {
             Some(CallTarget::Method { method }) => {
+                // Arithmetic and comparisons on numbers without a call.
+                if let Some(op) = self.fast_ops[*method as usize] {
+                    if pos.len() == 1 && kw.is_empty() && block.is_none() {
+                        if let Some(v) = fast_binop(op, &recv, &pos[0]) {
+                            return Ok(v);
+                        }
+                    }
+                }
                 let mid = self.resolve_dynamic(&recv, *method);
                 let r = self.invoke(mid, recv, pos, kw, block.clone());
                 self.catch_break(&block, r)
@@ -625,7 +638,7 @@ impl Interp {
         }
     }
 
-    fn eval_raise(&self, args: Vec<Value>) -> EvalResult {
+    fn eval_raise(&self, args: ArgVec) -> EvalResult {
         let mut it = args.into_iter();
         let first = it.next().unwrap_or(Value::Nil);
         let exc = match first {
@@ -712,7 +725,7 @@ impl Interp {
                     return Ok(Value::Nil);
                 }
                 let v = self.eval(value, ctx)?;
-                self.send(&r, &format!("{name}="), vec![v.clone()], None)?;
+                self.send(&r, &format!("{name}="), smallvec![v.clone()], None)?;
                 Ok(v)
             }
             LValue::Index { recv, args } => {
@@ -735,7 +748,7 @@ impl Interp {
         };
         let idx = match self.out.ivar_fields.get(&node) {
             Some(i) => *i,
-            None => self.world.field_index(o.class, name).unwrap_or(0),
+            None => self.field_index(o.class, name).unwrap_or(0),
         };
         let mut fields = o.fields.borrow_mut();
         if idx >= fields.len() {
@@ -760,7 +773,7 @@ impl Interp {
                 let cur = r
                     .map(|r| ctx.frame.get(r.depth, r.slot))
                     .unwrap_or(Value::Nil);
-                (cur, None, Vec::new())
+                (cur, None, ArgVec::new())
             }
             LValue::IVar(name) => {
                 let Value::Object(o) = &ctx.self_val else {
@@ -768,15 +781,15 @@ impl Interp {
                 };
                 let idx = match self.out.ivar_fields.get(&expr.id) {
                     Some(i) => *i,
-                    None => self.world.field_index(o.class, name).unwrap_or(0),
+                    None => self.field_index(o.class, name).unwrap_or(0),
                 };
                 let cur = o.fields.borrow().get(idx).cloned().unwrap_or(Value::Nil);
-                (cur, None, Vec::new())
+                (cur, None, ArgVec::new())
             }
             LValue::Attr { recv, name, .. } => {
                 let r = self.eval(recv, ctx)?;
-                let cur = self.send(&r, name, vec![], None)?;
-                (cur, Some(r), Vec::new())
+                let cur = self.send(&r, name, smallvec![], None)?;
+                (cur, Some(r), ArgVec::new())
             }
             LValue::Index { recv, args } => {
                 let r = self.eval(recv, ctx)?;
@@ -818,7 +831,7 @@ impl Interp {
                 self.send(
                     recv.as_ref().unwrap(),
                     &format!("{name}="),
-                    vec![result.clone()],
+                    smallvec![result.clone()],
                     None,
                 )?;
             }
@@ -834,27 +847,12 @@ impl Interp {
 
     /// Apply a binary operator by name with fast paths for numbers.
     pub fn binary_op(&self, lhs: &Value, name: &str, rhs: Value) -> EvalResult {
-        match (lhs, &rhs, name) {
-            (Value::Int(a), Value::Int(b), "+") => {
-                return Ok(match a.checked_add(*b) {
-                    Some(r) => Value::Int(r),
-                    None => {
-                        int_from_big(num_bigint::BigInt::from(*a) + num_bigint::BigInt::from(*b))
-                    }
-                })
+        if let Some(op) = FastOp::from_name(name) {
+            if let Some(v) = fast_binop(op, lhs, &rhs) {
+                return Ok(v);
             }
-            (Value::Int(a), Value::Int(b), "-") => {
-                return Ok(match a.checked_sub(*b) {
-                    Some(r) => Value::Int(r),
-                    None => {
-                        int_from_big(num_bigint::BigInt::from(*a) - num_bigint::BigInt::from(*b))
-                    }
-                })
-            }
-            (Value::Float(a), Value::Float(b), "+") => return Ok(Value::Float(a + b)),
-            _ => {}
         }
-        self.send(lhs, name, vec![rhs], None)
+        self.send(lhs, name, smallvec![rhs], None)
     }
 
     fn assign_multi(&self, targets: &[MultiTarget], v: &Value, ctx: &Ctx) -> Result<(), Flow> {
@@ -907,7 +905,7 @@ impl Interp {
                 let Value::Object(o) = &ctx.self_val else {
                     return Err(self.raise(self.exc.runtime_error, "@ivar outside of an object"));
                 };
-                let idx = self.world.field_index(o.class, name).unwrap_or(0);
+                let idx = self.field_index(o.class, name).unwrap_or(0);
                 let mut fields = o.fields.borrow_mut();
                 if idx >= fields.len() {
                     fields.resize(idx + 1, Value::Nil);
@@ -917,7 +915,7 @@ impl Interp {
             }
             LValue::Attr { recv, name, .. } => {
                 let r = self.eval(recv, ctx)?;
-                self.send(&r, &format!("{name}="), vec![v], None)?;
+                self.send(&r, &format!("{name}="), smallvec![v], None)?;
                 Ok(())
             }
             LValue::Index { recv, args } => {
@@ -1061,7 +1059,7 @@ impl Interp {
                     return Ok(false);
                 };
                 for pair in &hp.pairs {
-                    let Some(idx) = self.world.field_index(o.class, &pair.key) else {
+                    let Some(idx) = self.field_index(o.class, &pair.key) else {
                         return Ok(false);
                     };
                     let fv = o.fields.borrow().get(idx).cloned().unwrap_or(Value::Nil);
@@ -1172,7 +1170,7 @@ impl Interp {
                 }
                 Value::Object(o) => {
                     for pair in &hp.pairs {
-                        let Some(idx) = self.world.field_index(o.class, &pair.key) else {
+                        let Some(idx) = self.field_index(o.class, &pair.key) else {
                             return Ok(false);
                         };
                         let fv = o.fields.borrow().get(idx).cloned().unwrap_or(Value::Nil);

@@ -8,6 +8,7 @@ use std::time::Duration;
 use crate::interp::{Args, EvalResult, Flow, Interp, NativeFn};
 use crate::sched::{ChannelInner, ScopeInner, SelectorState, TaskHandle};
 use crate::value::*;
+use smallvec::smallvec;
 
 use super::{block, int};
 
@@ -42,7 +43,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     m.insert("Task.timeout", task_timeout);
     m.insert("Task.blocking", |i, _, a| {
         let b = block(i, &a)?;
-        i.call_block(&b, vec![])
+        i.call_block(&b, smallvec![])
     });
     m.insert("Task.check_cancel", |i, _, _| {
         let t = i.current_task();
@@ -188,7 +189,7 @@ fn atom<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Rc<RefCell<Value>>, Flo
 fn kernel_loop(interp: &Interp, _: &Value, args: Args) -> EvalResult {
     let b = block(interp, &args)?;
     loop {
-        match interp.call_block(&b, vec![]) {
+        match interp.call_block(&b, smallvec![]) {
             Ok(_) => {}
             Err(Flow::Raise(e)) if interp.exception_is_a(&e, interp.exc.stop_iteration) => {
                 return Ok(Value::Nil)
@@ -220,7 +221,7 @@ fn task_scope(interp: &Interp, _: &Value, args: Args) -> EvalResult {
         children: RefCell::new(Vec::new()),
         cancelled: Cell::new(false),
     });
-    let result = interp.call_block(&b, vec![Value::Scope(scope.clone())]);
+    let result = interp.call_block(&b, smallvec![Value::Scope(scope.clone())]);
     let (value, mut failure): (Value, Option<Flow>) = match result {
         Ok(v) => (v, None),
         Err(e) => {
@@ -397,7 +398,7 @@ fn channel_each(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
         if v.is_nil() && c.closed.get() && c.buffer.borrow().is_empty() {
             return Ok(Value::Nil);
         }
-        interp.call_block(&b, vec![v])?;
+        interp.call_block(&b, smallvec![v])?;
     }
 }
 
@@ -406,7 +407,7 @@ fn channel_each(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
 fn run_select(interp: &Interp, block: &Value, looping: bool) -> EvalResult {
     loop {
         let state = Rc::new(RefCell::new(SelectorState::default()));
-        interp.call_block(block, vec![Value::Selector(state.clone())])?;
+        interp.call_block(block, smallvec![Value::Selector(state.clone())])?;
         if state.borrow().stopped {
             return Ok(Value::Nil);
         }
@@ -436,7 +437,7 @@ fn select_once(interp: &Interp, state: &Rc<RefCell<SelectorState>>) -> Result<()
                 if let Some(seq) = timer_seq {
                     interp.sched.borrow_mut().cancel_timer(seq);
                 }
-                interp.call_block(handler, vec![v])?;
+                interp.call_block(handler, smallvec![v])?;
                 return Ok(());
             }
             if c.closed.get() {
@@ -467,14 +468,14 @@ fn select_once(interp: &Interp, state: &Rc<RefCell<SelectorState>>) -> Result<()
                 if let Some(seq) = timer_seq {
                     interp.sched.borrow_mut().cancel_timer(seq);
                 }
-                interp.call_block(handler, vec![])?;
+                interp.call_block(handler, smallvec![])?;
                 return Ok(());
             }
         }
         // Timeout.
         if let Some((d, handler)) = &after {
             if timer_start.elapsed() >= *d {
-                interp.call_block(handler, vec![])?;
+                interp.call_block(handler, smallvec![])?;
                 return Ok(());
             }
         }
@@ -484,7 +485,7 @@ fn select_once(interp: &Interp, state: &Rc<RefCell<SelectorState>>) -> Result<()
             if let Some(seq) = timer_seq {
                 interp.sched.borrow_mut().cancel_timer(seq);
             }
-            interp.call_block(&handler, vec![])?;
+            interp.call_block(&handler, smallvec![])?;
             return Ok(());
         }
         if receives.is_empty() && sends.is_empty() && after.is_none() {
@@ -508,7 +509,7 @@ fn atom_update(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let cell = atom(interp, recv)?;
     loop {
         let current = cell.borrow().clone();
-        let new = interp.call_block(&b, vec![current.clone()])?;
+        let new = interp.call_block(&b, smallvec![current.clone()])?;
         // Single-threaded: the value can only have changed if the block
         // suspended and another task updated it.
         if cell.borrow().identical(&current) {

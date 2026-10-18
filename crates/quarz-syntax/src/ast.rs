@@ -194,6 +194,19 @@ pub enum ExprKind {
 pub struct IntLit {
     pub digits: String,
     pub base: u8,
+    /// The value when it fits in 64 bits (parsed once by the parser).
+    pub value: Option<i64>,
+}
+
+impl IntLit {
+    pub fn new(digits: String, base: u8) -> IntLit {
+        let value = i64::from_str_radix(&digits, base as u32).ok();
+        IntLit {
+            digits,
+            base,
+            value,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

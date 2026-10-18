@@ -6,6 +6,7 @@ use std::rc::Rc;
 
 use crate::interp::{Args, EvalResult, Flow, Interp, NativeFn};
 use crate::value::*;
+use smallvec::smallvec;
 
 use super::{block, int, string};
 
@@ -322,7 +323,7 @@ fn md<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Rc<MatchDataVal>, Flow> {
 fn string_build(interp: &Interp, _: &Value, args: Args) -> EvalResult {
     let b = block(interp, &args)?;
     let builder = Rc::new(RefCell::new(String::new()));
-    interp.call_block(&b, vec![Value::StringBuilder(builder.clone())])?;
+    interp.call_block(&b, smallvec![Value::StringBuilder(builder.clone())])?;
     let s = std::mem::take(&mut *builder.borrow_mut());
     Ok(Value::string(s))
 }
@@ -730,7 +731,7 @@ fn string_each_char(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let text = s(interp, recv)?;
     let b = block(interp, &args)?;
     for c in text.chars() {
-        interp.call_block(&b, vec![Value::string(c.to_string())])?;
+        interp.call_block(&b, smallvec![Value::string(c.to_string())])?;
     }
     Ok(Value::Nil)
 }
@@ -739,7 +740,7 @@ fn string_each_line(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let text = s(interp, recv)?;
     let b = block(interp, &args)?;
     for line in text.split_inclusive('\n') {
-        interp.call_block(&b, vec![Value::str(line)])?;
+        interp.call_block(&b, smallvec![Value::str(line)])?;
     }
     Ok(Value::Nil)
 }

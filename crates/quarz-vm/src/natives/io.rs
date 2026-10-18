@@ -5,6 +5,7 @@ use std::rc::Rc;
 
 use crate::interp::{Args, EvalResult, Flow, Interp, NativeFn};
 use crate::value::*;
+use smallvec::smallvec;
 
 use super::{block, string};
 
@@ -50,7 +51,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
             match super::core_gets(i, false)? {
                 Value::Nil => return Ok(Value::Nil),
                 line => {
-                    i.call_block(&b, vec![line])?;
+                    i.call_block(&b, smallvec![line])?;
                 }
             }
         }

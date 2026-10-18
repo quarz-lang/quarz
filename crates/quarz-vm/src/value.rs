@@ -14,6 +14,7 @@ use indexmap::{IndexMap, IndexSet};
 use num_bigint::BigInt;
 use quarz_syntax::ast::Block;
 use quarz_types::ClassId;
+use smallvec::SmallVec;
 
 use crate::sched::{ChannelInner, ScopeInner, SelectorState, TaskHandle};
 
@@ -78,14 +79,14 @@ impl<T> std::fmt::Debug for AstRef<T> {
 /// created in.
 #[derive(Debug)]
 pub struct Frame {
-    pub slots: RefCell<Vec<Value>>,
+    pub slots: RefCell<SmallVec<[Value; 8]>>,
     pub parent: Option<Rc<Frame>>,
 }
 
 impl Frame {
     pub fn new(size: usize, parent: Option<Rc<Frame>>) -> Rc<Frame> {
         Rc::new(Frame {
-            slots: RefCell::new(vec![Value::Nil; size]),
+            slots: RefCell::new(smallvec::smallvec![Value::Nil; size]),
             parent,
         })
     }
@@ -125,7 +126,8 @@ pub struct Object {
 }
 
 /// A block implemented in Rust (used by natives that iterate).
-pub type NativeBlock = Rc<dyn Fn(&crate::interp::Interp, Vec<Value>) -> crate::interp::EvalResult>;
+pub type NativeBlock =
+    Rc<dyn Fn(&crate::interp::Interp, crate::interp::ArgVec) -> crate::interp::EvalResult>;
 
 /// The body a closure runs: a block from the AST, a method reference
 /// (`&:name`), or a native function.

@@ -9,6 +9,7 @@ use num_traits::{Signed, ToPrimitive, Zero};
 
 use crate::interp::{Args, EvalResult, Flow, Interp, NativeFn};
 use crate::value::*;
+use smallvec::smallvec;
 
 use super::{block, float, int};
 
@@ -215,7 +216,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
             i,
             r,
             &Args {
-                pos: vec![Value::Int(1)],
+                pos: smallvec![Value::Int(1)],
                 kw: a.kw,
                 block: None,
             },
@@ -227,7 +228,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
             i,
             r,
             &Args {
-                pos: vec![Value::Int(1)],
+                pos: smallvec![Value::Int(1)],
                 kw: a.kw,
                 block: None,
             },
@@ -485,7 +486,7 @@ fn int_times(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
         return enumerator(interp, recv, "times", vec![]);
     };
     for i in 0..n {
-        interp.call_block(&b, vec![Value::Int(i)])?;
+        interp.call_block(&b, smallvec![Value::Int(i)])?;
     }
     Ok(Value::Nil)
 }
@@ -496,7 +497,7 @@ fn int_upto(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let b = block(interp, &args)?;
     let mut i = from;
     while i <= to {
-        interp.call_block(&b, vec![Value::Int(i)])?;
+        interp.call_block(&b, smallvec![Value::Int(i)])?;
         i += 1;
     }
     Ok(Value::Nil)
@@ -508,7 +509,7 @@ fn int_downto(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let b = block(interp, &args)?;
     let mut i = from;
     while i >= to {
-        interp.call_block(&b, vec![Value::Int(i)])?;
+        interp.call_block(&b, smallvec![Value::Int(i)])?;
         i -= 1;
     }
     Ok(Value::Nil)
@@ -524,7 +525,7 @@ fn int_step(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let b = block(interp, &args)?;
     let mut i = from;
     while (step > 0 && i <= limit) || (step < 0 && i >= limit) {
-        interp.call_block(&b, vec![Value::Int(i)])?;
+        interp.call_block(&b, smallvec![Value::Int(i)])?;
         i += step;
     }
     Ok(Value::Nil)

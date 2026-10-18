@@ -1558,7 +1558,7 @@ impl<'src> Parser<'src> {
         match tok.kind {
             T::Int { digits, base } => {
                 self.bump();
-                Ok(self.node(start, ExprKind::Int(IntLit { digits, base })))
+                Ok(self.node(start, ExprKind::Int(IntLit::new(digits, base))))
             }
             T::Float(text) => {
                 self.bump();
@@ -1640,13 +1640,9 @@ impl<'src> Parser<'src> {
                 let lit = self.bump();
                 let span = self.span_from(start);
                 Ok(match lit.kind {
-                    T::Int { digits, base } => self.node(
-                        span,
-                        ExprKind::Int(IntLit {
-                            digits: format!("-{digits}"),
-                            base,
-                        }),
-                    ),
+                    T::Int { digits, base } => {
+                        self.node(span, ExprKind::Int(IntLit::new(format!("-{digits}"), base)))
+                    }
                     T::Float(text) => {
                         let value: f64 = text.parse().unwrap_or(f64::NAN);
                         self.node(span, ExprKind::Float(-value))
@@ -3417,13 +3413,13 @@ fn visibility_of(name: &str) -> Visibility {
 
 fn negate_literal(expr: &Expr) -> Option<ExprKind> {
     match &expr.kind {
-        ExprKind::Int(lit) => Some(ExprKind::Int(IntLit {
-            digits: match lit.digits.strip_prefix('-') {
+        ExprKind::Int(lit) => Some(ExprKind::Int(IntLit::new(
+            match lit.digits.strip_prefix('-') {
                 Some(positive) => positive.to_string(),
                 None => format!("-{}", lit.digits),
             },
-            base: lit.base,
-        })),
+            lit.base,
+        ))),
         ExprKind::Float(f) => Some(ExprKind::Float(-f)),
         _ => None,
     }
