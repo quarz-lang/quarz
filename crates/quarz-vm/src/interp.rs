@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 use std::time::Duration;
 
-use quarz_syntax::ast::{Block, ParamKind};
+use quarz_syntax::ast::{Block, Expr, ParamKind};
 use quarz_types::{CallTarget, Checked, ClassId, ClassKind, MethodId, Output, Synth, Type, World};
 
 use crate::natives;
@@ -58,6 +58,39 @@ pub type OwnedNativeFn = fn(&Interp, Value, Args) -> Result<Value, (Flow, Value)
 
 /// Key of the by-name method cache: class, name, arity, block given.
 type NameKey = (ClassId, String, usize, bool);
+
+/// Run-time state that outlives one interpreter instance (the REPL creates
+/// an interpreter per input over the same state).
+#[derive(Clone)]
+pub struct SharedState {
+    pub symbols: Rc<RefCell<SymbolTable>>,
+    pub consts: Rc<RefCell<Vec<Option<Value>>>>,
+    pub variant_singletons: Rc<RefCell<HashMap<ClassId, Value>>>,
+    pub sched: Rc<RefCell<Scheduler>>,
+    pub next_tag: Rc<Cell<u64>>,
+    pub at_exit: Rc<RefCell<Vec<Value>>>,
+    pub stdout: Rc<RefCell<Box<dyn std::io::Write>>>,
+    pub repl_frame: Option<Rc<Frame>>,
+    /// Every REPL input ever evaluated: closures created by an input point
+    /// into its AST, so inputs are never freed.
+    pub history: Rc<RefCell<Vec<Rc<Vec<Expr>>>>>,
+}
+
+impl SharedState {
+    pub fn new(out: Box<dyn std::io::Write>) -> SharedState {
+        SharedState {
+            symbols: Rc::new(RefCell::new(SymbolTable::default())),
+            consts: Rc::new(RefCell::new(Vec::new())),
+            variant_singletons: Rc::new(RefCell::new(HashMap::new())),
+            sched: Rc::new(RefCell::new(Scheduler::new())),
+            next_tag: Rc::new(Cell::new(1)),
+            at_exit: Rc::new(RefCell::new(Vec::new())),
+            stdout: Rc::new(RefCell::new(out)),
+            repl_frame: None,
+            history: Rc::new(RefCell::new(Vec::new())),
+        }
+    }
+}
 
 /// Which construct a `break` exits.
 #[derive(Clone, Copy, Debug)]
@@ -125,24 +158,27 @@ pub struct Interp {
     pub units: Vec<quarz_types::CheckedUnit>,
     /// The `self` object of each unit's top level, by file index.
     unit_selfs: Vec<Value>,
+    /// The frame of the REPL's top level, kept across inputs.
+    pub repl_frame: Option<Rc<Frame>>,
+    history: Rc<RefCell<Vec<Rc<Vec<Expr>>>>>,
     /// Display names by file index (0 = the prelude).
     pub file_names: Vec<String>,
-    pub symbols: RefCell<SymbolTable>,
-    consts: RefCell<Vec<Option<Value>>>,
-    variant_singletons: RefCell<HashMap<ClassId, Value>>,
+    pub symbols: Rc<RefCell<SymbolTable>>,
+    consts: Rc<RefCell<Vec<Option<Value>>>>,
+    variant_singletons: Rc<RefCell<HashMap<ClassId, Value>>>,
     pub natives: Vec<Option<NativeFn>>,
     pub natives_owned: Vec<Option<OwnedNativeFn>>,
-    pub sched: RefCell<Scheduler>,
+    pub sched: Rc<RefCell<Scheduler>>,
     dispatch_cache: RefCell<HashMap<(ClassId, MethodId), MethodId>>,
     name_cache: RefCell<HashMap<NameKey, Option<MethodId>>>,
     regexp_cache: RefCell<HashMap<u32, Value>>,
-    next_tag: Cell<u64>,
+    next_tag: Rc<Cell<u64>>,
     pub argv: Vec<String>,
     pub exc: ExcClasses,
     pub rt: RtClasses,
     pub call_stack: RefCell<Vec<Rc<str>>>,
-    pub at_exit: RefCell<Vec<Value>>,
-    pub stdout: RefCell<Box<dyn std::io::Write>>,
+    pub at_exit: Rc<RefCell<Vec<Value>>>,
+    pub stdout: Rc<RefCell<Box<dyn std::io::Write>>>,
     self_rc: RefCell<Weak<Interp>>,
     pub root_task: Cell<Option<TaskId>>,
 }
@@ -162,6 +198,13 @@ impl Interp {
         argv: Vec<String>,
         out: Box<dyn std::io::Write>,
     ) -> Rc<Interp> {
+        let state = SharedState::new(out);
+        Interp::with_state(checked, argv, state)
+    }
+
+    /// Create an interpreter over shared run-time state (the REPL creates
+    /// one per input, sharing variables, tasks and output).
+    pub fn with_state(checked: Checked, argv: Vec<String>, state: SharedState) -> Rc<Interp> {
         let Checked {
             world,
             output,
@@ -255,28 +298,38 @@ impl Interp {
             file_names[u.file as usize] = u.name.clone();
         }
         let n_consts = world.consts.len();
+        {
+            let mut consts = state.consts.borrow_mut();
+            if consts.len() < n_consts {
+                consts.resize(n_consts, None);
+            }
+        }
+        let repl_frame = state.repl_frame.clone();
+        let history = state.history.clone();
         let interp = Rc::new(Interp {
             world,
             out: output,
             units,
             unit_selfs,
+            repl_frame,
+            history,
             file_names,
-            symbols: RefCell::new(SymbolTable::default()),
-            consts: RefCell::new(vec![None; n_consts]),
-            variant_singletons: RefCell::new(HashMap::new()),
+            symbols: state.symbols,
+            consts: state.consts,
+            variant_singletons: state.variant_singletons,
             natives,
             natives_owned,
-            sched: RefCell::new(Scheduler::new()),
+            sched: state.sched,
             dispatch_cache: RefCell::new(HashMap::new()),
             name_cache: RefCell::new(HashMap::new()),
             regexp_cache: RefCell::new(HashMap::new()),
-            next_tag: Cell::new(1),
+            next_tag: state.next_tag,
             argv,
             exc,
             rt,
             call_stack: RefCell::new(Vec::new()),
-            at_exit: RefCell::new(Vec::new()),
-            stdout: RefCell::new(out),
+            at_exit: state.at_exit,
+            stdout: state.stdout,
             self_rc: RefCell::new(Weak::new()),
             root_task: Cell::new(None),
         });
@@ -360,6 +413,87 @@ impl Interp {
         let code = self.run_loop(&root);
         self.flush();
         code
+    }
+
+    /// The shared state, for creating another interpreter over it.
+    pub fn shared_state(&self) -> SharedState {
+        SharedState {
+            symbols: self.symbols.clone(),
+            consts: self.consts.clone(),
+            variant_singletons: self.variant_singletons.clone(),
+            sched: self.sched.clone(),
+            next_tag: self.next_tag.clone(),
+            at_exit: self.at_exit.clone(),
+            stdout: self.stdout.clone(),
+            repl_frame: self.repl_frame.clone(),
+            history: self.history.clone(),
+        }
+    }
+
+    /// Evaluate REPL input: run `body` in the persistent REPL frame as the
+    /// top level of unit `file`. Returns the value of the last statement,
+    /// or `None` after an uncaught exception (which is reported) or exit.
+    pub fn run_repl(self: &Rc<Interp>, file: u32, body: Vec<Expr>) -> Result<Option<Value>, i32> {
+        let me = self.clone();
+        let body = Rc::new(body);
+        self.history.borrow_mut().push(body.clone());
+        let frame = self
+            .repl_frame
+            .clone()
+            .unwrap_or_else(|| Frame::new(16, None));
+        let run_body: Box<dyn FnOnce() -> TaskExit> = Box::new(move || {
+            let ctx = Ctx {
+                self_val: me
+                    .unit_selfs
+                    .get(file as usize)
+                    .cloned()
+                    .unwrap_or(Value::Nil),
+                frame,
+                block: None,
+                method_tag: 0,
+                breakable: Breakable::None,
+                method: None,
+                file,
+            };
+            let mut result = Ok(Value::Nil);
+            for e in body.iter() {
+                match me.eval(e, &ctx) {
+                    Ok(v) => result = Ok(v),
+                    Err(f) => {
+                        result = Err(f);
+                        break;
+                    }
+                }
+            }
+            match result {
+                Ok(v) => TaskExit::Result(TaskResult::Value(v)),
+                Err(Flow::Raise(e)) => TaskExit::Result(TaskResult::Error(e)),
+                Err(Flow::Exit(c)) => TaskExit::Exit(c),
+                Err(Flow::Return(v, 0)) => TaskExit::Result(TaskResult::Value(v)),
+                Err(other) => {
+                    let e = me.make_exception(
+                        me.exc.runtime_error,
+                        &format!("unexpected control flow: {other:?}"),
+                    );
+                    TaskExit::Result(TaskResult::Error(e))
+                }
+            }
+        });
+        let root =
+            self.sched
+                .borrow_mut()
+                .spawn(run_body, None, "repl".to_string(), 256 * 1024 * 1024);
+        let code = self.run_loop(&root);
+        self.flush();
+        if code != 0 && !root.is_done() {
+            return Err(code);
+        }
+        let result = root.result.borrow().clone();
+        match result {
+            Some(TaskResult::Value(v)) => Ok(Some(v)),
+            Some(TaskResult::Error(_)) => Ok(None),
+            None => Err(code),
+        }
     }
 
     fn run_loop(&self, root: &Rc<TaskHandle>) -> i32 {

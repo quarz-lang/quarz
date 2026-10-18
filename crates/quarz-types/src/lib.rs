@@ -51,6 +51,103 @@ pub struct Checked {
 /// 1.. = units in order).
 pub type FileDiagnostic = (u32, Diagnostic);
 
+/// An interactive session: declarations and variables accumulate across
+/// inputs, which are all part of unit 1.
+pub struct Session {
+    checker: check::Checker,
+    main: ClassId,
+    inputs: u32,
+}
+
+impl Session {
+    pub fn new(prelude: &Program) -> Result<Session, Vec<FileDiagnostic>> {
+        let empty = Program {
+            body: Vec::new(),
+            span: quarz_syntax::Span::empty(0),
+        };
+        let mut declarer = declare::Declarer::new();
+        declarer.collect_prelude(prelude);
+        declarer.collect_unit(&empty, 1);
+        declarer.resolve_headers();
+        let diagnostics = std::mem::take(&mut declarer.diagnostics);
+        if diagnostics.iter().any(|(_, d)| d.is_error()) {
+            return Err(diagnostics);
+        }
+        let main = declarer.units[0].main;
+        let mut checker = check::Checker::new(declarer.world, vec![None, Some(main)]);
+        checker.check_all(&[(1, Vec::new())]);
+        let diagnostics = checker.take_diagnostics();
+        if diagnostics.iter().any(|(_, d)| d.is_error()) {
+            return Err(diagnostics);
+        }
+        Ok(Session {
+            checker,
+            main,
+            inputs: 0,
+        })
+    }
+
+    /// The span/node-id base to parse the next input with.
+    pub fn next_base(&self) -> u32 {
+        load::unit_base(self.inputs + 1)
+    }
+
+    pub fn main_class(&self) -> ClassId {
+        self.main
+    }
+
+    /// Variables declared so far (the parser needs them to tell variables
+    /// from method calls).
+    pub fn locals(&self) -> Vec<String> {
+        self.checker.repl_locals()
+    }
+
+    /// Declare and check one input. On success, returns the statements to
+    /// run; the world and output are available through `snapshot`.
+    pub fn feed(&mut self, program: &Program) -> Result<Vec<Expr>, Vec<FileDiagnostic>> {
+        self.inputs += 1;
+        let world = std::mem::take(&mut self.checker.world);
+        let mut declarer = declare::Declarer::with_world(world);
+        declarer.collect_into_unit(program, 1, self.main);
+        declarer.resolve_headers();
+        let mut diagnostics = std::mem::take(&mut declarer.diagnostics);
+        let body: Vec<Expr> = declarer.units[0]
+            .body
+            .iter()
+            .map(|e| (*e).clone())
+            .collect();
+        self.checker.world = std::mem::take(&mut declarer.world);
+        if diagnostics.iter().any(|(_, d)| d.is_error()) {
+            return Err(diagnostics);
+        }
+        let refs: Vec<&Expr> = body.iter().collect();
+        self.checker.check_repl(1, &refs);
+        diagnostics.append(&mut self.checker.take_diagnostics());
+        if diagnostics.iter().any(|(_, d)| d.is_error()) {
+            return Err(diagnostics);
+        }
+        for (_, d) in &diagnostics {
+            let _ = d;
+        }
+        Ok(body)
+    }
+
+    /// Warnings of the last input are returned by `feed` only on error; the
+    /// checker's current world and output, cloned for an interpreter.
+    pub fn snapshot(&self, body: Vec<Expr>, name: &str) -> Checked {
+        Checked {
+            world: self.checker.world.clone(),
+            output: self.checker.out.clone(),
+            units: vec![CheckedUnit {
+                file: 1,
+                name: name.to_string(),
+                main_class: self.main,
+                body,
+            }],
+        }
+    }
+}
+
 /// Check a single-file program.
 pub fn check(prelude: &Program, program: &Program) -> (Option<Checked>, Vec<FileDiagnostic>) {
     let unit = Unit {

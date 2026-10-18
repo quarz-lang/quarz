@@ -2,6 +2,8 @@
 
 use std::process::ExitCode;
 
+mod repl;
+
 use quarz_syntax::{parse, tokenize, SourceFile, TokenKind};
 
 const USAGE: &str = "\
@@ -12,6 +14,7 @@ commands:
   parse FILE     print the syntax tree of FILE (for debugging the parser)
   check FILE     type-check FILE
   run FILE [ARGS...]   type-check and run FILE
+  repl           start an interactive session
 ";
 
 fn main() -> ExitCode {
@@ -29,6 +32,7 @@ fn main() -> ExitCode {
             Some(path) => check_file(path),
             None => usage(),
         },
+        Some("repl") => repl::repl(),
         Some("run") => match args.get(1) {
             Some(path) => run_file(path, args[2..].to_vec()),
             None => usage(),

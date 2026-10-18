@@ -30,7 +30,16 @@ pub fn parse(src: &str) -> Parsed {
 /// Parse with spans offset by `span_base` and node ids starting at
 /// `id_base`, so that several files can share the checker's tables.
 pub fn parse_with_bases(src: &str, span_base: u32, id_base: NodeId) -> Parsed {
+    parse_repl(src, span_base, id_base, &[])
+}
+
+/// Parse REPL input: `locals` are the variables declared by earlier
+/// inputs.
+pub fn parse_repl(src: &str, span_base: u32, id_base: NodeId, locals: &[String]) -> Parsed {
     let mut parser = Parser::with_bases(src, span_base, id_base);
+    for name in locals {
+        parser.declare(name);
+    }
     let body = parser.parse_statements(&[]);
     let span = Span::new(span_base as usize, span_base as usize + src.len());
     let eof = parser.peek().clone();

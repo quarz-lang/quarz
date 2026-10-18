@@ -92,15 +92,22 @@ pub struct UnitDecl<'ast> {
 
 impl<'ast> Declarer<'ast> {
     pub fn new() -> Declarer<'ast> {
+        Declarer::with_world(World::new())
+    }
+
+    /// A declarer adding to an existing world (REPL inputs). Builtins are
+    /// looked up again only when the world is empty.
+    pub fn with_world(world: World) -> Declarer<'ast> {
+        let builtins_resolved = !world.classes.is_empty();
         Declarer {
-            world: World::new(),
+            builtins_resolved,
+            world,
             diagnostics: Vec::new(),
             file: 0,
             pending: Vec::new(),
             pending_ext: Vec::new(),
             units: Vec::new(),
             class_usings: HashMap::new(),
-            builtins_resolved: false,
         }
     }
 
@@ -134,6 +141,29 @@ impl<'ast> Declarer<'ast> {
         self.units.push(UnitDecl {
             file,
             main: id,
+            body: Vec::new(),
+            usings: Vec::new(),
+        });
+        for expr in &program.body {
+            if !self.collect_item(expr, None, false) {
+                self.units.last_mut().unwrap().body.push(expr);
+            }
+        }
+    }
+
+    /// Register the declarations of further input for an existing unit
+    /// (REPL): new methods join its main class, other statements become the
+    /// new body.
+    pub fn collect_into_unit(&mut self, program: &'ast Program, file: u32, main: ClassId) {
+        self.file = file;
+        self.pending.push(PendingClass {
+            id: main,
+            body: &program.body,
+            def: PendingDef::Main,
+        });
+        self.units.push(UnitDecl {
+            file,
+            main,
             body: Vec::new(),
             usings: Vec::new(),
         });
@@ -1118,7 +1148,7 @@ impl<'ast> Declarer<'ast> {
                     ids.extend(found);
                 }
             }
-            self.world.class_mut(main).usings = ids;
+            self.world.class_mut(main).usings.extend(ids);
         }
         let per_class = std::mem::take(&mut self.class_usings);
         for (cid, paths) in per_class {

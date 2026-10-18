@@ -3,13 +3,14 @@
 pub mod eval;
 pub mod interp;
 pub mod natives;
+pub mod repl;
 pub mod sched;
 pub mod value;
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
-pub use interp::Interp;
+pub use interp::{Interp, SharedState};
 
 /// Run a checked program with the given arguments; returns the exit code.
 pub fn run(checked: quarz_types::Checked, argv: Vec<String>) -> i32 {

@@ -54,7 +54,7 @@ pub enum ConstTarget {
 }
 
 /// The checker's output for the evaluator.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Output {
     pub node_types: HashMap<NodeId, Type>,
     pub calls: HashMap<NodeId, CallTarget>,
@@ -205,6 +205,8 @@ pub struct Checker {
     touched: Vec<NodeId>,
     /// The pseudo-class of each file's top-level methods, by file index.
     file_mains: Vec<Option<ClassId>>,
+    /// The REPL's top-level environment, kept across inputs.
+    repl_env: Option<Env>,
     /// Methods currently being checked (to detect inference cycles).
     in_progress: Vec<MethodId>,
 }
@@ -250,6 +252,7 @@ impl Checker {
             env,
             touched: Vec::new(),
             file_mains,
+            repl_env: None,
             in_progress: Vec::new(),
         }
     }
@@ -303,8 +306,15 @@ impl Checker {
             file,
         );
         env.ret_expected = Some(self.world.nil());
-        let saved_env = std::mem::replace(&mut self.env, env);
         let saved_infer = std::mem::take(&mut self.infer);
+        self.check_top_level(env, file, body);
+        self.infer = saved_infer;
+    }
+
+    /// Check top-level statements in `env`, returning the environment.
+    fn check_top_level(&mut self, env: Env, file: u32, body: &[&Expr]) -> Env {
+        let main = self.file_main(file).unwrap_or(self.world.builtin.object);
+        let saved_env = std::mem::replace(&mut self.env, env);
         self.world.active_extensions = self.world.class(main).usings.clone();
         for expr in body {
             let t = self.check_expr(expr, None);
@@ -319,8 +329,56 @@ impl Checker {
             self.out.unit_frame_sizes.resize(file as usize + 1, 0);
         }
         self.out.unit_frame_sizes[file as usize] = size;
-        self.env = saved_env;
-        self.infer = saved_infer;
+        std::mem::replace(&mut self.env, saved_env)
+    }
+
+    /// Check REPL input: unchecked methods and constants, then the
+    /// statements in the persistent top-level environment.
+    pub fn check_repl(&mut self, file: u32, body: &[&Expr]) {
+        let count = self.world.consts.len();
+        for cid in 0..count as ConstId {
+            self.const_type(cid, Span::empty(0));
+        }
+        let count = self.world.methods.len();
+        for mid in 0..count as MethodId {
+            self.ensure_method_checked(mid);
+        }
+        let main = self.file_main(file).unwrap_or(self.world.builtin.object);
+        let env = match self.repl_env.take() {
+            Some(env) => env,
+            None => {
+                let mut env = self.fresh_env(
+                    Type::class(main),
+                    Some(main),
+                    None,
+                    TypeScope::default(),
+                    file,
+                );
+                env.ret_expected = Some(self.world.nil());
+                env
+            }
+        };
+        // The REPL keeps its inference variables across inputs.
+        let env = self.check_top_level(env, file, body);
+        self.repl_env = Some(env);
+    }
+
+    /// Discard the diagnostics of a failed REPL input and forget the
+    /// variables it declared.
+    pub fn take_diagnostics(&mut self) -> Vec<(u32, Diagnostic)> {
+        std::mem::take(&mut self.diagnostics)
+    }
+
+    pub fn file_main_class(&self, file: u32) -> Option<ClassId> {
+        self.file_main(file)
+    }
+
+    /// Names of the variables of the REPL's top level.
+    pub fn repl_locals(&self) -> Vec<String> {
+        match &self.repl_env {
+            Some(env) => env.frames[0].vars.iter().map(|v| v.name.clone()).collect(),
+            None => Vec::new(),
+        }
     }
 
     fn fresh_env(

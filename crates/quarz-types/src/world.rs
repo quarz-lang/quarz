@@ -250,7 +250,7 @@ pub struct Builtin {
     pub match_data: ClassId,
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct World {
     pub classes: Vec<ClassInfo>,
     pub methods: Vec<MethodInfo>,
