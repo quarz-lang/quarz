@@ -1,0 +1,14 @@
+[package]
+name = "quarz-cli"
+description = "The quarz command"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "quarz"
+path = "src/main.rs"
+
+[dependencies]
+quarz-syntax = { workspace = true }
