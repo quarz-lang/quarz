@@ -199,6 +199,8 @@ end
 ```
 
 - `include` でインスタンス側に、`extend` でクラス側(`self.` メソッド)に取り込みます。
+- **契約は検査されます。** 具象クラス(`abstract` でない `class`、`data`、enum のバリアント)は、継承または `include` した抽象メソッドをすべて実装しなければならず、欠けているとコンパイルエラーです(`` `Version` must implement `<=>` (abstract in `Comparable`) ``)。`extend M` したクラスは `M` の抽象メソッドを `def self.name` で実装します。モジュールの既定実装はクラス側でもそのまま動きます(`extend Named` で `Thing.greeting` が `Thing.label` を呼ぶ)。
+- モジュールの役割は名前空間(`Math`、`JSON`)、既定実装付きの契約(`Comparable`、`Enumerable`)、印(`Shareable`)の 3 つで、キーワードは一つです。名前は契約なら形容詞・`-able`、名前空間なら名詞にします。インスタンスメソッドを持たない名前空間モジュールを `include`/`extend` しても何も増えないので、警告になります。
 - `prepend`、`module_function`、`included` フックなどの動的機構はありません。
 - モジュールは型として使えます(`def sort[T: Comparable[T]](xs: Array[T])`)。
 

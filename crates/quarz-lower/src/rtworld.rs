@@ -73,6 +73,15 @@ pub fn build(world: &World, lw: &Lowerer, file_names: Vec<String>) -> RtWorld {
                     .collect(),
                 fields,
                 methods: c.methods.clone(),
+                singleton_methods: c.singleton_methods.clone(),
+                extends: c
+                    .extends
+                    .iter()
+                    .filter_map(|t| match t {
+                        Type::Class(id, _) => Some(*id),
+                        _ => None,
+                    })
+                    .collect(),
                 members,
                 variants: c.variants.clone(),
                 variant_of: c.variant_of,
@@ -88,7 +97,10 @@ pub fn build(world: &World, lw: &Lowerer, file_names: Vec<String>) -> RtWorld {
         .map(|m| {
             let owner = world.class(m.owner);
             let overloaded = owner.methods.get(&m.name).is_some_and(|ids| ids.len() > 1);
-            let overridden = lw.overridden.contains(&(m.owner, m.name.clone()));
+            // An abstract method is always dispatched dynamically: its
+            // implementation may be a singleton method of a class that
+            // extends the module, which the class hierarchy walk does not see.
+            let overridden = m.is_abstract || lw.overridden.contains(&(m.owner, m.name.clone()));
             let synth = match &m.synth {
                 Synth::None => RtSynth::None,
                 Synth::FieldGet(name) => {

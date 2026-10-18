@@ -578,6 +578,10 @@ pub struct RtClass {
     /// Methods declared by the class, by name (overloads in declaration
     /// order).
     pub methods: HashMap<String, Vec<MethodId>>,
+    /// `def self.` methods, by name.
+    pub singleton_methods: HashMap<String, Vec<MethodId>>,
+    /// Modules whose instance methods are this class's class methods.
+    pub extends: Vec<ClassId>,
     /// Nested classes by short name.
     pub members: HashMap<String, ClassId>,
     pub variants: Vec<ClassId>,

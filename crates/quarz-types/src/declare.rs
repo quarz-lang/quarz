@@ -474,6 +474,200 @@ impl<'ast> Declarer<'ast> {
             self.resolve_extension_members(e);
         }
         self.resolve_usings();
+        for p in &pending {
+            self.file = self.world.class(p.id).file;
+            self.check_conformance(p);
+        }
+    }
+
+    fn warning(&mut self, message: impl Into<String>, span: Span) {
+        self.diagnostics
+            .push((self.file, Diagnostic::warning(message, span)));
+    }
+
+    /// A concrete class must implement every abstract method it inherits
+    /// or includes; a class that `extend`s a module must implement the
+    /// module's abstract methods on its class side. Including a module
+    /// that has no instance methods (a namespace) is pointless, and said
+    /// so with a warning.
+    fn check_conformance(&mut self, p: &PendingClass<'ast>) {
+        let class = self.world.class(p.id).clone();
+        // Namespace modules used as mixins.
+        for expr in p.body {
+            let ExprKind::Mixin { kind, types } = &expr.kind else {
+                continue;
+            };
+            for t in types {
+                let Some(Type::Class(mid, _)) = self.resolve_type_quietly(p.id, t) else {
+                    continue;
+                };
+                let module = self.world.class(mid);
+                if module.kind != ClassKind::Module {
+                    continue;
+                }
+                let has_instance_side = !module.methods.is_empty() || !module.includes.is_empty();
+                let has_class_side =
+                    !module.singleton_methods.is_empty() || !module.members.is_empty();
+                if !has_instance_side && has_class_side {
+                    let verb = match kind {
+                        MixinKind::Include => "including",
+                        MixinKind::Extend => "extending",
+                    };
+                    self.warning(
+                        format!(
+                            "`{}` has no instance methods, so {verb} it adds nothing; \
+                             it is a namespace, use `{}.name` and `{}::Name` instead",
+                            module.name, module.name, module.name
+                        ),
+                        t.span,
+                    );
+                }
+            }
+        }
+        let concrete = match class.kind {
+            ClassKind::Class => !class.is_abstract,
+            ClassKind::Data | ClassKind::Variant => true,
+            ClassKind::Module | ClassKind::Enum | ClassKind::Main => false,
+        };
+        if concrete {
+            // Instance side: abstract methods of ancestors.
+            let ancestors: Vec<ClassId> = self
+                .world
+                .ancestors(p.id, &[])
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect();
+            let mut missing: Vec<(String, ClassId)> = Vec::new();
+            for anc in &ancestors {
+                for ids in self.world.class(*anc).methods.values() {
+                    for mid in ids {
+                        let m = self.world.method(*mid);
+                        if !m.is_abstract {
+                            continue;
+                        }
+                        if !self.has_implementation(&ancestors, *mid) {
+                            missing.push((m.name.clone(), *anc));
+                        }
+                    }
+                }
+            }
+            missing.sort();
+            missing.dedup();
+            for (name, owner) in missing {
+                self.error(
+                    format!(
+                        "`{}` must implement `{name}` (abstract in `{}`)",
+                        class.name,
+                        self.world.class(owner).name
+                    ),
+                    class.span,
+                );
+            }
+        }
+        // Class side: abstract methods of extended modules must be
+        // implemented as singleton methods (or by another extended module).
+        if class.kind != ClassKind::Module {
+            let chain = self.world.superclass_chain(p.id);
+            let mut extended: Vec<ClassId> = Vec::new();
+            for cid in &chain {
+                for ext in &self.world.class(*cid).extends {
+                    if let Type::Class(mid, _) = ext {
+                        for (anc, _) in self.world.ancestors(*mid, &[]) {
+                            if !extended.contains(&anc) {
+                                extended.push(anc);
+                            }
+                        }
+                    }
+                }
+            }
+            let mut missing: Vec<(String, ClassId)> = Vec::new();
+            for mid in &extended {
+                for ids in self.world.class(*mid).methods.values() {
+                    for abs in ids {
+                        let m = self.world.method(*abs);
+                        if !m.is_abstract {
+                            continue;
+                        }
+                        let on_class = chain.iter().any(|cid| {
+                            self.world
+                                .class(*cid)
+                                .singleton_methods
+                                .get(&m.name)
+                                .is_some_and(|ids| ids.iter().any(|i| self.implements(*i, *abs)))
+                        });
+                        let on_module = extended.iter().any(|other| {
+                            self.world
+                                .class(*other)
+                                .methods
+                                .get(&m.name)
+                                .is_some_and(|ids| ids.iter().any(|i| self.implements(*i, *abs)))
+                        });
+                        if !on_class && !on_module {
+                            missing.push((m.name.clone(), *mid));
+                        }
+                    }
+                }
+            }
+            missing.sort();
+            missing.dedup();
+            for (name, owner) in missing {
+                self.error(
+                    format!(
+                        "`{}` must implement `self.{name}` (abstract in the extended module `{}`)",
+                        class.name,
+                        self.world.class(owner).name
+                    ),
+                    class.span,
+                );
+            }
+        }
+    }
+
+    /// Whether a concrete method implementing `abstract_id` exists on one
+    /// of `ancestors` (or an active extension of one of them).
+    fn has_implementation(&self, ancestors: &[ClassId], abstract_id: MethodId) -> bool {
+        let name = &self.world.method(abstract_id).name;
+        for anc in ancestors {
+            if let Some(ids) = self.world.class(*anc).methods.get(name) {
+                if ids.iter().any(|i| self.implements(*i, abstract_id)) {
+                    return true;
+                }
+            }
+            for ext_id in self.world.active_extension_ids() {
+                let ext = &self.world.extensions[ext_id as usize];
+                if ext.target != *anc {
+                    continue;
+                }
+                if let Some(ids) = ext.methods.get(name) {
+                    if ids.iter().any(|i| self.implements(*i, abstract_id)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// A concrete method of the same name whose arity covers the abstract
+    /// one's counts as its implementation.
+    fn implements(&self, candidate: MethodId, abstract_id: MethodId) -> bool {
+        let (c, a) = (self.world.method(candidate), self.world.method(abstract_id));
+        if c.is_abstract || c.name != a.name {
+            return false;
+        }
+        let (cmin, cmax) = c.positional_arity();
+        let (amin, amax) = a.positional_arity();
+        cmin <= amin && cmax >= amax && c.block.is_some() == a.block.is_some()
+    }
+
+    /// Resolve a type expression without reporting (the mixin was already
+    /// resolved, and diagnosed, when the header was built).
+    fn resolve_type_quietly(&mut self, class: ClassId, expr: &TypeExpr) -> Option<Type> {
+        let before = self.diagnostics.len();
+        let scope = self.class_scope(class);
+        let t = self.resolve_type(expr, &scope);
+        self.diagnostics.truncate(before);
+        t
     }
 
     fn find_builtins(&mut self) {

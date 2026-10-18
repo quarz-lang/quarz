@@ -260,6 +260,7 @@ pub struct Interp {
     field_indices: Vec<FxHashMap<String, usize>>,
     pub sched: Rc<RefCell<Scheduler>>,
     dispatch_cache: RefCell<FxHashMap<(ClassId, MethodId), MethodId>>,
+    class_dispatch_cache: RefCell<FxHashMap<(ClassId, MethodId), Option<MethodId>>>,
     name_cache: RefCell<FxHashMap<NameKey, FxHashMap<String, Option<MethodId>>>>,
     next_tag: Rc<Cell<u64>>,
     pub argv: Vec<String>,
@@ -453,6 +454,7 @@ impl Interp {
             field_indices,
             sched: state.sched,
             dispatch_cache: RefCell::new(FxHashMap::default()),
+            class_dispatch_cache: RefCell::new(FxHashMap::default()),
             name_cache: RefCell::new(FxHashMap::default()),
             next_tag: state.next_tag,
             argv,
@@ -934,6 +936,13 @@ impl Interp {
         if m.singleton || m.is_extension {
             return mid;
         }
+        if let Value::Class(cid) = recv {
+            // A module method running on a class object (`extend`): the
+            // class's own `def self.` methods override the module's.
+            if let Some(found) = self.class_side_override(*cid, mid) {
+                return found;
+            }
+        }
         let cid = self.class_of(recv);
         if cid == m.owner {
             return mid;
@@ -943,6 +952,49 @@ impl Interp {
         }
         let found = self.find_override(cid, mid).unwrap_or(mid);
         self.dispatch_cache.borrow_mut().insert((cid, mid), found);
+        found
+    }
+
+    /// The implementation of a module instance method `mid` for the class
+    /// object `cid`: a singleton method of the class (or a superclass), or
+    /// a concrete method of another module the class extends.
+    fn class_side_override(&self, cid: ClassId, mid: MethodId) -> Option<MethodId> {
+        if let Some(found) = self.class_dispatch_cache.borrow().get(&(cid, mid)) {
+            return *found;
+        }
+        let m = self.world.method(mid);
+        let (min, max) = m.positional_arity();
+        let accepts = |c: MethodId| {
+            let cm = self.world.method(c);
+            let (cmin, cmax) = cm.positional_arity();
+            !cm.is_abstract && cm.has_block == m.has_block && cmin <= max && cmax >= min
+        };
+        let mut found = None;
+        let mut cur = Some(cid);
+        'chain: while let Some(c) = cur {
+            let class = self.world.class(c);
+            if let Some(ids) = class.singleton_methods.get(&m.name) {
+                if let Some(id) = ids.iter().copied().find(|id| accepts(*id)) {
+                    found = Some(id);
+                    break;
+                }
+            }
+            for module in &class.extends {
+                for anc in &self.world.class(*module).ancestors {
+                    if let Some(ids) = self.world.class(*anc).methods.get(&m.name) {
+                        if let Some(id) = ids.iter().copied().find(|id| accepts(*id)) {
+                            found = Some(id);
+                            break 'chain;
+                        }
+                    }
+                }
+            }
+            cur = class.superclass;
+        }
+        let found = found.filter(|f| *f != mid);
+        self.class_dispatch_cache
+            .borrow_mut()
+            .insert((cid, mid), found);
         found
     }
 

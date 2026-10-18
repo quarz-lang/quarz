@@ -33,6 +33,23 @@ fn ok(src: &str) {
     );
 }
 
+fn warns(src: &str, expected: &str) {
+    let prelude = parse(PRELUDE_SOURCE);
+    let base = unit_base(0);
+    let parsed = parse_with_bases(src, base, base);
+    let (_, diags) = check(&prelude.program, &parsed.program);
+    let warnings: Vec<String> = diags
+        .into_iter()
+        .filter(|(file, d)| *file == 1 && !d.is_error())
+        .map(|(_, d)| d.message)
+        .collect();
+    assert!(
+        warnings.iter().any(|w| w.contains(expected)),
+        "expected a warning containing {expected:?} for {src:?}, got:\n{}",
+        warnings.join("\n")
+    );
+}
+
 fn err(src: &str, expected: &str) {
     let errs = diagnostics(src);
     assert!(
@@ -255,4 +272,44 @@ fn control_flow() {
     ok("xs = [1, 2, 3]\nfirst, *rest = xs\nputs first + rest.size");
     ok("x = 5\nputs \"big\" if x > 3");
     ok("s = \"a\"\nmsg = \"value: #{s} #{1 + 2}\"\nputs msg");
+}
+
+#[test]
+fn module_contracts() {
+    // A concrete class must implement the abstract methods it includes.
+    err(
+        "module M\n  abstract def zero -> Int\nend\nclass A\n  include M\nend",
+        "`A` must implement `zero` (abstract in `M`)",
+    );
+    ok("module M\n  abstract def zero -> Int\nend\nclass A\n  include M\n  def zero -> Int = 0\nend\nputs A.new.zero");
+    // ... unless it is abstract itself; its concrete subclasses must.
+    ok("module M\n  abstract def zero -> Int\nend\nabstract class A\n  include M\nend\nclass B < A\n  def zero -> Int = 0\nend\nputs B.new.zero");
+    err(
+        "module M\n  abstract def zero -> Int\nend\nabstract class A\n  include M\nend\nclass B < A\nend",
+        "`B` must implement `zero`",
+    );
+    // Data types and variants too.
+    err(
+        "module M\n  abstract def zero -> Int\nend\ndata P(x: Int) is\n  include M\nend",
+        "`P` must implement `zero`",
+    );
+    // An extension can supply the implementation.
+    ok("module M\n  abstract def zero -> Int\nend\nclass A\n  include M\nend\nextension A\n  def zero -> Int = 0\nend\nputs A.new.zero");
+    // `extend`: the module's abstract methods are class-side contracts.
+    err(
+        "module M\n  abstract def zero -> Int\n  def one -> Int = zero + 1\nend\nclass A\n  extend M\nend",
+        "`A` must implement `self.zero` (abstract in the extended module `M`)",
+    );
+    ok("module M\n  abstract def zero -> Int\n  def one -> Int = zero + 1\nend\nclass A\n  extend M\n  def self.zero -> Int = 5\nend\nputs A.one");
+    // Including a namespace adds nothing.
+    warns(
+        "module NS\n  def self.f -> Int = 1\nend\nclass A\n  include NS\nend",
+        "`NS` has no instance methods, so including it adds nothing",
+    );
+    warns(
+        "module NS\n  X = 1\nend\nclass A\n  extend NS\nend",
+        "extending it adds nothing",
+    );
+    // Marker modules are fine.
+    ok("module Marker\nend\nclass A\n  include Marker\nend\nputs 1");
 }

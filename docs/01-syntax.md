@@ -201,6 +201,8 @@ end
 ```
 
 - `include` mixes into the instance side, `extend` into the class side (`self.` methods).
+- **Contracts are checked.** A concrete class (a `class` that is not `abstract`, a `data`, an enum variant) must implement every abstract method it inherits or includes; a missing one is a compile error (`` `Version` must implement `<=>` (abstract in `Comparable`) ``). A class that `extend`s `M` implements `M`'s abstract methods as `def self.name`. The module's default methods work on the class side too (`extend Named` makes `Thing.greeting` call `Thing.label`).
+- A module plays one of three roles with one keyword: a namespace (`Math`, `JSON`), a contract with default methods (`Comparable`, `Enumerable`) or a marker (`Shareable`). Name contracts with adjectives or `-able`, namespaces with nouns. Including or extending a namespace module (one with no instance methods) adds nothing, so it is a warning.
 - There are no dynamic mechanisms such as `prepend`, `module_function` or the `included` hook.
 - Modules can be used as types (`def sort[T: Comparable[T]](xs: Array[T])`).
 
