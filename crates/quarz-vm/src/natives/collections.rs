@@ -308,7 +308,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
         Ok(if items.is_empty() {
             Value::Nil
         } else {
-            items[(super::core::next_random() % items.len() as u64) as usize].clone()
+            items[(super::random::next_random() % items.len() as u64) as usize].clone()
         })
     });
     m.insert("Array#shuffle", array_shuffle);
@@ -1197,7 +1197,7 @@ fn array_join(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
 fn array_shuffle(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
     update(interp, recv, |v| {
         for i in (1..v.len()).rev() {
-            let j = (super::core::next_random() % (i as u64 + 1)) as usize;
+            let j = (super::random::next_random() % (i as u64 + 1)) as usize;
             v.swap(i, j);
         }
     })

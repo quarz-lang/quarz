@@ -63,6 +63,7 @@ module Comparable[T]
   def between?(min: T, max: T) -> Bool = self >= min && self <= max
 
   native def clamp(min: T, max: T) -> self
+  native def clamp(range: Range[T]) -> self
 end
 
 class Int
@@ -117,16 +118,38 @@ class Int
   native def round -> Int
   native def truncate -> Int
   native def divmod(other: Int) -> [Int, Int]
+  native def pow(exp: Int) -> Int
   native def pow(exp: Int, mod: Int) -> Int
   native def gcd(other: Int) -> Int
   native def lcm(other: Int) -> Int
   native def bit_length -> Int
   native def digits -> Array[Int]
+  native def digits(base: Int) -> Array[Int]
   native def times(&: (Int) -> Nil) -> Nil
   native def times -> Enumerator[Int]
   native def upto(limit: Int, &: (Int) -> Nil) -> Nil
+  native def upto(limit: Int) -> Enumerator[Int]
   native def downto(limit: Int, &: (Int) -> Nil) -> Nil
+  native def downto(limit: Int) -> Enumerator[Int]
   native def step(limit: Int, step: Int, &: (Int) -> Nil) -> Nil
+  native def step(limit: Int, step: Int) -> Enumerator[Int]
+  # `Int.sqrt(n)` is the integer square root (Ruby's `Integer.sqrt`).
+  native def self.sqrt(n: Int) -> Int
+  native def fdiv(other: Int) -> Float
+  native def fdiv(other: Float) -> Float
+  native def ceildiv(other: Int) -> Int
+  # Rounding to a negative number of digits: `1234.round(-2)` is 1200.
+  native def floor(digits: Int) -> Int
+  native def ceil(digits: Int) -> Int
+  native def round(digits: Int) -> Int
+  native def truncate(digits: Int) -> Int
+  native def [](bit: Int) -> Int
+  native def bit_set?(bit: Int) -> Bool
+  native def allbits?(mask: Int) -> Bool
+  native def anybits?(mask: Int) -> Bool
+  native def nobits?(mask: Int) -> Bool
+  def integer? -> Bool = true
+  def ord -> Int = self
   native def ms -> Duration
   native def milliseconds -> Duration
   native def second -> Duration
@@ -145,6 +168,10 @@ class Float
 
   INFINITY = 1.0 / 0.0
   NAN = 0.0 / 0.0
+  EPSILON = 2.220446049250313e-16
+  MAX = 1.7976931348623157e308
+  MIN = 2.2250738585072014e-308
+  DIG = 15
 
   native def +(other: Float) -> Float
   native def +(other: Int) -> Float
@@ -182,6 +209,17 @@ class Float
   native def round -> Int
   native def round(digits: Int) -> Float
   native def truncate -> Int
+  native def floor(digits: Int) -> Float
+  native def ceil(digits: Int) -> Float
+  native def truncate(digits: Int) -> Float
+  native def divmod(other: Float) -> [Int, Float]
+  native def divmod(other: Int) -> [Int, Float]
+  native def fdiv(other: Float) -> Float
+  native def fdiv(other: Int) -> Float
+  native def next_float -> Float
+  native def prev_float -> Float
+  native def step(limit: Float, step: Float, &: (Float) -> Nil) -> Nil
+  def integer? -> Bool = false
   native def to_i -> Int
   native def to_f -> Float
   native def to_s -> String
@@ -205,6 +243,31 @@ class Duration
   native def to_f -> Float
   native def to_ms -> Int
   native def to_s -> String
+end
+
+# A pseudo-random number generator with its own state; `Random.rand` and
+# `Kernel#rand` draw from a default generator that `srand` seeds.
+class Random
+  include Unshareable
+
+  native def self.new -> Random
+  native def self.new(seed: Int) -> Random
+  native def self.new_seed -> Int
+  native def self.rand -> Float
+  native def self.rand(max: Int) -> Int
+  native def self.rand(max: Float) -> Float
+  native def self.rand(range: Range[Int]) -> Int
+  native def self.rand(range: Range[Float]) -> Float
+  native def self.bytes(size: Int) -> Bytes
+
+  native def seed -> Int
+  native def rand -> Float
+  native def rand(max: Int) -> Int
+  native def rand(max: Float) -> Float
+  native def rand(range: Range[Int]) -> Int
+  native def rand(range: Range[Float]) -> Float
+  native def bytes(size: Int) -> Bytes
+  native def ==(other: Object) -> Bool
 end
 
 class Bytes
@@ -1360,6 +1423,12 @@ end
 class SystemStackError < Exception
 end
 
+class NoMemoryError < Exception
+end
+
+class FloatDomainError < RangeError
+end
+
 class DeadlockError < Exception
 end
 
@@ -1539,6 +1608,16 @@ module Math
   native def self.hypot(x: Float, y: Float) -> Float
   native def self.floor(x: Float) -> Int
   native def self.ceil(x: Float) -> Int
+  native def self.asin(x: Float) -> Float
+  native def self.acos(x: Float) -> Float
+  native def self.sinh(x: Float) -> Float
+  native def self.cosh(x: Float) -> Float
+  native def self.tanh(x: Float) -> Float
+  native def self.asinh(x: Float) -> Float
+  native def self.acosh(x: Float) -> Float
+  native def self.atanh(x: Float) -> Float
+  native def self.log1p(x: Float) -> Float
+  native def self.expm1(x: Float) -> Float
 end
 
 module Kernel
@@ -1559,6 +1638,12 @@ module Kernel
   native def gets? -> String?
   native def rand -> Float
   native def rand(max: Int) -> Int
+  native def rand(max: Float) -> Float
+  native def rand(range: Range[Int]) -> Int
+  native def rand(range: Range[Float]) -> Float
+  # Seeds the default generator; returns the previous seed.
+  native def srand(seed: Int) -> Int
+  native def srand -> Int
   native def format(format: String, *args: Object) -> String
   native def sprintf(format: String, *args: Object) -> String
   native def Integer(text: String) -> Int

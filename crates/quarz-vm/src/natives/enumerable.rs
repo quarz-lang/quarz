@@ -265,7 +265,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
         let b = ab(i, r)?;
         let mut v = b.borrow_mut();
         for k in (1..v.len()).rev() {
-            let j = (super::core::next_random() % (k as u64 + 1)) as usize;
+            let j = (super::random::next_random() % (k as u64 + 1)) as usize;
             v.swap(k, j);
         }
         drop(v);

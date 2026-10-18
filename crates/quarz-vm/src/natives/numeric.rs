@@ -15,14 +15,14 @@ use super::{block, float, int};
 
 /// The numeric tower used for arithmetic.
 #[derive(Clone, Debug)]
-enum Num {
+pub(super) enum Num {
     I(i64),
     B(BigInt),
     F(f64),
 }
 
 impl Num {
-    fn of(interp: &Interp, v: &Value) -> Result<Num, Flow> {
+    pub(super) fn of(interp: &Interp, v: &Value) -> Result<Num, Flow> {
         match v {
             Value::Int(i) => Ok(Num::I(*i)),
             Value::BigInt(b) => Ok(Num::B((**b).clone())),
@@ -31,7 +31,7 @@ impl Num {
         }
     }
 
-    fn to_big(&self) -> BigInt {
+    pub(super) fn to_big(&self) -> BigInt {
         match self {
             Num::I(i) => BigInt::from(*i),
             Num::B(b) => b.clone(),
@@ -39,7 +39,7 @@ impl Num {
         }
     }
 
-    fn to_f64(&self) -> f64 {
+    pub(super) fn to_f64(&self) -> f64 {
         match self {
             Num::I(i) => *i as f64,
             Num::B(b) => b.to_f64().unwrap_or(f64::INFINITY),
@@ -52,7 +52,7 @@ impl Num {
     }
 }
 
-fn arith(interp: &Interp, recv: &Value, args: &Args, op: &str) -> EvalResult {
+pub(super) fn arith(interp: &Interp, recv: &Value, args: &Args, op: &str) -> EvalResult {
     let a = Num::of(interp, recv)?;
     let b = Num::of(interp, args.arg(0))?;
     if a.is_float() || b.is_float() {
@@ -445,7 +445,7 @@ fn int_divmod(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     Ok(Value::array(vec![q, r]))
 }
 
-fn int_pow_mod(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
+pub(super) fn int_pow_mod(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let base = Num::of(interp, recv)?.to_big();
     let exp = Num::of(interp, args.arg(0))?.to_big();
     let m = Num::of(interp, args.arg(1))?.to_big();
@@ -499,6 +499,9 @@ fn int_times(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
 }
 
 fn int_upto(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
+    if args.block.is_none() {
+        return enumerator(interp, recv, "upto", args.pos.to_vec());
+    }
     let from = int(interp, recv, "Int")?;
     let to = int(interp, args.arg(0), "limit")?;
     let b = block(interp, &args)?;
@@ -511,6 +514,9 @@ fn int_upto(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
 }
 
 fn int_downto(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
+    if args.block.is_none() {
+        return enumerator(interp, recv, "downto", args.pos.to_vec());
+    }
     let from = int(interp, recv, "Int")?;
     let to = int(interp, args.arg(0), "limit")?;
     let b = block(interp, &args)?;
@@ -523,6 +529,9 @@ fn int_downto(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
 }
 
 fn int_step(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
+    if args.block.is_none() {
+        return enumerator(interp, recv, "step", args.pos.to_vec());
+    }
     let from = int(interp, recv, "Int")?;
     let limit = int(interp, args.arg(0), "limit")?;
     let step = int(interp, args.arg(1), "step")?;
@@ -538,7 +547,7 @@ fn int_step(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     Ok(Value::Nil)
 }
 
-fn float_to_int(interp: &Interp, f: f64) -> EvalResult {
+pub(super) fn float_to_int(interp: &Interp, f: f64) -> EvalResult {
     if f.is_nan() || f.is_infinite() {
         return Err(interp.raise(
             interp.exc.range_error,

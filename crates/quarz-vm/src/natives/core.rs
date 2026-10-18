@@ -43,7 +43,6 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     m.insert("Kernel#at_exit", kernel_at_exit);
     m.insert("Kernel#gets", kernel_gets);
     m.insert("Kernel#gets?", kernel_gets_opt);
-    m.insert("Kernel#rand", kernel_rand);
     m.insert("Kernel#format", kernel_format);
     m.insert("Kernel#sprintf", kernel_format);
     m.insert("Kernel#Integer", kernel_integer);
@@ -315,44 +314,6 @@ fn kernel_gets_opt(interp: &Interp, _: &Value, _: Args) -> EvalResult {
     match read_line(interp)? {
         Some(l) => Ok(Value::string(l)),
         None => Ok(Value::Nil),
-    }
-}
-
-thread_local! {
-    static RNG: std::cell::Cell<u64> = const { std::cell::Cell::new(0x2545F4914F6CDD1D) };
-}
-
-pub fn next_random() -> u64 {
-    RNG.with(|r| {
-        let mut x = r.get();
-        if x == 0x2545F4914F6CDD1D {
-            // Seed from the clock on first use.
-            let t = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos() as u64)
-                .unwrap_or(1);
-            x ^= t;
-        }
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        r.set(x);
-        x
-    })
-}
-
-fn kernel_rand(interp: &Interp, _: &Value, args: Args) -> EvalResult {
-    match args.pos.first() {
-        None => Ok(Value::Float(
-            (next_random() >> 11) as f64 / (1u64 << 53) as f64,
-        )),
-        Some(v) => {
-            let n = int(interp, v, "rand")?;
-            if n <= 0 {
-                return Err(interp.err_arg("rand: argument must be positive"));
-            }
-            Ok(Value::Int((next_random() % n as u64) as i64))
-        }
     }
 }
 

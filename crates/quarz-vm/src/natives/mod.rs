@@ -16,7 +16,9 @@ mod core;
 mod enumerable;
 mod io;
 mod json;
+mod math;
 mod numeric;
+pub mod random;
 mod string;
 mod text;
 pub mod time;
@@ -25,6 +27,8 @@ pub fn registry() -> HashMap<&'static str, NativeFn> {
     let mut m: HashMap<&'static str, NativeFn> = HashMap::new();
     core::register(&mut m);
     numeric::register(&mut m);
+    math::register(&mut m);
+    random::register(&mut m);
     string::register(&mut m);
     text::register(&mut m);
     collections::register(&mut m);

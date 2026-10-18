@@ -232,6 +232,7 @@ pub struct RtClasses {
     pub selector: ClassId,
     pub enumerator: ClassId,
     pub io: ClassId,
+    pub random: ClassId,
     pub file: ClassId,
     pub math: ClassId,
     pub process: ClassId,
@@ -406,6 +407,7 @@ impl Interp {
             selector: class_by_name("Selector"),
             enumerator: class_by_name("Enumerator"),
             io: class_by_name("IO"),
+            random: class_by_name("Random"),
             file: class_by_name("File"),
             math: class_by_name("Math"),
             process: class_by_name("Process"),
@@ -859,6 +861,7 @@ impl Interp {
             Value::Bytes(_) => b.bytes,
             Value::BytesBuilder(_) => b.bytes_builder,
             Value::Time(_) => b.time,
+            Value::Random(_) => self.rt.random,
             Value::Flow(_) => b.object,
         }
     }
@@ -1632,6 +1635,7 @@ impl Interp {
             Value::Duration(ns) => format_duration(*ns),
             Value::Enumerator(e) => format!("#<Enumerator {}>", e.method),
             Value::Io(_) => "#<IO>".to_string(),
+            Value::Random(r) => format!("#<Random seed={}>", r.borrow().seed),
             Value::Bytes(b) => natives::bytes::inspect_bytes(b),
             Value::BytesBuilder(b) => natives::bytes::inspect_bytes(&b.borrow()),
             Value::Time(t) => natives::time::time_to_s(t, inspect),

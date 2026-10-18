@@ -233,8 +233,60 @@ pub enum Value {
     Bytes(Rc<[u8]>),
     BytesBuilder(Rc<RefCell<Vec<u8>>>),
     Time(Rc<TimeVal>),
+    Random(Rc<RefCell<RandomState>>),
     /// Internal: a flow in transit through an `ensure` handler.
     Flow(Rc<FlowBox>),
+}
+
+/// A pseudo-random generator (xoshiro256**), seeded with splitmix64.
+#[derive(Clone, Debug)]
+pub struct RandomState {
+    pub seed: i64,
+    s: [u64; 4],
+}
+
+impl RandomState {
+    pub fn new(seed: i64) -> RandomState {
+        let mut x = seed as u64;
+        let mut s = [0u64; 4];
+        for word in &mut s {
+            x = x.wrapping_add(0x9E3779B97F4A7C15);
+            let mut z = x;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+            *word = z ^ (z >> 31);
+        }
+        RandomState { seed, s }
+    }
+
+    pub fn next_u64(&mut self) -> u64 {
+        let s = &mut self.s;
+        let result = s[1].wrapping_mul(5).rotate_left(7).wrapping_mul(9);
+        let t = s[1] << 17;
+        s[2] ^= s[0];
+        s[3] ^= s[1];
+        s[1] ^= s[2];
+        s[0] ^= s[3];
+        s[2] ^= t;
+        s[3] = s[3].rotate_left(45);
+        result
+    }
+
+    /// A float in `[0, 1)`.
+    pub fn next_f64(&mut self) -> f64 {
+        (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64
+    }
+
+    /// An integer in `[0, bound)` without modulo bias.
+    pub fn below(&mut self, bound: u64) -> u64 {
+        let zone = u64::MAX - u64::MAX % bound;
+        loop {
+            let x = self.next_u64();
+            if x < zone {
+                return x % bound;
+            }
+        }
+    }
 }
 
 /// Tags below this hold no reference-counted payload.
@@ -336,6 +388,7 @@ impl Value {
             (Value::Bytes(a), Value::Bytes(b)) => Rc::ptr_eq(a, b) || a == b,
             (Value::BytesBuilder(a), Value::BytesBuilder(b)) => Rc::ptr_eq(a, b),
             (Value::Time(a), Value::Time(b)) => a.ns == b.ns,
+            (Value::Random(a), Value::Random(b)) => Rc::ptr_eq(a, b),
             (Value::Flow(a), Value::Flow(b)) => Rc::ptr_eq(a, b),
             _ => false,
         }
@@ -476,6 +529,7 @@ impl Hash for Value {
                     Value::Task(p) => (Rc::as_ptr(p) as usize).hash(state),
                     Value::Atom(p) => (Rc::as_ptr(p) as usize).hash(state),
                     Value::BytesBuilder(p) => (Rc::as_ptr(p) as usize).hash(state),
+                    Value::Random(p) => (Rc::as_ptr(p) as usize).hash(state),
                     _ => {}
                 }
             }
