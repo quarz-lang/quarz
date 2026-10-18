@@ -43,6 +43,23 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     m.insert("Kernel#at_exit", kernel_at_exit);
     m.insert("Kernel#gets", kernel_gets);
     m.insert("Kernel#gets?", kernel_gets_opt);
+    m.insert("Kernel#readline", kernel_gets);
+    m.insert("Kernel#readlines", |i, _, _| {
+        let mut lines = Vec::new();
+        loop {
+            match super::core_gets(i, false)? {
+                Value::Nil => break,
+                line => lines.push(line),
+            }
+        }
+        Ok(Value::array(lines))
+    });
+    m.insert("Kernel#printf", |i, _, a| {
+        let fmt = string(i, a.arg(0), "format string")?;
+        let text = format_values(i, &fmt, &a.pos[1..])?;
+        i.write_out(&text);
+        Ok(Value::Nil)
+    });
     m.insert("Kernel#format", kernel_format);
     m.insert("Kernel#sprintf", kernel_format);
     m.insert("Kernel#Integer", kernel_integer);
@@ -460,6 +477,22 @@ fn sign(s: String, plus: bool, space: bool) -> String {
 fn kernel_integer(interp: &Interp, _: &Value, args: Args) -> EvalResult {
     let s = string(interp, args.arg(0), "Integer()")?;
     let t = s.trim().replace('_', "");
+    if let Some(base) = args.pos.get(1) {
+        let base = int(interp, base, "base")?;
+        if !(2..=36).contains(&base) {
+            return Err(interp.err_arg(&format!("invalid radix {base}")));
+        }
+        let (neg, digits) = match t.strip_prefix('-') {
+            Some(rest) => (true, rest),
+            None => (false, t.strip_prefix('+').unwrap_or(&t)),
+        };
+        let parsed = num_bigint::BigInt::parse_bytes(digits.as_bytes(), base as u32)
+            .filter(|_| !digits.is_empty());
+        return match parsed {
+            Some(n) => Ok(int_from_big(if neg { -n } else { n })),
+            None => Err(interp.err_arg(&format!("invalid value for Integer(): {:?}", s.as_ref()))),
+        };
+    }
     let parsed = if let Some(h) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
         i64::from_str_radix(h, 16).ok()
     } else if let Some(b) = t.strip_prefix("0b") {

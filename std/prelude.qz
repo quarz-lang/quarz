@@ -1547,37 +1547,106 @@ class Atom[T: Shareable]
   native def compare_and_set(expected: T, replacement: T) -> Bool
 end
 
+# A stream: the standard streams and open files. `gets`/`read`/`readline`
+# raise EOFError at the end; `gets?`/`read?` return nil.
 class IO
   include Shareable
 
   native def puts(*args: Object) -> Nil
   native def print(*args: Object) -> Nil
-  native def write(text: String) -> Int
+  native def printf(format: String, *args: Object) -> Nil
+  native def write(*args: Object) -> Int
+  native def <<(value: Object) -> self
   native def gets -> String
   native def gets? -> String?
+  native def readline -> String
+  native def readlines -> Array[String]
   native def read -> String
+  native def read(length: Int) -> String
+  native def read? -> String?
+  native def read?(length: Int) -> String?
+  native def getc -> String?
   native def each_line(&: (String) -> Nil) -> Nil
   native def flush -> Nil
   native def close -> Nil
+  native def closed? -> Bool
   native def eof? -> Bool
+  native def rewind -> Nil
+  native def tty? -> Bool
+  native def path -> String?
+  native def to_s -> String
+  native def inspect -> String
 end
 
+# Files, by path. Operating-system failures (a missing file, say) raise
+# SystemCallError; `File.open` with a block closes the file afterwards.
 class File
   include Unshareable
 
+  SEPARATOR = "/"
+
+  native def self.open(path: String, mode: String = "r") -> IO
+  native def self.open[R](path: String, mode: String = "r", &: (IO) -> R) -> R
   native def self.read(path: String) -> String
   native def self.read_bytes(path: String) -> Bytes
   native def self.write(path: String, content: String) -> Int
   native def self.write(path: String, content: Bytes) -> Int
+  native def self.append(path: String, content: String) -> Int
+  native def self.append(path: String, content: Bytes) -> Int
   native def self.exist?(path: String) -> Bool
-  native def self.readlines(path: String) -> Array[String]
-  native def self.basename(path: String) -> String
+  native def self.file?(path: String) -> Bool
+  native def self.directory?(path: String) -> Bool
+  native def self.symlink?(path: String) -> Bool
+  native def self.readable?(path: String) -> Bool
+  native def self.writable?(path: String) -> Bool
+  native def self.executable?(path: String) -> Bool
+  native def self.size(path: String) -> Int
+  native def self.mtime(path: String) -> Time
+  native def self.delete(*paths: String) -> Int
+  native def self.rename(from: String, to: String) -> Int
+  native def self.copy(from: String, to: String) -> Int
+  native def self.readlines(path: String, chomp: Bool = false) -> Array[String]
+  native def self.each_line(path: String, &: (String) -> Nil) -> Nil
+  native def self.foreach(path: String, &: (String) -> Nil) -> Nil
+  native def self.basename(path: String, suffix: String = "") -> String
   native def self.dirname(path: String) -> String
   native def self.extname(path: String) -> String
+  native def self.split(path: String) -> [String, String]
   native def self.join(*parts: String) -> String
+  native def self.expand_path(path: String, directory: String? = nil) -> String
+  native def self.absolute_path(path: String) -> String
+end
+
+module Dir
+  native def self.pwd -> String
+  native def self.getwd -> String
+  native def self.home -> String
+  native def self.tmpdir -> String
+  native def self.chdir(path: String) -> Int
+  native def self.chdir[R](path: String, &: (String) -> R) -> R
+  native def self.exist?(path: String) -> Bool
+  native def self.empty?(path: String) -> Bool
+  native def self.mkdir(path: String) -> Int
+  # Creates the missing parents too (`mkdir -p`).
+  native def self.mkdir_p(path: String) -> Int
+  native def self.rmdir(path: String) -> Int
+  # Removes a directory and everything in it (`rm -rf`).
+  native def self.rm_rf(path: String) -> Int
+  native def self.entries(path: String) -> Array[String]
+  native def self.children(path: String) -> Array[String]
+  native def self.each_child(path: String, &: (String) -> Nil) -> Nil
+  # `*`, `?`, `[...]`, `**` and `{a,b}`; the results are sorted.
+  native def self.glob(pattern: String, base: String? = nil) -> Array[String]
+  native def self.glob(patterns: Array[String], base: String? = nil) -> Array[String]
 end
 
 module Process
+  # What a child process produced: `Process.run("ls", "-l")`,
+  # `Process.sh("ls | wc -l")`.
+  data Output(status: Int, stdout: String, stderr: String) is
+    native def success? -> Bool
+  end
+
   native def self.argv -> Array[String]
   native def self.env -> Hash[String, String]
   native def self.pid -> Int
@@ -1585,6 +1654,8 @@ module Process
   native def self.stdout -> IO
   native def self.stderr -> IO
   native def self.clock -> Float
+  native def self.run(*command: String) -> Process::Output
+  native def self.sh(script: String) -> Process::Output
 end
 
 module Math
@@ -1636,6 +1707,9 @@ module Kernel
   native def at_exit(&: () -> Nil) -> Nil
   native def gets -> String
   native def gets? -> String?
+  native def readline -> String
+  native def readlines -> Array[String]
+  native def printf(format: String, *args: Object) -> Nil
   native def rand -> Float
   native def rand(max: Int) -> Int
   native def rand(max: Float) -> Float
@@ -1647,6 +1721,7 @@ module Kernel
   native def format(format: String, *args: Object) -> String
   native def sprintf(format: String, *args: Object) -> String
   native def Integer(text: String) -> Int
+  native def Integer(text: String, base: Int) -> Int
   native def Float(text: String) -> Float
   native def String(value: Object) -> String
 end

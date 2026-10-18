@@ -1,0 +1,103 @@
+# IO, File, Dir, Process and the Kernel conversions: the methods added in
+# the second batch. Works in a fresh temporary directory; expected output
+# in io.out.
+dir = File.join(Dir.tmpdir, "quarz-io-test-#{Process.pid}")
+Dir.rm_rf(dir)
+Dir.mkdir_p(File.join(dir, "sub", "deep"))
+p Dir.exist?(dir), Dir.empty?(dir), File.directory?(dir), File.file?(dir)
+path = File.join(dir, "notes.txt")
+File.open(path, "w") do |f|
+  f.puts "first"
+  f << "second" << "\n"
+  f.printf("%03d\n", 7)
+  f.write("tail", "!", "\n")
+  p f.path == path, f.closed?
+end
+p File.exist?(path), File.file?(path), File.size(path), File.readable?(path), File.writable?(path), File.executable?(path)
+p File.read(path), File.readlines(path, chomp: true), File.readlines(path).size
+File.append(path, "more\n")
+p File.read(path).lines.size
+f = File.open(path)
+p f.gets, f.gets?, f.readline, f.eof?, f.read(4), f.read?, f.read?, f.read, f.eof?, f.closed?
+f.rewind
+p f.getc, f.getc, f.readlines.size
+f.close
+p f.closed?, f.inspect.end_with?("(closed)>")
+begin
+  f.gets
+rescue IOError => e
+  puts "error: #{e.message}"
+end
+begin
+  File.open(path) { |g| g.puts "x" }
+rescue IOError => e
+  puts "error: #{e.message}"
+end
+begin
+  File.read(File.join(dir, "missing"))
+rescue SystemCallError => e
+  puts "error: #{e.class.name}"
+end
+begin
+  File.open(path, "q")
+rescue ArgumentError => e
+  puts "error: #{e.message}"
+end
+lines = Array::Builder[String].new
+File.each_line(path) { |l| lines << l.chomp }
+p lines.to_a
+File.open(path, "a") { |g| g.puts "appended" }
+File.open(path, "r+") { |g| p g.gets }
+p File.read(path).lines.last
+copy = File.join(dir, "sub", "copy.txt")
+p File.copy(path, copy) > 0, File.rename(copy, copy + ".bak"), File.exist?(copy), File.exist?(copy + ".bak")
+p File.mtime(path).is_a?(Time), (Time.now - File.mtime(path)) < 1.minute
+File.write(File.join(dir, "sub", "a.rb"), "")
+File.write(File.join(dir, "sub", "deep", "b.rb"), "")
+p Dir.children(File.join(dir, "sub")), Dir.entries(File.join(dir, "sub")).first(2)
+names = Array::Builder[String].new
+Dir.each_child(File.join(dir, "sub")) { |n| names << n }
+p names.to_a
+p Dir.glob("**/*.rb", base: dir), Dir.glob(File.join(dir, "sub", "*.{rb,txt}")).map { |x| File.basename(x) }, Dir.glob(["*.txt", "sub/*.bak"], dir), Dir.glob("nothing/*", dir)
+p Dir.chdir(dir) { |d| [d == dir, Dir.pwd == dir, File.exist?("notes.txt")] }, Dir.pwd != dir, Dir.getwd == Dir.pwd, Dir.home.start_with?("/")
+p File.basename("/a/b/c.rb"), File.basename("/a/b/c.rb", ".rb"), File.basename("/a/b/c.rb", ".*"), File.basename("/a/b/"), File.basename("/"), File.basename("c")
+p File.dirname("/a/b/c.rb"), File.dirname("c.rb"), File.dirname("/a"), File.dirname("/"), File.dirname("a/b/")
+p File.extname("x.tar.gz"), File.extname(".bashrc"), File.extname("x."), File.extname("dir.d/file"), File.split("/a/b/c"), File.split("c")
+p File.join("a", "b", "/c"), File.join("a/", "b"), File.join("/", "x"), File::SEPARATOR
+p File.expand_path("/x/../y/./z"), File.expand_path("b", "/a"), File.expand_path("~").start_with?("/"), File.expand_path("~/x").end_with?("/x"), File.absolute_path("q", ).start_with?("/")
+p File.delete(path, copy + ".bak"), File.exist?(path)
+Dir.mkdir(File.join(dir, "empty"))
+p Dir.rmdir(File.join(dir, "empty")), Dir.exist?(File.join(dir, "empty"))
+begin
+  Dir.mkdir(dir)
+rescue SystemCallError => e
+  puts "error: mkdir failed"
+end
+Dir.rm_rf(dir)
+p Dir.exist?(dir), Dir.rm_rf(dir)
+out = Process.run("echo", "hello", "world")
+p out, out.success?, out.stdout, out.stderr, out.status
+sh = Process.sh("echo err 1>&2; echo out; exit 3")
+p sh.status, sh.success?, sh.stdout, sh.stderr
+begin
+  Process.run("quarz-no-such-command-xyz")
+rescue SystemCallError => e
+  puts "error: command not found"
+end
+p Integer("ff", 16), Integer("-101", 2), Integer("zz", 36), Integer("123456789012345678901234567890", 10)
+begin
+  Integer("12", 1)
+rescue ArgumentError => e
+  puts "error: #{e.message}"
+end
+begin
+  Integer("1x", 16)
+rescue ArgumentError => e
+  puts "error: #{e.message}"
+end
+printf("%s=%d\n", "n", 5)
+STDOUT.printf("%5.1f|\n", 3.14159)
+STDOUT << "chained" << " " << 1 << "\n"
+p STDOUT, STDERR.inspect, STDIN.path, STDOUT.closed?, STDOUT.tty?.is_a?(Bool)
+STDOUT.write("w1", "w2\n")
+STDOUT.flush

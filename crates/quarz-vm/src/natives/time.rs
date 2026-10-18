@@ -221,7 +221,7 @@ fn from_datetime<Tz: TimeZone>(dt: &DateTime<Tz>, utc: bool) -> Value {
 }
 
 /// The instant `ns` in the local time zone.
-fn at_local(ns: i64) -> Value {
+pub(super) fn at_local(ns: i64) -> Value {
     let secs = ns.div_euclid(NS);
     let nsec = ns.rem_euclid(NS) as u32;
     let offset = match Local.timestamp_opt(secs, nsec) {

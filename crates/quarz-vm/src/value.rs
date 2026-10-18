@@ -184,6 +184,17 @@ pub enum IoKind {
     Stdin,
     Stdout,
     Stderr,
+    /// An open file (`File.open`).
+    File(RefCell<FileHandle>),
+}
+
+/// The state of an open file: a buffered reader or writer over it.
+#[derive(Debug, Default)]
+pub struct FileHandle {
+    pub path: String,
+    pub reader: Option<std::io::BufReader<std::fs::File>>,
+    pub writer: Option<std::io::BufWriter<std::fs::File>>,
+    pub closed: bool,
 }
 
 #[derive(Debug)]

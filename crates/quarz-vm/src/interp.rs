@@ -219,6 +219,7 @@ pub struct ExcClasses {
     pub timeout: ClassId,
     pub deadlock: ClassId,
     pub io_error: ClassId,
+    pub system_call_error: ClassId,
     pub eof_error: ClassId,
     pub not_implemented: ClassId,
     pub system_exit: ClassId,
@@ -397,6 +398,7 @@ impl Interp {
             timeout: class_by_name("Task::Timeout"),
             deadlock: class_by_name("DeadlockError"),
             io_error: class_by_name("IOError"),
+            system_call_error: class_by_name("SystemCallError"),
             eof_error: class_by_name("EOFError"),
             not_implemented: class_by_name("NotImplementedError"),
             system_exit: class_by_name("SystemExit"),
@@ -1634,7 +1636,19 @@ impl Interp {
             Value::Selector(_) => "#<Selector>".to_string(),
             Value::Duration(ns) => format_duration(*ns),
             Value::Enumerator(e) => format!("#<Enumerator {}>", e.method),
-            Value::Io(_) => "#<IO>".to_string(),
+            Value::Io(io) => match &io.kind {
+                IoKind::Stdin => "#<IO:<STDIN>>".to_string(),
+                IoKind::Stdout => "#<IO:<STDOUT>>".to_string(),
+                IoKind::Stderr => "#<IO:<STDERR>>".to_string(),
+                IoKind::File(f) => {
+                    let f = f.borrow();
+                    format!(
+                        "#<File:{}{}>",
+                        f.path,
+                        if f.closed { " (closed)" } else { "" }
+                    )
+                }
+            },
             Value::Random(r) => format!("#<Random seed={}>", r.borrow().seed),
             Value::Bytes(b) => natives::bytes::inspect_bytes(b),
             Value::BytesBuilder(b) => natives::bytes::inspect_bytes(&b.borrow()),

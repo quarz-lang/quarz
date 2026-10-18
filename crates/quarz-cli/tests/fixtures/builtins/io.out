@@ -1,0 +1,113 @@
+true
+false
+true
+false
+true
+false
+true
+true
+23
+true
+true
+false
+"first\nsecond\n007\ntail!\n"
+["first", "second", "007", "tail!"]
+4
+5
+"first\n"
+"second\n"
+"007\n"
+false
+"tail"
+"!\nmore\n"
+""
+""
+true
+false
+"f"
+"i"
+5
+true
+true
+error: closed stream
+error: not opened for writing
+error: SystemCallError
+error: invalid access mode q
+["first", "second", "007", "tail!", "more"]
+"first\n"
+"appended\n"
+true
+0
+false
+true
+true
+true
+["a.rb", "copy.txt.bak", "deep"]
+[".", ".."]
+["a.rb", "copy.txt.bak", "deep"]
+["sub/a.rb", "sub/deep/b.rb"]
+["a.rb"]
+["notes.txt", "sub/copy.txt.bak"]
+[]
+[true, true, true]
+true
+true
+true
+"c.rb"
+"c"
+"c"
+"b"
+"/"
+"c"
+"/a/b"
+"."
+"/"
+"/"
+"a"
+".gz"
+""
+""
+""
+["/a/b", "c"]
+[".", "c"]
+"a/b/c"
+"a/b"
+"/x"
+"/"
+"/y/z"
+"/a/b"
+true
+true
+true
+2
+false
+0
+false
+error: mkdir failed
+false
+0
+Process::Output(status: 0, stdout: "hello world\n", stderr: "")
+true
+"hello world\n"
+""
+0
+3
+false
+"out\n"
+"err\n"
+error: command not found
+255
+-5
+1295
+123456789012345678901234567890
+error: invalid radix 1
+error: invalid value for Integer(): "1x"
+n=5
+  3.1|
+chained 1
+#<IO:<STDOUT>>
+"#<IO:<STDERR>>"
+nil
+false
+true
+w1w2
