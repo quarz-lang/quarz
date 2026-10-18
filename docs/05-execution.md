@@ -124,7 +124,7 @@ Listing what the Quarz implementation needs from the start, the decisive factor 
 |---|---|
 | Stackful task switching | `corosensei` |
 | Work-stealing scheduler, channels | `crossbeam` deques and synchronization primitives. Race detection can be left to the compiler |
-| Asynchronous IO | `io-uring`, `mio` |
+| Asynchronous IO | `polling` (epoll/kqueue) for sockets; helper threads for file IO and child processes |
 | Bignums, regular expressions, Unicode | `num-bigint` (or `rug`), `regex`, `unicode-*` |
 | Persistent vector / HAMT | Written in-house, since in-place updates rely on RC uniqueness. `im`/`rpds` serve as references |
 | AST and type processing | `enum` and pattern matching |

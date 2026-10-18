@@ -1,4 +1,9 @@
 //! IO, File, Dir and Process.
+//!
+//! Whole-file operations and child processes run on a helper thread
+//! through `Interp::block_on`, so only the calling task waits. Reads and
+//! writes through an open file handle are buffered and synchronous.
+//! Sockets (see `net.rs`) are non-blocking and wait on the reactor.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -10,6 +15,7 @@ use crate::interp::{Args, EvalResult, Flow, Interp, NativeFn};
 use crate::value::*;
 use smallvec::smallvec;
 
+use super::net;
 use super::{block, string};
 
 pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
@@ -67,15 +73,15 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     m.insert("IO#write", |i, r, a| {
         let mut total = 0;
         for v in &a.pos {
-            let s = i.to_s(v)?;
-            io_write(i, r, &s)?;
-            total += s.len();
+            let bytes = net::payload(i, v)?;
+            io_write_bytes(i, r, &bytes)?;
+            total += bytes.len();
         }
         Ok(Value::Int(total as i64))
     });
     m.insert("IO#<<", |i, r, a| {
-        let s = i.to_s(a.arg(0))?;
-        io_write(i, r, &s)?;
+        let bytes = net::payload(i, a.arg(0))?;
+        io_write_bytes(i, r, &bytes)?;
         Ok(r.clone())
     });
     m.insert("IO#gets", |i, r, _| io_gets(i, r, true));
@@ -146,26 +152,28 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
                     w.flush().map_err(|e| os_error(i, e, "flush"))?;
                 }
             }
-            _ => i.flush(),
+            IoKind::Stdout | IoKind::Stderr | IoKind::Stdin => i.flush(),
+            _ => {}
         }
         Ok(Value::Nil)
     });
     m.insert("IO#close", |i, r, _| {
-        if let IoKind::File(f) = &io_of(i, r)?.kind {
-            let mut f = f.borrow_mut();
-            if let Some(mut w) = f.writer.take() {
-                w.flush().map_err(|e| os_error(i, e, "close"))?;
+        match &io_of(i, r)?.kind {
+            IoKind::File(f) => {
+                let mut f = f.borrow_mut();
+                if let Some(mut w) = f.writer.take() {
+                    w.flush().map_err(|e| os_error(i, e, "close"))?;
+                }
+                f.reader = None;
+                f.closed = true;
             }
-            f.reader = None;
-            f.closed = true;
+            IoKind::Socket(_) | IoKind::Listener(_) | IoKind::Udp(_) => net::close(i, r)?,
+            _ => {}
         }
         Ok(Value::Nil)
     });
     m.insert("IO#closed?", |i, r, _| {
-        Ok(Value::Bool(match &io_of(i, r)?.kind {
-            IoKind::File(f) => f.borrow().closed,
-            _ => false,
-        }))
+        Ok(Value::Bool(net::is_closed(io_of(i, r)?)))
     });
     m.insert("IO#eof?", |i, r, _| {
         Ok(Value::Bool(match &io_of(i, r)?.kind {
@@ -185,22 +193,29 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
                 let mut lock = stdin.lock();
                 lock.fill_buf().map(|b| b.is_empty()).unwrap_or(true)
             }
+            IoKind::Socket(st) => net::socket_eof(i, st)?,
             _ => false,
         }))
     });
     m.insert("IO#rewind", |i, r, _| {
-        if let IoKind::File(f) = &io_of(i, r)?.kind {
-            let mut f = f.borrow_mut();
-            if let Some(reader) = f.reader.as_mut() {
-                reader
-                    .seek(std::io::SeekFrom::Start(0))
-                    .map_err(|e| os_error(i, e, "rewind"))?;
+        match &io_of(i, r)?.kind {
+            IoKind::File(f) => {
+                let mut f = f.borrow_mut();
+                if let Some(reader) = f.reader.as_mut() {
+                    reader
+                        .seek(std::io::SeekFrom::Start(0))
+                        .map_err(|e| os_error(i, e, "rewind"))?;
+                }
+                if let Some(writer) = f.writer.as_mut() {
+                    writer
+                        .seek(std::io::SeekFrom::Start(0))
+                        .map_err(|e| os_error(i, e, "rewind"))?;
+                }
             }
-            if let Some(writer) = f.writer.as_mut() {
-                writer
-                    .seek(std::io::SeekFrom::Start(0))
-                    .map_err(|e| os_error(i, e, "rewind"))?;
+            IoKind::Socket(_) | IoKind::Listener(_) | IoKind::Udp(_) => {
+                return Err(i.raise(i.exc.io_error, "cannot rewind a socket"))
             }
+            _ => {}
         }
         Ok(Value::Nil)
     });
@@ -210,13 +225,17 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
             IoKind::Stdin => std::io::stdin().is_terminal(),
             IoKind::Stdout => std::io::stdout().is_terminal(),
             IoKind::Stderr => std::io::stderr().is_terminal(),
-            IoKind::File(_) => false,
+            _ => false,
         }))
     });
     m.insert("IO#path", |i, r, _| {
-        Ok(match &io_of(i, r)?.kind {
+        let io = io_of(i, r)?;
+        Ok(match &io.kind {
             IoKind::File(f) => Value::str(&f.borrow().path),
-            _ => Value::Nil,
+            _ => match net::socket_path(io) {
+                Some(p) => Value::string(p),
+                None => Value::Nil,
+            },
         })
     });
     m.insert("IO#to_s", |i, r, _| Ok(Value::string(i.inspect(r)?)));
@@ -226,33 +245,41 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     m.insert("File.open", file_open);
     m.insert("File.read", |i, _, a| {
         let p = string(i, a.arg(0), "path")?;
-        std::fs::read_to_string(&*p)
+        let path = p.to_string();
+        i.block_on(move || std::fs::read_to_string(&path))?
             .map(Value::string)
             .map_err(|e| os_error(i, e, &p))
     });
     m.insert("File.read_bytes", |i, _, a| {
         let p = string(i, a.arg(0), "path")?;
-        std::fs::read(&*p)
+        let path = p.to_string();
+        i.block_on(move || std::fs::read(&path))?
             .map(Value::bytes)
             .map_err(|e| os_error(i, e, &p))
     });
     m.insert("File.write", |i, _, a| {
         let p = string(i, a.arg(0), "path")?;
         let content = content_bytes(i, a.arg(1))?;
-        std::fs::write(&*p, &content)
-            .map(|_| Value::Int(content.len() as i64))
+        let len = content.len();
+        let path = p.to_string();
+        i.block_on(move || std::fs::write(&path, &content))?
+            .map(|_| Value::Int(len as i64))
             .map_err(|e| os_error(i, e, &p))
     });
     m.insert("File.append", |i, _, a| {
         let p = string(i, a.arg(0), "path")?;
         let content = content_bytes(i, a.arg(1))?;
-        let mut f = std::fs::OpenOptions::new()
-            .append(true)
-            .create(true)
-            .open(&*p)
-            .map_err(|e| os_error(i, e, &p))?;
-        f.write_all(&content).map_err(|e| os_error(i, e, &p))?;
-        Ok(Value::Int(content.len() as i64))
+        let len = content.len();
+        let path = p.to_string();
+        i.block_on(move || {
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .create(true)
+                .open(&path)?;
+            f.write_all(&content)
+        })?
+        .map(|_| Value::Int(len as i64))
+        .map_err(|e| os_error(i, e, &p))
     });
     m.insert("File.exist?", |i, _, a| {
         Ok(Value::Bool(
@@ -335,14 +362,18 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     m.insert("File.copy", |i, _, a| {
         let from = string(i, a.arg(0), "from")?;
         let to = string(i, a.arg(1), "to")?;
-        std::fs::copy(&*from, &*to)
+        let (f, t) = (from.to_string(), to.to_string());
+        i.block_on(move || std::fs::copy(&f, &t))?
             .map(|n| Value::Int(n as i64))
             .map_err(|e| os_error(i, e, &from))
     });
     m.insert("File.readlines", |i, _, a| {
         let p = string(i, a.arg(0), "path")?;
         let chomp = a.arg(1).is_truthy() || a.kw(i, "chomp").is_some_and(|v| v.is_truthy());
-        let s = std::fs::read_to_string(&*p).map_err(|e| os_error(i, e, &p))?;
+        let path = p.to_string();
+        let s = i
+            .block_on(move || std::fs::read_to_string(&path))?
+            .map_err(|e| os_error(i, e, &p))?;
         Ok(Value::array(
             s.split_inclusive('\n')
                 .map(|line| if chomp { chomp_line(line) } else { line })
@@ -517,12 +548,12 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
             other => patterns.push(string(i, other, "pattern")?.to_string()),
         }
         let base = match a.pos.get(1) {
-            Some(b) => Some(string(i, b, "base")?.to_string()),
-            None => a
+            Some(Value::Nil) | None => a
                 .kw(i, "base")
                 .map(|b| string(i, b, "base"))
                 .transpose()?
                 .map(|s| s.to_string()),
+            Some(b) => Some(string(i, b, "base")?.to_string()),
         };
         let mut out = Vec::new();
         for pattern in patterns {
@@ -557,11 +588,11 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
 
 // ----- helpers ---------------------------------------------------------------------
 
-fn io(kind: IoKind) -> Value {
+pub(super) fn io(kind: IoKind) -> Value {
     Value::Io(Rc::new(IoVal { kind }))
 }
 
-fn io_of<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Rc<IoVal>, Flow> {
+pub(super) fn io_of<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Rc<IoVal>, Flow> {
     match v {
         Value::Io(io) => Ok(io),
         _ => Err(interp.err_type("expected an IO")),
@@ -569,7 +600,7 @@ fn io_of<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Rc<IoVal>, Flow> {
 }
 
 /// An operating-system failure as a `SystemCallError`.
-fn os_error(interp: &Interp, e: std::io::Error, what: &str) -> Flow {
+pub(super) fn os_error(interp: &Interp, e: std::io::Error, what: &str) -> Flow {
     interp.raise(interp.exc.system_call_error, &format!("{what}: {e}"))
 }
 
@@ -710,7 +741,9 @@ fn expand_braces(pattern: &str) -> Vec<String> {
 
 fn run_command(interp: &Interp, mut command: std::process::Command, name: &str) -> EvalResult {
     interp.flush();
-    let output = command.output().map_err(|e| os_error(interp, e, name))?;
+    let output = interp
+        .block_on(move || command.output())?
+        .map_err(|e| os_error(interp, e, name))?;
     let status = output.status.code().unwrap_or(-1);
     let class = interp
         .world
@@ -802,7 +835,10 @@ fn file_open(interp: &Interp, _: &Value, args: Args) -> EvalResult {
 fn file_each_line(interp: &Interp, _: &Value, args: Args) -> EvalResult {
     let b = block(interp, &args)?;
     let path = string(interp, args.arg(0), "path")?;
-    let text = std::fs::read_to_string(&*path).map_err(|e| os_error(interp, e, &path))?;
+    let p = path.to_string();
+    let text = interp
+        .block_on(move || std::fs::read_to_string(&p))?
+        .map_err(|e| os_error(interp, e, &path))?;
     for line in text.split_inclusive('\n') {
         interp.call_block(&b, smallvec![Value::str(line)])?;
     }
@@ -810,11 +846,15 @@ fn file_each_line(interp: &Interp, _: &Value, args: Args) -> EvalResult {
 }
 
 fn io_write(interp: &Interp, recv: &Value, s: &str) -> Result<(), Flow> {
+    io_write_bytes(interp, recv, s.as_bytes())
+}
+
+fn io_write_bytes(interp: &Interp, recv: &Value, bytes: &[u8]) -> Result<(), Flow> {
     match &io_of(interp, recv)?.kind {
-        IoKind::Stdout => interp.write_out(s),
+        IoKind::Stdout => interp.write_out_bytes(bytes),
         IoKind::Stderr => {
             interp.flush();
-            eprint!("{s}");
+            let _ = std::io::stderr().write_all(bytes);
         }
         IoKind::Stdin => return Err(interp.raise(interp.exc.io_error, "not opened for writing")),
         IoKind::File(f) => {
@@ -824,10 +864,14 @@ fn io_write(interp: &Interp, recv: &Value, s: &str) -> Result<(), Flow> {
             }
             match f.writer.as_mut() {
                 Some(w) => w
-                    .write_all(s.as_bytes())
+                    .write_all(bytes)
                     .map_err(|e| os_error(interp, e, "write"))?,
                 None => return Err(interp.raise(interp.exc.io_error, "not opened for writing")),
             }
+        }
+        IoKind::Socket(st) => net::socket_write(interp, st, bytes)?,
+        IoKind::Listener(_) | IoKind::Udp(_) => {
+            return Err(interp.raise(interp.exc.io_error, "not opened for writing"))
         }
     }
     Ok(())
@@ -856,6 +900,7 @@ fn io_gets(interp: &Interp, recv: &Value, raise_on_eof: bool) -> EvalResult {
                 Some(String::from_utf8_lossy(&buf).into_owned())
             }
         }
+        IoKind::Socket(st) => net::socket_gets(interp, st)?,
         _ => return Err(interp.raise(interp.exc.io_error, "not opened for reading")),
     };
     match line {
@@ -871,32 +916,22 @@ fn io_read(interp: &Interp, recv: &Value, limit: Option<&Value>) -> Result<Optio
         Some(v) => Some(super::int(interp, v, "length")?.max(0) as usize),
         None => None,
     };
+    let buf = read_raw(interp, recv, limit)?;
+    if buf.is_empty() && limit.is_some_and(|n| n > 0) {
+        return Ok(None);
+    }
+    Ok(Some(String::from_utf8_lossy(&buf).into_owned()))
+}
+
+/// Up to `limit` bytes (all when `None`) from a stream of any kind.
+fn read_raw(interp: &Interp, recv: &Value, limit: Option<usize>) -> Result<Vec<u8>, Flow> {
     let mut buf = Vec::new();
     match &io_of(interp, recv)?.kind {
         IoKind::Stdin => {
             interp.flush();
             let stdin = std::io::stdin();
             let mut lock = stdin.lock();
-            match limit {
-                Some(n) => {
-                    buf.resize(n, 0);
-                    let mut filled = 0;
-                    while filled < n {
-                        let got = lock
-                            .read(&mut buf[filled..])
-                            .map_err(|e| os_error(interp, e, "read"))?;
-                        if got == 0 {
-                            break;
-                        }
-                        filled += got;
-                    }
-                    buf.truncate(filled);
-                }
-                None => {
-                    lock.read_to_end(&mut buf)
-                        .map_err(|e| os_error(interp, e, "read"))?;
-                }
-            }
+            read_up_to(&mut lock, &mut buf, limit).map_err(|e| os_error(interp, e, "read"))?;
         }
         IoKind::File(f) => {
             let mut f = f.borrow_mut();
@@ -906,61 +941,56 @@ fn io_read(interp: &Interp, recv: &Value, limit: Option<&Value>) -> Result<Optio
             let Some(reader) = f.reader.as_mut() else {
                 return Err(interp.raise(interp.exc.io_error, "not opened for reading"));
             };
-            match limit {
-                Some(n) => {
-                    buf.resize(n, 0);
-                    let mut filled = 0;
-                    while filled < n {
-                        let got = reader
-                            .read(&mut buf[filled..])
-                            .map_err(|e| os_error(interp, e, "read"))?;
-                        if got == 0 {
-                            break;
-                        }
-                        filled += got;
-                    }
-                    buf.truncate(filled);
-                }
-                None => {
-                    reader
-                        .read_to_end(&mut buf)
-                        .map_err(|e| os_error(interp, e, "read"))?;
-                }
-            }
+            read_up_to(reader, &mut buf, limit).map_err(|e| os_error(interp, e, "read"))?;
         }
+        IoKind::Socket(st) => buf = net::socket_read(interp, st, limit)?,
         _ => return Err(interp.raise(interp.exc.io_error, "not opened for reading")),
     }
-    if buf.is_empty() && limit.is_some_and(|n| n > 0) {
-        return Ok(None);
+    Ok(buf)
+}
+
+fn read_up_to(
+    reader: &mut impl Read,
+    buf: &mut Vec<u8>,
+    limit: Option<usize>,
+) -> std::io::Result<()> {
+    match limit {
+        Some(n) => {
+            buf.resize(n, 0);
+            let mut filled = 0;
+            while filled < n {
+                let got = reader.read(&mut buf[filled..])?;
+                if got == 0 {
+                    break;
+                }
+                filled += got;
+            }
+            buf.truncate(filled);
+        }
+        None => {
+            reader.read_to_end(buf)?;
+        }
     }
-    if buf.is_empty() && limit.is_none() {
-        return Ok(Some(String::new()));
+    Ok(())
+}
+
+/// `readpartial` on a file or standard input: up to `max` bytes, `None`
+/// at the end.
+pub(super) fn read_limited(
+    interp: &Interp,
+    recv: &Value,
+    max: usize,
+) -> Result<Option<String>, Flow> {
+    let buf = read_raw(interp, recv, Some(max))?;
+    if buf.is_empty() && max > 0 {
+        return Ok(None);
     }
     Ok(Some(String::from_utf8_lossy(&buf).into_owned()))
 }
 
 fn read_byte(interp: &Interp, recv: &Value) -> Result<Option<u8>, Flow> {
-    let mut byte = [0u8; 1];
-    let n = match &io_of(interp, recv)?.kind {
-        IoKind::Stdin => {
-            interp.flush();
-            std::io::stdin()
-                .lock()
-                .read(&mut byte)
-                .map_err(|e| os_error(interp, e, "read"))?
-        }
-        IoKind::File(f) => {
-            let mut f = f.borrow_mut();
-            let Some(reader) = f.reader.as_mut() else {
-                return Err(interp.raise(interp.exc.io_error, "not opened for reading"));
-            };
-            reader
-                .read(&mut byte)
-                .map_err(|e| os_error(interp, e, "read"))?
-        }
-        _ => return Err(interp.raise(interp.exc.io_error, "not opened for reading")),
-    };
-    Ok(if n == 0 { None } else { Some(byte[0]) })
+    let buf = read_raw(interp, recv, Some(1))?;
+    Ok(buf.first().copied())
 }
 
 fn io_puts(interp: &Interp, recv: &Value, args: Args) -> EvalResult {

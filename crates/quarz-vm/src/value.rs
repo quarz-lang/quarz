@@ -186,6 +186,101 @@ pub enum IoKind {
     Stderr,
     /// An open file (`File.open`).
     File(RefCell<FileHandle>),
+    /// A connected stream socket (TCP or Unix), non-blocking, driven by
+    /// the scheduler's reactor.
+    Socket(RefCell<SocketState>),
+    /// A listening socket (`TCPServer`, `UNIXServer`).
+    Listener(RefCell<ListenerState>),
+    Udp(RefCell<UdpState>),
+}
+
+#[derive(Debug)]
+pub enum Stream {
+    Tcp(std::net::TcpStream),
+    Unix(std::os::unix::net::UnixStream),
+}
+
+impl Stream {
+    pub fn fd(&self) -> std::os::fd::RawFd {
+        use std::os::fd::AsRawFd;
+        match self {
+            Stream::Tcp(s) => s.as_raw_fd(),
+            Stream::Unix(s) => s.as_raw_fd(),
+        }
+    }
+}
+
+impl std::io::Read for Stream {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            Stream::Tcp(s) => s.read(buf),
+            Stream::Unix(s) => s.read(buf),
+        }
+    }
+}
+
+impl std::io::Write for Stream {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match self {
+            Stream::Tcp(s) => s.write(buf),
+            Stream::Unix(s) => s.write(buf),
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            Stream::Tcp(s) => s.flush(),
+            Stream::Unix(s) => s.flush(),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct SocketState {
+    /// `None` once closed: the descriptor is released at `close`, not
+    /// when the value is dropped.
+    pub stream: Option<Stream>,
+    pub unix: bool,
+    /// Bytes read from the socket but not yet consumed.
+    pub rbuf: Vec<u8>,
+    pub eof: bool,
+    pub closed: bool,
+    /// The path of a Unix socket.
+    pub path: Option<String>,
+    /// The addresses as of the connection (valid after the peer hangs
+    /// up, when the system no longer reports them).
+    pub local: Option<std::net::SocketAddr>,
+    pub peer: Option<std::net::SocketAddr>,
+}
+
+#[derive(Debug)]
+pub enum Listener {
+    Tcp(std::net::TcpListener),
+    Unix(std::os::unix::net::UnixListener),
+}
+
+impl Listener {
+    pub fn fd(&self) -> std::os::fd::RawFd {
+        use std::os::fd::AsRawFd;
+        match self {
+            Listener::Tcp(l) => l.as_raw_fd(),
+            Listener::Unix(l) => l.as_raw_fd(),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct ListenerState {
+    pub listener: Option<Listener>,
+    pub unix: bool,
+    pub closed: bool,
+    pub path: Option<String>,
+}
+
+#[derive(Debug)]
+pub struct UdpState {
+    pub socket: Option<std::net::UdpSocket>,
+    pub closed: bool,
 }
 
 /// The state of an open file: a buffered reader or writer over it.

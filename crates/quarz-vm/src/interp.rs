@@ -233,6 +233,11 @@ pub struct RtClasses {
     pub selector: ClassId,
     pub enumerator: ClassId,
     pub io: ClassId,
+    pub tcp_socket: ClassId,
+    pub tcp_server: ClassId,
+    pub udp_socket: ClassId,
+    pub unix_socket: ClassId,
+    pub unix_server: ClassId,
     pub random: ClassId,
     pub file: ClassId,
     pub math: ClassId,
@@ -410,6 +415,11 @@ impl Interp {
             selector: class_by_name("Selector"),
             enumerator: class_by_name("Enumerator"),
             io: class_by_name("IO"),
+            tcp_socket: class_by_name("TCPSocket"),
+            tcp_server: class_by_name("TCPServer"),
+            udp_socket: class_by_name("UDPSocket"),
+            unix_socket: class_by_name("UNIXSocket"),
+            unix_server: class_by_name("UNIXServer"),
             random: class_by_name("Random"),
             file: class_by_name("File"),
             math: class_by_name("Math"),
@@ -682,6 +692,35 @@ impl Interp {
         Ok(())
     }
 
+    /// Wait until `fd` is readable (or writable), parking the task.
+    pub fn wait_fd(&self, fd: std::os::fd::RawFd, writable: bool) -> Result<(), Flow> {
+        let id = self.current_task().id;
+        self.sched.borrow_mut().wait_fd(fd, writable, id);
+        let r = self.park();
+        self.sched.borrow_mut().unwait_fd(fd, id);
+        r
+    }
+
+    /// Run a blocking job on another thread, parking the task until it
+    /// finishes (file IO, name resolution, child processes).
+    pub fn block_on<T: Send + 'static>(
+        &self,
+        job: impl FnOnce() -> T + Send + 'static,
+    ) -> Result<T, Flow> {
+        use std::sync::mpsc::TryRecvError;
+        let id = self.current_task().id;
+        let rx = self.sched.borrow_mut().offload(id, job);
+        loop {
+            match rx.try_recv() {
+                Ok(v) => return Ok(v),
+                Err(TryRecvError::Disconnected) => {
+                    return Err(self.raise(self.exc.runtime_error, "background job failed"))
+                }
+                Err(TryRecvError::Empty) => self.park()?,
+            }
+        }
+    }
+
     pub fn yield_now(&self) {
         self.sched.borrow_mut().requeue_current();
         sched::suspend_raw();
@@ -861,7 +900,24 @@ impl Interp {
             Value::Selector(_) => self.rt.selector,
             Value::Duration(_) => b.duration,
             Value::Enumerator(_) => self.rt.enumerator,
-            Value::Io(_) => self.rt.io,
+            Value::Io(io) => match &io.kind {
+                IoKind::Socket(st) => {
+                    if st.borrow().unix {
+                        self.rt.unix_socket
+                    } else {
+                        self.rt.tcp_socket
+                    }
+                }
+                IoKind::Listener(st) => {
+                    if st.borrow().unix {
+                        self.rt.unix_server
+                    } else {
+                        self.rt.tcp_server
+                    }
+                }
+                IoKind::Udp(_) => self.rt.udp_socket,
+                _ => self.rt.io,
+            },
             Value::Bytes(_) => b.bytes,
             Value::BytesBuilder(_) => b.bytes_builder,
             Value::Time(_) => b.time,
@@ -1700,6 +1756,9 @@ impl Interp {
                         if f.closed { " (closed)" } else { "" }
                     )
                 }
+                IoKind::Socket(_) | IoKind::Listener(_) | IoKind::Udp(_) => {
+                    natives::net::inspect_socket(self, io)
+                }
             },
             Value::Random(r) => format!("#<Random seed={}>", r.borrow().seed),
             Value::Bytes(b) => natives::bytes::inspect_bytes(b),
@@ -1814,8 +1873,12 @@ impl Interp {
     }
 
     pub fn write_out(&self, s: &str) {
+        self.write_out_bytes(s.as_bytes());
+    }
+
+    pub fn write_out_bytes(&self, bytes: &[u8]) {
         use std::io::Write;
-        let _ = self.stdout.borrow_mut().write_all(s.as_bytes());
+        let _ = self.stdout.borrow_mut().write_all(bytes);
     }
 }
 

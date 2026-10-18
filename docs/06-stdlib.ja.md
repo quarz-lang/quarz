@@ -87,7 +87,8 @@
 - `Dir`: `pwd getwd home tmpdir chdir(ブロック可) exist? empty? mkdir mkdir_p rmdir rm_rf entries children each_child glob(pattern, base:)`(`*`、`?`、`[...]`、`**`、`{a,b}`)。
 - `Process`: `argv env pid clock stdin stdout stderr`。`Process.run(*command)` と `Process.sh(script)` は子プロセスを終了まで実行し、`success?` を持つ `Process::Output(status, stdout, stderr)` を返します。`ENV` と `ARGV` は定数。
 - `gets`/`read` などの「EOF で nil」を返す操作は 2 種類あります。`gets?`/`read?` は `nil` を返し、`gets`/`read`/`readline` は `EOFError` を送出します。OS の失敗(ファイルがない、コマンドが見つからない)は `SystemCallError`、閉じたストリームの使用や読み込み専用ストリームへの書き込みは `IOError` です。
-- ファイル IO は今のところ同期的で、実行中はスケジューラを止めます。タスクだけを止める非同期 IO、`Socket`(`TCPSocket`、`TCPServer`、`UDPSocket`、`UNIXSocket`)、`Signal` は *予定*。ファイルハンドルは作ったタスクが所有するべきものです。
+- ソケット: `TCPSocket.new(host, port)` / `TCPSocket.open(host, port) { |s| }`、`accept` を持つ `TCPServer.new([host,] port)`、`UDPSocket`(`bind connect send recv recv_bytes recvfrom recvfrom_bytes`)、パスで指定する `UNIXSocket`/`UNIXServer`。ソケットは `IO` なので `gets gets? read read(n) read? readline readlines each_line write << puts print printf eof? close closed?` がそのまま使え、加えて `readpartial readpartial? read_bytes close_write close_read` と、`[host, port]` を返す `local_address`/`remote_address` があります。`write` はバイナリ用に `Bytes` も受け取ります。
+- これらはすべて呼び出したタスクだけを止めます([04-concurrency.ja.md](04-concurrency.ja.md) §6)。ソケットはスケジューラのリアクタで待ち、ファイル全体の操作と子プロセスは補助スレッドで実行されます。開いた `File` ハンドルの読み書きはバッファ付きの同期処理で、標準ストリームはブロッキングです。`Signal` は *予定*。
 
 ## 10. その他(`require` で読み込む)
 

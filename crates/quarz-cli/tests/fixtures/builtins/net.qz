@@ -1,0 +1,128 @@
+# Sockets and asynchronous IO: TCP, UDP and UNIX sockets between tasks,
+# timeouts on blocked reads, and file IO on helper threads. Expected
+# output in net.out.
+# TCP: an echo server and several clients, all tasks in one scheduler.
+server = TCPServer.new("127.0.0.1", 0)
+port = server.local_address[1]
+p server.local_address[0], port > 0, server.closed?
+Task.scope do |scope|
+  scope.spawn do
+    3.times do
+      client = server.accept
+      scope.spawn do
+        client.each_line { |line| client.write("echo: #{line}") }
+        client.close
+      end
+    end
+  end
+  replies = 3.times.map do |n|
+    scope.spawn do
+      sock = TCPSocket.new("127.0.0.1", port)
+      sock.puts "hello #{n}"
+      sock.puts "bye #{n}"
+      sock.close_write
+      lines = sock.readlines
+      p sock.remote_address[1] == port, sock.local_address[0]
+      sock.close
+      lines
+    end
+  end
+  p replies.map(&:await).map { |ls| ls.map(&:chomp) }.sort_by { |ls| ls[0] }
+end
+server.close
+p server.closed?
+
+# A blocked read is interrupted by Task.timeout; the socket is reusable afterwards.
+server2 = TCPServer.new(0)
+port2 = server2.local_address[1]
+Task.scope do |scope|
+  scope.spawn do
+    c = server2.accept
+    Task.sleep(200.ms)
+    c.write("late\n")
+    c.close
+  end
+  sock = TCPSocket.new("127.0.0.1", port2)
+  begin
+    Task.timeout(50.ms) { sock.gets }
+    puts "no timeout?"
+  rescue Task::Timeout
+    puts "timed out"
+  end
+  p sock.gets, sock.gets?, sock.eof?
+  sock.close
+end
+server2.close
+
+# Binary data and partial reads.
+server3 = TCPServer.new("127.0.0.1", 0)
+Task.scope do |scope|
+  scope.spawn do
+    c = server3.accept
+    c.write(b"\x00\x01\x02", "tail")
+    c.close
+  end
+  sock = TCPSocket.open("127.0.0.1", server3.local_address[1]) do |s|
+    p s.read_bytes(2), s.readpartial(100), s.readpartial?(1), s.inspect.start_with?("#<TCPSocket 127.0.0.1:")
+    s
+  end
+  p sock.closed?
+end
+server3.close
+
+# UDP.
+udp = UDPSocket.new
+udp.bind("127.0.0.1", 0)
+uport = udp.local_address[1]
+sender = UDPSocket.new
+Task.scope do |scope|
+  scope.spawn do
+    sender.send("ping", "127.0.0.1", uport)
+    sender.send(b"\xffpong", "127.0.0.1", uport)
+  end
+  msg, from = udp.recvfrom(100)
+  p msg, from[0]
+  data, _ = udp.recvfrom_bytes(100)
+  p data
+  sender.connect("127.0.0.1", uport)
+  sender.send("direct")
+  p udp.recv(100)
+end
+udp.close
+sender.close
+
+# UNIX sockets.
+path = File.join(Dir.tmpdir, "quarz-sock-#{Process.pid}")
+us = UNIXServer.new(path)
+Task.scope do |scope|
+  scope.spawn do
+    c = us.accept
+    c.puts "unix #{c.gets.chomp}"
+    c.close
+  end
+  UNIXSocket.open(path) do |s|
+    s.puts "hi"
+    p s.gets, s.path == path
+  end
+end
+p us.path == path, File.exist?(path)
+us.close
+p File.exist?(path)
+
+# Connection errors.
+begin
+  TCPSocket.new("127.0.0.1", port)
+rescue SystemCallError => e
+  puts "refused"
+end
+
+# File IO runs on a helper thread; tasks interleave while it waits.
+tmp = File.join(Dir.tmpdir, "quarz-async-#{Process.pid}.txt")
+File.write(tmp, (1..2000).map { |i| "line #{i}" }.join("\n"))
+Task.scope do |scope|
+  readers = 4.times.map { |k| scope.spawn { File.read(tmp).lines.size } }
+  p readers.map(&:await)
+end
+File.delete(tmp)
+out = Process.run("sh", "-c", "sleep 0.1; echo done")
+p out.stdout

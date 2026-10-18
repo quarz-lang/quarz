@@ -119,7 +119,7 @@ Quarz の実装で最初から必要になるものを並べると、Rust のエ
 |---|---|
 | スタックフルなタスクの切り替え | `corosensei` |
 | ワークスティーリングスケジューラ、チャネル | `crossbeam` のデック・同期プリミティブ。競合の検出をコンパイラに任せられる |
-| 非同期 IO | `io-uring`、`mio` |
+| 非同期 IO | ソケットは `polling`(epoll/kqueue)、ファイル IO と子プロセスは補助スレッド |
 | 多倍長整数、正規表現、Unicode | `num-bigint`(または `rug`)、`regex`、`unicode-*` |
 | 永続ベクタ・HAMT | RC の一意性で在場更新するため自前。`im`/`rpds` を参考にする |
 | AST・型の処理 | `enum` とパターンマッチ |

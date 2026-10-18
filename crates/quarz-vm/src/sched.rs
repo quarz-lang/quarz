@@ -12,11 +12,14 @@
 
 use std::cell::{Cell, RefCell};
 use std::cmp::Reverse;
-use std::collections::{BinaryHeap, VecDeque};
+use std::collections::{BinaryHeap, HashMap, VecDeque};
+use std::os::fd::{BorrowedFd, RawFd};
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use corosensei::{Coroutine, CoroutineResult, Yielder};
+use polling::{Event, Events, Poller};
 
 use crate::value::Value;
 
@@ -146,6 +149,58 @@ pub struct SelectorState {
 
 pub type TaskCoroutine = Coroutine<(), (), TaskExit>;
 
+/// Tasks waiting for a file descriptor to become readable or writable.
+#[derive(Default)]
+struct IoWaiters {
+    readers: Vec<TaskId>,
+    writers: Vec<TaskId>,
+}
+
+/// The IO reactor: an `epoll`/`kqueue` poller that the run loop waits on
+/// when nothing is runnable, plus the completions of work pushed to
+/// other threads (file IO, DNS, child processes), which wake the waiting
+/// task through the poller's notification.
+pub struct Reactor {
+    pub poller: Arc<Poller>,
+    events: Events,
+    waiters: HashMap<RawFd, IoWaiters>,
+    completions: Arc<Mutex<Vec<TaskId>>>,
+    pending_jobs: usize,
+}
+
+impl Reactor {
+    fn new() -> Reactor {
+        Reactor {
+            poller: Arc::new(Poller::new().expect("create the IO poller")),
+            events: Events::new(),
+            waiters: HashMap::new(),
+            completions: Arc::new(Mutex::new(Vec::new())),
+            pending_jobs: 0,
+        }
+    }
+
+    fn idle(&self) -> bool {
+        self.waiters.is_empty() && self.pending_jobs == 0
+    }
+
+    /// The interest to arm for a descriptor, from who is waiting on it.
+    fn arm(&self, fd: RawFd) {
+        let Some(w) = self.waiters.get(&fd) else {
+            return;
+        };
+        let interest = match (!w.readers.is_empty(), !w.writers.is_empty()) {
+            (true, true) => Event::all(fd as usize),
+            (true, false) => Event::readable(fd as usize),
+            (false, true) => Event::writable(fd as usize),
+            (false, false) => Event::none(fd as usize),
+        };
+        // SAFETY: the descriptor is registered and open while it has
+        // waiters (sockets deregister before closing).
+        let source = unsafe { BorrowedFd::borrow_raw(fd) };
+        let _ = self.poller.modify(source, interest);
+    }
+}
+
 pub struct Scheduler {
     pub tasks: Vec<Rc<TaskHandle>>,
     coroutines: Vec<Option<TaskCoroutine>>,
@@ -154,6 +209,7 @@ pub struct Scheduler {
     timer_seq: u64,
     pub current: Option<TaskId>,
     cancelled_timers: Vec<u64>,
+    pub reactor: Reactor,
 }
 
 thread_local! {
@@ -196,6 +252,138 @@ impl Scheduler {
             timer_seq: 0,
             current: None,
             cancelled_timers: Vec::new(),
+            reactor: Reactor::new(),
+        }
+    }
+
+    // ----- IO ---------------------------------------------------------------------
+
+    /// Register a non-blocking descriptor with the reactor (no interest
+    /// yet). The owner must `deregister` it before closing it.
+    pub fn register(&self, fd: RawFd) {
+        // SAFETY: the caller keeps the descriptor open until `deregister`.
+        let _ = unsafe { self.reactor.poller.add(fd, Event::none(fd as usize)) };
+    }
+
+    pub fn deregister(&mut self, fd: RawFd) {
+        // SAFETY: the descriptor is still open (deregistration precedes
+        // the close).
+        let source = unsafe { BorrowedFd::borrow_raw(fd) };
+        let _ = self.reactor.poller.delete(source);
+        if let Some(w) = self.reactor.waiters.remove(&fd) {
+            for id in w.readers.into_iter().chain(w.writers) {
+                self.wake(id);
+            }
+        }
+    }
+
+    /// Record that `id` waits for `fd` to become readable (or writable);
+    /// the caller then parks.
+    pub fn wait_fd(&mut self, fd: RawFd, writable: bool, id: TaskId) {
+        let w = self.reactor.waiters.entry(fd).or_default();
+        let list = if writable {
+            &mut w.writers
+        } else {
+            &mut w.readers
+        };
+        if !list.contains(&id) {
+            list.push(id);
+        }
+        self.reactor.arm(fd);
+    }
+
+    /// Forget `id`'s interest in `fd` (its wait ended, by an event or
+    /// otherwise).
+    pub fn unwait_fd(&mut self, fd: RawFd, id: TaskId) {
+        let Some(w) = self.reactor.waiters.get_mut(&fd) else {
+            return;
+        };
+        w.readers.retain(|t| *t != id);
+        w.writers.retain(|t| *t != id);
+        if w.readers.is_empty() && w.writers.is_empty() {
+            self.reactor.waiters.remove(&fd);
+            // SAFETY: the descriptor is open while it is registered.
+            let source = unsafe { BorrowedFd::borrow_raw(fd) };
+            let _ = self.reactor.poller.modify(source, Event::none(fd as usize));
+        } else {
+            self.reactor.arm(fd);
+        }
+    }
+
+    /// Run `job` on another thread; the task `id` is woken when it
+    /// finishes and takes the result from the returned receiver.
+    pub fn offload<T: Send + 'static>(
+        &mut self,
+        id: TaskId,
+        job: impl FnOnce() -> T + Send + 'static,
+    ) -> std::sync::mpsc::Receiver<T> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let completions = self.reactor.completions.clone();
+        let poller = self.reactor.poller.clone();
+        self.reactor.pending_jobs += 1;
+        std::thread::spawn(move || {
+            let result = job();
+            let _ = tx.send(result);
+            completions.lock().unwrap().push(id);
+            let _ = poller.notify();
+        });
+        rx
+    }
+
+    /// Wait for IO events (at most `timeout`) and wake the tasks they
+    /// concern. Returns whether any task was woken.
+    fn poll_io(&mut self, timeout: Option<Duration>) -> bool {
+        let mut woke = false;
+        let mut events = std::mem::replace(&mut self.reactor.events, Events::new());
+        events.clear();
+        let _ = self.reactor.poller.wait(&mut events, timeout);
+        let mut rearm = Vec::new();
+        for ev in events.iter() {
+            let fd = ev.key as RawFd;
+            let Some(w) = self.reactor.waiters.get_mut(&fd) else {
+                continue;
+            };
+            let failed = ev.is_err() == Some(true) || ev.is_interrupt();
+            let mut woken = Vec::new();
+            if ev.readable || failed {
+                woken.append(&mut w.readers);
+            }
+            if ev.writable || failed {
+                woken.append(&mut w.writers);
+            }
+            if w.readers.is_empty() && w.writers.is_empty() {
+                self.reactor.waiters.remove(&fd);
+            } else {
+                rearm.push(fd);
+            }
+            for id in woken {
+                self.wake(id);
+                woke = true;
+            }
+        }
+        self.reactor.events = events;
+        for fd in rearm {
+            self.reactor.arm(fd);
+        }
+        let done: Vec<TaskId> = std::mem::take(&mut *self.reactor.completions.lock().unwrap());
+        for id in done {
+            self.reactor.pending_jobs = self.reactor.pending_jobs.saturating_sub(1);
+            self.wake(id);
+            woke = true;
+        }
+        woke
+    }
+
+    /// When the earliest timer is due.
+    fn next_timer(&mut self) -> Option<Instant> {
+        loop {
+            let Reverse((when, seq, _)) = self.timers.peek().cloned()?;
+            if let Some(pos) = self.cancelled_timers.iter().position(|s| *s == seq) {
+                self.cancelled_timers.swap_remove(pos);
+                self.timers.pop();
+                continue;
+            }
+            return Some(when);
         }
     }
 
@@ -307,6 +495,10 @@ impl Scheduler {
     /// nothing to run at all (deadlock or completion).
     pub fn next_runnable(&mut self) -> Option<(TaskId, TaskCoroutine)> {
         self.fire_due_timers(false);
+        if !self.reactor.idle() {
+            // Keep IO flowing while tasks are busy.
+            self.poll_io(Some(Duration::ZERO));
+        }
         loop {
             while let Some(id) = self.ready.pop_front() {
                 let task = &self.tasks[id as usize];
@@ -319,9 +511,18 @@ impl Scheduler {
                     return Some((id, co));
                 }
             }
-            if !self.fire_due_timers(true) {
-                return None;
+            if self.reactor.idle() {
+                if !self.fire_due_timers(true) {
+                    return None;
+                }
+                continue;
             }
+            // Nothing runnable: wait for IO, or for the next timer.
+            let timeout = self
+                .next_timer()
+                .map(|when| when.saturating_duration_since(Instant::now()));
+            self.poll_io(timeout);
+            self.fire_due_timers(false);
         }
     }
 

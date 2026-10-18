@@ -185,9 +185,11 @@ end
 
 ## 6. Blocking Operations and IO
 
-- All IO in the standard library (`File`, `Socket`, `IO`, `Process`) is built on the asynchronous runtime (io_uring / epoll / kqueue), and only the calling task waits. Code is written synchronously.
-- `IO` handles are not Shareable and can only be used from the owning task. To let other tasks read or write, mediate through a channel.
-- To push a potentially blocking C function (FFI) or a long computation onto an OS thread, use `Task.blocking { }`. It runs on a dedicated thread pool and the scheduler does not stall.
+- IO in the standard library only suspends the calling task; code is written synchronously. Sockets (`TCPSocket`, `TCPServer`, `UDPSocket`, `UNIXSocket`, `UNIXServer`) are non-blocking descriptors that the scheduler's reactor (`epoll`/`kqueue`, through the `polling` crate) watches: an operation that would block parks the task until the descriptor is ready, and the run loop waits on the reactor when nothing is runnable. Whole-file operations (`File.read`, `File.write`, …), name resolution, `connect` and child processes (`Process.run`) run on a helper thread that wakes the task through the reactor. Reads and writes on an open `File` handle are buffered and synchronous.
+- A parked IO operation is interrupted like any other wait: `Task.timeout` and `cancel` raise in the waiting task, and the socket stays usable afterwards.
+- The standard streams (`STDIN`, `STDOUT`, `STDERR`) are blocking for now: reading from the terminal stops the scheduler.
+- `IO` handles should be used from the owning task; to let other tasks read or write, mediate through a channel.
+- `Task.blocking { }` is reserved for pushing a potentially blocking C function (FFI) or a long computation onto an OS thread; today it runs the block in place.
 
 ```ruby
 rows = Task.blocking { legacy_c_query(sql) }

@@ -17,6 +17,7 @@ mod enumerable;
 mod io;
 mod json;
 mod math;
+pub mod net;
 mod numeric;
 pub mod random;
 mod string;
@@ -35,6 +36,7 @@ pub fn registry() -> HashMap<&'static str, NativeFn> {
     enumerable::register(&mut m);
     concurrency::register(&mut m);
     io::register(&mut m);
+    net::register(&mut m);
     bytes::register(&mut m);
     time::register(&mut m);
     json::register(&mut m);

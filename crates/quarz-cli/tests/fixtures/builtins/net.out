@@ -1,0 +1,32 @@
+"127.0.0.1"
+true
+false
+true
+"127.0.0.1"
+true
+"127.0.0.1"
+true
+"127.0.0.1"
+[["echo: hello 0", "echo: bye 0"], ["echo: hello 1", "echo: bye 1"], ["echo: hello 2", "echo: bye 2"]]
+true
+timed out
+"late\n"
+nil
+true
+b"\x00\x01"
+"\x02tail"
+nil
+true
+true
+"ping"
+"127.0.0.1"
+b"\xffpong"
+"direct"
+"unix hi\n"
+true
+true
+true
+false
+refused
+[2000, 2000, 2000, 2000]
+"done\n"
