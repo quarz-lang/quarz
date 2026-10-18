@@ -43,6 +43,7 @@ pub type EvalResult = Result<Value, Flow>;
 pub type ArgVec = SmallVec<[Value; 4]>;
 
 /// Arguments to a native method.
+#[derive(Default)]
 pub struct Args {
     pub pos: ArgVec,
     pub kw: Vec<(Symbol, Value)>,

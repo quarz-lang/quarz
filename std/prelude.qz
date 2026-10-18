@@ -695,6 +695,136 @@ module Enumerable[out T]
   end
 
   def lazy -> Array[T] = to_a
+
+  # Aliases that Ruby programs use.
+  def collect[U](&: (T) -> U) -> Array[U] = map { |x| yield(x) }
+  def collect_concat[U](&: (T) -> Array[U]) -> Array[U] = flat_map { |x| yield(x) }
+  def find_all(&: (T) -> Object) -> Array[T] = select { |x| yield(x) }
+  def member?(value: Object) -> Bool = include?(value)
+  def entries -> Array[T] = to_a
+
+  def reduce(&: (T, T) -> T) -> T?
+    acc: T? = nil
+    each do |x|
+      current = acc
+      acc = current.nil? ? x : yield(current, x)
+    end
+    acc
+  end
+
+  def inject(&: (T, T) -> T) -> T? = reduce { |a, x| yield(a, x) }
+
+  def count(value: Object) -> Int = count { |x| x == value }
+
+  def none? -> Bool = !any?
+
+  def one? -> Bool = count { |x| x } == 1
+
+  def find_index(value: Object) -> Int? = find_index { |x| x == value }
+
+  def reverse_each(&: (T) -> Nil) -> Nil
+    to_a.reverse_each { |x| yield(x) }
+  end
+
+  def each_cons(n: Int, &: (Array[T]) -> Nil) -> Nil
+    raise ArgumentError, "invalid size" if n <= 0
+    window = Array::Builder[T].new
+    each do |x|
+      window << x
+      window.shift if window.size > n
+      yield window.snapshot if window.size == n
+    end
+  end
+
+  # Consecutive elements for which the block holds stay in one chunk.
+  def chunk_while(&: (T, T) -> Object) -> Array[Array[T]]
+    chunks = Array::Builder[Array[T]].new
+    chunk = Array::Builder[T].new
+    previous: T? = nil
+    started = false
+    each do |x|
+      last = previous
+      if started && !last.nil? && !yield(last, x)
+        chunks << chunk.to_a
+        chunk = Array::Builder[T].new
+      end
+      chunk << x
+      previous = x
+      started = true
+    end
+    chunks << chunk.to_a if started
+    chunks.to_a
+  end
+
+  # The chunk is cut where the block holds.
+  def slice_when(&: (T, T) -> Object) -> Array[Array[T]]
+    chunk_while { |a, b| !yield(a, b) }
+  end
+
+  def uniq[U](&: (T) -> U) -> Array[T]
+    seen = Set::Builder[U].new
+    Array.build do |out|
+      each do |x|
+        key = yield(x)
+        unless seen.include?(key)
+          seen << key
+          out << x
+        end
+      end
+    end
+  end
+
+  def tally_by[K](&: (T) -> K) -> Hash[K, Int]
+    Hash.build do |counts|
+      each do |x|
+        key = yield(x)
+        counts[key] = counts.fetch(key, 0) + 1
+      end
+    end
+  end
+
+  def to_h[K, V](&: (T) -> [K, V]) -> Hash[K, V]
+    Hash.build do |out|
+      each do |x|
+        pair = yield(x)
+        out[pair[0]] = pair[1]
+      end
+    end
+  end
+
+  def cycle(n: Int, &: (T) -> Nil) -> Nil
+    items = to_a
+    return nil if items.empty?
+    n.times { items.each { |x| yield(x) } }
+  end
+
+  def cycle(&: (T) -> Nil) -> Nil
+    items = to_a
+    return nil if items.empty?
+    while true
+      items.each { |x| yield(x) }
+    end
+  end
+
+  def each_entry(&: (T) -> Nil) -> Nil = each { |x| yield(x) }
+
+  def sum(&: (T) -> Int) -> Int = reduce(0) { |acc, x| acc + yield(x) }
+  def sum(&: (T) -> Float) -> Float = reduce(0.0) { |acc, x| acc + yield(x) }
+
+  # Ordering by a block (`sort { |a, b| b <=> a }`); `sort_by` is usually
+  # simpler.
+  native def sort(&: (T, T) -> Int) -> Array[T]
+  native def min(&: (T, T) -> Int) -> T?
+  native def max(&: (T, T) -> Int) -> T?
+
+  # Without a block these return an enumerator, as in Ruby:
+  # `xs.each_with_index.map { |x, i| }`, `xs.map.with_index { |x, i| }`.
+  native def to_enum -> Enumerator[T]
+  native def map -> Enumerator[T]
+  native def each_with_index -> Enumerator[[T, Int]]
+  private native def each_with_index_pairs(&: ([T, Int]) -> Nil) -> Nil
+  native def each_slice(n: Int) -> Enumerator[Array[T]]
+  native def each_cons(n: Int) -> Enumerator[Array[T]]
 end
 
 extension Enumerable[T: Comparable[T]]
@@ -702,6 +832,8 @@ extension Enumerable[T: Comparable[T]]
   native def min -> T?
   native def max -> T?
   native def minmax -> [T?, T?]
+  def min(n: Int) -> Array[T] = sort.first(n)
+  def max(n: Int) -> Array[T] = sort.reverse.first(n)
 end
 
 extension Enumerable[T: Int]
@@ -722,8 +854,12 @@ class Enumerator[out T]
 
   native def each(&: (T) -> Nil) -> Nil
   native def next -> T
+  native def peek -> T
+  native def rewind -> self
   native def size -> Int
-  native def with_index(&: (T, Int) -> Nil) -> Nil
+  # Collects the block's results: `xs.map.with_index { |x, i| ... }`.
+  native def with_index[U](&: (T, Int) -> U) -> Array[U]
+  native def with_index[U](offset: Int, &: (T, Int) -> U) -> Array[U]
 end
 
 class Array[out T]
@@ -783,9 +919,37 @@ class Array[out T]
   native def map[U](&: (T) -> U) -> Array[U]
   native def select(&: (T) -> Object) -> Array[T]
   native def sort_pairs -> Array[T]
+  native def each -> Enumerator[T]
+  native def fetch(index: Int, &: (Int) -> T) -> T
+  native def slice(start: Int, length: Int) -> Array[T]
+  native def take(n: Int) -> Array[T]
+  native def drop(n: Int) -> Array[T]
+  native def values_at(*indices: Int) -> Array[T?]
+  native def index(&: (T) -> Object) -> Int?
+  native def rindex(&: (T) -> Object) -> Int?
+  native def push(*values: T) -> Array[T]
+  native def fill(value: T) -> Array[T]
+  native def fill(value: T, start: Int, length: Int) -> Array[T]
+  native def flatten(depth: Int) -> Array[Object]
+  native def sample(n: Int) -> Array[T]
+  native def *(separator: String) -> String
+  native def product[U](other: Array[U]) -> Array[[T, U]]
+  native def combination(n: Int) -> Array[Array[T]]
+  native def permutation(n: Int) -> Array[Array[T]]
+  native def permutation -> Array[Array[T]]
+  # Binary search over a sorted array: the block is false for a prefix and
+  # true from some element on; that element is returned.
+  native def bsearch(&: (T) -> Bool) -> T?
+  def delete_if(&: (T) -> Object) -> Array[T] = reject { |x| yield(x) }
+  def keep_if(&: (T) -> Object) -> Array[T] = select { |x| yield(x) }
+  def union(other: Array[T]) -> Array[T] = self | other
+  def intersection(other: Array[T]) -> Array[T] = self & other
+  def difference(other: Array[T]) -> Array[T] = self - other
+  def intersect?(other: Array[T]) -> Bool = !(self & other).empty?
 
   class Builder[T]
     include Unshareable
+    include Enumerable[T]
 
     native def self.new -> Array::Builder[T]
     native def self.new(size: Int, fill: T) -> Array::Builder[T]
@@ -815,6 +979,25 @@ class Array[out T]
     native def reject!(&: (T) -> Object) -> self
     native def each(&: (T) -> Nil) -> Nil
     native def each_with_index(&: (T, Int) -> Nil) -> Nil
+    native def push(*values: T) -> self
+    native def [](range: Range[Int]) -> Array[T]
+    native def first(n: Int) -> Array[T]
+    native def last(n: Int) -> Array[T]
+    native def index(value: T) -> Int?
+    native def join(separator: String = "") -> String
+    native def sort!(&: (T, T) -> Int) -> self
+    native def sort_by![U: Comparable[U]](&: (T) -> U) -> self
+    native def uniq! -> self
+    native def compact! -> self
+    native def shuffle! -> self
+    native def rotate!(count: Int = 1) -> self
+    native def fill(value: T) -> self
+    native def fill(value: T, start: Int, length: Int) -> self
+    native def replace(other: Array[T]) -> self
+    native def slice!(start: Int, length: Int) -> Array[T]
+    native def delete_if(&: (T) -> Object) -> self
+    native def keep_if(&: (T) -> Object) -> self
+    def freeze -> Array[T] = to_a
     native def to_a -> Array[T]
     native def snapshot -> Array[T]
     native def to_s -> String
@@ -840,8 +1023,19 @@ class Hash[K, out V]
   native def dig(key: K) -> V?
   native def key?(key: K) -> Bool
   native def has_key?(key: K) -> Bool
+  native def include?(key: Object) -> Bool
+  native def member?(key: Object) -> Bool
   native def value?(value: V) -> Bool
+  native def has_value?(value: V) -> Bool
   native def key(value: V) -> K?
+  native def values_at(*keys: K) -> Array[V?]
+  native def fetch_values(*keys: K) -> Array[V]
+  native def compact -> Hash[K, V]
+  native def except(*keys: K) -> Hash[K, V]
+  native def slice(*keys: K) -> Hash[K, V]
+  def filter(&: (K, V) -> Object) -> Hash[K, V] = select { |k, v| yield(k, v) }
+  def delete_if(&: (K, V) -> Object) -> Hash[K, V] = reject { |k, v| yield(k, v) }
+  def keep_if(&: (K, V) -> Object) -> Hash[K, V] = select { |k, v| yield(k, v) }
   native def keys -> Array[K]
   native def values -> Array[V]
   native def size -> Int
@@ -866,6 +1060,7 @@ class Hash[K, out V]
 
   class Builder[K, V]
     include Unshareable
+    include Enumerable[[K, V]]
 
     native def self.new -> Hash::Builder[K, V]
     native def [](key: K) -> V
@@ -881,7 +1076,25 @@ class Hash[K, out V]
     native def empty? -> Bool
     native def clear -> self
     native def merge!(other: Hash[K, V]) -> self
-    native def each(&: (K, V) -> Nil) -> Nil
+    native def merge!(other: Hash[K, V], &: (K, V, V) -> V) -> self
+    native def update(key: K, &: (V?) -> V) -> self
+    native def each(&: ([K, V]) -> Nil) -> Nil
+    native def each_pair(&: (K, V) -> Nil) -> Nil
+    native def each_key(&: (K) -> Nil) -> Nil
+    native def each_value(&: (V) -> Nil) -> Nil
+    native def fetch(key: K, &: (K) -> V) -> V
+    native def has_key?(key: K) -> Bool
+    native def include?(key: Object) -> Bool
+    native def value?(value: V) -> Bool
+    native def length -> Int
+    native def select!(&: (K, V) -> Object) -> self
+    native def reject!(&: (K, V) -> Object) -> self
+    native def delete_if(&: (K, V) -> Object) -> self
+    native def keep_if(&: (K, V) -> Object) -> self
+    native def transform_values!(&: (V) -> V) -> self
+    native def compact! -> self
+    native def replace(other: Hash[K, V]) -> self
+    def freeze -> Hash[K, V] = to_h
     native def to_h -> Hash[K, V]
     native def snapshot -> Hash[K, V]
     native def to_s -> String
@@ -910,16 +1123,52 @@ class Set[out T]
   native def ^(other: Set[T]) -> Set[T]
   native def subset?(other: Set[T]) -> Bool
   native def superset?(other: Set[T]) -> Bool
+  native def proper_subset?(other: Set[T]) -> Bool
+  native def proper_superset?(other: Set[T]) -> Bool
+  native def disjoint?(other: Set[T]) -> Bool
+  native def intersect?(other: Set[T]) -> Bool
+  native def merge(items: Array[T]) -> Set[T]
+  # The set with the value added, or `nil` when it was already a member.
+  native def add?(value: T) -> Set[T]?
+  native def select(&: (T) -> Object) -> Set[T]
+  native def reject(&: (T) -> Object) -> Set[T]
   native def to_a -> Array[T]
   native def to_s -> String
   native def inspect -> String
   native def ==(other: Object) -> Bool
   native def hash -> Int
+  def self.new(items: Array[T]) -> Set[T] = Set[T].new.merge(items)
+  def +(other: Set[T]) -> Set[T] = self | other
+  def union(other: Set[T]) -> Set[T] = self | other
+  def intersection(other: Set[T]) -> Set[T] = self & other
+  def difference(other: Set[T]) -> Set[T] = self - other
+  def <=(other: Set[T]) -> Bool = subset?(other)
+  def >=(other: Set[T]) -> Bool = superset?(other)
+  def <(other: Set[T]) -> Bool = proper_subset?(other)
+  def >(other: Set[T]) -> Bool = proper_superset?(other)
+  def member?(value: Object) -> Bool = include?(value)
+  def filter(&: (T) -> Object) -> Set[T] = select { |x| yield(x) }
+  def delete_if(&: (T) -> Object) -> Set[T] = reject { |x| yield(x) }
+  def keep_if(&: (T) -> Object) -> Set[T] = select { |x| yield(x) }
 
   class Builder[T]
     include Unshareable
+    include Enumerable[T]
 
     native def self.new -> Set::Builder[T]
+    native def add?(value: T) -> Bool
+    native def merge(items: Array[T]) -> self
+    native def merge(other: Set[T]) -> self
+    native def subtract(items: Array[T]) -> self
+    native def subtract(other: Set[T]) -> self
+    native def clear -> self
+    native def replace(other: Set[T]) -> self
+    native def select!(&: (T) -> Object) -> self
+    native def reject!(&: (T) -> Object) -> self
+    native def delete_if(&: (T) -> Object) -> self
+    native def keep_if(&: (T) -> Object) -> self
+    native def length -> Int
+    def freeze -> Set[T] = to_set
     native def <<(value: T) -> self
     native def add(value: T) -> self
     native def delete(value: T) -> self
@@ -947,12 +1196,17 @@ class Range[T]
   native def include?(value: Object) -> Bool
   native def cover?(value: T) -> Bool
   native def size -> Int
+  native def empty? -> Bool
   native def step(step: Int, &: (T) -> Nil) -> Nil
+  native def step(step: Int) -> Enumerator[T]
+  native def each -> Enumerator[T]
+  native def reverse_each(&: (T) -> Nil) -> Nil
   native def to_a -> Array[T]
   native def to_s -> String
   native def inspect -> String
   native def ==(other: Object) -> Bool
   native def hash -> Int
+  def last(n: Int) -> Array[T] = to_a.last(n)
 end
 
 class Proc

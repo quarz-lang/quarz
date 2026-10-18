@@ -13,6 +13,7 @@ pub mod bytes;
 mod collections;
 mod concurrency;
 mod core;
+mod enumerable;
 mod io;
 mod json;
 mod numeric;
@@ -25,6 +26,7 @@ pub fn registry() -> HashMap<&'static str, NativeFn> {
     numeric::register(&mut m);
     string::register(&mut m);
     collections::register(&mut m);
+    enumerable::register(&mut m);
     concurrency::register(&mut m);
     io::register(&mut m);
     bytes::register(&mut m);

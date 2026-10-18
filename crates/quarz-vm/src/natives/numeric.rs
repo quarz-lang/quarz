@@ -471,7 +471,12 @@ fn int_digits(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
     Ok(Value::array(out))
 }
 
-fn enumerator(interp: &Interp, recv: &Value, method: &str, args: Vec<Value>) -> EvalResult {
+pub(super) fn enumerator(
+    interp: &Interp,
+    recv: &Value,
+    method: &str,
+    args: Vec<Value>,
+) -> EvalResult {
     let _ = interp;
     Ok(Value::Enumerator(Rc::new(EnumeratorVal {
         recv: recv.clone(),

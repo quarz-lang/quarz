@@ -3380,6 +3380,22 @@ impl Checker {
             }
             match self.try_candidate(expr, call, &m, &subst, &pre, expected, single) {
                 Ok(ret) => {
+                    // With several candidates, an error inside the block
+                    // (its result has the wrong type, say) rules this one
+                    // out rather than being reported as the final word:
+                    // `sum { |x| x * 0.5 }` must reach the Float overload.
+                    if !single {
+                        let block_error = self.diagnostics[saved_diags..]
+                            .iter()
+                            .find(|(_, d)| d.is_error())
+                            .map(|(_, d)| d.message.clone());
+                        if let Some(message) = block_error {
+                            self.infer.restore(saved_infer);
+                            self.diagnostics.truncate(saved_diags);
+                            failures.push(format!("{}: {message}", self.signature(&m)));
+                            continue;
+                        }
+                    }
                     // Bounds of method type parameters.
                     let mut ok = true;
                     for (tp, t) in &method_vars {

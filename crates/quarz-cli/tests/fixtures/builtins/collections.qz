@@ -1,0 +1,66 @@
+# Enumerable, Array, Hash, Set, Range and the builders: the methods added
+# in the second batch. Expected output in collections.out.
+xs = [3, 1, 2, 5, 4]
+p xs.sort { |a, b| b <=> a }, xs.min { |a, b| b <=> a }, xs.max { |a, b| b <=> a }
+p xs.min(2), xs.max(2)
+p xs.reduce { |a, b| a + b }, [1].inject { |a, b| a * b }, Array[Int].new.reduce { |a, b| a + b }
+p xs.count(3), xs.none?, [nil, false].none?, [1, nil].one?, xs.find_index(5)
+p xs.each_cons(2).to_a, xs.each_slice(2).to_a
+xs.each_cons(3) { |w| p w }
+p [1, 2, 4, 9, 10, 11, 12, 15, 16, 19, 20, 21].chunk_while { |a, b| b == a + 1 }
+p [1, 2, 4, 9, 10].slice_when { |a, b| b != a + 1 }
+p ["a", "B", "c", "A"].uniq(&:downcase), ["a", "B", "c", "A"].tally_by(&:downcase)
+p [[1, "a"], [2, "b"]].to_h { |pair| [pair[1], pair[0]] }
+out = Array::Builder[Int].new
+[1, 2].cycle(2) { |x| out << x }
+p out.to_a
+p xs.sum { |x| x * 2 }, xs.sum { |x| x * 0.5 }
+p xs.each_with_index.map { |x, i| x * i }
+p xs.map.with_index { |x, i| [i, x] }
+p xs.map.with_index(1) { |x, i| "#{i}:#{x}" }
+e = xs.each
+p e.next, e.peek, e.next
+e.rewind
+p e.next, e.size, e.take(2)
+p xs.slice(1, 2), xs.take(2), xs.drop(3), xs.values_at(0, 4, 9)
+p xs.index { |x| x > 2 }, xs.rindex { |x| x > 2 }, xs.fetch(10) { |i| i * 100 }
+p xs.push(6, 7), xs.fill(0), [1, 2, 3, 4].fill(9, 1, 2), [1, 2].fill(7, 3, 2)
+p [[1, [2, [3]]]].flatten(1), [1, 2, 3] * ", ", [1, 2].product(["a", "b"])
+p [1, 2, 3].combination(2), [1, 2, 3].permutation(2).size, [1, 2, 3].permutation.first
+p [1, 3, 5, 7, 9].bsearch { |x| x >= 4 }, [1, 3].bsearch { |x| x >= 10 }
+p xs.delete_if(&:even?), xs.union([9]), xs.intersect?([5]), xs.sample(2).size
+p xs.collect { |x| x + 1 }.find_all(&:odd?), xs.member?(1), xs.entries == xs
+p [4, 5, 6].each_with_index.to_a
+b = Array::Builder[Int].new
+b.push(5, 3, 1, 3)
+p b.map { |x| x * 2 }, b.sum, b.min, b[1..2], b.first(2), b.last(2), b.index(1), b.join("-")
+b.sort! { |x, y| y <=> x }
+p b.to_a
+b.push(5, 3, 1, 3).uniq!.sort_by! { |x| -x }
+p b.snapshot, b.rotate!.snapshot, b.fill(0, 1, 5).snapshot, b.slice!(0, 2), b.snapshot
+b.replace([1, 2, 3, 4]).delete_if(&:even?)
+p b.freeze
+h = { a: 1, b: nil, c: 3 }
+p h.include?(:a), h.member?(:z), h.has_value?(3), h.values_at(:a, :z), h.compact, h.except(:a), h.slice(:a, :c, :z)
+p h.fetch_values(:a, :c), h.filter { |k, v| v }, h.delete_if { |k, v| v.nil? }
+hb = Hash::Builder[Symbol, Int].new
+hb[:x] = 1
+hb.merge!({ x: 10, y: 2 }) { |k, old, new| old + new }
+hb.update(:z) { |v| (v || 0) + 5 }
+p hb.snapshot, hb.fetch(:q) { |k| 0 }, hb.map { |k, v| "#{k}=#{v}" }
+hb.each_pair { |k, v| print k, v }
+puts
+hb.select! { |k, v| v > 1 }
+hb.transform_values! { |v| v * 2 }
+p hb.snapshot, hb.include?(:x), hb.length, hb.sort_by { |k, v| -v }, hb.to_h
+s = Set[1, 2, 3]
+p s.proper_subset?(Set[1, 2, 3, 4]), s <= Set[1, 2, 3], s < Set[1, 2, 3], s.disjoint?(Set[9]), s.intersect?(Set[3])
+p s.merge([4, 5]), s.add?(1), s.add?(9), s.select(&:odd?), s.reject(&:odd?), s + Set[7], Set.new([3, 3, 4])
+sb = Set::Builder[Int].new
+p sb.add?(1), sb.add?(1), sb.merge([2, 3]).subtract([1]).to_a, sb.map { |x| x * 10 }
+sb.keep_if(&:odd?)
+p sb.freeze
+r = 1..5
+p r.empty?, (5..1).empty?, (1...1).empty?, r.step(2).to_a, r.each.next, r.last(2), r.each_slice(2).to_a
+r.reverse_each { |x| print x }
+puts

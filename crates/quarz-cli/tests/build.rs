@@ -103,3 +103,17 @@ fn examples_compile_and_match_the_vm() {
 fn control_flow_matches_the_vm() {
     same_as_vm(&fixture("control_flow.qz"), &[]);
 }
+
+#[test]
+fn builtins_match_the_vm() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/builtins");
+    let mut paths: Vec<PathBuf> = fs::read_dir(&dir)
+        .expect("fixtures directory")
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|e| e == "qz"))
+        .collect();
+    paths.sort();
+    for path in paths {
+        same_as_vm(&path, &[]);
+    }
+}
