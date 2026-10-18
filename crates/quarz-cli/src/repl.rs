@@ -1,10 +1,10 @@
 //! The interactive session (`quarz repl`): line editing and display; the
-//! evaluation lives in `quarz_vm::repl`.
+//! evaluation lives in `quarz_cli::session`.
 
 use std::io::{BufRead, Write};
 use std::process::ExitCode;
 
-use quarz_vm::repl::{Outcome, Repl};
+use quarz_cli::session::{Outcome, Repl};
 
 pub fn repl() -> ExitCode {
     let out = Box::new(std::io::LineWriter::new(std::io::stdout()));

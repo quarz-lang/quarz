@@ -4,7 +4,7 @@ use std::cell::RefCell;
 use std::io::Write;
 use std::rc::Rc;
 
-use quarz_vm::repl::{Outcome, Repl};
+use quarz_cli::session::{Outcome, Repl};
 
 struct Shared(Rc<RefCell<Vec<u8>>>);
 

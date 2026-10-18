@@ -151,11 +151,13 @@ quarz/
   Cargo.toml          workspace
   crates/
     quarz-syntax      lexing, parsing, AST (with positions), error reporting
-    quarz-types       name resolution, type checking, Shareable derivation, QIR generation, .qzi read/write
-    quarz-rt          object model, RC, persistent collections, strings, bignums,
-                      scheduler, channels, IO (unsafe lives only here)
-    quarz-vm          QIR → bytecode, register VM
-    quarz-cli         quarz run / check / repl / fmt
+    quarz-types       name resolution, type checking, Shareable derivation, .qzi read/write
+    quarz-ir          QIR (the register-machine IR) and the run-time metadata (RtWorld)
+    quarz-lower       checked AST → QIR
+    quarz-vm          runtime (object model, RC, scheduler, channels, IO, natives) and the QIR interpreter;
+                      also the static library compiled programs link against
+    quarz-aot         QIR → machine code (Cranelift) and linking
+    quarz-cli         quarz run / check / ir / build / repl
   std/                standard library (the part written in Quarz)
   docs/
   examples/
@@ -176,7 +178,7 @@ quarz/
 
 What exists today differs from the plan above in a few deliberate ways; the plan still describes where the design is going.
 
-- **The interpreter evaluates the checked AST directly** instead of going through QIR and a register VM. The checker annotates the tree with types, resolved call targets and variable slots, and `quarz-vm` walks it. QIR and the bytecode VM are the next optimization step, not a semantic change. The tree walker is tuned where profiling showed it mattered: side tables use a fast hash, integer literals are parsed once, `Int`/`Float` operators and generated field accessors bypass method dispatch, argument lists and small frames are stored inline, and the call stack records method ids and formats names only when a backtrace is captured. The programs in `bench/` take 0.2–0.9 s each in a release build (`fib(27)`: 0.18 s; 3 M iterations of a counting loop: 0.67 s).
+- **Programs are lowered to QIR and interpreted by a register VM.** The checker annotates the tree with types, resolved call targets and variable slots; `quarz-lower` turns each method, block, constant initializer and file top level into a QIR function (`quarz ir FILE` prints them); `quarz-vm` runs them. Locals captured by blocks live in heap frames, everything else in registers; keyword arguments are bound by the runtime and defaults evaluated in the callee's prologue; `break`/`return` out of blocks are status codes carried through the runtime; `ensure` is a handler block that catches every flow and resumes it, and a plain `return`/`break` that leaves an `ensure` region runs the body inline. `Int`/`Float` operators and generated field accessors bypass method dispatch. The programs in `bench/` take 0.15–0.85 s each in a release build (`fib(27)`: 0.18 s; 3 M iterations of a counting loop: 0.47 s).
 - **Values are `Rc`-based.** Immutable collections are `Rc<Vec>` / `Rc<IndexMap>` and updates use `Rc::make_mut`, which copies unless the reference is unique. The evaluator moves the receiver out of the variable for the common `xs = xs.push(x)` form, so that case is updated in place; the general Perceus-style reuse described in §5 is future work. Reference counts are not atomic because the scheduler is single-threaded.
 - **Tasks are stackful coroutines (`corosensei`) on one OS thread (M:1).** The scheduler is cooperative: tasks switch at channel operations, `sleep`, `await`, `Task.yield` and inside `loop`. Each task reserves 16 MiB of virtual stack (256 MiB for the main task); exceeding it raises `SystemStackError`. Deadlock (every task blocked, no timers) aborts the program with `DeadlockError`. Timers sleep the thread; file and standard I/O are synchronous.
 - **The REPL** (`quarz repl`) keeps declarations, variables and running tasks across inputs; each input is checked incrementally against the accumulated program. Redefining a class or method is an error (use a new name); the hot reload described in §7 is not implemented. `require` and `require_relative` work in the REPL and run the loaded file's top level once.

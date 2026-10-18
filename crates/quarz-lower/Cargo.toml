@@ -1,0 +1,13 @@
+[package]
+name = "quarz-lower"
+description = "Lowering of checked Quarz programs to QIR"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+quarz-syntax = { workspace = true }
+quarz-types = { workspace = true }
+quarz-ir = { workspace = true }
+rustc-hash = "2"

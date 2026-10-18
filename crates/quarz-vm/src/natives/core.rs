@@ -161,13 +161,7 @@ fn proc_arity(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
         return Err(interp.err_type("expected a Proc"));
     };
     Ok(Value::Int(match &c.body {
-        ClosureBody::Block(b) => b
-            .get()
-            .params
-            .list
-            .iter()
-            .filter(|p| p.kind != quarz_syntax::ast::ParamKind::Block)
-            .count() as i64,
+        ClosureBody::Func(fid) => interp.func(*fid).arity as i64,
         ClosureBody::MethodName(_) => 1,
         ClosureBody::BoundMethod { .. } | ClosureBody::Native(_) => -1,
     }))

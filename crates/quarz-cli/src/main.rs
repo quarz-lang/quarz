@@ -13,6 +13,7 @@ commands:
   tokens FILE    print the tokens of FILE (for debugging the lexer)
   parse FILE     print the syntax tree of FILE (for debugging the parser)
   check FILE     type-check FILE
+  ir FILE        print the QIR of FILE (for debugging the lowering)
   run FILE [ARGS...]   type-check and run FILE
   repl           start an interactive session
 ";
@@ -30,6 +31,10 @@ fn main() -> ExitCode {
         },
         Some("check") => match args.get(1) {
             Some(path) => check_file(path),
+            None => usage(),
+        },
+        Some("ir") => match args.get(1) {
+            Some(path) => ir_file(path),
             None => usage(),
         },
         Some("repl") => repl::repl(),
@@ -121,8 +126,17 @@ fn run_file(path: &str, argv: Vec<String>) -> ExitCode {
     let Some(checked) = load_and_check(path) else {
         return ExitCode::FAILURE;
     };
-    let code = quarz_vm::run(checked, argv);
+    let code = quarz_cli::run(checked, argv);
     ExitCode::from(code.clamp(0, 255) as u8)
+}
+
+fn ir_file(path: &str) -> ExitCode {
+    let Some(checked) = load_and_check(path) else {
+        return ExitCode::FAILURE;
+    };
+    let module = quarz_lower::lower_checked(&checked);
+    print!("{}", quarz_ir::dump::dump_module(&module));
+    ExitCode::SUCCESS
 }
 
 fn check_file(path: &str) -> ExitCode {

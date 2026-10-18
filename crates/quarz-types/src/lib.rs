@@ -201,6 +201,14 @@ impl Session {
         Ok(units)
     }
 
+    pub fn world(&self) -> &World {
+        &self.checker.world
+    }
+
+    pub fn output(&self) -> &check::Output {
+        &self.checker.out
+    }
+
     /// The span/node-id base to parse the next input with.
     pub fn next_base(&self) -> u32 {
         load::unit_base(self.inputs + 1)

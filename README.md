@@ -99,7 +99,7 @@ puts counter.value        # => 100
 
 ## Status
 
-The interpreter runs every program in [examples/](examples/). It is written in Rust: `quarz-syntax` (lexer, parser), `quarz-types` (type checker) and `quarz-vm` (evaluator, scheduler, built-in classes). See [docs/05-execution.md](docs/05-execution.md) §9 for what the current implementation does and does not do.
+The interpreter runs every program in [examples/](examples/). It is written in Rust: `quarz-syntax` (lexer, parser), `quarz-types` (type checker), `quarz-ir`/`quarz-lower` (the QIR intermediate representation and the lowering to it) and `quarz-vm` (runtime, QIR interpreter, scheduler, built-in classes). See [docs/05-execution.md](docs/05-execution.md) §9 for what the current implementation does and does not do.
 
 ```sh
 cargo build --release

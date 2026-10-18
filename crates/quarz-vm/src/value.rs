@@ -12,10 +12,10 @@ use std::rc::Rc;
 
 use indexmap::{IndexMap, IndexSet};
 use num_bigint::BigInt;
-use quarz_syntax::ast::Block;
-use quarz_types::ClassId;
+use quarz_ir::{ClassId, FuncId};
 use smallvec::SmallVec;
 
+use crate::interp::Flow;
 use crate::sched::{ChannelInner, ScopeInner, SelectorState, TaskHandle};
 
 /// An interned symbol.
@@ -42,36 +42,6 @@ impl SymbolTable {
 
     pub fn name(&self, sym: Symbol) -> &Rc<str> {
         &self.names[sym.0 as usize]
-    }
-}
-
-/// A pointer into the AST, which outlives every value (the interpreter owns
-/// the checked program for the whole run).
-pub struct AstRef<T>(*const T);
-
-impl<T> AstRef<T> {
-    pub fn new(r: &T) -> AstRef<T> {
-        AstRef(r as *const T)
-    }
-
-    pub fn get(&self) -> &T {
-        // SAFETY: the AST is owned by the interpreter and never mutated or
-        // freed while values exist.
-        unsafe { &*self.0 }
-    }
-}
-
-impl<T> Clone for AstRef<T> {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-
-impl<T> Copy for AstRef<T> {}
-
-impl<T> std::fmt::Debug for AstRef<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "AstRef({:p})", self.0)
     }
 }
 
@@ -129,10 +99,10 @@ pub struct Object {
 pub type NativeBlock =
     Rc<dyn Fn(&crate::interp::Interp, crate::interp::ArgVec) -> crate::interp::EvalResult>;
 
-/// The body a closure runs: a block from the AST, a method reference
+/// The body a closure runs: a QIR function, a method reference
 /// (`&:name`), or a native function.
 pub enum ClosureBody {
-    Block(AstRef<Block>),
+    Func(FuncId),
     /// `&:name`: call `name` on the first argument.
     MethodName(Rc<str>),
     /// `obj.:name`: call `name` on a captured receiver.
@@ -146,7 +116,7 @@ pub enum ClosureBody {
 impl std::fmt::Debug for ClosureBody {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ClosureBody::Block(b) => write!(f, "Block({b:?})"),
+            ClosureBody::Func(id) => write!(f, "Func({id})"),
             ClosureBody::MethodName(n) => write!(f, "MethodName({n})"),
             ClosureBody::BoundMethod { name, .. } => write!(f, "BoundMethod({name})"),
             ClosureBody::Native(_) => write!(f, "Native"),
@@ -160,7 +130,6 @@ pub struct Closure {
     pub body: ClosureBody,
     pub frame: Option<Rc<Frame>>,
     pub self_val: Value,
-    pub frame_size: u32,
     /// How many parameters a single tuple argument is spread over.
     pub destructure: Option<usize>,
     pub is_lambda: bool,
@@ -219,15 +188,26 @@ pub struct IoVal {
     pub kind: IoKind,
 }
 
+/// A non-local flow caught by an `ensure` handler, carried through the
+/// handler's body and continued by `Resume`.
+pub type FlowBox = RefCell<Option<Flow>>;
+
+/// The layout is fixed (`repr(C, u64)`: a tag word followed by the
+/// payload) so that compiled code can build and test values inline. The
+/// variants without reference counting come first; see `NEEDS_DROP_FROM`.
 #[derive(Clone, Debug)]
+#[repr(C, u64)]
 pub enum Value {
     Nil,
     Bool(bool),
     Int(i64),
-    BigInt(Rc<BigInt>),
     Float(f64),
-    Str(Rc<str>),
     Symbol(Symbol),
+    Class(ClassId),
+    /// Nanoseconds.
+    Duration(i64),
+    BigInt(Rc<BigInt>),
+    Str(Rc<str>),
     Array(Rc<Vec<Value>>),
     Hash(Rc<IndexMap<Value, Value>>),
     Set(Rc<IndexSet<Value>>),
@@ -235,7 +215,6 @@ pub enum Value {
     Regexp(Rc<RegexpVal>),
     MatchData(Rc<MatchDataVal>),
     Object(Rc<Object>),
-    Class(ClassId),
     Proc(Rc<Closure>),
     ArrayBuilder(Rc<RefCell<Vec<Value>>>),
     HashBuilder(Rc<RefCell<IndexMap<Value, Value>>>),
@@ -246,14 +225,17 @@ pub enum Value {
     Scope(Rc<ScopeInner>),
     Atom(Rc<RefCell<Value>>),
     Selector(Rc<RefCell<SelectorState>>),
-    /// Nanoseconds.
-    Duration(i64),
     Enumerator(Rc<EnumeratorVal>),
     Io(Rc<IoVal>),
     Bytes(Rc<[u8]>),
     BytesBuilder(Rc<RefCell<Vec<u8>>>),
     Time(Rc<TimeVal>),
+    /// Internal: a flow in transit through an `ensure` handler.
+    Flow(Rc<FlowBox>),
 }
+
+/// Tags below this hold no reference-counted payload.
+pub const NEEDS_DROP_FROM: u64 = 7;
 
 /// A point in time: nanoseconds since the Unix epoch and the UTC offset
 /// it is displayed in.
@@ -305,39 +287,10 @@ impl Value {
         }
     }
 
+    /// The discriminant (the first word of the `repr(C, u64)` layout).
     pub fn type_tag(&self) -> u8 {
-        match self {
-            Value::Nil => 0,
-            Value::Bool(_) => 1,
-            Value::Int(_) | Value::BigInt(_) => 2,
-            Value::Float(_) => 3,
-            Value::Str(_) => 4,
-            Value::Symbol(_) => 5,
-            Value::Array(_) => 6,
-            Value::Hash(_) => 7,
-            Value::Set(_) => 8,
-            Value::Range(_) => 9,
-            Value::Regexp(_) => 10,
-            Value::MatchData(_) => 11,
-            Value::Object(_) => 12,
-            Value::Class(_) => 13,
-            Value::Proc(_) => 14,
-            Value::ArrayBuilder(_) => 15,
-            Value::HashBuilder(_) => 16,
-            Value::SetBuilder(_) => 17,
-            Value::StringBuilder(_) => 18,
-            Value::Channel(_) => 19,
-            Value::Task(_) => 20,
-            Value::Scope(_) => 21,
-            Value::Atom(_) => 22,
-            Value::Selector(_) => 23,
-            Value::Duration(_) => 24,
-            Value::Enumerator(_) => 25,
-            Value::Io(_) => 26,
-            Value::Bytes(_) => 27,
-            Value::BytesBuilder(_) => 28,
-            Value::Time(_) => 29,
-        }
+        // SAFETY: `Value` is `repr(C, u64)`, so it starts with its tag.
+        unsafe { *(self as *const Value as *const u64) as u8 }
     }
 
     /// Identity comparison (`equal?`).
@@ -364,6 +317,7 @@ impl Value {
             (Value::Bytes(a), Value::Bytes(b)) => Rc::ptr_eq(a, b) || a == b,
             (Value::BytesBuilder(a), Value::BytesBuilder(b)) => Rc::ptr_eq(a, b),
             (Value::Time(a), Value::Time(b)) => a.ns == b.ns,
+            (Value::Flow(a), Value::Flow(b)) => Rc::ptr_eq(a, b),
             _ => false,
         }
     }

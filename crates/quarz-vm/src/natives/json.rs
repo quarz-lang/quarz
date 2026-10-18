@@ -5,7 +5,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use quarz_types::{ClassId, ClassKind, Member};
+use quarz_ir::{ClassId, RtClassKind};
 use smallvec::smallvec;
 
 use crate::interp::{EvalResult, Flow, Interp, NativeFn};
@@ -60,12 +60,12 @@ struct Classes {
 fn classes(interp: &Interp) -> Result<Classes, Flow> {
     let world = &interp.world;
     let missing = || interp.err_type("the json library is not loaded");
-    let Some(Member::Class(json)) = world.top.get("JSON") else {
+    let Some(json) = world.top.get("JSON") else {
         return Err(missing());
     };
     let member = |name: &str| match world.class(*json).members.get(name) {
-        Some(Member::Class(id)) => Ok(*id),
-        _ => Err(missing()),
+        Some(id) => Ok(*id),
+        None => Err(missing()),
     };
     let value = member("Value")?;
     let variant = |name: &str| {
@@ -291,7 +291,7 @@ impl Parser<'_> {
         } else {
             Ok(variant(
                 self.classes.integer,
-                crate::eval::parse_int(text, 10),
+                crate::interp::parse_int(text, 10),
             ))
         }
     }
@@ -447,7 +447,7 @@ fn generate(
                 out.push_str(&interp.to_s(&r)?);
                 return Ok(());
             }
-            if class.kind == ClassKind::Variant && o.fields.borrow().is_empty() {
+            if class.kind == RtClassKind::Variant && o.fields.borrow().is_empty() {
                 escape(class.short_name(), out);
                 return Ok(());
             }
@@ -455,8 +455,8 @@ fn generate(
                 escape(&interp.to_s(v)?, out);
                 return Ok(());
             }
-            let fields = interp.class_fields(o.class);
-            let members: Vec<(String, Value)> = fields
+            let members: Vec<(String, Value)> = class
+                .fields
                 .iter()
                 .zip(o.fields.borrow().iter())
                 .map(|(f, v)| (f.name.clone(), v.clone()))

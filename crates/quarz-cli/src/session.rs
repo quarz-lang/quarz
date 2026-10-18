@@ -1,22 +1,28 @@
-//! The interactive session: parsing, checking and running one input at a
-//! time while declarations, variables and tasks persist.
+//! The interactive session: parsing, checking, lowering and running one
+//! input at a time while declarations, variables and tasks persist.
 
 use std::io::Write;
 use std::path::Path;
 use std::rc::Rc;
 
+use quarz_ir::Unit;
+use quarz_lower::{Lowerer, UnitInput};
 use quarz_syntax::ast::ExprKind;
 use quarz_syntax::{parse, parse_repl, Diagnostic, SourceFile};
 use quarz_types::{CheckedUnit, FileDiagnostic, Session, PRELUDE_SOURCE};
-
-use crate::interp::{Interp, SharedState};
-use crate::value::Frame;
+use quarz_vm::value::Frame;
+use quarz_vm::{Interp, SharedState};
 
 pub struct Repl {
     session: Session,
+    lowerer: Lowerer,
     state: SharedState,
     prelude_file: SourceFile,
     buffer: String,
+    /// Every unit lowered so far (required files first, the REPL unit
+    /// last), re-registered with each interpreter.
+    units: Vec<Unit>,
+    file_names: Vec<String>,
 }
 
 /// What happened to one line of input.
@@ -53,9 +59,12 @@ impl Repl {
         state.repl_frame = Some(Frame::new(16, None));
         Ok(Repl {
             session,
+            lowerer: Lowerer::new(),
             state,
             prelude_file,
             buffer: String::new(),
+            units: Vec::new(),
+            file_names: vec!["<prelude>".to_string(), "<repl>".to_string()],
         })
     }
 
@@ -115,9 +124,15 @@ impl Repl {
         {
             return Outcome::Value(None);
         }
-        let checked = self.session.snapshot(Vec::new(), "<repl>");
-        let interp: Rc<Interp> = Interp::with_state(checked, Vec::new(), self.state.clone());
-        let outcome = match interp.run_repl(1, body) {
+        let input = UnitInput {
+            file: 1,
+            name: "<repl>".to_string(),
+            main_class: self.session.main_class(),
+            body: &body,
+            repl: true,
+        };
+        let (interp, fid) = self.load(input);
+        let outcome = match interp.run_repl(1, fid) {
             Ok(Some(value)) => Outcome::Value(Some(
                 interp.inspect(&value).unwrap_or_else(|_| "?".to_string()),
             )),
@@ -128,11 +143,48 @@ impl Repl {
         outcome
     }
 
+    /// Lower a unit body (with everything else new in the world) and
+    /// create an interpreter over the shared state that has it loaded.
+    fn load(&mut self, input: UnitInput) -> (Rc<Interp>, quarz_ir::FuncId) {
+        let delta = self.lowerer.lower(
+            self.session.world(),
+            self.session.output(),
+            &[input],
+            self.file_names.clone(),
+        );
+        let unit = delta.units.into_iter().next().expect("one unit lowered");
+        let fid = unit.body;
+        // The REPL unit (file 1) is replaced each time; required files
+        // stay.
+        self.units.retain(|u| u.file != unit.file);
+        self.units.push(unit);
+        let interp = Interp::with_state(
+            delta.world,
+            delta.base,
+            delta.functions,
+            self.units.clone(),
+            Vec::new(),
+            self.state.clone(),
+        );
+        (interp, fid)
+    }
+
     /// Run the top level of a unit loaded by `require`.
     fn run_unit(&mut self, unit: CheckedUnit) -> Option<Outcome> {
-        let checked = self.session.snapshot(Vec::new(), "<repl>");
-        let interp: Rc<Interp> = Interp::with_state(checked, Vec::new(), self.state.clone());
-        let result = interp.run_repl(unit.file, unit.body);
+        if self.file_names.len() <= unit.file as usize {
+            self.file_names
+                .resize(unit.file as usize + 1, String::new());
+        }
+        self.file_names[unit.file as usize] = unit.name.clone();
+        let input = UnitInput {
+            file: unit.file,
+            name: unit.name.clone(),
+            main_class: unit.main_class,
+            body: &unit.body,
+            repl: false,
+        };
+        let (interp, fid) = self.load(input);
+        let result = interp.run_repl(unit.file, fid);
         self.state = interp.shared_state();
         match result {
             Err(code) => Some(Outcome::Exit(code)),

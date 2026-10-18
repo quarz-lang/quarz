@@ -1,14 +1,16 @@
 [package]
 name = "quarz-vm"
-description = "The Quarz interpreter: values, evaluator, scheduler and native methods"
+description = "The Quarz runtime and VM: values, QIR interpreter, scheduler and native methods"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[lib]
+crate-type = ["rlib", "staticlib"]
+
 [dependencies]
-quarz-syntax = { workspace = true }
-quarz-types = { workspace = true }
+quarz-ir = { workspace = true }
 corosensei = "0.3"
 indexmap = "2"
 num-bigint = "0.4"
