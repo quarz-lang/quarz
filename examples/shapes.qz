@@ -1,0 +1,70 @@
+# enum、data、パターンマッチ、Comparable
+
+data Point(x: Float, y: Float) do
+  def +(other: Point) -> Point = Point.new(x + other.x, y + other.y)
+  def distance_to(other: Point) -> Float
+    Math.hypot(other.x - x, other.y - y)
+  end
+end
+
+enum Shape
+  Circle(center: Point, radius: Float)
+  Rect(origin: Point, width: Float, height: Float)
+  Triangle(a: Point, b: Point, c: Point)
+
+  include Comparable[Shape]
+
+  def area -> Float
+    case self
+    in Circle(radius:) then Math::PI * radius ** 2
+    in Rect(width:, height:) then width * height
+    in Triangle(a:, b:, c:)
+      ((b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y)).abs / 2
+    end
+  end
+
+  def translate(d: Point) -> Shape
+    case self
+    in Circle(center:, radius:) then Circle.new(center + d, radius)
+    in Rect(origin:, width:, height:) then Rect.new(origin + d, width, height)
+    in Triangle(a:, b:, c:) then Triangle.new(a + d, b + d, c + d)
+    end
+  end
+
+  def <=>(other: Shape) -> Int = area <=> other.area
+
+  def to_s -> String
+    case self
+    in Circle(radius:) then "circle(r=#{radius})"
+    in Rect(width:, height:) then "rect(#{width}x#{height})"
+    in Triangle then "triangle"
+    end
+  end
+end
+
+origin = Point.new(0.0, 0.0)
+shapes = [
+  Shape::Circle.new(origin, 1.0),
+  Shape::Rect.new(origin, 2.0, 3.0),
+  Shape::Triangle.new(origin, Point.new(4.0, 0.0), Point.new(0.0, 3.0)),
+]
+
+shapes.sort.each { |s| puts "#{s}: #{s.area.round(2)}" }
+
+largest = shapes.max   # Shape?
+if largest
+  moved = largest.translate(Point.new(1.0, 1.0))
+  puts "largest: #{moved}"
+end
+
+# ガード付きパターンと合併型
+def classify(v: Int | String | Nil) -> String
+  case v
+  in nil then "nothing"
+  in Int => n if n.negative? then "negative"
+  in Int => n then "int #{n}"
+  in String => s then "string of #{s.size}"
+  end
+end
+
+puts classify(-1), classify(42), classify("quarz"), classify(nil)

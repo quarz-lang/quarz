@@ -1,0 +1,7 @@
+# quarz run examples/hello.qz [name]
+
+def greet(name: String) -> String
+  "Hello, #{name}!"
+end
+
+puts greet(ARGV.first? || "world")

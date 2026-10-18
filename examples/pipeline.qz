@@ -1,0 +1,45 @@
+# チャネルによるパイプラインとワーカープール、select
+
+data Job(id: Int, payload: String)
+data Done(id: Int, result: String, worker: Int)
+
+def worker(id: Int, jobs: Channel[Job], results: Channel[Done]) -> Nil
+  jobs.each do |job|                      # jobs が閉じられるまで受け取る
+    Task.sleep(10.ms)                     # 重い処理のつもり
+    results.send(Done.new(job.id, job.payload.upcase, id))
+  end
+end
+
+jobs = Channel[Job].new(capacity: 8)
+results = Channel[Done].new(capacity: 8)
+progress = Channel[Int].new
+
+Task.scope do |scope|
+  workers = 4.times.map { |i| scope.spawn { worker(i, jobs, results) } }
+
+  # 生産者
+  scope.spawn do
+    20.times { |i| jobs.send(Job.new(i, "job-#{i}")) }
+    jobs.close
+  end
+
+  # ワーカーが全員終わったら results を閉じる
+  scope.spawn do
+    workers.each(&:await)
+    results.close
+  end
+
+  # 消費者: 結果と進捗の両方を select で待つ
+  received = 0
+  Channel.select_loop do |s|
+    s.receive(results) do |done|
+      received += 1
+      puts "worker #{done.worker}: #{done.result}"
+      s.stop if results.closed? && results.empty?
+    end
+    s.after(1.second) do
+      warn "still waiting... (#{received} done)"
+    end
+  end
+  puts "received #{received} results"
+end

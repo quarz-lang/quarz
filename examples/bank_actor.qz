@@ -1,0 +1,75 @@
+# Erlang 風のアクター: 状態はタスクのローカル変数に閉じ、メッセージは enum
+
+enum Msg
+  Deposit(amount: Int)
+  Withdraw(amount: Int, reply: Channel[Result[Int, String]])
+  Balance(reply: Channel[Int])
+  Stop
+end
+
+def account_actor(inbox: Channel[Msg]) -> Nil
+  balance = 0
+  inbox.each do |msg|
+    case msg
+    in Msg::Deposit(amount:)
+      balance += amount
+    in Msg::Withdraw(amount:, reply:)
+      if amount <= balance
+        balance -= amount
+        reply.send(Result::Ok.new(balance))
+      else
+        reply.send(Result::Err.new("insufficient funds: #{balance} < #{amount}"))
+      end
+    in Msg::Balance(reply:)
+      reply.send(balance)
+    in Msg::Stop
+      break
+    end
+  end
+end
+
+# クライアント側の薄いラッパ
+class Account
+  @inbox: Channel[Msg]
+  def initialize(@inbox: Channel[Msg]); end
+
+  def deposit(amount: Int) -> Nil = @inbox.send(Msg::Deposit.new(amount))
+
+  def withdraw(amount: Int) -> Result[Int, String]
+    reply = Channel[Result[Int, String]].new
+    @inbox.send(Msg::Withdraw.new(amount, reply))
+    reply.receive
+  end
+
+  def balance -> Int
+    reply = Channel[Int].new
+    @inbox.send(Msg::Balance.new(reply))
+    reply.receive
+  end
+
+  def stop -> Nil = @inbox.send(Msg::Stop)
+end
+
+Task.scope do |scope|
+  inbox = Channel[Msg].new(capacity: 64)
+  scope.spawn { account_actor(inbox) }
+  account = Account.new(inbox)          # Account は Shareable(不変フィールドだけ)
+
+  # 複数のタスクから同時に入金しても、状態はアクターが直列に処理する
+  Task.scope do |s|
+    10.times { s.spawn { account.deposit(10) } }
+  end
+
+  case account.withdraw(30)
+  in Result::Ok(value:) then puts "withdrew, balance now #{value}"
+  in Result::Err(error:) then warn error
+  end
+
+  case account.withdraw(1000)
+  in Result::Ok(value:) then puts "withdrew, balance now #{value}"
+  in Result::Err(error:) then warn error
+  end
+
+  puts "final: #{account.balance}"
+  account.stop
+end

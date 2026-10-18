@@ -1,0 +1,45 @@
+# 不変コレクションと Builder の使い分け
+
+# 1. 不変スタイル: 参照が一意なら push はその場で更新されるので速い
+def squares(n: Int) -> Array[Int]
+  acc: Array[Int] = []
+  n.times { |i| acc = acc.push(i * i) }
+  acc
+end
+
+# 2. Builder: Ruby の可変 Array と同じ API。ブロックの外には出ない
+def sieve(limit: Int) -> Array[Int]
+  flags = Array::Builder[Bool].new(limit + 1, true)
+  flags[0] = flags[1] = false
+  (2..Math.sqrt(limit).to_i).each do |i|
+    next unless flags[i]
+    (i * i).step(limit, i) { |j| flags[j] = false }
+  end
+  Array.build do |primes|
+    flags.each_with_index { |f, i| primes << i if f }
+  end
+end
+
+# 3. 構造共有: 大きな配列から派生した値を複数持っても、コピーは差分だけ
+base = squares(100_000)
+v1 = base.set(0, -1)
+v2 = base.push(1)
+puts base[0], v1[0], v2.size         # => 0, -1, 100001
+
+# 4. 文字列の組み立て
+def render(rows: Array[Hash[Symbol, String]]) -> String
+  String.build do |out|
+    rows.each do |row|
+      out << row[:name] << "\t" << row[:email] << "\n"
+    end
+  end
+end
+
+puts sieve(50).inspect
+puts render([{ name: "alice", email: "a@example.com" }, { name: "bob", email: "b@example.com" }])
+
+# 5. Builder は他タスクに渡せない
+buf = Array::Builder[Int].new
+# spawn { buf << 1 }        # コンパイルエラー: Array::Builder[Int] は Shareable ではない
+frozen = buf.to_a           # O(1) で不変化。以後 buf は使えない
+spawn { puts frozen.size }.await

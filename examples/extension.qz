@@ -1,0 +1,37 @@
+# extension / using: 既存の型にメソッドとモジュール適合を字句スコープで追加する
+
+module Describable
+  abstract def describe -> String
+end
+
+module Describing
+  extension Int
+    include Describable
+    def describe -> String = "the integer #{self}"
+  end
+
+  extension String
+    include Describable
+    def describe -> String = "the string #{inspect}"
+    def shout -> String = upcase + "!"
+  end
+
+  extension Array[T: Describable]
+    def describe_all -> String = map(&:describe).join(", ")
+  end
+end
+
+def show(x: Describable) -> Nil
+  puts x.describe
+end
+
+using Describing
+
+show(42)                 # Int は Describable に適合した
+show("quarz")
+puts [1, 2, 3].describe_all
+puts "hello".shout
+
+module Other
+  # ここでは using が効いていないので "x".shout はコンパイルエラー
+end
