@@ -2,7 +2,7 @@
 
 日本語版: [README.ja.md](README.ja.md)
 
-Quarz is a programming language that keeps the feel of writing Ruby while making "static", "immutable" and "concurrent" the foundations of the language.
+Quarz is a programming language that feels like Ruby, but is built on static typing, immutability, and concurrency.
 
 - **Ruby-like syntax and built-in classes** — `def ... end`, blocks and `yield`, `case/in`, `#{}`, `Enumerable`/`Comparable` and exception handling are kept as they are.
 - **Static class and method definitions** — there is no class reopening, no `define_method`, no `method_missing`, no `eval`. Method calls are resolved at compile time and the class hierarchy is fixed for the whole program. Additions to existing types are made with `extension`/`using`, which are confined to a lexical scope.
