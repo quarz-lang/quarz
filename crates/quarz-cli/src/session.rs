@@ -22,7 +22,9 @@ pub struct Repl {
     /// Every unit lowered so far (required files first, the REPL unit
     /// last), re-registered with each interpreter.
     units: Vec<Unit>,
-    file_names: Vec<String>,
+    /// Source files by index: the prelude, the current input, required
+    /// files.
+    files: Vec<SourceFile>,
 }
 
 /// What happened to one line of input.
@@ -57,6 +59,7 @@ impl Repl {
         })?;
         let mut state = SharedState::new(out);
         state.repl_frame = Some(Frame::new(16, None));
+        let files = vec![prelude_file.clone(), SourceFile::new("<repl>", "")];
         Ok(Repl {
             session,
             lowerer: Lowerer::new(),
@@ -64,7 +67,7 @@ impl Repl {
             prelude_file,
             buffer: String::new(),
             units: Vec::new(),
-            file_names: vec!["<prelude>".to_string(), "<repl>".to_string()],
+            files,
         })
     }
 
@@ -85,6 +88,7 @@ impl Repl {
         }
         let base = self.session.next_base();
         let file = SourceFile::with_base("<repl>", self.buffer.clone(), base);
+        self.files[1] = file.clone();
         let parsed = parse_repl(&file.text, base, base, &self.session.locals());
         if parsed.diagnostics.iter().any(|d| d.is_error()) {
             if incomplete(&parsed.diagnostics) {
@@ -150,7 +154,7 @@ impl Repl {
             self.session.world(),
             self.session.output(),
             &[input],
-            self.file_names.clone(),
+            self.files.clone(),
         );
         let unit = delta.units.into_iter().next().expect("one unit lowered");
         let fid = unit.body;
@@ -171,11 +175,15 @@ impl Repl {
 
     /// Run the top level of a unit loaded by `require`.
     fn run_unit(&mut self, unit: CheckedUnit) -> Option<Outcome> {
-        if self.file_names.len() <= unit.file as usize {
-            self.file_names
-                .resize(unit.file as usize + 1, String::new());
+        if self.files.len() <= unit.file as usize {
+            self.files
+                .resize(unit.file as usize + 1, SourceFile::new("", ""));
         }
-        self.file_names[unit.file as usize] = unit.name.clone();
+        self.files[unit.file as usize] = self
+            .session
+            .source(unit.file)
+            .cloned()
+            .unwrap_or_else(|| SourceFile::new(unit.name.clone(), ""));
         let input = UnitInput {
             file: unit.file,
             name: unit.name.clone(),

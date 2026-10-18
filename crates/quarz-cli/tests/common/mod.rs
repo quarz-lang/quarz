@@ -27,7 +27,8 @@ pub fn run(src: &str, argv: &[&str]) -> (i32, String) {
         .collect();
     assert!(errors.is_empty(), "check errors:\n{}", errors.join("\n"));
     let argv = argv.iter().map(|s| s.to_string()).collect();
-    quarz_cli::run_capturing(checked.unwrap(), argv)
+    let prelude_file = SourceFile::new("<prelude>", PRELUDE_SOURCE);
+    quarz_cli::run_capturing(checked.unwrap(), &[prelude_file, file], argv)
 }
 
 /// Load a file (and what it requires), check and run it.
@@ -57,7 +58,9 @@ pub fn run_path(path: &std::path::Path, argv: &[&str]) -> (i32, String) {
         .collect();
     assert!(errors.is_empty(), "check errors:\n{}", errors.join("\n"));
     let argv = argv.iter().map(|s| s.to_string()).collect();
-    quarz_cli::run_capturing(checked.unwrap(), argv)
+    let mut files = vec![SourceFile::new("<prelude>", PRELUDE_SOURCE)];
+    files.extend(sources);
+    quarz_cli::run_capturing(checked.unwrap(), &files, argv)
 }
 
 /// Run and assert the output.

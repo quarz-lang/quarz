@@ -2,7 +2,7 @@
 //! instructions. Compiled code (`quarz build`) shares the instruction
 //! semantics through `exec_inst`.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use quarz_ir::*;
@@ -14,6 +14,11 @@ use crate::value::*;
 
 /// The context a function body runs in.
 pub struct Activation {
+    pub fid: FuncId,
+    /// The task running it (call stacks are kept per task).
+    pub task: crate::sched::TaskId,
+    /// Source line of the instruction being executed (for backtraces).
+    pub line: Cell<u32>,
     pub self_val: Value,
     /// The heap frame for captured variables (this function's own, or
     /// the one it shares with its creator).
@@ -52,6 +57,13 @@ impl Interp {
 
     /// Run a function to completion (its machine code when it has some).
     pub fn run_func(&self, fid: FuncId, act: &Activation) -> EvalResult {
+        self.call_stack.borrow_mut().push(act as *const Activation);
+        let r = self.run_func_inner(fid, act);
+        self.pop_call_stack(act);
+        r
+    }
+
+    fn run_func_inner(&self, fid: FuncId, act: &Activation) -> EvalResult {
         if let Some(r) = self.run_compiled(fid, act) {
             return r;
         }
@@ -68,6 +80,18 @@ impl Interp {
         }
     }
 
+    /// Remove `act` from the call stack. Tasks interleave on one stack,
+    /// so the entry is usually, but not always, the last one.
+    fn pop_call_stack(&self, act: &Activation) {
+        let mut stack = self.call_stack.borrow_mut();
+        let p = act as *const Activation;
+        if stack.last() == Some(&p) {
+            stack.pop();
+        } else if let Some(i) = stack.iter().rposition(|e| *e == p) {
+            stack.remove(i);
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn run_block(
         &self,
@@ -80,11 +104,13 @@ impl Interp {
         block: BlockId,
     ) -> Step {
         let b = &f.blocks[block as usize];
-        for inst in &b.insts {
+        for (i, inst) in b.insts.iter().enumerate() {
+            act.line.set(b.lines[i]);
             if let Err(flow) = self.exec_inst(f, fid, pool, act, regs, pending, inst) {
                 return self.unwind(b, flow, pending);
             }
         }
+        act.line.set(b.term_line);
         match &b.term {
             Term::Jump(t) => Step::Jump(*t),
             Term::Branch { cond, then, els } => {
@@ -788,6 +814,9 @@ impl Interp {
                     }
                 }
                 let act = Activation {
+                    fid: *fid,
+                    task: self.current_task_id.get(),
+                    line: Cell::new(0),
                     self_val: closure.self_val.clone(),
                     frame,
                     block: closure.method_block.clone(),
@@ -822,6 +851,9 @@ impl Interp {
             None
         };
         let act = Activation {
+            fid,
+            task: self.current_task_id.get(),
+            line: Cell::new(0),
             self_val,
             frame,
             block: None,
@@ -856,6 +888,9 @@ impl Interp {
         };
         let tag = self.new_tag();
         let act = Activation {
+            fid,
+            task: self.current_task_id.get(),
+            line: Cell::new(0),
             self_val: recv,
             frame,
             block,
@@ -866,9 +901,7 @@ impl Interp {
             args,
             provided,
         };
-        self.call_stack.borrow_mut().push(mid);
         let r = self.run_func(fid, &act);
-        self.call_stack.borrow_mut().pop();
         match r {
             Err(Flow::Return(v, t)) if t == tag => Ok(v),
             r => r,
@@ -888,6 +921,9 @@ impl Interp {
             _ => None,
         };
         let act = Activation {
+            fid,
+            task: self.current_task_id.get(),
+            line: Cell::new(0),
             self_val,
             frame,
             block: None,

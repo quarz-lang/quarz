@@ -34,7 +34,9 @@ fn build(path: &Path, output: &Path) {
         .map(|(f, d)| d.render(&sources[(*f as usize).saturating_sub(1)]))
         .collect();
     assert!(errors.is_empty(), "check errors:\n{}", errors.join("\n"));
-    quarz_cli::build(checked.unwrap(), output).expect("build");
+    let mut files = vec![SourceFile::new("<prelude>", PRELUDE_SOURCE)];
+    files.extend(sources);
+    quarz_cli::build(checked.unwrap(), &files, output).expect("build");
 }
 
 /// Compile and run `path` natively, returning the exit code and output.

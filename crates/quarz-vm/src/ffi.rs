@@ -87,7 +87,9 @@ pub unsafe extern "C" fn qz_exec(
     let f = rt.func(fid);
     let pool = rt.pools.borrow()[fid as usize].clone();
     let regs = std::slice::from_raw_parts_mut(regs, f.nregs as usize);
-    let inst = &f.blocks[block as usize].insts[inst as usize];
+    let b = &f.blocks[block as usize];
+    act.line.set(b.lines[inst as usize]);
+    let inst = &b.insts[inst as usize];
     let mut pending = rt.pending_flow.borrow_mut().take();
     match rt.exec_inst(&f, fid, &pool, act, regs, &mut pending, inst) {
         Ok(()) => {

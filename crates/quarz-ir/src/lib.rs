@@ -109,7 +109,10 @@ pub enum Constant {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Block {
     pub insts: Vec<Inst>,
+    /// Source line of each instruction (parallel to `insts`).
+    pub lines: Vec<u32>,
     pub term: Term,
+    pub term_line: u32,
     pub handler: Option<Handler>,
 }
 

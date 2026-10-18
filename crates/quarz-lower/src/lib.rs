@@ -8,6 +8,7 @@ use std::collections::HashMap;
 
 use quarz_ir::*;
 use quarz_syntax::ast::Expr;
+use quarz_syntax::SourceFile;
 use quarz_types::{Checked, Output, World};
 
 mod capture;
@@ -45,7 +46,8 @@ pub struct Lowerer {
     /// Functions of the current round, by id minus `round_base`.
     pending: Vec<Option<Function>>,
     round_base: FuncId,
-    pub(crate) file_names: Vec<String>,
+    /// Source files by index, for line numbers.
+    pub(crate) files: Vec<SourceFile>,
 }
 
 impl Lowerer {
@@ -70,11 +72,11 @@ impl Lowerer {
         world: &World,
         out: &Output,
         units: &[UnitInput],
-        file_names: Vec<String>,
+        files: Vec<SourceFile>,
     ) -> Delta {
         self.round_base = self.next_func;
         self.pending.clear();
-        self.file_names = file_names;
+        self.files = files;
 
         // Methods.
         if self.method_funcs.len() < world.methods.len() {
@@ -144,7 +146,8 @@ impl Lowerer {
             .drain(..)
             .map(|f| f.expect("function lowered"))
             .collect();
-        let world = rtworld::build(world, self, self.file_names.clone());
+        let file_names = self.files.iter().map(|f| f.name.clone()).collect();
+        let world = rtworld::build(world, self, file_names);
         Delta {
             world,
             base: self.round_base,
@@ -154,13 +157,20 @@ impl Lowerer {
     }
 }
 
-/// Lower a whole checked program into a module.
-pub fn lower_checked(checked: &Checked) -> Module {
+/// Lower a whole checked program into a module. `files` are the source
+/// files by index (0 = the prelude), used for line numbers.
+pub fn lower_checked(checked: &Checked, files: &[SourceFile]) -> Module {
     let mut lw = Lowerer::new();
     let max_file = checked.units.iter().map(|u| u.file).max().unwrap_or(0);
-    let mut file_names = vec!["<prelude>".to_string(); max_file as usize + 1];
-    for u in &checked.units {
-        file_names[u.file as usize] = u.name.clone();
+    let mut all: Vec<SourceFile> = files.to_vec();
+    while all.len() <= max_file as usize {
+        let name = checked
+            .units
+            .iter()
+            .find(|u| u.file as usize == all.len())
+            .map(|u| u.name.clone())
+            .unwrap_or_default();
+        all.push(SourceFile::new(name, ""));
     }
     let inputs: Vec<UnitInput> = checked
         .units
@@ -173,7 +183,7 @@ pub fn lower_checked(checked: &Checked) -> Module {
             repl: false,
         })
         .collect();
-    let delta = lw.lower(&checked.world, &checked.output, &inputs, file_names);
+    let delta = lw.lower(&checked.world, &checked.output, &inputs, all);
     Module {
         world: delta.world,
         functions: delta.functions,

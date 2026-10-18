@@ -72,6 +72,8 @@ pub struct FnBuilder<'a> {
     is_block: bool,
     is_lambda: bool,
     file: u32,
+    /// Source line of the expression being lowered.
+    line: u32,
 }
 
 impl<'a> FnBuilder<'a> {
@@ -120,6 +122,14 @@ impl<'a> FnBuilder<'a> {
             is_block: false,
             is_lambda: false,
             file,
+            line: 0,
+        }
+    }
+
+    fn line_of(&self, span: Span) -> u32 {
+        match self.lw.files.get(self.file as usize) {
+            Some(f) if !f.text.is_empty() => f.line_col(span.start).line as u32,
+            _ => 0,
         }
     }
 
@@ -276,7 +286,7 @@ impl<'a> FnBuilder<'a> {
             lw,
             world,
             out,
-            format!("top level of {}", unit.name),
+            "<main>".to_string(),
             kind,
             unit.file,
             &[],
@@ -401,14 +411,18 @@ impl<'a> FnBuilder<'a> {
         if self.dead {
             return;
         }
-        self.func.blocks[self.cur as usize].insts.push(inst);
+        let b = &mut self.func.blocks[self.cur as usize];
+        b.insts.push(inst);
+        b.lines.push(self.line);
     }
 
     fn new_block(&mut self) -> BlockId {
         let id = self.func.blocks.len() as BlockId;
         self.func.blocks.push(quarz_ir::Block {
             insts: Vec::new(),
+            lines: Vec::new(),
             term: Term::Unreachable,
+            term_line: self.line,
             handler: self.handlers.last().unwrap().handler,
         });
         id
@@ -423,7 +437,9 @@ impl<'a> FnBuilder<'a> {
         if self.dead {
             return;
         }
-        self.func.blocks[self.cur as usize].term = t;
+        let b = &mut self.func.blocks[self.cur as usize];
+        b.term = t;
+        b.term_line = self.line;
         self.dead = true;
     }
 
@@ -593,6 +609,14 @@ impl<'a> FnBuilder<'a> {
     }
 
     fn expr(&mut self, e: &'a Expr) -> Reg {
+        let saved = self.line;
+        self.line = self.line_of(e.span);
+        let r = self.expr_inner(e);
+        self.line = saved;
+        r
+    }
+
+    fn expr_inner(&mut self, e: &'a Expr) -> Reg {
         use ExprKind::*;
         match &e.kind {
             Nil => self.nil(),
@@ -656,13 +680,16 @@ impl<'a> FnBuilder<'a> {
                 ast::Magic::File => {
                     let name = self
                         .lw
-                        .file_names
+                        .files
                         .get(self.file as usize)
-                        .cloned()
+                        .map(|f| f.name.clone())
                         .unwrap_or_default();
                     self.load_const(Constant::Str(name))
                 }
-                ast::Magic::Line => self.load_const(Constant::Int(0)),
+                ast::Magic::Line => {
+                    let line = self.line;
+                    self.load_const(Constant::Int(i64::from(line)))
+                }
                 ast::Magic::Method => match self.method {
                     Some(mid) => {
                         let name = self.world.method(mid).name.clone();

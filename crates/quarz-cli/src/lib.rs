@@ -4,22 +4,33 @@
 
 pub mod session;
 
+use quarz_syntax::SourceFile;
 use quarz_types::Checked;
 
-/// Lower and run a checked program; returns the exit code.
-pub fn run(checked: Checked, argv: Vec<String>) -> i32 {
-    let module = quarz_lower::lower_checked(&checked);
+/// Lower and run a checked program; returns the exit code. `files` are
+/// the sources by file index (0 = the prelude), for line numbers.
+pub fn run(checked: Checked, files: &[SourceFile], argv: Vec<String>) -> i32 {
+    let module = quarz_lower::lower_checked(&checked, files);
     quarz_vm::run(module, argv)
 }
 
 /// Compile a checked program to the executable `output`.
-pub fn build(checked: Checked, output: &std::path::Path) -> Result<(), String> {
-    let module = quarz_lower::lower_checked(&checked);
+pub fn build(
+    checked: Checked,
+    files: &[SourceFile],
+    output: &std::path::Path,
+) -> Result<(), String> {
+    let module = quarz_lower::lower_checked(&checked, files);
     quarz_aot::build(&module, output)
 }
 
 /// Lower and run a checked program capturing its standard output.
-pub fn run_capturing(checked: Checked, argv: Vec<String>) -> (i32, String) {
-    let module = quarz_lower::lower_checked(&checked);
+pub fn run_capturing(checked: Checked, files: &[SourceFile], argv: Vec<String>) -> (i32, String) {
+    let module = quarz_lower::lower_checked(&checked, files);
     quarz_vm::run_capturing(module, argv)
+}
+
+/// Lower a checked program (for `quarz ir`).
+pub fn lower(checked: &Checked, files: &[SourceFile]) -> quarz_ir::Module {
+    quarz_lower::lower_checked(checked, files)
 }

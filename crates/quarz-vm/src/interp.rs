@@ -262,7 +262,12 @@ pub struct Interp {
     pub argv: Vec<String>,
     pub exc: ExcClasses,
     pub rt: RtClasses,
-    pub call_stack: RefCell<Vec<MethodId>>,
+    /// The activations in progress, innermost last (all tasks share the
+    /// vector; entries are tagged with their task). Raw pointers: an
+    /// activation lives on the Rust stack for the duration of its call.
+    pub call_stack: RefCell<Vec<*const crate::vm::Activation>>,
+    /// The task being run by the scheduler.
+    pub current_task_id: Cell<TaskId>,
     pub at_exit: Rc<RefCell<Vec<Value>>>,
     pub stdout: Rc<RefCell<Box<dyn std::io::Write>>>,
     /// The flow being returned from compiled code (see `vm.rs`).
@@ -449,6 +454,7 @@ impl Interp {
             exc,
             rt,
             call_stack: RefCell::new(Vec::new()),
+            current_task_id: Cell::new(0),
             at_exit: state.at_exit,
             stdout: state.stdout,
             pending_flow: RefCell::new(None),
@@ -580,6 +586,7 @@ impl Interp {
                 return 1;
             };
             let task = self.sched.borrow().task(id).clone();
+            self.current_task_id.set(id);
             let result = sched::resume(&task, &mut co);
             let exit = self.sched.borrow_mut().after_resume(id, co, result);
             if let Some(code) = exit {
@@ -723,21 +730,34 @@ impl Interp {
         }))
     }
 
-    /// The innermost frames of the call stack (deep recursion is cut
-    /// off).
+    /// The innermost frames of the current task's call stack, as
+    /// `file:line:in name` (deep recursion is cut off).
     pub fn capture_backtrace(&self) -> Vec<String> {
         let stack = self.call_stack.borrow();
-        let mut bt: Vec<String> = stack
-            .iter()
-            .rev()
-            .take(32)
-            .map(|mid| {
-                let m = self.world.method(*mid);
-                format!("{}#{}", self.world.class(m.owner).name, m.name)
-            })
-            .collect();
-        if stack.len() > 32 {
-            bt.push(format!("... {} more frames", stack.len() - 32));
+        let task = self.current_task_id.get();
+        let funcs = self.funcs.borrow();
+        let mut frames = 0;
+        let mut bt = Vec::new();
+        for p in stack.iter().rev() {
+            // SAFETY: entries are removed before their activation ends.
+            let act = unsafe { &**p };
+            if act.task != task {
+                continue;
+            }
+            frames += 1;
+            if frames > 32 {
+                continue;
+            }
+            let f = &funcs[act.fid as usize];
+            bt.push(format!(
+                "{}:{}:in {}",
+                self.file_name(f.file),
+                act.line.get(),
+                f.name
+            ));
+        }
+        if frames > 32 {
+            bt.push(format!("... {} more frames", frames - 32));
         }
         bt
     }

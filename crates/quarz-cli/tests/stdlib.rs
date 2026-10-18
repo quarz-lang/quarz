@@ -96,6 +96,26 @@ fn json() {
     );
 }
 
+#[test]
+fn backtraces_and_line_numbers() {
+    expect(
+        r#"def inner(n: Int) -> Int
+  raise ArgumentError, "n=#{n}" if n > 1
+  inner(n + 1)
+end
+begin
+  inner(0)
+rescue ArgumentError => e
+  puts e.message
+  puts e.backtrace.join("\n")
+end
+puts __LINE__
+[1].each { |x| puts __LINE__ + x }
+"#,
+        "n=2\ntest:2:in main#inner\ntest:3:in main#inner\ntest:3:in main#inner\ntest:6:in <main>\n11\n13\n",
+    );
+}
+
 /// Overloads resolved statically must stay on the same overload when the
 /// receiver's run-time class is a subclass or an enum variant.
 #[test]

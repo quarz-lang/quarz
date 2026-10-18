@@ -102,8 +102,9 @@ fn parse_file(path: &str) -> ExitCode {
 }
 
 /// Load the file and everything it requires, then type-check. Returns the
-/// checked program if there were no errors.
-fn load_and_check(path: &str) -> Option<quarz_types::Checked> {
+/// checked program and the source files by index (0 = the prelude) if
+/// there were no errors.
+fn load_and_check(path: &str) -> Option<(quarz_types::Checked, Vec<SourceFile>)> {
     let prelude_file = SourceFile::new("<prelude>", quarz_types::PRELUDE_SOURCE);
     let prelude = parse(&prelude_file.text);
     let mut failed = false;
@@ -136,31 +137,33 @@ fn load_and_check(path: &str) -> Option<quarz_types::Checked> {
         };
         eprint!("{}", diag.render(f));
     }
-    checked
+    let mut files = vec![prelude_file];
+    files.extend(sources);
+    checked.map(|c| (c, files))
 }
 
 fn run_file(path: &str, argv: Vec<String>) -> ExitCode {
-    let Some(checked) = load_and_check(path) else {
+    let Some((checked, files)) = load_and_check(path) else {
         return ExitCode::FAILURE;
     };
-    let code = quarz_cli::run(checked, argv);
+    let code = quarz_cli::run(checked, &files, argv);
     ExitCode::from(code.clamp(0, 255) as u8)
 }
 
 fn ir_file(path: &str) -> ExitCode {
-    let Some(checked) = load_and_check(path) else {
+    let Some((checked, files)) = load_and_check(path) else {
         return ExitCode::FAILURE;
     };
-    let module = quarz_lower::lower_checked(&checked);
+    let module = quarz_cli::lower(&checked, &files);
     print!("{}", quarz_ir::dump::dump_module(&module));
     ExitCode::SUCCESS
 }
 
 fn build_file(path: &str, out: &std::path::Path) -> ExitCode {
-    let Some(checked) = load_and_check(path) else {
+    let Some((checked, files)) = load_and_check(path) else {
         return ExitCode::FAILURE;
     };
-    match quarz_cli::build(checked, out) {
+    match quarz_cli::build(checked, &files, out) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("quarz: {e}");
