@@ -676,11 +676,13 @@ impl<'src> Lexer<'src> {
     /// `allow_setter`, a trailing `=` is included too (`:name=`).
     fn take_ident(&mut self, allow_setter: bool) -> &'src str {
         let start = self.pos;
+        let is_const = self.peek().is_some_and(|b| b.is_ascii_uppercase());
         while self.peek().is_some_and(is_ident_char) {
             self.pos += 1;
         }
         match self.peek() {
-            Some(b'?' | b'!') if self.peek_at(1) != Some(b'=') => self.pos += 1,
+            // Constants never end in `?`/`!` (`String?` is a nilable type).
+            Some(b'?' | b'!') if !is_const && self.peek_at(1) != Some(b'=') => self.pos += 1,
             Some(b'=') if allow_setter && !matches!(self.peek_at(1), Some(b'=' | b'~' | b'>')) => {
                 self.pos += 1
             }

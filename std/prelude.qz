@@ -13,6 +13,8 @@ module Unshareable
 end
 
 class Object
+  include Kernel
+
   native def ==(other: Object) -> Bool
   native def !=(other: Object) -> Bool
   native def equal?(other: Object) -> Bool
@@ -60,11 +62,7 @@ module Comparable[T]
   def >=(other: T) -> Bool = (self <=> other) >= 0
   def between?(min: T, max: T) -> Bool = self >= min && self <= max
 
-  def clamp(min: T, max: T) -> self
-    return min if self < min
-    return max if self > max
-    self
-  end
+  native def clamp(min: T, max: T) -> self
 end
 
 class Int
@@ -585,7 +583,8 @@ module Enumerable[out T]
   end
 
   def sort_by[U: Comparable[U]](&block: (T) -> U) -> Array[T]
-    map { |x| [yield(x), x] }.sort_pairs.map { |pair| pair[1] }
+    pairs: Array[[U, T]] = map { |x| [yield(x), x] }
+    pairs.sort_pairs.map { |pair| pair[1] }
   end
 
   def lazy -> Array[T] = to_a
@@ -637,8 +636,10 @@ class Array[out T]
   native def at(index: Int) -> T?
   native def fetch(index: Int, default: T) -> T
   native def first -> T?
+  native def first? -> T?
   native def first(n: Int) -> Array[T]
   native def last -> T?
+  native def last? -> T?
   native def last(n: Int) -> Array[T]
   native def size -> Int
   native def length -> Int
@@ -966,7 +967,7 @@ enum Result[T, E]
   end
 end
 
-class Task[out T]
+class Task[out T: Shareable]
   include Shareable
 
   native def self.scope[R](&block: (Scope) -> R) -> R
@@ -996,7 +997,7 @@ class Scope
   native def cancel -> Nil
 end
 
-class Channel[T]
+class Channel[T: Shareable]
   include Shareable
   include Enumerable[T]
 
@@ -1028,7 +1029,7 @@ class Selector
   native def stop -> Nil
 end
 
-class Atom[T]
+class Atom[T: Shareable]
   include Shareable
 
   native def self.new(value: T) -> Atom[T]
@@ -1040,7 +1041,7 @@ class Atom[T]
 end
 
 class IO
-  include Unshareable
+  include Shareable
 
   native def puts(*args: Object) -> Nil
   native def print(*args: Object) -> Nil

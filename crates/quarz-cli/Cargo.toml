@@ -12,3 +12,4 @@ path = "src/main.rs"
 
 [dependencies]
 quarz-syntax = { workspace = true }
+quarz-types = { workspace = true }
