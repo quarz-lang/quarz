@@ -93,7 +93,7 @@ fn classes(interp: &Interp) -> Result<Classes, Flow> {
 fn variant(class: ClassId, field: Value) -> Value {
     Value::Object(Rc::new(Object {
         class,
-        fields: RefCell::new(vec![field]),
+        fields: RefCell::new(smallvec![field]),
         backtrace: RefCell::new(None),
         cause: RefCell::new(None),
     }))

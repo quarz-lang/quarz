@@ -67,13 +67,15 @@ impl Interp {
         if let Some(r) = self.run_compiled(fid, act) {
             return r;
         }
-        let f = self.func(fid);
-        let pool = self.pools.borrow()[fid as usize].clone();
+        let funcs = self.funcs.borrow();
+        let f = &funcs[fid as usize];
+        let pools = self.pools.borrow();
+        let pool = &pools[fid as usize];
         let mut regs: SmallVec<[Value; 16]> = smallvec![Value::Nil; f.nregs as usize];
         let mut pending: Option<Flow> = None;
         let mut block = 0;
         loop {
-            match self.run_block(&f, fid, &pool, act, &mut regs, &mut pending, block) {
+            match self.run_block(f, fid, pool, act, &mut regs, &mut pending, block) {
                 Step::Jump(b) => block = b,
                 Step::Done(r) => return r,
             }
@@ -214,6 +216,9 @@ impl Interp {
         kw: &[(u32, Reg)],
         kw_splat: Option<Reg>,
     ) -> Vec<(Symbol, Value)> {
+        if kw.is_empty() && kw_splat.is_none() {
+            return Vec::new();
+        }
         let mut out: Vec<(Symbol, Value)> = kw
             .iter()
             .map(|(k, r)| (self.symbol_const(f, pool, *k), regs[*r as usize].clone()))
@@ -687,7 +692,7 @@ impl Interp {
             }
             Inst::ObjectFields { dst, src } => {
                 let v = match &regs[*src as usize] {
-                    Value::Object(o) => Value::array(o.fields.borrow().clone()),
+                    Value::Object(o) => Value::array(o.fields.borrow().to_vec()),
                     _ => Value::array(Vec::new()),
                 };
                 regs[*dst as usize] = v;
@@ -777,7 +782,8 @@ impl Interp {
                 if sched::stack_exhausted() {
                     return Err(self.raise(self.exc.system_stack, "stack level too deep"));
                 }
-                let f = self.func(*fid);
+                let funcs = self.funcs.borrow();
+                let f = &funcs[*fid as usize];
                 let frame = if f.frame_size > 0 {
                     Some(Frame::new(f.frame_size as usize, closure.frame.clone()))
                 } else {
@@ -795,6 +801,7 @@ impl Interp {
                 }
                 let mut bound: ArgVec = ArgVec::with_capacity(f.param_kinds.len());
                 let mut provided = 0u64;
+                let file = closure.file;
                 let mut it = args.into_iter();
                 for (i, kind) in f.param_kinds.iter().enumerate() {
                     match kind {
@@ -827,7 +834,7 @@ impl Interp {
                     },
                     closure_tag: closure.tag,
                     method: None,
-                    file: closure.file,
+                    file,
                     args: bound,
                     provided,
                 };
@@ -880,9 +887,13 @@ impl Interp {
         if sched::stack_exhausted() {
             return Err(self.raise(self.exc.system_stack, "stack level too deep"));
         }
-        let f = self.func(fid);
-        let frame = if f.frame_size > 0 {
-            Some(Frame::new(f.frame_size as usize, None))
+        let (frame_size, file) = {
+            let funcs = self.funcs.borrow();
+            let f = &funcs[fid as usize];
+            (f.frame_size, f.file)
+        };
+        let frame = if frame_size > 0 {
+            Some(Frame::new(frame_size as usize, None))
         } else {
             None
         };
@@ -897,7 +908,7 @@ impl Interp {
             method_tag: tag,
             closure_tag: 0,
             method: Some(mid),
-            file: f.file,
+            file,
             args,
             provided,
         };

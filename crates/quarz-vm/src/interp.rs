@@ -419,7 +419,7 @@ impl Interp {
         for u in &units {
             unit_selfs[u.file as usize] = Value::Object(Rc::new(Object {
                 class: u.main_class,
-                fields: RefCell::new(Vec::new()),
+                fields: RefCell::new(Fields::new()),
                 backtrace: RefCell::new(None),
                 cause: RefCell::new(None),
             }));
@@ -719,7 +719,7 @@ impl Interp {
 
     pub fn make_exception(&self, class: ClassId, message: &str) -> Value {
         let n = self.world.class(class).fields.len().max(1);
-        let mut fields = vec![Value::Nil; n];
+        let mut fields: Fields = smallvec![Value::Nil; n];
         fields[0] = Value::str(message);
         let bt = self.capture_backtrace();
         Value::Object(Rc::new(Object {
@@ -889,7 +889,7 @@ impl Interp {
         }
         let v = Value::Object(Rc::new(Object {
             class: cid,
-            fields: RefCell::new(Vec::new()),
+            fields: RefCell::new(Fields::new()),
             backtrace: RefCell::new(None),
             cause: RefCell::new(None),
         }));
@@ -1124,7 +1124,7 @@ impl Interp {
                     return Err(self.err_type("data initialization on a non-object"));
                 };
                 let values = self.bind_data_args(mid, &recv, args, kw)?;
-                *o.fields.borrow_mut() = values;
+                *o.fields.borrow_mut() = Fields::from_vec(values);
                 return Ok(Value::Nil);
             }
             RtSynth::DataWith => {
@@ -1340,7 +1340,7 @@ impl Interp {
         let info = self.world.class(class);
         let obj = Rc::new(Object {
             class,
-            fields: RefCell::new(vec![Value::Nil; info.fields.len()]),
+            fields: RefCell::new(smallvec![Value::Nil; info.fields.len()]),
             backtrace: RefCell::new(None),
             cause: RefCell::new(None),
         });

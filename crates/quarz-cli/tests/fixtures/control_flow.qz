@@ -80,4 +80,22 @@ ensure
 end
 def deep(n: Int) -> Int = n == 0 ? 0 : 1 + deep(n - 1)
 p deep(5000)
+# Integer and float arithmetic edge cases (inlined by the compiler).
+[[7, 2], [-7, 2], [7, -2], [-7, -2], [6, 3], [-6, 3]].each do |pair|
+  a = pair[0]
+  b = pair[1]
+  puts "#{a} / #{b} = #{a / b}, #{a} % #{b} = #{a % b}"
+end
+big = 3_037_000_500
+p big * big
+p (-big) * big
+p 9_223_372_036_854_775_807 + 1
+p -9_223_372_036_854_775_807 - 2
+p 7.5 % 2.0, -7.5 % 2.0, 7.5 / 2.0, 1.5 * 4.0
+p 10 * 3, -10 / 4, -10 % 4, 10.0 - 0.5
+begin
+  p 1 / 0
+rescue ZeroDivisionError => e
+  puts "zero: #{e.message}"
+end
 exit 3

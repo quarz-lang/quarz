@@ -44,11 +44,8 @@ const STATUS_RAISE: i64 = 1;
 struct Runtime {
     exec: CFuncId,
     term: CFuncId,
-    init_regs: CFuncId,
-    drop_regs: CFuncId,
     mov: CFuncId,
     drop_reg: CFuncId,
-    take_reg: CFuncId,
     self_: CFuncId,
     arg: CFuncId,
     block_param: CFuncId,
@@ -57,7 +54,9 @@ struct Runtime {
     field_get: CFuncId,
     field_set: CFuncId,
     call_static: CFuncId,
+    yield_: CFuncId,
     construct: CFuncId,
+    owned_call: CFuncId,
     main: CFuncId,
 }
 
@@ -76,7 +75,9 @@ struct Helpers {
     field_get: FuncRef,
     field_set: FuncRef,
     call_static: FuncRef,
+    yield_: FuncRef,
     construct: FuncRef,
+    owned_call: FuncRef,
 }
 
 struct Compiler {
@@ -127,11 +128,8 @@ pub fn compile(module: &Module) -> Result<Vec<u8>, String> {
             "qz_term",
             &sig(&[i64_, i64_, i32_, i32_, i64_], Some(i32_)),
         )?,
-        init_regs: import(&mut obj, "qz_init_regs", &sig(&[i64_, i32_], None))?,
-        drop_regs: import(&mut obj, "qz_drop_regs", &sig(&[i64_, i32_], None))?,
         mov: import(&mut obj, "qz_move", &sig(&[i64_, i32_, i32_], None))?,
         drop_reg: import(&mut obj, "qz_drop_reg", &sig(&[i64_, i32_], None))?,
-        take_reg: import(&mut obj, "qz_take_reg", &sig(&[i64_, i32_, i64_], None))?,
         self_: import(&mut obj, "qz_self", &sig(&[i64_, i64_, i32_], None))?,
         arg: import(&mut obj, "qz_arg", &sig(&[i64_, i32_, i64_, i32_], None))?,
         block_param: import(&mut obj, "qz_block_param", &sig(&[i64_, i64_, i32_], None))?,
@@ -159,7 +157,20 @@ pub fn compile(module: &Module) -> Result<Vec<u8>, String> {
             &mut obj,
             "qz_call_static",
             &sig(
-                &[i64_, i64_, i32_, i32_, i64_, i32_, i64_, i32_, i32_],
+                &[i64_, i64_, i32_, i64_, i32_, i64_, i32_, i32_, i32_],
+                Some(i32_),
+            ),
+        )?,
+        yield_: import(
+            &mut obj,
+            "qz_yield",
+            &sig(&[i64_, i64_, i64_, i64_, i32_, i32_], Some(i32_)),
+        )?,
+        owned_call: import(
+            &mut obj,
+            "qz_owned_call",
+            &sig(
+                &[i64_, i64_, i32_, i64_, i32_, i32_, i32_, i64_, i32_, i32_],
                 Some(i32_),
             ),
         )?,
@@ -206,9 +217,7 @@ impl Compiler {
         ctx.func.signature = self.fn_sig.clone();
         let mut fbc = FunctionBuilderContext::new();
         let mut b = FunctionBuilder::new(&mut ctx.func, &mut fbc);
-        let init_regs = self.module.declare_func_in_func(self.rt.init_regs, b.func);
-        let drop_regs = self.module.declare_func_in_func(self.rt.drop_regs, b.func);
-        let take_reg = self.module.declare_func_in_func(self.rt.take_reg, b.func);
+        let drop_reg_fn = self.module.declare_func_in_func(self.rt.drop_reg, b.func);
         let h = Helpers {
             exec: self.module.declare_func_in_func(self.rt.exec, b.func),
             term: self.module.declare_func_in_func(self.rt.term, b.func),
@@ -226,8 +235,11 @@ impl Compiler {
             call_static: self
                 .module
                 .declare_func_in_func(self.rt.call_static, b.func),
+            yield_: self.module.declare_func_in_func(self.rt.yield_, b.func),
             construct: self.module.declare_func_in_func(self.rt.construct, b.func),
+            owned_call: self.module.declare_func_in_func(self.rt.owned_call, b.func),
         };
+        let heap = heap_possible(f);
 
         let entry = b.create_block();
         b.append_block_params_for_function_params(entry);
@@ -260,7 +272,7 @@ impl Compiler {
             .iter()
             .flat_map(|blk| blk.insts.iter())
             .map(|inst| match inst {
-                Inst::Call { args, .. } => args.len(),
+                Inst::Call { args, .. } | Inst::OwnedCall { args, .. } => args.len(),
                 _ => 0,
             })
             .max()
@@ -272,8 +284,12 @@ impl Compiler {
             2,
         ));
         let scratch = b.ins().stack_addr(types::I64, scratch_slot, 0);
-        let n = b.ins().iconst(types::I32, i64::from(nregs));
-        b.ins().call(init_regs, &[regs, n]);
+        // Registers start as nil: only the tag word needs writing.
+        let zero = b.ins().iconst(types::I64, 0);
+        for i in 0..nregs as i32 {
+            b.ins()
+                .store(MemFlags::trusted(), zero, regs, i * VALUE_SIZE);
+        }
         b.ins().jump(blocks[0], &[]);
 
         let mut g = Gen {
@@ -307,11 +323,19 @@ impl Compiler {
                     );
                 }
                 Term::Return(r) => {
-                    let r = g.b.ins().iconst(types::I32, i64::from(*r));
-                    g.b.ins().call(take_reg, &[regs, r, out]);
-                    g.b.ins().call(drop_regs, &[regs, n]);
-                    let zero = g.b.ins().iconst(types::I32, 0);
-                    g.b.ins().return_(&[zero]);
+                    // Move the value into `out` (which holds nil) and
+                    // leave the register nil, then release the rest.
+                    let off = Gen::reg_off(*r);
+                    for k in [0, 8, 16] {
+                        let w =
+                            g.b.ins()
+                                .load(types::I64, MemFlags::trusted(), regs, off + k);
+                        g.b.ins().store(MemFlags::trusted(), w, out, k);
+                    }
+                    let zero = g.b.ins().iconst(types::I64, 0);
+                    g.b.ins().store(MemFlags::trusted(), zero, regs, off);
+                    let ok = g.b.ins().iconst(types::I32, 0);
+                    g.b.ins().jump(exit, &[ok]);
                 }
                 Term::Raise(_)
                 | Term::BreakOut(_)
@@ -344,9 +368,28 @@ impl Compiler {
                 }
             }
         }
+        // Exit: release the registers that may hold heap values.
         b.switch_to_block(exit);
         let status = b.block_params(exit)[0];
-        b.ins().call(drop_regs, &[regs, n]);
+        for i in 0..nregs {
+            if !heap[i as usize] {
+                continue;
+            }
+            let tag = b
+                .ins()
+                .load(types::I64, MemFlags::trusted(), regs, i as i32 * VALUE_SIZE);
+            let needs = b
+                .ins()
+                .icmp_imm(IntCC::UnsignedGreaterThanOrEqual, tag, NEEDS_DROP_FROM);
+            let drop_blk = b.create_block();
+            let next = b.create_block();
+            b.ins().brif(needs, drop_blk, &[], next, &[]);
+            b.switch_to_block(drop_blk);
+            let idx = b.ins().iconst(types::I32, i64::from(i));
+            b.ins().call(drop_reg_fn, &[regs, idx]);
+            b.ins().jump(next, &[]);
+            b.switch_to_block(next);
+        }
         b.ins().return_(&[status]);
         b.seal_all_blocks();
         b.finalize();
@@ -433,11 +476,91 @@ impl Compiler {
 
 /// A call compiled to `qz_call_static`.
 struct StaticCall {
-    fid: FuncId,
     mid: MethodId,
     recv: Option<Reg>,
     args: Vec<Reg>,
+    block: Option<Reg>,
     dst: Reg,
+}
+
+/// Which registers may ever hold a reference-counted value (the others
+/// need no release at exit).
+fn heap_possible(f: &Function) -> Vec<bool> {
+    let mut heap = vec![false; f.nregs as usize];
+    let mut mark = |r: Reg| heap[r as usize] = true;
+    for blk in &f.blocks {
+        for inst in &blk.insts {
+            match inst {
+                Inst::LoadConst { dst, idx } => {
+                    if !matches!(
+                        f.consts[*idx as usize],
+                        Constant::Nil | Constant::Bool(_) | Constant::Int(_) | Constant::Float(_)
+                    ) {
+                        mark(*dst);
+                    }
+                }
+                Inst::BinOp { dst, op, .. } => {
+                    // Arithmetic may overflow into a BigInt.
+                    if !matches!(
+                        op,
+                        FastOp::Lt
+                            | FastOp::Le
+                            | FastOp::Gt
+                            | FastOp::Ge
+                            | FastOp::Eq
+                            | FastOp::Ne
+                            | FastOp::Cmp
+                    ) {
+                        mark(*dst);
+                    }
+                }
+                Inst::HasArg { .. }
+                | Inst::Not { .. }
+                | Inst::IsNil { .. }
+                | Inst::IsArray { .. }
+                | Inst::IsHash { .. }
+                | Inst::IsObject { .. }
+                | Inst::Len { .. }
+                | Inst::ClassIsA { .. }
+                | Inst::IsA { .. }
+                | Inst::Equal { .. }
+                | Inst::CaseEq { .. } => {}
+                Inst::FieldGetByName { dst, .. } | Inst::HashGetSym { dst, .. } => mark(*dst),
+                Inst::Move { dst, .. }
+                | Inst::SelfRef { dst }
+                | Inst::Arg { dst, .. }
+                | Inst::BlockParam { dst }
+                | Inst::FrameGet { dst, .. }
+                | Inst::FieldGet { dst, .. }
+                | Inst::ConstGet { dst, .. }
+                | Inst::ClassRef { dst, .. }
+                | Inst::VariantSingleton { dst, .. }
+                | Inst::Call { dst, .. }
+                | Inst::OwnedCall { dst, .. }
+                | Inst::As { dst, .. }
+                | Inst::MakeBlock { dst, .. }
+                | Inst::MethodRef { dst, .. }
+                | Inst::SymbolProc { dst, .. }
+                | Inst::MakeArray { dst, .. }
+                | Inst::MakeHash { dst, .. }
+                | Inst::MakeRange { dst, .. }
+                | Inst::MakeRegexp { dst, .. }
+                | Inst::Interpolate { dst, .. }
+                | Inst::ToSym { dst, .. }
+                | Inst::ToArray { dst, .. }
+                | Inst::ArrayGet { dst, .. }
+                | Inst::ArrayGetReg { dst, .. }
+                | Inst::ArraySlice { dst, .. }
+                | Inst::ArraySliceReg { dst, .. }
+                | Inst::ObjectFields { dst, .. }
+                | Inst::HashRest { dst, .. }
+                | Inst::CatchException { dst }
+                | Inst::CatchAny { dst } => mark(*dst),
+                Inst::FrameSet { .. } | Inst::FieldSet { .. } | Inst::NoMatch { .. } => {}
+            }
+        }
+    }
+    heap
 }
 
 /// Code generation for one function body.
@@ -524,7 +647,8 @@ impl Gen<'_, '_> {
         self.b.switch_to_block(cont);
     }
 
-    /// Whether a call can go straight to the method's body.
+    /// Whether a call can go straight to the method (a native, or a body
+    /// with positional parameters) without dynamic dispatch.
     fn static_target(&self, inst: &Inst) -> Option<StaticCall> {
         let Inst::Call {
             dst,
@@ -534,7 +658,7 @@ impl Gen<'_, '_> {
             splat: false,
             kw,
             kw_splat: None,
-            block: None,
+            block,
         } = inst
         else {
             return None;
@@ -543,22 +667,22 @@ impl Gen<'_, '_> {
             return None;
         }
         let m = self.methods.get(*mid as usize)?;
-        let fid = m.func?;
-        let fixed = m.native_key.is_none()
-            && m.synth == RtSynth::None
+        let fixed = m.synth == RtSynth::None
             && !m.is_abstract
-            && !m.has_block
             && (!m.overridden || m.singleton || m.is_extension)
-            && m.params.iter().all(|p| p.kind == RtParamKind::Positional)
-            && args.len() <= m.params.len();
+            && (m.native_key.is_some()
+                || (m.func.is_some()
+                    && m.params.iter().all(|p| p.kind == RtParamKind::Positional)
+                    && args.len() <= m.params.len()
+                    && (block.is_none() || m.has_block)));
         if !fixed {
             return None;
         }
         Some(StaticCall {
-            fid,
             mid: *mid,
             recv: *recv,
             args: args.clone(),
+            block: *block,
             dst: *dst,
         })
     }
@@ -675,6 +799,7 @@ impl Gen<'_, '_> {
                     | FastOp::Sub
                     | FastOp::Mul
                     | FastOp::Div
+                    | FastOp::Mod
                     | FastOp::Lt
                     | FastOp::Le
                     | FastOp::Gt
@@ -706,6 +831,11 @@ impl Gen<'_, '_> {
                 let x = self.b.ins().bitcast(types::F64, MemFlags::new(), xb);
                 let y = self.b.ins().bitcast(types::F64, MemFlags::new(), yb);
                 match op {
+                    FastOp::Mod => {
+                        self.b.ins().jump(slow_blk, &[]);
+                        let dead = self.b.create_block();
+                        self.b.switch_to_block(dead);
+                    }
                     FastOp::Add | FastOp::Sub | FastOp::Mul | FastOp::Div => {
                         let r = match op {
                             FastOp::Add => self.b.ins().fadd(x, y),
@@ -736,11 +866,52 @@ impl Gen<'_, '_> {
                 let x = self.payload(*lhs);
                 let y = self.payload(*rhs);
                 match op {
-                    FastOp::Mul | FastOp::Div => {
-                        // Overflow and division semantics: let the runtime do it.
-                        self.b.ins().jump(slow_blk, &[]);
-                        let dead = self.b.create_block();
-                        self.b.switch_to_block(dead);
+                    FastOp::Mul => {
+                        // Overflow when the high word is not the sign
+                        // extension of the low one.
+                        let r = self.b.ins().imul(x, y);
+                        let hi = self.b.ins().smulhi(x, y);
+                        let sign = self.b.ins().sshr_imm(r, 63);
+                        let overflow = self.b.ins().icmp(IntCC::NotEqual, hi, sign);
+                        let ok_blk = self.b.create_block();
+                        self.b.ins().brif(overflow, slow_blk, &[], ok_blk, &[]);
+                        self.b.switch_to_block(ok_blk);
+                        self.release(*dst);
+                        self.store_tag(*dst, TAG_INT);
+                        self.store_payload(*dst, r);
+                    }
+                    FastOp::Div | FastOp::Mod => {
+                        // Division by zero and MIN / -1 go to the runtime.
+                        let y_zero = self.b.ins().icmp_imm(IntCC::Equal, y, 0);
+                        let x_min = self.b.ins().icmp_imm(IntCC::Equal, x, i64::MIN);
+                        let y_m1 = self.b.ins().icmp_imm(IntCC::Equal, y, -1);
+                        let min_case = self.b.ins().band(x_min, y_m1);
+                        let bad = self.b.ins().bor(y_zero, min_case);
+                        let ok_blk = self.b.create_block();
+                        self.b.ins().brif(bad, slow_blk, &[], ok_blk, &[]);
+                        self.b.switch_to_block(ok_blk);
+                        // Floor semantics, as in Ruby.
+                        let rem = self.b.ins().srem(x, y);
+                        let nonzero = self.b.ins().icmp_imm(IntCC::NotEqual, rem, 0);
+                        let y_neg = self.b.ins().icmp_imm(IntCC::SignedLessThan, y, 0);
+                        let r = if *op == FastOp::Div {
+                            let q = self.b.ins().sdiv(x, y);
+                            let x_neg = self.b.ins().icmp_imm(IntCC::SignedLessThan, x, 0);
+                            let differ = self.b.ins().bxor(x_neg, y_neg);
+                            let adjust = self.b.ins().band(nonzero, differ);
+                            let adjust = self.b.ins().uextend(types::I64, adjust);
+                            self.b.ins().isub(q, adjust)
+                        } else {
+                            let r_neg = self.b.ins().icmp_imm(IntCC::SignedLessThan, rem, 0);
+                            let differ = self.b.ins().bxor(r_neg, y_neg);
+                            let adjust = self.b.ins().band(nonzero, differ);
+                            let zero = self.b.ins().iconst(types::I64, 0);
+                            let add = self.b.ins().select(adjust, y, zero);
+                            self.b.ins().iadd(rem, add)
+                        };
+                        self.release(*dst);
+                        self.store_tag(*dst, TAG_INT);
+                        self.store_payload(*dst, r);
                     }
                     FastOp::Add | FastOp::Sub => {
                         let r = if *op == FastOp::Add {
@@ -876,12 +1047,78 @@ impl Gen<'_, '_> {
                 let status = self.b.inst_results(call)[0];
                 self.check(status, unwind);
             }
+            Inst::OwnedCall {
+                dst,
+                method,
+                recv,
+                args,
+                kw,
+            } if kw.is_empty() => {
+                for (k, r) in args.iter().enumerate() {
+                    let v = self.i32(*r);
+                    self.b
+                        .ins()
+                        .store(MemFlags::trusted(), v, self.scratch, 4 * k as i32);
+                }
+                let (kind, a, bb) = match recv {
+                    VarLoc::Reg(r) => (0, *r, 0),
+                    VarLoc::Frame { depth, slot } => (1, *depth, *slot),
+                };
+                let mid_v = self.i32(*method);
+                let kind_v = self.i32(kind);
+                let a_v = self.i32(a);
+                let b_v = self.i32(bb);
+                let nargs = self.i32(args.len() as u32);
+                let d = self.i32(*dst);
+                let call = self.b.ins().call(
+                    self.h.owned_call,
+                    &[
+                        self.rt,
+                        self.act,
+                        mid_v,
+                        self.regs,
+                        kind_v,
+                        a_v,
+                        b_v,
+                        self.scratch,
+                        nargs,
+                        d,
+                    ],
+                );
+                let status = self.b.inst_results(call)[0];
+                self.check(status, unwind);
+            }
+            Inst::Call {
+                dst,
+                kind: CallKind::Yield,
+                args,
+                splat: false,
+                kw,
+                kw_splat: None,
+                block: None,
+                ..
+            } if kw.is_empty() => {
+                for (k, r) in args.iter().enumerate() {
+                    let v = self.i32(*r);
+                    self.b
+                        .ins()
+                        .store(MemFlags::trusted(), v, self.scratch, 4 * k as i32);
+                }
+                let nargs = self.i32(args.len() as u32);
+                let d = self.i32(*dst);
+                let call = self.b.ins().call(
+                    self.h.yield_,
+                    &[self.rt, self.act, self.regs, self.scratch, nargs, d],
+                );
+                let status = self.b.inst_results(call)[0];
+                self.check(status, unwind);
+            }
             Inst::Call { .. } => match self.static_target(inst) {
                 Some(StaticCall {
-                    fid: callee,
                     mid,
                     recv,
                     args,
+                    block: blk,
                     dst,
                 }) => {
                     for (k, r) in args.iter().enumerate() {
@@ -890,22 +1127,22 @@ impl Gen<'_, '_> {
                             .ins()
                             .store(MemFlags::trusted(), v, self.scratch, 4 * k as i32);
                     }
-                    let callee_v = self.i32(callee);
                     let mid_v = self.i32(mid);
                     let recv_v = self.i32(recv.unwrap_or(u32::MAX));
                     let nargs = self.i32(args.len() as u32);
+                    let blk_v = self.i32(blk.unwrap_or(u32::MAX));
                     let d = self.i32(dst);
                     let call = self.b.ins().call(
                         self.h.call_static,
                         &[
                             self.rt,
                             self.act,
-                            callee_v,
                             mid_v,
                             self.regs,
                             recv_v,
                             self.scratch,
                             nargs,
+                            blk_v,
                             d,
                         ],
                     );

@@ -84,12 +84,15 @@ impl Frame {
     }
 }
 
+/// The fields of an object, stored inline for up to four.
+pub type Fields = SmallVec<[Value; 4]>;
+
 /// An instance of a user-defined class, data type, enum variant or
 /// exception.
 #[derive(Debug)]
 pub struct Object {
     pub class: ClassId,
-    pub fields: RefCell<Vec<Value>>,
+    pub fields: RefCell<Fields>,
     /// Exceptions: the backtrace captured when raised.
     pub backtrace: RefCell<Option<Rc<Vec<String>>>>,
     pub cause: RefCell<Option<Value>>,

@@ -271,23 +271,25 @@ pub unsafe extern "C" fn qz_field_set(
     }
 }
 
-/// A statically resolved call of a method that nothing overrides: binds
-/// positional arguments directly (`nil` for missing defaults, which the
-/// body evaluates) and runs the body.
+/// A statically resolved call of a method that nothing overrides, with
+/// positional arguments only (and possibly a block): natives are called
+/// directly, bodies get their parameters bound without the generic path
+/// (`nil` for missing defaults, which the body evaluates).
 ///
 /// # Safety
 /// As for `qz_exec`; `arg_regs` must point to `nargs` register indices;
-/// `recv` is a register index or `u32::MAX` for `self`.
+/// `recv` and `block` are register indices or `u32::MAX` for `self` /
+/// no block.
 #[no_mangle]
 pub unsafe extern "C" fn qz_call_static(
     rt: *const Interp,
     act: *const Activation,
-    fid: u32,
     mid: u32,
     regs: *mut Value,
     recv: u32,
     arg_regs: *const u32,
     nargs: u32,
+    block: u32,
     dst: u32,
 ) -> u32 {
     let rt = &*rt;
@@ -297,21 +299,150 @@ pub unsafe extern "C" fn qz_call_static(
     } else {
         (*regs.add(recv as usize)).clone()
     };
-    let nparams = rt.world.methods[mid as usize].params.len();
-    let mut args: crate::interp::ArgVec = crate::interp::ArgVec::with_capacity(nparams);
+    let block = if block == u32::MAX {
+        None
+    } else {
+        Some((*regs.add(block as usize)).clone())
+    };
+    let m = &rt.world.methods[mid as usize];
+    let nparams = m.params.len();
+    let mut args: crate::interp::ArgVec =
+        crate::interp::ArgVec::with_capacity(nparams.max(nargs as usize) + 1);
     for i in 0..nargs as usize {
         let r = *arg_regs.add(i);
         args.push((*regs.add(r as usize)).clone());
     }
-    while args.len() < nparams {
-        args.push(Value::Nil);
-    }
-    let provided = if nargs >= 64 {
-        u64::MAX
+    let r = if let Some(native) = rt.natives[mid as usize] {
+        native(
+            rt,
+            &recv,
+            crate::interp::Args {
+                pos: args,
+                kw: Vec::new(),
+                block: block.clone(),
+            },
+        )
+    } else if let Some(fid) = m.func {
+        let bit = |i: usize| if i < 64 { 1u64 << i } else { 0 };
+        let mut provided = 0u64;
+        for i in 0..(nargs as usize).min(nparams) {
+            provided |= bit(i);
+        }
+        while args.len() < nparams {
+            args.push(Value::Nil);
+        }
+        if m.has_block {
+            match &block {
+                Some(b) => {
+                    args.push(b.clone());
+                    provided |= bit(nparams);
+                }
+                None => args.push(Value::Nil),
+            }
+        }
+        rt.run_method(mid, fid, recv, args, provided, block.clone())
     } else {
-        (1u64 << nargs) - 1
+        rt.invoke(mid, recv, args, Vec::new(), block.clone())
     };
-    match rt.run_method(mid, fid, recv, args, provided, None) {
+    match rt.catch_break(&block, r) {
+        Ok(v) => {
+            *regs.add(dst as usize) = v;
+            STATUS_OK
+        }
+        Err(flow) => rt.park_flow(flow),
+    }
+}
+
+/// `x = x.meth(args)`: move the receiver out of its variable (a register
+/// when `loc_kind` is 0, else frame slot `b` at depth `a`), call the
+/// method with the sole reference, and store the result back.
+///
+/// # Safety
+/// As for `qz_call_static`.
+#[no_mangle]
+pub unsafe extern "C" fn qz_owned_call(
+    rt: *const Interp,
+    act: *const Activation,
+    mid: u32,
+    regs: *mut Value,
+    loc_kind: u32,
+    a: u32,
+    b: u32,
+    arg_regs: *const u32,
+    nargs: u32,
+    dst: u32,
+) -> u32 {
+    let rt = &*rt;
+    let act = &*act;
+    let mut args: crate::interp::ArgVec = crate::interp::ArgVec::with_capacity(nargs as usize);
+    for i in 0..nargs as usize {
+        let r = *arg_regs.add(i);
+        args.push((*regs.add(r as usize)).clone());
+    }
+    let old = if loc_kind == 0 {
+        std::mem::replace(&mut *regs.add(a as usize), Value::Nil)
+    } else {
+        let frame = act
+            .frame
+            .as_ref()
+            .expect("function without a frame uses one");
+        let old = frame.get(a, b);
+        frame.set(a, b, Value::Nil);
+        old
+    };
+    match rt.invoke_owned(mid, old, args, Vec::new()) {
+        Ok(v) => {
+            if loc_kind == 0 {
+                *regs.add(a as usize) = v.clone();
+            } else {
+                let frame = act
+                    .frame
+                    .as_ref()
+                    .expect("function without a frame uses one");
+                frame.set(a, b, v.clone());
+            }
+            *regs.add(dst as usize) = v;
+            STATUS_OK
+        }
+        Err((flow, old)) => {
+            if loc_kind == 0 {
+                *regs.add(a as usize) = old;
+            } else {
+                let frame = act
+                    .frame
+                    .as_ref()
+                    .expect("function without a frame uses one");
+                frame.set(a, b, old);
+            }
+            rt.park_flow(flow)
+        }
+    }
+}
+
+/// `yield(args)`: call the enclosing method's block.
+///
+/// # Safety
+/// As for `qz_call_static`.
+#[no_mangle]
+pub unsafe extern "C" fn qz_yield(
+    rt: *const Interp,
+    act: *const Activation,
+    regs: *mut Value,
+    arg_regs: *const u32,
+    nargs: u32,
+    dst: u32,
+) -> u32 {
+    let rt = &*rt;
+    let act = &*act;
+    let Some(block) = &act.block else {
+        return rt.park_flow(rt.raise(rt.exc.runtime_error, "no block given (yield)"));
+    };
+    let mut args: crate::interp::ArgVec = crate::interp::ArgVec::with_capacity(nargs as usize);
+    for i in 0..nargs as usize {
+        let r = *arg_regs.add(i);
+        args.push((*regs.add(r as usize)).clone());
+    }
+    match rt.call_block(block, args) {
         Ok(v) => {
             *regs.add(dst as usize) = v;
             STATUS_OK
@@ -341,6 +472,26 @@ pub unsafe extern "C" fn qz_construct(
         args.push((*regs.add(r as usize)).clone());
     }
     let init = if init == u32::MAX { None } else { Some(init) };
+    // A data type given all its fields: no initializer to run.
+    if let Some(i) = init {
+        let info = &rt.world.classes[class as usize];
+        if rt.world.methods[i as usize].synth == quarz_ir::RtSynth::DataInit
+            && args.len() == info.fields.len()
+            && matches!(
+                info.kind,
+                quarz_ir::RtClassKind::Data | quarz_ir::RtClassKind::Variant
+            )
+        {
+            let obj = Value::Object(Rc::new(crate::value::Object {
+                class,
+                fields: std::cell::RefCell::new(args.into_iter().collect()),
+                backtrace: std::cell::RefCell::new(None),
+                cause: std::cell::RefCell::new(None),
+            }));
+            *regs.add(dst as usize) = obj;
+            return STATUS_OK;
+        }
+    }
     match rt.construct(class, init, args, Vec::new(), None) {
         Ok(v) => {
             *regs.add(dst as usize) = v;

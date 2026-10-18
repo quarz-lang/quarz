@@ -1,4 +1,4 @@
-data Vec2(x: Float, y: Float) do
+data Vec2(x: Float, y: Float) is
   def +(o: Vec2) -> Vec2 = Vec2.new(x + o.x, y + o.y)
   def scale(k: Float) -> Vec2 = Vec2.new(x * k, y * k)
 end
