@@ -169,6 +169,11 @@ fn assignment_targets() {
     assert_eq!(sexp("a.b = 1"), "(= (attr (call _ a) .b) 1)");
     assert_eq!(sexp("a[1] = 2"), "(= (index (call _ a) 1) 2)");
     assert_eq!(sexp("a[1] += 2"), "(+= (index (call _ a) 1) 2)");
+    assert_eq!(sexp("a[1]?"), "(call (call _ a) []? 1)");
+    assert_eq!(
+        sexp("def []?(i: Int) -> Int? = nil"),
+        "(def []? (params i:Int) -> Int? nil)"
+    );
     assert_eq!(sexp("@x ||= 1"), "(||= @x 1)");
     assert_eq!(sexp("Foo = 1"), "(const Foo 1)");
     assert_eq!(

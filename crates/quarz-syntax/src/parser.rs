@@ -694,7 +694,10 @@ impl<'src> Parser<'src> {
 
     fn lvalue_of(&self, expr: &Expr) -> Option<LValue> {
         match &expr.kind {
-            ExprKind::Local(name) => Some(LValue::Local(name.clone())),
+            ExprKind::Local(name) => Some(LValue::Local {
+                name: name.clone(),
+                span: expr.span,
+            }),
             ExprKind::IVar(name) => Some(LValue::IVar(name.clone())),
             ExprKind::Const(path) if path.names.len() == 1 && !path.absolute => {
                 Some(LValue::Const(path.names[0].clone()))
@@ -705,7 +708,10 @@ impl<'src> Parser<'src> {
                 }
                 match (&call.recv, call.name.as_str()) {
                     (None, name) if call.args.is_empty() && !call.has_parens => {
-                        Some(LValue::Local(name.to_string()))
+                        Some(LValue::Local {
+                            name: name.to_string(),
+                            span: expr.span,
+                        })
                     }
                     (Some(recv), "[]") => Some(LValue::Index {
                         recv: recv.clone(),
@@ -726,7 +732,7 @@ impl<'src> Parser<'src> {
     }
 
     fn declare_lvalue(&mut self, lv: &LValue) {
-        if let LValue::Local(name) = lv {
+        if let LValue::Local { name, .. } = lv {
             self.declare(name);
         }
     }
@@ -821,7 +827,7 @@ impl<'src> Parser<'src> {
                 let Some(target) = self.lvalue_of(&lhs) else {
                     return Err(self.error_at("cannot assign to this expression", lhs.span));
                 };
-                if let LValue::Local(name) = &target {
+                if let LValue::Local { name, .. } = &target {
                     if !self.is_local(name) {
                         self.error_at(format!("undefined local variable `{name}`"), lhs.span);
                     }
@@ -1174,9 +1180,16 @@ impl<'src> Parser<'src> {
                     let args = self.parse_call_args_until(&T::RBracket)?;
                     self.no_do = saved;
                     self.expect(&T::RBracket, "`]`")?;
+                    // `xs[i]?` calls `[]?`.
+                    let name = if self.at(&T::Question) && !self.peek().space_before {
+                        self.bump();
+                        "[]?"
+                    } else {
+                        "[]"
+                    };
                     let span = self.span_from(start);
                     expr =
-                        self.call_node(span, Some(expr), "[]".to_string(), args, None, false, true);
+                        self.call_node(span, Some(expr), name.to_string(), args, None, false, true);
                 }
                 _ => break,
             }
@@ -3146,6 +3159,10 @@ impl<'src> Parser<'src> {
                 if self.at(&T::Assign) && !self.peek().space_before {
                     self.bump();
                     return Ok("[]=".to_string());
+                }
+                if self.at(&T::Question) && !self.peek().space_before {
+                    self.bump();
+                    return Ok("[]?".to_string());
                 }
                 return Ok("[]".to_string());
             }

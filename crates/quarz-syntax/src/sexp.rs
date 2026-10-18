@@ -170,7 +170,7 @@ fn type_params(out: &mut String, tps: &[TypeParam]) {
 
 fn lvalue(out: &mut String, lv: &LValue) {
     match lv {
-        LValue::Local(n) => out.push_str(n),
+        LValue::Local { name, .. } => out.push_str(name),
         LValue::IVar(n) => {
             let _ = write!(out, "@{n}");
         }

@@ -132,6 +132,10 @@ pub struct Lexer<'src> {
     /// in which case an adjacent `:` is a plain colon rather than the start
     /// of a symbol.
     prev_label_ok: bool,
+    /// Tracks `def` / `def self.` so that the following token is lexed as a
+    /// method name (`def /`, `def %`, `def <<`): 3 after `def`, 2 after
+    /// `def self`, 1 after `def self.`, 0 otherwise.
+    fname_state: u8,
     /// After lexing a heredoc body, the position just past its terminator;
     /// the newline that ends the tag's line jumps there.
     after_heredoc: Option<usize>,
@@ -217,6 +221,7 @@ impl<'src> Lexer<'src> {
             prev_value: false,
             prev_ident: None,
             prev_label_ok: false,
+            fname_state: 0,
             after_heredoc: None,
             next_heredoc_body: None,
             locals: LocalTable::default(),
@@ -265,7 +270,18 @@ impl<'src> Lexer<'src> {
                 | TokenKind::Keyword(_)
                 | TokenKind::StringEnd { .. }
         );
+        self.fname_state = match (&tok.kind, self.fname_state) {
+            (TokenKind::Keyword(Keyword::Def), _) => 3,
+            (TokenKind::Keyword(Keyword::SelfKw), 3) => 2,
+            (TokenKind::Dot, 2) => 1,
+            _ => 0,
+        };
         tok
+    }
+
+    /// Whether the next token is in method-name position (`def` here).
+    fn in_fname_position(&self) -> bool {
+        matches!(self.fname_state, 3 | 1)
     }
 
     // ----- helpers ---------------------------------------------------------
@@ -320,6 +336,9 @@ impl<'src> Lexer<'src> {
     /// `space_before` is whether whitespace precedes it; `op_len` is the
     /// length of the operator form.
     fn literal_allowed(&mut self, space_before: bool, op_len: usize) -> bool {
+        if self.in_fname_position() {
+            return false;
+        }
         if !self.prev_value {
             return true;
         }

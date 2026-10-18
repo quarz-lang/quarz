@@ -12,3 +12,10 @@ dependencies = [
 [[package]]
 name = "quarz-syntax"
 version = "0.0.1"
+
+[[package]]
+name = "quarz-types"
+version = "0.0.1"
+dependencies = [
+ "quarz-syntax",
+]

@@ -294,7 +294,10 @@ pub struct Block {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum LValue {
-    Local(String),
+    Local {
+        name: String,
+        span: Span,
+    },
     IVar(String),
     Const(String),
     /// `recv.name = value` → `recv.name=(value)`

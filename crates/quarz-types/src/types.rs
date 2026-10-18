@@ -1,0 +1,159 @@
+//! The representation of types.
+
+use std::collections::HashMap;
+
+pub type ClassId = u32;
+pub type MethodId = u32;
+pub type TypeParamId = u32;
+pub type InferVar = u32;
+pub type ConstId = u32;
+pub type ExtensionId = u32;
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum Type {
+    /// The bottom type: `raise`, `return`, an empty loop.
+    Nothing,
+    /// An instance of a class, module, data, enum or enum variant, with its
+    /// type arguments. Primitive types (`Int`, `Nil`, ...) are classes too.
+    Class(ClassId, Vec<Type>),
+    /// A class used as a value (`Point` in `Point.new`).
+    ClassObject(ClassId, Vec<Type>),
+    /// Normalized: flattened, deduplicated, at least two members, no
+    /// `Nothing`.
+    Union(Vec<Type>),
+    Tuple(Vec<Type>),
+    /// A block or lambda: `(A, B) -> R`.
+    Proc(Vec<Type>, Box<Type>),
+    /// A generic type parameter of the enclosing class or method.
+    Param(TypeParamId),
+    /// An inference variable, bound by unification during checking.
+    Var(InferVar),
+}
+
+impl Type {
+    pub fn class(id: ClassId) -> Type {
+        Type::Class(id, Vec::new())
+    }
+
+    pub fn is_nothing(&self) -> bool {
+        matches!(self, Type::Nothing)
+    }
+
+    /// Build a union, flattening nested unions, dropping `Nothing` and
+    /// duplicates. Subtype absorption is done by `World::simplify_union`.
+    pub fn union_of(members: Vec<Type>) -> Type {
+        let mut out: Vec<Type> = Vec::new();
+        fn push(out: &mut Vec<Type>, t: Type) {
+            match t {
+                Type::Nothing => {}
+                Type::Union(ms) => {
+                    for m in ms {
+                        push(out, m);
+                    }
+                }
+                t => {
+                    if !out.contains(&t) {
+                        out.push(t);
+                    }
+                }
+            }
+        }
+        for m in members {
+            push(&mut out, m);
+        }
+        match out.len() {
+            0 => Type::Nothing,
+            1 => out.pop().unwrap(),
+            _ => Type::Union(out),
+        }
+    }
+
+    /// The members of a union, or the type itself.
+    pub fn members(&self) -> Vec<Type> {
+        match self {
+            Type::Union(ms) => ms.clone(),
+            t => vec![t.clone()],
+        }
+    }
+
+    /// Substitute type parameters.
+    pub fn subst(&self, map: &HashMap<TypeParamId, Type>) -> Type {
+        if map.is_empty() {
+            return self.clone();
+        }
+        match self {
+            Type::Nothing => Type::Nothing,
+            Type::Class(id, args) => Type::Class(*id, args.iter().map(|a| a.subst(map)).collect()),
+            Type::ClassObject(id, args) => {
+                Type::ClassObject(*id, args.iter().map(|a| a.subst(map)).collect())
+            }
+            Type::Union(ms) => Type::union_of(ms.iter().map(|m| m.subst(map)).collect()),
+            Type::Tuple(ts) => Type::Tuple(ts.iter().map(|t| t.subst(map)).collect()),
+            Type::Proc(ps, r) => Type::Proc(
+                ps.iter().map(|p| p.subst(map)).collect(),
+                Box::new(r.subst(map)),
+            ),
+            Type::Param(id) => match map.get(id) {
+                Some(t) => t.clone(),
+                None => Type::Param(*id),
+            },
+            Type::Var(v) => Type::Var(*v),
+        }
+    }
+
+    pub fn has_vars(&self) -> bool {
+        match self {
+            Type::Var(_) => true,
+            Type::Nothing | Type::Param(_) => false,
+            Type::Class(_, args) | Type::ClassObject(_, args) => args.iter().any(Type::has_vars),
+            Type::Union(ms) | Type::Tuple(ms) => ms.iter().any(Type::has_vars),
+            Type::Proc(ps, r) => ps.iter().any(Type::has_vars) || r.has_vars(),
+        }
+    }
+
+    pub fn has_params(&self) -> bool {
+        match self {
+            Type::Param(_) => true,
+            Type::Nothing | Type::Var(_) => false,
+            Type::Class(_, args) | Type::ClassObject(_, args) => args.iter().any(Type::has_params),
+            Type::Union(ms) | Type::Tuple(ms) => ms.iter().any(Type::has_params),
+            Type::Proc(ps, r) => ps.iter().any(Type::has_params) || r.has_params(),
+        }
+    }
+
+    pub fn for_each_var(&self, f: &mut dyn FnMut(InferVar)) {
+        match self {
+            Type::Var(v) => f(*v),
+            Type::Nothing | Type::Param(_) => {}
+            Type::Class(_, args) | Type::ClassObject(_, args) => {
+                args.iter().for_each(|a| a.for_each_var(f))
+            }
+            Type::Union(ms) | Type::Tuple(ms) => ms.iter().for_each(|m| m.for_each_var(f)),
+            Type::Proc(ps, r) => {
+                ps.iter().for_each(|p| p.for_each_var(f));
+                r.for_each_var(f);
+            }
+        }
+    }
+
+    /// `T?` → `T` (remove `Nil` from a union), given the id of `Nil`.
+    pub fn without_nil(&self, nil: ClassId) -> Type {
+        match self {
+            Type::Union(ms) => Type::union_of(
+                ms.iter()
+                    .filter(|m| !matches!(m, Type::Class(id, _) if *id == nil))
+                    .cloned()
+                    .collect(),
+            ),
+            Type::Class(id, _) if *id == nil => Type::Nothing,
+            t => t.clone(),
+        }
+    }
+
+    pub fn class_id(&self) -> Option<ClassId> {
+        match self {
+            Type::Class(id, _) => Some(*id),
+            _ => None,
+        }
+    }
+}

@@ -1,0 +1,926 @@
+//! Classes, modules, methods and constants, plus subtyping and method lookup.
+
+use std::collections::HashMap;
+use std::rc::Rc;
+
+use quarz_syntax::ast::{Expr, MethodDef, ParamKind, TypeExpr, Variance, Visibility};
+use quarz_syntax::Span;
+
+use crate::types::*;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClassKind {
+    Class,
+    Module,
+    Data,
+    Enum,
+    /// An enum variant: a data-like class whose superclass is the enum.
+    Variant,
+    /// The pseudo-class holding a file's top-level methods.
+    Main,
+}
+
+#[derive(Clone, Debug)]
+pub struct TypeParamInfo {
+    pub id: TypeParamId,
+    pub name: String,
+    pub variance: Variance,
+    pub bounds: Vec<Type>,
+}
+
+#[derive(Clone, Debug)]
+pub struct FieldInfo {
+    pub name: String,
+    pub ty: Type,
+    pub mutable: bool,
+    pub default: Option<Rc<Expr>>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub struct ParamInfo {
+    pub name: String,
+    pub kind: ParamKind,
+    pub ty: Type,
+    pub default: Option<Rc<Expr>>,
+    /// `def initialize(@x: Int)`
+    pub assigns_ivar: bool,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub enum RetType {
+    Known(Type),
+    /// To be inferred from the body on first use.
+    Infer,
+    /// Currently being inferred (a call while in this state is a recursion
+    /// without an annotation).
+    Inferring,
+}
+
+#[derive(Clone, Debug)]
+pub struct MethodInfo {
+    pub id: MethodId,
+    pub name: String,
+    pub owner: ClassId,
+    pub singleton: bool,
+    pub type_params: Vec<TypeParamInfo>,
+    pub params: Vec<ParamInfo>,
+    /// The `&block` parameter: its name and proc type.
+    pub block: Option<(String, Type)>,
+    pub ret: RetType,
+    pub body: Option<Rc<MethodDef>>,
+    pub is_abstract: bool,
+    pub is_native: bool,
+    pub is_override: bool,
+    pub visibility: Visibility,
+    pub span: Span,
+    /// The extension the method was declared in, if any.
+    pub extension: Option<ExtensionId>,
+    /// Number of local variable slots the body needs (set by the checker).
+    pub frame_size: u32,
+    /// Whether the body has been checked.
+    pub checked: bool,
+}
+
+impl MethodInfo {
+    /// The key under which the runtime registers a native implementation:
+    /// `Int#+` for instance methods, `Int.parse` for singleton methods.
+    pub fn native_key(&self, world: &World) -> String {
+        let owner = &world.classes[self.owner as usize].name;
+        let sep = if self.singleton { "." } else { "#" };
+        format!("{owner}{sep}{}", self.name)
+    }
+
+    pub fn positional_arity(&self) -> (usize, usize) {
+        let mut min = 0;
+        let mut max = 0;
+        for p in &self.params {
+            match p.kind {
+                ParamKind::Positional => {
+                    max += 1;
+                    if p.default.is_none() {
+                        min += 1;
+                    }
+                }
+                ParamKind::Rest => max = usize::MAX,
+                _ => {}
+            }
+        }
+        (min, max)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ConstInfo {
+    pub id: ConstId,
+    pub name: String,
+    pub owner: Option<ClassId>,
+    pub ty: Option<Type>,
+    pub value: Option<Rc<Expr>>,
+    pub span: Span,
+    /// Set while the initializer is being checked.
+    pub checking: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct TypeAliasInfo {
+    pub name: String,
+    pub owner: Option<ClassId>,
+    pub type_params: Vec<TypeParamInfo>,
+    pub expr: TypeExpr,
+    pub resolved: Option<Type>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ExtensionInfo {
+    pub id: ExtensionId,
+    /// The module the extension is declared in (activated by `using`).
+    pub module: Option<ClassId>,
+    pub target: ClassId,
+    pub type_params: Vec<TypeParamInfo>,
+    /// The target's type arguments in terms of `type_params`.
+    pub target_args: Vec<Type>,
+    pub includes: Vec<Type>,
+    pub methods: HashMap<String, Vec<MethodId>>,
+    pub span: Span,
+    /// Prelude extensions are active everywhere.
+    pub always_active: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Member {
+    Class(ClassId),
+    Const(ConstId),
+    Alias(u32),
+}
+
+#[derive(Clone, Debug)]
+pub struct ClassInfo {
+    pub id: ClassId,
+    /// Qualified name, e.g. `Shape::Circle`.
+    pub name: String,
+    pub kind: ClassKind,
+    pub type_params: Vec<TypeParamInfo>,
+    pub superclass: Option<Type>,
+    pub includes: Vec<Type>,
+    pub extends: Vec<Type>,
+    pub fields: Vec<FieldInfo>,
+    pub methods: HashMap<String, Vec<MethodId>>,
+    pub singleton_methods: HashMap<String, Vec<MethodId>>,
+    /// Nested classes, constants and type aliases.
+    pub members: HashMap<String, Member>,
+    /// The lexically enclosing namespace.
+    pub parent: Option<ClassId>,
+    pub is_abstract: bool,
+    pub variants: Vec<ClassId>,
+    pub variant_of: Option<ClassId>,
+    pub extensions: Vec<ExtensionId>,
+    pub span: Span,
+    pub shareable: Option<bool>,
+    /// Whether `initialize` is generated (data, variants).
+    pub auto_initialize: bool,
+}
+
+impl ClassInfo {
+    pub fn short_name(&self) -> &str {
+        self.name.rsplit("::").next().unwrap_or(&self.name)
+    }
+}
+
+/// Ids of the classes the checker needs to know by name.
+#[derive(Clone, Debug, Default)]
+pub struct Builtin {
+    pub object: ClassId,
+    pub nil: ClassId,
+    pub bool_: ClassId,
+    pub int: ClassId,
+    pub float: ClassId,
+    pub string: ClassId,
+    pub symbol: ClassId,
+    pub array: ClassId,
+    pub hash: ClassId,
+    pub set: ClassId,
+    pub range: ClassId,
+    pub regexp: ClassId,
+    pub proc_: ClassId,
+    pub kernel: ClassId,
+    pub exception: ClassId,
+    pub standard_error: ClassId,
+    pub comparable: ClassId,
+    pub enumerable: ClassId,
+    pub class_: ClassId,
+    pub shareable: ClassId,
+    pub task: ClassId,
+    pub channel: ClassId,
+    pub atom: ClassId,
+    pub scope: ClassId,
+    pub duration: ClassId,
+    pub array_builder: ClassId,
+    pub hash_builder: ClassId,
+    pub string_builder: ClassId,
+    pub set_builder: ClassId,
+    pub match_data: ClassId,
+}
+
+#[derive(Debug, Default)]
+pub struct World {
+    pub classes: Vec<ClassInfo>,
+    pub methods: Vec<MethodInfo>,
+    pub consts: Vec<ConstInfo>,
+    pub aliases: Vec<TypeAliasInfo>,
+    pub extensions: Vec<ExtensionInfo>,
+    pub top: HashMap<String, Member>,
+    pub builtin: Builtin,
+    /// Extensions activated by `using` in the current lexical scope.
+    pub active_extensions: Vec<ExtensionId>,
+    next_type_param: TypeParamId,
+    pub type_param_names: HashMap<TypeParamId, String>,
+}
+
+impl World {
+    pub fn new() -> World {
+        World::default()
+    }
+
+    pub fn class(&self, id: ClassId) -> &ClassInfo {
+        &self.classes[id as usize]
+    }
+
+    pub fn class_mut(&mut self, id: ClassId) -> &mut ClassInfo {
+        &mut self.classes[id as usize]
+    }
+
+    pub fn method(&self, id: MethodId) -> &MethodInfo {
+        &self.methods[id as usize]
+    }
+
+    pub fn method_mut(&mut self, id: MethodId) -> &mut MethodInfo {
+        &mut self.methods[id as usize]
+    }
+
+    pub fn add_class(&mut self, mut info: ClassInfo) -> ClassId {
+        let id = self.classes.len() as ClassId;
+        info.id = id;
+        self.classes.push(info);
+        id
+    }
+
+    pub fn add_method(&mut self, mut info: MethodInfo) -> MethodId {
+        let id = self.methods.len() as MethodId;
+        info.id = id;
+        let owner = info.owner;
+        let singleton = info.singleton;
+        let name = info.name.clone();
+        let ext = info.extension;
+        self.methods.push(info);
+        match ext {
+            Some(ext) => {
+                self.extensions[ext as usize]
+                    .methods
+                    .entry(name)
+                    .or_default()
+                    .push(id);
+            }
+            None => {
+                let class = &mut self.classes[owner as usize];
+                let table = if singleton {
+                    &mut class.singleton_methods
+                } else {
+                    &mut class.methods
+                };
+                table.entry(name).or_default().push(id);
+            }
+        }
+        id
+    }
+
+    pub fn new_type_param(&mut self, name: &str, variance: Variance) -> TypeParamInfo {
+        let id = self.next_type_param;
+        self.next_type_param += 1;
+        self.type_param_names.insert(id, name.to_string());
+        TypeParamInfo {
+            id,
+            name: name.to_string(),
+            variance,
+            bounds: Vec::new(),
+        }
+    }
+
+    pub fn blank_class(
+        name: String,
+        kind: ClassKind,
+        parent: Option<ClassId>,
+        span: Span,
+    ) -> ClassInfo {
+        ClassInfo {
+            id: 0,
+            name,
+            kind,
+            type_params: Vec::new(),
+            superclass: None,
+            includes: Vec::new(),
+            extends: Vec::new(),
+            fields: Vec::new(),
+            methods: HashMap::new(),
+            singleton_methods: HashMap::new(),
+            members: HashMap::new(),
+            parent,
+            is_abstract: false,
+            variants: Vec::new(),
+            variant_of: None,
+            extensions: Vec::new(),
+            span,
+            shareable: None,
+            auto_initialize: false,
+        }
+    }
+
+    // ----- convenience types --------------------------------------------
+
+    pub fn nil(&self) -> Type {
+        Type::class(self.builtin.nil)
+    }
+
+    pub fn bool_(&self) -> Type {
+        Type::class(self.builtin.bool_)
+    }
+
+    pub fn int(&self) -> Type {
+        Type::class(self.builtin.int)
+    }
+
+    pub fn float(&self) -> Type {
+        Type::class(self.builtin.float)
+    }
+
+    pub fn string(&self) -> Type {
+        Type::class(self.builtin.string)
+    }
+
+    pub fn symbol(&self) -> Type {
+        Type::class(self.builtin.symbol)
+    }
+
+    pub fn object(&self) -> Type {
+        Type::class(self.builtin.object)
+    }
+
+    pub fn array_of(&self, t: Type) -> Type {
+        Type::Class(self.builtin.array, vec![t])
+    }
+
+    pub fn hash_of(&self, k: Type, v: Type) -> Type {
+        Type::Class(self.builtin.hash, vec![k, v])
+    }
+
+    pub fn nilable(&self, t: Type) -> Type {
+        Type::union_of(vec![t, self.nil()])
+    }
+
+    pub fn is_nil_type(&self, t: &Type) -> bool {
+        matches!(t, Type::Class(id, _) if *id == self.builtin.nil)
+    }
+
+    pub fn is_object(&self, t: &Type) -> bool {
+        matches!(t, Type::Class(id, _) if *id == self.builtin.object)
+    }
+
+    // ----- names -----------------------------------------------------------
+
+    pub fn type_name(&self, t: &Type) -> String {
+        match t {
+            Type::Nothing => "Nothing".to_string(),
+            Type::Class(id, args) => {
+                let name = &self.class(*id).name;
+                if args.is_empty() {
+                    name.clone()
+                } else {
+                    format!(
+                        "{name}[{}]",
+                        args.iter()
+                            .map(|a| self.type_name(a))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                }
+            }
+            Type::ClassObject(id, args) => {
+                format!("Class[{}]", self.type_name(&Type::Class(*id, args.clone())))
+            }
+            Type::Union(ms) => {
+                if ms.len() == 2 && self.is_nil_type(&ms[1]) {
+                    return format!("{}?", self.type_name(&ms[0]));
+                }
+                if ms.len() == 2 && self.is_nil_type(&ms[0]) {
+                    return format!("{}?", self.type_name(&ms[1]));
+                }
+                ms.iter()
+                    .map(|m| self.type_name(m))
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            }
+            Type::Tuple(ts) => format!(
+                "[{}]",
+                ts.iter()
+                    .map(|t| self.type_name(t))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            Type::Proc(ps, r) => format!(
+                "({}) -> {}",
+                ps.iter()
+                    .map(|t| self.type_name(t))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                self.type_name(r)
+            ),
+            Type::Param(id) => self
+                .type_param_names
+                .get(id)
+                .cloned()
+                .unwrap_or_else(|| format!("T{id}")),
+            Type::Var(v) => format!("?{v}"),
+        }
+    }
+
+    // ----- hierarchy ----------------------------------------------------------
+
+    /// Substitution map for a class's own type parameters.
+    pub fn class_subst(&self, id: ClassId, args: &[Type]) -> HashMap<TypeParamId, Type> {
+        let class = self.class(id);
+        class
+            .type_params
+            .iter()
+            .zip(args.iter().cloned())
+            .map(|(p, a)| (p.id, a))
+            .collect()
+    }
+
+    /// Whether `sub_id` is `sup_id` or inherits from / includes it
+    /// (nominally, ignoring type arguments).
+    pub fn class_is_a(&self, sub_id: ClassId, sup_id: ClassId) -> bool {
+        if sub_id == sup_id || sup_id == self.builtin.object {
+            return true;
+        }
+        self.ancestors(sub_id, &[])
+            .iter()
+            .any(|(id, _)| *id == sup_id)
+    }
+
+    /// The method resolution order: the class itself, its included modules
+    /// (last included first), then the superclass chain, each with the type
+    /// arguments expressed in terms of the given `args`. Retroactive
+    /// conformance from active extensions is included.
+    pub fn ancestors(&self, id: ClassId, args: &[Type]) -> Vec<(ClassId, Vec<Type>)> {
+        let mut out = Vec::new();
+        self.collect_ancestors(id, args, &mut out);
+        out
+    }
+
+    fn collect_ancestors(&self, id: ClassId, args: &[Type], out: &mut Vec<(ClassId, Vec<Type>)>) {
+        if out.iter().any(|(i, _)| *i == id) {
+            return;
+        }
+        out.push((id, args.to_vec()));
+        let class = self.class(id);
+        let subst = self.class_subst(id, args);
+        for inc in class.includes.iter().rev() {
+            if let Type::Class(mid, margs) = inc.subst(&subst) {
+                self.collect_ancestors(mid, &margs, out);
+            }
+        }
+        for ext_id in self.active_extension_ids() {
+            let ext = &self.extensions[ext_id as usize];
+            if ext.target != id {
+                continue;
+            }
+            let esubst = self.extension_subst(ext, args);
+            for inc in &ext.includes {
+                if let Type::Class(mid, margs) = inc.subst(&esubst) {
+                    self.collect_ancestors(mid, &margs, out);
+                }
+            }
+        }
+        if let Some(sup) = &class.superclass {
+            if let Type::Class(sid, sargs) = sup.subst(&subst) {
+                self.collect_ancestors(sid, &sargs, out);
+            }
+        } else if id != self.builtin.object && class.kind != ClassKind::Module {
+            self.collect_ancestors(self.builtin.object, &[], out);
+        }
+    }
+
+    pub fn active_extension_ids(&self) -> Vec<ExtensionId> {
+        let mut ids: Vec<ExtensionId> = self
+            .extensions
+            .iter()
+            .filter(|e| e.always_active)
+            .map(|e| e.id)
+            .collect();
+        for id in &self.active_extensions {
+            if !ids.contains(id) {
+                ids.push(*id);
+            }
+        }
+        ids
+    }
+
+    /// Map an extension's type parameters to the receiver's type arguments
+    /// (`extension Array[T: X]` applied to `Array[Int]` gives `T := Int`).
+    pub fn extension_subst(
+        &self,
+        ext: &ExtensionInfo,
+        args: &[Type],
+    ) -> HashMap<TypeParamId, Type> {
+        let mut map = HashMap::new();
+        for (targ, arg) in ext.target_args.iter().zip(args.iter()) {
+            if let Type::Param(pid) = targ {
+                map.insert(*pid, arg.clone());
+            }
+        }
+        map
+    }
+
+    /// Superclass chain for singleton method lookup (class methods are
+    /// inherited; modules do not inherit).
+    pub fn superclass_chain(&self, id: ClassId) -> Vec<ClassId> {
+        let mut out = vec![id];
+        let mut cur = id;
+        while let Some(Type::Class(sid, _)) = &self.class(cur).superclass {
+            if out.contains(sid) {
+                break;
+            }
+            out.push(*sid);
+            cur = *sid;
+        }
+        out
+    }
+
+    /// Fields of a class including inherited ones, superclass fields first.
+    pub fn all_fields(&self, id: ClassId) -> Vec<(FieldInfo, HashMap<TypeParamId, Type>)> {
+        let mut chain = self.superclass_chain(id);
+        chain.reverse();
+        let mut out = Vec::new();
+        let mut subst: HashMap<TypeParamId, Type> = HashMap::new();
+        // Walk from the root down, composing substitutions.
+        let mut substs: Vec<HashMap<TypeParamId, Type>> = Vec::new();
+        {
+            // Compute, for each class in the chain (from `id` upward), the
+            // substitution of its params in terms of `id`'s params.
+            let mut cur = id;
+            let mut cur_subst: HashMap<TypeParamId, Type> = HashMap::new();
+            let mut per_class = vec![(cur, cur_subst.clone())];
+            while let Some(sup) = &self.class(cur).superclass {
+                if let Type::Class(sid, sargs) = sup.subst(&cur_subst) {
+                    cur_subst = self.class_subst(sid, &sargs);
+                    per_class.push((sid, cur_subst.clone()));
+                    cur = sid;
+                } else {
+                    break;
+                }
+            }
+            per_class.reverse();
+            for (_, s) in per_class {
+                substs.push(s);
+            }
+        }
+        for (i, cid) in chain.iter().enumerate() {
+            if let Some(s) = substs.get(i) {
+                subst = s.clone();
+            }
+            for f in &self.class(*cid).fields {
+                out.push((f.clone(), subst.clone()));
+            }
+        }
+        out
+    }
+
+    pub fn field_index(&self, id: ClassId, name: &str) -> Option<usize> {
+        self.all_fields(id).iter().position(|(f, _)| f.name == name)
+    }
+
+    pub fn find_field(
+        &self,
+        id: ClassId,
+        name: &str,
+    ) -> Option<(FieldInfo, HashMap<TypeParamId, Type>)> {
+        self.all_fields(id)
+            .into_iter()
+            .find(|(f, _)| f.name == name)
+    }
+
+    // ----- subtyping ---------------------------------------------------------
+
+    /// `sub <: sup` for types without unresolved inference variables (a
+    /// `Var` is only a subtype of itself).
+    pub fn is_subtype(&self, sub: &Type, sup: &Type) -> bool {
+        if sub == sup || sub.is_nothing() {
+            return true;
+        }
+        if self.is_object(sup) {
+            return true;
+        }
+        match (sub, sup) {
+            (Type::Union(ms), _) => ms.iter().all(|m| self.is_subtype(m, sup)),
+            (_, Type::Union(ms)) => ms.iter().any(|m| self.is_subtype(sub, m)),
+            (Type::Class(a, aargs), Type::Class(b, bargs)) => {
+                for (anc, anc_args) in self.ancestors(*a, aargs) {
+                    if anc == *b {
+                        return self.args_compatible(*b, &anc_args, bargs);
+                    }
+                }
+                false
+            }
+            (Type::ClassObject(a, _), Type::ClassObject(b, _)) => self.class_is_a(*a, *b),
+            (Type::ClassObject(_, _), Type::Class(b, _)) => *b == self.builtin.class_,
+            (Type::Tuple(xs), Type::Tuple(ys)) => {
+                xs.len() == ys.len() && xs.iter().zip(ys).all(|(x, y)| self.is_subtype(x, y))
+            }
+            (Type::Tuple(xs), Type::Class(b, bargs)) if *b == self.builtin.array => {
+                let elem = Type::union_of(xs.clone());
+                bargs.len() == 1 && self.is_subtype(&elem, &bargs[0])
+            }
+            (Type::Tuple(_), Type::Class(b, _)) => self.class_is_a(self.builtin.array, *b),
+            (Type::Proc(ps, r), Type::Proc(qs, s)) => {
+                ps.len() == qs.len()
+                    && ps.iter().zip(qs).all(|(p, q)| self.is_subtype(q, p))
+                    && self.is_subtype(r, s)
+            }
+            (Type::Proc(_, _), Type::Class(b, _)) => *b == self.builtin.proc_,
+            (Type::Param(p), _) => {
+                let bounds = self.param_bounds(*p);
+                bounds.iter().any(|b| self.is_subtype(b, sup))
+            }
+            _ => false,
+        }
+    }
+
+    fn param_bounds(&self, id: TypeParamId) -> Vec<Type> {
+        for c in &self.classes {
+            for p in &c.type_params {
+                if p.id == id {
+                    return p.bounds.clone();
+                }
+            }
+        }
+        for m in &self.methods {
+            for p in &m.type_params {
+                if p.id == id {
+                    return p.bounds.clone();
+                }
+            }
+        }
+        for e in &self.extensions {
+            for p in &e.type_params {
+                if p.id == id {
+                    return p.bounds.clone();
+                }
+            }
+        }
+        Vec::new()
+    }
+
+    fn args_compatible(&self, class: ClassId, sub_args: &[Type], sup_args: &[Type]) -> bool {
+        if sub_args.len() != sup_args.len() {
+            return sub_args.is_empty() || sup_args.is_empty();
+        }
+        let params = &self.class(class).type_params;
+        sub_args
+            .iter()
+            .zip(sup_args)
+            .enumerate()
+            .all(|(i, (a, b))| match params.get(i).map(|p| p.variance) {
+                Some(Variance::Covariant) => self.is_subtype(a, b),
+                Some(Variance::Contravariant) => self.is_subtype(b, a),
+                _ => a == b || (self.is_subtype(a, b) && self.is_subtype(b, a)),
+            })
+    }
+
+    /// Least upper bound used for joining branches: absorbs subtypes into
+    /// supertypes, otherwise forms a union.
+    pub fn join(&self, a: &Type, b: &Type) -> Type {
+        if a.is_nothing() {
+            return b.clone();
+        }
+        if b.is_nothing() {
+            return a.clone();
+        }
+        if self.is_subtype(a, b) {
+            return b.clone();
+        }
+        if self.is_subtype(b, a) {
+            return a.clone();
+        }
+        self.simplify_union(Type::union_of(vec![a.clone(), b.clone()]))
+    }
+
+    /// Remove union members subsumed by other members.
+    pub fn simplify_union(&self, t: Type) -> Type {
+        let Type::Union(ms) = t else { return t };
+        let mut kept: Vec<Type> = Vec::new();
+        for m in &ms {
+            if ms
+                .iter()
+                .any(|o| o != m && self.is_subtype(m, o) && !self.is_subtype(o, m))
+            {
+                continue;
+            }
+            if !kept.contains(m) {
+                kept.push(m.clone());
+            }
+        }
+        Type::union_of(kept)
+    }
+
+    // ----- method lookup --------------------------------------------------------
+
+    /// Candidate methods for `recv.name`, in resolution order, each with the
+    /// substitution of the owner's (or extension's) type parameters.
+    pub fn lookup_methods(
+        &self,
+        recv: &Type,
+        name: &str,
+    ) -> Vec<(MethodId, HashMap<TypeParamId, Type>)> {
+        let mut out = Vec::new();
+        match recv {
+            Type::Class(id, args) => self.lookup_instance_methods(*id, args, name, &mut out),
+            Type::ClassObject(id, args) => {
+                for cid in self.superclass_chain(*id) {
+                    let class = self.class(cid);
+                    let subst = if cid == *id {
+                        self.class_subst(cid, args)
+                    } else {
+                        HashMap::new()
+                    };
+                    if let Some(ids) = class.singleton_methods.get(name) {
+                        for m in ids {
+                            out.push((*m, subst.clone()));
+                        }
+                    }
+                    for ext in class.extends.iter() {
+                        if let Type::Class(mid, margs) = ext {
+                            let msubst = self.class_subst(*mid, margs);
+                            if let Some(ids) = self.class(*mid).methods.get(name) {
+                                for m in ids {
+                                    out.push((*m, msubst.clone()));
+                                }
+                            }
+                        }
+                    }
+                }
+                // Class objects are objects too.
+                self.lookup_instance_methods(self.builtin.class_, &[], name, &mut out);
+            }
+            Type::Tuple(ts) => {
+                let elem = Type::union_of(ts.clone());
+                self.lookup_instance_methods(self.builtin.array, &[elem], name, &mut out);
+            }
+            Type::Proc(_, _) => {
+                self.lookup_instance_methods(self.builtin.proc_, &[], name, &mut out);
+            }
+            Type::Param(p) => {
+                for b in self.param_bounds(*p) {
+                    if let Type::Class(bid, bargs) = &b {
+                        self.lookup_instance_methods(*bid, bargs, name, &mut out);
+                    }
+                }
+                self.lookup_instance_methods(self.builtin.object, &[], name, &mut out);
+            }
+            Type::Union(_) | Type::Nothing | Type::Var(_) => {}
+        }
+        out
+    }
+
+    fn lookup_instance_methods(
+        &self,
+        id: ClassId,
+        args: &[Type],
+        name: &str,
+        out: &mut Vec<(MethodId, HashMap<TypeParamId, Type>)>,
+    ) {
+        for (anc, anc_args) in self.ancestors(id, args) {
+            let subst = self.class_subst(anc, &anc_args);
+            // Extensions on this ancestor take precedence over its own
+            // methods (lexically scoped override).
+            for ext_id in self.active_extension_ids() {
+                let ext = &self.extensions[ext_id as usize];
+                if ext.target != anc {
+                    continue;
+                }
+                if let Some(ids) = ext.methods.get(name) {
+                    let esubst = self.extension_subst(ext, &anc_args);
+                    for m in ids {
+                        out.push((*m, esubst.clone()));
+                    }
+                }
+            }
+            if let Some(ids) = self.class(anc).methods.get(name) {
+                for m in ids {
+                    out.push((*m, subst.clone()));
+                }
+            }
+        }
+    }
+
+    /// Resolve a constant path relative to a namespace, walking outward.
+    pub fn resolve_member(&self, scope: Option<ClassId>, name: &str) -> Option<Member> {
+        let mut cur = scope;
+        while let Some(cid) = cur {
+            if let Some(m) = self.class(cid).members.get(name) {
+                return Some(*m);
+            }
+            // Members of ancestors (inherited constants).
+            for (anc, _) in self.ancestors(cid, &[]) {
+                if let Some(m) = self.class(anc).members.get(name) {
+                    return Some(*m);
+                }
+            }
+            cur = self.class(cid).parent;
+        }
+        self.top.get(name).copied()
+    }
+
+    pub fn member_in(&self, scope: Option<ClassId>, name: &str) -> Option<Member> {
+        match scope {
+            Some(cid) => self.class(cid).members.get(name).copied(),
+            None => self.top.get(name).copied(),
+        }
+    }
+
+    pub fn is_exception_class(&self, id: ClassId) -> bool {
+        self.class_is_a(id, self.builtin.exception)
+    }
+
+    pub fn is_enum_variant(&self, id: ClassId) -> bool {
+        self.class(id).kind == ClassKind::Variant
+    }
+
+    /// Whether values of the type may be shared between tasks.
+    pub fn is_shareable(&mut self, t: &Type) -> bool {
+        match t {
+            Type::Nothing => true,
+            Type::Class(id, args) => {
+                let id = *id;
+                if !self.class_shareable(id) {
+                    return false;
+                }
+                // Generic containers are shareable when their arguments are.
+                args.clone().iter().all(|a| self.is_shareable(a))
+            }
+            Type::ClassObject(_, _) => true,
+            Type::Union(ms) | Type::Tuple(ms) => ms.clone().iter().all(|m| self.is_shareable(m)),
+            Type::Proc(_, _) => false,
+            Type::Param(p) => {
+                let bounds = self.param_bounds(*p);
+                bounds
+                    .iter()
+                    .any(|b| matches!(b, Type::Class(id, _) if *id == self.builtin.shareable))
+            }
+            Type::Var(_) => true,
+        }
+    }
+
+    fn class_shareable(&mut self, id: ClassId) -> bool {
+        if let Some(s) = self.class(id).shareable {
+            return s;
+        }
+        // Provisionally true to handle recursive types.
+        self.class_mut(id).shareable = Some(true);
+        let class = self.class(id);
+        let mut result = true;
+        if class.kind == ClassKind::Module {
+            // A module type: shareable only if it is the Shareable marker
+            // itself or inherits it.
+            result = class
+                .includes
+                .iter()
+                .any(|i| matches!(i, Type::Class(cid, _) if *cid == self.builtin.shareable))
+                || id == self.builtin.shareable;
+        } else {
+            // Builtins declare `include Shareable` or not in the prelude;
+            // user classes are shareable when they have no mutable fields
+            // and all fields are shareable.
+            let explicit_unshareable = class.includes.iter().any(
+                |i| matches!(i, Type::Class(cid, _) if self.class(*cid).name == "Unshareable"),
+            );
+            if explicit_unshareable {
+                result = false;
+            } else {
+                let fields = self.all_fields(id);
+                for (f, _) in fields {
+                    if f.mutable {
+                        result = false;
+                        break;
+                    }
+                    if !self.is_shareable(&f.ty) {
+                        result = false;
+                        break;
+                    }
+                }
+            }
+        }
+        self.class_mut(id).shareable = Some(result);
+        result
+    }
+}
