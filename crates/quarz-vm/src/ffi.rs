@@ -84,14 +84,16 @@ pub unsafe extern "C" fn qz_exec(
 ) -> u32 {
     let rt = &*rt;
     let act = &*act;
-    let f = rt.func(fid);
-    let pool = rt.pools.borrow()[fid as usize].clone();
+    let funcs = rt.funcs.borrow();
+    let f = &funcs[fid as usize];
+    let pools = rt.pools.borrow();
+    let pool = &pools[fid as usize];
     let regs = std::slice::from_raw_parts_mut(regs, f.nregs as usize);
     let b = &f.blocks[block as usize];
     act.line.set(b.lines[inst as usize]);
     let inst = &b.insts[inst as usize];
     let mut pending = rt.pending_flow.borrow_mut().take();
-    match rt.exec_inst(&f, fid, &pool, act, regs, &mut pending, inst) {
+    match rt.exec_inst(f, fid, pool, act, regs, &mut pending, inst) {
         Ok(()) => {
             *rt.pending_flow.borrow_mut() = pending;
             STATUS_OK
@@ -134,6 +136,218 @@ pub unsafe extern "C" fn qz_term(
         )),
     };
     rt.park_flow(flow)
+}
+
+/// `regs[dst] = self`.
+///
+/// # Safety
+/// As for `qz_exec`.
+#[no_mangle]
+pub unsafe extern "C" fn qz_self(act: *const Activation, regs: *mut Value, dst: u32) {
+    let act = &*act;
+    *regs.add(dst as usize) = act.self_val.clone();
+}
+
+/// `regs[dst] = args[index]` (nil when absent).
+///
+/// # Safety
+/// As for `qz_exec`.
+#[no_mangle]
+pub unsafe extern "C" fn qz_arg(act: *const Activation, index: u32, regs: *mut Value, dst: u32) {
+    let act = &*act;
+    let v = act.args.get(index as usize).cloned().unwrap_or(Value::Nil);
+    *regs.add(dst as usize) = v;
+}
+
+/// `regs[dst] = the enclosing method's block` (nil when none).
+///
+/// # Safety
+/// As for `qz_exec`.
+#[no_mangle]
+pub unsafe extern "C" fn qz_block_param(act: *const Activation, regs: *mut Value, dst: u32) {
+    let act = &*act;
+    *regs.add(dst as usize) = act.block.clone().unwrap_or(Value::Nil);
+}
+
+/// `regs[dst] = frame[depth][slot]`.
+///
+/// # Safety
+/// As for `qz_exec`; the function must have a frame.
+#[no_mangle]
+pub unsafe extern "C" fn qz_frame_get(
+    act: *const Activation,
+    depth: u32,
+    slot: u32,
+    regs: *mut Value,
+    dst: u32,
+) {
+    let act = &*act;
+    let frame = act
+        .frame
+        .as_ref()
+        .expect("function without a frame uses one");
+    *regs.add(dst as usize) = frame.get(depth, slot);
+}
+
+/// `frame[depth][slot] = regs[src]`.
+///
+/// # Safety
+/// As for `qz_frame_get`.
+#[no_mangle]
+pub unsafe extern "C" fn qz_frame_set(
+    act: *const Activation,
+    depth: u32,
+    slot: u32,
+    regs: *mut Value,
+    src: u32,
+) {
+    let act = &*act;
+    let frame = act
+        .frame
+        .as_ref()
+        .expect("function without a frame uses one");
+    frame.set(depth, slot, (*regs.add(src as usize)).clone());
+}
+
+/// `regs[dst] = regs[obj].fields[index]`.
+///
+/// # Safety
+/// As for `qz_exec`.
+#[no_mangle]
+pub unsafe extern "C" fn qz_field_get(
+    rt: *const Interp,
+    regs: *mut Value,
+    obj: u32,
+    index: u32,
+    dst: u32,
+) -> u32 {
+    let rt = &*rt;
+    let v = match &*regs.add(obj as usize) {
+        Value::Object(o) => o
+            .fields
+            .borrow()
+            .get(index as usize)
+            .cloned()
+            .unwrap_or(Value::Nil),
+        _ => {
+            return rt.park_flow(rt.raise(
+                rt.exc.runtime_error,
+                "instance variable access outside of an object",
+            ))
+        }
+    };
+    *regs.add(dst as usize) = v;
+    STATUS_OK
+}
+
+/// `regs[obj].fields[index] = regs[src]`.
+///
+/// # Safety
+/// As for `qz_exec`.
+#[no_mangle]
+pub unsafe extern "C" fn qz_field_set(
+    rt: *const Interp,
+    regs: *mut Value,
+    obj: u32,
+    index: u32,
+    src: u32,
+) -> u32 {
+    let rt = &*rt;
+    let v = (*regs.add(src as usize)).clone();
+    match &*regs.add(obj as usize) {
+        Value::Object(o) => {
+            let mut fields = o.fields.borrow_mut();
+            let idx = index as usize;
+            if idx >= fields.len() {
+                fields.resize(idx + 1, Value::Nil);
+            }
+            fields[idx] = v;
+            STATUS_OK
+        }
+        _ => rt.park_flow(rt.raise(
+            rt.exc.runtime_error,
+            "instance variable access outside of an object",
+        )),
+    }
+}
+
+/// A statically resolved call of a method that nothing overrides: binds
+/// positional arguments directly (`nil` for missing defaults, which the
+/// body evaluates) and runs the body.
+///
+/// # Safety
+/// As for `qz_exec`; `arg_regs` must point to `nargs` register indices;
+/// `recv` is a register index or `u32::MAX` for `self`.
+#[no_mangle]
+pub unsafe extern "C" fn qz_call_static(
+    rt: *const Interp,
+    act: *const Activation,
+    fid: u32,
+    mid: u32,
+    regs: *mut Value,
+    recv: u32,
+    arg_regs: *const u32,
+    nargs: u32,
+    dst: u32,
+) -> u32 {
+    let rt = &*rt;
+    let act = &*act;
+    let recv = if recv == u32::MAX {
+        act.self_val.clone()
+    } else {
+        (*regs.add(recv as usize)).clone()
+    };
+    let nparams = rt.world.methods[mid as usize].params.len();
+    let mut args: crate::interp::ArgVec = crate::interp::ArgVec::with_capacity(nparams);
+    for i in 0..nargs as usize {
+        let r = *arg_regs.add(i);
+        args.push((*regs.add(r as usize)).clone());
+    }
+    while args.len() < nparams {
+        args.push(Value::Nil);
+    }
+    let provided = if nargs >= 64 {
+        u64::MAX
+    } else {
+        (1u64 << nargs) - 1
+    };
+    match rt.run_method(mid, fid, recv, args, provided, None) {
+        Ok(v) => {
+            *regs.add(dst as usize) = v;
+            STATUS_OK
+        }
+        Err(flow) => rt.park_flow(flow),
+    }
+}
+
+/// `Class.new(args)` with positional arguments only.
+///
+/// # Safety
+/// As for `qz_call_static`; `init` is a method id or `u32::MAX`.
+#[no_mangle]
+pub unsafe extern "C" fn qz_construct(
+    rt: *const Interp,
+    regs: *mut Value,
+    class: u32,
+    init: u32,
+    arg_regs: *const u32,
+    nargs: u32,
+    dst: u32,
+) -> u32 {
+    let rt = &*rt;
+    let mut args: crate::interp::ArgVec = crate::interp::ArgVec::with_capacity(nargs as usize);
+    for i in 0..nargs as usize {
+        let r = *arg_regs.add(i);
+        args.push((*regs.add(r as usize)).clone());
+    }
+    let init = if init == u32::MAX { None } else { Some(init) };
+    match rt.construct(class, init, args, Vec::new(), None) {
+        Ok(v) => {
+            *regs.add(dst as usize) = v;
+            STATUS_OK
+        }
+        Err(flow) => rt.park_flow(flow),
+    }
 }
 
 /// Initialize `n` registers to nil.

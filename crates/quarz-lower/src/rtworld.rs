@@ -88,6 +88,7 @@ pub fn build(world: &World, lw: &Lowerer, file_names: Vec<String>) -> RtWorld {
         .map(|m| {
             let owner = world.class(m.owner);
             let overloaded = owner.methods.get(&m.name).is_some_and(|ids| ids.len() > 1);
+            let overridden = lw.overridden.contains(&(m.owner, m.name.clone()));
             let synth = match &m.synth {
                 Synth::None => RtSynth::None,
                 Synth::FieldGet(name) => {
@@ -135,6 +136,7 @@ pub fn build(world: &World, lw: &Lowerer, file_names: Vec<String>) -> RtWorld {
                 is_abstract: m.is_abstract,
                 is_extension: m.extension.is_some(),
                 overloaded,
+                overridden,
                 fast_op,
                 file: m.file,
             }

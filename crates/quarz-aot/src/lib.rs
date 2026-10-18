@@ -16,7 +16,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use cranelift_codegen::ir::condcodes::IntCC;
+use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_codegen::ir::{
     types, AbiParam, Block as CBlock, FuncRef, InstBuilder, MemFlags, Signature, StackSlotData,
     StackSlotKind, Value as CValue,
@@ -49,7 +49,34 @@ struct Runtime {
     mov: CFuncId,
     drop_reg: CFuncId,
     take_reg: CFuncId,
+    self_: CFuncId,
+    arg: CFuncId,
+    block_param: CFuncId,
+    frame_get: CFuncId,
+    frame_set: CFuncId,
+    field_get: CFuncId,
+    field_set: CFuncId,
+    call_static: CFuncId,
+    construct: CFuncId,
     main: CFuncId,
+}
+
+/// Imported runtime functions, as function references inside one
+/// function being built.
+struct Helpers {
+    exec: FuncRef,
+    term: FuncRef,
+    mov: FuncRef,
+    drop_reg: FuncRef,
+    self_: FuncRef,
+    arg: FuncRef,
+    block_param: FuncRef,
+    frame_get: FuncRef,
+    frame_set: FuncRef,
+    field_get: FuncRef,
+    field_set: FuncRef,
+    call_static: FuncRef,
+    construct: FuncRef,
 }
 
 struct Compiler {
@@ -105,6 +132,42 @@ pub fn compile(module: &Module) -> Result<Vec<u8>, String> {
         mov: import(&mut obj, "qz_move", &sig(&[i64_, i32_, i32_], None))?,
         drop_reg: import(&mut obj, "qz_drop_reg", &sig(&[i64_, i32_], None))?,
         take_reg: import(&mut obj, "qz_take_reg", &sig(&[i64_, i32_, i64_], None))?,
+        self_: import(&mut obj, "qz_self", &sig(&[i64_, i64_, i32_], None))?,
+        arg: import(&mut obj, "qz_arg", &sig(&[i64_, i32_, i64_, i32_], None))?,
+        block_param: import(&mut obj, "qz_block_param", &sig(&[i64_, i64_, i32_], None))?,
+        frame_get: import(
+            &mut obj,
+            "qz_frame_get",
+            &sig(&[i64_, i32_, i32_, i64_, i32_], None),
+        )?,
+        frame_set: import(
+            &mut obj,
+            "qz_frame_set",
+            &sig(&[i64_, i32_, i32_, i64_, i32_], None),
+        )?,
+        field_get: import(
+            &mut obj,
+            "qz_field_get",
+            &sig(&[i64_, i64_, i32_, i32_, i32_], Some(i32_)),
+        )?,
+        field_set: import(
+            &mut obj,
+            "qz_field_set",
+            &sig(&[i64_, i64_, i32_, i32_, i32_], Some(i32_)),
+        )?,
+        call_static: import(
+            &mut obj,
+            "qz_call_static",
+            &sig(
+                &[i64_, i64_, i32_, i32_, i64_, i32_, i64_, i32_, i32_],
+                Some(i32_),
+            ),
+        )?,
+        construct: import(
+            &mut obj,
+            "qz_construct",
+            &sig(&[i64_, i64_, i32_, i32_, i64_, i32_, i32_], Some(i32_)),
+        )?,
         main: import(
             &mut obj,
             "qz_main",
@@ -125,7 +188,7 @@ pub fn compile(module: &Module) -> Result<Vec<u8>, String> {
         funcs,
     };
     for (i, f) in module.functions.iter().enumerate() {
-        c.compile_function(i as FuncId, f)?;
+        c.compile_function(i as FuncId, f, &module.world.methods)?;
     }
     c.emit_data_and_main(module, call_conv)?;
     let product = c.module.finish();
@@ -133,18 +196,38 @@ pub fn compile(module: &Module) -> Result<Vec<u8>, String> {
 }
 
 impl Compiler {
-    fn compile_function(&mut self, fid: FuncId, f: &Function) -> Result<(), String> {
+    fn compile_function(
+        &mut self,
+        fid: FuncId,
+        f: &Function,
+        methods: &[RtMethod],
+    ) -> Result<(), String> {
         let mut ctx: Context = self.module.make_context();
         ctx.func.signature = self.fn_sig.clone();
         let mut fbc = FunctionBuilderContext::new();
         let mut b = FunctionBuilder::new(&mut ctx.func, &mut fbc);
-        let exec = self.module.declare_func_in_func(self.rt.exec, b.func);
-        let term = self.module.declare_func_in_func(self.rt.term, b.func);
         let init_regs = self.module.declare_func_in_func(self.rt.init_regs, b.func);
         let drop_regs = self.module.declare_func_in_func(self.rt.drop_regs, b.func);
-        let mov = self.module.declare_func_in_func(self.rt.mov, b.func);
-        let drop_reg = self.module.declare_func_in_func(self.rt.drop_reg, b.func);
         let take_reg = self.module.declare_func_in_func(self.rt.take_reg, b.func);
+        let h = Helpers {
+            exec: self.module.declare_func_in_func(self.rt.exec, b.func),
+            term: self.module.declare_func_in_func(self.rt.term, b.func),
+            mov: self.module.declare_func_in_func(self.rt.mov, b.func),
+            drop_reg: self.module.declare_func_in_func(self.rt.drop_reg, b.func),
+            self_: self.module.declare_func_in_func(self.rt.self_, b.func),
+            arg: self.module.declare_func_in_func(self.rt.arg, b.func),
+            block_param: self
+                .module
+                .declare_func_in_func(self.rt.block_param, b.func),
+            frame_get: self.module.declare_func_in_func(self.rt.frame_get, b.func),
+            frame_set: self.module.declare_func_in_func(self.rt.frame_set, b.func),
+            field_get: self.module.declare_func_in_func(self.rt.field_get, b.func),
+            field_set: self.module.declare_func_in_func(self.rt.field_set, b.func),
+            call_static: self
+                .module
+                .declare_func_in_func(self.rt.call_static, b.func),
+            construct: self.module.declare_func_in_func(self.rt.construct, b.func),
+        };
 
         let entry = b.create_block();
         b.append_block_params_for_function_params(entry);
@@ -171,21 +254,38 @@ impl Compiler {
             3,
         ));
         let regs = b.ins().stack_addr(types::I64, slot, 0);
+        // Scratch space for the argument register indices of static calls.
+        let max_args = f
+            .blocks
+            .iter()
+            .flat_map(|blk| blk.insts.iter())
+            .map(|inst| match inst {
+                Inst::Call { args, .. } => args.len(),
+                _ => 0,
+            })
+            .max()
+            .unwrap_or(0)
+            .max(1);
+        let scratch_slot = b.create_sized_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot,
+            4 * max_args as u32,
+            2,
+        ));
+        let scratch = b.ins().stack_addr(types::I64, scratch_slot, 0);
         let n = b.ins().iconst(types::I32, i64::from(nregs));
         b.ins().call(init_regs, &[regs, n]);
         b.ins().jump(blocks[0], &[]);
 
         let mut g = Gen {
             b: &mut b,
-            exec,
-            term,
-            mov,
-            drop_reg,
+            h,
             rt,
             act,
             regs,
+            scratch,
             fid,
             f,
+            methods,
         };
         for (i, blk) in f.blocks.iter().enumerate() {
             g.b.switch_to_block(blocks[i]);
@@ -220,7 +320,7 @@ impl Compiler {
                 | Term::Unreachable => {
                     let fid_v = g.b.ins().iconst(types::I32, i64::from(fid));
                     let blk_v = g.b.ins().iconst(types::I32, i as i64);
-                    let call = g.b.ins().call(term, &[rt, act, fid_v, blk_v, regs]);
+                    let call = g.b.ins().call(g.h.term, &[rt, act, fid_v, blk_v, regs]);
                     let status = g.b.inst_results(call)[0];
                     g.b.ins().jump(unwinds[i], &[status]);
                 }
@@ -331,18 +431,26 @@ impl Compiler {
     }
 }
 
+/// A call compiled to `qz_call_static`.
+struct StaticCall {
+    fid: FuncId,
+    mid: MethodId,
+    recv: Option<Reg>,
+    args: Vec<Reg>,
+    dst: Reg,
+}
+
 /// Code generation for one function body.
 struct Gen<'a, 'b> {
     b: &'a mut FunctionBuilder<'b>,
-    exec: FuncRef,
-    term: FuncRef,
-    mov: FuncRef,
-    drop_reg: FuncRef,
+    h: Helpers,
     rt: CValue,
     act: CValue,
     regs: CValue,
+    scratch: CValue,
     fid: FuncId,
     f: &'a Function,
+    methods: &'a [RtMethod],
 }
 
 impl Gen<'_, '_> {
@@ -400,9 +508,59 @@ impl Gen<'_, '_> {
         self.b.ins().brif(needs, drop_blk, &[], cont, &[]);
         self.b.switch_to_block(drop_blk);
         let d = self.b.ins().iconst(types::I32, i64::from(dst));
-        self.b.ins().call(self.drop_reg, &[self.regs, d]);
+        self.b.ins().call(self.h.drop_reg, &[self.regs, d]);
         self.b.ins().jump(cont, &[]);
         self.b.switch_to_block(cont);
+    }
+
+    fn i32(&mut self, v: u32) -> CValue {
+        self.b.ins().iconst(types::I32, i64::from(v))
+    }
+
+    /// Branch to `unwind` when a status is not OK.
+    fn check(&mut self, status: CValue, unwind: CBlock) {
+        let cont = self.b.create_block();
+        self.b.ins().brif(status, unwind, &[status], cont, &[]);
+        self.b.switch_to_block(cont);
+    }
+
+    /// Whether a call can go straight to the method's body.
+    fn static_target(&self, inst: &Inst) -> Option<StaticCall> {
+        let Inst::Call {
+            dst,
+            kind: CallKind::Method(mid),
+            recv,
+            args,
+            splat: false,
+            kw,
+            kw_splat: None,
+            block: None,
+        } = inst
+        else {
+            return None;
+        };
+        if !kw.is_empty() {
+            return None;
+        }
+        let m = self.methods.get(*mid as usize)?;
+        let fid = m.func?;
+        let fixed = m.native_key.is_none()
+            && m.synth == RtSynth::None
+            && !m.is_abstract
+            && !m.has_block
+            && (!m.overridden || m.singleton || m.is_extension)
+            && m.params.iter().all(|p| p.kind == RtParamKind::Positional)
+            && args.len() <= m.params.len();
+        if !fixed {
+            return None;
+        }
+        Some(StaticCall {
+            fid,
+            mid: *mid,
+            recv: *recv,
+            args: args.clone(),
+            dst: *dst,
+        })
     }
 
     fn store_tag(&mut self, dst: Reg, tag: i64) {
@@ -436,11 +594,9 @@ impl Gen<'_, '_> {
         let call = self
             .b
             .ins()
-            .call(self.exec, &[self.rt, self.act, fid, blk, i, self.regs]);
+            .call(self.h.exec, &[self.rt, self.act, fid, blk, i, self.regs]);
         let status = self.b.inst_results(call)[0];
-        let cont = self.b.create_block();
-        self.b.ins().brif(status, unwind, &[status], cont, &[]);
-        self.b.switch_to_block(cont);
+        self.check(status, unwind);
     }
 
     fn inst(&mut self, block: u32, index: u32, inst: &Inst, unwind: CBlock) {
@@ -484,7 +640,7 @@ impl Gen<'_, '_> {
                 self.b.switch_to_block(slow_blk);
                 let d = self.b.ins().iconst(types::I32, i64::from(*dst));
                 let s = self.b.ins().iconst(types::I32, i64::from(*src));
-                self.b.ins().call(self.mov, &[self.regs, d, s]);
+                self.b.ins().call(self.h.mov, &[self.regs, d, s]);
                 self.b.ins().jump(cont, &[]);
                 self.b.switch_to_block(cont);
             }
@@ -517,6 +673,8 @@ impl Gen<'_, '_> {
                 op,
                 FastOp::Add
                     | FastOp::Sub
+                    | FastOp::Mul
+                    | FastOp::Div
                     | FastOp::Lt
                     | FastOp::Le
                     | FastOp::Gt
@@ -531,13 +689,59 @@ impl Gen<'_, '_> {
                 let c = self.b.ins().icmp_imm(IntCC::Equal, tr, TAG_INT);
                 let both = self.b.ins().band(a, c);
                 let fast_blk = self.b.create_block();
+                let not_int = self.b.create_block();
                 let slow_blk = self.b.create_block();
                 let cont = self.b.create_block();
-                self.b.ins().brif(both, fast_blk, &[], slow_blk, &[]);
+                self.b.ins().brif(both, fast_blk, &[], not_int, &[]);
+                // Both floats: inline floating-point arithmetic.
+                self.b.switch_to_block(not_int);
+                let fa = self.b.ins().icmp_imm(IntCC::Equal, tl, TAG_FLOAT);
+                let fc = self.b.ins().icmp_imm(IntCC::Equal, tr, TAG_FLOAT);
+                let both_f = self.b.ins().band(fa, fc);
+                let float_blk = self.b.create_block();
+                self.b.ins().brif(both_f, float_blk, &[], slow_blk, &[]);
+                self.b.switch_to_block(float_blk);
+                let xb = self.payload(*lhs);
+                let yb = self.payload(*rhs);
+                let x = self.b.ins().bitcast(types::F64, MemFlags::new(), xb);
+                let y = self.b.ins().bitcast(types::F64, MemFlags::new(), yb);
+                match op {
+                    FastOp::Add | FastOp::Sub | FastOp::Mul | FastOp::Div => {
+                        let r = match op {
+                            FastOp::Add => self.b.ins().fadd(x, y),
+                            FastOp::Sub => self.b.ins().fsub(x, y),
+                            FastOp::Mul => self.b.ins().fmul(x, y),
+                            _ => self.b.ins().fdiv(x, y),
+                        };
+                        let bits = self.b.ins().bitcast(types::I64, MemFlags::new(), r);
+                        self.release(*dst);
+                        self.store_tag(*dst, TAG_FLOAT);
+                        self.store_payload(*dst, bits);
+                    }
+                    _ => {
+                        let cc = match op {
+                            FastOp::Lt => FloatCC::LessThan,
+                            FastOp::Le => FloatCC::LessThanOrEqual,
+                            FastOp::Gt => FloatCC::GreaterThan,
+                            FastOp::Ge => FloatCC::GreaterThanOrEqual,
+                            FastOp::Eq => FloatCC::Equal,
+                            _ => FloatCC::NotEqual,
+                        };
+                        let r = self.b.ins().fcmp(cc, x, y);
+                        self.store_bool(*dst, r);
+                    }
+                }
+                self.b.ins().jump(cont, &[]);
                 self.b.switch_to_block(fast_blk);
                 let x = self.payload(*lhs);
                 let y = self.payload(*rhs);
                 match op {
+                    FastOp::Mul | FastOp::Div => {
+                        // Overflow and division semantics: let the runtime do it.
+                        self.b.ins().jump(slow_blk, &[]);
+                        let dead = self.b.create_block();
+                        self.b.switch_to_block(dead);
+                    }
                     FastOp::Add | FastOp::Sub => {
                         let r = if *op == FastOp::Add {
                             self.b.ins().iadd(x, y)
@@ -592,9 +796,126 @@ impl Gen<'_, '_> {
                 let v = self.b.ins().icmp_imm(IntCC::Equal, tag, TAG_NIL);
                 self.store_bool(*dst, v);
             }
+            Inst::SelfRef { dst } => {
+                let d = self.i32(*dst);
+                self.b.ins().call(self.h.self_, &[self.act, self.regs, d]);
+            }
+            Inst::Arg { dst, index } => {
+                let i = self.i32(*index);
+                let d = self.i32(*dst);
+                self.b.ins().call(self.h.arg, &[self.act, i, self.regs, d]);
+            }
+            Inst::BlockParam { dst } => {
+                let d = self.i32(*dst);
+                self.b
+                    .ins()
+                    .call(self.h.block_param, &[self.act, self.regs, d]);
+            }
+            Inst::FrameGet { dst, depth, slot } => {
+                let dp = self.i32(*depth);
+                let sl = self.i32(*slot);
+                let d = self.i32(*dst);
+                self.b
+                    .ins()
+                    .call(self.h.frame_get, &[self.act, dp, sl, self.regs, d]);
+            }
+            Inst::FrameSet { depth, slot, src } => {
+                let dp = self.i32(*depth);
+                let sl = self.i32(*slot);
+                let s = self.i32(*src);
+                self.b
+                    .ins()
+                    .call(self.h.frame_set, &[self.act, dp, sl, self.regs, s]);
+            }
+            Inst::FieldGet { dst, obj, index } => {
+                let o = self.i32(*obj);
+                let i = self.i32(*index);
+                let d = self.i32(*dst);
+                let call = self
+                    .b
+                    .ins()
+                    .call(self.h.field_get, &[self.rt, self.regs, o, i, d]);
+                let status = self.b.inst_results(call)[0];
+                self.check(status, unwind);
+            }
+            Inst::FieldSet { obj, index, src } => {
+                let o = self.i32(*obj);
+                let i = self.i32(*index);
+                let s = self.i32(*src);
+                let call = self
+                    .b
+                    .ins()
+                    .call(self.h.field_set, &[self.rt, self.regs, o, i, s]);
+                let status = self.b.inst_results(call)[0];
+                self.check(status, unwind);
+            }
+            Inst::Call {
+                dst,
+                kind: CallKind::Construct { class, init },
+                args,
+                splat: false,
+                kw,
+                kw_splat: None,
+                block: None,
+                ..
+            } if kw.is_empty() => {
+                for (k, r) in args.iter().enumerate() {
+                    let v = self.i32(*r);
+                    self.b
+                        .ins()
+                        .store(MemFlags::trusted(), v, self.scratch, 4 * k as i32);
+                }
+                let class_v = self.i32(*class);
+                let init_v = self.i32(init.unwrap_or(u32::MAX));
+                let nargs = self.i32(args.len() as u32);
+                let d = self.i32(*dst);
+                let call = self.b.ins().call(
+                    self.h.construct,
+                    &[self.rt, self.regs, class_v, init_v, self.scratch, nargs, d],
+                );
+                let status = self.b.inst_results(call)[0];
+                self.check(status, unwind);
+            }
+            Inst::Call { .. } => match self.static_target(inst) {
+                Some(StaticCall {
+                    fid: callee,
+                    mid,
+                    recv,
+                    args,
+                    dst,
+                }) => {
+                    for (k, r) in args.iter().enumerate() {
+                        let v = self.i32(*r);
+                        self.b
+                            .ins()
+                            .store(MemFlags::trusted(), v, self.scratch, 4 * k as i32);
+                    }
+                    let callee_v = self.i32(callee);
+                    let mid_v = self.i32(mid);
+                    let recv_v = self.i32(recv.unwrap_or(u32::MAX));
+                    let nargs = self.i32(args.len() as u32);
+                    let d = self.i32(dst);
+                    let call = self.b.ins().call(
+                        self.h.call_static,
+                        &[
+                            self.rt,
+                            self.act,
+                            callee_v,
+                            mid_v,
+                            self.regs,
+                            recv_v,
+                            self.scratch,
+                            nargs,
+                            d,
+                        ],
+                    );
+                    let status = self.b.inst_results(call)[0];
+                    self.check(status, unwind);
+                }
+                None => self.exec(block, index, unwind),
+            },
             _ => self.exec(block, index, unwind),
         }
-        let _ = self.term;
     }
 }
 

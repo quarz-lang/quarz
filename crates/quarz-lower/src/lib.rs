@@ -4,7 +4,7 @@
 //! the methods, constants and field defaults that have not been lowered
 //! yet get functions. Function ids are stable and append-only.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use quarz_ir::*;
 use quarz_syntax::ast::Expr;
@@ -48,6 +48,10 @@ pub struct Lowerer {
     round_base: FuncId,
     /// Source files by index, for line numbers.
     pub(crate) files: Vec<SourceFile>,
+    /// `(class, name)` pairs for which some descendant of the class (or
+    /// an extension on one) declares a method `name`: a call resolved to
+    /// the class's method may dispatch elsewhere.
+    pub(crate) overridden: HashSet<(ClassId, String)>,
 }
 
 impl Lowerer {
@@ -77,6 +81,7 @@ impl Lowerer {
         self.round_base = self.next_func;
         self.pending.clear();
         self.files = files;
+        self.overridden = overridden_methods(world);
 
         // Methods.
         if self.method_funcs.len() < world.methods.len() {
@@ -155,6 +160,39 @@ impl Lowerer {
             units: lowered_units,
         }
     }
+}
+
+/// Class hierarchy analysis: for every class, the names its descendants
+/// (and extensions on them) declare, as `(ancestor, name)` pairs.
+fn overridden_methods(world: &World) -> HashSet<(ClassId, String)> {
+    let mut declared: HashMap<ClassId, Vec<String>> = HashMap::new();
+    for c in &world.classes {
+        declared
+            .entry(c.id)
+            .or_default()
+            .extend(c.methods.keys().cloned());
+    }
+    for e in &world.extensions {
+        declared
+            .entry(e.target)
+            .or_default()
+            .extend(e.methods.keys().cloned());
+    }
+    let mut out = HashSet::new();
+    for c in &world.classes {
+        let Some(names) = declared.get(&c.id) else {
+            continue;
+        };
+        for (anc, _) in world.ancestors(c.id, &[]) {
+            if anc == c.id {
+                continue;
+            }
+            for name in names {
+                out.insert((anc, name.clone()));
+            }
+        }
+    }
+    out
 }
 
 /// Lower a whole checked program into a module. `files` are the source

@@ -638,6 +638,9 @@ pub struct RtMethod {
     pub is_extension: bool,
     /// Another method of the owner has the same name.
     pub overloaded: bool,
+    /// Some descendant of the owner (or an extension on one) declares a
+    /// method of this name, so dynamic dispatch may pick it instead.
+    pub overridden: bool,
     pub fast_op: Option<FastOp>,
     pub file: u32,
 }

@@ -1343,6 +1343,28 @@ impl<'a> FnBuilder<'a> {
         let kind = match target {
             Some(CallTarget::Method { method }) => {
                 let m = self.world.method(*method);
+                // A generated field reader that nothing overrides is a
+                // field access.
+                if let quarz_types::Synth::FieldGet(name) = &m.synth {
+                    if a.pos.is_empty()
+                        && !a.splat
+                        && a.kw.is_empty()
+                        && a.kw_splat.is_none()
+                        && a.block.is_none()
+                        && !self.lw.overridden.contains(&(m.owner, m.name.clone()))
+                    {
+                        if let Some(index) = self.world.field_index(m.owner, name) {
+                            let obj = recv.unwrap_or_else(|| self.self_reg());
+                            let dst = self.reg();
+                            self.emit(Inst::FieldGet {
+                                dst,
+                                obj,
+                                index: index as u32,
+                            });
+                            return dst;
+                        }
+                    }
+                }
                 let fast = m.is_native
                     && (m.owner == self.world.builtin.int || m.owner == self.world.builtin.float)
                     && FastOp::from_name(&m.name).is_some();

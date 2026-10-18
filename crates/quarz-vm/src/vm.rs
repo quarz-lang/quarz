@@ -868,7 +868,7 @@ impl Interp {
     }
 
     /// Run a method body (parameters already bound).
-    pub(crate) fn run_method(
+    pub fn run_method(
         &self,
         mid: MethodId,
         fid: FuncId,
