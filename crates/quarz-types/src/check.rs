@@ -2162,6 +2162,9 @@ impl Checker {
                 }
                 self.check_body(els, expected)
             }
+            // Type tests that cover the whole subject make the `case`
+            // exhaustive.
+            None if remaining.as_ref().is_some_and(|r| r.is_nothing()) => Type::Nothing,
             None => self.world.nil(),
         };
         let mut dead = et.is_nothing();
@@ -3731,9 +3734,17 @@ impl Checker {
             .collect();
         let mut param_types: Vec<Type> = params.clone();
         if declared.len() > 1 && params.len() == 1 {
-            if let Type::Tuple(ts) = self.infer.resolve(&params[0]) {
-                param_types = ts;
-                self.out.block_destructure.insert(call_id, declared.len());
+            match self.infer.resolve(&params[0]) {
+                Type::Tuple(ts) => {
+                    param_types = ts;
+                    self.out.block_destructure.insert(call_id, declared.len());
+                }
+                // An array is spread over the parameters, as in Ruby.
+                Type::Class(id, args) if id == self.world.builtin.array && args.len() == 1 => {
+                    param_types = vec![args[0].clone(); declared.len()];
+                    self.out.block_destructure.insert(call_id, declared.len());
+                }
+                _ => {}
             }
         }
         if declared.len() > param_types.len() {
@@ -4252,7 +4263,11 @@ impl Checker {
             None => {
                 if !remaining.is_empty() {
                     let names: Vec<String> = remaining.iter().map(|t| self.name(t)).collect();
-                    let closed = remaining.iter().all(|t| self.is_closed_type(t));
+                    // A union lists its alternatives explicitly, so a
+                    // missing one is an error; for a single open type
+                    // (numbers, strings, open classes) it is a warning.
+                    let closed = remaining.iter().all(|t| self.is_closed_type(t))
+                        || self.expand_members(&st).len() > 1;
                     let msg = format!("`case` does not cover: {}", names.join(", "));
                     if closed {
                         self.error(format!("{msg} (add an `in` arm or `else`)"), span);
@@ -4281,20 +4296,13 @@ impl Checker {
         match t {
             Type::Class(id, _) => {
                 let class = self.world.class(*id);
+                // Values of these types can be enumerated by patterns;
+                // numbers and strings cannot, so a missing case there is a
+                // run-time error (warning only).
                 matches!(
                     class.kind,
                     ClassKind::Data | ClassKind::Variant | ClassKind::Enum
-                ) || [
-                    self.world.builtin.nil,
-                    self.world.builtin.bool_,
-                    self.world.builtin.int,
-                    self.world.builtin.float,
-                    self.world.builtin.string,
-                    self.world.builtin.symbol,
-                    self.world.builtin.array,
-                    self.world.builtin.hash,
-                ]
-                .contains(id)
+                ) || [self.world.builtin.nil, self.world.builtin.bool_].contains(id)
             }
             Type::Tuple(_) => true,
             _ => false,

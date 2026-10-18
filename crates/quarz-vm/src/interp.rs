@@ -56,6 +56,9 @@ pub type NativeFn = fn(&Interp, &Value, Args) -> EvalResult;
 /// back so the caller can restore it.
 pub type OwnedNativeFn = fn(&Interp, Value, Args) -> Result<Value, (Flow, Value)>;
 
+/// Key of the by-name method cache: class, name, arity, block given.
+type NameKey = (ClassId, String, usize, bool);
+
 /// Which construct a `break` exits.
 #[derive(Clone, Copy, Debug)]
 pub enum Breakable {
@@ -97,6 +100,7 @@ pub struct ExcClasses {
     pub not_implemented: ClassId,
     pub system_exit: ClassId,
     pub range_error: ClassId,
+    pub system_stack: ClassId,
 }
 
 /// Ids of runtime value classes.
@@ -125,7 +129,7 @@ pub struct Interp {
     pub natives_owned: Vec<Option<OwnedNativeFn>>,
     pub sched: RefCell<Scheduler>,
     dispatch_cache: RefCell<HashMap<(ClassId, MethodId), MethodId>>,
-    name_cache: RefCell<HashMap<(ClassId, String, usize, bool), Option<MethodId>>>,
+    name_cache: RefCell<HashMap<NameKey, Option<MethodId>>>,
     regexp_cache: RefCell<HashMap<u32, Value>>,
     next_tag: Cell<u64>,
     pub argv: Vec<String>,
@@ -133,13 +137,26 @@ pub struct Interp {
     pub rt: RtClasses,
     pub call_stack: RefCell<Vec<Rc<str>>>,
     pub at_exit: RefCell<Vec<Value>>,
-    pub stdout: RefCell<std::io::BufWriter<std::io::Stdout>>,
+    pub stdout: RefCell<Box<dyn std::io::Write>>,
     self_rc: RefCell<Weak<Interp>>,
     pub root_task: Cell<Option<TaskId>>,
 }
 
 impl Interp {
     pub fn new(checked: Checked, argv: Vec<String>) -> Rc<Interp> {
+        Interp::with_output(
+            checked,
+            argv,
+            Box::new(std::io::BufWriter::new(std::io::stdout())),
+        )
+    }
+
+    /// Create an interpreter writing standard output to `out`.
+    pub fn with_output(
+        checked: Checked,
+        argv: Vec<String>,
+        out: Box<dyn std::io::Write>,
+    ) -> Rc<Interp> {
         let Checked {
             world,
             output,
@@ -211,6 +228,7 @@ impl Interp {
             not_implemented: class_by_name("NotImplementedError"),
             system_exit: class_by_name("SystemExit"),
             range_error: class_by_name("RangeError"),
+            system_stack: class_by_name("SystemStackError"),
         };
         let rt = RtClasses {
             selector: class_by_name("Selector"),
@@ -250,7 +268,7 @@ impl Interp {
             rt,
             call_stack: RefCell::new(Vec::new()),
             at_exit: RefCell::new(Vec::new()),
-            stdout: RefCell::new(std::io::BufWriter::new(std::io::stdout())),
+            stdout: RefCell::new(out),
             self_rc: RefCell::new(Weak::new()),
             root_task: Cell::new(None),
         });
@@ -321,7 +339,7 @@ impl Interp {
         let root = self
             .sched
             .borrow_mut()
-            .spawn(body, None, "main".to_string(), 16 * 1024 * 1024);
+            .spawn(body, None, "main".to_string(), 256 * 1024 * 1024);
         self.root_task.set(Some(root.id));
         let code = self.run_loop(&root);
         self.flush();
@@ -413,7 +431,7 @@ impl Interp {
         });
         self.sched
             .borrow_mut()
-            .spawn(body, scope, name.to_string(), 4 * 1024 * 1024)
+            .spawn(body, scope, name.to_string(), 16 * 1024 * 1024)
     }
 
     /// Block the current task until woken, then check for cancellation.
@@ -479,19 +497,24 @@ impl Interp {
         let n = self.world.all_fields(class).len().max(1);
         let mut fields = vec![Value::Nil; n];
         fields[0] = Value::str(message);
-        let bt: Vec<String> = self
-            .call_stack
-            .borrow()
-            .iter()
-            .rev()
-            .map(|s| s.to_string())
-            .collect();
+        let bt = self.capture_backtrace();
         Value::Object(Rc::new(Object {
             class,
             fields: RefCell::new(fields),
             backtrace: RefCell::new(Some(Rc::new(bt))),
             cause: RefCell::new(None),
         }))
+    }
+
+    /// The innermost frames of the call stack (deep recursion is cut
+    /// off).
+    pub fn capture_backtrace(&self) -> Vec<String> {
+        let stack = self.call_stack.borrow();
+        let mut bt: Vec<String> = stack.iter().rev().take(32).map(|s| s.to_string()).collect();
+        if stack.len() > 32 {
+            bt.push(format!("... {} more frames", stack.len() - 32));
+        }
+        bt
     }
 
     pub fn raise(&self, class: ClassId, message: &str) -> Flow {
@@ -852,6 +875,9 @@ impl Interp {
         let Some(def) = &m.body else {
             return Ok(Value::Nil);
         };
+        if sched::stack_exhausted() {
+            return Err(self.raise(self.exc.system_stack, "stack level too deep"));
+        }
         let frame = Frame::new(m.frame_size as usize + 1, None);
         let tag = self.new_tag();
         let ctx = Ctx {
@@ -866,10 +892,6 @@ impl Interp {
         self.call_stack.borrow_mut().push(Rc::from(
             format!("{}#{}", self.world.class(m.owner).name, m.name).as_str(),
         ));
-        if self.call_stack.borrow().len() > 10_000 {
-            self.call_stack.borrow_mut().pop();
-            return Err(self.raise(self.exc.runtime_error, "stack level too deep"));
-        }
         let body = def.body.as_deref().unwrap_or(&[]);
         let r = self.eval_body(body, &ctx);
         self.call_stack.borrow_mut().pop();
@@ -1116,6 +1138,9 @@ impl Interp {
             ClosureBody::BoundMethod { recv, name } => self.send(recv, name, args, None),
             ClosureBody::Native(f) => f(self, args),
             ClosureBody::Block(block) => {
+                if sched::stack_exhausted() {
+                    return Err(self.raise(self.exc.system_stack, "stack level too deep"));
+                }
                 let block = block.get();
                 let frame = Frame::new(closure.frame_size as usize + 1, closure.frame.clone());
                 // Destructure a single array argument over several parameters.
@@ -1470,6 +1495,8 @@ impl Interp {
     }
 }
 
+/// Format a float the way Ruby does: shortest round-trip digits, always
+/// with a decimal point, exponent notation below 1e-4 and from 1e16.
 pub fn format_float(f: f64) -> String {
     if f.is_nan() {
         return "NaN".to_string();
@@ -1481,11 +1508,28 @@ pub fn format_float(f: f64) -> String {
             "-Infinity".to_string()
         };
     }
-    if f == f.trunc() && f.abs() < 1e16 {
-        return format!("{f:.1}");
+    if f == 0.0 {
+        return if f.is_sign_negative() {
+            "-0.0".to_string()
+        } else {
+            "0.0".to_string()
+        };
+    }
+    // Shortest representation in scientific form, e.g. "1.5e-7".
+    let sci = format!("{f:e}");
+    let (mantissa, exp) = sci.split_once('e').unwrap_or((&sci, "0"));
+    let exp: i32 = exp.parse().unwrap_or(0);
+    if !(-4..16).contains(&exp) {
+        let mantissa = if mantissa.contains('.') {
+            mantissa.to_string()
+        } else {
+            format!("{mantissa}.0")
+        };
+        let sign = if exp < 0 { '-' } else { '+' };
+        return format!("{mantissa}e{sign}{:02}", exp.abs());
     }
     let s = format!("{f}");
-    if s.contains('e') || s.contains('.') {
+    if s.contains('.') {
         s
     } else {
         format!("{s}.0")

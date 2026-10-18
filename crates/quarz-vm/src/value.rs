@@ -62,7 +62,7 @@ impl<T> AstRef<T> {
 
 impl<T> Clone for AstRef<T> {
     fn clone(&self) -> Self {
-        AstRef(self.0)
+        *self
     }
 }
 
@@ -406,11 +406,7 @@ impl Hash for Value {
             }
             Value::Float(f) => {
                 2u8.hash(state);
-                if f.fract() == 0.0 && f.abs() < 9.0e15 {
-                    f.to_bits().hash(state);
-                } else {
-                    f.to_bits().hash(state);
-                }
+                f.to_bits().hash(state);
             }
             Value::Str(s) => {
                 4u8.hash(state);

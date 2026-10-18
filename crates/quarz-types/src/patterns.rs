@@ -175,11 +175,15 @@ impl Checker {
             PatternKind::Hash(hp) => {
                 // A hash with symbol keys, or a data/variant by field names.
                 let members = self.expand_members(&value_ty);
-                let hash_members: Vec<Type> = members
+                let mut hash_members: Vec<Type> = members
                     .iter()
                     .filter(|m| matches!(m, Type::Class(id, _) if *id == self.world.builtin.hash))
                     .cloned()
                     .collect();
+                // An `Object` subject may be any hash.
+                if members.iter().any(|m| self.world.is_object(m)) {
+                    hash_members.push(self.world.hash_of(self.world.symbol(), self.world.object()));
+                }
                 let data_members: Vec<Type> = members
                     .iter()
                     .filter(|m| matches!(m, Type::Class(id, _) if matches!(self.world.class(*id).kind, ClassKind::Data | ClassKind::Variant)))

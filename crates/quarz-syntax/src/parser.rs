@@ -799,6 +799,20 @@ impl<'src> Parser<'src> {
     pub fn parse_expr(&mut self) -> PResult<Expr> {
         let start = self.peek().span;
         let lhs = self.parse_ternary()?;
+        // `value in pattern` is allowed inside argument lists too.
+        if self.at_kw(K::In) && self.allow_in_match {
+            self.bump();
+            let pattern = self.parse_pattern_top()?;
+            let span = self.span_from(start);
+            return Ok(self.node(
+                span,
+                ExprKind::MatchPattern {
+                    value: Box::new(lhs),
+                    pattern: Box::new(pattern),
+                    raises: false,
+                },
+            ));
+        }
         match self.kind().clone() {
             T::Assign => {
                 let Some(target) = self.lvalue_of(&lhs) else {

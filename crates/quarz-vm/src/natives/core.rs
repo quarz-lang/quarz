@@ -28,6 +28,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     m.insert("Bool#|", bool_or);
     m.insert("Bool#^", bool_xor);
     m.insert("Comparable#clamp", clamp);
+    m.insert("Proc#arity", proc_arity);
     m.insert("Exception#backtrace", exc_backtrace);
     m.insert("Exception#full_message", exc_full_message);
     m.insert("Exception#cause", exc_cause);
@@ -153,6 +154,23 @@ fn clamp(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
         return Ok(max.clone());
     }
     Ok(recv.clone())
+}
+
+fn proc_arity(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
+    let Value::Proc(c) = recv else {
+        return Err(interp.err_type("expected a Proc"));
+    };
+    Ok(Value::Int(match &c.body {
+        ClosureBody::Block(b) => b
+            .get()
+            .params
+            .list
+            .iter()
+            .filter(|p| p.kind != quarz_syntax::ast::ParamKind::Block)
+            .count() as i64,
+        ClosureBody::MethodName(_) => 1,
+        ClosureBody::BoundMethod { .. } | ClosureBody::Native(_) => -1,
+    }))
 }
 
 fn exc_backtrace(_: &Interp, recv: &Value, _: Args) -> EvalResult {

@@ -238,11 +238,11 @@ fn task_scope(interp: &Interp, _: &Value, args: Args) -> EvalResult {
             Ok(_) => {}
             Err(Flow::Raise(e)) => {
                 let is_cancel = interp.exception_is_a(&e, interp.exc.cancelled);
-                if failure.is_none() && !(is_cancel && scope.cancelled.get()) {
-                    failure = Some(Flow::Raise(e));
-                    cancel_children(interp, &scope);
+                if is_cancel && scope.cancelled.get() {
+                    // Cancelled by the scope itself: expected.
                 } else if failure.is_none() {
                     failure = Some(Flow::Raise(e));
+                    cancel_children(interp, &scope);
                 }
             }
             Err(e) => {

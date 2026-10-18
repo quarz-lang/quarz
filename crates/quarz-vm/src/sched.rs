@@ -55,6 +55,8 @@ pub struct TaskHandle {
     pub name: RefCell<String>,
     /// The coroutine's yielder, set when the task first runs.
     pub yielder: Cell<Option<*const Yielder<(), ()>>>,
+    /// Lowest stack address the task may use (for `SystemStackError`).
+    pub stack_limit: Cell<usize>,
 }
 
 impl std::fmt::Debug for TaskHandle {
@@ -156,6 +158,15 @@ pub struct Scheduler {
 
 thread_local! {
     static YIELDER: Cell<Option<*const Yielder<(), ()>>> = const { Cell::new(None) };
+    static STACK_LIMIT: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Whether the current stack pointer is below the task's limit.
+#[inline]
+pub fn stack_exhausted() -> bool {
+    let marker = 0u8;
+    let sp = &marker as *const u8 as usize;
+    STACK_LIMIT.with(|l| sp < l.get())
 }
 
 /// Suspend the running coroutine. Only valid inside a task, with no
@@ -215,6 +226,7 @@ impl Scheduler {
             scope: RefCell::new(scope.clone()),
             name: RefCell::new(name),
             yielder: Cell::new(None),
+            stack_limit: Cell::new(0),
         });
         if let Some(scope) = &scope {
             scope.children.borrow_mut().push(handle.clone());
@@ -224,6 +236,12 @@ impl Scheduler {
         let coroutine = Coroutine::with_stack(stack, move |yielder: &Yielder<(), ()>, ()| {
             handle_for_body.yielder.set(Some(yielder as *const _));
             YIELDER.with(|y| y.set(Some(yielder as *const _)));
+            // Leave a margin below which calls raise SystemStackError.
+            let marker = 0u8;
+            let base = &marker as *const u8 as usize;
+            let limit = base.saturating_sub(stack_size.saturating_sub(512 * 1024));
+            handle_for_body.stack_limit.set(limit);
+            STACK_LIMIT.with(|l| l.set(limit));
             body()
         });
         self.tasks.push(handle.clone());
@@ -331,10 +349,31 @@ impl Scheduler {
                 match exit {
                     TaskExit::Exit(code) => Some(code),
                     TaskExit::Result(r) => {
+                        let failed = matches!(r, TaskResult::Error(_));
                         *task.result.borrow_mut() = Some(r);
                         let joiners = std::mem::take(&mut *task.joiners.borrow_mut());
                         for j in joiners {
                             self.wake(j);
+                        }
+                        // A failing child cancels its siblings and wakes the
+                        // scope's owner so that the failure propagates at
+                        // once.
+                        if failed {
+                            let scope = task.scope.borrow().clone();
+                            if let Some(scope) = scope {
+                                if !scope.cancelled.get() {
+                                    scope.cancelled.set(true);
+                                    let children: Vec<Rc<TaskHandle>> =
+                                        scope.children.borrow().clone();
+                                    for c in children {
+                                        if c.id != id && !c.is_done() {
+                                            c.cancel_requested.set(true);
+                                            self.wake(c.id);
+                                        }
+                                    }
+                                }
+                                self.wake(scope.owner);
+                            }
                         }
                         None
                     }
@@ -356,8 +395,11 @@ impl Scheduler {
 /// Resume a task's coroutine outside of the scheduler's borrow.
 pub fn resume(task: &TaskHandle, co: &mut TaskCoroutine) -> CoroutineResult<(), TaskExit> {
     let outer = YIELDER.with(|y| y.get());
+    let outer_limit = STACK_LIMIT.with(|l| l.get());
     YIELDER.with(|y| y.set(task.yielder.get()));
+    STACK_LIMIT.with(|l| l.set(task.stack_limit.get()));
     let r = co.resume(());
     YIELDER.with(|y| y.set(outer));
+    STACK_LIMIT.with(|l| l.set(outer_limit));
     r
 }

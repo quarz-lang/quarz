@@ -151,13 +151,13 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     });
     m.insert("Array#[]", array_index);
     m.insert("Array#[]?", |i, r, a| {
-        Ok(index_opt(&arr(i, r)?, int(i, a.arg(0), "index")?))
+        Ok(index_opt(arr(i, r)?, int(i, a.arg(0), "index")?))
     });
     m.insert("Array#at", |i, r, a| {
-        Ok(index_opt(&arr(i, r)?, int(i, a.arg(0), "index")?))
+        Ok(index_opt(arr(i, r)?, int(i, a.arg(0), "index")?))
     });
     m.insert("Array#fetch", |i, r, a| {
-        let v = index_opt(&arr(i, r)?, int(i, a.arg(0), "index")?);
+        let v = index_opt(arr(i, r)?, int(i, a.arg(0), "index")?);
         Ok(if v.is_nil() { a.arg(1).clone() } else { v })
     });
     m.insert("Array#first", array_first);
@@ -272,7 +272,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     m.insert("Array#shuffle", array_shuffle);
     m.insert("Array#flatten", |i, r, _| {
         let mut out = Vec::new();
-        flatten_into(&arr(i, r)?, &mut out);
+        flatten_into(arr(i, r)?, &mut out);
         Ok(Value::array(out))
     });
     m.insert("Array#compact", |i, r, _| {
@@ -1308,8 +1308,7 @@ pub fn range_to_vec(interp: &Interp, r: &RangeVal) -> Result<Vec<Value>, Flow> {
             let mut out = Vec::new();
             let mut cur = Value::Str(lo.clone());
             let mut guard = 0;
-            loop {
-                let Value::Str(s) = &cur else { break };
+            while let Value::Str(s) = &cur {
                 if s.len() > hi.len() {
                     break;
                 }
@@ -1345,6 +1344,13 @@ fn range_each(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
             }
         }
         (Value::Int(lo), Value::Nil) => {
+            let mut i = *lo;
+            loop {
+                interp.call_block(&b, vec![Value::Int(i)])?;
+                i += 1;
+            }
+        }
+        (Value::Int(lo), Value::Float(f)) if f.is_infinite() && *f > 0.0 => {
             let mut i = *lo;
             loop {
                 interp.call_block(&b, vec![Value::Int(i)])?;

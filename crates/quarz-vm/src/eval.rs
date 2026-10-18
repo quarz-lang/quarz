@@ -10,6 +10,10 @@ use quarz_types::{CallTarget, ConstTarget, Member, Type};
 use crate::interp::*;
 use crate::value::*;
 
+/// Positional arguments, keyword arguments and the `&block` argument of a
+/// call.
+pub type EvaluatedArgs = (Vec<Value>, Vec<(Symbol, Value)>, Option<Value>);
+
 impl Interp {
     pub fn eval_body(&self, body: &[Expr], ctx: &Ctx) -> EvalResult {
         let mut last = Value::Nil;
@@ -506,11 +510,7 @@ impl Interp {
 
     /// Evaluate call arguments into positional, keyword and block-pass
     /// values.
-    pub fn eval_args(
-        &self,
-        args: &[Arg],
-        ctx: &Ctx,
-    ) -> Result<(Vec<Value>, Vec<(Symbol, Value)>, Option<Value>), Flow> {
+    pub fn eval_args(&self, args: &[Arg], ctx: &Ctx) -> Result<EvaluatedArgs, Flow> {
         let mut pos = Vec::with_capacity(args.len());
         let mut kw = Vec::new();
         let mut block = None;
@@ -636,13 +636,7 @@ impl Interp {
             Value::Str(s) => self.make_exception(self.exc.runtime_error, &s),
             Value::Object(o) => {
                 if o.backtrace.borrow().is_none() {
-                    let bt: Vec<String> = self
-                        .call_stack
-                        .borrow()
-                        .iter()
-                        .rev()
-                        .map(|s| s.to_string())
-                        .collect();
+                    let bt = self.capture_backtrace();
                     *o.backtrace.borrow_mut() = Some(Rc::new(bt));
                 }
                 Value::Object(o)
