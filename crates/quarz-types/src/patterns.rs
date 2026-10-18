@@ -158,9 +158,14 @@ impl Checker {
                     return Type::Nothing;
                 };
                 let elem = self.array_elem(&narrowed);
-                for name in [pre_rest, post_rest].into_iter().flatten() {
+                if let Some(name) = pre_rest {
                     let t = self.world.array_of(elem.clone());
                     self.declare_pattern_var(name, t, pattern.span);
+                }
+                if let Some(name) = post_rest {
+                    let t = self.world.array_of(elem.clone());
+                    // Keyed by the empty span at the pattern's end.
+                    self.declare_pattern_var(name, t, Span::empty(pattern.span.end as usize));
                 }
                 for m in middle {
                     self.check_pattern(m, &elem);

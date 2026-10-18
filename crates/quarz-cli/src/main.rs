@@ -11,6 +11,7 @@ commands:
   tokens FILE    print the tokens of FILE (for debugging the lexer)
   parse FILE     print the syntax tree of FILE (for debugging the parser)
   check FILE     type-check FILE
+  run FILE [ARGS...]   type-check and run FILE
 ";
 
 fn main() -> ExitCode {
@@ -26,6 +27,10 @@ fn main() -> ExitCode {
         },
         Some("check") => match args.get(1) {
             Some(path) => check_file(path),
+            None => usage(),
+        },
+        Some("run") => match args.get(1) {
+            Some(path) => run_file(path, args[2..].to_vec()),
             None => usage(),
         },
         Some("-h" | "--help" | "help") => {
@@ -98,6 +103,18 @@ fn load_and_check(file: &SourceFile) -> Option<quarz_types::Checked> {
         eprint!("{}", diag.render(f));
     }
     checked
+}
+
+fn run_file(path: &str, argv: Vec<String>) -> ExitCode {
+    let file = match read_source(path) {
+        Ok(file) => file,
+        Err(code) => return code,
+    };
+    let Some(checked) = load_and_check(&file) else {
+        return ExitCode::FAILURE;
+    };
+    let code = quarz_vm::run(checked, argv);
+    ExitCode::from(code.clamp(0, 255) as u8)
 }
 
 fn check_file(path: &str) -> ExitCode {

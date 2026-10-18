@@ -1,0 +1,17 @@
+[package]
+name = "quarz-vm"
+description = "The Quarz interpreter: values, evaluator, scheduler and native methods"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+quarz-syntax = { workspace = true }
+quarz-types = { workspace = true }
+corosensei = "0.3"
+indexmap = "2"
+num-bigint = "0.4"
+num-integer = "0.1"
+num-traits = "0.2"
+regex = "1"

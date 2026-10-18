@@ -73,6 +73,8 @@ pub struct Output {
     pub block_pass: HashMap<NodeId, BlockPass>,
     /// For block parameters that destructure a tuple: the arity.
     pub block_destructure: HashMap<NodeId, usize>,
+    /// Exception classes of each `rescue` clause, keyed by its span.
+    pub rescue_classes: HashMap<Span, Vec<ClassId>>,
 }
 
 #[derive(Clone, Debug)]
@@ -2183,19 +2185,23 @@ impl Checker {
             // Variables assigned in the body may or may not have been.
             self.widen_assigned(&block.body);
             let mut exc_ty = Type::Nothing;
+            let mut class_ids = Vec::new();
             if r.classes.is_empty() {
                 exc_ty = Type::class(self.world.builtin.standard_error);
+                class_ids.push(self.world.builtin.standard_error);
             }
             for c in &r.classes {
                 let scope = self.env.scope.clone();
                 match self.resolve_type_expr(c, &scope) {
                     Some(t @ Type::Class(id, _)) if self.world.is_exception_class(id) => {
                         exc_ty = self.join(&exc_ty, &t);
+                        class_ids.push(id);
                     }
                     Some(_) => self.error("`rescue` needs exception classes", c.span),
                     None => {}
                 }
             }
+            self.out.rescue_classes.insert(r.span, class_ids);
             if let Some(var) = &r.var {
                 if self.lookup_var(var).is_none_or(|(d, _)| d != 0) {
                     self.declare_var(var, exc_ty.clone(), r.span);

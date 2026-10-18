@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/quarz-syntax",
     "crates/quarz-types",
+    "crates/quarz-vm",
     "crates/quarz-cli",
 ]
 
@@ -15,3 +16,4 @@ repository = "https://github.com/shugo/quarz"
 [workspace.dependencies]
 quarz-syntax = { path = "crates/quarz-syntax" }
 quarz-types = { path = "crates/quarz-types" }
+quarz-vm = { path = "crates/quarz-vm" }
