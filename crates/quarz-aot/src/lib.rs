@@ -13,6 +13,7 @@
 //! its metadata, and interprets any function without machine code) and
 //! a table of the compiled bodies, and defines `main`.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -31,6 +32,9 @@ use quarz_ir::*;
 /// Size of a `Value` in bytes (`repr(C, u64)`: a tag word and a two-word
 /// payload, since some variants hold fat pointers).
 const VALUE_SIZE: i32 = 24;
+/// Space for an `Activation` built by compiled code (`qz_enter`); the
+/// runtime checks its real size against this.
+const ACT_BUF_SIZE: u32 = 320;
 /// Tags below this hold no reference-counted payload (`NEEDS_DROP_FROM`).
 const NEEDS_DROP_FROM: i64 = 7;
 const TAG_NIL: i64 = 0;
@@ -42,12 +46,16 @@ const STATUS_RAISE: i64 = 1;
 
 /// The runtime functions compiled code calls.
 struct Runtime {
+    enter: CFuncId,
+    leave: CFuncId,
+    act_ptrs: CFuncId,
+    clone_to: CFuncId,
+    clone_ptr: CFuncId,
+    drop_value: CFuncId,
     exec: CFuncId,
     term: CFuncId,
     mov: CFuncId,
     drop_reg: CFuncId,
-    self_: CFuncId,
-    arg: CFuncId,
     block_param: CFuncId,
     frame_get: CFuncId,
     frame_set: CFuncId,
@@ -63,12 +71,16 @@ struct Runtime {
 /// Imported runtime functions, as function references inside one
 /// function being built.
 struct Helpers {
+    enter: FuncRef,
+    leave: FuncRef,
+    act_ptrs: FuncRef,
+    clone_to: FuncRef,
+    clone_ptr: FuncRef,
+    drop_value: FuncRef,
     exec: FuncRef,
     term: FuncRef,
     mov: FuncRef,
     drop_reg: FuncRef,
-    self_: FuncRef,
-    arg: FuncRef,
     block_param: FuncRef,
     frame_get: FuncRef,
     frame_set: FuncRef,
@@ -130,8 +142,6 @@ pub fn compile(module: &Module) -> Result<Vec<u8>, String> {
         )?,
         mov: import(&mut obj, "qz_move", &sig(&[i64_, i32_, i32_], None))?,
         drop_reg: import(&mut obj, "qz_drop_reg", &sig(&[i64_, i32_], None))?,
-        self_: import(&mut obj, "qz_self", &sig(&[i64_, i64_, i32_], None))?,
-        arg: import(&mut obj, "qz_arg", &sig(&[i64_, i32_, i64_, i32_], None))?,
         block_param: import(&mut obj, "qz_block_param", &sig(&[i64_, i64_, i32_], None))?,
         frame_get: import(
             &mut obj,
@@ -153,6 +163,25 @@ pub fn compile(module: &Module) -> Result<Vec<u8>, String> {
             "qz_field_set",
             &sig(&[i64_, i64_, i32_, i32_, i32_], Some(i32_)),
         )?,
+        enter: import(
+            &mut obj,
+            "qz_enter",
+            &sig(
+                &[
+                    i64_, i64_, i64_, i32_, i32_, i64_, i32_, i64_, i32_, i32_, i32_, i32_, i64_,
+                ],
+                Some(i32_),
+            ),
+        )?,
+        leave: import(
+            &mut obj,
+            "qz_leave",
+            &sig(&[i64_, i64_, i32_, i64_, i64_, i32_, i32_], Some(i32_)),
+        )?,
+        act_ptrs: import(&mut obj, "qz_act_ptrs", &sig(&[i64_, i64_], None))?,
+        clone_to: import(&mut obj, "qz_clone_to", &sig(&[i64_, i32_, i64_], None))?,
+        clone_ptr: import(&mut obj, "qz_clone_ptr", &sig(&[i64_, i64_], None))?,
+        drop_value: import(&mut obj, "qz_drop_value", &sig(&[i64_], None))?,
         call_static: import(
             &mut obj,
             "qz_call_static",
@@ -199,7 +228,7 @@ pub fn compile(module: &Module) -> Result<Vec<u8>, String> {
         funcs,
     };
     for (i, f) in module.functions.iter().enumerate() {
-        c.compile_function(i as FuncId, f, &module.world.methods)?;
+        c.compile_function(i as FuncId, f, &module.world.methods, &module.functions)?;
     }
     c.emit_data_and_main(module, call_conv)?;
     let product = c.module.finish();
@@ -212,6 +241,7 @@ impl Compiler {
         fid: FuncId,
         f: &Function,
         methods: &[RtMethod],
+        functions: &[Function],
     ) -> Result<(), String> {
         let mut ctx: Context = self.module.make_context();
         ctx.func.signature = self.fn_sig.clone();
@@ -219,12 +249,16 @@ impl Compiler {
         let mut b = FunctionBuilder::new(&mut ctx.func, &mut fbc);
         let drop_reg_fn = self.module.declare_func_in_func(self.rt.drop_reg, b.func);
         let h = Helpers {
+            enter: self.module.declare_func_in_func(self.rt.enter, b.func),
+            leave: self.module.declare_func_in_func(self.rt.leave, b.func),
+            act_ptrs: self.module.declare_func_in_func(self.rt.act_ptrs, b.func),
+            clone_to: self.module.declare_func_in_func(self.rt.clone_to, b.func),
+            clone_ptr: self.module.declare_func_in_func(self.rt.clone_ptr, b.func),
+            drop_value: self.module.declare_func_in_func(self.rt.drop_value, b.func),
             exec: self.module.declare_func_in_func(self.rt.exec, b.func),
             term: self.module.declare_func_in_func(self.rt.term, b.func),
             mov: self.module.declare_func_in_func(self.rt.mov, b.func),
             drop_reg: self.module.declare_func_in_func(self.rt.drop_reg, b.func),
-            self_: self.module.declare_func_in_func(self.rt.self_, b.func),
-            arg: self.module.declare_func_in_func(self.rt.arg, b.func),
             block_param: self
                 .module
                 .declare_func_in_func(self.rt.block_param, b.func),
@@ -240,6 +274,44 @@ impl Compiler {
             owned_call: self.module.declare_func_in_func(self.rt.owned_call, b.func),
         };
         let heap = heap_possible(f);
+        // The compiled bodies this function calls directly.
+        let mut callees: HashMap<FuncId, FuncRef> = HashMap::new();
+        for blk in &f.blocks {
+            for inst in &blk.insts {
+                if let Some(target) = direct_target(inst, methods) {
+                    callees.entry(target).or_insert_with(|| {
+                        self.module
+                            .declare_func_in_func(self.funcs[target as usize], b.func)
+                    });
+                }
+            }
+        }
+        // The argument area for direct calls: the widest callee's
+        // parameters plus its block.
+        let max_direct_args = f
+            .blocks
+            .iter()
+            .flat_map(|blk| blk.insts.iter())
+            .filter_map(|inst| {
+                let Inst::Call {
+                    kind: CallKind::Method(mid),
+                    ..
+                } = inst
+                else {
+                    return None;
+                };
+                direct_target(inst, methods)?;
+                let m = &methods[*mid as usize];
+                Some(m.params.len() + usize::from(m.has_block))
+            })
+            .max()
+            .unwrap_or(0)
+            .max(1);
+        let uses_act = f.blocks.iter().any(|blk| {
+            blk.insts
+                .iter()
+                .any(|i| matches!(i, Inst::Arg { .. } | Inst::SelfRef { .. }))
+        });
 
         let entry = b.create_block();
         b.append_block_params_for_function_params(entry);
@@ -284,11 +356,37 @@ impl Compiler {
             2,
         ));
         let scratch = b.ins().stack_addr(types::I64, scratch_slot, 0);
+        // An activation for direct calls, the callee's result, and the
+        // addresses of this activation's arguments and `self`.
+        let act_slot = b.create_sized_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot,
+            ACT_BUF_SIZE,
+            4,
+        ));
+        let act_buf = b.ins().stack_addr(types::I64, act_slot, 0);
+        let out_slot = b.create_sized_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot,
+            VALUE_SIZE as u32,
+            3,
+        ));
+        let out_buf = b.ins().stack_addr(types::I64, out_slot, 0);
+        let ptrs_slot =
+            b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 24, 3));
+        let ptrs = b.ins().stack_addr(types::I64, ptrs_slot, 0);
+        let args_slot = b.create_sized_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot,
+            (VALUE_SIZE as u32) * max_direct_args as u32,
+            3,
+        ));
+        let args_buf = b.ins().stack_addr(types::I64, args_slot, 0);
         // Registers start as nil: only the tag word needs writing.
         let zero = b.ins().iconst(types::I64, 0);
         for i in 0..nregs as i32 {
             b.ins()
                 .store(MemFlags::trusted(), zero, regs, i * VALUE_SIZE);
+        }
+        if uses_act {
+            b.ins().call(h.act_ptrs, &[act, ptrs]);
         }
         b.ins().jump(blocks[0], &[]);
 
@@ -299,9 +397,15 @@ impl Compiler {
             act,
             regs,
             scratch,
+            act_buf,
+            out_buf,
+            ptrs,
+            args_buf,
             fid,
             f,
             methods,
+            functions,
+            callees,
         };
         for (i, blk) in f.blocks.iter().enumerate() {
             g.b.switch_to_block(blocks[i]);
@@ -474,6 +578,23 @@ impl Compiler {
     }
 }
 
+/// The compiled body a static call goes to directly (a method with a
+/// QIR body, not a native).
+fn direct_target(inst: &Inst, methods: &[RtMethod]) -> Option<FuncId> {
+    let Inst::Call {
+        kind: CallKind::Method(mid),
+        ..
+    } = inst
+    else {
+        return None;
+    };
+    let m = methods.get(*mid as usize)?;
+    if m.native_key.is_some() {
+        return None;
+    }
+    m.func
+}
+
 /// A call compiled to `qz_call_static`.
 struct StaticCall {
     mid: MethodId,
@@ -571,9 +692,19 @@ struct Gen<'a, 'b> {
     act: CValue,
     regs: CValue,
     scratch: CValue,
+    /// Space for the activation of a direct call.
+    act_buf: CValue,
+    /// Where a directly called body leaves its result.
+    out_buf: CValue,
+    /// `[args, self, nargs]` of this activation (see `qz_act_ptrs`).
+    ptrs: CValue,
+    /// The argument area of direct calls.
+    args_buf: CValue,
     fid: FuncId,
     f: &'a Function,
     methods: &'a [RtMethod],
+    functions: &'a [Function],
+    callees: HashMap<FuncId, FuncRef>,
 }
 
 impl Gen<'_, '_> {
@@ -632,6 +763,87 @@ impl Gen<'_, '_> {
         self.b.switch_to_block(drop_blk);
         let d = self.b.ins().iconst(types::I32, i64::from(dst));
         self.b.ins().call(self.h.drop_reg, &[self.regs, d]);
+        self.b.ins().jump(cont, &[]);
+        self.b.switch_to_block(cont);
+    }
+
+    /// `regs[dst] = *src`: inline for values without reference counts,
+    /// through the runtime for the others.
+    fn clone_from(&mut self, dst: Reg, src: CValue) {
+        let tag = self.b.ins().load(types::I64, MemFlags::trusted(), src, 0);
+        let needs = self
+            .b
+            .ins()
+            .icmp_imm(IntCC::UnsignedGreaterThanOrEqual, tag, NEEDS_DROP_FROM);
+        let slow = self.b.create_block();
+        let fast = self.b.create_block();
+        let cont = self.b.create_block();
+        self.b.ins().brif(needs, slow, &[], fast, &[]);
+        self.b.switch_to_block(fast);
+        self.release(dst);
+        let w1 = self.b.ins().load(types::I64, MemFlags::trusted(), src, 8);
+        let w2 = self.b.ins().load(types::I64, MemFlags::trusted(), src, 16);
+        self.b
+            .ins()
+            .store(MemFlags::trusted(), tag, self.regs, Self::reg_off(dst));
+        self.store_payload(dst, w1);
+        self.b
+            .ins()
+            .store(MemFlags::trusted(), w2, self.regs, Self::reg_off(dst) + 16);
+        self.b.ins().jump(cont, &[]);
+        self.b.switch_to_block(slow);
+        let d = self.i32(dst);
+        self.b.ins().call(self.h.clone_to, &[self.regs, d, src]);
+        self.b.ins().jump(cont, &[]);
+        self.b.switch_to_block(cont);
+    }
+
+    /// `*dst = regs[src]` where `dst` holds nil: inline for values without
+    /// reference counts, through the runtime for the others.
+    fn clone_reg_to_ptr(&mut self, dst: CValue, src: Reg) {
+        let tag = self.tag(src);
+        let needs = self
+            .b
+            .ins()
+            .icmp_imm(IntCC::UnsignedGreaterThanOrEqual, tag, NEEDS_DROP_FROM);
+        let slow = self.b.create_block();
+        let fast = self.b.create_block();
+        let cont = self.b.create_block();
+        self.b.ins().brif(needs, slow, &[], fast, &[]);
+        self.b.switch_to_block(fast);
+        let w1 = self.payload(src);
+        let w2 = self.b.ins().load(
+            types::I64,
+            MemFlags::trusted(),
+            self.regs,
+            Self::reg_off(src) + 16,
+        );
+        self.b.ins().store(MemFlags::trusted(), tag, dst, 0);
+        self.b.ins().store(MemFlags::trusted(), w1, dst, 8);
+        self.b.ins().store(MemFlags::trusted(), w2, dst, 16);
+        self.b.ins().jump(cont, &[]);
+        self.b.switch_to_block(slow);
+        let src_ptr = self
+            .b
+            .ins()
+            .iadd_imm(self.regs, i64::from(Self::reg_off(src)));
+        self.b.ins().call(self.h.clone_ptr, &[dst, src_ptr]);
+        self.b.ins().jump(cont, &[]);
+        self.b.switch_to_block(cont);
+    }
+
+    /// Release the value at `p` (leaving nil) when it is reference counted.
+    fn release_ptr(&mut self, p: CValue) {
+        let tag = self.b.ins().load(types::I64, MemFlags::trusted(), p, 0);
+        let needs = self
+            .b
+            .ins()
+            .icmp_imm(IntCC::UnsignedGreaterThanOrEqual, tag, NEEDS_DROP_FROM);
+        let drop_blk = self.b.create_block();
+        let cont = self.b.create_block();
+        self.b.ins().brif(needs, drop_blk, &[], cont, &[]);
+        self.b.switch_to_block(drop_blk);
+        self.b.ins().call(self.h.drop_value, &[p]);
         self.b.ins().jump(cont, &[]);
         self.b.switch_to_block(cont);
     }
@@ -968,13 +1180,42 @@ impl Gen<'_, '_> {
                 self.store_bool(*dst, v);
             }
             Inst::SelfRef { dst } => {
-                let d = self.i32(*dst);
-                self.b.ins().call(self.h.self_, &[self.act, self.regs, d]);
+                let self_ptr = self
+                    .b
+                    .ins()
+                    .load(types::I64, MemFlags::trusted(), self.ptrs, 8);
+                self.clone_from(*dst, self_ptr);
             }
             Inst::Arg { dst, index } => {
-                let i = self.i32(*index);
-                let d = self.i32(*dst);
-                self.b.ins().call(self.h.arg, &[self.act, i, self.regs, d]);
+                // Present arguments are copied inline; a missing one is nil.
+                let nargs = self
+                    .b
+                    .ins()
+                    .load(types::I64, MemFlags::trusted(), self.ptrs, 16);
+                let present =
+                    self.b
+                        .ins()
+                        .icmp_imm(IntCC::UnsignedGreaterThan, nargs, i64::from(*index));
+                let yes = self.b.create_block();
+                let no = self.b.create_block();
+                let cont = self.b.create_block();
+                self.b.ins().brif(present, yes, &[], no, &[]);
+                self.b.switch_to_block(yes);
+                let args = self
+                    .b
+                    .ins()
+                    .load(types::I64, MemFlags::trusted(), self.ptrs, 0);
+                let src = self
+                    .b
+                    .ins()
+                    .iadd_imm(args, i64::from(*index) * i64::from(VALUE_SIZE));
+                self.clone_from(*dst, src);
+                self.b.ins().jump(cont, &[]);
+                self.b.switch_to_block(no);
+                self.release(*dst);
+                self.store_tag(*dst, TAG_NIL);
+                self.b.ins().jump(cont, &[]);
+                self.b.switch_to_block(cont);
             }
             Inst::BlockParam { dst } => {
                 let d = self.i32(*dst);
@@ -1132,6 +1373,131 @@ impl Gen<'_, '_> {
                     let nargs = self.i32(args.len() as u32);
                     let blk_v = self.i32(blk.unwrap_or(u32::MAX));
                     let d = self.i32(dst);
+                    if let Some(callee) = direct_target(inst, self.methods) {
+                        // Build the activation, call the body, finish.
+                        let (frame_size, file) = {
+                            let target = &self.functions[callee as usize];
+                            (target.frame_size, target.file)
+                        };
+                        let body = self.callees[&callee];
+                        let callee_v = self.i32(callee);
+                        let frame_v = self.i32(frame_size);
+                        let file_v = self.i32(file);
+                        let (nparams, has_block) = {
+                            let m = &self.methods[mid as usize];
+                            (m.params.len(), m.has_block)
+                        };
+                        // Lay the parameters out in the argument area:
+                        // the arguments, nil for missing ones, the block.
+                        let mut provided: u64 = 0;
+                        let mut slots = 0usize;
+                        for (k, r) in args.iter().enumerate() {
+                            let p = self
+                                .b
+                                .ins()
+                                .iadd_imm(self.args_buf, (k as i64) * i64::from(VALUE_SIZE));
+                            self.clone_reg_to_ptr(p, *r);
+                            if k < 64 {
+                                provided |= 1 << k;
+                            }
+                            slots += 1;
+                        }
+                        while slots < nparams {
+                            let p = self
+                                .b
+                                .ins()
+                                .iadd_imm(self.args_buf, (slots as i64) * i64::from(VALUE_SIZE));
+                            let zero = self.b.ins().iconst(types::I64, 0);
+                            self.b.ins().store(MemFlags::trusted(), zero, p, 0);
+                            slots += 1;
+                        }
+                        if has_block {
+                            let p = self
+                                .b
+                                .ins()
+                                .iadd_imm(self.args_buf, (slots as i64) * i64::from(VALUE_SIZE));
+                            match blk {
+                                Some(r) => {
+                                    self.clone_reg_to_ptr(p, r);
+                                    if nparams < 64 {
+                                        provided |= 1 << nparams;
+                                    }
+                                }
+                                None => {
+                                    let zero = self.b.ins().iconst(types::I64, 0);
+                                    self.b.ins().store(MemFlags::trusted(), zero, p, 0);
+                                }
+                            }
+                            slots += 1;
+                        }
+                        let total_v = self.i32(slots as u32);
+                        let provided_v = self.b.ins().iconst(types::I64, provided as i64);
+                        let call = self.b.ins().call(
+                            self.h.enter,
+                            &[
+                                self.rt,
+                                self.act,
+                                self.act_buf,
+                                mid_v,
+                                callee_v,
+                                self.regs,
+                                recv_v,
+                                self.args_buf,
+                                total_v,
+                                blk_v,
+                                frame_v,
+                                file_v,
+                                provided_v,
+                            ],
+                        );
+                        let status = self.b.inst_results(call)[0];
+                        // On failure nothing was built: release the area.
+                        let failed = self.b.create_block();
+                        let ok_blk = self.b.create_block();
+                        self.b.ins().brif(status, failed, &[], ok_blk, &[]);
+                        self.b.switch_to_block(failed);
+                        for k in 0..slots {
+                            let p = self
+                                .b
+                                .ins()
+                                .iadd_imm(self.args_buf, (k as i64) * i64::from(VALUE_SIZE));
+                            self.release_ptr(p);
+                        }
+                        self.b.ins().jump(unwind, &[status]);
+                        self.b.switch_to_block(ok_blk);
+                        let zero = self.b.ins().iconst(types::I64, 0);
+                        self.b
+                            .ins()
+                            .store(MemFlags::trusted(), zero, self.out_buf, 0);
+                        let call = self
+                            .b
+                            .ins()
+                            .call(body, &[self.rt, self.act_buf, self.out_buf]);
+                        let status = self.b.inst_results(call)[0];
+                        let call = self.b.ins().call(
+                            self.h.leave,
+                            &[
+                                self.rt,
+                                self.act_buf,
+                                status,
+                                self.out_buf,
+                                self.regs,
+                                d,
+                                blk_v,
+                            ],
+                        );
+                        let status = self.b.inst_results(call)[0];
+                        // The callee is gone: release its parameters.
+                        for k in 0..slots {
+                            let p = self
+                                .b
+                                .ins()
+                                .iadd_imm(self.args_buf, (k as i64) * i64::from(VALUE_SIZE));
+                            self.release_ptr(p);
+                        }
+                        self.check(status, unwind);
+                        return;
+                    }
                     let call = self.b.ins().call(
                         self.h.call_static,
                         &[

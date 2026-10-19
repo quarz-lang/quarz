@@ -31,15 +31,41 @@ pub struct Activation {
     pub closure_tag: u64,
     pub method: Option<MethodId>,
     pub file: u32,
-    /// Parameters bound by the caller, in declaration order.
+    /// Parameters bound by the caller, in declaration order (empty when
+    /// the caller is compiled code that keeps them in its own frame).
     pub args: ArgVec,
     /// Bit `i` set when parameter `i` was passed.
     pub provided: u64,
+    /// Where the bound parameters live: `args`, or the compiled caller's
+    /// argument area. Set by `bind` once the activation is in place.
+    pub args_ptr: Cell<*const Value>,
+    pub nargs: Cell<u32>,
 }
 
 impl Activation {
     pub fn has_arg(&self, i: u32) -> bool {
         i >= 64 || self.provided & (1u64 << i) != 0
+    }
+
+    /// Point the parameter view at `args` (after the activation has
+    /// reached its final place).
+    pub fn bind(&self) {
+        self.args_ptr.set(self.args.as_ptr());
+        self.nargs.set(self.args.len() as u32);
+    }
+
+    pub fn params(&self) -> &[Value] {
+        let n = self.nargs.get() as usize;
+        if n == 0 {
+            return &[];
+        }
+        // SAFETY: `bind` (or `qz_enter`) pointed the view at `n` live
+        // values that outlive the activation.
+        unsafe { std::slice::from_raw_parts(self.args_ptr.get(), n) }
+    }
+
+    pub fn arg(&self, i: u32) -> Option<&Value> {
+        self.params().get(i as usize)
     }
 }
 
@@ -84,7 +110,7 @@ impl Interp {
 
     /// Remove `act` from the call stack. Tasks interleave on one stack,
     /// so the entry is usually, but not always, the last one.
-    fn pop_call_stack(&self, act: &Activation) {
+    pub(crate) fn pop_call_stack(&self, act: &Activation) {
         let mut stack = self.call_stack.borrow_mut();
         let p = act as *const Activation;
         if stack.last() == Some(&p) {
@@ -256,7 +282,7 @@ impl Interp {
             }
             Inst::SelfRef { dst } => regs[*dst as usize] = act.self_val.clone(),
             Inst::Arg { dst, index } => {
-                regs[*dst as usize] = act.args.get(*index as usize).cloned().unwrap_or(Value::Nil);
+                regs[*dst as usize] = act.arg(*index).cloned().unwrap_or(Value::Nil);
             }
             Inst::HasArg { dst, index } => {
                 regs[*dst as usize] = Value::Bool(act.has_arg(*index));
@@ -799,27 +825,40 @@ impl Interp {
                         }
                     }
                 }
-                let mut bound: ArgVec = ArgVec::with_capacity(f.param_kinds.len());
-                let mut provided = 0u64;
                 let file = closure.file;
-                let mut it = args.into_iter();
-                for (i, kind) in f.param_kinds.iter().enumerate() {
-                    match kind {
-                        RtParamKind::Rest => {
-                            let rest: Vec<Value> = it.by_ref().collect();
-                            bound.push(Value::array(rest));
-                            provided |= 1 << i.min(63);
-                        }
-                        RtParamKind::Block => bound.push(Value::Nil),
-                        _ => match it.next() {
-                            Some(v) => {
-                                bound.push(v);
+                let nparams = f.param_kinds.len();
+                // The common shape: positional parameters, one argument
+                // each. The arguments are the bound list as they are.
+                let simple = args.len() == nparams
+                    && nparams < 64
+                    && f.param_kinds
+                        .iter()
+                        .all(|k| matches!(k, RtParamKind::Positional | RtParamKind::KeywordOnly));
+                let (bound, provided) = if simple {
+                    (args, (1u64 << nparams) - 1)
+                } else {
+                    let mut bound: ArgVec = ArgVec::with_capacity(nparams);
+                    let mut provided = 0u64;
+                    let mut it = args.into_iter();
+                    for (i, kind) in f.param_kinds.iter().enumerate() {
+                        match kind {
+                            RtParamKind::Rest => {
+                                let rest: Vec<Value> = it.by_ref().collect();
+                                bound.push(Value::array(rest));
                                 provided |= 1 << i.min(63);
                             }
-                            None => bound.push(Value::Nil),
-                        },
+                            RtParamKind::Block => bound.push(Value::Nil),
+                            _ => match it.next() {
+                                Some(v) => {
+                                    bound.push(v);
+                                    provided |= 1 << i.min(63);
+                                }
+                                None => bound.push(Value::Nil),
+                            },
+                        }
                     }
-                }
+                    (bound, provided)
+                };
                 let act = Activation {
                     fid: *fid,
                     task: self.current_task_id.get(),
@@ -837,7 +876,10 @@ impl Interp {
                     file,
                     args: bound,
                     provided,
+                    args_ptr: Cell::new(std::ptr::null()),
+                    nargs: Cell::new(0),
                 };
+                act.bind();
                 match self.run_func(*fid, &act) {
                     Ok(v) => Ok(v),
                     Err(Flow::Next(v)) => Ok(v),
@@ -870,7 +912,10 @@ impl Interp {
             file,
             args: ArgVec::new(),
             provided: 0,
+            args_ptr: Cell::new(std::ptr::null()),
+            nargs: Cell::new(0),
         };
+        act.bind();
         self.run_func(fid, &act)
     }
 
@@ -911,7 +956,10 @@ impl Interp {
             file,
             args,
             provided,
+            args_ptr: Cell::new(std::ptr::null()),
+            nargs: Cell::new(0),
         };
+        act.bind();
         let r = self.run_func(fid, &act);
         match r {
             Err(Flow::Return(v, t)) if t == tag => Ok(v),
@@ -944,7 +992,10 @@ impl Interp {
             file,
             args: ArgVec::new(),
             provided: 0,
+            args_ptr: Cell::new(std::ptr::null()),
+            nargs: Cell::new(0),
         };
+        act.bind();
         self.run_func(fid, &act)
     }
 }

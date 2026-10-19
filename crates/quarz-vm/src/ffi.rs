@@ -138,6 +138,173 @@ pub unsafe extern "C" fn qz_term(
     rt.park_flow(flow)
 }
 
+/// Size of the buffer compiled code reserves for an `Activation` it
+/// builds itself (`qz_enter`); checked against the real size below.
+pub const ACT_BUF_SIZE: usize = 320;
+const _: () = assert!(std::mem::size_of::<Activation>() <= ACT_BUF_SIZE);
+const _: () = assert!(std::mem::align_of::<Activation>() <= 16);
+
+/// Where the arguments and `self` of an activation live, for inline
+/// reads: `out[0]` = the arguments, `out[1]` = `self`, `out[2]` = the
+/// number of arguments (as a pointer-sized integer).
+///
+/// # Safety
+/// As for `qz_exec`; `out` must have room for three words.
+#[no_mangle]
+pub unsafe extern "C" fn qz_act_ptrs(act: *const Activation, out: *mut *const Value) {
+    let act = &*act;
+    *out = act.args_ptr.get();
+    *out.add(1) = &act.self_val;
+    *out.add(2) = act.nargs.get() as usize as *const Value;
+}
+
+/// `regs[dst] = *src` for a reference-counted value (the inline path
+/// copies the others).
+///
+/// # Safety
+/// `src` must point to a live value.
+#[no_mangle]
+pub unsafe extern "C" fn qz_clone_to(regs: *mut Value, dst: u32, src: *const Value) {
+    *regs.add(dst as usize) = (*src).clone();
+}
+
+/// `*dst = *src` where `dst` holds no value yet (the inline path copies
+/// values without reference counts itself).
+///
+/// # Safety
+/// `src` must point to a live value, `dst` to writable space.
+#[no_mangle]
+pub unsafe extern "C" fn qz_clone_ptr(dst: *mut Value, src: *const Value) {
+    std::ptr::write(dst, (*src).clone());
+}
+
+/// Release the value at `p` and leave nil there.
+///
+/// # Safety
+/// `p` must point to a live value.
+#[no_mangle]
+pub unsafe extern "C" fn qz_drop_value(p: *mut Value) {
+    *p = Value::Nil;
+}
+
+/// Build the activation of a direct call to the compiled body of method
+/// `mid` (function `fid`) in `buf`, binding the receiver (`regs[recv]`, or
+/// the caller's `self` when `recv` is `u32::MAX`) and the block, and push
+/// it on the call stack. The parameters (`nargs` values, nil-padded and
+/// with the block last when the method takes one) stay in the caller's
+/// argument area `args`, which the activation refers to. The caller then
+/// calls the body and finishes with `qz_leave`. Returns a status
+/// (non-zero: the stack is exhausted and nothing was built).
+///
+/// # Safety
+/// As for `qz_call_static`; `buf` must have `ACT_BUF_SIZE` bytes of
+/// 16-byte aligned space, and `args` must stay untouched, until
+/// `qz_leave`.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn qz_enter(
+    rt: *const Interp,
+    act: *const Activation,
+    buf: *mut Activation,
+    mid: u32,
+    fid: u32,
+    regs: *mut Value,
+    recv: u32,
+    args: *const Value,
+    nargs: u32,
+    block: u32,
+    frame_size: u32,
+    file: u32,
+    provided: u64,
+) -> u32 {
+    let rt = &*rt;
+    let caller = &*act;
+    if crate::sched::stack_exhausted() {
+        return rt.park_flow(rt.raise(rt.exc.system_stack, "stack level too deep"));
+    }
+    let recv = if recv == u32::MAX {
+        caller.self_val.clone()
+    } else {
+        (*regs.add(recv as usize)).clone()
+    };
+    let block = if block == u32::MAX {
+        None
+    } else {
+        Some((*regs.add(block as usize)).clone())
+    };
+    let frame = if frame_size > 0 {
+        Some(crate::value::Frame::new(frame_size as usize, None))
+    } else {
+        None
+    };
+    std::ptr::write(
+        buf,
+        Activation {
+            fid,
+            task: rt.current_task_id.get(),
+            line: std::cell::Cell::new(0),
+            self_val: recv,
+            frame,
+            block,
+            method_tag: rt.new_tag(),
+            closure_tag: 0,
+            method: Some(mid),
+            file,
+            args: crate::interp::ArgVec::new(),
+            provided,
+            args_ptr: std::cell::Cell::new(args),
+            nargs: std::cell::Cell::new(nargs),
+        },
+    );
+    rt.call_stack.borrow_mut().push(buf as *const Activation);
+    STATUS_OK
+}
+
+/// Finish a direct call begun with `qz_enter`: pop the call stack,
+/// turn a `return` from the body or a `break` from its block into the
+/// result, store it in `regs[dst]`, drop the activation and return the
+/// status.
+///
+/// # Safety
+/// As for `qz_enter`; `status` is what the body returned and `out` the
+/// value it produced when the status is OK.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn qz_leave(
+    rt: *const Interp,
+    buf: *mut Activation,
+    status: u32,
+    out: *mut Value,
+    regs: *mut Value,
+    dst: u32,
+    block: u32,
+) -> u32 {
+    let rt = &*rt;
+    rt.pop_call_stack(&*buf);
+    let r = if status == STATUS_OK {
+        Ok(std::mem::replace(&mut *out, Value::Nil))
+    } else {
+        match rt.take_flow(status) {
+            Flow::Return(v, t) if t == (*buf).method_tag => Ok(v),
+            flow => Err(flow),
+        }
+    };
+    let blk = if block == u32::MAX {
+        None
+    } else {
+        Some((*regs.add(block as usize)).clone())
+    };
+    let r = rt.catch_break(&blk, r);
+    std::ptr::drop_in_place(buf);
+    match r {
+        Ok(v) => {
+            *regs.add(dst as usize) = v;
+            STATUS_OK
+        }
+        Err(flow) => rt.park_flow(flow),
+    }
+}
+
 /// `regs[dst] = self`.
 ///
 /// # Safety
@@ -155,7 +322,7 @@ pub unsafe extern "C" fn qz_self(act: *const Activation, regs: *mut Value, dst: 
 #[no_mangle]
 pub unsafe extern "C" fn qz_arg(act: *const Activation, index: u32, regs: *mut Value, dst: u32) {
     let act = &*act;
-    let v = act.args.get(index as usize).cloned().unwrap_or(Value::Nil);
+    let v = act.arg(index).cloned().unwrap_or(Value::Nil);
     *regs.add(dst as usize) = v;
 }
 
@@ -466,31 +633,40 @@ pub unsafe extern "C" fn qz_construct(
     dst: u32,
 ) -> u32 {
     let rt = &*rt;
-    let mut args: crate::interp::ArgVec = crate::interp::ArgVec::with_capacity(nargs as usize);
-    for i in 0..nargs as usize {
-        let r = *arg_regs.add(i);
-        args.push((*regs.add(r as usize)).clone());
-    }
     let init = if init == u32::MAX { None } else { Some(init) };
-    // A data type given all its fields: no initializer to run.
+    // A data type given all its fields: no initializer to run, and the
+    // fields are copied straight from the registers.
     if let Some(i) = init {
         let info = &rt.world.classes[class as usize];
         if rt.world.methods[i as usize].synth == quarz_ir::RtSynth::DataInit
-            && args.len() == info.fields.len()
+            && nargs as usize == info.fields.len()
             && matches!(
                 info.kind,
                 quarz_ir::RtClassKind::Data | quarz_ir::RtClassKind::Variant
             )
         {
+            let mut fields = crate::value::Fields::new();
+            if nargs > 4 {
+                fields.reserve(nargs as usize);
+            }
+            for k in 0..nargs as usize {
+                let r = *arg_regs.add(k);
+                fields.push((*regs.add(r as usize)).clone());
+            }
             let obj = Value::Object(Rc::new(crate::value::Object {
                 class,
-                fields: std::cell::RefCell::new(args.into_iter().collect()),
+                fields: std::cell::RefCell::new(fields),
                 backtrace: std::cell::RefCell::new(None),
                 cause: std::cell::RefCell::new(None),
             }));
             *regs.add(dst as usize) = obj;
             return STATUS_OK;
         }
+    }
+    let mut args: crate::interp::ArgVec = crate::interp::ArgVec::with_capacity(nargs as usize);
+    for i in 0..nargs as usize {
+        let r = *arg_regs.add(i);
+        args.push((*regs.add(r as usize)).clone());
     }
     match rt.construct(class, init, args, Vec::new(), None) {
         Ok(v) => {
