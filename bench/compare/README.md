@@ -10,21 +10,21 @@ cargo build --release
 PATH="$HOME/go-sdk/bin:$PATH" RUNS=5 bench/compare/run.sh
 ```
 
-## Results (2026-10-19, after the direct-call, inline-access and unboxing rounds)
+## Results (2026-10-19, after the direct-call, unboxing and inlining rounds)
 
 12th Gen Intel Core i7-1260P; Go 1.27.2, rustc 1.98.1 (`-O`), Ruby 4.0.5
-(with and without `--yjit`); Quarz at commit 29b957c, VM = `quarz run`,
-AOT = `quarz build`. Milliseconds, best of 5 runs, process start-up
-included. (The machine ran about 15% slower than for the first table
-below; compare columns within one table.)
+(with and without `--yjit`); Quarz at the inlining commit, VM =
+`quarz run`, AOT = `quarz build`. Milliseconds, best of 5 runs, process
+start-up included. (The machine ran about 15% slower than for the first
+table below; compare columns within one table.)
 
 | program     | quarz-vm | quarz-aot |   go | rust |  ruby | ruby --yjit |
 |-------------|---------:|----------:|-----:|-----:|------:|------------:|
-| fib         |    168.0 |      24.4 |  2.6 |  1.7 |  68.0 |        58.9 |
-| loop        |    557.0 |       9.2 |  3.4 |  3.4 | 113.9 |       115.6 |
-| collections |    875.3 |     294.7 | 29.3 | 15.0 | 233.9 |       212.4 |
-| objects     |    352.1 |      70.0 |  2.2 |  1.6 | 296.6 |       236.7 |
-| strings     |    155.5 |      88.4 | 32.7 | 15.6 | 158.4 |       151.2 |
+| fib         |    156.0 |      15.2 |  2.8 |  1.8 |  66.9 |        56.1 |
+| loop        |    551.9 |      14.3 |  3.1 |  4.0 | 110.5 |       110.0 |
+| collections |    647.7 |     186.9 | 32.2 | 14.6 | 226.6 |       206.8 |
+| objects     |    255.3 |      42.1 |  2.1 |  1.4 | 288.5 |       235.1 |
+| strings     |    155.9 |      85.4 | 32.1 | 15.9 | 157.2 |       149.7 |
 
 First measurement, at commit 93874ea (before direct calls between
 compiled bodies, inline reference counting, inline field and frame
@@ -40,22 +40,22 @@ access and the reusable block caller):
 
 ## Reading the numbers
 
-- Compiled Quarz is now 2.7× slower than Go and Rust on the counting
-  loop (its Int locals are unboxed and stay in registers), 9–14× on
-  `fib` (dominated by the call protocol), 10–20× on the collection
-  pipeline, 30–45× on `objects` and 3–6× on `strings`. Values other than local numbers are
-  still 24-byte tagged, reference-counted boxes: `Vec2.new` allocates,
-  and `map`/`select` run a block per element. Go and Rust keep `Vec2`
-  in registers and inline the calls.
-- Against Ruby, compiled Quarz is ahead everywhere: 2.4–2.8× on `fib`,
-  12× on `loop`, 3.4–4.2× on `objects`, 1.7–1.8× on `strings`;
-  `collections` (295 ms) is the one program still behind Ruby (234 ms,
-  212 ms with YJIT): its blocks run through the generic block protocol.
+- Compiled Quarz is now 3.5–4.5× slower than Go and Rust on the
+  counting loop (its Int locals are unboxed and stay in registers),
+  5–8× on `fib` (one level of the recursion is inlined; the rest is the
+  call protocol), 6–13× on the collection pipeline (its blocks are now
+  loops in the caller; what remains is the persistent array and hash
+  updates), 20–30× on `objects` (every `Vec2` is still heap-allocated
+  and reference-counted, where Go and Rust keep it in registers) and
+  3–5× on `strings`.
+- Against Ruby, compiled Quarz is ahead everywhere: 3.7–4.4× on `fib`,
+  8× on `loop`, 1.1–1.2× on `collections`, 5.6–6.9× on `objects`,
+  1.8× on `strings`.
 - The VM is 2–5× slower than Ruby's interpreter on calls and loops and
   on a par for objects and strings.
 
-The next steps that would narrow the gap to Go and Rust are inlining
-small methods and blocks into their callers (the call protocol is what
-is left in `fib`), passing unboxed numbers through calls (arguments and
-results are still boxed at the call boundary), and cheaper object
-construction.
+The next steps that would narrow the gap to Go and Rust are a lighter
+activation for the calls that remain (building it inline instead of in
+the runtime, and passing unboxed numbers), escape analysis or inline
+allocation for short-lived objects such as `Vec2`, and in-place updates
+of persistent collections in more shapes than `xs = xs.push(v)`.
