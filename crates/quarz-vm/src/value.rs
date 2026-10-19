@@ -469,6 +469,20 @@ impl Value {
         }
     }
 
+    /// `*dst = *src` without a temporary: a plain copy for values without
+    /// a reference count.
+    ///
+    /// # Safety
+    /// `dst` must point to writable space holding no live value.
+    #[inline]
+    pub unsafe fn clone_into(dst: *mut Value, src: &Value) {
+        if (src.type_tag() as u64) < NEEDS_DROP_FROM {
+            std::ptr::copy_nonoverlapping(src as *const Value, dst, 1);
+        } else {
+            std::ptr::write(dst, src.clone());
+        }
+    }
+
     /// Drop a value, skipping the destructor for those that need none.
     #[inline]
     pub fn fast_drop(self) {

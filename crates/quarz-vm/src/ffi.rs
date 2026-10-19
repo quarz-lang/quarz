@@ -227,10 +227,10 @@ pub unsafe extern "C" fn qz_enter(
     if crate::sched::stack_exhausted() {
         return rt.park_flow(rt.raise(rt.exc.system_stack, "stack level too deep"));
     }
-    let recv = if recv == u32::MAX {
-        caller.self_val.fast_clone()
+    let recv_src: &Value = if recv == u32::MAX {
+        &caller.self_val
     } else {
-        (*regs.add(recv as usize)).fast_clone()
+        &*regs.add(recv as usize)
     };
     let block = if block == u32::MAX {
         None
@@ -247,7 +247,7 @@ pub unsafe extern "C" fn qz_enter(
     write(addr_of_mut!((*buf).fid), fid);
     write(addr_of_mut!((*buf).task), rt.current_task_id.get());
     write(addr_of_mut!((*buf).line), std::cell::Cell::new(0));
-    write(addr_of_mut!((*buf).self_val), recv);
+    Value::clone_into(addr_of_mut!((*buf).self_val), recv_src);
     write(addr_of_mut!((*buf).frame), frame);
     write(addr_of_mut!((*buf).block), block);
     write(addr_of_mut!((*buf).method_tag), rt.new_tag());
@@ -308,7 +308,10 @@ pub unsafe extern "C" fn qz_leave(
         }
         drop_in_place(addr_of_mut!((*buf).frame));
         drop_in_place(addr_of_mut!((*buf).args));
-        drop_in_place(addr_of_mut!((*buf).yield_caller));
+        // The block caller exists only in activations that yielded.
+        if let Some(Some(caller)) = read(addr_of_mut!((*buf).yield_caller)).into_inner() {
+            drop(caller);
+        }
     }
     match r {
         Ok(v) => {
