@@ -375,6 +375,10 @@ impl Compiler {
             .collect();
         let exit = b.create_block();
         b.append_block_param(exit, types::I32);
+        // `return` releases its registers inline (only those whose state
+        // allows a heap value) and leaves through here.
+        let exit_quick = b.create_block();
+        b.append_block_param(exit_quick, types::I32);
 
         b.switch_to_block(entry);
         let params = b.block_params(entry).to_vec();
@@ -527,8 +531,14 @@ impl Compiler {
                     }
                     let zero = g.b.ins().iconst(types::I64, 0);
                     g.b.ins().store(MemFlags::trusted(), zero, regs, off);
+                    g.states[*r as usize] = State::NonHeap;
+                    for k in 0..g.nregs {
+                        if heap[k] {
+                            g.release(k as Reg);
+                        }
+                    }
                     let ok = g.b.ins().iconst(types::I32, 0);
-                    g.b.ins().jump(exit, &[ok]);
+                    g.b.ins().jump(exit_quick, &[ok]);
                 }
                 Term::Raise(_)
                 | Term::BreakOut(_)
@@ -571,6 +581,9 @@ impl Compiler {
             let p = b.ins().iadd_imm(regs, i64::from(i) * i64::from(VALUE_SIZE));
             emit_release_ptr(&mut b, drop_value_fn, p);
         }
+        b.ins().return_(&[status]);
+        b.switch_to_block(exit_quick);
+        let status = b.block_params(exit_quick)[0];
         b.ins().return_(&[status]);
         b.seal_all_blocks();
         b.finalize();
@@ -2257,7 +2270,12 @@ impl Gen<'_, '_> {
                 let a_v = self.i32(a);
                 let b_v = self.i32(bb);
                 let nargs = self.i32(args.len() as u32);
-                let d = self.i32(*dst);
+                // A result nobody reads (`xs = xs.push(v)` as a statement)
+                // is not stored: one clone and one release fewer.
+                let wanted = self.live[block as usize]
+                    .get(index as usize + 1)
+                    .is_some_and(|l| l[*dst as usize]);
+                let d = self.i32(if wanted { *dst } else { u32::MAX });
                 let call = self.b.ins().call(
                     self.h.owned_call,
                     &[

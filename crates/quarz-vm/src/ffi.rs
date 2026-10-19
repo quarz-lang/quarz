@@ -607,7 +607,9 @@ pub unsafe extern "C" fn qz_owned_call(
                 if refs.iter().all(|v| !std::ptr::eq(*v, recv))
                     && rt.owned_fast(mid, &mut *recv, refs)
                 {
-                    *regs.add(dst as usize) = (*recv).clone();
+                    if dst != u32::MAX {
+                        *regs.add(dst as usize) = (*recv).clone();
+                    }
                     return STATUS_OK;
                 }
             }
@@ -618,7 +620,9 @@ pub unsafe extern "C" fn qz_owned_call(
                         if rt.owned_fast(mid, slot, refs) {
                             let v = slot.clone();
                             drop(fields);
-                            *regs.add(dst as usize) = v;
+                            if dst != u32::MAX {
+                                *regs.add(dst as usize) = v;
+                            }
                             return STATUS_OK;
                         }
                     }
@@ -671,7 +675,9 @@ pub unsafe extern "C" fn qz_owned_call(
                 1 => frame().set(a, b, v.clone()),
                 _ => put_field(a, b, v.clone()),
             }
-            *regs.add(dst as usize) = v;
+            if dst != u32::MAX {
+                *regs.add(dst as usize) = v;
+            }
             STATUS_OK
         }
         Err((flow, old)) => {

@@ -165,6 +165,12 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
         m.insert(key("/"), |i, r, a| arith(i, r, &a, "/"));
         m.insert(key("%"), |i, r, a| arith(i, r, &a, "%"));
         m.insert(key("**"), |i, r, a| arith(i, r, &a, "**"));
+        m.insert(key("=="), |i, r, a| {
+            Ok(Value::Bool(i.values_equal(r, a.arg(0))?))
+        });
+        m.insert(key("!="), |i, r, a| {
+            Ok(Value::Bool(!i.values_equal(r, a.arg(0))?))
+        });
         m.insert(key("<=>"), |i, r, a| {
             Ok(Value::Int(cmp_num(i, r, &a)? as i64))
         });

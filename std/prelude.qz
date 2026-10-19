@@ -103,6 +103,9 @@ class Int
   native def >>(other: Int) -> Int
   native def <=>(other: Int) -> Int
   native def <=>(other: Float) -> Int
+  # Int's own `==`/`!=` (numeric equality): compiled code compares inline.
+  native def ==(other: Object) -> Bool
+  native def !=(other: Object) -> Bool
   native def <(other: Int) -> Bool
   native def <=(other: Int) -> Bool
   native def >(other: Int) -> Bool
@@ -200,6 +203,8 @@ class Float
   native def +@ -> Float
   native def <=>(other: Float) -> Int
   native def <=>(other: Int) -> Int
+  native def ==(other: Object) -> Bool
+  native def !=(other: Object) -> Bool
   native def <(other: Float) -> Bool
   native def <=(other: Float) -> Bool
   native def >(other: Float) -> Bool
