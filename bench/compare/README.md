@@ -10,22 +10,22 @@ cargo build --release
 PATH="$HOME/go-sdk/bin:$PATH" RUNS=5 bench/compare/run.sh
 ```
 
-## Results (2026-10-19, after the direct-call, unboxing, inlining, lean-call and allocation rounds)
+## Results (2026-10-19, after the direct-call, unboxing, inlining, lean-call, allocation and array rounds)
 
 12th Gen Intel Core i7-1260P; Go 1.27.2, rustc 1.98.1 (`-O`), Ruby 4.0.5
-(with and without `--yjit`); Quarz at the in-place-update commit, VM =
+(with and without `--yjit`); Quarz at the object-layout commit, VM =
 `quarz run`, AOT = `quarz build`. Milliseconds, best of 5 runs, process
-start-up included (about 5 ms for a compiled Quarz program, which is
-most of `fib` and `loop` now). (The machine ran about 10% slower than
-for the first table below; compare columns within one table.)
+start-up included (about 2 ms for a compiled Quarz program). `fib` and
+`loop` are short enough that the numbers wander by a few milliseconds
+between runs (`perf stat` puts `fib` at 10 ms).
 
 | program     | quarz-vm | quarz-aot |   go | rust |  ruby | ruby --yjit |
 |-------------|---------:|----------:|-----:|-----:|------:|------------:|
-| fib         |    155.8 |      15.1 |  2.8 |  1.8 |  66.4 |        56.7 |
-| loop        |    538.4 |       9.0 |  3.3 |  3.5 | 110.3 |       111.4 |
-| collections |    642.8 |     191.1 | 27.6 | 13.2 | 224.4 |       202.4 |
-| objects     |    188.5 |      28.9 |  2.1 |  1.7 | 284.7 |       228.8 |
-| strings     |    148.4 |      82.7 | 32.1 | 15.0 | 153.4 |       150.1 |
+| fib         |    158.7 |      14.5 |  2.1 |  1.7 |  64.7 |        55.8 |
+| loop        |    532.2 |       9.7 |  4.2 |  4.3 | 106.7 |       107.7 |
+| collections |    630.4 |     119.7 | 28.2 | 14.0 | 221.3 |       198.6 |
+| objects     |    184.6 |      19.4 |  2.0 |  1.5 | 282.3 |       226.6 |
+| strings     |    144.6 |      79.0 | 29.7 | 15.0 | 151.9 |       146.4 |
 
 First measurement, at commit 93874ea (before direct calls between
 compiled bodies, inline reference counting, inline field and frame
@@ -41,22 +41,23 @@ access and the reusable block caller):
 
 ## Reading the numbers
 
-- Compiled Quarz is now 2.5–3× slower than Go and Rust on the counting
-  loop (its Int locals are unboxed and stay in registers), 5–8× on
+- Compiled Quarz is now 2–2.5× slower than Go and Rust on the counting
+  loop (its Int locals are unboxed and stay in registers), 5–7× on
   `fib` (one level of the recursion is inlined and the remaining calls
-  build their activation inline; a third of the time is start-up),
-  7–14× on the collection pipeline (its blocks are loops in the caller
-  and the array and hash updates are in place; what remains is boxed
-  elements and hashing), 14–17× on `objects` (a `Vec2` that stays in
+  build their activation inline), 4–8× on the collection pipeline (its
+  blocks are loops in the caller, the array and hash updates are in
+  place and array elements are read inline; what remains is boxed
+  elements and hashing), 10–13× on `objects` (a `Vec2` that stays in
   its function is not allocated, the one stored in the particle is) and
   3–5× on `strings`.
-- Against Ruby, compiled Quarz is ahead everywhere: 4× on `fib`, 12×
-  on `loop`, 1.1–1.2× on `collections`, 8–10× on `objects`, 1.8× on
+- Against Ruby, compiled Quarz is ahead everywhere: 4× on `fib`, 11×
+  on `loop`, 1.7–1.8× on `collections`, 12–15× on `objects`, 1.9× on
   `strings`.
 - The VM is 2–5× slower than Ruby's interpreter on calls and loops and
   on a par for objects and strings.
 
-The next steps that would narrow the gap to Go and Rust are unboxed
-`Int`/`Float` fields and array elements (a `Vec2` stored in an object
-still boxes its floats), a faster start-up (the embedded module is
-decoded at every start), and a cheaper object layout.
+The next steps that would narrow the gap to Go and Rust are typed
+storage for `Int`/`Float` fields and array elements (every value is
+still a 24-byte tagged box, which also costs the reference-count
+checks on every copy), and hashing and string building in `strings`
+and `collections`.
