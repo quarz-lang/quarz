@@ -40,6 +40,139 @@ pub struct Activation {
     /// argument area. Set by `bind` once the activation is in place.
     pub args_ptr: Cell<*const Value>,
     pub nargs: Cell<u32>,
+    /// The caller for this activation's block, built on the first `yield`
+    /// (`None` once it is known to need the general path).
+    pub yield_caller: std::cell::OnceCell<Option<Box<BlockCaller>>>,
+}
+
+/// A block prepared for repeated calls (natives that iterate, `yield`):
+/// its activation is built once, and each call only points the
+/// parameter view at the arguments. Only blocks with a compiled or QIR
+/// body, positional parameters and no frame of their own qualify.
+pub struct BlockCaller {
+    interp: *const Interp,
+    closure: Rc<Closure>,
+    fid: FuncId,
+    act: Activation,
+    compiled: Option<crate::interp::CompiledFn>,
+    nparams: usize,
+}
+
+impl Interp {
+    /// A reusable caller for `proc`, or `None` when it needs the general
+    /// path (`call_block`).
+    pub fn block_caller(&self, proc: &Value) -> Option<BlockCaller> {
+        let Value::Proc(closure) = proc else {
+            return None;
+        };
+        let ClosureBody::Func(fid) = closure.body else {
+            return None;
+        };
+        if closure.destructure.is_some() {
+            return None;
+        }
+        let (frame_size, nparams, file) = {
+            let funcs = self.funcs.borrow();
+            let f = &funcs[fid as usize];
+            if f.frame_size > 0
+                || f.param_kinds.len() >= 64
+                || !f
+                    .param_kinds
+                    .iter()
+                    .all(|k| matches!(k, RtParamKind::Positional | RtParamKind::KeywordOnly))
+            {
+                return None;
+            }
+            (f.frame_size, f.param_kinds.len(), closure.file)
+        };
+        debug_assert_eq!(frame_size, 0);
+        let act = Activation {
+            fid,
+            task: self.current_task_id.get(),
+            line: Cell::new(0),
+            self_val: closure.self_val.fast_clone(),
+            frame: closure.frame.clone(),
+            block: closure.method_block.as_ref().map(|b| b.fast_clone()),
+            method_tag: if closure.is_lambda {
+                closure.tag
+            } else {
+                closure.method_tag
+            },
+            closure_tag: closure.tag,
+            method: None,
+            file,
+            args: ArgVec::new(),
+            provided: (1u64 << nparams) - 1,
+            args_ptr: Cell::new(std::ptr::null()),
+            nargs: Cell::new(0),
+            yield_caller: Default::default(),
+        };
+        let compiled = self.compiled.borrow().get(fid as usize).copied().flatten();
+        Some(BlockCaller {
+            interp: self,
+            closure: closure.clone(),
+            fid,
+            act,
+            compiled,
+            nparams,
+        })
+    }
+}
+
+impl BlockCaller {
+    /// Call the block with `args` (padded with nil or cut to the block's
+    /// parameters).
+    pub fn call(&self, args: &[Value]) -> EvalResult {
+        // SAFETY: a caller never outlives the interpreter that made it.
+        let interp = unsafe { &*self.interp };
+        if sched::stack_exhausted() {
+            return Err(interp.raise(interp.exc.system_stack, "stack level too deep"));
+        }
+        let padded: ArgVec;
+        let view: &[Value] = if args.len() == self.nparams {
+            args
+        } else {
+            let mut v: ArgVec = args
+                .iter()
+                .take(self.nparams)
+                .map(|a| a.fast_clone())
+                .collect();
+            while v.len() < self.nparams {
+                v.push(Value::Nil);
+            }
+            padded = v;
+            &padded
+        };
+        self.act.args_ptr.set(view.as_ptr());
+        self.act.nargs.set(view.len() as u32);
+        let act = &self.act;
+        interp
+            .call_stack
+            .borrow_mut()
+            .push(act as *const Activation);
+        let r = match self.compiled {
+            Some(f) => {
+                let mut out = Value::Nil;
+                // SAFETY: `f` is the compiled body of `fid` (see `run_compiled`).
+                let status = unsafe { f(interp, act, &mut out) };
+                if status == crate::ffi::STATUS_OK {
+                    Ok(out)
+                } else {
+                    Err(interp.take_flow(status))
+                }
+            }
+            None => interp.run_func_inner(self.fid, act),
+        };
+        interp.pop_call_stack(act);
+        let closure = &self.closure;
+        match r {
+            Ok(v) => Ok(v),
+            Err(Flow::Next(v)) => Ok(v),
+            Err(Flow::Return(v, t)) if closure.is_lambda && t == closure.tag => Ok(v),
+            Err(Flow::Break(v, t)) if closure.is_lambda && t == closure.tag => Ok(v),
+            Err(e) => Err(e),
+        }
+    }
 }
 
 impl Activation {
@@ -880,6 +1013,7 @@ impl Interp {
                     provided,
                     args_ptr: Cell::new(std::ptr::null()),
                     nargs: Cell::new(0),
+                    yield_caller: Default::default(),
                 };
                 act.bind();
                 let r = match self.run_func(*fid, &act) {
@@ -932,6 +1066,7 @@ impl Interp {
             provided: 0,
             args_ptr: Cell::new(std::ptr::null()),
             nargs: Cell::new(0),
+            yield_caller: Default::default(),
         };
         act.bind();
         self.run_func(fid, &act)
@@ -976,6 +1111,7 @@ impl Interp {
             provided,
             args_ptr: Cell::new(std::ptr::null()),
             nargs: Cell::new(0),
+            yield_caller: Default::default(),
         };
         act.bind();
         let r = self.run_func(fid, &act);
@@ -1012,6 +1148,7 @@ impl Interp {
             provided: 0,
             args_ptr: Cell::new(std::ptr::null()),
             nargs: Cell::new(0),
+            yield_caller: Default::default(),
         };
         act.bind();
         self.run_func(fid, &act)

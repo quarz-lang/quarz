@@ -492,9 +492,7 @@ fn int_times(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let Some(b) = args.block else {
         return enumerator(interp, recv, "times", vec![]);
     };
-    for i in 0..n {
-        interp.call_block(&b, smallvec![Value::Int(i)])?;
-    }
+    super::each_value(interp, (0..n).map(Value::Int), &b)?;
     Ok(Value::Nil)
 }
 

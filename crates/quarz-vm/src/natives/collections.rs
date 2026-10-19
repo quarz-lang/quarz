@@ -522,15 +522,29 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     m.insert("Hash.build", hash_build);
     m.insert("Hash#each", |i, r, a| {
         let b = block(i, &a)?;
-        for (k, v) in hash(i, r)?.iter() {
-            i.call_block(&b, smallvec![Value::array(vec![k.clone(), v.clone()])])?;
-        }
+        let h = hash(i, r)?.clone();
+        super::each_value(
+            i,
+            h.iter()
+                .map(|(k, v)| Value::array(vec![k.clone(), v.clone()])),
+            &b,
+        )?;
         Ok(Value::Nil)
     });
     m.insert("Hash#each_pair", |i, r, a| {
         let b = block(i, &a)?;
-        for (k, v) in hash(i, r)?.iter() {
-            i.call_block(&b, smallvec![k.clone(), v.clone()])?;
+        let h = hash(i, r)?.clone();
+        match i.block_caller(&b) {
+            Some(caller) => {
+                for (k, v) in h.iter() {
+                    caller.call(&[k.clone(), v.clone()])?;
+                }
+            }
+            None => {
+                for (k, v) in h.iter() {
+                    i.call_block(&b, smallvec![k.clone(), v.clone()])?;
+                }
+            }
         }
         Ok(Value::Nil)
     });
@@ -751,9 +765,8 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     m.insert("Set.build", set_build);
     m.insert("Set#each", |i, r, a| {
         let b = block(i, &a)?;
-        for x in set(i, r)?.iter() {
-            i.call_block(&b, smallvec![x.clone()])?;
-        }
+        let s = set(i, r)?.clone();
+        super::each_value(i, s.iter().cloned(), &b)?;
         Ok(Value::Nil)
     });
     m.insert("Set#add", |i, r, a| {
@@ -1083,9 +1096,7 @@ fn array_build(interp: &Interp, _: &Value, args: Args) -> EvalResult {
 fn array_each(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let b = block(interp, &args)?;
     let items = arr(interp, recv)?.clone();
-    for x in items.iter() {
-        interp.call_block(&b, smallvec![x.clone()])?;
-    }
+    super::each_value(interp, items.iter().cloned(), &b)?;
     Ok(Value::Nil)
 }
 
@@ -1206,20 +1217,31 @@ fn array_shuffle(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
 fn array_map(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let b = block(interp, &args)?;
     let items = arr(interp, recv)?.clone();
-    let mut out = Vec::with_capacity(items.len());
-    for x in items.iter() {
-        out.push(interp.call_block(&b, smallvec![x.clone()])?);
-    }
-    Ok(Value::array(out))
+    Ok(Value::array(super::map_values(
+        interp,
+        items.iter().cloned(),
+        &b,
+    )?))
 }
 
 fn array_select(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let b = block(interp, &args)?;
     let items = arr(interp, recv)?.clone();
     let mut out = Vec::new();
-    for x in items.iter() {
-        if interp.call_block(&b, smallvec![x.clone()])?.is_truthy() {
-            out.push(x.clone());
+    match interp.block_caller(&b) {
+        Some(caller) => {
+            for x in items.iter() {
+                if caller.call(std::slice::from_ref(x))?.is_truthy() {
+                    out.push(x.clone());
+                }
+            }
+        }
+        None => {
+            for x in items.iter() {
+                if interp.call_block(&b, smallvec![x.clone()])?.is_truthy() {
+                    out.push(x.clone());
+                }
+            }
         }
     }
     Ok(Value::array(out))
@@ -1430,11 +1452,7 @@ pub(super) fn range_each(interp: &Interp, recv: &Value, args: Args) -> EvalResul
     match (&r.lo, &r.hi) {
         (Value::Int(lo), Value::Int(hi)) => {
             let end = if r.exclusive { *hi } else { hi + 1 };
-            let mut i = *lo;
-            while i < end {
-                interp.call_block(&b, smallvec![Value::Int(i)])?;
-                i += 1;
-            }
+            super::each_value(interp, (*lo..end).map(Value::Int), &b)?;
         }
         (Value::Int(lo), Value::Nil) => {
             let mut i = *lo;

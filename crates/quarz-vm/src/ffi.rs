@@ -255,6 +255,7 @@ pub unsafe extern "C" fn qz_enter(
             provided,
             args_ptr: std::cell::Cell::new(args),
             nargs: std::cell::Cell::new(nargs),
+            yield_caller: Default::default(),
         },
     );
     rt.call_stack.borrow_mut().push(buf as *const Activation);
@@ -622,9 +623,18 @@ pub unsafe extern "C" fn qz_yield(
     let mut args: crate::interp::ArgVec = crate::interp::ArgVec::with_capacity(nargs as usize);
     for i in 0..nargs as usize {
         let r = *arg_regs.add(i);
-        args.push((*regs.add(r as usize)).clone());
+        args.push((*regs.add(r as usize)).fast_clone());
     }
-    match rt.call_block(block, args) {
+    // The block's caller is built on the first yield and reused (`None`
+    // when the block needs the general path).
+    let caller = act
+        .yield_caller
+        .get_or_init(|| rt.block_caller(block).map(Box::new));
+    let r = match caller {
+        Some(c) => c.call(&args),
+        None => rt.call_block(block, args),
+    };
+    match r {
         Ok(v) => {
             *regs.add(dst as usize) = v;
             STATUS_OK

@@ -129,10 +129,41 @@ pub fn each_value(
     items: impl IntoIterator<Item = Value>,
     block: &Value,
 ) -> Result<(), Flow> {
-    for v in items {
-        interp.call_block(block, smallvec![v])?;
+    match interp.block_caller(block) {
+        Some(caller) => {
+            for v in items {
+                caller.call(&[v])?;
+            }
+        }
+        None => {
+            for v in items {
+                interp.call_block(block, smallvec![v])?;
+            }
+        }
     }
     Ok(())
+}
+
+/// Call `block` once per item with one argument, collecting the results.
+pub fn map_values(
+    interp: &Interp,
+    items: impl IntoIterator<Item = Value>,
+    block: &Value,
+) -> Result<Vec<Value>, Flow> {
+    let mut out = Vec::new();
+    match interp.block_caller(block) {
+        Some(caller) => {
+            for v in items {
+                out.push(caller.call(&[v])?);
+            }
+        }
+        None => {
+            for v in items {
+                out.push(interp.call_block(block, smallvec![v])?);
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// `hash` for the built-in collections (structural).
