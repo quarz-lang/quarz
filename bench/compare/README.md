@@ -10,22 +10,22 @@ cargo build --release
 PATH="$HOME/go-sdk/bin:$PATH" RUNS=5 bench/compare/run.sh
 ```
 
-## Results (2026-10-19, after the direct-call, unboxing, inlining, lean-call, allocation and array rounds)
+## Results (2026-10-19, after the direct-call, unboxing, inlining, lean-call, allocation, array and hashing rounds)
 
 12th Gen Intel Core i7-1260P; Go 1.27.2, rustc 1.98.1 (`-O`), Ruby 4.0.5
-(with and without `--yjit`); Quarz at the object-layout commit, VM =
+(with and without `--yjit`); Quarz at the hashing commit, VM =
 `quarz run`, AOT = `quarz build`. Milliseconds, best of 5 runs, process
 start-up included (about 2 ms for a compiled Quarz program). `fib` and
 `loop` are short enough that the numbers wander by a few milliseconds
-between runs (`perf stat` puts `fib` at 10 ms).
+between runs.
 
 | program     | quarz-vm | quarz-aot |   go | rust |  ruby | ruby --yjit |
 |-------------|---------:|----------:|-----:|-----:|------:|------------:|
-| fib         |    158.7 |      14.5 |  2.1 |  1.7 |  64.7 |        55.8 |
-| loop        |    532.2 |       9.7 |  4.2 |  4.3 | 106.7 |       107.7 |
-| collections |    630.4 |     119.7 | 28.2 | 14.0 | 221.3 |       198.6 |
-| objects     |    184.6 |      19.4 |  2.0 |  1.5 | 282.3 |       226.6 |
-| strings     |    144.6 |      79.0 | 29.7 | 15.0 | 151.9 |       146.4 |
+| fib         |    161.9 |       9.7 |  2.3 |  1.7 |  67.9 |        59.5 |
+| loop        |    577.3 |       9.5 |  3.3 |  3.4 | 115.8 |       115.9 |
+| collections |    703.3 |     118.7 | 28.5 | 13.2 | 238.3 |       224.9 |
+| objects     |    201.6 |      21.3 |  2.1 |  1.5 | 300.2 |       241.8 |
+| strings     |    135.0 |      73.6 | 32.0 | 16.1 | 161.7 |       159.2 |
 
 First measurement, at commit 93874ea (before direct calls between
 compiled bodies, inline reference counting, inline field and frame
@@ -50,14 +50,15 @@ access and the reusable block caller):
   elements and hashing), 10–13× on `objects` (a `Vec2` that stays in
   its function is not allocated, the one stored in the particle is) and
   3–5× on `strings`.
-- Against Ruby, compiled Quarz is ahead everywhere: 4× on `fib`, 11×
-  on `loop`, 1.7–1.8× on `collections`, 12–15× on `objects`, 1.9× on
-  `strings`.
+- Against Ruby, compiled Quarz is ahead everywhere: 6–7× on `fib`,
+  12× on `loop`, 1.9–2× on `collections`, 11–14× on `objects`, 2.2×
+  on `strings`.
 - The VM is 2–5× slower than Ruby's interpreter on calls and loops and
   on a par for objects and strings.
 
-The next steps that would narrow the gap to Go and Rust are typed
-storage for `Int`/`Float` fields and array elements (every value is
-still a 24-byte tagged box, which also costs the reference-count
-checks on every copy), and hashing and string building in `strings`
-and `collections`.
+What separates compiled Quarz from Go and Rust now is the value
+representation: every value is a 24-byte tagged box, every copy of a
+heap value bumps a reference count, every object and every string is
+heap-allocated. Typed storage for `Int`/`Float` fields and array
+elements would be the next step, and it is a change to the runtime's
+data structures rather than to the compiler.
