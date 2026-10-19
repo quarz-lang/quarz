@@ -569,9 +569,7 @@ impl<'a> FnBuilder<'a> {
             let Some(Arg::Positional(arg)) = cur.args.first() else {
                 return None;
             };
-            let Some(recv) = cur.recv.as_ref() else {
-                return None;
-            };
+            let recv = cur.recv.as_ref()?;
             leaves.push(arg);
             depth += 1;
             match &recv.kind {
