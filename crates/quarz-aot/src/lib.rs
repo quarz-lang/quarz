@@ -844,6 +844,7 @@ fn heap_possible(f: &Function) -> Vec<bool> {
                 | Inst::IsObject { .. }
                 | Inst::Len { .. }
                 | Inst::ClassIsA { .. }
+                | Inst::ClassIs { .. }
                 | Inst::IsA { .. }
                 | Inst::Equal { .. }
                 | Inst::CaseEq { .. } => {}
@@ -2430,6 +2431,37 @@ impl Gen<'_, '_> {
                     self.store_tag(r, TAG_NIL);
                     self.states[r as usize] = State::NonHeap;
                 }
+            }
+            Inst::ClassIs { dst, src, class } => {
+                // An object of exactly the class: its id is read from the
+                // allocation; anything else (an unboxed number, another
+                // tag) is not.
+                let v = match self.states[*src as usize] {
+                    State::Int | State::Float | State::Bool | State::NonHeap => {
+                        self.b.ins().iconst(types::I8, 0)
+                    }
+                    State::Unknown => {
+                        let check = self.b.create_block();
+                        let join = self.b.create_block();
+                        self.b.append_block_param(join, types::I8);
+                        let tag = self.tag(*src);
+                        let is_obj = self.b.ins().icmp_imm(IntCC::Equal, tag, TAG_OBJECT);
+                        let no = self.b.ins().iconst(types::I8, 0);
+                        self.b.ins().brif(is_obj, check, &[], join, &[no]);
+                        self.b.switch_to_block(check);
+                        let rc = self.payload(*src);
+                        let cid = self.b.ins().uload32(
+                            MemFlags::trusted(),
+                            rc,
+                            OBJECT_FIELDS_PTR_OFF + L::OBJECT_CLASS_OFF as i32,
+                        );
+                        let same = self.b.ins().icmp_imm(IntCC::Equal, cid, i64::from(*class));
+                        self.b.ins().jump(join, &[same]);
+                        self.b.switch_to_block(join);
+                        self.b.block_params(join)[0]
+                    }
+                };
+                self.store_bool(*dst, v);
             }
             Inst::IsNil { dst, src } => {
                 let v = match self.states[*src as usize] {

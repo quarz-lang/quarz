@@ -118,6 +118,7 @@ pub fn build(world: &World, lw: &Lowerer, file_names: Vec<String>) -> RtWorld {
                 variant_of: c.variant_of,
                 structural: matches!(c.kind, ClassKind::Data | ClassKind::Variant),
                 is_exception: world.is_exception_class(c.id),
+                is_abstract: c.is_abstract,
                 file: c.file,
             }
         })

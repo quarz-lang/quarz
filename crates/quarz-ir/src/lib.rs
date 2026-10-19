@@ -408,6 +408,12 @@ pub enum Inst {
         src: Reg,
         class: ClassId,
     },
+    /// `dst` = whether `src` is an object of exactly `class`.
+    ClassIs {
+        dst: Reg,
+        src: Reg,
+        class: ClassId,
+    },
     IsA {
         dst: Reg,
         src: Reg,
@@ -614,6 +620,7 @@ impl Inst {
             | Inst::CaseEq { dst, .. }
             | Inst::Equal { dst, .. }
             | Inst::ClassIsA { dst, .. }
+            | Inst::ClassIs { dst, .. }
             | Inst::IsA { dst, .. }
             | Inst::As { dst, .. }
             | Inst::MakeBlock { dst, .. }
@@ -683,6 +690,7 @@ impl Inst {
             | Inst::Len { src, .. }
             | Inst::ObjectFields { src, .. }
             | Inst::ClassIsA { src, .. }
+            | Inst::ClassIs { src, .. }
             | Inst::IsA { src, .. }
             | Inst::As { src, .. }
             | Inst::NoMatch { src, .. } => *src = f(*src),
@@ -820,6 +828,7 @@ impl Inst {
             | Inst::Len { src, .. }
             | Inst::ObjectFields { src, .. }
             | Inst::ClassIsA { src, .. }
+            | Inst::ClassIs { src, .. }
             | Inst::IsA { src, .. }
             | Inst::As { src, .. }
             | Inst::NoMatch { src, .. } => vec![*src],
@@ -968,6 +977,9 @@ pub struct RtClass {
     /// Instances compare and hash structurally (data, variants).
     pub structural: bool,
     pub is_exception: bool,
+    /// `abstract class`: never instantiated.
+    #[serde(default)]
+    pub is_abstract: bool,
     pub file: u32,
 }
 

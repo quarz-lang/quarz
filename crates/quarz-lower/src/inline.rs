@@ -444,6 +444,11 @@ fn rewrite(inst: &Inst, base: Reg, consts: &[u32]) -> Inst {
             a: r(a),
             b: r(b),
         },
+        Inst::ClassIs { dst, src, class } => Inst::ClassIs {
+            dst: r(dst),
+            src: r(src),
+            class: *class,
+        },
         Inst::ClassIsA { dst, src, class } => Inst::ClassIsA {
             dst: r(dst),
             src: r(src),

@@ -13,6 +13,7 @@ use quarz_types::{Checked, Output, World};
 
 mod capture;
 mod copyprop;
+mod devirt;
 mod func;
 mod inline;
 mod iter;
@@ -231,6 +232,7 @@ pub fn lower_checked(checked: &Checked, files: &[SourceFile]) -> Module {
         .collect();
     let delta = lw.lower(&checked.world, &checked.output, &inputs, all);
     let mut functions = delta.functions;
+    devirt::devirtualize(&mut functions, &delta.world);
     inline::inline_calls(&mut functions, &delta.world.methods, 2);
     sroa::scalar_replace(&mut functions, &delta.world.methods, &delta.world.classes);
     copyprop::propagate_copies(&mut functions);

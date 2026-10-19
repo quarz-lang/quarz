@@ -99,6 +99,10 @@ pub fn vec_layout_packed() -> u64 {
 /// Where an array's data keeps its kind byte and its vector (byte
 /// offsets from the `ArrayData`, which sits after the allocation's two
 /// counts); `repr(C, u8)` fixes them.
+/// Where an object keeps its class id (byte offset from the `Object`,
+/// which sits after the allocation's two counts).
+pub const OBJECT_CLASS_OFF: usize = 12;
+
 pub const ARRAY_KIND_OFF: usize = 0;
 pub const ARRAY_VEC_OFF: usize = 8;
 
@@ -109,6 +113,11 @@ pub fn check(sig: u64, vec: u64) {
         eprintln!("quarz: this program was built against a different runtime; rebuild it");
         std::process::exit(70);
     }
+    assert_eq!(
+        std::mem::offset_of!(crate::value::Object, class),
+        OBJECT_CLASS_OFF,
+        "Object layout changed: class"
+    );
     // The array data layout compiled code reads.
     {
         use crate::value::{ArrayData, ARRAY_KIND_INTS};

@@ -126,6 +126,7 @@ pub fn reads_no_home(inst: &Inst) -> bool {
             | Inst::ClassRef { .. }
             | Inst::MakeBlock { .. }
             | Inst::Not { .. }
+            | Inst::ClassIs { .. }
             | Inst::IsNil { .. }
             | Inst::CatchException { .. }
             | Inst::CatchAny { .. }
@@ -314,6 +315,7 @@ pub fn transfer(
         | Inst::IsHash { dst, .. }
         | Inst::IsObject { dst, .. }
         | Inst::ClassIsA { dst, .. }
+        | Inst::ClassIs { dst, .. }
         | Inst::IsA { dst, .. } => st[*dst as usize] = State::Bool,
         // A length is always a machine-word Int.
         Inst::Len { dst, .. } => st[*dst as usize] = State::Int,

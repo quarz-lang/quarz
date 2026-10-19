@@ -1,0 +1,60 @@
+# A dispatched call with few receiver classes becomes exact class tests
+# with direct (inlined) calls and the dispatch as the fallback: shared
+# implementations, abstract intermediates and extensions keep working.
+abstract class Shape
+  abstract def area -> Float
+  def describe -> String = "#{name} #{area.round(1)}"
+  def name -> String = "shape"
+end
+class Circle < Shape
+  var @r: Float
+  def initialize(@r: Float); end
+  def area -> Float = 3.0 * @r * @r
+  def name -> String = "circle"
+end
+class Rect < Shape
+  var @w: Float
+  var @h: Float
+  def initialize(@w: Float, @h: Float); end
+  def area -> Float = @w * @h
+end
+class Square < Rect
+  def initialize(s: Float)
+    super(s, s)
+  end
+  def name -> String = "square"
+end
+abstract class Rounded < Shape
+  def name -> String = "rounded"
+end
+class Blob < Rounded
+  def area -> Float = 1.5
+end
+module Loud
+  extension Circle
+    def name -> String = "CIRCLE!"
+  end
+end
+shapes: Array[Shape] = [Circle.new(1.0), Rect.new(2.0, 3.0), Square.new(2.0), Blob.new]
+p shapes.map { |s| s.area }, shapes.map { |s| s.name }, shapes.map { |s| s.describe }
+total = 0.0
+shapes.each { |s| total += s.area }
+p total.round(2)
+using Loud do
+  p shapes.map { |s| s.name }, Circle.new(2.0).name
+end
+p shapes.map { |s| s.name }
+def pick(i: Int) -> Shape = i.even? ? Circle.new(i.to_f) : Square.new(i.to_f)
+p (0..3).to_a.map { |i| pick(i).area }, (0..3).to_a.map { |i| pick(i).describe }
+
+# An implementation shared through a middle class and overridden below it.
+class Base
+  def describe -> String = "base"
+end
+class Mid < Base
+end
+class Leaf < Mid
+  def describe -> String = "leaf"
+end
+xs: Array[Base] = [Base.new, Mid.new, Leaf.new]
+p xs.map { |x| x.describe }

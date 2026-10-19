@@ -925,6 +925,10 @@ impl Interp {
                 let r = self.values_equal(&regs[*a as usize], &regs[*b as usize])?;
                 regs[*dst as usize] = Value::Bool(r);
             }
+            Inst::ClassIs { dst, src, class } => {
+                let r = matches!(&regs[*src as usize], Value::Object(o) if o.class == *class);
+                regs[*dst as usize] = Value::Bool(r);
+            }
             Inst::ClassIsA { dst, src, class } => {
                 let r = self
                     .world

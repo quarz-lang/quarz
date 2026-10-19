@@ -1,0 +1,10 @@
+[3.0, 6.0, 4.0, 1.5]
+["CIRCLE!", "shape", "square", "rounded"]
+["CIRCLE! 3.0", "shape 6.0", "square 4.0", "rounded 1.5"]
+14.5
+["CIRCLE!", "shape", "square", "rounded"]
+"CIRCLE!"
+["CIRCLE!", "shape", "square", "rounded"]
+[0.0, 1.0, 12.0, 9.0]
+["CIRCLE! 0.0", "square 1.0", "CIRCLE! 12.0", "square 9.0"]
+["base", "base", "leaf"]
