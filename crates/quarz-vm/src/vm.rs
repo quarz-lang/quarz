@@ -488,7 +488,7 @@ impl Interp {
     fn call_args(&self, regs: &[Value], args: &[Reg], splat: bool) -> ArgVec {
         if splat {
             return match &regs[args[0] as usize] {
-                Value::Array(a) => a.iter().cloned().collect(),
+                Value::Array(a) => a.iter().collect(),
                 other => smallvec![other.clone()],
             };
         }
@@ -647,7 +647,7 @@ impl Interp {
                         self.catch_break(&block, r)
                     }
                     CallKind::Send(name) => {
-                        let r = self.send(&recv, name, pos, block.clone());
+                        let r = self.send_kw(&recv, name, pos, kw, block.clone());
                         self.catch_break(&block, r)
                     }
                     CallKind::Construct { class, init } => {
@@ -889,7 +889,7 @@ impl Interp {
                     let v = &regs[item.reg as usize];
                     if item.splat {
                         match v {
-                            Value::Array(a) => out.extend(a.iter().cloned()),
+                            Value::Array(a) => out.extend(a.iter()),
                             other => out.push(other.clone()),
                         }
                     } else {
@@ -981,7 +981,7 @@ impl Interp {
                         } else {
                             Some(*index as usize)
                         };
-                        i.and_then(|i| a.get(i).cloned()).unwrap_or(Value::Nil)
+                        i.and_then(|i| a.get(i)).unwrap_or(Value::Nil)
                     }
                     _ => Value::Nil,
                 };
@@ -995,7 +995,7 @@ impl Interp {
                         } else {
                             Some(*i as usize)
                         };
-                        i.and_then(|i| a.get(i).cloned()).unwrap_or(Value::Nil)
+                        i.and_then(|i| a.get(i)).unwrap_or(Value::Nil)
                     }
                     _ => Value::Nil,
                 };
@@ -1014,7 +1014,7 @@ impl Interp {
                         if from >= a.len() {
                             Value::array(Vec::new())
                         } else {
-                            Value::array(a[from..end.min(a.len())].to_vec())
+                            Value::array(a.values()[from..end.min(a.len())].to_vec())
                         }
                     }
                     _ => Value::array(Vec::new()),
@@ -1030,7 +1030,7 @@ impl Interp {
                     (Value::Array(a), Value::Int(from), Value::Int(to)) => {
                         let from = (*from).clamp(0, a.len() as i64) as usize;
                         let to = (*to).clamp(from as i64, a.len() as i64) as usize;
-                        Value::array(a[from..to].to_vec())
+                        Value::array(a.values()[from..to].to_vec())
                     }
                     _ => Value::array(Vec::new()),
                 };
@@ -1162,7 +1162,7 @@ impl Interp {
                 if let Some(n) = closure.destructure {
                     if args.len() == 1 {
                         if let Value::Array(a) = &args[0] {
-                            let mut items: ArgVec = a.iter().cloned().collect();
+                            let mut items: ArgVec = a.iter().collect();
                             items.resize(n.max(items.len()), Value::Nil);
                             args = items;
                         }

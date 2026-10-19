@@ -47,6 +47,8 @@
 
 ### Array[out T](不変)
 
+要素がすべて `Int` またはすべて `Float` の配列は要素を非ボックス化して保持します。観察できる違いはありません(`sort`、`min`、`max`、`include?`、`sum` は直接の経路を取ります)。
+
 - 読み出し: `[] []? at fetch(既定値またはブロック) first first? last last? size length empty? include? index rindex(値またはブロック) sample sample(n) shuffle slice take drop values_at bsearch each each_index reverse_each join(`* separator` も) to_a` + Enumerable。`each` はブロックなしで Enumerator を返します。
 - 更新(新しい値を返す): `push(*values) pop shift unshift insert set delete delete_at delete_if keep_if compact flatten(depth) reverse rotate sort sort_by uniq fill product combination permutation + - * & | union intersection difference intersect? concat`。
 - `Array::Builder[T]`(可変): Ruby の `Array` の破壊的 API。`<< push pop shift unshift insert []= [] []? [range] first(n) last(n) index include? delete delete_at delete_if keep_if compact! reverse! rotate! shuffle! sort!(比較ブロック可) sort_by! uniq! map! select! reject! concat fill replace slice! clear join each each_with_index` + Enumerable。`to_a`/`freeze` で不変化(一回限り)。`snapshot` は複製。

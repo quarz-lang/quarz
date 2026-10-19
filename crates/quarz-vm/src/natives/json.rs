@@ -399,7 +399,7 @@ fn generate(
         Value::Str(s) => escape(s, out),
         Value::Symbol(s) => escape(&interp.symbol_name(*s), out),
         Value::Array(items) => {
-            generate_seq(interp, items.iter(), indent, out, depth)?;
+            generate_seq(interp, items.values().iter(), indent, out, depth)?;
         }
         Value::Set(items) => {
             generate_seq(interp, items.iter(), indent, out, depth)?;

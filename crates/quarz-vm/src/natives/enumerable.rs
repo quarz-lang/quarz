@@ -68,7 +68,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     // Array
     m.insert("Array#slice", |i, r, a| {
         let items = arr(i, r)?;
-        Ok(Value::array(slice_of(items, i, a.arg(0), a.arg(1))?))
+        Ok(Value::array(slice_of(&items, i, a.arg(0), a.arg(1))?))
     });
     m.insert("Array#take", |i, r, a| {
         let n = int(i, a.arg(0), "count")?;
@@ -92,7 +92,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
         let items = arr(i, r)?;
         let mut out = Vec::with_capacity(a.pos.len());
         for idx in &a.pos {
-            out.push(index_opt(items, int(i, idx, "index")?));
+            out.push(index_opt(&items, int(i, idx, "index")?));
         }
         Ok(Value::array(out))
     });
@@ -127,7 +127,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
         let mut out = Vec::new();
         if n >= 0 && n as usize <= items.len() {
             let mut current = Vec::new();
-            combinations(items, n as usize, 0, &mut current, &mut out);
+            combinations(&items, n as usize, 0, &mut current, &mut out);
         }
         Ok(Value::array(out))
     });
@@ -141,7 +141,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
         if n >= 0 && n as usize <= items.len() {
             let mut used = vec![false; items.len()];
             let mut current = Vec::new();
-            permutations(items, n as usize, &mut used, &mut current, &mut out);
+            permutations(&items, n as usize, &mut used, &mut current, &mut out);
         }
         Ok(Value::array(out))
     });

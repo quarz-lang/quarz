@@ -542,7 +542,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
         match a.arg(0) {
             Value::Array(items) => {
                 for p in items.iter() {
-                    patterns.push(string(i, p, "pattern")?.to_string());
+                    patterns.push(string(i, &p, "pattern")?.to_string());
                 }
             }
             other => patterns.push(string(i, other, "pattern")?.to_string()),

@@ -116,7 +116,7 @@ pub fn export(interp: &Interp, v: &Value) -> Result<Transfer, Flow> {
         Value::Duration(d) => Transfer::Duration(*d),
         Value::BigInt(b) => Transfer::BigInt((**b).clone()),
         Value::Str(s) => Transfer::Str(s.to_string()),
-        Value::Array(items) => Transfer::Array(export_all(interp, items.iter())?),
+        Value::Array(items) => Transfer::Array(export_all(interp, items.values().iter())?),
         Value::Hash(h) => {
             let mut out = Vec::with_capacity(h.len());
             for (k, v) in h.iter() {

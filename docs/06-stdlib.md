@@ -49,6 +49,8 @@ A block over a collection of tuples destructures them: `hash.map { |k, v| }`, `x
 
 ### Array[out T] (immutable)
 
+An array whose elements are all `Int` or all `Float` keeps them unboxed; nothing observable depends on it (`sort`, `min`, `max`, `include?` and `sum` take the direct path).
+
 - Reading: `[] []? at fetch (default or block) first first? last last? size length empty? include? index rindex (value or block) sample sample(n) shuffle slice take drop values_at bsearch each each_index reverse_each join (also `* separator`) to_a` + Enumerable. `each` returns an enumerator without a block.
 - Updating (returns a new value): `push(*values) pop shift unshift insert set delete delete_at delete_if keep_if compact flatten(depth) reverse rotate sort sort_by uniq fill product combination permutation + - * & | union intersection difference intersect? concat`.
 - `Array::Builder[T]` (mutable): the destructive API of Ruby's `Array`. `<< push pop shift unshift insert []= [] []? [range] first(n) last(n) index include? delete delete_at delete_if keep_if compact! reverse! rotate! shuffle! sort! (comparator block) sort_by! uniq! map! select! reject! concat fill replace slice! clear join each each_with_index` + Enumerable. Made immutable with `to_a`/`freeze` (one time only); `snapshot` copies.

@@ -232,7 +232,7 @@ pub fn puts_to(interp: &Interp, args: &[Value], out: &mut String) -> Result<(), 
                     out.push('\n');
                 }
                 for x in items.iter() {
-                    puts_to(interp, std::slice::from_ref(x), out)?;
+                    puts_to(interp, std::slice::from_ref(&x), out)?;
                 }
             }
             _ => {

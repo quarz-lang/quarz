@@ -99,7 +99,7 @@ pub fn block(interp: &Interp, args: &Args) -> Result<Value, Flow> {
 /// collections, `each` otherwise).
 pub fn collect(interp: &Interp, recv: &Value) -> Result<Vec<Value>, Flow> {
     match recv {
-        Value::Array(a) => Ok(a.iter().cloned().collect()),
+        Value::Array(a) => Ok(a.to_values()),
         Value::ArrayBuilder(a) => Ok(a.borrow().clone()),
         Value::Set(s) => Ok(s.iter().cloned().collect()),
         Value::SetBuilder(s) => Ok(s.borrow().iter().cloned().collect()),

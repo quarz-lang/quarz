@@ -337,7 +337,7 @@ pub(super) fn sb_push(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
 fn string_format(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let fmt = s(interp, recv)?;
     let values: Vec<Value> = match args.arg(0) {
-        Value::Array(a) => a.iter().cloned().collect(),
+        Value::Array(a) => a.to_values(),
         other => vec![other.clone()],
     };
     Ok(Value::string(super::core::format_values(

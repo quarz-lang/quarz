@@ -1998,6 +1998,9 @@ impl<'a> FnBuilder<'a> {
             a.block = Some(dst);
         }
         let kind = match target {
+            Some(CallTarget::Method { .. }) if self.out.dynamic_calls.contains(&e.id) => {
+                CallKind::Send(call.name.clone())
+            }
             Some(CallTarget::Method { method }) => {
                 let m = self.world.method(*method);
                 // A generated field reader that nothing overrides is a

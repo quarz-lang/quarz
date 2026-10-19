@@ -67,6 +67,10 @@ pub struct Output {
     /// enclosing `self` instead: the receiver of the call is read from
     /// the hidden slot `var_refs[span]`.
     pub outer_self_calls: rustc_hash::FxHashSet<NodeId>,
+    /// Calls on a union-typed receiver whose members resolve to different
+    /// methods with no common ancestor declaring the name: looked up by
+    /// name on the receiver's class at run time.
+    pub dynamic_calls: rustc_hash::FxHashSet<NodeId>,
     /// `x.foo!(args)` calls that are sugar for `x = x.foo(args)` (the
     /// receiver's type has no `foo!`): the call targets `foo` and its
     /// result is stored into the receiver, a local or a field.
@@ -3222,6 +3226,51 @@ impl Checker {
         }
     }
 
+    /// A method named `name` declared by a common ancestor of every
+    /// member class that none of `resolved` (the methods the members
+    /// resolved to) belongs to: it is overridden by them, so a call
+    /// recorded against it is dispatched on the receiver's class.
+    fn common_ancestor_method(
+        &self,
+        members: &[Type],
+        name: &str,
+        resolved: &[Option<MethodId>],
+    ) -> Option<MethodId> {
+        let ids: Vec<ClassId> = members
+            .iter()
+            .map(|m| match self.resolve(m) {
+                Type::Class(id, _) => Some(id),
+                _ => None,
+            })
+            .collect::<Option<Vec<_>>>()?;
+        let owners: Vec<ClassId> = resolved
+            .iter()
+            .flatten()
+            .map(|m| self.world.method(*m).owner)
+            .collect();
+        let chains: Vec<Vec<ClassId>> = ids
+            .iter()
+            .map(|id| {
+                self.world
+                    .ancestors(*id, &[])
+                    .into_iter()
+                    .map(|(a, _)| a)
+                    .collect()
+            })
+            .collect();
+        for anc in &chains[0] {
+            if !chains.iter().all(|c| c.contains(anc)) || owners.contains(anc) {
+                continue;
+            }
+            if let Some(ms) = self.world.class(*anc).methods.get(name) {
+                if let Some(m) = ms.first() {
+                    return Some(*m);
+                }
+            }
+        }
+        None
+    }
+
     fn check_call_on(
         &mut self,
         expr: &Expr,
@@ -3236,17 +3285,33 @@ impl Checker {
                 // Each member must accept the call; the result is the join.
                 let members = members.clone();
                 let mut result = Type::Nothing;
-                let mut first = true;
+                let mut targets: Vec<Option<MethodId>> = Vec::new();
                 for m in &members {
-                    let t = if first {
-                        self.check_call_on(expr, call, m, implicit_self, expected)
-                    } else {
-                        // Re-resolve without re-reporting argument errors for
-                        // already typed arguments.
-                        self.check_call_on(expr, call, m, implicit_self, expected)
-                    };
-                    first = false;
+                    let t = self.check_call_on(expr, call, m, implicit_self, expected);
+                    targets.push(match self.out.calls.get(&expr.id) {
+                        Some(CallTarget::Method { method }) => Some(*method),
+                        _ => None,
+                    });
                     result = self.join(&result, &t);
+                }
+                // The recorded target is the last member's; when the
+                // members resolve to different methods, record one that
+                // is dispatched on the receiver's class instead.
+                if let Some(first) = targets.first().copied().flatten() {
+                    if targets.iter().all(|t| t.is_some())
+                        && targets.iter().any(|t| *t != Some(first))
+                    {
+                        match self.common_ancestor_method(&members, name, &targets) {
+                            Some(method) => {
+                                self.out
+                                    .calls
+                                    .insert(expr.id, CallTarget::Method { method });
+                            }
+                            None => {
+                                self.out.dynamic_calls.insert(expr.id);
+                            }
+                        }
+                    }
                 }
                 result
             }

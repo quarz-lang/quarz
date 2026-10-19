@@ -1234,9 +1234,16 @@ impl Gen<'_, '_> {
     /// `(elements, len, cap)` of the array in `arr` (whose tag is known
     /// to be an array's): the vector sits after the allocation's two
     /// counts, its words where `layout::vec_layout` found them.
-    fn array_view(&mut self, arr: Reg) -> (CValue, CValue, CValue) {
+    fn array_view(&mut self, arr: Reg) -> (CValue, CValue, CValue, CValue) {
         let rc = self.payload(arr);
-        let vec = self.b.ins().iadd_imm(rc, i64::from(OBJECT_FIELDS_PTR_OFF));
+        let data = self.b.ins().iadd_imm(rc, i64::from(OBJECT_FIELDS_PTR_OFF));
+        let kind = self.b.ins().uload8(
+            types::I64,
+            MemFlags::trusted(),
+            data,
+            L::ARRAY_KIND_OFF as i32,
+        );
+        let vec = self.b.ins().iadd_imm(data, L::ARRAY_VEC_OFF as i64);
         let l = L::vec_layout();
         let ptr = self
             .b
@@ -1250,7 +1257,7 @@ impl Gen<'_, '_> {
             .b
             .ins()
             .load(types::I64, MemFlags::trusted(), vec, l.cap as i32);
-        (ptr, len, cap)
+        (kind, ptr, len, cap)
     }
 
     /// The address of field `index` of the object in `obj` (whose tag is
@@ -1940,7 +1947,7 @@ impl Gen<'_, '_> {
                 let is_arr = self.b.ins().icmp_imm(IntCC::Equal, tag, TAG_ARRAY);
                 self.b.ins().brif(is_arr, fast, &[], slow, &[]);
                 self.b.switch_to_block(fast);
-                let (_, len, _) = self.array_view(*src);
+                let (_, _, len, _) = self.array_view(*src);
                 // The home too: `after` reads it back into the variable.
                 self.release(*dst);
                 self.store_tag(*dst, TAG_INT);
@@ -1981,13 +1988,41 @@ impl Gen<'_, '_> {
                 } else {
                     self.payload(*idx)
                 };
-                let (ptr, len, _) = self.array_view(*arr);
+                let (kind, ptr, len, _) = self.array_view(*arr);
                 let in_range = self.b.ins().icmp(IntCC::UnsignedLessThan, i, len);
                 self.b.ins().brif(in_range, fast, &[], slow, &[]);
                 self.b.switch_to_block(fast);
+                // Boxed elements are copied; unboxed ones are read as the
+                // machine word they are and boxed into the register.
+                let values_b = self.b.create_block();
+                let ints_b = self.b.create_block();
+                let floats_b = self.b.create_block();
+                let not_values = self.b.create_block();
+                let is_values = self.b.ins().icmp_imm(IntCC::Equal, kind, 0);
+                self.b.ins().brif(is_values, values_b, &[], not_values, &[]);
+                self.b.switch_to_block(not_values);
+                let is_ints = self.b.ins().icmp_imm(IntCC::Equal, kind, 1);
+                self.b.ins().brif(is_ints, ints_b, &[], floats_b, &[]);
+                self.b.switch_to_block(values_b);
                 let off = self.b.ins().imul_imm(i, i64::from(VALUE_SIZE));
                 let elem = self.b.ins().iadd(ptr, off);
                 self.clone_from(*dst, elem);
+                self.b.ins().jump(cont, &[]);
+                self.b.switch_to_block(ints_b);
+                let off = self.b.ins().imul_imm(i, 8);
+                let elem = self.b.ins().iadd(ptr, off);
+                let v = self.b.ins().load(types::I64, MemFlags::trusted(), elem, 0);
+                self.release(*dst);
+                self.store_tag(*dst, TAG_INT);
+                self.store_payload(*dst, v);
+                self.b.ins().jump(cont, &[]);
+                self.b.switch_to_block(floats_b);
+                let off = self.b.ins().imul_imm(i, 8);
+                let elem = self.b.ins().iadd(ptr, off);
+                let bits = self.b.ins().load(types::I64, MemFlags::trusted(), elem, 0);
+                self.release(*dst);
+                self.store_tag(*dst, TAG_FLOAT);
+                self.store_payload(*dst, bits);
                 self.b.ins().jump(cont, &[]);
                 self.b.switch_to_block(slow);
                 self.exec(block, index, unwind);
@@ -2008,19 +2043,60 @@ impl Gen<'_, '_> {
                 let rc = self.payload(*arr);
                 let strong = self.b.ins().load(types::I64, MemFlags::trusted(), rc, 0);
                 let weak = self.b.ins().load(types::I64, MemFlags::trusted(), rc, 8);
-                let (ptr, len, cap) = self.array_view(*arr);
+                let (kind, ptr, len, cap) = self.array_view(*arr);
                 let unique_s = self.b.ins().icmp_imm(IntCC::Equal, strong, 1);
                 let unique_w = self.b.ins().icmp_imm(IntCC::Equal, weak, 1);
                 let room = self.b.ins().icmp(IntCC::UnsignedLessThan, len, cap);
                 let ok = self.b.ins().band(unique_s, unique_w);
                 let ok = self.b.ins().band(ok, room);
+                // Which storage, and whether the value fits it: boxed takes
+                // anything; unboxed Ints/Floats take an Int/Float (known
+                // from the state, or from the tag).
+                let src_state = self.states[*src as usize];
+                let src_tag = match src_state {
+                    State::Int => self.b.ins().iconst(types::I64, TAG_INT),
+                    State::Float => self.b.ins().iconst(types::I64, TAG_FLOAT),
+                    State::Bool => self.b.ins().iconst(types::I64, TAG_BOOL),
+                    _ => self.tag(*src),
+                };
+                let kind_values = self.b.ins().icmp_imm(IntCC::Equal, kind, 0);
+                let kind_ints = self.b.ins().icmp_imm(IntCC::Equal, kind, 1);
+                let kind_floats = self.b.ins().icmp_imm(IntCC::Equal, kind, 2);
+                let src_int = self.b.ins().icmp_imm(IntCC::Equal, src_tag, TAG_INT);
+                let src_float = self.b.ins().icmp_imm(IntCC::Equal, src_tag, TAG_FLOAT);
+                let ints_ok = self.b.ins().band(kind_ints, src_int);
+                let floats_ok = self.b.ins().band(kind_floats, src_float);
+                let fits = self.b.ins().bor(kind_values, ints_ok);
+                let fits = self.b.ins().bor(fits, floats_ok);
+                let ok = self.b.ins().band(ok, fits);
                 self.b.ins().brif(ok, fast, &[], slow, &[]);
                 self.b.switch_to_block(fast);
+                let boxed_b = self.b.create_block();
+                let raw_b = self.b.create_block();
+                let done_b = self.b.create_block();
+                self.b.ins().brif(kind_values, boxed_b, &[], raw_b, &[]);
+                self.b.switch_to_block(boxed_b);
                 let off = self.b.ins().imul_imm(len, i64::from(VALUE_SIZE));
                 let slot = self.b.ins().iadd(ptr, off);
                 self.clone_reg_to_ptr(slot, *src);
+                self.b.ins().jump(done_b, &[]);
+                self.b.switch_to_block(raw_b);
+                let off = self.b.ins().imul_imm(len, 8);
+                let slot = self.b.ins().iadd(ptr, off);
+                let word = match src_state {
+                    State::Int => self.b.use_var(self.ivar(*src)),
+                    State::Float => {
+                        let f = self.b.use_var(self.fvar(*src));
+                        self.b.ins().bitcast(types::I64, MemFlags::new(), f)
+                    }
+                    _ => self.payload(*src),
+                };
+                self.b.ins().store(MemFlags::trusted(), word, slot, 0);
+                self.b.ins().jump(done_b, &[]);
+                self.b.switch_to_block(done_b);
                 let len1 = self.b.ins().iadd_imm(len, 1);
-                let vec = self.b.ins().iadd_imm(rc, i64::from(OBJECT_FIELDS_PTR_OFF));
+                let data = self.b.ins().iadd_imm(rc, i64::from(OBJECT_FIELDS_PTR_OFF));
+                let vec = self.b.ins().iadd_imm(data, L::ARRAY_VEC_OFF as i64);
                 self.b
                     .ins()
                     .store(MemFlags::trusted(), len1, vec, L::vec_layout().len as i32);

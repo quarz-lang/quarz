@@ -96,12 +96,38 @@ pub fn vec_layout_packed() -> u64 {
     (l.ptr as u64) | ((l.len as u64) << 8) | ((l.cap as u64) << 16)
 }
 
+/// Where an array's data keeps its kind byte and its vector (byte
+/// offsets from the `ArrayData`, which sits after the allocation's two
+/// counts); `repr(C, u8)` fixes them.
+pub const ARRAY_KIND_OFF: usize = 0;
+pub const ARRAY_VEC_OFF: usize = 8;
+
 /// Refuse to run code built against another layout, and check the bit
 /// patterns the compiled code writes for "nothing".
 pub fn check(sig: u64, vec: u64) {
     if sig != SIGNATURE || vec != vec_layout_packed() {
         eprintln!("quarz: this program was built against a different runtime; rebuild it");
         std::process::exit(70);
+    }
+    // The array data layout compiled code reads.
+    {
+        use crate::value::{ArrayData, ARRAY_KIND_INTS};
+        let mut v: Vec<i64> = Vec::with_capacity(7);
+        v.extend([1, 2, 3]);
+        let ptr = v.as_ptr() as usize;
+        let data = ArrayData::Ints(v);
+        // SAFETY: reading the bytes of a live value.
+        let (kind, words) = unsafe {
+            let base = &data as *const ArrayData as *const u8;
+            let kind = *base.add(ARRAY_KIND_OFF);
+            let words = std::ptr::read(base.add(ARRAY_VEC_OFF) as *const [usize; 3]);
+            (kind, words)
+        };
+        let l = vec_layout();
+        assert_eq!(kind, ARRAY_KIND_INTS, "ArrayData layout changed: kind byte");
+        assert_eq!(words[l.ptr / 8], ptr, "ArrayData layout changed: vector");
+        assert_eq!(words[l.len / 8], 3, "ArrayData layout changed: vector");
+        assert_eq!(words[l.cap / 8], 7, "ArrayData layout changed: vector");
     }
     assert_eq!(
         crate::value::Value::array(Vec::new()).type_tag(),

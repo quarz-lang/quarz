@@ -1237,6 +1237,18 @@ impl Interp {
     /// Call a method by name with dynamic lookup (used by `&:sym`,
     /// enumerators, `to_s`, operators in compound assignment).
     pub fn send(&self, recv: &Value, name: &str, args: ArgVec, block: Option<Value>) -> EvalResult {
+        self.send_kw(recv, name, args, Vec::new(), block)
+    }
+
+    /// `send` with keyword arguments.
+    pub fn send_kw(
+        &self,
+        recv: &Value,
+        name: &str,
+        args: ArgVec,
+        kw: Vec<(Symbol, Value)>,
+        block: Option<Value>,
+    ) -> EvalResult {
         let cid = self.class_of(recv);
         let Some(mid) = self.find_method(cid, name, args.len(), block.is_some()) else {
             return Err(self.raise(
@@ -1247,7 +1259,7 @@ impl Interp {
                 ),
             ));
         };
-        self.invoke(mid, recv.clone(), args, Vec::new(), block)
+        self.invoke(mid, recv.clone(), args, kw, block)
     }
 
     /// Whether the receiver's class defines `name` itself (not via Object's
@@ -1397,7 +1409,7 @@ impl Interp {
                 if i < 0 || i >= n {
                     return false;
                 }
-                Rc::make_mut(a)[i as usize] = (*v).clone();
+                Rc::make_mut(a).set(i as usize, (*v).clone());
                 true
             }
             (Value::Hash(h), [k, v]) if m == o.hash_put => {
@@ -1757,7 +1769,7 @@ impl Interp {
             Value::Array(a) => {
                 let mut parts = Vec::new();
                 for x in a.iter() {
-                    parts.push(self.inspect(x)?);
+                    parts.push(self.inspect(&x)?);
                 }
                 format!("[{}]", parts.join(", "))
             }
@@ -1940,7 +1952,7 @@ impl Interp {
             (Value::Time(x), Value::Time(y)) => return Ok(x.ns.cmp(&y.ns)),
             (Value::Array(x), Value::Array(y)) => {
                 for (p, q) in x.iter().zip(y.iter()) {
-                    let o = self.compare(p, q)?;
+                    let o = self.compare(&p, &q)?;
                     if o != Ordering::Equal {
                         return Ok(o);
                     }

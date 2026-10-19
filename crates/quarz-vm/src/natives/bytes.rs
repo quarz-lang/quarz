@@ -23,7 +23,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
         Value::Array(items) => {
             let mut out = Vec::with_capacity(items.len());
             for v in items.iter() {
-                out.push(byte(i, v)?);
+                out.push(byte(i, &v)?);
             }
             Ok(Value::bytes(out))
         }

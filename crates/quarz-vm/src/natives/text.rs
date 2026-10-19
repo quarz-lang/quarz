@@ -240,7 +240,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     m.insert("String#%", |i, r, a| {
         let fmt = s(i, r)?;
         let values: Vec<Value> = match a.arg(0) {
-            Value::Array(items) => items.iter().cloned().collect(),
+            Value::Array(items) => items.to_values(),
             other => vec![other.clone()],
         };
         Ok(Value::string(super::core::format_values(i, &fmt, &values)?))

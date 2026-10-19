@@ -96,7 +96,7 @@ pub fn register_owned(m: &mut HashMap<&'static str, OwnedNativeFn>) {
 fn owned_update(recv: Value, f: impl FnOnce(&mut Vec<Value>)) -> Result<Value, (Flow, Value)> {
     match recv {
         Value::Array(mut rc) => {
-            f(Rc::make_mut(&mut rc));
+            Rc::make_mut(&mut rc).with_values(f);
             Ok(Value::Array(rc))
         }
         other => Err((Flow::Raise(Value::Nil), other)),
@@ -135,32 +135,32 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     });
     m.insert("Array#each_index", |i, r, a| {
         let b = block(i, &a)?;
-        for k in 0..arr(i, r)?.len() {
+        for k in 0..arr_data(i, r)?.len() {
             i.call_block(&b, smallvec![Value::Int(k as i64)])?;
         }
         Ok(Value::Nil)
     });
     m.insert("Array#reverse_each", |i, r, a| {
         let b = block(i, &a)?;
-        for x in arr(i, r)?.iter().rev() {
-            i.call_block(&b, smallvec![x.clone()])?;
+        for x in arr_data(i, r)?.iter().rev() {
+            i.call_block(&b, smallvec![x])?;
         }
         Ok(Value::Nil)
     });
     m.insert("Array#[]", array_index);
     m.insert("Array#[]?", |i, r, a| {
-        Ok(index_opt(arr(i, r)?, int(i, a.arg(0), "index")?))
+        Ok(index_data(arr_data(i, r)?, int(i, a.arg(0), "index")?))
     });
     m.insert("Array#at", |i, r, a| {
-        Ok(index_opt(arr(i, r)?, int(i, a.arg(0), "index")?))
+        Ok(index_data(arr_data(i, r)?, int(i, a.arg(0), "index")?))
     });
     m.insert("Array#fetch", |i, r, a| {
         let idx = int(i, a.arg(0), "index")?;
-        let items = arr(i, r)?;
+        let items = arr_data(i, r)?;
         let n = items.len() as i64;
         let at = if idx < 0 { n + idx } else { idx };
         if at >= 0 && at < n {
-            return Ok(items[at as usize].clone());
+            return Ok(items.get(at as usize).unwrap_or(Value::Nil));
         }
         match &a.block {
             Some(b) => i.call_block(b, smallvec![Value::Int(idx)]),
@@ -169,20 +169,25 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     });
     m.insert("Array#first", array_first);
     m.insert("Array#first?", |i, r, _| {
-        Ok(arr(i, r)?.first().cloned().unwrap_or(Value::Nil))
+        Ok(arr_data(i, r)?.get(0).unwrap_or(Value::Nil))
     });
     m.insert("Array#last", array_last);
     m.insert("Array#last?", |i, r, _| {
-        Ok(arr(i, r)?.last().cloned().unwrap_or(Value::Nil))
+        let items = arr_data(i, r)?;
+        Ok(items
+            .len()
+            .checked_sub(1)
+            .and_then(|k| items.get(k))
+            .unwrap_or(Value::Nil))
     });
     m.insert("Array#size", |i, r, _| {
-        Ok(Value::Int(arr(i, r)?.len() as i64))
+        Ok(Value::Int(arr_data(i, r)?.len() as i64))
     });
     m.insert("Array#length", |i, r, _| {
-        Ok(Value::Int(arr(i, r)?.len() as i64))
+        Ok(Value::Int(arr_data(i, r)?.len() as i64))
     });
     m.insert("Array#empty?", |i, r, _| {
-        Ok(Value::Bool(arr(i, r)?.is_empty()))
+        Ok(Value::Bool(arr_data(i, r)?.is_empty()))
     });
     m.insert("Array#push", |i, r, a| {
         update(i, r, |v| v.extend(a.pos.iter().cloned()))
@@ -286,7 +291,12 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
             .unwrap_or(Value::Nil))
     });
     m.insert("Array#include?", |i, r, a| {
-        Ok(Value::Bool(arr(i, r)?.contains(a.arg(0))))
+        let needle = a.arg(0);
+        Ok(Value::Bool(match (&**arr_data(i, r)?, needle) {
+            (ArrayData::Ints(xs), Value::Int(n)) => xs.contains(n),
+            (ArrayData::Floats(xs), Value::Float(f)) => xs.contains(f),
+            (data, _) => data.iter().any(|x| &x == needle),
+        }))
     });
     m.insert("Array#join", array_join);
     m.insert("Array#sample", |i, r, a| {
@@ -310,7 +320,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
             None => -1,
         };
         let mut out = Vec::new();
-        flatten_into(arr(i, r)?, &mut out, depth);
+        flatten_into(&arr(i, r)?, &mut out, depth);
         Ok(Value::array(out))
     });
     m.insert("Array#compact", |i, r, _| {
@@ -942,7 +952,19 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
 
 // ----- helpers ---------------------------------------------------------------------
 
-pub(super) fn arr<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Rc<Vec<Value>>, Flow> {
+/// The elements of an array as boxed values (borrowed when stored so).
+pub(super) fn arr<'a>(
+    interp: &Interp,
+    v: &'a Value,
+) -> Result<std::borrow::Cow<'a, [Value]>, Flow> {
+    match v {
+        Value::Array(a) => Ok(a.values()),
+        _ => Err(interp.err_type(&format!("expected an Array, got {}", interp.class_name(v)))),
+    }
+}
+
+/// The array itself.
+pub(super) fn arr_data<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Rc<ArrayData>, Flow> {
     match v {
         Value::Array(a) => Ok(a),
         _ => Err(interp.err_type(&format!("expected an Array, got {}", interp.class_name(v)))),
@@ -993,10 +1015,10 @@ pub(super) fn range<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Rc<RangeVal
 
 /// Produce a new array by modifying a copy (in place when unique).
 pub(super) fn update(interp: &Interp, recv: &Value, f: impl FnOnce(&mut Vec<Value>)) -> EvalResult {
-    let mut rc = arr(interp, recv)?.clone();
+    let mut rc = arr_data(interp, recv)?.clone();
     // `recv` holds one reference, `rc` another; `make_mut` copies when a
     // third party holds the array.
-    f(Rc::make_mut(&mut rc));
+    Rc::make_mut(&mut rc).with_values(f);
     Ok(Value::Array(rc))
 }
 
@@ -1020,6 +1042,17 @@ pub(super) fn set_update(
     Ok(Value::Set(rc))
 }
 
+/// `items[i]` with negative indices from the end, nil out of range.
+pub(super) fn index_data(items: &ArrayData, i: i64) -> Value {
+    let n = items.len() as i64;
+    let i = if i < 0 { n + i } else { i };
+    if i < 0 || i >= n {
+        Value::Nil
+    } else {
+        items.get(i as usize).unwrap_or(Value::Nil)
+    }
+}
+
 pub(super) fn index_opt(items: &[Value], i: i64) -> Value {
     let n = items.len() as i64;
     let i = if i < 0 { n + i } else { i };
@@ -1034,7 +1067,7 @@ pub(super) fn index_opt(items: &[Value], i: i64) -> Value {
 pub(super) fn flatten_into(items: &[Value], out: &mut Vec<Value>, depth: i64) {
     for x in items {
         match x {
-            Value::Array(a) if depth != 0 => flatten_into(a, out, depth - 1),
+            Value::Array(a) if depth != 0 => flatten_into(&a.values(), out, depth - 1),
             other => out.push(other.clone()),
         }
     }
@@ -1048,7 +1081,7 @@ fn array_eq(interp: &Interp, a: &Value, b: &Value) -> Result<bool, Flow> {
         return Ok(false);
     }
     for (p, q) in x.iter().zip(y.iter()) {
-        if !interp.values_equal(p, q)? {
+        if !interp.values_equal(&p, &q)? {
             return Ok(false);
         }
     }
@@ -1088,18 +1121,18 @@ fn array_each(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
 }
 
 fn array_index(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
-    let items = arr(interp, recv)?;
+    let data = arr_data(interp, recv)?;
     match args.arg(0) {
         Value::Int(i) => {
-            let n = items.len() as i64;
+            let n = data.len() as i64;
             let idx = if *i < 0 { n + i } else { *i };
             if idx < 0 || idx >= n {
                 return Err(interp.err_index(&format!("index {i} out of bounds (size {n})")));
             }
-            Ok(items[idx as usize].clone())
+            Ok(data.get(idx as usize).unwrap_or(Value::Nil))
         }
-        Value::Range(r) => match super::string::range_bounds(interp, r, items.len())? {
-            Some((st, en)) => Ok(Value::array(items[st..en].to_vec())),
+        Value::Range(r) => match super::string::range_bounds(interp, r, data.len())? {
+            Some((st, en)) => Ok(Value::array(data.values()[st..en].to_vec())),
             None => Err(interp.err_index("range out of bounds")),
         },
         other => Err(interp.err_type(&format!(
@@ -1112,7 +1145,7 @@ fn array_index(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
 fn array_first(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let items = arr(interp, recv)?;
     match args.pos.first() {
-        None => Ok(items.first().cloned().unwrap_or(Value::Nil)),
+        None => Ok(arr_data(interp, recv)?.get(0).unwrap_or(Value::Nil)),
         Some(n) => {
             let n = int(interp, n, "count")?.max(0) as usize;
             Ok(Value::array(items.iter().take(n).cloned().collect()))
@@ -1123,7 +1156,14 @@ fn array_first(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
 fn array_last(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let items = arr(interp, recv)?;
     match args.pos.first() {
-        None => Ok(items.last().cloned().unwrap_or(Value::Nil)),
+        None => {
+            let data = arr_data(interp, recv)?;
+            Ok(data
+                .len()
+                .checked_sub(1)
+                .and_then(|k| data.get(k))
+                .unwrap_or(Value::Nil))
+        }
         Some(n) => {
             let n = int(interp, n, "count")?.max(0) as usize;
             let start = items.len().saturating_sub(n);
@@ -1239,11 +1279,11 @@ fn array_sort_pairs(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
     let mut items: Vec<Value> = arr(interp, recv)?.iter().cloned().collect();
     interp.sort_values(&mut items, |a, b| {
         let ka = match a {
-            Value::Array(p) => p.first().cloned().unwrap_or(Value::Nil),
+            Value::Array(p) => p.get(0).unwrap_or(Value::Nil),
             _ => Value::Nil,
         };
         let kb = match b {
-            Value::Array(p) => p.first().cloned().unwrap_or(Value::Nil),
+            Value::Array(p) => p.get(0).unwrap_or(Value::Nil),
             _ => Value::Nil,
         };
         interp.compare(&ka, &kb)
@@ -1252,6 +1292,24 @@ fn array_sort_pairs(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
 }
 
 pub(super) fn enum_sort(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
+    // Unboxed numbers sort as such.
+    if args.block.is_none() {
+        if let Value::Array(a) = recv {
+            match &**a {
+                ArrayData::Ints(xs) => {
+                    let mut xs = xs.clone();
+                    xs.sort_unstable();
+                    return Ok(Value::ints(xs));
+                }
+                ArrayData::Floats(xs) => {
+                    let mut xs = xs.clone();
+                    xs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                    return Ok(Value::floats(xs));
+                }
+                ArrayData::Values(_) => {}
+            }
+        }
+    }
     let mut items = collect(interp, recv)?;
     match &args.block {
         None => interp.sort_values(&mut items, |a, b| interp.compare(a, b))?,
@@ -1272,6 +1330,31 @@ pub(super) fn block_ordering(
 }
 
 pub(super) fn enum_extreme(interp: &Interp, recv: &Value, args: &Args, min: bool) -> EvalResult {
+    if args.block.is_none() {
+        if let Value::Array(a) = recv {
+            match &**a {
+                ArrayData::Ints(xs) if !xs.is_empty() => {
+                    let best = if min {
+                        xs.iter().min()
+                    } else {
+                        xs.iter().max()
+                    };
+                    return Ok(Value::Int(*best.unwrap()));
+                }
+                ArrayData::Floats(xs) if !xs.is_empty() => {
+                    let pick =
+                        |a: &&f64, b: &&f64| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal);
+                    let best = if min {
+                        xs.iter().min_by(pick)
+                    } else {
+                        xs.iter().max_by(pick)
+                    };
+                    return Ok(Value::Float(*best.unwrap()));
+                }
+                _ => {}
+            }
+        }
+    }
     let items = collect(interp, recv)?;
     let mut best: Option<Value> = None;
     for x in items {

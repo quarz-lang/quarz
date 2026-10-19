@@ -1,0 +1,37 @@
+# Arrays store all-Int or all-Float elements unboxed (`Array[Int]`,
+# `Array[Float]` usually are); the storage switches to boxed values
+# when something else is pushed, and nothing observable changes.
+xs = [3, 1, 2]
+p xs.sort, xs.min, xs.max, xs.include?(2), xs.include?(2.0), xs[1], xs[-1], xs.first, xs.last?, xs.size
+fs = [2.5, -1.0, 3.25]
+p fs.sort, fs.min, fs.max, fs.include?(3.25), fs[0], fs.sum
+mixed = [1, "a", 2.0]
+p mixed.sort { |a, b| a.to_s <=> b.to_s }, mixed.size, mixed[2]
+big = [1, 2 ** 70, 3]
+p big.sort, big.max, big[1]
+e: Array[Int] = []
+p e.sort, e.first?, e.size, e.sum
+ys = [1, 2]
+ys.push!(2 ** 70)
+p ys, ys.include?(2 ** 70), ys.sum
+zs: Array[Object] = [1, 2]
+zs.push!(1.5)
+p zs, zs.include?(1.5), zs.map { |z| z.to_s }
+ws: Array[Object] = []
+ws.push!(7)
+ws.push!("seven")
+p ws, ws.size, ws[1]
+p [1, 2, 3] == [1.0, 2.0, 3.0], [1, 2].hash == [1, 2].hash, ({ [1, 2] => "a" })[[1, 2]], [1, 2] == [1, 2, 3]
+p [1, 2, 3].map { |x| x * 1.5 }, [1, 2, 3].map { |x| x * 1.5 }.sum, (1..5).to_a.reverse, [0.5, 0.25].reverse
+acc: Array[Float] = []
+(1..4).each { |i| acc.push!(i / 2.0) }
+p acc, acc.sum, acc.max
+grid = [[1, 2], [3, 4]]
+p grid.map { |row| row.sum }, grid.flatten, grid[1][0]
+t: Array[Object] = [1, 2, 3]
+t.set!(1, 20)
+t.set!(0, 1.5)
+p t, t.sort { |a, b| b.to_s <=> a.to_s }
+u = [1, 2, 3]
+u.set!(2, 30)
+p u, u.sum

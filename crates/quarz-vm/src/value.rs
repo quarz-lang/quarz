@@ -119,6 +119,202 @@ impl Frame {
 /// The fields of an object, stored inline for up to four.
 pub type Fields = SmallVec<[Value; 4]>;
 
+/// The elements of an array: boxed values, or unboxed machine integers
+/// or floats when every element is one (`Array[Int]`/`Array[Float]`
+/// usually are). The layout is fixed (`repr(C, u8)`: the kind byte, then
+/// the vector at offset 8) so that compiled code reads elements directly.
+#[derive(Clone, Debug)]
+#[repr(C, u8)]
+pub enum ArrayData {
+    Values(Vec<Value>),
+    Ints(Vec<i64>),
+    Floats(Vec<f64>),
+}
+
+pub const ARRAY_KIND_VALUES: u8 = 0;
+pub const ARRAY_KIND_INTS: u8 = 1;
+pub const ARRAY_KIND_FLOATS: u8 = 2;
+
+/// Iterates an array's elements as values.
+pub enum ArrayIter<'a> {
+    Values(std::slice::Iter<'a, Value>),
+    Ints(std::slice::Iter<'a, i64>),
+    Floats(std::slice::Iter<'a, f64>),
+}
+
+impl Iterator for ArrayIter<'_> {
+    type Item = Value;
+
+    fn next(&mut self) -> Option<Value> {
+        match self {
+            ArrayIter::Values(it) => it.next().cloned(),
+            ArrayIter::Ints(it) => it.next().map(|i| Value::Int(*i)),
+            ArrayIter::Floats(it) => it.next().map(|f| Value::Float(*f)),
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        match self {
+            ArrayIter::Values(it) => it.size_hint(),
+            ArrayIter::Ints(it) => it.size_hint(),
+            ArrayIter::Floats(it) => it.size_hint(),
+        }
+    }
+}
+
+impl ExactSizeIterator for ArrayIter<'_> {}
+
+impl DoubleEndedIterator for ArrayIter<'_> {
+    fn next_back(&mut self) -> Option<Value> {
+        match self {
+            ArrayIter::Values(it) => it.next_back().cloned(),
+            ArrayIter::Ints(it) => it.next_back().map(|i| Value::Int(*i)),
+            ArrayIter::Floats(it) => it.next_back().map(|f| Value::Float(*f)),
+        }
+    }
+}
+
+impl ArrayData {
+    /// Store `items` unboxed when they are all machine integers or all
+    /// floats (and there are some), boxed otherwise.
+    pub fn from_values(items: Vec<Value>) -> ArrayData {
+        if items.is_empty() {
+            return ArrayData::Values(items);
+        }
+        if items.iter().all(|v| matches!(v, Value::Int(_))) {
+            return ArrayData::Ints(
+                items
+                    .iter()
+                    .map(|v| match v {
+                        Value::Int(i) => *i,
+                        _ => unreachable!(),
+                    })
+                    .collect(),
+            );
+        }
+        if items.iter().all(|v| matches!(v, Value::Float(_))) {
+            return ArrayData::Floats(
+                items
+                    .iter()
+                    .map(|v| match v {
+                        Value::Float(f) => *f,
+                        _ => unreachable!(),
+                    })
+                    .collect(),
+            );
+        }
+        ArrayData::Values(items)
+    }
+
+    pub fn kind(&self) -> u8 {
+        match self {
+            ArrayData::Values(_) => ARRAY_KIND_VALUES,
+            ArrayData::Ints(_) => ARRAY_KIND_INTS,
+            ArrayData::Floats(_) => ARRAY_KIND_FLOATS,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        match self {
+            ArrayData::Values(v) => v.len(),
+            ArrayData::Ints(v) => v.len(),
+            ArrayData::Floats(v) => v.len(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn get(&self, i: usize) -> Option<Value> {
+        match self {
+            ArrayData::Values(v) => v.get(i).cloned(),
+            ArrayData::Ints(v) => v.get(i).map(|i| Value::Int(*i)),
+            ArrayData::Floats(v) => v.get(i).map(|f| Value::Float(*f)),
+        }
+    }
+
+    pub fn iter(&self) -> ArrayIter<'_> {
+        match self {
+            ArrayData::Values(v) => ArrayIter::Values(v.iter()),
+            ArrayData::Ints(v) => ArrayIter::Ints(v.iter()),
+            ArrayData::Floats(v) => ArrayIter::Floats(v.iter()),
+        }
+    }
+
+    /// The elements as boxed values: borrowed when they are stored so,
+    /// a fresh vector otherwise.
+    pub fn values(&self) -> std::borrow::Cow<'_, [Value]> {
+        match self {
+            ArrayData::Values(v) => std::borrow::Cow::Borrowed(v.as_slice()),
+            _ => std::borrow::Cow::Owned(self.iter().collect()),
+        }
+    }
+
+    pub fn to_values(&self) -> Vec<Value> {
+        self.iter().collect()
+    }
+
+    pub fn into_values(self) -> Vec<Value> {
+        match self {
+            ArrayData::Values(v) => v,
+            other => other.iter().collect(),
+        }
+    }
+
+    /// Switch to boxed storage and give the vector to `f`.
+    pub fn with_values<R>(&mut self, f: impl FnOnce(&mut Vec<Value>) -> R) -> R {
+        if !matches!(self, ArrayData::Values(_)) {
+            *self = ArrayData::Values(self.to_values());
+        }
+        match self {
+            ArrayData::Values(v) => f(v),
+            _ => unreachable!(),
+        }
+    }
+
+    /// Append `v`: in the unboxed storage when it fits (an empty boxed
+    /// array takes the kind of its first element), boxing everything
+    /// otherwise.
+    pub fn push(&mut self, v: Value) {
+        match (&mut *self, &v) {
+            (ArrayData::Ints(xs), Value::Int(i)) => xs.push(*i),
+            (ArrayData::Floats(xs), Value::Float(f)) => xs.push(*f),
+            (ArrayData::Values(xs), Value::Int(i)) if xs.is_empty() => {
+                *self = ArrayData::Ints(vec![*i]);
+            }
+            (ArrayData::Values(xs), Value::Float(f)) if xs.is_empty() => {
+                *self = ArrayData::Floats(vec![*f]);
+            }
+            (ArrayData::Values(xs), _) => xs.push(v),
+            _ => self.with_values(|xs| xs.push(v)),
+        }
+    }
+
+    /// `self[i] = v` for an index in range.
+    pub fn set(&mut self, i: usize, v: Value) {
+        match (&mut *self, &v) {
+            (ArrayData::Ints(xs), Value::Int(x)) => xs[i] = *x,
+            (ArrayData::Floats(xs), Value::Float(x)) => xs[i] = *x,
+            (ArrayData::Values(xs), _) => xs[i] = v,
+            _ => self.with_values(|xs| xs[i] = v),
+        }
+    }
+
+    pub fn extend_from(&mut self, other: &ArrayData) {
+        match (&mut *self, other) {
+            (ArrayData::Ints(xs), ArrayData::Ints(ys)) => xs.extend_from_slice(ys),
+            (ArrayData::Floats(xs), ArrayData::Floats(ys)) => xs.extend_from_slice(ys),
+            (ArrayData::Values(xs), ArrayData::Values(ys)) => xs.extend_from_slice(ys),
+            (ArrayData::Values(xs), _) if xs.is_empty() => *self = other.clone(),
+            _ => {
+                let more = other.to_values();
+                self.with_values(|xs| xs.extend(more));
+            }
+        }
+    }
+}
+
 /// An instance of a user-defined class, data type, enum variant or
 /// exception.
 #[derive(Debug)]
@@ -406,7 +602,7 @@ pub enum Value {
     Duration(i64),
     BigInt(Rc<BigInt>),
     Str(Rc<str>),
-    Array(Rc<Vec<Value>>),
+    Array(Rc<ArrayData>),
     Hash(Rc<ValueMap>),
     Set(Rc<ValueSet>),
     Range(Rc<RangeVal>),
@@ -596,7 +792,15 @@ impl Value {
     }
 
     pub fn array(items: Vec<Value>) -> Value {
-        Value::Array(Rc::new(items))
+        Value::Array(Rc::new(ArrayData::from_values(items)))
+    }
+
+    pub fn ints(items: Vec<i64>) -> Value {
+        Value::Array(Rc::new(ArrayData::Ints(items)))
+    }
+
+    pub fn floats(items: Vec<f64>) -> Value {
+        Value::Array(Rc::new(ArrayData::Floats(items)))
     }
 
     pub fn bytes(bytes: Vec<u8>) -> Value {
@@ -688,7 +892,9 @@ impl PartialEq for Value {
             (Value::BigInt(a), Value::BigInt(b)) => a == b,
             (Value::Float(a), Value::Float(b)) => a == b,
             (Value::Str(a), Value::Str(b)) => a == b,
-            (Value::Array(a), Value::Array(b)) => a == b,
+            (Value::Array(a), Value::Array(b)) => {
+                a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| x == y)
+            }
             (Value::Hash(a), Value::Hash(b)) => {
                 a.len() == b.len() && a.iter().all(|(k, v)| b.get(k).is_some_and(|w| w == v))
             }

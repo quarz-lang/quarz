@@ -1,0 +1,20 @@
+# A call on a union-typed receiver goes to the receiver's own method:
+# through a common ancestor's (Object#to_s) or by name (size).
+mixed = [1, "a", 2.0]
+mixed.each { |x| p x.to_s }
+p mixed.sort { |a, b| a.to_s <=> b.to_s }
+
+def f(x: Array[Int] | String) -> Int
+  x.size
+end
+p f([1, 2, 3]), f("hello")
+
+def g(x: Int | String | Float) -> String
+  x.to_s
+end
+p g(1), g("s"), g(2.5)
+
+h: Hash[String, Int] | Array[Int] = { "a" => 1 }
+p h.size, h.empty?
+a: Hash[String, Int] | Array[Int] = [1, 2]
+p a.size, a.empty?
