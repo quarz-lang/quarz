@@ -41,6 +41,11 @@ const VALUE_SIZE: i32 = 24;
 const ACT_BUF_SIZE: u32 = 320;
 /// Tags below this hold no reference-counted payload (`NEEDS_DROP_FROM`).
 const NEEDS_DROP_FROM: i64 = 8;
+/// `qz_enter_virtual` ran the call itself (see `ffi::STATUS_DONE`).
+const STATUS_DONE: i64 = 7;
+/// A typed entry's result did not fit its declared type: it is boxed
+/// in the caller's `out` instead.
+const STATUS_BOXED: i64 = 8;
 const TAG_NIL: i64 = 0;
 const TAG_BOOL: i64 = 1;
 const TAG_INT: i64 = 2;
@@ -113,6 +118,33 @@ struct Compiler {
     rt: Runtime,
     fn_sig: Signature,
     funcs: Vec<CFuncId>,
+    /// The typed entries (`qz_fn_N_t`), for the functions that have one.
+    typed: Vec<Option<unbox::TypedSig>>,
+    typed_funcs: Vec<Option<CFuncId>>,
+}
+
+/// The signature of a typed entry: the interpreter, the caller's
+/// activation, the address of `self`, the parameters as machine values,
+/// then the address of a `Value` for a result that does not fit;
+/// returns the status and the result's bits.
+fn typed_signature(
+    call_conv: cranelift_codegen::isa::CallConv,
+    sig: &unbox::TypedSig,
+) -> Signature {
+    let mut s = Signature::new(call_conv);
+    for _ in 0..3 {
+        s.params.push(AbiParam::new(types::I64));
+    }
+    for p in &sig.params {
+        s.params.push(AbiParam::new(match p {
+            Num::Int => types::I64,
+            Num::Float => types::F64,
+        }));
+    }
+    s.params.push(AbiParam::new(types::I64));
+    s.returns.push(AbiParam::new(types::I32));
+    s.returns.push(AbiParam::new(types::I64));
+    s
 }
 
 /// Compile a module to an object file.
@@ -268,11 +300,30 @@ pub fn compile(module: &Module) -> Result<Vec<u8>, String> {
                 .map_err(|e| e.to_string())
         })
         .collect::<Result<_, _>>()?;
+    let typed = unbox::typed_sigs(&module.functions, &module.world.methods);
+    let typed_funcs: Vec<Option<CFuncId>> = typed
+        .iter()
+        .enumerate()
+        .map(|(i, t)| {
+            t.as_ref()
+                .map(|sig| {
+                    obj.declare_function(
+                        &format!("qz_fn_{i}_t"),
+                        Linkage::Local,
+                        &typed_signature(call_conv, sig),
+                    )
+                    .map_err(|e| e.to_string())
+                })
+                .transpose()
+        })
+        .collect::<Result<_, _>>()?;
     let mut c = Compiler {
         module: obj,
         rt,
         fn_sig,
         funcs,
+        typed,
+        typed_funcs,
     };
     for (i, f) in module.functions.iter().enumerate() {
         c.compile_function(
@@ -282,7 +333,19 @@ pub fn compile(module: &Module) -> Result<Vec<u8>, String> {
             &module.functions,
             &module.world.classes,
             &module.world.builtin,
+            None,
         )?;
+        if let Some(sig) = c.typed[i].clone() {
+            c.compile_function(
+                i as FuncId,
+                f,
+                &module.world.methods,
+                &module.functions,
+                &module.world.classes,
+                &module.world.builtin,
+                Some(sig),
+            )?;
+        }
     }
     c.emit_data_and_main(module, call_conv)?;
     let product = c.module.finish();
@@ -290,6 +353,7 @@ pub fn compile(module: &Module) -> Result<Vec<u8>, String> {
 }
 
 impl Compiler {
+    #[allow(clippy::too_many_arguments)]
     fn compile_function(
         &mut self,
         fid: FuncId,
@@ -298,9 +362,13 @@ impl Compiler {
         functions: &[Function],
         classes: &[RtClass],
         builtin: &RtBuiltin,
+        typed: Option<unbox::TypedSig>,
     ) -> Result<(), String> {
         let mut ctx: Context = self.module.make_context();
-        ctx.func.signature = self.fn_sig.clone();
+        ctx.func.signature = match &typed {
+            Some(sig) => typed_signature(self.fn_sig.call_conv, sig),
+            None => self.fn_sig.clone(),
+        };
         let mut fbc = FunctionBuilderContext::new();
         let mut b = FunctionBuilder::new(&mut ctx.func, &mut fbc);
         let drop_value_fn = self.module.declare_func_in_func(self.rt.drop_value, b.func);
@@ -338,10 +406,12 @@ impl Compiler {
             alloc_data: self.module.declare_func_in_func(self.rt.alloc_data, b.func),
             owned_call: self.module.declare_func_in_func(self.rt.owned_call, b.func),
         };
-        let heap = heap_possible(f);
+        let pop_call = h.pop_call;
+        let heap = heap_possible(f, methods, &self.typed);
         // Unboxed numbers: the state of each register at each block's
         // entry, and an SSA variable per register for each kind.
-        let entry_states = unbox::analyze(f, methods, classes, builtin);
+        let typed_all: &[Option<unbox::TypedSig>] = &self.typed;
+        let entry_states = unbox::analyze(f, methods, classes, builtin, typed_all);
         let live = unbox::liveness(f);
         let nregs_usize = f.nregs.max(1) as usize;
         for r in 0..nregs_usize {
@@ -359,6 +429,13 @@ impl Compiler {
                             .declare_func_in_func(self.funcs[target as usize], b.func)
                     });
                 }
+            }
+        }
+        // The typed entries of those callees.
+        let mut callees_typed: HashMap<FuncId, FuncRef> = HashMap::new();
+        for target in callees.keys().copied().collect::<Vec<_>>() {
+            if let Some(Some(tf)) = self.typed_funcs.get(target as usize) {
+                callees_typed.insert(target, self.module.declare_func_in_func(*tf, b.func));
             }
         }
         // The argument area for direct calls: the widest callee's
@@ -424,7 +501,10 @@ impl Compiler {
 
         b.switch_to_block(entry);
         let params = b.block_params(entry).to_vec();
-        let (rt, act, out) = (params[0], params[1], params[2]);
+        let rt = params[0];
+        // A typed entry builds its own activation (the boxed one gets
+        // the caller's) and its own result slot.
+        let (mut act, mut out) = (params[1], params[2]);
         let nregs = f.nregs.max(1);
         let slot = b.create_sized_stack_slot(StackSlotData::new(
             StackSlotKind::ExplicitSlot,
@@ -477,11 +557,198 @@ impl Compiler {
             3,
         ));
         let args_buf = b.ins().stack_addr(types::I64, args_slot, 0);
-        // Registers start as nil: only the tag word needs writing.
-        let zero = b.ins().iconst(types::I64, 0);
-        for i in 0..nregs as i32 {
+        let mut typed_params: Vec<CValue> = Vec::new();
+        let mut typed_self_ptr: Option<CValue> = None;
+        let mut typed_params_buf: Option<CValue> = None;
+        let mut typed_exit: Option<(CBlock, CValue, CValue, CBlock)> = None;
+        if let Some(sig) = &typed {
+            let nparams = sig.params.len();
+            let caller_act = params[1];
+            let self_ptr = params[2];
+            typed_params = params[3..3 + nparams].to_vec();
+            let out_caller = params[3 + nparams];
+            let own_act_slot = b.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                ACT_BUF_SIZE,
+                4,
+            ));
+            let own_act = b.ins().stack_addr(types::I64, own_act_slot, 0);
+            let own_out_slot = b.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                VALUE_SIZE as u32,
+                3,
+            ));
+            let own_out = b.ins().stack_addr(types::I64, own_out_slot, 0);
+            let params_slot = b.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                (VALUE_SIZE as u32) * nparams.max(1) as u32,
+                3,
+            ));
+            let params_buf = b.ins().stack_addr(types::I64, params_slot, 0);
+            let zero = b.ins().iconst(types::I64, 0);
+            b.ins().store(MemFlags::trusted(), zero, own_out, 0);
+            // The parameters are boxed into `params_buf`, and `self`
+            // cloned into the activation, only when the interpreter or
+            // the runtime needs them (see `materialize`).
+            typed_self_ptr = Some(self_ptr);
+            typed_params_buf = Some(params_buf);
+            // Native stack check, then the activation, pushed.
+            let sp = b.ins().get_stack_pointer(types::I64);
+            let limit_cell =
+                b.ins()
+                    .load(types::I64, MemFlags::trusted(), rt, L::HOT_LIMIT_PTR as i32);
+            let limit = b.ins().load(types::I64, MemFlags::trusted(), limit_cell, 0);
+            let exhausted = b.ins().icmp(IntCC::UnsignedLessThan, sp, limit);
+            let overflow = b.create_block();
+            let build = b.create_block();
+            b.ins().brif(exhausted, overflow, &[], build, &[]);
+            b.switch_to_block(overflow);
+            let call = b.ins().call(h.stack_overflow, &[rt]);
+            let status = b.inst_results(call)[0];
+            let zero_bits = b.ins().iconst(types::I64, 0);
+            b.ins().return_(&[status, zero_bits]);
+            b.switch_to_block(build);
+            let fid_v = b.ins().iconst(types::I32, i64::from(fid));
             b.ins()
-                .store(MemFlags::trusted(), zero, regs, i * VALUE_SIZE);
+                .store(MemFlags::trusted(), fid_v, own_act, L::ACT_FID as i32);
+            let task = b.ins().load(
+                types::I32,
+                MemFlags::trusted(),
+                caller_act,
+                L::ACT_TASK as i32,
+            );
+            b.ins()
+                .store(MemFlags::trusted(), task, own_act, L::ACT_TASK as i32);
+            let zero32 = b.ins().iconst(types::I32, 0);
+            b.ins()
+                .store(MemFlags::trusted(), zero32, own_act, L::ACT_LINE as i32);
+            let file_v = b.ins().iconst(types::I32, i64::from(f.file));
+            b.ins()
+                .store(MemFlags::trusted(), file_v, own_act, L::ACT_FILE as i32);
+            let self_dst = b.ins().iadd_imm(own_act, L::ACT_SELF as i64);
+            b.ins().store(MemFlags::trusted(), zero, self_dst, 0);
+            for off in [
+                L::ACT_FRAME,
+                L::ACT_BLOCK,
+                L::ACT_METHOD_TAG,
+                L::ACT_CLOSURE_TAG,
+                L::ACT_YIELD_CALLER,
+            ] {
+                b.ins()
+                    .store(MemFlags::trusted(), zero, own_act, off as i32);
+            }
+            let provided: u64 = if nparams >= 64 {
+                u64::MAX
+            } else {
+                (1u64 << nparams) - 1
+            };
+            let provided_v = b.ins().iconst(types::I64, provided as i64);
+            b.ins().store(
+                MemFlags::trusted(),
+                provided_v,
+                own_act,
+                L::ACT_PROVIDED as i32,
+            );
+            b.ins().store(
+                MemFlags::trusted(),
+                params_buf,
+                own_act,
+                L::ACT_ARGS_PTR as i32,
+            );
+            let nargs_v = b.ins().iconst(types::I32, nparams as i64);
+            b.ins()
+                .store(MemFlags::trusted(), nargs_v, own_act, L::ACT_NARGS as i32);
+            let len = b
+                .ins()
+                .load(types::I64, MemFlags::trusted(), rt, L::HOT_STACK_LEN as i32);
+            let cap = b
+                .ins()
+                .load(types::I64, MemFlags::trusted(), rt, L::HOT_STACK_CAP as i32);
+            let full = b.ins().icmp(IntCC::Equal, len, cap);
+            let push_slow = b.create_block();
+            let push_fast = b.create_block();
+            let pushed = b.create_block();
+            b.ins().brif(full, push_slow, &[], push_fast, &[]);
+            b.switch_to_block(push_slow);
+            b.ins().call(h.push_call, &[rt, own_act]);
+            b.ins().jump(pushed, &[]);
+            b.switch_to_block(push_fast);
+            let stack = b
+                .ins()
+                .load(types::I64, MemFlags::trusted(), rt, L::HOT_STACK_PTR as i32);
+            let slot_off = b.ins().ishl_imm(len, 3);
+            let slot = b.ins().iadd(stack, slot_off);
+            b.ins().store(MemFlags::trusted(), own_act, slot, 0);
+            let len1 = b.ins().iadd_imm(len, 1);
+            b.ins()
+                .store(MemFlags::trusted(), len1, rt, L::HOT_STACK_LEN as i32);
+            b.ins().jump(pushed, &[]);
+            b.switch_to_block(pushed);
+            act = own_act;
+            out = own_out;
+            let te = b.create_block();
+            b.append_block_param(te, types::I32);
+            let fast = b.create_block();
+            b.append_block_param(fast, types::I64);
+            typed_exit = Some((te, self_dst, out_caller, fast));
+        }
+        // Registers start as nil: the tag word is written for those
+        // that may ever be released (they may hold a heap value) or be
+        // read before they are written; the others are written first.
+        let zero = b.ins().iconst(types::I64, 0);
+        // Written by the runtime somewhere (which drops what it finds),
+        // or live at entry, or unknown at some block's entry (a handler
+        // knows nothing about any register): the home must hold nil
+        // from the start. Only registers written solely by inline code
+        // (numbers, copies, typed parameters and calls) are left alone.
+        // (A large function writes them all: the deoptimization paths
+        // would otherwise each carry a store per unwritten register.)
+        let lazy = nregs <= 64;
+        let mut zeroed: Vec<bool> = (0..nregs as usize)
+            .map(|i| {
+                // Released at exit whatever path ran.
+                !lazy
+                    || heap[i]
+                    || live
+                        .first()
+                        .and_then(|blk| blk.first())
+                        .is_some_and(|l| l[i])
+                    || entry_states.iter().any(|st| st[i] == State::Unknown)
+            })
+            .collect();
+        for blk in &f.blocks {
+            for inst in &blk.insts {
+                let inline_only = match inst {
+                    Inst::LoadConst { idx, .. } => matches!(
+                        f.consts[*idx as usize],
+                        Constant::Nil | Constant::Bool(_) | Constant::Int(_) | Constant::Float(_)
+                    ),
+                    Inst::Move { .. }
+                    | Inst::SelfRef { .. }
+                    | Inst::Not { .. }
+                    | Inst::IsNil { .. }
+                    | Inst::ClassIs { .. }
+                    | Inst::ClearRegs { .. } => true,
+                    Inst::Arg { .. } => typed.is_some(),
+                    Inst::BinOp { .. } => {
+                        unbox::bin_types(inst, methods, builtin).is_some()
+                            && !unbox::float_mod(inst)
+                    }
+                    Inst::Call { .. } => unbox::call_num(inst, methods, &self.typed).is_some(),
+                    _ => false,
+                };
+                if !inline_only {
+                    for r in inst.defs() {
+                        zeroed[r as usize] = true;
+                    }
+                }
+            }
+        }
+        for i in 0..nregs as i32 {
+            if zeroed[i as usize] {
+                b.ins()
+                    .store(MemFlags::trusted(), zero, regs, i * VALUE_SIZE);
+            }
         }
         if uses_act {
             // `[args, self, nargs, frame]` of this activation: the frame
@@ -532,6 +799,14 @@ impl Compiler {
             states: vec![State::NonHeap; nregs_usize],
             nregs: nregs_usize,
             live: &live,
+            typed_all,
+            callees_typed,
+            typed: typed.clone(),
+            typed_params,
+            typed_self_ptr,
+            typed_params_buf,
+            typed_fast_exit: typed_exit.map(|t| t.3),
+            zeroed,
         };
         for (i, blk) in f.blocks.iter().enumerate() {
             g.b.switch_to_block(blocks[i]);
@@ -567,6 +842,28 @@ impl Compiler {
                         &[],
                     );
                 }
+                Term::Return(r)
+                    if g.typed_fast_exit.is_some()
+                        && matches!(
+                            (g.states[*r as usize], g.typed.as_ref().map(|t| t.ret)),
+                            (State::Int, Some(Num::Int)) | (State::Float, Some(Num::Float))
+                        ) =>
+                {
+                    // A typed entry returning a value of its declared
+                    // type: the bits go straight back.
+                    let bits = match g.states[*r as usize] {
+                        State::Int => g.b.use_var(g.ivar(*r)),
+                        _ => {
+                            let v = g.b.use_var(g.fvar(*r));
+                            g.b.ins().bitcast(types::I64, MemFlags::new(), v)
+                        }
+                    };
+                    for k in (0..g.nregs).filter(|&k| heap[k]) {
+                        g.release(k as Reg);
+                    }
+                    let fast = g.typed_fast_exit.expect("typed");
+                    g.b.ins().jump(fast, &[bits]);
+                }
                 Term::Return(r) => {
                     // Move the value into `out` (which holds nil) and
                     // leave the register nil, then release the rest.
@@ -591,6 +888,7 @@ impl Compiler {
                 | Term::ReturnOut(_)
                 | Term::Resume(_)
                 | Term::Unreachable => {
+                    g.materialize();
                     let fid_v = g.b.ins().iconst(types::I32, i64::from(fid));
                     let blk_v = g.b.ins().iconst(types::I32, i as i64);
                     let call = g.b.ins().call(g.h.term, &[rt, act, fid_v, blk_v, regs]);
@@ -627,14 +925,70 @@ impl Compiler {
             let p = b.ins().iadd_imm(regs, i64::from(i) * i64::from(VALUE_SIZE));
             emit_release_ptr(&mut b, drop_value_fn, p);
         }
-        b.ins().return_(&[status]);
+        match typed_exit {
+            Some((te, ..)) => b.ins().jump(te, &[status]),
+            None => b.ins().return_(&[status]),
+        };
         b.switch_to_block(exit_quick);
         let status = b.block_params(exit_quick)[0];
-        b.ins().return_(&[status]);
+        match typed_exit {
+            Some((te, ..)) => b.ins().jump(te, &[status]),
+            None => b.ins().return_(&[status]),
+        };
+        if let (Some((te, self_dst, out_caller, fast)), Some(sig)) = (typed_exit, &typed) {
+            // A `return` of a value already of the declared type: pop,
+            // release what `self` may hold, hand the bits back.
+            b.switch_to_block(fast);
+            let bits = b.block_params(fast)[0];
+            emit_typed_pop(&mut b, rt, act, pop_call);
+            emit_release_ptr(&mut b, drop_value_fn, self_dst);
+            let ok_v = b.ins().iconst(types::I32, 0);
+            b.ins().return_(&[ok_v, bits]);
+            // The typed exit: pop the activation, release `self`, and
+            // hand the result back as a machine value when it is of the
+            // declared type, boxed in the caller's slot otherwise.
+            b.switch_to_block(te);
+            let status = b.block_params(te)[0];
+            emit_typed_pop(&mut b, rt, act, pop_call);
+            emit_release_ptr(&mut b, drop_value_fn, self_dst);
+            let ok = b.ins().icmp_imm(IntCC::Equal, status, 0);
+            let fits_b = b.create_block();
+            let failed_b = b.create_block();
+            b.ins().brif(ok, fits_b, &[], failed_b, &[]);
+            b.switch_to_block(failed_b);
+            let zero_bits = b.ins().iconst(types::I64, 0);
+            b.ins().return_(&[status, zero_bits]);
+            b.switch_to_block(fits_b);
+            let tag = b.ins().load(types::I64, MemFlags::trusted(), out, 0);
+            let want = match sig.ret {
+                Num::Int => TAG_INT,
+                Num::Float => TAG_FLOAT,
+            };
+            let is = b.ins().icmp_imm(IntCC::Equal, tag, want);
+            let unboxed_b = b.create_block();
+            let boxed_b = b.create_block();
+            b.ins().brif(is, unboxed_b, &[], boxed_b, &[]);
+            b.switch_to_block(unboxed_b);
+            let bits = b.ins().load(types::I64, MemFlags::trusted(), out, 8);
+            let ok_v = b.ins().iconst(types::I32, 0);
+            b.ins().return_(&[ok_v, bits]);
+            b.switch_to_block(boxed_b);
+            for k in [0, 8, 16] {
+                let w = b.ins().load(types::I64, MemFlags::trusted(), out, k);
+                b.ins().store(MemFlags::trusted(), w, out_caller, k);
+            }
+            let boxed_v = b.ins().iconst(types::I32, STATUS_BOXED);
+            let zero_bits = b.ins().iconst(types::I64, 0);
+            b.ins().return_(&[boxed_v, zero_bits]);
+        }
         b.seal_all_blocks();
         b.finalize();
+        let target = match &typed {
+            Some(_) => self.typed_funcs[fid as usize].expect("typed entry declared"),
+            None => self.funcs[fid as usize],
+        };
         self.module
-            .define_function(self.funcs[fid as usize], &mut ctx)
+            .define_function(target, &mut ctx)
             .map_err(|e| format!("{}: {e:?}\n{}", f.name, ctx.func.display()))?;
         self.module.clear_context(&mut ctx);
         Ok(())
@@ -748,6 +1102,34 @@ fn rc_increment(b: &mut FunctionBuilder, p: CValue) {
 /// Release the value at `p` and leave nil there: nothing for values
 /// without a reference count, a decrement when other references remain,
 /// the runtime's destructor for the last one.
+/// Pop activation `act` off the call stack (the top entry unless tasks
+/// interleaved, in which case the runtime finds it).
+fn emit_typed_pop(b: &mut FunctionBuilder, rt: CValue, act: CValue, pop_call: FuncRef) {
+    let len = b
+        .ins()
+        .load(types::I64, MemFlags::trusted(), rt, L::HOT_STACK_LEN as i32);
+    let stack = b
+        .ins()
+        .load(types::I64, MemFlags::trusted(), rt, L::HOT_STACK_PTR as i32);
+    let len0 = b.ins().iadd_imm(len, -1);
+    let top_off = b.ins().ishl_imm(len0, 3);
+    let top_slot = b.ins().iadd(stack, top_off);
+    let top = b.ins().load(types::I64, MemFlags::trusted(), top_slot, 0);
+    let is_top = b.ins().icmp(IntCC::Equal, top, act);
+    let pop_fast = b.create_block();
+    let pop_slow = b.create_block();
+    let popped = b.create_block();
+    b.ins().brif(is_top, pop_fast, &[], pop_slow, &[]);
+    b.switch_to_block(pop_fast);
+    b.ins()
+        .store(MemFlags::trusted(), len0, rt, L::HOT_STACK_LEN as i32);
+    b.ins().jump(popped, &[]);
+    b.switch_to_block(pop_slow);
+    b.ins().call(pop_call, &[rt, act]);
+    b.ins().jump(popped, &[]);
+    b.switch_to_block(popped);
+}
+
 fn emit_release_ptr(b: &mut FunctionBuilder, drop_value: FuncRef, p: CValue) {
     let tag = b.ins().load(types::I64, MemFlags::trusted(), p, 0);
     let needs = b
@@ -807,12 +1189,31 @@ struct StaticCall {
 
 /// Which registers may ever hold a reference-counted value (the others
 /// need no release at exit).
-fn heap_possible(f: &Function) -> Vec<bool> {
+fn heap_possible(
+    f: &Function,
+    methods: &[RtMethod],
+    typed: &[Option<unbox::TypedSig>],
+) -> Vec<bool> {
     let mut heap = vec![false; f.nregs as usize];
+    // Copies carry whatever their source may hold: to a fixpoint.
+    let mut moves: Vec<(Reg, Reg)> = Vec::new();
     let mut mark = |r: Reg| heap[r as usize] = true;
     for blk in &f.blocks {
         for inst in &blk.insts {
+            // (A call through a typed entry leaves a number, but a result
+            // that did not fit is boxed in the home for the interpreter,
+            // so its register is still released at exit.)
+            let _ = typed;
             match inst {
+                Inst::Move { dst, src } => moves.push((*dst, *src)),
+                // A parameter declared Int/Float is a number (checked
+                // once; a BigInt sends the function to the interpreter,
+                // and its home is released at exit).
+                Inst::Arg { dst, index } => {
+                    if unbox::param_num(f, methods, *index).is_none() {
+                        mark(*dst);
+                    }
+                }
                 Inst::LoadConst { dst, idx } => {
                     if !matches!(
                         f.consts[*idx as usize],
@@ -849,9 +1250,7 @@ fn heap_possible(f: &Function) -> Vec<bool> {
                 | Inst::Equal { .. }
                 | Inst::CaseEq { .. } => {}
                 Inst::FieldGetByName { dst, .. } | Inst::HashGetSym { dst, .. } => mark(*dst),
-                Inst::Move { dst, .. }
-                | Inst::SelfRef { dst }
-                | Inst::Arg { dst, .. }
+                Inst::SelfRef { dst }
                 | Inst::BlockParam { dst }
                 | Inst::FrameGet { dst, .. }
                 | Inst::FieldGet { dst, .. }
@@ -884,6 +1283,16 @@ fn heap_possible(f: &Function) -> Vec<bool> {
                 | Inst::ArrayPush { .. }
                 | Inst::ClearRegs { .. }
                 | Inst::NoMatch { .. } => {}
+            }
+        }
+    }
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for (dst, src) in &moves {
+            if heap[*src as usize] && !heap[*dst as usize] {
+                heap[*dst as usize] = true;
+                changed = true;
             }
         }
     }
@@ -924,6 +1333,23 @@ struct Gen<'a, 'b> {
     /// What is known about each register here (see `unbox`).
     states: Vec<State>,
     nregs: usize,
+    /// The typed entries of every function (see `unbox::typed_sigs`).
+    typed_all: &'a [Option<unbox::TypedSig>],
+    /// The typed entries this function calls directly.
+    callees_typed: HashMap<FuncId, FuncRef>,
+    /// This body's own typed entry, when compiling it as such, and its
+    /// parameters as the entry received them.
+    typed: Option<unbox::TypedSig>,
+    typed_params: Vec<CValue>,
+    /// A typed entry's `self` (the caller's value) and the slots its
+    /// parameters are boxed into when the interpreter needs them.
+    typed_self_ptr: Option<CValue>,
+    typed_params_buf: Option<CValue>,
+    /// Where a typed `return` of the declared type leaves (the bits).
+    typed_fast_exit: Option<CBlock>,
+    /// Which register homes were set to nil at entry (the others hold
+    /// nothing until written, and must not be read or dropped).
+    zeroed: Vec<bool>,
 }
 
 impl Gen<'_, '_> {
@@ -1505,6 +1931,7 @@ impl Gen<'_, '_> {
             self.methods,
             self.classes,
             self.builtin,
+            self.typed_all,
         );
         if matches!(
             inst,
@@ -1535,6 +1962,16 @@ impl Gen<'_, '_> {
     fn deopt(&mut self, block: u32, index: u32) {
         let live = self.live[block as usize][index as usize].clone();
         self.flush_live(&live);
+        // The interpreter drops what it overwrites: a home never set
+        // (nor just written back) must at least be nil.
+        // (A live one was just written back or holds a boxed value; an
+        // unknown one holds a value by construction.)
+        for (r, &is_live) in live.iter().enumerate().take(self.nregs) {
+            if !self.zeroed[r] && !is_live && self.states[r] != State::Unknown {
+                self.store_tag(r as Reg, TAG_NIL);
+            }
+        }
+        self.materialize();
         let fid = self.b.ins().iconst(types::I32, i64::from(self.fid));
         let blk = self.b.ins().iconst(types::I32, i64::from(block));
         let i = self.b.ins().iconst(types::I32, i64::from(index));
@@ -1720,6 +2157,9 @@ impl Gen<'_, '_> {
         index: u32,
         unwind: CBlock,
     ) {
+        if recv.is_none() {
+            self.materialize();
+        }
         let (nparams, has_block) = {
             let m = &self.methods[mid as usize];
             (m.params.len(), m.has_block)
@@ -1802,7 +2242,7 @@ impl Gen<'_, '_> {
         let is_ok = self.b.ins().icmp_imm(IntCC::Equal, status, 0);
         self.b.ins().brif(is_ok, entered, &[], not_entered, &[]);
         self.b.switch_to_block(not_entered);
-        let is_done = self.b.ins().icmp_imm(IntCC::Equal, status, 2);
+        let is_done = self.b.ins().icmp_imm(IntCC::Equal, status, STATUS_DONE);
         self.b.ins().brif(is_done, done, &[], failed, &[]);
         // On failure nothing was built: release the area.
         self.b.switch_to_block(failed);
@@ -1857,6 +2297,413 @@ impl Gen<'_, '_> {
         self.b.switch_to_block(cont);
     }
 
+    /// A direct call to the compiled body `callee`: the parameters laid
+    /// out in the argument area, the activation built inline (a lean
+    /// callee) or by the runtime, the body called, the result in `dst`.
+    #[allow(clippy::too_many_arguments)]
+    fn direct_call(
+        &mut self,
+        inst: &Inst,
+        mid: MethodId,
+        callee: FuncId,
+        recv: Option<Reg>,
+        args: &[Reg],
+        blk: Option<Reg>,
+        dst: Reg,
+        block: u32,
+        index: u32,
+        unwind: CBlock,
+        allow_move: bool,
+    ) {
+        if recv.is_none() {
+            self.materialize();
+        }
+        let mid_v = self.i32(mid);
+        let recv_v = self.i32(recv.unwrap_or(u32::MAX));
+        let blk_v = self.i32(blk.unwrap_or(u32::MAX));
+        let d = self.i32(dst);
+        // Build the activation, call the body, finish.
+        let (frame_size, file) = {
+            let target = &self.functions[callee as usize];
+            (target.frame_size, target.file)
+        };
+        let body = self.callees[&callee];
+        let callee_v = self.i32(callee);
+        let frame_v = self.i32(frame_size);
+        let file_v = self.i32(file);
+        let (nparams, has_block) = {
+            let m = &self.methods[mid as usize];
+            (m.params.len(), m.has_block)
+        };
+        // Lay the parameters out in the argument area:
+        // the arguments, nil for missing ones, the block.
+        let mut provided: u64 = 0;
+        let mut slots = 0usize;
+        for (k, r) in args.iter().enumerate() {
+            let p = self
+                .b
+                .ins()
+                .iadd_imm(self.args_buf, (k as i64) * i64::from(VALUE_SIZE));
+            // The area is released after the call: a
+            // dead argument is moved there.
+            if allow_move && self.movable(inst, *r, block, index) {
+                self.move_reg_to_ptr(p, *r);
+                self.states[*r as usize] = State::NonHeap;
+            } else {
+                self.clone_reg_to_ptr(p, *r);
+            }
+            if k < 64 {
+                provided |= 1 << k;
+            }
+            slots += 1;
+        }
+        while slots < nparams {
+            let p = self
+                .b
+                .ins()
+                .iadd_imm(self.args_buf, (slots as i64) * i64::from(VALUE_SIZE));
+            let zero = self.b.ins().iconst(types::I64, 0);
+            self.b.ins().store(MemFlags::trusted(), zero, p, 0);
+            slots += 1;
+        }
+        if has_block {
+            let p = self
+                .b
+                .ins()
+                .iadd_imm(self.args_buf, (slots as i64) * i64::from(VALUE_SIZE));
+            match blk {
+                Some(r) => {
+                    self.clone_reg_to_ptr(p, r);
+                    if nparams < 64 {
+                        provided |= 1 << nparams;
+                    }
+                }
+                None => {
+                    let zero = self.b.ins().iconst(types::I64, 0);
+                    self.b.ins().store(MemFlags::trusted(), zero, p, 0);
+                }
+            }
+            slots += 1;
+        }
+        let lean = frame_size == 0
+            && blk.is_none()
+            && !self.functions[callee as usize]
+                .blocks
+                .iter()
+                .any(|b| b.insts.iter().any(|i| matches!(i, Inst::MakeBlock { .. })));
+        if lean {
+            self.lean_call(body, callee, file, recv, provided, slots, dst, unwind);
+            return;
+        }
+        let total_v = self.i32(slots as u32);
+        let provided_v = self.b.ins().iconst(types::I64, provided as i64);
+        let call = self.b.ins().call(
+            self.h.enter,
+            &[
+                self.rt,
+                self.act,
+                self.act_buf,
+                mid_v,
+                callee_v,
+                self.regs,
+                recv_v,
+                self.args_buf,
+                total_v,
+                blk_v,
+                frame_v,
+                file_v,
+                provided_v,
+            ],
+        );
+        let status = self.b.inst_results(call)[0];
+        // On failure nothing was built: release the area.
+        let failed = self.b.create_block();
+        let ok_blk = self.b.create_block();
+        self.b.ins().brif(status, failed, &[], ok_blk, &[]);
+        self.b.switch_to_block(failed);
+        for k in 0..slots {
+            let p = self
+                .b
+                .ins()
+                .iadd_imm(self.args_buf, (k as i64) * i64::from(VALUE_SIZE));
+            self.release_ptr(p);
+        }
+        self.b.ins().jump(unwind, &[status]);
+        self.b.switch_to_block(ok_blk);
+        let zero = self.b.ins().iconst(types::I64, 0);
+        self.b
+            .ins()
+            .store(MemFlags::trusted(), zero, self.out_buf, 0);
+        let call = self
+            .b
+            .ins()
+            .call(body, &[self.rt, self.act_buf, self.out_buf]);
+        let status = self.b.inst_results(call)[0];
+        let call = self.b.ins().call(
+            self.h.leave,
+            &[
+                self.rt,
+                self.act_buf,
+                status,
+                self.out_buf,
+                self.regs,
+                d,
+                blk_v,
+            ],
+        );
+        let status = self.b.inst_results(call)[0];
+        // The callee is gone: release its parameters.
+        for k in 0..slots {
+            let p = self
+                .b
+                .ins()
+                .iadd_imm(self.args_buf, (k as i64) * i64::from(VALUE_SIZE));
+            self.release_ptr(p);
+        }
+        self.check(status, unwind);
+    }
+
+    /// A direct call through the callee's typed entry: the arguments as
+    /// machine values (checked when their state does not say), the
+    /// result straight into `dst`'s variable; the boxed protocol when an
+    /// argument is not of its declared type (a BigInt), and the
+    /// interpreter when the result is not (`STATUS_BOXED`).
+    #[allow(clippy::too_many_arguments)]
+    fn typed_call(
+        &mut self,
+        inst: &Inst,
+        mid: MethodId,
+        callee: FuncId,
+        sig: &unbox::TypedSig,
+        recv: Option<Reg>,
+        args: &[Reg],
+        dst: Reg,
+        block: u32,
+        index: u32,
+        unwind: CBlock,
+    ) {
+        let entry = self.callees_typed[&callee];
+        let typed_b = self.b.create_block();
+        let fallback_b = self.b.create_block();
+        let cont = self.b.create_block();
+        // Every argument of the declared type?
+        let mut ok: Option<CValue> = None;
+        for (r, n) in args.iter().zip(&sig.params) {
+            let fine = match (self.states[*r as usize], n) {
+                (State::Int, Num::Int) | (State::Float, Num::Float) => continue,
+                (State::Int | State::Float | State::Bool, _) => self.b.ins().iconst(types::I8, 0),
+                _ => {
+                    let tag = self.tag(*r);
+                    let want = match n {
+                        Num::Int => TAG_INT,
+                        Num::Float => TAG_FLOAT,
+                    };
+                    self.b.ins().icmp_imm(IntCC::Equal, tag, want)
+                }
+            };
+            ok = Some(match ok {
+                Some(acc) => self.b.ins().band(acc, fine),
+                None => fine,
+            });
+        }
+        match ok {
+            Some(c) => self.b.ins().brif(c, typed_b, &[], fallback_b, &[]),
+            None => self.b.ins().jump(typed_b, &[]),
+        };
+        let saved = self.states.clone();
+        // The typed path.
+        self.b.switch_to_block(typed_b);
+        let self_ptr = match (recv, self.typed_self_ptr) {
+            (Some(r), _) => self
+                .b
+                .ins()
+                .iadd_imm(self.regs, i64::from(Self::reg_off(r))),
+            // A typed entry passes its own `self` on, without cloning it.
+            (None, Some(p)) => p,
+            (None, None) => self.b.ins().iadd_imm(self.act, L::ACT_SELF as i64),
+        };
+        let mut call_args = vec![self.rt, self.act, self_ptr];
+        for (r, n) in args.iter().zip(&sig.params) {
+            let v = match (self.states[*r as usize], n) {
+                (State::Int, Num::Int) => self.b.use_var(self.ivar(*r)),
+                (State::Float, Num::Float) => self.b.use_var(self.fvar(*r)),
+                (_, Num::Int) => self.payload(*r),
+                (_, Num::Float) => {
+                    let p = self.payload(*r);
+                    self.b.ins().bitcast(types::F64, MemFlags::new(), p)
+                }
+            };
+            call_args.push(v);
+        }
+        let zero = self.b.ins().iconst(types::I64, 0);
+        self.b
+            .ins()
+            .store(MemFlags::trusted(), zero, self.out_buf, 0);
+        call_args.push(self.out_buf);
+        let line = self.f.blocks[block as usize].lines[index as usize];
+        let line_v = self.b.ins().iconst(types::I32, i64::from(line));
+        self.b
+            .ins()
+            .store(MemFlags::trusted(), line_v, self.act, L::ACT_LINE as i32);
+        let call = self.b.ins().call(entry, &call_args);
+        let results = self.b.inst_results(call).to_vec();
+        let (status, bits) = (results[0], results[1]);
+        let ok_b = self.b.create_block();
+        let not_ok_b = self.b.create_block();
+        let boxed_b = self.b.create_block();
+        let is_ok = self.b.ins().icmp_imm(IntCC::Equal, status, 0);
+        self.b.ins().brif(is_ok, ok_b, &[], not_ok_b, &[]);
+        self.b.switch_to_block(ok_b);
+        match sig.ret {
+            Num::Int => self.store_int(dst, bits),
+            Num::Float => {
+                let v = self.b.ins().bitcast(types::F64, MemFlags::new(), bits);
+                self.store_float(dst, v);
+            }
+        }
+        self.b.ins().jump(cont, &[]);
+        // Not the declared type: the boxed value goes to the register's
+        // home and the interpreter takes over after the call.
+        self.b.switch_to_block(not_ok_b);
+        let is_boxed = self.b.ins().icmp_imm(IntCC::Equal, status, STATUS_BOXED);
+        self.b.ins().brif(is_boxed, boxed_b, &[], unwind, &[status]);
+        self.b.switch_to_block(boxed_b);
+        self.states.clone_from(&saved);
+        self.clear_home(dst);
+        let home = self
+            .b
+            .ins()
+            .iadd_imm(self.regs, i64::from(Self::reg_off(dst)));
+        for k in [0, 8, 16] {
+            let w = self
+                .b
+                .ins()
+                .load(types::I64, MemFlags::trusted(), self.out_buf, k);
+            self.b.ins().store(MemFlags::trusted(), w, home, k);
+        }
+        self.b
+            .ins()
+            .store(MemFlags::trusted(), zero, self.out_buf, 0);
+        self.states[dst as usize] = State::Unknown;
+        self.get_num(dst, sig.ret, block, index + 1);
+        self.b.ins().jump(cont, &[]);
+        // The boxed protocol (through the runtime: this path is rare and
+        // the inline one is long), then the result checked into the
+        // variable.
+        self.b.switch_to_block(fallback_b);
+        self.states.clone_from(&saved);
+        self.clear_home(dst);
+        let _ = (inst, callee);
+        self.runtime_call(mid, recv, args, None, dst, unwind);
+        self.states[dst as usize] = State::Unknown;
+        self.get_num(dst, sig.ret, block, index + 1);
+        self.b.ins().jump(cont, &[]);
+        self.b.switch_to_block(cont);
+        self.states.clone_from(&saved);
+        self.states[dst as usize] = unbox::num_state(sig.ret);
+    }
+
+    /// A call through `qz_call_static`: the argument registers' indices
+    /// in the scratch area, the runtime does the rest.
+    fn runtime_call(
+        &mut self,
+        mid: MethodId,
+        recv: Option<Reg>,
+        args: &[Reg],
+        blk: Option<Reg>,
+        dst: Reg,
+        unwind: CBlock,
+    ) {
+        if recv.is_none() {
+            self.materialize();
+        }
+        for (k, r) in args.iter().enumerate() {
+            let v = self.i32(*r);
+            self.b
+                .ins()
+                .store(MemFlags::trusted(), v, self.scratch, 4 * k as i32);
+        }
+        let mid_v = self.i32(mid);
+        let recv_v = self.i32(recv.unwrap_or(u32::MAX));
+        let nargs = self.i32(args.len() as u32);
+        let blk_v = self.i32(blk.unwrap_or(u32::MAX));
+        let d = self.i32(dst);
+        let call = self.b.ins().call(
+            self.h.call_static,
+            &[
+                self.rt,
+                self.act,
+                mid_v,
+                self.regs,
+                recv_v,
+                self.scratch,
+                nargs,
+                blk_v,
+                d,
+            ],
+        );
+        let status = self.b.inst_results(call)[0];
+        self.check(status, unwind);
+    }
+
+    /// Leave nil in `r`'s home before the runtime writes it (which drops
+    /// what is there): released first when it may hold a value.
+    fn clear_home(&mut self, r: Reg) {
+        if self.states[r as usize].needs_release() {
+            self.release(r);
+        }
+        self.store_tag(r, TAG_NIL);
+    }
+
+    /// In a typed entry, give the activation what the runtime or the
+    /// interpreter may read from it: `self` (cloned once; its slot is
+    /// nil until then) and the parameters, boxed.
+    fn materialize(&mut self) {
+        let (Some(self_ptr), Some(params_buf)) = (self.typed_self_ptr, self.typed_params_buf)
+        else {
+            return;
+        };
+        let self_dst = self.b.ins().iadd_imm(self.act, L::ACT_SELF as i64);
+        let tag = self
+            .b
+            .ins()
+            .load(types::I64, MemFlags::trusted(), self_dst, 0);
+        let unset = self.b.ins().icmp_imm(IntCC::Equal, tag, TAG_NIL);
+        let fill = self.b.create_block();
+        let done = self.b.create_block();
+        self.b.ins().brif(unset, fill, &[], done, &[]);
+        self.b.switch_to_block(fill);
+        emit_clone_ptr(self.b, self_dst, self_ptr);
+        let params: Vec<(CValue, Num)> = self
+            .typed_params
+            .iter()
+            .copied()
+            .zip(
+                self.typed
+                    .as_ref()
+                    .map(|t| t.params.clone())
+                    .unwrap_or_default(),
+            )
+            .collect();
+        for (k, (v, n)) in params.into_iter().enumerate() {
+            let p = self
+                .b
+                .ins()
+                .iadd_imm(params_buf, (k as i64) * i64::from(VALUE_SIZE));
+            let (tag, word) = match n {
+                Num::Int => (self.b.ins().iconst(types::I64, TAG_INT), v),
+                Num::Float => (
+                    self.b.ins().iconst(types::I64, TAG_FLOAT),
+                    self.b.ins().bitcast(types::I64, MemFlags::new(), v),
+                ),
+            };
+            self.b.ins().store(MemFlags::trusted(), tag, p, 0);
+            self.b.ins().store(MemFlags::trusted(), word, p, 8);
+        }
+        self.b.ins().jump(done, &[]);
+        self.b.switch_to_block(done);
+    }
+
     fn store_tag(&mut self, dst: Reg, tag: i64) {
         let t = self.b.ins().iconst(types::I64, tag);
         self.b
@@ -1895,6 +2742,7 @@ impl Gen<'_, '_> {
     /// Delegate the instruction to a runtime entry with `qz_exec`'s
     /// signature (a dedicated one for some instructions).
     fn exec_via(&mut self, entry: FuncRef, block: u32, inst: u32, unwind: CBlock) {
+        self.materialize();
         let fid = self.b.ins().iconst(types::I32, i64::from(self.fid));
         let blk = self.b.ins().iconst(types::I32, i64::from(block));
         let i = self.b.ins().iconst(types::I32, i64::from(inst));
@@ -2474,11 +3322,22 @@ impl Gen<'_, '_> {
                 self.store_bool(*dst, v);
             }
             Inst::SelfRef { dst } => {
-                let self_ptr = self
-                    .b
-                    .ins()
-                    .load(types::I64, MemFlags::trusted(), self.ptrs, 8);
+                let self_ptr = match self.typed_self_ptr {
+                    Some(p) => p,
+                    None => self
+                        .b
+                        .ins()
+                        .load(types::I64, MemFlags::trusted(), self.ptrs, 8),
+                };
                 self.clone_from(*dst, self_ptr);
+            }
+            Inst::Arg { dst, index: arg } if self.typed.is_some() => {
+                // A typed entry's parameter is already the machine value.
+                let v = self.typed_params[*arg as usize];
+                match self.typed.as_ref().map(|t| t.params[*arg as usize]) {
+                    Some(Num::Float) => self.store_float(*dst, v),
+                    _ => self.store_int(*dst, v),
+                }
             }
             Inst::Arg { dst, index: arg } => {
                 // Present arguments are copied inline; a missing one is nil.
@@ -2880,145 +3739,26 @@ impl Gen<'_, '_> {
                         }
                     }
                     if let Some(callee) = direct_target(inst, self.methods) {
-                        // Build the activation, call the body, finish.
-                        let (frame_size, file) = {
-                            let target = &self.functions[callee as usize];
-                            (target.frame_size, target.file)
-                        };
-                        let body = self.callees[&callee];
-                        let callee_v = self.i32(callee);
-                        let frame_v = self.i32(frame_size);
-                        let file_v = self.i32(file);
-                        let (nparams, has_block) = {
-                            let m = &self.methods[mid as usize];
-                            (m.params.len(), m.has_block)
-                        };
-                        // Lay the parameters out in the argument area:
-                        // the arguments, nil for missing ones, the block.
-                        let mut provided: u64 = 0;
-                        let mut slots = 0usize;
-                        for (k, r) in args.iter().enumerate() {
-                            let p = self
-                                .b
-                                .ins()
-                                .iadd_imm(self.args_buf, (k as i64) * i64::from(VALUE_SIZE));
-                            // The area is released after the call: a
-                            // dead argument is moved there.
-                            if self.movable(inst, *r, block, index) {
-                                self.move_reg_to_ptr(p, *r);
-                                self.states[*r as usize] = State::NonHeap;
-                            } else {
-                                self.clone_reg_to_ptr(p, *r);
+                        let typed = self.typed_all.get(callee as usize).cloned().flatten();
+                        match typed {
+                            Some(sig)
+                                if blk.is_none()
+                                    && args.len() == sig.params.len()
+                                    && self.callees_typed.contains_key(&callee) =>
+                            {
+                                self.typed_call(
+                                    inst, mid, callee, &sig, recv, &args, dst, block, index, unwind,
+                                );
                             }
-                            if k < 64 {
-                                provided |= 1 << k;
-                            }
-                            slots += 1;
+                            _ => self.direct_call(
+                                inst, mid, callee, recv, &args, blk, dst, block, index, unwind,
+                                true,
+                            ),
                         }
-                        while slots < nparams {
-                            let p = self
-                                .b
-                                .ins()
-                                .iadd_imm(self.args_buf, (slots as i64) * i64::from(VALUE_SIZE));
-                            let zero = self.b.ins().iconst(types::I64, 0);
-                            self.b.ins().store(MemFlags::trusted(), zero, p, 0);
-                            slots += 1;
-                        }
-                        if has_block {
-                            let p = self
-                                .b
-                                .ins()
-                                .iadd_imm(self.args_buf, (slots as i64) * i64::from(VALUE_SIZE));
-                            match blk {
-                                Some(r) => {
-                                    self.clone_reg_to_ptr(p, r);
-                                    if nparams < 64 {
-                                        provided |= 1 << nparams;
-                                    }
-                                }
-                                None => {
-                                    let zero = self.b.ins().iconst(types::I64, 0);
-                                    self.b.ins().store(MemFlags::trusted(), zero, p, 0);
-                                }
-                            }
-                            slots += 1;
-                        }
-                        let lean = frame_size == 0
-                            && blk.is_none()
-                            && !self.functions[callee as usize].blocks.iter().any(|b| {
-                                b.insts.iter().any(|i| matches!(i, Inst::MakeBlock { .. }))
-                            });
-                        if lean {
-                            self.lean_call(body, callee, file, recv, provided, slots, dst, unwind);
-                            return;
-                        }
-                        let total_v = self.i32(slots as u32);
-                        let provided_v = self.b.ins().iconst(types::I64, provided as i64);
-                        let call = self.b.ins().call(
-                            self.h.enter,
-                            &[
-                                self.rt,
-                                self.act,
-                                self.act_buf,
-                                mid_v,
-                                callee_v,
-                                self.regs,
-                                recv_v,
-                                self.args_buf,
-                                total_v,
-                                blk_v,
-                                frame_v,
-                                file_v,
-                                provided_v,
-                            ],
-                        );
-                        let status = self.b.inst_results(call)[0];
-                        // On failure nothing was built: release the area.
-                        let failed = self.b.create_block();
-                        let ok_blk = self.b.create_block();
-                        self.b.ins().brif(status, failed, &[], ok_blk, &[]);
-                        self.b.switch_to_block(failed);
-                        for k in 0..slots {
-                            let p = self
-                                .b
-                                .ins()
-                                .iadd_imm(self.args_buf, (k as i64) * i64::from(VALUE_SIZE));
-                            self.release_ptr(p);
-                        }
-                        self.b.ins().jump(unwind, &[status]);
-                        self.b.switch_to_block(ok_blk);
-                        let zero = self.b.ins().iconst(types::I64, 0);
-                        self.b
-                            .ins()
-                            .store(MemFlags::trusted(), zero, self.out_buf, 0);
-                        let call = self
-                            .b
-                            .ins()
-                            .call(body, &[self.rt, self.act_buf, self.out_buf]);
-                        let status = self.b.inst_results(call)[0];
-                        let call = self.b.ins().call(
-                            self.h.leave,
-                            &[
-                                self.rt,
-                                self.act_buf,
-                                status,
-                                self.out_buf,
-                                self.regs,
-                                d,
-                                blk_v,
-                            ],
-                        );
-                        let status = self.b.inst_results(call)[0];
-                        // The callee is gone: release its parameters.
-                        for k in 0..slots {
-                            let p = self
-                                .b
-                                .ins()
-                                .iadd_imm(self.args_buf, (k as i64) * i64::from(VALUE_SIZE));
-                            self.release_ptr(p);
-                        }
-                        self.check(status, unwind);
                         return;
+                    }
+                    if recv.is_none() {
+                        self.materialize();
                     }
                     let call = self.b.ins().call(
                         self.h.call_static,

@@ -246,7 +246,7 @@ pub unsafe extern "C" fn qz_enter(
 
 /// The status `qz_enter_virtual` returns when it ran the whole call
 /// itself (the result is in `regs[dst]`, the argument area is empty).
-pub const STATUS_DONE: u32 = 2;
+pub const STATUS_DONE: u32 = 7;
 
 /// Enter a call to `mid` resolved on the receiver's class: when the
 /// method the class runs has a compiled body taking the parameters the

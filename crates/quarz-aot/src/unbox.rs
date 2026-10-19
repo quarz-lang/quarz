@@ -224,6 +224,98 @@ pub fn liveness(f: &Function) -> Vec<Vec<Vec<bool>>> {
         .collect()
 }
 
+/// The shape of a function's typed entry: parameters and result passed
+/// as machine values (see `Gen::typed`).
+#[derive(Clone, Debug)]
+pub struct TypedSig {
+    pub params: Vec<Num>,
+    pub ret: Num,
+}
+
+/// The functions that get a typed entry, by id: a method whose
+/// positional, non-defaulted parameters (at most six) and result are
+/// all declared `Int`/`Float`, with no block, no frame of its own and
+/// nothing in the body that reads the argument list.
+pub fn typed_sigs(functions: &[Function], methods: &[RtMethod]) -> Vec<Option<TypedSig>> {
+    functions
+        .iter()
+        .enumerate()
+        .map(|(fid, f)| {
+            let FuncKind::Method(mid) = f.kind else {
+                return None;
+            };
+            let m = methods.get(mid as usize)?;
+            if m.func != Some(fid as FuncId)
+                || m.has_block
+                || m.is_abstract
+                || m.native_key.is_some()
+                || m.synth != RtSynth::None
+                || m.params.len() > 6
+                || f.frame_size != 0
+            {
+                return None;
+            }
+            let params: Vec<Num> = m
+                .params
+                .iter()
+                .map(|p| {
+                    if p.kind == RtParamKind::Positional && !p.has_default {
+                        num_of(p.ty.as_deref())
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Option<_>>()?;
+            let ret = num_of(m.ret.as_deref())?;
+            let plain = f.blocks.iter().all(|b| {
+                b.insts.iter().all(|i| {
+                    !matches!(
+                        i,
+                        Inst::MakeBlock { .. }
+                            | Inst::BlockParam { .. }
+                            | Inst::HasArg { .. }
+                            | Inst::Call {
+                                kind: CallKind::Yield,
+                                ..
+                            }
+                    )
+                })
+            });
+            plain.then_some(TypedSig { params, ret })
+        })
+        .collect()
+}
+
+/// The result type of a call that goes through a typed entry: a direct
+/// call (bound to one body) of a function that has one.
+pub fn call_num(inst: &Inst, methods: &[RtMethod], typed: &[Option<TypedSig>]) -> Option<Num> {
+    let Inst::Call {
+        kind: CallKind::Method(mid),
+        args,
+        splat: false,
+        kw,
+        kw_splat: None,
+        block: None,
+        ..
+    } = inst
+    else {
+        return None;
+    };
+    if !kw.is_empty() {
+        return None;
+    }
+    let m = methods.get(*mid as usize)?;
+    if m.native_key.is_some()
+        || (m.overridden && !m.singleton && !m.is_extension)
+        || m.synth != RtSynth::None
+    {
+        return None;
+    }
+    let fid = m.func?;
+    let sig = typed.get(fid as usize)?.as_ref()?;
+    (sig.params.len() == args.len()).then_some(sig.ret)
+}
+
 /// The declared type of a method's positional, non-defaulted parameter,
 /// when it is Int or Float.
 pub fn param_num(f: &Function, methods: &[RtMethod], index: u32) -> Option<Num> {
@@ -260,8 +352,14 @@ pub fn transfer(
     methods: &[RtMethod],
     classes: &[RtClass],
     builtin: &RtBuiltin,
+    typed: &[Option<TypedSig>],
 ) {
     match inst {
+        // A call through a typed entry leaves its result unboxed (the
+        // caller falls back to the interpreter when it does not fit).
+        Inst::Call { dst, .. } if call_num(inst, methods, typed).is_some() => {
+            st[*dst as usize] = num_state(call_num(inst, methods, typed).unwrap_or(Num::Int));
+        }
         Inst::ClearRegs { from, to } => {
             for r in *from..*to {
                 st[r as usize] = State::NonHeap;
@@ -351,6 +449,7 @@ pub fn analyze(
     methods: &[RtMethod],
     classes: &[RtClass],
     builtin: &RtBuiltin,
+    typed: &[Option<TypedSig>],
 ) -> Vec<Vec<State>> {
     let nregs = f.nregs as usize;
     let nblocks = f.blocks.len();
@@ -374,7 +473,7 @@ pub fn analyze(
             };
             let mut st = start;
             for inst in &blk.insts {
-                transfer(inst, &mut st, f, methods, classes, builtin);
+                transfer(inst, &mut st, f, methods, classes, builtin, typed);
             }
             let targets: Vec<BlockId> = match &blk.term {
                 Term::Jump(t) => vec![*t],

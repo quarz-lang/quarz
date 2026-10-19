@@ -1,0 +1,47 @@
+# Methods whose parameters and result are declared Int/Float get a typed
+# entry: direct calls pass machine values. A BigInt argument takes the
+# boxed path, a BigInt result hands the caller to the interpreter, deep
+# recursion and exceptions still unwind through typed frames.
+def mul(n: Int) -> Int = n * 1000000007
+def half(x: Float) -> Float = x / 2.0
+def mix(a: Int, b: Float, c: Int) -> Float = a.to_f + b + c.to_f
+def deep(n: Int) -> Int = n == 0 ? 0 : 1 + deep(n - 1)
+def boom(n: Int) -> Int
+  raise "boom #{n}" if n > 2
+  n
+end
+def grow(n: Int) -> Int
+  x = n
+  3.times { x = x * 100000 }
+  x
+end
+class Acc
+  var @total: Int
+  def initialize; @total = 0; end
+  def add(n: Int) -> Int
+    @total += n
+    @total
+  end
+  def scaled(k: Float) -> Float = @total.to_f * k
+end
+p mul(3), mul(10 ** 12), mul(mul(10 ** 9)), half(5.0), half(1.0e308), mix(1, 2.5, 3)
+big = 2 ** 70
+p mul(big), half(mix(big, 0.5, 1))
+p deep(1000), deep(5_000)
+begin
+  p deep(100_000_000)
+rescue SystemStackError => e
+  p "stack: #{e.class}"
+end
+begin
+  boom(5)
+rescue RuntimeError => e
+  p e.message
+end
+p boom(1), grow(1), grow(2 ** 40), grow(2 ** 20) * 2
+a = Acc.new
+p a.add(5), a.add(2 ** 62), a.add(2 ** 62), a.scaled(0.5), a.add(1)
+def fact(n: Int) -> Int = n <= 1 ? 1 : n * fact(n - 1)
+p fact(20), fact(25), fact(30)
+def fib(n: Int) -> Int = n < 2 ? n : fib(n - 1) + fib(n - 2)
+p fib(20), (1..10).to_a.map { |i| fib(i) }

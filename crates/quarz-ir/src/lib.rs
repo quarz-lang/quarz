@@ -1042,6 +1042,9 @@ pub struct RtMethod {
     pub overridden: bool,
     pub fast_op: Option<FastOp>,
     pub file: u32,
+    /// The declared return type's name, when known.
+    #[serde(default)]
+    pub ret: Option<String>,
 }
 
 impl RtMethod {

@@ -183,6 +183,13 @@ pub fn build(world: &World, lw: &Lowerer, file_names: Vec<String>) -> RtWorld {
                 overridden,
                 fast_op,
                 file: m.file,
+                ret: match &m.ret {
+                    types::RetType::Known(t) => match t {
+                        Type::Param(_) | Type::Var(_) => None,
+                        t => Some(world.type_name(t)),
+                    },
+                    _ => None,
+                },
             }
         })
         .collect();
