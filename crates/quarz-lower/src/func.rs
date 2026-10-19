@@ -1346,6 +1346,9 @@ impl<'a> FnBuilder<'a> {
         if iter::exec_shape(e, call, self.out, self.world).is_some() {
             return self.inline_exec(e, call);
         }
+        if self.out.bang_assign.contains(&e.id) {
+            return self.bang_assign(e, call);
+        }
         let target = self.out.calls.get(&e.id);
         let recv = match call.recv.as_ref() {
             Some(r) => Some(self.expr(r)),
@@ -1412,6 +1415,121 @@ impl<'a> FnBuilder<'a> {
     /// update its receiver in place when nothing else refers to it.
     fn is_owned_native(&self, id: &u32) -> bool {
         matches!(self.out.calls.get(id), Some(CallTarget::Method { method }) if self.world.method(*method).is_native)
+    }
+
+    /// `x.foo!(args)` as `x = x.foo(args)` (the checker resolved `foo`):
+    /// an in-place update for a native, a call and a store otherwise.
+    fn bang_assign(&mut self, e: &'a Expr, call: &'a ast::Call) -> Reg {
+        let recv = call.recv.as_ref().unwrap();
+        let Some(CallTarget::Method { method }) = self.out.calls.get(&e.id) else {
+            return self.nil();
+        };
+        let method = *method;
+        // A chain `x.foo!.bar!`: the inner call has stored into the place
+        // already; this one uses its value and stores again.
+        let mut root = recv;
+        while let ExprKind::Call(inner) = &root.kind {
+            if !self.out.bang_assign.contains(&root.id) {
+                break;
+            }
+            match inner.recv.as_ref() {
+                Some(r) => root = r,
+                None => break,
+            }
+        }
+        let chained = !std::ptr::eq(root, recv);
+        let a = self.args(&call.args);
+        let simple = a.block.is_none() && !a.splat && a.kw_splat.is_none();
+        let owned = simple && self.world.method(method).is_native && !chained;
+        match &root.kind {
+            ExprKind::Local(_) => {
+                let r = self.var_ref(root.span);
+                if let (Some(r), true) = (r, owned) {
+                    let loc = self.var_loc(r);
+                    let dst = self.reg();
+                    self.emit(Inst::OwnedCall {
+                        dst,
+                        method,
+                        recv: loc,
+                        args: a.pos,
+                        kw: a.kw,
+                    });
+                    return dst;
+                }
+                let recv_reg = if chained {
+                    self.expr(recv)
+                } else {
+                    match r {
+                        Some(r) => self.load_var(r),
+                        None => self.nil(),
+                    }
+                };
+                let dst = self.reg();
+                self.emit(Inst::Call {
+                    dst,
+                    kind: CallKind::Method(method),
+                    recv: Some(recv_reg),
+                    args: a.pos,
+                    splat: a.splat,
+                    kw: a.kw,
+                    kw_splat: a.kw_splat,
+                    block: a.block,
+                });
+                if let Some(r) = r {
+                    self.store_var(r, dst);
+                }
+                dst
+            }
+            ExprKind::IVar(name) => {
+                let index = self.ivar_index(root.id, name);
+                let class = self.class_id.unwrap_or(u32::MAX);
+                if owned {
+                    let obj = self.self_reg();
+                    let dst = self.reg();
+                    self.emit(Inst::OwnedCall {
+                        dst,
+                        method,
+                        recv: VarLoc::Field { obj, index },
+                        args: a.pos,
+                        kw: a.kw,
+                    });
+                    return dst;
+                }
+                let recv_reg = if chained {
+                    self.expr(recv)
+                } else {
+                    let obj = self.self_reg();
+                    let r = self.reg();
+                    self.emit(Inst::FieldGet {
+                        dst: r,
+                        obj,
+                        index,
+                        class,
+                    });
+                    r
+                };
+                let dst = self.reg();
+                self.emit(Inst::Call {
+                    dst,
+                    kind: CallKind::Method(method),
+                    recv: Some(recv_reg),
+                    args: a.pos,
+                    splat: a.splat,
+                    kw: a.kw,
+                    kw_splat: a.kw_splat,
+                    block: a.block,
+                });
+                let obj = self.self_reg();
+                self.emit(Inst::FieldSet {
+                    obj,
+                    index,
+                    src: dst,
+                    class,
+                });
+                dst
+            }
+            _ => self.nil(),
+        }
     }
 
     /// `recv.instance_exec(args) { ... }` with a literal block: the body

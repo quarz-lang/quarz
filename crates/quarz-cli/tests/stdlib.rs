@@ -275,3 +275,39 @@ p c(&f)
         "{out}"
     );
 }
+
+/// `x.foo!` as `x = x.foo`: what the checker rejects.
+#[test]
+fn bang_assign_errors() {
+    let out = common::diagnostics(
+        r#"s = "abc"
+s.size!
+xs = [1]
+xs.nope!
+[1, 2].push!(3)
+class C
+  @n: Int = 0
+  def bump -> Nil
+    @n.succ!
+  end
+end
+"#,
+    )
+    .join("\n");
+    assert!(
+        out.contains("test:2:1: error: `.size!` would assign Int to `s` of type String"),
+        "{out}"
+    );
+    assert!(
+        out.contains("test:4:1: error: undefined method `nope!` for Array[Int]"),
+        "{out}"
+    );
+    assert!(
+        out.contains("test:5:1: error: `push!` is not a method of Array[Int]; `.push!` assigns the result of `push` back, but the receiver is not a variable or a field"),
+        "{out}"
+    );
+    assert!(
+        out.contains("test:9:5: error: field `@n` is immutable"),
+        "{out}"
+    );
+}

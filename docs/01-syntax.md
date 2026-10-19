@@ -359,12 +359,14 @@ a, b = 1, 2            # multiple assignment (tuple)
 first, *rest = [1, 2, 3]
 count += 1
 name ||= "anon"        # when name is T?
+xs.push!(4)            # xs = xs.push(4): a method call with `!` rebinds its receiver
 ```
 
 - The type of a local variable is determined by its first assignment. To widen the type, add an annotation (`y: Int? = nil`).
 - After an assignment the type is narrowed by **flow typing** (after `y = 10`, `y` can be treated as `Int`).
 - The rules for variable declaration and scope (a variable assigned inside an `if` is visible afterwards, block parameters are visible only within the block, etc.) are the same as in Ruby.
 - Assignment to an `@ivar` is only possible inside `initialize` if the field is immutable.
+- `x.foo!(args)` is sugar for `x = x.foo(args)` when the receiver's type has no method `foo!`: the receiver must be a local variable or a field, the result must fit its type (`s.size!` is an error), and the value of the expression is the new value. A chain rebinds the same place step by step (`s.strip!.upcase!`). Only the variable is rebound; the old value is unchanged for anything else that refers to it (`b = a; a.push!(1)` leaves `b` as it was), which differs from Ruby's mutating `!` methods. A real `foo!` (the mutating methods of builders such as `sort!`) is called as usual. The common collection updates (`push!`, `put!`, `add!`, `set!`, `delete!`) run in place when nothing else refers to the collection.
 
 ## 11. Expressions and control structures
 

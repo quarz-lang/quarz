@@ -67,6 +67,10 @@ pub struct Output {
     /// enclosing `self` instead: the receiver of the call is read from
     /// the hidden slot `var_refs[span]`.
     pub outer_self_calls: rustc_hash::FxHashSet<NodeId>,
+    /// `x.foo!(args)` calls that are sugar for `x = x.foo(args)` (the
+    /// receiver's type has no `foo!`): the call targets `foo` and its
+    /// result is stored into the receiver, a local or a field.
+    pub bang_assign: rustc_hash::FxHashSet<NodeId>,
     /// Functions that must store their `self` in a hidden frame slot.
     pub self_slots: FxHashMap<SelfOwner, u32>,
     /// Frame sizes of blocks (keyed by the call node) and lambdas (keyed by
@@ -3377,6 +3381,11 @@ impl Checker {
                         cands = self.world.lookup_methods(&main, name);
                     }
                 }
+                if cands.is_empty() && !implicit_self {
+                    if let Some(t) = self.check_bang_assign(expr, call, recv_ty, expected) {
+                        return t;
+                    }
+                }
                 if cands.is_empty() {
                     let msg = if call.recv.is_none() && call.args.is_empty() && !call.has_parens {
                         format!(
@@ -3393,6 +3402,130 @@ impl Checker {
                 self.resolve_overloads(expr, call, recv_ty, cands, implicit_self, expected)
             }
         }
+    }
+
+    /// `x.foo!(args)` where the receiver's type has no `foo!` but has
+    /// `foo`, and `x` is a local or a field: `x = x.foo(args)`. Returns
+    /// the assigned type, or `None` when the sugar does not apply.
+    fn check_bang_assign(
+        &mut self,
+        expr: &Expr,
+        call: &Call,
+        recv_ty: &Type,
+        expected: Option<&Type>,
+    ) -> Option<Type> {
+        let plain_name = call.name.strip_suffix('!')?;
+        if plain_name.is_empty() || call.name.ends_with("!=") {
+            return None;
+        }
+        let recv = call.recv.as_ref()?;
+        if self.world.lookup_methods(recv_ty, plain_name).is_empty() {
+            return None;
+        }
+        // The place: the receiver, or, in a chain `x.foo!.bar!`, the
+        // place the inner call already assigned.
+        let mut root = recv;
+        while let ExprKind::Call(inner) = &root.kind {
+            if !self.out.bang_assign.contains(&root.id) {
+                break;
+            }
+            match inner.recv.as_ref() {
+                Some(r) => root = r,
+                None => break,
+            }
+        }
+        let place: Option<LValue> = match &root.kind {
+            ExprKind::Local(name) => Some(LValue::Local {
+                name: name.clone(),
+                span: root.span,
+            }),
+            ExprKind::IVar(name) => Some(LValue::IVar(name.clone())),
+            _ => None,
+        };
+        let Some(place) = place else {
+            self.error(
+                format!(
+                    "`{}` is not a method of {}; `.{}` assigns the result of `{plain_name}` back, but the receiver is not a variable or a field",
+                    call.name,
+                    self.name(recv_ty),
+                    call.name
+                ),
+                expr.span,
+            );
+            self.check_args_blindly(call);
+            return Some(Type::Nothing);
+        };
+        let plain = Call {
+            name: plain_name.to_string(),
+            ..call.clone()
+        };
+        let vt = self.check_call_on(expr, &plain, recv_ty, false, expected);
+        if vt.is_nothing() {
+            return Some(Type::Nothing);
+        }
+        self.out.bang_assign.insert(expr.id);
+        // The store, as an assignment to the place would check it.
+        match &place {
+            LValue::Local { name, span } => {
+                let Some((depth, slot)) = self.lookup_var(name) else {
+                    return Some(vt);
+                };
+                if self.captured_across_task(depth) {
+                    self.error(
+                        format!("cannot assign to `{name}` from a task block (`spawn`, `Task.blocking`); it is captured by value"),
+                        *span,
+                    );
+                }
+                let declared = {
+                    let n = self.env.frames.len();
+                    self.env.frames[n - 1 - depth].vars[slot].declared.clone()
+                };
+                if !self.coerce(&vt, &declared) {
+                    self.error(
+                        format!(
+                            "`.{}` would assign {} to `{name}` of type {}",
+                            call.name,
+                            self.name(&vt),
+                            self.name(&declared)
+                        ),
+                        expr.span,
+                    );
+                }
+                let narrowed = self.resolve(&vt);
+                self.set_narrowed(&VarKey::Local(name.clone()), Some(narrowed));
+            }
+            LValue::IVar(name) => {
+                if !self.check_ivar_access(expr.span) {
+                    return Some(Type::Nothing);
+                }
+                let Some(cid) = self.env.class_id else {
+                    return Some(vt);
+                };
+                let Some((field, subst)) = self.world.find_field(cid, name) else {
+                    return Some(vt);
+                };
+                if !field.mutable && !self.env.in_initialize {
+                    self.error(
+                        format!("field `@{name}` is immutable; declare it with `var` or assign it in `initialize`"),
+                        expr.span,
+                    );
+                }
+                let fty = field.ty.subst(&subst);
+                if !self.coerce(&vt, &fty) {
+                    self.error(
+                        format!(
+                            "`.{}` would assign {} to `@{name}` of type {}",
+                            call.name,
+                            self.name(&vt),
+                            self.name(&fty)
+                        ),
+                        expr.span,
+                    );
+                }
+            }
+            _ => {}
+        }
+        Some(vt)
     }
 
     /// The innermost enclosing `self` (outside the blocks with receivers
