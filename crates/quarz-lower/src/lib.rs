@@ -13,6 +13,8 @@ use quarz_types::{Checked, Output, World};
 
 mod capture;
 mod func;
+mod inline;
+mod iter;
 mod rtworld;
 
 use func::FnBuilder;
@@ -222,9 +224,11 @@ pub fn lower_checked(checked: &Checked, files: &[SourceFile]) -> Module {
         })
         .collect();
     let delta = lw.lower(&checked.world, &checked.output, &inputs, all);
+    let mut functions = delta.functions;
+    inline::inline_calls(&mut functions, &delta.world.methods, 2);
     Module {
         world: delta.world,
-        functions: delta.functions,
+        functions,
         units: delta.units,
     }
 }

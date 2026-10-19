@@ -597,6 +597,13 @@ impl Interp {
                 args,
                 kw,
             } => {
+                if let (VarLoc::Reg(r), [arg], true) = (recv, args.as_slice(), kw.is_empty()) {
+                    let arg = regs[*arg as usize].clone();
+                    if self.owned_array_push(*method, &mut regs[*r as usize], &arg) {
+                        regs[*dst as usize] = regs[*r as usize].clone();
+                        return Ok(());
+                    }
+                }
                 let pos = self.call_args(regs, args, false);
                 let kw = self.call_kwargs(f, pool, regs, kw, None);
                 let old = match recv {
@@ -925,6 +932,18 @@ impl Interp {
                 regs[*dst as usize] = v;
                 regs[*found as usize] = Value::Bool(ok);
             }
+            Inst::ArrayPush { arr, src } => {
+                let v = regs[*src as usize].clone();
+                match &mut regs[*arr as usize] {
+                    Value::Array(a) => Rc::make_mut(a).push(v),
+                    other => {
+                        return Err(self.err_type(&format!(
+                            "expected an array, got {}",
+                            self.class_name(other)
+                        )))
+                    }
+                }
+            }
             Inst::HashRest { dst, hash, keys } => {
                 let keys: Vec<Symbol> = keys
                     .iter()
@@ -956,6 +975,11 @@ impl Interp {
             }
             Inst::CatchAny { dst } => {
                 regs[*dst as usize] = Value::Flow(Rc::new(RefCell::new(pending.take())));
+            }
+            Inst::ClearRegs { from, to } => {
+                for r in &mut regs[*from as usize..*to as usize] {
+                    *r = Value::Nil;
+                }
             }
             Inst::NoMatch { src, is_assert } => {
                 let v = &regs[*src as usize];

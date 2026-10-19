@@ -1,0 +1,200 @@
+# Blocks lowered in place (times, upto, each, each_with_index, map,
+# select, reject, reduce over arrays and literal ranges) and small
+# methods inlined into their callers: the control flow, the variables
+# and the backtraces must come out as with real calls.
+
+# --- counted loops ---
+sum = 0
+10.times { |i| sum += i }
+p sum
+3.times { sum += 1 }
+p sum
+p 4.times { |i| break i * 10 if i == 2 }
+p 2.times { |i| i }
+p 0.times { |i| i }
+p (-3).times { |i| i }
+acc: Array[Int] = []
+3.upto(6) { |i| acc = acc.push(i) }
+p acc
+p 5.upto(4) { |i| i }
+
+# --- arrays ---
+xs = [1, 2, 3, 4, 5]
+p xs.map { |x| x * x }
+p xs.select { |x| x.odd? }
+p xs.reject { |x| x.odd? }
+p xs.reduce(0) { |a, x| a + x }
+p xs.reduce("") { |a, x| "#{a}#{x}" }
+p xs.each { |x| x }
+p xs.each_with_index.map { |x, i| x * i }
+pairs: Array[String] = []
+xs.each_with_index { |x, i| pairs = pairs.push("#{i}:#{x}") }
+p pairs
+p [].map { |x| x }
+p [].reduce(1) { |a, x| a * x }
+
+# next and break carry values
+p xs.map { |x| next 0 if x.even?; x }
+p xs.select { |x| next false if x == 3; true }
+p xs.map { |x| break "stopped at #{x}" if x > 3; x }
+p xs.each { |x| break x if x > 2 }
+p xs.reduce(0) { |a, x| break a if x > 3; a + x }
+
+# block-local variables are fresh every iteration
+seen: Array[Int?] = []
+xs.each do |x|
+  y: Int? = nil
+  y = x if x.even?
+  seen = seen.push(y)
+end
+p seen
+
+# --- literal ranges ---
+p (1..5).map { |i| i * 2 }
+p (1...5).map { |i| i * 2 }
+p (1..5).select { |i| i > 2 }
+p (1..5).reject { |i| i > 2 }
+p (1..10).reduce(0) { |a, i| a + i }
+p (1..0).map { |i| i }
+lo = 2
+hi = lo + 2
+p (lo..hi).map { |i| i }
+p (1..5).each_with_index.map { |x, i| x + i }
+p (1..100).each { |i| break i if i * i > 50 }
+
+# --- nesting ---
+table: Array[Array[Int]] = []
+(1..3).each do |i|
+  row: Array[Int] = []
+  (1..3).each { |j| row = row.push(i * j) }
+  table = table.push(row)
+end
+p table
+p (1..3).map { |i| (1..3).map { |j| i * j } }
+found = (1..3).each do |i|
+  (1..3).each do |j|
+    break if j == 2
+  end
+  break i if i == 2
+end
+p found
+
+# a block inside the loop that captures the loop's variables (real closure)
+procs: Array[() -> Int] = []
+(1..3).each { |i| procs = procs.push(-> () -> Int { i * 100 }) }
+p procs.map { |f| f.() }
+adders = [1, 2, 3].map { |k| ->(x: Int) { x + k } }
+p adders.map { |f| f.(10) }
+
+# `return` from a loop body leaves the method
+def first_over(xs: Array[Int], limit: Int) -> Int?
+  xs.each { |x| return x if x > limit }
+  nil
+end
+p first_over([1, 5, 9], 4)
+p first_over([1, 5, 9], 10)
+
+def sum_until(limit: Int) -> Int
+  total = 0
+  (1..100).each do |i|
+    total += i
+    return total if total > limit
+  end
+  total
+end
+p sum_until(10)
+
+# `yield` inside a loop body yields to the method's block
+def each_double(xs: Array[Int], &: (Int) -> Nil) -> Nil
+  xs.each { |x| yield x * 2 }
+end
+each_double([1, 2]) { |v| p v }
+
+# exceptions and ensure inside loops
+log: Array[String] = []
+begin
+  [1, 0, 2].each do |d|
+    begin
+      log = log.push("#{10 / d}")
+    ensure
+      log = log.push("ensure #{d}")
+    end
+  end
+rescue ZeroDivisionError => e
+  log = log.push("rescued")
+end
+p log
+r = [1, 2, 3].map do |x|
+  begin
+    raise "boom" if x == 2
+    x
+  rescue RuntimeError
+    -1
+  end
+end
+p r
+
+# --- small methods inlined into callers ---
+def add(a: Int, b: Int) -> Int = a + b
+def twice(x: Int) -> Int = add(x, x)
+def fact(n: Int) -> Int = n <= 1 ? 1 : n * fact(n - 1)
+p add(1, 2), twice(21), fact(10), fact(25)
+
+data Pt(x: Float, y: Float) is
+  def +(o: Pt) -> Pt = Pt.new(x + o.x, y + o.y)
+  def scale(k: Float) -> Pt = Pt.new(x * k, y * k)
+  def norm2 -> Float = x * x + y * y
+end
+a = Pt.new(1.0, 2.0)
+b = Pt.new(0.5, 0.5)
+p a + b, (a + b).scale(2.0), a.scale(3.0).norm2
+p [a, b].map { |v| v.scale(2.0) }.reduce(Pt.new(0.0, 0.0)) { |s, v| s + v }
+
+class Counter
+  var @n: Int = 0
+  def bump -> Int
+    @n += 1
+    @n
+  end
+  def bump_twice -> Int
+    bump
+    bump
+  end
+  def n -> Int = @n
+end
+c = Counter.new
+c.bump_twice
+c.bump
+p c.n
+
+# inlined callees keep their frames in backtraces
+def fail_in(n: Int) -> Int
+  raise ArgumentError, "n=#{n}" if n > 1
+  fail_in(n + 1)
+end
+begin
+  fail_in(0)
+rescue ArgumentError => e
+  puts e.message
+  puts e.backtrace.map { |l| l.split("/").last }.join("\n")
+end
+
+def div(a: Int, b: Int) -> Int = a / b
+begin
+  p div(1, 0)
+rescue ZeroDivisionError => e
+  puts e.message
+  puts e.backtrace.map { |l| l.split("/").last }.join("\n")
+end
+
+# an inlined method with a local read before assignment on some path
+def maybe(flag: Bool) -> Int?
+  v: Int? = nil
+  v = 1 if flag
+  v
+end
+p [true, false, true].map { |f| maybe(f) }
+
+# lengths beyond a byte (the compiled code keeps lengths unboxed)
+big = (0...1000).map { |i| i }
+p big.size, big.map { |x| x }.size, big.select { |x| x > 500 }.size, big.reduce(0) { |a, x| a + x }

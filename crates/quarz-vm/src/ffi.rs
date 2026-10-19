@@ -589,6 +589,13 @@ pub unsafe extern "C" fn qz_owned_call(
 ) -> u32 {
     let rt = &*rt;
     let act = &*act;
+    if loc_kind == 0 && nargs == 1 {
+        let arg = (*regs.add(*arg_regs as usize)).clone();
+        if rt.owned_array_push(mid, &mut *regs.add(a as usize), &arg) {
+            *regs.add(dst as usize) = (*regs.add(a as usize)).clone();
+            return STATUS_OK;
+        }
+    }
     let mut args: crate::interp::ArgVec = crate::interp::ArgVec::with_capacity(nargs as usize);
     for i in 0..nargs as usize {
         let r = *arg_regs.add(i);

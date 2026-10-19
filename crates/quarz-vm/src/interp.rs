@@ -10,6 +10,7 @@ use smallvec::{smallvec, SmallVec};
 use std::rc::{Rc, Weak};
 use std::time::Duration;
 
+use quarz_ir::INLINE_LINE_FLAG;
 use quarz_ir::{
     ClassId, Constant, FuncId, Function, MethodId, RtClassKind, RtParamKind, RtSynth, RtType,
     RtWorld, Unit,
@@ -262,6 +263,8 @@ pub struct Interp {
     variant_singletons: Rc<RefCell<HashMap<ClassId, Value>>>,
     pub natives: Vec<Option<NativeFn>>,
     pub natives_owned: Vec<Option<OwnedNativeFn>>,
+    /// `Array#push`, whose owned call (`xs = xs.push(v)`) has a fast path.
+    pub array_push: Option<MethodId>,
     field_indices: Vec<FxHashMap<String, usize>>,
     pub sched: Rc<RefCell<Scheduler>>,
     dispatch_cache: RefCell<FxHashMap<(ClassId, MethodId), MethodId>>,
@@ -387,6 +390,11 @@ impl Interp {
                     .and_then(|k| owned_registry.get(k).copied())
             })
             .collect();
+        let array_push = world
+            .methods
+            .iter()
+            .position(|m| m.native_key.as_deref() == Some("Array#push"))
+            .map(|i| i as MethodId);
         let class_by_name = |name: &str| -> ClassId {
             world
                 .class_by_name(name)
@@ -459,6 +467,7 @@ impl Interp {
             variant_singletons: state.variant_singletons,
             natives,
             natives_owned,
+            array_push,
             field_indices,
             sched: state.sched,
             dispatch_cache: RefCell::new(FxHashMap::default()),
@@ -802,12 +811,23 @@ impl Interp {
                 continue;
             }
             let f = &funcs[act.fid as usize];
-            bt.push(format!(
-                "{}:{}:in {}",
-                self.file_name(f.file),
-                act.line.get(),
-                f.name
-            ));
+            let mut line = act.line.get();
+            // Code inlined from another function: its frame, then the
+            // caller's at the line of the call.
+            while line & INLINE_LINE_FLAG != 0 {
+                let Some(o) = f.inlined.get((line & !INLINE_LINE_FLAG) as usize) else {
+                    break;
+                };
+                let callee = &funcs[o.callee as usize];
+                bt.push(format!(
+                    "{}:{}:in {}",
+                    self.file_name(callee.file),
+                    o.line,
+                    callee.name
+                ));
+                line = o.call_line;
+            }
+            bt.push(format!("{}:{}:in {}", self.file_name(f.file), line, f.name));
         }
         if frames > 32 {
             bt.push(format!("... {} more frames", frames - 32));
@@ -1304,6 +1324,23 @@ impl Interp {
 
     /// Invoke with an owned receiver (`x = x.push(v)`): natives that update
     /// in place get the sole reference. On error the receiver is returned.
+    /// `xs = xs.push(v)` on a register: push in place when the array is
+    /// unshared, without the generic owned-call machinery. Returns
+    /// whether it applied.
+    #[inline]
+    pub fn owned_array_push(&self, mid: MethodId, slot: &mut Value, arg: &Value) -> bool {
+        if Some(mid) != self.array_push {
+            return false;
+        }
+        match slot {
+            Value::Array(a) => {
+                Rc::make_mut(a).push(arg.clone());
+                true
+            }
+            _ => false,
+        }
+    }
+
     pub fn invoke_owned(
         &self,
         mid: MethodId,

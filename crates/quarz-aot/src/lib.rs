@@ -773,7 +773,11 @@ fn heap_possible(f: &Function) -> Vec<bool> {
                 | Inst::HashRest { dst, .. }
                 | Inst::CatchException { dst }
                 | Inst::CatchAny { dst } => mark(*dst),
-                Inst::FrameSet { .. } | Inst::FieldSet { .. } | Inst::NoMatch { .. } => {}
+                Inst::FrameSet { .. }
+                | Inst::FieldSet { .. }
+                | Inst::ArrayPush { .. }
+                | Inst::ClearRegs { .. }
+                | Inst::NoMatch { .. } => {}
             }
         }
     }
@@ -985,6 +989,10 @@ impl Gen<'_, '_> {
                 let v = self.b.ins().ireduce(types::I8, v);
                 self.b.def_var(self.bvar(r), v);
             }
+        }
+        if let Inst::Len { dst, .. } = inst {
+            let v = self.payload(*dst);
+            self.b.def_var(self.ivar(*dst), v);
         }
     }
 
@@ -1570,6 +1578,13 @@ impl Gen<'_, '_> {
                 let one = self.b.ins().iconst(types::I8, 1);
                 let v = self.b.ins().bxor(t, one);
                 self.store_bool(*dst, v);
+            }
+            Inst::ClearRegs { from, to } => {
+                for r in *from..*to {
+                    self.release(r);
+                    self.store_tag(r, TAG_NIL);
+                    self.states[r as usize] = State::NonHeap;
+                }
             }
             Inst::IsNil { dst, src } => {
                 let v = match self.states[*src as usize] {

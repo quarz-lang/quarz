@@ -6,9 +6,10 @@ use quarz_ir::*;
 use quarz_syntax::ast::{self, Arg, Block as AstBlock, Expr, ExprKind, LValue, ParamKind, StrPart};
 use quarz_syntax::token::OpAssign;
 use quarz_syntax::Span;
-use quarz_types::{CallTarget, ConstTarget, Output, VarRef, World};
+use quarz_types::{CallTarget, ConstTarget, Output, Type, VarRef, World};
 
 use crate::capture::captured_slots;
+use crate::iter::{self, Kind, Shape, Source};
 use crate::rtworld::rt_type;
 use crate::{Lowerer, UnitInput};
 
@@ -32,6 +33,15 @@ struct LoopCtx {
     result: Reg,
     /// Number of handler regions open outside the loop.
     depth: usize,
+    /// For a block body lowered in place: where `next v` leaves its value.
+    next_value: Option<Reg>,
+}
+
+/// A block lowered in place (see `iter`): its variables are registers of
+/// the enclosing function.
+#[derive(Default)]
+struct InlineLevel {
+    slot_regs: HashMap<u32, Reg>,
 }
 
 /// A protected region: its handler, and its `ensure` body when a jump out
@@ -61,9 +71,14 @@ pub struct FnBuilder<'a> {
     /// Whether each enclosing function level (outermost first, this one
     /// last) allocates a heap frame.
     levels: Vec<bool>,
+    /// For each pair of consecutive levels, how many blocks lowered in
+    /// place sit between them (the checker counts those as levels too).
+    gaps: Vec<u32>,
     captured: HashSet<u32>,
     all_captured: bool,
     slot_regs: HashMap<u32, Reg>,
+    /// The blocks currently being lowered in place, outermost first.
+    inline: Vec<InlineLevel>,
     loops: Vec<LoopCtx>,
     handlers: Vec<Region<'a>>,
     retry_targets: Vec<BlockId>,
@@ -86,6 +101,7 @@ impl<'a> FnBuilder<'a> {
         kind: FuncKind,
         file: u32,
         outer_levels: &[bool],
+        gaps: Vec<u32>,
         captured: HashSet<u32>,
         all_captured: bool,
         method: Option<MethodId>,
@@ -108,9 +124,11 @@ impl<'a> FnBuilder<'a> {
             dead: false,
             const_index: HashMap::new(),
             levels,
+            gaps,
             captured,
             all_captured,
             slot_regs: HashMap::new(),
+            inline: Vec::new(),
             loops: Vec::new(),
             handlers: vec![Region {
                 handler: None,
@@ -153,7 +171,7 @@ impl<'a> FnBuilder<'a> {
             .filter_map(|p| p.default.as_deref())
             .collect();
         let nparams = m.params.len() as u32 + u32::from(m.block.is_some());
-        let captured = captured_slots(body, &defaults, out, nparams);
+        let captured = captured_slots(body, &defaults, out, world, nparams);
         let name = format!("{}#{}", world.class(m.owner).name, m.name);
         let mut b = FnBuilder::new(
             lw,
@@ -163,6 +181,7 @@ impl<'a> FnBuilder<'a> {
             FuncKind::Method(mid),
             m.file,
             &[],
+            Vec::new(),
             captured,
             false,
             Some(mid),
@@ -253,7 +272,7 @@ impl<'a> FnBuilder<'a> {
         class_id: Option<ClassId>,
         value: &'a Expr,
     ) -> Function {
-        let captured = captured_slots(std::slice::from_ref(value), &[], out, 0);
+        let captured = captured_slots(std::slice::from_ref(value), &[], out, world, 0);
         let mut b = FnBuilder::new(
             lw,
             world,
@@ -262,6 +281,7 @@ impl<'a> FnBuilder<'a> {
             FuncKind::Init,
             file,
             &[],
+            Vec::new(),
             captured,
             false,
             None,
@@ -278,7 +298,7 @@ impl<'a> FnBuilder<'a> {
         out: &'a Output,
         unit: &'a UnitInput<'a>,
     ) -> Function {
-        let captured = captured_slots(unit.body, &[], out, 0);
+        let captured = captured_slots(unit.body, &[], out, world, 0);
         let kind = if unit.repl {
             FuncKind::Repl
         } else {
@@ -292,6 +312,7 @@ impl<'a> FnBuilder<'a> {
             kind,
             unit.file,
             &[],
+            Vec::new(),
             captured,
             unit.repl,
             None,
@@ -311,7 +332,13 @@ impl<'a> FnBuilder<'a> {
             .filter(|p| p.kind != ParamKind::Block)
             .collect();
         let defaults: Vec<&Expr> = params.iter().filter_map(|p| p.default.as_ref()).collect();
-        let captured = captured_slots(&block.body, &defaults, self.out, params.len() as u32);
+        let captured = captured_slots(
+            &block.body,
+            &defaults,
+            self.out,
+            self.world,
+            params.len() as u32,
+        );
         let id = self.lw.alloc_func();
         let name = format!(
             "{} in {}",
@@ -326,6 +353,11 @@ impl<'a> FnBuilder<'a> {
             FuncKind::Block,
             self.file,
             &self.levels,
+            {
+                let mut gaps = self.gaps.clone();
+                gaps.push(self.inline.len() as u32);
+                gaps
+            },
             captured,
             false,
             self.method,
@@ -529,10 +561,10 @@ impl<'a> FnBuilder<'a> {
 
     /// Translate a checker depth into a heap-frame depth: levels without a
     /// frame of their own do not appear in the frame chain.
-    fn frame_depth(&self, depth: u32) -> u32 {
-        let n = self.levels.len() - 1;
-        let target = n - depth as usize;
-        self.levels[target + 1..=n].iter().filter(|h| **h).count() as u32
+    /// The checker's depth of the method's own level from here (for
+    /// `super` without arguments, which forwards the method's parameters).
+    fn method_level_depth(&self) -> u32 {
+        self.inline.len() as u32 + (self.levels.len() as u32 - 1) + self.gaps.iter().sum::<u32>()
     }
 
     fn is_captured(&self, slot: u32) -> bool {
@@ -549,46 +581,64 @@ impl<'a> FnBuilder<'a> {
         r
     }
 
-    fn load_var(&mut self, r: VarRef) -> Reg {
-        if r.depth == 0 && !self.is_captured(r.slot) {
-            let src = self.slot_reg(r.slot);
-            let dst = self.reg();
-            self.emit(Inst::Move { dst, src });
-            return dst;
+    /// Where a variable lives: a register of this function (its own
+    /// uncaptured variables, and every variable of a block lowered in
+    /// place) or a slot of a heap frame.
+    fn resolve(&mut self, r: VarRef) -> VarLoc {
+        let k = self.inline.len();
+        if (r.depth as usize) < k {
+            let level = k - 1 - r.depth as usize;
+            if let Some(reg) = self.inline[level].slot_regs.get(&r.slot) {
+                return VarLoc::Reg(*reg);
+            }
+            let reg = self.reg();
+            self.inline[level].slot_regs.insert(r.slot, reg);
+            return VarLoc::Reg(reg);
         }
-        let depth = self.frame_depth(r.depth);
-        let dst = self.reg();
-        self.emit(Inst::FrameGet {
-            dst,
+        let d = r.depth - k as u32;
+        if d == 0 && !self.is_captured(r.slot) {
+            return VarLoc::Reg(self.slot_reg(r.slot));
+        }
+        // An outer level: step over the blocks lowered in place between
+        // the real levels (nothing nested refers to their variables).
+        let n = self.levels.len() - 1;
+        let mut j = n;
+        let mut rem = d;
+        while rem > 0 {
+            rem -= 1;
+            let gap = self.gaps[j - 1];
+            debug_assert!(
+                rem >= gap,
+                "variable of an inlined block referenced from a nested function"
+            );
+            rem -= gap;
+            j -= 1;
+        }
+        let depth = self.levels[j + 1..=n].iter().filter(|h| **h).count() as u32;
+        VarLoc::Frame {
             depth,
             slot: r.slot,
-        });
+        }
+    }
+
+    fn load_var(&mut self, r: VarRef) -> Reg {
+        let dst = self.reg();
+        match self.resolve(r) {
+            VarLoc::Reg(src) => self.emit(Inst::Move { dst, src }),
+            VarLoc::Frame { depth, slot } => self.emit(Inst::FrameGet { dst, depth, slot }),
+        }
         dst
     }
 
     fn store_var(&mut self, r: VarRef, src: Reg) {
-        if r.depth == 0 && !self.is_captured(r.slot) {
-            let dst = self.slot_reg(r.slot);
-            self.emit(Inst::Move { dst, src });
-            return;
+        match self.resolve(r) {
+            VarLoc::Reg(dst) => self.emit(Inst::Move { dst, src }),
+            VarLoc::Frame { depth, slot } => self.emit(Inst::FrameSet { depth, slot, src }),
         }
-        let depth = self.frame_depth(r.depth);
-        self.emit(Inst::FrameSet {
-            depth,
-            slot: r.slot,
-            src,
-        });
     }
 
     fn var_loc(&mut self, r: VarRef) -> VarLoc {
-        if r.depth == 0 && !self.is_captured(r.slot) {
-            VarLoc::Reg(self.slot_reg(r.slot))
-        } else {
-            VarLoc::Frame {
-                depth: self.frame_depth(r.depth),
-                slot: r.slot,
-            }
-        }
+        self.resolve(r)
     }
 
     fn store_site(&mut self, span: Span, src: Reg) {
@@ -931,6 +981,7 @@ impl<'a> FnBuilder<'a> {
                     exit: exit_b,
                     result: res,
                     depth: self.handlers.len(),
+                    next_value: None,
                 });
                 self.body(body);
                 self.loops.pop();
@@ -1110,7 +1161,10 @@ impl<'a> FnBuilder<'a> {
                     None => self.nil(),
                 };
                 if let Some(l) = self.loops.last() {
-                    let (next, depth) = (l.next, l.depth);
+                    let (next, depth, next_value) = (l.next, l.depth, l.next_value);
+                    if let Some(dst) = next_value {
+                        self.emit(Inst::Move { dst, src: v });
+                    }
                     let restore = self.leave_regions(depth);
                     self.term(Term::Jump(next));
                     self.handlers.extend(restore);
@@ -1259,6 +1313,9 @@ impl<'a> FnBuilder<'a> {
     }
 
     fn call(&mut self, e: &'a Expr, call: &'a ast::Call) -> Reg {
+        if let Some(shape) = iter::shape(e, call, self.out, self.world) {
+            return self.inline_iter(call, shape);
+        }
         let target = self.out.calls.get(&e.id);
         let recv = call.recv.as_ref().map(|r| self.expr(r));
         // `recv&.name`: nil when the receiver is nil.
@@ -1300,6 +1357,262 @@ impl<'a> FnBuilder<'a> {
             }
             _ => value,
         }
+    }
+
+    /// The `Int` operator method `op` (for a typed `BinOp`).
+    fn int_op(&self, op: FastOp) -> Option<MethodId> {
+        let name = match op {
+            FastOp::Lt => "<",
+            FastOp::Le => "<=",
+            FastOp::Add => "+",
+            _ => return None,
+        };
+        let int = self.world.builtin.int;
+        self.world
+            .methods
+            .iter()
+            .find(|m| {
+                m.owner == int
+                    && m.name == name
+                    && m.params.len() == 1
+                    && matches!(&m.params[0].ty, Type::Class(c, a) if *c == int && a.is_empty())
+            })
+            .map(|m| m.id)
+    }
+
+    /// `n.times { }`, `xs.each { }`, `(lo..hi).map { }` and the other
+    /// shapes of `iter`: a counted loop in this function, with the block
+    /// body lowered in place (`break` and `next` become jumps).
+    fn inline_iter(&mut self, call: &'a ast::Call, shape: Shape) -> Reg {
+        let block = call.block.as_ref().unwrap();
+        let kind = shape.kind;
+        // The receiver (or the range's bounds), then the arguments.
+        let mut lo = None;
+        let mut hi = None;
+        let mut arr = None;
+        let mut exclusive = false;
+        match shape.source {
+            Some(Source::Range) => {
+                let ExprKind::Range {
+                    lo: l,
+                    hi: h,
+                    exclusive: ex,
+                } = &call.recv.as_ref().unwrap().kind
+                else {
+                    unreachable!()
+                };
+                lo = Some(self.expr(l.as_ref().unwrap()));
+                hi = Some(self.expr(h.as_ref().unwrap()));
+                exclusive = *ex;
+            }
+            Some(Source::Array) => arr = Some(self.expr(call.recv.as_ref().unwrap())),
+            None => {
+                let r = match &call.recv {
+                    Some(x) => self.expr(x),
+                    None => self.self_reg(),
+                };
+                if kind == Kind::Times {
+                    hi = Some(r);
+                    exclusive = true;
+                } else {
+                    lo = Some(r);
+                }
+            }
+        }
+        let args: Vec<Reg> = call
+            .args
+            .iter()
+            .map(|a| match a {
+                Arg::Positional(x) => self.expr(x),
+                _ => unreachable!(),
+            })
+            .collect();
+        if kind == Kind::Upto {
+            hi = Some(args[0]);
+        }
+        if let Some(a) = arr {
+            let len = self.reg();
+            self.emit(Inst::Len { dst: len, src: a });
+            hi = Some(len);
+            exclusive = true;
+        }
+        let lo = match lo {
+            Some(r) => r,
+            None => self.load_const(Constant::Int(0)),
+        };
+        let hi = hi.unwrap();
+        // The counter, the call's result, the block's value per
+        // iteration, and the accumulator or the array being built.
+        let i = self.reg();
+        self.emit(Inst::Move { dst: i, src: lo });
+        let result = self.nil();
+        let acc = (kind == Kind::Reduce).then(|| {
+            let r = self.reg();
+            self.emit(Inst::Move {
+                dst: r,
+                src: args[0],
+            });
+            r
+        });
+        let out = matches!(kind, Kind::Map | Kind::Select | Kind::Reject).then(|| {
+            let r = self.reg();
+            self.emit(Inst::MakeArray {
+                dst: r,
+                items: Vec::new(),
+            });
+            r
+        });
+        let cond_b = self.new_block();
+        let body_b = self.new_block();
+        let next_b = self.new_block();
+        let done_b = self.new_block();
+        let exit_b = self.new_block();
+        self.term(Term::Jump(cond_b));
+        self.switch(cond_b);
+        let c = self.reg();
+        let op = if exclusive { FastOp::Lt } else { FastOp::Le };
+        let method = self.int_op(op);
+        self.emit(Inst::BinOp {
+            dst: c,
+            op,
+            lhs: i,
+            rhs: hi,
+            method,
+        });
+        self.term(Term::Branch {
+            cond: c,
+            then: body_b,
+            els: done_b,
+        });
+        self.switch(body_b);
+        let elem = match arr {
+            Some(a) => {
+                let x = self.reg();
+                self.emit(Inst::ArrayGetReg {
+                    dst: x,
+                    arr: a,
+                    index: i,
+                });
+                x
+            }
+            None => i,
+        };
+        // Every register the body uses (its variables, its temporaries
+        // and its value) starts each iteration as nil, which also
+        // releases what the previous iteration left: `acc = acc.push(x)`
+        // then finds `acc` unshared and pushes in place. The range is
+        // known once the body is lowered.
+        let clear_from = self.func.nregs;
+        let clear_at = (self.cur, self.func.blocks[self.cur as usize].insts.len());
+        self.emit(Inst::ClearRegs {
+            from: clear_from,
+            to: clear_from,
+        });
+        let val = self.reg();
+        let yielded: Vec<Reg> = match kind {
+            Kind::EachWithIndex => vec![elem, i],
+            Kind::Reduce => vec![acc.unwrap(), elem],
+            _ => vec![elem],
+        };
+        self.inline.push(InlineLevel::default());
+        for pi in 0..block.params.list.len() {
+            let src = match yielded.get(pi) {
+                Some(r) => *r,
+                None => self.nil(),
+            };
+            self.store_var(
+                VarRef {
+                    depth: 0,
+                    slot: pi as u32,
+                },
+                src,
+            );
+        }
+        self.loops.push(LoopCtx {
+            next: next_b,
+            exit: exit_b,
+            result,
+            depth: self.handlers.len(),
+            next_value: Some(val),
+        });
+        let v = self.body(&block.body);
+        self.loops.pop();
+        self.emit(Inst::Move { dst: val, src: v });
+        self.term(Term::Jump(next_b));
+        self.inline.pop();
+        let clear_to = self.func.nregs;
+        if let Inst::ClearRegs { to, .. } =
+            &mut self.func.blocks[clear_at.0 as usize].insts[clear_at.1]
+        {
+            *to = clear_to;
+        }
+        self.switch(next_b);
+        match kind {
+            Kind::Map => self.emit(Inst::ArrayPush {
+                arr: out.unwrap(),
+                src: val,
+            }),
+            Kind::Select | Kind::Reject => {
+                let push_b = self.new_block();
+                let skip_b = self.new_block();
+                let (then, els) = if kind == Kind::Select {
+                    (push_b, skip_b)
+                } else {
+                    (skip_b, push_b)
+                };
+                self.term(Term::Branch {
+                    cond: val,
+                    then,
+                    els,
+                });
+                self.switch(push_b);
+                self.emit(Inst::ArrayPush {
+                    arr: out.unwrap(),
+                    src: elem,
+                });
+                self.term(Term::Jump(skip_b));
+                self.switch(skip_b);
+            }
+            Kind::Reduce => self.emit(Inst::Move {
+                dst: acc.unwrap(),
+                src: val,
+            }),
+            _ => {}
+        }
+        let one = self.load_const(Constant::Int(1));
+        let next_i = self.reg();
+        let add = self.int_op(FastOp::Add);
+        self.emit(Inst::BinOp {
+            dst: next_i,
+            op: FastOp::Add,
+            lhs: i,
+            rhs: one,
+            method: add,
+        });
+        self.emit(Inst::Move {
+            dst: i,
+            src: next_i,
+        });
+        self.term(Term::Jump(cond_b));
+        self.switch(done_b);
+        self.emit(Inst::ClearRegs {
+            from: clear_from,
+            to: clear_to,
+        });
+        match kind {
+            Kind::Map | Kind::Select | Kind::Reject => self.emit(Inst::Move {
+                dst: result,
+                src: out.unwrap(),
+            }),
+            Kind::Reduce => self.emit(Inst::Move {
+                dst: result,
+                src: acc.unwrap(),
+            }),
+            _ => {}
+        }
+        self.term(Term::Jump(exit_b));
+        self.switch(exit_b);
+        result
     }
 
     fn call_value(
@@ -1446,7 +1759,7 @@ impl<'a> FnBuilder<'a> {
                     let m = self.world.method(mid);
                     for (i, p) in m.params.iter().enumerate() {
                         let v = self.load_var(VarRef {
-                            depth: self.levels.len() as u32 - 1,
+                            depth: self.method_level_depth(),
                             slot: i as u32,
                         });
                         match p.kind {

@@ -98,156 +98,17 @@ pub fn bin_types(inst: &Inst, methods: &[RtMethod], builtin: &RtBuiltin) -> Opti
 
 /// The registers an instruction may write.
 pub fn defs(inst: &Inst) -> Vec<Reg> {
-    match inst {
-        Inst::LoadConst { dst, .. }
-        | Inst::Move { dst, .. }
-        | Inst::SelfRef { dst }
-        | Inst::Arg { dst, .. }
-        | Inst::HasArg { dst, .. }
-        | Inst::BlockParam { dst }
-        | Inst::FrameGet { dst, .. }
-        | Inst::FieldGet { dst, .. }
-        | Inst::ConstGet { dst, .. }
-        | Inst::ClassRef { dst, .. }
-        | Inst::VariantSingleton { dst, .. }
-        | Inst::Call { dst, .. }
-        | Inst::IsNil { dst, .. }
-        | Inst::BinOp { dst, .. }
-        | Inst::Not { dst, .. }
-        | Inst::CaseEq { dst, .. }
-        | Inst::Equal { dst, .. }
-        | Inst::ClassIsA { dst, .. }
-        | Inst::IsA { dst, .. }
-        | Inst::As { dst, .. }
-        | Inst::MakeBlock { dst, .. }
-        | Inst::MethodRef { dst, .. }
-        | Inst::SymbolProc { dst, .. }
-        | Inst::MakeArray { dst, .. }
-        | Inst::MakeHash { dst, .. }
-        | Inst::MakeRange { dst, .. }
-        | Inst::MakeRegexp { dst, .. }
-        | Inst::Interpolate { dst, .. }
-        | Inst::ToSym { dst, .. }
-        | Inst::IsArray { dst, .. }
-        | Inst::IsHash { dst, .. }
-        | Inst::IsObject { dst, .. }
-        | Inst::ToArray { dst, .. }
-        | Inst::Len { dst, .. }
-        | Inst::ArrayGet { dst, .. }
-        | Inst::ArrayGetReg { dst, .. }
-        | Inst::ArraySlice { dst, .. }
-        | Inst::ArraySliceReg { dst, .. }
-        | Inst::ObjectFields { dst, .. }
-        | Inst::HashRest { dst, .. }
-        | Inst::CatchException { dst }
-        | Inst::CatchAny { dst } => vec![*dst],
-        Inst::FieldGetByName { dst, found, .. } | Inst::HashGetSym { dst, found, .. } => {
-            vec![*dst, *found]
-        }
-        Inst::OwnedCall { dst, recv, .. } => match recv {
-            VarLoc::Reg(r) => vec![*dst, *r],
-            VarLoc::Frame { .. } => vec![*dst],
-        },
-        Inst::FrameSet { .. } | Inst::FieldSet { .. } | Inst::NoMatch { .. } => vec![],
-    }
+    inst.defs()
 }
 
 /// The registers an instruction reads.
 pub fn uses(inst: &Inst) -> Vec<Reg> {
-    match inst {
-        Inst::LoadConst { .. }
-        | Inst::SelfRef { .. }
-        | Inst::Arg { .. }
-        | Inst::HasArg { .. }
-        | Inst::BlockParam { .. }
-        | Inst::FrameGet { .. }
-        | Inst::ConstGet { .. }
-        | Inst::ClassRef { .. }
-        | Inst::VariantSingleton { .. }
-        | Inst::MakeBlock { .. }
-        | Inst::SymbolProc { .. }
-        | Inst::CatchException { .. }
-        | Inst::CatchAny { .. } => vec![],
-        Inst::Move { src, .. }
-        | Inst::Not { src, .. }
-        | Inst::IsNil { src, .. }
-        | Inst::FrameSet { src, .. }
-        | Inst::ToSym { src, .. }
-        | Inst::IsArray { src, .. }
-        | Inst::IsHash { src, .. }
-        | Inst::IsObject { src, .. }
-        | Inst::ToArray { src, .. }
-        | Inst::Len { src, .. }
-        | Inst::ObjectFields { src, .. }
-        | Inst::ClassIsA { src, .. }
-        | Inst::IsA { src, .. }
-        | Inst::As { src, .. }
-        | Inst::NoMatch { src, .. } => vec![*src],
-        Inst::FieldGet { obj, .. } | Inst::FieldGetByName { obj, .. } => vec![*obj],
-        Inst::FieldSet { obj, src, .. } => vec![*obj, *src],
-        Inst::Call {
-            recv,
-            args,
-            kw,
-            kw_splat,
-            block,
-            ..
-        } => {
-            let mut v: Vec<Reg> = recv.iter().copied().collect();
-            v.extend(args.iter().copied());
-            v.extend(kw.iter().map(|(_, r)| *r));
-            v.extend(kw_splat.iter().copied());
-            v.extend(block.iter().copied());
-            v
-        }
-        Inst::OwnedCall { recv, args, kw, .. } => {
-            let mut v: Vec<Reg> = match recv {
-                VarLoc::Reg(r) => vec![*r],
-                VarLoc::Frame { .. } => vec![],
-            };
-            v.extend(args.iter().copied());
-            v.extend(kw.iter().map(|(_, r)| *r));
-            v
-        }
-        Inst::BinOp { lhs, rhs, .. } => vec![*lhs, *rhs],
-        Inst::CaseEq { pattern, value, .. } => vec![*pattern, *value],
-        Inst::Equal { a, b, .. } => vec![*a, *b],
-        Inst::MethodRef { recv, .. } => vec![*recv],
-        Inst::MakeArray { items, .. } => items.iter().map(|i| i.reg).collect(),
-        Inst::MakeHash { items, .. } => items
-            .iter()
-            .flat_map(|i| match i {
-                HashItem::Pair(k, v) => vec![*k, *v],
-                HashItem::Splat(r) => vec![*r],
-            })
-            .collect(),
-        Inst::MakeRange { lo, hi, .. } => lo.iter().chain(hi.iter()).copied().collect(),
-        Inst::MakeRegexp { source, .. } => vec![*source],
-        Inst::Interpolate { parts, .. } => parts
-            .iter()
-            .filter_map(|p| match p {
-                StrPiece::Val(r) => Some(*r),
-                StrPiece::Lit(_) => None,
-            })
-            .collect(),
-        Inst::ArrayGet { arr, .. } | Inst::ArraySlice { arr, .. } => vec![*arr],
-        Inst::ArrayGetReg { arr, index, .. } => vec![*arr, *index],
-        Inst::ArraySliceReg { arr, from, to, .. } => vec![*arr, *from, *to],
-        Inst::HashGetSym { hash, .. } | Inst::HashRest { hash, .. } => vec![*hash],
-    }
+    inst.uses()
 }
 
 /// The register a terminator reads, if any.
 pub fn term_uses(term: &Term) -> Option<Reg> {
-    match term {
-        Term::Branch { cond, .. } => Some(*cond),
-        Term::Return(r)
-        | Term::Raise(r)
-        | Term::BreakOut(r)
-        | Term::ReturnOut(r)
-        | Term::Resume(r) => Some(*r),
-        Term::Jump(_) | Term::Unreachable => None,
-    }
+    term.uses()
 }
 
 /// Instructions whose generated code reads no register's home except
@@ -268,6 +129,7 @@ pub fn reads_no_home(inst: &Inst) -> bool {
             | Inst::IsNil { .. }
             | Inst::CatchException { .. }
             | Inst::CatchAny { .. }
+            | Inst::ClearRegs { .. }
     )
 }
 
@@ -399,6 +261,11 @@ pub fn transfer(
     builtin: &RtBuiltin,
 ) {
     match inst {
+        Inst::ClearRegs { from, to } => {
+            for r in *from..*to {
+                st[r as usize] = State::NonHeap;
+            }
+        }
         // A parameter or field of a numeric type is checked once and
         // then known (the check fails into the interpreter).
         Inst::Arg { dst, index } => {
@@ -448,6 +315,8 @@ pub fn transfer(
         | Inst::IsObject { dst, .. }
         | Inst::ClassIsA { dst, .. }
         | Inst::IsA { dst, .. } => st[*dst as usize] = State::Bool,
+        // A length is always a machine-word Int.
+        Inst::Len { dst, .. } => st[*dst as usize] = State::Int,
         _ => {
             for r in defs(inst) {
                 st[r as usize] = State::Unknown;
