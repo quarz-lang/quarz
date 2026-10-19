@@ -16,3 +16,5 @@ done
 | `collections.qz` | `Array`/`Hash` building, `map`/`select`/`reduce` with blocks |
 | `objects.qz` | object construction, field access and dynamic dispatch |
 | `strings.qz` | string concatenation, interpolation and splitting |
+
+`compare/` holds the same programs in Go, Rust and Ruby and a script that times all of them side by side; see `compare/README.md` for the latest numbers.
