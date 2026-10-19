@@ -1,0 +1,6 @@
+# The toolchain every checkout builds with, inside and outside the
+# development container. The minimum the sources need is in Cargo.toml
+# (`rust-version`).
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]

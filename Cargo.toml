@@ -13,6 +13,8 @@ members = [
 [workspace.package]
 version = "0.0.1"
 edition = "2021"
+# `f64::next_up` (Float#next_float) needs 1.86; the dependencies need 1.85.
+rust-version = "1.86"
 license = "MIT"
 repository = "https://github.com/shugo/quarz"
 

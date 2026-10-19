@@ -3,6 +3,7 @@ name = "quarz-vm"
 description = "The Quarz runtime and VM: values, QIR interpreter, scheduler and native methods"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 

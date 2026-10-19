@@ -3,6 +3,7 @@ name = "quarz-types"
 description = "Name resolution and type checking for the Quarz programming language"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 

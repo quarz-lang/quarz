@@ -3,6 +3,7 @@ name = "quarz-aot"
 description = "Ahead-of-time compilation of QIR to machine code with Cranelift"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
