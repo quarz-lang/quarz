@@ -357,10 +357,7 @@ fn import_all(interp: &Interp, items: Vec<Transfer>) -> Vec<Value> {
 
 fn import_frame(interp: &Interp, f: TFrame) -> Rc<Frame> {
     let parent = f.parent.map(|p| import_frame(interp, *p));
-    Rc::new(Frame {
-        slots: RefCell::new(import_all(interp, f.slots).into_iter().collect()),
-        parent,
-    })
+    Frame::from_slots(import_all(interp, f.slots).into_iter().collect(), parent)
 }
 
 // ----- the helper thread's interpreter ------------------------------------------

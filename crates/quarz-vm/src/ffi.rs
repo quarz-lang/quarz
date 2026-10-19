@@ -157,6 +157,10 @@ pub unsafe extern "C" fn qz_act_ptrs(act: *const Activation, out: *mut *const Va
     *out = act.args_ptr.get();
     *out.add(1) = &act.self_val;
     *out.add(2) = act.nargs.get() as usize as *const Value;
+    *out.add(3) = act
+        .frame
+        .as_ref()
+        .map_or(std::ptr::null(), |f| Rc::as_ptr(f) as *const Value);
 }
 
 /// `regs[dst] = *src` for a reference-counted value (the inline path
@@ -238,26 +242,23 @@ pub unsafe extern "C" fn qz_enter(
     } else {
         None
     };
-    std::ptr::write(
-        buf,
-        Activation {
-            fid,
-            task: rt.current_task_id.get(),
-            line: std::cell::Cell::new(0),
-            self_val: recv,
-            frame,
-            block,
-            method_tag: rt.new_tag(),
-            closure_tag: 0,
-            method: Some(mid),
-            file,
-            args: crate::interp::ArgVec::new(),
-            provided,
-            args_ptr: std::cell::Cell::new(args),
-            nargs: std::cell::Cell::new(nargs),
-            yield_caller: Default::default(),
-        },
-    );
+    // Field by field, so that no whole-struct temporary is copied.
+    use std::ptr::{addr_of_mut, write};
+    write(addr_of_mut!((*buf).fid), fid);
+    write(addr_of_mut!((*buf).task), rt.current_task_id.get());
+    write(addr_of_mut!((*buf).line), std::cell::Cell::new(0));
+    write(addr_of_mut!((*buf).self_val), recv);
+    write(addr_of_mut!((*buf).frame), frame);
+    write(addr_of_mut!((*buf).block), block);
+    write(addr_of_mut!((*buf).method_tag), rt.new_tag());
+    write(addr_of_mut!((*buf).closure_tag), 0);
+    write(addr_of_mut!((*buf).method), Some(mid));
+    write(addr_of_mut!((*buf).file), file);
+    write(addr_of_mut!((*buf).args), crate::interp::ArgVec::new());
+    write(addr_of_mut!((*buf).provided), provided);
+    write(addr_of_mut!((*buf).args_ptr), std::cell::Cell::new(args));
+    write(addr_of_mut!((*buf).nargs), std::cell::Cell::new(nargs));
+    write(addr_of_mut!((*buf).yield_caller), Default::default());
     rt.call_stack.borrow_mut().push(buf as *const Activation);
     STATUS_OK
 }
@@ -297,21 +298,18 @@ pub unsafe extern "C" fn qz_leave(
         Some((*regs.add(block as usize)).clone())
     };
     let r = rt.catch_break(&blk, r);
-    // Take the activation apart, skipping destructors values do not need.
-    let act = std::ptr::read(buf);
-    let Activation {
-        self_val,
-        frame,
-        block: act_block,
-        args,
-        ..
-    } = act;
-    self_val.fast_drop();
-    if let Some(b) = act_block {
-        b.fast_drop();
+    // Take the activation apart in place, skipping destructors values do
+    // not need.
+    {
+        use std::ptr::{addr_of_mut, drop_in_place, read};
+        read(addr_of_mut!((*buf).self_val)).fast_drop();
+        if let Some(b) = read(addr_of_mut!((*buf).block)) {
+            b.fast_drop();
+        }
+        drop_in_place(addr_of_mut!((*buf).frame));
+        drop_in_place(addr_of_mut!((*buf).args));
+        drop_in_place(addr_of_mut!((*buf).yield_caller));
     }
-    drop(frame);
-    drop(args);
     match r {
         Ok(v) => {
             *regs.add(dst as usize) = v;

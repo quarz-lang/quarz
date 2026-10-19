@@ -48,17 +48,41 @@ impl SymbolTable {
 /// A local variable frame. Blocks keep a reference to the frame they were
 /// created in.
 #[derive(Debug)]
+#[repr(C)]
 pub struct Frame {
+    /// Where the slots live and how many there are, for compiled code
+    /// (set by `bind` when the slots are created or resized).
+    pub slots_ptr: Cell<*const Value>,
+    pub nslots: Cell<u32>,
+    /// The parent frame, for compiled code (null at the top).
+    pub parent_ptr: Cell<*const Frame>,
     pub slots: RefCell<SmallVec<[Value; 8]>>,
     pub parent: Option<Rc<Frame>>,
 }
 
 impl Frame {
     pub fn new(size: usize, parent: Option<Rc<Frame>>) -> Rc<Frame> {
-        Rc::new(Frame {
-            slots: RefCell::new(smallvec::smallvec![Value::Nil; size]),
+        Frame::from_slots(smallvec::smallvec![Value::Nil; size], parent)
+    }
+
+    pub fn from_slots(slots: SmallVec<[Value; 8]>, parent: Option<Rc<Frame>>) -> Rc<Frame> {
+        let parent_ptr = parent.as_ref().map_or(std::ptr::null(), Rc::as_ptr);
+        let f = Rc::new(Frame {
+            slots_ptr: Cell::new(std::ptr::null()),
+            nslots: Cell::new(0),
+            parent_ptr: Cell::new(parent_ptr),
+            slots: RefCell::new(slots),
             parent,
-        })
+        });
+        f.bind();
+        f
+    }
+
+    /// Point the slot view at the slot vector.
+    pub fn bind(&self) {
+        let slots = self.slots.borrow();
+        self.slots_ptr.set(slots.as_ptr());
+        self.nslots.set(slots.len() as u32);
     }
 
     pub fn get(&self, depth: u32, slot: u32) -> Value {
@@ -79,6 +103,10 @@ impl Frame {
         let i = slot as usize;
         if i >= slots.len() {
             slots.resize(i + 1, Value::Nil);
+            drop(slots);
+            frame.bind();
+            frame.slots.borrow_mut()[i] = value;
+            return;
         }
         slots[i] = value;
     }
@@ -479,6 +507,9 @@ pub fn check_rc_layout() {
     let object = Value::Object(Object::new(0, Fields::new()));
     assert_eq!(object.type_tag(), 15, "Value layout changed: Object tag");
     assert_eq!(std::mem::offset_of!(Object, fields_ptr), 0);
+    assert_eq!(std::mem::offset_of!(Frame, slots_ptr), 0);
+    assert_eq!(std::mem::offset_of!(Frame, nslots), 8);
+    assert_eq!(std::mem::offset_of!(Frame, parent_ptr), 16);
     let b = a.clone();
     assert_eq!(
         strong_of(&value),

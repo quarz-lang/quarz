@@ -297,9 +297,15 @@ impl Compiler {
             .unwrap_or(0)
             .max(1);
         let uses_act = f.blocks.iter().any(|blk| {
-            blk.insts
-                .iter()
-                .any(|i| matches!(i, Inst::Arg { .. } | Inst::SelfRef { .. }))
+            blk.insts.iter().any(|i| {
+                matches!(
+                    i,
+                    Inst::Arg { .. }
+                        | Inst::SelfRef { .. }
+                        | Inst::FrameGet { .. }
+                        | Inst::FrameSet { .. }
+                )
+            })
         });
 
         let entry = b.create_block();
@@ -360,7 +366,7 @@ impl Compiler {
         ));
         let out_buf = b.ins().stack_addr(types::I64, out_slot, 0);
         let ptrs_slot =
-            b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 24, 3));
+            b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 32, 3));
         let ptrs = b.ins().stack_addr(types::I64, ptrs_slot, 0);
         let args_slot = b.create_sized_stack_slot(StackSlotData::new(
             StackSlotKind::ExplicitSlot,
@@ -837,6 +843,40 @@ impl Gen<'_, '_> {
             .iadd_imm(fields, i64::from(index) * i64::from(VALUE_SIZE))
     }
 
+    /// The address of `slot` in the frame `depth` levels up from this
+    /// activation's frame, branching to `slow` when there is no such
+    /// frame or the slot is beyond its size (layout: `Frame`).
+    fn frame_slot_addr(&mut self, depth: u32, slot: u32, slow: CBlock) -> CValue {
+        let mut frame = self
+            .b
+            .ins()
+            .load(types::I64, MemFlags::trusted(), self.ptrs, 24);
+        for level in 0..=depth {
+            let none = self.b.ins().icmp_imm(IntCC::Equal, frame, 0);
+            let next = self.b.create_block();
+            self.b.ins().brif(none, slow, &[], next, &[]);
+            self.b.switch_to_block(next);
+            if level < depth {
+                frame = self
+                    .b
+                    .ins()
+                    .load(types::I64, MemFlags::trusted(), frame, 16);
+            }
+        }
+        let nslots = self.b.ins().uload32(MemFlags::trusted(), frame, 8);
+        let in_range = self
+            .b
+            .ins()
+            .icmp_imm(IntCC::UnsignedGreaterThan, nslots, i64::from(slot));
+        let ok = self.b.create_block();
+        self.b.ins().brif(in_range, ok, &[], slow, &[]);
+        self.b.switch_to_block(ok);
+        let slots = self.b.ins().load(types::I64, MemFlags::trusted(), frame, 0);
+        self.b
+            .ins()
+            .iadd_imm(slots, i64::from(slot) * i64::from(VALUE_SIZE))
+    }
+
     fn i32(&mut self, v: u32) -> CValue {
         self.b.ins().iconst(types::I32, i64::from(v))
     }
@@ -1180,20 +1220,37 @@ impl Gen<'_, '_> {
                     .call(self.h.block_param, &[self.act, self.regs, d]);
             }
             Inst::FrameGet { dst, depth, slot } => {
+                let slow = self.b.create_block();
+                let cont = self.b.create_block();
+                let addr = self.frame_slot_addr(*depth, *slot, slow);
+                self.clone_from(*dst, addr);
+                self.b.ins().jump(cont, &[]);
+                self.b.switch_to_block(slow);
                 let dp = self.i32(*depth);
                 let sl = self.i32(*slot);
                 let d = self.i32(*dst);
                 self.b
                     .ins()
                     .call(self.h.frame_get, &[self.act, dp, sl, self.regs, d]);
+                self.b.ins().jump(cont, &[]);
+                self.b.switch_to_block(cont);
             }
             Inst::FrameSet { depth, slot, src } => {
+                let slow = self.b.create_block();
+                let cont = self.b.create_block();
+                let addr = self.frame_slot_addr(*depth, *slot, slow);
+                self.release_ptr(addr);
+                self.clone_reg_to_ptr(addr, *src);
+                self.b.ins().jump(cont, &[]);
+                self.b.switch_to_block(slow);
                 let dp = self.i32(*depth);
                 let sl = self.i32(*slot);
                 let s = self.i32(*src);
                 self.b
                     .ins()
                     .call(self.h.frame_set, &[self.act, dp, sl, self.regs, s]);
+                self.b.ins().jump(cont, &[]);
+                self.b.switch_to_block(cont);
             }
             Inst::ClassRef { dst, class } => {
                 self.release(*dst);
