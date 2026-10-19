@@ -82,6 +82,7 @@ impl Interp {
     }
 
     /// Run a function to completion (its machine code when it has some).
+    #[inline(always)]
     pub fn run_func(&self, fid: FuncId, act: &Activation) -> EvalResult {
         self.call_stack.borrow_mut().push(act as *const Activation);
         let r = self.run_func_inner(fid, act);
@@ -89,6 +90,7 @@ impl Interp {
         r
     }
 
+    #[inline(always)]
     fn run_func_inner(&self, fid: FuncId, act: &Activation) -> EvalResult {
         if let Some(r) = self.run_compiled(fid, act) {
             return r;

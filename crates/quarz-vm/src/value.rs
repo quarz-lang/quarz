@@ -398,6 +398,63 @@ impl RandomState {
 /// Tags below this hold no reference-counted payload.
 pub const NEEDS_DROP_FROM: u64 = 7;
 
+impl Value {
+    /// A copy that skips the reference count machinery for values that
+    /// have none.
+    #[inline]
+    pub fn fast_clone(&self) -> Value {
+        if (self.type_tag() as u64) < NEEDS_DROP_FROM {
+            // SAFETY: the variant holds no heap payload, so a bitwise
+            // copy is a complete value.
+            unsafe { std::ptr::read(self) }
+        } else {
+            self.clone()
+        }
+    }
+
+    /// Drop a value, skipping the destructor for those that need none.
+    #[inline]
+    pub fn fast_drop(self) {
+        if (self.type_tag() as u64) < NEEDS_DROP_FROM {
+            std::mem::forget(self);
+        }
+    }
+}
+
+/// Compiled code bumps and lowers reference counts inline, assuming the
+/// layout of `Rc`'s allocation: the strong count is its first word. This
+/// checks that assumption once at start-up.
+pub fn check_rc_layout() {
+    let a: Rc<str> = Rc::from("layout");
+    let value = Value::Str(a.clone());
+    // The payload's first word is the pointer `Rc` keeps: the allocation.
+    let strong_of = |v: &Value| -> usize {
+        // SAFETY: `Value` is `repr(C, u64)`: the tag, then the payload.
+        unsafe {
+            let words = v as *const Value as *const usize;
+            let allocation = *words.add(1) as *const usize;
+            *allocation
+        }
+    };
+    assert_eq!(
+        strong_of(&value),
+        2,
+        "Rc layout changed: the strong count must come first"
+    );
+    let b = a.clone();
+    assert_eq!(
+        strong_of(&value),
+        3,
+        "Rc layout changed: the strong count must come first"
+    );
+    drop(b);
+    assert_eq!(
+        strong_of(&value),
+        2,
+        "Rc layout changed: the strong count must come first"
+    );
+}
+
 /// Size of a value in bytes, as compiled code lays out its registers.
 pub const VALUE_SIZE: usize = 24;
 

@@ -49,13 +49,9 @@ struct Runtime {
     enter: CFuncId,
     leave: CFuncId,
     act_ptrs: CFuncId,
-    clone_to: CFuncId,
-    clone_ptr: CFuncId,
     drop_value: CFuncId,
     exec: CFuncId,
     term: CFuncId,
-    mov: CFuncId,
-    drop_reg: CFuncId,
     block_param: CFuncId,
     frame_get: CFuncId,
     frame_set: CFuncId,
@@ -74,13 +70,9 @@ struct Helpers {
     enter: FuncRef,
     leave: FuncRef,
     act_ptrs: FuncRef,
-    clone_to: FuncRef,
-    clone_ptr: FuncRef,
     drop_value: FuncRef,
     exec: FuncRef,
     term: FuncRef,
-    mov: FuncRef,
-    drop_reg: FuncRef,
     block_param: FuncRef,
     frame_get: FuncRef,
     frame_set: FuncRef,
@@ -140,8 +132,6 @@ pub fn compile(module: &Module) -> Result<Vec<u8>, String> {
             "qz_term",
             &sig(&[i64_, i64_, i32_, i32_, i64_], Some(i32_)),
         )?,
-        mov: import(&mut obj, "qz_move", &sig(&[i64_, i32_, i32_], None))?,
-        drop_reg: import(&mut obj, "qz_drop_reg", &sig(&[i64_, i32_], None))?,
         block_param: import(&mut obj, "qz_block_param", &sig(&[i64_, i64_, i32_], None))?,
         frame_get: import(
             &mut obj,
@@ -179,8 +169,6 @@ pub fn compile(module: &Module) -> Result<Vec<u8>, String> {
             &sig(&[i64_, i64_, i32_, i64_, i64_, i32_, i32_], Some(i32_)),
         )?,
         act_ptrs: import(&mut obj, "qz_act_ptrs", &sig(&[i64_, i64_], None))?,
-        clone_to: import(&mut obj, "qz_clone_to", &sig(&[i64_, i32_, i64_], None))?,
-        clone_ptr: import(&mut obj, "qz_clone_ptr", &sig(&[i64_, i64_], None))?,
         drop_value: import(&mut obj, "qz_drop_value", &sig(&[i64_], None))?,
         call_static: import(
             &mut obj,
@@ -247,18 +235,14 @@ impl Compiler {
         ctx.func.signature = self.fn_sig.clone();
         let mut fbc = FunctionBuilderContext::new();
         let mut b = FunctionBuilder::new(&mut ctx.func, &mut fbc);
-        let drop_reg_fn = self.module.declare_func_in_func(self.rt.drop_reg, b.func);
+        let drop_value_fn = self.module.declare_func_in_func(self.rt.drop_value, b.func);
         let h = Helpers {
             enter: self.module.declare_func_in_func(self.rt.enter, b.func),
             leave: self.module.declare_func_in_func(self.rt.leave, b.func),
             act_ptrs: self.module.declare_func_in_func(self.rt.act_ptrs, b.func),
-            clone_to: self.module.declare_func_in_func(self.rt.clone_to, b.func),
-            clone_ptr: self.module.declare_func_in_func(self.rt.clone_ptr, b.func),
             drop_value: self.module.declare_func_in_func(self.rt.drop_value, b.func),
             exec: self.module.declare_func_in_func(self.rt.exec, b.func),
             term: self.module.declare_func_in_func(self.rt.term, b.func),
-            mov: self.module.declare_func_in_func(self.rt.mov, b.func),
-            drop_reg: self.module.declare_func_in_func(self.rt.drop_reg, b.func),
             block_param: self
                 .module
                 .declare_func_in_func(self.rt.block_param, b.func),
@@ -479,20 +463,8 @@ impl Compiler {
             if !heap[i as usize] {
                 continue;
             }
-            let tag = b
-                .ins()
-                .load(types::I64, MemFlags::trusted(), regs, i as i32 * VALUE_SIZE);
-            let needs = b
-                .ins()
-                .icmp_imm(IntCC::UnsignedGreaterThanOrEqual, tag, NEEDS_DROP_FROM);
-            let drop_blk = b.create_block();
-            let next = b.create_block();
-            b.ins().brif(needs, drop_blk, &[], next, &[]);
-            b.switch_to_block(drop_blk);
-            let idx = b.ins().iconst(types::I32, i64::from(i));
-            b.ins().call(drop_reg_fn, &[regs, idx]);
-            b.ins().jump(next, &[]);
-            b.switch_to_block(next);
+            let p = b.ins().iadd_imm(regs, i64::from(i) * i64::from(VALUE_SIZE));
+            emit_release_ptr(&mut b, drop_value_fn, p);
         }
         b.ins().return_(&[status]);
         b.seal_all_blocks();
@@ -593,6 +565,67 @@ fn direct_target(inst: &Inst, methods: &[RtMethod]) -> Option<FuncId> {
         return None;
     }
     m.func
+}
+
+/// Bump the reference count of the heap value at `p` (whose tag is known
+/// to be a heap tag): the payload's first word points at the allocation,
+/// whose first word is the strong count (checked at start-up).
+fn rc_increment(b: &mut FunctionBuilder, p: CValue) {
+    let rc = b.ins().load(types::I64, MemFlags::trusted(), p, 8);
+    let strong = b.ins().load(types::I64, MemFlags::trusted(), rc, 0);
+    let bumped = b.ins().iadd_imm(strong, 1);
+    b.ins().store(MemFlags::trusted(), bumped, rc, 0);
+}
+
+/// Release the value at `p` and leave nil there: nothing for values
+/// without a reference count, a decrement when other references remain,
+/// the runtime's destructor for the last one.
+fn emit_release_ptr(b: &mut FunctionBuilder, drop_value: FuncRef, p: CValue) {
+    let tag = b.ins().load(types::I64, MemFlags::trusted(), p, 0);
+    let needs = b
+        .ins()
+        .icmp_imm(IntCC::UnsignedGreaterThanOrEqual, tag, NEEDS_DROP_FROM);
+    let heap = b.create_block();
+    let shared = b.create_block();
+    let last = b.create_block();
+    let cont = b.create_block();
+    b.ins().brif(needs, heap, &[], cont, &[]);
+    b.switch_to_block(heap);
+    let rc = b.ins().load(types::I64, MemFlags::trusted(), p, 8);
+    let strong = b.ins().load(types::I64, MemFlags::trusted(), rc, 0);
+    let is_last = b.ins().icmp_imm(IntCC::Equal, strong, 1);
+    b.ins().brif(is_last, last, &[], shared, &[]);
+    b.switch_to_block(shared);
+    let lowered = b.ins().iadd_imm(strong, -1);
+    b.ins().store(MemFlags::trusted(), lowered, rc, 0);
+    let zero = b.ins().iconst(types::I64, 0);
+    b.ins().store(MemFlags::trusted(), zero, p, 0);
+    b.ins().jump(cont, &[]);
+    b.switch_to_block(last);
+    b.ins().call(drop_value, &[p]);
+    b.ins().jump(cont, &[]);
+    b.switch_to_block(cont);
+}
+
+/// `*dst = *src` where `dst` holds nil: a three-word copy, plus a
+/// reference count bump for heap values.
+fn emit_clone_ptr(b: &mut FunctionBuilder, dst: CValue, src: CValue) {
+    let tag = b.ins().load(types::I64, MemFlags::trusted(), src, 0);
+    let w1 = b.ins().load(types::I64, MemFlags::trusted(), src, 8);
+    let w2 = b.ins().load(types::I64, MemFlags::trusted(), src, 16);
+    b.ins().store(MemFlags::trusted(), tag, dst, 0);
+    b.ins().store(MemFlags::trusted(), w1, dst, 8);
+    b.ins().store(MemFlags::trusted(), w2, dst, 16);
+    let needs = b
+        .ins()
+        .icmp_imm(IntCC::UnsignedGreaterThanOrEqual, tag, NEEDS_DROP_FROM);
+    let heap = b.create_block();
+    let cont = b.create_block();
+    b.ins().brif(needs, heap, &[], cont, &[]);
+    b.switch_to_block(heap);
+    rc_increment(b, src);
+    b.ins().jump(cont, &[]);
+    b.switch_to_block(cont);
 }
 
 /// A call compiled to `qz_call_static`.
@@ -752,100 +785,37 @@ impl Gen<'_, '_> {
     /// Make sure `dst` holds no reference-counted value before an inline
     /// store overwrites it.
     fn release(&mut self, dst: Reg) {
-        let tag = self.tag(dst);
-        let needs = self
+        let p = self
             .b
             .ins()
-            .icmp_imm(IntCC::UnsignedGreaterThanOrEqual, tag, NEEDS_DROP_FROM);
-        let drop_blk = self.b.create_block();
-        let cont = self.b.create_block();
-        self.b.ins().brif(needs, drop_blk, &[], cont, &[]);
-        self.b.switch_to_block(drop_blk);
-        let d = self.b.ins().iconst(types::I32, i64::from(dst));
-        self.b.ins().call(self.h.drop_reg, &[self.regs, d]);
-        self.b.ins().jump(cont, &[]);
-        self.b.switch_to_block(cont);
+            .iadd_imm(self.regs, i64::from(Self::reg_off(dst)));
+        emit_release_ptr(self.b, self.h.drop_value, p);
     }
 
     /// `regs[dst] = *src`: inline for values without reference counts,
     /// through the runtime for the others.
     fn clone_from(&mut self, dst: Reg, src: CValue) {
-        let tag = self.b.ins().load(types::I64, MemFlags::trusted(), src, 0);
-        let needs = self
+        self.release(dst);
+        let d = self
             .b
             .ins()
-            .icmp_imm(IntCC::UnsignedGreaterThanOrEqual, tag, NEEDS_DROP_FROM);
-        let slow = self.b.create_block();
-        let fast = self.b.create_block();
-        let cont = self.b.create_block();
-        self.b.ins().brif(needs, slow, &[], fast, &[]);
-        self.b.switch_to_block(fast);
-        self.release(dst);
-        let w1 = self.b.ins().load(types::I64, MemFlags::trusted(), src, 8);
-        let w2 = self.b.ins().load(types::I64, MemFlags::trusted(), src, 16);
-        self.b
-            .ins()
-            .store(MemFlags::trusted(), tag, self.regs, Self::reg_off(dst));
-        self.store_payload(dst, w1);
-        self.b
-            .ins()
-            .store(MemFlags::trusted(), w2, self.regs, Self::reg_off(dst) + 16);
-        self.b.ins().jump(cont, &[]);
-        self.b.switch_to_block(slow);
-        let d = self.i32(dst);
-        self.b.ins().call(self.h.clone_to, &[self.regs, d, src]);
-        self.b.ins().jump(cont, &[]);
-        self.b.switch_to_block(cont);
+            .iadd_imm(self.regs, i64::from(Self::reg_off(dst)));
+        emit_clone_ptr(self.b, d, src);
     }
 
     /// `*dst = regs[src]` where `dst` holds nil: inline for values without
     /// reference counts, through the runtime for the others.
     fn clone_reg_to_ptr(&mut self, dst: CValue, src: Reg) {
-        let tag = self.tag(src);
-        let needs = self
-            .b
-            .ins()
-            .icmp_imm(IntCC::UnsignedGreaterThanOrEqual, tag, NEEDS_DROP_FROM);
-        let slow = self.b.create_block();
-        let fast = self.b.create_block();
-        let cont = self.b.create_block();
-        self.b.ins().brif(needs, slow, &[], fast, &[]);
-        self.b.switch_to_block(fast);
-        let w1 = self.payload(src);
-        let w2 = self.b.ins().load(
-            types::I64,
-            MemFlags::trusted(),
-            self.regs,
-            Self::reg_off(src) + 16,
-        );
-        self.b.ins().store(MemFlags::trusted(), tag, dst, 0);
-        self.b.ins().store(MemFlags::trusted(), w1, dst, 8);
-        self.b.ins().store(MemFlags::trusted(), w2, dst, 16);
-        self.b.ins().jump(cont, &[]);
-        self.b.switch_to_block(slow);
         let src_ptr = self
             .b
             .ins()
             .iadd_imm(self.regs, i64::from(Self::reg_off(src)));
-        self.b.ins().call(self.h.clone_ptr, &[dst, src_ptr]);
-        self.b.ins().jump(cont, &[]);
-        self.b.switch_to_block(cont);
+        emit_clone_ptr(self.b, dst, src_ptr);
     }
 
     /// Release the value at `p` (leaving nil) when it is reference counted.
     fn release_ptr(&mut self, p: CValue) {
-        let tag = self.b.ins().load(types::I64, MemFlags::trusted(), p, 0);
-        let needs = self
-            .b
-            .ins()
-            .icmp_imm(IntCC::UnsignedGreaterThanOrEqual, tag, NEEDS_DROP_FROM);
-        let drop_blk = self.b.create_block();
-        let cont = self.b.create_block();
-        self.b.ins().brif(needs, drop_blk, &[], cont, &[]);
-        self.b.switch_to_block(drop_blk);
-        self.b.ins().call(self.h.drop_value, &[p]);
-        self.b.ins().jump(cont, &[]);
-        self.b.switch_to_block(cont);
+        emit_release_ptr(self.b, self.h.drop_value, p);
     }
 
     fn i32(&mut self, v: u32) -> CValue {
@@ -941,44 +911,11 @@ impl Gen<'_, '_> {
                 if dst == src {
                     return;
                 }
-                // Values without reference counts are copied inline.
-                let ts = self.tag(*src);
-                let td = self.tag(*dst);
-                let a = self
+                let s = self
                     .b
                     .ins()
-                    .icmp_imm(IntCC::UnsignedLessThan, ts, NEEDS_DROP_FROM);
-                let c = self
-                    .b
-                    .ins()
-                    .icmp_imm(IntCC::UnsignedLessThan, td, NEEDS_DROP_FROM);
-                let fast = self.b.ins().band(a, c);
-                let fast_blk = self.b.create_block();
-                let slow_blk = self.b.create_block();
-                let cont = self.b.create_block();
-                self.b.ins().brif(fast, fast_blk, &[], slow_blk, &[]);
-                self.b.switch_to_block(fast_blk);
-                let p = self.payload(*src);
-                let p2 = self.b.ins().load(
-                    types::I64,
-                    MemFlags::trusted(),
-                    self.regs,
-                    Self::reg_off(*src) + 16,
-                );
-                self.b
-                    .ins()
-                    .store(MemFlags::trusted(), ts, self.regs, Self::reg_off(*dst));
-                self.store_payload(*dst, p);
-                self.b
-                    .ins()
-                    .store(MemFlags::trusted(), p2, self.regs, Self::reg_off(*dst) + 16);
-                self.b.ins().jump(cont, &[]);
-                self.b.switch_to_block(slow_blk);
-                let d = self.b.ins().iconst(types::I32, i64::from(*dst));
-                let s = self.b.ins().iconst(types::I32, i64::from(*src));
-                self.b.ins().call(self.h.mov, &[self.regs, d, s]);
-                self.b.ins().jump(cont, &[]);
-                self.b.switch_to_block(cont);
+                    .iadd_imm(self.regs, i64::from(Self::reg_off(*src)));
+                self.clone_from(*dst, s);
             }
             Inst::LoadConst { dst, idx } => match &self.f.consts[*idx as usize] {
                 Constant::Nil => {

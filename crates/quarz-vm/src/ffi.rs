@@ -54,6 +54,7 @@ impl Interp {
     }
 
     /// Run a function's machine code, if it has any.
+    #[inline(always)]
     pub fn run_compiled(&self, fid: FuncId, act: &Activation) -> Option<Result<Value, Flow>> {
         let f = (*self.compiled.borrow().get(fid as usize)?)?;
         let mut out = Value::Nil;
@@ -223,14 +224,14 @@ pub unsafe extern "C" fn qz_enter(
         return rt.park_flow(rt.raise(rt.exc.system_stack, "stack level too deep"));
     }
     let recv = if recv == u32::MAX {
-        caller.self_val.clone()
+        caller.self_val.fast_clone()
     } else {
-        (*regs.add(recv as usize)).clone()
+        (*regs.add(recv as usize)).fast_clone()
     };
     let block = if block == u32::MAX {
         None
     } else {
-        Some((*regs.add(block as usize)).clone())
+        Some((*regs.add(block as usize)).fast_clone())
     };
     let frame = if frame_size > 0 {
         Some(crate::value::Frame::new(frame_size as usize, None))
@@ -295,7 +296,21 @@ pub unsafe extern "C" fn qz_leave(
         Some((*regs.add(block as usize)).clone())
     };
     let r = rt.catch_break(&blk, r);
-    std::ptr::drop_in_place(buf);
+    // Take the activation apart, skipping destructors values do not need.
+    let act = std::ptr::read(buf);
+    let Activation {
+        self_val,
+        frame,
+        block: act_block,
+        args,
+        ..
+    } = act;
+    self_val.fast_drop();
+    if let Some(b) = act_block {
+        b.fast_drop();
+    }
+    drop(frame);
+    drop(args);
     match r {
         Ok(v) => {
             *regs.add(dst as usize) = v;
@@ -765,6 +780,7 @@ pub unsafe extern "C" fn qz_main(
         functions,
         units,
     } = module;
+    crate::value::check_rc_layout();
     let interp: Rc<Interp> = Interp::with_state(world, 0, functions, units, args, state);
     {
         let mut compiled = interp.compiled.borrow_mut();
