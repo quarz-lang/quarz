@@ -401,6 +401,10 @@ fn rewrite(inst: &Inst, base: Reg, consts: &[u32]) -> Inst {
                     depth: *depth,
                     slot: *slot,
                 },
+                VarLoc::Field { obj, index } => VarLoc::Field {
+                    obj: r(obj),
+                    index: *index,
+                },
             },
             args: rs(args),
             kw: kw(kws),

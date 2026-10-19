@@ -281,6 +281,16 @@ impl Drop for Hot {
     }
 }
 
+/// Method ids of the owned natives `Interp::owned_fast` handles.
+pub struct OwnedIds {
+    pub array_push: Option<MethodId>,
+    pub array_set: Option<MethodId>,
+    pub hash_put: Option<MethodId>,
+    pub hash_delete: Option<MethodId>,
+    pub set_add: Option<MethodId>,
+    pub set_delete: Option<MethodId>,
+}
+
 #[repr(C)]
 pub struct Interp {
     pub hot: Hot,
@@ -299,8 +309,8 @@ pub struct Interp {
     variant_singletons: Rc<RefCell<HashMap<ClassId, Value>>>,
     pub natives: Vec<Option<NativeFn>>,
     pub natives_owned: Vec<Option<OwnedNativeFn>>,
-    /// `Array#push`, whose owned call (`xs = xs.push(v)`) has a fast path.
-    pub array_push: Option<MethodId>,
+    /// The owned natives with an in-place fast path (`xs = xs.push(v)`).
+    pub owned: OwnedIds,
     field_indices: Vec<FxHashMap<String, usize>>,
     pub sched: Rc<RefCell<Scheduler>>,
     dispatch_cache: RefCell<FxHashMap<(ClassId, MethodId), MethodId>>,
@@ -425,11 +435,21 @@ impl Interp {
                     .and_then(|k| owned_registry.get(k).copied())
             })
             .collect();
-        let array_push = world
-            .methods
-            .iter()
-            .position(|m| m.native_key.as_deref() == Some("Array#push"))
-            .map(|i| i as MethodId);
+        let owned_id = |key: &str| -> Option<MethodId> {
+            world
+                .methods
+                .iter()
+                .position(|m| m.native_key.as_deref() == Some(key))
+                .map(|i| i as MethodId)
+        };
+        let owned = OwnedIds {
+            array_push: owned_id("Array#push"),
+            array_set: owned_id("Array#set"),
+            hash_put: owned_id("Hash#put"),
+            hash_delete: owned_id("Hash#delete"),
+            set_add: owned_id("Set#add"),
+            set_delete: owned_id("Set#delete"),
+        };
         let class_by_name = |name: &str| -> ClassId {
             world
                 .class_by_name(name)
@@ -503,7 +523,7 @@ impl Interp {
             variant_singletons: state.variant_singletons,
             natives,
             natives_owned,
-            array_push,
+            owned,
             field_indices,
             sched: state.sched,
             dispatch_cache: RefCell::new(FxHashMap::default()),
@@ -1359,17 +1379,42 @@ impl Interp {
 
     /// Invoke with an owned receiver (`x = x.push(v)`): natives that update
     /// in place get the sole reference. On error the receiver is returned.
-    /// `xs = xs.push(v)` on a register: push in place when the array is
-    /// unshared, without the generic owned-call machinery. Returns
-    /// whether it applied.
+    /// `x = x.meth(args)` for the common collection updates: apply the
+    /// update to the value in `slot` (in place when it is unshared)
+    /// without the generic owned-call machinery. Returns whether it
+    /// applied; when it did not, nothing was changed.
     #[inline]
-    pub fn owned_array_push(&self, mid: MethodId, slot: &mut Value, arg: &Value) -> bool {
-        if Some(mid) != self.array_push {
-            return false;
-        }
-        match slot {
-            Value::Array(a) => {
-                Rc::make_mut(a).push(arg.clone());
+    pub fn owned_fast(&self, mid: MethodId, slot: &mut Value, args: &[Value]) -> bool {
+        let o = &self.owned;
+        let m = Some(mid);
+        match (slot, args) {
+            (Value::Array(a), [v]) if m == o.array_push => {
+                Rc::make_mut(a).push(v.clone());
+                true
+            }
+            (Value::Array(a), [Value::Int(i), v]) if m == o.array_set => {
+                let n = a.len() as i64;
+                let i = if *i < 0 { n + *i } else { *i };
+                if i < 0 || i >= n {
+                    return false;
+                }
+                Rc::make_mut(a)[i as usize] = v.clone();
+                true
+            }
+            (Value::Hash(h), [k, v]) if m == o.hash_put => {
+                Rc::make_mut(h).insert(k.clone(), v.clone());
+                true
+            }
+            (Value::Hash(h), [k]) if m == o.hash_delete => {
+                Rc::make_mut(h).shift_remove(k);
+                true
+            }
+            (Value::Set(s), [v]) if m == o.set_add => {
+                Rc::make_mut(s).insert(v.clone());
+                true
+            }
+            (Value::Set(s), [v]) if m == o.set_delete => {
+                Rc::make_mut(s).shift_remove(v);
                 true
             }
             _ => false,

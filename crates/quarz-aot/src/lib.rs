@@ -2123,6 +2123,7 @@ impl Gen<'_, '_> {
                 let (kind, a, bb) = match recv {
                     VarLoc::Reg(r) => (0, *r, 0),
                     VarLoc::Frame { depth, slot } => (1, *depth, *slot),
+                    VarLoc::Field { obj, index } => (2, *obj, *index),
                 };
                 let mid_v = self.i32(*method);
                 let kind_v = self.i32(kind);

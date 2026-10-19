@@ -154,7 +154,15 @@ pub enum HandlerKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum VarLoc {
     Reg(Reg),
-    Frame { depth: u32, slot: u32 },
+    Frame {
+        depth: u32,
+        slot: u32,
+    },
+    /// A field of the object in `obj` (`@items = @items.push(x)`).
+    Field {
+        obj: Reg,
+        index: u32,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -634,7 +642,7 @@ impl Inst {
             }
             Inst::OwnedCall { dst, recv, .. } => match recv {
                 VarLoc::Reg(r) => vec![*dst, *r],
-                VarLoc::Frame { .. } => vec![*dst],
+                _ => vec![*dst],
             },
             Inst::FrameSet { .. }
             | Inst::FieldSet { .. }
@@ -695,6 +703,7 @@ impl Inst {
             Inst::OwnedCall { recv, args, kw, .. } => {
                 let mut v: Vec<Reg> = match recv {
                     VarLoc::Reg(r) => vec![*r],
+                    VarLoc::Field { obj, .. } => vec![*obj],
                     VarLoc::Frame { .. } => vec![],
                 };
                 v.extend(args.iter().copied());

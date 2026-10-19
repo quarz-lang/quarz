@@ -675,15 +675,50 @@ impl Interp {
                 args,
                 kw,
             } => {
-                if let (VarLoc::Reg(r), [arg], true) = (recv, args.as_slice(), kw.is_empty()) {
-                    let arg = regs[*arg as usize].clone();
-                    if self.owned_array_push(*method, &mut regs[*r as usize], &arg) {
-                        regs[*dst as usize] = regs[*r as usize].clone();
-                        return Ok(());
+                let pos = self.call_args(regs, args, false);
+                if kw.is_empty() {
+                    match recv {
+                        VarLoc::Reg(r) => {
+                            if self.owned_fast(*method, &mut regs[*r as usize], &pos) {
+                                regs[*dst as usize] = regs[*r as usize].clone();
+                                return Ok(());
+                            }
+                        }
+                        VarLoc::Field { obj, index } => {
+                            if let Value::Object(o) = &regs[*obj as usize] {
+                                let mut fields = o.fields.borrow_mut();
+                                if let Some(slot) = fields.get_mut(*index as usize) {
+                                    if self.owned_fast(*method, slot, &pos) {
+                                        let v = slot.clone();
+                                        drop(fields);
+                                        regs[*dst as usize] = v;
+                                        return Ok(());
+                                    }
+                                }
+                            }
+                        }
+                        VarLoc::Frame { .. } => {}
                     }
                 }
-                let pos = self.call_args(regs, args, false);
                 let kw = self.call_kwargs(f, pool, regs, kw, None);
+                let take_field = |obj: Reg, index: u32| -> Value {
+                    match &regs[obj as usize] {
+                        Value::Object(o) => o
+                            .fields
+                            .borrow_mut()
+                            .get_mut(index as usize)
+                            .map(|s| std::mem::replace(s, Value::Nil))
+                            .unwrap_or(Value::Nil),
+                        _ => Value::Nil,
+                    }
+                };
+                let put_field = |regs: &[Value], obj: Reg, index: u32, v: Value| {
+                    if let Value::Object(o) = &regs[obj as usize] {
+                        if let Some(s) = o.fields.borrow_mut().get_mut(index as usize) {
+                            *s = v;
+                        }
+                    }
+                };
                 let old = match recv {
                     VarLoc::Reg(r) => std::mem::replace(&mut regs[*r as usize], Value::Nil),
                     VarLoc::Frame { depth, slot } => {
@@ -692,6 +727,7 @@ impl Interp {
                         fr.set(*depth, *slot, Value::Nil);
                         old
                     }
+                    VarLoc::Field { obj, index } => take_field(*obj, *index),
                 };
                 match self.invoke_owned(*method, old, pos, kw) {
                     Ok(v) => {
@@ -699,6 +735,9 @@ impl Interp {
                             VarLoc::Reg(r) => regs[*r as usize] = v.clone(),
                             VarLoc::Frame { depth, slot } => {
                                 self.frame(act).set(*depth, *slot, v.clone())
+                            }
+                            VarLoc::Field { obj, index } => {
+                                put_field(regs, *obj, *index, v.clone())
                             }
                         }
                         regs[*dst as usize] = v;
@@ -709,6 +748,7 @@ impl Interp {
                             VarLoc::Frame { depth, slot } => {
                                 self.frame(act).set(*depth, *slot, old)
                             }
+                            VarLoc::Field { obj, index } => put_field(regs, *obj, *index, old),
                         }
                         return Err(e);
                     }

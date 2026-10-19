@@ -593,52 +593,81 @@ pub unsafe extern "C" fn qz_owned_call(
 ) -> u32 {
     let rt = &*rt;
     let act = &*act;
-    if loc_kind == 0 && nargs == 1 {
-        let arg = (*regs.add(*arg_regs as usize)).clone();
-        if rt.owned_array_push(mid, &mut *regs.add(a as usize), &arg) {
-            *regs.add(dst as usize) = (*regs.add(a as usize)).clone();
-            return STATUS_OK;
-        }
-    }
     let mut args: crate::interp::ArgVec = crate::interp::ArgVec::with_capacity(nargs as usize);
     for i in 0..nargs as usize {
         let r = *arg_regs.add(i);
         args.push((*regs.add(r as usize)).clone());
     }
-    let old = if loc_kind == 0 {
-        std::mem::replace(&mut *regs.add(a as usize), Value::Nil)
-    } else {
-        let frame = act
-            .frame
+    // The common collection updates, in place.
+    match loc_kind {
+        0 => {
+            if rt.owned_fast(mid, &mut *regs.add(a as usize), &args) {
+                *regs.add(dst as usize) = (*regs.add(a as usize)).clone();
+                return STATUS_OK;
+            }
+        }
+        2 => {
+            if let Value::Object(o) = &*regs.add(a as usize) {
+                let mut fields = o.fields.borrow_mut();
+                if let Some(slot) = fields.get_mut(b as usize) {
+                    if rt.owned_fast(mid, slot, &args) {
+                        let v = slot.clone();
+                        drop(fields);
+                        *regs.add(dst as usize) = v;
+                        return STATUS_OK;
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    let frame = || {
+        act.frame
             .as_ref()
-            .expect("function without a frame uses one");
-        let old = frame.get(a, b);
-        frame.set(a, b, Value::Nil);
-        old
+            .expect("function without a frame uses one")
+    };
+    let take_field = |obj: u32, index: u32| -> Value {
+        match &*regs.add(obj as usize) {
+            Value::Object(o) => o
+                .fields
+                .borrow_mut()
+                .get_mut(index as usize)
+                .map(|s| std::mem::replace(s, Value::Nil))
+                .unwrap_or(Value::Nil),
+            _ => Value::Nil,
+        }
+    };
+    let put_field = |obj: u32, index: u32, v: Value| {
+        if let Value::Object(o) = &*regs.add(obj as usize) {
+            if let Some(s) = o.fields.borrow_mut().get_mut(index as usize) {
+                *s = v;
+            }
+        }
+    };
+    let old = match loc_kind {
+        0 => std::mem::replace(&mut *regs.add(a as usize), Value::Nil),
+        1 => {
+            let old = frame().get(a, b);
+            frame().set(a, b, Value::Nil);
+            old
+        }
+        _ => take_field(a, b),
     };
     match rt.invoke_owned(mid, old, args, Vec::new()) {
         Ok(v) => {
-            if loc_kind == 0 {
-                *regs.add(a as usize) = v.clone();
-            } else {
-                let frame = act
-                    .frame
-                    .as_ref()
-                    .expect("function without a frame uses one");
-                frame.set(a, b, v.clone());
+            match loc_kind {
+                0 => *regs.add(a as usize) = v.clone(),
+                1 => frame().set(a, b, v.clone()),
+                _ => put_field(a, b, v.clone()),
             }
             *regs.add(dst as usize) = v;
             STATUS_OK
         }
         Err((flow, old)) => {
-            if loc_kind == 0 {
-                *regs.add(a as usize) = old;
-            } else {
-                let frame = act
-                    .frame
-                    .as_ref()
-                    .expect("function without a frame uses one");
-                frame.set(a, b, old);
+            match loc_kind {
+                0 => *regs.add(a as usize) = old,
+                1 => frame().set(a, b, old),
+                _ => put_field(a, b, old),
             }
             rt.park_flow(flow)
         }

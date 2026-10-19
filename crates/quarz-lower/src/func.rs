@@ -626,6 +626,7 @@ impl<'a> FnBuilder<'a> {
         match self.resolve(r) {
             VarLoc::Reg(src) => self.emit(Inst::Move { dst, src }),
             VarLoc::Frame { depth, slot } => self.emit(Inst::FrameGet { dst, depth, slot }),
+            VarLoc::Field { .. } => unreachable!("a variable is never a field"),
         }
         dst
     }
@@ -634,6 +635,7 @@ impl<'a> FnBuilder<'a> {
         match self.resolve(r) {
             VarLoc::Reg(dst) => self.emit(Inst::Move { dst, src }),
             VarLoc::Frame { depth, slot } => self.emit(Inst::FrameSet { depth, slot, src }),
+            VarLoc::Field { .. } => unreachable!("a variable is never a field"),
         }
     }
 
@@ -1359,6 +1361,12 @@ impl<'a> FnBuilder<'a> {
         }
     }
 
+    /// Whether the call `id` resolves to a native method, which may
+    /// update its receiver in place when nothing else refers to it.
+    fn is_owned_native(&self, id: &u32) -> bool {
+        matches!(self.out.calls.get(id), Some(CallTarget::Method { method }) if self.world.method(*method).is_native)
+    }
+
     /// The `Int` operator method `op` (for a typed `BinOp`).
     fn int_op(&self, op: FastOp) -> Option<MethodId> {
         let name = match op {
@@ -1848,8 +1856,13 @@ impl<'a> FnBuilder<'a> {
                     {
                         let same = self.var_ref(*rspan) == Some(r);
                         if same && call.block.is_none() && !call.safe_nav {
-                            if let Some(CallTarget::Method { method }) =
-                                self.out.calls.get(&value.id)
+                            // Only natives update in place; a user method is
+                            // better off called directly (or inlined).
+                            if let Some(CallTarget::Method { method }) = self
+                                .out
+                                .calls
+                                .get(&value.id)
+                                .filter(|_| self.is_owned_native(&value.id))
                             {
                                 let method = *method;
                                 let a = self.args(&call.args);
@@ -1892,8 +1905,69 @@ impl<'a> FnBuilder<'a> {
                 v
             }
             LValue::IVar(name) => {
-                let v = self.expr(value);
                 let index = self.ivar_index(e.id, name);
+                // `@x = @x.meth(args)`: update the field's value in place
+                // when nothing else refers to it.
+                if let ExprKind::Call(call) = &value.kind {
+                    if let Some(Expr {
+                        kind: ExprKind::IVar(rname),
+                        ..
+                    }) = &call.recv
+                    {
+                        if rname == name && call.block.is_none() && !call.safe_nav {
+                            if let Some(CallTarget::Method { method }) = self
+                                .out
+                                .calls
+                                .get(&value.id)
+                                .filter(|_| self.is_owned_native(&value.id))
+                            {
+                                let method = *method;
+                                let a = self.args(&call.args);
+                                if a.block.is_none() && !a.splat && a.kw_splat.is_none() {
+                                    let obj = self.self_reg();
+                                    let dst = self.reg();
+                                    self.emit(Inst::OwnedCall {
+                                        dst,
+                                        method,
+                                        recv: VarLoc::Field { obj, index },
+                                        args: a.pos,
+                                        kw: a.kw,
+                                    });
+                                    return dst;
+                                }
+                                let obj = self.self_reg();
+                                let recv = self.reg();
+                                let class = self.class_id.unwrap_or(u32::MAX);
+                                self.emit(Inst::FieldGet {
+                                    dst: recv,
+                                    obj,
+                                    index,
+                                    class,
+                                });
+                                let dst = self.reg();
+                                self.emit(Inst::Call {
+                                    dst,
+                                    kind: CallKind::Method(method),
+                                    recv: Some(recv),
+                                    args: a.pos,
+                                    splat: a.splat,
+                                    kw: a.kw,
+                                    kw_splat: a.kw_splat,
+                                    block: a.block,
+                                });
+                                let obj = self.self_reg();
+                                self.emit(Inst::FieldSet {
+                                    obj,
+                                    index,
+                                    src: dst,
+                                    class,
+                                });
+                                return dst;
+                            }
+                        }
+                    }
+                }
+                let v = self.expr(value);
                 let obj = self.self_reg();
                 let class = self.class_id.unwrap_or(u32::MAX);
                 self.emit(Inst::FieldSet {

@@ -1,0 +1,79 @@
+# `x = x.meth(args)` updates a collection in place when nothing else
+# refers to it, for locals, captured variables and fields of self; a
+# shared collection is copied first, and a failing update leaves the
+# variable as it was.
+class Bag
+  var @items: Array[Int] = []
+  var @index: Hash[String, Int] = {}
+  var @seen: Set[Int] = Set.new
+  def add(x: Int) -> Nil
+    @items = @items.push(x)
+    @index = @index.put(x.to_s, @items.size)
+    @seen = @seen.add(x)
+  end
+  def forget(x: Int) -> Nil
+    @index = @index.delete(x.to_s)
+    @seen = @seen.delete(x)
+  end
+  def fix(i: Int, v: Int) -> Nil
+    @items = @items.set(i, v)
+  end
+  def items -> Array[Int] = @items
+  def index -> Hash[String, Int] = @index
+  def seen -> Set[Int] = @seen
+end
+b = Bag.new
+5.times { |i| b.add(i * i) }
+snapshot = b.items
+b.add(99)
+b.forget(4)
+b.fix(0, -1)
+b.fix(-1, -2)
+p b.items, snapshot, b.index, b.seen.to_a.sort
+begin
+  b.fix(10, 0)
+rescue IndexError => e
+  puts "index: #{e.message}"
+end
+p b.items
+
+xs: Array[Int] = []
+ys = xs
+3.times { |i| xs = xs.push(i) }
+p xs, ys
+h: Hash[Int, Int] = {}
+alias_h = h
+10.times { |i| h = h.put(i, i * 2) }
+h = h.delete(3)
+p h.size, h[4], h[3]?, alias_h.size
+s: Set[Int] = Set.new
+s = s.add(1)
+s = s.add(2)
+t = s
+s = s.add(3)
+s = s.delete(1)
+p s.to_a.sort, t.to_a.sort
+arr = [1, 2, 3]
+arr = arr.set(1, 20)
+arr = arr.set(-1, 30)
+p arr
+begin
+  arr = arr.set(5, 0)
+rescue IndexError => e
+  puts "index: #{e.message}"
+end
+p arr
+
+# captured variables (a block keeps them in a frame)
+acc: Array[Int] = []
+adder = ->(x: Int) { acc = acc.push(x) }
+adder.(1)
+adder.(2)
+p acc
+
+# a counter of words, the common shape
+counts: Hash[String, Int] = {}
+"the cat and the hat and the bat".split(" ").each do |w|
+  counts = counts.put(w, (counts[w]? || 0) + 1)
+end
+p counts
