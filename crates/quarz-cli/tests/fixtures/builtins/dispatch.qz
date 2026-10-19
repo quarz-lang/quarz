@@ -1,0 +1,28 @@
+# Calls to methods some class overrides are resolved on the receiver's
+# class (compiled code calls the resolved body directly when it has the
+# declared shape, the runtime runs it otherwise).
+abstract class Animal
+  abstract def speak(times: Int) -> String
+  def greet(name: String = "you", &: (String) -> String) -> String = yield("#{name}: #{speak(1)}")
+end
+class Dog < Animal
+  def speak(times: Int) -> String = "woof" * times
+end
+class Cat < Animal
+  def speak(times: Int, loud: Bool = false) -> String = loud ? "MEOW" : "meow" * times
+  def greet(name: String = "cat", &: (String) -> String) -> String = yield("#{name} ignores you")
+end
+class Puppy < Dog
+  def speak(times: Int) -> String = "yip" * times
+  def fetch -> String = speak(2) + "!"
+end
+animals: Array[Animal] = [Dog.new, Cat.new, Puppy.new]
+animals.each { |a| p a.speak(2), a.greet { |s| s.upcase }, a.greet("bob") { |s| s } }
+p Puppy.new.fetch, Cat.new.speak(1, true)
+def shout(a: Animal) -> String = a.speak(3).upcase
+p animals.map { |a| shout(a) }
+begin
+  animals.each { |a| raise a.speak(1) }
+rescue RuntimeError => e
+  p e.message
+end

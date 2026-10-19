@@ -244,6 +244,100 @@ pub unsafe extern "C" fn qz_enter(
     STATUS_OK
 }
 
+/// The status `qz_enter_virtual` returns when it ran the whole call
+/// itself (the result is in `regs[dst]`, the argument area is empty).
+pub const STATUS_DONE: u32 = 2;
+
+/// Enter a call to `mid` resolved on the receiver's class: when the
+/// method the class runs has a compiled body taking the parameters the
+/// caller laid out (`nparams` positional ones, then the block when the
+/// declared method takes one), its activation is built in `buf` as by
+/// `qz_enter` and the body's address is written to `body`, for the
+/// caller to call and then `qz_leave`; otherwise the runtime runs the
+/// call (moving the arguments out of the area) and returns
+/// `STATUS_DONE`.
+///
+/// # Safety
+/// As for `qz_enter`; `body` points at a writable word.
+#[no_mangle]
+pub unsafe extern "C" fn qz_enter_virtual(
+    rt: *const Interp,
+    act: *const Activation,
+    buf: *mut Activation,
+    mid: u32,
+    regs: *mut Value,
+    recv: u32,
+    args: *mut Value,
+    nparams: u32,
+    block: u32,
+    provided: u64,
+    body: *mut usize,
+    dst: u32,
+) -> u32 {
+    let rt = &*rt;
+    let caller = &*act;
+    let recv_ref: &Value = if recv == u32::MAX {
+        &caller.self_val
+    } else {
+        &*regs.add(recv as usize)
+    };
+    let declared = &rt.world.methods[mid as usize];
+    let target = rt.resolve_dynamic(recv_ref, mid);
+    let m = &rt.world.methods[target as usize];
+    let total = nparams + u32::from(declared.has_block);
+    let same_shape = m.native_key.is_none()
+        && m.params.len() == declared.params.len()
+        && m.has_block == declared.has_block
+        && m.params
+            .iter()
+            .all(|p| p.kind == quarz_ir::RtParamKind::Positional);
+    if same_shape {
+        if let Some(fid) = m.func {
+            if let Some(ptr) = rt.compiled.borrow().get(fid as usize).copied().flatten() {
+                let (frame_size, file) = {
+                    let funcs = rt.funcs.borrow();
+                    let f = &funcs[fid as usize];
+                    (f.frame_size, f.file)
+                };
+                let status = qz_enter(
+                    rt, act, buf, target, fid, regs, recv, args, total, block, frame_size, file,
+                    provided,
+                );
+                if status == STATUS_OK {
+                    *body = ptr as usize;
+                }
+                return status;
+            }
+        }
+    }
+    // The general path: the arguments the caller laid out, taken out of
+    // the area.
+    let mut argv: crate::interp::ArgVec = crate::interp::ArgVec::new();
+    for k in 0..nparams as usize {
+        let v = std::mem::replace(&mut *args.add(k), Value::Nil);
+        if k >= 64 || provided & (1u64 << k) != 0 {
+            argv.push(v);
+        }
+    }
+    if declared.has_block {
+        *args.add(nparams as usize) = Value::Nil;
+    }
+    let blk = if block == u32::MAX {
+        None
+    } else {
+        Some((*regs.add(block as usize)).clone())
+    };
+    let recv_val = recv_ref.clone();
+    let r = rt.invoke(target, recv_val, argv, Vec::new(), blk.clone());
+    match rt.catch_break(&blk, r) {
+        Ok(v) => {
+            *regs.add(dst as usize) = v;
+            STATUS_DONE
+        }
+        Err(flow) => rt.park_flow(flow),
+    }
+}
+
 /// Push `act` on the call stack when the compiled code found it full.
 ///
 /// # Safety
@@ -513,6 +607,17 @@ pub unsafe extern "C" fn qz_call_static(
 ) -> u32 {
     let rt = &*rt;
     let act = &*act;
+    // A method some class overrides: the receiver's class decides.
+    let mid = if rt.world.methods[mid as usize].overridden {
+        let recv_ref: &Value = if recv == u32::MAX {
+            &act.self_val
+        } else {
+            &*regs.add(recv as usize)
+        };
+        rt.resolve_dynamic(recv_ref, mid)
+    } else {
+        mid
+    };
     // A native with a by-reference version: no copies, no argument list.
     if block == u32::MAX && nargs <= 3 {
         if let Some(fast) = rt.fast_natives[mid as usize] {

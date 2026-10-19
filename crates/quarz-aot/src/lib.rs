@@ -58,6 +58,7 @@ const STATUS_RAISE: i64 = 1;
 struct Runtime {
     resume: CFuncId,
     enter: CFuncId,
+    enter_virtual: CFuncId,
     leave: CFuncId,
     push_call: CFuncId,
     pop_call: CFuncId,
@@ -85,6 +86,7 @@ struct Runtime {
 struct Helpers {
     resume: FuncRef,
     enter: FuncRef,
+    enter_virtual: FuncRef,
     leave: FuncRef,
     push_call: FuncRef,
     pop_call: FuncRef,
@@ -189,6 +191,16 @@ pub fn compile(module: &Module) -> Result<Vec<u8>, String> {
             &mut obj,
             "qz_resume",
             &sig(&[i64_, i64_, i32_, i32_, i32_, i64_, i64_], Some(i32_)),
+        )?,
+        enter_virtual: import(
+            &mut obj,
+            "qz_enter_virtual",
+            &sig(
+                &[
+                    i64_, i64_, i64_, i32_, i64_, i32_, i64_, i32_, i32_, i64_, i64_, i32_,
+                ],
+                Some(i32_),
+            ),
         )?,
         enter: import(
             &mut obj,
@@ -295,6 +307,9 @@ impl Compiler {
         let h = Helpers {
             resume: self.module.declare_func_in_func(self.rt.resume, b.func),
             enter: self.module.declare_func_in_func(self.rt.enter, b.func),
+            enter_virtual: self
+                .module
+                .declare_func_in_func(self.rt.enter_virtual, b.func),
             leave: self.module.declare_func_in_func(self.rt.leave, b.func),
             push_call: self.module.declare_func_in_func(self.rt.push_call, b.func),
             pop_call: self.module.declare_func_in_func(self.rt.pop_call, b.func),
@@ -355,12 +370,15 @@ impl Compiler {
             .iter()
             .flat_map(|blk| blk.insts.iter())
             .filter_map(|inst| match inst {
+                // Direct and virtual calls lay their parameters out there.
                 Inst::Call {
                     kind: CallKind::Method(mid),
                     ..
                 } => {
-                    direct_target(inst, methods)?;
                     let m = &methods[*mid as usize];
+                    if m.native_key.is_some() {
+                        return None;
+                    }
                     Some(m.params.len() + usize::from(m.has_block))
                 }
                 Inst::Call {
@@ -446,6 +464,10 @@ impl Compiler {
             3,
         ));
         let out_buf = b.ins().stack_addr(types::I64, out_slot, 0);
+        let vbody_slot =
+            b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3));
+        let vbody = b.ins().stack_addr(types::I64, vbody_slot, 0);
+        let body_sig = b.import_signature(self.fn_sig.clone());
         let ptrs_slot =
             b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 32, 3));
         let ptrs = b.ins().stack_addr(types::I64, ptrs_slot, 0);
@@ -496,6 +518,8 @@ impl Compiler {
             scratch,
             act_buf,
             out_buf,
+            vbody,
+            body_sig,
             ptrs,
             args_buf,
             fid,
@@ -705,7 +729,7 @@ fn direct_target(inst: &Inst, methods: &[RtMethod]) -> Option<FuncId> {
         return None;
     };
     let m = methods.get(*mid as usize)?;
-    if m.native_key.is_some() {
+    if m.native_key.is_some() || (m.overridden && !m.singleton && !m.is_extension) {
         return None;
     }
     m.func
@@ -879,6 +903,10 @@ struct Gen<'a, 'b> {
     act_buf: CValue,
     /// Where a directly called body leaves its result.
     out_buf: CValue,
+    /// A word for the body address `qz_enter_virtual` returns.
+    vbody: CValue,
+    /// The signature of compiled bodies, for indirect calls.
+    body_sig: cranelift_codegen::ir::SigRef,
     /// `[args, self, nargs]` of this activation (see `qz_act_ptrs`).
     ptrs: CValue,
     /// The argument area of direct calls.
@@ -1650,11 +1678,14 @@ impl Gen<'_, '_> {
             return None;
         }
         let m = self.methods.get(*mid as usize)?;
+        // A method some class overrides (an abstract one always is) is
+        // resolved on the receiver by `qz_call_static` itself; the
+        // declared signature says what the call passes.
+        let virtual_ = m.overridden && !m.singleton && !m.is_extension;
         let fixed = m.synth == RtSynth::None
-            && !m.is_abstract
-            && (!m.overridden || m.singleton || m.is_extension)
+            && (!m.is_abstract || virtual_)
             && (m.native_key.is_some()
-                || (m.func.is_some()
+                || ((m.func.is_some() || virtual_)
                     && m.params.iter().all(|p| p.kind == RtParamKind::Positional)
                     && args.len() <= m.params.len()
                     && (block.is_none() || m.has_block)));
@@ -1668,6 +1699,161 @@ impl Gen<'_, '_> {
             block: *block,
             dst: *dst,
         })
+    }
+
+    /// A call to a method some class overrides: the parameters are laid
+    /// out as for a direct call, `qz_enter_virtual` resolves the method
+    /// on the receiver and builds the activation (or runs the call
+    /// itself when the target's shape differs), and the body is called
+    /// through the address it returns.
+    #[allow(clippy::too_many_arguments)]
+    fn virtual_call(
+        &mut self,
+        inst: &Inst,
+        mid: MethodId,
+        recv: Option<Reg>,
+        args: &[Reg],
+        blk: Option<Reg>,
+        dst: Reg,
+        block: u32,
+        index: u32,
+        unwind: CBlock,
+    ) {
+        let (nparams, has_block) = {
+            let m = &self.methods[mid as usize];
+            (m.params.len(), m.has_block)
+        };
+        let mut provided: u64 = 0;
+        let mut slots = 0usize;
+        for (k, r) in args.iter().enumerate() {
+            let p = self
+                .b
+                .ins()
+                .iadd_imm(self.args_buf, (k as i64) * i64::from(VALUE_SIZE));
+            if self.movable(inst, *r, block, index) {
+                self.move_reg_to_ptr(p, *r);
+                self.states[*r as usize] = State::NonHeap;
+            } else {
+                self.clone_reg_to_ptr(p, *r);
+            }
+            if k < 64 {
+                provided |= 1 << k;
+            }
+            slots += 1;
+        }
+        while slots < nparams {
+            let p = self
+                .b
+                .ins()
+                .iadd_imm(self.args_buf, (slots as i64) * i64::from(VALUE_SIZE));
+            let zero = self.b.ins().iconst(types::I64, 0);
+            self.b.ins().store(MemFlags::trusted(), zero, p, 0);
+            slots += 1;
+        }
+        if has_block {
+            let p = self
+                .b
+                .ins()
+                .iadd_imm(self.args_buf, (slots as i64) * i64::from(VALUE_SIZE));
+            match blk {
+                Some(r) => {
+                    self.clone_reg_to_ptr(p, r);
+                    if nparams < 64 {
+                        provided |= 1 << nparams;
+                    }
+                }
+                None => {
+                    let zero = self.b.ins().iconst(types::I64, 0);
+                    self.b.ins().store(MemFlags::trusted(), zero, p, 0);
+                }
+            }
+            slots += 1;
+        }
+        let mid_v = self.i32(mid);
+        let recv_v = self.i32(recv.unwrap_or(u32::MAX));
+        let nparams_v = self.i32(nparams as u32);
+        let blk_v = self.i32(blk.unwrap_or(u32::MAX));
+        let provided_v = self.b.ins().iconst(types::I64, provided as i64);
+        let d = self.i32(dst);
+        let call = self.b.ins().call(
+            self.h.enter_virtual,
+            &[
+                self.rt,
+                self.act,
+                self.act_buf,
+                mid_v,
+                self.regs,
+                recv_v,
+                self.args_buf,
+                nparams_v,
+                blk_v,
+                provided_v,
+                self.vbody,
+                d,
+            ],
+        );
+        let status = self.b.inst_results(call)[0];
+        let entered = self.b.create_block();
+        let not_entered = self.b.create_block();
+        let done = self.b.create_block();
+        let failed = self.b.create_block();
+        let cont = self.b.create_block();
+        let is_ok = self.b.ins().icmp_imm(IntCC::Equal, status, 0);
+        self.b.ins().brif(is_ok, entered, &[], not_entered, &[]);
+        self.b.switch_to_block(not_entered);
+        let is_done = self.b.ins().icmp_imm(IntCC::Equal, status, 2);
+        self.b.ins().brif(is_done, done, &[], failed, &[]);
+        // On failure nothing was built: release the area.
+        self.b.switch_to_block(failed);
+        for k in 0..slots {
+            let p = self
+                .b
+                .ins()
+                .iadd_imm(self.args_buf, (k as i64) * i64::from(VALUE_SIZE));
+            self.release_ptr(p);
+        }
+        self.b.ins().jump(unwind, &[status]);
+        // The runtime ran the call and emptied the area.
+        self.b.switch_to_block(done);
+        self.b.ins().jump(cont, &[]);
+        // Call the body, finish, release the parameters.
+        self.b.switch_to_block(entered);
+        let zero = self.b.ins().iconst(types::I64, 0);
+        self.b
+            .ins()
+            .store(MemFlags::trusted(), zero, self.out_buf, 0);
+        let body = self
+            .b
+            .ins()
+            .load(types::I64, MemFlags::trusted(), self.vbody, 0);
+        let call =
+            self.b
+                .ins()
+                .call_indirect(self.body_sig, body, &[self.rt, self.act_buf, self.out_buf]);
+        let status = self.b.inst_results(call)[0];
+        let call = self.b.ins().call(
+            self.h.leave,
+            &[
+                self.rt,
+                self.act_buf,
+                status,
+                self.out_buf,
+                self.regs,
+                d,
+                blk_v,
+            ],
+        );
+        let status = self.b.inst_results(call)[0];
+        for k in 0..slots {
+            let p = self
+                .b
+                .ins()
+                .iadd_imm(self.args_buf, (k as i64) * i64::from(VALUE_SIZE));
+            self.release_ptr(p);
+        }
+        self.check(status, unwind);
+        self.b.ins().jump(cont, &[]);
+        self.b.switch_to_block(cont);
     }
 
     fn store_tag(&mut self, dst: Reg, tag: i64) {
@@ -2651,6 +2837,16 @@ impl Gen<'_, '_> {
                     let nargs = self.i32(args.len() as u32);
                     let blk_v = self.i32(blk.unwrap_or(u32::MAX));
                     let d = self.i32(dst);
+                    {
+                        let m = &self.methods[mid as usize];
+                        if m.overridden && !m.singleton && !m.is_extension && m.native_key.is_none()
+                        {
+                            self.virtual_call(
+                                inst, mid, recv, &args, blk, dst, block, index, unwind,
+                            );
+                            return;
+                        }
+                    }
                     if let Some(callee) = direct_target(inst, self.methods) {
                         // Build the activation, call the body, finish.
                         let (frame_size, file) = {

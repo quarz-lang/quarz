@@ -322,6 +322,13 @@ pub struct Interp {
     field_indices: Vec<FxHashMap<String, usize>>,
     pub sched: Rc<RefCell<Scheduler>>,
     dispatch_cache: RefCell<FxHashMap<(ClassId, MethodId), MethodId>>,
+    /// The dispatch table: for each class and each method that some
+    /// descendant of its owner overrides (`vslots[mid]` is the method's
+    /// column, `u32::MAX` for the others), the method the class runs
+    /// (`0`: not looked up yet, else the method id plus one).
+    vslots: Vec<u32>,
+    nvslots: usize,
+    vtable: RefCell<Vec<u32>>,
     class_dispatch_cache: RefCell<FxHashMap<(ClassId, MethodId), Option<MethodId>>>,
     /// The program image for helper threads, keyed by the number of
     /// functions loaded when it was taken.
@@ -443,6 +450,20 @@ impl Interp {
                     .collect()
             })
             .collect();
+        let nclasses = world.classes.len();
+        let mut nvslots = 0usize;
+        let vslots: Vec<u32> = world
+            .methods
+            .iter()
+            .map(|m| {
+                if m.overridden && !m.singleton && !m.is_extension {
+                    nvslots += 1;
+                    (nvslots - 1) as u32
+                } else {
+                    u32::MAX
+                }
+            })
+            .collect();
         let owned_registry = natives::owned_registry();
         let natives_owned: Vec<Option<OwnedNativeFn>> = world
             .methods
@@ -546,6 +567,9 @@ impl Interp {
             field_indices,
             sched: state.sched,
             dispatch_cache: RefCell::new(FxHashMap::default()),
+            vslots,
+            nvslots,
+            vtable: RefCell::new(vec![0; nvslots * nclasses]),
             class_dispatch_cache: RefCell::new(FxHashMap::default()),
             image_cache: RefCell::new(None),
             name_cache: RefCell::new(FxHashMap::default()),
@@ -1191,11 +1215,21 @@ impl Interp {
         if cid == m.owner {
             return mid;
         }
-        if let Some(found) = self.dispatch_cache.borrow().get(&(cid, mid)) {
-            return *found;
+        let slot = self.vslots[mid as usize];
+        if slot == u32::MAX {
+            // Nothing overrides it: the method is the one.
+            return mid;
+        }
+        let at = cid as usize * self.nvslots + slot as usize;
+        if let Some(&hit) = self.vtable.borrow().get(at) {
+            if hit != 0 {
+                return hit - 1;
+            }
         }
         let found = self.find_override(cid, mid).unwrap_or(mid);
-        self.dispatch_cache.borrow_mut().insert((cid, mid), found);
+        if let Some(cell) = self.vtable.borrow_mut().get_mut(at) {
+            *cell = found + 1;
+        }
         found
     }
 

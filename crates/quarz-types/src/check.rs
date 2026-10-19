@@ -1489,6 +1489,10 @@ impl Checker {
             Bytes(_) => Type::class(self.world.builtin.bytes),
             Magic(m) => match m {
                 quarz_syntax::ast::Magic::Line => self.world.int(),
+                // `__method__` is nil outside a method.
+                quarz_syntax::ast::Magic::Method if self.env.method.is_none() => {
+                    self.world.nilable(self.world.string())
+                }
                 _ => self.world.string(),
             },
             Array(items) => self.check_array(items, expected, expr.span),

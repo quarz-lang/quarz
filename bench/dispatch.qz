@@ -1,0 +1,29 @@
+abstract class Shape
+  abstract def area -> Float
+end
+class Circle < Shape
+  var @r: Float
+  def initialize(@r: Float); end
+  def area -> Float = 3.0 * @r * @r
+end
+class Rect < Shape
+  var @w: Float
+  var @h: Float
+  def initialize(@w: Float, @h: Float); end
+  def area -> Float = @w * @h
+end
+class Tri < Shape
+  var @b: Float
+  var @h: Float
+  def initialize(@b: Float, @h: Float); end
+  def area -> Float = 0.5 * @b * @h
+end
+shapes: Array[Shape] = []
+300.times do |i|
+  shapes = shapes.push(Circle.new(i.to_f))
+  shapes = shapes.push(Rect.new(i.to_f, 2.0))
+  shapes = shapes.push(Tri.new(i.to_f, 3.0))
+end
+total = 0.0
+1000.times { shapes.each { |s| total += s.area } }
+puts total.round(1)
