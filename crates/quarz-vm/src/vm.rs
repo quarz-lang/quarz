@@ -43,9 +43,14 @@ pub struct Activation {
 
 /// A lazily built `BlockCaller` for an activation's block: null until
 /// the first `yield`, `GENERIC` when the block needs the general path.
-#[derive(Default)]
 #[repr(transparent)]
 pub struct YieldCache(Cell<*mut BlockCaller>);
+
+impl Default for YieldCache {
+    fn default() -> Self {
+        YieldCache(Cell::new(std::ptr::null_mut()))
+    }
+}
 
 impl YieldCache {
     const GENERIC: *mut BlockCaller = std::ptr::dangling_mut::<BlockCaller>();
