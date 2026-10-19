@@ -322,6 +322,37 @@ pub unsafe extern "C" fn qz_leave(
     }
 }
 
+/// Give the rest of the function to the interpreter, starting at
+/// instruction `inst` of `block` on the compiled code's registers (a
+/// speculation failed: an Int grew into a BigInt, say). The result goes
+/// to `out`; the returned status is the function's. The caller then
+/// releases its registers as usual.
+///
+/// # Safety
+/// As for `qz_exec`; `out` must point to a nil value.
+#[no_mangle]
+pub unsafe extern "C" fn qz_resume(
+    rt: *const Interp,
+    act: *const Activation,
+    fid: u32,
+    block: u32,
+    inst: u32,
+    regs: *mut Value,
+    out: *mut Value,
+) -> u32 {
+    let rt = &*rt;
+    let act = &*act;
+    let nregs = rt.funcs.borrow()[fid as usize].nregs as usize;
+    let regs = std::slice::from_raw_parts_mut(regs, nregs);
+    match rt.run_func_from(fid, act, regs, block, inst as usize) {
+        Ok(v) => {
+            *out = v;
+            STATUS_OK
+        }
+        Err(flow) => rt.park_flow(flow),
+    }
+}
+
 /// `regs[dst] = self`.
 ///
 /// # Safety

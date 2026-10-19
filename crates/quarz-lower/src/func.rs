@@ -1752,6 +1752,12 @@ impl<'a> FnBuilder<'a> {
             _ => {
                 let rhs = self.expr(value);
                 let name = op.as_str().trim_end_matches('=').to_string();
+                // The checker resolved the operator (`x += 1` is `x + 1`);
+                // the method tells the compiler the operand types.
+                let method = match self.out.calls.get(&e.id) {
+                    Some(CallTarget::Method { method }) => Some(*method),
+                    _ => None,
+                };
                 let v = match FastOp::from_name(&name) {
                     Some(fop) => {
                         let dst = self.reg();
@@ -1760,7 +1766,7 @@ impl<'a> FnBuilder<'a> {
                             op: fop,
                             lhs: current,
                             rhs,
-                            method: None,
+                            method,
                         });
                         dst
                     }

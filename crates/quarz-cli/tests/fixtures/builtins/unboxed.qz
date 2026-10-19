@@ -1,0 +1,86 @@
+# Unboxed numbers in compiled code: speculation on Int/Float registers and
+# the fall-back to the interpreter when an Int grows into a BigInt or a
+# division fails. Expected output in unboxed.out.
+# Speculation on unboxed numbers and the fall-back to the interpreter.
+def grow(n: Int) -> Int
+  x = 1
+  i = 0
+  while i < n
+    x = x * 3 + i          # overflows into a BigInt after ~40 steps
+    i += 1
+  end
+  x
+end
+p grow(10), grow(45), grow(45) % 1000
+def mixed(a: Int, b: Float) -> Float
+  c = a + b
+  d = c * 2
+  e = a / 2.0
+  f = 7 / 2
+  g = -7 % 3
+  h = 7.5 % 2
+  c + d + e + f + g + h
+end
+p mixed(3, 0.5)
+def divide(a: Int, b: Int) -> Int
+  q = a / b
+  r = a % b
+  q * 10 + r
+end
+p divide(17, 5), divide(-17, 5), divide(9_223_372_036_854_775_807, -1)
+begin
+  divide(1, 0)
+rescue ZeroDivisionError => e
+  puts "zero: #{e.message}"
+end
+def loop_sum(n: Int) -> Int
+  s = 0
+  i = 0
+  while i < n
+    s += i * 2 % 7
+    i += 1
+  end
+  s
+end
+p loop_sum(1000)
+def cmp(a: Int, b: Float) -> Array[Bool]
+  [a < b, a <= b, a > b, a >= b, a == b, a != b, b < a, 2.0 == 2]
+end
+p cmp(2, 2.0), cmp(3, 2.5)
+def big_then_small(n: Int) -> Int
+  x = 2 ** 70
+  y = x - 2 ** 70 + n
+  y * 2
+end
+p big_then_small(21)
+def nilcheck(x: Int) -> Bool = x.nil?
+p nilcheck(5)
+def truth(n: Int) -> String
+  t = n > 3
+  u = !t
+  if t && !u then "big" else "small" end
+end
+p truth(5), truth(1)
+def floaty(x: Float) -> Float
+  y = x
+  10.times { y = y * 1.5 - 0.25 }
+  y
+end
+p floaty(1.0).round(3)
+def ensure_path(n: Int) -> Int
+  v = n * 2
+  begin
+    v = v + 1
+    raise ArgumentError, "boom" if n > 3
+    v
+  rescue ArgumentError
+    v = v + 100
+    v
+  ensure
+    v = v + 1000
+  end
+end
+p ensure_path(1), ensure_path(5)
+x = 9_223_372_036_854_775_800
+10.times { x += 1 }
+p x, x.class

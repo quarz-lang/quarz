@@ -243,6 +243,36 @@ impl Interp {
         }
     }
 
+    /// Continue a function in the interpreter from instruction `inst` of
+    /// `block`, on the registers compiled code was using (it gives up on
+    /// a speculation it cannot keep, such as an Int growing into a
+    /// BigInt). The registers are the caller's to release afterwards.
+    pub fn run_func_from(
+        &self,
+        fid: FuncId,
+        act: &Activation,
+        regs: &mut [Value],
+        block: BlockId,
+        inst: usize,
+    ) -> EvalResult {
+        let funcs = self.funcs.borrow();
+        let f = &funcs[fid as usize];
+        let pools = self.pools.borrow();
+        let pool = &pools[fid as usize];
+        let mut pending: Option<Flow> = None;
+        let mut block = block;
+        let mut start = inst;
+        loop {
+            match self.run_block_from(f, fid, pool, act, regs, &mut pending, block, start) {
+                Step::Jump(b) => {
+                    block = b;
+                    start = 0;
+                }
+                Step::Done(r) => return r,
+            }
+        }
+    }
+
     /// Remove `act` from the call stack. Tasks interleave on one stack,
     /// so the entry is usually, but not always, the last one.
     pub(crate) fn pop_call_stack(&self, act: &Activation) {
@@ -266,8 +296,24 @@ impl Interp {
         pending: &mut Option<Flow>,
         block: BlockId,
     ) -> Step {
+        self.run_block_from(f, fid, pool, act, regs, pending, block, 0)
+    }
+
+    /// Run a block from its instruction `start` on.
+    #[allow(clippy::too_many_arguments)]
+    fn run_block_from(
+        &self,
+        f: &Function,
+        fid: FuncId,
+        pool: &RefCell<Vec<Value>>,
+        act: &Activation,
+        regs: &mut [Value],
+        pending: &mut Option<Flow>,
+        block: BlockId,
+        start: usize,
+    ) -> Step {
         let b = &f.blocks[block as usize];
-        for (i, inst) in b.insts.iter().enumerate() {
+        for (i, inst) in b.insts.iter().enumerate().skip(start) {
             act.line.set(b.lines[i]);
             if let Err(flow) = self.exec_inst(f, fid, pool, act, regs, pending, inst) {
                 return self.unwind(b, flow, pending);

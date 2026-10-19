@@ -24,10 +24,13 @@ use cranelift_codegen::ir::{
 };
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_codegen::Context;
-use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
+use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_module::{DataDescription, FuncId as CFuncId, Linkage, Module as _};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use quarz_ir::*;
+
+mod unbox;
+use unbox::{Num, State};
 
 /// Size of a `Value` in bytes (`repr(C, u64)`: a tag word and a two-word
 /// payload, since some variants hold fat pointers).
@@ -51,6 +54,7 @@ const STATUS_RAISE: i64 = 1;
 
 /// The runtime functions compiled code calls.
 struct Runtime {
+    resume: CFuncId,
     enter: CFuncId,
     leave: CFuncId,
     act_ptrs: CFuncId,
@@ -72,6 +76,7 @@ struct Runtime {
 /// Imported runtime functions, as function references inside one
 /// function being built.
 struct Helpers {
+    resume: FuncRef,
     enter: FuncRef,
     leave: FuncRef,
     act_ptrs: FuncRef,
@@ -158,6 +163,11 @@ pub fn compile(module: &Module) -> Result<Vec<u8>, String> {
             "qz_field_set",
             &sig(&[i64_, i64_, i32_, i32_, i32_], Some(i32_)),
         )?,
+        resume: import(
+            &mut obj,
+            "qz_resume",
+            &sig(&[i64_, i64_, i32_, i32_, i32_, i64_, i64_], Some(i32_)),
+        )?,
         enter: import(
             &mut obj,
             "qz_enter",
@@ -221,7 +231,13 @@ pub fn compile(module: &Module) -> Result<Vec<u8>, String> {
         funcs,
     };
     for (i, f) in module.functions.iter().enumerate() {
-        c.compile_function(i as FuncId, f, &module.world.methods, &module.functions)?;
+        c.compile_function(
+            i as FuncId,
+            f,
+            &module.world.methods,
+            &module.functions,
+            &module.world.builtin,
+        )?;
     }
     c.emit_data_and_main(module, call_conv)?;
     let product = c.module.finish();
@@ -235,6 +251,7 @@ impl Compiler {
         f: &Function,
         methods: &[RtMethod],
         functions: &[Function],
+        builtin: &RtBuiltin,
     ) -> Result<(), String> {
         let mut ctx: Context = self.module.make_context();
         ctx.func.signature = self.fn_sig.clone();
@@ -242,6 +259,7 @@ impl Compiler {
         let mut b = FunctionBuilder::new(&mut ctx.func, &mut fbc);
         let drop_value_fn = self.module.declare_func_in_func(self.rt.drop_value, b.func);
         let h = Helpers {
+            resume: self.module.declare_func_in_func(self.rt.resume, b.func),
             enter: self.module.declare_func_in_func(self.rt.enter, b.func),
             leave: self.module.declare_func_in_func(self.rt.leave, b.func),
             act_ptrs: self.module.declare_func_in_func(self.rt.act_ptrs, b.func),
@@ -263,6 +281,15 @@ impl Compiler {
             owned_call: self.module.declare_func_in_func(self.rt.owned_call, b.func),
         };
         let heap = heap_possible(f);
+        // Unboxed numbers: the state of each register at each block's
+        // entry, and an SSA variable per register for each kind.
+        let entry_states = unbox::analyze(f, methods, builtin);
+        let nregs_usize = f.nregs.max(1) as usize;
+        for r in 0..nregs_usize {
+            b.declare_var(Variable::from_u32((r) as u32), types::I64);
+            b.declare_var(Variable::from_u32((nregs_usize + r) as u32), types::F64);
+            b.declare_var(Variable::from_u32((2 * nregs_usize + r) as u32), types::I8);
+        }
         // The compiled bodies this function calls directly.
         let mut callees: HashMap<FuncId, FuncRef> = HashMap::new();
         for blk in &f.blocks {
@@ -391,6 +418,8 @@ impl Compiler {
             rt,
             act,
             regs,
+            out,
+            exit,
             scratch,
             act_buf,
             out_buf,
@@ -400,12 +429,17 @@ impl Compiler {
             f,
             methods,
             functions,
+            builtin,
             callees,
+            states: vec![State::NonHeap; nregs_usize],
+            nregs: nregs_usize,
         };
         for (i, blk) in f.blocks.iter().enumerate() {
             g.b.switch_to_block(blocks[i]);
+            g.states.clone_from(&entry_states[i]);
             for (j, inst) in blk.insts.iter().enumerate() {
                 g.inst(i as u32, j as u32, inst, unwinds[i]);
+                g.after(inst);
             }
             match &blk.term {
                 Term::Jump(t) => {
@@ -735,6 +769,8 @@ struct Gen<'a, 'b> {
     rt: CValue,
     act: CValue,
     regs: CValue,
+    out: CValue,
+    exit: CBlock,
     scratch: CValue,
     /// Space for the activation of a direct call.
     act_buf: CValue,
@@ -748,7 +784,11 @@ struct Gen<'a, 'b> {
     f: &'a Function,
     methods: &'a [RtMethod],
     functions: &'a [Function],
+    builtin: &'a RtBuiltin,
     callees: HashMap<FuncId, FuncRef>,
+    /// What is known about each register here (see `unbox`).
+    states: Vec<State>,
+    nregs: usize,
 }
 
 impl Gen<'_, '_> {
@@ -782,6 +822,11 @@ impl Gen<'_, '_> {
 
     /// Truthiness of a register: not nil and not false.
     fn truthy(&mut self, r: Reg) -> CValue {
+        match self.states[r as usize] {
+            State::Bool => return self.b.use_var(self.bvar(r)),
+            State::Int | State::Float => return self.b.ins().iconst(types::I8, 1),
+            _ => {}
+        }
         let tag = self.tag(r);
         let p = self.payload8(r);
         let is_nil = self.b.ins().icmp_imm(IntCC::Equal, tag, TAG_NIL);
@@ -796,6 +841,9 @@ impl Gen<'_, '_> {
     /// Make sure `dst` holds no reference-counted value before an inline
     /// store overwrites it.
     fn release(&mut self, dst: Reg) {
+        if !self.states[dst as usize].needs_release() {
+            return;
+        }
         let p = self
             .b
             .ins()
@@ -877,6 +925,115 @@ impl Gen<'_, '_> {
             .iadd_imm(slots, i64::from(slot) * i64::from(VALUE_SIZE))
     }
 
+    fn ivar(&self, r: Reg) -> Variable {
+        Variable::from_u32((r as usize) as u32)
+    }
+
+    fn fvar(&self, r: Reg) -> Variable {
+        Variable::from_u32((self.nregs + r as usize) as u32)
+    }
+
+    fn bvar(&self, r: Reg) -> Variable {
+        Variable::from_u32((2 * self.nregs + r as usize) as u32)
+    }
+
+    /// Update the states after an instruction, and pick up a Bool the
+    /// runtime produced into its variable.
+    fn after(&mut self, inst: &Inst) {
+        unbox::transfer(inst, &mut self.states, self.f, self.methods, self.builtin);
+        if matches!(
+            inst,
+            Inst::HasArg { .. }
+                | Inst::Equal { .. }
+                | Inst::CaseEq { .. }
+                | Inst::IsArray { .. }
+                | Inst::IsHash { .. }
+                | Inst::IsObject { .. }
+                | Inst::ClassIsA { .. }
+                | Inst::IsA { .. }
+        ) {
+            for r in unbox::defs(inst) {
+                let v = self.payload8(r);
+                let v = self.b.ins().ireduce(types::I8, v);
+                self.b.def_var(self.bvar(r), v);
+            }
+        }
+    }
+
+    /// Give up on this function's speculation: the interpreter runs the
+    /// rest from instruction `index` of `block`, and the function exits
+    /// with its status. Emission continues in a fresh (unreachable) block.
+    fn deopt(&mut self, block: u32, index: u32) {
+        let fid = self.b.ins().iconst(types::I32, i64::from(self.fid));
+        let blk = self.b.ins().iconst(types::I32, i64::from(block));
+        let i = self.b.ins().iconst(types::I32, i64::from(index));
+        let call = self.b.ins().call(
+            self.h.resume,
+            &[self.rt, self.act, fid, blk, i, self.regs, self.out],
+        );
+        let status = self.b.inst_results(call)[0];
+        self.b.ins().jump(self.exit, &[status]);
+        let dead = self.b.create_block();
+        self.b.switch_to_block(dead);
+    }
+
+    /// The unboxed value of `r`, statically an Int or a Float: from its
+    /// variable when the state says so, else from memory after a tag
+    /// check that fails into the interpreter.
+    fn get_num(&mut self, r: Reg, n: Num, block: u32, index: u32) -> CValue {
+        let st = self.states[r as usize];
+        match (n, st) {
+            (Num::Int, State::Int) => return self.b.use_var(self.ivar(r)),
+            (Num::Float, State::Float) => return self.b.use_var(self.fvar(r)),
+            _ => {}
+        }
+        let tag = self.tag(r);
+        let want = if n == Num::Int { TAG_INT } else { TAG_FLOAT };
+        let is = self.b.ins().icmp_imm(IntCC::Equal, tag, want);
+        let ok = self.b.create_block();
+        let bad = self.b.create_block();
+        self.b.ins().brif(is, ok, &[], bad, &[]);
+        self.b.switch_to_block(bad);
+        self.deopt(block, index);
+        self.b.switch_to_block(ok);
+        let p = self.payload(r);
+        match n {
+            Num::Int => {
+                self.b.def_var(self.ivar(r), p);
+                self.states[r as usize] = State::Int;
+                p
+            }
+            Num::Float => {
+                let v = self.b.ins().bitcast(types::F64, MemFlags::new(), p);
+                self.b.def_var(self.fvar(r), v);
+                self.states[r as usize] = State::Float;
+                v
+            }
+        }
+    }
+
+    /// `regs[dst] = Int(v)`: the variable, and the boxed home.
+    fn store_int(&mut self, dst: Reg, v: CValue) {
+        self.b.def_var(self.ivar(dst), v);
+        if self.states[dst as usize] != State::Int {
+            self.release(dst);
+            self.store_tag(dst, TAG_INT);
+        }
+        self.store_payload(dst, v);
+        self.states[dst as usize] = State::Int;
+    }
+
+    fn store_float(&mut self, dst: Reg, v: CValue) {
+        self.b.def_var(self.fvar(dst), v);
+        if self.states[dst as usize] != State::Float {
+            self.release(dst);
+            self.store_tag(dst, TAG_FLOAT);
+        }
+        let bits = self.b.ins().bitcast(types::I64, MemFlags::new(), v);
+        self.store_payload(dst, bits);
+        self.states[dst as usize] = State::Float;
+    }
+
     fn i32(&mut self, v: u32) -> CValue {
         self.b.ins().iconst(types::I32, i64::from(v))
     }
@@ -943,6 +1100,7 @@ impl Gen<'_, '_> {
 
     /// Store a boolean (an I8 value) as a `Bool`.
     fn store_bool(&mut self, dst: Reg, v: CValue) {
+        self.b.def_var(self.bvar(dst), v);
         self.release(dst);
         self.store_tag(dst, TAG_BOOL);
         // `v` is an I8, stored as the payload's first byte.
@@ -970,11 +1128,37 @@ impl Gen<'_, '_> {
                 if dst == src {
                     return;
                 }
-                let s = self
-                    .b
-                    .ins()
-                    .iadd_imm(self.regs, i64::from(Self::reg_off(*src)));
-                self.clone_from(*dst, s);
+                match self.states[*src as usize] {
+                    State::Int => {
+                        let v = self.b.use_var(self.ivar(*src));
+                        self.store_int(*dst, v);
+                    }
+                    State::Float => {
+                        let v = self.b.use_var(self.fvar(*src));
+                        self.store_float(*dst, v);
+                    }
+                    State::Bool => {
+                        let v = self.b.use_var(self.bvar(*src));
+                        self.store_bool(*dst, v);
+                    }
+                    State::NonHeap => {
+                        // A plain copy: nothing to count on either side.
+                        self.release(*dst);
+                        let t = self.tag(*src);
+                        let p = self.payload(*src);
+                        self.b
+                            .ins()
+                            .store(MemFlags::trusted(), t, self.regs, Self::reg_off(*dst));
+                        self.store_payload(*dst, p);
+                    }
+                    State::Unknown => {
+                        let s = self
+                            .b
+                            .ins()
+                            .iadd_imm(self.regs, i64::from(Self::reg_off(*src)));
+                        self.clone_from(*dst, s);
+                    }
+                }
             }
             Inst::LoadConst { dst, idx } => match &self.f.consts[*idx as usize] {
                 Constant::Nil => {
@@ -986,19 +1170,147 @@ impl Gen<'_, '_> {
                     self.store_bool(*dst, v);
                 }
                 Constant::Int(i) => {
-                    self.release(*dst);
-                    self.store_tag(*dst, TAG_INT);
                     let v = self.b.ins().iconst(types::I64, *i);
-                    self.store_payload(*dst, v);
+                    self.store_int(*dst, v);
                 }
                 Constant::Float(f) => {
-                    self.release(*dst);
-                    self.store_tag(*dst, TAG_FLOAT);
-                    let v = self.b.ins().iconst(types::I64, f.to_bits() as i64);
-                    self.store_payload(*dst, v);
+                    let v = self.b.ins().f64const(*f);
+                    self.store_float(*dst, v);
                 }
                 _ => self.exec(block, index, unwind),
             },
+            Inst::BinOp {
+                dst, op, lhs, rhs, ..
+            } if unbox::bin_types(inst, self.methods, self.builtin).is_some()
+                && !(unbox::float_mod(inst)
+                    && unbox::bin_types(inst, self.methods, self.builtin)
+                        .unwrap()
+                        .result
+                        == Some(Num::Float)) =>
+            {
+                let t = unbox::bin_types(inst, self.methods, self.builtin).unwrap();
+                let x = self.get_num(*lhs, t.lhs, block, index);
+                let y = self.get_num(*rhs, t.rhs, block, index);
+                match t.result {
+                    Some(Num::Int) => {
+                        let r = match op {
+                            FastOp::Add | FastOp::Sub => {
+                                let (r, overflow) = if *op == FastOp::Add {
+                                    self.b.ins().sadd_overflow(x, y)
+                                } else {
+                                    self.b.ins().ssub_overflow(x, y)
+                                };
+                                let ok = self.b.create_block();
+                                let bad = self.b.create_block();
+                                self.b.ins().brif(overflow, bad, &[], ok, &[]);
+                                self.b.switch_to_block(bad);
+                                self.deopt(block, index);
+                                self.b.switch_to_block(ok);
+                                r
+                            }
+                            FastOp::Mul => {
+                                let (r, overflow) = self.b.ins().smul_overflow(x, y);
+                                let ok = self.b.create_block();
+                                let bad = self.b.create_block();
+                                self.b.ins().brif(overflow, bad, &[], ok, &[]);
+                                self.b.switch_to_block(bad);
+                                self.deopt(block, index);
+                                self.b.switch_to_block(ok);
+                                r
+                            }
+                            _ => {
+                                // Division by zero and MIN / -1 go to the
+                                // interpreter (an error, or a BigInt).
+                                let y_zero = self.b.ins().icmp_imm(IntCC::Equal, y, 0);
+                                let x_min = self.b.ins().icmp_imm(IntCC::Equal, x, i64::MIN);
+                                let y_m1 = self.b.ins().icmp_imm(IntCC::Equal, y, -1);
+                                let min_case = self.b.ins().band(x_min, y_m1);
+                                let bad_cond = self.b.ins().bor(y_zero, min_case);
+                                let ok = self.b.create_block();
+                                let bad = self.b.create_block();
+                                self.b.ins().brif(bad_cond, bad, &[], ok, &[]);
+                                self.b.switch_to_block(bad);
+                                self.deopt(block, index);
+                                self.b.switch_to_block(ok);
+                                // Floor semantics, as in Ruby.
+                                let rem = self.b.ins().srem(x, y);
+                                let nonzero = self.b.ins().icmp_imm(IntCC::NotEqual, rem, 0);
+                                let y_neg = self.b.ins().icmp_imm(IntCC::SignedLessThan, y, 0);
+                                if *op == FastOp::Div {
+                                    let q = self.b.ins().sdiv(x, y);
+                                    let x_neg = self.b.ins().icmp_imm(IntCC::SignedLessThan, x, 0);
+                                    let differ = self.b.ins().bxor(x_neg, y_neg);
+                                    let adjust = self.b.ins().band(nonzero, differ);
+                                    let adjust = self.b.ins().uextend(types::I64, adjust);
+                                    self.b.ins().isub(q, adjust)
+                                } else {
+                                    let r_neg =
+                                        self.b.ins().icmp_imm(IntCC::SignedLessThan, rem, 0);
+                                    let differ = self.b.ins().bxor(r_neg, y_neg);
+                                    let adjust = self.b.ins().band(nonzero, differ);
+                                    let zero = self.b.ins().iconst(types::I64, 0);
+                                    let add = self.b.ins().select(adjust, y, zero);
+                                    self.b.ins().iadd(rem, add)
+                                }
+                            }
+                        };
+                        self.store_int(*dst, r);
+                    }
+                    Some(Num::Float) => {
+                        let xf = if t.lhs == Num::Int {
+                            self.b.ins().fcvt_from_sint(types::F64, x)
+                        } else {
+                            x
+                        };
+                        let yf = if t.rhs == Num::Int {
+                            self.b.ins().fcvt_from_sint(types::F64, y)
+                        } else {
+                            y
+                        };
+                        let r = match op {
+                            FastOp::Add => self.b.ins().fadd(xf, yf),
+                            FastOp::Sub => self.b.ins().fsub(xf, yf),
+                            FastOp::Mul => self.b.ins().fmul(xf, yf),
+                            _ => self.b.ins().fdiv(xf, yf),
+                        };
+                        self.store_float(*dst, r);
+                    }
+                    None => {
+                        let r = if t.lhs == Num::Int && t.rhs == Num::Int {
+                            let cc = match op {
+                                FastOp::Lt => IntCC::SignedLessThan,
+                                FastOp::Le => IntCC::SignedLessThanOrEqual,
+                                FastOp::Gt => IntCC::SignedGreaterThan,
+                                FastOp::Ge => IntCC::SignedGreaterThanOrEqual,
+                                FastOp::Eq => IntCC::Equal,
+                                _ => IntCC::NotEqual,
+                            };
+                            self.b.ins().icmp(cc, x, y)
+                        } else {
+                            let xf = if t.lhs == Num::Int {
+                                self.b.ins().fcvt_from_sint(types::F64, x)
+                            } else {
+                                x
+                            };
+                            let yf = if t.rhs == Num::Int {
+                                self.b.ins().fcvt_from_sint(types::F64, y)
+                            } else {
+                                y
+                            };
+                            let cc = match op {
+                                FastOp::Lt => FloatCC::LessThan,
+                                FastOp::Le => FloatCC::LessThanOrEqual,
+                                FastOp::Gt => FloatCC::GreaterThan,
+                                FastOp::Ge => FloatCC::GreaterThanOrEqual,
+                                FastOp::Eq => FloatCC::Equal,
+                                _ => FloatCC::NotEqual,
+                            };
+                            self.b.ins().fcmp(cc, xf, yf)
+                        };
+                        self.store_bool(*dst, r);
+                    }
+                }
+            }
             Inst::BinOp {
                 dst, op, lhs, rhs, ..
             } if matches!(
@@ -1171,8 +1483,13 @@ impl Gen<'_, '_> {
                 self.store_bool(*dst, v);
             }
             Inst::IsNil { dst, src } => {
-                let tag = self.tag(*src);
-                let v = self.b.ins().icmp_imm(IntCC::Equal, tag, TAG_NIL);
+                let v = match self.states[*src as usize] {
+                    State::Int | State::Float | State::Bool => self.b.ins().iconst(types::I8, 0),
+                    _ => {
+                        let tag = self.tag(*src);
+                        self.b.ins().icmp_imm(IntCC::Equal, tag, TAG_NIL)
+                    }
+                };
                 self.store_bool(*dst, v);
             }
             Inst::SelfRef { dst } => {
