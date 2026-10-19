@@ -59,13 +59,55 @@ pub const SIGNATURE: u64 = {
     h
 };
 
+/// Where a `Vec<Value>` keeps its pointer, length and capacity (byte
+/// offsets), found by probing one: the standard library does not fix
+/// them. Compiled code reads arrays through them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VecLayout {
+    pub ptr: usize,
+    pub len: usize,
+    pub cap: usize,
+}
+
+pub fn vec_layout() -> VecLayout {
+    let mut v: Vec<crate::value::Value> = Vec::with_capacity(7);
+    v.push(crate::value::Value::Nil);
+    v.push(crate::value::Value::Nil);
+    v.push(crate::value::Value::Nil);
+    let ptr = v.as_ptr() as usize;
+    // SAFETY: a `Vec` is three words; which is which is what we find out.
+    let words: [usize; 3] = unsafe { std::ptr::read(&v as *const Vec<_> as *const [usize; 3]) };
+    let find = |x: usize| words.iter().position(|w| *w == x).expect("Vec layout") * 8;
+    let layout = VecLayout {
+        ptr: find(ptr),
+        len: find(3),
+        cap: find(7),
+    };
+    assert!(
+        layout.ptr != layout.len && layout.len != layout.cap && layout.ptr != layout.cap,
+        "Vec layout"
+    );
+    layout
+}
+
+/// `vec_layout` as one word (for the start-up check).
+pub fn vec_layout_packed() -> u64 {
+    let l = vec_layout();
+    (l.ptr as u64) | ((l.len as u64) << 8) | ((l.cap as u64) << 16)
+}
+
 /// Refuse to run code built against another layout, and check the bit
 /// patterns the compiled code writes for "nothing".
-pub fn check(sig: u64) {
-    if sig != SIGNATURE {
+pub fn check(sig: u64, vec: u64) {
+    if sig != SIGNATURE || vec != vec_layout_packed() {
         eprintln!("quarz: this program was built against a different runtime; rebuild it");
         std::process::exit(70);
     }
+    assert_eq!(
+        crate::value::Value::array(Vec::new()).type_tag(),
+        9,
+        "Value layout changed: Array tag"
+    );
     // SAFETY: a zeroed `Option<Rc<_>>` is `None`, verified here before
     // compiled code relies on it.
     unsafe {

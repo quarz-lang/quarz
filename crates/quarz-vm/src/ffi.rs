@@ -845,6 +845,7 @@ pub unsafe extern "C" fn qz_main(
     argc: i32,
     argv: *const *const c_char,
     layout_sig: u64,
+    vec_layout: u64,
 ) -> i32 {
     let bytes = std::slice::from_raw_parts(blob, len);
     let module = match quarz_ir::decode(bytes) {
@@ -869,7 +870,7 @@ pub unsafe extern "C" fn qz_main(
         units,
     } = module;
     crate::value::check_rc_layout();
-    crate::layout::check(layout_sig);
+    crate::layout::check(layout_sig, vec_layout);
     let interp: Rc<Interp> = Interp::with_state(world, 0, functions, units, args, state);
     {
         let mut compiled = interp.compiled.borrow_mut();
