@@ -1,0 +1,74 @@
+true
+true
+true
+0
+-1
+1
+1
+2
+true
+2
+15
+16
+9
+9
+["a", "b", "c", "this string is longer than fifteen bytes"]
+true
+1
+["a", "b", "c"]
+["a", "b", "c"]
+["a", "b", "c"]
+["x", "y,z"]
+"heLlo"
+"heLLo"
+"heLLo"
+2
+2
+3
+"sym"
+"a_long_symbol_name_here"
+:ab
+["abc", "abd", "abe"]
+["a", "b", "c", "d", "e"]
+["ab", "ac", "ad"]
+42
+2.5
+"7"
+"s"
+7
+120
+"x"
+"invalid value for Integer(): \"zz\""
+[97, 98, 99]
+["a", "b", "c"]
+"a**"
+"--abc--"
+"ababab"
+"hello world"
+"äö"
+"STRASSE"
+"cba"
+"abd"
+"ba"
+201
+true
+"x"
+"y"
+"yyy"
+"sent back"
+"a long message crossing the channel"
+"{\"k\":\"v\",\"key\":\"this string is longer than fifteen bytes\"}"
+JSON::Value::Map(members: {"a" => JSON::Value::Text(value: "b")})
+"\"abc\""
+"\"a\\nb\""
+""
+true
+true
+44
+2
+3
+["a", "b", "c"]
+"axc"
+"k=3"
+"short message"
+"a message that is longer than fifteen bytes"

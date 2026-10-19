@@ -53,7 +53,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     m.insert("Process.sh", |i, _, a| {
         let script = string(i, a.arg(0), "script")?;
         let mut command = std::process::Command::new("sh");
-        command.arg("-c").arg(&*script);
+        command.arg("-c").arg(script);
         run_command(i, command, "sh")
     });
     m.insert("Process::Output#success?", |i, r, _| {
@@ -66,7 +66,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     m.insert("IO#print", io_print);
     m.insert("IO#printf", |i, r, a| {
         let fmt = string(i, a.arg(0), "format string")?;
-        let text = super::core::format_values(i, &fmt, &a.pos[1..])?;
+        let text = super::core::format_values(i, fmt, &a.pos[1..])?;
         io_write(i, r, &text)?;
         Ok(Value::Nil)
     });
@@ -248,14 +248,14 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
         let path = p.to_string();
         i.block_on(move || std::fs::read_to_string(&path))?
             .map(Value::string)
-            .map_err(|e| os_error(i, e, &p))
+            .map_err(|e| os_error(i, e, p))
     });
     m.insert("File.read_bytes", |i, _, a| {
         let p = string(i, a.arg(0), "path")?;
         let path = p.to_string();
         i.block_on(move || std::fs::read(&path))?
             .map(Value::bytes)
-            .map_err(|e| os_error(i, e, &p))
+            .map_err(|e| os_error(i, e, p))
     });
     m.insert("File.write", |i, _, a| {
         let p = string(i, a.arg(0), "path")?;
@@ -264,7 +264,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
         let path = p.to_string();
         i.block_on(move || std::fs::write(&path, &content))?
             .map(|_| Value::Int(len as i64))
-            .map_err(|e| os_error(i, e, &p))
+            .map_err(|e| os_error(i, e, p))
     });
     m.insert("File.append", |i, _, a| {
         let p = string(i, a.arg(0), "path")?;
@@ -279,45 +279,45 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
             f.write_all(&content)
         })?
         .map(|_| Value::Int(len as i64))
-        .map_err(|e| os_error(i, e, &p))
+        .map_err(|e| os_error(i, e, p))
     });
     m.insert("File.exist?", |i, _, a| {
         Ok(Value::Bool(
-            Path::new(&*string(i, a.arg(0), "path")?).exists(),
+            Path::new(string(i, a.arg(0), "path")?).exists(),
         ))
     });
     m.insert("File.file?", |i, _, a| {
         Ok(Value::Bool(
-            Path::new(&*string(i, a.arg(0), "path")?).is_file(),
+            Path::new(string(i, a.arg(0), "path")?).is_file(),
         ))
     });
     m.insert("File.directory?", |i, _, a| {
         Ok(Value::Bool(
-            Path::new(&*string(i, a.arg(0), "path")?).is_dir(),
+            Path::new(string(i, a.arg(0), "path")?).is_dir(),
         ))
     });
     m.insert("File.symlink?", |i, _, a| {
         Ok(Value::Bool(
-            std::fs::symlink_metadata(&*string(i, a.arg(0), "path")?)
+            std::fs::symlink_metadata(string(i, a.arg(0), "path")?)
                 .map(|m| m.file_type().is_symlink())
                 .unwrap_or(false),
         ))
     });
     m.insert("File.readable?", |i, _, a| {
         Ok(Value::Bool(
-            std::fs::File::open(&*string(i, a.arg(0), "path")?).is_ok(),
+            std::fs::File::open(string(i, a.arg(0), "path")?).is_ok(),
         ))
     });
     m.insert("File.writable?", |i, _, a| {
         let p = string(i, a.arg(0), "path")?;
         Ok(Value::Bool(
-            std::fs::OpenOptions::new().append(true).open(&*p).is_ok()
-                || std::fs::metadata(&*p).is_ok_and(|m| m.is_dir() && !m.permissions().readonly()),
+            std::fs::OpenOptions::new().append(true).open(p).is_ok()
+                || std::fs::metadata(p).is_ok_and(|m| m.is_dir() && !m.permissions().readonly()),
         ))
     });
     m.insert("File.executable?", |i, _, a| {
         let p = string(i, a.arg(0), "path")?;
-        Ok(Value::Bool(std::fs::metadata(&*p).is_ok_and(|m| {
+        Ok(Value::Bool(std::fs::metadata(p).is_ok_and(|m| {
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
@@ -331,15 +331,15 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     });
     m.insert("File.size", |i, _, a| {
         let p = string(i, a.arg(0), "path")?;
-        std::fs::metadata(&*p)
+        std::fs::metadata(p)
             .map(|m| Value::Int(m.len() as i64))
-            .map_err(|e| os_error(i, e, &p))
+            .map_err(|e| os_error(i, e, p))
     });
     m.insert("File.mtime", |i, _, a| {
         let p = string(i, a.arg(0), "path")?;
-        let modified = std::fs::metadata(&*p)
+        let modified = std::fs::metadata(p)
             .and_then(|m| m.modified())
-            .map_err(|e| os_error(i, e, &p))?;
+            .map_err(|e| os_error(i, e, p))?;
         let ns = match modified.duration_since(std::time::UNIX_EPOCH) {
             Ok(d) => d.as_nanos() as i64,
             Err(e) => -(e.duration().as_nanos() as i64),
@@ -349,14 +349,14 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     m.insert("File.delete", |i, _, a| {
         for p in &a.pos {
             let p = string(i, p, "path")?;
-            std::fs::remove_file(&*p).map_err(|e| os_error(i, e, &p))?;
+            std::fs::remove_file(p).map_err(|e| os_error(i, e, p))?;
         }
         Ok(Value::Int(a.pos.len() as i64))
     });
     m.insert("File.rename", |i, _, a| {
         let from = string(i, a.arg(0), "from")?;
         let to = string(i, a.arg(1), "to")?;
-        std::fs::rename(&*from, &*to).map_err(|e| os_error(i, e, &from))?;
+        std::fs::rename(from, to).map_err(|e| os_error(i, e, from))?;
         Ok(Value::Int(0))
     });
     m.insert("File.copy", |i, _, a| {
@@ -365,7 +365,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
         let (f, t) = (from.to_string(), to.to_string());
         i.block_on(move || std::fs::copy(&f, &t))?
             .map(|n| Value::Int(n as i64))
-            .map_err(|e| os_error(i, e, &from))
+            .map_err(|e| os_error(i, e, from))
     });
     m.insert("File.readlines", |i, _, a| {
         let p = string(i, a.arg(0), "path")?;
@@ -373,7 +373,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
         let path = p.to_string();
         let s = i
             .block_on(move || std::fs::read_to_string(&path))?
-            .map_err(|e| os_error(i, e, &p))?;
+            .map_err(|e| os_error(i, e, p))?;
         Ok(Value::array(
             s.split_inclusive('\n')
                 .map(|line| if chomp { chomp_line(line) } else { line })
@@ -385,17 +385,17 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     m.insert("File.foreach", file_each_line);
     m.insert("File.basename", |i, _, a| {
         let p = string(i, a.arg(0), "path")?;
-        let name = file_name(&p);
+        let name = file_name(p);
         let name = match a.pos.get(1) {
             Some(suffix) => {
                 let suffix = string(i, suffix, "suffix")?;
-                if &*suffix == ".*" {
+                if suffix == ".*" {
                     match name.rfind('.') {
                         Some(0) | None => name.to_string(),
                         Some(at) => name[..at].to_string(),
                     }
                 } else {
-                    name.strip_suffix(&*suffix).unwrap_or(name).to_string()
+                    name.strip_suffix(suffix).unwrap_or(name).to_string()
                 }
             }
             None => name.to_string(),
@@ -403,11 +403,11 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
         Ok(Value::string(name))
     });
     m.insert("File.dirname", |i, _, a| {
-        Ok(Value::str(dir_name(&string(i, a.arg(0), "path")?)))
+        Ok(Value::str(dir_name(string(i, a.arg(0), "path")?)))
     });
     m.insert("File.extname", |i, _, a| {
         let p = string(i, a.arg(0), "path")?;
-        let name = file_name(&p);
+        let name = file_name(p);
         Ok(Value::string(match name.rfind('.') {
             Some(0) | None => String::new(),
             Some(at) if at == name.len() - 1 => String::new(),
@@ -417,8 +417,8 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     m.insert("File.split", |i, _, a| {
         let p = string(i, a.arg(0), "path")?;
         Ok(Value::array(vec![
-            Value::str(dir_name(&p)),
-            Value::str(file_name(&p)),
+            Value::str(dir_name(p)),
+            Value::str(file_name(p)),
         ]))
     });
     m.insert("File.join", |i, _, a| {
@@ -426,7 +426,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
         for p in &a.pos {
             let part = string(i, p, "part")?;
             if out.is_empty() {
-                out.push_str(&part);
+                out.push_str(part);
             } else {
                 let trimmed = part.trim_start_matches('/');
                 if !out.ends_with('/') {
@@ -441,13 +441,13 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
         let p = string(i, a.arg(0), "path")?;
         let base: Option<PathBuf> = match a.pos.get(1) {
             Some(Value::Nil) | None => None,
-            Some(b) => Some(PathBuf::from(&*string(i, b, "directory")?)),
+            Some(b) => Some(PathBuf::from(string(i, b, "directory")?)),
         };
-        Ok(Value::string(expand_path(&p, base)))
+        Ok(Value::string(expand_path(p, base)))
     });
     m.insert("File.absolute_path", |i, _, a| {
         let p = string(i, a.arg(0), "path")?;
-        Ok(Value::string(expand_path(&p, None)))
+        Ok(Value::string(expand_path(p, None)))
     });
 
     // Dir
@@ -480,59 +480,56 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     });
     m.insert("Dir.exist?", |i, _, a| {
         Ok(Value::Bool(
-            Path::new(&*string(i, a.arg(0), "path")?).is_dir(),
+            Path::new(string(i, a.arg(0), "path")?).is_dir(),
         ))
     });
     m.insert("Dir.empty?", |i, _, a| {
         let p = string(i, a.arg(0), "path")?;
         Ok(Value::Bool(
-            std::fs::read_dir(&*p)
+            std::fs::read_dir(p)
                 .map(|mut d| d.next().is_none())
                 .unwrap_or(false),
         ))
     });
     m.insert("Dir.mkdir", |i, _, a| {
         let p = string(i, a.arg(0), "path")?;
-        std::fs::create_dir(&*p).map_err(|e| os_error(i, e, &p))?;
+        std::fs::create_dir(p).map_err(|e| os_error(i, e, p))?;
         Ok(Value::Int(0))
     });
     m.insert("Dir.mkdir_p", |i, _, a| {
         let p = string(i, a.arg(0), "path")?;
-        std::fs::create_dir_all(&*p).map_err(|e| os_error(i, e, &p))?;
+        std::fs::create_dir_all(p).map_err(|e| os_error(i, e, p))?;
         Ok(Value::Int(0))
     });
     m.insert("Dir.rmdir", |i, _, a| {
         let p = string(i, a.arg(0), "path")?;
-        std::fs::remove_dir(&*p).map_err(|e| os_error(i, e, &p))?;
+        std::fs::remove_dir(p).map_err(|e| os_error(i, e, p))?;
         Ok(Value::Int(0))
     });
     m.insert("Dir.rm_rf", |i, _, a| {
         let p = string(i, a.arg(0), "path")?;
-        match std::fs::remove_dir_all(&*p) {
+        match std::fs::remove_dir_all(p) {
             Ok(()) => Ok(Value::Int(0)),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Value::Int(0)),
-            Err(e) => Err(os_error(i, e, &p)),
+            Err(e) => Err(os_error(i, e, p)),
         }
     });
     m.insert("Dir.children", |i, _, a| {
         let p = string(i, a.arg(0), "path")?;
         Ok(Value::array(
-            dir_children(i, &p)?
-                .into_iter()
-                .map(Value::string)
-                .collect(),
+            dir_children(i, p)?.into_iter().map(Value::string).collect(),
         ))
     });
     m.insert("Dir.entries", |i, _, a| {
         let p = string(i, a.arg(0), "path")?;
         let mut names = vec![".".to_string(), "..".to_string()];
-        names.extend(dir_children(i, &p)?);
+        names.extend(dir_children(i, p)?);
         Ok(Value::array(names.into_iter().map(Value::string).collect()))
     });
     m.insert("Dir.each_child", |i, _, a| {
         let b = block(i, &a)?;
         let p = string(i, a.arg(0), "path")?;
-        for name in dir_children(i, &p)? {
+        for name in dir_children(i, p)? {
             i.call_block(&b, smallvec![Value::string(name)])?;
         }
         Ok(Value::Nil)
@@ -797,14 +794,12 @@ fn file_open(interp: &Interp, _: &Value, args: Args) -> EvalResult {
         }
         other => return Err(interp.err_arg(&format!("invalid access mode {other}"))),
     };
-    let file = options
-        .open(&*path)
-        .map_err(|e| os_error(interp, e, &path))?;
+    let file = options.open(path).map_err(|e| os_error(interp, e, path))?;
     let handle = FileHandle {
         path: path.to_string(),
         reader: if read {
             Some(std::io::BufReader::new(
-                file.try_clone().map_err(|e| os_error(interp, e, &path))?,
+                file.try_clone().map_err(|e| os_error(interp, e, path))?,
             ))
         } else {
             None
@@ -838,7 +833,7 @@ fn file_each_line(interp: &Interp, _: &Value, args: Args) -> EvalResult {
     let p = path.to_string();
     let text = interp
         .block_on(move || std::fs::read_to_string(&p))?
-        .map_err(|e| os_error(interp, e, &path))?;
+        .map_err(|e| os_error(interp, e, path))?;
     for line in text.split_inclusive('\n') {
         interp.call_block(&b, smallvec![Value::str(line)])?;
     }

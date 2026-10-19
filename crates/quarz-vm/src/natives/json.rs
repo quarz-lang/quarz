@@ -397,6 +397,7 @@ fn generate(
             out.push_str(&crate::interp::format_float(*f));
         }
         Value::Str(s) => escape(s, out),
+        Value::Short(s) => escape(s.as_str(), out),
         Value::Symbol(s) => escape(&interp.symbol_name(*s), out),
         Value::Array(items) => {
             generate_seq(interp, items.values().iter(), indent, out, depth)?;
@@ -409,6 +410,7 @@ fn generate(
             for (k, v) in h.iter() {
                 let key = match k {
                     Value::Str(s) => s.to_string(),
+                    Value::Short(s) => s.as_str().to_string(),
                     Value::Symbol(s) => interp.symbol_name(*s).to_string(),
                     other => interp.to_s(other)?.to_string(),
                 };

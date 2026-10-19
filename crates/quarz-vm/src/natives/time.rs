@@ -46,7 +46,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
         let text = string(i, a.arg(0), "text")?;
         match DateTime::parse_from_rfc3339(text.trim()) {
             Ok(dt) => Ok(from_datetime(&dt, text.trim().ends_with('Z'))),
-            Err(_) => Err(i.err_arg(&format!("invalid ISO 8601 time {:?}", &*text))),
+            Err(_) => Err(i.err_arg(&format!("invalid ISO 8601 time {:?}", text))),
         }
     });
     m.insert("Time.monotonic", |_, _, _| {
@@ -159,7 +159,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     m.insert("Time#strftime", |i, r, a| {
         let t = tv(i, r)?;
         let fmt = string(i, a.arg(0), "format")?;
-        strftime(&t, &fmt)
+        strftime(&t, fmt)
             .map(Value::string)
             .ok_or_else(|| i.err_arg(&format!("invalid strftime format {:?}", &*fmt)))
     });

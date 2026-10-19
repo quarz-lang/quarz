@@ -86,10 +86,10 @@ pub fn float(interp: &Interp, v: &Value, what: &str) -> Result<f64, Flow> {
     }
 }
 
-pub fn string(interp: &Interp, v: &Value, what: &str) -> Result<Rc<str>, Flow> {
-    match v {
-        Value::Str(s) => Ok(s.clone()),
-        _ => Err(interp.err_type(&format!(
+pub fn string<'a>(interp: &Interp, v: &'a Value, what: &str) -> Result<&'a str, Flow> {
+    match v.as_str() {
+        Some(s) => Ok(s),
+        None => Err(interp.err_type(&format!(
             "{what} must be a String, got {}",
             interp.class_name(v)
         ))),

@@ -62,12 +62,12 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     m.insert("String#delete_prefix", |i, r, a| {
         let text = s(i, r)?;
         let prefix = string(i, a.arg(0), "prefix")?;
-        Ok(Value::str(text.strip_prefix(&*prefix).unwrap_or(&text)))
+        Ok(Value::str(text.strip_prefix(prefix).unwrap_or(text)))
     });
     m.insert("String#delete_suffix", |i, r, a| {
         let text = s(i, r)?;
         let suffix = string(i, a.arg(0), "suffix")?;
-        Ok(Value::str(text.strip_suffix(&*suffix).unwrap_or(&text)))
+        Ok(Value::str(text.strip_suffix(suffix).unwrap_or(text)))
     });
     m.insert("String#casecmp?", |i, r, a| {
         let other = string(i, a.arg(0), "other")?;
@@ -96,7 +96,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
             .unwrap_or(text.len());
         let mut out = String::with_capacity(text.len() + piece.len());
         out.push_str(&text[..byte]);
-        out.push_str(&piece);
+        out.push_str(piece);
         out.push_str(&text[byte..]);
         Ok(Value::string(out))
     });
@@ -114,18 +114,18 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     m.insert("String#upto", |i, r, a| {
         let b = block(i, &a)?;
         let last = string(i, a.arg(0), "last")?;
-        let mut current = s(i, r)?;
-        if current.chars().count() > last.chars().count() {
+        let last_len = last.chars().count();
+        let mut current = r.clone();
+        if s(i, &current)?.chars().count() > last_len {
             return Ok(Value::Nil);
         }
         loop {
-            i.call_block(&b, smallvec![Value::Str(current.clone())])?;
-            if *current == *last {
+            i.call_block(&b, smallvec![current.clone()])?;
+            if s(i, &current)? == last {
                 break;
             }
-            let next = super::string::string_succ(i, &Value::Str(current), Args::default())?;
-            current = s(i, &next)?;
-            if current.chars().count() > last.chars().count() {
+            current = super::string::string_succ(i, &current, Args::default())?;
+            if s(i, &current)?.chars().count() > last_len {
                 break;
             }
         }
@@ -159,21 +159,21 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
         let text = s(i, r)?;
         if let Some(suffix) = a.pos.first() {
             let suffix = string(i, suffix, "suffix")?;
-            return Ok(Value::str(text.strip_suffix(&*suffix).unwrap_or(&text)));
+            return Ok(Value::str(text.strip_suffix(suffix).unwrap_or(text)));
         }
         Ok(Value::str(
             text.strip_suffix("\r\n")
                 .or_else(|| text.strip_suffix('\n'))
                 .or_else(|| text.strip_suffix('\r'))
-                .unwrap_or(&text),
+                .unwrap_or(text),
         ))
     });
     m.insert("String#start_with?", |i, r, a| {
         let text = s(i, r)?;
         for p in &a.pos {
             let hit = match p {
-                Value::Regexp(rx) => rx.regex.find(&text).is_some_and(|m| m.start() == 0),
-                other => text.starts_with(&*string(i, other, "prefix")?),
+                Value::Regexp(rx) => rx.regex.find(text).is_some_and(|m| m.start() == 0),
+                other => text.starts_with(string(i, other, "prefix")?),
             };
             if hit {
                 return Ok(Value::Bool(true));
@@ -184,7 +184,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     m.insert("String#end_with?", |i, r, a| {
         let text = s(i, r)?;
         for p in &a.pos {
-            if text.ends_with(&*string(i, p, "suffix")?) {
+            if text.ends_with(string(i, p, "suffix")?) {
                 return Ok(Value::Bool(true));
             }
         }
@@ -229,7 +229,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     m.insert("String#[]", |i, r, a| match (a.arg(0), a.pos.len()) {
         (Value::Regexp(rx), 1) => {
             let text = s(i, r)?;
-            Ok(match rx.regex.find(&text) {
+            Ok(match rx.regex.find(text) {
                 Some(m) => Value::str(m.as_str()),
                 None => Value::Nil,
             })
@@ -243,14 +243,14 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
             Value::Array(items) => items.to_values(),
             other => vec![other.clone()],
         };
-        Ok(Value::string(super::core::format_values(i, &fmt, &values)?))
+        Ok(Value::string(super::core::format_values(i, fmt, &values)?))
     });
 
     // String::Builder
     m.insert("String::Builder#append", super::string::sb_push);
     m.insert("String::Builder#prepend", |i, r, a| {
         let piece = string(i, a.arg(0), "piece")?;
-        sb(i, r)?.borrow_mut().insert_str(0, &piece);
+        sb(i, r)?.borrow_mut().insert_str(0, piece);
         Ok(r.clone())
     });
     m.insert("String::Builder#insert", |i, r, a| {
@@ -268,7 +268,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
             .nth(at as usize)
             .map(|(b, _)| b)
             .unwrap_or(text.len());
-        text.insert_str(byte, &piece);
+        text.insert_str(byte, piece);
         drop(text);
         Ok(r.clone())
     });
@@ -327,7 +327,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     m.insert("Symbol#start_with?", |i, r, a| {
         let text = symbol_text(i, r)?;
         for p in &a.pos {
-            if text.starts_with(&*string(i, p, "prefix")?) {
+            if text.starts_with(string(i, p, "prefix")?) {
                 return Ok(Value::Bool(true));
             }
         }
@@ -336,15 +336,16 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     m.insert("Symbol#end_with?", |i, r, a| {
         let text = symbol_text(i, r)?;
         for p in &a.pos {
-            if text.ends_with(&*string(i, p, "suffix")?) {
+            if text.ends_with(string(i, p, "suffix")?) {
                 return Ok(Value::Bool(true));
             }
         }
         Ok(Value::Bool(false))
     });
     m.insert("Symbol#succ", |i, r, _| {
-        let next = super::string::string_succ(i, &Value::Str(symbol_text(i, r)?), Args::default())?;
-        Ok(Value::Symbol(i.intern(&s(i, &next)?)))
+        let next =
+            super::string::string_succ(i, &Value::str_rc(symbol_text(i, r)?), Args::default())?;
+        Ok(Value::Symbol(i.intern(s(i, &next)?)))
     });
 
     // Regexp
@@ -359,17 +360,17 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
                 return Err(i.err_arg(&format!("unknown regexp option: {f}")));
             }
         }
-        i.make_regexp(&source, &flags)
+        i.make_regexp(source, &flags)
     });
     m.insert("Regexp.escape", |i, _, a| {
-        Ok(Value::string(regex::escape(&string(i, a.arg(0), "text")?)))
+        Ok(Value::string(regex::escape(string(i, a.arg(0), "text")?)))
     });
     m.insert("Regexp.union", |i, _, a| {
         let mut parts = Vec::with_capacity(a.pos.len());
         for p in &a.pos {
             parts.push(match p {
                 Value::Regexp(rx) => format!("(?:{})", rx.source),
-                other => regex::escape(&string(i, other, "pattern")?),
+                other => regex::escape(string(i, other, "pattern")?),
             });
         }
         i.make_regexp(&parts.join("|"), "")
@@ -461,7 +462,7 @@ fn group_value(m: &MatchDataVal, idx: usize) -> Value {
 fn string_slice(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let text = s(interp, recv)?;
     if let Value::Range(r) = args.arg(0) {
-        return Ok(Value::string(slice_range(interp, &text, r)?));
+        return Ok(Value::string(slice_range(interp, text, r)?));
     }
     let start = int(interp, args.arg(0), "start")?;
     let len = int(interp, args.arg(1), "length")?;
@@ -485,19 +486,19 @@ fn string_partition(interp: &Interp, recv: &Value, args: Args, from_right: bool)
         Value::Regexp(rx) => {
             if from_right {
                 rx.regex
-                    .find_iter(&text)
+                    .find_iter(text)
                     .last()
                     .map(|m| (m.start(), m.end()))
             } else {
-                rx.regex.find(&text).map(|m| (m.start(), m.end()))
+                rx.regex.find(text).map(|m| (m.start(), m.end()))
             }
         }
         other => {
             let sep = string(interp, other, "separator")?;
             let at = if from_right {
-                text.rfind(&*sep)
+                text.rfind(sep)
             } else {
-                text.find(&*sep)
+                text.find(sep)
             };
             at.map(|b| (b, b + sep.len()))
         }
@@ -508,8 +509,8 @@ fn string_partition(interp: &Interp, recv: &Value, args: Args, from_right: bool)
             Value::str(&text[st..en]),
             Value::str(&text[en..]),
         ],
-        None if from_right => vec![Value::str(""), Value::str(""), Value::Str(text.clone())],
-        None => vec![Value::Str(text.clone()), Value::str(""), Value::str("")],
+        None if from_right => vec![Value::str(""), Value::str(""), Value::str(text)],
+        None => vec![Value::str(text), Value::str(""), Value::str("")],
     };
     Ok(Value::array(parts))
 }
@@ -547,23 +548,23 @@ fn string_find(interp: &Interp, recv: &Value, args: Args, from_right: bool) -> E
             if from_right {
                 let limit = byte_at(start);
                 rx.regex
-                    .find_iter(&text)
+                    .find_iter(text)
                     .map(|m| m.start())
                     .take_while(|b| *b <= limit)
                     .last()
             } else {
                 let from = byte_at(start);
-                rx.regex.find_at(&text, from).map(|m| m.start())
+                rx.regex.find_at(text, from).map(|m| m.start())
             }
         }
         other => {
             let needle = string(interp, other, "other")?;
             if from_right {
                 let limit = (byte_at(start) + needle.len()).min(text.len());
-                text[..limit].rfind(&*needle)
+                text[..limit].rfind(needle)
             } else {
                 let from = byte_at(start);
-                text[from..].find(&*needle).map(|b| b + from)
+                text[from..].find(needle).map(|b| b + from)
             }
         }
     };
@@ -581,12 +582,13 @@ fn string_split_limit(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     };
     let limit = int(interp, limit, "limit")?;
     let text = s(interp, recv)?;
-    let mut parts: Vec<&str> = match args.arg(0) {
-        Value::Str(sep) if limit > 0 => text.splitn(limit as usize, &**sep).collect(),
-        Value::Str(sep) => text.split(&**sep).collect(),
-        Value::Regexp(rx) if limit > 0 => rx.regex.splitn(&text, limit as usize).collect(),
-        Value::Regexp(rx) => rx.regex.split(&text).collect(),
-        other => {
+    let pat = args.arg(0);
+    let mut parts: Vec<&str> = match (pat, pat.as_str()) {
+        (_, Some(sep)) if limit > 0 => text.splitn(limit as usize, sep).collect(),
+        (_, Some(sep)) => text.split(sep).collect(),
+        (Value::Regexp(rx), _) if limit > 0 => rx.regex.splitn(text, limit as usize).collect(),
+        (Value::Regexp(rx), _) => rx.regex.split(text).collect(),
+        (other, _) => {
             return Err(interp.err_type(&format!(
                 "split takes a String or Regexp, got {}",
                 interp.class_name(other)
@@ -623,10 +625,11 @@ fn string_sub_block(interp: &Interp, recv: &Value, args: Args, global: bool) -> 
     }
     let mut out = String::with_capacity(text.len());
     let mut last = 0;
-    match args.arg(0) {
-        Value::Str(pat) => {
+    let pattern = args.arg(0);
+    match (pattern, pattern.as_str()) {
+        (_, Some(pat)) => {
             let mut from = 0;
-            while let Some(b) = text[from..].find(&**pat) {
+            while let Some(b) = text[from..].find(pat) {
                 let st = from + b;
                 let en = st + pat.len();
                 out.push_str(&text[last..st]);
@@ -638,8 +641,8 @@ fn string_sub_block(interp: &Interp, recv: &Value, args: Args, global: bool) -> 
                 }
             }
         }
-        Value::Regexp(rx) => {
-            for m in rx.regex.find_iter(&text) {
+        (Value::Regexp(rx), _) => {
+            for m in rx.regex.find_iter(text) {
                 out.push_str(&text[last..m.start()]);
                 out.push_str(&replacement(m.as_str())?);
                 last = m.end();
@@ -648,7 +651,7 @@ fn string_sub_block(interp: &Interp, recv: &Value, args: Args, global: bool) -> 
                 }
             }
         }
-        other => {
+        (other, _) => {
             return Err(interp.err_type(&format!(
                 "sub takes a String or Regexp, got {}",
                 interp.class_name(other)

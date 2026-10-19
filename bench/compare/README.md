@@ -21,11 +21,11 @@ between runs.
 
 | program     | quarz-vm | quarz-aot |   go | rust |  ruby | ruby --yjit |
 |-------------|---------:|----------:|-----:|-----:|------:|------------:|
-| fib         |    145.4 |       8.2 |  2.7 |  1.7 |  66.8 |        55.5 |
-| loop        |    409.2 |       9.6 |  3.1 |  4.2 | 110.6 |       108.9 |
-| collections |    505.0 |      33.5 | 28.6 | 13.1 | 225.0 |       203.4 |
-| objects     |    150.3 |      14.2 |  1.6 |  1.5 | 287.2 |       229.8 |
-| strings     |     95.6 |      47.5 | 30.0 | 15.2 | 153.3 |       147.5 |
+| fib         |    146.5 |       8.6 |  2.3 |  1.7 |  66.3 |        56.8 |
+| loop        |    417.1 |       8.7 |  3.4 |  3.5 | 110.2 |       111.2 |
+| collections |    495.4 |      32.6 | 28.6 | 14.1 | 228.5 |       205.5 |
+| objects     |    156.0 |      14.9 |  1.8 |  1.4 | 289.0 |       230.9 |
+| strings     |     81.0 |      37.2 | 31.7 | 15.1 | 155.2 |       148.4 |
 
 First measurement, at commit 93874ea (before direct calls between
 compiled bodies, inline reference counting, inline field and frame
@@ -51,21 +51,22 @@ access and the reusable block caller):
   the hash table with boxed keys and values), 9–10× on `objects` (a
   `Vec2` that stays in its function is not allocated, the one stored in
   the particle is: its allocation and release are most of the time) and
-  1.6–3× on `strings` (interpolation builds in one buffer, the string
-  natives take their arguments by reference; what remains is one heap
-  allocation per string).
+  1.2–2.5× on `strings` (interpolation builds in one buffer, the string
+  natives take their arguments by reference, strings of at most 15
+  bytes live in the value; what remains is the allocation of the longer
+  ones and the builder).
 - Against Ruby, compiled Quarz is ahead everywhere: 7–8× on `fib`,
-  11× on `loop`, 6–7× on `collections`, 16–20× on `objects`, 3× on
+  12× on `loop`, 6–7× on `collections`, 16–20× on `objects`, 4× on
   `strings`.
 - The VM is 2–4× slower than Ruby's interpreter on calls and loops and
   on a par for objects and strings.
 
 What separates compiled Quarz from Go and Rust now is the value
 representation: every value is a 24-byte tagged box, every copy of a
-heap value bumps a reference count, every object and every string is
-heap-allocated. Arrays of `Int`/`Float` now store their elements
-unboxed, and copy propagation removed most of the reference-count
-traffic on temporaries; typed storage for `Int`/`Float` fields and for
-`Int`-keyed hashes, and short strings kept inline in the value (no
-allocation, no reference count), would be the next steps, and they are
-changes to the runtime's data structures rather than to the compiler.
+heap value bumps a reference count, every object and every long string
+is heap-allocated. Arrays of `Int`/`Float` store their elements
+unboxed, strings of at most 15 bytes live in the value, and copy
+propagation removed most of the reference-count traffic on
+temporaries; typed storage for `Int`/`Float` fields and for
+`Int`-keyed hashes would be the next steps, and they are changes to
+the runtime's data structures rather than to the compiler.

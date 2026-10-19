@@ -1,0 +1,54 @@
+# Strings of at most 15 bytes live in the value itself; longer ones are
+# shared on the heap. Nothing observable depends on which.
+require "json"
+a = "short"
+b = "sho" + "rt"
+long = "this string is longer than fifteen bytes"
+p a == b, a.equal?(b), a.hash == b.hash, a <=> b, a <=> long, long <=> a
+h = { "short" => 1, long => 2 }
+p h["sh" + "ort"], h[long.dup], h.key?("short"), h.size
+p "exactly15bytes!".size, "exactly15bytes!!".size, "日本語の文字列です".size, "日本語".bytesize
+p ["b", "a", long, "c"].sort, ["x", "y"].include?("y"), ["x", "y"].index("y")
+p "a-b-c".split("-"), "a b  c".split(" "), "abc".split(""), "x,y,z".split(",", 2)
+p "hello".sub("l", "L"), "hello".gsub("l", "L"), "hello".gsub(/l+/) { |m| m.upcase }
+p "hello" =~ /ll/, "hello".index("l"), "hello".rindex("l")
+ups: Array[String] = []
+"abc".upto("abe") { |x| ups = ups.push(x) }
+p :sym.to_s, :a_long_symbol_name_here.to_s, "ab".to_sym, ups
+p ("a".."e").to_a, ("ab".."ad").to_a
+p Integer("42"), Float("2.5"), String(7), String("s"), "7".to_i, "x".ord, 120.chr
+begin
+  Integer("zz")
+rescue ArgumentError => e
+  p e.message
+end
+p "abc".bytes, "abc".chars, "a".ljust(3, "*"), "abc".center(7, "-"), "ab" * 3
+p "Hello World".downcase, "ÄÖ".downcase, "straße".upcase, "abc".reverse, "abc".succ, "az".succ
+s = "x"
+200.times { s = s + "y" }
+p s.size, s.start_with?("xy"), s[0], s[-1], s[1..3]
+ch = Channel[String].new
+Task.spawn { ch.send("sent" + " back"); ch.send("a long message crossing the channel") }
+p ch.receive, ch.receive
+p JSON.generate({ "k" => "v", "key" => long }), JSON.parse("{\"a\": \"b\"}")
+p "abc".inspect, "a\nb".inspect, "", "".empty?, " ".strip.empty?
+b2 = String.build { |sb| sb << "ab" << long; sb.push("cd") }
+p b2.size
+case "ab"
+when "cd" then p 1
+when "ab" then p 2
+end
+case "abc"
+when /b/ then p 3
+end
+p "abc".each_char.to_a, "abc".tr("b", "x"), "%s=%d" % ["k", 3]
+begin
+  raise "short message"
+rescue RuntimeError => e
+  p e.message
+end
+begin
+  raise "a message that is longer than fifteen bytes"
+rescue RuntimeError => e
+  p e.message
+end

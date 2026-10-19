@@ -36,7 +36,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
         let text = string(i, a.arg(0), "hex")?;
         let digits: Vec<u8> = text.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
         if !(digits.len() % 2 == 0) || !digits.iter().all(u8::is_ascii_hexdigit) {
-            return Err(i.err_arg(&format!("invalid hex string {:?}", &*text)));
+            return Err(i.err_arg(&format!("invalid hex string {:?}", text)));
         }
         let out = digits
             .chunks(2)
@@ -141,15 +141,15 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
         let data = bs(i, r)?;
         let encoding = match a.pos.first() {
             Some(v) => string(i, v, "encoding")?,
-            None => Rc::from("UTF-8"),
+            None => "UTF-8",
         };
-        match decode(&data, &encoding) {
+        match decode(&data, encoding) {
             Some(Ok(s)) => Ok(Value::string(s)),
             Some(Err(at)) => Err(i.err_arg(&format!(
                 "invalid {} byte sequence at offset {at}",
                 encoding.to_uppercase()
             ))),
-            None => Err(i.err_arg(&format!("unknown encoding {:?}", &*encoding))),
+            None => Err(i.err_arg(&format!("unknown encoding {:?}", encoding))),
         }
     });
     m.insert("Bytes#decode?", |i, r, _| {
@@ -205,15 +205,15 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
         let text = string(i, r, "receiver")?;
         let encoding = match a.pos.first() {
             Some(v) => string(i, v, "encoding")?,
-            None => Rc::from("UTF-8"),
+            None => "UTF-8",
         };
-        match encode(&text, &encoding) {
+        match encode(text, encoding) {
             Some(Ok(bytes)) => Ok(Value::bytes(bytes)),
             Some(Err(c)) => Err(i.err_arg(&format!(
                 "{c:?} cannot be encoded in {}",
                 encoding.to_uppercase()
             ))),
-            None => Err(i.err_arg(&format!("unknown encoding {:?}", &*encoding))),
+            None => Err(i.err_arg(&format!("unknown encoding {:?}", encoding))),
         }
     });
 }
@@ -261,7 +261,9 @@ fn builder_push(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let builder = bb(interp, recv)?;
     match args.arg(0) {
         Value::Bytes(b) => builder.borrow_mut().extend_from_slice(b),
-        Value::Str(s) => builder.borrow_mut().extend_from_slice(s.as_bytes()),
+        v if v.is_str() => builder
+            .borrow_mut()
+            .extend_from_slice(v.as_str().unwrap_or("").as_bytes()),
         v => {
             let b = byte(interp, v)?;
             builder.borrow_mut().push(b);

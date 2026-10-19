@@ -27,13 +27,11 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     m.insert("String#%", string_format);
     m.insert("String#<=>", |i, r, a| {
         Ok(Value::Int(
-            s(i, r)?.cmp(&string(i, a.arg(0), "other")?) as i64
+            s(i, r)?.cmp(string(i, a.arg(0), "other")?) as i64
         ))
     });
     m.insert("String#==", |i, r, a| {
-        Ok(Value::Bool(
-            matches!(a.arg(0), Value::Str(o) if *o == s(i, r)?),
-        ))
+        Ok(Value::Bool(a.arg(0).as_str() == Some(s(i, r)?)))
     });
     m.insert("String#size", |i, r, _| {
         Ok(Value::Int(s(i, r)?.chars().count() as i64))
@@ -71,7 +69,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     m.insert("String#scan", string_scan);
     m.insert("String#match", string_match);
     m.insert("String#match?", |i, r, a| {
-        Ok(Value::Bool(re(i, a.arg(0))?.regex.is_match(&s(i, r)?)))
+        Ok(Value::Bool(re(i, a.arg(0))?.regex.is_match(s(i, r)?)))
     });
     m.insert("String#=~", string_match_index);
     m.insert("String#sub", |i, r, a| string_sub(i, r, a, false));
@@ -110,7 +108,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
             st.strip_suffix("\r\n")
                 .or_else(|| st.strip_suffix('\n'))
                 .or_else(|| st.strip_suffix('\r'))
-                .unwrap_or(&st),
+                .unwrap_or(st),
         ))
     });
     m.insert("String#chop", |i, r, _| {
@@ -120,21 +118,21 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
         Ok(Value::string(c))
     });
     m.insert("String#start_with?", |i, r, a| {
-        Ok(Value::Bool(s(i, r)?.starts_with(&*string(
+        Ok(Value::Bool(s(i, r)?.starts_with(string(
             i,
             a.arg(0),
             "prefix",
         )?)))
     });
     m.insert("String#end_with?", |i, r, a| {
-        Ok(Value::Bool(s(i, r)?.ends_with(&*string(
+        Ok(Value::Bool(s(i, r)?.ends_with(string(
             i,
             a.arg(0),
             "suffix",
         )?)))
     });
     m.insert("String#include?", |i, r, a| {
-        Ok(Value::Bool(s(i, r)?.contains(&*string(
+        Ok(Value::Bool(s(i, r)?.contains(string(
             i,
             a.arg(0),
             "other",
@@ -157,11 +155,11 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     m.insert("String#to_i", string_to_i);
     m.insert("String#to_f", string_to_f);
     m.insert("String#to_sym", |i, r, _| {
-        Ok(Value::Symbol(i.intern(&s(i, r)?)))
+        Ok(Value::Symbol(i.intern(s(i, r)?)))
     });
     m.insert("String#to_s", |_, r, _| Ok(r.clone()));
     m.insert("String#inspect", |i, r, _| {
-        Ok(Value::string(crate::interp::inspect_str(&s(i, r)?)))
+        Ok(Value::string(crate::interp::inspect_str(s(i, r)?)))
     });
     m.insert("String#hash", |i, r, _| {
         use std::hash::{Hash, Hasher};
@@ -209,7 +207,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
         Ok(Value::Int(i.compare(r, a.arg(0))? as i64))
     });
     m.insert("Symbol#to_s", |i, r, _| match r {
-        Value::Symbol(sym) => Ok(Value::Str(i.symbol_name(*sym))),
+        Value::Symbol(sym) => Ok(Value::str_rc(i.symbol_name(*sym))),
         _ => Err(i.err_type("expected a Symbol")),
     });
     m.insert("Symbol#to_sym", |_, r, _| Ok(r.clone()));
@@ -220,10 +218,10 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     });
     m.insert("Regexp#match", |i, r, a| {
         let rx = re(i, r)?.clone();
-        match_data(i, &rx, &string(i, a.arg(0), "text")?)
+        match_data(i, &rx, string(i, a.arg(0), "text")?)
     });
     m.insert("Regexp#match?", |i, r, a| {
-        Ok(Value::Bool(re(i, r)?.regex.is_match(&string(
+        Ok(Value::Bool(re(i, r)?.regex.is_match(string(
             i,
             a.arg(0),
             "text",
@@ -231,7 +229,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     });
     m.insert("Regexp#=~", |i, r, a| {
         let text = string(i, a.arg(0), "text")?;
-        Ok(match re(i, r)?.regex.find(&text) {
+        Ok(match re(i, r)?.regex.find(text) {
             Some(mt) => Value::Int(text[..mt.start()].chars().count() as i64),
             None => Value::Nil,
         })
@@ -295,7 +293,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     });
 }
 
-pub(super) fn s(interp: &Interp, v: &Value) -> Result<Rc<str>, Flow> {
+pub(super) fn s<'a>(interp: &Interp, v: &'a Value) -> Result<&'a str, Flow> {
     string(interp, v, "receiver")
 }
 
@@ -341,7 +339,7 @@ fn string_format(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
         other => vec![other.clone()],
     };
     Ok(Value::string(super::core::format_values(
-        interp, &fmt, &values,
+        interp, fmt, &values,
     )?))
 }
 
@@ -360,11 +358,11 @@ pub(super) fn char_offset(text: &str, index: i64) -> Option<(usize, usize)> {
 pub(super) fn string_index(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let text = s(interp, recv)?;
     match args.arg(0) {
-        Value::Int(i) => match char_offset(&text, *i) {
+        Value::Int(i) => match char_offset(text, *i) {
             Some((st, en)) => Ok(Value::str(&text[st..en])),
             None => Err(interp.err_index(&format!("index {i} out of string bounds"))),
         },
-        Value::Range(r) => Ok(Value::string(slice_range(interp, &text, r)?)),
+        Value::Range(r) => Ok(Value::string(slice_range(interp, text, r)?)),
         other => Err(interp.err_type(&format!(
             "String#[] takes an Int or Range, got {}",
             interp.class_name(other)
@@ -375,7 +373,7 @@ pub(super) fn string_index(interp: &Interp, recv: &Value, args: Args) -> EvalRes
 fn string_index_opt(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let text = s(interp, recv)?;
     let i = int(interp, args.arg(0), "index")?;
-    Ok(match char_offset(&text, i) {
+    Ok(match char_offset(text, i) {
         Some((st, en)) => Value::str(&text[st..en]),
         None => Value::Nil,
     })
@@ -420,29 +418,26 @@ pub(super) fn slice_range(interp: &Interp, text: &str, r: &RangeVal) -> Result<S
 
 pub(super) fn string_split(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let text = s(interp, recv)?;
-    let parts: Vec<Value> = match args.pos.first() {
-        None => text.split_whitespace().map(Value::str).collect(),
-        Some(Value::Str(sep)) if sep.as_ref() == " " => {
-            text.split_whitespace().map(Value::str).collect()
-        }
-        Some(Value::Str(sep)) if sep.is_empty() => {
-            text.chars().map(|c| Value::string(c.to_string())).collect()
-        }
-        Some(Value::Str(sep)) => {
-            let mut v: Vec<&str> = text.split(sep.as_ref()).collect();
+    let first = args.pos.first();
+    let parts: Vec<Value> = match (first, first.and_then(|v| v.as_str())) {
+        (None, _) => text.split_whitespace().map(Value::str).collect(),
+        (Some(_), Some(" ")) => text.split_whitespace().map(Value::str).collect(),
+        (Some(_), Some("")) => text.chars().map(|c| Value::string(c.to_string())).collect(),
+        (Some(_), Some(sep)) => {
+            let mut v: Vec<&str> = text.split(sep).collect();
             while v.last() == Some(&"") {
                 v.pop();
             }
             v.into_iter().map(Value::str).collect()
         }
-        Some(Value::Regexp(r)) => {
-            let mut v: Vec<&str> = r.regex.split(&text).collect();
+        (Some(Value::Regexp(r)), _) => {
+            let mut v: Vec<&str> = r.regex.split(text).collect();
             while v.last() == Some(&"") {
                 v.pop();
             }
             v.into_iter().map(Value::str).collect()
         }
-        Some(other) => {
+        (Some(other), _) => {
             return Err(interp.err_type(&format!(
                 "split takes a String or Regexp, got {}",
                 interp.class_name(other)
@@ -457,7 +452,7 @@ pub(super) fn string_scan(interp: &Interp, recv: &Value, args: Args) -> EvalResu
     let r = re(interp, args.arg(0))?;
     let out: Vec<Value> = r
         .regex
-        .captures_iter(&text)
+        .captures_iter(text)
         .map(|c| {
             if c.len() > 1 {
                 if c.len() == 2 {
@@ -481,7 +476,7 @@ pub(super) fn string_scan(interp: &Interp, recv: &Value, args: Args) -> EvalResu
     Ok(Value::array(out))
 }
 
-pub fn match_data(interp: &Interp, r: &RegexpVal, text: &Rc<str>) -> EvalResult {
+pub fn match_data(interp: &Interp, r: &RegexpVal, text: &str) -> EvalResult {
     let _ = interp;
     match r.regex.captures(text) {
         None => Ok(Value::Nil),
@@ -496,7 +491,7 @@ pub fn match_data(interp: &Interp, r: &RegexpVal, text: &Rc<str>) -> EvalResult 
                 .filter_map(|(i, n)| n.map(|n| (n.to_string(), i)))
                 .collect();
             Ok(Value::MatchData(Rc::new(MatchDataVal {
-                text: text.clone(),
+                text: Rc::from(text),
                 groups,
                 names,
             })))
@@ -507,13 +502,13 @@ pub fn match_data(interp: &Interp, r: &RegexpVal, text: &Rc<str>) -> EvalResult 
 fn string_match(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let text = s(interp, recv)?;
     let r = re(interp, args.arg(0))?;
-    match_data(interp, r, &text)
+    match_data(interp, r, text)
 }
 
 fn string_match_index(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let text = s(interp, recv)?;
     let r = re(interp, args.arg(0))?;
-    Ok(match r.regex.find(&text) {
+    Ok(match r.regex.find(text) {
         Some(m) => Value::Int(text[..m.start()].chars().count() as i64),
         None => Value::Nil,
     })
@@ -523,10 +518,13 @@ fn md_index(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let m = md(interp, recv)?;
     let idx = match args.arg(0) {
         Value::Int(i) => *i as usize,
-        Value::Str(name) => match m.names.iter().find(|(n, _)| **n == **name) {
-            Some((_, i)) => *i,
-            None => return Err(interp.err_index(&format!("undefined group name {name}"))),
-        },
+        v if v.is_str() => {
+            let name = v.as_str().unwrap_or("");
+            match m.names.iter().find(|(n, _)| **n == *name) {
+                Some((_, i)) => *i,
+                None => return Err(interp.err_index(&format!("undefined group name {name}"))),
+            }
+        }
         other => {
             return Err(interp.err_type(&format!(
                 "MatchData#[] takes an Int or String, got {}",
@@ -574,19 +572,20 @@ pub(super) fn string_sub(interp: &Interp, recv: &Value, args: Args, global: bool
     let text = s(interp, recv)?;
     let rep = string(interp, args.arg(1), "replacement")?;
     Ok(Value::string(match args.arg(0) {
-        Value::Str(pat) => {
+        v if v.is_str() => {
+            let pat = v.as_str().unwrap_or("");
             if global {
-                text.replace(pat.as_ref(), &rep)
+                text.replace(pat, rep)
             } else {
-                text.replacen(pat.as_ref(), &rep, 1)
+                text.replacen(pat, rep, 1)
             }
         }
         Value::Regexp(r) => {
-            let converted = convert_replacement(&rep);
+            let converted = convert_replacement(rep);
             if global {
-                r.regex.replace_all(&text, converted.as_str()).into_owned()
+                r.regex.replace_all(text, converted.as_str()).into_owned()
             } else {
-                r.regex.replace(&text, converted.as_str()).into_owned()
+                r.regex.replace(text, converted.as_str()).into_owned()
             }
         }
         other => {
@@ -610,7 +609,7 @@ fn string_capitalize(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
 fn string_index_of(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let text = s(interp, recv)?;
     let needle = string(interp, args.arg(0), "other")?;
-    Ok(match text.find(needle.as_ref()) {
+    Ok(match text.find(needle) {
         Some(b) => Value::Int(text[..b].chars().count() as i64),
         None => Value::Nil,
     })
@@ -619,7 +618,7 @@ fn string_index_of(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
 fn string_rindex_of(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let text = s(interp, recv)?;
     let needle = string(interp, args.arg(0), "other")?;
-    Ok(match text.rfind(needle.as_ref()) {
+    Ok(match text.rfind(needle) {
         Some(b) => Value::Int(text[..b].chars().count() as i64),
         None => Value::Nil,
     })
@@ -682,8 +681,8 @@ fn expand_set(spec: &str) -> (Vec<char>, bool) {
 
 fn string_tr(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let text = s(interp, recv)?;
-    let (from, negate) = expand_set(&string(interp, args.arg(0), "from")?);
-    let (to, _) = expand_set(&string(interp, args.arg(1), "to")?);
+    let (from, negate) = expand_set(string(interp, args.arg(0), "from")?);
+    let (to, _) = expand_set(string(interp, args.arg(1), "to")?);
     let out: String = text
         .chars()
         .filter_map(|c| {
@@ -700,7 +699,7 @@ fn string_tr(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
 
 fn string_delete(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let text = s(interp, recv)?;
-    let (set, negate) = expand_set(&string(interp, args.arg(0), "chars")?);
+    let (set, negate) = expand_set(string(interp, args.arg(0), "chars")?);
     Ok(Value::string(
         text.chars().filter(|c| set.contains(c) == negate).collect(),
     ))
@@ -721,7 +720,7 @@ fn string_squeeze(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
 
 fn string_count(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let text = s(interp, recv)?;
-    let (set, negate) = expand_set(&string(interp, args.arg(0), "chars")?);
+    let (set, negate) = expand_set(string(interp, args.arg(0), "chars")?);
     Ok(Value::Int(
         text.chars().filter(|c| set.contains(c) != negate).count() as i64,
     ))

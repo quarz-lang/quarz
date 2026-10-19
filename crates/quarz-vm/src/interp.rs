@@ -2,6 +2,7 @@
 //! run loop, and conversions used by the natives. Function bodies are QIR
 //! (see `vm.rs`); compiled code uses the same runtime.
 
+use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
@@ -925,9 +926,9 @@ impl Interp {
 
     pub fn exception_message(&self, exc: &Value) -> String {
         match exc {
-            Value::Object(o) => match o.fields.borrow().first() {
-                Some(Value::Str(s)) => s.to_string(),
-                _ => self.class_name(exc),
+            Value::Object(o) => match o.fields.borrow().first().and_then(|v| v.as_str()) {
+                Some(s) => s.to_string(),
+                None => self.class_name(exc),
             },
             _ => String::new(),
         }
@@ -954,6 +955,7 @@ impl Interp {
                 self.make_exception(cid, &msg)
             }
             Value::Str(s) => self.make_exception(self.exc.runtime_error, &s),
+            Value::Short(s) => self.make_exception(self.exc.runtime_error, s.as_str()),
             Value::Object(o) => {
                 if o.backtrace().is_none() {
                     let bt = self.capture_backtrace();
@@ -977,7 +979,7 @@ impl Interp {
             Value::Bool(_) => b.bool_,
             Value::Int(_) | Value::BigInt(_) => b.int,
             Value::Float(_) => b.float,
-            Value::Str(_) => b.string,
+            Value::Str(_) | Value::Short(_) => b.string,
             Value::Symbol(_) => b.symbol,
             Value::Array(_) => b.array,
             Value::Hash(_) => b.hash,
@@ -1681,10 +1683,7 @@ impl Interp {
         match pattern {
             Value::Class(cid) => Ok(self.world.class_is_a(self.class_of(v), *cid)),
             Value::Range(r) => self.range_covers(r, v),
-            Value::Regexp(re) => Ok(match v {
-                Value::Str(s) => re.regex.is_match(s),
-                _ => false,
-            }),
+            Value::Regexp(re) => Ok(v.as_str().is_some_and(|s| re.regex.is_match(s))),
             Value::Proc(_) => Ok(self.call_block(pattern, smallvec![v.clone()])?.is_truthy()),
             _ => self.values_equal(pattern, v),
         }
@@ -1728,6 +1727,7 @@ impl Interp {
         use std::fmt::Write as _;
         match v {
             Value::Str(s) => buf.push_str(s),
+            Value::Short(s) => buf.push_str(s.as_str()),
             Value::Int(i) => {
                 let _ = write!(buf, "{i}");
             }
@@ -1738,20 +1738,22 @@ impl Interp {
         Ok(())
     }
 
-    pub fn to_s(&self, v: &Value) -> Result<Rc<str>, Flow> {
+    /// `v.to_s`: borrowed from a string value, built otherwise.
+    pub fn to_s<'a>(&self, v: &'a Value) -> Result<Cow<'a, str>, Flow> {
         match v {
-            Value::Str(s) => Ok(s.clone()),
+            Value::Str(s) => Ok(Cow::Borrowed(s)),
+            Value::Short(s) => Ok(Cow::Borrowed(s.as_str())),
             Value::Object(o) => {
                 if let Some(mid) = self.has_user_method(v, "to_s", 0) {
                     let r = self.invoke(mid, v.clone(), smallvec![], vec![], None)?;
-                    return self.to_s(&r);
+                    return Ok(Cow::Owned(self.to_s(&r)?.into_owned()));
                 }
                 if self.world.is_exception_class(o.class) {
-                    return Ok(Rc::from(self.exception_message(v).as_str()));
+                    return Ok(Cow::Owned(self.exception_message(v)));
                 }
-                Ok(Rc::from(self.inspect(v)?.as_str()))
+                Ok(Cow::Owned(self.inspect(v)?))
             }
-            _ => Ok(Rc::from(self.format_value(v, false)?.as_str())),
+            _ => Ok(Cow::Owned(self.format_value(v, false)?)),
         }
     }
 
@@ -1778,7 +1780,8 @@ impl Interp {
             Value::Int(i) => i.to_string(),
             Value::BigInt(b) => b.to_string(),
             Value::Float(f) => format_float(*f),
-            Value::Str(s) => {
+            Value::Str(_) | Value::Short(_) => {
+                let s = v.as_str().unwrap_or("");
                 if inspect {
                     inspect_str(s)
                 } else {
@@ -1977,7 +1980,9 @@ impl Interp {
             (Value::Float(x), Value::Int(y)) => {
                 return Ok(x.partial_cmp(&(*y as f64)).unwrap_or(Ordering::Equal))
             }
-            (Value::Str(x), Value::Str(y)) => return Ok(x.cmp(y)),
+            (Value::Str(_) | Value::Short(_), Value::Str(_) | Value::Short(_)) => {
+                return Ok(a.as_str().unwrap_or("").cmp(b.as_str().unwrap_or("")))
+            }
             (Value::Symbol(x), Value::Symbol(y)) => {
                 return Ok(self.symbol_name(*x).cmp(&self.symbol_name(*y)))
             }

@@ -227,7 +227,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
         update(i, r, |v| v.retain(|x| !other.contains(x)))
     });
     m.insert("Array#*", |i, r, a| {
-        if matches!(a.arg(0), Value::Str(_)) {
+        if a.arg(0).is_str() {
             return array_join(i, r, a);
         }
         let n = int(i, a.arg(0), "count")?.max(0) as usize;
@@ -1489,11 +1489,12 @@ pub fn range_to_vec(interp: &Interp, r: &RangeVal) -> Result<Vec<Value>, Flow> {
             let end = if r.exclusive { *hi } else { hi + 1 };
             Ok((*lo..end).map(Value::Int).collect())
         }
-        (Value::Str(lo), Value::Str(hi)) => {
+        (lo, hi) if lo.is_str() && hi.is_str() => {
+            let hi = hi.as_str().unwrap_or("");
             let mut out = Vec::new();
-            let mut cur = Value::Str(lo.clone());
+            let mut cur = lo.clone();
             let mut guard = 0;
-            while let Value::Str(s) = &cur {
+            while let Some(s) = cur.as_str() {
                 if s.len() > hi.len() {
                     break;
                 }

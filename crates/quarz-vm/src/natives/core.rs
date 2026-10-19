@@ -60,7 +60,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     });
     m.insert("Kernel#printf", |i, _, a| {
         let fmt = string(i, a.arg(0), "format string")?;
-        let text = format_values(i, &fmt, &a.pos[1..])?;
+        let text = format_values(i, fmt, &a.pos[1..])?;
         i.write_out(&text);
         Ok(Value::Nil)
     });
@@ -94,7 +94,7 @@ fn obj_to_s(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
         Value::Object(o) if !interp.world.is_exception_class(o.class) => {
             Ok(Value::string(interp.inspect(recv)?))
         }
-        _ => Ok(Value::Str(interp.to_s(recv)?)),
+        _ => Ok(Value::str(&interp.to_s(recv)?)),
     }
 }
 
@@ -295,7 +295,7 @@ fn kernel_exit(_: &Interp, _: &Value, args: Args) -> EvalResult {
 
 fn kernel_abort(interp: &Interp, _: &Value, args: Args) -> EvalResult {
     interp.flush();
-    if let Value::Str(s) = args.arg(0) {
+    if let Some(s) = args.arg(0).as_str() {
         eprintln!("{s}");
     }
     Err(Flow::Exit(1))
@@ -334,7 +334,7 @@ fn kernel_gets_opt(interp: &Interp, _: &Value, _: Args) -> EvalResult {
 
 fn kernel_format(interp: &Interp, _: &Value, args: Args) -> EvalResult {
     let fmt = string(interp, args.arg(0), "format string")?;
-    let s = format_values(interp, &fmt, &args.pos[1..])?;
+    let s = format_values(interp, fmt, &args.pos[1..])?;
     Ok(Value::string(s))
 }
 
@@ -488,7 +488,7 @@ fn kernel_integer(interp: &Interp, _: &Value, args: Args) -> EvalResult {
             .filter(|_| !digits.is_empty());
         return match parsed {
             Some(n) => Ok(int_from_big(if neg { -n } else { n })),
-            None => Err(interp.err_arg(&format!("invalid value for Integer(): {:?}", s.as_ref()))),
+            None => Err(interp.err_arg(&format!("invalid value for Integer(): {s:?}"))),
         };
     }
     let parsed = if let Some(h) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
@@ -500,7 +500,7 @@ fn kernel_integer(interp: &Interp, _: &Value, args: Args) -> EvalResult {
     };
     match parsed {
         Some(i) => Ok(Value::Int(i)),
-        None => Err(interp.err_arg(&format!("invalid value for Integer(): {:?}", s.as_ref()))),
+        None => Err(interp.err_arg(&format!("invalid value for Integer(): {s:?}"))),
     }
 }
 
@@ -508,10 +508,14 @@ fn kernel_float(interp: &Interp, _: &Value, args: Args) -> EvalResult {
     let s = string(interp, args.arg(0), "Float()")?;
     match s.trim().replace('_', "").parse::<f64>() {
         Ok(f) => Ok(Value::Float(f)),
-        Err(_) => Err(interp.err_arg(&format!("invalid value for Float(): {:?}", s.as_ref()))),
+        Err(_) => Err(interp.err_arg(&format!("invalid value for Float(): {s:?}"))),
     }
 }
 
 fn kernel_string(interp: &Interp, _: &Value, args: Args) -> EvalResult {
-    Ok(Value::Str(interp.to_s(args.arg(0))?))
+    let v = args.arg(0);
+    if v.is_str() {
+        return Ok(v.clone());
+    }
+    Ok(Value::str(&interp.to_s(v)?))
 }

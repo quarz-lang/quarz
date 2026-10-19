@@ -57,10 +57,10 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     });
     m.insert("UNIXServer.new", |i, _, a| {
         let path = string(i, a.arg(0), "path")?;
-        let listener = UnixListener::bind(&*path).map_err(|e| os_error(i, e, &path))?;
+        let listener = UnixListener::bind(path).map_err(|e| os_error(i, e, path))?;
         listener
             .set_nonblocking(true)
-            .map_err(|e| os_error(i, e, &path))?;
+            .map_err(|e| os_error(i, e, path))?;
         Ok(make_listener(
             i,
             Listener::Unix(listener),
@@ -218,10 +218,10 @@ fn tcp_connect(interp: &Interp, args: &Args) -> EvalResult {
 
 fn unix_connect(interp: &Interp, args: &Args) -> EvalResult {
     let path = string(interp, args.arg(0), "path")?;
-    let stream = UnixStream::connect(&*path).map_err(|e| os_error(interp, e, &path))?;
+    let stream = UnixStream::connect(path).map_err(|e| os_error(interp, e, path))?;
     stream
         .set_nonblocking(true)
-        .map_err(|e| os_error(interp, e, &path))?;
+        .map_err(|e| os_error(interp, e, path))?;
     Ok(make_socket(
         interp,
         Stream::Unix(stream),

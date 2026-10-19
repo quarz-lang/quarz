@@ -627,7 +627,10 @@ pub enum Value {
     Class(ClassId),
     /// Nanoseconds.
     Duration(i64),
+    /// A string of at most 15 bytes, kept in the value itself.
+    Short(ShortStr),
     BigInt(Rc<BigInt>),
+    /// A longer string.
     Str(Rc<str>),
     Array(Rc<ArrayData>),
     Hash(Rc<ValueMap>),
@@ -708,7 +711,52 @@ impl RandomState {
 }
 
 /// Tags below this hold no reference-counted payload.
-pub const NEEDS_DROP_FROM: u64 = 7;
+pub const NEEDS_DROP_FROM: u64 = 8;
+
+/// A string short enough to live in a value's payload: its length,
+/// then the bytes (valid UTF-8).
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ShortStr {
+    len: u8,
+    bytes: [u8; ShortStr::MAX],
+}
+
+impl ShortStr {
+    pub const MAX: usize = 15;
+
+    pub fn new(s: &str) -> Option<ShortStr> {
+        if s.len() > ShortStr::MAX {
+            return None;
+        }
+        let mut bytes = [0u8; ShortStr::MAX];
+        bytes[..s.len()].copy_from_slice(s.as_bytes());
+        Some(ShortStr {
+            len: s.len() as u8,
+            bytes,
+        })
+    }
+
+    #[inline]
+    pub fn as_str(&self) -> &str {
+        // SAFETY: built from a `str`, so the bytes are UTF-8.
+        unsafe { std::str::from_utf8_unchecked(&self.bytes[..self.len as usize]) }
+    }
+}
+
+impl std::ops::Deref for ShortStr {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl std::fmt::Debug for ShortStr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self.as_str())
+    }
+}
 
 impl Value {
     /// A copy that skips the reference count machinery for values that
@@ -774,7 +822,13 @@ pub fn check_rc_layout() {
         "Value layout changed: Class tag"
     );
     let object = Value::Object(Object::new(0, Fields::new()));
-    assert_eq!(object.type_tag(), 15, "Value layout changed: Object tag");
+    assert_eq!(object.type_tag(), 16, "Value layout changed: Object tag");
+    let short = Value::str("short");
+    assert_eq!(short.type_tag(), 7, "Value layout changed: Short tag");
+    assert!(
+        (short.type_tag() as u64) < NEEDS_DROP_FROM,
+        "a short string must need no release"
+    );
     assert_eq!(std::mem::offset_of!(Object, fields_ptr), 0);
     assert_eq!(std::mem::offset_of!(Frame, slots_ptr), 0);
     assert_eq!(std::mem::offset_of!(Frame, nslots), 8);
@@ -810,12 +864,28 @@ pub struct TimeVal {
 }
 
 impl Value {
+    /// A string value: in the value itself when short, shared on the
+    /// heap otherwise.
     pub fn str(s: &str) -> Value {
-        Value::Str(Rc::from(s))
+        match ShortStr::new(s) {
+            Some(short) => Value::Short(short),
+            None => Value::Str(Rc::from(s)),
+        }
+    }
+
+    /// A string value from a shared string (kept shared when long).
+    pub fn str_rc(s: Rc<str>) -> Value {
+        match ShortStr::new(&s) {
+            Some(short) => Value::Short(short),
+            None => Value::Str(s),
+        }
     }
 
     pub fn string(s: String) -> Value {
-        Value::Str(Rc::from(s))
+        match ShortStr::new(&s) {
+            Some(short) => Value::Short(short),
+            None => Value::Str(Rc::from(s)),
+        }
     }
 
     /// A string built by `f` in a reused buffer: one allocation (the
@@ -828,7 +898,7 @@ impl Value {
         let mut buf = SCRATCH.with(|s| std::mem::take(&mut *s.borrow_mut()));
         buf.clear();
         f(&mut buf);
-        let v = Value::Str(Rc::from(buf.as_str()));
+        let v = Value::str(buf.as_str());
         if buf.capacity() <= 1 << 16 {
             SCRATCH.with(|s| *s.borrow_mut() = buf);
         }
@@ -866,11 +936,18 @@ impl Value {
         }
     }
 
-    pub fn as_str(&self) -> Option<&Rc<str>> {
+    /// The text of a string value (short or long).
+    #[inline]
+    pub fn as_str(&self) -> Option<&str> {
         match self {
+            Value::Short(s) => Some(s.as_str()),
             Value::Str(s) => Some(s),
             _ => None,
         }
+    }
+
+    pub fn is_str(&self) -> bool {
+        matches!(self, Value::Short(_) | Value::Str(_))
     }
 
     /// The discriminant (the first word of the `repr(C, u64)` layout).
@@ -892,6 +969,10 @@ impl Value {
             (Value::Duration(a), Value::Duration(b)) => a == b,
             (Value::BigInt(a), Value::BigInt(b)) => Rc::ptr_eq(a, b) || a == b,
             (Value::Str(a), Value::Str(b)) => Rc::ptr_eq(a, b) || a == b,
+            (Value::Short(a), Value::Short(b)) => a.as_str() == b.as_str(),
+            (Value::Str(a), Value::Short(b)) | (Value::Short(b), Value::Str(a)) => {
+                **a == *b.as_str()
+            }
             (Value::Array(a), Value::Array(b)) => Rc::ptr_eq(a, b),
             (Value::Hash(a), Value::Hash(b)) => Rc::ptr_eq(a, b),
             (Value::Set(a), Value::Set(b)) => Rc::ptr_eq(a, b),
@@ -937,6 +1018,10 @@ impl PartialEq for Value {
             (Value::BigInt(a), Value::BigInt(b)) => a == b,
             (Value::Float(a), Value::Float(b)) => a == b,
             (Value::Str(a), Value::Str(b)) => a == b,
+            (Value::Short(a), Value::Short(b)) => a.as_str() == b.as_str(),
+            (Value::Str(a), Value::Short(b)) | (Value::Short(b), Value::Str(a)) => {
+                **a == *b.as_str()
+            }
             (Value::Array(a), Value::Array(b)) => {
                 a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| x == y)
             }
@@ -1003,7 +1088,11 @@ impl Hash for Value {
             }
             Value::Str(s) => {
                 4u8.hash(state);
-                s.hash(state);
+                (**s).hash(state);
+            }
+            Value::Short(s) => {
+                4u8.hash(state);
+                s.as_str().hash(state);
             }
             Value::Symbol(s) => {
                 5u8.hash(state);

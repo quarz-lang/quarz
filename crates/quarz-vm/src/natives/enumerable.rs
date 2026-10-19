@@ -207,13 +207,13 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
         let items = ab(i, r)?.borrow().clone();
         let sep = match a.pos.first() {
             Some(s) => string(i, s, "separator")?,
-            None => Rc::from(""),
+            None => "",
         };
         let mut parts = Vec::with_capacity(items.len());
         for x in &items {
             parts.push(i.to_s(x)?.to_string());
         }
-        Ok(Value::string(parts.join(&sep)))
+        Ok(Value::string(parts.join(sep)))
     });
     m.insert("Array::Builder#sort!", |i, r, a| {
         let b = ab(i, r)?;

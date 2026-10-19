@@ -40,14 +40,14 @@ const VALUE_SIZE: i32 = 24;
 /// runtime checks its real size against this.
 const ACT_BUF_SIZE: u32 = 320;
 /// Tags below this hold no reference-counted payload (`NEEDS_DROP_FROM`).
-const NEEDS_DROP_FROM: i64 = 7;
+const NEEDS_DROP_FROM: i64 = 8;
 const TAG_NIL: i64 = 0;
 const TAG_BOOL: i64 = 1;
 const TAG_INT: i64 = 2;
 const TAG_FLOAT: i64 = 3;
 const TAG_CLASS: i64 = 5;
-const TAG_ARRAY: i64 = 9;
-const TAG_OBJECT: i64 = 15;
+const TAG_ARRAY: i64 = 10;
+const TAG_OBJECT: i64 = 16;
 /// Offset of the field view in an `Object` from its `Rc` allocation
 /// (after the strong and weak counts); see `Object::bind_fields`.
 const OBJECT_FIELDS_PTR_OFF: i32 = 16;

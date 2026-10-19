@@ -1012,6 +1012,7 @@ impl Interp {
                     Value::Array(a) => a.len(),
                     Value::Hash(h) => h.len(),
                     Value::Str(s) => s.chars().count(),
+                    Value::Short(s) => s.chars().count(),
                     _ => 0,
                 };
                 regs[*dst as usize] = Value::Int(n as i64);

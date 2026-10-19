@@ -131,7 +131,7 @@ pub fn check(sig: u64, vec: u64) {
     }
     assert_eq!(
         crate::value::Value::array(Vec::new()).type_tag(),
-        9,
+        10,
         "Value layout changed: Array tag"
     );
     // SAFETY: a zeroed `Option<Rc<_>>` is `None`, verified here before
