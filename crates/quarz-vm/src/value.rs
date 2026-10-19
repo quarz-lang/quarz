@@ -418,8 +418,14 @@ pub type NativeBlock =
 pub enum ClosureBody {
     Func(FuncId),
     /// `&:name`: call `name` on the first argument. The cache holds the
-    /// method found for the last (class, argument count).
-    MethodName(Rc<str>, Cell<Option<(ClassId, usize, MethodId)>>),
+    /// method found for the last (class, argument count); the method is
+    /// the checker's resolution for the parameter's static type (an
+    /// extension method is only reachable through it).
+    MethodName(
+        Rc<str>,
+        Cell<Option<(ClassId, usize, MethodId)>>,
+        Option<MethodId>,
+    ),
     /// `obj.:name`: call `name` on a captured receiver.
     BoundMethod {
         recv: Value,
@@ -432,7 +438,7 @@ impl std::fmt::Debug for ClosureBody {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ClosureBody::Func(id) => write!(f, "Func({id})"),
-            ClosureBody::MethodName(n, _) => write!(f, "MethodName({n})"),
+            ClosureBody::MethodName(n, ..) => write!(f, "MethodName({n})"),
             ClosureBody::BoundMethod { name, .. } => write!(f, "BoundMethod({name})"),
             ClosureBody::Native(_) => write!(f, "Native"),
         }

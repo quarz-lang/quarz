@@ -488,9 +488,10 @@ fn rewrite(inst: &Inst, base: Reg, consts: &[u32]) -> Inst {
             recv: r(recv),
             name: consts[*name as usize],
         },
-        Inst::SymbolProc { dst, name } => Inst::SymbolProc {
+        Inst::SymbolProc { dst, name, method } => Inst::SymbolProc {
             dst: r(dst),
             name: consts[*name as usize],
+            method: *method,
         },
         Inst::MakeArray { dst, items } => Inst::MakeArray {
             dst: r(dst),

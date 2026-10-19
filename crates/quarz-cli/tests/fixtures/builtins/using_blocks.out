@@ -4,5 +4,5 @@
 SELECT * FROM users WHERE name = 'matz'
 SELECT * FROM users WHERE (name = 'matz' AND age > 20)
 SELECT * FROM users WHERE age > 30
-Cond::Eq(name: :name, value: "name")
+true
 SELECT * FROM users WHERE age > 1

@@ -1289,7 +1289,7 @@ impl Interp {
             }
             let mut candidates: Vec<MethodId> = Vec::new();
             for ext in &self.world.extensions {
-                if ext.target == anc {
+                if ext.target == anc && self.world.extension_dispatches(ext, m.owner) {
                     if let Some(ids) = ext.methods.get(&m.name) {
                         candidates.extend(ids);
                     }
@@ -1348,9 +1348,11 @@ impl Interp {
         'outer: for anc in &self.world.class(cid).ancestors {
             let anc = *anc;
             let mut lists: Vec<&Vec<MethodId>> = Vec::new();
-            // Always-active extensions on this ancestor come first.
+            // Always-active extensions on this ancestor come first (a
+            // module's extension applies only where `using` makes it
+            // visible, which is resolved statically).
             for ext in &self.world.extensions {
-                if ext.target == anc {
+                if ext.always_active && ext.target == anc {
                     if let Some(ids) = ext.methods.get(name) {
                         lists.push(ids);
                     }

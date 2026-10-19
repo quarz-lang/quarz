@@ -189,11 +189,17 @@ impl Interp {
         args: &[Value],
         name: &str,
         cache: &Cell<Option<(ClassId, usize, MethodId)>>,
+        method: Option<MethodId>,
     ) -> EvalResult {
         let cid = self.class_of(recv);
         let argc = args.len();
-        let mid = match cache.get() {
-            Some((c, n, mid)) if c == cid && n == argc => mid,
+        // The method the checker resolved for the block's parameter type
+        // is dispatched as a call would be (an extension method visible
+        // there, or a module's method a value conforms to through an
+        // extension, is not found by name).
+        let mid = match (method, cache.get()) {
+            (Some(m), _) => self.resolve_dynamic(recv, m),
+            (None, Some((c, n, mid))) if c == cid && n == argc => mid,
             _ => match self.find_method(cid, name, argc, false) {
                 Some(mid) => {
                     cache.set(Some((cid, argc, mid)));
@@ -235,13 +241,13 @@ impl BlockCaller {
                 nparams,
             } => (closure, *fid, act, *compiled, *nparams),
             CallerKind::Named { closure } => {
-                let ClosureBody::MethodName(name, cache) = &closure.body else {
+                let ClosureBody::MethodName(name, cache, method) = &closure.body else {
                     unreachable!()
                 };
                 let Some((recv, rest)) = args.split_first() else {
                     return Err(interp.err_arg("block needs an argument"));
                 };
-                return interp.call_named(recv, rest, name, cache);
+                return interp.call_named(recv, rest, name, cache, *method);
             }
         };
         if sched::stack_exhausted() {
@@ -993,12 +999,13 @@ impl Interp {
                     file: act.file,
                 }));
             }
-            Inst::SymbolProc { dst, name } => {
+            Inst::SymbolProc { dst, name, method } => {
                 let tag = self.new_tag();
                 regs[*dst as usize] = Value::Proc(Rc::new(Closure {
                     body: ClosureBody::MethodName(
                         Rc::from(self.str_const(f, *name)),
                         Cell::new(None),
+                        *method,
                     ),
                     frame: None,
                     self_val: Value::Nil,
@@ -1259,12 +1266,12 @@ impl Interp {
             return Err(self.err_type("not a procedure"));
         };
         match &closure.body {
-            ClosureBody::MethodName(name, cache) => {
+            ClosureBody::MethodName(name, cache, method) => {
                 if args.is_empty() {
                     return Err(self.err_arg("block needs an argument"));
                 }
                 let recv = args.remove(0);
-                self.call_named(&recv, &args, name, cache)
+                self.call_named(&recv, &args, name, cache, *method)
             }
             ClosureBody::BoundMethod { recv, name } => self.send(recv, name, args, None),
             ClosureBody::Native(f) => f(self, args),

@@ -63,11 +63,11 @@ fn resolve(world: &RtWorld, cid: ClassId, m: &RtMethod) -> Option<Option<MethodI
             .collect()
     };
     for anc in chain {
-        if world
-            .extensions
-            .iter()
-            .any(|e| e.target == anc && e.methods.contains_key(&m.name))
-        {
+        if world.extensions.iter().any(|e| {
+            e.target == anc
+                && e.methods.contains_key(&m.name)
+                && world.extension_dispatches(e, m.owner)
+        }) {
             return None;
         }
         let Some(ids) = world.classes[anc as usize].methods.get(&m.name) else {

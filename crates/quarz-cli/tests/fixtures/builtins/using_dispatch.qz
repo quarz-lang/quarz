@@ -1,0 +1,66 @@
+# A module's extension applies only where `using` makes it visible, by the
+# receiver's static type: never through dynamic dispatch, and through
+# `&:name` only where the checker resolved it. A top-level extension is
+# active everywhere.
+abstract class Shape
+  abstract def area -> Float
+  def name -> String = "shape"
+end
+class Circle < Shape
+  var @r: Float
+  def initialize(@r: Float); end
+  def area -> Float = 3.0 * @r * @r
+  def name -> String = "circle"
+end
+class Rect < Shape
+  def area -> Float = 6.0
+end
+module Loud
+  extension Circle
+    def name -> String = "CIRCLE!"
+    def shout -> String = name.upcase + "!!"
+  end
+  extension String
+    def shout -> String = upcase + "!"
+  end
+end
+extension String
+  def whisper -> String = downcase + "..."
+end
+shapes: Array[Shape] = [Circle.new(1.0), Rect.new]
+circles: Array[Circle] = [Circle.new(1.0), Circle.new(2.0)]
+words = ["Ab", "Cd"]
+p shapes.map { |s| s.name }, circles.map { |c| c.name }, circles.map(&:name), shapes.map(&:name)
+p words.map(&:whisper), words.map { |w| w.whisper }
+mixed: Array[Object] = [Circle.new(1.0), "Ab"]
+p mixed.map { |o| o.to_s.size }
+using Loud do
+  p shapes.map { |s| s.name }, circles.map { |c| c.name }, circles.map(&:name), shapes.map(&:name)
+  p circles[0].shout, circles.map(&:shout), words.map(&:shout), "Ef".shout, words.map(&:whisper)
+end
+p shapes.map { |s| s.name }, circles.map(&:name)
+def with_dsl(&: () -> String using Loud) -> String = yield
+p with_dsl { circles[1].name + " " + "x".shout }
+p circles.map(&:name)
+
+# Conformance through an extension holds wherever the value goes: the
+# module's methods dispatch to the extension's implementations.
+module Describable
+  abstract def describe -> String
+end
+module Describing
+  extension Int
+    include Describable
+    def describe -> String = "int #{self}"
+  end
+  extension Array[T: Describable]
+    def describe_all -> String = map(&:describe).join(", ")
+  end
+end
+def show(x: Describable) -> String = x.describe
+def show_all(xs: Array[Describable]) -> Array[String] = xs.map(&:describe)
+using Describing do
+  p show(42), [1, 2].describe_all, show_all([3, 4])
+  kept: Array[Describable] = [5, 6]
+  p kept.map { |d| d.describe }
+end

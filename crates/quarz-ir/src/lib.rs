@@ -441,9 +441,13 @@ pub enum Inst {
         name: u32,
     },
     /// `&:name`
+    /// `&:name`: a procedure calling `name` on its argument; `method`
+    /// is the one the checker resolved for the block's parameter type
+    /// (an extension method visible there is only reachable this way).
     SymbolProc {
         dst: Reg,
         name: u32,
+        method: Option<MethodId>,
     },
     MakeArray {
         dst: Reg,
@@ -1073,6 +1077,13 @@ pub struct RtConst {
 pub struct RtExtension {
     pub target: ClassId,
     pub methods: HashMap<String, Vec<MethodId>>,
+    /// Active everywhere (declared outside a module): its methods take
+    /// part in dispatch by name. A module's extension applies only where
+    /// `using` makes it visible, which the checker resolves statically.
+    pub always_active: bool,
+    /// The modules the extension makes its target conform to: their
+    /// methods dispatch to the extension's wherever the value goes.
+    pub includes: Vec<ClassId>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -1127,6 +1138,19 @@ impl RtWorld {
 
     pub fn method(&self, id: MethodId) -> &RtMethod {
         &self.methods[id as usize]
+    }
+
+    /// Whether the methods of `ext` take part in the dispatch of a
+    /// method declared by `owner`: always for an extension active
+    /// everywhere, and for the methods of a module the extension makes
+    /// its target conform to (a value typed as that module may have come
+    /// from anywhere, so its conformance must hold everywhere).
+    pub fn extension_dispatches(&self, ext: &RtExtension, owner: ClassId) -> bool {
+        ext.always_active
+            || ext
+                .includes
+                .iter()
+                .any(|m| *m == owner || self.classes[*m as usize].ancestors.contains(&owner))
     }
 
     pub fn class_is_a(&self, sub: ClassId, sup: ClassId) -> bool {

@@ -1526,9 +1526,13 @@ impl<'a> FnBuilder<'a> {
                 Arg::BlockPass(e) => {
                     block = Some(match &e.kind {
                         ExprKind::Symbol(name) => {
+                            let method = match self.out.block_pass.get(&e.id) {
+                                Some(quarz_types::BlockPass::Symbol(_, m)) => Some(*m),
+                                _ => None,
+                            };
                             let name = self.str_const(name);
                             let dst = self.reg();
-                            self.emit(Inst::SymbolProc { dst, name });
+                            self.emit(Inst::SymbolProc { dst, name, method });
                             dst
                         }
                         _ => self.expr(e),

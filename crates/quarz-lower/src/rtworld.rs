@@ -213,6 +213,15 @@ pub fn build(world: &World, lw: &Lowerer, file_names: Vec<String>) -> RtWorld {
                     .iter()
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect(),
+                always_active: e.always_active,
+                includes: e
+                    .includes
+                    .iter()
+                    .filter_map(|t| match t {
+                        Type::Class(id, _) => Some(*id),
+                        _ => None,
+                    })
+                    .collect(),
             });
         }
     }

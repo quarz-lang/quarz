@@ -98,8 +98,9 @@ pub struct Output {
 
 #[derive(Clone, Debug)]
 pub enum BlockPass {
-    /// `&:name`: call `name` on the block's argument.
-    Symbol(String),
+    /// `&:name`: call `name` (resolved to `method` for the parameter's
+    /// static type) on the block's argument.
+    Symbol(String, MethodId),
     /// `&expr`: the expression evaluates to a procedure.
     Proc,
 }
@@ -4284,7 +4285,11 @@ impl Checker {
                         }
                         self.out
                             .block_pass
-                            .insert(expr.id, BlockPass::Symbol(name.clone()));
+                            .insert(expr.id, BlockPass::Symbol(name.clone(), mid));
+                        // Also by the symbol itself, for the lowering.
+                        self.out
+                            .block_pass
+                            .insert(e.id, BlockPass::Symbol(name.clone(), mid));
                         self.record(e.id, &self.world.symbol());
                     }
                     _ => {

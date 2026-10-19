@@ -1,0 +1,24 @@
+["circle", "shape"]
+["circle", "circle"]
+["circle", "circle"]
+["circle", "shape"]
+["ab...", "cd..."]
+["ab...", "cd..."]
+[16, 2]
+["circle", "shape"]
+["CIRCLE!", "CIRCLE!"]
+["CIRCLE!", "CIRCLE!"]
+["circle", "shape"]
+"CIRCLE!!"
+["CIRCLE!!", "CIRCLE!!"]
+["AB!", "CD!"]
+"EF!"
+["ab...", "cd..."]
+["circle", "shape"]
+["circle", "circle"]
+"CIRCLE! X!"
+["circle", "circle"]
+"int 42"
+"int 1, int 2"
+["int 3", "int 4"]
+["int 5", "int 6"]
