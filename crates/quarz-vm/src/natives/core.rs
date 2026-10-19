@@ -181,9 +181,8 @@ fn proc_arity(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
 fn exc_backtrace(_: &Interp, recv: &Value, _: Args) -> EvalResult {
     match recv {
         Value::Object(o) => {
-            let bt = o.backtrace.borrow();
-            let items: Vec<Value> = bt
-                .as_ref()
+            let items: Vec<Value> = o
+                .backtrace()
                 .map(|b| b.iter().map(|s| Value::str(s)).collect())
                 .unwrap_or_default();
             Ok(Value::array(items))
@@ -199,7 +198,7 @@ fn exc_full_message(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
         interp.exception_message(recv)
     );
     if let Value::Object(o) = recv {
-        if let Some(bt) = o.backtrace.borrow().as_ref() {
+        if let Some(bt) = o.backtrace() {
             for frame in bt.iter() {
                 s.push_str(&format!("\n    from {frame}"));
             }
@@ -210,7 +209,7 @@ fn exc_full_message(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
 
 fn exc_cause(_: &Interp, recv: &Value, _: Args) -> EvalResult {
     match recv {
-        Value::Object(o) => Ok(o.cause.borrow().clone().unwrap_or(Value::Nil)),
+        Value::Object(o) => Ok(o.cause().unwrap_or(Value::Nil)),
         _ => Ok(Value::Nil),
     }
 }

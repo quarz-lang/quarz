@@ -704,7 +704,7 @@ impl Interp {
         let message = self.exception_message(exc);
         eprintln!("{class_name}: {message}");
         if let Value::Object(o) = exc {
-            if let Some(bt) = o.backtrace.borrow().as_ref() {
+            if let Some(bt) = o.backtrace() {
                 for frame in bt.iter() {
                     eprintln!("    from {frame}");
                 }
@@ -841,8 +841,7 @@ impl Interp {
         let bt = self.capture_backtrace();
         Value::Object({
             let o = Object::new(class, fields);
-            *o.backtrace.borrow_mut() = Some(Rc::new(bt));
-            *o.cause.borrow_mut() = None;
+            o.set_backtrace(Some(Rc::new(bt)));
             o
         })
     }
@@ -938,9 +937,9 @@ impl Interp {
             }
             Value::Str(s) => self.make_exception(self.exc.runtime_error, &s),
             Value::Object(o) => {
-                if o.backtrace.borrow().is_none() {
+                if o.backtrace().is_none() {
                     let bt = self.capture_backtrace();
-                    *o.backtrace.borrow_mut() = Some(Rc::new(bt));
+                    o.set_backtrace(Some(Rc::new(bt)));
                 }
                 Value::Object(o)
             }

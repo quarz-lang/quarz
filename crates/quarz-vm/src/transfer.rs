@@ -139,9 +139,9 @@ pub fn export(interp: &Interp, v: &Value) -> Result<Transfer, Flow> {
         Value::Object(o) => Transfer::Object {
             class: o.class,
             fields: export_all(interp, o.fields.borrow().iter())?,
-            backtrace: o.backtrace.borrow().as_ref().map(|b| b.to_vec()),
-            cause: match &*o.cause.borrow() {
-                Some(c) => Some(Box::new(export(interp, c)?)),
+            backtrace: o.backtrace().map(|b| b.to_vec()),
+            cause: match o.cause() {
+                Some(c) => Some(Box::new(export(interp, &c)?)),
                 None => None,
             },
         },
@@ -315,8 +315,10 @@ pub fn import(interp: &Interp, t: Transfer) -> Value {
             }
             Value::Object({
                 let o = Object::new(class, fields);
-                *o.backtrace.borrow_mut() = backtrace.map(Rc::new);
-                *o.cause.borrow_mut() = cause.map(|c| import(interp, *c));
+                if backtrace.is_some() || cause.is_some() {
+                    o.set_backtrace(backtrace.map(Rc::new));
+                    o.set_cause(cause.map(|c| import(interp, *c)));
+                }
                 o
             })
         }

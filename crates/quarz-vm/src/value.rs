@@ -127,9 +127,15 @@ pub struct Object {
     pub nfields: Cell<u32>,
     pub class: ClassId,
     pub fields: RefCell<Fields>,
-    /// Exceptions: the backtrace captured when raised.
-    pub backtrace: RefCell<Option<Rc<Vec<String>>>>,
-    pub cause: RefCell<Option<Value>>,
+    /// Exceptions only: what was captured when raised.
+    pub exc: RefCell<Option<Box<ExcInfo>>>,
+}
+
+/// The backtrace and cause of a raised exception.
+#[derive(Debug, Default)]
+pub struct ExcInfo {
+    pub backtrace: Option<Rc<Vec<String>>>,
+    pub cause: Option<Value>,
 }
 
 impl Object {
@@ -139,8 +145,7 @@ impl Object {
             nfields: Cell::new(0),
             class,
             fields: RefCell::new(fields),
-            backtrace: RefCell::new(None),
-            cause: RefCell::new(None),
+            exc: RefCell::new(None),
         });
         o.bind_fields();
         o
@@ -148,6 +153,29 @@ impl Object {
 
     /// Point the field view at the field vector (after it was created,
     /// resized or replaced).
+    /// The backtrace captured when this (exception) object was raised.
+    pub fn backtrace(&self) -> Option<Rc<Vec<String>>> {
+        self.exc.borrow().as_ref().and_then(|e| e.backtrace.clone())
+    }
+
+    pub fn set_backtrace(&self, bt: Option<Rc<Vec<String>>>) {
+        self.exc
+            .borrow_mut()
+            .get_or_insert_with(Default::default)
+            .backtrace = bt;
+    }
+
+    pub fn cause(&self) -> Option<Value> {
+        self.exc.borrow().as_ref().and_then(|e| e.cause.clone())
+    }
+
+    pub fn set_cause(&self, cause: Option<Value>) {
+        self.exc
+            .borrow_mut()
+            .get_or_insert_with(Default::default)
+            .cause = cause;
+    }
+
     pub fn bind_fields(&self) {
         let f = self.fields.borrow();
         self.fields_ptr.set(f.as_ptr());
