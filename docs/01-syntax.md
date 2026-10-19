@@ -334,10 +334,34 @@ Same as Ruby: `if`/`unless`/`elsif`/`else`, `while`/`until`, modifier forms, `ca
 
 Different from Ruby:
 
-- There is no `for` (use `each`).
+- There is no `for … do` loop (use `each`). `for` is the comprehension expression below.
 - All control structures are expressions (as in Ruby), but if the branches of an `if` have different types, the result is a union type. An `if` without `else` has type `T?`.
 - Truthiness is as in Ruby: only `nil` and `false` are falsy. However, a condition that is known from its type to be always true / always false (`if 3`, `if some_int`) produces a warning.
 - Variable types are narrowed by `while` and `if` conditions ([02-types.md](02-types.md) §6).
+
+### `for` comprehensions
+
+An expression that flattens nested blocks: it desugars to a chain of `flat_map`/`filter`/`map` (the shape of Ruby's Feature #22132).
+
+```ruby
+def pairs(n: Int, v: Int) -> Array[[Int, Int]]
+  for i in 0...n,
+      j in 0...n when i + j == v then
+    [i, j]
+  end
+end
+# => (0...n).flat_map { |i| (0...n).filter { |j| i + j == v }.map { |j| [i, j] } }
+
+for x in xs when x.even? then x * 2 end     # one line
+for k, v in hash then "#{k}=#{v}" end        # tuple destructuring, as for block parameters
+for u in find_user(id), o in latest_order(u) then [u, o] end   # Result[[User, Order], E]
+```
+
+- One iterator uses `map`; with several, all but the last use `flat_map`. `when` filters that iterator's sequence. The right-hand side of `in` and the guard are argument-level expressions (no commas, no modifier `if`).
+- The variables are block parameters, so nothing leaks out; later iterators, guards and the body see the earlier variables. The guard's block and the body's block are siblings, so a temporary assigned in a guard is not visible in the body.
+- Any type with `flat_map`/`map` (and `filter`, for `when`) works: `Enumerable`, `Range`, `Result` (`flat_map` is an alias of `and_then`; guards are not available). The type is inferred from the desugared expression as usual.
+- `break` inside the body or a guard is a compile error (it could only leave the innermost generated block).
+- `for` is a contextual keyword: only `for variable in` starts a comprehension.
 
 ### Pattern matching
 

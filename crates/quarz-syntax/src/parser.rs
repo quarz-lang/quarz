@@ -83,6 +83,9 @@ pub struct Parser<'src> {
     /// the condition of `while`/`until`, so that a `do` block binds to the
     /// outer construct.
     no_do: bool,
+    /// Inside the body or guard of a `for` comprehension (where `break`
+    /// is rejected, as it would leave only the innermost generated block).
+    in_comprehension: bool,
     /// `expr in pattern` is not a match while parsing a `case` subject.
     allow_in_match: bool,
     last_span_end: u32,
@@ -103,6 +106,7 @@ impl<'src> Parser<'src> {
             diagnostics: Vec::new(),
             next_id: id_base,
             no_do: false,
+            in_comprehension: false,
             allow_in_match: true,
             last_span_end: 0,
         }
@@ -1506,13 +1510,16 @@ impl<'src> Parser<'src> {
     fn parse_brace_block(&mut self) -> PResult<Block> {
         let start = self.expect(&T::LBrace, "`{`")?.span;
         let saved = self.no_do;
+        let saved_comp = self.in_comprehension;
         self.no_do = false;
+        self.in_comprehension = false;
         self.push_scope(false);
         self.skip_newlines();
         let params = self.parse_block_params()?;
         let body = self.parse_statements(&[]);
         self.pop_scope();
         self.no_do = saved;
+        self.in_comprehension = saved_comp;
         self.expect(&T::RBrace, "`}`")?;
         let span = self.span_from(start);
         Ok(Block {
@@ -1526,13 +1533,16 @@ impl<'src> Parser<'src> {
     fn parse_do_block(&mut self) -> PResult<Block> {
         let start = self.expect_kw(K::Do)?.span;
         let saved = self.no_do;
+        let saved_comp = self.in_comprehension;
         self.no_do = false;
+        self.in_comprehension = false;
         self.push_scope(false);
         self.skip_newlines();
         let params = self.parse_block_params()?;
         let body = self.parse_body_with_rescue(&[K::End])?;
         self.pop_scope();
         self.no_do = saved;
+        self.in_comprehension = saved_comp;
         self.expect_kw(K::End)?;
         let span = self.span_from(start);
         Ok(Block {
@@ -1562,6 +1572,9 @@ impl<'src> Parser<'src> {
     fn parse_primary(&mut self) -> PResult<Expr> {
         let tok = self.peek().clone();
         let start = tok.span;
+        if self.at_for_comprehension() {
+            return self.parse_for_comprehension();
+        }
         match tok.kind {
             T::Int { digits, base } => {
                 self.bump();
@@ -1980,6 +1993,189 @@ impl<'src> Parser<'src> {
         Ok(HashEntry::Pair { key, value })
     }
 
+    /// `for` is a contextual keyword: `for x in`, `for x, y in`.
+    fn at_for_comprehension(&mut self) -> bool {
+        if !matches!(self.kind(), T::Ident(name) if name == "for") {
+            return false;
+        }
+        let mut k = 1;
+        loop {
+            if !matches!(self.kind_at(k), T::Ident(_)) {
+                return false;
+            }
+            match self.kind_at(k + 1) {
+                T::Keyword(K::In) => return true,
+                T::Comma => k += 2,
+                _ => return false,
+            }
+        }
+    }
+
+    /// A `for` comprehension:
+    ///
+    /// ```text
+    /// for x in xs when x.even?, y in ys then [x, y] end
+    /// ```
+    ///
+    /// desugars to `xs.filter { |x| x.even? }.flat_map { |x| ys.map { |y|
+    /// [x, y] } }`: one `filter` per guard, `flat_map` for every iterator
+    /// but the last, `map` for the last. The variables are block
+    /// parameters, so later iterators, guards and the body see the
+    /// earlier ones and nothing leaks out.
+    fn parse_for_comprehension(&mut self) -> PResult<Expr> {
+        let start = self.bump().span; // for
+        struct Iterator {
+            names: Vec<(String, Span)>,
+            source: Expr,
+            guard: Option<Expr>,
+            span: Span,
+        }
+        let mut iterators: Vec<Iterator> = Vec::new();
+        let saved_comp = self.in_comprehension;
+        // Every iterator (and the body) is parsed inside the scopes of the
+        // earlier ones, as the generated blocks nest.
+        let mut scopes = 0;
+        loop {
+            let istart = self.peek().span;
+            let mut names = Vec::new();
+            loop {
+                let tok = self.bump();
+                let T::Ident(name) = tok.kind else {
+                    self.error_at("expected a variable name", tok.span);
+                    return Err(ParseError);
+                };
+                names.push((name, tok.span));
+                if !self.eat(&T::Comma) {
+                    break;
+                }
+            }
+            self.expect_kw(K::In)?;
+            // The source is evaluated in the scope of the earlier
+            // iterators but not of this one.
+            let saved_in = self.allow_in_match;
+            let saved_do = self.no_do;
+            self.allow_in_match = false;
+            self.no_do = true;
+            let source = self.parse_ternary();
+            self.allow_in_match = saved_in;
+            self.no_do = saved_do;
+            let source = source?;
+            self.push_scope(false);
+            scopes += 1;
+            for (name, _) in &names {
+                self.declare(name);
+            }
+            let guard = if self.at_kw(K::When) {
+                self.bump();
+                self.in_comprehension = true;
+                let g = self.parse_ternary();
+                self.in_comprehension = saved_comp;
+                Some(g?)
+            } else {
+                None
+            };
+            let span = self.span_from(istart);
+            iterators.push(Iterator {
+                names,
+                source,
+                guard,
+                span,
+            });
+            if self.eat(&T::Comma) {
+                self.skip_newlines();
+                continue;
+            }
+            break;
+        }
+        if !self.at_kw(K::Then) {
+            if self.at_kw(K::Do) {
+                self.error_expected(
+                    "`then` (a `for` comprehension yields its body with `then`, not `do`)",
+                );
+            } else {
+                self.error_expected("`then` after the iterators of `for`");
+            }
+            for _ in 0..scopes {
+                self.pop_scope();
+            }
+            return Err(ParseError);
+        }
+        self.bump(); // then
+        self.in_comprehension = true;
+        let mut body = self.parse_statements(&[K::End]);
+        self.in_comprehension = saved_comp;
+        for _ in 0..scopes {
+            self.pop_scope();
+        }
+        self.expect_kw(K::End)?;
+        let span = self.span_from(start);
+        // Build from the inside out.
+        let last = iterators.len() - 1;
+        let mut inner: Option<Expr> = None;
+        for (k, it) in iterators.into_iter().enumerate().rev() {
+            let params = Params {
+                list: it
+                    .names
+                    .iter()
+                    .map(|(name, span)| Param {
+                        name: name.clone(),
+                        kind: ParamKind::Positional,
+                        ty: None,
+                        default: None,
+                        assigns_ivar: false,
+                        span: *span,
+                    })
+                    .collect(),
+            };
+            let mut recv = it.source;
+            if let Some(guard) = it.guard {
+                let gspan = guard.span;
+                recv = self.node(
+                    gspan,
+                    ExprKind::Call(Box::new(Call {
+                        recv: Some(recv),
+                        name: "filter".to_string(),
+                        args: vec![],
+                        block: Some(Block {
+                            params: params.clone(),
+                            body: vec![guard],
+                            span: gspan,
+                            braces: true,
+                        }),
+                        safe_nav: false,
+                        has_parens: false,
+                        type_args: vec![],
+                    })),
+                );
+            }
+            let body_exprs = match inner.take() {
+                Some(e) => vec![e],
+                None => std::mem::take(&mut body),
+            };
+            let name = if k == last { "map" } else { "flat_map" };
+            inner = Some(self.node(
+                it.span,
+                ExprKind::Call(Box::new(Call {
+                    recv: Some(recv),
+                    name: name.to_string(),
+                    args: vec![],
+                    block: Some(Block {
+                        params,
+                        body: body_exprs,
+                        span: it.span,
+                        braces: true,
+                    }),
+                    safe_nav: false,
+                    has_parens: false,
+                    type_args: vec![],
+                })),
+            ));
+        }
+        let mut expr = inner.expect("at least one iterator");
+        expr.span = span;
+        Ok(expr)
+    }
+
     fn parse_lambda(&mut self) -> PResult<Expr> {
         let start = self.expect(&T::Arrow, "`->`")?.span;
         self.push_scope(false);
@@ -2071,6 +2267,9 @@ impl<'src> Parser<'src> {
             K::Class => self.parse_class(false),
             K::Module => self.parse_module(),
             K::Return | K::Break | K::Next => {
+                if kw == K::Break && self.in_comprehension {
+                    self.error_at("`break` cannot be used in a `for` comprehension", start);
+                }
                 self.bump();
                 let value = if self.starts_expression() && !self.at_modifier() {
                     Some(Box::new(self.parse_rhs_list()?))

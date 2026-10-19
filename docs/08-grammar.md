@@ -80,6 +80,8 @@ typed_assign   = IDENT ":" type "=" expression ;        (* only at the start of 
 
 (* ---- procedure literals ---- *)
 lambda         = "->" [ "(" [ param_list ] ")" ] [ "->" type ] ( "{" body "}" | "do" body "end" ) ;
+for_comp       = "for" for_iter { "," for_iter } "then" statements "end" ;
+for_iter       = IDENT { "," IDENT } "in" arg_expr [ "when" arg_expr ] ;
 block          = "{" [ "|" block_params "|" ] body "}" | "do" [ "|" block_params "|" ] body "end" ;
 block_params   = param_list ;                           (* types may be omitted; they are inferred *)
 method_ref     = expression ".:" method_name ;
@@ -116,5 +118,5 @@ extern_decl    = "extern" STRING NEWLINE { "def" IDENT "(" [ param_list ] ")" "-
 - **The two meanings of `->`**: `->` in a `def` signature is the return type; `->` in expression position is a lambda. In `->(x: Int) -> Int { }`, the first is the lambda and the second is the return type.
 - **`Const[...]`**: in type position, type arguments. In expression position, a type expression (`Array[Int].new`) if the contents of `[` can be interpreted as types, otherwise a call to `Const.[](...)` (a user-defined `self.[]`). The built-in `Array`/`Hash`/`Set` have no `self.[]`, so they are always type expressions.
 - **`{ }` as block vs. hash**: the same rule as Ruby.
-- **Contextual keywords**: `data`/`enum`/`var`/`abstract`/`override`/`extension`/`using`/`type`/`extern`/`is` are keywords only in the declaration positions above, when the following tokens take the form of a declaration.
+- **Contextual keywords**: `data`/`enum`/`var`/`abstract`/`override`/`extension`/`using`/`type`/`extern`/`is`/`for` are keywords only in the declaration positions above, when the following tokens take the form of a declaration.
 - **`is ... end` of `data`**: a `data` declaration without a body does not end with `end`, so a body needs an introducing word for the parser to tell it from the following statements; `is` right after `data X(...)` opens the body.

@@ -306,6 +306,18 @@ fn declarations() {
     // The variants are one `|`-separated list: on one line, continued on
     // lines that start with `|`, with or without a leading `|`.
     assert_eq!(sexp("enum C = A | B(x: Int)"), "(enum C (A) (B x:Int))");
+    // `for` comprehensions desugar to filter / flat_map / map.
+    assert_eq!(
+        sexp("for x in xs when x.even?, y in ys then [x, y] end"),
+        "(call (call (call _ xs) filter (block (params x) (call x even?))) flat_map (block (params x) (call (call _ ys) map (block (params y) (array x y)))))"
+    );
+    assert_eq!(
+        sexp("for k, v in h then k end"),
+        "(call (call _ h) map (block (params k v) k))"
+    );
+    assert!(errors("for x in xs then break end")[0].contains("`break` cannot be used"));
+    assert!(errors("for x in xs do x end")[0].contains("not `do`"));
+    assert_eq!(sexp("for(1)"), "(call _ for 1)");
     assert_eq!(sexp("enum C =\n  | A\n  | B"), "(enum C (A) (B))");
     assert_eq!(
         sexp("enum C\n  A | B\n  | D\n  def f = 1\nend"),

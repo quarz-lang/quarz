@@ -332,10 +332,34 @@ Ruby と同じもの: `if`/`unless`/`elsif`/`else`、`while`/`until`、修飾子
 
 Ruby と違うもの:
 
-- `for` はありません(`each` を使ってください)。
+- ループとしての `for … do` はありません(`each` を使ってください)。`for` は下記の内包表記(式)です。
 - すべての制御構造は式です(Ruby と同じ)が、`if` の各枝の型が異なると結果は合併型になります。`if` に `else` がないときは `T?` です。
 - 真偽判定は Ruby と同じく `nil` と `false` だけが偽です。ただし型から常に真/常に偽と分かる条件(`if 3`、`if some_int`)には警告が出ます。
 - `while` の条件や `if` の条件によって変数の型が絞り込まれます([02-types.ja.md](02-types.ja.md) §6)。
+
+### `for` 内包表記
+
+入れ子のブロックを平らに書くための式です。`flat_map`/`filter`/`map` の連鎖に脱糖されます(Ruby の Feature #22132 と同じ形)。
+
+```ruby
+def pairs(n: Int, v: Int) -> Array[[Int, Int]]
+  for i in 0...n,
+      j in 0...n when i + j == v then
+    [i, j]
+  end
+end
+# => (0...n).flat_map { |i| (0...n).filter { |j| i + j == v }.map { |j| [i, j] } }
+
+for x in xs when x.even? then x * 2 end     # 一行形式
+for k, v in hash then "#{k}=#{v}" end        # タプルの分解(ブロック引数と同じ)
+for u in find_user(id), o in latest_order(u) then [u, o] end   # Result[[User, Order], E]
+```
+
+- イテレータが 1 つなら `map`、複数なら最後以外が `flat_map`。`when` はそのイテレータの列への `filter`。`in` の右辺と `when` の条件は引数レベルの式です(コンマや修飾子 `if` を含まない)。
+- 変数はブロック引数なので外に漏れません。後続のイテレータ、`when`、本体から先行の変数が見えます。`when` のブロックと本体のブロックは兄弟なので、`when` の中で代入した一時変数は本体から見えません。
+- `flat_map`/`map`(と `when` に必要な `filter`)を持つ型なら何でも使えます: `Enumerable`、`Range`、`Result`(`flat_map` は `and_then` の別名。`when` は使えません)。型は脱糖後の式から普通に推論されます。
+- 本体や `when` の中の `break` はコンパイルエラーです(どのブロックを抜けるかが読めないため)。
+- `for` は文脈キーワードで、`for 変数 in` の形のときだけ内包表記です。
 
 ### パターンマッチ
 

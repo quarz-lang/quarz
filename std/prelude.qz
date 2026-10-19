@@ -1472,6 +1472,9 @@ enum Result[T, E]
     in Err(error:) then Result::Err[U, E].new(error)
     end
   end
+
+  # `and_then` under the name `for` comprehensions desugar to.
+  def flat_map[U](&: (T) -> Result[U, E]) -> Result[U, E] = and_then { |v| yield(v) }
 end
 
 class Task[out T: Shareable]

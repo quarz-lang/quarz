@@ -78,6 +78,8 @@ typed_assign   = IDENT ":" type "=" expression ;        (* 文の先頭でのみ
 
 (* ---- 手続きリテラル ---- *)
 lambda         = "->" [ "(" [ param_list ] ")" ] [ "->" type ] ( "{" body "}" | "do" body "end" ) ;
+for_comp       = "for" for_iter { "," for_iter } "then" statements "end" ;
+for_iter       = IDENT { "," IDENT } "in" arg_expr [ "when" arg_expr ] ;
 block          = "{" [ "|" block_params "|" ] body "}" | "do" [ "|" block_params "|" ] body "end" ;
 block_params   = param_list ;                           (* 型は省略可。推論される *)
 method_ref     = expression ".:" method_name ;
@@ -114,5 +116,5 @@ extern_decl    = "extern" STRING NEWLINE { "def" IDENT "(" [ param_list ] ")" "-
 - **`->` の二義性**: `def` のシグネチャ中の `->` は戻り値型、式の位置の `->` は lambda。lambda の `->(x: Int) -> Int { }` は 1 つ目が lambda、2 つ目が戻り値型。
 - **`Const[...]`**: 型の位置では型引数。式の位置では、`[` の中身が型として解釈できるなら型式(`Array[Int].new`)、そうでなければ `Const.[](...)` の呼び出し(ユーザー定義の `self.[]`)。組み込みの `Array`/`Hash`/`Set` は `self.[]` を持たないため常に型式。
 - **`{ }` のブロックとハッシュ**: Ruby と同じ規則。
-- **文脈キーワード**: `data`/`enum`/`var`/`abstract`/`override`/`extension`/`using`/`type`/`extern`/`is` は、上記の宣言位置で後続トークンが宣言の形を取るときだけキーワード。
+- **文脈キーワード**: `data`/`enum`/`var`/`abstract`/`override`/`extension`/`using`/`type`/`extern`/`is`/`for` は、上記の宣言位置で後続トークンが宣言の形を取るときだけキーワード。
 - **`is ... end` の `data`**: 本体のない `data` 宣言は `end` で終わらないので、本体を続ける語がないとパーサは本体と後続の文を区別できない。`data X(...)` の直後の `is` が本体を開く。
