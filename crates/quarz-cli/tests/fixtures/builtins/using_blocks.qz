@@ -1,0 +1,61 @@
+# `using M` inside a method or block body (to the end of that body),
+# `using M do ... end` as an expression, and block parameters declared
+# `using M`: the DSL applies its extensions to the caller's block literal.
+module Shout
+  extension String
+    def shout -> String = upcase + "!"
+  end
+end
+
+def greet(s: String) -> String
+  using Shout
+  s.shout
+end
+p greet("hi")
+
+x = using Shout do
+  "block".shout
+end
+p x
+p using Shout { "brace".shout }
+
+# a DSL that applies its own extensions to the caller's block
+enum Cond = Eq(name: Symbol, value: String) | Gt(name: Symbol, value: Int) | And(l: Cond, r: Cond)
+
+module SqlDSL
+  extension Symbol
+    override def ==(other: Object) -> Cond = Cond::Eq.new(self, other.to_s)
+    def >(other: Int) -> Cond = Cond::Gt.new(self, other)
+  end
+  extension Cond
+    def &(other: Cond) -> Cond = Cond::And.new(self, other)
+  end
+end
+
+def render(c: Cond) -> String
+  case c
+  in Cond::Eq(name:, value:) then "#{name} = '#{value}'"
+  in Cond::Gt(name:, value:) then "#{name} > #{value}"
+  in Cond::And(l:, r:) then "(#{render(l)} AND #{render(r)})"
+  end
+end
+
+class Relation
+  @table: String
+  def initialize(@table: String); end
+  def where(&: () -> Cond using SqlDSL) -> String
+    "SELECT * FROM #{@table} WHERE #{render(yield)}"
+  end
+  def where_named(&cond: () -> Cond using SqlDSL) -> String
+    "SELECT * FROM #{@table} WHERE #{render(cond.())}"
+  end
+end
+
+users = Relation.new("users")
+puts users.where { :name == "matz" }
+puts users.where { (:name == "matz") & (:age > 20) }
+puts users.where_named { :age > 30 }
+# outside the block, Symbol#== is the ordinary one
+p :name == :name
+# nested blocks inside the DSL block see the extensions too
+puts users.where { ([1].map { |i| :age > i })[0] }

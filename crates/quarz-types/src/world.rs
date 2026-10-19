@@ -68,6 +68,9 @@ pub struct MethodInfo {
     pub params: Vec<ParamInfo>,
     /// The `&block` parameter: its name and proc type.
     pub block: Option<(String, Type)>,
+    /// Extensions active inside a block literal passed to this method
+    /// (`&: (A) -> R using M`).
+    pub block_usings: Vec<ExtensionId>,
     pub ret: RetType,
     pub body: Option<Rc<MethodDef>>,
     pub is_abstract: bool,

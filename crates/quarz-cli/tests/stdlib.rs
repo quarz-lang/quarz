@@ -228,3 +228,50 @@ Builder.new.instance_exec { inner { item } }
         "{out}"
     );
 }
+
+/// `using` in bodies and on block parameters is lexically scoped.
+#[test]
+fn using_scoping() {
+    let out = common::diagnostics(
+        r#"module Shout
+  extension String
+    def shout -> String = upcase + "!"
+  end
+end
+def a -> String
+  using Shout
+  "x".shout
+end
+def b -> String = "y".shout
+v = using Shout { "z".shout }
+w = "w".shout
+def c(&: () -> String using Shout) -> String = yield
+p c { "c".shout }
+f = -> { "f".shout }
+p c(&f)
+"#,
+    )
+    .join("\n");
+    assert!(
+        out.contains("test:10:19: error: undefined method `shout` for String"),
+        "{out}"
+    );
+    assert!(
+        out.contains("test:12:5: error: undefined method `shout` for String"),
+        "{out}"
+    );
+    assert!(
+        out.contains("test:15:10: error: undefined method `shout` for String"),
+        "{out}"
+    );
+    assert!(!out.contains("test:8:"), "{out}");
+    assert!(!out.contains("test:11:"), "{out}");
+    assert!(!out.contains("test:14:"), "{out}");
+    // A declaration error is reported where the parameter is.
+    let out =
+        common::diagnostics("def d(&: () -> String using String) -> String = yield\n").join("\n");
+    assert!(
+        out.contains("test:1:7: error: `using String`: not a module"),
+        "{out}"
+    );
+}

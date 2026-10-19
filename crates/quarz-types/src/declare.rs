@@ -1100,6 +1100,7 @@ impl<'ast> Declarer<'ast> {
             type_params: Vec::new(),
             params,
             block: None,
+            block_usings: Vec::new(),
             ret: RetType::Known(ret),
             body: None,
             is_abstract: false,
@@ -1219,8 +1220,14 @@ impl<'ast> Declarer<'ast> {
         }
         let mut params = Vec::new();
         let mut block = None;
+        let mut block_usings: Vec<ExtensionId> = Vec::new();
         for p in &def.params.list {
             if p.kind == ParamKind::Block {
+                for path in &p.usings {
+                    if let Some(found) = self.resolve_using(scope.namespace, path, p.span) {
+                        block_usings.extend(found);
+                    }
+                }
                 match &p.ty {
                     Some(t) => {
                         if let Some(ty) = self.resolve_type(t, &scope) {
@@ -1305,6 +1312,7 @@ impl<'ast> Declarer<'ast> {
             type_params,
             params,
             block,
+            block_usings,
             ret,
             body: def.body.as_ref().map(|_| Rc::new(def.clone())),
             is_abstract: def.is_abstract,
@@ -1343,7 +1351,7 @@ impl<'ast> Declarer<'ast> {
             self.file = file;
             let mut ids = Vec::new();
             for path in paths {
-                if let Some(found) = self.resolve_using(None, path) {
+                if let Some(found) = self.resolve_using(None, path, Span::empty(0)) {
                     ids.extend(found);
                 }
             }
@@ -1353,7 +1361,7 @@ impl<'ast> Declarer<'ast> {
         for (cid, paths) in per_class {
             let mut ids = Vec::new();
             for path in paths {
-                if let Some(found) = self.resolve_using(Some(cid), path) {
+                if let Some(found) = self.resolve_using(Some(cid), path, Span::empty(0)) {
                     ids.extend(found);
                 }
             }
@@ -1365,8 +1373,8 @@ impl<'ast> Declarer<'ast> {
         &mut self,
         namespace: Option<ClassId>,
         path: &ConstPath,
+        span: Span,
     ) -> Option<Vec<ExtensionId>> {
-        let span = Span::empty(0);
         match self.resolve_path(namespace, path, span) {
             Some(Member::Class(id)) if self.world.class(id).kind == ClassKind::Module => {
                 Some(self.world.class(id).extensions.clone())

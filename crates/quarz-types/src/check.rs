@@ -1398,11 +1398,17 @@ impl Checker {
         }
         let mut result = self.world.nil();
         let mut dead = false;
+        // `using M` inside a body: its extensions are active from there to
+        // the end of this statement list.
+        let active_len = self.world.active_extensions.len();
         for (i, e) in body.iter().enumerate() {
             let last = i == body.len() - 1;
             if dead {
                 self.warning("unreachable code", e.span);
                 dead = false; // report once
+            }
+            if let ExprKind::Using(path) = &e.kind {
+                self.activate_using(path, e.span);
             }
             let t = self.check_expr(e, if last { expected } else { None });
             if t.is_nothing() {
@@ -1412,7 +1418,26 @@ impl Checker {
                 result = t;
             }
         }
+        self.world.active_extensions.truncate(active_len);
         result
+    }
+
+    /// `using M` in a body: make the module's extensions active (the
+    /// caller scopes them).
+    fn activate_using(&mut self, path: &ConstPath, span: Span) {
+        let namespace = self.env.scope.namespace;
+        match self.resolve_path(namespace, path, span) {
+            Some(Member::Class(id)) if self.world.class(id).kind == ClassKind::Module => {
+                let ids = self.world.class(id).extensions.clone();
+                for e in ids {
+                    if !self.world.active_extensions.contains(&e) {
+                        self.world.active_extensions.push(e);
+                    }
+                }
+            }
+            Some(_) => self.error(format!("`using {path}`: not a module"), span),
+            None => {}
+        }
     }
 
     // ----- expressions --------------------------------------------------------
@@ -3979,7 +4004,16 @@ impl Checker {
                     && (m.owner == self.world.builtin.kernel
                         || m.owner == self.world.builtin.scope))
                     || (m.name == "blocking" && m.owner == self.world.builtin.task);
+                // `&: (A) -> R using M`: the block literal sees the
+                // method's extensions.
+                let active_len = self.world.active_extensions.len();
+                for e in m.block_usings.clone() {
+                    if !self.world.active_extensions.contains(&e) {
+                        self.world.active_extensions.push(e);
+                    }
+                }
                 self.check_block_as(expr.id, b, &resolved, is_task);
+                self.world.active_extensions.truncate(active_len);
             } else if let Some(Arg::BlockPass(e)) =
                 call.args.iter().find(|a| matches!(a, Arg::BlockPass(_)))
             {

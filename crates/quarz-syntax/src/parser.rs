@@ -447,7 +447,25 @@ impl<'src> Parser<'src> {
                 let start = self.bump().span;
                 let path = self.parse_const_path()?;
                 let span = self.span_from(start);
-                self.node(span, ExprKind::Using(path))
+                let using = self.node(span, ExprKind::Using(path));
+                // `using M do ... end` / `using M { ... }`: the extensions
+                // are active in the body only, whose value is the result.
+                let block = if self.at_kw(K::Do) && !self.no_do {
+                    Some(self.parse_do_block()?)
+                } else if self.at(&T::LBrace) {
+                    Some(self.parse_brace_block()?)
+                } else {
+                    None
+                };
+                match block {
+                    Some(b) => {
+                        let mut stmts = vec![using];
+                        stmts.extend(b.body);
+                        let span = self.span_from(start);
+                        self.node(span, ExprKind::Seq(stmts))
+                    }
+                    None => using,
+                }
             }
             "type" if matches!(next, T::Const(_)) => self.parse_type_alias()?,
             "var" if matches!(next, T::IVar(_)) => {
@@ -1644,6 +1662,15 @@ impl<'src> Parser<'src> {
                 self.maybe_type_app(expr)
             }
             T::Ident(name) => {
+                // `using M do ... end` is an expression too.
+                if name == "using"
+                    && !self.is_local(&name)
+                    && matches!(self.kind_at(1), T::Const(_) | T::ColonColon)
+                {
+                    if let Some(expr) = self.parse_contextual_declaration(&name)? {
+                        return Ok(expr);
+                    }
+                }
                 self.bump();
                 if self.is_local(&name) && !(self.at(&T::LParen) && !self.peek().space_before) {
                     return Ok(self.node(start, ExprKind::Local(name)));
@@ -2123,6 +2150,7 @@ impl<'src> Parser<'src> {
                         ty: None,
                         default: None,
                         assigns_ivar: false,
+                        usings: Vec::new(),
                         span: *span,
                     })
                     .collect(),
@@ -3723,6 +3751,18 @@ impl<'src> Parser<'src> {
         } else {
             None
         };
+        // `&: (A) -> R using M, N`: the block literal is checked with
+        // these modules' extensions active.
+        let mut usings = Vec::new();
+        if kind == ParamKind::Block && matches!(self.kind(), T::Ident(n) if n == "using") {
+            self.bump();
+            loop {
+                usings.push(self.parse_const_path()?);
+                if !self.eat(&T::Comma) {
+                    break;
+                }
+            }
+        }
         let span = self.span_from(start);
         Ok(Some(Param {
             name,
@@ -3730,6 +3770,7 @@ impl<'src> Parser<'src> {
             ty,
             default,
             assigns_ivar,
+            usings,
             span,
         }))
     }

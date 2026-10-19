@@ -508,6 +508,9 @@ pub struct Param {
     pub default: Option<Expr>,
     /// `def initialize(@x: Int)`: also assigns the field.
     pub assigns_ivar: bool,
+    /// `&: (A) -> R using M`: extensions active inside a block literal
+    /// passed for this (block) parameter.
+    pub usings: Vec<ConstPath>,
     pub span: Span,
 }
 

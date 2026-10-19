@@ -226,7 +226,8 @@ using StringShout
 "hi".shout          # => "HI!"
 ```
 
-- `using` can be written in a file or inside a `class`/`module` body, and is in effect until the end of that lexical scope.
+- `using` can be written in a file, inside a `class`/`module` body, or inside a method or block body, and is in effect until the end of that lexical scope (the statement list it appears in). `using M do ... end` / `using M { ... }` is an expression: the extensions are active in its body only and its value is the body's.
+- A block parameter can carry a `using`: `def where(&: () -> Cond using SqlDSL)`. A block literal written at a call site is then checked as if it began with `using SqlDSL` (nested blocks included), so a DSL applies its own extensions to the caller's block without the caller naming them; this is the static form of Ruby's `Proc#refined`. The `using` is not part of the procedure type: an existing procedure value passed with `&proc` is unaffected.
 - Resolution of extension methods is **entirely at compile time**. It is determined only by the static type of the receiver and the `using`s in effect at that position; there is no runtime table rewriting.
 - If an extension defines a method with the same name as an existing one, the extension's method is statically chosen within that scope (the same "override only where visible" as Ruby's refinements). To prevent unintended overrides, a warning is issued unless `override` is present.
 - `include` inside an extension makes an existing type conform to a module after the fact (equivalent to Swift's `extension Int: Describable`). This is the only way to "make a class you did not write satisfy an interface".
