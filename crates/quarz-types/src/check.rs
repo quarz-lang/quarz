@@ -213,6 +213,8 @@ pub struct Checker {
     repl_env: Option<Env>,
     /// Methods currently being checked (to detect inference cycles).
     in_progress: Vec<MethodId>,
+    /// Classes whose field defaults have been checked.
+    defaults_checked: HashSet<ClassId>,
 }
 
 /// Arguments after matching to parameters.
@@ -258,6 +260,7 @@ impl Checker {
             file_mains,
             repl_env: None,
             in_progress: Vec::new(),
+            defaults_checked: HashSet::new(),
         }
     }
 
@@ -305,8 +308,71 @@ impl Checker {
         for mid in 0..count as MethodId {
             self.ensure_method_checked(mid);
         }
+        self.check_field_defaults();
         for (file, body) in units {
             self.check_main(*file, body);
+        }
+    }
+
+    /// Field defaults run with `self` = the new object, as `initialize`
+    /// would: check each against its field's type (and record what the
+    /// lowering needs, such as constant targets).
+    fn check_field_defaults(&mut self) {
+        let count = self.world.classes.len();
+        for cid in 0..count as ClassId {
+            if self.defaults_checked.contains(&cid) {
+                continue;
+            }
+            let class = self.world.class(cid).clone();
+            if class.fields.iter().all(|f| f.default.is_none()) {
+                continue;
+            }
+            self.defaults_checked.insert(cid);
+            let self_type = Type::Class(
+                cid,
+                class
+                    .type_params
+                    .iter()
+                    .map(|p| Type::Param(p.id))
+                    .collect(),
+            );
+            let scope = TypeScope {
+                namespace: Some(cid),
+                params: class
+                    .type_params
+                    .iter()
+                    .map(|p| (p.name.clone(), p.id))
+                    .collect(),
+                self_type: Some(self_type.clone()),
+            };
+            let env = self.fresh_env(self_type, Some(cid), None, scope, class.file);
+            let saved_env = std::mem::replace(&mut self.env, env);
+            let saved_infer = std::mem::take(&mut self.infer);
+            let saved_touched = std::mem::take(&mut self.touched);
+            let saved_active =
+                std::mem::replace(&mut self.world.active_extensions, class.usings.clone());
+            for f in &class.fields {
+                let Some(d) = &f.default else {
+                    continue;
+                };
+                let t = self.check_expr(d, Some(&f.ty));
+                if !self.coerce(&t, &f.ty) {
+                    self.error(
+                        format!(
+                            "default value of type {} for field `@{}` of type {}",
+                            self.name(&t),
+                            f.name,
+                            self.name(&f.ty)
+                        ),
+                        d.span,
+                    );
+                }
+            }
+            self.finish_frame_types();
+            self.env = saved_env;
+            self.infer = saved_infer;
+            self.touched = saved_touched;
+            self.world.active_extensions = saved_active;
         }
     }
 
@@ -357,6 +423,7 @@ impl Checker {
         for mid in 0..count as MethodId {
             self.ensure_method_checked(mid);
         }
+        self.check_field_defaults();
         let main = self.file_main(file).unwrap_or(self.world.builtin.object);
         let env = match self.repl_env.take() {
             Some(env) => env,

@@ -16,6 +16,7 @@ mod func;
 mod inline;
 mod iter;
 mod rtworld;
+mod sroa;
 
 use func::FnBuilder;
 
@@ -226,6 +227,7 @@ pub fn lower_checked(checked: &Checked, files: &[SourceFile]) -> Module {
     let delta = lw.lower(&checked.world, &checked.output, &inputs, all);
     let mut functions = delta.functions;
     inline::inline_calls(&mut functions, &delta.world.methods, 2);
+    sroa::scalar_replace(&mut functions, &delta.world.methods, &delta.world.classes);
     Module {
         world: delta.world,
         functions,

@@ -1,0 +1,68 @@
+# Data values that never escape are not allocated: their field reads
+# become reads of the constructor arguments. The values must come out
+# the same whether or not that happens.
+data Pt(x: Float, y: Float) is
+  def +(o: Pt) -> Pt = Pt.new(x + o.x, y + o.y)
+  def scale(k: Float) -> Pt = Pt.new(x * k, y * k)
+  def dot(o: Pt) -> Float = x * o.x + y * o.y
+end
+
+# a temporary consumed by an inlined method
+p Pt.new(1.0, 2.0).scale(3.0).dot(Pt.new(1.0, 1.0))
+# an argument register redefined after the construction
+a = 1.5
+v = Pt.new(a, 2.5)
+a = 99.0
+p v.x, a
+# the same register in a loop body
+total = 0.0
+k = 0.0
+(1..5).each do |i|
+  k = i.to_f
+  t = Pt.new(k, k * 2.0)
+  k = -1.0
+  total += t.x + t.y
+end
+p total, k
+# escaping: stored, returned, passed, kept in an array
+class Holder
+  var @last: Pt = Pt.new(0.0, 0.0)
+  def keep(q: Pt) -> Nil
+    @last = q
+  end
+  def last -> Pt = @last
+end
+h = Holder.new
+h.keep(Pt.new(3.0, 4.0))
+p h.last
+def make(x: Float) -> Pt = Pt.new(x, x + 1.0)
+p make(1.0)
+def show(q: Pt) -> String = "#{q.x}/#{q.y}"
+p show(Pt.new(5.0, 6.0))
+pts = [Pt.new(1.0, 1.0), Pt.new(2.0, 2.0)]
+p pts.map { |q| q.scale(2.0).x }
+p pts.reduce(Pt.new(0.0, 0.0)) { |s, q| s + q }
+# compared and inspected, so it must exist
+w = Pt.new(7.0, 8.0)
+p w == Pt.new(7.0, 8.0), w
+# nil and conditional paths
+def pick(flag: Bool) -> Float
+  q = flag ? Pt.new(1.0, 2.0) : Pt.new(3.0, 4.0)
+  q.x + q.y
+end
+p pick(true), pick(false)
+# a variant of an enum built from fields
+enum Shape = Circle(r: Float) | Rect(w: Float, h: Float)
+def area(s: Shape) -> Float
+  case s
+  in Shape::Circle(r:) then 3.0 * r * r
+  in Shape::Rect(w:, h:) then w * h
+  end
+end
+p area(Shape::Circle.new(2.0)), area(Shape::Rect.new(2.0, 3.0))
+c = Shape::Rect.new(1.0, 2.0)
+p c.w * c.h
+# BigInt and strings in fields (boxed values moved through registers)
+data Pair(n: Int, s: String)
+q = Pair.new(2 ** 70, "big")
+p q.n + 1, q.s.size
