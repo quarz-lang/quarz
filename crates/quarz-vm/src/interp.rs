@@ -64,6 +64,11 @@ impl Args {
 
 pub type NativeFn = fn(&Interp, &Value, Args) -> EvalResult;
 
+/// A native taking its receiver and arguments by reference (no copies,
+/// no argument list): `None` sends the call down the generic path (a
+/// receiver or argument it does not handle, or a case that raises).
+pub type FastNativeFn = fn(&Interp, &Value, &[&Value]) -> Option<EvalResult>;
+
 /// A native that takes ownership of the receiver so that it can update a
 /// uniquely referenced value in place. On failure it hands the receiver
 /// back so the caller can restore it.
@@ -308,6 +313,8 @@ pub struct Interp {
     consts: Rc<RefCell<Vec<Option<Value>>>>,
     variant_singletons: Rc<RefCell<HashMap<ClassId, Value>>>,
     pub natives: Vec<Option<NativeFn>>,
+    /// By-reference versions of some natives, by method id.
+    pub fast_natives: Vec<Option<FastNativeFn>>,
     pub natives_owned: Vec<Option<OwnedNativeFn>>,
     /// The owned natives with an in-place fast path (`xs = xs.push(v)`).
     pub owned: OwnedIds,
@@ -412,6 +419,16 @@ impl Interp {
                 m.native_key
                     .as_deref()
                     .and_then(|k| registry.get(k).copied())
+            })
+            .collect();
+        let fast_registry = natives::fast_registry();
+        let fast_natives: Vec<Option<FastNativeFn>> = world
+            .methods
+            .iter()
+            .map(|m| {
+                m.native_key
+                    .as_deref()
+                    .and_then(|k| fast_registry.get(k).copied())
             })
             .collect();
         let field_indices: Vec<FxHashMap<String, usize>> = world
@@ -522,6 +539,7 @@ impl Interp {
             consts: state.consts,
             variant_singletons: state.variant_singletons,
             natives,
+            fast_natives,
             natives_owned,
             owned,
             field_indices,
@@ -1703,6 +1721,22 @@ impl Interp {
     }
 
     // ----- conversions ---------------------------------------------------------------------------
+
+    /// Append `v`'s `to_s` to `buf` (numbers and strings without a
+    /// temporary).
+    pub fn append_to_s(&self, buf: &mut String, v: &Value) -> Result<(), Flow> {
+        use std::fmt::Write as _;
+        match v {
+            Value::Str(s) => buf.push_str(s),
+            Value::Int(i) => {
+                let _ = write!(buf, "{i}");
+            }
+            Value::Nil => {}
+            Value::Bool(b) => buf.push_str(if *b { "true" } else { "false" }),
+            _ => buf.push_str(&self.to_s(v)?),
+        }
+        Ok(())
+    }
 
     pub fn to_s(&self, v: &Value) -> Result<Rc<str>, Flow> {
         match v {

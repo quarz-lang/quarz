@@ -21,11 +21,11 @@ between runs.
 
 | program     | quarz-vm | quarz-aot |   go | rust |  ruby | ruby --yjit |
 |-------------|---------:|----------:|-----:|-----:|------:|------------:|
-| fib         |    140.1 |       7.9 |  2.5 |  1.7 |  67.0 |        58.8 |
-| loop        |    403.5 |       9.7 |  3.4 |  3.9 | 110.9 |       110.2 |
-| collections |    494.5 |      32.4 | 29.1 | 13.1 | 233.0 |       221.4 |
-| objects     |    144.5 |      15.0 |  1.6 |  1.6 | 296.7 |       234.9 |
-| strings     |    117.9 |      70.9 | 32.3 | 16.5 | 155.4 |       155.9 |
+| fib         |    145.4 |       8.2 |  2.7 |  1.7 |  66.8 |        55.5 |
+| loop        |    409.2 |       9.6 |  3.1 |  4.2 | 110.6 |       108.9 |
+| collections |    505.0 |      33.5 | 28.6 | 13.1 | 225.0 |       203.4 |
+| objects     |    150.3 |      14.2 |  1.6 |  1.5 | 287.2 |       229.8 |
+| strings     |     95.6 |      47.5 | 30.0 | 15.2 | 153.3 |       147.5 |
 
 First measurement, at commit 93874ea (before direct calls between
 compiled bodies, inline reference counting, inline field and frame
@@ -51,9 +51,11 @@ access and the reusable block caller):
   the hash table with boxed keys and values), 9–10× on `objects` (a
   `Vec2` that stays in its function is not allocated, the one stored in
   the particle is: its allocation and release are most of the time) and
-  2–4.5× on `strings`.
+  1.6–3× on `strings` (interpolation builds in one buffer, the string
+  natives take their arguments by reference; what remains is one heap
+  allocation per string).
 - Against Ruby, compiled Quarz is ahead everywhere: 7–8× on `fib`,
-  11× on `loop`, 7× on `collections`, 16–20× on `objects`, 2.2× on
+  11× on `loop`, 6–7× on `collections`, 16–20× on `objects`, 3× on
   `strings`.
 - The VM is 2–4× slower than Ruby's interpreter on calls and loops and
   on a par for objects and strings.
@@ -64,5 +66,6 @@ heap value bumps a reference count, every object and every string is
 heap-allocated. Arrays of `Int`/`Float` now store their elements
 unboxed, and copy propagation removed most of the reference-count
 traffic on temporaries; typed storage for `Int`/`Float` fields and for
-`Int`-keyed hashes would be the next steps, and they are changes to the
-runtime's data structures rather than to the compiler.
+`Int`-keyed hashes, and short strings kept inline in the value (no
+allocation, no reference count), would be the next steps, and they are
+changes to the runtime's data structures rather than to the compiler.

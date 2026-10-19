@@ -16,7 +16,7 @@ use indexmap::{IndexMap, IndexSet};
 pub type ValueMap = IndexMap<Value, Value, rustc_hash::FxBuildHasher>;
 pub type ValueSet = IndexSet<Value, rustc_hash::FxBuildHasher>;
 use num_bigint::BigInt;
-use quarz_ir::{ClassId, FuncId};
+use quarz_ir::{ClassId, FuncId, MethodId};
 use smallvec::SmallVec;
 
 use crate::interp::Flow;
@@ -417,8 +417,9 @@ pub type NativeBlock =
 /// (`&:name`), or a native function.
 pub enum ClosureBody {
     Func(FuncId),
-    /// `&:name`: call `name` on the first argument.
-    MethodName(Rc<str>),
+    /// `&:name`: call `name` on the first argument. The cache holds the
+    /// method found for the last (class, argument count).
+    MethodName(Rc<str>, Cell<Option<(ClassId, usize, MethodId)>>),
     /// `obj.:name`: call `name` on a captured receiver.
     BoundMethod {
         recv: Value,
@@ -431,7 +432,7 @@ impl std::fmt::Debug for ClosureBody {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ClosureBody::Func(id) => write!(f, "Func({id})"),
-            ClosureBody::MethodName(n) => write!(f, "MethodName({n})"),
+            ClosureBody::MethodName(n, _) => write!(f, "MethodName({n})"),
             ClosureBody::BoundMethod { name, .. } => write!(f, "BoundMethod({name})"),
             ClosureBody::Native(_) => write!(f, "Native"),
         }
@@ -815,6 +816,23 @@ impl Value {
 
     pub fn string(s: String) -> Value {
         Value::Str(Rc::from(s))
+    }
+
+    /// A string built by `f` in a reused buffer: one allocation (the
+    /// `Rc<str>`), none for the buffer. Reentrant (a nested build gets a
+    /// fresh buffer).
+    pub fn build_string(f: impl FnOnce(&mut String)) -> Value {
+        thread_local! {
+            static SCRATCH: RefCell<String> = const { RefCell::new(String::new()) };
+        }
+        let mut buf = SCRATCH.with(|s| std::mem::take(&mut *s.borrow_mut()));
+        buf.clear();
+        f(&mut buf);
+        let v = Value::Str(Rc::from(buf.as_str()));
+        if buf.capacity() <= 1 << 16 {
+            SCRATCH.with(|s| *s.borrow_mut() = buf);
+        }
+        v
     }
 
     pub fn array(items: Vec<Value>) -> Value {

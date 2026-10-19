@@ -633,6 +633,34 @@ impl Interp {
                 kw_splat,
                 block,
             } => {
+                // A native with a by-reference version takes the
+                // receiver and arguments from the registers directly.
+                if let CallKind::Method(mid) = kind {
+                    if !*splat
+                        && kw.is_empty()
+                        && kw_splat.is_none()
+                        && block.is_none()
+                        && args.len() <= 3
+                    {
+                        let recv_ref = match recv {
+                            Some(r) => &regs[*r as usize],
+                            None => &act.self_val,
+                        };
+                        let mid = self.resolve_dynamic(recv_ref, *mid);
+                        if let Some(fast) = self.fast_natives[mid as usize] {
+                            let result = {
+                                let refs: SmallVec<[&Value; 3]> =
+                                    args.iter().map(|r| &regs[*r as usize]).collect();
+                                fast(self, recv_ref, &refs)
+                            };
+                            if let Some(r) = result {
+                                let v = r?;
+                                regs[*dst as usize] = v;
+                                return Ok(());
+                            }
+                        }
+                    }
+                }
                 let recv = match recv {
                     Some(r) => regs[*r as usize].clone(),
                     None => act.self_val.clone(),
@@ -872,7 +900,10 @@ impl Interp {
             Inst::SymbolProc { dst, name } => {
                 let tag = self.new_tag();
                 regs[*dst as usize] = Value::Proc(Rc::new(Closure {
-                    body: ClosureBody::MethodName(Rc::from(self.str_const(f, *name))),
+                    body: ClosureBody::MethodName(
+                        Rc::from(self.str_const(f, *name)),
+                        Cell::new(None),
+                    ),
                     frame: None,
                     self_val: Value::Nil,
                     destructure: None,
@@ -935,14 +966,26 @@ impl Interp {
                 regs[*dst as usize] = self.make_regexp(&source, flags)?;
             }
             Inst::Interpolate { dst, parts } => {
-                let mut s = String::new();
-                for p in parts {
-                    match p {
-                        StrPiece::Lit(idx) => s.push_str(self.str_const(f, *idx)),
-                        StrPiece::Val(r) => s.push_str(&self.to_s(&regs[*r as usize])?),
+                // Every piece is written into one reused buffer (a number
+                // is formatted there, not through a temporary string).
+                let mut failed = None;
+                let v = Value::build_string(|s| {
+                    for p in parts {
+                        match p {
+                            StrPiece::Lit(idx) => s.push_str(self.str_const(f, *idx)),
+                            StrPiece::Val(r) => {
+                                if let Err(e) = self.append_to_s(s, &regs[*r as usize]) {
+                                    failed = Some(e);
+                                    return;
+                                }
+                            }
+                        }
                     }
+                });
+                if let Some(e) = failed {
+                    return Err(e);
                 }
-                regs[*dst as usize] = Value::string(s);
+                regs[*dst as usize] = v;
             }
             Inst::ToSym { dst, src } => {
                 let s = self.to_s(&regs[*src as usize])?;
@@ -1138,12 +1181,33 @@ impl Interp {
             return Err(self.err_type("not a procedure"));
         };
         match &closure.body {
-            ClosureBody::MethodName(name) => {
+            ClosureBody::MethodName(name, cache) => {
                 if args.is_empty() {
                     return Err(self.err_arg("block needs an argument"));
                 }
                 let recv = args.remove(0);
-                self.send(&recv, name, args, None)
+                // The method found for the last receiver class is reused.
+                let cid = self.class_of(&recv);
+                let argc = args.len();
+                let mid = match cache.get() {
+                    Some((c, n, mid)) if c == cid && n == argc => mid,
+                    _ => match self.find_method(cid, name, argc, false) {
+                        Some(mid) => {
+                            cache.set(Some((cid, argc, mid)));
+                            mid
+                        }
+                        None => return self.send(&recv, name, args, None),
+                    },
+                };
+                if argc <= 3 {
+                    if let Some(fast) = self.fast_natives[mid as usize] {
+                        let refs: SmallVec<[&Value; 3]> = args.iter().collect();
+                        if let Some(r) = fast(self, &recv, &refs) {
+                            return r;
+                        }
+                    }
+                }
+                self.invoke(mid, recv, args, Vec::new(), None)
             }
             ClosureBody::BoundMethod { recv, name } => self.send(recv, name, args, None),
             ClosureBody::Native(f) => f(self, args),

@@ -69,6 +69,7 @@ struct Runtime {
     frame_get: CFuncId,
     frame_set: CFuncId,
     field_get: CFuncId,
+    load_const: CFuncId,
     field_set: CFuncId,
     call_static: CFuncId,
     yield_: CFuncId,
@@ -94,6 +95,7 @@ struct Helpers {
     frame_get: FuncRef,
     frame_set: FuncRef,
     field_get: FuncRef,
+    load_const: FuncRef,
     field_set: FuncRef,
     call_static: FuncRef,
     yield_: FuncRef,
@@ -159,6 +161,11 @@ pub fn compile(module: &Module) -> Result<Vec<u8>, String> {
         frame_set: import(
             &mut obj,
             "qz_frame_set",
+            &sig(&[i64_, i32_, i32_, i64_, i32_], None),
+        )?,
+        load_const: import(
+            &mut obj,
+            "qz_load_const",
             &sig(&[i64_, i32_, i32_, i64_, i32_], None),
         )?,
         field_get: import(
@@ -296,6 +303,7 @@ impl Compiler {
             frame_get: self.module.declare_func_in_func(self.rt.frame_get, b.func),
             frame_set: self.module.declare_func_in_func(self.rt.frame_set, b.func),
             field_get: self.module.declare_func_in_func(self.rt.field_get, b.func),
+            load_const: self.module.declare_func_in_func(self.rt.load_const, b.func),
             field_set: self.module.declare_func_in_func(self.rt.field_set, b.func),
             call_static: self
                 .module
@@ -1759,6 +1767,15 @@ impl Gen<'_, '_> {
                 Constant::Float(f) => {
                     let v = self.b.ins().f64const(*f);
                     self.store_float(*dst, v);
+                }
+                // A string or symbol: cloned from the function's pool.
+                Constant::Str(_) | Constant::Symbol(_) => {
+                    let fid = self.i32(self.fid);
+                    let i = self.i32(*idx);
+                    let d = self.i32(*dst);
+                    self.b
+                        .ins()
+                        .call(self.h.load_const, &[self.rt, fid, i, self.regs, d]);
                 }
                 _ => self.exec(block, index, unwind),
             },

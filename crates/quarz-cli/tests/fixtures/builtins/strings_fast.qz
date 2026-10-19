@@ -1,0 +1,26 @@
+# Interpolation builds in one buffer; common string, array and hash natives
+# take their arguments by reference; `&:name` procs cache the method.
+p "a#{1}b#{2.5}c#{nil}d#{true}e#{:sym}f#{"s"}g#{[1, 2]}h#{2 ** 70}"
+data P(x: Int) is
+  def to_s -> String = "P(#{x}: #{"in#{x}ner"})"
+end
+p "#{P.new(3)} and #{P.new(4)}", "#{"x" * 70000}".size
+p "héllo wörld".upcase, "ÀB".downcase, "abc".upcase, "ab" + "cd", 42.to_s, (-7).to_s
+p ["ab", "cd"].map(&:upcase), [1, 2].map(&:to_s), ["x", "y"].map(&:size)
+mixed: Array[Object] = [1, "a", 2.5]
+p mixed.map(&:to_s), mixed.map(&:inspect)
+h = { "k" => 1 }
+p h["k"], h["z"]?, h.key?("k"), h.size, [1, 2, 3][1], [1, 2, 3][-1], [1, 2][5]?
+p "abc".end_with?("c"), "abc".start_with?("x"), "abc".include?("b"), "abc" == "abc", "abc" != "abd"
+b = String.build { |sb| sb << "x" << 1.to_s; sb.push("y") }
+p b
+begin
+  p [1, 2][9]
+rescue IndexError => e
+  p e.message
+end
+begin
+  p h["zz"]
+rescue KeyError => e
+  p e.message
+end

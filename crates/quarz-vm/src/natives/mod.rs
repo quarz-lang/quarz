@@ -14,6 +14,7 @@ mod collections;
 mod concurrency;
 mod core;
 mod enumerable;
+mod fast;
 mod io;
 mod json;
 mod math;
@@ -40,6 +41,13 @@ pub fn registry() -> HashMap<&'static str, NativeFn> {
     bytes::register(&mut m);
     time::register(&mut m);
     json::register(&mut m);
+    m
+}
+
+/// Natives with a by-reference version.
+pub fn fast_registry() -> HashMap<&'static str, crate::interp::FastNativeFn> {
+    let mut m = HashMap::new();
+    fast::register(&mut m);
     m
 }
 

@@ -513,6 +513,29 @@ pub unsafe extern "C" fn qz_call_static(
 ) -> u32 {
     let rt = &*rt;
     let act = &*act;
+    // A native with a by-reference version: no copies, no argument list.
+    if block == u32::MAX && nargs <= 3 {
+        if let Some(fast) = rt.fast_natives[mid as usize] {
+            let recv_ref: &Value = if recv == u32::MAX {
+                &act.self_val
+            } else {
+                &*regs.add(recv as usize)
+            };
+            let mut refs: [&Value; 3] = [&Value::Nil; 3];
+            for (i, slot) in refs.iter_mut().enumerate().take(nargs as usize) {
+                *slot = &*regs.add(*arg_regs.add(i) as usize);
+            }
+            if let Some(r) = fast(rt, recv_ref, &refs[..nargs as usize]) {
+                return match r {
+                    Ok(v) => {
+                        *regs.add(dst as usize) = v;
+                        STATUS_OK
+                    }
+                    Err(flow) => rt.park_flow(flow),
+                };
+            }
+        }
+    }
     let recv = if recv == u32::MAX {
         act.self_val.clone()
     } else {
@@ -729,6 +752,24 @@ pub unsafe extern "C" fn qz_yield(
         }
         Err(flow) => rt.park_flow(flow),
     }
+}
+
+/// `regs[dst]` = constant `idx` of function `fid` (a string or symbol,
+/// kept in the function's pool).
+///
+/// # Safety
+/// As for `qz_exec`.
+#[no_mangle]
+pub unsafe extern "C" fn qz_load_const(
+    rt: *const Interp,
+    fid: u32,
+    idx: u32,
+    regs: *mut Value,
+    dst: u32,
+) {
+    let rt = &*rt;
+    let v = rt.pools.borrow()[fid as usize].borrow()[idx as usize].clone();
+    *regs.add(dst as usize) = v;
 }
 
 /// Allocate a data object of `class` whose `nfields` fields are moved in

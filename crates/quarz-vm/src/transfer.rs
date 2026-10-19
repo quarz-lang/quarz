@@ -155,7 +155,7 @@ pub fn export(interp: &Interp, v: &Value) -> Result<Transfer, Flow> {
             };
             let body = match &c.body {
                 ClosureBody::Func(id) => ProcBody::Func(*id),
-                ClosureBody::MethodName(n) => ProcBody::MethodName(n.to_string()),
+                ClosureBody::MethodName(n, _) => ProcBody::MethodName(n.to_string()),
                 ClosureBody::BoundMethod { recv, name } => ProcBody::BoundMethod {
                     recv: Box::new(export(interp, recv)?),
                     name: name.to_string(),
@@ -335,7 +335,9 @@ pub fn import(interp: &Interp, t: Transfer) -> Value {
         } => Value::Proc(Rc::new(Closure {
             body: match body {
                 ProcBody::Func(id) => ClosureBody::Func(id),
-                ProcBody::MethodName(n) => ClosureBody::MethodName(Rc::from(n)),
+                ProcBody::MethodName(n) => {
+                    ClosureBody::MethodName(Rc::from(n), std::cell::Cell::new(None))
+                }
                 ProcBody::BoundMethod { recv, name } => ClosureBody::BoundMethod {
                     recv: import(interp, *recv),
                     name: Rc::from(name),

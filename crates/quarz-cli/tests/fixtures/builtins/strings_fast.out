@@ -1,0 +1,29 @@
+"a1b2.5cdtrueesymfsg[1, 2]h1180591620717411303424"
+"P(3: in3ner) and P(4: in4ner)"
+70000
+"HÉLLO WÖRLD"
+"àb"
+"ABC"
+"abcd"
+"42"
+"-7"
+["AB", "CD"]
+["1", "2"]
+[1, 1]
+["1", "a", "2.5"]
+["1", "\"a\"", "2.5"]
+1
+nil
+true
+1
+2
+3
+nil
+true
+false
+true
+true
+true
+"x1y"
+"index 9 out of bounds (size 2)"
+"key not found: \"zz\""

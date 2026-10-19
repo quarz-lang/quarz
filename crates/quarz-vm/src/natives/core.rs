@@ -177,7 +177,7 @@ fn proc_arity(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
     };
     Ok(Value::Int(match &c.body {
         ClosureBody::Func(fid) => interp.func(*fid).arity as i64,
-        ClosureBody::MethodName(_) => 1,
+        ClosureBody::MethodName(..) => 1,
         ClosureBody::BoundMethod { .. } | ClosureBody::Native(_) => -1,
     }))
 }
