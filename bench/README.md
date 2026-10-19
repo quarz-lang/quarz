@@ -16,5 +16,6 @@ done
 | `collections.qz` | `Array`/`Hash` building, `map`/`select`/`reduce` with blocks |
 | `objects.qz` | object construction, field access and dynamic dispatch |
 | `strings.qz` | string concatenation, interpolation and splitting |
+| `dispatch.qz` | calls to a method three classes override (900k dispatched calls) |
 
 `compare/` holds the same programs in Go, Rust and Ruby and a script that times all of them side by side; see `compare/README.md` for the latest numbers.

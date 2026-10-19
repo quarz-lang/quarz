@@ -515,6 +515,98 @@ impl<'a> FnBuilder<'a> {
         i
     }
 
+    /// The value of constant `cid` when its initializer is a literal
+    /// (an integer, float, plain string, boolean or symbol).
+    fn literal_const(&self, cid: quarz_types::ConstId) -> Option<Constant> {
+        let info = self.world.consts.get(cid as usize)?;
+        let value = info.value.as_ref()?;
+        let is_float =
+            matches!(&info.ty, Some(Type::Class(id, _)) if *id == self.world.builtin.float);
+        Some(match &value.kind {
+            ExprKind::Int(lit) => match lit.value {
+                Some(i) if is_float => Constant::Float(i as f64),
+                Some(i) if matches!(&info.ty, Some(Type::Class(id, _)) if *id == self.world.builtin.int) => {
+                    Constant::Int(i)
+                }
+                _ => return None,
+            },
+            ExprKind::Float(f) if is_float => Constant::Float(*f),
+            ExprKind::True => Constant::Bool(true),
+            ExprKind::False => Constant::Bool(false),
+            ExprKind::Symbol(name) => Constant::Symbol(name.clone()),
+            ExprKind::Str(parts) => {
+                let mut text = String::new();
+                for p in parts {
+                    match p {
+                        StrPart::Lit(s) => text.push_str(s),
+                        StrPart::Interp(_) => return None,
+                    }
+                }
+                Constant::Str(text)
+            }
+            _ => return None,
+        })
+    }
+
+    /// The operands of a chain of `String#+` (`a + b + c`, at least two
+    /// `+`), which is built in one buffer like an interpolation.
+    fn concat_chain(&self, e: &'a Expr, call: &'a ast::Call) -> Option<Vec<&'a Expr>> {
+        let mut leaves: Vec<&'a Expr> = Vec::new();
+        let mut depth = 0;
+        let (mut cur_e, mut cur) = (e, call);
+        loop {
+            let Some(CallTarget::Method { method }) = self.out.calls.get(&cur_e.id) else {
+                return None;
+            };
+            let m = self.world.method(*method);
+            if !(m.is_native && m.owner == self.world.builtin.string && m.name == "+")
+                || cur.block.is_some()
+                || cur.safe_nav
+                || cur.args.len() != 1
+            {
+                return None;
+            }
+            let Some(Arg::Positional(arg)) = cur.args.first() else {
+                return None;
+            };
+            let Some(recv) = cur.recv.as_ref() else {
+                return None;
+            };
+            leaves.push(arg);
+            depth += 1;
+            match &recv.kind {
+                ExprKind::Call(inner) if self.is_string_plus(recv, inner) => {
+                    cur_e = recv;
+                    cur = inner;
+                }
+                _ => {
+                    leaves.push(recv);
+                    break;
+                }
+            }
+        }
+        if depth < 2 {
+            return None;
+        }
+        leaves.reverse();
+        Some(leaves)
+    }
+
+    fn is_string_plus(&self, e: &Expr, call: &ast::Call) -> bool {
+        let Some(CallTarget::Method { method }) = self.out.calls.get(&e.id) else {
+            return false;
+        };
+        let m = self.world.method(*method);
+        m.is_native
+            && m.owner == self.world.builtin.string
+            && m.name == "+"
+            && call.block.is_none()
+            && !call.safe_nav
+            && call.args.len() == 1
+            && matches!(call.args.first(), Some(Arg::Positional(_)))
+            && call.recv.is_some()
+    }
+
     fn load_const(&mut self, c: Constant) -> Reg {
         let idx = self.const_idx(c);
         let dst = self.reg();
@@ -855,6 +947,10 @@ impl<'a> FnBuilder<'a> {
                     dst
                 }
                 Some(ConstTarget::Const(cid)) => {
+                    // A constant initialized by a literal is the literal.
+                    if let Some(c) = self.literal_const(*cid) {
+                        return self.load_const(c);
+                    }
                     let dst = self.reg();
                     self.emit(Inst::ConstGet { dst, id: *cid });
                     dst
@@ -1477,6 +1573,15 @@ impl<'a> FnBuilder<'a> {
         }
         if self.out.bang_assign.contains(&e.id) {
             return self.bang_assign(e, call);
+        }
+        if let Some(leaves) = self.concat_chain(e, call) {
+            let parts: Vec<StrPiece> = leaves
+                .into_iter()
+                .map(|l| StrPiece::Val(self.expr(l)))
+                .collect();
+            let dst = self.reg();
+            self.emit(Inst::Interpolate { dst, parts });
+            return dst;
         }
         let target = self.out.calls.get(&e.id);
         let recv = match call.recv.as_ref() {
