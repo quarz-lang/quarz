@@ -754,6 +754,40 @@ pub unsafe extern "C" fn qz_yield(
     }
 }
 
+/// Run the `Interpolate` at instruction `inst` of `block` of `fid` on the
+/// compiled function's registers (as `qz_exec`, without the generic
+/// dispatch).
+///
+/// # Safety
+/// As for `qz_exec`.
+#[no_mangle]
+pub unsafe extern "C" fn qz_interpolate(
+    rt: *const Interp,
+    act: *const Activation,
+    fid: u32,
+    block: u32,
+    inst: u32,
+    regs: *mut Value,
+) -> u32 {
+    let rt = &*rt;
+    let act = &*act;
+    let funcs = rt.funcs.borrow();
+    let f = &funcs[fid as usize];
+    let regs = std::slice::from_raw_parts_mut(regs, f.nregs as usize);
+    let b = &f.blocks[block as usize];
+    act.line.set(b.lines[inst as usize]);
+    let quarz_ir::Inst::Interpolate { dst, parts } = &b.insts[inst as usize] else {
+        unreachable!("qz_interpolate on another instruction")
+    };
+    match rt.interpolate(f, regs, parts) {
+        Ok(v) => {
+            regs[*dst as usize] = v;
+            STATUS_OK
+        }
+        Err(flow) => rt.park_flow(flow),
+    }
+}
+
 /// `regs[dst]` = constant `idx` of function `fid` (a string or symbol,
 /// kept in the function's pool).
 ///

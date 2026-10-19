@@ -70,6 +70,7 @@ struct Runtime {
     frame_set: CFuncId,
     field_get: CFuncId,
     load_const: CFuncId,
+    interpolate: CFuncId,
     field_set: CFuncId,
     call_static: CFuncId,
     yield_: CFuncId,
@@ -96,6 +97,7 @@ struct Helpers {
     frame_set: FuncRef,
     field_get: FuncRef,
     load_const: FuncRef,
+    interpolate: FuncRef,
     field_set: FuncRef,
     call_static: FuncRef,
     yield_: FuncRef,
@@ -167,6 +169,11 @@ pub fn compile(module: &Module) -> Result<Vec<u8>, String> {
             &mut obj,
             "qz_load_const",
             &sig(&[i64_, i32_, i32_, i64_, i32_], None),
+        )?,
+        interpolate: import(
+            &mut obj,
+            "qz_interpolate",
+            &sig(&[i64_, i64_, i32_, i32_, i32_, i64_], Some(i32_)),
         )?,
         field_get: import(
             &mut obj,
@@ -304,6 +311,9 @@ impl Compiler {
             frame_set: self.module.declare_func_in_func(self.rt.frame_set, b.func),
             field_get: self.module.declare_func_in_func(self.rt.field_get, b.func),
             load_const: self.module.declare_func_in_func(self.rt.load_const, b.func),
+            interpolate: self
+                .module
+                .declare_func_in_func(self.rt.interpolate, b.func),
             field_set: self.module.declare_func_in_func(self.rt.field_set, b.func),
             call_static: self
                 .module
@@ -1691,13 +1701,20 @@ impl Gen<'_, '_> {
 
     /// Delegate the instruction to the runtime and check its status.
     fn exec(&mut self, block: u32, inst: u32, unwind: CBlock) {
+        let entry = self.h.exec;
+        self.exec_via(entry, block, inst, unwind);
+    }
+
+    /// Delegate the instruction to a runtime entry with `qz_exec`'s
+    /// signature (a dedicated one for some instructions).
+    fn exec_via(&mut self, entry: FuncRef, block: u32, inst: u32, unwind: CBlock) {
         let fid = self.b.ins().iconst(types::I32, i64::from(self.fid));
         let blk = self.b.ins().iconst(types::I32, i64::from(block));
         let i = self.b.ins().iconst(types::I32, i64::from(inst));
         let call = self
             .b
             .ins()
-            .call(self.h.exec, &[self.rt, self.act, fid, blk, i, self.regs]);
+            .call(entry, &[self.rt, self.act, fid, blk, i, self.regs]);
         let status = self.b.inst_results(call)[0];
         self.check(status, unwind);
     }
@@ -1768,7 +1785,27 @@ impl Gen<'_, '_> {
                     let v = self.b.ins().f64const(*f);
                     self.store_float(*dst, v);
                 }
-                // A string or symbol: cloned from the function's pool.
+                // A short string is the three words of its value.
+                Constant::Str(text) if quarz_vm::value::ShortStr::new(text).is_some() => {
+                    let v = quarz_vm::value::Value::str(text);
+                    // SAFETY: a short string has no heap payload: its
+                    // three words are the whole value (and need no drop).
+                    let words: [u64; 3] = unsafe {
+                        std::ptr::read(&v as *const quarz_vm::value::Value as *const [u64; 3])
+                    };
+                    std::mem::forget(v);
+                    self.release(*dst);
+                    for (k, w) in words.iter().enumerate() {
+                        let c = self.b.ins().iconst(types::I64, *w as i64);
+                        self.b.ins().store(
+                            MemFlags::trusted(),
+                            c,
+                            self.regs,
+                            Self::reg_off(*dst) + 8 * k as i32,
+                        );
+                    }
+                }
+                // A longer string or a symbol: cloned from the function's pool.
                 Constant::Str(_) | Constant::Symbol(_) => {
                     let fid = self.i32(self.fid);
                     let i = self.i32(*idx);
@@ -2196,6 +2233,10 @@ impl Gen<'_, '_> {
                 if moving {
                     self.states[*src as usize] = State::NonHeap;
                 }
+            }
+            Inst::Interpolate { .. } => {
+                let entry = self.h.interpolate;
+                self.exec_via(entry, block, index, unwind);
             }
             Inst::ClearRegs { from, to } => {
                 for r in *from..*to {

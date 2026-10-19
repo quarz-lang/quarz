@@ -1724,12 +1724,12 @@ impl Interp {
     /// Append `v`'s `to_s` to `buf` (numbers and strings without a
     /// temporary).
     pub fn append_to_s(&self, buf: &mut String, v: &Value) -> Result<(), Flow> {
-        use std::fmt::Write as _;
         match v {
             Value::Str(s) => buf.push_str(s),
             Value::Short(s) => buf.push_str(s.as_str()),
             Value::Int(i) => {
-                let _ = write!(buf, "{i}");
+                let mut digits = [0u8; 20];
+                buf.push_str(crate::value::format_int(&mut digits, *i));
             }
             Value::Nil => {}
             Value::Bool(b) => buf.push_str(if *b { "true" } else { "false" }),

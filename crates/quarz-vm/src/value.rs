@@ -744,6 +744,52 @@ impl ShortStr {
     }
 }
 
+impl ShortStr {
+    pub fn make_ascii_uppercase(&mut self) {
+        let n = self.len as usize;
+        self.bytes[..n].make_ascii_uppercase();
+    }
+
+    pub fn make_ascii_lowercase(&mut self) {
+        let n = self.len as usize;
+        self.bytes[..n].make_ascii_lowercase();
+    }
+}
+
+/// Write `i` in decimal into `buf`, returning the text (two digits at
+/// a time; `fmt` is several times slower).
+pub fn format_int(buf: &mut [u8; 20], i: i64) -> &str {
+    const DIGITS: &[u8; 200] = b"0001020304050607080910111213141516171819\
+2021222324252627282930313233343536373839\
+4041424344454647484950515253545556575859\
+6061626364656667686970717273747576777879\
+8081828384858687888990919293949596979899";
+    let mut n = i.unsigned_abs();
+    let mut pos = buf.len();
+    while n >= 100 {
+        let d = (n % 100) as usize * 2;
+        n /= 100;
+        pos -= 2;
+        buf[pos] = DIGITS[d];
+        buf[pos + 1] = DIGITS[d + 1];
+    }
+    if n >= 10 {
+        let d = n as usize * 2;
+        pos -= 2;
+        buf[pos] = DIGITS[d];
+        buf[pos + 1] = DIGITS[d + 1];
+    } else {
+        pos -= 1;
+        buf[pos] = b'0' + n as u8;
+    }
+    if i < 0 {
+        pos -= 1;
+        buf[pos] = b'-';
+    }
+    // SAFETY: only ASCII digits and '-' were written.
+    unsafe { std::str::from_utf8_unchecked(&buf[pos..]) }
+}
+
 impl std::ops::Deref for ShortStr {
     type Target = str;
 

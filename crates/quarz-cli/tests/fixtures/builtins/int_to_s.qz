@@ -1,0 +1,4 @@
+# Integers are formatted by the runtime's own decimal conversion; short
+# ASCII strings are upcased in a copy of the value.
+p 0.to_s, 9.to_s, 10.to_s, 99.to_s, 100.to_s, -1.to_s, -10.to_s, -100.to_s, 1234567890.to_s, (-9223372036854775807 - 1).to_s, 9223372036854775807.to_s
+p "#{0}|#{-5}|#{123456789012345}|#{-9223372036854775807 - 1}", [1, -22, 333].map(&:to_s), ["ab", "CD", "ÄÖ", "exactly15bytes!", "sixteen bytes!!!"].map(&:upcase), ["AB", "ÄÖ"].map(&:downcase)

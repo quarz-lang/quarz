@@ -92,11 +92,20 @@ impl Drop for YieldCache {
 /// body, positional parameters and no frame of their own qualify.
 pub struct BlockCaller {
     interp: *const Interp,
-    closure: Rc<Closure>,
-    fid: FuncId,
-    act: Activation,
-    compiled: Option<crate::interp::CompiledFn>,
-    nparams: usize,
+    kind: CallerKind,
+}
+
+enum CallerKind {
+    /// A block with a body: its activation, built once.
+    Func {
+        closure: Rc<Closure>,
+        fid: FuncId,
+        act: Activation,
+        compiled: Option<crate::interp::CompiledFn>,
+        nparams: usize,
+    },
+    /// `&:name`: the method is called on the first argument.
+    Named { closure: Rc<Closure> },
 }
 
 impl Interp {
@@ -106,8 +115,17 @@ impl Interp {
         let Value::Proc(closure) = proc else {
             return None;
         };
-        let ClosureBody::Func(fid) = closure.body else {
-            return None;
+        let fid = match closure.body {
+            ClosureBody::Func(fid) => fid,
+            ClosureBody::MethodName(..) => {
+                return Some(BlockCaller {
+                    interp: self,
+                    kind: CallerKind::Named {
+                        closure: closure.clone(),
+                    },
+                });
+            }
+            _ => return None,
         };
         if closure.destructure.is_some() {
             return None;
@@ -152,12 +170,53 @@ impl Interp {
         let compiled = self.compiled.borrow().get(fid as usize).copied().flatten();
         Some(BlockCaller {
             interp: self,
-            closure: closure.clone(),
-            fid,
-            act,
-            compiled,
-            nparams,
+            kind: CallerKind::Func {
+                closure: closure.clone(),
+                fid,
+                act,
+                compiled,
+                nparams,
+            },
         })
+    }
+
+    /// `recv.name(*args)` for a `&:name` proc: the method found for the
+    /// last (receiver class, argument count) is cached in the proc, and a
+    /// by-reference native is called without an argument list.
+    pub fn call_named(
+        &self,
+        recv: &Value,
+        args: &[Value],
+        name: &str,
+        cache: &Cell<Option<(ClassId, usize, MethodId)>>,
+    ) -> EvalResult {
+        let cid = self.class_of(recv);
+        let argc = args.len();
+        let mid = match cache.get() {
+            Some((c, n, mid)) if c == cid && n == argc => mid,
+            _ => match self.find_method(cid, name, argc, false) {
+                Some(mid) => {
+                    cache.set(Some((cid, argc, mid)));
+                    mid
+                }
+                None => return self.send(recv, name, args.iter().cloned().collect(), None),
+            },
+        };
+        if argc <= 3 {
+            if let Some(fast) = self.fast_natives[mid as usize] {
+                let refs: SmallVec<[&Value; 3]> = args.iter().collect();
+                if let Some(r) = fast(self, recv, &refs) {
+                    return r;
+                }
+            }
+        }
+        self.invoke(
+            mid,
+            recv.clone(),
+            args.iter().cloned().collect(),
+            Vec::new(),
+            None,
+        )
     }
 }
 
@@ -167,29 +226,42 @@ impl BlockCaller {
     pub fn call(&self, args: &[Value]) -> EvalResult {
         // SAFETY: a caller never outlives the interpreter that made it.
         let interp = unsafe { &*self.interp };
+        let (closure, fid, act, compiled, nparams) = match &self.kind {
+            CallerKind::Func {
+                closure,
+                fid,
+                act,
+                compiled,
+                nparams,
+            } => (closure, *fid, act, *compiled, *nparams),
+            CallerKind::Named { closure } => {
+                let ClosureBody::MethodName(name, cache) = &closure.body else {
+                    unreachable!()
+                };
+                let Some((recv, rest)) = args.split_first() else {
+                    return Err(interp.err_arg("block needs an argument"));
+                };
+                return interp.call_named(recv, rest, name, cache);
+            }
+        };
         if sched::stack_exhausted() {
             return Err(interp.raise(interp.exc.system_stack, "stack level too deep"));
         }
         let padded: ArgVec;
-        let view: &[Value] = if args.len() == self.nparams {
+        let view: &[Value] = if args.len() == nparams {
             args
         } else {
-            let mut v: ArgVec = args
-                .iter()
-                .take(self.nparams)
-                .map(|a| a.fast_clone())
-                .collect();
-            while v.len() < self.nparams {
+            let mut v: ArgVec = args.iter().take(nparams).map(|a| a.fast_clone()).collect();
+            while v.len() < nparams {
                 v.push(Value::Nil);
             }
             padded = v;
             &padded
         };
-        self.act.args_ptr.set(view.as_ptr());
-        self.act.nargs.set(view.len() as u32);
-        let act = &self.act;
+        act.args_ptr.set(view.as_ptr());
+        act.nargs.set(view.len() as u32);
         interp.push_call(act as *const Activation);
-        let r = match self.compiled {
+        let r = match compiled {
             Some(f) => {
                 let mut out = Value::Nil;
                 // SAFETY: `f` is the compiled body of `fid` (see `run_compiled`).
@@ -200,10 +272,9 @@ impl BlockCaller {
                     Err(interp.take_flow(status))
                 }
             }
-            None => interp.run_func_inner(self.fid, act),
+            None => interp.run_func_inner(fid, act),
         };
         interp.pop_call_stack(act);
-        let closure = &self.closure;
         match r {
             Ok(v) => Ok(v),
             Err(Flow::Next(v)) => Ok(v),
@@ -474,6 +545,30 @@ impl Interp {
                 Constant::Symbol(name) | Constant::Str(name) => self.intern(name),
                 _ => self.intern(""),
             },
+        }
+    }
+
+    /// The string of an `Interpolate`: every piece is written into one
+    /// reused buffer (a number is formatted there, not through a
+    /// temporary string).
+    pub fn interpolate(&self, f: &Function, regs: &[Value], parts: &[StrPiece]) -> EvalResult {
+        let mut failed = None;
+        let v = Value::build_string(|s| {
+            for p in parts {
+                match p {
+                    StrPiece::Lit(idx) => s.push_str(self.str_const(f, *idx)),
+                    StrPiece::Val(r) => {
+                        if let Err(e) = self.append_to_s(s, &regs[*r as usize]) {
+                            failed = Some(e);
+                            return;
+                        }
+                    }
+                }
+            }
+        });
+        match failed {
+            Some(e) => Err(e),
+            None => Ok(v),
         }
     }
 
@@ -966,26 +1061,7 @@ impl Interp {
                 regs[*dst as usize] = self.make_regexp(&source, flags)?;
             }
             Inst::Interpolate { dst, parts } => {
-                // Every piece is written into one reused buffer (a number
-                // is formatted there, not through a temporary string).
-                let mut failed = None;
-                let v = Value::build_string(|s| {
-                    for p in parts {
-                        match p {
-                            StrPiece::Lit(idx) => s.push_str(self.str_const(f, *idx)),
-                            StrPiece::Val(r) => {
-                                if let Err(e) = self.append_to_s(s, &regs[*r as usize]) {
-                                    failed = Some(e);
-                                    return;
-                                }
-                            }
-                        }
-                    }
-                });
-                if let Some(e) = failed {
-                    return Err(e);
-                }
-                regs[*dst as usize] = v;
+                regs[*dst as usize] = self.interpolate(f, regs, parts)?;
             }
             Inst::ToSym { dst, src } => {
                 let s = self.to_s(&regs[*src as usize])?;
@@ -1187,28 +1263,7 @@ impl Interp {
                     return Err(self.err_arg("block needs an argument"));
                 }
                 let recv = args.remove(0);
-                // The method found for the last receiver class is reused.
-                let cid = self.class_of(&recv);
-                let argc = args.len();
-                let mid = match cache.get() {
-                    Some((c, n, mid)) if c == cid && n == argc => mid,
-                    _ => match self.find_method(cid, name, argc, false) {
-                        Some(mid) => {
-                            cache.set(Some((cid, argc, mid)));
-                            mid
-                        }
-                        None => return self.send(&recv, name, args, None),
-                    },
-                };
-                if argc <= 3 {
-                    if let Some(fast) = self.fast_natives[mid as usize] {
-                        let refs: SmallVec<[&Value; 3]> = args.iter().collect();
-                        if let Some(r) = fast(self, &recv, &refs) {
-                            return r;
-                        }
-                    }
-                }
-                self.invoke(mid, recv, args, Vec::new(), None)
+                self.call_named(&recv, &args, name, cache)
             }
             ClosureBody::BoundMethod { recv, name } => self.send(recv, name, args, None),
             ClosureBody::Native(f) => f(self, args),

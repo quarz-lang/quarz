@@ -21,11 +21,11 @@ between runs.
 
 | program     | quarz-vm | quarz-aot |   go | rust |  ruby | ruby --yjit |
 |-------------|---------:|----------:|-----:|-----:|------:|------------:|
-| fib         |    146.5 |       8.6 |  2.3 |  1.7 |  66.3 |        56.8 |
-| loop        |    417.1 |       8.7 |  3.4 |  3.5 | 110.2 |       111.2 |
-| collections |    495.4 |      32.6 | 28.6 | 14.1 | 228.5 |       205.5 |
-| objects     |    156.0 |      14.9 |  1.8 |  1.4 | 289.0 |       230.9 |
-| strings     |     81.0 |      37.2 | 31.7 | 15.1 | 155.2 |       148.4 |
+| fib         |    135.1 |       9.1 |  2.6 |  1.8 |  66.1 |        55.9 |
+| loop        |    403.8 |       8.9 |  3.2 |  4.1 | 105.5 |       107.2 |
+| collections |    482.8 |      33.2 | 26.8 | 13.1 | 223.7 |       203.9 |
+| objects     |    138.0 |      14.4 |  1.6 |  1.6 | 285.5 |       230.0 |
+| strings     |     76.1 |      31.1 | 31.8 | 15.1 | 151.2 |       147.6 |
 
 First measurement, at commit 93874ea (before direct calls between
 compiled bodies, inline reference counting, inline field and frame
@@ -51,12 +51,13 @@ access and the reusable block caller):
   the hash table with boxed keys and values), 9–10× on `objects` (a
   `Vec2` that stays in its function is not allocated, the one stored in
   the particle is: its allocation and release are most of the time) and
-  1.2–2.5× on `strings` (interpolation builds in one buffer, the string
-  natives take their arguments by reference, strings of at most 15
-  bytes live in the value; what remains is the allocation of the longer
-  ones and the builder).
+  on a par with Go and 2× slower than Rust on `strings` (interpolation
+  builds in one buffer, the string natives take their arguments by
+  reference, strings of at most 15 bytes live in the value; what
+  remains is the builder's growth and the per-call entry into the
+  runtime).
 - Against Ruby, compiled Quarz is ahead everywhere: 7–8× on `fib`,
-  12× on `loop`, 6–7× on `collections`, 16–20× on `objects`, 4× on
+  12× on `loop`, 6–7× on `collections`, 16–20× on `objects`, 5× on
   `strings`.
 - The VM is 2–4× slower than Ruby's interpreter on calls and loops and
   on a par for objects and strings.

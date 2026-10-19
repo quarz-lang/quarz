@@ -49,26 +49,41 @@ pub fn register(m: &mut HashMap<&'static str, FastNativeFn>) {
         (Some(s), [p]) => p.as_str().map(|p| Ok(Value::Bool(s.contains(p)))),
         _ => None,
     });
-    m.insert("String#upcase", |_, r, a| match (r.as_str(), a) {
-        (Some(s), []) => Some(Ok(Value::build_string(|out| {
-            if s.is_ascii() {
-                out.push_str(s);
-                out.make_ascii_uppercase();
-            } else {
-                out.push_str(&s.to_uppercase());
-            }
-        }))),
+    m.insert("String#upcase", |_, r, a| match (r, a) {
+        // A short ASCII string is converted in a copy of the value.
+        (Value::Short(s), []) if s.is_ascii() => {
+            let mut t = *s;
+            t.make_ascii_uppercase();
+            Some(Ok(Value::Short(t)))
+        }
+        (_, []) => r.as_str().map(|s| {
+            Ok(Value::build_string(|out| {
+                if s.is_ascii() {
+                    out.push_str(s);
+                    out.make_ascii_uppercase();
+                } else {
+                    out.push_str(&s.to_uppercase());
+                }
+            }))
+        }),
         _ => None,
     });
-    m.insert("String#downcase", |_, r, a| match (r.as_str(), a) {
-        (Some(s), []) => Some(Ok(Value::build_string(|out| {
-            if s.is_ascii() {
-                out.push_str(s);
-                out.make_ascii_lowercase();
-            } else {
-                out.push_str(&s.to_lowercase());
-            }
-        }))),
+    m.insert("String#downcase", |_, r, a| match (r, a) {
+        (Value::Short(s), []) if s.is_ascii() => {
+            let mut t = *s;
+            t.make_ascii_lowercase();
+            Some(Ok(Value::Short(t)))
+        }
+        (_, []) => r.as_str().map(|s| {
+            Ok(Value::build_string(|out| {
+                if s.is_ascii() {
+                    out.push_str(s);
+                    out.make_ascii_lowercase();
+                } else {
+                    out.push_str(&s.to_lowercase());
+                }
+            }))
+        }),
         _ => None,
     });
     m.insert("String#+", |_, r, a| match (r.as_str(), a) {
@@ -85,10 +100,10 @@ pub fn register(m: &mut HashMap<&'static str, FastNativeFn>) {
         _ => None,
     });
     m.insert("Int#to_s", |_, r, a| match (r, a) {
-        (Value::Int(i), []) => Some(Ok(Value::build_string(|out| {
-            use std::fmt::Write as _;
-            let _ = write!(out, "{i}");
-        }))),
+        (Value::Int(i), []) => {
+            let mut digits = [0u8; 20];
+            Some(Ok(Value::str(crate::value::format_int(&mut digits, *i))))
+        }
         _ => None,
     });
     // ----- String::Builder -----
