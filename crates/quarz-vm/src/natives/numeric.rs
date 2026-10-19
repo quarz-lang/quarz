@@ -137,7 +137,22 @@ pub(super) fn arith(interp: &Interp, recv: &Value, args: &Args, op: &str) -> Eva
 }
 
 fn cmp_num(interp: &Interp, recv: &Value, args: &Args) -> Result<std::cmp::Ordering, Flow> {
-    interp.compare(recv, args.arg(0))
+    use std::cmp::Ordering;
+    let other = args.arg(0);
+    // A BigInt on either side: compare in the numeric tower (the
+    // generic `compare` would come back here through `<=>`).
+    if matches!(recv, Value::BigInt(_)) || matches!(other, Value::BigInt(_)) {
+        let a = Num::of(interp, recv)?;
+        let b = Num::of(interp, other)?;
+        return Ok(match (&a, &b) {
+            (Num::F(_), _) | (_, Num::F(_)) => a
+                .to_f64()
+                .partial_cmp(&b.to_f64())
+                .unwrap_or(Ordering::Equal),
+            _ => a.to_big().cmp(&b.to_big()),
+        });
+    }
+    interp.compare(recv, other)
 }
 
 pub fn register(m: &mut HashMap<&'static str, NativeFn>) {

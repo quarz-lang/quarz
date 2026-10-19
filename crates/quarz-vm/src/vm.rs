@@ -478,7 +478,9 @@ impl Interp {
                 let v = regs[*src as usize].clone();
                 self.frame(act).set(*depth, *slot, v);
             }
-            Inst::FieldGet { dst, obj, index } => {
+            Inst::FieldGet {
+                dst, obj, index, ..
+            } => {
                 let v = match &regs[*obj as usize] {
                     Value::Object(o) => o
                         .fields
@@ -495,7 +497,9 @@ impl Interp {
                 };
                 regs[*dst as usize] = v;
             }
-            Inst::FieldSet { obj, index, src } => {
+            Inst::FieldSet {
+                obj, index, src, ..
+            } => {
                 let v = regs[*src as usize].clone();
                 match &regs[*obj as usize] {
                     Value::Object(o) => {

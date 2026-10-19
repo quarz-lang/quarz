@@ -227,10 +227,12 @@ impl<'a> FnBuilder<'a> {
                         slot: i as u32,
                     });
                     let obj = b.self_reg();
+                    let class = b.class_id.unwrap_or(u32::MAX);
                     b.emit(Inst::FieldSet {
                         obj,
                         index: idx as u32,
                         src: v,
+                        class,
                     });
                 }
             }
@@ -767,7 +769,13 @@ impl<'a> FnBuilder<'a> {
                 let index = self.ivar_index(e.id, name);
                 let obj = self.self_reg();
                 let dst = self.reg();
-                self.emit(Inst::FieldGet { dst, obj, index });
+                let class = self.class_id.unwrap_or(u32::MAX);
+                self.emit(Inst::FieldGet {
+                    dst,
+                    obj,
+                    index,
+                    class,
+                });
                 dst
             }
             Const(_) | TypeApp(_) => match self.out.const_targets.get(&e.id) {
@@ -1360,6 +1368,7 @@ impl<'a> FnBuilder<'a> {
                                 dst,
                                 obj,
                                 index: index as u32,
+                                class: m.owner,
                             });
                             return dst;
                         }
@@ -1573,7 +1582,13 @@ impl<'a> FnBuilder<'a> {
                 let v = self.expr(value);
                 let index = self.ivar_index(e.id, name);
                 let obj = self.self_reg();
-                self.emit(Inst::FieldSet { obj, index, src: v });
+                let class = self.class_id.unwrap_or(u32::MAX);
+                self.emit(Inst::FieldSet {
+                    obj,
+                    index,
+                    src: v,
+                    class,
+                });
                 v
             }
             LValue::Const(_) => self.nil(),
@@ -1696,7 +1711,13 @@ impl<'a> FnBuilder<'a> {
                 let index = self.ivar_index(e.id, name);
                 let obj = self.self_reg();
                 let dst = self.reg();
-                self.emit(Inst::FieldGet { dst, obj, index });
+                let class = self.class_id.unwrap_or(u32::MAX);
+                self.emit(Inst::FieldGet {
+                    dst,
+                    obj,
+                    index,
+                    class,
+                });
                 (dst, Place::IVar(index))
             }
             LValue::Attr { recv, name, .. } => {
@@ -1784,10 +1805,12 @@ impl<'a> FnBuilder<'a> {
             }
             Place::IVar(index) => {
                 let obj = self.self_reg();
+                let class = self.class_id.unwrap_or(u32::MAX);
                 self.emit(Inst::FieldSet {
                     obj,
                     index,
                     src: res,
+                    class,
                 });
             }
             Place::Attr(recv, name) => {
@@ -1871,7 +1894,13 @@ impl<'a> FnBuilder<'a> {
                     .and_then(|c| self.world.field_index(c, name))
                     .unwrap_or(0) as u32;
                 let obj = self.self_reg();
-                self.emit(Inst::FieldSet { obj, index, src: v });
+                let class = self.class_id.unwrap_or(u32::MAX);
+                self.emit(Inst::FieldSet {
+                    obj,
+                    index,
+                    src: v,
+                    class,
+                });
             }
             LValue::Attr { recv, name, .. } => {
                 let r = self.expr(recv);

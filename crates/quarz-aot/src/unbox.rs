@@ -107,7 +107,6 @@ pub fn defs(inst: &Inst) -> Vec<Reg> {
         | Inst::BlockParam { dst }
         | Inst::FrameGet { dst, .. }
         | Inst::FieldGet { dst, .. }
-        | Inst::FieldGetByName { dst, .. }
         | Inst::ConstGet { dst, .. }
         | Inst::ClassRef { dst, .. }
         | Inst::VariantSingleton { dst, .. }
@@ -139,15 +138,253 @@ pub fn defs(inst: &Inst) -> Vec<Reg> {
         | Inst::ArraySlice { dst, .. }
         | Inst::ArraySliceReg { dst, .. }
         | Inst::ObjectFields { dst, .. }
-        | Inst::HashGetSym { dst, .. }
         | Inst::HashRest { dst, .. }
         | Inst::CatchException { dst }
         | Inst::CatchAny { dst } => vec![*dst],
+        Inst::FieldGetByName { dst, found, .. } | Inst::HashGetSym { dst, found, .. } => {
+            vec![*dst, *found]
+        }
         Inst::OwnedCall { dst, recv, .. } => match recv {
             VarLoc::Reg(r) => vec![*dst, *r],
             VarLoc::Frame { .. } => vec![*dst],
         },
         Inst::FrameSet { .. } | Inst::FieldSet { .. } | Inst::NoMatch { .. } => vec![],
+    }
+}
+
+/// The registers an instruction reads.
+pub fn uses(inst: &Inst) -> Vec<Reg> {
+    match inst {
+        Inst::LoadConst { .. }
+        | Inst::SelfRef { .. }
+        | Inst::Arg { .. }
+        | Inst::HasArg { .. }
+        | Inst::BlockParam { .. }
+        | Inst::FrameGet { .. }
+        | Inst::ConstGet { .. }
+        | Inst::ClassRef { .. }
+        | Inst::VariantSingleton { .. }
+        | Inst::MakeBlock { .. }
+        | Inst::SymbolProc { .. }
+        | Inst::CatchException { .. }
+        | Inst::CatchAny { .. } => vec![],
+        Inst::Move { src, .. }
+        | Inst::Not { src, .. }
+        | Inst::IsNil { src, .. }
+        | Inst::FrameSet { src, .. }
+        | Inst::ToSym { src, .. }
+        | Inst::IsArray { src, .. }
+        | Inst::IsHash { src, .. }
+        | Inst::IsObject { src, .. }
+        | Inst::ToArray { src, .. }
+        | Inst::Len { src, .. }
+        | Inst::ObjectFields { src, .. }
+        | Inst::ClassIsA { src, .. }
+        | Inst::IsA { src, .. }
+        | Inst::As { src, .. }
+        | Inst::NoMatch { src, .. } => vec![*src],
+        Inst::FieldGet { obj, .. } | Inst::FieldGetByName { obj, .. } => vec![*obj],
+        Inst::FieldSet { obj, src, .. } => vec![*obj, *src],
+        Inst::Call {
+            recv,
+            args,
+            kw,
+            kw_splat,
+            block,
+            ..
+        } => {
+            let mut v: Vec<Reg> = recv.iter().copied().collect();
+            v.extend(args.iter().copied());
+            v.extend(kw.iter().map(|(_, r)| *r));
+            v.extend(kw_splat.iter().copied());
+            v.extend(block.iter().copied());
+            v
+        }
+        Inst::OwnedCall { recv, args, kw, .. } => {
+            let mut v: Vec<Reg> = match recv {
+                VarLoc::Reg(r) => vec![*r],
+                VarLoc::Frame { .. } => vec![],
+            };
+            v.extend(args.iter().copied());
+            v.extend(kw.iter().map(|(_, r)| *r));
+            v
+        }
+        Inst::BinOp { lhs, rhs, .. } => vec![*lhs, *rhs],
+        Inst::CaseEq { pattern, value, .. } => vec![*pattern, *value],
+        Inst::Equal { a, b, .. } => vec![*a, *b],
+        Inst::MethodRef { recv, .. } => vec![*recv],
+        Inst::MakeArray { items, .. } => items.iter().map(|i| i.reg).collect(),
+        Inst::MakeHash { items, .. } => items
+            .iter()
+            .flat_map(|i| match i {
+                HashItem::Pair(k, v) => vec![*k, *v],
+                HashItem::Splat(r) => vec![*r],
+            })
+            .collect(),
+        Inst::MakeRange { lo, hi, .. } => lo.iter().chain(hi.iter()).copied().collect(),
+        Inst::MakeRegexp { source, .. } => vec![*source],
+        Inst::Interpolate { parts, .. } => parts
+            .iter()
+            .filter_map(|p| match p {
+                StrPiece::Val(r) => Some(*r),
+                StrPiece::Lit(_) => None,
+            })
+            .collect(),
+        Inst::ArrayGet { arr, .. } | Inst::ArraySlice { arr, .. } => vec![*arr],
+        Inst::ArrayGetReg { arr, index, .. } => vec![*arr, *index],
+        Inst::ArraySliceReg { arr, from, to, .. } => vec![*arr, *from, *to],
+        Inst::HashGetSym { hash, .. } | Inst::HashRest { hash, .. } => vec![*hash],
+    }
+}
+
+/// The register a terminator reads, if any.
+pub fn term_uses(term: &Term) -> Option<Reg> {
+    match term {
+        Term::Branch { cond, .. } => Some(*cond),
+        Term::Return(r)
+        | Term::Raise(r)
+        | Term::BreakOut(r)
+        | Term::ReturnOut(r)
+        | Term::Resume(r) => Some(*r),
+        Term::Jump(_) | Term::Unreachable => None,
+    }
+}
+
+/// Instructions whose generated code reads no register's home except
+/// through the states (so unboxed registers need no write-back first).
+pub fn reads_no_home(inst: &Inst) -> bool {
+    matches!(
+        inst,
+        Inst::LoadConst { .. }
+            | Inst::Move { .. }
+            | Inst::SelfRef { .. }
+            | Inst::Arg { .. }
+            | Inst::BlockParam { .. }
+            | Inst::FrameGet { .. }
+            | Inst::FieldGet { .. }
+            | Inst::ClassRef { .. }
+            | Inst::MakeBlock { .. }
+            | Inst::Not { .. }
+            | Inst::IsNil { .. }
+            | Inst::CatchException { .. }
+            | Inst::CatchAny { .. }
+    )
+}
+
+/// Of those, the ones that may still unwind to the block's handler
+/// (which reads the homes).
+pub fn may_unwind(inst: &Inst) -> bool {
+    matches!(
+        inst,
+        Inst::BlockParam { .. }
+            | Inst::FrameGet { .. }
+            | Inst::FieldGet { .. }
+            | Inst::MakeBlock { .. }
+    )
+}
+
+fn successors(b: &Block) -> Vec<BlockId> {
+    let mut v = match &b.term {
+        Term::Jump(t) => vec![*t],
+        Term::Branch { then, els, .. } => vec![*then, *els],
+        _ => vec![],
+    };
+    if let Some(h) = b.handler {
+        v.push(h.block);
+    }
+    v
+}
+
+/// Liveness: `result[b][i][r]` says whether register `r` may be read
+/// before being written from instruction `i` of block `b` on (index
+/// `insts.len()` stands for the terminator). A block's handler can be
+/// entered from any of its instructions, so what the handler reads is
+/// live throughout the block.
+pub fn liveness(f: &Function) -> Vec<Vec<Vec<bool>>> {
+    let nregs = f.nregs as usize;
+    let nblocks = f.blocks.len();
+    let mut live_in: Vec<Vec<bool>> = vec![vec![false; nregs]; nblocks];
+    let uses_defs: Vec<Vec<(Vec<Reg>, Vec<Reg>)>> = f
+        .blocks
+        .iter()
+        .map(|blk| blk.insts.iter().map(|i| (uses(i), defs(i))).collect())
+        .collect();
+    let or_into = |live: &mut [bool], other: &[bool]| {
+        for (l, v) in live.iter_mut().zip(other) {
+            *l |= *v;
+        }
+    };
+    // The live set at the end of a block, then stepping backwards.
+    let walk = |bi: usize, live_in: &[Vec<bool>], visit: &mut dyn FnMut(&[bool])| {
+        let blk = &f.blocks[bi];
+        let mut live = vec![false; nregs];
+        for s in successors(blk) {
+            or_into(&mut live, &live_in[s as usize]);
+        }
+        if let Some(r) = term_uses(&blk.term) {
+            live[r as usize] = true;
+        }
+        let handler: Option<&Vec<bool>> = blk.handler.map(|h| &live_in[h.block as usize]);
+        visit(&live);
+        for (u, d) in uses_defs[bi].iter().rev() {
+            for r in d {
+                live[*r as usize] = false;
+            }
+            for r in u {
+                live[*r as usize] = true;
+            }
+            if let Some(h) = handler {
+                or_into(&mut live, h);
+            }
+            visit(&live);
+        }
+    };
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for bi in (0..nblocks).rev() {
+            let mut last = vec![false; nregs];
+            walk(bi, &live_in, &mut |l| last.clone_from_slice(l));
+            if last != live_in[bi] {
+                live_in[bi] = last;
+                changed = true;
+            }
+        }
+    }
+    (0..nblocks)
+        .map(|bi| {
+            let mut per_inst = Vec::with_capacity(f.blocks[bi].insts.len() + 1);
+            walk(bi, &live_in, &mut |l| per_inst.push(l.to_vec()));
+            per_inst.reverse();
+            per_inst
+        })
+        .collect()
+}
+
+/// The declared type of a method's positional, non-defaulted parameter,
+/// when it is Int or Float.
+pub fn param_num(f: &Function, methods: &[RtMethod], index: u32) -> Option<Num> {
+    let FuncKind::Method(mid) = f.kind else {
+        return None;
+    };
+    let p = methods.get(mid as usize)?.params.get(index as usize)?;
+    if p.kind != RtParamKind::Positional || p.has_default {
+        return None;
+    }
+    num_of(p.ty.as_deref())
+}
+
+/// The declared type of a field, when it is Int or Float.
+pub fn field_num(classes: &[RtClass], class: ClassId, index: u32) -> Option<Num> {
+    let field = classes.get(class as usize)?.fields.get(index as usize)?;
+    num_of(field.ty.as_deref())
+}
+
+fn num_of(name: Option<&str>) -> Option<Num> {
+    match name {
+        Some("Int") => Some(Num::Int),
+        Some("Float") => Some(Num::Float),
+        _ => None,
     }
 }
 
@@ -158,9 +395,26 @@ pub fn transfer(
     st: &mut [State],
     f: &Function,
     methods: &[RtMethod],
+    classes: &[RtClass],
     builtin: &RtBuiltin,
 ) {
     match inst {
+        // A parameter or field of a numeric type is checked once and
+        // then known (the check fails into the interpreter).
+        Inst::Arg { dst, index } => {
+            st[*dst as usize] = match param_num(f, methods, *index) {
+                Some(n) => num_state(n),
+                None => State::Unknown,
+            };
+        }
+        Inst::FieldGet {
+            dst, class, index, ..
+        } => {
+            st[*dst as usize] = match field_num(classes, *class, *index) {
+                Some(n) => num_state(n),
+                None => State::Unknown,
+            };
+        }
         Inst::LoadConst { dst, idx } => {
             st[*dst as usize] = match f.consts[*idx as usize] {
                 Constant::Int(_) => State::Int,
@@ -221,7 +475,12 @@ pub fn num_state(n: Num) -> State {
 }
 
 /// The state of every register at the entry of every block.
-pub fn analyze(f: &Function, methods: &[RtMethod], builtin: &RtBuiltin) -> Vec<Vec<State>> {
+pub fn analyze(
+    f: &Function,
+    methods: &[RtMethod],
+    classes: &[RtClass],
+    builtin: &RtBuiltin,
+) -> Vec<Vec<State>> {
     let nregs = f.nregs as usize;
     let nblocks = f.blocks.len();
     // Unreached until proven otherwise: the meet identity is "all
@@ -244,7 +503,7 @@ pub fn analyze(f: &Function, methods: &[RtMethod], builtin: &RtBuiltin) -> Vec<V
             };
             let mut st = start;
             for inst in &blk.insts {
-                transfer(inst, &mut st, f, methods, builtin);
+                transfer(inst, &mut st, f, methods, classes, builtin);
             }
             let targets: Vec<BlockId> = match &blk.term {
                 Term::Jump(t) => vec![*t],

@@ -236,6 +236,7 @@ pub fn compile(module: &Module) -> Result<Vec<u8>, String> {
             f,
             &module.world.methods,
             &module.functions,
+            &module.world.classes,
             &module.world.builtin,
         )?;
     }
@@ -251,6 +252,7 @@ impl Compiler {
         f: &Function,
         methods: &[RtMethod],
         functions: &[Function],
+        classes: &[RtClass],
         builtin: &RtBuiltin,
     ) -> Result<(), String> {
         let mut ctx: Context = self.module.make_context();
@@ -283,7 +285,8 @@ impl Compiler {
         let heap = heap_possible(f);
         // Unboxed numbers: the state of each register at each block's
         // entry, and an SSA variable per register for each kind.
-        let entry_states = unbox::analyze(f, methods, builtin);
+        let entry_states = unbox::analyze(f, methods, classes, builtin);
+        let live = unbox::liveness(f);
         let nregs_usize = f.nregs.max(1) as usize;
         for r in 0..nregs_usize {
             b.declare_var(Variable::from_u32((r) as u32), types::I64);
@@ -429,10 +432,12 @@ impl Compiler {
             f,
             methods,
             functions,
+            classes,
             builtin,
             callees,
             states: vec![State::NonHeap; nregs_usize],
             nregs: nregs_usize,
+            live: &live,
         };
         for (i, blk) in f.blocks.iter().enumerate() {
             g.b.switch_to_block(blocks[i]);
@@ -440,6 +445,19 @@ impl Compiler {
             for (j, inst) in blk.insts.iter().enumerate() {
                 g.inst(i as u32, j as u32, inst, unwinds[i]);
                 g.after(inst);
+            }
+            // Write back the unboxed registers that a successor expects
+            // in memory (a different state there), or that a terminator
+            // leaving the function reads.
+            let at_term = &live[i][blk.insts.len()];
+            match &blk.term {
+                Term::Jump(t) => g.flush_for_edge(&entry_states[*t as usize], at_term),
+                Term::Branch { then, els, .. } => {
+                    g.flush_for_edge(&entry_states[*then as usize], at_term);
+                    g.flush_for_edge(&entry_states[*els as usize], at_term);
+                }
+                Term::Return(r) => g.flush(*r),
+                _ => g.flush_live(at_term),
             }
             match &blk.term {
                 Term::Jump(t) => {
@@ -784,8 +802,11 @@ struct Gen<'a, 'b> {
     f: &'a Function,
     methods: &'a [RtMethod],
     functions: &'a [Function],
+    classes: &'a [RtClass],
     builtin: &'a RtBuiltin,
     callees: HashMap<FuncId, FuncRef>,
+    /// Liveness per block and instruction (see `unbox::liveness`).
+    live: &'a [Vec<Vec<bool>>],
     /// What is known about each register here (see `unbox`).
     states: Vec<State>,
     nregs: usize,
@@ -940,7 +961,14 @@ impl Gen<'_, '_> {
     /// Update the states after an instruction, and pick up a Bool the
     /// runtime produced into its variable.
     fn after(&mut self, inst: &Inst) {
-        unbox::transfer(inst, &mut self.states, self.f, self.methods, self.builtin);
+        unbox::transfer(
+            inst,
+            &mut self.states,
+            self.f,
+            self.methods,
+            self.classes,
+            self.builtin,
+        );
         if matches!(
             inst,
             Inst::HasArg { .. }
@@ -964,6 +992,8 @@ impl Gen<'_, '_> {
     /// rest from instruction `index` of `block`, and the function exits
     /// with its status. Emission continues in a fresh (unreachable) block.
     fn deopt(&mut self, block: u32, index: u32) {
+        let live = self.live[block as usize][index as usize].clone();
+        self.flush_live(&live);
         let fid = self.b.ins().iconst(types::I32, i64::from(self.fid));
         let blk = self.b.ins().iconst(types::I32, i64::from(block));
         let i = self.b.ins().iconst(types::I32, i64::from(index));
@@ -1013,25 +1043,68 @@ impl Gen<'_, '_> {
     }
 
     /// `regs[dst] = Int(v)`: the variable, and the boxed home.
+    /// `regs[dst] = Int(v)`, in the variable only: the home is written
+    /// when something reads it (`flush`). A home that may hold a heap
+    /// value is released and set to nil, so it never dangles.
     fn store_int(&mut self, dst: Reg, v: CValue) {
         self.b.def_var(self.ivar(dst), v);
-        if self.states[dst as usize] != State::Int {
-            self.release(dst);
-            self.store_tag(dst, TAG_INT);
-        }
-        self.store_payload(dst, v);
-        self.states[dst as usize] = State::Int;
+        self.unbox(dst, State::Int);
     }
 
     fn store_float(&mut self, dst: Reg, v: CValue) {
         self.b.def_var(self.fvar(dst), v);
-        if self.states[dst as usize] != State::Float {
+        self.unbox(dst, State::Float);
+    }
+
+    fn unbox(&mut self, dst: Reg, state: State) {
+        if self.states[dst as usize].needs_release() {
             self.release(dst);
-            self.store_tag(dst, TAG_FLOAT);
+            self.store_tag(dst, TAG_NIL);
         }
-        let bits = self.b.ins().bitcast(types::I64, MemFlags::new(), v);
-        self.store_payload(dst, bits);
-        self.states[dst as usize] = State::Float;
+        self.states[dst as usize] = state;
+    }
+
+    /// Write an unboxed register's value to its home in memory.
+    fn flush(&mut self, r: Reg) {
+        match self.states[r as usize] {
+            State::Int => {
+                let v = self.b.use_var(self.ivar(r));
+                self.store_tag(r, TAG_INT);
+                self.store_payload(r, v);
+            }
+            State::Float => {
+                let v = self.b.use_var(self.fvar(r));
+                let bits = self.b.ins().bitcast(types::I64, MemFlags::new(), v);
+                self.store_tag(r, TAG_FLOAT);
+                self.store_payload(r, bits);
+            }
+            State::Bool => {
+                let v = self.b.use_var(self.bvar(r));
+                self.store_tag(r, TAG_BOOL);
+                // An I8, stored as the payload's first byte.
+                self.b
+                    .ins()
+                    .store(MemFlags::trusted(), v, self.regs, Self::reg_off(r) + 8);
+            }
+            State::Unknown | State::NonHeap => {}
+        }
+    }
+
+    /// Write back every unboxed register that is live.
+    fn flush_live(&mut self, live: &[bool]) {
+        for r in (0..self.nregs).filter(|&r| live[r]) {
+            self.flush(r as Reg);
+        }
+    }
+
+    /// Before an edge: write back the live unboxed registers whose state
+    /// at the target differs (the target reads the home).
+    fn flush_for_edge(&mut self, target: &[State], live: &[bool]) {
+        for r in 0..self.nregs {
+            if live[r] && target[r] != self.states[r] {
+                self.flush(r as Reg);
+            }
+        }
     }
 
     fn i32(&mut self, v: u32) -> CValue {
@@ -1101,9 +1174,14 @@ impl Gen<'_, '_> {
     /// Store a boolean (an I8 value) as a `Bool`.
     fn store_bool(&mut self, dst: Reg, v: CValue) {
         self.b.def_var(self.bvar(dst), v);
+        self.unbox(dst, State::Bool);
+    }
+
+    /// Store a boolean to the register's home (for a path of a generic
+    /// operation, whose result stays boxed).
+    fn store_bool_home(&mut self, dst: Reg, v: CValue) {
         self.release(dst);
         self.store_tag(dst, TAG_BOOL);
-        // `v` is an I8, stored as the payload's first byte.
         self.b
             .ins()
             .store(MemFlags::trusted(), v, self.regs, Self::reg_off(dst) + 8);
@@ -1123,6 +1201,17 @@ impl Gen<'_, '_> {
     }
 
     fn inst(&mut self, block: u32, index: u32, inst: &Inst, unwind: CBlock) {
+        // Anything that reads register homes (the runtime, mostly) sees
+        // the live unboxed registers written back first; the typed
+        // arithmetic below works on the variables.
+        let typed = matches!(inst, Inst::BinOp { .. })
+            && unbox::bin_types(inst, self.methods, self.builtin).is_some()
+            && !unbox::float_mod(inst);
+        let has_handler = self.f.blocks[block as usize].handler.is_some();
+        if !typed && (!unbox::reads_no_home(inst) || (has_handler && unbox::may_unwind(inst))) {
+            let live = self.live[block as usize][index as usize].clone();
+            self.flush_live(&live);
+        }
         match inst {
             Inst::Move { dst, src } => {
                 if dst == src {
@@ -1378,7 +1467,7 @@ impl Gen<'_, '_> {
                             _ => FloatCC::NotEqual,
                         };
                         let r = self.b.ins().fcmp(cc, x, y);
-                        self.store_bool(*dst, r);
+                        self.store_bool_home(*dst, r);
                     }
                 }
                 self.b.ins().jump(cont, &[]);
@@ -1467,7 +1556,7 @@ impl Gen<'_, '_> {
                             _ => IntCC::NotEqual,
                         };
                         let r = self.b.ins().icmp(cc, x, y);
-                        self.store_bool(*dst, r);
+                        self.store_bool_home(*dst, r);
                     }
                 }
                 self.b.ins().jump(cont, &[]);
@@ -1499,7 +1588,7 @@ impl Gen<'_, '_> {
                     .load(types::I64, MemFlags::trusted(), self.ptrs, 8);
                 self.clone_from(*dst, self_ptr);
             }
-            Inst::Arg { dst, index } => {
+            Inst::Arg { dst, index: arg } => {
                 // Present arguments are copied inline; a missing one is nil.
                 let nargs = self
                     .b
@@ -1508,7 +1597,7 @@ impl Gen<'_, '_> {
                 let present =
                     self.b
                         .ins()
-                        .icmp_imm(IntCC::UnsignedGreaterThan, nargs, i64::from(*index));
+                        .icmp_imm(IntCC::UnsignedGreaterThan, nargs, i64::from(*arg));
                 let yes = self.b.create_block();
                 let no = self.b.create_block();
                 let cont = self.b.create_block();
@@ -1521,7 +1610,7 @@ impl Gen<'_, '_> {
                 let src = self
                     .b
                     .ins()
-                    .iadd_imm(args, i64::from(*index) * i64::from(VALUE_SIZE));
+                    .iadd_imm(args, i64::from(*arg) * i64::from(VALUE_SIZE));
                 self.clone_from(*dst, src);
                 self.b.ins().jump(cont, &[]);
                 self.b.switch_to_block(no);
@@ -1529,6 +1618,10 @@ impl Gen<'_, '_> {
                 self.store_tag(*dst, TAG_NIL);
                 self.b.ins().jump(cont, &[]);
                 self.b.switch_to_block(cont);
+                // A parameter declared Int/Float: check once, then unboxed.
+                if let Some(n) = unbox::param_num(self.f, self.methods, *arg) {
+                    self.get_num(*dst, n, block, index);
+                }
             }
             Inst::BlockParam { dst } => {
                 let d = self.i32(*dst);
@@ -1575,7 +1668,12 @@ impl Gen<'_, '_> {
                 let v = self.b.ins().iconst(types::I64, i64::from(*class));
                 self.store_payload(*dst, v);
             }
-            Inst::FieldGet { dst, obj, index } => {
+            Inst::FieldGet {
+                dst,
+                obj,
+                index: field,
+                class,
+            } => {
                 // An object: read the field through the object's view.
                 let fast = self.b.create_block();
                 let slow = self.b.create_block();
@@ -1584,12 +1682,12 @@ impl Gen<'_, '_> {
                 let is_obj = self.b.ins().icmp_imm(IntCC::Equal, tag, TAG_OBJECT);
                 self.b.ins().brif(is_obj, fast, &[], slow, &[]);
                 self.b.switch_to_block(fast);
-                let field = self.field_addr(*obj, *index);
-                self.clone_from(*dst, field);
+                let addr = self.field_addr(*obj, *field);
+                self.clone_from(*dst, addr);
                 self.b.ins().jump(cont, &[]);
                 self.b.switch_to_block(slow);
                 let o = self.i32(*obj);
-                let i = self.i32(*index);
+                let i = self.i32(*field);
                 let d = self.i32(*dst);
                 let call = self
                     .b
@@ -1599,8 +1697,14 @@ impl Gen<'_, '_> {
                 self.check(status, unwind);
                 self.b.ins().jump(cont, &[]);
                 self.b.switch_to_block(cont);
+                // A field declared Int/Float: check once, then unboxed.
+                if let Some(n) = unbox::field_num(self.classes, *class, *field) {
+                    self.get_num(*dst, n, block, index);
+                }
             }
-            Inst::FieldSet { obj, index, src } => {
+            Inst::FieldSet {
+                obj, index, src, ..
+            } => {
                 let fast = self.b.create_block();
                 let slow = self.b.create_block();
                 let cont = self.b.create_block();

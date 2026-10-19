@@ -288,11 +288,15 @@ pub enum Inst {
         dst: Reg,
         obj: Reg,
         index: u32,
+        /// The object's class when statically known (`u32::MAX` otherwise),
+        /// for the field's declared type.
+        class: ClassId,
     },
     FieldSet {
         obj: Reg,
         index: u32,
         src: Reg,
+        class: ClassId,
     },
     /// A field looked up by name on an object of unknown class (hash
     /// patterns); `found` tells whether the field exists.
@@ -564,6 +568,8 @@ pub struct RtField {
     pub name: String,
     /// The default value's initializer (run with `self` = the new object).
     pub default: Option<FuncId>,
+    /// The declared type's name (`None` for a type parameter).
+    pub ty: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

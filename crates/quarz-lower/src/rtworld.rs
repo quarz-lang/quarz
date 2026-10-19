@@ -42,6 +42,10 @@ pub fn build(world: &World, lw: &Lowerer, file_names: Vec<String>) -> RtWorld {
                 .map(|(i, (f, _))| RtField {
                     name: f.name,
                     default: lw.field_default_funcs.get(&(c.id, i)).copied(),
+                    ty: match &f.ty {
+                        Type::Param(_) | Type::Var(_) => None,
+                        t => Some(world.type_name(t)),
+                    },
                 })
                 .collect();
             let members = c

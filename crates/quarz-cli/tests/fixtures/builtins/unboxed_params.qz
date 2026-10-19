@@ -1,0 +1,102 @@
+# Parameters and fields declared Int/Float are unboxed after one check;
+# a BigInt (an Int that outgrew a machine word) or an overflow hands
+# the activation to the interpreter.
+
+def add3(a: Int, b: Int, c: Int) -> Int
+  a + b + c
+end
+
+def scale(x: Float, k: Int) -> Float
+  x * k + 0.5
+end
+
+def count_down(n: Int) -> Int
+  steps = 0
+  while n > 0
+    n = n / 2
+    steps += 1
+  end
+  steps
+end
+
+big = 2 ** 70
+p add3(1, 2, 3)
+p add3(big, 1, 2)
+p add3(9223372036854775807, 1, 0)
+p scale(1.5, 4)
+p scale(0.25, big)
+p count_down(1000)
+p count_down(big)
+
+class Counter
+  var @count: Int = 0
+  var @total: Float = 0.0
+  @name: String
+
+  def initialize(@name: String); end
+
+  def count -> Int = @count
+  def total -> Float = @total
+  def count=(v: Int) -> Nil
+    @count = v
+  end
+
+  def bump(by: Int) -> Int
+    @count += by
+    @total += by * 0.5
+    @count
+  end
+
+  def ratio -> Float
+    if @count == 0
+      0.0
+    else
+      @total / @count
+    end
+  end
+end
+
+c = Counter.new("c")
+10.times { |i| c.bump(i) }
+p c.count
+p c.total
+p c.ratio
+c.count = 9223372036854775807
+p c.bump(1)
+p c.count.class
+p c.ratio.round(3)
+c.count = big
+p c.bump(-1) == big - 1
+
+# A typed parameter used across a rescue (the handler reads memory).
+def guarded(n: Int, d: Int) -> Int
+  acc = n * 2
+  begin
+    acc = acc + n / d
+  rescue ZeroDivisionError
+    acc = acc - n
+  end
+  acc + 1
+end
+
+p guarded(10, 3)
+p guarded(10, 0)
+p guarded(big, 0) == big
+
+# Float fields and parameters mixed.
+data Vec2(x: Float, y: Float) is
+  def dot(o: Vec2) -> Float
+    x * o.x + y * o.y
+  end
+
+  def scaled(k: Float) -> Vec2
+    Vec2.new(x * k, y * k)
+  end
+end
+
+v = Vec2.new(1.5, -2.0)
+p v.dot(Vec2.new(2.0, 0.5))
+p v.scaled(2.0)
+sum = 0.0
+1000.times { |i| sum += Vec2.new(i.to_f, 1.0).dot(v) }
+p sum
