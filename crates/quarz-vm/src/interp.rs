@@ -247,7 +247,43 @@ pub struct RtClasses {
     pub result_err: ClassId,
 }
 
+/// The part of the interpreter compiled code reads and writes directly
+/// (by the offsets in `layout`): the call stack and the stack limit.
+#[repr(C)]
+pub struct Hot {
+    pub stack_ptr: Cell<*mut *const crate::vm::Activation>,
+    pub stack_len: Cell<usize>,
+    pub stack_cap: Cell<usize>,
+    /// Points at this thread's `sched::STACK_LIMIT` (which the scheduler
+    /// switches with the running task).
+    pub limit_ptr: *const Cell<usize>,
+}
+
+impl Hot {
+    fn new() -> Hot {
+        Hot {
+            // Dangling, never null: slices of length 0 are made from it.
+            stack_ptr: Cell::new(std::ptr::NonNull::dangling().as_ptr()),
+            stack_len: Cell::new(0),
+            stack_cap: Cell::new(0),
+            limit_ptr: sched::stack_limit_cell(),
+        }
+    }
+}
+
+impl Drop for Hot {
+    fn drop(&mut self) {
+        let cap = self.stack_cap.get();
+        if cap > 0 {
+            // SAFETY: the buffer came from a `Vec` of this capacity.
+            drop(unsafe { Vec::from_raw_parts(self.stack_ptr.get(), 0, cap) });
+        }
+    }
+}
+
+#[repr(C)]
 pub struct Interp {
+    pub hot: Hot,
     pub world: RtWorld,
     /// Compilation units in execution order.
     pub units: Vec<Unit>,
@@ -280,7 +316,6 @@ pub struct Interp {
     /// The activations in progress, innermost last (all tasks share the
     /// vector; entries are tagged with their task). Raw pointers: an
     /// activation lives on the Rust stack for the duration of its call.
-    pub call_stack: RefCell<Vec<*const crate::vm::Activation>>,
     /// The task being run by the scheduler.
     pub current_task_id: Cell<TaskId>,
     pub at_exit: Rc<RefCell<Vec<Value>>>,
@@ -455,6 +490,7 @@ impl Interp {
         }
         let repl_frame = state.repl_frame.clone();
         let interp = Rc::new(Interp {
+            hot: Hot::new(),
             world,
             units,
             unit_selfs,
@@ -478,7 +514,6 @@ impl Interp {
             argv,
             exc,
             rt,
-            call_stack: RefCell::new(Vec::new()),
             current_task_id: Cell::new(0),
             at_exit: state.at_exit,
             stdout: state.stdout,
@@ -795,7 +830,7 @@ impl Interp {
     /// The innermost frames of the current task's call stack, as
     /// `file:line:in name` (deep recursion is cut off).
     pub fn capture_backtrace(&self) -> Vec<String> {
-        let stack = self.call_stack.borrow();
+        let stack = self.call_stack();
         let task = self.current_task_id.get();
         let funcs = self.funcs.borrow();
         let mut frames = 0;

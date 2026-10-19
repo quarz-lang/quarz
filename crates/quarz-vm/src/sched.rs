@@ -219,6 +219,12 @@ thread_local! {
 
 /// Whether the current stack pointer is below the task's limit.
 #[inline]
+/// This thread's stack-limit cell (compiled code reads it through
+/// `Interp::hot`).
+pub fn stack_limit_cell() -> *const Cell<usize> {
+    STACK_LIMIT.with(|l| l as *const Cell<usize>)
+}
+
 pub fn stack_exhausted() -> bool {
     let marker = 0u8;
     let sp = &marker as *const u8 as usize;

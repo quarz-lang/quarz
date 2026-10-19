@@ -1,0 +1,13 @@
+1000
+rescued: stack level too deep
+500
+10
+[1, 1, 2, 2, 3, 3, 4, 4, 5, 5]
+at 0
+calls.qz:31:in main#boom
+calls.qz:32:in main#boom
+calls.qz:32:in main#boom
+calls.qz:32:in main#boom
+calls.qz:35:in <main>
+Box(v: "4(3(2(1(0(x)))))")
+11

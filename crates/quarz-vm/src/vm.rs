@@ -12,37 +12,73 @@ use crate::interp::{fast_binop, ArgVec, EvalResult, Flow, Interp};
 use crate::sched;
 use crate::value::*;
 
-/// The context a function body runs in.
+/// The context a function body runs in. `repr(C)`: compiled code builds
+/// and reads it by the offsets in `layout`.
+#[repr(C)]
 pub struct Activation {
     pub fid: FuncId,
     /// The task running it (call stacks are kept per task).
     pub task: crate::sched::TaskId,
     /// Source line of the instruction being executed (for backtraces).
     pub line: Cell<u32>,
+    pub file: u32,
     pub self_val: Value,
     /// The heap frame for captured variables (this function's own, or
-    /// the one it shares with its creator).
+    /// the one a block shares with its creator).
     pub frame: Option<Rc<Frame>>,
-    /// The enclosing method's block (`yield`).
-    pub block: Option<Value>,
-    /// Tag of `return` from a block body.
+    /// The block passed to the call (`Nil` when none).
+    pub block: Value,
+    /// Identifies this method activation for `return` from its blocks.
     pub method_tag: u64,
-    /// Tag of `break` from a block body (0 in a method).
     pub closure_tag: u64,
-    pub method: Option<MethodId>,
-    pub file: u32,
-    /// Parameters bound by the caller, in declaration order (empty when
-    /// the caller is compiled code that keeps them in its own frame).
-    pub args: ArgVec,
-    /// Bit `i` set when parameter `i` was passed.
+    /// Bit `i` set: parameter `i` was given (for `HasArg`).
     pub provided: u64,
-    /// Where the bound parameters live: `args`, or the compiled caller's
-    /// argument area. Set by `bind` once the activation is in place.
+    /// The parameter view: `nargs` values at `args_ptr` (in `args`, or in
+    /// a compiled caller's argument area).
     pub args_ptr: Cell<*const Value>,
     pub nargs: Cell<u32>,
-    /// The caller for this activation's block, built on the first `yield`
-    /// (`None` once it is known to need the general path).
-    pub yield_caller: std::cell::OnceCell<Option<Box<BlockCaller>>>,
+    /// The block's caller, built on the first `yield` and reused.
+    pub yield_caller: YieldCache,
+}
+
+/// A lazily built `BlockCaller` for an activation's block: null until
+/// the first `yield`, `GENERIC` when the block needs the general path.
+#[derive(Default)]
+#[repr(transparent)]
+pub struct YieldCache(Cell<*mut BlockCaller>);
+
+impl YieldCache {
+    const GENERIC: *mut BlockCaller = std::ptr::dangling_mut::<BlockCaller>();
+
+    /// The cached caller, building it on first use.
+    pub fn get_or_init(&self, build: impl FnOnce() -> Option<BlockCaller>) -> Option<&BlockCaller> {
+        let p = self.0.get();
+        if p.is_null() {
+            let p = match build() {
+                Some(c) => Box::into_raw(Box::new(c)),
+                None => Self::GENERIC,
+            };
+            self.0.set(p);
+        }
+        let p = self.0.get();
+        if p == Self::GENERIC {
+            None
+        } else {
+            // SAFETY: a non-null, non-sentinel pointer came from `Box::into_raw`
+            // above and is freed only by `drop`.
+            Some(unsafe { &*p })
+        }
+    }
+}
+
+impl Drop for YieldCache {
+    fn drop(&mut self) {
+        let p = self.0.get();
+        if !p.is_null() && p != Self::GENERIC {
+            // SAFETY: see `get_or_init`.
+            drop(unsafe { Box::from_raw(p) });
+        }
+    }
 }
 
 /// A block prepared for repeated calls (natives that iterate, `yield`):
@@ -92,16 +128,17 @@ impl Interp {
             line: Cell::new(0),
             self_val: closure.self_val.fast_clone(),
             frame: closure.frame.clone(),
-            block: closure.method_block.as_ref().map(|b| b.fast_clone()),
+            block: closure
+                .method_block
+                .as_ref()
+                .map_or(Value::Nil, |b| b.fast_clone()),
             method_tag: if closure.is_lambda {
                 closure.tag
             } else {
                 closure.method_tag
             },
             closure_tag: closure.tag,
-            method: None,
             file,
-            args: ArgVec::new(),
             provided: (1u64 << nparams) - 1,
             args_ptr: Cell::new(std::ptr::null()),
             nargs: Cell::new(0),
@@ -146,10 +183,7 @@ impl BlockCaller {
         self.act.args_ptr.set(view.as_ptr());
         self.act.nargs.set(view.len() as u32);
         let act = &self.act;
-        interp
-            .call_stack
-            .borrow_mut()
-            .push(act as *const Activation);
+        interp.push_call(act as *const Activation);
         let r = match self.compiled {
             Some(f) => {
                 let mut out = Value::Nil;
@@ -180,11 +214,11 @@ impl Activation {
         i >= 64 || self.provided & (1u64 << i) != 0
     }
 
-    /// Point the parameter view at `args` (after the activation has
-    /// reached its final place).
-    pub fn bind(&self) {
-        self.args_ptr.set(self.args.as_ptr());
-        self.nargs.set(self.args.len() as u32);
+    /// Point the parameter view at `args`, which must outlive the
+    /// activation.
+    pub fn bind(&self, args: &[Value]) {
+        self.args_ptr.set(args.as_ptr());
+        self.nargs.set(args.len() as u32);
     }
 
     pub fn params(&self) -> &[Value] {
@@ -217,7 +251,7 @@ impl Interp {
     /// Run a function to completion (its machine code when it has some).
     #[inline(always)]
     pub fn run_func(&self, fid: FuncId, act: &Activation) -> EvalResult {
-        self.call_stack.borrow_mut().push(act as *const Activation);
+        self.push_call(act as *const Activation);
         let r = self.run_func_inner(fid, act);
         self.pop_call_stack(act);
         r
@@ -276,13 +310,54 @@ impl Interp {
     /// Remove `act` from the call stack. Tasks interleave on one stack,
     /// so the entry is usually, but not always, the last one.
     pub(crate) fn pop_call_stack(&self, act: &Activation) {
-        let mut stack = self.call_stack.borrow_mut();
         let p = act as *const Activation;
+        let len = self.hot.stack_len.get();
+        // SAFETY: `len` entries of the buffer are initialized.
+        let stack = unsafe { std::slice::from_raw_parts_mut(self.hot.stack_ptr.get(), len) };
         if stack.last() == Some(&p) {
-            stack.pop();
+            self.hot.stack_len.set(len - 1);
         } else if let Some(i) = stack.iter().rposition(|e| *e == p) {
-            stack.remove(i);
+            stack.copy_within(i + 1.., i);
+            self.hot.stack_len.set(len - 1);
         }
+    }
+
+    /// Push an activation on the call stack (compiled code does this
+    /// inline when there is room).
+    #[inline]
+    pub fn push_call(&self, act: *const Activation) {
+        let len = self.hot.stack_len.get();
+        if len == self.hot.stack_cap.get() {
+            self.grow_call_stack();
+        }
+        // SAFETY: `len < cap` now.
+        unsafe { *self.hot.stack_ptr.get().add(len) = act };
+        self.hot.stack_len.set(len + 1);
+    }
+
+    #[cold]
+    fn grow_call_stack(&self) {
+        let len = self.hot.stack_len.get();
+        let cap = self.hot.stack_cap.get();
+        let new_cap = (cap * 2).max(256);
+        let mut buf: Vec<*const Activation> = Vec::with_capacity(new_cap);
+        // SAFETY: the old buffer holds `len` initialized entries.
+        unsafe {
+            buf.extend_from_slice(std::slice::from_raw_parts(self.hot.stack_ptr.get(), len));
+            buf.set_len(0);
+            if cap > 0 {
+                drop(Vec::from_raw_parts(self.hot.stack_ptr.get(), 0, cap));
+            }
+        }
+        let mut buf = std::mem::ManuallyDrop::new(buf);
+        self.hot.stack_ptr.set(buf.as_mut_ptr());
+        self.hot.stack_cap.set(new_cap);
+    }
+
+    /// The call stack, innermost last.
+    pub fn call_stack(&self) -> &[*const Activation] {
+        // SAFETY: `stack_len` entries of the buffer are initialized.
+        unsafe { std::slice::from_raw_parts(self.hot.stack_ptr.get(), self.hot.stack_len.get()) }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -469,7 +544,7 @@ impl Interp {
                 regs[*dst as usize] = Value::Bool(act.has_arg(*index));
             }
             Inst::BlockParam { dst } => {
-                regs[*dst as usize] = act.block.clone().unwrap_or(Value::Nil);
+                regs[*dst as usize] = act.block.clone();
             }
             Inst::FrameGet { dst, depth, slot } => {
                 regs[*dst as usize] = self.frame(act).get(*depth, *slot);
@@ -578,10 +653,13 @@ impl Interp {
                         let r = self.call_block(&recv, pos);
                         self.catch_break(&block, r)
                     }
-                    CallKind::Yield => match &act.block {
-                        Some(b) => self.call_block(b, pos),
-                        None => Err(self.raise(self.exc.runtime_error, "no block given (yield)")),
-                    },
+                    CallKind::Yield => {
+                        if act.block.is_nil() {
+                            Err(self.raise(self.exc.runtime_error, "no block given (yield)"))
+                        } else {
+                            self.call_block(&act.block, pos)
+                        }
+                    }
                     CallKind::Super(mid) => {
                         let r = self.invoke(*mid, recv, pos, kw, block.clone());
                         self.catch_break(&block, r)
@@ -719,7 +797,7 @@ impl Interp {
                     destructure: destructure.map(|n| n as usize),
                     is_lambda: *is_lambda,
                     tag,
-                    method_block: act.block.clone(),
+                    method_block: (!act.block.is_nil()).then(|| act.block.clone()),
                     method_tag: if *is_lambda { tag } else { act.method_tag },
                     file: act.file,
                 }));
@@ -1074,22 +1152,23 @@ impl Interp {
                     line: Cell::new(0),
                     self_val: closure.self_val.fast_clone(),
                     frame,
-                    block: closure.method_block.as_ref().map(|b| b.fast_clone()),
+                    block: closure
+                        .method_block
+                        .as_ref()
+                        .map_or(Value::Nil, |b| b.fast_clone()),
                     method_tag: if closure.is_lambda {
                         closure.tag
                     } else {
                         closure.method_tag
                     },
                     closure_tag: closure.tag,
-                    method: None,
                     file,
-                    args: bound,
                     provided,
                     args_ptr: Cell::new(std::ptr::null()),
                     nargs: Cell::new(0),
                     yield_caller: Default::default(),
                 };
-                act.bind();
+                act.bind(&bound);
                 let r = match self.run_func(*fid, &act) {
                     Ok(v) => Ok(v),
                     Err(Flow::Next(v)) => Ok(v),
@@ -1103,15 +1182,12 @@ impl Interp {
                     self_val,
                     frame,
                     block,
-                    args,
                     ..
                 } = act;
                 self_val.fast_drop();
-                if let Some(b) = block {
-                    b.fast_drop();
-                }
+                block.fast_drop();
                 drop(frame);
-                drop(args);
+                drop(bound);
                 r
             }
         }
@@ -1131,25 +1207,22 @@ impl Interp {
             line: Cell::new(0),
             self_val,
             frame,
-            block: None,
+            block: Value::Nil,
             method_tag: self.new_tag(),
             closure_tag: 0,
-            method: None,
             file,
-            args: ArgVec::new(),
             provided: 0,
             args_ptr: Cell::new(std::ptr::null()),
             nargs: Cell::new(0),
             yield_caller: Default::default(),
         };
-        act.bind();
         self.run_func(fid, &act)
     }
 
     /// Run a method body (parameters already bound).
     pub fn run_method(
         &self,
-        mid: MethodId,
+        _mid: MethodId,
         fid: FuncId,
         recv: Value,
         args: ArgVec,
@@ -1176,18 +1249,16 @@ impl Interp {
             line: Cell::new(0),
             self_val: recv,
             frame,
-            block,
+            block: block.unwrap_or(Value::Nil),
             method_tag: tag,
             closure_tag: 0,
-            method: Some(mid),
             file,
-            args,
             provided,
             args_ptr: Cell::new(std::ptr::null()),
             nargs: Cell::new(0),
             yield_caller: Default::default(),
         };
-        act.bind();
+        act.bind(&args);
         let r = self.run_func(fid, &act);
         match r {
             Err(Flow::Return(v, t)) if t == tag => Ok(v),
@@ -1213,18 +1284,15 @@ impl Interp {
             line: Cell::new(0),
             self_val,
             frame,
-            block: None,
+            block: Value::Nil,
             method_tag: 0,
             closure_tag: 0,
-            method: None,
             file,
-            args: ArgVec::new(),
             provided: 0,
             args_ptr: Cell::new(std::ptr::null()),
             nargs: Cell::new(0),
             yield_caller: Default::default(),
         };
-        act.bind();
         self.run_func(fid, &act)
     }
 }

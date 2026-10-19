@@ -1,0 +1,49 @@
+# Direct calls between compiled methods build their activations inline:
+# deep recursion still raises SystemStackError, backtraces still see every
+# frame, and tasks may interleave between a call and its return.
+def down(n: Int) -> Int = n == 0 ? 0 : 1 + down(n - 1)
+p down(1000)
+begin
+  p down(10_000_000)
+rescue SystemStackError => e
+  puts "rescued: #{e.message}"
+end
+p down(500)
+# tasks interleaving with compiled calls
+def pingpong(n: Int, ch: Channel[Int]) -> Int
+  if n == 0
+    0
+  else
+    ch.send(n)
+    Task.yield
+    1 + pingpong(n - 1, ch)
+  end
+end
+ch = Channel[Int].new(capacity: 100)
+t1 = spawn { pingpong(5, ch) }
+t2 = spawn { pingpong(5, ch) }
+p t1.await + t2.await
+got: Array[Int] = []
+10.times { got = got.push(ch.receive) }
+p got.sort
+
+def boom(n: Int) -> Int
+  raise ArgumentError, "at #{n}" if n == 0
+  boom(n - 1) + 1
+end
+begin
+  boom(3)
+rescue ArgumentError => e
+  puts e.message
+  puts e.backtrace.map { |l| l.split("/").last }.join("\n")
+end
+
+# results and receivers that hold references
+data Box(v: String) is
+  def wrap(tag: String) -> Box = Box.new("#{tag}(#{v})")
+end
+b = Box.new("x")
+5.times { |i| b = b.wrap(i.to_s) }
+p b
+def count_chars(s: String, acc: Int) -> Int = s.empty? ? acc : count_chars(s.slice(1, s.size - 1), acc + 1)
+p count_chars("hello world", 0)

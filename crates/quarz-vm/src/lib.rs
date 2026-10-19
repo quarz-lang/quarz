@@ -4,6 +4,7 @@
 
 pub mod ffi;
 pub mod interp;
+pub mod layout;
 pub mod natives;
 pub mod sched;
 pub mod transfer;

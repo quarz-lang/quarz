@@ -534,6 +534,7 @@ dependencies = [
  "cranelift-native",
  "cranelift-object",
  "quarz-ir",
+ "quarz-vm",
  "target-lexicon",
 ]
 

@@ -28,6 +28,7 @@ use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_module::{DataDescription, FuncId as CFuncId, Linkage, Module as _};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use quarz_ir::*;
+use quarz_vm::layout as L;
 
 mod unbox;
 use unbox::{Num, State};
@@ -57,7 +58,9 @@ struct Runtime {
     resume: CFuncId,
     enter: CFuncId,
     leave: CFuncId,
-    act_ptrs: CFuncId,
+    push_call: CFuncId,
+    pop_call: CFuncId,
+    stack_overflow: CFuncId,
     drop_value: CFuncId,
     exec: CFuncId,
     term: CFuncId,
@@ -79,7 +82,9 @@ struct Helpers {
     resume: FuncRef,
     enter: FuncRef,
     leave: FuncRef,
-    act_ptrs: FuncRef,
+    push_call: FuncRef,
+    pop_call: FuncRef,
+    stack_overflow: FuncRef,
     drop_value: FuncRef,
     exec: FuncRef,
     term: FuncRef,
@@ -183,7 +188,9 @@ pub fn compile(module: &Module) -> Result<Vec<u8>, String> {
             "qz_leave",
             &sig(&[i64_, i64_, i32_, i64_, i64_, i32_, i32_], Some(i32_)),
         )?,
-        act_ptrs: import(&mut obj, "qz_act_ptrs", &sig(&[i64_, i64_], None))?,
+        push_call: import(&mut obj, "qz_push_call", &sig(&[i64_, i64_], None))?,
+        pop_call: import(&mut obj, "qz_pop_call", &sig(&[i64_, i64_], None))?,
+        stack_overflow: import(&mut obj, "qz_stack_overflow", &sig(&[i64_], Some(i32_)))?,
         drop_value: import(&mut obj, "qz_drop_value", &sig(&[i64_], None))?,
         call_static: import(
             &mut obj,
@@ -214,7 +221,7 @@ pub fn compile(module: &Module) -> Result<Vec<u8>, String> {
         main: import(
             &mut obj,
             "qz_main",
-            &sig(&[i64_, i64_, i64_, i64_, i32_, i64_], Some(i32_)),
+            &sig(&[i64_, i64_, i64_, i64_, i32_, i64_, i64_], Some(i32_)),
         )?,
     };
     let fn_sig = sig(&[i64_, i64_, i64_], Some(i32_));
@@ -264,7 +271,11 @@ impl Compiler {
             resume: self.module.declare_func_in_func(self.rt.resume, b.func),
             enter: self.module.declare_func_in_func(self.rt.enter, b.func),
             leave: self.module.declare_func_in_func(self.rt.leave, b.func),
-            act_ptrs: self.module.declare_func_in_func(self.rt.act_ptrs, b.func),
+            push_call: self.module.declare_func_in_func(self.rt.push_call, b.func),
+            pop_call: self.module.declare_func_in_func(self.rt.pop_call, b.func),
+            stack_overflow: self
+                .module
+                .declare_func_in_func(self.rt.stack_overflow, b.func),
             drop_value: self.module.declare_func_in_func(self.rt.drop_value, b.func),
             exec: self.module.declare_func_in_func(self.rt.exec, b.func),
             term: self.module.declare_func_in_func(self.rt.term, b.func),
@@ -411,7 +422,26 @@ impl Compiler {
                 .store(MemFlags::trusted(), zero, regs, i * VALUE_SIZE);
         }
         if uses_act {
-            b.ins().call(h.act_ptrs, &[act, ptrs]);
+            // `[args, self, nargs, frame]` of this activation: the frame
+            // view is the `Frame` inside its `Rc` allocation (after the
+            // two counts), null when there is none.
+            let args_ptr =
+                b.ins()
+                    .load(types::I64, MemFlags::trusted(), act, L::ACT_ARGS_PTR as i32);
+            b.ins().store(MemFlags::trusted(), args_ptr, ptrs, 0);
+            let self_addr = b.ins().iadd_imm(act, L::ACT_SELF as i64);
+            b.ins().store(MemFlags::trusted(), self_addr, ptrs, 8);
+            let nargs = b
+                .ins()
+                .uload32(MemFlags::trusted(), act, L::ACT_NARGS as i32);
+            b.ins().store(MemFlags::trusted(), nargs, ptrs, 16);
+            let frame_rc = b
+                .ins()
+                .load(types::I64, MemFlags::trusted(), act, L::ACT_FRAME as i32);
+            let frame_view = b.ins().iadd_imm(frame_rc, i64::from(OBJECT_FIELDS_PTR_OFF));
+            let none = b.ins().icmp_imm(IntCC::Equal, frame_rc, 0);
+            let frame = b.ins().select(none, frame_rc, frame_view);
+            b.ins().store(MemFlags::trusted(), frame, ptrs, 24);
         }
         b.ins().jump(blocks[0], &[]);
 
@@ -573,7 +603,7 @@ impl Compiler {
         self.module
             .define_data(table, &desc)
             .map_err(|e| e.to_string())?;
-        // main(argc, argv) -> qz_main(blob, len, table, n, argc, argv)
+        // main(argc, argv) -> qz_main(blob, len, table, n, argc, argv, layout)
         let mut sig = Signature::new(call_conv);
         sig.params.push(AbiParam::new(types::I32));
         sig.params.push(AbiParam::new(types::I64));
@@ -597,9 +627,12 @@ impl Compiler {
         let table_ptr = b.ins().symbol_value(types::I64, table_gv);
         let len = b.ins().iconst(types::I64, blob_len as i64);
         let count = b.ins().iconst(types::I64, n as i64);
+        let layout = b.ins().iconst(types::I64, L::SIGNATURE as i64);
         let call = b.ins().call(
             qz_main,
-            &[blob_ptr, len, table_ptr, count, params[0], params[1]],
+            &[
+                blob_ptr, len, table_ptr, count, params[0], params[1], layout,
+            ],
         );
         let code = b.inst_results(call)[0];
         b.ins().return_(&[code]);
@@ -890,11 +923,283 @@ impl Gen<'_, '_> {
     /// `*dst = regs[src]` where `dst` holds nil: inline for values without
     /// reference counts, through the runtime for the others.
     fn clone_reg_to_ptr(&mut self, dst: CValue, src: Reg) {
-        let src_ptr = self
+        // An unboxed register is written from its variable (its home
+        // may be stale); a register that cannot hold a heap value is
+        // copied without the count check.
+        match self.states[src as usize] {
+            State::Int => {
+                let v = self.b.use_var(self.ivar(src));
+                let t = self.b.ins().iconst(types::I64, TAG_INT);
+                self.b.ins().store(MemFlags::trusted(), t, dst, 0);
+                self.b.ins().store(MemFlags::trusted(), v, dst, 8);
+            }
+            State::Float => {
+                let v = self.b.use_var(self.fvar(src));
+                let bits = self.b.ins().bitcast(types::I64, MemFlags::new(), v);
+                let t = self.b.ins().iconst(types::I64, TAG_FLOAT);
+                self.b.ins().store(MemFlags::trusted(), t, dst, 0);
+                self.b.ins().store(MemFlags::trusted(), bits, dst, 8);
+            }
+            State::Bool => {
+                let v = self.b.use_var(self.bvar(src));
+                let t = self.b.ins().iconst(types::I64, TAG_BOOL);
+                self.b.ins().store(MemFlags::trusted(), t, dst, 0);
+                let zero = self.b.ins().iconst(types::I64, 0);
+                self.b.ins().store(MemFlags::trusted(), zero, dst, 8);
+                self.b.ins().store(MemFlags::trusted(), v, dst, 8);
+            }
+            State::NonHeap => {
+                let src_ptr = self
+                    .b
+                    .ins()
+                    .iadd_imm(self.regs, i64::from(Self::reg_off(src)));
+                for k in [0, 8, 16] {
+                    let w = self
+                        .b
+                        .ins()
+                        .load(types::I64, MemFlags::trusted(), src_ptr, k);
+                    self.b.ins().store(MemFlags::trusted(), w, dst, k);
+                }
+            }
+            State::Unknown => {
+                let src_ptr = self
+                    .b
+                    .ins()
+                    .iadd_imm(self.regs, i64::from(Self::reg_off(src)));
+                emit_clone_ptr(self.b, dst, src_ptr);
+            }
+        }
+    }
+
+    /// A direct call to a compiled method that needs neither a frame nor
+    /// a method tag (it creates no blocks) and gets no block: the
+    /// activation is built, pushed, torn down and popped inline, and
+    /// the runtime is only called for a full call stack, a nearly
+    /// exhausted native stack, or a non-OK status.
+    #[allow(clippy::too_many_arguments)]
+    fn lean_call(
+        &mut self,
+        body: FuncRef,
+        callee: FuncId,
+        file: u32,
+        recv: Option<Reg>,
+        provided: u64,
+        slots: usize,
+        dst: Reg,
+        unwind: CBlock,
+    ) {
+        let act = self.act_buf;
+        let release_args = |g: &mut Self| {
+            for k in 0..slots {
+                let p =
+                    g.b.ins()
+                        .iadd_imm(g.args_buf, (k as i64) * i64::from(VALUE_SIZE));
+                g.release_ptr(p);
+            }
+        };
+        // Native stack check against the running task's limit.
+        let sp = self.b.ins().get_stack_pointer(types::I64);
+        let limit_cell = self.b.ins().load(
+            types::I64,
+            MemFlags::trusted(),
+            self.rt,
+            L::HOT_LIMIT_PTR as i32,
+        );
+        let limit = self
             .b
             .ins()
-            .iadd_imm(self.regs, i64::from(Self::reg_off(src)));
-        emit_clone_ptr(self.b, dst, src_ptr);
+            .load(types::I64, MemFlags::trusted(), limit_cell, 0);
+        let exhausted = self.b.ins().icmp(IntCC::UnsignedLessThan, sp, limit);
+        let overflow = self.b.create_block();
+        let build = self.b.create_block();
+        self.b.ins().brif(exhausted, overflow, &[], build, &[]);
+        self.b.switch_to_block(overflow);
+        let call = self.b.ins().call(self.h.stack_overflow, &[self.rt]);
+        let status = self.b.inst_results(call)[0];
+        release_args(self);
+        self.b.ins().jump(unwind, &[status]);
+        self.b.switch_to_block(build);
+        // The activation.
+        let fid_v = self.b.ins().iconst(types::I32, i64::from(callee));
+        self.b
+            .ins()
+            .store(MemFlags::trusted(), fid_v, act, L::ACT_FID as i32);
+        let task = self.b.ins().load(
+            types::I32,
+            MemFlags::trusted(),
+            self.act,
+            L::ACT_TASK as i32,
+        );
+        self.b
+            .ins()
+            .store(MemFlags::trusted(), task, act, L::ACT_TASK as i32);
+        let zero32 = self.b.ins().iconst(types::I32, 0);
+        self.b
+            .ins()
+            .store(MemFlags::trusted(), zero32, act, L::ACT_LINE as i32);
+        let file_v = self.b.ins().iconst(types::I32, i64::from(file));
+        self.b
+            .ins()
+            .store(MemFlags::trusted(), file_v, act, L::ACT_FILE as i32);
+        let self_dst = self.b.ins().iadd_imm(act, L::ACT_SELF as i64);
+        match recv {
+            Some(r) => self.clone_reg_to_ptr(self_dst, r),
+            None => {
+                let caller_self = self.b.ins().iadd_imm(self.act, L::ACT_SELF as i64);
+                emit_clone_ptr(self.b, self_dst, caller_self);
+            }
+        }
+        let zero = self.b.ins().iconst(types::I64, 0);
+        for off in [
+            L::ACT_FRAME,
+            L::ACT_BLOCK,
+            L::ACT_METHOD_TAG,
+            L::ACT_CLOSURE_TAG,
+            L::ACT_YIELD_CALLER,
+        ] {
+            self.b
+                .ins()
+                .store(MemFlags::trusted(), zero, act, off as i32);
+        }
+        let provided_v = self.b.ins().iconst(types::I64, provided as i64);
+        self.b
+            .ins()
+            .store(MemFlags::trusted(), provided_v, act, L::ACT_PROVIDED as i32);
+        self.b.ins().store(
+            MemFlags::trusted(),
+            self.args_buf,
+            act,
+            L::ACT_ARGS_PTR as i32,
+        );
+        let nargs_v = self.b.ins().iconst(types::I32, slots as i64);
+        self.b
+            .ins()
+            .store(MemFlags::trusted(), nargs_v, act, L::ACT_NARGS as i32);
+        // Push it on the call stack.
+        let len = self.b.ins().load(
+            types::I64,
+            MemFlags::trusted(),
+            self.rt,
+            L::HOT_STACK_LEN as i32,
+        );
+        let cap = self.b.ins().load(
+            types::I64,
+            MemFlags::trusted(),
+            self.rt,
+            L::HOT_STACK_CAP as i32,
+        );
+        let full = self.b.ins().icmp(IntCC::Equal, len, cap);
+        let push_slow = self.b.create_block();
+        let push_fast = self.b.create_block();
+        let pushed = self.b.create_block();
+        self.b.ins().brif(full, push_slow, &[], push_fast, &[]);
+        self.b.switch_to_block(push_slow);
+        self.b.ins().call(self.h.push_call, &[self.rt, act]);
+        self.b.ins().jump(pushed, &[]);
+        self.b.switch_to_block(push_fast);
+        let stack = self.b.ins().load(
+            types::I64,
+            MemFlags::trusted(),
+            self.rt,
+            L::HOT_STACK_PTR as i32,
+        );
+        let slot_off = self.b.ins().ishl_imm(len, 3);
+        let slot = self.b.ins().iadd(stack, slot_off);
+        self.b.ins().store(MemFlags::trusted(), act, slot, 0);
+        let len1 = self.b.ins().iadd_imm(len, 1);
+        self.b
+            .ins()
+            .store(MemFlags::trusted(), len1, self.rt, L::HOT_STACK_LEN as i32);
+        self.b.ins().jump(pushed, &[]);
+        self.b.switch_to_block(pushed);
+        // The body.
+        self.b
+            .ins()
+            .store(MemFlags::trusted(), zero, self.out_buf, 0);
+        let call = self.b.ins().call(body, &[self.rt, act, self.out_buf]);
+        let status = self.b.inst_results(call)[0];
+        // Leave: inline when the status is OK and the callee cached no
+        // block caller, through the runtime otherwise.
+        let cache = self.b.ins().load(
+            types::I64,
+            MemFlags::trusted(),
+            act,
+            L::ACT_YIELD_CALLER as i32,
+        );
+        let not_ok = self.b.ins().icmp_imm(IntCC::NotEqual, status, 0);
+        let cached = self.b.ins().icmp_imm(IntCC::NotEqual, cache, 0);
+        let slow = self.b.ins().bor(not_ok, cached);
+        let leave_slow = self.b.create_block();
+        let leave_fast = self.b.create_block();
+        let done = self.b.create_block();
+        self.b.append_block_param(done, types::I32);
+        self.b.ins().brif(slow, leave_slow, &[], leave_fast, &[]);
+        self.b.switch_to_block(leave_slow);
+        let d = self.i32(dst);
+        let none = self.i32(u32::MAX);
+        let call = self.b.ins().call(
+            self.h.leave,
+            &[self.rt, act, status, self.out_buf, self.regs, d, none],
+        );
+        let st = self.b.inst_results(call)[0];
+        self.b.ins().jump(done, &[st]);
+        self.b.switch_to_block(leave_fast);
+        // Pop (the entry is the top one unless tasks interleaved).
+        let len = self.b.ins().load(
+            types::I64,
+            MemFlags::trusted(),
+            self.rt,
+            L::HOT_STACK_LEN as i32,
+        );
+        let stack = self.b.ins().load(
+            types::I64,
+            MemFlags::trusted(),
+            self.rt,
+            L::HOT_STACK_PTR as i32,
+        );
+        let len0 = self.b.ins().iadd_imm(len, -1);
+        let top_off = self.b.ins().ishl_imm(len0, 3);
+        let top_slot = self.b.ins().iadd(stack, top_off);
+        let top = self
+            .b
+            .ins()
+            .load(types::I64, MemFlags::trusted(), top_slot, 0);
+        let is_top = self.b.ins().icmp(IntCC::Equal, top, act);
+        let pop_fast = self.b.create_block();
+        let pop_slow = self.b.create_block();
+        let popped = self.b.create_block();
+        self.b.ins().brif(is_top, pop_fast, &[], pop_slow, &[]);
+        self.b.switch_to_block(pop_fast);
+        self.b
+            .ins()
+            .store(MemFlags::trusted(), len0, self.rt, L::HOT_STACK_LEN as i32);
+        self.b.ins().jump(popped, &[]);
+        self.b.switch_to_block(pop_slow);
+        self.b.ins().call(self.h.pop_call, &[self.rt, act]);
+        self.b.ins().jump(popped, &[]);
+        self.b.switch_to_block(popped);
+        // Tear down: only `self` can hold a reference.
+        self.release_ptr(self_dst);
+        // The result moves into `dst`; `out` is nil again.
+        self.release(dst);
+        for k in [0, 8, 16] {
+            let w = self
+                .b
+                .ins()
+                .load(types::I64, MemFlags::trusted(), self.out_buf, k);
+            self.b
+                .ins()
+                .store(MemFlags::trusted(), w, self.regs, Self::reg_off(dst) + k);
+        }
+        self.b
+            .ins()
+            .store(MemFlags::trusted(), zero, self.out_buf, 0);
+        let ok = self.b.ins().iconst(types::I32, 0);
+        self.b.ins().jump(done, &[ok]);
+        self.b.switch_to_block(done);
+        let status = self.b.block_params(done)[0];
+        release_args(self);
+        self.check(status, unwind);
     }
 
     /// Release the value at `p` (leaving nil) when it is reference counted.
@@ -1845,6 +2150,13 @@ impl Gen<'_, '_> {
                     block: blk,
                     dst,
                 }) => {
+                    // The callee may raise: a backtrace shows this
+                    // activation at the call's line.
+                    let line = self.f.blocks[block as usize].lines[index as usize];
+                    let line_v = self.b.ins().iconst(types::I32, i64::from(line));
+                    self.b
+                        .ins()
+                        .store(MemFlags::trusted(), line_v, self.act, L::ACT_LINE as i32);
                     for (k, r) in args.iter().enumerate() {
                         let v = self.i32(*r);
                         self.b
@@ -1912,6 +2224,15 @@ impl Gen<'_, '_> {
                                 }
                             }
                             slots += 1;
+                        }
+                        let lean = frame_size == 0
+                            && blk.is_none()
+                            && !self.functions[callee as usize].blocks.iter().any(|b| {
+                                b.insts.iter().any(|i| matches!(i, Inst::MakeBlock { .. }))
+                            });
+                        if lean {
+                            self.lean_call(body, callee, file, recv, provided, slots, dst, unwind);
+                            return;
                         }
                         let total_v = self.i32(slots as u32);
                         let provided_v = self.b.ins().iconst(types::I64, provided as i64);

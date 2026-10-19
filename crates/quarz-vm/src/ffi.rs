@@ -145,24 +145,6 @@ pub const ACT_BUF_SIZE: usize = 320;
 const _: () = assert!(std::mem::size_of::<Activation>() <= ACT_BUF_SIZE);
 const _: () = assert!(std::mem::align_of::<Activation>() <= 16);
 
-/// Where the arguments and `self` of an activation live, for inline
-/// reads: `out[0]` = the arguments, `out[1]` = `self`, `out[2]` = the
-/// number of arguments (as a pointer-sized integer).
-///
-/// # Safety
-/// As for `qz_exec`; `out` must have room for three words.
-#[no_mangle]
-pub unsafe extern "C" fn qz_act_ptrs(act: *const Activation, out: *mut *const Value) {
-    let act = &*act;
-    *out = act.args_ptr.get();
-    *out.add(1) = &act.self_val;
-    *out.add(2) = act.nargs.get() as usize as *const Value;
-    *out.add(3) = act
-        .frame
-        .as_ref()
-        .map_or(std::ptr::null(), |f| Rc::as_ptr(f) as *const Value);
-}
-
 /// `regs[dst] = *src` for a reference-counted value (the inline path
 /// copies the others).
 ///
@@ -233,9 +215,9 @@ pub unsafe extern "C" fn qz_enter(
         &*regs.add(recv as usize)
     };
     let block = if block == u32::MAX {
-        None
+        Value::Nil
     } else {
-        Some((*regs.add(block as usize)).fast_clone())
+        (*regs.add(block as usize)).fast_clone()
     };
     let frame = if frame_size > 0 {
         Some(crate::value::Frame::new(frame_size as usize, None))
@@ -252,15 +234,43 @@ pub unsafe extern "C" fn qz_enter(
     write(addr_of_mut!((*buf).block), block);
     write(addr_of_mut!((*buf).method_tag), rt.new_tag());
     write(addr_of_mut!((*buf).closure_tag), 0);
-    write(addr_of_mut!((*buf).method), Some(mid));
     write(addr_of_mut!((*buf).file), file);
-    write(addr_of_mut!((*buf).args), crate::interp::ArgVec::new());
     write(addr_of_mut!((*buf).provided), provided);
     write(addr_of_mut!((*buf).args_ptr), std::cell::Cell::new(args));
     write(addr_of_mut!((*buf).nargs), std::cell::Cell::new(nargs));
     write(addr_of_mut!((*buf).yield_caller), Default::default());
-    rt.call_stack.borrow_mut().push(buf as *const Activation);
+    rt.push_call(buf as *const Activation);
+    let _ = mid;
     STATUS_OK
+}
+
+/// Push `act` on the call stack when the compiled code found it full.
+///
+/// # Safety
+/// `rt` is the interpreter running the caller.
+#[no_mangle]
+pub unsafe extern "C" fn qz_push_call(rt: *const Interp, act: *const Activation) {
+    (*rt).push_call(act);
+}
+
+/// Remove `act` from the call stack when it is not the top entry
+/// (tasks interleaved).
+///
+/// # Safety
+/// `rt` is the interpreter running the caller.
+#[no_mangle]
+pub unsafe extern "C" fn qz_pop_call(rt: *const Interp, act: *const Activation) {
+    (*rt).pop_call_stack(&*act);
+}
+
+/// The native stack is nearly exhausted: park a `SystemStackError`.
+///
+/// # Safety
+/// `rt` is the interpreter running the caller.
+#[no_mangle]
+pub unsafe extern "C" fn qz_stack_overflow(rt: *const Interp) -> u32 {
+    let rt = &*rt;
+    rt.park_flow(rt.raise(rt.exc.system_stack, "stack level too deep"))
 }
 
 /// Finish a direct call begun with `qz_enter`: pop the call stack,
@@ -303,15 +313,9 @@ pub unsafe extern "C" fn qz_leave(
     {
         use std::ptr::{addr_of_mut, drop_in_place, read};
         read(addr_of_mut!((*buf).self_val)).fast_drop();
-        if let Some(b) = read(addr_of_mut!((*buf).block)) {
-            b.fast_drop();
-        }
+        read(addr_of_mut!((*buf).block)).fast_drop();
         drop_in_place(addr_of_mut!((*buf).frame));
-        drop_in_place(addr_of_mut!((*buf).args));
-        // The block caller exists only in activations that yielded.
-        if let Some(Some(caller)) = read(addr_of_mut!((*buf).yield_caller)).into_inner() {
-            drop(caller);
-        }
+        drop_in_place(addr_of_mut!((*buf).yield_caller));
     }
     match r {
         Ok(v) => {
@@ -381,7 +385,7 @@ pub unsafe extern "C" fn qz_arg(act: *const Activation, index: u32, regs: *mut V
 #[no_mangle]
 pub unsafe extern "C" fn qz_block_param(act: *const Activation, regs: *mut Value, dst: u32) {
     let act = &*act;
-    *regs.add(dst as usize) = act.block.clone().unwrap_or(Value::Nil);
+    *regs.add(dst as usize) = act.block.clone();
 }
 
 /// `regs[dst] = frame[depth][slot]`.
@@ -656,9 +660,10 @@ pub unsafe extern "C" fn qz_yield(
 ) -> u32 {
     let rt = &*rt;
     let act = &*act;
-    let Some(block) = &act.block else {
+    if act.block.is_nil() {
         return rt.park_flow(rt.raise(rt.exc.runtime_error, "no block given (yield)"));
-    };
+    }
+    let block = &act.block;
     let mut args: crate::interp::ArgVec = crate::interp::ArgVec::with_capacity(nargs as usize);
     for i in 0..nargs as usize {
         let r = *arg_regs.add(i);
@@ -666,9 +671,7 @@ pub unsafe extern "C" fn qz_yield(
     }
     // The block's caller is built on the first yield and reused (`None`
     // when the block needs the general path).
-    let caller = act
-        .yield_caller
-        .get_or_init(|| rt.block_caller(block).map(Box::new));
+    let caller = act.yield_caller.get_or_init(|| rt.block_caller(block));
     let r = match caller {
         Some(c) => c.call(&args),
         None => rt.call_block(block, args),
@@ -801,6 +804,7 @@ pub unsafe extern "C" fn qz_main(
     n: usize,
     argc: i32,
     argv: *const *const c_char,
+    layout_sig: u64,
 ) -> i32 {
     let bytes = std::slice::from_raw_parts(blob, len);
     let module = match quarz_ir::decode(bytes) {
@@ -825,6 +829,7 @@ pub unsafe extern "C" fn qz_main(
         units,
     } = module;
     crate::value::check_rc_layout();
+    crate::layout::check(layout_sig);
     let interp: Rc<Interp> = Interp::with_state(world, 0, functions, units, args, state);
     {
         let mut compiled = interp.compiled.borrow_mut();

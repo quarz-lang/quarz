@@ -1,0 +1,84 @@
+//! The offsets compiled code uses to build activations and to reach the
+//! interpreter's call stack, and a signature of them: a program built
+//! against one runtime refuses to start on another.
+
+use std::mem::{offset_of, size_of};
+
+use crate::interp::{Hot, Interp};
+use crate::vm::Activation;
+
+pub const ACT_SIZE: usize = size_of::<Activation>();
+pub const ACT_FID: usize = offset_of!(Activation, fid);
+pub const ACT_TASK: usize = offset_of!(Activation, task);
+pub const ACT_LINE: usize = offset_of!(Activation, line);
+pub const ACT_FILE: usize = offset_of!(Activation, file);
+pub const ACT_SELF: usize = offset_of!(Activation, self_val);
+pub const ACT_FRAME: usize = offset_of!(Activation, frame);
+pub const ACT_BLOCK: usize = offset_of!(Activation, block);
+pub const ACT_METHOD_TAG: usize = offset_of!(Activation, method_tag);
+pub const ACT_CLOSURE_TAG: usize = offset_of!(Activation, closure_tag);
+pub const ACT_PROVIDED: usize = offset_of!(Activation, provided);
+pub const ACT_ARGS_PTR: usize = offset_of!(Activation, args_ptr);
+pub const ACT_NARGS: usize = offset_of!(Activation, nargs);
+pub const ACT_YIELD_CALLER: usize = offset_of!(Activation, yield_caller);
+
+pub const HOT_STACK_PTR: usize = offset_of!(Interp, hot) + offset_of!(Hot, stack_ptr);
+pub const HOT_STACK_LEN: usize = offset_of!(Interp, hot) + offset_of!(Hot, stack_len);
+pub const HOT_STACK_CAP: usize = offset_of!(Interp, hot) + offset_of!(Hot, stack_cap);
+pub const HOT_LIMIT_PTR: usize = offset_of!(Interp, hot) + offset_of!(Hot, limit_ptr);
+
+/// Everything above, folded into one number.
+pub const SIGNATURE: u64 = {
+    let xs = [
+        ACT_SIZE,
+        ACT_FID,
+        ACT_TASK,
+        ACT_LINE,
+        ACT_FILE,
+        ACT_SELF,
+        ACT_FRAME,
+        ACT_BLOCK,
+        ACT_METHOD_TAG,
+        ACT_CLOSURE_TAG,
+        ACT_PROVIDED,
+        ACT_ARGS_PTR,
+        ACT_NARGS,
+        ACT_YIELD_CALLER,
+        HOT_STACK_PTR,
+        HOT_STACK_LEN,
+        HOT_STACK_CAP,
+        HOT_LIMIT_PTR,
+    ];
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut i = 0;
+    while i < xs.len() {
+        h ^= xs[i] as u64;
+        h = h.wrapping_mul(0x0100_0000_01b3);
+        i += 1;
+    }
+    h
+};
+
+/// Refuse to run code built against another layout, and check the bit
+/// patterns the compiled code writes for "nothing".
+pub fn check(sig: u64) {
+    if sig != SIGNATURE {
+        eprintln!("quarz: this program was built against a different runtime; rebuild it");
+        std::process::exit(70);
+    }
+    // SAFETY: a zeroed `Option<Rc<_>>` is `None`, verified here before
+    // compiled code relies on it.
+    unsafe {
+        let none: Option<std::rc::Rc<crate::value::Frame>> = None;
+        assert_eq!(
+            std::mem::transmute::<Option<std::rc::Rc<crate::value::Frame>>, usize>(none),
+            0,
+            "Option<Rc> layout changed"
+        );
+    }
+    assert_eq!(
+        crate::value::Value::Nil.type_tag(),
+        0,
+        "Value layout changed: Nil tag"
+    );
+}
