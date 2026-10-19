@@ -48,26 +48,28 @@ access and the reusable block caller):
   (its blocks are loops in the caller, the array and hash updates are in
   place and the appends inline, `Int`/`Float` array elements are stored
   unboxed and read inline, numeric equality is inline; what remains is
-  the hash table with boxed keys and values), 9–10× on `objects` (a
-  `Vec2` that stays in its function is not allocated, the one stored in
-  the particle is: its allocation and release are most of the time) and
+  the hash table with boxed keys and values), 4× on `objects` (a `Vec2`
+  that stays in its function is not allocated, and the one stored in
+  the particle is held in place; what remains is the boxed fields and
+  the loop over boxed particles) and
   on a par with Go and 2× slower than Rust on `strings` (interpolation
   builds in one buffer, the string natives take their arguments by
   reference, strings of at most 15 bytes live in the value; what
   remains is the builder's growth and the per-call entry into the
   runtime).
 - Against Ruby, compiled Quarz is ahead everywhere: 7–8× on `fib`,
-  12× on `loop`, 6–7× on `collections`, 16–20× on `objects`, 5× on
+  12× on `loop`, 6–7× on `collections`, 33–40× on `objects`, 5× on
   `strings`.
 - The VM is 2–4× slower than Ruby's interpreter on calls and loops and
-  on a par for objects and strings.
+  2–3× faster than it on objects and 2× on strings.
 
 What separates compiled Quarz from Go and Rust now is the value
 representation: every value is a 24-byte tagged box, every copy of a
 heap value bumps a reference count, every object and every long string
 is heap-allocated. Arrays of `Int`/`Float` store their elements
-unboxed, strings of at most 15 bytes live in the value, and copy
+unboxed, strings of at most 15 bytes live in the value, small data
+values are held in place in the objects that store them, and copy
 propagation removed most of the reference-count traffic on
-temporaries; typed storage for `Int`/`Float` fields and for
-`Int`-keyed hashes would be the next steps, and they are changes to
+temporaries; unboxed `Int`/`Float` fields and `Int`-keyed hashes would
+be the next steps, and they are changes to
 the runtime's data structures rather than to the compiler.
