@@ -952,6 +952,41 @@ impl Gen<'_, '_> {
 
     /// `*dst = regs[src]` where `dst` holds nil: inline for values without
     /// reference counts, through the runtime for the others.
+    /// Whether `src`, read by instruction `index` of `block` (`inst`),
+    /// can be moved out instead of copied: it may hold a heap value, this
+    /// is its only read in the instruction, and nothing reads it after.
+    fn movable(&self, inst: &Inst, src: Reg, block: u32, index: u32) -> bool {
+        self.states[src as usize] == State::Unknown
+            && inst.uses().iter().filter(|&&u| u == src).count() == 1
+            && !self.live[block as usize]
+                .get(index as usize + 1)
+                .is_some_and(|l| l[src as usize])
+    }
+
+    /// `*dst = regs[src]`, the value moved out of the register (whose
+    /// home becomes nil): no count increment now, no release later.
+    fn move_reg_to_ptr(&mut self, dst: CValue, src: Reg) {
+        let src_ptr = self
+            .b
+            .ins()
+            .iadd_imm(self.regs, i64::from(Self::reg_off(src)));
+        for k in [0, 8, 16] {
+            let w = self
+                .b
+                .ins()
+                .load(types::I64, MemFlags::trusted(), src_ptr, k);
+            self.b.ins().store(MemFlags::trusted(), w, dst, k);
+        }
+        self.store_tag(src, TAG_NIL);
+    }
+
+    /// After a slow path that copied `src` instead of moving it: release
+    /// the register so that both paths leave its home nil.
+    fn drop_moved(&mut self, src: Reg) {
+        self.release(src);
+        self.store_tag(src, TAG_NIL);
+    }
+
     fn clone_reg_to_ptr(&mut self, dst: CValue, src: Reg) {
         // An unboxed register is written from its variable (its home
         // may be stale); a register that cannot hold a heap value is
@@ -1245,7 +1280,7 @@ impl Gen<'_, '_> {
     /// (boxed takes anything; unboxed Ints/Floats an Int/Float, known
     /// from the state or the tag), branching to `slow` otherwise. Falls
     /// through on success with the array's length updated.
-    fn inline_push(&mut self, arr_ptr: CValue, src: Reg, slow: CBlock) {
+    fn inline_push(&mut self, arr_ptr: CValue, src: Reg, slow: CBlock, move_src: bool) {
         let check_b = self.b.create_block();
         let fast = self.b.create_block();
         let tag = self
@@ -1293,7 +1328,11 @@ impl Gen<'_, '_> {
         self.b.switch_to_block(boxed_b);
         let off = self.b.ins().imul_imm(len, i64::from(VALUE_SIZE));
         let slot = self.b.ins().iadd(ptr, off);
-        self.clone_reg_to_ptr(slot, src);
+        if move_src {
+            self.move_reg_to_ptr(slot, src);
+        } else {
+            self.clone_reg_to_ptr(slot, src);
+        }
         self.b.ins().jump(done_b, &[]);
         self.b.switch_to_block(raw_b);
         let off = self.b.ins().imul_imm(len, 8);
@@ -2127,12 +2166,19 @@ impl Gen<'_, '_> {
                     .b
                     .ins()
                     .iadd_imm(self.regs, i64::from(Self::reg_off(*arr)));
-                self.inline_push(arr_ptr, *src, slow);
+                let moving = self.movable(inst, *src, block, index);
+                self.inline_push(arr_ptr, *src, slow, moving);
                 self.b.ins().jump(cont, &[]);
                 self.b.switch_to_block(slow);
                 self.exec(block, index, unwind);
+                if moving {
+                    self.drop_moved(*src);
+                }
                 self.b.ins().jump(cont, &[]);
                 self.b.switch_to_block(cont);
+                if moving {
+                    self.states[*src as usize] = State::NonHeap;
+                }
             }
             Inst::ClearRegs { from, to } => {
                 for r in *from..*to {
@@ -2304,7 +2350,10 @@ impl Gen<'_, '_> {
                 self.b.switch_to_block(cont);
             }
             Inst::FieldSet {
-                obj, index, src, ..
+                obj,
+                index: field_index,
+                src,
+                ..
             } => {
                 let fast = self.b.create_block();
                 let slow = self.b.create_block();
@@ -2313,13 +2362,19 @@ impl Gen<'_, '_> {
                 let is_obj = self.b.ins().icmp_imm(IntCC::Equal, tag, TAG_OBJECT);
                 self.b.ins().brif(is_obj, fast, &[], slow, &[]);
                 self.b.switch_to_block(fast);
-                let field = self.field_addr(*obj, *index);
+                let field = self.field_addr(*obj, *field_index);
                 self.release_ptr(field);
-                self.clone_reg_to_ptr(field, *src);
+                // The last read of the source moves it into the field.
+                let moving = self.movable(inst, *src, block, index);
+                if moving {
+                    self.move_reg_to_ptr(field, *src);
+                } else {
+                    self.clone_reg_to_ptr(field, *src);
+                }
                 self.b.ins().jump(cont, &[]);
                 self.b.switch_to_block(slow);
                 let o = self.i32(*obj);
-                let i = self.i32(*index);
+                let i = self.i32(*field_index);
                 let s = self.i32(*src);
                 let call = self
                     .b
@@ -2327,8 +2382,14 @@ impl Gen<'_, '_> {
                     .call(self.h.field_set, &[self.rt, self.regs, o, i, s]);
                 let status = self.b.inst_results(call)[0];
                 self.check(status, unwind);
+                if moving {
+                    self.drop_moved(*src);
+                }
                 self.b.ins().jump(cont, &[]);
                 self.b.switch_to_block(cont);
+                if moving {
+                    self.states[*src as usize] = State::NonHeap;
+                }
             }
             Inst::Call {
                 dst,
@@ -2358,7 +2419,12 @@ impl Gen<'_, '_> {
                             .b
                             .ins()
                             .iadd_imm(self.args_buf, (k as i64) * i64::from(VALUE_SIZE));
-                        self.clone_reg_to_ptr(p, *r);
+                        if self.movable(inst, *r, block, index) {
+                            self.move_reg_to_ptr(p, *r);
+                            self.states[*r as usize] = State::NonHeap;
+                        } else {
+                            self.clone_reg_to_ptr(p, *r);
+                        }
                     }
                     let class_v = self.i32(*class);
                     let n = self.i32(args.len() as u32);
@@ -2407,6 +2473,7 @@ impl Gen<'_, '_> {
                         .as_deref()
                         .is_some_and(|k| k == "Array#push")
                     && !matches!(recv, VarLoc::Reg(r) if *r == args[0]);
+                let moving = is_push && self.movable(inst, args[0], block, index);
                 let slow = self.b.create_block();
                 let cont = self.b.create_block();
                 if is_push {
@@ -2425,7 +2492,7 @@ impl Gen<'_, '_> {
                             self.field_addr(*obj, *index)
                         }
                     };
-                    self.inline_push(arr_ptr, args[0], slow);
+                    self.inline_push(arr_ptr, args[0], slow, moving);
                     if wanted {
                         self.clone_from(*dst, arr_ptr);
                     }
@@ -2466,8 +2533,14 @@ impl Gen<'_, '_> {
                 );
                 let status = self.b.inst_results(call)[0];
                 self.check(status, unwind);
+                if moving {
+                    self.drop_moved(args[0]);
+                }
                 self.b.ins().jump(cont, &[]);
                 self.b.switch_to_block(cont);
+                if moving {
+                    self.states[args[0] as usize] = State::NonHeap;
+                }
             }
             Inst::Call {
                 dst,
@@ -2543,7 +2616,14 @@ impl Gen<'_, '_> {
                                 .b
                                 .ins()
                                 .iadd_imm(self.args_buf, (k as i64) * i64::from(VALUE_SIZE));
-                            self.clone_reg_to_ptr(p, *r);
+                            // The area is released after the call: a
+                            // dead argument is moved there.
+                            if self.movable(inst, *r, block, index) {
+                                self.move_reg_to_ptr(p, *r);
+                                self.states[*r as usize] = State::NonHeap;
+                            } else {
+                                self.clone_reg_to_ptr(p, *r);
+                            }
                             if k < 64 {
                                 provided |= 1 << k;
                             }
