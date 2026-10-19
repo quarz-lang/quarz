@@ -685,6 +685,17 @@ pub unsafe extern "C" fn qz_yield(
     }
 }
 
+/// `regs[dst]` = a new data object of `class` with `nfields` nil fields,
+/// which the compiled code then fills through the field view.
+///
+/// # Safety
+/// As for `qz_exec`.
+#[no_mangle]
+pub unsafe extern "C" fn qz_alloc_data(regs: *mut Value, class: u32, nfields: u32, dst: u32) {
+    let fields: crate::value::Fields = smallvec::smallvec![Value::Nil; nfields as usize];
+    *regs.add(dst as usize) = Value::Object(crate::value::Object::new(class, fields));
+}
+
 /// `Class.new(args)` with positional arguments only.
 ///
 /// # Safety

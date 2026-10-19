@@ -72,6 +72,7 @@ struct Runtime {
     call_static: CFuncId,
     yield_: CFuncId,
     construct: CFuncId,
+    alloc_data: CFuncId,
     owned_call: CFuncId,
     main: CFuncId,
 }
@@ -96,6 +97,7 @@ struct Helpers {
     call_static: FuncRef,
     yield_: FuncRef,
     construct: FuncRef,
+    alloc_data: FuncRef,
     owned_call: FuncRef,
 }
 
@@ -213,6 +215,11 @@ pub fn compile(module: &Module) -> Result<Vec<u8>, String> {
                 Some(i32_),
             ),
         )?,
+        alloc_data: import(
+            &mut obj,
+            "qz_alloc_data",
+            &sig(&[i64_, i32_, i32_, i32_], None),
+        )?,
         construct: import(
             &mut obj,
             "qz_construct",
@@ -291,6 +298,7 @@ impl Compiler {
                 .declare_func_in_func(self.rt.call_static, b.func),
             yield_: self.module.declare_func_in_func(self.rt.yield_, b.func),
             construct: self.module.declare_func_in_func(self.rt.construct, b.func),
+            alloc_data: self.module.declare_func_in_func(self.rt.alloc_data, b.func),
             owned_call: self.module.declare_func_in_func(self.rt.owned_call, b.func),
         };
         let heap = heap_possible(f);
@@ -2059,6 +2067,29 @@ impl Gen<'_, '_> {
                 block: None,
                 ..
             } if kw.is_empty() => {
+                // A data type given all its fields: allocate it with nil
+                // fields and write the arguments straight into them.
+                let data = init.is_some_and(|i| {
+                    self.methods[i as usize].synth == RtSynth::DataInit
+                        && matches!(
+                            self.classes[*class as usize].kind,
+                            RtClassKind::Data | RtClassKind::Variant
+                        )
+                        && self.classes[*class as usize].fields.len() == args.len()
+                });
+                if data {
+                    let class_v = self.i32(*class);
+                    let n = self.i32(args.len() as u32);
+                    let d = self.i32(*dst);
+                    self.b
+                        .ins()
+                        .call(self.h.alloc_data, &[self.regs, class_v, n, d]);
+                    for (k, r) in args.iter().enumerate() {
+                        let p = self.field_addr(*dst, k as u32);
+                        self.clone_reg_to_ptr(p, *r);
+                    }
+                    return;
+                }
                 for (k, r) in args.iter().enumerate() {
                     let v = self.i32(*r);
                     self.b
