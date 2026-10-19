@@ -3666,6 +3666,9 @@ impl<'src> Parser<'src> {
     fn parse_def_name(&mut self) -> PResult<String> {
         let tok = self.bump();
         let mut name = match tok.kind {
+            // Unary `!` and `~` are called as `!x`/`~x` whatever the
+            // definition is spelled; `-@`/`+@` keep the `@`, as in Ruby.
+            T::Ident(name) if name == "!@" || name == "~@" => name[..1].to_string(),
             T::Ident(name) | T::Const(name) => name,
             T::Keyword(k) => k.as_str().to_string(),
             T::LBracket => {

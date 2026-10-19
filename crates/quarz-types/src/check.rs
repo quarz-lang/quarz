@@ -1636,8 +1636,11 @@ impl Checker {
                 self.join(&truthy, &tb)
             }
             Not(a) => {
-                self.check_expr(a, None);
-                self.world.bool_()
+                let t = self.check_expr(a, None);
+                match self.not_method(expr, a, &t) {
+                    Some(rt) => rt,
+                    None => self.world.bool_(),
+                }
             }
             If { cond, then, els } => self.check_if(cond, then, els.as_deref(), expected),
             While {
@@ -2140,6 +2143,12 @@ impl Checker {
             Not(inner) => {
                 let (t, ft, ff) = self.check_cond(inner);
                 self.record(inner.id, &t);
+                // A type with its own `!` is called, and says nothing
+                // about the operand.
+                if let Some(rt) = self.not_method(cond, inner, &t) {
+                    self.record(cond.id, &rt);
+                    return (rt, Facts::default(), Facts::default());
+                }
                 let bt = self.world.bool_();
                 self.record(cond.id, &bt);
                 (bt, ff, ft)
@@ -3526,6 +3535,25 @@ impl Checker {
             _ => {}
         }
         Some(vt)
+    }
+
+    /// `!x` where `x`'s type defines a method `!`: resolve the call and
+    /// return its type (`None` for the built-in negation).
+    fn not_method(&mut self, expr: &Expr, operand: &Expr, t: &Type) -> Option<Type> {
+        let t = self.resolve(t);
+        if self.world.lookup_methods(&t, "!").is_empty() {
+            return None;
+        }
+        let call = Call {
+            recv: Some(operand.clone()),
+            name: "!".to_string(),
+            args: vec![],
+            block: None,
+            safe_nav: false,
+            has_parens: true,
+            type_args: vec![],
+        };
+        Some(self.check_call_on(expr, &call, &t, false, None))
     }
 
     /// The innermost enclosing `self` (outside the blocks with receivers

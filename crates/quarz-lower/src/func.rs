@@ -948,6 +948,20 @@ impl<'a> FnBuilder<'a> {
             Not(a) => {
                 let v = self.expr(a);
                 let dst = self.reg();
+                // A type with its own `!` is called.
+                if let Some(CallTarget::Method { method }) = self.out.calls.get(&e.id) {
+                    self.emit(Inst::Call {
+                        dst,
+                        kind: CallKind::Method(*method),
+                        recv: Some(v),
+                        args: vec![],
+                        splat: false,
+                        kw: vec![],
+                        kw_splat: None,
+                        block: None,
+                    });
+                    return dst;
+                }
                 self.emit(Inst::Not { dst, src: v });
                 dst
             }

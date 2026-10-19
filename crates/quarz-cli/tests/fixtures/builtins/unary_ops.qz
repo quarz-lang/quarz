@@ -1,0 +1,30 @@
+# Unary operator methods: `-@`, `+@`, `~` and `!` (which may also be
+# spelled `!@`). `!x` calls the type's own `!` when it has one, and is
+# the built-in negation (truthiness) otherwise.
+class Foo
+  def !@ = "not foo"
+  def ~ = "tilde foo"
+  def -@ = "minus foo"
+  def +@ = "plus foo"
+end
+class Bar
+  def ! -> String = "not bar"
+end
+data Flag(on: Bool) is
+  def ! -> Flag = Flag.new(!on)
+end
+p(!Foo.new, ~Foo.new, -Foo.new, +Foo.new)
+p(!Bar.new)
+f = Flag.new(true)
+p(!f, !!f)
+# the built-in negation for everything else, including in conditions
+p(!true, !nil, !0, !"", ![])
+x: Int? = 3
+if !x.nil?
+  p x + 1
+end
+puts "custom in a condition" if !Bar.new == "not bar"
+y: Int? = nil
+unless !y.nil?
+  p "nil stays nil"
+end

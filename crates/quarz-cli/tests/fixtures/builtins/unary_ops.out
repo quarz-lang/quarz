@@ -1,0 +1,15 @@
+"not foo"
+"tilde foo"
+"minus foo"
+"plus foo"
+"not bar"
+Flag(on: false)
+Flag(on: true)
+false
+true
+false
+false
+false
+4
+custom in a condition
+"nil stays nil"
