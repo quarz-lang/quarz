@@ -1,0 +1,47 @@
+# `for x in xs do ... end` is a loop: each iterator becomes an `each`,
+# nested from left to right, a `when` guard an `if` around the rest. The
+# value is nil; `break`/`next` act on the innermost generator's loop.
+for i in 1..3 do
+  puts i
+end
+for i in 0...3, j in 0...3 when i < j do
+  puts "#{i},#{j}"
+end
+total = 0
+for x in [1, 2, 3], y in [10, 20] do
+  total += x * y
+end
+p total
+for k, v in { a: 1, b: 2 } do
+  puts "#{k}=#{v}"
+end
+# the value is nil, the variables do not leak
+p (for x in [1] do x end)
+# next skips an element, break leaves the innermost loop
+for x in [1, 2, 3, 4] do
+  next if x.even?
+  puts "odd #{x}"
+end
+for i in 1..3, j in 1..3 do
+  break if j == 2
+  puts "#{i}:#{j}"
+end
+# guards see the earlier variables; the body sees all of them
+for a in 1..4 when a.even?, b in 1..a when b * 2 == a do
+  puts "#{a} #{b}"
+end
+# nested `for` loops, and `return` from the enclosing method
+def find_pair(xs: Array[Int], target: Int) -> Int?
+  for x in xs do
+    for y in xs when x < y do
+      return x * 10 + y if x + y == target
+    end
+  end
+  nil
+end
+p find_pair([1, 2, 3, 4], 7), find_pair([1, 2], 10)
+# a comprehension is still an expression
+p (for x in [1, 2, 3] when x > 1 then x * 10 end)
+# one-line form
+for s in ["a", "b"] do print s end
+puts

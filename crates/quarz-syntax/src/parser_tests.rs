@@ -316,7 +316,15 @@ fn declarations() {
         "(call (call _ h) map (block (params k v) k))"
     );
     assert!(errors("for x in xs then break end")[0].contains("`break` cannot be used"));
-    assert!(errors("for x in xs do x end")[0].contains("not `do`"));
+    assert_eq!(
+        sexp("for x in xs do x end"),
+        "(call (call _ xs) each (block (params x) x))"
+    );
+    assert_eq!(
+        sexp("for x in xs, y in ys do x end"),
+        "(call (call _ xs) each (block (params x) (call (call _ ys) each (block (params y) x))))"
+    );
+    assert!(errors("for x in xs x end")[0].contains("`then` or `do`"));
     assert_eq!(sexp("for(1)"), "(call _ for 1)");
     assert_eq!(sexp("enum C =\n  | A\n  | B"), "(enum C (A) (B))");
     assert_eq!(

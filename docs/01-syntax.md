@@ -403,6 +403,23 @@ for u in find_user(id), o in latest_order(u) then [u, o] end   # Result[[User, O
 - `break` inside the body or a guard is a compile error (it could only leave the innermost generated block).
 - `for` is a contextual keyword: only `for variable in` starts a comprehension.
 
+### `for` loops
+
+The same iterators with `do ... end` instead of `then ... end` make a loop: each iterator becomes an `each`, nested from left to right, and a `when` guard an `if` around what follows it.
+
+```ruby
+for i in 0...3, j in 0...3 when i < j do
+  puts "#{i},#{j}"
+end
+# => (0...3).each { |i| (0...3).each { |j| if i < j then puts "#{i},#{j}" end } }
+
+for k, v in hash do puts "#{k}=#{v}" end
+```
+
+- The value is `nil`, and the variables are block parameters (nothing leaks out).
+- `next` skips to the next element and `break` leaves the loop of the innermost iterator, as they would in the `each` blocks; `return` returns from the enclosing method. To leave several iterators at once, nest `for` loops and `break` from the outer one or `return`.
+- The loops are compiled in place (no closure, no call per element) whenever the `each` blocks would be.
+
 ### Pattern matching
 
 Ruby 3's `case/in` is adopted as is, with static checks added.

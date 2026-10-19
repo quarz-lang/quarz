@@ -2051,11 +2051,9 @@ impl<'src> Parser<'src> {
     /// earlier ones and nothing leaks out.
     fn parse_for_comprehension(&mut self) -> PResult<Expr> {
         let start = self.bump().span; // for
-        struct Iterator {
-            names: Vec<(String, Span)>,
-            source: Expr,
-            guard: Option<Expr>,
-            span: Span,
+        type Iterator = ForIterator;
+        fn iterators_into(v: Vec<Iterator>) -> Vec<ForIterator> {
+            v
         }
         let mut iterators: Vec<Iterator> = Vec::new();
         let saved_comp = self.in_comprehension;
@@ -2114,14 +2112,19 @@ impl<'src> Parser<'src> {
             }
             break;
         }
-        if !self.at_kw(K::Then) {
-            if self.at_kw(K::Do) {
-                self.error_expected(
-                    "`then` (a `for` comprehension yields its body with `then`, not `do`)",
-                );
-            } else {
-                self.error_expected("`then` after the iterators of `for`");
+        // `for ... do ... end`: a loop, each iterator an `each`.
+        if self.at_kw(K::Do) {
+            self.bump();
+            let body = self.parse_statements(&[K::End]);
+            for _ in 0..scopes {
+                self.pop_scope();
             }
+            self.expect_kw(K::End)?;
+            let span = self.span_from(start);
+            return Ok(self.build_for_loop(iterators_into(iterators), body, span));
+        }
+        if !self.at_kw(K::Then) {
+            self.error_expected("`then` or `do` after the iterators of `for`");
             for _ in 0..scopes {
                 self.pop_scope();
             }
@@ -2202,6 +2205,66 @@ impl<'src> Parser<'src> {
         let mut expr = inner.expect("at least one iterator");
         expr.span = span;
         Ok(expr)
+    }
+
+    /// `for x in xs, y in ys when g do body end` as nested `each` calls:
+    /// `xs.each { |x| ys.each { |y| if g then body end } }`. The value is
+    /// nil; `break` and `next` act on the innermost generator's loop.
+    fn build_for_loop(&mut self, iterators: Vec<ForIterator>, body: Vec<Expr>, span: Span) -> Expr {
+        let mut body = body;
+        let mut inner: Option<Expr> = None;
+        for it in iterators.into_iter().rev() {
+            let params = Params {
+                list: it
+                    .names
+                    .iter()
+                    .map(|(name, span)| Param {
+                        name: name.clone(),
+                        kind: ParamKind::Positional,
+                        ty: None,
+                        default: None,
+                        assigns_ivar: false,
+                        usings: Vec::new(),
+                        span: *span,
+                    })
+                    .collect(),
+            };
+            let mut body_exprs = match inner.take() {
+                Some(e) => vec![e],
+                None => std::mem::take(&mut body),
+            };
+            if let Some(guard) = it.guard {
+                let gspan = guard.span;
+                body_exprs = vec![self.node(
+                    gspan,
+                    ExprKind::If {
+                        cond: Box::new(guard),
+                        then: body_exprs,
+                        els: None,
+                    },
+                )];
+            }
+            inner = Some(self.node(
+                it.span,
+                ExprKind::Call(Box::new(Call {
+                    recv: Some(it.source),
+                    name: "each".to_string(),
+                    args: vec![],
+                    block: Some(Block {
+                        params,
+                        body: body_exprs,
+                        span: it.span,
+                        braces: false,
+                    }),
+                    safe_nav: false,
+                    has_parens: false,
+                    type_args: vec![],
+                })),
+            ));
+        }
+        let mut expr = inner.expect("at least one iterator");
+        expr.span = span;
+        expr
     }
 
     fn parse_lambda(&mut self) -> PResult<Expr> {
@@ -3774,6 +3837,14 @@ impl<'src> Parser<'src> {
             span,
         }))
     }
+}
+
+/// One `name in source [when guard]` of a `for`.
+struct ForIterator {
+    names: Vec<(String, Span)>,
+    source: Expr,
+    guard: Option<Expr>,
+    span: Span,
 }
 
 enum BinOp {
