@@ -532,10 +532,8 @@ impl Compiler {
                     let zero = g.b.ins().iconst(types::I64, 0);
                     g.b.ins().store(MemFlags::trusted(), zero, regs, off);
                     g.states[*r as usize] = State::NonHeap;
-                    for k in 0..g.nregs {
-                        if heap[k] {
-                            g.release(k as Reg);
-                        }
+                    for k in (0..g.nregs).filter(|&k| heap[k]) {
+                        g.release(k as Reg);
                     }
                     let ok = g.b.ins().iconst(types::I32, 0);
                     g.b.ins().jump(exit_quick, &[ok]);
