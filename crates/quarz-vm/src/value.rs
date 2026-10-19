@@ -351,27 +351,24 @@ impl Object {
         o
     }
 
-    /// An object with `n` nil fields, built in its allocation (no
-    /// temporary to copy, no element-by-element fill: a nil is all
-    /// zero bytes).
-    pub fn with_nil_fields(class: ClassId, n: usize) -> Rc<Object> {
-        const _: () = assert!(std::mem::size_of::<Value>() == 24);
+    /// An object whose `n` fields are moved in from `src`, built in its
+    /// allocation (no temporary to copy).
+    ///
+    /// # Safety
+    /// `src` points at `n` initialized values that the caller gives up
+    /// (they are moved, not cloned, and must not be dropped by it).
+    pub unsafe fn with_fields_from(class: ClassId, src: *const Value, n: usize) -> Rc<Object> {
         let mut rc = Rc::<Object>::new_uninit();
         // SAFETY: the allocation is fresh and uniquely owned; every field
-        // of `Object` is written before `assume_init`, the nil fields by
-        // zeroing (`Value::Nil` has tag 0 and no payload).
+        // of `Object` is written before `assume_init`.
         unsafe {
             let p = Rc::get_mut(&mut rc).unwrap_unchecked().as_mut_ptr();
             std::ptr::write(&raw mut (*p).fields_ptr, Cell::new(std::ptr::null()));
             std::ptr::write(&raw mut (*p).nfields, Cell::new(0));
             std::ptr::write(&raw mut (*p).class, class);
-            let mut fields = Fields::new();
-            if n <= fields.inline_size() {
-                std::ptr::write_bytes(fields.as_mut_ptr(), 0, n);
-                fields.set_len(n);
-            } else {
-                fields.resize(n, Value::Nil);
-            }
+            let mut fields = Fields::with_capacity(n);
+            std::ptr::copy_nonoverlapping(src, fields.as_mut_ptr(), n);
+            fields.set_len(n);
             std::ptr::write(&raw mut (*p).fields, RefCell::new(fields));
             std::ptr::write(&raw mut (*p).exc, RefCell::new(None));
             let rc = rc.assume_init();

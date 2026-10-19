@@ -731,15 +731,24 @@ pub unsafe extern "C" fn qz_yield(
     }
 }
 
-/// `regs[dst]` = a new data object of `class` with `nfields` nil fields,
-/// which the compiled code then fills through the field view.
+/// Allocate a data object of `class` whose `nfields` fields are moved in
+/// from `src` (the compiled caller's argument area, which it wrote and
+/// gives up), into register `dst`.
 ///
 /// # Safety
-/// As for `qz_exec`.
+/// `regs` is the register file; `src` points at `nfields` initialized
+/// values the caller will not touch again.
 #[no_mangle]
-pub unsafe extern "C" fn qz_alloc_data(regs: *mut Value, class: u32, nfields: u32, dst: u32) {
-    *regs.add(dst as usize) = Value::Object(crate::value::Object::with_nil_fields(
+pub unsafe extern "C" fn qz_alloc_data(
+    regs: *mut Value,
+    class: u32,
+    src: *const Value,
+    nfields: u32,
+    dst: u32,
+) {
+    *regs.add(dst as usize) = Value::Object(crate::value::Object::with_fields_from(
         class,
+        src,
         nfields as usize,
     ));
 }

@@ -1,0 +1,24 @@
+# Fields declared Int/Float are read unboxed by compiled code; a value
+# that is not a machine Int (a BigInt) sends the read to the interpreter.
+class Counter
+  var @n: Int
+  var @f: Float
+  attr_reader :n, :f
+  def initialize(@n: Int, @f: Float); end
+  def bump -> Int
+    @n = @n + 1
+    @n
+  end
+  def scaled -> Float
+    @f * 2.0 + @n
+  end
+end
+c = Counter.new(2 ** 62, 1.5)
+p c.bump, c.bump, c.bump
+p c.scaled
+d = Counter.new(1, 0.25)
+p d.bump, d.scaled
+data P(a: Int, b: Float) is
+  def sum -> Float = a + b
+end
+p P.new(2 ** 70, 0.5).sum, P.new(3, 0.5).sum

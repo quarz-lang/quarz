@@ -219,7 +219,7 @@ pub fn compile(module: &Module) -> Result<Vec<u8>, String> {
         alloc_data: import(
             &mut obj,
             "qz_alloc_data",
-            &sig(&[i64_, i32_, i32_, i32_], None),
+            &sig(&[i64_, i32_, i64_, i32_, i32_], None),
         )?,
         construct: import(
             &mut obj,
@@ -330,21 +330,27 @@ impl Compiler {
         }
         // The argument area for direct calls: the widest callee's
         // parameters plus its block.
+        // The argument area: the parameters of direct calls, or the
+        // fields of a data construction, are laid out there.
         let max_direct_args = f
             .blocks
             .iter()
             .flat_map(|blk| blk.insts.iter())
-            .filter_map(|inst| {
-                let Inst::Call {
+            .filter_map(|inst| match inst {
+                Inst::Call {
                     kind: CallKind::Method(mid),
                     ..
-                } = inst
-                else {
-                    return None;
-                };
-                direct_target(inst, methods)?;
-                let m = &methods[*mid as usize];
-                Some(m.params.len() + usize::from(m.has_block))
+                } => {
+                    direct_target(inst, methods)?;
+                    let m = &methods[*mid as usize];
+                    Some(m.params.len() + usize::from(m.has_block))
+                }
+                Inst::Call {
+                    kind: CallKind::Construct { .. },
+                    args,
+                    ..
+                } => Some(args.len()),
+                _ => None,
             })
             .max()
             .unwrap_or(0)
@@ -2245,10 +2251,10 @@ impl Gen<'_, '_> {
                 let tag = self.tag(*obj);
                 let is_obj = self.b.ins().icmp_imm(IntCC::Equal, tag, TAG_OBJECT);
                 self.b.ins().brif(is_obj, fast, &[], slow, &[]);
-                self.b.switch_to_block(fast);
-                let addr = self.field_addr(*obj, *field);
-                self.clone_from(*dst, addr);
-                self.b.ins().jump(cont, &[]);
+                let num = unbox::field_num(self.classes, *class, *field);
+                // The slow path first: a field declared Int/Float is
+                // checked once there (the compile-time state must still
+                // be the one before this instruction).
                 self.b.switch_to_block(slow);
                 let o = self.i32(*obj);
                 let i = self.i32(*field);
@@ -2259,12 +2265,43 @@ impl Gen<'_, '_> {
                     .call(self.h.field_get, &[self.rt, self.regs, o, i, d]);
                 let status = self.b.inst_results(call)[0];
                 self.check(status, unwind);
-                self.b.ins().jump(cont, &[]);
-                self.b.switch_to_block(cont);
-                // A field declared Int/Float: check once, then unboxed.
-                if let Some(n) = unbox::field_num(self.classes, *class, *field) {
+                let before = self.states[*dst as usize];
+                if let Some(n) = num {
                     self.get_num(*dst, n, block, index);
                 }
+                self.b.ins().jump(cont, &[]);
+                self.states[*dst as usize] = before;
+                self.b.switch_to_block(fast);
+                let addr = self.field_addr(*obj, *field);
+                match num {
+                    // A numeric field goes straight into the unboxed
+                    // variable: the tag is checked in the field (a
+                    // mismatch re-runs the read in the interpreter), and
+                    // the home is not written.
+                    Some(n) => {
+                        let ftag = self.b.ins().load(types::I64, MemFlags::trusted(), addr, 0);
+                        let want = if n == Num::Int { TAG_INT } else { TAG_FLOAT };
+                        let is = self.b.ins().icmp_imm(IntCC::Equal, ftag, want);
+                        let ok = self.b.create_block();
+                        let bad = self.b.create_block();
+                        self.b.ins().brif(is, ok, &[], bad, &[]);
+                        self.b.switch_to_block(bad);
+                        self.deopt(block, index);
+                        self.b.switch_to_block(ok);
+                        let p = self.b.ins().load(types::I64, MemFlags::trusted(), addr, 8);
+                        self.unbox(*dst, unbox::num_state(n));
+                        match n {
+                            Num::Int => self.b.def_var(self.ivar(*dst), p),
+                            Num::Float => {
+                                let v = self.b.ins().bitcast(types::F64, MemFlags::new(), p);
+                                self.b.def_var(self.fvar(*dst), v);
+                            }
+                        }
+                    }
+                    None => self.clone_from(*dst, addr),
+                }
+                self.b.ins().jump(cont, &[]);
+                self.b.switch_to_block(cont);
             }
             Inst::FieldSet {
                 obj, index, src, ..
@@ -2314,16 +2351,22 @@ impl Gen<'_, '_> {
                         && self.classes[*class as usize].fields.len() == args.len()
                 });
                 if data {
+                    // The fields are laid out in the argument area and
+                    // moved into the object.
+                    for (k, r) in args.iter().enumerate() {
+                        let p = self
+                            .b
+                            .ins()
+                            .iadd_imm(self.args_buf, (k as i64) * i64::from(VALUE_SIZE));
+                        self.clone_reg_to_ptr(p, *r);
+                    }
                     let class_v = self.i32(*class);
                     let n = self.i32(args.len() as u32);
                     let d = self.i32(*dst);
-                    self.b
-                        .ins()
-                        .call(self.h.alloc_data, &[self.regs, class_v, n, d]);
-                    for (k, r) in args.iter().enumerate() {
-                        let p = self.field_addr(*dst, k as u32);
-                        self.clone_reg_to_ptr(p, *r);
-                    }
+                    self.b.ins().call(
+                        self.h.alloc_data,
+                        &[self.regs, class_v, self.args_buf, n, d],
+                    );
                     return;
                 }
                 for (k, r) in args.iter().enumerate() {
