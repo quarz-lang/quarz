@@ -130,12 +130,7 @@ fn obj_dup(_: &Interp, recv: &Value, _: Args) -> EvalResult {
         Value::StringBuilder(s) => {
             Value::StringBuilder(Rc::new(std::cell::RefCell::new(s.borrow().clone())))
         }
-        Value::Object(o) => Value::Object(Rc::new(Object {
-            class: o.class,
-            fields: std::cell::RefCell::new(o.fields.borrow().clone()),
-            backtrace: std::cell::RefCell::new(None),
-            cause: std::cell::RefCell::new(None),
-        })),
+        Value::Object(o) => Value::Object(Object::new(o.class, o.fields.borrow().clone())),
         other => other.clone(),
     })
 }

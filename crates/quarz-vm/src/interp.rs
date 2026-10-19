@@ -436,12 +436,7 @@ impl Interp {
             .max(units.iter().map(|u| u.file as usize + 1).max().unwrap_or(0));
         let mut unit_selfs = vec![Value::Nil; n_files];
         for u in &units {
-            unit_selfs[u.file as usize] = Value::Object(Rc::new(Object {
-                class: u.main_class,
-                fields: RefCell::new(Fields::new()),
-                backtrace: RefCell::new(None),
-                cause: RefCell::new(None),
-            }));
+            unit_selfs[u.file as usize] = Value::Object(Object::new(u.main_class, Fields::new()));
         }
         let n_consts = world.consts.len();
         {
@@ -780,12 +775,12 @@ impl Interp {
         let mut fields: Fields = smallvec![Value::Nil; n];
         fields[0] = Value::str(message);
         let bt = self.capture_backtrace();
-        Value::Object(Rc::new(Object {
-            class,
-            fields: RefCell::new(fields),
-            backtrace: RefCell::new(Some(Rc::new(bt))),
-            cause: RefCell::new(None),
-        }))
+        Value::Object({
+            let o = Object::new(class, fields);
+            *o.backtrace.borrow_mut() = Some(Rc::new(bt));
+            *o.cause.borrow_mut() = None;
+            o
+        })
     }
 
     /// The innermost frames of the current task's call stack, as
@@ -963,12 +958,7 @@ impl Interp {
         if let Some(v) = self.variant_singletons.borrow().get(&cid) {
             return v.clone();
         }
-        let v = Value::Object(Rc::new(Object {
-            class: cid,
-            fields: RefCell::new(Fields::new()),
-            backtrace: RefCell::new(None),
-            cause: RefCell::new(None),
-        }));
+        let v = Value::Object(Object::new(cid, Fields::new()));
         self.variant_singletons.borrow_mut().insert(cid, v.clone());
         v
     }
@@ -1241,6 +1231,10 @@ impl Interp {
                 let idx = *idx as usize;
                 if idx >= fields.len() {
                     fields.resize(idx + 1, Value::Nil);
+                    drop(fields);
+                    o.bind_fields();
+                    o.fields.borrow_mut()[idx] = v.clone();
+                    return Ok(v);
                 }
                 fields[idx] = v.clone();
                 return Ok(v);
@@ -1251,6 +1245,7 @@ impl Interp {
                 };
                 let values = self.bind_data_args(mid, &recv, args, kw)?;
                 *o.fields.borrow_mut() = Fields::from_vec(values);
+                o.bind_fields();
                 return Ok(Value::Nil);
             }
             RtSynth::DataWith => {
@@ -1266,12 +1261,7 @@ impl Interp {
                         }
                     }
                 }
-                return Ok(Value::Object(Rc::new(Object {
-                    class: o.class,
-                    fields: RefCell::new(fields),
-                    backtrace: RefCell::new(None),
-                    cause: RefCell::new(None),
-                })));
+                return Ok(Value::Object(Object::new(o.class, fields)));
             }
             RtSynth::DataToH => {
                 let Value::Object(o) = &recv else {
@@ -1464,12 +1454,7 @@ impl Interp {
         block: Option<Value>,
     ) -> EvalResult {
         let info = self.world.class(class);
-        let obj = Rc::new(Object {
-            class,
-            fields: RefCell::new(smallvec![Value::Nil; info.fields.len()]),
-            backtrace: RefCell::new(None),
-            cause: RefCell::new(None),
-        });
+        let obj = Object::new(class, smallvec![Value::Nil; info.fields.len()]);
         let value = Value::Object(obj.clone());
         // Field defaults (data types evaluate them in their constructor).
         if !matches!(info.kind, RtClassKind::Data | RtClassKind::Variant) {

@@ -41,6 +41,11 @@ const TAG_NIL: i64 = 0;
 const TAG_BOOL: i64 = 1;
 const TAG_INT: i64 = 2;
 const TAG_FLOAT: i64 = 3;
+const TAG_CLASS: i64 = 5;
+const TAG_OBJECT: i64 = 15;
+/// Offset of the field view in an `Object` from its `Rc` allocation
+/// (after the strong and weak counts); see `Object::bind_fields`.
+const OBJECT_FIELDS_PTR_OFF: i32 = 16;
 
 const STATUS_RAISE: i64 = 1;
 
@@ -818,6 +823,20 @@ impl Gen<'_, '_> {
         emit_release_ptr(self.b, self.h.drop_value, p);
     }
 
+    /// The address of field `index` of the object in `obj` (whose tag is
+    /// known to be an object's): the payload points at the allocation,
+    /// the object's first word at the fields.
+    fn field_addr(&mut self, obj: Reg, index: u32) -> CValue {
+        let rc = self.payload(obj);
+        let fields = self
+            .b
+            .ins()
+            .load(types::I64, MemFlags::trusted(), rc, OBJECT_FIELDS_PTR_OFF);
+        self.b
+            .ins()
+            .iadd_imm(fields, i64::from(index) * i64::from(VALUE_SIZE))
+    }
+
     fn i32(&mut self, v: u32) -> CValue {
         self.b.ins().iconst(types::I32, i64::from(v))
     }
@@ -1176,7 +1195,25 @@ impl Gen<'_, '_> {
                     .ins()
                     .call(self.h.frame_set, &[self.act, dp, sl, self.regs, s]);
             }
+            Inst::ClassRef { dst, class } => {
+                self.release(*dst);
+                self.store_tag(*dst, TAG_CLASS);
+                let v = self.b.ins().iconst(types::I64, i64::from(*class));
+                self.store_payload(*dst, v);
+            }
             Inst::FieldGet { dst, obj, index } => {
+                // An object: read the field through the object's view.
+                let fast = self.b.create_block();
+                let slow = self.b.create_block();
+                let cont = self.b.create_block();
+                let tag = self.tag(*obj);
+                let is_obj = self.b.ins().icmp_imm(IntCC::Equal, tag, TAG_OBJECT);
+                self.b.ins().brif(is_obj, fast, &[], slow, &[]);
+                self.b.switch_to_block(fast);
+                let field = self.field_addr(*obj, *index);
+                self.clone_from(*dst, field);
+                self.b.ins().jump(cont, &[]);
+                self.b.switch_to_block(slow);
                 let o = self.i32(*obj);
                 let i = self.i32(*index);
                 let d = self.i32(*dst);
@@ -1186,8 +1223,22 @@ impl Gen<'_, '_> {
                     .call(self.h.field_get, &[self.rt, self.regs, o, i, d]);
                 let status = self.b.inst_results(call)[0];
                 self.check(status, unwind);
+                self.b.ins().jump(cont, &[]);
+                self.b.switch_to_block(cont);
             }
             Inst::FieldSet { obj, index, src } => {
+                let fast = self.b.create_block();
+                let slow = self.b.create_block();
+                let cont = self.b.create_block();
+                let tag = self.tag(*obj);
+                let is_obj = self.b.ins().icmp_imm(IntCC::Equal, tag, TAG_OBJECT);
+                self.b.ins().brif(is_obj, fast, &[], slow, &[]);
+                self.b.switch_to_block(fast);
+                let field = self.field_addr(*obj, *index);
+                self.release_ptr(field);
+                self.clone_reg_to_ptr(field, *src);
+                self.b.ins().jump(cont, &[]);
+                self.b.switch_to_block(slow);
                 let o = self.i32(*obj);
                 let i = self.i32(*index);
                 let s = self.i32(*src);
@@ -1197,6 +1248,8 @@ impl Gen<'_, '_> {
                     .call(self.h.field_set, &[self.rt, self.regs, o, i, s]);
                 let status = self.b.inst_results(call)[0];
                 self.check(status, unwind);
+                self.b.ins().jump(cont, &[]);
+                self.b.switch_to_block(cont);
             }
             Inst::Call {
                 dst,

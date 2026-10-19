@@ -865,9 +865,9 @@ impl Interp {
                     fid: *fid,
                     task: self.current_task_id.get(),
                     line: Cell::new(0),
-                    self_val: closure.self_val.clone(),
+                    self_val: closure.self_val.fast_clone(),
                     frame,
-                    block: closure.method_block.clone(),
+                    block: closure.method_block.as_ref().map(|b| b.fast_clone()),
                     method_tag: if closure.is_lambda {
                         closure.tag
                     } else {
@@ -882,13 +882,29 @@ impl Interp {
                     nargs: Cell::new(0),
                 };
                 act.bind();
-                match self.run_func(*fid, &act) {
+                let r = match self.run_func(*fid, &act) {
                     Ok(v) => Ok(v),
                     Err(Flow::Next(v)) => Ok(v),
                     Err(Flow::Return(v, t)) if closure.is_lambda && t == closure.tag => Ok(v),
                     Err(Flow::Break(v, t)) if closure.is_lambda && t == closure.tag => Ok(v),
                     Err(e) => Err(e),
+                };
+                // Take the activation apart without destructors for the
+                // values that need none.
+                let Activation {
+                    self_val,
+                    frame,
+                    block,
+                    args,
+                    ..
+                } = act;
+                self_val.fast_drop();
+                if let Some(b) = block {
+                    b.fast_drop();
                 }
+                drop(frame);
+                drop(args);
+                r
             }
         }
     }

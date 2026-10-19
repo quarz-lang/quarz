@@ -313,12 +313,12 @@ pub fn import(interp: &Interp, t: Transfer) -> Value {
                     return interp.variant_singleton(class);
                 }
             }
-            Value::Object(Rc::new(Object {
-                class,
-                fields: RefCell::new(fields),
-                backtrace: RefCell::new(backtrace.map(Rc::new)),
-                cause: RefCell::new(cause.map(|c| import(interp, *c))),
-            }))
+            Value::Object({
+                let o = Object::new(class, fields);
+                *o.backtrace.borrow_mut() = backtrace.map(Rc::new);
+                *o.cause.borrow_mut() = cause.map(|c| import(interp, *c));
+                o
+            })
         }
         Transfer::Proc {
             body,

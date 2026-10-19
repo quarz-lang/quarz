@@ -1,7 +1,6 @@
 //! `JSON.parse`, `JSON.generate` and `JSON.pretty_generate` (the rest of
 //! the module is written in Quarz, see `std/json.qz`).
 
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -91,12 +90,7 @@ fn classes(interp: &Interp) -> Result<Classes, Flow> {
 }
 
 fn variant(class: ClassId, field: Value) -> Value {
-    Value::Object(Rc::new(Object {
-        class,
-        fields: RefCell::new(smallvec![field]),
-        backtrace: RefCell::new(None),
-        cause: RefCell::new(None),
-    }))
+    Value::Object(Object::new(class, smallvec![field]))
 }
 
 // ----- parsing ------------------------------------------------------------------

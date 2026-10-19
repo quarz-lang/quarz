@@ -90,12 +90,41 @@ pub type Fields = SmallVec<[Value; 4]>;
 /// An instance of a user-defined class, data type, enum variant or
 /// exception.
 #[derive(Debug)]
+#[repr(C)]
 pub struct Object {
+    /// Where the fields live, for compiled code: set by `bind_fields`
+    /// whenever the field vector is created or replaced. First in the
+    /// layout, right after the allocation's two counts.
+    pub fields_ptr: Cell<*const Value>,
+    pub nfields: Cell<u32>,
     pub class: ClassId,
     pub fields: RefCell<Fields>,
     /// Exceptions: the backtrace captured when raised.
     pub backtrace: RefCell<Option<Rc<Vec<String>>>>,
     pub cause: RefCell<Option<Value>>,
+}
+
+impl Object {
+    pub fn new(class: ClassId, fields: Fields) -> Rc<Object> {
+        let o = Rc::new(Object {
+            fields_ptr: Cell::new(std::ptr::null()),
+            nfields: Cell::new(0),
+            class,
+            fields: RefCell::new(fields),
+            backtrace: RefCell::new(None),
+            cause: RefCell::new(None),
+        });
+        o.bind_fields();
+        o
+    }
+
+    /// Point the field view at the field vector (after it was created,
+    /// resized or replaced).
+    pub fn bind_fields(&self) {
+        let f = self.fields.borrow();
+        self.fields_ptr.set(f.as_ptr());
+        self.nfields.set(f.len() as u32);
+    }
 }
 
 /// A block implemented in Rust (used by natives that iterate).
@@ -441,6 +470,15 @@ pub fn check_rc_layout() {
         2,
         "Rc layout changed: the strong count must come first"
     );
+    // The tags compiled code tests for, and the field view's place.
+    assert_eq!(
+        Value::Class(0).type_tag(),
+        5,
+        "Value layout changed: Class tag"
+    );
+    let object = Value::Object(Object::new(0, Fields::new()));
+    assert_eq!(object.type_tag(), 15, "Value layout changed: Object tag");
+    assert_eq!(std::mem::offset_of!(Object, fields_ptr), 0);
     let b = a.clone();
     assert_eq!(
         strong_of(&value),

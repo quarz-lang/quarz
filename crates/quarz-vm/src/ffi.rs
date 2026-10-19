@@ -668,12 +668,7 @@ pub unsafe extern "C" fn qz_construct(
                 let r = *arg_regs.add(k);
                 fields.push((*regs.add(r as usize)).clone());
             }
-            let obj = Value::Object(Rc::new(crate::value::Object {
-                class,
-                fields: std::cell::RefCell::new(fields),
-                backtrace: std::cell::RefCell::new(None),
-                cause: std::cell::RefCell::new(None),
-            }));
+            let obj = Value::Object(crate::value::Object::new(class, fields));
             *regs.add(dst as usize) = obj;
             return STATUS_OK;
         }
