@@ -351,6 +351,35 @@ impl Object {
         o
     }
 
+    /// An object with `n` nil fields, built in its allocation (no
+    /// temporary to copy, no element-by-element fill: a nil is all
+    /// zero bytes).
+    pub fn with_nil_fields(class: ClassId, n: usize) -> Rc<Object> {
+        const _: () = assert!(std::mem::size_of::<Value>() == 24);
+        let mut rc = Rc::<Object>::new_uninit();
+        // SAFETY: the allocation is fresh and uniquely owned; every field
+        // of `Object` is written before `assume_init`, the nil fields by
+        // zeroing (`Value::Nil` has tag 0 and no payload).
+        unsafe {
+            let p = Rc::get_mut(&mut rc).unwrap_unchecked().as_mut_ptr();
+            std::ptr::write(&raw mut (*p).fields_ptr, Cell::new(std::ptr::null()));
+            std::ptr::write(&raw mut (*p).nfields, Cell::new(0));
+            std::ptr::write(&raw mut (*p).class, class);
+            let mut fields = Fields::new();
+            if n <= fields.inline_size() {
+                std::ptr::write_bytes(fields.as_mut_ptr(), 0, n);
+                fields.set_len(n);
+            } else {
+                fields.resize(n, Value::Nil);
+            }
+            std::ptr::write(&raw mut (*p).fields, RefCell::new(fields));
+            std::ptr::write(&raw mut (*p).exc, RefCell::new(None));
+            let rc = rc.assume_init();
+            rc.bind_fields();
+            rc
+        }
+    }
+
     /// Point the field view at the field vector (after it was created,
     /// resized or replaced).
     /// The backtrace captured when this (exception) object was raised.
@@ -883,6 +912,7 @@ impl Value {
 impl PartialEq for Value {
     fn eq(&self, other: &Value) -> bool {
         match (self, other) {
+            (Value::Int(a), Value::Int(b)) => a == b,
             (Value::Int(a), Value::Float(b)) | (Value::Float(b), Value::Int(a)) => {
                 (*a as f64) == *b
             }
@@ -934,17 +964,27 @@ impl Hash for Value {
         match self {
             Value::Nil => 0u8.hash(state),
             Value::Bool(b) => b.hash(state),
+            // Numbers that are equal hash the same (`1 == 1.0`): an
+            // integral value hashes as the integer it is, which keeps
+            // the common Int key a plain integer hash.
             Value::Int(i) => {
                 2u8.hash(state);
-                (*i as f64).to_bits().hash(state);
+                i.hash(state);
             }
             Value::BigInt(b) => {
                 2u8.hash(state);
-                b.hash(state);
+                match i64::try_from(&**b) {
+                    Ok(i) => i.hash(state),
+                    Err(_) => b.hash(state),
+                }
             }
             Value::Float(f) => {
                 2u8.hash(state);
-                f.to_bits().hash(state);
+                if f.fract() == 0.0 && f.abs() < 9.2e18 {
+                    (*f as i64).hash(state);
+                } else {
+                    f.to_bits().hash(state);
+                }
             }
             Value::Str(s) => {
                 4u8.hash(state);

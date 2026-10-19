@@ -21,17 +21,17 @@ pub fn scalar_replace(functions: &mut [Function], methods: &[RtMethod], classes:
 }
 
 /// A definition site: instruction `inst` of block `block`.
-type Site = (usize, usize);
+pub(crate) type Site = (usize, usize);
 
 /// Reaching definitions per block entry: for each register, the set of
 /// sites that may have written it last.
-struct Reaching {
+pub(crate) struct Reaching {
     entry: Vec<HashMap<Reg, HashSet<Site>>>,
     /// Blocks entered from an exception: nothing definite is known there.
     handlers: HashSet<BlockId>,
 }
 
-fn successors(b: &Block) -> Vec<BlockId> {
+pub(crate) fn successors(b: &Block) -> Vec<BlockId> {
     let mut v = match &b.term {
         Term::Jump(t) => vec![*t],
         Term::Branch { then, els, .. } => vec![*then, *els],
@@ -45,9 +45,20 @@ fn successors(b: &Block) -> Vec<BlockId> {
 
 /// The "any definition" marker: a handler block may be entered from the
 /// middle of its region, so nothing definite is known there.
-const UNKNOWN: Site = (usize::MAX, usize::MAX);
+pub(crate) const UNKNOWN: Site = (usize::MAX, usize::MAX);
 
-fn reaching(f: &Function) -> Reaching {
+/// What an instruction writes, for the reaching definitions: its
+/// defined registers, and the array an `ArrayPush` appends to (changed
+/// in place, so a copy taken before no longer equals it).
+pub(crate) fn written(inst: &Inst) -> Vec<Reg> {
+    let mut v = inst.defs();
+    if let Inst::ArrayPush { arr, .. } = inst {
+        v.push(*arr);
+    }
+    v
+}
+
+pub(crate) fn reaching(f: &Function) -> Reaching {
     let n = f.blocks.len();
     let mut entry: Vec<HashMap<Reg, HashSet<Site>>> = vec![HashMap::new(); n];
     let handlers: HashSet<BlockId> = f
@@ -68,7 +79,7 @@ fn reaching(f: &Function) -> Reaching {
                 }
             }
             for (ii, inst) in f.blocks[bi].insts.iter().enumerate() {
-                for r in inst.defs() {
+                for r in written(inst) {
                     state.insert(r, HashSet::from([(bi, ii)]));
                 }
             }
@@ -90,14 +101,20 @@ fn reaching(f: &Function) -> Reaching {
 
 /// The definitions of `r` reaching instruction `ii` of block `bi`
 /// (`None` = never written on this path, i.e. still nil).
-fn defs_at(reach: &Reaching, f: &Function, bi: usize, ii: usize, r: Reg) -> HashSet<Site> {
+pub(crate) fn defs_at(
+    reach: &Reaching,
+    f: &Function,
+    bi: usize,
+    ii: usize,
+    r: Reg,
+) -> HashSet<Site> {
     let mut sites = if reach.handlers.contains(&(bi as BlockId)) {
         HashSet::from([UNKNOWN])
     } else {
         reach.entry[bi].get(&r).cloned().unwrap_or_default()
     };
     for (k, inst) in f.blocks[bi].insts[..ii].iter().enumerate() {
-        if inst.defs().contains(&r) {
+        if written(inst).contains(&r) {
             sites = HashSet::from([(bi, k)]);
         }
     }

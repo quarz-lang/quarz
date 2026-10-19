@@ -1234,8 +1234,91 @@ impl Gen<'_, '_> {
     /// `(elements, len, cap)` of the array in `arr` (whose tag is known
     /// to be an array's): the vector sits after the allocation's two
     /// counts, its words where `layout::vec_layout` found them.
+    /// Append register `src` to the array in the value at `arr_ptr` when
+    /// that is an unshared array with room whose storage takes the value
+    /// (boxed takes anything; unboxed Ints/Floats an Int/Float, known
+    /// from the state or the tag), branching to `slow` otherwise. Falls
+    /// through on success with the array's length updated.
+    fn inline_push(&mut self, arr_ptr: CValue, src: Reg, slow: CBlock) {
+        let check_b = self.b.create_block();
+        let fast = self.b.create_block();
+        let tag = self
+            .b
+            .ins()
+            .load(types::I64, MemFlags::trusted(), arr_ptr, 0);
+        let is_arr = self.b.ins().icmp_imm(IntCC::Equal, tag, TAG_ARRAY);
+        self.b.ins().brif(is_arr, check_b, &[], slow, &[]);
+        self.b.switch_to_block(check_b);
+        let rc = self
+            .b
+            .ins()
+            .load(types::I64, MemFlags::trusted(), arr_ptr, 8);
+        let strong = self.b.ins().load(types::I64, MemFlags::trusted(), rc, 0);
+        let weak = self.b.ins().load(types::I64, MemFlags::trusted(), rc, 8);
+        let (kind, ptr, len, cap) = self.array_view_at(rc);
+        let unique_s = self.b.ins().icmp_imm(IntCC::Equal, strong, 1);
+        let unique_w = self.b.ins().icmp_imm(IntCC::Equal, weak, 1);
+        let room = self.b.ins().icmp(IntCC::UnsignedLessThan, len, cap);
+        let ok = self.b.ins().band(unique_s, unique_w);
+        let ok = self.b.ins().band(ok, room);
+        let src_state = self.states[src as usize];
+        let src_tag = match src_state {
+            State::Int => self.b.ins().iconst(types::I64, TAG_INT),
+            State::Float => self.b.ins().iconst(types::I64, TAG_FLOAT),
+            State::Bool => self.b.ins().iconst(types::I64, TAG_BOOL),
+            _ => self.tag(src),
+        };
+        let kind_values = self.b.ins().icmp_imm(IntCC::Equal, kind, 0);
+        let kind_ints = self.b.ins().icmp_imm(IntCC::Equal, kind, 1);
+        let kind_floats = self.b.ins().icmp_imm(IntCC::Equal, kind, 2);
+        let src_int = self.b.ins().icmp_imm(IntCC::Equal, src_tag, TAG_INT);
+        let src_float = self.b.ins().icmp_imm(IntCC::Equal, src_tag, TAG_FLOAT);
+        let ints_ok = self.b.ins().band(kind_ints, src_int);
+        let floats_ok = self.b.ins().band(kind_floats, src_float);
+        let fits = self.b.ins().bor(kind_values, ints_ok);
+        let fits = self.b.ins().bor(fits, floats_ok);
+        let ok = self.b.ins().band(ok, fits);
+        self.b.ins().brif(ok, fast, &[], slow, &[]);
+        self.b.switch_to_block(fast);
+        let boxed_b = self.b.create_block();
+        let raw_b = self.b.create_block();
+        let done_b = self.b.create_block();
+        self.b.ins().brif(kind_values, boxed_b, &[], raw_b, &[]);
+        self.b.switch_to_block(boxed_b);
+        let off = self.b.ins().imul_imm(len, i64::from(VALUE_SIZE));
+        let slot = self.b.ins().iadd(ptr, off);
+        self.clone_reg_to_ptr(slot, src);
+        self.b.ins().jump(done_b, &[]);
+        self.b.switch_to_block(raw_b);
+        let off = self.b.ins().imul_imm(len, 8);
+        let slot = self.b.ins().iadd(ptr, off);
+        let word = match src_state {
+            State::Int => self.b.use_var(self.ivar(src)),
+            State::Float => {
+                let f = self.b.use_var(self.fvar(src));
+                self.b.ins().bitcast(types::I64, MemFlags::new(), f)
+            }
+            _ => self.payload(src),
+        };
+        self.b.ins().store(MemFlags::trusted(), word, slot, 0);
+        self.b.ins().jump(done_b, &[]);
+        self.b.switch_to_block(done_b);
+        let len1 = self.b.ins().iadd_imm(len, 1);
+        let data = self.b.ins().iadd_imm(rc, i64::from(OBJECT_FIELDS_PTR_OFF));
+        let vec = self.b.ins().iadd_imm(data, L::ARRAY_VEC_OFF as i64);
+        self.b
+            .ins()
+            .store(MemFlags::trusted(), len1, vec, L::vec_layout().len as i32);
+    }
+
     fn array_view(&mut self, arr: Reg) -> (CValue, CValue, CValue, CValue) {
         let rc = self.payload(arr);
+        self.array_view_at(rc)
+    }
+
+    /// The storage kind, element pointer, length and capacity of the
+    /// array whose allocation `rc` points at.
+    fn array_view_at(&mut self, rc: CValue) -> (CValue, CValue, CValue, CValue) {
         let data = self.b.ins().iadd_imm(rc, i64::from(OBJECT_FIELDS_PTR_OFF));
         let kind = self.b.ins().uload8(
             types::I64,
@@ -2032,74 +2115,13 @@ impl Gen<'_, '_> {
             Inst::ArrayPush { arr, src } => {
                 // An unshared array with room: append in place; otherwise
                 // the runtime copies or grows it.
-                let check_b = self.b.create_block();
-                let fast = self.b.create_block();
                 let slow = self.b.create_block();
                 let cont = self.b.create_block();
-                let tag = self.tag(*arr);
-                let is_arr = self.b.ins().icmp_imm(IntCC::Equal, tag, TAG_ARRAY);
-                self.b.ins().brif(is_arr, check_b, &[], slow, &[]);
-                self.b.switch_to_block(check_b);
-                let rc = self.payload(*arr);
-                let strong = self.b.ins().load(types::I64, MemFlags::trusted(), rc, 0);
-                let weak = self.b.ins().load(types::I64, MemFlags::trusted(), rc, 8);
-                let (kind, ptr, len, cap) = self.array_view(*arr);
-                let unique_s = self.b.ins().icmp_imm(IntCC::Equal, strong, 1);
-                let unique_w = self.b.ins().icmp_imm(IntCC::Equal, weak, 1);
-                let room = self.b.ins().icmp(IntCC::UnsignedLessThan, len, cap);
-                let ok = self.b.ins().band(unique_s, unique_w);
-                let ok = self.b.ins().band(ok, room);
-                // Which storage, and whether the value fits it: boxed takes
-                // anything; unboxed Ints/Floats take an Int/Float (known
-                // from the state, or from the tag).
-                let src_state = self.states[*src as usize];
-                let src_tag = match src_state {
-                    State::Int => self.b.ins().iconst(types::I64, TAG_INT),
-                    State::Float => self.b.ins().iconst(types::I64, TAG_FLOAT),
-                    State::Bool => self.b.ins().iconst(types::I64, TAG_BOOL),
-                    _ => self.tag(*src),
-                };
-                let kind_values = self.b.ins().icmp_imm(IntCC::Equal, kind, 0);
-                let kind_ints = self.b.ins().icmp_imm(IntCC::Equal, kind, 1);
-                let kind_floats = self.b.ins().icmp_imm(IntCC::Equal, kind, 2);
-                let src_int = self.b.ins().icmp_imm(IntCC::Equal, src_tag, TAG_INT);
-                let src_float = self.b.ins().icmp_imm(IntCC::Equal, src_tag, TAG_FLOAT);
-                let ints_ok = self.b.ins().band(kind_ints, src_int);
-                let floats_ok = self.b.ins().band(kind_floats, src_float);
-                let fits = self.b.ins().bor(kind_values, ints_ok);
-                let fits = self.b.ins().bor(fits, floats_ok);
-                let ok = self.b.ins().band(ok, fits);
-                self.b.ins().brif(ok, fast, &[], slow, &[]);
-                self.b.switch_to_block(fast);
-                let boxed_b = self.b.create_block();
-                let raw_b = self.b.create_block();
-                let done_b = self.b.create_block();
-                self.b.ins().brif(kind_values, boxed_b, &[], raw_b, &[]);
-                self.b.switch_to_block(boxed_b);
-                let off = self.b.ins().imul_imm(len, i64::from(VALUE_SIZE));
-                let slot = self.b.ins().iadd(ptr, off);
-                self.clone_reg_to_ptr(slot, *src);
-                self.b.ins().jump(done_b, &[]);
-                self.b.switch_to_block(raw_b);
-                let off = self.b.ins().imul_imm(len, 8);
-                let slot = self.b.ins().iadd(ptr, off);
-                let word = match src_state {
-                    State::Int => self.b.use_var(self.ivar(*src)),
-                    State::Float => {
-                        let f = self.b.use_var(self.fvar(*src));
-                        self.b.ins().bitcast(types::I64, MemFlags::new(), f)
-                    }
-                    _ => self.payload(*src),
-                };
-                self.b.ins().store(MemFlags::trusted(), word, slot, 0);
-                self.b.ins().jump(done_b, &[]);
-                self.b.switch_to_block(done_b);
-                let len1 = self.b.ins().iadd_imm(len, 1);
-                let data = self.b.ins().iadd_imm(rc, i64::from(OBJECT_FIELDS_PTR_OFF));
-                let vec = self.b.ins().iadd_imm(data, L::ARRAY_VEC_OFF as i64);
-                self.b
+                let arr_ptr = self
+                    .b
                     .ins()
-                    .store(MemFlags::trusted(), len1, vec, L::vec_layout().len as i32);
+                    .iadd_imm(self.regs, i64::from(Self::reg_off(*arr)));
+                self.inline_push(arr_ptr, *src, slow);
                 self.b.ins().jump(cont, &[]);
                 self.b.switch_to_block(slow);
                 self.exec(block, index, unwind);
@@ -2328,6 +2350,45 @@ impl Gen<'_, '_> {
                 args,
                 kw,
             } if kw.is_empty() => {
+                // A result nobody reads (`xs = xs.push(v)` as a statement)
+                // is not stored: one clone and one release fewer.
+                let wanted = self.live[block as usize]
+                    .get(index as usize + 1)
+                    .is_some_and(|l| l[*dst as usize]);
+                // `xs = xs.push(v)`: the append in place is inline when the
+                // array (in its register, frame slot or field) is unshared
+                // and has room; the runtime handles the rest.
+                let is_push = args.len() == 1
+                    && self.methods[*method as usize]
+                        .native_key
+                        .as_deref()
+                        .is_some_and(|k| k == "Array#push")
+                    && !matches!(recv, VarLoc::Reg(r) if *r == args[0]);
+                let slow = self.b.create_block();
+                let cont = self.b.create_block();
+                if is_push {
+                    let arr_ptr = match recv {
+                        VarLoc::Reg(r) => self
+                            .b
+                            .ins()
+                            .iadd_imm(self.regs, i64::from(Self::reg_off(*r))),
+                        VarLoc::Frame { depth, slot } => self.frame_slot_addr(*depth, *slot, slow),
+                        VarLoc::Field { obj, index } => {
+                            let check = self.b.create_block();
+                            let tag = self.tag(*obj);
+                            let is_obj = self.b.ins().icmp_imm(IntCC::Equal, tag, TAG_OBJECT);
+                            self.b.ins().brif(is_obj, check, &[], slow, &[]);
+                            self.b.switch_to_block(check);
+                            self.field_addr(*obj, *index)
+                        }
+                    };
+                    self.inline_push(arr_ptr, args[0], slow);
+                    if wanted {
+                        self.clone_from(*dst, arr_ptr);
+                    }
+                    self.b.ins().jump(cont, &[]);
+                    self.b.switch_to_block(slow);
+                }
                 for (k, r) in args.iter().enumerate() {
                     let v = self.i32(*r);
                     self.b
@@ -2344,11 +2405,6 @@ impl Gen<'_, '_> {
                 let a_v = self.i32(a);
                 let b_v = self.i32(bb);
                 let nargs = self.i32(args.len() as u32);
-                // A result nobody reads (`xs = xs.push(v)` as a statement)
-                // is not stored: one clone and one release fewer.
-                let wanted = self.live[block as usize]
-                    .get(index as usize + 1)
-                    .is_some_and(|l| l[*dst as usize]);
                 let d = self.i32(if wanted { *dst } else { u32::MAX });
                 let call = self.b.ins().call(
                     self.h.owned_call,
@@ -2367,6 +2423,8 @@ impl Gen<'_, '_> {
                 );
                 let status = self.b.inst_results(call)[0];
                 self.check(status, unwind);
+                self.b.ins().jump(cont, &[]);
+                self.b.switch_to_block(cont);
             }
             Inst::Call {
                 dst,

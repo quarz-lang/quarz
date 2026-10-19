@@ -653,6 +653,144 @@ impl Inst {
         }
     }
 
+    /// Replace the registers the instruction reads (the same positions
+    /// `uses` lists, plus the location of an `OwnedCall`).
+    pub fn map_uses(&mut self, f: &mut dyn FnMut(Reg) -> Reg) {
+        match self {
+            Inst::LoadConst { .. }
+            | Inst::SelfRef { .. }
+            | Inst::Arg { .. }
+            | Inst::HasArg { .. }
+            | Inst::BlockParam { .. }
+            | Inst::FrameGet { .. }
+            | Inst::ConstGet { .. }
+            | Inst::ClassRef { .. }
+            | Inst::VariantSingleton { .. }
+            | Inst::MakeBlock { .. }
+            | Inst::SymbolProc { .. }
+            | Inst::CatchException { .. }
+            | Inst::CatchAny { .. }
+            | Inst::ClearRegs { .. } => {}
+            Inst::Move { src, .. }
+            | Inst::Not { src, .. }
+            | Inst::IsNil { src, .. }
+            | Inst::FrameSet { src, .. }
+            | Inst::ToSym { src, .. }
+            | Inst::IsArray { src, .. }
+            | Inst::IsHash { src, .. }
+            | Inst::IsObject { src, .. }
+            | Inst::ToArray { src, .. }
+            | Inst::Len { src, .. }
+            | Inst::ObjectFields { src, .. }
+            | Inst::ClassIsA { src, .. }
+            | Inst::IsA { src, .. }
+            | Inst::As { src, .. }
+            | Inst::NoMatch { src, .. } => *src = f(*src),
+            Inst::FieldGet { obj, .. } | Inst::FieldGetByName { obj, .. } => *obj = f(*obj),
+            Inst::FieldSet { obj, src, .. } => {
+                *obj = f(*obj);
+                *src = f(*src);
+            }
+            Inst::Call {
+                recv,
+                args,
+                kw,
+                kw_splat,
+                block,
+                ..
+            } => {
+                if let Some(r) = recv {
+                    *r = f(*r);
+                }
+                for a in args.iter_mut() {
+                    *a = f(*a);
+                }
+                for (_, r) in kw.iter_mut() {
+                    *r = f(*r);
+                }
+                if let Some(r) = kw_splat {
+                    *r = f(*r);
+                }
+                if let Some(r) = block {
+                    *r = f(*r);
+                }
+            }
+            Inst::OwnedCall { recv, args, kw, .. } => {
+                match recv {
+                    VarLoc::Reg(r) => *r = f(*r),
+                    VarLoc::Field { obj, .. } => *obj = f(*obj),
+                    VarLoc::Frame { .. } => {}
+                }
+                for a in args.iter_mut() {
+                    *a = f(*a);
+                }
+                for (_, r) in kw.iter_mut() {
+                    *r = f(*r);
+                }
+            }
+            Inst::BinOp { lhs, rhs, .. } => {
+                *lhs = f(*lhs);
+                *rhs = f(*rhs);
+            }
+            Inst::CaseEq { pattern, value, .. } => {
+                *pattern = f(*pattern);
+                *value = f(*value);
+            }
+            Inst::Equal { a, b, .. } => {
+                *a = f(*a);
+                *b = f(*b);
+            }
+            Inst::MethodRef { recv, .. } => *recv = f(*recv),
+            Inst::MakeArray { items, .. } => {
+                for i in items.iter_mut() {
+                    i.reg = f(i.reg);
+                }
+            }
+            Inst::MakeHash { items, .. } => {
+                for i in items.iter_mut() {
+                    match i {
+                        HashItem::Pair(k, v) => {
+                            *k = f(*k);
+                            *v = f(*v);
+                        }
+                        HashItem::Splat(r) => *r = f(*r),
+                    }
+                }
+            }
+            Inst::MakeRange { lo, hi, .. } => {
+                if let Some(r) = lo {
+                    *r = f(*r);
+                }
+                if let Some(r) = hi {
+                    *r = f(*r);
+                }
+            }
+            Inst::MakeRegexp { source, .. } => *source = f(*source),
+            Inst::Interpolate { parts, .. } => {
+                for p in parts.iter_mut() {
+                    if let StrPiece::Val(r) = p {
+                        *r = f(*r);
+                    }
+                }
+            }
+            Inst::ArrayGet { arr, .. } | Inst::ArraySlice { arr, .. } => *arr = f(*arr),
+            Inst::ArrayGetReg { arr, index, .. } => {
+                *arr = f(*arr);
+                *index = f(*index);
+            }
+            Inst::ArraySliceReg { arr, from, to, .. } => {
+                *arr = f(*arr);
+                *from = f(*from);
+                *to = f(*to);
+            }
+            Inst::ArrayPush { arr, src } => {
+                *arr = f(*arr);
+                *src = f(*src);
+            }
+            Inst::HashGetSym { hash, .. } | Inst::HashRest { hash, .. } => *hash = f(*hash),
+        }
+    }
+
     /// The registers an instruction reads.
     pub fn uses(&self) -> Vec<Reg> {
         match self {
@@ -743,6 +881,19 @@ impl Inst {
 }
 
 impl Term {
+    /// Replace the register the terminator reads.
+    pub fn map_uses(&mut self, f: &mut dyn FnMut(Reg) -> Reg) {
+        match self {
+            Term::Branch { cond, .. } => *cond = f(*cond),
+            Term::Return(r)
+            | Term::Raise(r)
+            | Term::BreakOut(r)
+            | Term::ReturnOut(r)
+            | Term::Resume(r) => *r = f(*r),
+            Term::Jump(_) | Term::Unreachable => {}
+        }
+    }
+
     /// The register a terminator reads, if any.
     pub fn uses(&self) -> Option<Reg> {
         match self {

@@ -738,8 +738,10 @@ pub unsafe extern "C" fn qz_yield(
 /// As for `qz_exec`.
 #[no_mangle]
 pub unsafe extern "C" fn qz_alloc_data(regs: *mut Value, class: u32, nfields: u32, dst: u32) {
-    let fields: crate::value::Fields = smallvec::smallvec![Value::Nil; nfields as usize];
-    *regs.add(dst as usize) = Value::Object(crate::value::Object::new(class, fields));
+    *regs.add(dst as usize) = Value::Object(crate::value::Object::with_nil_fields(
+        class,
+        nfields as usize,
+    ));
 }
 
 /// `Class.new(args)` with positional arguments only.
