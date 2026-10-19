@@ -593,33 +593,44 @@ pub unsafe extern "C" fn qz_owned_call(
 ) -> u32 {
     let rt = &*rt;
     let act = &*act;
+    // The common collection updates, in place, with the arguments by
+    // reference (the receiver register is never an argument).
+    if nargs <= 2 {
+        let mut refs: [&Value; 2] = [&Value::Nil, &Value::Nil];
+        for (i, slot) in refs.iter_mut().enumerate().take(nargs as usize) {
+            *slot = &*regs.add(*arg_regs.add(i) as usize);
+        }
+        let refs = &refs[..nargs as usize];
+        match loc_kind {
+            0 => {
+                let recv = regs.add(a as usize);
+                if refs.iter().all(|v| !std::ptr::eq(*v, recv))
+                    && rt.owned_fast(mid, &mut *recv, refs)
+                {
+                    *regs.add(dst as usize) = (*recv).clone();
+                    return STATUS_OK;
+                }
+            }
+            2 => {
+                if let Value::Object(o) = &*regs.add(a as usize) {
+                    let mut fields = o.fields.borrow_mut();
+                    if let Some(slot) = fields.get_mut(b as usize) {
+                        if rt.owned_fast(mid, slot, refs) {
+                            let v = slot.clone();
+                            drop(fields);
+                            *regs.add(dst as usize) = v;
+                            return STATUS_OK;
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
     let mut args: crate::interp::ArgVec = crate::interp::ArgVec::with_capacity(nargs as usize);
     for i in 0..nargs as usize {
         let r = *arg_regs.add(i);
         args.push((*regs.add(r as usize)).clone());
-    }
-    // The common collection updates, in place.
-    match loc_kind {
-        0 => {
-            if rt.owned_fast(mid, &mut *regs.add(a as usize), &args) {
-                *regs.add(dst as usize) = (*regs.add(a as usize)).clone();
-                return STATUS_OK;
-            }
-        }
-        2 => {
-            if let Value::Object(o) = &*regs.add(a as usize) {
-                let mut fields = o.fields.borrow_mut();
-                if let Some(slot) = fields.get_mut(b as usize) {
-                    if rt.owned_fast(mid, slot, &args) {
-                        let v = slot.clone();
-                        drop(fields);
-                        *regs.add(dst as usize) = v;
-                        return STATUS_OK;
-                    }
-                }
-            }
-        }
-        _ => {}
     }
     let frame = || {
         act.frame

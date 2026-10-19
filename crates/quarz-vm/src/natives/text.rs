@@ -4,7 +4,6 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use indexmap::IndexMap;
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::interp::{Args, EvalResult, Flow, Interp, NativeFn};
@@ -414,7 +413,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     });
     m.insert("MatchData#named_captures", |i, r, _| {
         let m = md(i, r)?;
-        let mut out = IndexMap::new();
+        let mut out = ValueMap::default();
         for (name, idx) in &m.names {
             out.insert(Value::str(name), group_value(m, *idx));
         }

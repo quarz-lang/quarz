@@ -23,7 +23,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
         Ok(Value::array(i.argv.iter().map(|s| Value::str(s)).collect()))
     });
     m.insert("Process.env", |_, _, _| {
-        let map: indexmap::IndexMap<Value, Value> = std::env::vars()
+        let map: ValueMap = std::env::vars()
             .map(|(k, v)| (Value::string(k), Value::string(v)))
             .collect();
         Ok(Value::Hash(Rc::new(map)))

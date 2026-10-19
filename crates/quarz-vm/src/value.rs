@@ -11,6 +11,10 @@ use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
 use indexmap::{IndexMap, IndexSet};
+
+/// The maps and sets of values, hashed with the Fx hasher.
+pub type ValueMap = IndexMap<Value, Value, rustc_hash::FxBuildHasher>;
+pub type ValueSet = IndexSet<Value, rustc_hash::FxBuildHasher>;
 use num_bigint::BigInt;
 use quarz_ir::{ClassId, FuncId};
 use smallvec::SmallVec;
@@ -403,16 +407,16 @@ pub enum Value {
     BigInt(Rc<BigInt>),
     Str(Rc<str>),
     Array(Rc<Vec<Value>>),
-    Hash(Rc<IndexMap<Value, Value>>),
-    Set(Rc<IndexSet<Value>>),
+    Hash(Rc<ValueMap>),
+    Set(Rc<ValueSet>),
     Range(Rc<RangeVal>),
     Regexp(Rc<RegexpVal>),
     MatchData(Rc<MatchDataVal>),
     Object(Rc<Object>),
     Proc(Rc<Closure>),
     ArrayBuilder(Rc<RefCell<Vec<Value>>>),
-    HashBuilder(Rc<RefCell<IndexMap<Value, Value>>>),
-    SetBuilder(Rc<RefCell<IndexSet<Value>>>),
+    HashBuilder(Rc<RefCell<ValueMap>>),
+    SetBuilder(Rc<RefCell<ValueSet>>),
     StringBuilder(Rc<RefCell<String>>),
     Channel(Rc<ChannelInner>),
     Task(Rc<TaskHandle>),

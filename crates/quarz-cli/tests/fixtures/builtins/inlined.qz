@@ -198,3 +198,16 @@ p [true, false, true].map { |f| maybe(f) }
 # lengths beyond a byte (the compiled code keeps lengths unboxed)
 big = (0...1000).map { |i| i }
 p big.size, big.map { |x| x }.size, big.select { |x| x > 500 }.size, big.reduce(0) { |a, x| a + x }
+
+# count / any? / all? with a block are loops too (early exit for the
+# predicates), on arrays and ranges
+nums = [3, 8, 1, 9, 4]
+p nums.count { |x| x > 3 }, nums.any? { |x| x > 8 }, nums.all? { |x| x > 0 }, nums.all? { |x| x > 1 }
+p (1..10).count { |i| i.even? }, (1..10).any? { |i| i * i > 50 }, (1..10).all? { |i| i < 10 }
+p [].any? { |x| x }, [].all? { |x| x }, [].count { |x| x }
+probe: Array[Int] = []
+p nums.any? { |x| probe = probe.push(x); x > 3 }
+p probe
+p nums.all? { |x| probe = probe.push(x); x > 3 }
+p probe
+p nums.count { |x| next true if x == 1; break 42 if x == 9; x > 3 }

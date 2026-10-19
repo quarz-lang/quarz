@@ -21,6 +21,11 @@ pub enum Kind {
     Reject,
     /// `reduce(initial)`: the block gets the accumulator and the element.
     Reduce,
+    /// `count { }`: how many elements the block accepts.
+    Count,
+    /// `any? { }` / `all? { }`: stop at the first accepted / rejected element.
+    Any,
+    All,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -109,6 +114,9 @@ pub fn shape(e: &Expr, call: &ast::Call, out: &Output, world: &World) -> Option<
             ("reject", 0) if m.owner == bi.enumerable => Kind::Reject,
             ("each_with_index", 0) if m.owner == bi.enumerable => Kind::EachWithIndex,
             ("reduce", 1) if m.owner == bi.enumerable => Kind::Reduce,
+            ("count", 0) if m.owner == bi.enumerable => Kind::Count,
+            ("any?", 0) if m.owner == bi.enumerable => Kind::Any,
+            ("all?", 0) if m.owner == bi.enumerable => Kind::All,
             _ => return None,
         };
         Shape {

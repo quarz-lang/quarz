@@ -5,8 +5,6 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use indexmap::{IndexMap, IndexSet};
-
 use crate::interp::{Args, EvalResult, Flow, Interp, NativeFn, OwnedNativeFn};
 use crate::value::*;
 use smallvec::smallvec;
@@ -105,10 +103,7 @@ fn owned_update(recv: Value, f: impl FnOnce(&mut Vec<Value>)) -> Result<Value, (
     }
 }
 
-fn owned_hash_update(
-    recv: Value,
-    f: impl FnOnce(&mut IndexMap<Value, Value>),
-) -> Result<Value, (Flow, Value)> {
+fn owned_hash_update(recv: Value, f: impl FnOnce(&mut ValueMap)) -> Result<Value, (Flow, Value)> {
     match recv {
         Value::Hash(mut rc) => {
             f(Rc::make_mut(&mut rc));
@@ -118,10 +113,7 @@ fn owned_hash_update(
     }
 }
 
-fn owned_set_update(
-    recv: Value,
-    f: impl FnOnce(&mut IndexSet<Value>),
-) -> Result<Value, (Flow, Value)> {
+fn owned_set_update(recv: Value, f: impl FnOnce(&mut ValueSet)) -> Result<Value, (Flow, Value)> {
     match recv {
         Value::Set(mut rc) => {
             f(Rc::make_mut(&mut rc));
@@ -246,7 +238,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     });
     m.insert("Array#&", |i, r, a| {
         let other = arr(i, a.arg(0))?;
-        let mut seen = IndexSet::new();
+        let mut seen = ValueSet::default();
         for x in arr(i, r)?.iter() {
             if other.contains(x) {
                 seen.insert(x.clone());
@@ -255,7 +247,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
         Ok(Value::array(seen.into_iter().collect()))
     });
     m.insert("Array#|", |i, r, a| {
-        let mut seen: IndexSet<Value> = arr(i, r)?.iter().cloned().collect();
+        let mut seen: ValueSet = arr(i, r)?.iter().cloned().collect();
         seen.extend(arr(i, a.arg(0))?.iter().cloned());
         Ok(Value::array(seen.into_iter().collect()))
     });
@@ -517,7 +509,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     });
     // Hash
     m.insert("Hash.new", |_, _, _| {
-        Ok(Value::Hash(Rc::new(IndexMap::new())))
+        Ok(Value::Hash(Rc::new(ValueMap::default())))
     });
     m.insert("Hash.build", hash_build);
     m.insert("Hash#each", |i, r, a| {
@@ -623,7 +615,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     m.insert("Hash#reject", |i, r, a| hash_filter(i, r, a, false));
     m.insert("Hash#transform_values", |i, r, a| {
         let b = block(i, &a)?;
-        let mut out = IndexMap::new();
+        let mut out = ValueMap::default();
         for (k, v) in hash(i, r)?.iter() {
             out.insert(k.clone(), i.call_block(&b, smallvec![v.clone()])?);
         }
@@ -631,7 +623,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     });
     m.insert("Hash#transform_keys", |i, r, a| {
         let b = block(i, &a)?;
-        let mut out = IndexMap::new();
+        let mut out = ValueMap::default();
         for (k, v) in hash(i, r)?.iter() {
             out.insert(i.call_block(&b, smallvec![k.clone()])?, v.clone());
         }
@@ -660,7 +652,9 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     m.insert("Hash#hash", super::core_hash);
     // Hash::Builder
     m.insert("Hash::Builder.new", |_, _, _| {
-        Ok(Value::HashBuilder(Rc::new(RefCell::new(IndexMap::new()))))
+        Ok(Value::HashBuilder(Rc::new(RefCell::new(
+            ValueMap::default(),
+        ))))
     });
     m.insert("Hash::Builder#[]", |i, r, a| {
         match hb(i, r)?.borrow().get(a.arg(0)) {
@@ -757,7 +751,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     });
     // Set
     m.insert("Set.new", |_, _, _| {
-        Ok(Value::Set(Rc::new(IndexSet::new())))
+        Ok(Value::Set(Rc::new(ValueSet::default())))
     });
     m.insert("Set.[]", |_, _, a| {
         Ok(Value::Set(Rc::new(a.pos.into_iter().collect())))
@@ -806,7 +800,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     m.insert("Set#^", |i, r, a| {
         let other = set(i, a.arg(0))?;
         let mine = set(i, r)?;
-        let out: IndexSet<Value> = mine
+        let out: ValueSet = mine
             .iter()
             .filter(|x| !other.contains(*x))
             .chain(other.iter().filter(|x| !mine.contains(*x)))
@@ -832,7 +826,9 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     m.insert("Set#hash", super::core_hash);
     // Set::Builder
     m.insert("Set::Builder.new", |_, _, _| {
-        Ok(Value::SetBuilder(Rc::new(RefCell::new(IndexSet::new()))))
+        Ok(Value::SetBuilder(Rc::new(
+            RefCell::new(ValueSet::default()),
+        )))
     });
     m.insert("Set::Builder#<<", |i, r, a| {
         sb(i, r)?.borrow_mut().insert(a.arg(0).clone());
@@ -960,37 +956,28 @@ pub(super) fn ab<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Rc<RefCell<Vec
     }
 }
 
-pub(super) fn hash<'a>(
-    interp: &Interp,
-    v: &'a Value,
-) -> Result<&'a Rc<IndexMap<Value, Value>>, Flow> {
+pub(super) fn hash<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Rc<ValueMap>, Flow> {
     match v {
         Value::Hash(h) => Ok(h),
         _ => Err(interp.err_type(&format!("expected a Hash, got {}", interp.class_name(v)))),
     }
 }
 
-pub(super) fn hb<'a>(
-    interp: &Interp,
-    v: &'a Value,
-) -> Result<&'a Rc<RefCell<IndexMap<Value, Value>>>, Flow> {
+pub(super) fn hb<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Rc<RefCell<ValueMap>>, Flow> {
     match v {
         Value::HashBuilder(h) => Ok(h),
         _ => Err(interp.err_type("expected a Hash::Builder")),
     }
 }
 
-pub(super) fn set<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Rc<IndexSet<Value>>, Flow> {
+pub(super) fn set<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Rc<ValueSet>, Flow> {
     match v {
         Value::Set(s) => Ok(s),
         _ => Err(interp.err_type(&format!("expected a Set, got {}", interp.class_name(v)))),
     }
 }
 
-pub(super) fn sb<'a>(
-    interp: &Interp,
-    v: &'a Value,
-) -> Result<&'a Rc<RefCell<IndexSet<Value>>>, Flow> {
+pub(super) fn sb<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Rc<RefCell<ValueSet>>, Flow> {
     match v {
         Value::SetBuilder(s) => Ok(s),
         _ => Err(interp.err_type("expected a Set::Builder")),
@@ -1016,7 +1003,7 @@ pub(super) fn update(interp: &Interp, recv: &Value, f: impl FnOnce(&mut Vec<Valu
 pub(super) fn hash_update(
     interp: &Interp,
     recv: &Value,
-    f: impl FnOnce(&mut IndexMap<Value, Value>),
+    f: impl FnOnce(&mut ValueMap),
 ) -> EvalResult {
     let mut rc = hash(interp, recv)?.clone();
     f(Rc::make_mut(&mut rc));
@@ -1026,7 +1013,7 @@ pub(super) fn hash_update(
 pub(super) fn set_update(
     interp: &Interp,
     recv: &Value,
-    f: impl FnOnce(&mut IndexSet<Value>),
+    f: impl FnOnce(&mut ValueSet),
 ) -> EvalResult {
     let mut rc = set(interp, recv)?.clone();
     f(Rc::make_mut(&mut rc));
@@ -1340,7 +1327,7 @@ fn ab_set(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
 
 fn hash_build(interp: &Interp, _: &Value, args: Args) -> EvalResult {
     let b = block(interp, &args)?;
-    let builder = Rc::new(RefCell::new(IndexMap::new()));
+    let builder = Rc::new(RefCell::new(ValueMap::default()));
     interp.call_block(&b, smallvec![Value::HashBuilder(builder.clone())])?;
     let map = std::mem::take(&mut *builder.borrow_mut());
     Ok(Value::Hash(Rc::new(map)))
@@ -1390,7 +1377,7 @@ fn hash_update_key(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
 
 fn hash_filter(interp: &Interp, recv: &Value, args: Args, keep: bool) -> EvalResult {
     let b = block(interp, &args)?;
-    let mut out = IndexMap::new();
+    let mut out = ValueMap::default();
     for (k, v) in hash(interp, recv)?.iter() {
         if interp
             .call_block(&b, smallvec![k.clone(), v.clone()])?
@@ -1405,7 +1392,7 @@ fn hash_filter(interp: &Interp, recv: &Value, args: Args, keep: bool) -> EvalRes
 
 fn set_build(interp: &Interp, _: &Value, args: Args) -> EvalResult {
     let b = block(interp, &args)?;
-    let builder = Rc::new(RefCell::new(IndexSet::new()));
+    let builder = Rc::new(RefCell::new(ValueSet::default()));
     interp.call_block(&b, smallvec![Value::SetBuilder(builder.clone())])?;
     let s = std::mem::take(&mut *builder.borrow_mut());
     Ok(Value::Set(Rc::new(s)))

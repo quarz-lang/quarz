@@ -175,7 +175,7 @@ impl Parser<'_> {
     fn object(&mut self) -> EvalResult {
         self.enter()?;
         self.pos += 1;
-        let mut members = indexmap::IndexMap::new();
+        let mut members = ValueMap::default();
         self.skip_ws();
         if self.peek() == Some(b'}') {
             self.pos += 1;

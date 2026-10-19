@@ -675,11 +675,15 @@ impl Interp {
                 args,
                 kw,
             } => {
-                let pos = self.call_args(regs, args, false);
-                if kw.is_empty() {
+                if kw.is_empty() && args.len() <= 2 {
+                    // The arguments by reference: the fast paths clone
+                    // only what they keep.
+                    let argv: SmallVec<[Value; 2]> =
+                        args.iter().map(|r| regs[*r as usize].clone()).collect();
+                    let refs: SmallVec<[&Value; 2]> = argv.iter().collect();
                     match recv {
                         VarLoc::Reg(r) => {
-                            if self.owned_fast(*method, &mut regs[*r as usize], &pos) {
+                            if self.owned_fast(*method, &mut regs[*r as usize], &refs) {
                                 regs[*dst as usize] = regs[*r as usize].clone();
                                 return Ok(());
                             }
@@ -688,7 +692,7 @@ impl Interp {
                             if let Value::Object(o) = &regs[*obj as usize] {
                                 let mut fields = o.fields.borrow_mut();
                                 if let Some(slot) = fields.get_mut(*index as usize) {
-                                    if self.owned_fast(*method, slot, &pos) {
+                                    if self.owned_fast(*method, slot, &refs) {
                                         let v = slot.clone();
                                         drop(fields);
                                         regs[*dst as usize] = v;
@@ -700,6 +704,7 @@ impl Interp {
                         VarLoc::Frame { .. } => {}
                     }
                 }
+                let pos = self.call_args(regs, args, false);
                 let kw = self.call_kwargs(f, pool, regs, kw, None);
                 let take_field = |obj: Reg, index: u32| -> Value {
                     match &regs[obj as usize] {
@@ -889,7 +894,7 @@ impl Interp {
                 regs[*dst as usize] = Value::array(out);
             }
             Inst::MakeHash { dst, items } => {
-                let mut map = indexmap::IndexMap::with_capacity(items.len());
+                let mut map = ValueMap::with_capacity_and_hasher(items.len(), Default::default());
                 for item in items {
                     match item {
                         HashItem::Pair(k, v) => {
@@ -1069,7 +1074,7 @@ impl Interp {
                     .collect();
                 let v = match &regs[*hash as usize] {
                     Value::Hash(h) => {
-                        let mut rest = indexmap::IndexMap::new();
+                        let mut rest = ValueMap::default();
                         for (k, val) in h.iter() {
                             let matched = matches!(k, Value::Symbol(s) if keys.contains(s));
                             if !matched {
@@ -1078,7 +1083,7 @@ impl Interp {
                         }
                         Value::Hash(Rc::new(rest))
                     }
-                    _ => Value::Hash(Rc::new(indexmap::IndexMap::new())),
+                    _ => Value::Hash(Rc::new(ValueMap::default())),
                 };
                 regs[*dst as usize] = v;
             }

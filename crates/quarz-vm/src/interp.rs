@@ -1341,7 +1341,7 @@ impl Interp {
                 let Value::Object(o) = &recv else {
                     return Err(self.err_type("`to_h` on a non-object"));
                 };
-                let mut map = indexmap::IndexMap::new();
+                let mut map = ValueMap::default();
                 let class = self.world.class(o.class);
                 for (f, v) in class.fields.iter().zip(o.fields.borrow().iter()) {
                     map.insert(Value::Symbol(self.intern(&f.name)), v.clone());
@@ -1383,12 +1383,12 @@ impl Interp {
     /// without the generic owned-call machinery. Returns whether it
     /// applied; when it did not, nothing was changed.
     #[inline]
-    pub fn owned_fast(&self, mid: MethodId, slot: &mut Value, args: &[Value]) -> bool {
+    pub fn owned_fast(&self, mid: MethodId, slot: &mut Value, args: &[&Value]) -> bool {
         let o = &self.owned;
         let m = Some(mid);
         match (slot, args) {
             (Value::Array(a), [v]) if m == o.array_push => {
-                Rc::make_mut(a).push(v.clone());
+                Rc::make_mut(a).push((*v).clone());
                 true
             }
             (Value::Array(a), [Value::Int(i), v]) if m == o.array_set => {
@@ -1397,23 +1397,23 @@ impl Interp {
                 if i < 0 || i >= n {
                     return false;
                 }
-                Rc::make_mut(a)[i as usize] = v.clone();
+                Rc::make_mut(a)[i as usize] = (*v).clone();
                 true
             }
             (Value::Hash(h), [k, v]) if m == o.hash_put => {
-                Rc::make_mut(h).insert(k.clone(), v.clone());
+                Rc::make_mut(h).insert((*k).clone(), (*v).clone());
                 true
             }
             (Value::Hash(h), [k]) if m == o.hash_delete => {
-                Rc::make_mut(h).shift_remove(k);
+                Rc::make_mut(h).shift_remove(*k);
                 true
             }
             (Value::Set(s), [v]) if m == o.set_add => {
-                Rc::make_mut(s).insert(v.clone());
+                Rc::make_mut(s).insert((*v).clone());
                 true
             }
             (Value::Set(s), [v]) if m == o.set_delete => {
-                Rc::make_mut(s).shift_remove(v);
+                Rc::make_mut(s).shift_remove(*v);
                 true
             }
             _ => false,
@@ -1534,7 +1534,7 @@ impl Interp {
             }
             for (i, p) in m.params.iter().enumerate() {
                 if p.kind == RtParamKind::KeywordRest && provided & bit(i) == 0 {
-                    let mut map = indexmap::IndexMap::new();
+                    let mut map = ValueMap::default();
                     for (sym, v) in kwrest.drain(..) {
                         map.insert(Value::Symbol(sym), v);
                     }
@@ -1545,7 +1545,7 @@ impl Interp {
         } else {
             for (i, p) in m.params.iter().enumerate() {
                 if p.kind == RtParamKind::KeywordRest {
-                    values[i] = Value::Hash(Rc::new(indexmap::IndexMap::new()));
+                    values[i] = Value::Hash(Rc::new(ValueMap::default()));
                     provided |= bit(i);
                 }
             }

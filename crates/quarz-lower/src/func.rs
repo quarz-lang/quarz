@@ -1454,14 +1454,23 @@ impl<'a> FnBuilder<'a> {
         let i = self.reg();
         self.emit(Inst::Move { dst: i, src: lo });
         let result = self.nil();
-        let acc = (kind == Kind::Reduce).then(|| {
-            let r = self.reg();
-            self.emit(Inst::Move {
-                dst: r,
-                src: args[0],
-            });
-            r
-        });
+        let acc = match kind {
+            Kind::Reduce => {
+                let r = self.reg();
+                self.emit(Inst::Move {
+                    dst: r,
+                    src: args[0],
+                });
+                Some(r)
+            }
+            Kind::Count => {
+                let r = self.reg();
+                let zero = self.load_const(Constant::Int(0));
+                self.emit(Inst::Move { dst: r, src: zero });
+                Some(r)
+            }
+            _ => None,
+        };
         let out = matches!(kind, Kind::Map | Kind::Select | Kind::Reject).then(|| {
             let r = self.reg();
             self.emit(Inst::MakeArray {
@@ -1585,6 +1594,60 @@ impl<'a> FnBuilder<'a> {
                 dst: acc.unwrap(),
                 src: val,
             }),
+            Kind::Count => {
+                let inc_b = self.new_block();
+                let skip_b = self.new_block();
+                self.term(Term::Branch {
+                    cond: val,
+                    then: inc_b,
+                    els: skip_b,
+                });
+                self.switch(inc_b);
+                let one = self.load_const(Constant::Int(1));
+                let n = self.reg();
+                let add = self.int_op(FastOp::Add);
+                self.emit(Inst::BinOp {
+                    dst: n,
+                    op: FastOp::Add,
+                    lhs: acc.unwrap(),
+                    rhs: one,
+                    method: add,
+                });
+                self.emit(Inst::Move {
+                    dst: acc.unwrap(),
+                    src: n,
+                });
+                self.term(Term::Jump(skip_b));
+                self.switch(skip_b);
+            }
+            Kind::Any | Kind::All => {
+                // The first accepted (`any?`) or rejected (`all?`) element
+                // decides: the result is set and the loop left.
+                let stop_b = self.new_block();
+                let go_b = self.new_block();
+                let (then, els) = if kind == Kind::Any {
+                    (stop_b, go_b)
+                } else {
+                    (go_b, stop_b)
+                };
+                self.term(Term::Branch {
+                    cond: val,
+                    then,
+                    els,
+                });
+                self.switch(stop_b);
+                let decided = self.load_const(Constant::Bool(kind == Kind::Any));
+                self.emit(Inst::Move {
+                    dst: result,
+                    src: decided,
+                });
+                self.emit(Inst::ClearRegs {
+                    from: clear_from,
+                    to: clear_from,
+                });
+                self.term(Term::Jump(exit_b));
+                self.switch(go_b);
+            }
             _ => {}
         }
         let one = self.load_const(Constant::Int(1));
@@ -1612,10 +1675,17 @@ impl<'a> FnBuilder<'a> {
                 dst: result,
                 src: out.unwrap(),
             }),
-            Kind::Reduce => self.emit(Inst::Move {
+            Kind::Reduce | Kind::Count => self.emit(Inst::Move {
                 dst: result,
                 src: acc.unwrap(),
             }),
+            Kind::Any | Kind::All => {
+                let v = self.load_const(Constant::Bool(kind == Kind::All));
+                self.emit(Inst::Move {
+                    dst: result,
+                    src: v,
+                });
+            }
             _ => {}
         }
         self.term(Term::Jump(exit_b));

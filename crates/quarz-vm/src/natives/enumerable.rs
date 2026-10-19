@@ -5,8 +5,6 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use indexmap::{IndexMap, IndexSet};
-
 use crate::interp::{Args, EvalResult, Flow, Interp, NativeFn};
 use crate::value::*;
 use smallvec::smallvec;
@@ -253,7 +251,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     });
     m.insert("Array::Builder#uniq!", |i, r, _| {
         let b = ab(i, r)?;
-        let seen: IndexSet<Value> = b.borrow().iter().cloned().collect();
+        let seen: ValueSet = b.borrow().iter().cloned().collect();
         *b.borrow_mut() = seen.into_iter().collect();
         Ok(r.clone())
     });
@@ -375,7 +373,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     });
     m.insert("Hash#slice", |i, r, a| {
         let h = hash(i, r)?;
-        let mut out = IndexMap::new();
+        let mut out = ValueMap::default();
         for k in &a.pos {
             if let Some(v) = h.get(k) {
                 out.insert(k.clone(), v.clone());
@@ -472,7 +470,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     m.insert("Hash::Builder#transform_values!", |i, r, a| {
         let bl = block(i, &a)?;
         let b = hb(i, r)?;
-        let mut out = IndexMap::new();
+        let mut out = ValueMap::default();
         for (k, v) in builder_pairs(i, r)? {
             out.insert(k, i.call_block(&bl, smallvec![v])?);
         }
@@ -718,7 +716,7 @@ fn builder_pairs(interp: &Interp, recv: &Value) -> Result<Vec<(Value, Value)>, F
 fn hash_builder_filter(interp: &Interp, recv: &Value, args: Args, keep: bool) -> EvalResult {
     let bl = block(interp, &args)?;
     let b = hb(interp, recv)?;
-    let mut out = IndexMap::new();
+    let mut out = ValueMap::default();
     for (k, v) in builder_pairs(interp, recv)? {
         if interp
             .call_block(&bl, smallvec![k.clone(), v.clone()])?
@@ -734,7 +732,7 @@ fn hash_builder_filter(interp: &Interp, recv: &Value, args: Args, keep: bool) ->
 
 fn set_filter(interp: &Interp, recv: &Value, args: Args, keep: bool) -> EvalResult {
     let bl = block(interp, &args)?;
-    let mut out = IndexSet::new();
+    let mut out = ValueSet::default();
     for x in set(interp, recv)?.iter() {
         if interp.call_block(&bl, smallvec![x.clone()])?.is_truthy() == keep {
             out.insert(x.clone());
@@ -747,7 +745,7 @@ fn set_builder_filter(interp: &Interp, recv: &Value, args: Args, keep: bool) -> 
     let bl = block(interp, &args)?;
     let b = sb(interp, recv)?;
     let items: Vec<Value> = b.borrow().iter().cloned().collect();
-    let mut out = IndexSet::new();
+    let mut out = ValueSet::default();
     for x in items {
         if interp.call_block(&bl, smallvec![x.clone()])?.is_truthy() == keep {
             out.insert(x);
