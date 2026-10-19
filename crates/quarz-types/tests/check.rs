@@ -240,7 +240,7 @@ fn concurrency_rules() {
     );
     err(
         "total = 0\nspawn { total += 1 }",
-        "cannot assign to `total` from a `spawn` block",
+        "cannot assign to `total` from a task block",
     );
     ok("n = Atom.new(0)\nspawn { n.update { |v| v + 1 } }.await\nputs n.value");
     err("Channel[Array::Builder[Int]].new", "must be Shareable");

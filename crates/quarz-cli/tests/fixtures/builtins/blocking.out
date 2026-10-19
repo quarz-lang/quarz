@@ -1,0 +1,12 @@
+tick 0
+tick 1
+tick 2
+ticks done before heavy: true
+fib = 6765
+[103, ["A", "B"], :sym, 1.5, 1180591620717411303424, {k: Point(x: 1, y: 2)}]
+inside
+after
+caught: from the helper
+rejected: true
+[0, 0]
+parallel: true

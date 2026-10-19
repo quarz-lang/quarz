@@ -266,6 +266,9 @@ pub struct Interp {
     pub sched: Rc<RefCell<Scheduler>>,
     dispatch_cache: RefCell<FxHashMap<(ClassId, MethodId), MethodId>>,
     class_dispatch_cache: RefCell<FxHashMap<(ClassId, MethodId), Option<MethodId>>>,
+    /// The program image for helper threads, keyed by the number of
+    /// functions loaded when it was taken.
+    pub(crate) image_cache: RefCell<Option<(usize, std::sync::Arc<crate::transfer::ProgramImage>)>>,
     name_cache: RefCell<FxHashMap<NameKey, FxHashMap<String, Option<MethodId>>>>,
     next_tag: Rc<Cell<u64>>,
     pub argv: Vec<String>,
@@ -465,6 +468,7 @@ impl Interp {
             sched: state.sched,
             dispatch_cache: RefCell::new(FxHashMap::default()),
             class_dispatch_cache: RefCell::new(FxHashMap::default()),
+            image_cache: RefCell::new(None),
             name_cache: RefCell::new(FxHashMap::default()),
             next_tag: state.next_tag,
             argv,
@@ -586,7 +590,13 @@ impl Interp {
         }
     }
 
-    fn run_loop(&self, root: &Rc<TaskHandle>) -> i32 {
+    pub(crate) fn run_loop(&self, root: &Rc<TaskHandle>) -> i32 {
+        self.run_loop_with(root, true)
+    }
+
+    /// The run loop; `report` prints an exception the root task died with
+    /// (a helper thread hands it back instead).
+    pub(crate) fn run_loop_with(&self, root: &Rc<TaskHandle>, report: bool) -> i32 {
         loop {
             let next = self.sched.borrow_mut().next_runnable();
             let Some((id, mut co)) = next else {
@@ -615,8 +625,10 @@ impl Interp {
         }
         match root.result.borrow().clone() {
             Some(TaskResult::Error(exc)) => {
-                self.flush();
-                self.report_uncaught(&exc);
+                if report {
+                    self.flush();
+                    self.report_uncaught(&exc);
+                }
                 1
             }
             _ => 0,
@@ -1883,7 +1895,7 @@ impl Interp {
 }
 
 /// Convert the result of a task body into its exit.
-fn task_exit(interp: &Interp, result: EvalResult) -> TaskExit {
+pub(crate) fn task_exit(interp: &Interp, result: EvalResult) -> TaskExit {
     match result {
         Ok(v) => TaskExit::Result(TaskResult::Value(v)),
         Err(Flow::Raise(e)) => TaskExit::Result(TaskResult::Error(e)),

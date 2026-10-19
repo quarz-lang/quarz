@@ -42,8 +42,18 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     m.insert("Task.current", |i, _, _| Ok(Value::Task(i.current_task())));
     m.insert("Task.timeout", task_timeout);
     m.insert("Task.blocking", |i, _, a| {
+        use crate::transfer::{self, WorkerExit};
         let b = block(i, &a)?;
-        i.call_block(&b, smallvec![])
+        let closure = transfer::export(i, &b)?;
+        let image = i.image();
+        let argv = i.argv.clone();
+        let outcome = i.block_on(move || transfer::run_on_thread(image, argv, closure))?;
+        i.write_out_bytes(&outcome.output);
+        match outcome.exit {
+            WorkerExit::Value(t) => Ok(transfer::import(i, t)),
+            WorkerExit::Raise(t) => Err(Flow::Raise(transfer::import(i, t))),
+            WorkerExit::Exit(code) => Err(Flow::Exit(code)),
+        }
     });
     m.insert("Task.check_cancel", |i, _, _| {
         let t = i.current_task();

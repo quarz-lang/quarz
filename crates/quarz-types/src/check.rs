@@ -2358,7 +2358,7 @@ impl Checker {
                 if let Some((depth, slot)) = self.lookup_var(name) {
                     if self.captured_across_task(depth) {
                         self.error(
-                            format!("cannot assign to `{name}` from a `spawn` block; it is captured by value"),
+                            format!("cannot assign to `{name}` from a task block (`spawn`, `Task.blocking`); it is captured by value"),
                             *span,
                         );
                     }
@@ -2495,7 +2495,7 @@ impl Checker {
                 Some((depth, slot)) => {
                     if self.captured_across_task(depth) {
                         self.error(
-                            format!("cannot assign to `{name}` from a `spawn` block; it is captured by value"),
+                            format!("cannot assign to `{name}` from a task block (`spawn`, `Task.blocking`); it is captured by value"),
                             *span,
                         );
                     }
@@ -3748,9 +3748,10 @@ impl Checker {
             let block_ty = block_ty.subst(subst);
             if let Some(b) = &call.block {
                 let resolved = self.infer.resolve(&block_ty);
-                let is_task = m.name == "spawn"
+                let is_task = (m.name == "spawn"
                     && (m.owner == self.world.builtin.kernel
-                        || m.owner == self.world.builtin.scope);
+                        || m.owner == self.world.builtin.scope))
+                    || (m.name == "blocking" && m.owner == self.world.builtin.task);
                 self.check_block_as(expr.id, b, &resolved, is_task);
             } else if let Some(Arg::BlockPass(e)) =
                 call.args.iter().find(|a| matches!(a, Arg::BlockPass(_)))

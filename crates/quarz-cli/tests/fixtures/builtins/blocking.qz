@@ -1,0 +1,56 @@
+# Task.blocking: a block runs on a helper thread while the scheduler keeps
+# going; immutable captures and results cross over, exceptions propagate,
+# thread-bound values are rejected. Expected output in blocking.out.
+def fib(n: Int) -> Int = n < 2 ? n : fib(n - 1) + fib(n - 2)
+data Point(x: Int, y: Int) is
+  def sum -> Int = x + y
+end
+
+# A heavy computation on a helper thread; tasks keep running meanwhile.
+Task.scope do |scope|
+  heavy = scope.spawn { Task.blocking { Process.sh("sleep 0.3"); fib(20) } }
+  ticker = scope.spawn do
+    3.times do |i|
+      Task.sleep(20.ms)
+      puts "tick #{i}"
+    end
+  end
+  ticker.await
+  puts "ticks done before heavy: #{!heavy.done?}"
+  puts "fib = #{heavy.await}"
+end
+
+# Captured immutable values go in, results come out, including data and symbols.
+base = 100
+names = ["a", "b"]
+pt = Point.new(1, 2)
+r = Task.blocking { [base + pt.sum, names.map(&:upcase), :sym, 1.5, 2**70, { k: pt }] }
+p r
+
+# Output inside the block appears when it finishes.
+Task.blocking { puts "inside"; 1 }
+puts "after"
+
+# Exceptions propagate with their class and message.
+begin
+  Task.blocking { raise ArgumentError, "from the helper" }
+rescue ArgumentError => e
+  puts "caught: #{e.message}"
+end
+
+# Values bound to the calling thread are rejected.
+ch = Channel[Int].new
+begin
+  Task.blocking { ch.size }
+rescue ArgumentError => e
+  puts "rejected: #{e.message.start_with?("a Channel cannot be used in Task.blocking")}"
+end
+
+# Two blocking jobs run at the same time.
+t0 = Process.clock
+Task.scope do |scope|
+  jobs = 2.times.map { scope.spawn { Task.blocking { Process.sh("sleep 0.3").status } } }
+  p jobs.map(&:await)
+end
+puts "parallel: #{Process.clock - t0 < 0.5}"
+

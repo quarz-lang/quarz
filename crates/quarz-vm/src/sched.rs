@@ -310,7 +310,7 @@ impl Scheduler {
         }
     }
 
-    /// Run `job` on another thread; the task `id` is woken when it
+    /// Run `job` on a helper thread; the task `id` is woken when it
     /// finishes and takes the result from the returned receiver.
     pub fn offload<T: Send + 'static>(
         &mut self,
@@ -321,12 +321,12 @@ impl Scheduler {
         let completions = self.reactor.completions.clone();
         let poller = self.reactor.poller.clone();
         self.reactor.pending_jobs += 1;
-        std::thread::spawn(move || {
+        pool_submit(Box::new(move || {
             let result = job();
             let _ = tx.send(result);
             completions.lock().unwrap().push(id);
             let _ = poller.notify();
-        });
+        }));
         rx
     }
 
@@ -603,4 +603,57 @@ pub fn resume(task: &TaskHandle, co: &mut TaskCoroutine) -> CoroutineResult<(), 
     YIELDER.with(|y| y.set(outer));
     STACK_LIMIT.with(|l| l.set(outer_limit));
     r
+}
+
+// ----- the helper thread pool ---------------------------------------------------------
+
+type Job = Box<dyn FnOnce() + Send + 'static>;
+
+/// Threads for offloaded work. A job never waits for a thread: when all
+/// of them are busy a new one is started, so a long `Task.blocking`
+/// computation cannot hold up file IO. Idle threads are kept.
+struct Pool {
+    queue: Mutex<(VecDeque<Job>, usize)>,
+    available: std::sync::Condvar,
+}
+
+static POOL: std::sync::OnceLock<Pool> = std::sync::OnceLock::new();
+
+fn pool_submit(job: Job) {
+    let pool = POOL.get_or_init(|| Pool {
+        queue: Mutex::new((VecDeque::new(), 0)),
+        available: std::sync::Condvar::new(),
+    });
+    let mut q = pool.queue.lock().unwrap();
+    q.0.push_back(job);
+    if q.1 < q.0.len() {
+        // Fewer idle threads (including ones still starting) than
+        // queued jobs: start one. It counts as idle until it takes a job.
+        q.1 += 1;
+        drop(q);
+        std::thread::Builder::new()
+            .name("quarz-helper".to_string())
+            .spawn(move || pool_worker(pool))
+            .expect("spawn a helper thread");
+    } else {
+        drop(q);
+        pool.available.notify_one();
+    }
+}
+
+fn pool_worker(pool: &'static Pool) {
+    loop {
+        let job = {
+            let mut q = pool.queue.lock().unwrap();
+            loop {
+                if let Some(job) = q.0.pop_front() {
+                    q.1 -= 1;
+                    break job;
+                }
+                q = pool.available.wait(q).unwrap();
+            }
+        };
+        job();
+        pool.queue.lock().unwrap().1 += 1;
+    }
 }

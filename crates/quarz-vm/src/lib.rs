@@ -6,6 +6,7 @@ pub mod ffi;
 pub mod interp;
 pub mod natives;
 pub mod sched;
+pub mod transfer;
 pub mod value;
 pub mod vm;
 

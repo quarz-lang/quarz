@@ -189,7 +189,11 @@ end
 - A parked IO operation is interrupted like any other wait: `Task.timeout` and `cancel` raise in the waiting task, and the socket stays usable afterwards.
 - The standard streams (`STDIN`, `STDOUT`, `STDERR`) are blocking for now: reading from the terminal stops the scheduler.
 - `IO` handles should be used from the owning task; to let other tasks read or write, mediate through a channel.
-- `Task.blocking { }` is reserved for pushing a potentially blocking C function (FFI) or a long computation onto an OS thread; today it runs the block in place.
+- `Task.blocking { }` runs its block on a helper thread (one is started whenever none is idle, so a long computation never holds up file IO), and only the calling task waits. Values are owned by one thread, so the block is *copied* to the helper: its captured variables must be Shareable (the same rule as `spawn`), they cannot be assigned inside the block, and only immutable values cross over (numbers, strings, symbols, arrays, hashes, sets, ranges, `data`/`enum` values, procs over such values). A `Channel`, `Atom`, `Task` or any mutable value is rejected with `ArgumentError`, since it would have to be shared rather than copied. The block's result or exception comes back the same way, and what it prints is written out when it finishes. Use it for long computations and for blocking foreign functions; for IO, the standard library already suspends only the task.
+
+```ruby
+digest = Task.blocking { expensive_hash(data) }     # the scheduler keeps running other tasks
+```
 
 ```ruby
 rows = Task.blocking { legacy_c_query(sql) }
