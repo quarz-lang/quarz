@@ -21,11 +21,11 @@ between runs.
 
 | program     | quarz-vm | quarz-aot |   go | rust |  ruby | ruby --yjit |
 |-------------|---------:|----------:|-----:|-----:|------:|------------:|
-| fib         |    135.1 |       9.1 |  2.6 |  1.8 |  66.1 |        55.9 |
-| loop        |    403.8 |       8.9 |  3.2 |  4.1 | 105.5 |       107.2 |
-| collections |    482.8 |      33.2 | 26.8 | 13.1 | 223.7 |       203.9 |
-| objects     |    138.0 |      14.4 |  1.6 |  1.6 | 285.5 |       230.0 |
-| strings     |     76.1 |      31.1 | 31.8 | 15.1 | 151.2 |       147.6 |
+| fib         |    137.1 |       6.1 |  2.2 |  1.8 |  68.2 |        56.1 |
+| loop        |    402.8 |       9.0 |  3.9 |  3.4 | 107.0 |       109.3 |
+| collections |    483.1 |      31.8 | 29.4 | 13.0 | 223.7 |       203.1 |
+| objects     |     96.6 |       7.4 |  1.9 |  1.6 | 284.5 |       226.8 |
+| strings     |     77.4 |      29.1 | 33.1 | 15.4 | 154.7 |       148.9 |
 
 First measurement, at commit 93874ea (before direct calls between
 compiled bodies, inline reference counting, inline field and frame
@@ -42,9 +42,10 @@ access and the reusable block caller):
 ## Reading the numbers
 
 - Compiled Quarz is now 2.5× slower than Go and Rust on the counting
-  loop (its Int locals are unboxed and stay in registers), 3.5–4.5× on
+  loop (its Int locals are unboxed and stay in registers), 3× on
   `fib` (one level of the recursion is inlined and the remaining calls
-  build their activation inline), 1.1–2.5× on the collection pipeline
+  go through a typed entry that passes `Int`s as machine values; what
+  remains is the activation each call still pushes for backtraces), 1.1–2.5× on the collection pipeline
   (its blocks are loops in the caller, the array and hash updates are in
   place and the appends inline, `Int`/`Float` array elements are stored
   unboxed and read inline, numeric equality is inline; what remains is
@@ -57,7 +58,7 @@ access and the reusable block caller):
   reference, strings of at most 15 bytes live in the value; what
   remains is the builder's growth and the per-call entry into the
   runtime).
-- Against Ruby, compiled Quarz is ahead everywhere: 7–8× on `fib`,
+- Against Ruby, compiled Quarz is ahead everywhere: 9–11× on `fib`,
   12× on `loop`, 6–7× on `collections`, 33–40× on `objects`, 5× on
   `strings`.
 - The VM is 2–4× slower than Ruby's interpreter on calls and loops and
