@@ -56,3 +56,30 @@ def find_long(words: Array[String]) -> String?
   nil
 end
 p find_long(["a", "bb", "cccc", "ddddd"])
+
+# literal blocks run in place; a body that creates a closure keeps the
+# receiver as that closure's self
+p 3.instance_exec { [1, 2].sum { |x| x * self } }
+p "ab".instance_exec(2, 3) { |m, n| size * m + n }
+total = 0
+(1..3).each { |i| total += i.instance_exec { v = self * 10; v + 1 } }
+p total
+class Outer
+  def tag -> String = "outer"
+  def run -> String
+    "x".instance_exec { "y".instance_exec { upcase + tag + size.to_s } }
+  end
+end
+p Outer.new.run
+# DslScope: a marked receiver hides the marked receivers of enclosing blocks
+class Inner
+  include DslScope
+  def leaf(s: String) -> String = "leaf(#{s})"
+end
+class Builder
+  include DslScope
+  def item(s: String) -> String = "item(#{s})"
+  def inner(&b: Inner.() -> String) -> String = Inner.new.instance_exec(&b)
+end
+def label -> String = "label"
+p Builder.new.instance_exec { inner { leaf(label) } }

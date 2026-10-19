@@ -923,6 +923,14 @@ impl World {
         self.top.get(name).copied()
     }
 
+    /// The top-level class or module called `name`, if any.
+    pub fn top_class(&self, name: &str) -> Option<ClassId> {
+        match self.top.get(name).copied() {
+            Some(Member::Class(id)) => Some(id),
+            _ => None,
+        }
+    }
+
     pub fn member_in(&self, scope: Option<ClassId>, name: &str) -> Option<Member> {
         match scope {
             Some(cid) => self.class(cid).members.get(name).copied(),

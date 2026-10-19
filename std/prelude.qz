@@ -12,6 +12,13 @@ end
 module Unshareable
 end
 
+# A marker for DSL receivers: inside a block whose receiver includes it,
+# the receivers of enclosing blocks that include it are not implicit
+# (a call must name them), so nested builders do not leak into each
+# other. The enclosing method's `self` stays implicit.
+module DslScope
+end
+
 class Object
   include Kernel
 

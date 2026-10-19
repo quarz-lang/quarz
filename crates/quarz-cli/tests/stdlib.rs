@@ -196,6 +196,16 @@ g: Box.() -> Nil = f
 Box.new.bump { nothing_here }
 def n -> Int = 42
 Box.new.bump { n }
+class Inner
+  include DslScope
+  def leaf -> Int = 1
+end
+class Builder
+  include DslScope
+  def item -> Int = 2
+  def inner(&b: Inner.() -> Int) -> Int = Inner.new.instance_exec(&b)
+end
+Builder.new.instance_exec { inner { item } }
 "#,
     )
     .join("\n");
@@ -213,4 +223,8 @@ Box.new.bump { n }
         "{out}"
     );
     assert!(out.contains("warning: `n` is a method of both"), "{out}");
+    assert!(
+        out.contains("undefined local variable or method `item` for Inner"),
+        "{out}"
+    );
 }

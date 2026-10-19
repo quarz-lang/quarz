@@ -79,6 +79,9 @@ pub struct FnBuilder<'a> {
     slot_regs: HashMap<u32, Reg>,
     /// The blocks currently being lowered in place, outermost first.
     inline: Vec<InlineLevel>,
+    /// Inside an `instance_exec` block lowered in place: the register
+    /// holding the receiver, which `self` means here.
+    self_override: Option<Reg>,
     loops: Vec<LoopCtx>,
     handlers: Vec<Region<'a>>,
     retry_targets: Vec<BlockId>,
@@ -129,6 +132,7 @@ impl<'a> FnBuilder<'a> {
             all_captured,
             slot_regs: HashMap::new(),
             inline: Vec::new(),
+            self_override: None,
             loops: Vec::new(),
             handlers: vec![Region {
                 handler: None,
@@ -529,7 +533,10 @@ impl<'a> FnBuilder<'a> {
 
     fn self_reg(&mut self) -> Reg {
         let dst = self.reg();
-        self.emit(Inst::SelfRef { dst });
+        match self.self_override {
+            Some(src) => self.emit(Inst::Move { dst, src }),
+            None => self.emit(Inst::SelfRef { dst }),
+        }
         dst
     }
 
@@ -1336,6 +1343,9 @@ impl<'a> FnBuilder<'a> {
         if let Some(shape) = iter::shape(e, call, self.out, self.world) {
             return self.inline_iter(call, shape);
         }
+        if iter::exec_shape(e, call, self.out, self.world).is_some() {
+            return self.inline_exec(e, call);
+        }
         let target = self.out.calls.get(&e.id);
         let recv = match call.recv.as_ref() {
             Some(r) => Some(self.expr(r)),
@@ -1344,6 +1354,16 @@ impl<'a> FnBuilder<'a> {
             None if self.out.outer_self_calls.contains(&e.id) => {
                 let r = self.out.var_refs[&e.span];
                 Some(self.load_var(r))
+            }
+            // In an `instance_exec` block lowered in place, `self` is the
+            // receiver's register, not the activation's `self`.
+            None if self.self_override.is_some()
+                && matches!(
+                    self.out.calls.get(&e.id),
+                    Some(CallTarget::Method { .. }) | None
+                ) =>
+            {
+                Some(self.self_reg())
             }
             None => None,
         };
@@ -1392,6 +1412,85 @@ impl<'a> FnBuilder<'a> {
     /// update its receiver in place when nothing else refers to it.
     fn is_owned_native(&self, id: &u32) -> bool {
         matches!(self.out.calls.get(id), Some(CallTarget::Method { method }) if self.world.method(*method).is_native)
+    }
+
+    /// `recv.instance_exec(args) { ... }` with a literal block: the body
+    /// in this function, `self` being the receiver's register (its class
+    /// known from the receiver's static type), `break`/`next` jumping to
+    /// the join with the call's value.
+    fn inline_exec(&mut self, e: &'a Expr, call: &'a ast::Call) -> Reg {
+        let block = call.block.as_ref().unwrap();
+        let recv = match &call.recv {
+            Some(r) => self.expr(r),
+            None => self.self_reg(),
+        };
+        let recv_class = match &call.recv {
+            Some(r) => match self.out.node_types.get(&r.id) {
+                Some(Type::Class(id, _)) => Some(*id),
+                _ => None,
+            },
+            None => self.class_id,
+        };
+        let args: Vec<Reg> = call
+            .args
+            .iter()
+            .map(|a| match a {
+                Arg::Positional(x) => self.expr(x),
+                _ => unreachable!(),
+            })
+            .collect();
+        let result = self.nil();
+        let join = self.new_block();
+        // The body's registers start as nil (it may run again in a loop).
+        let clear_from = self.func.nregs;
+        let clear_at = (self.cur, self.func.blocks[self.cur as usize].insts.len());
+        self.emit(Inst::ClearRegs {
+            from: clear_from,
+            to: clear_from,
+        });
+        let saved_override = self.self_override.replace(recv);
+        let saved_class = self.class_id;
+        self.class_id = recv_class;
+        self.inline.push(InlineLevel::default());
+        for pi in 0..block.params.list.len() {
+            let src = match args.get(pi) {
+                Some(r) => *r,
+                None => self.nil(),
+            };
+            self.store_var(
+                VarRef {
+                    depth: 0,
+                    slot: pi as u32,
+                },
+                src,
+            );
+        }
+        self.store_self_slot(SelfOwner::Block(e.id));
+        self.loops.push(LoopCtx {
+            next: join,
+            exit: join,
+            result,
+            depth: self.handlers.len(),
+            next_value: Some(result),
+        });
+        let v = self.body(&block.body);
+        self.loops.pop();
+        self.emit(Inst::Move {
+            dst: result,
+            src: v,
+        });
+        self.term(Term::Jump(join));
+        self.inline.pop();
+        self.self_override = saved_override;
+        self.class_id = saved_class;
+        let clear_to = self.func.nregs;
+        if let Inst::ClearRegs { to, .. } =
+            &mut self.func.blocks[clear_at.0 as usize].insts[clear_at.1]
+        {
+            *to = clear_to;
+        }
+        self.switch(join);
+        result
     }
 
     /// The `Int` operator method `op` (for a typed `BinOp`).

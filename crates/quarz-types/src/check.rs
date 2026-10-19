@@ -3373,8 +3373,19 @@ impl Checker {
     /// The innermost enclosing `self` (outside the blocks with receivers
     /// the call sits in) that answers `name`, with its receiver level.
     fn outer_self_for(&mut self, name: &str) -> Option<(Type, usize)> {
+        // `DslScope`: from a block on a marked receiver, the receivers of
+        // enclosing blocks that are marked too are not implicit (the
+        // lexical `self` always is).
+        let dsl = self.world.top_class("DslScope");
+        let marked = |world: &World, t: &Type| -> bool {
+            matches!(t, Type::Class(c, _) if dsl.is_some_and(|d| world.class_is_a(*c, d)))
+        };
+        let inner_marked = marked(&self.world, &self.env.self_type.clone());
         for k in (0..self.env.receivers.len()).rev() {
             let outer = self.env.receivers[k].outer_self.clone();
+            if inner_marked && k > 0 && marked(&self.world, &outer) {
+                continue;
+            }
             if !self.world.lookup_methods(&outer, name).is_empty() {
                 return Some((outer, k));
             }

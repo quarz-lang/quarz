@@ -6,7 +6,7 @@
 use quarz_syntax::ast::{self, Arg, Expr, ExprKind, ParamKind};
 use quarz_types::{CallTarget, Output, Type, World};
 
-use crate::capture::captured_slots;
+use crate::capture::{captured_slots, has_real_closure};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -131,4 +131,42 @@ pub fn shape(e: &Expr, call: &ast::Call, out: &Output, world: &World) -> Option<
         return None;
     }
     Some(shape)
+}
+
+/// Whether `call` is `recv.instance_exec(args) { ... }` with a block that
+/// can run in place: the body is then lowered in the enclosing function
+/// with `self` replaced by the receiver's register. A body that creates
+/// a closure of its own is left alone (that closure must capture the
+/// receiver as its `self`).
+pub fn exec_shape(e: &Expr, call: &ast::Call, out: &Output, world: &World) -> Option<()> {
+    if call.safe_nav {
+        return None;
+    }
+    let block = call.block.as_ref()?;
+    let simple_params = block
+        .params
+        .list
+        .iter()
+        .all(|p| p.kind == ParamKind::Positional && p.default.is_none());
+    if !simple_params || out.block_destructure.contains_key(&e.id) {
+        return None;
+    }
+    if !call.args.iter().all(|a| matches!(a, Arg::Positional(_))) {
+        return None;
+    }
+    let Some(CallTarget::Method { method }) = out.calls.get(&e.id) else {
+        return None;
+    };
+    let m = world.method(*method);
+    if !(m.is_native && m.name == "instance_exec" && m.owner == world.builtin.object) {
+        return None;
+    }
+    let nparams = block.params.list.len() as u32;
+    if !captured_slots(&block.body, &[], out, world, nparams).is_empty() {
+        return None;
+    }
+    if has_real_closure(&block.body, out, world) {
+        return None;
+    }
+    Some(())
 }

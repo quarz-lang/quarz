@@ -344,6 +344,8 @@ end
 - `return` returns from the enclosing method, `break` from the `instance_exec` call, `next` from the block, and `yield` goes to the enclosing method's block, as in any block.
 - `instance_exec` is `Object#instance_exec[R](&: self.() -> R) -> R` (with one- and two-argument overloads), so `5.instance_exec { self * 2 }` is `10`. `yield` cannot run a block with a receiver: name the parameter and call `recv.instance_exec(&name)`. A `->` lambda takes its receiver from the type it is assigned to (`f: String.() -> String = -> { upcase }`).
 - The receiver position is contravariant: an `Object.() -> R` block can be passed where `Html.() -> R` is expected; a block with a receiver is not interchangeable with one without.
+- A class that includes the marker module `DslScope` keeps nested builders apart: inside a block whose receiver is marked, the receivers of enclosing blocks that are marked too are not implicit (name them), while the enclosing method's `self` stays reachable. This is Kotlin's `@DslMarker`.
+- A literal block given directly to `instance_exec` (`h.instance_exec { ... }`) is compiled in place, with `self` replaced by the receiver and no closure created, unless its body creates a closure of its own; a block passed on by name (`&build`) is a real closure.
 
 ## 10. Variables and assignment
 

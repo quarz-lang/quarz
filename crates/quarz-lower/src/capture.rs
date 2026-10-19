@@ -43,6 +43,25 @@ pub struct Cx<'a> {
     pub out: &'a Output,
     pub world: &'a World,
     pub visit: &'a mut dyn FnMut(Site, Nest),
+    /// How many blocks that become closures of their own were seen.
+    pub real_blocks: u32,
+}
+
+/// Whether `body` creates a closure (a block or lambda that is not
+/// lowered in place): such a closure would capture the wrong `self`
+/// inside a block lowered in place with another receiver.
+pub fn has_real_closure(body: &[Expr], out: &Output, world: &World) -> bool {
+    let mut visit = |_: Site, _: Nest| {};
+    let mut cx = Cx {
+        out,
+        world,
+        visit: &mut visit,
+        real_blocks: 0,
+    };
+    for e in body {
+        walk_expr(e, Nest::TOP, &mut cx);
+    }
+    cx.real_blocks > 0
 }
 
 /// Slots of the function whose body is `body` (plus `extra` expressions
@@ -79,6 +98,7 @@ pub fn captured_slots(
         out,
         world,
         visit: &mut visit,
+        real_blocks: 0,
     };
     for e in body {
         walk_expr(e, Nest::TOP, &mut cx);
@@ -115,6 +135,9 @@ fn walk_args(args: &[Arg], nest: Nest, cx: &mut Cx) {
 }
 
 fn walk_block(block: &Block, nest: Nest, cx: &mut Cx, inlined: bool) {
+    if !inlined {
+        cx.real_blocks += 1;
+    }
     let inner = nest.enter(inlined);
     for p in &block.params.list {
         if let Some(d) = &p.default {
@@ -261,7 +284,8 @@ pub fn walk_expr(e: &Expr, nest: Nest, cx: &mut Cx) {
             }
             walk_args(&call.args, nest, cx);
             if let Some(b) = &call.block {
-                let inlined = crate::iter::shape(e, call, cx.out, cx.world).is_some();
+                let inlined = crate::iter::shape(e, call, cx.out, cx.world).is_some()
+                    || crate::iter::exec_shape(e, call, cx.out, cx.world).is_some();
                 walk_block(b, nest, cx, inlined);
             }
         }
