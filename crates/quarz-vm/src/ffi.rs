@@ -880,5 +880,9 @@ pub unsafe extern "C" fn qz_main(
             }
         }
     }
-    interp.run()
+    let code = interp.run();
+    // The process is about to exit: freeing the program's tables (hash
+    // maps of every class and method) would only cost time.
+    std::mem::forget(interp);
+    code
 }

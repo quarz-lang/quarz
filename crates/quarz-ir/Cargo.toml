@@ -10,3 +10,4 @@ repository.workspace = true
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 bincode = "1"
+rustc-hash = "2"

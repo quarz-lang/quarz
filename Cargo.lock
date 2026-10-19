@@ -555,6 +555,7 @@ name = "quarz-ir"
 version = "0.0.1"
 dependencies = [
  "bincode",
+ "rustc-hash 2.1.3",
  "serde",
 ]
 

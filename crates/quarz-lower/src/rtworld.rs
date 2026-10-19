@@ -1,7 +1,5 @@
 //! `World` (the checker's view) → `RtWorld` (what the runtime needs).
 
-use std::collections::HashMap;
-
 use quarz_ir::*;
 use quarz_syntax::ast::ParamKind;
 use quarz_types::{self as types, ClassKind, Member, Synth, Type, World};
@@ -76,8 +74,16 @@ pub fn build(world: &World, lw: &Lowerer, file_names: Vec<String>) -> RtWorld {
                     .map(|(id, _)| id)
                     .collect(),
                 fields,
-                methods: c.methods.clone(),
-                singleton_methods: c.singleton_methods.clone(),
+                methods: c
+                    .methods
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect(),
+                singleton_methods: c
+                    .singleton_methods
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect(),
                 extends: c
                     .extends
                     .iter()
@@ -180,11 +186,15 @@ pub fn build(world: &World, lw: &Lowerer, file_names: Vec<String>) -> RtWorld {
         {
             extensions.push(RtExtension {
                 target: e.target,
-                methods: e.methods.clone(),
+                methods: e
+                    .methods
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect(),
             });
         }
     }
-    let top: HashMap<String, ClassId> = world
+    let top: quarz_ir::HashMap<String, ClassId> = world
         .top
         .iter()
         .filter_map(|(name, m)| match m {

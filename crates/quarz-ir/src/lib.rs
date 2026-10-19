@@ -10,7 +10,9 @@
 //! are registers.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+/// The maps of the run-time tables use a fast hasher: a program builds
+/// them at every start.
+pub type HashMap<K, V> = rustc_hash::FxHashMap<K, V>;
 
 pub type FuncId = u32;
 pub type Reg = u32;
