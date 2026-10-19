@@ -70,3 +70,17 @@ pub fn expect(src: &str, expected: &str) {
     assert_eq!(code, 0, "exit code for {src:?}, output: {out:?}");
     assert_eq!(out, expected, "output for {src:?}");
 }
+
+/// Type-check a program and return its diagnostics (errors and
+/// warnings), rendered.
+#[allow(dead_code)]
+pub fn diagnostics(src: &str) -> Vec<String> {
+    let prelude = parse(PRELUDE_SOURCE);
+    let base = unit_base(0);
+    let parsed = parse_with_bases(src, base, base);
+    let file = SourceFile::with_base("test", src, base);
+    let mut out: Vec<String> = parsed.diagnostics.iter().map(|d| d.render(&file)).collect();
+    let (_, diags) = quarz_types::check(&prelude.program, &parsed.program);
+    out.extend(diags.iter().map(|(_, d)| d.render(&file)));
+    out
+}

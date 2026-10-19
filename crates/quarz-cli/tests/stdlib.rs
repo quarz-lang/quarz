@@ -175,3 +175,42 @@ call(Base.new)
         "int 2\nstr x\nbase int\nsub str\nsub g\nbase int\nbase str\nbase g\n",
     );
 }
+
+/// Blocks with a receiver: what the checker rejects.
+#[test]
+fn receiver_block_errors() {
+    let out = common::diagnostics(
+        r#"class Box
+  var @n: Int = 0
+  def bump(&b: Box.() -> Nil) -> Nil
+    instance_exec(&b)
+  end
+  def n -> Int = @n
+end
+Box.new.bump { @n = 1 }
+def run(&b: Box.() -> Nil) -> Nil
+  yield
+end
+f: (Int) -> Int = -> (x: Int) { x }
+g: Box.() -> Nil = f
+Box.new.bump { nothing_here }
+def n -> Int = 42
+Box.new.bump { n }
+"#,
+    )
+    .join("\n");
+    assert!(out.contains("not accessible from this block"), "{out}");
+    assert!(
+        out.contains("`yield` cannot run a block with a receiver"),
+        "{out}"
+    );
+    assert!(
+        out.contains("cannot assign (Int) -> Int to `g` of type Box.() -> Nil"),
+        "{out}"
+    );
+    assert!(
+        out.contains("undefined local variable or method `nothing_here` for Box"),
+        "{out}"
+    );
+    assert!(out.contains("warning: `n` is a method of both"), "{out}");
+}

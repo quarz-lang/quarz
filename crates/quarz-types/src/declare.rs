@@ -1224,7 +1224,7 @@ impl<'ast> Declarer<'ast> {
                 match &p.ty {
                     Some(t) => {
                         if let Some(ty) = self.resolve_type(t, &scope) {
-                            if !matches!(ty, Type::Proc(_, _)) {
+                            if !matches!(ty, Type::Proc(_, _, _)) {
                                 self.error(
                                     "a block parameter must have a procedure type `(A) -> R`",
                                     t.span,
@@ -1448,13 +1448,17 @@ impl<'ast> Declarer<'ast> {
                 }
                 Some(Type::Tuple(out))
             }
-            TypeExprKind::Proc { params, ret } => {
+            TypeExprKind::Proc { recv, params, ret } => {
+                let rc = match recv {
+                    Some(t) => Some(Box::new(self.resolve_type(t, scope)?)),
+                    None => None,
+                };
                 let mut ps = Vec::new();
                 for p in params {
                     ps.push(self.resolve_type(p, scope)?);
                 }
                 let r = self.resolve_type(ret, scope)?;
-                Some(Type::Proc(ps, Box::new(r)))
+                Some(Type::Proc(rc, ps, Box::new(r)))
             }
             TypeExprKind::Named { path, args } => {
                 // A type parameter in scope?

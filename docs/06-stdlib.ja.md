@@ -12,7 +12,7 @@
 
 ## 2. Object
 
-`==`、`equal?`、`hash`、`to_s`、`inspect`、`class`、`is_a?`、`nil?`、`tap`、`then`、`dup`(可変オブジェクトのみ)、`as`、`as?`、`frozen?`(常に真、互換のため)。
+`==`、`equal?`、`hash`、`to_s`、`inspect`、`class`、`is_a?`、`nil?`、`tap`、`then`、`dup`(可変オブジェクトのみ)、`as`、`as?`、`frozen?`(常に真、互換のため)、`instance_exec`(レシーバ付きブロック `self.() -> R` を、そのオブジェクトを `self` にして実行。[01-syntax.ja.md](01-syntax.ja.md) §9 参照)。
 
 `Comparable[T]` は `<=>` を定義したクラスに `< <= > >= between? clamp(min, max) clamp(range)` を与えます。
 

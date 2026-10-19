@@ -14,7 +14,7 @@ Everything listed below exists in the prelude (`std/prelude.qz`) unless it is ma
 
 ## 2. Object
 
-`==`, `equal?`, `hash`, `to_s`, `inspect`, `class`, `is_a?`, `nil?`, `tap`, `then`, `dup` (mutable objects only), `as`, `as?`, `frozen?` (always true, for compatibility).
+`==`, `equal?`, `hash`, `to_s`, `inspect`, `class`, `is_a?`, `nil?`, `tap`, `then`, `dup` (mutable objects only), `as`, `as?`, `frozen?` (always true, for compatibility), `instance_exec` (runs a block with a receiver, `self.() -> R`, with `self` = the object; see [01-syntax.md](01-syntax.md) §9).
 
 `Comparable[T]` gives `< <= > >= between? clamp(min, max) clamp(range)` to a class that defines `<=>`.
 

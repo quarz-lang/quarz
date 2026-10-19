@@ -130,8 +130,11 @@ pub fn type_sexp(ty: &TypeExpr) -> String {
             "[{}]",
             ts.iter().map(type_sexp).collect::<Vec<_>>().join(", ")
         ),
-        TypeExprKind::Proc { params, ret } => format!(
-            "({}) -> {}",
+        TypeExprKind::Proc { recv, params, ret } => format!(
+            "{}({}) -> {}",
+            recv.as_ref()
+                .map(|r| format!("{}.", type_sexp(r)))
+                .unwrap_or_default(),
             params.iter().map(type_sexp).collect::<Vec<_>>().join(", "),
             type_sexp(ret)
         ),

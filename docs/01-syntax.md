@@ -310,6 +310,41 @@ double = ->(x: Int) { x * 2 }          # a procedure (equivalent to a Ruby lambd
 - `&:name` is a compile-time transformation to `{ |x| x.name }`.
 - Procedure types are written like `(Int, String) -> Bool`. Passing a block to a method that does not take one is a compile error.
 
+### Blocks with a receiver
+
+A procedure type can name a receiver: `Html.() -> Nil` is a block that runs with `self` = an `Html` (Kotlin's `Html.() -> Unit`). Such a block is declared as a named block parameter and run with `instance_exec`, which replaces its `self`; it is how DSLs are built.
+
+```ruby
+class Html
+  var @parts: Array[String] = []
+  def title(s: String) -> Nil = (@parts = @parts.push("<title>#{s}</title>"))
+  def body(&b: Body.() -> Nil) -> Nil
+    node = Body.new
+    node.instance_exec(&b)              # the block's self is `node`
+    @parts = @parts.push(node.render)
+  end
+end
+
+def html(&build: Html.() -> Nil) -> Html
+  h = Html.new
+  h.instance_exec(&build)
+  h
+end
+
+page = html do
+  title "Hello"                         # Html#title
+  body do
+    p "world"                           # Body#p
+  end
+end
+```
+
+- Inside the block, `self` is the receiver and an implicit-self call is looked up on the receiver first. A method the receiver does not have is looked up on the enclosing receivers and finally on the lexical `self` (so `html { title(page_title) }` reaches the enclosing class's `page_title`); when both have it, the receiver's is called and the compiler warns.
+- `@x` refers to the receiver's fields but is only allowed when the block is lexically inside that class's body, like any other field access.
+- `return` returns from the enclosing method, `break` from the `instance_exec` call, `next` from the block, and `yield` goes to the enclosing method's block, as in any block.
+- `instance_exec` is `Object#instance_exec[R](&: self.() -> R) -> R` (with one- and two-argument overloads), so `5.instance_exec { self * 2 }` is `10`. `yield` cannot run a block with a receiver: name the parameter and call `recv.instance_exec(&name)`. A `->` lambda takes its receiver from the type it is assigned to (`f: String.() -> String = -> { upcase }`).
+- The receiver position is contravariant: an `Object.() -> R` block can be passed where `Html.() -> R` is expected; a block with a receiver is not interchangeable with one without.
+
 ## 10. Variables and assignment
 
 ```ruby

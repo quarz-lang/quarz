@@ -308,6 +308,41 @@ double = ->(x: Int) { x * 2 }          # 手続き(Ruby の lambda に相当)
 - `&:name` は `{ |x| x.name }` へのコンパイル時変換です。
 - 手続きの型は `(Int, String) -> Bool` のように書きます。ブロックを取らないメソッドにブロックを渡すとコンパイルエラーです。
 
+### レシーバ付きブロック
+
+手続きの型にはレシーバを付けられます。`Html.() -> Nil` は `self` を `Html` にして走るブロックです(Kotlin の `Html.() -> Unit`)。名前付きのブロック引数として受け取り、`self` を差し替える `instance_exec` で実行します。DSL はこれで作ります。
+
+```ruby
+class Html
+  var @parts: Array[String] = []
+  def title(s: String) -> Nil = (@parts = @parts.push("<title>#{s}</title>"))
+  def body(&b: Body.() -> Nil) -> Nil
+    node = Body.new
+    node.instance_exec(&b)              # ブロックの self は node
+    @parts = @parts.push(node.render)
+  end
+end
+
+def html(&build: Html.() -> Nil) -> Html
+  h = Html.new
+  h.instance_exec(&build)
+  h
+end
+
+page = html do
+  title "Hello"                         # Html#title
+  body do
+    p "world"                           # Body#p
+  end
+end
+```
+
+- ブロックの中では `self` がレシーバで、暗黙の受け手の呼び出しはまずレシーバで探します。レシーバにないメソッドは外側のレシーバ、最後に字句上の `self` で探すので、`html { title(page_title) }` のように囲むクラスの `page_title` に届きます。両方にあればレシーバのものが呼ばれ、コンパイラが警告します。
+- `@x` はレシーバのフィールドを指しますが、他のフィールド参照と同じく、ブロックがそのクラスの本体の中に字句上あるときだけ許されます。
+- `return` は囲むメソッドから、`break` は `instance_exec` の呼び出しから、`next` はブロックから抜け、`yield` は囲むメソッドのブロックへ行きます。普通のブロックと同じです。
+- `instance_exec` は `Object#instance_exec[R](&: self.() -> R) -> R`(引数 1 つ・2 つの多重定義あり)で、`5.instance_exec { self * 2 }` は `10` です。`yield` ではレシーバ付きブロックを実行できません。引数に名前を付けて `recv.instance_exec(&name)` と書きます。`->` のラムダは代入先の型からレシーバを得ます(`f: String.() -> String = -> { upcase }`)。
+- レシーバの位置は反変です。`Object.() -> R` のブロックは `Html.() -> R` が期待される所に渡せますが、レシーバ付きとなしのブロックは互換ではありません。
+
 ## 10. 変数と代入
 
 ```ruby

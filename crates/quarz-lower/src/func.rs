@@ -6,7 +6,7 @@ use quarz_ir::*;
 use quarz_syntax::ast::{self, Arg, Block as AstBlock, Expr, ExprKind, LValue, ParamKind, StrPart};
 use quarz_syntax::token::OpAssign;
 use quarz_syntax::Span;
-use quarz_types::{CallTarget, ConstTarget, Output, Type, VarRef, World};
+use quarz_types::{CallTarget, ConstTarget, Output, SelfOwner, Type, VarRef, World};
 
 use crate::capture::captured_slots;
 use crate::iter::{self, Kind, Shape, Source};
@@ -144,6 +144,21 @@ impl<'a> FnBuilder<'a> {
         }
     }
 
+    /// Keep this function's `self` in its hidden frame slot when a block
+    /// with a receiver inside it calls methods on it.
+    fn store_self_slot(&mut self, owner: SelfOwner) {
+        if let Some(slot) = self.out.self_slots.get(&owner) {
+            let s = self.self_reg();
+            self.store_var(
+                VarRef {
+                    depth: 0,
+                    slot: *slot,
+                },
+                s,
+            );
+        }
+    }
+
     fn line_of(&self, span: Span) -> u32 {
         match self.lw.files.get(self.file as usize) {
             Some(f) if !f.text.is_empty() => f.line_col(span.start).line as u32,
@@ -256,6 +271,7 @@ impl<'a> FnBuilder<'a> {
                 }
             }
         }
+        b.store_self_slot(SelfOwner::Method(mid));
         let v = b.body(body);
         b.term(Term::Return(v));
         b.finish()
@@ -318,6 +334,7 @@ impl<'a> FnBuilder<'a> {
             None,
             Some(unit.main_class),
         );
+        b.store_self_slot(SelfOwner::Unit(unit.file));
         let v = b.body(unit.body);
         b.term(Term::Return(v));
         b.finish()
@@ -425,6 +442,7 @@ impl<'a> FnBuilder<'a> {
                 }
             }
         }
+        b.store_self_slot(SelfOwner::Block(call_id));
         let v = b.body(&block.body);
         b.term(Term::Return(v));
         let f = b.finish();
@@ -1319,7 +1337,16 @@ impl<'a> FnBuilder<'a> {
             return self.inline_iter(call, shape);
         }
         let target = self.out.calls.get(&e.id);
-        let recv = call.recv.as_ref().map(|r| self.expr(r));
+        let recv = match call.recv.as_ref() {
+            Some(r) => Some(self.expr(r)),
+            // An implicit-self call inside a block with a receiver that
+            // goes to an enclosing `self`: read it from its hidden slot.
+            None if self.out.outer_self_calls.contains(&e.id) => {
+                let r = self.out.var_refs[&e.span];
+                Some(self.load_var(r))
+            }
+            None => None,
+        };
         // `recv&.name`: nil when the receiver is nil.
         let (res, nil_join) = if call.safe_nav {
             let recv = recv.unwrap();

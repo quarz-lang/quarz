@@ -1,0 +1,58 @@
+# Blocks with a receiver (`Recv.() -> R`): the block runs with `self` = the
+# receiver given to `instance_exec`; methods the receiver lacks are looked up
+# on the enclosing selves; return/break/next keep their meaning.
+class Node
+  var @tag: String
+  var @children: Array[String] = []
+  def initialize(@tag: String); end
+  def text(s: String) -> Nil
+    @children = @children.push(s)
+  end
+  def node(tag: String, &build: Node.() -> Nil) -> Nil
+    child = Node.new(tag)
+    child.instance_exec(&build)
+    @children = @children.push(child.render)
+  end
+  def render -> String = "<#{@tag}>#{@children.join("")}</#{@tag}>"
+end
+
+def html(&build: Node.() -> Nil) -> String
+  root = Node.new("html")
+  root.instance_exec(&build)
+  root.render
+end
+
+class Page
+  @title: String
+  def initialize(@title: String); end
+  def heading -> String = @title.upcase
+  def render -> String
+    html do
+      node("head") { text heading }      # heading: the Page's method, reached from two blocks in
+      node("body") do
+        text "hello"
+        node("p") { text "nested"; text heading }
+      end
+    end
+  end
+end
+
+puts Page.new("Quarz").render
+puts html { text "plain" }
+# value of the block, break, arguments
+p 5.instance_exec { self * 2 }
+p "abc".instance_exec(3) { |n| size * n }
+p 10.instance_exec { break 7 if self > 5; self }
+# a named receiver block passed on
+greet: String.() -> String = -> { "hi #{self}" }
+p "bob".instance_exec(&greet)
+def twice(s: String, &f: String.() -> String) -> String = s.instance_exec(&f) + s.instance_exec(&f)
+p twice("ab") { upcase }
+# return from the enclosing method, and a loop inside
+def find_long(words: Array[String]) -> String?
+  words.each do |w|
+    w.instance_exec { return self if size > 3 }
+  end
+  nil
+end
+p find_long(["a", "bb", "cccc", "ddddd"])

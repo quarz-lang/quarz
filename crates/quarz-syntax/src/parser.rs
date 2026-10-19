@@ -2955,6 +2955,39 @@ impl<'src> Parser<'src> {
     fn parse_type_postfix(&mut self) -> PResult<TypeExpr> {
         let start = self.peek().span;
         let mut ty = self.parse_type_primary()?;
+        // `Recv.(A) -> R`: a procedure type with a receiver.
+        if self.at(&T::Dot)
+            && !self.peek().space_before
+            && matches!(self.peek_at(1).kind, T::LParen)
+            && matches!(ty.kind, TypeExprKind::Named { .. } | TypeExprKind::SelfType)
+        {
+            self.bump();
+            self.expect(&T::LParen, "`(`")?;
+            let mut items = Vec::new();
+            loop {
+                self.skip_newlines();
+                if self.at(&T::RParen) {
+                    break;
+                }
+                items.push(self.parse_type()?);
+                self.skip_newlines();
+                if !self.eat(&T::Comma) {
+                    break;
+                }
+            }
+            self.expect(&T::RParen, "`)`")?;
+            self.expect(&T::Arrow, "`->`")?;
+            let ret = self.parse_type_postfix()?;
+            let span = self.span_from(start);
+            ty = TypeExpr {
+                span,
+                kind: TypeExprKind::Proc {
+                    recv: Some(Box::new(ty)),
+                    params: items,
+                    ret: Box::new(ret),
+                },
+            };
+        }
         while self.at(&T::Question) && !self.peek().space_before {
             self.bump();
             let span = self.span_from(start);
@@ -3031,6 +3064,7 @@ impl<'src> Parser<'src> {
                     return Ok(TypeExpr {
                         span,
                         kind: TypeExprKind::Proc {
+                            recv: None,
                             params: items,
                             ret: Box::new(ret),
                         },

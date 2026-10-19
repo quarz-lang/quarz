@@ -459,8 +459,11 @@ impl World {
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
-            Type::Proc(ps, r) => format!(
-                "({}) -> {}",
+            Type::Proc(rc, ps, r) => format!(
+                "{}({}) -> {}",
+                rc.as_ref()
+                    .map(|t| format!("{}.", self.type_name(t)))
+                    .unwrap_or_default(),
                 ps.iter()
                     .map(|t| self.type_name(t))
                     .collect::<Vec<_>>()
@@ -675,12 +678,19 @@ impl World {
                 bargs.len() == 1 && self.is_subtype(&elem, &bargs[0])
             }
             (Type::Tuple(_), Type::Class(b, _)) => self.class_is_a(self.builtin.array, *b),
-            (Type::Proc(ps, r), Type::Proc(qs, s)) => {
-                ps.len() == qs.len()
+            (Type::Proc(ra, ps, r), Type::Proc(rb, qs, s)) => {
+                // Receivers, like parameters, are contravariant.
+                let recv_ok = match (ra, rb) {
+                    (None, None) => true,
+                    (Some(a), Some(b)) => self.is_subtype(b, a),
+                    _ => false,
+                };
+                recv_ok
+                    && ps.len() == qs.len()
                     && ps.iter().zip(qs).all(|(p, q)| self.is_subtype(q, p))
                     && self.is_subtype(r, s)
             }
-            (Type::Proc(_, _), Type::Class(b, _)) => *b == self.builtin.proc_,
+            (Type::Proc(_, _, _), Type::Class(b, _)) => *b == self.builtin.proc_,
             (Type::Param(p), _) => {
                 let bounds = self.param_bounds(*p);
                 bounds.iter().any(|b| self.is_subtype(b, sup))
@@ -848,7 +858,7 @@ impl World {
                 let elem = Type::union_of(ts.clone());
                 self.lookup_instance_methods(self.builtin.array, &[elem], name, &mut out);
             }
-            Type::Proc(_, _) => {
+            Type::Proc(_, _, _) => {
                 self.lookup_instance_methods(self.builtin.proc_, &[], name, &mut out);
             }
             Type::Param(p) => {
@@ -942,7 +952,7 @@ impl World {
             }
             Type::ClassObject(_, _) => true,
             Type::Union(ms) | Type::Tuple(ms) => ms.clone().iter().all(|m| self.is_shareable(m)),
-            Type::Proc(_, _) => false,
+            Type::Proc(_, _, _) => false,
             Type::Param(p) => {
                 let bounds = self.param_bounds(*p);
                 bounds

@@ -255,6 +255,9 @@ pub fn walk_expr(e: &Expr, nest: Nest, cx: &mut Cx) {
         Call(call) => {
             if let Some(r) = &call.recv {
                 walk_expr(r, nest, cx);
+            } else if cx.out.outer_self_calls.contains(&e.id) {
+                // Reads an enclosing function's `self` from its hidden slot.
+                (cx.visit)(Site::Var(e.span), nest);
             }
             walk_args(&call.args, nest, cx);
             if let Some(b) = &call.block {

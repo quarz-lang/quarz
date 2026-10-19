@@ -17,7 +17,7 @@ pub mod world;
 use quarz_syntax::ast::{Expr, ExprKind, Program};
 use quarz_syntax::{parse_with_bases, Diagnostic, SourceFile};
 
-pub use check::{BlockPass, CallTarget, ConstTarget, Output, VarRef};
+pub use check::{BlockPass, CallTarget, ConstTarget, Output, SelfOwner, VarRef};
 pub use load::{load, LoadedUnit, STD_MODULES};
 pub use types::*;
 pub use world::*;

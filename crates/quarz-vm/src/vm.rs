@@ -1122,7 +1122,13 @@ impl Interp {
 
     /// Call a block/procedure value with arguments. `next` yields the
     /// block's value; `break` propagates to the call that received it.
-    pub fn call_block(&self, proc: &Value, mut args: ArgVec) -> EvalResult {
+    pub fn call_block(&self, proc: &Value, args: ArgVec) -> EvalResult {
+        self.call_block_on(proc, None, args)
+    }
+
+    /// Call a block, with `self` replaced by `recv` when given (a block
+    /// with a receiver, run by `instance_exec`).
+    pub fn call_block_on(&self, proc: &Value, recv: Option<Value>, mut args: ArgVec) -> EvalResult {
         let Value::Proc(closure) = proc else {
             return Err(self.err_type("not a procedure"));
         };
@@ -1195,7 +1201,10 @@ impl Interp {
                     fid: *fid,
                     task: self.current_task_id.get(),
                     line: Cell::new(0),
-                    self_val: closure.self_val.fast_clone(),
+                    self_val: match recv {
+                        Some(v) => v,
+                        None => closure.self_val.fast_clone(),
+                    },
                     frame,
                     block: closure
                         .method_block

@@ -459,6 +459,8 @@ pub enum TypeExprKind {
     Union(Vec<TypeExpr>),
     Tuple(Vec<TypeExpr>),
     Proc {
+        /// `Recv.(A) -> R`: the block runs with `self` = a `Recv`.
+        recv: Option<Box<TypeExpr>>,
         params: Vec<TypeExpr>,
         ret: Box<TypeExpr>,
     },

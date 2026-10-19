@@ -23,7 +23,9 @@ pub enum Type {
     Union(Vec<Type>),
     Tuple(Vec<Type>),
     /// A block or lambda: `(A, B) -> R`.
-    Proc(Vec<Type>, Box<Type>),
+    /// A procedure: the receiver (`self` inside, for `Recv.(A) -> R`),
+    /// the parameters and the result.
+    Proc(Option<Box<Type>>, Vec<Type>, Box<Type>),
     /// A generic type parameter of the enclosing class or method.
     Param(TypeParamId),
     /// An inference variable, bound by unification during checking.
@@ -89,7 +91,8 @@ impl Type {
             }
             Type::Union(ms) => Type::union_of(ms.iter().map(|m| m.subst(map)).collect()),
             Type::Tuple(ts) => Type::Tuple(ts.iter().map(|t| t.subst(map)).collect()),
-            Type::Proc(ps, r) => Type::Proc(
+            Type::Proc(rc, ps, r) => Type::Proc(
+                rc.as_ref().map(|t| Box::new(t.subst(map))),
                 ps.iter().map(|p| p.subst(map)).collect(),
                 Box::new(r.subst(map)),
             ),
@@ -107,7 +110,11 @@ impl Type {
             Type::Nothing | Type::Param(_) => false,
             Type::Class(_, args) | Type::ClassObject(_, args) => args.iter().any(Type::has_vars),
             Type::Union(ms) | Type::Tuple(ms) => ms.iter().any(Type::has_vars),
-            Type::Proc(ps, r) => ps.iter().any(Type::has_vars) || r.has_vars(),
+            Type::Proc(rc, ps, r) => {
+                rc.as_ref().is_some_and(|t| t.has_vars())
+                    || ps.iter().any(Type::has_vars)
+                    || r.has_vars()
+            }
         }
     }
 
@@ -117,7 +124,11 @@ impl Type {
             Type::Nothing | Type::Var(_) => false,
             Type::Class(_, args) | Type::ClassObject(_, args) => args.iter().any(Type::has_params),
             Type::Union(ms) | Type::Tuple(ms) => ms.iter().any(Type::has_params),
-            Type::Proc(ps, r) => ps.iter().any(Type::has_params) || r.has_params(),
+            Type::Proc(rc, ps, r) => {
+                rc.as_ref().is_some_and(|t| t.has_params())
+                    || ps.iter().any(Type::has_params)
+                    || r.has_params()
+            }
         }
     }
 
@@ -129,7 +140,10 @@ impl Type {
                 args.iter().for_each(|a| a.for_each_var(f))
             }
             Type::Union(ms) | Type::Tuple(ms) => ms.iter().for_each(|m| m.for_each_var(f)),
-            Type::Proc(ps, r) => {
+            Type::Proc(rc, ps, r) => {
+                if let Some(t) = rc {
+                    t.for_each_var(f);
+                }
                 ps.iter().for_each(|p| p.for_each_var(f));
                 r.for_each_var(f);
             }

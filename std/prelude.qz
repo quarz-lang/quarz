@@ -25,6 +25,10 @@ class Object
   native def class -> Class
   native def frozen? -> Bool
   native def dup -> self
+  # Run a block with a receiver (`self.(...) -> R`) with `self` = this object.
+  native def instance_exec[R](&: self.() -> R) -> R
+  native def instance_exec[A, R](a: A, &: self.(A) -> R) -> R
+  native def instance_exec[A, B, R](a: A, b: B, &: self.(A, B) -> R) -> R
 
   def tap(&: (self) -> Nil) -> self
     yield self

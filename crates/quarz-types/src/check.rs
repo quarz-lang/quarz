@@ -63,6 +63,12 @@ pub struct Output {
     pub const_targets: FxHashMap<NodeId, ConstTarget>,
     /// Variable occurrences (uses and definitions) keyed by their span.
     pub var_refs: FxHashMap<Span, VarRef>,
+    /// Implicit-self calls inside a block with a receiver that go to an
+    /// enclosing `self` instead: the receiver of the call is read from
+    /// the hidden slot `var_refs[span]`.
+    pub outer_self_calls: rustc_hash::FxHashSet<NodeId>,
+    /// Functions that must store their `self` in a hidden frame slot.
+    pub self_slots: FxHashMap<SelfOwner, u32>,
     /// Frame sizes of blocks (keyed by the call node) and lambdas (keyed by
     /// the lambda node).
     pub frame_sizes: FxHashMap<NodeId, u32>,
@@ -101,6 +107,32 @@ struct VarInfo {
 struct Frame {
     vars: Vec<VarInfo>,
     is_block: bool,
+    /// Whose `self` this frame's function runs with (for the hidden
+    /// slot that blocks with receivers read the enclosing `self` from).
+    owner: SelfOwner,
+}
+
+/// The name of the hidden frame variable holding a function's `self`.
+const SELF_SLOT: &str = "%self";
+
+/// A function whose frame may hold its `self` in a hidden slot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SelfOwner {
+    Method(MethodId),
+    /// A block or lambda, by the node of the call (or lambda) it belongs to.
+    Block(NodeId),
+    /// A unit's top level, by file.
+    Unit(u32),
+    /// A constant or field initializer.
+    Init,
+}
+
+/// A block with a receiver being checked: what `self` was outside it,
+/// and the frame of the function that `self` belongs to.
+#[derive(Clone, Debug)]
+struct ReceiverCtx {
+    outer_self: Type,
+    outer_frame: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -119,6 +151,12 @@ struct Env {
     frames: Vec<Frame>,
     self_type: Type,
     class_id: Option<ClassId>,
+    /// The class whose body this code is lexically in (fields are
+    /// reachable only there); `class_id` changes inside receiver blocks.
+    lexical_class: Option<ClassId>,
+    /// The blocks with receivers enclosing the current code, outermost
+    /// first.
+    receivers: Vec<ReceiverCtx>,
     method: Option<MethodId>,
     scope: TypeScope,
     /// `None` while inferring.
@@ -177,7 +215,8 @@ impl InferTable {
             }
             Type::Union(ms) => Type::union_of(ms.iter().map(|m| self.resolve(m)).collect()),
             Type::Tuple(ts) => Type::Tuple(ts.iter().map(|t| self.resolve(t)).collect()),
-            Type::Proc(ps, r) => Type::Proc(
+            Type::Proc(rc, ps, r) => Type::Proc(
+                rc.as_ref().map(|t| Box::new(self.resolve(t))),
                 ps.iter().map(|p| self.resolve(p)).collect(),
                 Box::new(self.resolve(r)),
             ),
@@ -213,6 +252,8 @@ pub struct Checker {
     repl_env: Option<Env>,
     /// Methods currently being checked (to detect inference cycles).
     in_progress: Vec<MethodId>,
+    /// While re-checking an implicit-self call on an enclosing `self`.
+    in_outer_self: bool,
     /// Classes whose field defaults have been checked.
     defaults_checked: HashSet<ClassId>,
 }
@@ -232,9 +273,12 @@ impl Checker {
             frames: vec![Frame {
                 vars: Vec::new(),
                 is_block: false,
+                owner: SelfOwner::Init,
             }],
             self_type: Type::class(file_mains.iter().flatten().next().copied().unwrap_or(0)),
             class_id: None,
+            lexical_class: None,
+            receivers: Vec::new(),
             method: None,
             scope: TypeScope::default(),
             ret_expected: None,
@@ -260,6 +304,7 @@ impl Checker {
             file_mains,
             repl_env: None,
             in_progress: Vec::new(),
+            in_outer_self: false,
             defaults_checked: HashSet::new(),
         }
     }
@@ -470,13 +515,25 @@ impl Checker {
         scope: TypeScope,
         file: u32,
     ) -> Env {
+        let owner = match method {
+            Some(mid) => SelfOwner::Method(mid),
+            None => match self_type {
+                Type::Class(c, _) if self.world.class(c).kind == ClassKind::Main => {
+                    SelfOwner::Unit(file)
+                }
+                _ => SelfOwner::Init,
+            },
+        };
         Env {
             frames: vec![Frame {
                 vars: Vec::new(),
                 is_block: false,
+                owner,
             }],
             self_type,
+            lexical_class: class_id,
             class_id,
+            receivers: Vec::new(),
             method,
             scope,
             ret_expected: None,
@@ -906,9 +963,20 @@ impl Checker {
                 }
                 self.world.class_is_a(self.world.builtin.array, *eid)
             }
-            (Type::Proc(ps, r), Type::Proc(qs, s)) => {
+            (Type::Proc(ra, ps, r), Type::Proc(rb, qs, s)) => {
                 if ps.len() != qs.len() {
                     return false;
+                }
+                // Receivers are contravariant, and a block with one is
+                // not a block without one.
+                match (ra.clone(), rb.clone()) {
+                    (None, None) => {}
+                    (Some(ra), Some(rb)) => {
+                        if !self.coerce(&rb, &ra) {
+                            return false;
+                        }
+                    }
+                    _ => return false,
                 }
                 let (ps, qs, r, s) = (ps.clone(), qs.clone(), (**r).clone(), (**s).clone());
                 for (p, q) in ps.iter().zip(qs.iter()) {
@@ -918,7 +986,7 @@ impl Checker {
                 }
                 self.coerce(&r, &s)
             }
-            (Type::Proc(_, _), Type::Class(eid, _)) => *eid == self.world.builtin.proc_,
+            (Type::Proc(_, _, _), Type::Class(eid, _)) => *eid == self.world.builtin.proc_,
             (Type::Param(_), _) | (_, Type::Param(_)) => self.world.is_subtype(&a, &e),
             _ => false,
         }
@@ -1477,7 +1545,7 @@ impl Checker {
                 self.out
                     .calls
                     .insert(expr.id, CallTarget::Method { method: mid });
-                Type::Proc(params, Box::new(ret))
+                Type::Proc(None, params, Box::new(ret))
             }
             Yield(args) => self.check_yield(expr, args),
             Super { args, block } => self.check_super(expr, args.as_deref(), block.as_deref()),
@@ -1912,6 +1980,9 @@ impl Checker {
     }
 
     fn check_ivar_read(&mut self, expr: &Expr, name: &str) -> Type {
+        if !self.check_ivar_access(expr.span) {
+            return Type::Nothing;
+        }
         let Some(cid) = self.env.class_id else {
             self.error("instance variables are not available here", expr.span);
             return Type::Nothing;
@@ -2467,6 +2538,9 @@ impl Checker {
                 }
             }
             LValue::IVar(name) => {
+                if !self.check_ivar_access(expr.span) {
+                    return self.check_expr(value, None);
+                }
                 let Some(cid) = self.env.class_id else {
                     self.error("instance variables are not available here", expr.span);
                     return self.check_expr(value, None);
@@ -2872,6 +2946,9 @@ impl Checker {
                 }
             }
             LValue::IVar(name) => {
+                if !self.check_ivar_access(span) {
+                    return;
+                }
                 let Some(cid) = self.env.class_id else {
                     self.error("instance variables are not available here", span);
                     return;
@@ -3143,8 +3220,16 @@ impl Checker {
                 self.check_args_blindly(call);
                 Type::Nothing
             }
+            Type::Proc(Some(_), _, _) if name == "call" || name == "[]" => {
+                self.error(
+                    "a block with a receiver is run with `recv.instance_exec(&block)`",
+                    expr.span,
+                );
+                self.check_args_blindly(call);
+                Type::Nothing
+            }
             // `f.call(x)`, `f.(x)` and `f[x]` all call the procedure.
-            Type::Proc(params, ret) if name == "call" || name == "[]" => {
+            Type::Proc(None, params, ret) if name == "call" || name == "[]" => {
                 let params = params.clone();
                 let ret = (**ret).clone();
                 let positional: Vec<&Expr> = call
@@ -3232,6 +3317,34 @@ impl Checker {
             }
             _ => {
                 let mut cands = self.world.lookup_methods(recv_ty, name);
+                if call.recv.is_none()
+                    && implicit_self
+                    && !self.env.receivers.is_empty()
+                    && !self.in_outer_self
+                {
+                    // Inside a block with a receiver: the enclosing selves,
+                    // innermost first, answer what the receiver does not.
+                    match self.outer_self_for(name) {
+                        Some((outer, k)) if cands.is_empty() => {
+                            self.bind_outer_self(expr, k);
+                            self.in_outer_self = true;
+                            let t = self.check_call_on(expr, call, &outer, true, expected);
+                            self.in_outer_self = false;
+                            return t;
+                        }
+                        // Nested blocks on the same class shadow each
+                        // other on purpose; a different class is worth a word.
+                        Some((outer, _)) if outer != *recv_ty => self.warning(
+                            format!(
+                                "`{name}` is a method of both the block's receiver {} and the enclosing {}; the receiver's is called",
+                                self.name(recv_ty),
+                                self.name(&outer)
+                            ),
+                            expr.span,
+                        ),
+                        _ => {}
+                    }
+                }
                 if cands.is_empty() && call.recv.is_none() {
                     // Top-level functions of the file.
                     if let Some(fm) = self.file_main(self.env.file) {
@@ -3255,6 +3368,42 @@ impl Checker {
                 self.resolve_overloads(expr, call, recv_ty, cands, implicit_self, expected)
             }
         }
+    }
+
+    /// The innermost enclosing `self` (outside the blocks with receivers
+    /// the call sits in) that answers `name`, with its receiver level.
+    fn outer_self_for(&mut self, name: &str) -> Option<(Type, usize)> {
+        for k in (0..self.env.receivers.len()).rev() {
+            let outer = self.env.receivers[k].outer_self.clone();
+            if !self.world.lookup_methods(&outer, name).is_empty() {
+                return Some((outer, k));
+            }
+        }
+        None
+    }
+
+    /// Route an implicit-self call to the `self` of receiver level `k`:
+    /// that function keeps its `self` in a hidden frame slot the block
+    /// reads like a captured variable.
+    fn bind_outer_self(&mut self, expr: &Expr, k: usize) {
+        let owner_frame = self.env.receivers[k].outer_frame;
+        let frame = &mut self.env.frames[owner_frame];
+        let slot = match frame.vars.iter().position(|v| v.name == SELF_SLOT) {
+            Some(i) => i as u32,
+            None => {
+                frame.vars.push(VarInfo {
+                    name: SELF_SLOT.to_string(),
+                    declared: Type::Nothing,
+                    narrowed: None,
+                });
+                frame.vars.len() as u32 - 1
+            }
+        };
+        let owner = frame.owner;
+        let depth = (self.env.frames.len() - 1 - owner_frame) as u32;
+        self.out.var_refs.insert(expr.span, VarRef { depth, slot });
+        self.out.self_slots.insert(owner, slot);
+        self.out.outer_self_calls.insert(expr.id);
     }
 
     fn check_constructor(
@@ -3557,7 +3706,7 @@ impl Checker {
         if let Some(b) = &call.block {
             let fresh = self.infer.fresh();
             let params: Vec<Type> = b.params.list.iter().map(|_| self.infer.fresh()).collect();
-            self.check_block(expr.id, b, &Type::Proc(params, Box::new(fresh)));
+            self.check_block(expr.id, b, &Type::Proc(None, params, Box::new(fresh)));
         }
         Type::Nothing
     }
@@ -3826,7 +3975,7 @@ impl Checker {
                 match &e.kind {
                     ExprKind::Symbol(name) => {
                         // `&:name`: the block calls `name` on its argument.
-                        let Type::Proc(params, ret) = self.infer.resolve(&block_ty) else {
+                        let Type::Proc(_, params, ret) = self.infer.resolve(&block_ty) else {
                             return Err("invalid block type".to_string());
                         };
                         if params.len() != 1 {
@@ -3890,16 +4039,21 @@ impl Checker {
     }
 
     fn check_block_as(&mut self, call_id: NodeId, block: &Block, proc_ty: &Type, is_task: bool) {
-        let Type::Proc(params, ret) = proc_ty else {
+        let Type::Proc(recv, params, ret) = proc_ty else {
             self.error("internal: block type is not a procedure", block.span);
             return;
         };
         let params = params.clone();
         let ret = (**ret).clone();
         self.widen_assigned(&block.body);
+        // A block with a receiver runs with `self` = the receiver: the
+        // enclosing `self` stays reachable for calls it alone answers.
+        let receiver = recv.as_ref().map(|t| self.resolve(t));
+        let saved_self = self.enter_receiver(receiver.as_ref());
         self.env.frames.push(Frame {
             vars: Vec::new(),
             is_block: true,
+            owner: SelfOwner::Block(call_id),
         });
         let saved_task_frame = self.env.task_frame;
         if is_task {
@@ -3986,22 +4140,64 @@ impl Checker {
         let frame = self.env.frames.pop().unwrap();
         self.env.blocks.pop();
         self.env.task_frame = saved_task_frame;
+        self.leave_receiver(saved_self);
         self.out
             .frame_sizes
             .insert(call_id, frame.vars.len() as u32);
         self.widen_assigned(&block.body);
     }
 
-    fn check_lambda(&mut self, id: NodeId, block: &Block, expected: Option<&Type>) -> Type {
-        let expected_proc = match expected.map(|e| self.resolve(e)) {
-            Some(Type::Proc(ps, r)) => Some((ps, *r)),
+    /// Make `recv` the `self` of the block being checked (nothing for
+    /// `None`); returns what `leave_receiver` restores.
+    fn enter_receiver(&mut self, recv: Option<&Type>) -> Option<(Type, Option<ClassId>)> {
+        let recv = recv?;
+        let outer_self = std::mem::replace(&mut self.env.self_type, recv.clone());
+        let class = match recv {
+            Type::Class(id, _) => Some(*id),
             _ => None,
+        };
+        let outer_class = std::mem::replace(&mut self.env.class_id, class);
+        self.env.receivers.push(ReceiverCtx {
+            outer_self: outer_self.clone(),
+            outer_frame: self.env.frames.len() - 1,
+        });
+        Some((outer_self, outer_class))
+    }
+
+    fn leave_receiver(&mut self, saved: Option<(Type, Option<ClassId>)>) {
+        if let Some((self_type, class_id)) = saved {
+            self.env.receivers.pop();
+            self.env.self_type = self_type;
+            self.env.class_id = class_id;
+        }
+    }
+
+    /// Fields are reachable only from their class's own body: inside a
+    /// block with another receiver, `@x` is an error.
+    fn check_ivar_access(&mut self, span: Span) -> bool {
+        if !self.env.receivers.is_empty() && self.env.class_id != self.env.lexical_class {
+            let recv = self.name(&self.env.self_type.clone());
+            self.error(
+                format!("instance variables of {recv} are not accessible from this block (it runs with `self` = {recv})"),
+                span,
+            );
+            return false;
+        }
+        true
+    }
+
+    fn check_lambda(&mut self, id: NodeId, block: &Block, expected: Option<&Type>) -> Type {
+        let (expected_recv, expected_proc) = match expected.map(|e| self.resolve(e)) {
+            Some(Type::Proc(rc, ps, r)) => (rc.map(|t| *t), Some((ps, *r))),
+            _ => (None, None),
         };
         self.widen_assigned(&block.body);
         let mut param_types = Vec::new();
+        let saved_self = self.enter_receiver(expected_recv.as_ref());
         self.env.frames.push(Frame {
             vars: Vec::new(),
             is_block: true,
+            owner: SelfOwner::Block(id),
         });
         let ret_var = match &expected_proc {
             Some((_, r)) => r.clone(),
@@ -4045,9 +4241,10 @@ impl Checker {
         }
         let frame = self.env.frames.pop().unwrap();
         self.env.blocks.pop();
+        self.leave_receiver(saved_self);
         self.out.frame_sizes.insert(id, frame.vars.len() as u32);
         let ret = self.infer.resolve(&ret_var);
-        Type::Proc(param_types, Box::new(ret))
+        Type::Proc(expected_recv.map(Box::new), param_types, Box::new(ret))
     }
 
     fn check_yield(&mut self, expr: &Expr, args: &[Arg]) -> Type {
@@ -4064,9 +4261,25 @@ impl Checker {
             });
             return Type::Nothing;
         };
-        let Type::Proc(params, ret) = bt else {
+        let Type::Proc(recv, params, ret) = bt else {
             return Type::Nothing;
         };
+        if recv.is_some() {
+            self.error(
+                "`yield` cannot run a block with a receiver; name the block parameter and call `recv.instance_exec(&name)`",
+                expr.span,
+            );
+            self.check_args_blindly(&Call {
+                recv: None,
+                name: String::new(),
+                args: args.to_vec(),
+                block: None,
+                safe_nav: false,
+                has_parens: true,
+                type_args: vec![],
+            });
+            return Type::Nothing;
+        }
         let positional: Vec<&Expr> = args
             .iter()
             .filter_map(|a| match a {

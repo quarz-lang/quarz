@@ -20,6 +20,10 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     m.insert("Object#class", obj_class);
     m.insert("Object#frozen?", obj_frozen);
     m.insert("Object#dup", obj_dup);
+    m.insert("Object#instance_exec", |i, r, a| {
+        let b = super::block(i, &a)?;
+        i.call_block_on(&b, Some(r.clone()), a.pos)
+    });
     m.insert("Class#name", class_name);
     m.insert("Nil#to_a", |_, _, _| Ok(Value::array(vec![])));
     m.insert("Nil#&", |_, _, _| Ok(Value::Bool(false)));
