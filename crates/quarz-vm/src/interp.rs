@@ -436,7 +436,7 @@ impl Interp {
             .classes
             .iter()
             .map(|c| {
-                c.fields
+                c.ivars
                     .iter()
                     .enumerate()
                     .map(|(i, f)| (f.name.clone(), i))
@@ -1031,8 +1031,100 @@ impl Interp {
         self.world.class(self.class_of(v)).name.clone()
     }
 
+    /// The index of declared field `name` of `cid` (see `logical_get`).
     pub fn field_index(&self, cid: ClassId, name: &str) -> Option<usize> {
         self.field_indices[cid as usize].get(name).copied()
+    }
+
+    /// Declared field `i` of `o`: its physical field, or, for a data
+    /// value held in place, that value rebuilt from its physical fields.
+    pub fn logical_get(&self, o: &Object, i: usize) -> Value {
+        let class = self.world.class(o.class);
+        let Some(iv) = class.ivars.get(i) else {
+            return Value::Nil;
+        };
+        let fields = o.fields.borrow();
+        let slot = iv.slot as usize;
+        match iv.flat {
+            None => fields.get(slot).cloned().unwrap_or(Value::Nil),
+            Some(d) => {
+                let n = self.world.class(d).fields.len();
+                let vals: Fields = fields
+                    .get(slot..slot + n)
+                    .map(|s| s.iter().cloned().collect())
+                    .unwrap_or_else(|| smallvec![Value::Nil; n]);
+                Value::Object(Object::new(d, vals))
+            }
+        }
+    }
+
+    /// Store `v` into declared field `i` of `o` (a data value held in
+    /// place is copied field by field).
+    pub fn logical_set(&self, o: &Object, i: usize, v: Value) {
+        let class = self.world.class(o.class);
+        let Some(iv) = class.ivars.get(i) else {
+            return;
+        };
+        let slot = iv.slot as usize;
+        match iv.flat {
+            None => {
+                let mut fields = o.fields.borrow_mut();
+                if slot >= fields.len() {
+                    fields.resize(slot + 1, Value::Nil);
+                    drop(fields);
+                    o.bind_fields();
+                    fields = o.fields.borrow_mut();
+                }
+                fields[slot] = v;
+            }
+            Some(d) => {
+                let n = self.world.class(d).fields.len();
+                let Value::Object(src) = &v else {
+                    return;
+                };
+                let src_fields = src.fields.borrow();
+                let mut fields = o.fields.borrow_mut();
+                for k in 0..n {
+                    if let (Some(dst), Some(x)) = (fields.get_mut(slot + k), src_fields.get(k)) {
+                        *dst = x.clone();
+                    }
+                }
+            }
+        }
+    }
+
+    /// The values of all declared fields of `o`.
+    pub fn logical_values(&self, o: &Object) -> Vec<Value> {
+        let n = self.world.class(o.class).ivars.len();
+        (0..n).map(|i| self.logical_get(o, i)).collect()
+    }
+
+    /// The physical fields of a `class` object from its declared
+    /// fields' values.
+    pub fn flatten_values(&self, class: ClassId, values: Vec<Value>) -> Fields {
+        let info = self.world.class(class);
+        let mut out: Fields = smallvec![Value::Nil; info.fields.len()];
+        for (iv, v) in info.ivars.iter().zip(values) {
+            let slot = iv.slot as usize;
+            match iv.flat {
+                None => {
+                    if slot < out.len() {
+                        out[slot] = v;
+                    }
+                }
+                Some(d) => {
+                    let n = self.world.class(d).fields.len();
+                    if let Value::Object(src) = &v {
+                        for (k, x) in src.fields.borrow().iter().take(n).enumerate() {
+                            if slot + k < out.len() {
+                                out[slot + k] = x.clone();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        out
     }
 
     /// `value.is_a?(type)`, ignoring type arguments.
@@ -1321,28 +1413,14 @@ impl Interp {
                 let Value::Object(o) = &recv else {
                     return Err(self.err_type("field access on a non-object"));
                 };
-                return Ok(o
-                    .fields
-                    .borrow()
-                    .get(*idx as usize)
-                    .cloned()
-                    .unwrap_or(Value::Nil));
+                return Ok(self.logical_get(o, *idx as usize));
             }
             RtSynth::FieldSet(idx) => {
                 let Value::Object(o) = &recv else {
                     return Err(self.err_type("field access on a non-object"));
                 };
                 let v = args.into_iter().next().unwrap_or(Value::Nil);
-                let mut fields = o.fields.borrow_mut();
-                let idx = *idx as usize;
-                if idx >= fields.len() {
-                    fields.resize(idx + 1, Value::Nil);
-                    drop(fields);
-                    o.bind_fields();
-                    o.fields.borrow_mut()[idx] = v.clone();
-                    return Ok(v);
-                }
-                fields[idx] = v.clone();
+                self.logical_set(o, *idx as usize, v.clone());
                 return Ok(v);
             }
             RtSynth::DataInit => {
@@ -1350,7 +1428,7 @@ impl Interp {
                     return Err(self.err_type("data initialization on a non-object"));
                 };
                 let values = self.bind_data_args(mid, &recv, args, kw)?;
-                *o.fields.borrow_mut() = Fields::from_vec(values);
+                *o.fields.borrow_mut() = self.flatten_values(o.class, values);
                 o.bind_fields();
                 return Ok(Value::Nil);
             }
@@ -1358,16 +1436,14 @@ impl Interp {
                 let Value::Object(o) = &recv else {
                     return Err(self.err_type("`with` on a non-object"));
                 };
-                let mut fields = o.fields.borrow().clone();
+                let copy = Object::new(o.class, o.fields.borrow().clone());
                 for (sym, v) in kw {
                     let name = self.symbol_name(sym);
                     if let Some(i) = m.params.iter().position(|p| *p.name == *name) {
-                        if i < fields.len() {
-                            fields[i] = v;
-                        }
+                        self.logical_set(&copy, i, v);
                     }
                 }
-                return Ok(Value::Object(Object::new(o.class, fields)));
+                return Ok(Value::Object(copy));
             }
             RtSynth::DataToH => {
                 let Value::Object(o) = &recv else {
@@ -1375,8 +1451,8 @@ impl Interp {
                 };
                 let mut map = ValueMap::default();
                 let class = self.world.class(o.class);
-                for (f, v) in class.fields.iter().zip(o.fields.borrow().iter()) {
-                    map.insert(Value::Symbol(self.intern(&f.name)), v.clone());
+                for (i, f) in class.ivars.iter().enumerate() {
+                    map.insert(Value::Symbol(self.intern(&f.name)), self.logical_get(o, i));
                 }
                 return Ok(Value::Hash(Rc::new(map)));
             }
@@ -1506,7 +1582,7 @@ impl Interp {
         let class = self.world.class(m.owner);
         for (i, p) in m.params.iter().enumerate() {
             if !set[i] && p.has_default {
-                if let Some(default) = class.fields.get(i).and_then(|f| f.default) {
+                if let Some(default) = class.ivars.get(i).and_then(|f| f.default) {
                     values[i] = self.run_init(default, recv.clone(), class.file)?;
                 }
             }
@@ -1602,14 +1678,26 @@ impl Interp {
         block: Option<Value>,
     ) -> EvalResult {
         let info = self.world.class(class);
+        // A data constructor given every physical field: copied in.
+        if let Some(i) = init {
+            if self.world.methods[i as usize].synth == RtSynth::DataInit
+                && kw.is_empty()
+                && block.is_none()
+                && args.len() == info.fields.len()
+                && matches!(info.kind, RtClassKind::Data | RtClassKind::Variant)
+            {
+                let fields: Fields = args.into_iter().collect();
+                return Ok(Value::Object(Object::new(class, fields)));
+            }
+        }
         let obj = Object::new(class, smallvec![Value::Nil; info.fields.len()]);
         let value = Value::Object(obj.clone());
         // Field defaults (data types evaluate them in their constructor).
         if !matches!(info.kind, RtClassKind::Data | RtClassKind::Variant) {
-            for (i, f) in info.fields.iter().enumerate() {
+            for (i, f) in info.ivars.iter().enumerate() {
                 if let Some(d) = f.default {
                     let v = self.run_init(d, value.clone(), info.file)?;
-                    obj.fields.borrow_mut()[i] = v;
+                    self.logical_set(&obj, i, v);
                 }
             }
         }
@@ -1867,20 +1955,20 @@ impl Interp {
                 }
                 match class.kind {
                     RtClassKind::Data | RtClassKind::Variant => {
-                        if class.fields.is_empty() {
+                        if class.ivars.is_empty() {
                             return Ok(class.name.clone());
                         }
                         let mut parts = Vec::new();
-                        for (f, val) in class.fields.iter().zip(o.fields.borrow().iter()) {
-                            parts.push(format!("{}: {}", f.name, self.inspect(val)?));
+                        for (f, val) in class.ivars.iter().zip(self.logical_values(o)) {
+                            parts.push(format!("{}: {}", f.name, self.inspect(&val)?));
                         }
                         format!("{}({})", class.name, parts.join(", "))
                     }
                     RtClassKind::Main => "main".to_string(),
                     _ => {
                         let mut parts = Vec::new();
-                        for (f, val) in class.fields.iter().zip(o.fields.borrow().iter()) {
-                            parts.push(format!("@{}={}", f.name, self.inspect(val)?));
+                        for (f, val) in class.ivars.iter().zip(self.logical_values(o)) {
+                            parts.push(format!("@{}={}", f.name, self.inspect(&val)?));
                         }
                         if parts.is_empty() {
                             format!("#<{}>", class.name)

@@ -16,6 +16,7 @@ mod copyprop;
 mod func;
 mod inline;
 mod iter;
+pub(crate) mod layout;
 mod rtworld;
 mod sroa;
 
@@ -56,6 +57,8 @@ pub struct Lowerer {
     /// an extension on one) declares a method `name`: a call resolved to
     /// the class's method may dispatch elsewhere.
     pub(crate) overridden: HashSet<(ClassId, String)>,
+    /// Where each class's declared fields live (see `layout`).
+    pub(crate) layouts: Vec<layout::Layout>,
 }
 
 impl Lowerer {
@@ -86,6 +89,7 @@ impl Lowerer {
         self.pending.clear();
         self.files = files;
         self.overridden = overridden_methods(world);
+        self.layouts = layout::compute(world);
 
         // Methods.
         if self.method_funcs.len() < world.methods.len() {

@@ -1,0 +1,43 @@
+Vec2(x: 2.0, y: 2.5)
+Vec2(x: 0.5, y: 0.25)
+Vec2(x: 0.0, y: 0.0)
+Segment(a: Vec2(x: 0.0, y: 0.0), b: Vec2(x: 2.0, y: 2.5))
+Custom(v: 3)
+#<Particle @pos=Vec2(x: 2.0, y: 2.5), @vel=Vec2(x: 0.5, y: 0.25), @origin=Vec2(x: 0.0, y: 0.0), @path=Segment(a: Vec2(x: 0.0, y: 0.0), b: Vec2(x: 2.0, y: 2.5)), @tag=Custom(v: 3)>
+2.0
+2.5
+3.2015621187164243
+true
+false
+Vec2(x: 1.0, y: 1.5)
+Vec2(x: -1.0, y: -1.0)
+Vec2(x: 11.0, y: 11.5)
+Segment(a: Vec2(x: 0.0, y: 0.0), b: Vec2(x: 3.0, y: 4.0))
+5.0
+Vec2(x: 0.0, y: 0.0)
+4.0
+true
+true
+Segment(a: Vec2(x: 1.0, y: 1.0), b: Vec2(x: 3.0, y: 4.0))
+{a: Vec2(x: 0.0, y: 0.0), b: Vec2(x: 3.0, y: 4.0)}
+"Segment(a: Vec2(x: 0.0, y: 0.0), b: Vec2(x: 3.0, y: 4.0))"
+"Segment(a: Vec2(x: 0.0, y: 0.0), b: Vec2(x: 3.0, y: 4.0))"
+[Vec2(x: 0.0, y: 0.0), Vec2(x: 3.0, y: 4.0)]
+[0.0, 0.0, Vec2(x: 3.0, y: 4.0)]
+"seg"
+"v"
+Named(name: "home", at: Vec2(x: 5.0, y: 6.0))
+5.0
+Named(name: "home", at: Vec2(x: 7.0, y: 8.0))
+"{\"name\":\"home\",\"at\":{\"x\":5.0,\"y\":6.0}}"
+true
+false
+[1.4142135623730951, 5.0]
+Vec2(x: 1.0, y: 1.0)
+Segment(a: Vec2(x: 0.0, y: 0.0), b: Vec2(x: 3.0, y: 4.0))
+5.0
+["Segment(a: Vec2(x: 0.0, y: 0.0), b: Vec2(x: 3.0, y: 4.0))", "Vec2(x: 9.0, y: 9.0)", "Named(name: \"home\", at: Vec2(x: 5.0, y: 6.0))"]
+["Segment(a: Vec2(x: 0.0, y: 0.0), b: Vec2(x: 3.0, y: 4.0))", "Vec2(x: 9.0, y: 9.0)", "Named(name: \"home\", at: Vec2(x: 5.0, y: 6.0))"]
+4.5
+Vec2(x: 2.5, y: 0.0)
+Segment(a: Vec2(x: 0.0, y: 0.0), b: Vec2(x: 2.5, y: 0.0))

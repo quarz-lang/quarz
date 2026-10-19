@@ -702,10 +702,7 @@ impl Interp {
                 let name = self.str_const(f, *name);
                 let (v, ok) = match &regs[*obj as usize] {
                     Value::Object(o) => match self.field_index(o.class, name) {
-                        Some(i) => (
-                            o.fields.borrow().get(i).cloned().unwrap_or(Value::Nil),
-                            true,
-                        ),
+                        Some(i) => (self.logical_get(o, i), true),
                         None => (Value::Nil, false),
                     },
                     _ => (Value::Nil, false),
@@ -1158,7 +1155,7 @@ impl Interp {
             }
             Inst::ObjectFields { dst, src } => {
                 let v = match &regs[*src as usize] {
-                    Value::Object(o) => Value::array(o.fields.borrow().to_vec()),
+                    Value::Object(o) => Value::array(self.logical_values(o)),
                     _ => Value::array(Vec::new()),
                 };
                 regs[*dst as usize] = v;

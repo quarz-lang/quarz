@@ -452,10 +452,10 @@ fn generate(
                 return Ok(());
             }
             let members: Vec<(String, Value)> = class
-                .fields
+                .ivars
                 .iter()
-                .zip(o.fields.borrow().iter())
-                .map(|(f, v)| (f.name.clone(), v.clone()))
+                .zip(interp.logical_values(o))
+                .map(|(f, v)| (f.name.clone(), v))
                 .collect();
             generate_map(interp, &members, indent, out, depth)?;
         }

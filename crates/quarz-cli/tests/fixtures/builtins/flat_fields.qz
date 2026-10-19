@@ -1,0 +1,70 @@
+# A field whose type is a small immutable data type (Int/Float/Bool fields
+# or such data) is stored by value inside the object: reads rebuild the
+# value, writes copy its fields. Equality, hashing, inspect, with, to_h,
+# patterns and JSON see the declared fields.
+require "json"
+data Vec2(x: Float, y: Float) is
+  def +(o: Vec2) -> Vec2 = Vec2.new(x + o.x, y + o.y)
+  def scale(k: Float) -> Vec2 = Vec2.new(x * k, y * k)
+end
+data Segment(a: Vec2, b: Vec2) is
+  def length -> Float = ((b.x - a.x) ** 2 + (b.y - a.y) ** 2) ** 0.5
+end
+data Named(name: String, at: Vec2)
+data Custom(v: Int) is
+  def ==(o: Custom) -> Bool = v % 10 == o.v % 10
+end
+class Particle
+  var @pos: Vec2
+  var @vel: Vec2
+  var @origin: Vec2 = Vec2.new(0.0, 0.0)
+  var @path: Segment = Segment.new(Vec2.new(0.0, 0.0), Vec2.new(0.0, 0.0))
+  var @tag: Custom = Custom.new(3)
+  attr_reader :pos, :vel, :origin, :path, :tag
+  attr_writer :vel
+  def initialize(@pos: Vec2, @vel: Vec2); end
+  def step(dt: Float) -> Nil
+    @pos = @pos + @vel.scale(dt)
+    @path = Segment.new(@origin, @pos)
+  end
+  def shift(d: Vec2) -> Nil
+    @pos = @pos + d
+  end
+end
+p1 = Particle.new(Vec2.new(1.0, 2.0), Vec2.new(0.5, 0.25))
+p1.step(2.0)
+p p1.pos, p1.vel, p1.origin, p1.path, p1.tag, p1
+p p1.pos.x, p1.pos.y, p1.path.length, p1.pos == Vec2.new(2.0, 2.5), p1.pos.equal?(p1.pos)
+p1.vel = Vec2.new(-1.0, -1.0)
+p1.step(1.0)
+p p1.pos, p1.vel
+p1.shift(Vec2.new(10.0, 10.0))
+p p1.pos
+s = Segment.new(Vec2.new(0.0, 0.0), Vec2.new(3.0, 4.0))
+p s, s.length, s.a, s.b.y, s == Segment.new(Vec2.new(0.0, 0.0), Vec2.new(3.0, 4.0)), s.hash == Segment.new(Vec2.new(0.0, 0.0), Vec2.new(3.0, 4.0)).hash
+p s.with(a: Vec2.new(1.0, 1.0)), s.to_h, s.inspect, s.to_s
+case s
+in Segment(a:, b:) then p [a, b]
+else p 0
+end
+case s
+in Segment(a: Vec2(x:, y:), b:) then p [x, y, b]
+else p 0
+end
+h = { s => "seg", Vec2.new(1.0, 1.0) => "v" }
+p h[Segment.new(Vec2.new(0.0, 0.0), Vec2.new(3.0, 4.0))], h[Vec2.new(1.0, 1.0)]
+n = Named.new("home", Vec2.new(5.0, 6.0))
+p n, n.at.x, n.with(at: Vec2.new(7.0, 8.0)), JSON.generate(n.to_h)
+c1 = Custom.new(13)
+p c1 == Custom.new(3), [c1].include?(Custom.new(23))
+arr = [Segment.new(Vec2.new(1.0, 1.0), Vec2.new(2.0, 2.0)), s]
+p arr.map { |g| g.length }, arr.sort_by { |g| g.length }[0].a, arr.max_by { |g| g.b.x }
+ch = Channel[Segment].new
+Task.spawn { ch.send(s) }
+p ch.receive.length
+objs: Array[Object] = [s, Vec2.new(9.0, 9.0), n]
+p objs.map { |o| o.to_s }, objs.map { |o| o.inspect }
+def total(ps: Array[Particle]) -> Float = ps.reduce(0.0) { |acc, q| acc + q.pos.x }
+ps = Array.new(3) { |i| Particle.new(Vec2.new(i.to_f, 0.0), Vec2.new(1.0, 0.0)) }
+ps.each { |q| q.step(0.5) }
+p total(ps), ps[2].pos, ps[2].path

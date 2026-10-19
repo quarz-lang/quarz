@@ -33,17 +33,37 @@ pub fn build(world: &World, lw: &Lowerer, file_names: Vec<String>) -> RtWorld {
         .classes
         .iter()
         .map(|c| {
-            let fields = world
-                .all_fields(c.id)
-                .into_iter()
+            let layout = &lw.layouts[c.id as usize];
+            let ty_name = |t: &Type| match t {
+                Type::Param(_) | Type::Var(_) => None,
+                t => Some(world.type_name(t)),
+            };
+            // A declared field stored in one physical field keeps its
+            // default there; a flattened one runs it through the
+            // logical view.
+            let ivars: Vec<RtIvar> = layout
+                .ivars
+                .iter()
                 .enumerate()
-                .map(|(i, (f, _))| RtField {
-                    name: f.name,
+                .map(|(i, iv)| RtIvar {
+                    name: iv.name.clone(),
+                    ty: ty_name(&iv.ty),
+                    slot: iv.slot,
+                    flat: iv.flat,
                     default: lw.field_default_funcs.get(&(c.id, i)).copied(),
-                    ty: match &f.ty {
-                        Type::Param(_) | Type::Var(_) => None,
-                        t => Some(world.type_name(t)),
-                    },
+                })
+                .collect();
+            let fields: Vec<RtField> = layout
+                .slots
+                .iter()
+                .enumerate()
+                .map(|(k, s)| RtField {
+                    name: s.name.clone(),
+                    default: ivars
+                        .iter()
+                        .find(|iv| iv.flat.is_none() && iv.slot as usize == k)
+                        .and_then(|iv| iv.default),
+                    ty: ty_name(&s.ty),
                 })
                 .collect();
             let members = c
@@ -74,6 +94,7 @@ pub fn build(world: &World, lw: &Lowerer, file_names: Vec<String>) -> RtWorld {
                     .map(|(id, _)| id)
                     .collect(),
                 fields,
+                ivars,
                 methods: c
                     .methods
                     .iter()

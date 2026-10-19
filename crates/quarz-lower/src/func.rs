@@ -266,12 +266,7 @@ impl<'a> FnBuilder<'a> {
                     });
                     let obj = b.self_reg();
                     let class = b.class_id.unwrap_or(u32::MAX);
-                    b.emit(Inst::FieldSet {
-                        obj,
-                        index: idx as u32,
-                        src: v,
-                        class,
-                    });
+                    b.field_set(obj, class, idx as u32, v);
                 }
             }
         }
@@ -845,15 +840,8 @@ impl<'a> FnBuilder<'a> {
             IVar(name) => {
                 let index = self.ivar_index(e.id, name);
                 let obj = self.self_reg();
-                let dst = self.reg();
                 let class = self.class_id.unwrap_or(u32::MAX);
-                self.emit(Inst::FieldGet {
-                    dst,
-                    obj,
-                    index,
-                    class,
-                });
-                dst
+                self.field_get(obj, class, index)
             }
             Const(_) | TypeApp(_) => match self.out.const_targets.get(&e.id) {
                 Some(ConstTarget::Class(cid)) => {
@@ -1272,6 +1260,133 @@ impl<'a> FnBuilder<'a> {
         dst
     }
 
+    /// Where declared field `index` of `class` lives: its first physical
+    /// field, and the data class stored by value there, if any.
+    fn ivar_layout(&self, class: ClassId, index: u32) -> (u32, Option<ClassId>) {
+        match self
+            .lw
+            .layouts
+            .get(class as usize)
+            .and_then(|l| l.ivars.get(index as usize))
+        {
+            Some(iv) => (iv.slot, iv.flat),
+            None => (index, None),
+        }
+    }
+
+    fn flat_size(&self, d: ClassId) -> u32 {
+        self.lw.layouts[d as usize].slots.len() as u32
+    }
+
+    /// Read declared field `index` of the object in `obj`: the physical
+    /// field, or, for a data value held in place, that value rebuilt
+    /// from its physical fields (an allocation that scalar replacement
+    /// removes when only its fields are read).
+    fn field_get(&mut self, obj: Reg, class: ClassId, index: u32) -> Reg {
+        let (slot, flat) = self.ivar_layout(class, index);
+        let Some(d) = flat else {
+            let dst = self.reg();
+            self.emit(Inst::FieldGet {
+                dst,
+                obj,
+                index: slot,
+                class,
+            });
+            return dst;
+        };
+        let n = self.flat_size(d);
+        let args: Vec<Reg> = (0..n)
+            .map(|k| {
+                let r = self.reg();
+                self.emit(Inst::FieldGet {
+                    dst: r,
+                    obj,
+                    index: slot + k,
+                    class,
+                });
+                r
+            })
+            .collect();
+        let dst = self.reg();
+        self.emit(Inst::Call {
+            dst,
+            kind: CallKind::Construct {
+                class: d,
+                init: self.lw.layouts[d as usize].init,
+            },
+            recv: None,
+            args,
+            splat: false,
+            kw: Vec::new(),
+            kw_splat: None,
+            block: None,
+        });
+        dst
+    }
+
+    /// Write `src` to declared field `index` of the object in `obj`: the
+    /// physical field, or, for a data value held in place, its physical
+    /// fields copied one by one.
+    fn field_set(&mut self, obj: Reg, class: ClassId, index: u32, src: Reg) {
+        let (slot, flat) = self.ivar_layout(class, index);
+        let Some(d) = flat else {
+            self.emit(Inst::FieldSet {
+                obj,
+                index: slot,
+                src,
+                class,
+            });
+            return;
+        };
+        for k in 0..self.flat_size(d) {
+            let t = self.reg();
+            self.emit(Inst::FieldGet {
+                dst: t,
+                obj: src,
+                index: k,
+                class: d,
+            });
+            self.emit(Inst::FieldSet {
+                obj,
+                index: slot + k,
+                src: t,
+                class,
+            });
+        }
+    }
+
+    /// The physical fields a data constructor of `class` takes, from
+    /// the declared fields' values.
+    fn flatten_args(&mut self, class: ClassId, args: Vec<Reg>) -> Vec<Reg> {
+        let flats: Vec<Option<ClassId>> = match self.lw.layouts.get(class as usize) {
+            Some(l)
+                if l.ivars.len() == args.len() && l.ivars.iter().any(|iv| iv.flat.is_some()) =>
+            {
+                l.ivars.iter().map(|iv| iv.flat).collect()
+            }
+            _ => return args,
+        };
+        let mut out = Vec::new();
+        for (r, flat) in args.into_iter().zip(flats) {
+            match flat {
+                None => out.push(r),
+                Some(d) => {
+                    for k in 0..self.flat_size(d) {
+                        let t = self.reg();
+                        self.emit(Inst::FieldGet {
+                            dst: t,
+                            obj: r,
+                            index: k,
+                            class: d,
+                        });
+                        out.push(t);
+                    }
+                }
+            }
+        }
+        out
+    }
+
     fn ivar_index(&self, node: u32, name: &str) -> u32 {
         if let Some(i) = self.out.ivar_fields.get(&node) {
             return *i as u32;
@@ -1497,13 +1612,14 @@ impl<'a> FnBuilder<'a> {
             ExprKind::IVar(name) => {
                 let index = self.ivar_index(root.id, name);
                 let class = self.class_id.unwrap_or(u32::MAX);
-                if owned {
+                let (slot, flat) = self.ivar_layout(class, index);
+                if owned && flat.is_none() {
                     let obj = self.self_reg();
                     let dst = self.reg();
                     self.emit(Inst::OwnedCall {
                         dst,
                         method,
-                        recv: VarLoc::Field { obj, index },
+                        recv: VarLoc::Field { obj, index: slot },
                         args: a.pos,
                         kw: a.kw,
                     });
@@ -1513,14 +1629,7 @@ impl<'a> FnBuilder<'a> {
                     self.expr(recv)
                 } else {
                     let obj = self.self_reg();
-                    let r = self.reg();
-                    self.emit(Inst::FieldGet {
-                        dst: r,
-                        obj,
-                        index,
-                        class,
-                    });
-                    r
+                    self.field_get(obj, class, index)
                 };
                 let dst = self.reg();
                 self.emit(Inst::Call {
@@ -1534,12 +1643,7 @@ impl<'a> FnBuilder<'a> {
                     block: a.block,
                 });
                 let obj = self.self_reg();
-                self.emit(Inst::FieldSet {
-                    obj,
-                    index,
-                    src: dst,
-                    class,
-                });
+                self.field_set(obj, class, index, dst);
                 dst
             }
             _ => self.nil(),
@@ -2015,14 +2119,7 @@ impl<'a> FnBuilder<'a> {
                     {
                         if let Some(index) = self.world.field_index(m.owner, name) {
                             let obj = recv.unwrap_or_else(|| self.self_reg());
-                            let dst = self.reg();
-                            self.emit(Inst::FieldGet {
-                                dst,
-                                obj,
-                                index: index as u32,
-                                class: m.owner,
-                            });
-                            return dst;
+                            return self.field_get(obj, m.owner, index as u32);
                         }
                     }
                 }
@@ -2049,10 +2146,18 @@ impl<'a> FnBuilder<'a> {
                 }
                 CallKind::Method(*method)
             }
-            Some(CallTarget::Constructor { class, init }) => CallKind::Construct {
-                class: *class,
-                init: *init,
-            },
+            Some(CallTarget::Constructor { class, init }) => {
+                // A data constructor takes the physical fields.
+                let data_init = init
+                    .is_some_and(|m| self.world.method(m).synth == quarz_types::Synth::DataInit);
+                if data_init && !a.splat && a.kw.is_empty() && a.kw_splat.is_none() {
+                    a.pos = self.flatten_args(*class, std::mem::take(&mut a.pos));
+                }
+                CallKind::Construct {
+                    class: *class,
+                    init: *init,
+                }
+            }
             Some(CallTarget::ProcCall) => CallKind::ProcCall,
             Some(CallTarget::Raise) => CallKind::Raise,
             Some(CallTarget::Super { method }) => CallKind::Super(*method),
@@ -2254,27 +2359,26 @@ impl<'a> FnBuilder<'a> {
                             {
                                 let method = *method;
                                 let a = self.args(&call.args);
-                                if a.block.is_none() && !a.splat && a.kw_splat.is_none() {
+                                let class = self.class_id.unwrap_or(u32::MAX);
+                                let (slot, flat) = self.ivar_layout(class, index);
+                                if a.block.is_none()
+                                    && !a.splat
+                                    && a.kw_splat.is_none()
+                                    && flat.is_none()
+                                {
                                     let obj = self.self_reg();
                                     let dst = self.reg();
                                     self.emit(Inst::OwnedCall {
                                         dst,
                                         method,
-                                        recv: VarLoc::Field { obj, index },
+                                        recv: VarLoc::Field { obj, index: slot },
                                         args: a.pos,
                                         kw: a.kw,
                                     });
                                     return dst;
                                 }
                                 let obj = self.self_reg();
-                                let recv = self.reg();
-                                let class = self.class_id.unwrap_or(u32::MAX);
-                                self.emit(Inst::FieldGet {
-                                    dst: recv,
-                                    obj,
-                                    index,
-                                    class,
-                                });
+                                let recv = self.field_get(obj, class, index);
                                 let dst = self.reg();
                                 self.emit(Inst::Call {
                                     dst,
@@ -2287,12 +2391,7 @@ impl<'a> FnBuilder<'a> {
                                     block: a.block,
                                 });
                                 let obj = self.self_reg();
-                                self.emit(Inst::FieldSet {
-                                    obj,
-                                    index,
-                                    src: dst,
-                                    class,
-                                });
+                                self.field_set(obj, class, index, dst);
                                 return dst;
                             }
                         }
@@ -2301,12 +2400,7 @@ impl<'a> FnBuilder<'a> {
                 let v = self.expr(value);
                 let obj = self.self_reg();
                 let class = self.class_id.unwrap_or(u32::MAX);
-                self.emit(Inst::FieldSet {
-                    obj,
-                    index,
-                    src: v,
-                    class,
-                });
+                self.field_set(obj, class, index, v);
                 v
             }
             LValue::Const(_) => self.nil(),
@@ -2428,14 +2522,8 @@ impl<'a> FnBuilder<'a> {
             LValue::IVar(name) => {
                 let index = self.ivar_index(e.id, name);
                 let obj = self.self_reg();
-                let dst = self.reg();
                 let class = self.class_id.unwrap_or(u32::MAX);
-                self.emit(Inst::FieldGet {
-                    dst,
-                    obj,
-                    index,
-                    class,
-                });
+                let dst = self.field_get(obj, class, index);
                 (dst, Place::IVar(index))
             }
             LValue::Attr { recv, name, .. } => {
@@ -2524,12 +2612,7 @@ impl<'a> FnBuilder<'a> {
             Place::IVar(index) => {
                 let obj = self.self_reg();
                 let class = self.class_id.unwrap_or(u32::MAX);
-                self.emit(Inst::FieldSet {
-                    obj,
-                    index,
-                    src: res,
-                    class,
-                });
+                self.field_set(obj, class, index, res);
             }
             Place::Attr(recv, name) => {
                 self.send(recv, &format!("{name}="), vec![res]);
@@ -2613,12 +2696,7 @@ impl<'a> FnBuilder<'a> {
                     .unwrap_or(0) as u32;
                 let obj = self.self_reg();
                 let class = self.class_id.unwrap_or(u32::MAX);
-                self.emit(Inst::FieldSet {
-                    obj,
-                    index,
-                    src: v,
-                    class,
-                });
+                self.field_set(obj, class, index, v);
             }
             LValue::Attr { recv, name, .. } => {
                 let r = self.expr(recv);

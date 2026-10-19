@@ -148,6 +148,11 @@ end
 
 `data` generates the following automatically: fields (immutable), reader methods, `initialize`, `==`/`hash`, `to_s`/`inspect`, `with`, `deconstruct`/`deconstruct_keys`, `to_h`. To add methods, write them in an `is ... end` body (`is` is needed because a `data` declaration without a body does not end with `end`, so the parser could not otherwise tell a body from the next statement). `data` types cannot be inherited (they can `include`).
 
+
+### Data values stored in place
+
+A field (of a class or of another data type) whose declared type is a small immutable data type is stored *by value* inside the object: a data type whose fields are all `Int`, `Float`, `Bool` or such data types, with no type parameters and no `==`, `hash` or `equal?` of its own. `var @pos: Vec2` keeps `x` and `y` in the particle itself, so `@pos = @pos + @vel.scale(dt)` allocates nothing. Reading such a field gives a value equal to the one stored, but not the same object: `p.pos.equal?(p.pos)` is false, as it is for two `Vec2.new(1.0, 2.0)`. Everything else (`==`, `hash`, `inspect`, `with`, `to_h`, patterns, JSON) sees the declared fields. A nilable field (`Vec2?`), a union or a data type with its own equality keeps its reference.
+
 ## 5. Enumerations (`enum`)
 
 Sum types (algebraic data types). The variants are separated by `|`, as in a union type; each can carry data.

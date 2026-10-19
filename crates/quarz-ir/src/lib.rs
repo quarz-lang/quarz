@@ -920,6 +920,18 @@ pub enum RtClassKind {
     Main,
 }
 
+/// A field as the program declares it. `slot` is where it starts in the
+/// object's physical fields; a `flat` field is a data value stored in
+/// place (its data class's physical fields follow from `slot`).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RtIvar {
+    pub name: String,
+    pub ty: Option<String>,
+    pub slot: u32,
+    pub flat: Option<ClassId>,
+    pub default: Option<FuncId>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RtField {
     pub name: String,
@@ -936,8 +948,12 @@ pub struct RtClass {
     pub superclass: Option<ClassId>,
     /// Method resolution order, starting with the class itself.
     pub ancestors: Vec<ClassId>,
-    /// All fields in layout order (inherited first).
+    /// The physical fields, in layout order (inherited first): a data
+    /// value held by value contributes its own physical fields.
     pub fields: Vec<RtField>,
+    /// The declared fields, with where each lives.
+    #[serde(default)]
+    pub ivars: Vec<RtIvar>,
     /// Methods declared by the class, by name (overloads in declaration
     /// order).
     pub methods: HashMap<String, Vec<MethodId>>,
