@@ -239,7 +239,9 @@ pub unsafe extern "C" fn qz_enter(
     write(addr_of_mut!((*buf).args_ptr), std::cell::Cell::new(args));
     write(addr_of_mut!((*buf).nargs), std::cell::Cell::new(nargs));
     write(addr_of_mut!((*buf).yield_caller), Default::default());
-    rt.push_call(buf as *const Activation);
+    write(addr_of_mut!((*buf).sp), std::cell::Cell::new(0));
+    write(addr_of_mut!((*buf).native), std::cell::Cell::new(false));
+    rt.push_call(&*buf);
     let _ = mid;
     STATUS_OK
 }
@@ -344,7 +346,7 @@ pub unsafe extern "C" fn qz_enter_virtual(
 /// `rt` is the interpreter running the caller.
 #[no_mangle]
 pub unsafe extern "C" fn qz_push_call(rt: *const Interp, act: *const Activation) {
-    (*rt).push_call(act);
+    (*rt).push_call(&*act);
 }
 
 /// Remove `act` from the call stack when it is not the top entry
@@ -1054,6 +1056,7 @@ pub unsafe extern "C" fn qz_main(
     argv: *const *const c_char,
     layout_sig: u64,
     vec_layout: u64,
+    flags: u64,
 ) -> i32 {
     let bytes = std::slice::from_raw_parts(blob, len);
     let module = match quarz_ir::decode(bytes) {
@@ -1080,6 +1083,9 @@ pub unsafe extern "C" fn qz_main(
     crate::value::check_rc_layout();
     crate::layout::check(layout_sig, vec_layout);
     let interp: Rc<Interp> = Interp::with_state(world, 0, functions, units, args, state);
+    // Bit 0: compiled frames are found by the native unwinder (the
+    // typed entries push no activation).
+    interp.native_bt.set(flags & 1 != 0);
     {
         let mut compiled = interp.compiled.borrow_mut();
         for (i, f) in table.iter().enumerate() {

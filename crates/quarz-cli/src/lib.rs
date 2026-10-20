@@ -19,9 +19,10 @@ pub fn build(
     checked: Checked,
     files: &[SourceFile],
     output: &std::path::Path,
+    backend: quarz_aot::Backend,
 ) -> Result<(), String> {
     let module = quarz_lower::lower_checked(&checked, files);
-    quarz_aot::build(&module, output)
+    quarz_aot::build(&module, output, backend)
 }
 
 /// Lower and run a checked program capturing its standard output.

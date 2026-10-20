@@ -27,6 +27,8 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Lint
         run: cargo clippy --all-targets -- -D warnings
+      - name: Toolchain for the LLVM backend
+        run: clang --version
       - name: Build
         run: cargo build --workspace
       - name: Test

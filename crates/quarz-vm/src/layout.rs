@@ -21,11 +21,14 @@ pub const ACT_PROVIDED: usize = offset_of!(Activation, provided);
 pub const ACT_ARGS_PTR: usize = offset_of!(Activation, args_ptr);
 pub const ACT_NARGS: usize = offset_of!(Activation, nargs);
 pub const ACT_YIELD_CALLER: usize = offset_of!(Activation, yield_caller);
+pub const ACT_SP: usize = offset_of!(Activation, sp);
+pub const ACT_NATIVE: usize = offset_of!(Activation, native);
 
 pub const HOT_STACK_PTR: usize = offset_of!(Interp, hot) + offset_of!(Hot, stack_ptr);
 pub const HOT_STACK_LEN: usize = offset_of!(Interp, hot) + offset_of!(Hot, stack_len);
 pub const HOT_STACK_CAP: usize = offset_of!(Interp, hot) + offset_of!(Hot, stack_cap);
 pub const HOT_LIMIT_PTR: usize = offset_of!(Interp, hot) + offset_of!(Hot, limit_ptr);
+pub const CURRENT_TASK: usize = offset_of!(Interp, current_task_id);
 
 /// Everything above, folded into one number.
 pub const SIGNATURE: u64 = {
@@ -44,10 +47,13 @@ pub const SIGNATURE: u64 = {
         ACT_ARGS_PTR,
         ACT_NARGS,
         ACT_YIELD_CALLER,
+        ACT_SP,
+        ACT_NATIVE,
         HOT_STACK_PTR,
         HOT_STACK_LEN,
         HOT_STACK_CAP,
         HOT_LIMIT_PTR,
+        CURRENT_TASK,
     ];
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     let mut i = 0;

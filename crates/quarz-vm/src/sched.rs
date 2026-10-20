@@ -60,6 +60,8 @@ pub struct TaskHandle {
     pub yielder: Cell<Option<*const Yielder<(), ()>>>,
     /// Lowest stack address the task may use (for `SystemStackError`).
     pub stack_limit: Cell<usize>,
+    /// Its native stack (see `STACK_RANGE`).
+    pub stack_range: Cell<(usize, usize)>,
 }
 
 impl std::fmt::Debug for TaskHandle {
@@ -215,6 +217,10 @@ pub struct Scheduler {
 thread_local! {
     static YIELDER: Cell<Option<*const Yielder<(), ()>>> = const { Cell::new(None) };
     static STACK_LIMIT: Cell<usize> = const { Cell::new(0) };
+    /// The running task's native stack, `(lowest, highest)` address: a
+    /// backtrace keeps the frames found there (the unwinder continues
+    /// into the stack a coroutine was resumed from).
+    static STACK_RANGE: Cell<(usize, usize)> = const { Cell::new((0, usize::MAX)) };
 }
 
 /// Whether the current stack pointer is below the task's limit.
@@ -223,6 +229,11 @@ thread_local! {
 /// `Interp::hot`).
 pub fn stack_limit_cell() -> *const Cell<usize> {
     STACK_LIMIT.with(|l| l as *const Cell<usize>)
+}
+
+/// The running task's native stack range (see `STACK_RANGE`).
+pub fn stack_range() -> (usize, usize) {
+    STACK_RANGE.with(|r| r.get())
 }
 
 pub fn stack_exhausted() -> bool {
@@ -421,6 +432,7 @@ impl Scheduler {
             name: RefCell::new(name),
             yielder: Cell::new(None),
             stack_limit: Cell::new(0),
+            stack_range: Cell::new((0, usize::MAX)),
         });
         if let Some(scope) = &scope {
             scope.children.borrow_mut().push(handle.clone());
@@ -436,6 +448,11 @@ impl Scheduler {
             let limit = base.saturating_sub(stack_size.saturating_sub(512 * 1024));
             handle_for_body.stack_limit.set(limit);
             STACK_LIMIT.with(|l| l.set(limit));
+            // (The marker is near the top; frames above it are the
+            // coroutine's own entry frames.)
+            let range = (base.saturating_sub(stack_size), base + 4096);
+            handle_for_body.stack_range.set(range);
+            STACK_RANGE.with(|r| r.set(range));
             body()
         });
         self.tasks.push(handle.clone());
@@ -603,11 +620,14 @@ impl Scheduler {
 pub fn resume(task: &TaskHandle, co: &mut TaskCoroutine) -> CoroutineResult<(), TaskExit> {
     let outer = YIELDER.with(|y| y.get());
     let outer_limit = STACK_LIMIT.with(|l| l.get());
+    let outer_range = STACK_RANGE.with(|r| r.get());
     YIELDER.with(|y| y.set(task.yielder.get()));
     STACK_LIMIT.with(|l| l.set(task.stack_limit.get()));
+    STACK_RANGE.with(|r| r.set(task.stack_range.get()));
     let r = co.resume(());
     YIELDER.with(|y| y.set(outer));
     STACK_LIMIT.with(|l| l.set(outer_limit));
+    STACK_RANGE.with(|r| r.set(outer_range));
     r
 }
 

@@ -10,7 +10,23 @@ cargo build --release
 PATH="$HOME/go-sdk/bin:$PATH" RUNS=5 bench/compare/run.sh
 ```
 
-## Results (2026-10-19, after the direct-call, unboxing, inlining, lean-call, allocation, array, hashing and equality rounds)
+## Results (2026-10-20, with the LLVM backend)
+
+Same machine and versions as below; Quarz at the LLVM-backend commit,
+`quarz build` compiling through `clang -O2` (the default backend).
+Milliseconds, best of 10 runs. The Cranelift backend (`--backend
+cranelift`, for development) gives fib 6.8, loop 9.3, collections 33.4,
+objects 8.4, strings 31.4 on the same runs.
+
+| program     | quarz-vm | quarz-aot |   go | rust |  ruby | ruby --yjit |
+|-------------|---------:|----------:|-----:|-----:|------:|------------:|
+| fib         |    146.0 |       5.0 |  2.3 |  1.8 |  70.1 |        61.1 |
+| loop        |    439.4 |       4.4 |  3.5 |  3.6 | 117.9 |       118.9 |
+| collections |    539.5 |      31.8 | 30.1 | 13.6 | 239.2 |       215.7 |
+| objects     |    104.7 |       7.2 |  2.1 |  1.4 | 316.3 |       255.6 |
+| strings     |     89.6 |      34.7 | 36.9 | 17.1 | 173.7 |       169.0 |
+
+## Results (2026-10-19, Cranelift, after the direct-call, unboxing, inlining, lean-call, allocation, array, hashing and equality rounds)
 
 12th Gen Intel Core i7-1260P; Go 1.27.2, rustc 1.98.1 (`-O`), Ruby 4.0.5
 (with and without `--yjit`); Quarz at the equality commit, VM =
@@ -41,11 +57,13 @@ access and the reusable block caller):
 
 ## Reading the numbers
 
-- Compiled Quarz is now 2.5× slower than Go and Rust on the counting
-  loop (its Int locals are unboxed and stay in registers), 3× on
+- Compiled Quarz is now on a par with Go and Rust on the counting
+  loop (its Int locals are unboxed and stay in registers), 2.2–2.8× slower on
   `fib` (one level of the recursion is inlined and the remaining calls
-  go through a typed entry that passes `Int`s as machine values; what
-  remains is the activation each call still pushes for backtraces), 1.1–2.5× on the collection pipeline
+  go through a typed entry that passes `Int`s as machine values and,
+  with LLVM, pushes no activation, backtraces being recovered from the
+  native stack; what remains is the nil stores for the inlined callee's
+  registers and the result's status check), 1.1–2.3× on the collection pipeline
   (its blocks are loops in the caller, the array and hash updates are in
   place and the appends inline, `Int`/`Float` array elements are stored
   unboxed and read inline, numeric equality is inline; what remains is

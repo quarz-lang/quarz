@@ -14,7 +14,9 @@ commands:
   parse FILE     print the syntax tree of FILE (for debugging the parser)
   check FILE     type-check FILE
   ir FILE        print the QIR of FILE (for debugging the lowering)
-  build FILE [-o OUT]  compile FILE to a native executable (default: FILE without .qz)
+  build FILE [-o OUT] [--backend llvm|cranelift]
+                 compile FILE to a native executable (default: FILE without .qz,
+                 with LLVM; QUARZ_BACKEND chooses the default backend)
   run FILE [ARGS...]   type-check and run FILE
   repl           start an interactive session
 ";
@@ -50,7 +52,23 @@ fn main() -> ExitCode {
                         p.with_extension("")
                     }
                 };
-                build_file(path, &out)
+                let backend = match args.iter().position(|a| a == "--backend") {
+                    Some(i) => match args.get(i + 1).and_then(|b| quarz_aot::Backend::parse(b)) {
+                        Some(b) => b,
+                        None => return usage(),
+                    },
+                    None => match std::env::var("QUARZ_BACKEND") {
+                        Ok(name) => match quarz_aot::Backend::parse(&name) {
+                            Some(b) => b,
+                            None => {
+                                eprintln!("quarz: unknown backend {name:?} in QUARZ_BACKEND");
+                                return ExitCode::FAILURE;
+                            }
+                        },
+                        Err(_) => quarz_aot::Backend::Llvm,
+                    },
+                };
+                build_file(path, &out, backend)
             }
             None => usage(),
         },
@@ -159,11 +177,11 @@ fn ir_file(path: &str) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn build_file(path: &str, out: &std::path::Path) -> ExitCode {
+fn build_file(path: &str, out: &std::path::Path, backend: quarz_aot::Backend) -> ExitCode {
     let Some((checked, files)) = load_and_check(path) else {
         return ExitCode::FAILURE;
     };
-    match quarz_cli::build(checked, &files, out) {
+    match quarz_cli::build(checked, &files, out, backend) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("quarz: {e}");

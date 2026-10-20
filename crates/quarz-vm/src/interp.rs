@@ -343,6 +343,9 @@ pub struct Interp {
     /// activation lives on the Rust stack for the duration of its call.
     /// The task being run by the scheduler.
     pub current_task_id: Cell<TaskId>,
+    /// Backtraces also walk the native stack for compiled frames that
+    /// push no activation (typed entries of the LLVM backend).
+    pub native_bt: Cell<bool>,
     pub at_exit: Rc<RefCell<Vec<Value>>>,
     pub stdout: Rc<RefCell<Box<dyn std::io::Write>>>,
     /// The flow being returned from compiled code (see `vm.rs`).
@@ -578,6 +581,7 @@ impl Interp {
             exc,
             rt,
             current_task_id: Cell::new(0),
+            native_bt: Cell::new(false),
             at_exit: state.at_exit,
             stdout: state.stdout,
             pending_flow: RefCell::new(None),
@@ -895,20 +899,36 @@ impl Interp {
         let stack = self.call_stack();
         let task = self.current_task_id.get();
         let funcs = self.funcs.borrow();
+        // The frames, innermost first: the activations of this task
+        // (those the native unwinder also sees are left to it), merged
+        // by stack position with the compiled frames it reports.
+        let mut entries: Vec<(usize, FuncId, u32)> = stack
+            .iter()
+            .filter_map(|p| {
+                // SAFETY: entries are removed before their activation ends.
+                let act = unsafe { &**p };
+                (act.task == task && !act.native.get())
+                    .then(|| (act.sp.get(), act.fid, act.line.get()))
+            })
+            .collect();
+        if self.native_bt.get() {
+            entries.extend(native_frames());
+            // Deeper frames have lower addresses; the activation stack
+            // keeps its own order where addresses are unknown.
+            entries.sort_by_key(|e| std::cmp::Reverse(e.0));
+            entries.reverse();
+        } else {
+            entries.reverse();
+        }
         let mut frames = 0;
         let mut bt = Vec::new();
-        for p in stack.iter().rev() {
-            // SAFETY: entries are removed before their activation ends.
-            let act = unsafe { &**p };
-            if act.task != task {
-                continue;
-            }
+        for (_, fid, line) in entries {
             frames += 1;
             if frames > 32 {
                 continue;
             }
-            let f = &funcs[act.fid as usize];
-            let mut line = act.line.get();
+            let f = &funcs[fid as usize];
+            let mut line = line;
             // Code inlined from another function: its frame, then the
             // caller's at the line of the call.
             while line & INLINE_LINE_FLAG != 0 {
@@ -2273,4 +2293,10 @@ pub fn inspect_str(s: &str) -> String {
     }
     out.push('"');
     out
+}
+
+/// The compiled frames the native unwinder finds on this task's stack
+/// (see `native_bt`), innermost first.
+fn native_frames() -> Vec<(usize, FuncId, u32)> {
+    crate::native_bt::frames()
 }

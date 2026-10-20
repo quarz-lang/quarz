@@ -1,6 +1,6 @@
 [package]
 name = "quarz-aot"
-description = "Ahead-of-time compilation of QIR to machine code with Cranelift"
+description = "Ahead-of-time compilation of QIR to machine code (LLVM through clang, or Cranelift)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -37,6 +37,14 @@ pub struct Activation {
     /// a compiled caller's argument area).
     pub args_ptr: Cell<*const Value>,
     pub nargs: Cell<u32>,
+    /// Where the activation lives: activations are built on the native
+    /// stack (a local of the interpreter, or an area of a compiled
+    /// caller's frame), so their addresses order them among the frames
+    /// the native unwinder reports (see `Interp::capture_backtrace`).
+    pub sp: Cell<usize>,
+    /// The frame is also visible to the native unwinder (a typed entry
+    /// that materialized its activation): backtraces take it from there.
+    pub native: Cell<bool>,
     /// The block's caller, built on the first `yield` and reused.
     pub yield_caller: YieldCache,
 }
@@ -166,6 +174,8 @@ impl Interp {
             args_ptr: Cell::new(std::ptr::null()),
             nargs: Cell::new(0),
             yield_caller: Default::default(),
+            sp: Cell::new(0),
+            native: Cell::new(false),
         };
         let compiled = self.compiled.borrow().get(fid as usize).copied().flatten();
         Some(BlockCaller {
@@ -266,7 +276,7 @@ impl BlockCaller {
         };
         act.args_ptr.set(view.as_ptr());
         act.nargs.set(view.len() as u32);
-        interp.push_call(act as *const Activation);
+        interp.push_call(act);
         let r = match compiled {
             Some(f) => {
                 let mut out = Value::Nil;
@@ -333,7 +343,7 @@ impl Interp {
     /// Run a function to completion (its machine code when it has some).
     #[inline(always)]
     pub fn run_func(&self, fid: FuncId, act: &Activation) -> EvalResult {
-        self.push_call(act as *const Activation);
+        self.push_call(act);
         let r = self.run_func_inner(fid, act);
         self.pop_call_stack(act);
         r
@@ -407,7 +417,9 @@ impl Interp {
     /// Push an activation on the call stack (compiled code does this
     /// inline when there is room).
     #[inline]
-    pub fn push_call(&self, act: *const Activation) {
+    pub fn push_call(&self, act: &Activation) {
+        act.sp.set(act as *const Activation as usize);
+        let act = act as *const Activation;
         let len = self.hot.stack_len.get();
         if len == self.hot.stack_cap.get() {
             self.grow_call_stack();
@@ -1354,6 +1366,8 @@ impl Interp {
                     args_ptr: Cell::new(std::ptr::null()),
                     nargs: Cell::new(0),
                     yield_caller: Default::default(),
+                    sp: Cell::new(0),
+                    native: Cell::new(false),
                 };
                 act.bind(&bound);
                 let r = match self.run_func(*fid, &act) {
@@ -1402,6 +1416,8 @@ impl Interp {
             args_ptr: Cell::new(std::ptr::null()),
             nargs: Cell::new(0),
             yield_caller: Default::default(),
+            sp: Cell::new(0),
+            native: Cell::new(false),
         };
         self.run_func(fid, &act)
     }
@@ -1444,6 +1460,8 @@ impl Interp {
             args_ptr: Cell::new(std::ptr::null()),
             nargs: Cell::new(0),
             yield_caller: Default::default(),
+            sp: Cell::new(0),
+            native: Cell::new(false),
         };
         act.bind(&args);
         let r = self.run_func(fid, &act);
@@ -1479,6 +1497,8 @@ impl Interp {
             args_ptr: Cell::new(std::ptr::null()),
             nargs: Cell::new(0),
             yield_caller: Default::default(),
+            sp: Cell::new(0),
+            native: Cell::new(false),
         };
         self.run_func(fid, &act)
     }
