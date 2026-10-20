@@ -84,6 +84,43 @@ pub(crate) struct Target<'a, B: Builder> {
     /// A typed entry pushes no activation until something needs one
     /// (the backend walks the native stack for backtraces).
     pub lazy_act: bool,
+    /// Generate the *entry* of a typed function rather than its body:
+    /// only the part that needs no frame (`unbox::pure_region`), every
+    /// way out of it calling this body with the same arguments (the
+    /// part has no effects, so the body may run it again).
+    pub entry_of: Option<B::Func>,
+}
+
+/// The blocks a typed entry runs before it needs a frame, when it has
+/// any (see `unbox::pure_region`): a backend gives such a function a
+/// separate entry (`Target::entry_of`).
+pub(crate) fn typed_entry_region(
+    f: &Function,
+    methods: &[RtMethod],
+    classes: &[RtClass],
+    builtin: &RtBuiltin,
+    typed_all: &[Option<unbox::TypedSig>],
+    sig: &unbox::TypedSig,
+) -> Option<Vec<bool>> {
+    let heap = heap_possible(f, methods, typed_all);
+    let entry_states = unbox::analyze(f, methods, classes, builtin, typed_all);
+    let region = unbox::pure_region(
+        f,
+        &entry_states,
+        methods,
+        classes,
+        builtin,
+        typed_all,
+        sig,
+        &heap,
+    );
+    // Worth it when some path returns from the region.
+    let returns = f
+        .blocks
+        .iter()
+        .zip(&region)
+        .any(|(blk, &r)| r && matches!(blk.term, Term::Return(_)));
+    (region.first().copied().unwrap_or(false) && returns).then_some(region)
 }
 
 /// The compiled bodies `f` calls directly, and which of them have typed
@@ -123,6 +160,7 @@ pub(crate) fn gen_function<B: Builder>(
         callees_typed,
         body_sig,
         lazy_act,
+        entry_of,
     } = t;
     let drop_value_fn = h.drop_value;
     let pop_call = h.pop_call;
@@ -186,6 +224,7 @@ pub(crate) fn gen_function<B: Builder>(
         });
 
     let (entry, params) = b.entry_block();
+    let entry_params = params.clone();
     let blocks: Vec<B::Block> = f.blocks.iter().map(|_| b.create_block()).collect();
     let unwinds: Vec<B::Block> = f
         .blocks
@@ -229,72 +268,14 @@ pub(crate) fn gen_function<B: Builder>(
     // The callee's result slot: nil between calls (each consumer leaves
     // it so), written once here.
     let out_buf = b.stack_slot(VALUE_SIZE as u32, 3);
-    let nil = b.iconst(Ty::I64, 0);
-    b.store(nil, out_buf, 0);
     let vbody = b.stack_slot(8, 3);
     let ptrs = b.stack_slot(32, 3);
     // The words a deoptimization hands the runtime (see `deopt`).
     let fresh_buf = b.stack_slot(8 * nwords as u32, 3);
     let args_buf = b.stack_slot((VALUE_SIZE as u32) * max_direct_args as u32, 3);
-    let mut typed_params: Vec<B::Value> = Vec::new();
-    let mut typed_self_ptr: Option<B::Value> = None;
-    let mut typed_params_buf: Option<B::Value> = None;
-    let mut typed_exit: Option<TypedExit<B>> = None;
-    if let Some(sig) = &typed {
-        let nparams = sig.params.len();
-        let self_ptr = params[2];
-        typed_params = params[3..3 + nparams].to_vec();
-        let out_caller = params[3 + nparams];
-        let own_act = b.stack_slot(ACT_BUF_SIZE, 4);
-        let own_out = b.stack_slot(VALUE_SIZE as u32, 3);
-        let params_buf = b.stack_slot((VALUE_SIZE as u32) * nparams.max(1) as u32, 3);
-        let zero = b.iconst(Ty::I64, 0);
-        b.store(zero, own_out, 0);
-        // The parameters are boxed into `params_buf`, and `self`
-        // cloned into the activation, only when the interpreter or
-        // the runtime needs them (see `materialize`).
-        typed_self_ptr = Some(self_ptr);
-        typed_params_buf = Some(params_buf);
-        // Native stack check, then the activation, pushed.
-        let sp = b.get_stack_pointer();
-        let limit_cell = b.load(Ty::Ptr, rt, L::HOT_LIMIT_PTR as i32);
-        let limit = b.load(Ty::Ptr, limit_cell, 0);
-        let exhausted = b.icmp(IntCC::UnsignedLessThan, sp, limit);
-        let overflow = b.create_block();
-        let build = b.create_block();
-        b.brif(exhausted, overflow, &[], build, &[]);
-        b.switch_to_block(overflow);
-        let status = b.call(h.stack_overflow, &[rt])[0];
-        let zero_bits = b.iconst(Ty::I64, 0);
-        b.return_(&[status, zero_bits]);
-        b.switch_to_block(build);
-        let self_dst = b.iadd_imm(own_act, L::ACT_SELF as i64);
-        let zero8 = b.iconst(Ty::I8, 0);
-        b.def_var(pushed_var, zero8);
-        if !lazy_act {
-            emit_typed_activation(
-                b,
-                rt,
-                own_act,
-                fid,
-                f.file,
-                nparams,
-                params_buf,
-                h.push_call,
-            );
-        }
-        act = own_act;
-        out = own_out;
-        let te = b.create_block();
-        b.append_block_param(te, Ty::I32);
-        let fast = b.create_block();
-        b.append_block_param(fast, Ty::I64);
-        typed_exit = Some((te, self_dst, out_caller, fast));
-    }
     // Registers start as nil: the tag word is written for those
     // that may ever be released (they may hold a heap value) or be
     // read before they are written; the others are written first.
-    let zero = b.iconst(Ty::I64, 0);
     // Written by the runtime somewhere (which drops what it finds),
     // or live at entry, or unknown at some block's entry (a handler
     // knows nothing about any register): the home must hold nil
@@ -338,10 +319,71 @@ pub(crate) fn gen_function<B: Builder>(
             }
         }
     }
-    for i in 0..nregs as i32 {
-        if zeroed[i as usize] {
-            b.store(zero, regs, i * VALUE_SIZE);
+    // The part of the function that runs before its frame is set up
+    // (see `unbox::pure_region`): only with a lazily built activation.
+    let region = match (&typed, entry_of) {
+        (Some(sig), Some(_)) => unbox::pure_region(
+            f,
+            &entry_states,
+            methods,
+            classes,
+            builtin,
+            typed_all,
+            sig,
+            &heap,
+        ),
+        _ => vec![false; f.blocks.len()],
+    };
+    let mut own_out_slot: Option<B::Value> = None;
+    let mut typed_params: Vec<B::Value> = Vec::new();
+    let mut typed_self_ptr: Option<B::Value> = None;
+    let mut typed_params_buf: Option<B::Value> = None;
+    let mut typed_exit: Option<TypedExit<B>> = None;
+    if let Some(sig) = &typed {
+        let nparams = sig.params.len();
+        let self_ptr = params[2];
+        typed_params = params[3..3 + nparams].to_vec();
+        let out_caller = params[3 + nparams];
+        let own_act = b.stack_slot(ACT_BUF_SIZE, 4);
+        let own_out = b.stack_slot(VALUE_SIZE as u32, 3);
+        let params_buf = b.stack_slot((VALUE_SIZE as u32) * nparams.max(1) as u32, 3);
+        // The parameters are boxed into `params_buf`, and `self`
+        // cloned into the activation, only when the interpreter or
+        // the runtime needs them (see `materialize`).
+        typed_self_ptr = Some(self_ptr);
+        typed_params_buf = Some(params_buf);
+        // Native stack check (and the nil of the slots and homes), then
+        // the activation, pushed; deferred when the function may return
+        // without needing either.
+        own_out_slot = Some(own_out);
+        if !region.first().copied().unwrap_or(false) {
+            emit_frame_setup(b, &h, rt, regs, out_buf, Some(own_out), &zeroed);
         }
+        let self_dst = b.iadd_imm(own_act, L::ACT_SELF as i64);
+        let zero8 = b.iconst(Ty::I8, 0);
+        b.def_var(pushed_var, zero8);
+        if !lazy_act {
+            emit_typed_activation(
+                b,
+                rt,
+                own_act,
+                fid,
+                f.file,
+                nparams,
+                params_buf,
+                h.push_call,
+            );
+        }
+        act = own_act;
+        out = own_out;
+        let te = b.create_block();
+        b.append_block_param(te, Ty::I32);
+        let fast = b.create_block();
+        b.append_block_param(fast, Ty::I64);
+        typed_exit = Some((te, self_dst, out_caller, fast));
+    }
+    if typed.is_none() {
+        emit_frame_setup(b, &h, rt, regs, out_buf, None, &zeroed);
     }
     if uses_act {
         // `[args, self, nargs, frame]` of this activation: the frame
@@ -408,9 +450,21 @@ pub(crate) fn gen_function<B: Builder>(
         valid_vars: valid_vars.clone(),
         fresh_buf,
         stale: vec![false; nregs_usize],
+        region: region.clone(),
+        own_out: own_out_slot,
+        entry_of,
+        entry_params,
     };
     for (i, blk) in f.blocks.iter().enumerate() {
         g.b.switch_to_block(blocks[i]);
+        if g.entry_of.is_some() && !region[i] {
+            // Not part of an entry (never reached: leaving the region
+            // calls the body).
+            g.setup_frame();
+            let zb = g.b.iconst(Ty::I64, 0);
+            g.b.return_(&[zb]);
+            continue;
+        }
         g.states.clone_from(&entry_states[i]);
         g.stale.fill(false);
         for (j, inst) in blk.insts.iter().enumerate() {
@@ -430,12 +484,51 @@ pub(crate) fn gen_function<B: Builder>(
         // in memory (a different state there), or that a terminator
         // leaving the function reads.
         let at_term = &live[i][blk.insts.len()];
+        if region[i] {
+            // In the pure region: the frame is set up on an edge that
+            // leaves it, before anything is written back.
+            let edge = |g: &mut Gen<'_, B>, t: BlockId| {
+                if !region[t as usize] {
+                    g.setup_frame();
+                }
+                g.flush_for_edge(&entry_states[t as usize], at_term);
+                g.b.jump(blocks[t as usize], &[]);
+            };
+            match &blk.term {
+                Term::Jump(t) => {
+                    edge(&mut g, *t);
+                    continue;
+                }
+                Term::Branch { cond, then, els } => {
+                    let truthy = g.truthy(*cond);
+                    let to_then = g.b.create_block();
+                    let to_els = g.b.create_block();
+                    g.b.brif(truthy, to_then, &[], to_els, &[]);
+                    let states = g.states.clone();
+                    g.b.switch_to_block(to_then);
+                    edge(&mut g, *then);
+                    g.states.clone_from(&states);
+                    g.b.switch_to_block(to_els);
+                    edge(&mut g, *els);
+                    continue;
+                }
+                _ => {}
+            }
+        }
+        let fast_return = matches!(&blk.term, Term::Return(r)
+        if g.typed_fast_exit.is_some()
+            && matches!(
+                (g.states[*r as usize], g.typed.as_ref().map(|t| t.ret)),
+                (State::Int, Some(Num::Int)) | (State::Float, Some(Num::Float))
+            ));
         match &blk.term {
             Term::Jump(t) => g.flush_for_edge(&entry_states[*t as usize], at_term),
             Term::Branch { then, els, .. } => {
                 g.flush_for_edge(&entry_states[*then as usize], at_term);
                 g.flush_for_edge(&entry_states[*els as usize], at_term);
             }
+            // The bits go straight back.
+            Term::Return(_) if fast_return => {}
             Term::Return(r) => g.flush(*r),
             _ => g.flush_live(at_term),
         }
@@ -469,6 +562,13 @@ pub(crate) fn gen_function<B: Builder>(
                         g.b.bitcast(Ty::I64, v)
                     }
                 };
+                if region[i] {
+                    // Nothing was set up, pushed or written: return
+                    // right here (a return of its own lets the backend
+                    // keep the frame off this path).
+                    g.b.return_(&[bits]);
+                    continue;
+                }
                 for k in (0..g.nregs).filter(|&k| heap[k]) {
                     g.release(k as Reg);
                 }
@@ -570,8 +670,7 @@ pub(crate) fn gen_function<B: Builder>(
             pushed_var,
             lazy_act,
         );
-        let ok_v = b.iconst(Ty::I32, 0);
-        b.return_(&[ok_v, bits]);
+        b.return_(&[bits]);
         // The typed exit: pop the activation, release `self`, and
         // hand the result back as a machine value when it is of the
         // declared type, boxed in the caller's slot otherwise.
@@ -592,8 +691,7 @@ pub(crate) fn gen_function<B: Builder>(
         let failed_b = b.create_block();
         b.brif(ok, fits_b, &[], failed_b, &[]);
         b.switch_to_block(failed_b);
-        let zero_bits = b.iconst(Ty::I64, 0);
-        b.return_(&[status, zero_bits]);
+        emit_typed_fail(b, rt, status);
         b.switch_to_block(fits_b);
         let tag = b.load(Ty::I64, out, 0);
         let want = match sig.ret {
@@ -606,16 +704,57 @@ pub(crate) fn gen_function<B: Builder>(
         b.brif(is, unboxed_b, &[], boxed_b, &[]);
         b.switch_to_block(unboxed_b);
         let bits = b.load(Ty::I64, out, 8);
-        let ok_v = b.iconst(Ty::I32, 0);
-        b.return_(&[ok_v, bits]);
+        b.return_(&[bits]);
         b.switch_to_block(boxed_b);
         for k in [0, 8, 16] {
             let w = b.load(Ty::I64, out, k);
             b.store(w, out_caller, k);
         }
         let boxed_v = b.iconst(Ty::I32, STATUS_BOXED);
-        let zero_bits = b.iconst(Ty::I64, 0);
-        b.return_(&[boxed_v, zero_bits]);
+        emit_typed_fail(b, rt, boxed_v);
+    }
+}
+
+/// Leave a typed entry other than with its value: the status goes to the
+/// runtime (`Hot::typed_status`), where the caller finds it.
+fn emit_typed_fail<B: Builder>(b: &mut B, rt: B::Value, status: B::Value) {
+    b.store(status, rt, L::HOT_TYPED_STATUS as i32);
+    let zero_bits = b.iconst(Ty::I64, 0);
+    b.return_(&[zero_bits]);
+}
+
+/// Set a function's frame up: the result slots and the homes that must
+/// start nil (see `zeroed`), and, for a typed entry, the native stack
+/// check (whose failure returns at once: nothing is pushed yet).
+fn emit_frame_setup<B: Builder>(
+    b: &mut B,
+    h: &Helpers<B::Func>,
+    rt: B::Value,
+    regs: B::Value,
+    out_buf: B::Value,
+    own_out: Option<B::Value>,
+    zeroed: &[bool],
+) {
+    let zero = b.iconst(Ty::I64, 0);
+    b.store(zero, out_buf, 0);
+    if let Some(own_out) = own_out {
+        b.store(zero, own_out, 0);
+        let sp = b.get_stack_pointer();
+        let limit_cell = b.load(Ty::Ptr, rt, L::HOT_LIMIT_PTR as i32);
+        let limit = b.load(Ty::Ptr, limit_cell, 0);
+        let exhausted = b.icmp(IntCC::UnsignedLessThan, sp, limit);
+        let overflow = b.create_block();
+        let build = b.create_block();
+        b.brif(exhausted, overflow, &[], build, &[]);
+        b.switch_to_block(overflow);
+        let status = b.call(h.stack_overflow, &[rt])[0];
+        emit_typed_fail(b, rt, status);
+        b.switch_to_block(build);
+    }
+    for (i, z) in zeroed.iter().enumerate() {
+        if *z {
+            b.store(zero, regs, i as i32 * VALUE_SIZE);
+        }
     }
 }
 
@@ -1010,6 +1149,13 @@ struct Gen<'a, B: Builder> {
     /// written: a read of the home writes nil there first (see
     /// `ensure_home`). Tracked within a block.
     stale: Vec<bool>,
+    /// The blocks that run before the frame is set up (see
+    /// `unbox::pure_region`), and the typed entry's result slot.
+    region: Vec<bool>,
+    own_out: Option<B::Value>,
+    /// Generating a typed function's entry (see `Target::entry_of`).
+    entry_of: Option<B::Func>,
+    entry_params: Vec<B::Value>,
 }
 
 impl<B: Builder> Gen<'_, B> {
@@ -1489,6 +1635,9 @@ impl<B: Builder> Gen<'_, B> {
     /// rest from instruction `index` of `block`, and the function exits
     /// with its status. Emission continues in a fresh (unreachable) block.
     fn deopt(&mut self, block: u32, index: u32) {
+        if self.region[block as usize] {
+            self.setup_frame();
+        }
         let live = self.live[block as usize][index as usize].clone();
         self.flush_live(&live);
         // The interpreter drops what it overwrites: a home never set
@@ -1528,6 +1677,29 @@ impl<B: Builder> Gen<'_, B> {
         self.b.jump(self.exit, &[status]);
         let dead = self.b.create_block();
         self.b.switch_to_block(dead);
+    }
+
+    /// Set the frame up on leaving the pure region (see `emit_frame_setup`).
+    fn setup_frame(&mut self) {
+        if let Some(body) = self.entry_of {
+            // An entry: the body does the rest, from the start.
+            let args = self.entry_params.clone();
+            let r = self.b.call(body, &args);
+            self.b.return_(&r);
+            let dead = self.b.create_block();
+            self.b.switch_to_block(dead);
+            return;
+        }
+        let zeroed = self.zeroed.clone();
+        emit_frame_setup(
+            self.b,
+            &self.h,
+            self.rt,
+            self.regs,
+            self.out_buf,
+            self.own_out,
+            &zeroed,
+        );
     }
 
     /// The unboxed value of `r`, statically an Int or a Float: from its
@@ -2105,8 +2277,11 @@ impl<B: Builder> Gen<'_, B> {
         let zero = self.b.iconst(Ty::I64, 0);
         call_args.push(self.out_buf);
         self.set_call_line(block, index);
-        let results = self.b.call(entry, &call_args);
-        let (status, bits) = (results[0], results[1]);
+        let bits = self.b.call(entry, &call_args)[0];
+        // A status other than 0 (the value came back) is left in the
+        // runtime, and taken from there.
+        let status = self.b.uload32(self.rt, L::HOT_TYPED_STATUS as i32);
+        let status = self.b.ireduce(Ty::I32, status);
         let ok_b = self.b.create_block();
         let not_ok_b = self.b.create_block();
         let boxed_b = self.b.create_block();
@@ -2124,6 +2299,8 @@ impl<B: Builder> Gen<'_, B> {
         // Not the declared type: the boxed value goes to the register's
         // home and the interpreter takes over after the call.
         self.b.switch_to_block(not_ok_b);
+        let zero32 = self.b.iconst(Ty::I32, 0);
+        self.b.store(zero32, self.rt, L::HOT_TYPED_STATUS as i32);
         let is_boxed = self.b.icmp_imm(IntCC::Equal, status, STATUS_BOXED);
         self.b.brif(is_boxed, boxed_b, &[], unwind, &[status]);
         self.b.switch_to_block(boxed_b);

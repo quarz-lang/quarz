@@ -263,6 +263,10 @@ pub struct Hot {
     /// Points at this thread's `sched::STACK_LIMIT` (which the scheduler
     /// switches with the running task).
     pub limit_ptr: *const Cell<usize>,
+    /// How the last typed entry (`qz_fn_N_t`) that did not simply return
+    /// its value left: it returns only the value, and a status here,
+    /// which the caller reads and sets back to 0.
+    pub typed_status: Cell<u32>,
 }
 
 impl Hot {
@@ -273,6 +277,7 @@ impl Hot {
             stack_len: Cell::new(0),
             stack_cap: Cell::new(0),
             limit_ptr: sched::stack_limit_cell(),
+            typed_status: Cell::new(0),
         }
     }
 }

@@ -86,7 +86,6 @@ fn typed_signature(
         }));
     }
     s.params.push(AbiParam::new(types::I64));
-    s.returns.push(AbiParam::new(types::I32));
     s.returns.push(AbiParam::new(types::I64));
     s
 }
@@ -343,6 +342,7 @@ impl Compiler {
                 callees_typed,
                 body_sig,
                 lazy_act: false,
+                entry_of: None,
             },
             fid,
             f,

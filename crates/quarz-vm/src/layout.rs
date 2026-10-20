@@ -28,6 +28,7 @@ pub const HOT_STACK_PTR: usize = offset_of!(Interp, hot) + offset_of!(Hot, stack
 pub const HOT_STACK_LEN: usize = offset_of!(Interp, hot) + offset_of!(Hot, stack_len);
 pub const HOT_STACK_CAP: usize = offset_of!(Interp, hot) + offset_of!(Hot, stack_cap);
 pub const HOT_LIMIT_PTR: usize = offset_of!(Interp, hot) + offset_of!(Hot, limit_ptr);
+pub const HOT_TYPED_STATUS: usize = offset_of!(Interp, hot) + offset_of!(Hot, typed_status);
 pub const CURRENT_TASK: usize = offset_of!(Interp, current_task_id);
 
 /// Everything above, folded into one number.
@@ -53,6 +54,7 @@ pub const SIGNATURE: u64 = {
         HOT_STACK_LEN,
         HOT_STACK_CAP,
         HOT_LIMIT_PTR,
+        HOT_TYPED_STATUS,
         CURRENT_TASK,
     ];
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;

@@ -53,6 +53,7 @@ struct Ll<'a> {
     /// Pointers are `ptr` (LLVM 15 and later) or `i8*` with casts at
     /// each access.
     opaque: bool,
+    nparams: u32,
     rets: Vec<Ty>,
     vals: Vec<Val>,
     blocks: Vec<BlockData>,
@@ -125,6 +126,7 @@ impl<'a> Ll<'a> {
             decls,
             sigs,
             opaque,
+            nparams: params.len() as u32,
             rets: rets.to_vec(),
             vals: Vec::new(),
             blocks: Vec::new(),
@@ -389,7 +391,8 @@ impl Builder for Ll<'_> {
 
     fn entry_block(&mut self) -> (u32, Vec<u32>) {
         let b = self.create_block();
-        let params: Vec<u32> = (0..self.vals.len() as u32).collect();
+        // The parameters are the first values (variables may follow).
+        let params: Vec<u32> = (0..self.nparams).collect();
         (b, params)
     }
 
@@ -891,7 +894,7 @@ fn typed_signature(sig: &unbox::TypedSig) -> (Vec<Ty>, Vec<Ty>) {
         });
     }
     params.push(Ty::Ptr);
-    (params, vec![Ty::I32, Ty::I64])
+    (params, vec![Ty::I64])
 }
 
 /// Compile a module to the object file `object`.
@@ -1003,6 +1006,25 @@ fn emit(module: &Module, opaque: bool) -> Result<String, String> {
             })
         })
         .collect();
+    // A typed function that may return before it needs a frame gets a
+    // separate entry, which callers call (see `gen::Target::entry_of`).
+    let entry_funcs: Vec<Option<u32>> = typed
+        .iter()
+        .enumerate()
+        .map(|(i, t)| {
+            let sig = t.as_ref()?;
+            gen::typed_entry_region(
+                &module.functions[i],
+                &module.world.methods,
+                &module.world.classes,
+                &module.world.builtin,
+                &typed,
+                sig,
+            )?;
+            let (params, rets) = typed_signature(sig);
+            Some(declare(&format!("qz_fn_{i}_e"), &params, &rets))
+        })
+        .collect();
     let nrt = rt.main as usize + 1;
     let sigs = vec![SigDecl {
         params: body_params.to_vec(),
@@ -1038,11 +1060,14 @@ fn emit(module: &Module, opaque: bool) -> Result<String, String> {
     let methods = &module.world.methods;
     let mut text = String::new();
     for (i, f) in module.functions.iter().enumerate() {
-        let mut entries = vec![(None, funcs[i])];
+        let mut entries = vec![(None, funcs[i], None)];
         if let (Some(sig), Some(tf)) = (&typed[i], typed_funcs[i]) {
-            entries.push((Some(sig.clone()), tf));
+            entries.push((Some(sig.clone()), tf, None));
+            if let Some(ef) = entry_funcs[i] {
+                entries.push((Some(sig.clone()), ef, Some(tf)));
+            }
         }
-        for (sig, target) in entries {
+        for (sig, target, entry_of) in entries {
             let (params, rets) = match &sig {
                 Some(s) => typed_signature(s),
                 None => (body_params.to_vec(), vec![i32_]),
@@ -1052,7 +1077,7 @@ fn emit(module: &Module, opaque: bool) -> Result<String, String> {
             let mut callees_typed: HashMap<FuncId, u32> = HashMap::new();
             for c in gen::direct_callees(f, methods) {
                 callees.insert(c, funcs[c as usize]);
-                if let Some(tf) = typed_funcs[c as usize] {
+                if let Some(tf) = entry_funcs[c as usize].or(typed_funcs[c as usize]) {
                     callees_typed.insert(c, tf);
                 }
             }
@@ -1088,6 +1113,7 @@ fn emit(module: &Module, opaque: bool) -> Result<String, String> {
                     callees_typed,
                     body_sig: 0,
                     lazy_act: true,
+                    entry_of,
                 },
                 i as FuncId,
                 f,
@@ -1100,7 +1126,12 @@ fn emit(module: &Module, opaque: bool) -> Result<String, String> {
             );
             // A typed entry's frame is found on the native stack: it must
             // stay one (no inlining, no tail calls).
-            let attrs = if sig.is_some() {
+            // An entry never shows in a backtrace (it calls the body to
+            // do anything that could raise): it may be inlined into its
+            // callers, and call the body as a tail call.
+            let attrs = if entry_of.is_some() {
+                "uwtable"
+            } else if sig.is_some() {
                 "noinline uwtable \"disable-tail-calls\"=\"true\""
             } else {
                 "uwtable \"disable-tail-calls\"=\"true\""

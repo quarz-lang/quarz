@@ -60,7 +60,13 @@ from 58 to 53; the table above predates it. A round after that lifted
 the 64-register limit on lazily initialized homes and let the inliner
 take methods of up to 40 instructions, so `tak` is inlined into itself
 once: `tak(27,18,9)` 55 → 34 ms in the same run, the other programs
-unchanged.)
+unchanged. Then a typed function that can return without a frame got a
+separate entry for that part, which LLVM inlines into its callers (a
+call that returns at once is a comparison and a branch at the call
+site), and typed entries return only their value, any other outcome
+being left in the runtime: in one run on one core, `tak(27,18,9)` went
+from 49.8 to 18.9 ms (443 → 164 M instructions), against Spinel's 18.9
+ms (132 M), and `tak(24,16,8)` from 9.0 to 4.8 ms against 3.6.)
 
 - Spinel's `fib` number is not a call benchmark: it marks `fib` pure, and
   gcc, after inlining the recursion a few levels, merges the duplicate

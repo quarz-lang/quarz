@@ -525,3 +525,115 @@ pub fn analyze(
         .map(|e| e.unwrap_or_else(|| vec![State::Unknown; nregs]))
         .collect()
 }
+
+/// The blocks of a typed entry that run before its frame is set up
+/// (the stack check, the nil of the homes and result slots): those
+/// whose code only computes on unboxed registers (numbers, comparisons,
+/// copies, branches, a `return` of the declared type), entered only
+/// from such blocks, starting with the entry block. Leaving the region
+/// sets the frame up (on the edge, or before handing over to the
+/// interpreter), so a call that returns at once never touches its frame.
+#[allow(clippy::too_many_arguments)]
+pub fn pure_region(
+    f: &Function,
+    entry_states: &[Vec<State>],
+    methods: &[RtMethod],
+    classes: &[RtClass],
+    builtin: &RtBuiltin,
+    typed_all: &[Option<TypedSig>],
+    sig: &TypedSig,
+    heap: &[bool],
+) -> Vec<bool> {
+    let n = f.blocks.len();
+    let mut region: Vec<bool> = (0..n)
+        .map(|b| {
+            let blk = &f.blocks[b];
+            if blk.handler.is_some() {
+                return false;
+            }
+            let mut st = entry_states[b].clone();
+            for inst in &blk.insts {
+                if !pure_inst(inst, &st, f, methods, builtin) {
+                    return false;
+                }
+                transfer(inst, &mut st, f, methods, classes, builtin, typed_all);
+            }
+            match &blk.term {
+                Term::Jump(_) => true,
+                Term::Branch { cond, .. } => {
+                    matches!(st[*cond as usize], State::Bool | State::Int | State::Float)
+                }
+                Term::Return(r) => {
+                    matches!(
+                        (st[*r as usize], sig.ret),
+                        (State::Int, Num::Int) | (State::Float, Num::Float)
+                    ) && (0..st.len()).all(|k| !heap[k] || !st[k].needs_release())
+                }
+                _ => false,
+            }
+        })
+        .collect();
+    let mut preds: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for (b, blk) in f.blocks.iter().enumerate() {
+        for s in successors(blk) {
+            preds[s as usize].push(b);
+        }
+    }
+    // Nothing set up may flow into the region.
+    loop {
+        let mut changed = false;
+        for b in 0..n {
+            if region[b] && preds[b].iter().any(|&p| !region[p]) {
+                region[b] = false;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    if n > 0 && !region[0] {
+        return vec![false; n];
+    }
+    region
+}
+
+/// Whether an instruction's code, in state `st`, works on unboxed
+/// variables only: no home is read or written, nothing is released,
+/// and only a failed speculation (which sets the frame up first) calls
+/// out.
+fn pure_inst(
+    inst: &Inst,
+    st: &[State],
+    f: &Function,
+    methods: &[RtMethod],
+    builtin: &RtBuiltin,
+) -> bool {
+    let free = |r: Reg| !st[r as usize].needs_release();
+    match inst {
+        Inst::LoadConst { dst, idx } => {
+            matches!(
+                f.consts[*idx as usize],
+                Constant::Bool(_) | Constant::Int(_) | Constant::Float(_)
+            ) && free(*dst)
+        }
+        Inst::Move { dst, src } => {
+            dst == src
+                || (matches!(st[*src as usize], State::Int | State::Float | State::Bool)
+                    && free(*dst))
+        }
+        Inst::Arg { dst, .. } => free(*dst),
+        Inst::BinOp { dst, lhs, rhs, .. } => {
+            bin_types(inst, methods, builtin).is_some()
+                && !float_mod(inst)
+                && matches!(
+                    (st[*lhs as usize], st[*rhs as usize]),
+                    (State::Int, State::Int) | (State::Float, State::Float)
+                )
+                && free(*dst)
+        }
+        Inst::ClearRegs { from, to } => (*from..*to).all(free),
+        Inst::Call { .. } => int_to_f(inst, methods, st).is_some_and(|(_, d)| free(d)),
+        _ => false,
+    }
+}
