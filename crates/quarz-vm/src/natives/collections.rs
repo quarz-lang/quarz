@@ -102,7 +102,7 @@ fn owned_update(recv: Value, f: impl FnOnce(&mut Vec<Value>)) -> Result<Value, (
     }
 }
 
-fn owned_hash_update(recv: Value, f: impl FnOnce(&mut ValueMap)) -> Result<Value, (Flow, Value)> {
+fn owned_hash_update(recv: Value, f: impl FnOnce(&mut HashData)) -> Result<Value, (Flow, Value)> {
     match recv {
         Value::Hash(mut rc) => {
             f(Rc::make_mut(&mut rc));
@@ -518,12 +518,15 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     });
     // Hash
     m.insert("Hash.new", |_, _, _| {
-        Ok(Value::Hash(Rc::new(ValueMap::default())))
+        Ok(Value::Hash(Rc::new(crate::value::HashData::from(
+            ValueMap::default(),
+        ))))
     });
     m.insert("Hash.build", hash_build);
     m.insert("Hash#each", |i, r, a| {
         let b = block(i, &a)?;
         let h = hash(i, r)?.clone();
+        let h = h.as_map();
         super::each_value(
             i,
             h.iter()
@@ -535,6 +538,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     m.insert("Hash#each_pair", |i, r, a| {
         let b = block(i, &a)?;
         let h = hash(i, r)?.clone();
+        let h = h.as_map();
         match i.block_caller(&b) {
             Some(caller) => {
                 for (k, v) in h.iter() {
@@ -551,14 +555,14 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     });
     m.insert("Hash#each_key", |i, r, a| {
         let b = block(i, &a)?;
-        for k in hash(i, r)?.keys() {
+        for k in hash(i, r)?.as_map().keys() {
             i.call_block(&b, smallvec![k.clone()])?;
         }
         Ok(Value::Nil)
     });
     m.insert("Hash#each_value", |i, r, a| {
         let b = block(i, &a)?;
-        for v in hash(i, r)?.values() {
+        for v in hash(i, r)?.as_map().values() {
             i.call_block(&b, smallvec![v.clone()])?;
         }
         Ok(Value::Nil)
@@ -571,11 +575,11 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         )),
     });
     m.insert("Hash#[]?", |i, r, a| {
-        Ok(hash(i, r)?.get(a.arg(0)).cloned().unwrap_or(Value::Nil))
+        Ok(hash(i, r)?.get(a.arg(0)).unwrap_or(Value::Nil))
     });
     m.insert("Hash#fetch", hash_fetch);
     m.insert("Hash#dig", |i, r, a| {
-        Ok(hash(i, r)?.get(a.arg(0)).cloned().unwrap_or(Value::Nil))
+        Ok(hash(i, r)?.get(a.arg(0)).unwrap_or(Value::Nil))
     });
     m.insert("Hash#key?", |i, r, a| {
         Ok(Value::Bool(hash(i, r)?.contains_key(a.arg(0))))
@@ -584,20 +588,25 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         Ok(Value::Bool(hash(i, r)?.contains_key(a.arg(0))))
     });
     m.insert("Hash#value?", |i, r, a| {
-        Ok(Value::Bool(hash(i, r)?.values().any(|v| v == a.arg(0))))
+        Ok(Value::Bool(
+            hash(i, r)?.as_map().values().any(|v| v == a.arg(0)),
+        ))
     });
     m.insert("Hash#key", |i, r, a| {
         Ok(hash(i, r)?
+            .as_map()
             .iter()
             .find(|(_, v)| *v == a.arg(0))
             .map(|(k, _)| k.clone())
             .unwrap_or(Value::Nil))
     });
     m.insert("Hash#keys", |i, r, _| {
-        Ok(Value::array(hash(i, r)?.keys().cloned().collect()))
+        Ok(Value::array(hash(i, r)?.as_map().keys().cloned().collect()))
     });
     m.insert("Hash#values", |i, r, _| {
-        Ok(Value::array(hash(i, r)?.values().cloned().collect()))
+        Ok(Value::array(
+            hash(i, r)?.as_map().values().cloned().collect(),
+        ))
     });
     m.insert("Hash#size", |i, r, _| {
         Ok(Value::Int(hash(i, r)?.len() as i64))
@@ -609,12 +618,12 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         Ok(Value::Bool(hash(i, r)?.is_empty()))
     });
     m.insert("Hash#put", |i, r, a| {
-        hash_update(i, r, |h| {
+        hash_update_data(i, r, |h| {
             h.insert(a.arg(0).clone(), a.arg(1).clone());
         })
     });
     m.insert("Hash#delete", |i, r, a| {
-        hash_update(i, r, |h| {
+        hash_update_data(i, r, |h| {
             h.shift_remove(a.arg(0));
         })
     });
@@ -625,30 +634,32 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     m.insert("Hash#transform_values", |i, r, a| {
         let b = block(i, &a)?;
         let mut out = ValueMap::default();
-        for (k, v) in hash(i, r)?.iter() {
+        for (k, v) in hash(i, r)?.as_map().iter() {
             out.insert(k.clone(), i.call_block(&b, smallvec![v.clone()])?);
         }
-        Ok(Value::Hash(Rc::new(out)))
+        Ok(Value::Hash(Rc::new(crate::value::HashData::from(out))))
     });
     m.insert("Hash#transform_keys", |i, r, a| {
         let b = block(i, &a)?;
         let mut out = ValueMap::default();
-        for (k, v) in hash(i, r)?.iter() {
+        for (k, v) in hash(i, r)?.as_map().iter() {
             out.insert(i.call_block(&b, smallvec![k.clone()])?, v.clone());
         }
-        Ok(Value::Hash(Rc::new(out)))
+        Ok(Value::Hash(Rc::new(crate::value::HashData::from(out))))
     });
     m.insert("Hash#invert", |i, r, _| {
-        Ok(Value::Hash(Rc::new(
+        Ok(Value::Hash(Rc::new(crate::value::HashData::from(
             hash(i, r)?
+                .as_map()
                 .iter()
                 .map(|(k, v)| (v.clone(), k.clone()))
-                .collect(),
-        )))
+                .collect::<crate::value::ValueMap>(),
+        ))))
     });
     m.insert("Hash#to_a", |i, r, _| {
         Ok(Value::array(
             hash(i, r)?
+                .as_map()
                 .iter()
                 .map(|(k, v)| Value::array(vec![k.clone(), v.clone()]))
                 .collect(),
@@ -726,7 +737,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         Ok(r.clone())
     });
     m.insert("Hash::Builder#merge!", |i, r, a| {
-        let other = hash(i, a.arg(0))?;
+        let other = hash(i, a.arg(0))?.as_map();
         hb(i, r)?
             .borrow_mut()
             .extend(other.iter().map(|(k, v)| (k.clone(), v.clone())));
@@ -745,12 +756,14 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         Ok(Value::Nil)
     });
     m.insert("Hash::Builder#to_h", |i, r, _| {
-        Ok(Value::Hash(Rc::new(std::mem::take(
-            &mut *hb(i, r)?.borrow_mut(),
+        Ok(Value::Hash(Rc::new(crate::value::HashData::from(
+            std::mem::take(&mut *hb(i, r)?.borrow_mut()),
         ))))
     });
     m.insert("Hash::Builder#snapshot", |i, r, _| {
-        Ok(Value::Hash(Rc::new(hb(i, r)?.borrow().clone())))
+        Ok(Value::Hash(Rc::new(crate::value::HashData::from(
+            hb(i, r)?.borrow().clone(),
+        ))))
     });
     m.insert("Hash::Builder#to_s", |i, r, _| {
         Ok(Value::string(i.inspect(r)?))
@@ -977,7 +990,7 @@ pub(super) fn ab<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Rc<RefCell<Vec
     }
 }
 
-pub(super) fn hash<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Rc<ValueMap>, Flow> {
+pub(super) fn hash<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Rc<HashData>, Flow> {
     match v {
         Value::Hash(h) => Ok(h),
         _ => Err(interp.err_type(&format!("expected a Hash, got {}", interp.class_name(v)))),
@@ -1025,6 +1038,18 @@ pub(super) fn hash_update(
     interp: &Interp,
     recv: &Value,
     f: impl FnOnce(&mut ValueMap),
+) -> EvalResult {
+    let mut rc = hash(interp, recv)?.clone();
+    Rc::make_mut(&mut rc).with_values(f);
+    Ok(Value::Hash(rc))
+}
+
+/// `hash_update` on the storage itself (an `Int`-to-`Int` hash stays
+/// unboxed).
+pub(super) fn hash_update_data(
+    interp: &Interp,
+    recv: &Value,
+    f: impl FnOnce(&mut HashData),
 ) -> EvalResult {
     let mut rc = hash(interp, recv)?.clone();
     f(Rc::make_mut(&mut rc));
@@ -1412,7 +1437,7 @@ fn hash_build(interp: &Interp, _: &Value, args: Args) -> EvalResult {
     let builder = Rc::new(RefCell::new(ValueMap::default()));
     interp.call_block(&b, smallvec![Value::HashBuilder(builder.clone())])?;
     let map = std::mem::take(&mut *builder.borrow_mut());
-    Ok(Value::Hash(Rc::new(map)))
+    Ok(Value::Hash(Rc::new(crate::value::HashData::from(map))))
 }
 
 fn hash_fetch(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
@@ -1432,9 +1457,10 @@ fn hash_fetch(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
 
 fn hash_merge(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let other = hash(interp, args.arg(0))?.clone();
+    let other = other.as_map();
     let mut rc = hash(interp, recv)?.clone();
     let block = args.block.clone();
-    let map = Rc::make_mut(&mut rc);
+    let map = Rc::make_mut(&mut rc).values_mut();
     for (k, v) in other.iter() {
         let merged = match (map.get(k), &block) {
             (Some(existing), Some(b)) => {
@@ -1450,7 +1476,7 @@ fn hash_merge(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
 fn hash_update_key(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let b = block(interp, &args)?;
     let key = args.arg(0).clone();
-    let current = hash(interp, recv)?.get(&key).cloned().unwrap_or(Value::Nil);
+    let current = hash(interp, recv)?.get(&key).unwrap_or(Value::Nil);
     let new = interp.call_block(&b, smallvec![current])?;
     hash_update(interp, recv, |h| {
         h.insert(key, new);
@@ -1460,7 +1486,7 @@ fn hash_update_key(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
 fn hash_filter(interp: &Interp, recv: &Value, args: Args, keep: bool) -> EvalResult {
     let b = block(interp, &args)?;
     let mut out = ValueMap::default();
-    for (k, v) in hash(interp, recv)?.iter() {
+    for (k, v) in hash(interp, recv)?.as_map().iter() {
         if interp
             .call_block(&b, smallvec![k.clone(), v.clone()])?
             .is_truthy()
@@ -1469,7 +1495,7 @@ fn hash_filter(interp: &Interp, recv: &Value, args: Args, keep: bool) -> EvalRes
             out.insert(k.clone(), v.clone());
         }
     }
-    Ok(Value::Hash(Rc::new(out)))
+    Ok(Value::Hash(Rc::new(crate::value::HashData::from(out))))
 }
 
 fn set_build(interp: &Interp, _: &Value, args: Args) -> EvalResult {

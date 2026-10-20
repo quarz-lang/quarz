@@ -627,7 +627,7 @@ impl Interp {
             .collect();
         if let Some(h) = kw_splat {
             if let Value::Hash(h) = &regs[h as usize] {
-                for (k, v) in h.iter() {
+                for (k, v) in h.as_map().iter() {
                     if let Value::Symbol(s) = k {
                         out.push((*s, v.clone()));
                     }
@@ -1055,14 +1055,14 @@ impl Interp {
                         }
                         HashItem::Splat(h) => {
                             if let Value::Hash(h) = &regs[*h as usize] {
-                                for (k, v) in h.iter() {
+                                for (k, v) in h.as_map().iter() {
                                     map.insert(k.clone(), v.clone());
                                 }
                             }
                         }
                     }
                 }
-                regs[*dst as usize] = Value::Hash(Rc::new(map));
+                regs[*dst as usize] = Value::Hash(Rc::new(crate::value::HashData::from(map)));
             }
             Inst::MakeRange {
                 dst,
@@ -1222,15 +1222,15 @@ impl Interp {
                 let v = match &regs[*hash as usize] {
                     Value::Hash(h) => {
                         let mut rest = ValueMap::default();
-                        for (k, val) in h.iter() {
+                        for (k, val) in h.as_map().iter() {
                             let matched = matches!(k, Value::Symbol(s) if keys.contains(s));
                             if !matched {
                                 rest.insert(k.clone(), val.clone());
                             }
                         }
-                        Value::Hash(Rc::new(rest))
+                        Value::Hash(Rc::new(crate::value::HashData::from(rest)))
                     }
-                    _ => Value::Hash(Rc::new(ValueMap::default())),
+                    _ => Value::Hash(Rc::new(crate::value::HashData::from(ValueMap::default()))),
                 };
                 regs[*dst as usize] = v;
             }

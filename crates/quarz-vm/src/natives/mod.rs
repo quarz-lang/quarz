@@ -119,6 +119,7 @@ pub fn collect(interp: &Interp, recv: &Value) -> Result<Vec<Value>, Flow> {
         Value::Set(s) => Ok(s.iter().cloned().collect()),
         Value::SetBuilder(s) => Ok(s.borrow().iter().cloned().collect()),
         Value::Hash(h) => Ok(h
+            .as_map()
             .iter()
             .map(|(k, v)| Value::array(vec![k.clone(), v.clone()]))
             .collect()),

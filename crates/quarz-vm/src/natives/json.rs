@@ -179,7 +179,10 @@ impl Parser<'_> {
         if self.peek() == Some(b'}') {
             self.pos += 1;
             self.depth -= 1;
-            return Ok(variant(self.classes.map, Value::Hash(Rc::new(members))));
+            return Ok(variant(
+                self.classes.map,
+                Value::Hash(Rc::new(crate::value::HashData::from(members))),
+            ));
         }
         loop {
             self.skip_ws();
@@ -207,7 +210,10 @@ impl Parser<'_> {
             }
         }
         self.depth -= 1;
-        Ok(variant(self.classes.map, Value::Hash(Rc::new(members))))
+        Ok(variant(
+            self.classes.map,
+            Value::Hash(Rc::new(crate::value::HashData::from(members))),
+        ))
     }
 
     fn array(&mut self) -> EvalResult {
@@ -406,7 +412,7 @@ fn generate(
         }
         Value::Hash(h) => {
             let mut members = Vec::with_capacity(h.len());
-            for (k, v) in h.iter() {
+            for (k, v) in h.as_map().iter() {
                 let key = match k {
                     Value::Str(s) => s.to_string(),
                     Value::Short(s) => s.as_str().to_string(),

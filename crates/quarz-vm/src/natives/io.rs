@@ -25,7 +25,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         let map: ValueMap = std::env::vars()
             .map(|(k, v)| (Value::string(k), Value::string(v)))
             .collect();
-        Ok(Value::Hash(Rc::new(map)))
+        Ok(Value::Hash(Rc::new(crate::value::HashData::from(map))))
     });
     m.insert("Process.pid", |_, _, _| {
         Ok(Value::Int(std::process::id() as i64))

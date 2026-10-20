@@ -15,6 +15,147 @@ use indexmap::{IndexMap, IndexSet};
 /// The maps and sets of values, hashed with the Fx hasher.
 pub type ValueMap = IndexMap<Value, Value, rustc_hash::FxBuildHasher>;
 pub type ValueSet = IndexSet<Value, rustc_hash::FxBuildHasher>;
+/// A hash whose keys and values are all `Int`, stored unboxed.
+pub type IntMap = IndexMap<i64, i64, rustc_hash::FxBuildHasher>;
+
+/// The entries of a `Hash`: unboxed while every key and value is an
+/// `Int` (the storage becomes boxed values, once, when anything else is
+/// stored), boxed values otherwise. Iteration order is insertion order
+/// either way.
+#[derive(Clone, Debug)]
+pub enum HashData {
+    Values(ValueMap),
+    Ints(IntMap),
+}
+
+impl Default for HashData {
+    fn default() -> Self {
+        HashData::Values(ValueMap::default())
+    }
+}
+
+impl From<ValueMap> for HashData {
+    /// A map of `Int` keys and values is stored unboxed.
+    fn from(map: ValueMap) -> HashData {
+        if !map.is_empty()
+            && map
+                .iter()
+                .all(|(k, v)| matches!((k, v), (Value::Int(_), Value::Int(_))))
+        {
+            let mut ints = IntMap::with_capacity_and_hasher(map.len(), Default::default());
+            for (k, v) in &map {
+                if let (Value::Int(k), Value::Int(v)) = (k, v) {
+                    ints.insert(*k, *v);
+                }
+            }
+            return HashData::Ints(ints);
+        }
+        HashData::Values(map)
+    }
+}
+
+impl FromIterator<(Value, Value)> for HashData {
+    fn from_iter<I: IntoIterator<Item = (Value, Value)>>(items: I) -> HashData {
+        HashData::from(items.into_iter().collect::<ValueMap>())
+    }
+}
+
+impl HashData {
+    pub fn len(&self) -> usize {
+        match self {
+            HashData::Values(m) => m.len(),
+            HashData::Ints(m) => m.len(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// The entries as boxed values: borrowed, or built for unboxed
+    /// storage.
+    pub fn as_map(&self) -> std::borrow::Cow<'_, ValueMap> {
+        match self {
+            HashData::Values(m) => std::borrow::Cow::Borrowed(m),
+            HashData::Ints(m) => std::borrow::Cow::Owned(
+                m.iter()
+                    .map(|(k, v)| (Value::Int(*k), Value::Int(*v)))
+                    .collect(),
+            ),
+        }
+    }
+
+    /// The entries as boxed values, to change (unboxed storage is
+    /// converted, once).
+    pub fn values_mut(&mut self) -> &mut ValueMap {
+        if let HashData::Ints(m) = self {
+            let map: ValueMap = m
+                .iter()
+                .map(|(k, v)| (Value::Int(*k), Value::Int(*v)))
+                .collect();
+            *self = HashData::Values(map);
+        }
+        match self {
+            HashData::Values(m) => m,
+            HashData::Ints(_) => unreachable!(),
+        }
+    }
+
+    /// Change the entries as boxed values (unboxed storage is converted
+    /// first).
+    pub fn with_values<R>(&mut self, f: impl FnOnce(&mut ValueMap) -> R) -> R {
+        f(self.values_mut())
+    }
+
+    pub fn get(&self, k: &Value) -> Option<Value> {
+        match (self, k) {
+            (HashData::Values(m), _) => m.get(k).cloned(),
+            (HashData::Ints(m), Value::Int(k)) => m.get(k).map(|v| Value::Int(*v)),
+            // An Int-keyed hash holds no other key (`1.0 == 1` is a key
+            // equal to 1).
+            (HashData::Ints(m), Value::Float(f)) if f.fract() == 0.0 && f.abs() < 9.2e18 => {
+                m.get(&(*f as i64)).map(|v| Value::Int(*v))
+            }
+            (HashData::Ints(_), _) => None,
+        }
+    }
+
+    pub fn contains_key(&self, k: &Value) -> bool {
+        match (self, k) {
+            (HashData::Values(m), _) => m.contains_key(k),
+            (HashData::Ints(m), Value::Int(k)) => m.contains_key(k),
+            (HashData::Ints(_), _) => self.get(k).is_some(),
+        }
+    }
+
+    /// Insert or replace (keeping the key's position).
+    pub fn insert(&mut self, k: Value, v: Value) {
+        match (&mut *self, &k, &v) {
+            (HashData::Ints(m), Value::Int(a), Value::Int(b)) => {
+                m.insert(*a, *b);
+            }
+            (HashData::Values(m), Value::Int(a), Value::Int(b)) if m.is_empty() => {
+                let mut ints = IntMap::default();
+                ints.insert(*a, *b);
+                *self = HashData::Ints(ints);
+            }
+            _ => {
+                self.values_mut().insert(k, v);
+            }
+        }
+    }
+
+    /// Remove a key, keeping the order of the others.
+    pub fn shift_remove(&mut self, k: &Value) -> Option<Value> {
+        if let (HashData::Ints(m), Value::Int(a)) = (&mut *self, k) {
+            return m.shift_remove(a).map(Value::Int);
+        }
+        if matches!(self, HashData::Ints(_)) && !self.contains_key(k) {
+            return None;
+        }
+        self.values_mut().shift_remove(k)
+    }
+}
 use num_bigint::BigInt;
 use quarz_ir::{ClassId, FuncId, MethodId};
 use smallvec::SmallVec;
@@ -639,7 +780,7 @@ pub enum Value {
     /// A longer string.
     Str(Rc<str>),
     Array(Rc<ArrayData>),
-    Hash(Rc<ValueMap>),
+    Hash(Rc<HashData>),
     Set(Rc<ValueSet>),
     Range(Rc<RangeVal>),
     Regexp(Rc<RegexpVal>),
@@ -1077,9 +1218,15 @@ impl PartialEq for Value {
             (Value::Array(a), Value::Array(b)) => {
                 a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| x == y)
             }
-            (Value::Hash(a), Value::Hash(b)) => {
-                a.len() == b.len() && a.iter().all(|(k, v)| b.get(k).is_some_and(|w| w == v))
-            }
+            (Value::Hash(a), Value::Hash(b)) => match (&**a, &**b) {
+                (HashData::Ints(x), HashData::Ints(y)) => {
+                    x.len() == y.len() && x.iter().all(|(k, v)| y.get(k) == Some(v))
+                }
+                _ => {
+                    let (a, b) = (a.as_map(), b.as_map());
+                    a.len() == b.len() && a.iter().all(|(k, v)| b.get(k).is_some_and(|w| w == v))
+                }
+            },
             (Value::Set(a), Value::Set(b)) => a.len() == b.len() && a.iter().all(|x| b.contains(x)),
             (Value::Range(a), Value::Range(b)) => {
                 a.lo == b.lo && a.hi == b.hi && a.exclusive == b.exclusive

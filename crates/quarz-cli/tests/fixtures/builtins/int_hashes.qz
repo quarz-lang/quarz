@@ -1,0 +1,22 @@
+# Hashes whose keys and values are all Int are stored unboxed; anything
+# else turns the storage into boxed values, once. Behaviour is the same.
+h: Hash[Int, Int] = {}
+10.times { |i| h = h.put(i * 3, i * i) }
+p h, h.size, h[9], h[10]?, h[9]?, h.key?(27), h.key?(28)
+h = h.delete(9)
+p h.keys, h.values, h.to_a.first(2)
+p h.map { |k, v| k + v }.sum, h.select { |k, v| v.odd? }
+p h == { 0 => 0, 3 => 1, 6 => 4, 12 => 16, 15 => 25, 18 => 36, 21 => 49, 24 => 64, 27 => 81 }
+p h.fetch(3, -1), h.fetch(4, -1), h.fetch(5) { |k| k * 100 }
+g: Hash[Int, Int] = {1 => 2, 3 => 4}
+p g.merge({3 => 40, 5 => 6}), g.invert, g.min_by { |k, v| -v }
+n: Hash[Int, Int | String] = { 1 => 10 }
+n = n.put(2, "two")
+p n, n[1], n[2]
+f: Hash[Int | Float, Int] = { 1 => 1 }
+f = f.put(1.0, 5)
+p f, f[1], f.size
+counts: Hash[Int, Int] = {}
+[3, 1, 3, 2, 3, 1].each { |x| counts = counts.put(x, (counts[x]? || 0) + 1) }
+p counts, counts.sort_by { |k, v| -v }.first
+p({ 5 => 1, 6 => 2 }.hash == { 5 => 1, 6 => 2 }.hash)

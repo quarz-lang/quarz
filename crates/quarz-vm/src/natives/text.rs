@@ -417,7 +417,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         for (name, idx) in &m.names {
             out.insert(Value::str(name), group_value(m, *idx));
         }
-        Ok(Value::Hash(Rc::new(out)))
+        Ok(Value::Hash(Rc::new(crate::value::HashData::from(out))))
     });
     m.insert("MatchData#size", |i, r, _| {
         Ok(Value::Int(md(i, r)?.groups.len() as i64))
@@ -613,7 +613,7 @@ fn string_sub_block(interp: &Interp, recv: &Value, args: Args, global: bool) -> 
         }
         if let Value::Hash(h) = args.arg(1) {
             return Ok(match h.get(&Value::str(matched)) {
-                Some(v) => interp.to_s(v)?.to_string(),
+                Some(v) => interp.to_s(&v)?.to_string(),
                 None => String::new(),
             });
         }

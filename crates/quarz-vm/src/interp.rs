@@ -1515,7 +1515,7 @@ impl Interp {
                 for (i, f) in class.ivars.iter().enumerate() {
                     map.insert(Value::Symbol(self.intern(&f.name)), self.logical_get(o, i));
                 }
-                return Ok(Value::Hash(Rc::new(map)));
+                return Ok(Value::Hash(Rc::new(crate::value::HashData::from(map))));
             }
             RtSynth::None => {}
         }
@@ -1574,7 +1574,7 @@ impl Interp {
                 true
             }
             (Value::Hash(h), [k]) if m == o.hash_delete => {
-                Rc::make_mut(h).shift_remove(*k);
+                Rc::make_mut(h).shift_remove(k);
                 true
             }
             (Value::Set(s), [v]) if m == o.set_add => {
@@ -1707,14 +1707,15 @@ impl Interp {
                     for (sym, v) in kwrest.drain(..) {
                         map.insert(Value::Symbol(sym), v);
                     }
-                    values[i] = Value::Hash(Rc::new(map));
+                    values[i] = Value::Hash(Rc::new(crate::value::HashData::from(map)));
                     provided |= bit(i);
                 }
             }
         } else {
             for (i, p) in m.params.iter().enumerate() {
                 if p.kind == RtParamKind::KeywordRest {
-                    values[i] = Value::Hash(Rc::new(ValueMap::default()));
+                    values[i] =
+                        Value::Hash(Rc::new(crate::value::HashData::from(ValueMap::default())));
                     provided |= bit(i);
                 }
             }
@@ -1966,7 +1967,7 @@ impl Interp {
                 }
                 format!("[{}]", parts.join(", "))
             }
-            Value::Hash(h) => self.format_hash(h.iter())?,
+            Value::Hash(h) => self.format_hash(h.as_map().iter())?,
             Value::HashBuilder(h) => self.format_hash(h.borrow().iter())?,
             Value::Set(s) => {
                 let mut parts = Vec::new();

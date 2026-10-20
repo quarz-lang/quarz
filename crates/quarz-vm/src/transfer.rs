@@ -120,7 +120,7 @@ pub fn export(interp: &Interp, v: &Value) -> Result<Transfer, Flow> {
         Value::Array(items) => Transfer::Array(export_all(interp, items.values().iter())?),
         Value::Hash(h) => {
             let mut out = Vec::with_capacity(h.len());
-            for (k, v) in h.iter() {
+            for (k, v) in h.as_map().iter() {
                 out.push((export(interp, k)?, export(interp, v)?));
             }
             Transfer::Hash(out)
@@ -281,12 +281,12 @@ pub fn import(interp: &Interp, t: Transfer) -> Value {
         Transfer::BigInt(b) => int_from_big(b),
         Transfer::Str(s) => Value::string(s),
         Transfer::Array(items) => Value::array(import_all(interp, items)),
-        Transfer::Hash(pairs) => Value::Hash(Rc::new(
+        Transfer::Hash(pairs) => Value::Hash(Rc::new(crate::value::HashData::from(
             pairs
                 .into_iter()
                 .map(|(k, v)| (import(interp, k), import(interp, v)))
-                .collect(),
-        )),
+                .collect::<crate::value::ValueMap>(),
+        ))),
         Transfer::Set(items) => {
             Value::Set(Rc::new(import_all(interp, items).into_iter().collect()))
         }

@@ -333,14 +333,16 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         Ok(Value::Bool(hash(i, r)?.contains_key(a.arg(0))))
     });
     m.insert("Hash#has_value?", |i, r, a| {
-        Ok(Value::Bool(hash(i, r)?.values().any(|v| v == a.arg(0))))
+        Ok(Value::Bool(
+            hash(i, r)?.as_map().values().any(|v| v == a.arg(0)),
+        ))
     });
     m.insert("Hash#values_at", |i, r, a| {
         let h = hash(i, r)?;
         Ok(Value::array(
             a.pos
                 .iter()
-                .map(|k| h.get(k).cloned().unwrap_or(Value::Nil))
+                .map(|k| h.get(k).unwrap_or(Value::Nil))
                 .collect(),
         ))
     });
@@ -378,12 +380,13 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
                 out.insert(k.clone(), v.clone());
             }
         }
-        Ok(Value::Hash(Rc::new(out)))
+        Ok(Value::Hash(Rc::new(crate::value::HashData::from(out))))
     });
 
     // Hash::Builder
     m.insert("Hash::Builder#merge!", |i, r, a| {
         let other = hash(i, a.arg(0))?.clone();
+        let other = other.as_map();
         let b = hb(i, r)?;
         match &a.block {
             None => b
@@ -481,7 +484,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         Ok(r.clone())
     });
     m.insert("Hash::Builder#replace", |i, r, a| {
-        let other = hash(i, a.arg(0))?.as_ref().clone();
+        let other = hash(i, a.arg(0))?.as_map().into_owned();
         *hb(i, r)?.borrow_mut() = other;
         Ok(r.clone())
     });

@@ -148,16 +148,16 @@ pub fn register(m: &mut super::Registry<FastNativeFn>) {
     });
     // ----- Hash / Set -----
     m.insert("Hash#[]", |_, r, a| match (r, a) {
-        (Value::Hash(h), [k]) => h.get(*k).map(|v| Ok(v.clone())),
+        (Value::Hash(h), [k]) => h.get(k).map(|v| Ok(v.clone())),
         _ => None,
     });
     m.insert("Hash#[]?", |_, r, a| match (r, a) {
-        (Value::Hash(h), [k]) => Some(Ok(h.get(*k).cloned().unwrap_or(Value::Nil))),
+        (Value::Hash(h), [k]) => Some(Ok(h.get(k).unwrap_or(Value::Nil))),
         _ => None,
     });
     for key in ["Hash#key?", "Hash#has_key?", "Hash#include?"] {
         m.insert(key, |_, r, a| match (r, a) {
-            (Value::Hash(h), [k]) => Some(Ok(Value::Bool(h.contains_key(*k)))),
+            (Value::Hash(h), [k]) => Some(Ok(Value::Bool(h.contains_key(k)))),
             _ => None,
         });
     }
