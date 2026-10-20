@@ -53,7 +53,10 @@ are released under a per-path mask instead of being zeroed at entry; that
 took `fib` from 5.2 to 3.7 ms and `tak(27,18,9)` from 66.5 to 52.5 ms, 49
 instructions per `tak` call against Spinel's 8, which gcc's recursive
 inlining and the absence of any status check or deoptimization protocol
-explain.)
+explain. A later round made the registers of inlined callees nil
+lazily, which, in one run on one core, took `fib` from 4.2 to 3.9 ms,
+`objects` from 7.7 to 5.6, `dispatch` from 9.1 to 7.6 and `tak(27,18,9)`
+from 58 to 53; the table above predates it.)
 
 - Spinel's `fib` number is not a call benchmark: it marks `fib` pure, and
   gcc, after inlining the recursion a few levels, merges the duplicate
