@@ -138,6 +138,8 @@ pub(crate) fn gen_function<B: Builder>(
     // Whether a lazily pushed activation has been built (see
     // `materialize`).
     let pushed_var = b.declare_var(Ty::I8);
+    // Bit `k`: register `k`'s home holds a value to release at exit.
+    let valid_var = b.declare_var(Ty::I64);
     // The argument area for direct calls: the widest callee's
     // parameters plus its block.
     // The argument area: the parameters of direct calls, or the
@@ -222,7 +224,11 @@ pub(crate) fn gen_function<B: Builder>(
     // An activation for direct calls, the callee's result, and the
     // addresses of this activation's arguments and `self`.
     let act_buf = b.stack_slot(ACT_BUF_SIZE, 4);
+    // The callee's result slot: nil between calls (each consumer leaves
+    // it so), written once here.
     let out_buf = b.stack_slot(VALUE_SIZE as u32, 3);
+    let nil = b.iconst(Ty::I64, 0);
+    b.store(nil, out_buf, 0);
     let vbody = b.stack_slot(8, 3);
     let ptrs = b.stack_slot(32, 3);
     let args_buf = b.stack_slot((VALUE_SIZE as u32) * max_direct_args as u32, 3);
@@ -292,12 +298,13 @@ pub(crate) fn gen_function<B: Builder>(
     // (numbers, copies, typed parameters and calls) are left alone.
     // (A large function writes them all: the deoptimization paths
     // would otherwise each carry a store per unwritten register.)
+    // (A register that may hold a heap value is released at exit only
+    // when the mask in `valid_var` says its home holds one: see
+    // `set_valid`.)
     let lazy = nregs <= 64;
     let mut zeroed: Vec<bool> = (0..nregs as usize)
         .map(|i| {
-            // Released at exit whatever path ran.
             !lazy
-                || heap[i]
                 || live
                     .first()
                     .and_then(|blk| blk.first())
@@ -353,6 +360,9 @@ pub(crate) fn gen_function<B: Builder>(
         let frame = b.select(none, frame_rc, frame_view);
         b.store(frame, ptrs, 24);
     }
+    // No home holds a heap value yet (see `set_valid`).
+    let no_valid = b.iconst(Ty::I64, 0);
+    b.def_var(valid_var, no_valid);
     b.jump(blocks[0], &[]);
 
     let mut g = Gen {
@@ -393,16 +403,21 @@ pub(crate) fn gen_function<B: Builder>(
         typed_params_buf,
         typed_fast_exit: typed_exit.map(|t| t.3),
         zeroed,
+        heap: heap.clone(),
+        valid_var,
+        lazy_regs: lazy,
     };
     for (i, blk) in f.blocks.iter().enumerate() {
         g.b.switch_to_block(blocks[i]);
         g.states.clone_from(&entry_states[i]);
         for (j, inst) in blk.insts.iter().enumerate() {
             g.b.set_line(blk.lines[j]);
+            g.set_valid();
             g.inst(i as u32, j as u32, inst, unwinds[i]);
             g.after(inst);
         }
         g.b.set_line(blk.term_line);
+        g.set_valid();
         // Write back the unboxed registers that a successor expects
         // in memory (a different state there), or that a terminator
         // leaving the function reads.
@@ -500,15 +515,32 @@ pub(crate) fn gen_function<B: Builder>(
             }
         }
     }
-    // Exit: release the registers that may hold heap values.
+    // Exit: release the registers that may hold heap values (those the
+    // mask says do, when homes are initialized lazily: the others may
+    // not have been written).
     b.switch_to_block(exit);
     let status = b.block_params(exit)[0];
+    let valid = lazy.then(|| b.use_var(valid_var));
     for i in 0..nregs {
         if !heap[i as usize] {
             continue;
         }
         let p = b.iadd_imm(regs, i64::from(i) * i64::from(VALUE_SIZE));
-        emit_release_ptr(b, drop_value_fn, p);
+        match valid {
+            Some(valid) => {
+                let bit = b.iconst(Ty::I64, 1i64 << i);
+                let set = b.band(valid, bit);
+                let holds = b.icmp_imm(IntCC::NotEqual, set, 0);
+                let release = b.create_block();
+                let next = b.create_block();
+                b.brif(holds, release, &[], next, &[]);
+                b.switch_to_block(release);
+                emit_release_ptr(b, drop_value_fn, p);
+                b.jump(next, &[]);
+                b.switch_to_block(next);
+            }
+            None => emit_release_ptr(b, drop_value_fn, p),
+        }
     }
     match typed_exit {
         Some((te, ..)) => b.jump(te, &[status]),
@@ -964,6 +996,12 @@ struct Gen<'a, B: Builder> {
     /// Which register homes were set to nil at entry (the others hold
     /// nothing until written, and must not be read or dropped).
     zeroed: Vec<bool>,
+    /// Which registers may ever hold a heap value (see `heap_possible`).
+    heap: Vec<bool>,
+    /// Bit `k` set: register `k`'s home holds a value the exit must
+    /// release (kept when homes are initialized lazily; see `set_valid`).
+    valid_var: B::Var,
+    lazy_regs: bool,
 }
 
 impl<B: Builder> Gen<'_, B> {
@@ -1184,8 +1222,7 @@ impl<B: Builder> Gen<'_, B> {
         self.b.store(len1, self.rt, L::HOT_STACK_LEN as i32);
         self.b.jump(pushed, &[]);
         self.b.switch_to_block(pushed);
-        // The body.
-        self.b.store(zero, self.out_buf, 0);
+        // The body (`out_buf` holds nil).
         let status = self.b.call(body, &[self.rt, act, self.out_buf])[0];
         // Leave: inline when the status is OK and the callee cached no
         // block caller, through the runtime otherwise.
@@ -1440,6 +1477,12 @@ impl<B: Builder> Gen<'_, B> {
                 self.store_tag(r as Reg, TAG_NIL);
             }
         }
+        // Every home is valid now, and the interpreter may put a heap
+        // value in any of them.
+        if self.lazy_regs {
+            let all = self.b.iconst(Ty::I64, self.heap_mask(|_| true));
+            self.b.def_var(self.valid_var, all);
+        }
         self.materialize();
         let fid = self.b.iconst(Ty::I32, i64::from(self.fid));
         let blk = self.b.iconst(Ty::I32, i64::from(block));
@@ -1564,6 +1607,58 @@ impl<B: Builder> Gen<'_, B> {
 
     /// Whether a call can go straight to the method (a native, or a body
     /// with positional parameters) without dynamic dispatch.
+    /// The mask of the registers that may hold a heap value and satisfy
+    /// `pick`.
+    fn heap_mask(&self, pick: impl Fn(usize) -> bool) -> i64 {
+        let mut mask: u64 = 0;
+        for k in (0..self.nregs).filter(|&k| self.heap[k] && pick(k)) {
+            mask |= 1 << k;
+        }
+        mask as i64
+    }
+
+    /// Before an instruction (or a terminator) that may leave the
+    /// function through `exit`: which homes the exit must release, from
+    /// the states here (a register in an unknown state holds a value in
+    /// its home; the others hold nothing to release, or were never
+    /// written).
+    fn set_valid(&mut self) {
+        if !self.lazy_regs {
+            return;
+        }
+        let mask = self.heap_mask(|k| self.states[k] == State::Unknown);
+        let v = self.b.iconst(Ty::I64, mask);
+        self.b.def_var(self.valid_var, v);
+    }
+
+    /// The callee may raise: a backtrace shows this activation at the
+    /// call's line. (A typed entry whose frame the native unwinder
+    /// reports gets its line from there.)
+    fn set_call_line(&mut self, block: u32, index: u32) {
+        if self.lazy_act && self.typed.is_some() {
+            return;
+        }
+        let line = self.f.blocks[block as usize].lines[index as usize];
+        let line_v = self.b.iconst(Ty::I32, i64::from(line));
+        self.b.store(line_v, self.act, L::ACT_LINE as i32);
+    }
+
+    /// The typed entry a call goes through, when it does (the conditions
+    /// of the `Inst::Call` arm of `inst`).
+    fn typed_callee(&self, inst: &Inst) -> Option<FuncId> {
+        let call = self.static_target(inst)?;
+        let m = &self.methods[call.mid as usize];
+        if m.overridden && !m.singleton && !m.is_extension && m.native_key.is_none() {
+            return None;
+        }
+        let callee = direct_target(inst, self.methods)?;
+        let sig = self.typed_all.get(callee as usize)?.as_ref()?;
+        (call.block.is_none()
+            && call.args.len() == sig.params.len()
+            && self.callees_typed.contains_key(&callee))
+        .then_some(callee)
+    }
+
     fn static_target(&self, inst: &Inst) -> Option<StaticCall> {
         let Inst::Call {
             dst,
@@ -1720,8 +1815,6 @@ impl<B: Builder> Gen<'_, B> {
         self.b.jump(cont, &[]);
         // Call the body, finish, release the parameters.
         self.b.switch_to_block(entered);
-        let zero = self.b.iconst(Ty::I64, 0);
-        self.b.store(zero, self.out_buf, 0);
         let body = self.b.load(Ty::Ptr, self.vbody, 0);
         let call =
             self.b
@@ -1878,8 +1971,6 @@ impl<B: Builder> Gen<'_, B> {
         }
         self.b.jump(unwind, &[status]);
         self.b.switch_to_block(ok_blk);
-        let zero = self.b.iconst(Ty::I64, 0);
-        self.b.store(zero, self.out_buf, 0);
         let call = self.b.call(body, &[self.rt, self.act_buf, self.out_buf]);
         let status = call[0];
         let status = self.b.call(
@@ -1952,8 +2043,11 @@ impl<B: Builder> Gen<'_, B> {
             None => self.b.jump(typed_b, &[]),
         };
         let saved = self.states.clone();
-        // The typed path.
+        // The typed path (the receiver is passed by its home's address).
         self.b.switch_to_block(typed_b);
+        if let Some(r) = recv {
+            self.flush(r);
+        }
         let self_ptr = match (recv, self.typed_self_ptr) {
             (Some(r), _) => self.b.iadd_imm(self.regs, i64::from(reg_off(r))),
             // A typed entry passes its own `self` on, without cloning it.
@@ -1974,11 +2068,8 @@ impl<B: Builder> Gen<'_, B> {
             call_args.push(v);
         }
         let zero = self.b.iconst(Ty::I64, 0);
-        self.b.store(zero, self.out_buf, 0);
         call_args.push(self.out_buf);
-        let line = self.f.blocks[block as usize].lines[index as usize];
-        let line_v = self.b.iconst(Ty::I32, i64::from(line));
-        self.b.store(line_v, self.act, L::ACT_LINE as i32);
+        self.set_call_line(block, index);
         let results = self.b.call(entry, &call_args);
         let (status, bits) = (results[0], results[1]);
         let ok_b = self.b.create_block();
@@ -2017,6 +2108,10 @@ impl<B: Builder> Gen<'_, B> {
         // variable.
         self.b.switch_to_block(fallback_b);
         self.states.clone_from(&saved);
+        // The runtime reads the homes: written back here, not before
+        // the call.
+        let live = self.live[block as usize][index as usize].clone();
+        self.flush_live(&live);
         self.clear_home(dst);
         let _ = (inst, callee);
         self.runtime_call(mid, recv, args, None, dst, unwind);
@@ -2188,7 +2283,11 @@ impl<B: Builder> Gen<'_, B> {
             && unbox::bin_types(inst, self.methods, self.builtin).is_some()
             && !unbox::float_mod(inst);
         let has_handler = self.f.blocks[block as usize].handler.is_some();
-        if !typed && (!unbox::reads_no_home(inst) || (has_handler && unbox::may_unwind(inst))) {
+        // A call through a typed entry reads homes only on its fallback
+        // paths, which write back there (see `typed_call`).
+        let lazy = typed || self.typed_callee(inst).is_some();
+        let unwinds_to_handler = has_handler && unbox::may_unwind(inst);
+        if (!lazy && !unbox::reads_no_home(inst)) || (!typed && unwinds_to_handler) {
             let live = self.live[block as usize][index as usize].clone();
             self.flush_live(&live);
         }
@@ -3090,11 +3189,7 @@ impl<B: Builder> Gen<'_, B> {
                     block: blk,
                     dst,
                 }) => {
-                    // The callee may raise: a backtrace shows this
-                    // activation at the call's line.
-                    let line = self.f.blocks[block as usize].lines[index as usize];
-                    let line_v = self.b.iconst(Ty::I32, i64::from(line));
-                    self.b.store(line_v, self.act, L::ACT_LINE as i32);
+                    self.set_call_line(block, index);
                     for (k, r) in args.iter().enumerate() {
                         let v = self.i32(*r);
                         self.b.store(v, self.scratch, 4 * k as i32);

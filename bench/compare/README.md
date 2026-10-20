@@ -37,14 +37,23 @@ overriding `area`, 900k calls).
 
 | program     | quarz-llvm | quarz-cranelift | spinel |
 |-------------|-----------:|----------------:|-------:|
-| fib         |        5.2 |             6.7 |  (1.5) |
-| loop        |        5.4 |             9.4 |    3.9 |
-| collections |       32.2 |            32.6 |   25.4 |
-| objects     |        7.5 |             8.0 |   15.3 |
-| strings     |       30.2 |            32.3 |   22.7 |
-| dispatch    |        7.6 |             8.6 |    6.2 |
-| tak(24,16,8)|       13.2 |            27.7 |    3.9 |
-| tak(27,18,9)|       66.5 |           155.5 |   12.0 |
+| fib         |        3.7 |             5.6 |  (1.6) |
+| loop        |        4.6 |             9.4 |    4.1 |
+| collections |       33.3 |            34.0 |   25.4 |
+| objects     |        6.7 |             8.1 |   15.5 |
+| strings     |       32.4 |            31.8 |   23.3 |
+| dispatch    |        7.8 |             9.0 |    6.3 |
+| tak(24,16,8)|       10.0 |            22.8 |    3.4 |
+| tak(27,18,9)|       52.5 |           133.2 |   11.9 |
+
+(Measured after the typed-call round that followed the first Spinel
+comparison: typed calls no longer write their live registers back before
+the call, the result slot is set to nil once, and heap-capable registers
+are released under a per-path mask instead of being zeroed at entry; that
+took `fib` from 5.2 to 3.7 ms and `tak(27,18,9)` from 66.5 to 52.5 ms, 49
+instructions per `tak` call against Spinel's 8, which gcc's recursive
+inlining and the absence of any status check or deoptimization protocol
+explain.)
 
 - Spinel's `fib` number is not a call benchmark: it marks `fib` pure, and
   gcc, after inlining the recursion a few levels, merges the duplicate
@@ -53,11 +62,10 @@ overriding `area`, 900k calls).
   happens with the argument read from `ARGV`. `tak` (the Takeuchi
   function, `tak(x, y, z)` with `n * 3, n * 2, n` from `ARGV`) has no
   duplicate calls to merge and measures the call protocol: Spinel's is a
-  C call with three `int64` parameters; Quarz's typed entry still writes
-  the live unboxed registers back to their homes before each call (for
-  the boxed fallback and the interpreter), checks the native stack and
-  the result's status, and keeps a frame of over a kilobyte for the
-  register file.
+  C call with three `int64` parameters, and gcc inlines the recursion
+  several levels; Quarz's typed entry checks the native stack and each
+  result's status, saves six callee-saved registers, and keeps a frame of
+  over a kilobyte for the register file and the activation buffers.
 - `loop`, `collections` and `strings` are 1.3–1.4× slower than Spinel:
   the counting loop keeps a signal-poll and an overflow check per
   iteration in both, Quarz's remaining cost being the boxed home writes
