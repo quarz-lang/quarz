@@ -168,7 +168,7 @@ To pass a mutable object to another task, convert it to an immutable value. A Bu
 |---|---|
 | `arr << x` | `arr = arr.push(x)`, or `Array.build { \|b\| b << x }` |
 | `h[k] = v` | `h = h.put(k, v)` |
-| `h[k] ||= []` | `h = h.put(k, h.fetch(k, []))`, or `h.fetch(k) { [] }` |
+| `h[k] \|\|= []` | `h = h.put(k, h.fetch(k, []))`, or `h.fetch(k) { [] }` |
 | `str << "x"` | `String.build { \|b\| b << "x" }` |
 | `arr.sort!` / `arr.map!` | `arr = arr.sort` / `arr = arr.map { }` |
 | `arr.delete(x)` | `arr = arr.delete(x)` |
@@ -176,7 +176,7 @@ To pass a mutable object to another task, convert it to an immutable value. A Bu
 | `obj.dup` | Only mutable objects have `dup`. Unnecessary for immutable values |
 | `Struct.new(:a, :b)` | `data X(a: T, b: U)` |
 | `attr_accessor :x` | `var @x: T` + `attr_accessor :x` |
-| `@cache ||= compute` | `var @cache: T? = nil` + `@cache ||= compute`, or `Lazy`/`memoize` |
+| `@cache \|\|= compute` | `var @cache: T? = nil` + `@cache \|\|= compute`, or `Lazy`/`memoize` |
 | `$stdout.puts` | `STDOUT.puts` |
 | `@@count += 1` | `COUNT = Atom.new(0)` + `COUNT.update { \|n\| n + 1 }` |
 

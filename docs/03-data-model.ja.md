@@ -166,7 +166,7 @@ spawn { n.update { |v| v + 1 } } # OK
 |---|---|
 | `arr << x` | `arr = arr.push(x)`、または `Array.build { \|b\| b << x }` |
 | `h[k] = v` | `h = h.put(k, v)` |
-| `h[k] ||= []` | `h = h.put(k, h.fetch(k, []))`、または `h.fetch(k) { [] }` |
+| `h[k] \|\|= []` | `h = h.put(k, h.fetch(k, []))`、または `h.fetch(k) { [] }` |
 | `str << "x"` | `String.build { \|b\| b << "x" }` |
 | `arr.sort!` / `arr.map!` | `arr = arr.sort` / `arr = arr.map { }` |
 | `arr.delete(x)` | `arr = arr.delete(x)` |
@@ -174,7 +174,7 @@ spawn { n.update { |v| v + 1 } } # OK
 | `obj.dup` | 可変オブジェクトのみ `dup` を持つ。不変値には不要 |
 | `Struct.new(:a, :b)` | `data X(a: T, b: U)` |
 | `attr_accessor :x` | `var @x: T` + `attr_accessor :x` |
-| `@cache ||= compute` | `var @cache: T? = nil` + `@cache ||= compute`。または `Lazy`/`memoize` |
+| `@cache \|\|= compute` | `var @cache: T? = nil` + `@cache \|\|= compute`。または `Lazy`/`memoize` |
 | `$stdout.puts` | `STDOUT.puts` |
 | `@@count += 1` | `COUNT = Atom.new(0)` + `COUNT.update { \|n\| n + 1 }` |
 
