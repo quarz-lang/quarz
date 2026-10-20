@@ -146,6 +146,12 @@ is heap-allocated. Arrays of `Int`/`Float` store their elements
 unboxed, strings of at most 15 bytes live in the value, small data
 values are held in place in the objects that store them, and copy
 propagation removed most of the reference-count traffic on
-temporaries; unboxed `Int`/`Float` fields and `Int`-keyed hashes would
-be the next steps, and they are changes to
-the runtime's data structures rather than to the compiler.
+temporaries. A `Float` field is read and written without a tag test or
+a release, since the checker's definite initialization guarantees it
+holds a `Float` (`objects`: 44 → 36 M instructions). A one-word (8-byte)
+value representation was tried and set aside (branch `value-8byte`):
+with arrays already unboxed and data values flattened there was little
+copying left to save, while flonum conversions, kind tests through the
+heap header and the loss of in-value short strings cost 1.1–1.9× more
+instructions. `Int`-keyed hashes remain a change to the runtime's data
+structures rather than to the compiler.

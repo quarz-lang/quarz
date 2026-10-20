@@ -1,0 +1,65 @@
+# Fields declared Float hold a Float from construction on (the checker
+# sees to it), so compiled code reads and writes their payload directly.
+# Int fields may grow into big integers.
+class Acc
+  var @total: Float
+  var @count: Int
+  attr_reader :total, :count
+  def initialize(@total: Float)
+    @count = 0
+  end
+  def add(x: Float) -> Nil
+    @total = @total + x
+    @count += 1
+  end
+  def grow -> Nil
+    @count = @count * 1_000_000_007
+  end
+end
+
+a = Acc.new(0.5)
+1000.times { |i| a.add(i.to_f / 4.0) }
+p a.total, a.count
+5.times { a.grow }
+p a.count
+a.add(0.0)
+p a.count
+
+class Special
+  var @v: Float
+  attr_reader :v
+  def initialize(@v: Float); end
+  def set(x: Float) -> Float
+    @v = x
+    @v * 2.0
+  end
+end
+s = Special.new(-0.0)
+p s.v, s.set(1.0 / 0.0), s.set(-1.5), s.v
+p s.set(0.0 / 0.0).nan?
+
+class Base
+  var @x: Float
+  attr_reader :x
+  def initialize(@x: Float); end
+  def bump -> Nil
+    @x = @x + 1.0
+  end
+end
+class Derived < Base
+  var @y: Float
+  attr_reader :y
+  def initialize(@y: Float)
+    super(@y * 10.0)
+  end
+  def bump -> Nil
+    super
+    @y = @y + @x
+  end
+end
+d = Derived.new(2.0)
+3.times { d.bump }
+p d.x, d.y
+items = [Base.new(1.0), Derived.new(1.0)]
+items.each { |b| b.bump }
+p items.map(&:x)

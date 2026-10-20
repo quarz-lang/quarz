@@ -2326,11 +2326,22 @@ impl<B: Builder> Gen<'_, B> {
         let has_handler = self.f.blocks[block as usize].handler.is_some();
         // A call through a typed entry reads homes only on its fallback
         // paths, which write back there (see `typed_call`).
-        let lazy = typed || self.typed_callee(inst).is_some();
+        let to_f = unbox::int_to_f(inst, self.methods, &self.states);
+        // Its slow path writes back the source itself.
+        let float_store = matches!(inst, Inst::FieldSet { index, src, class, .. }
+            if unbox::field_num(self.classes, *class, *index) == Some(Num::Float)
+                && self.states[*src as usize] == State::Float);
+        let lazy = typed || to_f.is_some() || float_store || self.typed_callee(inst).is_some();
         let unwinds_to_handler = has_handler && unbox::may_unwind(inst);
         if (!lazy && !unbox::reads_no_home(inst)) || (!typed && unwinds_to_handler) {
             let live = self.live[block as usize][index as usize].clone();
             self.flush_live(&live);
+        }
+        if let Some((recv, dst)) = to_f {
+            let i = self.b.use_var(self.ivar(recv));
+            let f = self.b.fcvt_from_sint(i);
+            self.store_float(dst, f);
+            return;
         }
         match inst {
             Inst::Move { dst, src } => {
@@ -2995,10 +3006,18 @@ impl<B: Builder> Gen<'_, B> {
                 self.b.switch_to_block(fast);
                 let addr = self.field_addr(*obj, *field);
                 match num {
-                    // A numeric field goes straight into the unboxed
-                    // variable: the tag is checked in the field (a
-                    // mismatch re-runs the read in the interpreter), and
-                    // the home is not written.
+                    // A Float field always holds a Float (the checker
+                    // sees to it that fields are assigned before the
+                    // object is used): its payload is the value.
+                    Some(Num::Float) => {
+                        let p = self.b.load(Ty::I64, addr, 8);
+                        self.unbox(*dst, State::Float);
+                        let v = self.b.bitcast(Ty::F64, p);
+                        self.b.def_var(self.fvar(*dst), v);
+                    }
+                    // An Int field may hold a big integer: the tag is
+                    // checked in the field (a mismatch re-runs the read
+                    // in the interpreter), and the home is not written.
                     Some(n) => {
                         let ftag = self.b.load(Ty::I64, addr, 0);
                         let want = if n == Num::Int { TAG_INT } else { TAG_FLOAT };
@@ -3028,7 +3047,7 @@ impl<B: Builder> Gen<'_, B> {
                 obj,
                 index: field_index,
                 src,
-                ..
+                class,
             } => {
                 let fast = self.b.create_block();
                 let slow = self.b.create_block();
@@ -3038,6 +3057,32 @@ impl<B: Builder> Gen<'_, B> {
                 self.b.brif(is_obj, fast, &[], slow, &[]);
                 self.b.switch_to_block(fast);
                 let field = self.field_addr(*obj, *field_index);
+                // An unboxed Float into a Float field, which holds a
+                // Float (or, in `initialize`, still nil): nothing to
+                // release.
+                let float_into_float = unbox::field_num(self.classes, *class, *field_index)
+                    == Some(Num::Float)
+                    && self.states[*src as usize] == State::Float;
+                if float_into_float {
+                    let v = self.b.use_var(self.fvar(*src));
+                    let bits = self.b.bitcast(Ty::I64, v);
+                    let t = self.b.iconst(Ty::I64, TAG_FLOAT);
+                    self.b.store(t, field, 0);
+                    self.b.store(bits, field, 8);
+                    self.b.jump(cont, &[]);
+                    self.b.switch_to_block(slow);
+                    self.flush(*src);
+                    let o = self.i32(*obj);
+                    let i = self.i32(*field_index);
+                    let s = self.i32(*src);
+                    let call = self
+                        .b
+                        .call(self.h.field_set, &[self.rt, self.regs, o, i, s]);
+                    self.check(call[0], unwind);
+                    self.b.jump(cont, &[]);
+                    self.b.switch_to_block(cont);
+                    return;
+                }
                 self.release_ptr(field);
                 // The last read of the source moves it into the field.
                 let moving = self.movable(inst, *src, block, index);

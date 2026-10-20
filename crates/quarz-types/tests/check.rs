@@ -121,10 +121,71 @@ fn nil_safety_and_narrowing() {
 }
 
 #[test]
+fn definite_initialization() {
+    // Every path assigns a required field.
+    ok("class C\n  var @x: Float\n  def initialize(n: Int)\n    if n > 0\n      @x = 1.0\n    else\n      @x = 2.0\n    end\n  end\nend\nC.new(1)");
+    err(
+        "class C\n  var @x: Float\n  def initialize(n: Int)\n    if n > 0\n      @x = 1.0\n    end\n  end\nend",
+        "field `@x` is not assigned on every path through `initialize`",
+    );
+    err(
+        "class C\n  var @x: Float\n  def initialize(n: Int)\n    while n > 0\n      @x = 1.0\n    end\n  end\nend",
+        "field `@x` is not assigned on every path",
+    );
+    err(
+        "class C\n  var @x: Float\n  def initialize(n: Int)\n    return if n > 0\n    @x = 1.0\n  end\nend",
+        "field `@x` is not assigned when `initialize` returns",
+    );
+    // Raising before the assignment is fine: no object comes out.
+    ok("class C\n  @x: Int\n  def initialize(n: Int)\n    raise ArgumentError, \"neg\" if n < 0\n    @x = n\n  end\nend\nC.new(1)");
+    ok("class C\n  @x: Int\n  def initialize(n: Int)\n    @x = begin\n      n * 2\n    rescue\n      0\n    end\n  end\nend\nC.new(1)");
+    // Nilable fields, and fields with defaults, are not required.
+    ok("class C\n  var @x: Float?\n  var @y: Int = 0\nend\nC.new");
+    // The object is not used before its fields are assigned.
+    err(
+        "class C\n  var @x: Float\n  def initialize\n    show\n    @x = 1.0\n  end\n  def show -> Nil = p(@x)\nend",
+        "the object is used before field `@x` is assigned",
+    );
+    err(
+        "class C\n  var @x: Float\n  def initialize\n    p self\n    @x = 1.0\n  end\nend",
+        "the object is used before field `@x` is assigned",
+    );
+    err(
+        "class C\n  var @x: Int\n  var @y: Int\n  def initialize\n    @x = @y\n    @y = 1\n  end\nend",
+        "field `@y` is read before it is assigned",
+    );
+    err(
+        "class C\n  var @x: Int\n  def initialize(xs: Array[Int])\n    xs.each { |v| show }\n    @x = 1\n  end\n  def show -> Nil = nil\nend",
+        "the object is used before field `@x` is assigned",
+    );
+    ok("class C\n  var @xs: Array[Int]\n  def initialize(ys: Array[Int])\n    puts \"making\"\n    @xs = ys.map { |y| y * 2 }\n    show\n  end\n  def show -> Nil = p(@xs)\nend\nC.new([1])");
+    // A subclass assigns its own fields before `super`.
+    ok("class A\n  @a: Int\n  def initialize(@a: Int); end\nend\nclass B < A\n  @b: Int\n  def initialize(@b: Int)\n    super(@b)\n  end\nend\nB.new(1)");
+    err(
+        "class A\n  @a: Int\n  def initialize(@a: Int); end\nend\nclass B < A\n  @b: Int\n  def initialize(b: Int)\n    super(b)\n    @b = b\n  end\nend",
+        "field `@b` must be assigned before `super`",
+    );
+    err(
+        "class A\n  @a: Int\n  def initialize(@a: Int); end\nend\nclass B < A\n  @b: Int\nend",
+        "field `@b` has no default and `B` has no `initialize` to assign it",
+    );
+    // Defaults run before `initialize`.
+    ok("class C\n  var @a: Float = 1.0\n  var @b: Float = @a + 1.0\nend\nC.new");
+    err(
+        "class C\n  var @a: Float = twice\n  var @b: Float\n  def initialize(@b: Float); end\n  def twice -> Float = @b * 2.0\nend",
+        "the object is used before field `@a` is assigned",
+    );
+}
+
+#[test]
 fn classes_and_fields() {
     ok("class C\n  @x: Int\n  attr_reader :x\n  def initialize(@x: Int); end\nend\nputs C.new(1).x");
     err(
         "class C\n  @x: Int\n  def initialize\n  end\nend",
+        "field `@x` is not assigned on every path through `initialize`",
+    );
+    err(
+        "class C\n  @x: Int?\n  def initialize\n  end\nend",
         "field `@x` must be assigned in `initialize`",
     );
     err(

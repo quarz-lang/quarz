@@ -265,6 +265,8 @@ pub struct Checker {
     in_outer_self: bool,
     /// Classes whose field defaults have been checked.
     defaults_checked: HashSet<ClassId>,
+    /// Classes checked for required fields without an `initialize`.
+    init_checked: HashSet<ClassId>,
 }
 
 /// Arguments after matching to parameters.
@@ -315,6 +317,7 @@ impl Checker {
             in_progress: Vec::new(),
             in_outer_self: false,
             defaults_checked: HashSet::new(),
+            init_checked: HashSet::new(),
         }
     }
 
@@ -363,8 +366,137 @@ impl Checker {
             self.ensure_method_checked(mid);
         }
         self.check_field_defaults();
+        self.check_uninitialized_fields();
         for (file, body) in units {
             self.check_main(*file, body);
+        }
+    }
+
+    /// The fields `initialize` must assign (see `init`): every field and
+    /// the class's own ones whose declared type does not admit `nil`
+    /// and that have no default.
+    pub(crate) fn required_fields(
+        &self,
+        cid: ClassId,
+    ) -> (
+        std::collections::BTreeSet<String>,
+        std::collections::BTreeSet<String>,
+    ) {
+        let admits_nil = |t: &Type| match t {
+            Type::Class(id, _) => *id == self.world.builtin.nil || *id == self.world.builtin.object,
+            Type::Union(ms) => ms
+                .iter()
+                .any(|m| matches!(m, Type::Class(id, _) if *id == self.world.builtin.nil)),
+            Type::Param(_) | Type::Var(_) => true,
+            _ => false,
+        };
+        let all = self
+            .world
+            .all_fields(cid)
+            .into_iter()
+            .filter(|(f, _)| f.default.is_none() && !admits_nil(&f.ty))
+            .map(|(f, _)| f.name)
+            .collect();
+        let own = self
+            .world
+            .class(cid)
+            .fields
+            .iter()
+            .filter(|f| f.default.is_none() && !admits_nil(&f.ty))
+            .map(|f| f.name.clone())
+            .collect();
+        (all, own)
+    }
+
+    /// A class with required fields of its own (see `required_fields`)
+    /// must have an `initialize` that assigns them: an inherited one does
+    /// not know them, and without one they would stay nil.
+    fn check_uninitialized_fields(&mut self) {
+        let count = self.world.classes.len();
+        for cid in 0..count as ClassId {
+            if !self.init_checked.insert(cid) {
+                continue;
+            }
+            self.check_default_uses(cid);
+            let class = self.world.class(cid);
+            if class.kind != ClassKind::Class
+                || class.auto_initialize
+                || class
+                    .methods
+                    .get("initialize")
+                    .is_some_and(|ms| !ms.is_empty())
+            {
+                continue;
+            }
+            let (_, own) = self.required_fields(cid);
+            let Some(name) = own.into_iter().next() else {
+                continue;
+            };
+            let span = class
+                .fields
+                .iter()
+                .find(|f| f.name == name)
+                .map_or(class.span, |f| f.span);
+            self.error(
+                format!(
+                    "field `@{name}` has no default and `{}` has no `initialize` to assign it",
+                    class.name
+                ),
+                span,
+            );
+        }
+    }
+
+    /// Field defaults run before `initialize`, in declaration order (the
+    /// inherited ones first): one may not use the object, or read a
+    /// field that is not set yet.
+    fn check_default_uses(&mut self, cid: ClassId) {
+        let fields: Vec<FieldInfo> = self
+            .world
+            .all_fields(cid)
+            .into_iter()
+            .map(|(f, _)| f)
+            .collect();
+        if self
+            .world
+            .class(cid)
+            .fields
+            .iter()
+            .all(|f| f.default.is_none())
+        {
+            return;
+        }
+        let all: std::collections::BTreeSet<String> =
+            fields.iter().map(|f| f.name.clone()).collect();
+        let own: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        let mut errors = Vec::new();
+        {
+            let calls = |id: NodeId| self.out.calls.get(&id).cloned();
+            let world = &self.world;
+            let user = |mid: MethodId| {
+                let m = world.method(mid);
+                !m.is_native && m.owner != world.builtin.kernel && m.owner != world.builtin.object
+            };
+            let mut set: Vec<String> = Vec::new();
+            for f in &fields {
+                if let Some(d) = &f.default {
+                    if self
+                        .world
+                        .class(cid)
+                        .fields
+                        .iter()
+                        .any(|g| g.name == f.name)
+                    {
+                        let mut c = crate::init::InitCheck::new(&all, &own, &calls, &user);
+                        c.default(d, &set);
+                        errors.extend(c.errors);
+                    }
+                    set.push(f.name.clone());
+                }
+            }
+        }
+        for (msg, span) in errors {
+            self.error(msg, span);
         }
     }
 
@@ -478,6 +610,7 @@ impl Checker {
             self.ensure_method_checked(mid);
         }
         self.check_field_defaults();
+        self.check_uninitialized_fields();
         let main = self.file_main(file).unwrap_or(self.world.builtin.object);
         let env = match self.repl_env.take() {
             Some(env) => env,
@@ -798,9 +931,34 @@ impl Checker {
         }
 
         if self.env.in_initialize {
+            let (required, own) = self.required_fields(owner);
+            let params: Vec<(Option<&Expr>, Option<String>)> = info
+                .params
+                .iter()
+                .map(|p| (p.default.as_deref(), p.assigns_ivar.then(|| p.name.clone())))
+                .collect();
+            let errors = {
+                let calls = |id: NodeId| self.out.calls.get(&id).cloned();
+                let world = &self.world;
+                let user = |mid: MethodId| {
+                    let m = world.method(mid);
+                    !m.is_native
+                        && m.owner != world.builtin.kernel
+                        && m.owner != world.builtin.object
+                };
+                let mut c = crate::init::InitCheck::new(&required, &own, &calls, &user);
+                c.method(&params, &body, info.span);
+                c.errors
+            };
+            for (msg, span) in errors {
+                self.error(msg, span);
+            }
             let fields = self.world.all_fields(owner);
             for (f, _) in fields {
-                if f.default.is_none() && !f.mutable && !self.env.assigned_fields.contains(&f.name)
+                if f.default.is_none()
+                    && !f.mutable
+                    && !required.contains(&f.name)
+                    && !self.env.assigned_fields.contains(&f.name)
                 {
                     self.error(
                         format!("field `@{}` must be assigned in `initialize`", f.name),

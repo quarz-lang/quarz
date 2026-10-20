@@ -316,6 +316,30 @@ pub fn call_num(inst: &Inst, methods: &[RtMethod], typed: &[Option<TypedSig>]) -
     (sig.params.len() == args.len()).then_some(sig.ret)
 }
 
+/// A call to `Int#to_f` with an unboxed receiver: the conversion is
+/// done inline (the receiver and the result register).
+pub fn int_to_f(inst: &Inst, methods: &[RtMethod], st: &[State]) -> Option<(Reg, Reg)> {
+    let Inst::Call {
+        dst,
+        kind: CallKind::Method(mid),
+        recv: Some(recv),
+        args,
+        splat: false,
+        kw,
+        kw_splat: None,
+        block: None,
+    } = inst
+    else {
+        return None;
+    };
+    let m = methods.get(*mid as usize)?;
+    (args.is_empty()
+        && kw.is_empty()
+        && m.native_key.as_deref() == Some("Int#to_f")
+        && st[*recv as usize] == State::Int)
+        .then_some((*recv, *dst))
+}
+
 /// The declared type of a method's positional, non-defaulted parameter,
 /// when it is Int or Float.
 pub fn param_num(f: &Function, methods: &[RtMethod], index: u32) -> Option<Num> {
@@ -359,6 +383,9 @@ pub fn transfer(
         // caller falls back to the interpreter when it does not fit).
         Inst::Call { dst, .. } if call_num(inst, methods, typed).is_some() => {
             st[*dst as usize] = num_state(call_num(inst, methods, typed).unwrap_or(Num::Int));
+        }
+        Inst::Call { dst, .. } if int_to_f(inst, methods, st).is_some() => {
+            st[*dst as usize] = State::Float;
         }
         Inst::ClearRegs { from, to } => {
             for r in *from..*to {

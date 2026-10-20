@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 pub mod check;
 pub mod declare;
+pub mod init;
 pub mod load;
 pub mod patterns;
 pub mod types;

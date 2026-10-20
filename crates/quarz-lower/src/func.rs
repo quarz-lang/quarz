@@ -1649,8 +1649,16 @@ impl<'a> FnBuilder<'a> {
 
     /// Whether the call `id` resolves to a native method, which may
     /// update its receiver in place when nothing else refers to it.
+    /// Whether the call is to a native with an in-place variant: only
+    /// the collections have them (an owned call to anything else, a
+    /// number's `+` say, is a slower ordinary call).
     fn is_owned_native(&self, id: &u32) -> bool {
-        matches!(self.out.calls.get(id), Some(CallTarget::Method { method }) if self.world.method(*method).is_native)
+        let Some(CallTarget::Method { method }) = self.out.calls.get(id) else {
+            return false;
+        };
+        let m = self.world.method(*method);
+        let b = &self.world.builtin;
+        m.is_native && [b.array, b.hash, b.set].contains(&m.owner)
     }
 
     /// `x.foo!(args)` as `x = x.foo(args)` (the checker resolved `foo`):
