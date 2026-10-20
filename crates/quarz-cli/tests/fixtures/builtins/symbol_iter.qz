@@ -1,0 +1,27 @@
+# `xs.map(&:name)` and friends are lowered as loops calling `name` on
+# each element, dispatched as a call would be.
+xs = [1, 2, 3, 4, 5, 6]
+p xs.map(&:to_s), xs.select(&:even?), xs.reject(&:even?), xs.count(&:odd?)
+p xs.any?(&:zero?), xs.all?(&:positive?), (1..5).map(&:succ), (1..4).select(&:odd?)
+words = ["a", "Bb", "ccC"]
+p words.map(&:upcase), words.map(&:size).sum, words.count(&:empty?)
+
+class Animal
+  def speak -> String = "..."
+  def loud? -> Bool = false
+end
+class Dog < Animal
+  def speak -> String = "woof"
+  def loud? -> Bool = true
+end
+class Cat < Animal
+  def speak -> String = "meow"
+end
+zoo: Array[Animal] = [Dog.new, Cat.new, Animal.new, Dog.new]
+p zoo.map(&:speak), zoo.count(&:loud?), zoo.select(&:loud?).size, zoo.all?(&:loud?)
+
+extension Int
+  def double -> Int = self * 2
+end
+empty: Array[Int] = []
+p xs.map(&:double), empty.map(&:double)

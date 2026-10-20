@@ -886,6 +886,8 @@ pub unsafe extern "C" fn qz_interpolate(
 ) -> u32 {
     let rt = &*rt;
     let act = &*act;
+    let dead = inst & crate::layout::INTERP_RESULT_DEAD != 0;
+    let inst = inst & !crate::layout::INTERP_RESULT_DEAD;
     let funcs = rt.funcs.borrow();
     let f = &funcs[fid as usize];
     let regs = std::slice::from_raw_parts_mut(regs, f.nregs as usize);
@@ -894,6 +896,16 @@ pub unsafe extern "C" fn qz_interpolate(
     let quarz_ir::Inst::Interpolate { dst, parts, into } = &b.insts[inst as usize] else {
         unreachable!("qz_interpolate on another instruction")
     };
+    if dead {
+        if let Some(r) = into {
+            if let Value::StringBuilder(_) = &regs[*r as usize] {
+                return match rt.append_interpolation(f, regs, parts, *r) {
+                    Ok(()) => STATUS_OK,
+                    Err(flow) => rt.park_flow(flow),
+                };
+            }
+        }
+    }
     match rt.interpolate_inst(f, regs, parts, *into) {
         Ok(v) => {
             regs[*dst as usize] = v;

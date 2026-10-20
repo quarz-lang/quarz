@@ -1,0 +1,49 @@
+# Array length, element reads and appends write registers back only on
+# their runtime paths: those paths must see every operand.
+xs = [1, 2, 3]
+total = 0.5
+i = 0
+while i < 5
+  begin
+    total = total + xs[i].to_f
+  rescue IndexError
+    total = total * 10.0
+  end
+  i += 1
+end
+p total
+
+# A negative index goes through the runtime with an unboxed index.
+k = 0
+sum = 0
+while k < 3
+  sum += xs[k - 3]
+  k += 1
+end
+p sum
+
+# Appending an Int to a Float array converts its storage (runtime path).
+fs: Array[Int | Float] = [1.5, 2.5]
+n = 3
+fs = fs.push(n)
+x = 2.25
+fs = fs.push(x)
+p fs, fs.size
+
+# A shared array is copied by the runtime on push.
+a = [1, 2]
+b = a
+c = 7
+b = b.push(c)
+p a, b, a.size + b.size
+
+def tally(ys: Array[Int]) -> Int
+  acc = 0
+  j = 0
+  while j < ys.size
+    acc += ys[j] * j
+    j += 1
+  end
+  acc
+end
+p tally([3, 4, 5]), tally([])

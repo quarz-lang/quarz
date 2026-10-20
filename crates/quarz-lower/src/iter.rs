@@ -41,6 +41,9 @@ pub struct Shape {
     pub kind: Kind,
     /// For the collection kinds; `None` for `times`/`upto`.
     pub source: Option<Source>,
+    /// `xs.map(&:name)`: no block, the method called on each element
+    /// (as the checker resolved it for the element type).
+    pub symbol: Option<quarz_types::types::MethodId>,
 }
 
 /// Whether `call` (expression `e`) is lowered in place, and how.
@@ -48,17 +51,30 @@ pub fn shape(e: &Expr, call: &ast::Call, out: &Output, world: &World) -> Option<
     if call.safe_nav {
         return None;
     }
-    let block = call.block.as_ref()?;
-    let simple_params = block
-        .params
-        .list
-        .iter()
-        .all(|p| p.kind == ParamKind::Positional && p.default.is_none());
-    if !simple_params || out.block_destructure.contains_key(&e.id) {
-        return None;
-    }
-    if !call.args.iter().all(|a| matches!(a, Arg::Positional(_))) {
-        return None;
+    // `&:name` as the only argument stands for a one-parameter block
+    // calling `name` on it.
+    let symbol = match (&call.block, call.args.as_slice()) {
+        (None, [Arg::BlockPass(x)]) => match out.block_pass.get(&x.id) {
+            Some(quarz_types::BlockPass::Symbol(_, m)) if matches!(x.kind, ExprKind::Symbol(_)) => {
+                Some(*m)
+            }
+            _ => return None,
+        },
+        _ => None,
+    };
+    if symbol.is_none() {
+        let block = call.block.as_ref()?;
+        let simple_params = block
+            .params
+            .list
+            .iter()
+            .all(|p| p.kind == ParamKind::Positional && p.default.is_none());
+        if !simple_params || out.block_destructure.contains_key(&e.id) {
+            return None;
+        }
+        if !call.args.iter().all(|a| matches!(a, Arg::Positional(_))) {
+            return None;
+        }
     }
     let Some(CallTarget::Method { method }) = out.calls.get(&e.id) else {
         return None;
@@ -68,16 +84,18 @@ pub fn shape(e: &Expr, call: &ast::Call, out: &Output, world: &World) -> Option<
         return None;
     }
     let bi = &world.builtin;
-    let nargs = call.args.len();
+    let nargs = if symbol.is_some() { 0 } else { call.args.len() };
     let shape = if m.owner == bi.int {
         match (m.name.as_str(), nargs) {
             ("times", 0) => Shape {
                 kind: Kind::Times,
                 source: None,
+                symbol,
             },
             ("upto", 1) => Shape {
                 kind: Kind::Upto,
                 source: None,
+                symbol,
             },
             _ => return None,
         }
@@ -122,10 +140,16 @@ pub fn shape(e: &Expr, call: &ast::Call, out: &Output, world: &World) -> Option<
         Shape {
             kind,
             source: Some(source),
+            symbol,
         }
     };
+    if symbol.is_some() {
+        // One argument per element: not `each_with_index` or `reduce`.
+        return (!matches!(shape.kind, Kind::EachWithIndex | Kind::Reduce)).then_some(shape);
+    }
     // The block's variables must all be registers of the enclosing
     // function: nothing nested may capture them.
+    let block = call.block.as_ref()?;
     let nparams = block.params.list.len() as u32;
     if !captured_slots(&block.body, &[], out, world, nparams).is_empty() {
         return None;

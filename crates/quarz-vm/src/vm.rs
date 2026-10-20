@@ -586,10 +586,25 @@ impl Interp {
             return self.interpolate(f, regs, parts);
         };
         let target = &regs[b as usize];
-        let Value::StringBuilder(sb) = target else {
+        if !matches!(target, Value::StringBuilder(_)) {
             // Not a builder after all: `<<` by name.
             let s = self.interpolate(f, regs, parts)?;
             return self.send(target, "<<", smallvec![s], None);
+        }
+        self.append_interpolation(f, regs, parts, b)?;
+        Ok(regs[b as usize].clone())
+    }
+
+    /// Append the interpolation to the `String::Builder` in `regs[b]`.
+    pub fn append_interpolation(
+        &self,
+        f: &Function,
+        regs: &[Value],
+        parts: &[StrPiece],
+        b: Reg,
+    ) -> Result<(), Flow> {
+        let Value::StringBuilder(sb) = &regs[b as usize] else {
+            unreachable!("append_interpolation on a non-builder")
         };
         // Strings, integers, nil and booleans are written straight into
         // the builder (their text runs no user code).
@@ -608,8 +623,7 @@ impl Interp {
                     StrPiece::Val(r) => self.append_to_s(&mut buf, &regs[*r as usize])?,
                 }
             }
-            drop(buf);
-            return Ok(target.clone());
+            return Ok(());
         }
         let mut failed = None;
         Value::with_scratch(|s| {
@@ -628,7 +642,7 @@ impl Interp {
         });
         match failed {
             Some(e) => Err(e),
-            None => Ok(target.clone()),
+            None => Ok(()),
         }
     }
 

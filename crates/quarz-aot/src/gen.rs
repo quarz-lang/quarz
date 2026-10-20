@@ -2508,8 +2508,18 @@ impl<B: Builder> Gen<'_, B> {
         let float_store = matches!(inst, Inst::FieldSet { index, src, class, .. }
             if unbox::field_num(self.classes, *class, *index) == Some(Num::Float)
                 && self.states[*src as usize] == State::Float);
-        let lazy = typed || to_f.is_some() || float_store || self.typed_callee(inst).is_some();
-        let unwinds_to_handler = has_handler && unbox::may_unwind(inst);
+        // Array length, element reads and appends read only their own
+        // operands' homes, on the runtime path, which writes them back.
+        let array_op = matches!(
+            inst,
+            Inst::Len { .. } | Inst::ArrayGetReg { .. } | Inst::ArrayPush { .. }
+        );
+        let lazy =
+            typed || to_f.is_some() || float_store || array_op || self.typed_callee(inst).is_some();
+        // A handler reads the homes of whatever is live: anything that may
+        // reach the runtime writes them back first.
+        let unwinds_to_handler =
+            has_handler && (unbox::may_unwind(inst) || !unbox::reads_no_home(inst));
         if (!lazy && !unbox::reads_no_home(inst)) || (!typed && unwinds_to_handler) {
             let live = self.live[block as usize][index as usize].clone();
             self.flush_live(&live);
@@ -2914,6 +2924,7 @@ impl<B: Builder> Gen<'_, B> {
                 self.b.def_var(self.ivar(*dst), len);
                 self.b.jump(cont, &[]);
                 self.b.switch_to_block(slow);
+                self.flush(*src);
                 self.exec(block, index, unwind);
                 self.b.jump(cont, &[]);
                 self.b.switch_to_block(cont);
@@ -2984,6 +2995,8 @@ impl<B: Builder> Gen<'_, B> {
                 self.store_payload(*dst, bits);
                 self.b.jump(cont, &[]);
                 self.b.switch_to_block(slow);
+                self.flush(*arr);
+                self.flush(*idx);
                 self.exec(block, index, unwind);
                 self.b.jump(cont, &[]);
                 self.b.switch_to_block(cont);
@@ -2998,6 +3011,8 @@ impl<B: Builder> Gen<'_, B> {
                 self.inline_push(arr_ptr, *src, slow, moving);
                 self.b.jump(cont, &[]);
                 self.b.switch_to_block(slow);
+                self.flush(*arr);
+                self.flush(*src);
                 self.exec(block, index, unwind);
                 if moving {
                     self.drop_moved(*src);
@@ -3008,9 +3023,18 @@ impl<B: Builder> Gen<'_, B> {
                     self.states[*src as usize] = State::NonHeap;
                 }
             }
-            Inst::Interpolate { .. } => {
+            Inst::Interpolate { dst, into, .. } => {
+                // Appending to a builder whose result is not read: the
+                // runtime is told not to store it (`INTERP_RESULT_DEAD`).
+                let dead =
+                    into.is_some() && !self.live[block as usize][index as usize + 1][*dst as usize];
                 let entry = self.h.interpolate;
-                self.exec_via(entry, block, index, unwind);
+                let i = if dead {
+                    index | L::INTERP_RESULT_DEAD
+                } else {
+                    index
+                };
+                self.exec_via(entry, block, i, unwind);
             }
             Inst::ClearRegs { from, to } => {
                 // A register that may hold a heap value is released and

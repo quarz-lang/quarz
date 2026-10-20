@@ -75,7 +75,13 @@ unboxed (the 200 000 `put`s of `collections`: 14.6 → 9.5 ms); and
 builder (the building loop of `strings`: 14.7 → 7.7 ms, Spinel 5.1). In
 one run on one core, after them: `loop` 2.8 ms (Spinel 2.4),
 `collections` 21.9 (20.9), `objects` 3.0 (15.0), `strings` 22.9 (22.0),
-`dispatch` 5.4 (5.5), `tak(27,18,9)` 12.0 (12.0).)
+`dispatch` 5.4 (5.5), `tak(27,18,9)` 12.0 (12.0). A last round: array
+length, element reads and appends write registers back only on their
+runtime paths, an append to a builder whose result is not read does not
+store it, and `xs.map(&:name)` (with `select`, `count`, ...) is lowered
+as a loop calling the method directly. Same run: `collections` 20.5 ms
+(Spinel 20.7), `strings` 19.5 (21.9), `dispatch` 4.8 (4.8), `loop` 2.8
+(2.4), `objects` 2.9 (14.8).)
 
 - Spinel's `fib` number is not a call benchmark: it marks `fib` pure, and
   gcc, after inlining the recursion a few levels, merges the duplicate

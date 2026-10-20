@@ -1931,7 +1931,7 @@ impl<'a> FnBuilder<'a> {
     /// shapes of `iter`: a counted loop in this function, with the block
     /// body lowered in place (`break` and `next` become jumps).
     fn inline_iter(&mut self, call: &'a ast::Call, shape: Shape) -> Reg {
-        let block = call.block.as_ref().unwrap();
+        let block = call.block.as_ref();
         let kind = shape.kind;
         // The receiver (or the range's bounds), then the arguments.
         let mut lo = None;
@@ -1969,8 +1969,10 @@ impl<'a> FnBuilder<'a> {
         let args: Vec<Reg> = call
             .args
             .iter()
-            .map(|a| match a {
-                Arg::Positional(x) => self.expr(x),
+            .filter_map(|a| match a {
+                Arg::Positional(x) => Some(self.expr(x)),
+                // `&:name` (see `Shape::symbol`).
+                Arg::BlockPass(_) => None,
                 _ => unreachable!(),
             })
             .collect();
@@ -2071,7 +2073,8 @@ impl<'a> FnBuilder<'a> {
             _ => vec![elem],
         };
         self.inline.push(InlineLevel::default());
-        for pi in 0..block.params.list.len() {
+        let nparams = block.map_or(0, |b| b.params.list.len());
+        for pi in 0..nparams {
             let src = match yielded.get(pi) {
                 Some(r) => *r,
                 None => self.nil(),
@@ -2091,7 +2094,25 @@ impl<'a> FnBuilder<'a> {
             depth: self.handlers.len(),
             next_value: Some(val),
         });
-        let v = self.body(&block.body);
+        let v = match (block, shape.symbol) {
+            (Some(block), _) => self.body(&block.body),
+            // `&:name`: the method called on the element.
+            (None, Some(m)) => {
+                let d = self.reg();
+                self.emit(Inst::Call {
+                    dst: d,
+                    kind: CallKind::Method(m),
+                    recv: Some(elem),
+                    args: Vec::new(),
+                    splat: false,
+                    kw: Vec::new(),
+                    kw_splat: None,
+                    block: None,
+                });
+                d
+            }
+            (None, None) => unreachable!("an inlined iteration without a block"),
+        };
         self.loops.pop();
         self.emit(Inst::Move { dst: val, src: v });
         self.term(Term::Jump(next_b));
