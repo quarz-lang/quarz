@@ -7,7 +7,6 @@
 //! once rather than when the value is dropped.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream, UdpSocket};
 use std::os::fd::{AsRawFd, RawFd};
@@ -21,7 +20,7 @@ use smallvec::smallvec;
 use super::io::{io, io_of, os_error};
 use super::{int, string};
 
-pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
+pub fn register(m: &mut super::Registry<NativeFn>) {
     // TCPSocket
     m.insert("TCPSocket.new", |i, _, a| tcp_connect(i, &a));
     m.insert("TCPSocket.open", |i, _, a| {

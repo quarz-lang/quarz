@@ -2,8 +2,6 @@
 //! bit queries, Float steps and neighbours, the rest of `Math`, and
 //! `clamp` with a range.
 
-use std::collections::HashMap;
-
 use num_bigint::BigInt;
 use num_traits::{Signed, Zero};
 
@@ -14,7 +12,7 @@ use smallvec::smallvec;
 use super::numeric::{arith, float_to_int, Num};
 use super::{block, float, int};
 
-pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
+pub fn register(m: &mut super::Registry<NativeFn>) {
     // Int
     m.insert("Int.sqrt", |i, _, a| {
         let n = Num::of(i, a.arg(0))?.to_big();

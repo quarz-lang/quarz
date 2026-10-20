@@ -1,6 +1,5 @@
 //! Int, Float, Duration and Math.
 
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use num_bigint::BigInt;
@@ -155,7 +154,7 @@ fn cmp_num(interp: &Interp, recv: &Value, args: &Args) -> Result<std::cmp::Order
     interp.compare(recv, other)
 }
 
-pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
+pub fn register(m: &mut super::Registry<NativeFn>) {
     for class in ["Int", "Float"] {
         let key =
             |name: &str| -> &'static str { Box::leak(format!("{class}#{name}").into_boxed_str()) };

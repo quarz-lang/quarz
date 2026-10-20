@@ -2,7 +2,6 @@
 //! comparator forms of `sort`/`min`/`max`, and the Ruby methods on Array,
 //! Hash, Set, Range and their builders that the first batch left out.
 
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::interp::{Args, EvalResult, Flow, Interp, NativeFn};
@@ -16,7 +15,7 @@ use super::collections::{
 use super::numeric::enumerator;
 use super::{block, collect, int, string};
 
-pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
+pub fn register(m: &mut super::Registry<NativeFn>) {
     // Enumerable: enumerators for the blockless forms.
     m.insert("Enumerable#to_enum", |i, r, _| {
         enumerator(i, r, "each", vec![])

@@ -1,7 +1,6 @@
 //! Task, Scope, Channel, Selector, Atom and the Kernel entry points.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -12,7 +11,7 @@ use smallvec::smallvec;
 
 use super::{block, int};
 
-pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
+pub fn register(m: &mut super::Registry<NativeFn>) {
     m.insert("Kernel#spawn", |i, _, a| {
         let b = block(i, &a)?;
         Ok(Value::Task(i.spawn_task(b, None, "task")))

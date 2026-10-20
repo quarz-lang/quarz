@@ -25,6 +25,7 @@ pub type ConstId = u32;
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Module {
     pub world: RtWorld,
+    #[serde(with = "dropped")]
     pub functions: Vec<Function>,
     /// Compilation units in execution order (dependencies first).
     pub units: Vec<Unit>,
@@ -1124,6 +1125,7 @@ pub struct RtBuiltin {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct RtWorld {
     pub classes: Vec<RtClass>,
+    #[serde(with = "dropped")]
     pub methods: Vec<RtMethod>,
     pub consts: Vec<RtConst>,
     pub extensions: Vec<RtExtension>,
@@ -1187,6 +1189,75 @@ impl RtWorld {
 }
 
 /// Serialize a module for embedding in a compiled executable.
+/// What `shake::shake` dropped is an empty record: it is written as a
+/// single byte and read back as the empty record.
+pub trait Droppable: Sized {
+    fn is_dropped(&self) -> bool;
+    fn dropped() -> Self;
+}
+
+impl Droppable for RtMethod {
+    fn is_dropped(&self) -> bool {
+        self.name.is_empty()
+    }
+
+    fn dropped() -> Self {
+        RtMethod {
+            name: String::new(),
+            owner: 0,
+            singleton: false,
+            params: Vec::new(),
+            has_block: false,
+            func: None,
+            native_key: None,
+            synth: RtSynth::None,
+            is_abstract: false,
+            is_extension: false,
+            overloaded: false,
+            overridden: false,
+            fast_op: None,
+            file: 0,
+            ret: None,
+        }
+    }
+}
+
+impl Droppable for Function {
+    fn is_dropped(&self) -> bool {
+        self.name.is_empty()
+    }
+
+    fn dropped() -> Self {
+        shake::empty_function(String::new(), FuncKind::TopLevel, 0, 0)
+    }
+}
+
+mod dropped {
+    use super::Droppable;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<T: Serialize + Droppable, S: Serializer>(
+        items: &[T],
+        s: S,
+    ) -> Result<S::Ok, S::Error> {
+        let kept: Vec<Option<&T>> = items
+            .iter()
+            .map(|x| (!x.is_dropped()).then_some(x))
+            .collect();
+        kept.serialize(s)
+    }
+
+    pub fn deserialize<'de, T: Deserialize<'de> + Droppable, D: Deserializer<'de>>(
+        d: D,
+    ) -> Result<Vec<T>, D::Error> {
+        let kept: Vec<Option<T>> = Vec::deserialize(d)?;
+        Ok(kept
+            .into_iter()
+            .map(|x| x.unwrap_or_else(T::dropped))
+            .collect())
+    }
+}
+
 pub fn encode(module: &Module) -> Vec<u8> {
     bincode::serialize(module).expect("serializing QIR")
 }
@@ -1196,3 +1267,4 @@ pub fn decode(bytes: &[u8]) -> Result<Module, String> {
 }
 
 pub mod dump;
+pub mod shake;

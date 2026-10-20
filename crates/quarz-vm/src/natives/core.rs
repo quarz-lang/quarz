@@ -1,6 +1,5 @@
 //! Object, Nil, Bool, Class, Kernel, Comparable and Exception.
 
-use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
@@ -9,7 +8,7 @@ use crate::value::*;
 
 use super::{int, string};
 
-pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
+pub fn register(m: &mut super::Registry<NativeFn>) {
     m.insert("Object#==", obj_eq);
     m.insert("Object#!=", obj_ne);
     m.insert("Object#equal?", obj_equal);

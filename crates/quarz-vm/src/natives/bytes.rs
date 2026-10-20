@@ -1,7 +1,6 @@
 //! Bytes and Bytes::Builder.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::interp::{Args, EvalResult, Flow, Interp, NativeFn};
@@ -10,7 +9,7 @@ use smallvec::smallvec;
 
 use super::{block, int, string};
 
-pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
+pub fn register(m: &mut super::Registry<NativeFn>) {
     m.insert("Bytes.new", |_, _, _| Ok(Value::bytes(Vec::new())));
     m.insert("Bytes.[]", |i, _, a| {
         let mut out = Vec::with_capacity(a.pos.len());

@@ -80,6 +80,16 @@ fn link(object: &Path, output: &Path) -> Result<(), String> {
 
 /// Compile a module and link it into the executable `output`.
 pub fn build(module: &Module, output: &Path, backend: Backend) -> Result<(), String> {
+    // What the program cannot run is neither compiled nor decoded at
+    // start-up (`QUARZ_NO_SHAKE` keeps everything, for comparison).
+    let mut shaken;
+    let module = if std::env::var_os("QUARZ_NO_SHAKE").is_some() {
+        module
+    } else {
+        shaken = module.clone();
+        quarz_ir::shake::shake(&mut shaken);
+        &shaken
+    };
     let obj_path = output.with_extension("o");
     match backend {
         Backend::Cranelift => {

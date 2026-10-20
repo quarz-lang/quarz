@@ -1,7 +1,6 @@
 //! Time (a point in time with a UTC offset) and the Duration helpers that
 //! need the clock.
 
-use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::rc::Rc;
 
@@ -16,7 +15,7 @@ use super::{float, int, string};
 
 const NS: i64 = 1_000_000_000;
 
-pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
+pub fn register(m: &mut super::Registry<NativeFn>) {
     m.insert("Time.now", |_, _, _| {
         let now = Local::now();
         Ok(time(

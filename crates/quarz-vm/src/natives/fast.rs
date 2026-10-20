@@ -4,14 +4,12 @@
 //! `None` for what it does not handle (the generic native then runs,
 //! and raises where it must).
 
-use std::collections::HashMap;
-
 use crate::interp::FastNativeFn;
 use crate::value::Value;
 
 use super::collections::index_data;
 
-pub fn register(m: &mut HashMap<&'static str, FastNativeFn>) {
+pub fn register(m: &mut super::Registry<FastNativeFn>) {
     // ----- String -----
     m.insert("String#size", |_, r, a| match (r.as_str(), a) {
         (Some(s), []) => Some(Ok(Value::Int(s.chars().count() as i64))),

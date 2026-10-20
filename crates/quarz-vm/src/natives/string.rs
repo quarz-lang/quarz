@@ -1,7 +1,6 @@
 //! String, String::Builder, Symbol, Regexp and MatchData.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::interp::{Args, EvalResult, Flow, Interp, NativeFn};
@@ -10,7 +9,7 @@ use smallvec::smallvec;
 
 use super::{block, int, string};
 
-pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
+pub fn register(m: &mut super::Registry<NativeFn>) {
     m.insert("String.build", string_build);
     m.insert("String#+", |i, r, a| {
         Ok(Value::string(format!(

@@ -6,7 +6,6 @@
 //! Sockets (see `net.rs`) are non-blocking and wait on the reactor.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::io::{BufRead, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -18,7 +17,7 @@ use smallvec::smallvec;
 use super::net;
 use super::{block, string};
 
-pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
+pub fn register(m: &mut super::Registry<NativeFn>) {
     m.insert("Process.argv", |i, _, _| {
         Ok(Value::array(i.argv.iter().map(|s| Value::str(s)).collect()))
     });

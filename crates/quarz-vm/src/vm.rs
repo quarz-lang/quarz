@@ -519,7 +519,9 @@ impl Interp {
             },
             Term::Unreachable => Step::Done(Err(self.raise(
                 self.exc.runtime_error,
-                "internal error: unreachable code executed",
+                "internal error: unreachable code executed (in a compiled program, \
+                 possibly a function the build dropped as unreachable: \
+                 QUARZ_NO_SHAKE=1 at build time keeps them)",
             ))),
         }
     }

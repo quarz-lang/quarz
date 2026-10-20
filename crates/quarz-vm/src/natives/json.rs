@@ -1,7 +1,6 @@
 //! `JSON.parse`, `JSON.generate` and `JSON.pretty_generate` (the rest of
 //! the module is written in Quarz, see `std/json.qz`).
 
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use quarz_ir::{ClassId, RtClassKind};
@@ -12,7 +11,7 @@ use crate::value::*;
 
 use super::string;
 
-pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
+pub fn register(m: &mut super::Registry<NativeFn>) {
     m.insert("JSON.parse", |i, _, a| {
         let text = string(i, a.arg(0), "text")?;
         let classes = classes(i)?;

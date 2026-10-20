@@ -2,7 +2,6 @@
 //! comparison-based Enumerable extensions.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::interp::{Args, EvalResult, Flow, Interp, NativeFn, OwnedNativeFn};
@@ -14,7 +13,7 @@ use super::{block, collect, int, string};
 /// In-place variants used when the caller owns the receiver
 /// (`xs = xs.push(x)`): `Rc::make_mut` mutates without copying when the
 /// reference is unique.
-pub fn register_owned(m: &mut HashMap<&'static str, OwnedNativeFn>) {
+pub fn register_owned(m: &mut super::Registry<OwnedNativeFn>) {
     m.insert("Array#push", |_, r, a| {
         owned_update(r, |v| v.extend(a.pos.iter().cloned()))
     });
@@ -123,7 +122,7 @@ fn owned_set_update(recv: Value, f: impl FnOnce(&mut ValueSet)) -> Result<Value,
     }
 }
 
-pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
+pub fn register(m: &mut super::Registry<NativeFn>) {
     // Array
     m.insert("Array.new", array_new);
     m.insert("Array.build", array_build);

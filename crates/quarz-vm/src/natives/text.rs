@@ -1,7 +1,6 @@
 //! The second batch of text natives: the String, String::Builder, Symbol,
 //! Regexp and MatchData methods the first batch left out.
 
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use unicode_segmentation::UnicodeSegmentation;
@@ -14,7 +13,7 @@ use super::numeric::enumerator;
 use super::string::{char_offset, md, re, s, sb, slice_range, string_sub};
 use super::{block, int, string};
 
-pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
+pub fn register(m: &mut super::Registry<NativeFn>) {
     // String
     m.insert("String#slice", string_slice);
     m.insert("String#codepoints", |i, r, _| {

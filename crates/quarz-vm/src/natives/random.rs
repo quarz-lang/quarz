@@ -2,7 +2,6 @@
 //! generator.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::interp::{Args, EvalResult, Flow, Interp, NativeFn};
@@ -39,7 +38,7 @@ pub fn next_random() -> u64 {
     with_default(|s| s.next_u64())
 }
 
-pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
+pub fn register(m: &mut super::Registry<NativeFn>) {
     m.insert("Random.new", |_, _, a| {
         let seed = match a.pos.first() {
             Some(Value::Int(i)) => *i,

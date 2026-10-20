@@ -2,7 +2,6 @@
 //! `Class#method` (instance) or `Class.method` (singleton).
 
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::interp::{Args, EvalResult, Flow, Interp, NativeFn, OwnedNativeFn};
@@ -25,8 +24,16 @@ mod string;
 mod text;
 pub mod time;
 
-pub fn registry() -> HashMap<&'static str, NativeFn> {
-    let mut m: HashMap<&'static str, NativeFn> = HashMap::new();
+/// Natives by key (`Class#name`), built at start-up: a fast hasher, and
+/// room for all of them at once.
+pub type Registry<F> = quarz_ir::HashMap<&'static str, F>;
+
+fn registry_with<F>(n: usize) -> Registry<F> {
+    Registry::with_capacity_and_hasher(n, Default::default())
+}
+
+pub fn registry() -> Registry<NativeFn> {
+    let mut m: Registry<NativeFn> = registry_with(1024);
     core::register(&mut m);
     numeric::register(&mut m);
     math::register(&mut m);
@@ -45,15 +52,15 @@ pub fn registry() -> HashMap<&'static str, NativeFn> {
 }
 
 /// Natives with a by-reference version.
-pub fn fast_registry() -> HashMap<&'static str, crate::interp::FastNativeFn> {
-    let mut m = HashMap::new();
+pub fn fast_registry() -> Registry<crate::interp::FastNativeFn> {
+    let mut m = registry_with(64);
     fast::register(&mut m);
     m
 }
 
 /// Natives that update a uniquely owned receiver in place.
-pub fn owned_registry() -> HashMap<&'static str, OwnedNativeFn> {
-    let mut m: HashMap<&'static str, OwnedNativeFn> = HashMap::new();
+pub fn owned_registry() -> Registry<OwnedNativeFn> {
+    let mut m: Registry<OwnedNativeFn> = registry_with(16);
     collections::register_owned(&mut m);
     m
 }
