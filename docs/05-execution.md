@@ -53,7 +53,7 @@ Quarz shares one front end and one runtime across two back ends (a bytecode VM a
 
 ## 3. QIR
 
-QIR is a typed intermediate representation in SSA form. The Ruby-like syntax is simplified at the point of lowering to QIR.
+QIR (Quarz Intermediate Representation) is a typed intermediate representation in SSA form. The Ruby-like syntax is simplified at the point of lowering to QIR.
 
 - All method calls are already resolved (`call Account#deposit`, `vcall Shape#area`, `icall Comparable#<=>`).
 - Non-escaping blocks are inlined or become static local function calls. `break`/`next`/`return` are converted into jumps.

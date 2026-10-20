@@ -48,7 +48,7 @@ Quarz は 1 つのフロントエンドと 1 つのランタイムを、2 つの
 
 ## 3. QIR
 
-QIR は型付きの SSA 形式の中間表現です。Ruby 風の構文は QIR に落ちる段階で単純化されます。
+QIR(Quarz Intermediate Representation)は型付きの SSA 形式の中間表現です。Ruby 風の構文は QIR に落ちる段階で単純化されます。
 
 - メソッド呼び出しはすべて解決済み(`call Account#deposit`、`vcall Shape#area`、`icall Comparable#<=>`)。
 - エスケープしないブロックはインライン展開または静的なローカル関数呼び出し。`break`/`next`/`return` はジャンプに変換。
