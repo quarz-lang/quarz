@@ -891,10 +891,10 @@ pub unsafe extern "C" fn qz_interpolate(
     let regs = std::slice::from_raw_parts_mut(regs, f.nregs as usize);
     let b = &f.blocks[block as usize];
     act.line.set(b.lines[inst as usize]);
-    let quarz_ir::Inst::Interpolate { dst, parts } = &b.insts[inst as usize] else {
+    let quarz_ir::Inst::Interpolate { dst, parts, into } = &b.insts[inst as usize] else {
         unreachable!("qz_interpolate on another instruction")
     };
-    match rt.interpolate(f, regs, parts) {
+    match rt.interpolate_inst(f, regs, parts, *into) {
         Ok(v) => {
             regs[*dst as usize] = v;
             STATUS_OK

@@ -66,7 +66,16 @@ call that returns at once is a comparison and a branch at the call
 site), and typed entries return only their value, any other outcome
 being left in the runtime: in one run on one core, `tak(27,18,9)` went
 from 49.8 to 18.9 ms (443 → 164 M instructions), against Spinel's 18.9
-ms (132 M), and `tak(24,16,8)` from 9.0 to 4.8 ms against 3.6.)
+ms (132 M), and `tak(24,16,8)` from 9.0 to 4.8 ms against 3.6. Then three
+rounds aimed at what was left: the build drops what a program cannot
+run, so a compiled program starts in 0.7 ms instead of 1.3 (every
+program gains about 0.5 ms); a hash of `Int` keys and values is stored
+unboxed (the 200 000 `put`s of `collections`: 14.6 → 9.5 ms); and
+`b << "text #{x}"` on a `String::Builder` appends straight into the
+builder (the building loop of `strings`: 14.7 → 7.7 ms, Spinel 5.1). In
+one run on one core, after them: `loop` 2.8 ms (Spinel 2.4),
+`collections` 21.9 (20.9), `objects` 3.0 (15.0), `strings` 22.9 (22.0),
+`dispatch` 5.4 (5.5), `tak(27,18,9)` 12.0 (12.0).)
 
 - Spinel's `fib` number is not a call benchmark: it marks `fib` pure, and
   gcc, after inlining the recursion a few levels, merges the duplicate

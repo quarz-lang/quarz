@@ -1325,6 +1325,57 @@ impl<'a> FnBuilder<'a> {
         }
     }
 
+    /// `b << "text #{x}"` on a `String::Builder`: the interpolation is
+    /// appended to the builder as it is built (no string is made, no
+    /// call is dispatched); the result is the builder, as `<<`'s.
+    fn builder_append(&mut self, e: &'a Expr, call: &'a ast::Call) -> Option<Reg> {
+        let recv = call.recv.as_ref()?;
+        if call.safe_nav || call.block.is_some() || call.args.len() != 1 {
+            return None;
+        }
+        let ast::Arg::Positional(arg) = &call.args[0] else {
+            return None;
+        };
+        let ExprKind::Str(parts) = &arg.kind else {
+            return None;
+        };
+        if parts.iter().all(|p| matches!(p, StrPart::Lit(_))) {
+            return None;
+        }
+        let Some(CallTarget::Method { method }) = self.out.calls.get(&e.id) else {
+            return None;
+        };
+        let m = self.world.method(*method);
+        let key = m.is_native.then(|| m.native_key(self.world))?;
+        if !matches!(
+            key.as_str(),
+            "String::Builder#<<" | "String::Builder#push" | "String::Builder#append"
+        ) {
+            return None;
+        }
+        let builder = self.expr(recv);
+        let mut pieces = Vec::new();
+        for p in parts {
+            match p {
+                StrPart::Lit(s) => {
+                    let idx = self.str_const(s);
+                    pieces.push(StrPiece::Lit(idx));
+                }
+                StrPart::Interp(x) => {
+                    let r = self.expr(x);
+                    pieces.push(StrPiece::Val(r));
+                }
+            }
+        }
+        let dst = self.reg();
+        self.emit(Inst::Interpolate {
+            dst,
+            parts: pieces,
+            into: Some(builder),
+        });
+        Some(dst)
+    }
+
     fn str_parts(&mut self, parts: &'a [StrPart]) -> Reg {
         if parts.iter().all(|p| matches!(p, StrPart::Lit(_))) {
             let s: String = parts
@@ -1350,7 +1401,11 @@ impl<'a> FnBuilder<'a> {
             }
         }
         let dst = self.reg();
-        self.emit(Inst::Interpolate { dst, parts: pieces });
+        self.emit(Inst::Interpolate {
+            dst,
+            parts: pieces,
+            into: None,
+        });
         dst
     }
 
@@ -1582,7 +1637,14 @@ impl<'a> FnBuilder<'a> {
                 .map(|l| StrPiece::Val(self.expr(l)))
                 .collect();
             let dst = self.reg();
-            self.emit(Inst::Interpolate { dst, parts });
+            self.emit(Inst::Interpolate {
+                dst,
+                parts,
+                into: None,
+            });
+            return dst;
+        }
+        if let Some(dst) = self.builder_append(e, call) {
             return dst;
         }
         let target = self.out.calls.get(&e.id);

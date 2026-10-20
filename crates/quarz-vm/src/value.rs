@@ -1085,17 +1085,25 @@ impl Value {
     /// `Rc<str>`), none for the buffer. Reentrant (a nested build gets a
     /// fresh buffer).
     pub fn build_string(f: impl FnOnce(&mut String)) -> Value {
+        Value::with_scratch(|buf| {
+            f(buf);
+            Value::str(buf.as_str())
+        })
+    }
+
+    /// Run `f` on an empty, reused buffer (reentrant: a nested call gets
+    /// a fresh one).
+    pub fn with_scratch<R>(f: impl FnOnce(&mut String) -> R) -> R {
         thread_local! {
             static SCRATCH: RefCell<String> = const { RefCell::new(String::new()) };
         }
         let mut buf = SCRATCH.with(|s| std::mem::take(&mut *s.borrow_mut()));
         buf.clear();
-        f(&mut buf);
-        let v = Value::str(buf.as_str());
+        let r = f(&mut buf);
         if buf.capacity() <= 1 << 16 {
             SCRATCH.with(|s| *s.borrow_mut() = buf);
         }
-        v
+        r
     }
 
     pub fn array(items: Vec<Value>) -> Value {

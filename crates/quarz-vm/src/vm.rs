@@ -571,6 +571,67 @@ impl Interp {
     /// The string of an `Interpolate`: every piece is written into one
     /// reused buffer (a number is formatted there, not through a
     /// temporary string).
+    /// `Inst::Interpolate`: a new string, or (`into`) the text appended
+    /// to a `String::Builder`, which is the result. The text is built in
+    /// a reused buffer first (a `to_s` may run user code, even code
+    /// that appends to the same builder), then copied in.
+    pub fn interpolate_inst(
+        &self,
+        f: &Function,
+        regs: &[Value],
+        parts: &[StrPiece],
+        into: Option<Reg>,
+    ) -> EvalResult {
+        let Some(b) = into else {
+            return self.interpolate(f, regs, parts);
+        };
+        let target = &regs[b as usize];
+        let Value::StringBuilder(sb) = target else {
+            // Not a builder after all: `<<` by name.
+            let s = self.interpolate(f, regs, parts)?;
+            return self.send(target, "<<", smallvec![s], None);
+        };
+        // Strings, integers, nil and booleans are written straight into
+        // the builder (their text runs no user code).
+        let plain = parts.iter().all(|p| match p {
+            StrPiece::Lit(_) => true,
+            StrPiece::Val(r) => matches!(
+                regs[*r as usize],
+                Value::Str(_) | Value::Short(_) | Value::Int(_) | Value::Nil | Value::Bool(_)
+            ),
+        });
+        if plain {
+            let mut buf = sb.borrow_mut();
+            for p in parts {
+                match p {
+                    StrPiece::Lit(idx) => buf.push_str(self.str_const(f, *idx)),
+                    StrPiece::Val(r) => self.append_to_s(&mut buf, &regs[*r as usize])?,
+                }
+            }
+            drop(buf);
+            return Ok(target.clone());
+        }
+        let mut failed = None;
+        Value::with_scratch(|s| {
+            for p in parts {
+                match p {
+                    StrPiece::Lit(idx) => s.push_str(self.str_const(f, *idx)),
+                    StrPiece::Val(r) => {
+                        if let Err(e) = self.append_to_s(s, &regs[*r as usize]) {
+                            failed = Some(e);
+                            return;
+                        }
+                    }
+                }
+            }
+            sb.borrow_mut().push_str(s);
+        });
+        match failed {
+            Some(e) => Err(e),
+            None => Ok(target.clone()),
+        }
+    }
+
     pub fn interpolate(&self, f: &Function, regs: &[Value], parts: &[StrPiece]) -> EvalResult {
         let mut failed = None;
         let v = Value::build_string(|s| {
@@ -1082,8 +1143,8 @@ impl Interp {
                 let source = self.to_s(&regs[*source as usize])?;
                 regs[*dst as usize] = self.make_regexp(&source, flags)?;
             }
-            Inst::Interpolate { dst, parts } => {
-                regs[*dst as usize] = self.interpolate(f, regs, parts)?;
+            Inst::Interpolate { dst, parts, into } => {
+                regs[*dst as usize] = self.interpolate_inst(f, regs, parts, *into)?;
             }
             Inst::ToSym { dst, src } => {
                 let s = self.to_s(&regs[*src as usize])?;

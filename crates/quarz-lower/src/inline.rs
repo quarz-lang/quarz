@@ -529,8 +529,9 @@ fn rewrite(inst: &Inst, base: Reg, consts: &[u32]) -> Inst {
             source: r(source),
             flags: flags.clone(),
         },
-        Inst::Interpolate { dst, parts } => Inst::Interpolate {
+        Inst::Interpolate { dst, parts, into } => Inst::Interpolate {
             dst: r(dst),
+            into: into.map(|b| r(&b)),
             parts: parts
                 .iter()
                 .map(|p| match p {

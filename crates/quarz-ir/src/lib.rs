@@ -469,9 +469,14 @@ pub enum Inst {
         source: Reg,
         flags: String,
     },
+    /// String interpolation; with `into`, appended to that register's
+    /// `String::Builder` (no string is made), `dst` getting the builder
+    /// (`b << "..."`).
     Interpolate {
         dst: Reg,
         parts: Vec<StrPiece>,
+        #[serde(default)]
+        into: Option<Reg>,
     },
     /// Intern a string as a symbol.
     ToSym {
@@ -779,11 +784,14 @@ impl Inst {
                 }
             }
             Inst::MakeRegexp { source, .. } => *source = f(*source),
-            Inst::Interpolate { parts, .. } => {
+            Inst::Interpolate { parts, into, .. } => {
                 for p in parts.iter_mut() {
                     if let StrPiece::Val(r) = p {
                         *r = f(*r);
                     }
+                }
+                if let Some(b) = into {
+                    *b = f(*b);
                 }
             }
             Inst::ArrayGet { arr, .. } | Inst::ArraySlice { arr, .. } => *arr = f(*arr),
@@ -878,12 +886,13 @@ impl Inst {
                 .collect(),
             Inst::MakeRange { lo, hi, .. } => lo.iter().chain(hi.iter()).copied().collect(),
             Inst::MakeRegexp { source, .. } => vec![*source],
-            Inst::Interpolate { parts, .. } => parts
+            Inst::Interpolate { parts, into, .. } => parts
                 .iter()
                 .filter_map(|p| match p {
                     StrPiece::Val(r) => Some(*r),
                     StrPiece::Lit(_) => None,
                 })
+                .chain(*into)
                 .collect(),
             Inst::ArrayGet { arr, .. } | Inst::ArraySlice { arr, .. } => vec![*arr],
             Inst::ArrayGetReg { arr, index, .. } => vec![*arr, *index],

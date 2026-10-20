@@ -1,0 +1,32 @@
+# `b << "...#{x}..."` on a String::Builder appends the interpolation to
+# the builder directly; the result is the builder, as for `<<`.
+class Tag
+  @b: String::Builder
+  @name: String
+  def initialize(@b: String::Builder, @name: String); end
+  # A `to_s` that appends to the very builder being appended to.
+  def to_s -> String
+    @b << "(side)"
+    "<#{@name}>"
+  end
+end
+class Boom
+  def to_s -> String = raise(ArgumentError, "no text")
+end
+
+s = String.build do |b|
+  b << "a#{1}" << "b#{2.5}" << "c"
+  b.push("p#{nil}#{true}")
+  b.append("q#{:sym}")
+  x = (b << "r#{[1, 2]}")
+  b << "same: #{x.size}"
+  b << " #{Tag.new(b, "t")}"
+  begin
+    b << "lost#{Boom.new}"
+  rescue ArgumentError => e
+    b << " rescued #{e.message}"
+  end
+  n = 0
+  3.times { |i| b << ",#{i}:#{n += i}" }
+end
+p s
