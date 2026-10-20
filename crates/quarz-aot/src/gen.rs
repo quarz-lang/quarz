@@ -406,10 +406,12 @@ pub(crate) fn gen_function<B: Builder>(
         heap: heap.clone(),
         valid_var,
         lazy_regs: lazy,
+        stale: vec![false; nregs_usize],
     };
     for (i, blk) in f.blocks.iter().enumerate() {
         g.b.switch_to_block(blocks[i]);
         g.states.clone_from(&entry_states[i]);
+        g.stale.fill(false);
         for (j, inst) in blk.insts.iter().enumerate() {
             g.b.set_line(blk.lines[j]);
             g.set_valid();
@@ -418,6 +420,11 @@ pub(crate) fn gen_function<B: Builder>(
         }
         g.b.set_line(blk.term_line);
         g.set_valid();
+        // A successor reads homes it knows nothing about.
+        let at_term = &live[i][blk.insts.len()];
+        for r in (0..g.nregs).filter(|&r| at_term[r]) {
+            g.ensure_home(r as Reg);
+        }
         // Write back the unboxed registers that a successor expects
         // in memory (a different state there), or that a terminator
         // leaving the function reads.
@@ -470,6 +477,7 @@ pub(crate) fn gen_function<B: Builder>(
             Term::Return(r) => {
                 // Move the value into `out` (which holds nil) and
                 // leave the register nil, then release the rest.
+                g.ensure_home(*r);
                 let off = reg_off(*r);
                 for k in [0, 8, 16] {
                     let w = g.b.load(Ty::I64, regs, off + k);
@@ -1002,24 +1010,40 @@ struct Gen<'a, B: Builder> {
     /// release (kept when homes are initialized lazily; see `set_valid`).
     valid_var: B::Var,
     lazy_regs: bool,
+    /// Registers holding nil (after `ClearRegs`) whose home has not been
+    /// written: a read of the home writes nil there first (see
+    /// `ensure_home`). Tracked within a block.
+    stale: Vec<bool>,
 }
 
 impl<B: Builder> Gen<'_, B> {
+    /// Before a read of `r`'s home: a register cleared to nil whose home
+    /// was never written gets its nil now.
+    fn ensure_home(&mut self, r: Reg) {
+        if self.stale[r as usize] {
+            self.store_tag(r, TAG_NIL);
+        }
+    }
+
     fn tag(&mut self, r: Reg) -> B::Value {
+        self.ensure_home(r);
         self.b.load(Ty::I64, self.regs, reg_off(r))
     }
 
     fn payload(&mut self, r: Reg) -> B::Value {
+        self.ensure_home(r);
         self.b.load(Ty::I64, self.regs, reg_off(r) + 8)
     }
 
     /// The payload's first word as an address (the allocation of a heap
     /// value).
     fn payload_ptr(&mut self, r: Reg) -> B::Value {
+        self.ensure_home(r);
         self.b.load(Ty::Ptr, self.regs, reg_off(r) + 8)
     }
 
     fn payload8(&mut self, r: Reg) -> B::Value {
+        self.ensure_home(r);
         self.b.uload8(self.regs, reg_off(r) + 8)
     }
 
@@ -1057,6 +1081,7 @@ impl<B: Builder> Gen<'_, B> {
         self.release(dst);
         let d = self.b.iadd_imm(self.regs, i64::from(reg_off(dst)));
         emit_clone_ptr(self.b, d, src);
+        self.stale[dst as usize] = false;
     }
 
     /// `*dst = regs[src]` where `dst` holds nil: inline for values without
@@ -1075,6 +1100,7 @@ impl<B: Builder> Gen<'_, B> {
     /// `*dst = regs[src]`, the value moved out of the register (whose
     /// home becomes nil): no count increment now, no release later.
     fn move_reg_to_ptr(&mut self, dst: B::Value, src: Reg) {
+        self.ensure_home(src);
         let src_ptr = self.b.iadd_imm(self.regs, i64::from(reg_off(src)));
         for k in [0, 8, 16] {
             let w = self.b.load(Ty::I64, src_ptr, k);
@@ -1117,6 +1143,7 @@ impl<B: Builder> Gen<'_, B> {
                 self.b.store(v, dst, 8);
             }
             State::NonHeap => {
+                self.ensure_home(src);
                 let src_ptr = self.b.iadd_imm(self.regs, i64::from(reg_off(src)));
                 for k in [0, 8, 16] {
                     let w = self.b.load(Ty::I64, src_ptr, k);
@@ -1577,10 +1604,12 @@ impl<B: Builder> Gen<'_, B> {
         }
     }
 
-    /// Write back every unboxed register that is live.
+    /// Write back every unboxed register that is live (and the nil of a
+    /// cleared one whose home was never written).
     fn flush_live(&mut self, live: &[bool]) {
         for r in (0..self.nregs).filter(|&r| live[r]) {
             self.flush(r as Reg);
+            self.ensure_home(r as Reg);
         }
     }
 
@@ -2047,6 +2076,7 @@ impl<B: Builder> Gen<'_, B> {
         self.b.switch_to_block(typed_b);
         if let Some(r) = recv {
             self.flush(r);
+            self.ensure_home(r);
         }
         let self_ptr = match (recv, self.typed_self_ptr) {
             (Some(r), _) => self.b.iadd_imm(self.regs, i64::from(reg_off(r))),
@@ -2235,6 +2265,7 @@ impl<B: Builder> Gen<'_, B> {
     fn store_tag(&mut self, dst: Reg, tag: i64) {
         let t = self.b.iconst(Ty::I64, tag);
         self.b.store(t, self.regs, reg_off(dst));
+        self.stale[dst as usize] = false;
     }
 
     fn store_payload(&mut self, dst: Reg, v: B::Value) {
@@ -2276,6 +2307,11 @@ impl<B: Builder> Gen<'_, B> {
     }
 
     fn inst(&mut self, block: u32, index: u32, inst: &Inst, unwind: B::Block) {
+        // What the instruction defines is written by it (inline, or by
+        // the runtime), whatever the home held.
+        for d in inst.defs() {
+            self.stale[d as usize] = false;
+        }
         // Anything that reads register homes (the runtime, mostly) sees
         // the live unboxed registers written back first; the typed
         // arithmetic below works on the variables.
@@ -2784,9 +2820,16 @@ impl<B: Builder> Gen<'_, B> {
                 self.exec_via(entry, block, index, unwind);
             }
             Inst::ClearRegs { from, to } => {
+                // A register that may hold a heap value is released and
+                // set to nil; the others become nil lazily (the home is
+                // written when something reads it: `ensure_home`).
                 for r in *from..*to {
-                    self.release(r);
-                    self.store_tag(r, TAG_NIL);
+                    if self.states[r as usize].needs_release() {
+                        self.release(r);
+                        self.store_tag(r, TAG_NIL);
+                    } else {
+                        self.stale[r as usize] = true;
+                    }
                     self.states[r as usize] = State::NonHeap;
                 }
             }
