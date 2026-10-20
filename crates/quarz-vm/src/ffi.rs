@@ -439,10 +439,18 @@ pub unsafe extern "C" fn qz_resume(
     inst: u32,
     regs: *mut Value,
     out: *mut Value,
+    fresh: *const u64,
 ) -> u32 {
     let rt = &*rt;
     let act = &*act;
     let nregs = rt.funcs.borrow()[fid as usize].nregs as usize;
+    // Bit `r` of `fresh`: register `r`'s home was never written (the
+    // compiled code keeps it in a variable, or never touched it): nil.
+    for r in 0..nregs {
+        if (*fresh.add(r / 64) >> (r % 64)) & 1 != 0 {
+            std::ptr::write(regs.add(r), Value::Nil);
+        }
+    }
     let regs = std::slice::from_raw_parts_mut(regs, nregs);
     match rt.run_func_from(fid, act, regs, block, inst as usize) {
         Ok(v) => {

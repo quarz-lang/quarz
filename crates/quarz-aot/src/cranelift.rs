@@ -166,7 +166,10 @@ pub fn compile(module: &Module) -> Result<Vec<u8>, String> {
         resume: import(
             &mut obj,
             "qz_resume",
-            &sig(&[i64_, i64_, i32_, i32_, i32_, i64_, i64_], Some(i32_)),
+            &sig(
+                &[i64_, i64_, i32_, i32_, i32_, i64_, i64_, i64_],
+                Some(i32_),
+            ),
         )?,
         enter_virtual: import(
             &mut obj,

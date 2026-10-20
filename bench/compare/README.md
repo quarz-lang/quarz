@@ -56,7 +56,11 @@ inlining and the absence of any status check or deoptimization protocol
 explain. A later round made the registers of inlined callees nil
 lazily, which, in one run on one core, took `fib` from 4.2 to 3.9 ms,
 `objects` from 7.7 to 5.6, `dispatch` from 9.1 to 7.6 and `tak(27,18,9)`
-from 58 to 53; the table above predates it.)
+from 58 to 53; the table above predates it. A round after that lifted
+the 64-register limit on lazily initialized homes and let the inliner
+take methods of up to 40 instructions, so `tak` is inlined into itself
+once: `tak(27,18,9)` 55 → 34 ms in the same run, the other programs
+unchanged.)
 
 - Spinel's `fib` number is not a call benchmark: it marks `fib` pure, and
   gcc, after inlining the recursion a few levels, merges the duplicate

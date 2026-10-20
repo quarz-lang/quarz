@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use quarz_ir::*;
 
 /// The largest body (in instructions) worth inlining.
-const MAX_INSTS: usize = 24;
+const MAX_INSTS: usize = 40;
 
 /// Inline the eligible calls of every function in `functions` (indexed
 /// by `FuncId`), `passes` levels deep.

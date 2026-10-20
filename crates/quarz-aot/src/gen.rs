@@ -138,8 +138,10 @@ pub(crate) fn gen_function<B: Builder>(
     // Whether a lazily pushed activation has been built (see
     // `materialize`).
     let pushed_var = b.declare_var(Ty::I8);
-    // Bit `k`: register `k`'s home holds a value to release at exit.
-    let valid_var = b.declare_var(Ty::I64);
+    // Bit `k` (of word `k / 64`): register `k`'s home holds a value to
+    // release at exit.
+    let nwords = nregs_usize.div_ceil(64);
+    let valid_vars: Vec<B::Var> = (0..nwords).map(|_| b.declare_var(Ty::I64)).collect();
     // The argument area for direct calls: the widest callee's
     // parameters plus its block.
     // The argument area: the parameters of direct calls, or the
@@ -231,6 +233,8 @@ pub(crate) fn gen_function<B: Builder>(
     b.store(nil, out_buf, 0);
     let vbody = b.stack_slot(8, 3);
     let ptrs = b.stack_slot(32, 3);
+    // The words a deoptimization hands the runtime (see `deopt`).
+    let fresh_buf = b.stack_slot(8 * nwords as u32, 3);
     let args_buf = b.stack_slot((VALUE_SIZE as u32) * max_direct_args as u32, 3);
     let mut typed_params: Vec<B::Value> = Vec::new();
     let mut typed_self_ptr: Option<B::Value> = None;
@@ -296,19 +300,14 @@ pub(crate) fn gen_function<B: Builder>(
     // knows nothing about any register): the home must hold nil
     // from the start. Only registers written solely by inline code
     // (numbers, copies, typed parameters and calls) are left alone.
-    // (A large function writes them all: the deoptimization paths
-    // would otherwise each carry a store per unwritten register.)
     // (A register that may hold a heap value is released at exit only
-    // when the mask in `valid_var` says its home holds one: see
+    // when the mask in `valid_vars` says its home holds one: see
     // `set_valid`.)
-    let lazy = nregs <= 64;
     let mut zeroed: Vec<bool> = (0..nregs as usize)
         .map(|i| {
-            !lazy
-                || live
-                    .first()
-                    .and_then(|blk| blk.first())
-                    .is_some_and(|l| l[i])
+            live.first()
+                .and_then(|blk| blk.first())
+                .is_some_and(|l| l[i])
                 || entry_states.iter().any(|st| st[i] == State::Unknown)
         })
         .collect();
@@ -362,7 +361,9 @@ pub(crate) fn gen_function<B: Builder>(
     }
     // No home holds a heap value yet (see `set_valid`).
     let no_valid = b.iconst(Ty::I64, 0);
-    b.def_var(valid_var, no_valid);
+    for v in &valid_vars {
+        b.def_var(*v, no_valid);
+    }
     b.jump(blocks[0], &[]);
 
     let mut g = Gen {
@@ -404,8 +405,8 @@ pub(crate) fn gen_function<B: Builder>(
         typed_fast_exit: typed_exit.map(|t| t.3),
         zeroed,
         heap: heap.clone(),
-        valid_var,
-        lazy_regs: lazy,
+        valid_vars: valid_vars.clone(),
+        fresh_buf,
         stale: vec![false; nregs_usize],
     };
     for (i, blk) in f.blocks.iter().enumerate() {
@@ -524,31 +525,25 @@ pub(crate) fn gen_function<B: Builder>(
         }
     }
     // Exit: release the registers that may hold heap values (those the
-    // mask says do, when homes are initialized lazily: the others may
-    // not have been written).
+    // mask says do: the others may not even have been written).
     b.switch_to_block(exit);
     let status = b.block_params(exit)[0];
-    let valid = lazy.then(|| b.use_var(valid_var));
-    for i in 0..nregs {
-        if !heap[i as usize] {
+    let valid: Vec<B::Value> = valid_vars.iter().map(|v| b.use_var(*v)).collect();
+    for i in 0..nregs as usize {
+        if !heap[i] {
             continue;
         }
-        let p = b.iadd_imm(regs, i64::from(i) * i64::from(VALUE_SIZE));
-        match valid {
-            Some(valid) => {
-                let bit = b.iconst(Ty::I64, 1i64 << i);
-                let set = b.band(valid, bit);
-                let holds = b.icmp_imm(IntCC::NotEqual, set, 0);
-                let release = b.create_block();
-                let next = b.create_block();
-                b.brif(holds, release, &[], next, &[]);
-                b.switch_to_block(release);
-                emit_release_ptr(b, drop_value_fn, p);
-                b.jump(next, &[]);
-                b.switch_to_block(next);
-            }
-            None => emit_release_ptr(b, drop_value_fn, p),
-        }
+        let p = b.iadd_imm(regs, i as i64 * i64::from(VALUE_SIZE));
+        let bit = b.iconst(Ty::I64, 1i64 << (i % 64));
+        let set = b.band(valid[i / 64], bit);
+        let holds = b.icmp_imm(IntCC::NotEqual, set, 0);
+        let release = b.create_block();
+        let next = b.create_block();
+        b.brif(holds, release, &[], next, &[]);
+        b.switch_to_block(release);
+        emit_release_ptr(b, drop_value_fn, p);
+        b.jump(next, &[]);
+        b.switch_to_block(next);
     }
     match typed_exit {
         Some((te, ..)) => b.jump(te, &[status]),
@@ -1006,10 +1001,11 @@ struct Gen<'a, B: Builder> {
     zeroed: Vec<bool>,
     /// Which registers may ever hold a heap value (see `heap_possible`).
     heap: Vec<bool>,
-    /// Bit `k` set: register `k`'s home holds a value the exit must
-    /// release (kept when homes are initialized lazily; see `set_valid`).
-    valid_var: B::Var,
-    lazy_regs: bool,
+    /// Bit `k` of word `k / 64` set: register `k`'s home holds a value
+    /// the exit must release (see `set_valid`).
+    valid_vars: Vec<B::Var>,
+    /// Where a deoptimization lays out the registers to set to nil.
+    fresh_buf: B::Value,
     /// Registers holding nil (after `ClearRegs`) whose home has not been
     /// written: a read of the home writes nil there first (see
     /// `ensure_home`). Tracked within a block.
@@ -1496,19 +1492,21 @@ impl<B: Builder> Gen<'_, B> {
         let live = self.live[block as usize][index as usize].clone();
         self.flush_live(&live);
         // The interpreter drops what it overwrites: a home never set
-        // (nor just written back) must at least be nil.
+        // (nor just written back) must at least be nil, which the
+        // runtime writes for the registers whose bits are set.
         // (A live one was just written back or holds a boxed value; an
         // unknown one holds a value by construction.)
-        for (r, &is_live) in live.iter().enumerate().take(self.nregs) {
-            if !self.zeroed[r] && !is_live && self.states[r] != State::Unknown {
-                self.store_tag(r as Reg, TAG_NIL);
-            }
+        let fresh = self.masks(|g, r| !g.zeroed[r] && !live[r] && g.states[r] != State::Unknown);
+        for (k, word) in fresh.into_iter().enumerate() {
+            let w = self.b.iconst(Ty::I64, word);
+            self.b.store(w, self.fresh_buf, 8 * k as i32);
         }
-        // Every home is valid now, and the interpreter may put a heap
+        // Every home is valid then, and the interpreter may put a heap
         // value in any of them.
-        if self.lazy_regs {
-            let all = self.b.iconst(Ty::I64, self.heap_mask(|_| true));
-            self.b.def_var(self.valid_var, all);
+        let all = self.masks(|g, r| g.heap[r]);
+        for (k, word) in all.into_iter().enumerate() {
+            let w = self.b.iconst(Ty::I64, word);
+            self.b.def_var(self.valid_vars[k], w);
         }
         self.materialize();
         let fid = self.b.iconst(Ty::I32, i64::from(self.fid));
@@ -1516,7 +1514,16 @@ impl<B: Builder> Gen<'_, B> {
         let i = self.b.iconst(Ty::I32, i64::from(index));
         let status = self.b.call(
             self.h.resume,
-            &[self.rt, self.act, fid, blk, i, self.regs, self.out],
+            &[
+                self.rt,
+                self.act,
+                fid,
+                blk,
+                i,
+                self.regs,
+                self.out,
+                self.fresh_buf,
+            ],
         )[0];
         self.b.jump(self.exit, &[status]);
         let dead = self.b.create_block();
@@ -1636,14 +1643,13 @@ impl<B: Builder> Gen<'_, B> {
 
     /// Whether a call can go straight to the method (a native, or a body
     /// with positional parameters) without dynamic dispatch.
-    /// The mask of the registers that may hold a heap value and satisfy
-    /// `pick`.
-    fn heap_mask(&self, pick: impl Fn(usize) -> bool) -> i64 {
-        let mut mask: u64 = 0;
-        for k in (0..self.nregs).filter(|&k| self.heap[k] && pick(k)) {
-            mask |= 1 << k;
+    /// The registers satisfying `pick`, as words of 64 bits.
+    fn masks(&self, pick: impl Fn(&Self, usize) -> bool) -> Vec<i64> {
+        let mut words = vec![0u64; self.nregs.div_ceil(64)];
+        for k in (0..self.nregs).filter(|&k| pick(self, k)) {
+            words[k / 64] |= 1 << (k % 64);
         }
-        mask as i64
+        words.into_iter().map(|w| w as i64).collect()
     }
 
     /// Before an instruction (or a terminator) that may leave the
@@ -1652,12 +1658,11 @@ impl<B: Builder> Gen<'_, B> {
     /// its home; the others hold nothing to release, or were never
     /// written).
     fn set_valid(&mut self) {
-        if !self.lazy_regs {
-            return;
+        let words = self.masks(|g, k| g.heap[k] && g.states[k] == State::Unknown);
+        for (k, word) in words.into_iter().enumerate() {
+            let v = self.b.iconst(Ty::I64, word);
+            self.b.def_var(self.valid_vars[k], v);
         }
-        let mask = self.heap_mask(|k| self.states[k] == State::Unknown);
-        let v = self.b.iconst(Ty::I64, mask);
-        self.b.def_var(self.valid_var, v);
     }
 
     /// The callee may raise: a backtrace shows this activation at the

@@ -950,7 +950,7 @@ fn emit(module: &Module, opaque: bool) -> Result<String, String> {
             interpolate: declare("qz_interpolate", &[p, p, i32_, i32_, i32_, p], &[i32_]),
             field_get: declare("qz_field_get", &[p, p, i32_, i32_, i32_], &[i32_]),
             field_set: declare("qz_field_set", &[p, p, i32_, i32_, i32_], &[i32_]),
-            resume: declare("qz_resume", &[p, p, i32_, i32_, i32_, p, p], &[i32_]),
+            resume: declare("qz_resume", &[p, p, i32_, i32_, i32_, p, p, p], &[i32_]),
             enter_virtual: declare(
                 "qz_enter_virtual",
                 &[p, p, p, i32_, p, i32_, p, i32_, i32_, i64_, p, i32_],
