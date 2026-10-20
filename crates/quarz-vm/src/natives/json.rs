@@ -2,12 +2,12 @@
 //! the module is written in Quarz, see `std/json.qz`).
 
 use std::collections::HashMap;
-use std::rc::Rc;
 
 use quarz_ir::{ClassId, RtClassKind};
 use smallvec::smallvec;
 
 use crate::interp::{EvalResult, Flow, Interp, NativeFn};
+use crate::value::V;
 use crate::value::*;
 
 use super::string;
@@ -180,7 +180,7 @@ impl Parser<'_> {
         if self.peek() == Some(b'}') {
             self.pos += 1;
             self.depth -= 1;
-            return Ok(variant(self.classes.map, Value::Hash(Rc::new(members))));
+            return Ok(variant(self.classes.map, Value::Hash(members)));
         }
         loop {
             self.skip_ws();
@@ -208,7 +208,7 @@ impl Parser<'_> {
             }
         }
         self.depth -= 1;
-        Ok(variant(self.classes.map, Value::Hash(Rc::new(members))))
+        Ok(variant(self.classes.map, Value::Hash(members)))
     }
 
     fn array(&mut self) -> EvalResult {
@@ -382,47 +382,46 @@ fn generate(
             &format!("nesting of {depth} is too deep"),
         ));
     }
-    match v {
-        Value::Nil => out.push_str("null"),
-        Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
-        Value::Int(i) => out.push_str(&i.to_string()),
-        Value::BigInt(b) => out.push_str(&b.to_string()),
-        Value::Float(f) => {
+    match v.view() {
+        V::Nil => out.push_str("null"),
+        V::Bool(b) => out.push_str(if b { "true" } else { "false" }),
+        V::Int(i) => out.push_str(&i.to_string()),
+        V::BigInt(b) => out.push_str(&b.to_string()),
+        V::Float(f) => {
             if !f.is_finite() {
                 return Err(generator_error(
                     interp,
-                    &format!("{} not allowed in JSON", crate::interp::format_float(*f)),
+                    &format!("{} not allowed in JSON", crate::interp::format_float(f)),
                 ));
             }
-            out.push_str(&crate::interp::format_float(*f));
+            out.push_str(&crate::interp::format_float(f));
         }
-        Value::Str(s) => escape(s, out),
-        Value::Short(s) => escape(s.as_str(), out),
-        Value::Symbol(s) => escape(&interp.symbol_name(*s), out),
-        Value::Array(items) => {
+        V::Str(s) => escape(s.as_str(), out),
+        V::Symbol(s) => escape(&interp.symbol_name(s), out),
+        V::Array(items) => {
             generate_seq(interp, items.values().iter(), indent, out, depth)?;
         }
-        Value::Set(items) => {
+        V::Set(items) => {
             generate_seq(interp, items.iter(), indent, out, depth)?;
         }
-        Value::Hash(h) => {
+        V::Hash(h) => {
             let mut members = Vec::with_capacity(h.len());
             for (k, v) in h.iter() {
-                let key = match k {
-                    Value::Str(s) => s.to_string(),
-                    Value::Short(s) => s.as_str().to_string(),
-                    Value::Symbol(s) => interp.symbol_name(*s).to_string(),
-                    other => interp.to_s(other)?.to_string(),
+                let key = match k.view() {
+                    V::Str(s) => s.as_str().to_string(),
+                    V::Symbol(s) => interp.symbol_name(s).to_string(),
+                    _ => {
+                        let other: &Value = k;
+                        interp.to_s(other)?.to_string()
+                    }
                 };
                 members.push((key, v.clone()));
             }
             generate_map(interp, &members, indent, out, depth)?;
         }
-        Value::Class(c) => escape(&interp.world.class(*c).name, out),
-        Value::Time(_) | Value::Duration(_) | Value::Range(_) | Value::Regexp(_) => {
-            escape(&interp.to_s(v)?, out)
-        }
-        Value::Object(o) => {
+        V::Class(c) => escape(&interp.world.class(c).name, out),
+        V::Time(_) | V::Duration(_) | V::Range(_) | V::Regexp(_) => escape(&interp.to_s(v)?, out),
+        V::Object(o) => {
             let class = interp.world.class(o.class);
             // `JSON::Value` is generated as the document it represents.
             if let Some(value_class) = class.variant_of {
@@ -459,11 +458,12 @@ fn generate(
                 .collect();
             generate_map(interp, &members, indent, out, depth)?;
         }
-        other => {
+        _ => {
+            let other: &Value = v;
             return Err(generator_error(
                 interp,
                 &format!("cannot generate JSON for {}", interp.class_name(other)),
-            ))
+            ));
         }
     }
     Ok(())

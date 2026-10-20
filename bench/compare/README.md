@@ -130,9 +130,8 @@ access and the reusable block caller):
   the loop over boxed particles) and
   on a par with Go and 2× slower than Rust on `strings` (interpolation
   builds in one buffer, the string natives take their arguments by
-  reference, strings of at most 15 bytes live in the value; what
-  remains is the builder's growth and the per-call entry into the
-  runtime).
+  reference; what remains is the allocation of each string, the
+  builder's growth and the per-call entry into the runtime).
 - Against Ruby, compiled Quarz is ahead everywhere: 9–11× on `fib`,
   12× on `loop`, 6–7× on `collections`, 33–40× on `objects`, 5× on
   `strings`.
@@ -143,7 +142,7 @@ What separates compiled Quarz from Go and Rust now is the value
 representation: every value is a 24-byte tagged box, every copy of a
 heap value bumps a reference count, every object and every long string
 is heap-allocated. Arrays of `Int`/`Float` store their elements
-unboxed, strings of at most 15 bytes live in the value, small data
+unboxed, small data
 values are held in place in the objects that store them, and copy
 propagation removed most of the reference-count traffic on
 temporaries; unboxed `Int`/`Float` fields and `Int`-keyed hashes would

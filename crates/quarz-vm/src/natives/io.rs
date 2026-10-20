@@ -9,9 +9,10 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::{BufRead, Read, Seek, Write};
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
 
+use crate::heap::Heap;
 use crate::interp::{Args, EvalResult, Flow, Interp, NativeFn};
+use crate::value::V;
 use crate::value::*;
 use smallvec::smallvec;
 
@@ -26,7 +27,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
         let map: ValueMap = std::env::vars()
             .map(|(k, v)| (Value::string(k), Value::string(v)))
             .collect();
-        Ok(Value::Hash(Rc::new(map)))
+        Ok(Value::Hash(map))
     });
     m.insert("Process.pid", |_, _, _| {
         Ok(Value::Int(std::process::id() as i64))
@@ -58,7 +59,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     });
     m.insert("Process::Output#success?", |i, r, _| {
         let status = i.send(r, "status", smallvec![], None)?;
-        Ok(Value::Bool(matches!(status, Value::Int(0))))
+        Ok(Value::Bool(matches!(status.view(), V::Int(0))))
     });
 
     // IO
@@ -90,10 +91,11 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     m.insert("IO#readlines", |i, r, _| {
         let mut lines = Vec::new();
         loop {
-            match io_gets(i, r, false)? {
-                Value::Nil => break,
-                line => lines.push(line),
+            let line = io_gets(i, r, false)?;
+            if line.is_nil() {
+                break;
             }
+            lines.push(line);
         }
         Ok(Value::array(lines))
     });
@@ -137,9 +139,12 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     m.insert("IO#each_line", |i, r, a| {
         let b = block(i, &a)?;
         loop {
-            match io_gets(i, r, false)? {
-                Value::Nil => return Ok(Value::Nil),
-                line => {
+            let line = io_gets(i, r, false)?;
+            if line.is_nil() {
+                return Ok(Value::Nil);
+            }
+            {
+                {
                     i.call_block(&b, smallvec![line])?;
                 }
             }
@@ -440,8 +445,8 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     m.insert("File.expand_path", |i, _, a| {
         let p = string(i, a.arg(0), "path")?;
         let base: Option<PathBuf> = match a.pos.get(1) {
-            Some(Value::Nil) | None => None,
-            Some(b) => Some(PathBuf::from(string(i, b, "directory")?)),
+            Some(b) if !b.is_nil() => Some(PathBuf::from(string(i, b, "directory")?)),
+            _ => None,
         };
         Ok(Value::string(expand_path(p, base)))
     });
@@ -536,16 +541,19 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     });
     m.insert("Dir.glob", |i, _, a| {
         let mut patterns = Vec::new();
-        match a.arg(0) {
-            Value::Array(items) => {
+        match a.arg(0).view() {
+            V::Array(items) => {
                 for p in items.iter() {
                     patterns.push(string(i, &p, "pattern")?.to_string());
                 }
             }
-            other => patterns.push(string(i, other, "pattern")?.to_string()),
+            _ => {
+                let other: &Value = a.arg(0);
+                patterns.push(string(i, other, "pattern")?.to_string())
+            }
         }
         let base = match a.pos.get(1) {
-            Some(Value::Nil) | None => a
+            None => a
                 .kw(i, "base")
                 .map(|b| string(i, b, "base"))
                 .transpose()?
@@ -586,12 +594,12 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
 // ----- helpers ---------------------------------------------------------------------
 
 pub(super) fn io(kind: IoKind) -> Value {
-    Value::Io(Rc::new(IoVal { kind }))
+    Value::Io(IoVal { kind })
 }
 
-pub(super) fn io_of<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Rc<IoVal>, Flow> {
-    match v {
-        Value::Io(io) => Ok(io),
+pub(super) fn io_of<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Heap<IoVal>, Flow> {
+    match v.view() {
+        V::Io(io) => Ok(io),
         _ => Err(interp.err_type("expected an IO")),
     }
 }
@@ -602,9 +610,12 @@ pub(super) fn os_error(interp: &Interp, e: std::io::Error, what: &str) -> Flow {
 }
 
 fn content_bytes(interp: &Interp, v: &Value) -> Result<Vec<u8>, Flow> {
-    Ok(match v {
-        Value::Bytes(b) => b.to_vec(),
-        v => string(interp, v, "content")?.as_bytes().to_vec(),
+    Ok(match v.view() {
+        V::Bytes(b) => b.to_vec(),
+        _ => {
+            let v: &Value = v;
+            string(interp, v, "content")?.as_bytes().to_vec()
+        }
     })
 }
 
@@ -751,7 +762,7 @@ fn run_command(interp: &Interp, mut command: std::process::Command, name: &str) 
         .ok_or_else(|| interp.err_type("Process::Output is not defined"))?;
     // A `data` with no initializer of its own: fill the fields directly.
     let value = interp.construct(class, None, smallvec![], Vec::new(), None)?;
-    if let Value::Object(obj) = &value {
+    if let V::Object(obj) = value.view() {
         let mut fields = obj.fields.borrow_mut();
         fields[0] = Value::Int(status as i64);
         fields[1] = Value::string(String::from_utf8_lossy(&output.stdout).into_owned());

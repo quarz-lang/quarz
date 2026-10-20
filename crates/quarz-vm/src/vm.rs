@@ -8,8 +8,10 @@ use std::rc::Rc;
 use quarz_ir::*;
 use smallvec::{smallvec, SmallVec};
 
+use crate::heap::Heap;
 use crate::interp::{fast_binop, ArgVec, EvalResult, Flow, Interp};
 use crate::sched;
+use crate::value::V;
 use crate::value::*;
 
 /// The context a function body runs in. `repr(C)`: compiled code builds
@@ -106,21 +108,21 @@ pub struct BlockCaller {
 enum CallerKind {
     /// A block with a body: its activation, built once.
     Func {
-        closure: Rc<Closure>,
+        closure: Heap<Closure>,
         fid: FuncId,
         act: Activation,
         compiled: Option<crate::interp::CompiledFn>,
         nparams: usize,
     },
     /// `&:name`: the method is called on the first argument.
-    Named { closure: Rc<Closure> },
+    Named { closure: Heap<Closure> },
 }
 
 impl Interp {
     /// A reusable caller for `proc`, or `None` when it needs the general
     /// path (`call_block`).
     pub fn block_caller(&self, proc: &Value) -> Option<BlockCaller> {
-        let Value::Proc(closure) = proc else {
+        let V::Proc(closure) = proc.view() else {
             return None;
         };
         let fid = match closure.body {
@@ -510,8 +512,8 @@ impl Interp {
                 Flow::Return(regs[*r as usize].clone(), act.method_tag),
                 pending,
             ),
-            Term::Resume(r) => match &regs[*r as usize] {
-                Value::Flow(fb) => match fb.borrow_mut().take() {
+            Term::Resume(r) => match regs[*r as usize].view() {
+                V::Flow(fb) => match fb.borrow_mut().take() {
                     Some(flow) => self.unwind(b, flow, pending),
                     None => Step::Done(Ok(Value::Nil)),
                 },
@@ -557,8 +559,8 @@ impl Interp {
     }
 
     fn symbol_const(&self, f: &Function, pool: &RefCell<Vec<Value>>, idx: u32) -> Symbol {
-        match &pool.borrow()[idx as usize] {
-            Value::Symbol(s) => *s,
+        match pool.borrow()[idx as usize].view() {
+            V::Symbol(s) => s,
             _ => match &f.consts[idx as usize] {
                 Constant::Symbol(name) | Constant::Str(name) => self.intern(name),
                 _ => self.intern(""),
@@ -600,9 +602,12 @@ impl Interp {
     /// Positional arguments of a call (expanding a splat array).
     fn call_args(&self, regs: &[Value], args: &[Reg], splat: bool) -> ArgVec {
         if splat {
-            return match &regs[args[0] as usize] {
-                Value::Array(a) => a.iter().collect(),
-                other => smallvec![other.clone()],
+            return match regs[args[0] as usize].view() {
+                V::Array(a) => a.iter().collect(),
+                _ => {
+                    let other: &Value = &(regs[args[0] as usize]);
+                    smallvec![other.clone()]
+                }
             };
         }
         args.iter().map(|r| regs[*r as usize].clone()).collect()
@@ -624,10 +629,10 @@ impl Interp {
             .map(|(k, r)| (self.symbol_const(f, pool, *k), regs[*r as usize].clone()))
             .collect();
         if let Some(h) = kw_splat {
-            if let Value::Hash(h) = &regs[h as usize] {
+            if let V::Hash(h) = regs[h as usize].view() {
                 for (k, v) in h.iter() {
-                    if let Value::Symbol(s) = k {
-                        out.push((*s, v.clone()));
+                    if let V::Symbol(s) = k.view() {
+                        out.push((s, v.clone()));
                     }
                 }
             }
@@ -674,8 +679,8 @@ impl Interp {
             Inst::FieldGet {
                 dst, obj, index, ..
             } => {
-                let v = match &regs[*obj as usize] {
-                    Value::Object(o) => o
+                let v = match regs[*obj as usize].view() {
+                    V::Object(o) => o
                         .fields
                         .borrow()
                         .get(*index as usize)
@@ -694,8 +699,8 @@ impl Interp {
                 obj, index, src, ..
             } => {
                 let v = regs[*src as usize].clone();
-                match &regs[*obj as usize] {
-                    Value::Object(o) => {
+                match regs[*obj as usize].view() {
+                    V::Object(o) => {
                         let mut fields = o.fields.borrow_mut();
                         let idx = *index as usize;
                         if idx >= fields.len() {
@@ -718,8 +723,8 @@ impl Interp {
                 name,
             } => {
                 let name = self.str_const(f, *name);
-                let (v, ok) = match &regs[*obj as usize] {
-                    Value::Object(o) => match self.field_index(o.class, name) {
+                let (v, ok) = match regs[*obj as usize].view() {
+                    V::Object(o) => match self.field_index(o.class, name) {
                         Some(i) => (self.logical_get(o, i), true),
                         None => (Value::Nil, false),
                     },
@@ -832,7 +837,7 @@ impl Interp {
                             }
                         }
                         VarLoc::Field { obj, index } => {
-                            if let Value::Object(o) = &regs[*obj as usize] {
+                            if let V::Object(o) = regs[*obj as usize].view() {
                                 let mut fields = o.fields.borrow_mut();
                                 if let Some(slot) = fields.get_mut(*index as usize) {
                                     if self.owned_fast(*method, slot, &refs) {
@@ -850,8 +855,8 @@ impl Interp {
                 let pos = self.call_args(regs, args, false);
                 let kw = self.call_kwargs(f, pool, regs, kw, None);
                 let take_field = |obj: Reg, index: u32| -> Value {
-                    match &regs[obj as usize] {
-                        Value::Object(o) => o
+                    match regs[obj as usize].view() {
+                        V::Object(o) => o
                             .fields
                             .borrow_mut()
                             .get_mut(index as usize)
@@ -861,7 +866,7 @@ impl Interp {
                     }
                 };
                 let put_field = |regs: &[Value], obj: Reg, index: u32, v: Value| {
-                    if let Value::Object(o) = &regs[obj as usize] {
+                    if let V::Object(o) = regs[obj as usize].view() {
                         if let Some(s) = o.fields.borrow_mut().get_mut(index as usize) {
                             *s = v;
                         }
@@ -944,7 +949,7 @@ impl Interp {
                 regs[*dst as usize] = Value::Bool(r);
             }
             Inst::ClassIs { dst, src, class } => {
-                let r = matches!(&regs[*src as usize], Value::Object(o) if o.class == *class);
+                let r = matches!(regs[*src as usize].view(), V::Object(o) if o.class == *class);
                 regs[*dst as usize] = Value::Bool(r);
             }
             Inst::ClassIsA { dst, src, class } => {
@@ -982,7 +987,7 @@ impl Interp {
                 is_lambda,
             } => {
                 let tag = self.new_tag();
-                regs[*dst as usize] = Value::Proc(Rc::new(Closure {
+                regs[*dst as usize] = Value::Proc(Closure {
                     body: ClosureBody::Func(*func),
                     frame: act.frame.clone(),
                     self_val: act.self_val.clone(),
@@ -992,11 +997,11 @@ impl Interp {
                     method_block: (!act.block.is_nil()).then(|| act.block.clone()),
                     method_tag: if *is_lambda { tag } else { act.method_tag },
                     file: act.file,
-                }));
+                });
             }
             Inst::MethodRef { dst, recv, name } => {
                 let tag = self.new_tag();
-                regs[*dst as usize] = Value::Proc(Rc::new(Closure {
+                regs[*dst as usize] = Value::Proc(Closure {
                     body: ClosureBody::BoundMethod {
                         recv: regs[*recv as usize].clone(),
                         name: Rc::from(self.str_const(f, *name)),
@@ -1009,11 +1014,11 @@ impl Interp {
                     method_block: None,
                     method_tag: tag,
                     file: act.file,
-                }));
+                });
             }
             Inst::SymbolProc { dst, name, method } => {
                 let tag = self.new_tag();
-                regs[*dst as usize] = Value::Proc(Rc::new(Closure {
+                regs[*dst as usize] = Value::Proc(Closure {
                     body: ClosureBody::MethodName(
                         Rc::from(self.str_const(f, *name)),
                         Cell::new(None),
@@ -1027,16 +1032,19 @@ impl Interp {
                     method_block: None,
                     method_tag: tag,
                     file: act.file,
-                }));
+                });
             }
             Inst::MakeArray { dst, items } => {
                 let mut out = Vec::with_capacity(items.len());
                 for item in items {
                     let v = &regs[item.reg as usize];
                     if item.splat {
-                        match v {
-                            Value::Array(a) => out.extend(a.iter()),
-                            other => out.push(other.clone()),
+                        match v.view() {
+                            V::Array(a) => out.extend(a.iter()),
+                            _ => {
+                                let other: &Value = v;
+                                out.push(other.clone())
+                            }
                         }
                     } else {
                         out.push(v.clone());
@@ -1052,7 +1060,7 @@ impl Interp {
                             map.insert(regs[*k as usize].clone(), regs[*v as usize].clone());
                         }
                         HashItem::Splat(h) => {
-                            if let Value::Hash(h) = &regs[*h as usize] {
+                            if let V::Hash(h) = regs[*h as usize].view() {
                                 for (k, v) in h.iter() {
                                     map.insert(k.clone(), v.clone());
                                 }
@@ -1060,7 +1068,7 @@ impl Interp {
                         }
                     }
                 }
-                regs[*dst as usize] = Value::Hash(Rc::new(map));
+                regs[*dst as usize] = Value::Hash(map);
             }
             Inst::MakeRange {
                 dst,
@@ -1070,11 +1078,11 @@ impl Interp {
             } => {
                 let lo = lo.map(|r| regs[r as usize].clone()).unwrap_or(Value::Nil);
                 let hi = hi.map(|r| regs[r as usize].clone()).unwrap_or(Value::Nil);
-                regs[*dst as usize] = Value::Range(Rc::new(RangeVal {
+                regs[*dst as usize] = Value::Range(RangeVal {
                     lo,
                     hi,
                     exclusive: *exclusive,
-                }));
+                });
             }
             Inst::MakeRegexp { dst, source, flags } => {
                 let source = self.to_s(&regs[*source as usize])?;
@@ -1088,34 +1096,39 @@ impl Interp {
                 regs[*dst as usize] = Value::Symbol(self.intern(&s));
             }
             Inst::IsArray { dst, src } => {
-                regs[*dst as usize] = Value::Bool(matches!(regs[*src as usize], Value::Array(_)));
+                regs[*dst as usize] =
+                    Value::Bool(matches!((regs[*src as usize]).view(), V::Array(_)));
             }
             Inst::IsHash { dst, src } => {
-                regs[*dst as usize] = Value::Bool(matches!(regs[*src as usize], Value::Hash(_)));
+                regs[*dst as usize] =
+                    Value::Bool(matches!((regs[*src as usize]).view(), V::Hash(_)));
             }
             Inst::IsObject { dst, src } => {
-                regs[*dst as usize] = Value::Bool(matches!(regs[*src as usize], Value::Object(_)));
+                regs[*dst as usize] =
+                    Value::Bool(matches!((regs[*src as usize]).view(), V::Object(_)));
             }
             Inst::ToArray { dst, src } => {
-                let v = match &regs[*src as usize] {
-                    Value::Array(a) => Value::Array(a.clone()),
-                    other => Value::array(vec![other.clone()]),
+                let v = match regs[*src as usize].view() {
+                    V::Array(a) => Value::Array(a.clone()),
+                    _ => {
+                        let other: &Value = &(regs[*src as usize]);
+                        Value::array(vec![other.clone()])
+                    }
                 };
                 regs[*dst as usize] = v;
             }
             Inst::Len { dst, src } => {
-                let n = match &regs[*src as usize] {
-                    Value::Array(a) => a.len(),
-                    Value::Hash(h) => h.len(),
-                    Value::Str(s) => s.chars().count(),
-                    Value::Short(s) => s.chars().count(),
+                let n = match regs[*src as usize].view() {
+                    V::Array(a) => a.len(),
+                    V::Hash(h) => h.len(),
+                    V::Str(s) => s.chars().count(),
                     _ => 0,
                 };
                 regs[*dst as usize] = Value::Int(n as i64);
             }
             Inst::ArrayGet { dst, arr, index } => {
-                let v = match &regs[*arr as usize] {
-                    Value::Array(a) => {
+                let v = match regs[*arr as usize].view() {
+                    V::Array(a) => {
                         let i = if *index < 0 {
                             a.len().checked_sub((-*index) as usize)
                         } else {
@@ -1128,12 +1141,12 @@ impl Interp {
                 regs[*dst as usize] = v;
             }
             Inst::ArrayGetReg { dst, arr, index } => {
-                let v = match (&regs[*arr as usize], &regs[*index as usize]) {
-                    (Value::Array(a), Value::Int(i)) => {
-                        let i = if *i < 0 {
-                            a.len().checked_sub((-*i) as usize)
+                let v = match (regs[*arr as usize].view(), regs[*index as usize].view()) {
+                    (V::Array(a), V::Int(i)) => {
+                        let i = if i < 0 {
+                            a.len().checked_sub((-i) as usize)
                         } else {
-                            Some(*i as usize)
+                            Some(i as usize)
                         };
                         i.and_then(|i| a.get(i)).unwrap_or(Value::Nil)
                     }
@@ -1147,8 +1160,8 @@ impl Interp {
                 from,
                 drop_last,
             } => {
-                let v = match &regs[*arr as usize] {
-                    Value::Array(a) => {
+                let v = match regs[*arr as usize].view() {
+                    V::Array(a) => {
                         let from = *from as usize;
                         let end = a.len().saturating_sub(*drop_last as usize).max(from);
                         if from >= a.len() {
@@ -1163,13 +1176,13 @@ impl Interp {
             }
             Inst::ArraySliceReg { dst, arr, from, to } => {
                 let v = match (
-                    &regs[*arr as usize],
-                    &regs[*from as usize],
-                    &regs[*to as usize],
+                    regs[*arr as usize].view(),
+                    regs[*from as usize].view(),
+                    regs[*to as usize].view(),
                 ) {
-                    (Value::Array(a), Value::Int(from), Value::Int(to)) => {
-                        let from = (*from).clamp(0, a.len() as i64) as usize;
-                        let to = (*to).clamp(from as i64, a.len() as i64) as usize;
+                    (V::Array(a), V::Int(from), V::Int(to)) => {
+                        let from = (from).clamp(0, a.len() as i64) as usize;
+                        let to = (to).clamp(from as i64, a.len() as i64) as usize;
                         Value::array(a.values()[from..to].to_vec())
                     }
                     _ => Value::array(Vec::new()),
@@ -1177,8 +1190,8 @@ impl Interp {
                 regs[*dst as usize] = v;
             }
             Inst::ObjectFields { dst, src } => {
-                let v = match &regs[*src as usize] {
-                    Value::Object(o) => Value::array(self.logical_values(o)),
+                let v = match regs[*src as usize].view() {
+                    V::Object(o) => Value::array(self.logical_values(o)),
                     _ => Value::array(Vec::new()),
                 };
                 regs[*dst as usize] = v;
@@ -1190,8 +1203,8 @@ impl Interp {
                 key,
             } => {
                 let key = Value::Symbol(self.symbol_const(f, pool, *key));
-                let (v, ok) = match &regs[*hash as usize] {
-                    Value::Hash(h) => match h.get(&key) {
+                let (v, ok) = match regs[*hash as usize].view() {
+                    V::Hash(h) => match h.get(&key) {
                         Some(v) => (v.clone(), true),
                         None => (Value::Nil, false),
                     },
@@ -1202,13 +1215,14 @@ impl Interp {
             }
             Inst::ArrayPush { arr, src } => {
                 let v = regs[*src as usize].clone();
-                match &mut regs[*arr as usize] {
-                    Value::Array(a) => Rc::make_mut(a).push(v),
-                    other => {
+                match regs[*arr as usize].view_mut() {
+                    VM::Array(a) => Heap::make_mut(a).push(v),
+                    _ => {
+                        let other: &Value = &(regs[*arr as usize]);
                         return Err(self.err_type(&format!(
                             "expected an array, got {}",
                             self.class_name(other)
-                        )))
+                        )));
                     }
                 }
             }
@@ -1217,18 +1231,18 @@ impl Interp {
                     .iter()
                     .map(|k| self.symbol_const(f, pool, *k))
                     .collect();
-                let v = match &regs[*hash as usize] {
-                    Value::Hash(h) => {
+                let v = match regs[*hash as usize].view() {
+                    V::Hash(h) => {
                         let mut rest = ValueMap::default();
                         for (k, val) in h.iter() {
-                            let matched = matches!(k, Value::Symbol(s) if keys.contains(s));
+                            let matched = matches!(k.view(), V::Symbol(s) if keys.contains(&s));
                             if !matched {
                                 rest.insert(k.clone(), val.clone());
                             }
                         }
-                        Value::Hash(Rc::new(rest))
+                        Value::Hash(rest)
                     }
-                    _ => Value::Hash(Rc::new(ValueMap::default())),
+                    _ => Value::Hash(ValueMap::default()),
                 };
                 regs[*dst as usize] = v;
             }
@@ -1242,7 +1256,7 @@ impl Interp {
                 };
             }
             Inst::CatchAny { dst } => {
-                regs[*dst as usize] = Value::Flow(Rc::new(RefCell::new(pending.take())));
+                regs[*dst as usize] = Value::Flow(RefCell::new(pending.take()));
             }
             Inst::ClearRegs { from, to } => {
                 for r in &mut regs[*from as usize..*to as usize] {
@@ -1274,7 +1288,7 @@ impl Interp {
     /// Call a block, with `self` replaced by `recv` when given (a block
     /// with a receiver, run by `instance_exec`).
     pub fn call_block_on(&self, proc: &Value, recv: Option<Value>, mut args: ArgVec) -> EvalResult {
-        let Value::Proc(closure) = proc else {
+        let V::Proc(closure) = proc.view() else {
             return Err(self.err_type("not a procedure"));
         };
         match &closure.body {
@@ -1301,7 +1315,7 @@ impl Interp {
                 // Destructure a single array argument over several parameters.
                 if let Some(n) = closure.destructure {
                     if args.len() == 1 {
-                        if let Value::Array(a) = &args[0] {
+                        if let V::Array(a) = args[0].view() {
                             let mut items: ArgVec = a.iter().collect();
                             items.resize(n.max(items.len()), Value::Nil);
                             args = items;

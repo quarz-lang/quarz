@@ -8,6 +8,7 @@ use num_integer::Integer;
 use num_traits::{Signed, ToPrimitive, Zero};
 
 use crate::interp::{Args, EvalResult, Flow, Interp, NativeFn};
+use crate::value::V;
 use crate::value::*;
 use smallvec::smallvec;
 
@@ -23,10 +24,10 @@ pub(super) enum Num {
 
 impl Num {
     pub(super) fn of(interp: &Interp, v: &Value) -> Result<Num, Flow> {
-        match v {
-            Value::Int(i) => Ok(Num::I(*i)),
-            Value::BigInt(b) => Ok(Num::B((**b).clone())),
-            Value::Float(f) => Ok(Num::F(*f)),
+        match v.view() {
+            V::Int(i) => Ok(Num::I(i)),
+            V::BigInt(b) => Ok(Num::B((**b).clone())),
+            V::Float(f) => Ok(Num::F(f)),
             _ => Err(interp.err_type(&format!("expected a number, got {}", interp.class_name(v)))),
         }
     }
@@ -141,7 +142,7 @@ fn cmp_num(interp: &Interp, recv: &Value, args: &Args) -> Result<std::cmp::Order
     let other = args.arg(0);
     // A BigInt on either side: compare in the numeric tower (the
     // generic `compare` would come back here through `<=>`).
-    if matches!(recv, Value::BigInt(_)) || matches!(other, Value::BigInt(_)) {
+    if matches!(recv.view(), V::BigInt(_)) || matches!(other.view(), V::BigInt(_)) {
         let a = Num::of(interp, recv)?;
         let b = Num::of(interp, other)?;
         return Ok(match (&a, &b) {
@@ -397,8 +398,8 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
 }
 
 fn dur(interp: &Interp, v: &Value) -> Result<i64, Flow> {
-    match v {
-        Value::Duration(d) => Ok(*d),
+    match v.view() {
+        V::Duration(d) => Ok(d),
         _ => Err(interp.err_type("expected a Duration")),
     }
 }
@@ -410,23 +411,23 @@ fn duration(interp: &Interp, v: &Value, unit_ns: f64) -> EvalResult {
 }
 
 fn int_neg(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
-    match recv {
-        Value::Int(i) => Ok(match i.checked_neg() {
+    match recv.view() {
+        V::Int(i) => Ok(match i.checked_neg() {
             Some(n) => Value::Int(n),
-            None => int_from_big(-BigInt::from(*i)),
+            None => int_from_big(-BigInt::from(i)),
         }),
-        Value::BigInt(b) => Ok(int_from_big(-(**b).clone())),
+        V::BigInt(b) => Ok(int_from_big(-(**b).clone())),
         _ => Err(interp.err_type("expected an Int")),
     }
 }
 
 fn int_abs(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
-    match recv {
-        Value::Int(i) => Ok(match i.checked_abs() {
+    match recv.view() {
+        V::Int(i) => Ok(match i.checked_abs() {
             Some(n) => Value::Int(n),
-            None => int_from_big(BigInt::from(*i).abs()),
+            None => int_from_big(BigInt::from(i).abs()),
         }),
-        Value::BigInt(b) => Ok(int_from_big(b.abs())),
+        V::BigInt(b) => Ok(int_from_big(b.abs())),
         _ => Err(interp.err_type("expected an Int")),
     }
 }
@@ -499,13 +500,13 @@ pub(super) fn enumerator(
     args: Vec<Value>,
 ) -> EvalResult {
     let _ = interp;
-    Ok(Value::Enumerator(Rc::new(EnumeratorVal {
+    Ok(Value::Enumerator(EnumeratorVal {
         recv: recv.clone(),
         method: Rc::from(method),
         args,
         buffer: std::cell::RefCell::new(None),
         position: std::cell::Cell::new(0),
-    })))
+    }))
 }
 
 fn int_times(interp: &Interp, recv: &Value, args: Args) -> EvalResult {

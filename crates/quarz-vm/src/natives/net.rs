@@ -12,9 +12,10 @@ use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream, UdpSocket};
 use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::rc::Rc;
 
+use crate::heap::Heap;
 use crate::interp::{Args, EvalResult, Flow, Interp, NativeFn};
+use crate::value::V;
 use crate::value::*;
 use smallvec::smallvec;
 
@@ -611,9 +612,12 @@ fn udp_recv(
 
 /// The bytes of a String or Bytes argument.
 pub fn payload(interp: &Interp, v: &Value) -> Result<Vec<u8>, Flow> {
-    Ok(match v {
-        Value::Bytes(b) => b.to_vec(),
-        other => interp.to_s(other)?.as_bytes().to_vec(),
+    Ok(match v.view() {
+        V::Bytes(b) => b.to_vec(),
+        _ => {
+            let other: &Value = v;
+            interp.to_s(other)?.as_bytes().to_vec()
+        }
     })
 }
 
@@ -624,7 +628,7 @@ fn addr_value(addr: SocketAddr) -> Value {
     ])
 }
 
-pub fn inspect_socket(interp: &Interp, io: &Rc<IoVal>) -> String {
+pub fn inspect_socket(interp: &Interp, io: &Heap<IoVal>) -> String {
     let closed = if is_closed(io) { " (closed)" } else { "" };
     match &io.kind {
         IoKind::Socket(st) => {

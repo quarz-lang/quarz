@@ -8,6 +8,7 @@ use num_bigint::BigInt;
 use num_traits::{Signed, Zero};
 
 use crate::interp::{Args, EvalResult, Interp, NativeFn};
+use crate::value::V;
 use crate::value::*;
 use smallvec::smallvec;
 
@@ -200,8 +201,8 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     // Comparable#clamp with a range.
     m.insert("Comparable#clamp", |i, r, a| {
         use std::cmp::Ordering;
-        let (min, max) = match a.arg(0) {
-            Value::Range(rg) if a.pos.len() == 1 => {
+        let (min, max) = match a.arg(0).view() {
+            V::Range(rg) if a.pos.len() == 1 => {
                 if rg.exclusive && !rg.hi.is_nil() {
                     return Err(i.err_arg("cannot clamp with an exclusive range"));
                 }

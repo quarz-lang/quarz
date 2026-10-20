@@ -11,27 +11,30 @@ use crate::unbox::{self, Num, State};
 
 /// Size of a `Value` in bytes (`repr(C, u64)`: a tag word and a two-word
 /// payload, since some variants hold fat pointers).
-const VALUE_SIZE: i32 = 24;
+const VALUE_SIZE: i32 = 8;
 /// Space for an `Activation` built by compiled code (`qz_enter`); the
 /// runtime checks its real size against this.
 const ACT_BUF_SIZE: u32 = 320;
-/// Tags below this hold no reference-counted payload (`NEEDS_DROP_FROM`).
-const NEEDS_DROP_FROM: i64 = 8;
 /// `qz_enter_virtual` ran the call itself (see `ffi::STATUS_DONE`).
 const STATUS_DONE: i64 = 7;
 /// A typed entry's result did not fit its declared type: it is boxed
 /// in the caller's `out` instead.
 const STATUS_BOXED: i64 = 8;
-const TAG_NIL: i64 = 0;
-const TAG_BOOL: i64 = 1;
-const TAG_INT: i64 = 2;
-const TAG_FLOAT: i64 = 3;
-const TAG_CLASS: i64 = 5;
-const TAG_ARRAY: i64 = 10;
-const TAG_OBJECT: i64 = 16;
-/// Offset of the field view in an `Object` from its `Rc` allocation
-/// (after the strong and weak counts); see `Object::bind_fields`.
-const OBJECT_FIELDS_PTR_OFF: i32 = 16;
+/// The words of the immediate values compiled code writes and tests
+/// (see `quarz_vm::value::Value`): `nil` is 0.
+const FALSE_BITS: i64 = 4;
+const CLASS_TAG: i64 = 0x1C;
+const FLONUM_ZERO: i64 = 0x8000_0000_0000_0002_u64 as i64;
+/// Where a heap box keeps its kind and its value, and the kinds compiled
+/// code tests for (see `quarz_vm::heap`).
+const HEAP_VALUE_OFF: i32 = L::HEAP_VALUE_OFF as i32;
+const HEAP_KIND_OFF: i32 = L::HEAP_KIND_OFF as i32;
+const KIND_ARRAY: i64 = L::KIND_ARRAY as i64;
+/// An object's word: its box's address with this bit set (`heap`).
+const OBJECT_TAG: i64 = L::OBJECT_TAG as i64;
+/// Where an `Rc` keeps its value (after the strong and weak counts):
+/// frames are still shared that way.
+const RC_VALUE_OFF: i32 = 16;
 
 const STATUS_RAISE: i64 = 1;
 
@@ -45,6 +48,8 @@ pub(crate) struct Helpers<F> {
     pub pop_call: F,
     pub stack_overflow: F,
     pub drop_value: F,
+    pub box_int: F,
+    pub box_float: F,
     pub exec: F,
     pub term: F,
     pub block_param: F,
@@ -282,6 +287,11 @@ pub(crate) fn gen_function<B: Builder>(
                 params_buf,
                 h.push_call,
             );
+            // The parameters are boxed only when needed; the slots are
+            // released at exit either way.
+            for k in 0..nparams {
+                b.store(zero, params_buf, (k as i32) * VALUE_SIZE);
+            }
         }
         act = own_act;
         out = own_out;
@@ -354,7 +364,7 @@ pub(crate) fn gen_function<B: Builder>(
         let nargs = b.uload32(act, L::ACT_NARGS as i32);
         b.store(nargs, ptrs, 16);
         let frame_rc = b.load(Ty::Ptr, act, L::ACT_FRAME as i32);
-        let frame_view = b.iadd_imm(frame_rc, i64::from(OBJECT_FIELDS_PTR_OFF));
+        let frame_view = b.iadd_imm(frame_rc, i64::from(RC_VALUE_OFF));
         let none = b.icmp_imm(IntCC::Equal, frame_rc, 0);
         let frame = b.select(none, frame_rc, frame_view);
         b.store(frame, ptrs, 24);
@@ -408,6 +418,9 @@ pub(crate) fn gen_function<B: Builder>(
         valid_vars: valid_vars.clone(),
         fresh_buf,
         stale: vec![false; nregs_usize],
+        at: (0, 0),
+        box_via_runtime: false,
+        uses: Vec::new(),
     };
     for (i, blk) in f.blocks.iter().enumerate() {
         g.b.switch_to_block(blocks[i]);
@@ -416,6 +429,7 @@ pub(crate) fn gen_function<B: Builder>(
         for (j, inst) in blk.insts.iter().enumerate() {
             g.b.set_line(blk.lines[j]);
             g.set_valid();
+            g.at = (i as u32, j as u32);
             g.inst(i as u32, j as u32, inst, unwinds[i]);
             g.after(inst);
         }
@@ -428,30 +442,28 @@ pub(crate) fn gen_function<B: Builder>(
         }
         // Write back the unboxed registers that a successor expects
         // in memory (a different state there), or that a terminator
-        // leaving the function reads.
-        let at_term = &live[i][blk.insts.len()];
-        match &blk.term {
-            Term::Jump(t) => g.flush_for_edge(&entry_states[*t as usize], at_term),
-            Term::Branch { then, els, .. } => {
-                g.flush_for_edge(&entry_states[*then as usize], at_term);
-                g.flush_for_edge(&entry_states[*els as usize], at_term);
-            }
-            Term::Return(r) => g.flush(*r),
-            _ => g.flush_live(at_term),
-        }
+        // leaving the function reads; a value with no immediate form
+        // hands the function to the interpreter at the target.
+        g.at = (i as u32, blk.insts.len() as u32);
         match &blk.term {
             Term::Jump(t) => {
+                g.at = (*t, 0);
+                g.flush_for_edge(&entry_states[*t as usize], at_term);
                 g.b.jump(blocks[*t as usize], &[]);
             }
             Term::Branch { cond, then, els } => {
                 let truthy = g.truthy(*cond);
-                g.b.brif(
-                    truthy,
-                    blocks[*then as usize],
-                    &[],
-                    blocks[*els as usize],
-                    &[],
-                );
+                let then_edge = g.b.create_block();
+                let els_edge = g.b.create_block();
+                g.b.brif(truthy, then_edge, &[], els_edge, &[]);
+                g.b.switch_to_block(then_edge);
+                g.at = (*then, 0);
+                g.flush_for_edge(&entry_states[*then as usize], at_term);
+                g.b.jump(blocks[*then as usize], &[]);
+                g.b.switch_to_block(els_edge);
+                g.at = (*els, 0);
+                g.flush_for_edge(&entry_states[*els as usize], at_term);
+                g.b.jump(blocks[*els as usize], &[]);
             }
             Term::Return(r)
                 if g.typed_fast_exit.is_some()
@@ -477,13 +489,15 @@ pub(crate) fn gen_function<B: Builder>(
             }
             Term::Return(r) => {
                 // Move the value into `out` (which holds nil) and
-                // leave the register nil, then release the rest.
+                // leave the register nil, then release the rest. (A
+                // value boxed on the way moves out with it.)
+                g.box_via_runtime = true;
+                g.flush(*r);
+                g.box_via_runtime = false;
                 g.ensure_home(*r);
                 let off = reg_off(*r);
-                for k in [0, 8, 16] {
-                    let w = g.b.load(Ty::I64, regs, off + k);
-                    g.b.store(w, out, k);
-                }
+                let w = g.b.load(Ty::I64, regs, off);
+                g.b.store(w, out, 0);
                 let zero = g.b.iconst(Ty::I64, 0);
                 g.b.store(zero, regs, off);
                 g.states[*r as usize] = State::NonHeap;
@@ -498,6 +512,7 @@ pub(crate) fn gen_function<B: Builder>(
             | Term::ReturnOut(_)
             | Term::Resume(_)
             | Term::Unreachable => {
+                g.flush_live(at_term);
                 g.materialize();
                 let fid_v = g.b.iconst(Ty::I32, i64::from(fid));
                 let blk_v = g.b.iconst(Ty::I32, i as i64);
@@ -569,6 +584,7 @@ pub(crate) fn gen_function<B: Builder>(
             drop_value_fn,
             pushed_var,
             lazy_act,
+            typed_params_buf.map(|p| (p, sig.params.len())),
         );
         let ok_v = b.iconst(Ty::I32, 0);
         b.return_(&[ok_v, bits]);
@@ -586,6 +602,7 @@ pub(crate) fn gen_function<B: Builder>(
             drop_value_fn,
             pushed_var,
             lazy_act,
+            typed_params_buf.map(|p| (p, sig.params.len())),
         );
         let ok = b.icmp_imm(IntCC::Equal, status, 0);
         let fits_b = b.create_block();
@@ -595,24 +612,26 @@ pub(crate) fn gen_function<B: Builder>(
         let zero_bits = b.iconst(Ty::I64, 0);
         b.return_(&[status, zero_bits]);
         b.switch_to_block(fits_b);
-        let tag = b.load(Ty::I64, out, 0);
-        let want = match sig.ret {
-            Num::Int => TAG_INT,
-            Num::Float => TAG_FLOAT,
+        let w = b.load(Ty::I64, out, 0);
+        let is = match sig.ret {
+            Num::Int => emit_is_int(b, w),
+            Num::Float => emit_is_flonum(b, w),
         };
-        let is = b.icmp_imm(IntCC::Equal, tag, want);
         let unboxed_b = b.create_block();
         let boxed_b = b.create_block();
         b.brif(is, unboxed_b, &[], boxed_b, &[]);
         b.switch_to_block(unboxed_b);
-        let bits = b.load(Ty::I64, out, 8);
+        let bits = match sig.ret {
+            Num::Int => emit_int_of(b, w),
+            Num::Float => {
+                let f = emit_float_of(b, w);
+                b.bitcast(Ty::I64, f)
+            }
+        };
         let ok_v = b.iconst(Ty::I32, 0);
         b.return_(&[ok_v, bits]);
         b.switch_to_block(boxed_b);
-        for k in [0, 8, 16] {
-            let w = b.load(Ty::I64, out, k);
-            b.store(w, out_caller, k);
-        }
+        b.store(w, out_caller, 0);
         let boxed_v = b.iconst(Ty::I32, STATUS_BOXED);
         let zero_bits = b.iconst(Ty::I64, 0);
         b.return_(&[boxed_v, zero_bits]);
@@ -631,7 +650,18 @@ fn emit_typed_teardown<B: Builder>(
     drop_value: B::Func,
     pushed_var: B::Var,
     lazy_act: bool,
+    params: Option<(B::Value, usize)>,
 ) {
+    // The boxed parameters are released too: a box the runtime made
+    // for one with no immediate form (see `materialize`).
+    let release_params = |b: &mut B| {
+        if let Some((buf, n)) = params {
+            for k in 0..n {
+                let p = b.iadd_imm(buf, (k as i64) * i64::from(VALUE_SIZE));
+                emit_release_ptr(b, drop_value, p);
+            }
+        }
+    };
     if lazy_act {
         let pushed = b.use_var(pushed_var);
         let teardown = b.create_block();
@@ -640,11 +670,13 @@ fn emit_typed_teardown<B: Builder>(
         b.switch_to_block(teardown);
         emit_typed_pop(b, rt, act, pop_call);
         emit_release_ptr(b, drop_value, self_dst);
+        release_params(b);
         b.jump(done, &[]);
         b.switch_to_block(done);
     } else {
         emit_typed_pop(b, rt, act, pop_call);
         emit_release_ptr(b, drop_value, self_dst);
+        release_params(b);
     }
 }
 
@@ -668,11 +700,167 @@ fn direct_target(inst: &Inst, methods: &[RtMethod]) -> Option<FuncId> {
 /// Bump the reference count of the heap value at `p` (whose tag is known
 /// to be a heap tag): the payload's first word points at the allocation,
 /// whose first word is the strong count (checked at start-up).
+/// Whether word `w` is the address of a heap box (its low three bits
+/// clear, and not `nil`).
+fn emit_is_heap<B: Builder>(b: &mut B, w: B::Value) -> B::Value {
+    let seven = b.iconst(Ty::I64, 7);
+    let low = b.band(w, seven);
+    let aligned = b.icmp_imm(IntCC::Equal, low, 0);
+    let nonzero = b.icmp_imm(IntCC::NotEqual, w, 0);
+    b.band(aligned, nonzero)
+}
+
+/// Whether word `w` is an immediate `Int`.
+fn emit_is_int<B: Builder>(b: &mut B, w: B::Value) -> B::Value {
+    let one = b.iconst(Ty::I64, 1);
+    let bit = b.band(w, one);
+    b.icmp_imm(IntCC::NotEqual, bit, 0)
+}
+
+/// The `Int` an immediate word holds.
+fn emit_int_of<B: Builder>(b: &mut B, w: B::Value) -> B::Value {
+    b.sshr_imm(w, 1)
+}
+
+/// Whether word `w` is a flonum.
+fn emit_is_flonum<B: Builder>(b: &mut B, w: B::Value) -> B::Value {
+    let three = b.iconst(Ty::I64, 3);
+    let low = b.band(w, three);
+    b.icmp_imm(IntCC::Equal, low, 2)
+}
+
+/// The `Float` a flonum word holds.
+fn emit_float_of<B: Builder>(b: &mut B, w: B::Value) -> B::Value {
+    // `(2 - (w >> 63)) | (w & !3)`, rotated right by three; `0.0` has
+    // its own word.
+    let b63 = b.ushr_imm(w, 63);
+    let two = b.iconst(Ty::I64, 2);
+    let lead = b.isub(two, b63);
+    let mask = b.iconst(Ty::I64, !3);
+    let body = b.band(w, mask);
+    let t = b.bor(body, lead);
+    let rot = b.rotr_imm(t, 3);
+    let f = b.bitcast(Ty::F64, rot);
+    let zero = b.f64const(0.0);
+    let is_zero = b.icmp_imm(IntCC::Equal, w, FLONUM_ZERO);
+    b.select(is_zero, zero, f)
+}
+
+/// The immediate word of `Int` `v`, and whether it fits (63 bits).
+fn emit_fixnum<B: Builder>(b: &mut B, v: B::Value) -> (B::Value, B::Value) {
+    let shifted = b.ishl_imm(v, 1);
+    let back = b.sshr_imm(shifted, 1);
+    let fits = b.icmp(IntCC::Equal, back, v);
+    let one = b.iconst(Ty::I64, 1);
+    let word = b.bor(shifted, one);
+    (fits, word)
+}
+
+/// The flonum word of `Float` `f`, and whether there is one.
+fn emit_flonum<B: Builder>(b: &mut B, f: B::Value) -> (B::Value, B::Value) {
+    let bits = b.bitcast(Ty::I64, f);
+    let top = b.ushr_imm(bits, 60);
+    let seven = b.iconst(Ty::I64, 7);
+    let top3 = b.band(top, seven);
+    let three = b.iconst(Ty::I64, 3);
+    let t3 = b.isub(top3, three);
+    let not_one = b.iconst(Ty::I64, !1);
+    let masked = b.band(t3, not_one);
+    let in_range = b.icmp_imm(IntCC::Equal, masked, 0);
+    let special = b.icmp_imm(IntCC::Equal, bits, 0x3000_0000_0000_0000);
+    let one8 = b.iconst(Ty::I8, 1);
+    let not_special = b.bxor(special, one8);
+    let encodable = b.band(in_range, not_special);
+    let is_zero = b.icmp_imm(IntCC::Equal, bits, 0);
+    let ok = b.bor(encodable, is_zero);
+    let rot = b.rotl_imm(bits, 3);
+    let clear = b.band(rot, not_one);
+    let two = b.iconst(Ty::I64, 2);
+    let enc = b.bor(clear, two);
+    let zero_word = b.iconst(Ty::I64, FLONUM_ZERO);
+    let word = b.select(is_zero, zero_word, enc);
+    (ok, word)
+}
+
+/// `*slot = Int(v)`: the immediate when it fits, the runtime's box
+/// otherwise (`slot` holds no live value).
+fn emit_box_int<B: Builder>(b: &mut B, box_int: B::Func, slot: B::Value, v: B::Value) {
+    let (fits, word) = emit_fixnum(b, v);
+    let fast = b.create_block();
+    let slow = b.create_block();
+    let cont = b.create_block();
+    b.brif(fits, fast, &[], slow, &[]);
+    b.switch_to_block(fast);
+    b.store(word, slot, 0);
+    b.jump(cont, &[]);
+    b.switch_to_block(slow);
+    b.call(box_int, &[slot, v]);
+    b.jump(cont, &[]);
+    b.switch_to_block(cont);
+}
+
+/// `*slot = Float(f)`: the flonum when there is one, the runtime's box
+/// otherwise.
+fn emit_box_float<B: Builder>(b: &mut B, box_float: B::Func, slot: B::Value, f: B::Value) {
+    let (ok, word) = emit_flonum(b, f);
+    let fast = b.create_block();
+    let slow = b.create_block();
+    let cont = b.create_block();
+    b.brif(ok, fast, &[], slow, &[]);
+    b.switch_to_block(fast);
+    b.store(word, slot, 0);
+    b.jump(cont, &[]);
+    b.switch_to_block(slow);
+    b.call(box_float, &[slot, f]);
+    b.jump(cont, &[]);
+    b.switch_to_block(cont);
+}
+
+/// The word of a `Bool` from an `I8`.
+fn emit_bool_word<B: Builder>(b: &mut B, v: B::Value) -> B::Value {
+    let ext = b.uextend(Ty::I64, v);
+    let shifted = b.ishl_imm(ext, 3);
+    let four = b.iconst(Ty::I64, FALSE_BITS);
+    b.bor(shifted, four)
+}
+
+/// Whether word `w` is a heap box of `kind` (the kind is read only for
+/// a heap word).
+fn emit_kind_is<B: Builder>(b: &mut B, w: B::Value, kind: i64) -> B::Value {
+    let is_heap = emit_is_heap(b, w);
+    let check = b.create_block();
+    let join = b.create_block();
+    b.append_block_param(join, Ty::I8);
+    let no = b.iconst(Ty::I8, 0);
+    b.brif(is_heap, check, &[], join, &[no]);
+    b.switch_to_block(check);
+    let p = emit_box_addr(b, w);
+    let k = b.uload8(p, HEAP_KIND_OFF);
+    let same = b.icmp_imm(IntCC::Equal, k, kind);
+    b.jump(join, &[same]);
+    b.switch_to_block(join);
+    b.block_params(join)[0]
+}
+
+/// Whether word `w` is an object (its box's address with `OBJECT_TAG`).
+fn emit_is_object<B: Builder>(b: &mut B, w: B::Value) -> B::Value {
+    let mask = b.iconst(Ty::I64, 0xF);
+    let low = b.band(w, mask);
+    b.icmp_imm(IntCC::Equal, low, OBJECT_TAG)
+}
+
+/// The box of heap word `w` (the tag bits cleared).
+fn emit_box_addr<B: Builder>(b: &mut B, w: B::Value) -> B::Value {
+    let mask = b.iconst(Ty::I64, !0xF);
+    let addr = b.band(w, mask);
+    b.bitcast(Ty::Ptr, addr)
+}
+
+/// Bump the reference count of the heap box at `p`: its first word.
 fn rc_increment<B: Builder>(b: &mut B, p: B::Value) {
-    let rc = b.load(Ty::Ptr, p, 8);
-    let strong = b.load(Ty::I64, rc, 0);
+    let strong = b.load(Ty::I64, p, 0);
     let bumped = b.iadd_imm(strong, 1);
-    b.store(bumped, rc, 0);
+    b.store(bumped, p, 0);
 }
 
 /// Build a typed entry's activation in `own_act` (`self` nil, the
@@ -772,15 +960,15 @@ fn emit_typed_pop<B: Builder>(b: &mut B, rt: B::Value, act: B::Value, pop_call: 
 }
 
 fn emit_release_ptr<B: Builder>(b: &mut B, drop_value: B::Func, p: B::Value) {
-    let tag = b.load(Ty::I64, p, 0);
-    let needs = b.icmp_imm(IntCC::UnsignedGreaterThanOrEqual, tag, NEEDS_DROP_FROM);
+    let w = b.load(Ty::I64, p, 0);
+    let needs = emit_is_heap(b, w);
     let heap = b.create_block();
     let shared = b.create_block();
     let last = b.create_block();
     let cont = b.create_block();
     b.brif(needs, heap, &[], cont, &[]);
     b.switch_to_block(heap);
-    let rc = b.load(Ty::Ptr, p, 8);
+    let rc = emit_box_addr(b, w);
     let strong = b.load(Ty::I64, rc, 0);
     let is_last = b.icmp_imm(IntCC::Equal, strong, 1);
     b.brif(is_last, last, &[], shared, &[]);
@@ -796,21 +984,18 @@ fn emit_release_ptr<B: Builder>(b: &mut B, drop_value: B::Func, p: B::Value) {
     b.switch_to_block(cont);
 }
 
-/// `*dst = *src` where `dst` holds nil: a three-word copy, plus a
-/// reference count bump for heap values.
+/// `*dst = *src` where `dst` holds nil: a word copy, plus a reference
+/// count bump for heap values.
 fn emit_clone_ptr<B: Builder>(b: &mut B, dst: B::Value, src: B::Value) {
-    let tag = b.load(Ty::I64, src, 0);
-    let w1 = b.load(Ty::I64, src, 8);
-    let w2 = b.load(Ty::I64, src, 16);
-    b.store(tag, dst, 0);
-    b.store(w1, dst, 8);
-    b.store(w2, dst, 16);
-    let needs = b.icmp_imm(IntCC::UnsignedGreaterThanOrEqual, tag, NEEDS_DROP_FROM);
+    let w = b.load(Ty::I64, src, 0);
+    b.store(w, dst, 0);
+    let needs = emit_is_heap(b, w);
     let heap = b.create_block();
     let cont = b.create_block();
     b.brif(needs, heap, &[], cont, &[]);
     b.switch_to_block(heap);
-    rc_increment(b, src);
+    let rc = emit_box_addr(b, w);
+    rc_increment(b, rc);
     b.jump(cont, &[]);
     b.switch_to_block(cont);
 }
@@ -1010,6 +1195,16 @@ struct Gen<'a, B: Builder> {
     /// written: a read of the home writes nil there first (see
     /// `ensure_home`). Tracked within a block.
     stale: Vec<bool>,
+    /// Where the interpreter resumes when an unboxed value cannot be
+    /// boxed as an immediate (see `flush`): the instruction about to be
+    /// emitted, or the start of the block an edge leads to.
+    at: (u32, u32),
+    /// Box through the runtime instead (inside a deoptimization, whose
+    /// exit releases every home).
+    box_via_runtime: bool,
+    /// The registers the instruction being emitted reads: what a runtime
+    /// call for it finds in memory (see `flush_uses`).
+    uses: Vec<Reg>,
 }
 
 impl<B: Builder> Gen<'_, B> {
@@ -1017,30 +1212,45 @@ impl<B: Builder> Gen<'_, B> {
     /// was never written gets its nil now.
     fn ensure_home(&mut self, r: Reg) {
         if self.stale[r as usize] {
-            self.store_tag(r, TAG_NIL);
+            self.store_nil(r);
         }
     }
 
-    fn tag(&mut self, r: Reg) -> B::Value {
+    /// The word in `r`'s home, which is authoritative (the runtime just
+    /// wrote it).
+    fn home_word(&mut self, r: Reg) -> B::Value {
         self.ensure_home(r);
         self.b.load(Ty::I64, self.regs, reg_off(r))
     }
 
-    fn payload(&mut self, r: Reg) -> B::Value {
+    /// The word in `r`'s home (an unboxed register is written back
+    /// first: its home may be stale).
+    fn word(&mut self, r: Reg) -> B::Value {
+        if matches!(
+            self.states[r as usize],
+            State::Int | State::Float | State::Bool
+        ) {
+            self.flush(r);
+        }
         self.ensure_home(r);
-        self.b.load(Ty::I64, self.regs, reg_off(r) + 8)
+        self.b.load(Ty::I64, self.regs, reg_off(r))
     }
 
-    /// The payload's first word as an address (the allocation of a heap
-    /// value).
-    fn payload_ptr(&mut self, r: Reg) -> B::Value {
-        self.ensure_home(r);
-        self.b.load(Ty::Ptr, self.regs, reg_off(r) + 8)
+    /// The word in `r`'s home as an address (the box of a heap value).
+    fn word_ptr(&mut self, r: Reg) -> B::Value {
+        let w = self.word(r);
+        emit_box_addr(self.b, w)
     }
 
-    fn payload8(&mut self, r: Reg) -> B::Value {
-        self.ensure_home(r);
-        self.b.uload8(self.regs, reg_off(r) + 8)
+    /// `regs[dst] = w` (the home held nothing to release).
+    fn store_word(&mut self, dst: Reg, w: B::Value) {
+        self.b.store(w, self.regs, reg_off(dst));
+        self.stale[dst as usize] = false;
+    }
+
+    fn store_nil(&mut self, dst: Reg) {
+        let zero = self.b.iconst(Ty::I64, 0);
+        self.store_word(dst, zero);
     }
 
     /// Truthiness of a register: not nil and not false.
@@ -1050,15 +1260,11 @@ impl<B: Builder> Gen<'_, B> {
             State::Int | State::Float => return self.b.iconst(Ty::I8, 1),
             _ => {}
         }
-        let tag = self.tag(r);
-        let p = self.payload8(r);
-        let is_nil = self.b.icmp_imm(IntCC::Equal, tag, TAG_NIL);
-        let is_bool = self.b.icmp_imm(IntCC::Equal, tag, TAG_BOOL);
-        let is_zero = self.b.icmp_imm(IntCC::Equal, p, 0);
-        let is_false = self.b.band(is_bool, is_zero);
-        let falsy = self.b.bor(is_nil, is_false);
-        let one = self.b.iconst(Ty::I8, 1);
-        self.b.bxor(falsy, one)
+        // Only `nil` (0) and `false` (4) are falsy.
+        let w = self.word(r);
+        let mask = self.b.iconst(Ty::I64, !FALSE_BITS);
+        let t = self.b.band(w, mask);
+        self.b.icmp_imm(IntCC::NotEqual, t, 0)
     }
 
     /// Make sure `dst` holds no reference-counted value before an inline
@@ -1096,20 +1302,16 @@ impl<B: Builder> Gen<'_, B> {
     /// `*dst = regs[src]`, the value moved out of the register (whose
     /// home becomes nil): no count increment now, no release later.
     fn move_reg_to_ptr(&mut self, dst: B::Value, src: Reg) {
-        self.ensure_home(src);
-        let src_ptr = self.b.iadd_imm(self.regs, i64::from(reg_off(src)));
-        for k in [0, 8, 16] {
-            let w = self.b.load(Ty::I64, src_ptr, k);
-            self.b.store(w, dst, k);
-        }
-        self.store_tag(src, TAG_NIL);
+        let w = self.word(src);
+        self.b.store(w, dst, 0);
+        self.store_nil(src);
     }
 
     /// After a slow path that copied `src` instead of moving it: release
     /// the register so that both paths leave its home nil.
     fn drop_moved(&mut self, src: Reg) {
         self.release(src);
-        self.store_tag(src, TAG_NIL);
+        self.store_nil(src);
     }
 
     fn clone_reg_to_ptr(&mut self, dst: B::Value, src: Reg) {
@@ -1119,32 +1321,20 @@ impl<B: Builder> Gen<'_, B> {
         match self.states[src as usize] {
             State::Int => {
                 let v = self.b.use_var(self.ivar(src));
-                let t = self.b.iconst(Ty::I64, TAG_INT);
-                self.b.store(t, dst, 0);
-                self.b.store(v, dst, 8);
+                emit_box_int(self.b, self.h.box_int, dst, v);
             }
             State::Float => {
                 let v = self.b.use_var(self.fvar(src));
-                let bits = self.b.bitcast(Ty::I64, v);
-                let t = self.b.iconst(Ty::I64, TAG_FLOAT);
-                self.b.store(t, dst, 0);
-                self.b.store(bits, dst, 8);
+                emit_box_float(self.b, self.h.box_float, dst, v);
             }
             State::Bool => {
                 let v = self.b.use_var(self.bvar(src));
-                let t = self.b.iconst(Ty::I64, TAG_BOOL);
-                self.b.store(t, dst, 0);
-                let zero = self.b.iconst(Ty::I64, 0);
-                self.b.store(zero, dst, 8);
-                self.b.store(v, dst, 8);
+                let w = emit_bool_word(self.b, v);
+                self.b.store(w, dst, 0);
             }
             State::NonHeap => {
-                self.ensure_home(src);
-                let src_ptr = self.b.iadd_imm(self.regs, i64::from(reg_off(src)));
-                for k in [0, 8, 16] {
-                    let w = self.b.load(Ty::I64, src_ptr, k);
-                    self.b.store(w, dst, k);
-                }
+                let w = self.word(src);
+                self.b.store(w, dst, 0);
             }
             State::Unknown => {
                 let src_ptr = self.b.iadd_imm(self.regs, i64::from(reg_off(src)));
@@ -1319,31 +1509,29 @@ impl<B: Builder> Gen<'_, B> {
     fn inline_push(&mut self, arr_ptr: B::Value, src: Reg, slow: B::Block, move_src: bool) {
         let check_b = self.b.create_block();
         let fast = self.b.create_block();
-        let tag = self.b.load(Ty::I64, arr_ptr, 0);
-        let is_arr = self.b.icmp_imm(IntCC::Equal, tag, TAG_ARRAY);
+        let w = self.b.load(Ty::I64, arr_ptr, 0);
+        let is_arr = emit_kind_is(self.b, w, KIND_ARRAY);
         self.b.brif(is_arr, check_b, &[], slow, &[]);
         self.b.switch_to_block(check_b);
-        let rc = self.b.load(Ty::Ptr, arr_ptr, 8);
+        let rc = emit_box_addr(self.b, w);
         let strong = self.b.load(Ty::I64, rc, 0);
-        let weak = self.b.load(Ty::I64, rc, 8);
         let (kind, ptr, len, cap) = self.array_view_at(rc);
-        let unique_s = self.b.icmp_imm(IntCC::Equal, strong, 1);
-        let unique_w = self.b.icmp_imm(IntCC::Equal, weak, 1);
+        let unique = self.b.icmp_imm(IntCC::Equal, strong, 1);
         let room = self.b.icmp(IntCC::UnsignedLessThan, len, cap);
-        let ok = self.b.band(unique_s, unique_w);
-        let ok = self.b.band(ok, room);
+        let ok = self.b.band(unique, room);
         let src_state = self.states[src as usize];
-        let src_tag = match src_state {
-            State::Int => self.b.iconst(Ty::I64, TAG_INT),
-            State::Float => self.b.iconst(Ty::I64, TAG_FLOAT),
-            State::Bool => self.b.iconst(Ty::I64, TAG_BOOL),
-            _ => self.tag(src),
+        let (src_int, src_float) = match src_state {
+            State::Int => (self.b.iconst(Ty::I8, 1), self.b.iconst(Ty::I8, 0)),
+            State::Float => (self.b.iconst(Ty::I8, 0), self.b.iconst(Ty::I8, 1)),
+            State::Bool => (self.b.iconst(Ty::I8, 0), self.b.iconst(Ty::I8, 0)),
+            _ => {
+                let sw = self.word(src);
+                (emit_is_int(self.b, sw), emit_is_flonum(self.b, sw))
+            }
         };
         let kind_values = self.b.icmp_imm(IntCC::Equal, kind, 0);
         let kind_ints = self.b.icmp_imm(IntCC::Equal, kind, 1);
         let kind_floats = self.b.icmp_imm(IntCC::Equal, kind, 2);
-        let src_int = self.b.icmp_imm(IntCC::Equal, src_tag, TAG_INT);
-        let src_float = self.b.icmp_imm(IntCC::Equal, src_tag, TAG_FLOAT);
         let ints_ok = self.b.band(kind_ints, src_int);
         let floats_ok = self.b.band(kind_floats, src_float);
         let fits = self.b.bor(kind_values, ints_ok);
@@ -1373,26 +1561,33 @@ impl<B: Builder> Gen<'_, B> {
                 let f = self.b.use_var(self.fvar(src));
                 self.b.bitcast(Ty::I64, f)
             }
-            _ => self.payload(src),
+            _ => {
+                // The storage is of the value's kind: its machine word.
+                let sw = self.word(src);
+                let iv = emit_int_of(self.b, sw);
+                let fv = emit_float_of(self.b, sw);
+                let fb = self.b.bitcast(Ty::I64, fv);
+                self.b.select(kind_ints, iv, fb)
+            }
         };
         self.b.store(word, slot, 0);
         self.b.jump(done_b, &[]);
         self.b.switch_to_block(done_b);
         let len1 = self.b.iadd_imm(len, 1);
-        let data = self.b.iadd_imm(rc, i64::from(OBJECT_FIELDS_PTR_OFF));
+        let data = self.b.iadd_imm(rc, i64::from(HEAP_VALUE_OFF));
         let vec = self.b.iadd_imm(data, L::ARRAY_VEC_OFF as i64);
         self.b.store(len1, vec, L::vec_layout().len as i32);
     }
 
     fn array_view(&mut self, arr: Reg) -> (B::Value, B::Value, B::Value, B::Value) {
-        let rc = self.payload_ptr(arr);
+        let rc = self.word_ptr(arr);
         self.array_view_at(rc)
     }
 
     /// The storage kind, element pointer, length and capacity of the
     /// array whose allocation `rc` points at.
     fn array_view_at(&mut self, rc: B::Value) -> (B::Value, B::Value, B::Value, B::Value) {
-        let data = self.b.iadd_imm(rc, i64::from(OBJECT_FIELDS_PTR_OFF));
+        let data = self.b.iadd_imm(rc, i64::from(HEAP_VALUE_OFF));
         let kind = self.b.uload8(data, L::ARRAY_KIND_OFF as i32);
         let vec = self.b.iadd_imm(data, L::ARRAY_VEC_OFF as i64);
         let l = L::vec_layout();
@@ -1406,8 +1601,8 @@ impl<B: Builder> Gen<'_, B> {
     /// known to be an object's): the payload points at the allocation,
     /// the object's first word at the fields.
     fn field_addr(&mut self, obj: Reg, index: u32) -> B::Value {
-        let rc = self.payload_ptr(obj);
-        let fields = self.b.load(Ty::Ptr, rc, OBJECT_FIELDS_PTR_OFF);
+        let rc = self.word_ptr(obj);
+        let fields = self.b.load(Ty::Ptr, rc, HEAP_VALUE_OFF);
         self.b
             .iadd_imm(fields, i64::from(index) * i64::from(VALUE_SIZE))
     }
@@ -1474,13 +1669,16 @@ impl<B: Builder> Gen<'_, B> {
                 | Inst::IsA { .. }
         ) {
             for r in unbox::defs(inst) {
-                let v = self.payload8(r);
-                let v = self.b.ireduce(Ty::I8, v);
+                // `true` is 12, `false` 4: bit 3.
+                let w = self.home_word(r);
+                let bit = self.b.ushr_imm(w, 3);
+                let v = self.b.ireduce(Ty::I8, bit);
                 self.b.def_var(self.bvar(r), v);
             }
         }
         if let Inst::Len { dst, .. } = inst {
-            let v = self.payload(*dst);
+            let w = self.home_word(*dst);
+            let v = emit_int_of(self.b, w);
             self.b.def_var(self.ivar(*dst), v);
         }
     }
@@ -1490,7 +1688,10 @@ impl<B: Builder> Gen<'_, B> {
     /// with its status. Emission continues in a fresh (unreachable) block.
     fn deopt(&mut self, block: u32, index: u32) {
         let live = self.live[block as usize][index as usize].clone();
+        let was = self.box_via_runtime;
+        self.box_via_runtime = true;
         self.flush_live(&live);
+        self.box_via_runtime = was;
         // The interpreter drops what it overwrites: a home never set
         // (nor just written back) must at least be nil, which the
         // runtime writes for the registers whose bits are set.
@@ -1540,24 +1741,26 @@ impl<B: Builder> Gen<'_, B> {
             (Num::Float, State::Float) => return self.b.use_var(self.fvar(r)),
             _ => {}
         }
-        let tag = self.tag(r);
-        let want = if n == Num::Int { TAG_INT } else { TAG_FLOAT };
-        let is = self.b.icmp_imm(IntCC::Equal, tag, want);
+        let w = self.word(r);
+        let is = match n {
+            Num::Int => emit_is_int(self.b, w),
+            Num::Float => emit_is_flonum(self.b, w),
+        };
         let ok = self.b.create_block();
         let bad = self.b.create_block();
         self.b.brif(is, ok, &[], bad, &[]);
         self.b.switch_to_block(bad);
         self.deopt(block, index);
         self.b.switch_to_block(ok);
-        let p = self.payload(r);
         match n {
             Num::Int => {
-                self.b.def_var(self.ivar(r), p);
+                let v = emit_int_of(self.b, w);
+                self.b.def_var(self.ivar(r), v);
                 self.states[r as usize] = State::Int;
-                p
+                v
             }
             Num::Float => {
-                let v = self.b.bitcast(Ty::F64, p);
+                let v = emit_float_of(self.b, w);
                 self.b.def_var(self.fvar(r), v);
                 self.states[r as usize] = State::Float;
                 v
@@ -1582,7 +1785,7 @@ impl<B: Builder> Gen<'_, B> {
     fn unbox(&mut self, dst: Reg, state: State) {
         if self.states[dst as usize].needs_release() {
             self.release(dst);
-            self.store_tag(dst, TAG_NIL);
+            self.store_nil(dst);
         }
         self.states[dst as usize] = state;
     }
@@ -1592,22 +1795,66 @@ impl<B: Builder> Gen<'_, B> {
         match self.states[r as usize] {
             State::Int => {
                 let v = self.b.use_var(self.ivar(r));
-                self.store_tag(r, TAG_INT);
-                self.store_payload(r, v);
+                let (fits, word) = emit_fixnum(self.b, v);
+                self.box_home(r, fits, word, |g, slot| {
+                    g.b.call(g.h.box_int, &[slot, v]);
+                });
             }
             State::Float => {
                 let v = self.b.use_var(self.fvar(r));
-                let bits = self.b.bitcast(Ty::I64, v);
-                self.store_tag(r, TAG_FLOAT);
-                self.store_payload(r, bits);
+                let (ok, word) = emit_flonum(self.b, v);
+                self.box_home(r, ok, word, |g, slot| {
+                    g.b.call(g.h.box_float, &[slot, v]);
+                });
             }
             State::Bool => {
                 let v = self.b.use_var(self.bvar(r));
-                self.store_tag(r, TAG_BOOL);
-                // An I8, stored as the payload's first byte.
-                self.b.store(v, self.regs, reg_off(r) + 8);
+                let w = emit_bool_word(self.b, v);
+                self.store_word(r, w);
             }
             State::Unknown | State::NonHeap => {}
+        }
+    }
+
+    /// Write `word` to `r`'s home when `ok` says it is the value's
+    /// immediate form; otherwise the runtime boxes it there (inside a
+    /// deoptimization, whose exit releases every home) or the function
+    /// hands itself to the interpreter at `at` (a box in the home of an
+    /// unboxed register would never be released).
+    fn box_home(
+        &mut self,
+        r: Reg,
+        ok: B::Value,
+        word: B::Value,
+        runtime: impl FnOnce(&mut Self, B::Value),
+    ) {
+        let fast = self.b.create_block();
+        let slow = self.b.create_block();
+        let cont = self.b.create_block();
+        self.b.brif(ok, fast, &[], slow, &[]);
+        self.b.switch_to_block(slow);
+        if self.box_via_runtime {
+            let slot = self.b.iadd_imm(self.regs, i64::from(reg_off(r)));
+            runtime(self, slot);
+            self.b.jump(cont, &[]);
+        } else {
+            let (block, index) = self.at;
+            self.deopt(block, index);
+        }
+        self.b.switch_to_block(fast);
+        self.b.store(word, self.regs, reg_off(r));
+        self.b.jump(cont, &[]);
+        self.b.switch_to_block(cont);
+        self.stale[r as usize] = false;
+    }
+
+    /// Before a runtime call for the instruction being emitted: its
+    /// operands are in memory.
+    fn flush_uses(&mut self) {
+        let uses = self.uses.clone();
+        for r in uses {
+            self.flush(r);
+            self.ensure_home(r);
         }
     }
 
@@ -1677,22 +1924,6 @@ impl<B: Builder> Gen<'_, B> {
         self.b.store(line_v, self.act, L::ACT_LINE as i32);
     }
 
-    /// The typed entry a call goes through, when it does (the conditions
-    /// of the `Inst::Call` arm of `inst`).
-    fn typed_callee(&self, inst: &Inst) -> Option<FuncId> {
-        let call = self.static_target(inst)?;
-        let m = &self.methods[call.mid as usize];
-        if m.overridden && !m.singleton && !m.is_extension && m.native_key.is_none() {
-            return None;
-        }
-        let callee = direct_target(inst, self.methods)?;
-        let sig = self.typed_all.get(callee as usize)?.as_ref()?;
-        (call.block.is_none()
-            && call.args.len() == sig.params.len()
-            && self.callees_typed.contains_key(&callee))
-        .then_some(callee)
-    }
-
     fn static_target(&self, inst: &Inst) -> Option<StaticCall> {
         let Inst::Call {
             dst,
@@ -1752,8 +1983,12 @@ impl<B: Builder> Gen<'_, B> {
         index: u32,
         unwind: B::Block,
     ) {
-        if recv.is_none() {
-            self.materialize();
+        match recv {
+            None => self.materialize(),
+            Some(r) => {
+                self.flush(r);
+                self.ensure_home(r);
+            }
         }
         let (nparams, has_block) = {
             let m = &self.methods[mid as usize];
@@ -1895,8 +2130,12 @@ impl<B: Builder> Gen<'_, B> {
         unwind: B::Block,
         allow_move: bool,
     ) {
-        if recv.is_none() {
-            self.materialize();
+        match recv {
+            None => self.materialize(),
+            Some(r) => {
+                self.flush(r);
+                self.ensure_home(r);
+            }
         }
         let mid_v = self.i32(mid);
         let recv_v = self.i32(recv.unwrap_or(u32::MAX));
@@ -2059,12 +2298,11 @@ impl<B: Builder> Gen<'_, B> {
                 (State::Int, Num::Int) | (State::Float, Num::Float) => continue,
                 (State::Int | State::Float | State::Bool, _) => self.b.iconst(Ty::I8, 0),
                 _ => {
-                    let tag = self.tag(*r);
-                    let want = match n {
-                        Num::Int => TAG_INT,
-                        Num::Float => TAG_FLOAT,
-                    };
-                    self.b.icmp_imm(IntCC::Equal, tag, want)
+                    let w = self.word(*r);
+                    match n {
+                        Num::Int => emit_is_int(self.b, w),
+                        Num::Float => emit_is_flonum(self.b, w),
+                    }
                 }
             };
             ok = Some(match ok {
@@ -2094,10 +2332,13 @@ impl<B: Builder> Gen<'_, B> {
             let v = match (self.states[*r as usize], n) {
                 (State::Int, Num::Int) => self.b.use_var(self.ivar(*r)),
                 (State::Float, Num::Float) => self.b.use_var(self.fvar(*r)),
-                (_, Num::Int) => self.payload(*r),
+                (_, Num::Int) => {
+                    let w = self.word(*r);
+                    emit_int_of(self.b, w)
+                }
                 (_, Num::Float) => {
-                    let p = self.payload(*r);
-                    self.b.bitcast(Ty::F64, p)
+                    let w = self.word(*r);
+                    emit_float_of(self.b, w)
                 }
             };
             call_args.push(v);
@@ -2130,10 +2371,8 @@ impl<B: Builder> Gen<'_, B> {
         self.states.clone_from(&saved);
         self.clear_home(dst);
         let home = self.b.iadd_imm(self.regs, i64::from(reg_off(dst)));
-        for k in [0, 8, 16] {
-            let w = self.b.load(Ty::I64, self.out_buf, k);
-            self.b.store(w, home, k);
-        }
+        let w = self.b.load(Ty::I64, self.out_buf, 0);
+        self.b.store(w, home, 0);
         self.b.store(zero, self.out_buf, 0);
         self.states[dst as usize] = State::Unknown;
         self.get_num(dst, sig.ret, block, index + 1);
@@ -2169,6 +2408,7 @@ impl<B: Builder> Gen<'_, B> {
         dst: Reg,
         unwind: B::Block,
     ) {
+        self.flush_uses();
         if recv.is_none() {
             self.materialize();
         }
@@ -2204,7 +2444,7 @@ impl<B: Builder> Gen<'_, B> {
         if self.states[r as usize].needs_release() {
             self.release(r);
         }
-        self.store_tag(r, TAG_NIL);
+        self.store_nil(r);
     }
 
     /// In a typed entry, give the activation what the runtime or the
@@ -2232,8 +2472,8 @@ impl<B: Builder> Gen<'_, B> {
             self.b.store(one, act, L::ACT_NATIVE as i32);
             self.b.def_var(self.pushed_var, one);
         } else {
-            let tag = self.b.load(Ty::I64, self_dst, 0);
-            let unset = self.b.icmp_imm(IntCC::Equal, tag, TAG_NIL);
+            let w = self.b.load(Ty::I64, self_dst, 0);
+            let unset = self.b.icmp_imm(IntCC::Equal, w, 0);
             self.b.brif(unset, fill, &[], done, &[]);
             self.b.switch_to_block(fill);
         }
@@ -2253,28 +2493,24 @@ impl<B: Builder> Gen<'_, B> {
             let p = self
                 .b
                 .iadd_imm(params_buf, (k as i64) * i64::from(VALUE_SIZE));
-            let (tag, word) = match n {
-                Num::Int => (self.b.iconst(Ty::I64, TAG_INT), v),
-                Num::Float => (
-                    self.b.iconst(Ty::I64, TAG_FLOAT),
-                    self.b.bitcast(Ty::I64, v),
-                ),
-            };
-            self.b.store(tag, p, 0);
-            self.b.store(word, p, 8);
+            match n {
+                Num::Int => emit_box_int(self.b, self.h.box_int, p, v),
+                Num::Float => emit_box_float(self.b, self.h.box_float, p, v),
+            }
         }
         self.b.jump(done, &[]);
         self.b.switch_to_block(done);
     }
 
-    fn store_tag(&mut self, dst: Reg, tag: i64) {
-        let t = self.b.iconst(Ty::I64, tag);
-        self.b.store(t, self.regs, reg_off(dst));
-        self.stale[dst as usize] = false;
-    }
-
-    fn store_payload(&mut self, dst: Reg, v: B::Value) {
-        self.b.store(v, self.regs, reg_off(dst) + 8);
+    /// `regs[dst] = Int(v)` when `v` fits the immediate form, `slow`
+    /// otherwise (the runtime does the whole operation there).
+    fn store_fixnum_or(&mut self, dst: Reg, v: B::Value, slow: B::Block) {
+        let (fits, word) = emit_fixnum(self.b, v);
+        let ok = self.b.create_block();
+        self.b.brif(fits, ok, &[], slow, &[]);
+        self.b.switch_to_block(ok);
+        self.release(dst);
+        self.store_word(dst, word);
     }
 
     /// Store a boolean (an I8 value) as a `Bool`.
@@ -2287,8 +2523,8 @@ impl<B: Builder> Gen<'_, B> {
     /// operation, whose result stays boxed).
     fn store_bool_home(&mut self, dst: Reg, v: B::Value) {
         self.release(dst);
-        self.store_tag(dst, TAG_BOOL);
-        self.b.store(v, self.regs, reg_off(dst) + 8);
+        let w = emit_bool_word(self.b, v);
+        self.store_word(dst, w);
     }
 
     /// Delegate the instruction to the runtime and check its status.
@@ -2300,6 +2536,7 @@ impl<B: Builder> Gen<'_, B> {
     /// Delegate the instruction to a runtime entry with `qz_exec`'s
     /// signature (a dedicated one for some instructions).
     fn exec_via(&mut self, entry: B::Func, block: u32, inst: u32, unwind: B::Block) {
+        self.flush_uses();
         self.materialize();
         let fid = self.b.iconst(Ty::I32, i64::from(self.fid));
         let blk = self.b.iconst(Ty::I32, i64::from(block));
@@ -2323,14 +2560,16 @@ impl<B: Builder> Gen<'_, B> {
         let typed = matches!(inst, Inst::BinOp { .. })
             && unbox::bin_types(inst, self.methods, self.builtin).is_some()
             && !unbox::float_mod(inst);
-        let has_handler = self.f.blocks[block as usize].handler.is_some();
-        // A call through a typed entry reads homes only on its fallback
-        // paths, which write back there (see `typed_call`).
-        let lazy = typed || self.typed_callee(inst).is_some();
-        let unwinds_to_handler = has_handler && unbox::may_unwind(inst);
-        if (!lazy && !unbox::reads_no_home(inst)) || (!typed && unwinds_to_handler) {
-            let live = self.live[block as usize][index as usize].clone();
-            self.flush_live(&live);
+        // A runtime call reads only the registers the instruction uses,
+        // written back on the path that makes it (`flush_uses`); the
+        // block's handler, entered from any instruction that reaches the
+        // runtime, reads whatever is live at its entry.
+        self.uses = inst.uses();
+        if let Some(h) = self.f.blocks[block as usize].handler {
+            if !typed && !unbox::inline_only(inst) {
+                let live = self.live[h.block as usize][0].clone();
+                self.flush_live(&live);
+            }
         }
         match inst {
             Inst::Move { dst, src } => {
@@ -2353,10 +2592,8 @@ impl<B: Builder> Gen<'_, B> {
                     State::NonHeap => {
                         // A plain copy: nothing to count on either side.
                         self.release(*dst);
-                        let t = self.tag(*src);
-                        let p = self.payload(*src);
-                        self.b.store(t, self.regs, reg_off(*dst));
-                        self.store_payload(*dst, p);
+                        let w = self.word(*src);
+                        self.store_word(*dst, w);
                     }
                     State::Unknown => {
                         let s = self.b.iadd_imm(self.regs, i64::from(reg_off(*src)));
@@ -2367,7 +2604,7 @@ impl<B: Builder> Gen<'_, B> {
             Inst::LoadConst { dst, idx } => match &self.f.consts[*idx as usize] {
                 Constant::Nil => {
                     self.release(*dst);
-                    self.store_tag(*dst, TAG_NIL);
+                    self.store_nil(*dst);
                 }
                 Constant::Bool(v) => {
                     let v = self.b.iconst(Ty::I8, i64::from(*v));
@@ -2381,22 +2618,7 @@ impl<B: Builder> Gen<'_, B> {
                     let v = self.b.f64const(*f);
                     self.store_float(*dst, v);
                 }
-                // A short string is the three words of its value.
-                Constant::Str(text) if quarz_vm::value::ShortStr::new(text).is_some() => {
-                    let v = quarz_vm::value::Value::str(text);
-                    // SAFETY: a short string has no heap payload: its
-                    // three words are the whole value (and need no drop).
-                    let words: [u64; 3] = unsafe {
-                        std::ptr::read(&v as *const quarz_vm::value::Value as *const [u64; 3])
-                    };
-                    std::mem::forget(v);
-                    self.release(*dst);
-                    for (k, w) in words.iter().enumerate() {
-                        let c = self.b.iconst(Ty::I64, *w as i64);
-                        self.b.store(c, self.regs, reg_off(*dst) + 8 * k as i32);
-                    }
-                }
-                // A longer string or a symbol: cloned from the function's pool.
+                // A string or a symbol: cloned from the function's pool.
                 Constant::Str(_) | Constant::Symbol(_) => {
                     let fid = self.i32(self.fid);
                     let i = self.i32(*idx);
@@ -2480,6 +2702,17 @@ impl<B: Builder> Gen<'_, B> {
                                 }
                             }
                         };
+                        // An unboxed `Int` fits the immediate form, so
+                        // that writing it back never allocates.
+                        if matches!(op, FastOp::Add | FastOp::Sub | FastOp::Mul) {
+                            let (fits, _) = emit_fixnum(self.b, r);
+                            let ok = self.b.create_block();
+                            let bad = self.b.create_block();
+                            self.b.brif(fits, ok, &[], bad, &[]);
+                            self.b.switch_to_block(bad);
+                            self.deopt(block, index);
+                            self.b.switch_to_block(ok);
+                        }
                         self.store_int(*dst, r);
                     }
                     Some(Num::Float) => {
@@ -2554,10 +2787,10 @@ impl<B: Builder> Gen<'_, B> {
                     | FastOp::Ne
             ) =>
             {
-                let tl = self.tag(*lhs);
-                let tr = self.tag(*rhs);
-                let a = self.b.icmp_imm(IntCC::Equal, tl, TAG_INT);
-                let c = self.b.icmp_imm(IntCC::Equal, tr, TAG_INT);
+                let wl = self.word(*lhs);
+                let wr = self.word(*rhs);
+                let a = emit_is_int(self.b, wl);
+                let c = emit_is_int(self.b, wr);
                 let both = self.b.band(a, c);
                 let fast_blk = self.b.create_block();
                 let not_int = self.b.create_block();
@@ -2566,16 +2799,14 @@ impl<B: Builder> Gen<'_, B> {
                 self.b.brif(both, fast_blk, &[], not_int, &[]);
                 // Both floats: inline floating-point arithmetic.
                 self.b.switch_to_block(not_int);
-                let fa = self.b.icmp_imm(IntCC::Equal, tl, TAG_FLOAT);
-                let fc = self.b.icmp_imm(IntCC::Equal, tr, TAG_FLOAT);
+                let fa = emit_is_flonum(self.b, wl);
+                let fc = emit_is_flonum(self.b, wr);
                 let both_f = self.b.band(fa, fc);
                 let float_blk = self.b.create_block();
                 self.b.brif(both_f, float_blk, &[], slow_blk, &[]);
                 self.b.switch_to_block(float_blk);
-                let xb = self.payload(*lhs);
-                let yb = self.payload(*rhs);
-                let x = self.b.bitcast(Ty::F64, xb);
-                let y = self.b.bitcast(Ty::F64, yb);
+                let x = emit_float_of(self.b, wl);
+                let y = emit_float_of(self.b, wr);
                 match op {
                     FastOp::Mod => {
                         self.b.jump(slow_blk, &[]);
@@ -2589,10 +2820,10 @@ impl<B: Builder> Gen<'_, B> {
                             FastOp::Mul => self.b.fmul(x, y),
                             _ => self.b.fdiv(x, y),
                         };
-                        let bits = self.b.bitcast(Ty::I64, r);
                         self.release(*dst);
-                        self.store_tag(*dst, TAG_FLOAT);
-                        self.store_payload(*dst, bits);
+                        let slot = self.b.iadd_imm(self.regs, i64::from(reg_off(*dst)));
+                        emit_box_float(self.b, self.h.box_float, slot, r);
+                        self.stale[*dst as usize] = false;
                     }
                     _ => {
                         let cc = match op {
@@ -2609,8 +2840,8 @@ impl<B: Builder> Gen<'_, B> {
                 }
                 self.b.jump(cont, &[]);
                 self.b.switch_to_block(fast_blk);
-                let x = self.payload(*lhs);
-                let y = self.payload(*rhs);
+                let x = emit_int_of(self.b, wl);
+                let y = emit_int_of(self.b, wr);
                 match op {
                     FastOp::Mul => {
                         // Overflow when the high word is not the sign
@@ -2622,9 +2853,7 @@ impl<B: Builder> Gen<'_, B> {
                         let ok_blk = self.b.create_block();
                         self.b.brif(overflow, slow_blk, &[], ok_blk, &[]);
                         self.b.switch_to_block(ok_blk);
-                        self.release(*dst);
-                        self.store_tag(*dst, TAG_INT);
-                        self.store_payload(*dst, r);
+                        self.store_fixnum_or(*dst, r, slow_blk);
                     }
                     FastOp::Div | FastOp::Mod => {
                         // Division by zero and MIN / -1 go to the runtime.
@@ -2655,9 +2884,7 @@ impl<B: Builder> Gen<'_, B> {
                             let add = self.b.select(adjust, y, zero);
                             self.b.iadd(rem, add)
                         };
-                        self.release(*dst);
-                        self.store_tag(*dst, TAG_INT);
-                        self.store_payload(*dst, r);
+                        self.store_fixnum_or(*dst, r, slow_blk);
                     }
                     FastOp::Add | FastOp::Sub => {
                         let r = if *op == FastOp::Add {
@@ -2679,9 +2906,7 @@ impl<B: Builder> Gen<'_, B> {
                         let ok_blk = self.b.create_block();
                         self.b.brif(overflow, slow_blk, &[], ok_blk, &[]);
                         self.b.switch_to_block(ok_blk);
-                        self.release(*dst);
-                        self.store_tag(*dst, TAG_INT);
-                        self.store_payload(*dst, r);
+                        self.store_fixnum_or(*dst, r, slow_blk);
                     }
                     _ => {
                         let cc = match op {
@@ -2714,15 +2939,15 @@ impl<B: Builder> Gen<'_, B> {
                 let fast = self.b.create_block();
                 let slow = self.b.create_block();
                 let cont = self.b.create_block();
-                let tag = self.tag(*src);
-                let is_arr = self.b.icmp_imm(IntCC::Equal, tag, TAG_ARRAY);
+                let w = self.word(*src);
+                let is_arr = emit_kind_is(self.b, w, KIND_ARRAY);
                 self.b.brif(is_arr, fast, &[], slow, &[]);
                 self.b.switch_to_block(fast);
                 let (_, _, len, _) = self.array_view(*src);
                 // The home too: `after` reads it back into the variable.
                 self.release(*dst);
-                self.store_tag(*dst, TAG_INT);
-                self.store_payload(*dst, len);
+                let (_, word) = emit_fixnum(self.b, len);
+                self.store_word(*dst, word);
                 self.b.def_var(self.ivar(*dst), len);
                 self.b.jump(cont, &[]);
                 self.b.switch_to_block(slow);
@@ -2742,22 +2967,26 @@ impl<B: Builder> Gen<'_, B> {
                 let fast = self.b.create_block();
                 let slow = self.b.create_block();
                 let cont = self.b.create_block();
-                let tag = self.tag(*arr);
-                let is_arr = self.b.icmp_imm(IntCC::Equal, tag, TAG_ARRAY);
+                let w = self.word(*arr);
+                let is_arr = emit_kind_is(self.b, w, KIND_ARRAY);
                 let int_state = self.states[*idx as usize] == State::Int;
-                if int_state {
-                    self.b.brif(is_arr, check_b, &[], slow, &[]);
+                let iw = if int_state {
+                    None
                 } else {
-                    let itag = self.tag(*idx);
-                    let is_int = self.b.icmp_imm(IntCC::Equal, itag, TAG_INT);
-                    let both = self.b.band(is_arr, is_int);
-                    self.b.brif(both, check_b, &[], slow, &[]);
+                    Some(self.word(*idx))
+                };
+                match iw {
+                    None => self.b.brif(is_arr, check_b, &[], slow, &[]),
+                    Some(iw) => {
+                        let is_int = emit_is_int(self.b, iw);
+                        let both = self.b.band(is_arr, is_int);
+                        self.b.brif(both, check_b, &[], slow, &[]);
+                    }
                 }
                 self.b.switch_to_block(check_b);
-                let i = if int_state {
-                    self.b.use_var(self.ivar(*idx))
-                } else {
-                    self.payload(*idx)
+                let i = match iw {
+                    None => self.b.use_var(self.ivar(*idx)),
+                    Some(iw) => emit_int_of(self.b, iw),
                 };
                 let (kind, ptr, len, _) = self.array_view(*arr);
                 let in_range = self.b.icmp(IntCC::UnsignedLessThan, i, len);
@@ -2784,16 +3013,18 @@ impl<B: Builder> Gen<'_, B> {
                 let elem = self.b.iadd(ptr, off);
                 let v = self.b.load(Ty::I64, elem, 0);
                 self.release(*dst);
-                self.store_tag(*dst, TAG_INT);
-                self.store_payload(*dst, v);
+                let home = self.b.iadd_imm(self.regs, i64::from(reg_off(*dst)));
+                emit_box_int(self.b, self.h.box_int, home, v);
+                self.stale[*dst as usize] = false;
                 self.b.jump(cont, &[]);
                 self.b.switch_to_block(floats_b);
                 let off = self.b.imul_imm(i, 8);
                 let elem = self.b.iadd(ptr, off);
-                let bits = self.b.load(Ty::I64, elem, 0);
+                let f = self.b.load(Ty::F64, elem, 0);
                 self.release(*dst);
-                self.store_tag(*dst, TAG_FLOAT);
-                self.store_payload(*dst, bits);
+                let home = self.b.iadd_imm(self.regs, i64::from(reg_off(*dst)));
+                emit_box_float(self.b, self.h.box_float, home, f);
+                self.stale[*dst as usize] = false;
                 self.b.jump(cont, &[]);
                 self.b.switch_to_block(slow);
                 self.exec(block, index, unwind);
@@ -2831,7 +3062,7 @@ impl<B: Builder> Gen<'_, B> {
                 for r in *from..*to {
                     if self.states[r as usize].needs_release() {
                         self.release(r);
-                        self.store_tag(r, TAG_NIL);
+                        self.store_nil(r);
                     } else {
                         self.stale[r as usize] = true;
                     }
@@ -2850,15 +3081,15 @@ impl<B: Builder> Gen<'_, B> {
                         let check = self.b.create_block();
                         let join = self.b.create_block();
                         self.b.append_block_param(join, Ty::I8);
-                        let tag = self.tag(*src);
-                        let is_obj = self.b.icmp_imm(IntCC::Equal, tag, TAG_OBJECT);
+                        let w = self.word(*src);
+                        let is_obj = emit_is_object(self.b, w);
                         let no = self.b.iconst(Ty::I8, 0);
                         self.b.brif(is_obj, check, &[], join, &[no]);
                         self.b.switch_to_block(check);
-                        let rc = self.payload_ptr(*src);
+                        let rc = emit_box_addr(self.b, w);
                         let cid = self
                             .b
-                            .uload32(rc, OBJECT_FIELDS_PTR_OFF + L::OBJECT_CLASS_OFF as i32);
+                            .uload32(rc, HEAP_VALUE_OFF + L::OBJECT_CLASS_OFF as i32);
                         let same = self.b.icmp_imm(IntCC::Equal, cid, i64::from(*class));
                         self.b.jump(join, &[same]);
                         self.b.switch_to_block(join);
@@ -2871,8 +3102,8 @@ impl<B: Builder> Gen<'_, B> {
                 let v = match self.states[*src as usize] {
                     State::Int | State::Float | State::Bool => self.b.iconst(Ty::I8, 0),
                     _ => {
-                        let tag = self.tag(*src);
-                        self.b.icmp_imm(IntCC::Equal, tag, TAG_NIL)
+                        let w = self.word(*src);
+                        self.b.icmp_imm(IntCC::Equal, w, 0)
                     }
                 };
                 self.store_bool(*dst, v);
@@ -2911,7 +3142,7 @@ impl<B: Builder> Gen<'_, B> {
                 self.b.jump(cont, &[]);
                 self.b.switch_to_block(no);
                 self.release(*dst);
-                self.store_tag(*dst, TAG_NIL);
+                self.store_nil(*dst);
                 self.b.jump(cont, &[]);
                 self.b.switch_to_block(cont);
                 // A parameter declared Int/Float: check once, then unboxed.
@@ -2946,6 +3177,7 @@ impl<B: Builder> Gen<'_, B> {
                 self.clone_reg_to_ptr(addr, *src);
                 self.b.jump(cont, &[]);
                 self.b.switch_to_block(slow);
+                self.flush_uses();
                 let dp = self.i32(*depth);
                 let sl = self.i32(*slot);
                 let s = self.i32(*src);
@@ -2956,9 +3188,8 @@ impl<B: Builder> Gen<'_, B> {
             }
             Inst::ClassRef { dst, class } => {
                 self.release(*dst);
-                self.store_tag(*dst, TAG_CLASS);
-                let v = self.b.iconst(Ty::I64, i64::from(*class));
-                self.store_payload(*dst, v);
+                let w = self.b.iconst(Ty::I64, (i64::from(*class) << 8) | CLASS_TAG);
+                self.store_word(*dst, w);
             }
             Inst::FieldGet {
                 dst,
@@ -2970,14 +3201,15 @@ impl<B: Builder> Gen<'_, B> {
                 let fast = self.b.create_block();
                 let slow = self.b.create_block();
                 let cont = self.b.create_block();
-                let tag = self.tag(*obj);
-                let is_obj = self.b.icmp_imm(IntCC::Equal, tag, TAG_OBJECT);
+                let w = self.word(*obj);
+                let is_obj = emit_is_object(self.b, w);
                 self.b.brif(is_obj, fast, &[], slow, &[]);
                 let num = unbox::field_num(self.classes, *class, *field);
                 // The slow path first: a field declared Int/Float is
                 // checked once there (the compile-time state must still
                 // be the one before this instruction).
                 self.b.switch_to_block(slow);
+                self.flush_uses();
                 let o = self.i32(*obj);
                 let i = self.i32(*field);
                 let d = self.i32(*dst);
@@ -3000,21 +3232,25 @@ impl<B: Builder> Gen<'_, B> {
                     // mismatch re-runs the read in the interpreter), and
                     // the home is not written.
                     Some(n) => {
-                        let ftag = self.b.load(Ty::I64, addr, 0);
-                        let want = if n == Num::Int { TAG_INT } else { TAG_FLOAT };
-                        let is = self.b.icmp_imm(IntCC::Equal, ftag, want);
+                        let fw = self.b.load(Ty::I64, addr, 0);
+                        let is = match n {
+                            Num::Int => emit_is_int(self.b, fw),
+                            Num::Float => emit_is_flonum(self.b, fw),
+                        };
                         let ok = self.b.create_block();
                         let bad = self.b.create_block();
                         self.b.brif(is, ok, &[], bad, &[]);
                         self.b.switch_to_block(bad);
                         self.deopt(block, index);
                         self.b.switch_to_block(ok);
-                        let p = self.b.load(Ty::I64, addr, 8);
                         self.unbox(*dst, unbox::num_state(n));
                         match n {
-                            Num::Int => self.b.def_var(self.ivar(*dst), p),
+                            Num::Int => {
+                                let v = emit_int_of(self.b, fw);
+                                self.b.def_var(self.ivar(*dst), v);
+                            }
                             Num::Float => {
-                                let v = self.b.bitcast(Ty::F64, p);
+                                let v = emit_float_of(self.b, fw);
                                 self.b.def_var(self.fvar(*dst), v);
                             }
                         }
@@ -3033,8 +3269,8 @@ impl<B: Builder> Gen<'_, B> {
                 let fast = self.b.create_block();
                 let slow = self.b.create_block();
                 let cont = self.b.create_block();
-                let tag = self.tag(*obj);
-                let is_obj = self.b.icmp_imm(IntCC::Equal, tag, TAG_OBJECT);
+                let w = self.word(*obj);
+                let is_obj = emit_is_object(self.b, w);
                 self.b.brif(is_obj, fast, &[], slow, &[]);
                 self.b.switch_to_block(fast);
                 let field = self.field_addr(*obj, *field_index);
@@ -3048,6 +3284,7 @@ impl<B: Builder> Gen<'_, B> {
                 }
                 self.b.jump(cont, &[]);
                 self.b.switch_to_block(slow);
+                self.flush_uses();
                 let o = self.i32(*obj);
                 let i = self.i32(*field_index);
                 let s = self.i32(*src);
@@ -3108,6 +3345,7 @@ impl<B: Builder> Gen<'_, B> {
                     );
                     return;
                 }
+                self.flush_uses();
                 for (k, r) in args.iter().enumerate() {
                     let v = self.i32(*r);
                     self.b.store(v, self.scratch, 4 * k as i32);
@@ -3152,8 +3390,8 @@ impl<B: Builder> Gen<'_, B> {
                         VarLoc::Frame { depth, slot } => self.frame_slot_addr(*depth, *slot, slow),
                         VarLoc::Field { obj, index } => {
                             let check = self.b.create_block();
-                            let tag = self.tag(*obj);
-                            let is_obj = self.b.icmp_imm(IntCC::Equal, tag, TAG_OBJECT);
+                            let w = self.word(*obj);
+                            let is_obj = emit_is_object(self.b, w);
                             self.b.brif(is_obj, check, &[], slow, &[]);
                             self.b.switch_to_block(check);
                             self.field_addr(*obj, *index)
@@ -3166,6 +3404,7 @@ impl<B: Builder> Gen<'_, B> {
                     self.b.jump(cont, &[]);
                     self.b.switch_to_block(slow);
                 }
+                self.flush_uses();
                 for (k, r) in args.iter().enumerate() {
                     let v = self.i32(*r);
                     self.b.store(v, self.scratch, 4 * k as i32);
@@ -3217,6 +3456,7 @@ impl<B: Builder> Gen<'_, B> {
                 block: None,
                 ..
             } if kw.is_empty() => {
+                self.flush_uses();
                 for (k, r) in args.iter().enumerate() {
                     let v = self.i32(*r);
                     self.b.store(v, self.scratch, 4 * k as i32);
@@ -3276,6 +3516,7 @@ impl<B: Builder> Gen<'_, B> {
                         }
                         return;
                     }
+                    self.flush_uses();
                     if recv.is_none() {
                         self.materialize();
                     }

@@ -18,6 +18,7 @@ use quarz_ir::{ClassId, FuncId, Function, MethodId, RtWorld, Unit};
 
 use crate::interp::{CompiledFn, Flow, Interp, SharedState};
 use crate::sched::{TaskExit, TaskResult};
+use crate::value::V;
 use crate::value::*;
 
 /// Everything a second interpreter needs to run the loaded program.
@@ -106,38 +107,37 @@ pub struct WorkerOutcome {
 // ----- export --------------------------------------------------------------------
 
 pub fn export(interp: &Interp, v: &Value) -> Result<Transfer, Flow> {
-    Ok(match v {
-        Value::Nil => Transfer::Nil,
-        Value::Bool(b) => Transfer::Bool(*b),
-        Value::Int(i) => Transfer::Int(*i),
-        Value::Float(f) => Transfer::Float(*f),
-        Value::Symbol(s) => Transfer::Symbol(interp.symbol_name(*s).to_string()),
-        Value::Class(c) => Transfer::Class(*c),
-        Value::Duration(d) => Transfer::Duration(*d),
-        Value::BigInt(b) => Transfer::BigInt((**b).clone()),
-        Value::Str(s) => Transfer::Str(s.to_string()),
-        Value::Short(s) => Transfer::Str(s.as_str().to_string()),
-        Value::Array(items) => Transfer::Array(export_all(interp, items.values().iter())?),
-        Value::Hash(h) => {
+    Ok(match v.view() {
+        V::Nil => Transfer::Nil,
+        V::Bool(b) => Transfer::Bool(b),
+        V::Int(i) => Transfer::Int(i),
+        V::Float(f) => Transfer::Float(f),
+        V::Symbol(s) => Transfer::Symbol(interp.symbol_name(s).to_string()),
+        V::Class(c) => Transfer::Class(c),
+        V::Duration(d) => Transfer::Duration(d),
+        V::BigInt(b) => Transfer::BigInt((**b).clone()),
+        V::Str(s) => Transfer::Str(s.as_str().to_string()),
+        V::Array(items) => Transfer::Array(export_all(interp, items.values().iter())?),
+        V::Hash(h) => {
             let mut out = Vec::with_capacity(h.len());
             for (k, v) in h.iter() {
                 out.push((export(interp, k)?, export(interp, v)?));
             }
             Transfer::Hash(out)
         }
-        Value::Set(s) => Transfer::Set(export_all(interp, s.iter())?),
-        Value::Range(r) => Transfer::Range {
+        V::Set(s) => Transfer::Set(export_all(interp, s.iter())?),
+        V::Range(r) => Transfer::Range {
             lo: Box::new(export(interp, &r.lo)?),
             hi: Box::new(export(interp, &r.hi)?),
             exclusive: r.exclusive,
         },
-        Value::Regexp(r) => Transfer::Regexp {
+        V::Regexp(r) => Transfer::Regexp {
             source: r.source.clone(),
             flags: r.flags.clone(),
         },
-        Value::Bytes(b) => Transfer::Bytes(b.to_vec()),
-        Value::Time(t) => Transfer::Time(**t),
-        Value::Object(o) => Transfer::Object {
+        V::Bytes(b) => Transfer::Bytes(b.to_vec()),
+        V::Time(t) => Transfer::Time(**t),
+        V::Object(o) => Transfer::Object {
             class: o.class,
             fields: export_all(interp, o.fields.borrow().iter())?,
             backtrace: o.backtrace().map(|b| b.to_vec()),
@@ -146,7 +146,7 @@ pub fn export(interp: &Interp, v: &Value) -> Result<Transfer, Flow> {
                 None => None,
             },
         },
-        Value::Proc(c) => {
+        V::Proc(c) => {
             // Only the captured variables the block (and the blocks inside
             // it) actually use travel; the rest of the frame chain is
             // left out, so an unrelated channel in scope is no obstacle.
@@ -281,25 +281,25 @@ pub fn import(interp: &Interp, t: Transfer) -> Value {
         Transfer::BigInt(b) => int_from_big(b),
         Transfer::Str(s) => Value::string(s),
         Transfer::Array(items) => Value::array(import_all(interp, items)),
-        Transfer::Hash(pairs) => Value::Hash(Rc::new(
+        Transfer::Hash(pairs) => Value::Hash(
             pairs
                 .into_iter()
                 .map(|(k, v)| (import(interp, k), import(interp, v)))
-                .collect(),
-        )),
+                .collect::<ValueMap>(),
+        ),
         Transfer::Set(items) => {
-            Value::Set(Rc::new(import_all(interp, items).into_iter().collect()))
+            Value::Set(import_all(interp, items).into_iter().collect::<ValueSet>())
         }
-        Transfer::Range { lo, hi, exclusive } => Value::Range(Rc::new(RangeVal {
+        Transfer::Range { lo, hi, exclusive } => Value::Range(RangeVal {
             lo: import(interp, *lo),
             hi: import(interp, *hi),
             exclusive,
-        })),
+        }),
         Transfer::Regexp { source, flags } => {
             interp.make_regexp(&source, &flags).unwrap_or(Value::Nil)
         }
         Transfer::Bytes(b) => Value::bytes(b),
-        Transfer::Time(t) => Value::Time(Rc::new(t)),
+        Transfer::Time(t) => Value::Time(t),
         Transfer::Object {
             class,
             fields,
@@ -333,7 +333,7 @@ pub fn import(interp: &Interp, t: Transfer) -> Value {
             method_block,
             method_tag,
             file,
-        } => Value::Proc(Rc::new(Closure {
+        } => Value::Proc(Closure {
             body: match body {
                 ProcBody::Func(id) => ClosureBody::Func(id),
                 ProcBody::MethodName(n, m) => {
@@ -352,7 +352,7 @@ pub fn import(interp: &Interp, t: Transfer) -> Value {
             method_block: method_block.map(|b| import(interp, *b)),
             method_tag,
             file,
-        })),
+        }),
     }
 }
 

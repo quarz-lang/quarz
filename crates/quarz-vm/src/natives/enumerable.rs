@@ -3,9 +3,9 @@
 //! Hash, Set, Range and their builders that the first batch left out.
 
 use std::collections::HashMap;
-use std::rc::Rc;
 
 use crate::interp::{Args, EvalResult, Flow, Interp, NativeFn};
+use crate::value::V;
 use crate::value::*;
 use smallvec::smallvec;
 
@@ -41,7 +41,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
 
     // Enumerator
     m.insert("Enumerator#peek", |i, r, _| {
-        let Value::Enumerator(e) = r else {
+        let V::Enumerator(e) = r.view() else {
             return Err(i.err_type("expected an Enumerator"));
         };
         if e.buffer.borrow().is_none() {
@@ -57,7 +57,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
         }
     });
     m.insert("Enumerator#rewind", |i, r, _| {
-        let Value::Enumerator(e) = r else {
+        let V::Enumerator(e) = r.view() else {
             return Err(i.err_type("expected an Enumerator"));
         };
         e.position.set(0);
@@ -163,7 +163,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     // Array::Builder
     m.insert("Array::Builder#[]", |i, r, a| {
         let b = ab(i, r)?;
-        if let Value::Range(rg) = a.arg(0) {
+        if let V::Range(rg) = a.arg(0).view() {
             let items = b.borrow();
             let (start, len) = range_bounds(i, items.len(), rg)?;
             return Ok(Value::array(items[start..start + len].to_vec()));
@@ -379,7 +379,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
                 out.insert(k.clone(), v.clone());
             }
         }
-        Ok(Value::Hash(Rc::new(out)))
+        Ok(Value::Hash(out))
     });
 
     // Hash::Builder
@@ -482,7 +482,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
         Ok(r.clone())
     });
     m.insert("Hash::Builder#replace", |i, r, a| {
-        let other = hash(i, a.arg(0))?.as_ref().clone();
+        let other = (**hash(i, a.arg(0))?).clone();
         *hb(i, r)?.borrow_mut() = other;
         Ok(r.clone())
     });
@@ -570,15 +570,15 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     // Range
     m.insert("Range#empty?", |i, r, _| {
         let rg = range(i, r)?;
-        Ok(Value::Bool(match (&rg.lo, &rg.hi) {
-            (Value::Int(lo), Value::Int(hi)) => {
+        Ok(Value::Bool(match (rg.lo.view(), rg.hi.view()) {
+            (V::Int(lo), V::Int(hi)) => {
                 if rg.exclusive {
                     lo >= hi
                 } else {
                     lo > hi
                 }
             }
-            (_, Value::Nil) | (Value::Nil, _) => false,
+            (_, V::Nil) | (V::Nil, _) => false,
             _ => range_to_vec(i, rg)?.is_empty(),
         }))
     });
@@ -628,13 +628,17 @@ fn slice_of(
 /// The bounds a range selects from `len` elements.
 fn range_bounds(interp: &Interp, len: usize, rg: &RangeVal) -> Result<(usize, usize), Flow> {
     let n = len as i64;
-    let lo = match &rg.lo {
-        Value::Nil => 0,
-        v => int(interp, v, "range start")?,
+    let lo = match rg.lo.view() {
+        V::Nil => 0,
+        _ => {
+            let v: &Value = &(rg.lo);
+            int(interp, v, "range start")?
+        }
     };
-    let hi = match &rg.hi {
-        Value::Nil => n,
-        v => {
+    let hi = match rg.hi.view() {
+        V::Nil => n,
+        _ => {
+            let v: &Value = &(rg.hi);
             let h = int(interp, v, "range end")?;
             let h = if h < 0 { n + h } else { h };
             if rg.exclusive {
@@ -738,7 +742,7 @@ fn set_filter(interp: &Interp, recv: &Value, args: Args, keep: bool) -> EvalResu
             out.insert(x.clone());
         }
     }
-    Ok(Value::Set(Rc::new(out)))
+    Ok(Value::Set(out))
 }
 
 fn set_builder_filter(interp: &Interp, recv: &Value, args: Args, keep: bool) -> EvalResult {

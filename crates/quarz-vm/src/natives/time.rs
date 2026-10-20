@@ -3,13 +3,13 @@
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
-use std::rc::Rc;
 
 use chrono::{
     DateTime, Datelike, FixedOffset, Local, LocalResult, Offset, TimeZone, Timelike, Utc,
 };
 
 use crate::interp::{Args, EvalResult, Flow, Interp, NativeFn};
+use crate::value::V;
 use crate::value::*;
 
 use super::{float, int, string};
@@ -26,11 +26,14 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
         ))
     });
     m.insert("Time.at", |i, _, a| {
-        let ns = match a.arg(0) {
-            Value::Int(s) => s
+        let ns = match a.arg(0).view() {
+            V::Int(s) => s
                 .checked_mul(NS)
                 .ok_or_else(|| i.raise(i.exc.range_error, "time out of range"))?,
-            v => (float(i, v, "seconds")? * NS as f64).round() as i64,
+            _ => {
+                let v: &Value = a.arg(0);
+                (float(i, v, "seconds")? * NS as f64).round() as i64
+            }
         };
         Ok(at_local(ns))
     });
@@ -121,9 +124,10 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     });
     m.insert("Time#-", |i, r, a| {
         let t = tv(i, r)?;
-        match a.arg(0) {
-            Value::Time(o) => Ok(Value::Duration(t.ns - o.ns)),
-            v => {
+        match a.arg(0).view() {
+            V::Time(o) => Ok(Value::Duration(t.ns - o.ns)),
+            _ => {
+                let v: &Value = a.arg(0);
                 let d = dur(i, v)?;
                 let ns =
                     t.ns.checked_sub(d)
@@ -137,7 +141,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     });
     m.insert("Time#==", |i, r, a| {
         Ok(Value::Bool(
-            matches!(a.arg(0), Value::Time(o) if o.ns == tv(i, r)?.ns),
+            matches!(a.arg(0).view(), V::Time(o) if o.ns == tv(i, r)?.ns),
         ))
     });
     m.insert("Time#hash", |i, r, _| Ok(Value::Int(tv(i, r)?.ns)));
@@ -179,19 +183,19 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
 }
 
 fn time(ns: i64, offset: i32, utc: bool) -> Value {
-    Value::Time(Rc::new(TimeVal { ns, offset, utc }))
+    Value::Time(TimeVal { ns, offset, utc })
 }
 
 fn tv(interp: &Interp, v: &Value) -> Result<TimeVal, Flow> {
-    match v {
-        Value::Time(t) => Ok(**t),
+    match v.view() {
+        V::Time(t) => Ok(**t),
         _ => Err(interp.err_type(&format!("expected a Time, got {}", interp.class_name(v)))),
     }
 }
 
 fn dur(interp: &Interp, v: &Value) -> Result<i64, Flow> {
-    match v {
-        Value::Duration(d) => Ok(*d),
+    match v.view() {
+        V::Duration(d) => Ok(d),
         _ => Err(interp.err_type(&format!(
             "expected a Duration, got {}",
             interp.class_name(v)

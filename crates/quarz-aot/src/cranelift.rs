@@ -31,6 +31,8 @@ struct Runtime {
     pop_call: CFuncId,
     stack_overflow: CFuncId,
     drop_value: CFuncId,
+    box_int: CFuncId,
+    box_float: CFuncId,
     exec: CFuncId,
     term: CFuncId,
     block_param: CFuncId,
@@ -200,6 +202,8 @@ pub fn compile(module: &Module) -> Result<Vec<u8>, String> {
         pop_call: import(&mut obj, "qz_pop_call", &sig(&[i64_, i64_], None))?,
         stack_overflow: import(&mut obj, "qz_stack_overflow", &sig(&[i64_], Some(i32_)))?,
         drop_value: import(&mut obj, "qz_drop_value", &sig(&[i64_], None))?,
+        box_int: import(&mut obj, "qz_box_int", &sig(&[i64_, i64_], None))?,
+        box_float: import(&mut obj, "qz_box_float", &sig(&[i64_, types::F64], None))?,
         call_static: import(
             &mut obj,
             "qz_call_static",
@@ -309,6 +313,8 @@ impl Compiler {
             pop_call: imp(self.rt.pop_call, &mut fb),
             stack_overflow: imp(self.rt.stack_overflow, &mut fb),
             drop_value: imp(self.rt.drop_value, &mut fb),
+            box_int: imp(self.rt.box_int, &mut fb),
+            box_float: imp(self.rt.box_float, &mut fb),
             exec: imp(self.rt.exec, &mut fb),
             term: imp(self.rt.term, &mut fb),
             block_param: imp(self.rt.block_param, &mut fb),
@@ -461,7 +467,6 @@ fn cl_intcc(cc: IntCC) -> ClIntCC {
         IntCC::SignedGreaterThanOrEqual => ClIntCC::SignedGreaterThanOrEqual,
         IntCC::UnsignedLessThan => ClIntCC::UnsignedLessThan,
         IntCC::UnsignedGreaterThan => ClIntCC::UnsignedGreaterThan,
-        IntCC::UnsignedGreaterThanOrEqual => ClIntCC::UnsignedGreaterThanOrEqual,
     }
 }
 
@@ -598,6 +603,18 @@ impl Builder for Cl<'_> {
         self.fb.ins().sshr_imm(a, imm)
     }
 
+    fn ushr_imm(&mut self, a: Value, imm: i64) -> Value {
+        self.fb.ins().ushr_imm(a, imm)
+    }
+
+    fn rotl_imm(&mut self, a: Value, imm: i64) -> Value {
+        self.fb.ins().rotl_imm(a, imm)
+    }
+
+    fn rotr_imm(&mut self, a: Value, imm: i64) -> Value {
+        self.fb.ins().rotr_imm(a, imm)
+    }
+
     fn sadd_overflow(&mut self, a: Value, b: Value) -> (Value, Value) {
         self.fb.ins().sadd_overflow(a, b)
     }
@@ -643,6 +660,9 @@ impl Builder for Cl<'_> {
     }
 
     fn bitcast(&mut self, ty: Ty, a: Value) -> Value {
+        if self.fb.func.dfg.value_type(a) == cl_type(ty) {
+            return a;
+        }
         self.fb.ins().bitcast(cl_type(ty), MemFlags::new(), a)
     }
 

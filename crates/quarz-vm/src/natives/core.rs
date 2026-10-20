@@ -2,9 +2,9 @@
 
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
-use std::rc::Rc;
 
 use crate::interp::{Args, EvalResult, Flow, Interp, NativeFn};
+use crate::value::V;
 use crate::value::*;
 
 use super::{int, string};
@@ -51,10 +51,11 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     m.insert("Kernel#readlines", |i, _, _| {
         let mut lines = Vec::new();
         loop {
-            match super::core_gets(i, false)? {
-                Value::Nil => break,
-                line => lines.push(line),
+            let line = super::core_gets(i, false)?;
+            if line.is_nil() {
+                break;
             }
+            lines.push(line);
         }
         Ok(Value::array(lines))
     });
@@ -90,8 +91,8 @@ fn obj_hash(_: &Interp, recv: &Value, _: Args) -> EvalResult {
 }
 
 fn obj_to_s(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
-    match recv {
-        Value::Object(o) if !interp.world.is_exception_class(o.class) => {
+    match recv.view() {
+        V::Object(o) if !interp.world.is_exception_class(o.class) => {
             Ok(Value::string(interp.inspect(recv)?))
         }
         _ => Ok(Value::str(&interp.to_s(recv)?)),
@@ -112,36 +113,25 @@ fn obj_class(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
 
 fn obj_frozen(_: &Interp, recv: &Value, _: Args) -> EvalResult {
     Ok(Value::Bool(!matches!(
-        recv,
-        Value::ArrayBuilder(_)
-            | Value::HashBuilder(_)
-            | Value::SetBuilder(_)
-            | Value::StringBuilder(_)
+        recv.view(),
+        V::ArrayBuilder(_) | V::HashBuilder(_) | V::SetBuilder(_) | V::StringBuilder(_)
     )))
 }
 
 fn obj_dup(_: &Interp, recv: &Value, _: Args) -> EvalResult {
-    Ok(match recv {
-        Value::ArrayBuilder(a) => {
-            Value::ArrayBuilder(Rc::new(std::cell::RefCell::new(a.borrow().clone())))
-        }
-        Value::HashBuilder(h) => {
-            Value::HashBuilder(Rc::new(std::cell::RefCell::new(h.borrow().clone())))
-        }
-        Value::SetBuilder(s) => {
-            Value::SetBuilder(Rc::new(std::cell::RefCell::new(s.borrow().clone())))
-        }
-        Value::StringBuilder(s) => {
-            Value::StringBuilder(Rc::new(std::cell::RefCell::new(s.borrow().clone())))
-        }
-        Value::Object(o) => Value::Object(Object::new(o.class, o.fields.borrow().clone())),
-        other => other.clone(),
+    Ok(match recv.view() {
+        V::ArrayBuilder(a) => Value::ArrayBuilder(std::cell::RefCell::new(a.borrow().clone())),
+        V::HashBuilder(h) => Value::HashBuilder(std::cell::RefCell::new(h.borrow().clone())),
+        V::SetBuilder(s) => Value::SetBuilder(std::cell::RefCell::new(s.borrow().clone())),
+        V::StringBuilder(s) => Value::StringBuilder(std::cell::RefCell::new(s.borrow().clone())),
+        V::Object(o) => Value::Object(Object::new(o.class, o.fields.borrow().clone())),
+        _ => recv.clone(),
     })
 }
 
 fn class_name(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
-    match recv {
-        Value::Class(c) => Ok(Value::str(&interp.world.class(*c).name)),
+    match recv.view() {
+        V::Class(c) => Ok(Value::str(&interp.world.class(c).name)),
         _ => Ok(Value::str(&interp.class_name(recv))),
     }
 }
@@ -172,7 +162,7 @@ fn clamp(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
 }
 
 fn proc_arity(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
-    let Value::Proc(c) = recv else {
+    let V::Proc(c) = recv.view() else {
         return Err(interp.err_type("expected a Proc"));
     };
     Ok(Value::Int(match &c.body {
@@ -183,8 +173,8 @@ fn proc_arity(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
 }
 
 fn exc_backtrace(_: &Interp, recv: &Value, _: Args) -> EvalResult {
-    match recv {
-        Value::Object(o) => {
+    match recv.view() {
+        V::Object(o) => {
             let items: Vec<Value> = o
                 .backtrace()
                 .map(|b| b.iter().map(|s| Value::str(s)).collect())
@@ -201,7 +191,7 @@ fn exc_full_message(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
         interp.class_name(recv),
         interp.exception_message(recv)
     );
-    if let Value::Object(o) = recv {
+    if let V::Object(o) = recv.view() {
         if let Some(bt) = o.backtrace() {
             for frame in bt.iter() {
                 s.push_str(&format!("\n    from {frame}"));
@@ -212,8 +202,8 @@ fn exc_full_message(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
 }
 
 fn exc_cause(_: &Interp, recv: &Value, _: Args) -> EvalResult {
-    match recv {
-        Value::Object(o) => Ok(o.cause().unwrap_or(Value::Nil)),
+    match recv.view() {
+        V::Object(o) => Ok(o.cause().unwrap_or(Value::Nil)),
         _ => Ok(Value::Nil),
     }
 }
@@ -226,8 +216,8 @@ pub fn puts_to(interp: &Interp, args: &[Value], out: &mut String) -> Result<(), 
         return Ok(());
     }
     for a in args {
-        match a {
-            Value::Array(items) => {
+        match a.view() {
+            V::Array(items) => {
                 if items.is_empty() {
                     out.push('\n');
                 }
@@ -286,8 +276,8 @@ fn kernel_warn(interp: &Interp, _: &Value, args: Args) -> EvalResult {
 }
 
 fn kernel_exit(_: &Interp, _: &Value, args: Args) -> EvalResult {
-    let code = match args.arg(0) {
-        Value::Int(i) => *i as i32,
+    let code = match args.arg(0).view() {
+        V::Int(i) => i as i32,
         _ => 0,
     };
     Err(Flow::Exit(code))
@@ -400,9 +390,9 @@ pub fn format_values(interp: &Interp, fmt: &str, args: &[Value]) -> Result<Strin
         next_arg += 1;
         let body = match conv {
             'd' | 'i' => {
-                let v = match &arg {
-                    Value::Float(f) => Value::Int(f.floor() as i64),
-                    other => other.clone(),
+                let v = match arg.view() {
+                    V::Float(f) => Value::Int(f.floor() as i64),
+                    _ => arg.clone(),
                 };
                 let s = interp.to_s(&v)?.to_string();
                 sign(s, plus, space)
@@ -430,11 +420,11 @@ pub fn format_values(interp: &Interp, fmt: &str, args: &[Value]) -> Result<Strin
             'X' => format!("{:X}", int(interp, &arg, "format argument")?),
             'o' => format!("{:o}", int(interp, &arg, "format argument")?),
             'b' => format!("{:b}", int(interp, &arg, "format argument")?),
-            'c' => match &arg {
-                Value::Int(i) => char::from_u32(*i as u32)
+            'c' => match arg.view() {
+                V::Int(i) => char::from_u32(i as u32)
                     .map(|c| c.to_string())
                     .unwrap_or_default(),
-                other => interp.to_s(other)?.chars().take(1).collect(),
+                _ => interp.to_s(&arg)?.chars().take(1).collect(),
             },
             other => return Err(interp.err_arg(&format!("unknown format specifier %{other}"))),
         };

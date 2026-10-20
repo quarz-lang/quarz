@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::interp::{Args, EvalResult, Flow, Interp, NativeFn, OwnedNativeFn};
-use crate::value::Value;
+use crate::value::{Value, V};
 use smallvec::smallvec;
 
 pub mod bytes;
@@ -61,9 +61,9 @@ pub fn owned_registry() -> HashMap<&'static str, OwnedNativeFn> {
 // ----- argument helpers -------------------------------------------------------
 
 pub fn int(interp: &Interp, v: &Value, what: &str) -> Result<i64, Flow> {
-    match v {
-        Value::Int(i) => Ok(*i),
-        Value::Float(f) if f.fract() == 0.0 => Ok(*f as i64),
+    match v.view() {
+        V::Int(i) => Ok(i),
+        V::Float(f) if f.fract() == 0.0 => Ok(f as i64),
         _ => Err(interp.err_type(&format!(
             "{what} must be an Int, got {}",
             interp.class_name(v)
@@ -72,10 +72,10 @@ pub fn int(interp: &Interp, v: &Value, what: &str) -> Result<i64, Flow> {
 }
 
 pub fn float(interp: &Interp, v: &Value, what: &str) -> Result<f64, Flow> {
-    match v {
-        Value::Int(i) => Ok(*i as f64),
-        Value::Float(f) => Ok(*f),
-        Value::BigInt(b) => {
+    match v.view() {
+        V::Int(i) => Ok(i as f64),
+        V::Float(f) => Ok(f),
+        V::BigInt(b) => {
             use num_traits::ToPrimitive;
             Ok(b.to_f64().unwrap_or(f64::INFINITY))
         }
@@ -106,16 +106,16 @@ pub fn block(interp: &Interp, args: &Args) -> Result<Value, Flow> {
 /// Iterate any enumerable value into a vector (fast paths for the built-in
 /// collections, `each` otherwise).
 pub fn collect(interp: &Interp, recv: &Value) -> Result<Vec<Value>, Flow> {
-    match recv {
-        Value::Array(a) => Ok(a.to_values()),
-        Value::ArrayBuilder(a) => Ok(a.borrow().clone()),
-        Value::Set(s) => Ok(s.iter().cloned().collect()),
-        Value::SetBuilder(s) => Ok(s.borrow().iter().cloned().collect()),
-        Value::Hash(h) => Ok(h
+    match recv.view() {
+        V::Array(a) => Ok(a.to_values()),
+        V::ArrayBuilder(a) => Ok(a.borrow().clone()),
+        V::Set(s) => Ok(s.iter().cloned().collect()),
+        V::SetBuilder(s) => Ok(s.borrow().iter().cloned().collect()),
+        V::Hash(h) => Ok(h
             .iter()
             .map(|(k, v)| Value::array(vec![k.clone(), v.clone()]))
             .collect()),
-        Value::Range(r) => collections::range_to_vec(interp, r),
+        V::Range(r) => collections::range_to_vec(interp, r),
         _ => {
             let out = Rc::new(RefCell::new(Vec::new()));
             let out2 = out.clone();

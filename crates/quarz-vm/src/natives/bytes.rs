@@ -2,9 +2,10 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
 
+use crate::heap::{Heap, HeapBytes};
 use crate::interp::{Args, EvalResult, Flow, Interp, NativeFn};
+use crate::value::V;
 use crate::value::*;
 use smallvec::smallvec;
 
@@ -19,18 +20,21 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
         }
         Ok(Value::bytes(out))
     });
-    m.insert("Bytes.from", |i, _, a| match a.arg(0) {
-        Value::Array(items) => {
+    m.insert("Bytes.from", |i, _, a| match a.arg(0).view() {
+        V::Array(items) => {
             let mut out = Vec::with_capacity(items.len());
             for v in items.iter() {
                 out.push(byte(i, &v)?);
             }
             Ok(Value::bytes(out))
         }
-        other => Err(i.err_type(&format!(
-            "Bytes.from takes an Array[Int], got {}",
-            i.class_name(other)
-        ))),
+        _ => {
+            let other: &Value = a.arg(0);
+            Err(i.err_type(&format!(
+                "Bytes.from takes an Array[Int], got {}",
+                i.class_name(other)
+            )))
+        }
     });
     m.insert("Bytes.from_hex", |i, _, a| {
         let text = string(i, a.arg(0), "hex")?;
@@ -50,7 +54,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     });
     m.insert("Bytes.build", |i, _, a| {
         let b = block(i, &a)?;
-        let builder = Rc::new(RefCell::new(Vec::new()));
+        let builder = Heap::new(RefCell::new(Vec::new()));
         i.call_block(&b, smallvec![Value::BytesBuilder(builder.clone())])?;
         let out = std::mem::take(&mut *builder.borrow_mut());
         Ok(Value::bytes(out))
@@ -72,20 +76,23 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     });
     m.insert("Bytes#[]", |i, r, a| {
         let data = bs(i, r)?;
-        match a.arg(0) {
-            Value::Int(idx) => match offset(&data, *idx) {
+        match a.arg(0).view() {
+            V::Int(idx) => match offset(&data, idx) {
                 Some(k) => Ok(Value::Int(data[k] as i64)),
                 None => Err(i.err_index(&format!("index {idx} out of bounds"))),
             },
-            Value::Range(range) => {
+            V::Range(range) => {
                 let (lo, hi) = super::string::range_bounds(i, range, data.len())?
                     .unwrap_or((data.len(), data.len()));
                 Ok(Value::bytes(data[lo..hi].to_vec()))
             }
-            other => Err(i.err_type(&format!(
-                "Bytes#[] takes an Int or Range, got {}",
-                i.class_name(other)
-            ))),
+            _ => {
+                let other: &Value = a.arg(0);
+                Err(i.err_type(&format!(
+                    "Bytes#[] takes an Int or Range, got {}",
+                    i.class_name(other)
+                )))
+            }
         }
     });
     m.insert("Bytes#[]?", |i, r, a| {
@@ -115,7 +122,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     });
     m.insert("Bytes#==", |i, r, a| {
         Ok(Value::Bool(
-            matches!(a.arg(0), Value::Bytes(o) if *o == bs(i, r)?),
+            matches!(a.arg(0).view(), V::Bytes(o) if *o == bs(i, r)?),
         ))
     });
     m.insert("Bytes#<=>", |i, r, a| {
@@ -171,7 +178,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     });
 
     m.insert("Bytes::Builder.new", |_, _, _| {
-        Ok(Value::BytesBuilder(Rc::new(RefCell::new(Vec::new()))))
+        Ok(Value::BytesBuilder(RefCell::new(Vec::new())))
     });
     m.insert("Bytes::Builder#<<", builder_push);
     m.insert("Bytes::Builder#push", builder_push);
@@ -218,16 +225,16 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     });
 }
 
-fn bs(interp: &Interp, v: &Value) -> Result<Rc<[u8]>, Flow> {
-    match v {
-        Value::Bytes(b) => Ok(b.clone()),
+fn bs(interp: &Interp, v: &Value) -> Result<HeapBytes, Flow> {
+    match v.view() {
+        V::Bytes(b) => Ok(b.clone()),
         _ => Err(interp.err_type(&format!("expected Bytes, got {}", interp.class_name(v)))),
     }
 }
 
-fn bb<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Rc<RefCell<Vec<u8>>>, Flow> {
-    match v {
-        Value::BytesBuilder(b) => Ok(b),
+fn bb<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Heap<RefCell<Vec<u8>>>, Flow> {
+    match v.view() {
+        V::BytesBuilder(b) => Ok(b),
         _ => Err(interp.err_type("expected a Bytes::Builder")),
     }
 }
@@ -259,12 +266,16 @@ fn bytes_each(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
 
 fn builder_push(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let builder = bb(interp, recv)?;
-    match args.arg(0) {
-        Value::Bytes(b) => builder.borrow_mut().extend_from_slice(b),
-        v if v.is_str() => builder
-            .borrow_mut()
-            .extend_from_slice(v.as_str().unwrap_or("").as_bytes()),
-        v => {
+    match args.arg(0).view() {
+        V::Bytes(b) => builder.borrow_mut().extend_from_slice(b),
+        _ if (args.arg(0)).is_str() => {
+            let v: &Value = args.arg(0);
+            builder
+                .borrow_mut()
+                .extend_from_slice(v.as_str().unwrap_or("").as_bytes())
+        }
+        _ => {
+            let v: &Value = args.arg(0);
             let b = byte(interp, v)?;
             builder.borrow_mut().push(b);
         }

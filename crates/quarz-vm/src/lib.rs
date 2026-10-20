@@ -3,6 +3,7 @@
 //! crate as their runtime.
 
 pub mod ffi;
+pub mod heap;
 pub mod interp;
 pub mod layout;
 pub mod native_bt;

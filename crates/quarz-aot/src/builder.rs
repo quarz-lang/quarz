@@ -25,7 +25,6 @@ pub enum IntCC {
     SignedGreaterThanOrEqual,
     UnsignedLessThan,
     UnsignedGreaterThan,
-    UnsignedGreaterThanOrEqual,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -83,6 +82,9 @@ pub trait Builder {
     fn imul_imm(&mut self, a: Self::Value, imm: i64) -> Self::Value;
     fn ishl_imm(&mut self, a: Self::Value, imm: i64) -> Self::Value;
     fn sshr_imm(&mut self, a: Self::Value, imm: i64) -> Self::Value;
+    fn ushr_imm(&mut self, a: Self::Value, imm: i64) -> Self::Value;
+    fn rotl_imm(&mut self, a: Self::Value, imm: i64) -> Self::Value;
+    fn rotr_imm(&mut self, a: Self::Value, imm: i64) -> Self::Value;
     /// `(result, overflowed)`.
     fn sadd_overflow(&mut self, a: Self::Value, b: Self::Value) -> (Self::Value, Self::Value);
     fn ssub_overflow(&mut self, a: Self::Value, b: Self::Value) -> (Self::Value, Self::Value);

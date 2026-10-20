@@ -19,6 +19,10 @@ use num_bigint::BigInt;
 use quarz_ir::{ClassId, FuncId, MethodId};
 use smallvec::SmallVec;
 
+use crate::heap::{
+    kind_of, release, retain, Boxed, Dur, Heap, HeapBox, HeapBytes, HeapStr, Kind, KIND_OFF,
+    VALUE_OFF,
+};
 use crate::interp::Flow;
 use crate::sched::{ChannelInner, ScopeInner, SelectorState, TaskHandle};
 
@@ -181,23 +185,23 @@ impl ArrayData {
         if items.is_empty() {
             return ArrayData::Values(items);
         }
-        if items.iter().all(|v| matches!(v, Value::Int(_))) {
+        if items.iter().all(|v| matches!(v.view(), V::Int(_))) {
             return ArrayData::Ints(
                 items
                     .iter()
-                    .map(|v| match v {
-                        Value::Int(i) => *i,
+                    .map(|v| match v.view() {
+                        V::Int(i) => i,
                         _ => unreachable!(),
                     })
                     .collect(),
             );
         }
-        if items.iter().all(|v| matches!(v, Value::Float(_))) {
+        if items.iter().all(|v| matches!(v.view(), V::Float(_))) {
             return ArrayData::Floats(
                 items
                     .iter()
-                    .map(|v| match v {
-                        Value::Float(f) => *f,
+                    .map(|v| match v.view() {
+                        V::Float(f) => f,
                         _ => unreachable!(),
                     })
                     .collect(),
@@ -277,14 +281,14 @@ impl ArrayData {
     /// array takes the kind of its first element), boxing everything
     /// otherwise.
     pub fn push(&mut self, v: Value) {
-        match (&mut *self, &v) {
-            (ArrayData::Ints(xs), Value::Int(i)) => xs.push(*i),
-            (ArrayData::Floats(xs), Value::Float(f)) => xs.push(*f),
-            (ArrayData::Values(xs), Value::Int(i)) if xs.is_empty() => {
-                *self = ArrayData::Ints(vec![*i]);
+        match (&mut *self, v.view()) {
+            (ArrayData::Ints(xs), V::Int(i)) => xs.push(i),
+            (ArrayData::Floats(xs), V::Float(f)) => xs.push(f),
+            (ArrayData::Values(xs), V::Int(i)) if xs.is_empty() => {
+                *self = ArrayData::Ints(vec![i]);
             }
-            (ArrayData::Values(xs), Value::Float(f)) if xs.is_empty() => {
-                *self = ArrayData::Floats(vec![*f]);
+            (ArrayData::Values(xs), V::Float(f)) if xs.is_empty() => {
+                *self = ArrayData::Floats(vec![f]);
             }
             (ArrayData::Values(xs), _) => xs.push(v),
             _ => self.with_values(|xs| xs.push(v)),
@@ -293,9 +297,9 @@ impl ArrayData {
 
     /// `self[i] = v` for an index in range.
     pub fn set(&mut self, i: usize, v: Value) {
-        match (&mut *self, &v) {
-            (ArrayData::Ints(xs), Value::Int(x)) => xs[i] = *x,
-            (ArrayData::Floats(xs), Value::Float(x)) => xs[i] = *x,
+        match (&mut *self, v.view()) {
+            (ArrayData::Ints(xs), V::Int(x)) => xs[i] = x,
+            (ArrayData::Floats(xs), V::Float(x)) => xs[i] = x,
             (ArrayData::Values(xs), _) => xs[i] = v,
             _ => self.with_values(|xs| xs[i] = v),
         }
@@ -339,8 +343,8 @@ pub struct ExcInfo {
 }
 
 impl Object {
-    pub fn new(class: ClassId, fields: Fields) -> Rc<Object> {
-        let o = Rc::new(Object {
+    pub fn new(class: ClassId, fields: Fields) -> Heap<Object> {
+        let o = Heap::new(Object {
             fields_ptr: Cell::new(std::ptr::null()),
             nfields: Cell::new(0),
             class,
@@ -357,24 +361,14 @@ impl Object {
     /// # Safety
     /// `src` points at `n` initialized values that the caller gives up
     /// (they are moved, not cloned, and must not be dropped by it).
-    pub unsafe fn with_fields_from(class: ClassId, src: *const Value, n: usize) -> Rc<Object> {
-        let mut rc = Rc::<Object>::new_uninit();
-        // SAFETY: the allocation is fresh and uniquely owned; every field
-        // of `Object` is written before `assume_init`.
+    pub unsafe fn with_fields_from(class: ClassId, src: *const Value, n: usize) -> Heap<Object> {
+        let mut fields = Fields::with_capacity(n);
+        // SAFETY: the caller gives up the `n` values at `src`.
         unsafe {
-            let p = Rc::get_mut(&mut rc).unwrap_unchecked().as_mut_ptr();
-            std::ptr::write(&raw mut (*p).fields_ptr, Cell::new(std::ptr::null()));
-            std::ptr::write(&raw mut (*p).nfields, Cell::new(0));
-            std::ptr::write(&raw mut (*p).class, class);
-            let mut fields = Fields::with_capacity(n);
             std::ptr::copy_nonoverlapping(src, fields.as_mut_ptr(), n);
             fields.set_len(n);
-            std::ptr::write(&raw mut (*p).fields, RefCell::new(fields));
-            std::ptr::write(&raw mut (*p).exc, RefCell::new(None));
-            let rc = rc.assume_init();
-            rc.bind_fields();
-            rc
         }
+        Object::new(class, fields)
     }
 
     /// Point the field view at the field vector (after it was created,
@@ -619,51 +613,534 @@ pub struct IoVal {
 /// handler's body and continued by `Resume`.
 pub type FlowBox = RefCell<Option<Flow>>;
 
-/// The layout is fixed (`repr(C, u64)`: a tag word followed by the
-/// payload) so that compiled code can build and test values inline. The
-/// variants without reference counting come first; see `NEEDS_DROP_FROM`.
-#[derive(Clone, Debug)]
-#[repr(C, u64)]
-pub enum Value {
-    Nil,
-    Bool(bool),
-    Int(i64),
-    Float(f64),
-    Symbol(Symbol),
-    Class(ClassId),
-    /// Nanoseconds.
-    Duration(i64),
-    /// A string of at most 15 bytes, kept in the value itself.
-    Short(ShortStr),
-    BigInt(Rc<BigInt>),
-    /// A longer string.
-    Str(Rc<str>),
-    Array(Rc<ArrayData>),
-    Hash(Rc<ValueMap>),
-    Set(Rc<ValueSet>),
-    Range(Rc<RangeVal>),
-    Regexp(Rc<RegexpVal>),
-    MatchData(Rc<MatchDataVal>),
-    Object(Rc<Object>),
-    Proc(Rc<Closure>),
-    ArrayBuilder(Rc<RefCell<Vec<Value>>>),
-    HashBuilder(Rc<RefCell<ValueMap>>),
-    SetBuilder(Rc<RefCell<ValueSet>>),
-    StringBuilder(Rc<RefCell<String>>),
-    Channel(Rc<ChannelInner>),
-    Task(Rc<TaskHandle>),
-    Scope(Rc<ScopeInner>),
-    Atom(Rc<RefCell<Value>>),
-    Selector(Rc<RefCell<SelectorState>>),
-    Enumerator(Rc<EnumeratorVal>),
-    Io(Rc<IoVal>),
-    Bytes(Rc<[u8]>),
-    BytesBuilder(Rc<RefCell<Vec<u8>>>),
-    Time(Rc<TimeVal>),
-    Random(Rc<RefCell<RandomState>>),
-    /// Internal: a flow in transit through an `ensure` handler.
-    Flow(Rc<FlowBox>),
+/// A Quarz value in one machine word (see `docs/05-execution.md` §5).
+///
+/// The low bits say what it is:
+///
+/// - `…1`: an `Int` of 63 bits, shifted left by one;
+/// - `…10`: a `Float` (a "flonum": the double's bits rotated so that
+///   the exponent's redundant top bits make room for the tag; doubles
+///   outside the covered range, and -0.0, live in a box);
+/// - `…100`: nothing on the heap, bits 3-5 telling what: `false` (4),
+///   `true` (12), a `Symbol` or a `Class` (their id above bit 8), or a
+///   `Duration` of 58 bits of nanoseconds above bit 6 (a longer one,
+///   beyond about four and a half years, lives in a box);
+/// - `0`: `nil`;
+/// - `…000`, nonzero: the address of a heap box (`heap::HeapBox`), whose
+///   header holds the reference count and the kind.
+///
+/// Copying a value is a word copy plus, for a heap value, a count
+/// increment; dropping one a decrement. `view` gives the value as an
+/// enum to match on; `unpack` the same with the heap handles owned.
+#[repr(transparent)]
+pub struct Value(u64);
+
+const FALSE_BITS: u64 = 0x04;
+const TRUE_BITS: u64 = 0x0C;
+const SYMBOL_TAG: u64 = 0x14;
+const CLASS_TAG: u64 = 0x1C;
+/// A `Duration` word: nanoseconds above bit 6.
+const DURATION_TAG: u64 = 0x24;
+const DURATION_SHIFT: u32 = 6;
+/// The flonum of `0.0`.
+const FLONUM_ZERO: u64 = 0x8000_0000_0000_0002;
+
+/// Encode a double as a flonum, when its exponent allows it.
+#[inline]
+fn flonum(f: f64) -> Option<u64> {
+    let bits = f.to_bits();
+    let top = (bits >> 60) & 0x7;
+    if bits != 0x3000_0000_0000_0000 && (top.wrapping_sub(3) & !1) == 0 {
+        Some((bits.rotate_left(3) & !1) | 2)
+    } else if bits == 0 {
+        Some(FLONUM_ZERO)
+    } else {
+        None
+    }
 }
+
+/// The double a flonum encodes.
+#[inline]
+fn unflonum(v: u64) -> f64 {
+    if v == FLONUM_ZERO {
+        return 0.0;
+    }
+    let b63 = v >> 63;
+    f64::from_bits(((2 - b63) | (v & !3)).rotate_right(3))
+}
+
+/// A heap box's handle for each kind of heap value, as the `view` and
+/// `unpack` of a value give them, and the constructors take them.
+macro_rules! heap_variants {
+    ($($variant:ident($ty:ty) => $kind:ident),* $(,)?) => {
+        /// A value, borrowed, as an enum to match on.
+        #[derive(Debug, Clone, Copy)]
+        pub enum V<'a> {
+            Nil,
+            Bool(bool),
+            Int(i64),
+            Float(f64),
+            Symbol(Symbol),
+            Class(ClassId),
+            Duration(i64),
+            Str(&'a HeapStr),
+            Bytes(&'a HeapBytes),
+            $($variant(&'a Heap<$ty>),)*
+        }
+
+        /// A value, borrowed mutably: its heap handle can be replaced or,
+        /// when unshared, its contents changed in place.
+        pub enum VM<'a> {
+            Nil,
+            Bool(bool),
+            Int(i64),
+            Float(f64),
+            Symbol(Symbol),
+            Class(ClassId),
+            Duration(i64),
+            Str(&'a mut HeapStr),
+            Bytes(&'a mut HeapBytes),
+            $($variant(&'a mut Heap<$ty>),)*
+        }
+
+        /// A value, consumed, with its heap handle owned.
+        pub enum U {
+            Nil,
+            Bool(bool),
+            Int(i64),
+            Float(f64),
+            Symbol(Symbol),
+            Class(ClassId),
+            Duration(i64),
+            Str(HeapStr),
+            Bytes(HeapBytes),
+            $($variant(Heap<$ty>),)*
+        }
+
+        impl U {
+            /// Back to a value.
+            #[inline]
+            pub fn repack(self) -> Value {
+                match self {
+                    U::Nil => Value::Nil,
+                    U::Bool(b) => Value::Bool(b),
+                    U::Int(i) => Value::Int(i),
+                    U::Float(f) => Value::Float(f),
+                    U::Symbol(s) => Value::Symbol(s),
+                    U::Class(c) => Value::Class(c),
+                    U::Duration(d) => Value::Duration(d),
+                    U::Str(s) => Value::from(s),
+                    U::Bytes(b) => Value::from(b),
+                    $(U::$variant(h) => Value::from(h),)*
+                }
+            }
+        }
+
+        #[allow(non_snake_case)]
+        impl Value {
+            $(
+                #[inline]
+                pub fn $variant(v: impl Into<Heap<$ty>>) -> Value {
+                    Value(Heap::into_bits(v.into()))
+                }
+            )*
+
+            /// The value as an enum, borrowed.
+            #[inline]
+            pub fn view(&self) -> V<'_> {
+                let b = self.0;
+                if b & 1 == 1 {
+                    return V::Int((b as i64) >> 1);
+                }
+                if b & 3 == 2 {
+                    return V::Float(unflonum(b));
+                }
+                if b & 7 == 4 {
+                    return match (b >> 3) & 7 {
+                        0 => V::Bool(false),
+                        1 => V::Bool(true),
+                        2 => V::Symbol(Symbol((b >> 8) as u32)),
+                        3 => V::Class((b >> 8) as ClassId),
+                        _ => V::Duration((b as i64) >> DURATION_SHIFT),
+                    };
+                }
+                if b == 0 {
+                    return V::Nil;
+                }
+                // SAFETY: a nonzero word with its low bits clear is the
+                // address of a live box, and the handle types are
+                // transparent over that address.
+                unsafe {
+                    match kind_of(b) {
+                        Kind::Int => V::Int((*(b as *const HeapBox<i64>)).value),
+                        Kind::Float => V::Float((*(b as *const HeapBox<f64>)).value),
+                        Kind::Duration => V::Duration((*(b as *const HeapBox<Dur>)).value.0),
+                        Kind::Str => V::Str(&*(self as *const Value as *const HeapStr)),
+                        Kind::Bytes => V::Bytes(&*(self as *const Value as *const HeapBytes)),
+                        $(Kind::$kind => V::$variant(&*(self as *const Value as *const Heap<$ty>)),)*
+                    }
+                }
+            }
+
+            /// The value as an enum, its heap handle borrowed mutably.
+            #[inline]
+            pub fn view_mut(&mut self) -> VM<'_> {
+                let b = self.0;
+                if b & 1 == 1 {
+                    return VM::Int((b as i64) >> 1);
+                }
+                if b & 3 == 2 {
+                    return VM::Float(unflonum(b));
+                }
+                if b & 7 == 4 {
+                    return match (b >> 3) & 7 {
+                        0 => VM::Bool(false),
+                        1 => VM::Bool(true),
+                        2 => VM::Symbol(Symbol((b >> 8) as u32)),
+                        3 => VM::Class((b >> 8) as ClassId),
+                        _ => VM::Duration((b as i64) >> DURATION_SHIFT),
+                    };
+                }
+                if b == 0 {
+                    return VM::Nil;
+                }
+                // SAFETY: as in `view`.
+                unsafe {
+                    match kind_of(b) {
+                        Kind::Int => VM::Int((*(b as *const HeapBox<i64>)).value),
+                        Kind::Float => VM::Float((*(b as *const HeapBox<f64>)).value),
+                        Kind::Duration => VM::Duration((*(b as *const HeapBox<Dur>)).value.0),
+                        Kind::Str => VM::Str(&mut *(self as *mut Value as *mut HeapStr)),
+                        Kind::Bytes => VM::Bytes(&mut *(self as *mut Value as *mut HeapBytes)),
+                        $(Kind::$kind => VM::$variant(&mut *(self as *mut Value as *mut Heap<$ty>)),)*
+                    }
+                }
+            }
+
+            /// The value as an enum, consumed: a heap handle is owned.
+            #[inline]
+            pub fn unpack(self) -> U {
+                let b = self.0;
+                std::mem::forget(self);
+                if b & 1 == 1 {
+                    return U::Int((b as i64) >> 1);
+                }
+                if b & 3 == 2 {
+                    return U::Float(unflonum(b));
+                }
+                if b & 7 == 4 {
+                    return match (b >> 3) & 7 {
+                        0 => U::Bool(false),
+                        1 => U::Bool(true),
+                        2 => U::Symbol(Symbol((b >> 8) as u32)),
+                        3 => U::Class((b >> 8) as ClassId),
+                        _ => U::Duration((b as i64) >> DURATION_SHIFT),
+                    };
+                }
+                if b == 0 {
+                    return U::Nil;
+                }
+                // SAFETY: as in `view`; the reference moves into the handle.
+                unsafe {
+                    match kind_of(b) {
+                        Kind::Int => {
+                            let v = (*(b as *const HeapBox<i64>)).value;
+                            release(b);
+                            U::Int(v)
+                        }
+                        Kind::Float => {
+                            let v = (*(b as *const HeapBox<f64>)).value;
+                            release(b);
+                            U::Float(v)
+                        }
+                        Kind::Duration => {
+                            let v = (*(b as *const HeapBox<Dur>)).value.0;
+                            release(b);
+                            U::Duration(v)
+                        }
+                        Kind::Str => U::Str(HeapStr::from_bits(b)),
+                        Kind::Bytes => U::Bytes(HeapBytes::from_bits(b)),
+                        $(Kind::$kind => U::$variant(Heap::from_bits(b)),)*
+                    }
+                }
+            }
+        }
+    };
+}
+
+heap_variants! {
+    BigInt(BigInt) => BigInt,
+    Array(ArrayData) => Array,
+    Hash(ValueMap) => Hash,
+    Set(ValueSet) => Set,
+    Range(RangeVal) => Range,
+    Regexp(RegexpVal) => Regexp,
+    MatchData(MatchDataVal) => MatchData,
+    Object(Object) => Object,
+    Proc(Closure) => Proc,
+    ArrayBuilder(RefCell<Vec<Value>>) => ArrayBuilder,
+    HashBuilder(RefCell<ValueMap>) => HashBuilder,
+    SetBuilder(RefCell<ValueSet>) => SetBuilder,
+    StringBuilder(RefCell<String>) => StringBuilder,
+    Channel(Rc<ChannelInner>) => Channel,
+    Task(Rc<TaskHandle>) => Task,
+    Scope(Rc<ScopeInner>) => Scope,
+    Atom(RefCell<Value>) => Atom,
+    Selector(RefCell<SelectorState>) => Selector,
+    Enumerator(EnumeratorVal) => Enumerator,
+    Io(IoVal) => Io,
+    BytesBuilder(RefCell<Vec<u8>>) => BytesBuilder,
+    Time(TimeVal) => Time,
+    Random(RefCell<RandomState>) => Random,
+    Flow(FlowBox) => Flow,
+}
+
+/// `nil`, to borrow (a `&Value::Nil` would be a temporary).
+pub static NIL: Value = Value(0);
+
+#[allow(non_upper_case_globals, non_snake_case)]
+impl Value {
+    pub const Nil: Value = Value(0);
+
+    #[inline]
+    pub fn Bool(b: bool) -> Value {
+        Value(if b { TRUE_BITS } else { FALSE_BITS })
+    }
+
+    #[inline]
+    pub fn Int(i: i64) -> Value {
+        if (i << 1) >> 1 == i {
+            Value(((i as u64) << 1) | 1)
+        } else {
+            Value(Heap::into_bits(Heap::new(i)))
+        }
+    }
+
+    #[inline]
+    pub fn Float(f: f64) -> Value {
+        match flonum(f) {
+            Some(bits) => Value(bits),
+            None => Value(Heap::into_bits(Heap::new(f))),
+        }
+    }
+
+    #[inline]
+    pub fn Symbol(s: Symbol) -> Value {
+        Value(((s.0 as u64) << 8) | SYMBOL_TAG)
+    }
+
+    #[inline]
+    pub fn Class(c: ClassId) -> Value {
+        Value(((c as u64) << 8) | CLASS_TAG)
+    }
+
+    #[inline]
+    pub fn Duration(ns: i64) -> Value {
+        if (ns << DURATION_SHIFT) >> DURATION_SHIFT == ns {
+            Value(((ns as u64) << DURATION_SHIFT) | DURATION_TAG)
+        } else {
+            Value(Heap::into_bits(Heap::new(Dur(ns))))
+        }
+    }
+
+    #[inline]
+    pub fn Str(s: impl Into<HeapStr>) -> Value {
+        Value(HeapStr::into_bits(s.into()))
+    }
+
+    #[inline]
+    pub fn Bytes(b: impl Into<HeapBytes>) -> Value {
+        Value(HeapBytes::into_bits(b.into()))
+    }
+
+    /// The word.
+    #[inline]
+    pub fn bits(&self) -> u64 {
+        self.0
+    }
+
+    /// A value from its word, taking over the reference it holds.
+    ///
+    /// # Safety
+    /// `bits` must be a value's word whose heap reference (if any) the
+    /// caller gives up.
+    #[inline]
+    pub unsafe fn from_bits(bits: u64) -> Value {
+        Value(bits)
+    }
+
+    /// Whether the value is a heap box (and so reference counted).
+    #[inline]
+    pub fn is_heap(&self) -> bool {
+        self.0 & 7 == 0 && self.0 != 0
+    }
+
+    /// The kind of a heap value.
+    #[inline]
+    pub fn heap_kind(&self) -> Option<Kind> {
+        if self.is_heap() {
+            // SAFETY: a heap value's word is a live box's address.
+            Some(unsafe { kind_of(self.0) })
+        } else {
+            None
+        }
+    }
+
+    /// A copy that skips the reference count machinery for values that
+    /// have none.
+    #[inline]
+    pub fn fast_clone(&self) -> Value {
+        self.clone()
+    }
+
+    /// `*dst = *src` without a temporary.
+    ///
+    /// # Safety
+    /// `dst` must point to writable space holding no live value.
+    #[inline]
+    pub unsafe fn clone_into(dst: *mut Value, src: &Value) {
+        std::ptr::write(dst, src.clone());
+    }
+
+    /// Drop a value, skipping the destructor for those that need none.
+    #[inline]
+    pub fn fast_drop(self) {
+        drop(self);
+    }
+}
+
+impl Clone for Value {
+    #[inline]
+    fn clone(&self) -> Value {
+        if self.is_heap() {
+            // SAFETY: a heap value's word is a live box's address.
+            unsafe { retain(self.0) };
+        }
+        Value(self.0)
+    }
+}
+
+impl Drop for Value {
+    #[inline]
+    fn drop(&mut self) {
+        if self.is_heap() {
+            // SAFETY: a heap value's word is a live box's address, and
+            // this handle's reference ends here.
+            unsafe { release(self.0) };
+        }
+    }
+}
+
+impl std::fmt::Debug for Value {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.view().fmt(f)
+    }
+}
+
+impl<T: Boxed> From<Heap<T>> for Value {
+    #[inline]
+    fn from(h: Heap<T>) -> Value {
+        Value(Heap::into_bits(h))
+    }
+}
+
+impl From<HeapStr> for Value {
+    #[inline]
+    fn from(s: HeapStr) -> Value {
+        Value(HeapStr::into_bits(s))
+    }
+}
+
+impl From<HeapBytes> for Value {
+    #[inline]
+    fn from(b: HeapBytes) -> Value {
+        Value(HeapBytes::into_bits(b))
+    }
+}
+
+/// Compiled code reads and writes values by their bits and the heap
+/// box layout; this checks the assumptions once at start-up.
+pub fn check_heap_layout() {
+    let value = Value::Str("layout");
+    // The word is the box's address; the count is its first word.
+    let strong_of = |v: &Value| -> usize {
+        // SAFETY: a heap value's word is a live box's address.
+        unsafe { *(v.bits() as *const usize) }
+    };
+    assert_eq!(strong_of(&value), 1, "heap layout changed: the count");
+    let b = value.clone();
+    assert_eq!(strong_of(&value), 2, "heap layout changed: the count");
+    drop(b);
+    assert_eq!(strong_of(&value), 1, "heap layout changed: the count");
+    assert_eq!(
+        value.heap_kind(),
+        Some(Kind::Str),
+        "heap layout changed: the kind"
+    );
+    assert_eq!(std::mem::offset_of!(crate::heap::Header, kind), KIND_OFF);
+    let object = Value::Object(Object::new(0, Fields::new()));
+    assert_eq!(
+        object.bits() & 0xF,
+        crate::heap::OBJECT_TAG,
+        "object words carry their tag"
+    );
+    assert_eq!(object.heap_kind(), Some(Kind::Object));
+    assert_eq!(value.bits() & 0xF, 0, "a string word is its box's address");
+    assert_eq!(std::mem::offset_of!(HeapBox<Object>, value), VALUE_OFF);
+    assert_eq!(std::mem::offset_of!(HeapBox<ArrayData>, value), VALUE_OFF);
+    assert_eq!(std::mem::offset_of!(Object, fields_ptr), 0);
+    assert_eq!(std::mem::offset_of!(Frame, slots_ptr), 0);
+    assert_eq!(std::mem::offset_of!(Frame, nslots), 8);
+    assert_eq!(std::mem::offset_of!(Frame, parent_ptr), 16);
+    assert_eq!(Value::Int(5).bits(), 11, "value encoding changed: Int");
+    assert_eq!(Value::Bool(false).bits(), FALSE_BITS);
+    assert_eq!(Value::Bool(true).bits(), TRUE_BITS);
+    assert_eq!(Value::Nil.bits(), 0);
+    assert_eq!(Value::Class(3).bits(), (3 << 8) | CLASS_TAG);
+    for ns in [
+        0,
+        1,
+        -1,
+        20_000_000,
+        1 << 56,
+        -(1 << 56),
+        1 << 60,
+        i64::MAX,
+        i64::MIN,
+    ] {
+        match Value::Duration(ns).view() {
+            V::Duration(m) => assert_eq!(ns, m, "duration round trip"),
+            other => panic!("duration of {ns} viewed as {other:?}"),
+        }
+    }
+    assert!(matches!(Value::Int(20_000_000).view(), V::Int(20_000_000)));
+    for f in [0.0, 1.0, -2.5, 1e300, 1e-300, f64::NAN, f64::INFINITY, -0.0] {
+        match Value::Float(f).view() {
+            V::Float(g) => assert!(g.to_bits() == f.to_bits(), "flonum round trip of {f}"),
+            other => panic!("flonum of {f} viewed as {other:?}"),
+        }
+    }
+    for i in [
+        0,
+        1,
+        -1,
+        i64::MAX,
+        i64::MIN,
+        1 << 62,
+        -(1 << 62),
+        (1 << 62) - 1,
+    ] {
+        match Value::Int(i).view() {
+            V::Int(j) => assert_eq!(i, j, "fixnum round trip"),
+            other => panic!("Int {i} viewed as {other:?}"),
+        }
+    }
+}
+
+/// Size of a value in bytes, as compiled code lays out its registers.
+pub const VALUE_SIZE: usize = 8;
+
+const _: () = assert!(std::mem::size_of::<Value>() == VALUE_SIZE);
 
 /// A pseudo-random generator (xoshiro256**), seeded with splitmix64.
 #[derive(Clone, Debug)]
@@ -716,52 +1193,6 @@ impl RandomState {
     }
 }
 
-/// Tags below this hold no reference-counted payload.
-pub const NEEDS_DROP_FROM: u64 = 8;
-
-/// A string short enough to live in a value's payload: its length,
-/// then the bytes (valid UTF-8).
-#[derive(Clone, Copy)]
-#[repr(C)]
-pub struct ShortStr {
-    len: u8,
-    bytes: [u8; ShortStr::MAX],
-}
-
-impl ShortStr {
-    pub const MAX: usize = 15;
-
-    pub fn new(s: &str) -> Option<ShortStr> {
-        if s.len() > ShortStr::MAX {
-            return None;
-        }
-        let mut bytes = [0u8; ShortStr::MAX];
-        bytes[..s.len()].copy_from_slice(s.as_bytes());
-        Some(ShortStr {
-            len: s.len() as u8,
-            bytes,
-        })
-    }
-
-    #[inline]
-    pub fn as_str(&self) -> &str {
-        // SAFETY: built from a `str`, so the bytes are UTF-8.
-        unsafe { std::str::from_utf8_unchecked(&self.bytes[..self.len as usize]) }
-    }
-}
-
-impl ShortStr {
-    pub fn make_ascii_uppercase(&mut self) {
-        let n = self.len as usize;
-        self.bytes[..n].make_ascii_uppercase();
-    }
-
-    pub fn make_ascii_lowercase(&mut self) {
-        let n = self.len as usize;
-        self.bytes[..n].make_ascii_lowercase();
-    }
-}
-
 /// Write `i` in decimal into `buf`, returning the text (two digits at
 /// a time; `fmt` is several times slower).
 pub fn format_int(buf: &mut [u8; 20], i: i64) -> &str {
@@ -796,114 +1227,6 @@ pub fn format_int(buf: &mut [u8; 20], i: i64) -> &str {
     unsafe { std::str::from_utf8_unchecked(&buf[pos..]) }
 }
 
-impl std::ops::Deref for ShortStr {
-    type Target = str;
-
-    fn deref(&self) -> &str {
-        self.as_str()
-    }
-}
-
-impl std::fmt::Debug for ShortStr {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self.as_str())
-    }
-}
-
-impl Value {
-    /// A copy that skips the reference count machinery for values that
-    /// have none.
-    #[inline]
-    pub fn fast_clone(&self) -> Value {
-        if (self.type_tag() as u64) < NEEDS_DROP_FROM {
-            // SAFETY: the variant holds no heap payload, so a bitwise
-            // copy is a complete value.
-            unsafe { std::ptr::read(self) }
-        } else {
-            self.clone()
-        }
-    }
-
-    /// `*dst = *src` without a temporary: a plain copy for values without
-    /// a reference count.
-    ///
-    /// # Safety
-    /// `dst` must point to writable space holding no live value.
-    #[inline]
-    pub unsafe fn clone_into(dst: *mut Value, src: &Value) {
-        if (src.type_tag() as u64) < NEEDS_DROP_FROM {
-            std::ptr::copy_nonoverlapping(src as *const Value, dst, 1);
-        } else {
-            std::ptr::write(dst, src.clone());
-        }
-    }
-
-    /// Drop a value, skipping the destructor for those that need none.
-    #[inline]
-    pub fn fast_drop(self) {
-        if (self.type_tag() as u64) < NEEDS_DROP_FROM {
-            std::mem::forget(self);
-        }
-    }
-}
-
-/// Compiled code bumps and lowers reference counts inline, assuming the
-/// layout of `Rc`'s allocation: the strong count is its first word. This
-/// checks that assumption once at start-up.
-pub fn check_rc_layout() {
-    let a: Rc<str> = Rc::from("layout");
-    let value = Value::Str(a.clone());
-    // The payload's first word is the pointer `Rc` keeps: the allocation.
-    let strong_of = |v: &Value| -> usize {
-        // SAFETY: `Value` is `repr(C, u64)`: the tag, then the payload.
-        unsafe {
-            let words = v as *const Value as *const usize;
-            let allocation = *words.add(1) as *const usize;
-            *allocation
-        }
-    };
-    assert_eq!(
-        strong_of(&value),
-        2,
-        "Rc layout changed: the strong count must come first"
-    );
-    // The tags compiled code tests for, and the field view's place.
-    assert_eq!(
-        Value::Class(0).type_tag(),
-        5,
-        "Value layout changed: Class tag"
-    );
-    let object = Value::Object(Object::new(0, Fields::new()));
-    assert_eq!(object.type_tag(), 16, "Value layout changed: Object tag");
-    let short = Value::str("short");
-    assert_eq!(short.type_tag(), 7, "Value layout changed: Short tag");
-    assert!(
-        (short.type_tag() as u64) < NEEDS_DROP_FROM,
-        "a short string must need no release"
-    );
-    assert_eq!(std::mem::offset_of!(Object, fields_ptr), 0);
-    assert_eq!(std::mem::offset_of!(Frame, slots_ptr), 0);
-    assert_eq!(std::mem::offset_of!(Frame, nslots), 8);
-    assert_eq!(std::mem::offset_of!(Frame, parent_ptr), 16);
-    let b = a.clone();
-    assert_eq!(
-        strong_of(&value),
-        3,
-        "Rc layout changed: the strong count must come first"
-    );
-    drop(b);
-    assert_eq!(
-        strong_of(&value),
-        2,
-        "Rc layout changed: the strong count must come first"
-    );
-}
-
-/// Size of a value in bytes, as compiled code lays out its registers.
-pub const VALUE_SIZE: usize = 24;
-
-const _: () = assert!(std::mem::size_of::<Value>() == VALUE_SIZE);
-
 /// A point in time: nanoseconds since the Unix epoch and the UTC offset
 /// it is displayed in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -915,33 +1238,33 @@ pub struct TimeVal {
     pub utc: bool,
 }
 
+thread_local! {
+    /// Classes whose instances compare and hash structurally (data types,
+    /// enum variants). Set up by the interpreter.
+    pub static STRUCTURAL_CLASSES: RefCell<Vec<bool>> = const { RefCell::new(Vec::new()) };
+}
+
+pub fn is_structural(obj: &Object) -> bool {
+    STRUCTURAL_CLASSES.with(|s| s.borrow().get(obj.class as usize).copied().unwrap_or(false))
+}
+
 impl Value {
-    /// A string value: in the value itself when short, shared on the
-    /// heap otherwise.
+    /// A string value.
     pub fn str(s: &str) -> Value {
-        match ShortStr::new(s) {
-            Some(short) => Value::Short(short),
-            None => Value::Str(Rc::from(s)),
-        }
+        Value::Str(HeapStr::new(s))
     }
 
-    /// A string value from a shared string (kept shared when long).
+    /// A string value from a shared string.
     pub fn str_rc(s: Rc<str>) -> Value {
-        match ShortStr::new(&s) {
-            Some(short) => Value::Short(short),
-            None => Value::Str(s),
-        }
+        Value::Str(HeapStr::new(&s))
     }
 
     pub fn string(s: String) -> Value {
-        match ShortStr::new(&s) {
-            Some(short) => Value::Short(short),
-            None => Value::Str(Rc::from(s)),
-        }
+        Value::Str(HeapStr::new(&s))
     }
 
     /// A string built by `f` in a reused buffer: one allocation (the
-    /// `Rc<str>`), none for the buffer. Reentrant (a nested build gets a
+    /// box), none for the buffer. Reentrant (a nested build gets a
     /// fresh buffer).
     pub fn build_string(f: impl FnOnce(&mut String)) -> Value {
         thread_local! {
@@ -958,97 +1281,67 @@ impl Value {
     }
 
     pub fn array(items: Vec<Value>) -> Value {
-        Value::Array(Rc::new(ArrayData::from_values(items)))
+        Value::Array(ArrayData::from_values(items))
     }
 
     pub fn ints(items: Vec<i64>) -> Value {
-        Value::Array(Rc::new(ArrayData::Ints(items)))
+        Value::Array(ArrayData::Ints(items))
     }
 
     pub fn floats(items: Vec<f64>) -> Value {
-        Value::Array(Rc::new(ArrayData::Floats(items)))
+        Value::Array(ArrayData::Floats(items))
     }
 
     pub fn bytes(bytes: Vec<u8>) -> Value {
-        Value::Bytes(Rc::from(bytes))
+        Value::Bytes(HeapBytes::new(&bytes))
     }
 
+    #[inline]
     pub fn is_truthy(&self) -> bool {
-        !matches!(self, Value::Nil | Value::Bool(false))
+        self.0 != 0 && self.0 != FALSE_BITS
     }
 
+    #[inline]
     pub fn is_nil(&self) -> bool {
-        matches!(self, Value::Nil)
+        self.0 == 0
     }
 
+    #[inline]
     pub fn as_int(&self) -> Option<i64> {
-        match self {
-            Value::Int(i) => Some(*i),
+        match self.view() {
+            V::Int(i) => Some(i),
             _ => None,
         }
     }
 
-    /// The text of a string value (short or long).
+    /// The text of a string value.
     #[inline]
     pub fn as_str(&self) -> Option<&str> {
-        match self {
-            Value::Short(s) => Some(s.as_str()),
-            Value::Str(s) => Some(s),
+        match self.view() {
+            V::Str(s) => Some(s.as_str()),
             _ => None,
         }
     }
 
+    #[inline]
     pub fn is_str(&self) -> bool {
-        matches!(self, Value::Short(_) | Value::Str(_))
-    }
-
-    /// The discriminant (the first word of the `repr(C, u64)` layout).
-    pub fn type_tag(&self) -> u8 {
-        // SAFETY: `Value` is `repr(C, u64)`, so it starts with its tag.
-        unsafe { *(self as *const Value as *const u64) as u8 }
+        self.heap_kind() == Some(Kind::Str)
     }
 
     /// Identity comparison (`equal?`): values without a heap payload are
     /// identical when equal, the others when they share the allocation.
     pub fn identical(&self, other: &Value) -> bool {
-        match (self, other) {
-            (Value::Nil, Value::Nil) => true,
-            (Value::Bool(a), Value::Bool(b)) => a == b,
-            (Value::Int(a), Value::Int(b)) => a == b,
-            (Value::Float(a), Value::Float(b)) => a.to_bits() == b.to_bits(),
-            (Value::Symbol(a), Value::Symbol(b)) => a == b,
-            (Value::Class(a), Value::Class(b)) => a == b,
-            (Value::Duration(a), Value::Duration(b)) => a == b,
-            (Value::BigInt(a), Value::BigInt(b)) => Rc::ptr_eq(a, b) || a == b,
-            (Value::Str(a), Value::Str(b)) => Rc::ptr_eq(a, b) || a == b,
-            (Value::Short(a), Value::Short(b)) => a.as_str() == b.as_str(),
-            (Value::Str(a), Value::Short(b)) | (Value::Short(b), Value::Str(a)) => {
-                **a == *b.as_str()
-            }
-            (Value::Array(a), Value::Array(b)) => Rc::ptr_eq(a, b),
-            (Value::Hash(a), Value::Hash(b)) => Rc::ptr_eq(a, b),
-            (Value::Set(a), Value::Set(b)) => Rc::ptr_eq(a, b),
-            (Value::Range(a), Value::Range(b)) => Rc::ptr_eq(a, b),
-            (Value::Regexp(a), Value::Regexp(b)) => Rc::ptr_eq(a, b),
-            (Value::MatchData(a), Value::MatchData(b)) => Rc::ptr_eq(a, b),
-            (Value::Object(a), Value::Object(b)) => Rc::ptr_eq(a, b),
-            (Value::Proc(a), Value::Proc(b)) => Rc::ptr_eq(a, b),
-            (Value::ArrayBuilder(a), Value::ArrayBuilder(b)) => Rc::ptr_eq(a, b),
-            (Value::HashBuilder(a), Value::HashBuilder(b)) => Rc::ptr_eq(a, b),
-            (Value::SetBuilder(a), Value::SetBuilder(b)) => Rc::ptr_eq(a, b),
-            (Value::StringBuilder(a), Value::StringBuilder(b)) => Rc::ptr_eq(a, b),
-            (Value::Channel(a), Value::Channel(b)) => Rc::ptr_eq(a, b),
-            (Value::Task(a), Value::Task(b)) => Rc::ptr_eq(a, b),
-            (Value::Scope(a), Value::Scope(b)) => Rc::ptr_eq(a, b),
-            (Value::Atom(a), Value::Atom(b)) => Rc::ptr_eq(a, b),
-            (Value::Selector(a), Value::Selector(b)) => Rc::ptr_eq(a, b),
-            (Value::Enumerator(a), Value::Enumerator(b)) => Rc::ptr_eq(a, b),
-            (Value::Io(a), Value::Io(b)) => Rc::ptr_eq(a, b),
-            (Value::Bytes(a), Value::Bytes(b)) => Rc::ptr_eq(a, b) || a == b,
-            (Value::BytesBuilder(a), Value::BytesBuilder(b)) => Rc::ptr_eq(a, b),
-            (Value::Time(a), Value::Time(b)) => a.ns == b.ns,
-            (Value::Random(a), Value::Random(b)) => Rc::ptr_eq(a, b),
-            (Value::Flow(a), Value::Flow(b)) => Rc::ptr_eq(a, b),
+        if self.0 == other.0 {
+            return true;
+        }
+        match (self.view(), other.view()) {
+            (V::Int(a), V::Int(b)) => a == b,
+            (V::Float(a), V::Float(b)) => a.to_bits() == b.to_bits(),
+            (V::Duration(a), V::Duration(b)) => a == b,
+            (V::BigInt(a), V::BigInt(b)) => a == b,
+            (V::Str(a), V::Str(b)) => a == b,
+            (V::Bytes(a), V::Bytes(b)) => a == b,
+            (V::Time(a), V::Time(b)) => a.ns == b.ns,
             _ => false,
         }
     }
@@ -1059,36 +1352,28 @@ impl Value {
 /// variants compare field-wise.
 impl PartialEq for Value {
     fn eq(&self, other: &Value) -> bool {
-        match (self, other) {
-            (Value::Int(a), Value::Int(b)) => a == b,
-            (Value::Int(a), Value::Float(b)) | (Value::Float(b), Value::Int(a)) => {
-                (*a as f64) == *b
-            }
-            (Value::Int(a), Value::BigInt(b)) | (Value::BigInt(b), Value::Int(a)) => {
-                **b == BigInt::from(*a)
-            }
-            (Value::BigInt(a), Value::BigInt(b)) => a == b,
-            (Value::Float(a), Value::Float(b)) => a == b,
-            (Value::Str(a), Value::Str(b)) => a == b,
-            (Value::Short(a), Value::Short(b)) => a.as_str() == b.as_str(),
-            (Value::Str(a), Value::Short(b)) | (Value::Short(b), Value::Str(a)) => {
-                **a == *b.as_str()
-            }
-            (Value::Array(a), Value::Array(b)) => {
+        if self.0 == other.0 {
+            return true;
+        }
+        match (self.view(), other.view()) {
+            (V::Int(a), V::Int(b)) => a == b,
+            (V::Int(a), V::Float(b)) | (V::Float(b), V::Int(a)) => (a as f64) == b,
+            (V::Int(a), V::BigInt(b)) | (V::BigInt(b), V::Int(a)) => **b == BigInt::from(a),
+            (V::BigInt(a), V::BigInt(b)) => a == b,
+            (V::Float(a), V::Float(b)) => a == b,
+            (V::Str(a), V::Str(b)) => a == b,
+            (V::Array(a), V::Array(b)) => {
                 a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| x == y)
             }
-            (Value::Hash(a), Value::Hash(b)) => {
+            (V::Hash(a), V::Hash(b)) => {
                 a.len() == b.len() && a.iter().all(|(k, v)| b.get(k).is_some_and(|w| w == v))
             }
-            (Value::Set(a), Value::Set(b)) => a.len() == b.len() && a.iter().all(|x| b.contains(x)),
-            (Value::Range(a), Value::Range(b)) => {
+            (V::Set(a), V::Set(b)) => a.len() == b.len() && a.iter().all(|x| b.contains(x)),
+            (V::Range(a), V::Range(b)) => {
                 a.lo == b.lo && a.hi == b.hi && a.exclusive == b.exclusive
             }
-            (Value::Regexp(a), Value::Regexp(b)) => a.source == b.source && a.flags == b.flags,
-            (Value::Object(a), Value::Object(b)) => {
-                if Rc::ptr_eq(a, b) {
-                    return true;
-                }
+            (V::Regexp(a), V::Regexp(b)) => a.source == b.source && a.flags == b.flags,
+            (V::Object(a), V::Object(b)) => {
                 // Data-like objects (no mutable fields) compare structurally.
                 // The interpreter decides which classes are structural by
                 // the `structural` flag kept on the object.
@@ -1101,76 +1386,62 @@ impl PartialEq for Value {
 
 impl Eq for Value {}
 
-thread_local! {
-    /// Classes whose instances compare and hash structurally (data types,
-    /// enum variants). Set up by the interpreter.
-    pub static STRUCTURAL_CLASSES: RefCell<Vec<bool>> = const { RefCell::new(Vec::new()) };
-}
-
-pub fn is_structural(obj: &Object) -> bool {
-    STRUCTURAL_CLASSES.with(|s| s.borrow().get(obj.class as usize).copied().unwrap_or(false))
-}
-
 impl Hash for Value {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        match self {
-            Value::Nil => 0u8.hash(state),
-            Value::Bool(b) => b.hash(state),
+        match self.view() {
+            V::Nil => 0u8.hash(state),
+            V::Bool(b) => b.hash(state),
             // Numbers that are equal hash the same (`1 == 1.0`): an
             // integral value hashes as the integer it is, which keeps
             // the common Int key a plain integer hash.
-            Value::Int(i) => {
+            V::Int(i) => {
                 2u8.hash(state);
                 i.hash(state);
             }
-            Value::BigInt(b) => {
+            V::BigInt(b) => {
                 2u8.hash(state);
                 match i64::try_from(&**b) {
                     Ok(i) => i.hash(state),
                     Err(_) => b.hash(state),
                 }
             }
-            Value::Float(f) => {
+            V::Float(f) => {
                 2u8.hash(state);
                 if f.fract() == 0.0 && f.abs() < 9.2e18 {
-                    (*f as i64).hash(state);
+                    (f as i64).hash(state);
                 } else {
                     f.to_bits().hash(state);
                 }
             }
-            Value::Str(s) => {
-                4u8.hash(state);
-                (**s).hash(state);
-            }
-            Value::Short(s) => {
+            V::Str(s) => {
                 4u8.hash(state);
                 s.as_str().hash(state);
             }
-            Value::Symbol(s) => {
+            V::Symbol(s) => {
                 5u8.hash(state);
                 s.hash(state);
             }
-            Value::Array(a) => {
+            V::Array(a) => {
                 6u8.hash(state);
                 a.len().hash(state);
                 for x in a.iter() {
                     x.hash(state);
                 }
             }
-            Value::Hash(h) => {
+            V::Hash(h) => {
                 7u8.hash(state);
                 h.len().hash(state);
             }
-            Value::Set(s) => {
+            V::Set(s) => {
                 8u8.hash(state);
                 s.len().hash(state);
             }
-            Value::Range(r) => {
+            V::Range(r) => {
                 9u8.hash(state);
                 r.lo.hash(state);
                 r.hi.hash(state);
             }
-            Value::Object(o) => {
+            V::Object(o) => {
                 12u8.hash(state);
                 o.class.hash(state);
                 if is_structural(o) {
@@ -1178,41 +1449,27 @@ impl Hash for Value {
                         f.hash(state);
                     }
                 } else {
-                    (Rc::as_ptr(o) as usize).hash(state);
+                    self.0.hash(state);
                 }
             }
-            Value::Class(c) => {
+            V::Class(c) => {
                 13u8.hash(state);
                 c.hash(state);
             }
-            Value::Duration(d) => {
+            V::Duration(d) => {
                 24u8.hash(state);
                 d.hash(state);
             }
-            Value::Bytes(b) => {
+            V::Bytes(b) => {
                 27u8.hash(state);
-                b.hash(state);
+                b.as_slice().hash(state);
             }
-            Value::Time(t) => {
+            V::Time(t) => {
                 29u8.hash(state);
                 t.ns.hash(state);
             }
-            other => {
-                other.type_tag().hash(state);
-                // Identity for the rest.
-                match other {
-                    Value::Proc(p) => (Rc::as_ptr(p) as usize).hash(state),
-                    Value::ArrayBuilder(p) => (Rc::as_ptr(p) as usize).hash(state),
-                    Value::HashBuilder(p) => (Rc::as_ptr(p) as usize).hash(state),
-                    Value::StringBuilder(p) => (Rc::as_ptr(p) as usize).hash(state),
-                    Value::Channel(p) => (Rc::as_ptr(p) as usize).hash(state),
-                    Value::Task(p) => (Rc::as_ptr(p) as usize).hash(state),
-                    Value::Atom(p) => (Rc::as_ptr(p) as usize).hash(state),
-                    Value::BytesBuilder(p) => (Rc::as_ptr(p) as usize).hash(state),
-                    Value::Random(p) => (Rc::as_ptr(p) as usize).hash(state),
-                    _ => {}
-                }
-            }
+            // Identity for the rest.
+            _ => self.0.hash(state),
         }
     }
 }
@@ -1222,6 +1479,6 @@ pub fn int_from_big(b: BigInt) -> Value {
     use num_traits::ToPrimitive;
     match b.to_i64() {
         Some(i) => Value::Int(i),
-        None => Value::BigInt(Rc::new(b)),
+        None => Value::BigInt(b),
     }
 }

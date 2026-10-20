@@ -12,7 +12,7 @@ use std::rc::Rc;
 use quarz_ir::{FuncId, Term};
 
 use crate::interp::{CompiledFn, Flow, Interp, SharedState};
-use crate::value::Value;
+use crate::value::{Value, V};
 use crate::vm::Activation;
 
 pub const STATUS_OK: u32 = 0;
@@ -124,8 +124,8 @@ pub unsafe extern "C" fn qz_term(
         Term::Raise(r) => Flow::Raise(regs[*r as usize].clone()),
         Term::BreakOut(r) => Flow::Break(regs[*r as usize].clone(), act.closure_tag),
         Term::ReturnOut(r) => Flow::Return(regs[*r as usize].clone(), act.method_tag),
-        Term::Resume(r) => match &regs[*r as usize] {
-            Value::Flow(fb) => match fb.borrow_mut().take() {
+        Term::Resume(r) => match regs[*r as usize].view() {
+            V::Flow(fb) => match fb.borrow_mut().take() {
                 Some(flow) => flow,
                 None => return STATUS_OK,
             },
@@ -172,6 +172,26 @@ pub unsafe extern "C" fn qz_clone_ptr(dst: *mut Value, src: *const Value) {
 #[no_mangle]
 pub unsafe extern "C" fn qz_drop_value(p: *mut Value) {
     *p = Value::Nil;
+}
+
+/// `*slot = Int(v)` for an `Int` that does not fit the immediate
+/// encoding (compiled code writes the immediates itself). `slot` holds
+/// no live value.
+///
+/// # Safety
+/// `slot` must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn qz_box_int(slot: *mut Value, v: i64) {
+    std::ptr::write(slot, Value::Int(v));
+}
+
+/// `*slot = Float(f)` for a `Float` that is not a flonum (as `qz_box_int`).
+///
+/// # Safety
+/// `slot` must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn qz_box_float(slot: *mut Value, f: f64) {
+    std::ptr::write(slot, Value::Float(f));
 }
 
 /// Build the activation of a direct call to the compiled body of method
@@ -545,8 +565,8 @@ pub unsafe extern "C" fn qz_field_get(
     dst: u32,
 ) -> u32 {
     let rt = &*rt;
-    let v = match &*regs.add(obj as usize) {
-        Value::Object(o) => o
+    let v = match (*regs.add(obj as usize)).view() {
+        V::Object(o) => o
             .fields
             .borrow()
             .get(index as usize)
@@ -577,8 +597,8 @@ pub unsafe extern "C" fn qz_field_set(
 ) -> u32 {
     let rt = &*rt;
     let v = (*regs.add(src as usize)).clone();
-    match &*regs.add(obj as usize) {
-        Value::Object(o) => {
+    match (*regs.add(obj as usize)).view() {
+        V::Object(o) => {
             let mut fields = o.fields.borrow_mut();
             let idx = index as usize;
             if idx >= fields.len() {
@@ -636,7 +656,7 @@ pub unsafe extern "C" fn qz_call_static(
             } else {
                 &*regs.add(recv as usize)
             };
-            let mut refs: [&Value; 3] = [&Value::Nil; 3];
+            let mut refs: [&Value; 3] = [&crate::value::NIL; 3];
             for (i, slot) in refs.iter_mut().enumerate().take(nargs as usize) {
                 *slot = &*regs.add(*arg_regs.add(i) as usize);
             }
@@ -752,7 +772,7 @@ pub unsafe extern "C" fn qz_owned_call(
                 }
             }
             2 => {
-                if let Value::Object(o) = &*regs.add(a as usize) {
+                if let V::Object(o) = (*regs.add(a as usize)).view() {
                     let mut fields = o.fields.borrow_mut();
                     if let Some(slot) = fields.get_mut(b as usize) {
                         if rt.owned_fast(mid, slot, refs) {
@@ -780,8 +800,8 @@ pub unsafe extern "C" fn qz_owned_call(
             .expect("function without a frame uses one")
     };
     let take_field = |obj: u32, index: u32| -> Value {
-        match &*regs.add(obj as usize) {
-            Value::Object(o) => o
+        match (*regs.add(obj as usize)).view() {
+            V::Object(o) => o
                 .fields
                 .borrow_mut()
                 .get_mut(index as usize)
@@ -791,7 +811,7 @@ pub unsafe extern "C" fn qz_owned_call(
         }
     };
     let put_field = |obj: u32, index: u32, v: Value| {
-        if let Value::Object(o) = &*regs.add(obj as usize) {
+        if let V::Object(o) = (*regs.add(obj as usize)).view() {
             if let Some(s) = o.fields.borrow_mut().get_mut(index as usize) {
                 *s = v;
             }
@@ -1088,7 +1108,7 @@ pub unsafe extern "C" fn qz_main(
         functions,
         units,
     } = module;
-    crate::value::check_rc_layout();
+    crate::value::check_heap_layout();
     crate::layout::check(layout_sig, vec_layout);
     let interp: Rc<Interp> = Interp::with_state(world, 0, functions, units, args, state);
     // Bit 0: compiled frames are found by the native unwinder (the

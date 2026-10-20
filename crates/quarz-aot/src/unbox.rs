@@ -111,38 +111,23 @@ pub fn term_uses(term: &Term) -> Option<Reg> {
     term.uses()
 }
 
-/// Instructions whose generated code reads no register's home except
-/// through the states (so unboxed registers need no write-back first).
-pub fn reads_no_home(inst: &Inst) -> bool {
+/// Instructions whose generated code never reaches the runtime, so
+/// cannot unwind to the block's handler (before any other one, the
+/// registers the handler reads are written back).
+pub fn inline_only(inst: &Inst) -> bool {
     matches!(
         inst,
         Inst::LoadConst { .. }
             | Inst::Move { .. }
             | Inst::SelfRef { .. }
             | Inst::Arg { .. }
-            | Inst::BlockParam { .. }
-            | Inst::FrameGet { .. }
-            | Inst::FieldGet { .. }
             | Inst::ClassRef { .. }
-            | Inst::MakeBlock { .. }
             | Inst::Not { .. }
             | Inst::ClassIs { .. }
             | Inst::IsNil { .. }
             | Inst::CatchException { .. }
             | Inst::CatchAny { .. }
             | Inst::ClearRegs { .. }
-    )
-}
-
-/// Of those, the ones that may still unwind to the block's handler
-/// (which reads the homes).
-pub fn may_unwind(inst: &Inst) -> bool {
-    matches!(
-        inst,
-        Inst::BlockParam { .. }
-            | Inst::FrameGet { .. }
-            | Inst::FieldGet { .. }
-            | Inst::MakeBlock { .. }
     )
 }
 

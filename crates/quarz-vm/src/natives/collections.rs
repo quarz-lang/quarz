@@ -3,16 +3,17 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
 
+use crate::heap::Heap;
 use crate::interp::{Args, EvalResult, Flow, Interp, NativeFn, OwnedNativeFn};
+use crate::value::V;
 use crate::value::*;
 use smallvec::smallvec;
 
 use super::{block, collect, int, string};
 
 /// In-place variants used when the caller owns the receiver
-/// (`xs = xs.push(x)`): `Rc::make_mut` mutates without copying when the
+/// (`xs = xs.push(x)`): `Heap::make_mut` mutates without copying when the
 /// reference is unique.
 pub fn register_owned(m: &mut HashMap<&'static str, OwnedNativeFn>) {
     m.insert("Array#push", |_, r, a| {
@@ -52,8 +53,8 @@ pub fn register_owned(m: &mut HashMap<&'static str, OwnedNativeFn>) {
             Ok(x) => x,
             Err(e) => return Err((e, r)),
         };
-        let n = match &r {
-            Value::Array(v) => v.len() as i64,
+        let n = match r.view() {
+            V::Array(v) => v.len() as i64,
             _ => 0,
         };
         let idx = if idx < 0 { n + idx } else { idx };
@@ -94,32 +95,32 @@ pub fn register_owned(m: &mut HashMap<&'static str, OwnedNativeFn>) {
 }
 
 fn owned_update(recv: Value, f: impl FnOnce(&mut Vec<Value>)) -> Result<Value, (Flow, Value)> {
-    match recv {
-        Value::Array(mut rc) => {
-            Rc::make_mut(&mut rc).with_values(f);
+    match recv.unpack() {
+        U::Array(mut rc) => {
+            Heap::make_mut(&mut rc).with_values(f);
             Ok(Value::Array(rc))
         }
-        other => Err((Flow::Raise(Value::Nil), other)),
+        other => Err((Flow::Raise(Value::Nil), other.repack())),
     }
 }
 
 fn owned_hash_update(recv: Value, f: impl FnOnce(&mut ValueMap)) -> Result<Value, (Flow, Value)> {
-    match recv {
-        Value::Hash(mut rc) => {
-            f(Rc::make_mut(&mut rc));
+    match recv.unpack() {
+        U::Hash(mut rc) => {
+            f(Heap::make_mut(&mut rc));
             Ok(Value::Hash(rc))
         }
-        other => Err((Flow::Raise(Value::Nil), other)),
+        other => Err((Flow::Raise(Value::Nil), other.repack())),
     }
 }
 
 fn owned_set_update(recv: Value, f: impl FnOnce(&mut ValueSet)) -> Result<Value, (Flow, Value)> {
-    match recv {
-        Value::Set(mut rc) => {
-            f(Rc::make_mut(&mut rc));
+    match recv.unpack() {
+        U::Set(mut rc) => {
+            f(Heap::make_mut(&mut rc));
             Ok(Value::Set(rc))
         }
-        other => Err((Flow::Raise(Value::Nil), other)),
+        other => Err((Flow::Raise(Value::Nil), other.repack())),
     }
 }
 
@@ -292,9 +293,9 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     });
     m.insert("Array#include?", |i, r, a| {
         let needle = a.arg(0);
-        Ok(Value::Bool(match (&**arr_data(i, r)?, needle) {
-            (ArrayData::Ints(xs), Value::Int(n)) => xs.contains(n),
-            (ArrayData::Floats(xs), Value::Float(f)) => xs.contains(f),
+        Ok(Value::Bool(match (&**arr_data(i, r)?, needle.view()) {
+            (ArrayData::Ints(xs), V::Int(n)) => xs.contains(&n),
+            (ArrayData::Floats(xs), V::Float(f)) => xs.contains(&f),
             (data, _) => data.iter().any(|x| &x == needle),
         }))
     });
@@ -518,9 +519,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
         Ok(Value::string(i.inspect(r)?))
     });
     // Hash
-    m.insert("Hash.new", |_, _, _| {
-        Ok(Value::Hash(Rc::new(ValueMap::default())))
-    });
+    m.insert("Hash.new", |_, _, _| Ok(Value::Hash(ValueMap::default())));
     m.insert("Hash.build", hash_build);
     m.insert("Hash#each", |i, r, a| {
         let b = block(i, &a)?;
@@ -629,7 +628,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
         for (k, v) in hash(i, r)?.iter() {
             out.insert(k.clone(), i.call_block(&b, smallvec![v.clone()])?);
         }
-        Ok(Value::Hash(Rc::new(out)))
+        Ok(Value::Hash(out))
     });
     m.insert("Hash#transform_keys", |i, r, a| {
         let b = block(i, &a)?;
@@ -637,15 +636,15 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
         for (k, v) in hash(i, r)?.iter() {
             out.insert(i.call_block(&b, smallvec![k.clone()])?, v.clone());
         }
-        Ok(Value::Hash(Rc::new(out)))
+        Ok(Value::Hash(out))
     });
     m.insert("Hash#invert", |i, r, _| {
-        Ok(Value::Hash(Rc::new(
+        Ok(Value::Hash(
             hash(i, r)?
                 .iter()
                 .map(|(k, v)| (v.clone(), k.clone()))
-                .collect(),
-        )))
+                .collect::<ValueMap>(),
+        ))
     });
     m.insert("Hash#to_a", |i, r, _| {
         Ok(Value::array(
@@ -662,9 +661,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     m.insert("Hash#hash", super::core_hash);
     // Hash::Builder
     m.insert("Hash::Builder.new", |_, _, _| {
-        Ok(Value::HashBuilder(Rc::new(RefCell::new(
-            ValueMap::default(),
-        ))))
+        Ok(Value::HashBuilder(RefCell::new(ValueMap::default())))
     });
     m.insert("Hash::Builder#[]", |i, r, a| {
         match hb(i, r)?.borrow().get(a.arg(0)) {
@@ -746,12 +743,10 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
         Ok(Value::Nil)
     });
     m.insert("Hash::Builder#to_h", |i, r, _| {
-        Ok(Value::Hash(Rc::new(std::mem::take(
-            &mut *hb(i, r)?.borrow_mut(),
-        ))))
+        Ok(Value::Hash(std::mem::take(&mut *hb(i, r)?.borrow_mut())))
     });
     m.insert("Hash::Builder#snapshot", |i, r, _| {
-        Ok(Value::Hash(Rc::new(hb(i, r)?.borrow().clone())))
+        Ok(Value::Hash(hb(i, r)?.borrow().clone()))
     });
     m.insert("Hash::Builder#to_s", |i, r, _| {
         Ok(Value::string(i.inspect(r)?))
@@ -760,11 +755,9 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
         Ok(Value::string(i.inspect(r)?))
     });
     // Set
-    m.insert("Set.new", |_, _, _| {
-        Ok(Value::Set(Rc::new(ValueSet::default())))
-    });
+    m.insert("Set.new", |_, _, _| Ok(Value::Set(ValueSet::default())));
     m.insert("Set.[]", |_, _, a| {
-        Ok(Value::Set(Rc::new(a.pos.into_iter().collect())))
+        Ok(Value::Set(a.pos.into_iter().collect::<ValueSet>()))
     });
     m.insert("Set.build", set_build);
     m.insert("Set#each", |i, r, a| {
@@ -816,7 +809,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
             .chain(other.iter().filter(|x| !mine.contains(*x)))
             .cloned()
             .collect();
-        Ok(Value::Set(Rc::new(out)))
+        Ok(Value::Set(out))
     });
     m.insert("Set#subset?", |i, r, a| {
         let other = set(i, a.arg(0))?;
@@ -836,9 +829,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     m.insert("Set#hash", super::core_hash);
     // Set::Builder
     m.insert("Set::Builder.new", |_, _, _| {
-        Ok(Value::SetBuilder(Rc::new(
-            RefCell::new(ValueSet::default()),
-        )))
+        Ok(Value::SetBuilder(RefCell::new(ValueSet::default())))
     });
     m.insert("Set::Builder#<<", |i, r, a| {
         sb(i, r)?.borrow_mut().insert(a.arg(0).clone());
@@ -870,9 +861,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
         Ok(Value::Nil)
     });
     m.insert("Set::Builder#to_set", |i, r, _| {
-        Ok(Value::Set(Rc::new(std::mem::take(
-            &mut *sb(i, r)?.borrow_mut(),
-        ))))
+        Ok(Value::Set(std::mem::take(&mut *sb(i, r)?.borrow_mut())))
     });
     m.insert("Set::Builder#to_a", |i, r, _| {
         Ok(Value::array(sb(i, r)?.borrow().iter().cloned().collect()))
@@ -896,9 +885,9 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     m.insert("Range#last", |i, r, _| {
         let rg = range(i, r)?;
         Ok(if rg.exclusive {
-            match &rg.hi {
-                Value::Int(h) => Value::Int(h - 1),
-                other => other.clone(),
+            match rg.hi.view() {
+                V::Int(h) => Value::Int(h - 1),
+                _ => rg.hi.clone(),
             }
         } else {
             rg.hi.clone()
@@ -957,58 +946,58 @@ pub(super) fn arr<'a>(
     interp: &Interp,
     v: &'a Value,
 ) -> Result<std::borrow::Cow<'a, [Value]>, Flow> {
-    match v {
-        Value::Array(a) => Ok(a.values()),
+    match v.view() {
+        V::Array(a) => Ok(a.values()),
         _ => Err(interp.err_type(&format!("expected an Array, got {}", interp.class_name(v)))),
     }
 }
 
 /// The array itself.
-pub(super) fn arr_data<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Rc<ArrayData>, Flow> {
-    match v {
-        Value::Array(a) => Ok(a),
+pub(super) fn arr_data<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Heap<ArrayData>, Flow> {
+    match v.view() {
+        V::Array(a) => Ok(a),
         _ => Err(interp.err_type(&format!("expected an Array, got {}", interp.class_name(v)))),
     }
 }
 
-pub(super) fn ab<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Rc<RefCell<Vec<Value>>>, Flow> {
-    match v {
-        Value::ArrayBuilder(a) => Ok(a),
+pub(super) fn ab<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Heap<RefCell<Vec<Value>>>, Flow> {
+    match v.view() {
+        V::ArrayBuilder(a) => Ok(a),
         _ => Err(interp.err_type("expected an Array::Builder")),
     }
 }
 
-pub(super) fn hash<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Rc<ValueMap>, Flow> {
-    match v {
-        Value::Hash(h) => Ok(h),
+pub(super) fn hash<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Heap<ValueMap>, Flow> {
+    match v.view() {
+        V::Hash(h) => Ok(h),
         _ => Err(interp.err_type(&format!("expected a Hash, got {}", interp.class_name(v)))),
     }
 }
 
-pub(super) fn hb<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Rc<RefCell<ValueMap>>, Flow> {
-    match v {
-        Value::HashBuilder(h) => Ok(h),
+pub(super) fn hb<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Heap<RefCell<ValueMap>>, Flow> {
+    match v.view() {
+        V::HashBuilder(h) => Ok(h),
         _ => Err(interp.err_type("expected a Hash::Builder")),
     }
 }
 
-pub(super) fn set<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Rc<ValueSet>, Flow> {
-    match v {
-        Value::Set(s) => Ok(s),
+pub(super) fn set<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Heap<ValueSet>, Flow> {
+    match v.view() {
+        V::Set(s) => Ok(s),
         _ => Err(interp.err_type(&format!("expected a Set, got {}", interp.class_name(v)))),
     }
 }
 
-pub(super) fn sb<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Rc<RefCell<ValueSet>>, Flow> {
-    match v {
-        Value::SetBuilder(s) => Ok(s),
+pub(super) fn sb<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Heap<RefCell<ValueSet>>, Flow> {
+    match v.view() {
+        V::SetBuilder(s) => Ok(s),
         _ => Err(interp.err_type("expected a Set::Builder")),
     }
 }
 
-pub(super) fn range<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Rc<RangeVal>, Flow> {
-    match v {
-        Value::Range(r) => Ok(r),
+pub(super) fn range<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Heap<RangeVal>, Flow> {
+    match v.view() {
+        V::Range(r) => Ok(r),
         _ => Err(interp.err_type("expected a Range")),
     }
 }
@@ -1018,7 +1007,7 @@ pub(super) fn update(interp: &Interp, recv: &Value, f: impl FnOnce(&mut Vec<Valu
     let mut rc = arr_data(interp, recv)?.clone();
     // `recv` holds one reference, `rc` another; `make_mut` copies when a
     // third party holds the array.
-    Rc::make_mut(&mut rc).with_values(f);
+    Heap::make_mut(&mut rc).with_values(f);
     Ok(Value::Array(rc))
 }
 
@@ -1028,7 +1017,7 @@ pub(super) fn hash_update(
     f: impl FnOnce(&mut ValueMap),
 ) -> EvalResult {
     let mut rc = hash(interp, recv)?.clone();
-    f(Rc::make_mut(&mut rc));
+    f(Heap::make_mut(&mut rc));
     Ok(Value::Hash(rc))
 }
 
@@ -1038,7 +1027,7 @@ pub(super) fn set_update(
     f: impl FnOnce(&mut ValueSet),
 ) -> EvalResult {
     let mut rc = set(interp, recv)?.clone();
-    f(Rc::make_mut(&mut rc));
+    f(Heap::make_mut(&mut rc));
     Ok(Value::Set(rc))
 }
 
@@ -1066,15 +1055,15 @@ pub(super) fn index_opt(items: &[Value], i: i64) -> Value {
 /// Flatten nested arrays `depth` levels deep (negative: fully).
 pub(super) fn flatten_into(items: &[Value], out: &mut Vec<Value>, depth: i64) {
     for x in items {
-        match x {
-            Value::Array(a) if depth != 0 => flatten_into(&a.values(), out, depth - 1),
-            other => out.push(other.clone()),
+        match x.view() {
+            V::Array(a) if depth != 0 => flatten_into(&a.values(), out, depth - 1),
+            _ => out.push(x.clone()),
         }
     }
 }
 
 fn array_eq(interp: &Interp, a: &Value, b: &Value) -> Result<bool, Flow> {
-    let (Value::Array(x), Value::Array(y)) = (a, b) else {
+    let (V::Array(x), V::Array(y)) = (a.view(), b.view()) else {
         return Ok(false);
     };
     if x.len() != y.len() {
@@ -1107,7 +1096,7 @@ fn array_new(interp: &Interp, _: &Value, args: Args) -> EvalResult {
 
 fn array_build(interp: &Interp, _: &Value, args: Args) -> EvalResult {
     let b = block(interp, &args)?;
-    let builder = Rc::new(RefCell::new(Vec::new()));
+    let builder = Heap::new(RefCell::new(Vec::new()));
     interp.call_block(&b, smallvec![Value::ArrayBuilder(builder.clone())])?;
     let items = std::mem::take(&mut *builder.borrow_mut());
     Ok(Value::array(items))
@@ -1122,23 +1111,26 @@ fn array_each(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
 
 fn array_index(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let data = arr_data(interp, recv)?;
-    match args.arg(0) {
-        Value::Int(i) => {
+    match args.arg(0).view() {
+        V::Int(i) => {
             let n = data.len() as i64;
-            let idx = if *i < 0 { n + i } else { *i };
+            let idx = if i < 0 { n + i } else { i };
             if idx < 0 || idx >= n {
                 return Err(interp.err_index(&format!("index {i} out of bounds (size {n})")));
             }
             Ok(data.get(idx as usize).unwrap_or(Value::Nil))
         }
-        Value::Range(r) => match super::string::range_bounds(interp, r, data.len())? {
+        V::Range(r) => match super::string::range_bounds(interp, r, data.len())? {
             Some((st, en)) => Ok(Value::array(data.values()[st..en].to_vec())),
             None => Err(interp.err_index("range out of bounds")),
         },
-        other => Err(interp.err_type(&format!(
-            "Array#[] takes an Int or Range, got {}",
-            interp.class_name(other)
-        ))),
+        _ => {
+            let other: &Value = args.arg(0);
+            Err(interp.err_type(&format!(
+                "Array#[] takes an Int or Range, got {}",
+                interp.class_name(other)
+            )))
+        }
     }
 }
 
@@ -1278,12 +1270,12 @@ fn array_select(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
 fn array_sort_pairs(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
     let mut items: Vec<Value> = arr(interp, recv)?.iter().cloned().collect();
     interp.sort_values(&mut items, |a, b| {
-        let ka = match a {
-            Value::Array(p) => p.get(0).unwrap_or(Value::Nil),
+        let ka = match a.view() {
+            V::Array(p) => p.get(0).unwrap_or(Value::Nil),
             _ => Value::Nil,
         };
-        let kb = match b {
-            Value::Array(p) => p.get(0).unwrap_or(Value::Nil),
+        let kb = match b.view() {
+            V::Array(p) => p.get(0).unwrap_or(Value::Nil),
             _ => Value::Nil,
         };
         interp.compare(&ka, &kb)
@@ -1294,7 +1286,7 @@ fn array_sort_pairs(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
 pub(super) fn enum_sort(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     // Unboxed numbers sort as such.
     if args.block.is_none() {
-        if let Value::Array(a) = recv {
+        if let V::Array(a) = recv.view() {
             match &**a {
                 ArrayData::Ints(xs) => {
                     let mut xs = xs.clone();
@@ -1331,7 +1323,7 @@ pub(super) fn block_ordering(
 
 pub(super) fn enum_extreme(interp: &Interp, recv: &Value, args: &Args, min: bool) -> EvalResult {
     if args.block.is_none() {
-        if let Value::Array(a) = recv {
+        if let V::Array(a) = recv.view() {
             match &**a {
                 ArrayData::Ints(xs) if !xs.is_empty() => {
                     let best = if min {
@@ -1386,7 +1378,7 @@ fn ab_new(interp: &Interp, _: &Value, args: Args) -> EvalResult {
             vec![args.arg(1).clone(); n]
         }
     };
-    Ok(Value::ArrayBuilder(Rc::new(RefCell::new(items))))
+    Ok(Value::ArrayBuilder(RefCell::new(items)))
 }
 
 fn ab_set(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
@@ -1410,10 +1402,10 @@ fn ab_set(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
 
 fn hash_build(interp: &Interp, _: &Value, args: Args) -> EvalResult {
     let b = block(interp, &args)?;
-    let builder = Rc::new(RefCell::new(ValueMap::default()));
+    let builder = Heap::new(RefCell::new(ValueMap::default()));
     interp.call_block(&b, smallvec![Value::HashBuilder(builder.clone())])?;
     let map = std::mem::take(&mut *builder.borrow_mut());
-    Ok(Value::Hash(Rc::new(map)))
+    Ok(Value::Hash(map))
 }
 
 fn hash_fetch(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
@@ -1435,7 +1427,7 @@ fn hash_merge(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let other = hash(interp, args.arg(0))?.clone();
     let mut rc = hash(interp, recv)?.clone();
     let block = args.block.clone();
-    let map = Rc::make_mut(&mut rc);
+    let map = Heap::make_mut(&mut rc);
     for (k, v) in other.iter() {
         let merged = match (map.get(k), &block) {
             (Some(existing), Some(b)) => {
@@ -1470,29 +1462,29 @@ fn hash_filter(interp: &Interp, recv: &Value, args: Args, keep: bool) -> EvalRes
             out.insert(k.clone(), v.clone());
         }
     }
-    Ok(Value::Hash(Rc::new(out)))
+    Ok(Value::Hash(out))
 }
 
 fn set_build(interp: &Interp, _: &Value, args: Args) -> EvalResult {
     let b = block(interp, &args)?;
-    let builder = Rc::new(RefCell::new(ValueSet::default()));
+    let builder = Heap::new(RefCell::new(ValueSet::default()));
     interp.call_block(&b, smallvec![Value::SetBuilder(builder.clone())])?;
     let s = std::mem::take(&mut *builder.borrow_mut());
-    Ok(Value::Set(Rc::new(s)))
+    Ok(Value::Set(s))
 }
 
 // ----- Range -------------------------------------------------------------------------------
 
 pub fn range_to_vec(interp: &Interp, r: &RangeVal) -> Result<Vec<Value>, Flow> {
-    match (&r.lo, &r.hi) {
-        (Value::Int(lo), Value::Int(hi)) => {
-            let end = if r.exclusive { *hi } else { hi + 1 };
-            Ok((*lo..end).map(Value::Int).collect())
+    match (r.lo.view(), r.hi.view()) {
+        (V::Int(lo), V::Int(hi)) => {
+            let end = if r.exclusive { hi } else { hi + 1 };
+            Ok((lo..end).map(Value::Int).collect())
         }
-        (lo, hi) if lo.is_str() && hi.is_str() => {
-            let hi = hi.as_str().unwrap_or("");
+        (V::Str(lo), V::Str(hi)) => {
+            let hi = hi.as_str();
             let mut out = Vec::new();
-            let mut cur = lo.clone();
+            let mut cur = Value::Str(lo.clone());
             let mut guard = 0;
             while let Some(s) = cur.as_str() {
                 if s.len() > hi.len() {
@@ -1520,20 +1512,20 @@ pub fn range_to_vec(interp: &Interp, r: &RangeVal) -> Result<Vec<Value>, Flow> {
 pub(super) fn range_each(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let b = block(interp, &args)?;
     let r = range(interp, recv)?;
-    match (&r.lo, &r.hi) {
-        (Value::Int(lo), Value::Int(hi)) => {
-            let end = if r.exclusive { *hi } else { hi + 1 };
-            super::each_value(interp, (*lo..end).map(Value::Int), &b)?;
+    match (r.lo.view(), r.hi.view()) {
+        (V::Int(lo), V::Int(hi)) => {
+            let end = if r.exclusive { hi } else { hi + 1 };
+            super::each_value(interp, (lo..end).map(Value::Int), &b)?;
         }
-        (Value::Int(lo), Value::Nil) => {
-            let mut i = *lo;
+        (V::Int(lo), V::Nil) => {
+            let mut i = lo;
             loop {
                 interp.call_block(&b, smallvec![Value::Int(i)])?;
                 i += 1;
             }
         }
-        (Value::Int(lo), Value::Float(f)) if f.is_infinite() && *f > 0.0 => {
-            let mut i = *lo;
+        (V::Int(lo), V::Float(f)) if f.is_infinite() && f > 0.0 => {
+            let mut i = lo;
             loop {
                 interp.call_block(&b, smallvec![Value::Int(i)])?;
                 i += 1;
@@ -1555,11 +1547,11 @@ pub(super) fn range_step(interp: &Interp, recv: &Value, args: Args) -> EvalResul
     }
     let b = block(interp, &args)?;
     let r = range(interp, recv)?;
-    let (Value::Int(lo), Value::Int(hi)) = (&r.lo, &r.hi) else {
+    let (V::Int(lo), V::Int(hi)) = (r.lo.view(), r.hi.view()) else {
         return Err(interp.err_type("step needs an integer range"));
     };
-    let end = if r.exclusive { *hi } else { hi + 1 };
-    let mut i = *lo;
+    let end = if r.exclusive { hi } else { hi + 1 };
+    let mut i = lo;
     while i < end {
         interp.call_block(&b, smallvec![Value::Int(i)])?;
         i += step;
@@ -1570,7 +1562,7 @@ pub(super) fn range_step(interp: &Interp, recv: &Value, args: Args) -> EvalResul
 // ----- Enumerator ----------------------------------------------------------------------------
 
 fn enumerator_each(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
-    let Value::Enumerator(e) = recv else {
+    let V::Enumerator(e) = recv.view() else {
         return Err(interp.err_type("expected an Enumerator"));
     };
     let b = block(interp, &args)?;
@@ -1578,7 +1570,7 @@ fn enumerator_each(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
 }
 
 fn enumerator_next(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
-    let Value::Enumerator(e) = recv else {
+    let V::Enumerator(e) = recv.view() else {
         return Err(interp.err_type("expected an Enumerator"));
     };
     if e.buffer.borrow().is_none() {

@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 
 use crate::interp::FastNativeFn;
-use crate::value::Value;
+use crate::value::{Value, V};
 
 use super::collections::index_data;
 
@@ -49,13 +49,7 @@ pub fn register(m: &mut HashMap<&'static str, FastNativeFn>) {
         (Some(s), [p]) => p.as_str().map(|p| Ok(Value::Bool(s.contains(p)))),
         _ => None,
     });
-    m.insert("String#upcase", |_, r, a| match (r, a) {
-        // A short ASCII string is converted in a copy of the value.
-        (Value::Short(s), []) if s.is_ascii() => {
-            let mut t = *s;
-            t.make_ascii_uppercase();
-            Some(Ok(Value::Short(t)))
-        }
+    m.insert("String#upcase", |_, r, a| match (r.view(), a) {
         (_, []) => r.as_str().map(|s| {
             Ok(Value::build_string(|out| {
                 if s.is_ascii() {
@@ -68,12 +62,7 @@ pub fn register(m: &mut HashMap<&'static str, FastNativeFn>) {
         }),
         _ => None,
     });
-    m.insert("String#downcase", |_, r, a| match (r, a) {
-        (Value::Short(s), []) if s.is_ascii() => {
-            let mut t = *s;
-            t.make_ascii_lowercase();
-            Some(Ok(Value::Short(t)))
-        }
+    m.insert("String#downcase", |_, r, a| match (r.view(), a) {
         (_, []) => r.as_str().map(|s| {
             Ok(Value::build_string(|out| {
                 if s.is_ascii() {
@@ -99,10 +88,10 @@ pub fn register(m: &mut HashMap<&'static str, FastNativeFn>) {
         (Some(_), []) => Some(Ok(r.clone())),
         _ => None,
     });
-    m.insert("Int#to_s", |_, r, a| match (r, a) {
-        (Value::Int(i), []) => {
+    m.insert("Int#to_s", |_, r, a| match (r.view(), a) {
+        (V::Int(i), []) => {
             let mut digits = [0u8; 20];
-            Some(Ok(Value::str(crate::value::format_int(&mut digits, *i))))
+            Some(Ok(Value::str(crate::value::format_int(&mut digits, i))))
         }
         _ => None,
     });
@@ -112,8 +101,8 @@ pub fn register(m: &mut HashMap<&'static str, FastNativeFn>) {
         "String::Builder#push",
         "String::Builder#append",
     ] {
-        m.insert(key, |_, r, a| match (r, a) {
-            (Value::StringBuilder(b), [p]) => {
+        m.insert(key, |_, r, a| match (r.view(), a) {
+            (V::StringBuilder(b), [p]) => {
                 b.borrow_mut().push_str(p.as_str()?);
                 Some(Ok(r.clone()))
             }
@@ -121,22 +110,25 @@ pub fn register(m: &mut HashMap<&'static str, FastNativeFn>) {
         });
     }
     // ----- Array -----
-    m.insert("Array#size", |_, r, a| match (r, a) {
-        (Value::Array(x), []) => Some(Ok(Value::Int(x.len() as i64))),
+    m.insert("Array#size", |_, r, a| match (r.view(), a) {
+        (V::Array(x), []) => Some(Ok(Value::Int(x.len() as i64))),
         _ => None,
     });
-    m.insert("Array#length", |_, r, a| match (r, a) {
-        (Value::Array(x), []) => Some(Ok(Value::Int(x.len() as i64))),
+    m.insert("Array#length", |_, r, a| match (r.view(), a) {
+        (V::Array(x), []) => Some(Ok(Value::Int(x.len() as i64))),
         _ => None,
     });
-    m.insert("Array#empty?", |_, r, a| match (r, a) {
-        (Value::Array(x), []) => Some(Ok(Value::Bool(x.is_empty()))),
+    m.insert("Array#empty?", |_, r, a| match (r.view(), a) {
+        (V::Array(x), []) => Some(Ok(Value::Bool(x.is_empty()))),
         _ => None,
     });
-    m.insert("Array#[]", |_, r, a| match (r, a) {
-        (Value::Array(x), [Value::Int(i)]) => {
+    m.insert("Array#[]", |_, r, a| match (r.view(), a) {
+        (V::Array(x), [i]) => {
+            let V::Int(i) = i.view() else {
+                return None;
+            };
             let n = x.len() as i64;
-            let k = if *i < 0 { n + i } else { *i };
+            let k = if i < 0 { n + i } else { i };
             if k < 0 || k >= n {
                 return None;
             }
@@ -144,39 +136,42 @@ pub fn register(m: &mut HashMap<&'static str, FastNativeFn>) {
         }
         _ => None,
     });
-    m.insert("Array#[]?", |_, r, a| match (r, a) {
-        (Value::Array(x), [Value::Int(i)]) => Some(Ok(index_data(x, *i))),
+    m.insert("Array#[]?", |_, r, a| match (r.view(), a) {
+        (V::Array(x), [i]) => match i.view() {
+            V::Int(i) => Some(Ok(index_data(x, i))),
+            _ => None,
+        },
         _ => None,
     });
     // ----- Hash / Set -----
-    m.insert("Hash#[]", |_, r, a| match (r, a) {
-        (Value::Hash(h), [k]) => h.get(*k).map(|v| Ok(v.clone())),
+    m.insert("Hash#[]", |_, r, a| match (r.view(), a) {
+        (V::Hash(h), [k]) => h.get(*k).map(|v| Ok(v.clone())),
         _ => None,
     });
-    m.insert("Hash#[]?", |_, r, a| match (r, a) {
-        (Value::Hash(h), [k]) => Some(Ok(h.get(*k).cloned().unwrap_or(Value::Nil))),
+    m.insert("Hash#[]?", |_, r, a| match (r.view(), a) {
+        (V::Hash(h), [k]) => Some(Ok(h.get(*k).cloned().unwrap_or(Value::Nil))),
         _ => None,
     });
     for key in ["Hash#key?", "Hash#has_key?", "Hash#include?"] {
-        m.insert(key, |_, r, a| match (r, a) {
-            (Value::Hash(h), [k]) => Some(Ok(Value::Bool(h.contains_key(*k)))),
+        m.insert(key, |_, r, a| match (r.view(), a) {
+            (V::Hash(h), [k]) => Some(Ok(Value::Bool(h.contains_key(*k)))),
             _ => None,
         });
     }
-    m.insert("Hash#size", |_, r, a| match (r, a) {
-        (Value::Hash(h), []) => Some(Ok(Value::Int(h.len() as i64))),
+    m.insert("Hash#size", |_, r, a| match (r.view(), a) {
+        (V::Hash(h), []) => Some(Ok(Value::Int(h.len() as i64))),
         _ => None,
     });
-    m.insert("Hash#length", |_, r, a| match (r, a) {
-        (Value::Hash(h), []) => Some(Ok(Value::Int(h.len() as i64))),
+    m.insert("Hash#length", |_, r, a| match (r.view(), a) {
+        (V::Hash(h), []) => Some(Ok(Value::Int(h.len() as i64))),
         _ => None,
     });
-    m.insert("Hash#empty?", |_, r, a| match (r, a) {
-        (Value::Hash(h), []) => Some(Ok(Value::Bool(h.is_empty()))),
+    m.insert("Hash#empty?", |_, r, a| match (r.view(), a) {
+        (V::Hash(h), []) => Some(Ok(Value::Bool(h.is_empty()))),
         _ => None,
     });
-    m.insert("Set#include?", |_, r, a| match (r, a) {
-        (Value::Set(s), [k]) => Some(Ok(Value::Bool(s.contains(*k)))),
+    m.insert("Set#include?", |_, r, a| match (r.view(), a) {
+        (V::Set(s), [k]) => Some(Ok(Value::Bool(s.contains(*k)))),
         _ => None,
     });
 }

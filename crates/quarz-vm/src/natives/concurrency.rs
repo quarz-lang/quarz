@@ -5,8 +5,10 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Duration;
 
+use crate::heap::Heap;
 use crate::interp::{Args, EvalResult, Flow, Interp, NativeFn};
 use crate::sched::{ChannelInner, ScopeInner, SelectorState, TaskHandle};
+use crate::value::V;
 use crate::value::*;
 use smallvec::smallvec;
 
@@ -133,7 +135,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
         Ok(Value::Nil)
     });
     m.insert("Atom.new", |_, _, a| {
-        Ok(Value::Atom(Rc::new(RefCell::new(a.arg(0).clone()))))
+        Ok(Value::Atom(RefCell::new(a.arg(0).clone())))
     });
     m.insert("Atom#value", |i, r, _| Ok(atom(i, r)?.borrow().clone()));
     m.insert("Atom#get", |i, r, _| Ok(atom(i, r)?.borrow().clone()));
@@ -153,45 +155,45 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
 }
 
 fn duration(interp: &Interp, v: &Value) -> Result<Duration, Flow> {
-    match v {
-        Value::Duration(ns) => Ok(Duration::from_nanos((*ns).max(0) as u64)),
-        Value::Int(s) => Ok(Duration::from_secs((*s).max(0) as u64)),
-        Value::Float(s) => Ok(Duration::from_secs_f64(s.max(0.0))),
+    match v.view() {
+        V::Duration(ns) => Ok(Duration::from_nanos((ns).max(0) as u64)),
+        V::Int(s) => Ok(Duration::from_secs((s).max(0) as u64)),
+        V::Float(s) => Ok(Duration::from_secs_f64(s.max(0.0))),
         _ => Err(interp.err_type("expected a Duration")),
     }
 }
 
 fn task<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Rc<TaskHandle>, Flow> {
-    match v {
-        Value::Task(t) => Ok(t),
+    match v.view() {
+        V::Task(t) => Ok(t),
         _ => Err(interp.err_type("expected a Task")),
     }
 }
 
 fn scope<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Rc<ScopeInner>, Flow> {
-    match v {
-        Value::Scope(s) => Ok(s),
+    match v.view() {
+        V::Scope(s) => Ok(s),
         _ => Err(interp.err_type("expected a Scope")),
     }
 }
 
 fn chan<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Rc<ChannelInner>, Flow> {
-    match v {
-        Value::Channel(c) => Ok(c),
+    match v.view() {
+        V::Channel(c) => Ok(c),
         _ => Err(interp.err_type("expected a Channel")),
     }
 }
 
-fn sel<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Rc<RefCell<SelectorState>>, Flow> {
-    match v {
-        Value::Selector(s) => Ok(s),
+fn sel<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Heap<RefCell<SelectorState>>, Flow> {
+    match v.view() {
+        V::Selector(s) => Ok(s),
         _ => Err(interp.err_type("expected a Selector")),
     }
 }
 
-fn atom<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Rc<RefCell<Value>>, Flow> {
-    match v {
-        Value::Atom(a) => Ok(a),
+fn atom<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Heap<RefCell<Value>>, Flow> {
+    match v.view() {
+        V::Atom(a) => Ok(a),
         _ => Err(interp.err_type("expected an Atom")),
     }
 }
@@ -416,7 +418,7 @@ fn channel_each(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
 
 fn run_select(interp: &Interp, block: &Value, looping: bool) -> EvalResult {
     loop {
-        let state = Rc::new(RefCell::new(SelectorState::default()));
+        let state = Heap::new(RefCell::new(SelectorState::default()));
         interp.call_block(block, smallvec![Value::Selector(state.clone())])?;
         if state.borrow().stopped {
             return Ok(Value::Nil);
@@ -431,7 +433,7 @@ fn run_select(interp: &Interp, block: &Value, looping: bool) -> EvalResult {
     }
 }
 
-fn select_once(interp: &Interp, state: &Rc<RefCell<SelectorState>>) -> Result<(), Flow> {
+fn select_once(interp: &Interp, state: &Heap<RefCell<SelectorState>>) -> Result<(), Flow> {
     let me = interp.current_task().id;
     let timer_start = std::time::Instant::now();
     let after = state.borrow().after.clone();

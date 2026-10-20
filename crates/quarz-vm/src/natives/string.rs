@@ -4,7 +4,9 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use crate::heap::Heap;
 use crate::interp::{Args, EvalResult, Flow, Interp, NativeFn};
+use crate::value::V;
 use crate::value::*;
 use smallvec::smallvec;
 
@@ -186,7 +188,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
         ))
     });
     m.insert("String::Builder.new", |_, _, _| {
-        Ok(Value::StringBuilder(Rc::new(RefCell::new(String::new()))))
+        Ok(Value::StringBuilder(RefCell::new(String::new())))
     });
     m.insert("String::Builder#<<", sb_push);
     m.insert("String::Builder#push", sb_push);
@@ -206,14 +208,14 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     m.insert("Symbol#<=>", |i, r, a| {
         Ok(Value::Int(i.compare(r, a.arg(0))? as i64))
     });
-    m.insert("Symbol#to_s", |i, r, _| match r {
-        Value::Symbol(sym) => Ok(Value::str_rc(i.symbol_name(*sym))),
+    m.insert("Symbol#to_s", |i, r, _| match r.view() {
+        V::Symbol(sym) => Ok(Value::str_rc(i.symbol_name(sym))),
         _ => Err(i.err_type("expected a Symbol")),
     });
     m.insert("Symbol#to_sym", |_, r, _| Ok(r.clone()));
     m.insert("Symbol#inspect", |i, r, _| Ok(Value::string(i.inspect(r)?)));
-    m.insert("Symbol#size", |i, r, _| match r {
-        Value::Symbol(sym) => Ok(Value::Int(i.symbol_name(*sym).chars().count() as i64)),
+    m.insert("Symbol#size", |i, r, _| match r.view() {
+        V::Symbol(sym) => Ok(Value::Int(i.symbol_name(sym).chars().count() as i64)),
         _ => Err(i.err_type("expected a Symbol")),
     });
     m.insert("Regexp#match", |i, r, a| {
@@ -297,30 +299,30 @@ pub(super) fn s<'a>(interp: &Interp, v: &'a Value) -> Result<&'a str, Flow> {
     string(interp, v, "receiver")
 }
 
-pub(super) fn sb<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Rc<RefCell<String>>, Flow> {
-    match v {
-        Value::StringBuilder(b) => Ok(b),
+pub(super) fn sb<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Heap<RefCell<String>>, Flow> {
+    match v.view() {
+        V::StringBuilder(b) => Ok(b),
         _ => Err(interp.err_type("expected a String::Builder")),
     }
 }
 
-pub(super) fn re<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Rc<RegexpVal>, Flow> {
-    match v {
-        Value::Regexp(r) => Ok(r),
+pub(super) fn re<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Heap<RegexpVal>, Flow> {
+    match v.view() {
+        V::Regexp(r) => Ok(r),
         _ => Err(interp.err_type("expected a Regexp")),
     }
 }
 
-pub(super) fn md<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Rc<MatchDataVal>, Flow> {
-    match v {
-        Value::MatchData(m) => Ok(m),
+pub(super) fn md<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Heap<MatchDataVal>, Flow> {
+    match v.view() {
+        V::MatchData(m) => Ok(m),
         _ => Err(interp.err_type("expected a MatchData")),
     }
 }
 
 fn string_build(interp: &Interp, _: &Value, args: Args) -> EvalResult {
     let b = block(interp, &args)?;
-    let builder = Rc::new(RefCell::new(String::new()));
+    let builder = Heap::new(RefCell::new(String::new()));
     interp.call_block(&b, smallvec![Value::StringBuilder(builder.clone())])?;
     let s = std::mem::take(&mut *builder.borrow_mut());
     Ok(Value::string(s))
@@ -334,9 +336,12 @@ pub(super) fn sb_push(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
 
 fn string_format(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let fmt = s(interp, recv)?;
-    let values: Vec<Value> = match args.arg(0) {
-        Value::Array(a) => a.to_values(),
-        other => vec![other.clone()],
+    let values: Vec<Value> = match args.arg(0).view() {
+        V::Array(a) => a.to_values(),
+        _ => {
+            let other: &Value = args.arg(0);
+            vec![other.clone()]
+        }
     };
     Ok(Value::string(super::core::format_values(
         interp, fmt, &values,
@@ -357,16 +362,19 @@ pub(super) fn char_offset(text: &str, index: i64) -> Option<(usize, usize)> {
 
 pub(super) fn string_index(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let text = s(interp, recv)?;
-    match args.arg(0) {
-        Value::Int(i) => match char_offset(text, *i) {
+    match args.arg(0).view() {
+        V::Int(i) => match char_offset(text, i) {
             Some((st, en)) => Ok(Value::str(&text[st..en])),
             None => Err(interp.err_index(&format!("index {i} out of string bounds"))),
         },
-        Value::Range(r) => Ok(Value::string(slice_range(interp, text, r)?)),
-        other => Err(interp.err_type(&format!(
-            "String#[] takes an Int or Range, got {}",
-            interp.class_name(other)
-        ))),
+        V::Range(r) => Ok(Value::string(slice_range(interp, text, r)?)),
+        _ => {
+            let other: &Value = args.arg(0);
+            Err(interp.err_type(&format!(
+                "String#[] takes an Int or Range, got {}",
+                interp.class_name(other)
+            )))
+        }
     }
 }
 
@@ -385,13 +393,19 @@ pub fn range_bounds(
     len: usize,
 ) -> Result<Option<(usize, usize)>, Flow> {
     let n = len as i64;
-    let lo = match &r.lo {
-        Value::Nil => 0,
-        v => int(interp, v, "range start")?,
+    let lo = match r.lo.view() {
+        V::Nil => 0,
+        _ => {
+            let v: &Value = &(r.lo);
+            int(interp, v, "range start")?
+        }
     };
-    let hi = match &r.hi {
-        Value::Nil => n - 1,
-        v => int(interp, v, "range end")?,
+    let hi = match r.hi.view() {
+        V::Nil => n - 1,
+        _ => {
+            let v: &Value = &(r.hi);
+            int(interp, v, "range end")?
+        }
     };
     let lo = if lo < 0 { n + lo } else { lo };
     let mut hi = if hi < 0 { n + hi } else { hi };
@@ -419,7 +433,7 @@ pub(super) fn slice_range(interp: &Interp, text: &str, r: &RangeVal) -> Result<S
 pub(super) fn string_split(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let text = s(interp, recv)?;
     let first = args.pos.first();
-    let parts: Vec<Value> = match (first, first.and_then(|v| v.as_str())) {
+    let parts: Vec<Value> = match (first.map(|v| v.view()), first.and_then(|v| v.as_str())) {
         (None, _) => text.split_whitespace().map(Value::str).collect(),
         (Some(_), Some(" ")) => text.split_whitespace().map(Value::str).collect(),
         (Some(_), Some("")) => text.chars().map(|c| Value::string(c.to_string())).collect(),
@@ -430,17 +444,17 @@ pub(super) fn string_split(interp: &Interp, recv: &Value, args: Args) -> EvalRes
             }
             v.into_iter().map(Value::str).collect()
         }
-        (Some(Value::Regexp(r)), _) => {
+        (Some(V::Regexp(r)), _) => {
             let mut v: Vec<&str> = r.regex.split(text).collect();
             while v.last() == Some(&"") {
                 v.pop();
             }
             v.into_iter().map(Value::str).collect()
         }
-        (Some(other), _) => {
+        (Some(_), _) => {
             return Err(interp.err_type(&format!(
                 "split takes a String or Regexp, got {}",
-                interp.class_name(other)
+                interp.class_name(&args.pos[0])
             )))
         }
     };
@@ -490,11 +504,11 @@ pub fn match_data(interp: &Interp, r: &RegexpVal, text: &str) -> EvalResult {
                 .enumerate()
                 .filter_map(|(i, n)| n.map(|n| (n.to_string(), i)))
                 .collect();
-            Ok(Value::MatchData(Rc::new(MatchDataVal {
+            Ok(Value::MatchData(MatchDataVal {
                 text: Rc::from(text),
                 groups,
                 names,
-            })))
+            }))
         }
     }
 }
@@ -516,20 +530,22 @@ fn string_match_index(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
 
 fn md_index(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let m = md(interp, recv)?;
-    let idx = match args.arg(0) {
-        Value::Int(i) => *i as usize,
-        v if v.is_str() => {
+    let idx = match args.arg(0).view() {
+        V::Int(i) => i as usize,
+        _ if (args.arg(0)).is_str() => {
+            let v: &Value = args.arg(0);
             let name = v.as_str().unwrap_or("");
             match m.names.iter().find(|(n, _)| **n == *name) {
                 Some((_, i)) => *i,
                 None => return Err(interp.err_index(&format!("undefined group name {name}"))),
             }
         }
-        other => {
+        _ => {
+            let other: &Value = args.arg(0);
             return Err(interp.err_type(&format!(
                 "MatchData#[] takes an Int or String, got {}",
                 interp.class_name(other)
-            )))
+            )));
         }
     };
     Ok(match m.groups.get(idx).copied().flatten() {
@@ -571,8 +587,9 @@ pub(super) fn convert_replacement(rep: &str) -> String {
 pub(super) fn string_sub(interp: &Interp, recv: &Value, args: Args, global: bool) -> EvalResult {
     let text = s(interp, recv)?;
     let rep = string(interp, args.arg(1), "replacement")?;
-    Ok(Value::string(match args.arg(0) {
-        v if v.is_str() => {
+    Ok(Value::string(match args.arg(0).view() {
+        _ if (args.arg(0)).is_str() => {
+            let v: &Value = args.arg(0);
             let pat = v.as_str().unwrap_or("");
             if global {
                 text.replace(pat, rep)
@@ -580,7 +597,7 @@ pub(super) fn string_sub(interp: &Interp, recv: &Value, args: Args, global: bool
                 text.replacen(pat, rep, 1)
             }
         }
-        Value::Regexp(r) => {
+        V::Regexp(r) => {
             let converted = convert_replacement(rep);
             if global {
                 r.regex.replace_all(text, converted.as_str()).into_owned()
@@ -588,11 +605,12 @@ pub(super) fn string_sub(interp: &Interp, recv: &Value, args: Args, global: bool
                 r.regex.replace(text, converted.as_str()).into_owned()
             }
         }
-        other => {
+        _ => {
+            let other: &Value = args.arg(0);
             return Err(interp.err_type(&format!(
                 "sub takes a String or Regexp, got {}",
                 interp.class_name(other)
-            )))
+            )));
         }
     }))
 }

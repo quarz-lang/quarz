@@ -29,6 +29,12 @@ pub const HOT_STACK_LEN: usize = offset_of!(Interp, hot) + offset_of!(Hot, stack
 pub const HOT_STACK_CAP: usize = offset_of!(Interp, hot) + offset_of!(Hot, stack_cap);
 pub const HOT_LIMIT_PTR: usize = offset_of!(Interp, hot) + offset_of!(Hot, limit_ptr);
 pub const CURRENT_TASK: usize = offset_of!(Interp, current_task_id);
+/// The heap box layout compiled code reads (see `heap`).
+pub const HEAP_VALUE_OFF: usize = crate::heap::VALUE_OFF;
+pub const HEAP_KIND_OFF: usize = crate::heap::KIND_OFF;
+pub const KIND_ARRAY: u8 = crate::heap::Kind::Array as u8;
+pub const KIND_OBJECT: u8 = crate::heap::Kind::Object as u8;
+pub const OBJECT_TAG: u64 = crate::heap::OBJECT_TAG;
 
 /// Everything above, folded into one number.
 pub const SIGNATURE: u64 = {
@@ -54,6 +60,12 @@ pub const SIGNATURE: u64 = {
         HOT_STACK_CAP,
         HOT_LIMIT_PTR,
         CURRENT_TASK,
+        HEAP_VALUE_OFF,
+        HEAP_KIND_OFF,
+        KIND_ARRAY as usize,
+        KIND_OBJECT as usize,
+        OBJECT_TAG as usize,
+        crate::value::VALUE_SIZE,
     ];
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     let mut i = 0;
@@ -145,9 +157,9 @@ pub fn check(sig: u64, vec: u64) {
         assert_eq!(words[l.cap / 8], 7, "ArrayData layout changed: vector");
     }
     assert_eq!(
-        crate::value::Value::array(Vec::new()).type_tag(),
-        10,
-        "Value layout changed: Array tag"
+        crate::value::Value::array(Vec::new()).heap_kind(),
+        Some(crate::heap::Kind::Array),
+        "Value layout changed: Array kind"
     );
     // SAFETY: a zeroed `Option<Rc<_>>` is `None`, verified here before
     // compiled code relies on it.
@@ -160,8 +172,8 @@ pub fn check(sig: u64, vec: u64) {
         );
     }
     assert_eq!(
-        crate::value::Value::Nil.type_tag(),
+        crate::value::Value::Nil.bits(),
         0,
-        "Value layout changed: Nil tag"
+        "Value layout changed: nil"
     );
 }

@@ -19,8 +19,10 @@ use quarz_ir::{
 
 pub use quarz_ir::FastOp;
 
+use crate::heap::Heap;
 use crate::natives;
 use crate::sched::{self, Scheduler, ScopeInner, TaskExit, TaskHandle, TaskId, TaskResult};
+use crate::value::V;
 use crate::value::*;
 
 /// Non-local control flow and exceptions.
@@ -54,7 +56,7 @@ pub struct Args {
 
 impl Args {
     pub fn arg(&self, i: usize) -> &Value {
-        self.pos.get(i).unwrap_or(&Value::Nil)
+        self.pos.get(i).unwrap_or(&crate::value::NIL)
     }
 
     pub fn kw(&self, interp: &Interp, name: &str) -> Option<&Value> {
@@ -84,9 +86,9 @@ type NameKey = (ClassId, usize, bool);
 #[inline]
 pub fn fast_binop(op: FastOp, a: &Value, b: &Value) -> Option<Value> {
     use std::cmp::Ordering;
-    match (a, b) {
-        (Value::Int(x), Value::Int(y)) => {
-            let (x, y) = (*x, *y);
+    match (a.view(), b.view()) {
+        (V::Int(x), V::Int(y)) => {
+            let (x, y) = (x, y);
             Some(match op {
                 FastOp::Add => Value::Int(x.checked_add(y)?),
                 FastOp::Sub => Value::Int(x.checked_sub(y)?),
@@ -123,17 +125,15 @@ pub fn fast_binop(op: FastOp, a: &Value, b: &Value) -> Option<Value> {
                 FastOp::Cmp => Value::Int(x.cmp(&y) as i64),
             })
         }
-        (Value::Float(_), Value::Float(_))
-        | (Value::Int(_), Value::Float(_))
-        | (Value::Float(_), Value::Int(_)) => {
-            let x = match a {
-                Value::Int(i) => *i as f64,
-                Value::Float(f) => *f,
+        (V::Float(_), V::Float(_)) | (V::Int(_), V::Float(_)) | (V::Float(_), V::Int(_)) => {
+            let x = match a.view() {
+                V::Int(i) => i as f64,
+                V::Float(f) => f,
                 _ => return None,
             };
-            let y = match b {
-                Value::Int(i) => *i as f64,
-                Value::Float(f) => *f,
+            let y = match b.view() {
+                V::Int(i) => i as f64,
+                V::Float(f) => f,
                 _ => return None,
             };
             Some(match op {
@@ -750,7 +750,7 @@ impl Interp {
         let class_name = self.class_name(exc);
         let message = self.exception_message(exc);
         eprintln!("{class_name}: {message}");
-        if let Value::Object(o) = exc {
+        if let V::Object(o) = exc.view() {
             if let Some(bt) = o.backtrace() {
                 for frame in bt.iter() {
                     eprintln!("    from {frame}");
@@ -969,8 +969,8 @@ impl Interp {
     }
 
     pub fn exception_message(&self, exc: &Value) -> String {
-        match exc {
-            Value::Object(o) => match o.fields.borrow().first().and_then(|v| v.as_str()) {
+        match exc.view() {
+            V::Object(o) => match o.fields.borrow().first().and_then(|v| v.as_str()) {
                 Some(s) => s.to_string(),
                 None => self.class_name(exc),
             },
@@ -980,8 +980,8 @@ impl Interp {
 
     /// Whether an exception object is an instance of a class.
     pub fn exception_is_a(&self, exc: &Value, class: ClassId) -> bool {
-        match exc {
-            Value::Object(o) => self.world.class_is_a(o.class, class),
+        match exc.view() {
+            V::Object(o) => self.world.class_is_a(o.class, class),
             _ => false,
         }
     }
@@ -990,26 +990,23 @@ impl Interp {
     pub fn eval_raise(&self, args: ArgVec) -> EvalResult {
         let mut it = args.into_iter();
         let first = it.next().unwrap_or(Value::Nil);
-        let exc = match first {
-            Value::Class(cid) => {
+        let exc = match first.view() {
+            V::Class(cid) => {
                 let msg = match it.next() {
                     Some(m) => self.to_s(&m)?.to_string(),
                     None => self.world.class(cid).name.clone(),
                 };
                 self.make_exception(cid, &msg)
             }
-            Value::Str(s) => self.make_exception(self.exc.runtime_error, &s),
-            Value::Short(s) => self.make_exception(self.exc.runtime_error, s.as_str()),
-            Value::Object(o) => {
+            V::Str(s) => self.make_exception(self.exc.runtime_error, s.as_str()),
+            V::Object(o) => {
                 if o.backtrace().is_none() {
                     let bt = self.capture_backtrace();
                     o.set_backtrace(Some(Rc::new(bt)));
                 }
                 Value::Object(o)
             }
-            other => {
-                return Err(self.err_type(&format!("cannot raise {}", self.class_name(&other))))
-            }
+            _ => return Err(self.err_type(&format!("cannot raise {}", self.class_name(&first)))),
         };
         Err(Flow::Raise(exc))
     }
@@ -1018,34 +1015,34 @@ impl Interp {
 
     pub fn class_of(&self, v: &Value) -> ClassId {
         let b = &self.world.builtin;
-        match v {
-            Value::Nil => b.nil,
-            Value::Bool(_) => b.bool_,
-            Value::Int(_) | Value::BigInt(_) => b.int,
-            Value::Float(_) => b.float,
-            Value::Str(_) | Value::Short(_) => b.string,
-            Value::Symbol(_) => b.symbol,
-            Value::Array(_) => b.array,
-            Value::Hash(_) => b.hash,
-            Value::Set(_) => b.set,
-            Value::Range(_) => b.range,
-            Value::Regexp(_) => b.regexp,
-            Value::MatchData(_) => b.match_data,
-            Value::Object(o) => o.class,
-            Value::Class(_) => b.class_,
-            Value::Proc(_) => b.proc_,
-            Value::ArrayBuilder(_) => b.array_builder,
-            Value::HashBuilder(_) => b.hash_builder,
-            Value::SetBuilder(_) => b.set_builder,
-            Value::StringBuilder(_) => b.string_builder,
-            Value::Channel(_) => b.channel,
-            Value::Task(_) => b.task,
-            Value::Scope(_) => b.scope,
-            Value::Atom(_) => b.atom,
-            Value::Selector(_) => self.rt.selector,
-            Value::Duration(_) => b.duration,
-            Value::Enumerator(_) => self.rt.enumerator,
-            Value::Io(io) => match &io.kind {
+        match v.view() {
+            V::Nil => b.nil,
+            V::Bool(_) => b.bool_,
+            V::Int(_) | V::BigInt(_) => b.int,
+            V::Float(_) => b.float,
+            V::Str(_) => b.string,
+            V::Symbol(_) => b.symbol,
+            V::Array(_) => b.array,
+            V::Hash(_) => b.hash,
+            V::Set(_) => b.set,
+            V::Range(_) => b.range,
+            V::Regexp(_) => b.regexp,
+            V::MatchData(_) => b.match_data,
+            V::Object(o) => o.class,
+            V::Class(_) => b.class_,
+            V::Proc(_) => b.proc_,
+            V::ArrayBuilder(_) => b.array_builder,
+            V::HashBuilder(_) => b.hash_builder,
+            V::SetBuilder(_) => b.set_builder,
+            V::StringBuilder(_) => b.string_builder,
+            V::Channel(_) => b.channel,
+            V::Task(_) => b.task,
+            V::Scope(_) => b.scope,
+            V::Atom(_) => b.atom,
+            V::Selector(_) => self.rt.selector,
+            V::Duration(_) => b.duration,
+            V::Enumerator(_) => self.rt.enumerator,
+            V::Io(io) => match &io.kind {
                 IoKind::Socket(st) => {
                     if st.borrow().unix {
                         self.rt.unix_socket
@@ -1063,11 +1060,11 @@ impl Interp {
                 IoKind::Udp(_) => self.rt.udp_socket,
                 _ => self.rt.io,
             },
-            Value::Bytes(_) => b.bytes,
-            Value::BytesBuilder(_) => b.bytes_builder,
-            Value::Time(_) => b.time,
-            Value::Random(_) => self.rt.random,
-            Value::Flow(_) => b.object,
+            V::Bytes(_) => b.bytes,
+            V::BytesBuilder(_) => b.bytes_builder,
+            V::Time(_) => b.time,
+            V::Random(_) => self.rt.random,
+            V::Flow(_) => b.object,
         }
     }
 
@@ -1123,7 +1120,7 @@ impl Interp {
             }
             Some(d) => {
                 let n = self.world.class(d).fields.len();
-                let Value::Object(src) = &v else {
+                let V::Object(src) = v.view() else {
                     return;
                 };
                 let src_fields = src.fields.borrow();
@@ -1158,7 +1155,7 @@ impl Interp {
                 }
                 Some(d) => {
                     let n = self.world.class(d).fields.len();
-                    if let Value::Object(src) = &v {
+                    if let V::Object(src) = v.view() {
                         for (k, x) in src.fields.borrow().iter().take(n).enumerate() {
                             if slot + k < out.len() {
                                 out[slot + k] = x.clone();
@@ -1176,10 +1173,10 @@ impl Interp {
         match ty {
             RtType::Nothing => false,
             RtType::Class(cid) => self.world.class_is_a(self.class_of(v), *cid),
-            RtType::ClassObject => matches!(v, Value::Class(_)),
+            RtType::ClassObject => matches!(v.view(), V::Class(_)),
             RtType::Union(ms) => ms.iter().any(|m| self.is_a(v, m)),
-            RtType::Tuple(n) => matches!(v, Value::Array(a) if a.len() == *n as usize),
-            RtType::Proc => matches!(v, Value::Proc(_)),
+            RtType::Tuple(n) => matches!(v.view(), V::Array(a) if a.len() == *n as usize),
+            RtType::Proc => matches!(v.view(), V::Proc(_)),
             RtType::Any => true,
         }
     }
@@ -1224,10 +1221,10 @@ impl Interp {
         if m.singleton || m.is_extension {
             return mid;
         }
-        if let Value::Class(cid) = recv {
+        if let V::Class(cid) = recv.view() {
             // A module method running on a class object (`extend`): the
             // class's own `def self.` methods override the module's.
-            if let Some(found) = self.class_side_override(*cid, mid) {
+            if let Some(found) = self.class_side_override(cid, mid) {
                 return found;
             }
         }
@@ -1466,13 +1463,13 @@ impl Interp {
         }
         match &m.synth {
             RtSynth::FieldGet(idx) => {
-                let Value::Object(o) = &recv else {
+                let V::Object(o) = recv.view() else {
                     return Err(self.err_type("field access on a non-object"));
                 };
                 return Ok(self.logical_get(o, *idx as usize));
             }
             RtSynth::FieldSet(idx) => {
-                let Value::Object(o) = &recv else {
+                let V::Object(o) = recv.view() else {
                     return Err(self.err_type("field access on a non-object"));
                 };
                 let v = args.into_iter().next().unwrap_or(Value::Nil);
@@ -1480,7 +1477,7 @@ impl Interp {
                 return Ok(v);
             }
             RtSynth::DataInit => {
-                let Value::Object(o) = &recv else {
+                let V::Object(o) = recv.view() else {
                     return Err(self.err_type("data initialization on a non-object"));
                 };
                 let values = self.bind_data_args(mid, &recv, args, kw)?;
@@ -1489,7 +1486,7 @@ impl Interp {
                 return Ok(Value::Nil);
             }
             RtSynth::DataWith => {
-                let Value::Object(o) = &recv else {
+                let V::Object(o) = recv.view() else {
                     return Err(self.err_type("`with` on a non-object"));
                 };
                 let copy = Object::new(o.class, o.fields.borrow().clone());
@@ -1502,7 +1499,7 @@ impl Interp {
                 return Ok(Value::Object(copy));
             }
             RtSynth::DataToH => {
-                let Value::Object(o) = &recv else {
+                let V::Object(o) = recv.view() else {
                     return Err(self.err_type("`to_h` on a non-object"));
                 };
                 let mut map = ValueMap::default();
@@ -1510,7 +1507,7 @@ impl Interp {
                 for (i, f) in class.ivars.iter().enumerate() {
                     map.insert(Value::Symbol(self.intern(&f.name)), self.logical_get(o, i));
                 }
-                return Ok(Value::Hash(Rc::new(map)));
+                return Ok(Value::Hash(map));
             }
             RtSynth::None => {}
         }
@@ -1550,34 +1547,37 @@ impl Interp {
     pub fn owned_fast(&self, mid: MethodId, slot: &mut Value, args: &[&Value]) -> bool {
         let o = &self.owned;
         let m = Some(mid);
-        match (slot, args) {
-            (Value::Array(a), [v]) if m == o.array_push => {
-                Rc::make_mut(a).push((*v).clone());
+        match (slot.view_mut(), args) {
+            (VM::Array(a), [v]) if m == o.array_push => {
+                Heap::make_mut(a).push((*v).clone());
                 true
             }
-            (Value::Array(a), [Value::Int(i), v]) if m == o.array_set => {
+            (VM::Array(a), [i, v]) if m == o.array_set => {
+                let V::Int(i) = i.view() else {
+                    return false;
+                };
                 let n = a.len() as i64;
-                let i = if *i < 0 { n + *i } else { *i };
+                let i = if i < 0 { n + i } else { i };
                 if i < 0 || i >= n {
                     return false;
                 }
-                Rc::make_mut(a).set(i as usize, (*v).clone());
+                Heap::make_mut(a).set(i as usize, (*v).clone());
                 true
             }
-            (Value::Hash(h), [k, v]) if m == o.hash_put => {
-                Rc::make_mut(h).insert((*k).clone(), (*v).clone());
+            (VM::Hash(h), [k, v]) if m == o.hash_put => {
+                Heap::make_mut(h).insert((*k).clone(), (*v).clone());
                 true
             }
-            (Value::Hash(h), [k]) if m == o.hash_delete => {
-                Rc::make_mut(h).shift_remove(*k);
+            (VM::Hash(h), [k]) if m == o.hash_delete => {
+                Heap::make_mut(h).shift_remove(*k);
                 true
             }
-            (Value::Set(s), [v]) if m == o.set_add => {
-                Rc::make_mut(s).insert((*v).clone());
+            (VM::Set(s), [v]) if m == o.set_add => {
+                Heap::make_mut(s).insert((*v).clone());
                 true
             }
-            (Value::Set(s), [v]) if m == o.set_delete => {
-                Rc::make_mut(s).shift_remove(*v);
+            (VM::Set(s), [v]) if m == o.set_delete => {
+                Heap::make_mut(s).shift_remove(*v);
                 true
             }
             _ => false,
@@ -1702,14 +1702,14 @@ impl Interp {
                     for (sym, v) in kwrest.drain(..) {
                         map.insert(Value::Symbol(sym), v);
                     }
-                    values[i] = Value::Hash(Rc::new(map));
+                    values[i] = Value::Hash(map);
                     provided |= bit(i);
                 }
             }
         } else {
             for (i, p) in m.params.iter().enumerate() {
                 if p.kind == RtParamKind::KeywordRest {
-                    values[i] = Value::Hash(Rc::new(ValueMap::default()));
+                    values[i] = Value::Hash(ValueMap::default());
                     provided |= bit(i);
                 }
             }
@@ -1768,7 +1768,7 @@ impl Interp {
     /// A block implemented in Rust.
     pub fn native_block(&self, f: impl Fn(&Interp, ArgVec) -> EvalResult + 'static) -> Value {
         let tag = self.new_tag();
-        Value::Proc(Rc::new(Closure {
+        Value::Proc(Closure {
             body: ClosureBody::Native(Rc::new(f)),
             frame: None,
             self_val: Value::Nil,
@@ -1778,14 +1778,14 @@ impl Interp {
             method_block: None,
             method_tag: tag,
             file: 0,
-        }))
+        })
     }
 
     /// Run a call that received a block, turning `break` into the call's
     /// value.
     pub fn catch_break(&self, block: &Option<Value>, r: EvalResult) -> EvalResult {
-        match (r, block) {
-            (Err(Flow::Break(v, t)), Some(Value::Proc(c))) if c.tag == t => Ok(v),
+        match (r, block.as_ref().map(|b| b.view())) {
+            (Err(Flow::Break(v, t)), Some(V::Proc(c))) if c.tag == t => Ok(v),
             (r, _) => r,
         }
     }
@@ -1810,11 +1810,11 @@ impl Interp {
         // Ruby's `\A`/`\z` are the same; `\h` is a hex digit.
         pattern.push_str(&source.replace("\\h", "[0-9a-fA-F]"));
         match regex::Regex::new(&pattern) {
-            Ok(regex) => Ok(Value::Regexp(Rc::new(RegexpVal {
+            Ok(regex) => Ok(Value::Regexp(RegexpVal {
                 regex,
                 source: source.to_string(),
                 flags: flags.to_string(),
-            }))),
+            })),
             Err(e) => Err(self.raise(
                 self.exc.argument_error,
                 &format!("invalid regexp /{source}/: {e}"),
@@ -1824,11 +1824,11 @@ impl Interp {
 
     /// `===` for `case/when`.
     pub fn case_eq(&self, pattern: &Value, v: &Value) -> Result<bool, Flow> {
-        match pattern {
-            Value::Class(cid) => Ok(self.world.class_is_a(self.class_of(v), *cid)),
-            Value::Range(r) => self.range_covers(r, v),
-            Value::Regexp(re) => Ok(v.as_str().is_some_and(|s| re.regex.is_match(s))),
-            Value::Proc(_) => Ok(self.call_block(pattern, smallvec![v.clone()])?.is_truthy()),
+        match pattern.view() {
+            V::Class(cid) => Ok(self.world.class_is_a(self.class_of(v), cid)),
+            V::Range(r) => self.range_covers(r, v),
+            V::Regexp(re) => Ok(v.as_str().is_some_and(|s| re.regex.is_match(s))),
+            V::Proc(_) => Ok(self.call_block(pattern, smallvec![v.clone()])?.is_truthy()),
             _ => self.values_equal(pattern, v),
         }
     }
@@ -1868,15 +1868,14 @@ impl Interp {
     /// Append `v`'s `to_s` to `buf` (numbers and strings without a
     /// temporary).
     pub fn append_to_s(&self, buf: &mut String, v: &Value) -> Result<(), Flow> {
-        match v {
-            Value::Str(s) => buf.push_str(s),
-            Value::Short(s) => buf.push_str(s.as_str()),
-            Value::Int(i) => {
+        match v.view() {
+            V::Str(s) => buf.push_str(s.as_str()),
+            V::Int(i) => {
                 let mut digits = [0u8; 20];
-                buf.push_str(crate::value::format_int(&mut digits, *i));
+                buf.push_str(crate::value::format_int(&mut digits, i));
             }
-            Value::Nil => {}
-            Value::Bool(b) => buf.push_str(if *b { "true" } else { "false" }),
+            V::Nil => {}
+            V::Bool(b) => buf.push_str(if b { "true" } else { "false" }),
             _ => buf.push_str(&self.to_s(v)?),
         }
         Ok(())
@@ -1884,10 +1883,9 @@ impl Interp {
 
     /// `v.to_s`: borrowed from a string value, built otherwise.
     pub fn to_s<'a>(&self, v: &'a Value) -> Result<Cow<'a, str>, Flow> {
-        match v {
-            Value::Str(s) => Ok(Cow::Borrowed(s)),
-            Value::Short(s) => Ok(Cow::Borrowed(s.as_str())),
-            Value::Object(o) => {
+        match v.view() {
+            V::Str(s) => Ok(Cow::Borrowed(s.as_str())),
+            V::Object(o) => {
                 if let Some(mid) = self.has_user_method(v, "to_s", 0) {
                     let r = self.invoke(mid, v.clone(), smallvec![], vec![], None)?;
                     return Ok(Cow::Owned(self.to_s(&r)?.into_owned()));
@@ -1902,7 +1900,7 @@ impl Interp {
     }
 
     pub fn inspect(&self, v: &Value) -> Result<String, Flow> {
-        if let Value::Object(_) = v {
+        if let V::Object(_) = v.view() {
             if let Some(mid) = self.has_user_method(v, "inspect", 0) {
                 let r = self.invoke(mid, v.clone(), smallvec![], vec![], None)?;
                 return Ok(self.to_s(&r)?.to_string());
@@ -1912,19 +1910,19 @@ impl Interp {
     }
 
     fn format_value(&self, v: &Value, inspect: bool) -> Result<String, Flow> {
-        Ok(match v {
-            Value::Nil => {
+        Ok(match v.view() {
+            V::Nil => {
                 if inspect {
                     "nil".to_string()
                 } else {
                     String::new()
                 }
             }
-            Value::Bool(b) => b.to_string(),
-            Value::Int(i) => i.to_string(),
-            Value::BigInt(b) => b.to_string(),
-            Value::Float(f) => format_float(*f),
-            Value::Str(_) | Value::Short(_) => {
+            V::Bool(b) => b.to_string(),
+            V::Int(i) => i.to_string(),
+            V::BigInt(b) => b.to_string(),
+            V::Float(f) => format_float(f),
+            V::Str(_) => {
                 let s = v.as_str().unwrap_or("");
                 if inspect {
                     inspect_str(s)
@@ -1932,8 +1930,8 @@ impl Interp {
                     s.to_string()
                 }
             }
-            Value::Symbol(s) => {
-                let name = self.symbol_name(*s);
+            V::Symbol(s) => {
+                let name = self.symbol_name(s);
                 if inspect {
                     if name.chars().all(|c| {
                         c.is_alphanumeric() || c == '_' || c == '?' || c == '!' || c == '='
@@ -1947,44 +1945,44 @@ impl Interp {
                     name.to_string()
                 }
             }
-            Value::Array(a) => {
+            V::Array(a) => {
                 let mut parts = Vec::new();
                 for x in a.iter() {
                     parts.push(self.inspect(&x)?);
                 }
                 format!("[{}]", parts.join(", "))
             }
-            Value::ArrayBuilder(a) => {
+            V::ArrayBuilder(a) => {
                 let mut parts = Vec::new();
                 for x in a.borrow().iter() {
                     parts.push(self.inspect(x)?);
                 }
                 format!("[{}]", parts.join(", "))
             }
-            Value::Hash(h) => self.format_hash(h.iter())?,
-            Value::HashBuilder(h) => self.format_hash(h.borrow().iter())?,
-            Value::Set(s) => {
+            V::Hash(h) => self.format_hash(h.iter())?,
+            V::HashBuilder(h) => self.format_hash(h.borrow().iter())?,
+            V::Set(s) => {
                 let mut parts = Vec::new();
                 for x in s.iter() {
                     parts.push(self.inspect(x)?);
                 }
                 format!("Set[{}]", parts.join(", "))
             }
-            Value::SetBuilder(s) => {
+            V::SetBuilder(s) => {
                 let mut parts = Vec::new();
                 for x in s.borrow().iter() {
                     parts.push(self.inspect(x)?);
                 }
                 format!("Set[{}]", parts.join(", "))
             }
-            Value::Range(r) => format!(
+            V::Range(r) => format!(
                 "{}{}{}",
                 self.inspect(&r.lo)?,
                 if r.exclusive { "..." } else { ".." },
                 self.inspect(&r.hi)?
             ),
-            Value::Regexp(r) => format!("/{}/{}", r.source, r.flags),
-            Value::MatchData(m) => {
+            V::Regexp(r) => format!("/{}/{}", r.source, r.flags),
+            V::MatchData(m) => {
                 let group = |k: usize| -> String {
                     match m.groups.get(k).copied().flatten() {
                         Some((s, e)) => inspect_str(&m.text[s..e]),
@@ -2004,7 +2002,7 @@ impl Interp {
                 out.push('>');
                 out
             }
-            Value::Object(o) => {
+            V::Object(o) => {
                 let class = self.world.class(o.class);
                 if class.is_exception {
                     return Ok(format!("#<{}: {}>", class.name, self.exception_message(v)));
@@ -2034,23 +2032,23 @@ impl Interp {
                     }
                 }
             }
-            Value::Class(c) => self.world.class(*c).name.clone(),
-            Value::Proc(_) => "#<Proc>".to_string(),
-            Value::StringBuilder(s) => {
+            V::Class(c) => self.world.class(c).name.clone(),
+            V::Proc(_) => "#<Proc>".to_string(),
+            V::StringBuilder(s) => {
                 if inspect {
                     inspect_str(&s.borrow())
                 } else {
                     s.borrow().clone()
                 }
             }
-            Value::Channel(c) => format!("#<Channel capacity={}>", c.capacity),
-            Value::Task(t) => format!("#<Task {}>", t.id),
-            Value::Scope(_) => "#<Scope>".to_string(),
-            Value::Atom(a) => format!("#<Atom {}>", self.inspect(&a.borrow())?),
-            Value::Selector(_) => "#<Selector>".to_string(),
-            Value::Duration(ns) => format_duration(*ns),
-            Value::Enumerator(e) => format!("#<Enumerator {}>", e.method),
-            Value::Io(io) => match &io.kind {
+            V::Channel(c) => format!("#<Channel capacity={}>", c.capacity),
+            V::Task(t) => format!("#<Task {}>", t.id),
+            V::Scope(_) => "#<Scope>".to_string(),
+            V::Atom(a) => format!("#<Atom {}>", self.inspect(&a.borrow())?),
+            V::Selector(_) => "#<Selector>".to_string(),
+            V::Duration(ns) => format_duration(ns),
+            V::Enumerator(e) => format!("#<Enumerator {}>", e.method),
+            V::Io(io) => match &io.kind {
                 IoKind::Stdin => "#<IO:<STDIN>>".to_string(),
                 IoKind::Stdout => "#<IO:<STDOUT>>".to_string(),
                 IoKind::Stderr => "#<IO:<STDERR>>".to_string(),
@@ -2066,11 +2064,11 @@ impl Interp {
                     natives::net::inspect_socket(self, io)
                 }
             },
-            Value::Random(r) => format!("#<Random seed={}>", r.borrow().seed),
-            Value::Bytes(b) => natives::bytes::inspect_bytes(b),
-            Value::BytesBuilder(b) => natives::bytes::inspect_bytes(&b.borrow()),
-            Value::Time(t) => natives::time::time_to_s(t, inspect),
-            Value::Flow(_) => "#<Flow>".to_string(),
+            V::Random(r) => format!("#<Random seed={}>", r.borrow().seed),
+            V::Bytes(b) => natives::bytes::inspect_bytes(b),
+            V::BytesBuilder(b) => natives::bytes::inspect_bytes(&b.borrow()),
+            V::Time(t) => natives::time::time_to_s(t, inspect),
+            V::Flow(_) => "#<Flow>".to_string(),
         })
     }
 
@@ -2080,9 +2078,9 @@ impl Interp {
     ) -> Result<String, Flow> {
         let mut parts = Vec::new();
         for (k, v) in iter {
-            let key = match k {
-                Value::Symbol(s) => {
-                    let name = self.symbol_name(*s);
+            let key = match k.view() {
+                V::Symbol(s) => {
+                    let name = self.symbol_name(s);
                     if name
                         .chars()
                         .all(|c| c.is_alphanumeric() || c == '_' || c == '?' || c == '!')
@@ -2101,7 +2099,7 @@ impl Interp {
 
     /// `a == b` with user-defined equality.
     pub fn values_equal(&self, a: &Value, b: &Value) -> Result<bool, Flow> {
-        if let Value::Object(_) = a {
+        if let V::Object(_) = a.view() {
             if let Some(mid) = self.has_user_method(a, "==", 1) {
                 let r = self.invoke(mid, a.clone(), smallvec![b.clone()], vec![], None)?;
                 return Ok(r.is_truthy());
@@ -2113,27 +2111,25 @@ impl Interp {
     /// `a <=> b` as an ordering, raising when incomparable.
     pub fn compare(&self, a: &Value, b: &Value) -> Result<std::cmp::Ordering, Flow> {
         use std::cmp::Ordering;
-        match (a, b) {
-            (Value::Int(x), Value::Int(y)) => return Ok(x.cmp(y)),
-            (Value::Float(x), Value::Float(y)) => {
-                return Ok(x.partial_cmp(y).unwrap_or(Ordering::Equal))
+        match (a.view(), b.view()) {
+            (V::Int(x), V::Int(y)) => return Ok(x.cmp(&y)),
+            (V::Float(x), V::Float(y)) => return Ok(x.partial_cmp(&y).unwrap_or(Ordering::Equal)),
+            (V::Int(x), V::Float(y)) => {
+                return Ok((x as f64).partial_cmp(&y).unwrap_or(Ordering::Equal))
             }
-            (Value::Int(x), Value::Float(y)) => {
-                return Ok((*x as f64).partial_cmp(y).unwrap_or(Ordering::Equal))
+            (V::Float(x), V::Int(y)) => {
+                return Ok(x.partial_cmp(&(y as f64)).unwrap_or(Ordering::Equal))
             }
-            (Value::Float(x), Value::Int(y)) => {
-                return Ok(x.partial_cmp(&(*y as f64)).unwrap_or(Ordering::Equal))
-            }
-            (Value::Str(_) | Value::Short(_), Value::Str(_) | Value::Short(_)) => {
+            (V::Str(_), V::Str(_)) => {
                 return Ok(a.as_str().unwrap_or("").cmp(b.as_str().unwrap_or("")))
             }
-            (Value::Symbol(x), Value::Symbol(y)) => {
-                return Ok(self.symbol_name(*x).cmp(&self.symbol_name(*y)))
+            (V::Symbol(x), V::Symbol(y)) => {
+                return Ok(self.symbol_name(x).cmp(&self.symbol_name(y)))
             }
-            (Value::Duration(x), Value::Duration(y)) => return Ok(x.cmp(y)),
-            (Value::Bytes(x), Value::Bytes(y)) => return Ok(x.cmp(y)),
-            (Value::Time(x), Value::Time(y)) => return Ok(x.ns.cmp(&y.ns)),
-            (Value::Array(x), Value::Array(y)) => {
+            (V::Duration(x), V::Duration(y)) => return Ok(x.cmp(&y)),
+            (V::Bytes(x), V::Bytes(y)) => return Ok(x.cmp(y)),
+            (V::Time(x), V::Time(y)) => return Ok(x.ns.cmp(&y.ns)),
+            (V::Array(x), V::Array(y)) => {
                 for (p, q) in x.iter().zip(y.iter()) {
                     let o = self.compare(&p, &q)?;
                     if o != Ordering::Equal {
@@ -2145,8 +2141,8 @@ impl Interp {
             _ => {}
         }
         let r = self.send(a, "<=>", smallvec![b.clone()], None)?;
-        match r {
-            Value::Int(i) => Ok(i.cmp(&0)),
+        match r.view() {
+            V::Int(i) => Ok(i.cmp(&0)),
             _ => Err(self.err_arg(&format!(
                 "comparison of {} with {} failed",
                 self.class_name(a),

@@ -3,9 +3,10 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
 
+use crate::heap::Heap;
 use crate::interp::{Args, EvalResult, Flow, Interp, NativeFn};
+use crate::value::V;
 use crate::value::*;
 
 use super::{float, int};
@@ -41,16 +42,16 @@ pub fn next_random() -> u64 {
 
 pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     m.insert("Random.new", |_, _, a| {
-        let seed = match a.pos.first() {
-            Some(Value::Int(i)) => *i,
-            Some(Value::BigInt(b)) => {
+        let seed = match a.pos.first().map(|v| v.view()) {
+            Some(V::Int(i)) => i,
+            Some(V::BigInt(b)) => {
                 use num_traits::ToPrimitive;
                 b.to_i64()
                     .unwrap_or_else(|| (b.bits() as i64).wrapping_mul(0x9E3779B9))
             }
             _ => new_seed(),
         };
-        Ok(Value::Random(Rc::new(RefCell::new(RandomState::new(seed)))))
+        Ok(Value::Random(RefCell::new(RandomState::new(seed))))
     });
     m.insert("Random.new_seed", |_, _, _| Ok(Value::Int(new_seed())));
     m.insert("Random.rand", |i, _, a| with_default(|s| draw(i, s, &a)));
@@ -69,8 +70,8 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
         Ok(Value::bytes(random_bytes(&mut rng(i, r)?.borrow_mut(), n)))
     });
     m.insert("Random#==", |i, r, a| {
-        Ok(Value::Bool(match a.arg(0) {
-            Value::Random(other) => Rc::ptr_eq(rng(i, r)?, other),
+        Ok(Value::Bool(match a.arg(0).view() {
+            V::Random(other) => Heap::ptr_eq(rng(i, r)?, other),
             _ => false,
         }))
     });
@@ -88,9 +89,9 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     });
 }
 
-fn rng<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Rc<RefCell<RandomState>>, Flow> {
-    match v {
-        Value::Random(r) => Ok(r),
+fn rng<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Heap<RefCell<RandomState>>, Flow> {
+    match v.view() {
+        V::Random(r) => Ok(r),
         _ => Err(interp.err_type("expected a Random")),
     }
 }
@@ -107,41 +108,41 @@ fn random_bytes(state: &mut RandomState, n: usize) -> Vec<u8> {
 
 /// `rand`, `rand(max)`, `rand(max_float)`, `rand(range)`.
 fn draw(interp: &Interp, state: &mut RandomState, args: &Args) -> EvalResult {
-    match args.pos.first() {
+    match args.pos.first().map(|v| v.view()) {
         None => Ok(Value::Float(state.next_f64())),
-        Some(Value::Int(n)) => {
-            if *n <= 0 {
+        Some(V::Int(n)) => {
+            if n <= 0 {
                 return Err(interp.err_arg(&format!("invalid argument: {n}")));
             }
-            Ok(Value::Int(state.below(*n as u64) as i64))
+            Ok(Value::Int(state.below(n as u64) as i64))
         }
-        Some(Value::Float(f)) => {
-            if *f <= 0.0 {
+        Some(V::Float(f)) => {
+            if f <= 0.0 {
                 return Err(interp.err_arg(&format!("invalid argument: {f}")));
             }
             Ok(Value::Float(state.next_f64() * f))
         }
-        Some(Value::Range(r)) => match (&r.lo, &r.hi) {
-            (Value::Int(lo), Value::Int(hi)) => {
-                let hi = if r.exclusive { hi - 1 } else { *hi };
-                if hi < *lo {
+        Some(V::Range(r)) => match (r.lo.view(), r.hi.view()) {
+            (V::Int(lo), V::Int(hi)) => {
+                let hi = if r.exclusive { hi - 1 } else { hi };
+                if hi < lo {
                     return Err(interp.err_arg("invalid argument: empty range"));
                 }
                 let span = (hi - lo) as u64 + 1;
                 Ok(Value::Int(lo + state.below(span) as i64))
             }
-            (lo, hi) => {
-                let lo = float(interp, lo, "range start")?;
-                let hi = float(interp, hi, "range end")?;
+            _ => {
+                let lo = float(interp, &r.lo, "range start")?;
+                let hi = float(interp, &r.hi, "range end")?;
                 if hi < lo {
                     return Err(interp.err_arg("invalid argument: empty range"));
                 }
                 Ok(Value::Float(lo + state.next_f64() * (hi - lo)))
             }
         },
-        Some(other) => Err(interp.err_type(&format!(
+        Some(_) => Err(interp.err_type(&format!(
             "rand takes an Int, Float or Range, got {}",
-            interp.class_name(other)
+            interp.class_name(&args.pos[0])
         ))),
     }
 }

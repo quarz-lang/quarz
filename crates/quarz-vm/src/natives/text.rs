@@ -7,6 +7,7 @@ use std::rc::Rc;
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::interp::{Args, EvalResult, Flow, Interp, NativeFn};
+use crate::value::V;
 use crate::value::*;
 use smallvec::smallvec;
 
@@ -171,9 +172,12 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     m.insert("String#start_with?", |i, r, a| {
         let text = s(i, r)?;
         for p in &a.pos {
-            let hit = match p {
-                Value::Regexp(rx) => rx.regex.find(text).is_some_and(|m| m.start() == 0),
-                other => text.starts_with(string(i, other, "prefix")?),
+            let hit = match p.view() {
+                V::Regexp(rx) => rx.regex.find(text).is_some_and(|m| m.start() == 0),
+                _ => {
+                    let other: &Value = p;
+                    text.starts_with(string(i, other, "prefix")?)
+                }
             };
             if hit {
                 return Ok(Value::Bool(true));
@@ -218,7 +222,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
             return super::string::string_scan(i, r, a);
         };
         let matches = super::string::string_scan(i, r, Args { block: None, ..a })?;
-        let Value::Array(items) = matches else {
+        let V::Array(items) = matches.view() else {
             return Ok(Value::Nil);
         };
         for x in items.iter() {
@@ -226,22 +230,27 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
         }
         Ok(Value::Nil)
     });
-    m.insert("String#[]", |i, r, a| match (a.arg(0), a.pos.len()) {
-        (Value::Regexp(rx), 1) => {
-            let text = s(i, r)?;
-            Ok(match rx.regex.find(text) {
-                Some(m) => Value::str(m.as_str()),
-                None => Value::Nil,
-            })
+    m.insert("String#[]", |i, r, a| {
+        match (a.arg(0).view(), a.pos.len()) {
+            (V::Regexp(rx), 1) => {
+                let text = s(i, r)?;
+                Ok(match rx.regex.find(text) {
+                    Some(m) => Value::str(m.as_str()),
+                    None => Value::Nil,
+                })
+            }
+            (V::Int(_), 2) => string_slice(i, r, a),
+            _ => super::string::string_index(i, r, a),
         }
-        (Value::Int(_), 2) => string_slice(i, r, a),
-        _ => super::string::string_index(i, r, a),
     });
     m.insert("String#%", |i, r, a| {
         let fmt = s(i, r)?;
-        let values: Vec<Value> = match a.arg(0) {
-            Value::Array(items) => items.to_values(),
-            other => vec![other.clone()],
+        let values: Vec<Value> = match a.arg(0).view() {
+            V::Array(items) => items.to_values(),
+            _ => {
+                let other: &Value = a.arg(0);
+                vec![other.clone()]
+            }
         };
         Ok(Value::string(super::core::format_values(i, fmt, &values)?))
     });
@@ -368,9 +377,12 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
     m.insert("Regexp.union", |i, _, a| {
         let mut parts = Vec::with_capacity(a.pos.len());
         for p in &a.pos {
-            parts.push(match p {
-                Value::Regexp(rx) => format!("(?:{})", rx.source),
-                other => regex::escape(string(i, other, "pattern")?),
+            parts.push(match p.view() {
+                V::Regexp(rx) => format!("(?:{})", rx.source),
+                _ => {
+                    let other: &Value = p;
+                    regex::escape(string(i, other, "pattern")?)
+                }
             });
         }
         i.make_regexp(&parts.join("|"), "")
@@ -394,8 +406,8 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
         )))
     });
     m.insert("Regexp#==", |i, r, a| {
-        Ok(Value::Bool(match (re(i, r)?, a.arg(0)) {
-            (x, Value::Regexp(y)) => x.source == y.source && x.flags == y.flags,
+        Ok(Value::Bool(match (re(i, r)?, a.arg(0).view()) {
+            (x, V::Regexp(y)) => x.source == y.source && x.flags == y.flags,
             _ => false,
         }))
     });
@@ -418,7 +430,7 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
         for (name, idx) in &m.names {
             out.insert(Value::str(name), group_value(m, *idx));
         }
-        Ok(Value::Hash(Rc::new(out)))
+        Ok(Value::Hash(out))
     });
     m.insert("MatchData#size", |i, r, _| {
         Ok(Value::Int(md(i, r)?.groups.len() as i64))
@@ -445,8 +457,8 @@ pub fn register(m: &mut HashMap<&'static str, NativeFn>) {
 // ----- helpers ---------------------------------------------------------------------
 
 fn symbol_text(interp: &Interp, v: &Value) -> Result<Rc<str>, Flow> {
-    match v {
-        Value::Symbol(sym) => Ok(interp.symbol_name(*sym)),
+    match v.view() {
+        V::Symbol(sym) => Ok(interp.symbol_name(sym)),
         _ => Err(interp.err_type("expected a Symbol")),
     }
 }
@@ -461,7 +473,7 @@ fn group_value(m: &MatchDataVal, idx: usize) -> Value {
 /// `text[start, length]` / `slice(start, length)` / `slice(range)`.
 fn string_slice(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let text = s(interp, recv)?;
-    if let Value::Range(r) = args.arg(0) {
+    if let V::Range(r) = args.arg(0).view() {
         return Ok(Value::string(slice_range(interp, text, r)?));
     }
     let start = int(interp, args.arg(0), "start")?;
@@ -482,8 +494,8 @@ fn string_slice(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
 
 fn string_partition(interp: &Interp, recv: &Value, args: Args, from_right: bool) -> EvalResult {
     let text = s(interp, recv)?;
-    let found: Option<(usize, usize)> = match args.arg(0) {
-        Value::Regexp(rx) => {
+    let found: Option<(usize, usize)> = match args.arg(0).view() {
+        V::Regexp(rx) => {
             if from_right {
                 rx.regex
                     .find_iter(text)
@@ -493,7 +505,8 @@ fn string_partition(interp: &Interp, recv: &Value, args: Args, from_right: bool)
                 rx.regex.find(text).map(|m| (m.start(), m.end()))
             }
         }
-        other => {
+        _ => {
+            let other: &Value = args.arg(0);
             let sep = string(interp, other, "separator")?;
             let at = if from_right {
                 text.rfind(sep)
@@ -543,8 +556,8 @@ fn string_find(interp: &Interp, recv: &Value, args: Args, from_right: bool) -> E
             .map(|(b, _)| b)
             .unwrap_or(text.len())
     };
-    let found: Option<usize> = match args.arg(0) {
-        Value::Regexp(rx) => {
+    let found: Option<usize> = match args.arg(0).view() {
+        V::Regexp(rx) => {
             if from_right {
                 let limit = byte_at(start);
                 rx.regex
@@ -557,7 +570,8 @@ fn string_find(interp: &Interp, recv: &Value, args: Args, from_right: bool) -> E
                 rx.regex.find_at(text, from).map(|m| m.start())
             }
         }
-        other => {
+        _ => {
+            let other: &Value = args.arg(0);
             let needle = string(interp, other, "other")?;
             if from_right {
                 let limit = (byte_at(start) + needle.len()).min(text.len());
@@ -583,15 +597,15 @@ fn string_split_limit(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let limit = int(interp, limit, "limit")?;
     let text = s(interp, recv)?;
     let pat = args.arg(0);
-    let mut parts: Vec<&str> = match (pat, pat.as_str()) {
+    let mut parts: Vec<&str> = match (pat.view(), pat.as_str()) {
         (_, Some(sep)) if limit > 0 => text.splitn(limit as usize, sep).collect(),
         (_, Some(sep)) => text.split(sep).collect(),
-        (Value::Regexp(rx), _) if limit > 0 => rx.regex.splitn(text, limit as usize).collect(),
-        (Value::Regexp(rx), _) => rx.regex.split(text).collect(),
-        (other, _) => {
+        (V::Regexp(rx), _) if limit > 0 => rx.regex.splitn(text, limit as usize).collect(),
+        (V::Regexp(rx), _) => rx.regex.split(text).collect(),
+        _ => {
             return Err(interp.err_type(&format!(
                 "split takes a String or Regexp, got {}",
-                interp.class_name(other)
+                interp.class_name(pat)
             )))
         }
     };
@@ -612,7 +626,7 @@ fn string_sub_block(interp: &Interp, recv: &Value, args: Args, global: bool) -> 
             let v = interp.call_block(b, smallvec![Value::str(matched)])?;
             return Ok(interp.to_s(&v)?.to_string());
         }
-        if let Value::Hash(h) = args.arg(1) {
+        if let V::Hash(h) = args.arg(1).view() {
             return Ok(match h.get(&Value::str(matched)) {
                 Some(v) => interp.to_s(v)?.to_string(),
                 None => String::new(),
@@ -620,13 +634,13 @@ fn string_sub_block(interp: &Interp, recv: &Value, args: Args, global: bool) -> 
         }
         Ok(String::new())
     };
-    if args.block.is_none() && !matches!(args.arg(1), Value::Hash(_)) {
+    if args.block.is_none() && !matches!(args.arg(1).view(), V::Hash(_)) {
         return string_sub(interp, recv, args, global);
     }
     let mut out = String::with_capacity(text.len());
     let mut last = 0;
     let pattern = args.arg(0);
-    match (pattern, pattern.as_str()) {
+    match (pattern.view(), pattern.as_str()) {
         (_, Some(pat)) => {
             let mut from = 0;
             while let Some(b) = text[from..].find(pat) {
@@ -641,7 +655,7 @@ fn string_sub_block(interp: &Interp, recv: &Value, args: Args, global: bool) -> 
                 }
             }
         }
-        (Value::Regexp(rx), _) => {
+        (V::Regexp(rx), _) => {
             for m in rx.regex.find_iter(text) {
                 out.push_str(&text[last..m.start()]);
                 out.push_str(&replacement(m.as_str())?);
@@ -651,10 +665,10 @@ fn string_sub_block(interp: &Interp, recv: &Value, args: Args, global: bool) -> 
                 }
             }
         }
-        (other, _) => {
+        _ => {
             return Err(interp.err_type(&format!(
                 "sub takes a String or Regexp, got {}",
-                interp.class_name(other)
+                interp.class_name(pattern)
             )))
         }
     }

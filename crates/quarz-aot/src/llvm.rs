@@ -590,6 +590,26 @@ impl Builder for Ll<'_> {
         self.def(ty, format!("ashr {} {at}, {imm}", self.t(ty)))
     }
 
+    fn ushr_imm(&mut self, a: u32, imm: i64) -> u32 {
+        let ty = self.val(a).ty;
+        let at = self.val(a).text.clone();
+        self.def(ty, format!("lshr {} {at}, {imm}", self.t(ty)))
+    }
+
+    fn rotl_imm(&mut self, a: u32, imm: i64) -> u32 {
+        let a = self.coerce(a, Ty::I64);
+        let at = self.val(a).text.clone();
+        self.intrinsic("fshl");
+        self.def(Ty::I64, format!("call i64 @llvm.fshl.i64(i64 {at}, i64 {at}, i64 {imm})"))
+    }
+
+    fn rotr_imm(&mut self, a: u32, imm: i64) -> u32 {
+        let a = self.coerce(a, Ty::I64);
+        let at = self.val(a).text.clone();
+        self.intrinsic("fshr");
+        self.def(Ty::I64, format!("call i64 @llvm.fshr.i64(i64 {at}, i64 {at}, i64 {imm})"))
+    }
+
     fn sadd_overflow(&mut self, a: u32, b: u32) -> (u32, u32) {
         self.intrinsic("sadd");
         self.overflow("sadd", a, b)
@@ -623,7 +643,6 @@ impl Builder for Ll<'_> {
             IntCC::SignedGreaterThanOrEqual => "sge",
             IntCC::UnsignedLessThan => "ult",
             IntCC::UnsignedGreaterThan => "ugt",
-            IntCC::UnsignedGreaterThanOrEqual => "uge",
         };
         let (at, bt) = (self.tv(a), self.val(b).text.clone());
         let t = self.emit_tmp(format!("icmp {pred} {at}, {bt}"));
@@ -968,6 +987,8 @@ fn emit(module: &Module, opaque: bool) -> Result<String, String> {
             pop_call: declare("qz_pop_call", &[p, p], &[]),
             stack_overflow: declare("qz_stack_overflow", &[p], &[i32_]),
             drop_value: declare("qz_drop_value", &[p], &[]),
+            box_int: declare("qz_box_int", &[p, i64_], &[]),
+            box_float: declare("qz_box_float", &[p, Ty::F64], &[]),
             call_static: declare(
                 "qz_call_static",
                 &[p, p, i32_, p, i32_, p, i32_, i32_, i32_],
@@ -1029,6 +1050,8 @@ fn emit(module: &Module, opaque: bool) -> Result<String, String> {
             "declare {{ i64, i1 }} @llvm.{name}.with.overflow.i64(i64, i64)"
         );
     }
+    let _ = writeln!(out, "declare i64 @llvm.fshl.i64(i64, i64, i64)");
+    let _ = writeln!(out, "declare i64 @llvm.fshr.i64(i64, i64, i64)");
     out.push('\n');
 
     // Metadata: !0 the unit, !1 and !2 the flags, !3 the file, !4 and !5
@@ -1065,6 +1088,8 @@ fn emit(module: &Module, opaque: bool) -> Result<String, String> {
                 pop_call: rt.h.pop_call,
                 stack_overflow: rt.h.stack_overflow,
                 drop_value: rt.h.drop_value,
+                box_int: rt.h.box_int,
+                box_float: rt.h.box_float,
                 exec: rt.h.exec,
                 term: rt.h.term,
                 block_param: rt.h.block_param,
