@@ -124,7 +124,7 @@ Listing what the Quarz implementation needs from the start, the decisive factor 
 |---|---|
 | Stackful task switching | `corosensei` |
 | Work-stealing scheduler, channels | `crossbeam` deques and synchronization primitives (planned: today the scheduler runs on one thread and needs neither) |
-| Asynchronous IO | `polling` (epoll/kqueue) for sockets; helper threads for file IO and child processes |
+| Asynchronous IO | `polling` (epoll/kqueue) for sockets. Helper threads for whole-file operations, name resolution, `connect` and child processes. Open `File` handles, directory operations and standard input are synchronous (every task stops while they wait) |
 | Bignums, regular expressions, Unicode | `num-bigint` (or `rug`), `regex`, `unicode-*` |
 | Persistent vector / HAMT | Written in-house, since in-place updates rely on RC uniqueness; `im`/`rpds` serve as references (planned: today collections are copy-on-write vectors and `indexmap` maps) |
 | AST and type processing | `enum` and pattern matching |
