@@ -236,6 +236,22 @@ pub fn lower_checked(checked: &Checked, files: &[SourceFile]) -> Module {
     inline::inline_calls(&mut functions, &delta.world.methods, 2);
     sroa::scalar_replace(&mut functions, &delta.world.methods, &delta.world.classes);
     copyprop::propagate_copies(&mut functions);
+    // Last: where values move rather than copy, for every way the
+    // functions run.
+    let in_place: Vec<bool> = delta
+        .world
+        .methods
+        .iter()
+        .map(|m| {
+            m.native_key
+                .as_deref()
+                .is_some_and(|k| quarz_ir::live::IN_PLACE_NATIVES.contains(&k))
+        })
+        .collect();
+    for f in functions.iter_mut() {
+        quarz_ir::live::mark_moves(f);
+        quarz_ir::live::own_dying_receivers(f, &in_place);
+    }
     Module {
         world: delta.world,
         functions,

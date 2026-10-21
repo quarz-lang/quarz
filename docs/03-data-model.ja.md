@@ -50,6 +50,15 @@ def collect(n: Int) -> Array[Int]
 end
 ```
 
+値を渡しても、その変数をもう読まないなら参照は増えません。値は呼び出しにムーブされ、仮引数がそれを引き継ぎます。更新したコレクションを返す補助メソッドを挟んでも参照は一意のままなので、次のループも線形です。
+
+```ruby
+def add(xs: Array[Int], v: Int) -> Array[Int] = xs.push(v)
+
+ys: Array[Int] = []
+n.times { |i| ys = add(ys, i) }   # ys は add にムーブされ、xs.push がその場で追加する
+```
+
 これは Lean 4 / Koka の「functional but in-place」と同じ技法で、Ruby 風の素直なループが可変配列と同程度に速く動きます。参照が共有されていれば自動的にコピー(パス上のノードのみ。現状はコレクション全体)にフォールバックするので、意味論は常に不変のままです。
 
 ## 3. Builder(可変・タスク局所)

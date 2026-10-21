@@ -52,6 +52,15 @@ def collect(n: Int) -> Array[Int]
 end
 ```
 
+Passing a value on does not add a reference when the variable is not read again: the value moves into the call, and a parameter takes it over. A helper that returns the updated collection keeps it unique, so this loop is linear as well:
+
+```ruby
+def add(xs: Array[Int], v: Int) -> Array[Int] = xs.push(v)
+
+ys: Array[Int] = []
+n.times { |i| ys = add(ys, i) }   # ys moves into add, xs.push updates it in place
+```
+
 This is the same technique as "functional but in-place" in Lean 4 / Koka, and it lets straightforward Ruby-style loops run about as fast as with a mutable array. If the reference is shared, it automatically falls back to copying (only the nodes on the path; currently the whole collection), so the semantics always remain immutable.
 
 ## 3. Builders (Mutable, Task-Local)

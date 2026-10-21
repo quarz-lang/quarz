@@ -294,6 +294,13 @@ pub enum Inst {
         dst: Reg,
         src: Reg,
     },
+    /// A `Move` that is `src`'s last read (`live::mark_moves`): the value
+    /// is moved out, `src` left nil. Only the final pass of lowering
+    /// writes it.
+    Take {
+        dst: Reg,
+        src: Reg,
+    },
     SelfRef {
         dst: Reg,
     },
@@ -369,6 +376,11 @@ pub enum Inst {
         /// (`**opts`).
         kw_splat: Option<Reg>,
         block: Option<Reg>,
+        /// The registers the call reads for the last time, moved into
+        /// it rather than copied (`live::mark_moves`): bit `i` for
+        /// `args[i]` (`i` < 15), bit 15 for `recv`.
+        #[serde(default)]
+        moved: u16,
     },
     /// `x = x.meth(args)`: the receiver is moved out of its variable so a
     /// uniquely referenced collection is updated in place; the result is
@@ -622,6 +634,7 @@ impl Inst {
         match self {
             Inst::LoadConst { dst, .. }
             | Inst::Move { dst, .. }
+            | Inst::Take { dst, .. }
             | Inst::SelfRef { dst }
             | Inst::Arg { dst, .. }
             | Inst::HasArg { dst, .. }
@@ -697,6 +710,7 @@ impl Inst {
             | Inst::CatchAny { .. }
             | Inst::ClearRegs { .. } => {}
             Inst::Move { src, .. }
+            | Inst::Take { src, .. }
             | Inst::Not { src, .. }
             | Inst::IsNil { src, .. }
             | Inst::FrameSet { src, .. }
@@ -838,6 +852,7 @@ impl Inst {
             | Inst::CatchAny { .. }
             | Inst::ClearRegs { .. } => vec![],
             Inst::Move { src, .. }
+            | Inst::Take { src, .. }
             | Inst::Not { src, .. }
             | Inst::IsNil { src, .. }
             | Inst::FrameSet { src, .. }

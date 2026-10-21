@@ -45,6 +45,13 @@ pub struct Activation {
     /// The frame is also visible to the native unwinder (a typed entry
     /// that materialized its activation): backtraces take it from there.
     pub native: Cell<bool>,
+    /// The call owns the values of the parameter view (a list built for
+    /// it, or a compiled caller's argument area it releases after the
+    /// call), so `Arg` moves a parameter out of it: the callee holds the
+    /// only reference a moved argument has, and can update it in place.
+    /// False when the view borrows someone else's values (a native
+    /// handing a block an array's elements).
+    pub args_owned: Cell<bool>,
     /// The block's caller, built on the first `yield` and reused.
     pub yield_caller: YieldCache,
 }
@@ -176,6 +183,7 @@ impl Interp {
             yield_caller: Default::default(),
             sp: Cell::new(0),
             native: Cell::new(false),
+            args_owned: Cell::new(false),
         };
         let compiled = self.compiled.borrow().get(fid as usize).copied().flatten();
         Some(BlockCaller {
@@ -311,6 +319,37 @@ impl Activation {
     pub fn bind(&self, args: &[Value]) {
         self.args_ptr.set(args.as_ptr());
         self.nargs.set(args.len() as u32);
+    }
+
+    /// Point the parameter view at `args`, owned by this call: `Arg`
+    /// moves its values out.
+    pub fn bind_owned(&self, args: &mut [Value]) {
+        self.args_ptr.set(args.as_mut_ptr());
+        self.nargs.set(args.len() as u32);
+        self.args_owned.set(true);
+    }
+
+    /// Parameter `i` for `Arg`: moved out of the view when the call owns
+    /// it (each parameter is read once, at entry), else copied; nil when
+    /// absent.
+    pub fn take_arg(&self, i: u32) -> Value {
+        let n = self.nargs.get();
+        if i >= n {
+            return Value::Nil;
+        }
+        if self.args_owned.get() {
+            // SAFETY: an owned view (`bind_owned`, or a compiled caller's
+            // area set by `qz_enter`) points at `n` live values this call
+            // may take: the owner releases what is left, nil included.
+            unsafe {
+                std::ptr::replace(
+                    (self.args_ptr.get() as *mut Value).add(i as usize),
+                    Value::Nil,
+                )
+            }
+        } else {
+            self.params()[i as usize].clone()
+        }
     }
 
     pub fn params(&self) -> &[Value] {
@@ -734,9 +773,13 @@ impl Interp {
                 let v = regs[*src as usize].clone();
                 regs[*dst as usize] = v;
             }
+            Inst::Take { dst, src } => {
+                let v = std::mem::replace(&mut regs[*src as usize], Value::Nil);
+                regs[*dst as usize] = v;
+            }
             Inst::SelfRef { dst } => regs[*dst as usize] = act.self_val.clone(),
             Inst::Arg { dst, index } => {
-                regs[*dst as usize] = act.arg(*index).cloned().unwrap_or(Value::Nil);
+                regs[*dst as usize] = act.take_arg(*index);
             }
             Inst::HasArg { dst, index } => {
                 regs[*dst as usize] = Value::Bool(act.has_arg(*index));
@@ -822,6 +865,7 @@ impl Interp {
                 kw,
                 kw_splat,
                 block,
+                moved,
             } => {
                 // A native with a by-reference version takes the
                 // receiver and arguments from the registers directly.
@@ -851,11 +895,32 @@ impl Interp {
                         }
                     }
                 }
+                // What the call reads for the last time moves into it
+                // (`moved`, from lowering), so that a value passed on
+                // keeps a single reference.
                 let recv = match recv {
+                    Some(r) if *moved & (1 << 15) != 0 => {
+                        std::mem::replace(&mut regs[*r as usize], Value::Nil)
+                    }
                     Some(r) => regs[*r as usize].clone(),
                     None => act.self_val.clone(),
                 };
-                let pos = self.call_args(regs, args, *splat);
+                let pos = if *moved & 0x7fff != 0 {
+                    let mut pos = ArgVec::with_capacity(args.len());
+                    let mut bits = *moved & 0x7fff;
+                    for r in args {
+                        let slot = &mut regs[*r as usize];
+                        pos.push(if bits & 1 != 0 {
+                            std::mem::replace(slot, Value::Nil)
+                        } else {
+                            slot.clone()
+                        });
+                        bits >>= 1;
+                    }
+                    pos
+                } else {
+                    self.call_args(regs, args, *splat)
+                };
                 let kw = self.call_kwargs(f, pool, regs, kw, *kw_splat);
                 let block = block.map(|b| regs[b as usize].clone());
                 let r = match kind {
@@ -1402,7 +1467,7 @@ impl Interp {
                     && f.param_kinds
                         .iter()
                         .all(|k| matches!(k, RtParamKind::Positional | RtParamKind::KeywordOnly));
-                let (bound, provided) = if simple {
+                let (mut bound, provided) = if simple {
                     (args, (1u64 << nparams) - 1)
                 } else {
                     let mut bound: ArgVec = ArgVec::with_capacity(nparams);
@@ -1453,8 +1518,9 @@ impl Interp {
                     yield_caller: Default::default(),
                     sp: Cell::new(0),
                     native: Cell::new(false),
+                    args_owned: Cell::new(false),
                 };
-                act.bind(&bound);
+                act.bind_owned(&mut bound);
                 let r = match self.run_func(*fid, &act) {
                     Ok(v) => Ok(v),
                     Err(Flow::Next(v)) => Ok(v),
@@ -1503,6 +1569,7 @@ impl Interp {
             yield_caller: Default::default(),
             sp: Cell::new(0),
             native: Cell::new(false),
+            args_owned: Cell::new(false),
         };
         self.run_func(fid, &act)
     }
@@ -1513,7 +1580,7 @@ impl Interp {
         _mid: MethodId,
         fid: FuncId,
         recv: Value,
-        args: ArgVec,
+        mut args: ArgVec,
         provided: u64,
         block: Option<Value>,
     ) -> EvalResult {
@@ -1547,8 +1614,9 @@ impl Interp {
             yield_caller: Default::default(),
             sp: Cell::new(0),
             native: Cell::new(false),
+            args_owned: Cell::new(false),
         };
-        act.bind(&args);
+        act.bind_owned(&mut args);
         let r = self.run_func(fid, &act);
         match r {
             Err(Flow::Return(v, t)) if t == tag => Ok(v),
@@ -1584,6 +1652,7 @@ impl Interp {
             yield_caller: Default::default(),
             sp: Cell::new(0),
             native: Cell::new(false),
+            args_owned: Cell::new(false),
         };
         self.run_func(fid, &act)
     }

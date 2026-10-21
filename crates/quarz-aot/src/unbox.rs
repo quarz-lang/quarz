@@ -108,6 +108,7 @@ pub fn reads_no_home(inst: &Inst) -> bool {
         inst,
         Inst::LoadConst { .. }
             | Inst::Move { .. }
+            | Inst::Take { .. }
             | Inst::SelfRef { .. }
             | Inst::Arg { .. }
             | Inst::BlockParam { .. }
@@ -240,6 +241,7 @@ pub fn int_to_f(inst: &Inst, methods: &[RtMethod], st: &[State]) -> Option<(Reg,
         kw,
         kw_splat: None,
         block: None,
+        ..
     } = inst
     else {
         return None;
@@ -330,6 +332,13 @@ pub fn transfer(
             };
         }
         Inst::Move { dst, src } => st[*dst as usize] = st[*src as usize],
+        // The value moves; a boxed source is left nil.
+        Inst::Take { dst, src } => {
+            st[*dst as usize] = st[*src as usize];
+            if dst != src && st[*src as usize] == State::Unknown {
+                st[*src as usize] = State::NonHeap;
+            }
+        }
         Inst::BinOp { dst, lhs, rhs, .. } => match bin_types(inst, methods, builtin) {
             Some(t) if !(t.result == Some(Num::Float) && float_mod(inst)) => {
                 // The operands are checked (or already known) on the
@@ -529,7 +538,7 @@ fn pure_inst(
                 Constant::Bool(_) | Constant::Int(_) | Constant::Float(_)
             ) && free(*dst)
         }
-        Inst::Move { dst, src } => {
+        Inst::Move { dst, src } | Inst::Take { dst, src } => {
             dst == src
                 || (matches!(st[*src as usize], State::Int | State::Float | State::Bool)
                     && free(*dst))

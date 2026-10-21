@@ -90,6 +90,7 @@ fn site(inst: &Inst, eligible: &[bool], methods: &[RtMethod]) -> Option<Site> {
         kw,
         kw_splat: None,
         block: None,
+        ..
     } = inst
     else {
         return None;
@@ -302,6 +303,10 @@ fn rewrite(inst: &Inst, base: Reg, consts: &[u32]) -> Inst {
             dst: r(dst),
             src: r(src),
         },
+        Inst::Take { dst, src } => Inst::Take {
+            dst: r(dst),
+            src: r(src),
+        },
         Inst::SelfRef { dst } => Inst::SelfRef { dst: r(dst) },
         Inst::Arg { dst, index } => Inst::Arg {
             dst: r(dst),
@@ -376,6 +381,7 @@ fn rewrite(inst: &Inst, base: Reg, consts: &[u32]) -> Inst {
             kw: kws,
             kw_splat,
             block,
+            moved,
         } => Inst::Call {
             dst: r(dst),
             kind: kind.clone(),
@@ -385,6 +391,7 @@ fn rewrite(inst: &Inst, base: Reg, consts: &[u32]) -> Inst {
             kw: kw(kws),
             kw_splat: kw_splat.as_ref().map(r),
             block: block.as_ref().map(r),
+            moved: *moved,
         },
         Inst::OwnedCall {
             dst,

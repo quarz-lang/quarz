@@ -301,6 +301,7 @@ pub(crate) fn gen_function<B: Builder>(
                     Constant::Nil | Constant::Bool(_) | Constant::Int(_) | Constant::Float(_)
                 ),
                 Inst::Move { .. }
+                | Inst::Take { .. }
                 | Inst::SelfRef { .. }
                 | Inst::Not { .. }
                 | Inst::IsNil { .. }
@@ -857,6 +858,9 @@ fn emit_typed_activation<B: Builder>(
     b.store(own_act, own_act, L::ACT_SP as i32);
     let native = b.iconst(Ty::I8, 0);
     b.store(native, own_act, L::ACT_NATIVE as i32);
+    // Its parameter area is its own.
+    let owned = b.iconst(Ty::I8, 1);
+    b.store(owned, own_act, L::ACT_ARGS_OWNED as i32);
     let provided: u64 = if nparams >= 64 {
         u64::MAX
     } else {
@@ -985,7 +989,7 @@ fn heap_possible(
             // so its register is still released at exit.)
             let _ = typed;
             match inst {
-                Inst::Move { dst, src } => moves.push((*dst, *src)),
+                Inst::Move { dst, src } | Inst::Take { dst, src } => moves.push((*dst, *src)),
                 // A parameter declared Int/Float is a number (checked
                 // once; a BigInt sends the function to the interpreter,
                 // and its home is released at exit).
@@ -1371,6 +1375,10 @@ impl<B: Builder> Gen<'_, B> {
         self.b.store(act, act, L::ACT_SP as i32);
         let native = self.b.iconst(Ty::I8, 0);
         self.b.store(native, act, L::ACT_NATIVE as i32);
+        // The argument area is this caller's, released after the call:
+        // the callee may move the parameters out of it.
+        let owned = self.b.iconst(Ty::I8, 1);
+        self.b.store(owned, act, L::ACT_ARGS_OWNED as i32);
         let provided_v = self.b.iconst(Ty::I64, provided as i64);
         self.b.store(provided_v, act, L::ACT_PROVIDED as i32);
         self.b.store(self.args_buf, act, L::ACT_ARGS_PTR as i32);
@@ -1880,6 +1888,7 @@ impl<B: Builder> Gen<'_, B> {
             kw,
             kw_splat: None,
             block,
+            ..
         } = inst
         else {
             return None;
@@ -2536,7 +2545,7 @@ impl<B: Builder> Gen<'_, B> {
             return;
         }
         match inst {
-            Inst::Move { dst, src } => {
+            Inst::Move { dst, src } | Inst::Take { dst, src } => {
                 if dst == src {
                     return;
                 }
@@ -2560,6 +2569,18 @@ impl<B: Builder> Gen<'_, B> {
                         let p = self.payload(*src);
                         self.b.store(t, self.regs, reg_off(*dst));
                         self.store_payload(*dst, p);
+                    }
+                    // The last read of a boxed register: its value moves,
+                    // nil left behind.
+                    State::Unknown if matches!(inst, Inst::Take { .. }) => {
+                        self.release(*dst);
+                        for k in [0, 8, 16] {
+                            let w = self.b.load(Ty::I64, self.regs, reg_off(*src) + k);
+                            self.b.store(w, self.regs, reg_off(*dst) + k);
+                        }
+                        // (`unbox` then knows it for nil.)
+                        self.store_tag(*src, TAG_NIL);
+                        self.stale[*dst as usize] = false;
                     }
                     State::Unknown => {
                         let s = self.b.iadd_imm(self.regs, i64::from(reg_off(*src)));
@@ -3124,6 +3145,29 @@ impl<B: Builder> Gen<'_, B> {
                 let src = self
                     .b
                     .iadd_imm(args, i64::from(*arg) * i64::from(VALUE_SIZE));
+                // An area the call owns gives the value up (the callee
+                // then holds its only reference); a borrowed one is
+                // copied from. So is it by an entry, whose body reads the
+                // parameters again from the start when it takes over.
+                let owned = if self.entry_of.is_some() {
+                    self.b.iconst(Ty::I8, 0)
+                } else {
+                    self.b.load(Ty::I8, self.act, L::ACT_ARGS_OWNED as i32)
+                };
+                let take = self.b.create_block();
+                let copy = self.b.create_block();
+                self.b.brif(owned, take, &[], copy, &[]);
+                self.b.switch_to_block(take);
+                self.release(*dst);
+                for k in [0, 8, 16] {
+                    let w = self.b.load(Ty::I64, src, k);
+                    self.b.store(w, self.regs, reg_off(*dst) + k);
+                }
+                let nil = self.b.iconst(Ty::I64, TAG_NIL);
+                self.b.store(nil, src, 0);
+                self.stale[*dst as usize] = false;
+                self.b.jump(cont, &[]);
+                self.b.switch_to_block(copy);
                 self.clone_from(*dst, src);
                 self.b.jump(cont, &[]);
                 self.b.switch_to_block(no);
@@ -3132,8 +3176,10 @@ impl<B: Builder> Gen<'_, B> {
                 self.b.jump(cont, &[]);
                 self.b.switch_to_block(cont);
                 // A parameter declared Int/Float: check once, then unboxed.
+                // A failed check hands over after this instruction: the
+                // value is in the home, and may have left the area.
                 if let Some(n) = unbox::param_num(self.f, self.methods, *arg) {
-                    self.get_num(*dst, n, block, index);
+                    self.get_num(*dst, n, block, index + 1);
                 }
             }
             Inst::BlockParam { dst } => {

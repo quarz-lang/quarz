@@ -979,6 +979,7 @@ impl<'a> FnBuilder<'a> {
                     kw: a.kw,
                     kw_splat: a.kw_splat,
                     block: a.block,
+                    moved: 0,
                 });
                 dst
             }
@@ -1062,6 +1063,7 @@ impl<'a> FnBuilder<'a> {
                             kw: vec![],
                             kw_splat: None,
                             block: None,
+                            moved: 0,
                         });
                         self.emit(Inst::Move { dst: res, src: d });
                         self.term(Term::Jump(join));
@@ -1092,6 +1094,7 @@ impl<'a> FnBuilder<'a> {
                         kw: vec![],
                         kw_splat: None,
                         block: None,
+                        moved: 0,
                     });
                     return dst;
                 }
@@ -1520,6 +1523,7 @@ impl<'a> FnBuilder<'a> {
             kw: Vec::new(),
             kw_splat: None,
             block: None,
+            moved: 0,
         });
         dst
     }
@@ -1831,6 +1835,7 @@ impl<'a> FnBuilder<'a> {
                     kw: a.kw,
                     kw_splat: a.kw_splat,
                     block: a.block,
+                    moved: 0,
                 });
                 if let Some(r) = r {
                     self.store_var(r, dst);
@@ -1869,6 +1874,7 @@ impl<'a> FnBuilder<'a> {
                     kw: a.kw,
                     kw_splat: a.kw_splat,
                     block: a.block,
+                    moved: 0,
                 });
                 let obj = self.self_reg();
                 self.field_set(obj, class, index, dst);
@@ -2159,6 +2165,7 @@ impl<'a> FnBuilder<'a> {
                     kw: Vec::new(),
                     kw_splat: None,
                     block: None,
+                    moved: 0,
                 });
                 d
             }
@@ -2423,6 +2430,7 @@ impl<'a> FnBuilder<'a> {
                         kw: a.kw,
                         kw_splat: a.kw_splat,
                         block: a.block,
+                        moved: 0,
                     });
                     return dst;
                 }
@@ -2451,6 +2459,7 @@ impl<'a> FnBuilder<'a> {
             kw: a.kw,
             kw_splat: a.kw_splat,
             block: a.block,
+            moved: 0,
         });
         dst
     }
@@ -2544,6 +2553,7 @@ impl<'a> FnBuilder<'a> {
             kw: a.kw,
             kw_splat: a.kw_splat,
             block: a.block,
+            moved: 0,
         });
         dst
     }
@@ -2600,6 +2610,7 @@ impl<'a> FnBuilder<'a> {
                                     kw: a.kw,
                                     kw_splat: a.kw_splat,
                                     block: a.block,
+                                    moved: 0,
                                 });
                                 self.store_var(r, dst);
                                 return dst;
@@ -2662,6 +2673,7 @@ impl<'a> FnBuilder<'a> {
                                     kw: a.kw,
                                     kw_splat: a.kw_splat,
                                     block: a.block,
+                                    moved: 0,
                                 });
                                 let obj = self.self_reg();
                                 self.field_set(obj, class, index, dst);
@@ -2736,6 +2748,7 @@ impl<'a> FnBuilder<'a> {
             kw: Vec::new(),
             kw_splat: None,
             block: None,
+            moved: 0,
         });
         dst
     }
@@ -2772,6 +2785,7 @@ impl<'a> FnBuilder<'a> {
             kw: Vec::new(),
             kw_splat: None,
             block: None,
+            moved: 0,
         });
     }
 
@@ -2817,6 +2831,7 @@ impl<'a> FnBuilder<'a> {
                     kw: Vec::new(),
                     kw_splat: None,
                     block: None,
+                    moved: 0,
                 });
                 (dst, Place::Index(r, a.pos, a.splat))
             }

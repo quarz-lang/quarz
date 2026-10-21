@@ -241,6 +241,8 @@ pub unsafe extern "C" fn qz_enter(
     write(addr_of_mut!((*buf).yield_caller), Default::default());
     write(addr_of_mut!((*buf).sp), std::cell::Cell::new(0));
     write(addr_of_mut!((*buf).native), std::cell::Cell::new(false));
+    // The compiled caller's argument area, released by it after the call.
+    write(addr_of_mut!((*buf).args_owned), std::cell::Cell::new(true));
     rt.push_call(&*buf);
     let _ = mid;
     STATUS_OK
@@ -478,7 +480,7 @@ pub unsafe extern "C" fn qz_self(act: *const Activation, regs: *mut Value, dst: 
 #[no_mangle]
 pub unsafe extern "C" fn qz_arg(act: *const Activation, index: u32, regs: *mut Value, dst: u32) {
     let act = &*act;
-    let v = act.arg(index).cloned().unwrap_or(Value::Nil);
+    let v = act.take_arg(index);
     *regs.add(dst as usize) = v;
 }
 

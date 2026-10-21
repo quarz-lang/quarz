@@ -1,0 +1,47 @@
+# A value whose variable is not read again moves into the call that
+# takes it (and its parameter takes it over); one still read elsewhere
+# is shared, so updating it copies. Either way nothing else changes.
+def add(xs: Array[Int], v: Int) -> Array[Int] = xs.push(v)
+def add_keep(xs: Array[Int], v: Int) -> Array[Int]
+  ys = xs
+  xs = xs.push(v)
+  p ys
+  xs
+end
+def put(h: Hash[String, Int], k: String) -> Hash[String, Int] = h.put(k, 1)
+
+a = [1, 2]
+b = add(a, 3)
+p a, b
+c = add(b, 4)
+d = add_keep(c, 5)
+p c, d
+h = {"a" => 1}
+h2 = put(h, "b")
+p h, h2
+acc: Array[Int] = []
+5.times { |i| acc = add(acc, i) }
+p acc
+e = acc
+acc = add(acc, 9)
+p e, acc
+
+# A block given a collection's elements reads them where they are.
+arr = [[1], [2]]
+r = arr.map { |x| add(x, 0) }
+p arr, r
+r2 = arr.select { |x| add(x, 0).size > 1 }
+p arr, r2
+
+# An argument list read again by `super`.
+class A
+  def f(xs: Array[Int]) -> Array[Int] = xs.push(1)
+end
+class B < A
+  def f(xs: Array[Int]) -> Array[Int]
+    r = super
+    p xs
+    r.push(2)
+  end
+end
+p B.new.f([0])
