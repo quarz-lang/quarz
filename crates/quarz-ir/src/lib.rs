@@ -1282,12 +1282,20 @@ mod dropped {
     }
 }
 
+/// The encoding of a module embedded in a compiled program (read once at
+/// its start-up).
+fn bincode_config() -> impl bincode::config::Config {
+    bincode::config::legacy()
+}
+
 pub fn encode(module: &Module) -> Vec<u8> {
-    bincode::serialize(module).expect("serializing QIR")
+    bincode::serde::encode_to_vec(module, bincode_config()).expect("serializing QIR")
 }
 
 pub fn decode(bytes: &[u8]) -> Result<Module, String> {
-    bincode::deserialize(bytes).map_err(|e| e.to_string())
+    bincode::serde::decode_from_slice(bytes, bincode_config())
+        .map(|(module, _)| module)
+        .map_err(|e| e.to_string())
 }
 
 pub mod dump;
