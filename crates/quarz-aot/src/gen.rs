@@ -102,7 +102,7 @@ pub(crate) fn typed_entry_region(
     typed_all: &[Option<unbox::TypedSig>],
     sig: &unbox::TypedSig,
 ) -> Option<Vec<bool>> {
-    let heap = heap_possible(f, methods, typed_all);
+    let heap = quarz_ir::live::heap_possible(f, methods);
     let entry_states = unbox::analyze(f, methods, classes, builtin, typed_all);
     let region = unbox::pure_region(
         f,
@@ -164,7 +164,7 @@ pub(crate) fn gen_function<B: Builder>(
     } = t;
     let drop_value_fn = h.drop_value;
     let pop_call = h.pop_call;
-    let heap = heap_possible(f, methods, typed_all);
+    let heap = quarz_ir::live::heap_possible(f, methods);
     // Unboxed numbers: the state of each register at each block's
     // entry, and an SSA variable per register for each kind.
     let entry_states = unbox::analyze(f, methods, classes, builtin, typed_all);
@@ -969,118 +969,6 @@ struct StaticCall {
     args: Vec<Reg>,
     block: Option<Reg>,
     dst: Reg,
-}
-
-/// Which registers may ever hold a reference-counted value (the others
-/// need no release at exit).
-fn heap_possible(
-    f: &Function,
-    methods: &[RtMethod],
-    typed: &[Option<unbox::TypedSig>],
-) -> Vec<bool> {
-    let mut heap = vec![false; f.nregs as usize];
-    // Copies carry whatever their source may hold: to a fixpoint.
-    let mut moves: Vec<(Reg, Reg)> = Vec::new();
-    let mut mark = |r: Reg| heap[r as usize] = true;
-    for blk in &f.blocks {
-        for inst in &blk.insts {
-            // (A call through a typed entry leaves a number, but a result
-            // that did not fit is boxed in the home for the interpreter,
-            // so its register is still released at exit.)
-            let _ = typed;
-            match inst {
-                Inst::Move { dst, src } | Inst::Take { dst, src } => moves.push((*dst, *src)),
-                // A parameter declared Int/Float is a number (checked
-                // once; a BigInt sends the function to the interpreter,
-                // and its home is released at exit).
-                Inst::Arg { dst, index } => {
-                    if unbox::param_num(f, methods, *index).is_none() {
-                        mark(*dst);
-                    }
-                }
-                Inst::LoadConst { dst, idx } => {
-                    if !matches!(
-                        f.consts[*idx as usize],
-                        Constant::Nil | Constant::Bool(_) | Constant::Int(_) | Constant::Float(_)
-                    ) {
-                        mark(*dst);
-                    }
-                }
-                Inst::BinOp { dst, op, .. } => {
-                    // Arithmetic may overflow into a BigInt.
-                    if !matches!(
-                        op,
-                        FastOp::Lt
-                            | FastOp::Le
-                            | FastOp::Gt
-                            | FastOp::Ge
-                            | FastOp::Eq
-                            | FastOp::Ne
-                            | FastOp::Cmp
-                    ) {
-                        mark(*dst);
-                    }
-                }
-                Inst::HasArg { .. }
-                | Inst::Not { .. }
-                | Inst::IsNil { .. }
-                | Inst::IsArray { .. }
-                | Inst::IsHash { .. }
-                | Inst::IsObject { .. }
-                | Inst::Len { .. }
-                | Inst::ClassIsA { .. }
-                | Inst::ClassIs { .. }
-                | Inst::IsA { .. }
-                | Inst::Equal { .. }
-                | Inst::CaseEq { .. } => {}
-                Inst::FieldGetByName { dst, .. } | Inst::HashGetSym { dst, .. } => mark(*dst),
-                Inst::SelfRef { dst }
-                | Inst::BlockParam { dst }
-                | Inst::FrameGet { dst, .. }
-                | Inst::FieldGet { dst, .. }
-                | Inst::ConstGet { dst, .. }
-                | Inst::ClassRef { dst, .. }
-                | Inst::VariantSingleton { dst, .. }
-                | Inst::Call { dst, .. }
-                | Inst::OwnedCall { dst, .. }
-                | Inst::As { dst, .. }
-                | Inst::MakeBlock { dst, .. }
-                | Inst::MethodRef { dst, .. }
-                | Inst::SymbolProc { dst, .. }
-                | Inst::MakeArray { dst, .. }
-                | Inst::MakeHash { dst, .. }
-                | Inst::MakeRange { dst, .. }
-                | Inst::MakeRegexp { dst, .. }
-                | Inst::Interpolate { dst, .. }
-                | Inst::ToSym { dst, .. }
-                | Inst::ToArray { dst, .. }
-                | Inst::ArrayGet { dst, .. }
-                | Inst::ArrayGetReg { dst, .. }
-                | Inst::ArraySlice { dst, .. }
-                | Inst::ArraySliceReg { dst, .. }
-                | Inst::ObjectFields { dst, .. }
-                | Inst::HashRest { dst, .. }
-                | Inst::CatchException { dst }
-                | Inst::CatchAny { dst } => mark(*dst),
-                Inst::FrameSet { .. }
-                | Inst::FieldSet { .. }
-                | Inst::ArrayPush { .. }
-                | Inst::ClearRegs { .. }
-                | Inst::NoMatch { .. } => {}
-            }
-        }
-    }
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for (dst, src) in &moves {
-            if heap[*src as usize] && !heap[*dst as usize] {
-                heap[*dst as usize] = true;
-                changed = true;
-            }
-        }
-    }
-    heap
 }
 
 /// The offset of register `r`'s home in the register file.

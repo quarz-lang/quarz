@@ -287,17 +287,28 @@ fn const_index(g: &mut Function, c: &Constant) -> u32 {
 /// `inst` with its registers moved up by `base` and its constant indices
 /// mapped through `consts`.
 fn rewrite(inst: &Inst, base: Reg, consts: &[u32]) -> Inst {
-    let r = |x: &Reg| base + *x;
-    let rs = |xs: &[Reg]| xs.iter().map(|x| base + *x).collect::<Vec<_>>();
+    rewrite_with(inst, &|x| base + x, &|c| consts[c as usize])
+}
+
+/// `inst` with its registers mapped through `reg` and its constant
+/// indices through `cst` (`ClearRegs` maps its bounds, so `reg` must
+/// keep ranges: an offset does).
+pub(crate) fn rewrite_with(
+    inst: &Inst,
+    reg: &dyn Fn(Reg) -> Reg,
+    cst: &dyn Fn(u32) -> u32,
+) -> Inst {
+    let r = |x: &Reg| reg(*x);
+    let rs = |xs: &[Reg]| xs.iter().map(|x| reg(*x)).collect::<Vec<_>>();
     let kw = |xs: &[(u32, Reg)]| {
         xs.iter()
-            .map(|(k, v)| (consts[*k as usize], base + *v))
+            .map(|(k, v)| (cst(*k), reg(*v)))
             .collect::<Vec<_>>()
     };
     match inst {
         Inst::LoadConst { dst, idx } => Inst::LoadConst {
             dst: r(dst),
-            idx: consts[*idx as usize],
+            idx: cst(*idx),
         },
         Inst::Move { dst, src } => Inst::Move {
             dst: r(dst),
@@ -358,7 +369,7 @@ fn rewrite(inst: &Inst, base: Reg, consts: &[u32]) -> Inst {
             dst: r(dst),
             found: r(found),
             obj: r(obj),
-            name: consts[*name as usize],
+            name: cst(*name),
         },
         Inst::ConstGet { dst, id } => Inst::ConstGet {
             dst: r(dst),
@@ -493,11 +504,11 @@ fn rewrite(inst: &Inst, base: Reg, consts: &[u32]) -> Inst {
         Inst::MethodRef { dst, recv, name } => Inst::MethodRef {
             dst: r(dst),
             recv: r(recv),
-            name: consts[*name as usize],
+            name: cst(*name),
         },
         Inst::SymbolProc { dst, name, method } => Inst::SymbolProc {
             dst: r(dst),
-            name: consts[*name as usize],
+            name: cst(*name),
             method: *method,
         },
         Inst::MakeArray { dst, items } => Inst::MakeArray {
@@ -542,7 +553,7 @@ fn rewrite(inst: &Inst, base: Reg, consts: &[u32]) -> Inst {
             parts: parts
                 .iter()
                 .map(|p| match p {
-                    StrPiece::Lit(i) => StrPiece::Lit(consts[*i as usize]),
+                    StrPiece::Lit(i) => StrPiece::Lit(cst(*i)),
                     StrPiece::Val(x) => StrPiece::Val(r(x)),
                 })
                 .collect(),
@@ -619,12 +630,12 @@ fn rewrite(inst: &Inst, base: Reg, consts: &[u32]) -> Inst {
             dst: r(dst),
             found: r(found),
             hash: r(hash),
-            key: consts[*key as usize],
+            key: cst(*key),
         },
         Inst::HashRest { dst, hash, keys } => Inst::HashRest {
             dst: r(dst),
             hash: r(hash),
-            keys: keys.iter().map(|k| consts[*k as usize]).collect(),
+            keys: keys.iter().map(|k| cst(*k)).collect(),
         },
         Inst::CatchException { dst } => Inst::CatchException { dst: r(dst) },
         Inst::CatchAny { dst } => Inst::CatchAny { dst: r(dst) },
