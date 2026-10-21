@@ -396,20 +396,24 @@ fn tuple_inference() {
 
 #[test]
 fn self_type_positions() {
-    // `self` (the type) where the method hands a value out is fine.
-    ok("module M\n  def ok1(&: (self) -> Nil) -> self = self\n  def ok2 -> Array[self] = [self]\n  def ok3(f: (self) -> Int) -> Int = f.call(self)\nend");
+    // `Self` where the method hands a value out is fine.
+    ok("module M\n  def ok1(&: (Self) -> Nil) -> Self = self\n  def ok2 -> Array[Self] = [self]\n  def ok3(f: (Self) -> Int) -> Int = f.call(self)\n  def ok4 -> Self? = nil\nend");
     // Where the caller hands one in, a subclass would get its parent's.
     for src in [
-        "module M\n  abstract def cmp(other: self) -> Int\nend",
-        "module M\n  def a(&: () -> self) -> Nil = nil\nend",
-        "module M\n  def b(x: Array[self]) -> Nil = nil\nend",
-        "class C\n  def c(f: ((self) -> Int) -> Int) -> Int = 0\nend",
+        "module M\n  abstract def cmp(other: Self) -> Int\nend",
+        "module M\n  def a(&: () -> Self) -> Nil = nil\nend",
+        "module M\n  def b(x: Array[Self]) -> Nil = nil\nend",
+        "class C\n  def c(f: ((Self) -> Int) -> Int) -> Int = 0\nend",
     ] {
         err(
             src,
-            "`self` cannot be the type of a value the caller passes in",
+            "`Self` cannot be the type of a value the caller passes in",
         );
     }
+    // The name is reserved.
+    err("class Self\nend", "`Self` is reserved");
+    err("Self = 1", "`Self` is reserved");
+    err("class C\n  data Self = (x: Int)\nend", "`Self` is reserved");
 }
 
 #[test]

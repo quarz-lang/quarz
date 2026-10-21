@@ -341,6 +341,12 @@ fn declarations() {
     );
     assert!(errors("for x in xs x end")[0].contains("`then` or `do`"));
     assert_eq!(sexp("for(1)"), "(call _ for 1)");
+    // `Self` is the self type; `self` is a value only.
+    assert_eq!(
+        sexp("def d -> Self = self"),
+        sexp("def d -> Self\n  self\nend")
+    );
+    assert!(!errors("def d -> self = self").is_empty());
     // The one-line form continues after a `|` that ends a line.
     assert_eq!(
         sexp("enum C = A |\n  B(x: Int) |\n  D"),

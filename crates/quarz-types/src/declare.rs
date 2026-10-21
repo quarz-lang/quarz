@@ -15,7 +15,7 @@ use crate::types::*;
 use crate::world::*;
 
 /// Reserved type parameter id standing for the receiver's type in method
-/// signatures (`-> self`).
+/// signatures (`-> Self`).
 pub const SELF_PARAM: TypeParamId = u32::MAX;
 
 /// A type-expression resolution scope.
@@ -356,6 +356,10 @@ impl<'ast> Declarer<'ast> {
         namespace: Option<ClassId>,
         span: Span,
     ) -> Option<ClassId> {
+        if path.names.last().is_some_and(|n| n == "Self") {
+            self.error("`Self` is reserved: it is the type of the receiver", span);
+            return None;
+        }
         // `class A::B` nests B in A (A must exist).
         let mut ns = namespace;
         for prefix in &path.names[..path.names.len() - 1] {
@@ -401,6 +405,10 @@ impl<'ast> Declarer<'ast> {
         member: Member,
         span: Span,
     ) {
+        if name == "Self" {
+            self.error("`Self` is reserved: it is the type of the receiver", span);
+            return;
+        }
         let table = match namespace {
             Some(ns) => &mut self.world.class_mut(ns).members,
             None => &mut self.world.top,
@@ -1224,7 +1232,7 @@ impl<'ast> Declarer<'ast> {
         for p in &def.params.list {
             if let Some(span) = p.ty.as_ref().and_then(|t| self_against_variance(t, false)) {
                 self.error(
-                    "`self` cannot be the type of a value the caller passes in (a parameter, or a block's result): a subclass would receive values of its parent; use a type parameter instead (`module M[T]` with `other: T`)",
+                    "`Self` cannot be the type of a value the caller passes in (a parameter, or a block's result): a subclass would receive values of its parent; use a type parameter instead (`module M[T]` with `other: T`)",
                     span,
                 );
             }
@@ -1549,11 +1557,11 @@ impl<'ast> Declarer<'ast> {
     }
 }
 
-/// Where `self` (the type) appears in a contravariant position of `t`,
+/// Where `Self` appears in a contravariant position of `t`,
 /// `t` itself being in a covariant position when `covariant`: a method
 /// parameter is contravariant, the parameters of a procedure type flip
-/// the position and its result keeps it. `&: (self) -> Nil` (the method
-/// hands `self` to the block) is fine; `other: self` and `&: () -> self`
+/// the position and its result keeps it. `&: (Self) -> Nil` (the method
+/// hands `self` to the block) is fine; `other: Self` and `&: () -> Self`
 /// (the caller hands one in) are not.
 fn self_against_variance(t: &TypeExpr, covariant: bool) -> Option<Span> {
     match &t.kind {

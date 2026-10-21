@@ -3106,6 +3106,14 @@ impl<'src> Parser<'src> {
                     vec![]
                 };
                 let span = self.span_from(start);
+                // `Self`: the receiver's class (where a method hands a
+                // value out; see 02-types).
+                if path.names.len() == 1 && path.names[0] == "Self" && args.is_empty() {
+                    return Ok(TypeExpr {
+                        span,
+                        kind: TypeExprKind::SelfType,
+                    });
+                }
                 if path.names.len() == 1 && path.names[0] == "Nothing" && args.is_empty() {
                     return Ok(TypeExpr {
                         span,
@@ -3171,13 +3179,6 @@ impl<'src> Parser<'src> {
                 }
                 let span = self.span_from(start);
                 Err(self.error_at("expected `->` after the parameter types", span))
-            }
-            T::Keyword(K::SelfKw) => {
-                self.bump();
-                Ok(TypeExpr {
-                    span: start,
-                    kind: TypeExprKind::SelfType,
-                })
             }
             _ => Err(self.error_expected("a type")),
         }

@@ -31,18 +31,18 @@ class Object
   native def nil? -> Bool
   native def class -> Class
   native def frozen? -> Bool
-  native def dup -> self
+  native def dup -> Self
   # Run a block with a receiver (`self.(...) -> R`) with `self` = this object.
-  native def instance_exec[R](&: self.() -> R) -> R
-  native def instance_exec[A, R](a: A, &: self.(A) -> R) -> R
-  native def instance_exec[A, B, R](a: A, b: B, &: self.(A, B) -> R) -> R
+  native def instance_exec[R](&: Self.() -> R) -> R
+  native def instance_exec[A, R](a: A, &: Self.(A) -> R) -> R
+  native def instance_exec[A, B, R](a: A, b: B, &: Self.(A, B) -> R) -> R
 
-  def tap(&: (self) -> Nil) -> self
+  def tap(&: (Self) -> Nil) -> Self
     yield self
     self
   end
 
-  def then[U](&: (self) -> U) -> U = yield(self)
+  def then[U](&: (Self) -> U) -> U = yield(self)
 end
 
 class Class
@@ -73,8 +73,8 @@ module Comparable[T]
   def >=(other: T) -> Bool = (self <=> other) >= 0
   def between?(min: T, max: T) -> Bool = self >= min && self <= max
 
-  native def clamp(min: T, max: T) -> self
-  native def clamp(range: Range[T]) -> self
+  native def clamp(min: T, max: T) -> Self
+  native def clamp(range: Range[T]) -> Self
 end
 
 class Int
@@ -324,13 +324,13 @@ class Bytes
     include Unshareable
 
     native def self.new -> Bytes::Builder
-    native def <<(byte: Int) -> self
-    native def <<(bytes: Bytes) -> self
-    native def <<(text: String) -> self
-    native def push(byte: Int) -> self
+    native def <<(byte: Int) -> Self
+    native def <<(bytes: Bytes) -> Self
+    native def <<(text: String) -> Self
+    native def push(byte: Int) -> Self
     native def size -> Int
     native def empty? -> Bool
-    native def clear -> self
+    native def clear -> Self
     native def to_bytes -> Bytes
     native def snapshot -> Bytes
     native def to_s -> String
@@ -507,21 +507,21 @@ class String
     include Unshareable
 
     native def self.new -> String::Builder
-    native def <<(piece: String) -> self
-    native def push(piece: String) -> self
-    native def append(piece: String) -> self
-    native def prepend(piece: String) -> self
-    native def insert(index: Int, piece: String) -> self
+    native def <<(piece: String) -> Self
+    native def push(piece: String) -> Self
+    native def append(piece: String) -> Self
+    native def prepend(piece: String) -> Self
+    native def insert(index: Int, piece: String) -> Self
     native def delete_at(index: Int) -> String?
-    native def replace(text: String) -> self
-    native def reverse! -> self
+    native def replace(text: String) -> Self
+    native def reverse! -> Self
     native def to_s -> String
     native def snapshot -> String
     def freeze -> String = to_s
     native def size -> Int
     native def bytesize -> Int
     native def empty? -> Bool
-    native def clear -> self
+    native def clear -> Self
   end
 end
 
@@ -1013,7 +1013,7 @@ class Enumerator[out T]
   native def each(&: (T) -> Nil) -> Nil
   native def next -> T
   native def peek -> T
-  native def rewind -> self
+  native def rewind -> Self
   native def size -> Int
   # Collects the block's results: `xs.map.with_index { |x, i| ... }`.
   native def with_index[U](&: (T, Int) -> U) -> Array[U]
@@ -1110,13 +1110,13 @@ class Array[out T]
 
     native def self.new -> Array::Builder[T]
     native def self.new(size: Int, fill: T) -> Array::Builder[T]
-    native def <<(value: T) -> self
-    native def push(value: T) -> self
+    native def <<(value: T) -> Self
+    native def push(value: T) -> Self
     native def pop -> T?
     native def shift -> T?
-    native def unshift(value: T) -> self
-    native def insert(index: Int, value: T) -> self
-    native def concat(other: Array[T]) -> self
+    native def unshift(value: T) -> Self
+    native def insert(index: Int, value: T) -> Self
+    native def concat(other: Array[T]) -> Self
     native def [](index: Int) -> T
     native def []?(index: Int) -> T?
     native def []=(index: Int, value: T) -> T
@@ -1126,34 +1126,34 @@ class Array[out T]
     native def length -> Int
     native def empty? -> Bool
     native def include?(value: Object) -> Bool
-    native def delete(value: T) -> self
+    native def delete(value: T) -> Self
     native def delete_at(index: Int) -> T?
-    native def clear -> self
-    native def reverse! -> self
-    native def sort! -> self
-    native def map!(&: (T) -> T) -> self
-    native def select!(&: (T) -> Object) -> self
-    native def reject!(&: (T) -> Object) -> self
+    native def clear -> Self
+    native def reverse! -> Self
+    native def sort! -> Self
+    native def map!(&: (T) -> T) -> Self
+    native def select!(&: (T) -> Object) -> Self
+    native def reject!(&: (T) -> Object) -> Self
     native def each(&: (T) -> Nil) -> Nil
     native def each_with_index(&: (T, Int) -> Nil) -> Nil
-    native def push(*values: T) -> self
+    native def push(*values: T) -> Self
     native def [](range: Range[Int]) -> Array[T]
     native def first(n: Int) -> Array[T]
     native def last(n: Int) -> Array[T]
     native def index(value: T) -> Int?
     native def join(separator: String = "") -> String
-    native def sort!(&: (T, T) -> Int) -> self
-    native def sort_by![U: Comparable[U]](&: (T) -> U) -> self
-    native def uniq! -> self
-    native def compact! -> self
-    native def shuffle! -> self
-    native def rotate!(count: Int = 1) -> self
-    native def fill(value: T) -> self
-    native def fill(value: T, start: Int, length: Int) -> self
-    native def replace(other: Array[T]) -> self
+    native def sort!(&: (T, T) -> Int) -> Self
+    native def sort_by![U: Comparable[U]](&: (T) -> U) -> Self
+    native def uniq! -> Self
+    native def compact! -> Self
+    native def shuffle! -> Self
+    native def rotate!(count: Int = 1) -> Self
+    native def fill(value: T) -> Self
+    native def fill(value: T, start: Int, length: Int) -> Self
+    native def replace(other: Array[T]) -> Self
     native def slice!(start: Int, length: Int) -> Array[T]
-    native def delete_if(&: (T) -> Object) -> self
-    native def keep_if(&: (T) -> Object) -> self
+    native def delete_if(&: (T) -> Object) -> Self
+    native def keep_if(&: (T) -> Object) -> Self
     def freeze -> Array[T] = to_a
     native def to_a -> Array[T]
     native def snapshot -> Array[T]
@@ -1238,10 +1238,10 @@ class Hash[K, out V]
     native def values -> Array[V]
     native def size -> Int
     native def empty? -> Bool
-    native def clear -> self
-    native def merge!(other: Hash[K, V]) -> self
-    native def merge!(other: Hash[K, V], &: (K, V, V) -> V) -> self
-    native def update(key: K, &: (V?) -> V) -> self
+    native def clear -> Self
+    native def merge!(other: Hash[K, V]) -> Self
+    native def merge!(other: Hash[K, V], &: (K, V, V) -> V) -> Self
+    native def update(key: K, &: (V?) -> V) -> Self
     native def each(&: ([K, V]) -> Nil) -> Nil
     native def each_pair(&: (K, V) -> Nil) -> Nil
     native def each_key(&: (K) -> Nil) -> Nil
@@ -1251,13 +1251,13 @@ class Hash[K, out V]
     native def include?(key: Object) -> Bool
     native def value?(value: V) -> Bool
     native def length -> Int
-    native def select!(&: (K, V) -> Object) -> self
-    native def reject!(&: (K, V) -> Object) -> self
-    native def delete_if(&: (K, V) -> Object) -> self
-    native def keep_if(&: (K, V) -> Object) -> self
-    native def transform_values!(&: (V) -> V) -> self
-    native def compact! -> self
-    native def replace(other: Hash[K, V]) -> self
+    native def select!(&: (K, V) -> Object) -> Self
+    native def reject!(&: (K, V) -> Object) -> Self
+    native def delete_if(&: (K, V) -> Object) -> Self
+    native def keep_if(&: (K, V) -> Object) -> Self
+    native def transform_values!(&: (V) -> V) -> Self
+    native def compact! -> Self
+    native def replace(other: Hash[K, V]) -> Self
     def freeze -> Hash[K, V] = to_h
     native def to_h -> Hash[K, V]
     native def snapshot -> Hash[K, V]
@@ -1321,21 +1321,21 @@ class Set[out T]
 
     native def self.new -> Set::Builder[T]
     native def add?(value: T) -> Bool
-    native def merge(items: Array[T]) -> self
-    native def merge(other: Set[T]) -> self
-    native def subtract(items: Array[T]) -> self
-    native def subtract(other: Set[T]) -> self
-    native def clear -> self
-    native def replace(other: Set[T]) -> self
-    native def select!(&: (T) -> Object) -> self
-    native def reject!(&: (T) -> Object) -> self
-    native def delete_if(&: (T) -> Object) -> self
-    native def keep_if(&: (T) -> Object) -> self
+    native def merge(items: Array[T]) -> Self
+    native def merge(other: Set[T]) -> Self
+    native def subtract(items: Array[T]) -> Self
+    native def subtract(other: Set[T]) -> Self
+    native def clear -> Self
+    native def replace(other: Set[T]) -> Self
+    native def select!(&: (T) -> Object) -> Self
+    native def reject!(&: (T) -> Object) -> Self
+    native def delete_if(&: (T) -> Object) -> Self
+    native def keep_if(&: (T) -> Object) -> Self
     native def length -> Int
     def freeze -> Set[T] = to_set
-    native def <<(value: T) -> self
-    native def add(value: T) -> self
-    native def delete(value: T) -> self
+    native def <<(value: T) -> Self
+    native def add(value: T) -> Self
+    native def delete(value: T) -> Self
     native def include?(value: Object) -> Bool
     native def size -> Int
     native def empty? -> Bool
@@ -1583,7 +1583,7 @@ class IO
   native def print(*args: Object) -> Nil
   native def printf(format: String, *args: Object) -> Nil
   native def write(*args: Object) -> Int
-  native def <<(value: Object) -> self
+  native def <<(value: Object) -> Self
   native def gets -> String
   native def gets? -> String?
   native def readline -> String
