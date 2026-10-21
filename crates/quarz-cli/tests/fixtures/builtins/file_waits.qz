@@ -1,15 +1,20 @@
 # Waiting for a file does not stop the other tasks: opening a FIFO for
 # reading waits for a writer, and reads wait for data, while the task
 # that writes to it keeps running (an open file reads and writes on a
-# helper thread whenever its buffer cannot answer).
+# helper thread whenever its buffer cannot answer). With the old
+# synchronous reads, opening the FIFO stopped every task: a deadlock.
 fifo = File.join(Dir.tmpdir, "quarz-fifo-#{Process.pid}")
 Process.run("mkfifo", fifo)
 log: Atom[Array[String]] = Atom.new([])
+# The writer goes on only when the reader says it has the first line:
+# the order does not depend on timing.
+got_first = Channel[Bool].new
 Task.scope do |s|
   reader = s.spawn do
     File.open(fifo) do |f|
       first = f.gets
       log.update { |l| l.push("read #{first}") }
+      got_first.send(true)
       f.gets
     end
   end
@@ -21,8 +26,8 @@ Task.scope do |s|
     File.open(fifo, "w") do |f|
       f.puts "one"
       f.flush
-      Task.sleep(200.ms)
-      log.update { |l| l.push("writer waited") }
+      got_first.receive
+      log.update { |l| l.push("writer heard back") }
       f.puts "two"
     end
   end
