@@ -13,7 +13,7 @@ The syntax of Quarz is based on Ruby, with only the minimal changes needed to "d
 - Symbols `:foo`, `:"with space"`, `%i[a b]` are interned at compile time.
 - Regexp literals `/.../` and `%r{...}` are compiled at compile time and become `Regexp` constants.
 - String-like literals are `"..."`, `'...'`, `%q()`, `%Q()`, `%()`, `%w[]`, `%i[]` and heredocs (`<<~EOS`, `<<-EOS`, `<<EOS`, `<<~'EOS'`). Ruby's `?a` character literal, `%W`/`%I` (interpolating arrays), `%s`, `%x` and backquotes are dropped.
-- Lexing stops at a line consisting only of `__END__`; the rest can be read as `DATA` (an `IO`).
+- Lexing stops at a line consisting only of `__END__`; the rest is ignored (reading it as `DATA`, an `IO`, is planned).
 
 ### Contextual keywords
 
@@ -30,9 +30,10 @@ The following words are treated as keywords **only in declaration positions**; e
 | `extension` | At the start of a line, followed by `extension Type` |
 | `using` | At the start of a line, followed by `using Constant` |
 | `type` | At the start of a line, followed by `type Constant =` |
-| `extern` | At the start of a line, followed by `extern def` / `extern "C"` |
+| `extern` | At the start of a line, followed by `extern def` / `extern "C"` (FFI is planned, §14) |
+| `for` | `for variable in` (a comprehension or a loop, §11) |
 
-Of Ruby's reserved words, `defined?`, `undef`, `redo`, `BEGIN`, `END`, `__ENCODING__` and `for` are dropped. The others (`alias`, `retry`, `yield`, `super`, `self`, `and`/`or`/`not`, etc.) are kept.
+Of Ruby's reserved words, `defined?`, `undef`, `redo`, `BEGIN`, `END`, and `__ENCODING__` are dropped (`for` returns as a contextual keyword with a different meaning, §11). The others (`alias`, `retry`, `yield`, `super`, `self`, `and`/`or`/`not`, etc.) are kept.
 
 ## 2. Program structure
 
@@ -85,7 +86,7 @@ puts acct          # => alice: 100
 Differences from Ruby:
 
 - **Fields must be declared.** They are declared with `@name: Type`, and the object layout is fixed at compile time. Assigning to an undeclared instance variable is a compile error.
-- **Fields are immutable by default.** They must be assigned exactly once inside `initialize` (definite assignment analysis). With an initializer (`@tags: Array[String] = []`) the assignment can be omitted.
+- **Fields are immutable by default.** They must be assigned inside `initialize` (definite assignment analysis), where they may be reassigned. With an initializer (`@tags: Array[String] = []`) the assignment can be omitted.
 - **A field is never seen before it is assigned.** A field whose type does not admit `nil` and that has no initializer (`var` or not) must be assigned on every path through `initialize`, and the object may not be used until all such fields are: no `self`, no call on the implicit receiver to a method of the class (or of a module it includes), no read of a field not yet assigned, and no block that does one of these. `raise` and functions such as `puts` are fine; a `return` must come after the assignments. A subclass assigns its own such fields *before* calling `super` (so a method the superclass's `initialize` calls, and the subclass overrides, sees them), and `super` assigns the inherited ones. A class with such a field of its own must define `initialize`. Field initializers run first, in declaration order, and may read the fields declared before them but not use the object otherwise. Hence a field always holds a value of its declared type (`@x: Float` is a `Float`, never `nil`), which compiled code relies on.
 - **Mutable fields are declared with `var`.** A class with a `var` field, or with a field of a non-Shareable type, is not Shareable ([03-data-model.md](03-data-model.md)).
 - **Classes cannot be reopened.** Defining a class with the same name twice is an error. Adding methods to an existing class is done with `extension` (§7).
@@ -121,7 +122,7 @@ end
 ```
 
 - Single inheritance. An `abstract class` cannot be instantiated and an `abstract def` has no body.
-- `override` is optional, but a method marked with it that does not exist in the parent is an error, and overriding a parent method without it is a warning.
+- `override` is optional, but a method marked with it that does not exist in the parent is an error, and overriding a parent method without it is a warning. (Currently `override` is accepted but not checked: both diagnostics are planned.)
 - Since the class hierarchy is fixed at compile time for the whole program, the compiler automatically turns calls to methods that are never overridden into static calls (no `final` needed).
 - `super` works as in Ruby. A bare `super` passes the same arguments.
 
@@ -147,7 +148,7 @@ in Point(x:, y:) then puts "#{x}, #{y}"
 end
 ```
 
-`data` generates the following automatically: fields (immutable), reader methods, `initialize`, `==`/`hash`, `to_s`/`inspect`, `with`, `deconstruct`/`deconstruct_keys`, `to_h`. To add methods, write them in an `is ... end` body (`is` is needed because a `data` declaration without a body does not end with `end`, so the parser could not otherwise tell a body from the next statement). `data` types cannot be inherited (they can `include`).
+`data` generates the following automatically: fields (immutable), reader methods, `initialize`, `==`/`hash`, `to_s`/`inspect`, `with`, `to_h`. (`deconstruct`/`deconstruct_keys` methods are not generated: patterns read the declared fields directly, §11.) To add methods, write them in an `is ... end` body (`is` is needed because a `data` declaration without a body does not end with `end`, so the parser could not otherwise tell a body from the next statement). `data` types cannot be inherited (they can `include`).
 
 
 ### Data values stored in place
@@ -235,7 +236,7 @@ using StringShout
 - `using` can be written in a file, inside a `class`/`module` body, or inside a method or block body, and is in effect until the end of that lexical scope (the statement list it appears in). `using M do ... end` / `using M { ... }` is an expression: the extensions are active in its body only and its value is the body's.
 - A block parameter can carry a `using`: `def where(&: () -> Cond using SqlDSL)`. A block literal written at a call site is then checked as if it began with `using SqlDSL` (nested blocks included), so a DSL applies its own extensions to the caller's block without the caller naming them; this is the static form of Ruby's `Proc#refined`. The `using` is not part of the procedure type: an existing procedure value passed with `&proc` is unaffected.
 - Resolution of extension methods is **entirely at compile time**. It is determined only by the static type of the receiver and the `using`s in effect at that position; there is no runtime table rewriting. In particular a module's extension does not take part in dynamic dispatch: a call through a supertype (`s.name` with `s: Shape` holding a `Circle`) runs the class's method even inside `using`, and outside `using` the extension is unreachable. The exception is conformance: the methods of a module the extension `include`s dispatch to the extension's implementations wherever the value goes, since a value typed as that module may have been made where the extension was visible. `&:name` uses the method resolved for the block's parameter type where it is written. An extension declared outside any module is active everywhere, in dynamic dispatch too.
-- If an extension defines a method with the same name as an existing one, the extension's method is statically chosen within that scope (the same "override only where visible" as Ruby's refinements). To prevent unintended overrides, a warning is issued unless `override` is present.
+- If an extension defines a method with the same name as an existing one, the extension's method is statically chosen within that scope (the same "override only where visible" as Ruby's refinements). To prevent unintended overrides, a warning is issued unless `override` is present (planned, as for classes in §3).
 - `include` inside an extension makes an existing type conform to a module after the fact (equivalent to Swift's `extension Int: Describable`). This is the only way to "make a class you did not write satisfy an interface".
 - Generic types can be extended too, with constraints on the type arguments: `extension Array[T: Describable]; def describe_all -> String = map(&:describe).join(", "); end`.
 
@@ -275,8 +276,8 @@ def name(a: Int, b: String = "x", *rest: Int, *, flag: Bool, limit: Int? = nil, 
 - A method whose return type is `Nil` discards the value of the last expression in its body (equivalent to `void`).
 - Methods of the same name can be **overloaded** by parameter count and types. Resolution is at compile time.
 - One-line definitions (endless def) such as `def x -> Int = @x` are allowed.
-- Operator methods (`+`, `[]`, `<=>`, `-@`, `==`, `call`, etc.) are defined with the same names as in Ruby. `[]=` can only be defined on mutable types. The unary operators are `-@`, `+@`, `~` and `!` (`!` and `~` may also be written `!@`/`~@`); `!x` calls the type's own `!` when it defines one and is the built-in negation (`true` for `nil` and `false`) otherwise.
-- `def self.create(...)` defines a class method. `private`/`protected`/`public` are written as in Ruby and checked at compile time.
+- Operator methods (`+`, `[]`, `<=>`, `-@`, `==`, `call`, etc.) are defined with the same names as in Ruby. `[]=` can only be defined on mutable types (not checked yet). The unary operators are `-@`, `+@`, `~` and `!` (`!` and `~` may also be written `!@`/`~@`); `!x` calls the type's own `!` when it defines one and is the built-in negation (`true` for `nil` and `false`) otherwise.
+- `def self.create(...)` defines a class method. `private`/`protected`/`public` are written as in Ruby and checked at compile time (`protected` is accepted but not enforced yet).
 - `alias new_name old_name` creates an alias statically.
 
 ### Blocks, `yield` and procedures
@@ -309,8 +310,8 @@ double = ->(x: Int) { x * 2 }          # a procedure (equivalent to a Ruby lambd
 [1, 2, 3].map(&:to_s)
 ```
 
-- Block parameter types are inferred from the type of the callee's block parameter. To be explicit, write `{ |x: Int| ... }`.
-- `yield` requires a block parameter (named or anonymous), since the block's type comes from its declaration; calling such a method without a block is a compile error, so an optional block is written `&block: ((Int) -> Nil)?`.
+- Block parameter types are inferred from the type of the callee's block parameter. To be explicit, write `{ |x: Int| ... }` (planned: annotated block parameters do not parse yet). Destructuring parameters (`|(a, b), c|`) are not supported; match in the body (`pair => [a, b]`).
+- `yield` requires a block parameter (named or anonymous), since the block's type comes from its declaration; calling such a method without a block is a compile error, so an optional block is written `&block: ((Int) -> Nil)?` (planned: today a method that takes a block must be given one).
 - A block that is only invoked with `yield` (a non-escaping block) is expanded by the compiler without allocating a closure. Only when `&block` **escapes**, by being stored in a variable or returned, does it become a heap-allocated closure.
 - `break`/`next`/`return` inside a block mean the same as in Ruby. `next` returns the block's value, `break` exits the call the block was passed to, and `return` returns from the enclosing method.
 - `->(x) { }` is the same as a Ruby lambda (strict arity, `return` returns from the procedure). `Proc.new` and `proc` are dropped; procedures are created with `->` or from blocks.
@@ -361,7 +362,7 @@ x = 1                  # inferred as Int
 x = "one"              # error: a local variable's type is fixed at declaration (reassignment must have the same type)
 y: Int? = nil          # with a type annotation
 y = 10                 # OK
-a, b = 1, 2            # multiple assignment (tuple)
+a, b = 1, 2            # multiple assignment (a tuple when one is expected; otherwise an Array of the union)
 first, *rest = [1, 2, 3]
 count += 1
 name ||= "anon"        # when name is T?
@@ -376,7 +377,7 @@ xs.push!(4)            # xs = xs.push(4): a method call with `!` rebinds its rec
 
 ## 11. Expressions and control structures
 
-Same as Ruby: `if`/`unless`/`elsif`/`else`, `while`/`until`, modifier forms, `case/when`, `case/in`, `begin/rescue/else/ensure`, `loop`, `break`/`next`/`retry`/`return`, `and`/`or`/`not`, `&&`/`||`/`!`, `..`/`...` (including endless ranges), `&.`, `=>` (rightward assignment / pattern), `in` (pattern test), string interpolation `#{}`, `__FILE__`/`__LINE__`/`__method__`.
+Same as Ruby: `if`/`unless`/`elsif`/`else`, `while`/`until`, modifier forms, `case/when`, `case/in`, `begin/rescue/else/ensure`, `loop`, `break`/`next`/`retry`/`return`, `and`/`or`/`not`, `&&`/`||`/`!`, `..`/`...` (including endless ranges), `&.`, `=>` (rightward assignment / pattern), `in` (pattern test), string interpolation `#{}`, `__FILE__`/`__LINE__`/`__method__` (a `String` in Quarz, a `Symbol` in Ruby).
 
 Different from Ruby:
 
@@ -443,7 +444,7 @@ in nil then ...
 end
 ```
 
-- Available patterns: value patterns, pin `^x`, alternatives `|`, array patterns (`*rest`, find pattern), hash patterns, `Const(...)`/`Const[...]` (`deconstruct`/`deconstruct_keys`), binding `=> name`, guards `if`/`unless`, `nil`.
+- Available patterns: value patterns, pin `^x`, alternatives `|`, array patterns (`*rest`, find pattern), hash patterns, `Const(...)`/`Const[...]` (matching the declared fields of the class, `data` or variant), binding `=> name`, guards `if`/`unless`, `nil`.
 - `case/in` on `data`/`enum`/union types checks exhaustiveness. If the patterns are not exhaustive, an `else` is required; without either exhaustiveness or `else` it is a compile error. `case/in` on a class hierarchy is open, so without an `else` it raises `NoMatchingPatternError` at runtime (with a warning).
 - The variables bound by a pattern and the narrowed type of the receiver are statically known within that branch.
 - `expr => Point(x:, y:)` raises on failure; `expr in Point` returns a `Bool` and narrows.
@@ -464,8 +465,8 @@ begin
 rescue ParseError => e
   warn "line #{e.line}: #{e.message}"
   retry if (tries += 1) < 3
-rescue IOError, SystemCallError
-  raise
+rescue IOError, SystemCallError => e
+  warn "I/O error: #{e.message}"
 else
   puts "ok"
 ensure
@@ -475,9 +476,9 @@ end
 value = risky rescue default   # the modifier form is also allowed
 ```
 
-- The exception hierarchy follows Ruby (`Exception` > `StandardError` > ...). The argument of `raise` is an exception class, an exception object, or a string (`RuntimeError`).
+- The exception hierarchy follows Ruby (`Exception` > `StandardError` > ...). The argument of `raise` is an exception class, an exception object, or a string (`RuntimeError`). A bare `raise` that re-raises the exception being handled is planned; today write `rescue E => e` and `raise e` (with `e` of a single exception class: an `e` caught as `A | B` is not accepted by `raise` yet).
 - Exceptions are handled within the task that raised them. The handling of exceptions that escape a task is described in [04-concurrency.md](04-concurrency.md).
-- Exception objects must be Shareable (because they propagate to other tasks).
+- Exception objects must be Shareable (because they propagate to other tasks; not enforced yet).
 - The type of `raise` is `Nothing` (the bottom type), so narrowing such as `x = arg || raise ArgumentError` is possible.
 
 ## 13. String, array and hash literals
@@ -512,4 +513,4 @@ end
 puts strlen("hello")
 ```
 
-C functions can be declared and called directly. There are FFI types such as `CString`, `Pointer[T]` and the fixed-width integers. C functions that may block are called inside `Task.blocking { }`.
+C functions can be declared and called directly. There are FFI types such as `CString`, `Pointer[T]` and the fixed-width integers. C functions that may block are called inside `Task.blocking { }`. (FFI is planned: the parser accepts `extern "C"` blocks, but the checker rejects them, and the FFI types do not exist yet.)

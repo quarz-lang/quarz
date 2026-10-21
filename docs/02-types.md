@@ -35,9 +35,9 @@ Writing `Array[Int]` in expression context yields an expression denoting the typ
 | `Nil` | `NilClass` | The only value is `nil` |
 | `Bool` | `TrueClass`/`FalseClass` | `true`/`false` |
 | `Int` | `Integer` | **Arbitrary precision**. Implemented as a 63-bit tagged integer that is promoted to a heap bignum on overflow (same behavior as Ruby) |
-| `Int8`..`Int64`, `UInt8`..`UInt64` | - | Fixed-width integers. Overflow raises an exception (always an exception, never undefined behavior or wrapping, even with `--release`) |
+| `Int8`..`Int64`, `UInt8`..`UInt64` | - | Fixed-width integers (*planned*). Overflow raises an exception (always an exception, never undefined behavior or wrapping, even with `--release`) |
 | `Float` | `Float` | IEEE 754 double precision |
-| `Float32` | - | For FFI and numerical computation |
+| `Float32` | - | For FFI and numerical computation (*planned*) |
 | `String` | `String` | Immutable. Always UTF-8 |
 | `Bytes` | String (ASCII-8BIT) | Immutable byte sequence |
 | `Symbol` | `Symbol` | |
@@ -47,12 +47,12 @@ Writing `Array[Int]` in expression context yields an expression denoting the typ
 | `Range[T]` | `Range` | |
 | `Regexp`, `MatchData` | Same names | |
 | `Proc` = `(A...) -> R` | `Proc` | Generic name for procedure types |
-| `Enumerator[T]`, `Lazy[T]` | Same names | External iterators |
+| `Enumerator[T]`, `Lazy[T]` | Same names | External iterators (`Lazy[T]` is *planned*) |
 | `Channel[T]`, `Task[T]`, `Atom[T]`, `Scope` | - | Concurrency primitives |
 | `Array::Builder[T]`, `Hash::Builder[K, V]`, `String::Builder`, `Bytes::Builder`, `Set::Builder[T]` | Mutable `Array` etc. | Mutable, task-local |
-| `Class[T]` | `Class` | The type of `obj.class`. Very limited reflection such as `name` |
+| `Class` | `Class` | The type of `obj.class` (written without type arguments). Very limited reflection such as `name` |
 
-Numeric operations have the same meaning as in Ruby: `7 / 2` is `3`, `-7 / 2` is `-4`, `7 % -2` is `-1`, `1 + 1.5` is `2.5`. Mixed operations are defined as overloads such as `Int#+(Float) -> Float`. Fixed-width integers and `Int` are never mixed implicitly; convert explicitly with `to_i`/`to_i64` and friends.
+Numeric operations have the same meaning as in Ruby: `7 / 2` is `3`, `-7 / 2` is `-4`, `7 % -2` is `-1`, `1 + 1.5` is `2.5`. Mixed operations are defined as overloads such as `Int#+(Float) -> Float`. Fixed-width integers (planned) and `Int` will never be mixed implicitly; conversions will be explicit, with `to_i`/`to_i64` and friends.
 
 ## 3. Generics
 
@@ -73,10 +73,10 @@ end
 ```
 
 - Classes, modules, `data`, `enum` and methods can have type parameters.
-- Constraints are written as `T: Comparable[T]`. Multiple constraints: `T: Comparable[T] & Hashable`.
-- Variance is declared with `out` (covariant) / `in` (contravariant); unmarked parameters are invariant. The compiler checks, for example, that a covariant type parameter does not appear in a parameter position of a method.
+- Constraints are written as `T: Comparable[T]`. Multiple constraints: `T: Comparable[T] & Describable` (with any modules).
+- Variance is declared with `out` (covariant) / `in` (contravariant); unmarked parameters are invariant. The compiler checks, for example, that a covariant type parameter does not appear in a parameter position of a method (planned: today variance is used for subtyping, and the positions are not checked).
 - Type arguments of methods are inferred at the call site. To be explicit: `max_by[Person, Int](people) { |p| p.age }`.
-- The implementation defaults to **monomorphization**: specialized code is generated for each unboxed type such as `Int`/`Float`, while reference types share code. The interpreter follows the same policy.
+- The implementation defaults to **monomorphization**: specialized code is generated for each unboxed type such as `Int`/`Float`, while reference types share code. The interpreter follows the same policy. (Planned: today generic code is compiled once, over tagged values.)
 
 ## 4. Union Types and Nil Safety
 
@@ -103,19 +103,20 @@ u = find(1) || raise NotFound    # raise has type Nothing, so u is User
 Inference is **bidirectional and local**. Since parameter types are known, inference is confined to a single method body; there is no whole-program inference (whole-program inference as in Crystal is not adopted, because compile time grows superlinearly as the code base grows).
 
 - **Local variables**: the type of the first assignment. `x = 1` gives `Int`.
-- **Return type**: when omitted, the type of the body (the union of the `return` types and the last expression). For methods that call themselves recursively, `abstract def`, `extern def`, and methods exported to `.qzi` as public API, an uninferable return type is an error and an annotation is required.
-- **Empty literals**: `[]`, `{}` and `Set[]` follow the expected type if there is one; otherwise they carry a type variable such as `Array[?T]` that is unified within the same statement.
+- **Return type**: when omitted, the type of the body (the union of the `return` types and the last expression). For methods that call themselves recursively, `abstract def`, `extern def`, and methods exported to `.qzi` as public API (planned), an uninferable return type is an error and an annotation is required.
+- **Empty literals**: `[]`, `{}` and `Set[]` follow the expected type if there is one; otherwise they carry a type variable such as `Array[?T]`, fixed by the later uses in the same method.
 
 ```ruby
 counts = words.reduce({}) { |h, w| h.put(w, h.fetch(w, 0) + 1) }   # {} is Hash[String, Int]
 names: Array[String] = []          # from the expected type
-xs = []                            # error: element type undetermined. Write xs: Array[Int] = []
+xs = []                            # Array[?T] for now
+xs = xs.push(1)                    # ... fixed here: xs is Array[Int]
 ```
 
 - **Block parameters**: determined by the type of the `&block` they are passed to. In `[1, 2].map { |x| x * 2 }`, `x` is `Int`.
 - **Type arguments of generic methods**: determined by unification from the argument and block types.
-- **Numeric literals**: `1` is treated as a `Float` when the expected type is `Float`, and as an `Int32` when the expected type is `Int32`. The defaults are `Int`/`Float`.
-- **Tuples and arrays**: `[1, "a"]` is a tuple if the expected type is a tuple, otherwise `Array[Int | String]`. `return a, b` and the right-hand side of a multiple assignment are tuples.
+- **Numeric literals**: `1` is treated as a `Float` when the expected type is `Float` (and as an `Int32` when the expected type is `Int32`, once fixed-width integers exist). The defaults are `Int`/`Float`.
+- **Tuples and arrays**: `[1, "a"]` is a tuple if the expected type is a tuple, otherwise `Array[Int | String]`. `return a, b` and the right-hand side of a multiple assignment follow the same rule: a tuple when a tuple type is expected, otherwise an array.
 
 ## 6. Flow Typing (Narrowing)
 
@@ -141,9 +142,9 @@ while (line = io.gets?)             # line: String (inside the loop)
 end
 ```
 
-Conditions that narrow: truthiness tests (`if x`), `x.nil?`, `x.is_a?(T)`, `x in Pattern`, `case/in`, `==` comparisons against singletons (`nil`/`true`/`false`/data-less enum variants), combinations with `&&`/`||`/`!`/`and`/`or`/`not`, early exits via `return`/`raise`/`next`/`break`, and assignment.
+Conditions that narrow: truthiness tests (`if x`), `x.nil?`, `x.is_a?(T)`, `x in Pattern` (in the true branch only), `case/in`, `==`/`!=` comparisons against `nil` (against `true`/`false`/data-less enum variants is planned), combinations with `&&`/`||`/`!`/`and`/`or`/`not`, early exits via `return`/`raise`/`next`/`break`, and assignment.
 
-What gets narrowed: **local variables, immutable fields (`@x`), and `data` fields**. `var` fields and the results of arbitrary method calls (`user.name`) are not narrowed, because they may change in between; assign them to a local variable first. Since the default design has no mutable fields, most Ruby idioms such as `@x && @x.foo` work as is.
+What gets narrowed: **local variables, immutable fields (`@x`), and `data` fields** (when read as `@name` in the `data` body; reader calls such as `p.name` are method calls). `var` fields and the results of arbitrary method calls (`user.name`) are not narrowed, because they may change in between; assign them to a local variable first. Since the default design has no mutable fields, most Ruby idioms such as `@x && @x.foo` work as is.
 
 ## 7. Casts
 
@@ -158,7 +159,7 @@ Downcasts are checked at run time. Unsafe reinterpreting casts exist only in the
 ## 8. Method Resolution and Overloading
 
 - Calls are resolved by the static type of the receiver. The candidates are the methods of that class, its superclasses, the modules it includes, and the `extension`s in effect in the scope.
-- When a method name is overloaded, the most specific overload is chosen by the number of arguments, keywords and types. Ambiguity is an error.
+- When a method name is overloaded, the most specific overload is chosen by the number of arguments, keywords and types. Ambiguity is an error. (Currently the first declared overload that matches is chosen, and ambiguity is not reported.)
 - Methods that may be overridden in a subclass become virtual calls (vtable). Because the class hierarchy is fixed for the whole program, methods without overrides are replaced by static calls at link time (class hierarchy analysis).
 - Calls on a receiver of module type are interface calls (a per-class module implementation table).
 - `respond_to?` is folded to a compile-time constant. `send`/`public_send`/`method`/`define_method`/`method_missing`/`instance_variable_get` do not exist.
@@ -171,9 +172,10 @@ Downcasts are checked at run time. Unsafe reinterpreting casts exist only in the
 class Channel[T: Shareable]
 class Atom[T: Shareable]
 def spawn[T: Shareable](&block: () -> T) -> Task[T]   # the variables captured by the block must be Shareable too
+                                                       # (the bound on T is not enforced yet)
 ```
 
-Users cannot write `include Shareable`; it is determined by the structure of the type.
+Users cannot write `include Shareable`; it is determined by the structure of the type. (Currently `include Shareable` is accepted and ignored; an error is planned.)
 
 ## 10. Alternatives Not Adopted
 
