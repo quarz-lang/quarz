@@ -498,7 +498,10 @@ impl Interp {
                     Step::Jump(*els)
                 }
             }
-            Term::Return(r) => Step::Done(Ok(regs[*r as usize].clone())),
+            // The function ends here: its result is moved out.
+            Term::Return(r) => {
+                Step::Done(Ok(std::mem::replace(&mut regs[*r as usize], Value::Nil)))
+            }
             Term::Raise(r) => self.unwind(b, Flow::Raise(regs[*r as usize].clone()), pending),
             Term::BreakOut(r) => self.unwind(
                 b,

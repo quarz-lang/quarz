@@ -101,16 +101,6 @@ pub fn defs(inst: &Inst) -> Vec<Reg> {
     inst.defs()
 }
 
-/// The registers an instruction reads.
-pub fn uses(inst: &Inst) -> Vec<Reg> {
-    inst.uses()
-}
-
-/// The register a terminator reads, if any.
-pub fn term_uses(term: &Term) -> Option<Reg> {
-    term.uses()
-}
-
 /// Instructions whose generated code reads no register's home except
 /// through the states (so unboxed registers need no write-back first).
 pub fn reads_no_home(inst: &Inst) -> bool {
@@ -146,83 +136,8 @@ pub fn may_unwind(inst: &Inst) -> bool {
     )
 }
 
-fn successors(b: &Block) -> Vec<BlockId> {
-    let mut v = match &b.term {
-        Term::Jump(t) => vec![*t],
-        Term::Branch { then, els, .. } => vec![*then, *els],
-        _ => vec![],
-    };
-    if let Some(h) = b.handler {
-        v.push(h.block);
-    }
-    v
-}
-
-/// Liveness: `result[b][i][r]` says whether register `r` may be read
-/// before being written from instruction `i` of block `b` on (index
-/// `insts.len()` stands for the terminator). A block's handler can be
-/// entered from any of its instructions, so what the handler reads is
-/// live throughout the block.
-pub fn liveness(f: &Function) -> Vec<Vec<Vec<bool>>> {
-    let nregs = f.nregs as usize;
-    let nblocks = f.blocks.len();
-    let mut live_in: Vec<Vec<bool>> = vec![vec![false; nregs]; nblocks];
-    let uses_defs: Vec<Vec<(Vec<Reg>, Vec<Reg>)>> = f
-        .blocks
-        .iter()
-        .map(|blk| blk.insts.iter().map(|i| (uses(i), defs(i))).collect())
-        .collect();
-    let or_into = |live: &mut [bool], other: &[bool]| {
-        for (l, v) in live.iter_mut().zip(other) {
-            *l |= *v;
-        }
-    };
-    // The live set at the end of a block, then stepping backwards.
-    let walk = |bi: usize, live_in: &[Vec<bool>], visit: &mut dyn FnMut(&[bool])| {
-        let blk = &f.blocks[bi];
-        let mut live = vec![false; nregs];
-        for s in successors(blk) {
-            or_into(&mut live, &live_in[s as usize]);
-        }
-        if let Some(r) = term_uses(&blk.term) {
-            live[r as usize] = true;
-        }
-        let handler: Option<&Vec<bool>> = blk.handler.map(|h| &live_in[h.block as usize]);
-        visit(&live);
-        for (u, d) in uses_defs[bi].iter().rev() {
-            for r in d {
-                live[*r as usize] = false;
-            }
-            for r in u {
-                live[*r as usize] = true;
-            }
-            if let Some(h) = handler {
-                or_into(&mut live, h);
-            }
-            visit(&live);
-        }
-    };
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for bi in (0..nblocks).rev() {
-            let mut last = vec![false; nregs];
-            walk(bi, &live_in, &mut |l| last.clone_from_slice(l));
-            if last != live_in[bi] {
-                live_in[bi] = last;
-                changed = true;
-            }
-        }
-    }
-    (0..nblocks)
-        .map(|bi| {
-            let mut per_inst = Vec::with_capacity(f.blocks[bi].insts.len() + 1);
-            walk(bi, &live_in, &mut |l| per_inst.push(l.to_vec()));
-            per_inst.reverse();
-            per_inst
-        })
-        .collect()
-}
+pub use quarz_ir::live::liveness;
+use quarz_ir::live::successors;
 
 /// The shape of a function's typed entry: parameters and result passed
 /// as machine values (see `Gen::typed`).

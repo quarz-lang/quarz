@@ -1299,4 +1299,5 @@ pub fn decode(bytes: &[u8]) -> Result<Module, String> {
 }
 
 pub mod dump;
+pub mod live;
 pub mod shake;

@@ -169,6 +169,7 @@ pub(crate) fn gen_function<B: Builder>(
     // entry, and an SSA variable per register for each kind.
     let entry_states = unbox::analyze(f, methods, classes, builtin, typed_all);
     let live = unbox::liveness(f);
+    let last_reads = quarz_ir::live::last_reads_from(f, &live);
     let nregs_usize = f.nregs.max(1) as usize;
     let ivars: Vec<B::Var> = (0..nregs_usize).map(|_| b.declare_var(Ty::I64)).collect();
     let fvars: Vec<B::Var> = (0..nregs_usize).map(|_| b.declare_var(Ty::F64)).collect();
@@ -433,6 +434,7 @@ pub(crate) fn gen_function<B: Builder>(
         states: vec![State::NonHeap; nregs_usize],
         nregs: nregs_usize,
         live: &live,
+        last_reads: &last_reads,
         typed_all,
         ivars,
         fvars,
@@ -1111,8 +1113,11 @@ struct Gen<'a, B: Builder> {
     classes: &'a [RtClass],
     builtin: &'a RtBuiltin,
     callees: HashMap<FuncId, B::Func>,
-    /// Liveness per block and instruction (see `unbox::liveness`).
+    /// Liveness per block and instruction (see `quarz_ir::live`).
     live: &'a [Vec<Vec<bool>>],
+    /// The registers each instruction reads for the last time
+    /// (`quarz_ir::live::last_reads`, what the interpreter moves too).
+    last_reads: &'a [Vec<Vec<Reg>>],
     /// What is known about each register here (see `unbox`).
     states: Vec<State>,
     nregs: usize,
@@ -1230,15 +1235,13 @@ impl<B: Builder> Gen<'_, B> {
 
     /// `*dst = regs[src]` where `dst` holds nil: inline for values without
     /// reference counts, through the runtime for the others.
-    /// Whether `src`, read by instruction `index` of `block` (`inst`),
-    /// can be moved out instead of copied: it may hold a heap value, this
-    /// is its only read in the instruction, and nothing reads it after.
-    fn movable(&self, inst: &Inst, src: Reg, block: u32, index: u32) -> bool {
+    /// Whether `src`, read by instruction `index` of `block`, can be
+    /// moved out instead of copied: it may hold a heap value (a boxed
+    /// register; the rest is this backend's business), and this is its
+    /// last read (QIR's answer, shared with the interpreter).
+    fn movable(&self, _inst: &Inst, src: Reg, block: u32, index: u32) -> bool {
         self.states[src as usize] == State::Unknown
-            && inst.uses().iter().filter(|&&u| u == src).count() == 1
-            && !self.live[block as usize]
-                .get(index as usize + 1)
-                .is_some_and(|l| l[src as usize])
+            && self.last_reads[block as usize][index as usize].contains(&src)
     }
 
     /// `*dst = regs[src]`, the value moved out of the register (whose
