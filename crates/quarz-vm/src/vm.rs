@@ -1019,6 +1019,7 @@ impl Interp {
                 recv,
                 args,
                 kw,
+                unused,
             } => {
                 if kw.is_empty() && args.len() <= 2 {
                     // The arguments by reference: the fast paths clone
@@ -1029,7 +1030,9 @@ impl Interp {
                     match recv {
                         VarLoc::Reg(r) => {
                             if self.owned_fast(*method, &mut regs[*r as usize], &refs) {
-                                regs[*dst as usize] = regs[*r as usize].clone();
+                                if !*unused {
+                                    regs[*dst as usize] = regs[*r as usize].clone();
+                                }
                                 return Ok(());
                             }
                         }
@@ -1038,9 +1041,11 @@ impl Interp {
                                 let mut fields = o.fields.borrow_mut();
                                 if let Some(slot) = fields.get_mut(*index as usize) {
                                     if self.owned_fast(*method, slot, &refs) {
-                                        let v = slot.clone();
-                                        drop(fields);
-                                        regs[*dst as usize] = v;
+                                        if !*unused {
+                                            let v = slot.clone();
+                                            drop(fields);
+                                            regs[*dst as usize] = v;
+                                        }
                                         return Ok(());
                                     }
                                 }
@@ -1081,16 +1086,17 @@ impl Interp {
                 };
                 match self.invoke_owned(*method, old, pos, kw) {
                     Ok(v) => {
+                        let v = if *unused {
+                            v
+                        } else {
+                            regs[*dst as usize] = v.clone();
+                            v
+                        };
                         match recv {
-                            VarLoc::Reg(r) => regs[*r as usize] = v.clone(),
-                            VarLoc::Frame { depth, slot } => {
-                                self.frame(act).set(*depth, *slot, v.clone())
-                            }
-                            VarLoc::Field { obj, index } => {
-                                put_field(regs, *obj, *index, v.clone())
-                            }
+                            VarLoc::Reg(r) => regs[*r as usize] = v,
+                            VarLoc::Frame { depth, slot } => self.frame(act).set(*depth, *slot, v),
+                            VarLoc::Field { obj, index } => put_field(regs, *obj, *index, v),
                         }
-                        regs[*dst as usize] = v;
                     }
                     Err((e, old)) => {
                         match recv {
@@ -1405,7 +1411,7 @@ impl Interp {
             Inst::ArrayPush { arr, src } => {
                 let v = regs[*src as usize].clone();
                 match &mut regs[*arr as usize] {
-                    Value::Array(a) => Rc::make_mut(a).push(v),
+                    Value::Array(a) => crate::value::unique_mut(a).push(v),
                     other => {
                         return Err(self.err_type(&format!(
                             "expected an array, got {}",

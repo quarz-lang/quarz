@@ -1,0 +1,13 @@
+# Updates of a collection something else still refers to copy it, once
+# each (the test expects exactly 3).
+a = [1, 2]
+b = a
+a = a.push(3)
+h = {"x" => 1}
+g = h
+h = h.put("y", 2)
+s: Set[Int] = Set.new
+s = s.add(1)
+t = s
+s = s.add(2)
+p a, b, h, g, s.size, t.size

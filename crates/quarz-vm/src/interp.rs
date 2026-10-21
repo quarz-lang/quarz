@@ -657,6 +657,12 @@ impl Interp {
         self.root_task.set(Some(root.id));
         let code = self.run_loop(&root);
         self.flush();
+        if std::env::var_os("QUARZ_COUNT_COPIES").is_some() {
+            eprintln!(
+                "quarz: {} copies of shared collections",
+                crate::value::copies()
+            );
+        }
         code
     }
 
@@ -1611,7 +1617,7 @@ impl Interp {
         let m = Some(mid);
         match (slot, args) {
             (Value::Array(a), [v]) if m == o.array_push => {
-                Rc::make_mut(a).push((*v).clone());
+                crate::value::unique_mut(a).push((*v).clone());
                 true
             }
             (Value::Array(a), [Value::Int(i), v]) if m == o.array_set => {
@@ -1620,23 +1626,23 @@ impl Interp {
                 if i < 0 || i >= n {
                     return false;
                 }
-                Rc::make_mut(a).set(i as usize, (*v).clone());
+                crate::value::unique_mut(a).set(i as usize, (*v).clone());
                 true
             }
             (Value::Hash(h), [k, v]) if m == o.hash_put => {
-                Rc::make_mut(h).insert((*k).clone(), (*v).clone());
+                crate::value::unique_mut(h).insert((*k).clone(), (*v).clone());
                 true
             }
             (Value::Hash(h), [k]) if m == o.hash_delete => {
-                Rc::make_mut(h).shift_remove(k);
+                crate::value::unique_mut(h).shift_remove(k);
                 true
             }
             (Value::Set(s), [v]) if m == o.set_add => {
-                Rc::make_mut(s).insert((*v).clone());
+                crate::value::unique_mut(s).insert((*v).clone());
                 true
             }
             (Value::Set(s), [v]) if m == o.set_delete => {
-                Rc::make_mut(s).shift_remove(*v);
+                crate::value::unique_mut(s).shift_remove(*v);
                 true
             }
             _ => false,

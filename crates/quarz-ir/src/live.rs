@@ -172,6 +172,7 @@ pub fn own_dying_receivers(f: &mut Function, in_place: &[bool]) {
                 recv: crate::VarLoc::Reg(*r),
                 args: std::mem::take(args),
                 kw: std::mem::take(kw),
+                unused: false,
             };
         }
     }
@@ -270,6 +271,8 @@ pub fn mark_moves(f: &mut Function) {
                         src: *src,
                     };
                 }
+                // A result nothing reads is not stored (see the field).
+                Inst::OwnedCall { dst, unused, .. } => *unused = !has(&live, *dst),
                 Inst::Call {
                     recv,
                     args,

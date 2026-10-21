@@ -1814,6 +1814,7 @@ impl<'a> FnBuilder<'a> {
                         recv: loc,
                         args: a.pos,
                         kw: a.kw,
+                        unused: false,
                     });
                     return dst;
                 }
@@ -1855,6 +1856,7 @@ impl<'a> FnBuilder<'a> {
                         recv: VarLoc::Field { obj, index: slot },
                         args: a.pos,
                         kw: a.kw,
+                        unused: false,
                     });
                     return dst;
                 }
@@ -2594,6 +2596,7 @@ impl<'a> FnBuilder<'a> {
                                         recv: loc,
                                         args: a.pos,
                                         kw: a.kw,
+                                        unused: false,
                                     });
                                     return dst;
                                 }
@@ -2658,6 +2661,7 @@ impl<'a> FnBuilder<'a> {
                                         recv: VarLoc::Field { obj, index: slot },
                                         args: a.pos,
                                         kw: a.kw,
+                                        unused: false,
                                     });
                                     return dst;
                                 }

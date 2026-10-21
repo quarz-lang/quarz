@@ -95,7 +95,7 @@ pub fn register_owned(m: &mut super::Registry<OwnedNativeFn>) {
 fn owned_update(recv: Value, f: impl FnOnce(&mut Vec<Value>)) -> Result<Value, (Flow, Value)> {
     match recv {
         Value::Array(mut rc) => {
-            Rc::make_mut(&mut rc).with_values(f);
+            crate::value::unique_mut(&mut rc).with_values(f);
             Ok(Value::Array(rc))
         }
         other => Err((Flow::Raise(Value::Nil), other)),
@@ -105,7 +105,7 @@ fn owned_update(recv: Value, f: impl FnOnce(&mut Vec<Value>)) -> Result<Value, (
 fn owned_hash_update(recv: Value, f: impl FnOnce(&mut HashData)) -> Result<Value, (Flow, Value)> {
     match recv {
         Value::Hash(mut rc) => {
-            f(Rc::make_mut(&mut rc));
+            f(crate::value::unique_mut(&mut rc));
             Ok(Value::Hash(rc))
         }
         other => Err((Flow::Raise(Value::Nil), other)),
@@ -115,7 +115,7 @@ fn owned_hash_update(recv: Value, f: impl FnOnce(&mut HashData)) -> Result<Value
 fn owned_set_update(recv: Value, f: impl FnOnce(&mut ValueSet)) -> Result<Value, (Flow, Value)> {
     match recv {
         Value::Set(mut rc) => {
-            f(Rc::make_mut(&mut rc));
+            f(crate::value::unique_mut(&mut rc));
             Ok(Value::Set(rc))
         }
         other => Err((Flow::Raise(Value::Nil), other)),
@@ -1029,7 +1029,7 @@ pub(super) fn update(interp: &Interp, recv: &Value, f: impl FnOnce(&mut Vec<Valu
     let mut rc = arr_data(interp, recv)?.clone();
     // `recv` holds one reference, `rc` another; `make_mut` copies when a
     // third party holds the array.
-    Rc::make_mut(&mut rc).with_values(f);
+    crate::value::unique_mut(&mut rc).with_values(f);
     Ok(Value::Array(rc))
 }
 
@@ -1039,7 +1039,7 @@ pub(super) fn hash_update(
     f: impl FnOnce(&mut ValueMap),
 ) -> EvalResult {
     let mut rc = hash(interp, recv)?.clone();
-    Rc::make_mut(&mut rc).with_values(f);
+    crate::value::unique_mut(&mut rc).with_values(f);
     Ok(Value::Hash(rc))
 }
 
@@ -1051,7 +1051,7 @@ pub(super) fn hash_update_data(
     f: impl FnOnce(&mut HashData),
 ) -> EvalResult {
     let mut rc = hash(interp, recv)?.clone();
-    f(Rc::make_mut(&mut rc));
+    f(crate::value::unique_mut(&mut rc));
     Ok(Value::Hash(rc))
 }
 
@@ -1061,7 +1061,7 @@ pub(super) fn set_update(
     f: impl FnOnce(&mut ValueSet),
 ) -> EvalResult {
     let mut rc = set(interp, recv)?.clone();
-    f(Rc::make_mut(&mut rc));
+    f(crate::value::unique_mut(&mut rc));
     Ok(Value::Set(rc))
 }
 
@@ -1460,7 +1460,7 @@ fn hash_merge(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let other = other.as_map();
     let mut rc = hash(interp, recv)?.clone();
     let block = args.block.clone();
-    let map = Rc::make_mut(&mut rc).values_mut();
+    let map = crate::value::unique_mut(&mut rc).values_mut();
     for (k, v) in other.iter() {
         let merged = match (map.get(k), &block) {
             (Some(existing), Some(b)) => {

@@ -3321,6 +3321,7 @@ impl<B: Builder> Gen<'_, B> {
                 recv,
                 args,
                 kw,
+                ..
             } if kw.is_empty() => {
                 // A result nobody reads (`xs = xs.push(v)` as a statement)
                 // is not stored: one clone and one release fewer.

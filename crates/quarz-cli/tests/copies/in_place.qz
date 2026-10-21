@@ -1,0 +1,57 @@
+# Updates that must happen in place: each collection below has a single
+# reference when it is updated, so no update copies it (the test runs
+# this with QUARZ_COUNT_COPIES and expects 0). A copy here means a value
+# was left shared: a register or slot still holding the old reference,
+# an argument copied instead of moved.
+n = 2000
+
+# A local variable, in a loop and in a block.
+acc: Array[Int] = []
+i = 0
+while i < n
+  acc = acc.push(i)
+  i += 1
+end
+n.times { |k| acc = acc.push(k) }
+acc.push!(0)
+
+# Through methods that return the updated collection.
+def add(xs: Array[Int], v: Int) -> Array[Int] = xs.push(v)
+def add_twice(xs: Array[Int], v: Int) -> Array[Int]
+  xs = xs.push(v)
+  xs.push(v)
+end
+ys: Array[Int] = []
+n.times { |k| ys = add(ys, k) }
+n.times { |k| ys = add_twice(ys, k) }
+
+# Inside a method, with an index update.
+def fill(n: Int) -> Array[Int]
+  zs: Array[Int] = []
+  n.times { |k| zs = zs.push(k) }
+  n.times { |k| zs = zs.set(k, k * 2) }
+  zs
+end
+zs = fill(n)
+
+# Hashes and sets.
+h: Hash[Int, Int] = {}
+n.times { |k| h = h.put(k, k * 2) }
+n.times { |k| h = h.delete(k) if k.even? }
+names: Hash[String, Int] = {}
+n.times { |k| names = names.put("k#{k}", k) }
+s: Set[Int] = Set.new
+n.times { |k| s = s.add(k % 100) }
+
+# A field.
+class Log
+  var @lines: Array[String] = []
+  attr_reader :lines
+  def add(line: String) -> Nil
+    @lines = @lines.push(line)
+  end
+end
+log = Log.new
+n.times { |k| log.add("line #{k}") }
+
+p acc.size, ys.size, zs.size, h.size, names.size, s.size, log.lines.size

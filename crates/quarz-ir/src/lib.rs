@@ -403,6 +403,11 @@ pub enum Inst {
         recv: VarLoc,
         args: Vec<Reg>,
         kw: Vec<(u32, Reg)>,
+        /// Nothing reads `dst` after (`live::mark_moves`): the result is
+        /// not stored there, where a second reference would keep the
+        /// collection shared and make its next update copy it.
+        #[serde(default)]
+        unused: bool,
     },
     IsNil {
         dst: Reg,
