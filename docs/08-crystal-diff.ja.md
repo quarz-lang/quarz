@@ -11,7 +11,7 @@ Crystal は Quarz に最も近い言語です。Ruby の構文を持つ、静的
 | 項目 | Crystal | Quarz |
 |---|---|---|
 | 型注釈の書き方 | `x : Int32`、`def f(a : Int32) : Bool` | `x: Int`、`def f(a: Int) -> Bool`(コロンの前に空白を入れず、戻り値の型は `->`) |
-| メソッドの引数の型 | 省略できる。型のないメソッドは引数の型の組み合わせごとに具体化される(全体推論) | 必須(既定値から型が決まる場合を除く)。戻り値の型と局所変数は推論する。これで分割コンパイルと速い型検査を保つ([02-types.ja.md](02-types.ja.md) §10) |
+| メソッドの引数の型 | 省略できる。型のないメソッドは引数の型の組み合わせごとに具体化され、そのためにプログラム全体をまとめて型検査する | 必須(既定値から型が決まる場合を除く)。戻り値の型と局所変数は推論する。書く量は増え、ファイルごとに検査できる([02-types.ja.md](02-types.ja.md) §10) |
 | ジェネリック型の書き方 | `Array(Int32)`、`Hash(String, Int32)`、`Proc(Int32, Bool)` | `Array[Int]`、`Hash[String, Int]`、`(Int) -> Bool` |
 | 空のリテラル | `[] of Int32`、`{} of String => Int32` | 文脈から型が決まる: `xs: Array[Int] = []`、`h: Hash[String, Int] = {}` |
 | 整数 | 既定は `Int32`(`Int64` は `1_i64`)。溢れると `OverflowError` | `Int` は任意精度(溢れると Ruby と同じく多倍長整数になる)。固定幅の型は FFI 用に予定 |
@@ -21,12 +21,12 @@ Crystal は Quarz に最も近い言語です。Ruby の構文を持つ、静的
 | アクセサ | `getter`、`setter`、`property` | `attr_reader`、`attr_writer`、`attr_accessor`(書き込み側は `var` フィールドのみ) |
 | `Array`、`Hash`、`Set` | 可変(`<<`、`[]=`、`delete`) | 不変で永続的。`push`/`put`/`delete` は新しい値を返し、共有されていなければその場で更新する(`xs = xs.push(x)`)。タスク内で組み立てるための可変な `Array::Builder` など |
 | `arr[i]`、`h[k]` | 範囲外・キーなしで例外。`[]?` は `nil` を返す | 同じ |
-| レコード | `record Point, x : Int32, y : Int32`、または `struct` | `data Point(x: Int, y: Int)`。不変で、構造的な `==`/`hash`、`with`、パターンを持つ。小さいものは保持するオブジェクトの中にそのまま置かれる |
+| レコード | `record Point, x : Int32, y : Int32`。getter、フィールドごとの `==`/`hash`、`copy_with` を持つ struct | `data Point(x: Int, y: Int)`。不変で、構造的な `==`/`hash`、`with`、パターンを持つ。小さいものは保持するオブジェクトの中にそのまま置かれる |
 | `struct` | 可変な値型。代入でコピーされる | ユーザ定義の値型はない。`data` は不変なので、コピーと共有の違いは観察できない |
-| `enum` | 名前付きの整数定数(フラグも可) | 代数的データ型: `enum Shape = Circle(r: Float) \| Rect(w: Float, h: Float)`。`case/in` で網羅性を検査する |
+| `enum` | 名前付きの整数定数(フラグも可)。直和型は型の合併か、抽象 struct の階層で書く | 代数的データ型: `enum Shape = Circle(r: Float) \| Rect(w: Float, h: Float)`。`case/in` で網羅性を検査する |
 | `&.method` の短縮形 | `xs.map(&.upcase)` | `xs.map(&:upcase)`(Ruby の書き方) |
 | ブロック引数の型 | `&block : Int32 -> Int32` | `&block: (Int) -> Int`。`yield` するメソッドはブロックを宣言する(`&: (Int) -> Nil`) |
-| クラスの再オープン | どこでもできる(モンキーパッチ) | できない。既存の型へのメソッド追加は `extension` で行い、`using` が有効な範囲でだけ効く |
+| クラスの再オープン | どこでもでき、プログラム全体に効く | できない。既存の型へのメソッド追加は `extension` で行い、`using` が有効な範囲でだけ効く |
 | 既存の型をモジュールに適合させる | 型を再オープンしてモジュールを include する(`struct Int32; include M; ...; end`)。どこでも効く。型のない引数は、必要なメソッドを持つものなら何でも受け付ける(ダックタイピング) | `extension Int; include M; ...; end`。トップレベルに書けばどこでも有効で、モジュールの中に書けば `using` でそのモジュールを持ち込んだ範囲で有効になる。引数には型があるので、値は適合していなければならない |
 | 型の別名 | `alias UserId = Int32` | `type UserId = Int` |
 | メソッド参照 | `->obj.method` | `obj.:method` |
@@ -35,10 +35,10 @@ Crystal は Quarz に最も近い言語です。Ruby の構文を持つ、静的
 | フィールドの絞り込み | インスタンス変数は絞り込まれない(局所変数に代入する) | 不変フィールドと `data` のフィールドは絞り込まれる。`var` フィールドは絞り込まれない |
 | `to_s` | `to_s(io : IO)` を上書きする | `def to_s -> String` |
 | タプル | `Tuple`、`NamedTuple`(`{1, "a"}`、`{x: 1}`) | タプル型 `[Int, String]` を配列リテラルで書く。名前付きのフィールドは `data` で |
-| 並行処理 | メモリを共有するファイバー(`spawn`、`Channel(T)`、`Mutex`、どんな値でも入る `Atomic(T)`。可変な `Array` も入る)。可変オブジェクトの共有を止めるものはない | タスク(`spawn`、キャンセル付きの `Task.scope`、`Channel[T]`、`select`、`Atom[T]`)。タスクの境界を越えられるのは `Shareable` な(不変な)値だけで、コンパイラが検査する。ロックはない。ブロックする処理は `Task.blocking { }` の中で |
+| 並行処理 | メモリを共有するファイバー(`spawn`、`Channel(T)`、`Mutex`、`Atomic(T)`)。どんなオブジェクトもファイバー間で受け渡せ、実行コンテキストでファイバーを複数のスレッドで動かせる | タスク(`spawn`、キャンセル付きの `Task.scope`、`Channel[T]`、`select`、`Atom[T]`)。タスクの境界を越えられるのは `Shareable` な(不変な)値だけで、コンパイラが検査する。ロックはない。現在のスケジューラはタスクを 1 つのスレッドで動かし、`Task.blocking { }` はブロックを補助スレッドで実行する |
 | メモリ管理 | トレース型 GC(Boehm) | 参照カウント。参照が一意な値はその場で更新する |
 | C との連携 | `lib LibC; fun strlen(s : UInt8*) : SizeT; end` | `extern "C"; def strlen(s: CString) -> SizeT; end` |
-| プログラムの実行 | コンパイルする(`crystal run` も先にコンパイルする)。`crystal i` は実験的なインタプリタで、それを含めてビルドした Crystal でだけ使える | `quarz run` は解釈実行(開発中の起動が速い)。`quarz build` は LLVM か Cranelift でコンパイルする |
+| プログラムの実行 | コンパイルする(`crystal run` も先にコンパイルする)。`crystal i` は実験的なインタプリタで、それを含めてビルドした Crystal でだけ使える | `quarz run` は解釈実行する。`quarz build` は LLVM か Cranelift でコンパイルする |
 
 ## Quarz で加わるもの
 

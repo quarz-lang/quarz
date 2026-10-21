@@ -13,7 +13,7 @@ Crystal is the closest relative of Quarz: a statically typed, compiled language 
 | Item | Crystal | Quarz |
 |---|---|---|
 | Type annotation syntax | `x : Int32`, `def f(a : Int32) : Bool` | `x: Int`, `def f(a: Int) -> Bool` (no space before the colon; `->` for the return type) |
-| Method parameter types | Optional: an untyped method is instantiated for each combination of argument types (whole-program inference) | Required (except when a default value gives the type). Return types and locals are inferred. This keeps separate compilation and fast checking ([02-types.md](02-types.md) §10) |
+| Method parameter types | Optional: an untyped method is instantiated for each combination of argument types, which needs the whole program to be type-checked together | Required (except when a default value gives the type); return types and locals are inferred. More to write, and each file can be checked on its own ([02-types.md](02-types.md) §10) |
 | Generic type syntax | `Array(Int32)`, `Hash(String, Int32)`, `Proc(Int32, Bool)` | `Array[Int]`, `Hash[String, Int]`, `(Int) -> Bool` |
 | Empty literals | `[] of Int32`, `{} of String => Int32` | Typed from the context: `xs: Array[Int] = []`, `h: Hash[String, Int] = {}` |
 | Integers | `Int32` by default (`1_i64` for `Int64`); overflow raises `OverflowError` | `Int` is arbitrary precision (promoted to a big integer on overflow, as in Ruby). Fixed-width types are planned for FFI |
@@ -23,12 +23,12 @@ Crystal is the closest relative of Quarz: a statically typed, compiled language 
 | Accessors | `getter`, `setter`, `property` | `attr_reader`, `attr_writer`, `attr_accessor` (writers only on `var` fields) |
 | `Array`, `Hash`, `Set` | Mutable (`<<`, `[]=`, `delete`) | Immutable and persistent: `push`/`put`/`delete` return new values, updated in place when unshared (`xs = xs.push(x)`). Mutable `Array::Builder` and friends for task-local building |
 | `arr[i]`, `h[k]` | Raise when out of range / missing; `[]?` returns `nil` | Same |
-| Records | `record Point, x : Int32, y : Int32`, or a `struct` | `data Point(x: Int, y: Int)`: immutable, structural `==`/`hash`, `with`, patterns; small ones are stored in place in the objects that hold them |
+| Records | `record Point, x : Int32, y : Int32`: a struct with getters, field-wise `==`/`hash` and `copy_with` | `data Point(x: Int, y: Int)`: immutable, with structural `==`/`hash`, `with` and patterns; small ones are stored in place in the objects that hold them |
 | `struct` | Mutable value type, copied on assignment | No user value types: `data` is immutable, so copying and sharing cannot be told apart |
-| `enum` | Named integer constants (with flags) | Algebraic data types: `enum Shape = Circle(r: Float) \| Rect(w: Float, h: Float)`, matched exhaustively with `case/in` |
+| `enum` | Named integer constants (with flags); sum types are written as unions of types or an abstract struct hierarchy | Algebraic data types: `enum Shape = Circle(r: Float) \| Rect(w: Float, h: Float)`, matched exhaustively with `case/in` |
 | `&.method` shorthand | `xs.map(&.upcase)` | `xs.map(&:upcase)` (Ruby's spelling) |
 | Block parameter types | `&block : Int32 -> Int32` | `&block: (Int) -> Int`; a method that yields declares its block (`&: (Int) -> Nil`) |
-| Reopening classes | Allowed anywhere (monkey patching) | Not allowed. Methods are added to existing types with `extension`, active where `using` is in effect |
+| Reopening classes | Allowed anywhere, for the whole program | Not allowed. Methods are added to existing types with `extension`, active where `using` is in effect |
 | Making an existing type conform to a module | Reopen it and include the module (`struct Int32; include M; ...; end`), everywhere; untyped parameters also accept anything with the right methods (duck typing) | `extension Int; include M; ...; end`: active everywhere when written at the top level, or where `using` brings in the module that declares it; parameters are typed, so a value must conform |
 | Type aliases | `alias UserId = Int32` | `type UserId = Int` |
 | Method references | `->obj.method` | `obj.:method` |
@@ -37,10 +37,10 @@ Crystal is the closest relative of Quarz: a statically typed, compiled language 
 | Narrowing fields | Instance variables are not narrowed (assign to a local first) | Immutable fields and `data` fields are narrowed; `var` fields are not |
 | `to_s` | Overridden as `to_s(io : IO)` | `def to_s -> String` |
 | Tuples | `Tuple`, `NamedTuple` (`{1, "a"}`, `{x: 1}`) | Tuple types `[Int, String]` written as array literals; named fields use `data` |
-| Concurrency | Fibers sharing memory (`spawn`, `Channel(T)`, `Mutex`, `Atomic(T)`, which holds any value, a mutable `Array` included); nothing stops a mutable object from being shared | Tasks (`spawn`, `Task.scope` with cancellation, `Channel[T]`, `select`, `Atom[T]`); only `Shareable` values (immutable ones) cross task boundaries, checked by the compiler; no locks; blocking work in `Task.blocking { }` |
+| Concurrency | Fibers that share memory (`spawn`, `Channel(T)`, `Mutex`, `Atomic(T)`): any object can be passed between fibers, and execution contexts run fibers on several threads | Tasks (`spawn`, `Task.scope` with cancellation, `Channel[T]`, `select`, `Atom[T]`): only `Shareable` (immutable) values cross task boundaries, which the compiler checks, and there are no locks. The current scheduler runs tasks on one thread; `Task.blocking { }` runs a block on a helper thread |
 | Memory | Tracing GC (Boehm) | Reference counting with in-place updates of uniquely referenced values |
 | C interop | `lib LibC; fun strlen(s : UInt8*) : SizeT; end` | `extern "C"; def strlen(s: CString) -> SizeT; end` |
-| Running a program | Compiled (`crystal run` compiles first); `crystal i` is an experimental interpreter, available in builds that include it | `quarz run` interprets (fast start for development); `quarz build` compiles with LLVM or Cranelift |
+| Running a program | Compiled (`crystal run` compiles first); `crystal i` is an experimental interpreter, available in builds that include it | `quarz run` interprets; `quarz build` compiles with LLVM or Cranelift |
 
 ## What is added
 
