@@ -14,6 +14,18 @@ use serde::{Deserialize, Serialize};
 /// them at every start.
 pub type HashMap<K, V> = rustc_hash::FxHashMap<K, V>;
 
+/// A map written in key order: the order a hash map iterates in depends
+/// on how it was filled, and the embedded module should be the same
+/// bytes for the same program.
+fn sorted<K, V, S>(map: &HashMap<K, V>, s: S) -> Result<S::Ok, S::Error>
+where
+    K: Ord + Serialize,
+    V: Serialize,
+    S: serde::Serializer,
+{
+    s.collect_map(map.iter().collect::<std::collections::BTreeMap<_, _>>())
+}
+
 pub type FuncId = u32;
 pub type Reg = u32;
 pub type BlockId = u32;
@@ -1002,12 +1014,15 @@ pub struct RtClass {
     pub ivars: Vec<RtIvar>,
     /// Methods declared by the class, by name (overloads in declaration
     /// order).
+    #[serde(serialize_with = "sorted")]
     pub methods: HashMap<String, Vec<MethodId>>,
     /// `def self.` methods, by name.
+    #[serde(serialize_with = "sorted")]
     pub singleton_methods: HashMap<String, Vec<MethodId>>,
     /// Modules whose instance methods are this class's class methods.
     pub extends: Vec<ClassId>,
     /// Nested classes by short name.
+    #[serde(serialize_with = "sorted")]
     pub members: HashMap<String, ClassId>,
     pub variants: Vec<ClassId>,
     pub variant_of: Option<ClassId>,
@@ -1118,6 +1133,7 @@ pub struct RtConst {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RtExtension {
     pub target: ClassId,
+    #[serde(serialize_with = "sorted")]
     pub methods: HashMap<String, Vec<MethodId>>,
     /// Active everywhere (declared outside a module): its methods take
     /// part in dispatch by name. A module's extension applies only where
@@ -1168,6 +1184,7 @@ pub struct RtWorld {
     pub consts: Vec<RtConst>,
     pub extensions: Vec<RtExtension>,
     /// Top-level classes and modules by name.
+    #[serde(serialize_with = "sorted")]
     pub top: HashMap<String, ClassId>,
     pub builtin: RtBuiltin,
     /// Display names by file index (0 = the prelude).
