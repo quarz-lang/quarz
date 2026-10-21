@@ -131,7 +131,9 @@ impl Shake<'_> {
                     Inst::Call { kind, .. } => match kind {
                         CallKind::Method(m) | CallKind::Super(m) => self.method(*m),
                         CallKind::Send(name) => self.name(name),
-                        CallKind::Construct { init, .. } => {
+                        // By name: the receiver's class may be a subclass,
+                        // with an `initialize` of its own.
+                        CallKind::Construct { init, .. } | CallKind::ConstructRecv { init, .. } => {
                             self.name("initialize");
                             if let Some(m) = init {
                                 self.method(*m);

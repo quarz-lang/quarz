@@ -417,6 +417,31 @@ fn self_type_positions() {
 }
 
 #[test]
+fn class_methods_and_self() {
+    // `Self` in a class method is an instance of the receiving class.
+    ok("class S\n  def self.build -> Self = new\nend\nclass C < S\n  def area -> Int = 1\nend\nputs C.build.area");
+    // A body can return as `Self` only what is one: `self`, a call on it
+    // that returns `Self`, `new` on a class method's receiver.
+    ok("class S\n  def me -> Self = self\n  def twin -> Self = dup\n  def t -> Self = tap { |x| x }\n  def self.make -> Self = new\n  def self.again -> Self = make\nend");
+    err(
+        "class S\n  def copy -> Self = S.new\nend",
+        "returns Self but its body has type S",
+    );
+    err(
+        "class S\n  def self.make -> Self = S.new\nend",
+        "returns Self but its body has type S",
+    );
+    // A subclass that inherits a class method calling `new` must take its
+    // arguments, or override the method.
+    err(
+        "class S\n  def self.build -> Self = new\nend\nclass C < S\n  @r: Float\n  def initialize(@r: Float); end\nend",
+        "`C#initialize` does not take the arguments of `new` in `S.build`",
+    );
+    ok("class S\n  def self.build -> Self = new\nend\nclass C < S\n  @r: Float\n  def initialize(@r: Float); end\n  def self.build -> Self = new(1.0)\nend");
+    ok("class S\n  @n: Int\n  def initialize(@n: Int); end\n  def self.one -> Self = new(1)\nend\nclass C < S\n  @m: Int = 0\n  def initialize(@n: Int, @m: Int = 2); end\nend");
+}
+
+#[test]
 fn concurrency_rules() {
     ok("t = spawn { 1 + 1 }\nputs t.await");
     ok("x = 1\nt = spawn { x + 1 }\nputs t.await");

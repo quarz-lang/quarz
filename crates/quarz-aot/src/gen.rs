@@ -798,7 +798,9 @@ fn direct_target(inst: &Inst, methods: &[RtMethod]) -> Option<FuncId> {
         return None;
     };
     let m = methods.get(*mid as usize)?;
-    if m.native_key.is_some() || (m.overridden && !m.singleton && !m.is_extension) {
+    // An overridden method (a class method too: the class it is called
+    // on decides) is resolved at run time.
+    if m.native_key.is_some() || (m.overridden && !m.is_extension) {
         return None;
     }
     m.func
@@ -1854,7 +1856,7 @@ impl<B: Builder> Gen<'_, B> {
     fn typed_callee(&self, inst: &Inst) -> Option<FuncId> {
         let call = self.static_target(inst)?;
         let m = &self.methods[call.mid as usize];
-        if m.overridden && !m.singleton && !m.is_extension && m.native_key.is_none() {
+        if m.overridden && !m.is_extension && m.native_key.is_none() {
             return None;
         }
         let callee = direct_target(inst, self.methods)?;

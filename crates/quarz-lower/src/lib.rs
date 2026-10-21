@@ -172,14 +172,14 @@ impl Lowerer {
 }
 
 /// Class hierarchy analysis: for every class, the names its descendants
-/// (and extensions on them) declare, as `(ancestor, name)` pairs.
+/// (and extensions on them) declare, as `(ancestor, name)` pairs; a class
+/// method's name is spelled `self.name`.
 fn overridden_methods(world: &World) -> HashSet<(ClassId, String)> {
     let mut declared: HashMap<ClassId, Vec<String>> = HashMap::new();
     for c in &world.classes {
-        declared
-            .entry(c.id)
-            .or_default()
-            .extend(c.methods.keys().cloned());
+        let names = declared.entry(c.id).or_default();
+        names.extend(c.methods.keys().cloned());
+        names.extend(c.singleton_methods.keys().map(|n| format!("self.{n}")));
     }
     for e in &world.extensions {
         declared

@@ -24,7 +24,7 @@ Design principles:
 | Top | `Object` | Supertype of every type |
 | Bottom | `Nothing` | Type of `raise`, `exit` and infinite loops. Subtype of every type |
 | Type variable | `T`, `K`, `V` | Declared type parameters |
-| Self type | `Self` | The receiver's class, where a method hands a value out: `def dup -> Self`, `&: (Self) -> Nil`. Not where the caller hands one in (a parameter, a block's result): a subclass would receive its parent's values; use a type parameter (`Comparable[T]`) |
+| Self type | `Self` | The receiver's class (in a class method, its instances: `def self.build -> Self = new`), where a method hands a value out: `def dup -> Self`, `&: (Self) -> Nil`. Not where the caller hands one in (a parameter, a block's result): a subclass would receive its parent's values; use a type parameter (`Comparable[T]`). In the body, `Self` is the class or a subclass, not known which: only `self`, what calls on it return as `Self`, and `new` on a class method's receiver are a `Self` (`Shape.new` is not) |
 
 Writing `Array[Int]` in expression context yields an expression denoting the type itself, so it can be used as in `Array[Int].new` (there is no `Array.[]` constructor as in Ruby).
 

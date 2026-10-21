@@ -118,6 +118,23 @@ impl Type {
         }
     }
 
+    /// Whether the type parameter `id` occurs in the type.
+    pub fn mentions_param(&self, id: TypeParamId) -> bool {
+        match self {
+            Type::Param(p) => *p == id,
+            Type::Var(_) | Type::Nothing => false,
+            Type::Class(_, args) | Type::ClassObject(_, args) => {
+                args.iter().any(|a| a.mentions_param(id))
+            }
+            Type::Union(ms) | Type::Tuple(ms) => ms.iter().any(|m| m.mentions_param(id)),
+            Type::Proc(rc, ps, r) => {
+                rc.as_ref().is_some_and(|t| t.mentions_param(id))
+                    || ps.iter().any(|p| p.mentions_param(id))
+                    || r.mentions_param(id)
+            }
+        }
+    }
+
     pub fn has_params(&self) -> bool {
         match self {
             Type::Param(_) => true,

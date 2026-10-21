@@ -335,6 +335,8 @@ pub struct Interp {
     nvslots: usize,
     vtable: RefCell<Vec<u32>>,
     class_dispatch_cache: RefCell<FxHashMap<(ClassId, MethodId), Option<MethodId>>>,
+    /// `class_method_override` results.
+    class_method_cache: RefCell<FxHashMap<(ClassId, MethodId), Option<MethodId>>>,
     /// The program image for helper threads, keyed by the number of
     /// functions loaded when it was taken.
     pub(crate) image_cache: RefCell<Option<(usize, std::sync::Arc<crate::transfer::ProgramImage>)>>,
@@ -579,6 +581,7 @@ impl Interp {
             nvslots,
             vtable: RefCell::new(vec![0; nvslots * nclasses]),
             class_dispatch_cache: RefCell::new(FxHashMap::default()),
+            class_method_cache: RefCell::new(FxHashMap::default()),
             image_cache: RefCell::new(None),
             name_cache: RefCell::new(FxHashMap::default()),
             next_tag: state.next_tag,
@@ -1226,7 +1229,17 @@ impl Interp {
     /// receiver's run-time class (subclass overrides).
     pub fn resolve_dynamic(&self, recv: &Value, mid: MethodId) -> MethodId {
         let m = self.world.method(mid);
-        if m.singleton || m.is_extension {
+        if m.singleton {
+            // A class method some subclass overrides: the class it is
+            // called on decides.
+            return match recv {
+                Value::Class(cid) if m.overridden && *cid != m.owner => {
+                    self.class_method_override(*cid, mid).unwrap_or(mid)
+                }
+                _ => mid,
+            };
+        }
+        if m.is_extension {
             return mid;
         }
         if let Value::Class(cid) = recv {
@@ -1302,6 +1315,36 @@ impl Interp {
         }
         let found = found.filter(|f| *f != mid);
         self.class_dispatch_cache
+            .borrow_mut()
+            .insert((cid, mid), found);
+        found
+    }
+
+    /// The class method of `cid` (or of a superclass below the owner of
+    /// `mid`) that overrides the class method `mid`.
+    fn class_method_override(&self, cid: ClassId, mid: MethodId) -> Option<MethodId> {
+        if let Some(found) = self.class_method_cache.borrow().get(&(cid, mid)) {
+            return *found;
+        }
+        let m = self.world.method(mid);
+        let mut found = None;
+        let mut cur = Some(cid);
+        while let Some(c) = cur {
+            if c == m.owner {
+                break;
+            }
+            let class = self.world.class(c);
+            if let Some(ids) = class.singleton_methods.get(&m.name) {
+                if let Some(id) = ids.iter().copied().find(|id| {
+                    self.same_signature(*id, mid) || self.world.method(*id).overrides.contains(&mid)
+                }) {
+                    found = Some(id);
+                    break;
+                }
+            }
+            cur = class.superclass;
+        }
+        self.class_method_cache
             .borrow_mut()
             .insert((cid, mid), found);
         found
@@ -1737,6 +1780,41 @@ impl Interp {
     }
 
     /// Allocate an instance and run its initializer.
+    /// For `new` on a class method's receiver: the class the receiver
+    /// names (`class` or a subclass) and the `initialize` to run, the
+    /// nearest one declared between it and `class`, else `init`.
+    pub fn receiver_class_init(
+        &self,
+        recv: &Value,
+        class: ClassId,
+        init: Option<MethodId>,
+    ) -> (ClassId, Option<MethodId>) {
+        let cid = match recv {
+            Value::Class(c) => *c,
+            _ => class,
+        };
+        if cid == class {
+            return (cid, init);
+        }
+        for anc in &self.world.class(cid).ancestors {
+            if *anc == class {
+                break;
+            }
+            if let Some(ids) = self.world.class(*anc).methods.get("initialize") {
+                let pick = init
+                    .and_then(|i| {
+                        ids.iter().copied().find(|id| {
+                            self.same_signature(*id, i)
+                                || self.world.method(*id).overrides.contains(&i)
+                        })
+                    })
+                    .or_else(|| ids.first().copied());
+                return (cid, pick);
+            }
+        }
+        (cid, init)
+    }
+
     pub fn construct(
         &self,
         class: ClassId,

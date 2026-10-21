@@ -1,0 +1,50 @@
+# Class methods run on the class they are called on: an implicit call in
+# an inherited class method, and `new`, go to the receiver's class.
+class Shape
+  @name: String
+  def initialize(@name: String = "shape"); end
+  attr_reader :name
+  def self.label -> String = "shape"
+  def self.describe -> String = "a #{label}"
+  def self.build -> Self = new
+  def self.named(n: String) -> Self = new(n)
+  def self.twice -> Self = build
+  def self.me = self
+end
+class Circle < Shape
+  def self.label -> String = "circle"
+  def area -> Float = 3.0
+end
+class Square < Shape
+  @side: Int = 2
+  def initialize(@name: String = "square", @side: Int = 2); end
+  attr_reader :side
+end
+p Shape.describe, Circle.describe, Square.describe
+c = Circle.build
+p c.class, c.name, c.area, Circle.twice.area, Circle.me
+p Square.build.class, Square.build.name, Square.named("sq").side, Shape.build.class
+
+# An overload of a class method (other parameter types) is not an
+# override.
+class V
+  def self.make(x: Int) -> String = "V"
+  def self.go -> String = make(1)
+end
+class W < V
+  def self.make(x: String) -> String = "W"
+end
+class X < V
+  def self.make(x: Int) -> String = "X"
+end
+p W.go, X.go
+
+# Methods with `Self` in their signature see it as the receiver's class.
+class Node
+  def me -> Self = self
+  def twin -> Self = dup
+end
+class Leaf < Node
+  def leaf? -> Bool = true
+end
+p Leaf.new.me.leaf?, Leaf.new.twin.leaf?

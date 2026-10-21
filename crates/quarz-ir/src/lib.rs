@@ -180,6 +180,14 @@ pub enum CallKind {
         class: ClassId,
         init: Option<MethodId>,
     },
+    /// `new` on the receiver in a class method (`def self.build = new`):
+    /// the receiver is a class object, `class` or a subclass of it, and
+    /// the instance is of that class, built with its `initialize` (`init`
+    /// when it is `class` itself).
+    ConstructRecv {
+        class: ClassId,
+        init: Option<MethodId>,
+    },
     /// Calling a procedure value (the receiver).
     ProcCall,
     /// `yield`: calls the enclosing method's block.

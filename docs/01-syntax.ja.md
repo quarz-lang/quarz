@@ -275,7 +275,7 @@ def name(a: Int, b: String = "x", *rest: Int, *, flag: Bool, limit: Int? = nil, 
 - 同名メソッドを引数の個数・型で**多重定義**できます。解決はコンパイル時です。
 - `def x -> Int = @x` のような一行定義(endless def)が書けます。
 - 演算子メソッド(`+`、`[]`、`<=>`、`-@`、`==`、`call` など)は Ruby と同じ名前で定義します。`[]=` は可変型にしか定義できません(まだ検査していない)。単項演算子は `-@`、`+@`、`~`、`!` です(`!` と `~` は `!@`/`~@` とも書けます)。`!x` は、その型が `!` を定義していればそれを呼び、そうでなければ組み込みの否定(`nil` と `false` で真)です。
-- `def self.create(...)` でクラスメソッド。`private`/`protected`/`public` は Ruby と同じ書き方で、コンパイル時に検査されます(`protected` は受け付けるだけで、まだ強制していない)。
+- `def self.create(...)` でクラスメソッド。Ruby と同じく、クラスメソッドは呼ばれたクラスの上で動きます。`Shape` から継承した `Circle.describe` の中の暗黙の呼び出し(`label`)は `Circle.label` に行き、`new` は `Circle` を作ります(`def self.build -> Self = new` は `Circle` を返す)。`new` を呼ぶクラスメソッドを継承するサブクラスは、`initialize` で同じ引数を受け付けるか(省略可能な引数は足せる)、そのクラスメソッドを上書きしなければなりません。`private`/`protected`/`public` は Ruby と同じ書き方で、コンパイル時に検査されます(`protected` は受け付けるだけで、まだ強制していない)。
 - `alias new_name old_name` は静的に別名を作ります。
 
 ### ブロック、`yield`、手続き

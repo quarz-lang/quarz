@@ -132,7 +132,15 @@ pub fn build(world: &World, lw: &Lowerer, file_names: Vec<String>) -> RtWorld {
             // An abstract method is always dispatched dynamically: its
             // implementation may be a singleton method of a class that
             // extends the module, which the class hierarchy walk does not see.
-            let overridden = m.is_abstract || lw.overridden.contains(&(m.owner, m.name.clone()));
+            // A class method is dispatched on the class it is called on
+            // (`Circle.describe` runs `Circle.label` for an implicit
+            // `label` in `Shape.describe`).
+            let key = if m.singleton {
+                format!("self.{}", m.name)
+            } else {
+                m.name.clone()
+            };
+            let overridden = m.is_abstract || lw.overridden.contains(&(m.owner, key));
             let synth = match &m.synth {
                 Synth::None => RtSynth::None,
                 Synth::FieldGet(name) => {

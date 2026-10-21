@@ -103,7 +103,7 @@ fn site(inst: &Inst, eligible: &[bool], methods: &[RtMethod]) -> Option<Site> {
         && !m.is_abstract
         && !m.has_block
         && m.native_key.is_none()
-        && (!m.overridden || m.singleton || m.is_extension)
+        && (!m.overridden || m.is_extension)
         && m.params.len() == args.len()
         && m.params
             .iter()

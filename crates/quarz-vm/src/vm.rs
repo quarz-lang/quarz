@@ -869,6 +869,11 @@ impl Interp {
                         let r = self.construct(*class, *init, pos, kw, block.clone());
                         self.catch_break(&block, r)
                     }
+                    CallKind::ConstructRecv { class, init } => {
+                        let (cid, init) = self.receiver_class_init(&recv, *class, *init);
+                        let r = self.construct(cid, init, pos, kw, block.clone());
+                        self.catch_break(&block, r)
+                    }
                     CallKind::ProcCall => {
                         let r = self.call_block(&recv, pos);
                         self.catch_break(&block, r)

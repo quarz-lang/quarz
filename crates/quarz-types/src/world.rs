@@ -269,6 +269,10 @@ pub struct World {
     pub active_extensions: Vec<ExtensionId>,
     next_type_param: TypeParamId,
     pub type_param_names: HashMap<TypeParamId, String>,
+    /// While checking the body of a method whose signature mentions
+    /// `Self`: the class `Self` is bounded by (there, `Self` is that class
+    /// or a subclass, not known which).
+    pub self_bound: Option<Type>,
 }
 
 impl World {
@@ -473,7 +477,7 @@ impl World {
                     .join(", "),
                 self.type_name(r)
             ),
-            Type::Param(id) if *id == u32::MAX => "self".to_string(),
+            Type::Param(id) if *id == u32::MAX => "Self".to_string(),
             Type::Param(id) => self
                 .type_param_names
                 .get(id)
@@ -716,6 +720,9 @@ impl World {
     }
 
     fn param_bounds(&self, id: TypeParamId) -> Vec<Type> {
+        if id == u32::MAX {
+            return self.self_bound.iter().cloned().collect();
+        }
         for c in &self.classes {
             for p in &c.type_params {
                 if p.id == id {
@@ -983,6 +990,11 @@ impl World {
             Type::ClassObject(_, _) => true,
             Type::Union(ms) | Type::Tuple(ms) => ms.clone().iter().all(|m| self.is_shareable(m)),
             Type::Proc(_, _, _) => false,
+            // `Self`: as shareable as the class it stands for.
+            Type::Param(p) if *p == u32::MAX => match self.self_bound.clone() {
+                Some(b) => self.is_shareable(&b),
+                None => false,
+            },
             Type::Param(p) => {
                 let bounds = self.param_bounds(*p);
                 bounds

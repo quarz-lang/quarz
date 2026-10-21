@@ -2355,6 +2355,30 @@ impl<'a> FnBuilder<'a> {
                 if data_init && !a.splat && a.kw.is_empty() && a.kw_splat.is_none() {
                     a.pos = self.flatten_args(*class, std::mem::take(&mut a.pos));
                 }
+                // `new` on the receiver of a class method that subclasses
+                // may inherit: the class it is called on decides.
+                if self.out.self_new.contains(&e.id)
+                    && self
+                        .world
+                        .classes
+                        .iter()
+                        .any(|c| c.id != *class && self.world.class_is_a(c.id, *class))
+                {
+                    let (class, init) = (*class, *init);
+                    let recv = Some(recv.unwrap_or_else(|| self.self_reg()));
+                    let dst = self.reg();
+                    self.emit(Inst::Call {
+                        dst,
+                        kind: CallKind::ConstructRecv { class, init },
+                        recv,
+                        args: a.pos,
+                        splat: a.splat,
+                        kw: a.kw,
+                        kw_splat: a.kw_splat,
+                        block: a.block,
+                    });
+                    return dst;
+                }
                 CallKind::Construct {
                     class: *class,
                     init: *init,

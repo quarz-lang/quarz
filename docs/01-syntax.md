@@ -277,7 +277,7 @@ def name(a: Int, b: String = "x", *rest: Int, *, flag: Bool, limit: Int? = nil, 
 - Methods of the same name can be **overloaded** by parameter count and types. Resolution is at compile time.
 - One-line definitions (endless def) such as `def x -> Int = @x` are allowed.
 - Operator methods (`+`, `[]`, `<=>`, `-@`, `==`, `call`, etc.) are defined with the same names as in Ruby. `[]=` can only be defined on mutable types (not checked yet). The unary operators are `-@`, `+@`, `~` and `!` (`!` and `~` may also be written `!@`/`~@`); `!x` calls the type's own `!` when it defines one and is the built-in negation (`true` for `nil` and `false`) otherwise.
-- `def self.create(...)` defines a class method. `private`/`protected`/`public` are written as in Ruby and checked at compile time (`protected` is accepted but not enforced yet).
+- `def self.create(...)` defines a class method. As in Ruby, a class method runs on the class it is called on: in `Circle.describe`, inherited from `Shape`, an implicit call (`label`) goes to `Circle.label`, and `new` builds a `Circle` (`def self.build -> Self = new` gives a `Circle`). A subclass that inherits a class method calling `new` must take the same arguments in its `initialize` (it may add optional ones), or override the class method. `private`/`protected`/`public` are written as in Ruby and checked at compile time (`protected` is accepted but not enforced yet).
 - `alias new_name old_name` creates an alias statically.
 
 ### Blocks, `yield` and procedures

@@ -99,6 +99,9 @@ pub struct Output {
     /// method, block or lambda, the value of its `return` or `next`): they
     /// are evaluated and the result is `nil`.
     pub discarded: rustc_hash::FxHashSet<NodeId>,
+    /// `new` called on the receiver in a class method: it builds an
+    /// instance of the class the method is called on.
+    pub self_new: rustc_hash::FxHashSet<NodeId>,
 }
 
 #[derive(Clone, Debug)]
@@ -164,6 +167,11 @@ type Snapshot = (Vec<Vec<Option<Type>>>, HashMap<String, Type>);
 struct Env {
     frames: Vec<Frame>,
     self_type: Type,
+    /// In a method whose signature mentions `Self`: `self` (and what
+    /// `Self`-returning calls on it give) has the opaque type `Self`,
+    /// bounded by the class, so that only those can be returned as `Self`
+    /// (`Shape.new` cannot: a subclass's caller expects its own class).
+    self_opaque: bool,
     class_id: Option<ClassId>,
     /// The class whose body this code is lexically in (fields are
     /// reachable only there); `class_id` changes inside receiver blocks.
@@ -275,6 +283,9 @@ pub struct Checker {
     /// Integer literals kept `Int` even where a `Float` is expected: the
     /// members of a union receiver disagreed on them (see `check_call_on`).
     int_literals: rustc_hash::FxHashSet<NodeId>,
+    /// `new` on the receiver in class methods: (the class, its
+    /// `initialize`, the class method, where).
+    self_news: Vec<(ClassId, Option<MethodId>, MethodId, Span, u32)>,
 }
 
 /// Arguments after matching to parameters.
@@ -295,6 +306,7 @@ impl Checker {
                 owner: SelfOwner::Init,
             }],
             self_type: Type::class(file_mains.iter().flatten().next().copied().unwrap_or(0)),
+            self_opaque: false,
             class_id: None,
             lexical_class: None,
             receivers: Vec::new(),
@@ -327,6 +339,7 @@ impl Checker {
             defaults_checked: HashSet::new(),
             init_checked: HashSet::new(),
             int_literals: Default::default(),
+            self_news: Vec::new(),
         }
     }
 
@@ -378,6 +391,89 @@ impl Checker {
         self.check_uninitialized_fields();
         for (file, body) in units {
             self.check_main(*file, body);
+        }
+        self.check_inherited_constructors();
+    }
+
+    /// A class method that calls `new` on its receiver builds an instance
+    /// of each subclass it is called on: a subclass that inherits the
+    /// method must accept the same arguments in its `initialize` (keep
+    /// it, or add only optional parameters), or override the method.
+    fn check_inherited_constructors(&mut self) {
+        let mut sites = std::mem::take(&mut self.self_news);
+        sites.sort_by_key(|s| (s.0, s.2, s.3.start));
+        sites.dedup_by_key(|s| (s.0, s.2, s.3.start));
+        let mut reported = HashSet::new();
+        for (cid, init, method, _, _) in sites {
+            let mname = self.world.method(method).name.clone();
+            let nclasses = self.world.classes.len() as ClassId;
+            for sid in 0..nclasses {
+                if sid == cid
+                    || self.world.class(sid).kind != ClassKind::Class
+                    || !self.world.class_is_a(sid, cid)
+                {
+                    continue;
+                }
+                // The class methods and initialize between the subclass
+                // and the class that calls `new`.
+                let mut overrides = false;
+                let mut own_init = None;
+                let mut cur = Some(sid);
+                while let Some(c) = cur {
+                    if c == cid {
+                        break;
+                    }
+                    let class = self.world.class(c);
+                    if class.singleton_methods.contains_key(&mname) {
+                        overrides = true;
+                        break;
+                    }
+                    if own_init.is_none() {
+                        own_init = class
+                            .methods
+                            .get("initialize")
+                            .and_then(|ids| ids.first().copied());
+                    }
+                    cur = class.superclass.as_ref().and_then(|t| match t {
+                        Type::Class(id, _) => Some(*id),
+                        _ => None,
+                    });
+                }
+                let Some(sinit) = own_init else {
+                    continue;
+                };
+                if overrides || !reported.insert((sid, method)) {
+                    continue;
+                }
+                let s = self.world.method(sinit).clone();
+                let fits = match init {
+                    Some(i) => {
+                        let p = self.world.method(i).clone();
+                        p.params.len() <= s.params.len()
+                            && p.params.iter().zip(&s.params).all(|(a, b)| {
+                                a.kind == b.kind
+                                    && (a.ty == b.ty || self.world.is_subtype(&a.ty, &b.ty))
+                            })
+                            && s.params[p.params.len()..]
+                                .iter()
+                                .all(|b| b.default.is_some())
+                    }
+                    None => s.params.iter().all(|b| b.default.is_some()),
+                };
+                if !fits {
+                    let (sname, cname) = (
+                        self.world.class(sid).name.clone(),
+                        self.world.class(cid).name.clone(),
+                    );
+                    self.diagnostics.push((
+                        s.file,
+                        Diagnostic::error(
+                            format!("`{sname}#initialize` does not take the arguments of `new` in `{cname}.{mname}`, which `{sname}` inherits: keep the parameters of `{cname}#initialize` (adding only optional ones) or override `self.{mname}` in `{sname}`"),
+                            s.span,
+                        ),
+                    ));
+                }
+            }
         }
     }
 
@@ -682,6 +778,7 @@ impl Checker {
                 owner,
             }],
             self_type,
+            self_opaque: false,
             lexical_class: class_id,
             class_id,
             receivers: Vec::new(),
@@ -820,8 +917,20 @@ impl Checker {
             self_type: Some(self_type.clone()),
         };
         let mut env = self.fresh_env(self_type.clone(), Some(owner), Some(mid), scope, info.file);
-        let self_subst: HashMap<TypeParamId, Type> =
-            [(SELF_PARAM, self_type.clone())].into_iter().collect();
+        // A signature with `Self`: the body sees `Self` as opaque.
+        let opaque = Self::mentions_self(&info);
+        let self_subst: HashMap<TypeParamId, Type> = if opaque {
+            HashMap::new()
+        } else {
+            [(SELF_PARAM, Self::self_binding(&info, &self_type))]
+                .into_iter()
+                .collect()
+        };
+        env.self_opaque = opaque;
+        let saved_bound = std::mem::replace(
+            &mut self.world.self_bound,
+            opaque.then(|| Self::self_binding(&info, &self_type)),
+        );
         env.ret_expected = match &info.ret {
             RetType::Known(t) => Some(t.subst(&self_subst)),
             _ => None,
@@ -989,6 +1098,7 @@ impl Checker {
         self.infer = saved_infer;
         self.touched = saved_touched;
         self.world.active_extensions = saved_active;
+        self.world.self_bound = saved_bound;
         self.in_progress.pop();
     }
 
@@ -1585,6 +1695,42 @@ impl Checker {
 
     // ----- bodies --------------------------------------------------------------
 
+    /// Whether `Self` appears in the method's signature.
+    fn mentions_self(m: &MethodInfo) -> bool {
+        let is = |t: &Type| t.mentions_param(SELF_PARAM);
+        m.params.iter().any(|p| is(&p.ty))
+            || m.block.as_ref().is_some_and(|(_, t)| is(t))
+            || matches!(&m.ret, RetType::Known(t) if is(t))
+    }
+
+    /// Whether `self` is the method's own `self` with the opaque type
+    /// `Self` (an instance method whose signature mentions `Self`, outside
+    /// blocks run with another receiver).
+    fn self_is_opaque(&self) -> bool {
+        self.env.self_opaque
+            && self.env.receivers.is_empty()
+            && !matches!(self.env.self_type, Type::ClassObject(..))
+    }
+
+    /// Whether a call with an implicit or explicit `self` receiver of type
+    /// `recv` binds `Self` opaquely: an instance method's `self`, or a
+    /// class method's receiver (whose instances `Self` stands for).
+    fn self_is_opaque_for(&self, recv: &Type) -> bool {
+        self.env.self_opaque
+            && self.env.receivers.is_empty()
+            && (*recv == Type::Param(SELF_PARAM) || *recv == self.env.self_type)
+    }
+
+    /// What `Self` stands for in method `m` called on (or run with) `recv`:
+    /// the receiver's type, or for a class method (`def self.build ->
+    /// Self`), whose receiver is a class, that class's instances.
+    fn self_binding(m: &MethodInfo, recv: &Type) -> Type {
+        match recv {
+            Type::ClassObject(id, args) if m.singleton => Type::Class(*id, args.clone()),
+            t => t.clone(),
+        }
+    }
+
     /// Record (or, when a block is checked again in another context,
     /// forget) that the value of `e` is discarded; see `Output::discarded`.
     fn mark_discarded(&mut self, e: Option<&Expr>, void: bool) {
@@ -1660,7 +1806,11 @@ impl Checker {
             True | False => self.world.bool_(),
             SelfRef => {
                 self.check_task_self("`self`", expr.span);
-                self.env.self_type.clone()
+                if self.self_is_opaque() {
+                    Type::Param(SELF_PARAM)
+                } else {
+                    self.env.self_type.clone()
+                }
             }
             Int(_) => {
                 if let Some(e) = expected {
@@ -1785,7 +1935,7 @@ impl Checker {
                 };
                 let m = self.world.method(mid).clone();
                 let mut subst = subst;
-                subst.insert(SELF_PARAM, rt.clone());
+                subst.insert(SELF_PARAM, Self::self_binding(&m, &rt));
                 let params: Vec<Type> = m
                     .params
                     .iter()
@@ -3755,7 +3905,26 @@ impl Checker {
                     self.check_class_bounds(&t, expr.span);
                     return t;
                 }
-                self.check_constructor(expr, call, cid, &args, expected)
+                let t = self.check_constructor(expr, call, cid, &args, expected);
+                // `def self.build = new`: the instance is of the class the
+                // method is called on (a subclass, perhaps).
+                if implicit_self && self.world.class(cid).kind == ClassKind::Class {
+                    if let (Some(m), Some(CallTarget::Constructor { init, .. })) =
+                        (self.env.method, self.out.calls.get(&expr.id).cloned())
+                    {
+                        if self.world.method(m).singleton {
+                            self.out.self_new.insert(expr.id);
+                            self.self_news
+                                .push((cid, init, m, expr.span, self.env.file));
+                            // In a class method with `Self` in its
+                            // signature, the instance is a `Self`.
+                            if self.env.self_opaque && self.env.receivers.is_empty() {
+                                return Type::Param(SELF_PARAM);
+                            }
+                        }
+                    }
+                }
+                t
             }
             _ => {
                 let mut cands = self.world.lookup_methods(recv_ty, name);
@@ -4175,7 +4344,14 @@ impl Checker {
             let saved_diags = self.diagnostics.len();
             // Instantiate.
             let mut subst = class_subst.clone();
-            subst.insert(SELF_PARAM, recv_ty.clone());
+            // A call on `self` in a method with `Self` in its signature
+            // keeps `Self` opaque (`dup` gives a `Self`).
+            let bound_self = if implicit_self && self.self_is_opaque_for(recv_ty) {
+                Type::Param(SELF_PARAM)
+            } else {
+                Self::self_binding(&m, recv_ty)
+            };
+            subst.insert(SELF_PARAM, bound_self);
             let mut method_vars = Vec::new();
             if !call.type_args.is_empty() && call.type_args.len() != m.type_params.len() {
                 failures.push(format!(
