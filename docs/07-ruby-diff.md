@@ -13,14 +13,14 @@ A summary of the things someone who knows Ruby will first stumble on when starti
 | Item | Ruby | Quarz |
 |---|---|---|
 | Method parameters | `def f(a, b = 1, k:)` | `def f(a: Int, b: Int = 1, *, k: Bool)` — parameter types are required |
-| Return type | None | `def f(...) -> Int` (inferred if omitted) |
+| Return type | Not part of the language (signatures can be written in RBS files beside the code, or with Sorbet's `sig`) | `def f(...) -> Int` (inferred if omitted) |
 | Declaring keyword parameters | `k:` label | Written after `*`. Parameters before `*` can be passed positionally or by keyword |
 | Instance variables | Created on assignment | Declared in the class body with `@x: Int`. Immutable by default; mutable with `var @x: Int` |
 | Uninitialized instance variables | `nil` | Never seen: a field whose type does not admit `nil` and that has no initializer is assigned on every path through `initialize`, before the object is used (a compile error otherwise) |
 | Reopening classes | Allowed | Not allowed. Add within a lexical scope with `extension` + `using` |
 | `define_method`, `method_missing`, `send`, `eval`, `instance_eval`, `instance_variable_get` | Exist | Do not exist (`instance_exec` does, for blocks typed with a receiver) |
 | `Struct`/`Data` | `Data.define(:x, :y)` | `data Point(x: Int, y: Int)` |
-| Sum types | Imitated with class hierarchies | `enum` |
+| Sum types | No dedicated construct; written as a class hierarchy or several `Data` types | `enum` |
 | Interfaces | Duck typing | A `module` with `abstract def`. Retroactive conformance with `extension T; include M; end` |
 | `nil` | Fits in any variable | Only fits in types written as `T?`. Narrow with `if x` etc. |
 | Arrays, hashes, strings | Mutable | Immutable. `push`/`put` return new values. Use `Array::Builder` etc. when mutation is needed |
@@ -34,9 +34,9 @@ A summary of the things someone who knows Ruby will first stumble on when starti
 | Global variables `$x`, class variables `@@x` | Exist | Do not exist. Constants + `Atom` |
 | Constants | Reassignment is a warning | Cannot be reassigned; must be Shareable |
 | `Proc.new`, `proc` | Exist | Only `->` and blocks. Procedures always have lambda semantics |
-| `for x in xs` | A loop whose variable leaks out | `for x in xs do ... end` is an `each` loop (the variable stays inside); `for x in xs then ... end` is a comprehension returning the results. Several iterators and `when` guards are allowed |
+| `for x in xs` | A loop; the variable stays visible after it | `for x in xs do ... end` is an `each` loop (the variable stays inside); `for x in xs then ... end` is a comprehension returning the results. Several iterators and `when` guards are allowed |
 | `Thread`, `Mutex`, `Queue`, `Fiber` | Exist | `spawn`, `Task.scope`, `Channel`, `Atom` |
-| `Thread#join` | | `Task#await` |
+| `Thread#join`, `Thread#value` | Wait for a thread (and take its value) | `Task#await` |
 | `require` | Loads at runtime | Resolved at compile time (same syntax) |
 | Top-level `def` | Private method of `Object` | A function within that file |
 | Arbitrary expressions in a class body | Executed | Declarations only (constant initializers are allowed) |

@@ -11,14 +11,14 @@ Ruby を知っている人が Quarz を書き始めるときに最初に引っ�
 | 項目 | Ruby | Quarz |
 |---|---|---|
 | メソッドの引数 | `def f(a, b = 1, k:)` | `def f(a: Int, b: Int = 1, *, k: Bool)` — 引数型は必須 |
-| 戻り値型 | なし | `def f(...) -> Int`(省略すると推論) |
+| 戻り値型 | 言語の一部ではない(シグネチャはコードとは別の RBS ファイルか、Sorbet の `sig` で書ける) | `def f(...) -> Int`(省略すると推論) |
 | キーワード引数の宣言 | `k:` ラベル | `*` の後ろに書く。`*` の前の引数は位置でもキーワードでも渡せる |
 | インスタンス変数 | 代入すれば生える | `@x: Int` でクラス本体に宣言。既定で不変、可変は `var @x: Int` |
 | 未初期化のインスタンス変数 | `nil` | 見えない。型が `nil` を許さず初期化子もないフィールドは、`initialize` のすべての経路で、オブジェクトを使う前に代入する(しなければコンパイルエラー) |
 | クラスの再オープン | できる | できない。`extension` + `using` で字句スコープ内に追加 |
 | `define_method`、`method_missing`、`send`、`eval`、`instance_eval`、`instance_variable_get` | ある | ない(レシーバ付きの型を持つブロック用に `instance_exec` はある) |
 | `Struct`/`Data` | `Data.define(:x, :y)` | `data Point(x: Int, y: Int)` |
-| 直和型 | クラス階層で模倣 | `enum` |
+| 直和型 | 専用の構文はない。クラス階層や複数の `Data` 型で書く | `enum` |
 | インターフェース | ダックタイピング | `abstract def` を持つ `module`。後付けは `extension T; include M; end` |
 | `nil` | どの変数にも入る | `T?` と書いた型にしか入らない。`if x` などで絞り込む |
 | 配列・ハッシュ・文字列 | 可変 | 不変。`push`/`put` は新しい値を返す。可変が必要なら `Array::Builder` など |
@@ -32,9 +32,9 @@ Ruby を知っている人が Quarz を書き始めるときに最初に引っ�
 | グローバル変数 `$x`、クラス変数 `@@x` | ある | ない。定数 + `Atom` |
 | 定数 | 再代入は警告 | 再代入不可、Shareable 必須 |
 | `Proc.new`、`proc` | ある | `->` とブロックのみ。手続きは常に lambda 意味論 |
-| `for x in xs` | 変数が外に漏れるループ | `for x in xs do ... end` は `each` のループ(変数は中にとどまる)。`for x in xs then ... end` は結果を返す内包表記。複数の反復と `when` による絞り込みも書ける |
+| `for x in xs` | ループ。変数はループの後も見える | `for x in xs do ... end` は `each` のループ(変数は中にとどまる)。`for x in xs then ... end` は結果を返す内包表記。複数の反復と `when` による絞り込みも書ける |
 | `Thread`、`Mutex`、`Queue`、`Fiber` | ある | `spawn`、`Task.scope`、`Channel`、`Atom` |
-| `Thread#join` | | `Task#await` |
+| `Thread#join`、`Thread#value` | スレッドの終了を待つ(値を受け取る) | `Task#await` |
 | `require` | 実行時に読み込み | コンパイル時に解決(構文は同じ) |
 | トップレベルの `def` | `Object` のプライベートメソッド | そのファイル内の関数 |
 | クラス本体の任意の式 | 実行される | 宣言のみ(定数の初期化子は可) |
