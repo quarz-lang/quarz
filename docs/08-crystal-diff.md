@@ -38,7 +38,7 @@ Crystal is the closest relative of Quarz: a statically typed, compiled language 
 | `to_s` | Overridden as `to_s(io : IO)` | `def to_s -> String` |
 | Tuples | `Tuple`, `NamedTuple` (`{1, "a"}`, `{x: 1}`) | Tuple types `[Int, String]` written as array literals; named fields use `data` |
 | Concurrency | Fibers sharing memory (`spawn`, `Channel(T)`, `Mutex`, `Atomic(T)`, which holds any value, a mutable `Array` included); nothing stops a mutable object from being shared | Tasks (`spawn`, `Task.scope` with cancellation, `Channel[T]`, `select`, `Atom[T]`); only `Shareable` values (immutable ones) cross task boundaries, checked by the compiler; no locks; blocking work in `Task.blocking { }` |
-| Memory | Tracing GC (Boehm) | Reference counting with in-place updates of uniquely referenced values; no pauses |
+| Memory | Tracing GC (Boehm) | Reference counting with in-place updates of uniquely referenced values |
 | C interop | `lib LibC; fun strlen(s : UInt8*) : SizeT; end` | `extern "C"; def strlen(s: CString) -> SizeT; end` |
 | Running a program | Compiled (`crystal run` compiles first); `crystal i` is an experimental interpreter, available in builds that include it | `quarz run` interprets (fast start for development); `quarz build` compiles with LLVM or Cranelift |
 

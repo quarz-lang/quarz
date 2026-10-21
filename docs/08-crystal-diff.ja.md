@@ -36,7 +36,7 @@ Crystal は Quarz に最も近い言語です。Ruby の構文を持つ、静的
 | `to_s` | `to_s(io : IO)` を上書きする | `def to_s -> String` |
 | タプル | `Tuple`、`NamedTuple`(`{1, "a"}`、`{x: 1}`) | タプル型 `[Int, String]` を配列リテラルで書く。名前付きのフィールドは `data` で |
 | 並行処理 | メモリを共有するファイバー(`spawn`、`Channel(T)`、`Mutex`、どんな値でも入る `Atomic(T)`。可変な `Array` も入る)。可変オブジェクトの共有を止めるものはない | タスク(`spawn`、キャンセル付きの `Task.scope`、`Channel[T]`、`select`、`Atom[T]`)。タスクの境界を越えられるのは `Shareable` な(不変な)値だけで、コンパイラが検査する。ロックはない。ブロックする処理は `Task.blocking { }` の中で |
-| メモリ管理 | トレース型 GC(Boehm) | 参照カウント。参照が一意な値はその場で更新する。停止時間がない |
+| メモリ管理 | トレース型 GC(Boehm) | 参照カウント。参照が一意な値はその場で更新する |
 | C との連携 | `lib LibC; fun strlen(s : UInt8*) : SizeT; end` | `extern "C"; def strlen(s: CString) -> SizeT; end` |
 | プログラムの実行 | コンパイルする(`crystal run` も先にコンパイルする)。`crystal i` は実験的なインタプリタで、それを含めてビルドした Crystal でだけ使える | `quarz run` は解釈実行(開発中の起動が速い)。`quarz build` は LLVM か Cranelift でコンパイルする |
 
