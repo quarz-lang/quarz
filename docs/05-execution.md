@@ -81,8 +81,7 @@ Today values are reference counted without atomic operations, and updates copy u
 
 1. **In-place updates of immutable values**: an immutable value with a reference count of 1 can perform a "return a new value" operation destructively in place (Perceus, from Lean 4 / Koka). Quarz's "immutable by default yet fast" depends on this.
 2. **Compatibility with AOT**: a tracing GC needs stack maps for native code (LLVM statepoints, etc.) or conservative scanning, which is a hard part of the implementation. RC needs neither, and the boundary with C FFI is simple.
-3. **No pause times**: when the scheduler runs many tasks, a GC stop-the-world hurts responsiveness.
-4. **Deterministic release**: combined with `ensure`, resources like file handles can be released predictably.
+3. **Deterministic release**: combined with `ensure`, resources like file handles can be released predictably.
 
 ### Details
 
