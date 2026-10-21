@@ -95,7 +95,7 @@ puts counter.value        # => 100
 | Collections | Immutable values (copied on update when shared) + Builders | Safe sharing, and speed through in-place updates exploiting uniqueness |
 | Shared mutable state | Forbidden. Only `Atom` and `Channel` | Data races eliminated at compile time. No locks |
 | Lightweight threads | Stackful M:N tasks (`mmap` reservation + lazy commit) | Ruby-style synchronous code without async/await function coloring |
-| Memory management | Reference counting + in-place updates + cycle collection limited to mutable objects | Fits AOT (no stack maps), no pause times, in-place updates of immutable values |
+| Memory management | Reference counting + in-place updates + cycle collection limited to mutable objects | Fits AOT (no stack maps), in-place updates of immutable values |
 | `arr[i]`/`h[k]` | Out of range / missing key raises. `[]?` returns `nil` | Reduces the nil checks you have to write under static typing (proven by Crystal) |
 
 ## Status
