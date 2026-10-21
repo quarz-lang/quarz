@@ -775,7 +775,11 @@ impl<'a> FnBuilder<'a> {
     fn expr(&mut self, e: &'a Expr) -> Reg {
         let saved = self.line;
         self.line = self.line_of(e.span);
-        let r = self.expr_inner(e);
+        let mut r = self.expr_inner(e);
+        // The result of something declared to return `Nil`.
+        if self.out.discarded.contains(&e.id) {
+            r = self.nil();
+        }
         self.line = saved;
         r
     }

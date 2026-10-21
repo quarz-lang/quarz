@@ -305,6 +305,9 @@ pub struct Block {
     pub span: Span,
     /// `{ }` rather than `do ... end` (affects nothing semantically).
     pub braces: bool,
+    /// The declared result of a lambda (`->(x: Int) -> Nil { }`); `None`
+    /// for blocks.
+    pub ret: Option<TypeExpr>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

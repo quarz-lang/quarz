@@ -11,9 +11,38 @@ use smallvec::smallvec;
 
 use super::{block, int};
 
+/// A `spawn` block captures by value: the task sees the outer variables
+/// as they were at the `spawn`, not later reassignments. (The checker
+/// keeps the block from assigning them and requires their values to be
+/// Shareable, so a copy of each frame of the chain, sharing the values,
+/// is all it takes.)
+fn snapshot(b: &Value) -> Value {
+    let Value::Proc(c) = b else {
+        return b.clone();
+    };
+    let (ClosureBody::Func(f), Some(frame)) = (&c.body, &c.frame) else {
+        return b.clone();
+    };
+    fn copy(frame: &Rc<Frame>) -> Rc<Frame> {
+        let parent = frame.parent.as_ref().map(copy);
+        Frame::from_slots(frame.slots.borrow().clone(), parent)
+    }
+    Value::Proc(Rc::new(Closure {
+        body: ClosureBody::Func(*f),
+        frame: Some(copy(frame)),
+        self_val: c.self_val.clone(),
+        destructure: c.destructure,
+        is_lambda: c.is_lambda,
+        tag: c.tag,
+        method_block: c.method_block.clone(),
+        method_tag: c.method_tag,
+        file: c.file,
+    }))
+}
+
 pub fn register(m: &mut super::Registry<NativeFn>) {
     m.insert("Kernel#spawn", |i, _, a| {
-        let b = block(i, &a)?;
+        let b = snapshot(&block(i, &a)?);
         Ok(Value::Task(i.spawn_task(b, None, "task")))
     });
     m.insert("Kernel#loop", kernel_loop);
@@ -71,7 +100,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         Ok(Value::Bool(task(i, r)?.cancel_requested.get()))
     });
     m.insert("Scope#spawn", |i, r, a| {
-        let b = block(i, &a)?;
+        let b = snapshot(&block(i, &a)?);
         let s = scope(i, r)?.clone();
         Ok(Value::Task(i.spawn_task(b, Some(s), "task")))
     });
@@ -243,8 +272,20 @@ fn task_scope(interp: &Interp, _: &Value, args: Args) -> EvalResult {
     loop {
         let child = scope.children.borrow().get(i).cloned();
         let Some(child) = child else { break };
+        let r = interp.await_task(&child);
+        if let (Err(Flow::Raise(e)), false) = (&r, child.is_done()) {
+            // The wait itself was interrupted: the task running the scope
+            // was cancelled. That is the scope's failure; it cancels the
+            // children and still waits for them (their `ensure` runs
+            // before the scope ends).
+            if failure.is_none() {
+                failure = Some(Flow::Raise(e.clone()));
+            }
+            cancel_children(interp, &scope);
+            continue;
+        }
         i += 1;
-        match interp.await_task(&child) {
+        match r {
             Ok(_) => {}
             Err(Flow::Raise(e)) => {
                 let is_cancel = interp.exception_is_a(&e, interp.exc.cancelled);

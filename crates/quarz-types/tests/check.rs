@@ -292,6 +292,61 @@ fn extensions() {
 }
 
 #[test]
+fn captured_self_in_task_blocks() {
+    // `self` is captured like a variable: a mutable object cannot be.
+    let counter = "class Counter\n  var @n: Int = 0\n  def bump -> Nil\n    @n += 1\n    nil\n  end\n  def run -> Int\n    BODY\n    @n\n  end\nend";
+    for (body, msg) in [
+        (
+            "spawn { bump }.await",
+            "calling `bump` uses `self`, which has the non-shareable type Counter",
+        ),
+        (
+            "spawn { @n }.await",
+            "`self` (for its instance variables) has the non-shareable type Counter",
+        ),
+        (
+            "spawn { self }.await",
+            "`self` has the non-shareable type Counter",
+        ),
+        (
+            "Task.scope { |s| s.spawn { bump } }",
+            "calling `bump` uses `self`",
+        ),
+        ("Task.blocking { @n }", "non-shareable type Counter"),
+    ] {
+        err(&counter.replace("BODY", body), msg);
+    }
+    // Immutable objects, `Kernel` methods, top-level methods and a
+    // receiver set inside the task are fine.
+    ok("class P\n  @x: Int\n  def initialize(@x: Int); end\n  def twice -> Int = @x * 2\n  def run -> Int = spawn { twice + @x + self.twice }.await\nend\nputs P.new(2).run");
+    ok("class B\n  var @v: Int = 1\n  def run -> Int = spawn { puts \"hi\"; 5 }.await\n  def html -> String\n    spawn do\n      b = String::Builder.new\n      b.instance_exec { self << \"ok\" }\n      b.to_s\n    end.await\n  end\nend\nputs B.new.run");
+    ok("def helper(x: Int) -> Int = x + 1\nputs spawn { helper(1) }.await");
+    // The same failure through two candidates is reported once.
+    let errs = diagnostics(&counter.replace("BODY", "Task.scope { |s| s.spawn { bump } }"));
+    assert_eq!(errs[0].matches("calling `bump`").count(), 1, "{errs:?}");
+}
+
+#[test]
+fn nil_results_and_lambda_annotations() {
+    // A lambda's declared result is checked like a method's.
+    err(
+        "l = ->(x: Int) -> String { x }",
+        "lambda returns Int but String was expected",
+    );
+    ok("l = ->(x: Int) -> Int | String { x }\nputs l.call(1)");
+    ok("l = ->(x: Int) -> Nil { x }\nl.call(1)");
+    // An exception caught as a union can be raised again.
+    ok("begin\n  raise IOError, \"x\"\nrescue IOError, SystemCallError => e\n  raise e\nend");
+    // `*values: T` is shown with its element type.
+    err("xs = [1]\nxs.push(\"a\", \"b\", 3)", "push(*values: T)");
+    err(
+        "xs = [1]\nxs.push(\"a\", \"b\", 3)",
+        "matches (String, String, Int)",
+    );
+    err("p [3, 1].sort_pairs", "`sort_pairs` is private");
+}
+
+#[test]
 fn concurrency_rules() {
     ok("t = spawn { 1 + 1 }\nputs t.await");
     ok("x = 1\nt = spawn { x + 1 }\nputs t.await");

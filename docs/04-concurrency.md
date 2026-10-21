@@ -22,7 +22,7 @@ Task.current                          # the current Task
 ```
 
 - `spawn { }` creates a new task, registers it with the scheduler, and returns immediately. The `T` in the returned `Task[T]` is the type of the block.
-- The block **captures by value**. Outer local variables are copied at the time of `spawn`, and the block cannot assign to outer variables. Every captured value must be Shareable. (Currently the captured variables are shared rather than copied, so the task sees a later reassignment made by the spawning code; and `self` is not checked: a `spawn` block in a method can use the object's fields even when it is mutable. `Task.blocking` does copy.)
+- The block **captures by value**. Outer local variables are copied at the time of `spawn`, and the block cannot assign to outer variables. Every captured value must be Shareable, and so must `self` when the block uses it (its fields, its methods, or `self` itself): a `spawn` block in a method of a mutable class cannot touch the object.
 - `await` waits for the task to complete and returns its value. If the task ended with an exception, that exception is re-raised on the side that called `await`.
 - Tasks switch cooperatively at safepoints inserted by the compiler (method entry, loop back-edges, channel operations, allocation). Even a pure computational loop switches at loop boundaries, so no single task can monopolize the scheduler. (Currently tasks switch only at operations that wait (a channel operation that must wait, `sleep`, `await`, IO), at `Task.yield` and at each iteration of `loop`; a `while` loop or an iterator that does none of these keeps the scheduler until it finishes.)
 - Each task has its own stack (§7), so Ruby methods can be called recursively as usual. There is no function coloring like `async`/`await`. Blocking operations (channels, IO, `sleep`) can be called from anywhere, and only the calling task stops.
@@ -41,7 +41,7 @@ end
 - When leaving the `Task.scope` block, it waits for every task created with `scope.spawn` to complete. The value of the block is the value of `Task.scope`.
 - If a task in the scope ends with an exception, **the remaining tasks are cancelled**, and after waiting for them to complete, the exception is re-raised to the caller of `Task.scope`. If multiple tasks failed, the first exception is raised and the rest are attached as a `cause` chain (currently the others are discarded).
 - If the block body itself raises, the same thing happens: child tasks are cancelled and waited for before the exception propagates.
-- Scopes can be nested. Cancellation propagates inward through nested scopes. (Currently, when the task that runs a scope is cancelled while it waits in the scope, the scope re-raises at once, without waiting for the children it cancels.)
+- Scopes can be nested. Cancellation propagates inward through nested scopes. A scope whose own task is cancelled cancels its children and still waits for them, so their `ensure` bodies run before the cancellation leaves the scope.
 - A top-level `spawn` (without a `scope`) belongs to the program's root scope. When the main top-level code finishes, the program exits and any remaining tasks are cancelled (the same as Ruby's main thread exiting). (Currently they are dropped without running their `ensure` clauses.) Long-lived services should wait explicitly with `Task.scope`.
 
 ### Cancellation

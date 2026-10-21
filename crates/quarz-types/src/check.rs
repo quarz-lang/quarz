@@ -94,6 +94,11 @@ pub struct Output {
     pub rescue_classes: FxHashMap<Span, Vec<ClassId>>,
     /// Integer literals typed as `Float` because of their context.
     pub float_literals: rustc_hash::FxHashSet<NodeId>,
+    /// Expressions whose value is discarded because it is the result of
+    /// something declared to return `Nil` (the last expression of such a
+    /// method, block or lambda, the value of its `return` or `next`): they
+    /// are evaluated and the result is `nil`.
+    pub discarded: rustc_hash::FxHashSet<NodeId>,
 }
 
 #[derive(Clone, Debug)]
@@ -267,6 +272,9 @@ pub struct Checker {
     defaults_checked: HashSet<ClassId>,
     /// Classes checked for required fields without an `initialize`.
     init_checked: HashSet<ClassId>,
+    /// Integer literals kept `Int` even where a `Float` is expected: the
+    /// members of a union receiver disagreed on them (see `check_call_on`).
+    int_literals: rustc_hash::FxHashSet<NodeId>,
 }
 
 /// Arguments after matching to parameters.
@@ -318,6 +326,7 @@ impl Checker {
             in_outer_self: false,
             defaults_checked: HashSet::new(),
             init_checked: HashSet::new(),
+            int_literals: Default::default(),
         }
     }
 
@@ -893,6 +902,7 @@ impl Checker {
         let expected = self.env.ret_expected.clone();
         let void = expected.as_ref().is_some_and(|t| self.world.is_nil_type(t));
         let body_ty = self.check_body(&body, if void { None } else { expected.as_ref() });
+        self.mark_discarded(body.last(), void);
         match expected {
             Some(ret) if !void => {
                 if !body_ty.is_nothing() && !self.coerce(&body_ty, &ret) {
@@ -1559,6 +1569,18 @@ impl Checker {
 
     // ----- bodies --------------------------------------------------------------
 
+    /// Record (or, when a block is checked again in another context,
+    /// forget) that the value of `e` is discarded; see `Output::discarded`.
+    fn mark_discarded(&mut self, e: Option<&Expr>, void: bool) {
+        if let Some(e) = e {
+            if void {
+                self.out.discarded.insert(e.id);
+            } else {
+                self.out.discarded.remove(&e.id);
+            }
+        }
+    }
+
     fn check_body(&mut self, body: &[Expr], expected: Option<&Type>) -> Type {
         if body.is_empty() {
             return self.world.nil();
@@ -1620,11 +1642,14 @@ impl Checker {
         match &expr.kind {
             Nil => self.world.nil(),
             True | False => self.world.bool_(),
-            SelfRef => self.env.self_type.clone(),
+            SelfRef => {
+                self.check_task_self("`self`", expr.span);
+                self.env.self_type.clone()
+            }
             Int(_) => {
                 if let Some(e) = expected {
                     let e = self.resolve(e);
-                    if e == self.world.float() {
+                    if e == self.world.float() && !self.int_literals.contains(&expr.id) {
                         self.out.float_literals.insert(expr.id);
                         return self.world.float();
                     }
@@ -1716,7 +1741,21 @@ impl Checker {
                     None => Type::Nothing,
                 }
             }
-            Call(call) => self.check_call(expr, call, expected),
+            Call(call) => {
+                let t = self.check_call(expr, call, expected);
+                // `bump` in a `spawn` block in a method of a mutable
+                // class: a call on the captured `self` (a call to a
+                // `Kernel` method such as `puts` does not use it).
+                if call.recv.is_none() {
+                    if let Some(CallTarget::Method { method }) = self.out.calls.get(&expr.id) {
+                        if self.world.method(*method).owner != self.world.builtin.kernel {
+                            let what = format!("calling `{}` uses `self`, which", call.name);
+                            self.check_task_self(&what, expr.span);
+                        }
+                    }
+                }
+                t
+            }
             MethodRef { recv, name } => {
                 let rt = self.check_expr(recv, None);
                 let rt = self.resolve(&rt);
@@ -1907,6 +1946,7 @@ impl Checker {
                             Some(v) => self.check_expr(v, if void { None } else { Some(&ret) }),
                             None => self.world.nil(),
                         };
+                        self.mark_discarded(value.as_deref(), void);
                         if !void && !self.coerce(&t, &ret) {
                             self.error(
                                 format!(
@@ -1957,6 +1997,7 @@ impl Checker {
                         Some(v) => self.check_expr(v, if void { None } else { Some(&ret) }),
                         None => self.world.nil(),
                     };
+                    self.mark_discarded(value.as_deref(), void);
                     if !void && !self.coerce(&t, &ret) {
                         self.error(
                             format!(
@@ -3449,6 +3490,14 @@ impl Checker {
                 let members = members.clone();
                 let mut result = Type::Nothing;
                 let mut targets: Vec<Option<MethodId>> = Vec::new();
+                // The arguments are checked once per member, but a literal
+                // has one representation: an integer literal the members
+                // disagree on (`Float` for one, `Int` for another, as in
+                // `x + 1` with `x: Int | Float`) is kept `Int`, and the
+                // members are checked again under that.
+                let saved_floats = std::mem::take(&mut self.out.float_literals);
+                let ndiag = self.diagnostics.len();
+                let mut per_member = Vec::new();
                 for m in &members {
                     let t = self.check_call_on(expr, call, m, implicit_self, expected);
                     targets.push(match self.out.calls.get(&expr.id) {
@@ -3456,6 +3505,35 @@ impl Checker {
                         _ => None,
                     });
                     result = self.join(&result, &t);
+                    per_member.push(std::mem::take(&mut self.out.float_literals));
+                }
+                let agreed = per_member.windows(2).all(|w| w[0] == w[1]);
+                self.out.float_literals = saved_floats;
+                if agreed {
+                    if let Some(floats) = per_member.pop() {
+                        self.out.float_literals.extend(floats);
+                    }
+                } else {
+                    let all: rustc_hash::FxHashSet<NodeId> =
+                        per_member.iter().flatten().copied().collect();
+                    let added: Vec<NodeId> = all
+                        .into_iter()
+                        .filter(|id| self.int_literals.insert(*id))
+                        .collect();
+                    self.diagnostics.truncate(ndiag);
+                    result = Type::Nothing;
+                    targets.clear();
+                    for m in &members {
+                        let t = self.check_call_on(expr, call, m, implicit_self, expected);
+                        targets.push(match self.out.calls.get(&expr.id) {
+                            Some(CallTarget::Method { method }) => Some(*method),
+                            _ => None,
+                        });
+                        result = self.join(&result, &t);
+                    }
+                    for id in added {
+                        self.int_literals.remove(&id);
+                    }
                 }
                 // The recorded target is the last member's; when the
                 // members resolve to different methods, record one that
@@ -4114,6 +4192,10 @@ impl Checker {
             }
         }
         if !single || cands.is_empty() {
+            // A method and the one it overrides (`Scope#spawn` and
+            // `Kernel#spawn`) can fail for the same reason: say it once.
+            let mut seen = HashSet::new();
+            failures.retain(|f| seen.insert(f.clone()));
             let recv_name = self.name(recv_ty);
             let arg_desc = self.describe_args(call, &pre);
             self.error(
@@ -4144,7 +4226,13 @@ impl Checker {
                     pre.get(&e.id)
                         .or_else(|| self.out.node_types.get(&e.id))
                         .map(|t| self.name(t))
-                        .unwrap_or_else(|| "?".to_string()),
+                        .unwrap_or_else(|| match e.kind {
+                            // Typed only against a parameter, which no
+                            // overload got to.
+                            ExprKind::Int(_) => "Int".to_string(),
+                            ExprKind::Nil => "Nil".to_string(),
+                            _ => "?".to_string(),
+                        }),
                 ),
                 Arg::Splat(e) => parts.push(format!(
                     "*{}",
@@ -4179,11 +4267,14 @@ impl Checker {
                     _ => "",
                 };
                 let default = if p.default.is_some() { " = ..." } else { "" };
-                format!(
-                    "{prefix}{}: {}{default}",
-                    p.name,
-                    self.world.type_name(&p.ty)
-                )
+                // `*values: T` is declared with the element type and
+                // held as `Array[T]` (`**opts: T` as `Hash[Symbol, T]`).
+                let ty = match (&p.kind, &p.ty) {
+                    (ParamKind::Rest, Type::Class(_, args)) if args.len() == 1 => &args[0],
+                    (ParamKind::KeywordRest, Type::Class(_, args)) if args.len() == 2 => &args[1],
+                    _ => &p.ty,
+                };
+                format!("{prefix}{}: {}{default}", p.name, self.world.type_name(ty))
             })
             .collect();
         if let Some((name, t)) = &m.block {
@@ -4564,6 +4655,7 @@ impl Checker {
         }
         let void = self.world.is_nil_type(&self.infer.resolve(&ret));
         let bt = self.check_body(&block.body, if void { None } else { Some(&ret) });
+        self.mark_discarded(block.body.last(), void);
         if !void && !bt.is_nothing() && !self.coerce(&bt, &ret) {
             let span = block.body.last().map(|e| e.span).unwrap_or(block.span);
             self.error(
@@ -4612,7 +4704,36 @@ impl Checker {
 
     /// Fields are reachable only from their class's own body: inside a
     /// block with another receiver, `@x` is an error.
+    /// Whether `self` here is the `self` of the code around the innermost
+    /// `spawn` (or `Task.blocking`) block, captured by it (and not the
+    /// receiver of a block run with `instance_exec` inside the task).
+    fn self_crosses_task(&self) -> bool {
+        match self.env.task_frame {
+            Some(tf) => !self.env.receivers.iter().any(|r| r.outer_frame >= tf),
+            None => false,
+        }
+    }
+
+    /// A task block captures `self` like a variable: it must be Shareable.
+    fn check_task_self(&mut self, what: &str, span: Span) {
+        if !self.self_crosses_task() {
+            return;
+        }
+        let t = self.resolve(&self.env.self_type.clone());
+        if t.has_vars() || self.world.is_shareable(&t) {
+            return;
+        }
+        self.error(
+            format!(
+                "{what} has the non-shareable type {} and cannot be captured by a `spawn` block",
+                self.world.type_name(&t)
+            ),
+            span,
+        );
+    }
+
     fn check_ivar_access(&mut self, span: Span) -> bool {
+        self.check_task_self("`self` (for its instance variables)", span);
         if !self.env.receivers.is_empty() && self.env.class_id != self.env.lexical_class {
             let recv = self.name(&self.env.self_type.clone());
             self.error(
@@ -4637,9 +4758,16 @@ impl Checker {
             is_block: true,
             owner: SelfOwner::Block(id),
         });
-        let ret_var = match &expected_proc {
-            Some((_, r)) => r.clone(),
-            None => self.infer.fresh(),
+        // `->(x: Int) -> R { }`: the declared result, else the expected
+        // one, else inferred from the body.
+        let declared = block.ret.as_ref().map(|te| {
+            let scope = self.env.scope.clone();
+            self.resolve_type_expr(te, &scope).unwrap_or(Type::Nothing)
+        });
+        let ret_var = match (&declared, &expected_proc) {
+            (Some(d), _) => d.clone(),
+            (None, Some((_, r))) => r.clone(),
+            (None, None) => self.infer.fresh(),
         };
         self.env.blocks.push(BlockCtx {
             ret: ret_var.clone(),
@@ -4666,8 +4794,17 @@ impl Checker {
             param_types.push(t.clone());
             self.declare_var(&p.name, t, p.span);
         }
-        let bt = self.check_body(&block.body, None);
-        if !bt.is_nothing() && !self.coerce(&bt, &ret_var) {
+        let void = self.world.is_nil_type(&self.infer.resolve(&ret_var));
+        let bt = self.check_body(
+            &block.body,
+            if declared.is_some() && !void {
+                Some(&ret_var)
+            } else {
+                None
+            },
+        );
+        self.mark_discarded(block.body.last(), void);
+        if !void && !bt.is_nothing() && !self.coerce(&bt, &ret_var) {
             self.error(
                 format!(
                     "lambda returns {} but {} was expected",
@@ -4888,6 +5025,19 @@ impl Checker {
                 }
             }
             Type::Class(cid, _) if self.world.is_exception_class(*cid) => {
+                if args.len() > 1 {
+                    self.error(
+                        "`raise` with an exception object takes no second argument",
+                        expr.span,
+                    );
+                }
+            }
+            // `rescue IOError, SystemCallError => e` then `raise e`.
+            Type::Union(ms)
+                if ms.iter().all(
+                    |m| matches!(m, Type::Class(cid, _) if self.world.is_exception_class(*cid)),
+                ) =>
+            {
                 if args.len() > 1 {
                     self.error(
                         "`raise` with an exception object takes no second argument",

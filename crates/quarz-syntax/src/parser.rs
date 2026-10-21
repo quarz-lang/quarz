@@ -1545,6 +1545,7 @@ impl<'src> Parser<'src> {
             body,
             span,
             braces: true,
+            ret: None,
         })
     }
 
@@ -1568,6 +1569,7 @@ impl<'src> Parser<'src> {
             body,
             span,
             braces: false,
+            ret: None,
         })
     }
 
@@ -2172,6 +2174,7 @@ impl<'src> Parser<'src> {
                             body: vec![guard],
                             span: gspan,
                             braces: true,
+                            ret: None,
                         }),
                         safe_nav: false,
                         has_parens: false,
@@ -2195,6 +2198,7 @@ impl<'src> Parser<'src> {
                         body: body_exprs,
                         span: it.span,
                         braces: true,
+                        ret: None,
                     }),
                     safe_nav: false,
                     has_parens: false,
@@ -2255,6 +2259,7 @@ impl<'src> Parser<'src> {
                         body: body_exprs,
                         span: it.span,
                         braces: false,
+                        ret: None,
                     }),
                     safe_nav: false,
                     has_parens: false,
@@ -2285,7 +2290,6 @@ impl<'src> Parser<'src> {
         } else {
             None
         };
-        let _ = ret; // Lambda return types are inferred; annotation accepted for symmetry.
         let (body, braces) = if self.at(&T::LBrace) {
             let saved = self.no_do;
             self.no_do = false;
@@ -2315,6 +2319,7 @@ impl<'src> Parser<'src> {
                 body,
                 span,
                 braces,
+                ret,
             })),
         ))
     }

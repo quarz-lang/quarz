@@ -847,7 +847,7 @@ module Enumerable[out T]
 
   def sort_by[U: Comparable[U]](&: (T) -> U) -> Array[T]
     pairs: Array[[U, T]] = map { |x| [yield(x), x] }
-    pairs.sort_pairs.map { |pair| pair[1] }
+    sort_pairs(pairs).map { |pair| pair[1] }
   end
 
   def lazy -> Array[T] = to_a
@@ -979,6 +979,8 @@ module Enumerable[out T]
   native def map -> Enumerator[T]
   native def each_with_index -> Enumerator[[T, Int]]
   private native def each_with_index_pairs(&: ([T, Int]) -> Nil) -> Nil
+  # `[key, value]` pairs sorted by key (for `sort_by`).
+  private native def sort_pairs[K, V](pairs: Array[[K, V]]) -> Array[[K, V]]
   native def each_slice(n: Int) -> Enumerator[Array[T]]
   native def each_cons(n: Int) -> Enumerator[Array[T]]
 end
@@ -1074,7 +1076,6 @@ class Array[out T]
   native def hash -> Int
   native def map[U](&: (T) -> U) -> Array[U]
   native def select(&: (T) -> Object) -> Array[T]
-  native def sort_pairs -> Array[T]
   native def each -> Enumerator[T]
   native def fetch(index: Int, &: (Int) -> T) -> T
   native def slice(start: Int, length: Int) -> Array[T]

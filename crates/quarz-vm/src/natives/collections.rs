@@ -334,7 +334,6 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     m.insert("Array#hash", super::core_hash);
     m.insert("Array#map", array_map);
     m.insert("Array#select", array_select);
-    m.insert("Array#sort_pairs", array_sort_pairs);
     m.insert("Array#<=>", |i, r, a| {
         Ok(Value::Int(i.compare(r, a.arg(0))? as i64))
     });
@@ -1298,9 +1297,10 @@ fn array_select(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     Ok(Value::array(out))
 }
 
-/// Sort an array of `[key, value]` pairs by key (for `sort_by`).
-fn array_sort_pairs(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
-    let mut items: Vec<Value> = arr(interp, recv)?.iter().cloned().collect();
+/// Sort an array of `[key, value]` pairs by key (`Enumerable#sort_pairs`,
+/// private, for `sort_by`).
+pub(super) fn enum_sort_pairs(interp: &Interp, _: &Value, args: Args) -> EvalResult {
+    let mut items: Vec<Value> = arr(interp, args.arg(0))?.iter().cloned().collect();
     interp.sort_values(&mut items, |a, b| {
         let ka = match a {
             Value::Array(p) => p.get(0).unwrap_or(Value::Nil),

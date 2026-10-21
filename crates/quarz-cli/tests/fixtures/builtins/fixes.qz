@@ -1,0 +1,74 @@
+# A method, block or lambda declared to return Nil returns nil.
+def nl -> Nil
+  5
+end
+p nl
+def early(x: Int) -> Nil
+  return 5 if x > 0
+  nil
+end
+p early(1)
+l = ->(x: Int) -> Nil { x }
+p l.call(3)
+def run_block(&: () -> Nil) -> Nil
+  r = yield
+  p r
+end
+run_block { 7 }
+[1, 2].each { |x| x }
+
+# An integer literal stays an Int on a union receiver.
+def g(x: Int | Float) = x + 1
+p g(1), g(1.5)
+def h(x: Int | Float) -> Int | Float = x * 2
+p h(3), h(1.5)
+
+# spawn captures by value: a later reassignment is not seen.
+n = 1
+Task.scope do |s|
+  t = s.spawn do
+    Task.sleep(10.ms)
+    n
+  end
+  n = 2
+  p t.await, n
+end
+
+# A scope cancelled while it waits for its children still waits for
+# them, so their `ensure` runs before it ends.
+log: Atom[Array[String]] = Atom.new([])
+outer = spawn do
+  Task.scope do |s|
+    s.spawn do
+      begin
+        Task.sleep(100.ms)
+      ensure
+        Task.sleep(20.ms)
+        log.update { |entries| entries.push("child cleaned up") }
+      end
+    end
+  end
+  nil
+end
+Task.sleep(10.ms)
+outer.cancel
+begin
+  outer.await
+rescue Task::Cancelled => e
+  log.update { |entries| entries.push("outer: #{e.class}") }
+end
+p log.get
+
+# sort_by still works through the private helper.
+p ["pear", "fig", "apple"].sort_by(&:size), (1..4).sort_by { |x| -x }
+
+# An exception caught as a union is raised again.
+begin
+  begin
+    raise IOError, "disk"
+  rescue IOError, SystemCallError => e
+    raise e
+  end
+rescue => e
+  p e.class, e.message
+end

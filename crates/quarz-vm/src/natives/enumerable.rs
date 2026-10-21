@@ -24,6 +24,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     m.insert("Enumerable#each_with_index", |i, r, _| {
         enumerator(i, r, "each_with_index_pairs", vec![])
     });
+    m.insert("Enumerable#sort_pairs", super::collections::enum_sort_pairs);
     m.insert("Enumerable#each_with_index_pairs", |i, r, a| {
         let b = block(i, &a)?;
         for (k, x) in collect(i, r)?.into_iter().enumerate() {

@@ -99,7 +99,7 @@ end
 
 - Fields are immutable by default. They are assigned in `initialize` and cannot be changed outside it.
 - `var @x: T` makes a field mutable. An object with mutable fields is a **mutable object**.
-- A mutable object can only be used inside the task that created it (§5; not yet enforced everywhere: a `spawn` block in a method can use `self`, and a task's result is not checked).
+- A mutable object can only be used inside the task that created it (§5; not yet enforced everywhere: a task's result is not checked).
 - All fields of a `data` are immutable; `with` creates "a copy with some fields changed".
 
 The Ruby-style design of "line up `attr_accessor`s and change state through setters" requires writing `var` in Quarz, making the intent explicit. The number of `var`s is a measure of how risky a class is with respect to concurrency.
