@@ -6,7 +6,7 @@ Crystal is the closest relative of Quarz: a statically typed, compiled language 
 
 ## What works the same
 
-`def ... end`, `class`/`module`, `include`/`extend`, `abstract class`/`abstract def`, single inheritance, `super`, blocks and `yield`, `->(x) { }` procedures, `case/when` and `case/in`, `begin/rescue/ensure`, `raise`, string interpolation and heredocs, `require`, `private`/`protected`, operator methods, union types and `T?` (`T | Nil`), narrowing with `if x`, `x.nil?`, `is_a?` and `case/in`, `as`/`as?` (checked casts), generics with type parameters, positional arguments that can also be passed by name and keyword-only parameters after `*`, `def initialize(@x: T)` assigning the field, and the rule that the object cannot be used in `initialize` before its fields are assigned (Crystal reports `self` used before initialization; Quarz's definite initialization is described in [01-syntax.md](01-syntax.md) §3). Strings are immutable in both, and both build them with `String.build { |b| b << ... }` (a `String::Builder` in both; Crystal's is also an `IO`, so `print`-style methods and `to_s(io)` write into it).
+`def ... end`, `class`/`module`, `include`/`extend`, `abstract class`/`abstract def` (a class must implement the abstract methods it inherits or includes, checked in both), single inheritance, `super`, blocks and `yield`, `->(x) { }` procedures, `case/when` and `case/in`, `begin/rescue/ensure`, `raise`, string interpolation and heredocs, `require`, `private`/`protected`, operator methods, union types and `T?` (`T | Nil`), narrowing with `if x`, `x.nil?`, `is_a?` and `case/in`, `as`/`as?` (checked casts), generics with type parameters, positional arguments that can also be passed by name and keyword-only parameters after `*`, `def initialize(@x: T)` assigning the field, and an error for a field of a non-nilable type that `initialize` does not assign on every path. Strings are immutable in both, and both build them with `String.build { |b| b << ... }` (a `String::Builder` in both; Crystal's is also an `IO`, so `print`-style methods and `to_s(io)` write into it).
 
 ## What changes
 
@@ -19,6 +19,7 @@ Crystal is the closest relative of Quarz: a statically typed, compiled language 
 | Integers | `Int32` by default (`1_i64` for `Int64`); overflow raises `OverflowError` | `Int` is arbitrary precision (promoted to a big integer on overflow, as in Ruby). Fixed-width types are planned for FFI |
 | Floating point | `Float64` (`Float32`) | `Float` (`Float32` planned) |
 | Instance variables | Declared or inferred from assignments; mutable | Declared in the class body (`@x: Int`); immutable by default, mutable with `var @x: Int` |
+| Using the object in `initialize` before its fields are assigned | An error when `self` is used or passed on, or when a method it calls reads a field not assigned yet; a call to a method that does not touch such a field is allowed | An error on any use of `self` and any call to a method of the class until every such field is assigned (the methods called are not looked into); see [01-syntax.md](01-syntax.md) §3 |
 | Accessors | `getter`, `setter`, `property` | `attr_reader`, `attr_writer`, `attr_accessor` (writers only on `var` fields) |
 | `Array`, `Hash`, `Set` | Mutable (`<<`, `[]=`, `delete`) | Immutable and persistent: `push`/`put`/`delete` return new values, updated in place when unshared (`xs = xs.push(x)`). Mutable `Array::Builder` and friends for task-local building |
 | `arr[i]`, `h[k]` | Raise when out of range / missing; `[]?` returns `nil` | Same |
@@ -28,25 +29,27 @@ Crystal is the closest relative of Quarz: a statically typed, compiled language 
 | `&.method` shorthand | `xs.map(&.upcase)` | `xs.map(&:upcase)` (Ruby's spelling) |
 | Block parameter types | `&block : Int32 -> Int32` | `&block: (Int) -> Int`; a method that yields declares its block (`&: (Int) -> Nil`) |
 | Reopening classes | Allowed anywhere (monkey patching) | Not allowed. Methods are added to existing types with `extension`, active where `using` is in effect |
-| Interfaces | Modules with abstract methods; duck typing through untyped parameters | Modules with abstract methods, checked when a class includes them; a type you did not write is made to conform with `extension T; include M; end` |
+| Making an existing type conform to a module | Reopen it and include the module (`struct Int32; include M; ...; end`), everywhere; untyped parameters also accept anything with the right methods (duck typing) | `extension Int; include M; ...; end`: active everywhere when written at the top level, or where `using` brings in the module that declares it; parameters are typed, so a value must conform |
+| Type aliases | `alias UserId = Int32` | `type UserId = Int` |
+| Method references | `->obj.method` | `obj.:method` |
+| Blocks with a receiver (DSLs) | `with obj yield`: the block's implicit receiver is `obj`, whatever the block | The receiver is part of the block's type (`Html.() -> Nil`), and the block is run with `obj.instance_exec(&block)` |
 | Macros | `macro`, `{{ }}`, `@type`, annotations | None. Code generation by the compiler only for `data`, `attr_*` and friends |
 | Narrowing fields | Instance variables are not narrowed (assign to a local first) | Immutable fields and `data` fields are narrowed; `var` fields are not |
 | `to_s` | Overridden as `to_s(io : IO)` | `def to_s -> String` |
 | Tuples | `Tuple`, `NamedTuple` (`{1, "a"}`, `{x: 1}`) | Tuple types `[Int, String]` written as array literals; named fields use `data` |
-| Concurrency | Fibers sharing memory (`spawn`, `Channel(T)`, `Mutex`); nothing stops a mutable object from being shared | Tasks (`spawn`, `Task.scope` with cancellation, `Channel[T]`, `select`, `Atom[T]`); only `Shareable` values (immutable ones) cross task boundaries, checked by the compiler; no locks; blocking work in `Task.blocking { }` |
+| Concurrency | Fibers sharing memory (`spawn`, `Channel(T)`, `Mutex`, `Atomic(T)`, which holds any value, a mutable `Array` included); nothing stops a mutable object from being shared | Tasks (`spawn`, `Task.scope` with cancellation, `Channel[T]`, `select`, `Atom[T]`); only `Shareable` values (immutable ones) cross task boundaries, checked by the compiler; no locks; blocking work in `Task.blocking { }` |
 | Memory | Tracing GC (Boehm) | Reference counting with in-place updates of uniquely referenced values; no pauses |
 | C interop | `lib LibC; fun strlen(s : UInt8*) : SizeT; end` | `extern "C"; def strlen(s: CString) -> SizeT; end` |
-| Running a program | Compiled (`crystal run` compiles first) | `quarz run` interprets (fast start for development); `quarz build` compiles with LLVM or Cranelift |
+| Running a program | Compiled (`crystal run` compiles first); `crystal i` is an experimental interpreter, available in builds that include it | `quarz run` interprets (fast start for development); `quarz build` compiles with LLVM or Cranelift |
 
 ## What is added
 
-- `data`, algebraic `enum`, `var`, `override`, `extension`/`using`, `type` aliases
+- `data`, algebraic `enum`, `var`, `override`, `extension`/`using`
 - Immutable collections, with mutable Builders to assemble them (`Array::Builder`, `Hash::Builder`, `Set::Builder`; `Array.build { |b| b << x }` gives an immutable array). Crystal's `Array.build(capacity) { |buffer| ... }` is a different, low-level API: it writes into a raw pointer buffer and returns the number of elements written
-- `Task.scope` (structured concurrency with cancellation), `Atom`, the compiler-derived `Shareable` marker
-- Blocks with a receiver (`Html.() -> Nil` with `instance_exec`) for DSLs
-- `for` comprehensions
-- `obj.:method` (method reference) and `Result[T, E]`
-- An interpreter (`quarz run`, a REPL) alongside the compiler
+- `Task.scope` (structured concurrency with cancellation), the compiler-derived `Shareable` marker, and `Atom[T]` for `Shareable` values, updated with `update { |old| ... }` (a CAS loop)
+- `for` comprehensions and loops
+- `Result[T, E]`
+- An interpreter as the everyday way of running programs (`quarz run`, a REPL), sharing the runtime with the compiler
 
 ## Rewriting example
 

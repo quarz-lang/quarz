@@ -4,7 +4,7 @@ Crystal は Quarz に最も近い言語です。Ruby の構文を持つ、静的
 
 ## そのまま通じるもの
 
-`def ... end`、`class`/`module`、`include`/`extend`、`abstract class`/`abstract def`、単一継承、`super`、ブロックと `yield`、`->(x) { }` の手続き、`case/when` と `case/in`、`begin/rescue/ensure`、`raise`、文字列補間とヒアドキュメント、`require`、`private`/`protected`、演算子メソッド、合併型と `T?`(`T | Nil`)、`if x`・`x.nil?`・`is_a?`・`case/in` による絞り込み、`as`/`as?`(検査付きのキャスト)、型引数を持つジェネリクス、名前でも渡せる位置引数と `*` の後のキーワード専用引数、フィールドへの代入を兼ねる `def initialize(@x: T)`、そして `initialize` の中でフィールドの代入前にオブジェクトを使えないという規則(Crystal は初期化前の `self` の使用を報告します。Quarz の確定初期化は [01-syntax.ja.md](01-syntax.ja.md) §3 を参照)。文字列はどちらでも不変で、どちらも `String.build { |b| b << ... }` で組み立てます(どちらでも `String::Builder` です。Crystal のものは `IO` でもあるので、`print` などのメソッドや `to_s(io)` がそこに書き込めます)。
+`def ... end`、`class`/`module`、`include`/`extend`、`abstract class`/`abstract def`(継承・include した抽象メソッドの実装はどちらでも検査される)、単一継承、`super`、ブロックと `yield`、`->(x) { }` の手続き、`case/when` と `case/in`、`begin/rescue/ensure`、`raise`、文字列補間とヒアドキュメント、`require`、`private`/`protected`、演算子メソッド、合併型と `T?`(`T | Nil`)、`if x`・`x.nil?`・`is_a?`・`case/in` による絞り込み、`as`/`as?`(検査付きのキャスト)、型引数を持つジェネリクス、名前でも渡せる位置引数と `*` の後のキーワード専用引数、フィールドへの代入を兼ねる `def initialize(@x: T)`、そして `nil` を許さない型のフィールドを `initialize` がすべての経路で代入しなければエラーになること。文字列はどちらでも不変で、どちらも `String.build { |b| b << ... }` で組み立てます(どちらでも `String::Builder` です。Crystal のものは `IO` でもあるので、`print` などのメソッドや `to_s(io)` がそこに書き込めます)。
 
 ## 変わるもの
 
@@ -17,6 +17,7 @@ Crystal は Quarz に最も近い言語です。Ruby の構文を持つ、静的
 | 整数 | 既定は `Int32`(`Int64` は `1_i64`)。溢れると `OverflowError` | `Int` は任意精度(溢れると Ruby と同じく多倍長整数になる)。固定幅の型は FFI 用に予定 |
 | 浮動小数点数 | `Float64`(`Float32`) | `Float`(`Float32` は予定) |
 | インスタンス変数 | 宣言するか代入から推論。可変 | クラス本体で宣言(`@x: Int`)。既定で不変、`var @x: Int` で可変 |
+| `initialize` でフィールドの代入前にオブジェクトを使う | `self` を使ったり渡したりするとエラー。呼んだメソッドが未代入のフィールドを読んでもエラー。そのようなフィールドに触れないメソッドの呼び出しは許される | そのようなフィールドがすべて代入されるまで、`self` の使用もクラスのメソッドの呼び出しもすべてエラー(呼ぶメソッドの中身は見ない)。[01-syntax.ja.md](01-syntax.ja.md) §3 を参照 |
 | アクセサ | `getter`、`setter`、`property` | `attr_reader`、`attr_writer`、`attr_accessor`(書き込み側は `var` フィールドのみ) |
 | `Array`、`Hash`、`Set` | 可変(`<<`、`[]=`、`delete`) | 不変で永続的。`push`/`put`/`delete` は新しい値を返し、共有されていなければその場で更新する(`xs = xs.push(x)`)。タスク内で組み立てるための可変な `Array::Builder` など |
 | `arr[i]`、`h[k]` | 範囲外・キーなしで例外。`[]?` は `nil` を返す | 同じ |
@@ -26,25 +27,27 @@ Crystal は Quarz に最も近い言語です。Ruby の構文を持つ、静的
 | `&.method` の短縮形 | `xs.map(&.upcase)` | `xs.map(&:upcase)`(Ruby の書き方) |
 | ブロック引数の型 | `&block : Int32 -> Int32` | `&block: (Int) -> Int`。`yield` するメソッドはブロックを宣言する(`&: (Int) -> Nil`) |
 | クラスの再オープン | どこでもできる(モンキーパッチ) | できない。既存の型へのメソッド追加は `extension` で行い、`using` が有効な範囲でだけ効く |
-| インターフェース | 抽象メソッドを持つモジュール。型のない引数によるダックタイピング | 抽象メソッドを持つモジュールで、include したクラスを検査する。自分で書いていない型は `extension T; include M; end` で適合させる |
+| 既存の型をモジュールに適合させる | 型を再オープンしてモジュールを include する(`struct Int32; include M; ...; end`)。どこでも効く。型のない引数は、必要なメソッドを持つものなら何でも受け付ける(ダックタイピング) | `extension Int; include M; ...; end`。トップレベルに書けばどこでも有効で、モジュールの中に書けば `using` でそのモジュールを持ち込んだ範囲で有効になる。引数には型があるので、値は適合していなければならない |
+| 型の別名 | `alias UserId = Int32` | `type UserId = Int` |
+| メソッド参照 | `->obj.method` | `obj.:method` |
+| レシーバ付きのブロック(DSL) | `with obj yield`。ブロックが何であれ、暗黙のレシーバが `obj` になる | レシーバはブロックの型の一部(`Html.() -> Nil`)で、`obj.instance_exec(&block)` で実行する |
 | マクロ | `macro`、`{{ }}`、`@type`、アノテーション | ない。コンパイラによるコード生成は `data` や `attr_*` などに限る |
 | フィールドの絞り込み | インスタンス変数は絞り込まれない(局所変数に代入する) | 不変フィールドと `data` のフィールドは絞り込まれる。`var` フィールドは絞り込まれない |
 | `to_s` | `to_s(io : IO)` を上書きする | `def to_s -> String` |
 | タプル | `Tuple`、`NamedTuple`(`{1, "a"}`、`{x: 1}`) | タプル型 `[Int, String]` を配列リテラルで書く。名前付きのフィールドは `data` で |
-| 並行処理 | メモリを共有するファイバー(`spawn`、`Channel(T)`、`Mutex`)。可変オブジェクトの共有を止めるものはない | タスク(`spawn`、キャンセル付きの `Task.scope`、`Channel[T]`、`select`、`Atom[T]`)。タスクの境界を越えられるのは `Shareable` な(不変な)値だけで、コンパイラが検査する。ロックはない。ブロックする処理は `Task.blocking { }` の中で |
+| 並行処理 | メモリを共有するファイバー(`spawn`、`Channel(T)`、`Mutex`、どんな値でも入る `Atomic(T)`。可変な `Array` も入る)。可変オブジェクトの共有を止めるものはない | タスク(`spawn`、キャンセル付きの `Task.scope`、`Channel[T]`、`select`、`Atom[T]`)。タスクの境界を越えられるのは `Shareable` な(不変な)値だけで、コンパイラが検査する。ロックはない。ブロックする処理は `Task.blocking { }` の中で |
 | メモリ管理 | トレース型 GC(Boehm) | 参照カウント。参照が一意な値はその場で更新する。停止時間がない |
 | C との連携 | `lib LibC; fun strlen(s : UInt8*) : SizeT; end` | `extern "C"; def strlen(s: CString) -> SizeT; end` |
-| プログラムの実行 | コンパイルする(`crystal run` も先にコンパイルする) | `quarz run` は解釈実行(開発中の起動が速い)。`quarz build` は LLVM か Cranelift でコンパイルする |
+| プログラムの実行 | コンパイルする(`crystal run` も先にコンパイルする)。`crystal i` は実験的なインタプリタで、それを含めてビルドした Crystal でだけ使える | `quarz run` は解釈実行(開発中の起動が速い)。`quarz build` は LLVM か Cranelift でコンパイルする |
 
 ## Quarz で加わるもの
 
-- `data`、代数的な `enum`、`var`、`override`、`extension`/`using`、`type` による別名
+- `data`、代数的な `enum`、`var`、`override`、`extension`/`using`
 - 不変なコレクションと、それを組み立てる可変な Builder(`Array::Builder`、`Hash::Builder`、`Set::Builder`。`Array.build { |b| b << x }` は不変な配列を返す)。Crystal の `Array.build(capacity) { |buffer| ... }` は別物の低水準 API で、生のポインタのバッファに書き込み、書いた要素数を返す
-- `Task.scope`(キャンセル付きの構造化並行性)、`Atom`、コンパイラが導出する `Shareable` マーカー
-- DSL 向けのレシーバ付きブロック(`Html.() -> Nil` と `instance_exec`)
-- `for` 内包表記
-- `obj.:method`(メソッド参照)と `Result[T, E]`
-- コンパイラと並ぶインタプリタ(`quarz run`、REPL)
+- `Task.scope`(キャンセル付きの構造化並行性)、コンパイラが導出する `Shareable` マーカー、`Shareable` な値を入れる `Atom[T]`(`update { |old| ... }` で更新する CAS ループ)
+- `for` 内包表記と `for` ループ
+- `Result[T, E]`
+- 日常的な実行手段としてのインタプリタ(`quarz run`、REPL)。ランタイムはコンパイラと共有する
 
 ## 書き換えの例
 
