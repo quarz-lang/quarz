@@ -32,7 +32,7 @@ Ruby を知っている人が Quarz を書き始めるときに最初に引っ�
 | グローバル変数 `$x`、クラス変数 `@@x` | ある | ない。定数 + `Atom` |
 | 定数 | 再代入は警告 | 再代入不可、Shareable 必須 |
 | `Proc.new`、`proc` | ある | `->` とブロックのみ。手続きは常に lambda 意味論 |
-| `for x in xs` | ループ。変数はループの後も見える | `for x in xs do ... end` は `each` のループ(変数は中にとどまる)。`for x in xs then ... end` は結果を返す内包表記。複数の反復と `when` による絞り込みも書ける |
+| `for x in xs` | ループ。変数はループの後も見える | 本体の値を返す内包表記(`map`、複数の反復には `flat_map`、`when` による絞り込みには `filter`)。変数は中にとどまる。ループには `each` を使う |
 | `Thread`、`Mutex`、`Queue`、`Fiber` | ある | `spawn`、`Task.scope`、`Channel`、`Atom` |
 | `Thread#join`、`Thread#value` | スレッドの終了を待つ(値を受け取る) | `Task#await` |
 | `require` | 実行時に読み込み | コンパイル時に解決(構文は同じ) |

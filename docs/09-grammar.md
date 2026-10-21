@@ -81,7 +81,7 @@ typed_assign   = IDENT ":" type "=" expression ;        (* only at the start of 
 
 (* ---- procedure literals ---- *)
 lambda         = "->" [ "(" [ param_list ] ")" ] [ "->" type ] ( "{" body "}" | "do" body "end" ) ;
-for_comp       = "for" for_iter { "," for_iter } "then" statements "end" ;
+for_comp       = "for" for_iter { "," for_iter } ( "do" | NEWLINE ) statements "end" ;
 for_iter       = IDENT { "," IDENT } "in" arg_expr [ "when" arg_expr ] ;
 block          = "{" [ "|" block_params "|" ] body "}" | "do" [ "|" block_params "|" ] body "end" ;
 block_params   = param_list ;                           (* types may be omitted; they are inferred *)

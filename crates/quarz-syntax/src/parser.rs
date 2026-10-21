@@ -2043,7 +2043,7 @@ impl<'src> Parser<'src> {
     /// A `for` comprehension:
     ///
     /// ```text
-    /// for x in xs when x.even?, y in ys then [x, y] end
+    /// for x in xs when x.even?, y in ys do [x, y] end
     /// ```
     ///
     /// desugars to `xs.filter { |x| x.even? }.flat_map { |x| ys.map { |y|
@@ -2054,9 +2054,6 @@ impl<'src> Parser<'src> {
     fn parse_for_comprehension(&mut self) -> PResult<Expr> {
         let start = self.bump().span; // for
         type Iterator = ForIterator;
-        fn iterators_into(v: Vec<Iterator>) -> Vec<ForIterator> {
-            v
-        }
         let mut iterators: Vec<Iterator> = Vec::new();
         let saved_comp = self.in_comprehension;
         // Every iterator (and the body) is parsed inside the scopes of the
@@ -2114,25 +2111,16 @@ impl<'src> Parser<'src> {
             }
             break;
         }
-        // `for ... do ... end`: a loop, each iterator an `each`.
+        // The body follows `do`, or starts on the next line.
         if self.at_kw(K::Do) {
             self.bump();
-            let body = self.parse_statements(&[K::End]);
-            for _ in 0..scopes {
-                self.pop_scope();
-            }
-            self.expect_kw(K::End)?;
-            let span = self.span_from(start);
-            return Ok(self.build_for_loop(iterators_into(iterators), body, span));
-        }
-        if !self.at_kw(K::Then) {
-            self.error_expected("`then` or `do` after the iterators of `for`");
+        } else if !matches!(self.kind(), T::Newline) {
+            self.error_expected("`do` or a new line after the iterators of `for`");
             for _ in 0..scopes {
                 self.pop_scope();
             }
             return Err(ParseError);
         }
-        self.bump(); // then
         self.in_comprehension = true;
         let mut body = self.parse_statements(&[K::End]);
         self.in_comprehension = saved_comp;
@@ -2209,67 +2197,6 @@ impl<'src> Parser<'src> {
         let mut expr = inner.expect("at least one iterator");
         expr.span = span;
         Ok(expr)
-    }
-
-    /// `for x in xs, y in ys when g do body end` as nested `each` calls:
-    /// `xs.each { |x| ys.each { |y| if g then body end } }`. The value is
-    /// nil; `break` and `next` act on the innermost generator's loop.
-    fn build_for_loop(&mut self, iterators: Vec<ForIterator>, body: Vec<Expr>, span: Span) -> Expr {
-        let mut body = body;
-        let mut inner: Option<Expr> = None;
-        for it in iterators.into_iter().rev() {
-            let params = Params {
-                list: it
-                    .names
-                    .iter()
-                    .map(|(name, span)| Param {
-                        name: name.clone(),
-                        kind: ParamKind::Positional,
-                        ty: None,
-                        default: None,
-                        assigns_ivar: false,
-                        usings: Vec::new(),
-                        span: *span,
-                    })
-                    .collect(),
-            };
-            let mut body_exprs = match inner.take() {
-                Some(e) => vec![e],
-                None => std::mem::take(&mut body),
-            };
-            if let Some(guard) = it.guard {
-                let gspan = guard.span;
-                body_exprs = vec![self.node(
-                    gspan,
-                    ExprKind::If {
-                        cond: Box::new(guard),
-                        then: body_exprs,
-                        els: None,
-                    },
-                )];
-            }
-            inner = Some(self.node(
-                it.span,
-                ExprKind::Call(Box::new(Call {
-                    recv: Some(it.source),
-                    name: "each".to_string(),
-                    args: vec![],
-                    block: Some(Block {
-                        params,
-                        body: body_exprs,
-                        span: it.span,
-                        braces: false,
-                        ret: None,
-                    }),
-                    safe_nav: false,
-                    has_parens: false,
-                    type_args: vec![],
-                })),
-            ));
-        }
-        let mut expr = inner.expect("at least one iterator");
-        expr.span = span;
-        expr
     }
 
     fn parse_lambda(&mut self) -> PResult<Expr> {

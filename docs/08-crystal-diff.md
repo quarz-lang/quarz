@@ -47,7 +47,7 @@ Crystal is the closest relative of Quarz: a statically typed, compiled language 
 - `data`, algebraic `enum`, `var`, `override`, `extension`/`using`
 - Immutable collections, with mutable Builders to assemble them (`Array::Builder`, `Hash::Builder`, `Set::Builder`; `Array.build { |b| b << x }` gives an immutable array). Crystal's `Array.build(capacity) { |buffer| ... }` is a different, low-level API: it writes into a raw pointer buffer and returns the number of elements written
 - `Task.scope` (structured concurrency with cancellation), the compiler-derived `Shareable` marker, and `Atom[T]` for `Shareable` values, updated with `update { |old| ... }` (a CAS loop)
-- `for` comprehensions and loops
+- `for` comprehensions
 - `Result[T, E]`
 - An interpreter as the everyday way of running programs (`quarz run`, a REPL), sharing the runtime with the compiler
 

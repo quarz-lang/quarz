@@ -323,23 +323,22 @@ fn declarations() {
     assert!(errors("data P = (x: Int) is")[0].contains("end of line after the fields"));
     // `for` comprehensions desugar to filter / flat_map / map.
     assert_eq!(
-        sexp("for x in xs when x.even?, y in ys then [x, y] end"),
+        sexp("for x in xs when x.even?, y in ys do [x, y] end"),
         "(call (call (call _ xs) filter (block (params x) (call x even?))) flat_map (block (params x) (call (call _ ys) map (block (params y) (array x y)))))"
     );
     assert_eq!(
-        sexp("for k, v in h then k end"),
+        sexp("for k, v in h do k end"),
         "(call (call _ h) map (block (params k v) k))"
     );
-    assert!(errors("for x in xs then break end")[0].contains("`break` cannot be used"));
-    assert_eq!(
-        sexp("for x in xs do x end"),
-        "(call (call _ xs) each (block (params x) x))"
-    );
+    assert!(errors("for x in xs do break end")[0].contains("`break` cannot be used"));
+    // Without `do`, the body starts on the next line.
+    assert_eq!(sexp("for x in xs\n  x\nend"), sexp("for x in xs do x end"));
     assert_eq!(
         sexp("for x in xs, y in ys do x end"),
-        "(call (call _ xs) each (block (params x) (call (call _ ys) each (block (params y) x))))"
+        "(call (call _ xs) flat_map (block (params x) (call (call _ ys) map (block (params y) x))))"
     );
-    assert!(errors("for x in xs x end")[0].contains("`then` or `do`"));
+    assert!(errors("for x in xs x end")[0].contains("`do` or a new line"));
+    assert!(errors("for x in xs then x end")[0].contains("`do` or a new line"));
     assert_eq!(sexp("for(1)"), "(call _ for 1)");
     // `Self` is the self type; `self` is a value only.
     assert_eq!(

@@ -34,7 +34,7 @@ A summary of the things someone who knows Ruby will first stumble on when starti
 | Global variables `$x`, class variables `@@x` | Exist | Do not exist. Constants + `Atom` |
 | Constants | Reassignment is a warning | Cannot be reassigned; must be Shareable |
 | `Proc.new`, `proc` | Exist | Only `->` and blocks. Procedures always have lambda semantics |
-| `for x in xs` | A loop; the variable stays visible after it | `for x in xs do ... end` is an `each` loop (the variable stays inside); `for x in xs then ... end` is a comprehension returning the results. Several iterators and `when` guards are allowed |
+| `for x in xs` | A loop; the variable stays visible after it | A comprehension returning the body's values (`map`, `flat_map` for several iterators, `filter` for `when` guards); the variables stay inside. For a loop, use `each` |
 | `Thread`, `Mutex`, `Queue`, `Fiber` | Exist | `spawn`, `Task.scope`, `Channel`, `Atom` |
 | `Thread#join`, `Thread#value` | Wait for a thread (and take its value) | `Task#await` |
 | `require` | Loads at runtime | Resolved at compile time (same syntax) |

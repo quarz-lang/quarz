@@ -1,0 +1,42 @@
+# `for x in xs [do] ... end` is a comprehension: one `filter` per `when`
+# guard, `flat_map` for every iterator but the last, `map` for the last.
+# Its value is the array of the body's values.
+p (for i in 1..3 do i * 2 end)
+pairs = for i in 0...3, j in 0...3 when i < j do
+  [i, j]
+end
+p pairs
+# the body may start on the next line, without `do`
+products = for x in [1, 2, 3], y in [10, 20]
+  x * y
+end
+p products, products.sum
+p (for k, v in { a: 1, b: 2 } do "#{k}=#{v}" end)
+# `next v` gives the element's value; side effects run in order
+log: Array[String] = []
+evens = for x in [1, 2, 3, 4] do
+  next 0 if x.odd?
+  log = log.push("even #{x}")
+  x
+end
+p evens, log
+# guards see the earlier variables; the body sees all of them
+p (for a in 1..4 when a.even?, b in 1..a when b * 2 == a do [a, b] end)
+# nested comprehensions, and `return` from the enclosing method
+def find_pair(xs: Array[Int], target: Int) -> Int?
+  for x in xs do
+    for y in xs when x < y do
+      return x * 10 + y if x + y == target
+      0
+    end
+  end
+  nil
+end
+p find_pair([1, 2, 3, 4], 7), find_pair([1, 2], 10)
+# over a Result: flat_map and map are and_then and map
+def half(n: Int) -> Result[Int, String] =
+  n.even? ? Result::Ok[Int, String].new(n / 2) : Result::Err[Int, String].new("odd #{n}")
+p (for a in half(8), b in half(a) do a + b end), (for a in half(6), b in half(a) do a + b end)
+# one-line form
+for s in ["a", "b"] do print s end
+puts

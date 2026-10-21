@@ -31,7 +31,7 @@ The following words are treated as keywords **only in declaration positions**; e
 | `using` | At the start of a line, followed by `using Constant` |
 | `type` | At the start of a line, followed by `type Constant =` |
 | `extern` | At the start of a line, followed by `extern def` / `extern "C"` (FFI is planned, §14) |
-| `for` | `for variable in` (a comprehension or a loop, §11) |
+| `for` | `for variable in` (a comprehension, §11) |
 
 Of Ruby's reserved words, `defined?`, `undef`, `redo`, `BEGIN`, `END`, and `__ENCODING__` are dropped (`for` returns as a contextual keyword with a different meaning, §11). The others (`alias`, `retry`, `yield`, `super`, `self`, `and`/`or`/`not`, etc.) are kept.
 
@@ -381,51 +381,34 @@ Same as Ruby: `if`/`unless`/`elsif`/`else`, `while`/`until`, modifier forms, `ca
 
 Different from Ruby:
 
-- There is no `for … do` loop (use `each`). `for` is the comprehension expression below.
+- There is no `for` loop (use `each`): `for … do … end` is the comprehension expression below.
 - All control structures are expressions (as in Ruby), but if the branches of an `if` have different types, the result is a union type. An `if` without `else` has type `T?`.
 - Truthiness is as in Ruby: only `nil` and `false` are falsy. However, a condition that is known from its type to be always true / always false (`if 3`, `if some_int`) produces a warning.
 - Variable types are narrowed by `while` and `if` conditions ([02-types.md](02-types.md) §6).
 
 ### `for` comprehensions
 
-An expression that flattens nested blocks: it desugars to a chain of `flat_map`/`filter`/`map` (the shape of Ruby's Feature #22132).
+An expression that flattens nested blocks: it desugars to a chain of `flat_map`/`filter`/`map` (the shape of Ruby's Feature #22132). The body follows `do`, or starts on the next line.
 
 ```ruby
 def pairs(n: Int, v: Int) -> Array[[Int, Int]]
   for i in 0...n,
-      j in 0...n when i + j == v then
+      j in 0...n when i + j == v
     [i, j]
   end
 end
 # => (0...n).flat_map { |i| (0...n).filter { |j| i + j == v }.map { |j| [i, j] } }
 
-for x in xs when x.even? then x * 2 end     # one line
-for k, v in hash then "#{k}=#{v}" end        # tuple destructuring, as for block parameters
-for u in find_user(id), o in latest_order(u) then [u, o] end   # Result[[User, Order], E]
+for x in xs when x.even? do x * 2 end       # one line
+for k, v in hash do "#{k}=#{v}" end          # tuple destructuring, as for block parameters
+for u in find_user(id), o in latest_order(u) do [u, o] end   # Result[[User, Order], E]
 ```
 
 - One iterator uses `map`; with several, all but the last use `flat_map`. `when` filters that iterator's sequence. The right-hand side of `in` and the guard are argument-level expressions (no commas, no modifier `if`).
 - The variables are block parameters, so nothing leaks out; later iterators, guards and the body see the earlier variables. The guard's block and the body's block are siblings, so a temporary assigned in a guard is not visible in the body.
 - Any type with `flat_map`/`map` (and `filter`, for `when`) works: `Enumerable`, `Range`, `Result` (`flat_map` is an alias of `and_then`; guards are not available). The type is inferred from the desugared expression as usual.
-- `break` inside the body or a guard is a compile error (it could only leave the innermost generated block).
+- The body runs once per combination, in order, and its value is the element of the result; `next v` gives `v` for that element, and `return` returns from the enclosing method. `break` inside the body or a guard is a compile error (it could only leave the innermost generated block). For a loop whose values are not wanted, use `each`.
 - `for` is a contextual keyword: only `for variable in` starts a comprehension.
-
-### `for` loops
-
-The same iterators with `do ... end` instead of `then ... end` make a loop: each iterator becomes an `each`, nested from left to right, and a `when` guard an `if` around what follows it.
-
-```ruby
-for i in 0...3, j in 0...3 when i < j do
-  puts "#{i},#{j}"
-end
-# => (0...3).each { |i| (0...3).each { |j| if i < j then puts "#{i},#{j}" end } }
-
-for k, v in hash do puts "#{k}=#{v}" end
-```
-
-- The value is `nil`, and the variables are block parameters (nothing leaks out).
-- `next` skips to the next element and `break` leaves the loop of the innermost iterator, as they would in the `each` blocks; `return` returns from the enclosing method. To leave several iterators at once, nest `for` loops and `break` from the outer one or `return`.
-- The loops are compiled in place (no closure, no call per element) whenever the `each` blocks would be.
 
 ### Pattern matching
 
