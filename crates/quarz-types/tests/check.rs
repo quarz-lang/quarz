@@ -228,8 +228,8 @@ fn data_and_enum() {
         "enum E = A | B\ndef f(e: E) -> Int\n  case e\n  in E::A then 1\n  end\nend",
         "does not cover: E::B",
     );
-    ok("enum E\n  A | B\n  def flip -> E\n    case self\n    in A then B\n    in B then A\n    end\n  end\nend\nputs E::A.flip == E::B");
-    ok("enum Shape\n  Circle(r: Float)\n  | Rect(w: Float, h: Float)\n  include Comparable[Shape]\n  def area -> Float\n    case self\n    in Circle(r:) then 3.14 * r * r\n    in Rect(w:, h:) then w * h\n    end\n  end\n  def <=>(o: Shape) -> Int = area <=> o.area\nend\nputs [Shape::Circle.new(1.0), Shape::Rect.new(1.0, 2.0)].sort.first");
+    ok("enum E\n  variant A, B\n  def flip -> E\n    case self\n    in A then B\n    in B then A\n    end\n  end\nend\nputs E::A.flip == E::B");
+    ok("enum Shape\n  variant Circle(r: Float)\n  variant Rect(w: Float, h: Float)\n  include Comparable[Shape]\n  def area -> Float\n    case self\n    in Circle(r:) then 3.14 * r * r\n    in Rect(w:, h:) then w * h\n    end\n  end\n  def <=>(o: Shape) -> Int = area <=> o.area\nend\nputs [Shape::Circle.new(1.0), Shape::Rect.new(1.0, 2.0)].sort.first");
     ok("r: Result[Int, String] = Result::Ok.new(1)\ncase r\nin Result::Ok(value:) then puts value + 1\nin Result::Err(error:) then puts error.size\nend");
 }
 

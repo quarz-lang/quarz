@@ -38,8 +38,8 @@ Ruby との違いが現れているのは、引数の型(`text: String`)と戻�
 
 ```ruby
 enum Shape
-  Circle(radius: Float)
-  | Rect(width: Float, height: Float)
+  variant Circle(radius: Float)
+  variant Rect(width: Float, height: Float)
 
   def area -> Float
     case self                       # 網羅性はコンパイル時に検査される

@@ -29,8 +29,8 @@ end
 puts JSON.generate([Temp.new(21.5)])
 
 enum Color
-  Red
-  | Green
+  variant Red
+  variant Green
 end
 puts JSON.generate(Color::Red)
 puts JSON.generate(Time.utc(2026, 1, 2, 3, 4, 5))

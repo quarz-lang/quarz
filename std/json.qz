@@ -26,13 +26,13 @@ module JSON
   # A parsed JSON document. Integral numbers are `Integer`, the others
   # `Number`.
   enum Value
-    Null
-    | Boolean(value: Bool)
-    | Integer(value: Int)
-    | Number(value: Float)
-    | Text(value: String)
-    | List(items: Array[Value])
-    | Map(members: Hash[String, Value])
+    variant Null
+    variant Boolean(value: Bool)
+    variant Integer(value: Int)
+    variant Number(value: Float)
+    variant Text(value: String)
+    variant List(items: Array[Value])
+    variant Map(members: Hash[String, Value])
 
     def null? -> Bool
       case self

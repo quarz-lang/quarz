@@ -300,11 +300,10 @@ fn declarations() {
         "(data P (fields x:Int) (def f (params) (call _ x)))"
     );
     assert_eq!(
-        sexp("enum E[T]\n  | A\n  | B(v: T)\ndef f = 1\nend"),
+        sexp("enum E[T]\n  variant A\n  variant B(v: T)\ndef f = 1\nend"),
         "(enum E (tparams T) (A) (B v:T) (def f (params) 1))"
     );
-    // The variants are one `|`-separated list: on one line, continued on
-    // lines that start with `|`, with or without a leading `|`.
+    // The one-line form: variants separated by `|`, as in a union type.
     assert_eq!(sexp("enum C = A | B(x: Int)"), "(enum C (A) (B x:Int))");
     // `data Name = (fields)` is the form without a body, like `enum Name
     // = A | B`; without `=` a body follows and `end` closes it.
@@ -342,13 +341,26 @@ fn declarations() {
     );
     assert!(errors("for x in xs x end")[0].contains("`then` or `do`"));
     assert_eq!(sexp("for(1)"), "(call _ for 1)");
-    assert_eq!(sexp("enum C =\n  | A\n  | B"), "(enum C (A) (B))");
+    // The one-line form continues after a `|` that ends a line.
     assert_eq!(
-        sexp("enum C\n  A | B\n  | D\n  def f = 1\nend"),
+        sexp("enum C = A |\n  B(x: Int) |\n  D"),
+        "(enum C (A) (B x:Int) (D))"
+    );
+    assert_eq!(
+        sexp("enum C\n  variant A, B\n  variant D\n  def f = 1\nend"),
         "(enum C (A) (B) (D) (def f (params) 1))"
     );
-    assert_eq!(sexp("enum C\n  Only(x: Int)\nend"), "(enum C (Only x:Int))");
-    assert!(errors("enum C\n  A\n  B\nend")[0].contains("separated by `|`"));
+    assert_eq!(
+        sexp("enum C\n  variant Only(x: Int)\nend"),
+        "(enum C (Only x:Int))"
+    );
+    // Variants and other declarations can be mixed, and `variant` is a
+    // keyword only before a constant.
+    assert_eq!(
+        sexp("enum C\n  variant A\n  def f = 1\n  variant B(\n    x: Int\n  ),\n    D\nend"),
+        "(enum C (A) (B x:Int) (D) (def f (params) 1))"
+    );
+    assert_eq!(sexp("variant = 1"), "(= variant 1)");
     assert!(errors("enum C =\nputs 1")[0].contains("a variant after `=`"));
     assert_eq!(
         sexp("extension Array[T: Comparable[T]]\ndef m = 1\nend"),

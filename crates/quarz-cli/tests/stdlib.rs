@@ -144,8 +144,8 @@ fn overloads_through_dynamic_dispatch() {
     expect(
         r#"
 enum Shape
-  Dot
-  | Line(len: Int)
+  variant Dot
+  variant Line(len: Int)
 
   def scale(factor: Int) -> String = "int #{factor}"
   def scale(factor: String) -> String = "str #{factor}"

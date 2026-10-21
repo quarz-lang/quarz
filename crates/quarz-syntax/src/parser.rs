@@ -3402,14 +3402,6 @@ impl<'src> Parser<'src> {
         Ok(fields)
     }
 
-    /// Whether the next tokens spell a variant: `Const` alone on its line
-    /// or `Const(` with no space before the parenthesis.
-    fn at_variant(&mut self) -> bool {
-        matches!(self.kind(), T::Const(_))
-            && matches!(self.kind_at(1), T::Newline | T::Eof | T::LParen | T::Pipe)
-            && !(matches!(self.kind_at(1), T::LParen) && self.peek_at(1).space_before)
-    }
-
     fn parse_variant(&mut self) -> PResult<Variant> {
         let vstart = self.peek().span;
         let name = match self.bump().kind {
@@ -3428,36 +3420,32 @@ impl<'src> Parser<'src> {
         Ok(Variant { name, fields, span })
     }
 
-    /// `[|] A | B | C`, where a `|` may start a new line.
+    /// `A | B(x: Int) | C` after `enum Name =`. A line that ends with `|`
+    /// continues on the next, as after a binary operator.
     fn parse_variants(&mut self) -> PResult<Vec<Variant>> {
         let mut variants = Vec::new();
-        self.skip_newlines();
-        if self.at(&T::Pipe) {
-            self.bump();
-        } else if !matches!(self.kind(), T::Const(_)) {
+        if !matches!(self.kind(), T::Const(_)) {
             return Ok(variants);
         }
         loop {
             variants.push(self.parse_variant()?);
-            // The list continues after `|`, possibly on the next line.
-            let mut k = 0;
-            while matches!(self.kind_at(k), T::Newline) {
-                k += 1;
-            }
-            if !matches!(self.kind_at(k), T::Pipe) {
+            if !self.eat(&T::Pipe) {
                 break;
             }
-            self.skip_newlines();
-            self.bump(); // |
             self.skip_newlines();
         }
         Ok(variants)
     }
 
-    /// `enum Name = A | B(x: Int)` (no body) or
-    /// `enum Name NEWLINE A | B NEWLINE body end`. The variants form one
-    /// `|`-separated list; a line that starts with `|` continues it, and
-    /// the first variant may carry a leading `|` as in OCaml.
+    /// `variant A, B(x: Int)` in the body of an enum.
+    fn at_variant_decl(&mut self) -> bool {
+        matches!(self.kind(), T::Ident(name) if name == "variant")
+            && matches!(self.kind_at(1), T::Const(_))
+    }
+
+    /// `enum Name = A | B(x: Int)` (no body), or `enum Name` followed by a
+    /// body of declarations closed by `end`, where `variant A, B(x: Int)`
+    /// declares variants, like `def` declares methods.
     fn parse_enum(&mut self) -> PResult<Expr> {
         let start = self.bump().span; // enum
         let name = match self.bump().kind {
@@ -3488,26 +3476,27 @@ impl<'src> Parser<'src> {
                 })),
             ));
         } else {
-            let mut variants = self.parse_variants()?;
-            // Statements follow. A line that looks like a variant without
-            // the `|` is the old spelling: say so, and take it as one.
+            let mut variants = Vec::new();
             loop {
                 self.skip_newlines();
                 if self.at_kw(K::End) || self.at(&T::Eof) {
                     break;
                 }
-                if self.at_variant() {
-                    let span = self.peek().span;
-                    self.diagnostics.push(Diagnostic::error(
-                        "variants are separated by `|`: write `| Name` on this line",
-                        span,
-                    ));
-                    variants.push(self.parse_variant()?);
-                    continue;
-                }
-                match self.parse_statement() {
-                    Ok(stmt) => {
-                        body.push(stmt);
+                let decl = if self.at_variant_decl() {
+                    self.bump(); // variant
+                    while let Ok(v) = self.parse_variant() {
+                        variants.push(v);
+                        if !self.eat(&T::Comma) {
+                            break;
+                        }
+                        self.skip_newlines();
+                    }
+                    Ok(())
+                } else {
+                    self.parse_statement().map(|stmt| body.push(stmt))
+                };
+                match decl {
+                    Ok(()) => {
                         if !matches!(self.kind(), T::Newline | T::Eof | T::Keyword(K::End)) {
                             self.error_expected("end of line");
                             self.recover(&[K::End]);

@@ -40,8 +40,8 @@ The differences from Ruby show up in only three places: parameter types (`text: 
 
 ```ruby
 enum Shape
-  Circle(radius: Float)
-  | Rect(width: Float, height: Float)
+  variant Circle(radius: Float)
+  variant Rect(width: Float, height: Float)
 
   def area -> Float
     case self                       # exhaustiveness is checked at compile time

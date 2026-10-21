@@ -30,9 +30,9 @@ data_decl      = "data" CONST [ type_params ] "=" "(" [ field_list ] ")"
 field_list     = field { "," field } ;
 field          = IDENT ":" type [ "=" expression ] ;
 
-enum_decl      = "enum" CONST [ type_params ] "=" variants
-               | "enum" CONST [ type_params ] [ NEWLINE ] variants NEWLINE class_body "end" ;
-variants       = [ "|" ] variant { [ NEWLINE ] "|" variant } ;
+enum_decl      = "enum" CONST [ type_params ] "=" variant { "|" [ NEWLINE ] variant }
+               | "enum" CONST [ type_params ] NEWLINE { enum_member } "end" ;
+enum_member    = "variant" variant { "," variant } | class_member ;
 variant        = CONST [ "(" field_list ")" ] ;
 
 (* ---- 拡張 ---- *)
@@ -117,5 +117,5 @@ extern_decl    = "extern" STRING NEWLINE { "def" IDENT "(" [ param_list ] ")" "-
 - **`->` の二義性**: `def` のシグネチャ中の `->` は戻り値型、式の位置の `->` は lambda。lambda の `->(x: Int) -> Int { }` は 1 つ目が lambda、2 つ目が戻り値型。
 - **`Const[...]`**: 型の位置では型引数。式の位置では、`[` の中身が型として解釈できるなら型式(`Array[Int].new`)、そうでなければ `Const.[](...)` の呼び出し(ユーザー定義の `self.[]`)。組み込みの `Array`/`Hash`/`Set` は `self.[]` を持たないため常に型式。
 - **`{ }` のブロックとハッシュ**: Ruby と同じ規則。
-- **文脈キーワード**: `data`/`enum`/`var`/`abstract`/`override`/`extension`/`using`/`type`/`extern`/`for` は、上記の宣言位置で後続トークンが宣言の形を取るときだけキーワード。
+- **文脈キーワード**: `data`/`enum`/`var`/`abstract`/`override`/`extension`/`using`/`type`/`extern`/`variant`/`for` は、上記の宣言位置で後続トークンが宣言の形を取るときだけキーワード。
 - **本体のある `data` とない `data`**: `enum` と同じく、`=` のある形(`data P = (x: Int)`)は本体も `end` もなく、`=` がなければ本体が続いて `end` で閉じる。`=` を書き忘れるとファイルの残りが本体と解釈されるので、`end` がないことをそのヒント付きで `data` の位置に報告する。

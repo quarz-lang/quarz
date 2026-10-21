@@ -1,10 +1,10 @@
 # Erlang 風のアクター: 状態はタスクのローカル変数に閉じ、メッセージは enum
 
 enum Msg
-  Deposit(amount: Int)
-  | Withdraw(amount: Int, reply: Channel[Result[Int, String]])
-  | Balance(reply: Channel[Int])
-  | Stop
+  variant Deposit(amount: Int)
+  variant Withdraw(amount: Int, reply: Channel[Result[Int, String]])
+  variant Balance(reply: Channel[Int])
+  variant Stop
 end
 
 def account_actor(inbox: Channel[Msg]) -> Nil

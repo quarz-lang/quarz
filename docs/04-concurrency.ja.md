@@ -127,10 +127,10 @@ Erlang のプロセス + メールボックスは、タスク + 1 本のチャ�
 
 ```ruby
 enum Msg
-  Deposit(amount: Int)
-  | Withdraw(amount: Int, reply: Channel[Result[Int, String]])
-  | Balance(reply: Channel[Int])
-  | Stop
+  variant Deposit(amount: Int)
+  variant Withdraw(amount: Int, reply: Channel[Result[Int, String]])
+  variant Balance(reply: Channel[Int])
+  variant Stop
 end
 
 def account_actor(inbox: Channel[Msg]) -> Nil

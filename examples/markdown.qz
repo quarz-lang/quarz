@@ -4,11 +4,11 @@
 #   quarz run examples/markdown.qz README.md > README.html
 
 enum Block
-  Heading(level: Int, text: String)
-  | Paragraph(text: String)
-  | List(items: Array[String], ordered: Bool)
-  | Code(lang: String, lines: Array[String])
-  | Rule
+  variant Heading(level: Int, text: String)
+  variant Paragraph(text: String)
+  variant List(items: Array[String], ordered: Bool)
+  variant Code(lang: String, lines: Array[String])
+  variant Rule
 end
 
 def escape_html(text: String) -> String

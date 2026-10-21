@@ -1450,8 +1450,8 @@ class DeadlockError < Exception
 end
 
 enum Result[T, E]
-  Ok(value: T)
-  | Err(error: E)
+  variant Ok(value: T)
+  variant Err(error: E)
 
   def ok? -> Bool
     case self

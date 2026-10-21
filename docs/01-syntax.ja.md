@@ -21,6 +21,7 @@ Quarz の文法は Ruby を基礎にし、「静的に定義する」「不変�
 |---|---|
 | `data` | 行頭で `data 定数名 =` か `data 定数名(` が続くとき |
 | `enum` | 行頭で `enum 定数名` が続くとき |
+| `variant` | `enum` の本体で `variant 定数名` が続くとき |
 | `var` | `var @名前` / `var @名前:` が続くとき |
 | `abstract` | `abstract class` / `abstract def` |
 | `override` | `override def` |
@@ -154,15 +155,15 @@ end
 
 ## 5. 列挙型(`enum`)
 
-直和型(代数的データ型)です。バリアントは合併型と同じく `|` で区切り、それぞれデータを持てます。
+直和型(代数的データ型)です。各バリアントはデータを持てます。本体では `variant` で宣言し、一行形式では合併型と同じく `|` で区切ります。
 
 ```ruby
 enum Color = Red | Green | Blue              # 本体なし: 一行で書け、end は不要
 
 enum Shape
-  Circle(radius: Float)
-  | Rect(width: Float, height: Float)
-  | Point
+  variant Circle(radius: Float)
+  variant Rect(width: Float, height: Float)
+  variant Point
 
   def area -> Float
     case self
@@ -180,7 +181,7 @@ s.area
 - バリアントは `Shape::Circle` のように入れ子の型として参照でき、それぞれ `Shape` のサブタイプです。
 - データを持たないバリアント(`Point`)はシングルトンで、`Shape::Point` と書けば値になります。
 - `case/in` は網羅性を検査します。バリアントを取りこぼすとコンパイルエラーです。
-- バリアント列は `|` で区切った一つの並びです。`|` で始まる行はその続きで、OCaml と同じく最初のバリアントにも `|` を付けてかまいません(`| Circle(...)`)。一行形式 `enum Name = A | B` は本体を持たない enum を宣言し、`end` は不要です。ブロック形式ではバリアント列の後にメソッドを書きます。
+- ブロック形式では、`def` がメソッドを宣言するのと同じく、`variant` がバリアントを宣言します。1 行に 1 つでも複数でも書けます(`variant Hearts, Spades`)。一行形式 `enum Name = A | B` は本体を持たない enum を宣言し、`end` は不要です(`data Name = (...)` と同じ)。行末が `|` なら次の行に続きます。
 - 標準ライブラリの `Result[T, E]` は `enum Result[T, E] = Ok(value: T) | Err(error: E)` にメソッドを加えたものです。
 
 ## 6. モジュール

@@ -8,9 +8,9 @@ data Point(x: Float, y: Float)
 end
 
 enum Shape
-  Circle(center: Point, radius: Float)
-  | Rect(origin: Point, width: Float, height: Float)
-  | Triangle(a: Point, b: Point, c: Point)
+  variant Circle(center: Point, radius: Float)
+  variant Rect(origin: Point, width: Float, height: Float)
+  variant Triangle(a: Point, b: Point, c: Point)
 
   include Comparable[Shape]
 

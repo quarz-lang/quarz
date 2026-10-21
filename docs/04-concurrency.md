@@ -129,10 +129,10 @@ An Erlang process + mailbox can be expressed as a task + a single channel. If th
 
 ```ruby
 enum Msg
-  Deposit(amount: Int)
-  | Withdraw(amount: Int, reply: Channel[Result[Int, String]])
-  | Balance(reply: Channel[Int])
-  | Stop
+  variant Deposit(amount: Int)
+  variant Withdraw(amount: Int, reply: Channel[Result[Int, String]])
+  variant Balance(reply: Channel[Int])
+  variant Stop
 end
 
 def account_actor(inbox: Channel[Msg]) -> Nil
