@@ -41,9 +41,9 @@ Writing `Array[Int]` in expression context yields an expression denoting the typ
 | `String` | `String` | Immutable. Always UTF-8 |
 | `Bytes` | String (ASCII-8BIT) | Immutable byte sequence |
 | `Symbol` | `Symbol` | |
-| `Array[out T]` | `Array` | Immutable, persistent |
-| `Hash[K, out V]` | `Hash` | Immutable, persistent, preserves insertion order |
-| `Set[out T]` | `Set` | Immutable, persistent |
+| `Array[out T]` | `Array` | Immutable |
+| `Hash[K, out V]` | `Hash` | Immutable, preserves insertion order |
+| `Set[out T]` | `Set` | Immutable |
 | `Range[T]` | `Range` | |
 | `Regexp`, `MatchData` | Same names | |
 | `Proc` = `(A...) -> R` | `Proc` | Generic name for procedure types |

@@ -39,9 +39,9 @@ Quarz は静的型付きです。クラス・モジュール・メソッドの�
 | `String` | `String` | 不変。常に UTF-8 |
 | `Bytes` | 文字列(ASCII-8BIT) | 不変のバイト列 |
 | `Symbol` | `Symbol` | |
-| `Array[out T]` | `Array` | 不変・永続 |
-| `Hash[K, out V]` | `Hash` | 不変・永続・挿入順保持 |
-| `Set[out T]` | `Set` | 不変・永続 |
+| `Array[out T]` | `Array` | 不変 |
+| `Hash[K, out V]` | `Hash` | 不変・挿入順保持 |
+| `Set[out T]` | `Set` | 不変 |
 | `Range[T]` | `Range` | |
 | `Regexp`、`MatchData` | 同名 | |
 | `Proc` = `(A...) -> R` | `Proc` | 手続き型の総称 |

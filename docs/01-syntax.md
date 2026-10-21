@@ -482,7 +482,7 @@ bytes = b"\x00\xff"        # Bytes (binary)
 ```
 
 - Strings are always UTF-8 and immutable. Binary data is a separate type, `Bytes`.
-- `Array`/`Hash`/`Set` created from literals are immutable persistent data structures. The empty literals `[]` and `{}` take their element types from the context ([02-types.md](02-types.md) §5).
+- `Array`/`Hash`/`Set` created from literals are immutable: updates return new values. The empty literals `[]` and `{}` take their element types from the context ([02-types.md](02-types.md) §5).
 - The keys of `{ a: 1 }` are `Symbol`s; the keys of `{ "a" => 1 }` are `String`s. Mixing them gives `Hash[Symbol | String, Int]`.
 
 ## 14. FFI

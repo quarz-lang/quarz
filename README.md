@@ -6,7 +6,7 @@ Quarz is a programming language that feels like Ruby, but is built on static typ
 
 - **Ruby-like syntax and built-in classes** — `def ... end`, blocks and `yield`, `case/in`, `#{}`, `Enumerable`/`Comparable` and exception handling are kept as they are.
 - **Static class and method definitions** — there is no class reopening, no `define_method`, no `method_missing`, no `eval`. Method calls are resolved at compile time and the class hierarchy is fixed for the whole program. Additions to existing types are made with `extension`/`using`, which are confined to a lexical scope.
-- **Immutable built-in data by default** — `String`/`Array`/`Hash`/`Set` are persistent data structures and updates return new values. When a reference is unique the update happens in place, so a straightforward loop is about as fast as one over a mutable array. Where mutation is needed, Builder types with the same API as Ruby are available.
+- **Immutable built-in data by default** — `String`/`Array`/`Hash`/`Set` are immutable: updates return new values and leave the old ones unchanged. When a reference is unique the update happens in place, so a straightforward loop is about as fast as one over a mutable array. Where mutation is needed, Builder types with the same API as Ruby are available.
 - **Lightweight tasks** — `Task`s scheduled M:N like goroutines / Erlang processes, typed `Channel`s, structured concurrency (`Task.scope`) and `Atom`s that share immutable values. The type system (`Shareable`) checks that mutable objects never cross task boundaries, eliminating data races at compile time.
 - **Interpreter and AOT compiler together** — one typed intermediate representation (QIR) and one runtime (libquarz) are shared: `quarz run` executes on the spot and gives you a REPL, `quarz build` produces machine code. The behavior of both is identical; only the performance differs.
 
@@ -92,7 +92,7 @@ puts counter.value        # => 100
 | `nil` | A separate type, allowed only via `T?` | Turns runtime `NoMethodError`s into compile-time errors |
 | Sum types | `enum` | For message types and exhaustiveness checking in `case/in` |
 | Extending existing classes | `extension` + `using` (static refinements) | No reopening; the effect is limited to a lexical scope |
-| Collections | Immutable persistent data structures + Builders | Safe sharing, and speed through in-place updates exploiting uniqueness |
+| Collections | Immutable values (copied on update when shared) + Builders | Safe sharing, and speed through in-place updates exploiting uniqueness |
 | Shared mutable state | Forbidden. Only `Atom` and `Channel` | Data races eliminated at compile time. No locks |
 | Lightweight threads | Stackful M:N tasks (`mmap` reservation + lazy commit) | Ruby-style synchronous code without async/await function coloring |
 | Memory management | Reference counting + in-place updates + cycle collection limited to mutable objects | Fits AOT (no stack maps), no pause times, in-place updates of immutable values |

@@ -42,7 +42,7 @@ arr = arr.push(4)    # OK
 
 ### Complexity and "update in place when unique"
 
-Updating a persistent data structure is `O(log32 n)`, which is effectively constant in practice. Furthermore, since Quarz's memory management is reference counting ([05-execution.md](05-execution.md) §5), if there is only one reference to `arr` at the point of `arr.push(4)`, the **original array's storage is updated in place** instead of creating a new array.
+With the persistent structures of the design, an update would be `O(log32 n)`, effectively constant in practice; today an update of a shared collection copies it, in O(n). In either case, since Quarz's memory management is reference counting ([05-execution.md](05-execution.md) §5), if there is only one reference to `arr` at the point of `arr.push(4)`, the **original array's storage is updated in place** instead of creating a new array.
 
 ```ruby
 def collect(n: Int) -> Array[Int]
