@@ -1,0 +1,21 @@
+# Weekly updates for the actions the workflows use and for the Cargo
+# dependencies, each kind grouped into one pull request. CI runs on
+# every pull request, so an update lands only when the build, the lints
+# and the tests pass with it.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      cargo:
+        patterns: ["*"]
