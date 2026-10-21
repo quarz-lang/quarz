@@ -116,7 +116,7 @@ xs = xs.push(1)                    # ... fixed here: xs is Array[Int]
 - **Block parameters**: determined by the type of the `&block` they are passed to. In `[1, 2].map { |x| x * 2 }`, `x` is `Int`.
 - **Type arguments of generic methods**: determined by unification from the argument and block types.
 - **Numeric literals**: `1` is treated as a `Float` when the expected type is `Float` (and as an `Int32` when the expected type is `Int32`, once fixed-width integers exist). The defaults are `Int`/`Float`.
-- **Tuples and arrays**: `[1, "a"]` is a tuple if the expected type is a tuple, otherwise `Array[Int | String]`. `return a, b` and the right-hand side of a multiple assignment follow the same rule: a tuple when a tuple type is expected, otherwise an array.
+- **Tuples and arrays**: an array literal follows the expected type (a tuple or an array). With none, elements whose types join into a union make a tuple, and elements with a common type an array: `[w, w.size]` is `[String, Int]`, `[1, 2]` is `Array[Int]`, and `[circle, rect]` is `Array[Shape]`. `return a, b` and the right-hand side of a multiple assignment follow the same rule. A tuple is also an array of its elements' join, so array methods apply to it; tuples of comparable elements compare element by element (`sort`, `max`). A local variable assigned a tuple literal (`t = [1, "a"]`) is declared as that array and narrowed to the tuple: `t[0]` is an `Int`, and `t = t.push(2)` is allowed.
 
 ## 6. Flow Typing (Narrowing)
 

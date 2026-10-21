@@ -1,0 +1,33 @@
+# Array literals with elements of different types are tuples.
+words = ["pear", "fig", "apple"]
+pairs = words.map { |w| [w, w.size] }
+p pairs.sort_by { |pr| pr[1] }
+pairs.each { |w, n| puts "#{w.upcase} #{n + 1}" }
+t = [1, "a"]
+p t[0] + 1, t[1].upcase, t.size, t.class
+
+# The variable is an array narrowed to the tuple.
+x = [1, "a"]
+x = x.push(2)
+p x
+
+# Elements with a common type make an array.
+class A
+  def x -> Int = 1
+end
+class B < A
+  def x -> Int = 2
+end
+p [A.new, B.new].map(&:x)
+
+# A tuple pattern of the right shape covers the tuple.
+def describe(t: [Int, String]) -> String
+  case t
+  in [n, s] then "#{s * n}"
+  end
+end
+p describe([3, "ab"])
+counts = { "a" => 2, "b" => 1 }
+p counts.map { |k, v| [v, k] }.sort.map { |v, k| "#{k}=#{v}" }
+xs = [[2, "b"], [1, "z"], [2, "a"]]
+p xs.sort, xs.max, xs.min

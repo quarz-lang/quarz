@@ -450,8 +450,35 @@ impl Checker {
                     _ => false,
                 }
             }
+            // `[a, b]` against a tuple `[A, B]`: of the right length, and
+            // each element pattern covers its element type.
+            PatternKind::Array(ap) => {
+                let Type::Tuple(ts) = member else {
+                    return false;
+                };
+                let fixed = ap.pre.len() + ap.post.len();
+                let fits = match ap.rest {
+                    None => fixed == ts.len(),
+                    Some(_) => fixed <= ts.len(),
+                };
+                fits && ap
+                    .pre
+                    .iter()
+                    .zip(ts.iter())
+                    .all(|(p, t)| self.covers_all(p, t))
+                    && ap
+                        .post
+                        .iter()
+                        .zip(ts[ts.len() - ap.post.len()..].iter())
+                        .all(|(p, t)| self.covers_all(p, t))
+            }
             _ => false,
         }
+    }
+
+    /// Whether the pattern covers every member of `t` (a union or not).
+    fn covers_all(&self, pattern: &Pattern, t: &Type) -> bool {
+        t.members().iter().all(|m| self.pattern_covers(pattern, m))
     }
 
     fn field_pattern_irrefutable(&self, pattern: &Pattern, cid: ClassId, field: &str) -> bool {

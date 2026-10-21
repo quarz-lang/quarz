@@ -362,7 +362,7 @@ x = 1                  # inferred as Int
 x = "one"              # error: a local variable's type is fixed at declaration (reassignment must have the same type)
 y: Int? = nil          # with a type annotation
 y = 10                 # OK
-a, b = 1, 2            # multiple assignment (a tuple when one is expected; otherwise an Array of the union)
+a, b = 1, "x"          # multiple assignment (the right-hand side is a tuple [Int, String])
 first, *rest = [1, 2, 3]
 count += 1
 name ||= "anon"        # when name is T?
@@ -490,7 +490,7 @@ s3 = <<~EOS
   heredoc
 EOS
 a  = [1, 2, 3]             # Array[Int]
-t  = [1, "a"]              # [Int, String] if the context requires a tuple type, otherwise Array[Int | String]
+t  = [1, "a"]              # [Int, String]: elements of different types make a tuple (02-types.md §5)
 h  = { name: "alice", age: 30 }     # Hash[Symbol, String | Int]
 h2 = { "a" => 1, "b" => 2 }         # Hash[String, Int]
 r  = 1..10                 # Range[Int]

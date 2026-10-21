@@ -1132,6 +1132,22 @@ impl Checker {
                 let (xs, ys) = (xs.clone(), ys.clone());
                 xs.iter().zip(ys.iter()).all(|(x, y)| self.coerce(x, y))
             }
+            // Tuples compare element by element (`[2, "a"] < [2, "b"]`):
+            // `[A, B]` is a `Comparable[[C, D]]` when `A` is a
+            // `Comparable[C]` and `B` a `Comparable[D]`.
+            (Type::Tuple(xs), Type::Class(eid, eargs))
+                if *eid == self.world.builtin.comparable
+                    && matches!(eargs.as_slice(), [Type::Tuple(ys)] if ys.len() == xs.len()) =>
+            {
+                let (xs, eid) = (xs.clone(), *eid);
+                let [Type::Tuple(ys)] = eargs.as_slice() else {
+                    unreachable!()
+                };
+                let ys = ys.clone();
+                xs.iter()
+                    .zip(ys.iter())
+                    .all(|(x, y)| self.coerce(x, &Type::Class(eid, vec![y.clone()])))
+            }
             (Type::Tuple(xs), Type::Class(eid, eargs)) => {
                 if *eid == self.world.builtin.array && eargs.len() == 1 {
                     let elem = Type::union_of(xs.clone());
@@ -2108,13 +2124,19 @@ impl Checker {
             _ => None,
         };
         let mut elem = Type::Nothing;
+        // The type of each element, while all are positional.
+        let mut each: Option<Vec<Type>> = Some(Vec::new());
         for a in items {
             match a {
                 Arg::Positional(e) => {
                     let t = self.check_expr(e, elem_expected.as_ref());
                     elem = self.join(&elem, &t);
+                    if let Some(each) = &mut each {
+                        each.push(t);
+                    }
                 }
                 Arg::Splat(e) => {
+                    each = None;
                     let t = self.check_expr(e, None);
                     let t = self.resolve(&t);
                     match &t {
@@ -2147,6 +2169,24 @@ impl Checker {
                 span,
             );
             return self.world.array_of(et.clone());
+        }
+        // With nothing expected, elements of different types make a
+        // tuple (`[w, w.size]` is `[String, Int]`), and elements of one type
+        // an array (`[1, 2]` is `Array[Int]`). A tuple is also an array of
+        // the union of its element types, so it can be used as one.
+        if expected.is_none() || matches!(expected, Some(Type::Var(_))) {
+            if let Some(each) = each {
+                // Elements with a common type (`[circle, rect]`: a
+                // `Shape`; subclasses of one class) still make an array:
+                // only a join that is a union makes a tuple.
+                let each: Vec<Type> = each.iter().map(|t| self.resolve(t)).collect();
+                if each.len() >= 2
+                    && !each.iter().any(|t| t.has_vars() || t.is_nothing())
+                    && matches!(self.resolve(&elem), Type::Union(_))
+                {
+                    return Type::Tuple(each);
+                }
+            }
         }
         if elem.is_nothing() {
             elem = self.infer.fresh();
@@ -2779,6 +2819,17 @@ impl Checker {
                     } else {
                         declared
                     };
+                    // `x = [1, "a"]`: the literal is a tuple, but the
+                    // variable is an array of the union, narrowed to the
+                    // tuple. Uses that follow see the tuple; a later
+                    // `x = x.push(2)` is allowed and narrows it again.
+                    if let (Type::Tuple(ts), ExprKind::Array(_)) = (&declared, &value.kind) {
+                        let elem = self.world.tuple_element(ts);
+                        let tuple = declared.clone();
+                        self.declare_var(name, self.world.array_of(elem), *span);
+                        self.set_narrowed(&VarKey::Local(name.clone()), Some(tuple));
+                        return vt;
+                    }
                     self.declare_var(name, declared, *span);
                     vt
                 }
@@ -3113,7 +3164,7 @@ impl Checker {
             }
         };
         let array_elem = match vt {
-            Type::Tuple(ts) => Type::union_of(ts.clone()),
+            Type::Tuple(ts) => self.world.tuple_element(ts),
             Type::Class(_, args) if !args.is_empty() => args[0].clone(),
             _ => Type::Nothing,
         };
@@ -5288,7 +5339,11 @@ impl Checker {
                     ClassKind::Data | ClassKind::Variant | ClassKind::Enum
                 ) || [self.world.builtin.nil, self.world.builtin.bool_].contains(id)
             }
-            Type::Tuple(_) => true,
+            // A tuple of closed types (`[Bool, Color]`) can be covered;
+            // one with a number, a string or an array in it is open.
+            Type::Tuple(ts) => ts
+                .iter()
+                .all(|t| t.members().iter().all(|m| self.is_closed_type(m))),
             _ => false,
         }
     }

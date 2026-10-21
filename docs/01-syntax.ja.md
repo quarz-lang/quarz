@@ -360,7 +360,7 @@ x = 1                  # Int と推論
 x = "one"              # エラー: ローカル変数の型は宣言時に決まる(再代入は同じ型のみ)
 y: Int? = nil          # 型注釈付き
 y = 10                 # OK
-a, b = 1, 2            # 多重代入(タプルが期待されるときはタプル、そうでなければ合併型の Array)
+a, b = 1, "x"          # 多重代入(右辺はタプル [Int, String])
 first, *rest = [1, 2, 3]
 count += 1
 name ||= "anon"        # name が T? のとき
@@ -488,7 +488,7 @@ s3 = <<~EOS
   heredoc
 EOS
 a  = [1, 2, 3]             # Array[Int]
-t  = [1, "a"]              # 文脈がタプル型を要求すれば [Int, String]、さもなくば Array[Int | String]
+t  = [1, "a"]              # [Int, String]: 型の違う要素はタプルになる(02-types.ja.md §5)
 h  = { name: "alice", age: 30 }     # Hash[Symbol, String | Int]
 h2 = { "a" => 1, "b" => 2 }         # Hash[String, Int]
 r  = 1..10                 # Range[Int]

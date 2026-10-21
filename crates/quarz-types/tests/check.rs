@@ -347,6 +347,43 @@ fn nil_results_and_lambda_annotations() {
 }
 
 #[test]
+fn tuple_inference() {
+    // Elements of different types make a tuple, with nothing expected.
+    ok("pairs = [\"pear\", \"fig\"].map { |w| [w, w.size] }\np pairs.sort_by { |pr| pr[1] }\npairs.each { |w, n| puts w.upcase, n + 1 }");
+    ok("t = [1, \"a\"]\nputs t[0] + 1, t[1].upcase");
+    // The variable is an array narrowed to the tuple: it can be
+    // reassigned an array, and a loop sees the array.
+    ok("x = [1, \"a\"]\nx = x.push(2)\np x");
+    err(
+        "t = [1, \"a\"]\nwhile t.size < 3\n  y: Int = t[0]\n  t = t.push(3)\nend",
+        "cannot assign Int | String to `y` of type Int",
+    );
+    // A common type still makes an array.
+    ok("class A\n  def x -> Int = 1\nend\nclass B < A\nend\nitems = [A.new, B.new]\np items.map(&:x)");
+    ok("enum S\n  variant C, D\nend\nxs = [S::C, S::D]\np xs.size");
+    ok("xs = [1, 2]\nxs = xs.push(3)\np xs");
+    // A tuple pattern of the right shape covers the tuple.
+    ok("t: [Int, String] = [1, \"a\"]\ncase t\nin [a, b] then p a\nend");
+    ok("u: [Int, String, Bool] = [1, \"x\", true]\ncase u\nin [a, *rest] then p rest\nend");
+    // Uncovered values of an open element type are a run-time error; a
+    // tuple of closed types must be covered.
+    warns(
+        "t: [Int, String] = [1, \"a\"]\ncase t\nin [Int => a, \"b\"] then p a\nend",
+        "a NoMatchingPatternError is raised at run time",
+    );
+    err(
+        "t: [Bool, Bool] = [true, false]\ncase t\nin [true, b] then p b\nend",
+        "does not cover",
+    );
+    // Tuples of comparable elements are comparable, element by element.
+    ok("xs = [[2, \"b\"], [1, \"z\"]]\np xs.sort, xs.max\np [[\"x\", 2]].sort_by { |pr| [pr[1], pr[0]] }");
+    err(
+        "class A\nend\nxs = [[1, A.new], [2, A.new]]\np xs.sort",
+        "type bounds not satisfied",
+    );
+}
+
+#[test]
 fn concurrency_rules() {
     ok("t = spawn { 1 + 1 }\nputs t.await");
     ok("x = 1\nt = spawn { x + 1 }\nputs t.await");

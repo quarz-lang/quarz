@@ -680,6 +680,19 @@ impl World {
                 let elem = Type::union_of(xs.clone());
                 bargs.len() == 1 && self.is_subtype(&elem, &bargs[0])
             }
+            // Tuples compare element by element (`[2, "a"] < [2, "b"]`).
+            (Type::Tuple(xs), Type::Class(b, bargs)) if *b == self.builtin.comparable => {
+                match bargs.as_slice() {
+                    [Type::Tuple(ys)] => {
+                        xs.len() == ys.len()
+                            && xs
+                                .iter()
+                                .zip(ys)
+                                .all(|(x, y)| self.is_subtype(x, &Type::Class(*b, vec![y.clone()])))
+                    }
+                    _ => false,
+                }
+            }
             (Type::Tuple(_), Type::Class(b, _)) => self.class_is_a(self.builtin.array, *b),
             (Type::Proc(ra, ps, r), Type::Proc(rb, qs, s)) => {
                 // Receivers, like parameters, are contravariant.
@@ -745,6 +758,12 @@ impl World {
 
     /// Least upper bound used for joining branches: absorbs subtypes into
     /// supertypes, otherwise forms a union.
+    /// The element type of a tuple used as an array: the join of its
+    /// element types (`[Circle, Rect]` is an `Array[Shape]`).
+    pub fn tuple_element(&self, ts: &[Type]) -> Type {
+        ts.iter().fold(Type::Nothing, |acc, t| self.join(&acc, t))
+    }
+
     pub fn join(&self, a: &Type, b: &Type) -> Type {
         if a.is_nothing() {
             return b.clone();
@@ -858,7 +877,7 @@ impl World {
                 self.lookup_instance_methods(self.builtin.class_, &[], name, &mut out);
             }
             Type::Tuple(ts) => {
-                let elem = Type::union_of(ts.clone());
+                let elem = self.tuple_element(ts);
                 self.lookup_instance_methods(self.builtin.array, &[elem], name, &mut out);
             }
             Type::Proc(_, _, _) => {
