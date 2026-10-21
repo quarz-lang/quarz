@@ -397,15 +397,29 @@ impl Interp {
         let f = &funcs[fid as usize];
         let pools = self.pools.borrow();
         let pool = &pools[fid as usize];
-        let mut regs: SmallVec<[Value; 16]> = smallvec![Value::Nil; f.nregs as usize];
+        let n = f.nregs as usize;
+        let mut regs: SmallVec<[Value; 16]> = if n <= 16 {
+            SmallVec::new()
+        } else {
+            // Exactly the size needed (growing it by doubling, the files
+            // of a deep recursion come out larger and unevenly placed,
+            // measurably slower).
+            let mut v = self.reg_pool.borrow_mut().pop().unwrap_or_default();
+            v.reserve_exact(n);
+            SmallVec::from_vec(v)
+        };
+        regs.resize_with(n, || Value::Nil);
         let mut pending: Option<Flow> = None;
-        let mut block = 0;
-        loop {
-            match self.run_block(f, fid, pool, act, &mut regs, &mut pending, block) {
-                Step::Jump(b) => block = b,
-                Step::Done(r) => return r,
+        let r = self.run_block_from(f, fid, pool, act, &mut regs, &mut pending, 0, 0);
+        release_regs(&mut regs);
+        if regs.spilled() {
+            let v = regs.into_vec();
+            let mut pool = self.reg_pool.borrow_mut();
+            if pool.len() < 64 {
+                pool.push(v);
             }
         }
+        r
     }
 
     /// Continue a function in the interpreter from instruction `inst` of
@@ -425,17 +439,7 @@ impl Interp {
         let pools = self.pools.borrow();
         let pool = &pools[fid as usize];
         let mut pending: Option<Flow> = None;
-        let mut block = block;
-        let mut start = inst;
-        loop {
-            match self.run_block_from(f, fid, pool, act, regs, &mut pending, block, start) {
-                Step::Jump(b) => {
-                    block = b;
-                    start = 0;
-                }
-                Step::Done(r) => return r,
-            }
-        }
+        self.run_block_from(f, fid, pool, act, regs, &mut pending, block, inst)
     }
 
     /// Remove `act` from the call stack. Tasks interleave on one stack,
@@ -493,21 +497,9 @@ impl Interp {
         unsafe { std::slice::from_raw_parts(self.hot.stack_ptr.get(), self.hot.stack_len.get()) }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn run_block(
-        &self,
-        f: &Function,
-        fid: FuncId,
-        pool: &RefCell<Vec<Value>>,
-        act: &Activation,
-        regs: &mut [Value],
-        pending: &mut Option<Flow>,
-        block: BlockId,
-    ) -> Step {
-        self.run_block_from(f, fid, pool, act, regs, pending, block, 0)
-    }
-
-    /// Run a block from its instruction `start` on.
+    /// Run the function's blocks from instruction `start` of `block` on,
+    /// to the end of the function (blocks follow one another here rather
+    /// than through the caller: a step between blocks is a jump).
     #[allow(clippy::too_many_arguments)]
     fn run_block_from(
         &self,
@@ -519,52 +511,112 @@ impl Interp {
         pending: &mut Option<Flow>,
         block: BlockId,
         start: usize,
-    ) -> Step {
-        let b = &f.blocks[block as usize];
-        for (i, inst) in b.insts.iter().enumerate().skip(start) {
-            act.line.set(b.lines[i]);
-            if let Err(flow) = self.exec_inst(f, fid, pool, act, regs, pending, inst) {
-                return self.unwind(b, flow, pending);
-            }
-        }
-        act.line.set(b.term_line);
-        match &b.term {
-            Term::Jump(t) => Step::Jump(*t),
-            Term::Branch { cond, then, els } => {
-                if regs[*cond as usize].is_truthy() {
-                    Step::Jump(*then)
-                } else {
-                    Step::Jump(*els)
+    ) -> EvalResult {
+        let mut block = block;
+        let mut start = start;
+        'blocks: loop {
+            let b = &f.blocks[block as usize];
+            for (i, inst) in b.insts.iter().enumerate().skip(start) {
+                // The commonest instructions that cannot fail, here rather
+                // than through `exec_inst` (a large frame for one store).
+                // They raise nothing, so the line is not needed either.
+                match inst {
+                    Inst::LoadConst { dst, idx } => {
+                        let v = pool.borrow()[*idx as usize].clone();
+                        if !v.is_nil()
+                            || !matches!(f.consts[*idx as usize], Constant::Regexp { .. })
+                        {
+                            regs[*dst as usize] = v;
+                            continue;
+                        }
+                    }
+                    Inst::Move { dst, src } => {
+                        let v = regs[*src as usize].clone();
+                        regs[*dst as usize] = v;
+                        continue;
+                    }
+                    Inst::Take { dst, src } => {
+                        let v = std::mem::replace(&mut regs[*src as usize], Value::Nil);
+                        regs[*dst as usize] = v;
+                        continue;
+                    }
+                    Inst::BinOp {
+                        dst, op, lhs, rhs, ..
+                    } => {
+                        if let Some(v) = fast_binop(*op, &regs[*lhs as usize], &regs[*rhs as usize])
+                        {
+                            regs[*dst as usize] = v;
+                            continue;
+                        }
+                    }
+                    _ => {}
+                }
+                act.line.set(b.lines[i]);
+                if let Err(flow) = self.exec_inst(f, fid, pool, act, regs, pending, inst) {
+                    match self.unwind(b, flow, pending) {
+                        Step::Jump(h) => {
+                            block = h;
+                            start = 0;
+                            continue 'blocks;
+                        }
+                        Step::Done(r) => return r,
+                    }
                 }
             }
-            // The function ends here: its result is moved out.
-            Term::Return(r) => {
-                Step::Done(Ok(std::mem::replace(&mut regs[*r as usize], Value::Nil)))
+            start = 0;
+            let step = match &b.term {
+                Term::Jump(t) => {
+                    block = *t;
+                    continue 'blocks;
+                }
+                Term::Branch { cond, then, els } => {
+                    block = if regs[*cond as usize].is_truthy() {
+                        *then
+                    } else {
+                        *els
+                    };
+                    continue 'blocks;
+                }
+                // The function ends here: its result is moved out.
+                Term::Return(r) => {
+                    return Ok(std::mem::replace(&mut regs[*r as usize], Value::Nil));
+                }
+                _ => {
+                    act.line.set(b.term_line);
+                    match &b.term {
+                        Term::Raise(r) => {
+                            self.unwind(b, Flow::Raise(regs[*r as usize].clone()), pending)
+                        }
+                        Term::BreakOut(r) => self.unwind(
+                            b,
+                            Flow::Break(regs[*r as usize].clone(), act.closure_tag),
+                            pending,
+                        ),
+                        Term::ReturnOut(r) => self.unwind(
+                            b,
+                            Flow::Return(regs[*r as usize].clone(), act.method_tag),
+                            pending,
+                        ),
+                        Term::Resume(r) => match &regs[*r as usize] {
+                            Value::Flow(fb) => match fb.borrow_mut().take() {
+                                Some(flow) => self.unwind(b, flow, pending),
+                                None => Step::Done(Ok(Value::Nil)),
+                            },
+                            _ => Step::Done(Ok(Value::Nil)),
+                        },
+                        _ => Step::Done(Err(self.raise(
+                            self.exc.runtime_error,
+                            "internal error: unreachable code executed (in a compiled program, \
+                             possibly a function the build dropped as unreachable: \
+                             QUARZ_NO_SHAKE=1 at build time keeps them)",
+                        ))),
+                    }
+                }
+            };
+            match step {
+                Step::Jump(h) => block = h,
+                Step::Done(r) => return r,
             }
-            Term::Raise(r) => self.unwind(b, Flow::Raise(regs[*r as usize].clone()), pending),
-            Term::BreakOut(r) => self.unwind(
-                b,
-                Flow::Break(regs[*r as usize].clone(), act.closure_tag),
-                pending,
-            ),
-            Term::ReturnOut(r) => self.unwind(
-                b,
-                Flow::Return(regs[*r as usize].clone(), act.method_tag),
-                pending,
-            ),
-            Term::Resume(r) => match &regs[*r as usize] {
-                Value::Flow(fb) => match fb.borrow_mut().take() {
-                    Some(flow) => self.unwind(b, flow, pending),
-                    None => Step::Done(Ok(Value::Nil)),
-                },
-                _ => Step::Done(Ok(Value::Nil)),
-            },
-            Term::Unreachable => Step::Done(Err(self.raise(
-                self.exc.runtime_error,
-                "internal error: unreachable code executed (in a compiled program, \
-                 possibly a function the build dropped as unreachable: \
-                 QUARZ_NO_SHAKE=1 at build time keeps them)",
-            ))),
         }
     }
 
@@ -1660,3 +1712,26 @@ impl Interp {
 
 /// Positional arguments stored inline (re-exported for natives).
 pub type Args4 = SmallVec<[Value; 4]>;
+
+/// Empty a register file: only the values holding a reference are
+/// released one by one (most registers hold nil or a number).
+fn release_regs(regs: &mut SmallVec<[Value; 16]>) {
+    for r in regs.iter_mut() {
+        if !matches!(
+            r,
+            Value::Nil
+                | Value::Bool(_)
+                | Value::Int(_)
+                | Value::Float(_)
+                | Value::Symbol(_)
+                | Value::Class(_)
+                | Value::Duration(_)
+                | Value::Short(_)
+        ) {
+            *r = Value::Nil;
+        }
+    }
+    // SAFETY: every element is now a variant without drop glue, so
+    // forgetting them leaks nothing.
+    unsafe { regs.set_len(0) };
+}

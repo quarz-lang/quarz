@@ -357,6 +357,10 @@ pub struct Interp {
     pub stdout: Rc<RefCell<Box<dyn std::io::Write>>>,
     /// The flow being returned from compiled code (see `vm.rs`).
     pub pending_flow: RefCell<Option<Flow>>,
+    /// Register files of more than the inline 16, kept empty for the
+    /// next interpreted call that needs one (an allocation per call
+    /// otherwise).
+    pub reg_pool: RefCell<Vec<Vec<Value>>>,
     self_rc: RefCell<Weak<Interp>>,
     pub root_task: Cell<Option<TaskId>>,
 }
@@ -593,6 +597,7 @@ impl Interp {
             at_exit: state.at_exit,
             stdout: state.stdout,
             pending_flow: RefCell::new(None),
+            reg_pool: RefCell::new(Vec::new()),
             self_rc: RefCell::new(Weak::new()),
             root_task: Cell::new(None),
         });
