@@ -59,6 +59,7 @@ pub(crate) struct Helpers<F> {
     pub construct: F,
     pub alloc_data: F,
     pub owned_call: F,
+    pub hash_put_int: F,
 }
 
 /// A typed entry's exits: the block a status leaves through, the
@@ -2417,11 +2418,12 @@ impl<B: Builder> Gen<'_, B> {
             if unbox::field_num(self.classes, *class, *index) == Some(Num::Float)
                 && self.states[*src as usize] == State::Float);
         // Array length, element reads and appends read only their own
-        // operands' homes, on the runtime path, which writes them back.
+        // operands' homes, on the runtime path, which writes them back; so
+        // does an owned call (its in-place paths read no home).
         let array_op = matches!(
             inst,
             Inst::Len { .. } | Inst::ArrayGetReg { .. } | Inst::ArrayPush { .. }
-        );
+        ) || matches!(inst, Inst::OwnedCall { kw, .. } if kw.is_empty());
         let lazy =
             typed || to_f.is_some() || float_store || array_op || self.typed_callee(inst).is_some();
         // A handler reads the homes of whatever is live: anything that may
@@ -3334,9 +3336,43 @@ impl<B: Builder> Gen<'_, B> {
                         .as_deref()
                         .is_some_and(|k| k == "Array#push")
                     && !matches!(recv, VarLoc::Reg(r) if *r == args[0]);
+                // `h = h.put(k, v)` with numbers known to be Ints: in place
+                // through a small runtime entry when the hash is unshared
+                // and all Ints.
+                let is_put = args.len() == 2
+                    && self.methods[*method as usize]
+                        .native_key
+                        .as_deref()
+                        .is_some_and(|k| k == "Hash#put")
+                    && args.iter().all(|a| self.states[*a as usize] == State::Int);
                 let moving = is_push && self.movable(inst, args[0], block, index);
                 let slow = self.b.create_block();
                 let cont = self.b.create_block();
+                if is_put {
+                    let slot = match recv {
+                        VarLoc::Reg(r) => self.b.iadd_imm(self.regs, i64::from(reg_off(*r))),
+                        VarLoc::Frame { depth, slot } => self.frame_slot_addr(*depth, *slot, slow),
+                        VarLoc::Field { obj, index } => {
+                            let check = self.b.create_block();
+                            let tag = self.tag(*obj);
+                            let is_obj = self.b.icmp_imm(IntCC::Equal, tag, TAG_OBJECT);
+                            self.b.brif(is_obj, check, &[], slow, &[]);
+                            self.b.switch_to_block(check);
+                            self.field_addr(*obj, *index)
+                        }
+                    };
+                    let k = self.b.use_var(self.ivar(args[0]));
+                    let v = self.b.use_var(self.ivar(args[1]));
+                    let done = self.b.call(self.h.hash_put_int, &[slot, k, v])[0];
+                    let ok = self.b.create_block();
+                    self.b.brif(done, ok, &[], slow, &[]);
+                    self.b.switch_to_block(ok);
+                    if wanted {
+                        self.clone_from(*dst, slot);
+                    }
+                    self.b.jump(cont, &[]);
+                    self.b.switch_to_block(slow);
+                }
                 if is_push {
                     let arr_ptr = match recv {
                         VarLoc::Reg(r) => self.b.iadd_imm(self.regs, i64::from(reg_off(*r))),
@@ -3357,6 +3393,10 @@ impl<B: Builder> Gen<'_, B> {
                     self.b.jump(cont, &[]);
                     self.b.switch_to_block(slow);
                 }
+                // The runtime reads the homes: written back here, on its
+                // path only.
+                let live = self.live[block as usize][index as usize].clone();
+                self.flush_live(&live);
                 for (k, r) in args.iter().enumerate() {
                     let v = self.i32(*r);
                     self.b.store(v, self.scratch, 4 * k as i32);

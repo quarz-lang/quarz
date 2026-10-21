@@ -45,6 +45,7 @@ struct Runtime {
     construct: CFuncId,
     alloc_data: CFuncId,
     owned_call: CFuncId,
+    hash_put_int: CFuncId,
     main: CFuncId,
 }
 
@@ -220,6 +221,11 @@ pub fn compile(module: &Module) -> Result<Vec<u8>, String> {
                 Some(i32_),
             ),
         )?,
+        hash_put_int: import(
+            &mut obj,
+            "qz_hash_put_int",
+            &sig(&[i64_, i64_, i64_], Some(i32_)),
+        )?,
         alloc_data: import(
             &mut obj,
             "qz_alloc_data",
@@ -322,6 +328,7 @@ impl Compiler {
             construct: imp(self.rt.construct, &mut fb),
             alloc_data: imp(self.rt.alloc_data, &mut fb),
             owned_call: imp(self.rt.owned_call, &mut fb),
+            hash_put_int: imp(self.rt.hash_put_int, &mut fb),
         };
         let methods = &module.world.methods;
         let mut callees: HashMap<FuncId, FuncRef> = HashMap::new();

@@ -1,0 +1,24 @@
+# `h = h.put(k, v)` updates an unshared hash in place (compiled code has
+# a fast path for Int keys and values); a shared one is copied, and a
+# value of another type moves the hash to boxed entries.
+h: Hash[Int, Int] = {}
+5.times { |i| h = h.put(i, i * 10) }
+p h
+g = h
+h = h.put(99, 1)
+p g, h
+m: Hash[Int, Int | String] = {}
+3.times { |i| m = m.put(i, i) }
+m = m.put(7, "x")
+3.times { |i| m = m.put(i + 10, i) }
+p m
+class Box
+  var @h: Hash[Int, Int] = {}
+  attr_reader :h
+  def add(k: Int) -> Nil
+    @h = @h.put(k, k * k)
+  end
+end
+b = Box.new
+4.times { |i| b.add(i) }
+p b.h

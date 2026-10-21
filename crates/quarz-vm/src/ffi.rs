@@ -12,7 +12,7 @@ use std::rc::Rc;
 use quarz_ir::{FuncId, Term};
 
 use crate::interp::{CompiledFn, Flow, Interp, SharedState};
-use crate::value::Value;
+use crate::value::{HashData, Value};
 use crate::vm::Activation;
 
 pub const STATUS_OK: u32 = 0;
@@ -710,6 +710,30 @@ pub unsafe extern "C" fn qz_call_static(
         }
         Err(flow) => rt.park_flow(flow),
     }
+}
+
+/// `h = h.put(k, v)` with `Int` key and value, when the hash in `slot`
+/// is uniquely referenced and holds only `Int`s (or nothing): inserted
+/// in place, 1. Anything else is left to `qz_owned_call` (0).
+///
+/// # Safety
+/// `slot` points at a live value.
+#[no_mangle]
+pub unsafe extern "C" fn qz_hash_put_int(slot: *mut Value, k: i64, v: i64) -> u32 {
+    let Value::Hash(h) = &mut *slot else {
+        return 0;
+    };
+    let Some(data) = Rc::get_mut(h) else {
+        return 0;
+    };
+    match data {
+        HashData::Ints(m) => {
+            m.insert(k, v);
+        }
+        HashData::Values(m) if m.is_empty() => data.insert(Value::Int(k), Value::Int(v)),
+        HashData::Values(_) => return 0,
+    }
+    1
 }
 
 /// `x = x.meth(args)`: move the receiver out of its variable (a register
