@@ -20,6 +20,10 @@ updates:
     schedule:
       interval: weekly
     groups:
+      # Cranelift's crates only work at one version, and quarz-aot hands
+      # them target-lexicon's types: always together.
+      cranelift:
+        patterns: ["cranelift-*", "target-lexicon"]
       # Compatible updates together; an incompatible one (a new major
       # version, or a new 0.x minor) gets its own pull request, so that
       # one which needs code changes (or a newer Rust than 1.86) does
@@ -27,3 +31,8 @@ updates:
       cargo-compatible:
         patterns: ["*"]
         update-types: ["minor", "patch"]
+    ignore:
+      # bincode 3.0.0 is a tombstone release (a `compile_error!` that the
+      # project ended): 1.x stays.
+      - dependency-name: bincode
+        versions: [">= 3"]
