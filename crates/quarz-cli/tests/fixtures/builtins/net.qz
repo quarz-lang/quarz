@@ -126,3 +126,62 @@ end
 File.delete(tmp)
 out = Process.run("sh", "-c", "sleep 0.1; echo done")
 p out.stdout
+
+# A shared socket: each write call goes out whole, each gets returns a
+# whole line, and closing it fails the other task's pending read.
+srv = TCPServer.new("127.0.0.1", 0)
+sport = srv.local_address[1]
+Task.scope do |scope|
+  got = scope.spawn do
+    conn = srv.accept
+    data = conn.read
+    conn.close
+    data
+  end
+  c = TCPSocket.new("127.0.0.1", sport)
+  ws = ["x", "y", "z"].map { |ch| scope.spawn { c.write(ch * 300_000) } }
+  ws.each { |w| w.await }
+  c.close
+  d = got.await
+  runs = 0
+  prev = ""
+  d.each_char { |ch| if ch != prev then runs += 1; prev = ch end }
+  p d.size, runs
+end
+Task.scope do |scope|
+  peer = scope.spawn do
+    conn = srv.accept
+    conn.write((1..100).map { |i| "line #{i}\n" }.join)
+    conn.close
+  end
+  c = TCPSocket.new("127.0.0.1", sport)
+  readers = 2.times.map do
+    scope.spawn do
+      lines: Array[String] = []
+      while (l = c.gets?)
+        lines = lines.push(l)
+      end
+      lines
+    end
+  end
+  all = readers.flat_map(&:await)
+  p all.size, all.all? { |l| l.start_with?("line ") && l.end_with?("\n") }
+  peer.await
+  c.close
+end
+Task.scope do |scope|
+  scope.spawn { srv.accept }
+  c = TCPSocket.new("127.0.0.1", sport)
+  r = scope.spawn do
+    begin
+      c.gets
+      "no error"
+    rescue IOError => e
+      "IOError: #{e.message}"
+    end
+  end
+  Task.sleep(20.ms)
+  c.close
+  p r.await
+end
+srv.close

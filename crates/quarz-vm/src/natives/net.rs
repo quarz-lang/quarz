@@ -251,6 +251,8 @@ fn make_socket(interp: &Interp, stream: Stream, path: Option<String>) -> Value {
         path,
         local,
         peer,
+        writing: false,
+        write_waiters: std::collections::VecDeque::new(),
     })))
 }
 
@@ -458,7 +460,32 @@ pub fn socket_read_partial(
     Ok(Some(s.rbuf.drain(..n).collect()))
 }
 
+/// Write all of `data`. A write that has to wait for the socket keeps
+/// its turn: another task's write waits until this one is done, so the
+/// bytes of one call are never interleaved with another's.
 pub fn socket_write(interp: &Interp, st: &RefCell<SocketState>, data: &[u8]) -> Result<(), Flow> {
+    while st.borrow().writing {
+        let me = interp.current_task().id;
+        st.borrow_mut().write_waiters.push_back(me);
+        if let Err(flow) = interp.park() {
+            st.borrow_mut().write_waiters.retain(|t| *t != me);
+            return Err(flow);
+        }
+    }
+    st.borrow_mut().writing = true;
+    let r = socket_write_all(interp, st, data);
+    let next = {
+        let mut s = st.borrow_mut();
+        s.writing = false;
+        s.write_waiters.pop_front()
+    };
+    if let Some(next) = next {
+        interp.sched.borrow_mut().wake(next);
+    }
+    r
+}
+
+fn socket_write_all(interp: &Interp, st: &RefCell<SocketState>, data: &[u8]) -> Result<(), Flow> {
     let fd = socket_fd(interp, st)?;
     let mut written = 0;
     while written < data.len() {

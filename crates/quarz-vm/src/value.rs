@@ -710,6 +710,10 @@ pub struct SocketState {
     /// up, when the system no longer reports them).
     pub local: Option<std::net::SocketAddr>,
     pub peer: Option<std::net::SocketAddr>,
+    /// A task is in the middle of a write: one call goes out whole, and
+    /// the other writers wait here for their turn.
+    pub writing: bool,
+    pub write_waiters: std::collections::VecDeque<crate::sched::TaskId>,
 }
 
 #[derive(Debug)]

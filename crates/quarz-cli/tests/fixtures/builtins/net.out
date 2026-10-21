@@ -30,3 +30,8 @@ false
 refused
 [2000, 2000, 2000, 2000]
 "done\n"
+900000
+3
+100
+true
+"IOError: closed stream"
