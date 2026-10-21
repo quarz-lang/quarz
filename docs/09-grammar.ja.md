@@ -11,9 +11,9 @@ declaration    = class_decl | module_decl | data_decl | enum_decl | extension_de
                | require_stmt ;
 
 (* ---- クラス・モジュール ---- *)
-class_decl     = [ "abstract" ] "class" const_path [ type_params ] [ "<" type ] NEWLINE
+class_decl     = [ "abstract" ] "class" const_path [ type_params ] [ "<" type ] [ "is" ] NEWLINE
                  class_body "end" ;
-module_decl    = "module" const_path [ type_params ] NEWLINE class_body "end" ;
+module_decl    = "module" const_path [ type_params ] [ "is" ] NEWLINE class_body "end" ;
 class_body     = { class_member } ;
 class_member   = field_decl | method_decl | attr_decl | include_decl | visibility
                | const_decl | type_alias | class_decl | module_decl | data_decl
@@ -30,12 +30,12 @@ field_list     = field { "," field } ;
 field          = IDENT ":" type [ "=" expression ] ;
 
 enum_decl      = "enum" CONST [ type_params ] "=" variants
-               | "enum" CONST [ type_params ] NEWLINE variants NEWLINE class_body "end" ;
+               | "enum" CONST [ type_params ] [ "is" ] [ NEWLINE ] variants NEWLINE class_body "end" ;
 variants       = [ "|" ] variant { [ NEWLINE ] "|" variant } ;
 variant        = CONST [ "(" field_list ")" ] ;
 
 (* ---- 拡張 ---- *)
-extension_decl = "extension" type NEWLINE class_body "end" ;
+extension_decl = "extension" type [ "is" ] NEWLINE class_body "end" ;
 using_decl     = "using" const_path ;
 
 (* ---- メソッド ---- *)
@@ -117,4 +117,4 @@ extern_decl    = "extern" STRING NEWLINE { "def" IDENT "(" [ param_list ] ")" "-
 - **`Const[...]`**: 型の位置では型引数。式の位置では、`[` の中身が型として解釈できるなら型式(`Array[Int].new`)、そうでなければ `Const.[](...)` の呼び出し(ユーザー定義の `self.[]`)。組み込みの `Array`/`Hash`/`Set` は `self.[]` を持たないため常に型式。
 - **`{ }` のブロックとハッシュ**: Ruby と同じ規則。
 - **文脈キーワード**: `data`/`enum`/`var`/`abstract`/`override`/`extension`/`using`/`type`/`extern`/`is`/`for` は、上記の宣言位置で後続トークンが宣言の形を取るときだけキーワード。
-- **`is ... end` の `data`**: 本体のない `data` 宣言は `end` で終わらないので、本体を続ける語がないとパーサは本体と後続の文を区別できない。`data X(...)` の直後の `is` が本体を開く。
+- **`is ... end`**: 本体のない `data` 宣言は `end` で終わらないので、本体を続ける語がないとパーサは本体と後続の文を区別できない。`data X(...)` の直後の `is` が本体を開く。見た目をそろえるため、`class`・`module`・`enum`・`extension` も最初の行の末尾に同じ `is` を書ける(省略可。`class Point is`)。`extern "C"` には使わない。その文字列は呼び出し規約で、定義するものの名前ではないため。単独の行に書いた `is` はふつうの識別子。

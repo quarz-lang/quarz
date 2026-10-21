@@ -306,6 +306,32 @@ fn declarations() {
     // The variants are one `|`-separated list: on one line, continued on
     // lines that start with `|`, with or without a leading `|`.
     assert_eq!(sexp("enum C = A | B(x: Int)"), "(enum C (A) (B x:Int))");
+    // `is` may open the body of any declaration that has one, on the
+    // declaration's line; on the next line it is an ordinary name.
+    assert_eq!(sexp("class C is\nend"), sexp("class C\nend"));
+    assert_eq!(
+        sexp("class C[T] < B is\ndef f = 1\nend"),
+        sexp("class C[T] < B\ndef f = 1\nend")
+    );
+    assert_eq!(
+        sexp("abstract class C is\nend"),
+        sexp("abstract class C\nend")
+    );
+    assert_eq!(
+        sexp("module M[out T] is\nend"),
+        "(module M (tparams out T))"
+    );
+    assert_eq!(
+        sexp("extension Array[T: Describable] is\ndef f = 1\nend"),
+        sexp("extension Array[T: Describable]\ndef f = 1\nend")
+    );
+    assert_eq!(
+        sexp("enum E[T] is\n  | A\n  | B(v: T)\ndef f = 1\nend"),
+        "(enum E (tparams T) (A) (B v:T) (def f (params) 1))"
+    );
+    assert_eq!(sexp("enum E is | A | B\nend"), "(enum E (A) (B))");
+    assert_eq!(sexp("class C\nis\nend"), "(class C (call _ is))");
+    assert!(!errors("extern \"C\" is\nend").is_empty());
     // `for` comprehensions desugar to filter / flat_map / map.
     assert_eq!(
         sexp("for x in xs when x.even?, y in ys then [x, y] end"),

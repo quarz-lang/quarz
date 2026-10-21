@@ -20,7 +20,7 @@ Quarz の文法は Ruby を基礎にし、「静的に定義する」「不変�
 | 語 | 認識される文脈 |
 |---|---|
 | `data` | 行頭で `data 定数名(` が続くとき |
-| `is` | `data` 宣言の `)` の直後で、本体を導くとき |
+| `is` | 本体を持つ宣言の最初の行の末尾で、本体を導くとき。`data` では必須(`)` の直後)、`class`/`module`/`enum`/`extension` では省略可(`class Point is`) |
 | `enum` | 行頭で `enum 定数名` が続くとき |
 | `var` | `var @名前` / `var @名前:` が続くとき |
 | `abstract` | `abstract class` / `abstract def` |

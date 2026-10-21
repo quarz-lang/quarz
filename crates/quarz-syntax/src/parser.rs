@@ -3265,6 +3265,7 @@ impl<'src> Parser<'src> {
         } else {
             None
         };
+        self.eat_is();
         self.push_scope(true);
         let body = self.parse_statements(&[K::End]);
         self.pop_scope();
@@ -3286,6 +3287,7 @@ impl<'src> Parser<'src> {
         let start = self.expect_kw(K::Module)?.span;
         let name = self.parse_const_path()?;
         let type_params = self.parse_type_params_opt()?;
+        self.eat_is();
         self.push_scope(true);
         let body = self.parse_statements(&[K::End]);
         self.pop_scope();
@@ -3301,6 +3303,18 @@ impl<'src> Parser<'src> {
         ))
     }
 
+    /// The contextual keyword `is` that may open the body of a
+    /// declaration, on the declaration's own line (`class C is`, `data
+    /// P(x: Int) is`); `true` when it was there.
+    fn eat_is(&mut self) -> bool {
+        if matches!(self.kind(), T::Ident(name) if name == "is") {
+            self.bump();
+            true
+        } else {
+            false
+        }
+    }
+
     fn parse_data(&mut self) -> PResult<Expr> {
         let start = self.bump().span; // data
         let name = match self.bump().kind {
@@ -3313,10 +3327,9 @@ impl<'src> Parser<'src> {
         self.expect(&T::RParen, "`)`")?;
         // `data Name(fields) is ... end`: the body is introduced by the
         // contextual keyword `is`, since without one the next line could
-        // not be told from the next statement.
-        let has_body = matches!(self.kind(), T::Ident(name) if name == "is");
-        let body = if has_body {
-            self.bump();
+        // not be told from the next statement. (The other declarations
+        // with a body accept the same `is`, optionally.)
+        let body = if self.eat_is() {
             self.push_scope(true);
             let body = self.parse_statements(&[K::End]);
             self.pop_scope();
@@ -3447,7 +3460,7 @@ impl<'src> Parser<'src> {
         let type_params = self.parse_type_params_opt()?;
         self.push_scope(true);
         let mut body = Vec::new();
-        let variants = if self.eat(&T::Assign) {
+        let variants = if !self.eat_is() && self.eat(&T::Assign) {
             // The one-line form: variants only, no `end`.
             let variants = self.parse_variants()?;
             self.pop_scope();
@@ -3534,6 +3547,7 @@ impl<'src> Parser<'src> {
             span: tspan,
             kind: TypeExprKind::Named { path, args },
         };
+        self.eat_is();
         self.push_scope(true);
         let body = self.parse_statements(&[K::End]);
         self.pop_scope();

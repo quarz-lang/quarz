@@ -22,7 +22,7 @@ The following words are treated as keywords **only in declaration positions**; e
 | Word | Context in which it is recognized |
 |---|---|
 | `data` | At the start of a line, followed by `data ConstantName(` |
-| `is` | Right after the `)` of a `data` declaration, introducing its body |
+| `is` | At the end of the first line of a declaration with a body, introducing it: required for `data` (right after the `)`), optional for `class`/`module`/`enum`/`extension` (`class Point is`) |
 | `enum` | At the start of a line, followed by `enum ConstantName` |
 | `var` | Followed by `var @name` / `var @name:` |
 | `abstract` | `abstract class` / `abstract def` |
