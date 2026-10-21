@@ -12,24 +12,26 @@ Ruby と同じく、整数も `nil` もオブジェクトで、メソッドを�
 
 | 型 | 実装 | 主な「更新」操作(新しい値を返す) |
 |---|---|---|
-| `String` | フラットな UTF-8 バイト列(大きな連結は一時的にロープ) | `+`、`*`、`sub`、`gsub`、`upcase`、`strip`、`insert`、`delete_at`… |
+| `String` | フラットな UTF-8 バイト列(大きな連結は一時的にロープ) | `+`、`*`、`sub`、`gsub`、`upcase`、`strip`、`insert`… |
 | `Array[T]` | 32 分木の永続ベクタ(RRB-Tree)。32 要素以下は 1 ノード | `push`、`pop`、`shift`、`unshift`、`set`、`insert`、`delete_at`、`+`、`map`、`select`、`sort`、`concat`… |
 | `Hash[K, V]` | HAMT + 挿入順を保つ永続ベクタ。8 要素以下は線形配列 | `put`、`delete`、`merge`、`update`、`select`、`transform_values`… |
 | `Set[T]` | HAMT | `add`、`delete`、`\|`、`&`、`-`… |
 | `Range[T]`、`Tuple`、`Symbol`、数値、`Bool`、`Nil`、`Regexp` | | |
 
+「実装」の列は設計です。現状では、`Array` はフラットなベクタ(`Int` だけ・`Float` だけの配列は機械語の語を持つ)、`Hash` は挿入順を保つハッシュ表(キーと値がすべて `Int` のものは非ボックス化して持つ)、`Set` は挿入順を保つハッシュ集合、`String` はフラットな UTF-8 文字列(15 バイト以下は値そのものの中。ロープはない)です。更新は、下に書くとおり参照が一意ならその場で行い、そうでなければコレクション全体を O(n) でコピーします。
+
 ```ruby
 a = [1, 2, 3]
 b = a.push(4)        # a は [1, 2, 3] のまま、b は [1, 2, 3, 4]
 h = { name: "alice" }
-h2 = h.put(:age, 30)
+h2 = h.put(:city, "Paris")
 s = "abc"
 t = s + "d"
 ```
 
-Ruby の破壊的メソッド(`push`/`<<`/`[]=`/`sort!`/`map!`/`concat`/`delete`/`clear`/`gsub!`…)のうち、不変型にあるのは「新しい値を返す版」だけです。`<<` と `[]=` と `!` 付きメソッドは不変型には定義されていません。`arr << x` と書くと、コンパイラは `Array::Builder` を使うか `arr = arr.push(x)` と書くよう提案するエラーを出します。
+Ruby の破壊的メソッド(`push`/`<<`/`[]=`/`sort!`/`map!`/`concat`/`delete`/`clear`/`gsub!`…)のうち、不変型にあるのは「新しい値を返す版」だけです。`<<` と `[]=` と `!` 付きメソッドは不変型には定義されていません。`arr << x` と書くと、コンパイラは `Array::Builder` を使うか `arr = arr.push(x)` と書くよう提案するエラーを出します(現状はただの「未定義のメソッド」エラーで、提案は予定)。
 
-純粋なメソッドの結果を捨てると警告が出ます。
+純粋なメソッドの結果を捨てると警告が出ます(予定)。
 
 ```ruby
 arr.push(4)          # 警告: 結果が使われていない。arr は変わらない
@@ -48,7 +50,7 @@ def collect(n: Int) -> Array[Int]
 end
 ```
 
-これは Lean 4 / Koka の「functional but in-place」と同じ技法で、Ruby 風の素直なループが可変配列と同程度に速く動きます。参照が共有されていれば自動的にコピー(パス上のノードのみ)にフォールバックするので、意味論は常に不変のままです。
+これは Lean 4 / Koka の「functional but in-place」と同じ技法で、Ruby 風の素直なループが可変配列と同程度に速く動きます。参照が共有されていれば自動的にコピー(パス上のノードのみ。現状はコレクション全体)にフォールバックするので、意味論は常に不変のままです。
 
 ## 3. Builder(可変・タスク局所)
 
@@ -71,8 +73,8 @@ str = String.build { |b| b << "x" * 3; b << "y" }
 ```
 
 - Builder は Ruby の可変 `Array`/`Hash`/`String` とほぼ同じ API を持ちます(`<<`、`[]=`、`push`、`pop`、`sort!`、`map!`、`delete`、`clear`、`concat`…)。破壊的メソッドは `self` を返します。
-- `to_a`/`to_h`/`to_s`/`freeze` で不変値を取り出します。取り出しは**一回限り**で、以後その Builder を使うと `FrozenError` になります(Clojure の transient と同じ)。取り出しが O(1) なのはこの制約のおかげです。繰り返し覗きたいだけなら `snapshot`(O(n) コピー)を使います。
-- Builder は **Shareable ではありません**。チャネルに送る、`spawn` のブロックで捕捉する、`Atom` に入れる、定数にする、Shareable なクラスのフィールドにする、はどれもコンパイルエラーです。
+- `to_a`/`to_h`/`to_s`/`freeze` は不変値を O(1) で取り出します。中身をそのまま渡し、Builder は空になってまた詰められます。繰り返し覗きたいだけなら `snapshot`(O(n) コピー)を使います。
+- Builder は **Shareable ではありません**。チャネルに送る、`spawn` のブロックで捕捉する、`Atom` に入れる、定数にする、はどれもコンパイルエラーで、Builder のフィールドを持つクラスは Shareable になりません。
 - `Array.build { }` の形は、Builder がブロックの外へエスケープしないことをコンパイラが保証でき、割り当てを最適化できます。
 
 ## 4. ユーザー定義クラスの不変性
@@ -93,9 +95,9 @@ class Counter
 end
 ```
 
-- フィールドは既定で不変です。`initialize` で確定代入した後は変更できません。
+- フィールドは既定で不変です。`initialize` で代入し、その外では変更できません。
 - `var @x: T` で可変フィールドになります。可変フィールドを持つオブジェクトは**可変オブジェクト**です。
-- 可変オブジェクトは、それを作ったタスクの中でだけ使えます(§5)。
+- 可変オブジェクトは、それを作ったタスクの中でだけ使えます(§5。まだどこでも強制されているわけではなく、メソッドの中の `spawn` ブロックは `self` を使え、タスクの結果は検査されません)。
 - `data` のフィールドはすべて不変で、`with` で「一部を変えたコピー」を作ります。
 
 Ruby 流の「`attr_accessor` を並べて setter で状態を変える」設計は、Quarz では `var` を書くことで意図を明示することになります。`var` の数がそのクラスの「並行性に対する危うさ」の尺度になります。
@@ -111,15 +113,15 @@ Shareable であるもの:
 - `data`、`enum`(フィールドがすべて Shareable)
 - `var` フィールドを持たず、すべてのフィールドが Shareable なクラス
 - `Channel[T]`、`Task[T]`、`Atom[T]`、`Scope`(これらは内部で同期されている)
-- 手続き(捕捉している変数の値がすべて Shareable で、かつ捕捉した変数を再代入しないもの)
-- 例外オブジェクト(定義時に検査される)
+- 手続き(捕捉している変数の値がすべて Shareable で、かつ捕捉した変数を再代入しないもの。現状ではどの手続きの型も Shareable でない)
+- 例外オブジェクト(定義時に検査される。まだ検査しておらず、`var` フィールドを持つ例外クラスも通る)
+- `IO` ハンドル(標準入出力、開いたファイル、ソケット)。アクセスはランタイムが直列化する
 
 Shareable でないもの:
 
 - Builder 各種
 - `var` フィールドを持つクラス、Shareable でないフィールドを持つクラス
 - Builder や可変オブジェクトを捕捉した手続き、外側のローカル変数に代入する手続き
-- `IO`、`File`、`Socket` などのハンドル(所有タスクに紐づく)
 
 Shareable が要求される場所:
 
@@ -129,7 +131,7 @@ Shareable が要求される場所:
 | `spawn`/`scope.spawn` のブロックが捕捉する変数 | 新しいタスクで実行される |
 | `Atom[T]` の `T` | 複数タスクから読み書きされる |
 | 定数 | すべてのタスクから見える |
-| `Task[T]` の `T`(戻り値) | `await` で別タスクに渡る |
+| `Task[T]` の `T`(戻り値) | `await` で別タスクに渡る(まだ強制していない) |
 | 例外 | タスク境界を越えて伝播する |
 
 ```ruby
@@ -151,12 +153,12 @@ spawn { n.update { |v| v + 1 } } # OK
 - `hash` は `==` と整合するように定義します。`data`/`enum`/コレクションは自動生成。
 - `equal?` は同一性です。不変値については、同一性に意味を持たせないでください。実装は同じ値を共有したり、コピーしたりして構いません(小さな文字列のインターン、`with` でフィールドが変わらない場合の自己返却など)。
 - `eql?` は廃止します。静的型により `{ 1 => "a" }[1.0]` のような混同は型エラーになるため、`==`/`hash` の一組で十分です。
-- `Hash` のキーと `Set` の要素は `Hashable`(`==` と `hash` を持つ)でなければなりません。Shareable である必要はありませんが、可変オブジェクトをキーにすると `hash` が変わりうることは Ruby と同じ注意点です。
+- `Hash` のキーと `Set` の要素は `Hashable`(`==` と `hash` を持つ)でなければなりません。Shareable である必要はありませんが、可変オブジェクトをキーにすると `hash` が変わりうることは Ruby と同じ注意点です。(現状では `Hashable` という制約はなく、キーは組み込みの型と `data`/`enum` の値では `==` と同じに比べ、クラスのインスタンスは同一性で比べます。ユーザ定義の `==`/`hash` はまだ使いません。)
 
 ## 7. 文字列
 
-- `String` は常に UTF-8 の正しい列で、不変です。Ruby の多重エンコーディングはありません。他のエンコーディングは `Bytes` と `Encoding.decode`/`encode` で扱います。
-- `size`/`[]`/`each_char` はコードポイント単位、`bytesize`/`byteslice` はバイト単位、`graphemes` は書記素単位です。ASCII のみの文字列は内部フラグにより O(1) で添字アクセスできます。
+- `String` は常に UTF-8 の正しい列で、不変です。Ruby の多重エンコーディングはありません。他のエンコーディングは `Bytes`、`String#encode`、`Bytes#decode` で扱います(UTF-8、ASCII、ISO-8859-1。`Encoding` モジュールは予定)。
+- `size`/`[]`/`each_char` はコードポイント単位、`bytesize` はバイト単位(`byteslice` は予定)、`graphemes` は書記素単位です。ASCII のみの文字列を内部フラグにより O(1) で添字アクセスするのは予定です。
 - 文字列補間 `"#{a}#{b}"` と `+` の連鎖は、コンパイラが 1 回のバッファ確保にまとめます。
 - `Symbol` と `String` は別の型です。`to_sym`/`to_s` で変換します。
 
@@ -171,10 +173,10 @@ spawn { n.update { |v| v + 1 } } # OK
 | `arr.sort!` / `arr.map!` | `arr = arr.sort` / `arr = arr.map { }` |
 | `arr.delete(x)` | `arr = arr.delete(x)` |
 | `obj.freeze` | 不要(既定で不変) |
-| `obj.dup` | 可変オブジェクトのみ `dup` を持つ。不変値には不要 |
+| `obj.dup` | 不変値には不要(`dup` は組み込みの不変な値をそのまま返す) |
 | `Struct.new(:a, :b)` | `data X(a: T, b: U)` |
 | `attr_accessor :x` | `var @x: T` + `attr_accessor :x` |
-| `@cache \|\|= compute` | `var @cache: T? = nil` + `@cache \|\|= compute`。または `Lazy`/`memoize` |
+| `@cache \|\|= compute` | `var @cache: T? = nil` + `@cache \|\|= compute`(`Lazy`/`memoize` は予定) |
 | `$stdout.puts` | `STDOUT.puts` |
 | `@@count += 1` | `COUNT = Atom.new(0)` + `COUNT.update { \|n\| n + 1 }` |
 

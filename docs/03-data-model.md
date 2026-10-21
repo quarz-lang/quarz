@@ -14,24 +14,26 @@ The following types are **immutable**. There are no methods that modify a value;
 
 | Type | Implementation | Main "update" operations (return a new value) |
 |---|---|---|
-| `String` | Flat UTF-8 byte sequence (large concatenations temporarily use a rope) | `+`, `*`, `sub`, `gsub`, `upcase`, `strip`, `insert`, `delete_at`… |
+| `String` | Flat UTF-8 byte sequence (large concatenations temporarily use a rope) | `+`, `*`, `sub`, `gsub`, `upcase`, `strip`, `insert`… |
 | `Array[T]` | Persistent vector with 32-way branching (RRB-Tree). Up to 32 elements fit in a single node | `push`, `pop`, `shift`, `unshift`, `set`, `insert`, `delete_at`, `+`, `map`, `select`, `sort`, `concat`… |
 | `Hash[K, V]` | HAMT + a persistent vector that preserves insertion order. Up to 8 elements use a linear array | `put`, `delete`, `merge`, `update`, `select`, `transform_values`… |
 | `Set[T]` | HAMT | `add`, `delete`, `\|`, `&`, `-`… |
 | `Range[T]`, `Tuple`, `Symbol`, numbers, `Bool`, `Nil`, `Regexp` | | |
 
+The Implementation column is the design. Currently `Array` is a flat vector (an array of only `Int`s or only `Float`s stores machine words), `Hash` an insertion-ordered hash table (one whose keys and values are all `Int` is stored unboxed), `Set` an insertion-ordered hash set, and `String` a flat UTF-8 string (at most 15 bytes inside the value itself; no rope). An update is in place when the reference is unique, as below, and otherwise copies the whole collection, in O(n).
+
 ```ruby
 a = [1, 2, 3]
 b = a.push(4)        # a is still [1, 2, 3], b is [1, 2, 3, 4]
 h = { name: "alice" }
-h2 = h.put(:age, 30)
+h2 = h.put(:city, "Paris")
 s = "abc"
 t = s + "d"
 ```
 
-Of Ruby's destructive methods (`push`/`<<`/`[]=`/`sort!`/`map!`/`concat`/`delete`/`clear`/`gsub!`…), the immutable types only have the "return a new value" versions. `<<`, `[]=` and `!`-suffixed methods are not defined on immutable types. If you write `arr << x`, the compiler reports an error suggesting that you use `Array::Builder` or write `arr = arr.push(x)`.
+Of Ruby's destructive methods (`push`/`<<`/`[]=`/`sort!`/`map!`/`concat`/`delete`/`clear`/`gsub!`…), the immutable types only have the "return a new value" versions. `<<`, `[]=` and `!`-suffixed methods are not defined on immutable types. If you write `arr << x`, the compiler reports an error suggesting that you use `Array::Builder` or write `arr = arr.push(x)` (currently a plain "undefined method" error; the suggestion is planned).
 
-Discarding the result of a pure method produces a warning.
+Discarding the result of a pure method produces a warning (planned).
 
 ```ruby
 arr.push(4)          # warning: result unused. arr does not change
@@ -50,7 +52,7 @@ def collect(n: Int) -> Array[Int]
 end
 ```
 
-This is the same technique as "functional but in-place" in Lean 4 / Koka, and it lets straightforward Ruby-style loops run about as fast as with a mutable array. If the reference is shared, it automatically falls back to copying (only the nodes on the path), so the semantics always remain immutable.
+This is the same technique as "functional but in-place" in Lean 4 / Koka, and it lets straightforward Ruby-style loops run about as fast as with a mutable array. If the reference is shared, it automatically falls back to copying (only the nodes on the path; currently the whole collection), so the semantics always remain immutable.
 
 ## 3. Builders (Mutable, Task-Local)
 
@@ -73,8 +75,8 @@ str = String.build { |b| b << "x" * 3; b << "y" }
 ```
 
 - Builders have almost the same API as Ruby's mutable `Array`/`Hash`/`String` (`<<`, `[]=`, `push`, `pop`, `sort!`, `map!`, `delete`, `clear`, `concat`…). Destructive methods return `self`.
-- `to_a`/`to_h`/`to_s`/`freeze` extract the immutable value. Extraction is **one-shot**: using the Builder afterwards raises `FrozenError` (the same as Clojure's transients). This restriction is what makes extraction O(1). If you only want to peek repeatedly, use `snapshot` (an O(n) copy).
-- Builders are **not Shareable**. Sending one over a channel, capturing one in a `spawn` block, putting one in an `Atom`, making one a constant, or using one as a field of a Shareable class are all compile errors.
+- `to_a`/`to_h`/`to_s`/`freeze` extract the immutable value in O(1): they hand the contents over and leave the Builder empty, ready to be filled again. If you only want to peek repeatedly, use `snapshot` (an O(n) copy).
+- Builders are **not Shareable**. Sending one over a channel, capturing one in a `spawn` block, putting one in an `Atom` or making one a constant are compile errors, and a class with a Builder field is not Shareable.
 - In the `Array.build { }` form, the compiler can guarantee that the Builder does not escape the block, and can optimize the allocation.
 
 ## 4. Immutability of User-Defined Classes
@@ -95,9 +97,9 @@ class Counter
 end
 ```
 
-- Fields are immutable by default. After definite assignment in `initialize`, they cannot be changed.
+- Fields are immutable by default. They are assigned in `initialize` and cannot be changed outside it.
 - `var @x: T` makes a field mutable. An object with mutable fields is a **mutable object**.
-- A mutable object can only be used inside the task that created it (§5).
+- A mutable object can only be used inside the task that created it (§5; not yet enforced everywhere: a `spawn` block in a method can use `self`, and a task's result is not checked).
 - All fields of a `data` are immutable; `with` creates "a copy with some fields changed".
 
 The Ruby-style design of "line up `attr_accessor`s and change state through setters" requires writing `var` in Quarz, making the intent explicit. The number of `var`s is a measure of how risky a class is with respect to concurrency.
@@ -113,15 +115,15 @@ Shareable:
 - `data`, `enum` (all fields Shareable)
 - Classes with no `var` fields whose fields are all Shareable
 - `Channel[T]`, `Task[T]`, `Atom[T]`, `Scope` (these are internally synchronized)
-- Procedures (those whose captured variable values are all Shareable, and which do not reassign captured variables)
-- Exception objects (checked at definition time)
+- Procedures (those whose captured variable values are all Shareable, and which do not reassign captured variables; currently no procedure type is Shareable)
+- Exception objects (checked at definition time; not checked yet: an exception class with `var` fields is accepted)
+- `IO` handles (the standard streams, open files, sockets): the runtime serializes access
 
 Not Shareable:
 
 - The various Builders
 - Classes with `var` fields, classes with non-Shareable fields
 - Procedures that capture Builders or mutable objects, procedures that assign to outer local variables
-- Handles such as `IO`, `File`, `Socket` (tied to the owning task)
 
 Where Shareable is required:
 
@@ -131,7 +133,7 @@ Where Shareable is required:
 | Variables captured by `spawn`/`scope.spawn` blocks | Executed in a new task |
 | `T` of `Atom[T]` | Read and written from multiple tasks |
 | Constants | Visible from every task |
-| `T` of `Task[T]` (return value) | Passed to another task via `await` |
+| `T` of `Task[T]` (return value) | Passed to another task via `await` (not enforced yet) |
 | Exceptions | Propagate across task boundaries |
 
 ```ruby
@@ -153,12 +155,12 @@ To pass a mutable object to another task, convert it to an immutable value. A Bu
 - `hash` is defined consistently with `==`. Generated automatically for `data`/`enum`/collections.
 - `equal?` is identity. Do not attach meaning to the identity of immutable values; the implementation is free to share or copy equal values (interning of small strings, returning `self` from `with` when no field changes, and so on).
 - `eql?` is dropped. Static typing turns confusions like `{ 1 => "a" }[1.0]` into type errors, so the single pair `==`/`hash` suffices.
-- `Hash` keys and `Set` elements must be `Hashable` (have `==` and `hash`). They do not need to be Shareable, but as in Ruby, be aware that using a mutable object as a key means its `hash` may change.
+- `Hash` keys and `Set` elements must be `Hashable` (have `==` and `hash`). They do not need to be Shareable, but as in Ruby, be aware that using a mutable object as a key means its `hash` may change. (Currently there is no `Hashable` constraint, and keys compare as `==` does for the built-in types and `data`/`enum` values, but class instances by identity: a user-defined `==`/`hash` is not consulted yet.)
 
 ## 7. Strings
 
-- `String` is always a valid UTF-8 sequence and is immutable. Ruby's multiple encodings do not exist. Other encodings are handled with `Bytes` and `Encoding.decode`/`encode`.
-- `size`/`[]`/`each_char` work in code points, `bytesize`/`byteslice` in bytes, and `graphemes` in grapheme clusters. ASCII-only strings support O(1) indexing via an internal flag.
+- `String` is always a valid UTF-8 sequence and is immutable. Ruby's multiple encodings do not exist. Other encodings are handled with `Bytes`, `String#encode` and `Bytes#decode` (UTF-8, ASCII, ISO-8859-1; an `Encoding` module is planned).
+- `size`/`[]`/`each_char` work in code points, `bytesize` in bytes (`byteslice` is planned), and `graphemes` in grapheme clusters. O(1) indexing of ASCII-only strings through an internal flag is planned.
 - String interpolation `"#{a}#{b}"` and chains of `+` are combined by the compiler into a single buffer allocation.
 - `Symbol` and `String` are distinct types. Convert with `to_sym`/`to_s`.
 
@@ -173,10 +175,10 @@ To pass a mutable object to another task, convert it to an immutable value. A Bu
 | `arr.sort!` / `arr.map!` | `arr = arr.sort` / `arr = arr.map { }` |
 | `arr.delete(x)` | `arr = arr.delete(x)` |
 | `obj.freeze` | Unnecessary (immutable by default) |
-| `obj.dup` | Only mutable objects have `dup`. Unnecessary for immutable values |
+| `obj.dup` | Unnecessary for immutable values (`dup` returns a built-in immutable value as it is) |
 | `Struct.new(:a, :b)` | `data X(a: T, b: U)` |
 | `attr_accessor :x` | `var @x: T` + `attr_accessor :x` |
-| `@cache \|\|= compute` | `var @cache: T? = nil` + `@cache \|\|= compute`, or `Lazy`/`memoize` |
+| `@cache \|\|= compute` | `var @cache: T? = nil` + `@cache \|\|= compute` (`Lazy`/`memoize` are planned) |
 | `$stdout.puts` | `STDOUT.puts` |
 | `@@count += 1` | `COUNT = Atom.new(0)` + `COUNT.update { \|n\| n + 1 }` |
 
