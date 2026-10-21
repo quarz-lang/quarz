@@ -35,18 +35,18 @@ jobs:
         run: cargo test --workspace
 
   msrv:
-    name: Check (Rust 1.86)
+    name: Check (Rust 1.96)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.86
+      - uses: dtolnay/rust-toolchain@1.96
       - uses: Swatinem/rust-cache@v2
       # rust-toolchain.toml pins `stable` and takes precedence over the
       # default toolchain the action sets; RUSTUP_TOOLCHAIN overrides it.
       - run: cargo check --workspace --all-targets
         env:
-          RUSTUP_TOOLCHAIN: "1.86"
+          RUSTUP_TOOLCHAIN: "1.96"
       - run: rustc --version
         env:
-          RUSTUP_TOOLCHAIN: "1.86"
+          RUSTUP_TOOLCHAIN: "1.96"
