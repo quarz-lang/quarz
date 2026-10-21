@@ -1,94 +1,86 @@
-# Quarz against Go, Rust and Ruby
+# Quarz against Go, Rust, Crystal, Spinel and Ruby
 
-The programs in `go/`, `rust/` and `ruby/` do the same work as `bench/*.qz`
-and print the same results. `run.sh` builds everything, runs each program
-several times and prints the best wall-clock time. It needs a release
-build of Quarz, `go`, `rustc` and `ruby` on the path:
+The programs in `go/`, `rust/`, `crystal/` and `ruby/` do the same work
+as `bench/*.qz` and print the same results; [Spinel](https://github.com/matz/spinel)
+(a compiler from a Ruby subset to C, with whole-program type inference)
+compiles the `ruby/` programs as they are. Besides the programs in
+`bench/README.md`, `tak` is the Takeuchi function, `tak(n * 3, n * 2, n)`
+with `n` from the command line, which measures calls.
+
+`run.sh` builds everything, checks that every program prints the same
+thing, runs each one several times and prints the best wall-clock time.
+It needs a release build of Quarz and `go`, `rustc` and `ruby` on the
+path; Crystal and Spinel are used when found (`CRYSTAL`, with
+`CRYSTAL_LINK_FLAGS` if the compiler needs extra link flags, and
+`SPINEL` name them), their columns showing `-` otherwise:
 
 ```sh
 cargo build --release
 PATH="$HOME/go-sdk/bin:$PATH" RUNS=10 taskset -c 3 bench/compare/run.sh
 ```
 
-## Results (2026-10-20, with the LLVM backend, at `f88282e`)
+## Results (2026-10-21, Quarz at `41c014c`)
 
-12th Gen Intel Core i7-1260P; Go 1.27.2, rustc 1.98.1 (`-O`), Ruby 4.0.5
-(with and without `--yjit`), clang 14.0.6. VM = `quarz run`, AOT =
-`quarz build` compiling through `clang -O2` (the default backend).
-Every program pinned to one core (`taskset -c 3`); milliseconds, best of
-10 runs, process start-up included. The Cranelift backend
-(`--backend cranelift`, for development) gives fib 3.4, loop 8.1,
-collections 23.8, objects 3.4, strings 19.7 in the run of the next
-section. Measured the same way, a program printing one line takes 1.0
-ms in Quarz (it decodes its embedded module at start-up), 0.7 in Go and
-0.6 in Rust, process creation included: 0.3–0.5 ms of each difference
-on the smaller programs is start-up.
+12th Gen Intel Core i7-1260P; Go 1.27.2, rustc 1.98.1 (`-O`), Crystal
+1.22.0 (`--release`; the release build expects a newer glibc, so a small
+shim for `__isoc23_strto*` is linked in), Spinel at `78f436e06`
+(2026.09.12+11361) with gcc 12.2, Ruby 4.0.5 with and without `--yjit`,
+clang 14.0.6. quarz-vm is `quarz run`, quarz-llvm and cranelift are
+`quarz build` with each backend (LLVM is the default; Cranelift is for
+development). Every program pinned to one core (`taskset -c 3`), all in
+one run; milliseconds, best of 10 runs, process start-up included.
 
-| program     | quarz-vm | quarz-aot |   go | rust |  ruby | ruby --yjit |
-|-------------|---------:|----------:|-----:|-----:|------:|------------:|
-| fib         |    134.4 |       1.9 |  1.4 |  1.0 |  55.8 |        46.7 |
-| loop        |    400.6 |       3.1 |  2.4 |  2.6 |  97.1 |        97.4 |
-| collections |    470.7 |      19.5 | 19.1 | 11.7 | 211.6 |       191.0 |
-| objects     |     99.5 |       3.1 |  0.9 |  0.8 | 273.5 |       218.9 |
-| strings     |     80.8 |      19.1 | 33.4 | 14.3 | 142.9 |       138.8 |
+| program      | quarz-vm | quarz-llvm | cranelift |   go | rust | crystal | spinel |  ruby | ruby --yjit |
+|--------------|---------:|-----------:|----------:|-----:|-----:|--------:|-------:|------:|------------:|
+| fib          |    137.2 |        1.9 |       3.4 |  1.4 |  1.0 |     2.0 |  (0.6) |  57.8 |        48.4 |
+| loop         |    404.9 |        3.1 |       7.9 |  2.4 |  2.6 |     3.4 |    2.8 | 101.3 |       100.4 |
+| collections  |    478.7 |       19.9 |      23.7 | 19.2 | 11.9 |    21.4 |   21.6 | 216.8 |       194.9 |
+| objects      |     99.5 |        3.1 |       3.4 |  1.0 |  0.8 |     1.5 |   14.1 | 267.9 |       219.9 |
+| strings      |     81.2 |       18.9 |      20.1 | 33.0 | 14.3 |    26.6 |   21.6 | 144.7 |       140.0 |
+| dispatch     |    209.0 |        4.7 |       5.9 |  2.5 |  2.3 |     1.8 |    4.8 | 112.2 |        61.4 |
+| tak(24,16,8) |    712.0 |        2.8 |      10.7 |  3.6 |  3.1 |     3.8 |    2.5 |  98.0 |        54.3 |
+| tak(27,18,9) |   4736.2 |       11.5 |      66.7 | 18.5 | 16.6 |    17.8 |   11.3 | 370.1 |        94.5 |
 
-## Spinel (2026-10-20)
-
-[Spinel](https://github.com/matz/spinel) compiles a Ruby subset to C
-(whole-program type inference, `cc -O2`). The `ruby/*.rb` programs
-compile as they are; Spinel at `78f436e06` (2026.09.12+11361), gcc
-12.2. Same machine, one core, milliseconds, best of 10 runs, Quarz at
-`f88282e`; the `dispatch` row is `bench/dispatch.qz` and a Ruby
-transcription of it (three subclasses overriding `area`, 900k calls),
-the `tak` rows the Takeuchi function with `n * 3, n * 2, n` from `ARGV`.
-
-| program     | quarz-llvm | quarz-cranelift | spinel |
-|-------------|-----------:|----------------:|-------:|
-| fib         |        1.9 |             3.4 |  (0.5) |
-| loop        |        3.1 |             8.1 |    2.8 |
-| collections |       19.6 |            23.8 |   21.4 |
-| objects     |        3.2 |             3.4 |   14.4 |
-| strings     |       19.1 |            19.7 |   21.3 |
-| dispatch    |        4.7 |             5.9 |    4.8 |
-| tak(24,16,8)|        2.7 |            10.7 |    2.4 |
-| tak(27,18,9)|       11.6 |            66.8 |   11.4 |
-
-Reading the table:
-
-- Spinel's `fib` number is not a call benchmark: it marks `fib` pure, and
-  gcc, after inlining the recursion a few levels, merges the duplicate
-  calls (`fib(n-3)` appears twice in the expansion), so the work is far
-  from exponential: `fib(40)` takes about as long as `fib(27)`. `tak` has
-  no duplicate calls to merge and measures the call protocol: Spinel's is
-  a C call with three `int64` parameters that gcc inlines several levels
-  deep; Quarz's calls that return at once are a test at the call site,
-  the others go through a typed entry with a stack check and a frame for
-  the register file.
-- `loop` (and `tak(24,16,8)`) differ by about the start-up time: the
-  loops themselves run at the same speed.
-- `collections`, `strings` and `dispatch` are now slightly faster in
-  Quarz: the `Int`-to-`Int` hash and the in-place array updates, the
-  builder appends without a temporary string, and the class tests that
-  devirtualization puts before inlined calls.
-- `objects` is 4–5× faster in Quarz: the particle's `Vec2` is held in
-  place (no allocation per step), while Spinel allocates a `Vec2` object
-  for each `+` and `scale` and collects them.
+Measured the same way, a program printing one line takes 1.0 ms in
+Quarz (it decodes its embedded module at start-up), 0.7 in Go, 0.6 in
+Rust, 1.2 in Crystal and 0.6 in Spinel, process creation included: on
+the shortest programs a few tenths of a millisecond of each difference
+is start-up.
 
 ## Reading the numbers
 
-- Against Go and Rust (first table), compiled Quarz is on a par with Go
-  on the collection pipeline and 1.7× faster than it on `strings`
-  (Rust: 1.7× and 1.3× faster than Quarz), 1.2–1.3× slower on the
-  counting loop and 1.4–1.9× on `fib` (0.3–0.5 ms of which is the
-  longer start-up), and 3.4–3.9× slower on `objects`, where the
-  particles are heap objects with reference-counted fields walked
-  through boxed array elements, against plain structs.
-- Against Ruby, compiled Quarz is ahead everywhere: 25–29× on `fib`,
-  31× on `loop`, 10–11× on `collections`, 70–88× on `objects`, 7× on
-  `strings`.
-- The VM is 2–4× slower than Ruby's interpreter on calls, loops and the
-  collection pipeline, and 2–3× faster than it on objects and 2× on
-  strings.
+- **Go and Rust.** Compiled Quarz is on a par with Go on the collection
+  pipeline and 1.7× faster than it on `strings` (Rust is 1.7× and 1.3×
+  faster than Quarz there), 1.3× slower than Go on the counting loop and
+  on `fib`, about 2× slower on `dispatch` and 3–4× on `objects`, and
+  1.4–1.6× faster than both on `tak(27,18,9)`: a call that returns at
+  once is a test inlined at the call site, while Go and Rust make every
+  call. `objects` pays for the particles being heap objects with
+  reference-counted fields, walked through boxed array elements, against
+  plain structs; `dispatch` for the class tests (and the fallback
+  dispatch) in front of each inlined `area`, against an indirect call.
+- **Crystal.** Quarz is on a par with it on `fib` and faster on the
+  counting loop, the collection pipeline, `strings` (1.4×) and `tak`
+  (1.5×), and 2–2.6× slower on `objects` (Crystal's `Vec2` is a struct
+  and its particles plain objects) and `dispatch` (Crystal compiles the
+  call on a union of the three classes to a switch on the type id).
+- **Spinel.** Spinel's `fib` is not a call benchmark: it marks `fib`
+  pure, and gcc, after inlining the recursion a few levels, merges the
+  duplicate calls (`fib(n-3)` appears twice in the expansion), so the
+  work is far from exponential (`fib(40)` takes about as long as
+  `fib(27)`). On `tak`, which has no duplicate calls, the two are equal;
+  Quarz is faster on `collections` and `strings` (the `Int`-to-`Int`
+  hash and in-place array updates, the builder appends without a
+  temporary string) and 4.5× faster on `objects` (the particle's `Vec2`
+  is held in place, while Spinel allocates a `Vec2` object for each `+`
+  and `scale`), on a par on `dispatch`, and slightly slower on the
+  counting loop.
+- **Ruby.** Compiled Quarz is ahead everywhere: 25–30× on `fib`, 32× on
+  the loop, 10–11× on `collections`, 71–86× on `objects`, 7× on
+  `strings`, 13–24× on `dispatch` and 8–32× on `tak` (YJIT does best on
+  calls). The VM is 2–4× slower than Ruby's interpreter on calls, loops,
+  the collection pipeline and dispatch, 13× on `tak`, and faster than it
+  on objects (2.7×) and strings (1.8×).
 
 What separates compiled Quarz from Rust now is mostly the value
 representation: every value is a 24-byte tagged box, every copy of a
@@ -103,7 +95,7 @@ A one-word (8-byte) value representation was tried and set aside
 (branch `value-8byte`): with arrays already unboxed and data values
 flattened there was little copying left to save, while flonum
 conversions, kind tests through the heap header and the loss of
-in-value short strings cost more instructions than it saved. The start-up
-cost (about 1 M instructions decoding the module and 0.5 M in the
-dynamic loader, 2 M in all) is the other visible difference on short
+in-value short strings cost more instructions than it saved. The
+start-up cost (about 1 M instructions decoding the module and 0.5 M in
+the dynamic loader, 2 M in all) is the other visible difference on short
 programs.
