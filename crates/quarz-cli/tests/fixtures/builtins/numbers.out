@@ -94,3 +94,8 @@ error: invalid argument: 0
 error: Numerical argument is out of domain - "isqrt"
 true
 true
+[0, 8, 9, 0, 8, 9, 63]
+71
+70
+70
+71

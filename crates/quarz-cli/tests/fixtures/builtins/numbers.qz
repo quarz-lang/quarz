@@ -48,3 +48,6 @@ rescue ArgumentError => e
   puts "error: #{e.message}"
 end
 p NoMemoryError.new("x").is_a?(Exception), FloatDomainError.new("x").is_a?(RangeError)
+# bit_length: the bits past the sign (a negative number counts ~n's).
+p [0, 255, 256, -1, -256, -257, 9223372036854775807].map(&:bit_length)
+p (2 ** 70).bit_length, (2 ** 70 - 1).bit_length, (-(2 ** 70)).bit_length, (-(2 ** 70) - 1).bit_length

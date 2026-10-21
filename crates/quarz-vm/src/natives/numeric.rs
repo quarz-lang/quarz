@@ -272,10 +272,22 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     m.insert("Int#lcm", |i, r, a| {
         Ok(Value::Int(int(i, r, "Int")?.lcm(&int(i, a.arg(0), "Int")?)))
     });
-    m.insert("Int#bit_length", |i, r, _| {
-        Ok(Value::Int(
-            64 - int(i, r, "Int")?.abs().leading_zeros() as i64,
-        ))
+    // The bits of the number past its sign, as in Ruby: `~n`'s for a
+    // negative one (so -1 has none, -256 has 8).
+    m.insert("Int#bit_length", |i, r, _| match r {
+        Value::BigInt(b) => {
+            let n = if b.sign() == num_bigint::Sign::Minus {
+                -(**b).clone() - 1
+            } else {
+                (**b).clone()
+            };
+            Ok(Value::Int(n.bits() as i64))
+        }
+        _ => {
+            let n = int(i, r, "Int")?;
+            let n = if n < 0 { !n } else { n };
+            Ok(Value::Int(64 - n.leading_zeros() as i64))
+        }
     });
     m.insert("Int#digits", int_digits);
     m.insert("Int#times", int_times);
