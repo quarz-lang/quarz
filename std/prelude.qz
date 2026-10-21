@@ -1162,6 +1162,13 @@ class Array[out T]
   end
 end
 
+# Arrays of comparable elements compare element by element (as tuples
+# do, whose elements may differ in type; the checker handles those).
+extension Array[T: Comparable[T]]
+  include Comparable[Array[T]]
+  native def <=>(other: Array[T]) -> Int
+end
+
 class Hash[K, out V]
   include Shareable
   include Enumerable[[K, V]]

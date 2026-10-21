@@ -3359,6 +3359,14 @@ impl Checker {
             self.check_args_blindly(call);
             return Type::Nothing;
         }
+        if let (Type::Tuple(lhs), "<=>" | "<" | "<=" | ">" | ">=", [Arg::Positional(arg)], None) = (
+            &recv_ty,
+            call.name.as_str(),
+            call.args.as_slice(),
+            &call.block,
+        ) {
+            return self.check_tuple_order(expr, call, lhs.clone(), arg);
+        }
 
         // Safe navigation: `nil` passes through.
         let (recv_ty, nil_passthrough) = if call.safe_nav {
@@ -3417,10 +3425,61 @@ impl Checker {
         self.record(recv.id, &Type::Tuple(lhs.clone()));
         self.record(arg.id, &Type::Tuple(rhs.clone()));
         let op = if call.name == "<=>" { "<=>" } else { "==" };
-        for ((lt, rt), x) in lhs.iter().zip(rhs.iter()).zip(xs.iter()) {
-            let Arg::Positional(xe) = x else {
-                unreachable!()
-            };
+        let spans: Vec<Span> = xs.iter().map(|x| x.span()).collect();
+        self.check_elementwise(op, &lhs, &rhs, &spans);
+        // The runtime compares arrays element-wise.
+        let arr = self.world.array_of(self.world.object());
+        if let Some((mid, _)) = self.world.lookup_methods(&arr, &call.name).first() {
+            self.out
+                .calls
+                .insert(expr.id, CallTarget::Method { method: *mid });
+        }
+        if op == "<=>" {
+            self.world.int()
+        } else {
+            self.world.bool_()
+        }
+    }
+
+    /// `t < u` for tuples `t` and `u` of one length: each element of `t`
+    /// must compare (`<=>`) with the one of `u` at its position. Arrays of
+    /// one comparable element type are `Comparable` through the prelude;
+    /// a tuple's elements may differ in type, so it is checked here.
+    fn check_tuple_order(&mut self, expr: &Expr, call: &Call, lhs: Vec<Type>, arg: &Expr) -> Type {
+        let at = self.check_expr(arg, Some(&Type::Tuple(lhs.clone())));
+        let at = self.resolve(&at);
+        match &at {
+            Type::Tuple(rhs) if rhs.len() == lhs.len() => {
+                let rhs = rhs.clone();
+                self.check_elementwise("<=>", &lhs, &rhs, &vec![arg.span; lhs.len()]);
+            }
+            _ => self.error(
+                format!(
+                    "cannot compare {} with {} using `{}`",
+                    self.name(&Type::Tuple(lhs.clone())),
+                    self.name(&at),
+                    call.name
+                ),
+                arg.span,
+            ),
+        }
+        // At run time a tuple is an array, compared element by element by
+        // the method of `Comparable[Array[T]]` (any comparable `T`).
+        let arr = self.world.array_of(self.world.int());
+        if let Some((mid, _)) = self.world.lookup_methods(&arr, &call.name).first() {
+            self.out
+                .calls
+                .insert(expr.id, CallTarget::Method { method: *mid });
+        }
+        if call.name == "<=>" {
+            self.world.int()
+        } else {
+            self.world.bool_()
+        }
+    }
+
+    fn check_elementwise(&mut self, op: &str, lhs: &[Type], rhs: &[Type], spans: &[Span]) {
+        for ((lt, rt), span) in lhs.iter().zip(rhs.iter()).zip(spans.iter()) {
             let cands = self.world.lookup_methods(lt, op);
             let mut ok = false;
             for (mid, subst) in cands {
@@ -3450,21 +3509,9 @@ impl Checker {
                         self.name(lt),
                         self.name(rt)
                     ),
-                    xe.span,
+                    *span,
                 );
             }
-        }
-        // The runtime compares arrays element-wise.
-        let arr = self.world.array_of(self.world.object());
-        if let Some((mid, _)) = self.world.lookup_methods(&arr, &call.name).first() {
-            self.out
-                .calls
-                .insert(expr.id, CallTarget::Method { method: *mid });
-        }
-        if op == "<=>" {
-            self.world.int()
-        } else {
-            self.world.bool_()
         }
     }
 

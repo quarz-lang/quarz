@@ -13,3 +13,9 @@ Array
 [[1, "z"], [2, "a"], [2, "b"]]
 [2, "b"]
 [1, "z"]
+true
+-1
+false
+true
+true
+true

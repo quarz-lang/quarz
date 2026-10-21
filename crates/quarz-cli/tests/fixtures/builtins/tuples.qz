@@ -31,3 +31,10 @@ counts = { "a" => 2, "b" => 1 }
 p counts.map { |k, v| [v, k] }.sort.map { |v, k| "#{k}=#{v}" }
 xs = [[2, "b"], [1, "z"], [2, "a"]]
 p xs.sort, xs.max, xs.min
+
+# The comparison operators work on tuples and on arrays of one
+# comparable element type.
+a = [1, "b"]
+b = [1, "c"]
+p a < b, a <=> b, a >= b, b > a
+p [1, 2] < [1, 3], [1, 2].between?([1, 0], [1, 5])

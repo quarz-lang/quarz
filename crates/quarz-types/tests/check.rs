@@ -381,6 +381,17 @@ fn tuple_inference() {
         "class A\nend\nxs = [[1, A.new], [2, A.new]]\np xs.sort",
         "type bounds not satisfied",
     );
+    // ... and with the comparison operators, as are arrays of one
+    // comparable element type.
+    ok("t = [1, \"b\"]\nu = [1, \"c\"]\np t < u, t <=> u, u >= t\np [1, 2] < [1, 3], [1].between?([0], [2])");
+    err(
+        "class A\nend\nt = [1, A.new]\np t < [1, A.new]",
+        "cannot compare A with A using `<=>`",
+    );
+    err(
+        "p [1, \"a\"] < [1]",
+        "cannot compare [Int, String] with Array[Int] using `<`",
+    );
 }
 
 #[test]
