@@ -6,7 +6,7 @@ Crystal is the closest relative of Quarz: a statically typed, compiled language 
 
 ## What works the same
 
-`def ... end`, `class`/`module`, `include`/`extend`, `abstract class`/`abstract def`, single inheritance, `super`, blocks and `yield`, `->(x) { }` procedures, `case/when` and `case/in`, `begin/rescue/ensure`, `raise`, string interpolation and heredocs, `require`, `private`/`protected`, operator methods, union types and `T?` (`T | Nil`), narrowing with `if x`, `x.nil?`, `is_a?` and `case/in`, `as`/`as?` (checked casts), generics with type parameters, positional arguments that can also be passed by name and keyword-only parameters after `*`, `def initialize(@x: T)` assigning the field, and the rule that the object cannot be used in `initialize` before its fields are assigned (Crystal reports `self` used before initialization; Quarz's definite initialization is described in [01-syntax.md](01-syntax.md) §3). Strings are immutable in both.
+`def ... end`, `class`/`module`, `include`/`extend`, `abstract class`/`abstract def`, single inheritance, `super`, blocks and `yield`, `->(x) { }` procedures, `case/when` and `case/in`, `begin/rescue/ensure`, `raise`, string interpolation and heredocs, `require`, `private`/`protected`, operator methods, union types and `T?` (`T | Nil`), narrowing with `if x`, `x.nil?`, `is_a?` and `case/in`, `as`/`as?` (checked casts), generics with type parameters, positional arguments that can also be passed by name and keyword-only parameters after `*`, `def initialize(@x: T)` assigning the field, and the rule that the object cannot be used in `initialize` before its fields are assigned (Crystal reports `self` used before initialization; Quarz's definite initialization is described in [01-syntax.md](01-syntax.md) §3). Strings are immutable in both, and both build them with `String.build { |b| b << ... }` (a `String::Builder` in both; Crystal's is also an `IO`, so `print`-style methods and `to_s(io)` write into it).
 
 ## What changes
 
@@ -41,7 +41,7 @@ Crystal is the closest relative of Quarz: a statically typed, compiled language 
 ## What is added
 
 - `data`, algebraic `enum`, `var`, `override`, `extension`/`using`, `type` aliases
-- Immutable collections with Builders (`Array.build { |b| ... }`, `String.build`)
+- Immutable collections, with mutable Builders to assemble them (`Array::Builder`, `Hash::Builder`, `Set::Builder`; `Array.build { |b| b << x }` gives an immutable array). Crystal's `Array.build(capacity) { |buffer| ... }` is a different, low-level API: it writes into a raw pointer buffer and returns the number of elements written
 - `Task.scope` (structured concurrency with cancellation), `Atom`, the compiler-derived `Shareable` marker
 - Blocks with a receiver (`Html.() -> Nil` with `instance_exec`) for DSLs
 - `for` comprehensions

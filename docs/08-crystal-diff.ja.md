@@ -4,7 +4,7 @@ Crystal は Quarz に最も近い言語です。Ruby の構文を持つ、静的
 
 ## そのまま通じるもの
 
-`def ... end`、`class`/`module`、`include`/`extend`、`abstract class`/`abstract def`、単一継承、`super`、ブロックと `yield`、`->(x) { }` の手続き、`case/when` と `case/in`、`begin/rescue/ensure`、`raise`、文字列補間とヒアドキュメント、`require`、`private`/`protected`、演算子メソッド、合併型と `T?`(`T | Nil`)、`if x`・`x.nil?`・`is_a?`・`case/in` による絞り込み、`as`/`as?`(検査付きのキャスト)、型引数を持つジェネリクス、名前でも渡せる位置引数と `*` の後のキーワード専用引数、フィールドへの代入を兼ねる `def initialize(@x: T)`、そして `initialize` の中でフィールドの代入前にオブジェクトを使えないという規則(Crystal は初期化前の `self` の使用を報告します。Quarz の確定初期化は [01-syntax.ja.md](01-syntax.ja.md) §3 を参照)。文字列はどちらでも不変です。
+`def ... end`、`class`/`module`、`include`/`extend`、`abstract class`/`abstract def`、単一継承、`super`、ブロックと `yield`、`->(x) { }` の手続き、`case/when` と `case/in`、`begin/rescue/ensure`、`raise`、文字列補間とヒアドキュメント、`require`、`private`/`protected`、演算子メソッド、合併型と `T?`(`T | Nil`)、`if x`・`x.nil?`・`is_a?`・`case/in` による絞り込み、`as`/`as?`(検査付きのキャスト)、型引数を持つジェネリクス、名前でも渡せる位置引数と `*` の後のキーワード専用引数、フィールドへの代入を兼ねる `def initialize(@x: T)`、そして `initialize` の中でフィールドの代入前にオブジェクトを使えないという規則(Crystal は初期化前の `self` の使用を報告します。Quarz の確定初期化は [01-syntax.ja.md](01-syntax.ja.md) §3 を参照)。文字列はどちらでも不変で、どちらも `String.build { |b| b << ... }` で組み立てます(どちらでも `String::Builder` です。Crystal のものは `IO` でもあるので、`print` などのメソッドや `to_s(io)` がそこに書き込めます)。
 
 ## 変わるもの
 
@@ -39,7 +39,7 @@ Crystal は Quarz に最も近い言語です。Ruby の構文を持つ、静的
 ## Quarz で加わるもの
 
 - `data`、代数的な `enum`、`var`、`override`、`extension`/`using`、`type` による別名
-- Builder を伴う不変コレクション(`Array.build { |b| ... }`、`String.build`)
+- 不変なコレクションと、それを組み立てる可変な Builder(`Array::Builder`、`Hash::Builder`、`Set::Builder`。`Array.build { |b| b << x }` は不変な配列を返す)。Crystal の `Array.build(capacity) { |buffer| ... }` は別物の低水準 API で、生のポインタのバッファに書き込み、書いた要素数を返す
 - `Task.scope`(キャンセル付きの構造化並行性)、`Atom`、コンパイラが導出する `Shareable` マーカー
 - DSL 向けのレシーバ付きブロック(`Html.() -> Nil` と `instance_exec`)
 - `for` 内包表記
