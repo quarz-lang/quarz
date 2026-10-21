@@ -12,9 +12,11 @@
 
 ## 2. Object
 
-`==`、`equal?`、`hash`、`to_s`、`inspect`、`class`、`is_a?`、`nil?`、`tap`、`then`、`dup`(可変オブジェクトのみ)、`as`、`as?`、`frozen?`(常に真、互換のため)、`instance_exec`(レシーバ付きブロック `self.() -> R` を、そのオブジェクトを `self` にして実行。[01-syntax.ja.md](01-syntax.ja.md) §9 参照)。
+`==`、`!=`、`equal?`、`hash`、`to_s`、`inspect`、`class`(`name` を持つ `Class`)、`is_a?`、`nil?`、`tap`、`then`、`dup`(配列や文字列などの組み込みの不変な値はそのまま返し、Builder とオブジェクトはコピーする)、`as`、`as?`、`frozen?`(偽になるのは Builder だけ)、`instance_exec`(レシーバ付きブロック `self.() -> R` を、そのオブジェクトを `self` にして実行。[01-syntax.ja.md](01-syntax.ja.md) §9 参照)。
 
 `Comparable[T]` は `<=>` を定義したクラスに `< <= > >= between? clamp(min, max) clamp(range)` を与えます。
+
+`Nil` は `to_a`、`&`、`|` を、`Bool` は `&`、`|`、`^` を持ちます。
 
 ## 3. 数値
 
@@ -23,12 +25,12 @@
 - `Float`: `floor ceil round truncate`(桁数指定可)、`divmod fdiv nan? infinite? finite? integer? next_float prev_float step to_i to_f`。`Float::INFINITY`、`NAN`、`EPSILON`、`MAX`、`MIN`、`DIG`。
 - `Math`: `sqrt cbrt sin cos tan asin acos atan atan2 sinh cosh tanh asinh acosh atanh exp log log2 log10 log1p expm1 pow hypot floor ceil`。`Math::PI`、`Math::E`。
 - `Random`: `Random.new(seed)` は独立した状態を持つ生成器(`seed`、`rand`、`bytes(n)`)。`Random.rand`、`Random.bytes`、`Random.new_seed` と `Kernel#rand`/`srand` は既定の生成器を使います。`rand` は引数なし(`[0, 1)` の Float)、Int または Float の上限、Int または Float の範囲を取ります。既定の生成器はスレッドごとなので、タスク間で共有されます。
-- `Duration`: `100.ms`、`2.seconds`、`1.5.minutes`、`3.days` を `Int`/`Float` 上に提供。`+ - * <=> to_f to_ms to_s`。
+- `Duration`: `100.ms`、`2.seconds`、`1.5.minutes`、`3.days`(`ms`、`seconds`、`minutes` は `Int` と `Float` に、`hours` と `days` は `Int` にだけある)。`+ - * <=> to_f to_ms to_s`。
 - `Time`(組み込み、不変): `Time.now utc local at parse iso8601 monotonic`、`year month day hour min sec usec nsec wday yday`、`sunday?`…`saturday?`、`Duration` との `+`/`-`、時刻同士の `-` は `Duration`、`<=> == hash utc getlocal utc? utc_offset zone strftime iso8601 to_i to_f to_s inspect`。
 
 ## 4. 文字列・シンボル・バイト列
 
-- `String`(不変、UTF-8): `+ * % == <=> [] []? slice size length bytesize empty? chars bytes codepoints graphemes lines(chomp:) split(sep, limit) scan match match? =~ sub gsub(置換文字列・ブロック・Hash) partition rpartition upcase downcase capitalize swapcase strip lstrip rstrip chomp(suffix) chop delete_prefix delete_suffix start_with? end_with?(複数指定・Regexp) include? index rindex(開始位置・Regexp) casecmp casecmp? center ljust rjust tr delete squeeze count reverse insert prepend each_char each_line each_byte each_grapheme upto to_i(base) to_f to_sym to_s inspect encode to_bytes hex oct succ/next ord getbyte ascii_only?`。`pack`/`unpack` は `Bytes` 上に *予定*。
+- `String`(不変、UTF-8): `+ * % == <=> [] []? slice size length bytesize empty? chars bytes codepoints graphemes lines(chomp:) split(sep, limit) scan match match? =~ sub gsub(置換文字列かブロック。`Regexp` を取る `gsub` は Hash も取る) partition rpartition upcase downcase capitalize swapcase strip lstrip rstrip chomp(suffix) chop delete_prefix delete_suffix start_with? end_with?(複数指定・Regexp) include? index rindex(開始位置・Regexp) casecmp casecmp? center ljust rjust tr delete squeeze count reverse insert prepend each_char each_line each_byte each_grapheme upto to_i(base) to_f to_sym to_s inspect encode to_bytes hex oct succ/next ord getbyte ascii_only?`。`pack`/`unpack` は `Bytes` 上に *予定*。
 - `s[index]`・`s[range]` は範囲外で `IndexError`、`s[/regexp/]` と `[]?` は `nil`。`s[start, length]` は部分文字列。`String#%` は書式(`"%05d" % 42`、`"%s %s" % [a, b]`)。
 - `String::Builder`: `<< push append prepend insert delete_at replace reverse! clear to_s snapshot freeze size bytesize empty?`。`String.build { |b| }`。
 - `Symbol`: `to_s to_sym <=> size length empty? upcase downcase capitalize succ start_with? end_with?`。`&:name` でメソッドをブロックとして渡せます。`to_proc` は *予定*。
@@ -51,12 +53,12 @@
 
 - 読み出し: `[] []? at fetch(既定値またはブロック) first first? last last? size length empty? include? index rindex(値またはブロック) sample sample(n) shuffle slice take drop values_at bsearch each each_index reverse_each join(`* separator` も) to_a` + Enumerable。`each` はブロックなしで Enumerator を返します。
 - 更新(新しい値を返す): `push(*values) pop shift unshift insert set delete delete_at delete_if keep_if compact flatten(depth) reverse rotate sort sort_by uniq fill product combination permutation + - * & | union intersection difference intersect? concat`。
-- `Array::Builder[T]`(可変): Ruby の `Array` の破壊的 API。`<< push pop shift unshift insert []= [] []? [range] first(n) last(n) index include? delete delete_at delete_if keep_if compact! reverse! rotate! shuffle! sort!(比較ブロック可) sort_by! uniq! map! select! reject! concat fill replace slice! clear join each each_with_index` + Enumerable。`to_a`/`freeze` で不変化(一回限り)。`snapshot` は複製。
+- `Array::Builder[T]`(可変): Ruby の `Array` の破壊的 API。`<< push pop shift unshift insert []= [] []? [range] first(n) last(n) index include? delete delete_at delete_if keep_if compact! reverse! rotate! shuffle! sort!(比較ブロック可) sort_by! uniq! map! select! reject! concat fill replace slice! clear join each each_with_index` + Enumerable。`to_a`/`freeze` は中身をコピーせずに不変な配列として渡し、Builder は空になる(また詰められる)。`snapshot` は複製。
 - `Array.build { |b| }`、`Array.new(n) { |i| }`、`Array[Int].new`。
 
 ### Hash[K, out V](不変・挿入順)
 
-- 読み出し: `[] []? fetch(既定値またはブロック) dig key? has_key? include? member? value? has_value? key keys values values_at fetch_values size length empty? each each_pair each_key each_value to_a to_h invert` + Enumerable(要素は `[K, V]` タプルなので `each { |k, v| }`、`map { |k, v| }`、`min_by { |k, v| }` …)。
+- 読み出し: `[] []? fetch(既定値またはブロック) dig(キー 1 つ。`[]?` と同じ) key? has_key? include? member? value? has_value? key keys values values_at fetch_values size length empty? each each_pair each_key each_value to_a to_h invert` + Enumerable(要素は `[K, V]` タプルなので `each { |k, v| }`、`map { |k, v| }`、`min_by { |k, v| }` …)。
 - 更新: `put delete merge(&block) update(k) { |v| } select filter reject delete_if keep_if compact except slice transform_values transform_keys`。
 - `Hash::Builder[K, V]`: `[]= store [] []? fetch delete key? has_key? include? value? keys values size length empty? clear merge!(ブロック可) update(k) { |v| } select! reject! delete_if keep_if transform_values! compact! replace each each_pair each_key each_value to_h snapshot freeze` + Enumerable。`Hash.build { |b| }`、`Hash.new`(既定値なし。既定値は `fetch(k, default)` や `fetch(k) { }` で)。
 - `Hash#[]` は欠損キーで `KeyError`、`[]?` は `nil`。`default`/`default_proc` はありません。
@@ -76,7 +78,7 @@
 
 - 例外階層: `Exception` > (`Task::Cancelled`、`NoMemoryError`、`SystemExit`、`SystemStackError`、`DeadlockError`) / `StandardError` > (`ArgumentError`、`TypeError`、`IndexError` > `KeyError`、`RangeError` > `FloatDomainError`、`ZeroDivisionError`、`FrozenError`、`IOError` > `EOFError`、`SystemCallError`、`RuntimeError`、`NoMatchingPatternError`、`NotImplementedError`、`StopIteration`、`Channel::Closed`、`Task::Timeout`)。
 - `Exception#message backtrace cause full_message`。
-- `Result[T, E]`(enum): `Ok(value)`/`Err(error)`。`map`、`and_then`、`unwrap`、`unwrap_or`、`ok?`、`err?`。例外を使わないエラー処理に。
+- `Result[T, E]`(enum): `Ok(value)`/`Err(error)`。`map`、`and_then`(別名 `flat_map`)、`unwrap`、`unwrap_or`、`ok?`、`err?`。例外を使わないエラー処理に。
 
 ## 8. 並行
 
@@ -94,18 +96,18 @@
 
 ## 10. その他(`require` で読み込む)
 
-`json`(`JSON.parse -> JSON::Value`。`Null | Boolean | Integer | Number | Text | List | Map` の enum で、`as_s`・`as_i?`・`[]` などのアクセサを持つ。`JSON.generate`/`pretty_generate`、`to_json`)、`time`(何もしない。`Time` と `Duration` は組み込み)、`set`(組み込み済み)。*予定*: `data` へ直接デコードする `JSON.decode[T](str)`、`Date`、`digest`、`base64`、`uri`、`net/http`、`csv`、`yaml`、`optparse`、`logger`、`test`(`Test::Unit` 風)、`benchmark`、`ffi`。
+`json`(`JSON.parse -> JSON::Value`。`Null | Boolean | Integer | Number | Text | List | Map` の enum で、`as_s`・`as_i?`・`[]` などのアクセサを持つ。`JSON.generate`/`pretty_generate`、`to_json`)、`time`(何もしない。`Time` と `Duration` は組み込み)。`Set` は組み込みで、require する `set` ライブラリはない。*予定*: `data` へ直接デコードする `JSON.decode[T](str)`、`Date`、`digest`、`base64`、`uri`、`net/http`、`csv`、`yaml`、`optparse`、`logger`、`test`(`Test::Unit` 風)、`benchmark`、`ffi`。
 
 ## 11. Ruby の組み込みで提供しないもの
 
 | Ruby | 理由 / 代替 |
 |---|---|
 | `Thread`、`Mutex`、`Queue`、`ConditionVariable`、`Fiber`、`Ractor` | `Task`/`Channel`/`Atom` |
-| `ObjectSpace`、`GC` | 参照カウントのため不要。`GC.stat` 相当は `Runtime.stats` |
+| `ObjectSpace`、`GC` | 参照カウントのため不要。`GC.stat` 相当の、割り当て数などを返す `Runtime.stats` は*予定* |
 | `Binding`、`Method`、`UnboundMethod`、`Module#define_method` ほか動的メタプログラミング | 静的化のため |
 | `Struct`、`OpenStruct`、`Data` | `data` |
 | `Comparable#clamp` 以外のモンキーパッチ的拡張 | `extension` |
 | `Encoding`(多重エンコーディング) | `String` は UTF-8 固定。`Bytes` + `encode`/`decode` |
 | `$stdout`、`$;`、`$,` などのグローバル変数 | 定数 / 明示的引数 |
 | `Kernel#eval`、`instance_eval`、`class_eval` | なし |
-| `Marshal` | `Serialize` モジュール(`data`/`enum` に自動導出) |
+| `Marshal` | `Serialize` モジュール(`data`/`enum` に自動導出)は*予定*。今は `to_json`/`JSON.parse` が使える |

@@ -27,7 +27,7 @@ Ruby を知っている人が Quarz を書き始めるときに最初に引っ�
 | `gets`、`IO#read` | EOF で `nil` | `gets?` が `nil`、`gets` は `EOFError` |
 | `Integer` | 任意精度 | `Int`(任意精度)。固定幅の `Int32` などは予定 |
 | 文字列のエンコーディング | 多重 | UTF-8 固定。バイナリは `Bytes` |
-| `freeze`、`frozen?`、`dup` | ある | 不変な値は常に `frozen?` で、`dup` はそのまま返す。コピーするのは可変オブジェクトだけ。Builder の `freeze` は中身を不変な値として返す |
+| `freeze`、`frozen?`、`dup` | ある | `frozen?` が偽になるのは Builder だけ。`dup` は組み込みの不変な値(配列、文字列など)をそのまま返し、Builder とオブジェクトはコピーする。Builder の `freeze` は中身を不変な値として渡す |
 | `eql?` | `==` と別 | 廃止。`==`/`hash` のみ |
 | グローバル変数 `$x`、クラス変数 `@@x` | ある | ない。定数 + `Atom` |
 | 定数 | 再代入は警告 | 再代入不可、Shareable 必須 |

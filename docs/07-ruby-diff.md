@@ -29,7 +29,7 @@ A summary of the things someone who knows Ruby will first stumble on when starti
 | `gets`, `IO#read` | `nil` at EOF | `gets?` returns `nil`; `gets` raises `EOFError` |
 | `Integer` | Arbitrary precision | `Int` (arbitrary precision). Fixed-width `Int32` etc. are planned |
 | String encodings | Multiple | UTF-8 only. Binary is `Bytes` |
-| `freeze`, `frozen?`, `dup` | Exist | Immutable values are always `frozen?` and `dup` returns them as they are; it copies only mutable objects. A Builder's `freeze` returns its contents as an immutable value |
+| `freeze`, `frozen?`, `dup` | Exist | `frozen?` is false only for Builders. `dup` returns a built-in immutable value (an array, a string, ...) as it is and copies Builders and objects. A Builder's `freeze` hands its contents over as an immutable value |
 | `eql?` | Separate from `==` | Dropped. Only `==`/`hash` |
 | Global variables `$x`, class variables `@@x` | Exist | Do not exist. Constants + `Atom` |
 | Constants | Reassignment is a warning | Cannot be reassigned; must be Shareable |

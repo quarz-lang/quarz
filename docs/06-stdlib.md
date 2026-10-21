@@ -14,9 +14,11 @@ Everything listed below exists in the prelude (`std/prelude.qz`) unless it is ma
 
 ## 2. Object
 
-`==`, `equal?`, `hash`, `to_s`, `inspect`, `class`, `is_a?`, `nil?`, `tap`, `then`, `dup` (mutable objects only), `as`, `as?`, `frozen?` (always true, for compatibility), `instance_exec` (runs a block with a receiver, `self.() -> R`, with `self` = the object; see [01-syntax.md](01-syntax.md) §9).
+`==`, `!=`, `equal?`, `hash`, `to_s`, `inspect`, `class` (a `Class`, with `name`), `is_a?`, `nil?`, `tap`, `then`, `dup` (returns a built-in immutable value such as an array or a string as it is, and copies builders and objects), `as`, `as?`, `frozen?` (false only for builders), `instance_exec` (runs a block with a receiver, `self.() -> R`, with `self` = the object; see [01-syntax.md](01-syntax.md) §9).
 
 `Comparable[T]` gives `< <= > >= between? clamp(min, max) clamp(range)` to a class that defines `<=>`.
+
+`Nil` has `to_a`, `&` and `|`; `Bool` has `&`, `|` and `^`.
 
 ## 3. Numbers
 
@@ -25,12 +27,12 @@ Everything listed below exists in the prelude (`std/prelude.qz`) unless it is ma
 - `Float`: `floor ceil round truncate` (with an optional number of digits), `divmod fdiv nan? infinite? finite? integer? next_float prev_float step to_i to_f`. `Float::INFINITY`, `NAN`, `EPSILON`, `MAX`, `MIN`, `DIG`.
 - `Math`: `sqrt cbrt sin cos tan asin acos atan atan2 sinh cosh tanh asinh acosh atanh exp log log2 log10 log1p expm1 pow hypot floor ceil`. `Math::PI`, `Math::E`.
 - `Random`: `Random.new(seed)` is a generator with its own state (`seed`, `rand`, `bytes(n)`); `Random.rand`, `Random.bytes`, `Random.new_seed` and `Kernel#rand`/`srand` use the default generator. `rand` takes no argument (a Float in `[0, 1)`), an Int or Float bound, or an Int or Float range. The default generator is per thread, so tasks share it.
-- `Duration`: `100.ms`, `2.seconds`, `1.5.minutes`, `3.days` on `Int`/`Float`; `+ - * <=> to_f to_ms to_s`.
+- `Duration`: `100.ms`, `2.seconds`, `1.5.minutes`, `3.days` (`ms`, `seconds` and `minutes` on `Int` and `Float`; `hours` and `days` on `Int` only); `+ - * <=> to_f to_ms to_s`.
 - `Time` (built in, immutable): `Time.now utc local at parse iso8601 monotonic`, `year month day hour min sec usec nsec wday yday`, `sunday?`…`saturday?`, `+`/`-` with a `Duration`, `-` between two times gives a `Duration`, `<=> == hash utc getlocal utc? utc_offset zone strftime iso8601 to_i to_f to_s inspect`.
 
 ## 4. Strings, Symbols, Byte Sequences
 
-- `String` (immutable, UTF-8): `+ * % == <=> [] []? slice size length bytesize empty? chars bytes codepoints graphemes lines(chomp:) split(sep, limit) scan match match? =~ sub gsub (replacement, block or Hash) partition rpartition upcase downcase capitalize swapcase strip lstrip rstrip chomp(suffix) chop delete_prefix delete_suffix start_with? end_with? (several, or a Regexp) include? index rindex (start position, Regexp) casecmp casecmp? center ljust rjust tr delete squeeze count reverse insert prepend each_char each_line each_byte each_grapheme upto to_i(base) to_f to_sym to_s inspect encode to_bytes hex oct succ/next ord getbyte ascii_only?`. `pack`/`unpack` are *planned* on `Bytes`.
+- `String` (immutable, UTF-8): `+ * % == <=> [] []? slice size length bytesize empty? chars bytes codepoints graphemes lines(chomp:) split(sep, limit) scan match match? =~ sub gsub (replacement or block; `gsub` with a `Regexp` also takes a Hash) partition rpartition upcase downcase capitalize swapcase strip lstrip rstrip chomp(suffix) chop delete_prefix delete_suffix start_with? end_with? (several, or a Regexp) include? index rindex (start position, Regexp) casecmp casecmp? center ljust rjust tr delete squeeze count reverse insert prepend each_char each_line each_byte each_grapheme upto to_i(base) to_f to_sym to_s inspect encode to_bytes hex oct succ/next ord getbyte ascii_only?`. `pack`/`unpack` are *planned* on `Bytes`.
 - `s[index]` and `s[range]` raise `IndexError` when out of range; `s[/regexp/]` and `[]?` return `nil`. `s[start, length]` is a slice. `String#%` is formatting (`"%05d" % 42`, `"%s %s" % [a, b]`).
 - `String::Builder`: `<< push append prepend insert delete_at replace reverse! clear to_s snapshot freeze size bytesize empty?`. `String.build { |b| }`.
 - `Symbol`: `to_s to_sym <=> size length empty? upcase downcase capitalize succ start_with? end_with?`. `&:name` passes a method as a block; `to_proc` is *planned*.
@@ -53,12 +55,12 @@ An array whose elements are all `Int` or all `Float` keeps them unboxed; nothing
 
 - Reading: `[] []? at fetch (default or block) first first? last last? size length empty? include? index rindex (value or block) sample sample(n) shuffle slice take drop values_at bsearch each each_index reverse_each join (also `* separator`) to_a` + Enumerable. `each` returns an enumerator without a block.
 - Updating (returns a new value): `push(*values) pop shift unshift insert set delete delete_at delete_if keep_if compact flatten(depth) reverse rotate sort sort_by uniq fill product combination permutation + - * & | union intersection difference intersect? concat`.
-- `Array::Builder[T]` (mutable): the destructive API of Ruby's `Array`. `<< push pop shift unshift insert []= [] []? [range] first(n) last(n) index include? delete delete_at delete_if keep_if compact! reverse! rotate! shuffle! sort! (comparator block) sort_by! uniq! map! select! reject! concat fill replace slice! clear join each each_with_index` + Enumerable. Made immutable with `to_a`/`freeze` (one time only); `snapshot` copies.
+- `Array::Builder[T]` (mutable): the destructive API of Ruby's `Array`. `<< push pop shift unshift insert []= [] []? [range] first(n) last(n) index include? delete delete_at delete_if keep_if compact! reverse! rotate! shuffle! sort! (comparator block) sort_by! uniq! map! select! reject! concat fill replace slice! clear join each each_with_index` + Enumerable. `to_a`/`freeze` hand the contents over as an immutable array without copying and leave the builder empty (it can be filled again); `snapshot` copies.
 - `Array.build { |b| }`, `Array.new(n) { |i| }`, `Array[Int].new`.
 
 ### Hash[K, out V] (immutable, insertion-ordered)
 
-- Reading: `[] []? fetch (default or block) dig key? has_key? include? member? value? has_value? key keys values values_at fetch_values size length empty? each each_pair each_key each_value to_a to_h invert` + Enumerable (elements are `[K, V]` tuples, so `each { |k, v| }`, `map { |k, v| }`, `min_by { |k, v| }` …).
+- Reading: `[] []? fetch (default or block) dig (one key, like `[]?`) key? has_key? include? member? value? has_value? key keys values values_at fetch_values size length empty? each each_pair each_key each_value to_a to_h invert` + Enumerable (elements are `[K, V]` tuples, so `each { |k, v| }`, `map { |k, v| }`, `min_by { |k, v| }` …).
 - Updating: `put delete merge(&block) update(k) { |v| } select filter reject delete_if keep_if compact except slice transform_values transform_keys`.
 - `Hash::Builder[K, V]`: `[]= store [] []? fetch delete key? has_key? include? value? keys values size length empty? clear merge! (with a block) update(k) { |v| } select! reject! delete_if keep_if transform_values! compact! replace each each_pair each_key each_value to_h snapshot freeze` + Enumerable. `Hash.build { |b| }`, `Hash.new` (no default value; defaults via `fetch(k, default)` or `fetch(k) { }`).
 - `Hash#[]` raises `KeyError` for a missing key; `[]?` returns `nil`. There is no `default`/`default_proc`.
@@ -78,7 +80,7 @@ An array whose elements are all `Int` or all `Float` keeps them unboxed; nothing
 
 - Exception hierarchy: `Exception` > (`Task::Cancelled`, `NoMemoryError`, `SystemExit`, `SystemStackError`, `DeadlockError`) / `StandardError` > (`ArgumentError`, `TypeError`, `IndexError` > `KeyError`, `RangeError` > `FloatDomainError`, `ZeroDivisionError`, `FrozenError`, `IOError` > `EOFError`, `SystemCallError`, `RuntimeError`, `NoMatchingPatternError`, `NotImplementedError`, `StopIteration`, `Channel::Closed`, `Task::Timeout`).
 - `Exception#message backtrace cause full_message`.
-- `Result[T, E]` (enum): `Ok(value)`/`Err(error)`. `map`, `and_then`, `unwrap`, `unwrap_or`, `ok?`, `err?`. For error handling without exceptions.
+- `Result[T, E]` (enum): `Ok(value)`/`Err(error)`. `map`, `and_then` (alias `flat_map`), `unwrap`, `unwrap_or`, `ok?`, `err?`. For error handling without exceptions.
 
 ## 8. Concurrency
 
@@ -96,18 +98,18 @@ An array whose elements are all `Int` or all `Float` keeps them unboxed; nothing
 
 ## 10. Others (loaded with `require`)
 
-`json` (`JSON.parse -> JSON::Value`, an enum of `Null | Boolean | Integer | Number | Text | List | Map` with accessors such as `as_s`, `as_i?` and `[]`; `JSON.generate`/`pretty_generate`, `to_json`), `time` (a no-op: `Time` and `Duration` are built in), `set` (built in). *Planned*: `JSON.decode[T](str)` decoding directly into `data`, `Date`, `digest`, `base64`, `uri`, `net/http`, `csv`, `yaml`, `optparse`, `logger`, `test` (`Test::Unit`-style), `benchmark`, `ffi`.
+`json` (`JSON.parse -> JSON::Value`, an enum of `Null | Boolean | Integer | Number | Text | List | Map` with accessors such as `as_s`, `as_i?` and `[]`; `JSON.generate`/`pretty_generate`, `to_json`), `time` (a no-op: `Time` and `Duration` are built in). `Set` is built in; there is no `set` library to require. *Planned*: `JSON.decode[T](str)` decoding directly into `data`, `Date`, `digest`, `base64`, `uri`, `net/http`, `csv`, `yaml`, `optparse`, `logger`, `test` (`Test::Unit`-style), `benchmark`, `ffi`.
 
 ## 11. Ruby Built-ins Not Provided
 
 | Ruby | Reason / Replacement |
 |---|---|
 | `Thread`, `Mutex`, `Queue`, `ConditionVariable`, `Fiber`, `Ractor` | `Task`/`Channel`/`Atom` |
-| `ObjectSpace`, `GC` | Unnecessary due to reference counting. The equivalent of `GC.stat` is `Runtime.stats` |
+| `ObjectSpace`, `GC` | Unnecessary due to reference counting. A `Runtime.stats` with allocation counts, the equivalent of `GC.stat`, is *planned* |
 | `Binding`, `Method`, `UnboundMethod`, `Module#define_method` and other dynamic metaprogramming | For the sake of static definition |
 | `Struct`, `OpenStruct`, `Data` | `data` |
 | Monkey-patch-style extensions other than `Comparable#clamp` | `extension` |
 | `Encoding` (multiple encodings) | `String` is fixed to UTF-8. `Bytes` + `encode`/`decode` |
 | Global variables such as `$stdout`, `$;`, `$,` | Constants / explicit arguments |
 | `Kernel#eval`, `instance_eval`, `class_eval` | None |
-| `Marshal` | `Serialize` module (auto-derived for `data`/`enum`) |
+| `Marshal` | A `Serialize` module (auto-derived for `data`/`enum`) is *planned*; `to_json`/`JSON.parse` work today |
