@@ -34,3 +34,7 @@ class Mark
 end
 def negate(x: Bar | Mark) = !x
 p negate(Bar.new), negate(Mark.new)
+# When only some members define `!`, each value uses its member's, and
+# the others the built-in negation.
+def maybe(x: Mark | Nil) = !x
+p maybe(Mark.new), maybe(nil)

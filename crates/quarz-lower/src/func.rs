@@ -1033,6 +1033,47 @@ impl<'a> FnBuilder<'a> {
             }
             Not(a) => {
                 let v = self.expr(a);
+                // On a union with `!` in some members: a type test per
+                // such member, the built-in negation for the others.
+                if let Some(targets) = self.out.not_dispatch.get(&e.id) {
+                    let res = self.reg();
+                    let join = self.new_block();
+                    for (ty, method) in targets {
+                        let is = self.reg();
+                        self.emit(Inst::IsA {
+                            dst: is,
+                            src: v,
+                            ty: rt_type(ty),
+                        });
+                        let (yes, no) = (self.new_block(), self.new_block());
+                        self.term(Term::Branch {
+                            cond: is,
+                            then: yes,
+                            els: no,
+                        });
+                        self.switch(yes);
+                        let d = self.reg();
+                        self.emit(Inst::Call {
+                            dst: d,
+                            kind: CallKind::Method(*method),
+                            recv: Some(v),
+                            args: vec![],
+                            splat: false,
+                            kw: vec![],
+                            kw_splat: None,
+                            block: None,
+                        });
+                        self.emit(Inst::Move { dst: res, src: d });
+                        self.term(Term::Jump(join));
+                        self.switch(no);
+                    }
+                    let d = self.reg();
+                    self.emit(Inst::Not { dst: d, src: v });
+                    self.emit(Inst::Move { dst: res, src: d });
+                    self.term(Term::Jump(join));
+                    self.switch(join);
+                    return res;
+                }
                 let dst = self.reg();
                 // A type with its own `!` is called (by name when the
                 // members of a union have different ones).

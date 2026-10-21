@@ -102,6 +102,10 @@ pub struct Output {
     /// `new` called on the receiver in a class method: it builds an
     /// instance of the class the method is called on.
     pub self_new: rustc_hash::FxHashSet<NodeId>,
+    /// `!x` on a union where only some members define `!`: those members
+    /// with their `!` (a value of another member gets the built-in
+    /// negation).
+    pub not_dispatch: FxHashMap<NodeId, Vec<(Type, MethodId)>>,
 }
 
 #[derive(Clone, Debug)]
@@ -4110,14 +4114,13 @@ impl Checker {
         Some(vt)
     }
 
-    /// `!x` where `x`'s type defines a method `!`: resolve the call and
-    /// return its type (`None` for the built-in negation).
     /// `!x` with a type of its own `!` (decided by the static type, so
     /// that every other `!` is a truthiness test with no check at run
-    /// time): the call's type, or `None` for the truthiness test. A union
-    /// uses the members' `!` when every member has one, the test when
-    /// none has, and is an error when only some have (the same value
-    /// would answer differently depending on its static type).
+    /// time): the call's type, or `None` for the truthiness test. On a
+    /// union, each value uses its member's `!` when that member defines
+    /// one and the built-in negation otherwise, so a value answers the
+    /// same through `Cond` and `Cond | Nil`; the type test it takes is
+    /// paid only where such a union is the static type.
     fn not_method(&mut self, expr: &Expr, operand: &Expr, t: &Type) -> Option<Type> {
         let t = self.resolve(t);
         let has_not = |c: &Self, m: &Type| !c.world.lookup_methods(m, "!").is_empty();
@@ -4128,22 +4131,27 @@ impl Checker {
                 return None;
             }
             if !without.is_empty() {
-                let names = |ts: &[Type]| {
-                    ts.iter()
-                        .map(|t| self.name(t))
-                        .collect::<Vec<_>>()
-                        .join(", ")
+                let call = Call {
+                    recv: Some(operand.clone()),
+                    name: "!".to_string(),
+                    args: vec![],
+                    block: None,
+                    safe_nav: false,
+                    has_parens: true,
+                    type_args: vec![],
                 };
-                self.error(
-                    format!(
-                        "`!` on {} is ambiguous: {} define(s) `!`, while {} would be tested for truthiness; narrow the operand first",
-                        self.name(&t),
-                        names(&with),
-                        names(&without)
-                    ),
-                    expr.span,
-                );
-                return None;
+                let mut result = self.world.bool_();
+                let mut targets = Vec::new();
+                for m in with {
+                    let rt = self.check_call_on(expr, &call, &m, false, None);
+                    if let Some(CallTarget::Method { method }) = self.out.calls.get(&expr.id) {
+                        targets.push((m, *method));
+                    }
+                    result = self.join(&result, &rt);
+                }
+                self.out.calls.remove(&expr.id);
+                self.out.not_dispatch.insert(expr.id, targets);
+                return Some(result);
             }
         } else if !has_not(self, &t) {
             return None;

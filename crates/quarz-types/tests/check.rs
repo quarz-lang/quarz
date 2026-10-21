@@ -451,13 +451,14 @@ fn not_on_unions() {
     ok(&format!(
         "{defs}def f(u: Cond | Nil) -> String = u.nil? ? \"nil\" : !u"
     ));
+    // Where only some members define `!`, each value uses its member's.
+    ok(&format!("{defs}def f(u: Cond | Nil) -> String | Bool = !u"));
+    ok(&format!(
+        "{defs}def f(u: Cond | Nil)\n  if !u then 1 else 2 end\nend"
+    ));
     err(
-        &format!("{defs}def f(u: Cond | Nil) = !u"),
-        "`!` on Cond? is ambiguous: Cond define(s) `!`, while Nil would be tested for truthiness",
-    );
-    err(
-        &format!("{defs}def f(u: Cond | Nil)\n  if !u then 1 else 2 end\nend"),
-        "is ambiguous",
+        &format!("{defs}def f(u: Cond | Nil) -> String = !u"),
+        "returns String but its body has type Bool | String",
     );
 }
 
