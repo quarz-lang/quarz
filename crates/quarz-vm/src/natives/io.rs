@@ -1,14 +1,21 @@
 //! IO, File, Dir and Process.
 //!
-//! Whole-file operations and child processes run on a helper thread
-//! through `Interp::block_on`, so only the calling task waits. Reads and
-//! writes through an open file handle are buffered and synchronous.
-//! Sockets (see `net.rs`) are non-blocking and wait on the reactor.
+//! Nothing here stops the other tasks: work that may wait for the disk,
+//! the terminal or another process runs on a helper thread through
+//! `Interp::block_on`, and only the calling task waits. That is every
+//! whole-file, directory and metadata operation and every child process.
+//! Open files and standard input are buffered: a read the buffer can
+//! answer (a line it holds, `n` bytes it has) and a write that fits in it
+//! are done in place; filling or flushing the buffer, `seek` and `close`
+//! go to a helper thread, with the buffered state shared under a lock
+//! (see `buffered`). Sockets (see `net.rs`) are non-blocking and wait on
+//! the reactor.
 
 use std::cell::RefCell;
-use std::io::{BufRead, Read, Seek, Write};
+use std::io::{BufRead, BufReader, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::interp::{Args, EvalResult, Flow, Interp, NativeFn};
 use crate::value::*;
@@ -147,9 +154,17 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     m.insert("IO#flush", |i, r, _| {
         match &io_of(i, r)?.kind {
             IoKind::File(f) => {
-                if let Some(w) = f.borrow_mut().writer.as_mut() {
-                    w.flush().map_err(|e| os_error(i, e, "flush"))?;
-                }
+                let io = f.borrow().io.clone();
+                buffered(
+                    i,
+                    &io,
+                    |_| None,
+                    |io| match io.writer.as_mut() {
+                        Some(w) => w.flush(),
+                        None => Ok(()),
+                    },
+                )?
+                .map_err(|e| os_error(i, e, "flush"))?;
             }
             IoKind::Stdout | IoKind::Stderr | IoKind::Stdin => i.flush(),
             _ => {}
@@ -158,14 +173,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     });
     m.insert("IO#close", |i, r, _| {
         match &io_of(i, r)?.kind {
-            IoKind::File(f) => {
-                let mut f = f.borrow_mut();
-                if let Some(mut w) = f.writer.take() {
-                    w.flush().map_err(|e| os_error(i, e, "close"))?;
-                }
-                f.reader = None;
-                f.closed = true;
-            }
+            IoKind::File(f) => file_close(i, f)?,
             IoKind::Socket(_) | IoKind::Listener(_) | IoKind::Udp(_) => net::close(i, r)?,
             _ => {}
         }
@@ -177,20 +185,31 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     m.insert("IO#eof?", |i, r, _| {
         Ok(Value::Bool(match &io_of(i, r)?.kind {
             IoKind::File(f) => {
-                let mut f = f.borrow_mut();
-                match f.reader.as_mut() {
-                    Some(reader) => reader
-                        .fill_buf()
-                        .map(|buf| buf.is_empty())
-                        .map_err(|e| os_error(i, e, "eof?"))?,
-                    None => true,
+                let (io, readable) = {
+                    let f = f.borrow();
+                    (f.io.clone(), f.readable && !f.closed)
+                };
+                if !readable {
+                    true
+                } else {
+                    buffered(
+                        i,
+                        &io,
+                        |io| reader_of(io).and_then(at_eof_buffered),
+                        |io| match io.reader.as_mut() {
+                            Some(r) => r.fill_buf().map(|b| b.is_empty()),
+                            None => Ok(true),
+                        },
+                    )?
+                    .map_err(|e| os_error(i, e, "eof?"))?
                 }
             }
             IoKind::Stdin => {
                 i.flush();
-                let stdin = std::io::stdin();
-                let mut lock = stdin.lock();
-                lock.fill_buf().map(|b| b.is_empty()).unwrap_or(true)
+                buffered(i, stdin_state(), at_eof_buffered, |r| {
+                    r.fill_buf().map(|b| b.is_empty())
+                })?
+                .unwrap_or(true)
             }
             IoKind::Socket(st) => net::socket_eof(i, st)?,
             _ => false,
@@ -199,17 +218,22 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     m.insert("IO#rewind", |i, r, _| {
         match &io_of(i, r)?.kind {
             IoKind::File(f) => {
-                let mut f = f.borrow_mut();
-                if let Some(reader) = f.reader.as_mut() {
-                    reader
-                        .seek(std::io::SeekFrom::Start(0))
-                        .map_err(|e| os_error(i, e, "rewind"))?;
-                }
-                if let Some(writer) = f.writer.as_mut() {
-                    writer
-                        .seek(std::io::SeekFrom::Start(0))
-                        .map_err(|e| os_error(i, e, "rewind"))?;
-                }
+                let io = f.borrow().io.clone();
+                buffered(
+                    i,
+                    &io,
+                    |_| None,
+                    |io| -> std::io::Result<()> {
+                        if let Some(reader) = io.reader.as_mut() {
+                            reader.seek(std::io::SeekFrom::Start(0))?;
+                        }
+                        if let Some(writer) = io.writer.as_mut() {
+                            writer.seek(std::io::SeekFrom::Start(0))?;
+                        }
+                        Ok(())
+                    },
+                )?
+                .map_err(|e| os_error(i, e, "rewind"))?;
             }
             IoKind::Socket(_) | IoKind::Listener(_) | IoKind::Udp(_) => {
                 return Err(i.raise(i.exc.io_error, "cannot rewind a socket"))
@@ -281,63 +305,54 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         .map_err(|e| os_error(i, e, p))
     });
     m.insert("File.exist?", |i, _, a| {
-        Ok(Value::Bool(
-            Path::new(string(i, a.arg(0), "path")?).exists(),
-        ))
+        path_test(i, &a, |p| Path::new(p).exists())
     });
     m.insert("File.file?", |i, _, a| {
-        Ok(Value::Bool(
-            Path::new(string(i, a.arg(0), "path")?).is_file(),
-        ))
+        path_test(i, &a, |p| Path::new(p).is_file())
     });
     m.insert("File.directory?", |i, _, a| {
-        Ok(Value::Bool(
-            Path::new(string(i, a.arg(0), "path")?).is_dir(),
-        ))
+        path_test(i, &a, |p| Path::new(p).is_dir())
     });
     m.insert("File.symlink?", |i, _, a| {
-        Ok(Value::Bool(
-            std::fs::symlink_metadata(string(i, a.arg(0), "path")?)
+        path_test(i, &a, |p| {
+            std::fs::symlink_metadata(p)
                 .map(|m| m.file_type().is_symlink())
-                .unwrap_or(false),
-        ))
+                .unwrap_or(false)
+        })
     });
     m.insert("File.readable?", |i, _, a| {
-        Ok(Value::Bool(
-            std::fs::File::open(string(i, a.arg(0), "path")?).is_ok(),
-        ))
+        path_test(i, &a, |p| std::fs::File::open(p).is_ok())
     });
     m.insert("File.writable?", |i, _, a| {
-        let p = string(i, a.arg(0), "path")?;
-        Ok(Value::Bool(
+        path_test(i, &a, |p| {
             std::fs::OpenOptions::new().append(true).open(p).is_ok()
-                || std::fs::metadata(p).is_ok_and(|m| m.is_dir() && !m.permissions().readonly()),
-        ))
+                || std::fs::metadata(p).is_ok_and(|m| m.is_dir() && !m.permissions().readonly())
+        })
     });
     m.insert("File.executable?", |i, _, a| {
-        let p = string(i, a.arg(0), "path")?;
-        Ok(Value::Bool(std::fs::metadata(p).is_ok_and(|m| {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                m.is_file() && m.permissions().mode() & 0o111 != 0
-            }
-            #[cfg(not(unix))]
-            {
-                m.is_file()
-            }
-        })))
+        path_test(i, &a, |p| {
+            std::fs::metadata(p).is_ok_and(|m| {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    m.is_file() && m.permissions().mode() & 0o111 != 0
+                }
+                #[cfg(not(unix))]
+                {
+                    m.is_file()
+                }
+            })
+        })
     });
     m.insert("File.size", |i, _, a| {
         let p = string(i, a.arg(0), "path")?;
-        std::fs::metadata(p)
+        on_disk(i, p, |p| std::fs::metadata(p))?
             .map(|m| Value::Int(m.len() as i64))
             .map_err(|e| os_error(i, e, p))
     });
     m.insert("File.mtime", |i, _, a| {
         let p = string(i, a.arg(0), "path")?;
-        let modified = std::fs::metadata(p)
-            .and_then(|m| m.modified())
+        let modified = on_disk(i, p, |p| std::fs::metadata(p).and_then(|m| m.modified()))?
             .map_err(|e| os_error(i, e, p))?;
         let ns = match modified.duration_since(std::time::UNIX_EPOCH) {
             Ok(d) => d.as_nanos() as i64,
@@ -348,14 +363,16 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     m.insert("File.delete", |i, _, a| {
         for p in &a.pos {
             let p = string(i, p, "path")?;
-            std::fs::remove_file(p).map_err(|e| os_error(i, e, p))?;
+            on_disk(i, p, |p| std::fs::remove_file(p))?.map_err(|e| os_error(i, e, p))?;
         }
         Ok(Value::Int(a.pos.len() as i64))
     });
     m.insert("File.rename", |i, _, a| {
         let from = string(i, a.arg(0), "from")?;
         let to = string(i, a.arg(1), "to")?;
-        std::fs::rename(from, to).map_err(|e| os_error(i, e, from))?;
+        let (f, t) = (from.to_string(), to.to_string());
+        i.block_on(move || std::fs::rename(&f, &t))?
+            .map_err(|e| os_error(i, e, from))?;
         Ok(Value::Int(0))
     });
     m.insert("File.copy", |i, _, a| {
@@ -478,36 +495,33 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         result
     });
     m.insert("Dir.exist?", |i, _, a| {
-        Ok(Value::Bool(
-            Path::new(string(i, a.arg(0), "path")?).is_dir(),
-        ))
+        path_test(i, &a, |p| Path::new(p).is_dir())
     });
     m.insert("Dir.empty?", |i, _, a| {
-        let p = string(i, a.arg(0), "path")?;
-        Ok(Value::Bool(
+        path_test(i, &a, |p| {
             std::fs::read_dir(p)
                 .map(|mut d| d.next().is_none())
-                .unwrap_or(false),
-        ))
+                .unwrap_or(false)
+        })
     });
     m.insert("Dir.mkdir", |i, _, a| {
         let p = string(i, a.arg(0), "path")?;
-        std::fs::create_dir(p).map_err(|e| os_error(i, e, p))?;
+        on_disk(i, p, |p| std::fs::create_dir(p))?.map_err(|e| os_error(i, e, p))?;
         Ok(Value::Int(0))
     });
     m.insert("Dir.mkdir_p", |i, _, a| {
         let p = string(i, a.arg(0), "path")?;
-        std::fs::create_dir_all(p).map_err(|e| os_error(i, e, p))?;
+        on_disk(i, p, |p| std::fs::create_dir_all(p))?.map_err(|e| os_error(i, e, p))?;
         Ok(Value::Int(0))
     });
     m.insert("Dir.rmdir", |i, _, a| {
         let p = string(i, a.arg(0), "path")?;
-        std::fs::remove_dir(p).map_err(|e| os_error(i, e, p))?;
+        on_disk(i, p, |p| std::fs::remove_dir(p))?.map_err(|e| os_error(i, e, p))?;
         Ok(Value::Int(0))
     });
     m.insert("Dir.rm_rf", |i, _, a| {
         let p = string(i, a.arg(0), "path")?;
-        match std::fs::remove_dir_all(p) {
+        match on_disk(i, p, |p| std::fs::remove_dir_all(p))? {
             Ok(()) => Ok(Value::Int(0)),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Value::Int(0)),
             Err(e) => Err(os_error(i, e, p)),
@@ -551,33 +565,38 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
                 .map(|s| s.to_string()),
             Some(b) => Some(string(i, b, "base")?.to_string()),
         };
-        let mut out = Vec::new();
-        for pattern in patterns {
-            for expanded in expand_braces(&pattern) {
-                let full = match &base {
-                    Some(b) if !expanded.starts_with('/') => {
-                        format!("{}/{}", b.trim_end_matches('/'), expanded)
-                    }
-                    _ => expanded.clone(),
-                };
-                let paths = glob::glob(&full)
-                    .map_err(|e| i.err_arg(&format!("invalid glob pattern: {e}")))?;
-                for path in paths.flatten() {
-                    let mut shown = path.to_string_lossy().into_owned();
-                    if let Some(b) = &base {
-                        if !expanded.starts_with('/') {
-                            let prefix = format!("{}/", b.trim_end_matches('/'));
-                            if let Some(rest) = shown.strip_prefix(&prefix) {
-                                shown = rest.to_string();
+        // The directory walk runs on a helper thread.
+        let found = i.block_on(move || -> Result<Vec<String>, String> {
+            let mut out = Vec::new();
+            for pattern in patterns {
+                for expanded in expand_braces(&pattern) {
+                    let full = match &base {
+                        Some(b) if !expanded.starts_with('/') => {
+                            format!("{}/{}", b.trim_end_matches('/'), expanded)
+                        }
+                        _ => expanded.clone(),
+                    };
+                    let paths =
+                        glob::glob(&full).map_err(|e| format!("invalid glob pattern: {e}"))?;
+                    for path in paths.flatten() {
+                        let mut shown = path.to_string_lossy().into_owned();
+                        if let Some(b) = &base {
+                            if !expanded.starts_with('/') {
+                                let prefix = format!("{}/", b.trim_end_matches('/'));
+                                if let Some(rest) = shown.strip_prefix(&prefix) {
+                                    shown = rest.to_string();
+                                }
                             }
                         }
+                        out.push(shown);
                     }
-                    out.push(shown);
                 }
             }
-        }
-        out.sort();
-        out.dedup();
+            out.sort();
+            out.dedup();
+            Ok(out)
+        })?;
+        let out = found.map_err(|e| i.err_arg(&e))?;
         Ok(Value::array(out.into_iter().map(Value::string).collect()))
     });
 }
@@ -675,14 +694,15 @@ fn current_dir(interp: &Interp) -> EvalResult {
 }
 
 fn dir_children(interp: &Interp, path: &str) -> Result<Vec<String>, Flow> {
-    let entries = std::fs::read_dir(path).map_err(|e| os_error(interp, e, path))?;
-    let mut names = Vec::new();
-    for entry in entries {
-        let entry = entry.map_err(|e| os_error(interp, e, path))?;
-        names.push(entry.file_name().to_string_lossy().into_owned());
-    }
-    names.sort();
-    Ok(names)
+    let names = on_disk(interp, path, |path| -> std::io::Result<Vec<String>> {
+        let mut names = Vec::new();
+        for entry in std::fs::read_dir(path)? {
+            names.push(entry?.file_name().to_string_lossy().into_owned());
+        }
+        names.sort();
+        Ok(names)
+    })?;
+    names.map_err(|e| os_error(interp, e, path))
 }
 
 /// `{a,b}` alternatives in a glob pattern, expanded recursively.
@@ -759,6 +779,27 @@ fn run_command(interp: &Interp, mut command: std::process::Command, name: &str) 
     Ok(value)
 }
 
+/// A file-system call on `path`, on a helper thread (it may wait for the
+/// disk; the other tasks run).
+fn on_disk<T: Send + 'static>(
+    interp: &Interp,
+    path: &str,
+    op: impl FnOnce(&str) -> T + Send + 'static,
+) -> Result<T, Flow> {
+    let path = path.to_string();
+    interp.block_on(move || op(&path))
+}
+
+/// `File.exist?` and friends: a test of the path in the first argument.
+fn path_test(
+    interp: &Interp,
+    args: &Args,
+    test: impl FnOnce(&str) -> bool + Send + 'static,
+) -> EvalResult {
+    let p = string(interp, args.arg(0), "path")?;
+    Ok(Value::Bool(on_disk(interp, p, test)?))
+}
+
 fn file_open(interp: &Interp, _: &Value, args: Args) -> EvalResult {
     let path = string(interp, args.arg(0), "path")?;
     let mode = match args.pos.get(1) {
@@ -793,21 +834,29 @@ fn file_open(interp: &Interp, _: &Value, args: Args) -> EvalResult {
         }
         other => return Err(interp.err_arg(&format!("invalid access mode {other}"))),
     };
-    let file = options.open(path).map_err(|e| os_error(interp, e, path))?;
+    let p = path.to_string();
+    let opened = interp
+        .block_on(move || -> std::io::Result<FileIo> {
+            let file = options.open(&p)?;
+            Ok(FileIo {
+                reader: if read {
+                    Some(BufReader::new(file.try_clone()?))
+                } else {
+                    None
+                },
+                writer: if write {
+                    Some(std::io::BufWriter::new(file))
+                } else {
+                    None
+                },
+            })
+        })?
+        .map_err(|e| os_error(interp, e, path))?;
     let handle = FileHandle {
         path: path.to_string(),
-        reader: if read {
-            Some(std::io::BufReader::new(
-                file.try_clone().map_err(|e| os_error(interp, e, path))?,
-            ))
-        } else {
-            None
-        },
-        writer: if write {
-            Some(std::io::BufWriter::new(file))
-        } else {
-            None
-        },
+        io: Arc::new(Mutex::new(opened)),
+        readable: read,
+        writable: write,
         closed: false,
     };
     let value = io(IoKind::File(RefCell::new(handle)));
@@ -816,14 +865,130 @@ fn file_open(interp: &Interp, _: &Value, args: Args) -> EvalResult {
     };
     let result = interp.call_block(b, smallvec![value.clone()]);
     if let IoKind::File(f) = &io_of(interp, &value)?.kind {
-        let mut f = f.borrow_mut();
-        if let Some(mut w) = f.writer.take() {
-            let _ = w.flush();
+        let closed = file_close(interp, f);
+        if result.is_ok() {
+            closed?;
         }
-        f.reader = None;
-        f.closed = true;
     }
     result
+}
+
+/// Flush and release an open file (on a helper thread). The handle is
+/// closed at once, whatever the outcome.
+fn file_close(interp: &Interp, f: &RefCell<FileHandle>) -> Result<(), Flow> {
+    let io = {
+        let mut f = f.borrow_mut();
+        if f.closed {
+            return Ok(());
+        }
+        f.closed = true;
+        f.io.clone()
+    };
+    buffered(
+        interp,
+        &io,
+        |_| None,
+        |io| {
+            let r = match io.writer.take() {
+                Some(mut w) => w.flush(),
+                None => Ok(()),
+            };
+            io.reader = None;
+            r
+        },
+    )?
+    .map_err(|e| os_error(interp, e, "close"))
+}
+
+// ----- buffered reads and writes ----------------------------------------------------
+
+/// Run an operation on buffered state shared with helper threads: `fast`
+/// here, when it can answer from the buffer without a system call, else
+/// `slow` on a helper thread holding the lock (the calling task waits,
+/// the others run). The lock also keeps the operations of several tasks
+/// on one handle whole; one still in progress on a helper thread (its
+/// task cancelled) finishes before the next runs.
+fn buffered<S: Send + 'static, T: Send + 'static>(
+    interp: &Interp,
+    state: &Arc<Mutex<S>>,
+    fast: impl FnOnce(&mut S) -> Option<T>,
+    slow: impl FnOnce(&mut S) -> T + Send + 'static,
+) -> Result<T, Flow> {
+    if let Ok(mut guard) = state.try_lock() {
+        if let Some(v) = fast(&mut guard) {
+            return Ok(v);
+        }
+    }
+    let state = state.clone();
+    interp.block_on(move || {
+        let mut guard = state.lock().unwrap_or_else(|e| e.into_inner());
+        slow(&mut guard)
+    })
+}
+
+/// Standard input, buffered here (shared by every read of it, like the
+/// stream itself).
+fn stdin_state() -> &'static Arc<Mutex<BufReader<std::io::Stdin>>> {
+    static STDIN: OnceLock<Arc<Mutex<BufReader<std::io::Stdin>>>> = OnceLock::new();
+    STDIN.get_or_init(|| {
+        Arc::new(Mutex::new(BufReader::with_capacity(
+            64 * 1024,
+            std::io::stdin(),
+        )))
+    })
+}
+
+fn reader_of(io: &mut FileIo) -> Option<&mut BufReader<std::fs::File>> {
+    io.reader.as_mut()
+}
+
+/// A whole line the buffer holds, taken from it.
+fn line_buffered<R: Read>(r: &mut BufReader<R>) -> Option<std::io::Result<Vec<u8>>> {
+    let buf = r.buffer();
+    let end = buf.iter().position(|b| *b == b'\n')? + 1;
+    let line = buf[..end].to_vec();
+    r.consume(end);
+    Some(Ok(line))
+}
+
+fn line_slow<R: Read>(r: &mut BufReader<R>) -> std::io::Result<Vec<u8>> {
+    let mut line = Vec::new();
+    r.read_until(b'\n', &mut line)?;
+    Ok(line)
+}
+
+/// `limit` bytes, when the buffer holds them.
+fn bytes_buffered<R: Read>(
+    r: &mut BufReader<R>,
+    limit: Option<usize>,
+) -> Option<std::io::Result<Vec<u8>>> {
+    let n = limit?;
+    let buf = r.buffer();
+    if buf.len() < n {
+        return None;
+    }
+    let out = buf[..n].to_vec();
+    r.consume(n);
+    Some(Ok(out))
+}
+
+fn bytes_slow<R: Read>(r: &mut BufReader<R>, limit: Option<usize>) -> std::io::Result<Vec<u8>> {
+    let mut buf = Vec::new();
+    read_up_to(r, &mut buf, limit)?;
+    Ok(buf)
+}
+
+/// Not at the end, when the buffer holds something.
+fn at_eof_buffered<R: Read>(r: &mut BufReader<R>) -> Option<std::io::Result<bool>> {
+    (!r.buffer().is_empty()).then_some(Ok(false))
+}
+
+/// A line from standard input, `None` at its end.
+pub(super) fn stdin_line(interp: &Interp) -> Result<Option<String>, Flow> {
+    interp.flush();
+    let line = buffered(interp, stdin_state(), line_buffered, line_slow)?
+        .map_err(|e| interp.raise(interp.exc.io_error, &e.to_string()))?;
+    Ok((!line.is_empty()).then(|| String::from_utf8_lossy(&line).into_owned()))
 }
 
 fn file_each_line(interp: &Interp, _: &Value, args: Args) -> EvalResult {
@@ -852,16 +1017,32 @@ fn io_write_bytes(interp: &Interp, recv: &Value, bytes: &[u8]) -> Result<(), Flo
         }
         IoKind::Stdin => return Err(interp.raise(interp.exc.io_error, "not opened for writing")),
         IoKind::File(f) => {
-            let mut f = f.borrow_mut();
-            if f.closed {
-                return Err(interp.raise(interp.exc.io_error, "closed stream"));
-            }
-            match f.writer.as_mut() {
-                Some(w) => w
-                    .write_all(bytes)
-                    .map_err(|e| os_error(interp, e, "write"))?,
-                None => return Err(interp.raise(interp.exc.io_error, "not opened for writing")),
-            }
+            let io = {
+                let f = f.borrow();
+                if f.closed {
+                    return Err(interp.raise(interp.exc.io_error, "closed stream"));
+                }
+                if !f.writable {
+                    return Err(interp.raise(interp.exc.io_error, "not opened for writing"));
+                }
+                f.io.clone()
+            };
+            // What fits in the buffer is copied there; the rest goes out
+            // on a helper thread.
+            let owned = bytes.to_vec();
+            buffered(
+                interp,
+                &io,
+                |io| {
+                    let w = io.writer.as_mut()?;
+                    (w.capacity() - w.buffer().len() >= bytes.len()).then(|| w.write_all(bytes))
+                },
+                move |io| match io.writer.as_mut() {
+                    Some(w) => w.write_all(&owned),
+                    None => Ok(()),
+                },
+            )?
+            .map_err(|e| os_error(interp, e, "write"))?;
         }
         IoKind::Socket(st) => net::socket_write(interp, st, bytes)?,
         IoKind::Listener(_) | IoKind::Udp(_) => {
@@ -877,22 +1058,18 @@ fn io_gets(interp: &Interp, recv: &Value, raise_on_eof: bool) -> EvalResult {
     let line = match &io_of(interp, recv)?.kind {
         IoKind::Stdin => return super::core_gets(interp, raise_on_eof),
         IoKind::File(f) => {
-            let mut f = f.borrow_mut();
-            if f.closed {
-                return Err(interp.raise(interp.exc.io_error, "closed stream"));
-            }
-            let Some(reader) = f.reader.as_mut() else {
-                return Err(interp.raise(interp.exc.io_error, "not opened for reading"));
-            };
-            let mut buf = Vec::new();
-            let n = reader
-                .read_until(b'\n', &mut buf)
-                .map_err(|e| os_error(interp, e, "read"))?;
-            if n == 0 {
-                None
-            } else {
-                Some(String::from_utf8_lossy(&buf).into_owned())
-            }
+            let io = readable_io(interp, f)?;
+            let buf = buffered(
+                interp,
+                &io,
+                |io| reader_of(io).and_then(line_buffered),
+                |io| match io.reader.as_mut() {
+                    Some(r) => line_slow(r),
+                    None => Ok(Vec::new()),
+                },
+            )?
+            .map_err(|e| os_error(interp, e, "read"))?;
+            (!buf.is_empty()).then(|| String::from_utf8_lossy(&buf).into_owned())
         }
         IoKind::Socket(st) => net::socket_gets(interp, st)?,
         _ => return Err(interp.raise(interp.exc.io_error, "not opened for reading")),
@@ -919,28 +1096,45 @@ fn io_read(interp: &Interp, recv: &Value, limit: Option<&Value>) -> Result<Optio
 
 /// Up to `limit` bytes (all when `None`) from a stream of any kind.
 fn read_raw(interp: &Interp, recv: &Value, limit: Option<usize>) -> Result<Vec<u8>, Flow> {
-    let mut buf = Vec::new();
-    match &io_of(interp, recv)?.kind {
+    Ok(match &io_of(interp, recv)?.kind {
         IoKind::Stdin => {
             interp.flush();
-            let stdin = std::io::stdin();
-            let mut lock = stdin.lock();
-            read_up_to(&mut lock, &mut buf, limit).map_err(|e| os_error(interp, e, "read"))?;
+            buffered(
+                interp,
+                stdin_state(),
+                |r| bytes_buffered(r, limit),
+                move |r| bytes_slow(r, limit),
+            )?
+            .map_err(|e| os_error(interp, e, "read"))?
         }
         IoKind::File(f) => {
-            let mut f = f.borrow_mut();
-            if f.closed {
-                return Err(interp.raise(interp.exc.io_error, "closed stream"));
-            }
-            let Some(reader) = f.reader.as_mut() else {
-                return Err(interp.raise(interp.exc.io_error, "not opened for reading"));
-            };
-            read_up_to(reader, &mut buf, limit).map_err(|e| os_error(interp, e, "read"))?;
+            let io = readable_io(interp, f)?;
+            buffered(
+                interp,
+                &io,
+                |io| reader_of(io).and_then(|r| bytes_buffered(r, limit)),
+                move |io| match io.reader.as_mut() {
+                    Some(r) => bytes_slow(r, limit),
+                    None => Ok(Vec::new()),
+                },
+            )?
+            .map_err(|e| os_error(interp, e, "read"))?
         }
-        IoKind::Socket(st) => buf = net::socket_read(interp, st, limit)?,
+        IoKind::Socket(st) => net::socket_read(interp, st, limit)?,
         _ => return Err(interp.raise(interp.exc.io_error, "not opened for reading")),
+    })
+}
+
+/// The shared state of a file open for reading.
+fn readable_io(interp: &Interp, f: &RefCell<FileHandle>) -> Result<Arc<Mutex<FileIo>>, Flow> {
+    let f = f.borrow();
+    if f.closed {
+        return Err(interp.raise(interp.exc.io_error, "closed stream"));
     }
-    Ok(buf)
+    if !f.readable {
+        return Err(interp.raise(interp.exc.io_error, "not opened for reading"));
+    }
+    Ok(f.io.clone())
 }
 
 fn read_up_to(

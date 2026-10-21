@@ -192,17 +192,9 @@ pub fn core_hash(_: &Interp, recv: &Value, _: Args) -> EvalResult {
 
 /// Read a line from standard input (`gets`).
 pub fn core_gets(interp: &Interp, raise_on_eof: bool) -> EvalResult {
-    interp.flush();
-    let mut line = String::new();
-    match std::io::stdin().read_line(&mut line) {
-        Ok(0) => {
-            if raise_on_eof {
-                Err(interp.raise(interp.exc.eof_error, "end of file reached"))
-            } else {
-                Ok(Value::Nil)
-            }
-        }
-        Ok(_) => Ok(Value::string(line)),
-        Err(e) => Err(interp.raise(interp.exc.io_error, &e.to_string())),
+    match io::stdin_line(interp)? {
+        Some(line) => Ok(Value::string(line)),
+        None if raise_on_eof => Err(interp.raise(interp.exc.eof_error, "end of file reached")),
+        None => Ok(Value::Nil),
     }
 }

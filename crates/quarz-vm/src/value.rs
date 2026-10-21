@@ -750,9 +750,19 @@ pub struct UdpState {
 #[derive(Debug, Default)]
 pub struct FileHandle {
     pub path: String,
+    /// The buffered descriptors, shared with the helper thread that runs
+    /// an operation needing a system call (the calling task waits, the
+    /// others run; see `natives::io`).
+    pub io: std::sync::Arc<std::sync::Mutex<FileIo>>,
+    pub readable: bool,
+    pub writable: bool,
+    pub closed: bool,
+}
+
+#[derive(Debug, Default)]
+pub struct FileIo {
     pub reader: Option<std::io::BufReader<std::fs::File>>,
     pub writer: Option<std::io::BufWriter<std::fs::File>>,
-    pub closed: bool,
 }
 
 #[derive(Debug)]

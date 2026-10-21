@@ -308,13 +308,7 @@ fn kernel_at_exit(interp: &Interp, _: &Value, args: Args) -> EvalResult {
 }
 
 fn read_line(interp: &Interp) -> Result<Option<String>, Flow> {
-    interp.flush();
-    let mut line = String::new();
-    match std::io::stdin().read_line(&mut line) {
-        Ok(0) => Ok(None),
-        Ok(_) => Ok(Some(line)),
-        Err(e) => Err(interp.raise(interp.exc.io_error, &e.to_string())),
-    }
+    super::io::stdin_line(interp)
 }
 
 fn kernel_gets(interp: &Interp, _: &Value, _: Args) -> EvalResult {

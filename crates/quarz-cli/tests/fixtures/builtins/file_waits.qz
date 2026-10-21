@@ -1,0 +1,46 @@
+# Waiting for a file does not stop the other tasks: opening a FIFO for
+# reading waits for a writer, and reads wait for data, while the task
+# that writes to it keeps running (an open file reads and writes on a
+# helper thread whenever its buffer cannot answer).
+fifo = File.join(Dir.tmpdir, "quarz-fifo-#{Process.pid}")
+Process.run("mkfifo", fifo)
+log: Atom[Array[String]] = Atom.new([])
+Task.scope do |s|
+  reader = s.spawn do
+    File.open(fifo) do |f|
+      first = f.gets
+      log.update { |l| l.push("read #{first}") }
+      f.gets
+    end
+  end
+  s.spawn do
+    3.times do |k|
+      log.update { |l| l.push("tick #{k}") }
+      Task.sleep(10.ms)
+    end
+    File.open(fifo, "w") do |f|
+      f.puts "one"
+      f.flush
+      Task.sleep(200.ms)
+      log.update { |l| l.push("writer waited") }
+      f.puts "two"
+    end
+  end
+  p reader.await
+end
+p File.exist?(fifo), File.directory?(Dir.tmpdir)
+File.delete(fifo)
+p File.exist?(fifo), log.get
+
+# Buffered reads and writes still see each other's results in order.
+path = File.join(Dir.tmpdir, "quarz-waits-#{Process.pid}.txt")
+File.open(path, "w") do |f|
+  1000.times { |k| f.puts "line #{k}" }
+end
+File.open(path) do |f|
+  p f.gets, f.read(5), f.eof?
+  rest = f.read
+  p rest.lines.size, f.eof?
+end
+p File.size(path), Dir.children(Dir.tmpdir).include?(File.basename(path))
+File.delete(path)
