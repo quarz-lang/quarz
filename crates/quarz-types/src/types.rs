@@ -1,6 +1,6 @@
 //! The representation of types.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 pub type ClassId = u32;
 pub type MethodId = u32;

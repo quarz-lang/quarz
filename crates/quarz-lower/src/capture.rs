@@ -5,7 +5,7 @@
 //! nested function: references from its body are references from the
 //! enclosing function, and its own variables are registers there.
 
-use std::collections::HashSet;
+use rustc_hash::FxHashSet as HashSet;
 
 use quarz_syntax::ast::*;
 use quarz_syntax::Span;
@@ -74,7 +74,7 @@ pub fn captured_slots(
     world: &World,
     nparams: u32,
 ) -> HashSet<u32> {
-    let mut captured = HashSet::new();
+    let mut captured = HashSet::default();
     let mut visit = |site: Site, nest: Nest| {
         if nest.real == 0 {
             return;

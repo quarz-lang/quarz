@@ -1,6 +1,6 @@
 //! Classes, modules, methods and constants, plus subtyping and method lookup.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use std::rc::Rc;
 
 use quarz_syntax::ast::{Expr, MethodDef, ParamKind, TypeExpr, Variance, Visibility};
@@ -359,9 +359,9 @@ impl World {
             includes: Vec::new(),
             extends: Vec::new(),
             fields: Vec::new(),
-            methods: HashMap::new(),
-            singleton_methods: HashMap::new(),
-            members: HashMap::new(),
+            methods: HashMap::default(),
+            singleton_methods: HashMap::default(),
+            members: HashMap::default(),
             parent,
             is_abstract: false,
             variants: Vec::new(),
@@ -517,11 +517,23 @@ impl World {
     /// conformance from active extensions is included.
     pub fn ancestors(&self, id: ClassId, args: &[Type]) -> Vec<(ClassId, Vec<Type>)> {
         let mut out = Vec::new();
-        self.collect_ancestors(id, args, &mut out);
+        // The extensions that add conformances, looked up once.
+        let exts: Vec<ExtensionId> = self
+            .active_extension_ids()
+            .into_iter()
+            .filter(|e| !self.extensions[*e as usize].includes.is_empty())
+            .collect();
+        self.collect_ancestors(id, args, &exts, &mut out);
         out
     }
 
-    fn collect_ancestors(&self, id: ClassId, args: &[Type], out: &mut Vec<(ClassId, Vec<Type>)>) {
+    fn collect_ancestors(
+        &self,
+        id: ClassId,
+        args: &[Type],
+        exts: &[ExtensionId],
+        out: &mut Vec<(ClassId, Vec<Type>)>,
+    ) {
         if out.iter().any(|(i, _)| *i == id) {
             return;
         }
@@ -530,27 +542,71 @@ impl World {
         let subst = self.class_subst(id, args);
         for inc in class.includes.iter().rev() {
             if let Type::Class(mid, margs) = inc.subst(&subst) {
-                self.collect_ancestors(mid, &margs, out);
+                self.collect_ancestors(mid, &margs, exts, out);
             }
         }
-        for ext_id in self.active_extension_ids() {
-            let ext = &self.extensions[ext_id as usize];
+        for ext_id in exts {
+            let ext = &self.extensions[*ext_id as usize];
             if ext.target != id {
                 continue;
             }
             let esubst = self.extension_subst(ext, args);
             for inc in &ext.includes {
                 if let Type::Class(mid, margs) = inc.subst(&esubst) {
-                    self.collect_ancestors(mid, &margs, out);
+                    self.collect_ancestors(mid, &margs, exts, out);
                 }
             }
         }
         if let Some(sup) = &class.superclass {
             if let Type::Class(sid, sargs) = sup.subst(&subst) {
-                self.collect_ancestors(sid, &sargs, out);
+                self.collect_ancestors(sid, &sargs, exts, out);
             }
         } else if id != self.builtin.object && class.kind != ClassKind::Module {
-            self.collect_ancestors(self.builtin.object, &[], out);
+            self.collect_ancestors(self.builtin.object, &[], exts, out);
+        }
+    }
+
+    /// The classes of `ancestors(id, ..)`, in the same order, without
+    /// their type arguments (for lookups by name).
+    pub fn ancestor_ids(&self, id: ClassId) -> Vec<ClassId> {
+        let exts: Vec<ExtensionId> = self
+            .active_extension_ids()
+            .into_iter()
+            .filter(|e| !self.extensions[*e as usize].includes.is_empty())
+            .collect();
+        let mut out = Vec::new();
+        self.collect_ancestor_ids(id, &exts, &mut out);
+        out
+    }
+
+    fn collect_ancestor_ids(&self, id: ClassId, exts: &[ExtensionId], out: &mut Vec<ClassId>) {
+        if out.contains(&id) {
+            return;
+        }
+        out.push(id);
+        let class = self.class(id);
+        for inc in class.includes.iter().rev() {
+            if let Type::Class(mid, _) = inc {
+                self.collect_ancestor_ids(*mid, exts, out);
+            }
+        }
+        for ext_id in exts {
+            let ext = &self.extensions[*ext_id as usize];
+            if ext.target != id {
+                continue;
+            }
+            for inc in &ext.includes {
+                if let Type::Class(mid, _) = inc {
+                    self.collect_ancestor_ids(*mid, exts, out);
+                }
+            }
+        }
+        if let Some(sup) = &class.superclass {
+            if let Type::Class(sid, _) = sup {
+                self.collect_ancestor_ids(*sid, exts, out);
+            }
+        } else if id != self.builtin.object && class.kind != ClassKind::Module {
+            self.collect_ancestor_ids(self.builtin.object, exts, out);
         }
     }
 
@@ -576,7 +632,7 @@ impl World {
         ext: &ExtensionInfo,
         args: &[Type],
     ) -> HashMap<TypeParamId, Type> {
-        let mut map = HashMap::new();
+        let mut map = HashMap::default();
         for (targ, arg) in ext.target_args.iter().zip(args.iter()) {
             if let Type::Param(pid) = targ {
                 map.insert(*pid, arg.clone());
@@ -605,14 +661,14 @@ impl World {
         let mut chain = self.superclass_chain(id);
         chain.reverse();
         let mut out = Vec::new();
-        let mut subst: HashMap<TypeParamId, Type> = HashMap::new();
+        let mut subst: HashMap<TypeParamId, Type> = HashMap::default();
         // Walk from the root down, composing substitutions.
         let mut substs: Vec<HashMap<TypeParamId, Type>> = Vec::new();
         {
             // Compute, for each class in the chain (from `id` upward), the
             // substitution of its params in terms of `id`'s params.
             let mut cur = id;
-            let mut cur_subst: HashMap<TypeParamId, Type> = HashMap::new();
+            let mut cur_subst: HashMap<TypeParamId, Type> = HashMap::default();
             let mut per_class = vec![(cur, cur_subst.clone())];
             while let Some(sup) = &self.class(cur).superclass {
                 if let Type::Class(sid, sargs) = sup.subst(&cur_subst) {
@@ -862,7 +918,7 @@ impl World {
                     let subst = if cid == *id {
                         self.class_subst(cid, args)
                     } else {
-                        HashMap::new()
+                        HashMap::default()
                     };
                     if let Some(ids) = class.singleton_methods.get(name) {
                         for m in ids {
@@ -910,12 +966,12 @@ impl World {
         name: &str,
         out: &mut Vec<(MethodId, HashMap<TypeParamId, Type>)>,
     ) {
+        let exts = self.active_extension_ids();
         for (anc, anc_args) in self.ancestors(id, args) {
-            let subst = self.class_subst(anc, &anc_args);
             // Extensions on this ancestor take precedence over its own
             // methods (lexically scoped override).
-            for ext_id in self.active_extension_ids() {
-                let ext = &self.extensions[ext_id as usize];
+            for ext_id in &exts {
+                let ext = &self.extensions[*ext_id as usize];
                 if ext.target != anc {
                     continue;
                 }
@@ -927,6 +983,7 @@ impl World {
                 }
             }
             if let Some(ids) = self.class(anc).methods.get(name) {
+                let subst = self.class_subst(anc, &anc_args);
                 for m in ids {
                     out.push((*m, subst.clone()));
                 }
@@ -942,7 +999,7 @@ impl World {
                 return Some(*m);
             }
             // Members of ancestors (inherited constants).
-            for (anc, _) in self.ancestors(cid, &[]) {
+            for anc in self.ancestor_ids(cid) {
                 if let Some(m) = self.class(anc).members.get(name) {
                     return Some(*m);
                 }

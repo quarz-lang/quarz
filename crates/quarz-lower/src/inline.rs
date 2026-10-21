@@ -10,7 +10,7 @@
 //! itself). The lines of the copied instructions point at the function's
 //! `inlined` table, so backtraces still show the callee's frame.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 use quarz_ir::*;
 
@@ -125,7 +125,7 @@ fn inline_into(g: &mut Function, orig: &[Function], eligible: &[bool], methods: 
     let n = blocks.len();
     let mut out: Vec<Block> = vec![Block::default(); n];
     let mut extra: Vec<Option<Block>> = Vec::new();
-    let mut origins: HashMap<(FuncId, u32, u32), u32> = HashMap::new();
+    let mut origins: HashMap<(FuncId, u32, u32), u32> = HashMap::default();
     for (bi, blk) in blocks.into_iter().enumerate() {
         let handler = blk.handler;
         let mut cur = Block {

@@ -12,7 +12,7 @@
 //! register in place (`xs = xs.push(v)`, an `ArrayPush`) keeps its
 //! copy: the source must not see the change.
 
-use std::collections::HashSet;
+use rustc_hash::FxHashSet as HashSet;
 
 use quarz_ir::*;
 
@@ -74,13 +74,13 @@ fn propagate_in(f: &mut Function) -> bool {
             term_uses[r as usize].push(bi);
         }
     }
-    let mut delete: HashSet<Site> = HashSet::new();
+    let mut delete: HashSet<Site> = HashSet::default();
     // (site, dst, src): redirect the reads of `dst` at `site` to `src`.
     let mut redirect: Vec<(Site, Reg, Reg)> = Vec::new();
     let mut term_redirect: Vec<(usize, Reg, Reg)> = Vec::new();
     // Registers already rewritten this round: a chain's later links wait
     // for the next round, so the reaching definitions stay valid.
-    let mut touched: HashSet<Reg> = HashSet::new();
+    let mut touched: HashSet<Reg> = HashSet::default();
     for (site, dst, src) in moves {
         if touched.contains(&dst) || touched.contains(&src) {
             continue;

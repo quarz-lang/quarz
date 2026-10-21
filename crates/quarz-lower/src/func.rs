@@ -1,6 +1,6 @@
 //! Building one QIR function from an AST body.
 
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 use quarz_ir::*;
 use quarz_syntax::ast::{self, Arg, Block as AstBlock, Expr, ExprKind, LValue, ParamKind, StrPart};
@@ -125,12 +125,12 @@ impl<'a> FnBuilder<'a> {
             func,
             cur: 0,
             dead: false,
-            const_index: HashMap::new(),
+            const_index: HashMap::default(),
             levels,
             gaps,
             captured,
             all_captured,
-            slot_regs: HashMap::new(),
+            slot_regs: HashMap::default(),
             inline: Vec::new(),
             self_override: None,
             loops: Vec::new(),

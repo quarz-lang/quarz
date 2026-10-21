@@ -5,7 +5,7 @@
 //! requiring file. Dependencies are loaded once, in depth-first order, so
 //! that a file's top-level statements run after those of its dependencies.
 
-use std::collections::HashSet;
+use rustc_hash::FxHashSet as HashSet;
 use std::path::{Path, PathBuf};
 
 use quarz_syntax::ast::{Expr, ExprKind, Program};
@@ -34,7 +34,7 @@ pub fn load(path: &Path) -> (Vec<LoadedUnit>, Vec<LoadDiagnostic>) {
     let mut loader = Loader {
         units: Vec::new(),
         diagnostics: Vec::new(),
-        visited: HashSet::new(),
+        visited: HashSet::default(),
         in_progress: Vec::new(),
         next_unit: 0,
     };
@@ -49,7 +49,7 @@ pub fn load_source(name: &str, text: &str, dir: &Path) -> (Vec<LoadedUnit>, Vec<
     let mut loader = Loader {
         units: Vec::new(),
         diagnostics: Vec::new(),
-        visited: HashSet::new(),
+        visited: HashSet::default(),
         in_progress: Vec::new(),
         next_unit: 0,
     };

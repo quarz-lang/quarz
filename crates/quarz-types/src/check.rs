@@ -1,7 +1,7 @@
 //! Type checking of method bodies, constant initializers and the main
 //! program (phase 3).
 
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 use rustc_hash::FxHashMap;
 
@@ -320,10 +320,10 @@ impl Checker {
             ret_collected: Vec::new(),
             block_type: None,
             in_initialize: false,
-            assigned_fields: HashSet::new(),
+            assigned_fields: HashSet::default(),
             loop_depth: 0,
             blocks: Vec::new(),
-            ivar_narrow: HashMap::new(),
+            ivar_narrow: HashMap::default(),
             in_rescue: 0,
             file: 1,
             pattern_base: None,
@@ -340,8 +340,8 @@ impl Checker {
             repl_env: None,
             in_progress: Vec::new(),
             in_outer_self: false,
-            defaults_checked: HashSet::new(),
-            init_checked: HashSet::new(),
+            defaults_checked: HashSet::default(),
+            init_checked: HashSet::default(),
             int_literals: Default::default(),
             self_news: Vec::new(),
         }
@@ -407,7 +407,7 @@ impl Checker {
         let mut sites = std::mem::take(&mut self.self_news);
         sites.sort_by_key(|s| (s.0, s.2, s.3.start));
         sites.dedup_by_key(|s| (s.0, s.2, s.3.start));
-        let mut reported = HashSet::new();
+        let mut reported = HashSet::default();
         for (cid, init, method, _, _) in sites {
             let mname = self.world.method(method).name.clone();
             let nclasses = self.world.classes.len() as ClassId;
@@ -792,10 +792,10 @@ impl Checker {
             ret_collected: Vec::new(),
             block_type: None,
             in_initialize: false,
-            assigned_fields: HashSet::new(),
+            assigned_fields: HashSet::default(),
             loop_depth: 0,
             blocks: Vec::new(),
-            ivar_narrow: HashMap::new(),
+            ivar_narrow: HashMap::default(),
             in_rescue: 0,
             file,
             pattern_base: None,
@@ -877,7 +877,17 @@ impl Checker {
 
         let info = self.world.method(mid).clone();
         let owner = info.owner;
-        let class = self.world.class(owner).clone();
+        // What the body needs of its class (not the whole class: its
+        // tables are large and this runs for every method).
+        let class = {
+            let c = self.world.class(owner);
+            OwnerInfo {
+                type_params: c.type_params.clone(),
+                kind: c.kind,
+                usings: c.usings.clone(),
+                parent: c.parent,
+            }
+        };
         let self_type = if info.singleton {
             Type::ClassObject(
                 owner,
@@ -924,7 +934,7 @@ impl Checker {
         // A signature with `Self`: the body sees `Self` as opaque.
         let opaque = Self::mentions_self(&info);
         let self_subst: HashMap<TypeParamId, Type> = if opaque {
-            HashMap::new()
+            HashMap::default()
         } else {
             [(SELF_PARAM, Self::self_binding(&info, &self_type))]
                 .into_iter()
@@ -1690,7 +1700,7 @@ impl Checker {
 
     /// Reset the narrowing of outer variables assigned inside `body`.
     fn widen_assigned(&mut self, body: &[Expr]) {
-        let mut names = HashSet::new();
+        let mut names = HashSet::default();
         Self::assigned_names(body, &mut names);
         for name in names {
             self.set_narrowed(&VarKey::Local(name), None);
@@ -4347,7 +4357,7 @@ impl Checker {
         is_init: bool,
     ) -> Type {
         // Pre-type arguments that do not benefit from an expected type.
-        let mut pre: HashMap<NodeId, Type> = HashMap::new();
+        let mut pre: HashMap<NodeId, Type> = HashMap::default();
         let block_given =
             call.block.is_some() || call.args.iter().any(|a| matches!(a, Arg::BlockPass(_)));
         for a in &call.args {
@@ -4507,7 +4517,7 @@ impl Checker {
         if !single || cands.is_empty() {
             // A method and the one it overrides (`Scope#spawn` and
             // `Kernel#spawn`) can fail for the same reason: say it once.
-            let mut seen = HashSet::new();
+            let mut seen = HashSet::default();
             failures.retain(|f| seen.insert(f.clone()));
             let recv_name = self.name(recv_ty);
             let arg_desc = self.describe_args(call, &pre);
@@ -4640,7 +4650,7 @@ impl Checker {
             .params
             .iter()
             .position(|p| p.kind == ParamKind::KeywordRest);
-        let mut bound: HashMap<usize, Vec<MatchedArg>> = HashMap::new();
+        let mut bound: HashMap<usize, Vec<MatchedArg>> = HashMap::default();
         let mut next_pos = 0;
         let mut has_splat = false;
         for a in &call.args {
@@ -5640,4 +5650,12 @@ impl Checker {
     pub(crate) fn current_namespace(&self) -> Option<ClassId> {
         self.env.scope.namespace
     }
+}
+
+/// The parts of a method's class its checking reads.
+struct OwnerInfo {
+    type_params: Vec<crate::world::TypeParamInfo>,
+    kind: ClassKind,
+    usings: Vec<ExtensionId>,
+    parent: Option<ClassId>,
 }

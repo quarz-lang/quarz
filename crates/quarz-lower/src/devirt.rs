@@ -11,7 +11,7 @@
 //! extension, with defaults or a block, or whose receivers are many,
 //! keeps its dispatch.
 
-use std::collections::HashSet;
+use rustc_hash::FxHashSet as HashSet;
 
 use quarz_ir::*;
 
@@ -171,7 +171,7 @@ fn devirt_in(f: &mut Function, world: &RtWorld) {
     // The blocks a split creates are not split again: the fallback
     // holds the dispatched call, and a branch's direct call may be to a
     // method that is itself overridden further down.
-    let mut done: HashSet<usize> = HashSet::new();
+    let mut done: HashSet<usize> = HashSet::default();
     while let Some(site) = find_site(f, world, &done) {
         let bi = site.block;
         let handler = f.blocks[bi].handler;

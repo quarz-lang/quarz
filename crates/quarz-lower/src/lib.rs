@@ -4,7 +4,7 @@
 //! the methods, constants and field defaults that have not been lowered
 //! yet get functions. Function ids are stable and append-only.
 
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 use quarz_ir::*;
 use quarz_syntax::ast::Expr;
@@ -175,7 +175,7 @@ impl Lowerer {
 /// (and extensions on them) declare, as `(ancestor, name)` pairs; a class
 /// method's name is spelled `self.name`.
 fn overridden_methods(world: &World) -> HashSet<(ClassId, String)> {
-    let mut declared: HashMap<ClassId, Vec<String>> = HashMap::new();
+    let mut declared: HashMap<ClassId, Vec<String>> = HashMap::default();
     for c in &world.classes {
         let names = declared.entry(c.id).or_default();
         names.extend(c.methods.keys().cloned());
@@ -187,7 +187,7 @@ fn overridden_methods(world: &World) -> HashSet<(ClassId, String)> {
             .or_default()
             .extend(e.methods.keys().cloned());
     }
-    let mut out = HashSet::new();
+    let mut out = HashSet::default();
     for c in &world.classes {
         let Some(names) = declared.get(&c.id) else {
             continue;

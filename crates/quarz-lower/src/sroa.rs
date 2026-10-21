@@ -9,7 +9,7 @@
 //! construction is the one definition reaching it, and the argument
 //! registers must still hold their values there.
 
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 use quarz_ir::*;
 
@@ -23,12 +23,25 @@ pub fn scalar_replace(functions: &mut [Function], methods: &[RtMethod], classes:
 /// A definition site: instruction `inst` of block `block`.
 pub(crate) type Site = (usize, usize);
 
-/// Reaching definitions per block entry: for each register, the set of
-/// sites that may have written it last.
+/// The sites that may have written a register last, in order (a few at
+/// most).
+pub(crate) type Sites = Vec<Site>;
+
+/// Reaching definitions per block entry: for each register (by number),
+/// the sites that may have written it last.
 pub(crate) struct Reaching {
-    entry: Vec<HashMap<Reg, HashSet<Site>>>,
+    entry: Vec<Vec<Sites>>,
     /// Blocks entered from an exception: nothing definite is known there.
     handlers: HashSet<BlockId>,
+    /// What each instruction writes (`written`), computed once.
+    writes: Vec<Vec<Vec<Reg>>>,
+}
+
+/// The set of one site.
+pub(crate) fn one(site: Site) -> HashSet<Site> {
+    let mut s = HashSet::default();
+    s.insert(site);
+    s
 }
 
 pub(crate) fn successors(b: &Block) -> Vec<BlockId> {
@@ -60,65 +73,79 @@ pub(crate) fn written(inst: &Inst) -> Vec<Reg> {
 
 pub(crate) fn reaching(f: &Function) -> Reaching {
     let n = f.blocks.len();
-    let mut entry: Vec<HashMap<Reg, HashSet<Site>>> = vec![HashMap::new(); n];
+    let nregs = f.nregs as usize;
+    let mut entry: Vec<Vec<Sites>> = vec![vec![Vec::new(); nregs]; n];
+    let writes: Vec<Vec<Vec<Reg>>> = f
+        .blocks
+        .iter()
+        .map(|b| b.insts.iter().map(written).collect())
+        .collect();
     let handlers: HashSet<BlockId> = f
         .blocks
         .iter()
         .filter_map(|b| b.handler.map(|h| h.block))
         .collect();
-    // The entry block: every register is nil (site UNKNOWN stands for
-    // "not written here").
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for bi in 0..n {
-            let mut state = entry[bi].clone();
+    // The entry block: every register is nil (no site: "not written
+    // here"). A handler is entered from anywhere: UNKNOWN for all.
+    // A block is (re)visited when what enters it has grown.
+    let mut queued = vec![true; n];
+    let mut work: std::collections::VecDeque<usize> = (0..n).collect();
+    let mut state: Vec<Sites> = Vec::with_capacity(nregs);
+    while let Some(bi) = work.pop_front() {
+        queued[bi] = false;
+        {
+            state.clone_from(&entry[bi]);
             if handlers.contains(&(bi as BlockId)) {
-                for r in 0..f.nregs {
-                    state.insert(r, HashSet::from([UNKNOWN]));
+                for s in state.iter_mut() {
+                    s.clear();
+                    s.push(UNKNOWN);
                 }
             }
-            for (ii, inst) in f.blocks[bi].insts.iter().enumerate() {
-                for r in written(inst) {
-                    state.insert(r, HashSet::from([(bi, ii)]));
+            for (ii, w) in writes[bi].iter().enumerate() {
+                for r in w {
+                    let s = &mut state[*r as usize];
+                    s.clear();
+                    s.push((bi, ii));
                 }
             }
             for s in successors(&f.blocks[bi]) {
-                let target = &mut entry[s as usize];
-                for (r, sites) in &state {
-                    let dst = target.entry(*r).or_default();
+                let s = s as usize;
+                let mut grew = false;
+                for (dst, sites) in entry[s].iter_mut().zip(&state) {
                     for site in sites {
-                        if dst.insert(*site) {
-                            changed = true;
+                        if let Err(at) = dst.binary_search(site) {
+                            dst.insert(at, *site);
+                            grew = true;
                         }
                     }
+                }
+                if grew && !queued[s] {
+                    queued[s] = true;
+                    work.push_back(s);
                 }
             }
         }
     }
-    Reaching { entry, handlers }
+    Reaching {
+        entry,
+        handlers,
+        writes,
+    }
 }
 
 /// The definitions of `r` reaching instruction `ii` of block `bi`
 /// (`None` = never written on this path, i.e. still nil).
-pub(crate) fn defs_at(
-    reach: &Reaching,
-    f: &Function,
-    bi: usize,
-    ii: usize,
-    r: Reg,
-) -> HashSet<Site> {
-    let mut sites = if reach.handlers.contains(&(bi as BlockId)) {
-        HashSet::from([UNKNOWN])
-    } else {
-        reach.entry[bi].get(&r).cloned().unwrap_or_default()
-    };
-    for (k, inst) in f.blocks[bi].insts[..ii].iter().enumerate() {
-        if written(inst).contains(&r) {
-            sites = HashSet::from([(bi, k)]);
-        }
+pub(crate) fn defs_at(reach: &Reaching, f: &Function, bi: usize, ii: usize, r: Reg) -> Sites {
+    let _ = f;
+    // The last write before `ii` in the block, else what enters it.
+    if let Some(k) = reach.writes[bi][..ii].iter().rposition(|w| w.contains(&r)) {
+        return vec![(bi, k)];
     }
-    sites
+    if reach.handlers.contains(&(bi as BlockId)) {
+        vec![UNKNOWN]
+    } else {
+        reach.entry[bi][r as usize].clone()
+    }
 }
 
 fn replace_in(f: &mut Function, methods: &[RtMethod], classes: &[RtClass]) {
@@ -163,8 +190,8 @@ fn replace_in(f: &mut Function, methods: &[RtMethod], classes: &[RtClass]) {
     }
     let reach = reaching(f);
     // Where every register is used (instructions and terminators).
-    let mut uses: HashMap<Reg, Vec<Site>> = HashMap::new();
-    let mut term_uses: HashMap<Reg, Vec<usize>> = HashMap::new();
+    let mut uses: HashMap<Reg, Vec<Site>> = HashMap::default();
+    let mut term_uses: HashMap<Reg, Vec<usize>> = HashMap::default();
     for (bi, blk) in f.blocks.iter().enumerate() {
         for (ii, inst) in blk.insts.iter().enumerate() {
             for r in inst.uses() {
@@ -175,16 +202,16 @@ fn replace_in(f: &mut Function, methods: &[RtMethod], classes: &[RtClass]) {
             term_uses.entry(r).or_default().push(bi);
         }
     }
-    let mut delete: HashSet<Site> = HashSet::new();
-    let mut rewrite: HashMap<Site, Inst> = HashMap::new();
+    let mut delete: HashSet<Site> = HashSet::default();
+    let mut rewrite: HashMap<Site, Inst> = HashMap::default();
     for (site, class, args, dst) in sites {
-        let arg_defs: Vec<HashSet<Site>> = args
+        let arg_defs: Vec<Sites> = args
             .iter()
             .map(|a| defs_at(&reach, f, site.0, site.1, *a))
             .collect();
         // Aliases of the object: the register each definition writes.
         let mut aliases: Vec<(Reg, Site)> = vec![(dst, site)];
-        let mut seen: HashSet<Site> = HashSet::from([site]);
+        let mut seen: HashSet<Site> = one(site);
         let mut to_delete: Vec<Site> = vec![site];
         let mut to_rewrite: Vec<(Site, Inst)> = Vec::new();
         let mut ok = true;

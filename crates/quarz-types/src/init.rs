@@ -10,7 +10,8 @@
 //! them). Hence a field's value always has the field's declared type,
 //! which compiled code relies on.
 
-use std::collections::{BTreeSet, HashSet};
+use rustc_hash::FxHashSet as HashSet;
+use std::collections::BTreeSet;
 
 use quarz_syntax::ast::*;
 use quarz_syntax::Span;
@@ -49,7 +50,7 @@ impl<'a> InitCheck<'a> {
             calls,
             runs_user_code,
             errors: Vec::new(),
-            reported: HashSet::new(),
+            reported: HashSet::default(),
         }
     }
 

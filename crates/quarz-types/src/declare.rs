@@ -5,7 +5,7 @@
 //! resolve superclasses, includes, field types and method signatures in any
 //! order.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use std::rc::Rc;
 
 use quarz_syntax::ast::*;
@@ -107,7 +107,7 @@ impl<'ast> Declarer<'ast> {
             pending: Vec::new(),
             pending_ext: Vec::new(),
             units: Vec::new(),
-            class_usings: HashMap::new(),
+            class_usings: HashMap::default(),
         }
     }
 
@@ -261,7 +261,7 @@ impl<'ast> Declarer<'ast> {
                     type_params: Vec::new(),
                     target_args: Vec::new(),
                     includes: Vec::new(),
-                    methods: HashMap::new(),
+                    methods: HashMap::default(),
                     span: expr.span,
                     always_active: prelude || namespace.is_none(),
                 });

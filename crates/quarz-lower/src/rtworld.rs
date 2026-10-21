@@ -123,6 +123,7 @@ pub fn build(world: &World, lw: &Lowerer, file_names: Vec<String>) -> RtWorld {
             }
         })
         .collect();
+    let mut ancestors = HashMap::default();
     let methods: Vec<RtMethod> = world
         .methods
         .iter()
@@ -198,7 +199,7 @@ pub fn build(world: &World, lw: &Lowerer, file_names: Vec<String>) -> RtWorld {
                     },
                     _ => None,
                 },
-                overrides: overridden_methods(world, m),
+                overrides: overridden_methods(world, m, &mut ancestors),
             }
         })
         .collect();
@@ -298,15 +299,25 @@ pub fn build(world: &World, lw: &Lowerer, file_names: Vec<String>) -> RtWorld {
 /// accepting what the ancestor's does (its types instantiated for `m`'s class). A method of
 /// the same name that narrows a parameter (`cmp(other: W)` in `W < V`
 /// next to `cmp(other: V)`) is an overload, not an override.
-fn overridden_methods(world: &World, m: &types::MethodInfo) -> Vec<MethodId> {
-    let owner = world.class(m.owner);
-    let own_args: Vec<Type> = owner
-        .type_params
-        .iter()
-        .map(|tp| Type::Param(tp.id))
-        .collect();
+fn overridden_methods(
+    world: &World,
+    m: &types::MethodInfo,
+    ancestors: &mut HashMap<ClassId, Vec<(ClassId, Vec<Type>)>>,
+) -> Vec<MethodId> {
+    // The owner's ancestors with its own type parameters, once per class
+    // (the world does not change while the runtime one is built).
+    let ancs = ancestors.entry(m.owner).or_insert_with(|| {
+        let own_args: Vec<Type> = world
+            .class(m.owner)
+            .type_params
+            .iter()
+            .map(|tp| Type::Param(tp.id))
+            .collect();
+        world.ancestors(m.owner, &own_args)
+    });
     let mut out = Vec::new();
-    for (anc, anc_args) in world.ancestors(m.owner, &own_args) {
+    for (anc, anc_args) in ancs.iter() {
+        let anc = *anc;
         if anc == m.owner {
             continue;
         }
@@ -319,7 +330,7 @@ fn overridden_methods(world: &World, m: &types::MethodInfo) -> Vec<MethodId> {
         let Some(ids) = table.get(&m.name) else {
             continue;
         };
-        let subst: std::collections::HashMap<_, _> = ac
+        let subst: rustc_hash::FxHashMap<_, _> = ac
             .type_params
             .iter()
             .map(|tp| tp.id)

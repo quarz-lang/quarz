@@ -63,7 +63,7 @@ pub struct Session {
     inputs: u32,
     /// Units loaded by `require`: file index, name and pseudo-class.
     loaded: Vec<(u32, String, ClassId)>,
-    loaded_keys: std::collections::HashSet<String>,
+    loaded_keys: rustc_hash::FxHashSet<String>,
     sources: Vec<(u32, SourceFile)>,
 }
 
@@ -93,7 +93,7 @@ impl Session {
             main,
             inputs: 0,
             loaded: Vec::new(),
-            loaded_keys: std::collections::HashSet::new(),
+            loaded_keys: rustc_hash::FxHashSet::default(),
             sources: Vec::new(),
         })
     }
