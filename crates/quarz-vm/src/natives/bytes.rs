@@ -34,7 +34,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     m.insert("Bytes.from_hex", |i, _, a| {
         let text = string(i, a.arg(0), "hex")?;
         let digits: Vec<u8> = text.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
-        if !(digits.len() % 2 == 0) || !digits.iter().all(u8::is_ascii_hexdigit) {
+        if !digits.len().is_multiple_of(2) || !digits.iter().all(u8::is_ascii_hexdigit) {
             return Err(i.err_arg(&format!("invalid hex string {:?}", text)));
         }
         let out = digits
