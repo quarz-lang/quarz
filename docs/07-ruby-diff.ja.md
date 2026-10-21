@@ -14,8 +14,9 @@ Ruby を知っている人が Quarz を書き始めるときに最初に引っ�
 | 戻り値型 | なし | `def f(...) -> Int`(省略すると推論) |
 | キーワード引数の宣言 | `k:` ラベル | `*` の後ろに書く。`*` の前の引数は位置でもキーワードでも渡せる |
 | インスタンス変数 | 代入すれば生える | `@x: Int` でクラス本体に宣言。既定で不変、可変は `var @x: Int` |
+| 未初期化のインスタンス変数 | `nil` | 見えない。型が `nil` を許さず初期化子もないフィールドは、`initialize` のすべての経路で、オブジェクトを使う前に代入する(しなければコンパイルエラー) |
 | クラスの再オープン | できる | できない。`extension` + `using` で字句スコープ内に追加 |
-| `define_method`、`method_missing`、`send`、`eval`、`instance_variable_get` | ある | ない |
+| `define_method`、`method_missing`、`send`、`eval`、`instance_eval`、`instance_variable_get` | ある | ない(レシーバ付きの型を持つブロック用に `instance_exec` はある) |
 | `Struct`/`Data` | `Data.define(:x, :y)` | `data Point(x: Int, y: Int)` |
 | 直和型 | クラス階層で模倣 | `enum` |
 | インターフェース | ダックタイピング | `abstract def` を持つ `module`。後付けは `extension T; include M; end` |
@@ -24,14 +25,14 @@ Ruby を知っている人が Quarz を書き始めるときに最初に引っ�
 | `arr << x`、`h[k] = v`、`str << "a"`、`sort!` | 破壊的更新 | 不変型にはない。`arr = arr.push(x)`、`h = h.put(k, v)`、Builder |
 | `arr[i]`、`h[k]` | 範囲外・欠損で `nil` | 例外。`nil` が欲しければ `arr[i]?`、`h[k]?` |
 | `gets`、`IO#read` | EOF で `nil` | `gets?` が `nil`、`gets` は `EOFError` |
-| `Integer` | 任意精度 | `Int`(任意精度)。固定幅は `Int32` など |
+| `Integer` | 任意精度 | `Int`(任意精度)。固定幅の `Int32` などは予定 |
 | 文字列のエンコーディング | 多重 | UTF-8 固定。バイナリは `Bytes` |
-| `freeze`、`frozen?`、`dup` | ある | 不変値には不要。可変オブジェクトのみ `dup` |
+| `freeze`、`frozen?`、`dup` | ある | 不変な値は常に `frozen?` で、`dup` はそのまま返す。コピーするのは可変オブジェクトだけ。Builder の `freeze` は中身を不変な値として返す |
 | `eql?` | `==` と別 | 廃止。`==`/`hash` のみ |
 | グローバル変数 `$x`、クラス変数 `@@x` | ある | ない。定数 + `Atom` |
 | 定数 | 再代入は警告 | 再代入不可、Shareable 必須 |
 | `Proc.new`、`proc` | ある | `->` とブロックのみ。手続きは常に lambda 意味論 |
-| `for x in xs` | ある | ない。`each` |
+| `for x in xs` | 変数が外に漏れるループ | `for x in xs do ... end` は `each` のループ(変数は中にとどまる)。`for x in xs then ... end` は結果を返す内包表記。複数の反復と `when` による絞り込みも書ける |
 | `Thread`、`Mutex`、`Queue`、`Fiber` | ある | `spawn`、`Task.scope`、`Channel`、`Atom` |
 | `Thread#join` | | `Task#await` |
 | `require` | 実行時に読み込み | コンパイル時に解決(構文は同じ) |
@@ -50,10 +51,11 @@ Ruby を知っている人が Quarz を書き始めるときに最初に引っ�
 - `data`、`enum`、`var`、`abstract`、`override`、`extension`、`using`(キーワード化)、`type`、`extern`
 - `as`/`as?`
 - `Array::Builder` などの Builder 型と `Array.build { }`
-- `spawn`、`Task`、`Task.scope`、`Channel`、`select`、`Atom`、`Supervisor`
+- `spawn`、`Task`、`Task.scope`、`Task.blocking`、`Channel`、`select`、`Atom`(`Supervisor` は予定)
 - `Result[T, E]`
 - `Shareable`(自動導出のマーカー)
 - `obj.:method`(メソッド参照)
+- DSL 向けのレシーバ付きブロック(`Html.() -> Nil` を `instance_exec` で実行)と `using M do ... end`
 - `[]?`、`gets?` などの `nil` 許容版
 
 ## 書き換えの例
@@ -78,19 +80,20 @@ end
 ```ruby
 # Quarz(不変スタイル)
 class Inventory
-  @items: Hash[String, Int] = {}
+  @items: Hash[String, Int]
+
+  def initialize(@items: Hash[String, Int] = {}); end
 
   def add(name: String, qty: Int = 1) -> Inventory
-    Inventory.from(@items.update(name) { |q| (q || 0) + qty })
+    Inventory.new(@items.update(name) { |q| (q || 0) + qty })
   end
 
   def report -> String
     @items.map { |name, qty| "#{name}: #{qty}" }.join("\n")
   end
-
-  private def self.from(items: Hash[String, Int]) -> Inventory = new(items: items)
-  private def initialize(@items: Hash[String, Int]); end
 end
+
+puts Inventory.new.add("apple").add("pear", 2).report
 ```
 
 ```ruby
