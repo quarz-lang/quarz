@@ -21,7 +21,7 @@ Crystal は Quarz に最も近い言語です。Ruby の構文を持つ、静的
 | アクセサ | `getter`、`setter`、`property` | `attr_reader`、`attr_writer`、`attr_accessor`(書き込み側は `var` フィールドのみ) |
 | `Array`、`Hash`、`Set` | 可変(`<<`、`[]=`、`delete`) | 不変で永続的。`push`/`put`/`delete` は新しい値を返し、共有されていなければその場で更新する(`xs = xs.push(x)`)。タスク内で組み立てるための可変な `Array::Builder` など |
 | `arr[i]`、`h[k]` | 範囲外・キーなしで例外。`[]?` は `nil` を返す | 同じ |
-| レコード | `record Point, x : Int32, y : Int32`。getter、フィールドごとの `==`/`hash`、`copy_with` を持つ struct | `data Point(x: Int, y: Int)`。不変で、構造的な `==`/`hash`、`with`、パターンを持つ。小さいものは保持するオブジェクトの中にそのまま置かれる |
+| レコード | `record Point, x : Int32, y : Int32`。getter、フィールドごとの `==`/`hash`、`copy_with` を持つ struct | `data Point = (x: Int, y: Int)`。不変で、構造的な `==`/`hash`、`with`、パターンを持つ。小さいものは保持するオブジェクトの中にそのまま置かれる |
 | `struct` | 可変な値型。代入でコピーされる | ユーザ定義の値型はない。`data` は不変なので、コピーと共有の違いは観察できない |
 | `enum` | 名前付きの整数定数(フラグも可)。直和型は型の合併か、抽象 struct の階層で書く | 代数的データ型: `enum Shape = Circle(r: Float) \| Rect(w: Float, h: Float)`。`case/in` で網羅性を検査する |
 | `&.method` の短縮形 | `xs.map(&.upcase)` | `xs.map(&:upcase)`(Ruby の書き方) |
@@ -77,7 +77,7 @@ puts ps.map(&.pos.x).sum
 
 ```ruby
 # Quarz
-data Vec2(x: Float, y: Float) is
+data Vec2(x: Float, y: Float)
   def +(o: Vec2) -> Vec2 = Vec2.new(x + o.x, y + o.y)
 end
 

@@ -1,7 +1,7 @@
 # 複数ファイルを並行に読んで単語を数える
 # quarz run examples/wordcount.qz *.txt
 
-data WordCount(word: String, count: Int) is
+data WordCount(word: String, count: Int)
   include Comparable[WordCount]
   def <=>(other: WordCount) -> Int
     [other.count, word] <=> [count, other.word]   # 出現数の降順、語の昇順

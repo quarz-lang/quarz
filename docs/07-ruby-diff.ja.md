@@ -17,7 +17,7 @@ Ruby を知っている人が Quarz を書き始めるときに最初に引っ�
 | 未初期化のインスタンス変数 | `nil` | 見えない。型が `nil` を許さず初期化子もないフィールドは、`initialize` のすべての経路で、オブジェクトを使う前に代入する(しなければコンパイルエラー) |
 | クラスの再オープン | できる | できない。`extension` + `using` で字句スコープ内に追加 |
 | `define_method`、`method_missing`、`send`、`eval`、`instance_eval`、`instance_variable_get` | ある | ない(レシーバ付きの型を持つブロック用に `instance_exec` はある) |
-| `Struct`/`Data` | `Data.define(:x, :y)` | `data Point(x: Int, y: Int)` |
+| `Struct`/`Data` | `Data.define(:x, :y)` | `data Point = (x: Int, y: Int)` |
 | 直和型 | 専用の構文はない。クラス階層や複数の `Data` 型で書く | `enum` |
 | インターフェース | ダックタイピング | `abstract def` を持つ `module`。後付けは `extension T; include M; end` |
 | `nil` | どの変数にも入る | `T?` と書いた型にしか入らない。`if x` などで絞り込む |

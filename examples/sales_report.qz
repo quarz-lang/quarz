@@ -3,7 +3,7 @@
 # line, or uses the built-in data.
 require "json"
 
-data Sale(region: String, product: String, units: Int, price: Float, day: Time)
+data Sale = (region: String, product: String, units: Int, price: Float, day: Time)
 
 def sale_from(v: JSON::Value) -> Sale
   Sale.new(
@@ -15,7 +15,7 @@ def sale_from(v: JSON::Value) -> Sale
   )
 end
 
-data Summary(key: String, units: Int, revenue: Float, orders: Int) is
+data Summary(key: String, units: Int, revenue: Float, orders: Int)
   def average -> Float = orders == 0 ? 0.0 : revenue / orders
 end
 

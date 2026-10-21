@@ -12,7 +12,7 @@ in JSON::Value::Map(members:) then puts members.keys.join(",")
 else puts "not a map"
 end
 
-data Point(x: Int, y: Int)
+data Point = (x: Int, y: Int)
 puts JSON.generate({ a: 1, "b" => [true, nil, 2.5], c: Point.new(x: 1, y: 2), d: :sym, e: "q\"\n" })
 puts JSON.generate([]), JSON.generate({})
 puts JSON.pretty_generate({ a: [], b: {}, c: [1, [2]] })

@@ -39,7 +39,7 @@ rescue ArgumentError => e
 end
 
 # results and receivers that hold references
-data Box(v: String) is
+data Box(v: String)
   def wrap(tag: String) -> Box = Box.new("#{tag}(#{v})")
 end
 b = Box.new("x")

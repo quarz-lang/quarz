@@ -23,7 +23,7 @@ Crystal is the closest relative of Quarz: a statically typed, compiled language 
 | Accessors | `getter`, `setter`, `property` | `attr_reader`, `attr_writer`, `attr_accessor` (writers only on `var` fields) |
 | `Array`, `Hash`, `Set` | Mutable (`<<`, `[]=`, `delete`) | Immutable and persistent: `push`/`put`/`delete` return new values, updated in place when unshared (`xs = xs.push(x)`). Mutable `Array::Builder` and friends for task-local building |
 | `arr[i]`, `h[k]` | Raise when out of range / missing; `[]?` returns `nil` | Same |
-| Records | `record Point, x : Int32, y : Int32`: a struct with getters, field-wise `==`/`hash` and `copy_with` | `data Point(x: Int, y: Int)`: immutable, with structural `==`/`hash`, `with` and patterns; small ones are stored in place in the objects that hold them |
+| Records | `record Point, x : Int32, y : Int32`: a struct with getters, field-wise `==`/`hash` and `copy_with` | `data Point = (x: Int, y: Int)`: immutable, with structural `==`/`hash`, `with` and patterns; small ones are stored in place in the objects that hold them |
 | `struct` | Mutable value type, copied on assignment | No user value types: `data` is immutable, so copying and sharing cannot be told apart |
 | `enum` | Named integer constants (with flags); sum types are written as unions of types or an abstract struct hierarchy | Algebraic data types: `enum Shape = Circle(r: Float) \| Rect(w: Float, h: Float)`, matched exhaustively with `case/in` |
 | `&.method` shorthand | `xs.map(&.upcase)` | `xs.map(&:upcase)` (Ruby's spelling) |
@@ -79,7 +79,7 @@ puts ps.map(&.pos.x).sum
 
 ```ruby
 # Quarz
-data Vec2(x: Float, y: Float) is
+data Vec2(x: Float, y: Float)
   def +(o: Vec2) -> Vec2 = Vec2.new(x + o.x, y + o.y)
 end
 

@@ -10,7 +10,7 @@ end
 class Bar
   def ! -> String = "not bar"
 end
-data Flag(on: Bool) is
+data Flag(on: Bool)
   def ! -> Flag = Flag.new(!on)
 end
 p(!Foo.new, ~Foo.new, -Foo.new, +Foo.new)

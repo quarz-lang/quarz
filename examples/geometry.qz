@@ -2,7 +2,7 @@
 # Classes, data types and constants defined here are visible to any file
 # that requires this one; top-level `def`s stay private to this file.
 
-data Point(x: Float, y: Float) is
+data Point(x: Float, y: Float)
   def +(other: Point) -> Point = Point.new(x + other.x, y + other.y)
   def to_s -> String = "(#{x}, #{y})"
 end

@@ -1,6 +1,6 @@
 //! Object layouts: where each declared field of a class lives among the
 //! object's physical fields. A field whose type is a small immutable
-//! data type (`data Vec2(x: Float, y: Float)`: fields that are all
+//! data type (`data Vec2 = (x: Float, y: Float)`: fields that are all
 //! `Int`/`Float`/`Bool` or such data, no type parameters, no user
 //! equality) is stored *by value*: its data class's physical fields are
 //! laid out in place, so storing a `Vec2` into the field copies two

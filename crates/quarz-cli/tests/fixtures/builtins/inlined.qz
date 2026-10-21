@@ -140,7 +140,7 @@ def twice(x: Int) -> Int = add(x, x)
 def fact(n: Int) -> Int = n <= 1 ? 1 : n * fact(n - 1)
 p add(1, 2), twice(21), fact(10), fact(25)
 
-data Pt(x: Float, y: Float) is
+data Pt(x: Float, y: Float)
   def +(o: Pt) -> Pt = Pt.new(x + o.x, y + o.y)
   def scale(k: Float) -> Pt = Pt.new(x * k, y * k)
   def norm2 -> Float = x * x + y * y

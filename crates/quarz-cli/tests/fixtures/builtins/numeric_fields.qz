@@ -18,7 +18,7 @@ p c.bump, c.bump, c.bump
 p c.scaled
 d = Counter.new(1, 0.25)
 p d.bump, d.scaled
-data P(a: Int, b: Float) is
+data P(a: Int, b: Float)
   def sum -> Float = a + b
 end
 p P.new(2 ** 70, 0.5).sum, P.new(3, 0.5).sum

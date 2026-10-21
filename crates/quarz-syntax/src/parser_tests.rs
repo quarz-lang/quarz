@@ -292,11 +292,11 @@ fn declarations() {
     );
     assert_eq!(sexp("module M[out T]\nend"), "(module M (tparams out T))");
     assert_eq!(
-        sexp("data P(x: Int, y: Int = 0)"),
+        sexp("data P = (x: Int, y: Int = 0)"),
         "(data P (fields x:Int y:Int=0))"
     );
     assert_eq!(
-        sexp("data P(x: Int) is\ndef f = x\nend"),
+        sexp("data P(x: Int)\ndef f = x\nend"),
         "(data P (fields x:Int) (def f (params) (call _ x)))"
     );
     assert_eq!(
@@ -306,32 +306,22 @@ fn declarations() {
     // The variants are one `|`-separated list: on one line, continued on
     // lines that start with `|`, with or without a leading `|`.
     assert_eq!(sexp("enum C = A | B(x: Int)"), "(enum C (A) (B x:Int))");
-    // `is` may open the body of any declaration that has one, on the
-    // declaration's line; on the next line it is an ordinary name.
-    assert_eq!(sexp("class C is\nend"), sexp("class C\nend"));
+    // `data Name = (fields)` is the form without a body, like `enum Name
+    // = A | B`; without `=` a body follows and `end` closes it.
     assert_eq!(
-        sexp("class C[T] < B is\ndef f = 1\nend"),
-        sexp("class C[T] < B\ndef f = 1\nend")
+        sexp("data Pair[A, B] = (first: A, second: B)\nx = 1"),
+        "(data Pair (tparams A B) (fields first:A second:B))\n(= x 1)"
     );
+    assert_eq!(sexp("data U = ()"), "(data U (fields))");
     assert_eq!(
-        sexp("abstract class C is\nend"),
-        sexp("abstract class C\nend")
+        sexp("data C = (\n  host: String,\n  port: Int = 80\n)"),
+        "(data C (fields host:String port:Int=80))"
     );
-    assert_eq!(
-        sexp("module M[out T] is\nend"),
-        "(module M (tparams out T))"
-    );
-    assert_eq!(
-        sexp("extension Array[T: Describable] is\ndef f = 1\nend"),
-        sexp("extension Array[T: Describable]\ndef f = 1\nend")
-    );
-    assert_eq!(
-        sexp("enum E[T] is\n  | A\n  | B(v: T)\ndef f = 1\nend"),
-        "(enum E (tparams T) (A) (B v:T) (def f (params) 1))"
-    );
-    assert_eq!(sexp("enum E is | A | B\nend"), "(enum E (A) (B))");
-    assert_eq!(sexp("class C\nis\nend"), "(class C (call _ is))");
-    assert!(!errors("extern \"C\" is\nend").is_empty());
+    assert_eq!(sexp("data P(x: Int)\nend"), "(data P (fields x:Int))");
+    // A forgotten `=` takes the rest of the file for the body.
+    assert!(errors("data P(x: Int)\np P.new(1)")[0]
+        .contains("a data type without a body is written `data P = (...)`"));
+    assert!(errors("data P = (x: Int) is")[0].contains("end of line after the fields"));
     // `for` comprehensions desugar to filter / flat_map / map.
     assert_eq!(
         sexp("for x in xs when x.even?, y in ys then [x, y] end"),

@@ -11,7 +11,7 @@ Quarz(クォーツ)は、Ruby のような書き心地を持ちながら、静�
 ## 一目でわかる Quarz
 
 ```ruby
-data WordCount(word: String, count: Int) is
+data WordCount(word: String, count: Int)
   include Comparable[WordCount]
   def <=>(other: WordCount) -> Int = other.count <=> count
 end

@@ -174,7 +174,7 @@ spawn { n.update { |v| v + 1 } } # OK
 | `arr.delete(x)` | `arr = arr.delete(x)` |
 | `obj.freeze` | 不要(既定で不変) |
 | `obj.dup` | 不変値には不要(`dup` は組み込みの不変な値をそのまま返す) |
-| `Struct.new(:a, :b)` | `data X(a: T, b: U)` |
+| `Struct.new(:a, :b)` | `data X = (a: T, b: U)` |
 | `attr_accessor :x` | `var @x: T` + `attr_accessor :x` |
 | `@cache \|\|= compute` | `var @cache: T? = nil` + `@cache \|\|= compute`(`Lazy`/`memoize` は予定) |
 | `$stdout.puts` | `STDOUT.puts` |

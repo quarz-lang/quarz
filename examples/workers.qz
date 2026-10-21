@@ -2,7 +2,7 @@
 # to workers, results fan in, a shared Atom remembers which jobs were
 # retried, and a deadline stops the collection.
 
-data Job(id: Int, size: Int)
+data Job = (id: Int, size: Int)
 
 enum Outcome
   Done(id: Int, checksum: Int, worker: Int)

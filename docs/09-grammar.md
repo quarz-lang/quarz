@@ -13,9 +13,9 @@ declaration    = class_decl | module_decl | data_decl | enum_decl | extension_de
                | require_stmt ;
 
 (* ---- classes and modules ---- *)
-class_decl     = [ "abstract" ] "class" const_path [ type_params ] [ "<" type ] [ "is" ] NEWLINE
+class_decl     = [ "abstract" ] "class" const_path [ type_params ] [ "<" type ] NEWLINE
                  class_body "end" ;
-module_decl    = "module" const_path [ type_params ] [ "is" ] NEWLINE class_body "end" ;
+module_decl    = "module" const_path [ type_params ] NEWLINE class_body "end" ;
 class_body     = { class_member } ;
 class_member   = field_decl | method_decl | attr_decl | include_decl | visibility
                | const_decl | type_alias | class_decl | module_decl | data_decl
@@ -27,17 +27,18 @@ include_decl   = ( "include" | "extend" ) type { "," type } ;
 visibility     = ( "private" | "protected" | "public" ) [ method_decl | SYMBOL { "," SYMBOL } ] ;
 
 (* ---- data / enum ---- *)
-data_decl      = "data" CONST [ type_params ] "(" [ field_list ] ")" [ "is" NEWLINE class_body "end" ] ;
+data_decl      = "data" CONST [ type_params ] "=" "(" [ field_list ] ")"
+               | "data" CONST [ type_params ] "(" [ field_list ] ")" NEWLINE class_body "end" ;
 field_list     = field { "," field } ;
 field          = IDENT ":" type [ "=" expression ] ;
 
 enum_decl      = "enum" CONST [ type_params ] "=" variants
-               | "enum" CONST [ type_params ] [ "is" ] [ NEWLINE ] variants NEWLINE class_body "end" ;
+               | "enum" CONST [ type_params ] [ NEWLINE ] variants NEWLINE class_body "end" ;
 variants       = [ "|" ] variant { [ NEWLINE ] "|" variant } ;
 variant        = CONST [ "(" field_list ")" ] ;
 
 (* ---- extensions ---- *)
-extension_decl = "extension" type [ "is" ] NEWLINE class_body "end" ;
+extension_decl = "extension" type NEWLINE class_body "end" ;
 using_decl     = "using" const_path ;
 
 (* ---- methods ---- *)
@@ -118,5 +119,5 @@ extern_decl    = "extern" STRING NEWLINE { "def" IDENT "(" [ param_list ] ")" "-
 - **The two meanings of `->`**: `->` in a `def` signature is the return type; `->` in expression position is a lambda. In `->(x: Int) -> Int { }`, the first is the lambda and the second is the return type.
 - **`Const[...]`**: in type position, type arguments. In expression position, a type expression (`Array[Int].new`) if the contents of `[` can be interpreted as types, otherwise a call to `Const.[](...)` (a user-defined `self.[]`). The built-in `Array`/`Hash`/`Set` have no `self.[]`, so they are always type expressions.
 - **`{ }` as block vs. hash**: the same rule as Ruby.
-- **Contextual keywords**: `data`/`enum`/`var`/`abstract`/`override`/`extension`/`using`/`type`/`extern`/`is`/`for` are keywords only in the declaration positions above, when the following tokens take the form of a declaration.
-- **`is ... end`**: a `data` declaration without a body does not end with `end`, so a body needs an introducing word for the parser to tell it from the following statements; `is` right after `data X(...)` opens the body. For a uniform look, `class`, `module`, `enum` and `extension` accept the same `is` at the end of their first line, where it is optional (`class Point is`). It is not used with `extern "C"`, whose string names a calling convention, not the thing being defined. On a line of its own, `is` is an ordinary identifier.
+- **Contextual keywords**: `data`/`enum`/`var`/`abstract`/`override`/`extension`/`using`/`type`/`extern`/`for` are keywords only in the declaration positions above, when the following tokens take the form of a declaration.
+- **`data` with and without a body**: as with `enum`, the form with `=` (`data P = (x: Int)`) has no body and no `end`; without `=` a body follows and `end` closes it. A forgotten `=` takes the rest of the file for the body, and the missing `end` is reported at the `data` with that hint.

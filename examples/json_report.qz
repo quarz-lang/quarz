@@ -14,7 +14,7 @@ INPUT = <<~JSON
   }
 JSON
 
-data Job(name: String, done: Bool, hours: Float?)
+data Job = (name: String, done: Bool, hours: Float?)
 
 def job_from(value: JSON::Value) -> Job
   Job.new(

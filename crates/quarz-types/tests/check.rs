@@ -217,12 +217,12 @@ fn classes_and_fields() {
 
 #[test]
 fn data_and_enum() {
-    ok("data P(x: Int, y: Int)\np = P.new(1, 2)\nq = p.with(y: 5)\nputs q.x + q.y\np => P(x:, y:)\nputs x");
+    ok("data P = (x: Int, y: Int)\np = P.new(1, 2)\nq = p.with(y: 5)\nputs q.x + q.y\np => P(x:, y:)\nputs x");
     err(
-        "data P(x: Int)\nP.new(\"s\")",
+        "data P = (x: Int)\nP.new(\"s\")",
         "expects Int but found String",
     );
-    ok("data P(x: Int) is\n  def double -> P = P.new(x * 2)\nend\nputs P.new(2).double.x");
+    ok("data P(x: Int)\n  def double -> P = P.new(x * 2)\nend\nputs P.new(2).double.x");
     ok("enum E = A | B(v: Int)\ndef f(e: E) -> Int\n  case e\n  in E::A then 0\n  in E::B(v:) then v\n  end\nend\nputs f(E::A) + f(E::B.new(3))");
     err(
         "enum E = A | B\ndef f(e: E) -> Int\n  case e\n  in E::A then 1\n  end\nend",
@@ -367,7 +367,7 @@ fn concurrency_rules() {
         "class Counter\n  var @n: Int = 0\nend\nc = Counter.new\nspawn { c }",
         "non-shareable type Counter",
     );
-    ok("data P(x: Int)\np = P.new(1)\nspawn { p.x }.await");
+    ok("data P = (x: Int)\np = P.new(1)\nspawn { p.x }.await");
 }
 
 #[test]
@@ -406,7 +406,7 @@ fn module_contracts() {
     );
     // Data types and variants too.
     err(
-        "module M\n  abstract def zero -> Int\nend\ndata P(x: Int) is\n  include M\nend",
+        "module M\n  abstract def zero -> Int\nend\ndata P(x: Int)\n  include M\nend",
         "`P` must implement `zero`",
     );
     // An extension can supply the implementation.

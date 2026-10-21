@@ -2,7 +2,7 @@
 # going; immutable captures and results cross over, exceptions propagate,
 # thread-bound values are rejected. Expected output in blocking.out.
 def fib(n: Int) -> Int = n < 2 ? n : fib(n - 1) + fib(n - 2)
-data Point(x: Int, y: Int) is
+data Point(x: Int, y: Int)
   def sum -> Int = x + y
 end
 

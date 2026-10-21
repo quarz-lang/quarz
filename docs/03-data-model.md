@@ -176,7 +176,7 @@ To pass a mutable object to another task, convert it to an immutable value. A Bu
 | `arr.delete(x)` | `arr = arr.delete(x)` |
 | `obj.freeze` | Unnecessary (immutable by default) |
 | `obj.dup` | Unnecessary for immutable values (`dup` returns a built-in immutable value as it is) |
-| `Struct.new(:a, :b)` | `data X(a: T, b: U)` |
+| `Struct.new(:a, :b)` | `data X = (a: T, b: U)` |
 | `attr_accessor :x` | `var @x: T` + `attr_accessor :x` |
 | `@cache \|\|= compute` | `var @cache: T? = nil` + `@cache \|\|= compute` (`Lazy`/`memoize` are planned) |
 | `$stdout.puts` | `STDOUT.puts` |

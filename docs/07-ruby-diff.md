@@ -19,7 +19,7 @@ A summary of the things someone who knows Ruby will first stumble on when starti
 | Uninitialized instance variables | `nil` | Never seen: a field whose type does not admit `nil` and that has no initializer is assigned on every path through `initialize`, before the object is used (a compile error otherwise) |
 | Reopening classes | Allowed | Not allowed. Add within a lexical scope with `extension` + `using` |
 | `define_method`, `method_missing`, `send`, `eval`, `instance_eval`, `instance_variable_get` | Exist | Do not exist (`instance_exec` does, for blocks typed with a receiver) |
-| `Struct`/`Data` | `Data.define(:x, :y)` | `data Point(x: Int, y: Int)` |
+| `Struct`/`Data` | `Data.define(:x, :y)` | `data Point = (x: Int, y: Int)` |
 | Sum types | No dedicated construct; written as a class hierarchy or several `Data` types | `enum` |
 | Interfaces | Duck typing | A `module` with `abstract def`. Retroactive conformance with `extension T; include M; end` |
 | `nil` | Fits in any variable | Only fits in types written as `T?`. Narrow with `if x` etc. |

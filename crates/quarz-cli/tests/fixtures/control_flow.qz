@@ -62,7 +62,7 @@ def classify(v: Object) -> String
 end
 puts classify(500), classify(1.5), classify("hey"), classify([1, 2, 3]), classify({ name: "x", age: 1 }), classify(nil), classify(:sym)
 
-data P(x: Int, y: Int = 0)
+data P = (x: Int, y: Int = 0)
 case P.new(1)
 in P(x:, y:) then puts "p #{x} #{y}"
 end

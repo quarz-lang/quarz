@@ -13,7 +13,7 @@ Quarz is a programming language that feels like Ruby, but is built on static typ
 ## Quarz at a glance
 
 ```ruby
-data WordCount(word: String, count: Int) is
+data WordCount(word: String, count: Int)
   include Comparable[WordCount]
   def <=>(other: WordCount) -> Int = other.count <=> count
 end

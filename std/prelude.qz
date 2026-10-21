@@ -1713,7 +1713,7 @@ end
 module Process
   # What a child process produced: `Process.run("ls", "-l")`,
   # `Process.sh("ls | wc -l")`.
-  data Output(status: Int, stdout: String, stderr: String) is
+  data Output(status: Int, stdout: String, stderr: String)
     native def success? -> Bool
   end
 

@@ -21,8 +21,7 @@ The following words are treated as keywords **only in declaration positions**; e
 
 | Word | Context in which it is recognized |
 |---|---|
-| `data` | At the start of a line, followed by `data ConstantName(` |
-| `is` | At the end of the first line of a declaration with a body, introducing it: required for `data` (right after the `)`), optional for `class`/`module`/`enum`/`extension` (`class Point is`) |
+| `data` | At the start of a line, followed by `data ConstantName =` or `data ConstantName(` |
 | `enum` | At the start of a line, followed by `enum ConstantName` |
 | `var` | Followed by `var @name` / `var @name:` |
 | `abstract` | `abstract class` / `abstract def` |
@@ -131,9 +130,9 @@ end
 Immutable record types, corresponding to Ruby 3.2's `Data`.
 
 ```ruby
-data Point(x: Int, y: Int)
+data Point = (x: Int, y: Int)
 
-data Line(from: Point, to: Point) is
+data Line(from: Point, to: Point)
   def length -> Float
     Math.sqrt((to.x - from.x) ** 2 + (to.y - from.y) ** 2)
   end
@@ -148,7 +147,7 @@ in Point(x:, y:) then puts "#{x}, #{y}"
 end
 ```
 
-`data` generates the following automatically: fields (immutable), reader methods, `initialize`, `==`/`hash`, `to_s`/`inspect`, `with`, `to_h`. (`deconstruct`/`deconstruct_keys` methods are not generated: patterns read the declared fields directly, §11.) To add methods, write them in an `is ... end` body (`is` is needed because a `data` declaration without a body does not end with `end`, so the parser could not otherwise tell a body from the next statement). `data` types cannot be inherited (they can `include`).
+`data` generates the following automatically: fields (immutable), reader methods, `initialize`, `==`/`hash`, `to_s`/`inspect`, `with`, `to_h`. (`deconstruct`/`deconstruct_keys` methods are not generated: patterns read the declared fields directly, §11.) A `data` type without methods is written on one line with `=` (`data Point = (x: Int, y: Int)`), like the one-line `enum`; without `=`, a body with methods follows and `end` closes it. `data` types cannot be inherited (they can `include`).
 
 
 ### Data values stored in place
@@ -199,7 +198,7 @@ module Comparable[T]
   # ...
 end
 
-data Version(major: Int, minor: Int) is
+data Version(major: Int, minor: Int)
   include Comparable[Version]
   def <=>(other: Version) -> Int
     [major, minor] <=> [other.major, other.minor]

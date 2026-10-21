@@ -84,7 +84,7 @@ p guarded(10, 0)
 p guarded(big, 0) == big
 
 # Float fields and parameters mixed.
-data Vec2(x: Float, y: Float) is
+data Vec2(x: Float, y: Float)
   def dot(o: Vec2) -> Float
     x * o.x + y * o.y
   end

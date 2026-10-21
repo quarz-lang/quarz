@@ -3,15 +3,15 @@
 # value, writes copy its fields. Equality, hashing, inspect, with, to_h,
 # patterns and JSON see the declared fields.
 require "json"
-data Vec2(x: Float, y: Float) is
+data Vec2(x: Float, y: Float)
   def +(o: Vec2) -> Vec2 = Vec2.new(x + o.x, y + o.y)
   def scale(k: Float) -> Vec2 = Vec2.new(x * k, y * k)
 end
-data Segment(a: Vec2, b: Vec2) is
+data Segment(a: Vec2, b: Vec2)
   def length -> Float = ((b.x - a.x) ** 2 + (b.y - a.y) ** 2) ** 0.5
 end
-data Named(name: String, at: Vec2)
-data Custom(v: Int) is
+data Named = (name: String, at: Vec2)
+data Custom(v: Int)
   def ==(o: Custom) -> Bool = v % 10 == o.v % 10
 end
 class Particle

@@ -72,7 +72,7 @@ fn state_persists_across_inputs() {
         "x = 1",
         "def double(n: Int) -> Int = n * 2",
         "double(x) + 40",
-        "data P(a: Int)",
+        "data P = (a: Int)",
         "p = P.new(3)",
         "p.a + x",
         "y = [",

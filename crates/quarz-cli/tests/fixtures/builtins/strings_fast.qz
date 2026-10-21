@@ -1,7 +1,7 @@
 # Interpolation builds in one buffer; common string, array and hash natives
 # take their arguments by reference; `&:name` procs cache the method.
 p "a#{1}b#{2.5}c#{nil}d#{true}e#{:sym}f#{"s"}g#{[1, 2]}h#{2 ** 70}"
-data P(x: Int) is
+data P(x: Int)
   def to_s -> String = "P(#{x}: #{"in#{x}ner"})"
 end
 p "#{P.new(3)} and #{P.new(4)}", "#{"x" * 70000}".size
