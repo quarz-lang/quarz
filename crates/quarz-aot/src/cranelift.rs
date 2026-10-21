@@ -6,8 +6,8 @@ use std::collections::HashMap;
 
 use cranelift_codegen::ir::condcodes::{FloatCC as ClFloatCC, IntCC as ClIntCC};
 use cranelift_codegen::ir::{
-    types, AbiParam, Block, FuncRef, InstBuilder, MemFlags, SigRef, Signature, StackSlotData,
-    StackSlotKind, Value,
+    types, AbiParam, Block, BlockArg, FuncRef, InstBuilder, MemFlagsData, SigRef, Signature,
+    StackSlotData, StackSlotKind, Value,
 };
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_codegen::Context;
@@ -333,7 +333,7 @@ impl Compiler {
             }
         }
         let body_sig = fb.import_signature(self.fn_sig.clone());
-        let mut b = Cl { fb, nvars: 0 };
+        let mut b = Cl { fb };
         gen::gen_function(
             gen::Target {
                 b: &mut b,
@@ -354,7 +354,7 @@ impl Compiler {
             &self.typed,
         );
         b.fb.seal_all_blocks();
-        b.fb.finalize();
+        b.fb.finalize(self.module.target_config());
         let target = match &typed {
             Some(_) => self.typed_funcs[fid as usize].expect("typed entry declared"),
             None => self.funcs[fid as usize],
@@ -436,7 +436,7 @@ impl Compiler {
         let code = b.inst_results(call)[0];
         b.ins().return_(&[code]);
         b.seal_all_blocks();
-        b.finalize();
+        b.finalize(self.module.target_config());
         self.module
             .define_function(main, &mut ctx)
             .map_err(|e| e.to_string())?;
@@ -448,7 +448,10 @@ impl Compiler {
 /// The builder of one function.
 struct Cl<'a> {
     fb: FunctionBuilder<'a>,
-    nvars: u32,
+}
+
+fn block_args(args: &[Value]) -> Vec<BlockArg> {
+    args.iter().map(|v| BlockArg::Value(*v)).collect()
 }
 
 fn cl_intcc(cc: IntCC) -> ClIntCC {
@@ -507,10 +510,7 @@ impl Builder for Cl<'_> {
     }
 
     fn declare_var(&mut self, ty: Ty) -> Variable {
-        let v = Variable::from_u32(self.nvars);
-        self.nvars += 1;
-        self.fb.declare_var(v, cl_type(ty));
-        v
+        self.fb.declare_var(cl_type(ty))
     }
 
     fn def_var(&mut self, var: Variable, v: Value) {
@@ -583,19 +583,19 @@ impl Builder for Cl<'_> {
     }
 
     fn iadd_imm(&mut self, a: Value, imm: i64) -> Value {
-        self.fb.ins().iadd_imm(a, imm)
+        self.fb.ins().iadd_imm_s(a, imm)
     }
 
     fn imul_imm(&mut self, a: Value, imm: i64) -> Value {
-        self.fb.ins().imul_imm(a, imm)
+        self.fb.ins().imul_imm_s(a, imm)
     }
 
     fn ishl_imm(&mut self, a: Value, imm: i64) -> Value {
-        self.fb.ins().ishl_imm(a, imm)
+        self.fb.ins().ishl_imm_s(a, imm)
     }
 
     fn sshr_imm(&mut self, a: Value, imm: i64) -> Value {
-        self.fb.ins().sshr_imm(a, imm)
+        self.fb.ins().sshr_imm_s(a, imm)
     }
 
     fn sadd_overflow(&mut self, a: Value, b: Value) -> (Value, Value) {
@@ -615,7 +615,7 @@ impl Builder for Cl<'_> {
     }
 
     fn icmp_imm(&mut self, cc: IntCC, a: Value, imm: i64) -> Value {
-        self.fb.ins().icmp_imm(cl_intcc(cc), a, imm)
+        self.fb.ins().icmp_imm_s(cl_intcc(cc), a, imm)
     }
 
     fn fcmp(&mut self, cc: FloatCC, a: Value, b: Value) -> Value {
@@ -643,7 +643,7 @@ impl Builder for Cl<'_> {
     }
 
     fn bitcast(&mut self, ty: Ty, a: Value) -> Value {
-        self.fb.ins().bitcast(cl_type(ty), MemFlags::new(), a)
+        self.fb.ins().bitcast(cl_type(ty), MemFlagsData::new(), a)
     }
 
     fn uextend(&mut self, ty: Ty, a: Value) -> Value {
@@ -659,29 +659,33 @@ impl Builder for Cl<'_> {
     }
 
     fn load(&mut self, ty: Ty, p: Value, off: i32) -> Value {
-        self.fb.ins().load(cl_type(ty), MemFlags::trusted(), p, off)
+        self.fb
+            .ins()
+            .load(cl_type(ty), MemFlagsData::trusted(), p, off)
     }
 
     fn uload8(&mut self, p: Value, off: i32) -> Value {
         self.fb
             .ins()
-            .uload8(types::I64, MemFlags::trusted(), p, off)
+            .uload8(types::I64, MemFlagsData::trusted(), p, off)
     }
 
     fn uload32(&mut self, p: Value, off: i32) -> Value {
-        self.fb.ins().uload32(MemFlags::trusted(), p, off)
+        self.fb.ins().uload32(MemFlagsData::trusted(), p, off)
     }
 
     fn store(&mut self, v: Value, p: Value, off: i32) {
-        self.fb.ins().store(MemFlags::trusted(), v, p, off);
+        self.fb.ins().store(MemFlagsData::trusted(), v, p, off);
     }
 
     fn jump(&mut self, block: Block, args: &[Value]) {
-        self.fb.ins().jump(block, args);
+        self.fb.ins().jump(block, &block_args(args));
     }
 
     fn brif(&mut self, c: Value, then: Block, then_args: &[Value], els: Block, els_args: &[Value]) {
-        self.fb.ins().brif(c, then, then_args, els, els_args);
+        self.fb
+            .ins()
+            .brif(c, then, &block_args(then_args), els, &block_args(els_args));
     }
 
     fn return_(&mut self, vals: &[Value]) {
