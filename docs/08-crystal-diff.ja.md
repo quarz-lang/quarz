@@ -2,11 +2,11 @@
 
 Crystal は Quarz に最も近い言語です。Ruby の構文を持つ、静的型付けのコンパイル言語です。このページは、Crystal を知っている人が最初に気づく違いをまとめたものです。表面の大部分は共通で、違うのは、型を書く必要がある場所、可変性、メモリ管理と並行処理の仕組み、コンパイル時に変えられるものの範囲です。
 
-## そのまま通じるもの
+## 共通点
 
 `def ... end`、`class`/`module`、`include`/`extend`、`abstract class`/`abstract def`(継承・include した抽象メソッドの実装はどちらでも検査される)、単一継承、`super`、ブロックと `yield`、`->(x) { }` の手続き、`case/when` と `case/in`、`begin/rescue/ensure`、`raise`、文字列補間とヒアドキュメント、`require`、`private`/`protected`、演算子メソッド、合併型と `T?`(`T | Nil`)、`if x`・`x.nil?`・`is_a?`・`case/in` による絞り込み、`as`/`as?`(検査付きのキャスト)、型引数を持つジェネリクス、名前でも渡せる位置引数と `*` の後のキーワード専用引数、フィールドへの代入を兼ねる `def initialize(@x: T)`、そして `nil` を許さない型のフィールドを `initialize` がすべての経路で代入しなければエラーになること。文字列はどちらでも不変で、どちらも `String.build { |b| b << ... }` で組み立てます(どちらでも `String::Builder` です。Crystal のものは `IO` でもあるので、`print` などのメソッドや `to_s(io)` がそこに書き込めます)。
 
-## 変わるもの
+## 違い
 
 | 項目 | Crystal | Quarz |
 |---|---|---|
@@ -40,7 +40,7 @@ Crystal は Quarz に最も近い言語です。Ruby の構文を持つ、静的
 | C との連携 | `lib LibC; fun strlen(s : UInt8*) : SizeT; end` | `extern "C"; def strlen(s: CString) -> SizeT; end` |
 | プログラムの実行 | コンパイルする(`crystal run` も先にコンパイルする)。`crystal i` は実験的なインタプリタで、それを含めてビルドした Crystal でだけ使える | `quarz run` は解釈実行する。`quarz build` は LLVM か Cranelift でコンパイルする |
 
-## Quarz で加わるもの
+## 追加機能
 
 - `data`、代数的な `enum`、`var`、`override`、`extension`/`using`
 - 不変なコレクションと、それを組み立てる可変な Builder(`Array::Builder`、`Hash::Builder`、`Set::Builder`。`Array.build { |b| b << x }` は不変な配列を返す)。Crystal の `Array.build(capacity) { |buffer| ... }` は別物の低水準 API で、生のポインタのバッファに書き込み、書いた要素数を返す

@@ -2,11 +2,11 @@
 
 Ruby を知っている人が Quarz を書き始めるときに最初に引っかかる点をまとめます。
 
-## そのまま使えるもの
+## 共通点
 
 `def ... end`、`class`/`module`、`include`/`extend`、`attr_reader` など、ブロック(`do ... end`/`{ }`)、`yield`、`&block`、`&:sym`、`if`/`unless`/`while`/`until` と修飾子、`case/when`、`case/in`(パターンマッチ)、`begin/rescue/ensure/retry`、`raise`、文字列補間、ヒアドキュメント、`%w[]`/`%i[]`、シンボル、範囲、正規表現リテラル、`&.`、`||=`、多重代入、`*splat`、キーワード引数の呼び出し構文、`private`/`protected`、`self.` メソッド、演算子定義、`<=>` と `Comparable`、`Enumerable`、`super`、`alias`、`__FILE__`/`__LINE__`、`ARGV`、`ENV`、`puts`/`p`/`pp`。
 
-## 変わるもの
+## 違い
 
 | 項目 | Ruby | Quarz |
 |---|---|---|
@@ -45,7 +45,7 @@ Ruby を知っている人が Quarz を書き始めるときに最初に引っ�
 | 同名メソッドの再定義 | 上書き | 引数型による多重定義。同じシグネチャの再定義はエラー |
 | 例外 `rescue => e` | `StandardError` | 同じ。`Task::Cancelled` は `Exception` 直下なので捕まらない |
 
-## 追加されるもの
+## 追加機能
 
 - 型注釈: `x: Int`、`-> Int`、`T?`、`A | B`、`Array[T]`、`(A) -> B`、`[A, B]`
 - `data`、`enum`、`var`、`abstract`、`override`、`extension`、`using`(キーワード化)、`type`、`extern`
