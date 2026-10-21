@@ -122,6 +122,12 @@ pub trait Builder {
         els_args: &[Self::Value],
     );
     fn return_(&mut self, vals: &[Self::Value]);
+    /// Mark `block` as rarely run (a deoptimization, an error or a stack
+    /// overflow), so that the code generator lays the hot path out and
+    /// allocates its registers first.
+    fn set_cold(&mut self, block: Self::Block);
+    /// The block being filled.
+    fn current_block(&self) -> Self::Block;
 
     /// Call, returning the results.
     fn call(&mut self, f: Self::Func, args: &[Self::Value]) -> Vec<Self::Value>;

@@ -692,6 +692,14 @@ impl Builder for Cl<'_> {
         self.fb.ins().return_(vals);
     }
 
+    fn set_cold(&mut self, block: Block) {
+        self.fb.set_cold_block(block);
+    }
+
+    fn current_block(&self) -> Block {
+        self.fb.current_block().expect("a block is being filled")
+    }
+
     fn call(&mut self, f: FuncRef, args: &[Value]) -> Vec<Value> {
         let inst = self.fb.ins().call(f, args);
         self.fb.inst_results(inst).to_vec()

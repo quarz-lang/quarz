@@ -22,9 +22,22 @@ use quarz_ir::*;
 
 use crate::inline::rewrite_with;
 
-pub fn share_registers(functions: &mut [Function], methods: &[RtMethod]) {
+/// Which registers may share.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Sharing {
+    /// Any two that do not interfere, of the same kind. What the
+    /// interpreter, which fills and empties every register per call,
+    /// gains most from; LLVM too.
+    All,
+    /// Only those that never hold a counted value. Cranelift's code is
+    /// slower when counted values share homes (dispatch +12%, objects +8%
+    /// measured) and no faster when numbers do not.
+    Numbers,
+}
+
+pub fn share_registers(functions: &mut [Function], methods: &[RtMethod], sharing: Sharing) {
     for f in functions.iter_mut() {
-        share_in(f, methods);
+        share_in(f, methods, sharing);
     }
 }
 
@@ -62,7 +75,7 @@ impl Bits {
     }
 }
 
-fn share_in(f: &mut Function, methods: &[RtMethod]) {
+fn share_in(f: &mut Function, methods: &[RtMethod], sharing: Sharing) {
     let n = f.nregs as usize;
     if n <= 1 {
         return;
@@ -233,7 +246,9 @@ fn share_in(f: &mut Function, methods: &[RtMethod]) {
     let mut heap_color: Vec<bool> = Vec::new();
     for r in order {
         let fits = |c: usize, members: &[Bits]| {
-            heap_color[c] == heap[r as usize] && !interf[r as usize].meets(&members[c])
+            heap_color[c] == heap[r as usize]
+                && !(sharing == Sharing::Numbers && heap[r as usize])
+                && !interf[r as usize].meets(&members[c])
         };
         let preferred = partners[r as usize]
             .iter()

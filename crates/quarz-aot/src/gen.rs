@@ -748,6 +748,7 @@ fn emit_frame_setup<B: Builder>(
         let exhausted = b.icmp(IntCC::UnsignedLessThan, sp, limit);
         let overflow = b.create_block();
         let build = b.create_block();
+        b.set_cold(overflow);
         b.brif(exhausted, overflow, &[], build, &[]);
         b.switch_to_block(overflow);
         let status = b.call(h.stack_overflow, &[rt])[0];
@@ -1227,6 +1228,7 @@ impl<B: Builder> Gen<'_, B> {
         let exhausted = self.b.icmp(IntCC::UnsignedLessThan, sp, limit);
         let overflow = self.b.create_block();
         let build = self.b.create_block();
+        self.b.set_cold(overflow);
         self.b.brif(exhausted, overflow, &[], build, &[]);
         self.b.switch_to_block(overflow);
         let status = self.b.call(self.h.stack_overflow, &[self.rt])[0];
@@ -1536,6 +1538,8 @@ impl<B: Builder> Gen<'_, B> {
     /// rest from instruction `index` of `block`, and the function exits
     /// with its status. Emission continues in a fresh (unreachable) block.
     fn deopt(&mut self, block: u32, index: u32) {
+        let here = self.b.current_block();
+        self.b.set_cold(here);
         if self.region[block as usize] {
             self.setup_frame();
         }
@@ -1710,6 +1714,8 @@ impl<B: Builder> Gen<'_, B> {
     /// Branch to `unwind` when a status is not OK.
     fn check(&mut self, status: B::Value, unwind: B::Block) {
         let cont = self.b.create_block();
+        // A status is an exception or a flow leaving the function: rare.
+        self.b.set_cold(unwind);
         self.b.brif(status, unwind, &[status], cont, &[]);
         self.b.switch_to_block(cont);
     }

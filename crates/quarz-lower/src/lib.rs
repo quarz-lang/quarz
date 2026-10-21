@@ -19,6 +19,8 @@ mod inline;
 mod iter;
 pub(crate) mod layout;
 mod regshare;
+
+pub use regshare::Sharing;
 mod rtworld;
 mod sroa;
 
@@ -208,6 +210,13 @@ fn overridden_methods(world: &World) -> HashSet<(ClassId, String)> {
 /// Lower a whole checked program into a module. `files` are the source
 /// files by index (0 = the prelude), used for line numbers.
 pub fn lower_checked(checked: &Checked, files: &[SourceFile]) -> Module {
+    lower_checked_with(checked, files, Sharing::All)
+}
+
+/// `lower_checked`, sharing registers as `sharing` says (a compiled
+/// back end may prefer otherwise; the QIR it embeds is the same it
+/// compiles, so the interpreter it falls back to agrees on registers).
+pub fn lower_checked_with(checked: &Checked, files: &[SourceFile], sharing: Sharing) -> Module {
     let mut lw = Lowerer::new();
     let max_file = checked.units.iter().map(|u| u.file).max().unwrap_or(0);
     let mut all: Vec<SourceFile> = files.to_vec();
@@ -237,7 +246,7 @@ pub fn lower_checked(checked: &Checked, files: &[SourceFile]) -> Module {
     inline::inline_calls(&mut functions, &delta.world.methods, 2);
     sroa::scalar_replace(&mut functions, &delta.world.methods, &delta.world.classes);
     copyprop::propagate_copies(&mut functions);
-    regshare::share_registers(&mut functions, &delta.world.methods);
+    regshare::share_registers(&mut functions, &delta.world.methods, sharing);
     // Last: where values move rather than copy, for every way the
     // functions run.
     let in_place: Vec<bool> = delta

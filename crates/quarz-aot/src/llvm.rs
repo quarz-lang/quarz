@@ -37,6 +37,9 @@ struct Val {
     ty: Ty,
 }
 
+/// Where a conditional branch's weights go (see `Ll::branch_weights`).
+const PROF_MARK: &str = "\u{1}prof:";
+
 struct BlockData {
     /// The parameters: the values phis define.
     params: Vec<(u32, Ty)>,
@@ -44,6 +47,8 @@ struct BlockData {
     incoming: Vec<(u32, Vec<u32>)>,
     body: String,
     terminated: bool,
+    /// Rarely run: a branch to it from a hot block gets branch weights.
+    cold: bool,
 }
 
 /// The builder of one function, emitting text.
@@ -319,6 +324,33 @@ impl<'a> Ll<'a> {
         (r, o)
     }
 
+    /// `body` with each conditional branch's mark replaced by its weights:
+    /// `!prof` when exactly one side is cold (the module's nodes !6 and !7).
+    fn branch_weights(&self, body: &str) -> String {
+        let mut out = String::with_capacity(body.len());
+        let mut rest = body;
+        while let Some(at) = rest.find(PROF_MARK) {
+            out.push_str(&rest[..at]);
+            let tail = &rest[at + PROF_MARK.len()..];
+            let end = tail.find(';').unwrap_or(tail.len());
+            let (t, e) = tail[..end].split_once(',').unwrap_or(("0", "0"));
+            let cold = |b: &str| {
+                b.parse::<usize>()
+                    .ok()
+                    .and_then(|b| self.blocks.get(b))
+                    .is_some_and(|b| b.cold)
+            };
+            match (cold(t), cold(e)) {
+                (true, false) => out.push_str(", !prof !6"),
+                (false, true) => out.push_str(", !prof !7"),
+                _ => {}
+            }
+            rest = &tail[(end + 1).min(tail.len())..];
+        }
+        out.push_str(rest);
+        out
+    }
+
     /// The text of the function: `define`, the allocas, the blocks with
     /// their phis, and the function's metadata nodes.
     fn finish(mut self, name: &str, attrs: &str, params: &[Ty]) -> (String, Vec<String>) {
@@ -360,7 +392,8 @@ impl<'a> Ll<'a> {
                     .collect();
                 let _ = writeln!(out, "  {text} = phi {t} {}", entries.join(", "));
             }
-            out.push_str(&self.blocks[i].body);
+            let body = self.blocks[i].body.clone();
+            out.push_str(&self.branch_weights(&body));
             if !self.blocks[i].terminated {
                 out.push_str("  unreachable\n");
             }
@@ -402,6 +435,7 @@ impl Builder for Ll<'_> {
             incoming: Vec::new(),
             body: String::new(),
             terminated: false,
+            cold: false,
         });
         (self.blocks.len() - 1) as u32
     }
@@ -763,8 +797,20 @@ impl Builder for Ll<'_> {
                 .collect();
             self.blocks[block as usize].incoming.push((cur, args));
         }
-        self.emit(&format!("br i1 {c1}, label %b{then}, label %b{els}"));
+        // The weights, if one side is cold, are decided when the function
+        // is written out (a block is marked as it is filled).
+        self.emit(&format!(
+            "br i1 {c1}, label %b{then}, label %b{els}{PROF_MARK}{then},{els};"
+        ));
         self.blocks[cur as usize].terminated = true;
+    }
+
+    fn set_cold(&mut self, block: u32) {
+        self.blocks[block as usize].cold = true;
+    }
+
+    fn current_block(&self) -> u32 {
+        self.cur
     }
 
     fn return_(&mut self, vals: &[u32]) {
@@ -1056,7 +1102,8 @@ fn emit(module: &Module, opaque: bool) -> Result<String, String> {
     // Metadata: !0 the unit, !1 and !2 the flags, !3 the file, !4 and !5
     // the (empty) subroutine type; functions take ids from !6 on.
     let mut meta: Vec<String> = Vec::new();
-    let mut meta_next: u32 = 6;
+    // !0-!5 describe the unit, !6 and !7 are the branch weights.
+    let mut meta_next: u32 = 8;
     let methods = &module.world.methods;
     let mut text = String::new();
     for (i, f) in module.functions.iter().enumerate() {
@@ -1197,7 +1244,7 @@ fn emit(module: &Module, opaque: bool) -> Result<String, String> {
     );
     let _ = writeln!(
         out,
-        "\n!llvm.dbg.cu = !{{!0}}\n!llvm.module.flags = !{{!1, !2}}\n!0 = distinct !DICompileUnit(language: DW_LANG_C, file: !3, producer: \"quarz\", isOptimized: true, runtimeVersion: 0, emissionKind: LineTablesOnly)\n!1 = !{{i32 2, !\"Debug Info Version\", i32 3}}\n!2 = !{{i32 2, !\"Dwarf Version\", i32 4}}\n!3 = !DIFile(filename: \"quarz\", directory: \"/\")\n!4 = !DISubroutineType(types: !5)\n!5 = !{{}}"
+        "\n!llvm.dbg.cu = !{{!0}}\n!llvm.module.flags = !{{!1, !2}}\n!0 = distinct !DICompileUnit(language: DW_LANG_C, file: !3, producer: \"quarz\", isOptimized: true, runtimeVersion: 0, emissionKind: LineTablesOnly)\n!1 = !{{i32 2, !\"Debug Info Version\", i32 3}}\n!2 = !{{i32 2, !\"Dwarf Version\", i32 4}}\n!3 = !DIFile(filename: \"quarz\", directory: \"/\")\n!4 = !DISubroutineType(types: !5)\n!5 = !{{}}\n!6 = !{{!\"branch_weights\", i32 1, i32 2000}}\n!7 = !{{!\"branch_weights\", i32 2000, i32 1}}"
     );
     for m in &meta {
         out.push_str(m);

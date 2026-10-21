@@ -21,7 +21,11 @@ pub fn build(
     output: &std::path::Path,
     backend: quarz_aot::Backend,
 ) -> Result<(), String> {
-    let module = quarz_lower::lower_checked(&checked, files);
+    let sharing = match backend {
+        quarz_aot::Backend::Llvm => quarz_lower::Sharing::All,
+        quarz_aot::Backend::Cranelift => quarz_lower::Sharing::Numbers,
+    };
+    let module = quarz_lower::lower_checked_with(&checked, files, sharing);
     quarz_aot::build(&module, output, backend)
 }
 
