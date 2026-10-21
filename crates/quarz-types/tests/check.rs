@@ -442,6 +442,26 @@ fn class_methods_and_self() {
 }
 
 #[test]
+fn not_on_unions() {
+    let defs = "class Cond\n  def !() -> String = \"c\"\nend\nclass Flag\n  def !() -> String = \"f\"\nend\n";
+    ok(&format!(
+        "{defs}def f(x: Cond | Flag) -> String = !x\nputs f(Cond.new)"
+    ));
+    ok(&format!("{defs}def f(x: Int | Nil) -> Bool = !x"));
+    ok(&format!(
+        "{defs}def f(u: Cond | Nil) -> String = u.nil? ? \"nil\" : !u"
+    ));
+    err(
+        &format!("{defs}def f(u: Cond | Nil) = !u"),
+        "`!` on Cond? is ambiguous: Cond define(s) `!`, while Nil would be tested for truthiness",
+    );
+    err(
+        &format!("{defs}def f(u: Cond | Nil)\n  if !u then 1 else 2 end\nend"),
+        "is ambiguous",
+    );
+}
+
+#[test]
 fn concurrency_rules() {
     ok("t = spawn { 1 + 1 }\nputs t.await");
     ok("x = 1\nt = spawn { x + 1 }\nputs t.await");

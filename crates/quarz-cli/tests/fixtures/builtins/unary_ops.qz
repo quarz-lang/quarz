@@ -28,3 +28,9 @@ y: Int? = nil
 unless !y.nil?
   p "nil stays nil"
 end
+# On a union, each value calls its own `!` (when every member has one).
+class Mark
+  def !() -> String = "not mark"
+end
+def negate(x: Bar | Mark) = !x
+p negate(Bar.new), negate(Mark.new)

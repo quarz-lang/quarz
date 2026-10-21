@@ -4112,9 +4112,40 @@ impl Checker {
 
     /// `!x` where `x`'s type defines a method `!`: resolve the call and
     /// return its type (`None` for the built-in negation).
+    /// `!x` with a type of its own `!` (decided by the static type, so
+    /// that every other `!` is a truthiness test with no check at run
+    /// time): the call's type, or `None` for the truthiness test. A union
+    /// uses the members' `!` when every member has one, the test when
+    /// none has, and is an error when only some have (the same value
+    /// would answer differently depending on its static type).
     fn not_method(&mut self, expr: &Expr, operand: &Expr, t: &Type) -> Option<Type> {
         let t = self.resolve(t);
-        if self.world.lookup_methods(&t, "!").is_empty() {
+        let has_not = |c: &Self, m: &Type| !c.world.lookup_methods(m, "!").is_empty();
+        if let Type::Union(members) = &t {
+            let (with, without): (Vec<Type>, Vec<Type>) =
+                members.iter().cloned().partition(|m| has_not(self, m));
+            if with.is_empty() {
+                return None;
+            }
+            if !without.is_empty() {
+                let names = |ts: &[Type]| {
+                    ts.iter()
+                        .map(|t| self.name(t))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                };
+                self.error(
+                    format!(
+                        "`!` on {} is ambiguous: {} define(s) `!`, while {} would be tested for truthiness; narrow the operand first",
+                        self.name(&t),
+                        names(&with),
+                        names(&without)
+                    ),
+                    expr.span,
+                );
+                return None;
+            }
+        } else if !has_not(self, &t) {
             return None;
         }
         let call = Call {

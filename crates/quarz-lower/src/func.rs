@@ -1034,11 +1034,17 @@ impl<'a> FnBuilder<'a> {
             Not(a) => {
                 let v = self.expr(a);
                 let dst = self.reg();
-                // A type with its own `!` is called.
+                // A type with its own `!` is called (by name when the
+                // members of a union have different ones).
                 if let Some(CallTarget::Method { method }) = self.out.calls.get(&e.id) {
+                    let kind = if self.out.dynamic_calls.contains(&e.id) {
+                        CallKind::Send("!".to_string())
+                    } else {
+                        CallKind::Method(*method)
+                    };
                     self.emit(Inst::Call {
                         dst,
-                        kind: CallKind::Method(*method),
+                        kind,
                         recv: Some(v),
                         args: vec![],
                         splat: false,

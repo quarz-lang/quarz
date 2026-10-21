@@ -13,3 +13,5 @@ false
 4
 custom in a condition
 "nil stays nil"
+"not bar"
+"not mark"
