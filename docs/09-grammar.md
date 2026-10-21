@@ -1,6 +1,6 @@
 # Grammar Sketch
 
-日本語版: [08-grammar.ja.md](08-grammar.ja.md)
+日本語版: [09-grammar.ja.md](09-grammar.ja.md)
 
 This shows the parts that differ from Ruby (declarations, types, parameters, patterns) in EBNF style. The grammar of expressions, statements and literals follows Ruby 3.x, and only the differences are written here. `NEWLINE` and `;` are statement separators and are omitted under the same rules as in Ruby. This is a draft, on the assumption that the full grammar will be rewritten in Lrama format at implementation time.
 

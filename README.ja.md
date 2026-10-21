@@ -77,7 +77,8 @@ puts counter.value        # => 100
 | [docs/05-execution.md](docs/05-execution.ja.md) | インタプリタと AOT コンパイラ、QIR、分割コンパイル、参照カウントによるメモリ管理、ブートストラップ計画 |
 | [docs/06-stdlib.md](docs/06-stdlib.ja.md) | 標準ライブラリ。Ruby の組み込みクラスとの対応 |
 | [docs/07-ruby-diff.md](docs/07-ruby-diff.ja.md) | Ruby からの変更点 早見表 |
-| [docs/08-grammar.md](docs/08-grammar.ja.md) | 文法スケッチ(EBNF) |
+| [docs/08-crystal-diff.md](docs/08-crystal-diff.ja.md) | Crystal との違い 早見表 |
+| [docs/09-grammar.md](docs/09-grammar.ja.md) | 文法スケッチ(EBNF) |
 | [examples/](examples/) | サンプルコード(`hello`、`shapes`、`wordcount`、`pipeline`、`bank_actor`、`extension`、`builder`) |
 
 ## 設計上の主な判断

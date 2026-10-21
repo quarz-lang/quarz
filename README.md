@@ -79,7 +79,8 @@ puts counter.value        # => 100
 | [docs/05-execution.md](docs/05-execution.md) | Interpreter and AOT compiler, QIR, separate compilation, reference-counted memory management, implementation plan |
 | [docs/06-stdlib.md](docs/06-stdlib.md) | Standard library. Correspondence with Ruby's built-in classes |
 | [docs/07-ruby-diff.md](docs/07-ruby-diff.md) | Quick reference of changes from Ruby |
-| [docs/08-grammar.md](docs/08-grammar.md) | Grammar sketch (EBNF) |
+| [docs/08-crystal-diff.md](docs/08-crystal-diff.md) | Quick reference of differences from Crystal |
+| [docs/09-grammar.md](docs/09-grammar.md) | Grammar sketch (EBNF) |
 | [examples/](examples/) | Sample code (`hello`, `shapes`, `wordcount`, `pipeline`, `bank_actor`, `extension`, `builder`) |
 
 ## Main design decisions
