@@ -26,7 +26,8 @@ pub fn devirtualize(functions: &mut [Function], world: &RtWorld) {
 
 /// The classes a method call on `owner` may dispatch to, each with the
 /// method it runs; `None` when the site is better left alone.
-fn receivers(world: &RtWorld, m: &RtMethod) -> Option<Vec<(ClassId, MethodId)>> {
+fn receivers(world: &RtWorld, mid: MethodId) -> Option<Vec<(ClassId, MethodId)>> {
+    let m = &world.methods[mid as usize];
     let mut out = Vec::new();
     for (cid, c) in world.classes.iter().enumerate() {
         let cid = cid as ClassId;
@@ -40,7 +41,7 @@ fn receivers(world: &RtWorld, m: &RtMethod) -> Option<Vec<(ClassId, MethodId)>> 
         if cid != m.owner && !c.ancestors.contains(&m.owner) {
             continue;
         }
-        if let Some(impl_) = resolve(world, cid, m)? {
+        if let Some(impl_) = resolve(world, cid, mid)? {
             out.push((cid, impl_));
         }
         if out.len() > MAX_CLASSES {
@@ -53,7 +54,8 @@ fn receivers(world: &RtWorld, m: &RtMethod) -> Option<Vec<(ClassId, MethodId)>> 
 /// The method class `cid` runs for `m`: `Ok(None)` when it has none
 /// (an abstract one, so the class has no instances), `Err` when the
 /// answer is not simple (an extension, overloads, a native).
-fn resolve(world: &RtWorld, cid: ClassId, m: &RtMethod) -> Option<Option<MethodId>> {
+fn resolve(world: &RtWorld, cid: ClassId, mid: MethodId) -> Option<Option<MethodId>> {
+    let m = &world.methods[mid as usize];
     let class = &world.classes[cid as usize];
     let chain: Vec<ClassId> = if class.ancestors.first() == Some(&cid) {
         class.ancestors.clone()
@@ -84,6 +86,13 @@ fn resolve(world: &RtWorld, cid: ClassId, m: &RtMethod) -> Option<Option<MethodI
                     && c.params
                         .iter()
                         .all(|p| p.kind == RtParamKind::Positional && !p.has_default)
+                    // The method itself or an override of it: a method of
+                    // the same name that accepts less is an overload.
+                    && (*id == mid
+                        || c.overrides.contains(&mid)
+                        || c.params.iter().zip(&m.params).all(|(p, q)| {
+                            p.ty == q.ty || p.ty.is_none() || q.ty.is_none()
+                        }))
             })
             .collect();
         let [one] = matching.as_slice() else {
@@ -144,7 +153,7 @@ fn find_site(f: &Function, world: &RtWorld, done: &HashSet<usize>) -> Option<Sit
             if !virtual_ {
                 continue;
             }
-            let Some(receivers) = receivers(world, m) else {
+            let Some(receivers) = receivers(world, *mid) else {
                 continue;
             };
             return Some(Site {

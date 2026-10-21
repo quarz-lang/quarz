@@ -1055,6 +1055,12 @@ pub struct RtMethod {
     /// The declared return type's name, when known.
     #[serde(default)]
     pub ret: Option<String>,
+    /// Methods of ancestors this one overrides although their parameter
+    /// types are written differently (`put(x: T)` of `Box[T]` for
+    /// `put(x: Int)` of `IntBox < Box[Int]`); an exact signature match
+    /// needs no entry.
+    #[serde(default)]
+    pub overrides: Vec<MethodId>,
 }
 
 impl RtMethod {
@@ -1227,6 +1233,7 @@ impl Droppable for RtMethod {
             fast_op: None,
             file: 0,
             ret: None,
+            overrides: Vec::new(),
         }
     }
 }

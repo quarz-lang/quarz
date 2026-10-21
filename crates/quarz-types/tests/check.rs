@@ -395,6 +395,24 @@ fn tuple_inference() {
 }
 
 #[test]
+fn self_type_positions() {
+    // `self` (the type) where the method hands a value out is fine.
+    ok("module M\n  def ok1(&: (self) -> Nil) -> self = self\n  def ok2 -> Array[self] = [self]\n  def ok3(f: (self) -> Int) -> Int = f.call(self)\nend");
+    // Where the caller hands one in, a subclass would get its parent's.
+    for src in [
+        "module M\n  abstract def cmp(other: self) -> Int\nend",
+        "module M\n  def a(&: () -> self) -> Nil = nil\nend",
+        "module M\n  def b(x: Array[self]) -> Nil = nil\nend",
+        "class C\n  def c(f: ((self) -> Int) -> Int) -> Int = 0\nend",
+    ] {
+        err(
+            src,
+            "`self` cannot be the type of a value the caller passes in",
+        );
+    }
+}
+
+#[test]
 fn concurrency_rules() {
     ok("t = spawn { 1 + 1 }\nputs t.await");
     ok("x = 1\nt = spawn { x + 1 }\nputs t.await");

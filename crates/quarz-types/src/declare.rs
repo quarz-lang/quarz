@@ -1222,6 +1222,12 @@ impl<'ast> Declarer<'ast> {
         let mut block = None;
         let mut block_usings: Vec<ExtensionId> = Vec::new();
         for p in &def.params.list {
+            if let Some(span) = p.ty.as_ref().and_then(|t| self_against_variance(t, false)) {
+                self.error(
+                    "`self` cannot be the type of a value the caller passes in (a parameter, or a block's result): a subclass would receive values of its parent; use a type parameter instead (`module M[T]` with `other: T`)",
+                    span,
+                );
+            }
             if p.kind == ParamKind::Block {
                 for path in &p.usings {
                     if let Some(found) = self.resolve_using(scope.namespace, path, p.span) {
@@ -1540,5 +1546,31 @@ impl<'ast> Declarer<'ast> {
                 }
             }
         }
+    }
+}
+
+/// Where `self` (the type) appears in a contravariant position of `t`,
+/// `t` itself being in a covariant position when `covariant`: a method
+/// parameter is contravariant, the parameters of a procedure type flip
+/// the position and its result keeps it. `&: (self) -> Nil` (the method
+/// hands `self` to the block) is fine; `other: self` and `&: () -> self`
+/// (the caller hands one in) are not.
+fn self_against_variance(t: &TypeExpr, covariant: bool) -> Option<Span> {
+    match &t.kind {
+        TypeExprKind::SelfType => (!covariant).then_some(t.span),
+        TypeExprKind::Named { args, .. } => args
+            .iter()
+            .find_map(|a| self_against_variance(a, covariant)),
+        TypeExprKind::Nilable(inner) => self_against_variance(inner, covariant),
+        TypeExprKind::Union(ts) | TypeExprKind::Tuple(ts) => {
+            ts.iter().find_map(|a| self_against_variance(a, covariant))
+        }
+        TypeExprKind::Proc { recv, params, ret } => recv
+            .iter()
+            .map(|r| &**r)
+            .chain(params.iter())
+            .find_map(|a| self_against_variance(a, !covariant))
+            .or_else(|| self_against_variance(ret, covariant)),
+        TypeExprKind::Nothing => None,
     }
 }

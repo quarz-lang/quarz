@@ -1267,10 +1267,16 @@ impl Interp {
         }
         let m = self.world.method(mid);
         let (min, max) = m.positional_arity();
+        // A class method of the same name that accepts less is an
+        // overload, not an override.
         let accepts = |c: MethodId| {
             let cm = self.world.method(c);
             let (cmin, cmax) = cm.positional_arity();
-            !cm.is_abstract && cm.has_block == m.has_block && cmin <= max && cmax >= min
+            !cm.is_abstract
+                && cm.has_block == m.has_block
+                && cmin <= max
+                && cmax >= min
+                && (c == mid || self.same_signature(c, mid) || cm.overrides.contains(&mid))
         };
         let mut found = None;
         let mut cur = Some(cid);
@@ -1334,15 +1340,15 @@ impl Interp {
             if let Some(exact) = candidates.iter().find(|c| self.same_signature(**c, mid)) {
                 return Some(*exact);
             }
-            if m.overloaded {
-                // An override of one of the other overloads.
-                continue;
-            }
-            return candidates
+            // An override whose parameter types are written differently
+            // (instantiated generics, wider types). A method of the same
+            // name that accepts less is an overload: keep looking.
+            if let Some(o) = candidates
                 .iter()
-                .find(|c| self.world.method(**c).positional_arity() == (min, max))
-                .or(candidates.first())
-                .copied();
+                .find(|c| self.world.method(**c).overrides.contains(&mid))
+            {
+                return Some(*o);
+            }
         }
         None
     }

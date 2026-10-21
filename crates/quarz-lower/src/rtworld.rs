@@ -190,6 +190,7 @@ pub fn build(world: &World, lw: &Lowerer, file_names: Vec<String>) -> RtWorld {
                     },
                     _ => None,
                 },
+                overrides: overridden_methods(world, m),
             }
         })
         .collect();
@@ -282,4 +283,58 @@ pub fn build(world: &World, lw: &Lowerer, file_names: Vec<String>) -> RtWorld {
         builtin,
         file_names,
     }
+}
+
+/// The methods of `m`'s ancestors that `m` overrides: same name, kind of
+/// method, parameters (plus optional ones) and block, with each parameter
+/// accepting what the ancestor's does (its types instantiated for `m`'s class). A method of
+/// the same name that narrows a parameter (`cmp(other: W)` in `W < V`
+/// next to `cmp(other: V)`) is an overload, not an override.
+fn overridden_methods(world: &World, m: &types::MethodInfo) -> Vec<MethodId> {
+    let owner = world.class(m.owner);
+    let own_args: Vec<Type> = owner
+        .type_params
+        .iter()
+        .map(|tp| Type::Param(tp.id))
+        .collect();
+    let mut out = Vec::new();
+    for (anc, anc_args) in world.ancestors(m.owner, &own_args) {
+        if anc == m.owner {
+            continue;
+        }
+        let ac = world.class(anc);
+        let table = if m.singleton {
+            &ac.singleton_methods
+        } else {
+            &ac.methods
+        };
+        let Some(ids) = table.get(&m.name) else {
+            continue;
+        };
+        let subst: std::collections::HashMap<_, _> = ac
+            .type_params
+            .iter()
+            .map(|tp| tp.id)
+            .zip(anc_args.iter().cloned())
+            .collect();
+        for &pid in ids {
+            let pm = world.method(pid);
+            // The override may add parameters the parent's callers never
+            // pass: with defaults, or rest parameters.
+            let fits = pm.params.len() <= m.params.len()
+                && pm.block.is_some() == m.block.is_some()
+                && pm.params.iter().zip(&m.params).all(|(pp, cp)| {
+                    let pt = pp.ty.subst(&subst);
+                    pp.kind == cp.kind && (pt == cp.ty || world.is_subtype(&pt, &cp.ty))
+                })
+                && m.params[pm.params.len()..].iter().all(|cp| {
+                    cp.default.is_some()
+                        || matches!(cp.kind, ParamKind::Rest | ParamKind::KeywordRest)
+                });
+            if fits {
+                out.push(pid);
+            }
+        }
+    }
+    out
 }

@@ -1,0 +1,27 @@
+# A method of the same name that accepts less is an overload, not an
+# override: a call chosen as V#cmp(V) runs V#cmp on a W.
+class V
+  def cmp(other: V) -> Int = 0
+end
+class W < V
+  def cmp(other: W) -> Int = 7
+end
+def through_v(v: V) -> Int = v.cmp(V.new)
+p through_v(W.new), W.new.cmp(W.new), W.new.cmp(V.new)
+
+# Overrides whose parameter types are written differently still are.
+class Box[T]
+  def put(x: T) -> String = "box"
+end
+class IntBox < Box[Int]
+  def put(x: Int) -> String = "intbox"
+end
+class Wide
+  def take(x: Int) -> String = "wide"
+end
+class Wider < Wide
+  def take(x: Int | String) -> String = "wider"
+end
+def put_one(b: Box[Int]) -> String = b.put(1)
+def take_one(w: Wide) -> String = w.take(1)
+p put_one(IntBox.new), put_one(Box[Int].new), take_one(Wider.new), take_one(Wide.new)
