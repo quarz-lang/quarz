@@ -16,8 +16,13 @@ path; Crystal and Spinel are used when found (`CRYSTAL`, with
 
 ```sh
 cargo build --release
-PATH="$HOME/go-sdk/bin:$PATH" RUNS=10 taskset -c 3 bench/compare/run.sh
+RUNS=10 taskset -c 3 bench/compare/run.sh
 ```
+
+The development container has all of them at the versions below (Go
+from go.dev, Crystal from its GitHub release with the glibc shim in
+`CRYSTAL_LINK_FLAGS`, Spinel built at its commit). Elsewhere, put them
+on the path or name them as above.
 
 ## Results (2026-10-22, Quarz at `2a5c6d4`)
 
