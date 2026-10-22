@@ -234,6 +234,19 @@ fn walk_hash_pattern(hp: &HashPattern, span: Span, nest: Nest, cx: &mut Cx) {
     }
 }
 
+/// The right operand of `a && b` (or the value of `x ||= v`): a block when
+/// the checker made the expression a call of the type's own operator.
+fn walk_operand(e: &Expr, operand: &Expr, nest: Nest, cx: &mut Cx) {
+    match cx.out.logical_calls.get(&e.id).map(|c| &c.kind) {
+        Some(ExprKind::Call(call)) => {
+            if let Some(b) = &call.block {
+                walk_block(b, nest, cx, false);
+            }
+        }
+        _ => walk_expr(operand, nest, cx),
+    }
+}
+
 pub fn walk_expr(e: &Expr, nest: Nest, cx: &mut Cx) {
     use ExprKind::*;
     match &e.kind {
@@ -309,9 +322,13 @@ pub fn walk_expr(e: &Expr, nest: Nest, cx: &mut Cx) {
                 walk_block(b, nest, cx, false);
             }
         }
-        Assign { target, value } | OpAssign { target, value, .. } => {
+        Assign { target, value } => {
             walk_lvalue(target, nest, cx);
             walk_expr(value, nest, cx);
+        }
+        OpAssign { target, value, .. } => {
+            walk_lvalue(target, nest, cx);
+            walk_operand(e, value, nest, cx);
         }
         MultiAssign { targets, value } => {
             walk_multi(targets, nest, cx);
@@ -323,7 +340,7 @@ pub fn walk_expr(e: &Expr, nest: Nest, cx: &mut Cx) {
         }
         And(a, b) | Or(a, b) => {
             walk_expr(a, nest, cx);
-            walk_expr(b, nest, cx);
+            walk_operand(e, b, nest, cx);
         }
         Not(a) => walk_expr(a, nest, cx),
         If { cond, then, els } => {

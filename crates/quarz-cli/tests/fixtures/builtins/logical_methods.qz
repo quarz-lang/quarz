@@ -1,0 +1,61 @@
+# A query DSL: `&&` and `||` build an expression instead of testing truth.
+abstract class Cond
+  abstract def to_s -> String
+  def &&(&rhs: () -> Cond) -> Cond = Both.new(self, rhs.call)
+  def ||(&rhs: () -> Cond) -> Cond = Either.new(self, rhs.call)
+end
+class Eq < Cond
+  @col: String
+  @val: Int
+  def initialize(@col: String, @val: Int); end
+  def to_s -> String = "#{@col} = #{@val}"
+end
+class Both < Cond
+  @l: Cond
+  @r: Cond
+  def initialize(@l: Cond, @r: Cond); end
+  def to_s -> String = "(#{@l} AND #{@r})"
+end
+class Either < Cond
+  @l: Cond
+  @r: Cond
+  def initialize(@l: Cond, @r: Cond); end
+  def to_s -> String = "(#{@l} OR #{@r})"
+end
+def col(name: String, v: Int) -> Cond = Eq.new(name, v)
+
+q = col("a", 1) && col("b", 2) || col("c", 3)
+puts q
+r = (col("x", 1) and col("y", 2))
+puts r
+q ||= col("d", 4)
+puts q
+puts q.&&() { col("e", 5) }
+
+# A lazy flag: `&&` yields only when it is on.
+class Flag
+  @on: Bool
+  def initialize(@on: Bool); end
+  def &&(&rhs: () -> Int) -> Int = @on ? rhs.call : 0
+end
+def side(n: Int) -> Int
+  puts "evaluated #{n}"
+  n
+end
+p(Flag.new(false) && side(1))
+p(Flag.new(true) && side(2))
+
+# Bool, nil and unions keep the built-in short circuit.
+name: String? = nil
+p(name && name.size)
+name = "abc"
+p(name && name.size)
+p(true && false || 1 > 0)
+
+# The right operand is a block: it reads the method's locals and parameters.
+def lazy(on: Bool, n: Int) -> Int
+  m = n * 10
+  Flag.new(on) && m + n
+end
+p lazy(true, 1)
+p lazy(false, 1)

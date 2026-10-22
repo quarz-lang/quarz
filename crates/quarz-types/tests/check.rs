@@ -555,6 +555,36 @@ fn not_on_unions() {
 }
 
 #[test]
+fn logical_operator_methods() {
+    let defs = "class Cond\n  def &&(&rhs: () -> Cond) -> String = \"and\"\n  def ||(&rhs: () -> Cond) -> String = \"or\"\nend\n";
+    // On a type that defines it, `a && b` is the call `a.&&() { b }`.
+    ok(&format!("{defs}def f(c: Cond) -> String = c && Cond.new"));
+    ok(&format!("{defs}def f(c: Cond) -> String = c or Cond.new"));
+    ok(&format!("{defs}def f(c: Cond) -> String = c.&&() {{ c }}"));
+    err(
+        &format!("{defs}def f(c: Cond) -> String = c && 1"),
+        "block returns Int but Cond was expected",
+    );
+    // On a union, Bool or Nil it is the built-in operator.
+    ok(&format!(
+        "{defs}def f(c: Cond?) -> Int? = c && 1
+def g(b: Bool) -> Bool = b && !b"
+    ));
+    // The method takes the right operand as its only, parameterless block.
+    for src in [
+        "class C\n  def &&(x: Int) -> Int = x\nend",
+        "class C\n  def ||(&b: (Int) -> Int) -> Int = 0\nend",
+        "class C\n  def &&(x: Int, &b: () -> Int) -> Int = 0\nend",
+    ] {
+        err(src, "takes only a block with no parameters");
+    }
+    err(
+        "extension Bool\n  def &&(&b: () -> Bool) -> Bool = true\nend",
+        "cannot be defined on Bool or Nil",
+    );
+}
+
+#[test]
 fn concurrency_rules() {
     ok("t = spawn { 1 + 1 }\nputs t.await");
     ok("x = 1\nt = spawn { x + 1 }\nputs t.await");

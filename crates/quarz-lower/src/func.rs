@@ -1007,8 +1007,11 @@ impl<'a> FnBuilder<'a> {
                 v
             }
             And(a, b) => {
-                let res = self.reg();
                 let l = self.expr(a);
+                if let Some(c) = self.out.logical_calls.get(&e.id) {
+                    return self.logical_call(e, l, c);
+                }
+                let res = self.reg();
                 self.emit(Inst::Move { dst: res, src: l });
                 let rhs = self.new_block();
                 let join = self.new_block();
@@ -1025,8 +1028,11 @@ impl<'a> FnBuilder<'a> {
                 res
             }
             Or(a, b) => {
-                let res = self.reg();
                 let l = self.expr(a);
+                if let Some(c) = self.out.logical_calls.get(&e.id) {
+                    return self.logical_call(e, l, c);
+                }
+                let res = self.reg();
                 self.emit(Inst::Move { dst: res, src: l });
                 let rhs = self.new_block();
                 let join = self.new_block();
@@ -2854,7 +2860,12 @@ impl<'a> FnBuilder<'a> {
         // Combine.
         let res = self.reg();
         let join = self.new_block();
+        let logical = self.out.logical_calls.get(&e.id);
         match op {
+            OpAssign::OrOr | OpAssign::AndAnd if logical.is_some() => {
+                let v = self.logical_call(e, current, logical.unwrap());
+                self.emit(Inst::Move { dst: res, src: v });
+            }
             OpAssign::OrOr | OpAssign::AndAnd => {
                 self.emit(Inst::Move {
                     dst: res,
@@ -2936,6 +2947,16 @@ impl<'a> FnBuilder<'a> {
         self.term(Term::Jump(join));
         self.switch(join);
         res
+    }
+
+    /// `a && b` (or `x ||= b`) as the call of the type's own operator the
+    /// checker made of it, `a.&&() { b }`, on `recv`, `a`'s value.
+    fn logical_call(&mut self, e: &'a Expr, recv: Reg, c: &'a Expr) -> Reg {
+        let ExprKind::Call(call) = &c.kind else {
+            unreachable!("a logical call is a call")
+        };
+        let target = self.out.calls.get(&e.id);
+        self.call_value(e, call, target, Some(recv))
     }
 
     fn assign_multi(&mut self, targets: &'a [ast::MultiTarget], v: Reg) {

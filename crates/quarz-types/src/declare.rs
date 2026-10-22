@@ -1376,6 +1376,28 @@ impl<'ast> Declarer<'ast> {
                 def.span,
             );
         }
+        if def.name == "&&" || def.name == "||" {
+            // Called as `a && b` with `b` as the block: the method decides
+            // whether `b` is evaluated.
+            let only_block = def.params.list.len() == 1
+                && matches!(&block, Some((_, Type::Proc(_, ps, _))) if ps.is_empty());
+            if !only_block || def.singleton {
+                self.error(
+                    format!(
+                        "`{}` takes only a block with no parameters, the right operand (`def {}(&: () -> T) -> R`)",
+                        def.name, def.name
+                    ),
+                    def.span,
+                );
+            }
+            let b = &self.world.builtin;
+            if owner == b.bool_ || owner == b.nil {
+                self.error(
+                    format!("`{}` cannot be defined on Bool or Nil", def.name),
+                    def.span,
+                );
+            }
+        }
         self.world.add_method(MethodInfo {
             id: 0,
             name: def.name.clone(),

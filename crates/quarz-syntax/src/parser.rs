@@ -3894,6 +3894,8 @@ fn binary_op(kind: &T) -> Option<(u8, BinOp)> {
 
 fn operator_method_name(kind: &T) -> Option<&'static str> {
     Some(match kind {
+        T::AndAnd => "&&",
+        T::OrOr => "||",
         T::Plus => "+",
         T::Minus => "-",
         T::Star => "*",

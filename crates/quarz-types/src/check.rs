@@ -102,6 +102,11 @@ pub struct Output {
     /// `for` comprehensions whose value is not used, checked (and to be
     /// lowered) as their `each` expansion (see `ast::ForExpr`).
     pub for_loops: rustc_hash::FxHashSet<NodeId>,
+    /// `a && b`, `a || b` (`and`, `or`) and `x &&= v`, `x ||= v` on a value
+    /// whose type defines the operator: the call the checker made of it,
+    /// `a.&&() { b }`, with the expression's id (see `logical_method`).
+    /// Lowering calls it on the left operand's value.
+    pub logical_calls: FxHashMap<NodeId, Expr>,
     /// `new` called on the receiver in a class method: it builds an
     /// instance of the class the method is called on.
     pub self_new: rustc_hash::FxHashSet<NodeId>,
@@ -2064,6 +2069,9 @@ impl Checker {
             }
             And(a, b) => {
                 let (ta, facts_true, _) = self.check_cond(a);
+                if let Some(t) = self.logical_method(expr, "&&", &ta, b, expected) {
+                    return t;
+                }
                 let snap = self.snapshot();
                 self.apply_facts(&facts_true);
                 let tb = self.check_expr(b, None);
@@ -2079,6 +2087,9 @@ impl Checker {
             }
             Or(a, b) => {
                 let (ta, _, facts_false) = self.check_cond(a);
+                if let Some(t) = self.logical_method(expr, "||", &ta, b, expected) {
+                    return t;
+                }
                 let snap = self.snapshot();
                 self.apply_facts(&facts_false);
                 let tb = self.check_expr(b, expected);
@@ -2639,6 +2650,10 @@ impl Checker {
             }
             And(a, b) => {
                 let (ta, fat, _) = self.check_cond(a);
+                if let Some(t) = self.logical_method(cond, "&&", &ta, b, None) {
+                    self.record(cond.id, &t);
+                    return (t, Vec::new(), Vec::new());
+                }
                 let snap = self.snapshot();
                 self.apply_facts(&fat);
                 let (tb, fbt, _) = self.check_cond(b);
@@ -2658,6 +2673,10 @@ impl Checker {
             }
             Or(a, b) => {
                 let (ta, _, faf) = self.check_cond(a);
+                if let Some(t) = self.logical_method(cond, "||", &ta, b, None) {
+                    self.record(cond.id, &t);
+                    return (t, Vec::new(), Vec::new());
+                }
                 let snap = self.snapshot();
                 self.apply_facts(&faf);
                 let (tb, _, fbf) = self.check_cond(b);
@@ -3236,6 +3255,14 @@ impl Checker {
         };
         let current = self.resolve(&current);
         let result = match op {
+            OpAssign::OrOr | OpAssign::AndAnd
+                if self.has_logical_method(&current, op.as_str().trim_end_matches('=')) =>
+            {
+                // `x ||= v` is `x = x.||() { v }`: stored whatever it gives.
+                let name = op.as_str().trim_end_matches('=');
+                self.logical_method(expr, name, &current, value, None)
+                    .unwrap_or(Type::Nothing)
+            }
             OpAssign::OrOr => {
                 // `x ||= v`: v is evaluated only when x is falsy.
                 let vt = self.check_expr(value, Some(&current));
@@ -4194,6 +4221,63 @@ impl Checker {
             _ => {}
         }
         Some(vt)
+    }
+
+    /// Whether `a && b` (`name` is `&&` or `||`) on a value of type `t` is
+    /// a call of `t`'s own operator: decided by the static type, like `!`,
+    /// so that `&&` on `Bool`, on `nil`, on a union (`Foo?`: `x && x.foo`
+    /// narrows `x`) or on a type that does not define it is the built-in
+    /// short circuit, with no test at run time.
+    fn has_logical_method(&mut self, t: &Type, name: &str) -> bool {
+        let t = self.resolve(t);
+        let Type::Class(id, _) = &t else {
+            return false;
+        };
+        let b = &self.world.builtin;
+        *id != b.bool_ && *id != b.nil && !self.world.lookup_methods(&t, name).is_empty()
+    }
+
+    /// `a && b` (`a || b`, `x &&= b`) as the call `a.&&() { b }` when `a`'s
+    /// type defines the operator (`has_logical_method`): the method decides
+    /// whether `b` runs, by yielding. The call is kept for lowering in
+    /// `Output::logical_calls`; its block shares `b`'s nodes.
+    fn logical_method(
+        &mut self,
+        expr: &Expr,
+        name: &str,
+        lhs: &Type,
+        rhs: &Expr,
+        expected: Option<&Type>,
+    ) -> Option<Type> {
+        if !self.has_logical_method(lhs, name) {
+            return None;
+        }
+        let t = self.resolve(lhs);
+        let call = Call {
+            recv: None,
+            name: name.to_string(),
+            args: vec![],
+            block: Some(Block {
+                params: Params::empty(),
+                body: vec![rhs.clone()],
+                span: rhs.span,
+                braces: true,
+                ret: None,
+            }),
+            safe_nav: false,
+            has_parens: true,
+            type_args: vec![],
+        };
+        let rt = self.check_call_on(expr, &call, &t, false, expected);
+        self.out.logical_calls.insert(
+            expr.id,
+            Expr {
+                id: expr.id,
+                span: expr.span,
+                kind: ExprKind::Call(Box::new(call)),
+            },
+        );
+        Some(rt)
     }
 
     /// `!x` with a type of its own `!` (decided by the static type, so
