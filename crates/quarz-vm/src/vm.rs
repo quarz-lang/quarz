@@ -8,7 +8,7 @@ use std::rc::Rc;
 use quarz_ir::*;
 use smallvec::{smallvec, SmallVec};
 
-use crate::interp::{fast_binop, ArgVec, EvalResult, Flow, Interp};
+use crate::interp::{fast_binop, int_binop, ArgVec, EvalResult, Flow, Interp};
 use crate::sched;
 use crate::value::*;
 
@@ -532,7 +532,18 @@ impl Interp {
                 // They raise nothing, so the line is not needed either.
                 match inst {
                     Inst::LoadConst { dst, idx } => {
-                        let v = pool.borrow()[*idx as usize].clone();
+                        // SAFETY: the pool is only borrowed mutably inside
+                        // `constant` (to cache a regexp), never while the
+                        // block loop reads it here.
+                        let consts: &Vec<Value> = unsafe { &*pool.as_ptr() };
+                        let c = &consts[*idx as usize];
+                        let v = match c {
+                            Value::Int(i) => Value::Int(*i),
+                            Value::Float(x) => Value::Float(*x),
+                            Value::Bool(b) => Value::Bool(*b),
+                            Value::Nil => Value::Nil,
+                            other => other.clone(),
+                        };
                         if !v.is_nil()
                             || !matches!(f.consts[*idx as usize], Constant::Regexp { .. })
                         {
@@ -572,8 +583,12 @@ impl Interp {
                     Inst::BinOp {
                         dst, op, lhs, rhs, ..
                     } => {
-                        if let Some(v) = fast_binop(*op, &regs[*lhs as usize], &regs[*rhs as usize])
-                        {
+                        // Two Ints, the commonest case, computed here.
+                        let v = match (&regs[*lhs as usize], &regs[*rhs as usize]) {
+                            (Value::Int(x), Value::Int(y)) => int_binop(*op, *x, *y),
+                            (a, b) => fast_binop(*op, a, b),
+                        };
+                        if let Some(v) = v {
                             put(&mut regs[*dst as usize], v);
                             continue;
                         }

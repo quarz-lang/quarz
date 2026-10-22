@@ -79,50 +79,55 @@ pub type OwnedNativeFn = fn(&Interp, Value, Args) -> Result<Value, (Flow, Value)
 /// is the inner key, so lookups do not allocate).
 type NameKey = (ClassId, usize, bool);
 
+/// `fast_binop` on two Ints: inlined where the interpreter runs a block,
+/// the commonest case (None: overflow or a division by zero, for the
+/// method to handle).
+#[inline(always)]
+pub fn int_binop(op: FastOp, x: i64, y: i64) -> Option<Value> {
+    Some(match op {
+        FastOp::Add => Value::Int(x.checked_add(y)?),
+        FastOp::Sub => Value::Int(x.checked_sub(y)?),
+        FastOp::Mul => Value::Int(x.checked_mul(y)?),
+        FastOp::Div => {
+            if y == 0 || (x == i64::MIN && y == -1) {
+                return None;
+            }
+            // Floor division, as in Ruby.
+            let q = x / y;
+            Value::Int(if (x % y != 0) && ((x < 0) != (y < 0)) {
+                q - 1
+            } else {
+                q
+            })
+        }
+        FastOp::Mod => {
+            if y == 0 || (x == i64::MIN && y == -1) {
+                return None;
+            }
+            let r = x % y;
+            Value::Int(if r != 0 && ((r < 0) != (y < 0)) {
+                r + y
+            } else {
+                r
+            })
+        }
+        FastOp::Lt => Value::Bool(x < y),
+        FastOp::Le => Value::Bool(x <= y),
+        FastOp::Gt => Value::Bool(x > y),
+        FastOp::Ge => Value::Bool(x >= y),
+        FastOp::Eq => Value::Bool(x == y),
+        FastOp::Ne => Value::Bool(x != y),
+        FastOp::Cmp => Value::Int(x.cmp(&y) as i64),
+    })
+}
+
 /// Apply an operator to two numbers directly. `None` means the generic
 /// path must be taken (overflow, division by zero, other types).
 #[inline]
 pub fn fast_binop(op: FastOp, a: &Value, b: &Value) -> Option<Value> {
     use std::cmp::Ordering;
     match (a, b) {
-        (Value::Int(x), Value::Int(y)) => {
-            let (x, y) = (*x, *y);
-            Some(match op {
-                FastOp::Add => Value::Int(x.checked_add(y)?),
-                FastOp::Sub => Value::Int(x.checked_sub(y)?),
-                FastOp::Mul => Value::Int(x.checked_mul(y)?),
-                FastOp::Div => {
-                    if y == 0 || (x == i64::MIN && y == -1) {
-                        return None;
-                    }
-                    // Floor division, as in Ruby.
-                    let q = x / y;
-                    Value::Int(if (x % y != 0) && ((x < 0) != (y < 0)) {
-                        q - 1
-                    } else {
-                        q
-                    })
-                }
-                FastOp::Mod => {
-                    if y == 0 || (x == i64::MIN && y == -1) {
-                        return None;
-                    }
-                    let r = x % y;
-                    Value::Int(if r != 0 && ((r < 0) != (y < 0)) {
-                        r + y
-                    } else {
-                        r
-                    })
-                }
-                FastOp::Lt => Value::Bool(x < y),
-                FastOp::Le => Value::Bool(x <= y),
-                FastOp::Gt => Value::Bool(x > y),
-                FastOp::Ge => Value::Bool(x >= y),
-                FastOp::Eq => Value::Bool(x == y),
-                FastOp::Ne => Value::Bool(x != y),
-                FastOp::Cmp => Value::Int(x.cmp(&y) as i64),
-            })
-        }
+        (Value::Int(x), Value::Int(y)) => int_binop(op, *x, *y),
         (Value::Float(_), Value::Float(_))
         | (Value::Int(_), Value::Float(_))
         | (Value::Float(_), Value::Int(_)) => {
