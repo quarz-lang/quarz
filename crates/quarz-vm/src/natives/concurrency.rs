@@ -346,9 +346,10 @@ fn task_scope(interp: &Interp, _: &Value, args: Args) -> EvalResult {
         }
     };
     // Wait for every child; the first failure cancels the rest.
-    let mut i = 0;
     loop {
-        let Some(child) = scope.child(i) else { break };
+        let Some(child) = scope.first_child() else {
+            break;
+        };
         let r = interp.await_task(&child);
         if let (Err(Flow::Raise(e)), false) = (&r, child.is_done()) {
             // The wait itself was interrupted: the task running the scope
@@ -361,7 +362,7 @@ fn task_scope(interp: &Interp, _: &Value, args: Args) -> EvalResult {
             cancel_children(interp, &scope);
             continue;
         }
-        i += 1;
+        scope.remove_child(&child);
         match r {
             Ok(_) => {}
             Err(Flow::Raise(e)) => {

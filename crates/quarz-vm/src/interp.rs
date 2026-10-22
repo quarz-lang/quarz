@@ -942,8 +942,8 @@ impl Interp {
         loop {
             let next = self.sched.borrow_mut().next_step();
             match next {
-                sched::Next::Run(id, co) => {
-                    if let Some(code) = self.resume_task(id, co) {
+                sched::Next::Run(task, co) => {
+                    if let Some(code) = self.resume_task(task, co) {
                         return code;
                     }
                     if root.is_done() {
@@ -1039,11 +1039,10 @@ impl Interp {
 
     /// Run one task until it suspends or ends; `Some(code)` to end the
     /// program.
-    fn resume_task(&self, id: TaskId, mut co: sched::TaskCoroutine) -> Option<i32> {
-        let task = self.sched.borrow().task(id).clone();
-        self.current_task_id.set(id);
+    fn resume_task(&self, task: Rc<TaskHandle>, mut co: sched::TaskCoroutine) -> Option<i32> {
+        self.current_task_id.set(task.id);
         let result = sched::resume(&task, &mut co);
-        self.sched.borrow_mut().after_resume(id, co, result)
+        self.sched.borrow_mut().after_resume(task, co, result)
     }
 
     /// Start the tasks other workers placed on this one.
@@ -1122,8 +1121,8 @@ impl Interp {
         loop {
             let next = self.sched.borrow_mut().next_step();
             match next {
-                sched::Next::Run(id, co) => {
-                    let _ = self.resume_task(id, co);
+                sched::Next::Run(task, co) => {
+                    let _ = self.resume_task(task, co);
                 }
                 sched::Next::Spawn(requests) => self.adopt_tasks(requests),
                 sched::Next::Stop | sched::Next::Exit(_) | sched::Next::Idle => return,

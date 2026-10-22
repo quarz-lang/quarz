@@ -227,7 +227,7 @@ impl TaskHandle {
             stack_high: AtomicUsize::new(usize::MAX),
         });
         if let Some(scope) = &scope {
-            lock(&scope.children).push(handle.clone());
+            scope.add_child(handle.clone());
         }
         handle
     }
@@ -256,6 +256,11 @@ impl TaskHandle {
 
     pub fn is_done(&self) -> bool {
         self.state() == TaskState::Done
+    }
+
+    /// Done, and not with an exception.
+    pub fn finished_with_value(&self) -> bool {
+        self.is_done() && matches!(&*lock(&self.result), Some(TaskResult::Value(_)))
     }
 
     pub fn cancel_requested(&self) -> bool {
@@ -289,7 +294,7 @@ impl TaskHandle {
 /// A `Task.scope` with its child tasks.
 pub struct ScopeInner {
     pub owner: TaskRef,
-    pub children: Mutex<Vec<Rc<TaskHandle>>>,
+    pub children: Mutex<std::collections::VecDeque<Rc<TaskHandle>>>,
     cancelled: AtomicBool,
 }
 
@@ -303,7 +308,7 @@ impl ScopeInner {
     pub fn new(owner: TaskRef) -> Rc<ScopeInner> {
         Rc::new_shared(ScopeInner {
             owner,
-            children: Mutex::new(Vec::new()),
+            children: Mutex::new(std::collections::VecDeque::new()),
             cancelled: AtomicBool::new(false),
         })
     }
@@ -317,12 +322,33 @@ impl ScopeInner {
         !self.cancelled.swap(true, Ordering::AcqRel)
     }
 
-    pub fn child(&self, i: usize) -> Option<Rc<TaskHandle>> {
-        lock(&self.children).get(i).cloned()
+    /// A new child. A scope that lives long (a server's, spawning a task
+    /// per connection) would otherwise keep every child it ever had: the
+    /// ones that finished with a value, which nothing waits for any more,
+    /// are dropped as the list doubles.
+    pub fn add_child(&self, child: Rc<TaskHandle>) {
+        let mut children = lock(&self.children);
+        if children.len() >= 32 && children.len().is_power_of_two() {
+            children.retain(|c| !c.finished_with_value());
+        }
+        children.push_back(child);
+    }
+
+    /// The first child not yet waited for by `Task.scope`.
+    pub fn first_child(&self) -> Option<Rc<TaskHandle>> {
+        lock(&self.children).front().cloned()
+    }
+
+    /// Forget a child `Task.scope` has waited for.
+    pub fn remove_child(&self, child: &Rc<TaskHandle>) {
+        let mut children = lock(&self.children);
+        if let Some(i) = children.iter().position(|c| Rc::ptr_eq(c, child)) {
+            children.remove(i);
+        }
     }
 
     pub fn children(&self) -> Vec<Rc<TaskHandle>> {
-        lock(&self.children).clone()
+        lock(&self.children).iter().cloned().collect()
     }
 }
 
@@ -636,7 +662,7 @@ impl Workers {
 
 /// What a worker does next (`Scheduler::next_step`).
 pub enum Next {
-    Run(TaskId, TaskCoroutine),
+    Run(Rc<TaskHandle>, TaskCoroutine),
     /// Start these tasks other workers placed here.
     Spawn(Vec<SpawnRequest>),
     /// Nothing can ever run again: every task waits, on every worker.
@@ -653,8 +679,10 @@ pub struct Scheduler {
     pub workers: Arc<Workers>,
     /// The worker's tasks, by number (a number may be taken before its
     /// task arrives from the worker that spawned it).
-    tasks: Vec<Option<Rc<TaskHandle>>>,
-    coroutines: Vec<Option<TaskCoroutine>>,
+    /// This worker's live tasks (a finished one leaves at once) and the
+    /// coroutines of those not running.
+    tasks: rustc_hash::FxHashMap<TaskId, Rc<TaskHandle>>,
+    coroutines: rustc_hash::FxHashMap<TaskId, TaskCoroutine>,
     ready: VecDeque<TaskId>,
     timers: BinaryHeap<Reverse<(Instant, u64, TaskId)>>,
     timer_seq: u64,
@@ -711,8 +739,8 @@ impl Scheduler {
         Scheduler {
             worker,
             workers,
-            tasks: Vec::new(),
-            coroutines: Vec::new(),
+            tasks: Default::default(),
+            coroutines: Default::default(),
             ready: VecDeque::new(),
             timers: BinaryHeap::new(),
             timer_seq: 0,
@@ -893,13 +921,11 @@ impl Scheduler {
     }
 
     pub fn task(&self, id: TaskId) -> &Rc<TaskHandle> {
-        self.tasks[id as usize]
-            .as_ref()
-            .expect("a task of this worker")
+        self.tasks.get(&id).expect("a task of this worker")
     }
 
-    /// How many tasks this worker has had (whether any other than the
-    /// current one may want to run).
+    /// How many tasks this worker has (whether any other than the current
+    /// one may want to run).
     pub fn task_count(&self) -> usize {
         self.tasks.len()
     }
@@ -960,19 +986,14 @@ impl Scheduler {
             STACK_RANGE.with(|r| r.set(range));
             body()
         });
-        let i = id as usize;
-        if self.tasks.len() <= i {
-            self.tasks.resize_with(i + 1, || None);
-            self.coroutines.resize_with(i + 1, || None);
-        }
-        self.tasks[i] = Some(handle);
-        self.coroutines[i] = Some(coroutine);
+        self.tasks.insert(id, handle);
+        self.coroutines.insert(id, coroutine);
         self.ready.push_back(id);
     }
 
     /// Make a task of this worker ready, if it waits.
     pub fn wake(&mut self, id: TaskId) {
-        let Some(Some(task)) = self.tasks.get(id as usize) else {
+        let Some(task) = self.tasks.get(&id) else {
             return;
         };
         if task.state() == TaskState::Waiting {
@@ -1066,13 +1087,16 @@ impl Scheduler {
                 }
             }
             while let Some(id) = self.ready.pop_front() {
-                if self.task(id).state() == TaskState::Done {
-                    continue;
-                }
-                if let Some(co) = self.coroutines[id as usize].take() {
-                    self.task(id).set_state(TaskState::Running);
+                // A finished task is gone from the table (a late wake can
+                // still have queued it).
+                let task = match self.tasks.get(&id) {
+                    Some(t) if t.state() != TaskState::Done => t.clone(),
+                    _ => continue,
+                };
+                if let Some(co) = self.coroutines.remove(&id) {
+                    task.set_state(TaskState::Running);
                     self.current = Some(id);
-                    return Next::Run(id, co);
+                    return Next::Run(task, co);
                 }
             }
             if !multi {
@@ -1116,15 +1140,15 @@ impl Scheduler {
     /// Put a task back after it yielded or finished.
     pub fn after_resume(
         &mut self,
-        id: TaskId,
+        task: Rc<TaskHandle>,
         co: TaskCoroutine,
         result: CoroutineResult<(), TaskExit>,
     ) -> Option<i32> {
         self.current = None;
-        let task = self.task(id).clone();
+        let id = task.id;
         match result {
             CoroutineResult::Yield(()) => {
-                self.coroutines[id as usize] = Some(co);
+                self.coroutines.insert(id, co);
                 if task.state() == TaskState::Running {
                     task.set_state(TaskState::Ready);
                     self.ready.push_back(id);
@@ -1179,6 +1203,10 @@ impl Scheduler {
                                 self.wake_ref(scope.owner);
                             }
                         }
+                        // Those who wait for it hold its handle; the table
+                        // lets it go, or a program spawning a task per
+                        // request would keep them all.
+                        self.tasks.remove(&id);
                         None
                     }
                 }
@@ -1188,10 +1216,14 @@ impl Scheduler {
 
     /// Names of tasks that are blocked (for the deadlock report).
     pub fn waiting_tasks(&self) -> Vec<String> {
-        self.tasks
-            .iter()
-            .flatten()
+        let mut waiting: Vec<&Rc<TaskHandle>> = self
+            .tasks
+            .values()
             .filter(|t| t.state() == TaskState::Waiting)
+            .collect();
+        waiting.sort_by_key(|t| t.id);
+        waiting
+            .into_iter()
             .map(|t| format!("{} ({})", t.name, t.id))
             .collect()
     }
