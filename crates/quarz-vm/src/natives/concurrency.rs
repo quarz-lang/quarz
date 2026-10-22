@@ -1,11 +1,13 @@
 //! Task, Scope, Channel, Selector, Atom and the Kernel entry points.
 
 use crate::rc::Rc;
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::time::Duration;
 
 use crate::interp::{Args, EvalResult, Flow, Interp, NativeFn};
-use crate::sched::{ChannelInner, ScopeInner, SelectorState, TaskHandle};
+use crate::sched::{
+    lock, ChannelInner, ChannelState, ScopeInner, SelectorState, TaskHandle, TaskRef,
+};
 use crate::value::*;
 use quarz_ir::{FuncId, Inst, VarLoc};
 use smallvec::smallvec;
@@ -167,7 +169,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         Ok(Value::Bool(task(i, r)?.is_done()))
     });
     m.insert("Task#cancelled?", |i, r, _| {
-        Ok(Value::Bool(task(i, r)?.cancel_requested.get()))
+        Ok(Value::Bool(task(i, r)?.cancel_requested()))
     });
     m.insert("Scope#spawn", |i, r, a| {
         let b = snapshot(i, &block(i, &a)?);
@@ -194,13 +196,13 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     });
     m.insert("Channel#close", channel_close);
     m.insert("Channel#closed?", |i, r, _| {
-        Ok(Value::Bool(chan(i, r)?.closed.get()))
+        Ok(Value::Bool(chan(i, r)?.lock().closed))
     });
     m.insert("Channel#empty?", |i, r, _| {
-        Ok(Value::Bool(chan(i, r)?.buffer.borrow().is_empty()))
+        Ok(Value::Bool(chan(i, r)?.lock().buffer.is_empty()))
     });
     m.insert("Channel#size", |i, r, _| {
-        Ok(Value::Int(chan(i, r)?.buffer.borrow().len() as i64))
+        Ok(Value::Int(chan(i, r)?.lock().buffer.len() as i64))
     });
     m.insert("Channel#each", channel_each);
     m.insert("Selector#receive", |i, r, a| {
@@ -234,25 +236,30 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     m.insert("Atom.new", |_, _, a| {
         let v = a.arg(0).clone();
         v.share();
-        Ok(Value::Atom(Rc::new_shared(RefCell::new(v))))
+        Ok(Value::Atom(Rc::new_shared(std::sync::Mutex::new(v))))
     });
-    m.insert("Atom#value", |i, r, _| Ok(atom(i, r)?.borrow().clone()));
-    m.insert("Atom#get", |i, r, _| Ok(atom(i, r)?.borrow().clone()));
+    m.insert("Atom#value", |i, r, _| Ok(lock(atom(i, r)?).clone()));
+    m.insert("Atom#get", |i, r, _| Ok(lock(atom(i, r)?).clone()));
     m.insert("Atom#set", |i, r, a| {
         let v = a.arg(0).clone();
         v.share();
-        *atom(i, r)?.borrow_mut() = v;
+        let old = std::mem::replace(&mut *lock(atom(i, r)?), v);
+        drop(old);
         Ok(Value::Nil)
     });
     m.insert("Atom#update", atom_update);
     m.insert("Atom#compare_and_set", |i, r, a| {
-        let cell = atom(i, r)?;
-        let same = *cell.borrow() == *a.arg(0);
-        if same {
-            let v = a.arg(1).clone();
-            v.share();
-            *cell.borrow_mut() = v;
-        }
+        let new = a.arg(1).clone();
+        new.share();
+        let mut cell = lock(atom(i, r)?);
+        let same = *cell == *a.arg(0);
+        let old = if same {
+            Some(std::mem::replace(&mut *cell, new))
+        } else {
+            None
+        };
+        drop(cell);
+        drop(old);
         Ok(Value::Bool(same))
     });
 }
@@ -294,7 +301,7 @@ fn sel<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Rc<RefCell<SelectorState
     }
 }
 
-fn atom<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Rc<RefCell<Value>>, Flow> {
+fn atom<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Rc<std::sync::Mutex<Value>>, Flow> {
     match v {
         Value::Atom(a) => Ok(a),
         _ => Err(interp.err_type("expected an Atom")),
@@ -321,21 +328,15 @@ fn kernel_loop(interp: &Interp, _: &Value, args: Args) -> EvalResult {
 // ----- scopes -------------------------------------------------------------------------
 
 fn cancel_children(interp: &Interp, scope: &Rc<ScopeInner>) {
-    scope.cancelled.set(true);
-    let children: Vec<Rc<TaskHandle>> = scope.children.borrow().clone();
-    for c in children {
+    scope.cancel();
+    for c in scope.children() {
         interp.cancel_task(&c);
     }
 }
 
 fn task_scope(interp: &Interp, _: &Value, args: Args) -> EvalResult {
     let b = block(interp, &args)?;
-    let owner = interp.current_task().id;
-    let scope = Rc::new_shared(ScopeInner {
-        owner,
-        children: RefCell::new(Vec::new()),
-        cancelled: Cell::new(false),
-    });
+    let scope = ScopeInner::new(interp.sched.borrow().current_ref());
     let result = interp.call_block(&b, smallvec![Value::Scope(scope.clone())]);
     let (value, mut failure): (Value, Option<Flow>) = match result {
         Ok(v) => (v, None),
@@ -347,8 +348,7 @@ fn task_scope(interp: &Interp, _: &Value, args: Args) -> EvalResult {
     // Wait for every child; the first failure cancels the rest.
     let mut i = 0;
     loop {
-        let child = scope.children.borrow().get(i).cloned();
-        let Some(child) = child else { break };
+        let Some(child) = scope.child(i) else { break };
         let r = interp.await_task(&child);
         if let (Err(Flow::Raise(e)), false) = (&r, child.is_done()) {
             // The wait itself was interrupted: the task running the scope
@@ -366,7 +366,7 @@ fn task_scope(interp: &Interp, _: &Value, args: Args) -> EvalResult {
             Ok(_) => {}
             Err(Flow::Raise(e)) => {
                 let is_cancel = interp.exception_is_a(&e, interp.program.exc.cancelled);
-                if is_cancel && scope.cancelled.get() {
+                if is_cancel && scope.is_cancelled() {
                     // Cancelled by the scope itself: expected.
                 } else if failure.is_none() {
                     failure = Some(Flow::Raise(e));
@@ -390,8 +390,8 @@ fn task_timeout(interp: &Interp, _: &Value, args: Args) -> EvalResult {
     let d = duration(interp, args.arg(0))?;
     let b = block(interp, &args)?;
     let child = interp.spawn_task(b, None, "timeout");
-    let me = interp.current_task().id;
-    let timer = interp.sched.borrow_mut().add_timer(d, me);
+    let me = interp.current_task();
+    let timer = interp.sched.borrow_mut().add_timer(d, me.id);
     let start = std::time::Instant::now();
     loop {
         if child.is_done() {
@@ -403,7 +403,13 @@ fn task_timeout(interp: &Interp, _: &Value, args: Args) -> EvalResult {
             let _ = interp.await_task(&child);
             return Err(interp.raise(interp.program.exc.timeout, "timed out"));
         }
-        child.joiners.borrow_mut().push(me);
+        {
+            let mut joiners = lock(&child.joiners);
+            if child.is_done() {
+                continue;
+            }
+            joiners.push(me.task_ref());
+        }
         interp.park()?;
     }
 }
@@ -418,104 +424,130 @@ fn channel_new(interp: &Interp, _: &Value, args: Args) -> EvalResult {
     Ok(Value::Channel(ChannelInner::new(capacity)))
 }
 
-fn wake_one(interp: &Interp, waiters: &RefCell<std::collections::VecDeque<u32>>) {
-    if let Some(id) = waiters.borrow_mut().pop_front() {
-        interp.wake(id);
+fn wake_all(interp: &Interp, waiters: impl IntoIterator<Item = TaskRef>) {
+    for w in waiters {
+        interp.wake_ref(w);
     }
 }
 
-fn wake_all(interp: &Interp, waiters: &RefCell<std::collections::VecDeque<u32>>) {
-    let ids: Vec<u32> = waiters.borrow_mut().drain(..).collect();
-    for id in ids {
-        interp.wake(id);
-    }
+fn closed_error(interp: &Interp) -> Flow {
+    interp.raise(interp.program.exc.channel_closed, "channel is closed")
 }
 
 fn channel_send(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let c = chan(interp, recv)?;
-    let value = args.arg(0).clone();
+    let mut value = Some(args.arg(0).clone());
+    let me = interp.sched.borrow().current_ref();
     loop {
-        if c.closed.get() {
-            return Err(interp.raise(interp.program.exc.channel_closed, "channel is closed"));
+        let mut st = c.lock();
+        if st.closed {
+            drop(st);
+            return Err(closed_error(interp));
         }
-        if c.can_send() {
-            c.put(value);
-            let ticket = c.pushed.get() + 1;
-            c.pushed.set(ticket);
-            wake_one(interp, &c.recv_waiters);
-            if c.capacity == 0 {
-                // Rendezvous: wait until a receiver has taken the value.
-                while c.taken.get() < ticket {
-                    if c.closed.get() && c.taken.get() < ticket {
-                        return Err(
-                            interp.raise(interp.program.exc.channel_closed, "channel is closed")
-                        );
-                    }
-                    let me = interp.current_task().id;
-                    c.send_waiters.borrow_mut().push_back(me);
-                    interp.park()?;
-                }
-            }
+        if !st.can_send(c.capacity) {
+            st.send_waiters.push_back(me);
+            drop(st);
+            interp.park()?;
+            continue;
+        }
+        st.put(value.take().expect("sent once"));
+        let ticket = st.pushed;
+        let mut receiver = st.recv_waiters.pop_front();
+        if c.capacity > 0 {
+            drop(st);
+            wake_all(interp, receiver);
             return Ok(Value::Nil);
         }
-        let me = interp.current_task().id;
-        c.send_waiters.borrow_mut().push_back(me);
-        interp.park()?;
+        // Rendezvous: wait until a receiver has taken the value.
+        while st.taken < ticket {
+            if st.closed {
+                drop(st);
+                wake_all(interp, receiver.take());
+                return Err(closed_error(interp));
+            }
+            st.send_waiters.push_back(me);
+            drop(st);
+            wake_all(interp, receiver.take());
+            interp.park()?;
+            st = c.lock();
+        }
+        return Ok(Value::Nil);
     }
 }
 
 fn channel_try_send(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let c = chan(interp, recv)?;
-    if c.closed.get() {
-        return Err(interp.raise(interp.program.exc.channel_closed, "channel is closed"));
+    let mut st = c.lock();
+    if st.closed {
+        drop(st);
+        return Err(closed_error(interp));
     }
     // Only buffered channels can accept without a waiting receiver.
-    if c.capacity > 0 && c.can_send() {
-        c.put(args.arg(0).clone());
-        c.pushed.set(c.pushed.get() + 1);
-        wake_one(interp, &c.recv_waiters);
-        return Ok(Value::Bool(true));
+    let ready = st.can_send(c.capacity) && (c.capacity > 0 || !st.recv_waiters.is_empty());
+    if !ready {
+        return Ok(Value::Bool(false));
     }
-    if c.capacity == 0 && c.can_send() && !c.recv_waiters.borrow().is_empty() {
-        c.put(args.arg(0).clone());
-        c.pushed.set(c.pushed.get() + 1);
-        c.taken.set(c.pushed.get());
-        wake_one(interp, &c.recv_waiters);
-        return Ok(Value::Bool(true));
+    st.put(args.arg(0).clone());
+    if c.capacity == 0 {
+        st.taken = st.pushed;
     }
-    Ok(Value::Bool(false))
+    let receiver = st.recv_waiters.pop_front();
+    drop(st);
+    wake_all(interp, receiver);
+    Ok(Value::Bool(true))
 }
 
+/// Take a value if one is there (waking the senders waiting for room or
+/// for their value to be taken).
 fn take_value(interp: &Interp, c: &ChannelInner) -> Option<Value> {
-    let v = c.buffer.borrow_mut().pop_front()?;
-    c.taken.set(c.taken.get() + 1);
-    wake_all(interp, &c.send_waiters);
+    let mut st = c.lock();
+    let (v, senders) = take_locked(&mut st)?;
+    drop(st);
+    wake_all(interp, senders.into_iter().flatten());
     Some(v)
 }
 
+fn take_locked(st: &mut ChannelState) -> Option<(Value, Senders)> {
+    let v = st.buffer.pop_front()?;
+    st.taken += 1;
+    let senders = (!st.send_waiters.is_empty()).then(|| std::mem::take(&mut st.send_waiters));
+    Some((v, senders))
+}
+
+/// The senders a take wakes (usually none: nothing to build).
+type Senders = Option<std::collections::VecDeque<TaskRef>>;
+
 fn channel_receive(interp: &Interp, c: &Rc<ChannelInner>, raise_on_closed: bool) -> EvalResult {
+    let me = interp.sched.borrow().current_ref();
     loop {
-        if let Some(v) = take_value(interp, c) {
+        let mut st = c.lock();
+        if let Some((v, senders)) = take_locked(&mut st) {
+            drop(st);
+            wake_all(interp, senders.into_iter().flatten());
             return Ok(v);
         }
-        if c.closed.get() {
+        if st.closed {
+            drop(st);
             return if raise_on_closed {
-                Err(interp.raise(interp.program.exc.channel_closed, "channel is closed"))
+                Err(closed_error(interp))
             } else {
                 Ok(Value::Nil)
             };
         }
-        let me = interp.current_task().id;
-        c.recv_waiters.borrow_mut().push_back(me);
+        st.recv_waiters.push_back(me);
+        drop(st);
         interp.park()?;
     }
 }
 
 fn channel_close(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
     let c = chan(interp, recv)?;
-    c.closed.set(true);
-    wake_all(interp, &c.recv_waiters);
-    wake_all(interp, &c.send_waiters);
+    let mut st = c.lock();
+    st.closed = true;
+    let mut waiters: Vec<TaskRef> = st.recv_waiters.drain(..).collect();
+    waiters.extend(st.send_waiters.drain(..));
+    drop(st);
+    wake_all(interp, waiters);
     Ok(Value::Nil)
 }
 
@@ -524,8 +556,11 @@ fn channel_each(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let b = block(interp, &args)?;
     loop {
         let v = channel_receive(interp, &c, false)?;
-        if v.is_nil() && c.closed.get() && c.buffer.borrow().is_empty() {
-            return Ok(Value::Nil);
+        if v.is_nil() {
+            let st = c.lock();
+            if st.closed && st.buffer.is_empty() {
+                return Ok(Value::Nil);
+            }
         }
         interp.call_block(&b, smallvec![v])?;
     }
@@ -551,52 +586,54 @@ fn run_select(interp: &Interp, block: &Value, looping: bool) -> EvalResult {
 }
 
 fn select_once(interp: &Interp, state: &Rc<RefCell<SelectorState>>) -> Result<(), Flow> {
-    let me = interp.current_task().id;
+    let me = interp.current_task();
     let timer_start = std::time::Instant::now();
     let after = state.borrow().after.clone();
     let mut timer_seq = None;
     if let Some((d, _)) = &after {
-        timer_seq = Some(interp.sched.borrow_mut().add_timer(*d, me));
+        timer_seq = Some(interp.sched.borrow_mut().add_timer(*d, me.id));
     }
+    let cancel_timer = |seq: Option<u64>| {
+        if let Some(seq) = seq {
+            interp.sched.borrow_mut().cancel_timer(seq);
+        }
+    };
+    let receives: Vec<(Rc<ChannelInner>, Value)> = state.borrow().receives.clone();
+    let sends: Vec<(Rc<ChannelInner>, Value, Value)> = state.borrow().sends.clone();
     loop {
         // Receives.
-        let receives: Vec<(Rc<ChannelInner>, Value)> = state.borrow().receives.clone();
         for (c, handler) in &receives {
-            if let Some(v) = take_value(interp, c) {
-                if let Some(seq) = timer_seq {
-                    interp.sched.borrow_mut().cancel_timer(seq);
-                }
+            let mut st = c.lock();
+            if let Some((v, senders)) = take_locked(&mut st) {
+                drop(st);
+                wake_all(interp, senders.into_iter().flatten());
+                cancel_timer(timer_seq);
                 interp.call_block(handler, smallvec![v])?;
                 return Ok(());
             }
-            if c.closed.get() {
-                if let Some(seq) = timer_seq {
-                    interp.sched.borrow_mut().cancel_timer(seq);
-                }
-                return Err(interp.raise(interp.program.exc.channel_closed, "channel is closed"));
+            if st.closed {
+                drop(st);
+                cancel_timer(timer_seq);
+                return Err(closed_error(interp));
             }
         }
         // Sends.
-        let sends: Vec<(Rc<ChannelInner>, Value, Value)> = state.borrow().sends.clone();
         for (c, value, handler) in &sends {
-            if c.closed.get() {
-                if let Some(seq) = timer_seq {
-                    interp.sched.borrow_mut().cancel_timer(seq);
-                }
-                return Err(interp.raise(interp.program.exc.channel_closed, "channel is closed"));
+            let mut st = c.lock();
+            if st.closed {
+                drop(st);
+                cancel_timer(timer_seq);
+                return Err(closed_error(interp));
             }
-            let ready = (c.capacity > 0 && c.can_send())
-                || (c.capacity == 0 && c.can_send() && !c.recv_waiters.borrow().is_empty());
-            if ready {
-                c.put(value.clone());
-                c.pushed.set(c.pushed.get() + 1);
+            if send_ready(c, &st) {
+                st.put(value.clone());
                 if c.capacity == 0 {
-                    c.taken.set(c.pushed.get());
+                    st.taken = st.pushed;
                 }
-                wake_one(interp, &c.recv_waiters);
-                if let Some(seq) = timer_seq {
-                    interp.sched.borrow_mut().cancel_timer(seq);
-                }
+                let receiver = st.recv_waiters.pop_front();
+                drop(st);
+                wake_all(interp, receiver);
+                cancel_timer(timer_seq);
                 interp.call_block(handler, smallvec![])?;
                 return Ok(());
             }
@@ -611,24 +648,45 @@ fn select_once(interp: &Interp, state: &Rc<RefCell<SelectorState>>) -> Result<()
         // Default.
         let default = state.borrow().default.clone();
         if let Some(handler) = default {
-            if let Some(seq) = timer_seq {
-                interp.sched.borrow_mut().cancel_timer(seq);
-            }
+            cancel_timer(timer_seq);
             interp.call_block(&handler, smallvec![])?;
             return Ok(());
         }
         if receives.is_empty() && sends.is_empty() && after.is_none() {
             return Err(interp.err_arg("select with no alternatives"));
         }
-        // Register and wait.
+        // Register and wait. Each channel is checked again as the task
+        // registers on it: one that became ready since (another worker
+        // may have sent meanwhile) means trying again, not waiting.
+        let mut ready = false;
         for (c, _) in &receives {
-            c.recv_waiters.borrow_mut().push_back(me);
+            let mut st = c.lock();
+            if !st.buffer.is_empty() || st.closed {
+                ready = true;
+                break;
+            }
+            st.recv_waiters.push_back(me.task_ref());
         }
-        for (c, _, _) in &sends {
-            c.send_waiters.borrow_mut().push_back(me);
+        if !ready {
+            for (c, _, _) in &sends {
+                let mut st = c.lock();
+                if st.closed || send_ready(c, &st) {
+                    ready = true;
+                    break;
+                }
+                st.send_waiters.push_back(me.task_ref());
+            }
         }
-        interp.park()?;
+        if !ready {
+            interp.park()?;
+        }
     }
+}
+
+/// Whether a `select` can send on `c` now (an unbuffered channel needs a
+/// waiting receiver).
+fn send_ready(c: &ChannelInner, st: &ChannelState) -> bool {
+    st.can_send(c.capacity) && (c.capacity > 0 || !st.recv_waiters.is_empty())
 }
 
 // ----- atoms --------------------------------------------------------------------------------
@@ -637,13 +695,17 @@ fn atom_update(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let b = block(interp, &args)?;
     let cell = atom(interp, recv)?;
     loop {
-        let current = cell.borrow().clone();
+        let current = lock(cell).clone();
+        // The block runs without the lock (it may suspend, or use the
+        // atom); the update applies only if the value is still the one
+        // the block saw (another task may have changed it meanwhile).
         let new = interp.call_block(&b, smallvec![current.clone()])?;
-        // Single-threaded: the value can only have changed if the block
-        // suspended and another task updated it.
-        if cell.borrow().identical(&current) {
-            new.share();
-            *cell.borrow_mut() = new.clone();
+        new.share();
+        let mut g = lock(cell);
+        if g.identical(&current) {
+            let old = std::mem::replace(&mut *g, new.clone());
+            drop(g);
+            drop(old);
             return Ok(new);
         }
     }

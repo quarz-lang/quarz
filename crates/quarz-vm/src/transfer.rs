@@ -481,7 +481,7 @@ impl Interp {
         if !root.is_done() {
             return Err(Flow::Exit(code));
         }
-        let result = root.result.borrow().clone();
+        let result = root.result();
         match result {
             Some(TaskResult::Value(v)) => Ok(v),
             Some(TaskResult::Error(e)) => Err(Flow::Raise(e)),

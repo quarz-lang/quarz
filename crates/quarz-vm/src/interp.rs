@@ -191,7 +191,10 @@ enum ConstInit {
     Idle,
     /// The initializer runs in task `task`; the tasks in `waiters` wait
     /// for it (they would otherwise run it again).
-    Running { task: TaskId, waiters: Vec<TaskId> },
+    Running {
+        task: sched::TaskRef,
+        waiters: Vec<sched::TaskRef>,
+    },
 }
 
 /// A lock that a panic while holding it does not make unusable (nothing
@@ -894,7 +897,7 @@ impl Interp {
         if code != 0 && !root.is_done() {
             return Err(code);
         }
-        let result = root.result.borrow().clone();
+        let result = root.result();
         match result {
             Some(TaskResult::Value(v)) => Ok(Some(v)),
             Some(TaskResult::Error(_)) => Ok(None),
@@ -935,7 +938,7 @@ impl Interp {
                 break;
             }
         }
-        match root.result.borrow().clone() {
+        match root.result() {
             Some(TaskResult::Error(exc)) => {
                 if report {
                     self.flush();
@@ -1003,14 +1006,13 @@ impl Interp {
     pub fn park(&self) -> Result<(), Flow> {
         let task = self.current_task();
         self.check_cancel(&task)?;
-        task.state.set(sched::TaskState::Waiting);
+        task.set_state(sched::TaskState::Waiting);
         sched::suspend_raw();
         self.check_cancel(&task)
     }
 
     pub fn check_cancel(&self, task: &TaskHandle) -> Result<(), Flow> {
-        if task.cancel_requested.get() {
-            task.cancel_requested.set(false);
+        if task.take_cancel() {
             return Err(self.raise(self.program.exc.cancelled, "task cancelled"));
         }
         Ok(())
@@ -1054,6 +1056,11 @@ impl Interp {
         self.sched.borrow_mut().wake(id);
     }
 
+    /// Wake a task, whichever worker runs it.
+    pub fn wake_ref(&self, r: sched::TaskRef) {
+        self.sched.borrow_mut().wake_ref(r);
+    }
+
     pub fn sleep(&self, d: Duration) -> Result<(), Flow> {
         let id = self.current_task().id;
         self.sched.borrow_mut().add_timer(d, id);
@@ -1065,14 +1072,21 @@ impl Interp {
     pub fn await_task(&self, task: &Rc<TaskHandle>) -> EvalResult {
         loop {
             if task.is_done() {
-                return match task.result.borrow().clone() {
+                return match task.result() {
                     Some(TaskResult::Value(v)) => Ok(v),
                     Some(TaskResult::Error(e)) => Err(Flow::Raise(e)),
                     None => Ok(Value::Nil),
                 };
             }
-            let me = self.current_task().id;
-            task.joiners.borrow_mut().push(me);
+            {
+                // The task sets itself done under this lock: it is done
+                // now, or it will wake this one.
+                let mut joiners = sched::lock(&task.joiners);
+                if task.is_done() {
+                    continue;
+                }
+                joiners.push(self.sched.borrow().current_ref());
+            }
             self.park()?;
         }
     }
@@ -1081,8 +1095,8 @@ impl Interp {
         if task.is_done() {
             return;
         }
-        task.cancel_requested.set(true);
-        self.wake(task.id);
+        task.set_cancel_requested(true);
+        self.wake_ref(task.task_ref());
     }
 
     // ----- exceptions ------------------------------------------------------------------
@@ -1423,7 +1437,7 @@ impl Interp {
         // Run the initializer once: a task that finds another one
         // running it waits (it may suspend: IO, `sleep`).
         loop {
-            let me = self.current_task().id;
+            let me = self.sched.borrow().current_ref();
             let mut state = lock(&cell.init);
             if let Some(v) = cell.value.get() {
                 return Ok(v.get().clone());
@@ -1467,7 +1481,7 @@ impl Interp {
         let running = std::mem::take(&mut *lock(&cell.init));
         if let ConstInit::Running { waiters, .. } = running {
             for w in waiters {
-                self.wake(w);
+                self.wake_ref(w);
             }
         }
         r
@@ -2403,7 +2417,10 @@ impl Interp {
             Value::Channel(c) => format!("#<Channel capacity={}>", c.capacity),
             Value::Task(t) => format!("#<Task {}>", t.id),
             Value::Scope(_) => "#<Scope>".to_string(),
-            Value::Atom(a) => format!("#<Atom {}>", self.inspect(&a.borrow())?),
+            Value::Atom(a) => {
+                let v = sched::lock(a).clone();
+                format!("#<Atom {}>", self.inspect(&v)?)
+            }
             Value::Selector(_) => "#<Selector>".to_string(),
             Value::Duration(ns) => format_duration(*ns),
             Value::Enumerator(e) => format!("#<Enumerator {}>", e.method),

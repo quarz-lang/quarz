@@ -1006,7 +1006,7 @@ pub enum Value {
     Channel(Rc<ChannelInner>),
     Task(Rc<TaskHandle>),
     Scope(Rc<ScopeInner>),
-    Atom(Rc<RefCell<Value>>),
+    Atom(Rc<std::sync::Mutex<Value>>),
     Selector(Rc<RefCell<SelectorState>>),
     Enumerator(Rc<EnumeratorVal>),
     Io(Rc<IoVal>),
@@ -1412,15 +1412,13 @@ impl Value {
                             r.each_buffered(|x| push(&mut work, x));
                         }
                     }
-                    Value::Atom(r) => {
-                        if Rc::mark_shared(r) {
-                            push(&mut work, &*r.as_ptr());
-                        }
-                    }
                     // Made shared when created (`Rc::new_shared`), and
                     // their contents when they enter; a selector or a flow
                     // in transit never crosses.
                     Value::Channel(r) => {
+                        Rc::mark_shared(r);
+                    }
+                    Value::Atom(r) => {
                         Rc::mark_shared(r);
                     }
                     Value::Task(r) => {
