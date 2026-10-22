@@ -194,7 +194,9 @@ pub fn core_hash(_: &Interp, recv: &Value, _: Args) -> EvalResult {
 pub fn core_gets(interp: &Interp, raise_on_eof: bool) -> EvalResult {
     match io::stdin_line(interp)? {
         Some(line) => Ok(Value::string(line)),
-        None if raise_on_eof => Err(interp.raise(interp.exc.eof_error, "end of file reached")),
+        None if raise_on_eof => {
+            Err(interp.raise(interp.program.exc.eof_error, "end of file reached"))
+        }
         None => Ok(Value::Nil),
     }
 }

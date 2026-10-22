@@ -56,7 +56,7 @@ struct Classes {
 }
 
 fn classes(interp: &Interp) -> Result<Classes, Flow> {
-    let world = &interp.world;
+    let world = &interp.program.world;
     let missing = || interp.err_type("the json library is not loaded");
     let Some(json) = world.top.get("JSON") else {
         return Err(missing());
@@ -423,15 +423,15 @@ fn generate(
             }
             generate_map(interp, &members, indent, out, depth)?;
         }
-        Value::Class(c) => escape(&interp.world.class(*c).name, out),
+        Value::Class(c) => escape(&interp.program.world.class(*c).name, out),
         Value::Time(_) | Value::Duration(_) | Value::Range(_) | Value::Regexp(_) => {
             escape(&interp.to_s(v)?, out)
         }
         Value::Object(o) => {
-            let class = interp.world.class(o.class);
+            let class = interp.program.world.class(o.class);
             // `JSON::Value` is generated as the document it represents.
             if let Some(value_class) = class.variant_of {
-                if interp.world.class(value_class).name == "JSON::Value" {
+                if interp.program.world.class(value_class).name == "JSON::Value" {
                     let field = o.fields.borrow().first().cloned();
                     return match (class.short_name(), field) {
                         ("Null", _) => {
@@ -452,7 +452,7 @@ fn generate(
                 escape(class.short_name(), out);
                 return Ok(());
             }
-            if interp.world.is_exception_class(o.class) {
+            if interp.program.world.is_exception_class(o.class) {
                 escape(&interp.to_s(v)?, out);
                 return Ok(());
             }
@@ -557,6 +557,6 @@ fn escape(s: &str, out: &mut String) {
 fn generator_error(interp: &Interp, message: &str) -> Flow {
     match classes(interp) {
         Ok(c) => interp.raise(c.generator_error, message),
-        Err(_) => interp.raise(interp.exc.runtime_error, message),
+        Err(_) => interp.raise(interp.program.exc.runtime_error, message),
     }
 }

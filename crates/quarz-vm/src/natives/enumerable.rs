@@ -53,7 +53,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         let items = buffer.as_ref().unwrap();
         match items.get(pos) {
             Some(v) => Ok(v.clone()),
-            None => Err(i.raise(i.exc.stop_iteration, "iteration reached an end")),
+            None => Err(i.raise(i.program.exc.stop_iteration, "iteration reached an end")),
         }
     });
     m.insert("Enumerator#rewind", |i, r, _| {
@@ -355,7 +355,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
                 Some(v) => out.push(v.clone()),
                 None => {
                     return Err(i.raise(
-                        i.exc.key_error,
+                        i.program.exc.key_error,
                         &format!("key not found: {}", i.inspect(k)?),
                     ))
                 }

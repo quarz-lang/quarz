@@ -309,21 +309,13 @@ pub struct OwnedIds {
 }
 
 #[repr(C)]
-pub struct Interp {
-    pub hot: Hot,
+/// What the interpreter derives from the program when it loads it, and
+/// never changes: the part that the worker threads of an M:N scheduler
+/// are to share (it is `Send + Sync`, checked below).
+pub struct Program {
     pub world: RtWorld,
     /// Compilation units in execution order.
     pub units: Vec<Unit>,
-    /// The `self` object of each unit's top level, by file index.
-    unit_selfs: Vec<Value>,
-    /// The frame of the REPL's top level, kept across inputs.
-    pub repl_frame: Option<Rc<Frame>>,
-    pub funcs: Rc<RefCell<Vec<Rc<Function>>>>,
-    pub pools: Pools,
-    pub compiled: Rc<RefCell<Vec<Option<CompiledFn>>>>,
-    pub symbols: Rc<RefCell<SymbolTable>>,
-    consts: Rc<RefCell<Vec<Option<Value>>>>,
-    variant_singletons: Rc<RefCell<HashMap<ClassId, Value>>>,
     pub natives: Vec<Option<NativeFn>>,
     /// By-reference versions of some natives, by method id.
     pub fast_natives: Vec<Option<FastNativeFn>>,
@@ -338,15 +330,40 @@ pub struct Interp {
     /// method body, not a native, accessor or abstract method, with
     /// positional parameters only): the interpreter's common call.
     pub direct_funcs: Vec<Option<FuncId>>,
-    field_indices: Vec<FxHashMap<String, usize>>,
+    pub(crate) field_indices: Vec<FxHashMap<String, usize>>,
+    /// The dispatch table's columns: for each method that some
+    /// descendant of its owner overrides, its column in `Interp::vtable`
+    /// (`u32::MAX` for the others).
+    pub(crate) vslots: Vec<u32>,
+    pub(crate) nvslots: usize,
+    pub argv: Vec<String>,
+    pub exc: ExcClasses,
+    pub rt: RtClasses,
+}
+
+const _: () = {
+    const fn shareable<T: Send + Sync>() {}
+    shareable::<Program>();
+};
+
+pub struct Interp {
+    pub hot: Hot,
+    pub program: std::sync::Arc<Program>,
+    /// The `self` object of each unit's top level, by file index.
+    unit_selfs: Vec<Value>,
+    /// The frame of the REPL's top level, kept across inputs.
+    pub repl_frame: Option<Rc<Frame>>,
+    pub funcs: Rc<RefCell<Vec<Rc<Function>>>>,
+    pub pools: Pools,
+    pub compiled: Rc<RefCell<Vec<Option<CompiledFn>>>>,
+    pub symbols: Rc<RefCell<SymbolTable>>,
+    consts: Rc<RefCell<Vec<Option<Value>>>>,
+    variant_singletons: Rc<RefCell<HashMap<ClassId, Value>>>,
     pub sched: Rc<RefCell<Scheduler>>,
-    dispatch_cache: RefCell<FxHashMap<(ClassId, MethodId), MethodId>>,
     /// The dispatch table: for each class and each method that some
-    /// descendant of its owner overrides (`vslots[mid]` is the method's
-    /// column, `u32::MAX` for the others), the method the class runs
-    /// (`0`: not looked up yet, else the method id plus one).
-    vslots: Vec<u32>,
-    nvslots: usize,
+    /// descendant of its owner overrides (`Program::vslots[mid]` is the
+    /// method's column), the method the class runs (`0`: not looked up
+    /// yet, else the method id plus one).
     vtable: RefCell<Vec<u32>>,
     class_dispatch_cache: RefCell<FxHashMap<(ClassId, MethodId), Option<MethodId>>>,
     /// `class_method_override` results.
@@ -356,9 +373,6 @@ pub struct Interp {
     pub(crate) image_cache: RefCell<Option<(usize, std::sync::Arc<crate::transfer::ProgramImage>)>>,
     name_cache: RefCell<FxHashMap<NameKey, FxHashMap<String, Option<MethodId>>>>,
     next_tag: Rc<Cell<u64>>,
-    pub argv: Vec<String>,
-    pub exc: ExcClasses,
-    pub rt: RtClasses,
     /// The activations in progress, innermost last (all tasks share the
     /// vector; entries are tagged with their task). Raw pointers: an
     /// activation lives on the Rust stack for the duration of its call.
@@ -597,10 +611,25 @@ impl Interp {
             }
         }
         let repl_frame = state.repl_frame.clone();
-        let interp = std::rc::Rc::new(Interp {
-            hot: Hot::new(),
+        let program = std::sync::Arc::new(Program {
             world,
             units,
+            natives,
+            fast_natives,
+            natives_owned,
+            owned,
+            positional_only,
+            direct_funcs,
+            field_indices,
+            vslots,
+            nvslots,
+            argv,
+            exc,
+            rt,
+        });
+        let interp = std::rc::Rc::new(Interp {
+            hot: Hot::new(),
+            program,
             unit_selfs,
             repl_frame,
             funcs: state.funcs,
@@ -609,26 +638,13 @@ impl Interp {
             symbols: state.symbols,
             consts: state.consts,
             variant_singletons: state.variant_singletons,
-            natives,
-            fast_natives,
-            natives_owned,
-            owned,
-            positional_only,
-            direct_funcs,
-            field_indices,
             sched: state.sched,
-            dispatch_cache: RefCell::new(FxHashMap::default()),
-            vslots,
-            nvslots,
             vtable: RefCell::new(vec![0; nvslots * nclasses]),
             class_dispatch_cache: RefCell::new(FxHashMap::default()),
             class_method_cache: RefCell::new(FxHashMap::default()),
             image_cache: RefCell::new(None),
             name_cache: RefCell::new(FxHashMap::default()),
             next_tag: state.next_tag,
-            argv,
-            exc,
-            rt,
             current_task_id: Cell::new(0),
             native_bt: Cell::new(false),
             at_exit: state.at_exit,
@@ -664,7 +680,8 @@ impl Interp {
     }
 
     pub fn file_name(&self, file: u32) -> &str {
-        self.world
+        self.program
+            .world
             .file_names
             .get(file as usize)
             .map(String::as_str)
@@ -678,7 +695,7 @@ impl Interp {
         let me = self.clone();
         let body: Box<dyn FnOnce() -> TaskExit> = Box::new(move || {
             let mut result = Ok(Value::Nil);
-            for unit in me.units.iter() {
+            for unit in me.program.units.iter() {
                 let self_val = me.unit_selfs[unit.file as usize].clone();
                 if let Err(f) = me.run_top_level(unit.body, unit.file, self_val) {
                     result = Err(f);
@@ -841,7 +858,7 @@ impl Interp {
                 Err(Flow::Exit(c)) => TaskExit::Exit(c),
                 Err(other) => {
                     let e = me.make_exception(
-                        me.exc.runtime_error,
+                        me.program.exc.runtime_error,
                         &format!("unexpected control flow in task: {other:?}"),
                     );
                     TaskExit::Result(TaskResult::Error(e))
@@ -865,7 +882,7 @@ impl Interp {
     pub fn check_cancel(&self, task: &TaskHandle) -> Result<(), Flow> {
         if task.cancel_requested.get() {
             task.cancel_requested.set(false);
-            return Err(self.raise(self.exc.cancelled, "task cancelled"));
+            return Err(self.raise(self.program.exc.cancelled, "task cancelled"));
         }
         Ok(())
     }
@@ -892,7 +909,7 @@ impl Interp {
             match rx.try_recv() {
                 Ok(v) => return Ok(v),
                 Err(TryRecvError::Disconnected) => {
-                    return Err(self.raise(self.exc.runtime_error, "background job failed"))
+                    return Err(self.raise(self.program.exc.runtime_error, "background job failed"))
                 }
                 Err(TryRecvError::Empty) => self.park()?,
             }
@@ -942,7 +959,7 @@ impl Interp {
     // ----- exceptions ------------------------------------------------------------------
 
     pub fn make_exception(&self, class: ClassId, message: &str) -> Value {
-        let n = self.world.class(class).fields.len().max(1);
+        let n = self.program.world.class(class).fields.len().max(1);
         let mut fields: Fields = smallvec![Value::Nil; n];
         fields[0] = Value::str(message);
         let bt = self.capture_backtrace();
@@ -1017,15 +1034,15 @@ impl Interp {
     }
 
     pub fn err_arg(&self, message: &str) -> Flow {
-        self.raise(self.exc.argument_error, message)
+        self.raise(self.program.exc.argument_error, message)
     }
 
     pub fn err_type(&self, message: &str) -> Flow {
-        self.raise(self.exc.type_error, message)
+        self.raise(self.program.exc.type_error, message)
     }
 
     pub fn err_index(&self, message: &str) -> Flow {
-        self.raise(self.exc.index_error, message)
+        self.raise(self.program.exc.index_error, message)
     }
 
     pub fn exception_message(&self, exc: &Value) -> String {
@@ -1041,7 +1058,7 @@ impl Interp {
     /// Whether an exception object is an instance of a class.
     pub fn exception_is_a(&self, exc: &Value, class: ClassId) -> bool {
         match exc {
-            Value::Object(o) => self.world.class_is_a(o.class, class),
+            Value::Object(o) => self.program.world.class_is_a(o.class, class),
             _ => false,
         }
     }
@@ -1054,12 +1071,12 @@ impl Interp {
             Value::Class(cid) => {
                 let msg = match it.next() {
                     Some(m) => self.to_s(&m)?.to_string(),
-                    None => self.world.class(cid).name.clone(),
+                    None => self.program.world.class(cid).name.clone(),
                 };
                 self.make_exception(cid, &msg)
             }
-            Value::Str(s) => self.make_exception(self.exc.runtime_error, &s),
-            Value::Short(s) => self.make_exception(self.exc.runtime_error, s.as_str()),
+            Value::Str(s) => self.make_exception(self.program.exc.runtime_error, &s),
+            Value::Short(s) => self.make_exception(self.program.exc.runtime_error, s.as_str()),
             Value::Object(o) => {
                 if o.backtrace().is_none() {
                     let bt = self.capture_backtrace();
@@ -1077,7 +1094,7 @@ impl Interp {
     // ----- classes ---------------------------------------------------------------------
 
     pub fn class_of(&self, v: &Value) -> ClassId {
-        let b = &self.world.builtin;
+        let b = &self.program.world.builtin;
         match v {
             Value::Nil => b.nil,
             Value::Bool(_) => b.bool_,
@@ -1102,48 +1119,48 @@ impl Interp {
             Value::Task(_) => b.task,
             Value::Scope(_) => b.scope,
             Value::Atom(_) => b.atom,
-            Value::Selector(_) => self.rt.selector,
+            Value::Selector(_) => self.program.rt.selector,
             Value::Duration(_) => b.duration,
-            Value::Enumerator(_) => self.rt.enumerator,
+            Value::Enumerator(_) => self.program.rt.enumerator,
             Value::Io(io) => match &io.kind {
                 IoKind::Socket(st) => {
                     if st.borrow().unix {
-                        self.rt.unix_socket
+                        self.program.rt.unix_socket
                     } else {
-                        self.rt.tcp_socket
+                        self.program.rt.tcp_socket
                     }
                 }
                 IoKind::Listener(st) => {
                     if st.borrow().unix {
-                        self.rt.unix_server
+                        self.program.rt.unix_server
                     } else {
-                        self.rt.tcp_server
+                        self.program.rt.tcp_server
                     }
                 }
-                IoKind::Udp(_) => self.rt.udp_socket,
-                _ => self.rt.io,
+                IoKind::Udp(_) => self.program.rt.udp_socket,
+                _ => self.program.rt.io,
             },
             Value::Bytes(_) => b.bytes,
             Value::BytesBuilder(_) => b.bytes_builder,
             Value::Time(_) => b.time,
-            Value::Random(_) => self.rt.random,
+            Value::Random(_) => self.program.rt.random,
             Value::Flow(_) => b.object,
         }
     }
 
     pub fn class_name(&self, v: &Value) -> String {
-        self.world.class(self.class_of(v)).name.clone()
+        self.program.world.class(self.class_of(v)).name.clone()
     }
 
     /// The index of declared field `name` of `cid` (see `logical_get`).
     pub fn field_index(&self, cid: ClassId, name: &str) -> Option<usize> {
-        self.field_indices[cid as usize].get(name).copied()
+        self.program.field_indices[cid as usize].get(name).copied()
     }
 
     /// Declared field `i` of `o`: its physical field, or, for a data
     /// value held in place, that value rebuilt from its physical fields.
     pub fn logical_get(&self, o: &Object, i: usize) -> Value {
-        let class = self.world.class(o.class);
+        let class = self.program.world.class(o.class);
         let Some(iv) = class.ivars.get(i) else {
             return Value::Nil;
         };
@@ -1152,7 +1169,7 @@ impl Interp {
         match iv.flat {
             None => fields.get(slot).cloned().unwrap_or(Value::Nil),
             Some(d) => {
-                let n = self.world.class(d).fields.len();
+                let n = self.program.world.class(d).fields.len();
                 let vals: Fields = fields
                     .get(slot..slot + n)
                     .map(|s| s.iter().cloned().collect())
@@ -1165,7 +1182,7 @@ impl Interp {
     /// Store `v` into declared field `i` of `o` (a data value held in
     /// place is copied field by field).
     pub fn logical_set(&self, o: &Object, i: usize, v: Value) {
-        let class = self.world.class(o.class);
+        let class = self.program.world.class(o.class);
         let Some(iv) = class.ivars.get(i) else {
             return;
         };
@@ -1182,7 +1199,7 @@ impl Interp {
                 fields[slot] = v;
             }
             Some(d) => {
-                let n = self.world.class(d).fields.len();
+                let n = self.program.world.class(d).fields.len();
                 let Value::Object(src) = &v else {
                     return;
                 };
@@ -1199,14 +1216,14 @@ impl Interp {
 
     /// The values of all declared fields of `o`.
     pub fn logical_values(&self, o: &Object) -> Vec<Value> {
-        let n = self.world.class(o.class).ivars.len();
+        let n = self.program.world.class(o.class).ivars.len();
         (0..n).map(|i| self.logical_get(o, i)).collect()
     }
 
     /// The physical fields of a `class` object from its declared
     /// fields' values.
     pub fn flatten_values(&self, class: ClassId, values: Vec<Value>) -> Fields {
-        let info = self.world.class(class);
+        let info = self.program.world.class(class);
         let mut out: Fields = smallvec![Value::Nil; info.fields.len()];
         for (iv, v) in info.ivars.iter().zip(values) {
             let slot = iv.slot as usize;
@@ -1217,7 +1234,7 @@ impl Interp {
                     }
                 }
                 Some(d) => {
-                    let n = self.world.class(d).fields.len();
+                    let n = self.program.world.class(d).fields.len();
                     if let Value::Object(src) = &v {
                         for (k, x) in src.fields.borrow().iter().take(n).enumerate() {
                             if slot + k < out.len() {
@@ -1235,7 +1252,7 @@ impl Interp {
     pub fn is_a(&self, v: &Value, ty: &RtType) -> bool {
         match ty {
             RtType::Nothing => false,
-            RtType::Class(cid) => self.world.class_is_a(self.class_of(v), *cid),
+            RtType::Class(cid) => self.program.world.class_is_a(self.class_of(v), *cid),
             RtType::ClassObject => matches!(v, Value::Class(_)),
             RtType::Union(ms) => ms.iter().any(|m| self.is_a(v, m)),
             RtType::Tuple(n) => matches!(v, Value::Array(a) if a.len() == *n as usize),
@@ -1258,7 +1275,7 @@ impl Interp {
         if let Some(v) = self.consts.borrow()[cid as usize].clone() {
             return Ok(v);
         }
-        let info = &self.world.consts[cid as usize];
+        let info = &self.program.world.consts[cid as usize];
         let Some(init) = info.init else {
             return Ok(Value::Nil);
         };
@@ -1280,7 +1297,7 @@ impl Interp {
     /// Find the implementation of a statically resolved method for the
     /// receiver's run-time class (subclass overrides).
     pub fn resolve_dynamic(&self, recv: &Value, mid: MethodId) -> MethodId {
-        let m = self.world.method(mid);
+        let m = self.program.world.method(mid);
         if m.singleton {
             // A class method some subclass overrides: the class it is
             // called on decides.
@@ -1297,7 +1314,7 @@ impl Interp {
         // Nothing overrides it, and the receiver is not a class object
         // (whose own class methods may stand in for a module's): the
         // method is the one.
-        if self.vslots[mid as usize] == u32::MAX && !matches!(recv, Value::Class(_)) {
+        if self.program.vslots[mid as usize] == u32::MAX && !matches!(recv, Value::Class(_)) {
             return mid;
         }
         if let Value::Class(cid) = recv {
@@ -1311,12 +1328,12 @@ impl Interp {
         if cid == m.owner {
             return mid;
         }
-        let slot = self.vslots[mid as usize];
+        let slot = self.program.vslots[mid as usize];
         if slot == u32::MAX {
             // Nothing overrides it: the method is the one.
             return mid;
         }
-        let at = cid as usize * self.nvslots + slot as usize;
+        let at = cid as usize * self.program.nvslots + slot as usize;
         if let Some(&hit) = self.vtable.borrow().get(at) {
             if hit != 0 {
                 return hit - 1;
@@ -1336,12 +1353,12 @@ impl Interp {
         if let Some(found) = self.class_dispatch_cache.borrow().get(&(cid, mid)) {
             return *found;
         }
-        let m = self.world.method(mid);
+        let m = self.program.world.method(mid);
         let (min, max) = m.positional_arity();
         // A class method of the same name that accepts less is an
         // overload, not an override.
         let accepts = |c: MethodId| {
-            let cm = self.world.method(c);
+            let cm = self.program.world.method(c);
             let (cmin, cmax) = cm.positional_arity();
             !cm.is_abstract
                 && cm.has_block == m.has_block
@@ -1352,7 +1369,7 @@ impl Interp {
         let mut found = None;
         let mut cur = Some(cid);
         'chain: while let Some(c) = cur {
-            let class = self.world.class(c);
+            let class = self.program.world.class(c);
             if let Some(ids) = class.singleton_methods.get(&m.name) {
                 if let Some(id) = ids.iter().copied().find(|id| accepts(*id)) {
                     found = Some(id);
@@ -1360,8 +1377,8 @@ impl Interp {
                 }
             }
             for module in &class.extends {
-                for anc in &self.world.class(*module).ancestors {
-                    if let Some(ids) = self.world.class(*anc).methods.get(&m.name) {
+                for anc in &self.program.world.class(*module).ancestors {
+                    if let Some(ids) = self.program.world.class(*anc).methods.get(&m.name) {
                         if let Some(id) = ids.iter().copied().find(|id| accepts(*id)) {
                             found = Some(id);
                             break 'chain;
@@ -1384,17 +1401,18 @@ impl Interp {
         if let Some(found) = self.class_method_cache.borrow().get(&(cid, mid)) {
             return *found;
         }
-        let m = self.world.method(mid);
+        let m = self.program.world.method(mid);
         let mut found = None;
         let mut cur = Some(cid);
         while let Some(c) = cur {
             if c == m.owner {
                 break;
             }
-            let class = self.world.class(c);
+            let class = self.program.world.class(c);
             if let Some(ids) = class.singleton_methods.get(&m.name) {
                 if let Some(id) = ids.iter().copied().find(|id| {
-                    self.same_signature(*id, mid) || self.world.method(*id).overrides.contains(&mid)
+                    self.same_signature(*id, mid)
+                        || self.program.world.method(*id).overrides.contains(&mid)
                 }) {
                     found = Some(id);
                     break;
@@ -1412,26 +1430,26 @@ impl Interp {
     /// that overrides `mid`: same name, and the same signature when the
     /// name is overloaded.
     fn find_override(&self, cid: ClassId, mid: MethodId) -> Option<MethodId> {
-        let m = self.world.method(mid);
+        let m = self.program.world.method(mid);
         let (min, max) = m.positional_arity();
-        for anc in &self.world.class(cid).ancestors {
+        for anc in &self.program.world.class(cid).ancestors {
             let anc = *anc;
             if anc == m.owner {
                 return None;
             }
             let mut candidates: Vec<MethodId> = Vec::new();
-            for ext in &self.world.extensions {
-                if ext.target == anc && self.world.extension_dispatches(ext, m.owner) {
+            for ext in &self.program.world.extensions {
+                if ext.target == anc && self.program.world.extension_dispatches(ext, m.owner) {
                     if let Some(ids) = ext.methods.get(&m.name) {
                         candidates.extend(ids);
                     }
                 }
             }
-            if let Some(ids) = self.world.class(anc).methods.get(&m.name) {
+            if let Some(ids) = self.program.world.class(anc).methods.get(&m.name) {
                 candidates.extend(ids);
             }
             candidates.retain(|c| {
-                let cm = self.world.method(*c);
+                let cm = self.program.world.method(*c);
                 let (cmin, cmax) = cm.positional_arity();
                 cm.has_block == m.has_block && cmin <= max && cmax >= min
             });
@@ -1446,7 +1464,7 @@ impl Interp {
             // name that accepts less is an overload: keep looking.
             if let Some(o) = candidates
                 .iter()
-                .find(|c| self.world.method(**c).overrides.contains(&mid))
+                .find(|c| self.program.world.method(**c).overrides.contains(&mid))
             {
                 return Some(*o);
             }
@@ -1455,7 +1473,7 @@ impl Interp {
     }
 
     fn same_signature(&self, a: MethodId, b: MethodId) -> bool {
-        let (a, b) = (self.world.method(a), self.world.method(b));
+        let (a, b) = (self.program.world.method(a), self.program.world.method(b));
         a.params.len() == b.params.len()
             && a.params.iter().zip(&b.params).all(|(p, q)| {
                 p.kind == q.kind && (p.ty == q.ty || p.ty.is_none() || q.ty.is_none())
@@ -1477,25 +1495,25 @@ impl Interp {
         }
         let mut found = None;
         let mut fallback = None;
-        'outer: for anc in &self.world.class(cid).ancestors {
+        'outer: for anc in &self.program.world.class(cid).ancestors {
             let anc = *anc;
             let mut lists: Vec<&Vec<MethodId>> = Vec::new();
             // Always-active extensions on this ancestor come first (a
             // module's extension applies only where `using` makes it
             // visible, which is resolved statically).
-            for ext in &self.world.extensions {
+            for ext in &self.program.world.extensions {
                 if ext.always_active && ext.target == anc {
                     if let Some(ids) = ext.methods.get(name) {
                         lists.push(ids);
                     }
                 }
             }
-            if let Some(ids) = self.world.class(anc).methods.get(name) {
+            if let Some(ids) = self.program.world.class(anc).methods.get(name) {
                 lists.push(ids);
             }
             for ids in lists {
                 for id in ids {
-                    let m = self.world.method(*id);
+                    let m = self.program.world.method(*id);
                     let (min, max) = m.positional_arity();
                     if min <= argc && argc <= max && (m.has_block == with_block) {
                         found = Some(*id);
@@ -1532,10 +1550,10 @@ impl Interp {
         let cid = self.class_of(recv);
         let Some(mid) = self.find_method(cid, name, args.len(), block.is_some()) else {
             return Err(self.raise(
-                self.exc.runtime_error,
+                self.program.exc.runtime_error,
                 &format!(
                     "undefined method `{name}` for {}",
-                    self.world.class(cid).name
+                    self.program.world.class(cid).name
                 ),
             ));
         };
@@ -1547,8 +1565,8 @@ impl Interp {
     pub fn has_user_method(&self, recv: &Value, name: &str, argc: usize) -> Option<MethodId> {
         let cid = self.class_of(recv);
         let mid = self.find_method(cid, name, argc, false)?;
-        let m = self.world.method(mid);
-        if m.owner == self.world.builtin.object && m.native_key.is_some() {
+        let m = self.program.world.method(mid);
+        if m.owner == self.program.world.builtin.object && m.native_key.is_some() {
             return None;
         }
         Some(mid)
@@ -1564,8 +1582,8 @@ impl Interp {
         kw: Vec<(Symbol, Value)>,
         block: Option<Value>,
     ) -> EvalResult {
-        let m = self.world.method(mid);
-        if let Some(native) = self.natives[mid as usize] {
+        let m = self.program.world.method(mid);
+        if let Some(native) = self.program.natives[mid as usize] {
             return native(
                 self,
                 &recv,
@@ -1618,7 +1636,7 @@ impl Interp {
                     return Err(self.err_type("`to_h` on a non-object"));
                 };
                 let mut map = ValueMap::default();
-                let class = self.world.class(o.class);
+                let class = self.program.world.class(o.class);
                 for (i, f) in class.ivars.iter().enumerate() {
                     map.insert(Value::Symbol(self.intern(&f.name)), self.logical_get(o, i));
                 }
@@ -1628,7 +1646,7 @@ impl Interp {
         }
         if m.native_key.is_some() {
             return Err(self.raise(
-                self.exc.not_implemented,
+                self.program.exc.not_implemented,
                 &format!(
                     "native method `{}` is not implemented",
                     m.native_key.as_deref().unwrap_or("")
@@ -1637,7 +1655,7 @@ impl Interp {
         }
         if m.is_abstract {
             return Err(self.raise(
-                self.exc.not_implemented,
+                self.program.exc.not_implemented,
                 &format!(
                     "abstract method `{}` called on {}",
                     m.name,
@@ -1651,7 +1669,7 @@ impl Interp {
         // Positional parameters only: the arguments are bound as they
         // are (the checker has matched their number; extra ones are
         // dropped, as `bind_params` does).
-        let (bound, provided) = if kw.is_empty() && self.positional_only[mid as usize] {
+        let (bound, provided) = if kw.is_empty() && self.program.positional_only[mid as usize] {
             let mut args = args;
             args.truncate(m.params.len());
             let n = args.len();
@@ -1671,7 +1689,7 @@ impl Interp {
     /// applied; when it did not, nothing was changed.
     #[inline]
     pub fn owned_fast(&self, mid: MethodId, slot: &mut Value, args: &[&Value]) -> bool {
-        let o = &self.owned;
+        let o = &self.program.owned;
         let m = Some(mid);
         match (slot, args) {
             (Value::Array(a), [v]) if m == o.array_push => {
@@ -1715,7 +1733,7 @@ impl Interp {
         kw: Vec<(Symbol, Value)>,
     ) -> Result<Value, (Flow, Value)> {
         let mid = self.resolve_dynamic(&recv, mid);
-        if let Some(native) = self.natives_owned[mid as usize] {
+        if let Some(native) = self.program.natives_owned[mid as usize] {
             return native(
                 self,
                 recv,
@@ -1741,7 +1759,7 @@ impl Interp {
         args: ArgVec,
         kw: Vec<(Symbol, Value)>,
     ) -> Result<Vec<Value>, Flow> {
-        let m = self.world.method(mid);
+        let m = self.program.world.method(mid);
         let n = m.params.len();
         let mut values = vec![Value::Nil; n];
         let mut set = vec![false; n];
@@ -1758,7 +1776,7 @@ impl Interp {
                 set[i] = true;
             }
         }
-        let class = self.world.class(m.owner);
+        let class = self.program.world.class(m.owner);
         for (i, p) in m.params.iter().enumerate() {
             if !set[i] && p.has_default {
                 if let Some(default) = class.ivars.get(i).and_then(|f| f.default) {
@@ -1781,7 +1799,7 @@ impl Interp {
         kw: Vec<(Symbol, Value)>,
         block: Option<Value>,
     ) -> Result<(ArgVec, u64), Flow> {
-        let m = self.world.method(mid);
+        let m = self.program.world.method(mid);
         let n = m.params.len();
         let mut values: ArgVec = smallvec![Value::Nil; n + usize::from(m.has_block)];
         let mut provided = 0u64;
@@ -1865,16 +1883,16 @@ impl Interp {
         if cid == class {
             return (cid, init);
         }
-        for anc in &self.world.class(cid).ancestors {
+        for anc in &self.program.world.class(cid).ancestors {
             if *anc == class {
                 break;
             }
-            if let Some(ids) = self.world.class(*anc).methods.get("initialize") {
+            if let Some(ids) = self.program.world.class(*anc).methods.get("initialize") {
                 let pick = init
                     .and_then(|i| {
                         ids.iter().copied().find(|id| {
                             self.same_signature(*id, i)
-                                || self.world.method(*id).overrides.contains(&i)
+                                || self.program.world.method(*id).overrides.contains(&i)
                         })
                     })
                     .or_else(|| ids.first().copied());
@@ -1892,10 +1910,10 @@ impl Interp {
         kw: Vec<(Symbol, Value)>,
         block: Option<Value>,
     ) -> EvalResult {
-        let info = self.world.class(class);
+        let info = self.program.world.class(class);
         // A data constructor given every physical field: copied in.
         if let Some(i) = init {
-            if self.world.methods[i as usize].synth == RtSynth::DataInit
+            if self.program.world.methods[i as usize].synth == RtSynth::DataInit
                 && kw.is_empty()
                 && block.is_none()
                 && args.len() == info.fields.len()
@@ -1975,7 +1993,7 @@ impl Interp {
                 flags: flags.to_string(),
             }))),
             Err(e) => Err(self.raise(
-                self.exc.argument_error,
+                self.program.exc.argument_error,
                 &format!("invalid regexp /{source}/: {e}"),
             )),
         }
@@ -1984,7 +2002,7 @@ impl Interp {
     /// `===` for `case/when`.
     pub fn case_eq(&self, pattern: &Value, v: &Value) -> Result<bool, Flow> {
         match pattern {
-            Value::Class(cid) => Ok(self.world.class_is_a(self.class_of(v), *cid)),
+            Value::Class(cid) => Ok(self.program.world.class_is_a(self.class_of(v), *cid)),
             Value::Range(r) => self.range_covers(r, v),
             Value::Regexp(re) => Ok(v.as_str().is_some_and(|s| re.regex.is_match(s))),
             Value::Proc(_) => Ok(self.call_block(pattern, smallvec![v.clone()])?.is_truthy()),
@@ -2051,7 +2069,7 @@ impl Interp {
                     let r = self.invoke(mid, v.clone(), smallvec![], vec![], None)?;
                     return Ok(Cow::Owned(self.to_s(&r)?.into_owned()));
                 }
-                if self.world.is_exception_class(o.class) {
+                if self.program.world.is_exception_class(o.class) {
                     return Ok(Cow::Owned(self.exception_message(v)));
                 }
                 Ok(Cow::Owned(self.inspect(v)?))
@@ -2164,7 +2182,7 @@ impl Interp {
                 out
             }
             Value::Object(o) => {
-                let class = self.world.class(o.class);
+                let class = self.program.world.class(o.class);
                 if class.is_exception {
                     return Ok(format!("#<{}: {}>", class.name, self.exception_message(v)));
                 }
@@ -2193,7 +2211,7 @@ impl Interp {
                     }
                 }
             }
-            Value::Class(c) => self.world.class(*c).name.clone(),
+            Value::Class(c) => self.program.world.class(*c).name.clone(),
             Value::Proc(_) => "#<Proc>".to_string(),
             Value::StringBuilder(s) => {
                 if inspect {
@@ -2358,7 +2376,7 @@ pub(crate) fn task_exit(interp: &Interp, result: EvalResult) -> TaskExit {
         Err(Flow::Return(v, 0)) => TaskExit::Result(TaskResult::Value(v)),
         Err(other) => {
             let e = interp.make_exception(
-                interp.exc.runtime_error,
+                interp.program.exc.runtime_error,
                 &format!("unexpected control flow: {other:?}"),
             );
             TaskExit::Result(TaskResult::Error(e))

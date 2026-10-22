@@ -95,7 +95,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         let st = udp(i, r)?;
         let r = match &st.borrow().socket {
             Some(s) => s.connect(addr),
-            None => return Err(i.raise(i.exc.io_error, "closed stream")),
+            None => return Err(i.raise(i.program.exc.io_error, "closed stream")),
         };
         r.map_err(|e| os_error(i, e, &format!("{host}:{port}")))?;
         Ok(Value::Nil)
@@ -116,7 +116,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             let r = {
                 let s = st.borrow();
                 let Some(socket) = s.socket.as_ref() else {
-                    return Err(i.raise(i.exc.io_error, "closed stream"));
+                    return Err(i.raise(i.program.exc.io_error, "closed stream"));
                 };
                 match target {
                     Some(addr) => socket.send_to(&data, addr),
@@ -175,7 +175,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         let max = int(i, a.arg(0), "length")?.max(0) as usize;
         match read_partial(i, r, max)? {
             Some(bytes) => Ok(Value::string(String::from_utf8_lossy(&bytes).into_owned())),
-            None => Err(i.raise(i.exc.eof_error, "end of file reached")),
+            None => Err(i.raise(i.program.exc.eof_error, "end of file reached")),
         }
     });
     m.insert("IO#readpartial?", |i, r, a| {
@@ -291,7 +291,7 @@ fn resolve(interp: &Interp, host: &str, port: i64) -> Result<SocketAddr, Flow> {
         .map_err(|e| os_error(interp, e, &label))?;
     addrs.into_iter().next().ok_or_else(|| {
         interp.raise(
-            interp.exc.system_call_error,
+            interp.program.exc.system_call_error,
             &format!("{label}: no address"),
         )
     })
@@ -305,7 +305,7 @@ fn listener_accept(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
         let accepted = {
             let s = st.borrow();
             let Some(listener) = s.listener.as_ref() else {
-                return Err(interp.raise(interp.exc.io_error, "closed stream"));
+                return Err(interp.raise(interp.program.exc.io_error, "closed stream"));
             };
             match listener {
                 Listener::Tcp(l) => l.accept().map(|(s, _)| Stream::Tcp(s)),
@@ -357,21 +357,21 @@ fn udp<'a>(interp: &Interp, v: &'a Value) -> Result<&'a RefCell<UdpState>, Flow>
 fn socket_fd(interp: &Interp, st: &RefCell<SocketState>) -> Result<RawFd, Flow> {
     match &st.borrow().stream {
         Some(s) => Ok(s.fd()),
-        None => Err(interp.raise(interp.exc.io_error, "closed stream")),
+        None => Err(interp.raise(interp.program.exc.io_error, "closed stream")),
     }
 }
 
 fn listener_fd(interp: &Interp, st: &RefCell<ListenerState>) -> Result<RawFd, Flow> {
     match &st.borrow().listener {
         Some(l) => Ok(l.fd()),
-        None => Err(interp.raise(interp.exc.io_error, "closed stream")),
+        None => Err(interp.raise(interp.program.exc.io_error, "closed stream")),
     }
 }
 
 fn udp_fd(interp: &Interp, st: &RefCell<UdpState>) -> Result<RawFd, Flow> {
     match &st.borrow().socket {
         Some(s) => Ok(s.as_raw_fd()),
-        None => Err(interp.raise(interp.exc.io_error, "closed stream")),
+        None => Err(interp.raise(interp.program.exc.io_error, "closed stream")),
     }
 }
 
@@ -386,7 +386,7 @@ fn fill(interp: &Interp, st: &RefCell<SocketState>) -> Result<bool, Flow> {
         let r = {
             let mut s = st.borrow_mut();
             let Some(stream) = s.stream.as_mut() else {
-                return Err(interp.raise(interp.exc.io_error, "closed stream"));
+                return Err(interp.raise(interp.program.exc.io_error, "closed stream"));
             };
             stream.read(&mut chunk)
         };
@@ -492,12 +492,12 @@ fn socket_write_all(interp: &Interp, st: &RefCell<SocketState>, data: &[u8]) -> 
         let r = {
             let mut s = st.borrow_mut();
             let Some(stream) = s.stream.as_mut() else {
-                return Err(interp.raise(interp.exc.io_error, "closed stream"));
+                return Err(interp.raise(interp.program.exc.io_error, "closed stream"));
             };
             stream.write(&data[written..])
         };
         match r {
-            Ok(0) => return Err(interp.raise(interp.exc.io_error, "connection closed")),
+            Ok(0) => return Err(interp.raise(interp.program.exc.io_error, "connection closed")),
             Ok(n) => written += n,
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => interp.wait_fd(fd, true)?,
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
@@ -531,7 +531,7 @@ fn shutdown(interp: &Interp, recv: &Value, how: std::net::Shutdown) -> Result<()
     let r = match &s.stream {
         Some(Stream::Tcp(t)) => t.shutdown(how),
         Some(Stream::Unix(u)) => u.shutdown(how),
-        None => return Err(interp.raise(interp.exc.io_error, "closed stream")),
+        None => return Err(interp.raise(interp.program.exc.io_error, "closed stream")),
     };
     r.map_err(|e| os_error(interp, e, "shutdown"))
 }
@@ -608,7 +608,7 @@ fn udp_recv(
         let r = {
             let s = st.borrow();
             let Some(socket) = s.socket.as_ref() else {
-                return Err(interp.raise(interp.exc.io_error, "closed stream"));
+                return Err(interp.raise(interp.program.exc.io_error, "closed stream"));
             };
             socket.recv_from(&mut buf)
         };

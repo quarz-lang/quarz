@@ -569,7 +569,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     m.insert("Hash#[]", |i, r, a| match hash(i, r)?.get(a.arg(0)) {
         Some(v) => Ok(v.clone()),
         None => Err(i.raise(
-            i.exc.key_error,
+            i.program.exc.key_error,
             &format!("key not found: {}", i.inspect(a.arg(0))?),
         )),
     });
@@ -679,7 +679,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         match hb(i, r)?.borrow().get(a.arg(0)) {
             Some(v) => Ok(v.clone()),
             None => Err(i.raise(
-                i.exc.key_error,
+                i.program.exc.key_error,
                 &format!("key not found: {}", i.inspect(a.arg(0))?),
             )),
         }
@@ -1449,7 +1449,7 @@ fn hash_fetch(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
         (Some(b), _) => interp.call_block(b, smallvec![args.arg(0).clone()]),
         (None, Some(d)) => Ok(d.clone()),
         (None, None) => Err(interp.raise(
-            interp.exc.key_error,
+            interp.program.exc.key_error,
             &format!("key not found: {}", interp.inspect(args.arg(0))?),
         )),
     }
@@ -1614,7 +1614,10 @@ fn enumerator_next(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
     let buffer = e.buffer.borrow();
     let items = buffer.as_ref().unwrap();
     if pos >= items.len() {
-        return Err(interp.raise(interp.exc.stop_iteration, "iteration reached an end"));
+        return Err(interp.raise(
+            interp.program.exc.stop_iteration,
+            "iteration reached an end",
+        ));
     }
     e.position.set(pos + 1);
     Ok(items[pos].clone())

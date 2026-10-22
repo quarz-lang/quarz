@@ -227,7 +227,7 @@ impl Interp {
             },
         };
         if argc <= 3 {
-            if let Some(fast) = self.fast_natives[mid as usize] {
+            if let Some(fast) = self.program.fast_natives[mid as usize] {
                 let refs: SmallVec<[&Value; 3]> = args.iter().collect();
                 if let Some(r) = fast(self, recv, &refs) {
                     return r;
@@ -269,7 +269,7 @@ impl BlockCaller {
             }
         };
         if sched::stack_exhausted() {
-            return Err(interp.raise(interp.exc.system_stack, "stack level too deep"));
+            return Err(interp.raise(interp.program.exc.system_stack, "stack level too deep"));
         }
         let padded: ArgVec;
         let view: &[Value] = if args.len() == nparams {
@@ -649,7 +649,7 @@ impl Interp {
                             _ => Step::Done(Ok(Value::Nil)),
                         },
                         _ => Step::Done(Err(self.raise(
-                            self.exc.runtime_error,
+                            self.program.exc.runtime_error,
                             "internal error: unreachable code executed (in a compiled program, \
                              possibly a function the build dropped as unreachable: \
                              QUARZ_NO_SHAKE=1 at build time keeps them)",
@@ -902,7 +902,7 @@ impl Interp {
                         .unwrap_or(Value::Nil),
                     _ => {
                         return Err(self.raise(
-                            self.exc.runtime_error,
+                            self.program.exc.runtime_error,
                             "instance variable access outside of an object",
                         ))
                     }
@@ -924,7 +924,7 @@ impl Interp {
                     }
                     _ => {
                         return Err(self.raise(
-                            self.exc.runtime_error,
+                            self.program.exc.runtime_error,
                             "instance variable access outside of an object",
                         ))
                     }
@@ -976,7 +976,7 @@ impl Interp {
                         let mid = self.resolve_dynamic(recv_ref, *mid);
                         resolved = Some(mid);
                         if args.len() <= 3 {
-                            if let Some(fast) = self.fast_natives[mid as usize] {
+                            if let Some(fast) = self.program.fast_natives[mid as usize] {
                                 let result = {
                                     let refs: SmallVec<[&Value; 3]> =
                                         args.iter().map(|r| &regs[*r as usize]).collect();
@@ -993,7 +993,7 @@ impl Interp {
                         // to it (what `invoke` and `bind_params` would do,
                         // without their checks), the arguments moved in as
                         // below.
-                        if let Some(fid) = self.direct_funcs[mid as usize] {
+                        if let Some(fid) = self.program.direct_funcs[mid as usize] {
                             let recv = match recv {
                                 Some(r) if *moved & (1 << 15) != 0 => {
                                     std::mem::replace(&mut regs[*r as usize], Value::Nil)
@@ -1001,7 +1001,7 @@ impl Interp {
                                 Some(r) => regs[*r as usize].clone(),
                                 None => act.self_val.clone(),
                             };
-                            let nparams = self.world.method(mid).params.len();
+                            let nparams = self.program.world.method(mid).params.len();
                             let mut pos = ArgVec::with_capacity(args.len());
                             let mut bits = *moved & 0x7fff;
                             for r in args.iter().take(nparams) {
@@ -1074,7 +1074,8 @@ impl Interp {
                     }
                     CallKind::Yield => {
                         if act.block.is_nil() {
-                            Err(self.raise(self.exc.runtime_error, "no block given (yield)"))
+                            Err(self
+                                .raise(self.program.exc.runtime_error, "no block given (yield)"))
                         } else {
                             self.call_block(&act.block, pos)
                         }
@@ -1231,6 +1232,7 @@ impl Interp {
             }
             Inst::ClassIsA { dst, src, class } => {
                 let r = self
+                    .program
                     .world
                     .class_is_a(self.class_of(&regs[*src as usize]), *class);
                 regs[*dst as usize] = Value::Bool(r);
@@ -1538,7 +1540,7 @@ impl Interp {
                 } else {
                     format!("no pattern matched {}", self.inspect(v)?)
                 };
-                return Err(self.raise(self.exc.no_matching_pattern, &msg));
+                return Err(self.raise(self.program.exc.no_matching_pattern, &msg));
             }
         }
         let _ = fid;
@@ -1571,7 +1573,7 @@ impl Interp {
             ClosureBody::Native(f) => f(self, args),
             ClosureBody::Func(fid) => {
                 if sched::stack_exhausted() {
-                    return Err(self.raise(self.exc.system_stack, "stack level too deep"));
+                    return Err(self.raise(self.program.exc.system_stack, "stack level too deep"));
                 }
                 let funcs = self.funcs.borrow();
                 let f = &funcs[*fid as usize];
@@ -1717,7 +1719,7 @@ impl Interp {
         block: Option<Value>,
     ) -> EvalResult {
         if sched::stack_exhausted() {
-            return Err(self.raise(self.exc.system_stack, "stack level too deep"));
+            return Err(self.raise(self.program.exc.system_stack, "stack level too deep"));
         }
         let (frame_size, file) = {
             let funcs = self.funcs.borrow();

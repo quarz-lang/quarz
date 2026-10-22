@@ -258,7 +258,7 @@ fn needed_slots(interp: &Interp, fid: FuncId) -> std::collections::HashSet<(i64,
 
 fn not_transferable(interp: &Interp, v: &Value) -> Flow {
     interp.raise(
-        interp.exc.argument_error,
+        interp.program.exc.argument_error,
         &format!(
             "a {} cannot be used in Task.blocking: it belongs to the calling thread \
              (only immutable values are copied to the helper thread)",
@@ -309,7 +309,7 @@ pub fn import(interp: &Interp, t: Transfer) -> Value {
             let fields: Fields = import_all(interp, fields).into_iter().collect();
             // Variants without data are singletons.
             if fields.is_empty() {
-                let info = interp.world.class(class);
+                let info = interp.program.world.class(class);
                 if info.kind == quarz_ir::RtClassKind::Variant {
                     return interp.variant_singleton(class);
                 }
@@ -453,9 +453,9 @@ impl Interp {
             }
         }
         let image = Arc::new(ProgramImage {
-            world: self.world.clone(),
+            world: self.program.world.clone(),
             functions: self.funcs.borrow().iter().map(|f| (**f).clone()).collect(),
-            units: self.units.clone(),
+            units: self.program.units.clone(),
             compiled: self.compiled.borrow().clone(),
         });
         *self.image_cache.borrow_mut() = Some((n, image.clone()));

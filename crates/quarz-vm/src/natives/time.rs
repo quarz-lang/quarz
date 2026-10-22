@@ -28,7 +28,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         let ns = match a.arg(0) {
             Value::Int(s) => s
                 .checked_mul(NS)
-                .ok_or_else(|| i.raise(i.exc.range_error, "time out of range"))?,
+                .ok_or_else(|| i.raise(i.program.exc.range_error, "time out of range"))?,
             v => (float(i, v, "seconds")? * NS as f64).round() as i64,
         };
         Ok(at_local(ns))
@@ -115,7 +115,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         let d = dur(i, a.arg(0))?;
         let ns =
             t.ns.checked_add(d)
-                .ok_or_else(|| i.raise(i.exc.range_error, "time out of range"))?;
+                .ok_or_else(|| i.raise(i.program.exc.range_error, "time out of range"))?;
         Ok(time(ns, t.offset, t.utc))
     });
     m.insert("Time#-", |i, r, a| {
@@ -126,7 +126,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
                 let d = dur(i, v)?;
                 let ns =
                     t.ns.checked_sub(d)
-                        .ok_or_else(|| i.raise(i.exc.range_error, "time out of range"))?;
+                        .ok_or_else(|| i.raise(i.program.exc.range_error, "time out of range"))?;
                 Ok(time(ns, t.offset, t.utc))
             }
         }

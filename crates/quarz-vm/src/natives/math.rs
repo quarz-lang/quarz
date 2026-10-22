@@ -18,7 +18,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         let n = Num::of(i, a.arg(0))?.to_big();
         if n.is_negative() {
             return Err(i.raise(
-                i.exc.argument_error,
+                i.program.exc.argument_error,
                 "Numerical argument is out of domain - \"isqrt\"",
             ));
         }
@@ -67,7 +67,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         }
         let mut n = Num::of(i, r)?.to_big();
         if n.is_negative() {
-            return Err(i.raise(i.exc.argument_error, "out of domain"));
+            return Err(i.raise(i.program.exc.argument_error, "out of domain"));
         }
         let base = BigInt::from(base);
         let mut out = Vec::new();
@@ -135,7 +135,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         let x = float(i, r, "Float")?;
         let y = Num::of(i, a.arg(0))?.to_f64();
         if y == 0.0 {
-            return Err(i.raise(i.exc.zero_division, "divided by 0"));
+            return Err(i.raise(i.program.exc.zero_division, "divided by 0"));
         }
         let q = (x / y).floor();
         let rem = x - q * y;

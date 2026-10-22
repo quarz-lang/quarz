@@ -90,7 +90,7 @@ fn obj_hash(_: &Interp, recv: &Value, _: Args) -> EvalResult {
 
 fn obj_to_s(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
     match recv {
-        Value::Object(o) if !interp.world.is_exception_class(o.class) => {
+        Value::Object(o) if !interp.program.world.is_exception_class(o.class) => {
             Ok(Value::string(interp.inspect(recv)?))
         }
         _ => Ok(Value::str(&interp.to_s(recv)?)),
@@ -140,7 +140,7 @@ fn obj_dup(_: &Interp, recv: &Value, _: Args) -> EvalResult {
 
 fn class_name(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
     match recv {
-        Value::Class(c) => Ok(Value::str(&interp.world.class(*c).name)),
+        Value::Class(c) => Ok(Value::str(&interp.program.world.class(*c).name)),
         _ => Ok(Value::str(&interp.class_name(recv))),
     }
 }
@@ -314,7 +314,7 @@ fn read_line(interp: &Interp) -> Result<Option<String>, Flow> {
 fn kernel_gets(interp: &Interp, _: &Value, _: Args) -> EvalResult {
     match read_line(interp)? {
         Some(l) => Ok(Value::string(l)),
-        None => Err(interp.raise(interp.exc.eof_error, "end of file reached")),
+        None => Err(interp.raise(interp.program.exc.eof_error, "end of file reached")),
     }
 }
 

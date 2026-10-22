@@ -47,7 +47,7 @@ impl Interp {
         match self.pending_flow.borrow_mut().take() {
             Some(flow) => flow,
             None => Flow::Raise(self.make_exception(
-                self.exc.runtime_error,
+                self.program.exc.runtime_error,
                 &format!("internal error: lost flow (status {status})"),
             )),
         }
@@ -132,7 +132,7 @@ pub unsafe extern "C" fn qz_term(
             _ => return STATUS_OK,
         },
         _ => Flow::Raise(rt.make_exception(
-            rt.exc.runtime_error,
+            rt.program.exc.runtime_error,
             "internal error: unreachable code executed",
         )),
     };
@@ -207,7 +207,7 @@ pub unsafe extern "C" fn qz_enter(
     let rt = &*rt;
     let caller = &*act;
     if crate::sched::stack_exhausted() {
-        return rt.park_flow(rt.raise(rt.exc.system_stack, "stack level too deep"));
+        return rt.park_flow(rt.raise(rt.program.exc.system_stack, "stack level too deep"));
     }
     let recv_src: &Value = if recv == u32::MAX {
         &caller.self_val
@@ -285,9 +285,9 @@ pub unsafe extern "C" fn qz_enter_virtual(
     } else {
         &*regs.add(recv as usize)
     };
-    let declared = &rt.world.methods[mid as usize];
+    let declared = &rt.program.world.methods[mid as usize];
     let target = rt.resolve_dynamic(recv_ref, mid);
-    let m = &rt.world.methods[target as usize];
+    let m = &rt.program.world.methods[target as usize];
     let total = nparams + u32::from(declared.has_block);
     let same_shape = m.native_key.is_none()
         && m.params.len() == declared.params.len()
@@ -368,7 +368,7 @@ pub unsafe extern "C" fn qz_pop_call(rt: *const Interp, act: *const Activation) 
 #[no_mangle]
 pub unsafe extern "C" fn qz_stack_overflow(rt: *const Interp) -> u32 {
     let rt = &*rt;
-    rt.park_flow(rt.raise(rt.exc.system_stack, "stack level too deep"))
+    rt.park_flow(rt.raise(rt.program.exc.system_stack, "stack level too deep"))
 }
 
 /// Finish a direct call begun with `qz_enter`: pop the call stack,
@@ -556,7 +556,7 @@ pub unsafe extern "C" fn qz_field_get(
             .unwrap_or(Value::Nil),
         _ => {
             return rt.park_flow(rt.raise(
-                rt.exc.runtime_error,
+                rt.program.exc.runtime_error,
                 "instance variable access outside of an object",
             ))
         }
@@ -590,7 +590,7 @@ pub unsafe extern "C" fn qz_field_set(
             STATUS_OK
         }
         _ => rt.park_flow(rt.raise(
-            rt.exc.runtime_error,
+            rt.program.exc.runtime_error,
             "instance variable access outside of an object",
         )),
     }
@@ -620,7 +620,7 @@ pub unsafe extern "C" fn qz_call_static(
     let rt = &*rt;
     let act = &*act;
     // A method some class overrides: the receiver's class decides.
-    let mid = if rt.world.methods[mid as usize].overridden {
+    let mid = if rt.program.world.methods[mid as usize].overridden {
         let recv_ref: &Value = if recv == u32::MAX {
             &act.self_val
         } else {
@@ -632,7 +632,7 @@ pub unsafe extern "C" fn qz_call_static(
     };
     // A native with a by-reference version: no copies, no argument list.
     if block == u32::MAX && nargs <= 3 {
-        if let Some(fast) = rt.fast_natives[mid as usize] {
+        if let Some(fast) = rt.program.fast_natives[mid as usize] {
             let recv_ref: &Value = if recv == u32::MAX {
                 &act.self_val
             } else {
@@ -663,7 +663,7 @@ pub unsafe extern "C" fn qz_call_static(
     } else {
         Some((*regs.add(block as usize)).clone())
     };
-    let m = &rt.world.methods[mid as usize];
+    let m = &rt.program.world.methods[mid as usize];
     let nparams = m.params.len();
     let mut args: crate::interp::ArgVec =
         crate::interp::ArgVec::with_capacity(nparams.max(nargs as usize) + 1);
@@ -671,7 +671,7 @@ pub unsafe extern "C" fn qz_call_static(
         let r = *arg_regs.add(i);
         args.push((*regs.add(r as usize)).clone());
     }
-    let r = if let Some(native) = rt.natives[mid as usize] {
+    let r = if let Some(native) = rt.program.natives[mid as usize] {
         native(
             rt,
             &recv,
@@ -871,7 +871,7 @@ pub unsafe extern "C" fn qz_yield(
     let rt = &*rt;
     let act = &*act;
     if act.block.is_nil() {
-        return rt.park_flow(rt.raise(rt.exc.runtime_error, "no block given (yield)"));
+        return rt.park_flow(rt.raise(rt.program.exc.runtime_error, "no block given (yield)"));
     }
     let block = &act.block;
     let mut args: crate::interp::ArgVec = crate::interp::ArgVec::with_capacity(nargs as usize);
@@ -1000,8 +1000,8 @@ pub unsafe extern "C" fn qz_construct(
     // A data type given all its fields: no initializer to run, and the
     // fields are copied straight from the registers.
     if let Some(i) = init {
-        let info = &rt.world.classes[class as usize];
-        if rt.world.methods[i as usize].synth == quarz_ir::RtSynth::DataInit
+        let info = &rt.program.world.classes[class as usize];
+        if rt.program.world.methods[i as usize].synth == quarz_ir::RtSynth::DataInit
             && nargs as usize == info.fields.len()
             && matches!(
                 info.kind,

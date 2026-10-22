@@ -81,13 +81,13 @@ pub(super) fn arith(interp: &Interp, recv: &Value, args: &Args, op: &str) -> Eva
             "*" => x.checked_mul(y),
             "/" => {
                 if y == 0 {
-                    return Err(interp.raise(interp.exc.zero_division, "divided by 0"));
+                    return Err(interp.raise(interp.program.exc.zero_division, "divided by 0"));
                 }
                 x.checked_div_euclid(y).map(|_| Integer::div_floor(&x, &y))
             }
             "%" => {
                 if y == 0 {
-                    return Err(interp.raise(interp.exc.zero_division, "divided by 0"));
+                    return Err(interp.raise(interp.program.exc.zero_division, "divided by 0"));
                 }
                 Some(Integer::mod_floor(&x, &y))
             }
@@ -115,13 +115,13 @@ pub(super) fn arith(interp: &Interp, recv: &Value, args: &Args, op: &str) -> Eva
         "*" => x * y,
         "/" => {
             if y.is_zero() {
-                return Err(interp.raise(interp.exc.zero_division, "divided by 0"));
+                return Err(interp.raise(interp.program.exc.zero_division, "divided by 0"));
             }
             x.div_floor(&y)
         }
         "%" => {
             if y.is_zero() {
-                return Err(interp.raise(interp.exc.zero_division, "divided by 0"));
+                return Err(interp.raise(interp.program.exc.zero_division, "divided by 0"));
             }
             x.mod_floor(&y)
         }
@@ -467,7 +467,10 @@ fn int_chr(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
     let i = int(interp, recv, "Int")?;
     match char::from_u32(i as u32) {
         Some(c) if i >= 0 => Ok(Value::string(c.to_string())),
-        _ => Err(interp.raise(interp.exc.range_error, &format!("{i} out of char range"))),
+        _ => Err(interp.raise(
+            interp.program.exc.range_error,
+            &format!("{i} out of char range"),
+        )),
     }
 }
 
@@ -482,7 +485,7 @@ pub(super) fn int_pow_mod(interp: &Interp, recv: &Value, args: Args) -> EvalResu
     let exp = Num::of(interp, args.arg(0))?.to_big();
     let m = Num::of(interp, args.arg(1))?.to_big();
     if m.is_zero() {
-        return Err(interp.raise(interp.exc.zero_division, "divided by 0"));
+        return Err(interp.raise(interp.program.exc.zero_division, "divided by 0"));
     }
     Ok(int_from_big(base.modpow(&exp, &m)))
 }
@@ -580,7 +583,7 @@ fn int_step(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
 pub(super) fn float_to_int(interp: &Interp, f: f64) -> EvalResult {
     if f.is_nan() || f.is_infinite() {
         return Err(interp.raise(
-            interp.exc.range_error,
+            interp.program.exc.range_error,
             "cannot convert NaN or Infinity to Int",
         ));
     }

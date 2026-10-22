@@ -74,7 +74,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         let b = block(i, &a)?;
         let closure = transfer::export(i, &b)?;
         let image = i.image();
-        let argv = i.argv.clone();
+        let argv = i.program.argv.clone();
         let outcome = i.block_on(move || transfer::run_on_thread(image, argv, closure))?;
         i.write_out_bytes(&outcome.output);
         match outcome.exit {
@@ -229,7 +229,7 @@ fn kernel_loop(interp: &Interp, _: &Value, args: Args) -> EvalResult {
     loop {
         match interp.call_block(&b, smallvec![]) {
             Ok(_) => {}
-            Err(Flow::Raise(e)) if interp.exception_is_a(&e, interp.exc.stop_iteration) => {
+            Err(Flow::Raise(e)) if interp.exception_is_a(&e, interp.program.exc.stop_iteration) => {
                 return Ok(Value::Nil)
             }
             Err(e) => return Err(e),
@@ -288,7 +288,7 @@ fn task_scope(interp: &Interp, _: &Value, args: Args) -> EvalResult {
         match r {
             Ok(_) => {}
             Err(Flow::Raise(e)) => {
-                let is_cancel = interp.exception_is_a(&e, interp.exc.cancelled);
+                let is_cancel = interp.exception_is_a(&e, interp.program.exc.cancelled);
                 if is_cancel && scope.cancelled.get() {
                     // Cancelled by the scope itself: expected.
                 } else if failure.is_none() {
@@ -324,7 +324,7 @@ fn task_timeout(interp: &Interp, _: &Value, args: Args) -> EvalResult {
         if start.elapsed() >= d {
             interp.cancel_task(&child);
             let _ = interp.await_task(&child);
-            return Err(interp.raise(interp.exc.timeout, "timed out"));
+            return Err(interp.raise(interp.program.exc.timeout, "timed out"));
         }
         child.joiners.borrow_mut().push(me);
         interp.park()?;
@@ -359,7 +359,7 @@ fn channel_send(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let value = args.arg(0).clone();
     loop {
         if c.closed.get() {
-            return Err(interp.raise(interp.exc.channel_closed, "channel is closed"));
+            return Err(interp.raise(interp.program.exc.channel_closed, "channel is closed"));
         }
         if c.can_send() {
             c.buffer.borrow_mut().push_back(value);
@@ -370,7 +370,9 @@ fn channel_send(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
                 // Rendezvous: wait until a receiver has taken the value.
                 while c.taken.get() < ticket {
                     if c.closed.get() && c.taken.get() < ticket {
-                        return Err(interp.raise(interp.exc.channel_closed, "channel is closed"));
+                        return Err(
+                            interp.raise(interp.program.exc.channel_closed, "channel is closed")
+                        );
                     }
                     let me = interp.current_task().id;
                     c.send_waiters.borrow_mut().push_back(me);
@@ -388,7 +390,7 @@ fn channel_send(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
 fn channel_try_send(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let c = chan(interp, recv)?;
     if c.closed.get() {
-        return Err(interp.raise(interp.exc.channel_closed, "channel is closed"));
+        return Err(interp.raise(interp.program.exc.channel_closed, "channel is closed"));
     }
     // Only buffered channels can accept without a waiting receiver.
     if c.capacity > 0 && c.can_send() {
@@ -421,7 +423,7 @@ fn channel_receive(interp: &Interp, c: &Rc<ChannelInner>, raise_on_closed: bool)
         }
         if c.closed.get() {
             return if raise_on_closed {
-                Err(interp.raise(interp.exc.channel_closed, "channel is closed"))
+                Err(interp.raise(interp.program.exc.channel_closed, "channel is closed"))
             } else {
                 Ok(Value::Nil)
             };
@@ -494,7 +496,7 @@ fn select_once(interp: &Interp, state: &Rc<RefCell<SelectorState>>) -> Result<()
                 if let Some(seq) = timer_seq {
                     interp.sched.borrow_mut().cancel_timer(seq);
                 }
-                return Err(interp.raise(interp.exc.channel_closed, "channel is closed"));
+                return Err(interp.raise(interp.program.exc.channel_closed, "channel is closed"));
             }
         }
         // Sends.
@@ -504,7 +506,7 @@ fn select_once(interp: &Interp, state: &Rc<RefCell<SelectorState>>) -> Result<()
                 if let Some(seq) = timer_seq {
                     interp.sched.borrow_mut().cancel_timer(seq);
                 }
-                return Err(interp.raise(interp.exc.channel_closed, "channel is closed"));
+                return Err(interp.raise(interp.program.exc.channel_closed, "channel is closed"));
             }
             let ready = (c.capacity > 0 && c.can_send())
                 || (c.capacity == 0 && c.can_send() && !c.recv_waiters.borrow().is_empty());

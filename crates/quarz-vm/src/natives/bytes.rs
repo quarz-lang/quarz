@@ -235,7 +235,7 @@ fn byte(interp: &Interp, v: &Value) -> Result<u8, Flow> {
     let n = int(interp, v, "byte")?;
     u8::try_from(n).map_err(|_| {
         interp.raise(
-            interp.exc.range_error,
+            interp.program.exc.range_error,
             &format!("{n} is not a byte (0..255)"),
         )
     })

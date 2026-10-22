@@ -26,7 +26,9 @@ use super::{block, string};
 
 pub fn register(m: &mut super::Registry<NativeFn>) {
     m.insert("Process.argv", |i, _, _| {
-        Ok(Value::array(i.argv.iter().map(|s| Value::str(s)).collect()))
+        Ok(Value::array(
+            i.program.argv.iter().map(|s| Value::str(s)).collect(),
+        ))
     });
     m.insert("Process.env", |_, _, _| {
         let map: ValueMap = std::env::vars()
@@ -108,7 +110,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         match text {
             Some(text) => Ok(Value::string(text)),
             None if a.pos.is_empty() => Ok(Value::str("")),
-            None => Err(i.raise(i.exc.eof_error, "end of file reached")),
+            None => Err(i.raise(i.program.exc.eof_error, "end of file reached")),
         }
     });
     m.insert("IO#read?", |i, r, a| {
@@ -236,7 +238,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
                 .map_err(|e| os_error(i, e, "rewind"))?;
             }
             IoKind::Socket(_) | IoKind::Listener(_) | IoKind::Udp(_) => {
-                return Err(i.raise(i.exc.io_error, "cannot rewind a socket"))
+                return Err(i.raise(i.program.exc.io_error, "cannot rewind a socket"))
             }
             _ => {}
         }
@@ -470,9 +472,12 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     m.insert("Dir.pwd", |i, _, _| current_dir(i));
     m.insert("Dir.getwd", |i, _, _| current_dir(i));
     m.insert("Dir.home", |i, _, _| {
-        std::env::var("HOME")
-            .map(Value::string)
-            .map_err(|_| i.raise(i.exc.argument_error, "couldn't find HOME environment"))
+        std::env::var("HOME").map(Value::string).map_err(|_| {
+            i.raise(
+                i.program.exc.argument_error,
+                "couldn't find HOME environment",
+            )
+        })
     });
     m.insert("Dir.tmpdir", |_, _, _| {
         Ok(Value::string(
@@ -616,7 +621,10 @@ pub(super) fn io_of<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Rc<IoVal>, 
 
 /// An operating-system failure as a `SystemCallError`.
 pub(super) fn os_error(interp: &Interp, e: std::io::Error, what: &str) -> Flow {
-    interp.raise(interp.exc.system_call_error, &format!("{what}: {e}"))
+    interp.raise(
+        interp.program.exc.system_call_error,
+        &format!("{what}: {e}"),
+    )
 }
 
 fn content_bytes(interp: &Interp, v: &Value) -> Result<Vec<u8>, Flow> {
@@ -762,8 +770,9 @@ fn run_command(interp: &Interp, mut command: std::process::Command, name: &str) 
         .map_err(|e| os_error(interp, e, name))?;
     let status = output.status.code().unwrap_or(-1);
     let class = interp
+        .program
         .world
-        .class(interp.rt.process)
+        .class(interp.program.rt.process)
         .members
         .get("Output")
         .copied()
@@ -987,7 +996,7 @@ fn at_eof_buffered<R: Read>(r: &mut BufReader<R>) -> Option<std::io::Result<bool
 pub(super) fn stdin_line(interp: &Interp) -> Result<Option<String>, Flow> {
     interp.flush();
     let line = buffered(interp, stdin_state(), line_buffered, line_slow)?
-        .map_err(|e| interp.raise(interp.exc.io_error, &e.to_string()))?;
+        .map_err(|e| interp.raise(interp.program.exc.io_error, &e.to_string()))?;
     Ok((!line.is_empty()).then(|| String::from_utf8_lossy(&line).into_owned()))
 }
 
@@ -1015,15 +1024,17 @@ fn io_write_bytes(interp: &Interp, recv: &Value, bytes: &[u8]) -> Result<(), Flo
             interp.flush();
             let _ = std::io::stderr().write_all(bytes);
         }
-        IoKind::Stdin => return Err(interp.raise(interp.exc.io_error, "not opened for writing")),
+        IoKind::Stdin => {
+            return Err(interp.raise(interp.program.exc.io_error, "not opened for writing"))
+        }
         IoKind::File(f) => {
             let io = {
                 let f = f.borrow();
                 if f.closed {
-                    return Err(interp.raise(interp.exc.io_error, "closed stream"));
+                    return Err(interp.raise(interp.program.exc.io_error, "closed stream"));
                 }
                 if !f.writable {
-                    return Err(interp.raise(interp.exc.io_error, "not opened for writing"));
+                    return Err(interp.raise(interp.program.exc.io_error, "not opened for writing"));
                 }
                 f.io.clone()
             };
@@ -1046,7 +1057,7 @@ fn io_write_bytes(interp: &Interp, recv: &Value, bytes: &[u8]) -> Result<(), Flo
         }
         IoKind::Socket(st) => net::socket_write(interp, st, bytes)?,
         IoKind::Listener(_) | IoKind::Udp(_) => {
-            return Err(interp.raise(interp.exc.io_error, "not opened for writing"))
+            return Err(interp.raise(interp.program.exc.io_error, "not opened for writing"))
         }
     }
     Ok(())
@@ -1072,11 +1083,13 @@ fn io_gets(interp: &Interp, recv: &Value, raise_on_eof: bool) -> EvalResult {
             (!buf.is_empty()).then(|| String::from_utf8_lossy(&buf).into_owned())
         }
         IoKind::Socket(st) => net::socket_gets(interp, st)?,
-        _ => return Err(interp.raise(interp.exc.io_error, "not opened for reading")),
+        _ => return Err(interp.raise(interp.program.exc.io_error, "not opened for reading")),
     };
     match line {
         Some(line) => Ok(Value::string(line)),
-        None if raise_on_eof => Err(interp.raise(interp.exc.eof_error, "end of file reached")),
+        None if raise_on_eof => {
+            Err(interp.raise(interp.program.exc.eof_error, "end of file reached"))
+        }
         None => Ok(Value::Nil),
     }
 }
@@ -1121,7 +1134,7 @@ fn read_raw(interp: &Interp, recv: &Value, limit: Option<usize>) -> Result<Vec<u
             .map_err(|e| os_error(interp, e, "read"))?
         }
         IoKind::Socket(st) => net::socket_read(interp, st, limit)?,
-        _ => return Err(interp.raise(interp.exc.io_error, "not opened for reading")),
+        _ => return Err(interp.raise(interp.program.exc.io_error, "not opened for reading")),
     })
 }
 
@@ -1129,10 +1142,10 @@ fn read_raw(interp: &Interp, recv: &Value, limit: Option<usize>) -> Result<Vec<u
 fn readable_io(interp: &Interp, f: &RefCell<FileHandle>) -> Result<Arc<Mutex<FileIo>>, Flow> {
     let f = f.borrow();
     if f.closed {
-        return Err(interp.raise(interp.exc.io_error, "closed stream"));
+        return Err(interp.raise(interp.program.exc.io_error, "closed stream"));
     }
     if !f.readable {
-        return Err(interp.raise(interp.exc.io_error, "not opened for reading"));
+        return Err(interp.raise(interp.program.exc.io_error, "not opened for reading"));
     }
     Ok(f.io.clone())
 }
