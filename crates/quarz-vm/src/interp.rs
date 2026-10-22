@@ -324,6 +324,14 @@ pub struct Interp {
     pub natives_owned: Vec<Option<OwnedNativeFn>>,
     /// The owned natives with an in-place fast path (`xs = xs.push(v)`).
     pub owned: OwnedIds,
+    /// Per method: its parameters are positional only and it takes no
+    /// block, so the arguments of a call without keywords are its
+    /// parameters as they are (see `invoke`).
+    pub positional_only: Vec<bool>,
+    /// Per method: its function, when a call can go straight to it (a
+    /// method body, not a native, accessor or abstract method, with
+    /// positional parameters only): the interpreter's common call.
+    pub direct_funcs: Vec<Option<FuncId>>,
     field_indices: Vec<FxHashMap<String, usize>>,
     pub sched: Rc<RefCell<Scheduler>>,
     dispatch_cache: RefCell<FxHashMap<(ClassId, MethodId), MethodId>>,
@@ -495,6 +503,27 @@ impl Interp {
                 .position(|m| m.native_key.as_deref() == Some(key))
                 .map(|i| i as MethodId)
         };
+        let positional_only: Vec<bool> = world
+            .methods
+            .iter()
+            .map(|m| !m.has_block && m.params.iter().all(|p| p.kind == RtParamKind::Positional))
+            .collect();
+        let direct_funcs: Vec<Option<FuncId>> = world
+            .methods
+            .iter()
+            .zip(&positional_only)
+            .map(|(m, &positional)| {
+                let plain = positional
+                    && m.native_key.is_none()
+                    && matches!(m.synth, RtSynth::None)
+                    && !m.is_abstract;
+                if plain {
+                    m.func
+                } else {
+                    None
+                }
+            })
+            .collect();
         let owned = OwnedIds {
             array_push: owned_id("Array#push"),
             array_set: owned_id("Array#set"),
@@ -578,6 +607,8 @@ impl Interp {
             fast_natives,
             natives_owned,
             owned,
+            positional_only,
+            direct_funcs,
             field_indices,
             sched: state.sched,
             dispatch_cache: RefCell::new(FxHashMap::default()),
@@ -1253,6 +1284,12 @@ impl Interp {
         if m.is_extension {
             return mid;
         }
+        // Nothing overrides it, and the receiver is not a class object
+        // (whose own class methods may stand in for a module's): the
+        // method is the one.
+        if self.vslots[mid as usize] == u32::MAX && !matches!(recv, Value::Class(_)) {
+            return mid;
+        }
         if let Value::Class(cid) = recv {
             // A module method running on a class object (`extend`): the
             // class's own `def self.` methods override the module's.
@@ -1601,7 +1638,18 @@ impl Interp {
         let Some(fid) = m.func else {
             return Ok(Value::Nil);
         };
-        let (bound, provided) = self.bind_params(mid, &recv, args, kw, block.clone())?;
+        // Positional parameters only: the arguments are bound as they
+        // are (the checker has matched their number; extra ones are
+        // dropped, as `bind_params` does).
+        let (bound, provided) = if kw.is_empty() && self.positional_only[mid as usize] {
+            let mut args = args;
+            args.truncate(m.params.len());
+            let n = args.len();
+            let provided = if n >= 64 { u64::MAX } else { (1u64 << n) - 1 };
+            (args, provided)
+        } else {
+            self.bind_params(mid, &recv, args, kw, block.clone())?
+        };
         self.run_method(mid, fid, recv, bound, provided, block)
     }
 

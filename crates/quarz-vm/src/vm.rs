@@ -408,7 +408,17 @@ impl Interp {
             v.reserve_exact(n);
             SmallVec::from_vec(v)
         };
-        regs.resize_with(n, || Value::Nil);
+        // Nil in every register, without a capacity check per push.
+        // SAFETY: there is room for `n` (the inline 16, or the pooled
+        // vector reserved above); each is written before the length
+        // covers it.
+        unsafe {
+            let p = regs.as_mut_ptr();
+            for i in 0..n {
+                p.add(i).write(Value::Nil);
+            }
+            regs.set_len(n);
+        }
         let mut pending: Option<Flow> = None;
         let r = self.run_block_from(f, fid, pool, act, &mut regs, &mut pending, 0, 0);
         release_regs(&mut regs);
@@ -526,18 +536,37 @@ impl Interp {
                         if !v.is_nil()
                             || !matches!(f.consts[*idx as usize], Constant::Regexp { .. })
                         {
-                            regs[*dst as usize] = v;
+                            put(&mut regs[*dst as usize], v);
                             continue;
                         }
                     }
                     Inst::Move { dst, src } => {
                         let v = regs[*src as usize].clone();
-                        regs[*dst as usize] = v;
+                        put(&mut regs[*dst as usize], v);
                         continue;
                     }
                     Inst::Take { dst, src } => {
                         let v = std::mem::replace(&mut regs[*src as usize], Value::Nil);
-                        regs[*dst as usize] = v;
+                        put(&mut regs[*dst as usize], v);
+                        continue;
+                    }
+                    Inst::Arg { dst, index } => {
+                        put(&mut regs[*dst as usize], act.take_arg(*index));
+                        continue;
+                    }
+                    Inst::SelfRef { dst } => {
+                        put(&mut regs[*dst as usize], act.self_val.clone());
+                        continue;
+                    }
+                    Inst::ClearRegs { from, to } => {
+                        for r in &mut regs[*from as usize..*to as usize] {
+                            put(r, Value::Nil);
+                        }
+                        continue;
+                    }
+                    Inst::IsNil { dst, src } => {
+                        let v = Value::Bool(regs[*src as usize].is_nil());
+                        put(&mut regs[*dst as usize], v);
                         continue;
                     }
                     Inst::BinOp {
@@ -545,7 +574,7 @@ impl Interp {
                     } => {
                         if let Some(v) = fast_binop(*op, &regs[*lhs as usize], &regs[*rhs as usize])
                         {
-                            regs[*dst as usize] = v;
+                            put(&mut regs[*dst as usize], v);
                             continue;
                         }
                     }
@@ -920,30 +949,60 @@ impl Interp {
                 moved,
             } => {
                 // A native with a by-reference version takes the
-                // receiver and arguments from the registers directly.
+                // receiver and arguments from the registers directly. The
+                // method it resolves to is kept for the call below.
+                let mut resolved: Option<MethodId> = None;
                 if let CallKind::Method(mid) = kind {
-                    if !*splat
-                        && kw.is_empty()
-                        && kw_splat.is_none()
-                        && block.is_none()
-                        && args.len() <= 3
-                    {
+                    if !*splat && kw.is_empty() && kw_splat.is_none() && block.is_none() {
                         let recv_ref = match recv {
                             Some(r) => &regs[*r as usize],
                             None => &act.self_val,
                         };
                         let mid = self.resolve_dynamic(recv_ref, *mid);
-                        if let Some(fast) = self.fast_natives[mid as usize] {
-                            let result = {
-                                let refs: SmallVec<[&Value; 3]> =
-                                    args.iter().map(|r| &regs[*r as usize]).collect();
-                                fast(self, recv_ref, &refs)
-                            };
-                            if let Some(r) = result {
-                                let v = r?;
-                                regs[*dst as usize] = v;
-                                return Ok(());
+                        resolved = Some(mid);
+                        if args.len() <= 3 {
+                            if let Some(fast) = self.fast_natives[mid as usize] {
+                                let result = {
+                                    let refs: SmallVec<[&Value; 3]> =
+                                        args.iter().map(|r| &regs[*r as usize]).collect();
+                                    fast(self, recv_ref, &refs)
+                                };
+                                if let Some(r) = result {
+                                    let v = r?;
+                                    regs[*dst as usize] = v;
+                                    return Ok(());
+                                }
                             }
+                        }
+                        // A method body with positional parameters: straight
+                        // to it (what `invoke` and `bind_params` would do,
+                        // without their checks), the arguments moved in as
+                        // below.
+                        if let Some(fid) = self.direct_funcs[mid as usize] {
+                            let recv = match recv {
+                                Some(r) if *moved & (1 << 15) != 0 => {
+                                    std::mem::replace(&mut regs[*r as usize], Value::Nil)
+                                }
+                                Some(r) => regs[*r as usize].clone(),
+                                None => act.self_val.clone(),
+                            };
+                            let nparams = self.world.method(mid).params.len();
+                            let mut pos = ArgVec::with_capacity(args.len());
+                            let mut bits = *moved & 0x7fff;
+                            for r in args.iter().take(nparams) {
+                                let slot = &mut regs[*r as usize];
+                                pos.push(if bits & 1 != 0 {
+                                    std::mem::replace(slot, Value::Nil)
+                                } else {
+                                    slot.clone()
+                                });
+                                bits >>= 1;
+                            }
+                            let n = pos.len();
+                            let provided = if n >= 64 { u64::MAX } else { (1u64 << n) - 1 };
+                            let v = self.run_method(mid, fid, recv, pos, provided, None)?;
+                            regs[*dst as usize] = v;
+                            return Ok(());
                         }
                     }
                 }
@@ -977,7 +1036,7 @@ impl Interp {
                 let block = block.map(|b| regs[b as usize].clone());
                 let r = match kind {
                     CallKind::Method(mid) => {
-                        let mid = self.resolve_dynamic(&recv, *mid);
+                        let mid = resolved.unwrap_or_else(|| self.resolve_dynamic(&recv, *mid));
                         let r = self.invoke(mid, recv, pos, kw, block.clone());
                         self.catch_break(&block, r)
                     }
@@ -1740,4 +1799,27 @@ fn release_regs(regs: &mut SmallVec<[Value; 16]>) {
     // SAFETY: every element is now a variant without drop glue, so
     // forgetting them leaks nothing.
     unsafe { regs.set_len(0) };
+}
+
+/// `*slot = v`, without calling into the drop glue when the old value
+/// holds no reference (a register usually holds nil or a number).
+#[inline(always)]
+fn put(slot: &mut Value, v: Value) {
+    if matches!(
+        slot,
+        Value::Nil
+            | Value::Bool(_)
+            | Value::Int(_)
+            | Value::Float(_)
+            | Value::Symbol(_)
+            | Value::Class(_)
+            | Value::Duration(_)
+            | Value::Short(_)
+    ) {
+        // SAFETY: the old value has no drop glue, so overwriting it
+        // without dropping leaks nothing.
+        unsafe { std::ptr::write(slot, v) }
+    } else {
+        *slot = v;
+    }
 }
