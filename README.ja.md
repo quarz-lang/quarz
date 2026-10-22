@@ -107,5 +107,6 @@ cargo build --release
 ./target/release/quarz parse examples/shapes.qz    # 構文木を表示
 ./target/release/quarz ir examples/shapes.qz       # QIR を表示
 ./target/release/quarz build examples/shapes.qz -o shapes && ./shapes   # ネイティブ実行ファイルにコンパイル
+./target/release/quarz repl                        # 対話セッション(行編集・履歴・補完)
 cargo test                                         # 字句・構文・型検査・VM・コンパイラのテスト
 ```

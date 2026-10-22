@@ -109,5 +109,6 @@ cargo build --release
 ./target/release/quarz parse examples/shapes.qz    # print the syntax tree
 ./target/release/quarz ir examples/shapes.qz       # print the QIR
 ./target/release/quarz build examples/shapes.qz -o shapes && ./shapes   # compile to a native executable (needs clang 14+)
+./target/release/quarz repl                        # interactive session: line editing, history, completion
 cargo test                                         # lexer, parser, checker, VM and compiler tests
 ```
