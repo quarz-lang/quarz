@@ -10,7 +10,7 @@ A Rust workspace, front end to back ends:
   checking; the prelude is `std/prelude.qz`) → `quarz-lower` (AST → QIR,
   then the QIR passes) → `quarz-vm` (interpreter and the runtime that
   compiled code calls) or `quarz-aot` (one generator, `gen.rs`, behind a
-  `Builder` trait for LLVM IR text compiled by clang, and Cranelift).
+  `Builder` trait, for LLVM IR text compiled by clang).
 - `quarz-ir` is QIR itself, with `live.rs` (liveness, last reads, moves).
 - `quarz-cli` is the `quarz` command and the integration tests.
 - `docs/0N-*.md` describe the language and implementation; each has a
@@ -55,8 +55,8 @@ when the local one is older.
   `own_dying_receivers`. Anything that renumbers or moves instructions
   must run before `mark_moves`.
 - `quarz build` embeds the QIR it compiled, and deoptimization resumes
-  the interpreter on the compiled code's registers. A backend may lower
-  differently (`Sharing::Numbers` for Cranelift) only because of that.
+  the interpreter on the compiled code's registers: the machine code and
+  the embedded QIR must come from the same lowering.
 - In register sharing, a result never shares with its own operands (the
   AOT may release a destination before reading operands), counted and
   non-counted registers stay apart (`live::heap_possible`, shared with

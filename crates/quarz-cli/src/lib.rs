@@ -19,14 +19,9 @@ pub fn build(
     checked: Checked,
     files: &[SourceFile],
     output: &std::path::Path,
-    backend: quarz_aot::Backend,
 ) -> Result<(), String> {
-    let sharing = match backend {
-        quarz_aot::Backend::Llvm => quarz_lower::Sharing::All,
-        quarz_aot::Backend::Cranelift => quarz_lower::Sharing::Numbers,
-    };
-    let module = quarz_lower::lower_checked_with(&checked, files, sharing);
-    quarz_aot::build(&module, output, backend)
+    let module = quarz_lower::lower_checked(&checked, files);
+    quarz_aot::build(&module, output)
 }
 
 /// Lower and run a checked program capturing its standard output.

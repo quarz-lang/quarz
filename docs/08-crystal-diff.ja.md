@@ -38,7 +38,7 @@ Crystal は Quarz に最も近い言語です。Ruby の構文を持つ、静的
 | 並行処理 | メモリを共有するファイバー(`spawn`、`Channel(T)`、`Mutex`、`Atomic(T)`)。どんなオブジェクトもファイバー間で受け渡せ、実行コンテキストでファイバーを複数のスレッドで動かせる | タスク(`spawn`、キャンセル付きの `Task.scope`、`Channel[T]`、`select`、`Atom[T]`)。タスクの境界を越えられるのは `Shareable` な(不変な)値だけで、コンパイラが検査する。ロックはない。現在のスケジューラはタスクを 1 つのスレッドで動かし、`Task.blocking { }` はブロックを補助スレッドで実行する |
 | メモリ管理 | トレース型 GC(Boehm) | 参照カウント。参照が一意な値はその場で更新する |
 | C との連携 | `lib LibC; fun strlen(s : UInt8*) : SizeT; end` | `extern "C"; def strlen(s: CString) -> SizeT; end` |
-| プログラムの実行 | コンパイルする(`crystal run` も先にコンパイルする)。`crystal i` は実験的なインタプリタで、それを含めてビルドした Crystal でだけ使える | `quarz run` は解釈実行する。`quarz build` は LLVM か Cranelift でコンパイルする |
+| プログラムの実行 | コンパイルする(`crystal run` も先にコンパイルする)。`crystal i` は実験的なインタプリタで、それを含めてビルドした Crystal でだけ使える | `quarz run` は解釈実行する。`quarz build` は LLVM でコンパイルする |
 
 ## 追加機能
 

@@ -927,10 +927,13 @@ fn find_clang() -> Result<(String, u32), String> {
         }
         return Ok((c.clone(), major));
     }
-    Err("cannot find clang (install clang 14 or later, or set QUARZ_CLANG; or build with `--backend cranelift`)".to_string())
+    Err("cannot find clang (install clang 14 or later, or set QUARZ_CLANG)".to_string())
 }
 
-/// The typed entry's parameters and results (see `cranelift::typed_signature`).
+/// The signature of a typed entry: the interpreter, the caller's
+/// activation, the address of `self`, the parameters as machine values,
+/// then the address of a `Value` for a result that does not fit; returns
+/// the status and the result's bits.
 fn typed_signature(sig: &unbox::TypedSig) -> (Vec<Ty>, Vec<Ty>) {
     let mut params = vec![Ty::Ptr, Ty::Ptr, Ty::Ptr];
     for p in &sig.params {

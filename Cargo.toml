@@ -13,7 +13,8 @@ members = [
 [workspace.package]
 version = "0.0.1"
 edition = "2021"
-# Cranelift 0.136 needs 1.96 (gimli 0.34 needs 1.88).
+# Raised to 1.96 for Cranelift 0.136, since removed; not lowered (CI
+# checks this version, and nothing older is tested).
 rust-version = "1.96"
 license = "MIT"
 repository = "https://github.com/shugo/quarz"

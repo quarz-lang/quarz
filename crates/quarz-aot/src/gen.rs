@@ -1,5 +1,5 @@
 //! Code generation for one function body, written against `Builder`
-//! (the backends in `cranelift` and `llvm` supply the instructions).
+//! (the backend in `llvm` supplies the instructions).
 
 use std::collections::HashMap;
 

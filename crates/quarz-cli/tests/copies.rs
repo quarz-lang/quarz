@@ -1,6 +1,6 @@
 //! Collections updated in place stay in place: the programs in `copies/`
-//! are run with `QUARZ_COUNT_COPIES`, on the VM and compiled with each
-//! backend, and the number of updates that had to copy a shared
+//! are run with `QUARZ_COUNT_COPIES`, on the VM and compiled, and the
+//! number of updates that had to copy a shared
 //! collection is checked. A regression here (a reference left behind in
 //! a register, an argument copied instead of moved) makes a loop of
 //! updates quadratic while its output stays the same, so the other
@@ -43,10 +43,10 @@ fn on_vm(path: &Path) -> u64 {
     copies(&out, &format!("quarz run {}", path.display()))
 }
 
-fn compiled(path: &Path, backend: &str) -> u64 {
-    // One directory per program and backend: the tests run in parallel.
+fn compiled(path: &Path) -> u64 {
+    // One directory per program: the tests run in parallel.
     let dir = std::env::temp_dir().join(format!(
-        "quarz-copies-test-{}-{}-{backend}",
+        "quarz-copies-test-{}-{}",
         std::process::id(),
         path.file_stem().unwrap().to_string_lossy()
     ));
@@ -57,7 +57,6 @@ fn compiled(path: &Path, backend: &str) -> u64 {
         .arg(path)
         .arg("-o")
         .arg(&exe)
-        .args(["--backend", backend])
         .output()
         .expect("run quarz build");
     assert!(
@@ -71,15 +70,13 @@ fn compiled(path: &Path, backend: &str) -> u64 {
         .output()
         .expect("run the executable");
     let _ = std::fs::remove_dir_all(&dir);
-    copies(&out, &format!("{} ({backend})", path.display()))
+    copies(&out, &format!("{} (compiled)", path.display()))
 }
 
 fn check(name: &str, want: u64) {
     let path = program(name);
     assert_eq!(on_vm(&path), want, "{name} on the VM");
-    for backend in ["llvm", "cranelift"] {
-        assert_eq!(compiled(&path, backend), want, "{name} with {backend}");
-    }
+    assert_eq!(compiled(&path), want, "{name} compiled");
 }
 
 #[test]

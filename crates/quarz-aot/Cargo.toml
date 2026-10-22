@@ -1,6 +1,6 @@
 [package]
 name = "quarz-aot"
-description = "Ahead-of-time compilation of QIR to machine code (LLVM through clang, or Cranelift)"
+description = "Ahead-of-time compilation of QIR to machine code (LLVM through clang)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,9 +10,3 @@ repository.workspace = true
 [dependencies]
 quarz-ir = { workspace = true }
 quarz-vm = { workspace = true }
-cranelift-codegen = "0.136"
-cranelift-frontend = "0.136"
-cranelift-module = "0.136"
-cranelift-object = "0.136"
-cranelift-native = "0.136"
-target-lexicon = "0.13"

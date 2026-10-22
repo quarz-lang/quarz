@@ -1,10 +1,8 @@
 //! Ahead-of-time compilation of QIR to native executables.
 //!
-//! The generator (`gen`) is written against `builder::Builder`; two
-//! backends implement it: `llvm` (the production one: machine code
-//! through LLVM, typed entries that push no activation, backtraces from
-//! the native stack) and `cranelift` (for development: fast to build,
-//! no toolchain beyond a C linker).
+//! The generator (`gen`) is written against `builder::Builder`, which
+//! `llvm` implements: LLVM IR compiled by clang, with typed entries that
+//! push no activation and backtraces from the native stack.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -12,28 +10,9 @@ use std::process::Command;
 use quarz_ir::Module;
 
 mod builder;
-mod cranelift;
 mod gen;
 mod llvm;
 mod unbox;
-
-/// Which backend `build` uses.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Backend {
-    Llvm,
-    Cranelift,
-}
-
-impl Backend {
-    /// From a name (`llvm` or `cranelift`).
-    pub fn parse(name: &str) -> Option<Backend> {
-        match name {
-            "llvm" => Some(Backend::Llvm),
-            "cranelift" => Some(Backend::Cranelift),
-            _ => None,
-        }
-    }
-}
 
 // ----- building executables ----------------------------------------------------------
 
@@ -79,7 +58,7 @@ fn link(object: &Path, output: &Path) -> Result<(), String> {
 }
 
 /// Compile a module and link it into the executable `output`.
-pub fn build(module: &Module, output: &Path, backend: Backend) -> Result<(), String> {
+pub fn build(module: &Module, output: &Path) -> Result<(), String> {
     // What the program cannot run is neither compiled nor decoded at
     // start-up (`QUARZ_NO_SHAKE` keeps everything, for comparison).
     let mut shaken;
@@ -91,14 +70,7 @@ pub fn build(module: &Module, output: &Path, backend: Backend) -> Result<(), Str
         &shaken
     };
     let obj_path = output.with_extension("o");
-    match backend {
-        Backend::Cranelift => {
-            let object = cranelift::compile(module)?;
-            std::fs::write(&obj_path, &object)
-                .map_err(|e| format!("{}: {e}", obj_path.display()))?;
-        }
-        Backend::Llvm => llvm::compile(module, &obj_path)?,
-    }
+    llvm::compile(module, &obj_path)?;
     let linked = link(&obj_path, output);
     let _ = std::fs::remove_file(&obj_path);
     linked

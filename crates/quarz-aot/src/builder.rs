@@ -1,11 +1,10 @@
 //! What code generation needs from a backend: the instructions of one
-//! function, in SSA form with block parameters (Cranelift's model, which
-//! the LLVM backend reproduces with phis). The generator in `gen` is
-//! written against this trait; `cranelift` and `llvm` implement it.
+//! function, in SSA form with block parameters (which the LLVM backend
+//! turns into phis). The generator in `gen` is written against this
+//! trait, which `llvm` implements.
 
-/// A machine type. `Ptr` is an address (an integer of pointer size for
-/// Cranelift; a pointer for LLVM, so that its alias analysis sees through
-/// the register file and the activation).
+/// A machine type. `Ptr` is an address (a pointer for LLVM, so that its
+/// alias analysis sees through the register file and the activation).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Ty {
     I8,

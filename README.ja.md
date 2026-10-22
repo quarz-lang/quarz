@@ -98,7 +98,7 @@ puts counter.value        # => 100
 
 ## 状態
 
-インタプリタが [examples/](examples/) のすべてのプログラムを実行できます。Rust で書かれており、`quarz-syntax`(字句・構文解析)、`quarz-types`(型検査)、`quarz-ir`/`quarz-lower`(中間表現 QIR とそこへの変換)、`quarz-vm`(ランタイム、QIR インタプリタ、スケジューラ、組み込みクラス)、`quarz-aot`(Cranelift によるネイティブコード生成。`quarz build` が使う)からなります。現在の実装で出来ること・出来ないことは [docs/05-execution.md](docs/05-execution.ja.md) §9 を参照してください。
+インタプリタが [examples/](examples/) のすべてのプログラムを実行できます。Rust で書かれており、`quarz-syntax`(字句・構文解析)、`quarz-types`(型検査)、`quarz-ir`/`quarz-lower`(中間表現 QIR とそこへの変換)、`quarz-vm`(ランタイム、QIR インタプリタ、スケジューラ、組み込みクラス)、`quarz-aot`(`clang` 経由の LLVM によるネイティブコード生成。`quarz build` が使う)からなります。現在の実装で出来ること・出来ないことは [docs/05-execution.md](docs/05-execution.ja.md) §9 を参照してください。
 
 ```sh
 cargo build --release

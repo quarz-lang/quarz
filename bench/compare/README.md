@@ -30,21 +30,20 @@ on the path or name them as above.
 1.22.0 (`--release`; the release build expects a newer glibc, so a small
 shim for `__isoc23_strto*` is linked in), Spinel at `78f436e06`
 (2026.09.12+11364) with gcc 12.2, Ruby 4.0.5 with and without `--yjit`,
-clang 14.0.6. quarz-vm is `quarz run`, quarz-llvm and cranelift are
-`quarz build` with each backend (LLVM is the default; Cranelift is for
-development). Every program pinned to one core (`taskset -c 3`), all in
-one run; milliseconds, best of 10 runs, process start-up included.
+clang 14.0.6. quarz-vm is `quarz run`, quarz-llvm is `quarz build`
+(through LLVM). Every program pinned to one core (`taskset -c 3`), all
+in one run; milliseconds, best of 10 runs, process start-up included.
 
-| program      | quarz-vm | quarz-llvm | cranelift |   go | rust | crystal | spinel |  ruby | ruby --yjit |
-|--------------|---------:|-----------:|----------:|-----:|-----:|--------:|-------:|------:|------------:|
-| fib          |     75.9 |        2.0 |       3.5 |  1.5 |  1.1 |     1.9 |  (0.6) |  57.8 |        47.6 |
-| loop         |    243.6 |        3.2 |       6.2 |  2.5 |  2.6 |     3.3 |    2.8 |  99.7 |       100.4 |
-| collections  |    326.7 |       16.5 |      21.2 | 20.0 | 12.0 |    21.1 |   21.5 | 217.2 |       196.0 |
-| objects      |     64.2 |        2.9 |       3.3 |  1.0 |  0.8 |     1.5 |   14.3 | 277.4 |       220.9 |
-| strings      |     63.3 |       19.0 |      19.5 | 33.5 | 14.6 |    26.2 |   21.5 | 145.9 |       141.4 |
-| dispatch     |    127.9 |        4.1 |       5.7 |  2.5 |  2.3 |     1.7 |    4.8 | 112.7 |        61.0 |
-| tak(24,16,8) |    264.7 |        2.8 |      10.3 |  3.6 |  3.1 |     4.1 |    2.4 |  97.8 |        53.8 |
-| tak(27,18,9) |   1721.6 |       11.0 |      64.7 | 18.5 | 16.7 |    19.6 |   11.4 | 372.0 |        94.1 |
+| program      | quarz-vm | quarz-llvm |   go | rust | crystal | spinel |  ruby | ruby --yjit |
+|--------------|---------:|-----------:|-----:|-----:|--------:|-------:|------:|------------:|
+| fib          |     75.9 |        2.0 |  1.5 |  1.1 |     1.9 |  (0.6) |  57.8 |        47.6 |
+| loop         |    243.6 |        3.2 |  2.5 |  2.6 |     3.3 |    2.8 |  99.7 |       100.4 |
+| collections  |    326.7 |       16.5 | 20.0 | 12.0 |    21.1 |   21.5 | 217.2 |       196.0 |
+| objects      |     64.2 |        2.9 |  1.0 |  0.8 |     1.5 |   14.3 | 277.4 |       220.9 |
+| strings      |     63.3 |       19.0 | 33.5 | 14.6 |    26.2 |   21.5 | 145.9 |       141.4 |
+| dispatch     |    127.9 |        4.1 |  2.5 |  2.3 |     1.7 |    4.8 | 112.7 |        61.0 |
+| tak(24,16,8) |    264.7 |        2.8 |  3.6 |  3.1 |     4.1 |    2.4 |  97.8 |        53.8 |
+| tak(27,18,9) |   1721.6 |       11.0 | 18.5 | 16.7 |    19.6 |   11.4 | 372.0 |        94.1 |
 
 Measured the same way, a program printing one line takes 1.0 ms in
 Quarz (it decodes its embedded module at start-up), 0.7 in Go, 0.5 in

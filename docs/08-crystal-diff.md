@@ -40,7 +40,7 @@ Crystal is the closest relative of Quarz: a statically typed, compiled language 
 | Concurrency | Fibers that share memory (`spawn`, `Channel(T)`, `Mutex`, `Atomic(T)`): any object can be passed between fibers, and execution contexts run fibers on several threads | Tasks (`spawn`, `Task.scope` with cancellation, `Channel[T]`, `select`, `Atom[T]`): only `Shareable` (immutable) values cross task boundaries, which the compiler checks, and there are no locks. The current scheduler runs tasks on one thread; `Task.blocking { }` runs a block on a helper thread |
 | Memory | Tracing GC (Boehm) | Reference counting with in-place updates of uniquely referenced values |
 | C interop | `lib LibC; fun strlen(s : UInt8*) : SizeT; end` | `extern "C"; def strlen(s: CString) -> SizeT; end` |
-| Running a program | Compiled (`crystal run` compiles first); `crystal i` is an experimental interpreter, available in builds that include it | `quarz run` interprets; `quarz build` compiles with LLVM or Cranelift |
+| Running a program | Compiled (`crystal run` compiles first); `crystal i` is an experimental interpreter, available in builds that include it | `quarz run` interprets; `quarz build` compiles with LLVM |
 
 ## What is added
 

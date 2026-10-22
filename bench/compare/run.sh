@@ -1,5 +1,5 @@
 #!/bin/sh
-# Compare Quarz (VM, LLVM, Cranelift) with Go, Rust, Crystal, Spinel and
+# Compare Quarz (VM and compiled) with Go, Rust, Crystal, Spinel and
 # Ruby on bench/*.qz and their transcriptions here. Prints the best
 # wall-clock time of several runs for each program, in milliseconds.
 #
@@ -22,8 +22,7 @@ have() { command -v "$1" >/dev/null 2>&1; }
 programs="fib loop collections objects strings dispatch tak"
 mkdir -p "$out/bin"
 for b in $programs; do
-  $quarz build bench/$b.qz -o "$out/bin/llvm_$b" --backend llvm
-  $quarz build bench/$b.qz -o "$out/bin/cranelift_$b" --backend cranelift
+  $quarz build bench/$b.qz -o "$out/bin/llvm_$b"
   go build -o "$out/bin/go_$b" bench/compare/go/$b.go
   rustc -O -o "$out/bin/rust_$b" bench/compare/rust/$b.rs
   if have "$crystal"; then
@@ -63,7 +62,7 @@ norm() {
 }
 check() {
   want=$("$out/bin/llvm_$1" $2 | norm)
-  for cmd in "$quarz run bench/$1.qz" "$out/bin/cranelift_$1" "$out/bin/go_$1" \
+  for cmd in "$quarz run bench/$1.qz" "$out/bin/go_$1" \
     "$out/bin/rust_$1" "$out/bin/crystal_$1" "$out/bin/spinel_$1" \
     "ruby bench/compare/ruby/$1.rb"; do
     bin=${cmd%% *}
@@ -77,17 +76,16 @@ check() {
     fi
   done
 }
-printf "%-13s %9s %9s %9s %7s %7s %7s %7s %8s %8s\n" program quarz-vm quarz-llvm \
-  cranelift go rust crystal spinel ruby ruby-yjit
+printf "%-13s %9s %9s %7s %7s %7s %7s %8s %8s\n" program quarz-vm quarz-llvm \
+  go rust crystal spinel ruby ruby-yjit
 row() {
   name=$1
   b=$2
   arg=$3
   check "$b" "$arg"
-  printf "%-13s %9s %9s %9s %7s %7s %7s %7s %8s %8s\n" "$name" \
+  printf "%-13s %9s %9s %7s %7s %7s %7s %8s %8s\n" "$name" \
     "$(best $quarz run bench/$b.qz $arg)" \
     "$(best "$out/bin/llvm_$b" $arg)" \
-    "$(best "$out/bin/cranelift_$b" $arg)" \
     "$(best "$out/bin/go_$b" $arg)" \
     "$(best "$out/bin/rust_$b" $arg)" \
     "$(best "$out/bin/crystal_$b" $arg)" \
