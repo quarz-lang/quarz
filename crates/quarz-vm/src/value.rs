@@ -764,17 +764,10 @@ pub struct EnumeratorVal {
     pub recv: Value,
     pub method: Rc<str>,
     pub args: Vec<Value>,
-    /// Where `next` is. An enumerator is Shareable: tasks calling `next`
-    /// on the same one share the position, each element going to one of
-    /// them.
-    cursor: std::sync::Mutex<EnumCursor>,
-}
-
-#[derive(Debug, Default)]
-struct EnumCursor {
-    /// The elements, collected at the first `next` or `peek`.
-    buffer: Option<Vec<Value>>,
-    position: usize,
+    /// The elements, collected at the first `next` or `peek`. (Not
+    /// Shareable: an enumerator stays in its task.)
+    buffer: RefCell<Option<Vec<Value>>>,
+    position: Cell<usize>,
 }
 
 impl EnumeratorVal {
@@ -783,56 +776,42 @@ impl EnumeratorVal {
             recv,
             method,
             args,
-            cursor: std::sync::Mutex::new(EnumCursor::default()),
+            buffer: RefCell::new(None),
+            position: Cell::new(0),
         }
-    }
-
-    fn cursor(&self) -> std::sync::MutexGuard<'_, EnumCursor> {
-        // Nothing panics while holding it; recover if something did.
-        self.cursor.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Whether the elements have been collected.
     pub fn is_buffered(&self) -> bool {
-        self.cursor().buffer.is_some()
+        self.buffer.borrow().is_some()
     }
 
-    /// Keep the collected elements for `next`, unless another task did
-    /// meanwhile (collecting runs Quarz code, so the lock is not held
-    /// across it). `shared`: the enumerator is, and so must they be.
-    pub fn fill(&self, items: Vec<Value>, shared: bool) {
-        if shared {
-            items.iter().for_each(Value::share);
-        }
-        let mut c = self.cursor();
-        if c.buffer.is_none() {
-            c.buffer = Some(items);
-        }
+    /// Keep the collected elements for `next`.
+    pub fn fill(&self, items: Vec<Value>) {
+        *self.buffer.borrow_mut() = Some(items);
     }
 
     /// The element at the position (moving past it when `advance`), or
     /// `None` at the end.
     pub fn current(&self, advance: bool) -> Option<Value> {
-        let mut c = self.cursor();
-        let pos = c.position;
-        let v = c.buffer.as_ref()?.get(pos)?.clone();
+        let pos = self.position.get();
+        let v = self.buffer.borrow().as_ref()?.get(pos)?.clone();
         if advance {
-            c.position = pos + 1;
+            self.position.set(pos + 1);
         }
         Some(v)
     }
 
     /// Back to the start, collecting the elements again at the next use.
     pub fn rewind(&self) {
-        let mut c = self.cursor();
-        c.position = 0;
-        c.buffer = None;
+        self.position.set(0);
+        *self.buffer.borrow_mut() = None;
     }
 
     /// Call `f` on each buffered element (for `Value::share`).
-    fn each_buffered(&self, mut f: impl FnMut(&Value)) {
-        if let Some(xs) = &self.cursor().buffer {
-            xs.iter().for_each(&mut f);
+    fn each_buffered(&self, f: impl FnMut(&Value)) {
+        if let Some(xs) = &*self.buffer.borrow() {
+            xs.iter().for_each(f);
         }
     }
 }
@@ -1371,9 +1350,7 @@ impl Value {
                             push(&mut work, &r.recv);
                             Rc::mark_shared(&r.method);
                             r.args.iter().for_each(|x| push(&mut work, x));
-                            // The vector stays put while the walk runs:
-                            // a local enumerator, which only this thread
-                            // reaches, is not changed by it.
+                            // The vector stays put while the walk runs.
                             r.each_buffered(|x| push(&mut work, x));
                         }
                     }

@@ -1007,7 +1007,9 @@ extension Array[T: Comparable[T]]
 end
 
 class Enumerator[out T]
-  include Shareable
+  # It has a position, and its receiver may be a mutable object: it
+  # stays in its task.
+  include Unshareable
   include Enumerable[T]
 
   native def each(&: (T) -> Nil) -> Nil

@@ -43,7 +43,7 @@
 
 `abstract def each(&: (T) -> Nil)` を実装すれば使えます。Ruby と同じメソッド群: `map collect flat_map collect_concat filter_map select filter find_all reject reduce inject(初期値あり・なし) sum(ブロック付き。Int または Float) min max minmax(比較可能な要素、または比較ブロック) min(n) max(n) min_by max_by sort(比較ブロック可) sort_by group_by partition chunk_while slice_when each_slice each_cons each_with_index each_with_object each_entry zip take drop take_while drop_while find detect find_index include? member? count(値またはブロック) tally tally_by uniq(ブロック可) first first(n) to_a entries to_set to_h(ブロック付き) lazy any? all? none? one? cycle reverse_each`。
 
-`map`、`each_with_index`、`each_slice`、`each_cons`、`to_enum` はブロックなしで `Enumerator[T]` を返すので、`xs.each_with_index.map { |x, i| }` や `xs.map.with_index { |x, i| }` が書けます。`Enumerator` は `next peek rewind size each with_index(offset)` を持ち、それ自身 Enumerable です。Shareable で、同じ `Enumerator` の `next` を複数のタスクが呼ぶと位置を共有し、各要素はどれか 1 つのタスクに渡ります(`Enumerator#with_index` はブロックの結果を集めて返します。`map.with_index` に必要なためです)。`lazy` は今のところ何もしません。遅延評価の `Lazy[T]` は *予定*。
+`map`、`each_with_index`、`each_slice`、`each_cons`、`to_enum` はブロックなしで `Enumerator[T]` を返すので、`xs.each_with_index.map { |x, i| }` や `xs.map.with_index { |x, i| }` が書けます。`Enumerator` は `next peek rewind size each with_index(offset)` を持ち、それ自身 Enumerable です。Shareable ではありません(位置を持ち、受け手が可変なオブジェクトのこともあるため)。(`Enumerator#with_index` はブロックの結果を集めて返します。`map.with_index` に必要なためです)。`lazy` は今のところ何もしません。遅延評価の `Lazy[T]` は *予定*。
 
 タプルのコレクションに対するブロックは分解して受け取れます: `hash.map { |k, v| }`、`xs.each_with_index.map { |x, i| }`。
 

@@ -1608,7 +1608,7 @@ fn enumerator_next(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
     };
     if !e.is_buffered() {
         let items = collect(interp, recv)?;
-        e.fill(items, Rc::is_shared(e));
+        e.fill(items);
     }
     e.current(true).ok_or_else(|| {
         interp.raise(

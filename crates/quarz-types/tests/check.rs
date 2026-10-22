@@ -327,6 +327,22 @@ fn captured_self_in_task_blocks() {
 }
 
 #[test]
+fn enumerators_stay_in_their_task() {
+    // An enumerator has a position, and its receiver may be mutable.
+    let counter = "class Counter\n  include Enumerable[Int]\n  var @n: Int = 0\n  def each(&: (Int) -> Nil) -> Nil\n    @n += 1\n    yield @n\n  end\nend\n";
+    err(
+        &format!("{counter}e = Counter.new.to_enum\nt = spawn {{ e.next }}"),
+        "`e` has the non-shareable type Enumerator[Int]",
+    );
+    err(
+        "c = Channel[Enumerator[Int]].new",
+        "type argument Enumerator[Int] for `T` of `Channel` must be Shareable",
+    );
+    err("E = [1, 2].each", "constant `E` has the non-shareable type");
+    ok("e = [1, 2].each\np e.next");
+}
+
+#[test]
 fn task_results_are_shareable() {
     // A task's result passes to the task that awaits it.
     let counter = "class Counter\n  var @n: Int = 0\nend\n";

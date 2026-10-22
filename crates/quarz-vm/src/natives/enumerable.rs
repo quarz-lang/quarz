@@ -46,7 +46,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         };
         if !e.is_buffered() {
             let items = collect(i, r)?;
-            e.fill(items, Rc::is_shared(e));
+            e.fill(items);
         }
         e.current(false)
             .ok_or_else(|| i.raise(i.program.exc.stop_iteration, "iteration reached an end"))

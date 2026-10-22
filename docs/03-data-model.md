@@ -131,6 +131,7 @@ Shareable:
 Not Shareable:
 
 - The various Builders
+- `Enumerator` (it has a position, and its receiver may be a mutable object)
 - Classes with `var` fields, classes with non-Shareable fields
 - Procedures that capture Builders or mutable objects, procedures that assign to outer local variables
 
