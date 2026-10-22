@@ -466,8 +466,9 @@ impl World {
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
-            Type::Proc(rc, ps, r) => format!(
-                "{}({}) -> {}",
+            Type::Proc(rc, ps, r, sh) => format!(
+                "{}{}({}) -> {}",
+                if *sh { "shareable " } else { "" },
                 rc.as_ref()
                     .map(|t| format!("{}.", self.type_name(t)))
                     .unwrap_or_default(),
@@ -754,7 +755,11 @@ impl World {
                 }
             }
             (Type::Tuple(_), Type::Class(b, _)) => self.class_is_a(self.builtin.array, *b),
-            (Type::Proc(ra, ps, r), Type::Proc(rb, qs, s)) => {
+            (Type::Proc(ra, ps, r, sa), Type::Proc(rb, qs, s, sb)) => {
+                // A shareable procedure is a procedure; not the reverse.
+                if *sb && !*sa {
+                    return false;
+                }
                 // Receivers, like parameters, are contravariant.
                 let recv_ok = match (ra, rb) {
                     (None, None) => true,
@@ -766,7 +771,7 @@ impl World {
                     && ps.iter().zip(qs).all(|(p, q)| self.is_subtype(q, p))
                     && self.is_subtype(r, s)
             }
-            (Type::Proc(_, _, _), Type::Class(b, _)) => *b == self.builtin.proc_,
+            (Type::Proc(..), Type::Class(b, _)) => *b == self.builtin.proc_,
             (Type::Param(p), _) => {
                 let bounds = self.param_bounds(*p);
                 bounds.iter().any(|b| self.is_subtype(b, sup))
@@ -943,7 +948,7 @@ impl World {
                 let elem = self.tuple_element(ts);
                 self.lookup_instance_methods(self.builtin.array, &[elem], name, &mut out);
             }
-            Type::Proc(_, _, _) => {
+            Type::Proc(..) => {
                 self.lookup_instance_methods(self.builtin.proc_, &[], name, &mut out);
             }
             Type::Param(p) => {
@@ -1046,7 +1051,7 @@ impl World {
             }
             Type::ClassObject(_, _) => true,
             Type::Union(ms) | Type::Tuple(ms) => ms.clone().iter().all(|m| self.is_shareable(m)),
-            Type::Proc(_, _, _) => false,
+            Type::Proc(_, _, _, shareable) => *shareable,
             // `Self`: as shareable as the class it stands for.
             Type::Param(p) if *p == u32::MAX => match self.self_bound.clone() {
                 Some(b) => self.is_shareable(&b),

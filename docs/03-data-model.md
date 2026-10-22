@@ -124,7 +124,7 @@ Shareable:
 - `data` types (all fields Shareable), `enum` types (all variants' fields Shareable); a generic one when its type arguments are
 - Classes that include `Shareable`, directly or through an ancestor or an included module: each must have no `var` fields and only Shareable fields, and so must every subclass, or its definition is an error (`class Oops < RuntimeError` with a `var` field is one: `Exception` includes `Shareable`)
 - `Channel[T]`, `Task[T]`, `Atom[T]`, `Scope` (these are internally synchronized)
-- Procedures (those whose captured variable values are all Shareable, and which do not reassign captured variables; currently no procedure type is Shareable)
+- Shareable procedures, `shareable (A) -> R` ([02-types.md](02-types.md) §9): a block or lambda written where one is expected captures by value, like a `spawn` block, so its captured values must be Shareable and it cannot assign them. Other procedure types are not Shareable
 - Exception objects (`Exception` includes `Shareable`, so every exception class is held to the rules)
 - `IO` handles (the standard streams, open files, sockets): the runtime serializes access
 

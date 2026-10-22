@@ -174,6 +174,19 @@ def spawn[T: Shareable](&block: () -> T) -> Task[T]   # ブロックの捕捉変
 
 `include Shareable` は、サブタイプも守る約束です。Shareable な型の値は、どのクラスの値であっても Shareable です。そのため、型が Shareable かどうかは、その定義の場所で、自身と祖先の宣言だけから決まります。プログラムの残りを見る必要はありません(分割コンパイルにはこれが必要です)。
 
+手続きの型は Shareable ではありません。ブロックは周りのコードの変数を読み、代入しますが、それを別のタスクがしてはいけないからです。Shareable な手続きの型は `shareable (A) -> R` です。この型が期待される位置(ブロック引数 `&job: shareable (Int) -> Nil`、引数、型注釈のある変数)に書いたブロックやラムダは、`spawn` のブロックと同じく値で捕捉します。読む変数は作った時点でコピーされ、その値は Shareable でなければならず(`self` を使うなら `self` も)、それに代入することはできません。そうした手続きは、どのタスクからでも、ほかと同時に呼べます。ワーカープールやサーバーのループは、それを受け取り、自分のタスクで動かせます。
+
+```ruby
+def each_in_tasks(n: Int, &job: shareable (Int) -> Nil) -> Nil
+  Task.scope { |s| n.times { |i| s.spawn { job.call(i) } } }
+end
+label = "item"
+each_in_tasks(3) { |i| puts "#{label} #{i}" }    # `label` をコピーする
+log: shareable (String) -> Nil = ->(s: String) { STDERR.puts(s) }
+```
+
+Shareable な手続きは手続きです(`shareable (A) -> R` は `(A) -> R` のサブタイプ)。逆は成り立たないので、`g = ->() { 1 }` に対する `f: shareable () -> Int = g` はエラーです。ラムダを書く位置で型を注釈してください。
+
 ## 10. 採用しなかった案
 
 - **構造的型付け(Go のインターフェース、TypeScript)**: ダックタイピングに近く魅力的ですが、Ruby では「`each` を持つ」だけでなく「`each` の意味」を期待しています。名前的なモジュール + `extension` による後付け適合で同じ柔軟性を得つつ、適合の意図を明示させる方を選びました。

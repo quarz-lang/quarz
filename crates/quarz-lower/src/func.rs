@@ -935,7 +935,7 @@ impl<'a> FnBuilder<'a> {
                     destructure: None,
                     is_lambda: true,
                 });
-                dst
+                self.share_proc(e.id, dst)
             }
             Local(_) => match self.var_ref(e.span) {
                 Some(r) => self.load_var(r),
@@ -2373,7 +2373,7 @@ impl<'a> FnBuilder<'a> {
                 destructure,
                 is_lambda: false,
             });
-            a.block = Some(dst);
+            a.block = Some(self.share_proc(e.id, dst));
         }
         let kind = match target {
             Some(CallTarget::Method { .. }) if self.out.dynamic_calls.contains(&e.id) => {
@@ -2553,7 +2553,7 @@ impl<'a> FnBuilder<'a> {
                     destructure,
                     is_lambda: false,
                 });
-                Some(dst)
+                Some(self.share_proc(e.id, dst))
             }
             None => {
                 let dst = self.reg();
@@ -2947,6 +2947,17 @@ impl<'a> FnBuilder<'a> {
         self.term(Term::Jump(join));
         self.switch(join);
         res
+    }
+
+    /// A block or lambda made where a shareable procedure is expected
+    /// (`Output::shareable_procs`, by the id the checker recorded): a copy
+    /// with what it captures copied, as `spawn` makes, which reads no
+    /// frame of the creator's and so may run on any task.
+    fn share_proc(&mut self, id: ast::NodeId, block: Reg) -> Reg {
+        if !self.out.shareable_procs.contains(&id) {
+            return block;
+        }
+        self.send(block, "__copy_captures", Vec::new())
     }
 
     /// `a && b` (or `x ||= b`) as the call of the type's own operator the

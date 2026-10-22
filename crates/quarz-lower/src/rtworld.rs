@@ -13,7 +13,7 @@ pub fn rt_type(t: &Type) -> RtType {
         Type::ClassObject(_, _) => RtType::ClassObject,
         Type::Union(ms) => RtType::Union(ms.iter().map(rt_type).collect()),
         Type::Tuple(ts) => RtType::Tuple(ts.len() as u32),
-        Type::Proc(_, _, _) => RtType::Proc,
+        Type::Proc(..) => RtType::Proc,
         Type::Param(_) | Type::Var(_) => RtType::Any,
     }
 }

@@ -275,8 +275,19 @@ impl Frame {
         for _ in 0..depth {
             frame = frame.parent.as_deref().expect("frame depth");
         }
-        let slots = frame.slots.borrow();
-        slots.get(slot as usize).cloned().unwrap_or(Value::Nil)
+        // Through the slot view, as compiled code reads, not a borrow: the
+        // frames a shareable procedure (or a `spawn` block) copied are read
+        // by every task that calls it, at once, and a borrow would update
+        // the cell's count from several threads. Nothing writes them (the
+        // checker rejects assigning a variable captured that way), and a
+        // frame being written is read by its own task only.
+        if slot < frame.nslots.get() {
+            // SAFETY: `slots_ptr`/`nslots` describe the slot vector, set by
+            // `bind` whenever it is created or resized.
+            unsafe { (*frame.slots_ptr.get().add(slot as usize)).clone() }
+        } else {
+            Value::Nil
+        }
     }
 
     pub fn set(&self, depth: u32, slot: u32, value: Value) {

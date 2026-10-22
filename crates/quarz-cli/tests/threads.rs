@@ -100,6 +100,11 @@ fn atoms_and_constants_from_every_worker() {
 }
 
 #[test]
+fn shareable_procedures_called_from_every_worker() {
+    prints_its_out("shareable_procs.qz");
+}
+
+#[test]
 fn exit_in_a_task_on_another_worker() {
     check_runs("exit.qz", |out, what| {
         assert_eq!(out.status.code(), Some(7), "{what}");

@@ -1,0 +1,16 @@
+job 0: 0
+job 1: 1
+job 2: 4
+job 3: 9
+job 4: 16
+job 5: 25
+job 6: 36
+job 7: 49
+failed 1
+failed 3
+failed 5
+ok 0
+ok 2
+ok 4
+3
+240

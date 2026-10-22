@@ -118,6 +118,8 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         Ok(Value::Task(i.spawn_task(b, None, "task")))
     });
     m.insert("Kernel#loop", kernel_loop);
+    // A shareable procedure copies what it captures when it is made.
+    m.insert("Proc#__copy_captures", |i, r, _| Ok(snapshot(i, r)));
     m.insert("Kernel#sleep", |i, _, a| {
         i.sleep(duration(i, a.arg(0))?)?;
         Ok(Value::Nil)

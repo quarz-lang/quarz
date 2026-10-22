@@ -468,6 +468,8 @@ pub enum TypeExprKind {
         recv: Option<Box<TypeExpr>>,
         params: Vec<TypeExpr>,
         ret: Box<TypeExpr>,
+        /// `shareable (A) -> R`: a procedure any task may call.
+        shareable: bool,
     },
     SelfType,
     Nothing,

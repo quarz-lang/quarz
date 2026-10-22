@@ -107,6 +107,10 @@ pub struct Output {
     /// `a.&&() { b }`, with the expression's id (see `logical_method`).
     /// Lowering calls it on the left operand's value.
     pub logical_calls: FxHashMap<NodeId, Expr>,
+    /// Blocks (by their call's id) and lambdas checked as shareable
+    /// procedures: lowering copies what they capture when it makes them,
+    /// as `spawn` does, so that they no longer read the creator's frame.
+    pub shareable_procs: rustc_hash::FxHashSet<NodeId>,
     /// `new` called on the receiver in a class method: it builds an
     /// instance of the class the method is called on.
     pub self_new: rustc_hash::FxHashSet<NodeId>,
@@ -214,6 +218,9 @@ struct Env {
     /// block). Variables from frames below it are captured by value and must
     /// be shareable; they cannot be assigned.
     task_frame: Option<usize>,
+    /// What that frame is, for diagnostics: a task block, or the body of
+    /// a shareable procedure (which copies what it captures the same way).
+    task_shareable_proc: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -249,10 +256,11 @@ impl InferTable {
             }
             Type::Union(ms) => Type::union_of(ms.iter().map(|m| self.resolve(m)).collect()),
             Type::Tuple(ts) => Type::Tuple(ts.iter().map(|t| self.resolve(t)).collect()),
-            Type::Proc(rc, ps, r) => Type::Proc(
+            Type::Proc(rc, ps, r, sh) => Type::Proc(
                 rc.as_ref().map(|t| Box::new(self.resolve(t))),
                 ps.iter().map(|p| self.resolve(p)).collect(),
                 Box::new(self.resolve(r)),
+                *sh,
             ),
         }
     }
@@ -344,6 +352,7 @@ impl Checker {
             file: 1,
             pattern_base: None,
             task_frame: None,
+            task_shareable_proc: false,
         };
         Checker {
             world,
@@ -834,6 +843,7 @@ impl Checker {
             file,
             pattern_base: None,
             task_frame: None,
+            task_shareable_proc: false,
         }
     }
 
@@ -1315,8 +1325,9 @@ impl Checker {
                 }
                 self.world.class_is_a(self.world.builtin.array, *eid)
             }
-            (Type::Proc(ra, ps, r), Type::Proc(rb, qs, s)) => {
-                if ps.len() != qs.len() {
+            (Type::Proc(ra, ps, r, sa), Type::Proc(rb, qs, s, sb)) => {
+                // A shareable procedure is a procedure; not the reverse.
+                if ps.len() != qs.len() || (*sb && !*sa) {
                     return false;
                 }
                 // Receivers are contravariant, and a block with one is
@@ -1338,7 +1349,7 @@ impl Checker {
                 }
                 self.coerce(&r, &s)
             }
-            (Type::Proc(_, _, _), Type::Class(eid, _)) => *eid == self.world.builtin.proc_,
+            (Type::Proc(..), Type::Class(eid, _)) => *eid == self.world.builtin.proc_,
             (Type::Param(_), _) | (_, Type::Param(_)) => self.world.is_subtype(&a, &e),
             _ => false,
         }
@@ -1458,6 +1469,25 @@ impl Checker {
         None
     }
 
+    /// The innermost frame that captures by value, in diagnostics about
+    /// assigning to what it captured.
+    fn task_block_name(&self) -> &'static str {
+        if self.env.task_shareable_proc {
+            "a shareable procedure"
+        } else {
+            "a task block (`spawn`, `Task.blocking`)"
+        }
+    }
+
+    /// The same, in diagnostics about what it may capture.
+    fn task_capture_name(&self) -> &'static str {
+        if self.env.task_shareable_proc {
+            "a shareable procedure"
+        } else {
+            "a `spawn` block"
+        }
+    }
+
     /// Whether a variable `depth` frames up lives outside the innermost
     /// task block.
     fn captured_across_task(&self, depth: usize) -> bool {
@@ -1478,8 +1508,9 @@ impl Checker {
         if !self.world.is_shareable(&rt) {
             self.error(
                 format!(
-                    "`{name}` has the non-shareable type {} and cannot be captured by a `spawn` block",
-                    self.world.type_name(&rt)
+                    "`{name}` has the non-shareable type {} and cannot be captured by {}",
+                    self.world.type_name(&rt),
+                    self.task_capture_name()
                 ),
                 span,
             );
@@ -2036,7 +2067,7 @@ impl Checker {
                 self.out
                     .calls
                     .insert(expr.id, CallTarget::Method { method: mid });
-                Type::Proc(None, params, Box::new(ret))
+                Type::Proc(None, params, Box::new(ret), false)
             }
             Yield(args) => self.check_yield(expr, args),
             Super { args, block } => self.check_super(expr, args.as_deref(), block.as_deref()),
@@ -3037,7 +3068,10 @@ impl Checker {
                 if let Some((depth, slot)) = self.lookup_var(name) {
                     if self.captured_across_task(depth) {
                         self.error(
-                            format!("cannot assign to `{name}` from a task block (`spawn`, `Task.blocking`); it is captured by value"),
+                            format!(
+                                "cannot assign to `{name}` from {}; it is captured by value",
+                                self.task_block_name()
+                            ),
                             *span,
                         );
                     }
@@ -3188,7 +3222,10 @@ impl Checker {
                 Some((depth, slot)) => {
                     if self.captured_across_task(depth) {
                         self.error(
-                            format!("cannot assign to `{name}` from a task block (`spawn`, `Task.blocking`); it is captured by value"),
+                            format!(
+                                "cannot assign to `{name}` from {}; it is captured by value",
+                                self.task_block_name()
+                            ),
                             *span,
                         );
                     }
@@ -3925,7 +3962,7 @@ impl Checker {
                 self.check_args_blindly(call);
                 Type::Nothing
             }
-            Type::Proc(Some(_), _, _) if name == "call" || name == "[]" => {
+            Type::Proc(Some(_), ..) if name == "call" || name == "[]" => {
                 self.error(
                     "a block with a receiver is run with `recv.instance_exec(&block)`",
                     expr.span,
@@ -3934,7 +3971,7 @@ impl Checker {
                 Type::Nothing
             }
             // `f.call(x)`, `f.(x)` and `f[x]` all call the procedure.
-            Type::Proc(None, params, ret) if name == "call" || name == "[]" => {
+            Type::Proc(None, params, ret, _) if name == "call" || name == "[]" => {
                 let params = params.clone();
                 let ret = (**ret).clone();
                 let positional: Vec<&Expr> = call
@@ -4167,7 +4204,10 @@ impl Checker {
                 };
                 if self.captured_across_task(depth) {
                     self.error(
-                        format!("cannot assign to `{name}` from a task block (`spawn`, `Task.blocking`); it is captured by value"),
+                        format!(
+                            "cannot assign to `{name}` from {}; it is captured by value",
+                            self.task_block_name()
+                        ),
                         *span,
                     );
                 }
@@ -4692,7 +4732,11 @@ impl Checker {
         if let Some(b) = &call.block {
             let fresh = self.infer.fresh();
             let params: Vec<Type> = b.params.list.iter().map(|_| self.infer.fresh()).collect();
-            self.check_block(expr.id, b, &Type::Proc(None, params, Box::new(fresh)));
+            self.check_block(
+                expr.id,
+                b,
+                &Type::Proc(None, params, Box::new(fresh), false),
+            );
         }
         Type::Nothing
     }
@@ -4979,7 +5023,7 @@ impl Checker {
                 match &e.kind {
                     ExprKind::Symbol(name) => {
                         // `&:name`: the block calls `name` on its argument.
-                        let Type::Proc(_, params, ret) = self.infer.resolve(&block_ty) else {
+                        let Type::Proc(_, params, ret, _) = self.infer.resolve(&block_ty) else {
                             return Err("invalid block type".to_string());
                         };
                         if params.len() != 1 {
@@ -5047,10 +5091,14 @@ impl Checker {
     }
 
     fn check_block_as(&mut self, call_id: NodeId, block: &Block, proc_ty: &Type, is_task: bool) {
-        let Type::Proc(recv, params, ret) = proc_ty else {
+        let Type::Proc(recv, params, ret, shareable) = proc_ty else {
             self.error("internal: block type is not a procedure", block.span);
             return;
         };
+        let shareable = *shareable && !is_task;
+        if shareable {
+            self.out.shareable_procs.insert(call_id);
+        }
         let params = params.clone();
         let ret = (**ret).clone();
         self.widen_assigned(&block.body);
@@ -5063,9 +5111,10 @@ impl Checker {
             is_block: true,
             owner: SelfOwner::Block(call_id),
         });
-        let saved_task_frame = self.env.task_frame;
-        if is_task {
+        let saved_task_frame = (self.env.task_frame, self.env.task_shareable_proc);
+        if is_task || shareable {
             self.env.task_frame = Some(self.env.frames.len() - 1);
+            self.env.task_shareable_proc = shareable;
         }
         self.env.blocks.push(BlockCtx {
             ret: ret.clone(),
@@ -5164,7 +5213,7 @@ impl Checker {
         }
         let frame = self.env.frames.pop().unwrap();
         self.env.blocks.pop();
-        self.env.task_frame = saved_task_frame;
+        (self.env.task_frame, self.env.task_shareable_proc) = saved_task_frame;
         self.leave_receiver(saved_self);
         self.out
             .frame_sizes
@@ -5220,8 +5269,9 @@ impl Checker {
         }
         self.error(
             format!(
-                "{what} has the non-shareable type {} and cannot be captured by a `spawn` block",
-                self.world.type_name(&t)
+                "{what} has the non-shareable type {} and cannot be captured by {}",
+                self.world.type_name(&t),
+                self.task_capture_name()
             ),
             span,
         );
@@ -5241,9 +5291,21 @@ impl Checker {
     }
 
     fn check_lambda(&mut self, id: NodeId, block: &Block, expected: Option<&Type>) -> Type {
-        let (expected_recv, expected_proc) = match expected.map(|e| self.resolve(e)) {
-            Some(Type::Proc(rc, ps, r)) => (rc.map(|t| *t), Some((ps, *r))),
-            _ => (None, None),
+        // The expected procedure, also as the one procedure of a union
+        // (an optional argument, `f: ((A) -> R)? = nil`).
+        let expected_proc_type = match expected.map(|e| self.resolve(e)) {
+            Some(Type::Union(ms)) => {
+                let mut procs = ms.into_iter().filter(|m| matches!(m, Type::Proc(..)));
+                match (procs.next(), procs.next()) {
+                    (Some(p), None) => Some(p),
+                    _ => None,
+                }
+            }
+            other => other,
+        };
+        let (expected_recv, expected_proc, shareable) = match expected_proc_type {
+            Some(Type::Proc(rc, ps, r, sh)) => (rc.map(|t| *t), Some((ps, *r)), sh),
+            _ => (None, None, false),
         };
         self.widen_assigned(&block.body);
         let mut param_types = Vec::new();
@@ -5253,6 +5315,14 @@ impl Checker {
             is_block: true,
             owner: SelfOwner::Block(id),
         });
+        // Where a shareable procedure is expected, the lambda is one: it
+        // copies what it captures, which must be Shareable.
+        let saved_task_frame = (self.env.task_frame, self.env.task_shareable_proc);
+        if shareable {
+            self.out.shareable_procs.insert(id);
+            self.env.task_frame = Some(self.env.frames.len() - 1);
+            self.env.task_shareable_proc = true;
+        }
         // `->(x: Int) -> R { }`: the declared result, else the expected
         // one, else inferred from the body.
         let declared = block.ret.as_ref().map(|te| {
@@ -5310,12 +5380,18 @@ impl Checker {
                 block.span,
             );
         }
+        (self.env.task_frame, self.env.task_shareable_proc) = saved_task_frame;
         let frame = self.env.frames.pop().unwrap();
         self.env.blocks.pop();
         self.leave_receiver(saved_self);
         self.out.frame_sizes.insert(id, frame.vars.len() as u32);
         let ret = self.infer.resolve(&ret_var);
-        Type::Proc(expected_recv.map(Box::new), param_types, Box::new(ret))
+        Type::Proc(
+            expected_recv.map(Box::new),
+            param_types,
+            Box::new(ret),
+            shareable,
+        )
     }
 
     fn check_yield(&mut self, expr: &Expr, args: &[Arg]) -> Type {
@@ -5332,7 +5408,7 @@ impl Checker {
             });
             return Type::Nothing;
         };
-        let Type::Proc(recv, params, ret) = bt else {
+        let Type::Proc(recv, params, ret, _) = bt else {
             return Type::Nothing;
         };
         if recv.is_some() {

@@ -609,6 +609,39 @@ fn concurrency_rules() {
 }
 
 #[test]
+fn shareable_procedures() {
+    let run = "def run(&h: shareable () -> Nil) -> Nil\n  spawn { h.call }.await\nend\n";
+    // A block or lambda where one is expected captures by value, like a
+    // `spawn` block: Shareable values, no assignment.
+    ok(&format!("{run}x = 1\nrun {{ puts x }}"));
+    ok(&format!(
+        "{run}f: shareable (Int) -> Int = ->(n: Int) {{ n + 1 }}\nspawn {{ f.call(1) }}"
+    ));
+    ok(&format!(
+        "{run}def opt(f: (shareable () -> Nil)? = nil) = f\nopt(f: ->() {{ puts 1 }})"
+    ));
+    err(
+        &format!("{run}n = 0\nrun {{ n += 1 }}"),
+        "cannot assign to `n` from a shareable procedure",
+    );
+    err(
+        &format!("{run}b = Array::Builder[Int].new\nrun {{ b << 1 }}"),
+        "cannot be captured by a shareable procedure",
+    );
+    // A shareable procedure is a procedure, not the reverse; only a
+    // shareable one crosses to a task.
+    ok("f: shareable () -> Int = ->() { 1 }\ng: () -> Int = f");
+    err(
+        "g = ->() { 1 }\nf: shareable () -> Int = g",
+        "cannot assign () -> Int to `f` of type shareable () -> Int",
+    );
+    err(
+        "g = ->() { 1 }\nspawn { g.call }",
+        "non-shareable type () -> Int",
+    );
+}
+
+#[test]
 fn control_flow() {
     ok("x = if true then 1 else 2 end\nputs x + 1");
     ok("def f(b: Bool) -> Int | String\n  if b then 1 else \"s\" end\nend");

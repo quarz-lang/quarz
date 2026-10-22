@@ -122,7 +122,7 @@ Shareable であるもの:
 - `data` 型(フィールドがすべて Shareable)、`enum` 型(すべての variant のフィールドが Shareable)。型引数を持つものは、型引数が Shareable なとき
 - `Shareable` を include するクラス(直接、または祖先や include したモジュールを通して)。どれも `var` フィールドを持たず、フィールドはすべて Shareable でなければならず、すべてのサブクラスも同じです。満たさない定義はエラーです(`var` フィールドを持つ `class Oops < RuntimeError` はエラーになります。`Exception` が `Shareable` を include しているためです)
 - `Channel[T]`、`Task[T]`、`Atom[T]`、`Scope`(これらは内部で同期されている)
-- 手続き(捕捉している変数の値がすべて Shareable で、かつ捕捉した変数を再代入しないもの。現状ではどの手続きの型も Shareable でない)
+- Shareable な手続き、`shareable (A) -> R`([02-types.ja.md](02-types.ja.md) §9)。それが期待される位置に書いたブロックやラムダは、`spawn` のブロックと同じく値で捕捉するので、捕捉する値は Shareable でなければならず、それに代入することもできません。ほかの手続きの型は Shareable ではありません
 - 例外オブジェクト(`Exception` が `Shareable` を include しているので、すべての例外クラスが規則に照らして検査されます)
 - `IO` ハンドル(標準入出力、開いたファイル、ソケット)。アクセスはランタイムが直列化する
 

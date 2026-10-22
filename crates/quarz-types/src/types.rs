@@ -24,8 +24,10 @@ pub enum Type {
     Tuple(Vec<Type>),
     /// A block or lambda: `(A, B) -> R`.
     /// A procedure: the receiver (`self` inside, for `Recv.(A) -> R`),
-    /// the parameters and the result.
-    Proc(Option<Box<Type>>, Vec<Type>, Box<Type>),
+    /// the parameters, the result, and whether it is Shareable
+    /// (`shareable (A) -> R`: it captured Shareable values by copy, so any
+    /// task may call it).
+    Proc(Option<Box<Type>>, Vec<Type>, Box<Type>, bool),
     /// A generic type parameter of the enclosing class or method.
     Param(TypeParamId),
     /// An inference variable, bound by unification during checking.
@@ -91,10 +93,11 @@ impl Type {
             }
             Type::Union(ms) => Type::union_of(ms.iter().map(|m| m.subst(map)).collect()),
             Type::Tuple(ts) => Type::Tuple(ts.iter().map(|t| t.subst(map)).collect()),
-            Type::Proc(rc, ps, r) => Type::Proc(
+            Type::Proc(rc, ps, r, sh) => Type::Proc(
                 rc.as_ref().map(|t| Box::new(t.subst(map))),
                 ps.iter().map(|p| p.subst(map)).collect(),
                 Box::new(r.subst(map)),
+                *sh,
             ),
             Type::Param(id) => match map.get(id) {
                 Some(t) => t.clone(),
@@ -110,7 +113,7 @@ impl Type {
             Type::Nothing | Type::Param(_) => false,
             Type::Class(_, args) | Type::ClassObject(_, args) => args.iter().any(Type::has_vars),
             Type::Union(ms) | Type::Tuple(ms) => ms.iter().any(Type::has_vars),
-            Type::Proc(rc, ps, r) => {
+            Type::Proc(rc, ps, r, _) => {
                 rc.as_ref().is_some_and(|t| t.has_vars())
                     || ps.iter().any(Type::has_vars)
                     || r.has_vars()
@@ -127,7 +130,7 @@ impl Type {
                 args.iter().any(|a| a.mentions_param(id))
             }
             Type::Union(ms) | Type::Tuple(ms) => ms.iter().any(|m| m.mentions_param(id)),
-            Type::Proc(rc, ps, r) => {
+            Type::Proc(rc, ps, r, _) => {
                 rc.as_ref().is_some_and(|t| t.mentions_param(id))
                     || ps.iter().any(|p| p.mentions_param(id))
                     || r.mentions_param(id)
@@ -141,7 +144,7 @@ impl Type {
             Type::Nothing | Type::Var(_) => false,
             Type::Class(_, args) | Type::ClassObject(_, args) => args.iter().any(Type::has_params),
             Type::Union(ms) | Type::Tuple(ms) => ms.iter().any(Type::has_params),
-            Type::Proc(rc, ps, r) => {
+            Type::Proc(rc, ps, r, _) => {
                 rc.as_ref().is_some_and(|t| t.has_params())
                     || ps.iter().any(Type::has_params)
                     || r.has_params()
@@ -157,7 +160,7 @@ impl Type {
                 args.iter().for_each(|a| a.for_each_var(f))
             }
             Type::Union(ms) | Type::Tuple(ms) => ms.iter().for_each(|m| m.for_each_var(f)),
-            Type::Proc(rc, ps, r) => {
+            Type::Proc(rc, ps, r, _) => {
                 if let Some(t) = rc {
                     t.for_each_var(f);
                 }

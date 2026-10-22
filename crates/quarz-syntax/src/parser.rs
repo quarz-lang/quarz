@@ -3077,6 +3077,7 @@ impl<'src> Parser<'src> {
                     recv: Some(Box::new(ty)),
                     params: items,
                     ret: Box::new(ret),
+                    shareable: false,
                 },
             };
         }
@@ -3094,6 +3095,21 @@ impl<'src> Parser<'src> {
     fn parse_type_primary(&mut self) -> PResult<TypeExpr> {
         let start = self.peek().span;
         match self.kind().clone() {
+            // `shareable (A) -> R`, `shareable Recv.(A) -> R`.
+            T::Ident(word) if word == "shareable" => {
+                self.bump();
+                let mut ty = self.parse_type_postfix()?;
+                match &mut ty.kind {
+                    TypeExprKind::Proc { shareable, .. } => *shareable = true,
+                    _ => {
+                        return Err(
+                            self.error_at("`shareable` applies to a procedure type", ty.span)
+                        )
+                    }
+                }
+                ty.span = self.span_from(start);
+                Ok(ty)
+            }
             T::Const(_) | T::ColonColon => {
                 let path = self.parse_const_path()?;
                 let args = if self.at(&T::LBracket) && !self.peek().space_before {
@@ -3167,6 +3183,7 @@ impl<'src> Parser<'src> {
                             recv: None,
                             params: items,
                             ret: Box::new(ret),
+                            shareable: false,
                         },
                     });
                 }

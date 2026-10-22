@@ -1378,6 +1378,8 @@ end
 class Proc
   include Unshareable
   native def arity -> Int
+  # Lowering calls it on a block or lambda made as a shareable procedure.
+  native def __copy_captures -> Proc
 end
 
 class Exception

@@ -1303,7 +1303,7 @@ impl<'ast> Declarer<'ast> {
                 match &p.ty {
                     Some(t) => {
                         if let Some(ty) = self.resolve_type(t, &scope) {
-                            if !matches!(ty, Type::Proc(_, _, _)) {
+                            if !matches!(ty, Type::Proc(..)) {
                                 self.error(
                                     "a block parameter must have a procedure type `(A) -> R`",
                                     t.span,
@@ -1380,7 +1380,7 @@ impl<'ast> Declarer<'ast> {
             // Called as `a && b` with `b` as the block: the method decides
             // whether `b` is evaluated.
             let only_block = def.params.list.len() == 1
-                && matches!(&block, Some((_, Type::Proc(_, ps, _))) if ps.is_empty());
+                && matches!(&block, Some((_, Type::Proc(_, ps, _, _))) if ps.is_empty());
             if !only_block || def.singleton {
                 self.error(
                     format!(
@@ -1550,7 +1550,12 @@ impl<'ast> Declarer<'ast> {
                 }
                 Some(Type::Tuple(out))
             }
-            TypeExprKind::Proc { recv, params, ret } => {
+            TypeExprKind::Proc {
+                recv,
+                params,
+                ret,
+                shareable,
+            } => {
                 let rc = match recv {
                     Some(t) => Some(Box::new(self.resolve_type(t, scope)?)),
                     None => None,
@@ -1560,7 +1565,7 @@ impl<'ast> Declarer<'ast> {
                     ps.push(self.resolve_type(p, scope)?);
                 }
                 let r = self.resolve_type(ret, scope)?;
-                Some(Type::Proc(rc, ps, Box::new(r)))
+                Some(Type::Proc(rc, ps, Box::new(r), *shareable))
             }
             TypeExprKind::Named { path, args } => {
                 // A type parameter in scope?
@@ -1653,7 +1658,9 @@ fn self_against_variance(t: &TypeExpr, covariant: bool) -> Option<Span> {
         TypeExprKind::Union(ts) | TypeExprKind::Tuple(ts) => {
             ts.iter().find_map(|a| self_against_variance(a, covariant))
         }
-        TypeExprKind::Proc { recv, params, ret } => recv
+        TypeExprKind::Proc {
+            recv, params, ret, ..
+        } => recv
             .iter()
             .map(|r| &**r)
             .chain(params.iter())

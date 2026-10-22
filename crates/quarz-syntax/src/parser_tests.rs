@@ -64,6 +64,18 @@ fn anonymous_block_parameter() {
 }
 
 #[test]
+fn shareable_procedure_types() {
+    assert_eq!(
+        sexp("def f(&h: shareable (Int) -> Nil, g: (shareable () -> Int)? = nil) = h"),
+        "(def f (params &h:shareable (Int) -> Nil g:shareable () -> Int?=nil) h)"
+    );
+    assert_eq!(
+        errors("x: shareable Int = 1"),
+        vec!["`shareable` applies to a procedure type"]
+    );
+}
+
+#[test]
 fn bytes_literals() {
     assert_eq!(sexp("b\"\\x00a\\n\\377\""), "(bytes 00610aff)");
     assert_eq!(sexp("b'\\x41é'"), "(bytes 41c3a9)");

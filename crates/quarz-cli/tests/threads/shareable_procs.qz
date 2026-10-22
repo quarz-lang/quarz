@@ -1,0 +1,42 @@
+# Shareable procedures run in tasks on several workers: each task calls
+# the same one. Printed sorted, as the tasks run in any order.
+module Pool
+  # Run `job` for 0...n, `width` tasks at a time; `on_error` gets what a
+  # job raised.
+  def self.each(n: Int, on_error: (shareable (Exception, Int) -> Nil)? = nil,
+                &job: shareable (Int) -> String) -> Array[String]
+    results = Channel[String].new(capacity: n)
+    Task.scope do |scope|
+      n.times do |i|
+        scope.spawn do
+          begin
+            results.send(job.call(i))
+          rescue => e
+            on_error.call(e, i) if on_error
+            results.send("failed #{i}")
+          end
+        end
+      end
+    end
+    results.close
+    results.to_a.sort
+  end
+end
+
+prefix = "job"
+squares = [0, 1, 4, 9, 16, 25, 36, 49]
+out = Pool.each(8) { |i| "#{prefix} #{i}: #{squares[i]}" }
+prefix = "later"          # the procedure copied `prefix` when it was made
+puts out
+
+errors = Atom.new(0)
+log: shareable (Exception, Int) -> Nil = ->(e: Exception, i: Int) { errors.update { |n| n + 1 }; nil }
+puts Pool.each(6, on_error: log) { |i| raise "odd" if i.odd?; "ok #{i}" }
+p errors.value
+
+# A shareable procedure through a channel, called by tasks at once.
+double: shareable (Int) -> Int = ->(n: Int) { n * 2 }
+procs = Channel[shareable (Int) -> Int].new(capacity: 1)
+procs.send(double)
+f = procs.receive
+p Task.scope { |s| 16.times.map { |i| s.spawn { f.call(i) } }.map(&:await) }.sum

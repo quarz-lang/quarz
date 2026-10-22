@@ -176,6 +176,19 @@ def spawn[T: Shareable](&block: () -> T) -> Task[T]   # the variables captured b
 
 `include Shareable` is a promise that the subtypes keep: a value of a Shareable type is Shareable whatever its class. So whether a type is Shareable is decided where it is defined, from its own declaration and its ancestors', without looking at the rest of the program (which separate compilation needs).
 
+A procedure type is not Shareable: a block reads and assigns the variables of the code around it, which another task must not. `shareable (A) -> R` is the type of one that is. A block or lambda written where such a type is expected (a block parameter `&job: shareable (Int) -> Nil`, an argument, an annotated variable) captures by value, as a `spawn` block does: the variables it reads are copied when it is made, their values must be Shareable (and so must `self`, if it uses it), and it cannot assign them. Any task may then call it, at once with others: a worker pool or a server loop can take one and run it in tasks of its own.
+
+```ruby
+def each_in_tasks(n: Int, &job: shareable (Int) -> Nil) -> Nil
+  Task.scope { |s| n.times { |i| s.spawn { job.call(i) } } }
+end
+label = "item"
+each_in_tasks(3) { |i| puts "#{label} #{i}" }    # copies `label`
+log: shareable (String) -> Nil = ->(s: String) { STDERR.puts(s) }
+```
+
+A shareable procedure is a procedure (`shareable (A) -> R` is a subtype of `(A) -> R`); a procedure is not a shareable one, so `f: shareable () -> Int = g` with `g = ->() { 1 }` is an error: annotate where the lambda is written.
+
 ## 10. Alternatives Not Adopted
 
 - **Structural typing (Go interfaces, TypeScript)**: attractive because it is close to duck typing, but in Ruby what we expect is not merely "has `each`" but "what `each` means". We chose nominal modules plus retroactive conformance via `extension`, which gives the same flexibility while making the intent to conform explicit.
