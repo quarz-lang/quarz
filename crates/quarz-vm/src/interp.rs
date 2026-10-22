@@ -727,6 +727,7 @@ impl Interp {
             .spawn(body, None, "main".to_string(), 256 * 1024 * 1024);
         self.root_task.set(Some(root.id));
         let code = self.run_loop(&root);
+        let code = self.run_at_exit(code);
         self.flush();
         if std::env::var_os("QUARZ_COUNT_COPIES").is_some() {
             eprintln!(
@@ -735,6 +736,33 @@ impl Interp {
             );
         }
         code
+    }
+
+    /// Run the `at_exit` blocks, the last registered first (and any they
+    /// register), each as the root task of a run of its own, as Ruby does
+    /// when the main program ends, also by `exit` or an exception. An
+    /// exception in one is reported; a block that exits or fails sets the
+    /// exit code.
+    fn run_at_exit(self: &std::rc::Rc<Interp>, mut code: i32) -> i32 {
+        loop {
+            let Some(block) = self.at_exit.borrow_mut().pop() else {
+                return code;
+            };
+            let me = self.clone();
+            let body: Box<dyn FnOnce() -> TaskExit> = Box::new(move || {
+                let r = me.call_block(&block, smallvec![]);
+                task_exit(&me, r)
+            });
+            let root =
+                self.sched
+                    .borrow_mut()
+                    .spawn(body, None, "at_exit".to_string(), 16 * 1024 * 1024);
+            self.root_task.set(Some(root.id));
+            let c = self.run_loop(&root);
+            if c != 0 {
+                code = c;
+            }
+        }
     }
 
     /// The shared state, for creating another interpreter over it.

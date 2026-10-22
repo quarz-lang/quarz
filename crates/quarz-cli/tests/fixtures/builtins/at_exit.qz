@@ -1,0 +1,8 @@
+# `at_exit` blocks run when the program ends, the last registered first,
+# and any they register after them.
+at_exit { puts "second" }
+at_exit do
+  puts "first"
+  at_exit { puts "registered by an at_exit block" }
+end
+puts "main"
