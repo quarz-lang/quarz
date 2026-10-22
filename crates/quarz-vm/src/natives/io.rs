@@ -609,7 +609,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
 // ----- helpers ---------------------------------------------------------------------
 
 pub(super) fn io(kind: IoKind) -> Value {
-    Value::Io(Rc::new(IoVal { kind }))
+    Value::Io(Rc::new_shared(IoVal { kind }))
 }
 
 pub(super) fn io_of<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Rc<IoVal>, Flow> {

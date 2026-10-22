@@ -1025,6 +1025,213 @@ impl Value {
     }
 }
 
+/// What `Value::share` has still to mark.
+enum ShareItem {
+    Value(*const Value),
+    Frame(*const Frame),
+}
+
+impl Value {
+    /// Mark the value and everything it refers to shared, before it
+    /// becomes reachable from another task (and so, under an M:N
+    /// scheduler, another thread): their counts are then updated
+    /// atomically (see `rc.rs`). The walk stops at what is shared
+    /// already, whose contents are shared too.
+    ///
+    /// The checker lets only Shareable values cross, but a `spawn`
+    /// block's copied frames also hold the variables it does not capture,
+    /// whatever their type: those are marked as well, so that their counts
+    /// stay sound when the other task releases them (it never reads them).
+    pub fn share(&self) {
+        // An explicit worklist: a long list of `data` values would
+        // overflow the native stack.
+        let mut work = vec![ShareItem::Value(self as *const Value)];
+        while let Some(item) = work.pop() {
+            // SAFETY: every pointer is into a value that `self` keeps
+            // alive, and nothing changes while the walk runs (it reads
+            // the contents of `RefCell`s without borrowing them, as no
+            // borrow can be in progress across this call).
+            unsafe {
+                let v = match item {
+                    ShareItem::Value(v) => &*v,
+                    ShareItem::Frame(f) => {
+                        let f = &*f;
+                        for s in (*f.slots.as_ptr()).iter() {
+                            work.push(ShareItem::Value(s));
+                        }
+                        if let Some(p) = &f.parent {
+                            if Rc::mark_shared(p) {
+                                work.push(ShareItem::Frame(Rc::as_ptr(p)));
+                            }
+                        }
+                        continue;
+                    }
+                };
+                let push = |work: &mut Vec<ShareItem>, v: &Value| work.push(ShareItem::Value(v));
+                match v {
+                    Value::Nil
+                    | Value::Bool(_)
+                    | Value::Int(_)
+                    | Value::Float(_)
+                    | Value::Symbol(_)
+                    | Value::Class(_)
+                    | Value::Duration(_)
+                    | Value::Short(_) => {}
+                    Value::BigInt(r) => {
+                        Rc::mark_shared(r);
+                    }
+                    Value::Str(r) => {
+                        Rc::mark_shared(r);
+                    }
+                    Value::Regexp(r) => {
+                        Rc::mark_shared(r);
+                    }
+                    Value::Bytes(r) => {
+                        Rc::mark_shared(r);
+                    }
+                    Value::Time(r) => {
+                        Rc::mark_shared(r);
+                    }
+                    Value::Random(r) => {
+                        Rc::mark_shared(r);
+                    }
+                    Value::StringBuilder(r) => {
+                        Rc::mark_shared(r);
+                    }
+                    Value::BytesBuilder(r) => {
+                        Rc::mark_shared(r);
+                    }
+                    Value::Array(r) => {
+                        if Rc::mark_shared(r) {
+                            if let ArrayData::Values(xs) = &**r {
+                                xs.iter().for_each(|x| push(&mut work, x));
+                            }
+                        }
+                    }
+                    Value::Hash(r) => {
+                        if Rc::mark_shared(r) {
+                            if let HashData::Values(m) = &**r {
+                                for (k, x) in m {
+                                    push(&mut work, k);
+                                    push(&mut work, x);
+                                }
+                            }
+                        }
+                    }
+                    Value::Set(r) => {
+                        if Rc::mark_shared(r) {
+                            r.iter().for_each(|x| push(&mut work, x));
+                        }
+                    }
+                    Value::Range(r) => {
+                        if Rc::mark_shared(r) {
+                            push(&mut work, &r.lo);
+                            push(&mut work, &r.hi);
+                        }
+                    }
+                    Value::MatchData(r) => {
+                        if Rc::mark_shared(r) {
+                            Rc::mark_shared(&r.text);
+                        }
+                    }
+                    Value::Object(r) => {
+                        if Rc::mark_shared(r) {
+                            for x in (*r.fields.as_ptr()).iter() {
+                                push(&mut work, x);
+                            }
+                            if let Some(e) = &*r.exc.as_ptr() {
+                                if let Some(b) = &e.backtrace {
+                                    Rc::mark_shared(b);
+                                }
+                                if let Some(c) = &e.cause {
+                                    push(&mut work, c);
+                                }
+                            }
+                        }
+                    }
+                    Value::Proc(r) => {
+                        if Rc::mark_shared(r) {
+                            match &r.body {
+                                ClosureBody::Func(_) | ClosureBody::Native(_) => {}
+                                ClosureBody::MethodName(name, _, _) => {
+                                    Rc::mark_shared(name);
+                                }
+                                ClosureBody::BoundMethod { recv, name } => {
+                                    push(&mut work, recv);
+                                    Rc::mark_shared(name);
+                                }
+                            }
+                            if let Some(f) = &r.frame {
+                                if Rc::mark_shared(f) {
+                                    work.push(ShareItem::Frame(Rc::as_ptr(f)));
+                                }
+                            }
+                            push(&mut work, &r.self_val);
+                            if let Some(b) = &r.method_block {
+                                push(&mut work, b);
+                            }
+                        }
+                    }
+                    Value::ArrayBuilder(r) => {
+                        if Rc::mark_shared(r) {
+                            (*r.as_ptr()).iter().for_each(|x| push(&mut work, x));
+                        }
+                    }
+                    Value::HashBuilder(r) => {
+                        if Rc::mark_shared(r) {
+                            for (k, x) in (*r.as_ptr()).iter() {
+                                push(&mut work, k);
+                                push(&mut work, x);
+                            }
+                        }
+                    }
+                    Value::SetBuilder(r) => {
+                        if Rc::mark_shared(r) {
+                            (*r.as_ptr()).iter().for_each(|x| push(&mut work, x));
+                        }
+                    }
+                    Value::Enumerator(r) => {
+                        if Rc::mark_shared(r) {
+                            push(&mut work, &r.recv);
+                            Rc::mark_shared(&r.method);
+                            r.args.iter().for_each(|x| push(&mut work, x));
+                            if let Some(xs) = &*r.buffer.as_ptr() {
+                                xs.iter().for_each(|x| push(&mut work, x));
+                            }
+                        }
+                    }
+                    Value::Atom(r) => {
+                        if Rc::mark_shared(r) {
+                            push(&mut work, &*r.as_ptr());
+                        }
+                    }
+                    // Made shared when created (`Rc::new_shared`), and
+                    // their contents when they enter; a selector or a flow
+                    // in transit never crosses.
+                    Value::Channel(r) => {
+                        Rc::mark_shared(r);
+                    }
+                    Value::Task(r) => {
+                        Rc::mark_shared(r);
+                    }
+                    Value::Scope(r) => {
+                        Rc::mark_shared(r);
+                    }
+                    Value::Io(r) => {
+                        Rc::mark_shared(r);
+                    }
+                    Value::Selector(r) => {
+                        Rc::mark_shared(r);
+                    }
+                    Value::Flow(r) => {
+                        Rc::mark_shared(r);
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Compiled code bumps and lowers reference counts inline, assuming the
 /// layout of `Rc`'s allocation: the strong count is its first word
 /// (`rc.rs` fixes it at compile time). This checks it once at start-up,

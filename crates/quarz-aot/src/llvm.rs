@@ -1017,6 +1017,7 @@ fn emit(module: &Module, opaque: bool) -> Result<String, String> {
             pop_call: declare("qz_pop_call", &[p, p], &[]),
             stack_overflow: declare("qz_stack_overflow", &[p], &[i32_]),
             drop_value: declare("qz_drop_value", &[p], &[]),
+            clone_ptr: declare("qz_clone_ptr", &[p, p], &[]),
             call_static: declare(
                 "qz_call_static",
                 &[p, p, i32_, p, i32_, p, i32_, i32_, i32_],
@@ -1138,6 +1139,7 @@ fn emit(module: &Module, opaque: bool) -> Result<String, String> {
                 pop_call: rt.h.pop_call,
                 stack_overflow: rt.h.stack_overflow,
                 drop_value: rt.h.drop_value,
+                clone_ptr: rt.h.clone_ptr,
                 exec: rt.h.exec,
                 term: rt.h.term,
                 block_param: rt.h.block_param,

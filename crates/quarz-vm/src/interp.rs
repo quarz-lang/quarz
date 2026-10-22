@@ -1266,6 +1266,8 @@ impl Interp {
             return v.clone();
         }
         let v = Value::Object(Object::new(cid, Fields::new()));
+        // Every task gets the same value.
+        v.share();
         self.variant_singletons.borrow_mut().insert(cid, v.clone());
         v
     }
@@ -1288,6 +1290,8 @@ impl Interp {
                 .unwrap_or(Value::Nil),
         };
         let v = self.run_init(init, self_val, info.file)?;
+        // A constant is visible from every task.
+        v.share();
         self.consts.borrow_mut()[cid as usize] = Some(v.clone());
         Ok(v)
     }

@@ -30,7 +30,7 @@ const TAG_CLASS: i64 = 5;
 const TAG_ARRAY: i64 = 10;
 const TAG_OBJECT: i64 = 16;
 /// Offset of the field view in an `Object` from its `Rc` allocation
-/// (after the strong and weak counts); see `Object::bind_fields`.
+/// (after the allocation's two words); see `Object::bind_fields`.
 const OBJECT_FIELDS_PTR_OFF: i32 = 16;
 
 const STATUS_RAISE: i64 = 1;
@@ -45,6 +45,7 @@ pub(crate) struct Helpers<F> {
     pub pop_call: F,
     pub stack_overflow: F,
     pub drop_value: F,
+    pub clone_ptr: F,
     pub exec: F,
     pub term: F,
     pub block_param: F,
@@ -811,15 +812,10 @@ fn direct_target(inst: &Inst, methods: &[RtMethod]) -> Option<FuncId> {
     m.func
 }
 
-/// Bump the reference count of the heap value at `p` (whose tag is known
-/// to be a heap tag): the payload's first word points at the allocation,
-/// whose first word is the strong count (checked at start-up).
-fn rc_increment<B: Builder>(b: &mut B, p: B::Value) {
-    let rc = b.load(Ty::Ptr, p, 8);
-    let strong = b.load(Ty::I64, rc, 0);
-    let bumped = b.iadd_imm(strong, 1);
-    b.store(bumped, rc, 0);
-}
+/// The first word of an allocation that other threads may hold
+/// (`quarz_vm::rc`): its count is elsewhere, updated atomically by the
+/// runtime. Any other value is the count of a local allocation.
+const RC_SHARED: i64 = 0;
 
 /// Build a typed entry's activation in `own_act` (`self` nil, the
 /// parameters at `params_buf`, which the caller fills) and push it on
@@ -920,6 +916,11 @@ fn emit_typed_pop<B: Builder>(b: &mut B, rt: B::Value, act: B::Value, pop_call: 
     b.switch_to_block(popped);
 }
 
+/// Release the value at `p` and leave nil there: a heap value's count is
+/// lowered inline when it is local and above 1, else through `drop_value`
+/// (the last reference, or a shared count). The payload's first word
+/// points at the allocation, whose first word is the count (checked at
+/// start-up).
 fn emit_release_ptr<B: Builder>(b: &mut B, drop_value: B::Func, p: B::Value) {
     let tag = b.load(Ty::I64, p, 0);
     let needs = b.icmp_imm(IntCC::UnsignedGreaterThanOrEqual, tag, NEEDS_DROP_FROM);
@@ -931,7 +932,8 @@ fn emit_release_ptr<B: Builder>(b: &mut B, drop_value: B::Func, p: B::Value) {
     b.switch_to_block(heap);
     let rc = b.load(Ty::Ptr, p, 8);
     let strong = b.load(Ty::I64, rc, 0);
-    let is_last = b.icmp_imm(IntCC::Equal, strong, 1);
+    // 1 (the last reference) or `RC_SHARED` (0).
+    let is_last = b.icmp_imm(IntCC::UnsignedLessThan, strong, 2);
     b.brif(is_last, last, &[], shared, &[]);
     b.switch_to_block(shared);
     let lowered = b.iadd_imm(strong, -1);
@@ -946,8 +948,9 @@ fn emit_release_ptr<B: Builder>(b: &mut B, drop_value: B::Func, p: B::Value) {
 }
 
 /// `*dst = *src` where `dst` holds nil: a three-word copy, plus a
-/// reference count bump for heap values.
-fn emit_clone_ptr<B: Builder>(b: &mut B, dst: B::Value, src: B::Value) {
+/// reference count bump for heap values (inline for a local allocation,
+/// through `clone_ptr` for a shared one).
+fn emit_clone_ptr<B: Builder>(b: &mut B, clone_ptr: B::Func, dst: B::Value, src: B::Value) {
     let tag = b.load(Ty::I64, src, 0);
     let w1 = b.load(Ty::I64, src, 8);
     let w2 = b.load(Ty::I64, src, 16);
@@ -956,10 +959,22 @@ fn emit_clone_ptr<B: Builder>(b: &mut B, dst: B::Value, src: B::Value) {
     b.store(w2, dst, 16);
     let needs = b.icmp_imm(IntCC::UnsignedGreaterThanOrEqual, tag, NEEDS_DROP_FROM);
     let heap = b.create_block();
+    let local = b.create_block();
+    let shared = b.create_block();
     let cont = b.create_block();
     b.brif(needs, heap, &[], cont, &[]);
     b.switch_to_block(heap);
-    rc_increment(b, src);
+    let rc = b.load(Ty::Ptr, src, 8);
+    let strong = b.load(Ty::I64, rc, 0);
+    let is_local = b.icmp_imm(IntCC::NotEqual, strong, RC_SHARED);
+    b.brif(is_local, local, &[], shared, &[]);
+    b.switch_to_block(local);
+    let bumped = b.iadd_imm(strong, 1);
+    b.store(bumped, rc, 0);
+    b.jump(cont, &[]);
+    b.switch_to_block(shared);
+    b.set_cold(shared);
+    b.call(clone_ptr, &[dst, src]);
     b.jump(cont, &[]);
     b.switch_to_block(cont);
 }
@@ -1123,7 +1138,7 @@ impl<B: Builder> Gen<'_, B> {
     fn clone_from(&mut self, dst: Reg, src: B::Value) {
         self.release(dst);
         let d = self.b.iadd_imm(self.regs, i64::from(reg_off(dst)));
-        emit_clone_ptr(self.b, d, src);
+        emit_clone_ptr(self.b, self.h.clone_ptr, d, src);
         self.stale[dst as usize] = false;
     }
 
@@ -1193,7 +1208,7 @@ impl<B: Builder> Gen<'_, B> {
             }
             State::Unknown => {
                 let src_ptr = self.b.iadd_imm(self.regs, i64::from(reg_off(src)));
-                emit_clone_ptr(self.b, dst, src_ptr);
+                emit_clone_ptr(self.b, self.h.clone_ptr, dst, src_ptr);
             }
         }
     }
@@ -1250,7 +1265,7 @@ impl<B: Builder> Gen<'_, B> {
             Some(r) => self.clone_reg_to_ptr(self_dst, r),
             None => {
                 let caller_self = self.b.iadd_imm(self.act, L::ACT_SELF as i64);
-                emit_clone_ptr(self.b, self_dst, caller_self);
+                emit_clone_ptr(self.b, self.h.clone_ptr, self_dst, caller_self);
             }
         }
         let zero = self.b.iconst(Ty::I64, 0);
@@ -1374,14 +1389,12 @@ impl<B: Builder> Gen<'_, B> {
         self.b.brif(is_arr, check_b, &[], slow, &[]);
         self.b.switch_to_block(check_b);
         let rc = self.b.load(Ty::Ptr, arr_ptr, 8);
+        // Unique: a local count of 1 (a shared allocation has 0 there).
         let strong = self.b.load(Ty::I64, rc, 0);
-        let weak = self.b.load(Ty::I64, rc, 8);
         let (kind, ptr, len, cap) = self.array_view_at(rc);
-        let unique_s = self.b.icmp_imm(IntCC::Equal, strong, 1);
-        let unique_w = self.b.icmp_imm(IntCC::Equal, weak, 1);
+        let unique = self.b.icmp_imm(IntCC::Equal, strong, 1);
         let room = self.b.icmp(IntCC::UnsignedLessThan, len, cap);
-        let ok = self.b.band(unique_s, unique_w);
-        let ok = self.b.band(ok, room);
+        let ok = self.b.band(unique, room);
         let src_state = self.states[src as usize];
         let src_tag = match src_state {
             State::Int => self.b.iconst(Ty::I64, TAG_INT),
@@ -2323,7 +2336,7 @@ impl<B: Builder> Gen<'_, B> {
             self.b.brif(unset, fill, &[], done, &[]);
             self.b.switch_to_block(fill);
         }
-        emit_clone_ptr(self.b, self_dst, self_ptr);
+        emit_clone_ptr(self.b, self.h.clone_ptr, self_dst, self_ptr);
         let params: Vec<(B::Value, Num)> = self
             .typed_params
             .iter()

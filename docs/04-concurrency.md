@@ -208,14 +208,14 @@ rows = Task.blocking { legacy_c_query(sql) }
 
 ## 7. Runtime Structure
 
-This is the design. Currently one OS thread runs every task (M:1, see [05-execution.md](05-execution.md) §9); each task has a 16 MiB virtual stack (256 MiB for the main task), which cannot be changed; timers are a binary heap; channels and reference counts are not synchronized, since nothing is shared between threads (`Task.blocking` copies values). The work-stealing scheduler, `QUARZ_THREADS`, `spawn(stack:)`, the timing wheel, lock-free channels and the shared flag below are planned.
+This is the design. Currently one OS thread runs every task (M:1, see [05-execution.md](05-execution.md) §9); each task has a 16 MiB virtual stack (256 MiB for the main task), which cannot be changed; timers are a binary heap; channels are not synchronized, since nothing is shared between threads (`Task.blocking` copies values). The shared flag below is in place (its atomic counts only matter once tasks run on several threads); the work-stealing scheduler, `QUARZ_THREADS`, `spawn(stack:)`, the timing wheel and lock-free channels are planned.
 
 - **Scheduler**: work-stealing, with a run queue per OS thread (defaults to the number of CPU cores). `QUARZ_THREADS=1` pins it to a single thread, which is useful for tests that need determinism.
 - **Stacks**: virtual memory is reserved per task with `mmap` (default 1 MiB, changeable with `spawn(stack: 8.mib)`), and physical pages are committed only when touched. A guard page sits at the top, and overflow raises `SystemStackError`. On 64-bit systems the address space is ample, so even with a million tasks, real memory is only what is actually used (typically 4–8 KiB per task). Stack copying as in Go was not adopted because it would require rewriting pointers into the stack in AOT-compiled code.
 - **Preemption**: cooperative (safepoints). Room is left to add asynchronous signal-based preemption in the future.
 - **Timers**: a timing wheel. Used by `sleep`/`after`/`timeout`.
 - **Channels**: lock-free MPMC queue + waiter list.
-- **Relation to reference counting**: a value that crosses a task boundary (sent on a channel, captured by `spawn`, placed in an `Atom`) gets a "shared" flag set at that moment, and only its subsequent reference-count operations become atomic (the same scheme as Lean 4). Values confined to a task keep non-atomic count operations.
+- **Relation to reference counting**: a value that crosses a task boundary (sent on a channel, captured by `spawn`, placed in an `Atom`, returned by a task, held by a constant) gets a "shared" flag set at that moment, on it and everything it refers to, and only its subsequent reference-count operations become atomic (the same scheme as Lean 4). Channels, tasks, scopes, atoms and IO handles are shared from the start. Values confined to a task keep non-atomic count operations, and an update that finds itself holding a shared value's only reference makes it local again and changes it in place.
 
 ## 8. Rejected Alternatives
 

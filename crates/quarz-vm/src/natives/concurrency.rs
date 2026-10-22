@@ -18,16 +18,18 @@ use super::{block, int};
 /// is all it takes.)
 fn snapshot(b: &Value) -> Value {
     let Value::Proc(c) = b else {
+        b.share();
         return b.clone();
     };
     let (ClosureBody::Func(f), Some(frame)) = (&c.body, &c.frame) else {
+        b.share();
         return b.clone();
     };
     fn copy(frame: &Rc<Frame>) -> Rc<Frame> {
         let parent = frame.parent.as_ref().map(copy);
         Frame::from_slots(frame.slots.borrow().clone(), parent)
     }
-    Value::Proc(Rc::new(Closure {
+    let block = Value::Proc(Rc::new(Closure {
         body: ClosureBody::Func(*f),
         frame: Some(copy(frame)),
         self_val: c.self_val.clone(),
@@ -37,7 +39,10 @@ fn snapshot(b: &Value) -> Value {
         method_block: c.method_block.clone(),
         method_tag: c.method_tag,
         file: c.file,
-    }))
+    }));
+    // The block and what it captures pass to the new task.
+    block.share();
+    block
 }
 
 pub fn register(m: &mut super::Registry<NativeFn>) {
@@ -160,13 +165,18 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         sel(i, r)?.borrow_mut().stopped = true;
         Ok(Value::Nil)
     });
+    // An atom's content is read by every task that holds the atom.
     m.insert("Atom.new", |_, _, a| {
-        Ok(Value::Atom(Rc::new(RefCell::new(a.arg(0).clone()))))
+        let v = a.arg(0).clone();
+        v.share();
+        Ok(Value::Atom(Rc::new_shared(RefCell::new(v))))
     });
     m.insert("Atom#value", |i, r, _| Ok(atom(i, r)?.borrow().clone()));
     m.insert("Atom#get", |i, r, _| Ok(atom(i, r)?.borrow().clone()));
     m.insert("Atom#set", |i, r, a| {
-        *atom(i, r)?.borrow_mut() = a.arg(0).clone();
+        let v = a.arg(0).clone();
+        v.share();
+        *atom(i, r)?.borrow_mut() = v;
         Ok(Value::Nil)
     });
     m.insert("Atom#update", atom_update);
@@ -174,7 +184,9 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         let cell = atom(i, r)?;
         let same = *cell.borrow() == *a.arg(0);
         if same {
-            *cell.borrow_mut() = a.arg(1).clone();
+            let v = a.arg(1).clone();
+            v.share();
+            *cell.borrow_mut() = v;
         }
         Ok(Value::Bool(same))
     });
@@ -254,7 +266,7 @@ fn cancel_children(interp: &Interp, scope: &Rc<ScopeInner>) {
 fn task_scope(interp: &Interp, _: &Value, args: Args) -> EvalResult {
     let b = block(interp, &args)?;
     let owner = interp.current_task().id;
-    let scope = Rc::new(ScopeInner {
+    let scope = Rc::new_shared(ScopeInner {
         owner,
         children: RefCell::new(Vec::new()),
         cancelled: Cell::new(false),
@@ -362,7 +374,7 @@ fn channel_send(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
             return Err(interp.raise(interp.program.exc.channel_closed, "channel is closed"));
         }
         if c.can_send() {
-            c.buffer.borrow_mut().push_back(value);
+            c.put(value);
             let ticket = c.pushed.get() + 1;
             c.pushed.set(ticket);
             wake_one(interp, &c.recv_waiters);
@@ -394,13 +406,13 @@ fn channel_try_send(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     }
     // Only buffered channels can accept without a waiting receiver.
     if c.capacity > 0 && c.can_send() {
-        c.buffer.borrow_mut().push_back(args.arg(0).clone());
+        c.put(args.arg(0).clone());
         c.pushed.set(c.pushed.get() + 1);
         wake_one(interp, &c.recv_waiters);
         return Ok(Value::Bool(true));
     }
     if c.capacity == 0 && c.can_send() && !c.recv_waiters.borrow().is_empty() {
-        c.buffer.borrow_mut().push_back(args.arg(0).clone());
+        c.put(args.arg(0).clone());
         c.pushed.set(c.pushed.get() + 1);
         c.taken.set(c.pushed.get());
         wake_one(interp, &c.recv_waiters);
@@ -511,7 +523,7 @@ fn select_once(interp: &Interp, state: &Rc<RefCell<SelectorState>>) -> Result<()
             let ready = (c.capacity > 0 && c.can_send())
                 || (c.capacity == 0 && c.can_send() && !c.recv_waiters.borrow().is_empty());
             if ready {
-                c.buffer.borrow_mut().push_back(value.clone());
+                c.put(value.clone());
                 c.pushed.set(c.pushed.get() + 1);
                 if c.capacity == 0 {
                     c.taken.set(c.pushed.get());
@@ -565,6 +577,7 @@ fn atom_update(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
         // Single-threaded: the value can only have changed if the block
         // suspended and another task updated it.
         if cell.borrow().identical(&current) {
+            new.share();
             *cell.borrow_mut() = new.clone();
             return Ok(new);
         }

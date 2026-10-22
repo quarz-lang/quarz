@@ -46,6 +46,10 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         };
         if e.buffer.borrow().is_none() {
             let items = collect(i, r)?;
+            // What a shared enumerator holds is shared too (`Value::share`).
+            if Rc::is_shared(e) {
+                items.iter().for_each(Value::share);
+            }
             *e.buffer.borrow_mut() = Some(items);
         }
         let pos = e.position.get();

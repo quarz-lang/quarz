@@ -1608,6 +1608,10 @@ fn enumerator_next(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
     };
     if e.buffer.borrow().is_none() {
         let items = collect(interp, recv)?;
+        // What a shared enumerator holds is shared too (`Value::share`).
+        if Rc::is_shared(e) {
+            items.iter().for_each(Value::share);
+        }
         *e.buffer.borrow_mut() = Some(items);
     }
     let pos = e.position.get();

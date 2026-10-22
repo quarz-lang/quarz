@@ -31,6 +31,7 @@ struct Runtime {
     pop_call: CFuncId,
     stack_overflow: CFuncId,
     drop_value: CFuncId,
+    clone_ptr: CFuncId,
     exec: CFuncId,
     term: CFuncId,
     block_param: CFuncId,
@@ -200,6 +201,7 @@ pub fn compile(module: &Module) -> Result<Vec<u8>, String> {
         pop_call: import(&mut obj, "qz_pop_call", &sig(&[i64_, i64_], None))?,
         stack_overflow: import(&mut obj, "qz_stack_overflow", &sig(&[i64_], Some(i32_)))?,
         drop_value: import(&mut obj, "qz_drop_value", &sig(&[i64_], None))?,
+        clone_ptr: import(&mut obj, "qz_clone_ptr", &sig(&[i64_, i64_], None))?,
         call_static: import(
             &mut obj,
             "qz_call_static",
@@ -314,6 +316,7 @@ impl Compiler {
             pop_call: imp(self.rt.pop_call, &mut fb),
             stack_overflow: imp(self.rt.stack_overflow, &mut fb),
             drop_value: imp(self.rt.drop_value, &mut fb),
+            clone_ptr: imp(self.rt.clone_ptr, &mut fb),
             exec: imp(self.rt.exec, &mut fb),
             term: imp(self.rt.term, &mut fb),
             block_param: imp(self.rt.block_param, &mut fb),

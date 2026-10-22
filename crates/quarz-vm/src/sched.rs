@@ -118,7 +118,7 @@ impl std::fmt::Debug for ChannelInner {
 
 impl ChannelInner {
     pub fn new(capacity: usize) -> Rc<ChannelInner> {
-        Rc::new(ChannelInner {
+        Rc::new_shared(ChannelInner {
             buffer: RefCell::new(VecDeque::new()),
             capacity,
             closed: Cell::new(false),
@@ -127,6 +127,13 @@ impl ChannelInner {
             pushed: Cell::new(0),
             taken: Cell::new(0),
         })
+    }
+
+    /// Add a value to the buffer: it now crosses to the task that takes
+    /// it.
+    pub fn put(&self, value: Value) {
+        value.share();
+        self.buffer.borrow_mut().push_back(value);
     }
 
     /// Whether a value can be pushed right now.
@@ -468,7 +475,7 @@ impl Scheduler {
         stack_size: usize,
     ) -> Rc<TaskHandle> {
         let id = self.tasks.len() as TaskId;
-        let handle = Rc::new(TaskHandle {
+        let handle = Rc::new_shared(TaskHandle {
             id,
             state: Cell::new(TaskState::Ready),
             result: RefCell::new(None),
@@ -622,6 +629,11 @@ impl Scheduler {
                     TaskExit::Exit(code) => Some(code),
                     TaskExit::Result(r) => {
                         let failed = matches!(r, TaskResult::Error(_));
+                        // The result (or exception) passes to whoever
+                        // awaits the task.
+                        match &r {
+                            TaskResult::Value(v) | TaskResult::Error(v) => v.share(),
+                        }
                         *task.result.borrow_mut() = Some(r);
                         let joiners = std::mem::take(&mut *task.joiners.borrow_mut());
                         for j in joiners {
