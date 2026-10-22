@@ -1,0 +1,35 @@
+# A constant's initializer runs once, even when it suspends while other
+# tasks use the constant: they wait for it.
+def slow -> Int
+  puts "initializing"
+  Task.sleep(5.ms)
+  42
+end
+def late -> Int = LATE
+ts = (1..3).map { |_| spawn { late } }
+p ts.map(&:await)
+LATE = slow
+
+# A constant its own initializer uses is an error, not an endless loop.
+def loops -> Int = LOOP
+LOOP = loops + 1
+begin
+  p LOOP
+rescue RuntimeError => e
+  puts e.message
+end
+
+# An initializer that fails runs again at the next use.
+TRIES = Atom.new(0)
+def flaky -> Int
+  TRIES.set(TRIES.get + 1)
+  raise "not yet" if TRIES.get == 1
+  7
+end
+FLAKY = flaky
+begin
+  p FLAKY
+rescue RuntimeError => e
+  puts e.message
+end
+p FLAKY, TRIES.get

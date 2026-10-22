@@ -177,12 +177,25 @@ pub type CompiledFn =
 /// Materialized constant pools, by function id.
 pub type Pools = Rc<RefCell<Vec<Rc<RefCell<Vec<Value>>>>>>;
 
+/// A constant's value, evaluated by its initializer at the first use.
+#[derive(Clone, Debug)]
+pub enum ConstSlot {
+    Unset,
+    /// The initializer runs in task `task`; the tasks in `waiters` wait
+    /// for it (they would otherwise run it again).
+    Running {
+        task: TaskId,
+        waiters: Vec<TaskId>,
+    },
+    Set(Value),
+}
+
 /// Run-time state that outlives one interpreter instance (the REPL creates
 /// an interpreter per input over the same state).
 #[derive(Clone)]
 pub struct SharedState {
     pub symbols: Rc<RefCell<SymbolTable>>,
-    pub consts: Rc<RefCell<Vec<Option<Value>>>>,
+    pub consts: Rc<RefCell<Vec<ConstSlot>>>,
     pub variant_singletons: Rc<RefCell<HashMap<ClassId, Value>>>,
     pub sched: Rc<RefCell<Scheduler>>,
     pub next_tag: Rc<Cell<u64>>,
@@ -357,7 +370,7 @@ pub struct Interp {
     pub pools: Pools,
     pub compiled: Rc<RefCell<Vec<Option<CompiledFn>>>>,
     pub symbols: Rc<RefCell<SymbolTable>>,
-    consts: Rc<RefCell<Vec<Option<Value>>>>,
+    consts: Rc<RefCell<Vec<ConstSlot>>>,
     variant_singletons: Rc<RefCell<HashMap<ClassId, Value>>>,
     pub sched: Rc<RefCell<Scheduler>>,
     /// The dispatch table: for each class and each method that some
@@ -610,7 +623,7 @@ impl Interp {
         {
             let mut consts = state.consts.borrow_mut();
             if consts.len() < n_consts {
-                consts.resize(n_consts, None);
+                consts.resize(n_consts, ConstSlot::Unset);
             }
         }
         let repl_frame = state.repl_frame.clone();
@@ -1282,13 +1295,41 @@ impl Interp {
 
     /// The value of a constant, evaluating its initializer on first use.
     pub fn const_value(&self, cid: u32) -> EvalResult {
-        if let Some(v) = self.consts.borrow()[cid as usize].clone() {
-            return Ok(v);
+        if let ConstSlot::Set(v) = &self.consts.borrow()[cid as usize] {
+            return Ok(v.clone());
         }
         let info = &self.program.world.consts[cid as usize];
         let Some(init) = info.init else {
             return Ok(Value::Nil);
         };
+        // Run the initializer once: a task that finds another one
+        // running it waits (it may suspend: IO, `sleep`).
+        loop {
+            let me = self.current_task().id;
+            let mut consts = self.consts.borrow_mut();
+            match &mut consts[cid as usize] {
+                ConstSlot::Set(v) => return Ok(v.clone()),
+                ConstSlot::Running { task, .. } if *task == me => {
+                    drop(consts);
+                    return Err(self.raise(
+                        self.program.exc.runtime_error,
+                        &format!("constant `{}` is used by its own initializer", info.name),
+                    ));
+                }
+                ConstSlot::Running { waiters, .. } => {
+                    waiters.push(me);
+                    drop(consts);
+                    self.park()?;
+                }
+                slot @ ConstSlot::Unset => {
+                    *slot = ConstSlot::Running {
+                        task: me,
+                        waiters: Vec::new(),
+                    };
+                    break;
+                }
+            }
+        }
         let self_val = match info.owner {
             Some(o) => Value::Class(o),
             None => self
@@ -1297,11 +1338,23 @@ impl Interp {
                 .cloned()
                 .unwrap_or(Value::Nil),
         };
-        let v = self.run_init(init, self_val, info.file)?;
-        // A constant is visible from every task.
-        v.share();
-        self.consts.borrow_mut()[cid as usize] = Some(v.clone());
-        Ok(v)
+        let r = self.run_init(init, self_val, info.file);
+        // A constant is visible from every task. One whose initializer
+        // failed is evaluated again at its next use.
+        let done = match &r {
+            Ok(v) => {
+                v.share();
+                ConstSlot::Set(v.clone())
+            }
+            Err(_) => ConstSlot::Unset,
+        };
+        let running = std::mem::replace(&mut self.consts.borrow_mut()[cid as usize], done);
+        if let ConstSlot::Running { waiters, .. } = running {
+            for w in waiters {
+                self.wake(w);
+            }
+        }
+        r
     }
 
     // ----- dispatch --------------------------------------------------------------------

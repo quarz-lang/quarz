@@ -251,7 +251,7 @@ DEFAULT_HEADERS = { "Content-Type" => "application/json" }
 ```
 
 - Constants are bound once, and their values must be Shareable (constants are visible from all tasks).
-- Constant initializers are evaluated once, in dependency order, when the module is loaded.
+- Constant initializers are evaluated once, in dependency order, when the module is loaded. (Currently each is evaluated at the constant's first use: a task that uses a constant whose initializer another task is running waits for it, a constant used by its own initializer raises `RuntimeError`, and one whose initializer raised is evaluated again at its next use.)
 
 ## 9. Method definitions
 
