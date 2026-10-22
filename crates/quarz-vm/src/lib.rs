@@ -15,9 +15,6 @@ pub mod transfer;
 pub mod value;
 pub mod vm;
 
-use crate::rc::Rc;
-use std::cell::RefCell;
-
 pub use interp::{Interp, SharedState};
 pub use quarz_ir::Module;
 
@@ -28,11 +25,11 @@ pub fn run(module: Module, argv: Vec<String>) -> i32 {
 }
 
 /// A writer collecting output into a shared buffer (for tests).
-pub struct SharedBuffer(pub Rc<RefCell<Vec<u8>>>);
+pub struct SharedBuffer(pub std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
 
 impl std::io::Write for SharedBuffer {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0.borrow_mut().extend_from_slice(buf);
+        crate::interp::lock(&self.0).extend_from_slice(buf);
         Ok(buf.len())
     }
 
@@ -44,10 +41,10 @@ impl std::io::Write for SharedBuffer {
 /// Run a lowered program capturing its standard output. Returns the exit
 /// code and the output.
 pub fn run_capturing(module: Module, argv: Vec<String>) -> (i32, String) {
-    let buffer = Rc::new(RefCell::new(Vec::new()));
+    let buffer = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let interp = Interp::with_output(module, argv, Box::new(SharedBuffer(buffer.clone())));
     let code = interp.run();
     drop(interp);
-    let out = String::from_utf8_lossy(&buffer.borrow()).into_owned();
+    let out = String::from_utf8_lossy(&crate::interp::lock(&buffer)).into_owned();
     (code, out)
 }

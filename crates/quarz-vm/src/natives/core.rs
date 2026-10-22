@@ -302,7 +302,7 @@ fn kernel_abort(interp: &Interp, _: &Value, args: Args) -> EvalResult {
 
 fn kernel_at_exit(interp: &Interp, _: &Value, args: Args) -> EvalResult {
     if let Some(b) = args.block {
-        interp.at_exit.borrow_mut().push(b);
+        interp.add_at_exit(b);
     }
     Ok(Value::Nil)
 }

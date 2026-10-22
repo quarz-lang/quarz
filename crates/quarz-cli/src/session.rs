@@ -48,7 +48,7 @@ fn incomplete(diagnostics: &[Diagnostic]) -> bool {
 }
 
 impl Repl {
-    pub fn new(out: Box<dyn Write>) -> Result<Repl, Vec<String>> {
+    pub fn new(out: Box<dyn Write + Send>) -> Result<Repl, Vec<String>> {
         let prelude_file = SourceFile::new("<prelude>", PRELUDE_SOURCE);
         let prelude = parse(&prelude_file.text);
         let session = Session::new(&prelude.program).map_err(|diags| {

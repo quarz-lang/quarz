@@ -177,30 +177,66 @@ pub type CompiledFn =
 /// Materialized constant pools, by function id.
 pub type Pools = Rc<RefCell<Vec<Rc<RefCell<Vec<Value>>>>>>;
 
-/// A constant's value, evaluated by its initializer at the first use.
-#[derive(Clone, Debug)]
-pub enum ConstSlot {
-    Unset,
+/// A constant's value, evaluated by its initializer at the first use, and
+/// read without a lock after that.
+#[derive(Debug, Default)]
+pub struct ConstCell {
+    value: std::sync::OnceLock<SharedValue>,
+    init: std::sync::Mutex<ConstInit>,
+}
+
+#[derive(Debug, Default)]
+enum ConstInit {
+    #[default]
+    Idle,
     /// The initializer runs in task `task`; the tasks in `waiters` wait
     /// for it (they would otherwise run it again).
-    Running {
-        task: TaskId,
-        waiters: Vec<TaskId>,
-    },
-    Set(Value),
+    Running { task: TaskId, waiters: Vec<TaskId> },
+}
+
+/// A lock that a panic while holding it does not make unusable (nothing
+/// is left half done under the runtime's locks).
+pub fn lock<T: ?Sized>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// What the running program accumulates and every worker thread of an
+/// M:N scheduler is to share (it is `Send + Sync`, checked below).
+pub struct Global {
+    pub symbols: std::sync::RwLock<SymbolTable>,
+    /// Every constant loaded so far, by id (the REPL loads more); each
+    /// interpreter keeps the cells of its program in `Program::consts`.
+    consts: std::sync::Mutex<Vec<std::sync::Arc<ConstCell>>>,
+    /// The values of the enum variants without fields, by class.
+    variant_singletons: std::sync::Mutex<HashMap<ClassId, SharedValue>>,
+    at_exit: std::sync::Mutex<Vec<SharedValue>>,
+    stdout: std::sync::Mutex<Box<dyn std::io::Write + Send>>,
+}
+
+const _: () = {
+    const fn shareable<T: Send + Sync>() {}
+    shareable::<Global>();
+};
+
+impl Global {
+    pub fn new(out: Box<dyn std::io::Write + Send>) -> Global {
+        Global {
+            symbols: std::sync::RwLock::new(SymbolTable::default()),
+            consts: std::sync::Mutex::new(Vec::new()),
+            variant_singletons: std::sync::Mutex::new(HashMap::new()),
+            at_exit: std::sync::Mutex::new(Vec::new()),
+            stdout: std::sync::Mutex::new(out),
+        }
+    }
 }
 
 /// Run-time state that outlives one interpreter instance (the REPL creates
 /// an interpreter per input over the same state).
 #[derive(Clone)]
 pub struct SharedState {
-    pub symbols: Rc<RefCell<SymbolTable>>,
-    pub consts: Rc<RefCell<Vec<ConstSlot>>>,
-    pub variant_singletons: Rc<RefCell<HashMap<ClassId, Value>>>,
+    pub global: std::sync::Arc<Global>,
     pub sched: Rc<RefCell<Scheduler>>,
     pub next_tag: Rc<Cell<u64>>,
-    pub at_exit: Rc<RefCell<Vec<Value>>>,
-    pub stdout: Rc<RefCell<Box<dyn std::io::Write>>>,
     pub repl_frame: Option<Rc<Frame>>,
     /// Every function loaded so far, by id (append-only).
     pub funcs: Rc<RefCell<Vec<Rc<Function>>>>,
@@ -211,15 +247,11 @@ pub struct SharedState {
 }
 
 impl SharedState {
-    pub fn new(out: Box<dyn std::io::Write>) -> SharedState {
+    pub fn new(out: Box<dyn std::io::Write + Send>) -> SharedState {
         SharedState {
-            symbols: Rc::new(RefCell::new(SymbolTable::default())),
-            consts: Rc::new(RefCell::new(Vec::new())),
-            variant_singletons: Rc::new(RefCell::new(HashMap::new())),
+            global: std::sync::Arc::new(Global::new(out)),
             sched: Rc::new(RefCell::new(Scheduler::new())),
             next_tag: Rc::new(Cell::new(1)),
-            at_exit: Rc::new(RefCell::new(Vec::new())),
-            stdout: Rc::new(RefCell::new(out)),
             repl_frame: None,
             funcs: Rc::new(RefCell::new(Vec::new())),
             pools: Rc::new(RefCell::new(Vec::new())),
@@ -352,6 +384,11 @@ pub struct Program {
     pub argv: Vec<String>,
     pub exc: ExcClasses,
     pub rt: RtClasses,
+    /// The cells of the program's constants, by id (shared with
+    /// `Global::consts`).
+    pub(crate) consts: Vec<std::sync::Arc<ConstCell>>,
+    /// The values of the enum variants without fields, by class id.
+    pub(crate) singletons: Vec<Option<SharedValue>>,
 }
 
 const _: () = {
@@ -369,9 +406,11 @@ pub struct Interp {
     pub funcs: Rc<RefCell<Vec<Rc<Function>>>>,
     pub pools: Pools,
     pub compiled: Rc<RefCell<Vec<Option<CompiledFn>>>>,
-    pub symbols: Rc<RefCell<SymbolTable>>,
-    consts: Rc<RefCell<Vec<ConstSlot>>>,
-    variant_singletons: Rc<RefCell<HashMap<ClassId, Value>>>,
+    pub global: std::sync::Arc<Global>,
+    /// This thread's copies of the symbols' names (`symbol_name`): local
+    /// allocations, whose counts are plain, filled from the global table
+    /// as needed.
+    symbol_names: RefCell<Vec<Rc<str>>>,
     pub sched: Rc<RefCell<Scheduler>>,
     /// The dispatch table: for each class and each method that some
     /// descendant of its owner overrides (`Program::vslots[mid]` is the
@@ -397,8 +436,6 @@ pub struct Interp {
     /// Backtraces also walk the native stack for compiled frames that
     /// push no activation (typed entries of the LLVM backend).
     pub native_bt: Cell<bool>,
-    pub at_exit: Rc<RefCell<Vec<Value>>>,
-    pub stdout: Rc<RefCell<Box<dyn std::io::Write>>>,
     /// The flow being returned from compiled code (see `vm.rs`).
     pub pending_flow: RefCell<Option<Flow>>,
     /// Register files of more than the inline 16, kept empty for the
@@ -422,7 +459,7 @@ impl Interp {
     pub fn with_output(
         module: quarz_ir::Module,
         argv: Vec<String>,
-        out: Box<dyn std::io::Write>,
+        out: Box<dyn std::io::Write + Send>,
     ) -> std::rc::Rc<Interp> {
         let state = SharedState::new(out);
         let quarz_ir::Module {
@@ -453,7 +490,11 @@ impl Interp {
             let mut pools = state.pools.borrow_mut();
             let mut compiled = state.compiled.borrow_mut();
             assert_eq!(funcs.len(), base as usize, "functions loaded out of order");
-            let mut symbols = state.symbols.borrow_mut();
+            let mut symbols = state
+                .global
+                .symbols
+                .write()
+                .unwrap_or_else(|e| e.into_inner());
             for f in functions {
                 let pool: Vec<Value> = f
                     .consts
@@ -619,13 +660,35 @@ impl Interp {
         for u in &units {
             unit_selfs[u.file as usize] = Value::Object(Object::new(u.main_class, Fields::new()));
         }
-        let n_consts = world.consts.len();
-        {
-            let mut consts = state.consts.borrow_mut();
-            if consts.len() < n_consts {
-                consts.resize(n_consts, ConstSlot::Unset);
+        let consts: Vec<std::sync::Arc<ConstCell>> = {
+            let mut all = lock(&state.global.consts);
+            while all.len() < world.consts.len() {
+                all.push(Default::default());
             }
-        }
+            all[..world.consts.len()].to_vec()
+        };
+        // The same value for every task, and for every interpreter the
+        // REPL creates.
+        let singletons: Vec<Option<SharedValue>> = {
+            let mut known = lock(&state.global.variant_singletons);
+            world
+                .classes
+                .iter()
+                .enumerate()
+                .map(|(cid, c)| {
+                    let unit = c.kind == quarz_ir::RtClassKind::Variant && c.fields.is_empty();
+                    unit.then(|| {
+                        let cid = cid as ClassId;
+                        known
+                            .entry(cid)
+                            .or_insert_with(|| {
+                                SharedValue::new(Value::Object(Object::new(cid, Fields::new())))
+                            })
+                            .clone()
+                    })
+                })
+                .collect()
+        };
         let repl_frame = state.repl_frame.clone();
         let program = std::sync::Arc::new(Program {
             world,
@@ -642,6 +705,8 @@ impl Interp {
             argv,
             exc,
             rt,
+            consts,
+            singletons,
         });
         let interp = std::rc::Rc::new(Interp {
             hot: Hot::new(),
@@ -651,9 +716,8 @@ impl Interp {
             funcs: state.funcs,
             pools: state.pools,
             compiled: state.compiled,
-            symbols: state.symbols,
-            consts: state.consts,
-            variant_singletons: state.variant_singletons,
+            global: state.global,
+            symbol_names: RefCell::new(Vec::new()),
             sched: state.sched,
             vtable: RefCell::new(vec![0; nvslots * nclasses]),
             class_dispatch_cache: RefCell::new(FxHashMap::default()),
@@ -664,8 +728,6 @@ impl Interp {
             next_tag: state.next_tag,
             current_task_id: Cell::new(0),
             native_bt: Cell::new(false),
-            at_exit: state.at_exit,
-            stdout: state.stdout,
             pending_flow: RefCell::new(None),
             reg_pool: RefCell::new(Vec::new()),
             self_rc: RefCell::new(Weak::new()),
@@ -683,11 +745,36 @@ impl Interp {
     }
 
     pub fn intern(&self, name: &str) -> Symbol {
-        self.symbols.borrow_mut().intern(name)
+        let symbols = &self.global.symbols;
+        if let Some(s) = symbols
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .lookup(name)
+        {
+            return s;
+        }
+        symbols
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .intern(name)
     }
 
     pub fn symbol_name(&self, sym: Symbol) -> Rc<str> {
-        self.symbols.borrow().name(sym).clone()
+        let i = sym.0 as usize;
+        if let Some(n) = self.symbol_names.borrow().get(i) {
+            return n.clone();
+        }
+        // Copy the names interned since (the table only grows).
+        let table = self
+            .global
+            .symbols
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut names = self.symbol_names.borrow_mut();
+        for k in names.len()..table.len() {
+            names.push(Rc::from(&**table.name(Symbol(k as u32))));
+        }
+        names[i].clone()
     }
 
     pub fn new_tag(&self) -> u64 {
@@ -745,9 +832,10 @@ impl Interp {
     /// exit code.
     fn run_at_exit(self: &std::rc::Rc<Interp>, mut code: i32) -> i32 {
         loop {
-            let Some(block) = self.at_exit.borrow_mut().pop() else {
+            let Some(block) = lock(&self.global.at_exit).pop() else {
                 return code;
             };
+            let block = block.into_inner();
             let me = self.clone();
             let body: Box<dyn FnOnce() -> TaskExit> = Box::new(move || {
                 let r = me.call_block(&block, smallvec![]);
@@ -768,13 +856,9 @@ impl Interp {
     /// The shared state, for creating another interpreter over it.
     pub fn shared_state(&self) -> SharedState {
         SharedState {
-            symbols: self.symbols.clone(),
-            consts: self.consts.clone(),
-            variant_singletons: self.variant_singletons.clone(),
+            global: self.global.clone(),
             sched: self.sched.clone(),
             next_tag: self.next_tag.clone(),
-            at_exit: self.at_exit.clone(),
-            stdout: self.stdout.clone(),
             repl_frame: self.repl_frame.clone(),
             funcs: self.funcs.clone(),
             pools: self.pools.clone(),
@@ -865,7 +949,7 @@ impl Interp {
 
     pub fn flush(&self) {
         use std::io::Write;
-        let _ = self.stdout.borrow_mut().flush();
+        let _ = lock(&self.global.stdout).flush();
     }
 
     fn report_uncaught(&self, exc: &Value) {
@@ -1311,20 +1395,26 @@ impl Interp {
     }
 
     pub fn variant_singleton(&self, cid: ClassId) -> Value {
-        if let Some(v) = self.variant_singletons.borrow().get(&cid) {
-            return v.clone();
+        if let Some(Some(v)) = self.program.singletons.get(cid as usize) {
+            return v.get().clone();
         }
-        let v = Value::Object(Object::new(cid, Fields::new()));
-        // Every task gets the same value.
-        v.share();
-        self.variant_singletons.borrow_mut().insert(cid, v.clone());
-        v
+        lock(&self.global.variant_singletons)
+            .entry(cid)
+            .or_insert_with(|| SharedValue::new(Value::Object(Object::new(cid, Fields::new()))))
+            .get()
+            .clone()
+    }
+
+    /// Register an `at_exit` block (any task may; they run at the end).
+    pub fn add_at_exit(&self, block: Value) {
+        lock(&self.global.at_exit).push(SharedValue::new(block));
     }
 
     /// The value of a constant, evaluating its initializer on first use.
     pub fn const_value(&self, cid: u32) -> EvalResult {
-        if let ConstSlot::Set(v) = &self.consts.borrow()[cid as usize] {
-            return Ok(v.clone());
+        let cell = &self.program.consts[cid as usize];
+        if let Some(v) = cell.value.get() {
+            return Ok(v.get().clone());
         }
         let info = &self.program.world.consts[cid as usize];
         let Some(init) = info.init else {
@@ -1334,23 +1424,25 @@ impl Interp {
         // running it waits (it may suspend: IO, `sleep`).
         loop {
             let me = self.current_task().id;
-            let mut consts = self.consts.borrow_mut();
-            match &mut consts[cid as usize] {
-                ConstSlot::Set(v) => return Ok(v.clone()),
-                ConstSlot::Running { task, .. } if *task == me => {
-                    drop(consts);
+            let mut state = lock(&cell.init);
+            if let Some(v) = cell.value.get() {
+                return Ok(v.get().clone());
+            }
+            match &mut *state {
+                ConstInit::Running { task, .. } if *task == me => {
+                    drop(state);
                     return Err(self.raise(
                         self.program.exc.runtime_error,
                         &format!("constant `{}` is used by its own initializer", info.name),
                     ));
                 }
-                ConstSlot::Running { waiters, .. } => {
+                ConstInit::Running { waiters, .. } => {
                     waiters.push(me);
-                    drop(consts);
+                    drop(state);
                     self.park()?;
                 }
-                slot @ ConstSlot::Unset => {
-                    *slot = ConstSlot::Running {
+                ConstInit::Idle => {
+                    *state = ConstInit::Running {
                         task: me,
                         waiters: Vec::new(),
                     };
@@ -1369,15 +1461,11 @@ impl Interp {
         let r = self.run_init(init, self_val, info.file);
         // A constant is visible from every task. One whose initializer
         // failed is evaluated again at its next use.
-        let done = match &r {
-            Ok(v) => {
-                v.share();
-                ConstSlot::Set(v.clone())
-            }
-            Err(_) => ConstSlot::Unset,
-        };
-        let running = std::mem::replace(&mut self.consts.borrow_mut()[cid as usize], done);
-        if let ConstSlot::Running { waiters, .. } = running {
+        if let Ok(v) = &r {
+            let _ = cell.value.set(SharedValue::new(v.clone()));
+        }
+        let running = std::mem::take(&mut *lock(&cell.init));
+        if let ConstInit::Running { waiters, .. } = running {
             for w in waiters {
                 self.wake(w);
             }
@@ -2455,7 +2543,7 @@ impl Interp {
 
     pub fn write_out_bytes(&self, bytes: &[u8]) {
         use std::io::Write;
-        let _ = self.stdout.borrow_mut().write_all(bytes);
+        let _ = lock(&self.global.stdout).write_all(bytes);
     }
 }
 

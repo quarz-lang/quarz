@@ -187,11 +187,18 @@ use crate::sched::{ChannelInner, ScopeInner, SelectorState, TaskHandle};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Symbol(pub u32);
 
+/// The names of the symbols, which every task (and so every worker
+/// thread) uses: the names are shared allocations.
 #[derive(Default)]
 pub struct SymbolTable {
     names: Vec<Rc<str>>,
     ids: HashMap<Rc<str>, Symbol>,
 }
+
+// SAFETY: the table holds only shared allocations (marked by `intern`),
+// whose counts are updated atomically and which nothing changes.
+unsafe impl Send for SymbolTable {}
+unsafe impl Sync for SymbolTable {}
 
 impl SymbolTable {
     pub fn intern(&mut self, name: &str) -> Symbol {
@@ -199,10 +206,23 @@ impl SymbolTable {
             return *s;
         }
         let rc: Rc<str> = Rc::from(name);
+        Rc::mark_shared(&rc);
         let sym = Symbol(self.names.len() as u32);
         self.names.push(rc.clone());
         self.ids.insert(rc, sym);
         sym
+    }
+
+    pub fn len(&self) -> usize {
+        self.names.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.names.is_empty()
+    }
+
+    pub fn lookup(&self, name: &str) -> Option<Symbol> {
+        self.ids.get(name).copied()
     }
 
     pub fn name(&self, sym: Symbol) -> &Rc<str> {
@@ -1177,6 +1197,44 @@ impl Value {
         if (self.type_tag() as u64) < NEEDS_DROP_FROM {
             std::mem::forget(self);
         }
+    }
+}
+
+/// A value that any thread may hold: it is marked shared when wrapped
+/// (`Value::share`), so its counts are updated atomically, and nothing
+/// changes what it refers to (what is Shareable is immutable, and a
+/// value that is not, such as an `at_exit` block, is only used by one
+/// thread at a time).
+pub struct SharedValue(Value);
+
+// SAFETY: as said above; see `rc.rs`.
+unsafe impl Send for SharedValue {}
+unsafe impl Sync for SharedValue {}
+
+impl SharedValue {
+    pub fn new(v: Value) -> SharedValue {
+        v.share();
+        SharedValue(v)
+    }
+
+    pub fn get(&self) -> &Value {
+        &self.0
+    }
+
+    pub fn into_inner(self) -> Value {
+        self.0
+    }
+}
+
+impl Clone for SharedValue {
+    fn clone(&self) -> SharedValue {
+        SharedValue(self.0.clone())
+    }
+}
+
+impl std::fmt::Debug for SharedValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
     }
 }
 

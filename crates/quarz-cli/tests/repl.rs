@@ -1,16 +1,15 @@
 //! The REPL keeps declarations, variables and tasks across inputs.
 
-use std::cell::RefCell;
 use std::io::Write;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 use quarz_cli::session::{Outcome, Repl};
 
-struct Shared(Rc<RefCell<Vec<u8>>>);
+struct Shared(Arc<Mutex<Vec<u8>>>);
 
 impl Write for Shared {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0.borrow_mut().extend_from_slice(buf);
+        self.0.lock().unwrap().extend_from_slice(buf);
         Ok(buf.len())
     }
     fn flush(&mut self) -> std::io::Result<()> {
@@ -19,7 +18,7 @@ impl Write for Shared {
 }
 
 fn values(lines: &[&str]) -> (Vec<String>, String) {
-    let buffer = Rc::new(RefCell::new(Vec::new()));
+    let buffer = Arc::new(Mutex::new(Vec::new()));
     let mut repl = Repl::new(Box::new(Shared(buffer.clone()))).unwrap();
     let mut out = Vec::new();
     for line in lines {
@@ -34,7 +33,7 @@ fn values(lines: &[&str]) -> (Vec<String>, String) {
             Outcome::Exit(code) => out.push(format!("exit {code}")),
         }
     }
-    let printed = String::from_utf8_lossy(&buffer.borrow()).into_owned();
+    let printed = String::from_utf8_lossy(&buffer.lock().unwrap()).into_owned();
     (out, printed)
 }
 
