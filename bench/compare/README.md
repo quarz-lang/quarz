@@ -30,11 +30,11 @@ on the path or name them as above.
 1.22.0 (`--release`; the release build expects a newer glibc, so a small
 shim for `__isoc23_strto*` is linked in), Spinel at `78f436e06`
 (2026.09.12+11364) with gcc 12.2, Ruby 4.0.5 with and without `--yjit`,
-clang 14.0.6. quarz-vm is `quarz run`, quarz-llvm is `quarz build`
+clang 14.0.6. quarz-vm is `quarz run`, quarz-aot is `quarz build`
 (through LLVM). Every program pinned to one core (`taskset -c 3`), all
 in one run; milliseconds, best of 10 runs, process start-up included.
 
-| program      | quarz-vm | quarz-llvm |   go | rust | crystal | spinel |  ruby | ruby --yjit |
+| program      | quarz-vm | quarz-aot  |   go | rust | crystal | spinel |  ruby | ruby --yjit |
 |--------------|---------:|-----------:|-----:|-----:|--------:|-------:|------:|------------:|
 | fib          |     75.9 |        2.0 |  1.5 |  1.1 |     1.9 |  (0.6) |  57.8 |        47.6 |
 | loop         |    243.6 |        3.2 |  2.5 |  2.6 |     3.3 |    2.8 |  99.7 |       100.4 |

@@ -23,7 +23,7 @@ trap 'rm -rf "$out"' EXIT
 
 go build -o "$out/client" bench/net/client.go
 go build -o "$out/server" bench/net/server.go
-$quarz build bench/net/echo.qz -o "$out/echo_llvm" >/dev/null
+$quarz build bench/net/echo.qz -o "$out/echo_aot" >/dev/null
 
 port=$((20000 + RANDOM % 20000))
 # measure NAME CPUS CONNS COMMAND...: start the server pinned to CPUS,
@@ -45,13 +45,13 @@ measure() {
   printf " %10s" "$r"
 }
 
-printf "%-6s %10s %10s %10s %10s %10s %10s\n" conns quarz-vm quarz-llvm vm-4thr llvm-4thr go-1thread go-multi
+printf "%-6s %10s %10s %10s %10s %10s %10s\n" conns quarz-vm quarz-aot vm-4thr aot-4thr go-1thread go-multi
 for c in "${conns[@]}"; do
   printf "%-6s" "$c"
   measure vm "$server_cpu" "$c" $quarz run bench/net/echo.qz
-  measure llvm "$server_cpu" "$c" "$out/echo_llvm"
+  measure aot "$server_cpu" "$c" "$out/echo_aot"
   measure vm4 "$server_cpus" "$c" env QUARZ_THREADS=4 $quarz run bench/net/echo.qz
-  measure llvm4 "$server_cpus" "$c" env QUARZ_THREADS=4 "$out/echo_llvm"
+  measure aot4 "$server_cpus" "$c" env QUARZ_THREADS=4 "$out/echo_aot"
   measure go1 "$server_cpu" "$c" env GOMAXPROCS=1 "$out/server"
   measure goN "$server_cpus" "$c" "$out/server"
   echo

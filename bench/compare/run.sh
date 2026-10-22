@@ -22,7 +22,7 @@ have() { command -v "$1" >/dev/null 2>&1; }
 programs="fib loop collections objects strings dispatch tak"
 mkdir -p "$out/bin"
 for b in $programs; do
-  $quarz build bench/$b.qz -o "$out/bin/llvm_$b"
+  $quarz build bench/$b.qz -o "$out/bin/aot_$b"
   go build -o "$out/bin/go_$b" bench/compare/go/$b.go
   rustc -O -o "$out/bin/rust_$b" bench/compare/rust/$b.rs
   if have "$crystal"; then
@@ -61,7 +61,7 @@ norm() {
            if ($i ~ /^-?[0-9]+(\.[0-9]+)?$/) printf "%.10g\n", $i; else print $i } }'
 }
 check() {
-  want=$("$out/bin/llvm_$1" $2 | norm)
+  want=$("$out/bin/aot_$1" $2 | norm)
   for cmd in "$quarz run bench/$1.qz" "$out/bin/go_$1" \
     "$out/bin/rust_$1" "$out/bin/crystal_$1" "$out/bin/spinel_$1" \
     "ruby bench/compare/ruby/$1.rb"; do
@@ -76,7 +76,7 @@ check() {
     fi
   done
 }
-printf "%-13s %9s %9s %7s %7s %7s %7s %8s %8s\n" program quarz-vm quarz-llvm \
+printf "%-13s %9s %9s %7s %7s %7s %7s %8s %8s\n" program quarz-vm quarz-aot \
   go rust crystal spinel ruby ruby-yjit
 row() {
   name=$1
@@ -85,7 +85,7 @@ row() {
   check "$b" "$arg"
   printf "%-13s %9s %9s %7s %7s %7s %7s %8s %8s\n" "$name" \
     "$(best $quarz run bench/$b.qz $arg)" \
-    "$(best "$out/bin/llvm_$b" $arg)" \
+    "$(best "$out/bin/aot_$b" $arg)" \
     "$(best "$out/bin/go_$b" $arg)" \
     "$(best "$out/bin/rust_$b" $arg)" \
     "$(best "$out/bin/crystal_$b" $arg)" \

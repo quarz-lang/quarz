@@ -28,7 +28,7 @@ the first two columns, compares with Go limited to one thread; the
 four-thread columns with Go on the same two physical cores, CPUs 0-3,
 `GOMAXPROCS=4`):
 
-| connections | quarz-vm | quarz-llvm | vm, 4 threads | llvm, 4 threads | go, 1 thread | go, 4 threads |
+| connections | quarz-vm |  quarz-aot | vm, 4 threads | aot, 4 threads  | go, 1 thread | go, 4 threads |
 |------------:|---------:|-----------:|--------------:|----------------:|-------------:|--------------:|
 |           1 |  113,593 |    111,854 |       108,349 |         108,635 |      108,761 |       106,307 |
 |          16 |  203,878 |    201,903 |       308,572 |         314,959 |      197,923 |       306,614 |
@@ -38,7 +38,7 @@ four-thread columns with Go on the same two physical cores, CPUs 0-3,
 Before, with one thread (M:1), the reactor using epoll directly (each
 socket registered once, edge-triggered):
 
-| connections | quarz-vm | quarz-llvm | go, 1 thread | go, 4 threads |
+| connections | quarz-vm |  quarz-aot | go, 1 thread | go, 4 threads |
 |------------:|---------:|-----------:|-------------:|--------------:|
 |           1 |   94,538 |    104,304 |      103,713 |        92,024 |
 |          16 |  181,248 |    191,697 |      165,135 |       280,170 |
@@ -47,7 +47,7 @@ socket registered once, edge-triggered):
 
 Before (Quarz at `db9b660`, through the `polling` crate):
 
-| connections | quarz-vm | quarz-llvm | go, 1 thread | go, 4 threads |
+| connections | quarz-vm |  quarz-aot | go, 1 thread | go, 4 threads |
 |------------:|---------:|-----------:|-------------:|--------------:|
 |           1 |   81,229 |     79,530 |       73,758 |        71,905 |
 |          16 |  128,515 |    127,320 |      164,190 |       251,683 |
