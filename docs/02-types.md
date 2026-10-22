@@ -166,16 +166,15 @@ Downcasts are checked at run time. Unsafe reinterpreting casts exist only in the
 
 ## 9. Shareable
 
-`Shareable` is a marker module derived automatically by the compiler, denoting "a type whose values can safely be passed to another task". The details are in [03-data-model.md](03-data-model.md) §5; from the type system's point of view it is used as follows.
+`Shareable` is a marker module denoting "a type whose values can safely be passed to another task". The compiler derives it for `data` and `enum` types from their fields; a class or module declares it with `include Shareable`, and the compiler holds it, and every class that inherits or includes it, to the rules. The details are in [03-data-model.md](03-data-model.md) §5; from the type system's point of view it is used as follows.
 
 ```ruby
 class Channel[T: Shareable]
 class Atom[T: Shareable]
 def spawn[T: Shareable](&block: () -> T) -> Task[T]   # the variables captured by the block must be Shareable too
-                                                       # (the bound on T is not enforced yet)
 ```
 
-Users cannot write `include Shareable`; it is determined by the structure of the type. (Currently `include Shareable` is accepted and ignored; an error is planned.)
+`include Shareable` is a promise that the subtypes keep: a value of a Shareable type is Shareable whatever its class. So whether a type is Shareable is decided where it is defined, from its own declaration and its ancestors', without looking at the rest of the program (which separate compilation needs).
 
 ## 10. Alternatives Not Adopted
 

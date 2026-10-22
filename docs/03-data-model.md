@@ -115,24 +115,25 @@ The Ruby-style design of "line up `attr_accessor`s and change state through sett
 
 ## 5. Shareable
 
-A type is `Shareable` when its values **can safely be passed to another task**. The compiler derives this automatically from the structure of the type.
+A type is `Shareable` when its values **can safely be passed to another task**. For `data` and `enum` types the compiler derives it from their fields; a class declares it with `include Shareable` (or inherits it), and the compiler checks the class and every subclass against the rules where each is defined. A class is not Shareable just because its fields are: a subclass could add mutable state, and a value of the class's type may be of the subclass.
 
 Shareable:
 
 - `Nil`, `Bool`, numbers, `Symbol`, `String`, `Bytes`, `Regexp`, `Range[T]` (T Shareable)
 - Immutable collections `Array[T]`/`Hash[K, V]`/`Set[T]`/tuples (all element types Shareable)
-- `data`, `enum` (all fields Shareable)
-- Classes with no `var` fields whose fields are all Shareable
+- `data` types (all fields Shareable), `enum` types (all variants' fields Shareable); a generic one when its type arguments are
+- Classes that include `Shareable`, directly or through an ancestor or an included module: each must have no `var` fields and only Shareable fields, and so must every subclass, or its definition is an error (`class Oops < RuntimeError` with a `var` field is one: `Exception` includes `Shareable`)
 - `Channel[T]`, `Task[T]`, `Atom[T]`, `Scope` (these are internally synchronized)
 - Procedures (those whose captured variable values are all Shareable, and which do not reassign captured variables; currently no procedure type is Shareable)
-- Exception objects (checked at definition time; not checked yet: an exception class with `var` fields is accepted)
+- Exception objects (`Exception` includes `Shareable`, so every exception class is held to the rules)
 - `IO` handles (the standard streams, open files, sockets): the runtime serializes access
 
 Not Shareable:
 
 - The various Builders
 - `Enumerator` (it has a position, and its receiver may be a mutable object)
-- Classes with `var` fields, classes with non-Shareable fields
+- Classes that do not include `Shareable` (whatever their fields); including it is an error for one with `var` or non-Shareable fields
+- Modules that do not include `Shareable`; a module that does can only be included by Shareable classes (an `extension` that includes it in a non-Shareable class is an error)
 - Procedures that capture Builders or mutable objects, procedures that assign to outer local variables
 
 Where Shareable is required:
@@ -155,6 +156,14 @@ spawn { total += 1 }             # error: a spawn block cannot assign to outer v
 
 n = Atom.new(0)
 spawn { n.update { |v| v + 1 } } # OK
+
+class Account
+  include Shareable              # a promise, checked here and in every subclass
+  @inbox: Channel[Msg]
+end
+class Audited < Account
+  var @count: Int = 0            # error: `Audited` must be Shareable
+end
 ```
 
 To pass a mutable object to another task, convert it to an immutable value. A Builder's `to_a` is O(1).

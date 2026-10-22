@@ -113,24 +113,25 @@ Ruby 流の「`attr_accessor` を並べて setter で状態を変える」設計
 
 ## 5. Shareable(共有可能性)
 
-ある型の値を**他のタスクに安全に渡せる**とき、その型は `Shareable` です。コンパイラが型の構造から自動的に導出します。
+ある型の値を**他のタスクに安全に渡せる**とき、その型は `Shareable` です。`data` と `enum` については、コンパイラがフィールドから導出します。クラスは `include Shareable` で宣言し(祖先から受け継ぐこともあります)、コンパイラはそのクラスとすべてのサブクラスを、それぞれの定義の場所で規則に照らして検査します。フィールドが不変なだけのクラスは Shareable になりません。サブクラスが可変な状態を足すことができ、そのクラスの型の値がサブクラスの値であることもあるためです。
 
 Shareable であるもの:
 
 - `Nil`、`Bool`、数値、`Symbol`、`String`、`Bytes`、`Regexp`、`Range[T]`(T が Shareable)
 - 不変コレクション `Array[T]`/`Hash[K, V]`/`Set[T]`/タプル(要素型がすべて Shareable)
-- `data`、`enum`(フィールドがすべて Shareable)
-- `var` フィールドを持たず、すべてのフィールドが Shareable なクラス
+- `data` 型(フィールドがすべて Shareable)、`enum` 型(すべての variant のフィールドが Shareable)。型引数を持つものは、型引数が Shareable なとき
+- `Shareable` を include するクラス(直接、または祖先や include したモジュールを通して)。どれも `var` フィールドを持たず、フィールドはすべて Shareable でなければならず、すべてのサブクラスも同じです。満たさない定義はエラーです(`var` フィールドを持つ `class Oops < RuntimeError` はエラーになります。`Exception` が `Shareable` を include しているためです)
 - `Channel[T]`、`Task[T]`、`Atom[T]`、`Scope`(これらは内部で同期されている)
 - 手続き(捕捉している変数の値がすべて Shareable で、かつ捕捉した変数を再代入しないもの。現状ではどの手続きの型も Shareable でない)
-- 例外オブジェクト(定義時に検査される。まだ検査しておらず、`var` フィールドを持つ例外クラスも通る)
+- 例外オブジェクト(`Exception` が `Shareable` を include しているので、すべての例外クラスが規則に照らして検査されます)
 - `IO` ハンドル(標準入出力、開いたファイル、ソケット)。アクセスはランタイムが直列化する
 
 Shareable でないもの:
 
 - Builder 各種
 - `Enumerator`(位置を持ち、受け手が可変なオブジェクトのこともあるため)
-- `var` フィールドを持つクラス、Shareable でないフィールドを持つクラス
+- `Shareable` を include しないクラス(フィールドにかかわらず)。`var` フィールドや Shareable でないフィールドを持つクラスが include するとエラーです
+- `Shareable` を include しないモジュール。include するモジュールは Shareable なクラスしか include できません(Shareable でないクラスに `extension` で include するとエラーです)
 - Builder や可変オブジェクトを捕捉した手続き、外側のローカル変数に代入する手続き
 
 Shareable が要求される場所:
@@ -153,6 +154,14 @@ spawn { total += 1 }             # エラー: spawn のブロックは外側の�
 
 n = Atom.new(0)
 spawn { n.update { |v| v + 1 } } # OK
+
+class Account
+  include Shareable              # 約束。ここと、すべてのサブクラスで検査される
+  @inbox: Channel[Msg]
+end
+class Audited < Account
+  var @count: Int = 0            # エラー: `Audited` は Shareable でなければならない
+end
 ```
 
 可変オブジェクトを別タスクに渡したいときは、不変値に変換します。Builder の `to_a` は O(1) です。

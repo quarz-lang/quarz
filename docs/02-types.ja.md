@@ -164,16 +164,15 @@ f = n.to_f              # 変換メソッド(キャストではない)
 
 ## 9. Shareable(共有可能性)
 
-`Shareable` はコンパイラが自動的に導出するマーカーモジュールで、「他のタスクに安全に渡せる型」を表します。詳細は [03-data-model.ja.md](03-data-model.ja.md) §5 ですが、型システムの観点では次のように使われます。
+`Shareable` は「他のタスクに安全に渡せる型」を表すマーカーモジュールです。`data` と `enum` については、コンパイラがフィールドから導出します。クラスとモジュールは `include Shareable` で宣言し、コンパイラはそのクラスと、それを継承または include するすべてのクラスが規則を満たすか検査します。詳細は [03-data-model.ja.md](03-data-model.ja.md) §5 ですが、型システムの観点では次のように使われます。
 
 ```ruby
 class Channel[T: Shareable]
 class Atom[T: Shareable]
 def spawn[T: Shareable](&block: () -> T) -> Task[T]   # ブロックの捕捉変数も Shareable である必要がある
-                                                       # (T の制約はまだ強制していない)
 ```
 
-ユーザーが `include Shareable` と書くことはできません。型の構造から決まります。(現状では `include Shareable` は受け付けられて無視されます。エラーにするのは予定です。)
+`include Shareable` は、サブタイプも守る約束です。Shareable な型の値は、どのクラスの値であっても Shareable です。そのため、型が Shareable かどうかは、その定義の場所で、自身と祖先の宣言だけから決まります。プログラムの残りを見る必要はありません(分割コンパイルにはこれが必要です)。
 
 ## 10. 採用しなかった案
 

@@ -1062,46 +1062,98 @@ impl World {
         }
     }
 
+    /// Whether values of class `id` (with any Shareable type arguments)
+    /// may be shared. A `data` type, enum or variant is when its fields
+    /// allow it (an enum: all its variants); a class or module only when
+    /// it promises so with `include Shareable` (itself or an ancestor),
+    /// which `declare` holds every class to where it is defined, so that
+    /// a value of a Shareable type is Shareable whatever subclass it is
+    /// of. (Deriving it from the fields of a class would make it depend
+    /// on subclasses defined anywhere in the program.)
     fn class_shareable(&mut self, id: ClassId) -> bool {
         if let Some(s) = self.class(id).shareable {
             return s;
         }
         // Provisionally true to handle recursive types.
         self.class_mut(id).shareable = Some(true);
-        let class = self.class(id);
-        let mut result = true;
-        if class.kind == ClassKind::Module {
-            // A module type: shareable only if it is the Shareable marker
-            // itself or inherits it.
-            result = class
+        let result = match self.class(id).kind {
+            ClassKind::Module => self.shareable_promise(id).is_some(),
+            ClassKind::Class => {
+                self.shareable_promise(id).is_some() && self.shareable_violation(id).is_none()
+            }
+            ClassKind::Data | ClassKind::Enum | ClassKind::Variant | ClassKind::Main => {
+                self.shareable_violation(id).is_none()
+            }
+        };
+        self.class_mut(id).shareable = Some(result);
+        result
+    }
+
+    /// The class or module whose `include Shareable` class `id` inherits
+    /// (`id` itself when it includes it directly), if any: `id` and all
+    /// its descendants must then be Shareable.
+    pub fn shareable_promise(&self, id: ClassId) -> Option<ClassId> {
+        let marker = self.builtin.shareable;
+        if id == marker {
+            return Some(marker);
+        }
+        let mut ids = Vec::new();
+        self.collect_ancestor_ids(id, &[], &mut ids);
+        if !ids.contains(&marker) {
+            return None;
+        }
+        ids.into_iter().find(|&a| {
+            self.class(a)
                 .includes
                 .iter()
-                .any(|i| matches!(i, Type::Class(cid, _) if *cid == self.builtin.shareable))
-                || id == self.builtin.shareable;
-        } else {
-            // Builtins declare `include Shareable` or not in the prelude;
-            // user classes are shareable when they have no mutable fields
-            // and all fields are shareable.
-            let explicit_unshareable = class.includes.iter().any(
-                |i| matches!(i, Type::Class(cid, _) if self.class(*cid).name == "Unshareable"),
-            );
-            if explicit_unshareable {
-                result = false;
-            } else {
-                let fields = self.all_fields(id);
-                for (f, _) in fields {
-                    if f.mutable {
-                        result = false;
-                        break;
-                    }
-                    if !self.is_shareable(&f.ty) {
-                        result = false;
-                        break;
-                    }
+                .any(|i| matches!(i, Type::Class(c, _) if *c == marker))
+        })
+    }
+
+    /// Why the values of class `id` could not be shared, judging by what
+    /// it holds (`None` when they could): its own type parameters count
+    /// as Shareable, since a use of the class checks its type arguments.
+    pub fn shareable_violation(&mut self, id: ClassId) -> Option<String> {
+        let mut ids = Vec::new();
+        self.collect_ancestor_ids(id, &[], &mut ids);
+        let marked = ids.iter().any(|&a| {
+            self.class(a).kind == ClassKind::Module && self.class(a).name == "Unshareable"
+        });
+        if marked {
+            return Some("it is Unshareable".to_string());
+        }
+        // A variant's fields may also use its enum's parameters.
+        let class = self.class(id);
+        let enum_params = class.variant_of.map(|e| self.class(e).type_params.clone());
+        let erase: HashMap<TypeParamId, Type> = class
+            .type_params
+            .iter()
+            .chain(enum_params.iter().flatten())
+            .map(|p| (p.id, Type::Nothing))
+            .collect();
+        for (f, subst) in self.all_fields(id) {
+            if f.mutable {
+                return Some(format!("its field `@{}` is `var`", f.name));
+            }
+            let ty = f.ty.subst(&subst).subst(&erase);
+            if !self.is_shareable(&ty) {
+                return Some(format!(
+                    "its field `@{}` has the non-shareable type {}",
+                    f.name,
+                    self.type_name(&ty)
+                ));
+            }
+        }
+        if self.class(id).kind == ClassKind::Enum {
+            for v in self.class(id).variants.clone() {
+                if let Some(why) = self.shareable_violation(v) {
+                    return Some(format!(
+                        "its variant `{}`: {why}",
+                        self.class(v).short_name()
+                    ));
                 }
             }
         }
-        self.class_mut(id).shareable = Some(result);
-        result
+        None
     }
 }

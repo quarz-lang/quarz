@@ -318,7 +318,7 @@ fn captured_self_in_task_blocks() {
     }
     // Immutable objects, `Kernel` methods, top-level methods and a
     // receiver set inside the task are fine.
-    ok("class P\n  @x: Int\n  def initialize(@x: Int); end\n  def twice -> Int = @x * 2\n  def run -> Int = spawn { twice + @x + self.twice }.await\nend\nputs P.new(2).run");
+    ok("class P\n  include Shareable\n  @x: Int\n  def initialize(@x: Int); end\n  def twice -> Int = @x * 2\n  def run -> Int = spawn { twice + @x + self.twice }.await\nend\nputs P.new(2).run");
     ok("class B\n  var @v: Int = 1\n  def run -> Int = spawn { puts \"hi\"; 5 }.await\n  def html -> String\n    spawn do\n      b = String::Builder.new\n      b.instance_exec { self << \"ok\" }\n      b.to_s\n    end.await\n  end\nend\nputs B.new.run");
     ok("def helper(x: Int) -> Int = x + 1\nputs spawn { helper(1) }.await");
     // The same failure through two candidates is reported once.
@@ -340,6 +340,62 @@ fn enumerators_stay_in_their_task() {
     );
     err("E = [1, 2].each", "constant `E` has the non-shareable type");
     ok("e = [1, 2].each\np e.next");
+}
+
+#[test]
+fn shareable_is_promised_and_inherited() {
+    let counter = "class Counter\n  var @n: Int = 0\nend\n";
+    // A class is Shareable only when it (or an ancestor) includes
+    // `Shareable`; then it and its subclasses must be, by their fields.
+    err(
+        "class Base\n  def name -> String = \"b\"\nend\ndef run(b: Base) -> Task[Base] = spawn { b }",
+        "`b` has the non-shareable type Base",
+    );
+    ok("class Base\n  include Shareable\n  @x: Int = 1\nend\ndef run(b: Base) -> Task[Base] = spawn { b }");
+    err(
+        "class Base\n  include Shareable\nend\nclass Mut < Base\n  var @n: Int = 0\nend",
+        "`Mut` must be Shareable, since `Base` includes `Shareable`, but its field `@n` is `var`",
+    );
+    err(
+        &format!("{counter}class Holder\n  include Shareable\n  @c: Counter\n  def initialize(@c: Counter); end\nend"),
+        "its field `@c` has the non-shareable type Counter",
+    );
+    // Exceptions cross tasks: `Exception` includes `Shareable`.
+    err(
+        "class Oops < RuntimeError\n  var @count: Int = 0\nend",
+        "`Oops` must be Shareable, since `Exception` includes `Shareable`",
+    );
+    ok("class Oops < RuntimeError\n  @code: Int = 1\nend");
+    // So do builtin Shareable classes.
+    err(
+        "class MyRange < Range[Int]\n  var @n: Int = 0\nend",
+        "since `Range` includes `Shareable`",
+    );
+    // A module that includes `Shareable` holds its includers to it,
+    // also through an extension.
+    let marked = "module Marked\n  include Shareable\nend\n";
+    err(
+        &format!("{marked}class Counter\n  include Marked\n  var @n: Int = 0\nend"),
+        "`Counter` must be Shareable, since `Marked` includes `Shareable`",
+    );
+    err(
+        &format!(
+            "{marked}module M\n  extension Array::Builder[Int]\n    include Marked\n  end\nend"
+        ),
+        "`Array::Builder` cannot include `Marked`, which is Shareable: it is Unshareable",
+    );
+    // An enum is Shareable when all its variants are.
+    err(
+        &format!("{counter}enum Holder\n  variant Some(c: Counter)\n  variant Empty\nend\ndef run(h: Holder) -> Task[Holder] = spawn {{ h }}"),
+        "`h` has the non-shareable type Holder",
+    );
+    // A generic data type is Shareable with Shareable type arguments.
+    ok("data Box[T] = (v: T)\nb = Box.new(1)\nt = spawn { b.v }\np t.await");
+    ok("r: Result[Int, String] = Result::Ok.new(1)\np spawn { r }.await");
+    err(
+        &format!("{counter}data Box[T] = (v: T)\nb = Box.new(Counter.new)\nt = spawn {{ b }}"),
+        "`b` has the non-shareable type Box[Counter]",
+    );
 }
 
 #[test]

@@ -30,6 +30,7 @@ end
 
 # クライアント側の薄いラッパ
 class Account
+  include Shareable
   @inbox: Channel[Msg]
   def initialize(@inbox: Channel[Msg]); end
 

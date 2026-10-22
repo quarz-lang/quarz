@@ -79,6 +79,9 @@ pub struct Declarer<'ast> {
     pub units: Vec<UnitDecl<'ast>>,
     class_usings: HashMap<ClassId, Vec<&'ast ConstPath>>,
     builtins_resolved: bool,
+    /// The modules extensions include, where (extension, module, span,
+    /// file), checked once fields are known (`check_shareable_extensions`).
+    ext_includes: Vec<(ExtensionId, Type, Span, u32)>,
 }
 
 /// A file's top-level: its pseudo-class for top-level methods, its
@@ -108,6 +111,7 @@ impl<'ast> Declarer<'ast> {
             pending_ext: Vec::new(),
             units: Vec::new(),
             class_usings: HashMap::default(),
+            ext_includes: Vec::new(),
         }
     }
 
@@ -485,6 +489,58 @@ impl<'ast> Declarer<'ast> {
         for p in &pending {
             self.file = self.world.class(p.id).file;
             self.check_conformance(p);
+            self.check_shareable_promise(p.id);
+        }
+        self.check_shareable_extensions();
+    }
+
+    /// A class that includes `Shareable`, or inherits it, must be
+    /// Shareable by its fields: the promise covers every subclass, so
+    /// that a value of a Shareable type is one whatever its class.
+    fn check_shareable_promise(&mut self, id: ClassId) {
+        let Some(via) = self.world.shareable_promise(id) else {
+            return;
+        };
+        if self.world.class(id).kind == ClassKind::Module {
+            return;
+        }
+        let Some(why) = self.world.shareable_violation(id) else {
+            return;
+        };
+        let class = self.world.class(id);
+        let promise = if via == id {
+            "it includes `Shareable`".to_string()
+        } else {
+            format!("`{}` includes `Shareable`", self.world.class(via).name)
+        };
+        let message = format!(
+            "`{}` must be Shareable, since {promise}, but {why}",
+            class.name
+        );
+        let span = class.span;
+        self.error(message, span);
+    }
+
+    /// An extension that makes its target include a Shareable module
+    /// promises that the target is Shareable: it must be by its fields.
+    fn check_shareable_extensions(&mut self) {
+        for (ext, ty, span, file) in std::mem::take(&mut self.ext_includes) {
+            let Type::Class(mid, _) = ty else {
+                continue;
+            };
+            if self.world.shareable_promise(mid).is_none() {
+                continue;
+            }
+            let target = self.world.extensions[ext as usize].target;
+            if let Some(why) = self.world.shareable_violation(target) {
+                self.file = file;
+                let message = format!(
+                    "`{}` cannot include `{}`, which is Shareable: {why}",
+                    self.world.class(target).name,
+                    self.world.class(mid).name
+                );
+                self.error(message, span);
+            }
         }
     }
 
@@ -922,6 +978,8 @@ impl<'ast> Declarer<'ast> {
             {
                 for t in types {
                     if let Some(ty) = self.resolve_type(t, &scope) {
+                        self.ext_includes
+                            .push((e.id, ty.clone(), t.span, self.file));
                         self.world.extensions[e.id as usize].includes.push(ty);
                     }
                 }
