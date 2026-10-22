@@ -50,6 +50,14 @@ use std::sync::atomic::{fence, AtomicUsize, Ordering as AtomicOrdering};
 /// The first word of a shared allocation.
 pub const SHARED: usize = 0;
 
+/// A shared count at or above this is an immortal allocation's: one that
+/// lives as long as the program (a constant's value, the top level's
+/// `self`), whose count is not updated, so that threads using it at once
+/// only read the cache line it is on. (`make_immortal` sets it to
+/// `IMMORTAL * 2`, far enough from the bound for updates that race with
+/// it.)
+pub const IMMORTAL: usize = 1 << 61;
+
 /// The allocation: the two words, then the value.
 #[repr(C)]
 pub struct Inner<T: ?Sized> {
@@ -221,6 +229,27 @@ impl<T: ?Sized> Rc<T> {
         true
     }
 
+    /// Make the allocation immortal (see `IMMORTAL`), shared if it was
+    /// local. Returns whether it was not immortal yet: the caller then
+    /// makes what it refers to immortal too (`Value::make_immortal`).
+    pub fn make_immortal(this: &Rc<T>) -> bool {
+        let inner = this.inner();
+        if !inner.is_shared() {
+            inner.shared.set(IMMORTAL * 2);
+            inner.local.set(SHARED);
+            return true;
+        }
+        let count = inner.shared_count();
+        if count.load(AtomicOrdering::Relaxed) >= IMMORTAL {
+            return false;
+        }
+        // Other threads may update the count meanwhile: whatever they do
+        // leaves it far above `IMMORTAL`, and this reference keeps it
+        // alive until then.
+        count.store(IMMORTAL * 2, AtomicOrdering::Relaxed);
+        true
+    }
+
     /// The allocation's layout, for freeing it.
     fn layout(&self) -> Layout {
         Layout::for_value(self.inner())
@@ -250,7 +279,10 @@ impl<T: ?Sized> Clone for Rc<T> {
         } else {
             // Relaxed, as in `std::sync::Arc`: a new reference comes from
             // an existing one, which keeps the allocation alive.
-            inner.shared_count().fetch_add(1, AtomicOrdering::Relaxed);
+            let count = inner.shared_count();
+            if count.load(AtomicOrdering::Relaxed) < IMMORTAL {
+                count.fetch_add(1, AtomicOrdering::Relaxed);
+            }
         }
         Rc {
             ptr: self.ptr,
@@ -270,6 +302,8 @@ impl<T: ?Sized> Drop for Rc<T> {
             // SAFETY: the last reference: drop the value, then free the
             // allocation (there are no weak references).
             unsafe { self.drop_slow() };
+        } else if inner.shared_count().load(AtomicOrdering::Relaxed) >= IMMORTAL {
+            // Immortal: never freed.
         } else if inner.shared_count().fetch_sub(1, AtomicOrdering::Release) == 1 {
             // As in `std::sync::Arc`: every other thread's use of the
             // value happens before it is dropped.
@@ -428,6 +462,29 @@ impl<T: ?Sized + Hash> Hash for Rc<T> {
 impl<T: Default> Default for Rc<T> {
     fn default() -> Rc<T> {
         Rc::new(T::default())
+    }
+}
+
+/// A reference to a shared allocation, which may move to another thread
+/// (a task handle placed on another worker).
+pub struct SendRc<T: ?Sized>(Rc<T>);
+
+// SAFETY: the allocation is shared (checked when wrapped): its count is
+// updated atomically, and what is reachable from it is shared too.
+unsafe impl<T: ?Sized> Send for SendRc<T> {}
+unsafe impl<T: ?Sized> Sync for SendRc<T> {}
+
+impl<T: ?Sized> SendRc<T> {
+    pub fn new(rc: Rc<T>) -> SendRc<T> {
+        assert!(
+            Rc::is_shared(&rc),
+            "only a shared allocation crosses threads"
+        );
+        SendRc(rc)
+    }
+
+    pub fn into_inner(self) -> Rc<T> {
+        self.0
     }
 }
 

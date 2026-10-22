@@ -1345,6 +1345,12 @@ impl SharedValue {
         SharedValue(v)
     }
 
+    /// A value that lives as long as the program (see `rc::IMMORTAL`).
+    pub fn immortal(v: Value) -> SharedValue {
+        v.make_immortal();
+        SharedValue(v)
+    }
+
     pub fn get(&self) -> &Value {
         &self.0
     }
@@ -1366,6 +1372,15 @@ impl std::fmt::Debug for SharedValue {
     }
 }
 
+/// Mark one allocation shared or immortal; whether it was not yet.
+fn mark_rc<T: ?Sized>(immortal: bool, r: &Rc<T>) -> bool {
+    if immortal {
+        Rc::make_immortal(r)
+    } else {
+        Rc::mark_shared(r)
+    }
+}
+
 /// What `Value::share` has still to mark.
 enum ShareItem {
     Value(*const Value),
@@ -1384,6 +1399,17 @@ impl Value {
     /// whatever their type: those are marked as well, so that their counts
     /// stay sound when the other task releases them (it never reads them).
     pub fn share(&self) {
+        self.mark(false)
+    }
+
+    /// Mark the value and everything it refers to immortal (see
+    /// `rc::IMMORTAL`): for what lives as long as the program, used by
+    /// every worker at once (a constant's value, the top level's `self`).
+    pub fn make_immortal(&self) {
+        self.mark(true)
+    }
+
+    fn mark(&self, immortal: bool) {
         // An explicit worklist: a long list of `data` values would
         // overflow the native stack.
         let mut work = vec![ShareItem::Value(self as *const Value)];
@@ -1401,7 +1427,7 @@ impl Value {
                             work.push(ShareItem::Value(s));
                         }
                         if let Some(p) = &f.parent {
-                            if Rc::mark_shared(p) {
+                            if mark_rc(immortal, p) {
                                 work.push(ShareItem::Frame(Rc::as_ptr(p)));
                             }
                         }
@@ -1419,38 +1445,38 @@ impl Value {
                     | Value::Duration(_)
                     | Value::Short(_) => {}
                     Value::BigInt(r) => {
-                        Rc::mark_shared(r);
+                        mark_rc(immortal, r);
                     }
                     Value::Str(r) => {
-                        Rc::mark_shared(r);
+                        mark_rc(immortal, r);
                     }
                     Value::Regexp(r) => {
-                        Rc::mark_shared(r);
+                        mark_rc(immortal, r);
                     }
                     Value::Bytes(r) => {
-                        Rc::mark_shared(r);
+                        mark_rc(immortal, r);
                     }
                     Value::Time(r) => {
-                        Rc::mark_shared(r);
+                        mark_rc(immortal, r);
                     }
                     Value::Random(r) => {
-                        Rc::mark_shared(r);
+                        mark_rc(immortal, r);
                     }
                     Value::StringBuilder(r) => {
-                        Rc::mark_shared(r);
+                        mark_rc(immortal, r);
                     }
                     Value::BytesBuilder(r) => {
-                        Rc::mark_shared(r);
+                        mark_rc(immortal, r);
                     }
                     Value::Array(r) => {
-                        if Rc::mark_shared(r) {
+                        if mark_rc(immortal, r) {
                             if let ArrayData::Values(xs) = &**r {
                                 xs.iter().for_each(|x| push(&mut work, x));
                             }
                         }
                     }
                     Value::Hash(r) => {
-                        if Rc::mark_shared(r) {
+                        if mark_rc(immortal, r) {
                             if let HashData::Values(m) = &**r {
                                 for (k, x) in m {
                                     push(&mut work, k);
@@ -1460,29 +1486,29 @@ impl Value {
                         }
                     }
                     Value::Set(r) => {
-                        if Rc::mark_shared(r) {
+                        if mark_rc(immortal, r) {
                             r.iter().for_each(|x| push(&mut work, x));
                         }
                     }
                     Value::Range(r) => {
-                        if Rc::mark_shared(r) {
+                        if mark_rc(immortal, r) {
                             push(&mut work, &r.lo);
                             push(&mut work, &r.hi);
                         }
                     }
                     Value::MatchData(r) => {
-                        if Rc::mark_shared(r) {
-                            Rc::mark_shared(&r.text);
+                        if mark_rc(immortal, r) {
+                            mark_rc(immortal, &r.text);
                         }
                     }
                     Value::Object(r) => {
-                        if Rc::mark_shared(r) {
+                        if mark_rc(immortal, r) {
                             for x in r.fields_ref().iter() {
                                 push(&mut work, x);
                             }
                             if let Some(e) = r.exc_info() {
                                 if let Some(b) = &e.backtrace {
-                                    Rc::mark_shared(b);
+                                    mark_rc(immortal, b);
                                 }
                                 if let Some(c) = &e.cause {
                                     push(&mut work, c);
@@ -1491,19 +1517,19 @@ impl Value {
                         }
                     }
                     Value::Proc(r) => {
-                        if Rc::mark_shared(r) {
+                        if mark_rc(immortal, r) {
                             match &r.body {
                                 ClosureBody::Func(_) | ClosureBody::Native(_) => {}
                                 ClosureBody::MethodName(name, _, _) => {
-                                    Rc::mark_shared(name);
+                                    mark_rc(immortal, name);
                                 }
                                 ClosureBody::BoundMethod { recv, name } => {
                                     push(&mut work, recv);
-                                    Rc::mark_shared(name);
+                                    mark_rc(immortal, name);
                                 }
                             }
                             if let Some(f) = &r.frame {
-                                if Rc::mark_shared(f) {
+                                if mark_rc(immortal, f) {
                                     work.push(ShareItem::Frame(Rc::as_ptr(f)));
                                 }
                             }
@@ -1514,12 +1540,12 @@ impl Value {
                         }
                     }
                     Value::ArrayBuilder(r) => {
-                        if Rc::mark_shared(r) {
+                        if mark_rc(immortal, r) {
                             (*r.as_ptr()).iter().for_each(|x| push(&mut work, x));
                         }
                     }
                     Value::HashBuilder(r) => {
-                        if Rc::mark_shared(r) {
+                        if mark_rc(immortal, r) {
                             for (k, x) in (*r.as_ptr()).iter() {
                                 push(&mut work, k);
                                 push(&mut work, x);
@@ -1527,14 +1553,14 @@ impl Value {
                         }
                     }
                     Value::SetBuilder(r) => {
-                        if Rc::mark_shared(r) {
+                        if mark_rc(immortal, r) {
                             (*r.as_ptr()).iter().for_each(|x| push(&mut work, x));
                         }
                     }
                     Value::Enumerator(r) => {
-                        if Rc::mark_shared(r) {
+                        if mark_rc(immortal, r) {
                             push(&mut work, &r.recv);
-                            Rc::mark_shared(&r.method);
+                            mark_rc(immortal, &r.method);
                             r.args.iter().for_each(|x| push(&mut work, x));
                             // The vector stays put while the walk runs.
                             r.each_buffered(|x| push(&mut work, x));
@@ -1544,25 +1570,25 @@ impl Value {
                     // their contents when they enter; a selector or a flow
                     // in transit never crosses.
                     Value::Channel(r) => {
-                        Rc::mark_shared(r);
+                        mark_rc(immortal, r);
                     }
                     Value::Atom(r) => {
-                        Rc::mark_shared(r);
+                        mark_rc(immortal, r);
                     }
                     Value::Task(r) => {
-                        Rc::mark_shared(r);
+                        mark_rc(immortal, r);
                     }
                     Value::Scope(r) => {
-                        Rc::mark_shared(r);
+                        mark_rc(immortal, r);
                     }
                     Value::Io(r) => {
-                        Rc::mark_shared(r);
+                        mark_rc(immortal, r);
                     }
                     Value::Selector(r) => {
-                        Rc::mark_shared(r);
+                        mark_rc(immortal, r);
                     }
                     Value::Flow(r) => {
-                        Rc::mark_shared(r);
+                        mark_rc(immortal, r);
                     }
                 }
             }

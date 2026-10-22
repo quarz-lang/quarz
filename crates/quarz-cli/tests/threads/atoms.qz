@@ -1,0 +1,23 @@
+# Updates from tasks on every worker: none is lost.
+counter = Atom.new(0)
+seen = Atom[Array[Int]].new([])
+ts = (1..8).map do |k|
+  spawn do
+    500.times { counter.update { |n| n + 1 } }
+    seen.update { |xs| xs.push(k) }
+  end
+end
+ts.each { |t| t.await }
+p counter.value, seen.value.sort
+
+# A constant first used by tasks on several workers at once: its
+# initializer runs once.
+RUNS = Atom.new(0)
+def slow -> Int
+  RUNS.update { |n| n + 1 }
+  Task.sleep(20.ms)
+  42
+end
+def late -> Int = LATE
+LATE = slow
+p (1..8).map { |_| spawn { late } }.map(&:await).uniq, RUNS.value

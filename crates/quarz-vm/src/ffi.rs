@@ -1106,7 +1106,10 @@ pub unsafe extern "C" fn qz_main(
             args.push(CStr::from_ptr(p).to_string_lossy().into_owned());
         }
     }
-    let state = SharedState::new(Box::new(std::io::BufWriter::new(std::io::stdout())));
+    let state = SharedState::with_threads(
+        Box::new(std::io::BufWriter::new(std::io::stdout())),
+        crate::sched::Workers::count_from_env(),
+    );
     let quarz_ir::Module {
         world,
         functions,

@@ -1,0 +1,10 @@
+# `exit` in a task on another worker ends the program with its code.
+ts = (1..4).map do |i|
+  spawn do
+    Task.sleep(20.ms)
+    exit 7 if i == 3
+    Task.sleep(5.seconds)
+  end
+end
+ts.each(&:await)
+puts "not reached"

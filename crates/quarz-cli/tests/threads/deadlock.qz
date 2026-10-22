@@ -1,0 +1,8 @@
+# Tasks on different workers waiting for each other: a deadlock, found
+# although no single worker can see it.
+a = Channel[Int].new
+b = Channel[Int].new
+t1 = spawn { a.receive; b.send(1) }
+t2 = spawn { b.receive; a.send(1) }
+t1.await
+t2.await

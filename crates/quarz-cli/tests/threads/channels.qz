@@ -1,0 +1,48 @@
+# Unbuffered channels between tasks on different workers: a rendezvous
+# each time, in order.
+ping = Channel[Int].new
+pong = Channel[Int].new
+echo = spawn do
+  loop do
+    v = ping.receive
+    break if v < 0
+    pong.send(v * 2)
+  end
+  :done
+end
+sum = 0
+1000.times do |i|
+  ping.send(i)
+  sum += pong.receive
+end
+ping.send(-1)
+p sum, echo.await
+
+# A buffered channel with several producers and one consumer.
+ch = Channel[Int].new(4)
+producers = (1..8).map do |k|
+  spawn { 100.times { |i| ch.send(k * 1000 + i) } }
+end
+closer = spawn do
+  producers.each(&:await)
+  ch.close
+end
+got: Array[Int] = []
+ch.each { |v| got = got.push(v) }
+closer.await
+p got.size, got.sum, got.uniq.size
+
+# select over channels fed from other workers.
+a = Channel[Int].new
+b = Channel[Int].new
+spawn { 50.times { |i| a.send(i) } }
+spawn { 50.times { |i| b.send(i * 10) } }
+na = 0
+nb = 0
+100.times do
+  select do |s|
+    s.receive(a) { |_| na += 1 }
+    s.receive(b) { |_| nb += 1 }
+  end
+end
+p na, nb

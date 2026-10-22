@@ -13,19 +13,30 @@ bench/net/run.sh            # 1 16 64 256 connections
 bench/net/run.sh 64         # one count
 ```
 
-The single-threaded servers are pinned to one CPU, the multi-threaded Go
-server gets two physical cores, and the client runs on the other CPUs
-(`SERVER_CPU`, `SERVER_CPUS`, `CLIENT_CPUS`; see the script).
+The single-threaded servers are pinned to one CPU, the multi-threaded
+ones (Quarz with `QUARZ_THREADS=4`, Go with all its threads) get two
+physical cores, and the client runs on the other CPUs (`SERVER_CPU`,
+`SERVER_CPUS`, `CLIENT_CPUS`; see the script).
 
 ## Results (2026-10-22)
 
 12th Gen Intel Core i7-1260P, Go 1.27.2; round trips per second, 5 s
-after a second of warm-up. Quarz runs its tasks on one OS thread (M:1),
-so its columns compare with Go limited to one thread; the last column is
-Go on two physical cores (`GOMAXPROCS=4`, CPUs 0-3).
+after a second of warm-up.
 
-With the reactor using epoll directly (each socket registered once,
-edge-triggered):
+With four worker threads (Quarz at the commit adding them; one worker,
+the first two columns, compares with Go limited to one thread; the
+four-thread columns with Go on the same two physical cores, CPUs 0-3,
+`GOMAXPROCS=4`):
+
+| connections | quarz-vm | quarz-llvm | vm, 4 threads | llvm, 4 threads | go, 1 thread | go, 4 threads |
+|------------:|---------:|-----------:|--------------:|----------------:|-------------:|--------------:|
+|           1 |  113,593 |    111,854 |       108,349 |         108,635 |      108,761 |       106,307 |
+|          16 |  203,878 |    201,903 |       308,572 |         314,959 |      197,923 |       306,614 |
+|          64 |  184,377 |    186,671 |       326,199 |         329,824 |      198,540 |       367,166 |
+|         256 |  178,260 |    182,901 |       311,000 |         318,484 |      191,585 |       360,440 |
+
+Before, with one thread (M:1), the reactor using epoll directly (each
+socket registered once, edge-triggered):
 
 | connections | quarz-vm | quarz-llvm | go, 1 thread | go, 4 threads |
 |------------:|---------:|-----------:|-------------:|--------------:|
@@ -60,5 +71,9 @@ columns of one run, or medians of several).
   about 1.7 `epoll_ctl`, 0.55 `timerfd_settime` and 0.55 failed `read`s
   more per round trip. Polling the reactor only every 32 task switches
   instead of at each measured slower (the woken tasks waited longer).
-- Go on several threads doubles its throughput from 16 connections on,
-  which is what an M:N scheduler would bring.
+- On four worker threads Quarz goes from about 200k to 310-330k round
+  trips per second, as Go does from one thread to four: equal at 16
+  connections, about 90% of Go at 64 and 256. A connection's task stays
+  on the worker it started on (round robin), and its socket is
+  registered with that worker's epoll; Go moves goroutines between
+  threads.

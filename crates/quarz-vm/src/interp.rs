@@ -214,6 +214,8 @@ pub struct Global {
     variant_singletons: std::sync::Mutex<HashMap<ClassId, SharedValue>>,
     at_exit: std::sync::Mutex<Vec<SharedValue>>,
     stdout: std::sync::Mutex<Box<dyn std::io::Write + Send>>,
+    /// The worker threads that run the tasks.
+    pub workers: std::sync::Arc<sched::Workers>,
 }
 
 const _: () = {
@@ -222,8 +224,9 @@ const _: () = {
 };
 
 impl Global {
-    pub fn new(out: Box<dyn std::io::Write + Send>) -> Global {
+    pub fn new(out: Box<dyn std::io::Write + Send>, threads: usize) -> Global {
         Global {
+            workers: sched::Workers::new(threads),
             symbols: std::sync::RwLock::new(SymbolTable::default()),
             consts: std::sync::Mutex::new(Vec::new()),
             variant_singletons: std::sync::Mutex::new(HashMap::new()),
@@ -250,11 +253,26 @@ pub struct SharedState {
 }
 
 impl SharedState {
+    /// State for a program run by one worker (the REPL, a helper thread).
     pub fn new(out: Box<dyn std::io::Write + Send>) -> SharedState {
+        SharedState::with_threads(out, 1)
+    }
+
+    /// State for a program whose tasks run on `threads` workers.
+    pub fn with_threads(out: Box<dyn std::io::Write + Send>, threads: usize) -> SharedState {
+        SharedState::for_worker(std::sync::Arc::new(Global::new(out, threads)), 0)
+    }
+
+    /// The state of worker `worker` of the program `global` belongs to.
+    /// Each worker numbers its tags in a range of its own: a flow's tag
+    /// must not match one another worker gave out (a task's block may
+    /// have been made on another worker).
+    pub fn for_worker(global: std::sync::Arc<Global>, worker: u32) -> SharedState {
+        let workers = global.workers.clone();
         SharedState {
-            global: std::sync::Arc::new(Global::new(out)),
-            sched: Rc::new(RefCell::new(Scheduler::new())),
-            next_tag: Rc::new(Cell::new(1)),
+            global,
+            sched: Rc::new(RefCell::new(Scheduler::new(worker, workers))),
+            next_tag: Rc::new(Cell::new((u64::from(worker) << 48) | 1)),
             repl_frame: None,
             funcs: Rc::new(RefCell::new(Vec::new())),
             pools: Rc::new(RefCell::new(Vec::new())),
@@ -464,7 +482,7 @@ impl Interp {
         argv: Vec<String>,
         out: Box<dyn std::io::Write + Send>,
     ) -> std::rc::Rc<Interp> {
-        let state = SharedState::new(out);
+        let state = SharedState::with_threads(out, sched::Workers::count_from_env());
         let quarz_ir::Module {
             world,
             functions,
@@ -661,7 +679,11 @@ impl Interp {
             .max(units.iter().map(|u| u.file as usize + 1).max().unwrap_or(0));
         let mut unit_selfs = vec![Value::Nil; n_files];
         for u in &units {
-            unit_selfs[u.file as usize] = Value::Object(Object::new(u.main_class, Fields::new()));
+            // Every task calling a top-level method uses it: immortal, so
+            // that workers do not contend for its count.
+            let v = Value::Object(Object::new(u.main_class, Fields::new()));
+            v.make_immortal();
+            unit_selfs[u.file as usize] = v;
         }
         let consts: Vec<std::sync::Arc<ConstCell>> = {
             let mut all = lock(&state.global.consts);
@@ -685,7 +707,10 @@ impl Interp {
                         known
                             .entry(cid)
                             .or_insert_with(|| {
-                                SharedValue::new(Value::Object(Object::new(cid, Fields::new())))
+                                SharedValue::immortal(Value::Object(Object::new(
+                                    cid,
+                                    Fields::new(),
+                                )))
                             })
                             .clone()
                     })
@@ -817,6 +842,8 @@ impl Interp {
             .spawn(body, None, "main".to_string(), 256 * 1024 * 1024);
         self.root_task.set(Some(root.id));
         let code = self.run_loop(&root);
+        // The other workers stop with the main program.
+        self.global.workers.stop();
         let code = self.run_at_exit(code);
         self.flush();
         if std::env::var_os("QUARZ_COUNT_COPIES").is_some() {
@@ -913,29 +940,32 @@ impl Interp {
     /// (a helper thread hands it back instead).
     pub(crate) fn run_loop_with(&self, root: &Rc<TaskHandle>, report: bool) -> i32 {
         loop {
-            let next = self.sched.borrow_mut().next_runnable();
-            let Some((id, mut co)) = next else {
-                if root.is_done() {
-                    break;
+            let next = self.sched.borrow_mut().next_step();
+            match next {
+                sched::Next::Run(id, co) => {
+                    if let Some(code) = self.resume_task(id, co) {
+                        return code;
+                    }
+                    if root.is_done() {
+                        break;
+                    }
                 }
-                // Deadlock: no runnable tasks, no timers.
-                self.flush();
-                let waiting = self.sched.borrow().waiting_tasks();
-                eprintln!(
-                    "DeadlockError: all tasks are blocked ({})",
-                    waiting.join(", ")
-                );
-                return 1;
-            };
-            let task = self.sched.borrow().task(id).clone();
-            self.current_task_id.set(id);
-            let result = sched::resume(&task, &mut co);
-            let exit = self.sched.borrow_mut().after_resume(id, co, result);
-            if let Some(code) = exit {
-                return code;
-            }
-            if root.is_done() {
-                break;
+                sched::Next::Spawn(requests) => self.adopt_tasks(requests),
+                sched::Next::Exit(code) => return code,
+                sched::Next::Stop => return 0,
+                sched::Next::Idle => {
+                    if root.is_done() {
+                        break;
+                    }
+                    // Deadlock: no runnable tasks, no timers.
+                    self.flush();
+                    let waiting = self.sched.borrow().waiting_tasks();
+                    eprintln!(
+                        "DeadlockError: all tasks are blocked ({})",
+                        waiting.join(", ")
+                    );
+                    return 1;
+                }
             }
         }
         match root.result() {
@@ -975,14 +1005,137 @@ impl Interp {
     }
 
     /// Spawn a task running the closure.
+    /// Start a task running `closure` (marked shared: it may run on
+    /// another worker), on the worker `Workers::place` picks.
     pub fn spawn_task(
         &self,
         closure: Value,
         scope: Option<Rc<ScopeInner>>,
         name: &str,
     ) -> Rc<TaskHandle> {
+        let (here, workers) = {
+            let s = self.sched.borrow();
+            (s.worker, s.workers.clone())
+        };
+        let target = workers.place(here);
+        if target == here {
+            let body = self.task_body(closure);
+            return self
+                .sched
+                .borrow_mut()
+                .spawn(body, scope, name.to_string(), sched::TASK_STACK);
+        }
+        self.start_worker(target);
+        let handle = TaskHandle::new(target, workers.reserve_id(target), scope, name.to_string());
+        workers.post_spawn(
+            target,
+            sched::SpawnRequest {
+                handle: crate::rc::SendRc::new(handle.clone()),
+                block: SharedValue::new(closure),
+            },
+        );
+        handle
+    }
+
+    /// Run one task until it suspends or ends; `Some(code)` to end the
+    /// program.
+    fn resume_task(&self, id: TaskId, mut co: sched::TaskCoroutine) -> Option<i32> {
+        let task = self.sched.borrow().task(id).clone();
+        self.current_task_id.set(id);
+        let result = sched::resume(&task, &mut co);
+        self.sched.borrow_mut().after_resume(id, co, result)
+    }
+
+    /// Start the tasks other workers placed on this one.
+    fn adopt_tasks(&self, requests: Vec<sched::SpawnRequest>) {
+        for r in requests {
+            let body = self.task_body(r.block.into_inner());
+            self.sched
+                .borrow_mut()
+                .adopt(r.handle.into_inner(), body, sched::TASK_STACK);
+        }
+    }
+
+    /// Start worker `w`'s thread, unless it runs already: an interpreter
+    /// of its own over the program (built on that thread, whose stack
+    /// limit and thread-local state it uses) and the same global state,
+    /// running the tasks placed there until the program ends.
+    fn start_worker(&self, w: u32) {
+        let global = self.global.clone();
+        if !global.workers.claim_start(w) {
+            return;
+        }
+        sched::set_multi_threaded();
+        let image = self.image();
+        let argv = self.program.argv.clone();
+        let native_bt = self.native_bt.get();
+        std::thread::Builder::new()
+            .name(format!("quarz-worker-{w}"))
+            .spawn(move || {
+                // A panic here would leave the worker's tasks unfinished
+                // and the others waiting for them: it ends the program,
+                // as one on the main thread does (the hook has printed
+                // it).
+                let run = std::panic::AssertUnwindSafe(move || {
+                    Interp::worker_main(global, w, image, argv, native_bt)
+                });
+                if std::panic::catch_unwind(run).is_err() {
+                    std::process::exit(101);
+                }
+            })
+            .expect("start a worker thread");
+    }
+
+    /// The body of worker `w`'s thread (see `start_worker`).
+    fn worker_main(
+        global: std::sync::Arc<Global>,
+        w: u32,
+        image: std::sync::Arc<crate::transfer::ProgramImage>,
+        argv: Vec<String>,
+        native_bt: bool,
+    ) {
+        let state = SharedState::for_worker(global, w);
+        let interp = Interp::with_state(
+            image.world.clone(),
+            0,
+            image.functions.clone(),
+            image.units.clone(),
+            argv,
+            state,
+        );
+        interp.native_bt.set(native_bt);
+        {
+            let mut compiled = interp.compiled.borrow_mut();
+            for (i, f) in image.compiled.iter().enumerate() {
+                if i < compiled.len() {
+                    compiled[i] = *f;
+                }
+            }
+        }
+        interp.run_worker();
+        // The program is ending: its tasks are not unwound.
+        std::mem::forget(interp);
+    }
+
+    /// A worker's loop: run the tasks placed on it until the program ends.
+    fn run_worker(&self) {
+        loop {
+            let next = self.sched.borrow_mut().next_step();
+            match next {
+                sched::Next::Run(id, co) => {
+                    let _ = self.resume_task(id, co);
+                }
+                sched::Next::Spawn(requests) => self.adopt_tasks(requests),
+                sched::Next::Stop | sched::Next::Exit(_) | sched::Next::Idle => return,
+            }
+        }
+    }
+
+    /// A task's body: call `closure`, and turn how it ends into the
+    /// task's result.
+    fn task_body(&self, closure: Value) -> Box<dyn FnOnce() -> TaskExit> {
         let me = self.rc();
-        let body: Box<dyn FnOnce() -> TaskExit> = Box::new(move || {
+        Box::new(move || {
             let r = me.call_block(&closure, smallvec![]);
             match r {
                 Ok(v) => TaskExit::Result(TaskResult::Value(v)),
@@ -996,10 +1149,7 @@ impl Interp {
                     TaskExit::Result(TaskResult::Error(e))
                 }
             }
-        });
-        self.sched
-            .borrow_mut()
-            .spawn(body, scope, name.to_string(), 16 * 1024 * 1024)
+        })
     }
 
     /// Block the current task until woken, then check for cancellation.
@@ -1429,7 +1579,9 @@ impl Interp {
         }
         lock(&self.global.variant_singletons)
             .entry(cid)
-            .or_insert_with(|| SharedValue::new(Value::Object(Object::new(cid, Fields::new()))))
+            .or_insert_with(|| {
+                SharedValue::immortal(Value::Object(Object::new(cid, Fields::new())))
+            })
             .get()
             .clone()
     }
@@ -1491,7 +1643,7 @@ impl Interp {
         // A constant is visible from every task. One whose initializer
         // failed is evaluated again at its next use.
         if let Ok(v) = &r {
-            let _ = cell.value.set(SharedValue::new(v.clone()));
+            let _ = cell.value.set(SharedValue::immortal(v.clone()));
         }
         let running = std::mem::take(&mut *lock(&cell.init));
         if let ConstInit::Running { waiters, .. } = running {

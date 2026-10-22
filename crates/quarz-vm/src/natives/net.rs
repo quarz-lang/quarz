@@ -380,58 +380,59 @@ fn udp_fd(interp: &Interp, st: &IoCell<UdpState>) -> Result<RawFd, Flow> {
     }
 }
 
-/// Read more bytes into the buffer; `false` at the end of the stream.
-fn fill(interp: &Interp, st: &IoCell<SocketState>) -> Result<bool, Flow> {
-    let fd = socket_fd(interp, st)?;
+/// Read from the socket until `take` can take what it wants from the
+/// buffer (it sees `eof` once the stream has ended). Taking, and reading
+/// more when it cannot, happen under the state's lock, released only to
+/// wait for the socket: with tasks on several threads, a read call takes
+/// a whole unit (a line, all of the rest) however they interleave.
+fn read_with<R>(
+    interp: &Interp,
+    st: &IoCell<SocketState>,
+    mut take: impl FnMut(&mut SocketState) -> Option<R>,
+) -> Result<R, Flow> {
     let mut chunk = [0u8; 8192];
     loop {
-        if st.borrow().eof {
-            return Ok(false);
-        }
-        let r = {
+        let fd = {
             let mut s = st.borrow_mut();
-            let Some(stream) = s.stream.as_mut() else {
-                return Err(interp.raise(interp.program.exc.io_error, "closed stream"));
-            };
-            stream.read(&mut chunk)
+            loop {
+                if let Some(r) = take(&mut s) {
+                    return Ok(r);
+                }
+                let Some(stream) = s.stream.as_mut() else {
+                    return Err(interp.raise(interp.program.exc.io_error, "closed stream"));
+                };
+                match stream.read(&mut chunk) {
+                    Ok(0) => s.eof = true,
+                    Ok(n) => s.rbuf.extend_from_slice(&chunk[..n]),
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break stream.fd(),
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                    Err(e) => {
+                        drop(s);
+                        return Err(os_error(interp, e, "read"));
+                    }
+                }
+            }
         };
-        match r {
-            Ok(0) => {
-                st.borrow_mut().eof = true;
-                return Ok(false);
-            }
-            Ok(n) => {
-                st.borrow_mut().rbuf.extend_from_slice(&chunk[..n]);
-                return Ok(true);
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                interp.wait_io(st, fd, false)?
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-            Err(e) => return Err(os_error(interp, e, "read")),
-        }
+        interp.wait_io(st, fd, false)?;
     }
 }
 
 /// One line including its newline; `None` at the end of the stream.
 pub fn socket_gets(interp: &Interp, st: &IoCell<SocketState>) -> Result<Option<String>, Flow> {
-    loop {
-        {
-            let mut s = st.borrow_mut();
-            if let Some(pos) = s.rbuf.iter().position(|b| *b == b'\n') {
-                let line: Vec<u8> = s.rbuf.drain(..=pos).collect();
-                return Ok(Some(String::from_utf8_lossy(&line).into_owned()));
-            }
+    read_with(interp, st, |s| {
+        if let Some(pos) = s.rbuf.iter().position(|b| *b == b'\n') {
+            let line: Vec<u8> = s.rbuf.drain(..=pos).collect();
+            return Some(Some(String::from_utf8_lossy(&line).into_owned()));
         }
-        if !fill(interp, st)? {
-            let mut s = st.borrow_mut();
-            if s.rbuf.is_empty() {
-                return Ok(None);
-            }
-            let rest = std::mem::take(&mut s.rbuf);
-            return Ok(Some(String::from_utf8_lossy(&rest).into_owned()));
+        if !s.eof {
+            return None;
         }
-    }
+        if s.rbuf.is_empty() {
+            return Some(None);
+        }
+        let rest = std::mem::take(&mut s.rbuf);
+        Some(Some(String::from_utf8_lossy(&rest).into_owned()))
+    })
 }
 
 /// Everything up to the end of the stream, or up to `limit` bytes.
@@ -440,16 +441,14 @@ pub fn socket_read(
     st: &IoCell<SocketState>,
     limit: Option<usize>,
 ) -> Result<Vec<u8>, Flow> {
-    loop {
+    read_with(interp, st, |s| {
         if let Some(n) = limit {
-            if st.borrow().rbuf.len() >= n {
-                return Ok(st.borrow_mut().rbuf.drain(..n).collect());
+            if s.rbuf.len() >= n {
+                return Some(s.rbuf.drain(..n).collect());
             }
         }
-        if !fill(interp, st)? {
-            return Ok(std::mem::take(&mut st.borrow_mut().rbuf));
-        }
-    }
+        s.eof.then(|| std::mem::take(&mut s.rbuf))
+    })
 }
 
 /// Whatever is available, up to `max` bytes (one read when the buffer is
@@ -459,12 +458,13 @@ pub fn socket_read_partial(
     st: &IoCell<SocketState>,
     max: usize,
 ) -> Result<Option<Vec<u8>>, Flow> {
-    if st.borrow().rbuf.is_empty() && !fill(interp, st)? {
-        return Ok(None);
-    }
-    let mut s = st.borrow_mut();
-    let n = max.min(s.rbuf.len());
-    Ok(Some(s.rbuf.drain(..n).collect()))
+    read_with(interp, st, |s| {
+        if !s.rbuf.is_empty() {
+            let n = max.min(s.rbuf.len());
+            return Some(Some(s.rbuf.drain(..n).collect()));
+        }
+        s.eof.then_some(None)
+    })
 }
 
 /// Write all of `data`. A write that has to wait for the socket keeps
@@ -521,10 +521,12 @@ fn socket_write_all(interp: &Interp, st: &IoCell<SocketState>, data: &[u8]) -> R
 }
 
 pub fn socket_eof(interp: &Interp, st: &IoCell<SocketState>) -> Result<bool, Flow> {
-    if !st.borrow().rbuf.is_empty() {
-        return Ok(false);
-    }
-    Ok(!fill(interp, st)?)
+    read_with(interp, st, |s| {
+        if !s.rbuf.is_empty() {
+            return Some(false);
+        }
+        s.eof.then_some(true)
+    })
 }
 
 /// `readpartial` / `read_bytes` for any stream kind.

@@ -1,0 +1,4 @@
+scope raised: child failed
+["sibling 0 ended", "sibling 1 ended", "sibling 2 ended"]
+awaited: far away
+cancelled

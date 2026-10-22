@@ -319,7 +319,7 @@ fn kernel_loop(interp: &Interp, _: &Value, args: Args) -> EvalResult {
             Err(e) => return Err(e),
         }
         // Give other tasks a chance in tight loops.
-        if interp.sched.borrow().tasks.len() > 1 {
+        if interp.sched.borrow().task_count() > 1 {
             interp.yield_now();
         }
     }
@@ -579,7 +579,7 @@ fn run_select(interp: &Interp, block: &Value, looping: bool) -> EvalResult {
         if state.borrow().stopped || !looping {
             return Ok(Value::Nil);
         }
-        if interp.sched.borrow().tasks.len() > 1 {
+        if interp.sched.borrow().task_count() > 1 {
             interp.yield_now();
         }
     }

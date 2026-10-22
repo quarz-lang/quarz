@@ -1,15 +1,15 @@
 #!/bin/bash
 # Throughput of the line echo servers (echo.qz in the interpreter and
-# compiled with each backend, server.go with one thread and with
-# several), driven by client.go: round trips per second for each number
-# of connections. Run from the repository root after `cargo build
-# --release`, with `go` on the path:
+# compiled, each with one worker thread and with QUARZ_THREADS=4;
+# server.go with one thread and with several), driven by client.go:
+# round trips per second for each number of connections. Run from the
+# repository root after `cargo build --release`, with `go` on the path:
 #
 #   bench/net/run.sh [CONNS...]          # default: 1 16 64 256
 #
 # SERVER_CPU (default 2) is the one CPU the single-threaded servers are
-# pinned to, SERVER_CPUS (default 0-3) the ones the multi-threaded Go
-# server may use, CLIENT_CPUS (default 4-15) the client's; DUR (default
+# pinned to, SERVER_CPUS (default 0-3) the ones the multi-threaded
+# servers may use, CLIENT_CPUS (default 4-15) the client's; DUR (default
 # 5s) the measuring time after a second of warm-up.
 set -euo pipefail
 if [ $# -gt 0 ]; then conns=("$@"); else conns=(1 16 64 256); fi
@@ -45,11 +45,13 @@ measure() {
   printf " %10s" "$r"
 }
 
-printf "%-6s %10s %10s %10s %10s\n" conns quarz-vm quarz-llvm go-1thread go-multi
+printf "%-6s %10s %10s %10s %10s %10s %10s\n" conns quarz-vm quarz-llvm vm-4thr llvm-4thr go-1thread go-multi
 for c in "${conns[@]}"; do
   printf "%-6s" "$c"
   measure vm "$server_cpu" "$c" $quarz run bench/net/echo.qz
   measure llvm "$server_cpu" "$c" "$out/echo_llvm"
+  measure vm4 "$server_cpus" "$c" env QUARZ_THREADS=4 $quarz run bench/net/echo.qz
+  measure llvm4 "$server_cpus" "$c" env QUARZ_THREADS=4 "$out/echo_llvm"
   measure go1 "$server_cpu" "$c" env GOMAXPROCS=1 "$out/server"
   measure goN "$server_cpus" "$c" "$out/server"
   echo

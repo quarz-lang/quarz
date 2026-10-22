@@ -1,0 +1,8 @@
+# Work spread over the workers: each task computes on its own, the
+# results come back through a channel and through `await`.
+def fib(n: Int) -> Int = n < 2 ? n : fib(n - 1) + fib(n - 2)
+results = Channel[Int].new(16)
+ts = (1..16).map { |i| spawn { results.send(fib(20)); i } }
+total = 0
+16.times { total += results.receive }
+p total, ts.map(&:await).sum

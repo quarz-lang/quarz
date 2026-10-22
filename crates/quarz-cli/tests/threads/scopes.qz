@@ -1,0 +1,46 @@
+# A child failing on one worker cancels its siblings on the others, and
+# the scope raises the failure in its owner.
+log = Channel[String].new(16)
+begin
+  Task.scope do |s|
+    3.times do |i|
+      s.spawn do
+        begin
+          Task.sleep(5.seconds)
+        ensure
+          log.send("sibling #{i} ended")
+        end
+      end
+    end
+    s.spawn do
+      Task.sleep(20.ms)
+      raise ArgumentError, "child failed"
+    end
+  end
+rescue ArgumentError => e
+  puts "scope raised: #{e.message}"
+end
+lines: Array[String] = []
+3.times { lines = lines.push(log.receive) }
+p lines.sort
+
+# An exception from a task on another worker, through await.
+t = spawn { raise IOError, "far away" }
+begin
+  t.await
+rescue IOError => e
+  puts "awaited: #{e.message}"
+end
+
+# Cancelling a task on another worker.
+sleeper = spawn do
+  Task.sleep(5.seconds)
+  :slept
+end
+Task.sleep(10.ms)
+sleeper.cancel
+begin
+  sleeper.await
+rescue Task::Cancelled
+  puts "cancelled"
+end

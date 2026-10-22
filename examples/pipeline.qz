@@ -35,7 +35,7 @@ Task.scope do |scope|
     s.receive(results) do |done|
       received += 1
       puts "worker #{done.worker}: #{done.result}"
-      s.stop if results.closed? && results.empty?
+      s.stop if received == 20
     end
     s.after(1.second) do
       warn "still waiting... (#{received} done)"

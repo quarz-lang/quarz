@@ -17,7 +17,7 @@ use std::collections::{BinaryHeap, HashMap, VecDeque};
 #[cfg(not(target_os = "linux"))]
 use std::os::fd::BorrowedFd;
 use std::os::fd::RawFd;
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -27,7 +27,11 @@ use corosensei::{Coroutine, CoroutineResult, Yielder};
 #[cfg(not(target_os = "linux"))]
 use polling::{Event, Events, Poller};
 
-use crate::value::Value;
+use crate::rc::SendRc;
+use crate::value::{SharedValue, Value};
+
+/// The native stack of a task (the main program's is larger).
+pub const TASK_STACK: usize = 16 * 1024 * 1024;
 
 /// A task's number on the worker thread that runs it.
 pub type TaskId = u32;
@@ -200,6 +204,34 @@ impl std::fmt::Debug for TaskHandle {
 }
 
 impl TaskHandle {
+    /// A task that worker `worker` runs as number `id`, registered as a
+    /// child of `scope`.
+    pub fn new(
+        worker: u32,
+        id: TaskId,
+        scope: Option<Rc<ScopeInner>>,
+        name: String,
+    ) -> Rc<TaskHandle> {
+        let handle = Rc::new_shared(TaskHandle {
+            id,
+            worker,
+            state: AtomicU8::new(TaskState::Ready as u8),
+            result: Mutex::new(None),
+            joiners: Mutex::new(Vec::new()),
+            cancel_requested: AtomicBool::new(false),
+            scope: scope.clone(),
+            name,
+            yielder: AtomicPtr::new(std::ptr::null_mut()),
+            stack_limit: AtomicUsize::new(0),
+            stack_low: AtomicUsize::new(0),
+            stack_high: AtomicUsize::new(usize::MAX),
+        });
+        if let Some(scope) = &scope {
+            lock(&scope.children).push(handle.clone());
+        }
+        handle
+    }
+
     pub fn task_ref(&self) -> TaskRef {
         TaskRef {
             worker: self.worker,
@@ -440,10 +472,185 @@ impl Reactor {
     }
 }
 
+/// A task to start on another worker: its handle (made by the task that
+/// spawned it, which returns it at once) and its block.
+pub struct SpawnRequest {
+    pub handle: SendRc<TaskHandle>,
+    pub block: SharedValue,
+}
+
+/// What other threads leave for a worker.
+#[derive(Default)]
+pub struct Inbox {
+    /// Its tasks to wake.
+    pub wakes: Vec<TaskId>,
+    pub spawns: Vec<SpawnRequest>,
+}
+
+#[derive(Default)]
+struct WorkerSlot {
+    inbox: Mutex<Inbox>,
+    /// Whether the inbox may hold something (read without its lock at
+    /// every task switch).
+    mail: AtomicBool,
+    /// The worker's poller, to wake it when it waits (set when it starts).
+    poller: std::sync::OnceLock<Arc<Poller>>,
+    /// The numbers of its tasks, given out by whoever spawns one there.
+    next_id: AtomicU32,
+    started: AtomicBool,
+}
+
+/// The worker threads of a program (`QUARZ_THREADS`, 1 by default): a
+/// slot each, the thread started when a task is first placed there.
+/// Worker 0 is the thread that runs the main program.
+pub struct Workers {
+    slots: Vec<WorkerSlot>,
+    next: AtomicUsize,
+    /// Which workers have nothing at all to do (for deadlock detection).
+    idle: Mutex<Vec<bool>>,
+    stopping: AtomicBool,
+    exit_code: Mutex<Option<i32>>,
+}
+
+impl Workers {
+    pub fn new(count: usize) -> Arc<Workers> {
+        let count = count.max(1);
+        let slots: Vec<WorkerSlot> = (0..count).map(|_| WorkerSlot::default()).collect();
+        slots[0].started.store(true, Ordering::Relaxed);
+        Arc::new(Workers {
+            slots,
+            next: AtomicUsize::new(0),
+            idle: Mutex::new(vec![false; count]),
+            stopping: AtomicBool::new(false),
+            exit_code: Mutex::new(None),
+        })
+    }
+
+    /// `QUARZ_THREADS` (1 when unset or not a positive number).
+    pub fn count_from_env() -> usize {
+        std::env::var("QUARZ_THREADS")
+            .ok()
+            .and_then(|s| s.trim().parse::<usize>().ok())
+            .filter(|n| *n >= 1)
+            .unwrap_or(1)
+    }
+
+    pub fn count(&self) -> usize {
+        self.slots.len()
+    }
+
+    /// The worker a new task goes to: each in turn. (Tasks stay where
+    /// they start.) Once the program ends, the spawning one.
+    pub fn place(&self, from: u32) -> u32 {
+        if self.slots.len() == 1 || self.stopping.load(Ordering::Acquire) {
+            return from;
+        }
+        (self.next.fetch_add(1, Ordering::Relaxed) % self.slots.len()) as u32
+    }
+
+    pub fn reserve_id(&self, worker: u32) -> TaskId {
+        self.slots[worker as usize]
+            .next_id
+            .fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// Mark worker `w` started; returns whether the caller is to start
+    /// its thread (it was not started yet).
+    pub fn claim_start(&self, w: u32) -> bool {
+        !self.slots[w as usize].started.swap(true, Ordering::AcqRel)
+    }
+
+    pub fn set_poller(&self, w: u32, poller: Arc<Poller>) {
+        let _ = self.slots[w as usize].poller.set(poller);
+    }
+
+    fn notify(&self, w: u32) {
+        if let Some(p) = self.slots[w as usize].poller.get() {
+            let _ = p.notify();
+        }
+    }
+
+    fn post(&self, w: u32, f: impl FnOnce(&mut Inbox)) {
+        let slot = &self.slots[w as usize];
+        {
+            let mut inbox = lock(&slot.inbox);
+            f(&mut inbox);
+            slot.mail.store(true, Ordering::Release);
+        }
+        self.notify(w);
+    }
+
+    pub fn post_wake(&self, r: TaskRef) {
+        self.post(r.worker, |i| i.wakes.push(r.id));
+    }
+
+    pub fn post_spawn(&self, w: u32, req: SpawnRequest) {
+        self.post(w, |i| i.spawns.push(req));
+    }
+
+    fn take_inbox(&self, w: u32) -> Option<Inbox> {
+        let slot = &self.slots[w as usize];
+        if !slot.mail.load(Ordering::Acquire) {
+            return None;
+        }
+        let mut inbox = lock(&slot.inbox);
+        slot.mail.store(false, Ordering::Relaxed);
+        Some(std::mem::take(&mut *inbox))
+    }
+
+    /// Record whether worker `w` has nothing at all to do; returns whether
+    /// no worker has (and nothing is on its way to one): a deadlock.
+    fn set_idle(&self, w: u32, idle: bool) -> bool {
+        let mut all = lock(&self.idle);
+        all[w as usize] = idle;
+        idle && all.iter().enumerate().all(|(i, &is_idle)| {
+            let slot = &self.slots[i];
+            (is_idle || !slot.started.load(Ordering::Acquire))
+                && lock(&slot.inbox).wakes.is_empty()
+                && lock(&slot.inbox).spawns.is_empty()
+        })
+    }
+
+    /// The program ends: the other workers stop.
+    pub fn stop(&self) {
+        self.stopping.store(true, Ordering::Release);
+        for w in 1..self.slots.len() as u32 {
+            self.notify(w);
+        }
+    }
+
+    fn stopping(&self) -> bool {
+        self.stopping.load(Ordering::Acquire)
+    }
+
+    /// A task on another worker called `exit`: the main worker ends the
+    /// program with `code`.
+    fn request_exit(&self, code: i32) {
+        lock(&self.exit_code).get_or_insert(code);
+        self.notify(0);
+    }
+}
+
+/// What a worker does next (`Scheduler::next_step`).
+pub enum Next {
+    Run(TaskId, TaskCoroutine),
+    /// Start these tasks other workers placed here.
+    Spawn(Vec<SpawnRequest>),
+    /// Nothing can ever run again: every task waits, on every worker.
+    Idle,
+    /// The program ends (another worker than the main one).
+    Stop,
+    /// A task called `exit` (the main worker).
+    Exit(i32),
+}
+
 pub struct Scheduler {
     /// This worker's number (its tasks' `TaskRef::worker`).
     pub worker: u32,
-    pub tasks: Vec<Rc<TaskHandle>>,
+    pub workers: Arc<Workers>,
+    /// The worker's tasks, by number (a number may be taken before its
+    /// task arrives from the worker that spawned it).
+    tasks: Vec<Option<Rc<TaskHandle>>>,
     coroutines: Vec<Option<TaskCoroutine>>,
     ready: VecDeque<TaskId>,
     timers: BinaryHeap<Reverse<(Instant, u64, TaskId)>>,
@@ -492,16 +699,15 @@ pub fn suspend_raw() {
     unsafe { (*yielder).suspend(()) };
 }
 
-impl Default for Scheduler {
-    fn default() -> Self {
-        Scheduler::new()
-    }
-}
-
 impl Scheduler {
-    pub fn new() -> Scheduler {
+    pub fn new(worker: u32, workers: Arc<Workers>) -> Scheduler {
+        let reactor = Reactor::new();
+        // From now on posting to this worker wakes it; what was posted
+        // before is in its inbox, which it reads first.
+        workers.set_poller(worker, reactor.poller.clone());
         Scheduler {
-            worker: 0,
+            worker,
+            workers,
             tasks: Vec::new(),
             coroutines: Vec::new(),
             ready: VecDeque::new(),
@@ -509,7 +715,7 @@ impl Scheduler {
             timer_seq: 0,
             current: None,
             cancelled_timers: Vec::new(),
-            reactor: Reactor::new(),
+            reactor,
         }
     }
 
@@ -684,7 +890,15 @@ impl Scheduler {
     }
 
     pub fn task(&self, id: TaskId) -> &Rc<TaskHandle> {
-        &self.tasks[id as usize]
+        self.tasks[id as usize]
+            .as_ref()
+            .expect("a task of this worker")
+    }
+
+    /// How many tasks this worker has had (whether any other than the
+    /// current one may want to run).
+    pub fn task_count(&self) -> usize {
+        self.tasks.len()
     }
 
     /// The running task, without taking a reference to its handle.
@@ -697,10 +911,11 @@ impl Scheduler {
 
     pub fn current_task(&self) -> Rc<TaskHandle> {
         let id = self.current.expect("no current task");
-        self.tasks[id as usize].clone()
+        self.task(id).clone()
     }
 
-    /// Create a task running `body` on its own coroutine stack.
+    /// Create a task of this worker running `body` on its own coroutine
+    /// stack.
     pub fn spawn(
         &mut self,
         body: Box<dyn FnOnce() -> TaskExit>,
@@ -708,24 +923,20 @@ impl Scheduler {
         name: String,
         stack_size: usize,
     ) -> Rc<TaskHandle> {
-        let id = self.tasks.len() as TaskId;
-        let handle = Rc::new_shared(TaskHandle {
-            id,
-            worker: self.worker,
-            state: AtomicU8::new(TaskState::Ready as u8),
-            result: Mutex::new(None),
-            joiners: Mutex::new(Vec::new()),
-            cancel_requested: AtomicBool::new(false),
-            scope: scope.clone(),
-            name,
-            yielder: AtomicPtr::new(std::ptr::null_mut()),
-            stack_limit: AtomicUsize::new(0),
-            stack_low: AtomicUsize::new(0),
-            stack_high: AtomicUsize::new(usize::MAX),
-        });
-        if let Some(scope) = &scope {
-            lock(&scope.children).push(handle.clone());
-        }
+        let id = self.workers.reserve_id(self.worker);
+        let handle = TaskHandle::new(self.worker, id, scope, name);
+        self.adopt(handle.clone(), body, stack_size);
+        handle
+    }
+
+    /// Start a task made for this worker (here or by another worker).
+    pub fn adopt(
+        &mut self,
+        handle: Rc<TaskHandle>,
+        body: Box<dyn FnOnce() -> TaskExit>,
+        stack_size: usize,
+    ) {
+        let id = handle.id;
         let stack = corosensei::stack::DefaultStack::new(stack_size).expect("coroutine stack");
         let handle_for_body = handle.clone();
         let coroutine = Coroutine::with_stack(stack, move |yielder: &Yielder<(), ()>, ()| {
@@ -746,32 +957,42 @@ impl Scheduler {
             STACK_RANGE.with(|r| r.set(range));
             body()
         });
-        self.tasks.push(handle.clone());
-        self.coroutines.push(Some(coroutine));
+        let i = id as usize;
+        if self.tasks.len() <= i {
+            self.tasks.resize_with(i + 1, || None);
+            self.coroutines.resize_with(i + 1, || None);
+        }
+        self.tasks[i] = Some(handle);
+        self.coroutines[i] = Some(coroutine);
         self.ready.push_back(id);
-        handle
     }
 
     /// Make a task of this worker ready, if it waits.
     pub fn wake(&mut self, id: TaskId) {
-        let task = &self.tasks[id as usize];
+        let Some(Some(task)) = self.tasks.get(id as usize) else {
+            return;
+        };
         if task.state() == TaskState::Waiting {
             task.set_state(TaskState::Ready);
             self.ready.push_back(id);
         }
     }
 
-    /// Make a task ready, if it waits, whichever worker runs it.
+    /// Make a task ready, if it waits, whichever worker runs it (another
+    /// worker gets it in its inbox).
     pub fn wake_ref(&mut self, r: TaskRef) {
-        debug_assert_eq!(r.worker, self.worker, "a task of another worker");
-        self.wake(r.id);
+        if r.worker == self.worker {
+            self.wake(r.id);
+        } else {
+            self.workers.post_wake(r);
+        }
     }
 
     /// Mark the current task ready again (for `Task.yield`); the caller
     /// then suspends.
     pub fn requeue_current(&mut self) {
         let id = self.current.expect("no current task");
-        self.tasks[id as usize].set_state(TaskState::Ready);
+        self.task(id).set_state(TaskState::Ready);
         self.ready.push_back(id);
     }
 
@@ -811,10 +1032,11 @@ impl Scheduler {
         }
     }
 
-    /// Take the next runnable task and its coroutine. Sleeps for the
-    /// earliest timer when nothing is ready. Returns `None` when there is
-    /// nothing to run at all (deadlock or completion).
-    pub fn next_runnable(&mut self) -> Option<(TaskId, TaskCoroutine)> {
+    /// What to do next: the next runnable task and its coroutine, or
+    /// tasks to start. Sleeps for the earliest timer, IO, or (with other
+    /// workers) a message, when nothing is ready.
+    pub fn next_step(&mut self) -> Next {
+        let multi = self.workers.count() > 1;
         self.fire_due_timers(false);
         // Keep IO flowing while tasks are busy (on Linux one epoll_wait:
         // polling only every 32 switches measured slower, the woken tasks
@@ -823,28 +1045,67 @@ impl Scheduler {
             self.poll_io(Some(Duration::ZERO));
         }
         loop {
+            if multi {
+                if self.worker == 0 {
+                    if let Some(code) = *lock(&self.workers.exit_code) {
+                        return Next::Exit(code);
+                    }
+                } else if self.workers.stopping() {
+                    return Next::Stop;
+                }
+                if let Some(inbox) = self.workers.take_inbox(self.worker) {
+                    for id in inbox.wakes {
+                        self.wake(id);
+                    }
+                    if !inbox.spawns.is_empty() {
+                        return Next::Spawn(inbox.spawns);
+                    }
+                }
+            }
             while let Some(id) = self.ready.pop_front() {
-                let task = &self.tasks[id as usize];
-                if task.state() == TaskState::Done {
+                if self.task(id).state() == TaskState::Done {
                     continue;
                 }
                 if let Some(co) = self.coroutines[id as usize].take() {
-                    task.set_state(TaskState::Running);
+                    self.task(id).set_state(TaskState::Running);
                     self.current = Some(id);
-                    return Some((id, co));
+                    return Next::Run(id, co);
                 }
             }
-            if self.reactor.idle() {
-                if !self.fire_due_timers(true) {
-                    return None;
+            if !multi {
+                if self.reactor.idle() {
+                    if !self.fire_due_timers(true) {
+                        return Next::Idle;
+                    }
+                    continue;
                 }
+                // Nothing runnable: wait for IO, or for the next timer.
+                let timeout = self
+                    .next_timer()
+                    .map(|when| when.saturating_duration_since(Instant::now()));
+                self.poll_io(timeout);
+                self.fire_due_timers(false);
                 continue;
             }
-            // Nothing runnable: wait for IO, or for the next timer.
+            // Nothing runnable, with other workers: wait for IO, the next
+            // timer, or a message (the poller's notification). A worker
+            // with no timer and no IO is idle; when every worker is, with
+            // nothing on its way, no task can run again.
             let timeout = self
                 .next_timer()
                 .map(|when| when.saturating_duration_since(Instant::now()));
+            let idle = timeout.is_none() && self.reactor.idle();
+            if idle && self.workers.set_idle(self.worker, true) {
+                if self.worker == 0 {
+                    self.workers.set_idle(0, false);
+                    return Next::Idle;
+                }
+                self.workers.notify(0);
+            }
             self.poll_io(timeout);
+            if idle {
+                self.workers.set_idle(self.worker, false);
+            }
             self.fire_due_timers(false);
         }
     }
@@ -857,7 +1118,7 @@ impl Scheduler {
         result: CoroutineResult<(), TaskExit>,
     ) -> Option<i32> {
         self.current = None;
-        let task = self.tasks[id as usize].clone();
+        let task = self.task(id).clone();
         match result {
             CoroutineResult::Yield(()) => {
                 self.coroutines[id as usize] = Some(co);
@@ -872,6 +1133,11 @@ impl Scheduler {
                 match exit {
                     TaskExit::Exit(code) => {
                         task.set_state(TaskState::Done);
+                        if self.worker != 0 {
+                            // The main worker ends the program.
+                            self.workers.request_exit(code);
+                            return None;
+                        }
                         Some(code)
                     }
                     TaskExit::Result(r) => {
@@ -921,6 +1187,7 @@ impl Scheduler {
     pub fn waiting_tasks(&self) -> Vec<String> {
         self.tasks
             .iter()
+            .flatten()
             .filter(|t| t.state() == TaskState::Waiting)
             .map(|t| format!("{} ({})", t.name, t.id))
             .collect()
