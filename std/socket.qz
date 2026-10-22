@@ -1,0 +1,290 @@
+# Sockets: `require "socket"`. Every operation that would block suspends
+# only the calling task; `Task.timeout` and `cancel` interrupt it.
+
+# Addresses are `Socket::Address`es; `Socket` has the ways to connect
+# and serve.
+class TCPSocket < IO
+  # `Socket.tcp(host, port)`.
+  def self.new(host: String, port: Int) -> TCPSocket = Socket.tcp(host, port)
+  def self.open[R](host: String, port: Int, &blk: (TCPSocket) -> R) -> R = Socket.tcp(host, port, &blk)
+  # A connection to one address, with no lookup.
+  native def self.connect(address: Socket::Address) -> TCPSocket
+  native def local_address -> Socket::Address
+  native def remote_address -> Socket::Address
+end
+
+class TCPServer < IO
+  native def self.new(port: Int) -> TCPServer
+  native def self.new(host: String, port: Int) -> TCPServer
+  native def accept -> TCPSocket
+  native def local_address -> Socket::Address
+end
+
+class UDPSocket < IO
+  native def self.new -> UDPSocket
+  native def bind(host: String, port: Int) -> Nil
+  native def connect(host: String, port: Int) -> Nil
+  native def send(data: String, host: String, port: Int) -> Int
+  native def send(data: Bytes, host: String, port: Int) -> Int
+  native def send(data: String) -> Int
+  native def send(data: Bytes) -> Int
+  native def recv(length: Int) -> String
+  native def recv_bytes(length: Int) -> Bytes
+  native def recvfrom(length: Int) -> [String, Socket::Address]
+  native def recvfrom_bytes(length: Int) -> [Bytes, Socket::Address]
+  native def local_address -> Socket::Address
+end
+
+class UNIXSocket < IO
+  native def self.new(path: String) -> UNIXSocket
+  native def self.open[R](path: String, &: (UNIXSocket) -> R) -> R
+end
+
+class UNIXServer < IO
+  native def self.new(path: String) -> UNIXServer
+  native def accept -> UNIXSocket
+end
+
+# A host name that does not resolve.
+class SocketError < StandardError
+end
+
+module Socket
+  # A numeric address, IPv4 or IPv6, and a port.
+  data Address(host: String, port: Int)
+    def ipv6? -> Bool = host.include?(":")
+    def to_s -> String = ipv6? ? "[#{host}]:#{port}" : "#{host}:#{port}"
+  end
+
+  # Happy Eyeballs (RFC 8305): how long to wait for the IPv6 addresses
+  # once the IPv4 ones are in, and before starting another attempt while
+  # one is under way.
+  RESOLUTION_DELAY = 50.ms
+  CONNECTION_ATTEMPT_DELAY = 250.ms
+
+  # The addresses of `host` for `port`, of family 4 or 6, or both: a
+  # numeric host at once, a name looked up on a helper thread (only this
+  # task waits). A name with none raises `SocketError`.
+  native def self.getaddrinfo(host: String, port: Int, family: Int? = nil) -> Array[Address]
+
+  # A connection to `host` (a name or a numeric address) at `port`. The
+  # IPv6 and IPv4 addresses are looked up at once and tried by Happy
+  # Eyeballs (RFC 8305): alternating the families, IPv6 first, another
+  # attempt started when one fails or has not connected in 250 ms; the
+  # first to connect wins, the others are cancelled. The last failure is
+  # raised when none connects (`SystemCallError`; `SocketError` when the
+  # name has no address). `connect_timeout` bounds it all
+  # (`Task::Timeout`).
+  def self.tcp(host: String, port: Int, connect_timeout: Duration? = nil) -> TCPSocket
+    if connect_timeout
+      Task.timeout(connect_timeout) { happy_eyeballs(host, port) }
+    else
+      happy_eyeballs(host, port)
+    end
+  end
+
+  # The same, with the connection given to the block and closed after it.
+  def self.tcp[R](host: String, port: Int, connect_timeout: Duration? = nil,
+                  &blk: (TCPSocket) -> R) -> R
+    sock = tcp(host, port, connect_timeout: connect_timeout)
+    begin
+      blk.call(sock)
+    ensure
+      sock.close
+    end
+  end
+
+  def self.tcp_server(port: Int) -> TCPServer = TCPServer.new(port)
+  def self.tcp_server(host: String, port: Int) -> TCPServer = TCPServer.new(host, port)
+
+  # Serve `port` (of `host`, else every address) until cancelled: each
+  # connection is handed to `handler` with the peer's address, in a task
+  # of its own (so the handler is a shareable procedure), and closed when
+  # it returns. What the handler raises (a `StandardError`) goes to
+  # `on_error` with the peer's address, or to STDERR; the server goes on.
+  def self.tcp_server_loop(port: Int, on_error: (shareable (Exception, Address) -> Nil)? = nil,
+                           &handler: shareable (TCPSocket, Address) -> Nil) -> Nil
+    tcp_server_loop("0.0.0.0", port, on_error: on_error, &handler)
+  end
+
+  def self.tcp_server_loop(host: String, port: Int,
+                           on_error: (shareable (Exception, Address) -> Nil)? = nil,
+                           &handler: shareable (TCPSocket, Address) -> Nil) -> Nil
+    accept_loop(TCPServer.new(host, port), on_error: on_error, &handler)
+  end
+
+  # As `tcp_server_loop`, on a server already listening (its port known
+  # before the first connection: `TCPServer.new(0)`). The server is
+  # closed when the loop ends.
+  def self.accept_loop(server: TCPServer, on_error: (shareable (Exception, Address) -> Nil)? = nil,
+                       &handler: shareable (TCPSocket, Address) -> Nil) -> Nil
+    begin
+      Task.scope do |scope|
+        loop do
+          conn = server.accept
+          peer = conn.remote_address
+          scope.spawn do
+            begin
+              handler.call(conn, peer)
+            rescue => e
+              if on_error
+                on_error.call(e, peer)
+              else
+                STDERR.puts "#{peer}: #{e.class.name}: #{e.message}"
+              end
+            ensure
+              conn.close
+            end
+          end
+        end
+      end
+    ensure
+      server.close
+    end
+  end
+
+  # The same on a UNIX socket server, whose peers have no address.
+  def self.accept_loop(server: UNIXServer, on_error: (shareable (Exception) -> Nil)? = nil,
+                       &handler: shareable (UNIXSocket) -> Nil) -> Nil
+    begin
+      Task.scope do |scope|
+        loop do
+          conn = server.accept
+          scope.spawn do
+            begin
+              handler.call(conn)
+            rescue => e
+              if on_error
+                on_error.call(e)
+              else
+                STDERR.puts "#{server.path}: #{e.class.name}: #{e.message}"
+              end
+            ensure
+              conn.close
+            end
+          end
+        end
+      end
+    ensure
+      server.close
+    end
+  end
+
+  def self.unix(path: String) -> UNIXSocket = UNIXSocket.new(path)
+  def self.unix[R](path: String, &blk: (UNIXSocket) -> R) -> R = UNIXSocket.open(path, &blk)
+  def self.unix_server(path: String) -> UNIXServer = UNIXServer.new(path)
+
+  # As `tcp_server_loop`, on a UNIX socket at `path` (removed when the
+  # server closes).
+  def self.unix_server_loop(path: String, on_error: (shareable (Exception) -> Nil)? = nil,
+                            &handler: shareable (UNIXSocket) -> Nil) -> Nil
+    accept_loop(UNIXServer.new(path), on_error: on_error, &handler)
+  end
+
+  # What a lookup for one family found.
+  data Lookup = (family: Int, addresses: Array[Address], error: String?)
+
+  # The addresses in the order to try them: the families alternating,
+  # IPv6 first (RFC 8305, section 4).
+  def self.interleave(addresses: Array[Address]) -> Array[Address]
+    v6 = addresses.select(&:ipv6?)
+    v4 = addresses.reject(&:ipv6?)
+    out: Array[Address] = []
+    (0...(v6.size > v4.size ? v6.size : v4.size)).each do |i|
+      out = out.push(v6[i]) if i < v6.size
+      out = out.push(v4[i]) if i < v4.size
+    end
+    out
+  end
+
+  def self.happy_eyeballs(host: String, port: Int) -> TCPSocket
+    won, failed, unresolved, attempts = Task.scope do |scope|
+      lookups = Channel[Lookup].new(capacity: 2)
+      [6, 4].each do |family|
+        scope.spawn do
+          found = begin
+            Lookup.new(family, getaddrinfo(host, port, family), nil)
+          rescue SocketError => e
+            Lookup.new(family, [], e.message)
+          end
+          lookups.send(found)
+        end
+      end
+      pending: Array[Address] = []
+      unanswered = 2
+      lookup_error: String? = nil
+      # The first answer; if it is IPv4's, IPv6's for a little longer.
+      first = lookups.receive
+      unanswered -= 1
+      pending = interleave(first.addresses)
+      lookup_error ||= first.error
+      if first.family == 4
+        select do |s|
+          s.receive(lookups) do |more|
+            unanswered -= 1
+            pending = interleave(pending + more.addresses)
+            lookup_error ||= more.error
+          end
+          s.after(RESOLUTION_DELAY) { }
+        end
+      end
+      # Each attempt sends its outcome on a channel of its own, which never
+      # makes it wait: a cancelled attempt has sent, or closed its socket.
+      running: Array[Channel[TCPSocket | SystemCallError]] = []
+      made: Array[Channel[TCPSocket | SystemCallError]] = []
+      next_at = Time.monotonic
+      winner: TCPSocket? = nil
+      failure: SystemCallError? = nil
+      while winner.nil?
+        if !pending.empty? && (running.empty? || Time.monotonic >= next_at)
+          address = pending[0]
+          pending = pending.drop(1)
+          outcome = Channel[TCPSocket | SystemCallError].new(capacity: 1)
+          scope.spawn do
+            result = begin
+              TCPSocket.connect(address)
+            rescue SystemCallError => e
+              e
+            end
+            outcome.send(result)
+          end
+          running = running.push(outcome)
+          made = made.push(outcome)
+          next_at = Time.monotonic + CONNECTION_ATTEMPT_DELAY
+        end
+        break if running.empty? && pending.empty? && unanswered == 0
+        select do |s|
+          running.each do |ch|
+            s.receive(ch) do |result|
+              running = running.reject { |c| c.equal?(ch) }
+              case result
+              when TCPSocket then winner = result
+              when SystemCallError then failure = result
+              end
+            end
+          end
+          if unanswered > 0
+            s.receive(lookups) do |more|
+              unanswered -= 1
+              pending = interleave(pending + more.addresses)
+              lookup_error ||= more.error
+            end
+          end
+          if !pending.empty? && !running.empty?
+            s.after(next_at - Time.monotonic) { }
+          end
+        end
+      end
+      scope.cancel
+      [winner, failure, lookup_error, made]
+    end
+    # Attempts that connected after the winner: closed.
+    attempts.each do |ch|
+      late = ch.try_receive
+      late.close if late.is_a?(TCPSocket) && !late.equal?(won)
+    end
+    return won if won
+    raise failed if failed
+    raise SocketError, unresolved || "getaddrinfo: #{host}: no address"
+  end
+end

@@ -1,11 +1,8 @@
 # A line echo server: every connection gets a task that writes back each
 # line it reads. `quarz run bench/net/echo.qz PORT`; see README.md.
+require "socket"
+
 port = ARGV[0].to_i
-server = TCPServer.new("127.0.0.1", port)
-loop do
-  client = server.accept
-  spawn do
-    client.each_line { |line| client.write(line) }
-    client.close
-  end
+Socket.tcp_server_loop("127.0.0.1", port) do |client, _|
+  client.each_line { |line| client.write(line) }
 end

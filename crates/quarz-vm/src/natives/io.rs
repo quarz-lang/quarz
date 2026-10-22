@@ -77,13 +77,14 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         Ok(Value::Nil)
     });
     m.insert("IO#write", |i, r, a| {
-        let mut total = 0;
+        // One write for all the arguments: on a shared socket, another
+        // task's write does not come between them.
+        let mut bytes = Vec::new();
         for v in &a.pos {
-            let bytes = net::payload(i, v)?;
-            io_write_bytes(i, r, &bytes)?;
-            total += bytes.len();
+            bytes.extend(net::payload(i, v)?);
         }
-        Ok(Value::Int(total as i64))
+        io_write_bytes(i, r, &bytes)?;
+        Ok(Value::Int(bytes.len() as i64))
     });
     m.insert("IO#<<", |i, r, a| {
         let bytes = net::payload(i, a.arg(0))?;

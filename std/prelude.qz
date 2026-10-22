@@ -1656,48 +1656,6 @@ class File
   native def self.absolute_path(path: String) -> String
 end
 
-# Sockets. Every operation that would block suspends only the calling
-# task; `Task.timeout` and `cancel` interrupt it. Addresses are
-# `[host, port]` tuples.
-class TCPSocket < IO
-  native def self.new(host: String, port: Int) -> TCPSocket
-  native def self.open[R](host: String, port: Int, &: (TCPSocket) -> R) -> R
-  native def local_address -> [String, Int]
-  native def remote_address -> [String, Int]
-end
-
-class TCPServer < IO
-  native def self.new(port: Int) -> TCPServer
-  native def self.new(host: String, port: Int) -> TCPServer
-  native def accept -> TCPSocket
-  native def local_address -> [String, Int]
-end
-
-class UDPSocket < IO
-  native def self.new -> UDPSocket
-  native def bind(host: String, port: Int) -> Nil
-  native def connect(host: String, port: Int) -> Nil
-  native def send(data: String, host: String, port: Int) -> Int
-  native def send(data: Bytes, host: String, port: Int) -> Int
-  native def send(data: String) -> Int
-  native def send(data: Bytes) -> Int
-  native def recv(length: Int) -> String
-  native def recv_bytes(length: Int) -> Bytes
-  native def recvfrom(length: Int) -> [String, [String, Int]]
-  native def recvfrom_bytes(length: Int) -> [Bytes, [String, Int]]
-  native def local_address -> [String, Int]
-end
-
-class UNIXSocket < IO
-  native def self.new(path: String) -> UNIXSocket
-  native def self.open[R](path: String, &: (UNIXSocket) -> R) -> R
-end
-
-class UNIXServer < IO
-  native def self.new(path: String) -> UNIXServer
-  native def accept -> UNIXSocket
-end
-
 module Dir
   native def self.pwd -> String
   native def self.getwd -> String

@@ -1,10 +1,12 @@
 # Sockets and asynchronous IO: TCP, UDP and UNIX sockets between tasks,
 # timeouts on blocked reads, and file IO on helper threads. Expected
 # output in net.out.
+require "socket"
+
 # TCP: an echo server and several clients, all tasks in one scheduler.
 server = TCPServer.new("127.0.0.1", 0)
-port = server.local_address[1]
-p server.local_address[0], port > 0, server.closed?
+port = server.local_address.port
+p server.local_address.host, port > 0, server.closed?
 Task.scope do |scope|
   scope.spawn do
     3.times do
@@ -22,7 +24,7 @@ Task.scope do |scope|
       sock.puts "bye #{n}"
       sock.close_write
       lines = sock.readlines
-      p sock.remote_address[1] == port, sock.local_address[0]
+      p sock.remote_address.port == port, sock.local_address.host
       sock.close
       lines
     end
@@ -34,7 +36,7 @@ p server.closed?
 
 # A blocked read is interrupted by Task.timeout; the socket is reusable afterwards.
 server2 = TCPServer.new(0)
-port2 = server2.local_address[1]
+port2 = server2.local_address.port
 Task.scope do |scope|
   scope.spawn do
     c = server2.accept
@@ -62,7 +64,7 @@ Task.scope do |scope|
     c.write(b"\x00\x01\x02", "tail")
     c.close
   end
-  sock = TCPSocket.open("127.0.0.1", server3.local_address[1]) do |s|
+  sock = TCPSocket.open("127.0.0.1", server3.local_address.port) do |s|
     p s.read_bytes(2), s.readpartial(100), s.readpartial?(1), s.inspect.start_with?("#<TCPSocket 127.0.0.1:")
     s
   end
@@ -73,7 +75,7 @@ server3.close
 # UDP.
 udp = UDPSocket.new
 udp.bind("127.0.0.1", 0)
-uport = udp.local_address[1]
+uport = udp.local_address.port
 sender = UDPSocket.new
 Task.scope do |scope|
   scope.spawn do
@@ -81,7 +83,7 @@ Task.scope do |scope|
     sender.send(b"\xffpong", "127.0.0.1", uport)
   end
   msg, from = udp.recvfrom(100)
-  p msg, from[0]
+  p msg, from.host
   data, _ = udp.recvfrom_bytes(100)
   p data
   sender.connect("127.0.0.1", uport)
@@ -130,7 +132,7 @@ p out.stdout
 # A shared socket: each write call goes out whole, each gets returns a
 # whole line, and closing it fails the other task's pending read.
 srv = TCPServer.new("127.0.0.1", 0)
-sport = srv.local_address[1]
+sport = srv.local_address.port
 Task.scope do |scope|
   got = scope.spawn do
     conn = srv.accept

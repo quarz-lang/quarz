@@ -299,6 +299,7 @@ pub struct ExcClasses {
     pub deadlock: ClassId,
     pub io_error: ClassId,
     pub system_call_error: ClassId,
+    pub socket_error: ClassId,
     pub eof_error: ClassId,
     pub not_implemented: ClassId,
     pub system_exit: ClassId,
@@ -323,6 +324,7 @@ pub struct RtClasses {
     pub process: ClassId,
     pub result_ok: ClassId,
     pub result_err: ClassId,
+    pub socket_address: ClassId,
 }
 
 /// The part of the interpreter compiled code reads and writes directly
@@ -635,6 +637,10 @@ impl Interp {
                 .class_by_name(name)
                 .unwrap_or_else(|| panic!("prelude does not define {name}"))
         };
+        // The classes of a standard library a program may not require
+        // (`socket`): none of their values exist then.
+        let library_class =
+            |name: &str| -> ClassId { world.class_by_name(name).unwrap_or(ClassId::MAX) };
         let exc = ExcClasses {
             runtime_error: class_by_name("RuntimeError"),
             argument_error: class_by_name("ArgumentError"),
@@ -651,6 +657,7 @@ impl Interp {
             deadlock: class_by_name("DeadlockError"),
             io_error: class_by_name("IOError"),
             system_call_error: class_by_name("SystemCallError"),
+            socket_error: library_class("SocketError"),
             eof_error: class_by_name("EOFError"),
             not_implemented: class_by_name("NotImplementedError"),
             system_exit: class_by_name("SystemExit"),
@@ -661,17 +668,18 @@ impl Interp {
             selector: class_by_name("Selector"),
             enumerator: class_by_name("Enumerator"),
             io: class_by_name("IO"),
-            tcp_socket: class_by_name("TCPSocket"),
-            tcp_server: class_by_name("TCPServer"),
-            udp_socket: class_by_name("UDPSocket"),
-            unix_socket: class_by_name("UNIXSocket"),
-            unix_server: class_by_name("UNIXServer"),
+            tcp_socket: library_class("TCPSocket"),
+            tcp_server: library_class("TCPServer"),
+            udp_socket: library_class("UDPSocket"),
+            unix_socket: library_class("UNIXSocket"),
+            unix_server: library_class("UNIXServer"),
             random: class_by_name("Random"),
             file: class_by_name("File"),
             math: class_by_name("Math"),
             process: class_by_name("Process"),
             result_ok: class_by_name("Result::Ok"),
             result_err: class_by_name("Result::Err"),
+            socket_address: library_class("Socket::Address"),
         };
         let n_files = world
             .file_names

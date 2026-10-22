@@ -1,10 +1,13 @@
-//! Sockets: TCPSocket, TCPServer, UDPSocket, UNIXSocket and UNIXServer.
+//! Sockets: TCPSocket, TCPServer, UDPSocket, UNIXSocket and UNIXServer,
+//! and the primitives of the `Socket` module (whose `tcp`, written in
+//! the prelude, races connections to a host's addresses).
 //!
 //! Every socket is non-blocking. An operation that would block parks the
 //! task on the scheduler's reactor until the descriptor is ready, so
-//! only the calling task waits. Name resolution and `connect` run on a
-//! helper thread for the same reason. `close` releases the descriptor at
-//! once rather than when the value is dropped.
+//! only the calling task waits: a TCP `connect` too, which waits for the
+//! socket to become writable. Name resolution runs on a helper thread
+//! for the same reason. `close` releases the descriptor at once rather
+//! than when the value is dropped.
 
 use crate::rc::Rc;
 use std::io::{Read, Write};
@@ -20,11 +23,30 @@ use super::io::{io, io_of, os_error};
 use super::{int, string};
 
 pub fn register(m: &mut super::Registry<NativeFn>) {
+    // Socket
+    m.insert("Socket.getaddrinfo", |i, _, a| {
+        let host = string(i, a.arg(0), "host")?.to_string();
+        let port = port_number(i, a.arg(1))?;
+        let family = match a.pos.get(2) {
+            None | Some(Value::Nil) => libc::AF_UNSPEC,
+            Some(v) => match int(i, v, "family")? {
+                4 => libc::AF_INET,
+                6 => libc::AF_INET6,
+                _ => return Err(i.err_arg("family: 4, 6 or nil")),
+            },
+        };
+        let addrs = getaddrinfo(i, host, port, family)?;
+        Ok(Value::array(
+            addrs
+                .into_iter()
+                .map(|a| address_value(i, a))
+                .collect::<Result<Vec<_>, _>>()?,
+        ))
+    });
     // TCPSocket
-    m.insert("TCPSocket.new", |i, _, a| tcp_connect(i, &a));
-    m.insert("TCPSocket.open", |i, _, a| {
-        let sock = tcp_connect(i, &a)?;
-        with_closing(i, sock, &a)
+    m.insert("TCPSocket.connect", |i, _, a| {
+        let addr = address_of(i, a.arg(0))?;
+        tcp_connect(i, addr)
     });
     // TCPServer
     m.insert("TCPServer.new", |i, _, a| {
@@ -166,12 +188,21 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
                     .and_then(|s| s.local_addr().ok()),
                 _ => return Err(i.err_type("not a socket")),
             };
-            Ok(addr.map(addr_value).unwrap_or(Value::Nil))
+            match addr {
+                Some(a) => address_value(i, a),
+                None => Ok(Value::Nil),
+            }
         });
     }
     m.insert("TCPSocket#remote_address", |i, r, _| {
         match &io_of(i, r)?.kind {
-            IoKind::Socket(st) => Ok(st.borrow().peer.map(addr_value).unwrap_or(Value::Nil)),
+            IoKind::Socket(st) => {
+                let peer = st.borrow().peer;
+                match peer {
+                    Some(a) => address_value(i, a),
+                    None => Ok(Value::Nil),
+                }
+            }
             _ => Err(i.err_type("not a socket")),
         }
     });
@@ -206,18 +237,241 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
 
 // ----- construction ----------------------------------------------------------------
 
-fn tcp_connect(interp: &Interp, args: &Args) -> EvalResult {
-    let host = string(interp, args.arg(0), "host")?.to_string();
-    let port = int(interp, args.arg(1), "port")?;
-    let label = format!("{host}:{port}");
-    let stream = interp
-        .block_on(move || TcpStream::connect((host.as_str(), port as u16)))?
-        .map_err(|e| os_error(interp, e, &label))?;
-    stream
-        .set_nonblocking(true)
-        .map_err(|e| os_error(interp, e, &label))?;
-    let _ = stream.set_nodelay(true);
-    Ok(make_socket(interp, Stream::Tcp(stream), None))
+/// Connect to one address without blocking the thread: start the
+/// connection, wait for the socket to become writable (only this task
+/// waits; `Task.timeout` and `cancel` interrupt it, closing the socket),
+/// then read the outcome.
+fn tcp_connect(interp: &Interp, addr: SocketAddr) -> EvalResult {
+    use std::os::fd::FromRawFd;
+    let label = addr.to_string();
+    let domain = if addr.is_ipv6() {
+        libc::AF_INET6
+    } else {
+        libc::AF_INET
+    };
+    // SAFETY: plain system calls; the descriptor is owned by the stream
+    // from here on (closed when it is dropped, on every error path).
+    let fd = unsafe {
+        libc::socket(
+            domain,
+            libc::SOCK_STREAM | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC,
+            0,
+        )
+    };
+    if fd < 0 {
+        return Err(os_error(interp, std::io::Error::last_os_error(), &label));
+    }
+    let stream = unsafe { TcpStream::from_raw_fd(fd) };
+    let (storage, len) = sockaddr_of(addr);
+    let r = unsafe {
+        libc::connect(
+            fd,
+            &storage as *const libc::sockaddr_storage as *const libc::sockaddr,
+            len,
+        )
+    };
+    if r < 0 {
+        let e = std::io::Error::last_os_error();
+        if e.raw_os_error() != Some(libc::EINPROGRESS) {
+            return Err(os_error(interp, e, &label));
+        }
+    }
+    let sock = make_socket(interp, Stream::Tcp(stream), None);
+    if r < 0 {
+        let st = socket(interp, &sock)?;
+        let waited = interp.wait_io(st, fd, true).and_then(|()| {
+            let mut err: libc::c_int = 0;
+            let mut n = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+            // SAFETY: reads an int option into `err`.
+            let r = unsafe {
+                libc::getsockopt(
+                    fd,
+                    libc::SOL_SOCKET,
+                    libc::SO_ERROR,
+                    &mut err as *mut libc::c_int as *mut libc::c_void,
+                    &mut n,
+                )
+            };
+            let e = if r < 0 {
+                Some(std::io::Error::last_os_error())
+            } else if err != 0 {
+                Some(std::io::Error::from_raw_os_error(err))
+            } else {
+                None
+            };
+            match e {
+                Some(e) => Err(os_error(interp, e, &label)),
+                None => Ok(()),
+            }
+        });
+        if let Err(e) = waited {
+            let _ = close(interp, &sock);
+            return Err(e);
+        }
+        // The addresses, now that there is a connection.
+        let mut s = st.borrow_mut();
+        if let Some(Stream::Tcp(t)) = &s.stream {
+            let (local, peer) = (t.local_addr().ok(), t.peer_addr().ok());
+            s.local = local;
+            s.peer = peer;
+        }
+    }
+    if let Some(Stream::Tcp(t)) = &socket(interp, &sock)?.borrow().stream {
+        let _ = t.set_nodelay(true);
+    }
+    Ok(sock)
+}
+
+/// `addr` as a C socket address.
+fn sockaddr_of(addr: SocketAddr) -> (libc::sockaddr_storage, libc::socklen_t) {
+    // SAFETY: an all-zero sockaddr_storage is valid, and each arm writes a
+    // sockaddr that fits in it.
+    let mut storage: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
+    let len = match addr {
+        SocketAddr::V4(a) => {
+            let sin = libc::sockaddr_in {
+                sin_family: libc::AF_INET as libc::sa_family_t,
+                sin_port: a.port().to_be(),
+                sin_addr: libc::in_addr {
+                    s_addr: u32::from_ne_bytes(a.ip().octets()),
+                },
+                sin_zero: [0; 8],
+            };
+            unsafe { std::ptr::write(&mut storage as *mut _ as *mut libc::sockaddr_in, sin) };
+            std::mem::size_of::<libc::sockaddr_in>()
+        }
+        SocketAddr::V6(a) => {
+            let sin6 = libc::sockaddr_in6 {
+                sin6_family: libc::AF_INET6 as libc::sa_family_t,
+                sin6_port: a.port().to_be(),
+                sin6_flowinfo: a.flowinfo(),
+                sin6_addr: libc::in6_addr {
+                    s6_addr: a.ip().octets(),
+                },
+                sin6_scope_id: a.scope_id(),
+            };
+            unsafe { std::ptr::write(&mut storage as *mut _ as *mut libc::sockaddr_in6, sin6) };
+            std::mem::size_of::<libc::sockaddr_in6>()
+        }
+    };
+    (storage, len as libc::socklen_t)
+}
+
+/// The addresses of `host` for `port` in `family` (`AF_INET`, `AF_INET6`
+/// or `AF_UNSPEC`), in the resolver's order: at once for a numeric
+/// address, else on a helper thread. A failure is a `SocketError` (as
+/// for a family the host has no address in).
+fn getaddrinfo(
+    interp: &Interp,
+    host: String,
+    port: u16,
+    family: libc::c_int,
+) -> Result<Vec<SocketAddr>, Flow> {
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        let fits = match family {
+            libc::AF_INET => ip.is_ipv4(),
+            libc::AF_INET6 => ip.is_ipv6(),
+            _ => true,
+        };
+        return Ok(if fits {
+            vec![SocketAddr::new(ip, port)]
+        } else {
+            Vec::new()
+        });
+    }
+    let label = host.clone();
+    let found = interp.block_on(move || lookup(&host, port, family))?;
+    found.map_err(|e| {
+        interp.raise(
+            interp.program.exc.socket_error,
+            &format!("getaddrinfo: {label}: {e}"),
+        )
+    })
+}
+
+/// `getaddrinfo(3)` for stream sockets.
+fn lookup(host: &str, port: u16, family: libc::c_int) -> Result<Vec<SocketAddr>, String> {
+    let c_host = std::ffi::CString::new(host).map_err(|_| "a NUL in the host name".to_string())?;
+    // SAFETY: the hints are zeroed but for what is set; the result list is
+    // read, then freed once.
+    unsafe {
+        let mut hints: libc::addrinfo = std::mem::zeroed();
+        hints.ai_family = family;
+        // No `AI_ADDRCONFIG`: on a host whose only IPv6 address is the
+        // loopback's, it would hide `::1` for `localhost` (an attempt to
+        // an unreachable family fails at once anyway).
+        hints.ai_socktype = libc::SOCK_STREAM;
+        let mut res: *mut libc::addrinfo = std::ptr::null_mut();
+        let rc = libc::getaddrinfo(c_host.as_ptr(), std::ptr::null(), &hints, &mut res);
+        if rc != 0 {
+            let msg = std::ffi::CStr::from_ptr(libc::gai_strerror(rc));
+            return Err(msg.to_string_lossy().into_owned());
+        }
+        let mut out = Vec::new();
+        let mut p = res;
+        while !p.is_null() {
+            let ai = &*p;
+            if !ai.ai_addr.is_null() {
+                match ai.ai_family {
+                    libc::AF_INET => {
+                        let sin = &*(ai.ai_addr as *const libc::sockaddr_in);
+                        let ip = std::net::Ipv4Addr::from(sin.sin_addr.s_addr.to_ne_bytes());
+                        out.push(SocketAddr::new(ip.into(), port));
+                    }
+                    libc::AF_INET6 => {
+                        let sin6 = &*(ai.ai_addr as *const libc::sockaddr_in6);
+                        let ip = std::net::Ipv6Addr::from(sin6.sin6_addr.s6_addr);
+                        out.push(SocketAddr::V6(std::net::SocketAddrV6::new(
+                            ip,
+                            port,
+                            sin6.sin6_flowinfo,
+                            sin6.sin6_scope_id,
+                        )));
+                    }
+                    _ => {}
+                }
+            }
+            p = ai.ai_next;
+        }
+        libc::freeaddrinfo(res);
+        out.dedup();
+        Ok(out)
+    }
+}
+
+fn port_number(interp: &Interp, v: &Value) -> Result<u16, Flow> {
+    let port = int(interp, v, "port")?;
+    u16::try_from(port).map_err(|_| interp.err_arg(&format!("port {port} out of range")))
+}
+
+/// A `Socket::Address` as a socket address (its host is numeric).
+fn address_of(interp: &Interp, v: &Value) -> Result<SocketAddr, Flow> {
+    let Value::Object(obj) = v else {
+        return Err(interp.err_type("expected a Socket::Address"));
+    };
+    let host = obj.field(0).unwrap_or(Value::Nil);
+    let host = string(interp, &host, "host")?;
+    let port = port_number(interp, &obj.field(1).unwrap_or(Value::Nil))?;
+    let ip: std::net::IpAddr = host
+        .parse()
+        .map_err(|_| interp.err_arg(&format!("not a numeric address: {host}")))?;
+    Ok(SocketAddr::new(ip, port))
+}
+
+/// `addr` as a `Socket::Address`.
+fn address_value(interp: &Interp, addr: SocketAddr) -> EvalResult {
+    let value = interp.construct(
+        interp.program.rt.socket_address,
+        None,
+        smallvec![],
+        Vec::new(),
+        None,
+    )?;
+    if let Value::Object(obj) = &value {
+        obj.set_field(0, Value::string(addr.ip().to_string()));
+        obj.set_field(1, Value::Int(addr.port() as i64));
+    }
+    Ok(value)
 }
 
 fn unix_connect(interp: &Interp, args: &Args) -> EvalResult {
@@ -646,7 +900,7 @@ fn udp_recv(
                     Value::string(String::from_utf8_lossy(&buf).into_owned())
                 };
                 return Ok(if with_addr {
-                    Value::array(vec![data, addr_value(from)])
+                    Value::array(vec![data, address_value(interp, from)?])
                 } else {
                     data
                 });
@@ -668,13 +922,6 @@ pub fn payload(interp: &Interp, v: &Value) -> Result<Vec<u8>, Flow> {
         Value::Bytes(b) => b.to_vec(),
         other => interp.to_s(other)?.as_bytes().to_vec(),
     })
-}
-
-fn addr_value(addr: SocketAddr) -> Value {
-    Value::array(vec![
-        Value::string(addr.ip().to_string()),
-        Value::Int(addr.port() as i64),
-    ])
 }
 
 pub fn inspect_socket(interp: &Interp, io: &Rc<IoVal>) -> String {

@@ -1,0 +1,124 @@
+# The Socket module: addresses, Socket.tcp (Happy Eyeballs), the server
+# loops. Expected output in socket.out.
+require "socket"
+
+# Addresses.
+a6 = Socket::Address.new("::1", 80)
+puts a6, Socket::Address.new("127.0.0.1", 8080)
+p a6.ipv6?, a6.port
+p Socket.getaddrinfo("127.0.0.1", 80), Socket.getaddrinfo("127.0.0.1", 80, 6)
+p Socket.getaddrinfo("localhost", 80, 4).map(&:host)
+
+# A server loop: a task per connection, the handler's error to on_error,
+# the connection closed after the handler.
+listener = Socket.tcp_server("127.0.0.1", 0)
+port = listener.local_address.port
+errors = Channel[String].new(capacity: 4)
+greeting = "hello"
+report: shareable (Exception, Socket::Address) -> Nil = ->(e: Exception, peer: Socket::Address) { errors.send("#{e.message} (#{peer.host})"); nil }
+Task.scope do |scope|
+  server = scope.spawn do
+    Socket.accept_loop(listener, on_error: report) do |conn, peer|
+      line = conn.gets.chomp
+      raise "bad request" if line == "boom"
+      conn.puts "#{greeting} #{line} from #{peer.host}"
+    end
+  end
+  greeting = "changed"      # the handler copied `greeting`
+  replies = ["a", "boom", "b"].map do |w|
+    scope.spawn do
+      Socket.tcp("127.0.0.1", port) do |s|
+        s.puts w
+        s.gets? || "(closed)\n"
+      end
+    end
+  end
+  puts replies.map(&:await)
+  p errors.receive
+  # TCPSocket.new and Socket.tcp by name.
+  c = TCPSocket.new("localhost", port)
+  c.puts "by name"
+  p c.gets, c.remote_address.port == port
+  c.close
+  server.cancel
+end
+
+# Happy Eyeballs: when `::1` takes no connection (its listener's queue is
+# full), the IPv4 attempt starts 250 ms later and wins.
+v4 = TCPServer.new("127.0.0.1", 0)
+hport = v4.local_address.port
+v6 = begin
+  TCPServer.new("::1", hport)
+rescue SystemCallError
+  nil
+end
+Task.scope do |scope|
+  if v6
+    300.times do
+      scope.spawn do
+        begin
+          TCPSocket.connect(Socket::Address.new("::1", hport))
+        rescue SystemCallError
+          nil
+        end
+      end
+    end
+    Task.sleep(200.ms)
+  end
+  t0 = Time.monotonic
+  c = Socket.tcp("localhost", hport)
+  waited = Time.monotonic - t0
+  p c.remote_address.host, v6.nil? || (waited >= 240.ms && waited < 2.seconds)
+  c.close
+  scope.cancel
+end
+v4.close
+v6&.close
+
+# Failures: refused, no such host, a timeout.
+begin
+  Socket.tcp("127.0.0.1", port)
+rescue SystemCallError => e
+  puts "refused"
+end
+begin
+  Socket.tcp("no-such-host.invalid", 80)
+rescue SocketError => e
+  puts "no such host"
+end
+slow = TCPServer.new("127.0.0.1", 0)
+begin
+  Task.scope do |scope|
+    200.times do
+      scope.spawn do
+        begin
+          TCPSocket.connect(slow.local_address)
+        rescue SystemCallError
+          nil
+        end
+      end
+    end
+    Task.sleep(100.ms)
+    begin
+      Socket.tcp("127.0.0.1", slow.local_address.port, connect_timeout: 100.ms)
+      puts "connected?"
+    rescue Task::Timeout
+      puts "timed out"
+    end
+    scope.cancel
+  end
+ensure
+  slow.close
+end
+
+# A UNIX server loop.
+path = File.join(Dir.tmpdir, "quarz-socket-#{Process.pid}")
+unix_server = Socket.unix_server(path)
+Task.scope do |scope|
+  server = scope.spawn do
+    Socket.accept_loop(unix_server) { |conn| conn.puts "unix #{conn.gets.chomp}" }
+  end
+  p Socket.unix(path) { |s| s.puts "hi"; s.gets }
+  server.cancel
+end
+p File.exist?(path)

@@ -15,6 +15,7 @@ use quarz_syntax::{parse_with_bases, Diagnostic, SourceFile};
 pub const STD_MODULES: &[(&str, &str)] = &[
     ("json", include_str!("../../../std/json.qz")),
     ("time", include_str!("../../../std/time.qz")),
+    ("socket", include_str!("../../../std/socket.qz")),
 ];
 
 /// A loaded, parsed file.
