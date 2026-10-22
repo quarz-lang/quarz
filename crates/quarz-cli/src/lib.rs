@@ -2,6 +2,8 @@
 //! checked program and running it on the VM, and the interactive
 //! session.
 
+pub mod complete;
+pub mod highlight;
 pub mod session;
 
 use quarz_syntax::SourceFile;

@@ -49,6 +49,45 @@ pub enum Keyword {
 }
 
 impl Keyword {
+    /// Every keyword (for completion).
+    pub const ALL: &[Keyword] = &[
+        Keyword::Alias,
+        Keyword::And,
+        Keyword::Begin,
+        Keyword::Break,
+        Keyword::Case,
+        Keyword::Class,
+        Keyword::Def,
+        Keyword::Do,
+        Keyword::Else,
+        Keyword::Elsif,
+        Keyword::End,
+        Keyword::Ensure,
+        Keyword::False,
+        Keyword::If,
+        Keyword::In,
+        Keyword::Module,
+        Keyword::Next,
+        Keyword::Nil,
+        Keyword::Not,
+        Keyword::Or,
+        Keyword::Rescue,
+        Keyword::Retry,
+        Keyword::Return,
+        Keyword::SelfKw,
+        Keyword::Super,
+        Keyword::Then,
+        Keyword::True,
+        Keyword::Unless,
+        Keyword::Until,
+        Keyword::When,
+        Keyword::While,
+        Keyword::Yield,
+        Keyword::File,
+        Keyword::Line,
+        Keyword::Method,
+    ];
+
     pub fn from_ident(s: &str) -> Option<Keyword> {
         use Keyword::*;
         Some(match s {

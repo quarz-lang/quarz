@@ -5,26 +5,81 @@
 //! and so on). An input that lacks its end (an open block, bracket or
 //! string) goes on in the same entry on the next line, so a whole
 //! definition is edited, and recalled from the history, at once. The
-//! history is kept in `~/.quarz_history`.
+//! history is kept in `~/.quarz_history`. The entry is highlighted as it
+//! is typed (not with `NO_COLOR` set), and Tab completes names.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use std::borrow::Cow;
+
+use quarz_cli::complete::Completions;
 use quarz_cli::session::{needs_more, Outcome, Repl};
+use rustyline::completion::{Completer, Pair};
 use rustyline::error::ReadlineError;
+use rustyline::highlight::{CmdKind, Highlighter};
 use rustyline::history::FileHistory;
 use rustyline::validate::{ValidationContext, ValidationResult, Validator};
-use rustyline::{Config, Editor};
+use rustyline::{CompletionType, Config, Context, Editor};
 
 /// How many entries the history keeps.
 const HISTORY_SIZE: usize = 1000;
 
-/// What the line editor asks the session: whether an entry is complete.
-#[derive(rustyline::Helper, rustyline::Completer, rustyline::Hinter, rustyline::Highlighter)]
+/// What the line editor asks the session: whether an entry is complete,
+/// what completes a name, and how to color the entry. What it knows of
+/// the session is taken again after each input.
+#[derive(rustyline::Helper, rustyline::Hinter)]
 struct Helper {
-    /// The session's local variables, which decide how some lines parse
-    /// (updated after each input).
+    /// The session's local variables, which decide how some lines parse.
     locals: Vec<String>,
+    completions: Completions,
+    color: bool,
+}
+
+impl Helper {
+    fn new(repl: &Repl) -> Helper {
+        Helper {
+            locals: repl.locals(),
+            completions: repl.completions(),
+            color: std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty()),
+        }
+    }
+}
+
+impl Completer for Helper {
+    type Candidate = Pair;
+
+    fn complete(
+        &self,
+        line: &str,
+        pos: usize,
+        _: &Context<'_>,
+    ) -> rustyline::Result<(usize, Vec<Pair>)> {
+        let (start, names) = self.completions.complete(line, pos);
+        let pairs = names
+            .into_iter()
+            .map(|n| Pair {
+                display: n.clone(),
+                replacement: n,
+            })
+            .collect();
+        Ok((start, pairs))
+    }
+}
+
+impl Highlighter for Helper {
+    fn highlight<'l>(&self, line: &'l str, _: usize) -> Cow<'l, str> {
+        if self.color {
+            Cow::Owned(quarz_cli::highlight::highlight(line))
+        } else {
+            Cow::Borrowed(line)
+        }
+    }
+
+    fn highlight_char(&self, _: &str, _: usize, _: CmdKind) -> bool {
+        // Any change may change the colors (a quote opens a string).
+        self.color
+    }
 }
 
 impl Validator for Helper {
@@ -41,6 +96,7 @@ fn editor() -> rustyline::Result<Editor<Helper, FileHistory>> {
     let config = Config::builder()
         .max_history_size(HISTORY_SIZE)?
         .history_ignore_dups(true)?
+        .completion_type(CompletionType::List)
         .build();
     Editor::with_config(config)
 }
@@ -68,9 +124,7 @@ pub fn repl() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    editor.set_helper(Some(Helper {
-        locals: repl.locals(),
-    }));
+    editor.set_helper(Some(Helper::new(&repl)));
     let history = history_path();
     if let Some(path) = &history {
         // No history yet is fine.
@@ -116,7 +170,7 @@ pub fn repl() -> ExitCode {
         }
         let outcome = repl.feed_line(&entry);
         if let Some(helper) = editor.helper_mut() {
-            helper.locals = repl.locals();
+            *helper = Helper::new(&repl);
         }
         match outcome {
             Outcome::Incomplete => {}

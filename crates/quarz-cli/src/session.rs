@@ -93,6 +93,15 @@ impl Repl {
         self.session.locals()
     }
 
+    /// What completion offers, as of now (see `complete`).
+    pub fn completions(&self) -> crate::complete::Completions {
+        crate::complete::Completions::new(
+            self.session.world(),
+            self.session.main_class(),
+            &self.session.local_types(),
+        )
+    }
+
     /// Drop the lines of an incomplete input.
     pub fn discard(&mut self) {
         self.buffer.clear();

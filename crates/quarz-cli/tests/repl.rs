@@ -168,3 +168,100 @@ fn line_editor_continues_unfinished_inputs() {
         assert!(!needs_more(text, &[]), "{text:?} should not");
     }
 }
+
+#[test]
+fn completion_offers_what_the_session_knows() {
+    let buffer = Arc::new(Mutex::new(Vec::new()));
+    let mut repl = Repl::new(Box::new(Shared(buffer.clone()))).unwrap();
+    for line in [
+        "class Point\n  @x: Int\n  def initialize(@x: Int); end\n  def x_value -> Int = @x\n  def self.origin -> Point = Point.new(0)\nend",
+        "name = \"quarz\"",
+        "pt = Point.new(1)",
+        "maybe: String? = nil",
+        "def greet(who: String) -> String = \"hi #{who}\"",
+    ] {
+        let _ = repl.feed_line(line);
+    }
+    let c = repl.completions();
+    let has = |line: &str, start: usize, want: &[&str]| {
+        let (s, names) = c.complete(line, line.len());
+        assert_eq!(s, start, "where {line:?} completes");
+        for w in want {
+            assert!(
+                names.iter().any(|n| n == w),
+                "{line:?}: {w} not in {names:?}"
+            );
+        }
+    };
+    // Locals, top-level methods, keywords and constants.
+    has("na", 0, &["name"]);
+    has("gre", 0, &["greet"]);
+    has("wh", 0, &["when", "while"]);
+    has("Poi", 0, &["Point"]);
+    // Methods of a local's type (declared, `String?` here), of a class,
+    // of literals.
+    has("name.up", 5, &["upcase"]);
+    has("x = name.st", 9, &["strip", "start_with?"]);
+    has("pt.x_", 3, &["x_value"]);
+    has("maybe.emp", 6, &["empty?"]);
+    has("Point.or", 6, &["origin"]);
+    has("Point.ne", 6, &["new"]);
+    has("\"a\".len", 4, &["length"]);
+    has("[1].fir", 4, &["first"]);
+    has("3.ti", 2, &["times"]);
+    has(":ab.to_", 4, &["to_s"]);
+    // Constants inside a class or module.
+    has("Task::", 6, &["Cancelled", "Timeout"]);
+    has("Result::O", 8, &["Ok"]);
+    // Only names that complete the word; operators are not offered.
+    let (_, names) = c.complete("pt.", 3);
+    assert!(
+        names
+            .iter()
+            .all(|n| !n.starts_with(|ch: char| !ch.is_alphabetic() && ch != '_')),
+        "{names:?}"
+    );
+    assert!(
+        c.complete("name", 4).1.is_empty(),
+        "a complete word has nothing to add"
+    );
+}
+
+#[test]
+fn highlighting_colors_tokens() {
+    use quarz_cli::highlight::highlight;
+    let h = highlight("def f = \"n=#{x + 1}\" # note");
+    assert!(h.starts_with("\x1b[35mdef\x1b[0m"), "{h:?}");
+    assert!(
+        h.contains("\x1b[32m\"n=#{\x1b[0mx + \x1b[36m1\x1b[0m\x1b[32m}\"\x1b[0m"),
+        "{h:?}"
+    );
+    assert!(h.ends_with("\x1b[90m# note\x1b[0m"), "{h:?}");
+    let h = highlight("Foo.new(:sym, nil, @iv)");
+    for part in [
+        "\x1b[1;34mFoo",
+        "\x1b[33m:sym",
+        "\x1b[1;36mnil",
+        "\x1b[34m@iv",
+    ] {
+        assert!(h.contains(part), "{part:?} in {h:?}");
+    }
+    // An unfinished input is highlighted as far as it goes; the text is
+    // kept as it is.
+    let h = highlight("\"open #{");
+    assert!(h.contains("\x1b[32m"), "{h:?}");
+    let plain: String = {
+        let mut out = String::new();
+        let mut esc = false;
+        for ch in highlight("x = [1, \"é\", :a] # ü").chars() {
+            match (esc, ch) {
+                (false, '\x1b') => esc = true,
+                (true, 'm') => esc = false,
+                (true, _) => {}
+                (false, c) => out.push(c),
+            }
+        }
+        out
+    };
+    assert_eq!(plain, "x = [1, \"é\", :a] # ü");
+}

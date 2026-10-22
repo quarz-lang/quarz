@@ -751,6 +751,19 @@ impl Checker {
     }
 
     /// Names of the variables of the REPL's top level.
+    /// The REPL's local variables with their declared types (not as an
+    /// assignment narrowed them: `x: String? = nil` is a `String?`).
+    pub fn repl_local_types(&self) -> Vec<(String, Type)> {
+        match &self.repl_env {
+            Some(env) => env.frames[0]
+                .vars
+                .iter()
+                .map(|v| (v.name.clone(), self.resolve(&v.declared)))
+                .collect(),
+            None => Vec::new(),
+        }
+    }
+
     pub fn repl_locals(&self) -> Vec<String> {
         match &self.repl_env {
             Some(env) => env.frames[0].vars.iter().map(|v| v.name.clone()).collect(),

@@ -225,6 +225,11 @@ impl Session {
         self.checker.repl_locals()
     }
 
+    /// The REPL's local variables with their types.
+    pub fn local_types(&self) -> Vec<(String, Type)> {
+        self.checker.repl_local_types()
+    }
+
     /// Declare and check one input. On success, returns the statements to
     /// run; the world and output are available through `snapshot`.
     pub fn feed(&mut self, program: &Program) -> Result<Vec<Expr>, Vec<FileDiagnostic>> {
