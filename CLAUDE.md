@@ -20,14 +20,17 @@ A Rust workspace, front end to back ends:
 
 ```sh
 cargo build                     # before cargo test: the AOT tests link target/debug/libquarz_vm.a
-cargo test                      # about 4 minutes; run it in the background
-cargo +1.99.1 clippy --all-targets -- -D warnings   # CI's stable
-cargo +1.99.1 fmt --all -- --check
-cargo +1.96 check --workspace --all-targets         # the MSRV (rust-version)
+cargo test                      # several minutes; run it in the background
+cargo clippy --all-targets -- -D warnings
+cargo fmt --all -- --check
+cargo +<rust-version> check --workspace --all-targets   # the MSRV in Cargo.toml
 ```
 
-- Commit and push at good stopping points, with
-  `git -c commit.gpgsign=false commit`. Stage files by explicit path,
+CI runs clippy and rustfmt with the latest stable, whose lints can be
+newer than a local stable: check with that release (`cargo +<version>`)
+when the local one is older.
+
+- Commit and push at good stopping points. Stage files by explicit path,
   never `git add -A`. Remove a stray `examples/shapes` that tests leave.
 - Never print secrets (tokens, credentials). Leave credential commands to
   the user (`! command`) unless they ask.
@@ -66,15 +69,17 @@ cargo +1.96 check --workspace --all-targets         # the MSRV (rust-version)
 
 ## Performance work
 
-- Pin with `taskset -c 3`. The CPU is hybrid: read the `cpu_core` line
-  of `perf stat -e instructions:u` (and cycles for the real effect).
+- Pin to one core (`taskset -c N`) and count with
+  `perf stat -e instructions:u`, and cycles for the real effect. On a
+  hybrid CPU, pin to a performance core and read its (`cpu_core`) line.
 - Compare against a build of the previous commit in a separate
   `git worktree` with its own `CARGO_TARGET_DIR` (and
   `QUARZ_RT_LIB=<that target>/release/libquarz_vm.a` for its AOT
   builds).
 - Compiled benchmarks in `bench/` last only milliseconds: lengthen them
-  before concluding. AOT cycles vary about ±5% between builds with
-  identical instruction counts (code layout).
+  before concluding. AOT cycles can differ by several percent between
+  builds with identical instruction counts (code layout): identical
+  instructions with different cycles is not a regression in itself.
 - For start-up, use `valgrind --tool=callgrind`: sampling misattributes
   short runs.
 - `bench/compare/run.sh` compares with Go, Rust, Crystal, Spinel and
