@@ -1,5 +1,7 @@
 ((a = 1 AND b = 2) OR c = 3)
 (x = 1 AND y = 2)
+(x = 1 OR y = 2)
+((x = 1 OR y = 2) AND z = 3)
 (((a = 1 AND b = 2) OR c = 3) OR d = 4)
 ((((a = 1 AND b = 2) OR c = 3) OR d = 4) AND e = 5)
 0

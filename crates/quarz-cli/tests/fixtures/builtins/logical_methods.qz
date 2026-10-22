@@ -28,6 +28,10 @@ q = col("a", 1) && col("b", 2) || col("c", 3)
 puts q
 r = (col("x", 1) and col("y", 2))
 puts r
+r = (col("x", 1) or col("y", 2))
+puts r
+r = (col("x", 1) or col("y", 2) and col("z", 3))
+puts r
 q ||= col("d", 4)
 puts q
 puts q.&&() { col("e", 5) }
