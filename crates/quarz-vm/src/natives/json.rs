@@ -1,7 +1,7 @@
 //! `JSON.parse`, `JSON.generate` and `JSON.pretty_generate` (the rest of
 //! the module is written in Quarz, see `std/json.qz`).
 
-use std::rc::Rc;
+use crate::rc::Rc;
 
 use quarz_ir::{ClassId, RtClassKind};
 use smallvec::smallvec;

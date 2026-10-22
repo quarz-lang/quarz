@@ -10,13 +10,13 @@
 //! free function [`suspend_raw`] after all borrows are released, and the
 //! run loop takes a coroutine out of the scheduler before resuming it.
 
+use crate::rc::Rc;
 use std::cell::{Cell, RefCell};
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, VecDeque};
 #[cfg(not(target_os = "linux"))]
 use std::os::fd::BorrowedFd;
 use std::os::fd::RawFd;
-use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 

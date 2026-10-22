@@ -11,10 +11,10 @@
 //! (see `buffered`). Sockets (see `net.rs`) are non-blocking and wait on
 //! the reactor.
 
+use crate::rc::Rc;
 use std::cell::RefCell;
 use std::io::{BufRead, BufReader, Read, Seek, Write};
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::interp::{Args, EvalResult, Flow, Interp, NativeFn};

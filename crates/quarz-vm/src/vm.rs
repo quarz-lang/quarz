@@ -2,8 +2,8 @@
 //! instructions. Compiled code (`quarz build`) shares the instruction
 //! semantics through `exec_inst`.
 
+use crate::rc::Rc;
 use std::cell::{Cell, RefCell};
-use std::rc::Rc;
 
 use quarz_ir::*;
 use smallvec::{smallvec, SmallVec};

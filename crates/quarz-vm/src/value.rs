@@ -5,10 +5,10 @@
 //! referenced and copies otherwise (the "functional but in place"
 //! behaviour described in the design documents).
 
+use crate::rc::Rc;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
-use std::rc::Rc;
 
 use indexmap::{IndexMap, IndexSet};
 
@@ -519,7 +519,7 @@ impl Object {
     /// `src` points at `n` initialized values that the caller gives up
     /// (they are moved, not cloned, and must not be dropped by it).
     pub unsafe fn with_fields_from(class: ClassId, src: *const Value, n: usize) -> Rc<Object> {
-        let mut rc = Rc::<Object>::new_uninit();
+        let mut rc = Rc::<std::mem::MaybeUninit<Object>>::new_uninit();
         // SAFETY: the allocation is fresh and uniquely owned; every field
         // of `Object` is written before `assume_init`.
         unsafe {
@@ -570,9 +570,12 @@ impl Object {
     }
 }
 
-/// A block implemented in Rust (used by natives that iterate).
+/// A block implemented in Rust (used by natives that iterate). It stays
+/// `std::rc::Rc`: a trait object needs std's unsized coercion, and such
+/// a block never leaves the task that made it (no procedure type is
+/// Shareable).
 pub type NativeBlock =
-    Rc<dyn Fn(&crate::interp::Interp, crate::interp::ArgVec) -> crate::interp::EvalResult>;
+    std::rc::Rc<dyn Fn(&crate::interp::Interp, crate::interp::ArgVec) -> crate::interp::EvalResult>;
 
 /// The body a closure runs: a QIR function, a method reference
 /// (`&:name`), or a native function.
@@ -1023,8 +1026,9 @@ impl Value {
 }
 
 /// Compiled code bumps and lowers reference counts inline, assuming the
-/// layout of `Rc`'s allocation: the strong count is its first word. This
-/// checks that assumption once at start-up.
+/// layout of `Rc`'s allocation: the strong count is its first word
+/// (`rc.rs` fixes it at compile time). This checks it once at start-up,
+/// through a value, together with the tags and offsets compiled code uses.
 pub fn check_rc_layout() {
     let a: Rc<str> = Rc::from("layout");
     let value = Value::Str(a.clone());

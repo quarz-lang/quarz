@@ -9,8 +9,8 @@
 //! values travel; mutable ones and the concurrency primitives are
 //! rejected, since they would have to be shared, not copied.
 
+use crate::rc::Rc;
 use std::cell::RefCell;
-use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use num_bigint::BigInt;
@@ -383,7 +383,7 @@ impl std::io::Write for SyncBuffer {
 
 /// A helper thread's interpreter: the address of the image it was built
 /// from, the interpreter, and its output buffer.
-type Worker = (usize, Rc<Interp>, Arc<Mutex<Vec<u8>>>);
+type Worker = (usize, std::rc::Rc<Interp>, Arc<Mutex<Vec<u8>>>);
 
 thread_local! {
     /// The interpreter a helper thread keeps between jobs.
@@ -464,7 +464,7 @@ impl Interp {
 
     /// Call a block as the root task of this interpreter and run the
     /// scheduler until it finishes.
-    pub fn run_closure(self: &Rc<Interp>, closure: Value) -> Result<Value, Flow> {
+    pub fn run_closure(self: &std::rc::Rc<Interp>, closure: Value) -> Result<Value, Flow> {
         let me = self.clone();
         let body: Box<dyn FnOnce() -> TaskExit> = Box::new(move || {
             let r = me.call_block(&closure, smallvec::smallvec![]);

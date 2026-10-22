@@ -1,8 +1,8 @@
 //! Array, Hash, Set, their builders, Range, Enumerator and the
 //! comparison-based Enumerable extensions.
 
+use crate::rc::Rc;
 use std::cell::RefCell;
-use std::rc::Rc;
 
 use crate::interp::{Args, EvalResult, Flow, Interp, NativeFn, OwnedNativeFn};
 use crate::value::*;

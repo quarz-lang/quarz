@@ -6,9 +6,10 @@ use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
+use crate::rc::Rc;
 use rustc_hash::FxHashMap;
 use smallvec::{smallvec, SmallVec};
-use std::rc::{Rc, Weak};
+use std::rc::Weak;
 use std::time::Duration;
 
 use quarz_ir::INLINE_LINE_FLAG;
@@ -379,7 +380,7 @@ pub struct Interp {
 }
 
 impl Interp {
-    pub fn new(module: quarz_ir::Module, argv: Vec<String>) -> Rc<Interp> {
+    pub fn new(module: quarz_ir::Module, argv: Vec<String>) -> std::rc::Rc<Interp> {
         Interp::with_output(
             module,
             argv,
@@ -392,7 +393,7 @@ impl Interp {
         module: quarz_ir::Module,
         argv: Vec<String>,
         out: Box<dyn std::io::Write>,
-    ) -> Rc<Interp> {
+    ) -> std::rc::Rc<Interp> {
         let state = SharedState::new(out);
         let quarz_ir::Module {
             world,
@@ -412,7 +413,7 @@ impl Interp {
         units: Vec<Unit>,
         argv: Vec<String>,
         state: SharedState,
-    ) -> Rc<Interp> {
+    ) -> std::rc::Rc<Interp> {
         let structural: Vec<bool> = world.classes.iter().map(|c| c.structural).collect();
         STRUCTURAL_CLASSES.with(|s| *s.borrow_mut() = structural);
 
@@ -596,7 +597,7 @@ impl Interp {
             }
         }
         let repl_frame = state.repl_frame.clone();
-        let interp = Rc::new(Interp {
+        let interp = std::rc::Rc::new(Interp {
             hot: Hot::new(),
             world,
             units,
@@ -637,11 +638,11 @@ impl Interp {
             self_rc: RefCell::new(Weak::new()),
             root_task: Cell::new(None),
         });
-        *interp.self_rc.borrow_mut() = Rc::downgrade(&interp);
+        *interp.self_rc.borrow_mut() = std::rc::Rc::downgrade(&interp);
         interp
     }
 
-    pub fn rc(&self) -> Rc<Interp> {
+    pub fn rc(&self) -> std::rc::Rc<Interp> {
         self.self_rc
             .borrow()
             .upgrade()
@@ -673,7 +674,7 @@ impl Interp {
     // ----- running ---------------------------------------------------------------
 
     /// Run the main program as the root task. Returns the exit code.
-    pub fn run(self: &Rc<Interp>) -> i32 {
+    pub fn run(self: &std::rc::Rc<Interp>) -> i32 {
         let me = self.clone();
         let body: Box<dyn FnOnce() -> TaskExit> = Box::new(move || {
             let mut result = Ok(Value::Nil);
@@ -723,7 +724,11 @@ impl Interp {
     /// frame as the top level of unit `file`. Returns the value of the
     /// last statement, or `None` after an uncaught exception (which is
     /// reported) or exit.
-    pub fn run_repl(self: &Rc<Interp>, file: u32, fid: FuncId) -> Result<Option<Value>, i32> {
+    pub fn run_repl(
+        self: &std::rc::Rc<Interp>,
+        file: u32,
+        fid: FuncId,
+    ) -> Result<Option<Value>, i32> {
         let me = self.clone();
         let run_body: Box<dyn FnOnce() -> TaskExit> = Box::new(move || {
             let self_val = me
@@ -1923,7 +1928,7 @@ impl Interp {
     pub fn native_block(&self, f: impl Fn(&Interp, ArgVec) -> EvalResult + 'static) -> Value {
         let tag = self.new_tag();
         Value::Proc(Rc::new(Closure {
-            body: ClosureBody::Native(Rc::new(f)),
+            body: ClosureBody::Native(std::rc::Rc::new(f)),
             frame: None,
             self_val: Value::Nil,
             destructure: None,

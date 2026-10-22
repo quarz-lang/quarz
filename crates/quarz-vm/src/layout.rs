@@ -158,9 +158,9 @@ pub fn check(sig: u64, vec: u64) {
     // SAFETY: a zeroed `Option<Rc<_>>` is `None`, verified here before
     // compiled code relies on it.
     unsafe {
-        let none: Option<std::rc::Rc<crate::value::Frame>> = None;
+        let none: Option<crate::rc::Rc<crate::value::Frame>> = None;
         assert_eq!(
-            std::mem::transmute::<Option<std::rc::Rc<crate::value::Frame>>, usize>(none),
+            std::mem::transmute::<Option<crate::rc::Rc<crate::value::Frame>>, usize>(none),
             0,
             "Option<Rc> layout changed"
         );

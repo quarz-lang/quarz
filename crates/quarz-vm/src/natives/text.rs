@@ -1,7 +1,7 @@
 //! The second batch of text natives: the String, String::Builder, Symbol,
 //! Regexp and MatchData methods the first batch left out.
 
-use std::rc::Rc;
+use crate::rc::Rc;
 
 use unicode_segmentation::UnicodeSegmentation;
 

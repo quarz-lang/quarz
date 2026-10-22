@@ -1,7 +1,7 @@
 //! Object, Nil, Bool, Class, Kernel, Comparable and Exception.
 
+use crate::rc::Rc;
 use std::hash::{Hash, Hasher};
-use std::rc::Rc;
 
 use crate::interp::{Args, EvalResult, Flow, Interp, NativeFn};
 use crate::value::*;

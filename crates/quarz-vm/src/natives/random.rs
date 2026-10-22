@@ -1,8 +1,8 @@
 //! `Random`, and the `Kernel#rand`/`srand` family over the default
 //! generator.
 
+use crate::rc::Rc;
 use std::cell::RefCell;
-use std::rc::Rc;
 
 use crate::interp::{Args, EvalResult, Flow, Interp, NativeFn};
 use crate::value::*;

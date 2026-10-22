@@ -1,7 +1,7 @@
 //! String, String::Builder, Symbol, Regexp and MatchData.
 
+use crate::rc::Rc;
 use std::cell::RefCell;
-use std::rc::Rc;
 
 use crate::interp::{Args, EvalResult, Flow, Interp, NativeFn};
 use crate::value::*;

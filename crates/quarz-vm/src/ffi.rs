@@ -6,8 +6,8 @@
 //! Non-local flow crosses the boundary as a status code with the flow
 //! itself parked in `Interp::pending_flow`.
 
+use crate::rc::Rc;
 use std::ffi::{c_char, CStr};
-use std::rc::Rc;
 
 use quarz_ir::{FuncId, Term};
 
@@ -1128,7 +1128,7 @@ pub unsafe extern "C" fn qz_main(
     } = module;
     crate::value::check_rc_layout();
     crate::layout::check(layout_sig, vec_layout);
-    let interp: Rc<Interp> = Interp::with_state(world, 0, functions, units, args, state);
+    let interp: std::rc::Rc<Interp> = Interp::with_state(world, 0, functions, units, args, state);
     // Bit 0: compiled frames are found by the native unwinder (the
     // typed entries push no activation).
     interp.native_bt.set(flags & 1 != 0);

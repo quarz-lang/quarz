@@ -1,8 +1,8 @@
 //! Native implementations of the prelude's `native def` methods, keyed by
 //! `Class#method` (instance) or `Class.method` (singleton).
 
+use crate::rc::Rc;
 use std::cell::RefCell;
-use std::rc::Rc;
 
 use crate::interp::{Args, EvalResult, Flow, Interp, NativeFn, OwnedNativeFn};
 use crate::value::Value;

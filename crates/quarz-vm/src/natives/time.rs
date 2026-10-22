@@ -1,8 +1,8 @@
 //! Time (a point in time with a UTC offset) and the Duration helpers that
 //! need the clock.
 
+use crate::rc::Rc;
 use std::fmt::Write as _;
-use std::rc::Rc;
 
 use chrono::{
     DateTime, Datelike, FixedOffset, Local, LocalResult, Offset, TimeZone, Timelike, Utc,

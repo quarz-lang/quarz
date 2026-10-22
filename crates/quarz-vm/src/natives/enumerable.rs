@@ -2,7 +2,7 @@
 //! comparator forms of `sort`/`min`/`max`, and the Ruby methods on Array,
 //! Hash, Set, Range and their builders that the first batch left out.
 
-use std::rc::Rc;
+use crate::rc::Rc;
 
 use crate::interp::{Args, EvalResult, Flow, Interp, NativeFn};
 use crate::value::*;

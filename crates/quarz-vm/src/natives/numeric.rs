@@ -1,6 +1,6 @@
 //! Int, Float, Duration and Math.
 
-use std::rc::Rc;
+use crate::rc::Rc;
 
 use num_bigint::BigInt;
 use num_integer::Integer;

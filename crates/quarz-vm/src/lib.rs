@@ -9,13 +9,14 @@ pub mod interp;
 pub mod layout;
 pub mod native_bt;
 pub mod natives;
+pub mod rc;
 pub mod sched;
 pub mod transfer;
 pub mod value;
 pub mod vm;
 
+use crate::rc::Rc;
 use std::cell::RefCell;
-use std::rc::Rc;
 
 pub use interp::{Interp, SharedState};
 pub use quarz_ir::Module;

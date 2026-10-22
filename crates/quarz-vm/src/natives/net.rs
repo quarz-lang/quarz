@@ -6,12 +6,12 @@
 //! helper thread for the same reason. `close` releases the descriptor at
 //! once rather than when the value is dropped.
 
+use crate::rc::Rc;
 use std::cell::RefCell;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream, UdpSocket};
 use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::rc::Rc;
 
 use crate::interp::{Args, EvalResult, Flow, Interp, NativeFn};
 use crate::value::*;

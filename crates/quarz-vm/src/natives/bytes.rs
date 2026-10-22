@@ -1,7 +1,7 @@
 //! Bytes and Bytes::Builder.
 
+use crate::rc::Rc;
 use std::cell::RefCell;
-use std::rc::Rc;
 
 use crate::interp::{Args, EvalResult, Flow, Interp, NativeFn};
 use crate::value::*;

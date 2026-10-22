@@ -1,7 +1,7 @@
 //! Task, Scope, Channel, Selector, Atom and the Kernel entry points.
 
+use crate::rc::Rc;
 use std::cell::{Cell, RefCell};
-use std::rc::Rc;
 use std::time::Duration;
 
 use crate::interp::{Args, EvalResult, Flow, Interp, NativeFn};
