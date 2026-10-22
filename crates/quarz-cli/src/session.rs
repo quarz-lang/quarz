@@ -47,6 +47,18 @@ fn incomplete(diagnostics: &[Diagnostic]) -> bool {
         .all(|d| d.message.contains("end of file") || d.message.contains("unterminated"))
 }
 
+/// Whether `text` (read with the REPL's local variables `locals`, which
+/// decide how some lines parse) still lacks its end: an open block,
+/// bracket or string. The line editor then keeps reading lines into it,
+/// so that a whole definition is one entry to edit and recall.
+pub fn needs_more(text: &str, locals: &[String]) -> bool {
+    if text.trim().is_empty() {
+        return false;
+    }
+    let parsed = parse_repl(text, 0, 0, locals);
+    parsed.diagnostics.iter().any(|d| d.is_error()) && incomplete(&parsed.diagnostics)
+}
+
 impl Repl {
     pub fn new(out: Box<dyn Write + Send>) -> Result<Repl, Vec<String>> {
         let prelude_file = SourceFile::new("<prelude>", PRELUDE_SOURCE);
@@ -74,6 +86,16 @@ impl Repl {
     /// Whether a multi-line input is being accumulated.
     pub fn continuing(&self) -> bool {
         !self.buffer.is_empty()
+    }
+
+    /// The local variables of the session so far (see `needs_more`).
+    pub fn locals(&self) -> Vec<String> {
+        self.session.locals()
+    }
+
+    /// Drop the lines of an incomplete input.
+    pub fn discard(&mut self) {
+        self.buffer.clear();
     }
 
     /// Feed one line (with or without its newline).

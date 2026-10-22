@@ -3,7 +3,7 @@
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 
-use quarz_cli::session::{Outcome, Repl};
+use quarz_cli::session::{needs_more, Outcome, Repl};
 
 struct Shared(Arc<Mutex<Vec<u8>>>);
 
@@ -140,4 +140,31 @@ fn errors_and_exit() {
     assert_eq!(out[2], "");
     assert_eq!(out[3], "=> \"C\"");
     assert_eq!(out[4], "exit 3");
+}
+
+#[test]
+fn line_editor_continues_unfinished_inputs() {
+    // What the line editor asks: does the entry go on on the next line?
+    for text in [
+        "def f",
+        "def f(n: Int) -> Int\n  n",
+        "[1,",
+        "foo(",
+        "\"abc",
+        "1 +",
+        "Task.scope do |s|",
+    ] {
+        assert!(needs_more(text, &[]), "{text:?} should go on");
+    }
+    for text in [
+        "",
+        "1 + 2",
+        "def f = 1",
+        "def f\nend",
+        "[1,\n 2]",
+        "1)",
+        "end",
+    ] {
+        assert!(!needs_more(text, &[]), "{text:?} should not");
+    }
 }

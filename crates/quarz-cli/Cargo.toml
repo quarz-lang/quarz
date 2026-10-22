@@ -18,3 +18,6 @@ quarz-vm = { workspace = true }
 quarz-ir = { workspace = true }
 quarz-lower = { workspace = true }
 quarz-aot = { workspace = true }
+# Line editing and history for `quarz repl` (no default features: the
+# history file is the only one needed, and the home directory is $HOME).
+rustyline = { version = "19", default-features = false, features = ["with-file-history", "derive"] }
