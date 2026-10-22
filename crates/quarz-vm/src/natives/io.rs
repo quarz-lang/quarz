@@ -12,7 +12,6 @@
 //! the reactor.
 
 use crate::rc::Rc;
-use std::cell::RefCell;
 use std::io::{BufRead, BufReader, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -873,7 +872,7 @@ fn file_open(interp: &Interp, _: &Value, args: Args) -> EvalResult {
         writable: write,
         closed: false,
     };
-    let value = io(IoKind::File(RefCell::new(handle)));
+    let value = io(IoKind::File(IoCell::new(handle)));
     let Some(b) = &args.block else {
         return Ok(value);
     };
@@ -889,7 +888,7 @@ fn file_open(interp: &Interp, _: &Value, args: Args) -> EvalResult {
 
 /// Flush and release an open file (on a helper thread). The handle is
 /// closed at once, whatever the outcome.
-fn file_close(interp: &Interp, f: &RefCell<FileHandle>) -> Result<(), Flow> {
+fn file_close(interp: &Interp, f: &IoCell<FileHandle>) -> Result<(), Flow> {
     let io = {
         let mut f = f.borrow_mut();
         if f.closed {
@@ -1144,7 +1143,7 @@ fn read_raw(interp: &Interp, recv: &Value, limit: Option<usize>) -> Result<Vec<u
 }
 
 /// The shared state of a file open for reading.
-fn readable_io(interp: &Interp, f: &RefCell<FileHandle>) -> Result<Arc<Mutex<FileIo>>, Flow> {
+fn readable_io(interp: &Interp, f: &IoCell<FileHandle>) -> Result<Arc<Mutex<FileIo>>, Flow> {
     let f = f.borrow();
     if f.closed {
         return Err(interp.raise(interp.program.exc.io_error, "closed stream"));

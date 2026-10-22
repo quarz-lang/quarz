@@ -1018,12 +1018,27 @@ impl Interp {
         Ok(())
     }
 
-    /// Wait until `fd` is readable (or writable), parking the task.
-    pub fn wait_fd(&self, fd: std::os::fd::RawFd, writable: bool) -> Result<(), Flow> {
-        let id = self.current_task().id;
-        self.sched.borrow_mut().wait_fd(fd, writable, id);
+    /// Wait until the descriptor `fd` of the IO state `st` is readable
+    /// (or writable), parking the task. The task is listed among the
+    /// descriptor's waiters meanwhile, which closing it wakes on
+    /// whatever worker it waits.
+    pub fn wait_io<T: Watched>(
+        &self,
+        st: &IoCell<T>,
+        fd: std::os::fd::RawFd,
+        writable: bool,
+    ) -> Result<(), Flow> {
+        let me = self.sched.borrow().current_ref();
+        let serial = {
+            let mut s = st.borrow_mut();
+            let w = s.watch();
+            w.waiters.push(me);
+            w.serial
+        };
+        self.sched.borrow_mut().wait_fd(fd, serial, writable, me.id);
         let r = self.park();
-        self.sched.borrow_mut().unwait_fd(fd, id);
+        self.sched.borrow_mut().unwait_fd(fd, me.id);
+        st.borrow_mut().watch().waiters.retain(|t| *t != me);
         r
     }
 

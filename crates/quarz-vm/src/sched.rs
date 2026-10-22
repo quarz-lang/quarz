@@ -388,6 +388,10 @@ pub struct Reactor {
     #[cfg(not(target_os = "linux"))]
     events: Events,
     waiters: HashMap<RawFd, IoWaiters>,
+    /// The descriptors registered with this poller, with the serial of
+    /// each (`IoWatch`): a descriptor number reused after a close is
+    /// registered anew (closing one removes it from every poller).
+    registered: HashMap<RawFd, u64>,
     completions: Arc<Mutex<Vec<TaskId>>>,
     pending_jobs: usize,
 }
@@ -401,6 +405,7 @@ impl Reactor {
             #[cfg(not(target_os = "linux"))]
             events: Events::new(),
             waiters: HashMap::new(),
+            registered: HashMap::new(),
             completions: Arc::new(Mutex::new(Vec::new())),
             pending_jobs: 0,
         }
@@ -510,26 +515,36 @@ impl Scheduler {
 
     // ----- IO ---------------------------------------------------------------------
 
-    /// Register a non-blocking descriptor with the reactor (no interest
-    /// yet). The owner must `deregister` it before closing it.
-    pub fn register(&self, fd: RawFd) {
+    /// Register a non-blocking descriptor with this worker's poller, if
+    /// it is not yet (the first time one of its tasks waits on it: an
+    /// edge-triggered registration reports a descriptor that is ready
+    /// already). The owner deregisters it before closing it.
+    fn ensure_registered(&mut self, fd: RawFd, serial: u64) {
+        if self.reactor.registered.get(&fd) == Some(&serial) {
+            return;
+        }
         #[cfg(target_os = "linux")]
         let _ = self.reactor.poller.add(fd);
         // SAFETY: the caller keeps the descriptor open until `deregister`.
         #[cfg(not(target_os = "linux"))]
         let _ = unsafe { self.reactor.poller.add(fd, Event::none(fd as usize)) };
+        self.reactor.registered.insert(fd, serial);
     }
 
+    /// Forget a descriptor about to be closed (on this worker; the close
+    /// removes it from the other workers' pollers).
     pub fn deregister(&mut self, fd: RawFd) {
-        #[cfg(target_os = "linux")]
-        let _ = self.reactor.poller.delete(fd);
-        // SAFETY: the descriptor is still open (deregistration precedes
-        // the close).
-        #[cfg(not(target_os = "linux"))]
-        let _ = self
-            .reactor
-            .poller
-            .delete(unsafe { BorrowedFd::borrow_raw(fd) });
+        if self.reactor.registered.remove(&fd).is_some() {
+            #[cfg(target_os = "linux")]
+            let _ = self.reactor.poller.delete(fd);
+            // SAFETY: the descriptor is still open (deregistration
+            // precedes the close).
+            #[cfg(not(target_os = "linux"))]
+            let _ = self
+                .reactor
+                .poller
+                .delete(unsafe { BorrowedFd::borrow_raw(fd) });
+        }
         if let Some(w) = self.reactor.waiters.remove(&fd) {
             for id in w.readers.into_iter().chain(w.writers) {
                 self.wake(id);
@@ -537,9 +552,10 @@ impl Scheduler {
         }
     }
 
-    /// Record that `id` waits for `fd` to become readable (or writable);
-    /// the caller then parks.
-    pub fn wait_fd(&mut self, fd: RawFd, writable: bool, id: TaskId) {
+    /// Record that `id` waits for `fd` (with `serial`, see `IoWatch`) to
+    /// become readable (or writable); the caller then parks.
+    pub fn wait_fd(&mut self, fd: RawFd, serial: u64, writable: bool, id: TaskId) {
+        self.ensure_registered(fd, serial);
         let w = self.reactor.waiters.entry(fd).or_default();
         let list = if writable {
             &mut w.writers

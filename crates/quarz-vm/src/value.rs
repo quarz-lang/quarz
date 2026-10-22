@@ -842,13 +842,13 @@ pub enum IoKind {
     Stdout,
     Stderr,
     /// An open file (`File.open`).
-    File(RefCell<FileHandle>),
+    File(IoCell<FileHandle>),
     /// A connected stream socket (TCP or Unix), non-blocking, driven by
     /// the scheduler's reactor.
-    Socket(RefCell<SocketState>),
+    Socket(IoCell<SocketState>),
     /// A listening socket (`TCPServer`, `UNIXServer`).
-    Listener(RefCell<ListenerState>),
-    Udp(RefCell<UdpState>),
+    Listener(IoCell<ListenerState>),
+    Udp(IoCell<UdpState>),
 }
 
 #[derive(Debug)]
@@ -892,6 +892,131 @@ impl std::io::Write for Stream {
     }
 }
 
+/// The state of an IO handle, which tasks on any worker may use: behind a
+/// lock that, like the `RefCell` it replaces, is only held for an
+/// operation that does not wait (a task releases it before it parks).
+/// Taking it twice on one thread is a bug, and panics rather than
+/// deadlocking.
+pub struct IoCell<T> {
+    lock: std::sync::Mutex<T>,
+    /// The thread holding it (see `thread_mark`), 0 when none.
+    holder: std::sync::atomic::AtomicUsize,
+}
+
+pub struct IoGuard<'a, T> {
+    guard: std::sync::MutexGuard<'a, T>,
+    holder: &'a std::sync::atomic::AtomicUsize,
+}
+
+/// A number that tells the current thread from the others.
+fn thread_mark() -> usize {
+    thread_local! { static MARK: u8 = const { 0 }; }
+    MARK.with(|m| m as *const u8 as usize)
+}
+
+impl<T> IoCell<T> {
+    pub fn new(value: T) -> IoCell<T> {
+        IoCell {
+            lock: std::sync::Mutex::new(value),
+            holder: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    pub fn borrow(&self) -> IoGuard<'_, T> {
+        use std::sync::atomic::Ordering;
+        let me = thread_mark();
+        assert!(
+            self.holder.load(Ordering::Relaxed) != me,
+            "an IO handle's state taken twice"
+        );
+        let guard = crate::sched::lock(&self.lock);
+        self.holder.store(me, Ordering::Relaxed);
+        IoGuard {
+            guard,
+            holder: &self.holder,
+        }
+    }
+
+    pub fn borrow_mut(&self) -> IoGuard<'_, T> {
+        self.borrow()
+    }
+}
+
+impl<T> std::ops::Deref for IoGuard<'_, T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.guard
+    }
+}
+
+impl<T> std::ops::DerefMut for IoGuard<'_, T> {
+    fn deref_mut(&mut self) -> &mut T {
+        &mut self.guard
+    }
+}
+
+impl<T> Drop for IoGuard<'_, T> {
+    fn drop(&mut self) {
+        self.holder.store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+impl<T: std::fmt::Debug> std::fmt::Debug for IoCell<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("IoCell(..)")
+    }
+}
+
+/// What waiting on a descriptor needs besides its number: a serial that
+/// tells it from an earlier descriptor with the same number (a worker
+/// registers a descriptor with its poller when one of its tasks first
+/// waits on it), and the tasks waiting on it, on any worker, which
+/// closing it wakes.
+#[derive(Debug)]
+pub struct IoWatch {
+    pub serial: u64,
+    pub waiters: Vec<crate::sched::TaskRef>,
+}
+
+impl IoWatch {
+    pub fn new() -> IoWatch {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        IoWatch {
+            serial: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            waiters: Vec::new(),
+        }
+    }
+}
+
+impl Default for IoWatch {
+    fn default() -> IoWatch {
+        IoWatch::new()
+    }
+}
+
+/// An IO state with a descriptor tasks wait on.
+pub trait Watched {
+    fn watch(&mut self) -> &mut IoWatch;
+}
+
+impl Watched for SocketState {
+    fn watch(&mut self) -> &mut IoWatch {
+        &mut self.watch
+    }
+}
+
+impl Watched for ListenerState {
+    fn watch(&mut self) -> &mut IoWatch {
+        &mut self.watch
+    }
+}
+
+impl Watched for UdpState {
+    fn watch(&mut self) -> &mut IoWatch {
+        &mut self.watch
+    }
+}
+
 #[derive(Debug)]
 pub struct SocketState {
     /// `None` once closed: the descriptor is released at `close`, not
@@ -911,7 +1036,8 @@ pub struct SocketState {
     /// A task is in the middle of a write: one call goes out whole, and
     /// the other writers wait here for their turn.
     pub writing: bool,
-    pub write_waiters: std::collections::VecDeque<crate::sched::TaskId>,
+    pub write_waiters: std::collections::VecDeque<crate::sched::TaskRef>,
+    pub watch: IoWatch,
 }
 
 #[derive(Debug)]
@@ -936,12 +1062,14 @@ pub struct ListenerState {
     pub unix: bool,
     pub closed: bool,
     pub path: Option<String>,
+    pub watch: IoWatch,
 }
 
 #[derive(Debug)]
 pub struct UdpState {
     pub socket: Option<std::net::UdpSocket>,
     pub closed: bool,
+    pub watch: IoWatch,
 }
 
 /// The state of an open file: a buffered reader or writer over it.

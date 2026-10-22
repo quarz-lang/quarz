@@ -7,7 +7,6 @@
 //! once rather than when the value is dropped.
 
 use crate::rc::Rc;
-use std::cell::RefCell;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream, UdpSocket};
 use std::os::fd::{AsRawFd, RawFd};
@@ -69,10 +68,10 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     // UDPSocket
     m.insert("UDPSocket.new", |i, _, _| {
         let socket = udp_bind(i, "0.0.0.0:0")?;
-        i.sched.borrow().register(socket.as_raw_fd());
-        Ok(io(IoKind::Udp(RefCell::new(UdpState {
+        Ok(io(IoKind::Udp(IoCell::new(UdpState {
             socket: Some(socket),
             closed: false,
+            watch: IoWatch::new(),
         }))))
     });
     m.insert("UDPSocket#bind", |i, r, a| {
@@ -82,10 +81,16 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         let st = udp(i, r)?;
         let socket = udp_bind(i, &format!("{host}:{port}"))?;
         let old_fd = udp_fd(i, st)?;
-        i.sched.borrow_mut().deregister(old_fd);
-        st.borrow_mut().socket = Some(socket);
-        let new_fd = udp_fd(i, st)?;
-        i.sched.borrow().register(new_fd);
+        let waiters = {
+            let mut s = st.borrow_mut();
+            i.sched.borrow_mut().deregister(old_fd);
+            s.socket = Some(socket);
+            // A new descriptor: it is registered anew where waited on.
+            std::mem::replace(&mut s.watch, IoWatch::new()).waiters
+        };
+        for w in waiters {
+            i.wake_ref(w);
+        }
         Ok(Value::Nil)
     });
     m.insert("UDPSocket#connect", |i, r, a| {
@@ -125,7 +130,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             };
             match r {
                 Ok(n) => return Ok(Value::Int(n as i64)),
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => i.wait_fd(fd, true)?,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => i.wait_io(st, fd, true)?,
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
                 Err(e) => return Err(os_error(i, e, "send")),
             }
@@ -236,13 +241,12 @@ fn udp_bind(interp: &Interp, addr: &str) -> Result<UdpSocket, Flow> {
     Ok(socket)
 }
 
-fn make_socket(interp: &Interp, stream: Stream, path: Option<String>) -> Value {
-    interp.sched.borrow().register(stream.fd());
+fn make_socket(_: &Interp, stream: Stream, path: Option<String>) -> Value {
     let (local, peer, unix) = match &stream {
         Stream::Tcp(s) => (s.local_addr().ok(), s.peer_addr().ok(), false),
         Stream::Unix(_) => (None, None, true),
     };
-    io(IoKind::Socket(RefCell::new(SocketState {
+    io(IoKind::Socket(IoCell::new(SocketState {
         stream: Some(stream),
         unix,
         rbuf: Vec::new(),
@@ -253,17 +257,18 @@ fn make_socket(interp: &Interp, stream: Stream, path: Option<String>) -> Value {
         peer,
         writing: false,
         write_waiters: std::collections::VecDeque::new(),
+        watch: IoWatch::new(),
     })))
 }
 
-fn make_listener(interp: &Interp, listener: Listener, path: Option<String>) -> Value {
-    interp.sched.borrow().register(listener.fd());
+fn make_listener(_: &Interp, listener: Listener, path: Option<String>) -> Value {
     let unix = matches!(listener, Listener::Unix(_));
-    io(IoKind::Listener(RefCell::new(ListenerState {
+    io(IoKind::Listener(IoCell::new(ListenerState {
         listener: Some(listener),
         unix,
         closed: false,
         path,
+        watch: IoWatch::new(),
     })))
 }
 
@@ -330,7 +335,7 @@ fn listener_accept(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 let fd = listener_fd(interp, st)?;
-                interp.wait_fd(fd, false)?
+                interp.wait_io(st, fd, false)?
             }
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
             Err(e) => return Err(os_error(interp, e, "accept")),
@@ -340,35 +345,35 @@ fn listener_accept(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
 
 // ----- stream operations (used by the IO natives) ---------------------------------
 
-fn socket<'a>(interp: &Interp, v: &'a Value) -> Result<&'a RefCell<SocketState>, Flow> {
+fn socket<'a>(interp: &Interp, v: &'a Value) -> Result<&'a IoCell<SocketState>, Flow> {
     match &io_of(interp, v)?.kind {
         IoKind::Socket(st) => Ok(st),
         _ => Err(interp.err_type("not a stream socket")),
     }
 }
 
-fn udp<'a>(interp: &Interp, v: &'a Value) -> Result<&'a RefCell<UdpState>, Flow> {
+fn udp<'a>(interp: &Interp, v: &'a Value) -> Result<&'a IoCell<UdpState>, Flow> {
     match &io_of(interp, v)?.kind {
         IoKind::Udp(st) => Ok(st),
         _ => Err(interp.err_type("not a UDP socket")),
     }
 }
 
-fn socket_fd(interp: &Interp, st: &RefCell<SocketState>) -> Result<RawFd, Flow> {
+fn socket_fd(interp: &Interp, st: &IoCell<SocketState>) -> Result<RawFd, Flow> {
     match &st.borrow().stream {
         Some(s) => Ok(s.fd()),
         None => Err(interp.raise(interp.program.exc.io_error, "closed stream")),
     }
 }
 
-fn listener_fd(interp: &Interp, st: &RefCell<ListenerState>) -> Result<RawFd, Flow> {
+fn listener_fd(interp: &Interp, st: &IoCell<ListenerState>) -> Result<RawFd, Flow> {
     match &st.borrow().listener {
         Some(l) => Ok(l.fd()),
         None => Err(interp.raise(interp.program.exc.io_error, "closed stream")),
     }
 }
 
-fn udp_fd(interp: &Interp, st: &RefCell<UdpState>) -> Result<RawFd, Flow> {
+fn udp_fd(interp: &Interp, st: &IoCell<UdpState>) -> Result<RawFd, Flow> {
     match &st.borrow().socket {
         Some(s) => Ok(s.as_raw_fd()),
         None => Err(interp.raise(interp.program.exc.io_error, "closed stream")),
@@ -376,7 +381,7 @@ fn udp_fd(interp: &Interp, st: &RefCell<UdpState>) -> Result<RawFd, Flow> {
 }
 
 /// Read more bytes into the buffer; `false` at the end of the stream.
-fn fill(interp: &Interp, st: &RefCell<SocketState>) -> Result<bool, Flow> {
+fn fill(interp: &Interp, st: &IoCell<SocketState>) -> Result<bool, Flow> {
     let fd = socket_fd(interp, st)?;
     let mut chunk = [0u8; 8192];
     loop {
@@ -399,7 +404,9 @@ fn fill(interp: &Interp, st: &RefCell<SocketState>) -> Result<bool, Flow> {
                 st.borrow_mut().rbuf.extend_from_slice(&chunk[..n]);
                 return Ok(true);
             }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => interp.wait_fd(fd, false)?,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                interp.wait_io(st, fd, false)?
+            }
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
             Err(e) => return Err(os_error(interp, e, "read")),
         }
@@ -407,7 +414,7 @@ fn fill(interp: &Interp, st: &RefCell<SocketState>) -> Result<bool, Flow> {
 }
 
 /// One line including its newline; `None` at the end of the stream.
-pub fn socket_gets(interp: &Interp, st: &RefCell<SocketState>) -> Result<Option<String>, Flow> {
+pub fn socket_gets(interp: &Interp, st: &IoCell<SocketState>) -> Result<Option<String>, Flow> {
     loop {
         {
             let mut s = st.borrow_mut();
@@ -430,7 +437,7 @@ pub fn socket_gets(interp: &Interp, st: &RefCell<SocketState>) -> Result<Option<
 /// Everything up to the end of the stream, or up to `limit` bytes.
 pub fn socket_read(
     interp: &Interp,
-    st: &RefCell<SocketState>,
+    st: &IoCell<SocketState>,
     limit: Option<usize>,
 ) -> Result<Vec<u8>, Flow> {
     loop {
@@ -449,7 +456,7 @@ pub fn socket_read(
 /// empty); `None` at the end of the stream.
 pub fn socket_read_partial(
     interp: &Interp,
-    st: &RefCell<SocketState>,
+    st: &IoCell<SocketState>,
     max: usize,
 ) -> Result<Option<Vec<u8>>, Flow> {
     if st.borrow().rbuf.is_empty() && !fill(interp, st)? {
@@ -463,16 +470,22 @@ pub fn socket_read_partial(
 /// Write all of `data`. A write that has to wait for the socket keeps
 /// its turn: another task's write waits until this one is done, so the
 /// bytes of one call are never interleaved with another's.
-pub fn socket_write(interp: &Interp, st: &RefCell<SocketState>, data: &[u8]) -> Result<(), Flow> {
-    while st.borrow().writing {
-        let me = interp.current_task().id;
-        st.borrow_mut().write_waiters.push_back(me);
+pub fn socket_write(interp: &Interp, st: &IoCell<SocketState>, data: &[u8]) -> Result<(), Flow> {
+    let me = interp.sched.borrow().current_ref();
+    loop {
+        {
+            let mut s = st.borrow_mut();
+            if !s.writing {
+                s.writing = true;
+                break;
+            }
+            s.write_waiters.push_back(me);
+        }
         if let Err(flow) = interp.park() {
             st.borrow_mut().write_waiters.retain(|t| *t != me);
             return Err(flow);
         }
     }
-    st.borrow_mut().writing = true;
     let r = socket_write_all(interp, st, data);
     let next = {
         let mut s = st.borrow_mut();
@@ -480,12 +493,12 @@ pub fn socket_write(interp: &Interp, st: &RefCell<SocketState>, data: &[u8]) -> 
         s.write_waiters.pop_front()
     };
     if let Some(next) = next {
-        interp.sched.borrow_mut().wake(next);
+        interp.wake_ref(next);
     }
     r
 }
 
-fn socket_write_all(interp: &Interp, st: &RefCell<SocketState>, data: &[u8]) -> Result<(), Flow> {
+fn socket_write_all(interp: &Interp, st: &IoCell<SocketState>, data: &[u8]) -> Result<(), Flow> {
     let fd = socket_fd(interp, st)?;
     let mut written = 0;
     while written < data.len() {
@@ -499,7 +512,7 @@ fn socket_write_all(interp: &Interp, st: &RefCell<SocketState>, data: &[u8]) -> 
         match r {
             Ok(0) => return Err(interp.raise(interp.program.exc.io_error, "connection closed")),
             Ok(n) => written += n,
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => interp.wait_fd(fd, true)?,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => interp.wait_io(st, fd, true)?,
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
             Err(e) => return Err(os_error(interp, e, "write")),
         }
@@ -507,7 +520,7 @@ fn socket_write_all(interp: &Interp, st: &RefCell<SocketState>, data: &[u8]) -> 
     Ok(())
 }
 
-pub fn socket_eof(interp: &Interp, st: &RefCell<SocketState>) -> Result<bool, Flow> {
+pub fn socket_eof(interp: &Interp, st: &IoCell<SocketState>) -> Result<bool, Flow> {
     if !st.borrow().rbuf.is_empty() {
         return Ok(false);
     }
@@ -539,7 +552,9 @@ fn shutdown(interp: &Interp, recv: &Value, how: std::net::Shutdown) -> Result<()
 /// Close any socket kind: deregister from the reactor, then release the
 /// descriptor.
 pub fn close(interp: &Interp, recv: &Value) -> Result<(), Flow> {
-    match &io_of(interp, recv)?.kind {
+    // The tasks waiting on the descriptor, on whatever worker: woken, they
+    // find it closed.
+    let waiters = match &io_of(interp, recv)?.kind {
         IoKind::Socket(st) => {
             let mut s = st.borrow_mut();
             if let Some(stream) = s.stream.take() {
@@ -550,6 +565,9 @@ pub fn close(interp: &Interp, recv: &Value) -> Result<(), Flow> {
                 };
             }
             s.closed = true;
+            let mut w = std::mem::take(&mut s.watch.waiters);
+            w.extend(s.write_waiters.drain(..));
+            w
         }
         IoKind::Listener(st) => {
             let mut s = st.borrow_mut();
@@ -560,6 +578,7 @@ pub fn close(interp: &Interp, recv: &Value) -> Result<(), Flow> {
                 }
             }
             s.closed = true;
+            std::mem::take(&mut s.watch.waiters)
         }
         IoKind::Udp(st) => {
             let mut s = st.borrow_mut();
@@ -567,8 +586,12 @@ pub fn close(interp: &Interp, recv: &Value) -> Result<(), Flow> {
                 interp.sched.borrow_mut().deregister(socket.as_raw_fd());
             }
             s.closed = true;
+            std::mem::take(&mut s.watch.waiters)
         }
-        _ => {}
+        _ => Vec::new(),
+    };
+    for w in waiters {
+        interp.wake_ref(w);
     }
     Ok(())
 }
@@ -626,7 +649,9 @@ fn udp_recv(
                     data
                 });
             }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => interp.wait_fd(fd, false)?,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                interp.wait_io(st, fd, false)?
+            }
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
             Err(e) => return Err(os_error(interp, e, "recv")),
         }
