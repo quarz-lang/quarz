@@ -4,42 +4,77 @@
 //! Lines are edited with rustyline (Emacs or vi keys, history search,
 //! and so on). An input that lacks its end (an open block, bracket or
 //! string) goes on in the same entry on the next line, so a whole
-//! definition is edited, and recalled from the history, at once. The
-//! history is kept in `~/.quarz_history`. The entry is highlighted as it
+//! definition is edited, and recalled from the history, at once; the
+//! next line starts with as many spaces as the prompt is wide (part of
+//! the entry: rustyline shows no prompt there), so the code lines up,
+//! except inside a string, which they would change. The history is kept
+//! in `~/.quarz_history`. The entry is highlighted as it
 //! is typed (not with `NO_COLOR` set), and Tab completes names.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use std::borrow::Cow;
+use std::sync::{Arc, Mutex};
 
 use quarz_cli::complete::Completions;
-use quarz_cli::session::{needs_more, Outcome, Repl};
+use quarz_cli::session::{needs_more, unfinished, Outcome, Repl, Unfinished};
 use rustyline::completion::{Completer, Pair};
 use rustyline::error::ReadlineError;
 use rustyline::highlight::{CmdKind, Highlighter};
 use rustyline::history::FileHistory;
 use rustyline::validate::{ValidationContext, ValidationResult, Validator};
-use rustyline::{CompletionType, Config, Context, Editor};
+use rustyline::{
+    Cmd, CompletionType, ConditionalEventHandler, Config, Context, Editor, Event, EventContext,
+    EventHandler, KeyCode, KeyEvent, Modifiers, RepeatCount,
+};
 
 /// How many entries the history keeps.
 const HISTORY_SIZE: usize = 1000;
+
+const PROMPT: &str = "quarz> ";
+/// For an input the session still finds incomplete (the editor judged
+/// otherwise): as wide as `PROMPT`.
+const CONTINUATION_PROMPT: &str = "     > ";
+
+/// The session's local variables, which decide how some lines parse:
+/// shared by the helper and the Enter binding, taken again after each
+/// input.
+type Locals = Arc<Mutex<Vec<String>>>;
+
+/// Enter: in an entry that lacks its end, a new line indented as wide as
+/// the prompt (a plain new line inside a string); otherwise the usual
+/// (the entry is accepted).
+struct Enter {
+    locals: Locals,
+}
+
+impl ConditionalEventHandler for Enter {
+    fn handle(&self, _: &Event, _: RepeatCount, _: bool, ctx: &EventContext) -> Option<Cmd> {
+        let locals = self.locals.lock().unwrap_or_else(|e| e.into_inner());
+        match unfinished(ctx.line(), &locals) {
+            Unfinished::No => None,
+            Unfinished::Code => Some(Cmd::Insert(1, format!("\n{}", " ".repeat(PROMPT.len())))),
+            Unfinished::String => Some(Cmd::Insert(1, "\n".to_string())),
+        }
+    }
+}
 
 /// What the line editor asks the session: whether an entry is complete,
 /// what completes a name, and how to color the entry. What it knows of
 /// the session is taken again after each input.
 #[derive(rustyline::Helper, rustyline::Hinter)]
 struct Helper {
-    /// The session's local variables, which decide how some lines parse.
-    locals: Vec<String>,
+    locals: Locals,
     completions: Completions,
     color: bool,
 }
 
 impl Helper {
-    fn new(repl: &Repl) -> Helper {
+    fn new(repl: &Repl, locals: Locals) -> Helper {
+        *locals.lock().unwrap_or_else(|e| e.into_inner()) = repl.locals();
         Helper {
-            locals: repl.locals(),
+            locals,
             completions: repl.completions(),
             color: std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty()),
         }
@@ -84,7 +119,8 @@ impl Highlighter for Helper {
 
 impl Validator for Helper {
     fn validate(&self, ctx: &mut ValidationContext) -> rustyline::Result<ValidationResult> {
-        Ok(if needs_more(ctx.input(), &self.locals) {
+        let locals = self.locals.lock().unwrap_or_else(|e| e.into_inner());
+        Ok(if needs_more(ctx.input(), &locals) {
             ValidationResult::Incomplete
         } else {
             ValidationResult::Valid(None)
@@ -124,7 +160,14 @@ pub fn repl() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    editor.set_helper(Some(Helper::new(&repl)));
+    let locals: Locals = Arc::new(Mutex::new(Vec::new()));
+    editor.set_helper(Some(Helper::new(&repl, locals.clone())));
+    editor.bind_sequence(
+        KeyEvent(KeyCode::Enter, Modifiers::NONE),
+        EventHandler::Conditional(Box::new(Enter {
+            locals: locals.clone(),
+        })),
+    );
     let history = history_path();
     if let Some(path) = &history {
         // No history yet is fine.
@@ -145,9 +188,9 @@ pub fn repl() -> ExitCode {
         // An input the session still finds incomplete (the editor judged
         // otherwise) goes on with a continuation prompt.
         let prompt = if repl.continuing() {
-            "     > "
+            CONTINUATION_PROMPT
         } else {
-            "quarz> "
+            PROMPT
         };
         let entry = match editor.readline(prompt) {
             Ok(entry) => entry,
@@ -170,7 +213,7 @@ pub fn repl() -> ExitCode {
         }
         let outcome = repl.feed_line(&entry);
         if let Some(helper) = editor.helper_mut() {
-            *helper = Helper::new(&repl);
+            *helper = Helper::new(&repl, locals.clone());
         }
         match outcome {
             Outcome::Incomplete => {}

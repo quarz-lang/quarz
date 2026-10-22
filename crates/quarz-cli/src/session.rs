@@ -47,16 +47,43 @@ fn incomplete(diagnostics: &[Diagnostic]) -> bool {
         .all(|d| d.message.contains("end of file") || d.message.contains("unterminated"))
 }
 
+/// How an input stands (see `unfinished`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Unfinished {
+    /// Complete (or wrong in a way more lines would not fix).
+    No,
+    /// An open block or bracket: more code follows.
+    Code,
+    /// An open string: what follows is part of it.
+    String,
+}
+
 /// Whether `text` (read with the REPL's local variables `locals`, which
-/// decide how some lines parse) still lacks its end: an open block,
-/// bracket or string. The line editor then keeps reading lines into it,
-/// so that a whole definition is one entry to edit and recall.
-pub fn needs_more(text: &str, locals: &[String]) -> bool {
+/// decide how some lines parse) still lacks its end, and what is open.
+/// The line editor then keeps reading lines into it, so that a whole
+/// definition is one entry to edit and recall.
+pub fn unfinished(text: &str, locals: &[String]) -> Unfinished {
     if text.trim().is_empty() {
-        return false;
+        return Unfinished::No;
     }
     let parsed = parse_repl(text, 0, 0, locals);
-    parsed.diagnostics.iter().any(|d| d.is_error()) && incomplete(&parsed.diagnostics)
+    if !parsed.diagnostics.iter().any(|d| d.is_error()) || !incomplete(&parsed.diagnostics) {
+        return Unfinished::No;
+    }
+    let open_string = parsed
+        .diagnostics
+        .iter()
+        .any(|d| d.is_error() && d.message.contains("unterminated"));
+    if open_string {
+        Unfinished::String
+    } else {
+        Unfinished::Code
+    }
+}
+
+/// Whether `text` still lacks its end (see `unfinished`).
+pub fn needs_more(text: &str, locals: &[String]) -> bool {
+    unfinished(text, locals) != Unfinished::No
 }
 
 impl Repl {

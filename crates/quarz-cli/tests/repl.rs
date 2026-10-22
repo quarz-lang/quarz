@@ -3,7 +3,7 @@
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 
-use quarz_cli::session::{needs_more, Outcome, Repl};
+use quarz_cli::session::{needs_more, unfinished, Outcome, Repl, Unfinished};
 
 struct Shared(Arc<Mutex<Vec<u8>>>);
 
@@ -167,6 +167,15 @@ fn line_editor_continues_unfinished_inputs() {
     ] {
         assert!(!needs_more(text, &[]), "{text:?} should not");
     }
+    // Code goes on indented as wide as the prompt; a string as it is.
+    assert_eq!(
+        unfinished("class Foo\n         def bar", &[]),
+        Unfinished::Code
+    );
+    assert_eq!(unfinished("x = \"one", &[]), Unfinished::String);
+    // Inside an interpolation it is code again.
+    assert_eq!(unfinished("def f\n  \"a #{1", &[]), Unfinished::Code);
+    assert_eq!(unfinished("def f\n  \"a #{1} b", &[]), Unfinished::String);
 }
 
 #[test]
