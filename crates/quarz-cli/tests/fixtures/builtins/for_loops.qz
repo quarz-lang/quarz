@@ -1,0 +1,41 @@
+# A `for` whose value is not used runs as nested `each` calls (it builds
+# nothing); one whose value is used is the comprehension. Either way the
+# body runs once per combination, in order.
+xs = [1, 2, 3]
+total = 0
+for x in xs, y in 1..2 when x != y do
+  total += x * y
+end
+p total
+
+# A guard that ends in a call: `do` starts the body.
+for x in xs when x.odd? do puts "odd #{x}" end
+
+# Values used: an assignment, the last expression of a method.
+pairs = for x in xs when x.odd? do x * 10 end
+p pairs
+def squares(n: Int) = for i in 0...n do i * i end
+p squares(4)
+
+# Not used: a method declared to return Nil, a block that returns Nil.
+def show(n: Int) -> Nil
+  for i in 0...n, j in 0...n when i < j do
+    puts "#{i} #{j}"
+  end
+end
+show(3)
+[[1, 2], [3]].each do |row|
+  for v in row do print v, " " end
+end
+puts
+
+# `next` skips to the next combination.
+for x in xs do
+  next if x == 2
+  puts "next #{x}"
+end
+
+# A source without `each` (a Result): the comprehension, used or not.
+r: Result[Int, String] = Result::Ok.new(1)
+for v in r do puts "ok #{v}" end
+p(for v in r do v + 1 end)

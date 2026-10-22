@@ -237,6 +237,15 @@ fn walk_hash_pattern(hp: &HashPattern, span: Span, nest: Nest, cx: &mut Cx) {
 pub fn walk_expr(e: &Expr, nest: Nest, cx: &mut Cx) {
     use ExprKind::*;
     match &e.kind {
+        // The expansion the checker chose (see `Output::for_loops`).
+        For(f) => {
+            let chosen = if cx.out.for_loops.contains(&e.id) {
+                &f.each
+            } else {
+                &f.comprehension
+            };
+            walk_expr(chosen, nest, cx);
+        }
         Nil
         | True
         | False

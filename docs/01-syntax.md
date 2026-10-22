@@ -381,7 +381,7 @@ Same as Ruby: `if`/`unless`/`elsif`/`else`, `while`/`until`, modifier forms, `ca
 
 Different from Ruby:
 
-- There is no `for` loop (use `each`): `for … do … end` is the comprehension expression below.
+- `for … do … end` is the comprehension expression below; where its value is not used it runs as a loop (nested `each`), building nothing.
 - All control structures are expressions (as in Ruby), but if the branches of an `if` have different types, the result is a union type. An `if` without `else` has type `T?`.
 - Truthiness is as in Ruby: only `nil` and `false` are falsy. However, a condition that is known from its type to be always true / always false (`if 3`, `if some_int`) produces a warning.
 - Variable types are narrowed by `while` and `if` conditions ([02-types.md](02-types.md) §6).
@@ -407,7 +407,8 @@ for u in find_user(id), o in latest_order(u) do [u, o] end   # Result[[User, Ord
 - One iterator uses `map`; with several, all but the last use `flat_map`. `when` filters that iterator's sequence. The right-hand side of `in` and the guard are argument-level expressions (no commas, no modifier `if`).
 - The variables are block parameters, so nothing leaks out; later iterators, guards and the body see the earlier variables. The guard's block and the body's block are siblings, so a temporary assigned in a guard is not visible in the body.
 - Any type with `flat_map`/`map` (and `filter`, for `when`) works: `Enumerable`, `Range`, `Result` (`flat_map` is an alias of `and_then`; guards are not available). The type is inferred from the desugared expression as usual.
-- The body runs once per combination, in order, and its value is the element of the result; `next v` gives `v` for that element, and `return` returns from the enclosing method. `break` inside the body or a guard is a compile error (it could only leave the innermost generated block). For a loop whose values are not wanted, use `each`.
+- The body runs once per combination, in order, and its value is the element of the result; `next v` gives `v` for that element, and `return` returns from the enclosing method. `break` inside the body or a guard is a compile error (it could only leave the innermost generated block).
+- Where its value is not used (a statement before the last of a body, the last of a body whose value is discarded: a method or block declared to return `Nil`, a file's top level), a `for` whose sources all have `each` runs as nested `each` calls instead (`source.each { |x| if guard then … end }`), which build no collection; the body still runs once per combination, in order. With a source that has no `each` (a `Result`), it is the comprehension wherever it is.
 - `for` is a contextual keyword: only `for variable in` starts a comprehension.
 
 ### Pattern matching

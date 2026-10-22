@@ -787,6 +787,16 @@ impl<'a> FnBuilder<'a> {
     fn expr_inner(&mut self, e: &'a Expr) -> Reg {
         use ExprKind::*;
         match &e.kind {
+            // The expansion the checker chose (see `Output::for_loops`):
+            // nested `each` calls when its value is not used.
+            For(f) => {
+                if self.out.for_loops.contains(&e.id) {
+                    self.expr(&f.each);
+                    self.nil()
+                } else {
+                    self.expr(&f.comprehension)
+                }
+            }
             Nil => self.nil(),
             True => self.load_const(Constant::Bool(true)),
             False => self.load_const(Constant::Bool(false)),

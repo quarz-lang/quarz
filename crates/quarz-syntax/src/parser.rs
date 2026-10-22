@@ -2092,7 +2092,12 @@ impl<'src> Parser<'src> {
             let guard = if self.at_kw(K::When) {
                 self.bump();
                 self.in_comprehension = true;
+                // A `do` after the guard starts the body, not a block of
+                // the guard's last call (`when x.odd? do`).
+                let saved_do = self.no_do;
+                self.no_do = true;
                 let g = self.parse_ternary();
+                self.no_do = saved_do;
                 self.in_comprehension = saved_comp;
                 Some(g?)
             } else {
@@ -2129,6 +2134,7 @@ impl<'src> Parser<'src> {
         }
         self.expect_kw(K::End)?;
         let span = self.span_from(start);
+        let each = self.for_each_expansion(&iterators, &body, span);
         // Build from the inside out.
         let last = iterators.len() - 1;
         let mut inner: Option<Expr> = None;
@@ -2194,9 +2200,72 @@ impl<'src> Parser<'src> {
                 })),
             ));
         }
-        let mut expr = inner.expect("at least one iterator");
-        expr.span = span;
-        Ok(expr)
+        let mut comprehension = inner.expect("at least one iterator");
+        comprehension.span = span;
+        Ok(self.node(
+            span,
+            ExprKind::For(Box::new(ForExpr {
+                comprehension,
+                each,
+            })),
+        ))
+    }
+
+    /// The `each` expansion of a `for` (see `ForExpr`): from the inside
+    /// out, `source.each { |names| if guard then <rest> end }`, the body
+    /// innermost; the same source, guard and body nodes as the
+    /// comprehension.
+    fn for_each_expansion(&mut self, iterators: &[ForIterator], body: &[Expr], span: Span) -> Expr {
+        let mut inner: Vec<Expr> = body.to_vec();
+        for it in iterators.iter().rev() {
+            if let Some(guard) = &it.guard {
+                let gspan = guard.span;
+                inner = vec![self.node(
+                    gspan,
+                    ExprKind::If {
+                        cond: Box::new(guard.clone()),
+                        then: inner,
+                        els: None,
+                    },
+                )];
+            }
+            let params = Params {
+                list: it
+                    .names
+                    .iter()
+                    .map(|(name, span)| Param {
+                        name: name.clone(),
+                        kind: ParamKind::Positional,
+                        ty: None,
+                        default: None,
+                        assigns_ivar: false,
+                        usings: Vec::new(),
+                        span: *span,
+                    })
+                    .collect(),
+            };
+            inner = vec![self.node(
+                it.span,
+                ExprKind::Call(Box::new(Call {
+                    recv: Some(it.source.clone()),
+                    name: "each".to_string(),
+                    args: vec![],
+                    block: Some(Block {
+                        params,
+                        body: inner,
+                        span: it.span,
+                        braces: true,
+                        ret: None,
+                    }),
+                    safe_nav: false,
+                    has_parens: false,
+                    type_args: vec![],
+                })),
+            )];
+        }
+        let mut each = inner.pop().expect("at least one iterator");
+        each.span = span;
+        each
     }
 
     fn parse_lambda(&mut self) -> PResult<Expr> {

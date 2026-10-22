@@ -143,6 +143,8 @@ pub enum ExprKind {
     Retry,
     /// A parenthesized sequence `(a; b)`.
     Seq(Vec<Expr>),
+    /// `for … do … end`: both its expansions (see `ForExpr`).
+    For(Box<ForExpr>),
 
     // ----- declarations -----
     ClassDef(Box<ClassDef>),
@@ -552,6 +554,19 @@ pub struct MethodDef {
     pub is_native: bool,
     pub visibility: Option<Visibility>,
     pub span: Span,
+}
+
+/// A `for` comprehension, in the two expansions the checker chooses
+/// between: `comprehension`, the chain of `flat_map`/`filter`/`map` whose
+/// value is the collection of the body's values, and `each`, nested
+/// `each` calls (a guard an `if` around the rest), for a `for` whose value
+/// is not used and whose sources all have `each`: it builds nothing. The
+/// code written in the `for` (sources, guards, body) is the same nodes in
+/// both; only one expansion is checked and lowered.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ForExpr {
+    pub comprehension: Expr,
+    pub each: Expr,
 }
 
 #[derive(Clone, Debug, PartialEq)]

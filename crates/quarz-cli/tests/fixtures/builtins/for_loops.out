@@ -1,0 +1,13 @@
+13
+odd 1
+odd 3
+[10, 30]
+[0, 1, 4, 9]
+0 1
+0 2
+1 2
+1 2 3 
+next 1
+next 3
+ok 1
+Result::Ok(value: 2)

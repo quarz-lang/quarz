@@ -338,6 +338,8 @@ fn fields(out: &mut String, fs: &[FieldDecl]) {
 pub fn expr_to_sexp(expr: &Expr, out: &mut String) {
     use ExprKind::*;
     match &expr.kind {
+        // Shown as the comprehension it expands to.
+        For(f) => expr_to_sexp(&f.comprehension, out),
         Nil => out.push_str("nil"),
         True => out.push_str("true"),
         False => out.push_str("false"),

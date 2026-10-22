@@ -185,6 +185,8 @@ impl<'a> InitCheck<'a> {
 
     fn expr(&mut self, e: &Expr, st: St) -> St {
         match &e.kind {
+            // Both expansions assign the same.
+            ExprKind::For(f) => self.expr(&f.comprehension, st),
             ExprKind::Nil
             | ExprKind::True
             | ExprKind::False

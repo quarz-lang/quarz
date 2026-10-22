@@ -99,6 +99,9 @@ pub struct Output {
     /// method, block or lambda, the value of its `return` or `next`): they
     /// are evaluated and the result is `nil`.
     pub discarded: rustc_hash::FxHashSet<NodeId>,
+    /// `for` comprehensions whose value is not used, checked (and to be
+    /// lowered) as their `each` expansion (see `ast::ForExpr`).
+    pub for_loops: rustc_hash::FxHashSet<NodeId>,
     /// `new` called on the receiver in a class method: it builds an
     /// instance of the class the method is called on.
     pub self_new: rustc_hash::FxHashSet<NodeId>,
@@ -290,6 +293,14 @@ pub struct Checker {
     /// `new` on the receiver in class methods: (the class, its
     /// `initialize`, the class method, where).
     self_news: Vec<(ClassId, Option<MethodId>, MethodId, Span, u32)>,
+    /// Set by `check_body` for the statement it checks next: its value is
+    /// not used (a statement before the last, or the last of a body that
+    /// discards it). `check_expr` takes it, so only that statement itself
+    /// sees it, not the expressions in it.
+    stmt_unused: bool,
+    /// Set before `check_body` by a caller whose body's value is discarded
+    /// (it is declared to return `Nil`).
+    next_body_void: bool,
 }
 
 /// Arguments after matching to parameters.
@@ -344,6 +355,8 @@ impl Checker {
             init_checked: HashSet::default(),
             int_literals: Default::default(),
             self_news: Vec::new(),
+            stmt_unused: false,
+            next_body_void: false,
         }
     }
 
@@ -682,16 +695,19 @@ impl Checker {
         );
         env.ret_expected = Some(self.world.nil());
         let saved_infer = std::mem::take(&mut self.infer);
-        self.check_top_level(env, file, body);
+        self.check_top_level(env, file, body, false);
         self.infer = saved_infer;
     }
 
-    /// Check top-level statements in `env`, returning the environment.
-    fn check_top_level(&mut self, env: Env, file: u32, body: &[&Expr]) -> Env {
+    /// Check top-level statements in `env`, returning the environment. A
+    /// file's statements' values are not used; the REPL shows its last's
+    /// (`last_used`).
+    fn check_top_level(&mut self, env: Env, file: u32, body: &[&Expr], last_used: bool) -> Env {
         let main = self.file_main(file).unwrap_or(self.world.builtin.object);
         let saved_env = std::mem::replace(&mut self.env, env);
         self.world.active_extensions = self.world.class(main).usings.clone();
-        for expr in body {
+        for (i, expr) in body.iter().enumerate() {
+            self.stmt_unused = !(last_used && i + 1 == body.len());
             let t = self.check_expr(expr, None);
             if t.is_nothing() {
                 // Statements after `exit` etc. are unreachable; keep going
@@ -736,7 +752,7 @@ impl Checker {
             }
         };
         // The REPL keeps its inference variables across inputs.
-        let env = self.check_top_level(env, file, body);
+        let env = self.check_top_level(env, file, body, true);
         self.repl_env = Some(env);
     }
 
@@ -1037,6 +1053,7 @@ impl Checker {
         let body = def.body.as_ref().cloned().unwrap_or_default();
         let expected = self.env.ret_expected.clone();
         let void = expected.as_ref().is_some_and(|t| self.world.is_nil_type(t));
+        self.next_body_void = void;
         let body_ty = self.check_body(&body, if void { None } else { expected.as_ref() });
         self.mark_discarded(body.last(), void);
         match expected {
@@ -1591,6 +1608,8 @@ impl Checker {
     fn assigned_names_expr(e: &Expr, out: &mut HashSet<String>) {
         use ExprKind::*;
         match &e.kind {
+            // Both expansions assign the same names.
+            For(f) => Self::assigned_names_expr(&f.comprehension, out),
             Assign { target, value } | OpAssign { target, value, .. } => {
                 if let LValue::Local { name, .. } = &**target {
                     out.insert(name.clone());
@@ -1774,6 +1793,7 @@ impl Checker {
         if body.is_empty() {
             return self.world.nil();
         }
+        let void = std::mem::take(&mut self.next_body_void);
         let mut result = self.world.nil();
         let mut dead = false;
         // `using M` inside a body: its extensions are active from there to
@@ -1788,6 +1808,7 @@ impl Checker {
             if let ExprKind::Using(path) = &e.kind {
                 self.activate_using(path, e.span);
             }
+            self.stmt_unused = !last || void;
             let t = self.check_expr(e, if last { expected } else { None });
             if t.is_nothing() {
                 dead = true;
@@ -1821,14 +1842,51 @@ impl Checker {
     // ----- expressions --------------------------------------------------------
 
     pub fn check_expr(&mut self, expr: &Expr, expected: Option<&Type>) -> Type {
-        let t = self.check_expr_inner(expr, expected);
+        let unused = std::mem::take(&mut self.stmt_unused);
+        let t = match &expr.kind {
+            ExprKind::For(f) => self.check_for(expr, f, expected, unused),
+            _ => self.check_expr_inner(expr, expected),
+        };
         self.record(expr.id, &t);
         t
+    }
+
+    /// A `for`: when its value is not used, as nested `each` calls (it then
+    /// builds nothing), if that checks; else, or when a source has no
+    /// `each` (a `Result`), as the comprehension. Checking the `each`
+    /// expansion first is a trial: if it fails, what it inferred, declared
+    /// and reported is undone.
+    fn check_for(
+        &mut self,
+        expr: &Expr,
+        f: &ForExpr,
+        expected: Option<&Type>,
+        unused: bool,
+    ) -> Type {
+        if unused {
+            let infer = self.infer.save();
+            let env = self.env.clone();
+            let reported = self.diagnostics.len();
+            self.check_expr(&f.each, None);
+            let failed = self.diagnostics[reported..]
+                .iter()
+                .any(|(_, d)| d.is_error());
+            if !failed {
+                self.out.for_loops.insert(expr.id);
+                return self.world.nil();
+            }
+            self.diagnostics.truncate(reported);
+            self.infer.restore(infer);
+            self.env = env;
+        }
+        self.out.for_loops.remove(&expr.id);
+        self.check_expr(&f.comprehension, expected)
     }
 
     fn check_expr_inner(&mut self, expr: &Expr, expected: Option<&Type>) -> Type {
         use ExprKind::*;
         match &expr.kind {
+            For(f) => self.check_for(expr, f, expected, false),
             Nil => self.world.nil(),
             True | False => self.world.bool_(),
             SelfRef => {
@@ -2238,6 +2296,7 @@ impl Checker {
         fn walk(e: &Expr) -> bool {
             match &e.kind {
                 ExprKind::Break(_) => true,
+                ExprKind::For(f) => walk(&f.comprehension),
                 ExprKind::If { cond, then, els } => {
                     walk(cond)
                         || then.iter().any(walk)
@@ -4990,6 +5049,7 @@ impl Checker {
             self.declare_var(&p.name, t, p.span);
         }
         let void = self.world.is_nil_type(&self.infer.resolve(&ret));
+        self.next_body_void = void;
         let bt = self.check_body(&block.body, if void { None } else { Some(&ret) });
         self.mark_discarded(block.body.last(), void);
         // A task's result reaches the task that awaits it.
@@ -5146,6 +5206,7 @@ impl Checker {
             self.declare_var(&p.name, t, p.span);
         }
         let void = self.world.is_nil_type(&self.infer.resolve(&ret_var));
+        self.next_body_void = void;
         let bt = self.check_body(
             &block.body,
             if declared.is_some() && !void {
