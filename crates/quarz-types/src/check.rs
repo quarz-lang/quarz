@@ -2165,7 +2165,12 @@ impl Checker {
                 self.env.loop_depth -= 1;
                 self.restore(&snap);
                 self.widen_assigned(body);
-                self.apply_facts(&exit_facts);
+                // The loop ends with its condition false, unless a `break`
+                // leaves it (`while w.nil?` with a `break`: `w` may still
+                // be nil after it).
+                if !Self::contains_break(body) {
+                    self.apply_facts(&exit_facts);
+                }
                 let infinite = matches!(cond.kind, ExprKind::True) && !*negate
                     || matches!(cond.kind, ExprKind::False) && *negate;
                 let _ = ct;

@@ -642,6 +642,17 @@ fn shareable_procedures() {
 }
 
 #[test]
+fn narrowing_after_while() {
+    // The loop ends with its condition false: `w` is not nil after it.
+    ok("def f -> Int\n  w: Int? = nil\n  i = 0\n  while w.nil?\n    i += 1\n    w = i if i > 2\n  end\n  w\nend");
+    // Unless a `break` can leave it first.
+    err(
+        "def f(n: Int) -> Int\n  w: Int? = nil\n  i = 0\n  while w.nil?\n    i += 1\n    break if i > n\n    w = i if i > 2\n  end\n  w\nend",
+        "returns Int but its body has type Int?",
+    );
+}
+
+#[test]
 fn control_flow() {
     ok("x = if true then 1 else 2 end\nputs x + 1");
     ok("def f(b: Bool) -> Int | String\n  if b then 1 else \"s\" end\nend");
