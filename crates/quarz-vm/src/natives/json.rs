@@ -432,7 +432,7 @@ fn generate(
             // `JSON::Value` is generated as the document it represents.
             if let Some(value_class) = class.variant_of {
                 if interp.program.world.class(value_class).name == "JSON::Value" {
-                    let field = o.fields.borrow().first().cloned();
+                    let field = o.field(0);
                     return match (class.short_name(), field) {
                         ("Null", _) => {
                             out.push_str("null");
@@ -448,7 +448,7 @@ fn generate(
                 out.push_str(&interp.to_s(&r)?);
                 return Ok(());
             }
-            if class.kind == RtClassKind::Variant && o.fields.borrow().is_empty() {
+            if class.kind == RtClassKind::Variant && o.field_count() == 0 {
                 escape(class.short_name(), out);
                 return Ok(());
             }

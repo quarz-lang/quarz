@@ -1606,23 +1606,14 @@ fn enumerator_next(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
     let Value::Enumerator(e) = recv else {
         return Err(interp.err_type("expected an Enumerator"));
     };
-    if e.buffer.borrow().is_none() {
+    if !e.is_buffered() {
         let items = collect(interp, recv)?;
-        // What a shared enumerator holds is shared too (`Value::share`).
-        if Rc::is_shared(e) {
-            items.iter().for_each(Value::share);
-        }
-        *e.buffer.borrow_mut() = Some(items);
+        e.fill(items, Rc::is_shared(e));
     }
-    let pos = e.position.get();
-    let buffer = e.buffer.borrow();
-    let items = buffer.as_ref().unwrap();
-    if pos >= items.len() {
-        return Err(interp.raise(
+    e.current(true).ok_or_else(|| {
+        interp.raise(
             interp.program.exc.stop_iteration,
             "iteration reached an end",
-        ));
-    }
-    e.position.set(pos + 1);
-    Ok(items[pos].clone())
+        )
+    })
 }

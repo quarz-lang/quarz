@@ -487,9 +487,16 @@ pub struct Object {
     pub fields_ptr: Cell<*const Value>,
     pub nfields: Cell<u32>,
     pub class: ClassId,
-    pub fields: RefCell<Fields>,
-    /// Exceptions only: what was captured when raised.
-    pub exc: RefCell<Option<Box<ExcInfo>>>,
+    /// The field values, without a borrow flag: an object that tasks
+    /// share (its class has no `var` fields, or is an exception) is read
+    /// by several threads at once and written by none once built, and a
+    /// mutable one is only ever touched by its own task, so what guards
+    /// the vector is that no reference to it outlives the operation that
+    /// took it (see `fields_ref`).
+    fields: std::cell::UnsafeCell<Fields>,
+    /// Exceptions only: what was captured when raised (written once,
+    /// possibly by one of several threads raising a shared exception).
+    exc: std::sync::OnceLock<Box<ExcInfo>>,
 }
 
 /// The backtrace and cause of a raised exception.
@@ -505,8 +512,8 @@ impl Object {
             fields_ptr: Cell::new(std::ptr::null()),
             nfields: Cell::new(0),
             class,
-            fields: RefCell::new(fields),
-            exc: RefCell::new(None),
+            fields: std::cell::UnsafeCell::new(fields),
+            exc: std::sync::OnceLock::new(),
         });
         o.bind_fields();
         o
@@ -530,8 +537,8 @@ impl Object {
             let mut fields = Fields::with_capacity(n);
             std::ptr::copy_nonoverlapping(src, fields.as_mut_ptr(), n);
             fields.set_len(n);
-            std::ptr::write(&raw mut (*p).fields, RefCell::new(fields));
-            std::ptr::write(&raw mut (*p).exc, RefCell::new(None));
+            std::ptr::write(&raw mut (*p).fields, std::cell::UnsafeCell::new(fields));
+            std::ptr::write(&raw mut (*p).exc, std::sync::OnceLock::new());
             let rc = rc.assume_init();
             rc.bind_fields();
             rc
@@ -542,31 +549,132 @@ impl Object {
     /// resized or replaced).
     /// The backtrace captured when this (exception) object was raised.
     pub fn backtrace(&self) -> Option<Rc<Vec<String>>> {
-        self.exc.borrow().as_ref().and_then(|e| e.backtrace.clone())
-    }
-
-    pub fn set_backtrace(&self, bt: Option<Rc<Vec<String>>>) {
-        self.exc
-            .borrow_mut()
-            .get_or_insert_with(Default::default)
-            .backtrace = bt;
+        self.exc.get().and_then(|e| e.backtrace.clone())
     }
 
     pub fn cause(&self) -> Option<Value> {
-        self.exc.borrow().as_ref().and_then(|e| e.cause.clone())
+        self.exc.get().and_then(|e| e.cause.clone())
     }
 
-    pub fn set_cause(&self, cause: Option<Value>) {
-        self.exc
-            .borrow_mut()
-            .get_or_insert_with(Default::default)
-            .cause = cause;
+    /// What was captured when the exception was raised, if anything.
+    pub fn exc_info(&self) -> Option<&ExcInfo> {
+        self.exc.get().map(|e| &**e)
     }
 
+    /// Record the backtrace and cause, unless the exception has them
+    /// already (it was raised before: its first backtrace stays, as in
+    /// Ruby). Of several threads raising a shared exception at once, one
+    /// wins. `shared`: the object is shared, so what it now refers to
+    /// must be too.
+    pub fn init_exc(&self, info: ExcInfo, shared: bool) {
+        if self.exc.get().is_some() {
+            return;
+        }
+        if shared {
+            if let Some(b) = &info.backtrace {
+                Rc::mark_shared(b);
+            }
+            if let Some(c) = &info.cause {
+                c.share();
+            }
+        }
+        let _ = self.exc.set(Box::new(info));
+    }
+
+    /// Point the field view at the field vector (after it was created,
+    /// resized or replaced).
     pub fn bind_fields(&self) {
-        let f = self.fields.borrow();
+        // SAFETY: a short read (see `fields_ref`).
+        let f = unsafe { self.fields_ref() };
         self.fields_ptr.set(f.as_ptr());
         self.nfields.set(f.len() as u32);
+    }
+
+    /// Field `i`, if the object has it.
+    #[inline]
+    pub fn field(&self, i: usize) -> Option<Value> {
+        // SAFETY: a short read (see `fields_ref`).
+        unsafe { self.fields_ref() }.get(i).cloned()
+    }
+
+    pub fn field_count(&self) -> usize {
+        // SAFETY: a short read (see `fields_ref`).
+        unsafe { self.fields_ref() }.len()
+    }
+
+    /// A copy of the field values.
+    pub fn fields(&self) -> Fields {
+        // SAFETY: a short read (see `fields_ref`).
+        unsafe { self.fields_ref() }.clone()
+    }
+
+    /// Store `v` in field `i`, growing the fields when needed (and then
+    /// pointing compiled code's view at the new vector).
+    #[inline(always)]
+    pub fn set_field(&self, i: usize, v: Value) {
+        // SAFETY: a short write (see `fields_mut`); the replaced value is
+        // dropped after it.
+        let old = match unsafe { self.fields_mut() }.get_mut(i) {
+            Some(slot) => std::mem::replace(slot, v),
+            None => return self.grow_and_set(i, v),
+        };
+        drop(old);
+    }
+
+    #[cold]
+    fn grow_and_set(&self, i: usize, v: Value) {
+        // SAFETY: a short write (see `fields_mut`).
+        unsafe {
+            let fields = self.fields_mut();
+            fields.resize(i + 1, Value::Nil);
+            fields[i] = v;
+        }
+        self.bind_fields();
+    }
+
+    /// Field `i`, leaving nil there (`nil` when absent).
+    pub fn take_field(&self, i: usize) -> Value {
+        // SAFETY: a short write (see `fields_mut`).
+        unsafe { self.fields_mut() }
+            .get_mut(i)
+            .map(|s| std::mem::replace(s, Value::Nil))
+            .unwrap_or(Value::Nil)
+    }
+
+    /// Replace every field.
+    pub fn set_fields(&self, fields: Fields) {
+        // SAFETY: a short write (see `fields_mut`); the old values are
+        // dropped after it.
+        let old = std::mem::replace(unsafe { self.fields_mut() }, fields);
+        self.bind_fields();
+        drop(old);
+    }
+
+    /// The field vector, to read.
+    ///
+    /// # Safety
+    /// No `fields_mut` reference may be alive while this one is, and none
+    /// may be taken before it ends: the caller keeps it for an operation
+    /// that runs no Quarz code (nothing that could reach this object and
+    /// change it). Several threads may read a shared object this way at
+    /// once: nothing writes one once it is shared.
+    #[inline(always)]
+    pub unsafe fn fields_ref(&self) -> &Fields {
+        unsafe { &*self.fields.get() }
+    }
+
+    /// The field vector, to change.
+    ///
+    /// # Safety
+    /// No other reference to the fields may be alive or taken while this
+    /// one is (an operation that runs no Quarz code), and the object is
+    /// not shared with another thread (an object is changed only while
+    /// built, or by the one task a mutable object belongs to). A caller
+    /// that grows or replaces the vector calls `bind_fields` after.
+    #[allow(clippy::mut_from_ref)]
+    #[inline(always)]
+    pub unsafe fn fields_mut(&self) -> &mut Fields {
+        unsafe { &mut *self.fields.get() }
     }
 }
 
@@ -656,9 +764,77 @@ pub struct EnumeratorVal {
     pub recv: Value,
     pub method: Rc<str>,
     pub args: Vec<Value>,
-    /// Buffered elements for `next`.
-    pub buffer: RefCell<Option<Vec<Value>>>,
-    pub position: Cell<usize>,
+    /// Where `next` is. An enumerator is Shareable: tasks calling `next`
+    /// on the same one share the position, each element going to one of
+    /// them.
+    cursor: std::sync::Mutex<EnumCursor>,
+}
+
+#[derive(Debug, Default)]
+struct EnumCursor {
+    /// The elements, collected at the first `next` or `peek`.
+    buffer: Option<Vec<Value>>,
+    position: usize,
+}
+
+impl EnumeratorVal {
+    pub fn new(recv: Value, method: Rc<str>, args: Vec<Value>) -> EnumeratorVal {
+        EnumeratorVal {
+            recv,
+            method,
+            args,
+            cursor: std::sync::Mutex::new(EnumCursor::default()),
+        }
+    }
+
+    fn cursor(&self) -> std::sync::MutexGuard<'_, EnumCursor> {
+        // Nothing panics while holding it; recover if something did.
+        self.cursor.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Whether the elements have been collected.
+    pub fn is_buffered(&self) -> bool {
+        self.cursor().buffer.is_some()
+    }
+
+    /// Keep the collected elements for `next`, unless another task did
+    /// meanwhile (collecting runs Quarz code, so the lock is not held
+    /// across it). `shared`: the enumerator is, and so must they be.
+    pub fn fill(&self, items: Vec<Value>, shared: bool) {
+        if shared {
+            items.iter().for_each(Value::share);
+        }
+        let mut c = self.cursor();
+        if c.buffer.is_none() {
+            c.buffer = Some(items);
+        }
+    }
+
+    /// The element at the position (moving past it when `advance`), or
+    /// `None` at the end.
+    pub fn current(&self, advance: bool) -> Option<Value> {
+        let mut c = self.cursor();
+        let pos = c.position;
+        let v = c.buffer.as_ref()?.get(pos)?.clone();
+        if advance {
+            c.position = pos + 1;
+        }
+        Some(v)
+    }
+
+    /// Back to the start, collecting the elements again at the next use.
+    pub fn rewind(&self) {
+        let mut c = self.cursor();
+        c.position = 0;
+        c.buffer = None;
+    }
+
+    /// Call `f` on each buffered element (for `Value::share`).
+    fn each_buffered(&self, mut f: impl FnMut(&Value)) {
+        if let Some(xs) = &self.cursor().buffer {
+            xs.iter().for_each(&mut f);
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -1136,10 +1312,10 @@ impl Value {
                     }
                     Value::Object(r) => {
                         if Rc::mark_shared(r) {
-                            for x in (*r.fields.as_ptr()).iter() {
+                            for x in r.fields_ref().iter() {
                                 push(&mut work, x);
                             }
-                            if let Some(e) = &*r.exc.as_ptr() {
+                            if let Some(e) = r.exc_info() {
                                 if let Some(b) = &e.backtrace {
                                     Rc::mark_shared(b);
                                 }
@@ -1195,9 +1371,10 @@ impl Value {
                             push(&mut work, &r.recv);
                             Rc::mark_shared(&r.method);
                             r.args.iter().for_each(|x| push(&mut work, x));
-                            if let Some(xs) = &*r.buffer.as_ptr() {
-                                xs.iter().for_each(|x| push(&mut work, x));
-                            }
+                            // The vector stays put while the walk runs:
+                            // a local enumerator, which only this thread
+                            // reaches, is not changed by it.
+                            r.each_buffered(|x| push(&mut work, x));
                         }
                     }
                     Value::Atom(r) => {
@@ -1492,7 +1669,10 @@ impl PartialEq for Value {
                 // Data-like objects (no mutable fields) compare structurally.
                 // The interpreter decides which classes are structural by
                 // the `structural` flag kept on the object.
-                a.class == b.class && is_structural(a) && *a.fields.borrow() == *b.fields.borrow()
+                // SAFETY: comparing values runs no Quarz code.
+                a.class == b.class
+                    && is_structural(a)
+                    && unsafe { a.fields_ref() == b.fields_ref() }
             }
             _ => self.identical(other),
         }
@@ -1574,7 +1754,8 @@ impl Hash for Value {
                 12u8.hash(state);
                 o.class.hash(state);
                 if is_structural(o) {
-                    for f in o.fields.borrow().iter() {
+                    // SAFETY: hashing values runs no Quarz code.
+                    for f in unsafe { o.fields_ref() }.iter() {
                         f.hash(state);
                     }
                 } else {

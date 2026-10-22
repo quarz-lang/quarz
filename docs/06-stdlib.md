@@ -45,7 +45,7 @@ Everything listed below exists in the prelude (`std/prelude.qz`) unless it is ma
 
 Available once you implement `abstract def each(&: (T) -> Nil)`. The same set of methods as Ruby: `map collect flat_map collect_concat filter_map select filter find_all reject reduce inject (with or without an initial value) sum (with a block, Int or Float) min max minmax (comparable elements, or a comparator block) min(n) max(n) min_by max_by sort (or a comparator block) sort_by group_by partition chunk_while slice_when each_slice each_cons each_with_index each_with_object each_entry zip take drop take_while drop_while find detect find_index include? member? count (with a value or a block) tally tally_by uniq (with a block) first first(n) to_a entries to_set to_h (with a block) lazy any? all? none? one? cycle reverse_each`.
 
-`map`, `each_with_index`, `each_slice`, `each_cons` and `to_enum` return an `Enumerator[T]` without a block, so `xs.each_with_index.map { |x, i| }` and `xs.map.with_index { |x, i| }` work; `Enumerator` has `next peek rewind size each with_index(offset)` and is itself Enumerable. (`Enumerator#with_index` collects the block's results, which is what `map.with_index` needs.) `lazy` is a no-op for now: a lazily evaluated `Lazy[T]` is *planned*.
+`map`, `each_with_index`, `each_slice`, `each_cons` and `to_enum` return an `Enumerator[T]` without a block, so `xs.each_with_index.map { |x, i| }` and `xs.map.with_index { |x, i| }` work; `Enumerator` has `next peek rewind size each with_index(offset)` and is itself Enumerable; it is Shareable, and tasks calling `next` on the same enumerator share its position, each element going to one of them. (`Enumerator#with_index` collects the block's results, which is what `map.with_index` needs.) `lazy` is a no-op for now: a lazily evaluated `Lazy[T]` is *planned*.
 
 A block over a collection of tuples destructures them: `hash.map { |k, v| }`, `xs.each_with_index.map { |x, i| }`.
 
@@ -81,7 +81,7 @@ An array of a comparable element type is `Comparable` (`<=> < <= > >= between? c
 ## 7. Control and Errors
 
 - Exception hierarchy: `Exception` > (`Task::Cancelled`, `NoMemoryError`, `SystemExit`, `SystemStackError`, `DeadlockError`) / `StandardError` > (`ArgumentError`, `TypeError`, `IndexError` > `KeyError`, `RangeError` > `FloatDomainError`, `ZeroDivisionError`, `FrozenError`, `IOError` > `EOFError`, `SystemCallError`, `RuntimeError`, `NoMatchingPatternError`, `NotImplementedError`, `StopIteration`, `Channel::Closed`, `Task::Timeout`).
-- `Exception#message backtrace cause full_message`.
+- `Exception#message backtrace cause full_message`. An exception keeps the backtrace of its first `raise`, as in Ruby (an exception shared by tasks too: of tasks raising it at once, one sets it).
 - `Result[T, E]` (enum): `Ok(value)`/`Err(error)`. `map`, `and_then` (alias `flat_map`), `unwrap`, `unwrap_or`, `ok?`, `err?`. For error handling without exceptions.
 
 ## 8. Concurrency

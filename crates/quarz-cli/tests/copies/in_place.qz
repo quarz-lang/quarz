@@ -54,4 +54,13 @@ end
 log = Log.new
 n.times { |k| log.add("line #{k}") }
 
-p acc.size, ys.size, zs.size, h.size, names.size, s.size, log.lines.size
+# A variable in a frame that a task block does not read: the task's copy
+# of the frame leaves it out, so it stays unique.
+big = [1, 2, 3]
+big_size = -> { big.size }
+three = 3
+t = spawn { three * 2 }
+n.times { |k| big = big.push(k) }
+t.await
+
+p acc.size, ys.size, zs.size, h.size, names.size, s.size, log.lines.size, big_size.call

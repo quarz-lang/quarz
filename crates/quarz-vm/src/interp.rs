@@ -366,6 +366,9 @@ pub struct Interp {
     /// yet, else the method id plus one).
     vtable: RefCell<Vec<u32>>,
     class_dispatch_cache: RefCell<FxHashMap<(ClassId, MethodId), Option<MethodId>>>,
+    /// What each task block reads of the frames it was made in (see
+    /// `natives::concurrency::captured_slots`).
+    pub(crate) spawn_captures: RefCell<FxHashMap<FuncId, std::rc::Rc<Vec<Vec<u32>>>>>,
     /// `class_method_override` results.
     class_method_cache: RefCell<FxHashMap<(ClassId, MethodId), Option<MethodId>>>,
     /// The program image for helper threads, keyed by the number of
@@ -641,6 +644,7 @@ impl Interp {
             sched: state.sched,
             vtable: RefCell::new(vec![0; nvslots * nclasses]),
             class_dispatch_cache: RefCell::new(FxHashMap::default()),
+            spawn_captures: RefCell::new(FxHashMap::default()),
             class_method_cache: RefCell::new(FxHashMap::default()),
             image_cache: RefCell::new(None),
             name_cache: RefCell::new(FxHashMap::default()),
@@ -965,7 +969,13 @@ impl Interp {
         let bt = self.capture_backtrace();
         Value::Object({
             let o = Object::new(class, fields);
-            o.set_backtrace(Some(Rc::new(bt)));
+            o.init_exc(
+                ExcInfo {
+                    backtrace: Some(Rc::new(bt)),
+                    cause: None,
+                },
+                false,
+            );
             o
         })
     }
@@ -1047,7 +1057,7 @@ impl Interp {
 
     pub fn exception_message(&self, exc: &Value) -> String {
         match exc {
-            Value::Object(o) => match o.fields.borrow().first().and_then(|v| v.as_str()) {
+            Value::Object(o) => match o.field(0).as_ref().and_then(|v| v.as_str()) {
                 Some(s) => s.to_string(),
                 None => self.class_name(exc),
             },
@@ -1078,9 +1088,14 @@ impl Interp {
             Value::Str(s) => self.make_exception(self.program.exc.runtime_error, &s),
             Value::Short(s) => self.make_exception(self.program.exc.runtime_error, s.as_str()),
             Value::Object(o) => {
-                if o.backtrace().is_none() {
+                // Raised before: its first backtrace stays.
+                if o.exc_info().is_none() {
                     let bt = self.capture_backtrace();
-                    o.set_backtrace(Some(Rc::new(bt)));
+                    let info = ExcInfo {
+                        backtrace: Some(Rc::new(bt)),
+                        cause: None,
+                    };
+                    o.init_exc(info, Rc::is_shared(&o));
                 }
                 Value::Object(o)
             }
@@ -1164,13 +1179,13 @@ impl Interp {
         let Some(iv) = class.ivars.get(i) else {
             return Value::Nil;
         };
-        let fields = o.fields.borrow();
         let slot = iv.slot as usize;
         match iv.flat {
-            None => fields.get(slot).cloned().unwrap_or(Value::Nil),
+            None => o.field(slot).unwrap_or(Value::Nil),
             Some(d) => {
                 let n = self.program.world.class(d).fields.len();
-                let vals: Fields = fields
+                // SAFETY: a short read, copying values.
+                let vals: Fields = unsafe { o.fields_ref() }
                     .get(slot..slot + n)
                     .map(|s| s.iter().cloned().collect())
                     .unwrap_or_else(|| smallvec![Value::Nil; n]);
@@ -1188,23 +1203,15 @@ impl Interp {
         };
         let slot = iv.slot as usize;
         match iv.flat {
-            None => {
-                let mut fields = o.fields.borrow_mut();
-                if slot >= fields.len() {
-                    fields.resize(slot + 1, Value::Nil);
-                    drop(fields);
-                    o.bind_fields();
-                    fields = o.fields.borrow_mut();
-                }
-                fields[slot] = v;
-            }
+            None => o.set_field(slot, v),
             Some(d) => {
                 let n = self.program.world.class(d).fields.len();
                 let Value::Object(src) = &v else {
                     return;
                 };
-                let src_fields = src.fields.borrow();
-                let mut fields = o.fields.borrow_mut();
+                // SAFETY: a short write copying values; `src` is a value
+                // of class `d`, so not `o` itself.
+                let (fields, src_fields) = unsafe { (o.fields_mut(), src.fields_ref()) };
                 for k in 0..n {
                     if let (Some(dst), Some(x)) = (fields.get_mut(slot + k), src_fields.get(k)) {
                         *dst = x.clone();
@@ -1236,7 +1243,8 @@ impl Interp {
                 Some(d) => {
                     let n = self.program.world.class(d).fields.len();
                     if let Value::Object(src) = &v {
-                        for (k, x) in src.fields.borrow().iter().take(n).enumerate() {
+                        // SAFETY: a short read, copying values.
+                        for (k, x) in unsafe { src.fields_ref() }.iter().take(n).enumerate() {
                             if slot + k < out.len() {
                                 out[slot + k] = x.clone();
                             }
@@ -1618,15 +1626,14 @@ impl Interp {
                     return Err(self.err_type("data initialization on a non-object"));
                 };
                 let values = self.bind_data_args(mid, &recv, args, kw)?;
-                *o.fields.borrow_mut() = self.flatten_values(o.class, values);
-                o.bind_fields();
+                o.set_fields(self.flatten_values(o.class, values));
                 return Ok(Value::Nil);
             }
             RtSynth::DataWith => {
                 let Value::Object(o) = &recv else {
                     return Err(self.err_type("`with` on a non-object"));
                 };
-                let copy = Object::new(o.class, o.fields.borrow().clone());
+                let copy = Object::new(o.class, o.fields());
                 for (sym, v) in kw {
                     let name = self.symbol_name(sym);
                     if let Some(i) = m.params.iter().position(|p| *p.name == *name) {

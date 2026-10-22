@@ -780,10 +780,15 @@ fn run_command(interp: &Interp, mut command: std::process::Command, name: &str) 
     // A `data` with no initializer of its own: fill the fields directly.
     let value = interp.construct(class, None, smallvec![], Vec::new(), None)?;
     if let Value::Object(obj) = &value {
-        let mut fields = obj.fields.borrow_mut();
-        fields[0] = Value::Int(status as i64);
-        fields[1] = Value::string(String::from_utf8_lossy(&output.stdout).into_owned());
-        fields[2] = Value::string(String::from_utf8_lossy(&output.stderr).into_owned());
+        obj.set_field(0, Value::Int(status as i64));
+        obj.set_field(
+            1,
+            Value::string(String::from_utf8_lossy(&output.stdout).into_owned()),
+        );
+        obj.set_field(
+            2,
+            Value::string(String::from_utf8_lossy(&output.stderr).into_owned()),
+        );
     }
     Ok(value)
 }

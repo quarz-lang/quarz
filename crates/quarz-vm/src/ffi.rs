@@ -548,12 +548,7 @@ pub unsafe extern "C" fn qz_field_get(
 ) -> u32 {
     let rt = &*rt;
     let v = match &*regs.add(obj as usize) {
-        Value::Object(o) => o
-            .fields
-            .borrow()
-            .get(index as usize)
-            .cloned()
-            .unwrap_or(Value::Nil),
+        Value::Object(o) => o.field(index as usize).unwrap_or(Value::Nil),
         _ => {
             return rt.park_flow(rt.raise(
                 rt.program.exc.runtime_error,
@@ -581,12 +576,7 @@ pub unsafe extern "C" fn qz_field_set(
     let v = (*regs.add(src as usize)).clone();
     match &*regs.add(obj as usize) {
         Value::Object(o) => {
-            let mut fields = o.fields.borrow_mut();
-            let idx = index as usize;
-            if idx >= fields.len() {
-                fields.resize(idx + 1, Value::Nil);
-            }
-            fields[idx] = v;
+            o.set_field(index as usize, v);
             STATUS_OK
         }
         _ => rt.park_flow(rt.raise(
@@ -779,11 +769,12 @@ pub unsafe extern "C" fn qz_owned_call(
             }
             2 => {
                 if let Value::Object(o) = &*regs.add(a as usize) {
-                    let mut fields = o.fields.borrow_mut();
-                    if let Some(slot) = fields.get_mut(b as usize) {
+                    // SAFETY: `owned_fast` runs no Quarz code, and the
+                    // field of `@x = @x.meth` belongs to a mutable object,
+                    // which only its own task touches.
+                    if let Some(slot) = o.fields_mut().get_mut(b as usize) {
                         if rt.owned_fast(mid, slot, refs) {
                             let v = slot.clone();
-                            drop(fields);
                             if dst != u32::MAX {
                                 *regs.add(dst as usize) = v;
                             }
@@ -807,19 +798,14 @@ pub unsafe extern "C" fn qz_owned_call(
     };
     let take_field = |obj: u32, index: u32| -> Value {
         match &*regs.add(obj as usize) {
-            Value::Object(o) => o
-                .fields
-                .borrow_mut()
-                .get_mut(index as usize)
-                .map(|s| std::mem::replace(s, Value::Nil))
-                .unwrap_or(Value::Nil),
+            Value::Object(o) => o.take_field(index as usize),
             _ => Value::Nil,
         }
     };
     let put_field = |obj: u32, index: u32, v: Value| {
         if let Value::Object(o) = &*regs.add(obj as usize) {
-            if let Some(s) = o.fields.borrow_mut().get_mut(index as usize) {
-                *s = v;
+            if index < o.field_count() as u32 {
+                o.set_field(index as usize, v);
             }
         }
     };

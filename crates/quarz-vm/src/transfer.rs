@@ -139,7 +139,7 @@ pub fn export(interp: &Interp, v: &Value) -> Result<Transfer, Flow> {
         Value::Time(t) => Transfer::Time(**t),
         Value::Object(o) => Transfer::Object {
             class: o.class,
-            fields: export_all(interp, o.fields.borrow().iter())?,
+            fields: export_all(interp, o.fields().iter())?,
             backtrace: o.backtrace().map(|b| b.to_vec()),
             cause: match o.cause() {
                 Some(c) => Some(Box::new(export(interp, &c)?)),
@@ -317,8 +317,11 @@ pub fn import(interp: &Interp, t: Transfer) -> Value {
             Value::Object({
                 let o = Object::new(class, fields);
                 if backtrace.is_some() || cause.is_some() {
-                    o.set_backtrace(backtrace.map(Rc::new));
-                    o.set_cause(cause.map(|c| import(interp, *c)));
+                    let info = crate::value::ExcInfo {
+                        backtrace: backtrace.map(Rc::new),
+                        cause: cause.map(|c| import(interp, *c)),
+                    };
+                    o.init_exc(info, false);
                 }
                 o
             })

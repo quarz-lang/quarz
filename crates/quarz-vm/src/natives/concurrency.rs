@@ -7,16 +7,65 @@ use std::time::Duration;
 use crate::interp::{Args, EvalResult, Flow, Interp, NativeFn};
 use crate::sched::{ChannelInner, ScopeInner, SelectorState, TaskHandle};
 use crate::value::*;
+use quarz_ir::{FuncId, Inst, VarLoc};
 use smallvec::smallvec;
 
 use super::{block, int};
 
+/// What a task block reads of the frames it was made in: for each frame
+/// of the chain (0 = the innermost), the slots that its body, or a block
+/// made inside it, reads (or would write: none, the checker forbids it).
+/// A function with a frame of its own reaches the chain one frame up.
+pub(crate) fn captured_slots(interp: &Interp, fid: FuncId) -> std::rc::Rc<Vec<Vec<u32>>> {
+    if let Some(c) = interp.spawn_captures.borrow().get(&fid) {
+        return c.clone();
+    }
+    let funcs = interp.funcs.borrow();
+    let mut out: Vec<Vec<u32>> = Vec::new();
+    // (function, the frames between where it starts and the chain)
+    let mut work = vec![(fid, 0u32)];
+    while let Some((f, skip)) = work.pop() {
+        let func = &funcs[f as usize];
+        let own = u32::from(func.frame_size > 0);
+        let mut note = |depth: u32, slot: u32| {
+            if let Some(d) = depth.checked_sub(own + skip) {
+                let d = d as usize;
+                if out.len() <= d {
+                    out.resize(d + 1, Vec::new());
+                }
+                if !out[d].contains(&slot) {
+                    out[d].push(slot);
+                }
+            }
+        };
+        for b in &func.blocks {
+            for inst in &b.insts {
+                match inst {
+                    Inst::FrameGet { depth, slot, .. } | Inst::FrameSet { depth, slot, .. } => {
+                        note(*depth, *slot)
+                    }
+                    Inst::OwnedCall {
+                        recv: VarLoc::Frame { depth, slot },
+                        ..
+                    } => note(*depth, *slot),
+                    Inst::MakeBlock { func: g, .. } => work.push((*g, skip + own)),
+                    _ => {}
+                }
+            }
+        }
+    }
+    let c = std::rc::Rc::new(out);
+    interp.spawn_captures.borrow_mut().insert(fid, c.clone());
+    c
+}
+
 /// A `spawn` block captures by value: the task sees the outer variables
 /// as they were at the `spawn`, not later reassignments. (The checker
 /// keeps the block from assigning them and requires their values to be
-/// Shareable, so a copy of each frame of the chain, sharing the values,
-/// is all it takes.)
-fn snapshot(b: &Value) -> Value {
+/// Shareable, so a copy of the frames of the chain, sharing the values,
+/// is all it takes.) Only the variables the block reads are copied: the
+/// others, of whatever type, stay with this task.
+fn snapshot(interp: &Interp, b: &Value) -> Value {
     let Value::Proc(c) = b else {
         b.share();
         return b.clone();
@@ -25,13 +74,29 @@ fn snapshot(b: &Value) -> Value {
         b.share();
         return b.clone();
     };
-    fn copy(frame: &Rc<Frame>) -> Rc<Frame> {
-        let parent = frame.parent.as_ref().map(copy);
-        Frame::from_slots(frame.slots.borrow().clone(), parent)
+    fn copy(frame: &Rc<Frame>, depth: usize, caps: &[Vec<u32>]) -> Rc<Frame> {
+        let parent = if depth + 1 < caps.len() {
+            frame.parent.as_ref().map(|p| copy(p, depth + 1, caps))
+        } else {
+            None
+        };
+        let src = frame.slots.borrow();
+        let mut slots: smallvec::SmallVec<[Value; 8]> = smallvec![Value::Nil; src.len()];
+        for &s in &caps[depth] {
+            if let Some(v) = src.get(s as usize) {
+                slots[s as usize] = v.clone();
+            }
+        }
+        Frame::from_slots(slots, parent)
     }
+    let caps = captured_slots(interp, *f);
     let block = Value::Proc(Rc::new(Closure {
         body: ClosureBody::Func(*f),
-        frame: Some(copy(frame)),
+        frame: if caps.is_empty() {
+            None
+        } else {
+            Some(copy(frame, 0, &caps))
+        },
         self_val: c.self_val.clone(),
         destructure: c.destructure,
         is_lambda: c.is_lambda,
@@ -47,7 +112,7 @@ fn snapshot(b: &Value) -> Value {
 
 pub fn register(m: &mut super::Registry<NativeFn>) {
     m.insert("Kernel#spawn", |i, _, a| {
-        let b = snapshot(&block(i, &a)?);
+        let b = snapshot(i, &block(i, &a)?);
         Ok(Value::Task(i.spawn_task(b, None, "task")))
     });
     m.insert("Kernel#loop", kernel_loop);
@@ -105,7 +170,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         Ok(Value::Bool(task(i, r)?.cancel_requested.get()))
     });
     m.insert("Scope#spawn", |i, r, a| {
-        let b = snapshot(&block(i, &a)?);
+        let b = snapshot(i, &block(i, &a)?);
         let s = scope(i, r)?.clone();
         Ok(Value::Task(i.spawn_task(b, Some(s), "task")))
     });

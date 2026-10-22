@@ -1,0 +1,38 @@
+# An enumerator shared by tasks: each element goes to one of them.
+e = [1, 2, 3, 4, 5, 6].each
+results = Channel.new(10)
+Task.scope do |s|
+  2.times do |w|
+    s.spawn do
+      got: Array[Int] = []
+      begin
+        loop do
+          got = got.push(e.next)
+          Task.yield
+        end
+      rescue StopIteration
+      end
+      results.send(got)
+    end
+  end
+end
+a = results.receive
+b = results.receive
+p (a + b).sort, a.size + b.size
+
+# A shared exception keeps the backtrace of its first raise.
+Boom = RuntimeError.new("boom")
+def fail_once -> Nil
+  raise Boom
+end
+lines = (1..2).map do |_|
+  spawn do
+    begin
+      fail_once
+      ""
+    rescue => e
+      e.backtrace.first
+    end
+  end
+end.map(&:await)
+p lines[0] == lines[1], Boom.message

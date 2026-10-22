@@ -44,28 +44,18 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         let Value::Enumerator(e) = r else {
             return Err(i.err_type("expected an Enumerator"));
         };
-        if e.buffer.borrow().is_none() {
+        if !e.is_buffered() {
             let items = collect(i, r)?;
-            // What a shared enumerator holds is shared too (`Value::share`).
-            if Rc::is_shared(e) {
-                items.iter().for_each(Value::share);
-            }
-            *e.buffer.borrow_mut() = Some(items);
+            e.fill(items, Rc::is_shared(e));
         }
-        let pos = e.position.get();
-        let buffer = e.buffer.borrow();
-        let items = buffer.as_ref().unwrap();
-        match items.get(pos) {
-            Some(v) => Ok(v.clone()),
-            None => Err(i.raise(i.program.exc.stop_iteration, "iteration reached an end")),
-        }
+        e.current(false)
+            .ok_or_else(|| i.raise(i.program.exc.stop_iteration, "iteration reached an end"))
     });
     m.insert("Enumerator#rewind", |i, r, _| {
         let Value::Enumerator(e) = r else {
             return Err(i.err_type("expected an Enumerator"));
         };
-        e.position.set(0);
-        *e.buffer.borrow_mut() = None;
+        e.rewind();
         Ok(r.clone())
     });
 

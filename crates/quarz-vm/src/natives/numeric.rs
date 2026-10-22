@@ -513,13 +513,11 @@ pub(super) fn enumerator(
     args: Vec<Value>,
 ) -> EvalResult {
     let _ = interp;
-    Ok(Value::Enumerator(Rc::new(EnumeratorVal {
-        recv: recv.clone(),
-        method: Rc::from(method),
+    Ok(Value::Enumerator(Rc::new(EnumeratorVal::new(
+        recv.clone(),
+        Rc::from(method),
         args,
-        buffer: std::cell::RefCell::new(None),
-        position: std::cell::Cell::new(0),
-    })))
+    ))))
 }
 
 fn int_times(interp: &Interp, recv: &Value, args: Args) -> EvalResult {

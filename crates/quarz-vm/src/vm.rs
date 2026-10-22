@@ -894,12 +894,7 @@ impl Interp {
                 dst, obj, index, ..
             } => {
                 let v = match &regs[*obj as usize] {
-                    Value::Object(o) => o
-                        .fields
-                        .borrow()
-                        .get(*index as usize)
-                        .cloned()
-                        .unwrap_or(Value::Nil),
+                    Value::Object(o) => o.field(*index as usize).unwrap_or(Value::Nil),
                     _ => {
                         return Err(self.raise(
                             self.program.exc.runtime_error,
@@ -914,14 +909,7 @@ impl Interp {
             } => {
                 let v = regs[*src as usize].clone();
                 match &regs[*obj as usize] {
-                    Value::Object(o) => {
-                        let mut fields = o.fields.borrow_mut();
-                        let idx = *index as usize;
-                        if idx >= fields.len() {
-                            fields.resize(idx + 1, Value::Nil);
-                        }
-                        fields[idx] = v;
-                    }
+                    Value::Object(o) => o.set_field(*index as usize, v),
                     _ => {
                         return Err(self.raise(
                             self.program.exc.runtime_error,
@@ -1113,12 +1101,16 @@ impl Interp {
                         }
                         VarLoc::Field { obj, index } => {
                             if let Value::Object(o) = &regs[*obj as usize] {
-                                let mut fields = o.fields.borrow_mut();
-                                if let Some(slot) = fields.get_mut(*index as usize) {
+                                // SAFETY: `owned_fast` runs no Quarz code,
+                                // and the field of `@x = @x.meth` belongs
+                                // to a mutable object, which only its own
+                                // task touches.
+                                if let Some(slot) =
+                                    unsafe { o.fields_mut() }.get_mut(*index as usize)
+                                {
                                     if self.owned_fast(*method, slot, &refs) {
                                         if !*unused {
                                             let v = slot.clone();
-                                            drop(fields);
                                             regs[*dst as usize] = v;
                                         }
                                         return Ok(());
@@ -1133,19 +1125,14 @@ impl Interp {
                 let kw = self.call_kwargs(f, pool, regs, kw, None);
                 let take_field = |obj: Reg, index: u32| -> Value {
                     match &regs[obj as usize] {
-                        Value::Object(o) => o
-                            .fields
-                            .borrow_mut()
-                            .get_mut(index as usize)
-                            .map(|s| std::mem::replace(s, Value::Nil))
-                            .unwrap_or(Value::Nil),
+                        Value::Object(o) => o.take_field(index as usize),
                         _ => Value::Nil,
                     }
                 };
                 let put_field = |regs: &[Value], obj: Reg, index: u32, v: Value| {
                     if let Value::Object(o) = &regs[obj as usize] {
-                        if let Some(s) = o.fields.borrow_mut().get_mut(index as usize) {
-                            *s = v;
+                        if (index as usize) < o.field_count() {
+                            o.set_field(index as usize, v);
                         }
                     }
                 };
