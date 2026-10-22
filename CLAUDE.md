@@ -43,6 +43,11 @@ when the local one is older.
   output must match, and the build tests compile every fixture and
   example with both backends and compare against the VM. Regenerate an
   `.out` only after checking the new output by hand.
+- `.cargo/config.toml` sets `QUARZ_THREADS=1` for `cargo test` (and
+  `cargo run`), so tasks' output order is deterministic; the default is
+  one worker per CPU. `tests/threads.rs` runs `tests/threads/*.qz` with
+  four workers: programs there must print the same whatever the
+  scheduling.
 - `tests/copies.rs`: loops meant to update collections in place must
   copy nothing (`QUARZ_COUNT_COPIES=1` prints the count at exit, on the
   VM and in compiled programs). A regression there makes a loop

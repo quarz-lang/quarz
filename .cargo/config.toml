@@ -1,0 +1,8 @@
+# The tests run their programs on one worker thread, where the order of
+# tasks' output is deterministic; those meant for several workers
+# (crates/quarz-cli/tests/threads.rs) set QUARZ_THREADS themselves. A
+# QUARZ_THREADS already in the environment wins. (This also applies to
+# `cargo run`; run target/*/quarz directly for the default, one worker
+# per CPU.)
+[env]
+QUARZ_THREADS = "1"

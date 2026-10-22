@@ -500,8 +500,9 @@ struct WorkerSlot {
     started: AtomicBool,
 }
 
-/// The worker threads of a program (`QUARZ_THREADS`, 1 by default): a
-/// slot each, the thread started when a task is first placed there.
+/// The worker threads of a program (`QUARZ_THREADS`, by default as many
+/// as the CPUs the process may use): a slot each, the thread started when
+/// a task is first placed there.
 /// Worker 0 is the thread that runs the main program.
 pub struct Workers {
     slots: Vec<WorkerSlot>,
@@ -526,13 +527,15 @@ impl Workers {
         })
     }
 
-    /// `QUARZ_THREADS` (1 when unset or not a positive number).
+    /// `QUARZ_THREADS`, or, when it is unset (or not a positive number),
+    /// the number of CPUs the process may use (its affinity mask and, on
+    /// Linux, its cgroup's CPU quota), as Go's `GOMAXPROCS` defaults to.
     pub fn count_from_env() -> usize {
         std::env::var("QUARZ_THREADS")
             .ok()
             .and_then(|s| s.trim().parse::<usize>().ok())
             .filter(|n| *n >= 1)
-            .unwrap_or(1)
+            .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()))
     }
 
     pub fn count(&self) -> usize {

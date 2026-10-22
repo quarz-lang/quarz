@@ -4,7 +4,7 @@
 
 Quarz's concurrency model consists of three parts.
 
-1. **Tasks** — lightweight threads corresponding to goroutines / Erlang processes. They are M:N scheduled, and hundreds of thousands can run at once. (Currently `QUARZ_THREADS` sets the number of worker threads, 1 by default, and a task stays on the worker it starts on; see §7.)
+1. **Tasks** — lightweight threads corresponding to goroutines / Erlang processes. They are M:N scheduled, and hundreds of thousands can run at once. (Currently a task stays on the worker thread it starts on; see §7.)
 2. **Channels** — typed message queues. All communication and synchronization between tasks goes through them.
 3. **Atom** — a shared cell holding an immutable value. Updated via CAS, so multiple tasks can read and write it safely.
 
@@ -207,7 +207,7 @@ rows = Task.blocking { legacy_c_query(sql) }
 
 ## 7. Runtime Structure
 
-This is the design. Currently `QUARZ_THREADS` worker threads run the tasks (1 by default, see [05-execution.md](05-execution.md) §9), each with its run queue, timers and reactor; a new task goes to each worker in turn and stays there (no work stealing yet); each task has a 16 MiB virtual stack (256 MiB for the main task), which cannot be changed; timers are a binary heap; a channel is a buffer and waiters under a spin lock. The shared flag below is in place. Work stealing, a default of the number of cores, `spawn(stack:)`, the timing wheel and lock-free channels are planned.
+This is the design. Currently worker threads run the tasks (see [05-execution.md](05-execution.md) §9), each with its run queue, timers and reactor; a new task goes to each worker in turn and stays there (no work stealing yet); each task has a 16 MiB virtual stack (256 MiB for the main task), which cannot be changed; timers are a binary heap; a channel is a buffer and waiters under a spin lock. The shared flag below is in place. Work stealing, `spawn(stack:)`, the timing wheel and lock-free channels are planned.
 
 - **Scheduler**: work-stealing, with a run queue per OS thread (defaults to the number of CPU cores). `QUARZ_THREADS=1` pins it to a single thread, which is useful for tests that need determinism.
 - **Stacks**: virtual memory is reserved per task with `mmap` (default 1 MiB, changeable with `spawn(stack: 8.mib)`), and physical pages are committed only when touched. A guard page sits at the top, and overflow raises `SystemStackError`. On 64-bit systems the address space is ample, so even with a million tasks, real memory is only what is actually used (typically 4–8 KiB per task). Stack copying as in Go was not adopted because it would require rewriting pointers into the stack in AOT-compiled code.
