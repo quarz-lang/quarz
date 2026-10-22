@@ -1,7 +1,6 @@
 # Working on Quarz
 
-Respond to the user in Japanese. Code, comments, commit messages and the
-English docs stay in English.
+Code, comments, commit messages and the English docs are in English.
 
 ## Layout
 
