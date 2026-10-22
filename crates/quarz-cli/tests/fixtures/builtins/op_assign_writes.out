@@ -1,0 +1,9 @@
+make
+get
+set a
+get
+get
+set c
+[] k
+[]= k x
+[] k

@@ -1,0 +1,39 @@
+# `x.v ||= e` and `x[k] ||= e` (and `&&=`) evaluate the receiver and the
+# index once, read once, and call the setter only when they assign: e is
+# evaluated, and stored, only when the current value is falsy (truthy for
+# `&&=`), as in Ruby.
+class Box
+  var @v: String? = nil
+  def v -> String?
+    puts "get"
+    @v
+  end
+  def v=(x: String?) -> Nil
+    puts "set #{x}"
+    @v = x
+    nil
+  end
+end
+class Store
+  var @h: Hash[String, String] = {}
+  def [](k: String) -> String?
+    puts "[] #{k}"
+    @h[k]?
+  end
+  def []=(k: String, x: String) -> Nil
+    puts "[]= #{k} #{x}"
+    @h = @h.put(k, x)
+    nil
+  end
+end
+def make -> Box
+  puts "make"
+  Box.new
+end
+b = make
+b.v ||= "a"
+b.v ||= "b"
+b.v &&= "c"
+s = Store.new
+s["k"] ||= "x"
+s["k"] ||= "y"
