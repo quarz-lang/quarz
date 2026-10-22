@@ -142,7 +142,7 @@ Where Shareable is required:
 | Variables captured by `spawn`/`scope.spawn` blocks | Executed in a new task |
 | `T` of `Atom[T]` | Read and written from multiple tasks |
 | Constants | Visible from every task |
-| `T` of `Task[T]` (return value) | Passed to another task via `await` (not enforced yet) |
+| `T` of `Task[T]` (return value) | Passed to another task via `await` (the `spawn`, `scope.spawn` or `Task.blocking` block's result) |
 | Exceptions | Propagate across task boundaries |
 
 ```ruby

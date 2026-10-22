@@ -4979,6 +4979,21 @@ impl Checker {
         let void = self.world.is_nil_type(&self.infer.resolve(&ret));
         let bt = self.check_body(&block.body, if void { None } else { Some(&ret) });
         self.mark_discarded(block.body.last(), void);
+        // A task's result reaches the task that awaits it.
+        if is_task && !void && !bt.is_nothing() {
+            let rt = self.resolve(&bt);
+            if !rt.has_vars() && !self.world.is_shareable(&rt) {
+                let span = block.body.last().map(|e| e.span).unwrap_or(block.span);
+                self.error(
+                    format!(
+                        "a task block returns the non-shareable type {}, but its value \
+                         passes to the task that awaits it",
+                        self.world.type_name(&rt)
+                    ),
+                    span,
+                );
+            }
+        }
         if !void && !bt.is_nothing() && !self.coerce(&bt, &ret) {
             let span = block.body.last().map(|e| e.span).unwrap_or(block.span);
             self.error(

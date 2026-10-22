@@ -327,6 +327,26 @@ fn captured_self_in_task_blocks() {
 }
 
 #[test]
+fn task_results_are_shareable() {
+    // A task's result passes to the task that awaits it.
+    let counter = "class Counter\n  var @n: Int = 0\nend\n";
+    for body in [
+        "t = spawn { Counter.new }",
+        "Task.scope { |s| s.spawn { Counter.new } }",
+        "x = Task.blocking { Counter.new }",
+        "t = spawn { [Counter.new] }",
+    ] {
+        err(
+            &format!("{counter}{body}"),
+            "a task block returns the non-shareable type",
+        );
+    }
+    ok("t = spawn { [1, 2] }\np t.await");
+    ok("t = spawn { puts \"hi\" }\nt.await");
+    ok("x = Task.blocking { \"done\" }\nputs x");
+}
+
+#[test]
 fn nil_results_and_lambda_annotations() {
     // A lambda's declared result is checked like a method's.
     err(
