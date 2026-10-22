@@ -86,7 +86,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             i.sched.borrow_mut().deregister(old_fd);
             s.socket = Some(socket);
             // A new descriptor: it is registered anew where waited on.
-            std::mem::replace(&mut s.watch, IoWatch::new()).waiters
+            std::mem::take(&mut s.watch).waiters
         };
         for w in waiters {
             i.wake_ref(w);

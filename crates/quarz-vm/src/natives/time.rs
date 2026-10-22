@@ -49,10 +49,12 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         }
     });
     m.insert("Time.monotonic", |_, _, _| {
-        thread_local! { static START: std::time::Instant = std::time::Instant::now(); }
-        Ok(Value::Duration(START.with(|s| {
-            s.elapsed().as_nanos().min(i64::MAX as u128) as i64
-        })))
+        Ok(Value::Duration(
+            super::clock_start()
+                .elapsed()
+                .as_nanos()
+                .min(i64::MAX as u128) as i64,
+        ))
     });
 
     m.insert("Time#year", |i, r, _| {

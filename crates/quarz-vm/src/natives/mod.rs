@@ -200,3 +200,10 @@ pub fn core_gets(interp: &Interp, raise_on_eof: bool) -> EvalResult {
         None => Ok(Value::Nil),
     }
 }
+
+/// The origin of the monotonic clocks (`Process.clock`, `Time.monotonic`):
+/// one for every thread, taken at the first reading.
+pub(crate) fn clock_start() -> std::time::Instant {
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    *START.get_or_init(std::time::Instant::now)
+}

@@ -18,24 +18,24 @@ pub type ValueSet = IndexSet<Value, rustc_hash::FxBuildHasher>;
 /// A hash whose keys and values are all `Int`, stored unboxed.
 pub type IntMap = IndexMap<i64, i64, rustc_hash::FxBuildHasher>;
 
-thread_local! {
-    static COPIES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-}
+/// The updates that had to copy a shared collection, on every thread (a
+/// copy is rare enough for an atomic count).
+static COPIES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// The contents of a collection, for an update: in place when this is
 /// its only reference, else a copy (counted: see `copies`).
 pub fn unique_mut<T: Clone>(rc: &mut Rc<T>) -> &mut T {
     if Rc::get_mut(rc).is_none() {
-        COPIES.with(|c| c.set(c.get() + 1));
+        COPIES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
     Rc::make_mut(rc)
 }
 
-/// How many updates on this thread had to copy a shared collection.
+/// How many updates had to copy a shared collection.
 /// `QUARZ_COUNT_COPIES=1` prints it at exit; tests use it to check that
 /// the updates the compiler means to be in place are.
 pub fn copies() -> u64 {
-    COPIES.with(|c| c.get())
+    COPIES.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// The entries of a `Hash`: unboxed while every key and value is an

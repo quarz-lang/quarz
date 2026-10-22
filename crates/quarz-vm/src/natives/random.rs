@@ -9,10 +9,10 @@ use crate::value::*;
 
 use super::{float, int};
 
-thread_local! {
-    /// The generator behind `rand`/`srand` and `Random.rand`.
-    static DEFAULT: RefCell<Option<RandomState>> = const { RefCell::new(None) };
-}
+/// The generator behind `rand`/`srand` and `Random.rand`, one for the
+/// whole program (whatever worker a task runs on; `Task.blocking`'s
+/// helper threads use it too, so it is a real lock even with one worker).
+static DEFAULT: std::sync::Mutex<Option<RandomState>> = std::sync::Mutex::new(None);
 
 /// A seed from the clock and the address space.
 pub fn new_seed() -> i64 {
@@ -25,11 +25,9 @@ pub fn new_seed() -> i64 {
 }
 
 fn with_default<R>(f: impl FnOnce(&mut RandomState) -> R) -> R {
-    DEFAULT.with(|d| {
-        let mut d = d.borrow_mut();
-        let state = d.get_or_insert_with(|| RandomState::new(new_seed()));
-        f(state)
-    })
+    let mut d = crate::sched::lock(&DEFAULT);
+    let state = d.get_or_insert_with(|| RandomState::new(new_seed()));
+    f(state)
 }
 
 /// A random 64-bit word from the default generator (used by `shuffle`

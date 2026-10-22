@@ -42,8 +42,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     m.insert("Process.stdout", |_, _, _| Ok(io(IoKind::Stdout)));
     m.insert("Process.stderr", |_, _, _| Ok(io(IoKind::Stderr)));
     m.insert("Process.clock", |_, _, _| {
-        thread_local! { static START: std::time::Instant = std::time::Instant::now(); }
-        Ok(Value::Float(START.with(|s| s.elapsed().as_secs_f64())))
+        Ok(Value::Float(super::clock_start().elapsed().as_secs_f64()))
     });
     m.insert("Process.run", |i, _, a| {
         if a.pos.is_empty() {
