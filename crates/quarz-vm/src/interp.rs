@@ -1233,10 +1233,19 @@ impl Interp {
         self.sched.borrow_mut().wake_ref(r);
     }
 
+    /// Park the task for `d`. Woken before then (a scope's owner is when
+    /// a child fails), it parks again; leaving early (cancelled), it
+    /// cancels its timer, which would otherwise wake its next wait.
     pub fn sleep(&self, d: Duration) -> Result<(), Flow> {
-        let id = self.current_task().id;
-        self.sched.borrow_mut().add_timer(d, id);
-        self.park()
+        let id = self.sched.borrow().current_ref().id;
+        let timer = self.sched.borrow_mut().add_timer(d, id);
+        while self.sched.borrow().timer_pending(timer) {
+            if let Err(e) = self.park() {
+                self.sched.borrow_mut().cancel_timer(timer);
+                return Err(e);
+            }
+        }
+        Ok(())
     }
 
     /// Wait for a task to finish and return its result (re-raising its
@@ -1257,9 +1266,17 @@ impl Interp {
                 if task.is_done() {
                     continue;
                 }
-                joiners.push(self.sched.borrow().current_ref());
+                let me = self.sched.borrow().current_ref();
+                // Woken by something else, it may be listed already.
+                if !joiners.contains(&me) {
+                    joiners.push(me);
+                }
             }
-            self.park()?;
+            if let Err(e) = self.park() {
+                let me = self.sched.borrow().current_ref();
+                sched::lock(&task.joiners).retain(|t| *t != me);
+                return Err(e);
+            }
         }
     }
 
@@ -1625,9 +1642,16 @@ impl Interp {
                     ));
                 }
                 ConstInit::Running { waiters, .. } => {
-                    waiters.push(me);
+                    if !waiters.contains(&me) {
+                        waiters.push(me);
+                    }
                     drop(state);
-                    self.park()?;
+                    if let Err(e) = self.park() {
+                        if let ConstInit::Running { waiters, .. } = &mut *lock(&cell.init) {
+                            waiters.retain(|t| *t != me);
+                        }
+                        return Err(e);
+                    }
                 }
                 ConstInit::Idle => {
                     *state = ConstInit::Running {

@@ -1,0 +1,81 @@
+# A task waiting on several things is woken by one: what it was listed on
+# elsewhere must not wake its next wait, nor keep a wake-up from a task
+# waiting behind it. (The sleeps let the other tasks start waiting,
+# on whatever worker.)
+
+# A select woken by `a` was listed on `b` too: a send on `b` does not cut
+# the task's next sleep short.
+a = Channel[Int].new
+b = Channel[Int].new(capacity: 1)
+t = spawn do
+  select do |s|
+    s.receive(a) { |v| p [:a, v] }
+    s.receive(b) { |v| p [:b, v] }
+  end
+  t0 = Time.now
+  sleep(150.ms)
+  p Time.now - t0 >= 140.ms
+end
+sleep(20.ms)
+a.send 1
+sleep(30.ms)
+b.send 2
+t.await
+p b.receive
+
+# A receiver waiting on `d` behind such a select is woken by a send there.
+c = Channel[Int].new
+d = Channel[Int].new
+u = spawn do
+  select do |s|
+    s.receive(c) { |v| p [:c, v] }
+    s.receive(d) { |v| p [:d, v] }
+  end
+end
+w = spawn { p [:w, d.receive] }
+sleep(20.ms)
+c.send 1
+u.await
+sleep(20.ms)
+d.send 2
+w.await
+
+# A receiver cancelled after a sender chose it passes the value on.
+e = Channel[Int].new(capacity: 1)
+r1 = spawn { e.receive }
+r2 = spawn { p [:r2, e.receive] }
+sleep(20.ms)
+r1.cancel
+e.send 3
+r2.await
+
+# A sleep cancelled leaves no timer behind to wake the next one early.
+x = spawn do
+  begin
+    sleep(50.ms)
+  rescue Task::Cancelled
+    t0 = Time.now
+    sleep(150.ms)
+    p Time.now - t0 >= 140.ms
+  end
+end
+sleep(20.ms)
+x.cancel
+x.await
+
+# Nor does an await cancelled: the awaited task finishing later does not
+# wake the next wait.
+slow = spawn { sleep(50.ms); 1 }
+y = spawn do
+  begin
+    slow.await
+  rescue Task::Cancelled
+    t0 = Time.now
+    sleep(150.ms)
+    p Time.now - t0 >= 140.ms
+  end
+end
+sleep(20.ms)
+y.cancel
+y.await
+p slow.await

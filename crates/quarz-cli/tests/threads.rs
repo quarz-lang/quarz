@@ -105,6 +105,11 @@ fn shareable_procedures_called_from_every_worker() {
 }
 
 #[test]
+fn constants_initialized_once_across_workers() {
+    prints_its_out("consts.qz");
+}
+
+#[test]
 fn exit_in_a_task_on_another_worker() {
     check_runs("exit.qz", |out, what| {
         assert_eq!(out.status.code(), Some(7), "{what}");
@@ -118,5 +123,7 @@ fn deadlock_across_workers() {
         assert_eq!(out.status.code(), Some(1), "{what}");
         let err = String::from_utf8_lossy(&out.stderr);
         assert!(err.contains("DeadlockError"), "{what}: {err}");
+        // Both tasks are named, whichever worker each waits on.
+        assert_eq!(err.matches("task (").count(), 2, "{what}: {err}");
     });
 }

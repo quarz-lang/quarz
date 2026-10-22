@@ -411,9 +411,17 @@ fn task_timeout(interp: &Interp, _: &Value, args: Args) -> EvalResult {
             if child.is_done() {
                 continue;
             }
-            joiners.push(me.task_ref());
+            if !joiners.contains(&me.task_ref()) {
+                joiners.push(me.task_ref());
+            }
         }
-        interp.park()?;
+        if let Err(e) = interp.park() {
+            // Cancelled: so is the block.
+            lock(&child.joiners).retain(|t| *t != me.task_ref());
+            interp.sched.borrow_mut().cancel_timer(timer);
+            interp.cancel_task(&child);
+            return Err(e);
+        }
     }
 }
 
@@ -441,6 +449,9 @@ fn channel_send(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let c = chan(interp, recv)?;
     let mut value = Some(args.arg(0).clone());
     let me = interp.sched.borrow().current_ref();
+    // Whether it has waited: woken by something else, it may still be
+    // listed.
+    let mut waited = false;
     loop {
         let mut st = c.lock();
         if st.closed {
@@ -448,9 +459,15 @@ fn channel_send(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
             return Err(closed_error(interp));
         }
         if !st.can_send(c.capacity) {
-            st.send_waiters.push_back(me);
+            if !waited || !st.send_waiters.contains(&me) {
+                st.send_waiters.push_back(me);
+            }
             drop(st);
-            interp.park()?;
+            waited = true;
+            if let Err(e) = interp.park() {
+                c.lock().send_waiters.retain(|t| *t != me);
+                return Err(e);
+            }
             continue;
         }
         st.put(value.take().expect("sent once"));
@@ -468,10 +485,16 @@ fn channel_send(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
                 wake_all(interp, receiver.take());
                 return Err(closed_error(interp));
             }
-            st.send_waiters.push_back(me);
+            if !waited || !st.send_waiters.contains(&me) {
+                st.send_waiters.push_back(me);
+            }
             drop(st);
+            waited = true;
             wake_all(interp, receiver.take());
-            interp.park()?;
+            if let Err(e) = interp.park() {
+                c.lock().send_waiters.retain(|t| *t != me);
+                return Err(e);
+            }
             st = c.lock();
         }
         return Ok(Value::Nil);
@@ -522,6 +545,7 @@ type Senders = Option<std::collections::VecDeque<TaskRef>>;
 
 fn channel_receive(interp: &Interp, c: &Rc<ChannelInner>, raise_on_closed: bool) -> EvalResult {
     let me = interp.sched.borrow().current_ref();
+    let mut waited = false;
     loop {
         let mut st = c.lock();
         if let Some((v, senders)) = take_locked(&mut st) {
@@ -537,10 +561,36 @@ fn channel_receive(interp: &Interp, c: &Rc<ChannelInner>, raise_on_closed: bool)
                 Ok(Value::Nil)
             };
         }
-        st.recv_waiters.push_back(me);
+        // Woken by something else, it may still be listed.
+        if !waited || !st.recv_waiters.contains(&me) {
+            st.recv_waiters.push_back(me);
+        }
         drop(st);
-        interp.park()?;
+        waited = true;
+        if let Err(e) = interp.park() {
+            leave_receivers(interp, c, me, true);
+            return Err(e);
+        }
     }
+}
+
+/// Take `me` off a channel's receivers after a wait that ends otherwise
+/// (cancelled, or a `select` that another channel woke). A sender that
+/// took it off already meant its wake-up for a receiver: with `pass_on`,
+/// it goes to the next one while a value is there.
+fn leave_receivers(interp: &Interp, c: &ChannelInner, me: TaskRef, pass_on: bool) -> bool {
+    let mut st = c.lock();
+    let listed = st.recv_waiters.len();
+    st.recv_waiters.retain(|t| *t != me);
+    let taken_off = st.recv_waiters.len() == listed;
+    let next = if taken_off && pass_on && !st.buffer.is_empty() {
+        st.recv_waiters.pop_front()
+    } else {
+        None
+    };
+    drop(st);
+    wake_all(interp, next);
+    taken_off
 }
 
 fn channel_close(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
@@ -589,35 +639,34 @@ fn run_select(interp: &Interp, block: &Value, looping: bool) -> EvalResult {
 }
 
 fn select_once(interp: &Interp, state: &Rc<RefCell<SelectorState>>) -> Result<(), Flow> {
-    let me = interp.current_task();
+    let me = interp.sched.borrow().current_ref();
     let timer_start = std::time::Instant::now();
     let after = state.borrow().after.clone();
-    let mut timer_seq = None;
-    if let Some((d, _)) = &after {
-        timer_seq = Some(interp.sched.borrow_mut().add_timer(*d, me.id));
-    }
-    let cancel_timer = |seq: Option<u64>| {
-        if let Some(seq) = seq {
-            interp.sched.borrow_mut().cancel_timer(seq);
-        }
-    };
+    let timer = after
+        .as_ref()
+        .map(|(d, _)| interp.sched.borrow_mut().add_timer(*d, me.id));
     let receives: Vec<(Rc<ChannelInner>, Value)> = state.borrow().receives.clone();
     let sends: Vec<(Rc<ChannelInner>, Value, Value)> = state.borrow().sends.clone();
-    loop {
+    // How many of the receives and sends it is listed on, waiting.
+    let mut listed = (0, 0);
+    // The receives whose sender took it off while it waited: the wake-up
+    // meant for a receiver passes on if their value is still there once
+    // the select has chosen.
+    let mut taken_off: Vec<usize> = Vec::new();
+    // The handler chosen and its argument.
+    let chosen: Result<(Value, Option<Value>), Flow> = 'select: loop {
+        unlist(interp, &receives, &sends, me, &mut listed, &mut taken_off);
         // Receives.
         for (c, handler) in &receives {
             let mut st = c.lock();
             if let Some((v, senders)) = take_locked(&mut st) {
                 drop(st);
                 wake_all(interp, senders.into_iter().flatten());
-                cancel_timer(timer_seq);
-                interp.call_block(handler, smallvec![v])?;
-                return Ok(());
+                break 'select Ok((handler.clone(), Some(v)));
             }
             if st.closed {
                 drop(st);
-                cancel_timer(timer_seq);
-                return Err(closed_error(interp));
+                break 'select Err(closed_error(interp));
             }
         }
         // Sends.
@@ -625,8 +674,7 @@ fn select_once(interp: &Interp, state: &Rc<RefCell<SelectorState>>) -> Result<()
             let mut st = c.lock();
             if st.closed {
                 drop(st);
-                cancel_timer(timer_seq);
-                return Err(closed_error(interp));
+                break 'select Err(closed_error(interp));
             }
             if send_ready(c, &st) {
                 st.put(value.clone());
@@ -636,27 +684,21 @@ fn select_once(interp: &Interp, state: &Rc<RefCell<SelectorState>>) -> Result<()
                 let receiver = st.recv_waiters.pop_front();
                 drop(st);
                 wake_all(interp, receiver);
-                cancel_timer(timer_seq);
-                interp.call_block(handler, smallvec![])?;
-                return Ok(());
+                break 'select Ok((handler.clone(), None));
             }
         }
         // Timeout.
         if let Some((d, handler)) = &after {
             if timer_start.elapsed() >= *d {
-                interp.call_block(handler, smallvec![])?;
-                return Ok(());
+                break 'select Ok((handler.clone(), None));
             }
         }
         // Default.
-        let default = state.borrow().default.clone();
-        if let Some(handler) = default {
-            cancel_timer(timer_seq);
-            interp.call_block(&handler, smallvec![])?;
-            return Ok(());
+        if let Some(handler) = state.borrow().default.clone() {
+            break 'select Ok((handler, None));
         }
         if receives.is_empty() && sends.is_empty() && after.is_none() {
-            return Err(interp.err_arg("select with no alternatives"));
+            break 'select Err(interp.err_arg("select with no alternatives"));
         }
         // Register and wait. Each channel is checked again as the task
         // registers on it: one that became ready since (another worker
@@ -668,7 +710,8 @@ fn select_once(interp: &Interp, state: &Rc<RefCell<SelectorState>>) -> Result<()
                 ready = true;
                 break;
             }
-            st.recv_waiters.push_back(me.task_ref());
+            st.recv_waiters.push_back(me);
+            listed.0 += 1;
         }
         if !ready {
             for (c, _, _) in &sends {
@@ -677,13 +720,59 @@ fn select_once(interp: &Interp, state: &Rc<RefCell<SelectorState>>) -> Result<()
                     ready = true;
                     break;
                 }
-                st.send_waiters.push_back(me.task_ref());
+                st.send_waiters.push_back(me);
+                listed.1 += 1;
             }
         }
         if !ready {
-            interp.park()?;
+            if let Err(e) = interp.park() {
+                unlist(interp, &receives, &sends, me, &mut listed, &mut taken_off);
+                break 'select Err(e);
+            }
+        }
+    };
+    for i in taken_off {
+        let c = &receives[i].0;
+        let mut st = c.lock();
+        let next = if st.buffer.is_empty() {
+            None
+        } else {
+            st.recv_waiters.pop_front()
+        };
+        drop(st);
+        wake_all(interp, next);
+    }
+    // Cancelled, or else it would wake the task's next wait.
+    if let Some(t) = timer {
+        interp.sched.borrow_mut().cancel_timer(t);
+    }
+    match chosen? {
+        (handler, Some(v)) => interp.call_block(&handler, smallvec![v])?,
+        (handler, None) => interp.call_block(&handler, smallvec![])?,
+    };
+    Ok(())
+}
+
+/// Take a waiting `select` off the channels it is listed on (`listed`:
+/// the first so many receives and sends), noting the receives whose
+/// sender took it off already.
+fn unlist(
+    interp: &Interp,
+    receives: &[(Rc<ChannelInner>, Value)],
+    sends: &[(Rc<ChannelInner>, Value, Value)],
+    me: TaskRef,
+    listed: &mut (usize, usize),
+    taken_off: &mut Vec<usize>,
+) {
+    for (i, (c, _)) in receives.iter().enumerate().take(listed.0) {
+        if leave_receivers(interp, c, me, false) && !taken_off.contains(&i) {
+            taken_off.push(i);
         }
     }
+    for (c, _, _) in sends.iter().take(listed.1) {
+        c.lock().send_waiters.retain(|t| *t != me);
+    }
+    *listed = (0, 0);
 }
 
 /// Whether a `select` can send on `c` now (an unbuffered channel needs a

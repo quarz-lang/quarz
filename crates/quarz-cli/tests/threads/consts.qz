@@ -1,0 +1,65 @@
+# Constants used at once by tasks on different workers: the initializer
+# runs once, the others wait for it; one cancelled or failing leaves the
+# constant to the next use.
+RUNS = Atom.new(0)
+
+def slow -> Int
+  RUNS.update { |n| n + 1 }
+  Task.sleep(20.ms)
+  42
+end
+
+def late -> Int = LATE
+
+ts = (0...8).map { |_| spawn { late } }
+p ts.map(&:await), RUNS.get
+LATE = slow
+
+# The task running an initializer is cancelled while it sleeps: a task
+# waiting for the constant runs it again.
+STARTED = Channel[Int].new(capacity: 1)
+
+def stalls -> Int
+  STARTED.send(0) if RUNS.get == 0
+  RUNS.update { |n| n + 1 }
+  Task.sleep(50.ms)
+  7
+end
+
+def stalled -> Int = STALLED
+
+RUNS.set(0)
+first = spawn { stalled }
+STARTED.receive
+waiters = (0...4).map { |_| spawn { stalled } }
+Task.sleep(10.ms)
+first.cancel
+begin
+  first.await
+rescue Task::Cancelled
+  puts "first cancelled"
+end
+p waiters.map(&:await), RUNS.get
+STALLED = stalls
+
+# A task cancelled while it waits for a constant: the others still get it.
+def slower -> Int
+  Task.sleep(50.ms)
+  9
+end
+
+def slowest -> Int = SLOWEST
+
+runner = spawn { slowest }
+Task.sleep(10.ms)
+quitter = spawn { slowest }
+others = (0...3).map { |_| spawn { slowest } }
+Task.sleep(10.ms)
+quitter.cancel
+begin
+  quitter.await
+rescue Task::Cancelled
+  puts "quitter cancelled"
+end
+p runner.await, others.map(&:await)
+SLOWEST = slower

@@ -524,6 +524,8 @@ struct WorkerSlot {
     /// The numbers of its tasks, given out by whoever spawns one there.
     next_id: AtomicU32,
     started: AtomicBool,
+    /// Whether it has put its blocked tasks in `Workers::report`.
+    reported: AtomicBool,
 }
 
 /// The worker threads of a program (`QUARZ_THREADS`, by default as many
@@ -537,6 +539,10 @@ pub struct Workers {
     idle: Mutex<Vec<bool>>,
     stopping: AtomicBool,
     exit_code: Mutex<Option<i32>>,
+    /// Set when the main worker finds a deadlock: the others, woken, put
+    /// their blocked tasks in `report`, for its message.
+    report_wanted: AtomicBool,
+    report: Mutex<Vec<(u32, TaskId, String)>>,
 }
 
 impl Workers {
@@ -550,6 +556,8 @@ impl Workers {
             idle: Mutex::new(vec![false; count]),
             stopping: AtomicBool::new(false),
             exit_code: Mutex::new(None),
+            report_wanted: AtomicBool::new(false),
+            report: Mutex::new(Vec::new()),
         })
     }
 
@@ -640,6 +648,45 @@ impl Workers {
         })
     }
 
+    /// The blocked tasks of the other workers (the main one asks, having
+    /// found a deadlock: they are all idle, and each adds its own when
+    /// woken).
+    fn collect_reports(&self) -> Vec<(u32, TaskId, String)> {
+        let others: Vec<u32> = (1..self.slots.len() as u32)
+            .filter(|&w| self.slots[w as usize].started.load(Ordering::Acquire))
+            .collect();
+        if others.is_empty() {
+            return Vec::new();
+        }
+        self.report_wanted.store(true, Ordering::Release);
+        for &w in &others {
+            self.notify(w);
+        }
+        // They answer at once; a bound in case one does not.
+        let deadline = Instant::now() + Duration::from_millis(500);
+        while Instant::now() < deadline
+            && !others
+                .iter()
+                .all(|&w| self.slots[w as usize].reported.load(Ordering::Acquire))
+        {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        std::mem::take(&mut *lock(&self.report))
+    }
+
+    /// Add worker `w`'s blocked tasks to the report, if the main worker
+    /// wants one and it has not yet.
+    fn add_report(&self, w: u32, tasks: impl FnOnce() -> Vec<(u32, TaskId, String)>) {
+        if !self.report_wanted.load(Ordering::Acquire) {
+            return;
+        }
+        let slot = &self.slots[w as usize];
+        if !slot.reported.load(Ordering::Relaxed) {
+            lock(&self.report).extend(tasks());
+            slot.reported.store(true, Ordering::Release);
+        }
+    }
+
     /// The program ends: the other workers stop.
     pub fn stop(&self) {
         self.stopping.store(true, Ordering::Release);
@@ -677,8 +724,6 @@ pub struct Scheduler {
     /// This worker's number (its tasks' `TaskRef::worker`).
     pub worker: u32,
     pub workers: Arc<Workers>,
-    /// The worker's tasks, by number (a number may be taken before its
-    /// task arrives from the worker that spawned it).
     /// This worker's live tasks (a finished one leaves at once) and the
     /// coroutines of those not running.
     tasks: rustc_hash::FxHashMap<TaskId, Rc<TaskHandle>>,
@@ -687,7 +732,9 @@ pub struct Scheduler {
     timers: BinaryHeap<Reverse<(Instant, u64, TaskId)>>,
     timer_seq: u64,
     pub current: Option<TaskId>,
-    cancelled_timers: Vec<u64>,
+    /// The timers neither fired nor cancelled, by number: a cancelled
+    /// one stays in the heap until it comes up, and is then skipped.
+    pending_timers: rustc_hash::FxHashSet<u64>,
     pub reactor: Reactor,
 }
 
@@ -745,7 +792,7 @@ impl Scheduler {
             timers: BinaryHeap::new(),
             timer_seq: 0,
             current: None,
-            cancelled_timers: Vec::new(),
+            pending_timers: Default::default(),
             reactor,
         }
     }
@@ -911,8 +958,7 @@ impl Scheduler {
     fn next_timer(&mut self) -> Option<Instant> {
         loop {
             let Reverse((when, seq, _)) = self.timers.peek().cloned()?;
-            if let Some(pos) = self.cancelled_timers.iter().position(|s| *s == seq) {
-                self.cancelled_timers.swap_remove(pos);
+            if !self.pending_timers.contains(&seq) {
                 self.timers.pop();
                 continue;
             }
@@ -1024,11 +1070,20 @@ impl Scheduler {
         self.timer_seq += 1;
         let seq = self.timer_seq;
         self.timers.push(Reverse((Instant::now() + after, seq, id)));
+        self.pending_timers.insert(seq);
         seq
     }
 
+    /// Cancel a timer, whether or not it has fired (a task woken some
+    /// other way cancels its timer, or the timer would wake it in its
+    /// next wait).
     pub fn cancel_timer(&mut self, seq: u64) {
-        self.cancelled_timers.push(seq);
+        self.pending_timers.remove(&seq);
+    }
+
+    /// Whether a timer has neither fired nor been cancelled.
+    pub fn timer_pending(&self, seq: u64) -> bool {
+        self.pending_timers.contains(&seq)
     }
 
     fn fire_due_timers(&mut self, block: bool) -> bool {
@@ -1037,8 +1092,7 @@ impl Scheduler {
             let Some(Reverse((when, seq, tid))) = self.timers.peek().cloned() else {
                 return fired;
             };
-            if let Some(pos) = self.cancelled_timers.iter().position(|s| *s == seq) {
-                self.cancelled_timers.swap_remove(pos);
+            if !self.pending_timers.contains(&seq) {
                 self.timers.pop();
                 continue;
             }
@@ -1051,6 +1105,7 @@ impl Scheduler {
                 }
             }
             self.timers.pop();
+            self.pending_timers.remove(&seq);
             self.wake(tid);
             fired = true;
         }
@@ -1130,6 +1185,10 @@ impl Scheduler {
                 self.workers.notify(0);
             }
             self.poll_io(timeout);
+            if self.worker != 0 {
+                self.workers
+                    .add_report(self.worker, || self.blocked_tasks());
+            }
             if idle {
                 self.workers.set_idle(self.worker, false);
             }
@@ -1214,17 +1273,30 @@ impl Scheduler {
         }
     }
 
-    /// Names of tasks that are blocked (for the deadlock report).
-    pub fn waiting_tasks(&self) -> Vec<String> {
-        let mut waiting: Vec<&Rc<TaskHandle>> = self
-            .tasks
+    /// This worker's blocked tasks: worker, number and name.
+    fn blocked_tasks(&self) -> Vec<(u32, TaskId, String)> {
+        self.tasks
             .values()
             .filter(|t| t.state() == TaskState::Waiting)
-            .collect();
-        waiting.sort_by_key(|t| t.id);
+            .map(|t| (self.worker, t.id, t.name.clone()))
+            .collect()
+    }
+
+    /// The tasks that are blocked, on every worker, for the deadlock
+    /// report: `name (number)`, the number prefixed with the worker's
+    /// (`1:3`) but on the main one.
+    pub fn waiting_tasks(&self) -> Vec<String> {
+        let mut waiting = self.blocked_tasks();
+        if self.worker == 0 {
+            waiting.extend(self.workers.collect_reports());
+        }
+        waiting.sort();
         waiting
             .into_iter()
-            .map(|t| format!("{} ({})", t.name, t.id))
+            .map(|(w, id, name)| match w {
+                0 => format!("{name} ({id})"),
+                _ => format!("{name} ({w}:{id})"),
+            })
             .collect()
     }
 }
