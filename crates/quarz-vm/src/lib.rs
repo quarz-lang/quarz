@@ -2,6 +2,8 @@
 //! and the native methods. Compiled programs (`quarz build`) link this
 //! crate as their runtime.
 
+#[cfg(target_os = "linux")]
+mod epoll;
 pub mod ffi;
 pub mod interp;
 pub mod layout;

@@ -17,12 +17,24 @@ The single-threaded servers are pinned to one CPU, the multi-threaded Go
 server gets two physical cores, and the client runs on the other CPUs
 (`SERVER_CPU`, `SERVER_CPUS`, `CLIENT_CPUS`; see the script).
 
-## Results (2026-10-22, Quarz at `db9b660`)
+## Results (2026-10-22)
 
 12th Gen Intel Core i7-1260P, Go 1.27.2; round trips per second, 5 s
 after a second of warm-up. Quarz runs its tasks on one OS thread (M:1),
 so its columns compare with Go limited to one thread; the last column is
 Go on two physical cores (`GOMAXPROCS=4`, CPUs 0-3).
+
+With the reactor using epoll directly (each socket registered once,
+edge-triggered):
+
+| connections | quarz-vm | quarz-llvm | cranelift | go, 1 thread | go, 4 threads |
+|------------:|---------:|-----------:|----------:|-------------:|--------------:|
+|           1 |   94,538 |    104,304 |   106,134 |      103,713 |        92,024 |
+|          16 |  181,248 |    191,697 |   176,164 |      165,135 |       280,170 |
+|          64 |  185,339 |    188,760 |   176,500 |      197,360 |       356,403 |
+|         256 |  168,216 |    168,992 |   135,258 |      149,548 |       340,948 |
+
+Before (Quarz at `db9b660`, through the `polling` crate):
 
 | connections | quarz-vm | quarz-llvm | cranelift | go, 1 thread | go, 4 threads |
 |------------:|---------:|-----------:|----------:|-------------:|--------------:|
@@ -31,19 +43,22 @@ Go on two physical cores (`GOMAXPROCS=4`, CPUs 0-3).
 |          64 |  118,399 |    118,347 |   124,800 |      165,938 |       310,766 |
 |         256 |  111,188 |    113,063 |   111,863 |      156,564 |       306,331 |
 
-The same configuration varies by 10-15% from run to run.
+The same configuration varies by 10-20% from run to run (compare
+columns of one run, or medians of several).
 
 ## Reading the numbers
 
-- With one connection the round trip's latency decides, and Quarz is on
-  a par with Go. With more, Quarz reaches 70-80% of Go on one thread.
-- The interpreter and compiled code are about equal: the time goes to
-  the scheduler and the system calls, not to the program.
-- Per round trip, Quarz makes one `sendto` and about 1.5 `recvfrom`
-  like Go, but also about 1.7 `epoll_ctl`, 0.55 `epoll_pwait`, 0.55
-  `timerfd_settime` and 0.55 failed `read`s (strace, 64 connections). Go
-  registers each socket with epoll once, edge-triggered, and polls only
-  when every goroutine is blocked (about 0.01 `epoll_pwait` per round
-  trip).
+- Quarz is now on a par with Go on one thread, from one connection to
+  256. The interpreter and compiled code are about equal: the time goes
+  to the scheduler and the system calls, not to the program.
+- Per round trip (strace, 64 connections) Quarz makes one `sendto`,
+  about 1.4 `recvfrom` (the last one finding nothing) and 0.36
+  `epoll_wait`, like Go's one `write` and 1.45 `read`s; Go polls less
+  (about 0.01 `epoll_wait`), from its scheduler when goroutines block.
+- Before, the `polling` crate re-armed every descriptor after each event
+  (oneshot) and re-armed a timerfd and its notifier around every wait:
+  about 1.7 `epoll_ctl`, 0.55 `timerfd_settime` and 0.55 failed `read`s
+  more per round trip. Polling the reactor only every 32 task switches
+  instead of at each measured slower (the woken tasks waited longer).
 - Go on several threads doubles its throughput from 16 connections on,
   which is what an M:N scheduler would bring.

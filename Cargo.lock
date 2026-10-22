@@ -631,6 +631,7 @@ dependencies = [
  "gimli 0.34.0",
  "glob",
  "indexmap",
+ "libc",
  "num-bigint",
  "num-integer",
  "num-traits",
