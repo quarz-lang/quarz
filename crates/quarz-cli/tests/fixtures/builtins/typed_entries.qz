@@ -1,52 +1,53 @@
-# Calls through typed entries (compiled code passes Int, Float and Bool
-# parameters and results as machine values, and returns nothing for
-# Nil): the same results as the interpreter's, including the paths that
-# box (an argument from an array, a BigInt result).
-def even?(n: Int) -> Bool
-  return true if n == 0
-  odd?(n - 1)
+# Typed functions that may return without needing a frame get a
+# separate entry; leaving that part (a call, an overflow, a type that
+# is not the declared one) runs the full body from the start.
+def tak(x: Int, y: Int, z: Int) -> Int
+  return z if y >= x
+  tak(tak(x - 1, y, z), tak(y - 1, z, x), tak(z - 1, x, y))
+end
+p tak(18, 12, 6)
+
+# The leaf path overflows into a BigInt.
+def grow(x: Int, n: Int) -> Int
+  return x * 4611686018427387903 if n == 0
+  grow(x + 1, n - 1)
+end
+p grow(1, 3), grow(2, 0)
+
+# Floats, and a leaf that divides.
+def halve(x: Float, n: Int) -> Float
+  return x / 2.0 if n <= 0
+  halve(x * 3.0, n - 1) + 1.0
+end
+p halve(1.0, 4)
+
+def safe_div(a: Int, b: Int) -> Int
+  return a / b if b != 0
+  safe_div(a, b + 1)
+end
+p safe_div(7, 0), safe_div(-9, 2)
+def div_or_recurse(a: Int, b: Int, n: Int) -> Int
+  return a / b if n == 0
+  div_or_recurse(a, b, n - 1)
+end
+begin
+  p div_or_recurse(5, 0, 2)
+rescue ZeroDivisionError => e
+  puts "rescued #{e.class}"
 end
 
-def odd?(n: Int) -> Bool
-  return false if n == 0
-  even?(n - 1)
-end
-
-def walk(n: Int, up: Bool) -> Int
+# Deep recursion still reaches the stack check (in the body).
+def depth(n: Int) -> Int
   return 0 if n == 0
-  if up
-    1 + walk(n - 1, false)
-  else
-    2 + walk(n - 1, true)
-  end
+  1 + depth(n - 1)
 end
-
-class Counter
-  var @n: Int = 0
-  def n -> Int = @n
-  def bump(times: Int, double: Bool) -> Nil
-    return nil if times == 0
-    @n += double ? 2 : 1
-    bump(times - 1, !double)
-  end
+p depth(10_000)
+def forever(n: Int) -> Int
+  return n if n < 0
+  forever(n + 1) + 1
 end
-
-def scale(x: Float, half: Bool) -> Float
-  return x if x < 1.0
-  half ? scale(x / 2.0, false) : scale(x - 1.0, true)
+begin
+  forever(0)
+rescue SystemStackError
+  puts "stack overflow caught"
 end
-
-def grow(n: Int, big: Bool) -> Int
-  return 1 if n == 0
-  grow(n - 1, big) * (big ? 1_000_000 : 2)
-end
-
-p even?(10), odd?(7), even?(7)
-p walk(1, true), walk(2, false), walk(5, true), walk(6, false)
-c = Counter.new
-c.bump(10, false)
-p c.n
-p scale(100.0, true), scale(7.5, false)
-flags = [true, false, true]
-p flags.map { |f| walk(3, f) }
-p grow(10, false), grow(5, true)

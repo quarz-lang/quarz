@@ -1,0 +1,52 @@
+# Calls through typed entries (compiled code passes Int, Float and Bool
+# parameters and results as machine values, and returns nothing for
+# Nil): the same results as the interpreter's, including the paths that
+# box (an argument from an array, a BigInt result).
+def even?(n: Int) -> Bool
+  return true if n == 0
+  odd?(n - 1)
+end
+
+def odd?(n: Int) -> Bool
+  return false if n == 0
+  even?(n - 1)
+end
+
+def walk(n: Int, up: Bool) -> Int
+  return 0 if n == 0
+  if up
+    1 + walk(n - 1, false)
+  else
+    2 + walk(n - 1, true)
+  end
+end
+
+class Counter
+  var @n: Int = 0
+  def n -> Int = @n
+  def bump(times: Int, double: Bool) -> Nil
+    return nil if times == 0
+    @n += double ? 2 : 1
+    bump(times - 1, !double)
+  end
+end
+
+def scale(x: Float, half: Bool) -> Float
+  return x if x < 1.0
+  half ? scale(x / 2.0, false) : scale(x - 1.0, true)
+end
+
+def grow(n: Int, big: Bool) -> Int
+  return 1 if n == 0
+  grow(n - 1, big) * (big ? 1_000_000 : 2)
+end
+
+p even?(10), odd?(7), even?(7)
+p walk(1, true), walk(2, false), walk(5, true), walk(6, false)
+c = Counter.new
+c.bump(10, false)
+p c.n
+p scale(100.0, true), scale(7.5, false)
+flags = [true, false, true]
+p flags.map { |f| walk(3, f) }
+p grow(10, false), grow(5, true)
