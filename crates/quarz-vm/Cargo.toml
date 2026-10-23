@@ -28,11 +28,14 @@ glob = "0.3"
 polling = "3"
 # The allocator (see `src/alloc.rs`): C sources built with the system's
 # compiler.
-mimalloc = { version = "0.1", optional = true }
+# Pinned with libmimalloc-sys: `alloc.rs` sets an option by its number in
+# the bundled mimalloc's enum (check it when updating).
+mimalloc = { version = "=0.1.52", optional = true }
+libmimalloc-sys = { version = "=0.1.49", features = ["extended"], optional = true }
 
 [features]
 default = ["mimalloc"]
-mimalloc = ["dep:mimalloc"]
+mimalloc = ["dep:mimalloc", "dep:libmimalloc-sys"]
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

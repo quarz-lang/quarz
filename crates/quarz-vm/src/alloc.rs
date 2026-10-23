@@ -5,6 +5,12 @@
 //! `QUARZ_ALLOC=system` selects the system's `malloc`. The choice is made
 //! at the first allocation and kept: a block must go back to the
 //! allocator it came from.
+//!
+//! mimalloc asks for transparent huge pages by default, which the kernel
+//! zeroes 2 MiB at a time: half a millisecond more for every process,
+//! for a gain only to programs that use a lot of memory. Like most
+//! runtimes (Go, the JVM, glibc's malloc), Quarz leaves them to programs
+//! that ask: `QUARZ_THP=1`.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -31,20 +37,41 @@ fn choice() -> u8 {
 
 #[cold]
 fn decide() -> u8 {
-    // SAFETY: `getenv` with a constant name; the value is only read here,
-    // before anything could change the environment.
-    #[cfg(unix)]
-    let system = unsafe {
-        let v = libc::getenv(c"QUARZ_ALLOC".as_ptr());
-        !v.is_null() && std::ffi::CStr::from_ptr(v).to_bytes() == b"system"
-    };
-    // (Elsewhere reading the environment would allocate.)
-    #[cfg(not(unix))]
-    let system = false;
+    let system = env_is("QUARZ_ALLOC", b"system");
     let c = if system { SYSTEM } else { MIMALLOC };
+    if c == MIMALLOC && !env_is("QUARZ_THP", b"1") {
+        // SAFETY: before mimalloc's first allocation, which reads its
+        // options.
+        unsafe { libmimalloc_sys::mi_option_set(MI_OPTION_ALLOW_THP, 0) };
+    }
     // Threads deciding at once read the same environment.
     CHOICE.store(c, Ordering::Relaxed);
     c
+}
+
+/// `mi_option_allow_thp` in the bundled mimalloc's `mi_option_e` (3.3.2;
+/// the crates are pinned in Cargo.toml).
+const MI_OPTION_ALLOW_THP: libmimalloc_sys::mi_option_t = 43;
+
+/// Whether environment variable `name` is `value`, read without
+/// allocating (elsewhere than on Unix, never).
+fn env_is(name: &str, value: &[u8]) -> bool {
+    #[cfg(unix)]
+    {
+        let mut buf = [0u8; 32];
+        buf[..name.len()].copy_from_slice(name.as_bytes());
+        // SAFETY: a NUL-terminated name; the value is only read here,
+        // before anything could change the environment.
+        unsafe {
+            let v = libc::getenv(buf.as_ptr().cast());
+            !v.is_null() && std::ffi::CStr::from_ptr(v).to_bytes() == value
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (name, value);
+        false
+    }
 }
 
 /// The allocator in use, for diagnostics.
