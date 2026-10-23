@@ -1272,7 +1272,7 @@ impl<B: Builder> Gen<'_, B> {
                     self.b.store(w, dst, k);
                 }
             }
-            State::Unknown | State::Obj => {
+            State::Unknown | State::Obj | State::Arr => {
                 let src_ptr = self.b.iadd_imm(self.regs, i64::from(reg_off(src)));
                 emit_clone_ptr(self.b, self.h.clone_ptr, dst, src_ptr);
             }
@@ -1522,8 +1522,37 @@ impl<B: Builder> Gen<'_, B> {
     }
 
     fn array_view(&mut self, arr: Reg) -> (B::Value, B::Value, B::Value, B::Value) {
-        let rc = self.payload_ptr(arr);
+        let rc = if self.states[arr as usize] == State::Arr {
+            self.b.use_var(self.pvar(arr))
+        } else {
+            self.payload_ptr(arr)
+        };
         self.array_view_at(rc)
+    }
+
+    /// `arr`, whose tag has just been tested, holds an array: keep its
+    /// allocation in its variable (`State::Arr`, set by `after`).
+    fn note_arr(&mut self, arr: Reg) {
+        if self.states[arr as usize] != State::Arr {
+            let p = self.payload_ptr(arr);
+            self.b.def_var(self.pvar(arr), p);
+        }
+    }
+
+    /// After the runtime ran an instruction on `arr`: keep its allocation
+    /// when it is an array, or go to the interpreter after the
+    /// instruction (`after` makes it `State::Arr`).
+    fn arr_after_slow(&mut self, arr: Reg, block: u32, index: u32) {
+        let tag = self.tag(arr);
+        let is_arr = self.b.icmp_imm(IntCC::Equal, tag, TAG_ARRAY);
+        let ok = self.b.create_block();
+        let bad = self.b.create_block();
+        self.b.brif(is_arr, ok, &[], bad, &[]);
+        self.b.switch_to_block(bad);
+        self.deopt(block, index + 1);
+        self.b.switch_to_block(ok);
+        let p = self.payload_ptr(arr);
+        self.b.def_var(self.pvar(arr), p);
     }
 
     /// The storage kind, element pointer, length and capacity of the
@@ -1872,7 +1901,7 @@ impl<B: Builder> Gen<'_, B> {
                 // An I8, stored as the payload's first byte.
                 self.b.store(v, self.regs, reg_off(r) + 8);
             }
-            State::Unknown | State::NonHeap | State::Obj => {}
+            State::Unknown | State::NonHeap | State::Obj | State::Arr => {}
         }
     }
 
@@ -2692,9 +2721,9 @@ impl<B: Builder> Gen<'_, B> {
                     }
                     // The last read of a boxed register: its value moves,
                     // nil left behind.
-                    st @ (State::Unknown | State::Obj) => {
-                        // An object's allocation goes with it.
-                        let obj = (st == State::Obj).then(|| self.b.use_var(self.pvar(*src)));
+                    st @ (State::Unknown | State::Obj | State::Arr) => {
+                        // An object's or array's allocation goes with it.
+                        let obj = (st != State::Unknown).then(|| self.b.use_var(self.pvar(*src)));
                         if matches!(inst, Inst::Take { .. }) {
                             // The last read of a boxed register: its value
                             // moves, nil left behind.
@@ -3066,11 +3095,18 @@ impl<B: Builder> Gen<'_, B> {
                 let fast = self.b.create_block();
                 let slow = self.b.create_block();
                 let cont = self.b.create_block();
-                let tag = self.tag(*src);
-                let is_arr = self.b.icmp_imm(IntCC::Equal, tag, TAG_ARRAY);
-                self.b.brif(is_arr, fast, &[], slow, &[]);
+                if self.states[*src as usize] == State::Arr {
+                    self.b.jump(fast, &[]);
+                } else {
+                    let tag = self.tag(*src);
+                    let is_arr = self.b.icmp_imm(IntCC::Equal, tag, TAG_ARRAY);
+                    self.b.brif(is_arr, fast, &[], slow, &[]);
+                }
                 self.b.switch_to_block(fast);
                 let (_, _, len, _) = self.array_view(*src);
+                if src != dst {
+                    self.note_arr(*src);
+                }
                 // The home too: `after` reads it back into the variable.
                 self.release(*dst);
                 self.store_tag(*dst, TAG_INT);
@@ -3080,6 +3116,9 @@ impl<B: Builder> Gen<'_, B> {
                 self.b.switch_to_block(slow);
                 self.flush(*src);
                 self.exec(block, index, unwind);
+                if src != dst {
+                    self.arr_after_slow(*src, block, index);
+                }
                 self.b.jump(cont, &[]);
                 self.b.switch_to_block(cont);
             }
@@ -3096,18 +3135,33 @@ impl<B: Builder> Gen<'_, B> {
                 let fast = self.b.create_block();
                 let slow = self.b.create_block();
                 let cont = self.b.create_block();
-                let tag = self.tag(*arr);
-                let is_arr = self.b.icmp_imm(IntCC::Equal, tag, TAG_ARRAY);
+                let known = self.states[*arr as usize] == State::Arr;
                 let int_state = self.states[*idx as usize] == State::Int;
-                if int_state {
-                    self.b.brif(is_arr, check_b, &[], slow, &[]);
-                } else {
-                    let itag = self.tag(*idx);
-                    let is_int = self.b.icmp_imm(IntCC::Equal, itag, TAG_INT);
-                    let both = self.b.band(is_arr, is_int);
-                    self.b.brif(both, check_b, &[], slow, &[]);
+                match (known, int_state) {
+                    (true, true) => self.b.jump(check_b, &[]),
+                    (true, false) => {
+                        let itag = self.tag(*idx);
+                        let is_int = self.b.icmp_imm(IntCC::Equal, itag, TAG_INT);
+                        self.b.brif(is_int, check_b, &[], slow, &[]);
+                    }
+                    (false, true) => {
+                        let tag = self.tag(*arr);
+                        let is_arr = self.b.icmp_imm(IntCC::Equal, tag, TAG_ARRAY);
+                        self.b.brif(is_arr, check_b, &[], slow, &[]);
+                    }
+                    (false, false) => {
+                        let tag = self.tag(*arr);
+                        let is_arr = self.b.icmp_imm(IntCC::Equal, tag, TAG_ARRAY);
+                        let itag = self.tag(*idx);
+                        let is_int = self.b.icmp_imm(IntCC::Equal, itag, TAG_INT);
+                        let both = self.b.band(is_arr, is_int);
+                        self.b.brif(both, check_b, &[], slow, &[]);
+                    }
                 }
                 self.b.switch_to_block(check_b);
+                if arr != dst {
+                    self.note_arr(*arr);
+                }
                 let i = if int_state {
                     self.b.use_var(self.ivar(*idx))
                 } else {
@@ -3171,6 +3225,9 @@ impl<B: Builder> Gen<'_, B> {
                     self.b.call(self.h.disown, &[p]);
                 } else {
                     self.exec(block, index, unwind);
+                }
+                if arr != dst {
+                    self.arr_after_slow(*arr, block, index);
                 }
                 self.b.jump(cont, &[]);
                 self.b.switch_to_block(cont);
@@ -3241,7 +3298,7 @@ impl<B: Builder> Gen<'_, B> {
                 // allocation; anything else (an unboxed number, another
                 // tag) is not.
                 let v = match self.states[*src as usize] {
-                    State::Int | State::Float | State::Bool | State::NonHeap => {
+                    State::Int | State::Float | State::Bool | State::NonHeap | State::Arr => {
                         self.b.iconst(Ty::I8, 0)
                     }
                     // An object: only its class to compare.

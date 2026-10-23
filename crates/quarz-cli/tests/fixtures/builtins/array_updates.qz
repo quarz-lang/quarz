@@ -1,0 +1,57 @@
+# Compiled code keeps the allocation of an array it has read in a
+# variable: every update that may replace it (a push, an element set
+# that copies a shared array, a reassignment) must be seen.
+
+# Pushing while reading by index.
+xs = [1, 2, 3]
+i = 0
+sum = 0
+while i < xs.size
+  sum += xs[i]
+  xs = xs.push(i) if xs.size < 6
+  i += 1
+end
+p sum
+p xs
+
+# An element set on a shared array copies it: the reads after see the
+# copy, the other variable the original.
+a = [10, 20, 30]
+b = a
+j = 0
+while j < a.size
+  a = a.set(j, a[j] + 1)
+  p a[j]
+  j += 1
+end
+p a
+p b
+
+# Reassigned inside the loop to another array (of another storage kind).
+c: Array[Int | Float] = [1, 2, 3]
+k = 0
+out: Array[Int | Float] = []
+while k < 3
+  out = out.push(c[k])
+  c = [1.5, 2.5, 3.5] if k == 0
+  k += 1
+end
+p out
+
+# Iterating one array while building another from it.
+ys = [1.5, 2.5]
+zs = ys
+ys.each { |y| zs = zs.push(y * 2.0) }
+p ys
+p zs
+
+# The length after appends in place.
+ws: Array[Int] = []
+5.times { |n| ws = ws.push(n * n) }
+total = 0
+m = 0
+while m < ws.size
+  total += ws[m]
+  m += 1
+end
+p total

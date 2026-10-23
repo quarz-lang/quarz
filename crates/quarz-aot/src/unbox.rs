@@ -29,6 +29,10 @@ pub enum State {
     /// its allocation is also in a variable, so its fields are read
     /// without a tag test or a load of the home.
     Obj,
+    /// An array: the boxed home is valid, and the address of its
+    /// allocation is also in a variable (as for `Obj`), so its elements
+    /// and length are read without a tag test or a load of the home.
+    Arr,
 }
 
 impl State {
@@ -44,7 +48,7 @@ impl State {
 
     /// Whether the home holds the value, which may be on the heap.
     pub fn boxed(self) -> bool {
-        matches!(self, State::Unknown | State::Obj)
+        matches!(self, State::Unknown | State::Obj | State::Arr)
     }
 
     pub fn needs_release(self) -> bool {
@@ -371,6 +375,13 @@ pub fn transfer(
     builtin: &RtBuiltin,
     typed: &[Option<TypedSig>],
 ) {
+    // An update may replace an array's allocation (by a copy, when it is
+    // shared): a push, or any method called on it.
+    if let Inst::ArrayPush { arr: r, .. } | Inst::Call { recv: Some(r), .. } = inst {
+        if st[*r as usize] == State::Arr {
+            st[*r as usize] = State::Unknown;
+        }
+    }
     match inst {
         // A call through a typed entry leaves its result unboxed (the
         // caller falls back to the interpreter when it does not fit).
@@ -460,8 +471,21 @@ pub fn transfer(
         | Inst::ClassIsA { dst, .. }
         | Inst::ClassIs { dst, .. }
         | Inst::IsA { dst, .. } => st[*dst as usize] = State::Bool,
-        // A length is always a machine-word Int.
-        Inst::Len { dst, .. } => st[*dst as usize] = State::Int,
+        // A length is always a machine-word Int, and the receiver an
+        // array after it (one that is not goes to the interpreter).
+        Inst::Len { dst, src } => {
+            if src != dst {
+                st[*src as usize] = State::Arr;
+            }
+            st[*dst as usize] = State::Int;
+        }
+        // So is the array an element is read from.
+        Inst::ArrayGetReg { dst, arr, .. } => {
+            if arr != dst {
+                st[*arr as usize] = State::Arr;
+            }
+            st[*dst as usize] = State::Unknown;
+        }
         _ => {
             for r in defs(inst) {
                 st[r as usize] = State::Unknown;
