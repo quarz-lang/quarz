@@ -104,9 +104,10 @@ impl<T: ?Sized> Inner<T> {
 // What compiled code assumes (`quarz-aot`'s `gen.rs`): the first word at
 // 0, the second at 8, the value at 16.
 const _: () = {
-    assert!(std::mem::offset_of!(Inner<crate::value::Object>, local) == 0);
-    assert!(std::mem::offset_of!(Inner<crate::value::Object>, shared) == 8);
-    assert!(std::mem::offset_of!(Inner<crate::value::Object>, value) == 16);
+    type ObjectHeader = crate::value::ObjectOf<std::cell::UnsafeCell<[crate::value::Value; 0]>>;
+    assert!(std::mem::offset_of!(Inner<ObjectHeader>, local) == 0);
+    assert!(std::mem::offset_of!(Inner<ObjectHeader>, shared) == 8);
+    assert!(std::mem::offset_of!(Inner<ObjectHeader>, value) == 16);
     assert!(std::mem::offset_of!(Inner<crate::value::ArrayData>, value) == 16);
 };
 
@@ -167,6 +168,24 @@ impl<T> Rc<MaybeUninit<T>> {
 }
 
 impl<T: ?Sized> Rc<T> {
+    /// The first reference to an allocation the caller made (with the
+    /// global allocator, in the layout of `Inner<T>`) and whose value it
+    /// wrote: the counts are set here.
+    ///
+    /// # Safety
+    /// As said; nothing else refers to the allocation.
+    pub(crate) unsafe fn from_fresh(ptr: *mut Inner<T>) -> Rc<T> {
+        // SAFETY: as the caller promises.
+        unsafe {
+            (&raw mut (*ptr).local).write(Cell::new(1));
+            (&raw mut (*ptr).shared).write(Cell::new(1));
+            Rc {
+                ptr: NonNull::new_unchecked(ptr),
+                _owns: PhantomData,
+            }
+        }
+    }
+
     #[inline(always)]
     fn inner(&self) -> &Inner<T> {
         // SAFETY: the allocation lives while a reference does.

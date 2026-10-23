@@ -508,42 +508,80 @@ impl ArrayData {
 }
 
 /// An instance of a user-defined class, data type, enum variant or
-/// exception.
-#[derive(Debug)]
+/// exception: `ObjectOf` with its fields as the tail of the allocation,
+/// as many as the object has (an object is as large as its class needs,
+/// so objects with different numbers of fields fall in different size
+/// classes of the allocator, and none has a second allocation).
+pub type Object = ObjectOf<std::cell::UnsafeCell<[Value]>>;
+
+/// An object's header, then its fields `F` (see `Object`; the header
+/// with no fields, `ObjectOf<UnsafeCell<[Value; 0]>>`, gives the layout).
 #[repr(C)]
-pub struct Object {
-    /// Where the fields live, for compiled code: set by `bind_fields`
-    /// whenever the field vector is created or replaced. First in the
+pub struct ObjectOf<F: ?Sized + FieldTail> {
+    /// Where the fields live, for compiled code: the tail. First in the
     /// layout, right after the allocation's two counts.
     pub fields_ptr: Cell<*const Value>,
     pub nfields: Cell<u32>,
     pub class: ClassId,
-    /// The field values, without a borrow flag: an object that tasks
-    /// share (its class has no `var` fields, or is an exception) is read
-    /// by several threads at once and written by none once built, and a
-    /// mutable one is only ever touched by its own task, so what guards
-    /// the vector is that no reference to it outlives the operation that
-    /// took it (see `fields_ref`).
-    fields: std::cell::UnsafeCell<Fields>,
     /// Exceptions only: what was captured when raised (written once,
     /// possibly by one of several threads raising a shared exception).
     exc: std::sync::OnceLock<Box<ExcInfo>>,
     /// Whether its `deinitialize` has run (or is to run): released again,
     /// it is freed (see `crate::deinit`).
     deinitialized: Cell<bool>,
+    /// The field values, without a borrow flag: an object that tasks
+    /// share (its class has no `var` fields, or is an exception) is read
+    /// by several threads at once and written by none once built, and a
+    /// mutable one is only ever touched by its own task, so what guards
+    /// them is that no reference to them outlives the operation that
+    /// took it (see `fields_ref`).
+    fields: F,
 }
 
-impl Drop for Object {
+/// The fields at the end of an object.
+pub trait FieldTail {
+    fn values_mut(&mut self) -> &mut [Value];
+}
+
+impl FieldTail for std::cell::UnsafeCell<[Value]> {
+    fn values_mut(&mut self) -> &mut [Value] {
+        self.get_mut()
+    }
+}
+
+impl FieldTail for std::cell::UnsafeCell<[Value; 0]> {
+    fn values_mut(&mut self) -> &mut [Value] {
+        &mut []
+    }
+}
+
+impl<F: ?Sized + FieldTail> Drop for ObjectOf<F> {
     fn drop(&mut self) {
         // The last reference went: an object whose class defines
         // `deinitialize` lives on, rebuilt from its fields, until the
         // method has run on it.
         if !self.deinitialized.get() && crate::deinit::has(self.class) {
-            let fields = std::mem::take(self.fields.get_mut());
+            let fields: Fields = self
+                .fields
+                .values_mut()
+                .iter_mut()
+                .map(|v| std::mem::replace(v, Value::Nil))
+                .collect();
             let o = Object::new(self.class, fields);
             o.deinitialized.set(true);
             crate::deinit::queue(o);
         }
+    }
+}
+
+impl std::fmt::Debug for Object {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // SAFETY: a short read (see `fields_ref`).
+        let fields = unsafe { self.fields_ref() };
+        f.debug_struct("Object")
+            .field("class", &self.class)
+            .field("fields", &fields)
+            .finish()
     }
 }
 
@@ -555,17 +593,15 @@ pub struct ExcInfo {
 }
 
 impl Object {
-    pub fn new(class: ClassId, fields: Fields) -> Rc<Object> {
-        let o = Rc::new(Object {
-            fields_ptr: Cell::new(std::ptr::null()),
-            nfields: Cell::new(0),
-            class,
-            fields: std::cell::UnsafeCell::new(fields),
-            exc: std::sync::OnceLock::new(),
-            deinitialized: Cell::new(false),
-        });
-        o.bind_fields();
-        o
+    pub fn new(class: ClassId, mut fields: Fields) -> Rc<Object> {
+        let n = fields.len();
+        // SAFETY: the values are moved into the object, and the vector
+        // forgets them.
+        unsafe {
+            let o = Object::with_fields_from(class, fields.as_ptr(), n);
+            fields.set_len(0);
+            o
+        }
     }
 
     /// An object whose `n` fields are moved in from `src`, built in its
@@ -575,28 +611,39 @@ impl Object {
     /// `src` points at `n` initialized values that the caller gives up
     /// (they are moved, not cloned, and must not be dropped by it).
     pub unsafe fn with_fields_from(class: ClassId, src: *const Value, n: usize) -> Rc<Object> {
-        let mut rc = Rc::<std::mem::MaybeUninit<Object>>::new_uninit();
-        // SAFETY: the allocation is fresh and uniquely owned; every field
-        // of `Object` is written before `assume_init`.
+        type Header = crate::rc::Inner<ObjectOf<std::cell::UnsafeCell<[Value; 0]>>>;
+        let header = std::alloc::Layout::new::<Header>();
+        // The fields follow the header (whose size is a multiple of a
+        // value's alignment), as `Layout::for_value` finds them when the
+        // object is freed.
+        let layout = std::alloc::Layout::from_size_align(
+            header.size() + n * std::mem::size_of::<Value>(),
+            header.align(),
+        )
+        .expect("object too large");
+        // SAFETY: the layout is not zero-sized; every field of the header
+        // and every value is written before the reference is made.
         unsafe {
-            let p = Rc::get_mut(&mut rc).unwrap_unchecked().as_mut_ptr();
-            std::ptr::write(&raw mut (*p).fields_ptr, Cell::new(std::ptr::null()));
-            std::ptr::write(&raw mut (*p).nfields, Cell::new(0));
-            std::ptr::write(&raw mut (*p).class, class);
-            let mut fields = Fields::with_capacity(n);
-            std::ptr::copy_nonoverlapping(src, fields.as_mut_ptr(), n);
-            fields.set_len(n);
-            std::ptr::write(&raw mut (*p).fields, std::cell::UnsafeCell::new(fields));
-            std::ptr::write(&raw mut (*p).exc, std::sync::OnceLock::new());
-            std::ptr::write(&raw mut (*p).deinitialized, Cell::new(false));
-            let rc = rc.assume_init();
-            rc.bind_fields();
+            let mem = std::alloc::alloc(layout);
+            if mem.is_null() {
+                std::alloc::handle_alloc_error(layout);
+            }
+            let p = std::ptr::slice_from_raw_parts_mut(mem as *mut Value, n)
+                as *mut crate::rc::Inner<Object>;
+            let tail = mem.add(header.size()) as *mut Value;
+            std::ptr::copy_nonoverlapping(src, tail, n);
+            let o = &raw mut (*p).value;
+            std::ptr::write(&raw mut (*o).fields_ptr, Cell::new(tail));
+            std::ptr::write(&raw mut (*o).nfields, Cell::new(n as u32));
+            std::ptr::write(&raw mut (*o).class, class);
+            std::ptr::write(&raw mut (*o).exc, std::sync::OnceLock::new());
+            std::ptr::write(&raw mut (*o).deinitialized, Cell::new(false));
+            let rc = crate::rc::Rc::from_fresh(p);
+            debug_assert_eq!(std::alloc::Layout::for_value(&*p), layout);
             rc
         }
     }
 
-    /// Point the field view at the field vector (after it was created,
-    /// resized or replaced).
     /// The backtrace captured when this (exception) object was raised.
     pub fn backtrace(&self) -> Option<Rc<Vec<String>>> {
         self.exc.get().and_then(|e| e.backtrace.clone())
@@ -631,15 +678,6 @@ impl Object {
         let _ = self.exc.set(Box::new(info));
     }
 
-    /// Point the field view at the field vector (after it was created,
-    /// resized or replaced).
-    pub fn bind_fields(&self) {
-        // SAFETY: a short read (see `fields_ref`).
-        let f = unsafe { self.fields_ref() };
-        self.fields_ptr.set(f.as_ptr());
-        self.nfields.set(f.len() as u32);
-    }
-
     /// Field `i`, if the object has it.
     #[inline]
     pub fn field(&self, i: usize) -> Option<Value> {
@@ -648,38 +686,26 @@ impl Object {
     }
 
     pub fn field_count(&self) -> usize {
-        // SAFETY: a short read (see `fields_ref`).
-        unsafe { self.fields_ref() }.len()
+        self.nfields.get() as usize
     }
 
     /// A copy of the field values.
     pub fn fields(&self) -> Fields {
         // SAFETY: a short read (see `fields_ref`).
-        unsafe { self.fields_ref() }.clone()
+        unsafe { self.fields_ref() }.iter().cloned().collect()
     }
 
-    /// Store `v` in field `i`, growing the fields when needed (and then
-    /// pointing compiled code's view at the new vector).
+    /// Store `v` in field `i` (which the object has: it is built with all
+    /// of its class's).
     #[inline(always)]
     pub fn set_field(&self, i: usize, v: Value) {
         // SAFETY: a short write (see `fields_mut`); the replaced value is
         // dropped after it.
         let old = match unsafe { self.fields_mut() }.get_mut(i) {
             Some(slot) => std::mem::replace(slot, v),
-            None => return self.grow_and_set(i, v),
+            None => no_field(i, self.field_count()),
         };
         drop(old);
-    }
-
-    #[cold]
-    fn grow_and_set(&self, i: usize, v: Value) {
-        // SAFETY: a short write (see `fields_mut`).
-        unsafe {
-            let fields = self.fields_mut();
-            fields.resize(i + 1, Value::Nil);
-            fields[i] = v;
-        }
-        self.bind_fields();
     }
 
     /// Field `i`, leaving nil there (`nil` when absent).
@@ -691,16 +717,25 @@ impl Object {
             .unwrap_or(Value::Nil)
     }
 
-    /// Replace every field.
+    /// Replace every field (as many as the object has).
     pub fn set_fields(&self, fields: Fields) {
+        assert_eq!(
+            fields.len(),
+            self.field_count(),
+            "an object's fields replaced"
+        );
         // SAFETY: a short write (see `fields_mut`); the old values are
         // dropped after it.
-        let old = std::mem::replace(unsafe { self.fields_mut() }, fields);
-        self.bind_fields();
+        let slots = unsafe { self.fields_mut() };
+        let old: Fields = slots
+            .iter_mut()
+            .zip(fields)
+            .map(|(slot, v)| std::mem::replace(slot, v))
+            .collect();
         drop(old);
     }
 
-    /// The field vector, to read.
+    /// The fields, to read.
     ///
     /// # Safety
     /// No `fields_mut` reference may be alive while this one is, and none
@@ -709,23 +744,27 @@ impl Object {
     /// change it). Several threads may read a shared object this way at
     /// once: nothing writes one once it is shared.
     #[inline(always)]
-    pub unsafe fn fields_ref(&self) -> &Fields {
+    pub unsafe fn fields_ref(&self) -> &[Value] {
         unsafe { &*self.fields.get() }
     }
 
-    /// The field vector, to change.
+    /// The fields, to change.
     ///
     /// # Safety
     /// No other reference to the fields may be alive or taken while this
     /// one is (an operation that runs no Quarz code), and the object is
     /// not shared with another thread (an object is changed only while
-    /// built, or by the one task a mutable object belongs to). A caller
-    /// that grows or replaces the vector calls `bind_fields` after.
+    /// built, or by the one task a mutable object belongs to).
     #[allow(clippy::mut_from_ref)]
     #[inline(always)]
-    pub unsafe fn fields_mut(&self) -> &mut Fields {
+    pub unsafe fn fields_mut(&self) -> &mut [Value] {
         unsafe { &mut *self.fields.get() }
     }
+}
+
+#[cold]
+fn no_field(i: usize, n: usize) -> ! {
+    panic!("field {i} of an object with {n}")
 }
 
 /// A block implemented in Rust (used by natives that iterate). It stays
@@ -1976,7 +2015,7 @@ impl Hash for Value {
                         f.hash(state);
                     }
                 } else {
-                    (Rc::as_ptr(o) as usize).hash(state);
+                    (Rc::as_ptr(o).cast::<u8>() as usize).hash(state);
                 }
             }
             Value::Class(c) => {
