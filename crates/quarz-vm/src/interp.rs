@@ -1143,7 +1143,11 @@ impl Interp {
     fn task_body(&self, closure: Value) -> Box<dyn FnOnce() -> TaskExit> {
         let me = self.rc();
         Box::new(move || {
-            let r = me.call_block(&closure, smallvec![]);
+            // Cancelled before it started: its block does not run.
+            let r = match me.check_cancel(&me.current_task()) {
+                Ok(()) => me.call_block(&closure, smallvec![]),
+                Err(e) => Err(e),
+            };
             match r {
                 Ok(v) => TaskExit::Result(TaskResult::Value(v)),
                 Err(Flow::Raise(e)) => TaskExit::Result(TaskResult::Error(e)),

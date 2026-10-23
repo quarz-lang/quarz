@@ -56,9 +56,9 @@ end
 Task.timeout(5.seconds) { slow_call }     # raises Task::Timeout when exceeded; the block runs in a child task
 ```
 
-- `cancel` sets a "cancellation request" on the target task. The requested task receives a `Task::Cancelled` exception at the next blocking operation it performs (channel, IO, `sleep`, `await`), or when it calls `Task.check_cancel`.
+- `cancel` sets a "cancellation request" on the target task. The requested task receives a `Task::Cancelled` exception at the next blocking operation it performs (channel, IO, `sleep`, `await`), or when it calls `Task.check_cancel`. A task cancelled before it starts does not run its block at all: awaiting it raises `Task::Cancelled`.
 - `Task::Cancelled` is a direct subclass of `Exception`, not `StandardError`, so `rescue => e` does not catch it. `ensure` runs as usual, so cleanup goes there.
-- Cancellation is a request, not a force. Computation-only loops need to call `Task.check_cancel` periodically (an option to check automatically at safepoints, `--cancel-at-safepoints`, is planned). Likewise `Task.timeout` interrupts its block only at a wait; currently, cancelling the task that waits in `Task.timeout` does not cancel the block.
+- Cancellation is a request, not a force. Computation-only loops need to call `Task.check_cancel` periodically (an option to check automatically at safepoints, `--cancel-at-safepoints`, is planned). Likewise `Task.timeout` interrupts its block only at a wait; cancelling the task that waits in `Task.timeout` cancels the block too.
 - `Task#done?` tells whether a task has finished; `Scope#cancel` cancels the scope's children, and the scope then returns normally.
 
 ## 3. Channels

@@ -54,9 +54,9 @@ end
 Task.timeout(5.seconds) { slow_call }     # 超過すると Task::Timeout を送出。ブロックは子タスクで実行される
 ```
 
-- `cancel` は対象タスクに「キャンセル要求」を立てます。要求されたタスクは、次にブロックする操作(チャネル、IO、`sleep`、`await`)を行う時点、または `Task.check_cancel` を呼んだ時点で `Task::Cancelled` 例外を受け取ります。
+- `cancel` は対象タスクに「キャンセル要求」を立てます。要求されたタスクは、次にブロックする操作(チャネル、IO、`sleep`、`await`)を行う時点、または `Task.check_cancel` を呼んだ時点で `Task::Cancelled` 例外を受け取ります。開始前にキャンセルされたタスクはブロックをまったく実行せず、`await` すると `Task::Cancelled` が送出されます。
 - `Task::Cancelled` は `StandardError` ではなく `Exception` 直下のクラスなので、`rescue => e` では捕まりません。`ensure` は通常どおり実行されるので、後始末はそこに書きます。
-- キャンセルは要求であって強制ではありません。計算のみのループは `Task.check_cancel` を適宜呼ぶ必要があります(安全点で自動的に検査するオプション `--cancel-at-safepoints` は予定)。同じく `Task.timeout` がブロックを中断するのは待ちの時点だけです。現状では、`Task.timeout` で待っているタスクをキャンセルしても、ブロックはキャンセルされません。
+- キャンセルは要求であって強制ではありません。計算のみのループは `Task.check_cancel` を適宜呼ぶ必要があります(安全点で自動的に検査するオプション `--cancel-at-safepoints` は予定)。同じく `Task.timeout` がブロックを中断するのは待ちの時点だけです。`Task.timeout` で待っているタスクをキャンセルすると、ブロックもキャンセルされます。
 - `Task#done?` でタスクが終わったかを調べられます。`Scope#cancel` はスコープの子をキャンセルし、スコープはそのあと普通に戻ります。
 
 ## 3. チャネル

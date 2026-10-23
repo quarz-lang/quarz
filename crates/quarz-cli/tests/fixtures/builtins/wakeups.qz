@@ -79,3 +79,33 @@ sleep(20.ms)
 y.cancel
 y.await
 p slow.await
+
+# A task cancelled before it starts does not run its block.
+z = spawn { puts "z ran"; 0 }
+z.cancel
+begin
+  z.await
+rescue Task::Cancelled
+  puts "z cancelled before it started"
+end
+
+# Cancelling a task waiting in Task.timeout cancels the block.
+log = Channel[String].new(capacity: 1)
+v = spawn do
+  Task.timeout(10.seconds) do
+    begin
+      sleep(5.seconds)
+    ensure
+      log.send "block ended"
+    end
+  end
+end
+sleep(20.ms)
+v.cancel
+begin
+  v.await
+rescue Task::Cancelled
+  puts "v cancelled"
+end
+t0 = Time.now
+p log.receive, Time.now - t0 < 1.seconds
