@@ -24,5 +24,5 @@ quarz-syntax = { path = "crates/quarz-syntax" }
 quarz-types = { path = "crates/quarz-types" }
 quarz-ir = { path = "crates/quarz-ir" }
 quarz-lower = { path = "crates/quarz-lower" }
-quarz-vm = { path = "crates/quarz-vm" }
+quarz-vm = { path = "crates/quarz-vm", default-features = false }
 quarz-aot = { path = "crates/quarz-aot" }

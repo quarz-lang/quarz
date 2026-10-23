@@ -22,3 +22,10 @@ quarz-aot = { workspace = true }
 # history file and a binding for Enter are what is needed, and the home
 # directory is $HOME).
 rustyline = { version = "19", default-features = false, features = ["with-file-history", "derive", "custom-bindings"] }
+
+[features]
+# mimalloc as the allocator of `quarz` and of the runtime library compiled
+# programs link (`QUARZ_ALLOC=system` still selects the system's at run
+# time); without it, the system's only.
+default = ["mimalloc"]
+mimalloc = ["quarz-vm/mimalloc"]

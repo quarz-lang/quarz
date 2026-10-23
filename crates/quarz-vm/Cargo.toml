@@ -26,6 +26,13 @@ smallvec = "1"
 unicode-segmentation = "1"
 glob = "0.3"
 polling = "3"
+# The allocator (see `src/alloc.rs`): C sources built with the system's
+# compiler.
+mimalloc = { version = "0.1", optional = true }
 
-[target.'cfg(target_os = "linux")'.dependencies]
+[features]
+default = ["mimalloc"]
+mimalloc = ["dep:mimalloc"]
+
+[target.'cfg(unix)'.dependencies]
 libc = "0.2"

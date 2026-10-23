@@ -2,6 +2,8 @@
 //! and the native methods. Compiled programs (`quarz build`) link this
 //! crate as their runtime.
 
+#[cfg(feature = "mimalloc")]
+pub mod alloc;
 pub mod deinit;
 #[cfg(target_os = "linux")]
 mod epoll;
