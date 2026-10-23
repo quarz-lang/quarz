@@ -112,3 +112,7 @@ cargo build --release
 ./target/release/quarz repl                        # interactive session: line editing, history, completion
 cargo test                                         # lexer, parser, checker, VM and compiler tests
 ```
+
+## License
+
+[MIT No Attribution](LICENSE) (MIT-0).

@@ -16,7 +16,7 @@ edition = "2021"
 # Raised to 1.96 for Cranelift 0.136, since removed; not lowered (CI
 # checks this version, and nothing older is tested).
 rust-version = "1.96"
-license = "MIT"
+license = "MIT-0"
 repository = "https://github.com/shugo/quarz"
 
 [workspace.dependencies]

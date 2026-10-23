@@ -110,3 +110,7 @@ cargo build --release
 ./target/release/quarz repl                        # 対話セッション(行編集・履歴・補完)
 cargo test                                         # 字句・構文・型検査・VM・コンパイラのテスト
 ```
+
+## ライセンス
+
+[MIT No Attribution](LICENSE)(MIT-0)です。
