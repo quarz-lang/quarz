@@ -1,0 +1,16 @@
+# `x.nil?` is a test of the value when no class defines its own `nil?`
+# (the lowering then emits IsNil). Here one does, so every `nil?` stays
+# a call, and the class's answer counts.
+class Null
+  def nil? -> Bool = true
+end
+
+def count_nils(xs: Array[Object]) -> Int
+  n = 0
+  xs.each { |x| n += 1 if x.nil? }
+  n
+end
+
+p count_nils([1, nil, Null.new, "a", nil])
+v: Int? = nil
+p v.nil?, 3.nil?, Null.new.nil?

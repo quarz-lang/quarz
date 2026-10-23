@@ -1761,6 +1761,17 @@ impl<'a> FnBuilder<'a> {
         if iter::exec_shape(e, call, self.out, self.world).is_some() {
             return self.inline_exec(e, call);
         }
+        if self.is_builtin_nil_p(e, call) {
+            // `x.nil?`, which no class redefines: a test of the value, not
+            // a call (compiled code then answers it from what it knows).
+            let src = match &call.recv {
+                Some(x) => self.expr(x),
+                None => self.self_reg(),
+            };
+            let dst = self.reg();
+            self.emit(Inst::IsNil { dst, src });
+            return dst;
+        }
         if self.out.bang_assign.contains(&e.id) {
             return self.bang_assign(e, call);
         }
@@ -1962,6 +1973,22 @@ impl<'a> FnBuilder<'a> {
             }
             _ => self.nil(),
         }
+    }
+
+    /// Whether `call` is `Object#nil?` (no arguments, no block, no `&.`)
+    /// and no class or extension defines a `nil?` of its own.
+    fn is_builtin_nil_p(&self, e: &Expr, call: &ast::Call) -> bool {
+        if call.name != "nil?" || !call.args.is_empty() || call.block.is_some() || call.safe_nav {
+            return false;
+        }
+        let Some(CallTarget::Method { method }) = self.out.calls.get(&e.id) else {
+            return false;
+        };
+        let m = self.world.method(*method);
+        let object = self.world.builtin.object;
+        m.is_native
+            && m.owner == object
+            && !self.lw.overridden.contains(&(object, "nil?".to_string()))
     }
 
     /// `recv.instance_exec(args) { ... }` with a literal block: the body
