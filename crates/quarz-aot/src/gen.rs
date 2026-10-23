@@ -48,6 +48,10 @@ pub(crate) struct Helpers<F> {
     /// `qz_finalize`: run the `deinitialize` of what was released (none
     /// when the program defines no `deinitialize`).
     pub finalize: Option<F>,
+    /// `qz_own`, `qz_disown`: a borrowed register's reference counted,
+    /// a counted one given up.
+    pub own: F,
+    pub disown: F,
     pub clone_ptr: F,
     pub exec: F,
     pub term: F,
@@ -170,6 +174,17 @@ pub(crate) fn gen_function<B: Builder>(
     let drop_value_fn = h.drop_value;
     let finalize_fn = h.finalize;
     let pop_call = h.pop_call;
+    let mut borrowed = vec![false; f.nregs.max(1) as usize];
+    for blk in &f.blocks {
+        for inst in &blk.insts {
+            if let Inst::ArrayGetReg {
+                dst, borrow: true, ..
+            } = inst
+            {
+                borrowed[*dst as usize] = true;
+            }
+        }
+    }
     let heap = quarz_ir::live::heap_possible(f, methods);
     // Unboxed numbers: the state of each register at each block's
     // entry, and an SSA variable per register for each kind.
@@ -449,6 +464,7 @@ pub(crate) fn gen_function<B: Builder>(
         fvars,
         bvars,
         pvars,
+        borrowed,
         pushed_var,
         lazy_act,
         callees_typed,
@@ -1060,6 +1076,10 @@ struct Gen<'a, B: Builder> {
     bvars: Vec<B::Var>,
     /// The allocation of each register's object, when its state is `Obj`.
     pvars: Vec<B::Var>,
+    /// The registers that hold array elements borrowed from their arrays
+    /// (`ArrayGetReg`'s `borrow`): read without a count, never released,
+    /// and counted only when the interpreter takes over (`deopt`).
+    borrowed: Vec<bool>,
     /// Whether a lazily pushed activation has been built.
     pushed_var: B::Var,
     lazy_act: bool,
@@ -1150,6 +1170,10 @@ impl<B: Builder> Gen<'_, B> {
     /// Make sure `dst` holds no reference-counted value before an inline
     /// store overwrites it.
     fn release(&mut self, dst: Reg) {
+        // A borrowed element holds no count of its own.
+        if self.borrowed[dst as usize] {
+            return;
+        }
         if !self.states[dst as usize].needs_release() {
             return;
         }
@@ -1173,7 +1197,8 @@ impl<B: Builder> Gen<'_, B> {
     /// register; the rest is this backend's business), and this is its
     /// last read (QIR's answer, shared with the interpreter).
     fn movable(&self, _inst: &Inst, src: Reg, block: u32, index: u32) -> bool {
-        self.states[src as usize].boxed()
+        !self.borrowed[src as usize]
+            && self.states[src as usize].boxed()
             && self.last_reads[block as usize][index as usize].contains(&src)
     }
 
@@ -1628,6 +1653,20 @@ impl<B: Builder> Gen<'_, B> {
         }
         let live = self.live[block as usize][index as usize].clone();
         self.flush_live(&live);
+        // The interpreter owns its registers: a borrowed element still in
+        // use is counted, a dead one forgotten.
+        let borrowed: Vec<Reg> = (0..self.nregs)
+            .filter(|&r| self.borrowed[r])
+            .map(|r| r as Reg)
+            .collect();
+        for r in borrowed {
+            if live[r as usize] {
+                let p = self.b.iadd_imm(self.regs, i64::from(reg_off(r)));
+                self.b.call(self.h.own, &[p]);
+            } else {
+                self.store_tag(r, TAG_NIL);
+            }
+        }
         // The interpreter drops what it overwrites: a home never set
         // (nor just written back) must at least be nil, which the
         // runtime writes for the registers whose bits are set.
@@ -1820,7 +1859,7 @@ impl<B: Builder> Gen<'_, B> {
     /// its home; the others hold nothing to release, or were never
     /// written).
     fn set_valid(&mut self) {
-        let words = self.masks(|g, k| g.heap[k] && g.states[k].boxed());
+        let words = self.masks(|g, k| g.heap[k] && g.states[k].boxed() && !g.borrowed[k]);
         for (k, word) in words.into_iter().enumerate() {
             let v = self.b.iconst(Ty::I64, word);
             self.b.def_var(self.valid_vars[k], v);
@@ -2945,6 +2984,7 @@ impl<B: Builder> Gen<'_, B> {
                 dst,
                 arr,
                 index: idx,
+                borrow,
             } => {
                 // An array indexed by an Int within range: the element
                 // copied from the vector; everything else (negative
@@ -2988,7 +3028,16 @@ impl<B: Builder> Gen<'_, B> {
                 self.b.switch_to_block(values_b);
                 let off = self.b.imul_imm(i, i64::from(VALUE_SIZE));
                 let elem = self.b.iadd(ptr, off);
-                self.clone_from(*dst, elem);
+                if *borrow {
+                    // The three words, no count: the array keeps it.
+                    for k in [0, 8, 16] {
+                        let w = self.b.load(Ty::I64, elem, k);
+                        self.b.store(w, self.regs, reg_off(*dst) + k);
+                    }
+                    self.stale[*dst as usize] = false;
+                } else {
+                    self.clone_from(*dst, elem);
+                }
                 self.b.jump(cont, &[]);
                 self.b.switch_to_block(ints_b);
                 let off = self.b.imul_imm(i, 8);
@@ -3009,7 +3058,17 @@ impl<B: Builder> Gen<'_, B> {
                 self.b.switch_to_block(slow);
                 self.flush(*arr);
                 self.flush(*idx);
-                self.exec(block, index, unwind);
+                if *borrow {
+                    // The runtime drops what it overwrites (a borrowed
+                    // element: not to be released) and counts what it
+                    // stores (given up again: the array keeps it).
+                    self.store_tag(*dst, TAG_NIL);
+                    self.exec(block, index, unwind);
+                    let p = self.b.iadd_imm(self.regs, i64::from(reg_off(*dst)));
+                    self.b.call(self.h.disown, &[p]);
+                } else {
+                    self.exec(block, index, unwind);
+                }
                 self.b.jump(cont, &[]);
                 self.b.switch_to_block(cont);
             }

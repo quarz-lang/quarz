@@ -174,6 +174,26 @@ pub unsafe extern "C" fn qz_drop_value(p: *mut Value) {
     *p = Value::Nil;
 }
 
+/// Count a reference for the borrowed value at `p` (see `ArrayGetReg`'s
+/// `borrow`), which the interpreter is about to own.
+///
+/// # Safety
+/// `p` points to a live value kept alive by what it was borrowed from.
+#[no_mangle]
+pub unsafe extern "C" fn qz_own(p: *mut Value) {
+    std::mem::forget((*p).clone());
+}
+
+/// Give up the reference the runtime counted for the value at `p`, which
+/// stays there borrowed (what it came from keeps it alive).
+///
+/// # Safety
+/// `p` points to a live value that something else also refers to.
+#[no_mangle]
+pub unsafe extern "C" fn qz_disown(p: *mut Value) {
+    drop(std::ptr::read(p));
+}
+
 /// After a `Release`: run the `deinitialize` of what was released.
 ///
 /// # Safety

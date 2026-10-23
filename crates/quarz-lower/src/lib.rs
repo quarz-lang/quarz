@@ -11,6 +11,7 @@ use quarz_syntax::ast::Expr;
 use quarz_syntax::SourceFile;
 use quarz_types::{Checked, Output, World};
 
+mod borrow;
 mod capture;
 mod copyprop;
 mod devirt;
@@ -351,6 +352,7 @@ pub fn lower_checked(checked: &Checked, files: &[SourceFile]) -> Module {
     sroa::scalar_replace(&mut functions, &delta.world.methods, &delta.world.classes);
     copyprop::propagate_copies(&mut functions);
     release::drop_unobserved(&mut functions, &delta.world.methods, &delta.world.builtin);
+    borrow::mark_borrows(&mut functions);
     regshare::share_registers(&mut functions, &delta.world.methods);
     // Last: where values move rather than copy, for every way the
     // functions run.

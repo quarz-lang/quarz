@@ -1,0 +1,40 @@
+# Array elements read in a loop without counting a reference (compiled
+# code; see quarz-lower's borrow): still right when the rest of the
+# function goes to the interpreter, after a break, and when the array
+# goes away later.
+class P
+  @v: Int
+  def initialize(@v: Int) end
+  def v -> Int = @v
+end
+def overflow(ps: Array[P]) -> Nil
+  big = 9223372036854775807
+  ps.each do |p|
+    x = p.v + big          # overflows into a BigInt: the rest runs interpreted
+    puts "#{p.v} #{x}"
+  end
+  nil
+end
+overflow([P.new(1), P.new(2)])
+def first_big(ps: Array[P]) -> P?
+  found: P? = nil
+  ps.each do |p|
+    if p.v > 1
+      found = p
+      break
+    end
+  end
+  found
+end
+r = first_big([P.new(1), P.new(5), P.new(7)])
+p r.nil? ? 0 : r.v
+def total(ps: Array[P]) -> Int
+  t = 0
+  10.times { ps.each { |p| t += p.v } }
+  t
+end
+xs = Array.new(100) { |i| P.new(i) }
+p total(xs)
+ys = xs.map { |p| p }
+xs = []
+p ys.sum { |p| p.v }

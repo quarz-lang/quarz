@@ -1021,6 +1021,8 @@ fn emit(module: &Module, opaque: bool) -> Result<String, String> {
             stack_overflow: declare("qz_stack_overflow", &[p], &[i32_]),
             drop_value: declare("qz_drop_value", &[p], &[]),
             finalize: Some(declare("qz_finalize", &[p], &[])),
+            own: declare("qz_own", &[p], &[]),
+            disown: declare("qz_disown", &[p], &[]),
             clone_ptr: declare("qz_clone_ptr", &[p, p], &[]),
             call_static: declare(
                 "qz_call_static",
@@ -1148,6 +1150,8 @@ fn emit(module: &Module, opaque: bool) -> Result<String, String> {
                 stack_overflow: rt.h.stack_overflow,
                 drop_value: rt.h.drop_value,
                 finalize: rt.h.finalize.filter(|_| has_deinit),
+                own: rt.h.own,
+                disown: rt.h.disown,
                 clone_ptr: rt.h.clone_ptr,
                 exec: rt.h.exec,
                 term: rt.h.term,

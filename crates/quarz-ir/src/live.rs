@@ -189,6 +189,9 @@ pub fn own_dying_receivers(f: &mut Function, in_place: &[bool]) {
 /// every program, the prelude's included, at each start.
 pub fn mark_moves(f: &mut Function) {
     let nblocks = f.blocks.len();
+    // A borrowed element (see `ArrayGetReg`'s `borrow`) owns nothing to
+    // move.
+    let borrowed = borrowed_regs(f);
     let words = (f.nregs as usize).div_ceil(64);
     let set = |s: &mut [u64], r: Reg| s[r as usize / 64] |= 1 << (r % 64);
     let unset = |s: &mut [u64], r: Reg| s[r as usize / 64] &= !(1 << (r % 64));
@@ -263,6 +266,7 @@ pub fn mark_moves(f: &mut Function) {
             let dying = |r: Reg| {
                 (!has(&live, r) || defs.contains(&r))
                     && uses.iter().filter(|u| **u == r).count() == 1
+                    && !borrowed[r as usize]
             };
             match inst {
                 Inst::Move { dst, src } if dst != src && dying(*src) => {
@@ -306,6 +310,23 @@ pub fn mark_moves(f: &mut Function) {
             }
         }
     }
+}
+
+/// The registers that hold borrowed array elements (`ArrayGetReg` with
+/// `borrow`: the lowering keeps such a register to itself).
+pub fn borrowed_regs(f: &Function) -> Vec<bool> {
+    let mut b = vec![false; f.nregs as usize];
+    for blk in &f.blocks {
+        for inst in &blk.insts {
+            if let Inst::ArrayGetReg {
+                dst, borrow: true, ..
+            } = inst
+            {
+                b[*dst as usize] = true;
+            }
+        }
+    }
+    b
 }
 
 /// Which registers may ever hold a reference-counted value (the others

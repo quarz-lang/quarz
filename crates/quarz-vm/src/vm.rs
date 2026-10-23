@@ -1411,7 +1411,9 @@ impl Interp {
                 };
                 regs[*dst as usize] = v;
             }
-            Inst::ArrayGetReg { dst, arr, index } => {
+            Inst::ArrayGetReg {
+                dst, arr, index, ..
+            } => {
                 let v = match (&regs[*arr as usize], &regs[*index as usize]) {
                     (Value::Array(a), Value::Int(i)) => {
                         let i = if *i < 0 {

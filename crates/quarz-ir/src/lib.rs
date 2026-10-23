@@ -564,6 +564,11 @@ pub enum Inst {
         dst: Reg,
         arr: Reg,
         index: Reg,
+        /// Compiled code reads the element without counting a reference:
+        /// `arr` keeps it alive wherever `dst` is (see
+        /// `quarz-lower`'s `borrow`). The interpreter copies it.
+        #[serde(default)]
+        borrow: bool,
     },
     /// `arr[from..to]` with run-time Int bounds (clamped).
     ArraySliceReg {

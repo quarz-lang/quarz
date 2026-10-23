@@ -601,10 +601,16 @@ pub(crate) fn rewrite_with(
             from: *from,
             drop_last: *drop_last,
         },
-        Inst::ArrayGetReg { dst, arr, index } => Inst::ArrayGetReg {
+        Inst::ArrayGetReg {
+            dst,
+            arr,
+            index,
+            borrow,
+        } => Inst::ArrayGetReg {
             dst: r(dst),
             arr: r(arr),
             index: r(index),
+            borrow: *borrow,
         },
         Inst::ArraySliceReg { dst, arr, from, to } => Inst::ArraySliceReg {
             dst: r(dst),

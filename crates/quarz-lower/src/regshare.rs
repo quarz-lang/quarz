@@ -71,6 +71,16 @@ fn share_in(f: &mut Function, methods: &[RtMethod]) {
     // themselves: compiled code releases by register (a number's
     // register sharing with a call result's would be released too).
     let heap = quarz_ir::live::heap_possible(f, methods);
+    // A borrowed element's register is its own (compiled code never
+    // releases it: a number sharing it would hold another value).
+    let borrowed = quarz_ir::live::borrowed_regs(f);
+    let kind = |r: Reg| -> usize {
+        if borrowed[r as usize] {
+            2 + r as usize
+        } else {
+            usize::from(heap[r as usize])
+        }
+    };
     let nblocks = f.blocks.len();
     let ud: Vec<Vec<(Vec<Reg>, Vec<Reg>)>> = f
         .blocks
@@ -230,10 +240,10 @@ fn share_in(f: &mut Function, methods: &[RtMethod]) {
     // Registers never mentioned keep nothing; give them the first number.
     let mut color: Vec<Option<Reg>> = vec![None; n];
     let mut members: Vec<Bits> = Vec::new();
-    let mut heap_color: Vec<bool> = Vec::new();
+    let mut kind_color: Vec<usize> = Vec::new();
     for r in order {
         let fits = |c: usize, members: &[Bits]| {
-            heap_color[c] == heap[r as usize] && !interf[r as usize].meets(&members[c])
+            kind_color[c] == kind(r) && !interf[r as usize].meets(&members[c])
         };
         let preferred = partners[r as usize]
             .iter()
@@ -248,7 +258,7 @@ fn share_in(f: &mut Function, methods: &[RtMethod]) {
             Some(c) => c,
             None => {
                 members.push(Bits::new(n));
-                heap_color.push(heap[r as usize]);
+                kind_color.push(kind(r));
                 (members.len() - 1) as Reg
             }
         };

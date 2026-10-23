@@ -2188,6 +2188,7 @@ impl<'a> FnBuilder<'a> {
                     dst: x,
                     arr: a,
                     index: i,
+                    borrow: false,
                 });
                 x
             }
@@ -2390,6 +2391,11 @@ impl<'a> FnBuilder<'a> {
         }
         self.term(Term::Jump(exit_b));
         self.switch(exit_b);
+        // The array lives to the end of the loop, so that its elements
+        // can be borrowed (see `borrow`).
+        if let Some(a) = arr {
+            self.emit(Inst::Release { src: a });
+        }
         result
     }
 
@@ -3400,6 +3406,7 @@ impl<'a> FnBuilder<'a> {
                         dst: elem,
                         arr: v,
                         index: idx,
+                        borrow: false,
                     });
                     self.pattern(p, elem, next_i);
                 }
