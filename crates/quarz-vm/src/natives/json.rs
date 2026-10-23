@@ -47,6 +47,7 @@ struct Classes {
     null: ClassId,
     boolean: ClassId,
     integer: ClassId,
+    big_integer: ClassId,
     number: ClassId,
     text: ClassId,
     list: ClassId,
@@ -79,6 +80,7 @@ fn classes(interp: &Interp) -> Result<Classes, Flow> {
         null: variant("Null")?,
         boolean: variant("Boolean")?,
         integer: variant("Integer")?,
+        big_integer: variant("BigInteger")?,
         number: variant("Number")?,
         text: variant("Text")?,
         list: variant("List")?,
@@ -288,13 +290,12 @@ impl Parser<'_> {
             let f: f64 = text.parse().map_err(|_| self.error("invalid number"))?;
             Ok(variant(self.classes.number, Value::Float(f)))
         } else {
-            // An integer too large for an `Int` is read as a number, as
-            // JavaScript reads them all.
+            // An integer too large for an `Int` is kept exact.
             match text.parse::<i64>() {
                 Ok(i) => Ok(variant(self.classes.integer, Value::Int(i))),
                 Err(_) => Ok(variant(
-                    self.classes.number,
-                    Value::Float(text.parse().unwrap_or(f64::INFINITY)),
+                    self.classes.big_integer,
+                    crate::interp::parse_integer(text, 10),
                 )),
             }
         }

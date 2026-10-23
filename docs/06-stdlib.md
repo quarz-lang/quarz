@@ -105,7 +105,7 @@ An array of a comparable element type is `Comparable` (`<=> < <= > >= between? c
 
 ## 10. Others (loaded with `require`)
 
-`json` (`JSON.parse -> JSON::Value`, an enum of `Null | Boolean | Integer | Number | Text | List | Map` with accessors such as `as_s`, `as_i?` and `[]`; `JSON.generate`/`pretty_generate`, `to_json`), `time` (a no-op: `Time` and `Duration` are built in), `socket` (§9). `Set` is built in; there is no `set` library to require. *Planned*: `JSON.decode[T](str)` decoding directly into `data`, `Date`, `digest`, `base64`, `uri`, `net/http`, `csv`, `yaml`, `optparse`, `logger`, `test` (`Test::Unit`-style), `benchmark`, `ffi`.
+`json` (`JSON.parse -> JSON::Value`, an enum of `Null | Boolean | Integer | BigInteger | Number | Text | List | Map` with accessors such as `as_s`, `as_i?` and `[]`; an integer too large for an `Int` is a `BigInteger`, kept exact: `as_integer` gives any integer as an `Integer`, `as_i` raises `OverflowError` for it; `JSON.generate`/`pretty_generate`, `to_json`), `time` (a no-op: `Time` and `Duration` are built in), `socket` (§9). `Set` is built in; there is no `set` library to require. *Planned*: `JSON.decode[T](str)` decoding directly into `data`, `Date`, `digest`, `base64`, `uri`, `net/http`, `csv`, `yaml`, `optparse`, `logger`, `test` (`Test::Unit`-style), `benchmark`, `ffi`.
 
 ## 11. Ruby Built-ins Not Provided
 

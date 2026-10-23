@@ -24,12 +24,13 @@ def job_from(value: JSON::Value) -> Job
   )
 end
 
-# Every JSON value is one of seven variants, so `case/in` is exhaustive.
+# Every JSON value is one of eight variants, so `case/in` is exhaustive.
 def describe(node: JSON::Value) -> String
   case node
   in JSON::Value::Null then "null"
   in JSON::Value::Boolean(value:) then value ? "yes" : "no"
   in JSON::Value::Integer(value:) then "int #{value}"
+  in JSON::Value::BigInteger(value:) then "big int #{value}"
   in JSON::Value::Number(value:) then "float #{value}"
   in JSON::Value::Text(value:) then "text #{value.inspect}"
   in JSON::Value::List(items:) then "list of #{items.size}"

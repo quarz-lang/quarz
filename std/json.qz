@@ -23,12 +23,14 @@ module JSON
   class GeneratorError < StandardError
   end
 
-  # A parsed JSON document. Integral numbers are `Integer`, the others
-  # `Number`.
+  # A parsed JSON document. Integral numbers are `Integer` (an `Int`), or
+  # `BigInteger` when too large for an `Int` (an `::Integer`, exact), the
+  # others `Number`.
   enum Value
     variant Null
     variant Boolean(value: Bool)
     variant Integer(value: Int)
+    variant BigInteger(value: ::Integer)
     variant Number(value: Float)
     variant Text(value: String)
     variant List(items: Array[Value])
@@ -50,7 +52,7 @@ module JSON
 
     def number? -> Bool
       case self
-      in Integer | Number then true
+      in Integer | BigInteger | Number then true
       else false
       end
     end
@@ -117,7 +119,18 @@ module JSON
     def as_i -> Int
       case self
       in Integer(value:) then value
+      in BigInteger(value:) then value.to_i
       in Number(value:) then value.to_i
+      else raise TypeError, "not a JSON number: #{inspect}"
+      end
+    end
+
+    # The integer, exact whatever its size (a `Number`'s truncated).
+    def as_integer -> ::Integer
+      case self
+      in Integer(value:) then value.to_integer
+      in BigInteger(value:) then value
+      in Number(value:) then value.to_i.to_integer
       else raise TypeError, "not a JSON number: #{inspect}"
       end
     end
@@ -125,6 +138,7 @@ module JSON
     def as_f -> Float
       case self
       in Integer(value:) then value.to_f
+      in BigInteger(value:) then value.to_f
       in Number(value:) then value
       else raise TypeError, "not a JSON number: #{inspect}"
       end
@@ -161,7 +175,17 @@ module JSON
     def as_i? -> Int?
       case self
       in Integer(value:) then value
+      in BigInteger(value:) then value.to_i
       in Number(value:) then value.to_i
+      else nil
+      end
+    end
+
+    def as_integer? -> ::Integer?
+      case self
+      in Integer(value:) then value.to_integer
+      in BigInteger(value:) then value
+      in Number(value:) then value.to_i.to_integer
       else nil
       end
     end
@@ -169,6 +193,7 @@ module JSON
     def as_f? -> Float?
       case self
       in Integer(value:) then value.to_f
+      in BigInteger(value:) then value.to_f
       in Number(value:) then value
       else nil
       end
