@@ -940,6 +940,7 @@ fn typed_signature(sig: &unbox::TypedSig) -> (Vec<Ty>, Vec<Ty>) {
         params.push(match p {
             unbox::Mach::Float => Ty::F64,
             unbox::Mach::Bool => Ty::I8,
+            unbox::Mach::Boxed => Ty::Ptr,
             _ => Ty::I64,
         });
     }

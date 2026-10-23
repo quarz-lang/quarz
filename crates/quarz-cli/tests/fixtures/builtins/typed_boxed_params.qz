@@ -1,0 +1,80 @@
+# Typed entries with parameters other than numbers and Bools: compiled
+# code lends the caller's value (its address) instead of boxing an
+# argument list. The same results as the interpreter's when the callee
+# keeps the value, when it is the argument's last use, when the callee
+# goes to the interpreter (an overflow), and with deinitialize.
+data Point = (x: Float, y: Float)
+
+def dist2(a: Point, b: Point) -> Float
+  dx = a.x - b.x
+  dy = a.y - b.y
+  dx * dx + dy * dy
+end
+
+def nearest(ps: Array[Point], q: Point, i: Int, best: Float) -> Float
+  return best if i == ps.size
+  d = dist2(ps[i], q)
+  nearest(ps, q, i + 1, d < best ? d : best)
+end
+
+def count_long(words: Array[String], min: Int, i: Int) -> Int
+  return 0 if i == words.size
+  (words[i].size >= min ? 1 : 0) + count_long(words, min, i + 1)
+end
+
+def has_key?(h: Hash[String, Int], k: String, deep: Int) -> Bool
+  return h.key?(k) if deep == 0
+  has_key?(h, k, deep - 1)
+end
+
+class Bag
+  var @items: Array[String] = []
+  def items -> Array[String] = @items
+  def keep(s: String, times: Int) -> Nil
+    return nil if times == 0
+    @items = @items.push(s)
+    keep(s, times - 1)
+  end
+end
+
+def weigh(s: String, n: Int) -> Int
+  return s.size * 4611686018427387903 if n == 0
+  weigh(s, n - 1)
+end
+
+def describe(o: Object, n: Int) -> Int
+  return o.to_s.size if n == 0
+  describe(o, n - 1)
+end
+
+class Res
+  @name: String
+  def initialize(@name: String) end
+  def deinitialize
+    puts "deinitialize #{@name}"
+  end
+end
+
+def use(r: Res, n: Int) -> Int
+  return 1 if n == 0
+  use(r, n - 1) + 1
+end
+
+ps = Array.new(20) { |i| Point.new(i.to_f, (i * 7 % 13).to_f) }
+p nearest(ps, Point.new(4.5, 3.0), 0, 1.0e9)
+p count_long(["a", "bbb", "cc", "dddd"], 3, 0)
+h = {"x" => 1}
+p has_key?(h, "x", 5), has_key?(h, "z", 5)
+b = Bag.new
+b.keep("hi", 3)
+p b.items
+p weigh("abc", 3)
+p describe(12345, 2), describe(:sym, 2), describe(nil, 1)
+def scoped -> Nil
+  r = Res.new("lent")
+  puts "uses #{use(r, 3)}"
+  puts "after the call"
+  nil
+end
+scoped
+puts "end"

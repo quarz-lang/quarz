@@ -151,14 +151,16 @@ pub use quarz_ir::live::liveness;
 use quarz_ir::live::successors;
 
 /// A typed entry's parameter or result type, passed as a machine value:
-/// an `Int` or a `Float` as a word, a `Bool` as a byte, and `Nil` (a
-/// result only) as nothing.
+/// an `Int` or a `Float` as a word, a `Bool` as a byte, `Nil` (a result
+/// only) as nothing, and any other parameter (`Boxed`) as the address
+/// of the caller's value, which the caller keeps.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mach {
     Int,
     Float,
     Bool,
     Nil,
+    Boxed,
 }
 
 impl Mach {
@@ -179,6 +181,7 @@ impl Mach {
             Mach::Float => State::Float,
             Mach::Bool => State::Bool,
             Mach::Nil => State::NonHeap,
+            Mach::Boxed => State::Unknown,
         }
     }
 
@@ -230,13 +233,20 @@ pub fn typed_sigs(functions: &[Function], methods: &[RtMethod]) -> Vec<Option<Ty
                 .iter()
                 .map(|p| {
                     if p.kind == RtParamKind::Positional && !p.has_default {
-                        Mach::of(p.ty.as_deref()).filter(|t| *t != Mach::Nil)
+                        Some(match Mach::of(p.ty.as_deref()) {
+                            Some(Mach::Nil) | None => Mach::Boxed,
+                            Some(t) => t,
+                        })
                     } else {
                         None
                     }
                 })
                 .collect::<Option<_>>()?;
             let ret = Mach::of(m.ret.as_deref())?;
+            // (Nothing to unbox at all: the boxed body as it is.)
+            if ret == Mach::Nil && params.iter().all(|p| *p == Mach::Boxed) {
+                return None;
+            }
             let plain = f.blocks.iter().all(|b| {
                 b.insts.iter().all(|i| {
                     !matches!(
@@ -690,7 +700,13 @@ fn pure_inst(
                 || (matches!(st[*src as usize], State::Int | State::Float | State::Bool)
                     && free(*dst))
         }
-        Inst::Arg { dst, .. } => free(*dst),
+        // A parameter received as a machine value (a boxed one is
+        // counted into its register, which the frame set up later would
+        // overwrite).
+        Inst::Arg { dst, index } => {
+            free(*dst)
+                && (param_num(f, methods, *index).is_some() || param_bool(f, methods, *index))
+        }
         Inst::BinOp { dst, lhs, rhs, .. } => {
             bin_types(inst, methods, builtin).is_some()
                 && !float_mod(inst)

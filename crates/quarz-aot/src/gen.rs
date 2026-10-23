@@ -397,6 +397,7 @@ pub(crate) fn gen_function<B: Builder>(
                 nparams,
                 params_buf,
                 h.push_call,
+                !sig.params.contains(&unbox::Mach::Boxed),
             );
         }
         act = own_act;
@@ -768,6 +769,7 @@ fn mach_tag(m: unbox::Mach) -> i64 {
         unbox::Mach::Float => TAG_FLOAT,
         unbox::Mach::Bool => TAG_BOOL,
         unbox::Mach::Nil => TAG_NIL,
+        unbox::Mach::Boxed => unreachable!("a boxed parameter has no one tag"),
     }
 }
 
@@ -881,6 +883,7 @@ fn emit_typed_activation<B: Builder>(
     nparams: usize,
     params_buf: B::Value,
     push_call: B::Func,
+    owned: bool,
 ) {
     let zero = b.iconst(Ty::I64, 0);
     let fid_v = b.iconst(Ty::I32, i64::from(fid));
@@ -907,8 +910,9 @@ fn emit_typed_activation<B: Builder>(
     b.store(own_act, own_act, L::ACT_SP as i32);
     let native = b.iconst(Ty::I8, 0);
     b.store(native, own_act, L::ACT_NATIVE as i32);
-    // Its parameter area is its own.
-    let owned = b.iconst(Ty::I8, 1);
+    // Its parameter area is its own, unless it holds values lent by the
+    // caller (copied by whoever reads them).
+    let owned = b.iconst(Ty::I8, i64::from(owned));
     b.store(owned, own_act, L::ACT_ARGS_OWNED as i32);
     let provided: u64 = if nparams >= 64 {
         u64::MAX
@@ -1777,6 +1781,26 @@ impl<B: Builder> Gen<'_, B> {
         }
     }
 
+    /// After a typed call: a boxed argument the call reads for the last
+    /// time, lent rather than moved, is released now (and what that frees
+    /// finalized, as when the callee releases what it took).
+    fn drop_lent(&mut self, inst: &Inst, args: &[Reg], sig: &unbox::TypedSig) {
+        let Inst::Call { moved, .. } = inst else {
+            return;
+        };
+        let mut dropped = false;
+        for (i, (r, n)) in args.iter().zip(&sig.params).enumerate() {
+            if *n == unbox::Mach::Boxed && i < 15 && moved & (1 << i) != 0 {
+                self.drop_moved(*r);
+                self.states[*r as usize] = State::NonHeap;
+                dropped = true;
+            }
+        }
+        if dropped {
+            self.finalize();
+        }
+    }
+
     /// The result of a typed call in `r`'s home, put in its variable as
     /// `get_num` does (a Bool after a tag check, nil as it is).
     fn get_mach(&mut self, r: Reg, m: unbox::Mach, block: u32, index: u32) {
@@ -1802,6 +1826,7 @@ impl<B: Builder> Gen<'_, B> {
             }
             // (A method declared to return Nil returns nil.)
             unbox::Mach::Nil => self.states[r as usize] = State::NonHeap,
+            unbox::Mach::Boxed => {}
         }
     }
 
@@ -2300,6 +2325,8 @@ impl<B: Builder> Gen<'_, B> {
         for (r, n) in args.iter().zip(&sig.params) {
             let st = self.states[*r as usize];
             let fine = match st {
+                // Any value: the callee gets its address.
+                _ if *n == unbox::Mach::Boxed => continue,
                 _ if n.held(st) => continue,
                 State::Int | State::Float | State::Bool => self.b.iconst(Ty::I8, 0),
                 _ => {
@@ -2343,6 +2370,12 @@ impl<B: Builder> Gen<'_, B> {
                     self.ensure_home(*r);
                     self.b.load(Ty::I8, self.regs, reg_off(*r) + 8)
                 }
+                // The value stays the caller's: its address is lent.
+                (_, unbox::Mach::Boxed) => {
+                    self.flush(*r);
+                    self.ensure_home(*r);
+                    self.b.iadd_imm(self.regs, i64::from(reg_off(*r)))
+                }
                 _ => self.payload(*r),
             };
             call_args.push(v);
@@ -2376,7 +2409,9 @@ impl<B: Builder> Gen<'_, B> {
                 self.store_tag(dst, TAG_NIL);
                 self.states[dst as usize] = State::NonHeap;
             }
+            unbox::Mach::Boxed => unreachable!("a typed entry's result is a machine value"),
         }
+        self.drop_lent(inst, args, sig);
         self.b.jump(cont, &[]);
         // Not the declared type: the boxed value goes to the register's
         // home and the interpreter takes over after the call.
@@ -2396,6 +2431,7 @@ impl<B: Builder> Gen<'_, B> {
         self.b.store(zero, self.out_buf, 0);
         self.states[dst as usize] = State::Unknown;
         self.get_mach(dst, sig.ret, block, index + 1);
+        self.drop_lent(inst, args, sig);
         self.b.jump(cont, &[]);
         // The boxed protocol (through the runtime: this path is rare and
         // the inline one is long), then the result checked into the
@@ -2486,7 +2522,13 @@ impl<B: Builder> Gen<'_, B> {
             let nparams = self.typed_params.len();
             let (rt, act, fid, file, push_call) =
                 (self.rt, self.act, self.fid, self.f.file, self.h.push_call);
-            emit_typed_activation(self.b, rt, act, fid, file, nparams, params_buf, push_call);
+            let owned = self
+                .typed
+                .as_ref()
+                .is_none_or(|t| !t.params.contains(&unbox::Mach::Boxed));
+            emit_typed_activation(
+                self.b, rt, act, fid, file, nparams, params_buf, push_call, owned,
+            );
             let one = self.b.iconst(Ty::I8, 1);
             self.b.store(one, act, L::ACT_NATIVE as i32);
             self.b.def_var(self.pushed_var, one);
@@ -2512,6 +2554,16 @@ impl<B: Builder> Gen<'_, B> {
             let p = self
                 .b
                 .iadd_imm(params_buf, (k as i64) * i64::from(VALUE_SIZE));
+            if n == unbox::Mach::Boxed {
+                // The caller's value, not counted: the activation does
+                // not own its parameters then (see
+                // `emit_typed_activation`).
+                for k in [0, 8, 16] {
+                    let w = self.b.load(Ty::I64, v, k);
+                    self.b.store(w, p, k);
+                }
+                continue;
+            }
             let tag = self.b.iconst(Ty::I64, mach_tag(n));
             let word = match n {
                 unbox::Mach::Float => self.b.bitcast(Ty::I64, v),
@@ -3253,6 +3305,8 @@ impl<B: Builder> Gen<'_, B> {
                 match self.typed.as_ref().map(|t| t.params[*arg as usize]) {
                     Some(unbox::Mach::Float) => self.store_float(*dst, v),
                     Some(unbox::Mach::Bool) => self.store_bool(*dst, v),
+                    // The caller's value, counted again here.
+                    Some(unbox::Mach::Boxed) => self.clone_from(*dst, v),
                     _ => self.store_int(*dst, v),
                 }
             }
