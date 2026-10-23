@@ -22,7 +22,7 @@ Everything listed below exists in the prelude (`std/prelude.qz`) unless it is ma
 
 ## 3. Numbers
 
-- `Int` (arbitrary precision), `Float`. Fixed-width `Int8`…`UInt64`, `Float32` and `Rational`/`Complex` are *planned*.
+- `Int` (64-bit; overflow raises `OverflowError`), `Integer` (arbitrary precision; `Int#to_integer`, `Integer#to_i`, `Integer.parse`), `Float`. Fixed-width `Int8`…`UInt64`, `Float32` and `Rational`/`Complex` are *planned*.
 - `Int`: `+ - * / % ** -@ ~ & | ^ << >> <=> abs divmod fdiv ceildiv pow(exp) pow(exp, mod) gcd lcm bit_length n[bit] bit_set? allbits? anybits? nobits? to_s(base) to_i to_f chr ord even? odd? zero? positive? negative? integer? succ pred floor/ceil/round/truncate(digits) digits(base) times upto downto step`. `Int.sqrt(n)` is the integer square root. The iteration methods return an `Enumerator` without a block. Overloads for mixed arithmetic such as `Int#/(Float) -> Float`.
 - `Float`: `floor ceil round truncate` (with an optional number of digits), `divmod fdiv nan? infinite? finite? integer? next_float prev_float step to_i to_f`. `Float::INFINITY`, `NAN`, `EPSILON`, `MAX`, `MIN`, `DIG`.
 - `Math`: `sqrt cbrt sin cos tan asin acos atan atan2 sinh cosh tanh asinh acosh atanh exp log log2 log10 log1p expm1 pow hypot floor ceil`. `Math::PI`, `Math::E`.

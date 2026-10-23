@@ -1,0 +1,34 @@
+# Int is 64-bit (an overflow raises OverflowError); Integer holds any
+# size, and arithmetic with an Int gives one. Literals are Ints, but
+# where an Integer is expected or too large for an Int.
+a = 2.to_integer ** 70
+p a, a.class, a + 1, (a + 1).class, a * 2.5, a > 5, a == a + 0
+b = 123456789012345678901234567890
+p b, b.class, b % 97, b / 3
+c: Integer = 5
+p c, c.class, c + 1, c.to_i, c.to_i.class
+p Integer.parse("-99999999999999999999999"), Integer.sqrt(10.to_integer ** 40)
+p 9223372036854775807.to_integer + 1
+x = 9223372036854775807
+begin
+  p x + 1
+rescue OverflowError => e
+  p e.class, e.message
+end
+begin
+  p 2 ** 70
+rescue OverflowError => e
+  p "pow overflow"
+end
+begin
+  p a.to_i
+rescue OverflowError => e
+  p "to_i overflow"
+end
+p 3 + a, 3 < a, [a, 1.to_integer].max
+p({ 1 => "int", 2.to_integer => "integer" }[2], 1 == 1.to_integer)
+case 1.to_integer
+in Integer then p "integer"
+else p "other"
+end
+p 10.to_integer.pow(3.to_integer, 7.to_integer), 12.to_integer.gcd(18.to_integer), (-5).to_integer.abs

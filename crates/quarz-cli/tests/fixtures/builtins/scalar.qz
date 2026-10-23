@@ -62,7 +62,7 @@ end
 p area(Shape::Circle.new(2.0)), area(Shape::Rect.new(2.0, 3.0))
 c = Shape::Rect.new(1.0, 2.0)
 p c.w * c.h
-# BigInt and strings in fields (boxed values moved through registers)
-data Pair = (n: Int, s: String)
-q = Pair.new(2 ** 70, "big")
+# Integers and strings in fields (boxed values moved through registers)
+data Pair = (n: Integer, s: String)
+q = Pair.new(2.to_integer ** 70, "big")
 p q.n + 1, q.s.size

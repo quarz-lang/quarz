@@ -1,6 +1,6 @@
 # Fields declared Float hold a Float from construction on (the checker
 # sees to it), so compiled code reads and writes their payload directly.
-# Int fields may grow into big integers.
+# An Int field's update that overflows raises and leaves the field.
 class Acc
   var @total: Float
   var @count: Int
@@ -20,8 +20,13 @@ end
 a = Acc.new(0.5)
 1000.times { |i| a.add(i.to_f / 4.0) }
 p a.total, a.count
-5.times { a.grow }
+a.grow
 p a.count
+begin
+  a.grow
+rescue OverflowError => e
+  p e.class
+end
 a.add(0.0)
 p a.count
 

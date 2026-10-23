@@ -10,7 +10,12 @@ end
 def overflow(ps: Array[P]) -> Nil
   big = 9223372036854775807
   ps.each do |p|
-    x = p.v + big          # overflows into a BigInt: the rest runs interpreted
+    # Overflows: the interpreter raises, and runs the rest.
+    x = begin
+      p.v + big
+    rescue OverflowError
+      -p.v
+    end
     puts "#{p.v} #{x}"
   end
   nil

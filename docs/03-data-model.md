@@ -6,7 +6,7 @@ The principle in Quarz is "values are immutable by default; mutability is explic
 
 ## 1. Everything Is an Object
 
-As in Ruby, integers and `nil` are objects with methods (`3.times`, `nil.to_s`). The representation, however, is chosen by the compiler. Small `Int` values are tagged immediates, `Float` is an unboxed double wherever the type is statically known, and `Bool`/`Nil` are immediates. Only strings, collections, instances of user-defined classes, bignums and closures live on the heap.
+As in Ruby, integers and `nil` are objects with methods (`3.times`, `nil.to_s`). The representation, however, is chosen by the compiler. Small `Int` values are tagged immediates, `Float` is an unboxed double wherever the type is statically known, and `Bool`/`Nil` are immediates. Only strings, collections, instances of user-defined classes, `Integer`s and closures live on the heap.
 
 ## 2. Immutable Built-in Data
 

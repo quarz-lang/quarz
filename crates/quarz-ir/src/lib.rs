@@ -1244,6 +1244,7 @@ pub struct RtBuiltin {
     pub nil: ClassId,
     pub bool_: ClassId,
     pub int: ClassId,
+    pub integer: ClassId,
     pub float: ClassId,
     pub string: ClassId,
     pub symbol: ClassId,

@@ -747,6 +747,7 @@ impl<'ast> Declarer<'ast> {
             nil: get(w, "Nil"),
             bool_: get(w, "Bool"),
             int: get(w, "Int"),
+            integer: get(w, "Integer"),
             float: get(w, "Float"),
             string: get(w, "String"),
             symbol: get(w, "Symbol"),
@@ -1443,6 +1444,7 @@ impl<'ast> Declarer<'ast> {
 
     fn literal_type(&self, expr: &Expr) -> Option<Type> {
         Some(match &expr.kind {
+            ExprKind::Int(lit) if lit.value.is_none() => self.world.integer(),
             ExprKind::Int(_) => self.world.int(),
             ExprKind::Float(_) => self.world.float(),
             ExprKind::Str(_) => self.world.string(),

@@ -1,6 +1,5 @@
 # Parameters and fields declared Int/Float are unboxed after one check;
-# a BigInt (an Int that outgrew a machine word) or an overflow hands
-# the activation to the interpreter.
+# an overflow hands the activation to the interpreter, which raises.
 
 def add3(a: Int, b: Int, c: Int) -> Int
   a + b + c
@@ -19,14 +18,18 @@ def count_down(n: Int) -> Int
   steps
 end
 
-big = 2 ** 70
+big = 2 ** 61
 p add3(1, 2, 3)
 p add3(big, 1, 2)
-p add3(9223372036854775807, 1, 0)
+begin
+  p add3(9223372036854775807, 1, 0)
+rescue OverflowError => e
+  p e.class
+end
 p scale(1.5, 4)
 p scale(0.25, big)
 p count_down(1000)
-p count_down(big)
+p count_down(9223372036854775807)
 
 class Counter
   var @count: Int = 0
@@ -62,7 +65,11 @@ p c.count
 p c.total
 p c.ratio
 c.count = 9223372036854775807
-p c.bump(1)
+begin
+  p c.bump(1)
+rescue OverflowError => e
+  p e.class
+end
 p c.count.class
 p c.ratio.round(3)
 c.count = big

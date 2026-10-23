@@ -304,6 +304,7 @@ pub struct ExcClasses {
     pub not_implemented: ClassId,
     pub system_exit: ClassId,
     pub range_error: ClassId,
+    pub overflow_error: ClassId,
     pub system_stack: ClassId,
 }
 
@@ -527,7 +528,7 @@ impl Interp {
                         Constant::Nil => Value::Nil,
                         Constant::Bool(b) => Value::Bool(*b),
                         Constant::Int(i) => Value::Int(*i),
-                        Constant::BigInt { digits, base } => parse_int(digits, *base),
+                        Constant::BigInt { digits, base } => parse_integer(digits, *base),
                         Constant::Float(f) => Value::Float(*f),
                         Constant::Str(s) => Value::str(s),
                         Constant::Symbol(s) => Value::Symbol(symbols.intern(s)),
@@ -663,6 +664,7 @@ impl Interp {
             not_implemented: class_by_name("NotImplementedError"),
             system_exit: class_by_name("SystemExit"),
             range_error: class_by_name("RangeError"),
+            overflow_error: class_by_name("OverflowError"),
             system_stack: class_by_name("SystemStackError"),
         };
         let rt = RtClasses {
@@ -1419,6 +1421,19 @@ impl Interp {
         self.raise(self.program.exc.argument_error, message)
     }
 
+    /// An `Int` result that does not fit in 64 bits.
+    pub fn err_overflow(&self) -> Flow {
+        self.raise(
+            self.program.exc.overflow_error,
+            "arithmetic overflow (an Integer holds any size)",
+        )
+    }
+
+    /// `b` as an `Int`, or `OverflowError`.
+    pub fn int_of_big(&self, b: &num_bigint::BigInt) -> EvalResult {
+        fit_int(b).ok_or_else(|| self.err_overflow())
+    }
+
     pub fn err_type(&self, message: &str) -> Flow {
         self.raise(self.program.exc.type_error, message)
     }
@@ -1485,7 +1500,8 @@ impl Interp {
         match v {
             Value::Nil => b.nil,
             Value::Bool(_) => b.bool_,
-            Value::Int(_) | Value::BigInt(_) => b.int,
+            Value::Int(_) => b.int,
+            Value::BigInt(_) => b.integer,
             Value::Float(_) => b.float,
             Value::Str(_) | Value::Short(_) => b.string,
             Value::Symbol(_) => b.symbol,
@@ -2820,20 +2836,16 @@ pub(crate) fn task_exit(interp: &Interp, result: EvalResult) -> TaskExit {
 }
 
 /// Parse an integer literal (digits without prefix/underscores) in a base.
-pub fn parse_int(digits: &str, base: u8) -> Value {
+/// An `Integer` literal's value.
+pub fn parse_integer(digits: &str, base: u8) -> Value {
+    use num_bigint::BigInt;
+    use num_traits::Num;
     let (neg, digits) = match digits.strip_prefix('-') {
         Some(d) => (true, d),
         None => (false, digits),
     };
-    match i64::from_str_radix(digits, base as u32) {
-        Ok(v) => Value::Int(if neg { -v } else { v }),
-        Err(_) => {
-            use num_bigint::BigInt;
-            use num_traits::Num;
-            let b = BigInt::from_str_radix(digits, base as u32).unwrap_or_default();
-            int_from_big(if neg { -b } else { b })
-        }
-    }
+    let b = BigInt::from_str_radix(digits, base as u32).unwrap_or_default();
+    integer(if neg { -b } else { b })
 }
 
 /// Format a float the way Ruby does: shortest round-trip digits, always

@@ -900,8 +900,13 @@ impl<'a> FnBuilder<'a> {
             SelfRef => self.self_reg(),
             Int(lit) => {
                 let as_float = self.out.float_literals.contains(&e.id);
+                let as_integer = self.out.integer_literals.contains(&e.id);
                 match lit.value {
                     Some(i) if as_float => self.load_const(Constant::Float(i as f64)),
+                    Some(_) if as_integer => self.load_const(Constant::BigInt {
+                        digits: lit.digits.clone(),
+                        base: lit.base,
+                    }),
                     Some(i) => self.load_const(Constant::Int(i)),
                     None if as_float => {
                         let f = if lit.base == 10 {

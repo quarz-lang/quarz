@@ -138,7 +138,8 @@ p r
 def add(a: Int, b: Int) -> Int = a + b
 def twice(x: Int) -> Int = add(x, x)
 def fact(n: Int) -> Int = n <= 1 ? 1 : n * fact(n - 1)
-p add(1, 2), twice(21), fact(10), fact(25)
+def big_fact(n: Int) -> Integer = n <= 1 ? 1.to_integer : big_fact(n - 1) * n
+p add(1, 2), twice(21), fact(10), fact(20), big_fact(25)
 
 data Pt(x: Float, y: Float)
   def +(o: Pt) -> Pt = Pt.new(x + o.x, y + o.y)

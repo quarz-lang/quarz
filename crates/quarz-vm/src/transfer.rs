@@ -278,7 +278,7 @@ pub fn import(interp: &Interp, t: Transfer) -> Value {
         Transfer::Symbol(s) => Value::Symbol(interp.intern(&s)),
         Transfer::Class(c) => Value::Class(c),
         Transfer::Duration(d) => Value::Duration(d),
-        Transfer::BigInt(b) => int_from_big(b),
+        Transfer::BigInt(b) => integer(b),
         Transfer::Str(s) => Value::string(s),
         Transfer::Array(items) => Value::array(import_all(interp, items)),
         Transfer::Hash(pairs) => Value::Hash(Rc::new(crate::value::HashData::from(

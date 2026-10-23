@@ -20,7 +20,7 @@
 
 ## 3. 数値
 
-- `Int`(任意精度)、`Float`。固定幅 `Int8`…`UInt64`、`Float32`、`Rational`/`Complex` は *予定*。
+- `Int`(64 ビット。溢れると `OverflowError`)、`Integer`(任意精度。`Int#to_integer`、`Integer#to_i`、`Integer.parse`)、`Float`。固定幅 `Int8`…`UInt64`、`Float32`、`Rational`/`Complex` は *予定*。
 - `Int`: `+ - * / % ** -@ ~ & | ^ << >> <=> abs divmod fdiv ceildiv pow(exp) pow(exp, mod) gcd lcm bit_length n[bit] bit_set? allbits? anybits? nobits? to_s(base) to_i to_f chr ord even? odd? zero? positive? negative? integer? succ pred floor/ceil/round/truncate(digits) digits(base) times upto downto step`。`Int.sqrt(n)` は整数平方根。反復メソッドはブロックなしで `Enumerator` を返します。`Int#/(Float) -> Float` など混在演算の多重定義あり。
 - `Float`: `floor ceil round truncate`(桁数指定可)、`divmod fdiv nan? infinite? finite? integer? next_float prev_float step to_i to_f`。`Float::INFINITY`、`NAN`、`EPSILON`、`MAX`、`MIN`、`DIG`。
 - `Math`: `sqrt cbrt sin cos tan asin acos atan atan2 sinh cosh tanh asinh acosh atanh exp log log2 log10 log1p expm1 pow hypot floor ceil`。`Math::PI`、`Math::E`。

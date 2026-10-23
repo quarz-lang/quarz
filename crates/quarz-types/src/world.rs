@@ -229,6 +229,7 @@ pub struct Builtin {
     pub nil: ClassId,
     pub bool_: ClassId,
     pub int: ClassId,
+    pub integer: ClassId,
     pub float: ClassId,
     pub string: ClassId,
     pub symbol: ClassId,
@@ -397,6 +398,10 @@ impl World {
 
     pub fn int(&self) -> Type {
         Type::class(self.builtin.int)
+    }
+
+    pub fn integer(&self) -> Type {
+        Type::class(self.builtin.integer)
     }
 
     pub fn float(&self) -> Type {

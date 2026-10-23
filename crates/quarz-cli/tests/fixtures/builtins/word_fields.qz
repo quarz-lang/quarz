@@ -1,7 +1,7 @@
 # Fields declared Int, Float or Bool are stored as machine words; what a
-# word cannot hold (a big integer, the smallest Int, nil before the
-# field is assigned) is kept aside. Every way of reading and writing a
-# field must see the same values.
+# word cannot hold (the smallest Int, nil before the field is assigned)
+# is kept aside. Every way of reading and writing a field must see the
+# same values. An Integer field holds its value as any other.
 require "json"
 
 class Cell
@@ -21,28 +21,39 @@ class Cell
     @n = @n * 4611686018427387904
     nil
   end
+  def least -> Nil
+    @n = -9223372036854775807 - 1
+    nil
+  end
   def to_s -> String = "#{@tag}(#{@n}, #{@x}, #{@on})"
 end
 
 c = Cell.new(1, 2.5, true, "c")
 puts c
-# Into a big integer and back, through compiled and interpreted code.
+# The smallest Int, kept aside, through compiled and interpreted code;
+# an overflow leaves the field as it was.
 c.grow
 puts c
-c.grow
+begin
+  c.grow
+rescue OverflowError => e
+  p e.class
+end
+puts c
+c.least
 puts c
 c.set(-9223372036854775807 - 1, -0.0, false)
 puts c
-p c.n, c.n - 1
+p c.n, c.n + 1
 c.set(7, 0.0 / 0.0, true)
 p c.x.nan?, c.on
-c.set(2 ** 64, 1.0e308 * 10.0, false)
+c.set(9223372036854775807, 1.0e308 * 10.0, false)
 puts c
 
 # Structural equality, hashing, `with`, `to_h`, JSON and patterns.
 data Point = (i: Int, f: Float, b: Bool)
-a = Point.new(2 ** 65, 1.5, true)
-b = Point.new(2 ** 65, 1.5, true)
+a = Point.new(-9223372036854775807 - 1, 1.5, true)
+b = Point.new(-9223372036854775807 - 1, 1.5, true)
 p a == b, a.hash == b.hash, [a, b].uniq.size
 p Point.new(1, 0.0, false) == Point.new(1, -0.0, false)
 p a.with(i: 3), a.with(f: -2.0).f, a.to_h
@@ -67,15 +78,20 @@ class Body
   end
   def to_s -> String = "#{@at} #{@mass}"
 end
-body = Body.new(Point.new(9223372036854775806, 2.0, true), 1.0)
-body.move(1)
+body = Body.new(Point.new(-9223372036854775807, 2.0, true), 1.0)
+body.move(-1)
 puts body
 body.move(1)
 puts body
 p body.at.i
 
+# An Integer field.
+data Big = (n: Integer, tag: String)
+g = Big.new(2.to_integer ** 100, "g")
+p g, g.n + 1, g == Big.new(2.to_integer ** 100, "g"), g.with(n: 5.to_integer).n.class
+
 # Across tasks: copied to the task, and back as its result.
-t = Task.spawn { Point.new(2 ** 70 + 1, 3.25, false) }
+t = Task.spawn { Point.new(-9223372036854775807 - 1, 3.25, false) }
 p t.await
 
 # Released with `deinitialize`: the rebuilt object has the same fields.
@@ -89,7 +105,7 @@ class Probe
   end
 end
 def probe -> Nil
-  q = Probe.new(2 ** 66, 0.125, true)
+  q = Probe.new(-9223372036854775807 - 1, 0.125, true)
   r = Probe.new(5, -1.0, false)
   puts "probing"
   nil

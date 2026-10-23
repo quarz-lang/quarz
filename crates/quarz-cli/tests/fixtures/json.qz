@@ -61,7 +61,7 @@ rescue TypeError => e
   puts "type error: #{e.message}"
 end
 
-p JSON.parse("12345678901234567890").as_i, JSON.parse("-1.5e3").as_f, JSON.parse('"a\\tb"').as_s
+p JSON.parse("1234567890123456789").as_i, JSON.parse("12345678901234567890").as_f, JSON.parse("-1.5e3").as_f, JSON.parse('"a\\tb"').as_s
 p JSON.parse("[1,2,3]") == JSON.parse(" [1, 2, 3] ")
 p JSON.parse("[1, null]")
 p JSON::VERSION

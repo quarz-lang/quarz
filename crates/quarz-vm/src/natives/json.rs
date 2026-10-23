@@ -288,10 +288,15 @@ impl Parser<'_> {
             let f: f64 = text.parse().map_err(|_| self.error("invalid number"))?;
             Ok(variant(self.classes.number, Value::Float(f)))
         } else {
-            Ok(variant(
-                self.classes.integer,
-                crate::interp::parse_int(text, 10),
-            ))
+            // An integer too large for an `Int` is read as a number, as
+            // JavaScript reads them all.
+            match text.parse::<i64>() {
+                Ok(i) => Ok(variant(self.classes.integer, Value::Int(i))),
+                Err(_) => Ok(variant(
+                    self.classes.number,
+                    Value::Float(text.parse().unwrap_or(f64::INFINITY)),
+                )),
+            }
         }
     }
 

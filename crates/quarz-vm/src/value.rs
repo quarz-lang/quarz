@@ -2409,11 +2409,14 @@ impl Hash for Value {
     }
 }
 
-/// Normalize a big integer back to `Int` when it fits.
-pub fn int_from_big(b: BigInt) -> Value {
+/// An `Integer` (of any size): always a `BigInt`, small or not, so that
+/// it is told from an `Int` (its class, its methods).
+pub fn integer(b: BigInt) -> Value {
+    Value::BigInt(Rc::new(b))
+}
+
+/// `b` as an `Int`, if it fits.
+pub fn fit_int(b: &BigInt) -> Option<Value> {
     use num_traits::ToPrimitive;
-    match b.to_i64() {
-        Some(i) => Value::Int(i),
-        None => Value::BigInt(Rc::new(b)),
-    }
+    b.to_i64().map(Value::Int)
 }

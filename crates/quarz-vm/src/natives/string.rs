@@ -764,7 +764,7 @@ fn string_to_i(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
         Err(_) => {
             use num_traits::Num;
             match num_bigint::BigInt::from_str_radix(&digits, base) {
-                Ok(b) => int_from_big(b),
+                Ok(b) => interp.int_of_big(&b)?,
                 Err(_) => Value::Int(0),
             }
         }

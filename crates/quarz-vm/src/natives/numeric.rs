@@ -103,13 +103,15 @@ pub(super) fn arith(interp: &Interp, recv: &Value, args: &Args, op: &str) -> Eva
             }
             _ => unreachable!(),
         };
-        if let Some(r) = r {
-            return Ok(Value::Int(r));
-        }
+        // Two Ints give an Int, or nothing.
+        return match r {
+            Some(r) => Ok(Value::Int(r)),
+            None => Err(interp.err_overflow()),
+        };
     }
-    // Big integers.
+    // An Integer on either side: an Integer.
     let (x, y) = (a.to_big(), b.to_big());
-    Ok(int_from_big(match op {
+    Ok(integer(match op {
         "+" => x + y,
         "-" => x - y,
         "*" => x * y,
@@ -155,7 +157,7 @@ fn cmp_num(interp: &Interp, recv: &Value, args: &Args) -> Result<std::cmp::Order
 }
 
 pub fn register(m: &mut super::Registry<NativeFn>) {
-    for class in ["Int", "Float"] {
+    for class in ["Int", "Float", "Integer"] {
         let key =
             |name: &str| -> &'static str { Box::leak(format!("{class}#{name}").into_boxed_str()) };
         m.insert(key("+"), |i, r, a| arith(i, r, &a, "+"));
@@ -210,6 +212,10 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         m.insert(key("days"), |i, r, _| duration(i, r, 86_400_000_000_000.0));
     }
     m.insert("Int#-@", int_neg);
+    m.insert("Int#to_integer", |i, r, _| {
+        Ok(integer(Num::of(i, r)?.to_big()))
+    });
+    register_integer(m);
     m.insert("Int#~", |i, r, _| Ok(Value::Int(!int(i, r, "Int")?)));
     m.insert("Int#&", |i, r, a| {
         Ok(Value::Int(int(i, r, "Int")? & int(i, a.arg(0), "Int")?))
@@ -407,6 +413,60 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     });
 }
 
+/// `Integer`'s own methods (its arithmetic and comparisons are Int's and
+/// Float's, above).
+fn register_integer(m: &mut super::Registry<NativeFn>) {
+    fn big(interp: &Interp, v: &Value) -> Result<BigInt, Flow> {
+        Ok(Num::of(interp, v)?.to_big())
+    }
+    m.insert("Integer#-@", int_neg);
+    m.insert("Integer#abs", int_abs);
+    m.insert("Integer#even?", |i, r, _| {
+        Ok(Value::Bool(big(i, r)?.is_even()))
+    });
+    m.insert("Integer#odd?", |i, r, _| {
+        Ok(Value::Bool(big(i, r)?.is_odd()))
+    });
+    m.insert("Integer#succ", |i, r, _| Ok(integer(big(i, r)? + 1)));
+    m.insert("Integer#pred", |i, r, _| Ok(integer(big(i, r)? - 1)));
+    m.insert("Integer#to_i", |i, r, _| i.int_of_big(&big(i, r)?));
+    m.insert("Integer#to_integer", |_, r, _| Ok(r.clone()));
+    m.insert("Integer#to_s", int_to_s);
+    m.insert("Integer#divmod", int_divmod);
+    m.insert("Integer#pow", int_pow_mod);
+    m.insert("Integer#gcd", |i, r, a| {
+        Ok(integer(big(i, r)?.gcd(&big(i, a.arg(0))?)))
+    });
+    m.insert("Integer#lcm", |i, r, a| {
+        Ok(integer(big(i, r)?.lcm(&big(i, a.arg(0))?)))
+    });
+    m.insert("Integer#bit_length", |i, r, _| {
+        let b = big(i, r)?;
+        let n = if b.sign() == num_bigint::Sign::Minus {
+            -b - 1
+        } else {
+            b
+        };
+        Ok(Value::Int(n.bits() as i64))
+    });
+    m.insert("Integer.parse", |i, _, a| {
+        use num_traits::Num as _;
+        let text = super::string(i, a.arg(0), "text")?;
+        let base = match a.pos.get(1) {
+            Some(b) => int(i, b, "base")?,
+            None => 10,
+        };
+        if !(2..=36).contains(&base) {
+            return Err(i.err_arg(&format!("invalid radix {base}")));
+        }
+        let t = text.trim().replace('_', "");
+        let digits = t.strip_prefix('+').unwrap_or(&t);
+        BigInt::from_str_radix(digits, base as u32)
+            .map(integer)
+            .map_err(|_| i.err_arg(&format!("invalid value for Integer.parse: {text:?}")))
+    });
+}
+
 fn dur(interp: &Interp, v: &Value) -> Result<i64, Flow> {
     match v {
         Value::Duration(d) => Ok(*d),
@@ -422,22 +482,22 @@ fn duration(interp: &Interp, v: &Value, unit_ns: f64) -> EvalResult {
 
 fn int_neg(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
     match recv {
-        Value::Int(i) => Ok(match i.checked_neg() {
-            Some(n) => Value::Int(n),
-            None => int_from_big(-BigInt::from(*i)),
-        }),
-        Value::BigInt(b) => Ok(int_from_big(-(**b).clone())),
+        Value::Int(i) => i
+            .checked_neg()
+            .map(Value::Int)
+            .ok_or_else(|| interp.err_overflow()),
+        Value::BigInt(b) => Ok(integer(-(**b).clone())),
         _ => Err(interp.err_type("expected an Int")),
     }
 }
 
 fn int_abs(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
     match recv {
-        Value::Int(i) => Ok(match i.checked_abs() {
-            Some(n) => Value::Int(n),
-            None => int_from_big(BigInt::from(*i).abs()),
-        }),
-        Value::BigInt(b) => Ok(int_from_big(b.abs())),
+        Value::Int(i) => i
+            .checked_abs()
+            .map(Value::Int)
+            .ok_or_else(|| interp.err_overflow()),
+        Value::BigInt(b) => Ok(integer(b.abs())),
         _ => Err(interp.err_type("expected an Int")),
     }
 }
@@ -445,10 +505,12 @@ fn int_abs(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
 fn int_shl(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let x = Num::of(interp, recv)?.to_big();
     let n = int(interp, args.arg(0), "shift")?;
-    if n < 0 {
-        return Ok(int_from_big(x >> (-n) as usize));
-    }
-    Ok(int_from_big(x << n as usize))
+    let r = if n < 0 {
+        x >> (-n) as usize
+    } else {
+        x << n as usize
+    };
+    interp.int_of_big(&r)
 }
 
 fn int_to_s(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
@@ -487,7 +549,11 @@ pub(super) fn int_pow_mod(interp: &Interp, recv: &Value, args: Args) -> EvalResu
     if m.is_zero() {
         return Err(interp.raise(interp.program.exc.zero_division, "divided by 0"));
     }
-    Ok(int_from_big(base.modpow(&exp, &m)))
+    let r = base.modpow(&exp, &m);
+    match recv {
+        Value::BigInt(_) => Ok(integer(r)),
+        _ => interp.int_of_big(&r),
+    }
 }
 
 fn int_digits(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
@@ -588,7 +654,7 @@ pub(super) fn float_to_int(interp: &Interp, f: f64) -> EvalResult {
     if f.abs() < 9.2e18 {
         Ok(Value::Int(f as i64))
     } else {
-        Ok(int_from_big(BigInt::from(f as i128)))
+        Err(interp.err_overflow())
     }
 }
 

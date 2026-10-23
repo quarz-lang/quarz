@@ -24,7 +24,7 @@ end
 base = 100
 names = ["a", "b"]
 pt = Point.new(1, 2)
-r = Task.blocking { [base + pt.sum, names.map(&:upcase), :sym, 1.5, 2**70, { k: pt }] }
+r = Task.blocking { [base + pt.sum, names.map(&:upcase), :sym, 1.5, 2.to_integer**70, { k: pt }] }
 p r
 
 # Output inside the block appears when it finishes.

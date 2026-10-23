@@ -1,10 +1,11 @@
-# Objects with word fields cross workers: a big integer kept aside goes
-# with its object (marked shared with it), through channels and `await`.
-data Big = (n: Int, x: Float, ok: Bool)
+# Objects with word fields and Integer fields cross workers: the
+# Integer goes with its object (marked shared with it), through
+# channels and `await`, and the smallest Int kept aside too.
+data Big = (n: Integer, x: Float, ok: Bool, least: Int)
 out = Channel[Big].new(16)
-ts = (1..16).map { |i| spawn { out.send(Big.new(2 ** (64 + i), i * 0.5, i.even?)); Big.new(i, 0.25, true) } }
+ts = (1..16).map { |i| spawn { out.send(Big.new(2.to_integer ** (64 + i), i * 0.5, i.even?, -9223372036854775807 - 1)); Big.new(i.to_integer, 0.25, true, i) } }
 got: Array[Big] = []
 16.times { got = got.push(out.receive) }
-p got.map(&:n).sum == (1..16).map { |i| 2 ** (64 + i) }.sum
-p got.map(&:x).sum, got.count(&:ok)
-p ts.map(&:await).map(&:n).sum
+p got.map(&:n).sum == (1..16).map { |i| 2.to_integer ** (64 + i) }.sum
+p got.map(&:x).sum, got.count(&:ok), got.all? { |b| b.least == -9223372036854775807 - 1 }
+p ts.map(&:await).map(&:least).sum

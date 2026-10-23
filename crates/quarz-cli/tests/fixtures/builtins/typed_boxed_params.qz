@@ -38,7 +38,14 @@ class Bag
 end
 
 def weigh(s: String, n: Int) -> Int
-  return s.size * 4611686018427387903 if n == 0
+  if n == 0
+    # Overflows: the interpreter raises, and runs the rest.
+    return begin
+      s.size * 4611686018427387903
+    rescue OverflowError
+      -s.size
+    end
+  end
   weigh(s, n - 1)
 end
 

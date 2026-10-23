@@ -257,6 +257,7 @@ pub fn build(world: &World, lw: &Lowerer, file_names: Vec<String>) -> RtWorld {
         nil: b.nil,
         bool_: b.bool_,
         int: b.int,
+        integer: b.integer,
         float: b.float,
         string: b.string,
         symbol: b.symbol,

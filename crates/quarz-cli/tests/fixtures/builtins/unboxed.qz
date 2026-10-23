@@ -1,17 +1,22 @@
 # Unboxed numbers in compiled code: speculation on Int/Float registers and
-# the fall-back to the interpreter when an Int grows into a BigInt or a
-# division fails. Expected output in unboxed.out.
+# the fall-back to the interpreter when an Int overflows (which raises)
+# or a division fails. Expected output in unboxed.out.
 # Speculation on unboxed numbers and the fall-back to the interpreter.
 def grow(n: Int) -> Int
   x = 1
   i = 0
   while i < n
-    x = x * 3 + i          # overflows into a BigInt after ~40 steps
+    x = x * 3 + i          # overflows after ~40 steps
     i += 1
   end
   x
 end
-p grow(10), grow(45), grow(45) % 1000
+p grow(10), grow(38), grow(38) % 1000
+begin
+  p grow(45)
+rescue OverflowError => e
+  p e.class
+end
 def mixed(a: Int, b: Float) -> Float
   c = a + b
   d = c * 2
@@ -27,7 +32,7 @@ def divide(a: Int, b: Int) -> Int
   r = a % b
   q * 10 + r
 end
-p divide(17, 5), divide(-17, 5), divide(9_223_372_036_854_775_807, -1)
+p divide(17, 5), divide(-17, 5), divide(922_337_203_685_477_580, -1)
 begin
   divide(1, 0)
 rescue ZeroDivisionError => e
@@ -48,9 +53,9 @@ def cmp(a: Int, b: Float) -> Array[Bool]
 end
 p cmp(2, 2.0), cmp(3, 2.5)
 def big_then_small(n: Int) -> Int
-  x = 2 ** 70
-  y = x - 2 ** 70 + n
-  y * 2
+  x = 2.to_integer ** 70
+  y = x - 2.to_integer ** 70 + n
+  (y * 2).to_i
 end
 p big_then_small(21)
 def nilcheck(x: Int) -> Bool = x.nil?
@@ -82,5 +87,9 @@ def ensure_path(n: Int) -> Int
 end
 p ensure_path(1), ensure_path(5)
 x = 9_223_372_036_854_775_800
-10.times { x += 1 }
+begin
+  10.times { x += 1 }
+rescue OverflowError => e
+  p e.class
+end
 p x, x.class

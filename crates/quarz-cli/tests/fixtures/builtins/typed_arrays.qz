@@ -7,13 +7,13 @@ fs = [2.5, -1.0, 3.25]
 p fs.sort, fs.min, fs.max, fs.include?(3.25), fs[0], fs.sum
 mixed = [1, "a", 2.0]
 p mixed.sort { |a, b| a.to_s <=> b.to_s }, mixed.size, mixed[2]
-big = [1, 2 ** 70, 3]
+big = [1.to_integer, 2.to_integer ** 70, 3.to_integer]
 p big.sort, big.max, big[1]
 e: Array[Int] = []
 p e.sort, e.first?, e.size, e.sum
-ys = [1, 2]
-ys.push!(2 ** 70)
-p ys, ys.include?(2 ** 70), ys.sum
+ys: Array[Int | Integer] = [1, 2]
+ys.push!(2.to_integer ** 70)
+p ys, ys.include?(2.to_integer ** 70), ys.size
 zs: Array[Object] = [1, 2]
 zs.push!(1.5)
 p zs, zs.include?(1.5), zs.map { |z| z.to_s }

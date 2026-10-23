@@ -1,7 +1,6 @@
 # Methods whose parameters and result are declared Int/Float get a typed
-# entry: direct calls pass machine values. A BigInt argument takes the
-# boxed path, a BigInt result hands the caller to the interpreter, deep
-# recursion and exceptions still unwind through typed frames.
+# entry: direct calls pass machine values. An overflow in the callee
+# raises through the typed frames, as deep recursion and exceptions do.
 def mul(n: Int) -> Int = n * 1000000007
 def half(x: Float) -> Float = x / 2.0
 def mix(a: Int, b: Float, c: Int) -> Float = a.to_f + b + c.to_f
@@ -24,9 +23,13 @@ class Acc
   end
   def scaled(k: Float) -> Float = @total.to_f * k
 end
-p mul(3), mul(10 ** 12), mul(mul(10 ** 9)), half(5.0), half(1.0e308), mix(1, 2.5, 3)
-big = 2 ** 70
-p mul(big), half(mix(big, 0.5, 1))
+p mul(3), mul(10 ** 9), mul(mul(3)), half(5.0), half(1.0e308), mix(1, 2.5, 3)
+begin
+  p mul(mul(10 ** 9))
+rescue OverflowError => e
+  p e.class
+end
+p half(mix(2 ** 40, 0.5, 1))
 p deep(1000), deep(5_000)
 begin
   p deep(100_000_000)
@@ -38,10 +41,25 @@ begin
 rescue RuntimeError => e
   p e.message
 end
-p boom(1), grow(1), grow(2 ** 40), grow(2 ** 20) * 2
+p boom(1), grow(1), grow(2 ** 10) * 2
+begin
+  p grow(2 ** 40)
+rescue OverflowError => e
+  p e.class
+end
 a = Acc.new
-p a.add(5), a.add(2 ** 62), a.add(2 ** 62), a.scaled(0.5), a.add(1)
+p a.add(5), a.add(2 ** 61), a.add(2 ** 61), a.scaled(0.5), a.add(1)
+begin
+  a.add(2 ** 62)
+rescue OverflowError
+  p a.add(0)
+end
 def fact(n: Int) -> Int = n <= 1 ? 1 : n * fact(n - 1)
-p fact(20), fact(25), fact(30)
+p fact(20)
+begin
+  p fact(21)
+rescue OverflowError => e
+  p e.class
+end
 def fib(n: Int) -> Int = n < 2 ? n : fib(n - 1) + fib(n - 2)
 p fib(20), (1..10).to_a.map { |i| fib(i) }

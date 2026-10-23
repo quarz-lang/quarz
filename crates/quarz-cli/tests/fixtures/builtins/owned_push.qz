@@ -33,13 +33,13 @@ zs = zs.push("s")
 p zs
 r = xs.push(4)
 p r, xs
-big = [1]
-big = big.push(2 ** 70)
+big: Array[Int | Integer] = [1]
+big = big.push(2.to_integer ** 70)
 p big
 h = { 1 => "a", 2.0 => "b", 3 => "c" }
 p h[1.0], h[2], h[3.0], h.size, { 1 => 1 } == { 1.0 => 1 }
 hb: Hash[Object, Int] = {}
-hb = hb.put(2 ** 70, 1).put(1.5, 2).put(-7, 3).put(1e300, 4)
-p hb[2 ** 70], hb[1.5], hb[-7], hb[1e300], hb.size
+hb = hb.put(2.to_integer ** 70, 1).put(1.5, 2).put(-7, 3).put(1e300, 4)
+p hb[2.to_integer ** 70], hb[1.5], hb[-7], hb[1e300], hb.size
 s = Set.new([1, 1.0, 2])
 p s.size

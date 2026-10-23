@@ -25,7 +25,7 @@ Ruby を知っている人が Quarz を書き始めるときに最初に引っ�
 | `arr << x`、`h[k] = v`、`str << "a"`、`sort!` | 破壊的更新 | 不変型にはない。`arr = arr.push(x)`、`h = h.put(k, v)`、Builder |
 | `arr[i]`、`h[k]` | 範囲外・欠損で `nil` | 例外。`nil` が欲しければ `arr[i]?`、`h[k]?` |
 | `gets`、`IO#read` | EOF で `nil` | `gets?` が `nil`、`gets` は `EOFError` |
-| `Integer` | 任意精度 | `Int`(任意精度)。固定幅の `Int32` などは予定 |
+| `Integer` | 任意精度。リテラルは `Integer` | `Int` は 64 ビットで、整数リテラルは `Int` です。`2 ** 70` は `OverflowError` になります。`Integer` は任意精度で(`2.to_integer ** 70`)、`Int` からの暗黙の変換はありません。固定幅の `Int32` などは予定 |
 | 文字列のエンコーディング | 多重 | UTF-8 固定。バイナリは `Bytes` |
 | `freeze`、`frozen?`、`dup` | ある | `frozen?` が偽になるのは Builder だけ。`dup` は組み込みの不変な値(配列、文字列など)をそのまま返し、Builder とオブジェクトはコピーする。Builder の `freeze` は中身を不変な値として渡す |
 | `eql?` | `==` と別 | 廃止。`==`/`hash` のみ |

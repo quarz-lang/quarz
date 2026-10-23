@@ -84,7 +84,7 @@ begin
 rescue SystemCallError => e
   puts "error: command not found"
 end
-p Integer("ff", 16), Integer("-101", 2), Integer("zz", 36), Integer("123456789012345678901234567890", 10)
+p Integer("ff", 16), Integer("-101", 2), Integer("zz", 36), Integer.parse("123456789012345678901234567890", 10)
 begin
   Integer("12", 1)
 rescue ArgumentError => e

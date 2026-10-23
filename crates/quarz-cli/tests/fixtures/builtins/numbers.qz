@@ -1,6 +1,6 @@
 # Int, Float, Math, Comparable#clamp and Random: the methods added in the
 # second batch. Expected output in numbers.out.
-p Int.sqrt(17), Int.sqrt(10**40), 7.fdiv(2), 7.fdiv(2.0), 7.ceildiv(2), -7.ceildiv(2), 2.pow(10), 2.pow(10, 1000)
+p Int.sqrt(17), Integer.sqrt(10.to_integer**40), 7.fdiv(2), 7.fdiv(2.0), 7.ceildiv(2), -7.ceildiv(2), 2.pow(10), 2.pow(10, 1000)
 p 255.digits(16), 0.digits, 1234.floor(-2), 1250.round(-2), -1250.round(-2), 1234.ceil(-2), -1234.ceil(-2), -1234.truncate(-2), 1234.round(2)
 p 5[0], 5[1], 5[2], 5[-1], 6.allbits?(6), 6.allbits?(7), 6.anybits?(1), 6.nobits?(1), 5.bit_set?(2), 3.integer?, 3.ord
 p 3.upto(5).to_a, 5.downto(3).to_a, 1.step(10, 3).to_a, 1.step(10, 3).map { |x| x * 2 }
@@ -50,4 +50,4 @@ end
 p NoMemoryError.new("x").is_a?(Exception), FloatDomainError.new("x").is_a?(RangeError)
 # bit_length: the bits past the sign (a negative number counts ~n's).
 p [0, 255, 256, -1, -256, -257, 9223372036854775807].map(&:bit_length)
-p (2 ** 70).bit_length, (2 ** 70 - 1).bit_length, (-(2 ** 70)).bit_length, (-(2 ** 70) - 1).bit_length
+p (2.to_integer ** 70).bit_length, (2.to_integer ** 70 - 1).bit_length, (-(2.to_integer ** 70)).bit_length, (-(2.to_integer ** 70) - 1).bit_length

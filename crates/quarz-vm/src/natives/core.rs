@@ -480,7 +480,7 @@ fn kernel_integer(interp: &Interp, _: &Value, args: Args) -> EvalResult {
         let parsed = num_bigint::BigInt::parse_bytes(digits.as_bytes(), base as u32)
             .filter(|_| !digits.is_empty());
         return match parsed {
-            Some(n) => Ok(int_from_big(if neg { -n } else { n })),
+            Some(n) => interp.int_of_big(&if neg { -n } else { n }),
             None => Err(interp.err_arg(&format!("invalid value for Integer(): {s:?}"))),
         };
     }

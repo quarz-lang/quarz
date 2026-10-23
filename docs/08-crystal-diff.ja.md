@@ -14,7 +14,7 @@ Crystal は Quarz に最も近い言語です。Ruby の構文を持つ、静的
 | メソッドの引数の型 | 省略できる。型のないメソッドは引数の型の組み合わせごとに具体化され、そのためにプログラム全体をまとめて型検査する | 必須(既定値から型が決まる場合を除く)。戻り値の型と局所変数は推論する。書く量は増え、ファイルごとに検査できる([02-types.ja.md](02-types.ja.md) §10) |
 | ジェネリック型の書き方 | `Array(Int32)`、`Hash(String, Int32)`、`Proc(Int32, Bool)` | `Array[Int]`、`Hash[String, Int]`、`(Int) -> Bool` |
 | 空のリテラル | `[] of Int32`、`{} of String => Int32` | 文脈から型が決まる: `xs: Array[Int] = []`、`h: Hash[String, Int] = {}` |
-| 整数 | 既定は `Int32`(`Int64` は `1_i64`)。溢れると `OverflowError` | `Int` は任意精度(溢れると Ruby と同じく多倍長整数になる)。固定幅の型は FFI 用に予定 |
+| 整数 | 既定は `Int32`(`Int64` は `1_i64`)。溢れると `OverflowError` | `Int` は 64 ビットで、Crystal と同じく溢れると `OverflowError`。`Integer` は任意精度(Crystal の `BigInt`)で、`Int` と混ぜた演算は `Integer` になる。ほかの固定幅の型は FFI 用に予定 |
 | 浮動小数点数 | `Float64`(`Float32`) | `Float`(`Float32` は予定) |
 | インスタンス変数 | 宣言するか代入から推論。可変 | クラス本体で宣言(`@x: Int`)。既定で不変、`var @x: Int` で可変 |
 | `initialize` でフィールドの代入前にオブジェクトを使う | `self` を使ったり渡したりするとエラー。呼んだメソッドが未代入のフィールドを読んでもエラー。そのようなフィールドに触れないメソッドの呼び出しは許される | そのようなフィールドがすべて代入されるまで、`self` の使用もクラスのメソッドの呼び出しもすべてエラー(呼ぶメソッドの中身は見ない)。[01-syntax.ja.md](01-syntax.ja.md) §3 を参照 |

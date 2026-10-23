@@ -46,6 +46,7 @@ nil
 3
 42
 3628800
+2432902008176640000
 15511210043330985984000000
 Pt(x: 1.5, y: 2.5)
 Pt(x: 3.0, y: 5.0)
@@ -53,13 +54,13 @@ Pt(x: 3.0, y: 5.0)
 Pt(x: 3.0, y: 5.0)
 3
 n=2
-inlined.qz:172:in main#fail_in
 inlined.qz:173:in main#fail_in
-inlined.qz:173:in main#fail_in
-inlined.qz:176:in <main>
+inlined.qz:174:in main#fail_in
+inlined.qz:174:in main#fail_in
+inlined.qz:177:in <main>
 divided by 0
-inlined.qz:182:in main#div
-inlined.qz:184:in <main>
+inlined.qz:183:in main#div
+inlined.qz:185:in <main>
 [1, nil, 1]
 1000
 1000

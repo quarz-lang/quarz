@@ -6,12 +6,20 @@ use common::{expect, run};
 #[test]
 fn arithmetic() {
     expect(
-        "puts 7 / 2, -7 / 2, 7 % -2, 2 ** 10, 2 ** 100, 10.0 / 4, 1 + 1.5",
+        "puts 7 / 2, -7 / 2, 7 % -2, 2 ** 10, 2.to_integer ** 100, 10.0 / 4, 1 + 1.5",
         "3\n-4\n-1\n1024\n1267650600228229401496703205376\n2.5\n2.5\n",
     );
-    expect("puts 9223372036854775807 + 1", "9223372036854775808\n");
+    // An Int overflows; an Integer holds any size.
     expect(
-        "puts (9223372036854775807 + 1) - 1",
+        "begin; puts 9223372036854775807 + 1; rescue OverflowError => e; puts e.class; end",
+        "OverflowError\n",
+    );
+    expect(
+        "puts 9223372036854775807.to_integer + 1",
+        "9223372036854775808\n",
+    );
+    expect(
+        "puts (9223372036854775807.to_integer + 1 - 1).to_i",
         "9223372036854775807\n",
     );
     expect(

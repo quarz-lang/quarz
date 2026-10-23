@@ -77,20 +77,27 @@ module Comparable[T]
   native def clamp(range: Range[T]) -> Self
 end
 
+# A 64-bit integer: arithmetic that leaves the range raises
+# `OverflowError`. `Integer` is the integer of any size.
 class Int
   include Shareable
   include Comparable[Int]
 
   native def +(other: Int) -> Int
   native def +(other: Float) -> Float
+  native def +(other: Integer) -> Integer
   native def -(other: Int) -> Int
   native def -(other: Float) -> Float
+  native def -(other: Integer) -> Integer
   native def *(other: Int) -> Int
   native def *(other: Float) -> Float
+  native def *(other: Integer) -> Integer
   native def /(other: Int) -> Int
   native def /(other: Float) -> Float
+  native def /(other: Integer) -> Integer
   native def %(other: Int) -> Int
   native def %(other: Float) -> Float
+  native def %(other: Integer) -> Integer
   native def **(other: Int) -> Int
   native def **(other: Float) -> Float
   native def -@ -> Int
@@ -103,6 +110,7 @@ class Int
   native def >>(other: Int) -> Int
   native def <=>(other: Int) -> Int
   native def <=>(other: Float) -> Int
+  native def <=>(other: Integer) -> Int
   # Int's own `==`/`!=` (numeric equality): compiled code compares inline.
   native def ==(other: Object) -> Bool
   native def !=(other: Object) -> Bool
@@ -114,6 +122,10 @@ class Int
   native def <=(other: Float) -> Bool
   native def >(other: Float) -> Bool
   native def >=(other: Float) -> Bool
+  native def <(other: Integer) -> Bool
+  native def <=(other: Integer) -> Bool
+  native def >(other: Integer) -> Bool
+  native def >=(other: Integer) -> Bool
   native def abs -> Int
   native def negative? -> Bool
   native def positive? -> Bool
@@ -123,6 +135,7 @@ class Int
   native def succ -> Int
   native def pred -> Int
   native def to_i -> Int
+  native def to_integer -> Integer
   native def to_f -> Float
   native def to_s -> String
   native def to_s(base: Int) -> String
@@ -174,6 +187,74 @@ class Int
   native def hours -> Duration
   native def day -> Duration
   native def days -> Duration
+end
+
+# An integer of any size: arithmetic with an `Int` gives an `Integer`
+# (an `Int` becomes one only by `to_integer`, or as a literal where an
+# `Integer` is expected, or too large for an `Int`).
+class Integer
+  include Shareable
+  include Comparable[Integer]
+
+  native def +(other: Int) -> Integer
+  native def +(other: Integer) -> Integer
+  native def +(other: Float) -> Float
+  native def -(other: Int) -> Integer
+  native def -(other: Integer) -> Integer
+  native def -(other: Float) -> Float
+  native def *(other: Int) -> Integer
+  native def *(other: Integer) -> Integer
+  native def *(other: Float) -> Float
+  native def /(other: Int) -> Integer
+  native def /(other: Integer) -> Integer
+  native def /(other: Float) -> Float
+  native def %(other: Int) -> Integer
+  native def %(other: Integer) -> Integer
+  native def %(other: Float) -> Float
+  native def **(other: Int) -> Integer
+  native def **(other: Float) -> Float
+  native def -@ -> Integer
+  native def +@ -> Integer
+  native def <=>(other: Int) -> Int
+  native def <=>(other: Integer) -> Int
+  native def <=>(other: Float) -> Int
+  native def ==(other: Object) -> Bool
+  native def !=(other: Object) -> Bool
+  native def <(other: Int) -> Bool
+  native def <=(other: Int) -> Bool
+  native def >(other: Int) -> Bool
+  native def >=(other: Int) -> Bool
+  native def <(other: Integer) -> Bool
+  native def <=(other: Integer) -> Bool
+  native def >(other: Integer) -> Bool
+  native def >=(other: Integer) -> Bool
+  native def <(other: Float) -> Bool
+  native def <=(other: Float) -> Bool
+  native def >(other: Float) -> Bool
+  native def >=(other: Float) -> Bool
+  native def abs -> Integer
+  native def negative? -> Bool
+  native def positive? -> Bool
+  native def zero? -> Bool
+  native def even? -> Bool
+  native def odd? -> Bool
+  native def succ -> Integer
+  native def pred -> Integer
+  # The `Int`, or `OverflowError` when it does not fit.
+  native def to_i -> Int
+  native def to_integer -> Integer
+  native def to_f -> Float
+  native def to_s -> String
+  native def to_s(base: Int) -> String
+  native def divmod(other: Integer) -> [Integer, Integer]
+  native def pow(exp: Integer, mod: Integer) -> Integer
+  native def gcd(other: Integer) -> Integer
+  native def lcm(other: Integer) -> Integer
+  native def bit_length -> Int
+  native def self.sqrt(n: Integer) -> Integer
+  native def self.parse(text: String) -> Integer
+  native def self.parse(text: String, base: Int) -> Integer
+  def integer? -> Bool = true
 end
 
 class Float
@@ -1002,6 +1083,10 @@ extension Enumerable[T: Float]
   def sum -> Float = reduce(0.0) { |acc, x| acc + x }
 end
 
+extension Enumerable[T: Integer]
+  def sum -> Integer = reduce(0.to_integer) { |acc, x| acc + x }
+end
+
 extension Array[T: Comparable[T]]
   native def <=>(other: Array[T]) -> Int
 end
@@ -1419,6 +1504,10 @@ class KeyError < IndexError
 end
 
 class RangeError < StandardError
+end
+
+# An `Int` operation whose result does not fit in 64 bits.
+class OverflowError < RangeError
 end
 
 class ZeroDivisionError < StandardError

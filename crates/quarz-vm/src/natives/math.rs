@@ -14,16 +14,22 @@ use super::{block, float, int};
 
 pub fn register(m: &mut super::Registry<NativeFn>) {
     // Int
-    m.insert("Int.sqrt", |i, _, a| {
-        let n = Num::of(i, a.arg(0))?.to_big();
-        if n.is_negative() {
-            return Err(i.raise(
-                i.program.exc.argument_error,
-                "Numerical argument is out of domain - \"isqrt\"",
-            ));
-        }
-        Ok(int_from_big(n.sqrt()))
-    });
+    for name in ["Int.sqrt", "Integer.sqrt"] {
+        m.insert(name, |i, _, a| {
+            let n = Num::of(i, a.arg(0))?.to_big();
+            if n.is_negative() {
+                return Err(i.raise(
+                    i.program.exc.argument_error,
+                    "Numerical argument is out of domain - \"isqrt\"",
+                ));
+            }
+            // An Int's square root is one.
+            Ok(match a.arg(0) {
+                Value::BigInt(_) => integer(n.sqrt()),
+                _ => i.int_of_big(&n.sqrt())?,
+            })
+        });
+    }
     m.insert("Int#fdiv", |i, r, a| {
         let x = Num::of(i, r)?.to_f64();
         let y = Num::of(i, a.arg(0))?.to_f64();
@@ -76,7 +82,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         }
         while !n.is_zero() {
             let (q, rem) = num_integer::Integer::div_rem(&n, &base);
-            out.push(int_from_big(rem));
+            out.push(i.int_of_big(&rem)?);
             n = q;
         }
         Ok(Value::array(out))
@@ -273,7 +279,7 @@ fn int_round_digits(interp: &Interp, recv: &Value, args: Args, how: Rounding) ->
             }
         }
     };
-    Ok(int_from_big(rounded))
+    interp.int_of_big(&rounded)
 }
 
 fn float_round_digits(interp: &Interp, recv: &Value, args: Args, how: Rounding) -> EvalResult {

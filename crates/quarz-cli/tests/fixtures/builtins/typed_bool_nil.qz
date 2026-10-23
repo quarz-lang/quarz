@@ -1,7 +1,7 @@
 # Calls through typed entries (compiled code passes Int, Float and Bool
 # parameters and results as machine values, and returns nothing for
 # Nil): the same results as the interpreter's, including the paths that
-# box (an argument from an array, a BigInt result).
+# box (an argument from an array) or raise (an overflow in the callee).
 def even?(n: Int) -> Bool
   return true if n == 0
   odd?(n - 1)
@@ -49,4 +49,9 @@ p c.n
 p scale(100.0, true), scale(7.5, false)
 flags = [true, false, true]
 p flags.map { |f| walk(3, f) }
-p grow(10, false), grow(5, true)
+p grow(10, false), grow(3, true)
+begin
+  p grow(5, true)
+rescue OverflowError => e
+  p e.class
+end

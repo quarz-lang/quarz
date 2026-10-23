@@ -94,6 +94,9 @@ pub struct Output {
     pub rescue_classes: FxHashMap<Span, Vec<ClassId>>,
     /// Integer literals typed as `Float` because of their context.
     pub float_literals: rustc_hash::FxHashSet<NodeId>,
+    /// Integer literals that are `Integer`s: where one is expected, or
+    /// too large for an `Int`.
+    pub integer_literals: rustc_hash::FxHashSet<NodeId>,
     /// Expressions whose value is discarded because it is the result of
     /// something declared to return `Nil` (the last expression of such a
     /// method, block or lambda, the value of its `return` or `next`): they
@@ -2023,13 +2026,21 @@ impl Checker {
                     self.env.self_type.clone()
                 }
             }
-            Int(_) => {
+            Int(lit) => {
                 if let Some(e) = expected {
                     let e = self.resolve(e);
                     if e == self.world.float() && !self.int_literals.contains(&expr.id) {
                         self.out.float_literals.insert(expr.id);
                         return self.world.float();
                     }
+                    if e == self.world.integer() {
+                        self.out.integer_literals.insert(expr.id);
+                        return self.world.integer();
+                    }
+                }
+                if lit.value.is_none() {
+                    self.out.integer_literals.insert(expr.id);
+                    return self.world.integer();
                 }
                 self.world.int()
             }
