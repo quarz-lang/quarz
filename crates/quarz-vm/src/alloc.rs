@@ -1,10 +1,14 @@
 //! The memory allocator of `quarz` and of compiled programs (this crate
 //! is linked into both). Built with the `mimalloc` feature, it is
-//! mimalloc (a reference-counted runtime frees as often as it allocates,
-//! mostly small blocks, which mimalloc was designed for) unless
-//! `QUARZ_ALLOC=system` selects the system's `malloc`. The choice is made
-//! at the first allocation and kept: a block must go back to the
-//! allocator it came from.
+//! mimalloc for blocks under `LARGE` (a reference-counted runtime frees
+//! as often as it allocates, mostly small blocks, which mimalloc was
+//! designed for) and the system's `malloc` for larger ones (glibc grows a
+//! large block in place or by remapping its pages, where mimalloc copies
+//! it: an array or string built up by appends), unless
+//! `QUARZ_ALLOC=system` selects the system's for everything. The choice
+//! is made at the first allocation and kept, and a block's size, which
+//! comes back with it to `dealloc` and `realloc`, says which allocator
+//! it came from.
 //!
 //! mimalloc asks for transparent huge pages by default, which the kernel
 //! zeroes 2 MiB at a time: half a millisecond more for every process,
@@ -74,6 +78,15 @@ fn env_is(name: &str, value: &[u8]) -> bool {
     }
 }
 
+/// From this size on, blocks go to the system's allocator.
+const LARGE: usize = 32 * 1024;
+
+/// Whether a block of `size` bytes is mimalloc's (when mimalloc is in use).
+#[inline(always)]
+fn small(size: usize) -> bool {
+    size < LARGE
+}
+
 /// The allocator in use, for diagnostics.
 pub fn name() -> &'static str {
     match choice() {
@@ -82,38 +95,56 @@ pub fn name() -> &'static str {
     }
 }
 
-// SAFETY: every call goes to the one allocator chosen for the process,
-// which upholds `GlobalAlloc`'s contract.
+// SAFETY: a block goes back to the allocator it came from: the one chosen
+// for the process, and with mimalloc, the one its size picks (the same
+// size comes back with it); a block whose size crosses `LARGE` in a
+// `realloc` is moved from one to the other.
 unsafe impl GlobalAlloc for Allocator {
     #[inline]
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        match choice() {
-            SYSTEM => unsafe { System.alloc(layout) },
-            _ => unsafe { mimalloc::MiMalloc.alloc(layout) },
+        if choice() == MIMALLOC && small(layout.size()) {
+            unsafe { mimalloc::MiMalloc.alloc(layout) }
+        } else {
+            unsafe { System.alloc(layout) }
         }
     }
 
     #[inline]
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        match choice() {
-            SYSTEM => unsafe { System.alloc_zeroed(layout) },
-            _ => unsafe { mimalloc::MiMalloc.alloc_zeroed(layout) },
+        if choice() == MIMALLOC && small(layout.size()) {
+            unsafe { mimalloc::MiMalloc.alloc_zeroed(layout) }
+        } else {
+            unsafe { System.alloc_zeroed(layout) }
         }
     }
 
     #[inline]
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        match choice() {
-            SYSTEM => unsafe { System.dealloc(ptr, layout) },
-            _ => unsafe { mimalloc::MiMalloc.dealloc(ptr, layout) },
+        if choice() == MIMALLOC && small(layout.size()) {
+            unsafe { mimalloc::MiMalloc.dealloc(ptr, layout) }
+        } else {
+            unsafe { System.dealloc(ptr, layout) }
         }
     }
 
     #[inline]
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        match choice() {
-            SYSTEM => unsafe { System.realloc(ptr, layout, new_size) },
-            _ => unsafe { mimalloc::MiMalloc.realloc(ptr, layout, new_size) },
+        if choice() != MIMALLOC {
+            return unsafe { System.realloc(ptr, layout, new_size) };
+        }
+        match (small(layout.size()), small(new_size)) {
+            (true, true) => unsafe { mimalloc::MiMalloc.realloc(ptr, layout, new_size) },
+            (false, false) => unsafe { System.realloc(ptr, layout, new_size) },
+            // Crossing over: a new block from the other allocator.
+            _ => unsafe {
+                let new_layout = Layout::from_size_align_unchecked(new_size, layout.align());
+                let new = self.alloc(new_layout);
+                if !new.is_null() {
+                    std::ptr::copy_nonoverlapping(ptr, new, layout.size().min(new_size));
+                    self.dealloc(ptr, layout);
+                }
+                new
+            },
         }
     }
 }
