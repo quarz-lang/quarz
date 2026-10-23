@@ -1976,7 +1976,8 @@ impl<'a> FnBuilder<'a> {
     }
 
     /// Whether `call` is `Object#nil?` (no arguments, no block, no `&.`)
-    /// and no class or extension defines a `nil?` of its own.
+    /// on a receiver none of whose possible classes has a `nil?` of its
+    /// own (judged by its static type: see `nil_p_is_object`).
     fn is_builtin_nil_p(&self, e: &Expr, call: &ast::Call) -> bool {
         if call.name != "nil?" || !call.args.is_empty() || call.block.is_some() || call.safe_nav {
             return false;
@@ -1985,10 +1986,49 @@ impl<'a> FnBuilder<'a> {
             return false;
         };
         let m = self.world.method(*method);
-        let object = self.world.builtin.object;
-        m.is_native
-            && m.owner == object
-            && !self.lw.overridden.contains(&(object, "nil?".to_string()))
+        if !m.is_native || m.owner != self.world.builtin.object {
+            return false;
+        }
+        // An extension's `nil?` may be the one a value finds.
+        if self
+            .world
+            .extensions
+            .iter()
+            .any(|x| x.methods.contains_key("nil?"))
+        {
+            return false;
+        }
+        match &call.recv {
+            Some(r) => self
+                .out
+                .node_types
+                .get(&r.id)
+                .is_some_and(|t| self.nil_p_is_object(t)),
+            // `self`: an instance of the method's class or a subclass.
+            None => self
+                .class_id
+                .is_some_and(|c| self.nil_p_is_object(&Type::class(c))),
+        }
+    }
+
+    /// Whether a value of type `t` answers `nil?` with `Object#nil?`:
+    /// none of its classes defines one, nor a subclass of them (class
+    /// hierarchy analysis, `Lowerer::overridden`; a built-in value class
+    /// has none). Unknown types (a type parameter) may.
+    fn nil_p_is_object(&self, t: &Type) -> bool {
+        let b = &self.world.builtin;
+        let class_has_none = |c: ClassId| {
+            !self.world.class(c).methods.contains_key("nil?")
+                && !self.lw.overridden.contains(&(c, "nil?".to_string()))
+        };
+        match t {
+            Type::Nothing => true,
+            Type::Class(c, _) => class_has_none(*c),
+            Type::ClassObject(..) => class_has_none(b.class_),
+            Type::Proc(..) => class_has_none(b.proc_),
+            Type::Union(ms) => ms.iter().all(|m| self.nil_p_is_object(m)),
+            _ => false,
+        }
     }
 
     /// `recv.instance_exec(args) { ... }` with a literal block: the body
