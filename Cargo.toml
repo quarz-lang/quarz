@@ -26,3 +26,9 @@ quarz-ir = { path = "crates/quarz-ir" }
 quarz-lower = { path = "crates/quarz-lower" }
 quarz-vm = { path = "crates/quarz-vm", default-features = false }
 quarz-aot = { path = "crates/quarz-aot" }
+
+# The runtime (the interpreter, and the library compiled programs link)
+# as one codegen unit: faster, and its inlining no longer shifts with
+# how unrelated code is split into units (as Ruff does for its parser).
+[profile.release.package.quarz-vm]
+codegen-units = 1
