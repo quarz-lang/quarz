@@ -67,15 +67,14 @@ when the local one is older.
   variable (see `copyprop::consumes`).
 - A borrowed element register (`ArrayGetReg` with `borrow`) holds no
   count in compiled code: register sharing keeps it to itself,
-  `mark_moves` never moves it, the AOT never releases it, and `deopt`
-  counts the live ones before the interpreter takes over.
+  `mark_moves` never moves it, and the AOT never releases it.
 - An object's fields are laid out by `quarz_ir::field_slots` (a field
   declared `Int`/`Float`/`Bool` is a machine word, its mark meaning
   "kept aside"): the runtime and `gen.rs` must both go through it, and
   only the runtime may write a mark or the aside list.
-- `quarz build` embeds the QIR it compiled, and deoptimization resumes
-  the interpreter on the compiled code's registers: the machine code and
-  the embedded QIR must come from the same lowering.
+- `quarz build` embeds the QIR it compiled, and `qz_exec` runs an
+  instruction of it on the compiled code's registers: the machine code
+  and the embedded QIR must come from the same lowering.
 - In register sharing, a result never shares with its own operands (the
   AOT may release a destination before reading operands), counted and
   non-counted registers stay apart (`live::heap_possible`, shared with
@@ -101,7 +100,5 @@ when the local one is older.
   instructions with different cycles is not a regression in itself.
 - For start-up, use `valgrind --tool=callgrind`: sampling misattributes
   short runs.
-- `QUARZ_COUNT_DEOPTS=1` prints where compiled code handed over to the
-  interpreter (a failed speculation): a benchmark should show none.
 - `bench/compare/run.sh` compares with Go, Rust, Crystal, Spinel and
   Ruby; its README records the versions and the latest results.

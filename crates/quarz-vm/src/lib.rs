@@ -5,7 +5,6 @@
 #[cfg(feature = "mimalloc")]
 pub mod alloc;
 pub mod deinit;
-pub mod deopts;
 #[cfg(target_os = "linux")]
 mod epoll;
 pub mod ffi;

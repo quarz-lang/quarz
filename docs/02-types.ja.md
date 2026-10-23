@@ -32,7 +32,7 @@ Quarz は静的型付きです。クラス・モジュール・メソッドの�
 |---|---|---|
 | `Nil` | `NilClass` | 値は `nil` のみ |
 | `Bool` | `TrueClass`/`FalseClass` | `true`/`false` |
-| `Int` | `Integer` | **64 ビット**。結果が範囲を外れる演算は `OverflowError` を投げます(そのためコンパイル済みコードはどの `Int` も機械語の語のまま扱えます)。整数リテラルは `Int` です |
+| `Int` | `Integer` | **64 ビット**。結果が範囲を外れる演算は `OverflowError` を投げます(そのためコンパイル済みコードはどの `Int` も機械語の語のまま扱えます)。負の指数(`2 ** -1`)は `ArgumentError` です(`2.0 ** -1` は `0.5`)。整数リテラルは `Int` です |
 | `Integer` | `Integer` | **任意精度**。`Int` との演算の結果は `Integer` です。`Int` が `Integer` になるのは明示したときだけで(`to_integer`)、リテラルは `Integer` が期待される場所か、`Int` に収まらないときに `Integer` になります。`Integer#to_i` は収まらない値で `OverflowError` を投げます |
 | `Int8`..`Int64`、`UInt8`..`UInt64` | - | 固定幅整数(*予定*)。あふれると例外(`--release` では未定義ではなくラップ、ではなく常に例外) |
 | `Float` | `Float` | IEEE 754 倍精度 |

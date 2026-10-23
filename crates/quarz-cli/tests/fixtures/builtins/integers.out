@@ -30,3 +30,10 @@ true
 6
 6
 5
+ArgumentError
+0.5
+[-4, -1]
+0
+OverflowError
+6
+6

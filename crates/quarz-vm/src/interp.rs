@@ -901,7 +901,6 @@ impl Interp {
                 crate::value::copies()
             );
         }
-        crate::deopts::report();
         code
     }
 

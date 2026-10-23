@@ -48,6 +48,11 @@ pub const FIELD_INT_MARK: i64 = crate::value::INT_MARK;
 pub const FIELD_FLOAT_MARK: u64 = crate::value::FLOAT_MARK;
 pub const FIELD_BOOL_MARK: u64 = crate::value::BOOL_MARK;
 
+/// The errors `ffi::qz_raise` raises.
+pub const RAISE_OVERFLOW: u32 = 0;
+pub const RAISE_ZERO_DIVISION: u32 = 1;
+pub const RAISE_UNSOUND: u32 = 2;
+
 /// Everything above, folded into one number.
 pub const SIGNATURE: u64 = {
     let xs = [
@@ -79,6 +84,9 @@ pub const SIGNATURE: u64 = {
         FIELD_FLOAT_MARK as usize,
         FIELD_BOOL_MARK as usize,
         quarz_ir::VALUE_BYTES as usize,
+        RAISE_OVERFLOW as usize,
+        RAISE_ZERO_DIVISION as usize,
+        RAISE_UNSOUND as usize,
     ];
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     let mut i = 0;

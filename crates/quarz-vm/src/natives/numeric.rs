@@ -89,11 +89,18 @@ pub(super) fn arith(interp: &Interp, recv: &Value, args: &Args, op: &str) -> Eva
                 if y == 0 {
                     return Err(interp.raise(interp.program.exc.zero_division, "divided by 0"));
                 }
-                Some(Integer::mod_floor(&x, &y))
+                // (`MIN % -1` would overflow the machine's remainder.)
+                Some(if y == -1 {
+                    0
+                } else {
+                    Integer::mod_floor(&x, &y)
+                })
             }
             "**" => {
                 if y < 0 {
-                    return Ok(Value::Float((x as f64).powf(y as f64)));
+                    return Err(
+                        interp.err_arg("negative exponent of an Int (use a Float: 2.0 ** -1)")
+                    );
                 }
                 if y <= u32::MAX as i64 {
                     x.checked_pow(y as u32)
@@ -128,6 +135,11 @@ pub(super) fn arith(interp: &Interp, recv: &Value, args: &Args, op: &str) -> Eva
             x.mod_floor(&y)
         }
         "**" => {
+            if y.is_negative() {
+                return Err(
+                    interp.err_arg("negative exponent of an Integer (use a Float: 2.0 ** -1)")
+                );
+            }
             let e = y
                 .to_u32()
                 .ok_or_else(|| interp.err_arg("exponent too large"))?;

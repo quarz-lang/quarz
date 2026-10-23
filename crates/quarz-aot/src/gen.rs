@@ -37,7 +37,8 @@ const STATUS_RAISE: i64 = 1;
 
 /// The runtime functions compiled code calls, as a backend's callables.
 pub(crate) struct Helpers<F> {
-    pub resume: F,
+    /// `qz_raise`: an error the compiled code detects (see `raise_here`).
+    pub raise: F,
     pub enter: F,
     pub enter_virtual: F,
     pub leave: F,
@@ -293,8 +294,6 @@ pub(crate) fn gen_function<B: Builder>(
     let out_buf = b.stack_slot(VALUE_SIZE as u32, 3);
     let vbody = b.stack_slot(8, 3);
     let ptrs = b.stack_slot(32, 3);
-    // The words a deoptimization hands the runtime (see `deopt`).
-    let fresh_buf = b.stack_slot(8 * nwords as u32, 3);
     let args_buf = b.stack_slot((VALUE_SIZE as u32) * max_direct_args as u32, 3);
     // Registers start as nil: the tag word is written for those
     // that may ever be released (they may hold a heap value) or be
@@ -440,7 +439,6 @@ pub(crate) fn gen_function<B: Builder>(
         rt,
         act,
         regs,
-        out,
         exit,
         scratch,
         act_buf,
@@ -477,7 +475,6 @@ pub(crate) fn gen_function<B: Builder>(
         zeroed,
         heap: heap.clone(),
         valid_vars: valid_vars.clone(),
-        fresh_buf,
         stale: vec![false; nregs_usize],
         region: region.clone(),
         own_out: own_out_slot,
@@ -1055,7 +1052,6 @@ struct Gen<'a, B: Builder> {
     rt: B::Value,
     act: B::Value,
     regs: B::Value,
-    out: B::Value,
     exit: B::Block,
     scratch: B::Value,
     /// Space for the activation of a direct call.
@@ -1120,8 +1116,6 @@ struct Gen<'a, B: Builder> {
     /// Bit `k` of word `k / 64` set: register `k`'s home holds a value
     /// the exit must release (see `set_valid`).
     valid_vars: Vec<B::Var>,
-    /// Where a deoptimization lays out the registers to set to nil.
-    fresh_buf: B::Value,
     /// Registers holding nil (after `ClearRegs`) whose home has not been
     /// written: a read of the home writes nil there first (see
     /// `ensure_home`). Tracked within a block.
@@ -1540,8 +1534,8 @@ impl<B: Builder> Gen<'_, B> {
     }
 
     /// After the runtime ran an instruction on `arr`: keep its allocation
-    /// when it is an array, or go to the interpreter after the
-    /// instruction (`after` makes it `State::Arr`).
+    /// (`after` makes it `State::Arr`); lowering emits the instruction on
+    /// arrays only.
     fn arr_after_slow(&mut self, arr: Reg, block: u32, index: u32) {
         let tag = self.tag(arr);
         let is_arr = self.b.icmp_imm(IntCC::Equal, tag, TAG_ARRAY);
@@ -1549,7 +1543,7 @@ impl<B: Builder> Gen<'_, B> {
         let bad = self.b.create_block();
         self.b.brif(is_arr, ok, &[], bad, &[]);
         self.b.switch_to_block(bad);
-        self.deopt(block, index + 1);
+        self.unsound(block, index);
         self.b.switch_to_block(ok);
         let p = self.payload_ptr(arr);
         self.b.def_var(self.pvar(arr), p);
@@ -1757,10 +1751,10 @@ impl<B: Builder> Gen<'_, B> {
         }
     }
 
-    /// Give up on this function's speculation: the interpreter runs the
-    /// rest from instruction `index` of `block`, and the function exits
-    /// with its status. Emission continues in a fresh (unreachable) block.
-    fn deopt(&mut self, block: u32, index: u32) {
+    /// Raise `kind` (`layout::RAISE_*`) at instruction `index` of `block`,
+    /// as the instruction would: through the block's handler, if any
+    /// (which reads the homes of what is live), or out of the function.
+    fn raise_here(&mut self, kind: u32, block: u32, index: u32, unwind: B::Block) {
         let here = self.b.current_block();
         self.b.set_cold(here);
         if self.region[block as usize] {
@@ -1768,54 +1762,39 @@ impl<B: Builder> Gen<'_, B> {
         }
         let live = self.live[block as usize][index as usize].clone();
         self.flush_live(&live);
-        // The interpreter owns its registers: a borrowed element still in
-        // use is counted, a dead one forgotten.
-        let borrowed: Vec<Reg> = (0..self.nregs)
-            .filter(|&r| self.borrowed[r])
-            .map(|r| r as Reg)
-            .collect();
-        for r in borrowed {
-            if live[r as usize] {
-                let p = self.b.iadd_imm(self.regs, i64::from(reg_off(r)));
-                self.b.call(self.h.own, &[p]);
-            } else {
-                self.store_tag(r, TAG_NIL);
-            }
-        }
-        // The interpreter drops what it overwrites: a home never set
-        // (nor just written back) must at least be nil, which the
-        // runtime writes for the registers whose bits are set.
-        // (A live one was just written back or holds a boxed value; an
-        // unknown one holds a value by construction.)
-        let fresh = self.masks(|g, r| !g.zeroed[r] && !live[r] && !g.states[r].boxed());
-        for (k, word) in fresh.into_iter().enumerate() {
-            let w = self.b.iconst(Ty::I64, word);
-            self.b.store(w, self.fresh_buf, 8 * k as i32);
-        }
-        // Every home is valid then, and the interpreter may put a heap
-        // value in any of them.
-        let all = self.masks(|g, r| g.heap[r]);
-        for (k, word) in all.into_iter().enumerate() {
-            let w = self.b.iconst(Ty::I64, word);
-            self.b.def_var(self.valid_vars[k], w);
-        }
         self.materialize();
+        let k = self.b.iconst(Ty::I32, i64::from(kind));
         let fid = self.b.iconst(Ty::I32, i64::from(self.fid));
         let blk = self.b.iconst(Ty::I32, i64::from(block));
         let i = self.b.iconst(Ty::I32, i64::from(index));
-        let status = self.b.call(
-            self.h.resume,
-            &[
-                self.rt,
-                self.act,
-                fid,
-                blk,
-                i,
-                self.regs,
-                self.out,
-                self.fresh_buf,
-            ],
-        )[0];
+        let status = self
+            .b
+            .call(self.h.raise, &[self.rt, self.act, k, fid, blk, i])[0];
+        // The status is never OK: what follows is unreachable, and joins
+        // nothing (emission goes on in a fresh block).
+        self.b.set_cold(unwind);
+        self.b.jump(unwind, &[status]);
+        let dead = self.b.create_block();
+        self.b.switch_to_block(dead);
+    }
+
+    /// A value not of its static type, which the checker rules out: a
+    /// compiler bug, raised as a `TypeError` out of the function (its
+    /// handlers are not run: nothing is known to be sound any more).
+    fn unsound(&mut self, block: u32, index: u32) {
+        let here = self.b.current_block();
+        self.b.set_cold(here);
+        if self.region[block as usize] {
+            self.setup_frame();
+        }
+        self.materialize();
+        let k = self.b.iconst(Ty::I32, i64::from(L::RAISE_UNSOUND));
+        let fid = self.b.iconst(Ty::I32, i64::from(self.fid));
+        let blk = self.b.iconst(Ty::I32, i64::from(block));
+        let i = self.b.iconst(Ty::I32, i64::from(index));
+        let status = self
+            .b
+            .call(self.h.raise, &[self.rt, self.act, k, fid, blk, i])[0];
         self.b.jump(self.exit, &[status]);
         let dead = self.b.create_block();
         self.b.switch_to_block(dead);
@@ -1861,7 +1840,7 @@ impl<B: Builder> Gen<'_, B> {
         let bad = self.b.create_block();
         self.b.brif(is, ok, &[], bad, &[]);
         self.b.switch_to_block(bad);
-        self.deopt(block, index);
+        self.unsound(block, index);
         self.b.switch_to_block(ok);
         let p = self.payload(r);
         match n {
@@ -1916,7 +1895,7 @@ impl<B: Builder> Gen<'_, B> {
                 let bad = self.b.create_block();
                 self.b.brif(is, ok, &[], bad, &[]);
                 self.b.switch_to_block(bad);
-                self.deopt(block, index);
+                self.unsound(block, index);
                 self.b.switch_to_block(ok);
                 let v = self.b.load(Ty::I8, self.regs, reg_off(r) + 8);
                 self.b.def_var(self.bvar(r), v);
@@ -2881,7 +2860,7 @@ impl<B: Builder> Gen<'_, B> {
                                 let bad = self.b.create_block();
                                 self.b.brif(overflow, bad, &[], ok, &[]);
                                 self.b.switch_to_block(bad);
-                                self.deopt(block, index);
+                                self.raise_here(L::RAISE_OVERFLOW, block, index, unwind);
                                 self.b.switch_to_block(ok);
                                 r
                             }
@@ -2891,24 +2870,37 @@ impl<B: Builder> Gen<'_, B> {
                                 let bad = self.b.create_block();
                                 self.b.brif(overflow, bad, &[], ok, &[]);
                                 self.b.switch_to_block(bad);
-                                self.deopt(block, index);
+                                self.raise_here(L::RAISE_OVERFLOW, block, index, unwind);
                                 self.b.switch_to_block(ok);
                                 r
                             }
                             _ => {
-                                // Division by zero and MIN / -1 go to the
-                                // interpreter (an error, or a BigInt).
+                                // Division by zero raises, and so does
+                                // MIN / -1 (an overflow); MIN % -1 is 0,
+                                // which `x % 1` gives (the machine's
+                                // remainder traps there).
                                 let y_zero = self.b.icmp_imm(IntCC::Equal, y, 0);
-                                let x_min = self.b.icmp_imm(IntCC::Equal, x, i64::MIN);
-                                let y_m1 = self.b.icmp_imm(IntCC::Equal, y, -1);
-                                let min_case = self.b.band(x_min, y_m1);
-                                let bad_cond = self.b.bor(y_zero, min_case);
                                 let ok = self.b.create_block();
                                 let bad = self.b.create_block();
-                                self.b.brif(bad_cond, bad, &[], ok, &[]);
+                                self.b.brif(y_zero, bad, &[], ok, &[]);
                                 self.b.switch_to_block(bad);
-                                self.deopt(block, index);
+                                self.raise_here(L::RAISE_ZERO_DIVISION, block, index, unwind);
                                 self.b.switch_to_block(ok);
+                                let y_m1 = self.b.icmp_imm(IntCC::Equal, y, -1);
+                                let y = if *op == FastOp::Div {
+                                    let x_min = self.b.icmp_imm(IntCC::Equal, x, i64::MIN);
+                                    let min_case = self.b.band(x_min, y_m1);
+                                    let fine = self.b.create_block();
+                                    let over = self.b.create_block();
+                                    self.b.brif(min_case, over, &[], fine, &[]);
+                                    self.b.switch_to_block(over);
+                                    self.raise_here(L::RAISE_OVERFLOW, block, index, unwind);
+                                    self.b.switch_to_block(fine);
+                                    y
+                                } else {
+                                    let one = self.b.iconst(Ty::I64, 1);
+                                    self.b.select(y_m1, one, y)
+                                };
                                 // Floor semantics, as in Ruby.
                                 let rem = self.b.srem(x, y);
                                 let nonzero = self.b.icmp_imm(IntCC::NotEqual, rem, 0);
@@ -3596,16 +3588,13 @@ impl<B: Builder> Gen<'_, B> {
                         self.unbox(*dst, State::Bool);
                         self.b.def_var(self.bvar(*dst), p);
                     }
-                    // An Int field may hold a big integer, kept aside: its
-                    // mark re-runs the read in the interpreter.
+                    // An Int field's mark (the smallest Int, kept aside):
+                    // the runtime reads it.
                     FieldKind::Int => {
                         let p = self.b.load(Ty::I64, addr, 0);
                         let aside = self.b.icmp_imm(IntCC::Equal, p, L::FIELD_INT_MARK);
                         let ok = self.b.create_block();
-                        let bad = self.b.create_block();
-                        self.b.brif(aside, bad, &[], ok, &[]);
-                        self.b.switch_to_block(bad);
-                        self.deopt(block, index);
+                        self.b.brif(aside, slow, &[], ok, &[]);
                         self.b.switch_to_block(ok);
                         self.unbox(*dst, State::Int);
                         self.b.def_var(self.ivar(*dst), p);

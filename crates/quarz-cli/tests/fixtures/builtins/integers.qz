@@ -32,3 +32,34 @@ in Integer then p "integer"
 else p "other"
 end
 p 10.to_integer.pow(3.to_integer, 7.to_integer), 12.to_integer.gcd(18.to_integer), (-5).to_integer.abs
+
+# A negative exponent of an Int is an error (a Float gives the fraction).
+begin
+  p 2 ** -1
+rescue ArgumentError => e
+  p e.class
+end
+p 2.0 ** -1
+# Compiled code raises these itself, through the function's handlers.
+def div_mod(a: Int, b: Int) -> [Int, Int]
+  [a / b, a % b]
+end
+least = -9223372036854775807 - 1
+p div_mod(7, -2), least % -1
+begin
+  p div_mod(least, -1)
+rescue OverflowError => e
+  p e.class
+end
+def safe_sum(xs: Array[Int], d: Int) -> Int
+  total = 0
+  xs.each do |x|
+    total += begin
+      x / d
+    rescue ZeroDivisionError
+      x
+    end
+  end
+  total
+end
+p safe_sum([1, 2, 3], 1), safe_sum([1, 2, 3], 0)

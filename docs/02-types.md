@@ -34,7 +34,7 @@ Writing `Array[Int]` in expression context yields an expression denoting the typ
 |---|---|---|
 | `Nil` | `NilClass` | The only value is `nil` |
 | `Bool` | `TrueClass`/`FalseClass` | `true`/`false` |
-| `Int` | `Integer` | **64-bit**. Arithmetic whose result leaves the range raises `OverflowError` (so compiled code keeps every `Int` a machine word). Integer literals are `Int`s |
+| `Int` | `Integer` | **64-bit**. Arithmetic whose result leaves the range raises `OverflowError` (so compiled code keeps every `Int` a machine word), and a negative exponent (`2 ** -1`) raises `ArgumentError` (`2.0 ** -1` is `0.5`). Integer literals are `Int`s |
 | `Integer` | `Integer` | **Arbitrary precision**. Arithmetic with an `Int` gives an `Integer`; an `Int` becomes one only explicitly (`to_integer`), and a literal is one where an `Integer` is expected or when it is too large for an `Int`. `Integer#to_i` raises `OverflowError` when the value does not fit |
 | `Int8`..`Int64`, `UInt8`..`UInt64` | - | Fixed-width integers (*planned*). Overflow raises an exception (always an exception, never undefined behavior or wrapping, even with `--release`) |
 | `Float` | `Float` | IEEE 754 double precision |

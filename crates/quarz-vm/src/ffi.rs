@@ -455,46 +455,46 @@ pub unsafe extern "C" fn qz_leave(
     }
 }
 
-/// Give the rest of the function to the interpreter, starting at
-/// instruction `inst` of `block` on the compiled code's registers (a
-/// speculation failed: an Int grew into a BigInt, say). The result goes
-/// to `out`; the returned status is the function's. The caller then
-/// releases its registers as usual.
+/// Raise an error compiled code detects itself: `RAISE_OVERFLOW` (an
+/// `Int` result out of range), `RAISE_ZERO_DIVISION`, or
+/// `RAISE_UNSOUND` (a value not of its static type, which the checker
+/// should have made impossible: a compiler bug, reported as one).
+/// Returns the status the compiled code leaves with.
 ///
 /// # Safety
-/// As for `qz_exec`; `out` must point to a nil value.
+/// As for `qz_exec`.
 #[no_mangle]
-pub unsafe extern "C" fn qz_resume(
+pub unsafe extern "C" fn qz_raise(
     rt: *const Interp,
     act: *const Activation,
+    kind: u32,
     fid: u32,
     block: u32,
     inst: u32,
-    regs: *mut Value,
-    out: *mut Value,
-    fresh: *const u64,
 ) -> u32 {
     let rt = &*rt;
-    let act = &*act;
-    if crate::deopts::counting() {
-        crate::deopts::record(&rt.funcs.borrow()[fid as usize], block, inst);
+    // Where it is raised, as `qz_exec` records it (the backtrace finds
+    // the inlined callees from it).
+    if let Some(line) = rt.funcs.borrow()[fid as usize]
+        .blocks
+        .get(block as usize)
+        .and_then(|b| b.lines.get(inst as usize))
+    {
+        (*act).line.set(*line);
     }
-    let nregs = rt.funcs.borrow()[fid as usize].nregs as usize;
-    // Bit `r` of `fresh`: register `r`'s home was never written (the
-    // compiled code keeps it in a variable, or never touched it): nil.
-    for r in 0..nregs {
-        if (*fresh.add(r / 64) >> (r % 64)) & 1 != 0 {
-            std::ptr::write(regs.add(r), Value::Nil);
+    let flow = match kind {
+        crate::layout::RAISE_OVERFLOW => rt.err_overflow(),
+        crate::layout::RAISE_ZERO_DIVISION => {
+            rt.raise(rt.program.exc.zero_division, "divided by 0")
         }
-    }
-    let regs = std::slice::from_raw_parts_mut(regs, nregs);
-    match rt.run_func_from(fid, act, regs, block, inst as usize) {
-        Ok(v) => {
-            *out = v;
-            STATUS_OK
+        _ => {
+            let name = rt.funcs.borrow()[fid as usize].name.clone();
+            rt.err_type(&format!(
+                "internal error: a value not of its static type in {name} (b{block}.{inst})"
+            ))
         }
-        Err(flow) => rt.park_flow(flow),
-    }
+    };
+    rt.park_flow(flow)
 }
 
 /// `regs[dst] = self`.
