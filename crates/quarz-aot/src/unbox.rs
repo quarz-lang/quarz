@@ -25,21 +25,30 @@ pub enum State {
     Bool,
     Int,
     Float,
+    /// An object (any class): the boxed home is valid, and the address of
+    /// its allocation is also in a variable, so its fields are read
+    /// without a tag test or a load of the home.
+    Obj,
 }
 
 impl State {
     pub fn meet(self, other: State) -> State {
         if self == other {
             self
-        } else if self != State::Unknown && other != State::Unknown {
+        } else if !self.boxed() && !other.boxed() {
             State::NonHeap
         } else {
             State::Unknown
         }
     }
 
+    /// Whether the home holds the value, which may be on the heap.
+    pub fn boxed(self) -> bool {
+        matches!(self, State::Unknown | State::Obj)
+    }
+
     pub fn needs_release(self) -> bool {
-        self == State::Unknown
+        self.boxed()
     }
 }
 
@@ -316,12 +325,28 @@ pub fn transfer(
                 None => State::Unknown,
             };
         }
+        // The object is one after its field is read or written (or the
+        // instruction failed).
         Inst::FieldGet {
-            dst, class, index, ..
+            dst,
+            obj,
+            class,
+            index,
         } => {
+            if obj != dst {
+                st[*obj as usize] = State::Obj;
+            }
             st[*dst as usize] = match field_num(classes, *class, *index) {
                 Some(n) => num_state(n),
                 None => State::Unknown,
+            };
+        }
+        Inst::FieldSet { obj, .. } => st[*obj as usize] = State::Obj,
+        Inst::SelfRef { dst } => {
+            st[*dst as usize] = if self_is_object(f, methods, classes, builtin) {
+                State::Obj
+            } else {
+                State::Unknown
             };
         }
         Inst::LoadConst { dst, idx } => {
@@ -337,7 +362,7 @@ pub fn transfer(
         // The value moves; a boxed source is left nil.
         Inst::Take { dst, src } => {
             st[*dst as usize] = st[*src as usize];
-            if dst != src && st[*src as usize] == State::Unknown {
+            if dst != src && st[*src as usize].boxed() {
                 st[*src as usize] = State::NonHeap;
             }
         }
@@ -372,6 +397,41 @@ pub fn transfer(
                 st[r as usize] = State::Unknown;
             }
         }
+    }
+}
+
+/// Whether `self` in `f` is always an object: an instance method of a
+/// class whose instances are objects (a class of the program's own, or
+/// built on exceptions only, a `data` type, a variant), not of a module
+/// (its `self` is whatever includes it) or of a built-in value class.
+pub fn self_is_object(
+    f: &Function,
+    methods: &[RtMethod],
+    classes: &[RtClass],
+    builtin: &RtBuiltin,
+) -> bool {
+    let FuncKind::Method(mid) = f.kind else {
+        return false;
+    };
+    let Some(m) = methods.get(mid as usize) else {
+        return false;
+    };
+    if m.singleton || m.is_extension {
+        return false;
+    }
+    let Some(c) = classes.get(m.owner as usize) else {
+        return false;
+    };
+    match c.kind {
+        RtClassKind::Data | RtClassKind::Variant => true,
+        RtClassKind::Class => c.ancestors.iter().all(|&a| {
+            let ac = &classes[a as usize];
+            a == builtin.object
+                || ac.kind == RtClassKind::Module
+                || ac.is_exception
+                || (ac.file != 0 && ac.kind == RtClassKind::Class)
+        }),
+        _ => false,
     }
 }
 
@@ -425,16 +485,24 @@ pub fn analyze(
             for inst in &blk.insts {
                 transfer(inst, &mut st, f, methods, classes, builtin, typed);
             }
-            let targets: Vec<BlockId> = match &blk.term {
-                Term::Jump(t) => vec![*t],
-                Term::Branch { then, els, .. } => vec![*then, *els],
+            let targets: Vec<(BlockId, Option<Reg>)> = match &blk.term {
+                Term::Jump(t) => vec![(*t, None)],
+                Term::Branch { cond, then, els } => {
+                    vec![(*then, class_tested(blk, *cond)), (*els, None)]
+                }
                 _ => vec![],
             };
-            for t in targets {
+            for (t, obj) in targets {
+                // Past a class test that held, the register holds an
+                // object (the test read its allocation).
+                let mut out = st.clone();
+                if let Some(r) = obj {
+                    out[r as usize] = State::Obj;
+                }
                 let slot = &mut entry[t as usize];
                 let merged = match slot {
-                    None => st.clone(),
-                    Some(old) => old.iter().zip(&st).map(|(a, b)| a.meet(*b)).collect(),
+                    None => out,
+                    Some(old) => old.iter().zip(&out).map(|(a, b)| a.meet(*b)).collect(),
                 };
                 if slot.as_ref() != Some(&merged) {
                     *slot = Some(merged);
@@ -447,6 +515,25 @@ pub fn analyze(
         .into_iter()
         .map(|e| e.unwrap_or_else(|| vec![State::Unknown; nregs]))
         .collect()
+}
+
+/// The register a block's branch on `cond` tests the class of: `cond` is
+/// the result of the block's last `ClassIs`, and neither it nor the
+/// tested register is written after it.
+pub fn class_tested(blk: &Block, cond: Reg) -> Option<Reg> {
+    let (at, src) = blk
+        .insts
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(i, inst)| match inst {
+            Inst::ClassIs { dst, src, .. } if *dst == cond && dst != src => Some((i, *src)),
+            _ => None,
+        })?;
+    let rewritten = blk.insts[at + 1..]
+        .iter()
+        .any(|inst| inst.defs().iter().any(|d| *d == cond || *d == src));
+    (!rewritten).then_some(src)
 }
 
 /// The blocks of a typed entry that run before its frame is set up

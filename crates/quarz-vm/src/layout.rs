@@ -34,6 +34,11 @@ pub const HOT_TYPED_STATUS: usize = offset_of!(Interp, hot) + offset_of!(Hot, ty
 /// of an append to a builder is not read.
 pub const INTERP_RESULT_DEAD: u32 = 1 << 31;
 pub const CURRENT_TASK: usize = offset_of!(Interp, current_task_id);
+/// Where an object's fields start, from its allocation (after the counts
+/// and the header: see `value::Object`).
+pub const OBJECT_FIELDS_OFF: usize = size_of::<
+    crate::rc::Inner<crate::value::ObjectOf<std::cell::UnsafeCell<[crate::value::Value; 0]>>>,
+>();
 
 /// Everything above, folded into one number.
 pub const SIGNATURE: u64 = {
@@ -60,6 +65,7 @@ pub const SIGNATURE: u64 = {
         HOT_LIMIT_PTR,
         HOT_TYPED_STATUS,
         CURRENT_TASK,
+        OBJECT_FIELDS_OFF,
     ];
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     let mut i = 0;

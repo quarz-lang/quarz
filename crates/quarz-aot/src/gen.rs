@@ -180,6 +180,7 @@ pub(crate) fn gen_function<B: Builder>(
     let ivars: Vec<B::Var> = (0..nregs_usize).map(|_| b.declare_var(Ty::I64)).collect();
     let fvars: Vec<B::Var> = (0..nregs_usize).map(|_| b.declare_var(Ty::F64)).collect();
     let bvars: Vec<B::Var> = (0..nregs_usize).map(|_| b.declare_var(Ty::I8)).collect();
+    let pvars: Vec<B::Var> = (0..nregs_usize).map(|_| b.declare_var(Ty::Ptr)).collect();
     // Whether a lazily pushed activation has been built (see
     // `materialize`).
     let pushed_var = b.declare_var(Ty::I8);
@@ -296,7 +297,7 @@ pub(crate) fn gen_function<B: Builder>(
             live.first()
                 .and_then(|blk| blk.first())
                 .is_some_and(|l| l[i])
-                || entry_states.iter().any(|st| st[i] == State::Unknown)
+                || entry_states.iter().any(|st| st[i].boxed())
         })
         .collect();
     for blk in &f.blocks {
@@ -447,6 +448,7 @@ pub(crate) fn gen_function<B: Builder>(
         ivars,
         fvars,
         bvars,
+        pvars,
         pushed_var,
         lazy_act,
         callees_typed,
@@ -1056,6 +1058,8 @@ struct Gen<'a, B: Builder> {
     ivars: Vec<B::Var>,
     fvars: Vec<B::Var>,
     bvars: Vec<B::Var>,
+    /// The allocation of each register's object, when its state is `Obj`.
+    pvars: Vec<B::Var>,
     /// Whether a lazily pushed activation has been built.
     pushed_var: B::Var,
     lazy_act: bool,
@@ -1169,7 +1173,7 @@ impl<B: Builder> Gen<'_, B> {
     /// register; the rest is this backend's business), and this is its
     /// last read (QIR's answer, shared with the interpreter).
     fn movable(&self, _inst: &Inst, src: Reg, block: u32, index: u32) -> bool {
-        self.states[src as usize] == State::Unknown
+        self.states[src as usize].boxed()
             && self.last_reads[block as usize][index as usize].contains(&src)
     }
 
@@ -1226,7 +1230,7 @@ impl<B: Builder> Gen<'_, B> {
                     self.b.store(w, dst, k);
                 }
             }
-            State::Unknown => {
+            State::Unknown | State::Obj => {
                 let src_ptr = self.b.iadd_imm(self.regs, i64::from(reg_off(src)));
                 emit_clone_ptr(self.b, self.h.clone_ptr, dst, src_ptr);
             }
@@ -1496,11 +1500,14 @@ impl<B: Builder> Gen<'_, B> {
     /// The address of field `index` of the object in `obj` (whose tag is
     /// known to be an object's): the payload points at the allocation,
     /// the object's first word at the fields.
+    /// The address of field `index` of the object in `obj`: the fields
+    /// follow the object's header in its allocation.
     fn field_addr(&mut self, obj: Reg, index: u32) -> B::Value {
-        let rc = self.payload_ptr(obj);
-        let fields = self.b.load(Ty::Ptr, rc, OBJECT_FIELDS_PTR_OFF);
-        self.b
-            .iadd_imm(fields, i64::from(index) * i64::from(VALUE_SIZE))
+        let rc = self.obj_ptr(obj);
+        self.b.iadd_imm(
+            rc,
+            L::OBJECT_FIELDS_OFF as i64 + i64::from(index) * i64::from(VALUE_SIZE),
+        )
     }
 
     /// The address of `slot` in the frame `depth` levels up from this
@@ -1539,6 +1546,40 @@ impl<B: Builder> Gen<'_, B> {
 
     fn bvar(&self, r: Reg) -> B::Var {
         self.bvars[r as usize]
+    }
+
+    fn pvar(&self, r: Reg) -> B::Var {
+        self.pvars[r as usize]
+    }
+
+    /// The allocation of the object in `r` (whose tag is an object's).
+    fn obj_ptr(&mut self, r: Reg) -> B::Value {
+        if self.states[r as usize] == State::Obj {
+            self.b.use_var(self.pvar(r))
+        } else {
+            self.payload_ptr(r)
+        }
+    }
+
+    /// Go to `yes` when `r` holds an object, to `no` otherwise (no test
+    /// when it is known to).
+    fn branch_obj(&mut self, r: Reg, yes: B::Block, no: B::Block) {
+        if self.states[r as usize] == State::Obj {
+            self.b.jump(yes, &[]);
+        } else {
+            let tag = self.tag(r);
+            let is_obj = self.b.icmp_imm(IntCC::Equal, tag, TAG_OBJECT);
+            self.b.brif(is_obj, yes, &[], no, &[]);
+        }
+    }
+
+    /// `r` holds an object now: keep its allocation in its variable (when
+    /// it is not there already).
+    fn note_obj(&mut self, r: Reg) {
+        if self.states[r as usize] != State::Obj {
+            let p = self.payload_ptr(r);
+            self.b.def_var(self.pvar(r), p);
+        }
     }
 
     /// Update the states after an instruction, and pick up a Bool the
@@ -1592,7 +1633,7 @@ impl<B: Builder> Gen<'_, B> {
         // runtime writes for the registers whose bits are set.
         // (A live one was just written back or holds a boxed value; an
         // unknown one holds a value by construction.)
-        let fresh = self.masks(|g, r| !g.zeroed[r] && !live[r] && g.states[r] != State::Unknown);
+        let fresh = self.masks(|g, r| !g.zeroed[r] && !live[r] && !g.states[r].boxed());
         for (k, word) in fresh.into_iter().enumerate() {
             let w = self.b.iconst(Ty::I64, word);
             self.b.store(w, self.fresh_buf, 8 * k as i32);
@@ -1726,7 +1767,7 @@ impl<B: Builder> Gen<'_, B> {
                 // An I8, stored as the payload's first byte.
                 self.b.store(v, self.regs, reg_off(r) + 8);
             }
-            State::Unknown | State::NonHeap => {}
+            State::Unknown | State::NonHeap | State::Obj => {}
         }
     }
 
@@ -1779,7 +1820,7 @@ impl<B: Builder> Gen<'_, B> {
     /// its home; the others hold nothing to release, or were never
     /// written).
     fn set_valid(&mut self) {
-        let words = self.masks(|g, k| g.heap[k] && g.states[k] == State::Unknown);
+        let words = self.masks(|g, k| g.heap[k] && g.states[k].boxed());
         for (k, word) in words.into_iter().enumerate() {
             let v = self.b.iconst(Ty::I64, word);
             self.b.def_var(self.valid_vars[k], v);
@@ -2509,19 +2550,27 @@ impl<B: Builder> Gen<'_, B> {
                     }
                     // The last read of a boxed register: its value moves,
                     // nil left behind.
-                    State::Unknown if matches!(inst, Inst::Take { .. }) => {
-                        self.release(*dst);
-                        for k in [0, 8, 16] {
-                            let w = self.b.load(Ty::I64, self.regs, reg_off(*src) + k);
-                            self.b.store(w, self.regs, reg_off(*dst) + k);
+                    st @ (State::Unknown | State::Obj) => {
+                        // An object's allocation goes with it.
+                        let obj = (st == State::Obj).then(|| self.b.use_var(self.pvar(*src)));
+                        if matches!(inst, Inst::Take { .. }) {
+                            // The last read of a boxed register: its value
+                            // moves, nil left behind.
+                            self.release(*dst);
+                            for k in [0, 8, 16] {
+                                let w = self.b.load(Ty::I64, self.regs, reg_off(*src) + k);
+                                self.b.store(w, self.regs, reg_off(*dst) + k);
+                            }
+                            // (`unbox` then knows it for nil.)
+                            self.store_tag(*src, TAG_NIL);
+                            self.stale[*dst as usize] = false;
+                        } else {
+                            let s = self.b.iadd_imm(self.regs, i64::from(reg_off(*src)));
+                            self.clone_from(*dst, s);
                         }
-                        // (`unbox` then knows it for nil.)
-                        self.store_tag(*src, TAG_NIL);
-                        self.stale[*dst as usize] = false;
-                    }
-                    State::Unknown => {
-                        let s = self.b.iadd_imm(self.regs, i64::from(reg_off(*src)));
-                        self.clone_from(*dst, s);
+                        if let Some(p) = obj {
+                            self.b.def_var(self.pvar(*dst), p);
+                        }
                     }
                 }
             }
@@ -3033,6 +3082,14 @@ impl<B: Builder> Gen<'_, B> {
                     State::Int | State::Float | State::Bool | State::NonHeap => {
                         self.b.iconst(Ty::I8, 0)
                     }
+                    // An object: only its class to compare.
+                    State::Obj => {
+                        let rc = self.b.use_var(self.pvar(*src));
+                        let cid = self
+                            .b
+                            .uload32(rc, OBJECT_FIELDS_PTR_OFF + L::OBJECT_CLASS_OFF as i32);
+                        self.b.icmp_imm(IntCC::Equal, cid, i64::from(*class))
+                    }
                     State::Unknown => {
                         let check = self.b.create_block();
                         let join = self.b.create_block();
@@ -3043,6 +3100,11 @@ impl<B: Builder> Gen<'_, B> {
                         self.b.brif(is_obj, check, &[], join, &[no]);
                         self.b.switch_to_block(check);
                         let rc = self.payload_ptr(*src);
+                        // Where the test holds, an object (see
+                        // `unbox::class_tested`).
+                        if dst != src {
+                            self.b.def_var(self.pvar(*src), rc);
+                        }
                         let cid = self
                             .b
                             .uload32(rc, OBJECT_FIELDS_PTR_OFF + L::OBJECT_CLASS_OFF as i32);
@@ -3070,6 +3132,10 @@ impl<B: Builder> Gen<'_, B> {
                     None => self.b.load(Ty::Ptr, self.ptrs, 8),
                 };
                 self.clone_from(*dst, self_ptr);
+                if unbox::self_is_object(self.f, self.methods, self.classes, self.builtin) {
+                    let p = self.b.load(Ty::Ptr, self_ptr, 8);
+                    self.b.def_var(self.pvar(*dst), p);
+                }
             }
             Inst::Arg { dst, index: arg } if self.typed.is_some() => {
                 // A typed entry's parameter is already the machine value.
@@ -3178,13 +3244,12 @@ impl<B: Builder> Gen<'_, B> {
                 index: field,
                 class,
             } => {
-                // An object: read the field through the object's view.
+                // An object: read the field where it is (no test when the
+                // register is known to hold one).
                 let fast = self.b.create_block();
                 let slow = self.b.create_block();
                 let cont = self.b.create_block();
-                let tag = self.tag(*obj);
-                let is_obj = self.b.icmp_imm(IntCC::Equal, tag, TAG_OBJECT);
-                self.b.brif(is_obj, fast, &[], slow, &[]);
+                self.branch_obj(*obj, fast, slow);
                 let num = unbox::field_num(self.classes, *class, *field);
                 // The slow path first: a field declared Int/Float is
                 // checked once there (the compile-time state must still
@@ -3199,12 +3264,19 @@ impl<B: Builder> Gen<'_, B> {
                 let status = call[0];
                 self.check(status, unwind);
                 let before = self.states[*dst as usize];
+                if dst != obj {
+                    // It was an object after all.
+                    self.note_obj(*obj);
+                }
                 if let Some(n) = num {
                     self.get_num(*dst, n, block, index);
                 }
                 self.b.jump(cont, &[]);
                 self.states[*dst as usize] = before;
                 self.b.switch_to_block(fast);
+                if dst != obj {
+                    self.note_obj(*obj);
+                }
                 let addr = self.field_addr(*obj, *field);
                 match num {
                     // A Float field always holds a Float (the checker
@@ -3253,9 +3325,7 @@ impl<B: Builder> Gen<'_, B> {
                 let fast = self.b.create_block();
                 let slow = self.b.create_block();
                 let cont = self.b.create_block();
-                let tag = self.tag(*obj);
-                let is_obj = self.b.icmp_imm(IntCC::Equal, tag, TAG_OBJECT);
-                self.b.brif(is_obj, fast, &[], slow, &[]);
+                self.branch_obj(*obj, fast, slow);
                 self.b.switch_to_block(fast);
                 let field = self.field_addr(*obj, *field_index);
                 // An unboxed Float into a Float field, which holds a
@@ -3282,6 +3352,7 @@ impl<B: Builder> Gen<'_, B> {
                     self.check(call[0], unwind);
                     self.b.jump(cont, &[]);
                     self.b.switch_to_block(cont);
+                    self.note_obj(*obj);
                     return;
                 }
                 self.release_ptr(field);
@@ -3307,6 +3378,9 @@ impl<B: Builder> Gen<'_, B> {
                 }
                 self.b.jump(cont, &[]);
                 self.b.switch_to_block(cont);
+                if obj != src || !moving {
+                    self.note_obj(*obj);
+                }
                 if moving {
                     self.states[*src as usize] = State::NonHeap;
                 }
@@ -3417,9 +3491,7 @@ impl<B: Builder> Gen<'_, B> {
                         VarLoc::Frame { depth, slot } => self.frame_slot_addr(*depth, *slot, slow),
                         VarLoc::Field { obj, index } => {
                             let check = self.b.create_block();
-                            let tag = self.tag(*obj);
-                            let is_obj = self.b.icmp_imm(IntCC::Equal, tag, TAG_OBJECT);
-                            self.b.brif(is_obj, check, &[], slow, &[]);
+                            self.branch_obj(*obj, check, slow);
                             self.b.switch_to_block(check);
                             self.field_addr(*obj, *index)
                         }
@@ -3442,9 +3514,7 @@ impl<B: Builder> Gen<'_, B> {
                         VarLoc::Frame { depth, slot } => self.frame_slot_addr(*depth, *slot, slow),
                         VarLoc::Field { obj, index } => {
                             let check = self.b.create_block();
-                            let tag = self.tag(*obj);
-                            let is_obj = self.b.icmp_imm(IntCC::Equal, tag, TAG_OBJECT);
-                            self.b.brif(is_obj, check, &[], slow, &[]);
+                            self.branch_obj(*obj, check, slow);
                             self.b.switch_to_block(check);
                             self.field_addr(*obj, *index)
                         }
