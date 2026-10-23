@@ -45,14 +45,20 @@ struct InlineLevel {
     owner: SelfOwner,
     /// Its variables that live to the end of each pass of the body.
     lexical: Vec<Reg>,
+    /// The loops and `retry` targets around it (a pass runs its body
+    /// once, unless a loop inside it repeats some of it).
+    loops: usize,
+    retries: usize,
 }
 
 impl InlineLevel {
-    fn new(owner: SelfOwner) -> InlineLevel {
+    fn new(owner: SelfOwner, loops: usize, retries: usize) -> InlineLevel {
         InlineLevel {
             slot_regs: HashMap::default(),
             owner,
             lexical: Vec::new(),
+            loops,
+            retries,
         }
     }
 }
@@ -98,6 +104,8 @@ pub struct FnBuilder<'a> {
     /// Its variables that live to the end of the function (`Inst::Release`
     /// before it returns) rather than their last use.
     lexical: Vec<Reg>,
+    /// The lexical variables assigned so far (in lowering order).
+    assigned: HashSet<Reg>,
     /// Inside an `instance_exec` block lowered in place: the register
     /// holding the receiver, which `self` means here.
     self_override: Option<Reg>,
@@ -153,6 +161,7 @@ impl<'a> FnBuilder<'a> {
             inline: Vec::new(),
             owner: None,
             lexical: Vec::new(),
+            assigned: HashSet::default(),
             self_override: None,
             loops: Vec::new(),
             handlers: vec![Region {
@@ -799,10 +808,36 @@ impl<'a> FnBuilder<'a> {
 
     fn store_var(&mut self, r: VarRef, src: Reg) {
         match self.resolve(r) {
-            VarLoc::Reg(dst) => self.emit(Inst::Move { dst, src }),
+            VarLoc::Reg(dst) => {
+                // A lexical variable's old value ends here: released by
+                // its assignment, which reads it, so it is not moved out
+                // at an earlier last read (into a loop's copy, say).
+                if dst != src && self.may_hold_value(dst) {
+                    self.emit(Inst::Release { src: dst });
+                }
+                self.emit(Inst::Move { dst, src })
+            }
             VarLoc::Frame { depth, slot } => self.emit(Inst::FrameSet { depth, slot, src }),
             VarLoc::Field { .. } => unreachable!("a variable is never a field"),
         }
+    }
+
+    /// Whether the lexical variable `dst` may hold a value when assigned:
+    /// not on its first assignment, unless a loop or a `retry` inside its
+    /// scope may run it again (the variable of a block lowered in place
+    /// is nil at the start of each pass).
+    fn may_hold_value(&mut self, dst: Reg) -> bool {
+        let (own_level, loops, retries) = match self.inline.last() {
+            Some(level) => (level.lexical.contains(&dst), level.loops, level.retries),
+            None => (self.lexical.contains(&dst), 0, 0),
+        };
+        let lexical =
+            self.lexical.contains(&dst) || self.inline.iter().any(|l| l.lexical.contains(&dst));
+        if !lexical {
+            return false;
+        }
+        let first = self.assigned.insert(dst);
+        !(first && own_level && self.loops.len() == loops && self.retry_targets.len() == retries)
     }
 
     fn var_loc(&mut self, r: VarRef) -> VarLoc {
@@ -2068,7 +2103,12 @@ impl<'a> FnBuilder<'a> {
         let saved_override = self.self_override.replace(recv);
         let saved_class = self.class_id;
         self.class_id = recv_class;
-        self.inline.push(InlineLevel::new(SelfOwner::Block(e.id)));
+        let level = InlineLevel::new(
+            SelfOwner::Block(e.id),
+            self.loops.len(),
+            self.retry_targets.len(),
+        );
+        self.inline.push(level);
         for pi in 0..block.params.list.len() {
             let src = match args.get(pi) {
                 Some(r) => *r,
@@ -2278,7 +2318,12 @@ impl<'a> FnBuilder<'a> {
             Kind::Reduce => vec![acc.unwrap(), elem],
             _ => vec![elem],
         };
-        self.inline.push(InlineLevel::new(SelfOwner::Block(e.id)));
+        let level = InlineLevel::new(
+            SelfOwner::Block(e.id),
+            self.loops.len(),
+            self.retry_targets.len(),
+        );
+        self.inline.push(level);
         let nparams = block.map_or(0, |b| b.params.list.len());
         for pi in 0..nparams {
             let src = match yielded.get(pi) {

@@ -37,6 +37,18 @@ v = Res.new("first")
 v = Res.new("second")
 puts "reassigned to #{v.name}"
 
+# Reassigned after a loop over it: the old array goes at the assignment,
+# not at the end of the loop (which reads it last).
+def loop_then_reassign -> Nil
+  rs = [Res.new("looped")]
+  rs.each { |r| puts "in #{r.name}" }
+  puts "after the loop"
+  rs = []
+  puts "array reassigned #{rs.size}"
+  nil
+end
+loop_then_reassign
+
 # A statement's unused value, at the end of the statement.
 Res.new("temporary")
 puts "after the temporary"

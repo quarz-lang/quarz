@@ -13,15 +13,19 @@ deinitialize yielded 1
 in yielded 2
 deinitialize yielded 2
 after the loops
-reassigned to second
 deinitialize first
+reassigned to second
+in looped
+after the loop
+deinitialize looped
+array reassigned 0
 deinitialize temporary
 after the temporary
 made returned
 kept returned
 listed 1
-list emptied
 deinitialize in a list
+list emptied
 holding
 deinitialize held
 after the faulty one
