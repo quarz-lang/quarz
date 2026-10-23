@@ -103,7 +103,7 @@
 
 ## 10. その他(`require` で読み込む)
 
-`json`(`JSON.parse -> JSON::Value`。`Null | Boolean | Integer | BigInteger | Number | Text | List | Map` の enum で、`as_s`・`as_i?`・`[]` などのアクセサを持つ。`Int` に収まらない整数は `BigInteger` で、桁を失わずに持つ。`as_integer` はどの整数も `Integer` として返し、`as_i` は `BigInteger` では `OverflowError` を投げる。`JSON.generate`/`pretty_generate`、`to_json`)、`time`(何もしない。`Time` と `Duration` は組み込み)、`socket`(§9)。`Set` は組み込みで、require する `set` ライブラリはない。*予定*: `data` へ直接デコードする `JSON.decode[T](str)`、`Date`、`digest`、`base64`、`uri`、`net/http`、`csv`、`yaml`、`optparse`、`logger`、`test`(`Test::Unit` 風)、`benchmark`、`ffi`。
+`json`(`JSON.parse -> JSON::Value`。`Null | Bool | Number | String | Array | Object` の enum で(名前は Rust の serde_json に合わせている)、`as_s`・`as_i?`・`[]` などのアクセサを持つ。`Number` は `Int`、`Integer`(`Int` に収まらない整数を桁を失わずに)、`Float` のどれかを持ち、`as_i`・`as_integer`・`as_f` でその型として取り出す。`as_i` は収まらなければ `OverflowError` を投げる。`JSON.generate`/`pretty_generate`、`to_json`)、`time`(何もしない。`Time` と `Duration` は組み込み)、`socket`(§9)。`Set` は組み込みで、require する `set` ライブラリはない。*予定*: `data` へ直接デコードする `JSON.decode[T](str)`、`Date`、`digest`、`base64`、`uri`、`net/http`、`csv`、`yaml`、`optparse`、`logger`、`test`(`Test::Unit` 風)、`benchmark`、`ffi`。
 
 ## 11. Ruby の組み込みで提供しないもの
 

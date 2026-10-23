@@ -88,9 +88,9 @@ fn json() {
             "parse error: unexpected end of input at line 1 column 6\n",
             "parse error: nesting of 101 is too deep at line 1 column 101\n",
             "generator error: NaN not allowed in JSON\n",
-            "type error: not a JSON number: JSON::Value::Text(value: \"quarz\")\n",
+            "type error: not a JSON number: JSON::Value::String(value: \"quarz\")\n",
             "1234567890123456789\n12345678901234567890\n\"[12345678901234567890]\"\n-1500.0\n\"a\\tb\"\ntrue\n",
-            "JSON::Value::List(items: [JSON::Value::Integer(value: 1), JSON::Value::Null])\n",
+            "JSON::Value::Array(items: [JSON::Value::Number(value: 1), JSON::Value::Null])\n",
             "\"0.1.0\"\n",
         )
     );

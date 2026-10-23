@@ -46,12 +46,10 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
 struct Classes {
     null: ClassId,
     boolean: ClassId,
-    integer: ClassId,
-    big_integer: ClassId,
     number: ClassId,
-    text: ClassId,
-    list: ClassId,
-    map: ClassId,
+    string: ClassId,
+    array: ClassId,
+    object: ClassId,
     parse_error: ClassId,
     generator_error: ClassId,
 }
@@ -78,13 +76,11 @@ fn classes(interp: &Interp) -> Result<Classes, Flow> {
     };
     Ok(Classes {
         null: variant("Null")?,
-        boolean: variant("Boolean")?,
-        integer: variant("Integer")?,
-        big_integer: variant("BigInteger")?,
+        boolean: variant("Bool")?,
         number: variant("Number")?,
-        text: variant("Text")?,
-        list: variant("List")?,
-        map: variant("Map")?,
+        string: variant("String")?,
+        array: variant("Array")?,
+        object: variant("Object")?,
         parse_error: member("ParseError")?,
         generator_error: member("GeneratorError")?,
     })
@@ -146,7 +142,7 @@ impl Parser<'_> {
         match self.peek() {
             Some(b'{') => self.object(),
             Some(b'[') => self.array(),
-            Some(b'"') => Ok(variant(self.classes.text, Value::string(self.string()?))),
+            Some(b'"') => Ok(variant(self.classes.string, Value::string(self.string()?))),
             Some(b't') => {
                 self.expect_word("true")?;
                 Ok(variant(self.classes.boolean, Value::Bool(true)))
@@ -182,7 +178,7 @@ impl Parser<'_> {
             self.pos += 1;
             self.depth -= 1;
             return Ok(variant(
-                self.classes.map,
+                self.classes.object,
                 Value::Hash(Rc::new(crate::value::HashData::from(members))),
             ));
         }
@@ -213,7 +209,7 @@ impl Parser<'_> {
         }
         self.depth -= 1;
         Ok(variant(
-            self.classes.map,
+            self.classes.object,
             Value::Hash(Rc::new(crate::value::HashData::from(members))),
         ))
     }
@@ -226,7 +222,7 @@ impl Parser<'_> {
         if self.peek() == Some(b']') {
             self.pos += 1;
             self.depth -= 1;
-            return Ok(variant(self.classes.list, Value::array(items)));
+            return Ok(variant(self.classes.array, Value::array(items)));
         }
         loop {
             self.skip_ws();
@@ -243,7 +239,7 @@ impl Parser<'_> {
             }
         }
         self.depth -= 1;
-        Ok(variant(self.classes.list, Value::array(items)))
+        Ok(variant(self.classes.array, Value::array(items)))
     }
 
     fn number(&mut self) -> EvalResult {
@@ -290,11 +286,11 @@ impl Parser<'_> {
             let f: f64 = text.parse().map_err(|_| self.error("invalid number"))?;
             Ok(variant(self.classes.number, Value::Float(f)))
         } else {
-            // An integer too large for an `Int` is kept exact.
+            // An integer: an `Int`, or an `Integer` (exact) when too large.
             match text.parse::<i64>() {
-                Ok(i) => Ok(variant(self.classes.integer, Value::Int(i))),
+                Ok(i) => Ok(variant(self.classes.number, Value::Int(i))),
                 Err(_) => Ok(variant(
-                    self.classes.big_integer,
+                    self.classes.number,
                     crate::interp::parse_integer(text, 10),
                 )),
             }

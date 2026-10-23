@@ -58,7 +58,7 @@ true
 "sent back"
 "a long message crossing the channel"
 "{\"k\":\"v\",\"key\":\"this string is longer than fifteen bytes\"}"
-JSON::Value::Map(members: {"a" => JSON::Value::Text(value: "b")})
+JSON::Value::Object(members: {"a" => JSON::Value::String(value: "b")})
 "\"abc\""
 "\"a\\nb\""
 ""

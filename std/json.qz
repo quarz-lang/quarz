@@ -5,7 +5,7 @@
 #   doc["name"].as_s                 # => "quarz"
 #   doc["tags"][1].as_s              # => "vm"
 #   case doc
-#   in JSON::Value::Map(members:) then members.keys
+#   in JSON::Value::Object(members:) then members.keys
 #   else []
 #   end
 #   JSON.generate({ a: 1, b: [true, nil] })   # => '{"a":1,"b":[true,null]}'
@@ -23,159 +23,154 @@ module JSON
   class GeneratorError < StandardError
   end
 
-  # A parsed JSON document. Integral numbers are `Integer` (an `Int`), or
-  # `BigInteger` when too large for an `Int` (an `::Integer`, exact), the
-  # others `Number`.
+  # A parsed JSON document, its variants named as Rust's serde_json
+  # names them. A `Number` holds any number: an `Int`, an `Integer` when
+  # too large for an `Int` (kept exact), or a `Float` when it has a
+  # fraction or an exponent. Inside the enum the names are the variants:
+  # the types are `::Bool`, `::String` and so on.
   enum Value
     variant Null
-    variant Boolean(value: Bool)
-    variant Integer(value: Int)
-    variant BigInteger(value: ::Integer)
-    variant Number(value: Float)
-    variant Text(value: String)
-    variant List(items: Array[Value])
-    variant Map(members: Hash[String, Value])
+    variant Bool(value: ::Bool)
+    variant Number(value: ::Int | ::Integer | ::Float)
+    variant String(value: ::String)
+    variant Array(items: ::Array[Value])
+    variant Object(members: ::Hash[::String, Value])
 
-    def null? -> Bool
+    def null? -> ::Bool
       case self
       in Null then true
       else false
       end
     end
 
-    def boolean? -> Bool
+    def bool? -> ::Bool
       case self
-      in Boolean then true
+      in Bool then true
       else false
       end
     end
 
-    def number? -> Bool
+    def number? -> ::Bool
       case self
-      in Integer | BigInteger | Number then true
+      in Number then true
       else false
       end
     end
 
-    def text? -> Bool
+    def string? -> ::Bool
       case self
-      in Text then true
+      in String then true
       else false
       end
     end
 
-    def list? -> Bool
+    def array? -> ::Bool
       case self
-      in List then true
+      in Array then true
       else false
       end
     end
 
-    def map? -> Bool
+    def object? -> ::Bool
       case self
-      in Map then true
+      in Object then true
       else false
       end
     end
 
     # Member of an object; raises `KeyError` when missing and `TypeError`
-    # on anything but a `Map`.
-    def [](key: String) -> Value
+    # on anything but an `Object`.
+    def [](key: ::String) -> Value
       case self
-      in Map(members:) then members[key]
+      in Object(members:) then members[key]
       else raise TypeError, "not a JSON object: #{inspect}"
       end
     end
 
     # Element of an array; raises `IndexError` when out of range.
-    def [](index: Int) -> Value
+    def [](index: ::Int) -> Value
       case self
-      in List(items:) then items[index]
+      in Array(items:) then items[index]
       else raise TypeError, "not a JSON array: #{inspect}"
       end
     end
 
-    def []?(key: String) -> Value?
+    def []?(key: ::String) -> Value?
       case self
-      in Map(members:) then members[key]?
+      in Object(members:) then members[key]?
       else nil
       end
     end
 
-    def []?(index: Int) -> Value?
+    def []?(index: ::Int) -> Value?
       case self
-      in List(items:) then items[index]?
+      in Array(items:) then items[index]?
       else nil
       end
     end
 
-    def as_bool -> Bool
+    def as_bool -> ::Bool
       case self
-      in Boolean(value:) then value
+      in Bool(value:) then value
       else raise TypeError, "not a JSON boolean: #{inspect}"
       end
     end
 
-    def as_i -> Int
+    # The number as an `Int` (a `Float` truncated); `OverflowError` when
+    # it does not fit.
+    def as_i -> ::Int
       case self
-      in Integer(value:) then value
-      in BigInteger(value:) then value.to_i
       in Number(value:) then value.to_i
       else raise TypeError, "not a JSON number: #{inspect}"
       end
     end
 
-    # The integer, exact whatever its size (a `Number`'s truncated).
+    # The number as an `Integer`, exact whatever its size (a `Float`
+    # truncated).
     def as_integer -> ::Integer
       case self
-      in Integer(value:) then value.to_integer
-      in BigInteger(value:) then value
-      in Number(value:) then value.to_i.to_integer
+      in Number(value:) then JSON.integer_of(value)
       else raise TypeError, "not a JSON number: #{inspect}"
       end
     end
 
-    def as_f -> Float
+    def as_f -> ::Float
       case self
-      in Integer(value:) then value.to_f
-      in BigInteger(value:) then value.to_f
-      in Number(value:) then value
+      in Number(value:) then value.to_f
       else raise TypeError, "not a JSON number: #{inspect}"
       end
     end
 
-    def as_s -> String
+    def as_s -> ::String
       case self
-      in Text(value:) then value
+      in String(value:) then value
       else raise TypeError, "not a JSON string: #{inspect}"
       end
     end
 
-    def as_a -> Array[Value]
+    def as_a -> ::Array[Value]
       case self
-      in List(items:) then items
+      in Array(items:) then items
       else raise TypeError, "not a JSON array: #{inspect}"
       end
     end
 
-    def as_h -> Hash[String, Value]
+    def as_h -> ::Hash[::String, Value]
       case self
-      in Map(members:) then members
+      in Object(members:) then members
       else raise TypeError, "not a JSON object: #{inspect}"
       end
     end
 
-    def as_bool? -> Bool?
+    def as_bool? -> ::Bool?
       case self
-      in Boolean(value:) then value
+      in Bool(value:) then value
       else nil
       end
     end
 
-    def as_i? -> Int?
+    def as_i? -> ::Int?
       case self
-      in Integer(value:) then value
-      in BigInteger(value:) then value.to_i
       in Number(value:) then value.to_i
       else nil
       end
@@ -183,55 +178,60 @@ module JSON
 
     def as_integer? -> ::Integer?
       case self
-      in Integer(value:) then value.to_integer
-      in BigInteger(value:) then value
-      in Number(value:) then value.to_i.to_integer
+      in Number(value:) then JSON.integer_of(value)
       else nil
       end
     end
 
-    def as_f? -> Float?
+    def as_f? -> ::Float?
       case self
-      in Integer(value:) then value.to_f
-      in BigInteger(value:) then value.to_f
-      in Number(value:) then value
+      in Number(value:) then value.to_f
       else nil
       end
     end
 
-    def as_s? -> String?
+    def as_s? -> ::String?
       case self
-      in Text(value:) then value
+      in String(value:) then value
       else nil
       end
     end
 
-    def as_a? -> Array[Value]?
+    def as_a? -> ::Array[Value]?
       case self
-      in List(items:) then items
+      in Array(items:) then items
       else nil
       end
     end
 
-    def as_h? -> Hash[String, Value]?
+    def as_h? -> ::Hash[::String, Value]?
       case self
-      in Map(members:) then members
+      in Object(members:) then members
       else nil
       end
     end
 
     # Number of elements or members.
-    def size -> Int
+    def size -> ::Int
       case self
-      in List(items:) then items.size
-      in Map(members:) then members.size
+      in Array(items:) then items.size
+      in Object(members:) then members.size
       else raise TypeError, "not a JSON array or object: #{inspect}"
       end
     end
 
-    def to_json -> String = JSON.generate(self)
+    def to_json -> ::String = JSON.generate(self)
 
-    def to_s -> String = to_json
+    def to_s -> ::String = to_json
+  end
+
+  # A JSON number as an `Integer` (a `Float` truncated).
+  def self.integer_of(n: Int | Integer | Float) -> Integer
+    case n
+    in Int then n.to_integer
+    in Integer then n
+    in Float then n.to_i.to_integer
+    end
   end
 
   # Parse a document; raises `JSON::ParseError` on malformed input.
