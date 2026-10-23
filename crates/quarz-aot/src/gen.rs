@@ -545,10 +545,7 @@ pub(crate) fn gen_function<B: Builder>(
         }
         let fast_return = matches!(&blk.term, Term::Return(r)
         if g.typed_fast_exit.is_some()
-            && matches!(
-                (g.states[*r as usize], g.typed.as_ref().map(|t| t.ret)),
-                (State::Int, Some(Num::Int)) | (State::Float, Some(Num::Float))
-            ));
+            && g.typed.as_ref().is_some_and(|t| t.ret.held(g.states[*r as usize])));
         match &blk.term {
             Term::Jump(t) => g.flush_for_edge(&entry_states[*t as usize], at_term),
             Term::Branch { then, els, .. } => {
@@ -576,15 +573,20 @@ pub(crate) fn gen_function<B: Builder>(
             }
             Term::Return(r)
                 if g.typed_fast_exit.is_some()
-                    && matches!(
-                        (g.states[*r as usize], g.typed.as_ref().map(|t| t.ret)),
-                        (State::Int, Some(Num::Int)) | (State::Float, Some(Num::Float))
-                    ) =>
+                    && g.typed
+                        .as_ref()
+                        .is_some_and(|t| t.ret.held(g.states[*r as usize])) =>
             {
                 // A typed entry returning a value of its declared
                 // type: the bits go straight back.
-                let bits = match g.states[*r as usize] {
-                    State::Int => g.b.use_var(g.ivar(*r)),
+                let ret = g.typed.as_ref().map(|t| t.ret);
+                let bits = match (ret, g.states[*r as usize]) {
+                    (Some(unbox::Mach::Nil), _) => g.b.iconst(Ty::I64, 0),
+                    (_, State::Int) => g.b.use_var(g.ivar(*r)),
+                    (_, State::Bool) => {
+                        let v = g.b.use_var(g.bvar(*r));
+                        g.b.uextend(Ty::I64, v)
+                    }
                     _ => {
                         let v = g.b.use_var(g.fvar(*r));
                         g.b.bitcast(Ty::I64, v)
@@ -737,16 +739,17 @@ pub(crate) fn gen_function<B: Builder>(
         emit_typed_fail(b, rt, status);
         b.switch_to_block(fits_b);
         let tag = b.load(Ty::I64, out, 0);
-        let want = match sig.ret {
-            Num::Int => TAG_INT,
-            Num::Float => TAG_FLOAT,
-        };
-        let is = b.icmp_imm(IntCC::Equal, tag, want);
+        let is = b.icmp_imm(IntCC::Equal, tag, mach_tag(sig.ret));
         let unboxed_b = b.create_block();
         let boxed_b = b.create_block();
         b.brif(is, unboxed_b, &[], boxed_b, &[]);
         b.switch_to_block(unboxed_b);
-        let bits = b.load(Ty::I64, out, 8);
+        let bits = match sig.ret {
+            unbox::Mach::Nil => b.iconst(Ty::I64, 0),
+            // A Bool is the payload's first byte.
+            unbox::Mach::Bool => b.uload8(out, 8),
+            _ => b.load(Ty::I64, out, 8),
+        };
         b.return_(&[bits]);
         b.switch_to_block(boxed_b);
         for k in [0, 8, 16] {
@@ -755,6 +758,16 @@ pub(crate) fn gen_function<B: Builder>(
         }
         let boxed_v = b.iconst(Ty::I32, STATUS_BOXED);
         emit_typed_fail(b, rt, boxed_v);
+    }
+}
+
+/// The tag of a boxed value of a typed entry's parameter or result type.
+fn mach_tag(m: unbox::Mach) -> i64 {
+    match m {
+        unbox::Mach::Int => TAG_INT,
+        unbox::Mach::Float => TAG_FLOAT,
+        unbox::Mach::Bool => TAG_BOOL,
+        unbox::Mach::Nil => TAG_NIL,
     }
 }
 
@@ -1764,6 +1777,34 @@ impl<B: Builder> Gen<'_, B> {
         }
     }
 
+    /// The result of a typed call in `r`'s home, put in its variable as
+    /// `get_num` does (a Bool after a tag check, nil as it is).
+    fn get_mach(&mut self, r: Reg, m: unbox::Mach, block: u32, index: u32) {
+        match m {
+            unbox::Mach::Int => {
+                self.get_num(r, Num::Int, block, index);
+            }
+            unbox::Mach::Float => {
+                self.get_num(r, Num::Float, block, index);
+            }
+            unbox::Mach::Bool => {
+                let tag = self.tag(r);
+                let is = self.b.icmp_imm(IntCC::Equal, tag, TAG_BOOL);
+                let ok = self.b.create_block();
+                let bad = self.b.create_block();
+                self.b.brif(is, ok, &[], bad, &[]);
+                self.b.switch_to_block(bad);
+                self.deopt(block, index);
+                self.b.switch_to_block(ok);
+                let v = self.b.load(Ty::I8, self.regs, reg_off(r) + 8);
+                self.b.def_var(self.bvar(r), v);
+                self.states[r as usize] = State::Bool;
+            }
+            // (A method declared to return Nil returns nil.)
+            unbox::Mach::Nil => self.states[r as usize] = State::NonHeap,
+        }
+    }
+
     /// `regs[dst] = Int(v)`: the variable, and the boxed home.
     /// `regs[dst] = Int(v)`, in the variable only: the home is written
     /// when something reads it (`flush`). A home that may hold a heap
@@ -2257,16 +2298,13 @@ impl<B: Builder> Gen<'_, B> {
         // Every argument of the declared type?
         let mut ok: Option<B::Value> = None;
         for (r, n) in args.iter().zip(&sig.params) {
-            let fine = match (self.states[*r as usize], n) {
-                (State::Int, Num::Int) | (State::Float, Num::Float) => continue,
-                (State::Int | State::Float | State::Bool, _) => self.b.iconst(Ty::I8, 0),
+            let st = self.states[*r as usize];
+            let fine = match st {
+                _ if n.held(st) => continue,
+                State::Int | State::Float | State::Bool => self.b.iconst(Ty::I8, 0),
                 _ => {
                     let tag = self.tag(*r);
-                    let want = match n {
-                        Num::Int => TAG_INT,
-                        Num::Float => TAG_FLOAT,
-                    };
-                    self.b.icmp_imm(IntCC::Equal, tag, want)
+                    self.b.icmp_imm(IntCC::Equal, tag, mach_tag(*n))
                 }
             };
             ok = Some(match ok {
@@ -2294,13 +2332,18 @@ impl<B: Builder> Gen<'_, B> {
         let mut call_args = vec![self.rt, self.act, self_ptr];
         for (r, n) in args.iter().zip(&sig.params) {
             let v = match (self.states[*r as usize], n) {
-                (State::Int, Num::Int) => self.b.use_var(self.ivar(*r)),
-                (State::Float, Num::Float) => self.b.use_var(self.fvar(*r)),
-                (_, Num::Int) => self.payload(*r),
-                (_, Num::Float) => {
+                (State::Int, unbox::Mach::Int) => self.b.use_var(self.ivar(*r)),
+                (State::Float, unbox::Mach::Float) => self.b.use_var(self.fvar(*r)),
+                (State::Bool, unbox::Mach::Bool) => self.b.use_var(self.bvar(*r)),
+                (_, unbox::Mach::Float) => {
                     let p = self.payload(*r);
                     self.b.bitcast(Ty::F64, p)
                 }
+                (_, unbox::Mach::Bool) => {
+                    self.ensure_home(*r);
+                    self.b.load(Ty::I8, self.regs, reg_off(*r) + 8)
+                }
+                _ => self.payload(*r),
             };
             call_args.push(v);
         }
@@ -2319,10 +2362,19 @@ impl<B: Builder> Gen<'_, B> {
         self.b.brif(is_ok, ok_b, &[], not_ok_b, &[]);
         self.b.switch_to_block(ok_b);
         match sig.ret {
-            Num::Int => self.store_int(dst, bits),
-            Num::Float => {
+            unbox::Mach::Int => self.store_int(dst, bits),
+            unbox::Mach::Float => {
                 let v = self.b.bitcast(Ty::F64, bits);
                 self.store_float(dst, v);
+            }
+            unbox::Mach::Bool => {
+                let v = self.b.ireduce(Ty::I8, bits);
+                self.store_bool(dst, v);
+            }
+            unbox::Mach::Nil => {
+                self.release(dst);
+                self.store_tag(dst, TAG_NIL);
+                self.states[dst as usize] = State::NonHeap;
             }
         }
         self.b.jump(cont, &[]);
@@ -2343,7 +2395,7 @@ impl<B: Builder> Gen<'_, B> {
         }
         self.b.store(zero, self.out_buf, 0);
         self.states[dst as usize] = State::Unknown;
-        self.get_num(dst, sig.ret, block, index + 1);
+        self.get_mach(dst, sig.ret, block, index + 1);
         self.b.jump(cont, &[]);
         // The boxed protocol (through the runtime: this path is rare and
         // the inline one is long), then the result checked into the
@@ -2358,11 +2410,11 @@ impl<B: Builder> Gen<'_, B> {
         let _ = (inst, callee);
         self.runtime_call(mid, recv, args, None, dst, unwind);
         self.states[dst as usize] = State::Unknown;
-        self.get_num(dst, sig.ret, block, index + 1);
+        self.get_mach(dst, sig.ret, block, index + 1);
         self.b.jump(cont, &[]);
         self.b.switch_to_block(cont);
         self.states.clone_from(&saved);
-        self.states[dst as usize] = unbox::num_state(sig.ret);
+        self.states[dst as usize] = sig.ret.state();
     }
 
     /// A call through `qz_call_static`: the argument registers' indices
@@ -2445,7 +2497,7 @@ impl<B: Builder> Gen<'_, B> {
             self.b.switch_to_block(fill);
         }
         emit_clone_ptr(self.b, self.h.clone_ptr, self_dst, self_ptr);
-        let params: Vec<(B::Value, Num)> = self
+        let params: Vec<(B::Value, unbox::Mach)> = self
             .typed_params
             .iter()
             .copied()
@@ -2460,12 +2512,11 @@ impl<B: Builder> Gen<'_, B> {
             let p = self
                 .b
                 .iadd_imm(params_buf, (k as i64) * i64::from(VALUE_SIZE));
-            let (tag, word) = match n {
-                Num::Int => (self.b.iconst(Ty::I64, TAG_INT), v),
-                Num::Float => (
-                    self.b.iconst(Ty::I64, TAG_FLOAT),
-                    self.b.bitcast(Ty::I64, v),
-                ),
+            let tag = self.b.iconst(Ty::I64, mach_tag(n));
+            let word = match n {
+                unbox::Mach::Float => self.b.bitcast(Ty::I64, v),
+                unbox::Mach::Bool => self.b.uextend(Ty::I64, v),
+                _ => v,
             };
             self.b.store(tag, p, 0);
             self.b.store(word, p, 8);
@@ -3200,7 +3251,8 @@ impl<B: Builder> Gen<'_, B> {
                 // A typed entry's parameter is already the machine value.
                 let v = self.typed_params[*arg as usize];
                 match self.typed.as_ref().map(|t| t.params[*arg as usize]) {
-                    Some(Num::Float) => self.store_float(*dst, v),
+                    Some(unbox::Mach::Float) => self.store_float(*dst, v),
+                    Some(unbox::Mach::Bool) => self.store_bool(*dst, v),
                     _ => self.store_int(*dst, v),
                 }
             }
@@ -3252,6 +3304,9 @@ impl<B: Builder> Gen<'_, B> {
                 // A parameter declared Int/Float: check once, then unboxed.
                 // A failed check hands over after this instruction: the
                 // value is in the home, and may have left the area.
+                if unbox::param_bool(self.f, self.methods, *arg) {
+                    self.get_mach(*dst, unbox::Mach::Bool, block, index + 1);
+                }
                 if let Some(n) = unbox::param_num(self.f, self.methods, *arg) {
                     self.get_num(*dst, n, block, index + 1);
                 }

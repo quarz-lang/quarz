@@ -14,7 +14,7 @@ use quarz_vm::layout as L;
 
 use crate::builder::{Builder, FloatCC, IntCC, Ty};
 use crate::gen::{self, Helpers};
-use crate::unbox::{self, Num};
+use crate::unbox;
 
 /// A declared function: its name and signature.
 struct FnDecl {
@@ -938,8 +938,9 @@ fn typed_signature(sig: &unbox::TypedSig) -> (Vec<Ty>, Vec<Ty>) {
     let mut params = vec![Ty::Ptr, Ty::Ptr, Ty::Ptr];
     for p in &sig.params {
         params.push(match p {
-            Num::Int => Ty::I64,
-            Num::Float => Ty::F64,
+            unbox::Mach::Float => Ty::F64,
+            unbox::Mach::Bool => Ty::I8,
+            _ => Ty::I64,
         });
     }
     params.push(Ty::Ptr);

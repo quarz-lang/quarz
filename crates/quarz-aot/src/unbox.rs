@@ -150,18 +150,62 @@ pub fn may_unwind(inst: &Inst) -> bool {
 pub use quarz_ir::live::liveness;
 use quarz_ir::live::successors;
 
+/// A typed entry's parameter or result type, passed as a machine value:
+/// an `Int` or a `Float` as a word, a `Bool` as a byte, and `Nil` (a
+/// result only) as nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mach {
+    Int,
+    Float,
+    Bool,
+    Nil,
+}
+
+impl Mach {
+    pub fn of(ty: Option<&str>) -> Option<Mach> {
+        match ty {
+            Some("Int") => Some(Mach::Int),
+            Some("Float") => Some(Mach::Float),
+            Some("Bool") => Some(Mach::Bool),
+            Some("Nil") => Some(Mach::Nil),
+            _ => None,
+        }
+    }
+
+    /// The state of a register holding a value of the type.
+    pub fn state(self) -> State {
+        match self {
+            Mach::Int => State::Int,
+            Mach::Float => State::Float,
+            Mach::Bool => State::Bool,
+            Mach::Nil => State::NonHeap,
+        }
+    }
+
+    /// Whether a register in state `st` holds a value of the type in its
+    /// variable (a `Nil` result is nil whatever the register's state:
+    /// the checker sees to it).
+    pub fn held(self, st: State) -> bool {
+        matches!(
+            (self, st),
+            (Mach::Int, State::Int) | (Mach::Float, State::Float) | (Mach::Bool, State::Bool)
+        ) || self == Mach::Nil
+    }
+}
+
 /// The shape of a function's typed entry: parameters and result passed
 /// as machine values (see `Gen::typed`).
 #[derive(Clone, Debug)]
 pub struct TypedSig {
-    pub params: Vec<Num>,
-    pub ret: Num,
+    pub params: Vec<Mach>,
+    pub ret: Mach,
 }
 
 /// The functions that get a typed entry, by id: a method whose
-/// positional, non-defaulted parameters (at most six) and result are
-/// all declared `Int`/`Float`, with no block, no frame of its own and
-/// nothing in the body that reads the argument list.
+/// positional, non-defaulted parameters (at most six) are all declared
+/// `Int`, `Float` or `Bool`, and its result one of those or `Nil`, with
+/// no block, no frame of its own and nothing in the body that reads the
+/// argument list.
 pub fn typed_sigs(functions: &[Function], methods: &[RtMethod]) -> Vec<Option<TypedSig>> {
     functions
         .iter()
@@ -181,18 +225,18 @@ pub fn typed_sigs(functions: &[Function], methods: &[RtMethod]) -> Vec<Option<Ty
             {
                 return None;
             }
-            let params: Vec<Num> = m
+            let params: Vec<Mach> = m
                 .params
                 .iter()
                 .map(|p| {
                     if p.kind == RtParamKind::Positional && !p.has_default {
-                        num_of(p.ty.as_deref())
+                        Mach::of(p.ty.as_deref()).filter(|t| *t != Mach::Nil)
                     } else {
                         None
                     }
                 })
                 .collect::<Option<_>>()?;
-            let ret = num_of(m.ret.as_deref())?;
+            let ret = Mach::of(m.ret.as_deref())?;
             let plain = f.blocks.iter().all(|b| {
                 b.insts.iter().all(|i| {
                     !matches!(
@@ -214,7 +258,7 @@ pub fn typed_sigs(functions: &[Function], methods: &[RtMethod]) -> Vec<Option<Ty
 
 /// The result type of a call that goes through a typed entry: a direct
 /// call (bound to one body) of a function that has one.
-pub fn call_num(inst: &Inst, methods: &[RtMethod], typed: &[Option<TypedSig>]) -> Option<Num> {
+pub fn call_num(inst: &Inst, methods: &[RtMethod], typed: &[Option<TypedSig>]) -> Option<Mach> {
     let Inst::Call {
         kind: CallKind::Method(mid),
         args,
@@ -277,6 +321,21 @@ pub fn param_num(f: &Function, methods: &[RtMethod], index: u32) -> Option<Num> 
     num_of(p.ty.as_deref())
 }
 
+/// Whether a method's parameter `index` is a positional, non-defaulted
+/// one declared `Bool`: read into its variable once (as a typed entry
+/// receives it).
+pub fn param_bool(f: &Function, methods: &[RtMethod], index: u32) -> bool {
+    let FuncKind::Method(mid) = f.kind else {
+        return false;
+    };
+    methods
+        .get(mid as usize)
+        .and_then(|m| m.params.get(index as usize))
+        .is_some_and(|p| {
+            p.kind == RtParamKind::Positional && !p.has_default && p.ty.as_deref() == Some("Bool")
+        })
+}
+
 /// The declared type of a field, when it is Int or Float.
 pub fn field_num(classes: &[RtClass], class: ClassId, index: u32) -> Option<Num> {
     let field = classes.get(class as usize)?.fields.get(index as usize)?;
@@ -306,7 +365,7 @@ pub fn transfer(
         // A call through a typed entry leaves its result unboxed (the
         // caller falls back to the interpreter when it does not fit).
         Inst::Call { dst, .. } if call_num(inst, methods, typed).is_some() => {
-            st[*dst as usize] = num_state(call_num(inst, methods, typed).unwrap_or(Num::Int));
+            st[*dst as usize] = call_num(inst, methods, typed).map_or(State::Unknown, Mach::state);
         }
         Inst::Call { dst, .. } if int_to_f(inst, methods, st).is_some() => {
             st[*dst as usize] = State::Float;
@@ -322,6 +381,7 @@ pub fn transfer(
         Inst::Arg { dst, index } => {
             st[*dst as usize] = match param_num(f, methods, *index) {
                 Some(n) => num_state(n),
+                None if param_bool(f, methods, *index) => State::Bool,
                 None => State::Unknown,
             };
         }
@@ -574,10 +634,8 @@ pub fn pure_region(
                     matches!(st[*cond as usize], State::Bool | State::Int | State::Float)
                 }
                 Term::Return(r) => {
-                    matches!(
-                        (st[*r as usize], sig.ret),
-                        (State::Int, Num::Int) | (State::Float, Num::Float)
-                    ) && (0..st.len()).all(|k| !heap[k] || !st[k].needs_release())
+                    sig.ret.held(st[*r as usize])
+                        && (0..st.len()).all(|k| !heap[k] || !st[k].needs_release())
                 }
                 _ => false,
             }
