@@ -1,0 +1,98 @@
+# Fields declared Int, Float or Bool are stored as machine words; what a
+# word cannot hold (a big integer, the smallest Int, nil before the
+# field is assigned) is kept aside. Every way of reading and writing a
+# field must see the same values.
+require "json"
+
+class Cell
+  var @n: Int
+  var @x: Float
+  var @on: Bool
+  var @tag: String
+  attr_reader :n, :x, :on
+  def initialize(@n: Int, @x: Float, @on: Bool, @tag: String); end
+  def set(n: Int, x: Float, on: Bool) -> Nil
+    @n = n
+    @x = x
+    @on = on
+    nil
+  end
+  def grow -> Nil
+    @n = @n * 4611686018427387904
+    nil
+  end
+  def to_s -> String = "#{@tag}(#{@n}, #{@x}, #{@on})"
+end
+
+c = Cell.new(1, 2.5, true, "c")
+puts c
+# Into a big integer and back, through compiled and interpreted code.
+c.grow
+puts c
+c.grow
+puts c
+c.set(-9223372036854775807 - 1, -0.0, false)
+puts c
+p c.n, c.n - 1
+c.set(7, 0.0 / 0.0, true)
+p c.x.nan?, c.on
+c.set(2 ** 64, 1.0e308 * 10.0, false)
+puts c
+
+# Structural equality, hashing, `with`, `to_h`, JSON and patterns.
+data Point = (i: Int, f: Float, b: Bool)
+a = Point.new(2 ** 65, 1.5, true)
+b = Point.new(2 ** 65, 1.5, true)
+p a == b, a.hash == b.hash, [a, b].uniq.size
+p Point.new(1, 0.0, false) == Point.new(1, -0.0, false)
+p a.with(i: 3), a.with(f: -2.0).f, a.to_h
+p JSON.generate(Point.new(4, 0.5, false).to_h)
+case a
+in Point(i:, f:, b: true) then p i, f
+else p "no"
+end
+h = { Point.new(1, 1.0, true) => "one" }
+p h[Point.new(1, 1.0, true)]
+
+# Held in place in another object.
+class Body
+  var @at: Point
+  var @mass: Float
+  def initialize(@at: Point, @mass: Float); end
+  def at -> Point = @at
+  def move(di: Int) -> Nil
+    @at = @at.with(i: @at.i + di)
+    @mass = @mass + 0.5
+    nil
+  end
+  def to_s -> String = "#{@at} #{@mass}"
+end
+body = Body.new(Point.new(9223372036854775806, 2.0, true), 1.0)
+body.move(1)
+puts body
+body.move(1)
+puts body
+p body.at.i
+
+# Across tasks: copied to the task, and back as its result.
+t = Task.spawn { Point.new(2 ** 70 + 1, 3.25, false) }
+p t.await
+
+# Released with `deinitialize`: the rebuilt object has the same fields.
+class Probe
+  @n: Int
+  @x: Float
+  @b: Bool
+  def initialize(@n: Int, @x: Float, @b: Bool); end
+  def deinitialize
+    puts "deinitialize #{@n} #{@x} #{@b}"
+  end
+end
+def probe -> Nil
+  q = Probe.new(2 ** 66, 0.125, true)
+  r = Probe.new(5, -1.0, false)
+  puts "probing"
+  nil
+end
+probe
+puts "done"

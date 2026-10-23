@@ -1568,17 +1568,86 @@ impl<B: Builder> Gen<'_, B> {
         (kind, ptr, len, cap)
     }
 
-    /// The address of field `index` of the object in `obj` (whose tag is
-    /// known to be an object's): the payload points at the allocation,
-    /// the object's first word at the fields.
-    /// The address of field `index` of the object in `obj`: the fields
-    /// follow the object's header in its allocation.
-    fn field_addr(&mut self, obj: Reg, index: u32) -> B::Value {
+    /// The address of field `index` of the `class` object in `obj` (whose
+    /// tag is known to be an object's): the fields follow the object's
+    /// header in its allocation, as the class lays them out.
+    fn field_addr(&mut self, obj: Reg, class: ClassId, index: u32) -> B::Value {
+        let (_, off) = unbox::field_slot(self.classes, class, index);
         let rc = self.obj_ptr(obj);
-        self.b.iadd_imm(
-            rc,
-            L::OBJECT_FIELDS_OFF as i64 + i64::from(index) * i64::from(VALUE_SIZE),
-        )
+        self.b
+            .iadd_imm(rc, L::OBJECT_FIELDS_OFF as i64 + i64::from(off))
+    }
+
+    /// Store `src` into the word field (of kind `kind`) at `field`, or go
+    /// to `slow` when the word cannot hold it (a big integer, `i64::MIN`,
+    /// a value of another type).
+    fn store_word_field(&mut self, field: B::Value, kind: FieldKind, src: Reg, slow: B::Block) {
+        let state = self.states[src as usize];
+        let word = match (kind, state) {
+            (FieldKind::Float, State::Float) => {
+                let v = self.b.use_var(self.fvar(src));
+                self.b.bitcast(Ty::I64, v)
+            }
+            (FieldKind::Bool, State::Bool) => {
+                let v = self.b.use_var(self.bvar(src));
+                self.b.uextend(Ty::I64, v)
+            }
+            (FieldKind::Int, State::Int) => {
+                let v = self.b.use_var(self.ivar(src));
+                let aside = self.b.icmp_imm(IntCC::Equal, v, L::FIELD_INT_MARK);
+                let ok = self.b.create_block();
+                self.b.brif(aside, slow, &[], ok, &[]);
+                self.b.switch_to_block(ok);
+                v
+            }
+            _ if state.boxed() => {
+                // A boxed value of the field's type: its payload word (an
+                // Int's but the mark).
+                let (want, mark) = match kind {
+                    FieldKind::Int => (TAG_INT, Some(L::FIELD_INT_MARK)),
+                    FieldKind::Float => (TAG_FLOAT, Some(L::FIELD_FLOAT_MARK as i64)),
+                    _ => (TAG_BOOL, None),
+                };
+                let tag = self.tag(src);
+                let is = self.b.icmp_imm(IntCC::Equal, tag, want);
+                let check = self.b.create_block();
+                self.b.brif(is, check, &[], slow, &[]);
+                self.b.switch_to_block(check);
+                let w = if kind == FieldKind::Bool {
+                    let b = self.payload8(src);
+                    self.b.uextend(Ty::I64, b)
+                } else {
+                    self.payload(src)
+                };
+                if let Some(m) = mark {
+                    let aside = self.b.icmp_imm(IntCC::Equal, w, m);
+                    let ok = self.b.create_block();
+                    self.b.brif(aside, slow, &[], ok, &[]);
+                    self.b.switch_to_block(ok);
+                }
+                w
+            }
+            // An unboxed value of another type: the runtime decides.
+            _ => {
+                self.b.jump(slow, &[]);
+                let dead = self.b.create_block();
+                self.b.switch_to_block(dead);
+                self.b.iconst(Ty::I64, 0)
+            }
+        };
+        self.b.store(word, field, 0);
+    }
+
+    /// The address of field `index` of the object in `obj`, whatever its
+    /// class, from the offsets its layout keeps (the object's first word
+    /// points at the layout).
+    fn field_addr_of(&mut self, obj: Reg, index: u32) -> B::Value {
+        let rc = self.obj_ptr(obj);
+        let layout = self.b.load(Ty::Ptr, rc, OBJECT_FIELDS_PTR_OFF);
+        let offsets = self.b.load(Ty::Ptr, layout, L::FIELD_LAYOUT_OFFSETS as i32);
+        let off = self.b.uload32(offsets, index as i32 * 4);
+        let fields = self.b.iadd_imm(rc, L::OBJECT_FIELDS_OFF as i64);
+        self.b.iadd(fields, off)
     }
 
     /// The address of `slot` in the frame `depth` levels up from this
@@ -2666,10 +2735,10 @@ impl<B: Builder> Gen<'_, B> {
         // A call through a typed entry reads homes only on its fallback
         // paths, which write back there (see `typed_call`).
         let to_f = unbox::int_to_f(inst, self.methods, &self.states);
-        // Its slow path writes back the source itself.
-        let float_store = matches!(inst, Inst::FieldSet { index, src, class, .. }
-            if unbox::field_num(self.classes, *class, *index) == Some(Num::Float)
-                && self.states[*src as usize] == State::Float);
+        // A store into a word field: its slow path writes back the source
+        // itself.
+        let word_store = matches!(inst, Inst::FieldSet { index, class, .. }
+            if unbox::field_slot(self.classes, *class, *index).0 != FieldKind::Value);
         // Array length, element reads and appends read only their own
         // operands' homes, on the runtime path, which writes them back; so
         // does an owned call (its in-place paths read no home).
@@ -2678,7 +2747,7 @@ impl<B: Builder> Gen<'_, B> {
             Inst::Len { .. } | Inst::ArrayGetReg { .. } | Inst::ArrayPush { .. }
         ) || matches!(inst, Inst::OwnedCall { kw, .. } if kw.is_empty());
         let lazy =
-            typed || to_f.is_some() || float_store || array_op || self.typed_callee(inst).is_some();
+            typed || to_f.is_some() || word_store || array_op || self.typed_callee(inst).is_some();
         // A handler reads the homes of whatever is live: anything that may
         // reach the runtime writes them back first.
         let unwinds_to_handler =
@@ -3482,7 +3551,8 @@ impl<B: Builder> Gen<'_, B> {
                 let cont = self.b.create_block();
                 self.branch_obj(*obj, fast, slow);
                 let num = unbox::field_num(self.classes, *class, *field);
-                // The slow path first: a field declared Int/Float is
+                let (kind, _) = unbox::field_slot(self.classes, *class, *field);
+                // The slow path first: a field declared Int/Float/Bool is
                 // checked once there (the compile-time state must still
                 // be the one before this instruction).
                 self.b.switch_to_block(slow);
@@ -3501,6 +3571,8 @@ impl<B: Builder> Gen<'_, B> {
                 }
                 if let Some(n) = num {
                     self.get_num(*dst, n, block, index);
+                } else if kind == FieldKind::Bool {
+                    self.get_mach(*dst, unbox::Mach::Bool, block, index);
                 }
                 self.b.jump(cont, &[]);
                 self.states[*dst as usize] = before;
@@ -3508,41 +3580,37 @@ impl<B: Builder> Gen<'_, B> {
                 if dst != obj {
                     self.note_obj(*obj);
                 }
-                let addr = self.field_addr(*obj, *field);
-                match num {
-                    // A Float field always holds a Float (the checker
+                let addr = self.field_addr(*obj, *class, *field);
+                match kind {
+                    // A Float or Bool field always holds one (the checker
                     // sees to it that fields are assigned before the
-                    // object is used): its payload is the value.
-                    Some(Num::Float) => {
-                        let p = self.b.load(Ty::I64, addr, 8);
+                    // object is used): its word is the value.
+                    FieldKind::Float => {
+                        let p = self.b.load(Ty::I64, addr, 0);
                         self.unbox(*dst, State::Float);
                         let v = self.b.bitcast(Ty::F64, p);
                         self.b.def_var(self.fvar(*dst), v);
                     }
-                    // An Int field may hold a big integer: the tag is
-                    // checked in the field (a mismatch re-runs the read
-                    // in the interpreter), and the home is not written.
-                    Some(n) => {
-                        let ftag = self.b.load(Ty::I64, addr, 0);
-                        let want = if n == Num::Int { TAG_INT } else { TAG_FLOAT };
-                        let is = self.b.icmp_imm(IntCC::Equal, ftag, want);
+                    FieldKind::Bool => {
+                        let p = self.b.load(Ty::I8, addr, 0);
+                        self.unbox(*dst, State::Bool);
+                        self.b.def_var(self.bvar(*dst), p);
+                    }
+                    // An Int field may hold a big integer, kept aside: its
+                    // mark re-runs the read in the interpreter.
+                    FieldKind::Int => {
+                        let p = self.b.load(Ty::I64, addr, 0);
+                        let aside = self.b.icmp_imm(IntCC::Equal, p, L::FIELD_INT_MARK);
                         let ok = self.b.create_block();
                         let bad = self.b.create_block();
-                        self.b.brif(is, ok, &[], bad, &[]);
+                        self.b.brif(aside, bad, &[], ok, &[]);
                         self.b.switch_to_block(bad);
                         self.deopt(block, index);
                         self.b.switch_to_block(ok);
-                        let p = self.b.load(Ty::I64, addr, 8);
-                        self.unbox(*dst, unbox::num_state(n));
-                        match n {
-                            Num::Int => self.b.def_var(self.ivar(*dst), p),
-                            Num::Float => {
-                                let v = self.b.bitcast(Ty::F64, p);
-                                self.b.def_var(self.fvar(*dst), v);
-                            }
-                        }
+                        self.unbox(*dst, State::Int);
+                        self.b.def_var(self.ivar(*dst), p);
                     }
-                    None => self.clone_from(*dst, addr),
+                    FieldKind::Value => self.clone_from(*dst, addr),
                 }
                 self.b.jump(cont, &[]);
                 self.b.switch_to_block(cont);
@@ -3558,19 +3626,14 @@ impl<B: Builder> Gen<'_, B> {
                 let cont = self.b.create_block();
                 self.branch_obj(*obj, fast, slow);
                 self.b.switch_to_block(fast);
-                let field = self.field_addr(*obj, *field_index);
-                // An unboxed Float into a Float field, which holds a
-                // Float (or, in `initialize`, still nil): nothing to
-                // release.
-                let float_into_float = unbox::field_num(self.classes, *class, *field_index)
-                    == Some(Num::Float)
-                    && self.states[*src as usize] == State::Float;
-                if float_into_float {
-                    let v = self.b.use_var(self.fvar(*src));
-                    let bits = self.b.bitcast(Ty::I64, v);
-                    let t = self.b.iconst(Ty::I64, TAG_FLOAT);
-                    self.b.store(t, field, 0);
-                    self.b.store(bits, field, 8);
+                let field = self.field_addr(*obj, *class, *field_index);
+                let (kind, _) = unbox::field_slot(self.classes, *class, *field_index);
+                // A word field: the number or boolean as its word, when
+                // the source is one the word holds (nothing to release);
+                // anything else through the runtime, which keeps it
+                // aside.
+                if kind != FieldKind::Value {
+                    self.store_word_field(field, kind, *src, slow);
                     self.b.jump(cont, &[]);
                     self.b.switch_to_block(slow);
                     self.flush(*src);
@@ -3724,7 +3787,7 @@ impl<B: Builder> Gen<'_, B> {
                             let check = self.b.create_block();
                             self.branch_obj(*obj, check, slow);
                             self.b.switch_to_block(check);
-                            self.field_addr(*obj, *index)
+                            self.field_addr_of(*obj, *index)
                         }
                     };
                     let k = self.b.use_var(self.ivar(args[0]));
@@ -3747,7 +3810,7 @@ impl<B: Builder> Gen<'_, B> {
                             let check = self.b.create_block();
                             self.branch_obj(*obj, check, slow);
                             self.b.switch_to_block(check);
-                            self.field_addr(*obj, *index)
+                            self.field_addr_of(*obj, *index)
                         }
                     };
                     self.inline_push(arr_ptr, args[0], slow, moving);

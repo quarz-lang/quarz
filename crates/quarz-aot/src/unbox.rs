@@ -352,6 +352,21 @@ pub fn param_bool(f: &Function, methods: &[RtMethod], index: u32) -> bool {
 }
 
 /// The declared type of a field, when it is Int or Float.
+/// How field `index` of a `class` object is stored (see
+/// `quarz_ir::field_slots`) and where, from the fields' start.
+pub fn field_slot(classes: &[RtClass], class: ClassId, index: u32) -> (FieldKind, u32) {
+    let fields = classes
+        .get(class as usize)
+        .map_or(&[][..], |c| &c.fields[..]);
+    let slots = field_slots(fields);
+    match slots.kinds.get(index as usize) {
+        Some(k) => (*k, slots.offsets[index as usize]),
+        // (Not a field of the class: as a value, which the runtime path
+        // reads.)
+        None => (FieldKind::Value, index * VALUE_BYTES),
+    }
+}
+
 pub fn field_num(classes: &[RtClass], class: ClassId, index: u32) -> Option<Num> {
     let field = classes.get(class as usize)?.fields.get(index as usize)?;
     num_of(field.ty.as_deref())
@@ -421,6 +436,8 @@ pub fn transfer(
             }
             st[*dst as usize] = match field_num(classes, *class, *index) {
                 Some(n) => num_state(n),
+                // A Bool field is a word read into the variable.
+                None if field_slot(classes, *class, *index).0 == FieldKind::Bool => State::Bool,
                 None => State::Unknown,
             };
         }

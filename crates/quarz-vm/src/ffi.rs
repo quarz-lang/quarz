@@ -806,7 +806,7 @@ pub unsafe extern "C" fn qz_owned_call(
                     // SAFETY: `owned_fast` runs no Quarz code, and the
                     // field of `@x = @x.meth` belongs to a mutable object,
                     // which only its own task touches.
-                    if let Some(slot) = o.fields_mut().get_mut(b as usize) {
+                    if let Some(slot) = o.field_value_mut(b as usize) {
                         if rt.owned_fast(mid, slot, refs) {
                             let v = slot.clone();
                             if dst != u32::MAX {

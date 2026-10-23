@@ -36,9 +36,17 @@ pub const INTERP_RESULT_DEAD: u32 = 1 << 31;
 pub const CURRENT_TASK: usize = offset_of!(Interp, current_task_id);
 /// Where an object's fields start, from its allocation (after the counts
 /// and the header: see `value::Object`).
-pub const OBJECT_FIELDS_OFF: usize = size_of::<
-    crate::rc::Inner<crate::value::ObjectOf<std::cell::UnsafeCell<[crate::value::Value; 0]>>>,
->();
+pub const OBJECT_FIELDS_OFF: usize =
+    size_of::<crate::rc::Inner<crate::value::ObjectOf<std::cell::UnsafeCell<[u64; 0]>>>>();
+/// Where an object's layout keeps its field offsets (a pointer to `u32`
+/// byte offsets from the fields' start; the layout's address is the
+/// object's first word).
+pub const FIELD_LAYOUT_OFFSETS: usize = std::mem::offset_of!(crate::value::FieldLayout, offsets);
+/// The marks of word fields whose value is kept aside (see
+/// `value::Object`).
+pub const FIELD_INT_MARK: i64 = crate::value::INT_MARK;
+pub const FIELD_FLOAT_MARK: u64 = crate::value::FLOAT_MARK;
+pub const FIELD_BOOL_MARK: u64 = crate::value::BOOL_MARK;
 
 /// Everything above, folded into one number.
 pub const SIGNATURE: u64 = {
@@ -66,6 +74,11 @@ pub const SIGNATURE: u64 = {
         HOT_TYPED_STATUS,
         CURRENT_TASK,
         OBJECT_FIELDS_OFF,
+        FIELD_LAYOUT_OFFSETS,
+        FIELD_INT_MARK as usize,
+        FIELD_FLOAT_MARK as usize,
+        FIELD_BOOL_MARK as usize,
+        quarz_ir::VALUE_BYTES as usize,
     ];
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     let mut i = 0;

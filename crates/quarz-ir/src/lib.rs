@@ -1019,6 +1019,80 @@ pub struct RtField {
     pub ty: Option<String>,
 }
 
+/// How an object stores a physical field: a value (three words), or,
+/// for a field declared `Int`, `Float` or `Bool`, the machine word of
+/// the number or boolean. What a word cannot hold (nil before the field
+/// is assigned, a big integer) is marked in it and kept aside (see
+/// `quarz_vm::value::Object`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum FieldKind {
+    Value,
+    Int,
+    Float,
+    Bool,
+}
+
+/// The size of a value in an object or a register (`quarz_vm` checks
+/// it).
+pub const VALUE_BYTES: u32 = 24;
+
+impl FieldKind {
+    pub fn of(ty: Option<&str>) -> FieldKind {
+        match ty {
+            Some("Int") => FieldKind::Int,
+            Some("Float") => FieldKind::Float,
+            Some("Bool") => FieldKind::Bool,
+            _ => FieldKind::Value,
+        }
+    }
+
+    pub fn bytes(self) -> u32 {
+        match self {
+            FieldKind::Value => VALUE_BYTES,
+            _ => 8,
+        }
+    }
+}
+
+/// Where an object of a class keeps its physical fields, after its
+/// header: each field's kind and byte offset, then, when some field is a
+/// machine word, the word that points at what those words cannot hold.
+/// The interpreter and compiled code agree through this one function; a
+/// subclass's fields extend its superclass's, so they start the same.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FieldSlots {
+    pub kinds: Vec<FieldKind>,
+    pub offsets: Vec<u32>,
+    /// The offset of the word for what is kept aside, if any.
+    pub aside: Option<u32>,
+    /// The bytes of it all.
+    pub size: u32,
+}
+
+pub fn field_slots(fields: &[RtField]) -> FieldSlots {
+    let kinds: Vec<FieldKind> = fields
+        .iter()
+        .map(|f| FieldKind::of(f.ty.as_deref()))
+        .collect();
+    let mut offsets = Vec::with_capacity(kinds.len());
+    let mut size = 0;
+    for k in &kinds {
+        offsets.push(size);
+        size += k.bytes();
+    }
+    let aside = kinds.iter().any(|k| *k != FieldKind::Value).then(|| {
+        size += 8;
+        size - 8
+    });
+    FieldSlots {
+        kinds,
+        offsets,
+        aside,
+        size,
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RtClass {
     pub name: String,

@@ -69,6 +69,10 @@ when the local one is older.
   count in compiled code: register sharing keeps it to itself,
   `mark_moves` never moves it, the AOT never releases it, and `deopt`
   counts the live ones before the interpreter takes over.
+- An object's fields are laid out by `quarz_ir::field_slots` (a field
+  declared `Int`/`Float`/`Bool` is a machine word, its mark meaning
+  "kept aside"): the runtime and `gen.rs` must both go through it, and
+  only the runtime may write a mark or the aside list.
 - `quarz build` embeds the QIR it compiled, and deoptimization resumes
   the interpreter on the compiled code's registers: the machine code and
   the embedded QIR must come from the same lowering.

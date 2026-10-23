@@ -1118,9 +1118,7 @@ impl Interp {
                                 // and the field of `@x = @x.meth` belongs
                                 // to a mutable object, which only its own
                                 // task touches.
-                                if let Some(slot) =
-                                    unsafe { o.fields_mut() }.get_mut(*index as usize)
-                                {
+                                if let Some(slot) = unsafe { o.field_value_mut(*index as usize) } {
                                     if self.owned_fast(*method, slot, &refs) {
                                         if !*unused {
                                             let v = slot.clone();

@@ -1,0 +1,10 @@
+# Objects with word fields cross workers: a big integer kept aside goes
+# with its object (marked shared with it), through channels and `await`.
+data Big = (n: Int, x: Float, ok: Bool)
+out = Channel[Big].new(16)
+ts = (1..16).map { |i| spawn { out.send(Big.new(2 ** (64 + i), i * 0.5, i.even?)); Big.new(i, 0.25, true) } }
+got: Array[Big] = []
+16.times { got = got.push(out.receive) }
+p got.map(&:n).sum == (1..16).map { |i| 2 ** (64 + i) }.sum
+p got.map(&:x).sum, got.count(&:ok)
+p ts.map(&:await).map(&:n).sum

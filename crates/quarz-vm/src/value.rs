@@ -509,18 +509,35 @@ impl ArrayData {
 
 /// An instance of a user-defined class, data type, enum variant or
 /// exception: `ObjectOf` with its fields as the tail of the allocation,
-/// as many as the object has (an object is as large as its class needs,
-/// so objects with different numbers of fields fall in different size
-/// classes of the allocator, and none has a second allocation).
-pub type Object = ObjectOf<std::cell::UnsafeCell<[Value]>>;
+/// laid out as its class's `FieldLayout` says (an object is as large as
+/// its class needs, so objects with different fields fall in different
+/// size classes of the allocator, and none has a second allocation
+/// unless a field declared `Int` holds a big integer).
+///
+/// A field declared `Int`, `Float` or `Bool` is the machine word of the
+/// number or boolean (`quarz_ir::field_slots`); what the word cannot
+/// hold is marked in it and kept aside: nil before the field is
+/// assigned, a big integer or `i64::MIN` in an `Int` field (and, should
+/// one ever be stored, a value of another type). The marks are
+/// `INT_MARK`, `FLOAT_MARK` (a NaN no arithmetic produces: Quarz cannot
+/// observe NaN payloads, and one stored with these bits would be kept
+/// aside like the rest) and `BOOL_MARK`.
+pub type Object = ObjectOf<std::cell::UnsafeCell<[u64]>>;
+
+/// The mark of an `Int` field whose value is kept aside.
+pub const INT_MARK: i64 = i64::MIN;
+/// The mark of a `Float` field whose value is kept aside.
+pub const FLOAT_MARK: u64 = 0xFFF4_0000_0000_C0DE;
+/// The mark of a `Bool` field whose value is kept aside.
+pub const BOOL_MARK: u64 = 2;
 
 /// An object's header, then its fields `F` (see `Object`; the header
-/// with no fields, `ObjectOf<UnsafeCell<[Value; 0]>>`, gives the layout).
+/// with no fields, `ObjectOf<UnsafeCell<[u64; 0]>>`, gives the layout).
 #[repr(C)]
 pub struct ObjectOf<F: ?Sized + FieldTail> {
-    /// Where the fields live, for compiled code: the tail. First in the
-    /// layout, right after the allocation's two counts.
-    pub fields_ptr: Cell<*const Value>,
+    /// Where its fields are. First in the layout, right after the
+    /// allocation's two counts (compiled code reads the offsets there).
+    pub layout: &'static FieldLayout,
     pub nfields: Cell<u32>,
     pub class: ClassId,
     /// Exceptions only: what was captured when raised (written once,
@@ -529,58 +546,224 @@ pub struct ObjectOf<F: ?Sized + FieldTail> {
     /// Whether its `deinitialize` has run (or is to run): released again,
     /// it is freed (see `crate::deinit`).
     deinitialized: Cell<bool>,
-    /// The field values, without a borrow flag: an object that tasks
-    /// share (its class has no `var` fields, or is an exception) is read
-    /// by several threads at once and written by none once built, and a
-    /// mutable one is only ever touched by its own task, so what guards
-    /// them is that no reference to them outlives the operation that
-    /// took it (see `fields_ref`).
+    /// The fields, without a borrow flag: an object that tasks share (its
+    /// class has no `var` fields, or is an exception) is read by several
+    /// threads at once and written by none once built, and a mutable one
+    /// is only ever touched by its own task, so what guards them is that
+    /// no reference into them outlives the operation that took it.
     fields: F,
 }
 
-/// The fields at the end of an object.
-pub trait FieldTail {
-    fn values_mut(&mut self) -> &mut [Value];
+/// The fields at the end of an object, as words.
+pub trait FieldTail {}
+
+impl FieldTail for std::cell::UnsafeCell<[u64]> {}
+impl FieldTail for std::cell::UnsafeCell<[u64; 0]> {}
+
+/// Where an object keeps each field (from `quarz_ir::field_slots`),
+/// shared by all the objects of a class and never freed.
+#[repr(C)]
+pub struct FieldLayout {
+    /// Byte offsets from the start of the fields (first: compiled code
+    /// reads them through `layout::FIELD_LAYOUT_OFFSETS`).
+    pub offsets: *const u32,
+    pub kinds: &'static [FieldKind],
+    /// The byte offset of the pointer to what is kept aside, if any.
+    pub aside: Option<u32>,
+    /// The fields' size, in words.
+    pub words: usize,
 }
 
-impl FieldTail for std::cell::UnsafeCell<[Value]> {
-    fn values_mut(&mut self) -> &mut [Value] {
-        self.get_mut()
+// SAFETY: a layout is immutable once made; `offsets` points at a leaked
+// slice as long as `kinds`.
+unsafe impl Sync for FieldLayout {}
+unsafe impl Send for FieldLayout {}
+
+pub use quarz_ir::FieldKind;
+
+/// What `Int` fields cannot hold (see `Object`), by field index.
+type Aside = Vec<(u32, Value)>;
+
+static NO_FIELDS: FieldLayout = FieldLayout {
+    offsets: std::ptr::null(),
+    kinds: &[],
+    aside: None,
+    words: 0,
+};
+
+impl FieldLayout {
+    fn leak(slots: &quarz_ir::FieldSlots) -> &'static FieldLayout {
+        if slots.kinds.is_empty() {
+            return &NO_FIELDS;
+        }
+        let offsets: &'static [u32] = Box::leak(slots.offsets.clone().into_boxed_slice());
+        let kinds: &'static [FieldKind] = Box::leak(slots.kinds.clone().into_boxed_slice());
+        Box::leak(Box::new(FieldLayout {
+            offsets: offsets.as_ptr(),
+            kinds,
+            aside: slots.aside,
+            words: slots.size as usize / 8,
+        }))
+    }
+
+    #[inline(always)]
+    fn offset(&self, i: usize) -> usize {
+        // SAFETY: `i` is below `kinds.len()`, as long as `offsets`.
+        unsafe { *self.offsets.add(i) as usize }
+    }
+
+    /// `n` fields that are all values (a class the registry does not know
+    /// or whose fields changed: what a REPL input redefines, say).
+    fn values(n: usize) -> &'static FieldLayout {
+        static CACHE: std::sync::Mutex<Vec<&'static FieldLayout>> =
+            std::sync::Mutex::new(Vec::new());
+        let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        while cache.len() <= n {
+            let k = cache.len();
+            let slots = quarz_ir::FieldSlots {
+                kinds: vec![FieldKind::Value; k],
+                offsets: (0..k as u32).map(|i| i * quarz_ir::VALUE_BYTES).collect(),
+                aside: None,
+                size: k as u32 * quarz_ir::VALUE_BYTES,
+            };
+            cache.push(FieldLayout::leak(&slots));
+        }
+        cache[n]
     }
 }
 
-impl FieldTail for std::cell::UnsafeCell<[Value; 0]> {
-    fn values_mut(&mut self) -> &mut [Value] {
-        &mut []
+/// Each class's layout, by class id (published whole: readers take no
+/// lock).
+static LAYOUTS: std::sync::atomic::AtomicPtr<Vec<&'static FieldLayout>> =
+    std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
+static LAYOUTS_WRITE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Make the layouts of `classes` (a program's, by id) the ones new
+/// objects get. A class whose fields are as before keeps its layout.
+pub fn register_layouts(classes: &[quarz_ir::RtClass]) {
+    let _guard = LAYOUTS_WRITE.lock().unwrap_or_else(|e| e.into_inner());
+    let old = LAYOUTS.load(std::sync::atomic::Ordering::Acquire);
+    // SAFETY: a published table is never freed.
+    let old: &[&'static FieldLayout] = if old.is_null() { &[] } else { unsafe { &*old } };
+    let table: Vec<&'static FieldLayout> = classes
+        .iter()
+        .enumerate()
+        .map(|(id, c)| {
+            let slots = quarz_ir::field_slots(&c.fields);
+            match old.get(id) {
+                Some(l) if l.kinds == slots.kinds.as_slice() => *l,
+                _ => FieldLayout::leak(&slots),
+            }
+        })
+        .collect();
+    let same = table.len() == old.len() && table.iter().zip(old).all(|(a, b)| std::ptr::eq(*a, *b));
+    if !same {
+        // The old table stays allocated: a reader may still hold it.
+        LAYOUTS.store(
+            Box::into_raw(Box::new(table)),
+            std::sync::atomic::Ordering::Release,
+        );
     }
+}
+
+/// The layout of a new object of `class` with `n` fields.
+fn layout_for(class: ClassId, n: usize) -> &'static FieldLayout {
+    let table = LAYOUTS.load(std::sync::atomic::Ordering::Acquire);
+    if !table.is_null() {
+        // SAFETY: a published table is never freed.
+        if let Some(l) = unsafe { &*table }.get(class as usize) {
+            if l.kinds.len() == n {
+                return l;
+            }
+        }
+    }
+    FieldLayout::values(n)
 }
 
 impl<F: ?Sized + FieldTail> Drop for ObjectOf<F> {
     fn drop(&mut self) {
+        let layout = self.layout;
+        let base = &raw mut self.fields as *mut u8;
         // The last reference went: an object whose class defines
         // `deinitialize` lives on, rebuilt from its fields, until the
         // method has run on it.
         if !self.deinitialized.get() && crate::deinit::has(self.class) {
-            let fields: Fields = self
-                .fields
-                .values_mut()
-                .iter_mut()
-                .map(|v| std::mem::replace(v, Value::Nil))
+            // SAFETY: nothing else refers to the object now.
+            let fields: Fields = (0..layout.kinds.len())
+                .map(|i| unsafe { take_field_at(layout, base, i) })
                 .collect();
             let o = Object::new(self.class, fields);
             o.deinitialized.set(true);
             crate::deinit::queue(o);
+        }
+        // SAFETY: as above; each value is dropped once, here.
+        unsafe {
+            for (i, k) in layout.kinds.iter().enumerate() {
+                if *k == FieldKind::Value {
+                    std::ptr::drop_in_place(base.add(layout.offset(i)) as *mut Value);
+                }
+            }
+            if let Some(a) = layout.aside {
+                let p = *(base.add(a as usize) as *const *mut Aside);
+                if !p.is_null() {
+                    drop(Box::from_raw(p));
+                }
+            }
+        }
+    }
+}
+
+/// Field `i` of the object whose fields start at `base`, leaving nil
+/// there.
+///
+/// # Safety
+/// A short write of field `i` (see `ObjectOf::fields`).
+unsafe fn take_field_at(layout: &FieldLayout, base: *mut u8, i: usize) -> Value {
+    // SAFETY: as the caller promises.
+    unsafe {
+        let k = layout.kinds[i];
+        let at = base.add(layout.offset(i));
+        if k == FieldKind::Value {
+            return std::mem::replace(&mut *(at as *mut Value), Value::Nil);
+        }
+        let v = read_word(layout, base, i, k);
+        store_word(layout, base, i, k, Value::Nil);
+        v
+    }
+}
+
+/// Word field `i` (of kind `k`) as a value.
+///
+/// # Safety
+/// A short read of field `i`.
+#[inline(always)]
+unsafe fn read_word(layout: &FieldLayout, base: *mut u8, i: usize, k: FieldKind) -> Value {
+    // SAFETY: as the caller promises.
+    unsafe {
+        let at = base.add(layout.offset(i));
+        match k {
+            FieldKind::Int => match *(at as *const i64) {
+                INT_MARK => aside_get(layout, base, i),
+                x => Value::Int(x),
+            },
+            FieldKind::Float => match *(at as *const u64) {
+                FLOAT_MARK => aside_get(layout, base, i),
+                bits => Value::Float(f64::from_bits(bits)),
+            },
+            _ => match *(at as *const u64) {
+                0 => Value::Bool(false),
+                1 => Value::Bool(true),
+                _ => aside_get(layout, base, i),
+            },
         }
     }
 }
 
 impl std::fmt::Debug for Object {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // SAFETY: a short read (see `fields_ref`).
-        let fields = unsafe { self.fields_ref() };
         f.debug_struct("Object")
             .field("class", &self.class)
-            .field("fields", &fields)
+            .field("fields", &self.fields())
             .finish()
     }
 }
@@ -611,37 +794,60 @@ impl Object {
     /// `src` points at `n` initialized values that the caller gives up
     /// (they are moved, not cloned, and must not be dropped by it).
     pub unsafe fn with_fields_from(class: ClassId, src: *const Value, n: usize) -> Rc<Object> {
-        type Header = crate::rc::Inner<ObjectOf<std::cell::UnsafeCell<[Value; 0]>>>;
+        type Header = crate::rc::Inner<ObjectOf<std::cell::UnsafeCell<[u64; 0]>>>;
+        let layout_of = layout_for(class, n);
+        let words = layout_of.words;
         let header = std::alloc::Layout::new::<Header>();
         // The fields follow the header (whose size is a multiple of a
-        // value's alignment), as `Layout::for_value` finds them when the
-        // object is freed.
-        let layout = std::alloc::Layout::from_size_align(
-            header.size() + n * std::mem::size_of::<Value>(),
-            header.align(),
-        )
-        .expect("object too large");
+        // word), as `Layout::for_value` finds them when the object is
+        // freed.
+        let layout = std::alloc::Layout::from_size_align(header.size() + words * 8, header.align())
+            .expect("object too large");
         // SAFETY: the layout is not zero-sized; every field of the header
-        // and every value is written before the reference is made.
+        // and every field slot is written before the reference is made.
         unsafe {
             let mem = std::alloc::alloc(layout);
             if mem.is_null() {
                 std::alloc::handle_alloc_error(layout);
             }
-            let p = std::ptr::slice_from_raw_parts_mut(mem as *mut Value, n)
+            let p = std::ptr::slice_from_raw_parts_mut(mem as *mut u64, words)
                 as *mut crate::rc::Inner<Object>;
-            let tail = mem.add(header.size()) as *mut Value;
-            std::ptr::copy_nonoverlapping(src, tail, n);
             let o = &raw mut (*p).value;
-            std::ptr::write(&raw mut (*o).fields_ptr, Cell::new(tail));
+            std::ptr::write(&raw mut (*o).layout, layout_of);
             std::ptr::write(&raw mut (*o).nfields, Cell::new(n as u32));
             std::ptr::write(&raw mut (*o).class, class);
             std::ptr::write(&raw mut (*o).exc, std::sync::OnceLock::new());
             std::ptr::write(&raw mut (*o).deinitialized, Cell::new(false));
+            let base = mem.add(header.size());
+            if let Some(a) = layout_of.aside {
+                std::ptr::write(
+                    base.add(a as usize) as *mut *mut Aside,
+                    std::ptr::null_mut(),
+                );
+            }
+            for (i, k) in layout_of.kinds.iter().enumerate() {
+                let at = base.add(layout_of.offset(i));
+                let v = std::ptr::read(src.add(i));
+                match k {
+                    FieldKind::Value => std::ptr::write(at as *mut Value, v),
+                    _ => {
+                        // Marked first: what the word cannot hold goes
+                        // aside (the object is not yet shared).
+                        std::ptr::write(at as *mut u64, mark(*k));
+                        store_word(layout_of, base, i, *k, v);
+                    }
+                }
+            }
             let rc = crate::rc::Rc::from_fresh(p);
             debug_assert_eq!(std::alloc::Layout::for_value(&*p), layout);
             rc
         }
+    }
+
+    /// The start of the fields.
+    #[inline(always)]
+    fn base(&self) -> *mut u8 {
+        self.fields.get() as *mut u64 as *mut u8
     }
 
     /// The backtrace captured when this (exception) object was raised.
@@ -678,43 +884,88 @@ impl Object {
         let _ = self.exc.set(Box::new(info));
     }
 
+    pub fn field_count(&self) -> usize {
+        self.layout.kinds.len()
+    }
+
     /// Field `i`, if the object has it.
     #[inline]
     pub fn field(&self, i: usize) -> Option<Value> {
-        // SAFETY: a short read (see `fields_ref`).
-        unsafe { self.fields_ref() }.get(i).cloned()
+        let k = *self.layout.kinds.get(i)?;
+        // SAFETY: a short read of field `i`, which the object has (see
+        // `ObjectOf::fields`).
+        unsafe {
+            Some(match k {
+                FieldKind::Value => {
+                    (*(self.base().add(self.layout.offset(i)) as *const Value)).clone()
+                }
+                _ => read_word(self.layout, self.base(), i, k),
+            })
+        }
     }
 
-    pub fn field_count(&self) -> usize {
-        self.nfields.get() as usize
+    /// Field `i` as a value in place, when it is stored as one (to read
+    /// without a count).
+    #[inline]
+    pub fn field_ref(&self, i: usize) -> Option<&Value> {
+        if *self.layout.kinds.get(i)? != FieldKind::Value {
+            return None;
+        }
+        // SAFETY: as for `field`; the reference lasts as the caller's
+        // operation does (it runs no Quarz code).
+        unsafe { Some(&*(self.base().add(self.layout.offset(i)) as *const Value)) }
     }
 
     /// A copy of the field values.
     pub fn fields(&self) -> Fields {
-        // SAFETY: a short read (see `fields_ref`).
-        unsafe { self.fields_ref() }.iter().cloned().collect()
+        (0..self.field_count())
+            .map(|i| self.field(i).unwrap_or(Value::Nil))
+            .collect()
     }
 
     /// Store `v` in field `i` (which the object has: it is built with all
     /// of its class's).
     #[inline(always)]
     pub fn set_field(&self, i: usize, v: Value) {
-        // SAFETY: a short write (see `fields_mut`); the replaced value is
-        // dropped after it.
-        let old = match unsafe { self.fields_mut() }.get_mut(i) {
-            Some(slot) => std::mem::replace(slot, v),
-            None => no_field(i, self.field_count()),
+        let Some(&k) = self.layout.kinds.get(i) else {
+            no_field(i, self.field_count())
         };
-        drop(old);
+        // SAFETY: a short write of field `i` (see `ObjectOf::fields`); the
+        // replaced value is dropped after it.
+        unsafe {
+            let base = self.base();
+            if k == FieldKind::Value {
+                let at = base.add(self.layout.offset(i)) as *mut Value;
+                let old = std::mem::replace(&mut *at, v);
+                drop(old);
+            } else {
+                store_word(self.layout, base, i, k, v);
+            }
+        }
     }
 
     /// Field `i`, leaving nil there (`nil` when absent).
     pub fn take_field(&self, i: usize) -> Value {
-        // SAFETY: a short write (see `fields_mut`).
-        unsafe { self.fields_mut() }
-            .get_mut(i)
-            .map(|s| std::mem::replace(s, Value::Nil))
-            .unwrap_or(Value::Nil)
+        if i >= self.field_count() {
+            return Value::Nil;
+        }
+        // SAFETY: a short write of field `i`.
+        unsafe { take_field_at(self.layout, self.base(), i) }
+    }
+
+    /// Field `i` in place, to change, when it is stored as a value.
+    ///
+    /// # Safety
+    /// No other reference into the fields may be alive or taken while
+    /// this one is (an operation that runs no Quarz code), and the object
+    /// is not shared with another thread.
+    #[allow(clippy::mut_from_ref)]
+    pub unsafe fn field_value_mut(&self, i: usize) -> Option<&mut Value> {
+        if *self.layout.kinds.get(i)? != FieldKind::Value {
+            return None;
+        }
+        // SAFETY: as the caller promises.
+        unsafe { Some(&mut *(self.base().add(self.layout.offset(i)) as *mut Value)) }
     }
 
     /// Replace every field (as many as the object has).
@@ -724,41 +975,151 @@ impl Object {
             self.field_count(),
             "an object's fields replaced"
         );
-        // SAFETY: a short write (see `fields_mut`); the old values are
-        // dropped after it.
-        let slots = unsafe { self.fields_mut() };
-        let old: Fields = slots
-            .iter_mut()
-            .zip(fields)
-            .map(|(slot, v)| std::mem::replace(slot, v))
-            .collect();
+        for (i, v) in fields.into_iter().enumerate() {
+            self.set_field(i, v);
+        }
+    }
+
+    /// Whether two objects of one class have equal fields.
+    pub fn fields_eq(&self, other: &Object) -> bool {
+        self.field_count() == other.field_count()
+            && (0..self.field_count()).all(|i| match (self.field_ref(i), other.field_ref(i)) {
+                (Some(a), Some(b)) => a == b,
+                _ => self.field(i) == other.field(i),
+            })
+    }
+
+    /// Hash the fields (as `fields_eq` compares them).
+    pub fn hash_fields<H: Hasher>(&self, state: &mut H) {
+        for i in 0..self.field_count() {
+            match self.field_ref(i) {
+                Some(v) => v.hash(state),
+                None => self.field(i).unwrap_or(Value::Nil).hash(state),
+            }
+        }
+    }
+
+    /// Each value the object holds in place or aside (what it refers to).
+    ///
+    /// # Safety
+    /// The pointers are valid while the object is and is not changed.
+    pub unsafe fn value_ptrs(&self, mut f: impl FnMut(*const Value)) {
+        // SAFETY: as the caller promises.
+        unsafe {
+            let base = self.base();
+            for (i, k) in self.layout.kinds.iter().enumerate() {
+                if *k == FieldKind::Value {
+                    f(base.add(self.layout.offset(i)) as *const Value);
+                }
+            }
+            if let Some(a) = self.layout.aside {
+                let p = *(base.add(a as usize) as *const *mut Aside);
+                if !p.is_null() {
+                    for (_, v) in (*p).iter() {
+                        f(v as *const Value);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Write `v` into word field `i` (of kind `k`) of the object whose
+/// fields start at `base`: the word, or its mark with `v` aside.
+///
+/// # Safety
+/// A short write of field `i` (see `ObjectOf::fields`), whose word and
+/// aside pointer are initialized.
+#[inline(always)]
+unsafe fn store_word(layout: &FieldLayout, base: *mut u8, i: usize, k: FieldKind, v: Value) {
+    // SAFETY: as the caller promises.
+    unsafe {
+        let at = base.add(layout.offset(i)) as *mut u64;
+        let word = match (k, &v) {
+            (FieldKind::Int, Value::Int(x)) if *x != INT_MARK => Some(*x as u64),
+            (FieldKind::Float, Value::Float(x)) if x.to_bits() != FLOAT_MARK => Some(x.to_bits()),
+            (FieldKind::Bool, Value::Bool(b)) => Some(u64::from(*b)),
+            _ => None,
+        };
+        match word {
+            Some(w) => {
+                *at = w;
+                // (Most objects keep nothing aside.)
+                if let Some(a) = layout.aside {
+                    if !(*(base.add(a as usize) as *const *mut Aside)).is_null() {
+                        aside_set(layout, base, i, Value::Nil);
+                    }
+                }
+            }
+            None => {
+                *at = mark(k);
+                aside_set(layout, base, i, v);
+            }
+        }
+    }
+}
+
+/// What field `i` keeps aside (nil when nothing).
+#[cold]
+#[inline(never)]
+fn aside_get(layout: &FieldLayout, base: *mut u8, i: usize) -> Value {
+    let Some(a) = layout.aside else {
+        return Value::Nil;
+    };
+    // SAFETY: a short read of the aside pointer and its list.
+    unsafe {
+        let p = *(base.add(a as usize) as *const *mut Aside);
+        if p.is_null() {
+            return Value::Nil;
+        }
+        (*p).iter()
+            .find(|(j, _)| *j as usize == i)
+            .map(|(_, v)| v.clone())
+            .unwrap_or(Value::Nil)
+    }
+}
+
+/// Keep `v` aside for field `i` (nil: nothing).
+///
+/// # Safety
+/// A short write (see `ObjectOf::fields`) of an initialized aside
+/// pointer.
+#[cold]
+#[inline(never)]
+unsafe fn aside_set(layout: &FieldLayout, base: *mut u8, i: usize, v: Value) {
+    let Some(a) = layout.aside else {
+        return;
+    };
+    // SAFETY: as the caller promises.
+    unsafe {
+        let slot = base.add(a as usize) as *mut *mut Aside;
+        if (*slot).is_null() {
+            if matches!(v, Value::Nil) {
+                return;
+            }
+            *slot = Box::into_raw(Box::default());
+        }
+        let list = &mut **slot;
+        let at = list.iter().position(|(j, _)| *j as usize == i);
+        let old = match (at, matches!(v, Value::Nil)) {
+            (Some(at), true) => Some(list.swap_remove(at).1),
+            (Some(at), false) => Some(std::mem::replace(&mut list[at].1, v)),
+            (None, true) => None,
+            (None, false) => {
+                list.push((i as u32, v));
+                None
+            }
+        };
         drop(old);
     }
+}
 
-    /// The fields, to read.
-    ///
-    /// # Safety
-    /// No `fields_mut` reference may be alive while this one is, and none
-    /// may be taken before it ends: the caller keeps it for an operation
-    /// that runs no Quarz code (nothing that could reach this object and
-    /// change it). Several threads may read a shared object this way at
-    /// once: nothing writes one once it is shared.
-    #[inline(always)]
-    pub unsafe fn fields_ref(&self) -> &[Value] {
-        unsafe { &*self.fields.get() }
-    }
-
-    /// The fields, to change.
-    ///
-    /// # Safety
-    /// No other reference to the fields may be alive or taken while this
-    /// one is (an operation that runs no Quarz code), and the object is
-    /// not shared with another thread (an object is changed only while
-    /// built, or by the one task a mutable object belongs to).
-    #[allow(clippy::mut_from_ref)]
-    #[inline(always)]
-    pub unsafe fn fields_mut(&self) -> &mut [Value] {
-        unsafe { &mut *self.fields.get() }
+/// The mark of a word field of kind `k`.
+fn mark(k: FieldKind) -> u64 {
+    match k {
+        FieldKind::Int => INT_MARK as u64,
+        FieldKind::Float => FLOAT_MARK,
+        _ => BOOL_MARK,
     }
 }
 
@@ -1572,9 +1933,7 @@ impl Value {
                     }
                     Value::Object(r) => {
                         if mark_rc(immortal, r) {
-                            for x in r.fields_ref().iter() {
-                                push(&mut work, x);
-                            }
+                            r.value_ptrs(|x| work.push(ShareItem::Value(x)));
                             if let Some(e) = r.exc_info() {
                                 if let Some(b) = &e.backtrace {
                                     mark_rc(immortal, b);
@@ -1700,7 +2059,9 @@ pub fn check_rc_layout() {
         (short.type_tag() as u64) < NEEDS_DROP_FROM,
         "a short string must need no release"
     );
-    assert_eq!(std::mem::offset_of!(Object, fields_ptr), 0);
+    assert_eq!(std::mem::offset_of!(Object, layout), 0);
+    assert_eq!(std::mem::offset_of!(FieldLayout, offsets), 0);
+    assert_eq!(std::mem::size_of::<Value>(), quarz_ir::VALUE_BYTES as usize);
     assert_eq!(std::mem::offset_of!(Frame, slots_ptr), 0);
     assert_eq!(std::mem::offset_of!(Frame, nslots), 8);
     assert_eq!(std::mem::offset_of!(Frame, parent_ptr), 16);
@@ -1925,10 +2286,7 @@ impl PartialEq for Value {
                 // Data-like objects (no mutable fields) compare structurally.
                 // The interpreter decides which classes are structural by
                 // the `structural` flag kept on the object.
-                // SAFETY: comparing values runs no Quarz code.
-                a.class == b.class
-                    && is_structural(a)
-                    && unsafe { a.fields_ref() == b.fields_ref() }
+                a.class == b.class && is_structural(a) && a.fields_eq(b)
             }
             _ => self.identical(other),
         }
@@ -2010,10 +2368,7 @@ impl Hash for Value {
                 12u8.hash(state);
                 o.class.hash(state);
                 if is_structural(o) {
-                    // SAFETY: hashing values runs no Quarz code.
-                    for f in unsafe { o.fields_ref() }.iter() {
-                        f.hash(state);
-                    }
+                    o.hash_fields(state);
                 } else {
                     (Rc::as_ptr(o).cast::<u8>() as usize).hash(state);
                 }

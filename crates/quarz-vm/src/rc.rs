@@ -104,7 +104,7 @@ impl<T: ?Sized> Inner<T> {
 // What compiled code assumes (`quarz-aot`'s `gen.rs`): the first word at
 // 0, the second at 8, the value at 16.
 const _: () = {
-    type ObjectHeader = crate::value::ObjectOf<std::cell::UnsafeCell<[crate::value::Value; 0]>>;
+    type ObjectHeader = crate::value::ObjectOf<std::cell::UnsafeCell<[u64; 0]>>;
     assert!(std::mem::offset_of!(Inner<ObjectHeader>, local) == 0);
     assert!(std::mem::offset_of!(Inner<ObjectHeader>, shared) == 8);
     assert!(std::mem::offset_of!(Inner<ObjectHeader>, value) == 16);

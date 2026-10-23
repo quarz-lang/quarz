@@ -110,6 +110,11 @@ fn constants_initialized_once_across_workers() {
 }
 
 #[test]
+fn word_fields_kept_aside_across_workers() {
+    prints_its_out("word_fields.qz");
+}
+
+#[test]
 fn exit_in_a_task_on_another_worker() {
     check_runs("exit.qz", |out, what| {
         assert_eq!(out.status.code(), Some(7), "{what}");

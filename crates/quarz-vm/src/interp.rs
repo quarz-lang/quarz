@@ -506,6 +506,7 @@ impl Interp {
     ) -> std::rc::Rc<Interp> {
         let structural: Vec<bool> = world.classes.iter().map(|c| c.structural).collect();
         STRUCTURAL_CLASSES.with(|s| *s.borrow_mut() = structural);
+        crate::value::register_layouts(&world.classes);
 
         // Load the functions.
         {
@@ -1555,11 +1556,9 @@ impl Interp {
             None => o.field(slot).unwrap_or(Value::Nil),
             Some(d) => {
                 let n = self.program.world.class(d).fields.len();
-                // SAFETY: a short read, copying values.
-                let vals: Fields = unsafe { o.fields_ref() }
-                    .get(slot..slot + n)
-                    .map(|s| s.iter().cloned().collect())
-                    .unwrap_or_else(|| smallvec![Value::Nil; n]);
+                let vals: Fields = (slot..slot + n)
+                    .map(|k| o.field(k).unwrap_or(Value::Nil))
+                    .collect();
                 Value::Object(Object::new(d, vals))
             }
         }
@@ -1580,12 +1579,11 @@ impl Interp {
                 let Value::Object(src) = &v else {
                     return;
                 };
-                // SAFETY: a short write copying values; `src` is a value
-                // of class `d`, so not `o` itself.
-                let (fields, src_fields) = unsafe { (o.fields_mut(), src.fields_ref()) };
                 for k in 0..n {
-                    if let (Some(dst), Some(x)) = (fields.get_mut(slot + k), src_fields.get(k)) {
-                        *dst = x.clone();
+                    if let Some(x) = src.field(k) {
+                        if slot + k < o.field_count() {
+                            o.set_field(slot + k, x);
+                        }
                     }
                 }
             }
@@ -1614,10 +1612,9 @@ impl Interp {
                 Some(d) => {
                     let n = self.program.world.class(d).fields.len();
                     if let Value::Object(src) = &v {
-                        // SAFETY: a short read, copying values.
-                        for (k, x) in unsafe { src.fields_ref() }.iter().take(n).enumerate() {
+                        for k in 0..n.min(src.field_count()) {
                             if slot + k < out.len() {
-                                out[slot + k] = x.clone();
+                                out[slot + k] = src.field(k).unwrap_or(Value::Nil);
                             }
                         }
                     }
