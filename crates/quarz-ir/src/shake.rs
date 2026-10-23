@@ -21,7 +21,7 @@ use crate::*;
 /// enumerators natives build). A new by-name call in the runtime
 /// (`Interp::send`, `call_named`, `has_user_method`, an enumerator)
 /// must add its name here.
-const RUNTIME_NAMES: &[&str] = &[
+pub const RUNTIME_NAMES: &[&str] = &[
     "to_s",
     "inspect",
     "==",
@@ -34,6 +34,8 @@ const RUNTIME_NAMES: &[&str] = &[
     "succ",
     "status",
     "to_json",
+    // An interpolation into what turns out not to be a builder.
+    "<<",
     "initialize",
     // Run when an object's last reference goes.
     "deinitialize",
@@ -119,44 +121,66 @@ impl Shake<'_> {
 
     fn scan(&mut self, fid: FuncId) {
         let f = &self.module.functions[fid as usize];
-        for c in &f.consts {
-            if let Constant::Symbol(s) = c {
-                self.name(s);
-            }
+        refs(f, &mut |r| match r {
+            Ref::Method(m) => self.method(m),
+            Ref::Name(n) => self.name(n),
+            Ref::Func(f) => self.func(f),
+            Ref::Const(c) => self.constant(c),
+        });
+    }
+}
+
+/// What a function refers to, for reachability (here and when the
+/// lowering decides which prelude methods to lower).
+pub enum Ref<'a> {
+    /// A method called as resolved (one of that name in a subclass or an
+    /// extension may run instead: its name counts too).
+    Method(MethodId),
+    /// A method name looked up at run time.
+    Name(&'a str),
+    Func(FuncId),
+    Const(ConstId),
+}
+
+/// Visit what `f` refers to.
+pub fn refs<'a>(f: &'a Function, visit: &mut dyn FnMut(Ref<'a>)) {
+    for c in &f.consts {
+        if let Constant::Symbol(s) = c {
+            visit(Ref::Name(s));
         }
-        for o in &f.inlined {
-            self.func(o.callee);
-        }
-        for blk in &f.blocks {
-            for inst in &blk.insts {
-                match inst {
-                    Inst::Call { kind, .. } => match kind {
-                        CallKind::Method(m) | CallKind::Super(m) => self.method(*m),
-                        CallKind::Send(name) => self.name(name),
-                        // By name: the receiver's class may be a subclass,
-                        // with an `initialize` of its own.
-                        CallKind::Construct { init, .. } | CallKind::ConstructRecv { init, .. } => {
-                            self.name("initialize");
-                            if let Some(m) = init {
-                                self.method(*m);
-                            }
-                        }
-                        CallKind::ProcCall | CallKind::Yield | CallKind::Raise => {}
-                    },
-                    Inst::OwnedCall { method, .. } => self.method(*method),
-                    Inst::BinOp { method, op, .. } => {
-                        self.name(op.name());
-                        if let Some(m) = method {
-                            self.method(*m);
+    }
+    for o in &f.inlined {
+        visit(Ref::Func(o.callee));
+    }
+    for blk in &f.blocks {
+        for inst in &blk.insts {
+            match inst {
+                Inst::Call { kind, .. } => match kind {
+                    CallKind::Method(m) | CallKind::Super(m) => visit(Ref::Method(*m)),
+                    CallKind::Send(name) => visit(Ref::Name(name)),
+                    // By name: the receiver's class may be a subclass,
+                    // with an `initialize` of its own.
+                    CallKind::Construct { init, .. } | CallKind::ConstructRecv { init, .. } => {
+                        visit(Ref::Name("initialize"));
+                        if let Some(m) = init {
+                            visit(Ref::Method(*m));
                         }
                     }
-                    Inst::SymbolProc {
-                        method: Some(m), ..
-                    } => self.method(*m),
-                    Inst::MakeBlock { func, .. } => self.func(*func),
-                    Inst::ConstGet { id, .. } => self.constant(*id),
-                    _ => {}
+                    CallKind::ProcCall | CallKind::Yield | CallKind::Raise => {}
+                },
+                Inst::OwnedCall { method, .. } => visit(Ref::Method(*method)),
+                Inst::BinOp { method, op, .. } => {
+                    visit(Ref::Name(op.name()));
+                    if let Some(m) = method {
+                        visit(Ref::Method(*m));
+                    }
                 }
+                Inst::SymbolProc {
+                    method: Some(m), ..
+                } => visit(Ref::Method(*m)),
+                Inst::MakeBlock { func, .. } => visit(Ref::Func(*func)),
+                Inst::ConstGet { id, .. } => visit(Ref::Const(*id)),
+                _ => {}
             }
         }
     }

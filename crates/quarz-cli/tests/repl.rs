@@ -274,3 +274,27 @@ fn highlighting_colors_tokens() {
     };
     assert_eq!(plain, "x = [1, \"é\", :a] # ü");
 }
+
+#[test]
+fn prelude_methods_first_used_in_a_later_input() {
+    // The prelude is lowered as far as the inputs so far reach: what a
+    // later input first calls (directly, by `&:name`, or through another
+    // prelude method) is lowered then.
+    let (out, _) = values(&[
+        "x = 1",
+        "[1, 1, 2].tally",
+        "[1, 2, 3, 4].partition { |n| n.even? }",
+        "[1, 2, 4, 5].chunk_while { |a, b| b == a + 1 }",
+        "[:x, :y].map(&:to_s).group_by(&:size)",
+    ]);
+    assert_eq!(
+        out,
+        [
+            "=> 1",
+            "=> {1 => 2, 2 => 1}",
+            "=> [[2, 4], [1, 3]]",
+            "=> [[1, 2], [4, 5]]",
+            "=> {1 => [\"x\", \"y\"]}",
+        ]
+    );
+}

@@ -63,6 +63,14 @@ pub struct Lowerer {
     pub(crate) overridden: HashSet<(ClassId, String)>,
     /// Where each class's declared fields live (see `layout`).
     pub(crate) layouts: Vec<layout::Layout>,
+    /// The prelude's methods are lowered only once something lowered may
+    /// call them (most programs use a small part of it): the methods and
+    /// names reached so far, kept across REPL inputs. Reachability is
+    /// `quarz_ir::shake`'s, by name.
+    reached: Vec<bool>,
+    reached_names: HashSet<String>,
+    /// Lowered functions of this round whose references were followed.
+    scanned: usize,
 }
 
 impl Lowerer {
@@ -99,17 +107,13 @@ impl Lowerer {
         if self.method_funcs.len() < world.methods.len() {
             self.method_funcs.resize(world.methods.len(), None);
         }
+        if self.reached.len() < world.methods.len() {
+            self.reached.resize(world.methods.len(), false);
+        }
         for mid in 0..world.methods.len() {
-            if self.method_funcs[mid].is_some() {
-                continue;
+            if world.methods[mid].file != PRELUDE_FILE || self.reached[mid] {
+                self.lower_method(world, out, mid as MethodId);
             }
-            let m = &world.methods[mid];
-            let Some(def) = &m.body else { continue };
-            let Some(body) = &def.body else { continue };
-            let id = self.alloc_func();
-            self.method_funcs[mid] = Some(id);
-            let f = FnBuilder::method(self, world, out, mid as MethodId, body);
-            self.set_func(id, f);
         }
         // Constants.
         if self.const_funcs.len() < world.consts.len() {
@@ -158,6 +162,40 @@ impl Lowerer {
                 body: id,
             });
         }
+        // The prelude methods what was lowered may call, and theirs.
+        self.scanned = 0;
+        let by_name = methods_by_name(world);
+        let mut work: Vec<MethodId> = Vec::new();
+        for n in quarz_ir::shake::RUNTIME_NAMES {
+            self.reach_name(world, n, &by_name, &mut work);
+        }
+        loop {
+            while self.scanned < self.pending.len() {
+                let i = self.scanned;
+                self.scanned += 1;
+                let Some(f) = self.pending[i].take() else {
+                    continue;
+                };
+                let mut methods = Vec::new();
+                let mut names = Vec::new();
+                quarz_ir::shake::refs(&f, &mut |r| match r {
+                    quarz_ir::shake::Ref::Method(m) => methods.push(m),
+                    quarz_ir::shake::Ref::Name(n) => names.push(n.to_string()),
+                    _ => {}
+                });
+                self.pending[i] = Some(f);
+                for m in methods {
+                    self.reach_method(world, m, &by_name, &mut work);
+                }
+                for n in names {
+                    self.reach_name(world, &n, &by_name, &mut work);
+                }
+            }
+            let Some(mid) = work.pop() else {
+                break;
+            };
+            self.lower_method(world, out, mid);
+        }
         let functions: Vec<Function> = self
             .pending
             .drain(..)
@@ -170,6 +208,79 @@ impl Lowerer {
             base: self.round_base,
             functions,
             units: lowered_units,
+        }
+    }
+}
+
+/// The file index of the prelude.
+const PRELUDE_FILE: u32 = 0;
+
+fn methods_by_name(world: &World) -> HashMap<&str, Vec<MethodId>> {
+    let mut by_name: HashMap<&str, Vec<MethodId>> = HashMap::default();
+    for (i, m) in world.methods.iter().enumerate() {
+        by_name
+            .entry(m.name.as_str())
+            .or_default()
+            .push(i as MethodId);
+    }
+    by_name
+}
+
+impl Lowerer {
+    /// Lower method `mid` if it has a body and has not been lowered.
+    fn lower_method(&mut self, world: &World, out: &Output, mid: MethodId) {
+        let m = &world.methods[mid as usize];
+        if self.method_funcs[mid as usize].is_some() {
+            return;
+        }
+        let Some(def) = &m.body else { return };
+        let Some(body) = &def.body else { return };
+        let id = self.alloc_func();
+        self.method_funcs[mid as usize] = Some(id);
+        let f = FnBuilder::method(self, world, out, mid, body);
+        self.set_func(id, f);
+    }
+
+    /// Method `mid` may be called: so may every method of its name (and
+    /// the one it is an alias of); a prelude one goes to `work`.
+    fn reach_method(
+        &mut self,
+        world: &World,
+        mid: MethodId,
+        by_name: &HashMap<&str, Vec<MethodId>>,
+        work: &mut Vec<MethodId>,
+    ) {
+        let Some(seen) = self.reached.get_mut(mid as usize) else {
+            return;
+        };
+        if *seen {
+            return;
+        }
+        *seen = true;
+        let m = &world.methods[mid as usize];
+        if m.file == PRELUDE_FILE && self.method_funcs[mid as usize].is_none() {
+            work.push(mid);
+        }
+        if let Some(orig) = m.alias_of {
+            self.reach_method(world, orig, by_name, work);
+        }
+        self.reach_name(world, &m.name, by_name, work);
+    }
+
+    /// A method called `name` may be called.
+    fn reach_name(
+        &mut self,
+        world: &World,
+        name: &str,
+        by_name: &HashMap<&str, Vec<MethodId>>,
+        work: &mut Vec<MethodId>,
+    ) {
+        if self.reached_names.contains(name) {
+            return;
+        }
+        self.reached_names.insert(name.to_string());
+        for &m in by_name.get(name).map(|v| v.as_slice()).unwrap_or(&[]) {
+            self.reach_method(world, m, by_name, work);
         }
     }
 }
