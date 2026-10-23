@@ -97,5 +97,7 @@ when the local one is older.
   instructions with different cycles is not a regression in itself.
 - For start-up, use `valgrind --tool=callgrind`: sampling misattributes
   short runs.
+- `QUARZ_COUNT_DEOPTS=1` prints where compiled code handed over to the
+  interpreter (a failed speculation): a benchmark should show none.
 - `bench/compare/run.sh` compares with Go, Rust, Crystal, Spinel and
   Ruby; its README records the versions and the latest results.

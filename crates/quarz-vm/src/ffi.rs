@@ -476,6 +476,9 @@ pub unsafe extern "C" fn qz_resume(
 ) -> u32 {
     let rt = &*rt;
     let act = &*act;
+    if crate::deopts::counting() {
+        crate::deopts::record(&rt.funcs.borrow()[fid as usize], block, inst);
+    }
     let nregs = rt.funcs.borrow()[fid as usize].nregs as usize;
     // Bit `r` of `fresh`: register `r`'s home was never written (the
     // compiled code keeps it in a variable, or never touched it): nil.
