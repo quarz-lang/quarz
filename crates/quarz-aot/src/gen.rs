@@ -3457,6 +3457,12 @@ impl<B: Builder> Gen<'_, B> {
                 self.b.jump(cont, &[]);
                 self.b.switch_to_block(cont);
             }
+            // A class nothing reads (an inlined constructor's receiver,
+            // once the construction was replaced by its fields), over a
+            // value with nothing to release: not written at all.
+            Inst::ClassRef { dst, .. }
+                if !self.live[block as usize][index as usize + 1][*dst as usize]
+                    && !self.states[*dst as usize].needs_release() => {}
             Inst::ClassRef { dst, class } => {
                 self.release(*dst);
                 self.store_tag(*dst, TAG_CLASS);

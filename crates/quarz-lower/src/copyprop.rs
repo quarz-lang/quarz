@@ -10,7 +10,9 @@
 //! only when the move is the one definition reaching it and `src` has
 //! the same definitions there as at the move. A read that updates the
 //! register in place (`xs = xs.push(v)`, an `ArrayPush`) keeps its
-//! copy: the source must not see the change.
+//! copy: the source must not see the change. A `Release` of the copy
+//! (the end of an inlined `self`'s scope, say) goes with it: the source
+//! still holds the value, so no deinitializer can run there.
 
 use rustc_hash::FxHashSet as HashSet;
 
@@ -81,17 +83,22 @@ fn propagate_in(f: &mut Function) -> bool {
     // (site, dst, src): redirect the reads of `dst` at `site` to `src`.
     let mut redirect: Vec<(Site, Reg, Reg)> = Vec::new();
     let mut term_redirect: Vec<(usize, Reg, Reg)> = Vec::new();
-    // Registers already rewritten this round: a chain's later links wait
-    // for the next round, so the reaching definitions stay valid.
-    let mut touched: HashSet<Reg> = HashSet::default();
+    // The copies removed this round and their sources: a chain's later
+    // links wait for the next round, so the reaching definitions stay
+    // valid (removing a copy changes its destination's definitions, which
+    // a copy from it relied on). Copies of one source go together: the
+    // reads redirected to it leave its definitions as they were.
+    let mut removed: HashSet<Reg> = HashSet::default();
+    let mut sources: HashSet<Reg> = HashSet::default();
     for (site, dst, src) in moves {
-        if touched.contains(&dst) || touched.contains(&src) {
+        if removed.contains(&dst) || sources.contains(&dst) || removed.contains(&src) {
             continue;
         }
         let src_defs = defs_at(&reach, f, site.0, site.1, src);
         let mut ok = true;
         let mut reads: Vec<Site> = Vec::new();
         let mut term_reads: Vec<usize> = Vec::new();
+        let mut drops: Vec<Site> = Vec::new();
         for &(ubi, uii) in &uses[dst as usize] {
             let here = defs_at(&reach, f, ubi, uii, dst);
             // A read in a handler (entered from anywhere in its region)
@@ -107,17 +114,24 @@ fn propagate_in(f: &mut Function) -> bool {
             // A `Release` of the copy may release the source instead when
             // the copy is all that reads the source (the variable a loop
             // element goes into, say).
-            let releases_only_src = matches!(inst, Inst::Release { .. })
-                && uses[src as usize].len() == 1
-                && term_uses[src as usize].is_empty();
+            let is_release = matches!(inst, Inst::Release { .. });
+            let releases_only_src =
+                is_release && uses[src as usize].len() == 1 && term_uses[src as usize].is_empty();
             if here.len() != 1
-                || (consumes(inst, dst) && !releases_only_src)
+                || (consumes(inst, dst) && !is_release)
                 || defs_at(&reach, f, ubi, uii, src) != src_defs
             {
                 ok = false;
                 break;
             }
-            reads.push((ubi, uii));
+            if is_release && !releases_only_src {
+                // Otherwise the source still holds the value: releasing the
+                // copy only lowers its count, which nothing can tell; it
+                // goes with the copy.
+                drops.push((ubi, uii));
+            } else {
+                reads.push((ubi, uii));
+            }
         }
         if ok {
             for &bi in &term_uses[dst as usize] {
@@ -140,9 +154,10 @@ fn propagate_in(f: &mut Function) -> bool {
         if !ok {
             continue;
         }
-        touched.insert(dst);
-        touched.insert(src);
+        removed.insert(dst);
+        sources.insert(src);
         delete.insert(site);
+        delete.extend(drops);
         redirect.extend(reads.into_iter().map(|s| (s, dst, src)));
         term_redirect.extend(term_reads.into_iter().map(|b| (b, dst, src)));
     }

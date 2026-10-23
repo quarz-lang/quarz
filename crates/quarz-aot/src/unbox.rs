@@ -20,7 +20,8 @@ use quarz_ir::*;
 pub enum State {
     /// Anything: only the boxed home is valid.
     Unknown,
-    /// Nil, a boolean or a number: no release needed on overwrite.
+    /// Nil, a boolean, a number or a class: no release needed on
+    /// overwrite.
     NonHeap,
     Bool,
     Int,
@@ -397,6 +398,7 @@ pub fn transfer(
             }
         }
         Inst::Release { src } => st[*src as usize] = State::NonHeap,
+        Inst::ClassRef { dst, .. } => st[*dst as usize] = State::NonHeap,
         // A parameter or field of a numeric type is checked once and
         // then known (the check fails into the interpreter).
         Inst::Arg { dst, index } => {
