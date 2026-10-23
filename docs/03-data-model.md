@@ -113,6 +113,32 @@ end
 
 The Ruby-style design of "line up `attr_accessor`s and change state through setters" requires writing `var` in Quarz, making the intent explicit. The number of `var`s is a measure of how risky a class is with respect to concurrency.
 
+### Lifetimes and `deinitialize`
+
+Memory is reference counted ([05-execution.md](05-execution.md) §5), so a value is released when its last reference goes, and most values are released at their last use. A value whose release can be observed lives to the end of its scope instead, as in Swift (since 5.7), C++ and Rust:
+
+```ruby
+class TempFile
+  @path: String
+  def initialize(@path: String) end
+  def deinitialize
+    File.delete(@path)
+  end
+end
+
+def with_scratch -> Nil
+  f = TempFile.new("/tmp/scratch")
+  File.write("/tmp/scratch", "data")   # f is not used after this line,
+  run_tool("/tmp/scratch")             # but the file is still there
+end                                    # here f goes, and the file with it
+```
+
+- `def deinitialize` (no parameters; in a class or a module a class includes, not in a `data` type, enum, built-in value class or extension) runs when an instance's last reference goes. An exception it raises is reported on standard error as a warning and goes no further.
+- A local variable, parameter or block parameter lives to the end of its scope (the method, or each pass of the block), or until it is reassigned, when its type may hold such a value: any class or module type (a subclass may define `deinitialize` or hold an IO handle, and subclasses are not looked at, as for Shareable), a procedure (what it captured), an `Enumerator`, a type parameter, and a built-in collection, `data` type, enum, union or tuple holding one of these. `Int`, `String`, `Array[Int]` and `data Point = (x: Float, y: Float)` are released at their last use, and the in-place updates of §2 are unaffected. So a server socket used only to learn its port stays open: `server = TCPServer.new(host, 0); port = server.local_address.port` and the rest of the method can connect to it.
+- A statement's unused value of such a type (`Lock.new(..)` on its own line) is released at the end of the statement; one returned from the method lives on with the caller.
+- `deinitialize` runs where the release happens when that is the end of a scope or statement; a release elsewhere (a reassignment, an element dropped from a collection) runs it when the method that released it returns, or at the next end of a scope, whichever comes first. It runs on the worker that dropped the last reference, as part of the task running there.
+- Objects still referenced when the program exits are not finalized. Use `ensure` (or a block-taking API, `File.open(path) { }`) for what must happen at a definite point; `deinitialize` is for releasing what an object owns.
+
 ## 5. Shareable
 
 A type is `Shareable` when its values **can safely be passed to another task**. For `data` and `enum` types the compiler derives it from their fields; a class declares it with `include Shareable` (or inherits it), and the compiler checks the class and every subclass against the rules where each is defined. A class is not Shareable just because its fields are: a subclass could add mutable state, and a value of the class's type may be of the subclass.

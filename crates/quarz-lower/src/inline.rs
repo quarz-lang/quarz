@@ -318,6 +318,7 @@ pub(crate) fn rewrite_with(
             dst: r(dst),
             src: r(src),
         },
+        Inst::Release { src } => Inst::Release { src: r(src) },
         Inst::SelfRef { dst } => Inst::SelfRef { dst: r(dst) },
         Inst::Arg { dst, index } => Inst::Arg {
             dst: r(dst),

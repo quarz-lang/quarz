@@ -711,3 +711,67 @@ fn module_contracts() {
     // Marker modules are fine.
     ok("module Marker\nend\nclass A\n  include Marker\nend\nputs 1");
 }
+
+#[test]
+fn deinitialize_declarations() {
+    ok("class R\n  def deinitialize\n    puts 1\n  end\nend");
+    ok("module Cleanup\n  def deinitialize -> Nil = nil\nend\nclass R\n  include Cleanup\nend");
+    err(
+        "class R\n  def deinitialize(x: Int) = nil\nend",
+        "`deinitialize` takes no parameters",
+    );
+    err(
+        "data D(x: Int)\n  def deinitialize = nil\nend",
+        "`deinitialize` can only be defined in a class or module",
+    );
+    err(
+        "extension String\n  def deinitialize = nil\nend",
+        "`deinitialize` can only be defined in a class or module",
+    );
+}
+
+/// The top-level variables of `src` whose release may be observed.
+fn lexical_vars(src: &str) -> Vec<u32> {
+    let prelude = parse(PRELUDE_SOURCE);
+    let base = unit_base(0);
+    let parsed = parse_with_bases(src, base, base);
+    let (checked, diags) = check(&prelude.program, &parsed.program);
+    assert!(
+        diags.iter().all(|(_, d)| !d.is_error()),
+        "errors for {src:?}"
+    );
+    let out = checked.expect("checked").output;
+    let mut slots: Vec<u32> = out
+        .lexical_slots
+        .iter()
+        .filter(|(owner, _)| *owner == quarz_types::SelfOwner::Unit(1))
+        .map(|(_, s)| *s)
+        .collect();
+    slots.sort_unstable();
+    slots
+}
+
+#[test]
+fn lexical_lifetimes_by_type() {
+    // Values, collections of values and data of values are released at
+    // their last use; objects (any class: a subclass may hold a socket or
+    // define `deinitialize`), procedures, and what holds them, at the end
+    // of the scope.
+    assert_eq!(
+        lexical_vars(
+            "data P = (x: Int)\ndata Q = (o: Object)\n\
+             a = 1\ns = \"x\"\nxs = [1]\np = P.new(1)\n\
+             o = Object.new\nf = ->() { 1 }\nos = [Object.new]\nq = Q.new(Object.new)\nh = {a: f}"
+        ),
+        vec![4, 5, 6, 7, 8]
+    );
+    // A recursive data type holding nothing observable is not.
+    assert_eq!(
+        lexical_vars(
+            "data Node = (rest: Node?, v: Int)\nn = Node.new(nil, 1)\n\
+             enum T = Leaf(v: Int) | Two(l: T, r: T)\nt = T::Leaf.new(1)\n\
+             enum U = Hold(o: Object) | Both(l: U, r: U)\nu = U::Hold.new(Object.new)"
+        ),
+        vec![2]
+    );
+}

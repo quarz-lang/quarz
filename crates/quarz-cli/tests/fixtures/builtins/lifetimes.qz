@@ -1,0 +1,97 @@
+# A variable whose release can be observed (an IO handle, an object whose
+# class defines `deinitialize`) lives to the end of its scope, not its
+# last use; `deinitialize` runs when the last reference goes.
+require "socket"
+
+class Res
+  @name: String
+  def initialize(@name: String) end
+  def name -> String = @name
+  def deinitialize
+    puts "deinitialize #{@name}"
+  end
+end
+
+# At the end of the method, after its last statement.
+def scoped -> Nil
+  r = Res.new("method")
+  puts "used #{r.name}"
+  puts "last statement"
+  nil
+end
+scoped
+puts "after the call"
+
+# At the end of each pass of a block, inlined or not.
+2.times { |i| r = Res.new("pass #{i}"); puts "in #{r.name}" }
+[1].each_with_index { |x, i| r = Res.new("block #{x}"); puts "in #{r.name}" }
+def each_twice(&: (Int) -> Nil) -> Nil
+  yield 1
+  yield 2
+end
+each_twice { |i| r = Res.new("yielded #{i}"); puts "in #{r.name}" }
+puts "after the loops"
+
+# Reassigned: the old value goes.
+v = Res.new("first")
+v = Res.new("second")
+puts "reassigned to #{v.name}"
+
+# A statement's unused value, at the end of the statement.
+Res.new("temporary")
+puts "after the temporary"
+
+# Returned: it lives on with the caller.
+def make(name: String) -> Res
+  r = Res.new(name)
+  puts "made #{r.name}"
+  r
+end
+kept = make("returned")
+puts "kept #{kept.name}"
+
+# Kept elsewhere: not released.
+list = [Res.new("in a list")]
+puts "listed #{list.size}"
+list = []
+puts "list emptied"
+
+# A value held by a field goes with its holder.
+class Holder
+  @res: Res
+  def initialize(@res: Res) end
+end
+def hold -> Nil
+  h = Holder.new(Res.new("held"))
+  puts "holding"
+  nil
+end
+hold
+
+# An exception from `deinitialize` is a warning; the program goes on.
+class Faulty
+  def deinitialize
+    raise "failed to clean up"
+  end
+end
+Faulty.new
+puts "after the faulty one"
+
+# A server socket used only to learn its port stays open to the end of
+# the scope, so connecting to it works; so does a socket in an object.
+server = TCPServer.new("127.0.0.1", 0)
+port = server.local_address.port
+client = TCPSocket.new("127.0.0.1", port)
+p client.closed?
+class Conn
+  @sock: TCPSocket
+  def initialize(@sock: TCPSocket) end
+  def sock -> TCPSocket = @sock
+end
+def through_object(port: Int) -> Bool
+  conn = Conn.new(TCPSocket.new("127.0.0.1", port))
+  s = conn.sock
+  s.closed?
+end
+p through_object(port)
+puts "end"

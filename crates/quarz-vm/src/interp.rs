@@ -770,7 +770,45 @@ impl Interp {
             root_task: Cell::new(None),
         });
         *interp.self_rc.borrow_mut() = std::rc::Rc::downgrade(&interp);
+        let deinit: Vec<bool> = (0..interp.program.world.classes.len() as ClassId)
+            .map(|c| interp.deinitializer(c).is_some())
+            .collect();
+        crate::deinit::set_classes(deinit);
         interp
+    }
+
+    /// The `deinitialize` instances of class `cid` run when released.
+    fn deinitializer(&self, cid: ClassId) -> Option<MethodId> {
+        let world = &self.program.world;
+        world.class(cid).ancestors.iter().find_map(|a| {
+            world
+                .class(*a)
+                .methods
+                .get("deinitialize")
+                .and_then(|ms| ms.first().copied())
+        })
+    }
+
+    /// Run the `deinitialize` of the objects released since the last
+    /// time (see `crate::deinit`). An exception it raises is reported as
+    /// a warning; it does not reach the code that released the object.
+    #[cold]
+    #[inline(never)]
+    pub fn run_deinitializers(&self) {
+        crate::deinit::run(|obj| {
+            let Some(mid) = self.deinitializer(obj.class) else {
+                return;
+            };
+            let recv = Value::Object(obj);
+            if let Err(Flow::Raise(e)) = self.invoke(mid, recv, smallvec![], Vec::new(), None) {
+                self.flush();
+                eprintln!(
+                    "warning: deinitialize raised {}: {}",
+                    self.class_name(&e),
+                    self.exception_message(&e)
+                );
+            }
+        });
     }
 
     pub fn rc(&self) -> std::rc::Rc<Interp> {

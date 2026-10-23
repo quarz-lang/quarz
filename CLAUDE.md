@@ -55,10 +55,15 @@ when the local one is older.
 
 ## Invariants that are easy to break
 
-- Lowering ends with: copy propagation → `regshare` (register sharing)
-  → `live::mark_moves` (`Take`, `Call::moved`, `OwnedCall::unused`) →
-  `own_dying_receivers`. Anything that renumbers or moves instructions
-  must run before `mark_moves`.
+- Lowering ends with: copy propagation → `release::drop_unobserved` →
+  `regshare` (register sharing) → `live::mark_moves` (`Take`,
+  `Call::moved`, `OwnedCall::unused`) → `own_dying_receivers`. Anything
+  that renumbers or moves instructions must run before `mark_moves`.
+- `Inst::Release` ends the scope of a variable whose release may be
+  observed (`World::release_observable`: IO, `deinitialize`, any class
+  type, procs, type parameters); it reads and writes the same register,
+  so a pass that redirects reads must not redirect it to another
+  variable (see `copyprop::consumes`).
 - `quarz build` embeds the QIR it compiled, and deoptimization resumes
   the interpreter on the compiled code's registers: the machine code and
   the embedded QIR must come from the same lowering.

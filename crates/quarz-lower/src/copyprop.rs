@@ -38,6 +38,9 @@ fn consumes(inst: &Inst, r: Reg) -> bool {
             ..
         } => *q == r,
         Inst::ArrayPush { arr, .. } => *arr == r,
+        // It releases what it reads: redirected, it releases the copy's
+        // source (see `propagate_in`).
+        Inst::Release { src } => *src == r,
         _ => false,
     }
 }
@@ -100,8 +103,15 @@ fn propagate_in(f: &mut Function) -> bool {
             if !here.contains(&site) {
                 continue;
             }
+            let inst = &f.blocks[ubi].insts[uii];
+            // A `Release` of the copy may release the source instead when
+            // the copy is all that reads the source (the variable a loop
+            // element goes into, say).
+            let releases_only_src = matches!(inst, Inst::Release { .. })
+                && uses[src as usize].len() == 1
+                && term_uses[src as usize].is_empty();
             if here.len() != 1
-                || consumes(&f.blocks[ubi].insts[uii], dst)
+                || (consumes(inst, dst) && !releases_only_src)
                 || defs_at(&reach, f, ubi, uii, src) != src_defs
             {
                 ok = false;

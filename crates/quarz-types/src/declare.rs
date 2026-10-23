@@ -1360,7 +1360,9 @@ impl<'ast> Declarer<'ast> {
         }
         let ret = match &def.ret {
             Some(t) => RetType::Known(self.resolve_type(t, &scope).unwrap_or(Type::Nothing)),
-            None if def.name == "initialize" => RetType::Known(self.world.nil()),
+            None if def.name == "initialize" || def.name == "deinitialize" => {
+                RetType::Known(self.world.nil())
+            }
             None if def.is_abstract || def.is_native => {
                 self.error("abstract and native methods need a return type", def.span);
                 RetType::Known(self.world.nil())
@@ -1394,6 +1396,22 @@ impl<'ast> Declarer<'ast> {
             if owner == b.bool_ || owner == b.nil {
                 self.error(
                     format!("`{}` cannot be defined on Bool or Nil", def.name),
+                    def.span,
+                );
+            }
+        }
+        if def.name == "deinitialize" && !def.singleton {
+            // Run by the runtime when an instance's last reference goes.
+            if !def.params.list.is_empty() || block.is_some() {
+                self.error("`deinitialize` takes no parameters", def.span);
+            }
+            let kind = self.world.class(owner).kind;
+            if extension.is_some()
+                || self.world.is_value_class(owner)
+                || !matches!(kind, ClassKind::Class | ClassKind::Module)
+            {
+                self.error(
+                    "`deinitialize` can only be defined in a class or module (not a built-in value class, `data` type, enum or extension)",
                     def.span,
                 );
             }

@@ -399,6 +399,7 @@ pub fn heap_possible(f: &Function, methods: &[RtMethod]) -> Vec<bool> {
                 | Inst::FieldSet { .. }
                 | Inst::ArrayPush { .. }
                 | Inst::ClearRegs { .. }
+                | Inst::Release { .. }
                 | Inst::NoMatch { .. } => {}
             }
         }

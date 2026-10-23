@@ -118,6 +118,13 @@ pub struct Output {
     /// with their `!` (a value of another member gets the built-in
     /// negation).
     pub not_dispatch: FxHashMap<NodeId, Vec<(Type, MethodId)>>,
+    /// The variables (frame, slot) whose release may be observed
+    /// (`World::release_observable`): they live to the end of their
+    /// scope, not their last use.
+    pub lexical_slots: rustc_hash::FxHashSet<(SelfOwner, u32)>,
+    /// Statements whose value is not used and may be released observably
+    /// (`Res.new(..)` on its own): released at the end of the statement.
+    pub released_stmts: rustc_hash::FxHashSet<NodeId>,
 }
 
 #[derive(Clone, Debug)]
@@ -288,6 +295,14 @@ pub struct Checker {
     infer: InferTable,
     env: Env,
     touched: Vec<NodeId>,
+    /// The variables of the frames checked since the last
+    /// `finish_frame_types`, with their declared types: those whose
+    /// release may be observed go to `Output::lexical_slots`.
+    frame_vars: Vec<(SelfOwner, u32, Type)>,
+    /// Statements whose value is not used (calls, literals) since the last
+    /// `finish_frame_types`: those whose release may be observed go to
+    /// `Output::released_stmts`.
+    temp_stmts: Vec<NodeId>,
     /// The pseudo-class of each file's top-level methods, by file index.
     file_mains: Vec<Option<ClassId>>,
     /// The REPL's top-level environment, kept across inputs.
@@ -361,6 +376,8 @@ impl Checker {
             infer: InferTable::default(),
             env,
             touched: Vec::new(),
+            frame_vars: Vec::new(),
+            temp_stmts: Vec::new(),
             file_mains,
             repl_env: None,
             in_progress: Vec::new(),
@@ -671,6 +688,8 @@ impl Checker {
             let saved_env = std::mem::replace(&mut self.env, env);
             let saved_infer = std::mem::take(&mut self.infer);
             let saved_touched = std::mem::take(&mut self.touched);
+            let saved_frame_vars = std::mem::take(&mut self.frame_vars);
+            let saved_temp_stmts = std::mem::take(&mut self.temp_stmts);
             let saved_active =
                 std::mem::replace(&mut self.world.active_extensions, class.usings.clone());
             for f in &class.fields {
@@ -694,6 +713,8 @@ impl Checker {
             self.env = saved_env;
             self.infer = saved_infer;
             self.touched = saved_touched;
+            self.frame_vars = saved_frame_vars;
+            self.temp_stmts = saved_temp_stmts;
             self.world.active_extensions = saved_active;
         }
     }
@@ -723,6 +744,9 @@ impl Checker {
         for (i, expr) in body.iter().enumerate() {
             self.stmt_unused = !(last_used && i + 1 == body.len());
             let t = self.check_expr(expr, None);
+            if i + 1 < body.len() {
+                self.note_temp_stmt(expr);
+            }
             if t.is_nothing() {
                 // Statements after `exit` etc. are unreachable; keep going
                 // for diagnostics.
@@ -847,8 +871,63 @@ impl Checker {
         }
     }
 
+    /// Note a statement whose value is not used, if it makes a new value
+    /// (a call or literal, not a variable or an assignment's), for
+    /// `finish_frame_types`.
+    fn note_temp_stmt(&mut self, e: &Expr) {
+        let fresh = match &e.kind {
+            ExprKind::Call(_) => !self.out.bang_assign.contains(&e.id),
+            ExprKind::Yield(_)
+            | ExprKind::Super { .. }
+            | ExprKind::Array(_)
+            | ExprKind::Hash(_)
+            | ExprKind::Lambda(_) => true,
+            _ => false,
+        };
+        if fresh {
+            self.temp_stmts.push(e.id);
+        }
+    }
+
+    /// Note a frame's variables for `finish_frame_types`.
+    fn note_frame_vars(&mut self, frame: &Frame) {
+        if frame.owner == SelfOwner::Init {
+            return;
+        }
+        for (i, v) in frame.vars.iter().enumerate() {
+            self.frame_vars
+                .push((frame.owner, i as u32, v.declared.clone()));
+        }
+    }
+
+    fn note_lexical(&mut self, owner: SelfOwner, slot: u32, t: &Type) {
+        let t = self.infer.resolve(t);
+        if self.world.release_observable(&t) {
+            self.out.lexical_slots.insert((owner, slot));
+        }
+    }
+
     /// Resolve the types recorded for the nodes of the frame just checked.
     fn finish_frame_types(&mut self) {
+        let root = std::mem::take(&mut self.env.frames[0].vars);
+        let owner = self.env.frames[0].owner;
+        if owner != SelfOwner::Init {
+            for (i, v) in root.iter().enumerate() {
+                self.note_lexical(owner, i as u32, &v.declared);
+            }
+        }
+        self.env.frames[0].vars = root;
+        for (owner, slot, t) in std::mem::take(&mut self.frame_vars) {
+            self.note_lexical(owner, slot, &t);
+        }
+        for id in std::mem::take(&mut self.temp_stmts) {
+            if let Some(t) = self.out.node_types.get(&id) {
+                let t = self.infer.resolve(t);
+                if self.world.release_observable(&t) {
+                    self.out.released_stmts.insert(id);
+                }
+            }
+        }
         let touched = std::mem::take(&mut self.touched);
         for id in touched {
             if let Some(t) = self.out.node_types.get(&id) {
@@ -1034,6 +1113,8 @@ impl Checker {
         let saved_env = std::mem::replace(&mut self.env, env);
         let saved_infer = std::mem::take(&mut self.infer);
         let saved_touched = std::mem::take(&mut self.touched);
+        let saved_frame_vars = std::mem::take(&mut self.frame_vars);
+        let saved_temp_stmts = std::mem::take(&mut self.temp_stmts);
         let saved_active = std::mem::replace(&mut self.world.active_extensions, active);
 
         // Parameter slots are the first slots of the frame.
@@ -1156,6 +1237,8 @@ impl Checker {
         self.env = saved_env;
         self.infer = saved_infer;
         self.touched = saved_touched;
+        self.frame_vars = saved_frame_vars;
+        self.temp_stmts = saved_temp_stmts;
         self.world.active_extensions = saved_active;
         self.world.self_bound = saved_bound;
         self.in_progress.pop();
@@ -1191,6 +1274,8 @@ impl Checker {
         let saved_env = std::mem::replace(&mut self.env, env);
         let saved_infer = std::mem::take(&mut self.infer);
         let saved_touched = std::mem::take(&mut self.touched);
+        let saved_frame_vars = std::mem::take(&mut self.frame_vars);
+        let saved_temp_stmts = std::mem::take(&mut self.temp_stmts);
         let t = self.check_expr(&value, None);
         let t = self.infer.resolve(&t);
         if t.has_vars() {
@@ -1213,6 +1298,8 @@ impl Checker {
         self.env = saved_env;
         self.infer = saved_infer;
         self.touched = saved_touched;
+        self.frame_vars = saved_frame_vars;
+        self.temp_stmts = saved_temp_stmts;
         self.world.consts[cid as usize].ty = Some(t.clone());
         self.world.consts[cid as usize].checking = false;
         t
@@ -1846,6 +1933,9 @@ impl Checker {
             }
             self.stmt_unused = !last || void;
             let t = self.check_expr(e, if last { expected } else { None });
+            if !last {
+                self.note_temp_stmt(e);
+            }
             if t.is_nothing() {
                 dead = true;
                 result = Type::Nothing;
@@ -5217,6 +5307,7 @@ impl Checker {
             );
         }
         let frame = self.env.frames.pop().unwrap();
+        self.note_frame_vars(&frame);
         self.env.blocks.pop();
         (self.env.task_frame, self.env.task_shareable_proc) = saved_task_frame;
         self.leave_receiver(saved_self);
@@ -5387,6 +5478,7 @@ impl Checker {
         }
         (self.env.task_frame, self.env.task_shareable_proc) = saved_task_frame;
         let frame = self.env.frames.pop().unwrap();
+        self.note_frame_vars(&frame);
         self.env.blocks.pop();
         self.leave_receiver(saved_self);
         self.out.frame_sizes.insert(id, frame.vars.len() as u32);

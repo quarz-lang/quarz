@@ -585,6 +585,13 @@ pub enum Inst {
         from: Reg,
         to: Reg,
     },
+    /// The end of the scope of a variable whose release may be observed
+    /// (an IO handle, an object with `deinitialize`): it lives to here,
+    /// not its last use, and is released here (`src` left nil), then the
+    /// `deinitialize` of what was released runs.
+    Release {
+        src: Reg,
+    },
     /// The fields of an object as an array.
     ObjectFields {
         dst: Reg,
@@ -694,6 +701,7 @@ impl Inst {
             | Inst::CatchException { dst }
             | Inst::CatchAny { dst } => vec![*dst],
             Inst::ClearRegs { from, to } => (*from..*to).collect(),
+            Inst::Release { src } => vec![*src],
             Inst::FieldGetByName { dst, found, .. } | Inst::HashGetSym { dst, found, .. } => {
                 vec![*dst, *found]
             }
@@ -728,6 +736,7 @@ impl Inst {
             | Inst::ClearRegs { .. } => {}
             Inst::Move { src, .. }
             | Inst::Take { src, .. }
+            | Inst::Release { src }
             | Inst::Not { src, .. }
             | Inst::IsNil { src, .. }
             | Inst::FrameSet { src, .. }
@@ -870,6 +879,7 @@ impl Inst {
             | Inst::ClearRegs { .. } => vec![],
             Inst::Move { src, .. }
             | Inst::Take { src, .. }
+            | Inst::Release { src }
             | Inst::Not { src, .. }
             | Inst::IsNil { src, .. }
             | Inst::FrameSet { src, .. }

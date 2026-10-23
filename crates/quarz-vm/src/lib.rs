@@ -2,6 +2,7 @@
 //! and the native methods. Compiled programs (`quarz build`) link this
 //! crate as their runtime.
 
+pub mod deinit;
 #[cfg(target_os = "linux")]
 mod epoll;
 pub mod ffi;

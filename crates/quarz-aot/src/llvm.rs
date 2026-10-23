@@ -1020,6 +1020,7 @@ fn emit(module: &Module, opaque: bool) -> Result<String, String> {
             pop_call: declare("qz_pop_call", &[p, p], &[]),
             stack_overflow: declare("qz_stack_overflow", &[p], &[i32_]),
             drop_value: declare("qz_drop_value", &[p], &[]),
+            finalize: Some(declare("qz_finalize", &[p], &[])),
             clone_ptr: declare("qz_clone_ptr", &[p, p], &[]),
             call_static: declare(
                 "qz_call_static",
@@ -1110,6 +1111,10 @@ fn emit(module: &Module, opaque: bool) -> Result<String, String> {
     // !0-!5 describe the unit, !6 and !7 are the branch weights.
     let mut meta_next: u32 = 8;
     let methods = &module.world.methods;
+    // A `Release` runs deinitializers only in a program that has some.
+    let has_deinit = methods
+        .iter()
+        .any(|m| m.name == "deinitialize" && m.func.is_some());
     let mut text = String::new();
     for (i, f) in module.functions.iter().enumerate() {
         let mut entries = vec![(None, funcs[i], None)];
@@ -1142,6 +1147,7 @@ fn emit(module: &Module, opaque: bool) -> Result<String, String> {
                 pop_call: rt.h.pop_call,
                 stack_overflow: rt.h.stack_overflow,
                 drop_value: rt.h.drop_value,
+                finalize: rt.h.finalize.filter(|_| has_deinit),
                 clone_ptr: rt.h.clone_ptr,
                 exec: rt.h.exec,
                 term: rt.h.term,

@@ -385,6 +385,12 @@ impl Interp {
         self.push_call(act);
         let r = self.run_func_inner(fid, act);
         self.pop_call_stack(act);
+        // Objects released in the call are finalized now (when it
+        // returns: an exception on its way out leaves them to the next
+        // return, as compiled code does).
+        if r.is_ok() && crate::deinit::pending() {
+            self.run_deinitializers();
+        }
         r
     }
 
@@ -572,6 +578,13 @@ impl Interp {
                     Inst::ClearRegs { from, to } => {
                         for r in &mut regs[*from as usize..*to as usize] {
                             put(r, Value::Nil);
+                        }
+                        continue;
+                    }
+                    Inst::Release { src } => {
+                        put(&mut regs[*src as usize], Value::Nil);
+                        if crate::deinit::pending() {
+                            self.run_deinitializers();
                         }
                         continue;
                     }
@@ -1518,6 +1531,12 @@ impl Interp {
             Inst::ClearRegs { from, to } => {
                 for r in &mut regs[*from as usize..*to as usize] {
                     *r = Value::Nil;
+                }
+            }
+            Inst::Release { src } => {
+                regs[*src as usize] = Value::Nil;
+                if crate::deinit::pending() {
+                    self.run_deinitializers();
                 }
             }
             Inst::NoMatch { src, is_assert } => {

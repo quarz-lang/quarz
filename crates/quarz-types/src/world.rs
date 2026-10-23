@@ -204,6 +204,10 @@ pub struct ClassInfo {
     pub extensions: Vec<ExtensionId>,
     pub span: Span,
     pub shareable: Option<bool>,
+    /// For a `data`, enum or variant: whether what it holds may be
+    /// released observably (see `World::release_observable`), computed
+    /// once.
+    pub observable: Option<bool>,
     /// Whether `initialize` is generated (data, variants).
     pub auto_initialize: bool,
     /// Source file index (0 = prelude, 1 = the user program).
@@ -273,6 +277,11 @@ pub struct World {
     /// `Self`: the class `Self` is bounded by (there, `Self` is that class
     /// or a subclass, not known which).
     pub self_bound: Option<Type>,
+    /// The `data` types and enums whose observability is being computed
+    /// (`data_observable`), and whether a computation leaned on one of
+    /// them (its negative answer then holds only once they are done).
+    observable_pending: Vec<ClassId>,
+    observable_tentative: bool,
 }
 
 impl World {
@@ -369,6 +378,7 @@ impl World {
             extensions: Vec::new(),
             span,
             shareable: None,
+            observable: None,
             auto_initialize: false,
             file: 0,
             usings: Vec::new(),
@@ -1065,6 +1075,123 @@ impl World {
             }
             Type::Var(_) => true,
         }
+    }
+
+    /// The built-in classes whose values are the runtime's own (no user
+    /// fields, no `deinitialize`): what they hold is their type
+    /// arguments.
+    pub fn is_value_class(&self, id: ClassId) -> bool {
+        let b = &self.builtin;
+        [
+            b.nil,
+            b.bool_,
+            b.int,
+            b.float,
+            b.string,
+            b.symbol,
+            b.array,
+            b.hash,
+            b.set,
+            b.range,
+            b.regexp,
+            b.class_,
+            b.task,
+            b.channel,
+            b.atom,
+            b.scope,
+            b.duration,
+            b.bytes,
+            b.time,
+            b.array_builder,
+            b.bytes_builder,
+            b.hash_builder,
+            b.string_builder,
+            b.set_builder,
+            b.match_data,
+        ]
+        .contains(&id)
+    }
+
+    /// Whether releasing a value of the type may be observed: it may hold
+    /// an IO handle (closed when released) or an object whose class
+    /// defines `deinitialize`. A local variable of such a type lives to
+    /// the end of its scope instead of its last use. Every class and
+    /// module type may (a subclass may define `deinitialize` or hold a
+    /// socket; subclasses are not looked at, as for Shareable), and so
+    /// may a procedure (what it captured), an enumerator and a type
+    /// parameter; the built-in value classes hold what their type
+    /// arguments say, and a `data` type or enum what its fields do.
+    pub fn release_observable(&mut self, t: &Type) -> bool {
+        match t {
+            Type::Nothing | Type::ClassObject(_, _) | Type::Var(_) => false,
+            Type::Class(id, args) => {
+                let id = *id;
+                let own = if self.is_value_class(id) {
+                    false
+                } else {
+                    match self.class(id).kind {
+                        ClassKind::Data | ClassKind::Enum | ClassKind::Variant => {
+                            self.data_observable(id)
+                        }
+                        ClassKind::Class | ClassKind::Module | ClassKind::Main => true,
+                    }
+                };
+                own || args.clone().iter().any(|a| self.release_observable(a))
+            }
+            Type::Union(ms) | Type::Tuple(ms) => {
+                ms.clone().iter().any(|m| self.release_observable(m))
+            }
+            Type::Proc(..) | Type::Param(_) => true,
+        }
+    }
+
+    /// Whether the fields of a `data` type, enum (any variant) or variant
+    /// may hold something released observably, its own type parameters
+    /// aside (`release_observable` looks at the arguments).
+    fn data_observable(&mut self, id: ClassId) -> bool {
+        if let Some(o) = self.class(id).observable {
+            return o;
+        }
+        // A type it holds holds it again: not on that account.
+        if self.observable_pending.contains(&id) {
+            self.observable_tentative = true;
+            return false;
+        }
+        self.observable_pending.push(id);
+        let class = self.class(id);
+        let enum_params = class.variant_of.map(|e| self.class(e).type_params.clone());
+        let erase: HashMap<TypeParamId, Type> = class
+            .type_params
+            .iter()
+            .chain(enum_params.iter().flatten())
+            .map(|p| (p.id, Type::Nothing))
+            .collect();
+        let mut result = false;
+        for (f, subst) in self.all_fields(id) {
+            let ty = f.ty.subst(&subst).subst(&erase);
+            if self.release_observable(&ty) {
+                result = true;
+                break;
+            }
+        }
+        if !result && self.class(id).kind == ClassKind::Enum {
+            for v in self.class(id).variants.clone() {
+                if self.data_observable(v) {
+                    result = true;
+                    break;
+                }
+            }
+        }
+        self.observable_pending.pop();
+        // A negative answer that assumed an enclosing type's is kept only
+        // once the outermost is done.
+        if result || self.observable_pending.is_empty() || !self.observable_tentative {
+            self.class_mut(id).observable = Some(result);
+        }
+        if self.observable_pending.is_empty() {
+            self.observable_tentative = false;
+        }
+        result
     }
 
     /// Whether values of class `id` (with any Shareable type arguments)

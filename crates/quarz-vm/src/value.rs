@@ -528,6 +528,23 @@ pub struct Object {
     /// Exceptions only: what was captured when raised (written once,
     /// possibly by one of several threads raising a shared exception).
     exc: std::sync::OnceLock<Box<ExcInfo>>,
+    /// Whether its `deinitialize` has run (or is to run): released again,
+    /// it is freed (see `crate::deinit`).
+    deinitialized: Cell<bool>,
+}
+
+impl Drop for Object {
+    fn drop(&mut self) {
+        // The last reference went: an object whose class defines
+        // `deinitialize` lives on, rebuilt from its fields, until the
+        // method has run on it.
+        if !self.deinitialized.get() && crate::deinit::has(self.class) {
+            let fields = std::mem::take(self.fields.get_mut());
+            let o = Object::new(self.class, fields);
+            o.deinitialized.set(true);
+            crate::deinit::queue(o);
+        }
+    }
 }
 
 /// The backtrace and cause of a raised exception.
@@ -545,6 +562,7 @@ impl Object {
             class,
             fields: std::cell::UnsafeCell::new(fields),
             exc: std::sync::OnceLock::new(),
+            deinitialized: Cell::new(false),
         });
         o.bind_fields();
         o
@@ -570,6 +588,7 @@ impl Object {
             fields.set_len(n);
             std::ptr::write(&raw mut (*p).fields, std::cell::UnsafeCell::new(fields));
             std::ptr::write(&raw mut (*p).exc, std::sync::OnceLock::new());
+            std::ptr::write(&raw mut (*p).deinitialized, Cell::new(false));
             let rc = rc.assume_init();
             rc.bind_fields();
             rc

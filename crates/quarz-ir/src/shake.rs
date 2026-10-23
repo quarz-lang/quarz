@@ -35,6 +35,8 @@ const RUNTIME_NAMES: &[&str] = &[
     "status",
     "to_json",
     "initialize",
+    // Run when an object's last reference goes.
+    "deinitialize",
     "message",
     "call",
     // Enumerators made by natives call these on their receiver.

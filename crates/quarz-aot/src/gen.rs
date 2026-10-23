@@ -45,6 +45,9 @@ pub(crate) struct Helpers<F> {
     pub pop_call: F,
     pub stack_overflow: F,
     pub drop_value: F,
+    /// `qz_finalize`: run the `deinitialize` of what was released (none
+    /// when the program defines no `deinitialize`).
+    pub finalize: Option<F>,
     pub clone_ptr: F,
     pub exec: F,
     pub term: F,
@@ -165,6 +168,7 @@ pub(crate) fn gen_function<B: Builder>(
         entry_of,
     } = t;
     let drop_value_fn = h.drop_value;
+    let finalize_fn = h.finalize;
     let pop_call = h.pop_call;
     let heap = quarz_ir::live::heap_possible(f, methods);
     // Unboxed numbers: the state of each register at each block's
@@ -308,7 +312,8 @@ pub(crate) fn gen_function<B: Builder>(
                 | Inst::Not { .. }
                 | Inst::IsNil { .. }
                 | Inst::ClassIs { .. }
-                | Inst::ClearRegs { .. } => true,
+                | Inst::ClearRegs { .. }
+                | Inst::Release { .. } => true,
                 Inst::Arg { .. } => typed.is_some(),
                 Inst::BinOp { .. } => {
                     unbox::bin_types(inst, methods, builtin).is_some() && !unbox::float_mod(inst)
@@ -577,6 +582,7 @@ pub(crate) fn gen_function<B: Builder>(
                 for k in (0..g.nregs).filter(|&k| heap[k]) {
                     g.release(k as Reg);
                 }
+                g.finalize();
                 let fast = g.typed_fast_exit.expect("typed");
                 g.b.jump(fast, &[bits]);
             }
@@ -595,6 +601,7 @@ pub(crate) fn gen_function<B: Builder>(
                 for k in (0..g.nregs).filter(|&k| heap[k]) {
                     g.release(k as Reg);
                 }
+                g.finalize();
                 let ok = g.b.iconst(Ty::I32, 0);
                 g.b.jump(exit_quick, &[ok]);
             }
@@ -649,6 +656,19 @@ pub(crate) fn gen_function<B: Builder>(
         emit_release_ptr(b, drop_value_fn, p);
         b.jump(next, &[]);
         b.switch_to_block(next);
+    }
+    // What the registers held is finalized as the function ends (as the
+    // interpreter does when a function returns), unless a flow is on
+    // its way out.
+    if let Some(finalize) = finalize_fn {
+        let ok_b = b.create_block();
+        let done_b = b.create_block();
+        let ok = b.icmp_imm(IntCC::Equal, status, 0);
+        b.brif(ok, ok_b, &[], done_b, &[]);
+        b.switch_to_block(ok_b);
+        b.call(finalize, &[rt]);
+        b.jump(done_b, &[]);
+        b.switch_to_block(done_b);
     }
     match typed_exit {
         Some((te, ..)) => b.jump(te, &[status]),
@@ -1366,6 +1386,14 @@ impl<B: Builder> Gen<'_, B> {
         let status = self.b.block_params(done)[0];
         release_args(self);
         self.check(status, unwind);
+    }
+
+    /// Run the `deinitialize` of what was released (in a program that
+    /// defines one).
+    fn finalize(&mut self) {
+        if let Some(finalize) = self.h.finalize {
+            self.b.call(finalize, &[self.rt]);
+        }
     }
 
     /// Release the value at `p` (leaving nil) when it is reference counted.
@@ -2985,6 +3013,18 @@ impl<B: Builder> Gen<'_, B> {
                     self.states[r as usize] = State::NonHeap;
                 }
             }
+            // The end of a variable's scope: released, then what it held
+            // finalized.
+            Inst::Release { src } => {
+                if self.states[*src as usize].needs_release() {
+                    self.release(*src);
+                    self.store_tag(*src, TAG_NIL);
+                } else {
+                    self.stale[*src as usize] = true;
+                }
+                self.states[*src as usize] = State::NonHeap;
+                self.finalize();
+            }
             Inst::ClassIs { dst, src, class } => {
                 // An object of exactly the class: its id is read from the
                 // allocation; anything else (an unboxed number, another
@@ -3327,6 +3367,15 @@ impl<B: Builder> Gen<'_, B> {
                     &[self.rt, self.regs, class_v, init_v, self.scratch, nargs, d],
                 )[0];
                 self.check(status, unwind);
+                // The runtime copied the arguments: those read for the
+                // last time are released now, as the interpreter moves
+                // them (what `initialize` kept stays).
+                for r in args {
+                    if *r != *dst && self.movable(inst, *r, block, index) {
+                        self.drop_moved(*r);
+                        self.states[*r as usize] = State::NonHeap;
+                    }
+                }
             }
             Inst::OwnedCall {
                 dst,

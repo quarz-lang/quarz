@@ -122,6 +122,7 @@ pub fn reads_no_home(inst: &Inst) -> bool {
             | Inst::CatchException { .. }
             | Inst::CatchAny { .. }
             | Inst::ClearRegs { .. }
+            | Inst::Release { .. }
     )
 }
 
@@ -306,6 +307,7 @@ pub fn transfer(
                 st[r as usize] = State::NonHeap;
             }
         }
+        Inst::Release { src } => st[*src as usize] = State::NonHeap,
         // A parameter or field of a numeric type is checked once and
         // then known (the check fails into the interpreter).
         Inst::Arg { dst, index } => {

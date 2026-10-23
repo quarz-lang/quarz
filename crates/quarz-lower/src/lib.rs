@@ -19,6 +19,7 @@ mod inline;
 mod iter;
 pub(crate) mod layout;
 mod regshare;
+mod release;
 
 mod rtworld;
 mod sroa;
@@ -238,6 +239,7 @@ pub fn lower_checked(checked: &Checked, files: &[SourceFile]) -> Module {
     inline::inline_calls(&mut functions, &delta.world.methods, 2);
     sroa::scalar_replace(&mut functions, &delta.world.methods, &delta.world.classes);
     copyprop::propagate_copies(&mut functions);
+    release::drop_unobserved(&mut functions, &delta.world.methods, &delta.world.builtin);
     regshare::share_registers(&mut functions, &delta.world.methods);
     // Last: where values move rather than copy, for every way the
     // functions run.

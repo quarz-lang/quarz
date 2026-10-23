@@ -39,9 +39,22 @@ struct LoopCtx {
 
 /// A block lowered in place (see `iter`): its variables are registers of
 /// the enclosing function.
-#[derive(Default)]
 struct InlineLevel {
     slot_regs: HashMap<u32, Reg>,
+    /// The block's frame, for `Output::lexical_slots`.
+    owner: SelfOwner,
+    /// Its variables that live to the end of each pass of the body.
+    lexical: Vec<Reg>,
+}
+
+impl InlineLevel {
+    fn new(owner: SelfOwner) -> InlineLevel {
+        InlineLevel {
+            slot_regs: HashMap::default(),
+            owner,
+            lexical: Vec::new(),
+        }
+    }
 }
 
 /// A protected region: its handler, and its `ensure` body when a jump out
@@ -79,6 +92,12 @@ pub struct FnBuilder<'a> {
     slot_regs: HashMap<u32, Reg>,
     /// The blocks currently being lowered in place, outermost first.
     inline: Vec<InlineLevel>,
+    /// This function's frame, for `Output::lexical_slots` (none for an
+    /// initializer).
+    owner: Option<SelfOwner>,
+    /// Its variables that live to the end of the function (`Inst::Release`
+    /// before it returns) rather than their last use.
+    lexical: Vec<Reg>,
     /// Inside an `instance_exec` block lowered in place: the register
     /// holding the receiver, which `self` means here.
     self_override: Option<Reg>,
@@ -132,6 +151,8 @@ impl<'a> FnBuilder<'a> {
             all_captured,
             slot_regs: HashMap::default(),
             inline: Vec::new(),
+            owner: None,
+            lexical: Vec::new(),
             self_override: None,
             loops: Vec::new(),
             handlers: vec![Region {
@@ -170,8 +191,31 @@ impl<'a> FnBuilder<'a> {
         }
     }
 
-    fn finish(self) -> Function {
+    /// The function, its lexical variables released at each exit (but the
+    /// one it returns).
+    fn finish(mut self) -> Function {
+        if !self.lexical.is_empty() {
+            for blk in self.func.blocks.iter_mut() {
+                let (Term::Return(v) | Term::BreakOut(v) | Term::ReturnOut(v)) = blk.term else {
+                    continue;
+                };
+                for &src in &self.lexical {
+                    if src != v {
+                        blk.insts.push(Inst::Release { src });
+                        blk.lines.push(blk.term_line);
+                    }
+                }
+            }
+        }
         self.func
+    }
+
+    /// Release the lexical variables of a block lowered in place at the end
+    /// of a pass of its body (where control is now).
+    fn release_inline(&mut self, level: InlineLevel) {
+        for src in level.lexical {
+            self.emit(Inst::Release { src });
+        }
     }
 
     // ----- entry points ------------------------------------------------------------------
@@ -206,6 +250,7 @@ impl<'a> FnBuilder<'a> {
             Some(mid),
             Some(m.owner),
         );
+        b.owner = Some(SelfOwner::Method(mid));
         // Parameters: bound by the runtime into argument slots in order;
         // the `&block` parameter comes last.
         for (i, p) in m.params.iter().enumerate() {
@@ -333,6 +378,7 @@ impl<'a> FnBuilder<'a> {
             None,
             Some(unit.main_class),
         );
+        b.owner = Some(SelfOwner::Unit(unit.file));
         b.store_self_slot(SelfOwner::Unit(unit.file));
         let v = b.body(unit.body);
         b.term(Term::Return(v));
@@ -381,6 +427,7 @@ impl<'a> FnBuilder<'a> {
         );
         b.is_block = true;
         b.is_lambda = is_lambda;
+        b.owner = Some(SelfOwner::Block(call_id));
         b.func.param_kinds = params
             .iter()
             .map(|p| match p.kind {
@@ -688,6 +735,11 @@ impl<'a> FnBuilder<'a> {
         let r = self.reg();
         // Registers start as nil; a variable read before assignment is nil.
         self.slot_regs.insert(slot, r);
+        if let Some(owner) = self.owner {
+            if self.out.lexical_slots.contains(&(owner, slot)) {
+                self.lexical.push(r);
+            }
+        }
         r
     }
 
@@ -702,7 +754,11 @@ impl<'a> FnBuilder<'a> {
                 return VarLoc::Reg(*reg);
             }
             let reg = self.reg();
-            self.inline[level].slot_regs.insert(r.slot, reg);
+            let lv = &mut self.inline[level];
+            lv.slot_regs.insert(r.slot, reg);
+            if self.out.lexical_slots.contains(&(lv.owner, r.slot)) {
+                lv.lexical.push(reg);
+            }
             return VarLoc::Reg(reg);
         }
         let d = r.depth - k as u32;
@@ -763,8 +819,14 @@ impl<'a> FnBuilder<'a> {
 
     fn body(&mut self, exprs: &'a [Expr]) -> Reg {
         let mut last = None;
-        for e in exprs {
-            last = Some(self.expr(e));
+        for (i, e) in exprs.iter().enumerate() {
+            let r = self.expr(e);
+            // A value released observably that nothing uses goes at the
+            // end of its statement.
+            if i + 1 < exprs.len() && self.out.released_stmts.contains(&e.id) {
+                self.emit(Inst::Release { src: r });
+            }
+            last = Some(r);
         }
         match last {
             Some(r) => r,
@@ -1694,7 +1756,7 @@ impl<'a> FnBuilder<'a> {
 
     fn call(&mut self, e: &'a Expr, call: &'a ast::Call) -> Reg {
         if let Some(shape) = iter::shape(e, call, self.out, self.world) {
-            return self.inline_iter(call, shape);
+            return self.inline_iter(e, call, shape);
         }
         if iter::exec_shape(e, call, self.out, self.world).is_some() {
             return self.inline_exec(e, call);
@@ -1939,7 +2001,7 @@ impl<'a> FnBuilder<'a> {
         let saved_override = self.self_override.replace(recv);
         let saved_class = self.class_id;
         self.class_id = recv_class;
-        self.inline.push(InlineLevel::default());
+        self.inline.push(InlineLevel::new(SelfOwner::Block(e.id)));
         for pi in 0..block.params.list.len() {
             let src = match args.get(pi) {
                 Some(r) => *r,
@@ -1968,7 +2030,7 @@ impl<'a> FnBuilder<'a> {
             src: v,
         });
         self.term(Term::Jump(join));
-        self.inline.pop();
+        let level = self.inline.pop().expect("the inline level");
         self.self_override = saved_override;
         self.class_id = saved_class;
         let clear_to = self.func.nregs;
@@ -1978,6 +2040,7 @@ impl<'a> FnBuilder<'a> {
             *to = clear_to;
         }
         self.switch(join);
+        self.release_inline(level);
         result
     }
 
@@ -2005,7 +2068,7 @@ impl<'a> FnBuilder<'a> {
     /// `n.times { }`, `xs.each { }`, `(lo..hi).map { }` and the other
     /// shapes of `iter`: a counted loop in this function, with the block
     /// body lowered in place (`break` and `next` become jumps).
-    fn inline_iter(&mut self, call: &'a ast::Call, shape: Shape) -> Reg {
+    fn inline_iter(&mut self, e: &'a Expr, call: &'a ast::Call, shape: Shape) -> Reg {
         let block = call.block.as_ref();
         let kind = shape.kind;
         // The receiver (or the range's bounds), then the arguments.
@@ -2147,7 +2210,7 @@ impl<'a> FnBuilder<'a> {
             Kind::Reduce => vec![acc.unwrap(), elem],
             _ => vec![elem],
         };
-        self.inline.push(InlineLevel::default());
+        self.inline.push(InlineLevel::new(SelfOwner::Block(e.id)));
         let nparams = block.map_or(0, |b| b.params.list.len());
         for pi in 0..nparams {
             let src = match yielded.get(pi) {
@@ -2192,7 +2255,7 @@ impl<'a> FnBuilder<'a> {
         self.loops.pop();
         self.emit(Inst::Move { dst: val, src: v });
         self.term(Term::Jump(next_b));
-        self.inline.pop();
+        let level = self.inline.pop().expect("the inline level");
         let clear_to = self.func.nregs;
         if let Inst::ClearRegs { to, .. } =
             &mut self.func.blocks[clear_at.0 as usize].insts[clear_at.1]
@@ -2200,6 +2263,7 @@ impl<'a> FnBuilder<'a> {
             *to = clear_to;
         }
         self.switch(next_b);
+        self.release_inline(level);
         match kind {
             Kind::Map => self.emit(Inst::ArrayPush {
                 arr: out.unwrap(),

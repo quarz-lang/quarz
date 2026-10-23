@@ -174,6 +174,17 @@ pub unsafe extern "C" fn qz_drop_value(p: *mut Value) {
     *p = Value::Nil;
 }
 
+/// After a `Release`: run the `deinitialize` of what was released.
+///
+/// # Safety
+/// `rt` must be the running interpreter.
+#[no_mangle]
+pub unsafe extern "C" fn qz_finalize(rt: *const Interp) {
+    if crate::deinit::pending() {
+        (*rt).run_deinitializers();
+    }
+}
+
 /// Build the activation of a direct call to the compiled body of method
 /// `mid` (function `fid`) in `buf`, binding the receiver (`regs[recv]`, or
 /// the caller's `self` when `recv` is `u32::MAX`) and the block, and push
