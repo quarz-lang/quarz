@@ -73,8 +73,8 @@ fn snapshot(interp: &Interp, b: &Value) -> Value {
         } else {
             None
         };
-        let src = frame.slots.borrow();
-        let mut slots: smallvec::SmallVec<[Value; 8]> = smallvec![Value::Nil; src.len()];
+        let src = frame.slots();
+        let mut slots = vec![Value::Nil; src.len()];
         for &s in &caps[depth] {
             if let Some(v) = src.get(s as usize) {
                 slots[s as usize] = v.clone();
