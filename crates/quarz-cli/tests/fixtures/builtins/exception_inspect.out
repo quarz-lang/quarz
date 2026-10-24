@@ -1,0 +1,6 @@
+#<RuntimeError: x>
+#<ArgumentError: bad>
+#<ArgumentError: bad>
+#<Plain @n=1>
+W:#<Wrapped @n=3>
+[#<RuntimeError: a>, #<ArgumentError: b>]

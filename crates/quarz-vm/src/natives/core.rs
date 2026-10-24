@@ -96,8 +96,10 @@ fn obj_to_s(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
     }
 }
 
+/// The default `inspect` (of `Object` and `Exception`): the receiver
+/// formatted, not looked up again, which would find this very method.
 fn obj_inspect(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
-    Ok(Value::string(interp.inspect(recv)?))
+    Ok(Value::string(interp.format_value(recv, true)?))
 }
 
 fn obj_nil(_: &Interp, recv: &Value, _: Args) -> EvalResult {
