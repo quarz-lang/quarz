@@ -6,7 +6,7 @@ Quarz is statically typed. The structure of classes, modules and methods is fixe
 
 Design principles:
 
-1. **Write types at method boundaries, not inside them.** Parameter types are required; return types and local variables are inferred. This gives us both per-file separate compilation and fast type checking when the interpreter starts.
+1. **Write types at method boundaries, not inside them.** Parameter types are required; return types and local variables are inferred. This keeps compile times short and error messages clear.
 2. **nil is not a value of ordinary types.** A value of type `String` is never `nil`; if `nil` is possible, write `String?`.
 3. **Union types and flow typing.** Union types such as `Int | String` can be used directly and narrowed with `if`/`case/in`/`is_a?`.
 4. **Immutable means covariant.** Immutable collections are covariant in their element type, so an `Array[Int]` can be passed where an `Array[Int | Nil]` is expected.
@@ -102,7 +102,7 @@ u = find(1) || raise NotFound    # raise has type Nothing, so u is User
 
 ## 5. Type Inference
 
-Inference is **bidirectional and local**. Since parameter types are known, inference is confined to a single method body; there is no whole-program inference (whole-program inference as in Crystal is not adopted, because compile time grows superlinearly as the code base grows).
+Inference is **bidirectional and local**. Since parameter types are known, inference is confined to a single method body; there is no whole-program inference.
 
 - **Local variables**: the type of the first assignment. `x = 1` gives `Int`.
 - **Return type**: when omitted, the type of the body (the union of the `return` types and the last expression). For methods that call themselves recursively, `abstract def`, `extern def`, and methods exported to `.qzi` as public API (planned), an uninferable return type is an error and an annotation is required.
@@ -195,4 +195,4 @@ A shareable procedure is a procedure (`shareable (A) -> R` is a subtype of `(A) 
 
 - **Structural typing (Go interfaces, TypeScript)**: attractive because it is close to duck typing, but in Ruby what we expect is not merely "has `each`" but "what `each` means". We chose nominal modules plus retroactive conformance via `extension`, which gives the same flexibility while making the intent to conform explicit.
 - **A dynamic type `Dynamic`**: considered for prototyping convenience, but having even one requires run-time method tables for every class and hinders optimization in both the interpreter and the AOT compiler. Prototyping convenience will instead come from stronger inference.
-- **Whole-program inference (Crystal)**: lets you omit parameter types, but sacrifices compile time and the quality of error messages. "Write types at method boundaries" is Quarz's trade-off.
+- **Whole-program inference**: lets you omit parameter types, but sacrifices compile time and the quality of error messages. "Write types at method boundaries" is Quarz's trade-off.

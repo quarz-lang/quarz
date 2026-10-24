@@ -272,7 +272,7 @@ def name(a: Int, b: String = "x", *rest: Int, *, flag: Bool, limit: Int? = nil, 
 | `&: (Int) -> Nil` | Anonymous block parameter: only `yield` and forwarding with `f(&)` can use it |
 | `-> Ret` | Return type. If omitted it is inferred from the body (required for recursive methods) |
 
-- **Parameter types are required** (except where they can be inferred from a default value). Because types are fixed at method boundaries, per-file separate compilation and fast type checking are possible.
+- **Parameter types are required** (except where they can be inferred from a default value). Because types are fixed at method boundaries, compile times stay short and error messages clear.
 - Ruby 3's "separation of positional and keyword arguments" is unnecessary in Quarz because an argument list never implicitly becomes a `Hash`. Parameters before `*` can be passed either positionally or by keyword (same as Python/Crystal).
 - A method whose return type is `Nil` discards the value of the last expression in its body (equivalent to `void`).
 - Methods of the same name can be **overloaded** by parameter count and types. Resolution is at compile time.
