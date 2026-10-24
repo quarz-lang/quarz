@@ -27,3 +27,6 @@ k=v #<MatchData "k=v" 1:"k" 2:"v">
 ["b"]
 ["b", []]
 "invalid group name reference format"
+[["k=v", "k", "v", 0], ["a=b", "a", "b", 5]]
+[]
+["", "b", "", ""]

@@ -496,6 +496,8 @@ class String
   native def split(separator: Regexp) -> Array[String]
   native def scan(pattern: Regexp) -> Array[String]
   native def match(pattern: Regexp) -> MatchData?
+  # Every match, with its groups (`scan` gives the matched text only).
+  native def matches(pattern: Regexp) -> Array[MatchData]
   native def match?(pattern: Regexp) -> Bool
   native def =~(pattern: Regexp) -> Int?
   native def sub(pattern: String, replacement: String) -> String

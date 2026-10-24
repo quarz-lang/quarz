@@ -58,6 +58,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         ))
     });
     native!(m, "String#match", string_match);
+    native!(m, "String#matches", string_matches);
     native!(m, "String#match?", |i, r, a| {
         Ok(Value::Bool(re(i, a.arg(0))?.regex.is_match(s(i, r)?)))
     });
@@ -451,6 +452,20 @@ fn string_match(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let text = s(interp, recv)?;
     let r = re(interp, args.arg(0))?;
     match_data(interp, r, text)
+}
+
+fn string_matches(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
+    let text = s(interp, recv)?;
+    let pattern = args.arg(0);
+    re(interp, pattern)?;
+    let shared: Rc<str> = Rc::from(text);
+    let names = group_names(pattern);
+    let mut out = Vec::new();
+    each_match(interp, text, pattern, true, true, |groups| {
+        out.push(match_value(&shared, groups, &names));
+        Ok(())
+    })?;
+    Ok(Value::array(out))
 }
 
 fn string_match_index(interp: &Interp, recv: &Value, args: Args) -> EvalResult {

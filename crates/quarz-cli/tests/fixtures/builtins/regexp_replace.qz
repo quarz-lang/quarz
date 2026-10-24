@@ -30,3 +30,6 @@ begin
 rescue => e
   p e.message
 end
+# Every match with its groups.
+ms = "k=v, a=b".matches(/(?<k>\w)=(\w)/)
+p ms.map { |m| [m.to_s, m["k"], m[2], m.begin(0)] }, "abc".matches(/x/), "abc".matches(/b*/).map(&:to_s)
