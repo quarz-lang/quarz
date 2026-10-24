@@ -181,13 +181,19 @@ pub fn load_movement(cogs: &[CogSpec]) -> (Vec<LoadedUnit>, Vec<CogDecl>, Vec<Lo
     (loader.units, decls, loader.diagnostics)
 }
 
-/// The `.qz` files under `dir`, recursively.
+/// The `.qz` files under `dir`, recursively. A symbolic link to a
+/// directory is not followed (a link back up would never end); one to a
+/// file counts as that file (a fetched cog holds no links at all).
 fn qz_files(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
     for entry in std::fs::read_dir(dir)? {
-        let path = entry?.path();
-        if path.is_dir() {
+        let entry = entry?;
+        let path = entry.path();
+        let ft = entry.file_type()?;
+        if ft.is_dir() {
             qz_files(&path, out)?;
-        } else if path.extension().is_some_and(|e| e == "qz") {
+        } else if (ft.is_file() || (ft.is_symlink() && path.is_file()))
+            && path.extension().is_some_and(|e| e == "qz")
+        {
             out.push(path);
         }
     }
