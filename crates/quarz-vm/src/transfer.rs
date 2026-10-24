@@ -224,7 +224,7 @@ fn export_frame(
     depth: i64,
 ) -> Result<TFrame, Flow> {
     let mut slots = Vec::new();
-    for (j, v) in frame.slots.borrow().iter().enumerate() {
+    for (j, v) in frame.slots().iter().enumerate() {
         let wanted = needed.is_none_or(|n| n.contains(&(depth, j as u32)));
         slots.push(if wanted {
             export(interp, v)?

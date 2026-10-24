@@ -244,43 +244,142 @@ impl SymbolTable {
 }
 
 /// A local variable frame. Blocks keep a reference to the frame they were
-/// created in.
-#[derive(Debug)]
+/// created in. One allocation: the header, then the slots (`FrameOf` with
+/// its tail; a frame that grows past it, which only a REPL's top level
+/// does, moves its slots to a vector of their own).
+pub type Frame = FrameOf<std::cell::UnsafeCell<[ManuallyDrop<Value>]>>;
+
+/// The header with no slots, which gives the layout.
+type FrameHeader = FrameOf<std::cell::UnsafeCell<[ManuallyDrop<Value>; 0]>>;
+
+use std::mem::ManuallyDrop;
+
 #[repr(C)]
-pub struct Frame {
+pub struct FrameOf<S: ?Sized + FrameTail> {
     /// Where the slots live and how many there are, for compiled code
-    /// (set by `bind` when the slots are created or resized).
+    /// (set by `bind` when the slots are created or moved).
     pub slots_ptr: Cell<*const Value>,
     pub nslots: Cell<u32>,
-    /// The parent frame, for compiled code (null at the top).
-    pub parent_ptr: Cell<*const Frame>,
-    pub slots: RefCell<SmallVec<[Value; 8]>>,
+    /// How many slots follow the header (the tail's length).
+    tail_len: u32,
+    /// The parent frame's header, for compiled code (null at the top).
+    pub parent_ptr: Cell<*const u8>,
     pub parent: Option<Rc<Frame>>,
+    /// The slots once the frame grew past its tail, which then holds
+    /// nothing (they were moved here). Boxed: one word in every frame
+    /// rather than three, for what few frames need.
+    #[allow(clippy::box_collection)]
+    grown: std::cell::UnsafeCell<Option<Box<Vec<Value>>>>,
+    /// Written through the slot view while the frame is borrowed.
+    tail: S,
+}
+
+/// The slots after a frame's header.
+pub trait FrameTail {}
+
+impl FrameTail for std::cell::UnsafeCell<[ManuallyDrop<Value>]> {}
+impl FrameTail for std::cell::UnsafeCell<[ManuallyDrop<Value>; 0]> {}
+
+// What compiled code reads (`gen.rs`'s frame access): the slot view at
+// 0, 8 and 16 of the frame.
+const _: () = {
+    assert!(std::mem::offset_of!(FrameHeader, slots_ptr) == 0);
+    assert!(std::mem::offset_of!(FrameHeader, nslots) == 8);
+    assert!(std::mem::offset_of!(FrameHeader, parent_ptr) == 16);
+};
+
+// SAFETY: a frame's allocation is the counts, then the header, which
+// gives the tail's length (see `Frame::from_iter`).
+unsafe impl crate::rc::Target for Frame {
+    #[inline(always)]
+    unsafe fn inner(p: *mut u8) -> *mut crate::rc::Inner<Frame> {
+        type Inner = crate::rc::Inner<FrameHeader>;
+        // SAFETY: the header of a live frame, as the caller promises.
+        let len = unsafe {
+            *p.add(std::mem::offset_of!(Inner, value) + std::mem::offset_of!(FrameHeader, tail_len))
+                .cast::<u32>() as usize
+        };
+        std::ptr::slice_from_raw_parts_mut(p.cast::<ManuallyDrop<Value>>(), len)
+            as *mut crate::rc::Inner<Frame>
+    }
+}
+
+impl<S: ?Sized + FrameTail> Drop for FrameOf<S> {
+    fn drop(&mut self) {
+        if self.grown.get_mut().is_some() {
+            // The tail's slots were moved out; the vector drops its own.
+            return;
+        }
+        let n = self.tail_len as usize;
+        let tail = (&raw mut self.tail).cast::<Value>();
+        // SAFETY: the tail holds `n` live values, dropped once, here.
+        unsafe { std::ptr::drop_in_place(std::ptr::slice_from_raw_parts_mut(tail, n)) }
+    }
+}
+
+impl std::fmt::Debug for Frame {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Frame")
+            .field("slots", &self.slots())
+            .field("parent", &self.parent)
+            .finish()
+    }
 }
 
 impl Frame {
     pub fn new(size: usize, parent: Option<Rc<Frame>>) -> Rc<Frame> {
-        Frame::from_slots(smallvec::smallvec![Value::Nil; size], parent)
+        Frame::from_iter(std::iter::repeat_n(Value::Nil, size), parent)
     }
 
-    pub fn from_slots(slots: SmallVec<[Value; 8]>, parent: Option<Rc<Frame>>) -> Rc<Frame> {
-        let parent_ptr = parent.as_ref().map_or(std::ptr::null(), Rc::as_ptr);
-        let f = Rc::new(Frame {
-            slots_ptr: Cell::new(std::ptr::null()),
-            nslots: Cell::new(0),
-            parent_ptr: Cell::new(parent_ptr),
-            slots: RefCell::new(slots),
-            parent,
-        });
-        f.bind();
-        f
+    pub fn from_slots(slots: Vec<Value>, parent: Option<Rc<Frame>>) -> Rc<Frame> {
+        Frame::from_iter(slots.into_iter(), parent)
     }
 
-    /// Point the slot view at the slot vector.
-    pub fn bind(&self) {
-        let slots = self.slots.borrow();
-        self.slots_ptr.set(slots.as_ptr());
-        self.nslots.set(slots.len() as u32);
+    fn from_iter(
+        slots: impl ExactSizeIterator<Item = Value>,
+        parent: Option<Rc<Frame>>,
+    ) -> Rc<Frame> {
+        let n = slots.len();
+        let header = std::alloc::Layout::new::<crate::rc::Inner<FrameHeader>>();
+        let layout = std::alloc::Layout::from_size_align(
+            header.size() + n * std::mem::size_of::<Value>(),
+            header.align(),
+        )
+        .expect("frame too large");
+        let parent_ptr = parent
+            .as_ref()
+            .map_or(std::ptr::null(), |p| Rc::as_ptr(p) as *const u8);
+        // SAFETY: the layout is not zero-sized; every field of the header
+        // and every slot is written before the reference is made.
+        unsafe {
+            let mem = std::alloc::alloc(layout);
+            if mem.is_null() {
+                std::alloc::handle_alloc_error(layout);
+            }
+            let p = std::ptr::slice_from_raw_parts_mut(mem.cast::<ManuallyDrop<Value>>(), n)
+                as *mut crate::rc::Inner<Frame>;
+            let f = &raw mut (*p).value;
+            let tail = &raw mut (*f).tail as *mut ManuallyDrop<Value> as *mut Value;
+            // Nil for what an iterator shorter than it said leaves.
+            let mut slots = slots.fuse();
+            for k in 0..n {
+                tail.add(k).write(slots.next().unwrap_or(Value::Nil));
+            }
+            (&raw mut (*f).slots_ptr).write(Cell::new(tail));
+            (&raw mut (*f).nslots).write(Cell::new(n as u32));
+            (&raw mut (*f).tail_len).write(n as u32);
+            (&raw mut (*f).parent_ptr).write(Cell::new(parent_ptr));
+            (&raw mut (*f).parent).write(parent);
+            (&raw mut (*f).grown).write(std::cell::UnsafeCell::new(None));
+            Rc::from_fresh(p)
+        }
+    }
+
+    /// The slots, through the slot view (as `get` reads them).
+    pub fn slots(&self) -> &[Value] {
+        // SAFETY: `slots_ptr`/`nslots` describe the live slots; see `get`
+        // for why reading them without a borrow is sound.
+        unsafe { std::slice::from_raw_parts(self.slots_ptr.get(), self.nslots.get() as usize) }
     }
 
     pub fn get(&self, depth: u32, slot: u32) -> Value {
@@ -295,29 +394,49 @@ impl Frame {
         // checker rejects assigning a variable captured that way), and a
         // frame being written is read by its own task only.
         if slot < frame.nslots.get() {
-            // SAFETY: `slots_ptr`/`nslots` describe the slot vector, set by
-            // `bind` whenever it is created or resized.
+            // SAFETY: `slots_ptr`/`nslots` describe the live slots, set
+            // when they are created or moved.
             unsafe { (*frame.slots_ptr.get().add(slot as usize)).clone() }
         } else {
             Value::Nil
         }
     }
 
+    /// Set a slot (its frame's own task only, as for `get`), growing the
+    /// frame when the slot is beyond it.
     pub fn set(&self, depth: u32, slot: u32, value: Value) {
         let mut frame = self;
         for _ in 0..depth {
             frame = frame.parent.as_deref().expect("frame depth");
         }
-        let mut slots = frame.slots.borrow_mut();
         let i = slot as usize;
-        if i >= slots.len() {
-            slots.resize(i + 1, Value::Nil);
-            drop(slots);
-            frame.bind();
-            frame.slots.borrow_mut()[i] = value;
-            return;
+        if i >= frame.nslots.get() as usize {
+            frame.grow(i + 1);
         }
-        slots[i] = value;
+        // SAFETY: a live slot (see `get`); no reference into the slots is
+        // held across this store.
+        unsafe { *(frame.slots_ptr.get() as *mut Value).add(i) = value }
+    }
+
+    /// Make room for `n` slots: in a vector of the frame's own, the tail's
+    /// slots moved into it the first time.
+    fn grow(&self, n: usize) {
+        // SAFETY: only the frame's own task changes its slots, and no
+        // reference into them is held across this call.
+        unsafe {
+            let grown = &mut *self.grown.get();
+            if grown.is_none() {
+                let tail = self.tail.get() as *const ManuallyDrop<Value> as *const Value;
+                let moved: Vec<Value> = (0..self.tail_len as usize)
+                    .map(|k| std::ptr::read(tail.add(k)))
+                    .collect();
+                *grown = Some(Box::new(moved));
+            }
+            let vec = grown.as_mut().unwrap();
+            vec.resize(n, Value::Nil);
+            self.slots_ptr.set(vec.as_ptr());
+            self.nslots.set(vec.len() as u32);
+        }
     }
 }
 
@@ -1951,7 +2070,7 @@ impl Value {
                     ShareItem::Value(v) => &*v,
                     ShareItem::Frame(f) => {
                         let f = &*f;
-                        for s in (*f.slots.as_ptr()).iter() {
+                        for s in f.slots().iter() {
                             work.push(ShareItem::Value(s));
                         }
                         if let Some(p) = &f.parent {
