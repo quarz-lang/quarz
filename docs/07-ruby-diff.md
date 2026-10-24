@@ -54,7 +54,7 @@ A summary of the things someone who knows Ruby will first stumble on when starti
 - `data`, `enum`, `var`, `abstract`, `extension`, `using` (now a keyword), `type`, `extern`
 - `as`/`as?`
 - Builder types such as `Array::Builder`, and `Array.build { }`
-- `Task.spawn`, `Task`, `Task.scope`, `Task.blocking`, `Channel`, `select`, `Atom` (`Supervisor` is planned)
+- `Task.spawn`, `Task`, `Task.scope`, `Task.blocking`, `Channel`, `Channel.select`, `Atom` (`Supervisor` is planned)
 - `Result[T, E]`
 - `Shareable` (an automatically derived marker)
 - `obj.:method` (method reference)

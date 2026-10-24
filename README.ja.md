@@ -73,7 +73,7 @@ puts counter.value        # => 100
 | [docs/01-syntax.md](docs/01-syntax.ja.md) | 文法。クラス、`data`、`enum`、`module`、`extension`/`using`、メソッド定義、ブロック、パターンマッチ、例外 |
 | [docs/02-types.md](docs/02-types.ja.md) | 型システム。合併型と nil 安全性、ジェネリクスと変位、推論、フロー型付け、多重定義 |
 | [docs/03-data-model.md](docs/03-data-model.ja.md) | 不変データと Builder、`Shareable` の導出規則、等価性、文字列、Ruby の慣用句の書き換え |
-| [docs/04-concurrency.md](docs/04-concurrency.ja.md) | タスク、構造化並行性とキャンセル、チャネルと `select`、`Atom`、アクターと監視、ランタイム |
+| [docs/04-concurrency.md](docs/04-concurrency.ja.md) | タスク、構造化並行性とキャンセル、チャネルと `Channel.select`、`Atom`、アクターと監視、ランタイム |
 | [docs/05-execution.md](docs/05-execution.ja.md) | インタプリタと AOT コンパイラ、QIR、分割コンパイル、参照カウントによるメモリ管理、ブートストラップ計画 |
 | [docs/06-stdlib.md](docs/06-stdlib.ja.md) | 標準ライブラリ。Ruby の組み込みクラスとの対応 |
 | [docs/07-ruby-diff.md](docs/07-ruby-diff.ja.md) | Ruby からの変更点 早見表 |

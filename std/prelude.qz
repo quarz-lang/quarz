@@ -1630,6 +1630,7 @@ class Channel[T: Shareable]
   include Enumerable[T]
 
   native def self.new(capacity: Int = 0) -> Channel[T]
+  native def self.select(&: (Selector) -> Nil) -> Nil
   native def self.select_loop(&: (Selector) -> Nil) -> Nil
 
   native def send(value: T) -> Nil
@@ -1832,7 +1833,6 @@ module Kernel
   native def warn(*args: Object) -> Nil
   native def loop(&: () -> Nil) -> Nil
   native def sleep(duration: Duration) -> Nil
-  native def select(&: (Selector) -> Nil) -> Nil
   native def exit(status: Int = 0) -> Nothing
   native def abort(message: String) -> Nothing
   native def at_exit(&: () -> Nil) -> Nil

@@ -115,7 +115,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         i.sleep(duration(i, a.arg(0))?)?;
         Ok(Value::Nil)
     });
-    native!(m, "Kernel#select", |i, _, a| {
+    native!(m, "Channel.select", |i, _, a| {
         let b = block(i, &a)?;
         run_select(i, &b, false)
     });
@@ -691,7 +691,7 @@ fn select_once(interp: &Interp, state: &Rc<RefCell<SelectorState>>) -> Result<()
             break 'select Ok((handler, None));
         }
         if receives.is_empty() && sends.is_empty() && after.is_none() {
-            break 'select Err(interp.err_arg("select with no alternatives"));
+            break 'select Err(interp.err_arg("Channel.select with no alternatives"));
         }
         // Register and wait. Each channel is checked again as the task
         // registers on it: one that became ready since (another worker

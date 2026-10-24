@@ -35,7 +35,7 @@ Crystal は Quarz に最も近い言語です。Ruby の構文を持つ、静的
 | フィールドの絞り込み | インスタンス変数は絞り込まれない(局所変数に代入する) | 不変フィールドと `data` のフィールドは絞り込まれる。`var` フィールドは絞り込まれない |
 | `to_s` | `to_s(io : IO)` を上書きする | `def to_s -> String` |
 | タプル | `Tuple`、`NamedTuple`(`{1, "a"}`、`{x: 1}`) | タプル型 `[Int, String]` を配列リテラルで書く。名前付きのフィールドは `data` で |
-| 並行処理 | メモリを共有するファイバー(`Task.spawn`、`Channel(T)`、`Mutex`、`Atomic(T)`)。どんなオブジェクトもファイバー間で受け渡せ、実行コンテキストでファイバーを複数のスレッドで動かせる | タスク(`Task.spawn`、キャンセル付きの `Task.scope`、`Channel[T]`、`select`、`Atom[T]`)。タスクの境界を越えられるのは `Shareable` な(不変な)値だけで、コンパイラが検査する。ロックはない。現在のスケジューラはタスクを 1 つのスレッドで動かし、`Task.blocking { }` はブロックを補助スレッドで実行する |
+| 並行処理 | メモリを共有するファイバー(`Task.spawn`、`Channel(T)`、`Mutex`、`Atomic(T)`)。どんなオブジェクトもファイバー間で受け渡せ、実行コンテキストでファイバーを複数のスレッドで動かせる | タスク(`Task.spawn`、キャンセル付きの `Task.scope`、`Channel[T]`、`Channel.select`、`Atom[T]`)。タスクの境界を越えられるのは `Shareable` な(不変な)値だけで、コンパイラが検査する。ロックはない。現在のスケジューラはタスクを 1 つのスレッドで動かし、`Task.blocking { }` はブロックを補助スレッドで実行する |
 | メモリ管理 | トレース型 GC(Boehm) | 参照カウント。参照が一意な値はその場で更新する |
 | C との連携 | `lib LibC; fun strlen(s : UInt8*) : SizeT; end` | `extern "C"; def strlen(s: CString) -> SizeT; end` |
 | プログラムの実行 | コンパイルする(`crystal run` も先にコンパイルする)。`crystal i` は実験的なインタプリタで、それを含めてビルドした Crystal でだけ使える | `quarz run` は解釈実行する。`quarz build` は LLVM でコンパイルする |

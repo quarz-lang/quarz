@@ -6,7 +6,7 @@
 
 ## 1. Kernel(トップレベルで使える関数)
 
-`puts`、`print`、`printf`、`p`、`pp`、`warn`、`raise`、`loop`、`sleep`(= `Task.sleep`)、`Task.spawn`、`select`、`exit`、`abort`、`at_exit`、`require`、`require_relative`、`gets`/`gets?`、`readline`、`readlines`、`rand`/`srand`、`format`/`sprintf`、`Integer(text, base = 10)`/`Float(...)`/`String(...)`(変換・失敗で例外)。
+`puts`、`print`、`printf`、`p`、`pp`、`warn`、`raise`、`loop`、`sleep`(= `Task.sleep`)、`Task.spawn`、`exit`、`abort`、`at_exit`、`require`、`require_relative`、`gets`/`gets?`、`readline`、`readlines`、`rand`/`srand`、`format`/`sprintf`、`Integer(text, base = 10)`/`Float(...)`/`String(...)`(変換・失敗で例外)。
 
 `eval`、`send`、`binding`、`method`、`instance_eval`、`define_method`、`ObjectSpace`、`fork`、`system`/バッククォート(`Process.run`/`Process.sh` に移動)はありません。
 
@@ -84,7 +84,7 @@
 
 ## 8. 並行
 
-`Task[T]`、`Scope`、`Channel[T]`、`Atom[T]`、`Task.scope`/`sleep`/`yield`/`timeout`/`blocking`/`current`/`check_cancel`、`select`。詳細は [04-concurrency.ja.md](04-concurrency.ja.md)。`Supervisor` は *予定*。
+`Task[T]`、`Scope`、`Channel[T]`、`Atom[T]`、`Task.scope`/`sleep`/`yield`/`timeout`/`blocking`/`current`/`check_cancel`、`Channel.select`/`select_loop`。詳細は [04-concurrency.ja.md](04-concurrency.ja.md)。`Supervisor` は *予定*。
 
 ## 9. IO・OS
 

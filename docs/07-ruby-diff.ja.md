@@ -52,7 +52,7 @@ Ruby を知っている人が Quarz を書き始めるときに最初に引っ�
 - `data`、`enum`、`var`、`abstract`、`extension`、`using`(キーワード化)、`type`、`extern`
 - `as`/`as?`
 - `Array::Builder` などの Builder 型と `Array.build { }`
-- `Task.spawn`、`Task`、`Task.scope`、`Task.blocking`、`Channel`、`select`、`Atom`(`Supervisor` は予定)
+- `Task.spawn`、`Task`、`Task.scope`、`Task.blocking`、`Channel`、`Channel.select`、`Atom`(`Supervisor` は予定)
 - `Result[T, E]`
 - `Shareable`(自動導出のマーカー)
 - `obj.:method`(メソッド参照)

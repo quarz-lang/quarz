@@ -80,12 +80,12 @@ ch.each { |m| ... }  # 閉じられるまで受信し続ける
 - `send`/`receive` は happens-before を確立します。`send` の前に行った更新は、対応する `receive` の後から見えます。これが Quarz のメモリモデルのすべてです(共有可変状態がないため、他に規定すべきことがありません)。
 - 全タスクがチャネル待ちになってデッドロックした場合、ランタイムは `DeadlockError` でプログラムを停止します(Go の "all goroutines are asleep" と同じ)。全ワーカーの待っているタスクを表示して(`名前 (番号)`。メイン以外のワーカーのタスクは番号の前にワーカーの番号が付きます: `task (1:0)`)状態 1 で終了します。捕捉できる例外ではなく、`ensure` も `at_exit` も実行されません。
 
-### `select`
+### `Channel.select`
 
 複数のチャネル操作のうち、最初に可能になったものを 1 つ実行します。複数が同時に可能なら、先に書いたものが選ばれます。`receive` や `send` のチャネルが閉じていれば `Channel::Closed` を送出します。
 
 ```ruby
-select do |s|
+Channel.select do |s|
   s.receive(jobs) { |job| handle(job) }
   s.receive(quit) { |_| done = true }
   s.send(results, value) { puts "sent" }
@@ -94,7 +94,7 @@ select do |s|
 end
 ```
 
-`select` は同じ構造を `loop` の中で使うことが多いので、`Channel.select_loop` も用意しています。ハンドラの中で `s.stop` を呼ぶとループを抜けます(ハンドラはそれぞれ別のブロックなので、Ruby の規則どおり `break` は `s.receive` から抜けるだけで、ループは止まりません)。
+(関数ではなく `Channel` のクラスメソッドです。Ruby の `Kernel#select` や `IO.select` は IO を待つもので、`select` は `Enumerable#select` でもあるためです。)`Channel.select` は同じ構造を `loop` の中で使うことが多いので、`Channel.select_loop` も用意しています。ハンドラの中で `s.stop` を呼ぶとループを抜けます(ハンドラはそれぞれ別のブロックなので、Ruby の規則どおり `break` は `s.receive` から抜けるだけで、ループは止まりません)。
 
 ## 4. Atom
 

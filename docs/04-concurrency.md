@@ -82,12 +82,12 @@ ch.each { |m| ... }  # keeps receiving until closed
 - `send`/`receive` establish happens-before. Updates made before a `send` are visible after the corresponding `receive`. This is the entirety of Quarz's memory model (since there is no shared mutable state, there is nothing else to specify).
 - If every task is waiting on a channel and the program deadlocks, the runtime stops the program with `DeadlockError` (the same as Go's "all goroutines are asleep"). It prints the blocked tasks, on every worker (`name (number)`, the number prefixed with the worker's on other workers than the main one: `task (1:0)`), and exits with status 1; it is not an exception that can be rescued, and `ensure` and `at_exit` do not run.
 
-### `select`
+### `Channel.select`
 
 Executes exactly one of several channel operations, whichever becomes possible first. When several are ready, the first one written wins; a closed channel in a `receive` or `send` raises `Channel::Closed`.
 
 ```ruby
-select do |s|
+Channel.select do |s|
   s.receive(jobs) { |job| handle(job) }
   s.receive(quit) { |_| done = true }
   s.send(results, value) { puts "sent" }
@@ -96,7 +96,7 @@ select do |s|
 end
 ```
 
-Since `select` is often used in the same shape inside a `loop`, `Channel.select_loop` is provided as well. Calling `s.stop` inside a handler exits the loop (each handler is a separate block, so by Ruby's rules `break` only exits `s.receive` and does not stop the loop).
+(A class method of `Channel` rather than a function: Ruby's `Kernel#select` and `IO.select` wait for IO, and `select` is also `Enumerable#select`.) Since `Channel.select` is often used in the same shape inside a `loop`, `Channel.select_loop` is provided as well. Calling `s.stop` inside a handler exits the loop (each handler is a separate block, so by Ruby's rules `break` only exits `s.receive` and does not stop the loop).
 
 ## 4. Atom
 

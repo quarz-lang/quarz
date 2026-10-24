@@ -75,7 +75,7 @@ puts counter.value        # => 100
 | [docs/01-syntax.md](docs/01-syntax.md) | Syntax. Classes, `data`, `enum`, `module`, `extension`/`using`, method definitions, blocks, pattern matching, exceptions |
 | [docs/02-types.md](docs/02-types.md) | Type system. Union types and nil safety, generics and variance, inference, flow typing, overloading |
 | [docs/03-data-model.md](docs/03-data-model.md) | Immutable data and Builders, derivation rules for `Shareable`, equality, strings, rewriting Ruby idioms |
-| [docs/04-concurrency.md](docs/04-concurrency.md) | Tasks, structured concurrency and cancellation, channels and `select`, `Atom`, actors and supervision, the runtime |
+| [docs/04-concurrency.md](docs/04-concurrency.md) | Tasks, structured concurrency and cancellation, channels and `Channel.select`, `Atom`, actors and supervision, the runtime |
 | [docs/05-execution.md](docs/05-execution.md) | Interpreter and AOT compiler, QIR, separate compilation, reference-counted memory management, implementation plan |
 | [docs/06-stdlib.md](docs/06-stdlib.md) | Standard library. Correspondence with Ruby's built-in classes |
 | [docs/07-ruby-diff.md](docs/07-ruby-diff.md) | Quick reference of changes from Ruby |

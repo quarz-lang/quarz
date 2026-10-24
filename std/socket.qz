@@ -219,7 +219,7 @@ module Socket
       pending = interleave(first.addresses)
       lookup_error ||= first.error
       if first.family == 4
-        select do |s|
+        Channel.select do |s|
           s.receive(lookups) do |more|
             unanswered -= 1
             pending = interleave(pending + more.addresses)
@@ -253,7 +253,7 @@ module Socket
           next_at = Time.monotonic + CONNECTION_ATTEMPT_DELAY
         end
         break if running.empty? && pending.empty? && unanswered == 0
-        select do |s|
+        Channel.select do |s|
           running.each do |ch|
             s.receive(ch) do |result|
               running = running.reject { |c| c.equal?(ch) }

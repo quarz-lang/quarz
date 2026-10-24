@@ -40,7 +40,7 @@ Task.spawn { 50.times { |i| b.send(i * 10) } }
 na = 0
 nb = 0
 100.times do
-  select do |s|
+  Channel.select do |s|
     s.receive(a) { |_| na += 1 }
     s.receive(b) { |_| nb += 1 }
   end

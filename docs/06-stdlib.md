@@ -8,7 +8,7 @@ Everything listed below exists in the prelude (`std/prelude.qz`) unless it is ma
 
 ## 1. Kernel (functions available at the top level)
 
-`puts`, `print`, `printf`, `p`, `pp`, `warn`, `raise`, `loop`, `sleep` (= `Task.sleep`), `Task.spawn`, `select`, `exit`, `abort`, `at_exit`, `require`, `require_relative`, `gets`/`gets?`, `readline`, `readlines`, `rand`/`srand`, `format`/`sprintf`, `Integer(text, base = 10)`/`Float(...)`/`String(...)` (conversion; raises on failure).
+`puts`, `print`, `printf`, `p`, `pp`, `warn`, `raise`, `loop`, `sleep` (= `Task.sleep`), `Task.spawn`, `exit`, `abort`, `at_exit`, `require`, `require_relative`, `gets`/`gets?`, `readline`, `readlines`, `rand`/`srand`, `format`/`sprintf`, `Integer(text, base = 10)`/`Float(...)`/`String(...)` (conversion; raises on failure).
 
 `eval`, `send`, `binding`, `method`, `instance_eval`, `define_method`, `ObjectSpace`, `fork`, `system`/backticks (moved to `Process.run`/`Process.sh`) do not exist.
 
@@ -86,7 +86,7 @@ An array of a comparable element type is `Comparable` (`<=> < <= > >= between? c
 
 ## 8. Concurrency
 
-`Task[T]`, `Scope`, `Channel[T]`, `Atom[T]`, `Task.scope`/`sleep`/`yield`/`timeout`/`blocking`/`current`/`check_cancel`, `select`. Details in [04-concurrency.md](04-concurrency.md). `Supervisor` is *planned*.
+`Task[T]`, `Scope`, `Channel[T]`, `Atom[T]`, `Task.scope`/`sleep`/`yield`/`timeout`/`blocking`/`current`/`check_cancel`, `Channel.select`/`select_loop`. Details in [04-concurrency.md](04-concurrency.md). `Supervisor` is *planned*.
 
 ## 9. IO and OS
 

@@ -8,7 +8,7 @@
 a = Channel[Int].new
 b = Channel[Int].new(capacity: 1)
 t = Task.spawn do
-  select do |s|
+  Channel.select do |s|
     s.receive(a) { |v| p [:a, v] }
     s.receive(b) { |v| p [:b, v] }
   end
@@ -27,7 +27,7 @@ p b.receive
 c = Channel[Int].new
 d = Channel[Int].new
 u = Task.spawn do
-  select do |s|
+  Channel.select do |s|
     s.receive(c) { |v| p [:c, v] }
     s.receive(d) { |v| p [:d, v] }
   end
