@@ -97,7 +97,9 @@ impl Version {
             Some(b) => Version {
                 major: b.major,
                 minor: b.minor,
-                patch: b.patch + 1,
+                // A patch of u64::MAX has no next one; the pseudo-version
+                // then sorts with it rather than overflowing.
+                patch: b.patch.saturating_add(1),
                 pre: vec!["0".into(), stamp, short],
             },
         }

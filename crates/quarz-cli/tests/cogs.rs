@@ -106,8 +106,13 @@ impl World {
     }
 
     fn quarz(&self, cwd: &str, args: &[&str]) -> Out {
+        self.quarz_env(cwd, args, &[])
+    }
+
+    fn quarz_env(&self, cwd: &str, args: &[&str], env: &[(&str, &str)]) -> Out {
         let out = Command::new(env!("CARGO_BIN_EXE_quarz"))
             .args(args)
+            .envs(env.iter().copied())
             .current_dir(self.path(cwd))
             .env("QUARZ_CACHE", self.path("cache"))
             .env("QUARZ_THREADS", "1")
@@ -715,4 +720,36 @@ fn a_pseudo_version_follows_the_highest_version_tag_among_its_ancestors() {
     assert_eq!(w.ok("app", &["run"]), "3\n");
     let v = w.locked_version("app", "p");
     assert!(v.starts_with("2.0.1-0."), "{v}");
+}
+
+#[test]
+fn a_cog_from_elsewhere_may_not_name_a_local_repository() {
+    // `https://example.invalid/` is this test's directory to git, so that
+    // `r` is a cog from elsewhere; it names `t` by a file:// URL.
+    let w = World::new();
+    publish(&w, "t", "1.0.0", &[]);
+    publish(&w, "r", "1.0.0", &[("T", "t", "v1.0.0")]);
+    w.app(
+        "R = { git = \"https://example.invalid/r\", tag = \"v1.0.0\" }\n",
+        "puts R::V\n",
+    );
+    let base = format!("{}/", w.url(""));
+    let base = base.replace("//", "/").replacen("file:/", "file:///", 1);
+    let env = [
+        ("GIT_CONFIG_COUNT", "1"),
+        ("GIT_CONFIG_KEY_0", &*format!("url.{base}.insteadOf")),
+        ("GIT_CONFIG_VALUE_0", "https://example.invalid/"),
+    ];
+    let out = w.quarz_env("app", &["check"], &env);
+    assert!(
+        !out.ok && out.stderr.contains("a repository on this machine"),
+        "{}",
+        out.stderr
+    );
+    // The application itself may.
+    w.app(
+        &format!("T = {{ git = \"{}\", tag = \"v1.0.0\" }}\n", w.url("t")),
+        "puts T::V\n",
+    );
+    assert_eq!(w.ok("app", &["run"]), "1.0.0\n");
 }

@@ -73,7 +73,7 @@ impl Dependency {
     pub fn source(&self) -> Source {
         Source {
             url: self.git.clone(),
-            subdir: self.subdir.clone(),
+            subdir: self.subdir.as_deref().and_then(normal_subdir),
         }
     }
 
@@ -91,13 +91,44 @@ impl Dependency {
 }
 
 /// A cog's identity: its repository and the directory in it.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// `a`, `a/`, `./a` and `a//b/.` as `a` and `a/b`; `""` and `.` as none.
+fn normal_subdir(dir: &str) -> Option<String> {
+    let parts: Vec<&str> = dir
+        .split('/')
+        .filter(|p| !p.is_empty() && *p != ".")
+        .collect();
+    (!parts.is_empty()).then(|| parts.join("/"))
+}
+
+/// A cog's identity: its repository and the directory in it. Two spellings
+/// of one repository (`HTTPS://Host/p/`, `https://host/p.git`) are one
+/// source: the comparison ignores the case of the scheme and host and a
+/// trailing `/` or `.git`, while `url` keeps what the manifest wrote,
+/// which is what git is given.
+#[derive(Clone, Debug)]
 pub struct Source {
     pub url: String,
     pub subdir: Option<String>,
 }
 
 impl Source {
+    fn identity(&self) -> (String, Option<&str>) {
+        let url = self.url.trim_end_matches('/');
+        let url = url.strip_suffix(".git").unwrap_or(url);
+        let url = match url.split_once("://") {
+            Some((scheme, rest)) => {
+                let (authority, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
+                format!(
+                    "{}://{}{path}",
+                    scheme.to_ascii_lowercase(),
+                    authority.to_ascii_lowercase()
+                )
+            }
+            None => url.to_string(),
+        };
+        (url, self.subdir.as_deref())
+    }
+
     /// The form written in `Cog.lock`: `git+URL`, with `?subdir=DIR`.
     pub fn to_lock_string(&self) -> String {
         match &self.subdir {
@@ -118,6 +149,32 @@ impl Source {
                 subdir: None,
             },
         })
+    }
+}
+
+impl PartialEq for Source {
+    fn eq(&self, other: &Source) -> bool {
+        self.identity() == other.identity()
+    }
+}
+
+impl Eq for Source {}
+
+impl std::hash::Hash for Source {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.identity().hash(state);
+    }
+}
+
+impl PartialOrd for Source {
+    fn partial_cmp(&self, other: &Source) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Source {
+    fn cmp(&self, other: &Source) -> std::cmp::Ordering {
+        self.identity().cmp(&other.identity())
     }
 }
 
@@ -147,12 +204,7 @@ impl Manifest {
 
     fn validate(&self) -> Result<(), Error> {
         let name = &self.cog.name;
-        if name.is_empty()
-            || !name
-                .chars()
-                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
-            || !name.starts_with(|c: char| c.is_ascii_lowercase())
-        {
+        if !is_cog_name(name) {
             return Err(Error::new(format!(
                 "[cog] name `{name}`: use lowercase letters, digits, `-` and `_`, starting with a letter"
             )));
@@ -202,6 +254,11 @@ impl Manifest {
                             "[{table}] `{key}`: tag `{tag}` is not a version tag (vMAJOR.MINOR.PATCH)"
                         )));
                     }
+                }
+                if dep.git.contains("?subdir=") {
+                    return Err(Error::new(format!(
+                        "[{table}] `{key}`: give the directory with `subdir`, not in the URL"
+                    )));
                 }
                 if let Some(dir) = &dep.subdir {
                     if dir.starts_with('/') || dir.split('/').any(|p| p == "..") {
@@ -268,6 +325,15 @@ fn parse_language_version(s: &str) -> Option<(u64, u64, u64)> {
     Some((major, minor, patch))
 }
 
+/// A cog's name: lowercase letters, digits, `-` and `_`, starting with a
+/// letter (it is also a directory name in the cache and in vendor/).
+pub fn is_cog_name(name: &str) -> bool {
+    name.starts_with(|c: char| c.is_ascii_lowercase())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+}
+
 pub fn is_const_name(s: &str) -> bool {
     s.starts_with(|c: char| c.is_ascii_uppercase())
         && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
@@ -327,6 +393,40 @@ Utils = { git = "https://example.com/mono", rev = "3f2a9c1e0b4d7c6e8a1f2b3c4d5e6
         );
         assert!(err("[cog]\nname = \"X\"\n").contains("lowercase"));
         assert!(err("[cog]\nname = \"x\"\nfoo = 1\n").contains("unknown field"));
+    }
+
+    #[test]
+    fn sources_are_compared_by_identity() {
+        let dep = |git: &str, subdir: Option<&str>| Dependency {
+            git: git.into(),
+            tag: None,
+            rev: None,
+            branch: None,
+            subdir: subdir.map(str::to_string),
+        };
+        let a = dep("https://github.com/foo/mono", Some("a")).source();
+        for (git, dir) in [
+            ("https://github.com/foo/mono", Some("a/")),
+            ("https://github.com/foo/mono", Some("./a")),
+            ("https://GitHub.com/foo/mono.git", Some("a")),
+            ("HTTPS://github.com/foo/mono/", Some("a/.")),
+        ] {
+            assert_eq!(dep(git, dir).source(), a, "{git} {dir:?}");
+        }
+        assert_ne!(dep("https://github.com/Foo/mono", Some("a")).source(), a);
+        assert_ne!(dep("https://github.com/foo/mono", Some("b")).source(), a);
+        assert_eq!(
+            dep("https://h/m", Some("")).source(),
+            dep("https://h/m", Some(".")).source()
+        );
+        assert_eq!(dep("https://h/m", Some("")).source().subdir, None);
+        // The lock's form reads back as the same source.
+        let back = Source::parse_lock_string(&a.to_lock_string()).unwrap();
+        assert_eq!(back, a);
+        assert!(Manifest::parse(
+            "[cog]\nname = \"x\"\n[dependencies]\nA = { git = \"https://h/m?subdir=a\" }\n"
+        )
+        .is_err());
     }
 
     #[test]
