@@ -36,6 +36,12 @@ when the local one is older.
   the user (`! command`) unless they ask.
 - Write commit messages that say what changed and why, with measured
   numbers for performance work.
+- Review every commit with an agent before making it: give a fresh
+  subagent the diff (not your own conclusions) and ask it for
+  correctness bugs. Fix the findings that need no decision from the
+  user, then commit. Keep the ones that do (a change of the language or
+  its specification, a trade-off, more scope) and go on with the work;
+  when all of it is done, ask the user about them together.
 
 ## Tests
 
