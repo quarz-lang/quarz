@@ -1,26 +1,26 @@
 # Cog: パッケージ
 
-Quarz のパッケージは **cog**(歯車)です。ルートに `Cog.toml` を持つ git リポジトリで、ソースのまま取得され、使う側のプログラムと一緒にコンパイルされます。ビルドされるプログラムと、それが組み込む cog の全体を **movement**(ムーブメント)と呼びます。レジストリはなく、バイナリも配布しません。cog はリポジトリの URL で識別され、ロックファイルが 1 つのコミットに固定します。
+Quarz のパッケージは **cog**(歯車)です。ルートに `Cog.toml` を持つ git リポジトリで、ソースのまま取得され、使う側のプログラムと一緒にコンパイルされます。ビルドされるプログラムと、それが組み込む cog の全体を **movement**(ムーブメント)と呼びます。レジストリはなく、バイナリも配布しません。cog はリポジトリの URL で識別され、ロックファイルが 1 つのコミットに固定します。cog は `require` なしで使います。マニフェストに名前を書けば、そのモジュールが見えます。
 
-この文書は設計で、どれもまだ実装されていません。今日の `require "name"` は標準ライブラリのモジュールだけを、`require_relative` はファイルを読み込みます([01-syntax.ja.md](01-syntax.ja.md) §2)。
+この文書は設計で、どれもまだ実装されていません。今日の `require "name"` は標準ライブラリのモジュールを、`require_relative` はファイルを読み込みます([01-syntax.ja.md](01-syntax.ja.md) §2)。
 
 ## 1. 語彙と形
 
 ```
 httpx/                      1 つの cog
-├── Cog.toml              マニフェスト
-├── Cog.lock              ロックファイル(アプリケーションはコミットする。ライブラリは任意)
-├── src/
-│   ├── httpx.qz            入口ファイル: `require "httpx"` が読み込む
-│   └── httpx/
-│       ├── client.qz       `require "httpx/client"`
-│       └── response.qz
+├── Cog.toml                マニフェスト
+├── Cog.lock                ロックファイル(アプリケーションはコミットする。ライブラリは任意)
+├── src/                    この下の .qz ファイルはすべて cog の一部
+│   ├── client.qz
+│   ├── response.qz
+│   └── errors.qz
 └── test/
 ```
 
 - cog は git の URL(`https://github.com/foo/httpx`、`ssh://git@host/path`)で識別します。`subdir` で大きなリポジトリ(モノレポ)の中の cog を選べます。
-- 入口ファイルは `src/<name>.qz` です。残りのファイルは `src/<name>/` の下に置き、外からは `require "<name>/path"`、中からは `require_relative` で読み込みます。
+- cog は `src/` 全体です。Go のパッケージがディレクトリ全体であるのと同じで、その下のすべての `.qz` ファイルが読み込まれ、ファイル同士は名前で参照し合い、間に `require_relative` はありません。ファイルの名前と階層は作者の自由です。
 - バージョンは `vMAJOR.MINOR.PATCH` という名前の git タグ(セマンティックバージョニング)です。どのタグも指さないコミットには*擬似バージョン*が付きます(§4)。
+- アプリケーションも cog(その movement のルート)で、文は `src/main.qz` に書きます(§6)。`Cog.toml` なしに `quarz run file.qz` で動かす 1 ファイルは*スクリプト*です。依存を持たず、`require_relative` で隣のファイルを読み込みます。
 
 ## 2. マニフェスト: `Cog.toml`
 
@@ -34,24 +34,24 @@ module  = "Webkit"      # この cog の宣言が入るモジュール。既定�
 quarz   = "0.1"         # 書かれた対象の言語バージョン
 
 [dependencies]
-# キー = `require` で使う名前。`git` は必須、tag/rev/branch は多くとも 1 つ
-httpx  = { git = "https://github.com/foo/httpx", tag = "v1.4.0" }
-tomlz  = { git = "https://github.com/bar/tomlz", rev = "3f2a9c1e0b4d7c6e8a1f2b3c4d5e6f7a8b9c0d1e" }
-utils  = { git = "https://github.com/baz/mono",  tag = "v2.0.0", subdir = "libs/utils" }
-autil  = { git = "https://github.com/a/util",    tag = "v2.0.0", namespace = "AUtil" }   # §6
-butil  = { git = "https://github.com/b/util",    tag = "v1.1.0", namespace = "BUtil" }
-devlib = { git = "ssh://git@internal/devlib",    branch = "main" }                       # 開発時のみ
+# キー = その cog が見えるモジュール名。`git` は必須、tag/rev/branch は多くとも 1 つ
+Httpx  = { git = "https://github.com/foo/httpx", tag = "v1.4.0" }
+Tomlz  = { git = "https://github.com/bar/tomlz", rev = "3f2a9c1e0b4d7c6e8a1f2b3c4d5e6f7a8b9c0d1e" }
+Utils  = { git = "https://github.com/baz/mono",  tag = "v2.0.0", subdir = "libs/utils" }
+AUtil  = { git = "https://github.com/a/util",    tag = "v2.0.0" }    # どちらも `module = "Util"` を宣言:
+BUtil  = { git = "https://github.com/b/util",    tag = "v1.1.0" }    # キーで区別する(§6)
+DevLib = { git = "ssh://git@internal/devlib",    branch = "main" }   # 開発時のみ
 
 [dev-dependencies]          # `quarz test` とこの cog 自身の開発用。利用者には渡らない
-spec = { git = "https://github.com/quarz-lang/spec", tag = "v0.2.0" }
+Spec = { git = "https://github.com/quarz-lang/spec", tag = "v0.2.0" }
 
 [patch]                     # 複数の cog を同時に開発するときのローカル差し替え。ロックには残らない
-httpx = { path = "../httpx" }
+Httpx = { path = "../httpx" }
 ```
 
+- 依存のキーは、この cog からその依存が見える定数、つまりモジュール名なので大文字で始めます。依存が宣言するモジュール(`[cog] module`)と同じなら、それ以上何も言いません。違えば、そのモジュールの別名です(§6)。組み込みや標準ライブラリのモジュール名(`JSON`、`Socket`、`Array`)をキーにするのはエラーです。
 - `tag`、`rev`、`branch` は「どこを見るか」の指示で、実際に使うコミットはロックファイルに記録されます(§3)。`branch` は `quarz cog update` のたびに動くので開発用です。`quarz cog add` が書くのは `tag` か `rev` で、`branch` は書きません。
-- 依存のキーは、それを宣言した cog の中だけで有効です。`httpx` は*この*マニフェストの依存を指し、別の cog は同じリポジトリを別の名前で呼んでいてかまいません。
-- 標準ライブラリのモジュール名(`json`、`socket`、…)は予約されており、依存のキーには使えません。
+- 依存のキーは、それを宣言した cog の中だけで有効です。別の cog は同じリポジトリを別の名前で見ていてかまいません。
 - `quarz` はその cog が必要とする最低の言語バージョンです(`go.mod` の `go 1.21`、Zig の `minimum_zig_version` と同じ)。それより古い `quarz` ではビルドを拒みます。
 - `extern "C"` 宣言を持つ cog はリンクする C ライブラリを名指しする必要が出ます。そのために `[cog] link = ["ssl"]` を予約しておき、ここでは設計しません。
 
@@ -63,15 +63,17 @@ httpx = { path = "../httpx" }
 version = 1
 
 [[cog]]
-name    = "httpx"
+name    = "httpx"                                    # cog 自身の `[cog] name`
+module  = "Httpx"
 source  = "git+https://github.com/foo/httpx"
 version = "1.4.0"
 rev     = "9b1c4e2f0a7d3b6c8e5f1a2b3c4d5e6f7a8b9c0d"
 hash    = "h1:Zk3q…"
-dependencies = ["tomlz"]
+dependencies = ["git+https://github.com/bar/tomlz"]
 
 [[cog]]
 name    = "tomlz"
+module  = "Tomlz"
 source  = "git+https://github.com/bar/tomlz"
 version = "0.8.1-0.20261023141500.3f2a9c1e0b4d"       # 擬似バージョン: どのタグもこのコミットを指さない
 rev     = "3f2a9c1e0b4d7c6e8a1f2b3c4d5e6f7a8b9c0d1e"
@@ -79,6 +81,7 @@ hash    = "h1:Q8ua…"
 dependencies = []
 ```
 
+- cog は `source`(URL。`subdir` があればそれも)で識別します。各マニフェストがその cog に付けたキーは記録しません。マニフェストごとに違うものだからです。
 - `rev` は取得の鍵、`hash` は検証の鍵です。`hash` はそのコミットにおける cog のファイル(`Cog.toml` と `src/` 以下すべて。パスと内容をソート順で)のハッシュです。二つを分けるのは、git のコミット id がリポジトリの履歴の SHA-1 であって、Quarz がコンパイルするファイルのハッシュではないからです。取得後、ロックとハッシュが一致しないツリー(書き換えられた履歴、force-push されたタグ、改変されたミラー)は拒否します。`h1:` という接頭辞はアルゴリズムを名指しし、後で変えられるようにしています。
 - ロックには解決の結果だけが載ります。マニフェストが何を求めていても、cog ごとに 1 項目です。`[patch]` は記録しません。
 
@@ -89,12 +92,12 @@ dependencies = []
 - **1 つの cog に 1 つのバージョン。** cog の宣言は 1 つのモジュールに入り(§6)、クラスは 1 つのクラスなので、同じ cog が movement に二度現れることはありません。選ばれたバージョンのメジャー(メジャーが `0` の間はマイナー)が、要求のどれかと一致しないときは解決に失敗し、二つの要求を名指しします。アプリケーションは一方を `rev` で固定するか、`[patch]` で差し替えます。
 - **アプリケーション自身のマニフェストの `rev` は固定です。** ほかの場所の `rev` はただの下限ですが、movement のマニフェストでは上限でもあります。より新しいバージョンを求める依存があればエラーで、黙って上げることはしません。
 - **擬似バージョン。** どのタグも指さないコミットは `1.4.1-0.20261023141500.3f2a9c1e0b4d` として順序付けます。祖先の中で最も近いタグの次のパッチ(タグがなければ `0.0.0`)、そのパッチの本物のプレリリースより下に並ぶための `0`、コミット時刻(UTC)、コミット id の先頭 12 桁です。セマンティックバージョニングの優先順位規則で、タグと次のリリースの間に並びます(Go の擬似バージョンと同じ)。
-- `quarz cog update [name]` が再解決してロックを書き直します。ロックされたバージョンを動かすものはほかにありません。`quarz run`、`quarz build`、`quarz check` は、ロックがありマニフェストと整合していればそれを使い、なければ解決して書き、`--locked` では変更が必要なら失敗します。
+- `quarz cog update [Key]` が再解決してロックを書き直します。ロックされたバージョンを動かすものはほかにありません。`quarz run`、`quarz build`、`quarz check` は、ロックがありマニフェストと整合していればそれを使い、なければ解決して書き、`--locked` では変更が必要なら失敗します。
 
 ## 5. 取得、キャッシュ、ベンダリング
 
 - リポジトリは `~/.cache/quarz/git/<host>/<path>.git` にミラー(ベアクローン)し、ロックが名指しするコミットだけを取得します(`git fetch --depth 1 origin <rev>`)。大きな履歴にコストはかかりません。
-- cog のツリーは `~/.cache/quarz/src/<name>-<rev の先頭 12 桁>/` に読み取り専用でチェックアウトし、何かをコンパイルする前にロックの `hash` と照合します。このディレクトリは一度書かれたら変わりません。固定されたコミットは不変なので、cog の型検査結果と `.qzi`([05-execution.ja.md](05-execution.ja.md) §2)は `(hash, quarz のバージョン, バックエンド)` を鍵にキャッシュでき、無効化は一切要りません。
+- cog のツリーは `~/.cache/quarz/src/<name>-<rev の先頭 12 桁>/` に読み取り専用でチェックアウトし、何かをコンパイルする前にロックの `hash` と照合します。このディレクトリは一度書かれたら変わりません。固定されたコミットは不変なので、cog の型検査結果と `.qzi`([05-execution.ja.md](05-execution.ja.md) §2)は `(hash, quarz のバージョン, バックエンド)` を鍵にキャッシュでき、無効化は一切要りません。プログラムが名指しするファイルではなく cog 全体を読み込むコストは、実行ごとではなくコミットごとに一度の型検査で、`quarz build` はプログラムが到達しないものを落とします。
 - `quarz cog vendor` はロックされた全 cog をマニフェストの隣の `vendor/` にコピーします。このディレクトリがあれば何も取得しません。`--offline` はキャッシュと `vendor/` だけで解決します。
 - 非公開リポジトリは git 自身の認証(SSH 鍵、credential helper)を使います。Quarz は独自の認証情報の扱いを持ちません。
 
@@ -103,34 +106,33 @@ dependencies = []
 cog の宣言はトップレベルには届きません。cog のファイルは、`[cog] module` が名指しする 1 つのモジュール(既定は cog 名の CamelCase)の本文で、各ファイルを `module Httpx … end` の中に書いたのと同じです。
 
 ```ruby
-# httpx/src/httpx.qz          → ここにあるものはすべて `Httpx` の中
+# httpx/src/client.qz          → ここにあるものはすべて `Httpx` の中
 class Client
-  def get(url: String) -> Response … end
+  def get(url: String) -> Response … end     # `Response` は response.qz にある。require は不要
 end
-class Response … end
 
-def self.get(url: String) -> Response   # モジュール関数: `Httpx.get`
+def self.get(url: String) -> Response        # モジュール関数: `Httpx.get`
   Client.new.get(url)
 end
 
-def helper(…) … end                      # トップレベルの `def` はこれまでどおりファイル私有
+def helper(…) … end                          # トップレベルの `def` はこれまでどおりファイル私有
 ```
 
-利用側は入口ファイルを require し、そのモジュールの下に見ます。
+利用側は `[dependencies]` に名前を書き、そのキーの下に見ます。
 
 ```ruby
-require "httpx"
-require "httpx/client"
-
+# アプリケーションの src/main.qz。Cog.toml に `Httpx = { git = … }` がある
 res = Httpx.get("https://example.com")
 client = Httpx::Client.new
 ```
 
+- **`require` はない。** 宣言は読み込まれた全ファイルにまたがって巻き上げられるので、`require` が決めていたのは「どのファイルを読み込むか」と「文がどの順で実行されるか」だけでした。前者はマニフェストが、後者は §6 の文の規則が答えます。`require "json"` は、今日の `require "time"` と同じく no-op として受け付けるので、Ruby のコードはそのまま移せます。標準ライブラリのモジュール(`JSON`、`Socket`、…)はそれなしで見えます。`require_relative` はマニフェストを持たないスクリプトのために残ります。
+- **cog は文を持たない。** cog のファイルは宣言と定数だけで、cog のファイルのトップレベルに文があればエラーです。したがって cog の読み込みには効果がなく、定義すべき読み込み順もありません。アプリケーションの文は `src/main.qz` にあり、movement の中で文を持ってよい唯一のファイルで、すべての定数が初期化された後に実行されます。
+- **定数は依存順に初期化される。** checker は初期化子がどの定数を読むか知っています。それらを先に初期化し(循環はエラー)、互いに依存しない定数はファイルパスの順、次にファイル内の位置の順です。cog の定数は、それに依存する cog の定数より先に初期化されます。
 - **ルートモジュールは普通のモジュール**で、普通の規則に従います。再オープンできません(クラスもモジュールも再オープンされないので、cog の内外どこにも `module Httpx` は書けません)。include や extend は、名前空間モジュールを include したときと同じ警告になります([01-syntax.ja.md](01-syntax.ja.md) §6)。cog が定義する `extension` は、ファイルが `using Httpx::StringExt` と書いた場所でだけ効きます。cog は利用者をモンキーパッチできません。
-- 依存テーブルの **`namespace`** は、アプリケーションにルートの別名を与えます。`namespace = "AUtil"` は、`AUtil = Util` と書いたのと同じように、アプリケーションのスコープで定数 `AUtil` をその cog のルートモジュールに束縛します。必要になるのは二つの cog が同じモジュール名を宣言したときだけで、それ以外ではそれはエラー(両方を名指しする)です。cog 自身のコードには影響しないので、その `.qzi` は利用者が何と呼んでいても共有されます(Swift PM の `moduleAliases`、.NET の `extern alias`、Cabal の `mixins` は同じ衝突を同じ方法で解いています)。
-- **cog の依存は、その cog 自身のマニフェストで解決します。** `httpx` が `tomlz` を require するとき、名前は `httpx` の `[dependencies]` から、モジュールは `tomlz` の `[cog] module` から来ます。アプリケーションがどちらを何と呼んでいても変わりません。クラスはどの名前の下でも同じクラスなので、`httpx` が作った `Tomlz::Value` とアプリケーションが作ったものは 1 つの型です。
-- `require "name"` は `name` をこの順に解決します。標準ライブラリのモジュール、要求元 cog の依存キー(その cog の `src/name.qz` を読み込む。`require "name/path"` は `src/name/path.qz`)、どちらでもなければエラー。`require_relative` は cog の中にとどまります。
-- アプリケーション(movement のルート cog)と素のスクリプトは包まれません。その宣言は今日と同じくトップレベルです。
+- **キーが名前で、違えば別名。** マニフェストが cog を載せたキーは、その cog のスコープで、`AUtil = Util` という定数と同じように依存のルートモジュールに束縛されます。二つの依存が同じ `module` を宣言していればキーが区別し、宣言されたモジュールと同じキーは普通の場合で、何も言いません。依存自身のコードには影響しないので、その `.qzi` は利用者が何と呼んでいても共有されます(Swift PM の `moduleAliases`、.NET の `extern alias`、Cabal の `mixins` は同じ衝突を同じ方法で解いています)。
+- **cog の依存は、その cog 自身のマニフェストで解決します。** `httpx` のコードが `Tomlz::Parser` と書けば、その名前は `httpx` がその依存に付けたキーで、アプリケーションが何と呼んでいても変わりません。クラスはどの名前の下でも同じクラスなので、`httpx` が作った `Tomlz::Value` とアプリケーションが作ったものは 1 つの型です。
+- アプリケーションはその movement のルート cog で、その宣言は包まれません。`src/main.qz` とその隣のファイルは、今日のスクリプトと同じくトップレベルです。
 
 ### キーワード `cog`
 
@@ -143,15 +145,15 @@ cog.name             # "httpx"。マニフェストから
 cog.version          # "1.4.0"。マニフェストから。ソースに二度書かない
 ```
 
-アプリケーションとスクリプトでは `cog` はトップレベルです。そのとき `cog.name` はアプリケーションのマニフェストの名前、マニフェストがなければ拡張子を除いたファイル名で、`cog.version` はそのバージョンか `"0.0.0"` です。`cog` を定義済み定数ではなくキーワードにするのは、どの cog にも隠されないためです。`::` と綴らないのは、cog 自身の宣言が隠した標準クラスに届くために Ruby の `::Foo`(トップレベル)が引き続き必要だからです。
+アプリケーションとスクリプトでは `cog` はトップレベルです。そのとき `cog.name` はアプリケーションのマニフェストの名前、スクリプトなら拡張子を除いたファイル名で、`cog.version` はそのバージョンか `"0.0.0"` です。`cog` を定義済み定数ではなくキーワードにするのは、どの cog にも隠されないためです。`::` と綴らないのは、cog 自身の宣言が隠した標準クラスに届くために Ruby の `::Foo`(トップレベル)が引き続き必要だからです。
 
 ## 7. コマンド
 
 | コマンド | 動作 |
 |---|---|
 | `quarz cog init` | 現在のディレクトリに `Cog.toml` を書く |
-| `quarz cog add <git-url> [--tag v1.4.0 \| --rev <hash>] [--name key] [--subdir dir] [--dev]` | 依存を追加して解決する。`--tag` か既定ブランチの先頭が `tag` または `rev` として記録される |
-| `quarz cog update [name]` | 再解決(1 つまたは全部)してロックを書き直す |
+| `quarz cog add <git-url> [--tag v1.4.0 \| --rev <hash>] [--as Key] [--subdir dir] [--dev]` | 依存を追加して解決する。キーは `--as` がなければ cog が宣言するモジュール。`--tag` か既定ブランチの先頭が `tag` または `rev` として記録される |
+| `quarz cog update [Key]` | 再解決(1 つまたは全部)してロックを書き直す |
 | `quarz cog fetch` | ロックが名指しするものを取得して検証する。コンパイルはしない |
 | `quarz cog vendor` | ロックされた cog を `vendor/` にコピーする |
 | `quarz cog tree` | 解決された依存グラフを表示する |
@@ -165,7 +167,8 @@ cog.version          # "1.4.0"。マニフェストから。ソースに二度�
 - **バイナリではなくソース。** cog は利用者のマシンで利用者の `quarz` によってコンパイルされます。取得したツリーは内容で検証し、内容を鍵にしたキャッシュがコストを初回のビルドに留めます。これを安くするのが分割コンパイル([05-execution.ja.md](05-execution.ja.md) §2)です。
 - **ロックが固定するのはバージョンではなくコミット。** タグは動き、コミットは動きません。バージョンは順序付けのためにタグから導き、安全のために内容ハッシュを照合します。
 - **ソルバではなく最小バージョン選択。** Cargo や Bundler のリゾルバは制約を満たすどのバージョンでも選べるので、結果はリゾルバに依存し、ロックファイルがその唯一の記録になります。MVS ではマニフェストが結果を決め、ロックはそのキャッシュで、依存の更新がバージョンを下げることはありません。代償は、cog が「2.0 未満」をメジャーバージョンの規則以外では言えないことで、Go も同じ代償を払っています。
-- **包み直しではなく別名。** アプリケーションの `namespace` は定数の別名で、cog のソースを別のモジュールの下に入れ直すものではありません。入れ直しだと、cog の型検査結果が利用者ごとの名前の選択に依存し、cog 同士の参照が壊れます。
+- **ファイルの列挙ではなくディレクトリ、そして `require` なし**(Go)。マニフェストはプログラムが使いうる cog をすべて名指ししており、巻き上げは読み込まれた宣言をすべて見えるようにしているので、`require` はマニフェストの繰り返しになります。やめることで、ライブラリが読み込み時にコードを実行する唯一の経路もなくなります。ファイル名は自由なままです。Rails の Zeitwerk と違い、定数をパスに対応付けるものはなく、matz の「モジュールによる名前空間とライブラリのファイル名は分離してた方が自由度が高い」([ruby-list:7885])という見方に沿っています。
+- **キーが別名。** `require` がなくなると依存のキーにほかの仕事はないので、キーを cog が見える名前にし、名前の変更はキーの編集です。別の `namespace` フィールドは要らず、cog のソースを別のモジュールの下に入れ直すこともしません。入れ直しだと、cog の型検査結果が利用者ごとの名前の選択に依存し、cog 同士の参照が壊れます。
 - **宣言は最初から包まれている。** Ruby の `Namespace`(Feature #19744)は、トップレベル向けに書かれたライブラリを後から名前空間に読み込まねばならず、matz はそれを難しいと述べています(「もともとトップレベルに読み込まれるべく作られたモジュールをトップレベル以外に読み込んで来るのは無理がある」[ruby-dev:725])。Quarz の cog は最初の行からモジュールの中に書かれるので、後付けするものがありません。
 - **却下: `require` に URL**(Deno)。二つのファイルが一つのライブラリの二つのバージョンを名指しできてしまい、1 つのグローバルなクラス表を持つ movement には収まりません。それに、全ファイルに URL があるのは Ruby ではありません。
 - **却下: 同じ cog の複数バージョンの共存**(Cargo、Java の shading)。技術的には開いています(各 cog は自分のルートを持つので)が、1 つのプログラムに二つの `Tomlz::Value` 型があるのは助けより混乱が大きいでしょう。後で必要になれば、マニフェストの形を変えずに依存ごとに許せます。
@@ -175,4 +178,5 @@ cog.version          # "1.4.0"。マニフェストから。ソースに二度�
 - クラスが表示する名前。使用箇所の診断はそこで見える名前(`AUtil::Table`)を、実行時の `Class#name` は宣言された名前(`Util::Table`)を出す、という分け方が候補です。Ruby の `Namespace` でも同じ問題が未決です(Bug #21316)。
 - `[patch]` の外で `branch` を許すべきかどうか。
 - ハッシュの正確な範囲(`test/` とライブラリのロックを含めるか)とアルゴリズム。
+- アプリケーションの `src/main.qz` 以外のファイルに文を許すかどうか(読み込み時に出力する `require_relative` されたヘルパーは動かなくなります)。
 - FFI が入ったときの `[cog] link` の形。
