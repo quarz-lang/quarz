@@ -211,6 +211,9 @@ struct Env {
     ret_expected: Option<Type>,
     ret_collected: Vec<Type>,
     block_type: Option<Type>,
+    /// The block may be left out (`&block: ((A) -> R)?`), so `yield`
+    /// cannot run it.
+    block_optional: bool,
     in_initialize: bool,
     assigned_fields: HashSet<String>,
     loop_depth: u32,
@@ -361,6 +364,7 @@ impl Checker {
             ret_expected: None,
             ret_collected: Vec::new(),
             block_type: None,
+            block_optional: false,
             in_initialize: false,
             assigned_fields: HashSet::default(),
             loop_depth: 0,
@@ -861,6 +865,7 @@ impl Checker {
             ret_expected: None,
             ret_collected: Vec::new(),
             block_type: None,
+            block_optional: false,
             in_initialize: false,
             assigned_fields: HashSet::default(),
             loop_depth: 0,
@@ -1078,6 +1083,7 @@ impl Checker {
             _ => None,
         };
         env.block_type = info.block.as_ref().map(|(_, t)| t.subst(&self_subst));
+        env.block_optional = info.block_optional;
         env.in_initialize = info.name == "initialize" && !info.singleton;
         env.frames[0].vars = Vec::new();
         for p in &info.params {
@@ -1088,9 +1094,14 @@ impl Checker {
             });
         }
         if let Some((name, t)) = &info.block {
+            let t = t.subst(&self_subst);
             env.frames[0].vars.push(VarInfo {
                 name: name.clone(),
-                declared: t.subst(&self_subst),
+                declared: if info.block_optional {
+                    self.world.nilable(t)
+                } else {
+                    t
+                },
                 narrowed: None,
             });
         }
@@ -4717,7 +4728,7 @@ impl Checker {
                 ));
                 continue;
             }
-            if (m.block.is_some()) != block_given {
+            if m.block.is_some() != block_given && !(m.block_optional && !block_given) {
                 failures.push(if m.block.is_some() {
                     format!("{} requires a block", self.signature(&m))
                 } else {
@@ -5205,6 +5216,13 @@ impl Checker {
                         self.record(e.id, &self.world.symbol());
                     }
                     _ => {
+                        // `&block` may be `nil` when the callee's block may be
+                        // left out.
+                        let block_ty = if m.block_optional {
+                            self.world.nilable(block_ty.clone())
+                        } else {
+                            block_ty.clone()
+                        };
                         let t = self.check_expr(e, Some(&block_ty));
                         if !self.coerce(&t, &block_ty) {
                             let msg = format!(
@@ -5537,8 +5555,16 @@ impl Checker {
     }
 
     fn check_yield(&mut self, expr: &Expr, args: &[Arg]) -> Type {
-        let Some(bt) = self.env.block_type.clone() else {
-            self.error("`yield` in a method without a block parameter", expr.span);
+        let bt = self.env.block_type.clone();
+        let Some(bt) = bt.filter(|_| !self.env.block_optional) else {
+            if self.env.block_optional {
+                self.error(
+                    "`yield` cannot run an optional block; call it with `block.call` where it is not `nil`",
+                    expr.span,
+                );
+            } else {
+                self.error("`yield` in a method without a block parameter", expr.span);
+            }
             self.check_args_blindly(&Call {
                 recv: None,
                 name: String::new(),

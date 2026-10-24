@@ -702,6 +702,16 @@ fn control_flow() {
     ok("begin\n  raise \"x\"\nrescue ArgumentError\n  raise\nend");
     ok("begin\n  raise \"x\"\nrescue => e\n  [1].each { |x| raise }\nend");
     err("raise", "a bare `raise` re-raises only inside `rescue`");
+    ok("def f(&b: ((Int) -> Nil)?) -> Nil\n  b&.call(1)\nend\nf\nf { |x| p x }");
+    err(
+        "def f(&b: ((Int) -> Nil)?) -> Nil\n  yield 1\nend",
+        "`yield` cannot run an optional block",
+    );
+    err("def f(&b: ((Int) -> Nil)?) -> Nil\n  b.call(1)\nend", "Nil");
+    err(
+        "def f(&b: (Int) -> Nil) -> Nil\n  b.call(1)\nend\nf",
+        "requires a block",
+    );
     err(
         "[1].each { |x: String| puts x }",
         "block parameter `x` is annotated String but receives Int",

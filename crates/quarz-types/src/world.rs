@@ -68,6 +68,9 @@ pub struct MethodInfo {
     pub params: Vec<ParamInfo>,
     /// The `&block` parameter: its name and proc type.
     pub block: Option<(String, Type)>,
+    /// `&block: ((A) -> R)?`: the block may be left out, and the
+    /// parameter is then `nil`.
+    pub block_optional: bool,
     /// Extensions active inside a block literal passed to this method
     /// (`&: (A) -> R using M`).
     pub block_usings: Vec<ExtensionId>,

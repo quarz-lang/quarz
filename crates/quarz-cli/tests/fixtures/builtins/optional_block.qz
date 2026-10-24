@@ -1,0 +1,37 @@
+# A block parameter of an optional type may be left out; it is then nil.
+def each_twice(n: Int, &block: ((Int) -> Nil)?) -> Int
+  if block
+    block.call(n)
+    block.(n + 1)
+  end
+  n * 2
+end
+
+def transform(xs: Array[Int], &f: ((Int) -> Int)?) -> Array[Int]
+  return xs unless f
+  xs.map { |x| f.call(x) }
+end
+
+def forward(n: Int, &block: ((Int) -> Nil)?) -> Int
+  each_twice(n, &block)
+end
+
+class Counter
+  var @count: Int = 0
+
+  def tick(&on_tick: ((Int) -> Nil)?) -> Nil
+    @count += 1
+    on_tick&.call(@count)
+  end
+end
+
+p each_twice(3) { |x| puts x }
+p each_twice(4)
+p transform([1, 2, 3]) { |x| x * 10 }
+p transform([1, 2, 3])
+p transform([1, 2, 3], &:succ)
+p forward(5) { |x| puts "fwd #{x}" }
+p forward(6)
+c = Counter.new
+c.tick
+c.tick { |n| puts "tick #{n}" }

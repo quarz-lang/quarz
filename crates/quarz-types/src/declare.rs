@@ -1332,6 +1332,7 @@ impl<'ast> Declarer<'ast> {
             type_params: Vec::new(),
             params,
             block: None,
+            block_optional: false,
             block_usings: Vec::new(),
             ret: RetType::Known(ret),
             body: None,
@@ -1452,6 +1453,7 @@ impl<'ast> Declarer<'ast> {
         }
         let mut params = Vec::new();
         let mut block = None;
+        let mut block_optional = false;
         let mut block_usings: Vec<ExtensionId> = Vec::new();
         for p in &def.params.list {
             if let Some(span) = p.ty.as_ref().and_then(|t| self_against_variance(t, false)) {
@@ -1468,7 +1470,18 @@ impl<'ast> Declarer<'ast> {
                 }
                 match &p.ty {
                     Some(t) => {
-                        if let Some(ty) = self.resolve_type(t, &scope) {
+                        if let Some(mut ty) = self.resolve_type(t, &scope) {
+                            let nil = self.world.builtin.nil;
+                            if let Type::Union(ms) = &ty {
+                                if let [Type::Proc(..), Type::Class(c, _)]
+                                | [Type::Class(c, _), Type::Proc(..)] = ms.as_slice()
+                                {
+                                    if *c == nil {
+                                        block_optional = true;
+                                        ty = ty.without_nil(nil);
+                                    }
+                                }
+                            }
                             if !matches!(ty, Type::Proc(..)) {
                                 self.error(
                                     "a block parameter must have a procedure type `(A) -> R`",
@@ -1590,6 +1603,7 @@ impl<'ast> Declarer<'ast> {
             type_params,
             params,
             block,
+            block_optional,
             block_usings,
             ret,
             body: def.body.as_ref().map(|_| Rc::new(def.clone())),
