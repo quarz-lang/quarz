@@ -355,6 +355,116 @@ fn cog_files_hold_declarations_only() {
 }
 
 #[test]
+fn namespaces_are_added_to_not_reopened() {
+    let w = World::new();
+    w.write("lib/Cog.toml", "[cog]\nname = \"lib\"\n");
+    // `a.qz` loads before the file declaring `Shapes`: the qualified
+    // declaration waits for it.
+    w.write(
+        "lib/src/a.qz",
+        "class Shapes::Line\n  def self.k -> Int = Shapes.k + 1\nend\n",
+    );
+    w.write(
+        "lib/src/b.qz",
+        "module Shapes\n  def self.k -> Int = 1\nend\n",
+    );
+    w.commit("lib", Some("v0.1.0"));
+    let dep = format!("Lib = {{ git = \"{}\", tag = \"v0.1.0\" }}\n", w.url("lib"));
+    w.app(&dep, "puts Lib::Shapes::Line.k\n");
+    assert_eq!(w.ok("app", &["run"]), "2\n");
+    // A dependency's root module is not the application's to add to.
+    w.app(&dep, "module Lib\nend\nputs 1\n");
+    let err = w.fails("app", &["check"]);
+    assert!(
+        err.contains("`Lib` is already defined; modules cannot be reopened"),
+        "{err}"
+    );
+    assert!(!err.contains("declare `class"), "{err}");
+    // A cog's files are its root module's body already.
+    w.write("lib/src/c.qz", "module Lib\nend\n");
+    w.commit("lib", Some("v0.1.1"));
+    w.app(
+        &format!("Lib = {{ git = \"{}\", tag = \"v0.1.1\" }}\n", w.url("lib")),
+        "puts 1\n",
+    );
+    let err = w.fails("app", &["check"]);
+    assert!(err.contains("`Lib` is this cog's root module"), "{err}");
+    // Also as `cog::Lib` inside a module of the cog.
+    w.write("lib/src/c.qz", "module M\n  module cog::Lib\n  end\nend\n");
+    w.commit("lib", Some("v0.1.4"));
+    w.app(
+        &format!("Lib = {{ git = \"{}\", tag = \"v0.1.4\" }}\n", w.url("lib")),
+        "puts 1\n",
+    );
+    let err = w.fails("app", &["check"]);
+    assert!(err.contains("`Lib` is this cog's root module"), "{err}");
+    // Nor may a cog declare a module named like a dependency's key.
+    w.write(
+        "user/Cog.toml",
+        &format!(
+            "[cog]\nname = \"user\"\n\n[dependencies]\nLib = {{ git = \"{}\", tag = \"v0.1.0\" }}\n",
+            w.url("lib")
+        ),
+    );
+    w.write("user/src/a.qz", "module Lib\nend\n");
+    w.commit("user", Some("v0.1.0"));
+    w.app(
+        &format!(
+            "User = {{ git = \"{}\", tag = \"v0.1.0\" }}\n",
+            w.url("user")
+        ),
+        "puts 1\n",
+    );
+    let err = w.fails("app", &["check"]);
+    assert!(err.contains("`Lib` is a dependency of this cog"), "{err}");
+    w.write("user/src/a.qz", "Lib = 5\n");
+    w.commit("user", Some("v0.1.2"));
+    w.app(
+        &format!(
+            "User = {{ git = \"{}\", tag = \"v0.1.2\" }}\n",
+            w.url("user")
+        ),
+        "puts 1\n",
+    );
+    let err = w.fails("app", &["check"]);
+    assert!(err.contains("`Lib` is a dependency of this cog"), "{err}");
+    // A cog declares nothing at the application's top level.
+    w.write("user/src/a.qz", "class ::Leak\nend\n");
+    w.commit("user", Some("v0.1.3"));
+    w.app(
+        &format!(
+            "User = {{ git = \"{}\", tag = \"v0.1.3\" }}\n",
+            w.url("user")
+        ),
+        "puts 1\n",
+    );
+    let err = w.fails("app", &["check"]);
+    assert!(
+        err.contains("a cog declares only in its root module"),
+        "{err}"
+    );
+    w.write("user/src/a.qz", "class Lib\nend\n");
+    w.commit("user", Some("v0.1.1"));
+    w.app(
+        &format!(
+            "User = {{ git = \"{}\", tag = \"v0.1.1\" }}\n",
+            w.url("user")
+        ),
+        "puts 1\n",
+    );
+    let err = w.fails("app", &["check"]);
+    assert!(err.contains("`Lib` is a dependency of this cog"), "{err}");
+    // A class named after the cog is not its root module.
+    w.write("lib/src/c.qz", "class Lib\n  def self.k -> Int = 3\nend\n");
+    w.commit("lib", Some("v0.1.2"));
+    w.app(
+        &format!("Lib = {{ git = \"{}\", tag = \"v0.1.2\" }}\n", w.url("lib")),
+        "puts Lib::Lib.k\n",
+    );
+    assert_eq!(w.ok("app", &["run"]), "3\n");
+}
+
+#[test]
 fn versions_follow_minimal_version_selection() {
     let w = World::new();
     let untagged = w.libraries();

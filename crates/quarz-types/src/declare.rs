@@ -88,6 +88,34 @@ pub struct Declarer<'ast> {
     /// While collecting a file of the application of a movement: its
     /// top-level names are hidden from library cogs.
     in_app: bool,
+    /// `class A::B` / `module A::B`: collected once every other
+    /// declaration has been (see `collect_deferred`), as declarations are
+    /// hoisted: `A` may be declared later, in this file or another, and
+    /// a nearer `A` declared later wins as it would earlier.
+    deferred: Vec<Deferred<'ast>>,
+    /// The deferred declaration being collected now (not deferred again).
+    collecting: Option<*const Expr>,
+    /// Collecting the deferred declarations for the last time: an unknown
+    /// namespace is now an error.
+    final_pass: bool,
+}
+
+/// A qualified declaration waiting for its namespace (`Declarer::deferred`).
+struct Deferred<'ast> {
+    expr: &'ast Expr,
+    namespace: Option<ClassId>,
+    prelude: bool,
+    file: u32,
+    in_app: bool,
+}
+
+/// The name a deferred declaration declares.
+fn deferred_path(expr: &Expr) -> &ConstPath {
+    match &expr.kind {
+        ExprKind::ClassDef(def) => &def.name,
+        ExprKind::ModuleDef(def) => &def.name,
+        _ => unreachable!("only classes and modules are deferred"),
+    }
 }
 
 /// A cog of the movement, as the declarer needs it.
@@ -129,6 +157,9 @@ impl<'ast> Declarer<'ast> {
             class_usings: HashMap::default(),
             ext_includes: Vec::new(),
             in_app: false,
+            deferred: Vec::new(),
+            collecting: None,
+            final_pass: false,
         }
     }
 
@@ -325,6 +356,27 @@ impl<'ast> Declarer<'ast> {
         namespace: Option<ClassId>,
         prelude: bool,
     ) -> bool {
+        // A qualified name waits for the other declarations (hoisting).
+        let qualified = match &expr.kind {
+            ExprKind::ClassDef(def) => Some(&def.name),
+            ExprKind::ModuleDef(def) => Some(&def.name),
+            _ => None,
+        };
+        if let Some(path) = qualified {
+            if path.names.len() > 1
+                && !self.final_pass
+                && self.collecting != Some(expr as *const Expr)
+            {
+                self.deferred.push(Deferred {
+                    expr,
+                    namespace,
+                    prelude,
+                    file: self.file,
+                    in_app: self.in_app,
+                });
+                return true;
+            }
+        }
         match &expr.kind {
             ExprKind::ClassDef(def) => {
                 let Some(id) =
@@ -485,6 +537,179 @@ impl<'ast> Declarer<'ast> {
         true
     }
 
+    /// The namespace a declaration of `path` goes into (`None` for the
+    /// top level), or the first part of its prefix that is not declared.
+    /// The first part is looked up as any constant is, outwards from
+    /// `namespace` (from the top level for `::A::B`, the cog's root for
+    /// `cog::A::B`); the others in the namespace before them only.
+    fn resolve_prefix<'p>(
+        &self,
+        path: &'p ConstPath,
+        namespace: Option<ClassId>,
+    ) -> Result<Option<ClassId>, &'p str> {
+        let (mut ns, outwards) = if path.absolute {
+            (None, false)
+        } else if path.cog {
+            (self.world.cog_root(namespace), false)
+        } else {
+            (namespace, true)
+        };
+        let prefixes = &path.names[..path.names.len().saturating_sub(1)];
+        for (i, prefix) in prefixes.iter().enumerate() {
+            let found = if i == 0 && outwards {
+                self.world.resolve_member(ns, prefix)
+            } else {
+                self.world.member_in(ns, prefix)
+            };
+            match found {
+                Some(Member::Class(id)) => ns = Some(id),
+                _ => return Err(prefix),
+            }
+        }
+        Ok(ns)
+    }
+
+    fn namespace_of(
+        &self,
+        path: &ConstPath,
+        namespace: Option<ClassId>,
+    ) -> Option<Option<ClassId>> {
+        self.resolve_prefix(path, namespace).ok()
+    }
+
+    /// Whether deferred declaration `d` can be collected now: its
+    /// namespace resolves, and no other deferred declaration (`names`
+    /// counts them by the name they declare; `others` are they) declares
+    /// its first part in a scope nearer than where it was found, so that
+    /// a nearer `A` declared later wins, as it would earlier. One whose
+    /// own namespace does not resolve yet cannot be nearer: its path would
+    /// be made of names that resolve already.
+    fn deferred_ready<'d>(
+        &self,
+        d: &Deferred<'ast>,
+        names: &HashMap<&'ast str, usize>,
+        others: impl Iterator<Item = &'d Deferred<'ast>>,
+    ) -> bool
+    where
+        'ast: 'd,
+    {
+        let path = deferred_path(d.expr);
+        if self.namespace_of(path, d.namespace).is_none() {
+            return false;
+        }
+        if path.absolute || path.cog {
+            return true;
+        }
+        let first = path.names[0].as_str();
+        let mut count = names.get(first).copied().unwrap_or(0);
+        if path.last() == first {
+            count -= 1;
+        }
+        if count == 0 {
+            return true;
+        }
+        // The scopes searched before the one where `first` was found.
+        let mut nearer = Vec::new();
+        let mut cur = d.namespace;
+        while let Some(cid) = cur {
+            if self.world.member_in(Some(cid), first).is_some() {
+                break;
+            }
+            nearer.push(cid);
+            cur = self.world.class(cid).parent;
+        }
+        if nearer.is_empty() {
+            return true;
+        }
+        !others.into_iter().any(|o| {
+            let op = deferred_path(o.expr);
+            op.last() == first
+                && self
+                    .namespace_of(op, o.namespace)
+                    .is_some_and(|target| target.is_some_and(|t| nearer.contains(&t)))
+        })
+    }
+
+    /// Collect the deferred qualified declarations, in passes: each pass
+    /// collects, in the order they were met, those ready
+    /// (`deferred_ready`); a collected body may defer more, and make others
+    /// ready. When a pass collects none, those whose namespace resolves are
+    /// waiting on one another (`module A; module N::A; end; end` with
+    /// `module N; module A::N; end; end`): where they go depends on which
+    /// comes first, so that is an error, as is an unknown namespace.
+    fn collect_deferred(&mut self) {
+        loop {
+            let mut todo: Vec<Option<Deferred<'ast>>> = std::mem::take(&mut self.deferred)
+                .into_iter()
+                .map(Some)
+                .collect();
+            if todo.is_empty() {
+                return;
+            }
+            let mut names: HashMap<&'ast str, usize> = HashMap::default();
+            for d in todo.iter().flatten() {
+                *names.entry(deferred_path(d.expr).last()).or_default() += 1;
+            }
+            // Those ready when the pass starts, collected in the order they
+            // were met (so a duplicate is reported on the later one); what
+            // they make ready waits for the next pass.
+            let ready: Vec<bool> = (0..todo.len())
+                .map(|i| {
+                    let d = todo[i].as_ref().unwrap();
+                    let others = todo
+                        .iter()
+                        .enumerate()
+                        .filter(|(j, _)| *j != i)
+                        .filter_map(|(_, o)| o.as_ref());
+                    self.deferred_ready(d, &names, others)
+                })
+                .collect();
+            let mut kept = Vec::new();
+            let mut progress = false;
+            for (i, ready) in ready.into_iter().enumerate() {
+                let d = todo[i].take().unwrap();
+                if !ready {
+                    kept.push(d);
+                    continue;
+                }
+                self.collect_one(d);
+                progress = true;
+            }
+            kept.append(&mut self.deferred);
+            self.deferred = kept;
+            if !progress {
+                break;
+            }
+        }
+        for d in std::mem::take(&mut self.deferred) {
+            let path = deferred_path(d.expr);
+            if self.namespace_of(path, d.namespace).is_some() {
+                self.file = d.file;
+                self.error(
+                    format!(
+                        "where `{}` goes depends on the order of the declarations: another declaration of `{}` waits for it",
+                        path.names.join("::"),
+                        path.names[0]
+                    ),
+                    d.expr.span,
+                );
+            } else {
+                self.final_pass = true;
+                self.collect_one(d);
+                self.final_pass = false;
+            }
+        }
+    }
+
+    fn collect_one(&mut self, d: Deferred<'ast>) {
+        self.file = d.file;
+        self.in_app = d.in_app;
+        self.collecting = Some(d.expr as *const Expr);
+        self.collect_item(d.expr, d.namespace, d.prelude);
+        self.collecting = None;
+        self.in_app = false;
+    }
+
     fn collect_body(&mut self, id: ClassId, body: &'ast [Expr], prelude: bool) {
         for expr in body {
             if !self.collect_item(expr, Some(id), prelude) {
@@ -504,28 +729,86 @@ impl<'ast> Declarer<'ast> {
             self.error("`Self` is reserved: it is the type of the receiver", span);
             return None;
         }
-        // `class A::B` nests B in A (A must exist).
-        let mut ns = namespace;
-        for prefix in &path.names[..path.names.len() - 1] {
-            match self.world.resolve_member(ns, prefix) {
-                Some(Member::Class(id)) => ns = Some(id),
-                _ => {
-                    self.error(format!("unknown namespace `{prefix}`"), span);
+        // A library cog declares only inside its root module: `::X` would
+        // be the application's top level.
+        if path.absolute && self.world.cog_root(namespace).is_some() {
+            self.error(
+                "a cog declares only in its root module: `::` would declare at the application's top level",
+                span,
+            );
+            return None;
+        }
+        // `class A::B` nests B in A (A must exist, see `resolve_prefix`).
+        let ns = match self.resolve_prefix(path, namespace) {
+            Ok(ns) => ns,
+            Err(prefix) => {
+                self.error(format!("unknown namespace `{prefix}`"), span);
+                return None;
+            }
+        };
+        let short = path.last().to_string();
+        // A cog's files are the body of its root module already: `module
+        // Httpx` in the `Httpx` cog (at a file's top level, or as
+        // `cog::Httpx` anywhere) would reopen it.
+        if kind == ClassKind::Module {
+            // The cog this declaration is in: not a dependency's root
+            // reached by a qualified name.
+            if let Some(root) = ns.filter(|n| self.world.cog_root(namespace) == Some(*n)) {
+                if self.world.class(root).name == short {
+                    self.error(
+                        format!(
+                            "`{short}` is this cog's root module: its files are its body already, and it cannot be reopened"
+                        ),
+                        span,
+                    );
                     return None;
                 }
             }
         }
-        let short = path.last().to_string();
+        // Nor a dependency's (its key in the manifest), which any
+        // declaration of that name would shadow.
+        if path.names.len() == 1 && self.shadows_dependency(namespace, &short) {
+            self.dependency_error(&short, span);
+            return None;
+        }
         if let Some(existing) = self.world.member_in(ns, &short) {
+            let written = path.names.join("::");
             match existing {
                 Member::Class(id) => {
-                    self.error(
-                        format!(
-                            "`{}` is already defined; classes cannot be reopened (use `extension`)",
-                            self.world.class(id).name
+                    let existing = self.world.class(id);
+                    let message = match (existing.kind, kind) {
+                        // A module of the program's own: the way to add to
+                        // it. Not a built-in module, nor a dependency's
+                        // root (another cog's declarations).
+                        (ClassKind::Module, ClassKind::Module)
+                            if existing.file != 0
+                                && !self.world.std_files.contains(&existing.file)
+                                && !self.world.cogs.iter().any(|c| c.root == Some(id))
+                                && self.world.cog_root(Some(id)) == self.world.cog_root(namespace) =>
+                        {
+                            // Its name from a file's top level (in a cog,
+                            // the root module's body).
+                            let root = self.world.cog_root(namespace);
+                            let full = root
+                                .and_then(|r| {
+                                    existing
+                                        .name
+                                        .strip_prefix(&format!("{}::", self.world.class(r).name))
+                                })
+                                .unwrap_or(&existing.name);
+                            format!(
+                                "`{written}` is already defined; modules cannot be reopened (to add to it from elsewhere, declare `class {full}::Name` or `module {full}::Name`)"
+                            )
+                        }
+                        (ClassKind::Module, ClassKind::Module) => {
+                            format!("`{written}` is already defined; modules cannot be reopened")
+                        }
+                        (k, ClassKind::Class) if k != ClassKind::Module => format!(
+                            "`{written}` is already defined; classes cannot be reopened (use `extension`)"
                         ),
-                        span,
-                    );
+                        _ => format!("`{written}` is already defined"),
+                    };
+                    self.error(message, span);
                 }
                 _ => self.error(format!("`{short}` is already defined"), span),
             }
@@ -542,6 +825,25 @@ impl<'ast> Declarer<'ast> {
         Some(id)
     }
 
+    /// Whether `name`, declared in `namespace`, is a dependency's key of
+    /// the cog whose root module `namespace` is: a declaration of that name
+    /// there would shadow the dependency.
+    fn shadows_dependency(&self, namespace: Option<ClassId>, name: &str) -> bool {
+        namespace
+            .filter(|n| self.world.cogs.iter().any(|c| c.root == Some(*n)))
+            .and_then(|n| self.world.class(n).cog)
+            .is_some_and(|c| self.world.cogs[c as usize].imports.contains_key(name))
+    }
+
+    fn dependency_error(&mut self, name: &str, span: Span) {
+        self.error(
+            format!(
+                "`{name}` is a dependency of this cog (a key of its Cog.toml): another cog's module cannot be reopened or shadowed"
+            ),
+            span,
+        );
+    }
+
     fn register_member(
         &mut self,
         namespace: Option<ClassId>,
@@ -551,6 +853,10 @@ impl<'ast> Declarer<'ast> {
     ) {
         if name == "Self" {
             self.error("`Self` is reserved: it is the type of the receiver", span);
+            return;
+        }
+        if self.shadows_dependency(namespace, name) {
+            self.dependency_error(name, span);
             return;
         }
         if namespace.is_none() && self.in_app {
@@ -570,6 +876,7 @@ impl<'ast> Declarer<'ast> {
     // ----- phase 2 ---------------------------------------------------------
 
     pub fn resolve_headers(&mut self) {
+        self.collect_deferred();
         if !self.builtins_resolved {
             self.find_builtins();
             self.builtins_resolved = true;

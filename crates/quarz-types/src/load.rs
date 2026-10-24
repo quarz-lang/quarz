@@ -228,9 +228,15 @@ pub fn implicit_std<'a>(
     for text in texts {
         let lexed = tokenize(text);
         let mut prev_declares = false;
-        for tok in &lexed.tokens {
+        for (i, tok) in lexed.tokens.iter().enumerate() {
             if let TokenKind::Const(name) = &tok.kind {
-                if prev_declares {
+                // `class JSON::Mine` declares `Mine` in `JSON`, which it
+                // names.
+                let qualified = matches!(
+                    lexed.tokens.get(i + 1).map(|t| &t.kind),
+                    Some(TokenKind::ColonColon)
+                );
+                if prev_declares && !qualified {
                     declared.insert(name.clone());
                 } else {
                     mentioned.insert(name.clone());

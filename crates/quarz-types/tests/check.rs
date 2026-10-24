@@ -76,6 +76,20 @@ fn err(src: &str, expected: &str) {
     );
 }
 
+/// An error containing `expected`, reported on line `line` (1-based).
+fn err_at(src: &str, expected: &str, line: usize) {
+    let prelude = parse(PRELUDE_SOURCE);
+    let base = unit_base(0);
+    let parsed = parse_with_bases(src, base, base);
+    let (_, diags) = check(&prelude.program, &parsed.program);
+    let lines: Vec<usize> = diags
+        .iter()
+        .filter(|(file, d)| *file == 1 && d.is_error() && d.message.contains(expected))
+        .map(|(_, d)| src[..(d.span.start - base) as usize].matches('\n').count() + 1)
+        .collect();
+    assert_eq!(lines, vec![line], "{expected:?} for {src:?}");
+}
+
 #[test]
 fn prelude_checks_cleanly() {
     let prelude = parse(PRELUDE_SOURCE);
@@ -905,5 +919,64 @@ fn reraise_block_params_narrowing() {
     err(
         "def f\n  raise\nend",
         "a bare `raise` re-raises only inside `rescue`",
+    );
+}
+
+#[test]
+fn namespaces_are_added_to_not_reopened() {
+    err(
+        "module M\nend\nmodule M\nend",
+        "`M` is already defined; modules cannot be reopened (to add to it from elsewhere, declare `class M::Name` or `module M::Name`)",
+    );
+    err(
+        "class C\nend\nclass C\nend",
+        "classes cannot be reopened (use `extension`)",
+    );
+    ok("module Geo\n  class Point\n  end\nend\nclass Geo::Line\n  @a: Point\n  def initialize(@a: Point); end\nend\nmodule Geo::Util\n  def self.f -> Point = Point.new\nend\np Geo::Line.new(Geo::Util.f)");
+    // Declarations are hoisted: a qualified one may come before its
+    // namespace.
+    ok("class Geo::Line\n  def f -> Point = Point.new\nend\nmodule Geo\n  class Point\n  end\nend\np Geo::Line.new.f");
+    ok("class A::B::C\nend\nmodule A\n  module B\n  end\nend\np A::B::C.new");
+    err("class Nope::X\nend", "unknown namespace `Nope`");
+    // A deferred body defers more; the nearer namespace wins whatever the
+    // order; a second declaration is the one reported.
+    ok("class M::A::X::B::C\nend\nclass M::A\n  module X::B\n  end\n  module X\n  end\nend\nmodule M\nend\np M::A::X::B::C.new");
+    ok("module A\nend\nmodule M\n  class A::B\n  end\n  module A\n  end\nend\np M::A::B.new");
+    err_at(
+        "class Geo::Line\nend\nmodule Geo\nend\nclass Geo::Line\nend",
+        "`Geo::Line` is already defined",
+        5,
+    );
+    err_at(
+        "class Geo::Inner::Line\nend\nmodule Geo::Inner\nend\nclass Geo::Inner::Line\nend\nmodule Geo\nend",
+        "`Geo::Inner::Line` is already defined",
+        5,
+    );
+    // A nearer namespace declared later, itself qualified, still wins.
+    ok("module A\nend\nmodule M\n  class A::B\n  end\nend\nmodule M::A\nend\np M::A::B.new");
+    ok("module A\nend\nmodule N\n  class A::X\n  end\nend\nmodule P\n  module N::A\n  end\nend\nmodule N::A::N\nend\np N::A::X");
+    // Declarations waiting on one another: which comes first would decide.
+    err(
+        "module A\n  module N::A\n  end\nend\nmodule N\n  module A::N\n  end\nend",
+        "depends on the order of the declarations",
+    );
+    // `::A::B` is in the top-level `A` whatever is nearer.
+    ok("module A\nend\nmodule M\n  module A\n  end\n  class ::A::B\n  end\nend\np A::B");
+    // Only the first part is looked up outwards.
+    err(
+        "module B\nend\nmodule Geo\nend\nclass Geo::B::C\nend",
+        "unknown namespace `B`",
+    );
+    // The hint names the module from a file's top level.
+    err(
+        "module Outer\n  module Inner\n  end\n  module Inner\n  end\nend",
+        "declare `class Outer::Inner::Name` or `module Outer::Inner::Name`",
+    );
+    // Another kind of declaration under a taken name.
+    err("module D\nend\ndata D = (x: Int)", "`D` is already defined");
+    err("class C\nend\nmodule C\nend", "`C` is already defined");
+    err(
+        "module Comparable\nend",
+        "`Comparable` is already defined; modules cannot be reopened",
     );
 }

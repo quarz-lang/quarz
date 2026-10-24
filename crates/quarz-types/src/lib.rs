@@ -212,6 +212,9 @@ impl Session {
         }
         let world = std::mem::take(&mut self.checker.world);
         let mut declarer = declare::Declarer::with_world(world);
+        if name.starts_with("<std:") {
+            declarer.world.std_files.insert(file);
+        }
         declarer.collect_unit(&parsed.program, file);
         declarer.resolve_headers();
         diagnostics.append(&mut declarer.diagnostics);
@@ -352,6 +355,9 @@ pub fn check_movement(
     declarer.declare_cogs(cogs, units.len() as u32);
     for (i, unit) in units.iter().enumerate() {
         let file = i as u32 + 1;
+        if unit.name.starts_with("<std:") {
+            declarer.world.std_files.insert(file);
+        }
         match unit.cog {
             Some(cog) if !cogs.is_empty() => {
                 declarer.collect_cog_unit(&unit.program, file, cog, unit.statements)

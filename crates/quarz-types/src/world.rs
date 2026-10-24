@@ -309,6 +309,9 @@ pub struct World {
     /// Names the application declares or imports at the top level: a
     /// library cog does not see them.
     pub app_names: rustc_hash::FxHashSet<String>,
+    /// The files of the standard library (`require "json"`): their
+    /// modules are not the program's to add to.
+    pub std_files: rustc_hash::FxHashSet<u32>,
 }
 
 impl World {
