@@ -24,18 +24,24 @@ static COPIES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(
 
 /// The contents of a collection, for an update: in place when this is
 /// its only reference, else a copy (counted: see `copies`).
-pub fn unique_mut<T: Clone + 'static>(rc: &mut Rc<T>) -> &mut T {
-    if Rc::get_mut(rc).is_none() {
-        // The empty array (`Value::empty_array`) is shared by design, and
-        // has nothing to copy.
-        let empty = (&**rc as &dyn std::any::Any)
-            .downcast_ref::<ArrayData>()
-            .is_some_and(|a| a.is_empty());
-        if !empty {
-            COPIES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        }
+pub fn unique_mut<T: Clone>(rc: &mut Rc<T>) -> &mut T {
+    // The empty array (`Value::empty_array`) is shared by design, and has
+    // nothing to copy; any other shared collection counts.
+    if Rc::get_mut(rc).is_none() && !is_the_empty_array(Rc::as_ptr(rc).cast()) {
+        COPIES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
     Rc::make_mut(rc)
+}
+
+/// The empty array every `Value::array` of no elements returns.
+static EMPTY_ARRAY: std::sync::OnceLock<SharedValue> = std::sync::OnceLock::new();
+
+/// Whether `p` is the address of the shared empty array's `ArrayData`.
+fn is_the_empty_array(p: *const u8) -> bool {
+    match EMPTY_ARRAY.get().map(SharedValue::get) {
+        Some(Value::Array(a)) => std::ptr::eq(Rc::as_ptr(a).cast(), p),
+        _ => false,
+    }
 }
 
 /// How many updates had to copy a shared collection.
@@ -2198,8 +2204,7 @@ impl Value {
     /// The empty array: one immortal allocation for the whole program
     /// (an append copies it, as it does any shared array).
     pub fn empty_array() -> Value {
-        static EMPTY: std::sync::OnceLock<SharedValue> = std::sync::OnceLock::new();
-        EMPTY
+        EMPTY_ARRAY
             .get_or_init(|| {
                 SharedValue::immortal(Value::Array(Rc::new(ArrayData::Values(Vec::new()))))
             })
