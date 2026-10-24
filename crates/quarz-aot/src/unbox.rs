@@ -110,6 +110,28 @@ pub fn bin_types(inst: &Inst, methods: &[RtMethod], builtin: &RtBuiltin) -> Opti
     Some(BinTypes { lhs, rhs, result })
 }
 
+/// `x == y` / `x != y` through `==(other: Object)` with both operands
+/// unboxed numbers of one kind here: a machine comparison.
+pub fn num_eq(inst: &Inst, st: &[State], methods: &[RtMethod], builtin: &RtBuiltin) -> Option<Num> {
+    let Inst::BinOp {
+        op: FastOp::Eq | FastOp::Ne,
+        lhs,
+        rhs,
+        ..
+    } = inst
+    else {
+        return None;
+    };
+    if bin_types(inst, methods, builtin).is_some() {
+        return None;
+    }
+    match (st[*lhs as usize], st[*rhs as usize]) {
+        (State::Int, State::Int) => Some(Num::Int),
+        (State::Float, State::Float) => Some(Num::Float),
+        _ => None,
+    }
+}
+
 /// The registers an instruction may write.
 pub fn defs(inst: &Inst) -> Vec<Reg> {
     inst.defs()
@@ -466,6 +488,9 @@ pub fn transfer(
                 st[*src as usize] = State::NonHeap;
             }
         }
+        Inst::BinOp { dst, .. } if num_eq(inst, st, methods, builtin).is_some() => {
+            st[*dst as usize] = State::Bool;
+        }
         Inst::BinOp { dst, lhs, rhs, .. } => match bin_types(inst, methods, builtin) {
             Some(t) if !(t.result == Some(Num::Float) && float_mod(inst)) => {
                 // The operands are checked (or already known) on the
@@ -499,9 +524,12 @@ pub fn transfer(
             st[*dst as usize] = State::Int;
         }
         // `ArrayWords` makes an array; its elements are words.
-        Inst::ArrayWords { dst, .. } | Inst::MakeArray { dst, .. } => {
-            st[*dst as usize] = State::Arr
-        }
+        Inst::ArrayWords { dst, .. }
+        | Inst::MakeArray { dst, .. }
+        | Inst::ArrayNewWords { dst, .. } => st[*dst as usize] = State::Arr,
+        // The array stays one (the runtime grows it in place: nothing else
+        // refers to it).
+        Inst::ArrayPushWord { arr, .. } => st[*arr as usize] = State::Arr,
         // A result nothing reads is not written (for the calls compiled
         // inline, without keywords): the register is as it was.
         Inst::OwnedCall {

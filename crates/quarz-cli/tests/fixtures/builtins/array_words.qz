@@ -27,3 +27,14 @@ p t, floats.map { |f| f * 2.0 }
 built: Array[Int] = []
 10.times { |i| built = built.push(i * i) }
 p built.select { |x| x.even? }
+# Built arrays of words: map presized, select grown, Float results, and
+# a select over a range.
+big = (1..3000).to_a
+doubled = big.map { |x| x * 2 }
+p doubled.size, doubled[0], doubled[-1], doubled.sum
+odd = big.select { |x| x % 2 == 1 }
+p odd.size, odd[-1], big.reject { |x| x > 2 }
+p [1.5, 2.5].map { |f| f * 2.0 }, (1..10).select { |i| i % 3 == 0 }
+halves = big.map { |x| x / 2.0 }
+p halves[1], halves.size
+p big.map { |x| x == 2 }.count { |b| b }, [1.0, 2.0].select { |f| f == 2.0 }

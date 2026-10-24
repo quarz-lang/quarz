@@ -428,6 +428,11 @@ op_entry!(qz_op_array_get_reg(dst: u32, arr: u32, index: u32) |rt, act, f, pool,
     Ok(())
 });
 
+op_entry!(qz_op_array_new_words(dst: u32, capacity: u32, float: u32) |rt, act, f, pool, regs| {
+    rt.op_array_new_words(regs, dst, capacity, float != 0);
+    Ok(())
+});
+
 op_entry!(qz_op_array_index(dst: u32, arr: u32, index: u32) |rt, act, f, pool, regs| {
     rt.op_array_index(regs, dst, arr, index)
 });

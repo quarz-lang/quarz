@@ -426,6 +426,7 @@ pub fn heap_possible(f: &Function, methods: &[RtMethod]) -> Vec<bool> {
                 | Inst::ArrayGet { dst, .. }
                 | Inst::ArrayGetReg { dst, .. }
                 | Inst::ArrayWords { dst, .. }
+                | Inst::ArrayNewWords { dst, .. }
                 | Inst::ArraySlice { dst, .. }
                 | Inst::ArraySliceReg { dst, .. }
                 | Inst::ObjectFields { dst, .. }
@@ -442,6 +443,7 @@ pub fn heap_possible(f: &Function, methods: &[RtMethod]) -> Vec<bool> {
                 Inst::FrameSet { .. }
                 | Inst::FieldSet { .. }
                 | Inst::ArrayPush { .. }
+                | Inst::ArrayPushWord { .. }
                 | Inst::ClearRegs { .. }
                 | Inst::Release { .. }
                 | Inst::NoMatch { .. } => {}

@@ -661,6 +661,21 @@ pub enum Inst {
         #[serde(default)]
         borrow: bool,
     },
+    /// A new empty array storing `Int`s (or `Float`s with `float`) as
+    /// machine words, with room for `capacity` (an Int register) of them:
+    /// the array a loop over an `Array[Int]` builds (`map`, `select`).
+    ArrayNewWords {
+        dst: Reg,
+        capacity: Reg,
+        float: bool,
+    },
+    /// Append the Int (or Float) in `src` to an array `ArrayNewWords`
+    /// made, which nothing else refers to.
+    ArrayPushWord {
+        arr: Reg,
+        src: Reg,
+        float: bool,
+    },
     /// `arr[index]`, `Array#[]` with an Int: from the end when negative,
     /// `IndexError` when out of range. `word`: the checker types `arr`
     /// `Array[Int]` (`Some(false)`) or `Array[Float]` (`Some(true)`), so
@@ -820,6 +835,7 @@ impl Inst {
             | Inst::ArrayWords { dst, .. }
             | Inst::ArrayGetWord { dst, .. }
             | Inst::ArrayIndex { dst, .. }
+            | Inst::ArrayNewWords { dst, .. }
             | Inst::ArraySlice { dst, .. }
             | Inst::ArraySliceReg { dst, .. }
             | Inst::ObjectFields { dst, .. }
@@ -838,6 +854,7 @@ impl Inst {
             Inst::FrameSet { .. }
             | Inst::FieldSet { .. }
             | Inst::ArrayPush { .. }
+            | Inst::ArrayPushWord { .. }
             | Inst::NoMatch { .. } => vec![],
         }
     }
@@ -970,6 +987,11 @@ impl Inst {
             }
             Inst::ArrayGet { arr, .. } | Inst::ArraySlice { arr, .. } => *arr = f(*arr),
             Inst::ArrayWords { arr, .. } => *arr = f(*arr),
+            Inst::ArrayNewWords { capacity, .. } => *capacity = f(*capacity),
+            Inst::ArrayPushWord { arr, src, .. } => {
+                *arr = f(*arr);
+                *src = f(*src);
+            }
             Inst::ArrayGetWord { arr, index, .. } | Inst::ArrayIndex { arr, index, .. } => {
                 *arr = f(*arr);
                 *index = f(*index);
@@ -1080,6 +1102,8 @@ impl Inst {
             | Inst::ArrayGetWord { arr, index, .. }
             | Inst::ArrayIndex { arr, index, .. } => vec![*arr, *index],
             Inst::ArrayWords { arr, .. } => vec![*arr],
+            Inst::ArrayNewWords { capacity, .. } => vec![*capacity],
+            Inst::ArrayPushWord { arr, src, .. } => vec![*arr, *src],
             Inst::ArraySliceReg { arr, from, to, .. } => vec![*arr, *from, *to],
             Inst::ArrayPush { arr, src } => vec![*arr, *src],
             Inst::HashGetSym { hash, .. } | Inst::HashRest { hash, .. } => vec![*hash],

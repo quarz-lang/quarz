@@ -75,6 +75,7 @@ pub(crate) const OPS: &[(&str, &[Ty])] = {
         ("qz_op_array_get_reg", &[I, I, I]),
         ("qz_op_array_words", &[I, I, I]),
         ("qz_op_array_index", &[I, I, I]),
+        ("qz_op_array_new_words", &[I, I, I]),
         ("qz_op_array_slice", &[I, I, I, I]),
         ("qz_op_array_slice_reg", &[I, I, I, I]),
         ("qz_op_hash_get_sym", &[I, I, I, I]),
@@ -1830,7 +1831,10 @@ impl<B: Builder> Gen<'_, B> {
             let v = self.payload(*dst);
             self.b.def_var(self.ivar(*dst), v);
         }
-        if let Inst::ArrayWords { dst, .. } | Inst::MakeArray { dst, .. } = inst {
+        if let Inst::ArrayWords { dst, .. }
+        | Inst::MakeArray { dst, .. }
+        | Inst::ArrayNewWords { dst, .. } = inst
+        {
             let p = self.payload_ptr(*dst);
             self.b.def_var(self.pvar(*dst), p);
         }
@@ -3062,6 +3066,21 @@ impl<B: Builder> Gen<'_, B> {
                 "qz_op_array_index",
                 vec![w(self, *dst), w(self, *arr), w(self, *index)],
             ),
+            Inst::ArrayNewWords {
+                dst,
+                capacity,
+                float,
+            } => (
+                "qz_op_array_new_words",
+                vec![
+                    w(self, *dst),
+                    w(self, *capacity),
+                    w(self, u32::from(*float)),
+                ],
+            ),
+            Inst::ArrayPushWord { arr, src, .. } => {
+                ("qz_op_array_push", vec![w(self, *arr), w(self, *src)])
+            }
             Inst::ArrayWords { dst, arr, float } => (
                 "qz_op_array_words",
                 vec![w(self, *dst), w(self, *arr), w(self, u32::from(*float))],
@@ -3156,9 +3175,10 @@ impl<B: Builder> Gen<'_, B> {
         // Anything that reads register homes (the runtime, mostly) sees
         // the live unboxed registers written back first; the typed
         // arithmetic below works on the variables.
-        let typed = matches!(inst, Inst::BinOp { .. })
+        let typed = (matches!(inst, Inst::BinOp { .. })
             && unbox::bin_types(inst, self.methods, self.builtin).is_some()
-            && !unbox::float_mod(inst);
+            && !unbox::float_mod(inst))
+            || unbox::num_eq(inst, &self.states, self.methods, self.builtin).is_some();
         let has_handler = self.f.blocks[block as usize].handler.is_some();
         // A call through a typed entry reads homes only on its fallback
         // paths, which write back there (see `typed_call`).
@@ -3177,6 +3197,7 @@ impl<B: Builder> Gen<'_, B> {
                 | Inst::ArrayGetWord { .. }
                 | Inst::ArrayIndex { .. }
                 | Inst::ArrayPush { .. }
+                | Inst::ArrayPushWord { .. }
         ) || matches!(inst, Inst::OwnedCall { kw, .. } if kw.is_empty());
         let lazy =
             typed || to_f.is_some() || word_store || array_op || self.typed_callee(inst).is_some();
@@ -3288,6 +3309,33 @@ impl<B: Builder> Gen<'_, B> {
                 }
                 _ => self.exec(block, index, unwind),
             },
+            Inst::BinOp {
+                dst, op, lhs, rhs, ..
+            } if unbox::num_eq(inst, &self.states, self.methods, self.builtin).is_some() => {
+                let eq = *op == FastOp::Eq;
+                let r = match unbox::num_eq(inst, &self.states, self.methods, self.builtin) {
+                    Some(Num::Int) => {
+                        let x = self.b.use_var(self.ivar(*lhs));
+                        let y = self.b.use_var(self.ivar(*rhs));
+                        self.b
+                            .icmp(if eq { IntCC::Equal } else { IntCC::NotEqual }, x, y)
+                    }
+                    _ => {
+                        let x = self.b.use_var(self.fvar(*lhs));
+                        let y = self.b.use_var(self.fvar(*rhs));
+                        self.b.fcmp(
+                            if eq {
+                                FloatCC::Equal
+                            } else {
+                                FloatCC::NotEqual
+                            },
+                            x,
+                            y,
+                        )
+                    }
+                };
+                self.store_bool(*dst, r);
+            }
             Inst::BinOp {
                 dst, op, lhs, rhs, ..
             } if unbox::bin_types(inst, self.methods, self.builtin).is_some()
@@ -3909,6 +3957,58 @@ impl<B: Builder> Gen<'_, B> {
                 if arr != dst {
                     self.arr_after_slow(*arr, block, index);
                 }
+                self.b.jump(cont, &[]);
+                self.b.switch_to_block(cont);
+            }
+            Inst::ArrayPushWord { arr, src, float } => {
+                // The array `ArrayNewWords` made, unshared, storing words:
+                // with room, the word is stored and the length bumped;
+                // otherwise the runtime grows it.
+                let fast = self.b.create_block();
+                let slow = self.b.create_block();
+                let cont = self.b.create_block();
+                let rc = if self.states[*arr as usize] == State::Arr {
+                    self.b.use_var(self.pvar(*arr))
+                } else {
+                    self.payload_ptr(*arr)
+                };
+                let (_, ptr, len, cap) = self.array_view_at(rc);
+                let room = self.b.icmp(IntCC::UnsignedLessThan, len, cap);
+                self.b.brif(room, fast, &[], slow, &[]);
+                self.b.switch_to_block(fast);
+                let word = match self.states[*src as usize] {
+                    State::Int => self.b.use_var(self.ivar(*src)),
+                    State::Float => {
+                        let f = self.b.use_var(self.fvar(*src));
+                        self.b.bitcast(Ty::I64, f)
+                    }
+                    _ => {
+                        // The checker's type: anything else is a bug (the
+                        // runtime would store it boxed, under the words).
+                        let want = if *float { TAG_FLOAT } else { TAG_INT };
+                        let tag = self.tag(*src);
+                        let ok = self.b.icmp_imm(IntCC::Equal, tag, want);
+                        let good = self.b.create_block();
+                        let bad = self.b.create_block();
+                        self.b.brif(ok, good, &[], bad, &[]);
+                        self.b.switch_to_block(bad);
+                        self.unsound(block, index);
+                        self.b.switch_to_block(good);
+                        self.payload(*src)
+                    }
+                };
+                let off = self.b.imul_imm(len, 8);
+                let slot = self.b.iadd(ptr, off);
+                self.b.store(word, slot, 0);
+                let len1 = self.b.iadd_imm(len, 1);
+                let data = self.b.iadd_imm(rc, i64::from(OBJECT_FIELDS_PTR_OFF));
+                let vec = self.b.iadd_imm(data, L::ARRAY_VEC_OFF as i64);
+                self.b.store(len1, vec, L::vec_layout().len as i32);
+                self.b.jump(cont, &[]);
+                self.b.switch_to_block(slow);
+                self.flush(*src);
+                self.exec(block, index, unwind);
+                self.arr_after_slow(*arr, block, index);
                 self.b.jump(cont, &[]);
                 self.b.switch_to_block(cont);
             }

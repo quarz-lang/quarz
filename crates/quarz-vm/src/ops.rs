@@ -644,6 +644,19 @@ impl Interp {
         regs[dst as usize] = v;
     }
 
+    /// `ArrayNewWords`.
+    pub fn op_array_new_words(&self, regs: &mut [Value], dst: Reg, capacity: Reg, float: bool) {
+        let n = match regs[capacity as usize] {
+            Value::Int(n) => n.max(0) as usize,
+            _ => 0,
+        };
+        regs[dst as usize] = if float {
+            Value::floats(Vec::with_capacity(n))
+        } else {
+            Value::ints(Vec::with_capacity(n))
+        };
+    }
+
     /// `ArrayIndex`: `Array#[]` with an Int.
     pub fn op_array_index(
         &self,

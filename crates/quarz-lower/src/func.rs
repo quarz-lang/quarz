@@ -2177,6 +2177,22 @@ impl<'a> FnBuilder<'a> {
             .map(|m| m.id)
     }
 
+    /// Whether the checker types `e` `Array[Int]` (`Some(false)`) or
+    /// `Array[Float]` (`Some(true)`).
+    fn words_of(&self, e: &Expr) -> Option<bool> {
+        let bi = &self.world.builtin;
+        match self.out.node_types.get(&e.id) {
+            Some(quarz_types::Type::Class(c, args)) if *c == bi.array => match args.first() {
+                Some(quarz_types::Type::Class(x, a)) if *x == bi.int && a.is_empty() => Some(false),
+                Some(quarz_types::Type::Class(x, a)) if *x == bi.float && a.is_empty() => {
+                    Some(true)
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     /// `n.times { }`, `xs.each { }`, `(lo..hi).map { }` and the other
     /// shapes of `iter`: a counted loop in this function, with the block
     /// body lowered in place (`break` and `next` become jumps).
@@ -2273,14 +2289,42 @@ impl<'a> FnBuilder<'a> {
             }
             _ => None,
         };
+        // The array built, storing words when it is an `Array[Int]` or
+        // `Array[Float]` (`map` makes as many elements as an array has).
+        let out_words = match kind {
+            Kind::Map => self.words_of(e),
+            Kind::Select | Kind::Reject => match shape.source {
+                Some(Source::Array) => shape.words,
+                Some(Source::Range) => Some(false),
+                None => None,
+            },
+            _ => None,
+        };
         let out = matches!(kind, Kind::Map | Kind::Select | Kind::Reject).then(|| {
             let r = self.reg();
-            self.emit(Inst::MakeArray {
-                dst: r,
-                items: Vec::new(),
-            });
+            match out_words {
+                Some(float) => {
+                    let capacity = match (kind, arr) {
+                        (Kind::Map, Some(_)) => hi,
+                        _ => self.load_const(Constant::Int(0)),
+                    };
+                    self.emit(Inst::ArrayNewWords {
+                        dst: r,
+                        capacity,
+                        float,
+                    });
+                }
+                None => self.emit(Inst::MakeArray {
+                    dst: r,
+                    items: Vec::new(),
+                }),
+            }
             r
         });
+        let push = |arr: Reg, src: Reg| match out_words {
+            Some(float) => Inst::ArrayPushWord { arr, src, float },
+            None => Inst::ArrayPush { arr, src },
+        };
         let cond_b = self.new_block();
         let body_b = self.new_block();
         let next_b = self.new_block();
@@ -2404,10 +2448,7 @@ impl<'a> FnBuilder<'a> {
         self.switch(next_b);
         self.release_inline(level);
         match kind {
-            Kind::Map => self.emit(Inst::ArrayPush {
-                arr: out.unwrap(),
-                src: val,
-            }),
+            Kind::Map => self.emit(push(out.unwrap(), val)),
             Kind::Select | Kind::Reject => {
                 let push_b = self.new_block();
                 let skip_b = self.new_block();
@@ -2422,10 +2463,7 @@ impl<'a> FnBuilder<'a> {
                     els,
                 });
                 self.switch(push_b);
-                self.emit(Inst::ArrayPush {
-                    arr: out.unwrap(),
-                    src: elem,
-                });
+                self.emit(push(out.unwrap(), elem));
                 self.term(Term::Jump(skip_b));
                 self.switch(skip_b);
             }

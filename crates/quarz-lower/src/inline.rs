@@ -623,6 +623,20 @@ pub(crate) fn rewrite_with(
             index: r(index),
             word: *word,
         },
+        Inst::ArrayNewWords {
+            dst,
+            capacity,
+            float,
+        } => Inst::ArrayNewWords {
+            dst: r(dst),
+            capacity: r(capacity),
+            float: *float,
+        },
+        Inst::ArrayPushWord { arr, src, float } => Inst::ArrayPushWord {
+            arr: r(arr),
+            src: r(src),
+            float: *float,
+        },
         Inst::ArrayWords { dst, arr, float } => Inst::ArrayWords {
             dst: r(dst),
             arr: r(arr),

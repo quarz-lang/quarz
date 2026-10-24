@@ -1148,7 +1148,14 @@ impl Interp {
                 hash,
                 key,
             } => self.op_hash_get_sym(f, pool, regs, *dst, *found, *hash, *key),
-            Inst::ArrayPush { arr, src } => self.op_array_push(regs, *arr, *src)?,
+            Inst::ArrayPush { arr, src } | Inst::ArrayPushWord { arr, src, .. } => {
+                self.op_array_push(regs, *arr, *src)?
+            }
+            Inst::ArrayNewWords {
+                dst,
+                capacity,
+                float,
+            } => self.op_array_new_words(regs, *dst, *capacity, *float),
             Inst::HashRest { dst, hash, keys } => {
                 self.op_hash_rest(f, pool, regs, *dst, *hash, keys.iter().copied())
             }
