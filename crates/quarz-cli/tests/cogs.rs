@@ -380,6 +380,25 @@ fn namespaces_are_added_to_not_reopened() {
         "{err}"
     );
     assert!(!err.contains("declare `class"), "{err}");
+    // Nor to a dependency's modules, nor the standard library's.
+    w.app(&dep, "class Lib::Shapes::Q\nend\nputs 1\n");
+    let err = w.fails("app", &["check"]);
+    assert!(
+        err.contains("cannot declare in `Lib::Shapes`: it is another cog's"),
+        "{err}"
+    );
+    w.app(&dep, "class Lib::Q\nend\nputs 1\n");
+    let err = w.fails("app", &["check"]);
+    assert!(
+        err.contains("cannot declare in `Lib`: it is another cog's"),
+        "{err}"
+    );
+    w.app(&dep, "class JSON::Mine\nend\nputs 1\n");
+    let err = w.fails("app", &["check"]);
+    assert!(
+        err.contains("cannot declare in `JSON`: it is in the standard library"),
+        "{err}"
+    );
     // A cog's files are its root module's body already.
     w.write("lib/src/c.qz", "module Lib\nend\n");
     w.commit("lib", Some("v0.1.1"));
@@ -389,8 +408,8 @@ fn namespaces_are_added_to_not_reopened() {
     );
     let err = w.fails("app", &["check"]);
     assert!(err.contains("`Lib` is this cog's root module"), "{err}");
-    // Also as `cog::Lib` inside a module of the cog.
-    w.write("lib/src/c.qz", "module M\n  module cog::Lib\n  end\nend\n");
+    // Also as `cog::Lib`.
+    w.write("lib/src/c.qz", "module cog::Lib\nend\n");
     w.commit("lib", Some("v0.1.4"));
     w.app(
         &format!("Lib = {{ git = \"{}\", tag = \"v0.1.4\" }}\n", w.url("lib")),

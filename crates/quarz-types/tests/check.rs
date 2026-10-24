@@ -938,10 +938,9 @@ fn namespaces_are_added_to_not_reopened() {
     ok("class Geo::Line\n  def f -> Point = Point.new\nend\nmodule Geo\n  class Point\n  end\nend\np Geo::Line.new.f");
     ok("class A::B::C\nend\nmodule A\n  module B\n  end\nend\np A::B::C.new");
     err("class Nope::X\nend", "unknown namespace `Nope`");
-    // A deferred body defers more; the nearer namespace wins whatever the
-    // order; a second declaration is the one reported.
-    ok("class M::A::X::B::C\nend\nclass M::A\n  module X::B\n  end\n  module X\n  end\nend\nmodule M\nend\np M::A::X::B::C.new");
-    ok("module A\nend\nmodule M\n  class A::B\n  end\n  module A\n  end\nend\np M::A::B.new");
+    // Deferred ones wait for one another, collected in passes; a second
+    // declaration is the one reported.
+    ok("class M::A::X::B::C\nend\nclass M::A\nend\nmodule M::A::X::B\nend\nmodule M::A::X\nend\nmodule M\nend\np M::A::X::B::C.new");
     err_at(
         "class Geo::Line\nend\nmodule Geo\nend\nclass Geo::Line\nend",
         "`Geo::Line` is already defined",
@@ -952,16 +951,25 @@ fn namespaces_are_added_to_not_reopened() {
         "`Geo::Inner::Line` is already defined",
         5,
     );
-    // A nearer namespace declared later, itself qualified, still wins.
-    ok("module A\nend\nmodule M\n  class A::B\n  end\nend\nmodule M::A\nend\np M::A::B.new");
-    ok("module A\nend\nmodule N\n  class A::X\n  end\nend\nmodule P\n  module N::A\n  end\nend\nmodule N::A::N\nend\np N::A::X");
-    // Declarations waiting on one another: which comes first would decide.
+    // A qualified declaration goes at a file's top level.
     err(
-        "module A\n  module N::A\n  end\nend\nmodule N\n  module A::N\n  end\nend",
-        "depends on the order of the declarations",
+        "module A\nend\nmodule M\n  class A::B\n  end\nend",
+        "a qualified name is declared at a file's top level",
     );
-    // `::A::B` is in the top-level `A` whatever is nearer.
-    ok("module A\nend\nmodule M\n  module A\n  end\n  class ::A::B\n  end\nend\np A::B");
+    err(
+        "module M\n  class ::B\n  end\nend",
+        "`::B` is declared inside another declaration: a qualified name is declared at a file's top level",
+    );
+    ok("module A\nend\nclass ::A::B\nend\np A::B");
+    // Only to the program's own modules.
+    err(
+        "class Kernel::Foo\nend",
+        "cannot declare in `Kernel`: it is built in",
+    );
+    err(
+        "module Comparable::Foo\nend",
+        "cannot declare in `Comparable`: it is built in",
+    );
     // Only the first part is looked up outwards.
     err(
         "module B\nend\nmodule Geo\nend\nclass Geo::B::C\nend",

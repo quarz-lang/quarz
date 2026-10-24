@@ -1,6 +1,0 @@
-# A qualified declaration names its namespace: a standard library module
-# named so is loaded for it, without `require`.
-class JSON::Mine
-  def self.k -> Int = 5
-end
-p JSON::Mine.k, JSON.generate([1])
