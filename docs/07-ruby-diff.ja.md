@@ -36,7 +36,7 @@ Ruby を知っている人が Quarz を書き始めるときに最初に引っ�
 | `Thread`、`Mutex`、`Queue`、`Fiber` | ある | `spawn`、`Task.scope`、`Channel`、`Atom` |
 | `Thread#join`、`Thread#value` | スレッドの終了を待つ(値を受け取る) | `Task#await` |
 | `require` | 実行時に読み込み | コンパイル時に解決(構文は同じ) |
-| RubyGems、Bundler(`Gemfile`) | rubygems.org からインストールするパッケージ | cog: `Quarz.lock` でコミットに固定する git リポジトリ。それぞれ自身のモジュールの下に入る([10-cogs.ja.md](10-cogs.ja.md)、予定) |
+| RubyGems、Bundler(`Gemfile`) | rubygems.org からインストールするパッケージ | cog: `Cog.lock` でコミットに固定する git リポジトリ。それぞれ自身のモジュールの下に入る([10-cogs.ja.md](10-cogs.ja.md)、予定) |
 | トップレベルの `def` | `Object` のプライベートメソッド | そのファイル内の関数 |
 | クラス本体の任意の式 | 実行される | 宣言のみ(定数の初期化子は可) |
 | `respond_to?` | 実行時 | コンパイル時定数 |

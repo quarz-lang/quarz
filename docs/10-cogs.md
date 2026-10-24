@@ -2,7 +2,7 @@
 
 日本語版: [10-cogs.ja.md](10-cogs.ja.md)
 
-A Quarz package is a **cog**: a git repository with a `Quarz.toml` at its root, fetched as source and compiled with the program that uses it. The program being built, with every cog it brings in, is a **movement**. There is no registry and nothing is distributed as a binary: a cog is named by the URL of its repository, and the lock file pins it to one commit.
+A Quarz package is a **cog**: a git repository with a `Cog.toml` at its root, fetched as source and compiled with the program that uses it. The program being built, with every cog it brings in, is a **movement**. There is no registry and nothing is distributed as a binary: a cog is named by the URL of its repository, and the lock file pins it to one commit.
 
 This document is the design; none of it is built yet. Today `require "name"` only loads a standard library module, and `require_relative` a file (see [01-syntax.md](01-syntax.md) §2).
 
@@ -10,8 +10,8 @@ This document is the design; none of it is built yet. Today `require "name"` onl
 
 ```
 httpx/                      a cog
-├── Quarz.toml              its manifest
-├── Quarz.lock              its lock file (committed by an application, optional for a library)
+├── Cog.toml              its manifest
+├── Cog.lock              its lock file (committed by an application, optional for a library)
 ├── src/
 │   ├── httpx.qz            the entry file: `require "httpx"` loads it
 │   └── httpx/
@@ -24,7 +24,9 @@ httpx/                      a cog
 - The entry file is `src/<name>.qz`; the rest of the cog's files sit under `src/<name>/` and are loaded by `require "<name>/path"` from outside or `require_relative` from within.
 - Versions are git tags named `vMAJOR.MINOR.PATCH` (semantic versioning). A commit that no tag names gets a *pseudo-version* (§4).
 
-## 2. The Manifest: `Quarz.toml`
+## 2. The Manifest: `Cog.toml`
+
+The manifest is named after what it describes, one cog, as Crystal's `shard.yml` is; `cog.name` and `cog.version` (§6) read from it.
 
 ```toml
 [cog]
@@ -55,9 +57,9 @@ httpx = { path = "../httpx" }
 - `quarz` is the minimum language version the cog needs (as `go 1.21` in a `go.mod` and `minimum_zig_version` in Zig); a program refuses to build with an older `quarz`.
 - A cog with `extern "C"` declarations will need to name the C libraries to link; `[cog] link = ["ssl"]` is reserved for that and not designed further here.
 
-## 3. The Lock File: `Quarz.lock`
+## 3. The Lock File: `Cog.lock`
 
-`Quarz.lock` is generated, and an application commits it; a library may commit it for its own development, but its users ignore it (as Cargo and Bundler do).
+`Cog.lock` is generated, and an application commits it; a library may commit it for its own development, but its users ignore it (as Cargo and Bundler do).
 
 ```toml
 version = 1
@@ -79,7 +81,7 @@ hash    = "h1:Q8ua…"
 dependencies = []
 ```
 
-- `rev` is the key for fetching, `hash` the key for verification: a hash of the cog's files at that commit (`Quarz.toml` and everything under `src/`, path and content in sorted order). The two are kept apart because a git commit id is a SHA-1 of the repository's history, not of the files Quarz compiles: after fetching, a tree whose hash differs from the lock (a rewritten history, a force-pushed tag, a tampered mirror) is refused. The `h1:` prefix names the algorithm so it can change.
+- `rev` is the key for fetching, `hash` the key for verification: a hash of the cog's files at that commit (`Cog.toml` and everything under `src/`, path and content in sorted order). The two are kept apart because a git commit id is a SHA-1 of the repository's history, not of the files Quarz compiles: after fetching, a tree whose hash differs from the lock (a rewritten history, a force-pushed tag, a tampered mirror) is refused. The `h1:` prefix names the algorithm so it can change.
 - The lock lists only what the resolution chose: one entry per cog, whatever the manifests asked for. `[patch]` entries are not recorded.
 
 ## 4. Version Resolution
@@ -149,7 +151,7 @@ In the application and in a script, `cog` is the top level; `cog.name` is then t
 
 | Command | Behavior |
 |---|---|
-| `quarz cog init` | Write a `Quarz.toml` for the current directory |
+| `quarz cog init` | Write a `Cog.toml` for the current directory |
 | `quarz cog add <git-url> [--tag v1.4.0 \| --rev <hash>] [--name key] [--subdir dir] [--dev]` | Add a dependency and resolve; a `--tag` or the default branch's head is recorded as a `tag` or `rev` |
 | `quarz cog update [name]` | Re-resolve (one cog or all) and rewrite the lock |
 | `quarz cog fetch` | Fetch and verify everything the lock names, compiling nothing |

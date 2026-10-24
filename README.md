@@ -81,7 +81,7 @@ puts counter.value        # => 100
 | [docs/07-ruby-diff.md](docs/07-ruby-diff.md) | Quick reference of changes from Ruby |
 | [docs/08-crystal-diff.md](docs/08-crystal-diff.md) | Quick reference of differences from Crystal |
 | [docs/09-grammar.md](docs/09-grammar.md) | Grammar sketch (EBNF) |
-| [docs/10-cogs.md](docs/10-cogs.md) | Cogs (packages): git repositories pinned by commit, `Quarz.toml`/`Quarz.lock`, one module per cog, the `cog` keyword (design) |
+| [docs/10-cogs.md](docs/10-cogs.md) | Cogs (packages): git repositories pinned by commit, `Cog.toml`/`Cog.lock`, one module per cog, the `cog` keyword (design) |
 | [examples/](examples/) | Sample code (`hello`, `shapes`, `wordcount`, `pipeline`, `bank_actor`, `extension`, `builder`) |
 
 ## Main design decisions
