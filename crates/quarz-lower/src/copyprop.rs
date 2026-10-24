@@ -18,118 +18,7 @@ use rustc_hash::FxHashSet as HashSet;
 
 use quarz_ir::*;
 
-use crate::sroa::{defs_at, reaching, successors, written, Site, UNKNOWN};
-
-/// Where the copy made at `site` (`dst <- src`) still holds on entry to
-/// each block: on every path from the move, neither register was written
-/// again, and no path from the function's entry or a handler gets there
-/// without the move. Reaching definitions cannot tell this across a loop:
-/// a read of `dst` reached by the move of the previous pass, while `src`
-/// was written again by the same instruction in this one, has the same
-/// definitions as the move, but not the same value.
-fn copy_holds_on_entry(f: &Function, site: Site, dst: Reg, src: Reg) -> Vec<bool> {
-    let n = f.blocks.len();
-    let mut preds: Vec<Vec<usize>> = vec![Vec::new(); n];
-    for (bi, blk) in f.blocks.iter().enumerate() {
-        for s in successors(blk) {
-            preds[s as usize].push(bi);
-        }
-    }
-    let handlers: HashSet<usize> = f
-        .blocks
-        .iter()
-        .filter_map(|b| b.handler.map(|h| h.block as usize))
-        .collect();
-    // What each block does to the copy, found once: it makes it (the
-    // move, with no write after it there), ends it (a write of either
-    // register, after the move if any), or leaves it as it came.
-    #[derive(Clone, Copy)]
-    enum Effect {
-        Makes,
-        Ends,
-        Keeps,
-    }
-    let effect: Vec<Effect> = f
-        .blocks
-        .iter()
-        .enumerate()
-        .map(|(bi, blk)| {
-            let mut e = Effect::Keeps;
-            for (ii, inst) in blk.insts.iter().enumerate() {
-                if (bi, ii) == site {
-                    e = Effect::Makes;
-                } else if written(inst).iter().any(|&r| r == dst || r == src) {
-                    e = Effect::Ends;
-                }
-            }
-            e
-        })
-        .collect();
-    // Whether the copy holds at the end of block `bi`, given it holds on
-    // entry or not.
-    let at_end = |bi: usize, holds: bool| -> bool {
-        match effect[bi] {
-            Effect::Makes => true,
-            Effect::Ends => false,
-            Effect::Keeps => holds,
-        }
-    };
-    // Optimistic start, lowered to a fixed point: the entry block and
-    // handlers hold nothing.
-    let mut entry: Vec<bool> = (0..n).map(|b| b != 0 && !handlers.contains(&b)).collect();
-    let mut exit: Vec<bool> = (0..n).map(|b| at_end(b, entry[b])).collect();
-    loop {
-        let mut changed = false;
-        for b in 1..n {
-            if handlers.contains(&b) {
-                continue;
-            }
-            let e = !preds[b].is_empty() && preds[b].iter().all(|&p| exit[p]);
-            if e != entry[b] {
-                entry[b] = e;
-                changed = true;
-            }
-            let x = at_end(b, e);
-            if x != exit[b] {
-                exit[b] = x;
-                changed = true;
-            }
-        }
-        if !changed {
-            return entry;
-        }
-    }
-}
-
-/// Whether the copy made at `site` still holds before instruction `ii`
-/// of its own block, after it: nothing between writes either register.
-fn written_between(f: &Function, site: Site, ii: usize, dst: Reg, src: Reg) -> bool {
-    f.blocks[site.0].insts[site.1 + 1..ii]
-        .iter()
-        .all(|inst| !written(inst).iter().any(|&r| r == dst || r == src))
-}
-
-/// Whether the copy made at `site` still holds before instruction `ii`
-/// of block `bi` (`ii` the instruction count: before the terminator).
-fn copy_holds_at(
-    f: &Function,
-    entry: &[bool],
-    site: Site,
-    dst: Reg,
-    src: Reg,
-    bi: usize,
-    ii: usize,
-) -> bool {
-    let mut holds = entry[bi];
-    for (k, inst) in f.blocks[bi].insts[..ii].iter().enumerate() {
-        if (bi, k) == site {
-            holds = true;
-        } else if written(inst).iter().any(|&r| r == dst || r == src) {
-            holds = false;
-        }
-    }
-    holds
-}
+use crate::sroa::{defs_at, holds_at, holds_on_entry, reaching, unwritten_between, Site, UNKNOWN};
 
 pub fn propagate_copies(functions: &mut [Function]) {
     for f in functions.iter_mut() {
@@ -239,10 +128,10 @@ fn propagate_in(f: &mut Function) -> bool {
                 break;
             }
             let still = if ubi == site.0 && uii > site.1 {
-                written_between(f, site, uii, dst, src)
+                unwritten_between(f, site, uii, &[dst, src])
             } else {
-                let entry = holds.get_or_insert_with(|| copy_holds_on_entry(f, site, dst, src));
-                copy_holds_at(f, entry, site, dst, src, ubi, uii)
+                let entry = holds.get_or_insert_with(|| holds_on_entry(f, site, &[dst, src]));
+                holds_at(f, entry, site, &[dst, src], ubi, uii)
             };
             if !still {
                 ok = false;
@@ -273,10 +162,10 @@ fn propagate_in(f: &mut Function) -> bool {
                     break;
                 }
                 let still = if bi == site.0 {
-                    written_between(f, site, n, dst, src)
+                    unwritten_between(f, site, n, &[dst, src])
                 } else {
-                    let entry = holds.get_or_insert_with(|| copy_holds_on_entry(f, site, dst, src));
-                    copy_holds_at(f, entry, site, dst, src, bi, n)
+                    let entry = holds.get_or_insert_with(|| holds_on_entry(f, site, &[dst, src]));
+                    holds_at(f, entry, site, &[dst, src], bi, n)
                 };
                 if !still {
                     ok = false;

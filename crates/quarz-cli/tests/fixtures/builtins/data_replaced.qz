@@ -1,0 +1,58 @@
+# Scalar replacement of data values. A data value read in a rescue clause
+# is built (scalar replacement once removed it: the handler, entered from
+# anywhere in its region, was not counted as a use).
+data V = (x: Int, y: Int)
+
+def boom(n: Int) -> Int
+  raise "boom" if n > 0
+  n
+end
+
+def f(n: Int) -> Int
+  o = V.new(n, 0)
+  begin
+    boom(n)
+  rescue
+    o.x + 100
+  end
+end
+
+p f(3)
+p f(0)
+
+# A data value built in a loop whose argument expression may leave the
+# pass (`break`, `next`) after its first argument is computed: the field
+# read after the loop is the last value built, not the last computed.
+def built_before_break(n: Int) -> Int
+  a = n + 1
+  a = a + 2
+  a = a + 3
+  a = a + 4
+  a = a + 5
+  a = a + 6
+  j = 0
+  o = V.new(0, 0)
+  while true
+    j += 1
+    o = V.new(j * 10, j > n ? (break) : 0)
+  end
+  o.x + a - a
+end
+p built_before_break(2)
+
+def built_before_next(n: Int) -> Int
+  a = n + 1
+  a = a + 2
+  a = a + 3
+  a = a + 4
+  a = a + 5
+  a = a + 6
+  j = 0
+  o = V.new(0, 0)
+  while j < n
+    j += 1
+    o = V.new(j * 10, j > 2 ? (next) : 0)
+  end
+  o.x + a - a
+end
+p built_before_next(5)
