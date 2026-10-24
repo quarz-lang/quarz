@@ -85,6 +85,11 @@ when the local one is older.
   lists only those its methods use. Register a key once (a second one
   is a duplicate symbol), and build the full registries
   (`natives::all`) only through the installed interpreter.
+- `quarz_ir::shake` keeps a method found by name only when its owner
+  can have values. A native must declare, in its result or block type,
+  every class whose values it makes (beyond the literals' classes and
+  exceptions, which are always live): a value of a class shake thought
+  dead finds its methods dropped, in compiled programs only.
 - In register sharing, a result never shares with its own operands (the
   AOT may release a destination before reading operands), counted and
   non-counted registers stay apart (`live::heap_possible`, shared with

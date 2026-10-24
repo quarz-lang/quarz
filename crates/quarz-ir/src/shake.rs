@@ -8,9 +8,18 @@
 //! `recv.:name`, a symbol, an operator, and the few names the runtime
 //! itself calls, such as `to_s` and `each`). Quarz has no way to call a
 //! method whose name is computed at run time, so a name that appears
-//! nowhere reachable can never be looked up. Ids stay as they are: a
-//! dropped function becomes an empty body (that fails if it ever runs),
-//! a dropped method an empty record no table refers to.
+//! nowhere reachable can never be looked up.
+//!
+//! A method found by name runs only on a value of its owner or of a
+//! descendant, so it is kept only once such a class is live: one the
+//! reachable code names (a class reference, a construction, a literal),
+//! one a reachable native may make (the classes of its result and block
+//! types, `RtMethod::makes`, with their descendants and variants), or
+//! one the runtime makes by itself (the values of the literals,
+//! exceptions). A method called as resolved is kept whatever its owner.
+//! Ids stay as they are: a dropped function becomes an empty body (that
+//! fails if it ever runs), a dropped method an empty record no table
+//! refers to.
 
 use std::collections::HashSet;
 
@@ -64,10 +73,19 @@ pub const RUNTIME_NAMES: &[&str] = &[
 struct Shake<'a> {
     module: &'a Module,
     by_name: HashMap<&'a str, Vec<MethodId>>,
+    /// The methods each class owns (an extension's, its target's).
+    by_owner: Vec<Vec<MethodId>>,
+    /// The classes that list each one as their superclass or variant of.
+    children: Vec<Vec<ClassId>>,
     funcs: Vec<bool>,
     methods: Vec<bool>,
     consts: Vec<bool>,
     names: HashSet<String>,
+    /// Classes with possible instances (or class objects).
+    live: Vec<bool>,
+    /// Classes whose methods may run: the ancestors of the live ones, and
+    /// the modules they extend.
+    active: Vec<bool>,
     work: Vec<FuncId>,
 }
 
@@ -88,7 +106,74 @@ impl Shake<'_> {
         self.names.insert(name.to_string());
         let mids = self.by_name.get(name).cloned().unwrap_or_default();
         for m in mids {
-            self.method(m);
+            let owner = self.module.world.methods[m as usize].owner;
+            if self.active.get(owner as usize).copied().unwrap_or(true) {
+                self.method(m);
+            }
+        }
+    }
+
+    /// Class `c` may have instances.
+    fn class(&mut self, c: ClassId) {
+        let Some(seen) = self.live.get_mut(c as usize) else {
+            return;
+        };
+        if *seen {
+            return;
+        }
+        *seen = true;
+        let classes = &self.module.world.classes;
+        let class = &classes[c as usize];
+        let mut act: Vec<ClassId> = class.ancestors.clone();
+        act.push(c);
+        for a in class.ancestors.iter().chain([&c]) {
+            for e in &classes[*a as usize].extends {
+                act.extend(classes[*e as usize].ancestors.iter().copied());
+                act.push(*e);
+            }
+        }
+        for a in act {
+            self.activate(a);
+        }
+        let variants = class.variants.clone();
+        for v in variants {
+            self.class(v);
+        }
+    }
+
+    /// Class `c` and its descendants may have instances.
+    fn class_and_descendants(&mut self, c: ClassId) {
+        let mut stack = vec![c];
+        let mut seen = HashSet::new();
+        while let Some(c) = stack.pop() {
+            if !seen.insert(c) {
+                continue;
+            }
+            self.class(c);
+            if let Some(ch) = self.children.get(c as usize) {
+                stack.extend(ch.iter().copied());
+            }
+        }
+    }
+
+    /// The methods of class `c` may run: those whose names are reached
+    /// are kept.
+    fn activate(&mut self, c: ClassId) {
+        let Some(seen) = self.active.get_mut(c as usize) else {
+            return;
+        };
+        if *seen {
+            return;
+        }
+        *seen = true;
+        let mids = self.by_owner[c as usize].clone();
+        for m in mids {
+            if self
+                .names
+                .contains(&self.module.world.methods[m as usize].name)
+            {
+                self.method(m);
+            }
         }
     }
 
@@ -102,6 +187,16 @@ impl Shake<'_> {
         *seen = true;
         let method = &self.module.world.methods[m as usize];
         let (name, func) = (method.name.as_str(), method.func);
+        // What a native hands out is of these classes, or of
+        // descendants of theirs (but `Object`'s: every class is one).
+        let object = self.module.world.builtin.object;
+        for c in method.makes.clone() {
+            if c == object {
+                self.class(c);
+            } else {
+                self.class_and_descendants(c);
+            }
+        }
         self.name(name);
         if let Some(f) = func {
             self.func(f);
@@ -126,6 +221,9 @@ impl Shake<'_> {
             Ref::Name(n) => self.name(n),
             Ref::Func(f) => self.func(f),
             Ref::Const(c) => self.constant(c),
+            Ref::Class(c) => self.class(c),
+            Ref::Regexp => self.class(self.module.world.builtin.regexp),
+            Ref::Bytes => self.class(self.module.world.builtin.bytes),
         });
     }
 }
@@ -140,13 +238,22 @@ pub enum Ref<'a> {
     Name(&'a str),
     Func(FuncId),
     Const(ConstId),
+    /// A class named: its instances or its class object may exist.
+    Class(ClassId),
+    /// A regular expression made (`Regexp` instances exist).
+    Regexp,
+    /// A `Bytes` constant.
+    Bytes,
 }
 
 /// Visit what `f` refers to.
 pub fn refs<'a>(f: &'a Function, visit: &mut dyn FnMut(Ref<'a>)) {
     for c in &f.consts {
-        if let Constant::Symbol(s) = c {
-            visit(Ref::Name(s));
+        match c {
+            Constant::Symbol(s) => visit(Ref::Name(s)),
+            Constant::Regexp { .. } => visit(Ref::Regexp),
+            Constant::Bytes(_) => visit(Ref::Bytes),
+            _ => {}
         }
     }
     for o in &f.inlined {
@@ -160,7 +267,9 @@ pub fn refs<'a>(f: &'a Function, visit: &mut dyn FnMut(Ref<'a>)) {
                     CallKind::Send(name) => visit(Ref::Name(name)),
                     // By name: the receiver's class may be a subclass,
                     // with an `initialize` of its own.
-                    CallKind::Construct { init, .. } | CallKind::ConstructRecv { init, .. } => {
+                    CallKind::Construct { init, class }
+                    | CallKind::ConstructRecv { init, class } => {
+                        visit(Ref::Class(*class));
                         visit(Ref::Name("initialize"));
                         if let Some(m) = init {
                             visit(Ref::Method(*m));
@@ -180,6 +289,10 @@ pub fn refs<'a>(f: &'a Function, visit: &mut dyn FnMut(Ref<'a>)) {
                 } => visit(Ref::Method(*m)),
                 Inst::MakeBlock { func, .. } => visit(Ref::Func(*func)),
                 Inst::ConstGet { id, .. } => visit(Ref::Const(*id)),
+                Inst::ClassRef { class, .. } | Inst::VariantSingleton { class, .. } => {
+                    visit(Ref::Class(*class))
+                }
+                Inst::MakeRegexp { .. } => visit(Ref::Regexp),
                 _ => {}
             }
         }
@@ -218,15 +331,54 @@ pub fn shake(module: &mut Module) -> usize {
             .or_default()
             .push(i as MethodId);
     }
+    let nclasses = module.world.classes.len();
+    let mut by_owner: Vec<Vec<MethodId>> = vec![Vec::new(); nclasses];
+    for (i, m) in module.world.methods.iter().enumerate() {
+        if let Some(v) = by_owner.get_mut(m.owner as usize) {
+            v.push(i as MethodId);
+        }
+    }
+    let mut children: Vec<Vec<ClassId>> = vec![Vec::new(); nclasses];
+    for (i, c) in module.world.classes.iter().enumerate() {
+        for p in c.superclass.iter().chain(c.variant_of.iter()) {
+            if let Some(v) = children.get_mut(*p as usize) {
+                v.push(i as ClassId);
+            }
+        }
+        // A module's descendants are the classes that include it.
+        for a in &c.ancestors {
+            if *a != i as ClassId && module.world.classes[*a as usize].kind == RtClassKind::Module {
+                children[*a as usize].push(i as ClassId);
+            }
+        }
+    }
     let mut s = Shake {
         module,
         by_name,
+        by_owner,
+        children,
         funcs: vec![false; module.functions.len()],
         methods: vec![false; module.world.methods.len()],
         consts: vec![false; module.world.consts.len()],
         names: HashSet::new(),
+        live: vec![false; nclasses],
+        active: vec![false; nclasses],
         work: Vec::new(),
     };
+    // What the runtime makes by itself: the values of the literals and of
+    // the operations on them, procs, classes, and every exception.
+    let b = &module.world.builtin;
+    for c in [
+        b.object, b.nil, b.bool_, b.int, b.integer, b.float, b.string, b.symbol, b.array, b.hash,
+        b.range, b.proc_, b.class_,
+    ] {
+        s.class(c);
+    }
+    for (i, c) in module.world.classes.iter().enumerate() {
+        if c.is_exception || c.kind == RtClassKind::Main {
+            s.class(i as ClassId);
+        }
+    }
     for u in &module.units {
         s.func(u.body);
     }

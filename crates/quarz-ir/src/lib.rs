@@ -1284,6 +1284,11 @@ pub struct RtMethod {
     /// needs no entry.
     #[serde(default)]
     pub overrides: Vec<MethodId>,
+    /// For a native: the classes in its result and block types, whose
+    /// instances (or those of their descendants) it may make and hand
+    /// out (see `shake`).
+    #[serde(default)]
+    pub makes: Vec<ClassId>,
 }
 
 impl RtMethod {
@@ -1460,6 +1465,7 @@ impl Droppable for RtMethod {
             file: 0,
             ret: None,
             overrides: Vec::new(),
+            makes: Vec::new(),
         }
     }
 }

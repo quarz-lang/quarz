@@ -200,6 +200,20 @@ pub fn build(world: &World, lw: &Lowerer, file_names: Vec<String>) -> RtWorld {
                     _ => None,
                 },
                 overrides: overridden_methods(world, m, &mut ancestors),
+                makes: if m.is_native {
+                    let mut out = Vec::new();
+                    if let types::RetType::Known(t) = &m.ret {
+                        classes_in(t, &mut out);
+                    }
+                    if let Some((_, t)) = &m.block {
+                        classes_in(t, &mut out);
+                    }
+                    out.sort_unstable();
+                    out.dedup();
+                    out
+                } else {
+                    Vec::new()
+                },
             }
         })
         .collect();
@@ -357,4 +371,31 @@ fn overridden_methods(
         }
     }
     out
+}
+
+/// The classes `t` names (as instances or as class objects).
+fn classes_in(t: &Type, out: &mut Vec<ClassId>) {
+    match t {
+        Type::Class(c, args) | Type::ClassObject(c, args) => {
+            out.push(*c);
+            for a in args {
+                classes_in(a, out);
+            }
+        }
+        Type::Union(ts) | Type::Tuple(ts) => {
+            for t in ts {
+                classes_in(t, out);
+            }
+        }
+        Type::Proc(recv, params, ret, _) => {
+            if let Some(r) = recv {
+                classes_in(r, out);
+            }
+            for p in params {
+                classes_in(p, out);
+            }
+            classes_in(ret, out);
+        }
+        Type::Nothing | Type::Param(_) | Type::Var(_) => {}
+    }
 }
