@@ -75,6 +75,8 @@ struct Ll<'a> {
     line: Option<u32>,
     /// Intrinsics used (declared by the module).
     intrinsics: Vec<&'static str>,
+    /// The definitions of the function's data (`data_words` and so on).
+    data: Vec<String>,
 }
 
 fn ty_str(ty: Ty, opaque: bool) -> &'static str {
@@ -144,6 +146,7 @@ impl<'a> Ll<'a> {
             lines: Vec::new(),
             line: None,
             intrinsics: Vec::new(),
+            data: Vec::new(),
         };
         for (i, p) in params.iter().enumerate() {
             ll.vals.push(Val {
@@ -399,6 +402,10 @@ impl<'a> Ll<'a> {
             }
         }
         out.push_str("}\n");
+        for d in &self.data {
+            out.push_str(d);
+            out.push('\n');
+        }
         let mut meta = vec![format!(
             "!{} = distinct !DISubprogram(name: \"{name}\", scope: !3, file: !3, line: 1, type: !4, spFlags: DISPFlagDefinition, unit: !0)",
             self.meta_base
@@ -415,7 +422,68 @@ impl<'a> Ll<'a> {
     }
 }
 
+impl Ll<'_> {
+    /// A new datum of the function, defined by `def` given its name, as a
+    /// pointer value (`ty` is its type, for the typed-pointer syntax).
+    fn datum(&mut self, def: impl FnOnce(&str) -> String, ty: &str) -> u32 {
+        // Unique in the module (names need only be distinct).
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let name = format!("@qz_data_{n}");
+        self.data.push(def(&name));
+        let text = if self.opaque {
+            name
+        } else {
+            format!("bitcast ({ty}* {name} to i8*)")
+        };
+        self.new_val(text, Ty::Ptr)
+    }
+}
+
 impl Builder for Ll<'_> {
+    fn data_words(&mut self, words: &[u32]) -> u32 {
+        if words.is_empty() {
+            return self.iconst(Ty::Ptr, 0);
+        }
+        let items: Vec<String> = words.iter().map(|w| format!("i32 {}", *w as i32)).collect();
+        let ty = format!("[{} x i32]", words.len());
+        let t2 = ty.clone();
+        self.datum(
+            move |name| {
+                format!(
+                    "{name} = private unnamed_addr constant {t2} [{}], align 4",
+                    items.join(", ")
+                )
+            },
+            &ty,
+        )
+    }
+
+    fn data_bytes(&mut self, bytes: &[u8]) -> u32 {
+        if bytes.is_empty() {
+            return self.iconst(Ty::Ptr, 0);
+        }
+        let mut text = String::with_capacity(bytes.len() * 3);
+        for b in bytes {
+            let _ = write!(text, "\\{b:02X}");
+        }
+        let ty = format!("[{} x i8]", bytes.len());
+        let t2 = ty.clone();
+        self.datum(
+            move |name| format!("{name} = private unnamed_addr constant {t2} c\"{text}\", align 1"),
+            &ty,
+        )
+    }
+
+    fn data_cell(&mut self) -> u32 {
+        let ptr = self.t(Ty::Ptr);
+        let ty = ptr.to_string();
+        self.datum(
+            move |name| format!("{name} = private global {ptr} null, align 8"),
+            &ty,
+        )
+    }
+
     type Value = u32;
     type Block = u32;
     type Var = u32;
@@ -993,15 +1061,21 @@ fn emit(module: &Module, opaque: bool) -> Result<String, String> {
         (decls.len() - 1) as u32
     }
     let mut declare = |name: &str, params: &[Ty], rets: &[Ty]| push(&mut decls, name, params, rets);
+    let ops: Vec<u32> = gen::OPS
+        .iter()
+        .map(|(name, extra)| {
+            let mut params = vec![p, p, i32_, i32_, p];
+            params.extend_from_slice(extra);
+            declare(name, &params, &[i32_])
+        })
+        .collect();
     let rt = RtIdx {
         h: Helpers {
-            exec: declare("qz_exec", &[p, p, i32_, i32_, i32_, p], &[i32_]),
-            term: declare("qz_term", &[p, p, i32_, i32_, p], &[i32_]),
+            ops,
             block_param: declare("qz_block_param", &[p, p, i32_], &[]),
             frame_get: declare("qz_frame_get", &[p, i32_, i32_, p, i32_], &[]),
             frame_set: declare("qz_frame_set", &[p, i32_, i32_, p, i32_], &[]),
             load_const: declare("qz_load_const", &[p, i32_, i32_, p, i32_], &[]),
-            interpolate: declare("qz_interpolate", &[p, p, i32_, i32_, i32_, p], &[i32_]),
             field_get: declare("qz_field_get", &[p, p, i32_, i32_, i32_], &[i32_]),
             field_set: declare("qz_field_set", &[p, p, i32_, i32_, i32_], &[i32_]),
             raise: declare("qz_raise", &[p, p, i32_, i32_, i32_], &[i32_]),
@@ -1114,12 +1188,6 @@ fn emit(module: &Module, opaque: bool) -> Result<String, String> {
     let mut meta: Vec<String> = Vec::new();
     // !0-!5 describe the unit, !6 and !7 are the branch weights.
     let mut meta_next: u32 = 8;
-    // What each function hands the runtime by position (all its entries).
-    let mut sites: Vec<gen::Sites> = module
-        .functions
-        .iter()
-        .map(|_| gen::Sites::default())
-        .collect();
     let methods = &module.world.methods;
     // A `Release` runs deinitializers only in a program that has some.
     let has_deinit = methods
@@ -1149,6 +1217,7 @@ fn emit(module: &Module, opaque: bool) -> Result<String, String> {
                 }
             }
             let h = Helpers {
+                ops: rt.h.ops.clone(),
                 raise: rt.h.raise,
                 enter: rt.h.enter,
                 enter_virtual: rt.h.enter_virtual,
@@ -1161,14 +1230,11 @@ fn emit(module: &Module, opaque: bool) -> Result<String, String> {
                 own: rt.h.own,
                 disown: rt.h.disown,
                 clone_ptr: rt.h.clone_ptr,
-                exec: rt.h.exec,
-                term: rt.h.term,
                 block_param: rt.h.block_param,
                 frame_get: rt.h.frame_get,
                 frame_set: rt.h.frame_set,
                 field_get: rt.h.field_get,
                 load_const: rt.h.load_const,
-                interpolate: rt.h.interpolate,
                 field_set: rt.h.field_set,
                 call_static: rt.h.call_static,
                 yield_: rt.h.yield_,
@@ -1186,7 +1252,6 @@ fn emit(module: &Module, opaque: bool) -> Result<String, String> {
                     body_sig: 0,
                     lazy_act: true,
                     entry_of,
-                    sites: &mut sites[i],
                 },
                 i as FuncId,
                 f,
@@ -1219,12 +1284,17 @@ fn emit(module: &Module, opaque: bool) -> Result<String, String> {
     }
     out.push_str(&text);
 
-    // The serialized module (each function only as compiled code needs
-    // it at run time) and the table of compiled bodies.
-    let mut kept = module.clone();
-    for (f, s) in kept.functions.iter_mut().zip(&sites) {
-        *f = gen::strip(f, s);
-    }
+    // The serialized program (the functions without their bodies, which
+    // the machine code replaces) and the table of compiled bodies.
+    let mut kept = quarz_ir::Image {
+        world: module.world.clone(),
+        functions: module
+            .functions
+            .iter()
+            .map(|f| f.clone().split().0)
+            .collect(),
+        units: module.units.clone(),
+    };
     // The methods apart, decoded when first needed, with what the runtime
     // derives from them (where their natives are in its registries: the
     // compiler links the same runtime crate).
@@ -1234,7 +1304,7 @@ fn emit(module: &Module, opaque: bool) -> Result<String, String> {
         &quarz_vm::natives::positions(),
         quarz_vm::natives::fingerprint(),
     );
-    let bytes = quarz_ir::encode(&kept);
+    let bytes = quarz_ir::encode_image(&kept);
     let mut blob = String::with_capacity(bytes.len() * 4);
     for byte in &bytes {
         let _ = write!(blob, "\\{byte:02X}");

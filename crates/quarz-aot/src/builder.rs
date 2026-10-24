@@ -140,4 +140,13 @@ pub trait Builder {
     /// The source line of what is emitted next, for backtraces that walk
     /// the native stack (a backend without them ignores it).
     fn set_line(&mut self, _line: u32) {}
+
+    /// The address of `words`, constant data of the executable (null
+    /// when there are none).
+    fn data_words(&mut self, words: &[u32]) -> Self::Value;
+    /// The address of `bytes`, constant data (null when empty).
+    fn data_bytes(&mut self, bytes: &[u8]) -> Self::Value;
+    /// The address of a pointer-sized variable of the executable, null
+    /// at start (what the runtime keeps for one site).
+    fn data_cell(&mut self) -> Self::Value;
 }

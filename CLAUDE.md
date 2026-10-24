@@ -72,9 +72,13 @@ when the local one is older.
   declared `Int`/`Float`/`Bool` is a machine word, its mark meaning
   "kept aside"): the runtime and `gen.rs` must both go through it, and
   only the runtime may write a mark or the aside list.
-- `quarz build` embeds the QIR it compiled, and `qz_exec` runs an
-  instruction of it on the compiled code's registers: the machine code
-  and the embedded QIR must come from the same lowering.
+- A compiled program carries no QIR instructions and no interpreter:
+  an instruction its code does not do inline calls the runtime's entry
+  for its kind (`ffi_ops.rs`, `qz_op_*`, listed in `gen::OPS`), which
+  runs the interpreter's code for it (`ops.rs`). Only `quarz run` and
+  the REPL install the interpreter (`Interp::install_interpreter`);
+  nothing a compiled program reaches may name `Inst`, `Block` or the
+  interpreter, or the linker keeps them.
 - In register sharing, a result never shares with its own operands (the
   AOT may release a destination before reading operands), counted and
   non-counted registers stay apart (`live::heap_possible`, shared with

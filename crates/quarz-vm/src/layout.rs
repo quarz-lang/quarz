@@ -30,9 +30,6 @@ pub const HOT_STACK_LEN: usize = offset_of!(Interp, hot) + offset_of!(Hot, stack
 pub const HOT_STACK_CAP: usize = offset_of!(Interp, hot) + offset_of!(Hot, stack_cap);
 pub const HOT_LIMIT_PTR: usize = offset_of!(Interp, hot) + offset_of!(Hot, limit_ptr);
 pub const HOT_TYPED_STATUS: usize = offset_of!(Interp, hot) + offset_of!(Hot, typed_status);
-/// Set in the instruction index passed to `qz_interpolate`: the result
-/// of an append to a builder is not read.
-pub const INTERP_RESULT_DEAD: u32 = 1 << 31;
 pub const CURRENT_TASK: usize = offset_of!(Interp, current_task_id);
 /// Where an object's fields start, from its allocation (after the counts
 /// and the header: see `value::Object`).

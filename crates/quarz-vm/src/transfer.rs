@@ -14,7 +14,7 @@ use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
 
 use num_bigint::BigInt;
-use quarz_ir::{ClassId, FuncId, Function, MethodId, RtWorld, Unit};
+use quarz_ir::{ClassId, FuncId, FuncInfo, MethodId, RtWorld, Unit};
 
 use crate::interp::{CompiledFn, Flow, Interp, SharedState};
 use crate::sched::{TaskExit, TaskResult};
@@ -25,9 +25,30 @@ pub struct ProgramImage {
     pub world: RtWorld,
     /// A compiled program's methods (shared: decoded once for all).
     pub lazy: Option<Arc<crate::methods::Lazy>>,
-    pub functions: Vec<Function>,
+    pub functions: Vec<FuncInfo>,
+    /// The functions' bodies, for the interpreter (none in a compiled
+    /// program).
+    pub bodies: Option<crate::vm::Bodies>,
     pub units: Vec<Unit>,
     pub compiled: Vec<Option<CompiledFn>>,
+}
+
+impl ProgramImage {
+    /// An interpreter of the program over `state`, on this thread.
+    pub fn load(&self, argv: Vec<String>, state: SharedState) -> std::rc::Rc<Interp> {
+        if let (Some(bodies), Some(i)) = (&self.bodies, crate::vm::INTERPRETER.get()) {
+            (i.import)(&state, bodies);
+        }
+        Interp::with_state_lazy(
+            self.world.clone(),
+            0,
+            self.functions.clone(),
+            self.units.clone(),
+            argv,
+            state,
+            self.lazy.clone(),
+        )
+    }
 }
 
 // SAFETY: the image holds plain data and `extern "C"` function pointers.
@@ -224,7 +245,6 @@ fn export_frame(
 /// function `fid` and the blocks created inside it read or write. Depth 0
 /// is the closure's own captured frame.
 fn needed_slots(interp: &Interp, fid: FuncId) -> std::collections::HashSet<(i64, u32)> {
-    use quarz_ir::Inst;
     let mut needed = std::collections::HashSet::new();
     let mut visited = std::collections::HashSet::new();
     // (function, offset): a frame depth seen from the function's own
@@ -240,19 +260,14 @@ fn needed_slots(interp: &Interp, fid: FuncId) -> std::collections::HashSet<(i64,
             continue;
         };
         let own = if f.frame_size > 0 { 1 } else { 0 };
-        for block in &f.blocks {
-            for inst in &block.insts {
-                match inst {
-                    Inst::FrameGet { depth, slot, .. } | Inst::FrameSet { depth, slot, .. } => {
-                        let index = *depth as i64 - own + base;
-                        if index >= 0 {
-                            needed.insert((index, *slot));
-                        }
-                    }
-                    Inst::MakeBlock { func, .. } => work.push((*func, base - own)),
-                    _ => {}
-                }
+        for &(depth, slot) in &f.facts.uses {
+            let index = depth as i64 - own + base;
+            if index >= 0 {
+                needed.insert((index, slot));
             }
+        }
+        for &func in &f.facts.blocks {
+            work.push((func, base - own));
         }
     }
     needed
@@ -409,15 +424,7 @@ pub fn run_on_thread(
             _ => {
                 let out = Arc::new(Mutex::new(Vec::new()));
                 let state = SharedState::new(Box::new(SyncBuffer(out.clone())));
-                let interp = Interp::with_state_lazy(
-                    image.world.clone(),
-                    0,
-                    image.functions.clone(),
-                    image.units.clone(),
-                    argv,
-                    state,
-                    image.lazy.clone(),
-                );
+                let interp = image.load(argv, state);
                 {
                     let mut compiled = interp.compiled.borrow_mut();
                     for (i, f) in image.compiled.iter().enumerate() {
@@ -462,6 +469,7 @@ impl Interp {
             world: self.program.world.clone(),
             lazy: self.program.lazy.clone(),
             functions: self.funcs.borrow().iter().map(|f| (**f).clone()).collect(),
+            bodies: crate::vm::INTERPRETER.get().and_then(|i| (i.export)(self)),
             units: self.program.units.clone(),
             compiled: self.compiled.borrow().clone(),
         });

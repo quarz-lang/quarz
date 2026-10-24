@@ -9,7 +9,7 @@
 use crate::rc::Rc;
 use std::ffi::{c_char, CStr};
 
-use quarz_ir::{FuncId, Term};
+use quarz_ir::FuncId;
 
 use crate::interp::{CompiledFn, Flow, Interp, SharedState};
 use crate::value::{HashData, Value};
@@ -67,76 +67,6 @@ impl Interp {
             Err(self.take_flow(status))
         })
     }
-}
-
-/// Execute one instruction of function `fid` on the registers `regs`.
-///
-/// # Safety
-/// `rt` and `act` must be live, `regs` must point to `nregs` initialized
-/// values.
-#[no_mangle]
-pub unsafe extern "C" fn qz_exec(
-    rt: *const Interp,
-    act: *const Activation,
-    fid: u32,
-    block: u32,
-    inst: u32,
-    regs: *mut Value,
-) -> u32 {
-    let rt = &*rt;
-    let act = &*act;
-    let funcs = rt.funcs.borrow();
-    let f = &funcs[fid as usize];
-    let pools = rt.pools.borrow();
-    let pool = &pools[fid as usize];
-    let regs = std::slice::from_raw_parts_mut(regs, f.nregs as usize);
-    let b = &f.blocks[block as usize];
-    act.line.set(b.lines[inst as usize]);
-    let inst = &b.insts[inst as usize];
-    let mut pending = rt.pending_flow.borrow_mut().take();
-    match rt.exec_inst(f, fid, pool, act, regs, &mut pending, inst) {
-        Ok(()) => {
-            *rt.pending_flow.borrow_mut() = pending;
-            STATUS_OK
-        }
-        Err(flow) => rt.park_flow(flow),
-    }
-}
-
-/// Execute the terminator of a block that leaves the function abruptly
-/// (`Raise`, `BreakOut`, `ReturnOut`, `Resume`, `Unreachable`).
-///
-/// # Safety
-/// As for `qz_exec`.
-#[no_mangle]
-pub unsafe extern "C" fn qz_term(
-    rt: *const Interp,
-    act: *const Activation,
-    fid: u32,
-    block: u32,
-    regs: *mut Value,
-) -> u32 {
-    let rt = &*rt;
-    let act = &*act;
-    let f = rt.func(fid);
-    let regs = std::slice::from_raw_parts_mut(regs, f.nregs as usize);
-    let flow = match &f.blocks[block as usize].term {
-        Term::Raise(r) => Flow::Raise(regs[*r as usize].clone()),
-        Term::BreakOut(r) => Flow::Break(regs[*r as usize].clone(), act.closure_tag),
-        Term::ReturnOut(r) => Flow::Return(regs[*r as usize].clone(), act.method_tag),
-        Term::Resume(r) => match &regs[*r as usize] {
-            Value::Flow(fb) => match fb.borrow_mut().take() {
-                Some(flow) => flow,
-                None => return STATUS_OK,
-            },
-            _ => return STATUS_OK,
-        },
-        _ => Flow::Raise(rt.make_exception(
-            rt.program.exc.runtime_error,
-            "internal error: unreachable code executed",
-        )),
-    };
-    rt.park_flow(flow)
 }
 
 /// Size of the buffer compiled code reserves for an `Activation` it
@@ -215,7 +145,7 @@ pub unsafe extern "C" fn qz_finalize(rt: *const Interp) {
 /// (non-zero: the stack is exhausted and nothing was built).
 ///
 /// # Safety
-/// As for `qz_call_static`; `buf` must have `ACT_BUF_SIZE` bytes of
+/// As for `qz_raise`; `buf` must have `ACT_BUF_SIZE` bytes of
 /// 16-byte aligned space, and `args` must stay untouched, until
 /// `qz_leave`.
 #[no_mangle]
@@ -462,7 +392,8 @@ pub unsafe extern "C" fn qz_leave(
 /// Returns the status the compiled code leaves with.
 ///
 /// # Safety
-/// As for `qz_exec`.
+/// `rt` and `act` must be live; a `regs` passed must point to the
+/// function's `nregs` initialized values (as for every entry below).
 #[no_mangle]
 pub unsafe extern "C" fn qz_raise(
     rt: *const Interp,
@@ -472,7 +403,7 @@ pub unsafe extern "C" fn qz_raise(
     line: u32,
 ) -> u32 {
     let rt = &*rt;
-    // Where it is raised, as `qz_exec` records it (the backtrace finds
+    // Where it is raised, as `qz_op_*` record it (the backtrace finds
     // the inlined callees from it).
     (*act).line.set(line);
     let flow = match kind {
@@ -493,7 +424,7 @@ pub unsafe extern "C" fn qz_raise(
 /// `regs[dst] = self`.
 ///
 /// # Safety
-/// As for `qz_exec`.
+/// As for `qz_raise`.
 #[no_mangle]
 pub unsafe extern "C" fn qz_self(act: *const Activation, regs: *mut Value, dst: u32) {
     let act = &*act;
@@ -503,7 +434,7 @@ pub unsafe extern "C" fn qz_self(act: *const Activation, regs: *mut Value, dst: 
 /// `regs[dst] = args[index]` (nil when absent).
 ///
 /// # Safety
-/// As for `qz_exec`.
+/// As for `qz_raise`.
 #[no_mangle]
 pub unsafe extern "C" fn qz_arg(act: *const Activation, index: u32, regs: *mut Value, dst: u32) {
     let act = &*act;
@@ -514,7 +445,7 @@ pub unsafe extern "C" fn qz_arg(act: *const Activation, index: u32, regs: *mut V
 /// `regs[dst] = the enclosing method's block` (nil when none).
 ///
 /// # Safety
-/// As for `qz_exec`.
+/// As for `qz_raise`.
 #[no_mangle]
 pub unsafe extern "C" fn qz_block_param(act: *const Activation, regs: *mut Value, dst: u32) {
     let act = &*act;
@@ -524,7 +455,7 @@ pub unsafe extern "C" fn qz_block_param(act: *const Activation, regs: *mut Value
 /// `regs[dst] = frame[depth][slot]`.
 ///
 /// # Safety
-/// As for `qz_exec`; the function must have a frame.
+/// As for `qz_raise`; the function must have a frame.
 #[no_mangle]
 pub unsafe extern "C" fn qz_frame_get(
     act: *const Activation,
@@ -564,7 +495,7 @@ pub unsafe extern "C" fn qz_frame_set(
 /// `regs[dst] = regs[obj].fields[index]`.
 ///
 /// # Safety
-/// As for `qz_exec`.
+/// As for `qz_raise`.
 #[no_mangle]
 pub unsafe extern "C" fn qz_field_get(
     rt: *const Interp,
@@ -590,7 +521,7 @@ pub unsafe extern "C" fn qz_field_get(
 /// `regs[obj].fields[index] = regs[src]`.
 ///
 /// # Safety
-/// As for `qz_exec`.
+/// As for `qz_raise`.
 #[no_mangle]
 pub unsafe extern "C" fn qz_field_set(
     rt: *const Interp,
@@ -619,7 +550,7 @@ pub unsafe extern "C" fn qz_field_set(
 /// (`nil` for missing defaults, which the body evaluates).
 ///
 /// # Safety
-/// As for `qz_exec`; `arg_regs` must point to `nargs` register indices;
+/// As for `qz_raise`; `arg_regs` must point to `nargs` register indices;
 /// `recv` and `block` are register indices or `u32::MAX` for `self` /
 /// no block.
 #[no_mangle]
@@ -758,7 +689,7 @@ pub unsafe extern "C" fn qz_hash_put_int(slot: *mut Value, k: i64, v: i64) -> u3
 /// method with the sole reference, and store the result back.
 ///
 /// # Safety
-/// As for `qz_call_static`.
+/// As for `qz_raise`.
 #[no_mangle]
 pub unsafe extern "C" fn qz_owned_call(
     rt: *const Interp,
@@ -871,7 +802,7 @@ pub unsafe extern "C" fn qz_owned_call(
 /// `yield(args)`: call the enclosing method's block.
 ///
 /// # Safety
-/// As for `qz_call_static`.
+/// As for `qz_raise`.
 #[no_mangle]
 pub unsafe extern "C" fn qz_yield(
     rt: *const Interp,
@@ -908,57 +839,11 @@ pub unsafe extern "C" fn qz_yield(
     }
 }
 
-/// Run the `Interpolate` at instruction `inst` of `block` of `fid` on the
-/// compiled function's registers (as `qz_exec`, without the generic
-/// dispatch).
-///
-/// # Safety
-/// As for `qz_exec`.
-#[no_mangle]
-pub unsafe extern "C" fn qz_interpolate(
-    rt: *const Interp,
-    act: *const Activation,
-    fid: u32,
-    block: u32,
-    inst: u32,
-    regs: *mut Value,
-) -> u32 {
-    let rt = &*rt;
-    let act = &*act;
-    let dead = inst & crate::layout::INTERP_RESULT_DEAD != 0;
-    let inst = inst & !crate::layout::INTERP_RESULT_DEAD;
-    let funcs = rt.funcs.borrow();
-    let f = &funcs[fid as usize];
-    let regs = std::slice::from_raw_parts_mut(regs, f.nregs as usize);
-    let b = &f.blocks[block as usize];
-    act.line.set(b.lines[inst as usize]);
-    let quarz_ir::Inst::Interpolate { dst, parts, into } = &b.insts[inst as usize] else {
-        unreachable!("qz_interpolate on another instruction")
-    };
-    if dead {
-        if let Some(r) = into {
-            if let Value::StringBuilder(_) = &regs[*r as usize] {
-                return match rt.append_interpolation(f, regs, parts, *r) {
-                    Ok(()) => STATUS_OK,
-                    Err(flow) => rt.park_flow(flow),
-                };
-            }
-        }
-    }
-    match rt.interpolate_inst(f, regs, parts, *into) {
-        Ok(v) => {
-            regs[*dst as usize] = v;
-            STATUS_OK
-        }
-        Err(flow) => rt.park_flow(flow),
-    }
-}
-
 /// `regs[dst]` = constant `idx` of function `fid` (a string or symbol,
 /// kept in the function's pool).
 ///
 /// # Safety
-/// As for `qz_exec`.
+/// As for `qz_raise`.
 #[no_mangle]
 pub unsafe extern "C" fn qz_load_const(
     rt: *const Interp,
@@ -997,7 +882,7 @@ pub unsafe extern "C" fn qz_alloc_data(
 /// `Class.new(args)` with positional arguments only.
 ///
 /// # Safety
-/// As for `qz_call_static`; `init` is a method id or `u32::MAX`.
+/// As for `qz_raise`; `init` is a method id or `u32::MAX`.
 #[no_mangle]
 pub unsafe extern "C" fn qz_construct(
     rt: *const Interp,
@@ -1124,7 +1009,7 @@ pub unsafe extern "C" fn qz_main(
     // What start-up builds lives as long as the program (see `alloc`).
     #[cfg(feature = "mimalloc")]
     crate::alloc::startup_begin();
-    let module = match quarz_ir::decode(bytes) {
+    let image = match quarz_ir::decode_image(bytes) {
         Ok(m) => m,
         Err(e) => {
             eprintln!("quarz: corrupt program: {e}");
@@ -1143,11 +1028,11 @@ pub unsafe extern "C" fn qz_main(
         Box::new(std::io::BufWriter::new(std::io::stdout())),
         crate::sched::Workers::count_from_env(),
     );
-    let quarz_ir::Module {
+    let quarz_ir::Image {
         world,
         functions,
         units,
-    } = module;
+    } = image;
     crate::value::check_rc_layout();
     crate::layout::check(layout_sig, vec_layout);
     // The program's methods, decoded when first needed.

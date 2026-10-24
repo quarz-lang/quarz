@@ -8,11 +8,13 @@ pub mod deinit;
 #[cfg(target_os = "linux")]
 mod epoll;
 pub mod ffi;
+pub mod ffi_ops;
 pub mod interp;
 pub mod layout;
 pub mod methods;
 pub mod native_bt;
 pub mod natives;
+pub mod ops;
 pub mod rc;
 pub mod sched;
 pub mod transfer;

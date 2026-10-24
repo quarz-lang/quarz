@@ -35,8 +35,67 @@ const OBJECT_FIELDS_PTR_OFF: i32 = 16;
 
 const STATUS_RAISE: i64 = 1;
 
+/// The runtime's entries for the instructions compiled code does not do
+/// inline (`quarz_vm::ffi_ops`), one per kind: each takes the
+/// interpreter, the activation, the function, the line and the
+/// registers, then these operands.
+pub(crate) const OPS: &[(&str, &[Ty])] = {
+    const I: Ty = Ty::I32;
+    const P: Ty = Ty::Ptr;
+    &[
+        ("qz_op_load_const", &[I, I]),
+        ("qz_op_has_arg", &[I, I]),
+        ("qz_op_field_get_by_name", &[I, I, I, I]),
+        ("qz_op_const_get", &[I, I]),
+        ("qz_op_variant_singleton", &[I, I]),
+        ("qz_op_call", &[P, P, I]),
+        ("qz_op_owned_call", &[P]),
+        ("qz_op_binop", &[I, I, I, I, I]),
+        ("qz_op_case_eq", &[I, I, I]),
+        ("qz_op_equal", &[I, I, I]),
+        ("qz_op_class_is_a", &[I, I, I]),
+        ("qz_op_is_a", &[I, I, P, I, P]),
+        ("qz_op_as", &[I, I, P, I, P, I, P, I]),
+        ("qz_op_make_block", &[I, I, I, I]),
+        ("qz_op_method_ref", &[I, I, I]),
+        ("qz_op_symbol_proc", &[I, I, I]),
+        ("qz_op_make_array", &[I, P, I]),
+        ("qz_op_make_hash", &[I, P, I]),
+        ("qz_op_make_range", &[I, I, I, I]),
+        ("qz_op_make_regexp", &[I, I, P, I]),
+        ("qz_op_interpolate", &[I, P, I, I, I]),
+        ("qz_op_to_sym", &[I, I]),
+        ("qz_op_is_array", &[I, I]),
+        ("qz_op_is_hash", &[I, I]),
+        ("qz_op_is_object", &[I, I]),
+        ("qz_op_to_array", &[I, I]),
+        ("qz_op_len", &[I, I]),
+        ("qz_op_object_fields", &[I, I]),
+        ("qz_op_array_get", &[I, I, I]),
+        ("qz_op_array_get_reg", &[I, I, I]),
+        ("qz_op_array_slice", &[I, I, I, I]),
+        ("qz_op_array_slice_reg", &[I, I, I, I]),
+        ("qz_op_hash_get_sym", &[I, I, I, I]),
+        ("qz_op_array_push", &[I, I]),
+        ("qz_op_hash_rest", &[I, I, P, I]),
+        ("qz_op_catch_exception", &[I]),
+        ("qz_op_catch_any", &[I]),
+        ("qz_op_no_match", &[I, I]),
+        ("qz_op_term", &[I, I]),
+    ]
+};
+
+/// The position of entry `name` in `OPS`.
+fn op_index(name: &str) -> usize {
+    OPS.iter()
+        .position(|(n, _)| *n == name)
+        .unwrap_or_else(|| panic!("no runtime entry {name}"))
+}
+
 /// The runtime functions compiled code calls, as a backend's callables.
 pub(crate) struct Helpers<F> {
+    /// The entries of `OPS`, in its order.
+    pub ops: Vec<F>,
     /// `qz_raise`: an error the compiled code detects (see `raise_here`).
     pub raise: F,
     pub enter: F,
@@ -54,14 +113,11 @@ pub(crate) struct Helpers<F> {
     pub own: F,
     pub disown: F,
     pub clone_ptr: F,
-    pub exec: F,
-    pub term: F,
     pub block_param: F,
     pub frame_get: F,
     pub frame_set: F,
     pub field_get: F,
     pub load_const: F,
-    pub interpolate: F,
     pub field_set: F,
     pub call_static: F,
     pub yield_: F,
@@ -69,95 +125,6 @@ pub(crate) struct Helpers<F> {
     pub alloc_data: F,
     pub owned_call: F,
     pub hash_put_int: F,
-}
-
-/// What of a function compiled code hands the runtime by position: the
-/// instructions `qz_exec` and `qz_interpolate` run and the terminators
-/// `qz_term` does. The executable keeps only these of the body (`strip`):
-/// compiled code passes their positions there, the instructions in block
-/// 0 and each terminator as a block of its own after it. Shared by the
-/// entries of one function.
-#[derive(Default)]
-pub(crate) struct Sites {
-    insts: Vec<(u32, u32)>,
-    inst_index: HashMap<(u32, u32), u32>,
-    terms: Vec<u32>,
-    term_index: HashMap<u32, u32>,
-}
-
-impl Sites {
-    /// The position in the stripped function of instruction `inst` of
-    /// `block`.
-    fn inst(&mut self, block: u32, inst: u32) -> u32 {
-        let next = self.insts.len() as u32;
-        *self.inst_index.entry((block, inst)).or_insert_with(|| {
-            self.insts.push((block, inst));
-            next
-        })
-    }
-
-    /// The block in the stripped function of `block`'s terminator.
-    fn term(&mut self, block: u32) -> u32 {
-        let next = self.terms.len() as u32 + 1;
-        *self.term_index.entry(block).or_insert_with(|| {
-            self.terms.push(block);
-            next
-        })
-    }
-}
-
-/// `f` as the executable keeps it: its header, constants and inline
-/// origins, the sites compiled code hands the runtime, and the
-/// instructions the runtime's analyses of a block body look at (what a
-/// spawned block reads of its frames).
-pub(crate) fn strip(f: &Function, sites: &Sites) -> Function {
-    let mut out = Function {
-        blocks: Vec::new(),
-        stripped: true,
-        ..f.clone()
-    };
-    let mut first = Block {
-        insts: Vec::new(),
-        lines: Vec::new(),
-        term: Term::Unreachable,
-        term_line: 0,
-        handler: None,
-    };
-    for &(b, i) in &sites.insts {
-        let blk = &f.blocks[b as usize];
-        first.insts.push(blk.insts[i as usize].clone());
-        first.lines.push(blk.lines[i as usize]);
-    }
-    for (bi, blk) in f.blocks.iter().enumerate() {
-        for (ii, inst) in blk.insts.iter().enumerate() {
-            let analysed = matches!(
-                inst,
-                Inst::FrameGet { .. }
-                    | Inst::FrameSet { .. }
-                    | Inst::MakeBlock { .. }
-                    | Inst::OwnedCall {
-                        recv: VarLoc::Frame { .. },
-                        ..
-                    }
-            );
-            if analysed && !sites.inst_index.contains_key(&(bi as u32, ii as u32)) {
-                first.insts.push(inst.clone());
-                first.lines.push(blk.lines[ii]);
-            }
-        }
-    }
-    out.blocks.push(first);
-    for &b in &sites.terms {
-        let blk = &f.blocks[b as usize];
-        out.blocks.push(Block {
-            insts: Vec::new(),
-            lines: Vec::new(),
-            term: blk.term.clone(),
-            term_line: blk.term_line,
-            handler: None,
-        });
-    }
-    out
 }
 
 /// A typed entry's exits: the block a status leaves through, the
@@ -184,7 +151,6 @@ pub(crate) struct Target<'a, B: Builder> {
     /// (the backend walks the native stack for backtraces).
     pub lazy_act: bool,
     /// What of the function compiled code hands the runtime by position.
-    pub sites: &'a mut Sites,
     /// Generate the *entry* of a typed function rather than its body:
     /// only the part that needs no frame (`unbox::pure_region`), every
     /// way out of it calling this body with the same arguments (the
@@ -262,7 +228,6 @@ pub(crate) fn gen_function<B: Builder>(
         body_sig,
         lazy_act,
         entry_of,
-        sites,
     } = t;
     let drop_value_fn = h.drop_value;
     let finalize_fn = h.finalize;
@@ -464,8 +429,8 @@ pub(crate) fn gen_function<B: Builder>(
         let own_out = b.stack_slot(VALUE_SIZE as u32, 3);
         let params_buf = b.stack_slot((VALUE_SIZE as u32) * nparams.max(1) as u32, 3);
         // The parameters are boxed into `params_buf`, and `self`
-        // cloned into the activation, only when the interpreter or
-        // the runtime needs them (see `materialize`).
+        // cloned into the activation, only when the runtime needs them
+        // (see `materialize`).
         typed_self_ptr = Some(self_ptr);
         typed_params_buf = Some(params_buf);
         // Native stack check (and the nil of the slots and homes), then
@@ -572,7 +537,6 @@ pub(crate) fn gen_function<B: Builder>(
         own_out: own_out_slot,
         entry_of,
         entry_params,
-        sites,
     };
     for (i, blk) in f.blocks.iter().enumerate() {
         g.b.switch_to_block(blocks[i]);
@@ -721,11 +685,17 @@ pub(crate) fn gen_function<B: Builder>(
             | Term::ReturnOut(_)
             | Term::Resume(_)
             | Term::Unreachable => {
-                g.materialize();
-                let fid_v = g.b.iconst(Ty::I32, i64::from(fid));
-                let site = g.sites.term(i as u32);
-                let blk_v = g.b.iconst(Ty::I32, i64::from(site));
-                let status = g.b.call(g.h.term, &[rt, act, fid_v, blk_v, regs])[0];
+                let (kind, reg) = match &blk.term {
+                    Term::Raise(r) => (0, *r),
+                    Term::BreakOut(r) => (1, *r),
+                    Term::ReturnOut(r) => (2, *r),
+                    Term::Resume(r) => (3, *r),
+                    _ => (4, 0),
+                };
+                let kind = g.b.iconst(Ty::I32, kind);
+                let reg = g.b.iconst(Ty::I32, i64::from(reg));
+                let n = blk.insts.len() as u32;
+                let status = g.op_status("qz_op_term", i as u32, n, &[kind, reg]);
                 g.b.jump(unwinds[i], &[status]);
             }
         }
@@ -1184,13 +1154,12 @@ struct Gen<'a, B: Builder> {
     /// The allocation of each register's object, when its state is `Obj`.
     pvars: Vec<B::Var>,
     /// The registers that hold array elements borrowed from their arrays
-    /// (`ArrayGetReg`'s `borrow`): read without a count, never released,
-    /// and counted only when the interpreter takes over (`deopt`).
+    /// (`ArrayGetReg`'s `borrow`): read without a count and never
+    /// released.
     borrowed: Vec<bool>,
     /// Whether a lazily pushed activation has been built.
     pushed_var: B::Var,
     lazy_act: bool,
-    sites: &'a mut Sites,
     /// The typed entries this function calls directly.
     callees_typed: HashMap<FuncId, B::Func>,
     /// This body's own typed entry, when compiling it as such, and its
@@ -1198,7 +1167,7 @@ struct Gen<'a, B: Builder> {
     typed: Option<unbox::TypedSig>,
     typed_params: Vec<B::Value>,
     /// A typed entry's `self` (the caller's value) and the slots its
-    /// parameters are boxed into when the interpreter needs them.
+    /// parameters are boxed into when the runtime needs them.
     typed_self_ptr: Option<B::Value>,
     typed_params_buf: Option<B::Value>,
     /// Where a typed `return` of the declared type leaves (the bits).
@@ -1932,7 +1901,7 @@ impl<B: Builder> Gen<'_, B> {
 
     /// The unboxed value of `r`, statically an Int or a Float: from its
     /// variable when the state says so, else from memory after a tag
-    /// check that fails into the interpreter.
+    /// check (one that fails is a compiler bug: `unsound`).
     fn get_num(&mut self, r: Reg, n: Num, block: u32, index: u32) -> B::Value {
         let st = self.states[r as usize];
         match (n, st) {
@@ -2484,8 +2453,8 @@ impl<B: Builder> Gen<'_, B> {
     /// A direct call through the callee's typed entry: the arguments as
     /// machine values (checked when their state does not say), the
     /// result straight into `dst`'s variable; the boxed protocol when an
-    /// argument is not of its declared type (a BigInt), and the
-    /// interpreter when the result is not (`STATUS_BOXED`).
+    /// argument is not of its declared type, and a check of a result
+    /// that comes back boxed (`STATUS_BOXED`).
     #[allow(clippy::too_many_arguments)]
     fn typed_call(
         &mut self,
@@ -2597,8 +2566,8 @@ impl<B: Builder> Gen<'_, B> {
         }
         self.drop_lent(inst, args, sig);
         self.b.jump(cont, &[]);
-        // Not the declared type: the boxed value goes to the register's
-        // home and the interpreter takes over after the call.
+        // A boxed result: the value goes to the register's home and is
+        // checked there.
         self.b.switch_to_block(not_ok_b);
         let zero32 = self.b.iconst(Ty::I32, 0);
         self.b.store(zero32, self.rt, L::HOT_TYPED_STATUS as i32);
@@ -2686,8 +2655,8 @@ impl<B: Builder> Gen<'_, B> {
         self.store_tag(r, TAG_NIL);
     }
 
-    /// In a typed entry, give the activation what the runtime or the
-    /// interpreter may read from it: `self` (cloned once; its slot is
+    /// In a typed entry, give the activation what the runtime may read
+    /// from it: `self` (cloned once; its slot is
     /// nil until then) and the parameters, boxed.
     fn materialize(&mut self) {
         let (Some(self_ptr), Some(params_buf)) = (self.typed_self_ptr, self.typed_params_buf)
@@ -2786,26 +2755,365 @@ impl<B: Builder> Gen<'_, B> {
     }
 
     /// Delegate the instruction to the runtime and check its status.
-    fn exec(&mut self, block: u32, inst: u32, unwind: B::Block) {
-        let entry = self.h.exec;
-        self.exec_via(entry, block, inst, unwind);
+    /// Have the runtime do instruction `index` of `block` (`inst`), through
+    /// its entry for the kind (`OPS`), its operands passed as arguments
+    /// and data. `dead`: an append to a builder whose result is not read.
+    fn exec(&mut self, block: u32, index: u32, unwind: B::Block) {
+        let inst = self.f.blocks[block as usize].insts[index as usize].clone();
+        self.emit_op(&inst, block, index, false, unwind);
     }
 
-    /// Delegate the instruction to a runtime entry with `qz_exec`'s
-    /// signature (a dedicated one for some instructions).
-    fn exec_via(&mut self, entry: B::Func, block: u32, inst: u32, unwind: B::Block) {
-        self.materialize();
-        // Its position in the stripped function (a flag bit kept).
-        let flag = inst & L::INTERP_RESULT_DEAD;
-        let site = self.sites.inst(block, inst & !L::INTERP_RESULT_DEAD) | flag;
-        let fid = self.b.iconst(Ty::I32, i64::from(self.fid));
-        let blk = self.b.iconst(Ty::I32, 0);
-        let i = self.b.iconst(Ty::I32, i64::from(site));
-        let call = self
-            .b
-            .call(entry, &[self.rt, self.act, fid, blk, i, self.regs]);
-        let status = call[0];
+    fn emit_op(&mut self, inst: &Inst, block: u32, index: u32, dead: bool, unwind: B::Block) {
+        let w = |g: &mut Self, v: u32| g.b.iconst(Ty::I32, i64::from(v));
+        let opt = |r: Option<u32>| r.unwrap_or(u32::MAX);
+        let (name, extra): (&str, Vec<B::Value>) = match inst {
+            Inst::LoadConst { dst, idx } => {
+                ("qz_op_load_const", vec![w(self, *dst), w(self, *idx)])
+            }
+            Inst::HasArg { dst, index } => ("qz_op_has_arg", vec![w(self, *dst), w(self, *index)]),
+            Inst::FieldGetByName {
+                dst,
+                found,
+                obj,
+                name,
+            } => (
+                "qz_op_field_get_by_name",
+                vec![
+                    w(self, *dst),
+                    w(self, *found),
+                    w(self, *obj),
+                    w(self, *name),
+                ],
+            ),
+            Inst::ConstGet { dst, id } => ("qz_op_const_get", vec![w(self, *dst), w(self, *id)]),
+            Inst::VariantSingleton { dst, class } => (
+                "qz_op_variant_singleton",
+                vec![w(self, *dst), w(self, *class)],
+            ),
+            Inst::Call {
+                dst,
+                kind,
+                recv,
+                args,
+                splat,
+                kw,
+                kw_splat,
+                block: blk,
+                moved,
+            } => {
+                let (tag, a, b2, name): (u32, u32, u32, &str) = match kind {
+                    CallKind::Method(m) => (0, *m, 0, ""),
+                    CallKind::Send(n) => (1, 0, 0, n),
+                    CallKind::Construct { class, init } => (2, *class, opt(*init), ""),
+                    CallKind::ConstructRecv { class, init } => (3, *class, opt(*init), ""),
+                    CallKind::ProcCall => (4, 0, 0, ""),
+                    CallKind::Yield => (5, 0, 0, ""),
+                    CallKind::Super(m) => (6, *m, 0, ""),
+                    CallKind::Raise => (7, 0, 0, ""),
+                };
+                let mut desc = vec![
+                    *dst,
+                    tag,
+                    a,
+                    b2,
+                    opt(*recv),
+                    u32::from(*splat),
+                    opt(*kw_splat),
+                    opt(*blk),
+                    u32::from(*moved),
+                    args.len() as u32,
+                    kw.len() as u32,
+                ];
+                desc.extend(args.iter().copied());
+                for (k, r) in kw {
+                    desc.extend([*k, *r]);
+                }
+                let d = self.b.data_words(&desc);
+                let n = self.b.data_bytes(name.as_bytes());
+                let len = w(self, name.len() as u32);
+                ("qz_op_call", vec![d, n, len])
+            }
+            Inst::OwnedCall {
+                dst,
+                method,
+                recv,
+                args,
+                kw,
+                unused,
+            } => {
+                let (kind, a, b2) = match recv {
+                    VarLoc::Reg(r) => (0, *r, 0),
+                    VarLoc::Frame { depth, slot } => (1, *depth, *slot),
+                    VarLoc::Field { obj, index } => (2, *obj, *index),
+                };
+                let mut desc = vec![
+                    *dst,
+                    *method,
+                    kind,
+                    a,
+                    b2,
+                    u32::from(*unused),
+                    args.len() as u32,
+                    kw.len() as u32,
+                ];
+                desc.extend(args.iter().copied());
+                for (k, r) in kw {
+                    desc.extend([*k, *r]);
+                }
+                let d = self.b.data_words(&desc);
+                ("qz_op_owned_call", vec![d])
+            }
+            Inst::BinOp {
+                dst,
+                op,
+                lhs,
+                rhs,
+                method,
+            } => (
+                "qz_op_binop",
+                vec![
+                    w(self, *dst),
+                    w(self, op.index()),
+                    w(self, *lhs),
+                    w(self, *rhs),
+                    w(self, opt(*method)),
+                ],
+            ),
+            Inst::CaseEq {
+                dst,
+                pattern,
+                value,
+            } => (
+                "qz_op_case_eq",
+                vec![w(self, *dst), w(self, *pattern), w(self, *value)],
+            ),
+            Inst::Equal { dst, a, b: b2 } => (
+                "qz_op_equal",
+                vec![w(self, *dst), w(self, *a), w(self, *b2)],
+            ),
+            Inst::ClassIsA { dst, src, class } => (
+                "qz_op_class_is_a",
+                vec![w(self, *dst), w(self, *src), w(self, *class)],
+            ),
+            Inst::IsA { dst, src, ty } => {
+                let mut words = Vec::new();
+                quarz_vm::ffi_ops::encode_type(ty, &mut words);
+                let t = self.b.data_words(&words);
+                let n = w(self, words.len() as u32);
+                let cell = self.b.data_cell();
+                ("qz_op_is_a", vec![w(self, *dst), w(self, *src), t, n, cell])
+            }
+            Inst::As {
+                dst,
+                src,
+                ty,
+                optional,
+                name,
+            } => {
+                let mut words = Vec::new();
+                quarz_vm::ffi_ops::encode_type(ty, &mut words);
+                let t = self.b.data_words(&words);
+                let n = w(self, words.len() as u32);
+                let cell = self.b.data_cell();
+                let nm = self.b.data_bytes(name.as_bytes());
+                let len = w(self, name.len() as u32);
+                let o = w(self, u32::from(*optional));
+                (
+                    "qz_op_as",
+                    vec![w(self, *dst), w(self, *src), t, n, cell, o, nm, len],
+                )
+            }
+            Inst::MakeBlock {
+                dst,
+                func,
+                destructure,
+                is_lambda,
+            } => (
+                "qz_op_make_block",
+                vec![
+                    w(self, *dst),
+                    w(self, *func),
+                    w(self, opt(*destructure)),
+                    w(self, u32::from(*is_lambda)),
+                ],
+            ),
+            Inst::MethodRef { dst, recv, name } => (
+                "qz_op_method_ref",
+                vec![w(self, *dst), w(self, *recv), w(self, *name)],
+            ),
+            Inst::SymbolProc { dst, name, method } => (
+                "qz_op_symbol_proc",
+                vec![w(self, *dst), w(self, *name), w(self, opt(*method))],
+            ),
+            Inst::MakeArray { dst, items } => {
+                let words: Vec<u32> = items
+                    .iter()
+                    .flat_map(|i| [i.reg, u32::from(i.splat)])
+                    .collect();
+                let d = self.b.data_words(&words);
+                (
+                    "qz_op_make_array",
+                    vec![w(self, *dst), d, w(self, items.len() as u32)],
+                )
+            }
+            Inst::MakeHash { dst, items } => {
+                let words: Vec<u32> = items
+                    .iter()
+                    .flat_map(|i| match i {
+                        HashItem::Pair(k, v) => [0, *k, *v],
+                        HashItem::Splat(h) => [1, *h, 0],
+                    })
+                    .collect();
+                let d = self.b.data_words(&words);
+                (
+                    "qz_op_make_hash",
+                    vec![w(self, *dst), d, w(self, items.len() as u32)],
+                )
+            }
+            Inst::MakeRange {
+                dst,
+                lo,
+                hi,
+                exclusive,
+            } => (
+                "qz_op_make_range",
+                vec![
+                    w(self, *dst),
+                    w(self, opt(*lo)),
+                    w(self, opt(*hi)),
+                    w(self, u32::from(*exclusive)),
+                ],
+            ),
+            Inst::MakeRegexp { dst, source, flags } => {
+                let fl = self.b.data_bytes(flags.as_bytes());
+                (
+                    "qz_op_make_regexp",
+                    vec![
+                        w(self, *dst),
+                        w(self, *source),
+                        fl,
+                        w(self, flags.len() as u32),
+                    ],
+                )
+            }
+            Inst::Interpolate { dst, parts, into } => {
+                let words: Vec<u32> = parts
+                    .iter()
+                    .flat_map(|p| match p {
+                        StrPiece::Lit(c) => [0, *c],
+                        StrPiece::Val(r) => [1, *r],
+                    })
+                    .collect();
+                let d = self.b.data_words(&words);
+                (
+                    "qz_op_interpolate",
+                    vec![
+                        w(self, *dst),
+                        d,
+                        w(self, parts.len() as u32),
+                        w(self, opt(*into)),
+                        w(self, u32::from(dead)),
+                    ],
+                )
+            }
+            Inst::ToSym { dst, src } => ("qz_op_to_sym", vec![w(self, *dst), w(self, *src)]),
+            Inst::IsArray { dst, src } => ("qz_op_is_array", vec![w(self, *dst), w(self, *src)]),
+            Inst::IsHash { dst, src } => ("qz_op_is_hash", vec![w(self, *dst), w(self, *src)]),
+            Inst::IsObject { dst, src } => ("qz_op_is_object", vec![w(self, *dst), w(self, *src)]),
+            Inst::ToArray { dst, src } => ("qz_op_to_array", vec![w(self, *dst), w(self, *src)]),
+            Inst::Len { dst, src } => ("qz_op_len", vec![w(self, *dst), w(self, *src)]),
+            Inst::ObjectFields { dst, src } => {
+                ("qz_op_object_fields", vec![w(self, *dst), w(self, *src)])
+            }
+            Inst::ArrayGet { dst, arr, index } => (
+                "qz_op_array_get",
+                vec![w(self, *dst), w(self, *arr), w(self, *index as u32)],
+            ),
+            Inst::ArrayGetReg {
+                dst, arr, index, ..
+            } => (
+                "qz_op_array_get_reg",
+                vec![w(self, *dst), w(self, *arr), w(self, *index)],
+            ),
+            Inst::ArraySlice {
+                dst,
+                arr,
+                from,
+                drop_last,
+            } => (
+                "qz_op_array_slice",
+                vec![
+                    w(self, *dst),
+                    w(self, *arr),
+                    w(self, *from),
+                    w(self, *drop_last),
+                ],
+            ),
+            Inst::ArraySliceReg { dst, arr, from, to } => (
+                "qz_op_array_slice_reg",
+                vec![w(self, *dst), w(self, *arr), w(self, *from), w(self, *to)],
+            ),
+            Inst::HashGetSym {
+                dst,
+                found,
+                hash,
+                key,
+            } => (
+                "qz_op_hash_get_sym",
+                vec![
+                    w(self, *dst),
+                    w(self, *found),
+                    w(self, *hash),
+                    w(self, *key),
+                ],
+            ),
+            Inst::ArrayPush { arr, src } => {
+                ("qz_op_array_push", vec![w(self, *arr), w(self, *src)])
+            }
+            Inst::HashRest { dst, hash, keys } => {
+                let d = self.b.data_words(keys);
+                (
+                    "qz_op_hash_rest",
+                    vec![w(self, *dst), w(self, *hash), d, w(self, keys.len() as u32)],
+                )
+            }
+            Inst::CatchException { dst } => ("qz_op_catch_exception", vec![w(self, *dst)]),
+            Inst::CatchAny { dst } => ("qz_op_catch_any", vec![w(self, *dst)]),
+            Inst::NoMatch { src, is_assert } => (
+                "qz_op_no_match",
+                vec![w(self, *src), w(self, u32::from(*is_assert))],
+            ),
+            other => unreachable!("compiled code does {other:?} inline"),
+        };
+        self.call_op(name, block, index, &extra, unwind);
+    }
+
+    /// Call the runtime's entry `name` for instruction `index` of `block`
+    /// with the operands `extra`, then go on or unwind.
+    fn call_op(
+        &mut self,
+        name: &str,
+        block: u32,
+        index: u32,
+        extra: &[B::Value],
+        unwind: B::Block,
+    ) {
+        let status = self.op_status(name, block, index, extra);
         self.check(status, unwind);
+    }
+
+    /// Call the runtime's entry `name` as `call_op` does, returning the
+    /// status.
+    fn op_status(&mut self, name: &str, block: u32, index: u32, extra: &[B::Value]) -> B::Value {
+        self.materialize();
+        let entry = self.h.ops[op_index(name)];
+        let fid = self.b.iconst(Ty::I32, i64::from(self.fid));
+        let line = self
+            .b
+            .iconst(Ty::I32, i64::from(self.line_at(block, index)));
+        let mut args = vec![self.rt, self.act, fid, line, self.regs];
+        args.extend_from_slice(extra);
+        self.b.call(entry, &args)[0]
     }
 
     fn inst(&mut self, block: u32, index: u32, inst: &Inst, unwind: B::Block) {
@@ -3427,16 +3735,10 @@ impl<B: Builder> Gen<'_, B> {
             }
             Inst::Interpolate { dst, into, .. } => {
                 // Appending to a builder whose result is not read: the
-                // runtime is told not to store it (`INTERP_RESULT_DEAD`).
+                // runtime is told not to store it.
                 let dead =
                     into.is_some() && !self.live[block as usize][index as usize + 1][*dst as usize];
-                let entry = self.h.interpolate;
-                let i = if dead {
-                    index | L::INTERP_RESULT_DEAD
-                } else {
-                    index
-                };
-                self.exec_via(entry, block, i, unwind);
+                self.emit_op(inst, block, index, dead, unwind);
             }
             Inst::ClearRegs { from, to } => {
                 // A register that may hold a heap value is released and

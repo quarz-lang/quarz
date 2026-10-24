@@ -9,7 +9,7 @@ use crate::sched::{
     lock, ChannelInner, ChannelState, ScopeInner, SelectorState, TaskHandle, TaskRef,
 };
 use crate::value::*;
-use quarz_ir::{FuncId, Inst, VarLoc};
+use quarz_ir::FuncId;
 use smallvec::smallvec;
 
 use super::{block, int};
@@ -40,20 +40,11 @@ pub(crate) fn captured_slots(interp: &Interp, fid: FuncId) -> std::rc::Rc<Vec<Ve
                 }
             }
         };
-        for b in &func.blocks {
-            for inst in &b.insts {
-                match inst {
-                    Inst::FrameGet { depth, slot, .. } | Inst::FrameSet { depth, slot, .. } => {
-                        note(*depth, *slot)
-                    }
-                    Inst::OwnedCall {
-                        recv: VarLoc::Frame { depth, slot },
-                        ..
-                    } => note(*depth, *slot),
-                    Inst::MakeBlock { func: g, .. } => work.push((*g, skip + own)),
-                    _ => {}
-                }
-            }
+        for &(depth, slot) in &func.facts.uses {
+            note(depth, slot);
+        }
+        for &g in &func.facts.blocks {
+            work.push((g, skip + own));
         }
     }
     let c = std::rc::Rc::new(out);

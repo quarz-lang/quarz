@@ -87,10 +87,33 @@ pub struct Function {
     /// line `INLINE_LINE_FLAG | i` refers to `inlined[i]`.
     #[serde(default)]
     pub inlined: Vec<InlineOrigin>,
-    /// Only what compiled code hands the runtime is left of the body (an
-    /// executable's copy: see `quarz_aot`'s `Sites`): never interpreted.
-    #[serde(default)]
-    pub stripped: bool,
+}
+
+/// A function without its body (`Function::split`): what the runtime
+/// keeps of every function, and all a compiled program carries of one.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FuncInfo {
+    pub name: String,
+    pub kind: FuncKind,
+    pub file: u32,
+    pub nregs: u32,
+    pub frame_size: u32,
+    pub param_kinds: Vec<RtParamKind>,
+    pub arity: i32,
+    pub consts: Vec<Constant>,
+    pub inlined: Vec<InlineOrigin>,
+    /// What its body does with frames.
+    pub facts: FrameFacts,
+}
+
+/// What the body of a function does with frames, which the runtime
+/// looks at to know what a spawned block reads.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FrameFacts {
+    /// The frame slots (depth, slot) it reads or writes, in order.
+    pub uses: Vec<(u32, u32)>,
+    /// The functions of the blocks it creates.
+    pub blocks: Vec<FuncId>,
 }
 
 /// The bit that marks a line number as an index into `Function::inlined`.
@@ -119,8 +142,47 @@ impl Function {
             consts: Vec::new(),
             blocks: Vec::new(),
             inlined: Vec::new(),
-            stripped: false,
         }
+    }
+
+    /// What its body does with frames.
+    pub fn frame_facts(&self) -> FrameFacts {
+        let mut facts = FrameFacts::default();
+        for inst in self.blocks.iter().flat_map(|b| &b.insts) {
+            match inst {
+                Inst::FrameGet { depth, slot, .. }
+                | Inst::FrameSet { depth, slot, .. }
+                | Inst::OwnedCall {
+                    recv: VarLoc::Frame { depth, slot },
+                    ..
+                } => facts.uses.push((*depth, *slot)),
+                Inst::MakeBlock { func, .. } => facts.blocks.push(*func),
+                _ => {}
+            }
+        }
+        facts.uses.sort_unstable();
+        facts.uses.dedup();
+        facts.blocks.sort_unstable();
+        facts.blocks.dedup();
+        facts
+    }
+
+    /// Its body apart.
+    pub fn split(self) -> (FuncInfo, Vec<Block>) {
+        let facts = self.frame_facts();
+        let info = FuncInfo {
+            name: self.name,
+            kind: self.kind,
+            file: self.file,
+            nregs: self.nregs,
+            frame_size: self.frame_size,
+            param_kinds: self.param_kinds,
+            arity: self.arity,
+            consts: self.consts,
+            inlined: self.inlined,
+            facts,
+        };
+        (info, self.blocks)
     }
 }
 
@@ -253,6 +315,30 @@ pub enum FastOp {
 }
 
 impl FastOp {
+    const ALL: [FastOp; 12] = [
+        FastOp::Add,
+        FastOp::Sub,
+        FastOp::Mul,
+        FastOp::Div,
+        FastOp::Mod,
+        FastOp::Lt,
+        FastOp::Le,
+        FastOp::Gt,
+        FastOp::Ge,
+        FastOp::Eq,
+        FastOp::Ne,
+        FastOp::Cmp,
+    ];
+
+    /// Its number, as compiled code passes it to the runtime.
+    pub fn index(self) -> u32 {
+        Self::ALL.iter().position(|o| *o == self).unwrap_or(0) as u32
+    }
+
+    pub fn from_index(i: u32) -> FastOp {
+        Self::ALL.get(i as usize).copied().unwrap_or(FastOp::Add)
+    }
+
     pub fn from_name(name: &str) -> Option<FastOp> {
         Some(match name {
             "+" => FastOp::Add,
@@ -1388,6 +1474,38 @@ impl Droppable for Function {
     }
 }
 
+impl Droppable for FuncInfo {
+    fn is_dropped(&self) -> bool {
+        self.name.is_empty()
+    }
+
+    fn dropped() -> Self {
+        // As `shake::empty_function`'s, without building a body.
+        FuncInfo {
+            name: String::new(),
+            kind: FuncKind::TopLevel,
+            file: 0,
+            nregs: 1,
+            frame_size: 0,
+            param_kinds: Vec::new(),
+            arity: 0,
+            consts: Vec::new(),
+            inlined: Vec::new(),
+            facts: FrameFacts::default(),
+        }
+    }
+}
+
+/// What a compiled program carries of its module: the functions without
+/// their bodies (its machine code runs them), the methods apart.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Image {
+    pub world: RtWorld,
+    #[serde(with = "dropped")]
+    pub functions: Vec<FuncInfo>,
+    pub units: Vec<Unit>,
+}
+
 mod dropped {
     use super::Droppable;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -1422,6 +1540,16 @@ fn bincode_config() -> impl bincode::config::Config {
 
 pub fn encode(module: &Module) -> Vec<u8> {
     bincode::serde::encode_to_vec(module, bincode_config()).expect("serializing QIR")
+}
+
+pub fn encode_image(image: &Image) -> Vec<u8> {
+    bincode::serde::encode_to_vec(image, bincode_config()).expect("serializing a program")
+}
+
+pub fn decode_image(bytes: &[u8]) -> Result<Image, String> {
+    bincode::serde::decode_from_slice(bytes, bincode_config())
+        .map(|(image, _)| image)
+        .map_err(|e| e.to_string())
 }
 
 pub fn decode(bytes: &[u8]) -> Result<Module, String> {

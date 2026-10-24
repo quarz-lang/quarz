@@ -14,8 +14,8 @@ use std::time::Duration;
 
 use quarz_ir::INLINE_LINE_FLAG;
 use quarz_ir::{
-    ClassId, Constant, FuncId, Function, MethodId, RtClassKind, RtMethod, RtParamKind, RtSynth,
-    RtType, RtWorld, Unit,
+    ClassId, Constant, FuncId, FuncInfo, Function, MethodId, RtClassKind, RtMethod, RtParamKind,
+    RtSynth, RtType, RtWorld, Unit,
 };
 
 pub use quarz_ir::FastOp;
@@ -245,11 +245,14 @@ pub struct SharedState {
     pub next_tag: Rc<Cell<u64>>,
     pub repl_frame: Option<Rc<Frame>>,
     /// Every function loaded so far, by id (append-only).
-    pub funcs: Rc<RefCell<Vec<Rc<Function>>>>,
+    pub funcs: Rc<RefCell<Vec<Rc<FuncInfo>>>>,
     /// Materialized constant pools, by function id.
     pub pools: Pools,
     /// Machine-code bodies, by function id (`None` = interpret).
     pub compiled: Rc<RefCell<Vec<Option<CompiledFn>>>>,
+    /// The functions' bodies, for the interpreter (`vm::BodyTable`), kept
+    /// opaque: a compiled program has none and links no code for them.
+    pub bodies: std::rc::Rc<std::cell::OnceCell<std::rc::Rc<dyn std::any::Any>>>,
 }
 
 impl SharedState {
@@ -277,6 +280,7 @@ impl SharedState {
             funcs: Rc::new(RefCell::new(Vec::new())),
             pools: Rc::new(RefCell::new(Vec::new())),
             compiled: Rc::new(RefCell::new(Vec::new())),
+            bodies: std::rc::Rc::new(std::cell::OnceCell::new()),
         }
     }
 }
@@ -582,7 +586,8 @@ pub struct Interp {
     unit_selfs: Vec<Value>,
     /// The frame of the REPL's top level, kept across inputs.
     pub repl_frame: Option<Rc<Frame>>,
-    pub funcs: Rc<RefCell<Vec<Rc<Function>>>>,
+    pub funcs: Rc<RefCell<Vec<Rc<FuncInfo>>>>,
+    pub bodies: std::rc::Rc<std::cell::OnceCell<std::rc::Rc<dyn std::any::Any>>>,
     pub pools: Pools,
     pub compiled: Rc<RefCell<Vec<Option<CompiledFn>>>>,
     pub global: std::sync::Arc<Global>,
@@ -660,7 +665,11 @@ impl Interp {
         argv: Vec<String>,
         state: SharedState,
     ) -> std::rc::Rc<Interp> {
-        Interp::with_state_lazy(world, base, functions, units, argv, state, None)
+        Interp::install_interpreter();
+        let (infos, bodies): (Vec<FuncInfo>, Vec<Vec<quarz_ir::Block>>) =
+            functions.into_iter().map(Function::split).unzip();
+        crate::vm::load_bodies(&state, base, bodies);
+        Interp::with_state_lazy(world, base, infos, units, argv, state, None)
     }
 
     /// `with_state` for a compiled program, whose methods (`world`'s are
@@ -668,7 +677,7 @@ impl Interp {
     pub fn with_state_lazy(
         world: RtWorld,
         base: FuncId,
-        functions: Vec<Function>,
+        functions: Vec<FuncInfo>,
         units: Vec<Unit>,
         argv: Vec<String>,
         state: SharedState,
@@ -855,6 +864,7 @@ impl Interp {
             unit_selfs,
             repl_frame,
             funcs: state.funcs,
+            bodies: state.bodies,
             pools: state.pools,
             compiled: state.compiled,
             global: state.global,
@@ -1044,6 +1054,7 @@ impl Interp {
             funcs: self.funcs.clone(),
             pools: self.pools.clone(),
             compiled: self.compiled.clone(),
+            bodies: self.bodies.clone(),
         }
     }
 
@@ -1245,15 +1256,7 @@ impl Interp {
         native_bt: bool,
     ) {
         let state = SharedState::for_worker(global, w);
-        let interp = Interp::with_state_lazy(
-            image.world.clone(),
-            0,
-            image.functions.clone(),
-            image.units.clone(),
-            argv,
-            state,
-            image.lazy.clone(),
-        );
+        let interp = image.load(argv, state);
         interp.native_bt.set(native_bt);
         {
             let mut compiled = interp.compiled.borrow_mut();

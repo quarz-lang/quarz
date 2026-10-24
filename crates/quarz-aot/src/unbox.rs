@@ -8,8 +8,8 @@
 //! release of the old value. The knowledge comes from constants, from the
 //! overload the lowering recorded for an operator (`Int#+(Int)` says both
 //! operands are Ints: an operand whose state is unknown is checked once
-//! at run time, and the function falls back to the interpreter if the
-//! check fails), and from copies. A forward dataflow analysis over the
+//! at run time, and a check that fails, which the static types rule out,
+//! raises an internal error), and from copies. A forward dataflow analysis over the
 //! basic blocks gives the state at each block's entry; the generator then
 //! tracks it instruction by instruction with the same transfer function.
 
@@ -400,7 +400,7 @@ pub fn transfer(
     }
     match inst {
         // A call through a typed entry leaves its result unboxed (the
-        // caller falls back to the interpreter when it does not fit).
+        // caller checks a result that comes back boxed).
         Inst::Call { dst, .. } if call_num(inst, methods, typed).is_some() => {
             st[*dst as usize] = call_num(inst, methods, typed).map_or(State::Unknown, Mach::state);
         }
@@ -415,7 +415,7 @@ pub fn transfer(
         Inst::Release { src } => st[*src as usize] = State::NonHeap,
         Inst::ClassRef { dst, .. } => st[*dst as usize] = State::NonHeap,
         // A parameter or field of a numeric type is checked once and
-        // then known (the check fails into the interpreter).
+        // then known (a check that fails raises an internal error).
         Inst::Arg { dst, index } => {
             st[*dst as usize] = match param_num(f, methods, *index) {
                 Some(n) => num_state(n),
@@ -491,7 +491,7 @@ pub fn transfer(
         | Inst::ClassIs { dst, .. }
         | Inst::IsA { dst, .. } => st[*dst as usize] = State::Bool,
         // A length is always a machine-word Int, and the receiver an
-        // array after it (one that is not goes to the interpreter).
+        // array after it (the runtime does the others).
         Inst::Len { dst, src } => {
             if src != dst {
                 st[*src as usize] = State::Arr;
@@ -654,8 +654,7 @@ pub fn class_tested(blk: &Block, cond: Reg) -> Option<Reg> {
 /// whose code only computes on unboxed registers (numbers, comparisons,
 /// copies, branches, a `return` of the declared type), entered only
 /// from such blocks, starting with the entry block. Leaving the region
-/// sets the frame up (on the edge, or before handing over to the
-/// interpreter), so a call that returns at once never touches its frame.
+/// sets the frame up (on the edge, or before a runtime call), so a call that returns at once never touches its frame.
 #[allow(clippy::too_many_arguments)]
 pub fn pure_region(
     f: &Function,
