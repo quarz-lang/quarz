@@ -5464,6 +5464,23 @@ impl Checker {
                             }
                             return Err(msg);
                         };
+                        // As Ruby's `Symbol#to_proc`, only a public method.
+                        let visibility = self.world.method(mid).visibility;
+                        if visibility != Visibility::Public {
+                            let msg = format!(
+                                "`{name}` is {} for {}: `&:{name}` calls only public methods",
+                                if visibility == Visibility::Private {
+                                    "private"
+                                } else {
+                                    "protected"
+                                },
+                                self.name(&recv)
+                            );
+                            if report {
+                                self.error(msg.clone(), e.span);
+                            }
+                            return Err(msg);
+                        }
                         let mut msubst = msubst;
                         msubst.insert(SELF_PARAM, recv.clone());
                         let r = self.method_ret(mid, e.span).subst(&msubst);

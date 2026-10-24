@@ -835,6 +835,16 @@ fn reraise_block_params_narrowing() {
     ok("begin\n  raise \"x\"\nrescue ArgumentError\n  raise\nend");
     ok("begin\n  raise \"x\"\nrescue => e\n  [1].each { |x| raise }\nend");
     err("raise", "a bare `raise` re-raises only inside `rescue`");
+    err(
+        "class A\n  private def f -> Int = 1\nend\np [A.new].map(&:f)",
+        "`f` is private for A: `&:f` calls only public methods",
+    );
+    err(
+        "class A\n  protected def f -> Int = 1\n  def g(xs: Array[A]) -> Array[Int] = xs.map(&:f)\nend",
+        "`f` is protected for A: `&:f` calls only public methods",
+    );
+    err("[1].each(&:puts)", "`puts` is private");
+    err("1.puts", "`puts` is private");
     warns(
         "xs = [1]\nxs.push(2)\np xs",
         "the result of `push` is discarded; Array is immutable",

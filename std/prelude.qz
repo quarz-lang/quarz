@@ -1820,6 +1820,9 @@ module Math
 end
 
 module Kernel
+  # Functions, called without a receiver (as in Ruby).
+  private
+
   native def puts(*args: Object) -> Nil
   native def print(*args: Object) -> Nil
   native def p[T](value: T) -> T
