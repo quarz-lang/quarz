@@ -87,6 +87,10 @@ pub struct Function {
     /// line `INLINE_LINE_FLAG | i` refers to `inlined[i]`.
     #[serde(default)]
     pub inlined: Vec<InlineOrigin>,
+    /// Only what compiled code hands the runtime is left of the body (an
+    /// executable's copy: see `quarz_aot`'s `Sites`): never interpreted.
+    #[serde(default)]
+    pub stripped: bool,
 }
 
 /// The bit that marks a line number as an index into `Function::inlined`.
@@ -115,6 +119,7 @@ impl Function {
             consts: Vec::new(),
             blocks: Vec::new(),
             inlined: Vec::new(),
+            stripped: false,
         }
     }
 }

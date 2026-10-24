@@ -528,6 +528,9 @@ impl Interp {
         block: BlockId,
         start: usize,
     ) -> EvalResult {
+        // An executable's function keeps only what its machine code hands
+        // the runtime: it never comes here.
+        assert!(!f.stripped, "{} has no body to interpret", f.name);
         let mut block = block;
         let mut start = start;
         'blocks: loop {

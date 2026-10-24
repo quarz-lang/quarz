@@ -205,6 +205,7 @@ pub fn empty_function(name: String, kind: FuncKind, file: u32, arity: i32) -> Fu
             handler: None,
         }],
         inlined: Vec::new(),
+        stripped: false,
     }
 }
 

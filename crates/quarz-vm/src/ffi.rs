@@ -469,19 +469,12 @@ pub unsafe extern "C" fn qz_raise(
     act: *const Activation,
     kind: u32,
     fid: u32,
-    block: u32,
-    inst: u32,
+    line: u32,
 ) -> u32 {
     let rt = &*rt;
     // Where it is raised, as `qz_exec` records it (the backtrace finds
     // the inlined callees from it).
-    if let Some(line) = rt.funcs.borrow()[fid as usize]
-        .blocks
-        .get(block as usize)
-        .and_then(|b| b.lines.get(inst as usize))
-    {
-        (*act).line.set(*line);
-    }
+    (*act).line.set(line);
     let flow = match kind {
         crate::layout::RAISE_OVERFLOW => rt.err_overflow(),
         crate::layout::RAISE_ZERO_DIVISION => {
@@ -490,7 +483,7 @@ pub unsafe extern "C" fn qz_raise(
         _ => {
             let name = rt.funcs.borrow()[fid as usize].name.clone();
             rt.err_type(&format!(
-                "internal error: a value not of its static type in {name} (b{block}.{inst})"
+                "internal error: a value not of its static type in {name}"
             ))
         }
     };

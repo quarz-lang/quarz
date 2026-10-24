@@ -1004,7 +1004,7 @@ fn emit(module: &Module, opaque: bool) -> Result<String, String> {
             interpolate: declare("qz_interpolate", &[p, p, i32_, i32_, i32_, p], &[i32_]),
             field_get: declare("qz_field_get", &[p, p, i32_, i32_, i32_], &[i32_]),
             field_set: declare("qz_field_set", &[p, p, i32_, i32_, i32_], &[i32_]),
-            raise: declare("qz_raise", &[p, p, i32_, i32_, i32_, i32_], &[i32_]),
+            raise: declare("qz_raise", &[p, p, i32_, i32_, i32_], &[i32_]),
             enter_virtual: declare(
                 "qz_enter_virtual",
                 &[p, p, p, i32_, p, i32_, p, i32_, i32_, i64_, p, i32_],
@@ -1114,6 +1114,12 @@ fn emit(module: &Module, opaque: bool) -> Result<String, String> {
     let mut meta: Vec<String> = Vec::new();
     // !0-!5 describe the unit, !6 and !7 are the branch weights.
     let mut meta_next: u32 = 8;
+    // What each function hands the runtime by position (all its entries).
+    let mut sites: Vec<gen::Sites> = module
+        .functions
+        .iter()
+        .map(|_| gen::Sites::default())
+        .collect();
     let methods = &module.world.methods;
     // A `Release` runs deinitializers only in a program that has some.
     let has_deinit = methods
@@ -1180,6 +1186,7 @@ fn emit(module: &Module, opaque: bool) -> Result<String, String> {
                     body_sig: 0,
                     lazy_act: true,
                     entry_of,
+                    sites: &mut sites[i],
                 },
                 i as FuncId,
                 f,
@@ -1212,8 +1219,13 @@ fn emit(module: &Module, opaque: bool) -> Result<String, String> {
     }
     out.push_str(&text);
 
-    // The serialized module and the table of compiled bodies.
-    let bytes = quarz_ir::encode(module);
+    // The serialized module (each function only as compiled code needs
+    // it at run time) and the table of compiled bodies.
+    let mut kept = module.clone();
+    for (f, s) in kept.functions.iter_mut().zip(&sites) {
+        *f = gen::strip(f, s);
+    }
+    let bytes = quarz_ir::encode(&kept);
     let mut blob = String::with_capacity(bytes.len() * 4);
     for byte in &bytes {
         let _ = write!(blob, "\\{byte:02X}");

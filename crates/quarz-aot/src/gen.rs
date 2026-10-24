@@ -71,6 +71,95 @@ pub(crate) struct Helpers<F> {
     pub hash_put_int: F,
 }
 
+/// What of a function compiled code hands the runtime by position: the
+/// instructions `qz_exec` and `qz_interpolate` run and the terminators
+/// `qz_term` does. The executable keeps only these of the body (`strip`):
+/// compiled code passes their positions there, the instructions in block
+/// 0 and each terminator as a block of its own after it. Shared by the
+/// entries of one function.
+#[derive(Default)]
+pub(crate) struct Sites {
+    insts: Vec<(u32, u32)>,
+    inst_index: HashMap<(u32, u32), u32>,
+    terms: Vec<u32>,
+    term_index: HashMap<u32, u32>,
+}
+
+impl Sites {
+    /// The position in the stripped function of instruction `inst` of
+    /// `block`.
+    fn inst(&mut self, block: u32, inst: u32) -> u32 {
+        let next = self.insts.len() as u32;
+        *self.inst_index.entry((block, inst)).or_insert_with(|| {
+            self.insts.push((block, inst));
+            next
+        })
+    }
+
+    /// The block in the stripped function of `block`'s terminator.
+    fn term(&mut self, block: u32) -> u32 {
+        let next = self.terms.len() as u32 + 1;
+        *self.term_index.entry(block).or_insert_with(|| {
+            self.terms.push(block);
+            next
+        })
+    }
+}
+
+/// `f` as the executable keeps it: its header, constants and inline
+/// origins, the sites compiled code hands the runtime, and the
+/// instructions the runtime's analyses of a block body look at (what a
+/// spawned block reads of its frames).
+pub(crate) fn strip(f: &Function, sites: &Sites) -> Function {
+    let mut out = Function {
+        blocks: Vec::new(),
+        stripped: true,
+        ..f.clone()
+    };
+    let mut first = Block {
+        insts: Vec::new(),
+        lines: Vec::new(),
+        term: Term::Unreachable,
+        term_line: 0,
+        handler: None,
+    };
+    for &(b, i) in &sites.insts {
+        let blk = &f.blocks[b as usize];
+        first.insts.push(blk.insts[i as usize].clone());
+        first.lines.push(blk.lines[i as usize]);
+    }
+    for (bi, blk) in f.blocks.iter().enumerate() {
+        for (ii, inst) in blk.insts.iter().enumerate() {
+            let analysed = matches!(
+                inst,
+                Inst::FrameGet { .. }
+                    | Inst::FrameSet { .. }
+                    | Inst::MakeBlock { .. }
+                    | Inst::OwnedCall {
+                        recv: VarLoc::Frame { .. },
+                        ..
+                    }
+            );
+            if analysed && !sites.inst_index.contains_key(&(bi as u32, ii as u32)) {
+                first.insts.push(inst.clone());
+                first.lines.push(blk.lines[ii]);
+            }
+        }
+    }
+    out.blocks.push(first);
+    for &b in &sites.terms {
+        let blk = &f.blocks[b as usize];
+        out.blocks.push(Block {
+            insts: Vec::new(),
+            lines: Vec::new(),
+            term: blk.term.clone(),
+            term_line: blk.term_line,
+            handler: None,
+        });
+    }
+    out
+}
+
 /// A typed entry's exits: the block a status leaves through, the
 /// address of its `self`, the caller's result slot, and the block a
 /// result of the declared type leaves through (with the bits).
@@ -94,6 +183,8 @@ pub(crate) struct Target<'a, B: Builder> {
     /// A typed entry pushes no activation until something needs one
     /// (the backend walks the native stack for backtraces).
     pub lazy_act: bool,
+    /// What of the function compiled code hands the runtime by position.
+    pub sites: &'a mut Sites,
     /// Generate the *entry* of a typed function rather than its body:
     /// only the part that needs no frame (`unbox::pure_region`), every
     /// way out of it calling this body with the same arguments (the
@@ -171,6 +262,7 @@ pub(crate) fn gen_function<B: Builder>(
         body_sig,
         lazy_act,
         entry_of,
+        sites,
     } = t;
     let drop_value_fn = h.drop_value;
     let finalize_fn = h.finalize;
@@ -480,6 +572,7 @@ pub(crate) fn gen_function<B: Builder>(
         own_out: own_out_slot,
         entry_of,
         entry_params,
+        sites,
     };
     for (i, blk) in f.blocks.iter().enumerate() {
         g.b.switch_to_block(blocks[i]);
@@ -630,7 +723,8 @@ pub(crate) fn gen_function<B: Builder>(
             | Term::Unreachable => {
                 g.materialize();
                 let fid_v = g.b.iconst(Ty::I32, i64::from(fid));
-                let blk_v = g.b.iconst(Ty::I32, i as i64);
+                let site = g.sites.term(i as u32);
+                let blk_v = g.b.iconst(Ty::I32, i64::from(site));
                 let status = g.b.call(g.h.term, &[rt, act, fid_v, blk_v, regs])[0];
                 g.b.jump(unwinds[i], &[status]);
             }
@@ -1096,6 +1190,7 @@ struct Gen<'a, B: Builder> {
     /// Whether a lazily pushed activation has been built.
     pushed_var: B::Var,
     lazy_act: bool,
+    sites: &'a mut Sites,
     /// The typed entries this function calls directly.
     callees_typed: HashMap<FuncId, B::Func>,
     /// This body's own typed entry, when compiling it as such, and its
@@ -1765,17 +1860,28 @@ impl<B: Builder> Gen<'_, B> {
         self.materialize();
         let k = self.b.iconst(Ty::I32, i64::from(kind));
         let fid = self.b.iconst(Ty::I32, i64::from(self.fid));
-        let blk = self.b.iconst(Ty::I32, i64::from(block));
-        let i = self.b.iconst(Ty::I32, i64::from(index));
+        let line = self
+            .b
+            .iconst(Ty::I32, i64::from(self.line_at(block, index)));
         let status = self
             .b
-            .call(self.h.raise, &[self.rt, self.act, k, fid, blk, i])[0];
+            .call(self.h.raise, &[self.rt, self.act, k, fid, line])[0];
         // The status is never OK: what follows is unreachable, and joins
         // nothing (emission goes on in a fresh block).
         self.b.set_cold(unwind);
         self.b.jump(unwind, &[status]);
         let dead = self.b.create_block();
         self.b.switch_to_block(dead);
+    }
+
+    /// The line of instruction `index` of `block` (its terminator's past
+    /// the end).
+    fn line_at(&self, block: u32, index: u32) -> u32 {
+        let blk = &self.f.blocks[block as usize];
+        blk.lines
+            .get(index as usize)
+            .copied()
+            .unwrap_or(blk.term_line)
     }
 
     /// A value not of its static type, which the checker rules out: a
@@ -1790,11 +1896,12 @@ impl<B: Builder> Gen<'_, B> {
         self.materialize();
         let k = self.b.iconst(Ty::I32, i64::from(L::RAISE_UNSOUND));
         let fid = self.b.iconst(Ty::I32, i64::from(self.fid));
-        let blk = self.b.iconst(Ty::I32, i64::from(block));
-        let i = self.b.iconst(Ty::I32, i64::from(index));
+        let line = self
+            .b
+            .iconst(Ty::I32, i64::from(self.line_at(block, index)));
         let status = self
             .b
-            .call(self.h.raise, &[self.rt, self.act, k, fid, blk, i])[0];
+            .call(self.h.raise, &[self.rt, self.act, k, fid, line])[0];
         self.b.jump(self.exit, &[status]);
         let dead = self.b.create_block();
         self.b.switch_to_block(dead);
@@ -2688,9 +2795,12 @@ impl<B: Builder> Gen<'_, B> {
     /// signature (a dedicated one for some instructions).
     fn exec_via(&mut self, entry: B::Func, block: u32, inst: u32, unwind: B::Block) {
         self.materialize();
+        // Its position in the stripped function (a flag bit kept).
+        let flag = inst & L::INTERP_RESULT_DEAD;
+        let site = self.sites.inst(block, inst & !L::INTERP_RESULT_DEAD) | flag;
         let fid = self.b.iconst(Ty::I32, i64::from(self.fid));
-        let blk = self.b.iconst(Ty::I32, i64::from(block));
-        let i = self.b.iconst(Ty::I32, i64::from(inst));
+        let blk = self.b.iconst(Ty::I32, 0);
+        let i = self.b.iconst(Ty::I32, i64::from(site));
         let call = self
             .b
             .call(entry, &[self.rt, self.act, fid, blk, i, self.regs]);
