@@ -574,11 +574,13 @@ pub fn transfer(
             st[*dst as usize] = if *float { State::Float } else { State::Int };
         }
         // So is the array an element is read from.
-        Inst::ArrayGetReg { dst, arr, .. } => {
+        Inst::ArrayGetReg {
+            dst, arr, objects, ..
+        } => {
             if arr != dst {
                 st[*arr as usize] = State::Arr;
             }
-            st[*dst as usize] = State::Unknown;
+            st[*dst as usize] = if *objects { State::Obj } else { State::Unknown };
         }
         _ => {
             for r in defs(inst) {

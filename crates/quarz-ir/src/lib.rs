@@ -660,6 +660,11 @@ pub enum Inst {
         /// `quarz-lower`'s `borrow`). The interpreter copies it.
         #[serde(default)]
         borrow: bool,
+        /// The checker types every element an object (of a class of the
+        /// program, a `data` type or an enum): compiled code takes the
+        /// element's allocation with no tag test.
+        #[serde(default)]
+        objects: bool,
     },
     /// A new empty array storing `Int`s (or `Float`s with `float`) as
     /// machine words, with room for `capacity` (an Int register) of them:

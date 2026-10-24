@@ -1,0 +1,39 @@
+# Loops over arrays whose elements are all objects take each element's
+# allocation with no tag test; arrays typed by a module or Object do not
+# (they may hold built-in values).
+abstract class Shape
+  abstract def area -> Float
+end
+class Sq < Shape
+  @s: Float
+  def initialize(@s: Float); end
+  def area -> Float = @s * @s
+end
+class Circle < Shape
+  @r: Float
+  def initialize(@r: Float); end
+  def area -> Float = 3.0 * @r * @r
+end
+data Point = (x: Int, y: Int)
+enum Light = Red | Green | Rgb(r: Int)
+
+shapes: Array[Shape] = [Sq.new(2.0), Circle.new(1.0), Sq.new(3.0)]
+total = 0.0
+shapes.each { |s| total += s.area }
+p total, shapes.map { |s| s.area }, shapes.select { |s| s.area > 3.5 }.size
+p shapes.count { |s| s.is_a?(Sq) }, shapes.any? { |s| s.area > 8.0 }
+points = [Point.new(1, 2), Point.new(3, 4)]
+p points.map { |pt| pt.x + pt.y }, points.reduce(0) { |a, pt| a + pt.x }
+lights = [Light::Red, Light::Rgb.new(7), Light::Green]
+lights.each_with_index do |l, i|
+  case l
+  in Light::Rgb(r:) then puts "#{i}: rgb #{r}"
+  else puts "#{i}: #{l}"
+  end
+end
+errors = [ArgumentError.new("a"), IOError.new("b")]
+p errors.map { |e| e.message }
+mixed: Array[Comparable[Int]] = [1, 2]
+p mixed.map { |c| c > 1 }
+empty: Array[Shape] = []
+p empty.map { |s| s.area }

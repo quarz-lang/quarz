@@ -2177,6 +2177,30 @@ impl<'a> FnBuilder<'a> {
             .map(|m| m.id)
     }
 
+    /// Whether the checker types `e` an array whose elements are all
+    /// objects: of a class, `data` type or enum declared outside the
+    /// prelude, or an exception, descending from no built-in class but
+    /// `Object` (a module type may hold built-in values).
+    fn elems_are_objects(&self, e: &Expr) -> bool {
+        let bi = &self.world.builtin;
+        let Some(quarz_types::Type::Class(c, args)) = self.out.node_types.get(&e.id) else {
+            return false;
+        };
+        let Some(quarz_types::Type::Class(elem, _)) = args.first() else {
+            return false;
+        };
+        if *c != bi.array {
+            return false;
+        }
+        let class = self.world.class(*elem);
+        class.kind != quarz_types::ClassKind::Module
+            && class.kind != quarz_types::ClassKind::Main
+            && self.world.superclass_chain(*elem).into_iter().all(|k| {
+                k == bi.object || self.world.class(k).file != 0 || self.world.is_exception_class(k)
+            })
+            && (class.file != 0 || self.world.is_exception_class(*elem))
+    }
+
     /// Whether the checker types `e` `Array[Int]` (`Some(false)`) or
     /// `Array[Float]` (`Some(true)`).
     fn words_of(&self, e: &Expr) -> Option<bool> {
@@ -2361,11 +2385,16 @@ impl<'a> FnBuilder<'a> {
             }
             (Some(a), None) => {
                 let x = self.reg();
+                let objects = call
+                    .recv
+                    .as_ref()
+                    .is_some_and(|r| self.elems_are_objects(r));
                 self.emit(Inst::ArrayGetReg {
                     dst: x,
                     arr: a,
                     index: i,
                     borrow: false,
+                    objects,
                 });
                 x
             }
@@ -3625,6 +3654,7 @@ impl<'a> FnBuilder<'a> {
                         arr: v,
                         index: idx,
                         borrow: false,
+                        objects: false,
                     });
                     self.pattern(p, elem, next_i);
                 }

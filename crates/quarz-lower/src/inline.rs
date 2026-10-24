@@ -606,11 +606,13 @@ pub(crate) fn rewrite_with(
             arr,
             index,
             borrow,
+            objects,
         } => Inst::ArrayGetReg {
             dst: r(dst),
             arr: r(arr),
             index: r(index),
             borrow: *borrow,
+            objects: *objects,
         },
         Inst::ArrayIndex {
             dst,

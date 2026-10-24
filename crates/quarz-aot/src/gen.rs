@@ -3855,6 +3855,7 @@ impl<B: Builder> Gen<'_, B> {
                 arr,
                 index: idx,
                 borrow,
+                objects,
             } => {
                 // An array indexed by an Int within range: the element
                 // copied from the vector; everything else (negative
@@ -3899,6 +3900,60 @@ impl<B: Builder> Gen<'_, B> {
                 let in_range = self.b.icmp(IntCC::UnsignedLessThan, i, len);
                 self.b.brif(in_range, fast, &[], slow, &[]);
                 self.b.switch_to_block(fast);
+                if *objects {
+                    // Objects only: the storage holds values (any other
+                    // kind is a bug), and the element's allocation is its
+                    // payload's first word, kept for `State::Obj`.
+                    let values_b = self.b.create_block();
+                    let bad = self.b.create_block();
+                    let is_values = self.b.icmp_imm(IntCC::Equal, kind, 0);
+                    self.b.brif(is_values, values_b, &[], bad, &[]);
+                    self.b.switch_to_block(bad);
+                    self.unsound(block, index);
+                    self.b.switch_to_block(values_b);
+                    let off = self.b.imul_imm(i, i64::from(VALUE_SIZE));
+                    let elem = self.b.iadd(ptr, off);
+                    if *borrow {
+                        for k in [0, 8, 16] {
+                            let w = self.b.load(Ty::I64, elem, k);
+                            self.b.store(w, self.regs, reg_off(*dst) + k);
+                        }
+                        self.stale[*dst as usize] = false;
+                    } else {
+                        self.clone_from(*dst, elem);
+                    }
+                    let p = self.b.load(Ty::Ptr, elem, 8);
+                    self.b.def_var(self.pvar(*dst), p);
+                    self.b.jump(cont, &[]);
+                    self.b.switch_to_block(slow);
+                    self.flush(*arr);
+                    self.flush(*idx);
+                    if *borrow {
+                        self.store_tag(*dst, TAG_NIL);
+                        self.exec(block, index, unwind);
+                        let p = self.b.iadd_imm(self.regs, i64::from(reg_off(*dst)));
+                        self.b.call(self.h.disown, &[p]);
+                    } else {
+                        self.exec(block, index, unwind);
+                    }
+                    // In range in the loops that use it: an object.
+                    let tag = self.tag(*dst);
+                    let is_obj = self.b.icmp_imm(IntCC::Equal, tag, TAG_OBJECT);
+                    let good = self.b.create_block();
+                    let bad = self.b.create_block();
+                    self.b.brif(is_obj, good, &[], bad, &[]);
+                    self.b.switch_to_block(bad);
+                    self.unsound(block, index);
+                    self.b.switch_to_block(good);
+                    let p = self.payload_ptr(*dst);
+                    self.b.def_var(self.pvar(*dst), p);
+                    if arr != dst {
+                        self.arr_after_slow(*arr, block, index);
+                    }
+                    self.b.jump(cont, &[]);
+                    self.b.switch_to_block(cont);
+                    return;
+                }
                 // Boxed elements are copied; unboxed ones are read as the
                 // machine word they are and boxed into the register.
                 let values_b = self.b.create_block();
