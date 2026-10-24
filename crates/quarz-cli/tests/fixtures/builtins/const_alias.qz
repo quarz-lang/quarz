@@ -1,0 +1,29 @@
+# A constant whose value is a class or module stands for it in constant
+# paths, types and patterns, not only as a value.
+module Geometry
+  class Point
+    @x: Int
+    @y: Int
+    def initialize(@x: Int, @y: Int)
+    end
+    def to_s -> String = "(#{@x}, #{@y})"
+  end
+  ORIGIN = 0
+end
+
+G = Geometry
+P = G::Point
+Q = P
+
+def show(p: P) -> String = p.to_s
+
+pt: G::Point = Q.new(1, 2)
+puts show(pt)
+puts G::ORIGIN
+puts pt.is_a?(P)
+case pt
+in Q then puts "matched"
+end
+puts P.name
+xs: Array[G::Point] = [P.new(3, 4)]
+puts xs.map(&:to_s).join(" ")

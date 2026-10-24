@@ -298,3 +298,13 @@ fn prelude_methods_first_used_in_a_later_input() {
         ]
     );
 }
+
+#[test]
+fn standard_library_without_require() {
+    let (out, _) = values(&[
+        "JSON.generate([1, 2])",
+        "require \"json\"",
+        "JSON.parse(\"[3]\")[0].as_i",
+    ]);
+    assert_eq!(out, vec!["=> \"[1,2]\"", "", "=> 3"]);
+}

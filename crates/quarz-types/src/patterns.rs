@@ -235,7 +235,8 @@ impl Checker {
 
     fn resolve_pattern_class(&mut self, path: &ConstPath, span: Span) -> Option<ClassId> {
         let ns = self.current_namespace();
-        match self.resolve_path_pub(ns, path, span) {
+        let member = self.resolve_path_pub(ns, path, span);
+        match member.map(|m| self.world.through_alias(m)) {
             Some(Member::Class(cid)) => {
                 self.out.pattern_classes.insert(span, cid);
                 Some(cid)

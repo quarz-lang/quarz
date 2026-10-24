@@ -214,6 +214,21 @@ pub struct ClassInfo {
     pub file: u32,
     /// Extensions activated by `using` inside the class body.
     pub usings: Vec<ExtensionId>,
+    /// For the root module of a library cog: the cog's index in
+    /// `World::cogs`.
+    pub cog: Option<u32>,
+}
+
+/// A cog (package) of the movement being checked.
+#[derive(Clone, Debug, Default)]
+pub struct CogInfo {
+    pub name: String,
+    /// The module its declarations live in; `None` for the application,
+    /// whose declarations are at the top level.
+    pub root: Option<ClassId>,
+    /// Its dependencies by the keys of its manifest, bound to their root
+    /// modules in its scope.
+    pub imports: HashMap<String, ClassId>,
 }
 
 impl ClassInfo {
@@ -283,6 +298,11 @@ pub struct World {
     /// them (its negative answer then holds only once they are done).
     observable_pending: Vec<ClassId>,
     observable_tentative: bool,
+    /// The cogs of the movement (empty for a script).
+    pub cogs: Vec<CogInfo>,
+    /// Names the application declares or imports at the top level: a
+    /// library cog does not see them.
+    pub app_names: rustc_hash::FxHashSet<String>,
 }
 
 impl World {
@@ -383,6 +403,7 @@ impl World {
             auto_initialize: false,
             file: 0,
             usings: Vec::new(),
+            cog: None,
         }
     }
 
@@ -1012,8 +1033,11 @@ impl World {
     }
 
     /// Resolve a constant path relative to a namespace, walking outward.
+    /// Inside a library cog the walk ends at its root module, then its
+    /// imports, then the top level without the application's names.
     pub fn resolve_member(&self, scope: Option<ClassId>, name: &str) -> Option<Member> {
         let mut cur = scope;
+        let mut in_library = false;
         while let Some(cid) = cur {
             if let Some(m) = self.class(cid).members.get(name) {
                 return Some(*m);
@@ -1024,9 +1048,118 @@ impl World {
                     return Some(*m);
                 }
             }
+            if let Some(cog) = self.class(cid).cog {
+                if let Some(root) = self.cogs[cog as usize].imports.get(name) {
+                    return Some(Member::Class(*root));
+                }
+                in_library = true;
+            }
             cur = self.class(cid).parent;
         }
+        if in_library && self.app_names.contains(name) {
+            return None;
+        }
         self.top.get(name).copied()
+    }
+
+    /// The root module of the library cog that `scope` is in; `None` in
+    /// the application, a script or the standard library.
+    pub fn cog_root(&self, scope: Option<ClassId>) -> Option<ClassId> {
+        let mut cur = scope;
+        while let Some(cid) = cur {
+            if self.class(cid).cog.is_some() {
+                return Some(cid);
+            }
+            cur = self.class(cid).parent;
+        }
+        None
+    }
+
+    /// The first step of a `cog::` path (or `cog` itself, with no names):
+    /// a member of the cog's root module, or of the top level in the
+    /// application.
+    pub fn resolve_cog_path_start(
+        &self,
+        scope: Option<ClassId>,
+        path: &quarz_syntax::ast::ConstPath,
+    ) -> Result<Member, String> {
+        let root = self.cog_root(scope);
+        let Some(first) = path.names.first() else {
+            return match root {
+                Some(root) => Ok(Member::Class(root)),
+                None => Err(
+                    "`cog` is the top level here (the application or a script), not a module"
+                        .to_string(),
+                ),
+            };
+        };
+        let found = match root {
+            Some(root) => self.class(root).members.get(first).copied(),
+            None => self.top.get(first).copied(),
+        };
+        found.ok_or_else(|| match root {
+            Some(root) => format!(
+                "unknown constant `{first}` in `cog` ({})",
+                self.class(root).name
+            ),
+            None => format!("unknown constant `{first}` at the top level"),
+        })
+    }
+
+    /// A constant whose initializer is a constant path naming a class or
+    /// module (`Short = Some::Long::Name`) stands for that class in
+    /// constant paths and types; any other member is returned unchanged.
+    pub fn through_alias(&self, member: Member) -> Member {
+        let mut member = member;
+        // A chain of aliases is followed a few steps (a cycle is not
+        // followed at all: its initializer fails when it runs).
+        for _ in 0..16 {
+            let Member::Const(id) = member else {
+                return member;
+            };
+            match self.const_alias_step(id) {
+                Some(next) => member = next,
+                None => return member,
+            }
+        }
+        member
+    }
+
+    fn const_alias_step(&self, id: ConstId) -> Option<Member> {
+        let info = &self.consts[id as usize];
+        let quarz_syntax::ast::ExprKind::Const(path) = &info.value.as_ref()?.kind else {
+            return None;
+        };
+        let mut member = if path.cog {
+            self.resolve_cog_path_start(info.owner, path).ok()?
+        } else if path.absolute {
+            self.top.get(path.names.first()?).copied()?
+        } else {
+            self.resolve_member(info.owner, path.names.first()?)?
+        };
+        for name in path.names.get(1..).unwrap_or_default() {
+            let Member::Class(cid) = self.through_alias_shallow(member) else {
+                return None;
+            };
+            member = self.class(cid).members.get(name).copied().or_else(|| {
+                self.ancestor_ids(cid)
+                    .into_iter()
+                    .find_map(|anc| self.class(anc).members.get(name).copied())
+            })?;
+        }
+        match member {
+            Member::Class(_) => Some(member),
+            Member::Const(c) if c != id => Some(member),
+            _ => None,
+        }
+    }
+
+    /// One step of `through_alias`, for the prefixes of an alias's own path.
+    fn through_alias_shallow(&self, member: Member) -> Member {
+        match member {
+            Member::Const(id) => self.const_alias_step(id).unwrap_or(member),
+            _ => member,
+        }
     }
 
     /// The top-level class or module called `name`, if any.

@@ -156,8 +156,30 @@ impl Repl {
             return Outcome::Errors(parsed.diagnostics.iter().map(|d| d.render(&file)).collect());
         }
         self.buffer.clear();
-        // Load what the input requires, running each library's top level
+        // The standard library modules the input names without requiring
+        // them, then what it requires, running each library's top level
         // the first time it is loaded.
+        let implicit = quarz_types::load::implicit_std(std::iter::once(file.text.as_str()), &|m| {
+            self.session.std_loaded(m)
+        });
+        for module in implicit {
+            match self.session.require(
+                module,
+                false,
+                Path::new("."),
+                1,
+                quarz_syntax::Span::empty(0),
+            ) {
+                Ok(units) => {
+                    for unit in units {
+                        if let Some(outcome) = self.run_unit(unit) {
+                            return outcome;
+                        }
+                    }
+                }
+                Err(diags) => return Outcome::Errors(self.render(&diags, &file)),
+            }
+        }
         for expr in &parsed.program.body {
             if let ExprKind::Require { path, relative } = &expr.kind {
                 let loaded = self

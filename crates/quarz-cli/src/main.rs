@@ -2,6 +2,7 @@
 
 use std::process::ExitCode;
 
+mod cog;
 mod repl;
 
 use quarz_syntax::{parse, tokenize, SourceFile, TokenKind};
@@ -12,12 +13,29 @@ usage: quarz <command> [args]
 commands:
   tokens FILE    print the tokens of FILE (for debugging the lexer)
   parse FILE     print the syntax tree of FILE (for debugging the parser)
-  check FILE     type-check FILE
-  ir FILE        print the QIR of FILE (for debugging the lowering)
-  build FILE [-o OUT]
-                 compile FILE to a native executable (default: FILE without .qz)
-  run FILE [ARGS...]   type-check and run FILE
+  check [TARGET] type-check TARGET
+  ir [TARGET]    print the QIR of TARGET (for debugging the lowering)
+  build [TARGET] [-o OUT]
+                 compile TARGET to a native executable (default: a script
+                 without .qz, or the cog's name in its directory)
+  run [TARGET] [ARGS...]   type-check and run TARGET (`--` before ARGS
+                 when TARGET is left out)
   repl           start an interactive session
+  cog COMMAND    manage the cogs (packages) of the application here:
+    init                      write a Cog.toml (and src/main.qz)
+    add URL [--tag vX.Y.Z | --rev COMMIT] [--as KEY] [--subdir DIR] [--dev]
+                              add a dependency and resolve
+    update                    resolve again and rewrite Cog.lock
+    fetch                     fetch and verify what Cog.lock names
+    vendor                    copy the locked cogs into vendor/
+    tree                      print the dependency graph
+    outdated                  show newer version tags of the locked cogs
+    verify                    check the fetched cogs against Cog.lock
+
+TARGET is a script (FILE.qz), or an application: a directory with a
+Cog.toml, its src/main.qz, or (left out) the one around the current
+directory. With an application, --locked fails rather than write
+Cog.lock, and --offline fetches nothing.
 ";
 
 fn main() -> ExitCode {
@@ -31,35 +49,41 @@ fn main() -> ExitCode {
             Some(path) => parse_file(path),
             None => usage(),
         },
-        Some("check") => match args.get(1) {
-            Some(path) => check_file(path),
-            None => usage(),
+        Some("check") => match Target::parse(&args[1..]) {
+            Ok((target, rest)) if rest.is_empty() => check_file(&target),
+            Ok(_) => usage(),
+            Err(code) => code,
         },
-        Some("ir") => match args.get(1) {
-            Some(path) => ir_file(path),
-            None => usage(),
+        Some("ir") => match Target::parse(&args[1..]) {
+            Ok((target, rest)) if rest.is_empty() => ir_file(&target),
+            Ok(_) => usage(),
+            Err(code) => code,
         },
-        Some("build") => match args.get(1) {
-            Some(path) => {
-                let out = match args.iter().position(|a| a == "-o") {
-                    Some(i) => match args.get(i + 1) {
-                        Some(o) => std::path::PathBuf::from(o),
-                        None => return usage(),
-                    },
-                    None => {
-                        let p = std::path::Path::new(path);
-                        p.with_extension("")
-                    }
-                };
-                build_file(path, &out)
+        Some("build") => {
+            let mut rest: Vec<String> = args[1..].to_vec();
+            let mut out = None;
+            if let Some(i) = rest.iter().position(|a| a == "-o") {
+                match rest.get(i + 1) {
+                    Some(o) => out = Some(std::path::PathBuf::from(o)),
+                    None => return usage(),
+                }
+                rest.drain(i..i + 2);
             }
-            None => usage(),
-        },
+            match Target::parse(&rest) {
+                Ok((target, extra)) if extra.is_empty() => {
+                    let out = out.unwrap_or_else(|| target.default_output());
+                    build_file(&target, &out)
+                }
+                Ok(_) => usage(),
+                Err(code) => code,
+            }
+        }
         Some("repl") => repl::repl(),
-        Some("run") => match args.get(1) {
-            Some(path) => run_file(path, args[2..].to_vec()),
-            None => usage(),
+        Some("run") => match Target::parse(&args[1..]) {
+            Ok((target, argv)) => run_file(&target, argv),
+            Err(code) => code,
         },
+        Some("cog") => cog::command(&args[1..]),
         Some("-h" | "--help" | "help") => {
             print!("{USAGE}");
             ExitCode::SUCCESS
@@ -102,10 +126,92 @@ fn parse_file(path: &str) -> ExitCode {
     }
 }
 
-/// Load the file and everything it requires, then type-check. Returns the
-/// checked program and the source files by index (0 = the prelude) if
+/// What `run`, `check`, `build` and `ir` work on: a script, or the
+/// application of a movement.
+enum Target {
+    Script(String),
+    App {
+        root: std::path::PathBuf,
+        opts: quarz_cog::Options,
+    },
+}
+
+impl Target {
+    /// The target and the arguments after it: `--locked` and `--offline`
+    /// first, then a script, a directory with a Cog.toml or an
+    /// application's src/main.qz, or nothing (or `--`) for the application
+    /// around the current directory.
+    fn parse(args: &[String]) -> Result<(Target, Vec<String>), ExitCode> {
+        let mut opts = quarz_cog::Options {
+            verbose: true,
+            ..Default::default()
+        };
+        let mut i = 0;
+        while let Some(a) = args.get(i) {
+            match a.as_str() {
+                "--locked" => opts.locked = true,
+                "--offline" => opts.offline = true,
+                _ => break,
+            }
+            i += 1;
+        }
+        let app = |root: std::path::PathBuf, opts| Target::App { root, opts };
+        match args.get(i).map(String::as_str) {
+            None | Some("--") => {
+                let here = std::env::current_dir().unwrap_or_default();
+                match quarz_cog::find_root(&here) {
+                    Some(root) => Ok((
+                        app(root, opts),
+                        args.get(i + 1..).unwrap_or_default().to_vec(),
+                    )),
+                    None => {
+                        eprintln!("quarz: no Cog.toml here or above; give a file to run");
+                        Err(ExitCode::from(2))
+                    }
+                }
+            }
+            Some(path) => {
+                let p = std::path::Path::new(path);
+                let rest = args[i + 1..].to_vec();
+                if p.is_dir() {
+                    if p.join(quarz_cog::manifest::MANIFEST).is_file() {
+                        let root = std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+                        return Ok((app(root, opts), rest));
+                    }
+                    eprintln!("quarz: {path} has no Cog.toml");
+                    return Err(ExitCode::FAILURE);
+                }
+                // An application's main file.
+                if let Some(root) = std::fs::canonicalize(p).ok().and_then(|f| {
+                    Some(f.parent()?.parent()?.to_path_buf()).filter(|r| {
+                        r.join(quarz_cog::manifest::MANIFEST).is_file()
+                            && r.join("src").join("main.qz") == f
+                    })
+                }) {
+                    return Ok((app(root, opts), rest));
+                }
+                Ok((Target::Script(path.to_string()), rest))
+            }
+        }
+    }
+
+    fn default_output(&self) -> std::path::PathBuf {
+        match self {
+            Target::Script(path) => std::path::Path::new(path).with_extension(""),
+            Target::App { root, .. } => {
+                let name = quarz_cog::manifest::Manifest::read(root)
+                    .map(|m| m.cog.name)
+                    .unwrap_or_else(|_| "app".to_string());
+                root.join(name)
+            }
+        }
+    }
+}
+
+/// Load the target and everything it requires, then type-check. Returns
+/// the checked program and the source files by index (0 = the prelude) if
 /// there were no errors.
-fn load_and_check(path: &str) -> Option<(quarz_types::Checked, Vec<SourceFile>)> {
+fn load_and_check(target: &Target) -> Option<(quarz_types::Checked, Vec<SourceFile>)> {
     let prelude_file = SourceFile::new("<prelude>", quarz_types::PRELUDE_SOURCE);
     let prelude = parse(&prelude_file.text);
     let mut failed = false;
@@ -113,7 +219,38 @@ fn load_and_check(path: &str) -> Option<(quarz_types::Checked, Vec<SourceFile>)>
         eprint!("{}", diag.render(&prelude_file));
         failed |= diag.is_error();
     }
-    let (units, diagnostics) = quarz_types::load(std::path::Path::new(path));
+    let (units, cogs, diagnostics) = match target {
+        Target::Script(path) => {
+            let (units, diagnostics) = quarz_types::load(std::path::Path::new(path));
+            (units, Vec::new(), diagnostics)
+        }
+        Target::App { root, opts } => {
+            let movement = match quarz_cog::open(root, opts) {
+                Ok(m) => m,
+                Err(e) => {
+                    eprintln!("quarz: {e}");
+                    return None;
+                }
+            };
+            let specs: Vec<quarz_types::CogSpec> = movement
+                .cogs
+                .iter()
+                .enumerate()
+                .map(|(i, c)| quarz_types::CogSpec {
+                    name: c.name.clone(),
+                    version: c.version.clone(),
+                    module: (i > 0).then(|| c.module.clone()),
+                    src: c.dir.join("src"),
+                    imports: c
+                        .imports
+                        .iter()
+                        .map(|(k, j)| (k.clone(), *j as u32))
+                        .collect(),
+                })
+                .collect();
+            quarz_types::load_movement(&specs)
+        }
+    };
     for (file, diag) in &diagnostics {
         eprint!("{}", diag.render(file));
         failed |= diag.is_error();
@@ -122,14 +259,8 @@ fn load_and_check(path: &str) -> Option<(quarz_types::Checked, Vec<SourceFile>)>
         return None;
     }
     let sources: Vec<SourceFile> = units.iter().map(|u| u.source.clone()).collect();
-    let to_check: Vec<quarz_types::Unit> = units
-        .into_iter()
-        .map(|u| quarz_types::Unit {
-            name: u.name,
-            program: u.program,
-        })
-        .collect();
-    let (checked, diagnostics) = quarz_types::check_units(&prelude.program, &to_check);
+    let to_check: Vec<quarz_types::Unit> = units.into_iter().map(quarz_types::Unit::from).collect();
+    let (checked, diagnostics) = quarz_types::check_movement(&prelude.program, &to_check, &cogs);
     for (file_index, diag) in &diagnostics {
         let f = if *file_index == 0 {
             &prelude_file
@@ -143,16 +274,16 @@ fn load_and_check(path: &str) -> Option<(quarz_types::Checked, Vec<SourceFile>)>
     checked.map(|c| (c, files))
 }
 
-fn run_file(path: &str, argv: Vec<String>) -> ExitCode {
-    let Some((checked, files)) = load_and_check(path) else {
+fn run_file(target: &Target, argv: Vec<String>) -> ExitCode {
+    let Some((checked, files)) = load_and_check(target) else {
         return ExitCode::FAILURE;
     };
     let code = quarz_cli::run(checked, &files, argv);
     ExitCode::from(code.clamp(0, 255) as u8)
 }
 
-fn ir_file(path: &str) -> ExitCode {
-    let Some((checked, files)) = load_and_check(path) else {
+fn ir_file(target: &Target) -> ExitCode {
+    let Some((checked, files)) = load_and_check(target) else {
         return ExitCode::FAILURE;
     };
     let module = quarz_cli::lower(&checked, &files);
@@ -160,8 +291,8 @@ fn ir_file(path: &str) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn build_file(path: &str, out: &std::path::Path) -> ExitCode {
-    let Some((checked, files)) = load_and_check(path) else {
+fn build_file(target: &Target, out: &std::path::Path) -> ExitCode {
+    let Some((checked, files)) = load_and_check(target) else {
         return ExitCode::FAILURE;
     };
     match quarz_cli::build(checked, &files, out) {
@@ -173,8 +304,8 @@ fn build_file(path: &str, out: &std::path::Path) -> ExitCode {
     }
 }
 
-fn check_file(path: &str) -> ExitCode {
-    match load_and_check(path) {
+fn check_file(target: &Target) -> ExitCode {
+    match load_and_check(target) {
         Some(_) => ExitCode::SUCCESS,
         None => ExitCode::FAILURE,
     }

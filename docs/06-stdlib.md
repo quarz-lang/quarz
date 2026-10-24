@@ -103,7 +103,7 @@ An array of a comparable element type is `Comparable` (`<=> < <= > >= between? c
   - `TCPServer.new([host,] port)` with `accept`, `UDPSocket` (`bind connect send recv recv_bytes recvfrom recvfrom_bytes`), `UNIXSocket`/`UNIXServer` by path. Sockets are `IO`s, so `gets gets? read read(n) read? readline readlines each_line write << puts print printf eof? close closed?` work on them, plus `readpartial readpartial? read_bytes close_write close_read`. `write` accepts `Bytes` for binary data.
 - All of this only suspends the calling task (see [04-concurrency.md](04-concurrency.md) §6): sockets wait on the scheduler's reactor; whole-file, directory and metadata operations and child processes run on a helper thread, and so do the reads and writes of an open `File` or standard input that its buffer cannot serve. Writes to standard output and standard error are synchronous. `Signal` is *planned*.
 
-## 10. Others (loaded with `require`)
+## 10. Others (loaded when named, or with `require`)
 
 `json` (`JSON.parse -> JSON::Value`, an enum of `Null | Bool | Number | String | Array | Object`, named as Rust's serde_json names them, with accessors such as `as_s`, `as_i?` and `[]`; a `Number` holds an `Int`, an `Integer` (an integer too large for an `Int`, kept exact) or a `Float`: `as_i`, `as_integer` and `as_f` give it as one, `as_i` raising `OverflowError` when it does not fit; `JSON.generate`/`pretty_generate`, `to_json`), `time` (a no-op: `Time` and `Duration` are built in), `socket` (§9). `Set` is built in; there is no `set` library to require. *Planned*: `JSON.decode[T](str)` decoding directly into `data`, `Date`, `digest`, `base64`, `uri`, `net/http`, `csv`, `yaml`, `optparse`, `logger`, `test` (`Test::Unit`-style), `benchmark`, `ffi`.
 

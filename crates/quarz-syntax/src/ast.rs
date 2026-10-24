@@ -230,6 +230,9 @@ pub enum StrPart {
 pub struct ConstPath {
     /// `::Foo` (lookup from the top level).
     pub absolute: bool,
+    /// `cog::Foo` (lookup in the current cog's root module); with no names,
+    /// `cog` itself.
+    pub cog: bool,
     pub names: Vec<String>,
 }
 
@@ -237,6 +240,7 @@ impl ConstPath {
     pub fn simple(name: impl Into<String>) -> ConstPath {
         ConstPath {
             absolute: false,
+            cog: false,
             names: vec![name.into()],
         }
     }
@@ -250,6 +254,12 @@ impl std::fmt::Display for ConstPath {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if self.absolute {
             write!(f, "::")?;
+        }
+        if self.cog {
+            write!(f, "cog")?;
+            if !self.names.is_empty() {
+                write!(f, "::")?;
+            }
         }
         write!(f, "{}", self.names.join("::"))
     }

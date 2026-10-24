@@ -53,6 +53,9 @@ enum PendingDef<'ast> {
     Enum(&'ast EnumDef),
     Variant(&'ast Variant),
     Main,
+    /// A library cog's file, contributing its `def self.` methods to the
+    /// cog's root module (the file index, for diagnostics).
+    CogRoot(u32),
 }
 
 struct PendingExtension<'ast> {
@@ -82,6 +85,19 @@ pub struct Declarer<'ast> {
     /// The modules extensions include, where (extension, module, span,
     /// file), checked once fields are known (`check_shareable_extensions`).
     ext_includes: Vec<(ExtensionId, Type, Span, u32)>,
+    /// While collecting a file of the application of a movement: its
+    /// top-level names are hidden from library cogs.
+    in_app: bool,
+}
+
+/// A cog of the movement, as the declarer needs it.
+#[derive(Clone, Debug)]
+pub struct CogDecl {
+    pub name: String,
+    /// The module its declarations live in; `None` for the application.
+    pub module: Option<String>,
+    /// Dependencies: the key of the manifest and the index of the cog.
+    pub imports: Vec<(String, u32)>,
 }
 
 /// A file's top-level: its pseudo-class for top-level methods, its
@@ -112,6 +128,130 @@ impl<'ast> Declarer<'ast> {
             units: Vec::new(),
             class_usings: HashMap::default(),
             ext_includes: Vec::new(),
+            in_app: false,
+        }
+    }
+
+    /// Create the root module of every library cog and bind each cog's
+    /// dependency keys: in a library's scope (`CogInfo::imports`), or at
+    /// the top level for the application. Called after the prelude, before
+    /// the cogs' files.
+    /// A key that is also a name of the prelude or the standard library
+    /// is an error, reported against `file` (the application's main file).
+    pub fn declare_cogs(&mut self, cogs: &[CogDecl], file: u32) {
+        let saved = self.file;
+        self.file = file;
+        for cog in cogs {
+            for (key, _) in &cog.imports {
+                let std = crate::load::std_exports()
+                    .iter()
+                    .any(|(_, names)| names.iter().any(|n| n == key));
+                if std || self.world.top.contains_key(key) {
+                    self.error(
+                        format!(
+                            "the dependency `{key}` of cog `{}` has the name of a built-in or standard library constant; give it another key in Cog.toml",
+                            cog.name
+                        ),
+                        Span::empty(0),
+                    );
+                }
+            }
+        }
+        self.file = saved;
+        for (i, cog) in cogs.iter().enumerate() {
+            let root = cog.module.as_ref().map(|module| {
+                let mut info =
+                    World::blank_class(module.clone(), ClassKind::Module, None, Span::empty(0));
+                info.cog = Some(i as u32);
+                info.superclass = None;
+                self.world.add_class(info)
+            });
+            self.world.cogs.push(CogInfo {
+                name: cog.name.clone(),
+                root,
+                imports: HashMap::default(),
+            });
+        }
+        for (i, cog) in cogs.iter().enumerate() {
+            for (key, dep) in &cog.imports {
+                let Some(root) = self.world.cogs[*dep as usize].root else {
+                    continue;
+                };
+                if cog.module.is_some() {
+                    self.world.cogs[i].imports.insert(key.clone(), root);
+                } else {
+                    self.world.app_names.insert(key.clone());
+                    self.world.top.insert(key.clone(), Member::Class(root));
+                }
+            }
+        }
+    }
+
+    /// Register the declarations of a file of cog `cog` (an index into
+    /// the cogs given to `declare_cogs`). A library's files are the body of
+    /// its root module and hold declarations only; the application's are at
+    /// the top level, and only `statements` allows statements in one.
+    pub fn collect_cog_unit(
+        &mut self,
+        program: &'ast Program,
+        file: u32,
+        cog: u32,
+        statements: bool,
+    ) {
+        let Some(root) = self.world.cogs[cog as usize].root else {
+            self.in_app = true;
+            self.collect_unit(program, file);
+            self.in_app = false;
+            if !statements {
+                let body = std::mem::take(&mut self.units.last_mut().unwrap().body);
+                for expr in body {
+                    self.error(
+                        "statements of the application go in src/main.qz; its other files hold declarations only",
+                        expr.span,
+                    );
+                }
+            }
+            return;
+        };
+        self.file = file;
+        let mut main = World::blank_class(
+            "main".to_string(),
+            ClassKind::Main,
+            Some(root),
+            program.span,
+        );
+        main.file = file;
+        let id = self.world.add_class(main);
+        self.pending.push(PendingClass {
+            id,
+            body: &program.body,
+            def: PendingDef::Main,
+        });
+        self.pending.push(PendingClass {
+            id: root,
+            body: &program.body,
+            def: PendingDef::CogRoot(file),
+        });
+        self.units.push(UnitDecl {
+            file,
+            main: id,
+            body: Vec::new(),
+            usings: Vec::new(),
+        });
+        for expr in &program.body {
+            match &expr.kind {
+                // A file's `using`s and requires are its own.
+                ExprKind::Using(path) => self.units.last_mut().unwrap().usings.push(path),
+                ExprKind::Require { .. } => {}
+                _ => {
+                    if !self.collect_item(expr, Some(root), false) {
+                        self.error(
+                            "a cog's files hold declarations only (classes, modules, methods, constants); statements belong to the application's src/main.qz",
+                            expr.span,
+                        );
+                    }
+                }
+            }
         }
     }
 
@@ -413,6 +553,9 @@ impl<'ast> Declarer<'ast> {
             self.error("`Self` is reserved: it is the type of the receiver", span);
             return;
         }
+        if namespace.is_none() && self.in_app {
+            self.world.app_names.insert(name.to_string());
+        }
         let table = match namespace {
             Some(ns) => &mut self.world.class_mut(ns).members,
             None => &mut self.world.top,
@@ -441,7 +584,7 @@ impl<'ast> Declarer<'ast> {
                 PendingDef::Module(d) => (&d.type_params, ()),
                 PendingDef::Data(d) => (&d.type_params, ()),
                 PendingDef::Enum(d) => (&d.type_params, ()),
-                PendingDef::Variant(_) | PendingDef::Main => continue,
+                PendingDef::Variant(_) | PendingDef::Main | PendingDef::CogRoot(_) => continue,
             };
             let infos: Vec<TypeParamInfo> = params
                 .iter()
@@ -470,7 +613,7 @@ impl<'ast> Declarer<'ast> {
 
         // Bounds, superclasses, includes, fields and methods.
         for p in &pending {
-            self.file = self.world.class(p.id).file;
+            self.file = self.pending_file(p);
             self.resolve_class_header(p);
         }
         for e in &pending_ext {
@@ -478,7 +621,7 @@ impl<'ast> Declarer<'ast> {
             self.resolve_extension(e);
         }
         for p in &pending {
-            self.file = self.world.class(p.id).file;
+            self.file = self.pending_file(p);
             self.resolve_class_members(p);
         }
         for e in &pending_ext {
@@ -487,11 +630,20 @@ impl<'ast> Declarer<'ast> {
         }
         self.resolve_usings();
         for p in &pending {
-            self.file = self.world.class(p.id).file;
+            self.file = self.pending_file(p);
             self.check_conformance(p);
             self.check_shareable_promise(p.id);
         }
         self.check_shareable_extensions();
+    }
+
+    /// The file a pending declaration is in (a cog's root module is in
+    /// all of the cog's files).
+    fn pending_file(&self, p: &PendingClass<'ast>) -> u32 {
+        match p.def {
+            PendingDef::CogRoot(file) => file,
+            _ => self.world.class(p.id).file,
+        }
     }
 
     /// A class that includes `Shareable`, or inherits it, must be
@@ -1008,7 +1160,20 @@ impl<'ast> Declarer<'ast> {
         if is_main {
             visibility = Visibility::Private;
         }
+        // In a library cog's file, `def self.name` is a method of the
+        // cog's root module and every other top-level method is the file's.
+        let cog_root = matches!(p.def, PendingDef::CogRoot(_));
+        let in_cog_file = is_main && self.world.cog_root(Some(id)).is_some();
+        if cog_root {
+            visibility = Visibility::Public;
+        }
         for expr in p.body {
+            if cog_root || in_cog_file {
+                let singleton = matches!(&expr.kind, ExprKind::MethodDef(def) if def.singleton);
+                if singleton != cog_root {
+                    continue;
+                }
+            }
             match &expr.kind {
                 ExprKind::MethodDef(def) => {
                     let vis = def.visibility.unwrap_or(visibility);
@@ -1508,7 +1673,15 @@ impl<'ast> Declarer<'ast> {
         path: &ConstPath,
         span: Span,
     ) -> Option<Member> {
-        let mut member = if path.absolute {
+        let mut member = if path.cog {
+            match self.world.resolve_cog_path_start(namespace, path) {
+                Ok(m) => Some(m),
+                Err(message) => {
+                    self.error(message, span);
+                    return None;
+                }
+            }
+        } else if path.absolute {
             self.world.top.get(&path.names[0]).copied()
         } else {
             self.world.resolve_member(namespace, &path.names[0])
@@ -1517,8 +1690,8 @@ impl<'ast> Declarer<'ast> {
             self.error(format!("unknown constant `{}`", path.names[0]), span);
             return None;
         }
-        for name in &path.names[1..] {
-            let Some(Member::Class(cid)) = member else {
+        for name in path.names.get(1..).unwrap_or_default() {
+            let Some(Member::Class(cid)) = member.map(|m| self.world.through_alias(m)) else {
                 self.error(format!("`{}` is not a namespace", path), span);
                 return None;
             };
@@ -1589,7 +1762,7 @@ impl<'ast> Declarer<'ast> {
             }
             TypeExprKind::Named { path, args } => {
                 // A type parameter in scope?
-                if path.names.len() == 1 && !path.absolute {
+                if path.names.len() == 1 && !path.absolute && !path.cog {
                     if let Some((_, id)) =
                         scope.params.iter().rev().find(|(n, _)| *n == path.names[0])
                     {
@@ -1600,6 +1773,7 @@ impl<'ast> Declarer<'ast> {
                     }
                 }
                 let member = self.resolve_path(scope.namespace, path, expr.span)?;
+                let member = self.world.through_alias(member);
                 let mut resolved_args = Vec::new();
                 for a in args {
                     resolved_args.push(self.resolve_type(a, scope)?);

@@ -1,0 +1,10 @@
+# A standard library module the program names is loaded without
+# `require`, unless the program declares one of its names itself (this
+# file's own `Socket` keeps the socket library out).
+module Socket
+  def self.kind -> String = "mine"
+end
+
+puts JSON.generate({ "a" => [1, 2] })
+puts JSON.parse("[3]")[0].as_i
+puts Socket.kind
