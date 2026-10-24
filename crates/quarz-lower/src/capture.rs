@@ -306,8 +306,10 @@ pub fn walk_expr(e: &Expr, nest: Nest, cx: &mut Cx) {
             }
             walk_args(&call.args, nest, cx);
             if let Some(b) = &call.block {
-                let inlined = crate::iter::shape(e, call, cx.out, cx.world).is_some()
-                    || crate::iter::exec_shape(e, call, cx.out, cx.world).is_some();
+                // `xs.map! { }` passes a real block (see `FnBuilder::call`).
+                let inlined = !cx.out.bang_assign.contains(&e.id)
+                    && (crate::iter::shape(e, call, cx.out, cx.world).is_some()
+                        || crate::iter::exec_shape(e, call, cx.out, cx.world).is_some());
                 walk_block(b, nest, cx, inlined);
             }
         }

@@ -1,0 +1,59 @@
+# A local assigned on some paths only is nil on the others, and its type
+# says so.
+def pick(n: Int) -> String
+  if n > 5
+    y = n * 2
+  end
+  y ? "got #{y + 1}" : "nil"
+end
+puts pick(3), pick(7)
+
+def scan(n: Int) -> Int
+  i = 0
+  while i < n
+    last = i
+    i += 1
+  end
+  last || -1
+end
+p scan(0), scan(4)
+
+def parse(s: String) -> Int?
+  begin
+    v = Integer(s)
+  rescue ArgumentError
+    p v
+  end
+  v
+end
+p parse("12"), parse("x")
+
+data V = (x: Int, y: Int)
+def first_over(n: Int) -> Int
+  j = 0
+  o = V.new(0, 0)
+  while true
+    j += 1
+    o = V.new(j * 10, j > n ? (break) : j)
+  end
+  o.x + o.y
+end
+p first_over(2)
+
+# A `while true` is left by its breaks; a block's `break` gives the call
+# its value.
+def double_until_big(n: Int) -> Int
+  while true
+    y = n * 2
+    break if y > 10
+    n = y
+  end
+  y + 1
+end
+p double_until_big(1)
+x = loop do
+  break 5
+end
+p x
+z = [1, 2].map { |v| break "big" if v > 1; v }
+p z

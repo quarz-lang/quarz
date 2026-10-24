@@ -217,6 +217,14 @@ struct Env {
     in_initialize: bool,
     assigned_fields: HashSet<String>,
     loop_depth: u32,
+    /// Whether a `break`, and a `next`, of the innermost loop has been
+    /// checked.
+    loop_exits: LoopExits,
+    /// While an `ensure` is checked: the types it assigns to each variable
+    /// (by frame and slot).
+    ensure_assigns: Option<HashMap<(usize, usize), Type>>,
+    /// A narrowing being applied is a fact, not an assignment.
+    applying_facts: bool,
     /// For each enclosing block (innermost last): the proc's return type
     /// (for `next`) and the collected `break` value types.
     blocks: Vec<BlockCtx>,
@@ -234,6 +242,27 @@ struct Env {
     /// What that frame is, for diagnostics: a task block, or the body of
     /// a shareable procedure (which copies what it captures the same way).
     task_shareable_proc: bool,
+}
+
+/// What a piece of code may assign (`Checker::assigned_names`): local
+/// variables, and receivers of `x.foo!` calls (with the method), which
+/// assign when the receiver's type has no `foo!`.
+#[derive(Debug, Default)]
+struct Assigned {
+    names: HashSet<String>,
+    bangs: Vec<(String, String)>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct LoopExits {
+    /// The narrowings at each `break`.
+    breaks: Vec<Snapshot>,
+    /// A `break` runs an `ensure` on its way out, which the narrowings
+    /// at it do not show.
+    through_ensure: bool,
+    skipped: bool,
+    /// The `begin` blocks with an `ensure` around the point being checked.
+    ensures: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -305,6 +334,9 @@ pub struct Checker {
     /// `finish_frame_types`, with their declared types: those whose
     /// release may be observed go to `Output::lexical_slots`.
     frame_vars: Vec<(SelfOwner, u32, Type)>,
+    /// Calls whose block has a `break` of its own, and the type of the
+    /// values it gives the call (`loop { }` without one never returns).
+    breaking_blocks: HashMap<NodeId, Type>,
     /// Statements whose value is not used (calls, literals) since the last
     /// `finish_frame_types`: those whose release may be observed go to
     /// `Output::released_stmts`.
@@ -368,6 +400,9 @@ impl Checker {
             in_initialize: false,
             assigned_fields: HashSet::default(),
             loop_depth: 0,
+            loop_exits: LoopExits::default(),
+            ensure_assigns: None,
+            applying_facts: false,
             blocks: Vec::new(),
             ivar_narrow: HashMap::default(),
             in_rescue: 0,
@@ -384,6 +419,7 @@ impl Checker {
             env,
             touched: Vec::new(),
             frame_vars: Vec::new(),
+            breaking_blocks: HashMap::default(),
             temp_stmts: Vec::new(),
             file_mains,
             repl_env: None,
@@ -869,6 +905,9 @@ impl Checker {
             in_initialize: false,
             assigned_fields: HashSet::default(),
             loop_depth: 0,
+            loop_exits: LoopExits::default(),
+            ensure_assigns: None,
+            applying_facts: false,
             blocks: Vec::new(),
             ivar_narrow: HashMap::default(),
             in_rescue: 0,
@@ -1646,6 +1685,16 @@ impl Checker {
             VarKey::Local(name) => {
                 if let Some((depth, slot)) = self.lookup_var(name) {
                     let n = self.env.frames.len();
+                    if let (Some(rec), Some(t), false) =
+                        (&mut self.env.ensure_assigns, &t, self.env.applying_facts)
+                    {
+                        let key = (n - 1 - depth, slot);
+                        let j = match rec.get(&key) {
+                            Some(old) => self.world.join(old, t),
+                            None => t.clone(),
+                        };
+                        rec.insert(key, j);
+                    }
                     let v = &mut self.env.frames[n - 1 - depth].vars[slot];
                     v.narrowed = match t {
                         Some(t) if t != v.declared => Some(t),
@@ -1664,10 +1713,20 @@ impl Checker {
         }
     }
 
+    /// Narrow the subject of a `case` in a branch (a fact).
+    fn narrow_subject(&mut self, key: &VarKey, t: Option<Type>) {
+        let saved = std::mem::replace(&mut self.env.applying_facts, true);
+        self.set_narrowed(key, t);
+        self.env.applying_facts = saved;
+    }
+
     fn apply_facts(&mut self, facts: &Facts) {
+        // A fact narrows the value a variable has; it assigns nothing.
+        let saved = std::mem::replace(&mut self.env.applying_facts, true);
         for (key, t) in facts {
             self.set_narrowed(key, Some(t.clone()));
         }
+        self.env.applying_facts = saved;
     }
 
     /// Snapshot of all narrowings (for branches).
@@ -1682,13 +1741,66 @@ impl Checker {
         )
     }
 
+    /// Go back to the narrowings of `snap`. Variables declared since
+    /// were unassigned then: they may be nil.
     fn restore(&mut self, snap: &Snapshot) {
         for (f, saved) in self.env.frames.iter_mut().zip(snap.0.iter()) {
             for (v, s) in f.vars.iter_mut().zip(saved.iter()) {
                 v.narrowed = s.clone();
             }
         }
+        self.unset_since(snap);
         self.env.ivar_narrow = snap.1.clone();
+    }
+
+    /// Make the variables declared since `snap` nilable: on some path
+    /// from there they are not assigned.
+    fn unset_since(&mut self, snap: &Snapshot) {
+        let nil = self.world.nil();
+        for (fi, f) in self.env.frames.iter_mut().enumerate() {
+            let known = snap.0.get(fi).map_or(0, |s| s.len());
+            for v in f.vars.iter_mut().skip(known) {
+                v.narrowed = Self::maybe_unset(&self.world, &self.infer, v, &nil);
+            }
+        }
+    }
+
+    /// The variables a pattern test (`v in Int => n`) declared since
+    /// `snap` are bound only when it matches: their types become facts of
+    /// a match, and they may be nil otherwise.
+    fn bound_if_matched(&mut self, snap: &Snapshot, facts: &mut Facts) {
+        let frame = self.env.frames.last().unwrap();
+        let known = snap.0.last().map_or(0, |s| s.len());
+        for v in frame.vars.iter().skip(known) {
+            let t = v.narrowed.clone().unwrap_or_else(|| v.declared.clone());
+            facts.push((VarKey::Local(v.name.clone()), t));
+        }
+        self.unset_since(snap);
+    }
+
+    /// Take back from `now` the narrowings of the variables declared
+    /// since `snap`.
+    fn keep_since(&mut self, snap: &Snapshot, now: &Snapshot) {
+        for (fi, f) in self.env.frames.iter_mut().enumerate() {
+            let known = snap.0.get(fi).map_or(0, |s| s.len());
+            let Some(cur) = now.0.get(fi) else {
+                continue;
+            };
+            for (v, n) in f.vars.iter_mut().zip(cur.iter()).skip(known) {
+                v.narrowed = n.clone();
+            }
+        }
+    }
+
+    /// The narrowing of a variable that may be unassigned: its type or
+    /// nil (any value it was given, on an earlier pass of a loop).
+    fn maybe_unset(world: &World, infer: &InferTable, v: &VarInfo, nil: &Type) -> Option<Type> {
+        let j = world.join(&infer.resolve(&v.declared), nil);
+        if j == v.declared {
+            None
+        } else {
+            Some(j)
+        }
     }
 
     /// Merge the narrowings of two branches into the current environment
@@ -1701,13 +1813,15 @@ impl Checker {
         if other_dead {
             return;
         }
+        let nil = self.world.nil();
         for (fi, f) in self.env.frames.iter_mut().enumerate() {
             let Some(saved) = other.0.get(fi) else {
                 continue;
             };
             for (vi, v) in f.vars.iter_mut().enumerate() {
                 let Some(s) = saved.get(vi) else {
-                    v.narrowed = None;
+                    // Declared after the other branch: unassigned there.
+                    v.narrowed = Self::maybe_unset(&self.world, &self.infer, v, &nil);
                     continue;
                 };
                 if v.narrowed != *s {
@@ -1738,20 +1852,28 @@ impl Checker {
 
     /// Names assigned anywhere inside the expressions (for widening before
     /// loops and blocks).
-    fn assigned_names(exprs: &[Expr], out: &mut HashSet<String>) {
+    fn assigned_names(exprs: &[Expr], out: &mut Assigned) {
         for e in exprs {
             Self::assigned_names_expr(e, out);
         }
     }
 
-    fn assigned_names_expr(e: &Expr, out: &mut HashSet<String>) {
+    fn assigned_names_expr(e: &Expr, out: &mut Assigned) {
         use ExprKind::*;
         match &e.kind {
             // Both expansions assign the same names.
             For(f) => Self::assigned_names_expr(&f.comprehension, out),
             Assign { target, value } | OpAssign { target, value, .. } => {
-                if let LValue::Local { name, .. } = &**target {
-                    out.insert(name.clone());
+                match &**target {
+                    LValue::Local { name, .. } => {
+                        out.names.insert(name.clone());
+                    }
+                    LValue::Attr { recv, .. } => Self::assigned_names_expr(recv, out),
+                    LValue::Index { recv, args } => {
+                        Self::assigned_names_expr(recv, out);
+                        Self::assigned_names_args(args, out);
+                    }
+                    _ => {}
                 }
                 Self::assigned_names_expr(value, out);
             }
@@ -1768,16 +1890,22 @@ impl Checker {
                         _ => {}
                     }
                 }
-                targets.iter().for_each(|t| collect(t, out));
+                targets.iter().for_each(|t| collect(t, &mut out.names));
                 Self::assigned_names_expr(value, out);
             }
             TypedDecl { name, value, .. } => {
-                out.insert(name.clone());
+                out.names.insert(name.clone());
                 Self::assigned_names_expr(value, out);
             }
             Call(call) => {
                 if let Some(r) = &call.recv {
                     Self::assigned_names_expr(r, out);
+                    // `x.foo!` rebinds `x` when its type has no `foo!`.
+                    if call.name.ends_with('!') && call.name != "!=" {
+                        if let ExprKind::Local(name) = &r.kind {
+                            out.bangs.push((name.clone(), call.name.clone()));
+                        }
+                    }
                 }
                 for a in &call.args {
                     match a {
@@ -1817,6 +1945,7 @@ impl Checker {
                     Self::assigned_names_expr(s, out);
                 }
                 for w in whens {
+                    Self::assigned_names_args(&w.conds, out);
                     Self::assigned_names(&w.body, out);
                 }
                 if let Some(els) = els {
@@ -1826,6 +1955,10 @@ impl Checker {
             CaseIn { subject, arms, els } => {
                 Self::assigned_names_expr(subject, out);
                 for a in arms {
+                    Self::pattern_names(&a.pattern, &mut out.names);
+                    if let Some(g) = &a.guard {
+                        Self::assigned_names_expr(&g.cond, out);
+                    }
                     Self::assigned_names(&a.body, out);
                 }
                 if let Some(els) = els {
@@ -1835,6 +1968,9 @@ impl Checker {
             Begin(b) => {
                 Self::assigned_names(&b.body, out);
                 for r in &b.rescues {
+                    if let Some(v) = &r.var {
+                        out.names.insert(v.clone());
+                    }
                     Self::assigned_names(&r.body, out);
                 }
                 if let Some(x) = &b.else_body {
@@ -1847,16 +1983,34 @@ impl Checker {
             Seq(es) => Self::assigned_names(es, out),
             Return(Some(v)) | Break(Some(v)) | Next(Some(v)) => Self::assigned_names_expr(v, out),
             Lambda(b) => Self::assigned_names(&b.body, out),
-            Array(items) => {
-                for a in items {
-                    match a {
-                        Arg::Positional(x)
-                        | Arg::Splat(x)
-                        | Arg::DoubleSplat(x)
-                        | Arg::BlockPass(x) => Self::assigned_names_expr(x, out),
-                        Arg::Keyword { value, .. } => Self::assigned_names_expr(value, out),
+            Array(items) | Yield(items) => Self::assigned_names_args(items, out),
+            Super { args, block } => {
+                if let Some(args) = args {
+                    Self::assigned_names_args(args, out);
+                }
+                if let Some(b) = block {
+                    Self::assigned_names(&b.body, out);
+                }
+            }
+            Hash(entries) => {
+                for e in entries {
+                    match e {
+                        HashEntry::Pair { key, value } => {
+                            Self::assigned_names_expr(key, out);
+                            Self::assigned_names_expr(value, out);
+                        }
+                        HashEntry::DoubleSplat(x) => Self::assigned_names_expr(x, out),
                     }
                 }
+            }
+            Range { lo, hi, .. } => {
+                for x in [lo, hi].into_iter().flatten() {
+                    Self::assigned_names_expr(x, out);
+                }
+            }
+            MatchPattern { value, pattern, .. } => {
+                Self::assigned_names_expr(value, out);
+                Self::pattern_names(pattern, &mut out.names);
             }
             Str(parts) | DSymbol(parts) | Regexp { parts, .. } => {
                 for p in parts {
@@ -1869,13 +2023,102 @@ impl Checker {
         }
     }
 
+    /// The variables a pattern binds.
+    fn pattern_names(p: &Pattern, out: &mut HashSet<String>) {
+        fn array(a: &ArrayPattern, out: &mut HashSet<String>) {
+            for p in a.pre.iter().chain(&a.post) {
+                Checker::pattern_names(p, out);
+            }
+            if let Some(Some(r)) = &a.rest {
+                out.insert(r.clone());
+            }
+        }
+        fn hash(h: &HashPattern, out: &mut HashSet<String>) {
+            for pair in &h.pairs {
+                match &pair.pattern {
+                    Some(p) => Checker::pattern_names(p, out),
+                    None => {
+                        out.insert(pair.key.clone());
+                    }
+                }
+            }
+            if let Some(HashPatternRest::Bind(r)) = &h.rest {
+                out.insert(r.clone());
+            }
+        }
+        match &p.kind {
+            PatternKind::Bind(n) => {
+                out.insert(n.clone());
+            }
+            PatternKind::Capture(p, n) => {
+                Self::pattern_names(p, out);
+                out.insert(n.clone());
+            }
+            PatternKind::Alt(ps) => ps.iter().for_each(|p| Self::pattern_names(p, out)),
+            PatternKind::ConstArray(_, a) => array(a, out),
+            PatternKind::Array(a) => array(a, out),
+            PatternKind::ConstHash(_, h) => hash(h, out),
+            PatternKind::Hash(h) => hash(h, out),
+            PatternKind::Find {
+                pre_rest,
+                middle,
+                post_rest,
+            } => {
+                out.extend(pre_rest.iter().chain(post_rest.iter()).cloned());
+                middle.iter().for_each(|p| Self::pattern_names(p, out));
+            }
+            PatternKind::Value(_)
+            | PatternKind::Pin(_)
+            | PatternKind::Const(_)
+            | PatternKind::Range { .. } => {}
+        }
+    }
+
+    fn assigned_names_args(args: &[Arg], out: &mut Assigned) {
+        for a in args {
+            match a {
+                Arg::Positional(x) | Arg::Splat(x) | Arg::DoubleSplat(x) | Arg::BlockPass(x) => {
+                    Self::assigned_names_expr(x, out)
+                }
+                Arg::Keyword { value, .. } => Self::assigned_names_expr(value, out),
+            }
+        }
+    }
+
     /// Reset the narrowing of outer variables assigned inside `body`.
     fn widen_assigned(&mut self, body: &[Expr]) {
-        let mut names = HashSet::default();
-        Self::assigned_names(body, &mut names);
-        for name in names {
+        let mut assigned = Assigned::default();
+        Self::assigned_names(body, &mut assigned);
+        for (name, method) in assigned.bangs {
+            if !assigned.names.contains(&name) && self.bang_may_assign(&name, &method) {
+                assigned.names.insert(name);
+            }
+        }
+        for name in assigned.names {
             self.set_narrowed(&VarKey::Local(name), None);
         }
+    }
+
+    /// Whether `name.method` (`method` ends with `!`) may be the sugar
+    /// for `name = name.foo`: unless every member of the variable's type
+    /// has a `foo!` (which its subclasses inherit; a narrowing to one
+    /// that has only `foo` would take the sugar). `nil` calls nothing.
+    fn bang_may_assign(&self, name: &str, method: &str) -> bool {
+        let Some((depth, slot)) = self.lookup_var(name) else {
+            return false;
+        };
+        let n = self.env.frames.len();
+        let t = self
+            .infer
+            .resolve(&self.env.frames[n - 1 - depth].vars[slot].declared);
+        let members = match &t {
+            Type::Union(ms) => ms.clone(),
+            t => vec![t.clone()],
+        };
+        let nil = self.world.nil();
+        members
+            .iter()
+            .any(|m| *m != nil && self.world.lookup_methods(m, method).is_empty())
     }
 
     // ----- bodies --------------------------------------------------------------
@@ -2340,20 +2583,42 @@ impl Checker {
                     self.apply_facts(&body_facts);
                 }
                 self.env.loop_depth += 1;
+                let saved_exits = std::mem::take(&mut self.env.loop_exits);
                 self.check_body(body, None);
+                let end_of_body = self.snapshot();
+                let exits = std::mem::replace(&mut self.env.loop_exits, saved_exits);
+                let broke = !exits.breaks.is_empty();
                 self.env.loop_depth -= 1;
-                self.restore(&snap);
-                self.widen_assigned(body);
+                let infinite = matches!(cond.kind, ExprKind::True) && !*negate
+                    || matches!(cond.kind, ExprKind::False) && *negate;
+                if infinite && !exits.through_ensure {
+                    // Only a `break` leaves: as at the breaks.
+                    if let Some((first, rest)) = exits.breaks.split_first() {
+                        self.restore(first);
+                        for b in rest {
+                            self.merge_with(b, false, false);
+                        }
+                    }
+                } else {
+                    self.restore(&snap);
+                    self.widen_assigned(body);
+                    // Variables the body declares are unassigned when it
+                    // does not run, or leaves before assigning them; a
+                    // `begin ... end while` body runs once.
+                    if !*do_while || broke || exits.skipped {
+                        self.unset_since(&snap);
+                    } else {
+                        self.keep_since(&snap, &end_of_body);
+                    }
+                }
                 // The loop ends with its condition false, unless a `break`
                 // leaves it (`while w.nil?` with a `break`: `w` may still
                 // be nil after it).
-                if !Self::contains_break(body) {
+                if !broke {
                     self.apply_facts(&exit_facts);
                 }
-                let infinite = matches!(cond.kind, ExprKind::True) && !*negate
-                    || matches!(cond.kind, ExprKind::False) && *negate;
                 let _ = ct;
-                if infinite && !Self::contains_break(body) {
+                if infinite && !broke {
                     Type::Nothing
                 } else {
                     self.world.nil()
@@ -2374,11 +2639,13 @@ impl Checker {
             } => {
                 let vt = self.check_expr(value, None);
                 let vt = self.resolve(&vt);
-                let facts = self.check_pattern_facts(pattern, &vt, value);
+                let before = self.snapshot();
+                let mut facts = self.check_pattern_facts(pattern, &vt, value);
                 if *raises {
                     self.apply_facts(&facts);
                     self.world.nil()
                 } else {
+                    self.bound_if_matched(&before, &mut facts);
                     self.world.bool_()
                 }
             }
@@ -2454,10 +2721,12 @@ impl Checker {
                     Some(v) => self.check_expr(v, None),
                     None => self.world.nil(),
                 };
-                if in_block && self.env.loop_depth == 0 {
-                    if let Some(b) = self.env.blocks.last_mut() {
-                        b.breaks.push(t);
-                    }
+                if self.env.loop_depth > 0 {
+                    let snap = self.snapshot();
+                    self.env.loop_exits.breaks.push(snap);
+                    self.env.loop_exits.through_ensure |= self.env.loop_exits.ensures > 0;
+                } else if let Some(b) = self.env.blocks.last_mut() {
+                    b.breaks.push(t);
                 }
                 Type::Nothing
             }
@@ -2466,6 +2735,9 @@ impl Checker {
                 if self.env.loop_depth == 0 && !in_block {
                     self.error("`next` outside of a loop or block", expr.span);
                     return Type::Nothing;
+                }
+                if self.env.loop_depth > 0 {
+                    self.env.loop_exits.skipped = true;
                 }
                 if in_block && self.env.loop_depth == 0 {
                     let ret = self.env.blocks.last().unwrap().ret.clone();
@@ -2516,37 +2788,6 @@ impl Checker {
             }
             Using(_) | Require { .. } => self.world.nil(),
         }
-    }
-
-    fn contains_break(body: &[Expr]) -> bool {
-        fn walk(e: &Expr) -> bool {
-            match &e.kind {
-                ExprKind::Break(_) => true,
-                ExprKind::For(f) => walk(&f.comprehension),
-                ExprKind::If { cond, then, els } => {
-                    walk(cond)
-                        || then.iter().any(walk)
-                        || els.as_ref().is_some_and(|b| b.iter().any(walk))
-                }
-                ExprKind::Begin(b) => {
-                    b.body.iter().any(walk) || b.rescues.iter().any(|r| r.body.iter().any(walk))
-                }
-                ExprKind::Case { whens, els, .. } => {
-                    whens.iter().any(|w| w.body.iter().any(walk))
-                        || els.as_ref().is_some_and(|b| b.iter().any(walk))
-                }
-                ExprKind::CaseIn { arms, els, .. } => {
-                    arms.iter().any(|a| a.body.iter().any(walk))
-                        || els.as_ref().is_some_and(|b| b.iter().any(walk))
-                }
-                ExprKind::Seq(es) => es.iter().any(walk),
-                ExprKind::And(a, b) | ExprKind::Or(a, b) => walk(a) || walk(b),
-                ExprKind::Not(a) => walk(a),
-                ExprKind::Assign { value, .. } | ExprKind::OpAssign { value, .. } => walk(value),
-                _ => false,
-            }
-        }
-        body.iter().any(walk)
     }
 
     fn check_str_parts(&mut self, parts: &[StrPart]) {
@@ -2964,7 +3205,9 @@ impl Checker {
             } => {
                 let vt = self.check_expr(value, None);
                 let vt = self.resolve(&vt);
-                let facts = self.check_pattern_facts(pattern, &vt, value);
+                let before = self.snapshot();
+                let mut facts = self.check_pattern_facts(pattern, &vt, value);
+                self.bound_if_matched(&before, &mut facts);
                 let bt = self.world.bool_();
                 self.record(cond.id, &bt);
                 (bt, facts, Vec::new())
@@ -3153,7 +3396,7 @@ impl Checker {
             self.restore(&before);
             if let Some(rem) = &remaining {
                 if let Some(k) = &key {
-                    self.set_narrowed(k, Some(rem.clone()));
+                    self.narrow_subject(k, Some(rem.clone()));
                 }
             }
             let mut narrowed_to = Vec::new();
@@ -3180,7 +3423,7 @@ impl Checker {
             }
             if let (Some(k), false) = (&key, narrowed_to.is_empty()) {
                 let t = Type::union_of(narrowed_to);
-                self.set_narrowed(k, Some(t));
+                self.narrow_subject(k, Some(t));
             }
             let bt = self.check_body(&w.body, expected);
             branch_snaps.push((self.snapshot(), bt.is_nothing()));
@@ -3190,7 +3433,7 @@ impl Checker {
         let et = match els {
             Some(els) => {
                 if let (Some(k), Some(rem)) = (&key, &remaining) {
-                    self.set_narrowed(k, Some(rem.clone()));
+                    self.narrow_subject(k, Some(rem.clone()));
                 }
                 self.check_body(els, expected)
             }
@@ -3209,6 +3452,18 @@ impl Checker {
     }
 
     fn check_begin(&mut self, block: &BeginBlock, expected: Option<&Type>) -> Type {
+        // A `break` through an `ensure` that assigns leaves with what it
+        // assigns.
+        let ensures = block.ensure.as_ref().is_some_and(|e| {
+            let mut assigned = Assigned::default();
+            Self::assigned_names(e, &mut assigned);
+            !assigned.names.is_empty()
+                || assigned
+                    .bangs
+                    .iter()
+                    .any(|(name, method)| self.bang_may_assign(name, method))
+        }) as u32;
+        self.env.loop_exits.ensures += ensures;
         let before = self.snapshot();
         let bt = self.check_body(&block.body, expected);
         let body_dead = bt.is_nothing();
@@ -3219,6 +3474,7 @@ impl Checker {
             self.restore(&before);
             // Variables assigned in the body may or may not have been.
             self.widen_assigned(&block.body);
+            self.unset_since(&before);
             let mut exc_ty = Type::Nothing;
             let mut class_ids = Vec::new();
             if r.classes.is_empty() {
@@ -3270,10 +3526,57 @@ impl Checker {
             self.merge_with(snap, *d, dead);
             dead = dead && *d;
         }
+        self.env.loop_exits.ensures -= ensures;
         if let Some(ensure) = &block.ensure {
             let saved = self.snapshot();
+            // It also runs when the body or a `rescue` raised part way
+            // through.
+            self.widen_assigned(&block.body);
+            for r in &block.rescues {
+                self.widen_assigned(&r.body);
+            }
+            if let Some(x) = &block.else_body {
+                self.widen_assigned(x);
+            }
+            self.unset_since(&before);
+            let outer = self.env.ensure_assigns.replace(HashMap::default());
             self.check_body(ensure, None);
+            let assigned =
+                std::mem::replace(&mut self.env.ensure_assigns, outer).unwrap_or_default();
+            // After it, as on the normal path, joined with what it
+            // assigns; what it declares, as at its end.
+            let end = self.snapshot();
             self.restore(&saved);
+            self.keep_since(&saved, &end);
+            let n = self.env.frames.len();
+            for (&(fi, slot), t) in &assigned {
+                if fi >= n || slot >= self.env.frames[fi].vars.len() {
+                    continue;
+                }
+                let v = &self.env.frames[fi].vars[slot];
+                let cur = v.narrowed.clone().unwrap_or_else(|| v.declared.clone());
+                let mut j = self.world.join(&self.infer.resolve(&cur), t);
+                // Its type at the end of the `ensure` holds too (that
+                // started wider): the narrower of the two.
+                if let Some(at_end) = end.0.get(fi).and_then(|f| f.get(slot)) {
+                    let at_end = at_end.clone().unwrap_or_else(|| v.declared.clone());
+                    let at_end = self.infer.resolve(&at_end);
+                    if self.world.is_subtype(&at_end, &j) {
+                        j = at_end;
+                    }
+                }
+                let v = &mut self.env.frames[fi].vars[slot];
+                v.narrowed = if j == v.declared { None } else { Some(j) };
+            }
+            if let Some(rec) = &mut self.env.ensure_assigns {
+                for (k, t) in assigned {
+                    let j = match rec.get(&k) {
+                        Some(old) => self.world.join(old, &t),
+                        None => t,
+                    };
+                    rec.insert(k, j);
+                }
+            }
         }
         result
     }
@@ -4113,6 +4416,10 @@ impl Checker {
                 let members = members.clone();
                 let mut result = Type::Nothing;
                 let mut targets: Vec<Option<MethodId>> = Vec::new();
+                // `x.foo!` as `x = x.foo`: each member is checked with `x`
+                // as it was, and `x` then holds any member's result.
+                let bang = self.union_bang_place(call, &members, expr.span);
+                let bang_saved = bang.as_ref().map(|k| self.narrowing_of(k));
                 // The arguments are checked once per member, but a literal
                 // has one representation: an integer literal the members
                 // disagree on (`Float` for one, `Int` for another, as in
@@ -4122,6 +4429,9 @@ impl Checker {
                 let ndiag = self.diagnostics.len();
                 let mut per_member = Vec::new();
                 for m in &members {
+                    if let (Some(k), Some(saved)) = (&bang, &bang_saved) {
+                        self.narrow_subject(k, saved.clone());
+                    }
                     let t = self.check_call_on(expr, call, m, implicit_self, expected);
                     targets.push(match self.out.calls.get(&expr.id) {
                         Some(CallTarget::Method { method }) => Some(*method),
@@ -4147,6 +4457,9 @@ impl Checker {
                     result = Type::Nothing;
                     targets.clear();
                     for m in &members {
+                        if let (Some(k), Some(saved)) = (&bang, &bang_saved) {
+                            self.narrow_subject(k, saved.clone());
+                        }
                         let t = self.check_call_on(expr, call, m, implicit_self, expected);
                         targets.push(match self.out.calls.get(&expr.id) {
                             Some(CallTarget::Method { method }) => Some(*method),
@@ -4156,6 +4469,12 @@ impl Checker {
                     }
                     for id in added {
                         self.int_literals.remove(&id);
+                    }
+                }
+                if let Some(k) = &bang {
+                    if self.out.bang_assign.contains(&expr.id) {
+                        let t = self.resolve(&result);
+                        self.set_narrowed(k, Some(t));
                     }
                 }
                 // The recorded target is the last member's; when the
@@ -4400,6 +4719,65 @@ impl Checker {
     /// `x.foo!(args)` where the receiver's type has no `foo!` but has
     /// `foo`, and `x` is a local or a field: `x = x.foo(args)`. Returns
     /// the assigned type, or `None` when the sugar does not apply.
+    /// The place `x.foo!` on a union receiver assigns (`x`, or `@x`; the
+    /// root of a chain `x.foo!.bar!`), when no member has a `foo!` of its
+    /// own. Members that disagree on that are refused: some would call
+    /// their `foo!` and others assign.
+    fn union_bang_place(&mut self, call: &Call, members: &[Type], span: Span) -> Option<VarKey> {
+        let plain = call.name.strip_suffix('!')?;
+        if plain.is_empty() || call.name.ends_with("!=") {
+            return None;
+        }
+        let own = members
+            .iter()
+            .any(|m| !self.world.lookup_methods(m, &call.name).is_empty());
+        let sugar = members.iter().any(|m| {
+            self.world.lookup_methods(m, &call.name).is_empty()
+                && !self.world.lookup_methods(m, plain).is_empty()
+        });
+        if !sugar {
+            return None;
+        }
+        if own {
+            self.error(
+                format!(
+                    "`{}` is a method of some members of the union and `{plain}` of others; \
+                     narrow the receiver first",
+                    call.name
+                ),
+                span,
+            );
+            return None;
+        }
+        let mut root = call.recv.as_ref()?;
+        while let ExprKind::Call(inner) = &root.kind {
+            if !self.out.bang_assign.contains(&root.id) {
+                break;
+            }
+            match inner.recv.as_ref() {
+                Some(r) => root = r,
+                None => break,
+            }
+        }
+        match &root.kind {
+            ExprKind::Local(name) => Some(VarKey::Local(name.clone())),
+            ExprKind::IVar(name) => Some(VarKey::IVar(name.clone())),
+            _ => None,
+        }
+    }
+
+    /// The narrowing `key` has now (`None`: its declared type).
+    fn narrowing_of(&self, key: &VarKey) -> Option<Type> {
+        match key {
+            VarKey::Local(name) => {
+                let (depth, slot) = self.lookup_var(name)?;
+                let n = self.env.frames.len();
+                self.env.frames[n - 1 - depth].vars[slot].narrowed.clone()
+            }
+            VarKey::IVar(name) => self.env.ivar_narrow.get(name).cloned(),
+        }
+    }
+
     fn check_bang_assign(
         &mut self,
         expr: &Expr,
@@ -4517,6 +4895,12 @@ impl Checker {
                         ),
                         expr.span,
                     );
+                }
+                // As an assignment to the field narrows it.
+                self.env.assigned_fields.insert(name.clone());
+                if !field.mutable {
+                    let narrowed = self.resolve(&vt);
+                    self.env.ivar_narrow.insert(name.clone(), narrowed);
                 }
             }
             _ => {}
@@ -5010,12 +5394,17 @@ impl Checker {
                         .calls
                         .insert(expr.id, CallTarget::Method { method: *mid });
                     // `loop { }` without `break` never returns.
-                    if m.name == "loop" && m.owner == self.world.builtin.kernel {
-                        if let Some(b) = &call.block {
-                            if !Self::contains_break(&b.body) {
-                                return Type::Nothing;
-                            }
-                        }
+                    let broken = self.breaking_blocks.get(&expr.id).cloned();
+                    if m.name == "loop"
+                        && m.owner == self.world.builtin.kernel
+                        && call.block.is_some()
+                        && broken.is_none()
+                    {
+                        return Type::Nothing;
+                    }
+                    // A `break` in the block gives the call its value.
+                    if let Some(t) = broken {
+                        return self.join(&ret, &t);
                     }
                     return ret;
                 }
@@ -5567,6 +5956,12 @@ impl Checker {
             breaks: Vec::new(),
             is_lambda: false,
         });
+        // `break` and `next` in a block leave the block, not a loop
+        // around it.
+        let saved_loop = (
+            std::mem::take(&mut self.env.loop_depth),
+            std::mem::take(&mut self.env.loop_exits),
+        );
         // Parameters: destructure a single tuple parameter over several
         // block parameters.
         let declared: Vec<&Param> = block
@@ -5659,7 +6054,14 @@ impl Checker {
         }
         let frame = self.env.frames.pop().unwrap();
         self.note_frame_vars(&frame);
-        self.env.blocks.pop();
+        let breaks = self.env.blocks.pop().unwrap().breaks;
+        if let Some((first, rest)) = breaks.split_first() {
+            let t = rest.iter().fold(first.clone(), |a, b| self.join(&a, b));
+            self.breaking_blocks.insert(call_id, t);
+        } else {
+            self.breaking_blocks.remove(&call_id);
+        }
+        (self.env.loop_depth, self.env.loop_exits) = saved_loop;
         (self.env.task_frame, self.env.task_shareable_proc) = saved_task_frame;
         self.leave_receiver(saved_self);
         self.out
@@ -5786,6 +6188,11 @@ impl Checker {
             breaks: Vec::new(),
             is_lambda: true,
         });
+        // `break` and `next` here do not leave a loop around the lambda.
+        let saved_loop = (
+            std::mem::take(&mut self.env.loop_depth),
+            std::mem::take(&mut self.env.loop_exits),
+        );
         for (i, p) in block.params.list.iter().enumerate() {
             let t = match &p.ty {
                 Some(te) => {
@@ -5828,6 +6235,7 @@ impl Checker {
             );
         }
         (self.env.task_frame, self.env.task_shareable_proc) = saved_task_frame;
+        (self.env.loop_depth, self.env.loop_exits) = saved_loop;
         let frame = self.env.frames.pop().unwrap();
         self.note_frame_vars(&frame);
         self.env.blocks.pop();
@@ -6256,7 +6664,7 @@ impl Checker {
             self.restore(&before);
             let narrowed = self.check_pattern(&arm.pattern, &st);
             if let Some(k) = &key {
-                self.set_narrowed(k, Some(narrowed));
+                self.narrow_subject(k, Some(narrowed));
             }
             if let Some(g) = &arm.guard {
                 let (_, ft, ff) = self.check_cond(&g.cond);
@@ -6274,7 +6682,7 @@ impl Checker {
             Some(els) => {
                 if let Some(k) = &key {
                     let rem = Type::union_of(remaining.clone());
-                    self.set_narrowed(k, Some(rem));
+                    self.narrow_subject(k, Some(rem));
                 }
                 self.check_body(els, expected)
             }

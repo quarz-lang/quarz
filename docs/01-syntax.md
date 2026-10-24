@@ -374,7 +374,7 @@ xs.push!(4)            # xs = xs.push(4): a method call with `!` rebinds its rec
 
 - The type of a local variable is determined by its first assignment. To widen the type, add an annotation (`y: Int? = nil`).
 - After an assignment the type is narrowed by **flow typing** (after `y = 10`, `y` can be treated as `Int`).
-- The rules for variable declaration and scope (a variable assigned inside an `if` is visible afterwards, block parameters are visible only within the block, etc.) are the same as in Ruby.
+- The rules for variable declaration and scope (a variable assigned inside an `if` is visible afterwards, block parameters are visible only within the block, etc.) are the same as in Ruby. Where such a variable may not have been assigned (after an `if` that assigns it in one branch only, after a `while` that assigns it in its body, in a `rescue` when the body assigns it), it is `nil` as in Ruby, and its type there is nilable: `y = n if n > 0` followed by `y + 1` is an error, while `y + 1 if y` is not.
 - Assignment to an `@ivar` is only possible inside `initialize` if the field is immutable.
 - `x.foo!(args)` is sugar for `x = x.foo(args)` when the receiver's type has no method `foo!`: the receiver must be a local variable or a field, the result must fit its type (`s.size!` is an error), and the value of the expression is the new value. A chain rebinds the same place step by step (`s.strip!.upcase!`). Only the variable is rebound; the old value is unchanged for anything else that refers to it (`b = a; a.push!(1)` leaves `b` as it was), which differs from Ruby's mutating `!` methods. A real `foo!` (the mutating methods of builders such as `sort!`) is called as usual. The common collection updates (`push!`, `put!`, `add!`, `set!`, `delete!`) run in place when nothing else refers to the collection. The receiver cannot be another object's attribute: `obj.items.push!(x)` is an error, and `obj.items = obj.items.push(x)` copies the array every time (the object still holds it while `push` runs; in a loop that is quadratic). To update a collection another object holds, give that object a method and write `@items.push!(x)` inside it, where the update is in place.
 
@@ -388,6 +388,7 @@ Different from Ruby:
 - All control structures are expressions (as in Ruby), but if the branches of an `if` have different types, the result is a union type. An `if` without `else` has type `T?`.
 - Truthiness is as in Ruby: only `nil` and `false` are falsy. However, a condition that is known from its type to be always true / always false (`if 3`, `if some_int`) produces a warning.
 - Variable types are narrowed by `while` and `if` conditions ([02-types.md](02-types.md) §6).
+- `break v` in a block ends the call that the block was given to, with the value `v`: the call's type includes the types of its block's breaks (`xs.map! { break v }`, which is `xs = xs.map { break v }`, stores `v`). `loop { }` without a `break` never returns; with one, it may also end with `nil` at a `StopIteration`. `break` and `next` in a block or a lambda leave it, not a loop around it; `break` in a lambda is an error (use `next` or `return`).
 
 ### `for` comprehensions
 
