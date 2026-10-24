@@ -2737,7 +2737,7 @@ impl Interp {
         self.format_value(v, true)
     }
 
-    fn format_value(&self, v: &Value, inspect: bool) -> Result<String, Flow> {
+    pub(crate) fn format_value(&self, v: &Value, inspect: bool) -> Result<String, Flow> {
         Ok(match v {
             Value::Nil => {
                 if inspect {

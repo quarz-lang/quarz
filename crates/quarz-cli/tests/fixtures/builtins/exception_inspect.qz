@@ -1,0 +1,22 @@
+# The default `inspect` of an exception formats it (it used to look
+# itself up again, without end).
+p RuntimeError.new("x")
+begin
+  raise ArgumentError, "bad"
+rescue => e
+  p e
+  puts e.inspect
+end
+class Plain
+  @n: Int
+  def initialize(@n: Int); end
+end
+p Plain.new(1)
+# A user `inspect` building on the default one.
+class Wrapped
+  @n: Int
+  def initialize(@n: Int); end
+  def inspect -> String = "W:" + super
+end
+p Wrapped.new(3)
+p [RuntimeError.new("a"), ArgumentError.new("b")]
