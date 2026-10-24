@@ -8,7 +8,9 @@ use std::cell::{Cell, RefCell};
 use quarz_ir::*;
 use smallvec::{smallvec, SmallVec};
 
-use crate::interp::{fast_binop, int_binop, ArgVec, EvalResult, Flow, Interp, SharedState};
+use crate::interp::{
+    float_binop_into, float_operands, int_binop_into, ArgVec, EvalResult, Flow, Interp, SharedState,
+};
 use crate::sched;
 use crate::value::*;
 
@@ -650,13 +652,21 @@ impl Interp {
                     Inst::BinOp {
                         dst, op, lhs, rhs, ..
                     } => {
-                        // Two Ints, the commonest case, computed here.
-                        let v = match (&regs[*lhs as usize], &regs[*rhs as usize]) {
-                            (Value::Int(x), Value::Int(y)) => int_binop(*op, *x, *y),
-                            (a, b) => fast_binop(*op, a, b),
-                        };
-                        if let Some(v) = v {
-                            put(&mut regs[*dst as usize], v);
+                        // Two Ints, the commonest case, computed here and
+                        // written straight into the register: a value built
+                        // aside and copied in is read back before its stores
+                        // are done, which costs more than the arithmetic.
+                        if let (Value::Int(x), Value::Int(y)) =
+                            (&regs[*lhs as usize], &regs[*rhs as usize])
+                        {
+                            let (x, y) = (*x, *y);
+                            if int_binop_into(*op, x, y, &mut regs[*dst as usize]) {
+                                continue;
+                            }
+                        } else if let Some((x, y)) =
+                            float_operands(&regs[*lhs as usize], &regs[*rhs as usize])
+                        {
+                            float_binop_into(*op, x, y, &mut regs[*dst as usize]);
                             continue;
                         }
                     }
@@ -970,6 +980,15 @@ impl Interp {
             Inst::FieldGet {
                 dst, obj, index, ..
             } => {
+                if let (Value::Object(o), true) = (&regs[*obj as usize], obj != dst) {
+                    let o: *const Object = &**o;
+                    let slot: *mut Value = &mut regs[*dst as usize];
+                    // SAFETY: the register holding the object is another
+                    // one, which keeps it alive while `slot` is written.
+                    if unsafe { (*o).field_into(*index as usize, slot) } {
+                        return Ok(());
+                    }
+                }
                 let v = match &regs[*obj as usize] {
                     Value::Object(o) => o.field(*index as usize).unwrap_or(Value::Nil),
                     _ => {
@@ -1453,7 +1472,7 @@ fn release_regs(regs: &mut SmallVec<[Value; 16]>) {
 /// `*slot = v`, without calling into the drop glue when the old value
 /// holds no reference (a register usually holds nil or a number).
 #[inline(always)]
-fn put(slot: &mut Value, v: Value) {
+pub(crate) fn put(slot: &mut Value, v: Value) {
     if matches!(
         slot,
         Value::Nil
