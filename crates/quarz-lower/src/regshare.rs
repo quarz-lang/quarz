@@ -28,37 +28,51 @@ pub fn share_registers(functions: &mut [Function], methods: &[RtMethod]) {
     }
 }
 
-/// A set of registers, one bit each.
-#[derive(Clone)]
-struct Bits(Vec<u64>);
+/// A set of registers: a list to go through and a flag per register,
+/// so that adding, removing and testing are constant time and going
+/// through it costs what it holds, not the number of registers.
+struct Live {
+    list: Vec<Reg>,
+    pos: Vec<u32>,
+}
 
-impl Bits {
-    fn new(n: usize) -> Bits {
-        Bits(vec![0; n.div_ceil(64)])
-    }
-    fn set(&mut self, r: Reg) {
-        self.0[r as usize / 64] |= 1 << (r % 64);
-    }
-    fn unset(&mut self, r: Reg) {
-        self.0[r as usize / 64] &= !(1 << (r % 64));
-    }
-    fn has(&self, r: Reg) -> bool {
-        self.0[r as usize / 64] & (1 << (r % 64)) != 0
-    }
-    fn or(&mut self, other: &Bits) {
-        for (a, b) in self.0.iter_mut().zip(&other.0) {
-            *a |= b;
+const ABSENT: u32 = u32::MAX;
+
+impl Live {
+    fn new(n: usize) -> Live {
+        Live {
+            list: Vec::new(),
+            pos: vec![ABSENT; n],
         }
     }
-    fn meets(&self, other: &Bits) -> bool {
-        self.0.iter().zip(&other.0).any(|(a, b)| a & b != 0)
+    fn set(&mut self, r: Reg) {
+        if self.pos[r as usize] == ABSENT {
+            self.pos[r as usize] = self.list.len() as u32;
+            self.list.push(r);
+        }
     }
-    fn iter(&self) -> impl Iterator<Item = Reg> + '_ {
-        self.0.iter().enumerate().flat_map(|(w, word)| {
-            (0..64)
-                .filter(move |b| word & (1 << b) != 0)
-                .map(move |b| (w * 64 + b) as Reg)
-        })
+    fn unset(&mut self, r: Reg) {
+        let at = self.pos[r as usize];
+        if at != ABSENT {
+            self.list.swap_remove(at as usize);
+            if let Some(moved) = self.list.get(at as usize) {
+                self.pos[*moved as usize] = at;
+            }
+            self.pos[r as usize] = ABSENT;
+        }
+    }
+    fn has(&self, r: Reg) -> bool {
+        self.pos[r as usize] != ABSENT
+    }
+    fn clear(&mut self) {
+        for r in self.list.drain(..) {
+            self.pos[r as usize] = ABSENT;
+        }
+    }
+    fn extend(&mut self, regs: &[Reg]) {
+        for r in regs {
+            self.set(*r);
+        }
     }
 }
 
@@ -87,56 +101,89 @@ fn share_in(f: &mut Function, methods: &[RtMethod]) {
         .iter()
         .map(|b| b.insts.iter().map(|i| (i.uses(), i.defs())).collect())
         .collect();
-    // Liveness at block entry (as in `live::mark_moves`).
-    let mut up = vec![Bits::new(n); nblocks];
-    let mut kill = vec![Bits::new(n); nblocks];
-    for (bi, blk) in f.blocks.iter().enumerate() {
-        if let Some(r) = blk.term.uses() {
-            up[bi].set(r);
-        }
-        for (uses, defs) in ud[bi].iter().rev() {
-            for r in defs {
-                up[bi].unset(*r);
-                kill[bi].set(*r);
-            }
-            for r in uses {
-                up[bi].set(*r);
-            }
-        }
-    }
+    // Liveness at block entry (as in `live::mark_moves`), register by
+    // register: from the blocks that read it before writing it, back
+    // through the predecessors that do not write it. A block's handler
+    // may be entered from any of its instructions: what is live entering
+    // the handler is live entering the block (one with instructions).
+    // Each block's list holds only what is live there, where a set of
+    // every register per block would grow as blocks times registers.
     let succ: Vec<Vec<BlockId>> = f.blocks.iter().map(successors).collect();
-    let mut live_in = vec![Bits::new(n); nblocks];
-    let out_of = |bi: usize, live_in: &[Bits]| {
-        let mut out = Bits::new(n);
+    let mut preds: Vec<Vec<usize>> = vec![Vec::new(); nblocks];
+    let mut protected: Vec<Vec<usize>> = vec![Vec::new(); nblocks];
+    for (bi, blk) in f.blocks.iter().enumerate() {
         for s in &succ[bi] {
-            out.or(&live_in[*s as usize]);
+            preds[*s as usize].push(bi);
         }
-        out
-    };
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for bi in (0..nblocks).rev() {
-            let out = out_of(bi, &live_in);
-            let mut new = Bits::new(n);
-            for w in 0..new.0.len() {
-                new.0[w] = up[bi].0[w] | (out.0[w] & !kill[bi].0[w]);
+        if let (Some(h), false) = (blk.handler, blk.insts.is_empty()) {
+            protected[h.block as usize].push(bi);
+        }
+    }
+    // By register: the blocks reading it before any write there, and
+    // those writing it.
+    let mut ups: Vec<Vec<usize>> = vec![Vec::new(); n];
+    let mut kills: Vec<Vec<usize>> = vec![Vec::new(); n];
+    {
+        let mut up = Live::new(n);
+        let mut kill = Live::new(n);
+        for (bi, blk) in f.blocks.iter().enumerate() {
+            if let Some(r) = blk.term.uses() {
+                up.set(r);
             }
-            if let (Some(h), false) = (f.blocks[bi].handler, f.blocks[bi].insts.is_empty()) {
-                new.or(&live_in[h.block as usize]);
+            for (uses, defs) in ud[bi].iter().rev() {
+                for r in defs {
+                    up.unset(*r);
+                    kill.set(*r);
+                }
+                up.extend(uses);
             }
-            if new.0 != live_in[bi].0 {
-                live_in[bi] = new;
-                changed = true;
+            for r in &up.list {
+                ups[*r as usize].push(bi);
+            }
+            for r in &kill.list {
+                kills[*r as usize].push(bi);
+            }
+            up.clear();
+            kill.clear();
+        }
+    }
+    let mut live_in: Vec<Vec<Reg>> = vec![Vec::new(); nblocks];
+    {
+        // `marked[b] == r + 1`: `r` is live entering `b`.
+        let mut marked: Vec<u32> = vec![0; nblocks];
+        let mut work: Vec<usize> = Vec::new();
+        for r in 0..n {
+            let stamp = r as u32 + 1;
+            for &b in &ups[r] {
+                if marked[b] != stamp {
+                    marked[b] = stamp;
+                    work.push(b);
+                }
+            }
+            while let Some(b) = work.pop() {
+                live_in[b].push(r as Reg);
+                for &p in &preds[b] {
+                    if marked[p] != stamp && kills[r].binary_search(&p).is_err() {
+                        marked[p] = stamp;
+                        work.push(p);
+                    }
+                }
+                for &p in &protected[b] {
+                    if marked[p] != stamp {
+                        marked[p] = stamp;
+                        work.push(p);
+                    }
+                }
             }
         }
     }
-    // Interference: a write against what is live after it.
-    let mut interf = vec![Bits::new(n); n];
+    // Interference: a write against what is live after it. Each
+    // register's list, sorted and without duplicates at the end.
+    let mut interf: Vec<Vec<Reg>> = vec![Vec::new(); n];
     let mut edge = |a: Reg, b: Reg| {
         if a != b {
-            interf[a as usize].set(b);
-            interf[b as usize].set(a);
+            interf[a as usize].push(b);
+            interf[b as usize].push(a);
         }
     };
     // Move partners, for the preference.
@@ -151,12 +198,16 @@ fn share_in(f: &mut Function, methods: &[RtMethod]) {
         .iter()
         .map(|b| vec![Vec::new(); b.insts.len()])
         .collect();
+    let mut live = Live::new(n);
     for (bi, blk) in f.blocks.iter().enumerate() {
-        let mut live = out_of(bi, &live_in);
+        live.clear();
+        for s in &succ[bi] {
+            live.extend(&live_in[*s as usize]);
+        }
         if let Some(r) = blk.term.uses() {
             live.set(r);
         }
-        let handler = blk.handler.map(|h| live_in[h.block as usize].clone());
+        let handler = blk.handler.map(|h| &live_in[h.block as usize]);
         for (ii, (inst, (uses, defs))) in blk.insts.iter().zip(&ud[bi]).enumerate().rev() {
             if let Inst::ClearRegs { .. } = inst {
                 let keep: Vec<Reg> = defs
@@ -165,15 +216,15 @@ fn share_in(f: &mut Function, methods: &[RtMethod]) {
                     .filter(|r| live.has(*r) || heap[*r as usize])
                     .collect();
                 for d in &keep {
-                    for l in live.iter() {
+                    for &l in &live.list {
                         edge(*d, l);
                     }
                 }
                 for r in defs {
                     live.unset(*r);
                 }
-                if let Some(h) = &handler {
-                    live.or(h);
+                if let Some(h) = handler {
+                    live.extend(h);
                 }
                 cleared[bi][ii] = keep;
                 continue;
@@ -187,7 +238,7 @@ fn share_in(f: &mut Function, methods: &[RtMethod]) {
                 _ => None,
             };
             for d in defs {
-                for l in live.iter() {
+                for &l in &live.list {
                     if Some(l) != copy_src {
                         edge(*d, l);
                     }
@@ -210,20 +261,22 @@ fn share_in(f: &mut Function, methods: &[RtMethod]) {
             for r in defs {
                 live.unset(*r);
             }
-            for r in uses {
-                live.set(*r);
-            }
-            if let Some(h) = &handler {
-                live.or(h);
+            live.extend(uses);
+            if let Some(h) = handler {
+                live.extend(h);
             }
         }
     }
+    for list in interf.iter_mut() {
+        list.sort_unstable();
+        list.dedup();
+    }
     // Order of appearance: the first definition or use.
     let mut order: Vec<Reg> = Vec::with_capacity(n);
-    let mut seen = Bits::new(n);
+    let mut seen = vec![false; n];
     let mut note = |r: Reg, order: &mut Vec<Reg>| {
-        if !seen.has(r) {
-            seen.set(r);
+        if !seen[r as usize] {
+            seen[r as usize] = true;
             order.push(r);
         }
     };
@@ -238,34 +291,41 @@ fn share_in(f: &mut Function, methods: &[RtMethod]) {
         }
     }
     // Registers never mentioned keep nothing; give them the first number.
+    // A number fits a register of its kind that interferes with none of
+    // the registers it holds; the numbers of each kind, in order.
     let mut color: Vec<Option<Reg>> = vec![None; n];
-    let mut members: Vec<Bits> = Vec::new();
     let mut kind_color: Vec<usize> = Vec::new();
+    let mut of_kind: std::collections::HashMap<usize, Vec<Reg>> = Default::default();
+    // `taken[c] == r + 1`: an interfering register of `r`'s holds `c`.
+    let mut taken: Vec<u32> = Vec::new();
     for r in order {
-        let fits = |c: usize, members: &[Bits]| {
-            kind_color[c] == kind(r) && !interf[r as usize].meets(&members[c])
-        };
+        let stamp = r + 1;
+        for nb in &interf[r as usize] {
+            if let Some(c) = color[*nb as usize] {
+                taken[c as usize] = stamp;
+            }
+        }
+        let k = kind(r);
+        let fits = |c: Reg| kind_color[c as usize] == k && taken[c as usize] != stamp;
         let preferred = partners[r as usize]
             .iter()
             .filter_map(|p| color[*p as usize])
-            .find(|c| fits(*c as usize, &members));
-        let c = preferred.or_else(|| {
-            (0..members.len())
-                .find(|c| fits(*c, &members))
-                .map(|c| c as Reg)
-        });
+            .find(|c| fits(*c));
+        let numbers = of_kind.entry(k).or_default();
+        let c = preferred.or_else(|| numbers.iter().copied().find(|c| fits(*c)));
         let c = match c {
             Some(c) => c,
             None => {
-                members.push(Bits::new(n));
-                kind_color.push(kind(r));
-                (members.len() - 1) as Reg
+                let c = kind_color.len() as Reg;
+                kind_color.push(k);
+                taken.push(0);
+                numbers.push(c);
+                c
             }
         };
-        members[c as usize].set(r);
         color[r as usize] = Some(c);
     }
-    let new_n = members.len().max(1) as u32;
+    let new_n = kind_color.len().max(1) as u32;
     if new_n >= f.nregs {
         return;
     }

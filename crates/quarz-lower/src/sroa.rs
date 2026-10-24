@@ -87,8 +87,10 @@ impl Reaching {
         let mut reads = Vec::new();
         let mut terms = Vec::new();
         let mut seen: HashSet<usize> = HashSet::default();
-        let mut stack = vec![(site.0, site.1 + 1)];
-        while let Some((b, from)) = stack.pop() {
+        // Breadth first: the reads are mostly near, and once all are found
+        // the walk stops.
+        let mut queue = std::collections::VecDeque::from([(site.0, site.1 + 1)]);
+        while let Some((b, from)) = queue.pop_front() {
             let next = writes
                 .get(writes.partition_point(|w| *w < (b, from)))
                 .filter(|w| w.0 == b)
@@ -110,7 +112,7 @@ impl Reaching {
             for s in successors(&f.blocks[b]) {
                 let s = s as usize;
                 if !self.handlers.contains(&s) && seen.insert(s) {
-                    stack.push((s, 0));
+                    queue.push_back((s, 0));
                 }
             }
         }
