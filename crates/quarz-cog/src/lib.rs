@@ -144,8 +144,21 @@ pub fn open(root: &Path, opts: &Options) -> Result<Movement, Error> {
                 LockProblem::Stale(s) | LockProblem::Fatal(Error(s)) => Error(s),
             });
     }
+    let inputs = ctx.inputs(&manifest)?;
+    let current = existing
+        .as_ref()
+        .filter(|l| l.inputs.as_deref() == Some(inputs.as_str()));
     if !opts.refresh {
-        if let Some(lock) = &existing {
+        if existing.is_some() && current.is_none() {
+            if opts.locked {
+                return Err(Error::new(
+                    "Cog.lock is out of date (the dependencies in the manifests changed); run `quarz cog update` (--locked)",
+                ));
+            }
+            if opts.verbose {
+                eprintln!("quarz: resolving again: the dependencies in the manifests changed");
+            }
+        } else if let Some(lock) = current {
             match ctx.movement_from_lock(&manifest, lock) {
                 Ok(mut movement) => {
                     // A lock that names cogs nothing needs any more is
@@ -183,7 +196,8 @@ pub fn open(root: &Path, opts: &Options) -> Result<Movement, Error> {
             "resolving the dependencies needs git (Cog.lock is missing or out of date): drop --offline",
         ));
     }
-    let lock = ctx.resolve(&manifest)?;
+    let mut lock = ctx.resolve(&manifest)?;
+    lock.inputs = Some(inputs);
     if existing.as_ref() != Some(&lock) {
         if opts.locked {
             return Err(Error::new("Cog.lock would change (--locked)"));
@@ -200,6 +214,7 @@ pub fn open(root: &Path, opts: &Options) -> Result<Movement, Error> {
 fn empty_lock() -> Lock {
     Lock {
         version: 1,
+        inputs: None,
         cogs: Vec::new(),
     }
 }
@@ -250,11 +265,10 @@ impl<'a> Ctx<'a> {
         })
     }
 
-    /// Build the movement from `lock`: every cog the manifests reach must
-    /// be in it (or patched) and satisfy what the application and the
-    /// patched cogs ask for (the locked cogs' own requirements held when
-    /// the lock was resolved, and their manifests are pinned). The lock
-    /// returned in the movement is `lock` restricted to what was reached.
+    /// Build the movement from `lock`, which `open` has found to be the
+    /// resolution of the current manifests: every cog they reach must be in
+    /// it (or patched). The lock returned in the movement is `lock`
+    /// restricted to what was reached.
     fn movement_from_lock(
         &mut self,
         manifest: &Manifest,
@@ -279,15 +293,10 @@ impl<'a> Ctx<'a> {
         let mut manifests = vec![manifest.clone()];
         let mut index: HashMap<Source, usize> = HashMap::new();
         let mut reached: BTreeSet<Source> = BTreeSet::new();
-        // Every requirement on a locked cog, from every manifest reached.
-        let mut wanted: HashMap<Source, Vec<Ref>> = HashMap::new();
         let mut next = 0;
         while next < cogs.len() {
             let i = next;
             next += 1;
-            // The application and patched cogs: their requirements are
-            // checked against the lock.
-            let checked = i == 0 || cogs[i].source.is_none();
             let deps: Vec<(String, Dependency)> = manifests[i]
                 .dependencies
                 .iter()
@@ -337,57 +346,12 @@ impl<'a> Ctx<'a> {
                         cogs.len() - 1
                     }
                 };
-                wanted
-                    .entry(source.clone())
-                    .or_default()
-                    .push(dep.reference());
-                if checked {
-                    if let Some(locked) = by_source.get(&source) {
-                        if !self.patches.contains_key(&source) {
-                            satisfies(&dep, locked).map_err(LockProblem::Stale)?;
-                        }
-                    }
-                }
                 cogs[i].imports.push((key, j));
-            }
-        }
-        // Minimal version selection picks the highest version asked for: a
-        // lock holding a higher one than every requirement names (one that
-        // was dropped) is stale. A requirement by a branch, or by another
-        // commit, has a version only git can tell; it is taken as met.
-        for (source, refs) in &wanted {
-            let Some(locked) = by_source.get(source) else {
-                continue;
-            };
-            if self.patches.contains_key(source) {
-                continue;
-            }
-            let Some(have) = Version::parse(&locked.version) else {
-                continue;
-            };
-            let mut highest: Option<Version> = None;
-            let mut all_known = true;
-            for r in refs {
-                let v = match r {
-                    Ref::Tag(t) => Version::parse_tag(t),
-                    Ref::Rev(rev) if *rev == locked.rev => Some(have.clone()),
-                    _ => None,
-                };
-                match v {
-                    Some(v) => highest = highest.max(Some(v)),
-                    None => all_known = false,
-                }
-            }
-            if let Some(h) = highest {
-                if all_known && h != have {
-                    return Err(LockProblem::Stale(format!(
-                        "{source} is locked at {have}, but the highest version asked for is {h}"
-                    )));
-                }
             }
         }
         let pruned = Lock {
             version: 1,
+            inputs: lock.inputs.clone(),
             cogs: lock
                 .cogs
                 .iter()
@@ -447,6 +411,32 @@ impl<'a> Ctx<'a> {
             )));
         }
         Ok(dir)
+    }
+
+    /// A digest of what resolution reads that can change: the
+    /// dependencies of the application's manifest and of the patched cogs'
+    /// (every other manifest is pinned by its commit). A lock resolved from
+    /// the same inputs is the resolution itself: only `quarz cog update`
+    /// moves a branch.
+    fn inputs(&self, manifest: &Manifest) -> Result<String, Error> {
+        fn table(out: &mut String, owner: &str, m: &Manifest) {
+            for (key, dep) in &m.dependencies {
+                out.push_str(&format!(
+                    "{owner}\t{key}\t{}\t{}\n",
+                    dep.source().to_lock_string(),
+                    describe_ref(&dep.reference()),
+                ));
+            }
+        }
+        let mut text = String::new();
+        table(&mut text, "", manifest);
+        let mut patched: Vec<(&Source, &PathBuf)> = self.patches.iter().collect();
+        patched.sort();
+        for (source, dir) in patched {
+            let m = Manifest::read(dir)?;
+            table(&mut text, &source.to_lock_string(), &m);
+        }
+        Ok(hash::digest(text.as_bytes()))
     }
 
     fn src_dir(&self, name: &str, rev: &str) -> PathBuf {
@@ -710,42 +700,18 @@ impl<'a> Ctx<'a> {
                 dependencies,
             });
         }
-        Ok(Lock { version: 1, cogs })
+        Ok(Lock {
+            version: 1,
+            inputs: None,
+            cogs,
+        })
     }
-}
-
-/// Whether a locked cog meets a dependency of the application (or of a
-/// patched cog).
-fn satisfies(dep: &Dependency, locked: &LockedCog) -> Result<(), String> {
-    let source = dep.source();
-    let have = Version::parse(&locked.version)
-        .ok_or_else(|| format!("bad version `{}` for {source}", locked.version))?;
-    match dep.reference() {
-        Ref::Tag(tag) => {
-            let want = Version::parse_tag(&tag).unwrap();
-            if have < want || !have.compatible(&want) {
-                return Err(format!(
-                    "{source} is locked at {have}, the manifest asks for {tag}"
-                ));
-            }
-        }
-        Ref::Rev(rev) => {
-            if locked.rev != rev {
-                return Err(format!(
-                    "{source} is locked at {}, the manifest asks for {rev}",
-                    locked.rev
-                ));
-            }
-        }
-        Ref::Branch(_) | Ref::Head => {}
-    }
-    Ok(())
 }
 
 fn describe_ref(r: &Ref) -> String {
     match r {
         Ref::Tag(t) => format!("tag {t}"),
-        Ref::Rev(r) => format!("rev {}", &r[..r.len().min(12)]),
+        Ref::Rev(r) => format!("rev {r}"),
         Ref::Branch(b) => format!("branch {b}"),
         Ref::Head => "the default branch".to_string(),
     }

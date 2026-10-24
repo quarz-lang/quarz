@@ -13,6 +13,11 @@ pub const LOCK: &str = "Cog.lock";
 #[serde(deny_unknown_fields)]
 pub struct Lock {
     pub version: u32,
+    /// A digest of the dependencies listed by the manifests that can
+    /// change (the application's and the patched cogs'): the lock is the
+    /// resolution of those inputs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inputs: Option<String>,
     #[serde(default, rename = "cog")]
     pub cogs: Vec<LockedCog>,
 }
