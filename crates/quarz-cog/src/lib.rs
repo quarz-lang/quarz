@@ -1172,6 +1172,10 @@ pub fn vendor(root: &Path, opts: &Options) -> Result<usize, Error> {
         let _ = std::fs::remove_dir_all(&tmp);
         return Err(Error::new(format!("{}: {e}", vendor.display())));
     }
+    // On Unix a read-only file can be removed; elsewhere it must be made
+    // writable first (a vendor/ that an older quarz wrote may hold some).
+    #[cfg(not(unix))]
+    each_file(&old, &mut |p| set_mode(p, true));
     let _ = std::fs::remove_dir_all(&old);
     Ok(count)
 }

@@ -133,7 +133,12 @@ pub fn check_rev(rev: &str) -> Result<(), Error> {
     if rev.len() == 40 && rev.bytes().all(|b| b.is_ascii_hexdigit()) {
         Ok(())
     } else {
-        Err(Error::new(format!("`{rev}` is not a full commit id")))
+        let sha256 = rev.len() == 64 && rev.bytes().all(|b| b.is_ascii_hexdigit());
+        Err(Error::new(if sha256 {
+            format!("`{rev}` is a SHA-256 object id; repositories that use SHA-256 are not supported yet")
+        } else {
+            format!("`{rev}` is not a full commit id")
+        }))
     }
 }
 

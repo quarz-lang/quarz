@@ -97,7 +97,7 @@ Resolution follows Go's *minimal version selection*: every manifest in the graph
 - **One version per cog.** A cog's declarations live in one module (§6) and a class is one class, so the same cog cannot appear twice in a movement. When the chosen version does not share its major with every requirement (its minor, while the major is `0`), the resolution fails and names the two requirements; the application pins one side with `rev` or replaces it with `[patch]`.
 - **A `rev` in the application's own manifest pins.** Elsewhere a `rev` is a lower bound like any other, but in the movement's manifest it is also the ceiling: a dependency that asks for a newer version is an error, not a silent upgrade.
 - **Pseudo-versions.** A commit that no tag names is ordered as `1.4.1-0.20261023141500.3f2a9c1e0b4d`: the patch after the highest version tag among its ancestors (`0.0.0` when there is none; a tag that is not a semantic version does not count, nor one that the repository's own listing does not show on the same commit), a `0` so that it sorts below any real pre-release of that patch, the commit's time in UTC, and twelve hex digits of its id. Semantic versioning's precedence rules then order it between the tag and the next release, as Go's pseudo-versions do.
-- `quarz cog update [Key]` re-resolves and rewrites the lock; nothing else moves a locked version. `quarz run`, `quarz build` and `quarz check` use the lock when it is present and consistent with the manifest, resolve and write it when it is absent, and fail with `--locked` when it would have to change.
+- `quarz cog update [Key]` re-resolves and rewrites the lock. Otherwise a locked version moves only when the dependencies a manifest lists change (the application's or a patched cog's): the lock is then resolved again as a whole, and a `branch` dependency elsewhere may move with it. `quarz run`, `quarz build` and `quarz check` use the lock when it is present and was resolved from the current manifests, resolve and write it when it is absent or was not, and fail with `--locked` when it would have to change (as a lock written before `inputs` existed does once).
 
 ## 5. Fetching, Cache and Vendoring
 
@@ -185,4 +185,5 @@ In the application and in a script, `cog` is the top level; `cog.name` is then t
 - Whether `test/` should take part in the hash (it does not: only what is compiled does).
 - Whether an application's files other than `src/main.qz` may hold statements (a `require_relative`d helper that prints at load would stop working).
 - What `[cog] link` looks like once FFI exists.
+- Repositories that use SHA-256 object ids (64 hexadecimal digits) are not supported yet: commit ids are SHA-1's 40 digits, and a longer one is refused as not a commit id (*not yet*).
 - `[dev-dependencies]` are read and validated, but nothing uses them until `quarz test` exists (*not yet*).

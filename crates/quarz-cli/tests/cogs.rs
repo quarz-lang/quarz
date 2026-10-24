@@ -753,3 +753,51 @@ fn a_cog_from_elsewhere_may_not_name_a_local_repository() {
     );
     assert_eq!(w.ok("app", &["run"]), "1.0.0\n");
 }
+
+#[test]
+fn annotated_tags_give_versions_too() {
+    // ls-remote shows an annotated tag's object and its peeled commit;
+    // the version comes from the commit on both sides.
+    let w = World::new();
+    w.write("q/Cog.toml", "[cog]\nname = \"q\"\nversion = \"1.2.0\"\n");
+    w.write("q/src/v.qz", "V = 1\n");
+    w.commit("q", None);
+    w.git(
+        "q",
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.com",
+            "tag",
+            "-a",
+            "-m",
+            "release",
+            "v1.2.0",
+        ],
+    );
+    let tagged = w.git("q", &["rev-parse", "HEAD"]);
+    w.write("q/src/w.qz", "W = 2\n");
+    let later = w.commit("q", None);
+    // By tag, by the tagged commit (its exact version), by a later commit
+    // (a pseudo-version after the annotated tag).
+    w.app(
+        &format!("Q = {{ git = \"{}\", tag = \"v1.2.0\" }}\n", w.url("q")),
+        "puts Q::V\n",
+    );
+    assert_eq!(w.ok("app", &["run"]), "1\n");
+    assert_eq!(w.locked_version("app", "q"), "1.2.0");
+    w.app(
+        &format!("Q = {{ git = \"{}\", rev = \"{tagged}\" }}\n", w.url("q")),
+        "puts Q::V\n",
+    );
+    w.ok("app", &["check"]);
+    assert_eq!(w.locked_version("app", "q"), "1.2.0");
+    w.app(
+        &format!("Q = {{ git = \"{}\", rev = \"{later}\" }}\n", w.url("q")),
+        "puts Q::W\n",
+    );
+    assert_eq!(w.ok("app", &["run"]), "2\n");
+    let v = w.locked_version("app", "q");
+    assert!(v.starts_with("1.2.1-0."), "{v}");
+}
