@@ -50,6 +50,9 @@ pub struct Options {
     pub refresh: bool,
     /// Report fetches on standard error.
     pub verbose: bool,
+    /// Read the cogs from the cache even when `vendor/` exists (to fill
+    /// it again).
+    pub ignore_vendor: bool,
 }
 
 /// A movement: the application (`cogs[0]`) and every cog it brings in.
@@ -254,7 +257,7 @@ impl<'a> Ctx<'a> {
             }
             patches.insert(dep.source(), dir);
         }
-        let vendor = Some(root.join("vendor")).filter(|v| v.is_dir());
+        let vendor = Some(root.join("vendor")).filter(|v| v.is_dir() && !opts.ignore_vendor);
         Ok(Ctx {
             root,
             cache: cache_dir(),
@@ -383,7 +386,7 @@ impl<'a> Ctx<'a> {
                 dir
             }
             None => {
-                let dir = self.src_dir(&locked.name, &locked.rev);
+                let dir = self.src_dir(&locked.name, &locked.rev, source.subdir.as_deref());
                 if !dir.join(MANIFEST).is_file() {
                     if self.opts.offline {
                         return Err(Error::new(format!(
@@ -394,7 +397,7 @@ impl<'a> Ctx<'a> {
                     let mirror = Mirror::open(&self.cache, &source.url)?;
                     self.log(&format!("fetching {} {}", locked.name, locked.version));
                     mirror.fetch_commit(&locked.rev)?;
-                    self.export(&mirror, &locked.rev, source.subdir.as_deref(), &dir)?;
+                    self.install(&mirror, &locked.rev, source.subdir.as_deref(), &dir)?;
                 }
                 dir
             }
@@ -439,9 +442,24 @@ impl<'a> Ctx<'a> {
         Ok(hash::digest(text.as_bytes()))
     }
 
-    fn src_dir(&self, name: &str, rev: &str) -> PathBuf {
+    /// Where a cog's tree is kept in the cache: by name, commit and, for a
+    /// cog in a subdirectory, a digest of the subdirectory (two cogs of one
+    /// commit may share a name).
+    fn src_dir(&self, name: &str, rev: &str, subdir: Option<&str>) -> PathBuf {
         let short: String = rev.chars().take(12).collect();
-        self.cache.join("src").join(format!("{name}-{short}"))
+        let leaf = match subdir {
+            Some(d) => {
+                let tag: String = hash::digest(d.as_bytes())
+                    .chars()
+                    .skip(3)
+                    .filter(char::is_ascii_alphanumeric)
+                    .take(8)
+                    .collect();
+                format!("{name}-{short}-{tag}")
+            }
+            None => format!("{name}-{short}"),
+        };
+        self.cache.join("src").join(leaf)
     }
 
     fn log(&self, message: &str) {
@@ -450,32 +468,66 @@ impl<'a> Ctx<'a> {
         }
     }
 
-    /// Write a commit's tree into `dest` (through a temporary directory, so
-    /// that a tree is never seen half written), its files read-only.
-    fn export(
+    /// Write a commit's tree into `dest`, through a temporary directory of
+    /// its own (several `quarz` processes may fetch the same cog at once,
+    /// and none may see a tree half written), its files read-only, and
+    /// return the tree's hash. A `dest` that another process installed
+    /// first is kept if it holds the same tree.
+    fn install(
         &self,
         mirror: &Mirror,
         rev: &str,
         subdir: Option<&str>,
         dest: &Path,
-    ) -> Result<(), Error> {
-        let tmp = dest.with_extension(format!("tmp{}", std::process::id()));
+    ) -> Result<String, Error> {
+        static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let parent = dest.parent().unwrap_or(Path::new("."));
+        std::fs::create_dir_all(parent)
+            .map_err(|e| Error::new(format!("{}: {e}", parent.display())))?;
+        let tmp = parent.join(format!(
+            ".{}.tmp{}-{n}",
+            dest.file_name().unwrap_or_default().to_string_lossy(),
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&tmp);
-        mirror.export(rev, subdir, &tmp)?;
-        if !tmp.join(MANIFEST).is_file() {
-            let _ = std::fs::remove_dir_all(&tmp);
+        let prepared = (|| {
+            mirror.export(rev, subdir, &tmp)?;
+            if !tmp.join(MANIFEST).is_file() {
+                return Err(Error::new(format!(
+                    "{} has no Cog.toml at {rev}{}",
+                    mirror.url,
+                    subdir.map(|d| format!(" in {d}")).unwrap_or_default()
+                )));
+            }
+            hash::check_tree(&tmp)
+                .map_err(|e| Error::new(format!("{} at {rev}: {e}", mirror.url)))?;
+            let hash = hash::tree_hash(&tmp)
+                .map_err(|e| Error::new(format!("{} at {rev}: {e}", mirror.url)))?;
+            set_read_only(&tmp);
+            Ok(hash)
+        })();
+        let hash = match prepared {
+            Ok(h) => h,
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(&tmp);
+                return Err(e);
+            }
+        };
+        if std::fs::rename(&tmp, dest).is_ok() {
+            return Ok(hash);
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+        // Another process was first (or the tree was there already).
+        let existing =
+            hash::tree_hash(dest).map_err(|e| Error::new(format!("{}: {e}", dest.display())))?;
+        if existing != hash {
             return Err(Error::new(format!(
-                "{} has no Cog.toml at {rev}{}",
-                mirror.url,
-                subdir.map(|d| format!(" in {d}")).unwrap_or_default()
+                "{} does not hold the tree git gives for {rev} (expected {hash}, found {existing}); remove it to fetch it again",
+                dest.display()
             )));
         }
-        set_read_only(&tmp);
-        if dest.exists() {
-            let _ = std::fs::remove_dir_all(&tmp);
-            return Ok(());
-        }
-        std::fs::rename(&tmp, dest).map_err(|e| Error::new(format!("{}: {e}", dest.display())))
+        Ok(hash)
     }
 
     fn remote_refs(&mut self, url: &str) -> Result<&Vec<(String, String)>, Error> {
@@ -501,22 +553,23 @@ impl<'a> Ctx<'a> {
                 Ok((commit, Version::parse_tag(tag).unwrap()))
             }
             Ref::Branch(branch) => {
-                let refs = self.remote_refs(&source.url)?;
-                let commit = find(refs, &format!("refs/heads/{branch}")).ok_or_else(|| {
+                let refs = self.remote_refs(&source.url)?.clone();
+                let commit = find(&refs, &format!("refs/heads/{branch}")).ok_or_else(|| {
                     Error::new(format!("{} has no branch `{branch}`", source.url))
                 })?;
-                let v = version_of(&mirror, &commit)?;
+                let v = version_of(&mirror, &commit, &refs)?;
                 Ok((commit, v))
             }
             Ref::Head => {
-                let refs = self.remote_refs(&source.url)?;
-                let commit = find(refs, "HEAD")
+                let refs = self.remote_refs(&source.url)?.clone();
+                let commit = find(&refs, "HEAD")
                     .ok_or_else(|| Error::new(format!("{} has no default branch", source.url)))?;
-                let v = version_of(&mirror, &commit)?;
+                let v = version_of(&mirror, &commit, &refs)?;
                 Ok((commit, v))
             }
             Ref::Rev(rev) => {
-                let v = version_of(&mirror, rev)?;
+                let refs = self.remote_refs(&source.url)?.clone();
+                let v = version_of(&mirror, rev, &refs)?;
                 Ok((rev.clone(), v))
             }
         }
@@ -673,15 +726,13 @@ impl<'a> Ctx<'a> {
         for source in &reached {
             let (version, rev) = &chosen[source];
             let node = &nodes[&(source.clone(), rev.clone())];
-            let dir = self.src_dir(&node.manifest.cog.name, rev);
-            if !dir.join(MANIFEST).is_file() {
-                let mirror = Mirror::open(&self.cache, &source.url)?;
-                self.log(&format!("fetching {} {version}", node.manifest.cog.name));
-                mirror.fetch_commit(rev)?;
-                self.export(&mirror, rev, source.subdir.as_deref(), &dir)?;
-            }
-            let hash =
-                hash::tree_hash(&dir).map_err(|e| Error::new(format!("{}: {e}", dir.display())))?;
+            let dir = self.src_dir(&node.manifest.cog.name, rev, source.subdir.as_deref());
+            let mirror = Mirror::open(&self.cache, &source.url)?;
+            self.log(&format!("fetching {} {version}", node.manifest.cog.name));
+            mirror.fetch_commit(rev)?;
+            // The lock's hash is the hash of what git gives, never of what
+            // the cache happens to hold.
+            let hash = self.install(&mirror, rev, source.subdir.as_deref(), &dir)?;
             let mut dependencies: Vec<String> = node
                 .manifest
                 .dependencies
@@ -719,36 +770,67 @@ fn describe_ref(r: &Ref) -> String {
 
 /// The version of a commit: the highest version tag naming it, or a
 /// pseudo-version from the nearest tag among its ancestors.
-fn version_of(mirror: &Mirror, rev: &str) -> Result<Version, Error> {
+fn version_of(mirror: &Mirror, rev: &str, remote: &[(String, String)]) -> Result<Version, Error> {
     mirror.fetch_history(rev)?;
-    let mut tagged: Vec<Version> = mirror
-        .tags_at(rev)?
+    // Only tags the repository itself shows, naming the same commit.
+    let genuine = |name: &str, commit: &str| {
+        remote
+            .iter()
+            .any(|(n, c)| n.strip_prefix("refs/tags/") == Some(name) && c == commit)
+    };
+    let tags: Vec<(Version, bool)> = mirror
+        .tags_merged(rev)?
         .iter()
-        .filter_map(|t| Version::parse_tag(t))
+        .filter(|(name, commit)| genuine(name, commit))
+        .filter_map(|(name, commit)| Some((Version::parse_tag(name)?, commit == rev)))
         .collect();
-    tagged.sort();
-    if let Some(v) = tagged.pop() {
-        return Ok(v);
+    // The highest version tag naming the commit, else a pseudo-version
+    // after the highest one among its ancestors.
+    if let Some(v) = tags.iter().filter(|(_, at)| *at).map(|(v, _)| v).max() {
+        return Ok(v.clone());
     }
-    let base = mirror.nearest_tag(rev).and_then(|t| Version::parse_tag(&t));
+    let base = tags.iter().map(|(v, _)| v).max();
     let time = mirror.commit_time(rev)?;
-    Ok(Version::pseudo(base.as_ref(), time, rev))
+    Ok(Version::pseudo(base, time, rev))
 }
 
-fn set_read_only(dir: &Path) {
+/// Visit the regular files under `dir`, never following a symbolic link.
+fn each_file(dir: &Path, f: &mut dyn FnMut(&Path)) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
     for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            set_read_only(&path);
-        } else if let Ok(meta) = std::fs::metadata(&path) {
-            let mut perms = meta.permissions();
-            perms.set_readonly(true);
-            let _ = std::fs::set_permissions(&path, perms);
+        let Ok(ft) = entry.file_type() else {
+            continue;
+        };
+        if ft.is_dir() {
+            each_file(&entry.path(), f);
+        } else if ft.is_file() {
+            f(&entry.path());
         }
     }
+}
+
+/// A cached file is read-only for everyone; a vendored one is the
+/// owner's to change (`0o644`), as a checked-out file is.
+fn set_mode(path: &Path, writable: bool) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = if writable { 0o644 } else { 0o444 };
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode));
+    }
+    #[cfg(not(unix))]
+    if let Ok(meta) = std::fs::metadata(path) {
+        let mut perms = meta.permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        perms.set_readonly(!writable);
+        let _ = std::fs::set_permissions(path, perms);
+    }
+}
+
+fn set_read_only(dir: &Path) {
+    each_file(dir, &mut |p| set_mode(p, false));
 }
 
 // ----- commands --------------------------------------------------------
@@ -835,10 +917,12 @@ pub fn add(root: &Path, req: &AddRequest, opts: &Options) -> Result<(String, Str
         (("rev", rev.clone()), rev.clone())
     } else {
         let (rev, version) = ctx.locate(&source, &Ref::Head)?;
+        let tag_ref = format!("refs/tags/{}", version.tag());
         let tagged = version.pre.is_empty()
-            && Mirror::open(&ctx.cache, &source.url)?
-                .tags_at(&rev)?
-                .contains(&version.tag());
+            && ctx
+                .remote_refs(&source.url)?
+                .iter()
+                .any(|(n, c)| *n == tag_ref && *c == rev);
         if tagged {
             (("tag", version.tag()), rev)
         } else {
@@ -982,7 +1066,10 @@ pub fn verify(root: &Path) -> Result<Vec<String>, Error> {
     for c in &lock.cogs {
         let dir = match &ctx.vendor {
             Some(v) => v.join(&c.name),
-            None => ctx.src_dir(&c.name, &c.rev),
+            None => {
+                let subdir = Source::parse_lock_string(&c.source).and_then(|s| s.subdir);
+                ctx.src_dir(&c.name, &c.rev, subdir.as_deref())
+            }
         };
         match hash::tree_hash(&dir) {
             _ if !dir.join(MANIFEST).is_file() => problems.push(format!(
@@ -1005,31 +1092,55 @@ pub fn verify(root: &Path) -> Result<Vec<String>, Error> {
     Ok(problems)
 }
 
-/// `quarz cog vendor`: copy every locked cog into `vendor/<name>/`.
+/// `quarz cog vendor`: copy every locked cog into `vendor/<name>/`. The
+/// cogs are resolved and fetched (from the cache, not from the current
+/// `vendor/`) and copied into a new directory first; only then does it
+/// replace `vendor/`, so a failure leaves the old one as it was.
 pub fn vendor(root: &Path, opts: &Options) -> Result<usize, Error> {
-    // Read the cogs from the cache, not from a previous vendor/.
+    let opts = Options {
+        ignore_vendor: true,
+        ..opts.clone()
+    };
+    let movement = open(root, &opts)?;
     let vendor = root.join("vendor");
+    let tmp = root.join(format!(".vendor.tmp{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    let filled = (|| {
+        std::fs::create_dir_all(&tmp).map_err(|e| Error::new(format!("{}: {e}", tmp.display())))?;
+        let mut names = BTreeSet::new();
+        for c in movement.cogs.iter().skip(1).filter(|c| c.source.is_some()) {
+            if !names.insert(c.name.clone()) {
+                return Err(Error::new(format!(
+                    "two cogs are named `{}`: vendor/ cannot hold both",
+                    c.name
+                )));
+            }
+            copy_tree(&c.dir, &tmp.join(&c.name))?;
+        }
+        Ok(names.len())
+    })();
+    let count = match filled {
+        Ok(n) => n,
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&tmp);
+            return Err(e);
+        }
+    };
+    let old = root.join(format!(".vendor.old{}", std::process::id()));
     if vendor.exists() {
-        make_writable(&vendor);
-        std::fs::remove_dir_all(&vendor)
+        std::fs::rename(&vendor, &old)
             .map_err(|e| Error::new(format!("{}: {e}", vendor.display())))?;
     }
-    let movement = open(root, opts)?;
-    let mut names = BTreeSet::new();
-    let mut count = 0;
-    for c in movement.cogs.iter().skip(1).filter(|c| c.source.is_some()) {
-        if !names.insert(c.name.clone()) {
-            return Err(Error::new(format!(
-                "two cogs are named `{}`: vendor/ cannot hold both",
-                c.name
-            )));
-        }
-        copy_tree(&c.dir, &vendor.join(&c.name))?;
-        count += 1;
+    if let Err(e) = std::fs::rename(&tmp, &vendor) {
+        let _ = std::fs::rename(&old, &vendor);
+        let _ = std::fs::remove_dir_all(&tmp);
+        return Err(Error::new(format!("{}: {e}", vendor.display())));
     }
+    let _ = std::fs::remove_dir_all(&old);
     Ok(count)
 }
 
+/// Copy a cog's tree (no symbolic links: `install` refused them).
 fn copy_tree(from: &Path, to: &Path) -> Result<(), Error> {
     std::fs::create_dir_all(to).map_err(|e| Error::new(format!("{}: {e}", to.display())))?;
     for entry in
@@ -1038,37 +1149,21 @@ fn copy_tree(from: &Path, to: &Path) -> Result<(), Error> {
         let entry = entry.map_err(|e| Error::new(e.to_string()))?;
         let path = entry.path();
         let dest = to.join(entry.file_name());
-        if path.is_dir() {
+        let ft = entry.file_type().map_err(|e| Error::new(e.to_string()))?;
+        if ft.is_dir() {
             copy_tree(&path, &dest)?;
-        } else {
+        } else if ft.is_file() {
             std::fs::copy(&path, &dest)
                 .map_err(|e| Error::new(format!("{}: {e}", dest.display())))?;
-            if let Ok(meta) = std::fs::metadata(&dest) {
-                let mut perms = meta.permissions();
-                #[allow(clippy::permissions_set_readonly_false)]
-                perms.set_readonly(false);
-                let _ = std::fs::set_permissions(&dest, perms);
-            }
+            set_mode(&dest, true);
+        } else {
+            return Err(Error::new(format!(
+                "{}: not a regular file",
+                path.display()
+            )));
         }
     }
     Ok(())
-}
-
-fn make_writable(dir: &Path) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            make_writable(&path);
-        } else if let Ok(meta) = std::fs::metadata(&path) {
-            let mut perms = meta.permissions();
-            #[allow(clippy::permissions_set_readonly_false)]
-            perms.set_readonly(false);
-            let _ = std::fs::set_permissions(&path, perms);
-        }
-    }
 }
 
 /// The path of the lock file of the application in `root`.

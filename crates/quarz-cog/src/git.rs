@@ -55,39 +55,125 @@ pub fn ls_remote(url: &str) -> Result<Vec<(String, String)>, Error> {
     Ok(refs)
 }
 
-/// The directory a repository is mirrored in: `<cache>/git/<host>/<path>.git`.
-pub fn mirror_path(cache: &Path, url: &str) -> PathBuf {
-    let rest = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
-    // `git@host:path` (scp-like) and `user@host/path`.
-    let rest = rest.rsplit_once('@').map(|(_, r)| r).unwrap_or(rest);
-    let rest = rest.replacen(':', "/", 1);
-    let mut dir = cache.join("git");
-    for part in rest
-        .split('/')
-        .filter(|p| !p.is_empty() && *p != "." && *p != "..")
-    {
-        dir.push(part.trim_end_matches(".git"));
+/// The host of a URL (`https://user@host:443/p`, `git@host:p`), lowercase,
+/// or `local` for a `file://` URL or a path. Only the authority is looked
+/// at: an `@` or `:` in the path is part of the path.
+pub fn url_host(url: &str) -> String {
+    if let Some((scheme, rest)) = url.split_once("://") {
+        if scheme.eq_ignore_ascii_case("file") {
+            return "local".to_string();
+        }
+        let authority = rest.split('/').next().unwrap_or("");
+        let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+        return host.to_ascii_lowercase();
     }
-    let mut s = dir.into_os_string();
-    s.push(".git");
-    PathBuf::from(s)
+    // scp-like `user@host:path`: the part before the first `:`, if it holds
+    // no `/` (otherwise it is a path).
+    match url.split_once(':') {
+        Some((authority, _)) if !authority.contains('/') && !authority.is_empty() => authority
+            .rsplit_once('@')
+            .map_or(authority, |(_, h)| h)
+            .to_ascii_lowercase(),
+        _ => "local".to_string(),
+    }
+}
+
+/// Whether a URL names a repository on this machine (`file://` or a path).
+pub fn is_local_url(url: &str) -> bool {
+    url_host(url) == "local"
+}
+
+/// The directory a repository is mirrored in:
+/// `<cache>/git/<host>/<name>-<digest of the URL>.git`. The digest keeps
+/// every URL apart (`https://a/p@b/x` is not `https://b/x`); host and name
+/// are only there to be read.
+pub fn mirror_path(cache: &Path, url: &str) -> PathBuf {
+    let clean = |s: &str| -> String {
+        let c: String = s
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || "._-".contains(c) {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        c.trim_start_matches('.').to_string()
+    };
+    let host = clean(&url_host(url));
+    let name = url
+        .trim_end_matches('/')
+        .rsplit(['/', ':'])
+        .next()
+        .unwrap_or("")
+        .trim_end_matches(".git");
+    let name = Some(clean(name))
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| "repo".into());
+    let digest: String = crate::hash::digest(url.as_bytes())
+        .chars()
+        .skip(3)
+        .filter(char::is_ascii_alphanumeric)
+        .take(16)
+        .collect();
+    cache
+        .join("git")
+        .join(if host.is_empty() {
+            "local".into()
+        } else {
+            host
+        })
+        .join(format!("{name}-{digest}.git"))
+}
+
+/// A full commit id: what every revision handed to git here must be, so
+/// that none can be read as an option.
+pub fn check_rev(rev: &str) -> Result<(), Error> {
+    if rev.len() == 40 && rev.bytes().all(|b| b.is_ascii_hexdigit()) {
+        Ok(())
+    } else {
+        Err(Error::new(format!("`{rev}` is not a full commit id")))
+    }
 }
 
 impl Mirror {
     /// The mirror of `url`, created (empty) when it does not exist yet.
     pub fn open(cache: &Path, url: &str) -> Result<Mirror, Error> {
-        let dir = mirror_path(cache, url);
-        if !dir.join("HEAD").exists() {
-            std::fs::create_dir_all(&dir)
-                .map_err(|e| Error::new(format!("{}: {e}", dir.display())))?;
-            let mut cmd = git();
-            cmd.arg("init").arg("--bare").arg("-q").arg(&dir);
-            run(cmd, "creating a mirror")?;
-        }
-        Ok(Mirror {
-            dir,
+        let mirror = Mirror {
+            dir: mirror_path(cache, url),
             url: url.to_string(),
-        })
+        };
+        if !mirror.dir.join("HEAD").exists() {
+            let _lock = mirror.lock()?;
+            if !mirror.dir.join("HEAD").exists() {
+                let mut cmd = git();
+                cmd.arg("init").arg("--bare").arg("-q").arg(&mirror.dir);
+                run(cmd, "creating a mirror")?;
+            }
+        }
+        Ok(mirror)
+    }
+
+    /// Hold the mirror for writing (creating it, fetching into it):
+    /// another `quarz` process waits until the returned file is dropped.
+    fn lock(&self) -> Result<std::fs::File, Error> {
+        let mut path = self.dir.clone().into_os_string();
+        path.push(".lock");
+        let path = PathBuf::from(path);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| Error::new(format!("{}: {e}", parent.display())))?;
+        }
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&path)
+            .map_err(|e| Error::new(format!("{}: {e}", path.display())))?;
+        file.lock()
+            .map_err(|e| Error::new(format!("{}: {e}", path.display())))?;
+        Ok(file)
     }
 
     fn cmd(&self) -> Command {
@@ -105,6 +191,11 @@ impl Mirror {
 
     /// Fetch one commit (and nothing of its history).
     pub fn fetch_commit(&self, rev: &str) -> Result<(), Error> {
+        check_rev(rev)?;
+        if self.has_commit(rev) {
+            return Ok(());
+        }
+        let _lock = self.lock()?;
         if self.has_commit(rev) {
             return Ok(());
         }
@@ -115,10 +206,14 @@ impl Mirror {
     }
 
     /// Fetch a commit with its history and the repository's tags, to
-    /// find the version tags it descends from.
+    /// find the version tags it descends from. The mirror is this URL's
+    /// alone, and its tags are made the remote's (moved and deleted ones
+    /// included), so no other repository's tags get in.
     pub fn fetch_history(&self, rev: &str) -> Result<(), Error> {
+        check_rev(rev)?;
+        let _lock = self.lock()?;
         let mut c = self.cmd();
-        c.args(["fetch", "-q"]);
+        c.args(["fetch", "-q", "--prune"]);
         if self.dir.join("shallow").exists() {
             c.arg("--unshallow");
         }
@@ -130,21 +225,27 @@ impl Mirror {
         Ok(())
     }
 
-    /// A file at a commit, or `None` when the commit has no such file.
+    /// A file at a commit, or `None` when the commit has no such file
+    /// (any other failure of git is an error).
     pub fn show(&self, rev: &str, path: &str) -> Result<Option<String>, Error> {
-        let mut c = self.cmd();
-        c.args(["show", &format!("{rev}:{path}")]);
-        let out = c
-            .output()
-            .map_err(|e| Error::new(format!("cannot run git: {e}")))?;
-        if !out.status.success() {
+        check_rev(rev)?;
+        if !self.has_commit(rev) {
+            return Err(Error::new(format!("{} has no commit {rev}", self.url)));
+        }
+        let mut probe = self.cmd();
+        probe.args(["cat-file", "-e", &format!("{rev}:{path}")]);
+        probe.stderr(Stdio::null());
+        if !probe.status().is_ok_and(|s| s.success()) {
             return Ok(None);
         }
-        Ok(Some(String::from_utf8_lossy(&out.stdout).into_owned()))
+        let mut c = self.cmd();
+        c.args(["cat-file", "blob", &format!("{rev}:{path}")]);
+        Ok(Some(run(c, &format!("reading {path} at {rev}"))?))
     }
 
     /// The commit's time, in seconds since the epoch.
     pub fn commit_time(&self, rev: &str) -> Result<u64, Error> {
+        check_rev(rev)?;
         let mut c = self.cmd();
         c.args(["show", "-s", "--format=%ct", rev]);
         let out = run(c, "reading a commit time")?;
@@ -153,38 +254,32 @@ impl Mirror {
             .map_err(|_| Error::new(format!("bad commit time for {rev}")))
     }
 
-    /// The version tags naming the commit.
-    pub fn tags_at(&self, rev: &str) -> Result<Vec<String>, Error> {
-        let mut c = self.cmd();
-        c.args(["tag", "--points-at", rev, "--list", "v[0-9]*"]);
-        Ok(run(c, "listing tags")?
-            .lines()
-            .map(str::to_string)
-            .collect())
-    }
-
-    /// The version tags among the commit's ancestors (itself excluded),
-    /// nearest first as `git describe` finds them.
-    pub fn nearest_tag(&self, rev: &str) -> Option<String> {
+    /// The version tags among the commit's ancestors, the commit itself
+    /// included (`git tag --merged`), with the commits they name.
+    pub fn tags_merged(&self, rev: &str) -> Result<Vec<(String, String)>, Error> {
+        check_rev(rev)?;
         let mut c = self.cmd();
         c.args([
-            "describe",
-            "--tags",
-            "--abbrev=0",
-            "--match",
-            "v[0-9]*",
-            &format!("{rev}^"),
+            "for-each-ref",
+            "--merged",
+            rev,
+            "--format=%(refname:strip=2) %(*objectname)%(objectname)",
+            "refs/tags/v*",
         ]);
-        c.stderr(Stdio::null());
-        let out = c.output().ok()?;
-        if !out.status.success() {
-            return None;
-        }
-        Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+        let out = run(c, "listing tags")?;
+        Ok(out
+            .lines()
+            .filter_map(|line| {
+                let (name, ids) = line.split_once(' ')?;
+                // A peeled annotated tag prints its commit first.
+                Some((name.to_string(), ids.get(..40)?.to_string()))
+            })
+            .collect())
     }
 
     /// Write the tree of `rev` (or of its directory `subdir`) into `dest`.
     pub fn export(&self, rev: &str, subdir: Option<&str>, dest: &Path) -> Result<(), Error> {
+        check_rev(rev)?;
         std::fs::create_dir_all(dest)
             .map_err(|e| Error::new(format!("{}: {e}", dest.display())))?;
         let tree = match subdir {
@@ -192,7 +287,8 @@ impl Mirror {
             None => rev.to_string(),
         };
         let mut archive = self.cmd();
-        archive.args(["archive", "--format=tar", &tree]);
+        // Only what is compiled and hashed: the manifest and `src/`.
+        archive.args(["archive", "--format=tar", &tree, "--", "Cog.toml", "src"]);
         archive.stdout(Stdio::piped());
         archive.stderr(Stdio::piped());
         let mut child = archive
@@ -230,27 +326,49 @@ mod tests {
     use super::*;
 
     #[test]
-    fn mirror_paths() {
+    fn hosts_come_from_the_authority_only() {
+        assert_eq!(url_host("https://github.com/foo/httpx"), "github.com");
+        assert_eq!(
+            url_host("https://user@GitHub.com:443/foo"),
+            "github.com:443"
+        );
+        assert_eq!(
+            url_host("https://evil.example/p@github.com/foo/httpx"),
+            "evil.example"
+        );
+        assert_eq!(url_host("git@github.com:foo/httpx.git"), "github.com");
+        assert_eq!(url_host("ssh://git@internal/devlib"), "internal");
+        assert_eq!(url_host("file:///tmp/repo"), "local");
+        assert_eq!(url_host("/tmp/repo"), "local");
+        assert_eq!(url_host("../repo:x"), "local");
+        assert!(is_local_url("file:///x") && !is_local_url("https://h/x"));
+    }
+
+    #[test]
+    fn every_url_has_a_mirror_of_its_own() {
         let c = Path::new("/c");
-        assert_eq!(
-            mirror_path(c, "https://github.com/foo/httpx"),
-            Path::new("/c/git/github.com/foo/httpx.git")
+        let real = mirror_path(c, "https://github.com/foo/httpx");
+        let fake = mirror_path(c, "https://evil.example/p@github.com/foo/httpx");
+        assert_ne!(real, fake);
+        assert!(real.starts_with("/c/git/github.com"), "{}", real.display());
+        assert!(
+            fake.starts_with("/c/git/evil.example"),
+            "{}",
+            fake.display()
         );
-        assert_eq!(
-            mirror_path(c, "https://github.com/foo/httpx.git"),
-            Path::new("/c/git/github.com/foo/httpx.git")
+        let name = real.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(
+            name.starts_with("httpx-") && name.ends_with(".git"),
+            "{name}"
         );
-        assert_eq!(
-            mirror_path(c, "git@github.com:foo/httpx.git"),
-            Path::new("/c/git/github.com/foo/httpx.git")
-        );
-        assert_eq!(
-            mirror_path(c, "ssh://git@internal/devlib"),
-            Path::new("/c/git/internal/devlib.git")
-        );
-        assert_eq!(
-            mirror_path(c, "file:///tmp/x/../repo"),
-            Path::new("/c/git/tmp/x/repo.git")
-        );
+        assert_eq!(real, mirror_path(c, "https://github.com/foo/httpx"));
+        assert!(mirror_path(c, "file:///tmp/x/../repo").starts_with("/c/git/local"));
+    }
+
+    #[test]
+    fn revisions_are_commit_ids() {
+        assert!(check_rev("3f2a9c1e0b4d7c6e8a1f2b3c4d5e6f7a8b9c0d1e").is_ok());
+        assert!(check_rev("--output=/tmp/x").is_err());
+        assert!(check_rev("HEAD").is_err());
     }
 }

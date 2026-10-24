@@ -23,8 +23,13 @@ fn make_writable(dir: &Path) {
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.is_dir() {
+        let Ok(ft) = entry.file_type() else {
+            continue;
+        };
+        if ft.is_dir() {
             make_writable(&path);
+        } else if !ft.is_file() {
+            // A symbolic link: its target is not ours to change.
         } else if let Ok(meta) = std::fs::metadata(&path) {
             let mut perms = meta.permissions();
             #[allow(clippy::permissions_set_readonly_false)]
@@ -563,4 +568,151 @@ fn a_lock_just_resolved_is_used_as_it_is() {
     assert_eq!(w.ok("app", &["run"]), "1.1.0\n");
     assert_eq!(w.locked_version("app", "c"), "1.5.0");
     assert_eq!(w.ok("app", &["run", "--locked", "--offline"]), "1.1.0\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn symbolic_links_are_refused_in_cogs_and_not_followed_in_the_application() {
+    use std::os::unix::fs::PermissionsExt;
+    let w = World::new();
+    w.write("secret.txt", "secret\n");
+    let secret = w.path("secret.txt");
+    w.write("s/Cog.toml", "[cog]\nname = \"s\"\n");
+    w.write("s/src/a.qz", "A = 1\n");
+    std::os::unix::fs::symlink(&secret, w.path("s/src/leak.txt")).unwrap();
+    w.commit("s", Some("v0.1.0"));
+    w.app(
+        &format!("S = {{ git = \"{}\", tag = \"v0.1.0\" }}\n", w.url("s")),
+        "puts S::A\n",
+    );
+    let err = w.fails("app", &["check"]);
+    assert!(err.contains("symbolic link"), "{err}");
+    // The link's target was neither changed nor copied, and nothing is
+    // left in the cache.
+    let mode = std::fs::metadata(&secret).unwrap().permissions().mode();
+    assert_eq!(mode & 0o200, 0o200, "the secret was made read-only");
+    let left: Vec<_> = std::fs::read_dir(w.path("cache/src"))
+        .map(|d| d.flatten().map(|e| e.file_name()).collect())
+        .unwrap_or_default();
+    assert!(left.is_empty(), "{left:?}");
+    // In the application's own src/, a link back up is not walked.
+    w.app("", "puts 1\n");
+    std::os::unix::fs::symlink("..", w.path("app/src/up")).unwrap();
+    assert_eq!(w.ok("app", &["run"]), "1\n");
+}
+
+#[test]
+fn a_failed_vendor_keeps_the_old_vendor() {
+    let w = World::new();
+    w.libraries();
+    w.app(
+        &format!(
+            "Httpx = {{ git = \"{}\", tag = \"v1.4.0\" }}\n",
+            w.url("httpx")
+        ),
+        "puts Httpx.get(\"u\").body\n",
+    );
+    w.ok("app", &["cog", "vendor"]);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(w.path("app/vendor/httpx/src/client.qz"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(
+            mode & 0o777,
+            0o644,
+            "vendored files are the owner's to change, no one else's"
+        );
+    }
+    make_writable(&w.path("cache"));
+    std::fs::remove_dir_all(w.path("cache")).unwrap();
+    assert_eq!(w.ok("app", &["run", "--offline"]), "Value(body)\n");
+    // With nothing in the cache, vendoring again cannot work offline; the
+    // vendor/ that worked must still be there.
+    assert!(w
+        .fails("app", &["cog", "vendor", "--offline"])
+        .contains("--offline"));
+    assert_eq!(w.ok("app", &["run", "--offline"]), "Value(body)\n");
+}
+
+#[test]
+fn concurrent_fetches_share_the_cache() {
+    let w = World::new();
+    w.libraries();
+    w.app(
+        &format!(
+            "Httpx = {{ git = \"{}\", tag = \"v1.4.0\" }}\n",
+            w.url("httpx")
+        ),
+        "puts Httpx.get(\"u\").body\n",
+    );
+    w.ok("app", &["run"]);
+    // An empty cache: every process mirrors, fetches and installs.
+    make_writable(&w.path("cache"));
+    std::fs::remove_dir_all(w.path("cache")).unwrap();
+    let w = std::sync::Arc::new(w);
+    let runs: Vec<_> = (0..48)
+        .map(|_| {
+            let w = w.clone();
+            std::thread::spawn(move || w.quarz("app", &["cog", "fetch", "--locked"]))
+        })
+        .collect();
+    for r in runs {
+        let out = r.join().unwrap();
+        assert!(out.ok, "{}", out.stderr);
+    }
+    let names: Vec<String> = std::fs::read_dir(w.path("cache/src"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(names.len(), 2, "{names:?}");
+    assert!(names.iter().all(|n| !n.starts_with('.')), "{names:?}");
+}
+
+#[test]
+fn a_pseudo_version_follows_the_highest_version_tag_among_its_ancestors() {
+    // `v1.5` is not a version tag; the base is v1.4.0, not 0.0.0.
+    let w = World::new();
+    publish(&w, "p", "1.4.0", &[]);
+    w.write("p/src/w.qz", "W = 1\n");
+    w.commit("p", Some("v1.5"));
+    w.write("p/src/x.qz", "X = 2\n");
+    let head = w.commit("p", None);
+    w.app(
+        &format!("P = {{ git = \"{}\", rev = \"{head}\" }}\n", w.url("p")),
+        "puts P::X\n",
+    );
+    assert_eq!(w.ok("app", &["run"]), "2\n");
+    let v = w.locked_version("app", "p");
+    assert!(v.starts_with("1.4.1-0."), "{v}");
+    // A release branch merged back: the higher tag on the merged side is
+    // an ancestor too.
+    w.git("p", &["checkout", "-q", "-b", "release", "v1.4.0"]);
+    w.write("p/src/r.qz", "R = 3\n");
+    w.commit("p", Some("v2.0.0"));
+    w.git("p", &["checkout", "-q", "main"]);
+    w.git(
+        "p",
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.com",
+            "merge",
+            "-q",
+            "--no-edit",
+            "release",
+        ],
+    );
+    let merged = w.git("p", &["rev-parse", "HEAD"]);
+    w.app(
+        &format!("P = {{ git = \"{}\", rev = \"{merged}\" }}\n", w.url("p")),
+        "puts P::R\n",
+    );
+    assert_eq!(w.ok("app", &["run"]), "3\n");
+    let v = w.locked_version("app", "p");
+    assert!(v.starts_with("2.0.1-0."), "{v}");
 }
