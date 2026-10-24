@@ -12,7 +12,7 @@
 
 ## 2. Object
 
-`==`、`!=`、`equal?`、`hash`、`to_s`、`inspect`、`class`(`name` を持つ `Class`)、`is_a?`、`nil?`、`tap`、`then`、`dup`(配列や文字列などの組み込みの不変な値はそのまま返し、Builder とオブジェクトはコピーする)、`as`、`as?`、`frozen?`(偽になるのは Builder だけ)、`instance_exec`(レシーバ付きブロック `self.() -> R` を、そのオブジェクトを `self` にして実行。[01-syntax.ja.md](01-syntax.ja.md) §9 参照)。
+`==`、`!=`、`equal?`、`hash`、`to_s`(Ruby と同じく、クラスのインスタンスではクラス名 `#<Point>`、例外ではメッセージ、`data` の値と enum のバリアントでは既定の `inspect` と同じ(トップレベルの `self` は `main`)。クラスが定義した `inspect` は呼ばない)、`inspect`、`class`(`name` を持つ `Class`)、`is_a?`、`nil?`、`tap`、`then`、`dup`(配列や文字列などの組み込みの不変な値はそのまま返し、Builder とオブジェクトはコピーする)、`as`、`as?`、`frozen?`(偽になるのは Builder だけ)、`instance_exec`(レシーバ付きブロック `self.() -> R` を、そのオブジェクトを `self` にして実行。[01-syntax.ja.md](01-syntax.ja.md) §9 参照)。
 
 `Comparable[T]` は `<=>` を定義したクラスに `< <= > >= between? clamp(min, max) clamp(range)` を与えます。
 
