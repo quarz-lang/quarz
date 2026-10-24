@@ -1111,6 +1111,27 @@ fn emit_clone_ptr<B: Builder>(b: &mut B, clone_ptr: B::Func, dst: B::Value, src:
     b.switch_to_block(cont);
 }
 
+/// One more reference to the heap value whose allocation is `rc`, held
+/// in the value at `home`: its local count bumped inline, a shared one
+/// through `qz_own`.
+fn emit_retain<B: Builder>(b: &mut B, own: B::Func, home: B::Value, rc: B::Value) {
+    let local = b.create_block();
+    let shared = b.create_block();
+    let cont = b.create_block();
+    let strong = b.load(Ty::I64, rc, 0);
+    let is_local = b.icmp_imm(IntCC::NotEqual, strong, RC_SHARED);
+    b.brif(is_local, local, &[], shared, &[]);
+    b.switch_to_block(local);
+    let bumped = b.iadd_imm(strong, 1);
+    b.store(bumped, rc, 0);
+    b.jump(cont, &[]);
+    b.switch_to_block(shared);
+    b.set_cold(shared);
+    b.call(own, &[home]);
+    b.jump(cont, &[]);
+    b.switch_to_block(cont);
+}
+
 /// A call compiled to `qz_call_static`.
 struct StaticCall {
     mid: MethodId,
@@ -1566,19 +1587,56 @@ impl<B: Builder> Gen<'_, B> {
         let kind_values = self.b.icmp_imm(IntCC::Equal, kind, 0);
         let kind_ints = self.b.icmp_imm(IntCC::Equal, kind, 1);
         let kind_floats = self.b.icmp_imm(IntCC::Equal, kind, 2);
+        let kind_objects = self.b.icmp_imm(IntCC::Equal, kind, 3);
         let src_int = self.b.icmp_imm(IntCC::Equal, src_tag, TAG_INT);
         let src_float = self.b.icmp_imm(IntCC::Equal, src_tag, TAG_FLOAT);
+        let src_obj = self.b.icmp_imm(IntCC::Equal, src_tag, TAG_OBJECT);
         let ints_ok = self.b.band(kind_ints, src_int);
         let floats_ok = self.b.band(kind_floats, src_float);
-        let fits = self.b.bor(kind_values, ints_ok);
+        let objects_ok = self.b.band(kind_objects, src_obj);
+        // An object first in an empty boxed array goes to the runtime,
+        // which makes the storage references.
+        let empty = self.b.icmp_imm(IntCC::Equal, len, 0);
+        let first_obj = self.b.band(empty, src_obj);
+        let one = self.b.iconst(Ty::I8, 1);
+        let not_first_obj = self.b.bxor(first_obj, one);
+        let values_ok = self.b.band(kind_values, not_first_obj);
+        let fits = self.b.bor(values_ok, ints_ok);
         let fits = self.b.bor(fits, floats_ok);
+        let fits = self.b.bor(fits, objects_ok);
         let ok = self.b.band(ok, fits);
         self.b.brif(ok, fast, &[], slow, &[]);
         self.b.switch_to_block(fast);
         let boxed_b = self.b.create_block();
+        let unboxed_b = self.b.create_block();
+        let objects_b = self.b.create_block();
         let raw_b = self.b.create_block();
         let done_b = self.b.create_block();
-        self.b.brif(kind_values, boxed_b, &[], raw_b, &[]);
+        self.b.brif(kind_values, boxed_b, &[], unboxed_b, &[]);
+        self.b.switch_to_block(unboxed_b);
+        self.b.brif(kind_objects, objects_b, &[], raw_b, &[]);
+        // An object's reference: moved out of the register, or counted.
+        // (Never taken for a number in a variable: `objects_ok` is false.)
+        self.b.switch_to_block(objects_b);
+        if matches!(src_state, State::Int | State::Float | State::Bool) {
+            self.b.jump(slow, &[]);
+        } else {
+            let off = self.b.imul_imm(len, 8);
+            let slot = self.b.iadd(ptr, off);
+            let p = if src_state == State::Obj {
+                self.b.use_var(self.pvar(src))
+            } else {
+                self.payload_ptr(src)
+            };
+            self.b.store(p, slot, 0);
+            if move_src {
+                self.store_tag(src, TAG_NIL);
+            } else {
+                let home = self.b.iadd_imm(self.regs, i64::from(reg_off(src)));
+                emit_retain(self.b, self.h.own, home, p);
+            }
+            self.b.jump(done_b, &[]);
+        }
         self.b.switch_to_block(boxed_b);
         let off = self.b.imul_imm(len, i64::from(VALUE_SIZE));
         let slot = self.b.iadd(ptr, off);
@@ -2776,6 +2834,24 @@ impl<B: Builder> Gen<'_, B> {
         self.b.switch_to_block(done);
     }
 
+    /// Register `dst` gets the object element at `elem` of an array of
+    /// objects (a reference): counted, or `borrow`ed (the array keeps
+    /// it; the register holds no count, see `ArrayGetReg`). Returns the
+    /// object's allocation.
+    fn load_object_elem(&mut self, dst: Reg, elem: B::Value, borrow: bool) -> B::Value {
+        let p = self.b.load(Ty::Ptr, elem, 0);
+        if !borrow {
+            self.release(dst);
+        }
+        self.store_tag(dst, TAG_OBJECT);
+        self.b.store(p, self.regs, reg_off(dst) + 8);
+        if !borrow {
+            let home = self.b.iadd_imm(self.regs, i64::from(reg_off(dst)));
+            emit_retain(self.b, self.h.own, home, p);
+        }
+        p
+    }
+
     fn store_tag(&mut self, dst: Reg, tag: i64) {
         let t = self.b.iconst(Ty::I64, tag);
         self.b.store(t, self.regs, reg_off(dst));
@@ -3786,10 +3862,19 @@ impl<B: Builder> Gen<'_, B> {
                         let values_b = self.b.create_block();
                         let ints_b = self.b.create_block();
                         let floats_b = self.b.create_block();
+                        let objects_b = self.b.create_block();
                         let not_values = self.b.create_block();
+                        let words_b = self.b.create_block();
                         let is_values = self.b.icmp_imm(IntCC::Equal, kind, 0);
                         self.b.brif(is_values, values_b, &[], not_values, &[]);
                         self.b.switch_to_block(not_values);
+                        let is_objects = self.b.icmp_imm(IntCC::Equal, kind, 3);
+                        self.b.brif(is_objects, objects_b, &[], words_b, &[]);
+                        self.b.switch_to_block(objects_b);
+                        let elem = self.b.iadd(ptr, off8);
+                        self.load_object_elem(*dst, elem, false);
+                        self.b.jump(cont, &[]);
+                        self.b.switch_to_block(words_b);
                         let is_ints = self.b.icmp_imm(IntCC::Equal, kind, 1);
                         self.b.brif(is_ints, ints_b, &[], floats_b, &[]);
                         self.b.switch_to_block(values_b);
@@ -3930,24 +4015,37 @@ impl<B: Builder> Gen<'_, B> {
                 // array of objects only (`objects`) holds values: any other
                 // storage is a bug.
                 let values_b = self.b.create_block();
+                let objects_b = self.b.create_block();
+                let not_values = self.b.create_block();
+                let is_values = self.b.icmp_imm(IntCC::Equal, kind, 0);
+                self.b.brif(is_values, values_b, &[], not_values, &[]);
+                self.b.switch_to_block(not_values);
                 let unboxed = if *objects {
                     let bad = self.b.create_block();
-                    let is_values = self.b.icmp_imm(IntCC::Equal, kind, 0);
-                    self.b.brif(is_values, values_b, &[], bad, &[]);
+                    let is_objects = self.b.icmp_imm(IntCC::Equal, kind, 3);
+                    self.b.brif(is_objects, objects_b, &[], bad, &[]);
                     self.b.switch_to_block(bad);
                     self.unsound(block, index);
                     None
                 } else {
                     let ints_b = self.b.create_block();
                     let floats_b = self.b.create_block();
-                    let not_values = self.b.create_block();
-                    let is_values = self.b.icmp_imm(IntCC::Equal, kind, 0);
-                    self.b.brif(is_values, values_b, &[], not_values, &[]);
-                    self.b.switch_to_block(not_values);
+                    let words_b = self.b.create_block();
+                    let is_objects = self.b.icmp_imm(IntCC::Equal, kind, 3);
+                    self.b.brif(is_objects, objects_b, &[], words_b, &[]);
+                    self.b.switch_to_block(words_b);
                     let is_ints = self.b.icmp_imm(IntCC::Equal, kind, 1);
                     self.b.brif(is_ints, ints_b, &[], floats_b, &[]);
                     Some((ints_b, floats_b))
                 };
+                self.b.switch_to_block(objects_b);
+                let off8 = self.b.imul_imm(i, 8);
+                let elem8 = self.b.iadd(ptr, off8);
+                let p = self.load_object_elem(*dst, elem8, *borrow);
+                if *objects {
+                    self.b.def_var(self.pvar(*dst), p);
+                }
+                self.b.jump(cont, &[]);
                 self.b.switch_to_block(values_b);
                 let off = self.b.imul_imm(i, i64::from(VALUE_SIZE));
                 let elem = self.b.iadd(ptr, off);

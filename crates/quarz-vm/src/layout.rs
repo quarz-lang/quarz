@@ -173,6 +173,26 @@ pub fn check(sig: u64, vec: u64) {
         assert_eq!(words[l.ptr / 8], ptr, "ArrayData layout changed: vector");
         assert_eq!(words[l.len / 8], 3, "ArrayData layout changed: vector");
         assert_eq!(words[l.cap / 8], 7, "ArrayData layout changed: vector");
+        // Objects: their kind, the references a word each, as `Vec`.
+        let o = crate::value::Object::new(0, crate::value::Fields::new());
+        let objects = ArrayData::Objects(vec![o]);
+        // SAFETY: reading the bytes of a live value.
+        let (kind, words) = unsafe {
+            let base = &objects as *const ArrayData as *const u8;
+            let kind = *base.add(ARRAY_KIND_OFF);
+            let words = std::ptr::read(base.add(ARRAY_VEC_OFF) as *const [usize; 3]);
+            (kind, words)
+        };
+        assert_eq!(
+            kind,
+            crate::value::ARRAY_KIND_OBJECTS,
+            "ArrayData layout changed: kind byte"
+        );
+        assert_eq!(words[l.len / 8], 1, "ArrayData layout changed: objects");
+        assert_eq!(
+            std::mem::size_of::<crate::rc::Rc<crate::value::Object>>(),
+            8
+        );
     }
     assert_eq!(
         crate::value::Value::array(Vec::new()).type_tag(),
