@@ -187,6 +187,16 @@ impl Mirror {
         c
     }
 
+    /// A fetch into the mirror. Its objects arrive as one pack, which
+    /// appears at once: unpacked into loose objects (git's default for a
+    /// small fetch), a commit could be seen by another process before its
+    /// trees and blobs, which read without the lock.
+    fn fetch(&self) -> Command {
+        let mut c = self.cmd();
+        c.args(["-c", "fetch.unpackLimit=1", "fetch", "-q"]);
+        c
+    }
+
     pub fn has_commit(&self, rev: &str) -> bool {
         let mut c = self.cmd();
         c.args(["cat-file", "-e", &format!("{rev}^{{commit}}")]);
@@ -204,8 +214,8 @@ impl Mirror {
         if self.has_commit(rev) {
             return Ok(());
         }
-        let mut c = self.cmd();
-        c.args(["fetch", "-q", "--depth", "1", "--", &self.url, rev]);
+        let mut c = self.fetch();
+        c.args(["--depth", "1", "--", &self.url, rev]);
         run(c, &format!("fetching {rev} from {}", self.url))?;
         Ok(())
     }
@@ -217,8 +227,8 @@ impl Mirror {
     pub fn fetch_history(&self, rev: &str) -> Result<(), Error> {
         check_rev(rev)?;
         let _lock = self.lock()?;
-        let mut c = self.cmd();
-        c.args(["fetch", "-q", "--prune"]);
+        let mut c = self.fetch();
+        c.arg("--prune");
         if self.dir.join("shallow").exists() {
             c.arg("--unshallow");
         }
