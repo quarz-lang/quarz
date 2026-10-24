@@ -134,6 +134,120 @@ pub(crate) fn reaching(f: &Function) -> Reaching {
     }
 }
 
+/// Where what `site` made (a copy, `dst <- src`; an object built from
+/// argument registers) still holds on entry to each block: on every path
+/// from `site`, none of `regs` was written again, and no path from the
+/// function's entry or a handler gets there without passing `site`.
+/// Reaching definitions cannot tell this across a loop: a use reached by
+/// `site` in the previous pass, while one of `regs` was written again by
+/// the same instruction in this one, has the same definitions as at
+/// `site`, but not the same values.
+pub(crate) fn holds_on_entry(f: &Function, site: Site, regs: &[Reg]) -> Vec<bool> {
+    let n = f.blocks.len();
+    let mut preds: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for (bi, blk) in f.blocks.iter().enumerate() {
+        for s in successors(blk) {
+            preds[s as usize].push(bi);
+        }
+    }
+    let handlers: HashSet<usize> = f
+        .blocks
+        .iter()
+        .filter_map(|b| b.handler.map(|h| h.block as usize))
+        .collect();
+    // What each block does, found once: it makes it (`site`, with no
+    // write after it there), ends it (a write of one of `regs`, after
+    // `site` if any), or leaves it as it came.
+    #[derive(Clone, Copy)]
+    enum Effect {
+        Makes,
+        Ends,
+        Keeps,
+    }
+    let effect: Vec<Effect> = f
+        .blocks
+        .iter()
+        .enumerate()
+        .map(|(bi, blk)| {
+            let mut e = Effect::Keeps;
+            for (ii, inst) in blk.insts.iter().enumerate() {
+                if (bi, ii) == site {
+                    e = Effect::Makes;
+                } else if writes_any(inst, regs) {
+                    e = Effect::Ends;
+                }
+            }
+            e
+        })
+        .collect();
+    let at_end = |bi: usize, holds: bool| -> bool {
+        match effect[bi] {
+            Effect::Makes => true,
+            Effect::Ends => false,
+            Effect::Keeps => holds,
+        }
+    };
+    // Optimistic start, lowered to a fixed point: the entry block and
+    // handlers hold nothing.
+    let mut entry: Vec<bool> = (0..n).map(|b| b != 0 && !handlers.contains(&b)).collect();
+    let mut exit: Vec<bool> = (0..n).map(|b| at_end(b, entry[b])).collect();
+    loop {
+        let mut changed = false;
+        for b in 1..n {
+            if handlers.contains(&b) {
+                continue;
+            }
+            let e = !preds[b].is_empty() && preds[b].iter().all(|&p| exit[p]);
+            if e != entry[b] {
+                entry[b] = e;
+                changed = true;
+            }
+            let x = at_end(b, e);
+            if x != exit[b] {
+                exit[b] = x;
+                changed = true;
+            }
+        }
+        if !changed {
+            return entry;
+        }
+    }
+}
+
+fn writes_any(inst: &Inst, regs: &[Reg]) -> bool {
+    written(inst).iter().any(|r| regs.contains(r))
+}
+
+/// Whether what `site` made still holds before instruction `ii` of its
+/// own block, after it: nothing between writes one of `regs`.
+pub(crate) fn unwritten_between(f: &Function, site: Site, ii: usize, regs: &[Reg]) -> bool {
+    f.blocks[site.0].insts[site.1 + 1..ii]
+        .iter()
+        .all(|inst| !writes_any(inst, regs))
+}
+
+/// Whether what `site` made still holds before instruction `ii` of block
+/// `bi` (`ii` the instruction count: before the terminator), `entry`
+/// being `holds_on_entry`'s answer.
+pub(crate) fn holds_at(
+    f: &Function,
+    entry: &[bool],
+    site: Site,
+    regs: &[Reg],
+    bi: usize,
+    ii: usize,
+) -> bool {
+    let mut holds = entry[bi];
+    for (k, inst) in f.blocks[bi].insts[..ii].iter().enumerate() {
+        if (bi, k) == site {
+            holds = true;
+        } else if writes_any(inst, regs) {
+            holds = false;
+        }
+    }
+    holds
+}
+
 /// The definitions of `r` reaching instruction `ii` of block `bi`
 /// (`None` = never written on this path, i.e. still nil).
 pub(crate) fn defs_at(reach: &Reaching, f: &Function, bi: usize, ii: usize, r: Reg) -> Sites {
@@ -220,10 +334,13 @@ fn replace_in(f: &mut Function, methods: &[RtMethod], classes: &[RtClass]) {
         while ok && k < aliases.len() {
             let (q, def) = aliases[k];
             k += 1;
+            // A use in a handler (entered from anywhere in its region:
+            // `UNKNOWN`) may see the object; so does a terminator.
             if term_uses.get(&q).is_some_and(|bs| {
                 bs.iter().any(|bi| {
                     let n = f.blocks[*bi].insts.len();
-                    defs_at(&reach, f, *bi, n, q).contains(&def)
+                    let here = defs_at(&reach, f, *bi, n, q);
+                    here.contains(&def) || here.contains(&UNKNOWN)
                 })
             }) {
                 ok = false;
@@ -231,6 +348,10 @@ fn replace_in(f: &mut Function, methods: &[RtMethod], classes: &[RtClass]) {
             }
             for &(ubi, uii) in uses.get(&q).map(|v| v.as_slice()).unwrap_or(&[]) {
                 let here = defs_at(&reach, f, ubi, uii, q);
+                if here.contains(&UNKNOWN) {
+                    ok = false;
+                    break;
+                }
                 if !here.contains(&def) {
                     continue;
                 }
@@ -252,7 +373,16 @@ fn replace_in(f: &mut Function, methods: &[RtMethod], classes: &[RtClass]) {
                         class: c,
                     } if *obj == q && *c == class && (*index as usize) < args.len() => {
                         let a = args[*index as usize];
-                        if defs_at(&reach, f, ubi, uii, a) != arg_defs[*index as usize] {
+                        // The argument still holds what the object was
+                        // built from: same definitions, and not written
+                        // since on any path (a pass of a loop may write
+                        // it and leave before building again).
+                        let still = if ubi == site.0 && uii > site.1 {
+                            unwritten_between(f, site, uii, &[a])
+                        } else {
+                            holds_at(f, &holds_on_entry(f, site, &[a]), site, &[a], ubi, uii)
+                        };
+                        if defs_at(&reach, f, ubi, uii, a) != arg_defs[*index as usize] || !still {
                             ok = false;
                             break;
                         }
