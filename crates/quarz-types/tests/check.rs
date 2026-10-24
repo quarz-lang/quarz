@@ -216,6 +216,45 @@ fn classes_and_fields() {
 }
 
 #[test]
+fn protected_methods() {
+    // As in Ruby: callable on another receiver only from an instance of
+    // the class (or module) that defines it, or of a descendant.
+    let account = "class Account\n  @balance: Int\n  def initialize(@balance: Int); end\n  def richer?(o: Account) -> Bool = balance > o.balance\n  protected def balance -> Int = @balance\nend\n";
+    ok(&format!(
+        "{account}puts Account.new(2).richer?(Account.new(1))"
+    ));
+    err(
+        &format!("{account}puts Account.new(2).balance"),
+        "`balance` is protected",
+    );
+    // `self.` and an implicit receiver are always allowed.
+    ok("class A\n  def f -> Int = self.g + g\n  protected def g -> Int = 1\nend\nputs A.new.f");
+    // A subclass may call it on an instance of the class, a sibling's
+    // instance included; an unrelated class may not.
+    ok(&format!("{account}class Savings < Account\n  def more?(o: Account) -> Bool = balance > o.balance\nend\nputs Savings.new(2).more?(Account.new(1))"));
+    err(
+        &format!("{account}class Bank\n  def peek(a: Account) -> Int = a.balance\nend\nputs Bank.new.peek(Account.new(1))"),
+        "`balance` is protected",
+    );
+    // A class method's `self` is the class, not an instance.
+    err(
+        &format!("{account}class Audit < Account\n  def self.peek(a: Account) -> Int = a.balance\nend\nputs Audit.peek(Account.new(1))"),
+        "`balance` is protected",
+    );
+    // Declared in a module: any instance of a class including it.
+    ok("module Ranked\n  protected def rank -> Int = 1\n  def above?(o: Ranked) -> Bool = rank > o.rank\nend\nclass X\n  include Ranked\nend\nclass Y\n  include Ranked\nend\nputs X.new.above?(Y.new)");
+    // The section form and the form naming methods.
+    err(
+        "class B\n  protected\n  def h -> Int = 1\nend\nputs B.new.h",
+        "`h` is protected",
+    );
+    err(
+        "class B\n  def h -> Int = 1\n  protected :h\nend\nputs B.new.h",
+        "`h` is protected",
+    );
+}
+
+#[test]
 fn data_and_enum() {
     ok("data P = (x: Int, y: Int)\np = P.new(1, 2)\nq = p.with(y: 5)\nputs q.x + q.y\np => P(x:, y:)\nputs x");
     err(

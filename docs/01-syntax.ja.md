@@ -89,6 +89,7 @@ Ruby との違い:
 - **可変フィールドは `var`** で宣言します。`var` フィールドを持つクラス、または Shareable でない型のフィールドを持つクラスは Shareable になりません([03-data-model.ja.md](03-data-model.ja.md))。
 - **クラスは再オープンできません**。同名のクラスを二度定義するとエラーです。既存クラスへのメソッド追加は `extension`(§7)で行います。
 - **クラス本体は宣言のみ**。フィールド宣言、メソッド定義、`include`/`extend`、`attr_*`、定数、入れ子の型、可視性指定(`private`/`protected`/`public`)が書けます。任意の式は書けません。
+- **可視性は Ruby と同じ規則で静的に検査します**。`private` なメソッドは `self` に対してだけ(省略するか `self.` を付けて)呼べます。`protected` なメソッドは別の受け手に対しても呼べますが、呼び出す側の `self` が、そのメソッドを定義したクラスかモジュールのインスタンス(子孫のものを含む)である場合に限ります(`def richer?(o: Account) = balance > o.balance`)。クラスメソッドの `self` はクラスなので、インスタンスの protected なメソッドは呼べません。`private`/`protected`/`public` は、後に続くメソッド、前置したメソッド(`private def f`)、名前を挙げたメソッド(`protected :f`)に適用されます。
 - `attr_reader`/`attr_writer`/`attr_accessor` は組み込みの宣言で、宣言済みのフィールドに対するアクセサメソッドを生成します(`attr_writer`/`attr_accessor` は `var` フィールドにのみ使えます)。
 - `initialize` の引数に `@` を付けると、そのフィールドへの代入を兼ねます(Crystal と同じ):
 

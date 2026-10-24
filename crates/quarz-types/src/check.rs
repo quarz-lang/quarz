@@ -4645,6 +4645,19 @@ impl Checker {
         }
     }
 
+    /// Whether the code here may call a protected method of class (or
+    /// module) `owner` on a receiver other than `self`: when `self` is an
+    /// instance of `owner` or of a descendant (as in Ruby). A class
+    /// method's `self` is a class, never such an instance.
+    fn may_call_protected(&self, owner: ClassId) -> bool {
+        if matches!(self.env.self_type, Type::ClassObject(..)) {
+            return false;
+        }
+        self.env
+            .class_id
+            .is_some_and(|c| self.world.class_is_a(c, owner))
+    }
+
     fn resolve_overloads(
         &mut self,
         expr: &Expr,
@@ -4691,6 +4704,17 @@ impl Checker {
             // Visibility.
             if m.visibility == Visibility::Private && !implicit_self && !is_init {
                 failures.push(format!("`{}` is private", m.name));
+                continue;
+            }
+            if m.visibility == Visibility::Protected
+                && !implicit_self
+                && !self.may_call_protected(m.owner)
+            {
+                failures.push(format!(
+                    "`{}` is protected: it is called on another receiver only from an instance of {}",
+                    m.name,
+                    self.world.class(m.owner).name
+                ));
                 continue;
             }
             if (m.block.is_some()) != block_given {

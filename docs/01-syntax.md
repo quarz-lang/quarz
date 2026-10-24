@@ -91,6 +91,7 @@ Differences from Ruby:
 - **Mutable fields are declared with `var`.** A class with a `var` field, or with a field of a non-Shareable type, is not Shareable ([03-data-model.md](03-data-model.md)).
 - **Classes cannot be reopened.** Defining a class with the same name twice is an error. Adding methods to an existing class is done with `extension` (§7).
 - **Class bodies contain only declarations.** Field declarations, method definitions, `include`/`extend`, `attr_*`, constants, nested types and visibility specifiers (`private`/`protected`/`public`) are allowed. Arbitrary expressions are not.
+- **Visibility is checked statically, as in Ruby.** A `private` method is called only on `self` (implicitly or as `self.`); a `protected` one also on another receiver, but only from code whose `self` is an instance of the class or module that defines it, or of a descendant (`def richer?(o: Account) = balance > o.balance`). A class method's `self` is a class, so it cannot call an instance's protected method. `private`/`protected`/`public` apply to the methods after them, to the one they prefix (`private def f`), or to the ones they name (`protected :f`).
 - `attr_reader`/`attr_writer`/`attr_accessor` are built-in declarations that generate accessor methods for declared fields (`attr_writer`/`attr_accessor` can only be used on `var` fields).
 - Prefixing an `initialize` parameter with `@` also assigns the field (same as Crystal):
 
