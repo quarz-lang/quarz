@@ -3535,8 +3535,9 @@ impl Checker {
                 let rt = self.resolve(&self.out.node_types[&recv.id]);
                 let cands = self.world.lookup_methods(&rt, "[]=");
                 if cands.is_empty() {
+                    let hint = self.immutable_hint(&rt, "[]=", Some(recv));
                     self.error(
-                        format!("undefined method `[]=` for {}", self.name(&rt)),
+                        format!("undefined method `[]=` for {}{hint}", self.name(&rt)),
                         expr.span,
                     );
                 } else {
@@ -4284,7 +4285,8 @@ impl Checker {
                             self.name(recv_ty)
                         )
                     } else {
-                        format!("undefined method `{name}` for {}", self.name(recv_ty))
+                        let hint = self.immutable_hint(recv_ty, name, call.recv.as_ref());
+                        format!("undefined method `{name}` for {}{hint}", self.name(recv_ty))
                     };
                     self.error(msg, expr.span);
                     self.check_args_blindly(call);
@@ -4293,6 +4295,41 @@ impl Checker {
                 self.resolve_overloads(expr, call, recv_ty, cands, implicit_self, expected)
             }
         }
+    }
+
+    /// For a destructive method missing on an immutable built-in type,
+    /// the way to write it ("" otherwise).
+    fn immutable_hint(&self, recv_ty: &Type, name: &str, recv: Option<&Expr>) -> String {
+        let Type::Class(cid, _) = recv_ty else {
+            return String::new();
+        };
+        let b = &self.world.builtin;
+        let class = if *cid == b.array {
+            "Array"
+        } else if *cid == b.hash {
+            "Hash"
+        } else if *cid == b.set {
+            "Set"
+        } else if *cid == b.string {
+            "String"
+        } else if *cid == b.bytes {
+            "Bytes"
+        } else {
+            return String::new();
+        };
+        let var = match recv.map(|r| &r.kind) {
+            Some(ExprKind::Local(v)) => v.as_str(),
+            _ => "x",
+        };
+        let instead = match (class, name) {
+            ("Array", "<<") => format!("`{var} = {var}.push(value)`"),
+            ("Array", "[]=") => format!("`{var} = {var}.set(index, value)`"),
+            ("Hash", "[]=") => format!("`{var} = {var}.put(key, value)`"),
+            ("Set", "<<") => format!("`{var} = {var}.add(value)`"),
+            ("String" | "Bytes", "<<") => format!("`{var} = {var} + other`"),
+            _ => return String::new(),
+        };
+        format!("; {class} is immutable: write {instead}, or build it with `{class}::Builder`")
     }
 
     /// `x.foo!(args)` where the receiver's type has no `foo!` but has

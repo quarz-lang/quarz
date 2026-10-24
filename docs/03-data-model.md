@@ -31,7 +31,7 @@ s = "abc"
 t = s + "d"
 ```
 
-Of Ruby's destructive methods (`push`/`<<`/`[]=`/`sort!`/`map!`/`concat`/`delete`/`clear`/`gsub!`…), the immutable types only have the "return a new value" versions. `<<`, `[]=` and `!`-suffixed methods are not defined on immutable types. If you write `arr << x`, the compiler reports an error suggesting that you use `Array::Builder` or write `arr = arr.push(x)` (currently a plain "undefined method" error; the suggestion is planned).
+Of Ruby's destructive methods (`push`/`<<`/`[]=`/`sort!`/`map!`/`concat`/`delete`/`clear`/`gsub!`…), the immutable types only have the "return a new value" versions. `<<`, `[]=` and `!`-suffixed methods are not defined on immutable types. If you write `arr << x`, the compiler reports an error suggesting that you use `Array::Builder` or write `arr = arr.push(x)` (likewise `<<` on `Set`, `String` and `Bytes`, and `[]=` on `Array` and `Hash`).
 
 Discarding the result of a pure method produces a warning (planned).
 

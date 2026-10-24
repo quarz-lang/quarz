@@ -820,6 +820,11 @@ fn reraise_block_params_overrides() {
     ok("begin\n  raise \"x\"\nrescue ArgumentError\n  raise\nend");
     ok("begin\n  raise \"x\"\nrescue => e\n  [1].each { |x| raise }\nend");
     err("raise", "a bare `raise` re-raises only inside `rescue`");
+    err(
+        "arr = [1]\narr << 2",
+        "Array is immutable: write `arr = arr.push(value)`, or build it with `Array::Builder`",
+    );
+    err("h = {1 => 2}\nh[3] = 4", "write `h = h.put(key, value)`");
     ok("enum C = A | B(x: Int)\ndef f(c: C) -> Int\n  c == C::A ? 0 : c.x\nend");
     ok("enum C = A | B(x: Int)\ndef f(c: C) -> Int\n  return 0 unless c != C::A\n  c.x\nend");
     ok("def f(b: Bool?) -> Bool\n  b == true ? b : false\nend");
