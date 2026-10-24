@@ -74,7 +74,7 @@ proc_type      = "(" [ type { "," type } ] ")" "->" type ;
 
 type_alias     = "type" CONST [ type_params ] "=" type ;
 const_decl     = const_path "=" expression ;
-const_path     = [ "::" | "cog" "::" ] CONST { "::" CONST } ;   (* "cog": the current package's module (planned) *)
+const_path     = [ "::" | "cog" "::" ] CONST { "::" CONST } ;   (* "cog": the current cog's root module *)
 
 (* ---- type annotations on variables ---- *)
 typed_assign   = IDENT ":" type "=" expression ;        (* only at the start of a statement *)
