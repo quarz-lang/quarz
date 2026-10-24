@@ -2928,7 +2928,7 @@ impl Checker {
                     ("==", [Arg::Positional(arg)]) | ("!=", [Arg::Positional(arg)]) => {
                         let is_nil = matches!(arg.kind, ExprKind::Nil);
                         if !is_nil {
-                            return (t, Vec::new(), Vec::new());
+                            return self.equality_facts(t, call, arg, key, &recv_ty);
                         }
                         let nil = self.world.nil();
                         let without = recv_ty.without_nil(self.world.builtin.nil);
@@ -2945,6 +2945,38 @@ impl Checker {
                 let t = self.check_expr(cond, None);
                 (t, Vec::new(), Vec::new())
             }
+        }
+    }
+
+    /// `x == true`, `x != Color::Red`: the value equal to a `true` or
+    /// `false` literal is a `Bool`, and one equal to a data-less variant
+    /// is that variant; one not equal to such a variant is not it.
+    fn equality_facts(
+        &mut self,
+        t: Type,
+        call: &Call,
+        arg: &Expr,
+        key: VarKey,
+        recv_ty: &Type,
+    ) -> (Type, Facts, Facts) {
+        let (target, singleton) = match &arg.kind {
+            ExprKind::True | ExprKind::False => (self.world.bool_(), false),
+            _ => match self.out.const_targets.get(&arg.id) {
+                Some(ConstTarget::VariantSingleton(id)) => (Type::class(*id), true),
+                _ => return (t, Vec::new(), Vec::new()),
+            },
+        };
+        let (yes, no) = self.split_by_type(recv_ty, &target);
+        let equal = vec![(key.clone(), yes)];
+        let unequal = if singleton {
+            vec![(key, no)]
+        } else {
+            Vec::new()
+        };
+        if call.name == "==" {
+            (t, equal, unequal)
+        } else {
+            (t, unequal, equal)
         }
     }
 

@@ -1,0 +1,36 @@
+# `==`/`!=` against `true`, `false` or a data-less variant narrow, as
+# against `nil`.
+enum Color = Red | Green | Rgb(r: Int, g: Int, b: Int)
+
+def name(c: Color) -> String
+  if c == Color::Red
+    "red"
+  elsif c == Color::Green
+    "green"
+  else
+    "rgb #{c.r} #{c.g} #{c.b}"
+  end
+end
+
+def red_part(c: Color) -> Int
+  return 255 unless c != Color::Red
+  return 0 if c == Color::Green
+  c.r
+end
+
+def flag(b: Bool?) -> Bool
+  if b == true
+    b
+  elsif b != false
+    false
+  else
+    b
+  end
+end
+
+[Color::Red, Color::Green, Color::Rgb.new(1, 2, 3)].each do |c|
+  puts "#{name(c)} #{red_part(c)}"
+end
+p flag(true)
+p flag(false)
+p flag(nil)

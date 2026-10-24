@@ -820,6 +820,13 @@ fn reraise_block_params_overrides() {
     ok("begin\n  raise \"x\"\nrescue ArgumentError\n  raise\nend");
     ok("begin\n  raise \"x\"\nrescue => e\n  [1].each { |x| raise }\nend");
     err("raise", "a bare `raise` re-raises only inside `rescue`");
+    ok("enum C = A | B(x: Int)\ndef f(c: C) -> Int\n  c == C::A ? 0 : c.x\nend");
+    ok("enum C = A | B(x: Int)\ndef f(c: C) -> Int\n  return 0 unless c != C::A\n  c.x\nend");
+    ok("def f(b: Bool?) -> Bool\n  b == true ? b : false\nend");
+    err(
+        "def f(b: Bool?) -> Bool\n  b != true ? b : false\nend",
+        "Bool?",
+    );
     ok("module M\n  def m -> Int = 1\nend\nclass A\n  include M\n  def f -> Int = 1\n  def self.k -> Int = 1\nend\nclass B < A\n  override def f -> Int = 2\n  override def m -> Int = 2\n  override def to_s -> String = \"B\"\n  override def self.k -> Int = 2\nend");
     err(
         "class A\nend\nclass B < A\n  override def g -> Int = 1\nend",
