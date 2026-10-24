@@ -43,7 +43,7 @@ Quarz shares one front end and one runtime across two back ends (an interpreter 
 | `quarz ir app.qz` | Print the QIR of every function (for debugging the lowering); `quarz tokens` and `quarz parse` print the tokens and the syntax tree |
 | `quarz test` | Run `test/**/*_test.qz` (*planned*) |
 | `quarz fmt` | Format (*planned*) |
-| `quarz cog add <git-url>` | Package management: a cog is a git repository pinned to a commit in `Quarz.lock`; the manifest is `Quarz.toml` ([10-cogs.md](10-cogs.md), *planned*) |
+| `quarz cog add <git-url>` | Package management: a cog is a git repository pinned to a commit in `Cog.lock`; the manifest is `Cog.toml` ([10-cogs.md](10-cogs.md), *planned*) |
 
 ## 2. Compilation Units and Separate Compilation
 

@@ -40,7 +40,7 @@ Quarz は 1 つのフロントエンドと 1 つのランタイムを、2 つの
 | `quarz ir app.qz` | 全関数の QIR を表示する(変換結果のデバッグ用)。`quarz tokens` と `quarz parse` はトークンと構文木を表示する |
 | `quarz test` | `test/**/*_test.qz` を実行(*予定*) |
 | `quarz fmt` | 整形(*予定*) |
-| `quarz cog add <git-url>` | パッケージ管理。cog は `Quarz.lock` でコミットに固定された git リポジトリ。マニフェストは `Quarz.toml`([10-cogs.ja.md](10-cogs.ja.md)、*予定*) |
+| `quarz cog add <git-url>` | パッケージ管理。cog は `Cog.lock` でコミットに固定された git リポジトリ。マニフェストは `Cog.toml`([10-cogs.ja.md](10-cogs.ja.md)、*予定*) |
 
 ## 2. コンパイル単位と分割コンパイル
 
