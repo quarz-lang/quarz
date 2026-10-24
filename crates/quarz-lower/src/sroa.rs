@@ -61,11 +61,12 @@ pub(crate) fn successors(b: &Block) -> Vec<BlockId> {
 pub(crate) const UNKNOWN: Site = (usize::MAX, usize::MAX);
 
 /// What an instruction writes, for the reaching definitions: its
-/// defined registers, and the array an `ArrayPush` appends to (changed
-/// in place, so a copy taken before no longer equals it).
+/// defined registers, and the array an `ArrayPush` or `ArrayPushWord`
+/// appends to (changed in place, so a copy taken before no longer equals
+/// it).
 pub(crate) fn written(inst: &Inst) -> Vec<Reg> {
     let mut v = inst.defs();
-    if let Inst::ArrayPush { arr, .. } = inst {
+    if let Inst::ArrayPush { arr, .. } | Inst::ArrayPushWord { arr, .. } = inst {
         v.push(*arr);
     }
     v
