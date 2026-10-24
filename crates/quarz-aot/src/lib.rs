@@ -40,7 +40,9 @@ pub fn find_runtime_lib() -> Result<PathBuf, String> {
     Err("cannot find libquarz_vm.a (build it with `cargo build` or set QUARZ_RT_LIB)".to_string())
 }
 
-/// Link an object file with the runtime into the executable `output`.
+/// Link an object file with the runtime into the executable `output`,
+/// dropping the runtime's code the program cannot reach (the runtime is
+/// one codegen unit, each function in a section of its own).
 fn link(object: &Path, output: &Path) -> Result<(), String> {
     let runtime = find_runtime_lib()?;
     let status = Command::new("cc")
@@ -48,6 +50,7 @@ fn link(object: &Path, output: &Path) -> Result<(), String> {
         .arg(output)
         .arg(object)
         .arg(&runtime)
+        .arg("-Wl,--gc-sections")
         .args(["-lpthread", "-ldl", "-lm", "-lgcc_s", "-lrt", "-lutil"])
         .status()
         .map_err(|e| format!("cannot run cc: {e}"))?;
