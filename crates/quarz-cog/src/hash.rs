@@ -39,6 +39,11 @@ pub fn tree_hash(dir: &Path) -> std::io::Result<String> {
     ))
 }
 
+/// `h1:` and the base64 of the SHA-256 of `bytes`.
+pub fn digest(bytes: &[u8]) -> String {
+    format!("h1:{}", base64(&Sha256::digest(bytes)))
+}
+
 fn collect(base: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
     for entry in std::fs::read_dir(dir)? {
         let path = entry?.path();

@@ -524,3 +524,43 @@ fn cog_add_writes_a_tag_or_a_rev() {
     let out = w.ok("app", &["cog", "add", &w.url("plain"), "--as", "Plain2"]);
     assert!(out.contains(&format!("rev = \"{head}\"")), "{out}");
 }
+
+/// A cog at `version` of repository `repo` (module `module`) whose
+/// manifest lists `deps` (key, repo, tag), committed and tagged.
+fn publish(w: &World, repo: &str, version: &str, deps: &[(&str, &str, &str)]) {
+    let mut manifest =
+        format!("[cog]\nname = \"{repo}\"\nversion = \"{version}\"\n\n[dependencies]\n");
+    for (key, dep, tag) in deps {
+        manifest.push_str(&format!(
+            "{key} = {{ git = \"{}\", tag = \"{tag}\" }}\n",
+            w.url(dep)
+        ));
+    }
+    w.write(&format!("{repo}/Cog.toml"), &manifest);
+    w.write(&format!("{repo}/src/v.qz"), &format!("V = \"{version}\"\n"));
+    w.commit(repo, Some(&format!("v{version}")));
+}
+
+#[test]
+fn a_lock_just_resolved_is_used_as_it_is() {
+    // The resolution visits A 1.0.0 (asking for C 1.5.0) before B lifts A
+    // to 1.1.0 (asking for C 1.2.0): C stays at 1.5.0, and the next run
+    // must take the lock as it is.
+    let w = World::new();
+    publish(&w, "c", "1.2.0", &[]);
+    publish(&w, "c", "1.5.0", &[]);
+    publish(&w, "a", "1.0.0", &[("C", "c", "v1.5.0")]);
+    publish(&w, "a", "1.1.0", &[("C", "c", "v1.2.0")]);
+    publish(&w, "b", "1.0.0", &[("A", "a", "v1.1.0")]);
+    w.app(
+        &format!(
+            "A = {{ git = \"{}\", tag = \"v1.0.0\" }}\nB = {{ git = \"{}\", tag = \"v1.0.0\" }}\n",
+            w.url("a"),
+            w.url("b")
+        ),
+        "puts A::V\n",
+    );
+    assert_eq!(w.ok("app", &["run"]), "1.1.0\n");
+    assert_eq!(w.locked_version("app", "c"), "1.5.0");
+    assert_eq!(w.ok("app", &["run", "--locked", "--offline"]), "1.1.0\n");
+}
