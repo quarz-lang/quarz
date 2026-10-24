@@ -1,0 +1,49 @@
+# A variable reassigned in a loop: its old value is released before the
+# assignment, and that release must not reach the new value (copy
+# propagation once redirected it there, through the loop's back edge).
+class P
+  @v: Int
+  def initialize(@v: Int); end
+  def v -> Int = @v
+end
+
+def work(ps: Array[P]) -> Int = ps.size
+
+k = 0
+while k < 3
+  b = [P.new(k)]
+  p work(b)
+  k += 1
+end
+
+def last_sum(n: Int) -> Int
+  xs = Array.new(n) { |i| P.new(i) }
+  t = 0
+  i = 0
+  while i < n
+    l = xs.last
+    t += l.nil? ? 0 : l.v
+    i += 1
+  end
+  t
+end
+p last_sum(3)
+
+# A data value built in a loop from a variable a branch may change: the
+# copy of the variable it was built from no longer holds after the join.
+data V = (x: Int, y: Int)
+def sum_built(n: Int) -> Int
+  s = 0
+  i = 0
+  j = 0
+  while j < n
+    o = V.new(i, 0)
+    if j.even?
+      i += 1
+    end
+    s += o.x
+    j += 1
+  end
+  s
+end
+p sum_built(6)
