@@ -2713,17 +2713,34 @@ impl Interp {
         match v {
             Value::Str(s) => Ok(Cow::Borrowed(s)),
             Value::Short(s) => Ok(Cow::Borrowed(s.as_str())),
-            Value::Object(o) => {
+            Value::Object(_) => {
                 if let Some(mid) = self.has_user_method(v, "to_s", 0) {
                     let r = self.invoke(mid, v.clone(), smallvec![], vec![], None)?;
                     return Ok(Cow::Owned(self.to_s(&r)?.into_owned()));
                 }
-                if self.program.world.is_exception_class(o.class) {
-                    return Ok(Cow::Owned(self.exception_message(v)));
-                }
-                Ok(Cow::Owned(self.inspect(v)?))
+                Ok(Cow::Owned(self.object_to_s(v)?))
             }
             _ => Ok(Cow::Owned(self.format_value(v, false)?)),
+        }
+    }
+
+    /// The default `to_s` of an object, as in Ruby: an exception's
+    /// message, a `data` value or variant formatted as the default
+    /// `inspect` does, and other objects' class name only. It never
+    /// calls a user-defined `inspect`, which may call `to_s`.
+    pub(crate) fn object_to_s(&self, v: &Value) -> Result<String, Flow> {
+        let Value::Object(o) = v else {
+            return self.format_value(v, false);
+        };
+        let class = self.program.world.class(o.class);
+        if class.is_exception {
+            return Ok(self.exception_message(v));
+        }
+        match class.kind {
+            RtClassKind::Data | RtClassKind::Variant | RtClassKind::Main => {
+                self.format_value(v, true)
+            }
+            _ => Ok(format!("#<{}>", class.name)),
         }
     }
 

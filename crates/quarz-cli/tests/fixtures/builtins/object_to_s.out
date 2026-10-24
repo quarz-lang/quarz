@@ -1,0 +1,9 @@
+#<Foo>
+Foo(#<Foo>)
+Foo(#<Foo>)
+#<Bar>
+#<Bar @y=2>
+#<Bar>
+P(a: 4)
+P(a: 4)
+boom

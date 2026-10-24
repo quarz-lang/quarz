@@ -89,9 +89,7 @@ fn obj_hash(_: &Interp, recv: &Value, _: Args) -> EvalResult {
 
 fn obj_to_s(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
     match recv {
-        Value::Object(o) if !interp.program.world.is_exception_class(o.class) => {
-            Ok(Value::string(interp.inspect(recv)?))
-        }
+        Value::Object(_) => Ok(Value::string(interp.object_to_s(recv)?)),
         _ => Ok(Value::str(&interp.to_s(recv)?)),
     }
 }

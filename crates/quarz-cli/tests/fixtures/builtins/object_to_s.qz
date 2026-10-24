@@ -1,0 +1,20 @@
+class Foo
+  @x: Int
+  def initialize(@x: Int) end
+  def inspect = "Foo(#{to_s})"
+end
+class Bar
+  @y: Int
+  def initialize(@y: Int) end
+end
+data P = (a: Int)
+f = Foo.new(1)
+puts f
+p f
+puts f.inspect
+puts Bar.new(2)
+p Bar.new(2)
+puts "#{Bar.new(3)}"
+puts P.new(4)
+puts P.new(4).to_s
+puts RuntimeError.new("boom")
