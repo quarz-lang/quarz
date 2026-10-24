@@ -703,6 +703,10 @@ fn control_flow() {
     ok("begin\n  raise \"x\"\nrescue => e\n  [1].each { |x| raise }\nend");
     err("raise", "a bare `raise` re-raises only inside `rescue`");
     err(
+        "[1].each { |x: String| puts x }",
+        "block parameter `x` is annotated String but receives Int",
+    );
+    err(
         "def f\n  raise\nend",
         "a bare `raise` re-raises only inside `rescue`",
     );

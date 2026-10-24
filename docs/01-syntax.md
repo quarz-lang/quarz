@@ -313,7 +313,7 @@ double = ->(x: Int) { x * 2 }          # a procedure (equivalent to a Ruby lambd
 [1, 2, 3].map(&:to_s)
 ```
 
-- Block parameter types are inferred from the type of the callee's block parameter. To be explicit, write `{ |x: Int| ... }` (planned: annotated block parameters do not parse yet). Destructuring parameters (`|(a, b), c|`) are not supported; match in the body (`pair => [a, b]`).
+- Block parameter types are inferred from the type of the callee's block parameter. To be explicit, write `{ |x: Int| ... }`; a union there goes in parentheses, `|x: (Int | String)|`, since `|` closes the parameters. Destructuring parameters (`|(a, b), c|`) are not supported; match in the body (`pair => [a, b]`).
 - `yield` requires a block parameter (named or anonymous), since the block's type comes from its declaration; calling such a method without a block is a compile error, so an optional block is written `&block: ((Int) -> Nil)?` (planned: today a method that takes a block must be given one).
 - A block that is only invoked with `yield` (a non-escaping block) is expanded by the compiler without allocating a closure. Only when `&block` **escapes**, by being stored in a variable or returned, does it become a heap-allocated closure.
 - `break`/`next`/`return` inside a block mean the same as in Ruby. `next` returns the block's value, `break` exits the call the block was passed to, and `return` returns from the enclosing method.

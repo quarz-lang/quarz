@@ -126,6 +126,9 @@ pub struct Parser<'src> {
     /// clauses (innermost last), which a bare `raise` re-raises, and
     /// whether one did.
     rescued: Vec<(String, bool)>,
+    /// In a block's parameters, where `|` closes the list rather than
+    /// joining a union (one in brackets or parentheses still does).
+    pipe_ends_type: bool,
 }
 
 impl<'src> Parser<'src> {
@@ -148,6 +151,7 @@ impl<'src> Parser<'src> {
             last_span_end: 0,
             cog: CogMeta::default(),
             rescued: Vec::new(),
+            pipe_ends_type: false,
         }
     }
 
@@ -1645,7 +1649,10 @@ impl<'src> Parser<'src> {
             return Ok(Params::empty());
         }
         self.bump();
-        let params = self.parse_param_list(&T::Pipe)?;
+        let saved = std::mem::replace(&mut self.pipe_ends_type, true);
+        let params = self.parse_param_list(&T::Pipe);
+        self.pipe_ends_type = saved;
+        let params = params?;
         self.expect(&T::Pipe, "`|`")?;
         Ok(params)
     }
@@ -3150,7 +3157,7 @@ impl<'src> Parser<'src> {
     pub fn parse_type(&mut self) -> PResult<TypeExpr> {
         let start = self.peek().span;
         let mut members = vec![self.parse_type_postfix()?];
-        while self.at(&T::Pipe) {
+        while self.at(&T::Pipe) && !self.pipe_ends_type {
             self.bump();
             self.skip_newlines();
             members.push(self.parse_type_postfix()?);
@@ -3163,6 +3170,14 @@ impl<'src> Parser<'src> {
             span,
             kind: TypeExprKind::Union(members),
         })
+    }
+
+    /// A type inside brackets or parentheses, where `|` is a union again.
+    fn parse_nested_type(&mut self) -> PResult<TypeExpr> {
+        let saved = std::mem::replace(&mut self.pipe_ends_type, false);
+        let ty = self.parse_type();
+        self.pipe_ends_type = saved;
+        ty
     }
 
     fn parse_type_postfix(&mut self) -> PResult<TypeExpr> {
@@ -3182,7 +3197,7 @@ impl<'src> Parser<'src> {
                 if self.at(&T::RParen) {
                     break;
                 }
-                items.push(self.parse_type()?);
+                items.push(self.parse_nested_type()?);
                 self.skip_newlines();
                 if !self.eat(&T::Comma) {
                     break;
@@ -3266,7 +3281,7 @@ impl<'src> Parser<'src> {
                     if self.at(&T::RBracket) {
                         break;
                     }
-                    items.push(self.parse_type()?);
+                    items.push(self.parse_nested_type()?);
                     self.skip_newlines();
                     if !self.eat(&T::Comma) {
                         break;
@@ -3287,7 +3302,7 @@ impl<'src> Parser<'src> {
                     if self.at(&T::RParen) {
                         break;
                     }
-                    items.push(self.parse_type()?);
+                    items.push(self.parse_nested_type()?);
                     self.skip_newlines();
                     if !self.eat(&T::Comma) {
                         break;
@@ -3326,7 +3341,7 @@ impl<'src> Parser<'src> {
             if self.at(&T::RBracket) {
                 break;
             }
-            args.push(self.parse_type()?);
+            args.push(self.parse_nested_type()?);
             self.skip_newlines();
             if !self.eat(&T::Comma) {
                 break;
