@@ -1118,6 +1118,9 @@ pub unsafe extern "C" fn qz_main(
     flags: u64,
 ) -> i32 {
     let bytes = std::slice::from_raw_parts(blob, len);
+    // What start-up builds lives as long as the program (see `alloc`).
+    #[cfg(feature = "mimalloc")]
+    crate::alloc::startup_begin();
     let module = match quarz_ir::decode(bytes) {
         Ok(m) => m,
         Err(e) => {
@@ -1156,6 +1159,8 @@ pub unsafe extern "C" fn qz_main(
             }
         }
     }
+    #[cfg(feature = "mimalloc")]
+    crate::alloc::startup_end();
     let code = interp.run();
     // The process is about to exit: freeing the program's tables (hash
     // maps of every class and method) would only cost time.

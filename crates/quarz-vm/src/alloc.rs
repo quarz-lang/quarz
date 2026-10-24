@@ -15,9 +15,18 @@
 //! for a gain only to programs that use a lot of memory. Like most
 //! runtimes (Go, the JVM, glibc's malloc), Quarz leaves them to programs
 //! that ask: `QUARZ_THP=1`.
+//!
+//! A compiled program's start-up (decoding its module, building the
+//! runtime's tables) allocates thousands of small blocks that live as
+//! long as the program: between `startup_begin` and `startup_end` they
+//! are cut one after another from `ARENA`, a static area of which only
+//! the pages used are ever mapped, with no per-block bookkeeping and no
+//! zeroing (the area starts zeroed and is never reused). Such a block is
+//! never freed (`dealloc` ignores it) and moves to the heap when it grows.
 
 use std::alloc::{GlobalAlloc, Layout, System};
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::cell::UnsafeCell;
+use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
 #[global_allocator]
 static GLOBAL: Allocator = Allocator;
@@ -27,6 +36,57 @@ struct Allocator;
 const UNDECIDED: u8 = 0;
 const SYSTEM: u8 = 1;
 const MIMALLOC: u8 = 2;
+/// mimalloc, but start-up blocks from `ARENA`.
+const STARTUP: u8 = 3;
+
+const ARENA_SIZE: usize = 8 << 20;
+
+#[repr(C, align(64))]
+struct Arena(UnsafeCell<[u8; ARENA_SIZE]>);
+
+// SAFETY: blocks are handed out once each, by an atomic bump.
+unsafe impl Sync for Arena {}
+
+static ARENA: Arena = Arena(UnsafeCell::new([0; ARENA_SIZE]));
+static ARENA_NEXT: AtomicUsize = AtomicUsize::new(0);
+
+/// Whether `ptr` was cut from `ARENA`.
+#[inline(always)]
+fn in_arena(ptr: *mut u8) -> bool {
+    (ptr as usize).wrapping_sub(ARENA.0.get() as usize) < ARENA_SIZE
+}
+
+/// A block from `ARENA` (zeroed), or null when it is full.
+fn arena_alloc(layout: Layout) -> *mut u8 {
+    let align = layout.align().max(8);
+    let mut next = ARENA_NEXT.load(Ordering::Relaxed);
+    loop {
+        let start = (next + align - 1) & !(align - 1);
+        let end = start + layout.size();
+        if end > ARENA_SIZE {
+            return std::ptr::null_mut();
+        }
+        match ARENA_NEXT.compare_exchange_weak(next, end, Ordering::Relaxed, Ordering::Relaxed) {
+            // SAFETY: within the area.
+            Ok(_) => return unsafe { (ARENA.0.get() as *mut u8).add(start) },
+            Err(n) => next = n,
+        }
+    }
+}
+
+/// Cut the allocations from here on from `ARENA` (with mimalloc), until
+/// `startup_end`: for what a program's start-up builds to keep.
+pub fn startup_begin() {
+    if choice() == MIMALLOC {
+        CHOICE.store(STARTUP, Ordering::Relaxed);
+    }
+}
+
+pub fn startup_end() {
+    if CHOICE.load(Ordering::Relaxed) == STARTUP {
+        CHOICE.store(MIMALLOC, Ordering::Relaxed);
+    }
+}
 
 static CHOICE: AtomicU8 = AtomicU8::new(UNDECIDED);
 
@@ -95,6 +155,20 @@ pub fn name() -> &'static str {
     }
 }
 
+/// A start-up block: from `ARENA`, or as mimalloc would give it.
+#[cold]
+unsafe fn startup_alloc(layout: Layout) -> *mut u8 {
+    let p = arena_alloc(layout);
+    if !p.is_null() {
+        return p;
+    }
+    if small(layout.size()) {
+        unsafe { mimalloc::MiMalloc.alloc(layout) }
+    } else {
+        unsafe { System.alloc(layout) }
+    }
+}
+
 // SAFETY: a block goes back to the allocator it came from: the one chosen
 // for the process, and with mimalloc, the one its size picks (the same
 // size comes back with it); a block whose size crosses `LARGE` in a
@@ -102,8 +176,11 @@ pub fn name() -> &'static str {
 unsafe impl GlobalAlloc for Allocator {
     #[inline]
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        if choice() == MIMALLOC && small(layout.size()) {
+        let c = choice();
+        if c == MIMALLOC && small(layout.size()) {
             unsafe { mimalloc::MiMalloc.alloc(layout) }
+        } else if c == STARTUP {
+            unsafe { startup_alloc(layout) }
         } else {
             unsafe { System.alloc(layout) }
         }
@@ -111,8 +188,21 @@ unsafe impl GlobalAlloc for Allocator {
 
     #[inline]
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        if choice() == MIMALLOC && small(layout.size()) {
+        let c = choice();
+        if c == MIMALLOC && small(layout.size()) {
             unsafe { mimalloc::MiMalloc.alloc_zeroed(layout) }
+        } else if c == STARTUP {
+            // (The area is zeroed and never reused; the fall-backs are
+            // not.)
+            let p = arena_alloc(layout);
+            if !p.is_null() {
+                return p;
+            }
+            if small(layout.size()) {
+                unsafe { mimalloc::MiMalloc.alloc_zeroed(layout) }
+            } else {
+                unsafe { System.alloc_zeroed(layout) }
+            }
         } else {
             unsafe { System.alloc_zeroed(layout) }
         }
@@ -120,7 +210,11 @@ unsafe impl GlobalAlloc for Allocator {
 
     #[inline]
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        if choice() == MIMALLOC && small(layout.size()) {
+        // A start-up block stays.
+        if in_arena(ptr) {
+            return;
+        }
+        if choice() != SYSTEM && small(layout.size()) {
             unsafe { mimalloc::MiMalloc.dealloc(ptr, layout) }
         } else {
             unsafe { System.dealloc(ptr, layout) }
@@ -129,7 +223,19 @@ unsafe impl GlobalAlloc for Allocator {
 
     #[inline]
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        if choice() != MIMALLOC {
+        // A start-up block grows into a new one (from the area too while
+        // starting up).
+        if in_arena(ptr) {
+            return unsafe {
+                let new_layout = Layout::from_size_align_unchecked(new_size, layout.align());
+                let new = self.alloc(new_layout);
+                if !new.is_null() {
+                    std::ptr::copy_nonoverlapping(ptr, new, layout.size().min(new_size));
+                }
+                new
+            };
+        }
+        if choice() == SYSTEM {
             return unsafe { System.realloc(ptr, layout, new_size) };
         }
         match (small(layout.size()), small(new_size)) {
