@@ -1201,6 +1201,32 @@ impl World {
         self.class_is_a(id, self.builtin.exception)
     }
 
+    /// Whether every value of class `id` (its subclasses' included) is an
+    /// object, one allocation of a header and fields: a `data` type, an
+    /// enum or a variant, an exception, or a class all of whose
+    /// ancestors are `Object`, modules, exceptions or classes declared
+    /// outside the prelude. Not `Object` itself, nor a module or a
+    /// built-in class (their values may be numbers, strings, arrays...).
+    /// Compiled code relies on it to read such a value's allocation
+    /// without a tag test (`RtClass::objects`).
+    pub fn instances_are_objects(&self, id: ClassId) -> bool {
+        let class = self.class(id);
+        match class.kind {
+            ClassKind::Data | ClassKind::Enum | ClassKind::Variant => true,
+            ClassKind::Class => {
+                id != self.builtin.object
+                    && self.ancestors(id, &[]).iter().all(|(a, _)| {
+                        let ac = self.class(*a);
+                        *a == self.builtin.object
+                            || ac.kind == ClassKind::Module
+                            || self.is_exception_class(*a)
+                            || (ac.file != 0 && ac.kind == ClassKind::Class)
+                    })
+            }
+            ClassKind::Module | ClassKind::Main => false,
+        }
+    }
+
     pub fn is_enum_variant(&self, id: ClassId) -> bool {
         self.class(id).kind == ClassKind::Variant
     }

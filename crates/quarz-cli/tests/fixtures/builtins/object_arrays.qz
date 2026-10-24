@@ -37,3 +37,13 @@ mixed: Array[Comparable[Int]] = [1, 2]
 p mixed.map { |c| c > 1 }
 empty: Array[Shape] = []
 p empty.map { |s| s.area }
+# A prelude enum's values are objects too; Object's may be anything.
+results: Array[Result[Int, String]] = [Result::Ok.new(1), Result::Err.new("no")]
+results.each do |r|
+  case r
+  in Result::Ok(value:) then p value
+  in Result::Err(error:) then p error
+  end
+end
+anything: Array[Object] = [1, "a", Sq.new(1.0), nil]
+p anything.map { |o| o.class.name }

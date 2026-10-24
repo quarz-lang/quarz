@@ -11,3 +11,6 @@ true
 ["a", "b"]
 [false, true]
 []
+1
+"no"
+["Int", "String", "Sq", "Nil"]

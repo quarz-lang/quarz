@@ -4180,7 +4180,7 @@ impl<B: Builder> Gen<'_, B> {
                     None => self.b.load(Ty::Ptr, self.ptrs, 8),
                 };
                 self.clone_from(*dst, self_ptr);
-                if unbox::self_is_object(self.f, self.methods, self.classes, self.builtin) {
+                if unbox::self_is_object(self.f, self.methods, self.classes) {
                     let p = self.b.load(Ty::Ptr, self_ptr, 8);
                     self.b.def_var(self.pvar(*dst), p);
                 }

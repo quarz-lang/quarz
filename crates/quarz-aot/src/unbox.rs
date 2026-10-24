@@ -465,7 +465,7 @@ pub fn transfer(
         }
         Inst::FieldSet { obj, .. } => st[*obj as usize] = State::Obj,
         Inst::SelfRef { dst } => {
-            st[*dst as usize] = if self_is_object(f, methods, classes, builtin) {
+            st[*dst as usize] = if self_is_object(f, methods, classes) {
                 State::Obj
             } else {
                 State::Unknown
@@ -591,38 +591,16 @@ pub fn transfer(
 }
 
 /// Whether `self` in `f` is always an object: an instance method of a
-/// class whose instances are objects (a class of the program's own, or
-/// built on exceptions only, a `data` type, a variant), not of a module
-/// (its `self` is whatever includes it) or of a built-in value class.
-pub fn self_is_object(
-    f: &Function,
-    methods: &[RtMethod],
-    classes: &[RtClass],
-    builtin: &RtBuiltin,
-) -> bool {
+/// class whose values all are (`RtClass::objects`), not of a module (its
+/// `self` is whatever includes it), an extension or a built-in class.
+pub fn self_is_object(f: &Function, methods: &[RtMethod], classes: &[RtClass]) -> bool {
     let FuncKind::Method(mid) = f.kind else {
         return false;
     };
     let Some(m) = methods.get(mid as usize) else {
         return false;
     };
-    if m.singleton || m.is_extension {
-        return false;
-    }
-    let Some(c) = classes.get(m.owner as usize) else {
-        return false;
-    };
-    match c.kind {
-        RtClassKind::Data | RtClassKind::Variant => true,
-        RtClassKind::Class => c.ancestors.iter().all(|&a| {
-            let ac = &classes[a as usize];
-            a == builtin.object
-                || ac.kind == RtClassKind::Module
-                || ac.is_exception
-                || (ac.file != 0 && ac.kind == RtClassKind::Class)
-        }),
-        _ => false,
-    }
+    !m.singleton && !m.is_extension && classes.get(m.owner as usize).is_some_and(|c| c.objects)
 }
 
 /// A `Float` remainder has no inline form; it stays on the generic path.

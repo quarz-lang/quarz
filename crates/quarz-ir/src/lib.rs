@@ -660,9 +660,10 @@ pub enum Inst {
         /// `quarz-lower`'s `borrow`). The interpreter copies it.
         #[serde(default)]
         borrow: bool,
-        /// The checker types every element an object (of a class of the
-        /// program, a `data` type or an enum): compiled code takes the
-        /// element's allocation with no tag test.
+        /// The checker types every element an object (`RtClass::objects`:
+        /// a `data` type, an enum, an exception, or a class of the
+        /// program): compiled code takes the element's allocation with no
+        /// tag test.
         #[serde(default)]
         objects: bool,
     },
@@ -1284,6 +1285,9 @@ pub struct RtClass {
     /// `abstract class`: never instantiated.
     #[serde(default)]
     pub is_abstract: bool,
+    /// Every value of the class is an object (`World::instances_are_objects`).
+    #[serde(default)]
+    pub objects: bool,
     pub file: u32,
 }
 
