@@ -661,6 +661,16 @@ pub enum Inst {
         #[serde(default)]
         borrow: bool,
     },
+    /// `arr[index]`, `Array#[]` with an Int: from the end when negative,
+    /// `IndexError` when out of range. `word`: the checker types `arr`
+    /// `Array[Int]` (`Some(false)`) or `Array[Float]` (`Some(true)`), so
+    /// the element is that number.
+    ArrayIndex {
+        dst: Reg,
+        arr: Reg,
+        index: Reg,
+        word: Option<bool>,
+    },
     /// An array the checker types `Array[Int]` (or `Array[Float]` with
     /// `float`), with its elements stored as machine words: `arr` itself
     /// when they are, else a copy that stores them so. Before a loop
@@ -809,6 +819,7 @@ impl Inst {
             | Inst::ArrayGetReg { dst, .. }
             | Inst::ArrayWords { dst, .. }
             | Inst::ArrayGetWord { dst, .. }
+            | Inst::ArrayIndex { dst, .. }
             | Inst::ArraySlice { dst, .. }
             | Inst::ArraySliceReg { dst, .. }
             | Inst::ObjectFields { dst, .. }
@@ -959,7 +970,7 @@ impl Inst {
             }
             Inst::ArrayGet { arr, .. } | Inst::ArraySlice { arr, .. } => *arr = f(*arr),
             Inst::ArrayWords { arr, .. } => *arr = f(*arr),
-            Inst::ArrayGetWord { arr, index, .. } => {
+            Inst::ArrayGetWord { arr, index, .. } | Inst::ArrayIndex { arr, index, .. } => {
                 *arr = f(*arr);
                 *index = f(*index);
             }
@@ -1065,9 +1076,9 @@ impl Inst {
                 .chain(*into)
                 .collect(),
             Inst::ArrayGet { arr, .. } | Inst::ArraySlice { arr, .. } => vec![*arr],
-            Inst::ArrayGetReg { arr, index, .. } | Inst::ArrayGetWord { arr, index, .. } => {
-                vec![*arr, *index]
-            }
+            Inst::ArrayGetReg { arr, index, .. }
+            | Inst::ArrayGetWord { arr, index, .. }
+            | Inst::ArrayIndex { arr, index, .. } => vec![*arr, *index],
             Inst::ArrayWords { arr, .. } => vec![*arr],
             Inst::ArraySliceReg { arr, from, to, .. } => vec![*arr, *from, *to],
             Inst::ArrayPush { arr, src } => vec![*arr, *src],

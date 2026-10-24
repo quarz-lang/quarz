@@ -1,0 +1,36 @@
+# `xs[i]` with an Int, and appends that keep a register an array: the
+# fast paths and the runtime's (negative and out-of-range indices,
+# shared arrays, storage other than words).
+ints = [10, 20, 30]
+p ints[0], ints[2], ints[-1], ints[-3]
+begin
+  p ints[3]
+rescue IndexError => e
+  puts e.message
+end
+begin
+  p ints[-4]
+rescue IndexError => e
+  puts e.message
+end
+floats = [1.5, 2.5]
+p floats[1] * 2.0, floats[-2]
+strs = ["a", "b"]
+p strs[1] + strs[0]
+# Stored as values, all Ints.
+mixed: Array[Int?] = [nil, 4, 5]
+vals = mixed.compact.as(Array[Int])
+p vals[0] + vals[1]
+# A shared array is copied by the first append; the copy is then
+# appended to in place.
+a = [1]
+b = a
+3.times { |i| a = a.push(i * 10) }
+p a, b, a[3] + a[1]
+sum = 0
+i = 0
+while i < a.size
+  sum += a[i]
+  i += 1
+end
+p sum

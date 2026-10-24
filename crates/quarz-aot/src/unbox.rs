@@ -499,7 +499,44 @@ pub fn transfer(
             st[*dst as usize] = State::Int;
         }
         // `ArrayWords` makes an array; its elements are words.
-        Inst::ArrayWords { dst, .. } => st[*dst as usize] = State::Arr,
+        Inst::ArrayWords { dst, .. } | Inst::MakeArray { dst, .. } => {
+            st[*dst as usize] = State::Arr
+        }
+        // A result nothing reads is not written (for the calls compiled
+        // inline, without keywords): the register is as it was.
+        Inst::OwnedCall {
+            dst,
+            method,
+            recv,
+            args,
+            unused,
+            kw,
+        } if kw.is_empty() => {
+            // `xs = xs.push(v)`, compiled inline, leaves an array in the
+            // register (see `Gen`'s `OwnedCall`).
+            let push = args.len() == 1
+                && methods
+                    .get(*method as usize)
+                    .and_then(|m| m.native_key.as_deref())
+                    == Some("Array#push")
+                && !matches!(recv, VarLoc::Reg(r) if *r == args[0]);
+            if let VarLoc::Reg(r) = recv {
+                st[*r as usize] = if push { State::Arr } else { State::Unknown };
+            }
+            if !*unused {
+                st[*dst as usize] = State::Unknown;
+            }
+        }
+        Inst::ArrayIndex { dst, arr, word, .. } => {
+            if arr != dst {
+                st[*arr as usize] = State::Arr;
+            }
+            st[*dst as usize] = match word {
+                Some(true) => State::Float,
+                Some(false) => State::Int,
+                None => State::Unknown,
+            };
+        }
         Inst::ArrayGetWord {
             dst, arr, float, ..
         } => {

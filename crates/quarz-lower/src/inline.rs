@@ -612,6 +612,17 @@ pub(crate) fn rewrite_with(
             index: r(index),
             borrow: *borrow,
         },
+        Inst::ArrayIndex {
+            dst,
+            arr,
+            index,
+            word,
+        } => Inst::ArrayIndex {
+            dst: r(dst),
+            arr: r(arr),
+            index: r(index),
+            word: *word,
+        },
         Inst::ArrayWords { dst, arr, float } => Inst::ArrayWords {
             dst: r(dst),
             arr: r(arr),

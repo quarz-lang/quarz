@@ -1126,6 +1126,9 @@ impl Interp {
             Inst::ArrayWords { dst, arr, float } => {
                 self.op_array_words(regs, *dst, *arr, *float)?
             }
+            Inst::ArrayIndex {
+                dst, arr, index, ..
+            } => self.op_array_index(regs, *dst, *arr, *index)?,
             Inst::ArrayGetWord {
                 dst, arr, index, ..
             } => self.op_array_get_reg(regs, *dst, *arr, *index),

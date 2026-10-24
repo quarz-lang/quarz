@@ -434,6 +434,11 @@ pub fn heap_possible(f: &Function, methods: &[RtMethod]) -> Vec<bool> {
                 | Inst::CatchAny { dst } => mark(*dst),
                 // A number.
                 Inst::ArrayGetWord { .. } => {}
+                Inst::ArrayIndex { dst, word, .. } => {
+                    if word.is_none() {
+                        mark(*dst);
+                    }
+                }
                 Inst::FrameSet { .. }
                 | Inst::FieldSet { .. }
                 | Inst::ArrayPush { .. }

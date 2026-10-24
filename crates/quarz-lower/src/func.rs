@@ -2626,6 +2626,48 @@ impl<'a> FnBuilder<'a> {
                     });
                     return dst;
                 }
+                // `xs[i]` with an Int: `ArrayIndex` (as the number for an
+                // `Array[Int]` or `Array[Float]`).
+                let array_index = m.is_native
+                    && m.owner == self.world.builtin.array
+                    && m.name == "[]"
+                    && matches!(&m.params[..], [p] if matches!(&p.ty, quarz_types::Type::Class(c, a) if *c == self.world.builtin.int && a.is_empty()))
+                    && !self.lw.overridden.contains(&(m.owner, m.name.clone()));
+                if let (true, Some(arr), Some(r)) = (array_index, recv, &call.recv) {
+                    if a.pos.len() == 1
+                        && !a.splat
+                        && a.kw.is_empty()
+                        && a.kw_splat.is_none()
+                        && a.block.is_none()
+                    {
+                        let int = self.world.builtin.int;
+                        let float = self.world.builtin.float;
+                        let word = match self.out.node_types.get(&r.id) {
+                            Some(quarz_types::Type::Class(_, args)) => match args.first() {
+                                Some(quarz_types::Type::Class(c, x))
+                                    if *c == int && x.is_empty() =>
+                                {
+                                    Some(false)
+                                }
+                                Some(quarz_types::Type::Class(c, x))
+                                    if *c == float && x.is_empty() =>
+                                {
+                                    Some(true)
+                                }
+                                _ => None,
+                            },
+                            _ => None,
+                        };
+                        let dst = self.reg();
+                        self.emit(Inst::ArrayIndex {
+                            dst,
+                            arr,
+                            index: a.pos[0],
+                            word,
+                        });
+                        return dst;
+                    }
+                }
                 CallKind::Method(*method)
             }
             Some(CallTarget::Constructor { class, init }) => {

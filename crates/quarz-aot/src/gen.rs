@@ -74,6 +74,7 @@ pub(crate) const OPS: &[(&str, &[Ty])] = {
         ("qz_op_array_get", &[I, I, I]),
         ("qz_op_array_get_reg", &[I, I, I]),
         ("qz_op_array_words", &[I, I, I]),
+        ("qz_op_array_index", &[I, I, I]),
         ("qz_op_array_slice", &[I, I, I, I]),
         ("qz_op_array_slice_reg", &[I, I, I, I]),
         ("qz_op_hash_get_sym", &[I, I, I, I]),
@@ -1514,14 +1515,28 @@ impl<B: Builder> Gen<'_, B> {
     /// (boxed takes anything; unboxed Ints/Floats an Int/Float, known
     /// from the state or the tag), branching to `slow` otherwise. Falls
     /// through on success with the array's length updated.
-    fn inline_push(&mut self, arr_ptr: B::Value, src: Reg, slow: B::Block, move_src: bool) {
-        let check_b = self.b.create_block();
+    /// Returns the array's allocation (unchanged by the append).
+    fn inline_push(
+        &mut self,
+        arr_ptr: B::Value,
+        known: Option<B::Value>,
+        src: Reg,
+        slow: B::Block,
+        move_src: bool,
+    ) -> B::Value {
         let fast = self.b.create_block();
-        let tag = self.b.load(Ty::I64, arr_ptr, 0);
-        let is_arr = self.b.icmp_imm(IntCC::Equal, tag, TAG_ARRAY);
-        self.b.brif(is_arr, check_b, &[], slow, &[]);
-        self.b.switch_to_block(check_b);
-        let rc = self.b.load(Ty::Ptr, arr_ptr, 8);
+        let rc = match known {
+            // An array (`State::Arr`): its allocation is at hand.
+            Some(rc) => rc,
+            None => {
+                let check_b = self.b.create_block();
+                let tag = self.b.load(Ty::I64, arr_ptr, 0);
+                let is_arr = self.b.icmp_imm(IntCC::Equal, tag, TAG_ARRAY);
+                self.b.brif(is_arr, check_b, &[], slow, &[]);
+                self.b.switch_to_block(check_b);
+                self.b.load(Ty::Ptr, arr_ptr, 8)
+            }
+        };
         // Unique: a local count of 1 (a shared allocation has 0 there).
         let strong = self.b.load(Ty::I64, rc, 0);
         let (kind, ptr, len, cap) = self.array_view_at(rc);
@@ -1578,6 +1593,7 @@ impl<B: Builder> Gen<'_, B> {
         let data = self.b.iadd_imm(rc, i64::from(OBJECT_FIELDS_PTR_OFF));
         let vec = self.b.iadd_imm(data, L::ARRAY_VEC_OFF as i64);
         self.b.store(len1, vec, L::vec_layout().len as i32);
+        rc
     }
 
     fn array_view(&mut self, arr: Reg) -> (B::Value, B::Value, B::Value, B::Value) {
@@ -1814,7 +1830,7 @@ impl<B: Builder> Gen<'_, B> {
             let v = self.payload(*dst);
             self.b.def_var(self.ivar(*dst), v);
         }
-        if let Inst::ArrayWords { dst, .. } = inst {
+        if let Inst::ArrayWords { dst, .. } | Inst::MakeArray { dst, .. } = inst {
             let p = self.payload_ptr(*dst);
             self.b.def_var(self.pvar(*dst), p);
         }
@@ -3040,6 +3056,12 @@ impl<B: Builder> Gen<'_, B> {
                 "qz_op_array_get_reg",
                 vec![w(self, *dst), w(self, *arr), w(self, *index)],
             ),
+            Inst::ArrayIndex {
+                dst, arr, index, ..
+            } => (
+                "qz_op_array_index",
+                vec![w(self, *dst), w(self, *arr), w(self, *index)],
+            ),
             Inst::ArrayWords { dst, arr, float } => (
                 "qz_op_array_words",
                 vec![w(self, *dst), w(self, *arr), w(self, u32::from(*float))],
@@ -3153,6 +3175,7 @@ impl<B: Builder> Gen<'_, B> {
             Inst::Len { .. }
                 | Inst::ArrayGetReg { .. }
                 | Inst::ArrayGetWord { .. }
+                | Inst::ArrayIndex { .. }
                 | Inst::ArrayPush { .. }
         ) || matches!(inst, Inst::OwnedCall { kw, .. } if kw.is_empty());
         let lazy =
@@ -3613,6 +3636,143 @@ impl<B: Builder> Gen<'_, B> {
                 self.b.jump(cont, &[]);
                 self.b.switch_to_block(cont);
             }
+            Inst::ArrayIndex {
+                dst,
+                arr,
+                index: idx,
+                word,
+            } => {
+                // An Int index within range: the element from the vector
+                // (as the number it is for an `Array[Int]`/`Array[Float]`
+                // stored as words); a negative or out-of-range index, or
+                // other storage, through the runtime, which counts from
+                // the end or raises `IndexError`.
+                let check_b = self.b.create_block();
+                let fast = self.b.create_block();
+                let slow = self.b.create_block();
+                let cont = self.b.create_block();
+                let known = self.states[*arr as usize] == State::Arr;
+                let int_state = self.states[*idx as usize] == State::Int;
+                if !known {
+                    let tag = self.tag(*arr);
+                    let is_arr = self.b.icmp_imm(IntCC::Equal, tag, TAG_ARRAY);
+                    let ok = if int_state {
+                        is_arr
+                    } else {
+                        let itag = self.tag(*idx);
+                        let is_int = self.b.icmp_imm(IntCC::Equal, itag, TAG_INT);
+                        self.b.band(is_arr, is_int)
+                    };
+                    self.b.brif(ok, check_b, &[], slow, &[]);
+                } else if !int_state {
+                    let itag = self.tag(*idx);
+                    let is_int = self.b.icmp_imm(IntCC::Equal, itag, TAG_INT);
+                    self.b.brif(is_int, check_b, &[], slow, &[]);
+                } else {
+                    self.b.jump(check_b, &[]);
+                }
+                // The result's state, on every path.
+                let num = match word {
+                    Some(true) => Some(State::Float),
+                    Some(false) => Some(State::Int),
+                    None => None,
+                };
+                self.b.switch_to_block(check_b);
+                if arr != dst {
+                    self.note_arr(*arr);
+                }
+                let i = if int_state {
+                    self.b.use_var(self.ivar(*idx))
+                } else {
+                    self.payload(*idx)
+                };
+                let (kind, ptr, len, _) = self.array_view(*arr);
+                let in_range = self.b.icmp(IntCC::UnsignedLessThan, i, len);
+                self.b.brif(in_range, fast, &[], slow, &[]);
+                self.b.switch_to_block(fast);
+                let off8 = self.b.imul_imm(i, 8);
+                match num {
+                    Some(st) => {
+                        let words = self.b.create_block();
+                        let want = if st == State::Float { 2 } else { 1 };
+                        let is_words = self.b.icmp_imm(IntCC::Equal, kind, want);
+                        self.b.brif(is_words, words, &[], slow, &[]);
+                        self.b.switch_to_block(words);
+                        let elem = self.b.iadd(ptr, off8);
+                        let w = self.b.load(Ty::I64, elem, 0);
+                        self.unbox(*dst, st);
+                        if st == State::Float {
+                            let v = self.b.bitcast(Ty::F64, w);
+                            self.b.def_var(self.fvar(*dst), v);
+                        } else {
+                            self.b.def_var(self.ivar(*dst), w);
+                        }
+                        self.b.jump(cont, &[]);
+                    }
+                    None => {
+                        let values_b = self.b.create_block();
+                        let ints_b = self.b.create_block();
+                        let floats_b = self.b.create_block();
+                        let not_values = self.b.create_block();
+                        let is_values = self.b.icmp_imm(IntCC::Equal, kind, 0);
+                        self.b.brif(is_values, values_b, &[], not_values, &[]);
+                        self.b.switch_to_block(not_values);
+                        let is_ints = self.b.icmp_imm(IntCC::Equal, kind, 1);
+                        self.b.brif(is_ints, ints_b, &[], floats_b, &[]);
+                        self.b.switch_to_block(values_b);
+                        let off = self.b.imul_imm(i, i64::from(VALUE_SIZE));
+                        let elem = self.b.iadd(ptr, off);
+                        self.clone_from(*dst, elem);
+                        self.b.jump(cont, &[]);
+                        for (blk, tag) in [(ints_b, TAG_INT), (floats_b, TAG_FLOAT)] {
+                            self.b.switch_to_block(blk);
+                            let elem = self.b.iadd(ptr, off8);
+                            let w = self.b.load(Ty::I64, elem, 0);
+                            self.release(*dst);
+                            self.store_tag(*dst, tag);
+                            self.store_payload(*dst, w);
+                            self.b.jump(cont, &[]);
+                        }
+                    }
+                }
+                self.b.switch_to_block(slow);
+                self.flush(*arr);
+                self.flush(*idx);
+                if let Some(st) = num {
+                    // The runtime writes the number into the home: read
+                    // it back into the variable.
+                    self.unbox(*dst, State::Unknown);
+                    self.exec(block, index, unwind);
+                    let want = if st == State::Float {
+                        TAG_FLOAT
+                    } else {
+                        TAG_INT
+                    };
+                    let tag = self.tag(*dst);
+                    let ok = self.b.icmp_imm(IntCC::Equal, tag, want);
+                    let good = self.b.create_block();
+                    let bad = self.b.create_block();
+                    self.b.brif(ok, good, &[], bad, &[]);
+                    self.b.switch_to_block(bad);
+                    self.unsound(block, index);
+                    self.b.switch_to_block(good);
+                    let w = self.payload(*dst);
+                    self.states[*dst as usize] = st;
+                    if st == State::Float {
+                        let v = self.b.bitcast(Ty::F64, w);
+                        self.b.def_var(self.fvar(*dst), v);
+                    } else {
+                        self.b.def_var(self.ivar(*dst), w);
+                    }
+                } else {
+                    self.exec(block, index, unwind);
+                }
+                if arr != dst {
+                    self.arr_after_slow(*arr, block, index);
+                }
+                self.b.jump(cont, &[]);
+                self.b.switch_to_block(cont);
+            }
             Inst::ArrayGetWord {
                 dst,
                 arr,
@@ -3759,7 +3919,7 @@ impl<B: Builder> Gen<'_, B> {
                 let cont = self.b.create_block();
                 let arr_ptr = self.b.iadd_imm(self.regs, i64::from(reg_off(*arr)));
                 let moving = self.movable(inst, *src, block, index);
-                self.inline_push(arr_ptr, *src, slow, moving);
+                self.inline_push(arr_ptr, None, *src, slow, moving);
                 self.b.jump(cont, &[]);
                 self.b.switch_to_block(slow);
                 self.flush(*arr);
@@ -4193,13 +4353,12 @@ impl<B: Builder> Gen<'_, B> {
                 recv,
                 args,
                 kw,
-                ..
+                unused,
             } if kw.is_empty() => {
                 // A result nobody reads (`xs = xs.push(v)` as a statement)
-                // is not stored: one clone and one release fewer.
-                let wanted = self.live[block as usize]
-                    .get(index as usize + 1)
-                    .is_some_and(|l| l[*dst as usize]);
+                // is not stored: one clone and one release fewer (and the
+                // register keeps its state, see `unbox::transfer`).
+                let wanted = !*unused;
                 // `xs = xs.push(v)`: the append in place is inline when the
                 // array (in its register, frame slot or field) is unshared
                 // and has room; the runtime handles the rest.
@@ -4255,7 +4414,20 @@ impl<B: Builder> Gen<'_, B> {
                             self.field_addr_of(*obj, *index)
                         }
                     };
-                    self.inline_push(arr_ptr, args[0], slow, moving);
+                    // An array register stays one (`unbox::transfer`): its
+                    // allocation, the same after an append in place, is
+                    // kept in its variable on both paths.
+                    let arr_reg = match recv {
+                        VarLoc::Reg(r) => Some(*r),
+                        _ => None,
+                    };
+                    let known = arr_reg
+                        .filter(|r| self.states[*r as usize] == State::Arr)
+                        .map(|r| self.b.use_var(self.pvar(r)));
+                    let rc = self.inline_push(arr_ptr, known, args[0], slow, moving);
+                    if let Some(r) = arr_reg {
+                        self.b.def_var(self.pvar(r), rc);
+                    }
                     if wanted {
                         self.clone_from(*dst, arr_ptr);
                     }
@@ -4300,6 +4472,9 @@ impl<B: Builder> Gen<'_, B> {
                 self.check(status, unwind);
                 if moving {
                     self.drop_moved(args[0]);
+                }
+                if let (true, VarLoc::Reg(r)) = (is_push, recv) {
+                    self.arr_after_slow(*r, block, index);
                 }
                 self.b.jump(cont, &[]);
                 self.b.switch_to_block(cont);

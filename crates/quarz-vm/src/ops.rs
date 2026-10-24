@@ -644,6 +644,29 @@ impl Interp {
         regs[dst as usize] = v;
     }
 
+    /// `ArrayIndex`: `Array#[]` with an Int.
+    pub fn op_array_index(
+        &self,
+        regs: &mut [Value],
+        dst: Reg,
+        arr: Reg,
+        index: Reg,
+    ) -> Result<(), Flow> {
+        let v = match (&regs[arr as usize], &regs[index as usize]) {
+            (Value::Array(a), Value::Int(i)) => {
+                let n = a.len() as i64;
+                let at = if *i < 0 { n + i } else { *i };
+                if at < 0 || at >= n {
+                    return Err(self.err_index(&format!("index {i} out of bounds (size {n})")));
+                }
+                a.get(at as usize).unwrap_or(Value::Nil)
+            }
+            _ => return Err(self.err_type("internal error: ArrayIndex on a non-Array")),
+        };
+        regs[dst as usize] = v;
+        Ok(())
+    }
+
     /// `ArrayWords`: the array with its elements stored as machine words
     /// (`Int`s, or `Float`s with `float`), copied only when they are not.
     pub fn op_array_words(
