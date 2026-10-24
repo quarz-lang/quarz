@@ -314,9 +314,6 @@ fn method_def(out: &mut String, d: &MethodDef) {
         if d.is_abstract {
             o.push_str(" abstract");
         }
-        if d.is_override {
-            o.push_str(" override");
-        }
         if d.is_native {
             o.push_str(" native");
         }

@@ -633,62 +633,9 @@ impl<'ast> Declarer<'ast> {
             self.file = self.pending_file(p);
             self.check_conformance(p);
             self.check_shareable_promise(p.id);
-            self.check_overrides(p.id);
             self.check_variance(p.id);
         }
         self.check_shareable_extensions();
-    }
-
-    /// A method marked `override` must override one: an instance method
-    /// one of an ancestor's, a class method one of a superclass's.
-    fn check_overrides(&mut self, id: ClassId) {
-        let class = self.world.class(id);
-        let marked: Vec<(MethodId, bool)> = class
-            .methods
-            .values()
-            .map(|ms| (ms, false))
-            .chain(class.singleton_methods.values().map(|ms| (ms, true)))
-            .flat_map(|(ms, singleton)| ms.iter().map(move |m| (*m, singleton)))
-            .filter(|(m, _)| {
-                let m = self.world.method(*m);
-                m.is_override && m.owner == id
-            })
-            .collect();
-        for (mid, singleton) in marked {
-            let name = self.world.method(mid).name.clone();
-            let found = if singleton {
-                self.world.superclass_chain(id).into_iter().any(|c| {
-                    let class = self.world.class(c);
-                    (c != id && class.singleton_methods.contains_key(&name))
-                        || class.extends.iter().any(|t| match t {
-                            Type::Class(m, args) => self
-                                .world
-                                .ancestors(*m, args)
-                                .iter()
-                                .any(|(a, _)| self.world.class(*a).methods.contains_key(&name)),
-                            _ => false,
-                        })
-                })
-            } else {
-                self.world
-                    .ancestors(id, &[])
-                    .into_iter()
-                    .filter(|(c, _)| *c != id)
-                    .any(|(c, _)| self.world.class(c).methods.contains_key(&name))
-            };
-            if !found {
-                let m = self.world.method(mid);
-                let span = m.span;
-                self.error(
-                    format!(
-                        "`{}{}` is marked `override` but overrides no method of an ancestor",
-                        if singleton { "self." } else { "" },
-                        name
-                    ),
-                    span,
-                );
-            }
-        }
     }
 
     /// A covariant (`out`) type parameter may appear only where values
@@ -1535,7 +1482,6 @@ impl<'ast> Declarer<'ast> {
             body: None,
             is_abstract: false,
             is_native: true,
-            is_override: false,
             visibility,
             span,
             extension: None,
@@ -1810,7 +1756,6 @@ impl<'ast> Declarer<'ast> {
             body: def.body.as_ref().map(|_| Rc::new(def.clone())),
             is_abstract: def.is_abstract,
             is_native: def.is_native,
-            is_override: def.is_override,
             visibility,
             span: def.span,
             extension,

@@ -279,8 +279,8 @@ fn declarations() {
     );
     assert_eq!(sexp("private def f = 1"), "(def Private f (params) 1)");
     assert_eq!(
-        sexp("override def to_s -> String = \"x\""),
-        "(def override to_s (params) -> String (str \"x\"))"
+        sexp("def to_s -> String = \"x\""),
+        "(def to_s (params) -> String (str \"x\"))"
     );
     assert_eq!(
         sexp("def self.create(x: Int) = new(x)"),

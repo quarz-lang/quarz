@@ -51,7 +51,7 @@ A summary of the things someone who knows Ruby will first stumble on when starti
 ## What is added
 
 - Type annotations: `x: Int`, `-> Int`, `T?`, `A | B`, `Array[T]`, `(A) -> B`, `[A, B]`
-- `data`, `enum`, `var`, `abstract`, `override`, `extension`, `using` (now a keyword), `type`, `extern`
+- `data`, `enum`, `var`, `abstract`, `extension`, `using` (now a keyword), `type`, `extern`
 - `as`/`as?`
 - Builder types such as `Array::Builder`, and `Array.build { }`
 - `spawn`, `Task`, `Task.scope`, `Task.blocking`, `Channel`, `select`, `Atom` (`Supervisor` is planned)

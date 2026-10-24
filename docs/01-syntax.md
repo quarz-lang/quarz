@@ -26,7 +26,6 @@ The following words are treated as keywords **only in declaration positions**; e
 | `variant` | In the body of an `enum`, followed by `variant ConstantName` |
 | `var` | Followed by `var @name` / `var @name:` |
 | `abstract` | `abstract class` / `abstract def` |
-| `override` | `override def` |
 | `extension` | At the start of a line, followed by `extension Type` |
 | `using` | At the start of a line, followed by `using Constant` |
 | `type` | At the start of a line, followed by `type Constant =` |
@@ -118,12 +117,12 @@ class Circle < Shape
   @radius: Float
   def initialize(@radius: Float); end
 
-  override def area -> Float = Math::PI * @radius ** 2
+  def area -> Float = Math::PI * @radius ** 2
 end
 ```
 
 - Single inheritance. An `abstract class` cannot be instantiated and an `abstract def` has no body.
-- `override` is optional, and overriding a parent method without it is fine, as in Ruby and Crystal; but a method marked with it must override one: an instance method one of an included module or a superclass, a class method one of a superclass's class methods or of a module the class `extend`s, or it is an error.
+- A method with the name of a parent's method overrides it; as in Ruby and Crystal, nothing marks it (no `override`).
 - Since the class hierarchy is fixed at compile time for the whole program, the compiler automatically turns calls to methods that are never overridden into static calls (no `final` needed).
 - `super` works as in Ruby. A bare `super` passes the same arguments.
 
@@ -237,7 +236,7 @@ using StringShout
 - `using` can be written in a file, inside a `class`/`module` body, or inside a method or block body, and is in effect until the end of that lexical scope (the statement list it appears in). `using M do ... end` / `using M { ... }` is an expression: the extensions are active in its body only and its value is the body's.
 - A block parameter can carry a `using`: `def where(&: () -> Cond using SqlDSL)`. A block literal written at a call site is then checked as if it began with `using SqlDSL` (nested blocks included), so a DSL applies its own extensions to the caller's block without the caller naming them; this is the static form of Ruby's `Proc#refined`. The `using` is not part of the procedure type: an existing procedure value passed with `&proc` is unaffected.
 - Resolution of extension methods is **entirely at compile time**. It is determined only by the static type of the receiver and the `using`s in effect at that position; there is no runtime table rewriting. In particular a module's extension does not take part in dynamic dispatch: a call through a supertype (`s.name` with `s: Shape` holding a `Circle`) runs the class's method even inside `using`, and outside `using` the extension is unreachable. The exception is conformance: the methods of a module the extension `include`s dispatch to the extension's implementations wherever the value goes, since a value typed as that module may have been made where the extension was visible. `&:name` uses the method resolved for the block's parameter type where it is written. An extension declared outside any module is active everywhere, in dynamic dispatch too.
-- If an extension defines a method with the same name as an existing one, the extension's method is statically chosen within that scope (the same "override only where visible" as Ruby's refinements). To prevent unintended overrides, a warning is issued unless `override` is present (planned, as for classes in §3).
+- If an extension defines a method with the same name as an existing one, the extension's method is statically chosen within that scope (the same "override only where visible" as Ruby's refinements).
 - `include` inside an extension makes an existing type conform to a module after the fact (equivalent to Swift's `extension Int: Describable`). This is the only way to "make a class you did not write satisfy an interface".
 - Generic types can be extended too, with constraints on the type arguments: `extension Array[T: Describable]; def describe_all -> String = map(&:describe).join(", "); end`.
 

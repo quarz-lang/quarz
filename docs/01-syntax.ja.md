@@ -24,7 +24,6 @@ Quarz の文法は Ruby を基礎にし、「静的に定義する」「不変�
 | `variant` | `enum` の本体で `variant 定数名` が続くとき |
 | `var` | `var @名前` / `var @名前:` が続くとき |
 | `abstract` | `abstract class` / `abstract def` |
-| `override` | `override def` |
 | `extension` | 行頭で `extension 型` が続くとき |
 | `using` | 行頭で `using 定数` が続くとき |
 | `type` | 行頭で `type 定数 =` が続くとき |
@@ -116,12 +115,12 @@ class Circle < Shape
   @radius: Float
   def initialize(@radius: Float); end
 
-  override def area -> Float = Math::PI * @radius ** 2
+  def area -> Float = Math::PI * @radius ** 2
 end
 ```
 
 - 単一継承。`abstract class` はインスタンス化できず、`abstract def` は本体を持ちません。
-- `override` は任意で、Ruby や Crystal と同じく、付けずに親のメソッドを上書きしてもかまいません。ただし付けたメソッドは何かを上書きしていなければならず、そうでなければエラーです。インスタンスメソッドは include したモジュールかスーパークラスのメソッドを、クラスメソッドはスーパークラスのクラスメソッドか `extend` したモジュールのメソッドを上書きしている必要があります。
+- 親のメソッドと同じ名前のメソッドは、それを上書きします。Ruby や Crystal と同じく、印は付けません(`override` はありません)。
 - クラス階層はプログラム全体でコンパイル時に確定するので、コンパイラは上書きのないメソッドを自動的に静的呼び出しにします(`final` は不要)。
 - `super` は Ruby 同様。引数なしの `super` は同じ引数を渡します。
 
@@ -235,7 +234,7 @@ using StringShout
 - `using` はファイル、`class`/`module` 本体、メソッド本体やブロック本体の中に書け、その字句スコープ(書かれた文の並び)の末尾まで有効です。`using M do ... end` / `using M { ... }` は式で、拡張は本体の中だけ有効、値は本体の値です。
 - ブロック引数には `using` を付けられます: `def where(&: () -> Cond using SqlDSL)`。呼び出し位置に書かれたブロック字面は、先頭に `using SqlDSL` があるものとして検査されます(入れ子のブロックも含む)。DSL が自分の拡張を呼び出し側のブロックに黙って効かせる、Ruby の `Proc#refined` の静的版です。`using` は手続きの型の一部ではなく、`&proc` で渡した既存の手続き値には影響しません。
 - 拡張メソッドの解決は**完全にコンパイル時**です。レシーバの静的型と、その位置で有効な `using` だけで決まり、実行時のテーブル書き換えはありません。特に、モジュール内の extension は動的ディスパッチには関与しません。上位型経由の呼び出し(`Circle` を保持する `s: Shape` に対する `s.name`)は `using` の中でもクラス自身のメソッドを実行し、`using` の外では extension には到達できません。例外は適合です。extension が `include` したモジュールのメソッドは、値がどこへ行っても extension の実装にディスパッチされます(そのモジュール型の値は extension が見えていた場所で作られたかもしれないからです)。`&:name` は、それが書かれた位置でブロック引数の型に対して解決されたメソッドを使います。モジュールの外で宣言した extension はどこでも有効で、動的ディスパッチでも使われます。
-- 拡張で既存メソッドと同名のメソッドを定義すると、そのスコープでは拡張側が静的に選ばれます(Ruby の refinements と同じ「見えている範囲だけ上書き」)。意図しない上書きを防ぐため、`override` がなければ警告です(§3 のクラスと同じく予定)。
+- 拡張で既存メソッドと同名のメソッドを定義すると、そのスコープでは拡張側が静的に選ばれます(Ruby の refinements と同じ「見えている範囲だけ上書き」)。
 - 拡張の中の `include` により、既存の型を後からモジュールに適合させられます(Swift の `extension Int: Describable` 相当)。これが「自分の書いていないクラスにインターフェースを満たさせる」唯一の方法です。
 - ジェネリック型にも、型引数に制約を付けて拡張できます: `extension Array[T: Describable]; def describe_all -> String = map(&:describe).join(", "); end`。
 

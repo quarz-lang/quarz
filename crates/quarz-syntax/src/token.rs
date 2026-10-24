@@ -4,7 +4,7 @@ use crate::source::Span;
 use std::fmt;
 
 /// Reserved words. Contextual keywords (`data`, `enum`, `var`, `abstract`,
-/// `override`, `extension`, `using`, `type`, `extern`, `out`) are lexed as
+/// `extension`, `using`, `type`, `extern`, `out`) are lexed as
 /// identifiers and recognized by the parser.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Keyword {

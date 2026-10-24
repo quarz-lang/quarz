@@ -80,7 +80,6 @@ pub struct MethodInfo {
     pub body: Option<Rc<MethodDef>>,
     pub is_abstract: bool,
     pub is_native: bool,
-    pub is_override: bool,
     pub visibility: Visibility,
     pub span: Span,
     /// The extension the method was declared in, if any.

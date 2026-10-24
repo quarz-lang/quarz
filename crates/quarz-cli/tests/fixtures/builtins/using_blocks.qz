@@ -24,7 +24,7 @@ enum Cond = Eq(name: Symbol, value: String) | Gt(name: Symbol, value: Int) | And
 
 module SqlDSL
   extension Symbol
-    override def ==(other: Object) -> Cond = Cond::Eq.new(self, other.to_s)
+    def ==(other: Object) -> Cond = Cond::Eq.new(self, other.to_s)
     def >(other: Int) -> Cond = Cond::Gt.new(self, other)
   end
   extension Cond

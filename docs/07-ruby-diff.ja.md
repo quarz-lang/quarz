@@ -49,7 +49,7 @@ Ruby を知っている人が Quarz を書き始めるときに最初に引っ�
 ## 追加機能
 
 - 型注釈: `x: Int`、`-> Int`、`T?`、`A | B`、`Array[T]`、`(A) -> B`、`[A, B]`
-- `data`、`enum`、`var`、`abstract`、`override`、`extension`、`using`(キーワード化)、`type`、`extern`
+- `data`、`enum`、`var`、`abstract`、`extension`、`using`(キーワード化)、`type`、`extern`
 - `as`/`as?`
 - `Array::Builder` などの Builder 型と `Array.build { }`
 - `spawn`、`Task`、`Task.scope`、`Task.blocking`、`Channel`、`select`、`Atom`(`Supervisor` は予定)

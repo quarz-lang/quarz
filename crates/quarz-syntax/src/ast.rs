@@ -564,7 +564,6 @@ pub struct MethodDef {
     /// `None` for `abstract def` and `native def`.
     pub body: Option<Vec<Expr>>,
     pub is_abstract: bool,
-    pub is_override: bool,
     pub is_native: bool,
     pub visibility: Option<Visibility>,
     pub span: Span,

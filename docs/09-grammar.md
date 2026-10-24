@@ -45,7 +45,7 @@ using_decl     = "using" const_path ;
 method_decl    = { modifier } "def" [ "self" "." ] method_name [ type_params ]
                  [ "(" [ param_list ] ")" ] [ "->" type ]
                  ( "=" expression | NEWLINE body "end" ) ;
-modifier       = "abstract" | "override" | "private" | "protected" | "public" ;
+modifier       = "abstract" | "private" | "protected" | "public" ;
 method_name    = IDENT [ "?" | "!" | "=" ] | operator ;
 operator       = "+" | "-" | "*" | "/" | "%" | "**" | "==" | "!=" | "<" | "<=" | ">" | ">="
                | "<=>" | "===" | "=~" | "<<" | ">>" | "&" | "|" | "^" | "~" | "!"
@@ -119,5 +119,5 @@ extern_decl    = "extern" STRING NEWLINE { "def" IDENT "(" [ param_list ] ")" "-
 - **The two meanings of `->`**: `->` in a `def` signature is the return type; `->` in expression position is a lambda. In `->(x: Int) -> Int { }`, the first is the lambda and the second is the return type.
 - **`Const[...]`**: in type position, type arguments. In expression position, a type expression (`Array[Int].new`) if the contents of `[` can be interpreted as types, otherwise a call to `Const.[](...)` (a user-defined `self.[]`). The built-in `Array`/`Hash`/`Set` have no `self.[]`, so they are always type expressions.
 - **`{ }` as block vs. hash**: the same rule as Ruby.
-- **Contextual keywords**: `data`/`enum`/`var`/`abstract`/`override`/`extension`/`using`/`type`/`extern`/`variant`/`for` are keywords only in the declaration positions above, when the following tokens take the form of a declaration.
+- **Contextual keywords**: `data`/`enum`/`var`/`abstract`/`extension`/`using`/`type`/`extern`/`variant`/`for` are keywords only in the declaration positions above, when the following tokens take the form of a declaration.
 - **`data` with and without a body**: as with `enum`, the form with `=` (`data P = (x: Int)`) has no body and no `end`; without `=` a body follows and `end` closes it. A forgotten `=` takes the rest of the file for the body, and the missing `end` is reported at the `data` with that hint.

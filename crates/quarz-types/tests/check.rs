@@ -219,7 +219,7 @@ fn classes_and_fields() {
         "abstract class A\n  abstract def f -> Int\nend\nA.new",
         "cannot instantiate `A`",
     );
-    ok("abstract class A\n  abstract def f -> Int\n  def g -> Int = f + 1\nend\nclass B < A\n  override def f -> Int = 1\nend\nputs B.new.g");
+    ok("abstract class A\n  abstract def f -> Int\n  def g -> Int = f + 1\nend\nclass B < A\n  def f -> Int = 1\nend\nputs B.new.g");
     err(
         "class P\n  private def secret -> Int = 1\nend\nP.new.secret",
         "is private",
@@ -831,7 +831,7 @@ fn lexical_lifetimes_by_type() {
 }
 
 #[test]
-fn reraise_block_params_overrides() {
+fn reraise_block_params_narrowing() {
     ok("begin\n  raise \"x\"\nrescue ArgumentError\n  raise\nend");
     ok("begin\n  raise \"x\"\nrescue => e\n  [1].each { |x| raise }\nend");
     err("raise", "a bare `raise` re-raises only inside `rescue`");
@@ -877,15 +877,6 @@ fn reraise_block_params_overrides() {
     err(
         "def f(b: Bool?) -> Bool\n  b != true ? b : false\nend",
         "Bool?",
-    );
-    ok("module M\n  def m -> Int = 1\nend\nclass A\n  include M\n  def f -> Int = 1\n  def self.k -> Int = 1\nend\nclass B < A\n  override def f -> Int = 2\n  override def m -> Int = 2\n  override def to_s -> String = \"B\"\n  override def self.k -> Int = 2\nend");
-    err(
-        "class A\nend\nclass B < A\n  override def g -> Int = 1\nend",
-        "`g` is marked `override` but overrides no method of an ancestor",
-    );
-    err(
-        "class A\n  def f -> Int = 1\nend\nclass B < A\n  override def self.f -> Int = 1\nend",
-        "`self.f` is marked `override` but overrides no method of an ancestor",
     );
     ok("def f(&b: ((Int) -> Nil)?) -> Nil\n  b&.call(1)\nend\nf\nf { |x| p x }");
     err(

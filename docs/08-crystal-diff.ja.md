@@ -42,7 +42,7 @@ Crystal は Quarz に最も近い言語です。Ruby の構文を持つ、静的
 
 ## 追加機能
 
-- `data`、代数的な `enum`、`var`、`override`、`extension`/`using`
+- `data`、代数的な `enum`、`var`、`extension`/`using`
 - 不変なコレクションと、それを組み立てる可変な Builder(`Array::Builder`、`Hash::Builder`、`Set::Builder`。`Array.build { |b| b << x }` は不変な配列を返す)。Crystal の `Array.build(capacity) { |buffer| ... }` は別物の低水準 API で、生のポインタのバッファに書き込み、書いた要素数を返す
 - `Task.scope`(キャンセル付きの構造化並行性)、コンパイラが導出する `Shareable` マーカー、`Shareable` な値を入れる `Atom[T]`(`update { |old| ... }` で更新する CAS ループ)
 - `for` 内包表記
