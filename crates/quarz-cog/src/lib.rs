@@ -331,6 +331,16 @@ impl<'a> Ctx<'a> {
                             let dir = self.locked_tree(&source, locked)?;
                             let m = Manifest::read(&dir)?;
                             m.check_language(LANGUAGE_VERSION)?;
+                            if m.cog.name != locked.name || m.module() != locked.module {
+                                return Err(LockProblem::Fatal(Error::new(format!(
+                                    "Cog.lock says {source} is `{}` (module {}), its Cog.toml says `{}` (module {})",
+                                    locked.name,
+                                    locked.module,
+                                    m.cog.name,
+                                    m.module()
+                                ))));
+                            }
+                            check_local_deps(&source, &m)?;
                             reached.insert(source.clone());
                             let entry = CogEntry {
                                 name: m.cog.name.clone(),
@@ -597,7 +607,8 @@ impl<'a> Ctx<'a> {
     fn resolve(&mut self, manifest: &Manifest) -> Result<Lock, Error> {
         let mut nodes: HashMap<(Source, String), Node> = HashMap::new();
         let mut versions: BTreeMap<Source, Vec<(Version, String)>> = BTreeMap::new();
-        // (who asks, the manifest is the application's or a patched cog's, dependency)
+        // (who asks, whether it may name repositories on this machine,
+        // dependency)
         let mut queue: Vec<(String, bool, Dependency)> = manifest
             .dependencies
             .values()
@@ -606,13 +617,16 @@ impl<'a> Ctx<'a> {
         let mut patched_seen: BTreeSet<Source> = BTreeSet::new();
         // Located references, so that a branch is read once.
         let mut located: HashMap<(Source, Ref), (String, Version)> = HashMap::new();
-        while let Some((from, _, dep)) = queue.pop() {
+        while let Some((from, local_ok, dep)) = queue.pop() {
             let source = dep.source();
+            if !local_ok && git::is_local_url(&source.url) {
+                return Err(local_dep_error(&from, &source));
+            }
             if let Some(dir) = self.patches.get(&source).cloned() {
                 if patched_seen.insert(source.clone()) {
                     let m = Manifest::read(&dir)?;
                     for d in m.dependencies.values() {
-                        queue.push((m.cog.name.clone(), false, d.clone()));
+                        queue.push((m.cog.name.clone(), true, d.clone()));
                     }
                 }
                 continue;
@@ -638,8 +652,9 @@ impl<'a> Ctx<'a> {
                 continue;
             }
             let m = self.manifest_at(&source, &rev)?;
+            let local = git::is_local_url(&source.url);
             for d in m.dependencies.values() {
-                queue.push((format!("{} {version}", m.cog.name), false, d.clone()));
+                queue.push((format!("{} {version}", m.cog.name), local, d.clone()));
             }
             versions
                 .entry(source.clone())
@@ -766,6 +781,27 @@ fn describe_ref(r: &Ref) -> String {
         Ref::Branch(b) => format!("branch {b}"),
         Ref::Head => "the default branch".to_string(),
     }
+}
+
+/// A cog fetched from elsewhere may not name a repository on this machine
+/// (`file://` or a path): only the application, a patched cog and a cog
+/// that is itself local may.
+fn check_local_deps(source: &Source, m: &Manifest) -> Result<(), Error> {
+    if git::is_local_url(&source.url) {
+        return Ok(());
+    }
+    for d in m.dependencies.values() {
+        if git::is_local_url(&d.git) {
+            return Err(local_dep_error(&m.cog.name, &d.source()));
+        }
+    }
+    Ok(())
+}
+
+fn local_dep_error(from: &str, dep: &Source) -> Error {
+    Error::new(format!(
+        "{from} names {dep}, a repository on this machine: only the application, a patched cog or a local cog may"
+    ))
 }
 
 /// The version of a commit: the highest version tag naming it, or a

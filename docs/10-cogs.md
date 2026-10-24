@@ -54,6 +54,7 @@ Httpx = { path = "../httpx" }
 - The key of a dependency is the constant under which this cog sees it: a module name, so it is capitalized. When it equals the module the dependency declares (`[cog] module`), nothing more is said; when it differs, it is an alias of that module (§6). A key that is the name of a built-in or standard library module (`JSON`, `Socket`, `Array`) is an error.
 - `tag`, `rev` and `branch` say where to look; the commit actually used is recorded in the lock file (§3). A `branch` moves with every `quarz cog update`, so it is for development; `quarz cog add` writes a `tag` or `rev`, never a `branch`.
 - Dependency keys are local to the cog that declares them: another cog may see the same repository under another name.
+- A cog fetched from elsewhere may not name a repository on this machine (a `file://` URL or a path): only the application, a patched cog and a cog that is itself local may.
 - `quarz` is the minimum language version the cog needs (as `go 1.21` in a `go.mod` and `minimum_zig_version` in Zig); a program refuses to build with an older `quarz`.
 - A cog with `extern "C"` declarations will need to name the C libraries to link; `[cog] link = ["ssl"]` is reserved for that and not designed further here.
 
@@ -63,6 +64,7 @@ Httpx = { path = "../httpx" }
 
 ```toml
 version = 1
+inputs  = "h1:p0Xv…"   # the resolution's inputs (§4)
 
 [[cog]]
 name    = "httpx"                                    # the cog's own `[cog] name`
@@ -83,7 +85,8 @@ hash    = "h1:Q8ua…"
 dependencies = []
 ```
 
-- A cog is identified by its `source` (the URL, with the `subdir` when there is one); the keys the manifests use for it are not recorded, since each manifest has its own.
+- A cog is identified by its `source` (the URL, with the `subdir` when there is one); the keys the manifests use for it are not recorded, since each manifest has its own. Two spellings of one source are one cog: a `subdir` of `a`, `a/` or `./a`, and URLs that differ only in the case of the scheme and host or in a trailing `/` or `.git`.
+- `inputs` is a digest of the dependency tables of the manifests that can change: the application's and the patched cogs' (every other manifest is pinned by its commit). The lock is the resolution of those inputs: while the digest matches, it is used as it is; when the manifests list other dependencies, it is resolved again.
 - `rev` is the key for fetching, `hash` the key for verification: a hash of the cog's files at that commit (`Cog.toml` and everything under `src/`): one line per file in path order, its SHA-256 in hex, two spaces and its path, and the base64 of the SHA-256 of those lines (as Go's module hashes). The two are kept apart because a git commit id is a SHA-1 of the repository's history, not of the files Quarz compiles: after fetching, a tree whose hash differs from the lock (a rewritten history, a force-pushed tag, a tampered mirror) is refused. The `h1:` prefix names the algorithm so it can change.
 - The lock lists only what the resolution chose: one entry per cog, whatever the manifests asked for. `[patch]` entries are not recorded.
 
@@ -93,14 +96,14 @@ Resolution follows Go's *minimal version selection*: every manifest in the graph
 
 - **One version per cog.** A cog's declarations live in one module (§6) and a class is one class, so the same cog cannot appear twice in a movement. When the chosen version does not share its major with every requirement (its minor, while the major is `0`), the resolution fails and names the two requirements; the application pins one side with `rev` or replaces it with `[patch]`.
 - **A `rev` in the application's own manifest pins.** Elsewhere a `rev` is a lower bound like any other, but in the movement's manifest it is also the ceiling: a dependency that asks for a newer version is an error, not a silent upgrade.
-- **Pseudo-versions.** A commit that no tag names is ordered as `1.4.1-0.20261023141500.3f2a9c1e0b4d`: the patch after the nearest tag among its ancestors (`0.0.0` when there is none), a `0` so that it sorts below any real pre-release of that patch, the commit's time in UTC, and twelve hex digits of its id. Semantic versioning's precedence rules then order it between the tag and the next release, as Go's pseudo-versions do.
+- **Pseudo-versions.** A commit that no tag names is ordered as `1.4.1-0.20261023141500.3f2a9c1e0b4d`: the patch after the highest version tag among its ancestors (`0.0.0` when there is none; a tag that is not a semantic version does not count, nor one that the repository's own listing does not show on the same commit), a `0` so that it sorts below any real pre-release of that patch, the commit's time in UTC, and twelve hex digits of its id. Semantic versioning's precedence rules then order it between the tag and the next release, as Go's pseudo-versions do.
 - `quarz cog update [Key]` re-resolves and rewrites the lock; nothing else moves a locked version. `quarz run`, `quarz build` and `quarz check` use the lock when it is present and consistent with the manifest, resolve and write it when it is absent, and fail with `--locked` when it would have to change.
 
 ## 5. Fetching, Cache and Vendoring
 
-- The cache is `$QUARZ_CACHE`, else `$XDG_CACHE_HOME/quarz`, else `~/.cache/quarz`. Repositories are mirrored under `~/.cache/quarz/git/<host>/<path>.git` (a bare clone), and only the commit the lock names is fetched (`git fetch --depth 1 origin <rev>`), so a large history costs nothing. Resolving a branch or a `rev` that no tag names fetches the commit's history and tags once, to find the nearest tag for its pseudo-version.
-- The cog's tree is checked out, read-only, into `~/.cache/quarz/src/<name>-<first 12 hex digits of rev>/` and verified against the lock's `hash` before anything is compiled. The directory never changes once written: a pinned commit is immutable, so the type-check results and the `.qzi` of a cog ([05-execution.md](05-execution.md) §2) can be cached by `(hash, quarz version, back end)` and never invalidated. Loading a whole cog rather than the files a program names costs type checking once per commit, not once per run; `quarz build` drops what the program does not reach.
-- `quarz cog vendor` copies every locked cog into `vendor/<name>/` next to the manifest; when that directory exists, nothing is fetched. `--offline` resolves from the cache and `vendor/` only.
+- The cache is `$QUARZ_CACHE`, else `$XDG_CACHE_HOME/quarz`, else `~/.cache/quarz`. Repositories are mirrored under `~/.cache/quarz/git/<host>/<name>-<digest of the URL>.git` (a bare clone, one per URL: the host is read from the URL's authority only), and only the commit the lock names is fetched (`git fetch --depth 1 origin <rev>`), so a large history costs nothing. Resolving a branch or a `rev` that no tag names fetches the commit's history and tags once, to find the tags for its pseudo-version; the mirror's tags are made the remote's, deleted ones included. Creating a mirror and fetching into it hold a lock file, so several `quarz` processes can share the cache.
+- The cog's `Cog.toml` and `src/` are checked out, read-only, into `~/.cache/quarz/src/<name>-<first 12 hex digits of rev>/` (with a digest of the `subdir` after it for a cog in a subdirectory) and verified against the lock's `hash` before anything is compiled. A tree holding a symbolic link (its target would be outside what the hash covers), anything but files and directories, or a file name that is not UTF-8 or holds a control character, is refused. Each process writes into a directory of its own and renames it into place. The directory never changes once written: a pinned commit is immutable, so the type-check results and the `.qzi` of a cog ([05-execution.md](05-execution.md) §2) can be cached by `(hash, quarz version, back end)` and never invalidated. Loading a whole cog rather than the files a program names costs type checking once per commit, not once per run; `quarz build` drops what the program does not reach.
+- `quarz cog vendor` copies every locked cog into `vendor/<name>/` next to the manifest (into a new directory that replaces `vendor/` only once it is complete); when that directory exists, nothing is fetched. `--offline` resolves from the cache and `vendor/` only.
 - Private repositories use git's own authentication (SSH keys, credential helpers); Quarz adds no credential handling of its own.
 
 ## 6. Namespaces: a Cog Is a Module
@@ -183,4 +186,3 @@ In the application and in a script, `cog` is the top level; `cog.name` is then t
 - Whether an application's files other than `src/main.qz` may hold statements (a `require_relative`d helper that prints at load would stop working).
 - What `[cog] link` looks like once FFI exists.
 - `[dev-dependencies]` are read and validated, but nothing uses them until `quarz test` exists (*not yet*).
-- A lock is used as long as it meets what the application and the patched cogs ask for and no cog in it is above every version asked for (a requirement that was dropped). A requirement by a branch, or by a commit other than the locked one, has a version only git can tell, and is taken as met without asking it.

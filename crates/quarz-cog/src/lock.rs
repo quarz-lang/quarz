@@ -39,6 +39,12 @@ pub struct LockedCog {
 }
 
 impl Lock {
+    pub fn parse(text: &str) -> Result<Lock, Error> {
+        let lock: Lock = toml::from_str(text).map_err(|e| Error::new(e.message().to_string()))?;
+        lock.validate()?;
+        Ok(lock)
+    }
+
     pub fn read(dir: &Path) -> Result<Option<Lock>, Error> {
         let path = dir.join(LOCK);
         let text = match std::fs::read_to_string(&path) {
@@ -55,7 +61,36 @@ impl Lock {
                 lock.version
             )));
         }
+        lock.validate()
+            .map_err(|e| Error::new(format!("{}: {e}", path.display())))?;
         Ok(Some(lock))
+    }
+
+    /// Every field is what `quarz cog` writes: a name is also a directory
+    /// in the cache and vendor/, and a commit id goes to git.
+    fn validate(&self) -> Result<(), Error> {
+        for c in &self.cogs {
+            if !crate::manifest::is_cog_name(&c.name) {
+                return Err(Error::new(format!("bad cog name `{}`", c.name)));
+            }
+            if !crate::manifest::is_const_name(&c.module) {
+                return Err(Error::new(format!("{}: bad module `{}`", c.name, c.module)));
+            }
+            crate::git::check_rev(&c.rev).map_err(|e| Error::new(format!("{}: {e}", c.name)))?;
+            if crate::manifest::Source::parse_lock_string(&c.source).is_none() {
+                return Err(Error::new(format!("{}: bad source `{}`", c.name, c.source)));
+            }
+            if crate::version::Version::parse(&c.version).is_none() {
+                return Err(Error::new(format!(
+                    "{}: bad version `{}`",
+                    c.name, c.version
+                )));
+            }
+            if !c.hash.starts_with("h1:") {
+                return Err(Error::new(format!("{}: bad hash `{}`", c.name, c.hash)));
+            }
+        }
+        Ok(())
     }
 
     pub fn to_text(&self) -> String {
@@ -67,5 +102,25 @@ impl Lock {
         let path = dir.join(LOCK);
         std::fs::write(&path, self.to_text())
             .map_err(|e| Error::new(format!("{}: {e}", path.display())))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lock(name: &str, rev: &str) -> String {
+        format!(
+            "version = 1\n[[cog]]\nname = \"{name}\"\nmodule = \"M\"\nsource = \"git+https://h/m\"\nversion = \"1.0.0\"\nrev = \"{rev}\"\nhash = \"h1:x\"\n"
+        )
+    }
+
+    #[test]
+    fn fields_are_validated() {
+        let rev = "3f2a9c1e0b4d7c6e8a1f2b3c4d5e6f7a8b9c0d1e";
+        assert!(Lock::parse(&lock("m", rev)).is_ok());
+        assert!(Lock::parse(&lock("../../etc", rev)).is_err());
+        assert!(Lock::parse(&lock("m", "--output=/tmp/x")).is_err());
+        assert!(Lock::parse(&lock("m", "HEAD")).is_err());
     }
 }
