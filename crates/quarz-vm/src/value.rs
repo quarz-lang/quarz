@@ -551,14 +551,9 @@ pub struct ObjectOf<F: ?Sized + FieldTail> {
     /// Where its fields are. First in the layout, right after the
     /// allocation's two counts (compiled code reads the offsets there).
     pub layout: &'static FieldLayout,
-    pub nfields: Cell<u32>,
+    /// `DEINITIALIZED` and `HAS_EXC`.
+    flags: std::sync::atomic::AtomicU32,
     pub class: ClassId,
-    /// Exceptions only: what was captured when raised (written once,
-    /// possibly by one of several threads raising a shared exception).
-    exc: std::sync::OnceLock<Box<ExcInfo>>,
-    /// Whether its `deinitialize` has run (or is to run): released again,
-    /// it is freed (see `crate::deinit`).
-    deinitialized: Cell<bool>,
     /// The fields, without a borrow flag: an object that tasks share (its
     /// class has no `var` fields, or is an exception) is read by several
     /// threads at once and written by none once built, and a mutable one
@@ -584,6 +579,42 @@ unsafe impl crate::rc::Target for Object {
         };
         std::ptr::slice_from_raw_parts_mut(p.cast::<u64>(), words) as *mut crate::rc::Inner<Object>
     }
+}
+
+/// An object's flag: its `deinitialize` has run (or is to run), so that
+/// released again it is freed (see `crate::deinit`). Set before the
+/// object is reachable, by the thread that makes it.
+const DEINITIALIZED: u32 = 1;
+/// An object's flag: it was raised, and `EXC_INFO` holds what was
+/// captured then (set once, under the table's lock, by whichever of
+/// several threads raising a shared exception gets there first).
+const HAS_EXC: u32 = 2;
+
+/// What raised exceptions captured, by the address of their allocation:
+/// kept out of the header, which would otherwise carry it for every
+/// object (two words of five). An entry lives as long as its object,
+/// which removes it when freed.
+static EXC_INFO: std::sync::Mutex<HashMap<usize, ExcEntry, rustc_hash::FxBuildHasher>> =
+    std::sync::Mutex::new(HashMap::with_hasher(rustc_hash::FxBuildHasher));
+
+/// An entry of `EXC_INFO`.
+struct ExcEntry(Box<ExcInfo>);
+
+// SAFETY: the table only moves the box; what it holds is reached through
+// its object, as a field of the object would be: by the object's thread
+// while it is local, and by any once it is shared, `init_exc` having
+// marked the entry's values shared too. It is dropped when the object is.
+unsafe impl Send for ExcEntry {}
+
+/// An object's key in `EXC_INFO`: the address of its header.
+fn exc_key(object: *const u8) -> usize {
+    object as usize
+}
+
+fn exc_table() -> std::sync::MutexGuard<'static, HashMap<usize, ExcEntry, rustc_hash::FxBuildHasher>>
+{
+    // A panic while the lock was held leaves the table as it was.
+    EXC_INFO.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 /// The fields at the end of an object, as words.
@@ -719,13 +750,15 @@ impl<F: ?Sized + FieldTail> Drop for ObjectOf<F> {
         // The last reference went: an object whose class defines
         // `deinitialize` lives on, rebuilt from its fields, until the
         // method has run on it.
-        if !self.deinitialized.get() && crate::deinit::has(self.class) {
+        let flags = self.flags.load(std::sync::atomic::Ordering::Relaxed);
+        if flags & DEINITIALIZED == 0 && crate::deinit::has(self.class) {
             // SAFETY: nothing else refers to the object now.
             let fields: Fields = (0..layout.kinds.len())
                 .map(|i| unsafe { take_field_at(layout, base, i) })
                 .collect();
             let o = Object::new(self.class, fields);
-            o.deinitialized.set(true);
+            o.flags
+                .fetch_or(DEINITIALIZED, std::sync::atomic::Ordering::Relaxed);
             crate::deinit::queue(o);
         }
         // SAFETY: as above; each value is dropped once, here.
@@ -741,6 +774,12 @@ impl<F: ?Sized + FieldTail> Drop for ObjectOf<F> {
                     drop(Box::from_raw(p));
                 }
             }
+        }
+        // Last, as when it was a field. Taken out under the lock, dropped
+        // after it (its cause may be an exception freed in turn).
+        if flags & HAS_EXC != 0 {
+            let info = exc_table().remove(&exc_key(self as *const Self as *const u8));
+            drop(info);
         }
     }
 }
@@ -846,10 +885,8 @@ impl Object {
                 as *mut crate::rc::Inner<Object>;
             let o = &raw mut (*p).value;
             std::ptr::write(&raw mut (*o).layout, layout_of);
-            std::ptr::write(&raw mut (*o).nfields, Cell::new(n as u32));
+            std::ptr::write(&raw mut (*o).flags, std::sync::atomic::AtomicU32::new(0));
             std::ptr::write(&raw mut (*o).class, class);
-            std::ptr::write(&raw mut (*o).exc, std::sync::OnceLock::new());
-            std::ptr::write(&raw mut (*o).deinitialized, Cell::new(false));
             let base = mem.add(header.size());
             if let Some(a) = layout_of.aside {
                 std::ptr::write(
@@ -884,16 +921,25 @@ impl Object {
 
     /// The backtrace captured when this (exception) object was raised.
     pub fn backtrace(&self) -> Option<Rc<Vec<String>>> {
-        self.exc.get().and_then(|e| e.backtrace.clone())
+        self.exc_info().and_then(|e| e.backtrace.clone())
     }
 
     pub fn cause(&self) -> Option<Value> {
-        self.exc.get().and_then(|e| e.cause.clone())
+        self.exc_info().and_then(|e| e.cause.clone())
     }
 
     /// What was captured when the exception was raised, if anything.
     pub fn exc_info(&self) -> Option<&ExcInfo> {
-        self.exc.get().map(|e| &**e)
+        // Acquire: the entry was inserted before the flag was set.
+        if self.flags.load(std::sync::atomic::Ordering::Acquire) & HAS_EXC == 0 {
+            return None;
+        }
+        let info: *const ExcInfo = &*exc_table()
+            .get(&exc_key(self as *const Self as *const u8))?
+            .0;
+        // SAFETY: the entry is never changed, and removed only when the
+        // object is freed, which `&self` outlives.
+        Some(unsafe { &*info })
     }
 
     /// Record the backtrace and cause, unless the exception has them
@@ -902,7 +948,7 @@ impl Object {
     /// wins. `shared`: the object is shared, so what it now refers to
     /// must be too.
     pub fn init_exc(&self, info: ExcInfo, shared: bool) {
-        if self.exc.get().is_some() {
+        if self.flags.load(std::sync::atomic::Ordering::Acquire) & HAS_EXC != 0 {
             return;
         }
         if shared {
@@ -913,7 +959,25 @@ impl Object {
                 c.share();
             }
         }
-        let _ = self.exc.set(Box::new(info));
+        let mut table = exc_table();
+        if self.flags.load(std::sync::atomic::Ordering::Relaxed) & HAS_EXC != 0 {
+            // Another thread was first; what this one captured is dropped
+            // after the lock.
+            drop(table);
+            drop(info);
+            return;
+        }
+        let old = table.insert(
+            exc_key(self as *const Self as *const u8),
+            ExcEntry(Box::new(info)),
+        );
+        self.flags
+            .fetch_or(HAS_EXC, std::sync::atomic::Ordering::Release);
+        drop(table);
+        // A freed object removes its entry, so its address, given to
+        // another, has none.
+        debug_assert!(old.is_none(), "a stale exception entry");
+        drop(old);
     }
 
     pub fn field_count(&self) -> usize {
