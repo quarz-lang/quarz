@@ -2509,6 +2509,9 @@ impl<B: Builder> Gen<'_, B> {
         let entry = self.callees_typed[&callee];
         let typed_b = self.b.create_block();
         let fallback_b = self.b.create_block();
+        // Rare (an argument of another type than declared): out of the
+        // hot path's way.
+        self.b.set_cold(fallback_b);
         let cont = self.b.create_block();
         // Every argument of the declared type?
         let mut ok: Option<B::Value> = None;
@@ -2580,6 +2583,10 @@ impl<B: Builder> Gen<'_, B> {
         let status = self.b.ireduce(Ty::I32, status);
         let ok_b = self.b.create_block();
         let not_ok_b = self.b.create_block();
+        // An exception or a boxed result: rare, and laid out of the way
+        // (between the hot blocks, it moved their alignment with every
+        // change to its size).
+        self.b.set_cold(not_ok_b);
         let boxed_b = self.b.create_block();
         let is_ok = self.b.icmp_imm(IntCC::Equal, status, 0);
         self.b.brif(is_ok, ok_b, &[], not_ok_b, &[]);
