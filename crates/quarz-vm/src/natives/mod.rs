@@ -26,8 +26,8 @@ pub mod time;
 
 /// Natives with their keys (`Class#name`), in the order they are
 /// registered (a later one with the same key wins), built at start-up.
-/// A compiled program's methods know where theirs are (`native_at`, see
-/// `positions`), the interpreter's look them up by key (`map`).
+/// A compiled program's methods know where theirs are (`positions`, see
+/// `crate::methods`), the interpreter's look them up by key (`map`).
 pub struct Registry<F> {
     entries: Vec<(&'static str, F)>,
 }
@@ -42,18 +42,24 @@ impl<F: Copy> Registry<F> {
         self.entries.push((key, f));
     }
 
-    /// The native `positions` put at `i`, if its key is still `key`
-    /// (else the program was built against another runtime: `None`).
-    pub fn at(&self, i: u32, key: &str) -> Option<F> {
-        self.entries
-            .get(i as usize)
-            .filter(|(k, _)| *k == key)
-            .map(|(_, f)| *f)
+    /// The native `positions` put at `i` (in a registry whose
+    /// `fingerprint` the build's matches).
+    pub fn get(&self, i: u32) -> Option<F> {
+        self.entries.get(i as usize).map(|(_, f)| *f)
     }
 
     /// The natives by key.
     pub fn map(&self) -> quarz_ir::HashMap<&'static str, F> {
         self.entries.iter().copied().collect()
+    }
+
+    /// Its keys in order, hashed: a build and the runtime it links
+    /// against must agree on where the natives are.
+    pub fn fingerprint(&self, h: &mut impl std::hash::Hasher) {
+        for (k, _) in &self.entries {
+            h.write(k.as_bytes());
+            h.write_u8(0);
+        }
     }
 
     /// Where each key's native is (for a build to record).
@@ -72,8 +78,26 @@ fn registry_with<F>(n: usize) -> Registry<F> {
     }
 }
 
+/// The fingerprint of the three registries (see `Registry::fingerprint`).
+pub fn fingerprint_of(
+    plain: &Registry<NativeFn>,
+    fast: &Registry<crate::interp::FastNativeFn>,
+    owned: &Registry<OwnedNativeFn>,
+) -> u64 {
+    use std::hash::Hasher;
+    let mut h = rustc_hash::FxHasher::default();
+    plain.fingerprint(&mut h);
+    fast.fingerprint(&mut h);
+    owned.fingerprint(&mut h);
+    h.finish()
+}
+
+pub fn fingerprint() -> u64 {
+    fingerprint_of(&registry(), &fast_registry(), &owned_registry())
+}
+
 /// Where each native of the three registries is, by key (`PLAIN`,
-/// `FAST`, `OWNED`): what a build records in `RtMethod::native_at`.
+/// `FAST`, `OWNED`): what a build records (see `crate::methods`).
 pub fn positions() -> [quarz_ir::HashMap<&'static str, u32>; 3] {
     [
         registry().positions(),

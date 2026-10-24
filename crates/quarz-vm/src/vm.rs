@@ -1005,7 +1005,7 @@ impl Interp {
                                 Some(r) => regs[*r as usize].clone(),
                                 None => act.self_val.clone(),
                             };
-                            let nparams = self.program.world.method(mid).params.len();
+                            let nparams = self.program.method(mid).params.len();
                             let mut pos = ArgVec::with_capacity(args.len());
                             let mut bits = *moved & 0x7fff;
                             for r in args.iter().take(nparams) {

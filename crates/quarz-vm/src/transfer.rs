@@ -23,6 +23,8 @@ use crate::value::*;
 /// Everything a second interpreter needs to run the loaded program.
 pub struct ProgramImage {
     pub world: RtWorld,
+    /// A compiled program's methods (shared: decoded once for all).
+    pub lazy: Option<Arc<crate::methods::Lazy>>,
     pub functions: Vec<Function>,
     pub units: Vec<Unit>,
     pub compiled: Vec<Option<CompiledFn>>,
@@ -407,13 +409,14 @@ pub fn run_on_thread(
             _ => {
                 let out = Arc::new(Mutex::new(Vec::new()));
                 let state = SharedState::new(Box::new(SyncBuffer(out.clone())));
-                let interp = Interp::with_state(
+                let interp = Interp::with_state_lazy(
                     image.world.clone(),
                     0,
                     image.functions.clone(),
                     image.units.clone(),
                     argv,
                     state,
+                    image.lazy.clone(),
                 );
                 {
                     let mut compiled = interp.compiled.borrow_mut();
@@ -457,6 +460,7 @@ impl Interp {
         }
         let image = Arc::new(ProgramImage {
             world: self.program.world.clone(),
+            lazy: self.program.lazy.clone(),
             functions: self.funcs.borrow().iter().map(|f| (**f).clone()).collect(),
             units: self.program.units.clone(),
             compiled: self.compiled.borrow().clone(),

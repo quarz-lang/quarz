@@ -316,9 +316,9 @@ pub unsafe extern "C" fn qz_enter_virtual(
     } else {
         &*regs.add(recv as usize)
     };
-    let declared = &rt.program.world.methods[mid as usize];
+    let declared = &rt.program.method(mid);
     let target = rt.resolve_dynamic(recv_ref, mid);
-    let m = &rt.program.world.methods[target as usize];
+    let m = &rt.program.method(target);
     let total = nparams + u32::from(declared.has_block);
     let same_shape = m.native_key.is_none()
         && m.params.len() == declared.params.len()
@@ -637,7 +637,7 @@ pub unsafe extern "C" fn qz_call_static(
     let rt = &*rt;
     let act = &*act;
     // A method some class overrides: the receiver's class decides.
-    let mid = if rt.program.world.methods[mid as usize].overridden {
+    let mid = if rt.program.method(mid).overridden {
         let recv_ref: &Value = if recv == u32::MAX {
             &act.self_val
         } else {
@@ -680,7 +680,7 @@ pub unsafe extern "C" fn qz_call_static(
     } else {
         Some((*regs.add(block as usize)).clone())
     };
-    let m = &rt.program.world.methods[mid as usize];
+    let m = &rt.program.method(mid);
     let nparams = m.params.len();
     let mut args: crate::interp::ArgVec =
         crate::interp::ArgVec::with_capacity(nparams.max(nargs as usize) + 1);
@@ -1014,7 +1014,7 @@ pub unsafe extern "C" fn qz_construct(
     // fields are copied straight from the registers.
     if let Some(i) = init {
         let info = &rt.program.world.classes[class as usize];
-        if rt.program.world.methods[i as usize].synth == quarz_ir::RtSynth::DataInit
+        if rt.program.method(i).synth == quarz_ir::RtSynth::DataInit
             && nargs as usize == info.fields.len()
             && matches!(
                 info.kind,
@@ -1099,16 +1099,19 @@ pub unsafe extern "C" fn qz_take_reg(regs: *mut Value, r: u32, out: *mut Value) 
     *out = v;
 }
 
-/// Run a compiled program: `blob` is the serialized module, `table` the
-/// machine-code bodies by function id (null for functions the VM
-/// interprets). Returns the exit code.
+/// Run a compiled program: `blob` is the serialized module (but its
+/// methods), `methods` its methods (see `crate::methods`), `table` the
+/// machine-code bodies by function id. Returns the exit code.
 ///
 /// # Safety
-/// The pointers must describe valid data produced by `quarz build`.
+/// The pointers must describe valid data produced by `quarz build`,
+/// which lives as long as the process (`methods` is decoded lazily).
 #[no_mangle]
 pub unsafe extern "C" fn qz_main(
     blob: *const u8,
     len: usize,
+    methods: *const u8,
+    methods_len: usize,
     table: *const Option<CompiledFn>,
     n: usize,
     argc: i32,
@@ -1147,7 +1150,16 @@ pub unsafe extern "C" fn qz_main(
     } = module;
     crate::value::check_rc_layout();
     crate::layout::check(layout_sig, vec_layout);
-    let interp: std::rc::Rc<Interp> = Interp::with_state(world, 0, functions, units, args, state);
+    // The program's methods, decoded when first needed.
+    let lazy = match crate::methods::Lazy::new(std::slice::from_raw_parts(methods, methods_len)) {
+        Ok(l) => std::sync::Arc::new(l),
+        Err(e) => {
+            eprintln!("quarz: corrupt program: {e}");
+            return 70;
+        }
+    };
+    let interp: std::rc::Rc<Interp> =
+        Interp::with_state_lazy(world, 0, functions, units, args, state, Some(lazy));
     // Bit 0: compiled frames are found by the native unwinder (the
     // typed entries push no activation).
     interp.native_bt.set(flags & 1 != 0);

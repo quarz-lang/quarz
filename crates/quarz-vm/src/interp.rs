@@ -14,8 +14,8 @@ use std::time::Duration;
 
 use quarz_ir::INLINE_LINE_FLAG;
 use quarz_ir::{
-    ClassId, Constant, FuncId, Function, MethodId, RtClassKind, RtParamKind, RtSynth, RtType,
-    RtWorld, Unit,
+    ClassId, Constant, FuncId, Function, MethodId, RtClassKind, RtMethod, RtParamKind, RtSynth,
+    RtType, RtWorld, Unit,
 };
 
 pub use quarz_ir::FastOp;
@@ -377,12 +377,167 @@ pub struct OwnedIds {
     pub set_delete: Option<MethodId>,
 }
 
+impl Program {
+    /// Method `id` (decoded now if a compiled program's not yet needed).
+    #[inline]
+    pub fn method(&self, id: MethodId) -> &RtMethod {
+        match &self.lazy {
+            Some(lazy) => lazy.get(id),
+            None => self.world.method(id),
+        }
+    }
+
+    pub fn method_count(&self) -> usize {
+        match &self.lazy {
+            Some(lazy) => lazy.count(),
+            None => self.world.methods.len(),
+        }
+    }
+}
+
+/// What the runtime derives from every method when it loads a program
+/// (a compiled program has it computed by its build: see
+/// `crate::methods`).
+struct Derived {
+    natives: Vec<Option<NativeFn>>,
+    fast_natives: Vec<Option<FastNativeFn>>,
+    natives_owned: Vec<Option<OwnedNativeFn>>,
+    owned: OwnedIds,
+    positional_only: Vec<bool>,
+    direct_funcs: Vec<Option<FuncId>>,
+    vslots: Vec<u32>,
+    nvslots: usize,
+}
+
+impl Derived {
+    fn of(world: &RtWorld, lazy: Option<&crate::methods::Lazy>) -> Derived {
+        let plain = natives::registry();
+        let fast = natives::fast_registry();
+        let owned_reg = natives::owned_registry();
+        let mut nvslots = 0usize;
+        let mut vslot = |has: bool| {
+            if has {
+                nvslots += 1;
+                (nvslots - 1) as u32
+            } else {
+                u32::MAX
+            }
+        };
+        if let Some(lazy) = lazy {
+            if lazy.fingerprint() != natives::fingerprint_of(&plain, &fast, &owned_reg) {
+                eprintln!("quarz: this program was built against a different runtime; rebuild it");
+                std::process::exit(70);
+            }
+            let n = lazy.count() as MethodId;
+            let at = |which: usize| move |id: MethodId| lazy.native_at(id, which);
+            let [array_push, array_set, hash_put, hash_delete, set_add, set_delete] = lazy.owned();
+            return Derived {
+                natives: (0..n)
+                    .map(|id| at(natives::PLAIN)(id).and_then(|i| plain.get(i)))
+                    .collect(),
+                fast_natives: (0..n)
+                    .map(|id| at(natives::FAST)(id).and_then(|i| fast.get(i)))
+                    .collect(),
+                natives_owned: (0..n)
+                    .map(|id| at(natives::OWNED)(id).and_then(|i| owned_reg.get(i)))
+                    .collect(),
+                owned: OwnedIds {
+                    array_push,
+                    array_set,
+                    hash_put,
+                    hash_delete,
+                    set_add,
+                    set_delete,
+                },
+                positional_only: (0..n)
+                    .map(|id| lazy.flags(id) & crate::methods::POSITIONAL != 0)
+                    .collect(),
+                direct_funcs: (0..n).map(|id| lazy.direct_func(id)).collect(),
+                vslots: (0..n)
+                    .map(|id| vslot(lazy.flags(id) & crate::methods::VSLOT != 0))
+                    .collect(),
+                nvslots,
+            };
+        }
+        let (plain_map, fast_map, owned_map) = (plain.map(), fast.map(), owned_reg.map());
+        let natives = world
+            .methods
+            .iter()
+            .map(|m| plain_map.get(m.native_key.as_deref()?).copied())
+            .collect();
+        let fast_natives = world
+            .methods
+            .iter()
+            .map(|m| fast_map.get(m.native_key.as_deref()?).copied())
+            .collect();
+        let natives_owned = world
+            .methods
+            .iter()
+            .map(|m| owned_map.get(m.native_key.as_deref()?).copied())
+            .collect();
+        let owned_id = |key: &str| -> Option<MethodId> {
+            world
+                .methods
+                .iter()
+                .position(|m| m.native_key.as_deref() == Some(key))
+                .map(|i| i as MethodId)
+        };
+        let positional_only: Vec<bool> = world
+            .methods
+            .iter()
+            .map(|m| !m.has_block && m.params.iter().all(|p| p.kind == RtParamKind::Positional))
+            .collect();
+        let direct_funcs: Vec<Option<FuncId>> = world
+            .methods
+            .iter()
+            .zip(&positional_only)
+            .map(|(m, &positional)| {
+                let plain = positional
+                    && m.native_key.is_none()
+                    && matches!(m.synth, RtSynth::None)
+                    && !m.is_abstract;
+                if plain {
+                    m.func
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let vslots = world
+            .methods
+            .iter()
+            .map(|m| vslot(m.overridden && !m.singleton && !m.is_extension))
+            .collect();
+        Derived {
+            natives,
+            fast_natives,
+            natives_owned,
+            owned: OwnedIds {
+                array_push: owned_id("Array#push"),
+                array_set: owned_id("Array#set"),
+                hash_put: owned_id("Hash#put"),
+                hash_delete: owned_id("Hash#delete"),
+                set_add: owned_id("Set#add"),
+                set_delete: owned_id("Set#delete"),
+            },
+            positional_only,
+            direct_funcs,
+            vslots,
+            nvslots,
+        }
+    }
+}
+
 #[repr(C)]
 /// What the interpreter derives from the program when it loads it, and
 /// never changes: the part that the worker threads of an M:N scheduler
 /// are to share (it is `Send + Sync`, checked below).
 pub struct Program {
+    /// Its classes and so on, and, but in a compiled program, its methods
+    /// (see `method`).
     pub world: RtWorld,
+    /// A compiled program's methods, decoded when first needed.
+    pub lazy: Option<std::sync::Arc<crate::methods::Lazy>>,
     /// Compilation units in execution order.
     pub units: Vec<Unit>,
     pub natives: Vec<Option<NativeFn>>,
@@ -505,6 +660,20 @@ impl Interp {
         argv: Vec<String>,
         state: SharedState,
     ) -> std::rc::Rc<Interp> {
+        Interp::with_state_lazy(world, base, functions, units, argv, state, None)
+    }
+
+    /// `with_state` for a compiled program, whose methods (`world`'s are
+    /// left empty) come from `lazy`.
+    pub fn with_state_lazy(
+        world: RtWorld,
+        base: FuncId,
+        functions: Vec<Function>,
+        units: Vec<Unit>,
+        argv: Vec<String>,
+        state: SharedState,
+        lazy: Option<std::sync::Arc<crate::methods::Lazy>>,
+    ) -> std::rc::Rc<Interp> {
         let structural: Vec<bool> = world.classes.iter().map(|c| c.structural).collect();
         STRUCTURAL_CLASSES.with(|s| *s.borrow_mut() = structural);
         crate::value::register_layouts(&world.classes);
@@ -543,36 +712,7 @@ impl Interp {
             }
         }
 
-        // A built program's methods say where their natives are; the
-        // others are looked up by key.
-        fn resolve<F: Copy>(
-            world: &RtWorld,
-            registry: &natives::Registry<F>,
-            which: usize,
-        ) -> Vec<Option<F>> {
-            let mut by_key = None;
-            world
-                .methods
-                .iter()
-                .map(|m| {
-                    let key = m.native_key.as_deref()?;
-                    if let Some(at) = m.native_at {
-                        if at[which] == u32::MAX {
-                            return None;
-                        }
-                        if let Some(f) = registry.at(at[which], key) {
-                            return Some(f);
-                        }
-                    }
-                    by_key
-                        .get_or_insert_with(|| registry.map())
-                        .get(key)
-                        .copied()
-                })
-                .collect()
-        }
-        let natives = resolve(&world, &natives::registry(), natives::PLAIN);
-        let fast_natives = resolve(&world, &natives::fast_registry(), natives::FAST);
+        let derived = Derived::of(&world, lazy.as_deref());
         let field_indices: Vec<FxHashMap<String, usize>> = world
             .classes
             .iter()
@@ -585,56 +725,6 @@ impl Interp {
             })
             .collect();
         let nclasses = world.classes.len();
-        let mut nvslots = 0usize;
-        let vslots: Vec<u32> = world
-            .methods
-            .iter()
-            .map(|m| {
-                if m.overridden && !m.singleton && !m.is_extension {
-                    nvslots += 1;
-                    (nvslots - 1) as u32
-                } else {
-                    u32::MAX
-                }
-            })
-            .collect();
-        let natives_owned = resolve(&world, &natives::owned_registry(), natives::OWNED);
-        let owned_id = |key: &str| -> Option<MethodId> {
-            world
-                .methods
-                .iter()
-                .position(|m| m.native_key.as_deref() == Some(key))
-                .map(|i| i as MethodId)
-        };
-        let positional_only: Vec<bool> = world
-            .methods
-            .iter()
-            .map(|m| !m.has_block && m.params.iter().all(|p| p.kind == RtParamKind::Positional))
-            .collect();
-        let direct_funcs: Vec<Option<FuncId>> = world
-            .methods
-            .iter()
-            .zip(&positional_only)
-            .map(|(m, &positional)| {
-                let plain = positional
-                    && m.native_key.is_none()
-                    && matches!(m.synth, RtSynth::None)
-                    && !m.is_abstract;
-                if plain {
-                    m.func
-                } else {
-                    None
-                }
-            })
-            .collect();
-        let owned = OwnedIds {
-            array_push: owned_id("Array#push"),
-            array_set: owned_id("Array#set"),
-            hash_put: owned_id("Hash#put"),
-            hash_delete: owned_id("Hash#delete"),
-            set_add: owned_id("Set#add"),
-            set_delete: owned_id("Set#delete"),
-        };
         let class_by_name = |name: &str| -> ClassId {
             world
                 .class_by_name(name)
@@ -730,8 +820,19 @@ impl Interp {
                 .collect()
         };
         let repl_frame = state.repl_frame.clone();
+        let Derived {
+            natives,
+            fast_natives,
+            natives_owned,
+            owned,
+            positional_only,
+            direct_funcs,
+            vslots,
+            nvslots,
+        } = derived;
         let program = std::sync::Arc::new(Program {
             world,
+            lazy,
             units,
             natives,
             fast_natives,
@@ -1144,13 +1245,14 @@ impl Interp {
         native_bt: bool,
     ) {
         let state = SharedState::for_worker(global, w);
-        let interp = Interp::with_state(
+        let interp = Interp::with_state_lazy(
             image.world.clone(),
             0,
             image.functions.clone(),
             image.units.clone(),
             argv,
             state,
+            image.lazy.clone(),
         );
         interp.native_bt.set(native_bt);
         {
@@ -1746,7 +1848,7 @@ impl Interp {
     /// Find the implementation of a statically resolved method for the
     /// receiver's run-time class (subclass overrides).
     pub fn resolve_dynamic(&self, recv: &Value, mid: MethodId) -> MethodId {
-        let m = self.program.world.method(mid);
+        let m = self.program.method(mid);
         if m.singleton {
             // A class method some subclass overrides: the class it is
             // called on decides.
@@ -1802,12 +1904,12 @@ impl Interp {
         if let Some(found) = self.class_dispatch_cache.borrow().get(&(cid, mid)) {
             return *found;
         }
-        let m = self.program.world.method(mid);
+        let m = self.program.method(mid);
         let (min, max) = m.positional_arity();
         // A class method of the same name that accepts less is an
         // overload, not an override.
         let accepts = |c: MethodId| {
-            let cm = self.program.world.method(c);
+            let cm = self.program.method(c);
             let (cmin, cmax) = cm.positional_arity();
             !cm.is_abstract
                 && cm.has_block == m.has_block
@@ -1850,7 +1952,7 @@ impl Interp {
         if let Some(found) = self.class_method_cache.borrow().get(&(cid, mid)) {
             return *found;
         }
-        let m = self.program.world.method(mid);
+        let m = self.program.method(mid);
         let mut found = None;
         let mut cur = Some(cid);
         while let Some(c) = cur {
@@ -1861,7 +1963,7 @@ impl Interp {
             if let Some(ids) = class.singleton_methods.get(&m.name) {
                 if let Some(id) = ids.iter().copied().find(|id| {
                     self.same_signature(*id, mid)
-                        || self.program.world.method(*id).overrides.contains(&mid)
+                        || self.program.method(*id).overrides.contains(&mid)
                 }) {
                     found = Some(id);
                     break;
@@ -1879,7 +1981,7 @@ impl Interp {
     /// that overrides `mid`: same name, and the same signature when the
     /// name is overloaded.
     fn find_override(&self, cid: ClassId, mid: MethodId) -> Option<MethodId> {
-        let m = self.program.world.method(mid);
+        let m = self.program.method(mid);
         let (min, max) = m.positional_arity();
         for anc in &self.program.world.class(cid).ancestors {
             let anc = *anc;
@@ -1898,7 +2000,7 @@ impl Interp {
                 candidates.extend(ids);
             }
             candidates.retain(|c| {
-                let cm = self.program.world.method(*c);
+                let cm = self.program.method(*c);
                 let (cmin, cmax) = cm.positional_arity();
                 cm.has_block == m.has_block && cmin <= max && cmax >= min
             });
@@ -1913,7 +2015,7 @@ impl Interp {
             // name that accepts less is an overload: keep looking.
             if let Some(o) = candidates
                 .iter()
-                .find(|c| self.program.world.method(**c).overrides.contains(&mid))
+                .find(|c| self.program.method(**c).overrides.contains(&mid))
             {
                 return Some(*o);
             }
@@ -1922,7 +2024,7 @@ impl Interp {
     }
 
     fn same_signature(&self, a: MethodId, b: MethodId) -> bool {
-        let (a, b) = (self.program.world.method(a), self.program.world.method(b));
+        let (a, b) = (self.program.method(a), self.program.method(b));
         a.params.len() == b.params.len()
             && a.params.iter().zip(&b.params).all(|(p, q)| {
                 p.kind == q.kind && (p.ty == q.ty || p.ty.is_none() || q.ty.is_none())
@@ -1962,7 +2064,7 @@ impl Interp {
             }
             for ids in lists {
                 for id in ids {
-                    let m = self.program.world.method(*id);
+                    let m = self.program.method(*id);
                     let (min, max) = m.positional_arity();
                     if min <= argc && argc <= max && (m.has_block == with_block) {
                         found = Some(*id);
@@ -2014,7 +2116,7 @@ impl Interp {
     pub fn has_user_method(&self, recv: &Value, name: &str, argc: usize) -> Option<MethodId> {
         let cid = self.class_of(recv);
         let mid = self.find_method(cid, name, argc, false)?;
-        let m = self.program.world.method(mid);
+        let m = self.program.method(mid);
         if m.owner == self.program.world.builtin.object && m.native_key.is_some() {
             return None;
         }
@@ -2031,7 +2133,7 @@ impl Interp {
         kw: Vec<(Symbol, Value)>,
         block: Option<Value>,
     ) -> EvalResult {
-        let m = self.program.world.method(mid);
+        let m = self.program.method(mid);
         if let Some(native) = self.program.natives[mid as usize] {
             return native(
                 self,
@@ -2207,7 +2309,7 @@ impl Interp {
         args: ArgVec,
         kw: Vec<(Symbol, Value)>,
     ) -> Result<Vec<Value>, Flow> {
-        let m = self.program.world.method(mid);
+        let m = self.program.method(mid);
         let n = m.params.len();
         let mut values = vec![Value::Nil; n];
         let mut set = vec![false; n];
@@ -2247,7 +2349,7 @@ impl Interp {
         kw: Vec<(Symbol, Value)>,
         block: Option<Value>,
     ) -> Result<(ArgVec, u64), Flow> {
-        let m = self.program.world.method(mid);
+        let m = self.program.method(mid);
         let n = m.params.len();
         let mut values: ArgVec = smallvec![Value::Nil; n + usize::from(m.has_block)];
         let mut provided = 0u64;
@@ -2340,7 +2442,7 @@ impl Interp {
                     .and_then(|i| {
                         ids.iter().copied().find(|id| {
                             self.same_signature(*id, i)
-                                || self.program.world.method(*id).overrides.contains(&i)
+                                || self.program.method(*id).overrides.contains(&i)
                         })
                     })
                     .or_else(|| ids.first().copied());
@@ -2361,7 +2463,7 @@ impl Interp {
         let info = self.program.world.class(class);
         // A data constructor given every physical field: copied in.
         if let Some(i) = init {
-            if self.program.world.methods[i as usize].synth == RtSynth::DataInit
+            if self.program.method(i).synth == RtSynth::DataInit
                 && kw.is_empty()
                 && block.is_none()
                 && args.len() == info.fields.len()

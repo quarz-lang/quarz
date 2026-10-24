@@ -1043,7 +1043,7 @@ fn emit(module: &Module, opaque: bool) -> Result<String, String> {
         },
         main: declare(
             "qz_main",
-            &[p, i64_, p, i64_, i32_, p, i64_, i64_, i64_],
+            &[p, i64_, p, i64_, p, i64_, i32_, p, i64_, i64_, i64_],
             &[i32_],
         ),
     };
@@ -1225,18 +1225,15 @@ fn emit(module: &Module, opaque: bool) -> Result<String, String> {
     for (f, s) in kept.functions.iter_mut().zip(&sites) {
         *f = gen::strip(f, s);
     }
-    // Where each native is in the runtime's registries (the same crate
-    // as the compiler), so that the program looks up none by key.
-    let positions = quarz_vm::natives::positions();
-    for m in kept.world.methods.iter_mut() {
-        if let Some(key) = m.native_key.as_deref() {
-            m.native_at = Some(
-                positions
-                    .each_ref()
-                    .map(|p| p.get(key).copied().unwrap_or(u32::MAX)),
-            );
-        }
-    }
+    // The methods apart, decoded when first needed, with what the runtime
+    // derives from them (where their natives are in its registries: the
+    // compiler links the same runtime crate).
+    let methods = std::mem::take(&mut kept.world.methods);
+    let method_bytes = quarz_vm::methods::encode(
+        &methods,
+        &quarz_vm::natives::positions(),
+        quarz_vm::natives::fingerprint(),
+    );
     let bytes = quarz_ir::encode(&kept);
     let mut blob = String::with_capacity(bytes.len() * 4);
     for byte in &bytes {
@@ -1246,6 +1243,15 @@ fn emit(module: &Module, opaque: bool) -> Result<String, String> {
         out,
         "@qz_module_blob = internal constant [{} x i8] c\"{blob}\", align 8",
         bytes.len()
+    );
+    let mut mblob = String::with_capacity(method_bytes.len() * 4);
+    for byte in &method_bytes {
+        let _ = write!(mblob, "\\{byte:02X}");
+    }
+    let _ = writeln!(
+        out,
+        "@qz_methods_blob = internal constant [{} x i8] c\"{mblob}\", align 8",
+        method_bytes.len()
     );
     let n = module.functions.len();
     let entries: Vec<String> = (0..n)
@@ -1263,7 +1269,17 @@ fn emit(module: &Module, opaque: bool) -> Result<String, String> {
         "@qz_fn_table = internal constant [{n} x {ptr}] [{}], align 8",
         entries.join(", ")
     );
-    // main(argc, argv) -> qz_main(blob, len, table, n, argc, argv, layout, vec_layout, flags)
+    // main(argc, argv) -> qz_main(blob, len, methods, len, table, n, argc,
+    // argv, layout, vec_layout, flags)
+    let methods_ptr = if opaque {
+        "ptr @qz_methods_blob".to_string()
+    } else {
+        format!(
+            "i8* getelementptr ([{} x i8], [{} x i8]* @qz_methods_blob, i64 0, i64 0)",
+            method_bytes.len(),
+            method_bytes.len()
+        )
+    };
     let blob_ptr = if opaque {
         "ptr @qz_module_blob".to_string()
     } else {
@@ -1280,8 +1296,9 @@ fn emit(module: &Module, opaque: bool) -> Result<String, String> {
     };
     let _ = writeln!(
         out,
-        "define i32 @main(i32 %argc, {ptr} %argv) {{\n  %code = call i32 @qz_main({blob_ptr}, i64 {}, {table_ptr}, i64 {n}, i32 %argc, {ptr} %argv, i64 {}, i64 {}, i64 1)\n  ret i32 %code\n}}",
+        "define i32 @main(i32 %argc, {ptr} %argv) {{\n  %code = call i32 @qz_main({blob_ptr}, i64 {}, {methods_ptr}, i64 {}, {table_ptr}, i64 {n}, i32 %argc, {ptr} %argv, i64 {}, i64 {}, i64 1)\n  ret i32 %code\n}}",
         bytes.len(),
+        method_bytes.len(),
         L::SIGNATURE as i64,
         L::vec_layout_packed() as i64
     );

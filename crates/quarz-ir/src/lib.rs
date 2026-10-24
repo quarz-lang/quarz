@@ -1198,11 +1198,6 @@ pub struct RtMethod {
     /// needs no entry.
     #[serde(default)]
     pub overrides: Vec<MethodId>,
-    /// Where the native is in each of the runtime's registries (plain,
-    /// by reference, in place; `u32::MAX` when absent there), recorded
-    /// by a build so that a compiled program looks up nothing by key.
-    #[serde(default)]
-    pub native_at: Option<[u32; 3]>,
 }
 
 impl RtMethod {
@@ -1379,7 +1374,6 @@ impl Droppable for RtMethod {
             file: 0,
             ret: None,
             overrides: Vec::new(),
-            native_at: None,
         }
     }
 }
@@ -1433,6 +1427,18 @@ pub fn encode(module: &Module) -> Vec<u8> {
 pub fn decode(bytes: &[u8]) -> Result<Module, String> {
     bincode::serde::decode_from_slice(bytes, bincode_config())
         .map(|(module, _)| module)
+        .map_err(|e| e.to_string())
+}
+
+/// One method, encoded apart (a compiled program decodes each the first
+/// time it is needed: see `quarz_vm::methods`).
+pub fn encode_method(m: &RtMethod) -> Vec<u8> {
+    bincode::serde::encode_to_vec(m, bincode_config()).expect("serializing a method")
+}
+
+pub fn decode_method(bytes: &[u8]) -> Result<RtMethod, String> {
+    bincode::serde::decode_from_slice(bytes, bincode_config())
+        .map(|(m, _)| m)
         .map_err(|e| e.to_string())
 }
 

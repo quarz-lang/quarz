@@ -200,7 +200,6 @@ pub fn build(world: &World, lw: &Lowerer, file_names: Vec<String>) -> RtWorld {
                     _ => None,
                 },
                 overrides: overridden_methods(world, m, &mut ancestors),
-                native_at: None,
             }
         })
         .collect();
