@@ -1178,7 +1178,7 @@ pub struct RtField {
     pub ty: Option<String>,
 }
 
-/// How an object stores a physical field: a value (three words), or,
+/// How an object stores a physical field: a value (two words), or,
 /// for a field declared `Int`, `Float` or `Bool`, the machine word of
 /// the number or boolean. What a word cannot hold (nil before the field
 /// is assigned, a big integer) is marked in it and kept aside (see
@@ -1194,7 +1194,7 @@ pub enum FieldKind {
 
 /// The size of a value in an object or a register (`quarz_vm` checks
 /// it).
-pub const VALUE_BYTES: u32 = 24;
+pub const VALUE_BYTES: u32 = 16;
 
 impl FieldKind {
     pub fn of(ty: Option<&str>) -> FieldKind {

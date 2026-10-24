@@ -9,9 +9,16 @@ use quarz_vm::layout as L;
 use crate::builder::{Builder, FloatCC, IntCC, Ty};
 use crate::unbox::{self, Num, State};
 
-/// Size of a `Value` in bytes (`repr(C, u64)`: a tag word and a two-word
-/// payload, since some variants hold fat pointers).
-const VALUE_SIZE: i32 = 24;
+/// Size of a `Value` in bytes (`repr(u8)`: a tag byte, then a payload
+/// at the next word; only the tag's byte of the first word is defined).
+const VALUE_SIZE: i32 = 16;
+/// Where a `Bool`'s byte and a `Class`'s id are in a value: right after
+/// the tag, as `repr(u8)` lays out a variant whose payload is smaller than
+/// a word (the runtime checks both at start-up). Every other payload is
+/// at the next word. A tag is stored before the payload, since storing it
+/// may write the whole first word.
+const BOOL_OFF: i32 = 1;
+const CLASS_OFF: i32 = 4;
 /// Space for an `Activation` built by compiled code (`qz_enter`); the
 /// runtime checks its real size against this.
 const ACT_BUF_SIZE: u32 = 320;
@@ -669,7 +676,7 @@ pub(crate) fn gen_function<B: Builder>(
                 // leave the register nil, then release the rest.
                 g.ensure_home(*r);
                 let off = reg_off(*r);
-                for k in [0, 8, 16] {
+                for k in [0, 8] {
                     let w = g.b.load(Ty::I64, regs, off + k);
                     g.b.store(w, out, k);
                 }
@@ -803,7 +810,7 @@ pub(crate) fn gen_function<B: Builder>(
         b.switch_to_block(failed_b);
         emit_typed_fail(b, rt, status);
         b.switch_to_block(fits_b);
-        let tag = b.load(Ty::I64, out, 0);
+        let tag = load_tag(b, out, 0);
         let is = b.icmp_imm(IntCC::Equal, tag, mach_tag(sig.ret));
         let unboxed_b = b.create_block();
         let boxed_b = b.create_block();
@@ -811,13 +818,12 @@ pub(crate) fn gen_function<B: Builder>(
         b.switch_to_block(unboxed_b);
         let bits = match sig.ret {
             unbox::Mach::Nil => b.iconst(Ty::I64, 0),
-            // A Bool is the payload's first byte.
-            unbox::Mach::Bool => b.uload8(out, 8),
+            unbox::Mach::Bool => b.uload8(out, BOOL_OFF),
             _ => b.load(Ty::I64, out, 8),
         };
         b.return_(&[bits]);
         b.switch_to_block(boxed_b);
-        for k in [0, 8, 16] {
+        for k in [0, 8] {
             let w = b.load(Ty::I64, out, k);
             b.store(w, out_caller, k);
         }
@@ -1035,13 +1041,19 @@ fn emit_typed_pop<B: Builder>(b: &mut B, rt: B::Value, act: B::Value, pop_call: 
     b.switch_to_block(popped);
 }
 
+/// A value's tag: the first byte at `p + off` (the rest of the word is
+/// undefined but in a short string), as an `I64`.
+fn load_tag<B: Builder>(b: &mut B, p: B::Value, off: i32) -> B::Value {
+    b.uload8(p, off)
+}
+
 /// Release the value at `p` and leave nil there: a heap value's count is
 /// lowered inline when it is local and above 1, else through `drop_value`
 /// (the last reference, or a shared count). The payload's first word
 /// points at the allocation, whose first word is the count (checked at
 /// start-up).
 fn emit_release_ptr<B: Builder>(b: &mut B, drop_value: B::Func, p: B::Value) {
-    let tag = b.load(Ty::I64, p, 0);
+    let tag = load_tag(b, p, 0);
     let needs = b.icmp_imm(IntCC::UnsignedGreaterThanOrEqual, tag, NEEDS_DROP_FROM);
     let heap = b.create_block();
     let shared = b.create_block();
@@ -1066,16 +1078,17 @@ fn emit_release_ptr<B: Builder>(b: &mut B, drop_value: B::Func, p: B::Value) {
     b.switch_to_block(cont);
 }
 
-/// `*dst = *src` where `dst` holds nil: a three-word copy, plus a
+/// `*dst = *src` where `dst` holds nil: a two-word copy, plus a
 /// reference count bump for heap values (inline for a local allocation,
 /// through `clone_ptr` for a shared one).
 fn emit_clone_ptr<B: Builder>(b: &mut B, clone_ptr: B::Func, dst: B::Value, src: B::Value) {
-    let tag = b.load(Ty::I64, src, 0);
+    let w0 = b.load(Ty::I64, src, 0);
     let w1 = b.load(Ty::I64, src, 8);
-    let w2 = b.load(Ty::I64, src, 16);
-    b.store(tag, dst, 0);
+    b.store(w0, dst, 0);
     b.store(w1, dst, 8);
-    b.store(w2, dst, 16);
+    // The tag is the first byte (see `load_tag`).
+    let mask = b.iconst(Ty::I64, 0xff);
+    let tag = b.band(w0, mask);
     let needs = b.icmp_imm(IntCC::UnsignedGreaterThanOrEqual, tag, NEEDS_DROP_FROM);
     let heap = b.create_block();
     let local = b.create_block();
@@ -1207,7 +1220,7 @@ impl<B: Builder> Gen<'_, B> {
 
     fn tag(&mut self, r: Reg) -> B::Value {
         self.ensure_home(r);
-        self.b.load(Ty::I64, self.regs, reg_off(r))
+        load_tag(self.b, self.regs, reg_off(r))
     }
 
     fn payload(&mut self, r: Reg) -> B::Value {
@@ -1222,9 +1235,10 @@ impl<B: Builder> Gen<'_, B> {
         self.b.load(Ty::Ptr, self.regs, reg_off(r) + 8)
     }
 
-    fn payload8(&mut self, r: Reg) -> B::Value {
+    /// A `Bool`'s byte (as an `I64`).
+    fn bool_payload(&mut self, r: Reg) -> B::Value {
         self.ensure_home(r);
-        self.b.uload8(self.regs, reg_off(r) + 8)
+        self.b.uload8(self.regs, reg_off(r) + BOOL_OFF)
     }
 
     /// Truthiness of a register: not nil and not false.
@@ -1235,7 +1249,7 @@ impl<B: Builder> Gen<'_, B> {
             _ => {}
         }
         let tag = self.tag(r);
-        let p = self.payload8(r);
+        let p = self.bool_payload(r);
         let is_nil = self.b.icmp_imm(IntCC::Equal, tag, TAG_NIL);
         let is_bool = self.b.icmp_imm(IntCC::Equal, tag, TAG_BOOL);
         let is_zero = self.b.icmp_imm(IntCC::Equal, p, 0);
@@ -1285,7 +1299,7 @@ impl<B: Builder> Gen<'_, B> {
     fn move_reg_to_ptr(&mut self, dst: B::Value, src: Reg) {
         self.ensure_home(src);
         let src_ptr = self.b.iadd_imm(self.regs, i64::from(reg_off(src)));
-        for k in [0, 8, 16] {
+        for k in [0, 8] {
             let w = self.b.load(Ty::I64, src_ptr, k);
             self.b.store(w, dst, k);
         }
@@ -1321,14 +1335,12 @@ impl<B: Builder> Gen<'_, B> {
                 let v = self.b.use_var(self.bvar(src));
                 let t = self.b.iconst(Ty::I64, TAG_BOOL);
                 self.b.store(t, dst, 0);
-                let zero = self.b.iconst(Ty::I64, 0);
-                self.b.store(zero, dst, 8);
-                self.b.store(v, dst, 8);
+                self.b.store(v, dst, BOOL_OFF);
             }
             State::NonHeap => {
                 self.ensure_home(src);
                 let src_ptr = self.b.iadd_imm(self.regs, i64::from(reg_off(src)));
-                for k in [0, 8, 16] {
+                for k in [0, 8] {
                     let w = self.b.load(Ty::I64, src_ptr, k);
                     self.b.store(w, dst, k);
                 }
@@ -1482,7 +1494,7 @@ impl<B: Builder> Gen<'_, B> {
         self.release_ptr(self_dst);
         // The result moves into `dst`; `out` is nil again.
         self.release(dst);
-        for k in [0, 8, 16] {
+        for k in [0, 8] {
             let w = self.b.load(Ty::I64, self.out_buf, k);
             self.b.store(w, self.regs, reg_off(dst) + k);
         }
@@ -1531,7 +1543,7 @@ impl<B: Builder> Gen<'_, B> {
             Some(rc) => rc,
             None => {
                 let check_b = self.b.create_block();
-                let tag = self.b.load(Ty::I64, arr_ptr, 0);
+                let tag = load_tag(self.b, arr_ptr, 0);
                 let is_arr = self.b.icmp_imm(IntCC::Equal, tag, TAG_ARRAY);
                 self.b.brif(is_arr, check_b, &[], slow, &[]);
                 self.b.switch_to_block(check_b);
@@ -1690,7 +1702,7 @@ impl<B: Builder> Gen<'_, B> {
                 self.b.brif(is, check, &[], slow, &[]);
                 self.b.switch_to_block(check);
                 let w = if kind == FieldKind::Bool {
-                    let b = self.payload8(src);
+                    let b = self.bool_payload(src);
                     self.b.uextend(Ty::I64, b)
                 } else {
                     self.payload(src)
@@ -1822,7 +1834,7 @@ impl<B: Builder> Gen<'_, B> {
                 | Inst::IsA { .. }
         ) {
             for r in unbox::defs(inst) {
-                let v = self.payload8(r);
+                let v = self.bool_payload(r);
                 let v = self.b.ireduce(Ty::I8, v);
                 self.b.def_var(self.bvar(r), v);
             }
@@ -1998,7 +2010,7 @@ impl<B: Builder> Gen<'_, B> {
                 self.b.switch_to_block(bad);
                 self.unsound(block, index);
                 self.b.switch_to_block(ok);
-                let v = self.b.load(Ty::I8, self.regs, reg_off(r) + 8);
+                let v = self.b.load(Ty::I8, self.regs, reg_off(r) + BOOL_OFF);
                 self.b.def_var(self.bvar(r), v);
                 self.states[r as usize] = State::Bool;
             }
@@ -2047,8 +2059,8 @@ impl<B: Builder> Gen<'_, B> {
             State::Bool => {
                 let v = self.b.use_var(self.bvar(r));
                 self.store_tag(r, TAG_BOOL);
-                // An I8, stored as the payload's first byte.
-                self.b.store(v, self.regs, reg_off(r) + 8);
+                // An I8, stored after the tag.
+                self.b.store(v, self.regs, reg_off(r) + BOOL_OFF);
             }
             State::Unknown | State::NonHeap | State::Obj | State::Arr => {}
         }
@@ -2546,7 +2558,7 @@ impl<B: Builder> Gen<'_, B> {
                 }
                 (_, unbox::Mach::Bool) => {
                     self.ensure_home(*r);
-                    self.b.load(Ty::I8, self.regs, reg_off(*r) + 8)
+                    self.b.load(Ty::I8, self.regs, reg_off(*r) + BOOL_OFF)
                 }
                 // The value stays the caller's: its address is lent.
                 (_, unbox::Mach::Boxed) => {
@@ -2602,7 +2614,7 @@ impl<B: Builder> Gen<'_, B> {
         self.states.clone_from(&saved);
         self.clear_home(dst);
         let home = self.b.iadd_imm(self.regs, i64::from(reg_off(dst)));
-        for k in [0, 8, 16] {
+        for k in [0, 8] {
             let w = self.b.load(Ty::I64, self.out_buf, k);
             self.b.store(w, home, k);
         }
@@ -2711,7 +2723,7 @@ impl<B: Builder> Gen<'_, B> {
             self.b.store(one, act, L::ACT_NATIVE as i32);
             self.b.def_var(self.pushed_var, one);
         } else {
-            let tag = self.b.load(Ty::I64, self_dst, 0);
+            let tag = load_tag(self.b, self_dst, 0);
             let unset = self.b.icmp_imm(IntCC::Equal, tag, TAG_NIL);
             self.b.brif(unset, fill, &[], done, &[]);
             self.b.switch_to_block(fill);
@@ -2736,20 +2748,22 @@ impl<B: Builder> Gen<'_, B> {
                 // The caller's value, not counted: the activation does
                 // not own its parameters then (see
                 // `emit_typed_activation`).
-                for k in [0, 8, 16] {
+                for k in [0, 8] {
                     let w = self.b.load(Ty::I64, v, k);
                     self.b.store(w, p, k);
                 }
                 continue;
             }
             let tag = self.b.iconst(Ty::I64, mach_tag(n));
-            let word = match n {
-                unbox::Mach::Float => self.b.bitcast(Ty::I64, v),
-                unbox::Mach::Bool => self.b.uextend(Ty::I64, v),
-                _ => v,
-            };
             self.b.store(tag, p, 0);
-            self.b.store(word, p, 8);
+            match n {
+                unbox::Mach::Float => {
+                    let word = self.b.bitcast(Ty::I64, v);
+                    self.b.store(word, p, 8);
+                }
+                unbox::Mach::Bool => self.b.store(v, p, BOOL_OFF),
+                _ => self.b.store(v, p, 8),
+            }
         }
         self.b.jump(done, &[]);
         self.b.switch_to_block(done);
@@ -2776,7 +2790,7 @@ impl<B: Builder> Gen<'_, B> {
     fn store_bool_home(&mut self, dst: Reg, v: B::Value) {
         self.release(dst);
         self.store_tag(dst, TAG_BOOL);
-        self.b.store(v, self.regs, reg_off(dst) + 8);
+        self.b.store(v, self.regs, reg_off(dst) + BOOL_OFF);
     }
 
     /// Delegate the instruction to the runtime and check its status.
@@ -3234,12 +3248,16 @@ impl<B: Builder> Gen<'_, B> {
                         self.store_bool(*dst, v);
                     }
                     State::NonHeap => {
-                        // A plain copy: nothing to count on either side.
+                        // A plain copy of both words (a short string's
+                        // bytes, a `Bool`'s or a `Class`'s payload are in
+                        // the first): nothing to count on either side.
                         self.release(*dst);
-                        let t = self.tag(*src);
-                        let p = self.payload(*src);
-                        self.b.store(t, self.regs, reg_off(*dst));
-                        self.store_payload(*dst, p);
+                        self.ensure_home(*src);
+                        for k in [0, 8] {
+                            let w = self.b.load(Ty::I64, self.regs, reg_off(*src) + k);
+                            self.b.store(w, self.regs, reg_off(*dst) + k);
+                        }
+                        self.stale[*dst as usize] = false;
                     }
                     // The last read of a boxed register: its value moves,
                     // nil left behind.
@@ -3250,7 +3268,7 @@ impl<B: Builder> Gen<'_, B> {
                             // The last read of a boxed register: its value
                             // moves, nil left behind.
                             self.release(*dst);
-                            for k in [0, 8, 16] {
+                            for k in [0, 8] {
                                 let w = self.b.load(Ty::I64, self.regs, reg_off(*src) + k);
                                 self.b.store(w, self.regs, reg_off(*dst) + k);
                             }
@@ -3284,13 +3302,13 @@ impl<B: Builder> Gen<'_, B> {
                     let v = self.b.f64const(*f);
                     self.store_float(*dst, v);
                 }
-                // A short string is the three words of its value.
+                // A short string is the two words of its value.
                 Constant::Str(text) if quarz_vm::value::ShortStr::new(text).is_some() => {
                     let v = quarz_vm::value::Value::str(text);
                     // SAFETY: a short string has no heap payload: its
-                    // three words are the whole value (and need no drop).
-                    let words: [u64; 3] = unsafe {
-                        std::ptr::read(&v as *const quarz_vm::value::Value as *const [u64; 3])
+                    // two words are the whole value (and need no drop).
+                    let words: [u64; 2] = unsafe {
+                        std::ptr::read(&v as *const quarz_vm::value::Value as *const [u64; 2])
                     };
                     std::mem::forget(v);
                     self.release(*dst);
@@ -3914,7 +3932,7 @@ impl<B: Builder> Gen<'_, B> {
                     let off = self.b.imul_imm(i, i64::from(VALUE_SIZE));
                     let elem = self.b.iadd(ptr, off);
                     if *borrow {
-                        for k in [0, 8, 16] {
+                        for k in [0, 8] {
                             let w = self.b.load(Ty::I64, elem, k);
                             self.b.store(w, self.regs, reg_off(*dst) + k);
                         }
@@ -3969,8 +3987,8 @@ impl<B: Builder> Gen<'_, B> {
                 let off = self.b.imul_imm(i, i64::from(VALUE_SIZE));
                 let elem = self.b.iadd(ptr, off);
                 if *borrow {
-                    // The three words, no count: the array keeps it.
-                    for k in [0, 8, 16] {
+                    // The two words, no count: the array keeps it.
+                    for k in [0, 8] {
                         let w = self.b.load(Ty::I64, elem, k);
                         self.b.store(w, self.regs, reg_off(*dst) + k);
                     }
@@ -4225,7 +4243,7 @@ impl<B: Builder> Gen<'_, B> {
                 self.b.brif(owned, take, &[], copy, &[]);
                 self.b.switch_to_block(take);
                 self.release(*dst);
-                for k in [0, 8, 16] {
+                for k in [0, 8] {
                     let w = self.b.load(Ty::I64, src, k);
                     self.b.store(w, self.regs, reg_off(*dst) + k);
                 }
@@ -4295,8 +4313,8 @@ impl<B: Builder> Gen<'_, B> {
             Inst::ClassRef { dst, class } => {
                 self.release(*dst);
                 self.store_tag(*dst, TAG_CLASS);
-                let v = self.b.iconst(Ty::I64, i64::from(*class));
-                self.store_payload(*dst, v);
+                let v = self.b.iconst(Ty::I32, i64::from(*class));
+                self.b.store(v, self.regs, reg_off(*dst) + CLASS_OFF);
             }
             Inst::FieldGet {
                 dst,
