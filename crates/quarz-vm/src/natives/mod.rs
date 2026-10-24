@@ -24,12 +24,62 @@ mod string;
 mod text;
 pub mod time;
 
-/// Natives by key (`Class#name`), built at start-up: a fast hasher, and
-/// room for all of them at once.
-pub type Registry<F> = quarz_ir::HashMap<&'static str, F>;
+/// Natives with their keys (`Class#name`), in the order they are
+/// registered (a later one with the same key wins), built at start-up.
+/// A compiled program's methods know where theirs are (`native_at`, see
+/// `positions`), the interpreter's look them up by key (`map`).
+pub struct Registry<F> {
+    entries: Vec<(&'static str, F)>,
+}
+
+/// Which registry: `natives::registry`, `fast_registry`, `owned_registry`.
+pub const PLAIN: usize = 0;
+pub const FAST: usize = 1;
+pub const OWNED: usize = 2;
+
+impl<F: Copy> Registry<F> {
+    pub fn insert(&mut self, key: &'static str, f: F) {
+        self.entries.push((key, f));
+    }
+
+    /// The native `positions` put at `i`, if its key is still `key`
+    /// (else the program was built against another runtime: `None`).
+    pub fn at(&self, i: u32, key: &str) -> Option<F> {
+        self.entries
+            .get(i as usize)
+            .filter(|(k, _)| *k == key)
+            .map(|(_, f)| *f)
+    }
+
+    /// The natives by key.
+    pub fn map(&self) -> quarz_ir::HashMap<&'static str, F> {
+        self.entries.iter().copied().collect()
+    }
+
+    /// Where each key's native is (for a build to record).
+    pub fn positions(&self) -> quarz_ir::HashMap<&'static str, u32> {
+        self.entries
+            .iter()
+            .enumerate()
+            .map(|(i, (k, _))| (*k, i as u32))
+            .collect()
+    }
+}
 
 fn registry_with<F>(n: usize) -> Registry<F> {
-    Registry::with_capacity_and_hasher(n, Default::default())
+    Registry {
+        entries: Vec::with_capacity(n),
+    }
+}
+
+/// Where each native of the three registries is, by key (`PLAIN`,
+/// `FAST`, `OWNED`): what a build records in `RtMethod::native_at`.
+pub fn positions() -> [quarz_ir::HashMap<&'static str, u32>; 3] {
+    [
+        registry().positions(),
+        fast_registry().positions(),
+        owned_registry().positions(),
+    ]
 }
 
 pub fn registry() -> Registry<NativeFn> {

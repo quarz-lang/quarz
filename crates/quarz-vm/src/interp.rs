@@ -543,26 +543,36 @@ impl Interp {
             }
         }
 
-        let registry = natives::registry();
-        let natives: Vec<Option<NativeFn>> = world
-            .methods
-            .iter()
-            .map(|m| {
-                m.native_key
-                    .as_deref()
-                    .and_then(|k| registry.get(k).copied())
-            })
-            .collect();
-        let fast_registry = natives::fast_registry();
-        let fast_natives: Vec<Option<FastNativeFn>> = world
-            .methods
-            .iter()
-            .map(|m| {
-                m.native_key
-                    .as_deref()
-                    .and_then(|k| fast_registry.get(k).copied())
-            })
-            .collect();
+        // A built program's methods say where their natives are; the
+        // others are looked up by key.
+        fn resolve<F: Copy>(
+            world: &RtWorld,
+            registry: &natives::Registry<F>,
+            which: usize,
+        ) -> Vec<Option<F>> {
+            let mut by_key = None;
+            world
+                .methods
+                .iter()
+                .map(|m| {
+                    let key = m.native_key.as_deref()?;
+                    if let Some(at) = m.native_at {
+                        if at[which] == u32::MAX {
+                            return None;
+                        }
+                        if let Some(f) = registry.at(at[which], key) {
+                            return Some(f);
+                        }
+                    }
+                    by_key
+                        .get_or_insert_with(|| registry.map())
+                        .get(key)
+                        .copied()
+                })
+                .collect()
+        }
+        let natives = resolve(&world, &natives::registry(), natives::PLAIN);
+        let fast_natives = resolve(&world, &natives::fast_registry(), natives::FAST);
         let field_indices: Vec<FxHashMap<String, usize>> = world
             .classes
             .iter()
@@ -588,16 +598,7 @@ impl Interp {
                 }
             })
             .collect();
-        let owned_registry = natives::owned_registry();
-        let natives_owned: Vec<Option<OwnedNativeFn>> = world
-            .methods
-            .iter()
-            .map(|m| {
-                m.native_key
-                    .as_deref()
-                    .and_then(|k| owned_registry.get(k).copied())
-            })
-            .collect();
+        let natives_owned = resolve(&world, &natives::owned_registry(), natives::OWNED);
         let owned_id = |key: &str| -> Option<MethodId> {
             world
                 .methods

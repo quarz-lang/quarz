@@ -1198,6 +1198,11 @@ pub struct RtMethod {
     /// needs no entry.
     #[serde(default)]
     pub overrides: Vec<MethodId>,
+    /// Where the native is in each of the runtime's registries (plain,
+    /// by reference, in place; `u32::MAX` when absent there), recorded
+    /// by a build so that a compiled program looks up nothing by key.
+    #[serde(default)]
+    pub native_at: Option<[u32; 3]>,
 }
 
 impl RtMethod {
@@ -1374,6 +1379,7 @@ impl Droppable for RtMethod {
             file: 0,
             ret: None,
             overrides: Vec::new(),
+            native_at: None,
         }
     }
 }

@@ -1225,6 +1225,18 @@ fn emit(module: &Module, opaque: bool) -> Result<String, String> {
     for (f, s) in kept.functions.iter_mut().zip(&sites) {
         *f = gen::strip(f, s);
     }
+    // Where each native is in the runtime's registries (the same crate
+    // as the compiler), so that the program looks up none by key.
+    let positions = quarz_vm::natives::positions();
+    for m in kept.world.methods.iter_mut() {
+        if let Some(key) = m.native_key.as_deref() {
+            m.native_at = Some(
+                positions
+                    .each_ref()
+                    .map(|p| p.get(key).copied().unwrap_or(u32::MAX)),
+            );
+        }
+    }
     let bytes = quarz_ir::encode(&kept);
     let mut blob = String::with_capacity(bytes.len() * 4);
     for byte in &bytes {
