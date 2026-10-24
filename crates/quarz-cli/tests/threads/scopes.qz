@@ -25,7 +25,7 @@ lines: Array[String] = []
 p lines.sort
 
 # An exception from a task on another worker, through await.
-t = spawn { raise IOError, "far away" }
+t = Task.spawn { raise IOError, "far away" }
 begin
   t.await
 rescue IOError => e
@@ -33,7 +33,7 @@ rescue IOError => e
 end
 
 # Cancelling a task on another worker.
-sleeper = spawn do
+sleeper = Task.spawn do
   Task.sleep(5.seconds)
   :slept
 end

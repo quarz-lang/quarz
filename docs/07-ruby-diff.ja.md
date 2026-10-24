@@ -33,7 +33,7 @@ Ruby を知っている人が Quarz を書き始めるときに最初に引っ�
 | 定数 | 再代入は警告 | 再代入不可、Shareable 必須 |
 | `Proc.new`、`proc` | ある | `->` とブロックのみ。手続きは常に lambda 意味論 |
 | `for x in xs` | ループ。変数はループの後も見える | 本体の値を返す内包表記(`map`、複数の反復には `flat_map`、`when` による絞り込みには `filter`)。変数は中にとどまる。ループには `each` を使う |
-| `Thread`、`Mutex`、`Queue`、`Fiber` | ある | `spawn`、`Task.scope`、`Channel`、`Atom` |
+| `Thread`、`Mutex`、`Queue`、`Fiber` | ある | `Task.spawn`、`Task.scope`、`Channel`、`Atom` |
 | `Thread#join`、`Thread#value` | スレッドの終了を待つ(値を受け取る) | `Task#await` |
 | `require` | 実行時に読み込み | コンパイル時に解決(構文は同じ) |
 | RubyGems、Bundler(`Gemfile`) | rubygems.org からインストールし、`require` するパッケージ | cog: `Cog.lock` でコミットに固定する git リポジトリ。それぞれ自身のモジュールの下に入り、`require` なしで見える([10-cogs.ja.md](10-cogs.ja.md)) |
@@ -52,7 +52,7 @@ Ruby を知っている人が Quarz を書き始めるときに最初に引っ�
 - `data`、`enum`、`var`、`abstract`、`extension`、`using`(キーワード化)、`type`、`extern`
 - `as`/`as?`
 - `Array::Builder` などの Builder 型と `Array.build { }`
-- `spawn`、`Task`、`Task.scope`、`Task.blocking`、`Channel`、`select`、`Atom`(`Supervisor` は予定)
+- `Task.spawn`、`Task`、`Task.scope`、`Task.blocking`、`Channel`、`select`、`Atom`(`Supervisor` は予定)
 - `Result[T, E]`
 - `Shareable`(自動導出のマーカー)
 - `obj.:method`(メソッド参照)

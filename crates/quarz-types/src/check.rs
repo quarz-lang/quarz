@@ -1578,7 +1578,7 @@ impl Checker {
         if self.env.task_shareable_proc {
             "a shareable procedure"
         } else {
-            "a task block (`spawn`, `Task.blocking`)"
+            "a task block (`Task.spawn`, `Task.blocking`)"
         }
     }
 
@@ -1587,7 +1587,7 @@ impl Checker {
         if self.env.task_shareable_proc {
             "a shareable procedure"
         } else {
-            "a `spawn` block"
+            "a `Task.spawn` block"
         }
     }
 
@@ -2209,7 +2209,7 @@ impl Checker {
             }
             Call(call) => {
                 let t = self.check_call(expr, call, expected);
-                // `bump` in a `spawn` block in a method of a mutable
+                // `bump` in a `Task.spawn` block in a method of a mutable
                 // class: a call on the captured `self` (a call to a
                 // `Kernel` method such as `puts` does not use it).
                 if call.recv.is_none() {
@@ -5029,8 +5029,8 @@ impl Checker {
             }
         }
         if !single || cands.is_empty() {
-            // A method and the one it overrides (`Scope#spawn` and
-            // `Kernel#spawn`) can fail for the same reason: say it once.
+            // A method and the one it overrides can fail for the same
+            // reason: say it once.
             let mut seen = HashSet::default();
             failures.retain(|f| seen.insert(f.clone()));
             let recv_name = self.name(recv_ty);
@@ -5427,8 +5427,7 @@ impl Checker {
             if let Some(b) = &call.block {
                 let resolved = self.infer.resolve(&block_ty);
                 let is_task = (m.name == "spawn"
-                    && (m.owner == self.world.builtin.kernel
-                        || m.owner == self.world.builtin.scope))
+                    && (m.owner == self.world.builtin.task || m.owner == self.world.builtin.scope))
                     || (m.name == "blocking" && m.owner == self.world.builtin.task);
                 // `&: (A) -> R using M`: the block literal sees the
                 // method's extensions.

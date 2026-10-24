@@ -91,7 +91,7 @@ g = Big.new(2.to_integer ** 100, "g")
 p g, g.n + 1, g == Big.new(2.to_integer ** 100, "g"), g.with(n: 5.to_integer).n.class
 
 # Across tasks: copied to the task, and back as its result.
-t = spawn { Point.new(-9223372036854775807 - 1, 3.25, false) }
+t = Task.spawn { Point.new(-9223372036854775807 - 1, 3.25, false) }
 p t.await
 
 # Released with `deinitialize`: the rebuilt object has the same fields.

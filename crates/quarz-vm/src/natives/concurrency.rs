@@ -104,7 +104,7 @@ fn snapshot(interp: &Interp, b: &Value) -> Value {
 }
 
 pub fn register(m: &mut super::Registry<NativeFn>) {
-    native!(m, "Kernel#spawn", |i, _, a| {
+    native!(m, "Task.spawn", |i, _, a| {
         let b = snapshot(i, &block(i, &a)?);
         Ok(Value::Task(i.spawn_task(b, None, "task")))
     });

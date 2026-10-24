@@ -3,7 +3,7 @@
 # channels and `await`, and the smallest Int kept aside too.
 data Big = (n: Integer, x: Float, ok: Bool, least: Int)
 out = Channel[Big].new(16)
-ts = (1..16).map { |i| spawn { out.send(Big.new(2.to_integer ** (64 + i), i * 0.5, i.even?, -9223372036854775807 - 1)); Big.new(i.to_integer, 0.25, true, i) } }
+ts = (1..16).map { |i| Task.spawn { out.send(Big.new(2.to_integer ** (64 + i), i * 0.5, i.even?, -9223372036854775807 - 1)); Big.new(i.to_integer, 0.25, true, i) } }
 got: Array[Big] = []
 16.times { got = got.push(out.receive) }
 p got.map(&:n).sum == (1..16).map { |i| 2.to_integer ** (64 + i) }.sum

@@ -37,7 +37,7 @@ end
 # A scope cancelled while it waits for its children still waits for
 # them, so their `ensure` runs before it ends.
 log: Atom[Array[String]] = Atom.new([])
-outer = spawn do
+outer = Task.spawn do
   Task.scope do |s|
     s.spawn do
       begin

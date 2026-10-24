@@ -28,7 +28,7 @@ s = "x"
 200.times { s = s + "y" }
 p s.size, s.start_with?("xy"), s[0], s[-1], s[1..3]
 ch = Channel[String].new
-spawn { ch.send("sent" + " back"); ch.send("a long message crossing the channel") }
+Task.spawn { ch.send("sent" + " back"); ch.send("a long message crossing the channel") }
 p ch.receive, ch.receive
 p JSON.generate({ "k" => "v", "key" => long }), JSON.parse("{\"a\": \"b\"}")
 p "abc".inspect, "a\nb".inspect, "", "".empty?, " ".strip.empty?

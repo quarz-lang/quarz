@@ -36,7 +36,7 @@ total.map { |word, count| WordCount.new(word, count) }
      .each { |wc| puts "#{wc.word}: #{wc.count}" }
 ```
 
-The differences from Ruby show up in only three places: parameter types (`text: String`) and return types (`-> Hash[String, Int]`), immutable records via `data`, and `Task.scope`/`spawn`/`await`. The rest is Ruby itself.
+The differences from Ruby show up in only three places: parameter types (`text: String`) and return types (`-> Hash[String, Int]`), immutable records via `data`, and `Task.scope`/`Task.spawn`/`await`. The rest is Ruby itself.
 
 ```ruby
 enum Shape

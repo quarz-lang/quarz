@@ -276,7 +276,7 @@ impl Frame {
             frame = frame.parent.as_deref().expect("frame depth");
         }
         // Through the slot view, as compiled code reads, not a borrow: the
-        // frames a shareable procedure (or a `spawn` block) copied are read
+        // frames a shareable procedure (or a `Task.spawn` block) copied are read
         // by every task that calls it, at once, and a borrow would update
         // the cell's count from several threads. Nothing writes them (the
         // checker rejects assigning a variable captured that way), and a

@@ -7,7 +7,7 @@
 # the task's next sleep short.
 a = Channel[Int].new
 b = Channel[Int].new(capacity: 1)
-t = spawn do
+t = Task.spawn do
   select do |s|
     s.receive(a) { |v| p [:a, v] }
     s.receive(b) { |v| p [:b, v] }
@@ -26,13 +26,13 @@ p b.receive
 # A receiver waiting on `d` behind such a select is woken by a send there.
 c = Channel[Int].new
 d = Channel[Int].new
-u = spawn do
+u = Task.spawn do
   select do |s|
     s.receive(c) { |v| p [:c, v] }
     s.receive(d) { |v| p [:d, v] }
   end
 end
-w = spawn { p [:w, d.receive] }
+w = Task.spawn { p [:w, d.receive] }
 sleep(20.ms)
 c.send 1
 u.await
@@ -42,15 +42,15 @@ w.await
 
 # A receiver cancelled after a sender chose it passes the value on.
 e = Channel[Int].new(capacity: 1)
-r1 = spawn { e.receive }
-r2 = spawn { p [:r2, e.receive] }
+r1 = Task.spawn { e.receive }
+r2 = Task.spawn { p [:r2, e.receive] }
 sleep(20.ms)
 r1.cancel
 e.send 3
 r2.await
 
 # A sleep cancelled leaves no timer behind to wake the next one early.
-x = spawn do
+x = Task.spawn do
   begin
     sleep(50.ms)
   rescue Task::Cancelled
@@ -65,8 +65,8 @@ x.await
 
 # Nor does an await cancelled: the awaited task finishing later does not
 # wake the next wait.
-slow = spawn { sleep(50.ms); 1 }
-y = spawn do
+slow = Task.spawn { sleep(50.ms); 1 }
+y = Task.spawn do
   begin
     slow.await
   rescue Task::Cancelled
@@ -81,7 +81,7 @@ y.await
 p slow.await
 
 # A task cancelled before it starts does not run its block.
-z = spawn { puts "z ran"; 0 }
+z = Task.spawn { puts "z ran"; 0 }
 z.cancel
 begin
   z.await
@@ -91,7 +91,7 @@ end
 
 # Cancelling a task waiting in Task.timeout cancels the block.
 log = Channel[String].new(capacity: 1)
-v = spawn do
+v = Task.spawn do
   Task.timeout(10.seconds) do
     begin
       sleep(5.seconds)

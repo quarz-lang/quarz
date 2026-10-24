@@ -4,7 +4,7 @@ def fail_once -> Nil
   raise Boom
 end
 lines = (1..2).map do |_|
-  spawn do
+  Task.spawn do
     begin
       fail_once
       ""

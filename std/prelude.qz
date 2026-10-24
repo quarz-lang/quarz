@@ -1597,6 +1597,7 @@ end
 class Task[out T: Shareable]
   include Shareable
 
+  native def self.spawn[R](&: () -> R) -> Task[R]
   native def self.scope[R](&: (Scope) -> R) -> R
   native def self.sleep(duration: Duration) -> Nil
   native def self.yield -> Nil
@@ -1831,7 +1832,6 @@ module Kernel
   native def warn(*args: Object) -> Nil
   native def loop(&: () -> Nil) -> Nil
   native def sleep(duration: Duration) -> Nil
-  native def spawn[T](&: () -> T) -> Task[T]
   native def select(&: (Selector) -> Nil) -> Nil
   native def exit(status: Int = 0) -> Nothing
   native def abort(message: String) -> Nothing

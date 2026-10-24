@@ -173,12 +173,12 @@ Downcasts are checked at run time. Unsafe reinterpreting casts exist only in the
 ```ruby
 class Channel[T: Shareable]
 class Atom[T: Shareable]
-def spawn[T: Shareable](&block: () -> T) -> Task[T]   # the variables captured by the block must be Shareable too
+def self.spawn[T: Shareable](&block: () -> T) -> Task[T]   # the variables captured by the block must be Shareable too
 ```
 
 `include Shareable` is a promise that the subtypes keep: a value of a Shareable type is Shareable whatever its class. So whether a type is Shareable is decided where it is defined, from its own declaration and its ancestors', without looking at the rest of the program (which separate compilation needs).
 
-A procedure type is not Shareable: a block reads and assigns the variables of the code around it, which another task must not. `shareable (A) -> R` is the type of one that is. A block or lambda written where such a type is expected (a block parameter `&job: shareable (Int) -> Nil`, an argument, an annotated variable) captures by value, as a `spawn` block does: the variables it reads are copied when it is made, their values must be Shareable (and so must `self`, if it uses it), and it cannot assign them. Any task may then call it, at once with others: a worker pool or a server loop can take one and run it in tasks of its own.
+A procedure type is not Shareable: a block reads and assigns the variables of the code around it, which another task must not. `shareable (A) -> R` is the type of one that is. A block or lambda written where such a type is expected (a block parameter `&job: shareable (Int) -> Nil`, an argument, an annotated variable) captures by value, as a `Task.spawn` block does: the variables it reads are copied when it is made, their values must be Shareable (and so must `self`, if it uses it), and it cannot assign them. Any task may then call it, at once with others: a worker pool or a server loop can take one and run it in tasks of its own.
 
 ```ruby
 def each_in_tasks(n: Int, &job: shareable (Int) -> Nil) -> Nil

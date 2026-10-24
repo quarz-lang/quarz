@@ -40,6 +40,6 @@ puts render([{ name: "alice", email: "a@example.com" }, { name: "bob", email: "b
 
 # 5. Builder は他タスクに渡せない
 buf = Array::Builder[Int].new
-# spawn { buf << 1 }        # コンパイルエラー: Array::Builder[Int] は Shareable ではない
+# Task.spawn { buf << 1 }        # コンパイルエラー: Array::Builder[Int] は Shareable ではない
 frozen = buf.to_a           # O(1) で不変化。以後 buf は使えない
-spawn { puts frozen.size }.await
+Task.spawn { puts frozen.size }.await

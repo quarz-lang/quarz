@@ -13,7 +13,7 @@ And there is one rule that spans the whole language: **mutable objects never cro
 ## 1. Tasks
 
 ```ruby
-t = spawn { heavy_computation(42) }   # Task[Int]
+t = Task.spawn { heavy_computation(42) }   # Task[Int]
 puts t.await                          # wait for completion and receive the value
 
 Task.sleep(100.ms)
@@ -21,8 +21,8 @@ Task.yield                            # yield to other tasks
 Task.current                          # the current Task
 ```
 
-- `spawn { }` creates a new task, registers it with the scheduler, and returns immediately. The `T` in the returned `Task[T]` is the type of the block.
-- The block **captures by value**. Outer local variables are copied at the time of `spawn`, and the block cannot assign to outer variables. Every captured value must be Shareable, and so must `self` when the block uses it (its fields, its methods, or `self` itself): a `spawn` block in a method of a mutable class cannot touch the object. A block for a parameter of a shareable procedure type (`&job: shareable (Int) -> Nil`) captures the same way, so that a method can run it in tasks of its own ([02-types.md](02-types.md) §9).
+- `Task.spawn { }` creates a new task, registers it with the scheduler, and returns immediately. The `T` in the returned `Task[T]` is the type of the block.
+- The block **captures by value**. Outer local variables are copied at the time of `Task.spawn`, and the block cannot assign to outer variables. Every captured value must be Shareable, and so must `self` when the block uses it (its fields, its methods, or `self` itself): a `Task.spawn` block in a method of a mutable class cannot touch the object. A block for a parameter of a shareable procedure type (`&job: shareable (Int) -> Nil`) captures the same way, so that a method can run it in tasks of its own ([02-types.md](02-types.md) §9).
 - `await` waits for the task to complete and returns its value. If the task ended with an exception, that exception is re-raised on the side that called `await`.
 - Tasks switch cooperatively at safepoints inserted by the compiler (method entry, loop back-edges, channel operations, allocation). Even a pure computational loop switches at loop boundaries, so no single task can monopolize the scheduler. (Currently tasks switch only at operations that wait (a channel operation that must wait, `sleep`, `await`, IO), at `Task.yield` and at each iteration of `loop`; a `while` loop or an iterator that does none of these keeps the scheduler until it finishes.)
 - Each task has its own stack (§7), so Ruby methods can be called recursively as usual. There is no function coloring like `async`/`await`. Blocking operations (channels, IO, `sleep`) can be called from anywhere, and only the calling task stops.
@@ -42,7 +42,7 @@ end
 - If a task in the scope ends with an exception, **the remaining tasks are cancelled**, and after waiting for them to complete, the exception is re-raised to the caller of `Task.scope`. If multiple tasks failed, the first exception is raised and the rest are attached as a `cause` chain (currently the others are discarded).
 - If the block body itself raises, the same thing happens: child tasks are cancelled and waited for before the exception propagates.
 - Scopes can be nested. Cancellation propagates inward through nested scopes. A scope whose own task is cancelled cancels its children and still waits for them, so their `ensure` bodies run before the cancellation leaves the scope.
-- A top-level `spawn` (without a `scope`) belongs to the program's root scope. When the main top-level code finishes, the program exits and any remaining tasks are cancelled (the same as Ruby's main thread exiting). (Currently they are dropped without running their `ensure` clauses.) Long-lived services should wait explicitly with `Task.scope`.
+- A top-level `Task.spawn` (without a `scope`) belongs to the program's root scope. When the main top-level code finishes, the program exits and any remaining tasks are cancelled (the same as Ruby's main thread exiting). (Currently they are dropped without running their `ensure` clauses.) Long-lived services should wait explicitly with `Task.scope`.
 
 ### Cancellation
 
@@ -195,7 +195,7 @@ end
   - **One write call goes out whole.** The bytes of one `write`, `print`, `puts`, `printf` or `<<` are never interleaved with another task's output on the same handle (a socket write that has to wait keeps its turn; the others wait for it). The writes of one task appear in its order; between tasks, the order of the calls is whatever the scheduling gives.
   - **One read call takes a whole unit.** `gets` returns a whole line and `read(n)` up to `n` bytes taken together. When several tasks read the same handle, which task receives which line is not specified, but nothing is read twice or lost.
   - **Closing fails what waits.** When a task closes a handle that another task is waiting on, the waiting operation raises `IOError` (`closed stream`), as does any later use.
-- `Task.blocking { }` runs its block on a helper thread (one is started whenever none is idle, so a long computation never holds up file IO), and only the calling task waits. Values are owned by one thread, so the block is *copied* to the helper: its captured variables must be Shareable (the same rule as `spawn`), they cannot be assigned inside the block, and only immutable values cross over (numbers, strings, symbols, arrays, hashes, sets, ranges, `data`/`enum` values; a proc made inside the block can be returned, but one cannot be captured, since proc types are not Shareable yet). A `Channel`, `Atom`, `Task` or any mutable value is rejected with `ArgumentError`, since it would have to be shared rather than copied. The block's result or exception comes back the same way, and what it prints is written out when it finishes. Cancelling the waiting task raises in it, but the helper thread runs the block to its end. Use it for long computations and for blocking foreign functions; for IO, the standard library already suspends only the task.
+- `Task.blocking { }` runs its block on a helper thread (one is started whenever none is idle, so a long computation never holds up file IO), and only the calling task waits. Values are owned by one thread, so the block is *copied* to the helper: its captured variables must be Shareable (the same rule as `Task.spawn`), they cannot be assigned inside the block, and only immutable values cross over (numbers, strings, symbols, arrays, hashes, sets, ranges, `data`/`enum` values; a proc made inside the block can be returned, but one cannot be captured, since proc types are not Shareable yet). A `Channel`, `Atom`, `Task` or any mutable value is rejected with `ArgumentError`, since it would have to be shared rather than copied. The block's result or exception comes back the same way, and what it prints is written out when it finishes. Cancelling the waiting task raises in it, but the helper thread runs the block to its end. Use it for long computations and for blocking foreign functions; for IO, the standard library already suspends only the task.
 
 ```ruby
 digest = Task.blocking { expensive_hash(data) }     # the scheduler keeps running other tasks
@@ -207,14 +207,14 @@ rows = Task.blocking { legacy_c_query(sql) }
 
 ## 7. Runtime Structure
 
-This is the design. Currently worker threads run the tasks (see [05-execution.md](05-execution.md) §9), each with its run queue, timers and reactor; a new task goes to each worker in turn and stays there (no work stealing yet); each task has a 16 MiB virtual stack (256 MiB for the main task), which cannot be changed; timers are a binary heap; a channel is a buffer and waiters under a spin lock. The shared flag below is in place. Work stealing, `spawn(stack:)`, the timing wheel and lock-free channels are planned.
+This is the design. Currently worker threads run the tasks (see [05-execution.md](05-execution.md) §9), each with its run queue, timers and reactor; a new task goes to each worker in turn and stays there (no work stealing yet); each task has a 16 MiB virtual stack (256 MiB for the main task), which cannot be changed; timers are a binary heap; a channel is a buffer and waiters under a spin lock. The shared flag below is in place. Work stealing, `Task.spawn(stack:)`, the timing wheel and lock-free channels are planned.
 
 - **Scheduler**: work-stealing, with a run queue per OS thread (defaults to the number of CPU cores). `QUARZ_THREADS=1` pins it to a single thread, which is useful for tests that need determinism.
-- **Stacks**: virtual memory is reserved per task with `mmap` (default 1 MiB, changeable with `spawn(stack: 8.mib)`), and physical pages are committed only when touched. A guard page sits at the top, and overflow raises `SystemStackError`. On 64-bit systems the address space is ample, so even with a million tasks, real memory is only what is actually used (typically 4–8 KiB per task). Stack copying as in Go was not adopted because it would require rewriting pointers into the stack in AOT-compiled code.
+- **Stacks**: virtual memory is reserved per task with `mmap` (default 1 MiB, changeable with `Task.spawn(stack: 8.mib)`), and physical pages are committed only when touched. A guard page sits at the top, and overflow raises `SystemStackError`. On 64-bit systems the address space is ample, so even with a million tasks, real memory is only what is actually used (typically 4–8 KiB per task). Stack copying as in Go was not adopted because it would require rewriting pointers into the stack in AOT-compiled code.
 - **Preemption**: cooperative (safepoints). Room is left to add asynchronous signal-based preemption in the future.
 - **Timers**: a timing wheel. Used by `sleep`/`after`/`timeout`.
 - **Channels**: lock-free MPMC queue + waiter list.
-- **Relation to reference counting**: a value that crosses a task boundary (sent on a channel, captured by `spawn`, placed in an `Atom`, returned by a task, held by a constant) gets a "shared" flag set at that moment, on it and everything it refers to, and only its subsequent reference-count operations become atomic (the same scheme as Lean 4). Channels, tasks, scopes, atoms and IO handles are shared from the start. Values confined to a task keep non-atomic count operations, and an update that finds itself holding a shared value's only reference makes it local again and changes it in place.
+- **Relation to reference counting**: a value that crosses a task boundary (sent on a channel, captured by `Task.spawn`, placed in an `Atom`, returned by a task, held by a constant) gets a "shared" flag set at that moment, on it and everything it refers to, and only its subsequent reference-count operations become atomic (the same scheme as Lean 4). Channels, tasks, scopes, atoms and IO handles are shared from the start. Values confined to a task keep non-atomic count operations, and an update that finds itself holding a shared value's only reference makes it local again and changes it in place.
 
 ## 8. Rejected Alternatives
 

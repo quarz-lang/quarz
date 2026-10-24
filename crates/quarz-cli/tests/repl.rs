@@ -112,7 +112,7 @@ fn state_persists_across_inputs() {
 #[test]
 fn tasks_outlive_inputs() {
     let (out, _) = values(&[
-        "t = spawn { Task.sleep(5.ms); 99 }",
+        "t = Task.spawn { Task.sleep(5.ms); 99 }",
         "t.await",
         "ch = Channel[Int].new(capacity: 1)",
         "ch.send(5)",

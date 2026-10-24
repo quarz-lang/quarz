@@ -83,7 +83,7 @@ str = String.build { |b| b << "x" * 3; b << "y" }
 
 - Builder は Ruby の可変 `Array`/`Hash`/`String` とほぼ同じ API を持ちます(`<<`、`[]=`、`push`、`pop`、`sort!`、`map!`、`delete`、`clear`、`concat`…)。破壊的メソッドは `self` を返します。
 - `to_a`/`to_h`/`to_s`/`freeze` は不変値を O(1) で取り出します。中身をそのまま渡し、Builder は空になってまた詰められます。繰り返し覗きたいだけなら `snapshot`(O(n) コピー)を使います。
-- Builder は **Shareable ではありません**。チャネルに送る、`spawn` のブロックで捕捉する、`Atom` に入れる、定数にする、はどれもコンパイルエラーで、Builder のフィールドを持つクラスは Shareable になりません。
+- Builder は **Shareable ではありません**。チャネルに送る、`Task.spawn` のブロックで捕捉する、`Atom` に入れる、定数にする、はどれもコンパイルエラーで、Builder のフィールドを持つクラスは Shareable になりません。
 - `Array.build { }` の形は、Builder がブロックの外へエスケープしないことをコンパイラが保証でき、割り当てを最適化できます。
 
 ## 4. ユーザー定義クラスの不変性
@@ -148,7 +148,7 @@ Shareable であるもの:
 - `data` 型(フィールドがすべて Shareable)、`enum` 型(すべての variant のフィールドが Shareable)。型引数を持つものは、型引数が Shareable なとき
 - `Shareable` を include するクラス(直接、または祖先や include したモジュールを通して)。どれも `var` フィールドを持たず、フィールドはすべて Shareable でなければならず、すべてのサブクラスも同じです。満たさない定義はエラーです(`var` フィールドを持つ `class Oops < RuntimeError` はエラーになります。`Exception` が `Shareable` を include しているためです)
 - `Channel[T]`、`Task[T]`、`Atom[T]`、`Scope`(これらは内部で同期されている)
-- Shareable な手続き、`shareable (A) -> R`([02-types.ja.md](02-types.ja.md) §9)。それが期待される位置に書いたブロックやラムダは、`spawn` のブロックと同じく値で捕捉するので、捕捉する値は Shareable でなければならず、それに代入することもできません。ほかの手続きの型は Shareable ではありません
+- Shareable な手続き、`shareable (A) -> R`([02-types.ja.md](02-types.ja.md) §9)。それが期待される位置に書いたブロックやラムダは、`Task.spawn` のブロックと同じく値で捕捉するので、捕捉する値は Shareable でなければならず、それに代入することもできません。ほかの手続きの型は Shareable ではありません
 - 例外オブジェクト(`Exception` が `Shareable` を include しているので、すべての例外クラスが規則に照らして検査されます)
 - `IO` ハンドル(標準入出力、開いたファイル、ソケット)。アクセスはランタイムが直列化する
 
@@ -165,21 +165,21 @@ Shareable が要求される場所:
 | 場所 | 理由 |
 |---|---|
 | `Channel[T]` の `T` | 他タスクに送られる |
-| `spawn`/`scope.spawn` のブロックが捕捉する変数 | 新しいタスクで実行される |
+| `Task.spawn`/`scope.spawn` のブロックが捕捉する変数 | 新しいタスクで実行される |
 | `Atom[T]` の `T` | 複数タスクから読み書きされる |
 | 定数 | すべてのタスクから見える |
-| `Task[T]` の `T`(戻り値) | `await` で別タスクに渡る(`spawn`・`scope.spawn`・`Task.blocking` のブロックの結果) |
+| `Task[T]` の `T`(戻り値) | `await` で別タスクに渡る(`Task.spawn`・`scope.spawn`・`Task.blocking` のブロックの結果) |
 | 例外 | タスク境界を越えて伝播する |
 
 ```ruby
 counter = Counter.new            # 可変
-spawn { counter.increment }      # エラー: Counter は Shareable ではない
+Task.spawn { counter.increment }      # エラー: Counter は Shareable ではない
 
 total = 0
-spawn { total += 1 }             # エラー: spawn のブロックは外側の変数に代入できない
+Task.spawn { total += 1 }             # エラー: spawn のブロックは外側の変数に代入できない
 
 n = Atom.new(0)
-spawn { n.update { |v| v + 1 } } # OK
+Task.spawn { n.update { |v| v + 1 } } # OK
 
 class Account
   include Shareable              # 約束。ここと、すべてのサブクラスで検査される

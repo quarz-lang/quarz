@@ -85,7 +85,7 @@ str = String.build { |b| b << "x" * 3; b << "y" }
 
 - Builders have almost the same API as Ruby's mutable `Array`/`Hash`/`String` (`<<`, `[]=`, `push`, `pop`, `sort!`, `map!`, `delete`, `clear`, `concat`…). Destructive methods return `self`.
 - `to_a`/`to_h`/`to_s`/`freeze` extract the immutable value in O(1): they hand the contents over and leave the Builder empty, ready to be filled again. If you only want to peek repeatedly, use `snapshot` (an O(n) copy).
-- Builders are **not Shareable**. Sending one over a channel, capturing one in a `spawn` block, putting one in an `Atom` or making one a constant are compile errors, and a class with a Builder field is not Shareable.
+- Builders are **not Shareable**. Sending one over a channel, capturing one in a `Task.spawn` block, putting one in an `Atom` or making one a constant are compile errors, and a class with a Builder field is not Shareable.
 - In the `Array.build { }` form, the compiler can guarantee that the Builder does not escape the block, and can optimize the allocation.
 
 ## 4. Immutability of User-Defined Classes
@@ -150,7 +150,7 @@ Shareable:
 - `data` types (all fields Shareable), `enum` types (all variants' fields Shareable); a generic one when its type arguments are
 - Classes that include `Shareable`, directly or through an ancestor or an included module: each must have no `var` fields and only Shareable fields, and so must every subclass, or its definition is an error (`class Oops < RuntimeError` with a `var` field is one: `Exception` includes `Shareable`)
 - `Channel[T]`, `Task[T]`, `Atom[T]`, `Scope` (these are internally synchronized)
-- Shareable procedures, `shareable (A) -> R` ([02-types.md](02-types.md) §9): a block or lambda written where one is expected captures by value, like a `spawn` block, so its captured values must be Shareable and it cannot assign them. Other procedure types are not Shareable
+- Shareable procedures, `shareable (A) -> R` ([02-types.md](02-types.md) §9): a block or lambda written where one is expected captures by value, like a `Task.spawn` block, so its captured values must be Shareable and it cannot assign them. Other procedure types are not Shareable
 - Exception objects (`Exception` includes `Shareable`, so every exception class is held to the rules)
 - `IO` handles (the standard streams, open files, sockets): the runtime serializes access
 
@@ -167,21 +167,21 @@ Where Shareable is required:
 | Place | Reason |
 |---|---|
 | `T` of `Channel[T]` | Sent to other tasks |
-| Variables captured by `spawn`/`scope.spawn` blocks | Executed in a new task |
+| Variables captured by `Task.spawn`/`scope.spawn` blocks | Executed in a new task |
 | `T` of `Atom[T]` | Read and written from multiple tasks |
 | Constants | Visible from every task |
-| `T` of `Task[T]` (return value) | Passed to another task via `await` (the `spawn`, `scope.spawn` or `Task.blocking` block's result) |
+| `T` of `Task[T]` (return value) | Passed to another task via `await` (the `Task.spawn`, `scope.spawn` or `Task.blocking` block's result) |
 | Exceptions | Propagate across task boundaries |
 
 ```ruby
 counter = Counter.new            # mutable
-spawn { counter.increment }      # error: Counter is not Shareable
+Task.spawn { counter.increment }      # error: Counter is not Shareable
 
 total = 0
-spawn { total += 1 }             # error: a spawn block cannot assign to outer variables
+Task.spawn { total += 1 }             # error: a spawn block cannot assign to outer variables
 
 n = Atom.new(0)
-spawn { n.update { |v| v + 1 } } # OK
+Task.spawn { n.update { |v| v + 1 } } # OK
 
 class Account
   include Shareable              # a promise, checked here and in every subclass

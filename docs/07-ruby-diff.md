@@ -35,7 +35,7 @@ A summary of the things someone who knows Ruby will first stumble on when starti
 | Constants | Reassignment is a warning | Cannot be reassigned; must be Shareable |
 | `Proc.new`, `proc` | Exist | Only `->` and blocks. Procedures always have lambda semantics |
 | `for x in xs` | A loop; the variable stays visible after it | A comprehension returning the body's values (`map`, `flat_map` for several iterators, `filter` for `when` guards); the variables stay inside. For a loop, use `each` |
-| `Thread`, `Mutex`, `Queue`, `Fiber` | Exist | `spawn`, `Task.scope`, `Channel`, `Atom` |
+| `Thread`, `Mutex`, `Queue`, `Fiber` | Exist | `Task.spawn`, `Task.scope`, `Channel`, `Atom` |
 | `Thread#join`, `Thread#value` | Wait for a thread (and take its value) | `Task#await` |
 | `require` | Loads at runtime | Resolved at compile time (same syntax) |
 | RubyGems, Bundler (`Gemfile`) | Packages installed from rubygems.org, then `require`d | Cogs: git repositories pinned to a commit in `Cog.lock`, each under its own module, visible without `require` ([10-cogs.md](10-cogs.md)) |
@@ -54,7 +54,7 @@ A summary of the things someone who knows Ruby will first stumble on when starti
 - `data`, `enum`, `var`, `abstract`, `extension`, `using` (now a keyword), `type`, `extern`
 - `as`/`as?`
 - Builder types such as `Array::Builder`, and `Array.build { }`
-- `spawn`, `Task`, `Task.scope`, `Task.blocking`, `Channel`, `select`, `Atom` (`Supervisor` is planned)
+- `Task.spawn`, `Task`, `Task.scope`, `Task.blocking`, `Channel`, `select`, `Atom` (`Supervisor` is planned)
 - `Result[T, E]`
 - `Shareable` (an automatically derived marker)
 - `obj.:method` (method reference)

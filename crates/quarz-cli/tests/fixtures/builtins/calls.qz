@@ -20,8 +20,8 @@ def pingpong(n: Int, ch: Channel[Int]) -> Int
   end
 end
 ch = Channel[Int].new(capacity: 100)
-t1 = spawn { pingpong(5, ch) }
-t2 = spawn { pingpong(5, ch) }
+t1 = Task.spawn { pingpong(5, ch) }
+t2 = Task.spawn { pingpong(5, ch) }
 p t1.await + t2.await
 got: Array[Int] = []
 10.times { got = got.push(ch.receive) }

@@ -6,7 +6,7 @@ def slow -> Int
   42
 end
 def late -> Int = LATE
-ts = (1..3).map { |_| spawn { late } }
+ts = (1..3).map { |_| Task.spawn { late } }
 p ts.map(&:await)
 LATE = slow
 

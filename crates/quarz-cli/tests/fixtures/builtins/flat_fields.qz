@@ -60,7 +60,7 @@ p c1 == Custom.new(3), [c1].include?(Custom.new(23))
 arr = [Segment.new(Vec2.new(1.0, 1.0), Vec2.new(2.0, 2.0)), s]
 p arr.map { |g| g.length }, arr.sort_by { |g| g.length }[0].a, arr.max_by { |g| g.b.x }
 ch = Channel[Segment].new
-spawn { ch.send(s) }
+Task.spawn { ch.send(s) }
 p ch.receive.length
 objs: Array[Object] = [s, Vec2.new(9.0, 9.0), n]
 p objs.map { |o| o.to_s }, objs.map { |o| o.inspect }

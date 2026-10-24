@@ -353,15 +353,15 @@ fn captured_self_in_task_blocks() {
     let counter = "class Counter\n  var @n: Int = 0\n  def bump -> Nil\n    @n += 1\n    nil\n  end\n  def run -> Int\n    BODY\n    @n\n  end\nend";
     for (body, msg) in [
         (
-            "spawn { bump }.await",
+            "Task.spawn { bump }.await",
             "calling `bump` uses `self`, which has the non-shareable type Counter",
         ),
         (
-            "spawn { @n }.await",
+            "Task.spawn { @n }.await",
             "`self` (for its instance variables) has the non-shareable type Counter",
         ),
         (
-            "spawn { self }.await",
+            "Task.spawn { self }.await",
             "`self` has the non-shareable type Counter",
         ),
         (
@@ -374,9 +374,9 @@ fn captured_self_in_task_blocks() {
     }
     // Immutable objects, `Kernel` methods, top-level methods and a
     // receiver set inside the task are fine.
-    ok("class P\n  include Shareable\n  @x: Int\n  def initialize(@x: Int); end\n  def twice -> Int = @x * 2\n  def run -> Int = spawn { twice + @x + self.twice }.await\nend\nputs P.new(2).run");
-    ok("class B\n  var @v: Int = 1\n  def run -> Int = spawn { puts \"hi\"; 5 }.await\n  def html -> String\n    spawn do\n      b = String::Builder.new\n      b.instance_exec { self << \"ok\" }\n      b.to_s\n    end.await\n  end\nend\nputs B.new.run");
-    ok("def helper(x: Int) -> Int = x + 1\nputs spawn { helper(1) }.await");
+    ok("class P\n  include Shareable\n  @x: Int\n  def initialize(@x: Int); end\n  def twice -> Int = @x * 2\n  def run -> Int = Task.spawn { twice + @x + self.twice }.await\nend\nputs P.new(2).run");
+    ok("class B\n  var @v: Int = 1\n  def run -> Int = Task.spawn { puts \"hi\"; 5 }.await\n  def html -> String\n    Task.spawn do\n      b = String::Builder.new\n      b.instance_exec { self << \"ok\" }\n      b.to_s\n    end.await\n  end\nend\nputs B.new.run");
+    ok("def helper(x: Int) -> Int = x + 1\nputs Task.spawn { helper(1) }.await");
     // The same failure through two candidates is reported once.
     let errs = diagnostics(&counter.replace("BODY", "Task.scope { |s| s.spawn { bump } }"));
     assert_eq!(errs[0].matches("calling `bump`").count(), 1, "{errs:?}");
@@ -387,7 +387,7 @@ fn enumerators_stay_in_their_task() {
     // An enumerator has a position, and its receiver may be mutable.
     let counter = "class Counter\n  include Enumerable[Int]\n  var @n: Int = 0\n  def each(&: (Int) -> Nil) -> Nil\n    @n += 1\n    yield @n\n  end\nend\n";
     err(
-        &format!("{counter}e = Counter.new.to_enum\nt = spawn {{ e.next }}"),
+        &format!("{counter}e = Counter.new.to_enum\nt = Task.spawn {{ e.next }}"),
         "`e` has the non-shareable type Enumerator[Int]",
     );
     err(
@@ -404,10 +404,10 @@ fn shareable_is_promised_and_inherited() {
     // A class is Shareable only when it (or an ancestor) includes
     // `Shareable`; then it and its subclasses must be, by their fields.
     err(
-        "class Base\n  def name -> String = \"b\"\nend\ndef run(b: Base) -> Task[Base] = spawn { b }",
+        "class Base\n  def name -> String = \"b\"\nend\ndef run(b: Base) -> Task[Base] = Task.spawn { b }",
         "`b` has the non-shareable type Base",
     );
-    ok("class Base\n  include Shareable\n  @x: Int = 1\nend\ndef run(b: Base) -> Task[Base] = spawn { b }");
+    ok("class Base\n  include Shareable\n  @x: Int = 1\nend\ndef run(b: Base) -> Task[Base] = Task.spawn { b }");
     err(
         "class Base\n  include Shareable\nend\nclass Mut < Base\n  var @n: Int = 0\nend",
         "`Mut` must be Shareable, since `Base` includes `Shareable`, but its field `@n` is `var`",
@@ -442,14 +442,14 @@ fn shareable_is_promised_and_inherited() {
     );
     // An enum is Shareable when all its variants are.
     err(
-        &format!("{counter}enum Holder\n  variant Some(c: Counter)\n  variant Empty\nend\ndef run(h: Holder) -> Task[Holder] = spawn {{ h }}"),
+        &format!("{counter}enum Holder\n  variant Some(c: Counter)\n  variant Empty\nend\ndef run(h: Holder) -> Task[Holder] = Task.spawn {{ h }}"),
         "`h` has the non-shareable type Holder",
     );
     // A generic data type is Shareable with Shareable type arguments.
-    ok("data Box[T] = (v: T)\nb = Box.new(1)\nt = spawn { b.v }\np t.await");
-    ok("r: Result[Int, String] = Result::Ok.new(1)\np spawn { r }.await");
+    ok("data Box[T] = (v: T)\nb = Box.new(1)\nt = Task.spawn { b.v }\np t.await");
+    ok("r: Result[Int, String] = Result::Ok.new(1)\np Task.spawn { r }.await");
     err(
-        &format!("{counter}data Box[T] = (v: T)\nb = Box.new(Counter.new)\nt = spawn {{ b }}"),
+        &format!("{counter}data Box[T] = (v: T)\nb = Box.new(Counter.new)\nt = Task.spawn {{ b }}"),
         "`b` has the non-shareable type Box[Counter]",
     );
 }
@@ -459,18 +459,18 @@ fn task_results_are_shareable() {
     // A task's result passes to the task that awaits it.
     let counter = "class Counter\n  var @n: Int = 0\nend\n";
     for body in [
-        "t = spawn { Counter.new }",
+        "t = Task.spawn { Counter.new }",
         "Task.scope { |s| s.spawn { Counter.new } }",
         "x = Task.blocking { Counter.new }",
-        "t = spawn { [Counter.new] }",
+        "t = Task.spawn { [Counter.new] }",
     ] {
         err(
             &format!("{counter}{body}"),
             "a task block returns the non-shareable type",
         );
     }
-    ok("t = spawn { [1, 2] }\np t.await");
-    ok("t = spawn { puts \"hi\" }\nt.await");
+    ok("t = Task.spawn { [1, 2] }\np t.await");
+    ok("t = Task.spawn { puts \"hi\" }\nt.await");
     ok("x = Task.blocking { \"done\" }\nputs x");
 }
 
@@ -640,36 +640,36 @@ def g(b: Bool) -> Bool = b && !b"
 
 #[test]
 fn concurrency_rules() {
-    ok("t = spawn { 1 + 1 }\nputs t.await");
-    ok("x = 1\nt = spawn { x + 1 }\nputs t.await");
+    ok("t = Task.spawn { 1 + 1 }\nputs t.await");
+    ok("x = 1\nt = Task.spawn { x + 1 }\nputs t.await");
     err(
-        "b = Array::Builder[Int].new\nspawn { b << 1 }",
+        "b = Array::Builder[Int].new\nTask.spawn { b << 1 }",
         "non-shareable type Array::Builder[Int]",
     );
     err(
-        "total = 0\nspawn { total += 1 }",
+        "total = 0\nTask.spawn { total += 1 }",
         "cannot assign to `total` from a task block",
     );
-    ok("n = Atom.new(0)\nspawn { n.update { |v| v + 1 } }.await\nputs n.value");
+    ok("n = Atom.new(0)\nTask.spawn { n.update { |v| v + 1 } }.await\nputs n.value");
     err("Channel[Array::Builder[Int]].new", "must be Shareable");
     err("B = Array::Builder[Int].new", "non-shareable type");
     ok("ch = Channel[Int].new\nTask.scope do |scope|\n  scope.spawn { ch.send(1) }\n  puts ch.receive\nend");
     ok("class Counter\n  var @n: Int = 0\n  def bump -> Nil\n    @n += 1\n  end\nend\nc = Counter.new\nc.bump");
     err(
-        "class Counter\n  var @n: Int = 0\nend\nc = Counter.new\nspawn { c }",
+        "class Counter\n  var @n: Int = 0\nend\nc = Counter.new\nTask.spawn { c }",
         "non-shareable type Counter",
     );
-    ok("data P = (x: Int)\np = P.new(1)\nspawn { p.x }.await");
+    ok("data P = (x: Int)\np = P.new(1)\nTask.spawn { p.x }.await");
 }
 
 #[test]
 fn shareable_procedures() {
-    let run = "def run(&h: shareable () -> Nil) -> Nil\n  spawn { h.call }.await\nend\n";
+    let run = "def run(&h: shareable () -> Nil) -> Nil\n  Task.spawn { h.call }.await\nend\n";
     // A block or lambda where one is expected captures by value, like a
     // `spawn` block: Shareable values, no assignment.
     ok(&format!("{run}x = 1\nrun {{ puts x }}"));
     ok(&format!(
-        "{run}f: shareable (Int) -> Int = ->(n: Int) {{ n + 1 }}\nspawn {{ f.call(1) }}"
+        "{run}f: shareable (Int) -> Int = ->(n: Int) {{ n + 1 }}\nTask.spawn {{ f.call(1) }}"
     ));
     ok(&format!(
         "{run}def opt(f: (shareable () -> Nil)? = nil) = f\nopt(f: ->() {{ puts 1 }})"
@@ -690,7 +690,7 @@ fn shareable_procedures() {
         "cannot assign () -> Int to `f` of type shareable () -> Int",
     );
     err(
-        "g = ->() { 1 }\nspawn { g.call }",
+        "g = ->() { 1 }\nTask.spawn { g.call }",
         "non-shareable type () -> Int",
     );
 }

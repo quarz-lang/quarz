@@ -11,7 +11,7 @@ end
 
 def late -> Int = LATE
 
-ts = (0...8).map { |_| spawn { late } }
+ts = (0...8).map { |_| Task.spawn { late } }
 p ts.map(&:await), RUNS.get
 LATE = slow
 
@@ -29,9 +29,9 @@ end
 def stalled -> Int = STALLED
 
 RUNS.set(0)
-first = spawn { stalled }
+first = Task.spawn { stalled }
 STARTED.receive
-waiters = (0...4).map { |_| spawn { stalled } }
+waiters = (0...4).map { |_| Task.spawn { stalled } }
 Task.sleep(10.ms)
 first.cancel
 begin
@@ -50,10 +50,10 @@ end
 
 def slowest -> Int = SLOWEST
 
-runner = spawn { slowest }
+runner = Task.spawn { slowest }
 Task.sleep(10.ms)
-quitter = spawn { slowest }
-others = (0...3).map { |_| spawn { slowest } }
+quitter = Task.spawn { slowest }
+others = (0...3).map { |_| Task.spawn { slowest } }
 Task.sleep(10.ms)
 quitter.cancel
 begin

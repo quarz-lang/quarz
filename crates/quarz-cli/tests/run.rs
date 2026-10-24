@@ -252,18 +252,18 @@ fn extensions_and_misc() {
 #[test]
 fn concurrency() {
     expect("ch = Channel[Int].new\nTask.scope do |s|\n  s.spawn { 3.times { |i| ch.send(i) }; ch.close }\n  ch.each { |v| puts v }\nend\nputs \"done\"", "0\n1\n2\ndone\n");
-    expect("ch = Channel[String].new(capacity: 2)\nt = spawn { ch.send(\"a\"); ch.send(\"b\"); \"sent\" }\nputs ch.receive, ch.receive, t.await", "a\nb\nsent\n");
+    expect("ch = Channel[String].new(capacity: 2)\nt = Task.spawn { ch.send(\"a\"); ch.send(\"b\"); \"sent\" }\nputs ch.receive, ch.receive, t.await", "a\nb\nsent\n");
     expect("results = Task.scope do |s|\n  ts = [3, 1, 2].map { |n| s.spawn { Task.sleep((n * 5).ms); n } }\n  ts.map(&:await)\nend\nputs results.inspect", "[3, 1, 2]\n");
     expect("order = Atom[Array[Int]].new([])\nTask.scope do |s|\n  s.spawn { Task.sleep(20.ms); order.update { |o| o.push(2) } }\n  s.spawn { Task.sleep(5.ms); order.update { |o| o.push(1) } }\nend\nputs order.value.inspect", "[1, 2]\n");
     expect("n = Atom.new(0)\nTask.scope do |s|\n  100.times { s.spawn { n.update { |v| v + 1 } } }\nend\nputs n.value", "100\n");
     expect("begin\n  Task.scope do |s|\n    s.spawn { Task.sleep(1.second); puts \"never\" }\n    s.spawn { raise ArgumentError, \"child failed\" }\n  end\nrescue ArgumentError => e\n  puts \"scope raised: #{e.message}\"\nend", "scope raised: child failed\n");
     expect("begin\n  Task.timeout(10.ms) { Task.sleep(1.second) }\nrescue Task::Timeout\n  puts \"timed out\"\nend\nputs Task.timeout(1.second) { 5 }", "timed out\n5\n");
-    expect("a = Channel[Int].new\nb = Channel[Int].new\nspawn { Task.sleep(5.ms); b.send(2) }\nselect do |s|\n  s.receive(a) { |v| puts \"a #{v}\" }\n  s.receive(b) { |v| puts \"b #{v}\" }\nend\nselect do |s|\n  s.receive(a) { |v| puts \"a #{v}\" }\n  s.after(5.ms) { puts \"timeout\" }\nend\nselect do |s|\n  s.receive(a) { |v| puts \"a #{v}\" }\n  s.default { puts \"default\" }\nend", "b 2\ntimeout\ndefault\n");
+    expect("a = Channel[Int].new\nb = Channel[Int].new\nTask.spawn { Task.sleep(5.ms); b.send(2) }\nselect do |s|\n  s.receive(a) { |v| puts \"a #{v}\" }\n  s.receive(b) { |v| puts \"b #{v}\" }\nend\nselect do |s|\n  s.receive(a) { |v| puts \"a #{v}\" }\n  s.after(5.ms) { puts \"timeout\" }\nend\nselect do |s|\n  s.receive(a) { |v| puts \"a #{v}\" }\n  s.default { puts \"default\" }\nend", "b 2\ntimeout\ndefault\n");
     expect("jobs = Channel[Int].new(capacity: 10)\ndone = Channel[Int].new(capacity: 10)\nTask.scope do |s|\n  2.times { |w| s.spawn { jobs.each { |j| done.send(j * 10) } } }\n  5.times { |j| jobs.send(j) }\n  jobs.close\nend\ndone.close\nputs done.to_a.sort.inspect", "[0, 10, 20, 30, 40]\n");
     let (code, out) = run("ch = Channel[Int].new\nputs \"waiting\"\nch.receive", &[]);
     assert_eq!(code, 1);
     assert_eq!(out, "waiting\n");
-    expect("t = spawn { Task.sleep(1.second); 1 }\nt.cancel\nbegin\n  t.await\nrescue Task::Cancelled\n  puts \"cancelled\"\nend", "cancelled\n");
-    expect("ch = Channel[Int].new\nt = spawn { ch.receive }\nTask.yield\nch.send(7)\nputs t.await\nputs ch.closed?, Task.current.done?", "7\nfalse\nfalse\n");
+    expect("t = Task.spawn { Task.sleep(1.second); 1 }\nt.cancel\nbegin\n  t.await\nrescue Task::Cancelled\n  puts \"cancelled\"\nend", "cancelled\n");
+    expect("ch = Channel[Int].new\nt = Task.spawn { ch.receive }\nTask.yield\nch.send(7)\nputs t.await\nputs ch.closed?, Task.current.done?", "7\nfalse\nfalse\n");
     expect("ch = Channel[Int].new(capacity: 1)\nch.send(1)\nputs ch.try_send(2), ch.size, ch.try_receive.inspect, ch.try_receive.inspect\nch.close\nputs ch.receive?.inspect\nbegin\n  ch.send(3)\nrescue Channel::Closed\n  puts \"closed\"\nend", "false\n1\n1\nnil\nnil\nclosed\n");
 }

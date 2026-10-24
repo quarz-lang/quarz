@@ -8,7 +8,7 @@ Everything listed below exists in the prelude (`std/prelude.qz`) unless it is ma
 
 ## 1. Kernel (functions available at the top level)
 
-`puts`, `print`, `printf`, `p`, `pp`, `warn`, `raise`, `loop`, `sleep` (= `Task.sleep`), `spawn`, `select`, `exit`, `abort`, `at_exit`, `require`, `require_relative`, `gets`/`gets?`, `readline`, `readlines`, `rand`/`srand`, `format`/`sprintf`, `Integer(text, base = 10)`/`Float(...)`/`String(...)` (conversion; raises on failure).
+`puts`, `print`, `printf`, `p`, `pp`, `warn`, `raise`, `loop`, `sleep` (= `Task.sleep`), `Task.spawn`, `select`, `exit`, `abort`, `at_exit`, `require`, `require_relative`, `gets`/`gets?`, `readline`, `readlines`, `rand`/`srand`, `format`/`sprintf`, `Integer(text, base = 10)`/`Float(...)`/`String(...)` (conversion; raises on failure).
 
 `eval`, `send`, `binding`, `method`, `instance_eval`, `define_method`, `ObjectSpace`, `fork`, `system`/backticks (moved to `Process.run`/`Process.sh`) do not exist.
 
