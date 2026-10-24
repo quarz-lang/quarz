@@ -709,10 +709,10 @@ const DEINITIALIZED: u32 = 1;
 /// several threads raising a shared exception gets there first).
 const HAS_EXC: u32 = 2;
 
-/// What raised exceptions captured, by the address of their allocation:
-/// kept out of the header, which would otherwise carry it for every
-/// object (two words of five). An entry lives as long as its object,
-/// which removes it when freed.
+/// What raised exceptions captured, by the address of their allocation,
+/// for an exception whose layout has no word for it (one made with other
+/// fields than its class's layout has: `FieldLayout::values`). An entry lives as long as its
+/// object, which removes it when freed.
 static EXC_INFO: std::sync::Mutex<HashMap<usize, ExcEntry, rustc_hash::FxBuildHasher>> =
     std::sync::Mutex::new(HashMap::with_hasher(rustc_hash::FxBuildHasher));
 
@@ -752,6 +752,9 @@ pub struct FieldLayout {
     pub kinds: &'static [FieldKind],
     /// The byte offset of the pointer to what is kept aside, if any.
     pub aside: Option<u32>,
+    /// Exception classes only: the byte offset of the word that points
+    /// at what the exception captured when raised (null until then).
+    pub exc: Option<u32>,
     /// The fields' size, in words.
     pub words: usize,
 }
@@ -770,12 +773,15 @@ static NO_FIELDS: FieldLayout = FieldLayout {
     offsets: std::ptr::null(),
     kinds: &[],
     aside: None,
+    exc: None,
     words: 0,
 };
 
 impl FieldLayout {
-    fn leak(slots: &quarz_ir::FieldSlots) -> &'static FieldLayout {
-        if slots.kinds.is_empty() {
+    /// `exc`: the objects are exceptions, with a word for what they
+    /// capture after the fields.
+    fn leak(slots: &quarz_ir::FieldSlots, exc: bool) -> &'static FieldLayout {
+        if slots.kinds.is_empty() && !exc {
             return &NO_FIELDS;
         }
         let offsets: &'static [u32] = Box::leak(slots.offsets.clone().into_boxed_slice());
@@ -784,7 +790,8 @@ impl FieldLayout {
             offsets: offsets.as_ptr(),
             kinds,
             aside: slots.aside,
-            words: slots.size as usize / 8,
+            exc: exc.then_some(slots.size),
+            words: slots.size as usize / 8 + usize::from(exc),
         }))
     }
 
@@ -808,7 +815,7 @@ impl FieldLayout {
                 aside: None,
                 size: k as u32 * quarz_ir::VALUE_BYTES,
             };
-            cache.push(FieldLayout::leak(&slots));
+            cache.push(FieldLayout::leak(&slots, false));
         }
         cache[n]
     }
@@ -827,14 +834,16 @@ pub fn register_layouts(classes: &[quarz_ir::RtClass]) {
     let old = LAYOUTS.load(std::sync::atomic::Ordering::Acquire);
     // SAFETY: a published table is never freed.
     let old: &[&'static FieldLayout] = if old.is_null() { &[] } else { unsafe { &*old } };
+    // Exceptions get a word for what a raise captures (see `exc_info`).
     let table: Vec<&'static FieldLayout> = classes
         .iter()
         .enumerate()
         .map(|(id, c)| {
             let slots = quarz_ir::field_slots(&c.fields);
+            let exc = c.is_exception;
             match old.get(id) {
-                Some(l) if l.kinds == slots.kinds.as_slice() => *l,
-                _ => FieldLayout::leak(&slots),
+                Some(l) if l.kinds == slots.kinds.as_slice() && l.exc.is_some() == exc => *l,
+                _ => FieldLayout::leak(&slots, exc),
             }
         })
         .collect();
@@ -894,8 +903,19 @@ impl<F: ?Sized + FieldTail> Drop for ObjectOf<F> {
                 }
             }
         }
-        // Last, as when it was a field. Taken out under the lock, dropped
-        // after it (its cause may be an exception freed in turn).
+        // Last, as when it was a field.
+        if let Some(e) = layout.exc {
+            // SAFETY: the word `with_fields_from` made, now this thread's
+            // alone; a non-null pointer is a box `init_exc` leaked.
+            unsafe {
+                let p = *(base.add(e as usize) as *const *mut ExcInfo);
+                if !p.is_null() {
+                    drop(Box::from_raw(p));
+                }
+            }
+        }
+        // Taken out under the lock, dropped after it (its cause may be an
+        // exception freed in turn).
         if flags & HAS_EXC != 0 {
             let info = exc_table().remove(&exc_key(self as *const Self as *const u8));
             drop(info);
@@ -1013,6 +1033,12 @@ impl Object {
                     std::ptr::null_mut(),
                 );
             }
+            if let Some(e) = layout_of.exc {
+                std::ptr::write(
+                    base.add(e as usize) as *mut std::sync::atomic::AtomicPtr<ExcInfo>,
+                    std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
+                );
+            }
             for (i, k) in layout_of.kinds.iter().enumerate() {
                 let at = base.add(layout_of.offset(i));
                 let v = std::ptr::read(src.add(i));
@@ -1047,8 +1073,27 @@ impl Object {
         self.exc_info().and_then(|e| e.cause.clone())
     }
 
+    /// The word an exception's capture is in, when its layout has one
+    /// (a class the registry knew; the others use `EXC_INFO`).
+    #[inline]
+    fn exc_cell(&self) -> Option<&std::sync::atomic::AtomicPtr<ExcInfo>> {
+        let e = self.layout.exc?;
+        // SAFETY: the word `with_fields_from` made, only ever accessed
+        // atomically once the object is built.
+        Some(unsafe {
+            &*(self.base().add(e as usize) as *const std::sync::atomic::AtomicPtr<ExcInfo>)
+        })
+    }
+
     /// What was captured when the exception was raised, if anything.
     pub fn exc_info(&self) -> Option<&ExcInfo> {
+        if let Some(cell) = self.exc_cell() {
+            // Acquire: what the pointer points at was written before it.
+            let p = cell.load(std::sync::atomic::Ordering::Acquire);
+            // SAFETY: set once, to a box freed only with the object, which
+            // `&self` outlives.
+            return (!p.is_null()).then(|| unsafe { &*p });
+        }
         // Acquire: the entry was inserted before the flag was set.
         if self.flags.load(std::sync::atomic::Ordering::Acquire) & HAS_EXC == 0 {
             return None;
@@ -1067,7 +1112,7 @@ impl Object {
     /// wins. `shared`: the object is shared, so what it now refers to
     /// must be too.
     pub fn init_exc(&self, info: ExcInfo, shared: bool) {
-        if self.flags.load(std::sync::atomic::Ordering::Acquire) & HAS_EXC != 0 {
+        if self.exc_info().is_some() {
             return;
         }
         if shared {
@@ -1077,6 +1122,24 @@ impl Object {
             if let Some(c) = &info.cause {
                 c.share();
             }
+        }
+        if let Some(cell) = self.exc_cell() {
+            let p = Box::into_raw(Box::new(info));
+            // Release: the box's contents before the pointer; the first
+            // raise wins, and a later one's capture is dropped.
+            if cell
+                .compare_exchange(
+                    std::ptr::null_mut(),
+                    p,
+                    std::sync::atomic::Ordering::Release,
+                    std::sync::atomic::Ordering::Relaxed,
+                )
+                .is_err()
+            {
+                // SAFETY: the box was not published.
+                drop(unsafe { Box::from_raw(p) });
+            }
+            return;
         }
         let mut table = exc_table();
         if self.flags.load(std::sync::atomic::Ordering::Relaxed) & HAS_EXC != 0 {
