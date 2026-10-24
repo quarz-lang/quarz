@@ -367,7 +367,8 @@ pub fn lower_checked(checked: &Checked, files: &[SourceFile]) -> Module {
         })
         .collect();
     for f in functions.iter_mut() {
-        quarz_ir::live::mark_moves(f);
+        let heap = quarz_ir::live::heap_possible(f, &delta.world.methods);
+        quarz_ir::live::mark_moves(f, &heap);
         quarz_ir::live::own_dying_receivers(f, &in_place);
     }
     Module {

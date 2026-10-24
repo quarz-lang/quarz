@@ -187,7 +187,7 @@ pub fn own_dying_receivers(f: &mut Function, in_place: &[bool]) {
 /// The same answer as `last_reads`, computed with bit sets per block
 /// rather than a set per instruction: this runs on every function of
 /// every program, the prelude's included, at each start.
-pub fn mark_moves(f: &mut Function) {
+pub fn mark_moves(f: &mut Function, heap: &[bool]) {
     let nblocks = f.blocks.len();
     // A borrowed element (see `ArrayGetReg`'s `borrow`) owns nothing to
     // move.
@@ -257,11 +257,21 @@ pub fn mark_moves(f: &mut Function) {
     // the instruction at hand.
     for (bi, (blk, ud)) in f.blocks.iter_mut().zip(&ud).enumerate() {
         let mut live = out_of(bi, &live_in);
+        // Copies and constants nothing reads, into registers that never
+        // hold a counted value (overwriting one releases it, which must
+        // stay): dropped below.
+        let mut dead = vec![false; blk.insts.len()];
         let handler = blk.handler.map(|h| live_in[h.block as usize].clone());
         if let Some(r) = blk.term.uses() {
             set(&mut live, r);
         }
-        for (inst, (uses, defs)) in blk.insts.iter_mut().zip(ud).rev() {
+        for (k, (inst, (uses, defs))) in blk.insts.iter_mut().zip(ud).enumerate().rev() {
+            if let Inst::LoadConst { dst, .. } | Inst::Move { dst, .. } = inst {
+                if !has(&live, *dst) && !uses.contains(dst) && !heap[*dst as usize] {
+                    dead[k] = true;
+                    continue;
+                }
+            }
             // Dead after it, or overwritten by it.
             let dying = |r: Reg| {
                 (!has(&live, r) || defs.contains(&r))
@@ -309,6 +319,11 @@ pub fn mark_moves(f: &mut Function) {
                 }
             }
         }
+        let mut k = 0;
+        blk.insts.retain(|_| {
+            k += 1;
+            !dead[k - 1]
+        });
     }
 }
 
@@ -410,12 +425,15 @@ pub fn heap_possible(f: &Function, methods: &[RtMethod]) -> Vec<bool> {
                 | Inst::ToArray { dst, .. }
                 | Inst::ArrayGet { dst, .. }
                 | Inst::ArrayGetReg { dst, .. }
+                | Inst::ArrayWords { dst, .. }
                 | Inst::ArraySlice { dst, .. }
                 | Inst::ArraySliceReg { dst, .. }
                 | Inst::ObjectFields { dst, .. }
                 | Inst::HashRest { dst, .. }
                 | Inst::CatchException { dst }
                 | Inst::CatchAny { dst } => mark(*dst),
+                // A number.
+                Inst::ArrayGetWord { .. } => {}
                 Inst::FrameSet { .. }
                 | Inst::FieldSet { .. }
                 | Inst::ArrayPush { .. }

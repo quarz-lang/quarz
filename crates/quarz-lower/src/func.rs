@@ -2234,6 +2234,17 @@ impl<'a> FnBuilder<'a> {
             self.emit(Inst::Len { dst: len, src: a });
             hi = Some(len);
             exclusive = true;
+            // An `Array[Int]` or `Array[Float]`: its elements as words,
+            // read with no check in the loop.
+            if let Some(float) = shape.words {
+                let w = self.reg();
+                self.emit(Inst::ArrayWords {
+                    dst: w,
+                    arr: a,
+                    float,
+                });
+                arr = Some(w);
+            }
         }
         let lo = match lo {
             Some(r) => r,
@@ -2293,8 +2304,18 @@ impl<'a> FnBuilder<'a> {
             els: done_b,
         });
         self.switch(body_b);
-        let elem = match arr {
-            Some(a) => {
+        let elem = match (arr, shape.words) {
+            (Some(a), Some(float)) => {
+                let x = self.reg();
+                self.emit(Inst::ArrayGetWord {
+                    dst: x,
+                    arr: a,
+                    index: i,
+                    float,
+                });
+                x
+            }
+            (Some(a), None) => {
                 let x = self.reg();
                 self.emit(Inst::ArrayGetReg {
                     dst: x,
@@ -2304,7 +2325,7 @@ impl<'a> FnBuilder<'a> {
                 });
                 x
             }
-            None => i,
+            (None, _) => i,
         };
         // Every register the body uses (its variables, its temporaries
         // and its value) starts each iteration as nil, which also

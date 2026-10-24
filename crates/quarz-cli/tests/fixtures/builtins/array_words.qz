@@ -1,0 +1,29 @@
+# Loops over an Array[Int] or Array[Float] read the elements as machine
+# words, whatever storage the array has.
+ints = [3, 1, 4, 1, 5]
+s = 0
+ints.each { |x| s += x }
+p s
+p ints.map { |x| x * 2 }, ints.select { |x| x > 2 }, ints.reject { |x| x > 2 }
+p ints.reduce(0) { |a, x| a + x }, ints.count { |x| x == 1 }
+p ints.any? { |x| x > 4 }, ints.all? { |x| x > 0 }
+ints.each_with_index { |x, i| print x * i, " " }
+puts
+# Possibly stored as values (they held a nil), now all Ints.
+mixed: Array[Int?] = [nil, 1, nil, 2]
+p mixed.compact.as(Array[Int]).map { |x| x + 1 }, mixed.drop(1).compact.as(Array[Int]).sum
+empty: Array[Int] = []
+p empty.map { |x| x + 1 }, empty.reduce(7) { |a, x| a + x }
+# break and next.
+found = ints.each do |x|
+  next if x < 4
+  break x
+end
+p found
+floats = [0.5, 1.25, 2.0]
+t = 0.0
+floats.each { |f| t += f }
+p t, floats.map { |f| f * 2.0 }
+built: Array[Int] = []
+10.times { |i| built = built.push(i * i) }
+p built.select { |x| x.even? }

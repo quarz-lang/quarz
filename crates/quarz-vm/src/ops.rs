@@ -644,6 +644,53 @@ impl Interp {
         regs[dst as usize] = v;
     }
 
+    /// `ArrayWords`: the array with its elements stored as machine words
+    /// (`Int`s, or `Float`s with `float`), copied only when they are not.
+    pub fn op_array_words(
+        &self,
+        regs: &mut [Value],
+        dst: Reg,
+        arr: Reg,
+        float: bool,
+    ) -> Result<(), Flow> {
+        let v = match &regs[arr as usize] {
+            Value::Array(a) => match (&**a, float) {
+                (ArrayData::Ints(_), false) | (ArrayData::Floats(_), true) => {
+                    Value::Array(a.clone())
+                }
+                (data, false) => {
+                    let mut words = Vec::with_capacity(data.len());
+                    for v in data.iter() {
+                        match v {
+                            Value::Int(i) => words.push(i),
+                            _ => {
+                                return Err(self.err_type("internal error: a non-Int in Array[Int]"))
+                            }
+                        }
+                    }
+                    Value::ints(words)
+                }
+                (data, true) => {
+                    let mut words = Vec::with_capacity(data.len());
+                    for v in data.iter() {
+                        match v {
+                            Value::Float(f) => words.push(f),
+                            _ => {
+                                return Err(
+                                    self.err_type("internal error: a non-Float in Array[Float]")
+                                )
+                            }
+                        }
+                    }
+                    Value::floats(words)
+                }
+            },
+            _ => return Err(self.err_type("internal error: ArrayWords on a non-Array")),
+        };
+        regs[dst as usize] = v;
+        Ok(())
+    }
+
     pub fn op_array_slice(
         &self,
         regs: &mut [Value],

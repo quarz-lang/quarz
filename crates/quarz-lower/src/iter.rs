@@ -44,6 +44,9 @@ pub struct Shape {
     /// `xs.map(&:name)`: no block, the method called on each element
     /// (as the checker resolved it for the element type).
     pub symbol: Option<quarz_types::types::MethodId>,
+    /// An `Array[Int]` (`Some(false)`) or `Array[Float]` (`Some(true)`)
+    /// receiver: its elements are read as machine words (`ArrayWords`).
+    pub words: Option<bool>,
 }
 
 /// Whether `call` (expression `e`) is lowered in place, and how.
@@ -91,11 +94,13 @@ pub fn shape(e: &Expr, call: &ast::Call, out: &Output, world: &World) -> Option<
                 kind: Kind::Times,
                 source: None,
                 symbol,
+                words: None,
             },
             ("upto", 1) => Shape {
                 kind: Kind::Upto,
                 source: None,
                 symbol,
+                words: None,
             },
             _ => return None,
         }
@@ -137,10 +142,19 @@ pub fn shape(e: &Expr, call: &ast::Call, out: &Output, world: &World) -> Option<
             ("all?", 0) if m.owner == bi.enumerable => Kind::All,
             _ => return None,
         };
+        let words = match (source, out.node_types.get(&recv.id)) {
+            (Source::Array, Some(Type::Class(_, args))) => match args.first() {
+                Some(Type::Class(c, a)) if *c == bi.int && a.is_empty() => Some(false),
+                Some(Type::Class(c, a)) if *c == bi.float && a.is_empty() => Some(true),
+                _ => None,
+            },
+            _ => None,
+        };
         Shape {
             kind,
             source: Some(source),
             symbol,
+            words,
         }
     };
     if symbol.is_some() {

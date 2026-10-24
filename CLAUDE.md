@@ -57,7 +57,9 @@ when the local one is older.
 
 - Lowering ends with: copy propagation → `release::drop_unobserved` →
   `borrow::mark_borrows` → `regshare` (register sharing) →
-  `live::mark_moves` (`Take`, `Call::moved`, `OwnedCall::unused`) →
+  `live::mark_moves` (`Take`, `Call::moved`, `OwnedCall::unused`, and
+  dropping constants and copies nothing reads into registers that never
+  hold a counted value: overwriting one that may releases it) →
   `own_dying_receivers`. Anything that renumbers or moves instructions
   must run before `mark_moves`.
 - `Inst::Release` ends the scope of a variable whose release may be

@@ -498,6 +498,16 @@ pub fn transfer(
             }
             st[*dst as usize] = State::Int;
         }
+        // `ArrayWords` makes an array; its elements are words.
+        Inst::ArrayWords { dst, .. } => st[*dst as usize] = State::Arr,
+        Inst::ArrayGetWord {
+            dst, arr, float, ..
+        } => {
+            if arr != dst {
+                st[*arr as usize] = State::Arr;
+            }
+            st[*dst as usize] = if *float { State::Float } else { State::Int };
+        }
         // So is the array an element is read from.
         Inst::ArrayGetReg { dst, arr, .. } => {
             if arr != dst {

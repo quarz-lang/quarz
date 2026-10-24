@@ -73,6 +73,7 @@ pub(crate) const OPS: &[(&str, &[Ty])] = {
         ("qz_op_object_fields", &[I, I]),
         ("qz_op_array_get", &[I, I, I]),
         ("qz_op_array_get_reg", &[I, I, I]),
+        ("qz_op_array_words", &[I, I, I]),
         ("qz_op_array_slice", &[I, I, I, I]),
         ("qz_op_array_slice_reg", &[I, I, I, I]),
         ("qz_op_hash_get_sym", &[I, I, I, I]),
@@ -1813,6 +1814,10 @@ impl<B: Builder> Gen<'_, B> {
             let v = self.payload(*dst);
             self.b.def_var(self.ivar(*dst), v);
         }
+        if let Inst::ArrayWords { dst, .. } = inst {
+            let p = self.payload_ptr(*dst);
+            self.b.def_var(self.pvar(*dst), p);
+        }
     }
 
     /// Raise `kind` (`layout::RAISE_*`) at instruction `index` of `block`,
@@ -3035,6 +3040,10 @@ impl<B: Builder> Gen<'_, B> {
                 "qz_op_array_get_reg",
                 vec![w(self, *dst), w(self, *arr), w(self, *index)],
             ),
+            Inst::ArrayWords { dst, arr, float } => (
+                "qz_op_array_words",
+                vec![w(self, *dst), w(self, *arr), w(self, u32::from(*float))],
+            ),
             Inst::ArraySlice {
                 dst,
                 arr,
@@ -3141,7 +3150,10 @@ impl<B: Builder> Gen<'_, B> {
         // does an owned call (its in-place paths read no home).
         let array_op = matches!(
             inst,
-            Inst::Len { .. } | Inst::ArrayGetReg { .. } | Inst::ArrayPush { .. }
+            Inst::Len { .. }
+                | Inst::ArrayGetReg { .. }
+                | Inst::ArrayGetWord { .. }
+                | Inst::ArrayPush { .. }
         ) || matches!(inst, Inst::OwnedCall { kw, .. } if kw.is_empty());
         let lazy =
             typed || to_f.is_some() || word_store || array_op || self.typed_callee(inst).is_some();
@@ -3600,6 +3612,35 @@ impl<B: Builder> Gen<'_, B> {
                 }
                 self.b.jump(cont, &[]);
                 self.b.switch_to_block(cont);
+            }
+            Inst::ArrayGetWord {
+                dst,
+                arr,
+                index: idx,
+                float,
+            } => {
+                // In range, and the elements are words (`ArrayWords`):
+                // a load, into the variable.
+                let i = if self.states[*idx as usize] == State::Int {
+                    self.b.use_var(self.ivar(*idx))
+                } else {
+                    self.payload(*idx)
+                };
+                if arr != dst {
+                    self.note_arr(*arr);
+                }
+                let (_, ptr, _, _) = self.array_view(*arr);
+                let off = self.b.imul_imm(i, 8);
+                let elem = self.b.iadd(ptr, off);
+                let word = self.b.load(Ty::I64, elem, 0);
+                if *float {
+                    self.unbox(*dst, State::Float);
+                    let v = self.b.bitcast(Ty::F64, word);
+                    self.b.def_var(self.fvar(*dst), v);
+                } else {
+                    self.unbox(*dst, State::Int);
+                    self.b.def_var(self.ivar(*dst), word);
+                }
             }
             Inst::ArrayGetReg {
                 dst,

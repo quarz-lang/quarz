@@ -1123,6 +1123,12 @@ impl Interp {
             Inst::ArrayGetReg {
                 dst, arr, index, ..
             } => self.op_array_get_reg(regs, *dst, *arr, *index),
+            Inst::ArrayWords { dst, arr, float } => {
+                self.op_array_words(regs, *dst, *arr, *float)?
+            }
+            Inst::ArrayGetWord {
+                dst, arr, index, ..
+            } => self.op_array_get_reg(regs, *dst, *arr, *index),
             Inst::ArraySlice {
                 dst,
                 arr,
