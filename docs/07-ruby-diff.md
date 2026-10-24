@@ -38,7 +38,7 @@ A summary of the things someone who knows Ruby will first stumble on when starti
 | `Thread`, `Mutex`, `Queue`, `Fiber` | Exist | `spawn`, `Task.scope`, `Channel`, `Atom` |
 | `Thread#join`, `Thread#value` | Wait for a thread (and take its value) | `Task#await` |
 | `require` | Loads at runtime | Resolved at compile time (same syntax) |
-| RubyGems, Bundler (`Gemfile`) | Packages installed from rubygems.org | Cogs: git repositories pinned to a commit in `Cog.lock`, each under its own module ([10-cogs.md](10-cogs.md), planned) |
+| RubyGems, Bundler (`Gemfile`) | Packages installed from rubygems.org, then `require`d | Cogs: git repositories pinned to a commit in `Cog.lock`, each under its own module, visible without `require` ([10-cogs.md](10-cogs.md), planned) |
 | Top-level `def` | Private method of `Object` | A function within that file |
 | Arbitrary expressions in a class body | Executed | Declarations only (constant initializers are allowed) |
 | `respond_to?` | Runtime | Compile-time constant |

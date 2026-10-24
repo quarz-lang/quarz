@@ -79,7 +79,7 @@ puts counter.value        # => 100
 | [docs/07-ruby-diff.md](docs/07-ruby-diff.ja.md) | Ruby からの変更点 早見表 |
 | [docs/08-crystal-diff.md](docs/08-crystal-diff.ja.md) | Crystal との違い 早見表 |
 | [docs/09-grammar.md](docs/09-grammar.ja.md) | 文法スケッチ(EBNF) |
-| [docs/10-cogs.md](docs/10-cogs.ja.md) | cog(パッケージ)。コミットで固定する git リポジトリ、`Cog.toml`/`Cog.lock`、cog ごとに 1 モジュール、キーワード `cog`(設計) |
+| [docs/10-cogs.md](docs/10-cogs.ja.md) | cog(パッケージ)。コミットで固定する git リポジトリ、`Cog.toml`/`Cog.lock`、cog ごとに 1 モジュール、`require` 不要、キーワード `cog`(設計) |
 | [examples/](examples/) | サンプルコード(`hello`、`shapes`、`wordcount`、`pipeline`、`bank_actor`、`extension`、`builder`) |
 
 ## 設計上の主な判断
