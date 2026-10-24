@@ -19,7 +19,8 @@ use quarz_syntax::ast::{Expr, ExprKind, Program};
 use quarz_syntax::{parse_with_bases, Diagnostic, SourceFile};
 
 pub use check::{BlockPass, CallTarget, ConstTarget, Output, SelfOwner, VarRef};
-pub use load::{load, LoadedUnit, STD_MODULES};
+pub use declare::CogDecl;
+pub use load::{load, load_movement, CogSpec, LoadedUnit, STD_MODULES};
 pub use types::*;
 pub use world::*;
 
@@ -31,6 +32,35 @@ pub const PRELUDE_SOURCE: &str = include_str!("../../../std/prelude.qz");
 pub struct Unit {
     pub name: String,
     pub program: Program,
+    /// The cog the file belongs to (an index into the cogs given to
+    /// `check_movement`); `None` for a script or the standard library.
+    pub cog: Option<u32>,
+    /// Whether the file may hold statements (only the application's main
+    /// file, in a movement).
+    pub statements: bool,
+}
+
+impl Unit {
+    /// A file outside any cog: a script, or a file it requires.
+    pub fn script(name: String, program: Program) -> Unit {
+        Unit {
+            name,
+            program,
+            cog: None,
+            statements: true,
+        }
+    }
+}
+
+impl From<LoadedUnit> for Unit {
+    fn from(u: LoadedUnit) -> Unit {
+        Unit {
+            name: u.name,
+            program: u.program,
+            cog: u.cog,
+            statements: u.statements,
+        }
+    }
 }
 
 /// A checked compilation unit: its top-level statements and the
@@ -96,6 +126,16 @@ impl Session {
             loaded_keys: rustc_hash::FxHashSet::default(),
             sources: Vec::new(),
         })
+    }
+
+    /// Whether standard library module `module` is loaded, or one of its
+    /// names is taken (so that loading it implicitly would clash).
+    pub fn std_loaded(&self, module: &str) -> bool {
+        self.loaded_keys.contains(&format!("<std:{module}>"))
+            || load::std_exports()
+                .iter()
+                .filter(|(m, _)| *m == module)
+                .any(|(_, names)| names.iter().any(|n| self.checker.world.top.contains_key(n)))
     }
 
     /// The source of a unit loaded by `require`, for rendering diagnostics.
@@ -292,18 +332,32 @@ impl Session {
 /// parsed with `parse_with_bases(src, load::unit_base(0), load::unit_base(0))`
 /// so that its spans and node ids do not collide with the prelude's.
 pub fn check(prelude: &Program, program: &Program) -> (Option<Checked>, Vec<FileDiagnostic>) {
-    let unit = Unit {
-        name: "main".to_string(),
-        program: program.clone(),
-    };
+    let unit = Unit::script("main".to_string(), program.clone());
     check_units(prelude, &[unit])
 }
 
 pub fn check_units(prelude: &Program, units: &[Unit]) -> (Option<Checked>, Vec<FileDiagnostic>) {
+    check_movement(prelude, units, &[])
+}
+
+/// Check the files of a movement: `cogs` are its cogs (the application
+/// first), and each unit names the cog it belongs to.
+pub fn check_movement(
+    prelude: &Program,
+    units: &[Unit],
+    cogs: &[CogDecl],
+) -> (Option<Checked>, Vec<FileDiagnostic>) {
     let mut declarer = declare::Declarer::new();
     declarer.collect_prelude(prelude);
+    declarer.declare_cogs(cogs, units.len() as u32);
     for (i, unit) in units.iter().enumerate() {
-        declarer.collect_unit(&unit.program, i as u32 + 1);
+        let file = i as u32 + 1;
+        match unit.cog {
+            Some(cog) if !cogs.is_empty() => {
+                declarer.collect_cog_unit(&unit.program, file, cog, unit.statements)
+            }
+            _ => declarer.collect_unit(&unit.program, file),
+        }
     }
     declarer.resolve_headers();
     let mut diagnostics = std::mem::take(&mut declarer.diagnostics);

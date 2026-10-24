@@ -4,7 +4,7 @@
 
 A Quarz package is a **cog**: a git repository with a `Cog.toml` at its root, fetched as source and compiled with the program that uses it. The program being built, with every cog it brings in, is a **movement**. There is no registry and nothing is distributed as a binary: a cog is named by the URL of its repository, and the lock file pins it to one commit. A cog is used without `require`: naming it in the manifest makes its module visible.
 
-This document is the design; none of it is built yet. Today `require "name"` loads a standard library module, and `require_relative` a file (see [01-syntax.md](01-syntax.md) §2).
+This is the design, and it is implemented (crates `quarz-cog` for manifests, locks, resolution and fetching; `quarz-types` for loading and checking a movement) except where a paragraph says *not yet*. Scripts keep `require_relative` ([01-syntax.md](01-syntax.md) §2).
 
 ## 1. Vocabulary and Shape
 
@@ -84,7 +84,7 @@ dependencies = []
 ```
 
 - A cog is identified by its `source` (the URL, with the `subdir` when there is one); the keys the manifests use for it are not recorded, since each manifest has its own.
-- `rev` is the key for fetching, `hash` the key for verification: a hash of the cog's files at that commit (`Cog.toml` and everything under `src/`, path and content in sorted order). The two are kept apart because a git commit id is a SHA-1 of the repository's history, not of the files Quarz compiles: after fetching, a tree whose hash differs from the lock (a rewritten history, a force-pushed tag, a tampered mirror) is refused. The `h1:` prefix names the algorithm so it can change.
+- `rev` is the key for fetching, `hash` the key for verification: a hash of the cog's files at that commit (`Cog.toml` and everything under `src/`): one line per file in path order, its SHA-256 in hex, two spaces and its path, and the base64 of the SHA-256 of those lines (as Go's module hashes). The two are kept apart because a git commit id is a SHA-1 of the repository's history, not of the files Quarz compiles: after fetching, a tree whose hash differs from the lock (a rewritten history, a force-pushed tag, a tampered mirror) is refused. The `h1:` prefix names the algorithm so it can change.
 - The lock lists only what the resolution chose: one entry per cog, whatever the manifests asked for. `[patch]` entries are not recorded.
 
 ## 4. Version Resolution
@@ -98,9 +98,9 @@ Resolution follows Go's *minimal version selection*: every manifest in the graph
 
 ## 5. Fetching, Cache and Vendoring
 
-- Repositories are mirrored under `~/.cache/quarz/git/<host>/<path>.git` (a bare clone), and only the commit the lock names is fetched (`git fetch --depth 1 origin <rev>`), so a large history costs nothing.
+- The cache is `$QUARZ_CACHE`, else `$XDG_CACHE_HOME/quarz`, else `~/.cache/quarz`. Repositories are mirrored under `~/.cache/quarz/git/<host>/<path>.git` (a bare clone), and only the commit the lock names is fetched (`git fetch --depth 1 origin <rev>`), so a large history costs nothing. Resolving a branch or a `rev` that no tag names fetches the commit's history and tags once, to find the nearest tag for its pseudo-version.
 - The cog's tree is checked out, read-only, into `~/.cache/quarz/src/<name>-<first 12 hex digits of rev>/` and verified against the lock's `hash` before anything is compiled. The directory never changes once written: a pinned commit is immutable, so the type-check results and the `.qzi` of a cog ([05-execution.md](05-execution.md) §2) can be cached by `(hash, quarz version, back end)` and never invalidated. Loading a whole cog rather than the files a program names costs type checking once per commit, not once per run; `quarz build` drops what the program does not reach.
-- `quarz cog vendor` copies every locked cog into `vendor/` next to the manifest; when that directory exists, nothing is fetched. `--offline` resolves from the cache and `vendor/` only.
+- `quarz cog vendor` copies every locked cog into `vendor/<name>/` next to the manifest; when that directory exists, nothing is fetched. `--offline` resolves from the cache and `vendor/` only.
 - Private repositories use git's own authentication (SSH keys, credential helpers); Quarz adds no credential handling of its own.
 
 ## 6. Namespaces: a Cog Is a Module
@@ -130,7 +130,7 @@ client = Httpx::Client.new
 
 - **No `require`.** Declarations are hoisted across every loaded file, so `require` only ever chose which files are loaded and in which order their statements run; the manifest answers the first, and §6's rule on statements the second. `require "json"` is accepted as a no-op, as `require "time"` is today, so Ruby code moves over unchanged: the standard library's modules (`JSON`, `Socket`, …) are visible without it. `require_relative` remains for scripts, which have no manifest.
 - **A cog has no statements.** Its files hold declarations and constants only; a statement at the top level of a cog file is an error. Loading a cog therefore has no effect, and there is no order of loading to define. The application's statements are in `src/main.qz`, the one file of a movement that may have them, and they run after every constant is initialized.
-- **Constants are initialized in dependency order.** The checker knows which constants an initializer reads: those are initialized first (a cycle is an error), and constants that do not depend on one another in the order of their files' paths and then their position in the file. A cog's constants are initialized before those of the cogs that depend on it.
+- **Constants are initialized in dependency order.** Each constant is initialized at its first use, so the constants an initializer reads come first and a constant used by its own initializer raises `RuntimeError` ([01-syntax.md](01-syntax.md) §8); no load order is needed for that either.
 - **The root module is an ordinary module** and follows the ordinary rules: it cannot be reopened (no `module Httpx` anywhere, inside or outside the cog, since classes and modules are never reopened), including or extending it warns as including any namespace module does ([01-syntax.md](01-syntax.md) §6), and `extension`s a cog defines take effect only where a file says `using Httpx::StringExt`. A cog cannot monkey-patch its users.
 - **The key is the name, and an alias when it differs.** The key under which a manifest lists a cog is bound, in that cog's scope, to the dependency's root module, as a constant `AUtil = Util` would be. When two dependencies declare the same `module`, their keys tell them apart; a key equal to the declared module is the common case and says nothing. The dependency's own code is unaffected, so its `.qzi` is shared by every user whatever they call it. (Swift PM's `moduleAliases`, .NET's `extern alias` and Cabal's `mixins` solve the same collision the same way.)
 - **The dependencies of a cog are resolved by its own manifest.** When `httpx`'s code says `Tomlz::Parser`, the name is `httpx`'s key for that dependency, whatever the application calls it. A class is the same class under every name, so a `Tomlz::Value` built by `httpx` and one built by the application have one type.
@@ -161,7 +161,7 @@ In the application and in a script, `cog` is the top level; `cog.name` is then t
 | `quarz cog tree` | Print the resolved dependency graph |
 | `quarz cog outdated` | Show, for each cog, the newest tag beyond the locked version |
 | `quarz cog verify` | Check the cache and `vendor/` against the lock's hashes |
-| `quarz run`/`build`/`check` | Use the lock, or resolve and write it; `--locked` fails instead of writing, `--offline` fetches nothing |
+| `quarz run`/`build`/`check`/`ir` [`--locked`] [`--offline`] [TARGET] | TARGET is the application's directory, its `src/main.qz`, or nothing for the application around the current directory (`quarz run -- ARGS`); a `.qz` file elsewhere is a script. Use the lock, or resolve and write it; `--locked` fails instead of writing, `--offline` fetches nothing. `quarz build` writes the executable next to the manifest, named after the cog, unless `-o` says otherwise |
 
 ## 8. Design Notes
 
@@ -179,6 +179,8 @@ In the application and in a script, `cog` is the top level; `cog.name` is then t
 
 - The name a class prints: the diagnostic at a use site can show the name visible there (`AUtil::Table`), while `Class#name` at run time gives the declared one (`Util::Table`); Ruby's `Namespace` has the same question open (Bug #21316).
 - Whether `branch` should be allowed at all outside `[patch]`.
-- The hash's exact scope (whether `test/` and the lock of a library take part) and algorithm.
+- Whether `test/` should take part in the hash (it does not: only what is compiled does).
 - Whether an application's files other than `src/main.qz` may hold statements (a `require_relative`d helper that prints at load would stop working).
 - What `[cog] link` looks like once FFI exists.
+- `[dev-dependencies]` are read and validated, but nothing uses them until `quarz test` exists (*not yet*).
+- A lock is used as long as it meets what the application and the patched cogs ask for and no cog in it is above every version asked for (a requirement that was dropped). A requirement by a branch, or by a commit other than the locked one, has a version only git can tell, and is taken as met without asking it.

@@ -37,7 +37,7 @@ Of Ruby's reserved words, `defined?`, `undef`, `redo`, `BEGIN`, `END`, and `__EN
 
 ## 2. Program structure
 
-- One file = one compilation unit (module). `require "name"` loads a standard library module (`std/name.qz`, embedded in the interpreter) and `require_relative "path"` loads a file relative to the requiring one (`.qz` is appended when there is no extension). Both are resolved **at compile time**: the dependency graph is determined statically, each file is loaded once, and a circular `require` is an error. *Planned*: a **cog**, a package fetched from a git repository, is loaded whole from the manifest that names it, without `require`, and its declarations appear under its own module ([10-cogs.md](10-cogs.md)).
+- One file = one compilation unit (module). `require "name"` loads a standard library module (`std/name.qz`, embedded in the interpreter) and `require_relative "path"` loads a file relative to the requiring one (`.qz` is appended when there is no extension). Both are resolved **at compile time**: the dependency graph is determined statically, each file is loaded once, and a circular `require` is an error. A standard library module that the program names (`JSON`, `TCPSocket`) is loaded without `require` too, unless the program declares one of its names itself. A **cog**, a package fetched from a git repository, is loaded whole from the manifest that names it, without `require`, and its declarations appear under its own module ([10-cogs.md](10-cogs.md)).
 - Statements may appear at the top level. `quarz run hello.qz` runs a one-line script `puts "Hello"`. The top-level statements of a required file run once, before those of the file that requires it (dependencies first, in depth-first order).
 - Classes, modules, data types, enums, constants and type aliases declared in a required file are visible everywhere; top-level `def`s and `using`s stay private to their file.
 - A top-level `def` becomes a function visible only within that file (it does not become a private method of `Object` as in Ruby).
@@ -252,6 +252,7 @@ DEFAULT_HEADERS = { "Content-Type" => "application/json" }
 
 - Constants are bound once, and their values must be Shareable (constants are visible from all tasks).
 - Constant initializers are evaluated once, in dependency order, when the module is loaded. (Currently each is evaluated at the constant's first use: a task that uses a constant whose initializer another task is running waits for it, a constant used by its own initializer raises `RuntimeError`, and one whose initializer raised is evaluated again at its next use.)
+- A constant whose initializer is a constant path naming a class or module is also an alias of it: after `P = Geometry::Point`, `P` serves in constant paths (`G::Point` after `G = Geometry`), types (`p: P`), patterns (`in P`) and `is_a?`, as well as a value (`P.new`). The class keeps its name (`P.name` is `"Geometry::Point"`).
 
 ## 9. Method definitions
 

@@ -1044,8 +1044,10 @@ impl Checker {
             namespace = e.module;
         } else {
             params.extend(class.type_params.iter().map(|p| (p.name.clone(), p.id)));
+            // A file's top-level methods resolve constants from the file's
+            // namespace: the cog's root module, or the top level.
             namespace = if class.kind == ClassKind::Main {
-                None
+                class.parent
             } else {
                 Some(owner)
             };
@@ -2716,7 +2718,15 @@ impl Checker {
         path: &ConstPath,
         span: Span,
     ) -> Option<Member> {
-        let mut member = if path.absolute {
+        let mut member = if path.cog {
+            match self.world.resolve_cog_path_start(namespace, path) {
+                Ok(m) => Some(m),
+                Err(message) => {
+                    self.error(message, span);
+                    return None;
+                }
+            }
+        } else if path.absolute {
             self.world.top.get(&path.names[0]).copied()
         } else {
             self.world.resolve_member(namespace, &path.names[0])
@@ -2725,8 +2735,8 @@ impl Checker {
             self.error(format!("unknown constant `{}`", path.names[0]), span);
             return None;
         }
-        for name in &path.names[1..] {
-            let Some(Member::Class(cid)) = member else {
+        for name in path.names.get(1..).unwrap_or_default() {
+            let Some(Member::Class(cid)) = member.map(|m| self.world.through_alias(m)) else {
                 self.error(format!("`{path}` is not a namespace"), span);
                 return None;
             };

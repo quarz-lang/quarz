@@ -33,6 +33,31 @@ pub fn parse_with_bases(src: &str, span_base: u32, id_base: NodeId) -> Parsed {
     parse_repl(src, span_base, id_base, &[])
 }
 
+/// What `cog.name` and `cog.version` stand for in a file: the name and
+/// version of the cog it belongs to (from its `Cog.toml`), or of a script.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CogMeta {
+    pub name: String,
+    pub version: String,
+}
+
+impl Default for CogMeta {
+    fn default() -> Self {
+        CogMeta {
+            name: "main".to_string(),
+            version: "0.0.0".to_string(),
+        }
+    }
+}
+
+/// Parse a file of a cog (or a script) whose `cog.name` and
+/// `cog.version` are `meta`'s.
+pub fn parse_cog_file(src: &str, span_base: u32, id_base: NodeId, meta: &CogMeta) -> Parsed {
+    let mut parser = Parser::with_bases(src, span_base, id_base);
+    parser.cog = meta.clone();
+    parser.finish(src, span_base)
+}
+
 /// Parse REPL input: `locals` are the variables declared by earlier
 /// inputs.
 pub fn parse_repl(src: &str, span_base: u32, id_base: NodeId, locals: &[String]) -> Parsed {
@@ -40,20 +65,26 @@ pub fn parse_repl(src: &str, span_base: u32, id_base: NodeId, locals: &[String])
     for name in locals {
         parser.declare(name);
     }
-    let body = parser.parse_statements(&[]);
-    let span = Span::new(span_base as usize, span_base as usize + src.len());
-    let eof = parser.peek().clone();
-    if !matches!(eof.kind, T::Eof) {
-        parser.error_at(format!("unexpected {}", describe(&eof.kind)), eof.span);
-    }
-    let mut diagnostics = parser.lexer.take_diagnostics();
-    diagnostics.append(&mut parser.diagnostics);
-    diagnostics.sort_by_key(|d| (d.span.start, d.span.end));
-    Parsed {
-        program: Program { body, span },
-        diagnostics,
-        comments: parser.lexer.comments().to_vec(),
-        data_offset: parser.lexer.data_offset(),
+    parser.finish(src, span_base)
+}
+
+impl Parser<'_> {
+    fn finish(mut self, src: &str, span_base: u32) -> Parsed {
+        let body = self.parse_statements(&[]);
+        let span = Span::new(span_base as usize, span_base as usize + src.len());
+        let eof = self.peek().clone();
+        if !matches!(eof.kind, T::Eof) {
+            self.error_at(format!("unexpected {}", describe(&eof.kind)), eof.span);
+        }
+        let mut diagnostics = self.lexer.take_diagnostics();
+        diagnostics.append(&mut self.diagnostics);
+        diagnostics.sort_by_key(|d| (d.span.start, d.span.end));
+        Parsed {
+            program: Program { body, span },
+            diagnostics,
+            comments: self.lexer.comments().to_vec(),
+            data_offset: self.lexer.data_offset(),
+        }
     }
 }
 
@@ -89,6 +120,8 @@ pub struct Parser<'src> {
     /// `expr in pattern` is not a match while parsing a `case` subject.
     allow_in_match: bool,
     last_span_end: u32,
+    /// What `cog.name` and `cog.version` read.
+    cog: CogMeta,
 }
 
 impl<'src> Parser<'src> {
@@ -109,6 +142,7 @@ impl<'src> Parser<'src> {
             in_comprehension: false,
             allow_in_match: true,
             last_span_end: 0,
+            cog: CogMeta::default(),
         }
     }
 
@@ -443,7 +477,7 @@ impl<'src> Parser<'src> {
             "data" if matches!(next, T::Const(_)) => self.parse_data()?,
             "enum" if matches!(next, T::Const(_)) => self.parse_enum()?,
             "extension" if matches!(next, T::Const(_)) => self.parse_extension()?,
-            "using" if matches!(next, T::Const(_) | T::ColonColon) => {
+            "using" if matches!(next, T::Const(_) | T::ColonColon | T::Keyword(K::Cog)) => {
                 let start = self.bump().span;
                 let path = self.parse_const_path()?;
                 let span = self.span_from(start);
@@ -740,7 +774,7 @@ impl<'src> Parser<'src> {
                 span: expr.span,
             }),
             ExprKind::IVar(name) => Some(LValue::IVar(name.clone())),
-            ExprKind::Const(path) if path.names.len() == 1 && !path.absolute => {
+            ExprKind::Const(path) if path.names.len() == 1 && !path.absolute && !path.cog => {
                 Some(LValue::Const(path.names[0].clone()))
             }
             ExprKind::Call(call) => {
@@ -996,6 +1030,7 @@ impl<'src> Parser<'src> {
                     | K::True
                     | K::False
                     | K::SelfKw
+                    | K::Cog
                     | K::Not
                     | K::If
                     | K::Unless
@@ -1371,6 +1406,7 @@ impl<'src> Parser<'src> {
                     | K::True
                     | K::False
                     | K::SelfKw
+                    | K::Cog
                     | K::Not
                     | K::Case
                     | K::Begin
@@ -1737,7 +1773,13 @@ impl<'src> Parser<'src> {
     }
 
     fn parse_const_path(&mut self) -> PResult<ConstPath> {
-        let absolute = self.eat(&T::ColonColon);
+        // `cog::Foo`: a path from the current cog's root module.
+        let cog = self.at_kw(K::Cog) && matches!(self.kind_at(1), T::ColonColon);
+        if cog {
+            self.bump();
+            self.bump();
+        }
+        let absolute = !cog && self.eat(&T::ColonColon);
         let mut names = Vec::new();
         loop {
             match self.kind().clone() {
@@ -1753,7 +1795,11 @@ impl<'src> Parser<'src> {
             }
             break;
         }
-        Ok(ConstPath { absolute, names })
+        Ok(ConstPath {
+            absolute,
+            cog,
+            names,
+        })
     }
 
     fn parse_string_literal(&mut self) -> PResult<Expr> {
@@ -2339,6 +2385,38 @@ impl<'src> Parser<'src> {
                 self.bump();
                 Ok(self.node(start, ExprKind::SelfRef))
             }
+            K::Cog => {
+                if matches!(self.kind_at(1), T::ColonColon) {
+                    let path = self.parse_const_path()?;
+                    let span = self.span_from(start);
+                    let expr = self.node(span, ExprKind::Const(path));
+                    return self.maybe_type_app(expr);
+                }
+                self.bump();
+                // `cog.name` and `cog.version` are the manifest's, as
+                // literals.
+                if self.at(&T::Dot) && !matches!(self.kind_at(2), T::LParen) {
+                    if let T::Ident(field) = self.kind_at(1).clone() {
+                        let value = match field.as_str() {
+                            "name" => Some(self.cog.name.clone()),
+                            "version" => Some(self.cog.version.clone()),
+                            _ => None,
+                        };
+                        if let Some(value) = value {
+                            self.bump();
+                            self.bump();
+                            let span = self.span_from(start);
+                            return Ok(self.node(span, ExprKind::Str(vec![StrPart::Lit(value)])));
+                        }
+                    }
+                }
+                let path = ConstPath {
+                    absolute: false,
+                    cog: true,
+                    names: Vec::new(),
+                };
+                Ok(self.node(start, ExprKind::Const(path)))
+            }
             K::File => {
                 self.bump();
                 Ok(self.node(start, ExprKind::Magic(Magic::File)))
@@ -2830,7 +2908,10 @@ impl<'src> Parser<'src> {
                 self.expect(&T::RBrace, "`}`")?;
                 PatternKind::Hash(hash)
             }
-            T::Const(_) | T::ColonColon => {
+            T::Keyword(K::Cog) if !matches!(self.kind_at(1), T::ColonColon) => {
+                return Err(self.error_expected("a pattern"));
+            }
+            T::Const(_) | T::ColonColon | T::Keyword(K::Cog) => {
                 let path = self.parse_const_path()?;
                 if self.at(&T::LParen) && !self.peek().space_before {
                     self.bump();
@@ -3110,7 +3191,7 @@ impl<'src> Parser<'src> {
                 ty.span = self.span_from(start);
                 Ok(ty)
             }
-            T::Const(_) | T::ColonColon => {
+            T::Const(_) | T::ColonColon | T::Keyword(K::Cog) => {
                 let path = self.parse_const_path()?;
                 let args = if self.at(&T::LBracket) && !self.peek().space_before {
                     self.parse_type_args()?

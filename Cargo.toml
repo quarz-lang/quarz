@@ -7,6 +7,7 @@ members = [
     "crates/quarz-lower",
     "crates/quarz-vm",
     "crates/quarz-aot",
+    "crates/quarz-cog",
     "crates/quarz-cli",
 ]
 
@@ -26,6 +27,7 @@ quarz-ir = { path = "crates/quarz-ir" }
 quarz-lower = { path = "crates/quarz-lower" }
 quarz-vm = { path = "crates/quarz-vm", default-features = false }
 quarz-aot = { path = "crates/quarz-aot" }
+quarz-cog = { path = "crates/quarz-cog" }
 
 # The runtime (the interpreter, and the library compiled programs link)
 # as one codegen unit: faster, and its inlining no longer shifts with

@@ -101,7 +101,7 @@
   - `accept` を持つ `TCPServer.new([host,] port)`、`UDPSocket`(`bind connect send recv recv_bytes recvfrom recvfrom_bytes`)、パスで指定する `UNIXSocket`/`UNIXServer`。ソケットは `IO` なので `gets gets? read read(n) read? readline readlines each_line write << puts print printf eof? close closed?` がそのまま使え、加えて `readpartial readpartial? read_bytes close_write close_read` があります。`write` はバイナリ用に `Bytes` も受け取ります。
 - これらはすべて呼び出したタスクだけを止めます([04-concurrency.ja.md](04-concurrency.ja.md) §6)。ソケットはスケジューラのリアクタで待ち、ファイル全体の操作、ディレクトリとメタデータの操作、子プロセスは補助スレッドで実行されます。開いた `File` と標準入力の読み書きも、バッファで済まないものは補助スレッドで行います。標準出力と標準エラーへの書き込みは同期処理です。`Signal` は *予定*。
 
-## 10. その他(`require` で読み込む)
+## 10. その他(名指しすれば、または `require` で読み込む)
 
 `json`(`JSON.parse -> JSON::Value`。`Null | Bool | Number | String | Array | Object` の enum で(名前は Rust の serde_json に合わせている)、`as_s`・`as_i?`・`[]` などのアクセサを持つ。`Number` は `Int`、`Integer`(`Int` に収まらない整数を桁を失わずに)、`Float` のどれかを持ち、`as_i`・`as_integer`・`as_f` でその型として取り出す。`as_i` は収まらなければ `OverflowError` を投げる。`JSON.generate`/`pretty_generate`、`to_json`)、`time`(何もしない。`Time` と `Duration` は組み込み)、`socket`(§9)。`Set` は組み込みで、require する `set` ライブラリはない。*予定*: `data` へ直接デコードする `JSON.decode[T](str)`、`Date`、`digest`、`base64`、`uri`、`net/http`、`csv`、`yaml`、`optparse`、`logger`、`test`(`Test::Unit` 風)、`benchmark`、`ffi`。
 

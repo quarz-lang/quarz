@@ -449,3 +449,29 @@ fn error_recovery() {
     assert!(!parsed.diagnostics.is_empty());
     assert!(!parsed.program.body.is_empty());
 }
+
+#[test]
+fn cog_keyword() {
+    assert_eq!(sexp("cog::Response"), "cog::Response");
+    assert_eq!(sexp("cog::A::B.new"), "(call cog::A::B new)");
+    assert_eq!(sexp("cog"), "cog");
+    assert_eq!(sexp("cog.get(1)"), "(call cog get 1)");
+    // `cog.name` and `cog.version` are the manifest's, as literals.
+    assert_eq!(sexp("cog.name"), "(str \"main\")");
+    assert_eq!(sexp("cog.version.size"), "(call (str \"0.0.0\") size)");
+    let meta = crate::parser::CogMeta {
+        name: "httpx".into(),
+        version: "1.4.0".into(),
+    };
+    let parsed = crate::parser::parse_cog_file("puts cog.name + cog.version", 0, 0, &meta);
+    assert_eq!(
+        program_to_sexp(&parsed.program).trim_end(),
+        "(call _ puts (call (str \"httpx\") + (str \"1.4.0\")))"
+    );
+    assert!(sexp("def f(x: cog::T) -> cog::U = x").contains("cog::T"));
+    assert_eq!(
+        sexp("case x\nin cog::A then 1\nend"),
+        "(case-in (call _ x) (in cog::A 1))"
+    );
+    assert!(!errors("cog = 1").is_empty());
+}

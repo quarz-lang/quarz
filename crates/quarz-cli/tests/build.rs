@@ -20,13 +20,7 @@ fn build(path: &Path, output: &Path) {
         path.display()
     );
     let sources: Vec<SourceFile> = units.iter().map(|u| u.source.clone()).collect();
-    let to_check: Vec<quarz_types::Unit> = units
-        .into_iter()
-        .map(|u| quarz_types::Unit {
-            name: u.name,
-            program: u.program,
-        })
-        .collect();
+    let to_check: Vec<quarz_types::Unit> = units.into_iter().map(quarz_types::Unit::from).collect();
     let (checked, diags) = quarz_types::check_units(&prelude.program, &to_check);
     let errors: Vec<String> = diags
         .iter()

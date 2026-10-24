@@ -14,6 +14,8 @@ pub enum Keyword {
     Break,
     Case,
     Class,
+    /// The current cog's root module (`cog::Foo`, `cog.name`).
+    Cog,
     Def,
     Do,
     Else,
@@ -57,6 +59,7 @@ impl Keyword {
         Keyword::Break,
         Keyword::Case,
         Keyword::Class,
+        Keyword::Cog,
         Keyword::Def,
         Keyword::Do,
         Keyword::Else,
@@ -97,6 +100,7 @@ impl Keyword {
             "break" => Break,
             "case" => Case,
             "class" => Class,
+            "cog" => Cog,
             "def" => Def,
             "do" => Do,
             "else" => Else,
@@ -139,6 +143,7 @@ impl Keyword {
             Break => "break",
             Case => "case",
             Class => "class",
+            Cog => "cog",
             Def => "def",
             Do => "do",
             Else => "else",
@@ -177,7 +182,7 @@ impl Keyword {
         use Keyword::*;
         matches!(
             self,
-            End | SelfKw | Nil | True | False | File | Line | Method
+            End | SelfKw | Cog | Nil | True | False | File | Line | Method
         )
     }
 }
