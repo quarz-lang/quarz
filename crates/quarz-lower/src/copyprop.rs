@@ -18,7 +18,7 @@ use rustc_hash::FxHashSet as HashSet;
 
 use quarz_ir::*;
 
-use crate::sroa::{defs_at, holds_at, holds_on_entry, reaching, unwritten_between, Site, UNKNOWN};
+use crate::sroa::{defs_at, reaching, Holds, Site};
 
 pub fn propagate_copies(functions: &mut [Function]) {
     for f in functions.iter_mut() {
@@ -66,19 +66,7 @@ fn propagate_in(f: &mut Function) -> bool {
         return false;
     }
     let reach = reaching(f);
-    // Where every register is read.
-    let mut uses: Vec<Vec<Site>> = vec![Vec::new(); f.nregs as usize];
-    let mut term_uses: Vec<Vec<usize>> = vec![Vec::new(); f.nregs as usize];
-    for (bi, blk) in f.blocks.iter().enumerate() {
-        for (ii, inst) in blk.insts.iter().enumerate() {
-            for r in inst.uses() {
-                uses[r as usize].push((bi, ii));
-            }
-        }
-        if let Some(r) = blk.term.uses() {
-            term_uses[r as usize].push(bi);
-        }
-    }
+    let (uses, term_uses) = (&reach.uses, &reach.term_uses);
     let mut delete: HashSet<Site> = HashSet::default();
     // (site, dst, src): redirect the reads of `dst` at `site` to `src`.
     let mut redirect: Vec<(Site, Reg, Reg)> = Vec::new();
@@ -94,25 +82,20 @@ fn propagate_in(f: &mut Function) -> bool {
         if removed.contains(&dst) || sources.contains(&dst) || removed.contains(&src) {
             continue;
         }
-        let src_defs = defs_at(&reach, f, site.0, site.1, src);
-        // Computed once a read of the copy in another block, or before
-        // the move in its block, is found.
-        let mut holds: Option<Vec<bool>> = None;
+        let src_defs = defs_at(&reach, site.0, site.1, src);
+        let mut holds = Holds::new(&reach, site, &[dst, src]);
         let mut ok = true;
         let mut reads: Vec<Site> = Vec::new();
         let mut term_reads: Vec<usize> = Vec::new();
         let mut drops: Vec<Site> = Vec::new();
-        for &(ubi, uii) in &uses[dst as usize] {
-            let here = defs_at(&reach, f, ubi, uii, dst);
-            // A read in a handler (entered from anywhere in its region)
-            // may see the copy: it stays.
-            if here.contains(&UNKNOWN) {
-                ok = false;
-                break;
-            }
-            if !here.contains(&site) {
-                continue;
-            }
+        // A read in a handler (entered from anywhere in its region) may
+        // see the copy: it stays.
+        if reach.read_unknown(f, dst) {
+            continue;
+        }
+        let (dst_reads, dst_terms) = reach.reads_of(f, site, dst);
+        for (ubi, uii) in dst_reads {
+            let here = defs_at(&reach, ubi, uii, dst);
             let inst = &f.blocks[ubi].insts[uii];
             // A `Release` of the copy may release the source instead when
             // the copy is all that reads the source (the variable a loop
@@ -122,18 +105,12 @@ fn propagate_in(f: &mut Function) -> bool {
                 is_release && uses[src as usize].len() == 1 && term_uses[src as usize].is_empty();
             if here.len() != 1
                 || (consumes(inst, dst) && !is_release)
-                || defs_at(&reach, f, ubi, uii, src) != src_defs
+                || defs_at(&reach, ubi, uii, src) != src_defs
             {
                 ok = false;
                 break;
             }
-            let still = if ubi == site.0 && uii > site.1 {
-                unwritten_between(f, site, uii, &[dst, src])
-            } else {
-                let entry = holds.get_or_insert_with(|| holds_on_entry(f, site, &[dst, src]));
-                holds_at(f, entry, site, &[dst, src], ubi, uii)
-            };
-            if !still {
+            if !holds.at(ubi, uii) {
                 ok = false;
                 break;
             }
@@ -147,27 +124,14 @@ fn propagate_in(f: &mut Function) -> bool {
             }
         }
         if ok {
-            for &bi in &term_uses[dst as usize] {
+            for bi in dst_terms {
                 let n = f.blocks[bi].insts.len();
-                let here = defs_at(&reach, f, bi, n, dst);
-                if here.contains(&UNKNOWN) {
+                let here = defs_at(&reach, bi, n, dst);
+                if here.len() != 1 || defs_at(&reach, bi, n, src) != src_defs {
                     ok = false;
                     break;
                 }
-                if !here.contains(&site) {
-                    continue;
-                }
-                if here.len() != 1 || defs_at(&reach, f, bi, n, src) != src_defs {
-                    ok = false;
-                    break;
-                }
-                let still = if bi == site.0 {
-                    unwritten_between(f, site, n, &[dst, src])
-                } else {
-                    let entry = holds.get_or_insert_with(|| holds_on_entry(f, site, &[dst, src]));
-                    holds_at(f, entry, site, &[dst, src], bi, n)
-                };
-                if !still {
+                if !holds.at(bi, n) {
                     ok = false;
                     break;
                 }

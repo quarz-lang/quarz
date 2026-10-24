@@ -9,6 +9,8 @@
 //! construction is the one definition reaching it, and the argument
 //! registers must still hold their values there.
 
+use std::cell::RefCell;
+
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 use quarz_ir::*;
@@ -27,20 +29,151 @@ pub(crate) type Site = (usize, usize);
 /// most).
 pub(crate) type Sites = Vec<Site>;
 
-/// Reaching definitions per block entry: for each register (by number),
-/// the sites that may have written it last.
+/// Reaching definitions, found on demand: from a read, the walk goes
+/// back through the predecessors to the writes of the register on each
+/// path. A table of every register at every block's entry would grow as
+/// blocks times registers, which a long method makes quadratic in time
+/// and memory; a read is mostly near its writes.
 pub(crate) struct Reaching {
-    entry: Vec<Vec<Sites>>,
+    preds: Vec<Vec<usize>>,
     /// Blocks entered from an exception: nothing definite is known there.
-    handlers: HashSet<BlockId>,
-    /// What each instruction writes (`written`), computed once.
-    writes: Vec<Vec<Vec<Reg>>>,
+    handlers: HashSet<usize>,
+    /// Each register's writes (`written`), in order.
+    writes: Vec<Vec<Site>>,
+    /// Where each register is read: by instructions, in order (once per
+    /// operand), and by terminators (their blocks).
+    pub(crate) uses: Vec<Vec<Site>>,
+    pub(crate) term_uses: Vec<Vec<usize>>,
+    /// Whether a read of a register may see anything (`UNKNOWN`).
+    unknown: RefCell<HashMap<Reg, bool>>,
+    /// The definitions entering a block, by block and register.
+    entry: RefCell<HashMap<(usize, Reg), Sites>>,
 }
 
-/// The set of one site.
-pub(crate) fn one(site: Site) -> HashSet<Site> {
+impl Reaching {
+    /// The writes of `r` in block `bi` before instruction `ii`.
+    fn writes_before(&self, r: Reg, bi: usize, ii: usize) -> &[Site] {
+        let w = &self.writes[r as usize];
+        let lo = w.partition_point(|s| s.0 < bi);
+        let hi = w.partition_point(|s| *s < (bi, ii));
+        &w[lo..hi]
+    }
+
+    /// Whether one of `regs` is written in block `bi` between
+    /// instructions `from` and `to` (both excluded).
+    fn written_between(&self, regs: &[Reg], bi: usize, from: usize, to: usize) -> bool {
+        regs.iter().any(|r| {
+            self.writes_before(*r, bi, to)
+                .last()
+                .is_some_and(|s| s.1 > from)
+        })
+    }
+
+    /// Whether one of `regs` is written in block `bi` before instruction
+    /// `to`.
+    fn written_before(&self, regs: &[Reg], bi: usize, to: usize) -> bool {
+        regs.iter()
+            .any(|r| !self.writes_before(*r, bi, to).is_empty())
+    }
+
+    /// The reads of `r` that its write at `site` may reach (`defs_at`
+    /// there includes `site`): instructions in order and terminators,
+    /// found walking forward from `site` up to the next writes. A read
+    /// at a write is before it. A handler's entry is `UNKNOWN`: the walk
+    /// stops there.
+    pub(crate) fn reads_of(&self, f: &Function, site: Site, r: Reg) -> (Vec<Site>, Vec<usize>) {
+        let writes = &self.writes[r as usize];
+        let uses = &self.uses[r as usize];
+        let mut reads = Vec::new();
+        let mut terms = Vec::new();
+        let mut seen: HashSet<usize> = HashSet::default();
+        let mut stack = vec![(site.0, site.1 + 1)];
+        while let Some((b, from)) = stack.pop() {
+            let next = writes
+                .get(writes.partition_point(|w| *w < (b, from)))
+                .filter(|w| w.0 == b)
+                .map(|w| w.1);
+            let lo = uses.partition_point(|u| *u < (b, from));
+            let hi = uses.partition_point(|u| *u <= (b, next.unwrap_or(usize::MAX)));
+            reads.extend_from_slice(&uses[lo..hi]);
+            if next.is_some() {
+                continue;
+            }
+            if self.term_uses[r as usize].binary_search(&b).is_ok() {
+                terms.push(b);
+            }
+            // Every read found: the rest of the function reads it no more
+            // (a temporary written once).
+            if reads.len() + terms.len() == uses.len() + self.term_uses[r as usize].len() {
+                break;
+            }
+            for s in successors(&f.blocks[b]) {
+                let s = s as usize;
+                if !self.handlers.contains(&s) && seen.insert(s) {
+                    stack.push((s, 0));
+                }
+            }
+        }
+        reads.sort_unstable();
+        terms.sort_unstable();
+        (reads, terms)
+    }
+
+    /// Whether some read of `r` may see anything (`UNKNOWN`: in a
+    /// handler, or after one).
+    pub(crate) fn read_unknown(&self, f: &Function, r: Reg) -> bool {
+        if self.handlers.is_empty() {
+            return false;
+        }
+        if let Some(unknown) = self.unknown.borrow().get(&r) {
+            return *unknown;
+        }
+        let unknown = self.uses[r as usize]
+            .iter()
+            .any(|&(bi, ii)| defs_at(self, bi, ii, r).contains(&UNKNOWN))
+            || self.term_uses[r as usize]
+                .iter()
+                .any(|&bi| defs_at(self, bi, f.blocks[bi].insts.len(), r).contains(&UNKNOWN));
+        self.unknown.borrow_mut().insert(r, unknown);
+        unknown
+    }
+
+    /// The definitions of `r` entering block `b` (not a handler).
+    fn entering(&self, b: usize, r: Reg) -> Sites {
+        if let Some(sites) = self.entry.borrow().get(&(b, r)) {
+            return sites.clone();
+        }
+        let mut sites = Sites::new();
+        let mut seen: HashSet<usize> = one(b);
+        let mut stack = vec![b];
+        while let Some(x) = stack.pop() {
+            for &p in &self.preds[x] {
+                // What leaves `p`: its last write, anything from a handler,
+                // or what enters it.
+                if let Some(site) = self.writes_before(r, p, usize::MAX).last() {
+                    sites.push(*site);
+                } else if self.handlers.contains(&p) {
+                    sites.push(UNKNOWN);
+                } else if seen.insert(p) {
+                    // Known already: what enters it is all its paths give.
+                    match self.entry.borrow().get(&(p, r)) {
+                        Some(known) => sites.extend_from_slice(known),
+                        None => stack.push(p),
+                    }
+                }
+            }
+        }
+        sites.sort_unstable();
+        sites.dedup();
+        self.entry.borrow_mut().insert((b, r), sites.clone());
+        sites
+    }
+}
+
+/// The set of one element.
+pub(crate) fn one<T: std::hash::Hash + Eq>(x: T) -> HashSet<T> {
     let mut s = HashSet::default();
-    s.insert(site);
+    s.insert(x);
     s
 }
 
@@ -73,193 +206,135 @@ pub(crate) fn written(inst: &Inst) -> Vec<Reg> {
 }
 
 pub(crate) fn reaching(f: &Function) -> Reaching {
-    let n = f.blocks.len();
-    let nregs = f.nregs as usize;
-    let mut entry: Vec<Vec<Sites>> = vec![vec![Vec::new(); nregs]; n];
-    let writes: Vec<Vec<Vec<Reg>>> = f
-        .blocks
-        .iter()
-        .map(|b| b.insts.iter().map(written).collect())
-        .collect();
-    let handlers: HashSet<BlockId> = f
-        .blocks
-        .iter()
-        .filter_map(|b| b.handler.map(|h| h.block))
-        .collect();
-    // The entry block: every register is nil (no site: "not written
-    // here"). A handler is entered from anywhere: UNKNOWN for all.
-    // A block is (re)visited when what enters it has grown.
-    let mut queued = vec![true; n];
-    let mut work: std::collections::VecDeque<usize> = (0..n).collect();
-    let mut state: Vec<Sites> = Vec::with_capacity(nregs);
-    while let Some(bi) = work.pop_front() {
-        queued[bi] = false;
-        {
-            state.clone_from(&entry[bi]);
-            if handlers.contains(&(bi as BlockId)) {
-                for s in state.iter_mut() {
-                    s.clear();
-                    s.push(UNKNOWN);
-                }
-            }
-            for (ii, w) in writes[bi].iter().enumerate() {
-                for r in w {
-                    let s = &mut state[*r as usize];
-                    s.clear();
-                    s.push((bi, ii));
-                }
-            }
-            for s in successors(&f.blocks[bi]) {
-                let s = s as usize;
-                let mut grew = false;
-                for (dst, sites) in entry[s].iter_mut().zip(&state) {
-                    for site in sites {
-                        if let Err(at) = dst.binary_search(site) {
-                            dst.insert(at, *site);
-                            grew = true;
-                        }
-                    }
-                }
-                if grew && !queued[s] {
-                    queued[s] = true;
-                    work.push_back(s);
-                }
-            }
-        }
-    }
-    Reaching {
-        entry,
-        handlers,
-        writes,
-    }
-}
-
-/// Where what `site` made (a copy, `dst <- src`; an object built from
-/// argument registers) still holds on entry to each block: on every path
-/// from `site`, none of `regs` was written again, and no path from the
-/// function's entry or a handler gets there without passing `site`.
-/// Reaching definitions cannot tell this across a loop: a use reached by
-/// `site` in the previous pass, while one of `regs` was written again by
-/// the same instruction in this one, has the same definitions as at
-/// `site`, but not the same values.
-pub(crate) fn holds_on_entry(f: &Function, site: Site, regs: &[Reg]) -> Vec<bool> {
-    let n = f.blocks.len();
-    let mut preds: Vec<Vec<usize>> = vec![Vec::new(); n];
+    let mut preds: Vec<Vec<usize>> = vec![Vec::new(); f.blocks.len()];
+    let mut writes: Vec<Vec<Site>> = vec![Vec::new(); f.nregs as usize];
+    let mut uses: Vec<Vec<Site>> = vec![Vec::new(); f.nregs as usize];
+    let mut term_uses: Vec<Vec<usize>> = vec![Vec::new(); f.nregs as usize];
     for (bi, blk) in f.blocks.iter().enumerate() {
         for s in successors(blk) {
             preds[s as usize].push(bi);
         }
+        if let Some(r) = blk.term.uses() {
+            term_uses[r as usize].push(bi);
+        }
+        for (ii, inst) in blk.insts.iter().enumerate() {
+            for r in inst.uses() {
+                uses[r as usize].push((bi, ii));
+            }
+            for r in written(inst) {
+                let w = &mut writes[r as usize];
+                if w.last() != Some(&(bi, ii)) {
+                    w.push((bi, ii));
+                }
+            }
+        }
     }
-    let handlers: HashSet<usize> = f
+    let handlers = f
         .blocks
         .iter()
         .filter_map(|b| b.handler.map(|h| h.block as usize))
         .collect();
-    // What each block does, found once: it makes it (`site`, with no
-    // write after it there), ends it (a write of one of `regs`, after
-    // `site` if any), or leaves it as it came.
-    #[derive(Clone, Copy)]
-    enum Effect {
-        Makes,
-        Ends,
-        Keeps,
+    Reaching {
+        preds,
+        handlers,
+        writes,
+        uses,
+        term_uses,
+        unknown: RefCell::default(),
+        entry: RefCell::default(),
     }
-    let effect: Vec<Effect> = f
-        .blocks
-        .iter()
-        .enumerate()
-        .map(|(bi, blk)| {
-            let mut e = Effect::Keeps;
-            for (ii, inst) in blk.insts.iter().enumerate() {
-                if (bi, ii) == site {
-                    e = Effect::Makes;
-                } else if writes_any(inst, regs) {
-                    e = Effect::Ends;
+}
+
+/// Where what `site` made (a copy, `dst <- src`; an object built from
+/// argument registers) still holds: on every path from `site`, none of
+/// `regs` was written again, and no path from the function's entry or a
+/// handler gets there without passing `site`. Reaching definitions
+/// cannot tell this across a loop: a use reached by `site` in the
+/// previous pass, while one of `regs` was written again by the same
+/// instruction in this one, has the same definitions as at `site`, but
+/// not the same values. Found on demand, as the reaching definitions
+/// are, by blocks.
+pub(crate) struct Holds<'r> {
+    reach: &'r Reaching,
+    site: Site,
+    regs: Vec<Reg>,
+    entry: HashMap<usize, bool>,
+}
+
+impl<'r> Holds<'r> {
+    pub(crate) fn new(reach: &'r Reaching, site: Site, regs: &[Reg]) -> Holds<'r> {
+        Holds {
+            reach,
+            site,
+            regs: regs.to_vec(),
+            entry: HashMap::default(),
+        }
+    }
+
+    /// Whether it still holds before instruction `ii` of block `bi`
+    /// (`ii` the instruction count: before the terminator).
+    pub(crate) fn at(&mut self, bi: usize, ii: usize) -> bool {
+        let (sb, si) = self.site;
+        if sb == bi && si < ii {
+            return !self.reach.written_between(&self.regs, bi, si, ii);
+        }
+        !self.reach.written_before(&self.regs, bi, ii) && self.on_entry(bi)
+    }
+
+    /// Whether it holds on entry to block `b`: walking back, every path
+    /// meets a block that makes it (`site`, nothing of `regs` written
+    /// after it there) before one that ends it (writes one of `regs`) or
+    /// the entry of the function, a handler or a block nothing enters.
+    /// A loop that does neither adds no path.
+    fn on_entry(&mut self, b: usize) -> bool {
+        if let Some(holds) = self.entry.get(&b) {
+            return *holds;
+        }
+        let reach = self.reach;
+        let (sb, si) = self.site;
+        let mut holds = true;
+        let mut seen: HashSet<usize> = one(b);
+        let mut stack = vec![b];
+        'walk: while let Some(x) = stack.pop() {
+            if x == 0 || reach.handlers.contains(&x) || reach.preds[x].is_empty() {
+                holds = false;
+                break;
+            }
+            for &p in &reach.preds[x] {
+                let makes = p == sb && !reach.written_between(&self.regs, p, si, usize::MAX);
+                if makes {
+                    continue;
+                }
+                let ends = if p == sb {
+                    true
+                } else {
+                    reach.written_before(&self.regs, p, usize::MAX)
+                };
+                if ends {
+                    holds = false;
+                    break 'walk;
+                }
+                if seen.insert(p) {
+                    stack.push(p);
                 }
             }
-            e
-        })
-        .collect();
-    let at_end = |bi: usize, holds: bool| -> bool {
-        match effect[bi] {
-            Effect::Makes => true,
-            Effect::Ends => false,
-            Effect::Keeps => holds,
         }
-    };
-    // Optimistic start, lowered to a fixed point: the entry block and
-    // handlers hold nothing.
-    let mut entry: Vec<bool> = (0..n).map(|b| b != 0 && !handlers.contains(&b)).collect();
-    let mut exit: Vec<bool> = (0..n).map(|b| at_end(b, entry[b])).collect();
-    loop {
-        let mut changed = false;
-        for b in 1..n {
-            if handlers.contains(&b) {
-                continue;
-            }
-            let e = !preds[b].is_empty() && preds[b].iter().all(|&p| exit[p]);
-            if e != entry[b] {
-                entry[b] = e;
-                changed = true;
-            }
-            let x = at_end(b, e);
-            if x != exit[b] {
-                exit[b] = x;
-                changed = true;
-            }
-        }
-        if !changed {
-            return entry;
-        }
+        self.entry.insert(b, holds);
+        holds
     }
-}
-
-fn writes_any(inst: &Inst, regs: &[Reg]) -> bool {
-    written(inst).iter().any(|r| regs.contains(r))
-}
-
-/// Whether what `site` made still holds before instruction `ii` of its
-/// own block, after it: nothing between writes one of `regs`.
-pub(crate) fn unwritten_between(f: &Function, site: Site, ii: usize, regs: &[Reg]) -> bool {
-    f.blocks[site.0].insts[site.1 + 1..ii]
-        .iter()
-        .all(|inst| !writes_any(inst, regs))
-}
-
-/// Whether what `site` made still holds before instruction `ii` of block
-/// `bi` (`ii` the instruction count: before the terminator), `entry`
-/// being `holds_on_entry`'s answer.
-pub(crate) fn holds_at(
-    f: &Function,
-    entry: &[bool],
-    site: Site,
-    regs: &[Reg],
-    bi: usize,
-    ii: usize,
-) -> bool {
-    let mut holds = entry[bi];
-    for (k, inst) in f.blocks[bi].insts[..ii].iter().enumerate() {
-        if (bi, k) == site {
-            holds = true;
-        } else if writes_any(inst, regs) {
-            holds = false;
-        }
-    }
-    holds
 }
 
 /// The definitions of `r` reaching instruction `ii` of block `bi`
-/// (`None` = never written on this path, i.e. still nil).
-pub(crate) fn defs_at(reach: &Reaching, f: &Function, bi: usize, ii: usize, r: Reg) -> Sites {
-    let _ = f;
+/// (none = never written on this path, i.e. still nil).
+pub(crate) fn defs_at(reach: &Reaching, bi: usize, ii: usize, r: Reg) -> Sites {
     // The last write before `ii` in the block, else what enters it.
-    if let Some(k) = reach.writes[bi][..ii].iter().rposition(|w| w.contains(&r)) {
-        return vec![(bi, k)];
+    if let Some(site) = reach.writes_before(r, bi, ii).last() {
+        return vec![*site];
     }
-    if reach.handlers.contains(&(bi as BlockId)) {
+    if reach.handlers.contains(&bi) {
         vec![UNKNOWN]
     } else {
-        reach.entry[bi][r as usize].clone()
+        reach.entering(bi, r)
     }
 }
 
@@ -304,28 +379,19 @@ fn replace_in(f: &mut Function, methods: &[RtMethod], classes: &[RtClass]) {
         return;
     }
     let reach = reaching(f);
-    // Where every register is used (instructions and terminators).
-    let mut uses: HashMap<Reg, Vec<Site>> = HashMap::default();
-    let mut term_uses: HashMap<Reg, Vec<usize>> = HashMap::default();
-    for (bi, blk) in f.blocks.iter().enumerate() {
-        for (ii, inst) in blk.insts.iter().enumerate() {
-            for r in inst.uses() {
-                uses.entry(r).or_default().push((bi, ii));
-            }
-        }
-        if let Some(r) = blk.term.uses() {
-            term_uses.entry(r).or_default().push(bi);
-        }
-    }
     let mut delete: HashSet<Site> = HashSet::default();
     let mut rewrite: HashMap<Site, Inst> = HashMap::default();
     for (site, class, args, dst) in sites {
         let arg_defs: Vec<Sites> = args
             .iter()
-            .map(|a| defs_at(&reach, f, site.0, site.1, *a))
+            .map(|a| defs_at(&reach, site.0, site.1, *a))
             .collect();
         // Aliases of the object: the register each definition writes.
         let mut aliases: Vec<(Reg, Site)> = vec![(dst, site)];
+        let mut holds: Vec<Holds> = args
+            .iter()
+            .map(|a| Holds::new(&reach, site, &[*a]))
+            .collect();
         let mut seen: HashSet<Site> = one(site);
         let mut to_delete: Vec<Site> = vec![site];
         let mut to_rewrite: Vec<(Site, Inst)> = Vec::new();
@@ -336,25 +402,13 @@ fn replace_in(f: &mut Function, methods: &[RtMethod], classes: &[RtClass]) {
             k += 1;
             // A use in a handler (entered from anywhere in its region:
             // `UNKNOWN`) may see the object; so does a terminator.
-            if term_uses.get(&q).is_some_and(|bs| {
-                bs.iter().any(|bi| {
-                    let n = f.blocks[*bi].insts.len();
-                    let here = defs_at(&reach, f, *bi, n, q);
-                    here.contains(&def) || here.contains(&UNKNOWN)
-                })
-            }) {
+            let (reads, terms) = reach.reads_of(f, def, q);
+            if !terms.is_empty() || reach.read_unknown(f, q) {
                 ok = false;
                 break;
             }
-            for &(ubi, uii) in uses.get(&q).map(|v| v.as_slice()).unwrap_or(&[]) {
-                let here = defs_at(&reach, f, ubi, uii, q);
-                if here.contains(&UNKNOWN) {
-                    ok = false;
-                    break;
-                }
-                if !here.contains(&def) {
-                    continue;
-                }
+            for (ubi, uii) in reads {
+                let here = defs_at(&reach, ubi, uii, q);
                 if here.len() != 1 {
                     ok = false;
                     break;
@@ -377,12 +431,9 @@ fn replace_in(f: &mut Function, methods: &[RtMethod], classes: &[RtClass]) {
                         // built from: same definitions, and not written
                         // since on any path (a pass of a loop may write
                         // it and leave before building again).
-                        let still = if ubi == site.0 && uii > site.1 {
-                            unwritten_between(f, site, uii, &[a])
-                        } else {
-                            holds_at(f, &holds_on_entry(f, site, &[a]), site, &[a], ubi, uii)
-                        };
-                        if defs_at(&reach, f, ubi, uii, a) != arg_defs[*index as usize] || !still {
+                        if defs_at(&reach, ubi, uii, a) != arg_defs[*index as usize]
+                            || !holds[*index as usize].at(ubi, uii)
+                        {
                             ok = false;
                             break;
                         }
