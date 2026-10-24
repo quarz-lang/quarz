@@ -1,0 +1,17 @@
+# A backtrace through typed entries (compiled: from the native stack,
+# read through the stripped executable's .quarz_bt section).
+def f(x: Int) -> Int
+  raise "boom" if x == 0
+  f(x - 1) + 1
+end
+
+def g(n: Int) -> Int
+  f(n) * 2
+end
+
+begin
+  g(3)
+rescue => e
+  puts e.message
+  puts e.backtrace.map { |l| l.split("/").last }.join("\n")
+end

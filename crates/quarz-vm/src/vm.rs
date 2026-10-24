@@ -502,7 +502,7 @@ impl Interp {
             regs.set_len(n);
         }
         let mut pending: Option<Flow> = None;
-        let r = self.run_block_from(f, blocks, fid, pool, act, &mut regs, &mut pending, 0, 0);
+        let r = self.run_blocks(f, blocks, pool, act, &mut regs, &mut pending);
         release_regs(&mut regs);
         if regs.spilled() {
             let v = regs.into_vec();
@@ -569,24 +569,21 @@ impl Interp {
         unsafe { std::slice::from_raw_parts(self.hot.stack_ptr.get(), self.hot.stack_len.get()) }
     }
 
-    /// Run the function's blocks from instruction `start` of `block` on,
-    /// to the end of the function (blocks follow one another here rather
-    /// than through the caller: a step between blocks is a jump).
+    /// Run the function's blocks from the entry to the end of the
+    /// function (blocks follow one another here rather than through the
+    /// caller: a step between blocks is a jump).
     #[allow(clippy::too_many_arguments)]
-    fn run_block_from(
+    fn run_blocks(
         &self,
         f: &FuncInfo,
         blocks: &[Block],
-        fid: FuncId,
         pool: &RefCell<Vec<Value>>,
         act: &Activation,
         regs: &mut [Value],
         pending: &mut Option<Flow>,
-        block: BlockId,
-        start: usize,
     ) -> EvalResult {
-        let mut block = block;
-        let mut start = start;
+        let mut block: BlockId = 0;
+        let mut start = 0;
         'blocks: loop {
             let b = &blocks[block as usize];
             for (i, inst) in b.insts.iter().enumerate().skip(start) {
@@ -666,7 +663,7 @@ impl Interp {
                     _ => {}
                 }
                 act.line.set(b.lines[i]);
-                if let Err(flow) = self.exec_inst(f, fid, pool, act, regs, pending, inst) {
+                if let Err(flow) = self.exec_inst(f, pool, act, regs, pending, inst) {
                     match self.unwind(b, flow, pending) {
                         Step::Jump(h) => {
                             block = h;
@@ -939,14 +936,12 @@ impl Interp {
     pub fn exec_inst(
         &self,
         f: &FuncInfo,
-        fid: FuncId,
         pool: &RefCell<Vec<Value>>,
         act: &Activation,
         regs: &mut [Value],
         pending: &mut Option<Flow>,
         inst: &Inst,
     ) -> Result<(), Flow> {
-        let _ = fid;
         match inst {
             Inst::LoadConst { dst, idx } => self.op_load_const(f, pool, regs, *dst, *idx)?,
             Inst::Move { dst, src } => {

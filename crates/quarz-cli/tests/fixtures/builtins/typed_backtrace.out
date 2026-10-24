@@ -1,0 +1,7 @@
+boom
+typed_backtrace.qz:4:in main#f
+typed_backtrace.qz:5:in main#f
+typed_backtrace.qz:5:in main#f
+typed_backtrace.qz:5:in main#f
+typed_backtrace.qz:9:in main#g
+typed_backtrace.qz:13:in <main>

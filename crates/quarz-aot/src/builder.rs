@@ -121,7 +121,7 @@ pub trait Builder {
         els_args: &[Self::Value],
     );
     fn return_(&mut self, vals: &[Self::Value]);
-    /// Mark `block` as rarely run (a deoptimization, an error or a stack
+    /// Mark `block` as rarely run (an error, an unwinding or a stack
     /// overflow), so that the code generator lays the hot path out and
     /// allocates its registers first.
     fn set_cold(&mut self, block: Self::Block);
