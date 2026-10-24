@@ -561,6 +561,25 @@ pub struct ObjectOf<F: ?Sized + FieldTail> {
     fields: F,
 }
 
+// SAFETY: an object's allocation is the counts, then the header, whose
+// layout (its first field) gives the fields' size in words, the length of
+// the tail (see `Object::with_fields_from`).
+unsafe impl crate::rc::Target for Object {
+    #[inline(always)]
+    unsafe fn inner(p: *mut u8) -> *mut crate::rc::Inner<Object> {
+        type Header = crate::rc::Inner<ObjectOf<std::cell::UnsafeCell<[u64; 0]>>>;
+        // SAFETY: the header of a live object, as the caller promises.
+        let words = unsafe {
+            let at = p.add(
+                std::mem::offset_of!(Header, value)
+                    + std::mem::offset_of!(ObjectOf<std::cell::UnsafeCell<[u64; 0]>>, layout),
+            );
+            (*at.cast::<&'static FieldLayout>()).words
+        };
+        std::ptr::slice_from_raw_parts_mut(p.cast::<u64>(), words) as *mut crate::rc::Inner<Object>
+    }
+}
+
 /// The fields at the end of an object, as words.
 pub trait FieldTail {}
 
@@ -1537,11 +1556,13 @@ pub struct IoVal {
 /// handler's body and continued by `Resume`.
 pub type FlowBox = RefCell<Option<Flow>>;
 
-/// The layout is fixed (`repr(C, u64)`: a tag word followed by the
-/// payload) so that compiled code can build and test values inline. The
-/// variants without reference counting come first; see `NEEDS_DROP_FROM`.
+/// The layout is fixed (`repr(u8)`: a tag byte, then the payload, at
+/// the next byte for a short string and at the next word for the rest) so
+/// that compiled code can build and test values inline. Two words: every
+/// heap payload is a one-word `Rc`. The variants without reference
+/// counting come first; see `NEEDS_DROP_FROM`.
 #[derive(Clone, Debug)]
-#[repr(C, u64)]
+#[repr(u8)]
 pub enum Value {
     Nil,
     Bool(bool),
@@ -1551,7 +1572,7 @@ pub enum Value {
     Class(ClassId),
     /// Nanoseconds.
     Duration(i64),
-    /// A string of at most 15 bytes, kept in the value itself.
+    /// A string of at most 14 bytes, kept in the value itself.
     Short(ShortStr),
     BigInt(Rc<BigInt>),
     /// A longer string.
@@ -1647,7 +1668,7 @@ pub struct ShortStr {
 }
 
 impl ShortStr {
-    pub const MAX: usize = 15;
+    pub const MAX: usize = 14;
 
     pub fn new(s: &str) -> Option<ShortStr> {
         if s.len() > ShortStr::MAX {
@@ -1810,7 +1831,7 @@ impl std::fmt::Debug for SharedValue {
 }
 
 /// Mark one allocation shared or immortal; whether it was not yet.
-fn mark_rc<T: ?Sized>(immortal: bool, r: &Rc<T>) -> bool {
+fn mark_rc<T: ?Sized + crate::rc::Target>(immortal: bool, r: &Rc<T>) -> bool {
     if immortal {
         Rc::make_immortal(r)
     } else {
@@ -2040,7 +2061,8 @@ pub fn check_rc_layout() {
     let value = Value::Str(a.clone());
     // The payload's first word is the pointer `Rc` keeps: the allocation.
     let strong_of = |v: &Value| -> usize {
-        // SAFETY: `Value` is `repr(C, u64)`: the tag, then the payload.
+        // SAFETY: `Value` is `repr(u8)`: the tag, then the payload at the
+        // next word.
         unsafe {
             let words = v as *const Value as *const usize;
             let allocation = *words.add(1) as *const usize;
@@ -2060,6 +2082,20 @@ pub fn check_rc_layout() {
     );
     let object = Value::Object(Object::new(0, Fields::new()));
     assert_eq!(object.type_tag(), 16, "Value layout changed: Object tag");
+    // A payload smaller than a word follows the tag (`repr(u8)`).
+    let t = Value::Bool(true);
+    let c = Value::Class(0x0102_0304);
+    // SAFETY: the bytes read are the payloads.
+    unsafe {
+        let t = &t as *const Value as *const u8;
+        assert_eq!(*t.add(1), 1, "Value layout changed: Bool");
+        let c = &c as *const Value as *const u8;
+        assert_eq!(
+            c.add(4).cast::<u32>().read(),
+            0x0102_0304,
+            "Value layout changed: Class"
+        );
+    }
     let short = Value::str("short");
     assert_eq!(short.type_tag(), 7, "Value layout changed: Short tag");
     assert!(
@@ -2087,7 +2123,7 @@ pub fn check_rc_layout() {
 }
 
 /// Size of a value in bytes, as compiled code lays out its registers.
-pub const VALUE_SIZE: usize = 24;
+pub const VALUE_SIZE: usize = 16;
 
 const _: () = assert!(std::mem::size_of::<Value>() == VALUE_SIZE);
 
@@ -2212,10 +2248,10 @@ impl Value {
         matches!(self, Value::Short(_) | Value::Str(_))
     }
 
-    /// The discriminant (the first word of the `repr(C, u64)` layout).
+    /// The discriminant (the first byte of the `repr(u8)` layout).
     pub fn type_tag(&self) -> u8 {
-        // SAFETY: `Value` is `repr(C, u64)`, so it starts with its tag.
-        unsafe { *(self as *const Value as *const u64) as u8 }
+        // SAFETY: `Value` is `repr(u8)`, so it starts with its tag.
+        unsafe { *(self as *const Value as *const u8) }
     }
 
     /// Identity comparison (`equal?`): values without a heap payload are

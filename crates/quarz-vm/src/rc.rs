@@ -17,6 +17,10 @@
 //! - A shared one has 0 in the first word, which no count ever is, and
 //!   its count in the second, updated atomically.
 //!
+//! A reference is one word, the address of the counts, whatever the
+//! value: an unsized value finds its length in the allocation (see
+//! `Target`), so that a `Value` holding one is two words.
+//!
 //! So compiled code reads only the first word: it bumps a count that is
 //! not 0 and lowers one above 1 inline, and calls the runtime for the
 //! rest (a shared count, or the last reference); a count of 1 means a
@@ -111,9 +115,58 @@ const _: () = {
     assert!(std::mem::offset_of!(Inner<crate::value::ArrayData>, value) == 16);
 };
 
+/// What an `Rc` can refer to: how to find the allocation's `Inner`
+/// from the address of its counts, which is all a reference keeps. A
+/// sized value needs nothing more; an unsized one keeps its length in
+/// the allocation (a string's or byte string's in the word before the
+/// counts, an object's in its layout).
+///
+/// # Safety
+/// `inner` gives back the `Inner` the allocation was made with, and
+/// `PREFIX` is how many bytes the allocation has before the counts.
+pub unsafe trait Target {
+    const PREFIX: usize = 0;
+
+    /// # Safety
+    /// `p` is the address of a live allocation's counts.
+    unsafe fn inner(p: *mut u8) -> *mut Inner<Self>;
+}
+
+// SAFETY: a sized value's `Inner` starts at the counts.
+unsafe impl<T> Target for T {
+    #[inline(always)]
+    unsafe fn inner(p: *mut u8) -> *mut Inner<T> {
+        p.cast()
+    }
+}
+
+// SAFETY: made by `Rc::from_bytes`, the length in the word before.
+unsafe impl Target for [u8] {
+    const PREFIX: usize = 8;
+
+    #[inline(always)]
+    unsafe fn inner(p: *mut u8) -> *mut Inner<[u8]> {
+        // SAFETY: as the caller promises.
+        let len = unsafe { *p.cast::<usize>().sub(1) };
+        std::ptr::slice_from_raw_parts_mut(p, len) as *mut Inner<[u8]>
+    }
+}
+
+// SAFETY: as `[u8]`, of which a string is the bytes.
+unsafe impl Target for str {
+    const PREFIX: usize = 8;
+
+    #[inline(always)]
+    unsafe fn inner(p: *mut u8) -> *mut Inner<str> {
+        // SAFETY: as the caller promises.
+        unsafe { <[u8] as Target>::inner(p) as *mut Inner<str> }
+    }
+}
+
 /// A counted reference to a heap value (see the module comment).
-pub struct Rc<T: ?Sized> {
-    ptr: NonNull<Inner<T>>,
+pub struct Rc<T: ?Sized + Target> {
+    /// The allocation's counts.
+    ptr: NonNull<u8>,
     _owns: PhantomData<Inner<T>>,
 }
 
@@ -127,7 +180,7 @@ impl<T> Rc<T> {
         });
         Rc {
             // SAFETY: `Box::into_raw` never returns null.
-            ptr: unsafe { NonNull::new_unchecked(Box::into_raw(inner)) },
+            ptr: unsafe { NonNull::new_unchecked(Box::into_raw(inner).cast()) },
             _owns: PhantomData,
         }
     }
@@ -157,7 +210,7 @@ impl<T> Rc<MaybeUninit<T>> {
     /// The value has been fully written.
     #[inline]
     pub unsafe fn assume_init(self) -> Rc<T> {
-        let ptr = self.ptr.cast::<Inner<T>>();
+        let ptr = self.ptr;
         std::mem::forget(self);
         // `MaybeUninit<T>` has the layout of `T`, so `Inner` keeps its own.
         Rc {
@@ -167,7 +220,7 @@ impl<T> Rc<MaybeUninit<T>> {
     }
 }
 
-impl<T: ?Sized> Rc<T> {
+impl<T: ?Sized + Target> Rc<T> {
     /// The first reference to an allocation the caller made (with the
     /// global allocator, in the layout of `Inner<T>`) and whose value it
     /// wrote: the counts are set here.
@@ -175,34 +228,42 @@ impl<T: ?Sized> Rc<T> {
     /// # Safety
     /// As said; nothing else refers to the allocation.
     pub(crate) unsafe fn from_fresh(ptr: *mut Inner<T>) -> Rc<T> {
+        // Nothing here writes what comes before the counts.
+        debug_assert_eq!(T::PREFIX, 0);
         // SAFETY: as the caller promises.
         unsafe {
             (&raw mut (*ptr).local).write(Cell::new(1));
             (&raw mut (*ptr).shared).write(Cell::new(1));
             Rc {
-                ptr: NonNull::new_unchecked(ptr),
+                ptr: NonNull::new_unchecked(ptr.cast()),
                 _owns: PhantomData,
             }
         }
     }
 
     #[inline(always)]
+    fn inner_ptr(&self) -> *mut Inner<T> {
+        // SAFETY: the allocation lives while a reference does.
+        unsafe { T::inner(self.ptr.as_ptr()) }
+    }
+
+    #[inline(always)]
     fn inner(&self) -> &Inner<T> {
         // SAFETY: the allocation lives while a reference does.
-        unsafe { self.ptr.as_ref() }
+        unsafe { &*self.inner_ptr() }
     }
 
     /// Whether both point at the same allocation.
     #[inline]
     pub fn ptr_eq(a: &Rc<T>, b: &Rc<T>) -> bool {
-        std::ptr::addr_eq(a.ptr.as_ptr(), b.ptr.as_ptr())
+        a.ptr == b.ptr
     }
 
     /// The address of the value.
     #[inline]
     pub fn as_ptr(this: &Rc<T>) -> *const T {
         // SAFETY: a field of a live allocation.
-        unsafe { &raw const (*this.ptr.as_ptr()).value }
+        unsafe { &raw const (*this.inner_ptr()).value }
     }
 
     /// The value, when this is its only reference.
@@ -210,7 +271,7 @@ impl<T: ?Sized> Rc<T> {
     pub fn get_mut(this: &mut Rc<T>) -> Option<&mut T> {
         if this.inner().take_unique() {
             // SAFETY: the only reference, borrowed mutably.
-            Some(unsafe { &mut (*this.ptr.as_ptr()).value })
+            Some(unsafe { &mut (*this.inner_ptr()).value })
         } else {
             None
         }
@@ -271,7 +332,8 @@ impl<T: ?Sized> Rc<T> {
 
     /// The allocation's layout, for freeing it.
     fn layout(&self) -> Layout {
-        Layout::for_value(self.inner())
+        let value = Layout::for_value(self.inner());
+        Layout::from_size_align(T::PREFIX + value.size(), value.align()).unwrap()
     }
 }
 
@@ -284,11 +346,11 @@ impl<T: Clone> Rc<T> {
             *this = Rc::new((**this).clone());
         }
         // SAFETY: the only reference now, borrowed mutably.
-        unsafe { &mut (*this.ptr.as_ptr()).value }
+        unsafe { &mut (*this.inner_ptr()).value }
     }
 }
 
-impl<T: ?Sized> Clone for Rc<T> {
+impl<T: ?Sized + Target> Clone for Rc<T> {
     #[inline]
     fn clone(&self) -> Rc<T> {
         let inner = self.inner();
@@ -310,7 +372,7 @@ impl<T: ?Sized> Clone for Rc<T> {
     }
 }
 
-impl<T: ?Sized> Drop for Rc<T> {
+impl<T: ?Sized + Target> Drop for Rc<T> {
     #[inline]
     fn drop(&mut self) {
         let inner = self.inner();
@@ -333,19 +395,19 @@ impl<T: ?Sized> Drop for Rc<T> {
     }
 }
 
-impl<T: ?Sized> Rc<T> {
+impl<T: ?Sized + Target> Rc<T> {
     #[inline(never)]
     unsafe fn drop_slow(&mut self) {
         let layout = self.layout();
         // SAFETY: the caller holds the last reference.
         unsafe {
-            std::ptr::drop_in_place(&raw mut (*self.ptr.as_ptr()).value);
-            dealloc(self.ptr.as_ptr().cast(), layout);
+            std::ptr::drop_in_place(&raw mut (*self.inner_ptr()).value);
+            dealloc(self.ptr.as_ptr().sub(T::PREFIX), layout);
         }
     }
 }
 
-impl<T: ?Sized> Deref for Rc<T> {
+impl<T: ?Sized + Target> Deref for Rc<T> {
     type Target = T;
     #[inline(always)]
     fn deref(&self) -> &T {
@@ -353,13 +415,13 @@ impl<T: ?Sized> Deref for Rc<T> {
     }
 }
 
-impl<T: ?Sized> AsRef<T> for Rc<T> {
+impl<T: ?Sized + Target> AsRef<T> for Rc<T> {
     fn as_ref(&self) -> &T {
         self
     }
 }
 
-impl<T: ?Sized> Borrow<T> for Rc<T> {
+impl<T: ?Sized + Target> Borrow<T> for Rc<T> {
     fn borrow(&self) -> &T {
         self
     }
@@ -368,12 +430,12 @@ impl<T: ?Sized> Borrow<T> for Rc<T> {
 impl From<&str> for Rc<str> {
     fn from(s: &str) -> Rc<str> {
         let bytes: Rc<[u8]> = Rc::from_bytes(s.as_bytes());
-        let ptr = bytes.ptr.as_ptr() as *mut Inner<str>;
+        let ptr = bytes.ptr;
         std::mem::forget(bytes);
+        // The allocation holds valid UTF-8; `str` and `[u8]` have the
+        // same layout and are found the same way.
         Rc {
-            // SAFETY: the allocation holds valid UTF-8; `str` and `[u8]`
-            // have the same layout and metadata.
-            ptr: unsafe { NonNull::new_unchecked(ptr) },
+            ptr,
             _owns: PhantomData,
         }
     }
@@ -416,11 +478,16 @@ impl<T> From<T> for Rc<T> {
 }
 
 impl Rc<[u8]> {
+    /// The length, then the counts, then the bytes (see `Target`).
     fn from_bytes(bytes: &[u8]) -> Rc<[u8]> {
-        let (layout, offset) = Layout::new::<Inner<()>>()
+        let (inner, offset) = Layout::new::<Inner<()>>()
             .extend(Layout::array::<u8>(bytes.len()).expect("string too large"))
             .expect("string too large");
-        let layout = layout.pad_to_align();
+        let layout = Layout::from_size_align(
+            <[u8] as Target>::PREFIX + inner.pad_to_align().size(),
+            inner.align(),
+        )
+        .expect("string too large");
         // SAFETY: the layout is not zero-sized (it has the counts); the
         // memory is initialized before the reference is made.
         unsafe {
@@ -428,51 +495,53 @@ impl Rc<[u8]> {
             if mem.is_null() {
                 handle_alloc_error(layout);
             }
-            let inner = std::ptr::slice_from_raw_parts_mut(mem, bytes.len()) as *mut Inner<[u8]>;
+            mem.cast::<usize>().write(bytes.len());
+            let counts = mem.add(<[u8] as Target>::PREFIX);
+            let inner = <[u8] as Target>::inner(counts);
             (&raw mut (*inner).local).write(Cell::new(1));
             (&raw mut (*inner).shared).write(Cell::new(1));
-            std::ptr::copy_nonoverlapping(bytes.as_ptr(), mem.add(offset), bytes.len());
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), counts.add(offset), bytes.len());
             Rc {
-                ptr: NonNull::new_unchecked(inner),
+                ptr: NonNull::new_unchecked(counts),
                 _owns: PhantomData,
             }
         }
     }
 }
 
-impl<T: ?Sized + fmt::Debug> fmt::Debug for Rc<T> {
+impl<T: ?Sized + Target + fmt::Debug> fmt::Debug for Rc<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Debug::fmt(&**self, f)
     }
 }
 
-impl<T: ?Sized + fmt::Display> fmt::Display for Rc<T> {
+impl<T: ?Sized + Target + fmt::Display> fmt::Display for Rc<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(&**self, f)
     }
 }
 
-impl<T: ?Sized + PartialEq> PartialEq for Rc<T> {
+impl<T: ?Sized + Target + PartialEq> PartialEq for Rc<T> {
     fn eq(&self, other: &Rc<T>) -> bool {
         **self == **other
     }
 }
 
-impl<T: ?Sized + Eq> Eq for Rc<T> {}
+impl<T: ?Sized + Target + Eq> Eq for Rc<T> {}
 
-impl<T: ?Sized + PartialOrd> PartialOrd for Rc<T> {
+impl<T: ?Sized + Target + PartialOrd> PartialOrd for Rc<T> {
     fn partial_cmp(&self, other: &Rc<T>) -> Option<Ordering> {
         (**self).partial_cmp(&**other)
     }
 }
 
-impl<T: ?Sized + Ord> Ord for Rc<T> {
+impl<T: ?Sized + Target + Ord> Ord for Rc<T> {
     fn cmp(&self, other: &Rc<T>) -> Ordering {
         (**self).cmp(&**other)
     }
 }
 
-impl<T: ?Sized + Hash> Hash for Rc<T> {
+impl<T: ?Sized + Target + Hash> Hash for Rc<T> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         (**self).hash(state)
     }
@@ -486,14 +555,14 @@ impl<T: Default> Default for Rc<T> {
 
 /// A reference to a shared allocation, which may move to another thread
 /// (a task handle placed on another worker).
-pub struct SendRc<T: ?Sized>(Rc<T>);
+pub struct SendRc<T: ?Sized + Target>(Rc<T>);
 
 // SAFETY: the allocation is shared (checked when wrapped): its count is
 // updated atomically, and what is reachable from it is shared too.
-unsafe impl<T: ?Sized> Send for SendRc<T> {}
-unsafe impl<T: ?Sized> Sync for SendRc<T> {}
+unsafe impl<T: ?Sized + Target> Send for SendRc<T> {}
+unsafe impl<T: ?Sized + Target> Sync for SendRc<T> {}
 
-impl<T: ?Sized> SendRc<T> {
+impl<T: ?Sized + Target> SendRc<T> {
     pub fn new(rc: Rc<T>) -> SendRc<T> {
         assert!(
             Rc::is_shared(&rc),

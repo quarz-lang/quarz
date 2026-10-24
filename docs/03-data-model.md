@@ -20,7 +20,7 @@ The following types are **immutable**. There are no methods that modify a value;
 | `Set[T]` | HAMT | `add`, `delete`, `\|`, `&`, `-`… |
 | `Range[T]`, `Tuple`, `Symbol`, numbers, `Bool`, `Nil`, `Regexp` | | |
 
-The Implementation column is the design. Currently `Array` is a flat vector (an array of only `Int`s or only `Float`s stores machine words), `Hash` an insertion-ordered hash table (one whose keys and values are all `Int` is stored unboxed), `Set` an insertion-ordered hash set, and `String` a flat UTF-8 string (at most 15 bytes inside the value itself; no rope). An update is in place when the reference is unique, as below, and otherwise copies the whole collection, in O(n).
+The Implementation column is the design. Currently `Array` is a flat vector (an array of only `Int`s or only `Float`s stores machine words), `Hash` an insertion-ordered hash table (one whose keys and values are all `Int` is stored unboxed), `Set` an insertion-ordered hash set, and `String` a flat UTF-8 string (at most 14 bytes inside the value itself; no rope). An update is in place when the reference is unique, as below, and otherwise copies the whole collection, in O(n).
 
 ```ruby
 a = [1, 2, 3]
