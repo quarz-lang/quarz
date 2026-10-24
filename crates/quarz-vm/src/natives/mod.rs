@@ -8,6 +8,66 @@ use crate::interp::{Args, EvalResult, Flow, Interp, NativeFn, OwnedNativeFn};
 use crate::value::Value;
 use smallvec::smallvec;
 
+/// Register a native under its keys (one, or a list), as a function of
+/// its own named `qzn.` and its first key: a compiled program refers to
+/// the natives it uses by these names (see `quarz_aot`), so that the
+/// linker leaves out the others.
+macro_rules! native {
+    ($m:expr, [$first:literal $(, $key:literal)* $(,)?], $f:expr $(,)?) => {{
+        #[export_name = concat!("qzn.", $first)]
+        fn native(
+            i: &crate::interp::Interp,
+            r: &crate::value::Value,
+            a: crate::interp::Args,
+        ) -> crate::interp::EvalResult {
+            let f: crate::interp::NativeFn = $f;
+            f(i, r, a)
+        }
+        $m.add(&[$first $(, $key)*], native, concat!("qzn.", $first));
+    }};
+    ($m:expr, $key:literal, $f:expr $(,)?) => {
+        native!($m, [$key], $f)
+    };
+}
+
+/// `native!` for a by-reference native (`qzf.`).
+macro_rules! fast {
+    ($m:expr, [$first:literal $(, $key:literal)* $(,)?], $f:expr $(,)?) => {{
+        #[export_name = concat!("qzf.", $first)]
+        fn native(
+            i: &crate::interp::Interp,
+            r: &crate::value::Value,
+            a: &[&crate::value::Value],
+        ) -> Option<crate::interp::EvalResult> {
+            let f: crate::interp::FastNativeFn = $f;
+            f(i, r, a)
+        }
+        $m.add(&[$first $(, $key)*], native, concat!("qzf.", $first));
+    }};
+    ($m:expr, $key:literal, $f:expr $(,)?) => {
+        fast!($m, [$key], $f)
+    };
+}
+
+/// `native!` for an in-place native (`qzo.`).
+macro_rules! owned {
+    ($m:expr, [$first:literal $(, $key:literal)* $(,)?], $f:expr $(,)?) => {{
+        #[export_name = concat!("qzo.", $first)]
+        fn native(
+            i: &crate::interp::Interp,
+            r: crate::value::Value,
+            a: crate::interp::Args,
+        ) -> Result<crate::value::Value, (crate::interp::Flow, crate::value::Value)> {
+            let f: crate::interp::OwnedNativeFn = $f;
+            f(i, r, a)
+        }
+        $m.add(&[$first $(, $key)*], native, concat!("qzo.", $first));
+    }};
+    ($m:expr, $key:literal, $f:expr $(,)?) => {
+        owned!($m, [$key], $f)
+    };
+}
+
 pub mod bytes;
 mod collections;
 mod concurrency;
@@ -24,51 +84,34 @@ mod string;
 mod text;
 pub mod time;
 
-/// Natives with their keys (`Class#name`), in the order they are
-/// registered (a later one with the same key wins), built at start-up.
-/// A compiled program's methods know where theirs are (`positions`, see
-/// `crate::methods`), the interpreter's look them up by key (`map`).
+/// Natives with their keys (`Class#name`) and symbols, in the order they
+/// are registered (a later one with the same key wins). Only what
+/// interprets builds the registries (`all`): a compiled program has a
+/// table of the natives it uses, made by its build (`symbols`).
 pub struct Registry<F> {
-    entries: Vec<(&'static str, F)>,
+    entries: Vec<(&'static str, F, &'static str)>,
 }
 
-/// Which registry: `natives::registry`, `fast_registry`, `owned_registry`.
+/// Which registry: plain natives, by-reference ones, in-place ones.
 pub const PLAIN: usize = 0;
 pub const FAST: usize = 1;
 pub const OWNED: usize = 2;
 
 impl<F: Copy> Registry<F> {
-    pub fn insert(&mut self, key: &'static str, f: F) {
-        self.entries.push((key, f));
-    }
-
-    /// The native `positions` put at `i` (in a registry whose
-    /// `fingerprint` the build's matches).
-    pub fn get(&self, i: u32) -> Option<F> {
-        self.entries.get(i as usize).map(|(_, f)| *f)
+    pub fn add(&mut self, keys: &[&'static str], f: F, symbol: &'static str) {
+        for key in keys {
+            self.entries.push((key, f, symbol));
+        }
     }
 
     /// The natives by key.
     pub fn map(&self) -> quarz_ir::HashMap<&'static str, F> {
-        self.entries.iter().copied().collect()
+        self.entries.iter().map(|(k, f, _)| (*k, *f)).collect()
     }
 
-    /// Its keys in order, hashed: a build and the runtime it links
-    /// against must agree on where the natives are.
-    pub fn fingerprint(&self, h: &mut impl std::hash::Hasher) {
-        for (k, _) in &self.entries {
-            h.write(k.as_bytes());
-            h.write_u8(0);
-        }
-    }
-
-    /// Where each key's native is (for a build to record).
-    pub fn positions(&self) -> quarz_ir::HashMap<&'static str, u32> {
-        self.entries
-            .iter()
-            .enumerate()
-            .map(|(i, (k, _))| (*k, i as u32))
-            .collect()
+    /// The symbols of the natives by key.
+    pub fn symbols(&self) -> quarz_ir::HashMap<&'static str, &'static str> {
+        self.entries.iter().map(|(k, _, s)| (*k, *s)).collect()
     }
 }
 
@@ -78,35 +121,29 @@ fn registry_with<F>(n: usize) -> Registry<F> {
     }
 }
 
-/// The fingerprint of the three registries (see `Registry::fingerprint`).
-pub fn fingerprint_of(
-    plain: &Registry<NativeFn>,
-    fast: &Registry<crate::interp::FastNativeFn>,
-    owned: &Registry<OwnedNativeFn>,
-) -> u64 {
-    use std::hash::Hasher;
-    let mut h = rustc_hash::FxHasher::default();
-    plain.fingerprint(&mut h);
-    fast.fingerprint(&mut h);
-    owned.fingerprint(&mut h);
-    h.finish()
+/// The three registries.
+pub struct Natives {
+    pub plain: Registry<NativeFn>,
+    pub fast: Registry<crate::interp::FastNativeFn>,
+    pub owned: Registry<OwnedNativeFn>,
 }
 
-pub fn fingerprint() -> u64 {
-    fingerprint_of(&registry(), &fast_registry(), &owned_registry())
+pub fn all() -> Natives {
+    Natives {
+        plain: registry(),
+        fast: fast_registry(),
+        owned: owned_registry(),
+    }
 }
 
-/// Where each native of the three registries is, by key (`PLAIN`,
-/// `FAST`, `OWNED`): what a build records (see `crate::methods`).
-pub fn positions() -> [quarz_ir::HashMap<&'static str, u32>; 3] {
-    [
-        registry().positions(),
-        fast_registry().positions(),
-        owned_registry().positions(),
-    ]
+/// The symbols of the natives of the three registries (`PLAIN`, `FAST`,
+/// `OWNED`), by key: what a build refers to.
+pub fn symbols() -> [quarz_ir::HashMap<&'static str, &'static str>; 3] {
+    let n = all();
+    [n.plain.symbols(), n.fast.symbols(), n.owned.symbols()]
 }
 
-pub fn registry() -> Registry<NativeFn> {
+fn registry() -> Registry<NativeFn> {
     let mut m: Registry<NativeFn> = registry_with(1024);
     core::register(&mut m);
     numeric::register(&mut m);
@@ -126,14 +163,14 @@ pub fn registry() -> Registry<NativeFn> {
 }
 
 /// Natives with a by-reference version.
-pub fn fast_registry() -> Registry<crate::interp::FastNativeFn> {
+fn fast_registry() -> Registry<crate::interp::FastNativeFn> {
     let mut m = registry_with(64);
     fast::register(&mut m);
     m
 }
 
 /// Natives that update a uniquely owned receiver in place.
-pub fn owned_registry() -> Registry<OwnedNativeFn> {
+fn owned_registry() -> Registry<OwnedNativeFn> {
     let mut m: Registry<OwnedNativeFn> = registry_with(16);
     collections::register_owned(&mut m);
     m

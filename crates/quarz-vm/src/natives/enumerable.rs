@@ -17,30 +17,39 @@ use super::{block, collect, int, string};
 
 pub fn register(m: &mut super::Registry<NativeFn>) {
     // Enumerable: enumerators for the blockless forms.
-    m.insert("Enumerable#to_enum", |i, r, _| {
+    native!(m, "Enumerable#to_enum", |i, r, _| {
         enumerator(i, r, "each", vec![])
     });
-    m.insert("Enumerable#map", |i, r, _| enumerator(i, r, "each", vec![]));
-    m.insert("Enumerable#each_with_index", |i, r, _| {
+    native!(m, "Enumerable#map", |i, r, _| enumerator(
+        i,
+        r,
+        "each",
+        vec![]
+    ));
+    native!(m, "Enumerable#each_with_index", |i, r, _| {
         enumerator(i, r, "each_with_index_pairs", vec![])
     });
-    m.insert("Enumerable#sort_pairs", super::collections::enum_sort_pairs);
-    m.insert("Enumerable#each_with_index_pairs", |i, r, a| {
+    native!(
+        m,
+        "Enumerable#sort_pairs",
+        super::collections::enum_sort_pairs
+    );
+    native!(m, "Enumerable#each_with_index_pairs", |i, r, a| {
         let b = block(i, &a)?;
         for (k, x) in collect(i, r)?.into_iter().enumerate() {
             i.call_block(&b, smallvec![Value::array(vec![x, Value::Int(k as i64)])])?;
         }
         Ok(Value::Nil)
     });
-    m.insert("Enumerable#each_slice", |i, r, a| {
+    native!(m, "Enumerable#each_slice", |i, r, a| {
         enumerator(i, r, "each_slice", a.pos.to_vec())
     });
-    m.insert("Enumerable#each_cons", |i, r, a| {
+    native!(m, "Enumerable#each_cons", |i, r, a| {
         enumerator(i, r, "each_cons", a.pos.to_vec())
     });
 
     // Enumerator
-    m.insert("Enumerator#peek", |i, r, _| {
+    native!(m, "Enumerator#peek", |i, r, _| {
         let Value::Enumerator(e) = r else {
             return Err(i.err_type("expected an Enumerator"));
         };
@@ -51,7 +60,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         e.current(false)
             .ok_or_else(|| i.raise(i.program.exc.stop_iteration, "iteration reached an end"))
     });
-    m.insert("Enumerator#rewind", |i, r, _| {
+    native!(m, "Enumerator#rewind", |i, r, _| {
         let Value::Enumerator(e) = r else {
             return Err(i.err_type("expected an Enumerator"));
         };
@@ -60,11 +69,11 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     });
 
     // Array
-    m.insert("Array#slice", |i, r, a| {
+    native!(m, "Array#slice", |i, r, a| {
         let items = arr(i, r)?;
         Ok(Value::array(slice_of(&items, i, a.arg(0), a.arg(1))?))
     });
-    m.insert("Array#take", |i, r, a| {
+    native!(m, "Array#take", |i, r, a| {
         let n = int(i, a.arg(0), "count")?;
         if n < 0 {
             return Err(i.err_arg("attempt to take negative size"));
@@ -73,7 +82,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             arr(i, r)?.iter().take(n as usize).cloned().collect(),
         ))
     });
-    m.insert("Array#drop", |i, r, a| {
+    native!(m, "Array#drop", |i, r, a| {
         let n = int(i, a.arg(0), "count")?;
         if n < 0 {
             return Err(i.err_arg("attempt to drop negative size"));
@@ -82,7 +91,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             arr(i, r)?.iter().skip(n as usize).cloned().collect(),
         ))
     });
-    m.insert("Array#values_at", |i, r, a| {
+    native!(m, "Array#values_at", |i, r, a| {
         let items = arr(i, r)?;
         let mut out = Vec::with_capacity(a.pos.len());
         for idx in &a.pos {
@@ -90,7 +99,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         }
         Ok(Value::array(out))
     });
-    m.insert("Array#fill", |i, r, a| {
+    native!(m, "Array#fill", |i, r, a| {
         let value = a.arg(0).clone();
         if a.pos.len() == 1 {
             return update(i, r, |v| v.iter_mut().for_each(|x| *x = value.clone()));
@@ -105,7 +114,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
                 .for_each(|x| *x = value.clone());
         })
     });
-    m.insert("Array#product", |i, r, a| {
+    native!(m, "Array#product", |i, r, a| {
         let other = arr(i, a.arg(0))?;
         let mut out = Vec::new();
         for x in arr(i, r)?.iter() {
@@ -115,7 +124,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         }
         Ok(Value::array(out))
     });
-    m.insert("Array#combination", |i, r, a| {
+    native!(m, "Array#combination", |i, r, a| {
         let n = int(i, a.arg(0), "size")?;
         let items = arr(i, r)?;
         let mut out = Vec::new();
@@ -125,7 +134,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         }
         Ok(Value::array(out))
     });
-    m.insert("Array#permutation", |i, r, a| {
+    native!(m, "Array#permutation", |i, r, a| {
         let items = arr(i, r)?;
         let n = match a.pos.first() {
             Some(n) => int(i, n, "size")?,
@@ -139,7 +148,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         }
         Ok(Value::array(out))
     });
-    m.insert("Array#bsearch", |i, r, a| {
+    native!(m, "Array#bsearch", |i, r, a| {
         let b = block(i, &a)?;
         let items = arr(i, r)?.clone();
         let (mut lo, mut hi) = (0usize, items.len());
@@ -155,7 +164,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     });
 
     // Array::Builder
-    m.insert("Array::Builder#[]", |i, r, a| {
+    native!(m, "Array::Builder#[]", |i, r, a| {
         let b = ab(i, r)?;
         if let Value::Range(rg) = a.arg(0) {
             let items = b.borrow();
@@ -168,7 +177,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         }
         Ok(v)
     });
-    m.insert("Array::Builder#first", |i, r, a| {
+    native!(m, "Array::Builder#first", |i, r, a| {
         let items = ab(i, r)?.borrow();
         match a.pos.first() {
             None => Ok(items.first().cloned().unwrap_or(Value::Nil)),
@@ -178,7 +187,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             }
         }
     });
-    m.insert("Array::Builder#last", |i, r, a| {
+    native!(m, "Array::Builder#last", |i, r, a| {
         let items = ab(i, r)?.borrow();
         match a.pos.first() {
             None => Ok(items.last().cloned().unwrap_or(Value::Nil)),
@@ -189,7 +198,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             }
         }
     });
-    m.insert("Array::Builder#index", |i, r, a| {
+    native!(m, "Array::Builder#index", |i, r, a| {
         Ok(ab(i, r)?
             .borrow()
             .iter()
@@ -197,7 +206,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             .map(|p| Value::Int(p as i64))
             .unwrap_or(Value::Nil))
     });
-    m.insert("Array::Builder#join", |i, r, a| {
+    native!(m, "Array::Builder#join", |i, r, a| {
         let items = ab(i, r)?.borrow().clone();
         let sep = match a.pos.first() {
             Some(s) => string(i, s, "separator")?,
@@ -209,7 +218,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         }
         Ok(Value::string(parts.join(sep)))
     });
-    m.insert("Array::Builder#sort!", |i, r, a| {
+    native!(m, "Array::Builder#sort!", |i, r, a| {
         let b = ab(i, r)?;
         let mut items = std::mem::take(&mut *b.borrow_mut());
         let result = match &a.block {
@@ -220,7 +229,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         result?;
         Ok(r.clone())
     });
-    m.insert("Array::Builder#sort_by!", |i, r, a| {
+    native!(m, "Array::Builder#sort_by!", |i, r, a| {
         let bl = block(i, &a)?;
         let b = ab(i, r)?;
         let items = b.borrow().clone();
@@ -243,17 +252,17 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         *b.borrow_mut() = indices.into_iter().map(|k| keyed[k].1.clone()).collect();
         Ok(r.clone())
     });
-    m.insert("Array::Builder#uniq!", |i, r, _| {
+    native!(m, "Array::Builder#uniq!", |i, r, _| {
         let b = ab(i, r)?;
         let seen: ValueSet = b.borrow().iter().cloned().collect();
         *b.borrow_mut() = seen.into_iter().collect();
         Ok(r.clone())
     });
-    m.insert("Array::Builder#compact!", |i, r, _| {
+    native!(m, "Array::Builder#compact!", |i, r, _| {
         ab(i, r)?.borrow_mut().retain(|x| !x.is_nil());
         Ok(r.clone())
     });
-    m.insert("Array::Builder#shuffle!", |i, r, _| {
+    native!(m, "Array::Builder#shuffle!", |i, r, _| {
         let b = ab(i, r)?;
         let mut v = b.borrow_mut();
         for k in (1..v.len()).rev() {
@@ -263,7 +272,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         drop(v);
         Ok(r.clone())
     });
-    m.insert("Array::Builder#rotate!", |i, r, a| {
+    native!(m, "Array::Builder#rotate!", |i, r, a| {
         let count = match a.pos.first() {
             Some(n) => int(i, n, "count")?,
             None => 1,
@@ -278,7 +287,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         drop(v);
         Ok(r.clone())
     });
-    m.insert("Array::Builder#fill", |i, r, a| {
+    native!(m, "Array::Builder#fill", |i, r, a| {
         let value = a.arg(0).clone();
         let b = ab(i, r)?;
         if a.pos.len() == 1 {
@@ -297,12 +306,12 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         drop(v);
         Ok(r.clone())
     });
-    m.insert("Array::Builder#replace", |i, r, a| {
+    native!(m, "Array::Builder#replace", |i, r, a| {
         let items = collect(i, a.arg(0))?;
         *ab(i, r)?.borrow_mut() = items;
         Ok(r.clone())
     });
-    m.insert("Array::Builder#slice!", |i, r, a| {
+    native!(m, "Array::Builder#slice!", |i, r, a| {
         let b = ab(i, r)?;
         let len_now = b.borrow().len();
         let (start, len) = fill_bounds(i, len_now, a.arg(0), a.arg(1))?;
@@ -313,26 +322,26 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         drop(v);
         Ok(Value::array(removed))
     });
-    m.insert("Array::Builder#delete_if", |i, r, a| {
+    native!(m, "Array::Builder#delete_if", |i, r, a| {
         builder_filter(i, r, a, false)
     });
-    m.insert("Array::Builder#keep_if", |i, r, a| {
+    native!(m, "Array::Builder#keep_if", |i, r, a| {
         builder_filter(i, r, a, true)
     });
 
     // Hash
-    m.insert("Hash#include?", |i, r, a| {
+    native!(m, "Hash#include?", |i, r, a| {
         Ok(Value::Bool(hash(i, r)?.contains_key(a.arg(0))))
     });
-    m.insert("Hash#member?", |i, r, a| {
+    native!(m, "Hash#member?", |i, r, a| {
         Ok(Value::Bool(hash(i, r)?.contains_key(a.arg(0))))
     });
-    m.insert("Hash#has_value?", |i, r, a| {
+    native!(m, "Hash#has_value?", |i, r, a| {
         Ok(Value::Bool(
             hash(i, r)?.as_map().values().any(|v| v == a.arg(0)),
         ))
     });
-    m.insert("Hash#values_at", |i, r, a| {
+    native!(m, "Hash#values_at", |i, r, a| {
         let h = hash(i, r)?;
         Ok(Value::array(
             a.pos
@@ -341,7 +350,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
                 .collect(),
         ))
     });
-    m.insert("Hash#fetch_values", |i, r, a| {
+    native!(m, "Hash#fetch_values", |i, r, a| {
         let h = hash(i, r)?;
         let mut out = Vec::with_capacity(a.pos.len());
         for k in &a.pos {
@@ -357,17 +366,17 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         }
         Ok(Value::array(out))
     });
-    m.insert("Hash#compact", |i, r, _| {
+    native!(m, "Hash#compact", |i, r, _| {
         hash_update(i, r, |h| h.retain(|_, v| !v.is_nil()))
     });
-    m.insert("Hash#except", |i, r, a| {
+    native!(m, "Hash#except", |i, r, a| {
         hash_update(i, r, |h| {
             for k in &a.pos {
                 h.shift_remove(k);
             }
         })
     });
-    m.insert("Hash#slice", |i, r, a| {
+    native!(m, "Hash#slice", |i, r, a| {
         let h = hash(i, r)?;
         let mut out = ValueMap::default();
         for k in &a.pos {
@@ -379,7 +388,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     });
 
     // Hash::Builder
-    m.insert("Hash::Builder#merge!", |i, r, a| {
+    native!(m, "Hash::Builder#merge!", |i, r, a| {
         let other = hash(i, a.arg(0))?.clone();
         let other = other.as_map();
         let b = hb(i, r)?;
@@ -400,7 +409,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         }
         Ok(r.clone())
     });
-    m.insert("Hash::Builder#update", |i, r, a| {
+    native!(m, "Hash::Builder#update", |i, r, a| {
         let bl = block(i, &a)?;
         let b = hb(i, r)?;
         let key = a.arg(0).clone();
@@ -409,28 +418,28 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         b.borrow_mut().insert(key, next);
         Ok(r.clone())
     });
-    m.insert("Hash::Builder#each_pair", |i, r, a| {
+    native!(m, "Hash::Builder#each_pair", |i, r, a| {
         let b = block(i, &a)?;
         for (k, v) in builder_pairs(i, r)? {
             i.call_block(&b, smallvec![k, v])?;
         }
         Ok(Value::Nil)
     });
-    m.insert("Hash::Builder#each_key", |i, r, a| {
+    native!(m, "Hash::Builder#each_key", |i, r, a| {
         let b = block(i, &a)?;
         for (k, _) in builder_pairs(i, r)? {
             i.call_block(&b, smallvec![k])?;
         }
         Ok(Value::Nil)
     });
-    m.insert("Hash::Builder#each_value", |i, r, a| {
+    native!(m, "Hash::Builder#each_value", |i, r, a| {
         let b = block(i, &a)?;
         for (_, v) in builder_pairs(i, r)? {
             i.call_block(&b, smallvec![v])?;
         }
         Ok(Value::Nil)
     });
-    m.insert("Hash::Builder#fetch", |i, r, a| {
+    native!(m, "Hash::Builder#fetch", |i, r, a| {
         let found = hb(i, r)?.borrow().get(a.arg(0)).cloned();
         match (found, &a.block) {
             (Some(v), _) => Ok(v),
@@ -438,33 +447,33 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             (None, None) => Ok(a.arg(1).clone()),
         }
     });
-    m.insert("Hash::Builder#has_key?", |i, r, a| {
+    native!(m, "Hash::Builder#has_key?", |i, r, a| {
         Ok(Value::Bool(hb(i, r)?.borrow().contains_key(a.arg(0))))
     });
-    m.insert("Hash::Builder#include?", |i, r, a| {
+    native!(m, "Hash::Builder#include?", |i, r, a| {
         Ok(Value::Bool(hb(i, r)?.borrow().contains_key(a.arg(0))))
     });
-    m.insert("Hash::Builder#value?", |i, r, a| {
+    native!(m, "Hash::Builder#value?", |i, r, a| {
         Ok(Value::Bool(
             hb(i, r)?.borrow().values().any(|v| v == a.arg(0)),
         ))
     });
-    m.insert("Hash::Builder#length", |i, r, _| {
+    native!(m, "Hash::Builder#length", |i, r, _| {
         Ok(Value::Int(hb(i, r)?.borrow().len() as i64))
     });
-    m.insert("Hash::Builder#select!", |i, r, a| {
+    native!(m, "Hash::Builder#select!", |i, r, a| {
         hash_builder_filter(i, r, a, true)
     });
-    m.insert("Hash::Builder#keep_if", |i, r, a| {
+    native!(m, "Hash::Builder#keep_if", |i, r, a| {
         hash_builder_filter(i, r, a, true)
     });
-    m.insert("Hash::Builder#reject!", |i, r, a| {
+    native!(m, "Hash::Builder#reject!", |i, r, a| {
         hash_builder_filter(i, r, a, false)
     });
-    m.insert("Hash::Builder#delete_if", |i, r, a| {
+    native!(m, "Hash::Builder#delete_if", |i, r, a| {
         hash_builder_filter(i, r, a, false)
     });
-    m.insert("Hash::Builder#transform_values!", |i, r, a| {
+    native!(m, "Hash::Builder#transform_values!", |i, r, a| {
         let bl = block(i, &a)?;
         let b = hb(i, r)?;
         let mut out = ValueMap::default();
@@ -474,44 +483,44 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         *b.borrow_mut() = out;
         Ok(r.clone())
     });
-    m.insert("Hash::Builder#compact!", |i, r, _| {
+    native!(m, "Hash::Builder#compact!", |i, r, _| {
         hb(i, r)?.borrow_mut().retain(|_, v| !v.is_nil());
         Ok(r.clone())
     });
-    m.insert("Hash::Builder#replace", |i, r, a| {
+    native!(m, "Hash::Builder#replace", |i, r, a| {
         let other = hash(i, a.arg(0))?.as_map().into_owned();
         *hb(i, r)?.borrow_mut() = other;
         Ok(r.clone())
     });
 
     // Set
-    m.insert("Set#proper_subset?", |i, r, a| {
+    native!(m, "Set#proper_subset?", |i, r, a| {
         let other = set(i, a.arg(0))?;
         let mine = set(i, r)?;
         Ok(Value::Bool(
             mine.len() < other.len() && mine.iter().all(|x| other.contains(x)),
         ))
     });
-    m.insert("Set#proper_superset?", |i, r, a| {
+    native!(m, "Set#proper_superset?", |i, r, a| {
         let other = set(i, a.arg(0))?;
         let mine = set(i, r)?;
         Ok(Value::Bool(
             mine.len() > other.len() && other.iter().all(|x| mine.contains(x)),
         ))
     });
-    m.insert("Set#disjoint?", |i, r, a| {
+    native!(m, "Set#disjoint?", |i, r, a| {
         let other = set(i, a.arg(0))?;
         Ok(Value::Bool(!set(i, r)?.iter().any(|x| other.contains(x))))
     });
-    m.insert("Set#intersect?", |i, r, a| {
+    native!(m, "Set#intersect?", |i, r, a| {
         let other = set(i, a.arg(0))?;
         Ok(Value::Bool(set(i, r)?.iter().any(|x| other.contains(x))))
     });
-    m.insert("Set#merge", |i, r, a| {
+    native!(m, "Set#merge", |i, r, a| {
         let items = collect(i, a.arg(0))?;
         set_update(i, r, |s| s.extend(items))
     });
-    m.insert("Set#add?", |i, r, a| {
+    native!(m, "Set#add?", |i, r, a| {
         if set(i, r)?.contains(a.arg(0)) {
             return Ok(Value::Nil);
         }
@@ -519,19 +528,19 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             s.insert(a.arg(0).clone());
         })
     });
-    m.insert("Set#select", |i, r, a| set_filter(i, r, a, true));
-    m.insert("Set#reject", |i, r, a| set_filter(i, r, a, false));
+    native!(m, "Set#select", |i, r, a| set_filter(i, r, a, true));
+    native!(m, "Set#reject", |i, r, a| set_filter(i, r, a, false));
 
     // Set::Builder
-    m.insert("Set::Builder#add?", |i, r, a| {
+    native!(m, "Set::Builder#add?", |i, r, a| {
         Ok(Value::Bool(sb(i, r)?.borrow_mut().insert(a.arg(0).clone())))
     });
-    m.insert("Set::Builder#merge", |i, r, a| {
+    native!(m, "Set::Builder#merge", |i, r, a| {
         let items = collect(i, a.arg(0))?;
         sb(i, r)?.borrow_mut().extend(items);
         Ok(r.clone())
     });
-    m.insert("Set::Builder#subtract", |i, r, a| {
+    native!(m, "Set::Builder#subtract", |i, r, a| {
         let items = collect(i, a.arg(0))?;
         let b = sb(i, r)?;
         for x in &items {
@@ -539,33 +548,33 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         }
         Ok(r.clone())
     });
-    m.insert("Set::Builder#clear", |i, r, _| {
+    native!(m, "Set::Builder#clear", |i, r, _| {
         sb(i, r)?.borrow_mut().clear();
         Ok(r.clone())
     });
-    m.insert("Set::Builder#replace", |i, r, a| {
+    native!(m, "Set::Builder#replace", |i, r, a| {
         let items = collect(i, a.arg(0))?;
         *sb(i, r)?.borrow_mut() = items.into_iter().collect();
         Ok(r.clone())
     });
-    m.insert("Set::Builder#length", |i, r, _| {
+    native!(m, "Set::Builder#length", |i, r, _| {
         Ok(Value::Int(sb(i, r)?.borrow().len() as i64))
     });
-    m.insert("Set::Builder#select!", |i, r, a| {
+    native!(m, "Set::Builder#select!", |i, r, a| {
         set_builder_filter(i, r, a, true)
     });
-    m.insert("Set::Builder#keep_if", |i, r, a| {
+    native!(m, "Set::Builder#keep_if", |i, r, a| {
         set_builder_filter(i, r, a, true)
     });
-    m.insert("Set::Builder#reject!", |i, r, a| {
+    native!(m, "Set::Builder#reject!", |i, r, a| {
         set_builder_filter(i, r, a, false)
     });
-    m.insert("Set::Builder#delete_if", |i, r, a| {
+    native!(m, "Set::Builder#delete_if", |i, r, a| {
         set_builder_filter(i, r, a, false)
     });
 
     // Range
-    m.insert("Range#empty?", |i, r, _| {
+    native!(m, "Range#empty?", |i, r, _| {
         let rg = range(i, r)?;
         Ok(Value::Bool(match (&rg.lo, &rg.hi) {
             (Value::Int(lo), Value::Int(hi)) => {
@@ -579,7 +588,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             _ => range_to_vec(i, rg)?.is_empty(),
         }))
     });
-    m.insert("Range#reverse_each", |i, r, a| {
+    native!(m, "Range#reverse_each", |i, r, a| {
         let b = block(i, &a)?;
         for v in range_to_vec(i, range(i, r)?)?.into_iter().rev() {
             i.call_block(&b, smallvec![v])?;

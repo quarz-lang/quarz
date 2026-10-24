@@ -16,7 +16,7 @@ use super::{float, int, string};
 const NS: i64 = 1_000_000_000;
 
 pub fn register(m: &mut super::Registry<NativeFn>) {
-    m.insert("Time.now", |_, _, _| {
+    native!(m, "Time.now", |_, _, _| {
         let now = Local::now();
         Ok(time(
             now.timestamp_nanos_opt().unwrap_or(0),
@@ -24,7 +24,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             false,
         ))
     });
-    m.insert("Time.at", |i, _, a| {
+    native!(m, "Time.at", |i, _, a| {
         let ns = match a.arg(0) {
             Value::Int(s) => s
                 .checked_mul(NS)
@@ -33,22 +33,22 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         };
         Ok(at_local(ns))
     });
-    m.insert("Time.utc", |i, _, a| make(i, &a, true));
-    m.insert("Time.local", |i, _, a| make(i, &a, false));
-    m.insert("Time.parse", |i, _, a| {
+    native!(m, "Time.utc", |i, _, a| make(i, &a, true));
+    native!(m, "Time.local", |i, _, a| make(i, &a, false));
+    native!(m, "Time.parse", |i, _, a| {
         let text = string(i, a.arg(0), "text")?;
         parse(text.trim())
             .map(|(ns, off, utc)| time(ns, off, utc))
             .ok_or_else(|| i.err_arg(&format!("no time information in {:?}", &*text)))
     });
-    m.insert("Time.iso8601", |i, _, a| {
+    native!(m, "Time.iso8601", |i, _, a| {
         let text = string(i, a.arg(0), "text")?;
         match DateTime::parse_from_rfc3339(text.trim()) {
             Ok(dt) => Ok(from_datetime(&dt, text.trim().ends_with('Z'))),
             Err(_) => Err(i.err_arg(&format!("invalid ISO 8601 time {:?}", text))),
         }
     });
-    m.insert("Time.monotonic", |_, _, _| {
+    native!(m, "Time.monotonic", |_, _, _| {
         Ok(Value::Duration(
             super::clock_start()
                 .elapsed()
@@ -57,62 +57,64 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         ))
     });
 
-    m.insert("Time#year", |i, r, _| {
+    native!(m, "Time#year", |i, r, _| {
         Ok(Value::Int(dt(i, r)?.year() as i64))
     });
-    m.insert("Time#month", |i, r, _| {
+    native!(m, "Time#month", |i, r, _| {
         Ok(Value::Int(dt(i, r)?.month() as i64))
     });
-    m.insert("Time#day", |i, r, _| Ok(Value::Int(dt(i, r)?.day() as i64)));
-    m.insert("Time#hour", |i, r, _| {
+    native!(m, "Time#day", |i, r, _| Ok(Value::Int(
+        dt(i, r)?.day() as i64
+    )));
+    native!(m, "Time#hour", |i, r, _| {
         Ok(Value::Int(dt(i, r)?.hour() as i64))
     });
-    m.insert("Time#min", |i, r, _| {
+    native!(m, "Time#min", |i, r, _| {
         Ok(Value::Int(dt(i, r)?.minute() as i64))
     });
-    m.insert("Time#sec", |i, r, _| {
+    native!(m, "Time#sec", |i, r, _| {
         Ok(Value::Int(dt(i, r)?.second() as i64))
     });
-    m.insert("Time#nsec", |i, r, _| {
+    native!(m, "Time#nsec", |i, r, _| {
         Ok(Value::Int(tv(i, r)?.ns.rem_euclid(NS)))
     });
-    m.insert("Time#usec", |i, r, _| {
+    native!(m, "Time#usec", |i, r, _| {
         Ok(Value::Int(tv(i, r)?.ns.rem_euclid(NS) / 1000))
     });
-    m.insert("Time#wday", |i, r, _| {
+    native!(m, "Time#wday", |i, r, _| {
         Ok(Value::Int(dt(i, r)?.weekday().num_days_from_sunday() as i64))
     });
-    m.insert("Time#yday", |i, r, _| {
+    native!(m, "Time#yday", |i, r, _| {
         Ok(Value::Int(dt(i, r)?.ordinal() as i64))
     });
-    for (name, wday) in [
-        ("sunday?", 0),
-        ("monday?", 1),
-        ("tuesday?", 2),
-        ("wednesday?", 3),
-        ("thursday?", 4),
-        ("friday?", 5),
-        ("saturday?", 6),
-    ] {
-        let key: &'static str = Box::leak(format!("Time#{name}").into_boxed_str());
-        let f: NativeFn = match wday {
-            0 => |i, r, _| Ok(Value::Bool(dt(i, r)?.weekday().num_days_from_sunday() == 0)),
-            1 => |i, r, _| Ok(Value::Bool(dt(i, r)?.weekday().num_days_from_sunday() == 1)),
-            2 => |i, r, _| Ok(Value::Bool(dt(i, r)?.weekday().num_days_from_sunday() == 2)),
-            3 => |i, r, _| Ok(Value::Bool(dt(i, r)?.weekday().num_days_from_sunday() == 3)),
-            4 => |i, r, _| Ok(Value::Bool(dt(i, r)?.weekday().num_days_from_sunday() == 4)),
-            5 => |i, r, _| Ok(Value::Bool(dt(i, r)?.weekday().num_days_from_sunday() == 5)),
-            _ => |i, r, _| Ok(Value::Bool(dt(i, r)?.weekday().num_days_from_sunday() == 6)),
-        };
-        m.insert(key, f);
-    }
-    m.insert("Time#to_i", |i, r, _| {
+    native!(m, "Time#sunday?", |i, r, _| {
+        Ok(Value::Bool(dt(i, r)?.weekday().num_days_from_sunday() == 0))
+    });
+    native!(m, "Time#monday?", |i, r, _| {
+        Ok(Value::Bool(dt(i, r)?.weekday().num_days_from_sunday() == 1))
+    });
+    native!(m, "Time#tuesday?", |i, r, _| {
+        Ok(Value::Bool(dt(i, r)?.weekday().num_days_from_sunday() == 2))
+    });
+    native!(m, "Time#wednesday?", |i, r, _| {
+        Ok(Value::Bool(dt(i, r)?.weekday().num_days_from_sunday() == 3))
+    });
+    native!(m, "Time#thursday?", |i, r, _| {
+        Ok(Value::Bool(dt(i, r)?.weekday().num_days_from_sunday() == 4))
+    });
+    native!(m, "Time#friday?", |i, r, _| {
+        Ok(Value::Bool(dt(i, r)?.weekday().num_days_from_sunday() == 5))
+    });
+    native!(m, "Time#saturday?", |i, r, _| {
+        Ok(Value::Bool(dt(i, r)?.weekday().num_days_from_sunday() == 6))
+    });
+    native!(m, "Time#to_i", |i, r, _| {
         Ok(Value::Int(tv(i, r)?.ns.div_euclid(NS)))
     });
-    m.insert("Time#to_f", |i, r, _| {
+    native!(m, "Time#to_f", |i, r, _| {
         Ok(Value::Float(tv(i, r)?.ns as f64 / NS as f64))
     });
-    m.insert("Time#+", |i, r, a| {
+    native!(m, "Time#+", |i, r, a| {
         let t = tv(i, r)?;
         let d = dur(i, a.arg(0))?;
         let ns =
@@ -120,7 +122,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
                 .ok_or_else(|| i.raise(i.program.exc.range_error, "time out of range"))?;
         Ok(time(ns, t.offset, t.utc))
     });
-    m.insert("Time#-", |i, r, a| {
+    native!(m, "Time#-", |i, r, a| {
         let t = tv(i, r)?;
         match a.arg(0) {
             Value::Time(o) => Ok(Value::Duration(t.ns - o.ns)),
@@ -133,23 +135,23 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             }
         }
     });
-    m.insert("Time#<=>", |i, r, a| {
+    native!(m, "Time#<=>", |i, r, a| {
         Ok(Value::Int(tv(i, r)?.ns.cmp(&tv(i, a.arg(0))?.ns) as i64))
     });
-    m.insert("Time#==", |i, r, a| {
+    native!(m, "Time#==", |i, r, a| {
         Ok(Value::Bool(
             matches!(a.arg(0), Value::Time(o) if o.ns == tv(i, r)?.ns),
         ))
     });
-    m.insert("Time#hash", |i, r, _| Ok(Value::Int(tv(i, r)?.ns)));
-    m.insert("Time#utc", |i, r, _| Ok(time(tv(i, r)?.ns, 0, true)));
-    m.insert("Time#getlocal", |i, r, _| Ok(at_local(tv(i, r)?.ns)));
-    m.insert("Time#localtime", |i, r, _| Ok(at_local(tv(i, r)?.ns)));
-    m.insert("Time#utc?", |i, r, _| Ok(Value::Bool(tv(i, r)?.utc)));
-    m.insert("Time#utc_offset", |i, r, _| {
+    native!(m, "Time#hash", |i, r, _| Ok(Value::Int(tv(i, r)?.ns)));
+    native!(m, "Time#utc", |i, r, _| Ok(time(tv(i, r)?.ns, 0, true)));
+    native!(m, "Time#getlocal", |i, r, _| Ok(at_local(tv(i, r)?.ns)));
+    native!(m, "Time#localtime", |i, r, _| Ok(at_local(tv(i, r)?.ns)));
+    native!(m, "Time#utc?", |i, r, _| Ok(Value::Bool(tv(i, r)?.utc)));
+    native!(m, "Time#utc_offset", |i, r, _| {
         Ok(Value::Int(tv(i, r)?.offset as i64))
     });
-    m.insert("Time#zone", |i, r, _| {
+    native!(m, "Time#zone", |i, r, _| {
         let t = tv(i, r)?;
         Ok(Value::string(if t.utc {
             "UTC".to_string()
@@ -157,24 +159,24 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             format_offset(t.offset, true)
         }))
     });
-    m.insert("Time#strftime", |i, r, a| {
+    native!(m, "Time#strftime", |i, r, a| {
         let t = tv(i, r)?;
         let fmt = string(i, a.arg(0), "format")?;
         strftime(&t, fmt)
             .map(Value::string)
             .ok_or_else(|| i.err_arg(&format!("invalid strftime format {:?}", &*fmt)))
     });
-    m.insert("Time#iso8601", |i, r, a| {
+    native!(m, "Time#iso8601", |i, r, a| {
         let digits = match a.pos.first() {
             Some(v) => int(i, v, "fraction_digits")?.clamp(0, 9) as usize,
             None => 0,
         };
         Ok(Value::string(iso8601(&tv(i, r)?, digits)))
     });
-    m.insert("Time#to_s", |i, r, _| {
+    native!(m, "Time#to_s", |i, r, _| {
         Ok(Value::string(time_to_s(&tv(i, r)?, false)))
     });
-    m.insert("Time#inspect", |i, r, _| {
+    native!(m, "Time#inspect", |i, r, _| {
         Ok(Value::string(time_to_s(&tv(i, r)?, true)))
     });
 }

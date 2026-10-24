@@ -999,6 +999,8 @@ pub unsafe extern "C" fn qz_main(
     methods_len: usize,
     table: *const Option<CompiledFn>,
     n: usize,
+    natives: *const usize,
+    natives_len: *const usize,
     argc: i32,
     argv: *const *const c_char,
     layout_sig: u64,
@@ -1036,7 +1038,16 @@ pub unsafe extern "C" fn qz_main(
     crate::value::check_rc_layout();
     crate::layout::check(layout_sig, vec_layout);
     // The program's methods, decoded when first needed.
-    let lazy = match crate::methods::Lazy::new(std::slice::from_raw_parts(methods, methods_len)) {
+    // The program's tables of natives, one after another (their lengths
+    // at `natives_len`).
+    let lens = std::slice::from_raw_parts(natives_len, 3);
+    let plain = std::slice::from_raw_parts(natives, lens[0]);
+    let fast = std::slice::from_raw_parts(natives.add(lens[0]), lens[1]);
+    let owned = std::slice::from_raw_parts(natives.add(lens[0] + lens[1]), lens[2]);
+    let lazy = match crate::methods::Lazy::new(
+        std::slice::from_raw_parts(methods, methods_len),
+        [plain, fast, owned],
+    ) {
         Ok(l) => std::sync::Arc::new(l),
         Err(e) => {
             eprintln!("quarz: corrupt program: {e}");

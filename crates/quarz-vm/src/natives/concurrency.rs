@@ -104,37 +104,39 @@ fn snapshot(interp: &Interp, b: &Value) -> Value {
 }
 
 pub fn register(m: &mut super::Registry<NativeFn>) {
-    m.insert("Kernel#spawn", |i, _, a| {
+    native!(m, "Kernel#spawn", |i, _, a| {
         let b = snapshot(i, &block(i, &a)?);
         Ok(Value::Task(i.spawn_task(b, None, "task")))
     });
-    m.insert("Kernel#loop", kernel_loop);
+    native!(m, "Kernel#loop", kernel_loop);
     // A shareable procedure copies what it captures when it is made.
-    m.insert("Proc#__copy_captures", |i, r, _| Ok(snapshot(i, r)));
-    m.insert("Kernel#sleep", |i, _, a| {
+    native!(m, "Proc#__copy_captures", |i, r, _| Ok(snapshot(i, r)));
+    native!(m, "Kernel#sleep", |i, _, a| {
         i.sleep(duration(i, a.arg(0))?)?;
         Ok(Value::Nil)
     });
-    m.insert("Kernel#select", |i, _, a| {
+    native!(m, "Kernel#select", |i, _, a| {
         let b = block(i, &a)?;
         run_select(i, &b, false)
     });
-    m.insert("Channel.select_loop", |i, _, a| {
+    native!(m, "Channel.select_loop", |i, _, a| {
         let b = block(i, &a)?;
         run_select(i, &b, true)
     });
-    m.insert("Task.scope", task_scope);
-    m.insert("Task.sleep", |i, _, a| {
+    native!(m, "Task.scope", task_scope);
+    native!(m, "Task.sleep", |i, _, a| {
         i.sleep(duration(i, a.arg(0))?)?;
         Ok(Value::Nil)
     });
-    m.insert("Task.yield", |i, _, _| {
+    native!(m, "Task.yield", |i, _, _| {
         i.yield_now();
         Ok(Value::Nil)
     });
-    m.insert("Task.current", |i, _, _| Ok(Value::Task(i.current_task())));
-    m.insert("Task.timeout", task_timeout);
-    m.insert("Task.blocking", |i, _, a| {
+    native!(m, "Task.current", |i, _, _| Ok(Value::Task(
+        i.current_task()
+    )));
+    native!(m, "Task.timeout", task_timeout);
+    native!(m, "Task.blocking", |i, _, a| {
         use crate::transfer::{self, WorkerExit};
         let b = block(i, &a)?;
         let closure = transfer::export(i, &b)?;
@@ -148,100 +150,100 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             WorkerExit::Exit(code) => Err(Flow::Exit(code)),
         }
     });
-    m.insert("Task.check_cancel", |i, _, _| {
+    native!(m, "Task.check_cancel", |i, _, _| {
         let t = i.current_task();
         i.check_cancel(&t)?;
         Ok(Value::Nil)
     });
-    m.insert("Task#await", |i, r, _| i.await_task(task(i, r)?));
-    m.insert("Task#cancel", |i, r, _| {
+    native!(m, "Task#await", |i, r, _| i.await_task(task(i, r)?));
+    native!(m, "Task#cancel", |i, r, _| {
         i.cancel_task(task(i, r)?);
         Ok(Value::Nil)
     });
-    m.insert("Task#done?", |i, r, _| {
+    native!(m, "Task#done?", |i, r, _| {
         Ok(Value::Bool(task(i, r)?.is_done()))
     });
-    m.insert("Task#cancelled?", |i, r, _| {
+    native!(m, "Task#cancelled?", |i, r, _| {
         Ok(Value::Bool(task(i, r)?.cancel_requested()))
     });
-    m.insert("Scope#spawn", |i, r, a| {
+    native!(m, "Scope#spawn", |i, r, a| {
         let b = snapshot(i, &block(i, &a)?);
         let s = scope(i, r)?.clone();
         Ok(Value::Task(i.spawn_task(b, Some(s), "task")))
     });
-    m.insert("Scope#cancel", |i, r, _| {
+    native!(m, "Scope#cancel", |i, r, _| {
         let s = scope(i, r)?.clone();
         cancel_children(i, &s);
         Ok(Value::Nil)
     });
-    m.insert("Channel.new", channel_new);
-    m.insert("Channel#send", channel_send);
-    m.insert("Channel#receive", |i, r, _| {
+    native!(m, "Channel.new", channel_new);
+    native!(m, "Channel#send", channel_send);
+    native!(m, "Channel#receive", |i, r, _| {
         channel_receive(i, chan(i, r)?, true)
     });
-    m.insert("Channel#receive?", |i, r, _| {
+    native!(m, "Channel#receive?", |i, r, _| {
         channel_receive(i, chan(i, r)?, false)
     });
-    m.insert("Channel#try_send", channel_try_send);
-    m.insert("Channel#try_receive", |i, r, _| {
+    native!(m, "Channel#try_send", channel_try_send);
+    native!(m, "Channel#try_receive", |i, r, _| {
         let c = chan(i, r)?;
         Ok(take_value(i, c).unwrap_or(Value::Nil))
     });
-    m.insert("Channel#close", channel_close);
-    m.insert("Channel#closed?", |i, r, _| {
+    native!(m, "Channel#close", channel_close);
+    native!(m, "Channel#closed?", |i, r, _| {
         Ok(Value::Bool(chan(i, r)?.lock().closed))
     });
-    m.insert("Channel#empty?", |i, r, _| {
+    native!(m, "Channel#empty?", |i, r, _| {
         Ok(Value::Bool(chan(i, r)?.lock().buffer.is_empty()))
     });
-    m.insert("Channel#size", |i, r, _| {
+    native!(m, "Channel#size", |i, r, _| {
         Ok(Value::Int(chan(i, r)?.lock().buffer.len() as i64))
     });
-    m.insert("Channel#each", channel_each);
-    m.insert("Selector#receive", |i, r, a| {
+    native!(m, "Channel#each", channel_each);
+    native!(m, "Selector#receive", |i, r, a| {
         let c = chan(i, a.arg(0))?.clone();
         let b = block(i, &a)?;
         sel(i, r)?.borrow_mut().receives.push((c, b));
         Ok(Value::Nil)
     });
-    m.insert("Selector#send", |i, r, a| {
+    native!(m, "Selector#send", |i, r, a| {
         let c = chan(i, a.arg(0))?.clone();
         let b = block(i, &a)?;
         sel(i, r)?.borrow_mut().sends.push((c, a.arg(1).clone(), b));
         Ok(Value::Nil)
     });
-    m.insert("Selector#after", |i, r, a| {
+    native!(m, "Selector#after", |i, r, a| {
         let d = duration(i, a.arg(0))?;
         let b = block(i, &a)?;
         sel(i, r)?.borrow_mut().after = Some((d, b));
         Ok(Value::Nil)
     });
-    m.insert("Selector#default", |i, r, a| {
+    native!(m, "Selector#default", |i, r, a| {
         let b = block(i, &a)?;
         sel(i, r)?.borrow_mut().default = Some(b);
         Ok(Value::Nil)
     });
-    m.insert("Selector#stop", |i, r, _| {
+    native!(m, "Selector#stop", |i, r, _| {
         sel(i, r)?.borrow_mut().stopped = true;
         Ok(Value::Nil)
     });
     // An atom's content is read by every task that holds the atom.
-    m.insert("Atom.new", |_, _, a| {
+    native!(m, "Atom.new", |_, _, a| {
         let v = a.arg(0).clone();
         v.share();
         Ok(Value::Atom(Rc::new_shared(std::sync::Mutex::new(v))))
     });
-    m.insert("Atom#value", |i, r, _| Ok(lock(atom(i, r)?).clone()));
-    m.insert("Atom#get", |i, r, _| Ok(lock(atom(i, r)?).clone()));
-    m.insert("Atom#set", |i, r, a| {
+    native!(m, "Atom#value", |i, r, _| Ok(lock(atom(i, r)?).clone()));
+    native!(m, "Atom#get", |i, r, _| Ok(lock(atom(i, r)?).clone()));
+    native!(m, "Atom#set", |i, r, a| {
         let v = a.arg(0).clone();
         v.share();
         let old = std::mem::replace(&mut *lock(atom(i, r)?), v);
         drop(old);
         Ok(Value::Nil)
     });
-    m.insert("Atom#update", atom_update);
-    m.insert("Atom#compare_and_set", |i, r, a| {
+    native!(m, "Atom#update", atom_update);
+    native!(m, "Atom#compare_and_set", |i, r, a| {
         let new = a.arg(1).clone();
         new.share();
         let mut cell = lock(atom(i, r)?);

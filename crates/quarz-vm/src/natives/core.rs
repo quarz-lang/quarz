@@ -9,45 +9,44 @@ use crate::value::*;
 use super::{int, string};
 
 pub fn register(m: &mut super::Registry<NativeFn>) {
-    m.insert("Object#==", obj_eq);
-    m.insert("Object#!=", obj_ne);
-    m.insert("Object#equal?", obj_equal);
-    m.insert("Object#hash", obj_hash);
-    m.insert("Object#to_s", obj_to_s);
-    m.insert("Object#inspect", obj_inspect);
-    m.insert("Object#nil?", obj_nil);
-    m.insert("Object#class", obj_class);
-    m.insert("Object#frozen?", obj_frozen);
-    m.insert("Object#dup", obj_dup);
-    m.insert("Object#instance_exec", |i, r, a| {
+    native!(m, "Object#==", obj_eq);
+    native!(m, "Object#!=", obj_ne);
+    native!(m, "Object#equal?", obj_equal);
+    native!(m, "Object#hash", obj_hash);
+    native!(m, "Object#to_s", obj_to_s);
+    native!(m, "Object#inspect", obj_inspect);
+    native!(m, "Object#nil?", obj_nil);
+    native!(m, "Object#class", obj_class);
+    native!(m, "Object#frozen?", obj_frozen);
+    native!(m, "Object#dup", obj_dup);
+    native!(m, "Object#instance_exec", |i, r, a| {
         let b = super::block(i, &a)?;
         i.call_block_on(&b, Some(r.clone()), a.pos)
     });
-    m.insert("Class#name", class_name);
-    m.insert("Nil#to_a", |_, _, _| Ok(Value::array(vec![])));
-    m.insert("Nil#&", |_, _, _| Ok(Value::Bool(false)));
-    m.insert("Nil#|", |_, _, a| Ok(Value::Bool(a.arg(0).is_truthy())));
-    m.insert("Bool#&", bool_and);
-    m.insert("Bool#|", bool_or);
-    m.insert("Bool#^", bool_xor);
-    m.insert("Comparable#clamp", clamp);
-    m.insert("Proc#arity", proc_arity);
-    m.insert("Exception#backtrace", exc_backtrace);
-    m.insert("Exception#full_message", exc_full_message);
-    m.insert("Exception#cause", exc_cause);
-    m.insert("Exception#inspect", obj_inspect);
-    m.insert("Kernel#puts", kernel_puts);
-    m.insert("Kernel#print", kernel_print);
-    m.insert("Kernel#p", kernel_p);
-    m.insert("Kernel#pp", kernel_p);
-    m.insert("Kernel#warn", kernel_warn);
-    m.insert("Kernel#exit", kernel_exit);
-    m.insert("Kernel#abort", kernel_abort);
-    m.insert("Kernel#at_exit", kernel_at_exit);
-    m.insert("Kernel#gets", kernel_gets);
-    m.insert("Kernel#gets?", kernel_gets_opt);
-    m.insert("Kernel#readline", kernel_gets);
-    m.insert("Kernel#readlines", |i, _, _| {
+    native!(m, "Class#name", class_name);
+    native!(m, "Nil#to_a", |_, _, _| Ok(Value::array(vec![])));
+    native!(m, "Nil#&", |_, _, _| Ok(Value::Bool(false)));
+    native!(m, "Nil#|", |_, _, a| Ok(Value::Bool(a.arg(0).is_truthy())));
+    native!(m, "Bool#&", bool_and);
+    native!(m, "Bool#|", bool_or);
+    native!(m, "Bool#^", bool_xor);
+    native!(m, "Proc#arity", proc_arity);
+    native!(m, "Exception#backtrace", exc_backtrace);
+    native!(m, "Exception#full_message", exc_full_message);
+    native!(m, "Exception#cause", exc_cause);
+    native!(m, "Exception#inspect", obj_inspect);
+    native!(m, "Kernel#puts", kernel_puts);
+    native!(m, "Kernel#print", kernel_print);
+    native!(m, "Kernel#p", kernel_p);
+    native!(m, "Kernel#pp", kernel_p);
+    native!(m, "Kernel#warn", kernel_warn);
+    native!(m, "Kernel#exit", kernel_exit);
+    native!(m, "Kernel#abort", kernel_abort);
+    native!(m, "Kernel#at_exit", kernel_at_exit);
+    native!(m, "Kernel#gets", kernel_gets);
+    native!(m, "Kernel#gets?", kernel_gets_opt);
+    native!(m, "Kernel#readline", kernel_gets);
+    native!(m, "Kernel#readlines", |i, _, _| {
         let mut lines = Vec::new();
         loop {
             match super::core_gets(i, false)? {
@@ -57,17 +56,17 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         }
         Ok(Value::array(lines))
     });
-    m.insert("Kernel#printf", |i, _, a| {
+    native!(m, "Kernel#printf", |i, _, a| {
         let fmt = string(i, a.arg(0), "format string")?;
         let text = format_values(i, fmt, &a.pos[1..])?;
         i.write_out(&text);
         Ok(Value::Nil)
     });
-    m.insert("Kernel#format", kernel_format);
-    m.insert("Kernel#sprintf", kernel_format);
-    m.insert("Kernel#Integer", kernel_integer);
-    m.insert("Kernel#Float", kernel_float);
-    m.insert("Kernel#String", kernel_string);
+    native!(m, "Kernel#format", kernel_format);
+    native!(m, "Kernel#sprintf", kernel_format);
+    native!(m, "Kernel#Integer", kernel_integer);
+    native!(m, "Kernel#Float", kernel_float);
+    native!(m, "Kernel#String", kernel_string);
 }
 
 fn obj_eq(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
@@ -155,19 +154,6 @@ fn bool_or(_: &Interp, recv: &Value, args: Args) -> EvalResult {
 
 fn bool_xor(_: &Interp, recv: &Value, args: Args) -> EvalResult {
     Ok(Value::Bool(recv.is_truthy() != args.arg(0).is_truthy()))
-}
-
-fn clamp(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
-    use std::cmp::Ordering;
-    let min = args.arg(0);
-    let max = args.arg(1);
-    if interp.compare(recv, min)? == Ordering::Less {
-        return Ok(min.clone());
-    }
-    if interp.compare(recv, max)? == Ordering::Greater {
-        return Ok(max.clone());
-    }
-    Ok(recv.clone())
 }
 
 fn proc_arity(interp: &Interp, recv: &Value, _: Args) -> EvalResult {

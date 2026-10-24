@@ -169,89 +169,143 @@ fn cmp_num(interp: &Interp, recv: &Value, args: &Args) -> Result<std::cmp::Order
 }
 
 pub fn register(m: &mut super::Registry<NativeFn>) {
-    for class in ["Int", "Float", "Integer"] {
-        let key =
-            |name: &str| -> &'static str { Box::leak(format!("{class}#{name}").into_boxed_str()) };
-        m.insert(key("+"), |i, r, a| arith(i, r, &a, "+"));
-        m.insert(key("-"), |i, r, a| arith(i, r, &a, "-"));
-        m.insert(key("*"), |i, r, a| arith(i, r, &a, "*"));
-        m.insert(key("/"), |i, r, a| arith(i, r, &a, "/"));
-        m.insert(key("%"), |i, r, a| arith(i, r, &a, "%"));
-        m.insert(key("**"), |i, r, a| arith(i, r, &a, "**"));
-        m.insert(key("=="), |i, r, a| {
-            Ok(Value::Bool(i.values_equal(r, a.arg(0))?))
-        });
-        m.insert(key("!="), |i, r, a| {
-            Ok(Value::Bool(!i.values_equal(r, a.arg(0))?))
-        });
-        m.insert(key("<=>"), |i, r, a| {
-            Ok(Value::Int(cmp_num(i, r, &a)? as i64))
-        });
-        m.insert(key("<"), |i, r, a| {
-            Ok(Value::Bool(cmp_num(i, r, &a)?.is_lt()))
-        });
-        m.insert(key("<="), |i, r, a| {
-            Ok(Value::Bool(cmp_num(i, r, &a)?.is_le()))
-        });
-        m.insert(key(">"), |i, r, a| {
-            Ok(Value::Bool(cmp_num(i, r, &a)?.is_gt()))
-        });
-        m.insert(key(">="), |i, r, a| {
-            Ok(Value::Bool(cmp_num(i, r, &a)?.is_ge()))
-        });
-        m.insert(key("+@"), |_, r, _| Ok(r.clone()));
-        m.insert(key("negative?"), |i, r, _| {
-            Ok(Value::Bool(float(i, r, "number")? < 0.0))
-        });
-        m.insert(key("positive?"), |i, r, _| {
-            Ok(Value::Bool(float(i, r, "number")? > 0.0))
-        });
-        m.insert(key("zero?"), |i, r, _| {
-            Ok(Value::Bool(float(i, r, "number")? == 0.0))
-        });
-        m.insert(key("to_f"), |i, r, _| {
-            Ok(Value::Float(float(i, r, "number")?))
-        });
-        m.insert(key("ms"), |i, r, _| duration(i, r, 1_000_000.0));
-        m.insert(key("milliseconds"), |i, r, _| duration(i, r, 1_000_000.0));
-        m.insert(key("second"), |i, r, _| duration(i, r, 1_000_000_000.0));
-        m.insert(key("seconds"), |i, r, _| duration(i, r, 1_000_000_000.0));
-        m.insert(key("minute"), |i, r, _| duration(i, r, 60_000_000_000.0));
-        m.insert(key("minutes"), |i, r, _| duration(i, r, 60_000_000_000.0));
-        m.insert(key("hour"), |i, r, _| duration(i, r, 3_600_000_000_000.0));
-        m.insert(key("hours"), |i, r, _| duration(i, r, 3_600_000_000_000.0));
-        m.insert(key("day"), |i, r, _| duration(i, r, 86_400_000_000_000.0));
-        m.insert(key("days"), |i, r, _| duration(i, r, 86_400_000_000_000.0));
-    }
-    m.insert("Int#-@", int_neg);
-    m.insert("Int#to_integer", |i, r, _| {
+    native!(m, ["Int#+", "Float#+", "Integer#+"], |i, r, a| arith(
+        i, r, &a, "+"
+    ));
+    native!(m, ["Int#-", "Float#-", "Integer#-"], |i, r, a| arith(
+        i, r, &a, "-"
+    ));
+    native!(m, ["Int#*", "Float#*", "Integer#*"], |i, r, a| arith(
+        i, r, &a, "*"
+    ));
+    native!(m, ["Int#/", "Float#/", "Integer#/"], |i, r, a| arith(
+        i, r, &a, "/"
+    ));
+    native!(m, ["Int#%", "Float#%", "Integer#%"], |i, r, a| arith(
+        i, r, &a, "%"
+    ));
+    native!(m, ["Int#**", "Float#**", "Integer#**"], |i, r, a| arith(
+        i, r, &a, "**"
+    ));
+    native!(m, ["Int#==", "Float#==", "Integer#=="], |i, r, a| {
+        Ok(Value::Bool(i.values_equal(r, a.arg(0))?))
+    });
+    native!(m, ["Int#!=", "Float#!=", "Integer#!="], |i, r, a| {
+        Ok(Value::Bool(!i.values_equal(r, a.arg(0))?))
+    });
+    native!(m, ["Int#<=>", "Float#<=>", "Integer#<=>"], |i, r, a| {
+        Ok(Value::Int(cmp_num(i, r, &a)? as i64))
+    });
+    native!(m, ["Int#<", "Float#<", "Integer#<"], |i, r, a| {
+        Ok(Value::Bool(cmp_num(i, r, &a)?.is_lt()))
+    });
+    native!(m, ["Int#<=", "Float#<=", "Integer#<="], |i, r, a| {
+        Ok(Value::Bool(cmp_num(i, r, &a)?.is_le()))
+    });
+    native!(m, ["Int#>", "Float#>", "Integer#>"], |i, r, a| {
+        Ok(Value::Bool(cmp_num(i, r, &a)?.is_gt()))
+    });
+    native!(m, ["Int#>=", "Float#>=", "Integer#>="], |i, r, a| {
+        Ok(Value::Bool(cmp_num(i, r, &a)?.is_ge()))
+    });
+    native!(m, ["Int#+@", "Float#+@", "Integer#+@"], |_, r, _| Ok(
+        r.clone()
+    ));
+    native!(
+        m,
+        ["Int#negative?", "Float#negative?", "Integer#negative?"],
+        |i, r, _| { Ok(Value::Bool(float(i, r, "number")? < 0.0)) }
+    );
+    native!(
+        m,
+        ["Int#positive?", "Float#positive?", "Integer#positive?"],
+        |i, r, _| { Ok(Value::Bool(float(i, r, "number")? > 0.0)) }
+    );
+    native!(
+        m,
+        ["Int#zero?", "Float#zero?", "Integer#zero?"],
+        |i, r, _| { Ok(Value::Bool(float(i, r, "number")? == 0.0)) }
+    );
+    native!(m, ["Int#to_f", "Float#to_f", "Integer#to_f"], |i, r, _| {
+        Ok(Value::Float(float(i, r, "number")?))
+    });
+    native!(m, ["Int#ms", "Float#ms", "Integer#ms"], |i, r, _| duration(
+        i,
+        r,
+        1_000_000.0
+    ));
+    native!(
+        m,
+        [
+            "Int#milliseconds",
+            "Float#milliseconds",
+            "Integer#milliseconds"
+        ],
+        |i, r, _| duration(i, r, 1_000_000.0)
+    );
+    native!(
+        m,
+        ["Int#second", "Float#second", "Integer#second"],
+        |i, r, _| duration(i, r, 1_000_000_000.0)
+    );
+    native!(
+        m,
+        ["Int#seconds", "Float#seconds", "Integer#seconds"],
+        |i, r, _| duration(i, r, 1_000_000_000.0)
+    );
+    native!(
+        m,
+        ["Int#minute", "Float#minute", "Integer#minute"],
+        |i, r, _| duration(i, r, 60_000_000_000.0)
+    );
+    native!(
+        m,
+        ["Int#minutes", "Float#minutes", "Integer#minutes"],
+        |i, r, _| duration(i, r, 60_000_000_000.0)
+    );
+    native!(m, ["Int#hour", "Float#hour", "Integer#hour"], |i, r, _| {
+        duration(i, r, 3_600_000_000_000.0)
+    });
+    native!(
+        m,
+        ["Int#hours", "Float#hours", "Integer#hours"],
+        |i, r, _| duration(i, r, 3_600_000_000_000.0)
+    );
+    native!(m, ["Int#day", "Float#day", "Integer#day"], |i, r, _| {
+        duration(i, r, 86_400_000_000_000.0)
+    });
+    native!(m, ["Int#days", "Float#days", "Integer#days"], |i, r, _| {
+        duration(i, r, 86_400_000_000_000.0)
+    });
+    native!(m, "Int#-@", int_neg);
+    native!(m, "Int#to_integer", |i, r, _| {
         Ok(integer(Num::of(i, r)?.to_big()))
     });
     register_integer(m);
-    m.insert("Int#~", |i, r, _| Ok(Value::Int(!int(i, r, "Int")?)));
-    m.insert("Int#&", |i, r, a| {
+    native!(m, "Int#~", |i, r, _| Ok(Value::Int(!int(i, r, "Int")?)));
+    native!(m, "Int#&", |i, r, a| {
         Ok(Value::Int(int(i, r, "Int")? & int(i, a.arg(0), "Int")?))
     });
-    m.insert("Int#|", |i, r, a| {
+    native!(m, "Int#|", |i, r, a| {
         Ok(Value::Int(int(i, r, "Int")? | int(i, a.arg(0), "Int")?))
     });
-    m.insert("Int#^", |i, r, a| {
+    native!(m, "Int#^", |i, r, a| {
         Ok(Value::Int(int(i, r, "Int")? ^ int(i, a.arg(0), "Int")?))
     });
-    m.insert("Int#<<", int_shl);
-    m.insert("Int#>>", |i, r, a| {
+    native!(m, "Int#<<", int_shl);
+    native!(m, "Int#>>", |i, r, a| {
         Ok(Value::Int(
             int(i, r, "Int")? >> int(i, a.arg(0), "Int")?.clamp(0, 63),
         ))
     });
-    m.insert("Int#abs", int_abs);
-    m.insert("Int#even?", |i, r, _| {
+    native!(m, "Int#abs", int_abs);
+    native!(m, "Int#even?", |i, r, _| {
         Ok(Value::Bool(int(i, r, "Int")? % 2 == 0))
     });
-    m.insert("Int#odd?", |i, r, _| {
+    native!(m, "Int#odd?", |i, r, _| {
         Ok(Value::Bool(int(i, r, "Int")? % 2 != 0))
     });
-    m.insert("Int#succ", |i, r, a| {
+    native!(m, "Int#succ", |i, r, a| {
         arith(
             i,
             r,
@@ -263,7 +317,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             "+",
         )
     });
-    m.insert("Int#pred", |i, r, a| {
+    native!(m, "Int#pred", |i, r, a| {
         arith(
             i,
             r,
@@ -275,24 +329,19 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             "-",
         )
     });
-    m.insert("Int#to_i", |_, r, _| Ok(r.clone()));
-    m.insert("Int#to_s", int_to_s);
-    m.insert("Int#chr", int_chr);
-    m.insert("Int#floor", |_, r, _| Ok(r.clone()));
-    m.insert("Int#ceil", |_, r, _| Ok(r.clone()));
-    m.insert("Int#round", |_, r, _| Ok(r.clone()));
-    m.insert("Int#truncate", |_, r, _| Ok(r.clone()));
-    m.insert("Int#divmod", int_divmod);
-    m.insert("Int#pow", int_pow_mod);
-    m.insert("Int#gcd", |i, r, a| {
+    native!(m, "Int#to_i", |_, r, _| Ok(r.clone()));
+    native!(m, "Int#to_s", int_to_s);
+    native!(m, "Int#chr", int_chr);
+    native!(m, "Int#divmod", int_divmod);
+    native!(m, "Int#gcd", |i, r, a| {
         Ok(Value::Int(int(i, r, "Int")?.gcd(&int(i, a.arg(0), "Int")?)))
     });
-    m.insert("Int#lcm", |i, r, a| {
+    native!(m, "Int#lcm", |i, r, a| {
         Ok(Value::Int(int(i, r, "Int")?.lcm(&int(i, a.arg(0), "Int")?)))
     });
     // The bits of the number past its sign, as in Ruby: `~n`'s for a
     // negative one (so -1 has none, -256 has 8).
-    m.insert("Int#bit_length", |i, r, _| match r {
+    native!(m, "Int#bit_length", |i, r, _| match r {
         Value::BigInt(b) => {
             let n = if b.sign() == num_bigint::Sign::Minus {
                 -(**b).clone() - 1
@@ -307,120 +356,110 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             Ok(Value::Int(64 - n.leading_zeros() as i64))
         }
     });
-    m.insert("Int#digits", int_digits);
-    m.insert("Int#times", int_times);
-    m.insert("Int#upto", int_upto);
-    m.insert("Int#downto", int_downto);
-    m.insert("Int#step", int_step);
-    m.insert("Float#-@", |i, r, _| {
+    native!(m, "Int#times", int_times);
+    native!(m, "Int#upto", int_upto);
+    native!(m, "Int#downto", int_downto);
+    native!(m, "Int#step", int_step);
+    native!(m, "Float#-@", |i, r, _| {
         Ok(Value::Float(-float(i, r, "Float")?))
     });
-    m.insert("Float#abs", |i, r, _| {
+    native!(m, "Float#abs", |i, r, _| {
         Ok(Value::Float(float(i, r, "Float")?.abs()))
     });
-    m.insert("Float#nan?", |i, r, _| {
+    native!(m, "Float#nan?", |i, r, _| {
         Ok(Value::Bool(float(i, r, "Float")?.is_nan()))
     });
-    m.insert("Float#infinite?", |i, r, _| {
+    native!(m, "Float#infinite?", |i, r, _| {
         Ok(Value::Bool(float(i, r, "Float")?.is_infinite()))
     });
-    m.insert("Float#finite?", |i, r, _| {
+    native!(m, "Float#finite?", |i, r, _| {
         Ok(Value::Bool(float(i, r, "Float")?.is_finite()))
     });
-    m.insert("Float#floor", |i, r, _| {
-        float_to_int(i, float(i, r, "Float")?.floor())
-    });
-    m.insert("Float#ceil", |i, r, _| {
-        float_to_int(i, float(i, r, "Float")?.ceil())
-    });
-    m.insert("Float#round", float_round);
-    m.insert("Float#truncate", |i, r, _| {
+    native!(m, "Float#round", float_round);
+    native!(m, "Float#to_i", |i, r, _| {
         float_to_int(i, float(i, r, "Float")?.trunc())
     });
-    m.insert("Float#to_i", |i, r, _| {
-        float_to_int(i, float(i, r, "Float")?.trunc())
-    });
-    m.insert("Float#to_s", |i, r, _| {
+    native!(m, "Float#to_s", |i, r, _| {
         Ok(Value::string(crate::interp::format_float(float(
             i, r, "Float",
         )?)))
     });
-    m.insert("Duration#+", |i, r, a| {
+    native!(m, "Duration#+", |i, r, a| {
         Ok(Value::Duration(dur(i, r)? + dur(i, a.arg(0))?))
     });
-    m.insert("Duration#-", |i, r, a| {
+    native!(m, "Duration#-", |i, r, a| {
         Ok(Value::Duration(dur(i, r)? - dur(i, a.arg(0))?))
     });
-    m.insert("Duration#*", |i, r, a| {
+    native!(m, "Duration#*", |i, r, a| {
         Ok(Value::Duration(
             (dur(i, r)? as f64 * float(i, a.arg(0), "factor")?) as i64,
         ))
     });
-    m.insert("Duration#<=>", |i, r, a| {
+    native!(m, "Duration#<=>", |i, r, a| {
         Ok(Value::Int(dur(i, r)?.cmp(&dur(i, a.arg(0))?) as i64))
     });
-    m.insert("Duration#to_f", |i, r, _| {
+    native!(m, "Duration#to_f", |i, r, _| {
         Ok(Value::Float(dur(i, r)? as f64 / 1e9))
     });
-    m.insert("Duration#to_ms", |i, r, _| {
+    native!(m, "Duration#to_ms", |i, r, _| {
         Ok(Value::Int(dur(i, r)? / 1_000_000))
     });
-    m.insert("Duration#to_s", |i, r, _| {
+    native!(m, "Duration#to_s", |i, r, _| {
         Ok(Value::string(crate::interp::format_duration(dur(i, r)?)))
     });
-    m.insert("Math.sqrt", |i, _, a| {
+    native!(m, "Math.sqrt", |i, _, a| {
         Ok(Value::Float(float(i, a.arg(0), "sqrt")?.sqrt()))
     });
-    m.insert("Math.cbrt", |i, _, a| {
+    native!(m, "Math.cbrt", |i, _, a| {
         Ok(Value::Float(float(i, a.arg(0), "cbrt")?.cbrt()))
     });
-    m.insert("Math.sin", |i, _, a| {
+    native!(m, "Math.sin", |i, _, a| {
         Ok(Value::Float(float(i, a.arg(0), "sin")?.sin()))
     });
-    m.insert("Math.cos", |i, _, a| {
+    native!(m, "Math.cos", |i, _, a| {
         Ok(Value::Float(float(i, a.arg(0), "cos")?.cos()))
     });
-    m.insert("Math.tan", |i, _, a| {
+    native!(m, "Math.tan", |i, _, a| {
         Ok(Value::Float(float(i, a.arg(0), "tan")?.tan()))
     });
-    m.insert("Math.atan", |i, _, a| {
+    native!(m, "Math.atan", |i, _, a| {
         Ok(Value::Float(float(i, a.arg(0), "atan")?.atan()))
     });
-    m.insert("Math.atan2", |i, _, a| {
+    native!(m, "Math.atan2", |i, _, a| {
         Ok(Value::Float(float(i, a.arg(0), "atan2")?.atan2(float(
             i,
             a.arg(1),
             "atan2",
         )?)))
     });
-    m.insert("Math.exp", |i, _, a| {
+    native!(m, "Math.exp", |i, _, a| {
         Ok(Value::Float(float(i, a.arg(0), "exp")?.exp()))
     });
-    m.insert("Math.log", math_log);
-    m.insert("Math.log2", |i, _, a| {
+    native!(m, "Math.log", math_log);
+    native!(m, "Math.log2", |i, _, a| {
         Ok(Value::Float(float(i, a.arg(0), "log2")?.log2()))
     });
-    m.insert("Math.log10", |i, _, a| {
+    native!(m, "Math.log10", |i, _, a| {
         Ok(Value::Float(float(i, a.arg(0), "log10")?.log10()))
     });
-    m.insert("Math.pow", |i, _, a| {
+    native!(m, "Math.pow", |i, _, a| {
         Ok(Value::Float(float(i, a.arg(0), "pow")?.powf(float(
             i,
             a.arg(1),
             "pow",
         )?)))
     });
-    m.insert("Math.hypot", |i, _, a| {
+    native!(m, "Math.hypot", |i, _, a| {
         Ok(Value::Float(float(i, a.arg(0), "hypot")?.hypot(float(
             i,
             a.arg(1),
             "hypot",
         )?)))
     });
-    m.insert("Math.floor", |i, _, a| {
+    native!(m, "Math.floor", |i, _, a| {
         float_to_int(i, float(i, a.arg(0), "floor")?.floor())
     });
-    m.insert("Math.ceil", |i, _, a| {
+    native!(m, "Math.ceil", |i, _, a| {
         float_to_int(i, float(i, a.arg(0), "ceil")?.ceil())
     });
 }
@@ -431,28 +470,28 @@ fn register_integer(m: &mut super::Registry<NativeFn>) {
     fn big(interp: &Interp, v: &Value) -> Result<BigInt, Flow> {
         Ok(Num::of(interp, v)?.to_big())
     }
-    m.insert("Integer#-@", int_neg);
-    m.insert("Integer#abs", int_abs);
-    m.insert("Integer#even?", |i, r, _| {
+    native!(m, "Integer#-@", int_neg);
+    native!(m, "Integer#abs", int_abs);
+    native!(m, "Integer#even?", |i, r, _| {
         Ok(Value::Bool(big(i, r)?.is_even()))
     });
-    m.insert("Integer#odd?", |i, r, _| {
+    native!(m, "Integer#odd?", |i, r, _| {
         Ok(Value::Bool(big(i, r)?.is_odd()))
     });
-    m.insert("Integer#succ", |i, r, _| Ok(integer(big(i, r)? + 1)));
-    m.insert("Integer#pred", |i, r, _| Ok(integer(big(i, r)? - 1)));
-    m.insert("Integer#to_i", |i, r, _| i.int_of_big(&big(i, r)?));
-    m.insert("Integer#to_integer", |_, r, _| Ok(r.clone()));
-    m.insert("Integer#to_s", int_to_s);
-    m.insert("Integer#divmod", int_divmod);
-    m.insert("Integer#pow", int_pow_mod);
-    m.insert("Integer#gcd", |i, r, a| {
+    native!(m, "Integer#succ", |i, r, _| Ok(integer(big(i, r)? + 1)));
+    native!(m, "Integer#pred", |i, r, _| Ok(integer(big(i, r)? - 1)));
+    native!(m, "Integer#to_i", |i, r, _| i.int_of_big(&big(i, r)?));
+    native!(m, "Integer#to_integer", |_, r, _| Ok(r.clone()));
+    native!(m, "Integer#to_s", int_to_s);
+    native!(m, "Integer#divmod", int_divmod);
+    native!(m, "Integer#pow", int_pow_mod);
+    native!(m, "Integer#gcd", |i, r, a| {
         Ok(integer(big(i, r)?.gcd(&big(i, a.arg(0))?)))
     });
-    m.insert("Integer#lcm", |i, r, a| {
+    native!(m, "Integer#lcm", |i, r, a| {
         Ok(integer(big(i, r)?.lcm(&big(i, a.arg(0))?)))
     });
-    m.insert("Integer#bit_length", |i, r, _| {
+    native!(m, "Integer#bit_length", |i, r, _| {
         let b = big(i, r)?;
         let n = if b.sign() == num_bigint::Sign::Minus {
             -b - 1
@@ -461,7 +500,7 @@ fn register_integer(m: &mut super::Registry<NativeFn>) {
         };
         Ok(Value::Int(n.bits() as i64))
     });
-    m.insert("Integer.parse", |i, _, a| {
+    native!(m, "Integer.parse", |i, _, a| {
         use num_traits::Num as _;
         let text = super::string(i, a.arg(0), "text")?;
         let base = match a.pos.get(1) {
@@ -566,22 +605,6 @@ pub(super) fn int_pow_mod(interp: &Interp, recv: &Value, args: Args) -> EvalResu
         Value::BigInt(_) => Ok(integer(r)),
         _ => interp.int_of_big(&r),
     }
-}
-
-fn int_digits(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
-    let mut n = int(interp, recv, "Int")?;
-    if n < 0 {
-        return Err(interp.err_arg("digits of a negative number"));
-    }
-    let mut out = Vec::new();
-    if n == 0 {
-        out.push(Value::Int(0));
-    }
-    while n > 0 {
-        out.push(Value::Int(n % 10));
-        n /= 10;
-    }
-    Ok(Value::array(out))
 }
 
 pub(super) fn enumerator(

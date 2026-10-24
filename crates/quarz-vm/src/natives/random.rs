@@ -37,7 +37,7 @@ pub fn next_random() -> u64 {
 }
 
 pub fn register(m: &mut super::Registry<NativeFn>) {
-    m.insert("Random.new", |_, _, a| {
+    native!(m, "Random.new", |_, _, a| {
         let seed = match a.pos.first() {
             Some(Value::Int(i)) => *i,
             Some(Value::BigInt(b)) => {
@@ -49,30 +49,30 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         };
         Ok(Value::Random(Rc::new(RefCell::new(RandomState::new(seed)))))
     });
-    m.insert("Random.new_seed", |_, _, _| Ok(Value::Int(new_seed())));
-    m.insert("Random.rand", |i, _, a| with_default(|s| draw(i, s, &a)));
-    m.insert("Random.bytes", |i, _, a| {
+    native!(m, "Random.new_seed", |_, _, _| Ok(Value::Int(new_seed())));
+    native!(m, "Random.rand", |i, _, a| with_default(|s| draw(i, s, &a)));
+    native!(m, "Random.bytes", |i, _, a| {
         let n = int(i, a.arg(0), "size")?.max(0) as usize;
         Ok(Value::bytes(with_default(|s| random_bytes(s, n))))
     });
-    m.insert("Random#seed", |i, r, _| {
+    native!(m, "Random#seed", |i, r, _| {
         Ok(Value::Int(rng(i, r)?.borrow().seed))
     });
-    m.insert("Random#rand", |i, r, a| {
+    native!(m, "Random#rand", |i, r, a| {
         draw(i, &mut rng(i, r)?.borrow_mut(), &a)
     });
-    m.insert("Random#bytes", |i, r, a| {
+    native!(m, "Random#bytes", |i, r, a| {
         let n = int(i, a.arg(0), "size")?.max(0) as usize;
         Ok(Value::bytes(random_bytes(&mut rng(i, r)?.borrow_mut(), n)))
     });
-    m.insert("Random#==", |i, r, a| {
+    native!(m, "Random#==", |i, r, a| {
         Ok(Value::Bool(match a.arg(0) {
             Value::Random(other) => Rc::ptr_eq(rng(i, r)?, other),
             _ => false,
         }))
     });
-    m.insert("Kernel#rand", |i, _, a| with_default(|s| draw(i, s, &a)));
-    m.insert("Kernel#srand", |i, _, a| {
+    native!(m, "Kernel#rand", |i, _, a| with_default(|s| draw(i, s, &a)));
+    native!(m, "Kernel#srand", |i, _, a| {
         let seed = match a.pos.first() {
             Some(v) => int(i, v, "seed")?,
             None => new_seed(),

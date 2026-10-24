@@ -14,28 +14,26 @@ use super::{block, float, int};
 
 pub fn register(m: &mut super::Registry<NativeFn>) {
     // Int
-    for name in ["Int.sqrt", "Integer.sqrt"] {
-        m.insert(name, |i, _, a| {
-            let n = Num::of(i, a.arg(0))?.to_big();
-            if n.is_negative() {
-                return Err(i.raise(
-                    i.program.exc.argument_error,
-                    "Numerical argument is out of domain - \"isqrt\"",
-                ));
-            }
-            // An Int's square root is one.
-            Ok(match a.arg(0) {
-                Value::BigInt(_) => integer(n.sqrt()),
-                _ => i.int_of_big(&n.sqrt())?,
-            })
-        });
-    }
-    m.insert("Int#fdiv", |i, r, a| {
+    native!(m, ["Int.sqrt", "Integer.sqrt"], |i, _, a| {
+        let n = Num::of(i, a.arg(0))?.to_big();
+        if n.is_negative() {
+            return Err(i.raise(
+                i.program.exc.argument_error,
+                "Numerical argument is out of domain - \"isqrt\"",
+            ));
+        }
+        // An Int's square root is one.
+        Ok(match a.arg(0) {
+            Value::BigInt(_) => integer(n.sqrt()),
+            _ => i.int_of_big(&n.sqrt())?,
+        })
+    });
+    native!(m, "Int#fdiv", |i, r, a| {
         let x = Num::of(i, r)?.to_f64();
         let y = Num::of(i, a.arg(0))?.to_f64();
         Ok(Value::Float(x / y))
     });
-    m.insert("Int#ceildiv", |i, r, a| {
+    native!(m, "Int#ceildiv", |i, r, a| {
         // -(-a / b) with floor division is the ceiling.
         let neg = arith(
             i,
@@ -57,13 +55,13 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             "*",
         )
     });
-    m.insert("Int#pow", |i, r, a| {
+    native!(m, "Int#pow", |i, r, a| {
         if a.pos.len() == 1 {
             return arith(i, r, &a, "**");
         }
         super::numeric::int_pow_mod(i, r, a)
     });
-    m.insert("Int#digits", |i, r, a| {
+    native!(m, "Int#digits", |i, r, a| {
         let base = match a.pos.first() {
             Some(b) => int(i, b, "base")?,
             None => 10,
@@ -87,19 +85,19 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         }
         Ok(Value::array(out))
     });
-    m.insert("Int#floor", |i, r, a| {
+    native!(m, "Int#floor", |i, r, a| {
         int_round_digits(i, r, a, Rounding::Floor)
     });
-    m.insert("Int#ceil", |i, r, a| {
+    native!(m, "Int#ceil", |i, r, a| {
         int_round_digits(i, r, a, Rounding::Ceil)
     });
-    m.insert("Int#round", |i, r, a| {
+    native!(m, "Int#round", |i, r, a| {
         int_round_digits(i, r, a, Rounding::Round)
     });
-    m.insert("Int#truncate", |i, r, a| {
+    native!(m, "Int#truncate", |i, r, a| {
         int_round_digits(i, r, a, Rounding::Truncate)
     });
-    m.insert("Int#[]", |i, r, a| {
+    native!(m, "Int#[]", |i, r, a| {
         let bit = int(i, a.arg(0), "bit")?;
         if bit < 0 {
             return Ok(Value::Int(0));
@@ -113,22 +111,22 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             },
         ))
     });
-    m.insert("Int#allbits?", |i, r, a| {
+    native!(m, "Int#allbits?", |i, r, a| {
         let n = Num::of(i, r)?.to_big();
         let mask = Num::of(i, a.arg(0))?.to_big();
         Ok(Value::Bool((&n & &mask) == mask))
     });
-    m.insert("Int#anybits?", |i, r, a| {
+    native!(m, "Int#anybits?", |i, r, a| {
         let n = Num::of(i, r)?.to_big();
         let mask = Num::of(i, a.arg(0))?.to_big();
         Ok(Value::Bool(!(n & mask).is_zero()))
     });
-    m.insert("Int#nobits?", |i, r, a| {
+    native!(m, "Int#nobits?", |i, r, a| {
         let n = Num::of(i, r)?.to_big();
         let mask = Num::of(i, a.arg(0))?.to_big();
         Ok(Value::Bool((n & mask).is_zero()))
     });
-    m.insert("Int#bit_set?", |i, r, a| {
+    native!(m, "Int#bit_set?", |i, r, a| {
         let bit = int(i, a.arg(0), "bit")?;
         let n = Num::of(i, r)?.to_big();
         Ok(Value::Bool(
@@ -137,7 +135,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     });
 
     // Float
-    m.insert("Float#divmod", |i, r, a| {
+    native!(m, "Float#divmod", |i, r, a| {
         let x = float(i, r, "Float")?;
         let y = Num::of(i, a.arg(0))?.to_f64();
         if y == 0.0 {
@@ -147,27 +145,27 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         let rem = x - q * y;
         Ok(Value::array(vec![float_to_int(i, q)?, Value::Float(rem)]))
     });
-    m.insert("Float#fdiv", |i, r, a| {
+    native!(m, "Float#fdiv", |i, r, a| {
         let x = float(i, r, "Float")?;
         let y = Num::of(i, a.arg(0))?.to_f64();
         Ok(Value::Float(x / y))
     });
-    m.insert("Float#floor", |i, r, a| {
+    native!(m, "Float#floor", |i, r, a| {
         float_round_digits(i, r, a, Rounding::Floor)
     });
-    m.insert("Float#ceil", |i, r, a| {
+    native!(m, "Float#ceil", |i, r, a| {
         float_round_digits(i, r, a, Rounding::Ceil)
     });
-    m.insert("Float#truncate", |i, r, a| {
+    native!(m, "Float#truncate", |i, r, a| {
         float_round_digits(i, r, a, Rounding::Truncate)
     });
-    m.insert("Float#next_float", |i, r, _| {
+    native!(m, "Float#next_float", |i, r, _| {
         Ok(Value::Float(float(i, r, "Float")?.next_up()))
     });
-    m.insert("Float#prev_float", |i, r, _| {
+    native!(m, "Float#prev_float", |i, r, _| {
         Ok(Value::Float(float(i, r, "Float")?.next_down()))
     });
-    m.insert("Float#step", |i, r, a| {
+    native!(m, "Float#step", |i, r, a| {
         let from = float(i, r, "Float")?;
         let limit = Num::of(i, a.arg(0))?.to_f64();
         let step = Num::of(i, a.arg(1))?.to_f64();
@@ -190,19 +188,19 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     });
 
     // Math
-    m.insert("Math.asin", |i, _, a| unary(i, &a, f64::asin));
-    m.insert("Math.acos", |i, _, a| unary(i, &a, f64::acos));
-    m.insert("Math.sinh", |i, _, a| unary(i, &a, f64::sinh));
-    m.insert("Math.cosh", |i, _, a| unary(i, &a, f64::cosh));
-    m.insert("Math.tanh", |i, _, a| unary(i, &a, f64::tanh));
-    m.insert("Math.asinh", |i, _, a| unary(i, &a, f64::asinh));
-    m.insert("Math.acosh", |i, _, a| unary(i, &a, f64::acosh));
-    m.insert("Math.atanh", |i, _, a| unary(i, &a, f64::atanh));
-    m.insert("Math.log1p", |i, _, a| unary(i, &a, f64::ln_1p));
-    m.insert("Math.expm1", |i, _, a| unary(i, &a, f64::exp_m1));
+    native!(m, "Math.asin", |i, _, a| unary(i, &a, f64::asin));
+    native!(m, "Math.acos", |i, _, a| unary(i, &a, f64::acos));
+    native!(m, "Math.sinh", |i, _, a| unary(i, &a, f64::sinh));
+    native!(m, "Math.cosh", |i, _, a| unary(i, &a, f64::cosh));
+    native!(m, "Math.tanh", |i, _, a| unary(i, &a, f64::tanh));
+    native!(m, "Math.asinh", |i, _, a| unary(i, &a, f64::asinh));
+    native!(m, "Math.acosh", |i, _, a| unary(i, &a, f64::acosh));
+    native!(m, "Math.atanh", |i, _, a| unary(i, &a, f64::atanh));
+    native!(m, "Math.log1p", |i, _, a| unary(i, &a, f64::ln_1p));
+    native!(m, "Math.expm1", |i, _, a| unary(i, &a, f64::exp_m1));
 
     // Comparable#clamp with a range.
-    m.insert("Comparable#clamp", |i, r, a| {
+    native!(m, "Comparable#clamp", |i, r, a| {
         use std::cmp::Ordering;
         let (min, max) = match a.arg(0) {
             Value::Range(rg) if a.pos.len() == 1 => {

@@ -24,27 +24,27 @@ use super::net;
 use super::{block, string};
 
 pub fn register(m: &mut super::Registry<NativeFn>) {
-    m.insert("Process.argv", |i, _, _| {
+    native!(m, "Process.argv", |i, _, _| {
         Ok(Value::array(
             i.program.argv.iter().map(|s| Value::str(s)).collect(),
         ))
     });
-    m.insert("Process.env", |_, _, _| {
+    native!(m, "Process.env", |_, _, _| {
         let map: ValueMap = std::env::vars()
             .map(|(k, v)| (Value::string(k), Value::string(v)))
             .collect();
         Ok(Value::Hash(Rc::new(crate::value::HashData::from(map))))
     });
-    m.insert("Process.pid", |_, _, _| {
+    native!(m, "Process.pid", |_, _, _| {
         Ok(Value::Int(std::process::id() as i64))
     });
-    m.insert("Process.stdin", |_, _, _| Ok(io(IoKind::Stdin)));
-    m.insert("Process.stdout", |_, _, _| Ok(io(IoKind::Stdout)));
-    m.insert("Process.stderr", |_, _, _| Ok(io(IoKind::Stderr)));
-    m.insert("Process.clock", |_, _, _| {
+    native!(m, "Process.stdin", |_, _, _| Ok(io(IoKind::Stdin)));
+    native!(m, "Process.stdout", |_, _, _| Ok(io(IoKind::Stdout)));
+    native!(m, "Process.stderr", |_, _, _| Ok(io(IoKind::Stderr)));
+    native!(m, "Process.clock", |_, _, _| {
         Ok(Value::Float(super::clock_start().elapsed().as_secs_f64()))
     });
-    m.insert("Process.run", |i, _, a| {
+    native!(m, "Process.run", |i, _, a| {
         if a.pos.is_empty() {
             return Err(i.err_arg("Process.run needs a command"));
         }
@@ -56,27 +56,27 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         command.args(&parts[1..]);
         run_command(i, command, &parts[0])
     });
-    m.insert("Process.sh", |i, _, a| {
+    native!(m, "Process.sh", |i, _, a| {
         let script = string(i, a.arg(0), "script")?;
         let mut command = std::process::Command::new("sh");
         command.arg("-c").arg(script);
         run_command(i, command, "sh")
     });
-    m.insert("Process::Output#success?", |i, r, _| {
+    native!(m, "Process::Output#success?", |i, r, _| {
         let status = i.send(r, "status", smallvec![], None)?;
         Ok(Value::Bool(matches!(status, Value::Int(0))))
     });
 
     // IO
-    m.insert("IO#puts", io_puts);
-    m.insert("IO#print", io_print);
-    m.insert("IO#printf", |i, r, a| {
+    native!(m, "IO#puts", io_puts);
+    native!(m, "IO#print", io_print);
+    native!(m, "IO#printf", |i, r, a| {
         let fmt = string(i, a.arg(0), "format string")?;
         let text = super::core::format_values(i, fmt, &a.pos[1..])?;
         io_write(i, r, &text)?;
         Ok(Value::Nil)
     });
-    m.insert("IO#write", |i, r, a| {
+    native!(m, "IO#write", |i, r, a| {
         // One write for all the arguments: on a shared socket, another
         // task's write does not come between them.
         let mut bytes = Vec::new();
@@ -86,15 +86,15 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         io_write_bytes(i, r, &bytes)?;
         Ok(Value::Int(bytes.len() as i64))
     });
-    m.insert("IO#<<", |i, r, a| {
+    native!(m, "IO#<<", |i, r, a| {
         let bytes = net::payload(i, a.arg(0))?;
         io_write_bytes(i, r, &bytes)?;
         Ok(r.clone())
     });
-    m.insert("IO#gets", |i, r, _| io_gets(i, r, true));
-    m.insert("IO#gets?", |i, r, _| io_gets(i, r, false));
-    m.insert("IO#readline", |i, r, _| io_gets(i, r, true));
-    m.insert("IO#readlines", |i, r, _| {
+    native!(m, "IO#gets", |i, r, _| io_gets(i, r, true));
+    native!(m, "IO#gets?", |i, r, _| io_gets(i, r, false));
+    native!(m, "IO#readline", |i, r, _| io_gets(i, r, true));
+    native!(m, "IO#readlines", |i, r, _| {
         let mut lines = Vec::new();
         loop {
             match io_gets(i, r, false)? {
@@ -104,7 +104,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         }
         Ok(Value::array(lines))
     });
-    m.insert("IO#read", |i, r, a| {
+    native!(m, "IO#read", |i, r, a| {
         let text = io_read(i, r, a.pos.first())?;
         match text {
             Some(text) => Ok(Value::string(text)),
@@ -112,13 +112,13 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             None => Err(i.raise(i.program.exc.eof_error, "end of file reached")),
         }
     });
-    m.insert("IO#read?", |i, r, a| {
+    native!(m, "IO#read?", |i, r, a| {
         Ok(match io_read(i, r, a.pos.first())? {
             Some(text) => Value::string(text),
             None => Value::Nil,
         })
     });
-    m.insert("IO#getc", |i, r, _| {
+    native!(m, "IO#getc", |i, r, _| {
         let mut buf = [0u8; 4];
         let first = match read_byte(i, r)? {
             Some(b) => b,
@@ -141,7 +141,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             String::from_utf8_lossy(&buf[..width]).into_owned(),
         ))
     });
-    m.insert("IO#each_line", |i, r, a| {
+    native!(m, "IO#each_line", |i, r, a| {
         let b = block(i, &a)?;
         loop {
             match io_gets(i, r, false)? {
@@ -152,7 +152,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             }
         }
     });
-    m.insert("IO#flush", |i, r, _| {
+    native!(m, "IO#flush", |i, r, _| {
         match &io_of(i, r)?.kind {
             IoKind::File(f) => {
                 let io = f.borrow().io.clone();
@@ -172,7 +172,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         }
         Ok(Value::Nil)
     });
-    m.insert("IO#close", |i, r, _| {
+    native!(m, "IO#close", |i, r, _| {
         match &io_of(i, r)?.kind {
             IoKind::File(f) => file_close(i, f)?,
             IoKind::Socket(_) | IoKind::Listener(_) | IoKind::Udp(_) => net::close(i, r)?,
@@ -180,10 +180,10 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         }
         Ok(Value::Nil)
     });
-    m.insert("IO#closed?", |i, r, _| {
+    native!(m, "IO#closed?", |i, r, _| {
         Ok(Value::Bool(net::is_closed(io_of(i, r)?)))
     });
-    m.insert("IO#eof?", |i, r, _| {
+    native!(m, "IO#eof?", |i, r, _| {
         Ok(Value::Bool(match &io_of(i, r)?.kind {
             IoKind::File(f) => {
                 let (io, readable) = {
@@ -216,7 +216,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             _ => false,
         }))
     });
-    m.insert("IO#rewind", |i, r, _| {
+    native!(m, "IO#rewind", |i, r, _| {
         match &io_of(i, r)?.kind {
             IoKind::File(f) => {
                 let io = f.borrow().io.clone();
@@ -243,7 +243,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         }
         Ok(Value::Nil)
     });
-    m.insert("IO#tty?", |i, r, _| {
+    native!(m, "IO#tty?", |i, r, _| {
         use std::io::IsTerminal;
         Ok(Value::Bool(match &io_of(i, r)?.kind {
             IoKind::Stdin => std::io::stdin().is_terminal(),
@@ -252,7 +252,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             _ => false,
         }))
     });
-    m.insert("IO#path", |i, r, _| {
+    native!(m, "IO#path", |i, r, _| {
         let io = io_of(i, r)?;
         Ok(match &io.kind {
             IoKind::File(f) => Value::str(&f.borrow().path),
@@ -262,26 +262,26 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             },
         })
     });
-    m.insert("IO#to_s", |i, r, _| Ok(Value::string(i.inspect(r)?)));
-    m.insert("IO#inspect", |i, r, _| Ok(Value::string(i.inspect(r)?)));
+    native!(m, "IO#to_s", |i, r, _| Ok(Value::string(i.inspect(r)?)));
+    native!(m, "IO#inspect", |i, r, _| Ok(Value::string(i.inspect(r)?)));
 
     // File
-    m.insert("File.open", file_open);
-    m.insert("File.read", |i, _, a| {
+    native!(m, "File.open", file_open);
+    native!(m, "File.read", |i, _, a| {
         let p = string(i, a.arg(0), "path")?;
         let path = p.to_string();
         i.block_on(move || std::fs::read_to_string(&path))?
             .map(Value::string)
             .map_err(|e| os_error(i, e, p))
     });
-    m.insert("File.read_bytes", |i, _, a| {
+    native!(m, "File.read_bytes", |i, _, a| {
         let p = string(i, a.arg(0), "path")?;
         let path = p.to_string();
         i.block_on(move || std::fs::read(&path))?
             .map(Value::bytes)
             .map_err(|e| os_error(i, e, p))
     });
-    m.insert("File.write", |i, _, a| {
+    native!(m, "File.write", |i, _, a| {
         let p = string(i, a.arg(0), "path")?;
         let content = content_bytes(i, a.arg(1))?;
         let len = content.len();
@@ -290,7 +290,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             .map(|_| Value::Int(len as i64))
             .map_err(|e| os_error(i, e, p))
     });
-    m.insert("File.append", |i, _, a| {
+    native!(m, "File.append", |i, _, a| {
         let p = string(i, a.arg(0), "path")?;
         let content = content_bytes(i, a.arg(1))?;
         let len = content.len();
@@ -305,32 +305,32 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         .map(|_| Value::Int(len as i64))
         .map_err(|e| os_error(i, e, p))
     });
-    m.insert("File.exist?", |i, _, a| {
+    native!(m, "File.exist?", |i, _, a| {
         path_test(i, &a, |p| Path::new(p).exists())
     });
-    m.insert("File.file?", |i, _, a| {
+    native!(m, "File.file?", |i, _, a| {
         path_test(i, &a, |p| Path::new(p).is_file())
     });
-    m.insert("File.directory?", |i, _, a| {
+    native!(m, "File.directory?", |i, _, a| {
         path_test(i, &a, |p| Path::new(p).is_dir())
     });
-    m.insert("File.symlink?", |i, _, a| {
+    native!(m, "File.symlink?", |i, _, a| {
         path_test(i, &a, |p| {
             std::fs::symlink_metadata(p)
                 .map(|m| m.file_type().is_symlink())
                 .unwrap_or(false)
         })
     });
-    m.insert("File.readable?", |i, _, a| {
+    native!(m, "File.readable?", |i, _, a| {
         path_test(i, &a, |p| std::fs::File::open(p).is_ok())
     });
-    m.insert("File.writable?", |i, _, a| {
+    native!(m, "File.writable?", |i, _, a| {
         path_test(i, &a, |p| {
             std::fs::OpenOptions::new().append(true).open(p).is_ok()
                 || std::fs::metadata(p).is_ok_and(|m| m.is_dir() && !m.permissions().readonly())
         })
     });
-    m.insert("File.executable?", |i, _, a| {
+    native!(m, "File.executable?", |i, _, a| {
         path_test(i, &a, |p| {
             std::fs::metadata(p).is_ok_and(|m| {
                 #[cfg(unix)]
@@ -345,13 +345,13 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             })
         })
     });
-    m.insert("File.size", |i, _, a| {
+    native!(m, "File.size", |i, _, a| {
         let p = string(i, a.arg(0), "path")?;
         on_disk(i, p, |p| std::fs::metadata(p))?
             .map(|m| Value::Int(m.len() as i64))
             .map_err(|e| os_error(i, e, p))
     });
-    m.insert("File.mtime", |i, _, a| {
+    native!(m, "File.mtime", |i, _, a| {
         let p = string(i, a.arg(0), "path")?;
         let modified = on_disk(i, p, |p| std::fs::metadata(p).and_then(|m| m.modified()))?
             .map_err(|e| os_error(i, e, p))?;
@@ -361,14 +361,14 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         };
         Ok(super::time::at_local(ns))
     });
-    m.insert("File.delete", |i, _, a| {
+    native!(m, "File.delete", |i, _, a| {
         for p in &a.pos {
             let p = string(i, p, "path")?;
             on_disk(i, p, |p| std::fs::remove_file(p))?.map_err(|e| os_error(i, e, p))?;
         }
         Ok(Value::Int(a.pos.len() as i64))
     });
-    m.insert("File.rename", |i, _, a| {
+    native!(m, "File.rename", |i, _, a| {
         let from = string(i, a.arg(0), "from")?;
         let to = string(i, a.arg(1), "to")?;
         let (f, t) = (from.to_string(), to.to_string());
@@ -376,7 +376,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             .map_err(|e| os_error(i, e, from))?;
         Ok(Value::Int(0))
     });
-    m.insert("File.copy", |i, _, a| {
+    native!(m, "File.copy", |i, _, a| {
         let from = string(i, a.arg(0), "from")?;
         let to = string(i, a.arg(1), "to")?;
         let (f, t) = (from.to_string(), to.to_string());
@@ -384,7 +384,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             .map(|n| Value::Int(n as i64))
             .map_err(|e| os_error(i, e, from))
     });
-    m.insert("File.readlines", |i, _, a| {
+    native!(m, "File.readlines", |i, _, a| {
         let p = string(i, a.arg(0), "path")?;
         let chomp = a.arg(1).is_truthy() || a.kw(i, "chomp").is_some_and(|v| v.is_truthy());
         let path = p.to_string();
@@ -398,9 +398,9 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
                 .collect(),
         ))
     });
-    m.insert("File.each_line", file_each_line);
-    m.insert("File.foreach", file_each_line);
-    m.insert("File.basename", |i, _, a| {
+    native!(m, "File.each_line", file_each_line);
+    native!(m, "File.foreach", file_each_line);
+    native!(m, "File.basename", |i, _, a| {
         let p = string(i, a.arg(0), "path")?;
         let name = file_name(p);
         let name = match a.pos.get(1) {
@@ -419,10 +419,10 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         };
         Ok(Value::string(name))
     });
-    m.insert("File.dirname", |i, _, a| {
+    native!(m, "File.dirname", |i, _, a| {
         Ok(Value::str(dir_name(string(i, a.arg(0), "path")?)))
     });
-    m.insert("File.extname", |i, _, a| {
+    native!(m, "File.extname", |i, _, a| {
         let p = string(i, a.arg(0), "path")?;
         let name = file_name(p);
         Ok(Value::string(match name.rfind('.') {
@@ -431,14 +431,14 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             Some(at) => name[at..].to_string(),
         }))
     });
-    m.insert("File.split", |i, _, a| {
+    native!(m, "File.split", |i, _, a| {
         let p = string(i, a.arg(0), "path")?;
         Ok(Value::array(vec![
             Value::str(dir_name(p)),
             Value::str(file_name(p)),
         ]))
     });
-    m.insert("File.join", |i, _, a| {
+    native!(m, "File.join", |i, _, a| {
         let mut out = String::new();
         for p in &a.pos {
             let part = string(i, p, "part")?;
@@ -454,7 +454,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         }
         Ok(Value::string(out))
     });
-    m.insert("File.expand_path", |i, _, a| {
+    native!(m, "File.expand_path", |i, _, a| {
         let p = string(i, a.arg(0), "path")?;
         let base: Option<PathBuf> = match a.pos.get(1) {
             Some(Value::Nil) | None => None,
@@ -462,15 +462,15 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         };
         Ok(Value::string(expand_path(p, base)))
     });
-    m.insert("File.absolute_path", |i, _, a| {
+    native!(m, "File.absolute_path", |i, _, a| {
         let p = string(i, a.arg(0), "path")?;
         Ok(Value::string(expand_path(p, None)))
     });
 
     // Dir
-    m.insert("Dir.pwd", |i, _, _| current_dir(i));
-    m.insert("Dir.getwd", |i, _, _| current_dir(i));
-    m.insert("Dir.home", |i, _, _| {
+    native!(m, "Dir.pwd", |i, _, _| current_dir(i));
+    native!(m, "Dir.getwd", |i, _, _| current_dir(i));
+    native!(m, "Dir.home", |i, _, _| {
         std::env::var("HOME").map(Value::string).map_err(|_| {
             i.raise(
                 i.program.exc.argument_error,
@@ -478,12 +478,12 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             )
         })
     });
-    m.insert("Dir.tmpdir", |_, _, _| {
+    native!(m, "Dir.tmpdir", |_, _, _| {
         Ok(Value::string(
             std::env::temp_dir().to_string_lossy().into_owned(),
         ))
     });
-    m.insert("Dir.chdir", |i, _, a| {
+    native!(m, "Dir.chdir", |i, _, a| {
         let target = match a.pos.first() {
             Some(p) => string(i, p, "path")?.to_string(),
             None => std::env::var("HOME").unwrap_or_else(|_| "/".to_string()),
@@ -498,32 +498,32 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         let _ = std::env::set_current_dir(previous);
         result
     });
-    m.insert("Dir.exist?", |i, _, a| {
+    native!(m, "Dir.exist?", |i, _, a| {
         path_test(i, &a, |p| Path::new(p).is_dir())
     });
-    m.insert("Dir.empty?", |i, _, a| {
+    native!(m, "Dir.empty?", |i, _, a| {
         path_test(i, &a, |p| {
             std::fs::read_dir(p)
                 .map(|mut d| d.next().is_none())
                 .unwrap_or(false)
         })
     });
-    m.insert("Dir.mkdir", |i, _, a| {
+    native!(m, "Dir.mkdir", |i, _, a| {
         let p = string(i, a.arg(0), "path")?;
         on_disk(i, p, |p| std::fs::create_dir(p))?.map_err(|e| os_error(i, e, p))?;
         Ok(Value::Int(0))
     });
-    m.insert("Dir.mkdir_p", |i, _, a| {
+    native!(m, "Dir.mkdir_p", |i, _, a| {
         let p = string(i, a.arg(0), "path")?;
         on_disk(i, p, |p| std::fs::create_dir_all(p))?.map_err(|e| os_error(i, e, p))?;
         Ok(Value::Int(0))
     });
-    m.insert("Dir.rmdir", |i, _, a| {
+    native!(m, "Dir.rmdir", |i, _, a| {
         let p = string(i, a.arg(0), "path")?;
         on_disk(i, p, |p| std::fs::remove_dir(p))?.map_err(|e| os_error(i, e, p))?;
         Ok(Value::Int(0))
     });
-    m.insert("Dir.rm_rf", |i, _, a| {
+    native!(m, "Dir.rm_rf", |i, _, a| {
         let p = string(i, a.arg(0), "path")?;
         match on_disk(i, p, |p| std::fs::remove_dir_all(p))? {
             Ok(()) => Ok(Value::Int(0)),
@@ -531,19 +531,19 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             Err(e) => Err(os_error(i, e, p)),
         }
     });
-    m.insert("Dir.children", |i, _, a| {
+    native!(m, "Dir.children", |i, _, a| {
         let p = string(i, a.arg(0), "path")?;
         Ok(Value::array(
             dir_children(i, p)?.into_iter().map(Value::string).collect(),
         ))
     });
-    m.insert("Dir.entries", |i, _, a| {
+    native!(m, "Dir.entries", |i, _, a| {
         let p = string(i, a.arg(0), "path")?;
         let mut names = vec![".".to_string(), "..".to_string()];
         names.extend(dir_children(i, p)?);
         Ok(Value::array(names.into_iter().map(Value::string).collect()))
     });
-    m.insert("Dir.each_child", |i, _, a| {
+    native!(m, "Dir.each_child", |i, _, a| {
         let b = block(i, &a)?;
         let p = string(i, a.arg(0), "path")?;
         for name in dir_children(i, p)? {
@@ -551,7 +551,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         }
         Ok(Value::Nil)
     });
-    m.insert("Dir.glob", |i, _, a| {
+    native!(m, "Dir.glob", |i, _, a| {
         let mut patterns = Vec::new();
         match a.arg(0) {
             Value::Array(items) => {

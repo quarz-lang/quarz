@@ -12,7 +12,7 @@ use crate::value::*;
 use super::string;
 
 pub fn register(m: &mut super::Registry<NativeFn>) {
-    m.insert("JSON.parse", |i, _, a| {
+    native!(m, "JSON.parse", |i, _, a| {
         let text = string(i, a.arg(0), "text")?;
         let classes = classes(i)?;
         let mut p = Parser {
@@ -30,12 +30,12 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         }
         Ok(v)
     });
-    m.insert("JSON.generate", |i, _, a| {
+    native!(m, "JSON.generate", |i, _, a| {
         let mut out = String::new();
         generate(i, a.arg(0), None, &mut out, 0)?;
         Ok(Value::string(out))
     });
-    m.insert("JSON.pretty_generate", |i, _, a| {
+    native!(m, "JSON.pretty_generate", |i, _, a| {
         let mut out = String::new();
         generate(i, a.arg(0), Some("  "), &mut out, 0)?;
         Ok(Value::string(out))

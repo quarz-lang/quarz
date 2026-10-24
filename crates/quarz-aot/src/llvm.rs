@@ -1117,7 +1117,7 @@ fn emit(module: &Module, opaque: bool) -> Result<String, String> {
         },
         main: declare(
             "qz_main",
-            &[p, i64_, p, i64_, p, i64_, i32_, p, i64_, i64_, i64_],
+            &[p, i64_, p, i64_, p, i64_, p, p, i32_, p, i64_, i64_, i64_],
             &[i32_],
         ),
     };
@@ -1296,13 +1296,71 @@ fn emit(module: &Module, opaque: bool) -> Result<String, String> {
         units: module.units.clone(),
     };
     // The methods apart, decoded when first needed, with what the runtime
-    // derives from them (where their natives are in its registries: the
-    // compiler links the same runtime crate).
+    // derives from them, and the tables of the natives they use (by their
+    // symbols: the compiler links the same runtime crate), so that the
+    // linker leaves the others out.
     let methods = std::mem::take(&mut kept.world.methods);
-    let method_bytes = quarz_vm::methods::encode(
-        &methods,
-        &quarz_vm::natives::positions(),
-        quarz_vm::natives::fingerprint(),
+    let symbols = quarz_vm::natives::symbols();
+    let mut positions: [quarz_ir::HashMap<&str, u32>; 3] = Default::default();
+    let mut tables: [Vec<&'static str>; 3] = Default::default();
+    for key in methods.iter().filter_map(|m| m.native_key.as_deref()) {
+        for k in 0..3 {
+            let Some(&sym) = symbols[k].get(key) else {
+                continue;
+            };
+            if positions[k].contains_key(key) {
+                continue;
+            }
+            let at = match tables[k].iter().position(|s| *s == sym) {
+                Some(at) => at,
+                None => {
+                    tables[k].push(sym);
+                    tables[k].len() - 1
+                }
+            };
+            positions[k].insert(key, at as u32);
+        }
+    }
+    let method_bytes = quarz_vm::methods::encode(&methods, &positions);
+    // `@"qzn.Array#size"`: the natives' symbols, quoted.
+    let quoted = |sym: &str| -> String {
+        let mut q = String::from("@\"");
+        for b in sym.bytes() {
+            if b == b'"' || b == b'\\' || !(0x20..0x7f).contains(&b) {
+                let _ = write!(q, "\\{b:02X}");
+            } else {
+                q.push(b as char);
+            }
+        }
+        q.push('"');
+        q
+    };
+    let all_natives: Vec<&str> = tables.iter().flatten().copied().collect();
+    for sym in &all_natives {
+        let _ = writeln!(out, "declare void {}()", quoted(sym));
+    }
+    let native_entries: Vec<String> = all_natives
+        .iter()
+        .map(|sym| {
+            if opaque {
+                format!("ptr {}", quoted(sym))
+            } else {
+                format!("i8* bitcast (void ()* {} to i8*)", quoted(sym))
+            }
+        })
+        .collect();
+    let _ = writeln!(
+        out,
+        "@qz_natives = internal constant [{} x {ptr}] [{}], align 8",
+        native_entries.len(),
+        native_entries.join(", ")
+    );
+    let _ = writeln!(
+        out,
+        "@qz_natives_len = internal constant [3 x i64] [i64 {}, i64 {}, i64 {}], align 8",
+        tables[0].len(),
+        tables[1].len(),
+        tables[2].len()
     );
     let bytes = quarz_ir::encode_image(&kept);
     let mut blob = String::with_capacity(bytes.len() * 4);
@@ -1339,8 +1397,8 @@ fn emit(module: &Module, opaque: bool) -> Result<String, String> {
         "@qz_fn_table = internal constant [{n} x {ptr}] [{}], align 8",
         entries.join(", ")
     );
-    // main(argc, argv) -> qz_main(blob, len, methods, len, table, n, argc,
-    // argv, layout, vec_layout, flags)
+    // main(argc, argv) -> qz_main(blob, len, methods, len, table, n,
+    // natives, natives_len, argc, argv, layout, vec_layout, flags)
     let methods_ptr = if opaque {
         "ptr @qz_methods_blob".to_string()
     } else {
@@ -1364,9 +1422,23 @@ fn emit(module: &Module, opaque: bool) -> Result<String, String> {
     } else {
         format!("i8* bitcast ([{n} x i8*]* @qz_fn_table to i8*)")
     };
+    let (natives_ptr, natives_len_ptr) = if opaque {
+        (
+            "ptr @qz_natives".to_string(),
+            "ptr @qz_natives_len".to_string(),
+        )
+    } else {
+        (
+            format!(
+                "i8* bitcast ([{} x i8*]* @qz_natives to i8*)",
+                native_entries.len()
+            ),
+            "i8* bitcast ([3 x i64]* @qz_natives_len to i8*)".to_string(),
+        )
+    };
     let _ = writeln!(
         out,
-        "define i32 @main(i32 %argc, {ptr} %argv) {{\n  %code = call i32 @qz_main({blob_ptr}, i64 {}, {methods_ptr}, i64 {}, {table_ptr}, i64 {n}, i32 %argc, {ptr} %argv, i64 {}, i64 {}, i64 1)\n  ret i32 %code\n}}",
+        "define i32 @main(i32 %argc, {ptr} %argv) {{\n  %code = call i32 @qz_main({blob_ptr}, i64 {}, {methods_ptr}, i64 {}, {table_ptr}, i64 {n}, {natives_ptr}, {natives_len_ptr}, i32 %argc, {ptr} %argv, i64 {}, i64 {}, i64 1)\n  ret i32 %code\n}}",
         bytes.len(),
         method_bytes.len(),
         L::SIGNATURE as i64,

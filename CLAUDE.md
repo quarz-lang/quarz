@@ -79,6 +79,12 @@ when the local one is older.
   the REPL install the interpreter (`Interp::install_interpreter`);
   nothing a compiled program reaches may name `Inst`, `Block` or the
   interpreter, or the linker keeps them.
+- Natives are registered with `native!`/`fast!`/`owned!`
+  (`natives/mod.rs`): each is a function of its own, exported as
+  `qzn.`/`qzf.`/`qzo.` and its first key, and a compiled program's table
+  lists only those its methods use. Register a key once (a second one
+  is a duplicate symbol), and build the full registries
+  (`natives::all`) only through the installed interpreter.
 - In register sharing, a result never shares with its own operands (the
   AOT may release a destination before reading operands), counted and
   non-counted registers stay apart (`live::heap_possible`, shared with

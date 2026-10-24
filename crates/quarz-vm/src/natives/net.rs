@@ -24,7 +24,7 @@ use super::{int, string};
 
 pub fn register(m: &mut super::Registry<NativeFn>) {
     // Socket
-    m.insert("Socket.getaddrinfo", |i, _, a| {
+    native!(m, "Socket.getaddrinfo", |i, _, a| {
         let host = string(i, a.arg(0), "host")?.to_string();
         let port = port_number(i, a.arg(1))?;
         let family = match a.pos.get(2) {
@@ -44,12 +44,12 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         ))
     });
     // TCPSocket
-    m.insert("TCPSocket.connect", |i, _, a| {
+    native!(m, "TCPSocket.connect", |i, _, a| {
         let addr = address_of(i, a.arg(0))?;
         tcp_connect(i, addr)
     });
     // TCPServer
-    m.insert("TCPServer.new", |i, _, a| {
+    native!(m, "TCPServer.new", |i, _, a| {
         let (host, port) = match a.pos.len() {
             1 => ("0.0.0.0".to_string(), int(i, a.arg(0), "port")?),
             _ => (
@@ -67,15 +67,15 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             .map_err(|e| os_error(i, e, "listen"))?;
         Ok(make_listener(i, Listener::Tcp(listener), None))
     });
-    m.insert("TCPServer#accept", listener_accept);
-    m.insert("UNIXServer#accept", listener_accept);
+    native!(m, "TCPServer#accept", listener_accept);
+    native!(m, "UNIXServer#accept", listener_accept);
     // UNIXSocket / UNIXServer
-    m.insert("UNIXSocket.new", |i, _, a| unix_connect(i, &a));
-    m.insert("UNIXSocket.open", |i, _, a| {
+    native!(m, "UNIXSocket.new", |i, _, a| unix_connect(i, &a));
+    native!(m, "UNIXSocket.open", |i, _, a| {
         let sock = unix_connect(i, &a)?;
         with_closing(i, sock, &a)
     });
-    m.insert("UNIXServer.new", |i, _, a| {
+    native!(m, "UNIXServer.new", |i, _, a| {
         let path = string(i, a.arg(0), "path")?;
         let listener = UnixListener::bind(path).map_err(|e| os_error(i, e, path))?;
         listener
@@ -88,7 +88,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         ))
     });
     // UDPSocket
-    m.insert("UDPSocket.new", |i, _, _| {
+    native!(m, "UDPSocket.new", |i, _, _| {
         let socket = udp_bind(i, "0.0.0.0:0")?;
         Ok(io(IoKind::Udp(IoCell::new(UdpState {
             socket: Some(socket),
@@ -96,7 +96,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             watch: IoWatch::new(),
         }))))
     });
-    m.insert("UDPSocket#bind", |i, r, a| {
+    native!(m, "UDPSocket#bind", |i, r, a| {
         // Binding after creation replaces the descriptor.
         let host = string(i, a.arg(0), "host")?;
         let port = int(i, a.arg(1), "port")?;
@@ -115,7 +115,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         }
         Ok(Value::Nil)
     });
-    m.insert("UDPSocket#connect", |i, r, a| {
+    native!(m, "UDPSocket#connect", |i, r, a| {
         let host = string(i, a.arg(0), "host")?.to_string();
         let port = int(i, a.arg(1), "port")?;
         let addr = resolve(i, &host, port)?;
@@ -127,7 +127,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         r.map_err(|e| os_error(i, e, &format!("{host}:{port}")))?;
         Ok(Value::Nil)
     });
-    m.insert("UDPSocket#send", |i, r, a| {
+    native!(m, "UDPSocket#send", |i, r, a| {
         let data = payload(i, a.arg(0))?;
         let st = udp(i, r)?;
         let fd = udp_fd(i, st)?;
@@ -158,23 +158,27 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             }
         }
     });
-    m.insert("UDPSocket#recvfrom", |i, r, a| {
+    native!(m, "UDPSocket#recvfrom", |i, r, a| {
         udp_recv(i, r, &a, true, false)
     });
-    m.insert("UDPSocket#recvfrom_bytes", |i, r, a| {
+    native!(m, "UDPSocket#recvfrom_bytes", |i, r, a| {
         udp_recv(i, r, &a, true, true)
     });
-    m.insert("UDPSocket#recv", |i, r, a| udp_recv(i, r, &a, false, false));
-    m.insert("UDPSocket#recv_bytes", |i, r, a| {
+    native!(m, "UDPSocket#recv", |i, r, a| udp_recv(
+        i, r, &a, false, false
+    ));
+    native!(m, "UDPSocket#recv_bytes", |i, r, a| {
         udp_recv(i, r, &a, false, true)
     });
     // Addresses.
-    for key in [
-        "TCPSocket#local_address",
-        "TCPServer#local_address",
-        "UDPSocket#local_address",
-    ] {
-        m.insert(key, |i, r, _| {
+    native!(
+        m,
+        [
+            "TCPSocket#local_address",
+            "TCPServer#local_address",
+            "UDPSocket#local_address"
+        ],
+        |i, r, _| {
             let addr = match &io_of(i, r)?.kind {
                 IoKind::Socket(st) => st.borrow().local,
                 IoKind::Listener(st) => match &st.borrow().listener {
@@ -192,9 +196,9 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
                 Some(a) => address_value(i, a),
                 None => Ok(Value::Nil),
             }
-        });
-    }
-    m.insert("TCPSocket#remote_address", |i, r, _| {
+        }
+    );
+    native!(m, "TCPSocket#remote_address", |i, r, _| {
         match &io_of(i, r)?.kind {
             IoKind::Socket(st) => {
                 let peer = st.borrow().peer;
@@ -207,29 +211,29 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         }
     });
     // Streams in general (sockets and files).
-    m.insert("IO#readpartial", |i, r, a| {
+    native!(m, "IO#readpartial", |i, r, a| {
         let max = int(i, a.arg(0), "length")?.max(0) as usize;
         match read_partial(i, r, max)? {
             Some(bytes) => Ok(Value::string(String::from_utf8_lossy(&bytes).into_owned())),
             None => Err(i.raise(i.program.exc.eof_error, "end of file reached")),
         }
     });
-    m.insert("IO#readpartial?", |i, r, a| {
+    native!(m, "IO#readpartial?", |i, r, a| {
         let max = int(i, a.arg(0), "length")?.max(0) as usize;
         Ok(match read_partial(i, r, max)? {
             Some(bytes) => Value::string(String::from_utf8_lossy(&bytes).into_owned()),
             None => Value::Nil,
         })
     });
-    m.insert("IO#read_bytes", |i, r, a| {
+    native!(m, "IO#read_bytes", |i, r, a| {
         let max = int(i, a.arg(0), "length")?.max(0) as usize;
         Ok(Value::bytes(read_partial(i, r, max)?.unwrap_or_default()))
     });
-    m.insert("IO#close_write", |i, r, _| {
+    native!(m, "IO#close_write", |i, r, _| {
         shutdown(i, r, std::net::Shutdown::Write)?;
         Ok(Value::Nil)
     });
-    m.insert("IO#close_read", |i, r, _| {
+    native!(m, "IO#close_read", |i, r, _| {
         shutdown(i, r, std::net::Shutdown::Read)?;
         Ok(Value::Nil)
     });

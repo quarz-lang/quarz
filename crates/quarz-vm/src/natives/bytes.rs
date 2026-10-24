@@ -10,15 +10,15 @@ use smallvec::smallvec;
 use super::{block, int, string};
 
 pub fn register(m: &mut super::Registry<NativeFn>) {
-    m.insert("Bytes.new", |_, _, _| Ok(Value::bytes(Vec::new())));
-    m.insert("Bytes.[]", |i, _, a| {
+    native!(m, "Bytes.new", |_, _, _| Ok(Value::bytes(Vec::new())));
+    native!(m, "Bytes.[]", |i, _, a| {
         let mut out = Vec::with_capacity(a.pos.len());
         for v in a.pos.iter() {
             out.push(byte(i, v)?);
         }
         Ok(Value::bytes(out))
     });
-    m.insert("Bytes.from", |i, _, a| match a.arg(0) {
+    native!(m, "Bytes.from", |i, _, a| match a.arg(0) {
         Value::Array(items) => {
             let mut out = Vec::with_capacity(items.len());
             for v in items.iter() {
@@ -31,7 +31,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             i.class_name(other)
         ))),
     });
-    m.insert("Bytes.from_hex", |i, _, a| {
+    native!(m, "Bytes.from_hex", |i, _, a| {
         let text = string(i, a.arg(0), "hex")?;
         let digits: Vec<u8> = text.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
         if !digits.len().is_multiple_of(2) || !digits.iter().all(u8::is_ascii_hexdigit) {
@@ -47,7 +47,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             .collect();
         Ok(Value::bytes(out))
     });
-    m.insert("Bytes.build", |i, _, a| {
+    native!(m, "Bytes.build", |i, _, a| {
         let b = block(i, &a)?;
         let builder = Rc::new(RefCell::new(Vec::new()));
         i.call_block(&b, smallvec![Value::BytesBuilder(builder.clone())])?;
@@ -55,21 +55,21 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         Ok(Value::bytes(out))
     });
 
-    m.insert("Bytes#each", bytes_each);
-    m.insert("Bytes#each_byte", bytes_each);
-    m.insert("Bytes#size", |i, r, _| {
+    native!(m, "Bytes#each", bytes_each);
+    native!(m, "Bytes#each_byte", bytes_each);
+    native!(m, "Bytes#size", |i, r, _| {
         Ok(Value::Int(bs(i, r)?.len() as i64))
     });
-    m.insert("Bytes#length", |i, r, _| {
+    native!(m, "Bytes#length", |i, r, _| {
         Ok(Value::Int(bs(i, r)?.len() as i64))
     });
-    m.insert("Bytes#bytesize", |i, r, _| {
+    native!(m, "Bytes#bytesize", |i, r, _| {
         Ok(Value::Int(bs(i, r)?.len() as i64))
     });
-    m.insert("Bytes#empty?", |i, r, _| {
+    native!(m, "Bytes#empty?", |i, r, _| {
         Ok(Value::Bool(bs(i, r)?.is_empty()))
     });
-    m.insert("Bytes#[]", |i, r, a| {
+    native!(m, "Bytes#[]", |i, r, a| {
         let data = bs(i, r)?;
         match a.arg(0) {
             Value::Int(idx) => match offset(&data, *idx) {
@@ -87,7 +87,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             ))),
         }
     });
-    m.insert("Bytes#[]?", |i, r, a| {
+    native!(m, "Bytes#[]?", |i, r, a| {
         let data = bs(i, r)?;
         let idx = int(i, a.arg(0), "index")?;
         Ok(match offset(&data, idx) {
@@ -95,7 +95,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             None => Value::Nil,
         })
     });
-    m.insert("Bytes#slice", |i, r, a| {
+    native!(m, "Bytes#slice", |i, r, a| {
         let data = bs(i, r)?;
         let start = int(i, a.arg(0), "start")?;
         let len = int(i, a.arg(1), "length")?.max(0) as usize;
@@ -107,36 +107,36 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         let end = (start + len).min(data.len());
         Ok(Value::bytes(data[start..end].to_vec()))
     });
-    m.insert("Bytes#+", |i, r, a| {
+    native!(m, "Bytes#+", |i, r, a| {
         let mut out = bs(i, r)?.to_vec();
         out.extend_from_slice(&bs(i, a.arg(0))?);
         Ok(Value::bytes(out))
     });
-    m.insert("Bytes#==", |i, r, a| {
+    native!(m, "Bytes#==", |i, r, a| {
         Ok(Value::Bool(
             matches!(a.arg(0), Value::Bytes(o) if *o == bs(i, r)?),
         ))
     });
-    m.insert("Bytes#<=>", |i, r, a| {
+    native!(m, "Bytes#<=>", |i, r, a| {
         Ok(Value::Int(bs(i, r)?.cmp(&bs(i, a.arg(0))?) as i64))
     });
-    m.insert("Bytes#hash", |i, r, _| {
+    native!(m, "Bytes#hash", |i, r, _| {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
         bs(i, r)?.hash(&mut h);
         Ok(Value::Int((h.finish() >> 1) as i64))
     });
-    m.insert("Bytes#reverse", |i, r, _| {
+    native!(m, "Bytes#reverse", |i, r, _| {
         let mut out = bs(i, r)?.to_vec();
         out.reverse();
         Ok(Value::bytes(out))
     });
-    m.insert("Bytes#to_a", |i, r, _| {
+    native!(m, "Bytes#to_a", |i, r, _| {
         Ok(Value::array(
             bs(i, r)?.iter().map(|b| Value::Int(*b as i64)).collect(),
         ))
     });
-    m.insert("Bytes#decode", |i, r, a| {
+    native!(m, "Bytes#decode", |i, r, a| {
         let data = bs(i, r)?;
         let encoding = match a.pos.first() {
             Some(v) => string(i, v, "encoding")?,
@@ -151,56 +151,56 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             None => Err(i.err_arg(&format!("unknown encoding {:?}", encoding))),
         }
     });
-    m.insert("Bytes#decode?", |i, r, _| {
+    native!(m, "Bytes#decode?", |i, r, _| {
         Ok(match std::str::from_utf8(&bs(i, r)?) {
             Ok(s) => Value::str(s),
             Err(_) => Value::Nil,
         })
     });
-    m.insert("Bytes#hex", |i, r, _| {
+    native!(m, "Bytes#hex", |i, r, _| {
         Ok(Value::string(
             bs(i, r)?.iter().map(|b| format!("{b:02x}")).collect(),
         ))
     });
-    m.insert("Bytes#to_s", |i, r, _| {
+    native!(m, "Bytes#to_s", |i, r, _| {
         Ok(Value::string(inspect_bytes(&bs(i, r)?)))
     });
-    m.insert("Bytes#inspect", |i, r, _| {
+    native!(m, "Bytes#inspect", |i, r, _| {
         Ok(Value::string(inspect_bytes(&bs(i, r)?)))
     });
 
-    m.insert("Bytes::Builder.new", |_, _, _| {
+    native!(m, "Bytes::Builder.new", |_, _, _| {
         Ok(Value::BytesBuilder(Rc::new(RefCell::new(Vec::new()))))
     });
-    m.insert("Bytes::Builder#<<", builder_push);
-    m.insert("Bytes::Builder#push", builder_push);
-    m.insert("Bytes::Builder#size", |i, r, _| {
+    native!(m, "Bytes::Builder#<<", builder_push);
+    native!(m, "Bytes::Builder#push", builder_push);
+    native!(m, "Bytes::Builder#size", |i, r, _| {
         Ok(Value::Int(bb(i, r)?.borrow().len() as i64))
     });
-    m.insert("Bytes::Builder#empty?", |i, r, _| {
+    native!(m, "Bytes::Builder#empty?", |i, r, _| {
         Ok(Value::Bool(bb(i, r)?.borrow().is_empty()))
     });
-    m.insert("Bytes::Builder#clear", |i, r, _| {
+    native!(m, "Bytes::Builder#clear", |i, r, _| {
         bb(i, r)?.borrow_mut().clear();
         Ok(r.clone())
     });
-    m.insert("Bytes::Builder#to_bytes", |i, r, _| {
+    native!(m, "Bytes::Builder#to_bytes", |i, r, _| {
         Ok(Value::bytes(bb(i, r)?.borrow().clone()))
     });
-    m.insert("Bytes::Builder#snapshot", |i, r, _| {
+    native!(m, "Bytes::Builder#snapshot", |i, r, _| {
         Ok(Value::bytes(bb(i, r)?.borrow().clone()))
     });
-    m.insert("Bytes::Builder#to_s", |i, r, _| {
+    native!(m, "Bytes::Builder#to_s", |i, r, _| {
         Ok(Value::string(inspect_bytes(&bb(i, r)?.borrow())))
     });
-    m.insert("Bytes::Builder#inspect", |i, r, _| {
+    native!(m, "Bytes::Builder#inspect", |i, r, _| {
         Ok(Value::string(inspect_bytes(&bb(i, r)?.borrow())))
     });
 
-    m.insert("String#to_bytes", |i, r, _| {
+    native!(m, "String#to_bytes", |i, r, _| {
         Ok(Value::bytes(string(i, r, "receiver")?.as_bytes().to_vec()))
     });
-    m.insert("String#encode", |i, r, a| {
+    native!(m, "String#encode", |i, r, a| {
         let text = string(i, r, "receiver")?;
         let encoding = match a.pos.first() {
             Some(v) => string(i, v, "encoding")?,

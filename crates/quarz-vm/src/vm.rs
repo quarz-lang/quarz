@@ -22,6 +22,8 @@ pub(crate) struct Interpreter {
     /// `import` into its state.
     pub export: fn(&Interp) -> Option<Bodies>,
     pub import: fn(&SharedState, &Bodies),
+    /// All the natives (a compiled program has a table of those it uses).
+    pub natives: fn() -> crate::natives::Natives,
 }
 
 pub(crate) static INTERPRETER: std::sync::OnceLock<Interpreter> = std::sync::OnceLock::new();
@@ -468,6 +470,7 @@ impl Interp {
             },
             export: export_bodies,
             import: import_bodies,
+            natives: crate::natives::all,
         });
     }
 

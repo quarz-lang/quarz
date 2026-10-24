@@ -9,18 +9,22 @@
 //! column. The section is little-endian 32-bit words, read in place:
 //!
 //! ```text
-//! count, fingerprint (2 words), owned ids (6 words),
+//! count, owned ids (6 words),
 //! count records of RECORD words: offset, length, native positions (3),
 //!   flags, direct function, (unused),
 //! the methods' encodings
 //! ```
+//!
+//! A native position is the place of the method's native in the
+//! program's own table of that kind (plain, by-reference, in place),
+//! which lists the natives its methods use (`natives::PLAIN` and so on).
 
 use std::sync::OnceLock;
 
 use quarz_ir::{Droppable, FuncId, MethodId, RtMethod, RtParamKind, RtSynth};
 
 const RECORD: usize = 8;
-const HEADER: usize = 9;
+const HEADER: usize = 7;
 const NONE: u32 = u32::MAX;
 
 /// Its parameters are positional and it takes no block.
@@ -39,17 +43,11 @@ pub const OWNED_KEYS: [&str; 6] = [
 ];
 
 /// The section for `methods`, whose natives are at `positions` in the
-/// registries whose keys hash to `fingerprint`.
-pub fn encode(
-    methods: &[RtMethod],
-    positions: &[quarz_ir::HashMap<&'static str, u32>; 3],
-    fingerprint: u64,
-) -> Vec<u8> {
+/// program's tables (by key).
+pub fn encode(methods: &[RtMethod], positions: &[quarz_ir::HashMap<&str, u32>; 3]) -> Vec<u8> {
     let n = methods.len();
     let mut words: Vec<u32> = Vec::with_capacity(HEADER + n * RECORD);
     words.push(n as u32);
-    words.push(fingerprint as u32);
-    words.push((fingerprint >> 32) as u32);
     for key in OWNED_KEYS {
         let id = methods
             .iter()
@@ -99,13 +97,18 @@ pub struct Lazy {
     bytes: &'static [u8],
     count: usize,
     cells: Box<[OnceLock<RtMethod>]>,
+    /// The program's tables of natives (addresses of functions of the
+    /// kind of each table).
+    natives: [&'static [usize]; 3],
 }
 
 impl Lazy {
-    /// The section `bytes` (static: the program's own).
-    pub fn new(bytes: &'static [u8]) -> Result<Lazy, String> {
+    /// The section `bytes` and the tables of natives (static: the
+    /// program's own).
+    pub fn new(bytes: &'static [u8], natives: [&'static [usize]; 3]) -> Result<Lazy, String> {
         let mut lazy = Lazy {
             bytes,
+            natives,
             count: 0,
             cells: Box::new([]),
         };
@@ -134,19 +137,16 @@ impl Lazy {
         self.count
     }
 
-    pub fn fingerprint(&self) -> u64 {
-        u64::from(self.word(1)) | (u64::from(self.word(2)) << 32)
-    }
-
     /// The methods of the `OWNED_KEYS` natives.
     pub fn owned(&self) -> [Option<MethodId>; 6] {
-        std::array::from_fn(|k| Some(self.word(3 + k)).filter(|w| *w != NONE))
+        std::array::from_fn(|k| Some(self.word(1 + k)).filter(|w| *w != NONE))
     }
 
-    /// Where method `id`'s native is in registry `which` (`natives::PLAIN`
-    /// and so on).
-    pub fn native_at(&self, id: MethodId, which: usize) -> Option<u32> {
-        Some(self.record(id, 2 + which)).filter(|w| *w != NONE)
+    /// The address of method `id`'s native in table `which`
+    /// (`natives::PLAIN` and so on).
+    pub fn native(&self, id: MethodId, which: usize) -> Option<usize> {
+        let at = Some(self.record(id, 2 + which)).filter(|w| *w != NONE)?;
+        self.natives[which].get(at as usize).copied()
     }
 
     pub fn flags(&self, id: MethodId) -> u32 {

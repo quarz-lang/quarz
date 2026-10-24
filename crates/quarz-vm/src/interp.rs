@@ -415,9 +415,6 @@ struct Derived {
 
 impl Derived {
     fn of(world: &RtWorld, lazy: Option<&crate::methods::Lazy>) -> Derived {
-        let plain = natives::registry();
-        let fast = natives::fast_registry();
-        let owned_reg = natives::owned_registry();
         let mut nvslots = 0usize;
         let mut vslot = |has: bool| {
             if has {
@@ -428,22 +425,29 @@ impl Derived {
             }
         };
         if let Some(lazy) = lazy {
-            if lazy.fingerprint() != natives::fingerprint_of(&plain, &fast, &owned_reg) {
-                eprintln!("quarz: this program was built against a different runtime; rebuild it");
-                std::process::exit(70);
-            }
             let n = lazy.count() as MethodId;
-            let at = |which: usize| move |id: MethodId| lazy.native_at(id, which);
+            let at = |which: usize| move |id: MethodId| lazy.native(id, which);
             let [array_push, array_set, hash_put, hash_delete, set_add, set_delete] = lazy.owned();
+            // SAFETY: the tables hold functions of their kinds, which the
+            // program's build listed by the natives' symbols.
             return Derived {
                 natives: (0..n)
-                    .map(|id| at(natives::PLAIN)(id).and_then(|i| plain.get(i)))
+                    .map(|id| {
+                        at(natives::PLAIN)(id)
+                            .map(|p| unsafe { std::mem::transmute::<usize, NativeFn>(p) })
+                    })
                     .collect(),
                 fast_natives: (0..n)
-                    .map(|id| at(natives::FAST)(id).and_then(|i| fast.get(i)))
+                    .map(|id| {
+                        at(natives::FAST)(id)
+                            .map(|p| unsafe { std::mem::transmute::<usize, FastNativeFn>(p) })
+                    })
                     .collect(),
                 natives_owned: (0..n)
-                    .map(|id| at(natives::OWNED)(id).and_then(|i| owned_reg.get(i)))
+                    .map(|id| {
+                        at(natives::OWNED)(id)
+                            .map(|p| unsafe { std::mem::transmute::<usize, OwnedNativeFn>(p) })
+                    })
                     .collect(),
                 owned: OwnedIds {
                     array_push,
@@ -463,6 +467,12 @@ impl Derived {
                 nvslots,
             };
         }
+        // Only what interprets has all the natives (`install_interpreter`).
+        let all = crate::vm::INTERPRETER
+            .get()
+            .map(|i| (i.natives)())
+            .expect("a program without its natives");
+        let (plain, fast, owned_reg) = (&all.plain, &all.fast, &all.owned);
         let (plain_map, fast_map, owned_map) = (plain.map(), fast.map(), owned_reg.map());
         let natives = world
             .methods

@@ -10,43 +10,41 @@ use smallvec::smallvec;
 use super::{block, int, string};
 
 pub fn register(m: &mut super::Registry<NativeFn>) {
-    m.insert("String.build", string_build);
-    m.insert("String#+", |i, r, a| {
+    native!(m, "String.build", string_build);
+    native!(m, "String#+", |i, r, a| {
         Ok(Value::string(format!(
             "{}{}",
             s(i, r)?,
             string(i, a.arg(0), "other")?
         )))
     });
-    m.insert("String#*", |i, r, a| {
+    native!(m, "String#*", |i, r, a| {
         Ok(Value::string(
             s(i, r)?.repeat(int(i, a.arg(0), "count")?.max(0) as usize),
         ))
     });
-    m.insert("String#%", string_format);
-    m.insert("String#<=>", |i, r, a| {
+    native!(m, "String#<=>", |i, r, a| {
         Ok(Value::Int(
             s(i, r)?.cmp(string(i, a.arg(0), "other")?) as i64
         ))
     });
-    m.insert("String#==", |i, r, a| {
+    native!(m, "String#==", |i, r, a| {
         Ok(Value::Bool(a.arg(0).as_str() == Some(s(i, r)?)))
     });
-    m.insert("String#size", |i, r, _| {
+    native!(m, "String#size", |i, r, _| {
         Ok(Value::Int(s(i, r)?.chars().count() as i64))
     });
-    m.insert("String#length", |i, r, _| {
+    native!(m, "String#length", |i, r, _| {
         Ok(Value::Int(s(i, r)?.chars().count() as i64))
     });
-    m.insert("String#bytesize", |i, r, _| {
+    native!(m, "String#bytesize", |i, r, _| {
         Ok(Value::Int(s(i, r)?.len() as i64))
     });
-    m.insert("String#empty?", |i, r, _| {
+    native!(m, "String#empty?", |i, r, _| {
         Ok(Value::Bool(s(i, r)?.is_empty()))
     });
-    m.insert("String#[]", string_index);
-    m.insert("String#[]?", string_index_opt);
-    m.insert("String#chars", |i, r, _| {
+    native!(m, "String#[]?", string_index_opt);
+    native!(m, "String#chars", |i, r, _| {
         Ok(Value::array(
             s(i, r)?
                 .chars()
@@ -54,33 +52,24 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
                 .collect(),
         ))
     });
-    m.insert("String#bytes", |i, r, _| {
+    native!(m, "String#bytes", |i, r, _| {
         Ok(Value::array(
             s(i, r)?.bytes().map(|b| Value::Int(b as i64)).collect(),
         ))
     });
-    m.insert("String#lines", |i, r, _| {
-        Ok(Value::array(
-            s(i, r)?.split_inclusive('\n').map(Value::str).collect(),
-        ))
-    });
-    m.insert("String#split", string_split);
-    m.insert("String#scan", string_scan);
-    m.insert("String#match", string_match);
-    m.insert("String#match?", |i, r, a| {
+    native!(m, "String#match", string_match);
+    native!(m, "String#match?", |i, r, a| {
         Ok(Value::Bool(re(i, a.arg(0))?.regex.is_match(s(i, r)?)))
     });
-    m.insert("String#=~", string_match_index);
-    m.insert("String#sub", |i, r, a| string_sub(i, r, a, false));
-    m.insert("String#gsub", |i, r, a| string_sub(i, r, a, true));
-    m.insert("String#upcase", |i, r, _| {
+    native!(m, "String#=~", string_match_index);
+    native!(m, "String#upcase", |i, r, _| {
         Ok(Value::string(s(i, r)?.to_uppercase()))
     });
-    m.insert("String#downcase", |i, r, _| {
+    native!(m, "String#downcase", |i, r, _| {
         Ok(Value::string(s(i, r)?.to_lowercase()))
     });
-    m.insert("String#capitalize", string_capitalize);
-    m.insert("String#swapcase", |i, r, _| {
+    native!(m, "String#capitalize", string_capitalize);
+    native!(m, "String#swapcase", |i, r, _| {
         Ok(Value::string(
             s(i, r)?
                 .chars()
@@ -94,165 +83,142 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
                 .collect(),
         ))
     });
-    m.insert("String#strip", |i, r, _| Ok(Value::str(s(i, r)?.trim())));
-    m.insert("String#lstrip", |i, r, _| {
+    native!(m, "String#strip", |i, r, _| Ok(Value::str(s(i, r)?.trim())));
+    native!(m, "String#lstrip", |i, r, _| {
         Ok(Value::str(s(i, r)?.trim_start()))
     });
-    m.insert("String#rstrip", |i, r, _| {
+    native!(m, "String#rstrip", |i, r, _| {
         Ok(Value::str(s(i, r)?.trim_end()))
     });
-    m.insert("String#chomp", |i, r, _| {
-        let st = s(i, r)?;
-        Ok(Value::str(
-            st.strip_suffix("\r\n")
-                .or_else(|| st.strip_suffix('\n'))
-                .or_else(|| st.strip_suffix('\r'))
-                .unwrap_or(st),
-        ))
-    });
-    m.insert("String#chop", |i, r, _| {
+    native!(m, "String#chop", |i, r, _| {
         let st = s(i, r)?;
         let mut c = st.to_string();
         c.pop();
         Ok(Value::string(c))
     });
-    m.insert("String#start_with?", |i, r, a| {
-        Ok(Value::Bool(s(i, r)?.starts_with(string(
-            i,
-            a.arg(0),
-            "prefix",
-        )?)))
-    });
-    m.insert("String#end_with?", |i, r, a| {
-        Ok(Value::Bool(s(i, r)?.ends_with(string(
-            i,
-            a.arg(0),
-            "suffix",
-        )?)))
-    });
-    m.insert("String#include?", |i, r, a| {
+    native!(m, "String#include?", |i, r, a| {
         Ok(Value::Bool(s(i, r)?.contains(string(
             i,
             a.arg(0),
             "other",
         )?)))
     });
-    m.insert("String#index", string_index_of);
-    m.insert("String#rindex", string_rindex_of);
-    m.insert("String#center", |i, r, a| pad(i, r, a, Pad::Center));
-    m.insert("String#ljust", |i, r, a| pad(i, r, a, Pad::Left));
-    m.insert("String#rjust", |i, r, a| pad(i, r, a, Pad::Right));
-    m.insert("String#tr", string_tr);
-    m.insert("String#delete", string_delete);
-    m.insert("String#squeeze", string_squeeze);
-    m.insert("String#count", string_count);
-    m.insert("String#reverse", |i, r, _| {
+    native!(m, "String#center", |i, r, a| pad(i, r, a, Pad::Center));
+    native!(m, "String#ljust", |i, r, a| pad(i, r, a, Pad::Left));
+    native!(m, "String#rjust", |i, r, a| pad(i, r, a, Pad::Right));
+    native!(m, "String#tr", string_tr);
+    native!(m, "String#delete", string_delete);
+    native!(m, "String#count", string_count);
+    native!(m, "String#reverse", |i, r, _| {
         Ok(Value::string(s(i, r)?.chars().rev().collect()))
     });
-    m.insert("String#each_char", string_each_char);
-    m.insert("String#each_line", string_each_line);
-    m.insert("String#to_i", string_to_i);
-    m.insert("String#to_f", string_to_f);
-    m.insert("String#to_sym", |i, r, _| {
+    native!(m, "String#each_line", string_each_line);
+    native!(m, "String#to_i", string_to_i);
+    native!(m, "String#to_f", string_to_f);
+    native!(m, "String#to_sym", |i, r, _| {
         Ok(Value::Symbol(i.intern(s(i, r)?)))
     });
-    m.insert("String#to_s", |_, r, _| Ok(r.clone()));
-    m.insert("String#inspect", |i, r, _| {
+    native!(m, "String#to_s", |_, r, _| Ok(r.clone()));
+    native!(m, "String#inspect", |i, r, _| {
         Ok(Value::string(crate::interp::inspect_str(s(i, r)?)))
     });
-    m.insert("String#hash", |i, r, _| {
+    native!(m, "String#hash", |i, r, _| {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
         s(i, r)?.hash(&mut h);
         Ok(Value::Int((h.finish() >> 1) as i64))
     });
-    m.insert("String#succ", string_succ);
-    m.insert("String#ord", |i, r, _| {
+    native!(m, "String#succ", string_succ);
+    native!(m, "String#ord", |i, r, _| {
         s(i, r)?
             .chars()
             .next()
             .map(|c| Ok(Value::Int(c as i64)))
             .unwrap_or_else(|| Err(i.err_arg("empty string")))
     });
-    m.insert("String#hex", |i, r, _| {
+    native!(m, "String#hex", |i, r, _| {
         Ok(Value::Int(
             i64::from_str_radix(s(i, r)?.trim().trim_start_matches("0x"), 16).unwrap_or(0),
         ))
     });
-    m.insert("String#oct", |i, r, _| {
+    native!(m, "String#oct", |i, r, _| {
         Ok(Value::Int(
             i64::from_str_radix(s(i, r)?.trim().trim_start_matches("0o"), 8).unwrap_or(0),
         ))
     });
-    m.insert("String::Builder.new", |_, _, _| {
+    native!(m, "String::Builder.new", |_, _, _| {
         Ok(Value::StringBuilder(Rc::new(RefCell::new(String::new()))))
     });
-    m.insert("String::Builder#<<", sb_push);
-    m.insert("String::Builder#push", sb_push);
-    m.insert("String::Builder#to_s", |i, r, _| {
+    native!(m, "String::Builder#<<", sb_push);
+    native!(m, "String::Builder#push", sb_push);
+    native!(m, "String::Builder#to_s", |i, r, _| {
         Ok(Value::string(std::mem::take(&mut *sb(i, r)?.borrow_mut())))
     });
-    m.insert("String::Builder#size", |i, r, _| {
+    native!(m, "String::Builder#size", |i, r, _| {
         Ok(Value::Int(sb(i, r)?.borrow().chars().count() as i64))
     });
-    m.insert("String::Builder#empty?", |i, r, _| {
+    native!(m, "String::Builder#empty?", |i, r, _| {
         Ok(Value::Bool(sb(i, r)?.borrow().is_empty()))
     });
-    m.insert("String::Builder#clear", |i, r, _| {
+    native!(m, "String::Builder#clear", |i, r, _| {
         sb(i, r)?.borrow_mut().clear();
         Ok(r.clone())
     });
-    m.insert("Symbol#<=>", |i, r, a| {
+    native!(m, "Symbol#<=>", |i, r, a| {
         Ok(Value::Int(i.compare(r, a.arg(0))? as i64))
     });
-    m.insert("Symbol#to_s", |i, r, _| match r {
+    native!(m, "Symbol#to_s", |i, r, _| match r {
         Value::Symbol(sym) => Ok(Value::str_rc(i.symbol_name(*sym))),
         _ => Err(i.err_type("expected a Symbol")),
     });
-    m.insert("Symbol#to_sym", |_, r, _| Ok(r.clone()));
-    m.insert("Symbol#inspect", |i, r, _| Ok(Value::string(i.inspect(r)?)));
-    m.insert("Symbol#size", |i, r, _| match r {
+    native!(m, "Symbol#to_sym", |_, r, _| Ok(r.clone()));
+    native!(m, "Symbol#inspect", |i, r, _| Ok(Value::string(
+        i.inspect(r)?
+    )));
+    native!(m, "Symbol#size", |i, r, _| match r {
         Value::Symbol(sym) => Ok(Value::Int(i.symbol_name(*sym).chars().count() as i64)),
         _ => Err(i.err_type("expected a Symbol")),
     });
-    m.insert("Regexp#match", |i, r, a| {
+    native!(m, "Regexp#match", |i, r, a| {
         let rx = re(i, r)?.clone();
         match_data(i, &rx, string(i, a.arg(0), "text")?)
     });
-    m.insert("Regexp#match?", |i, r, a| {
+    native!(m, "Regexp#match?", |i, r, a| {
         Ok(Value::Bool(re(i, r)?.regex.is_match(string(
             i,
             a.arg(0),
             "text",
         )?)))
     });
-    m.insert("Regexp#=~", |i, r, a| {
+    native!(m, "Regexp#=~", |i, r, a| {
         let text = string(i, a.arg(0), "text")?;
         Ok(match re(i, r)?.regex.find(text) {
             Some(mt) => Value::Int(text[..mt.start()].chars().count() as i64),
             None => Value::Nil,
         })
     });
-    m.insert("Regexp#source", |i, r, _| Ok(Value::str(&re(i, r)?.source)));
-    m.insert("Regexp#to_s", |i, r, _| {
+    native!(m, "Regexp#source", |i, r, _| Ok(Value::str(
+        &re(i, r)?.source
+    )));
+    native!(m, "Regexp#to_s", |i, r, _| {
         Ok(Value::string(format!(
             "/{}/{}",
             re(i, r)?.source,
             re(i, r)?.flags
         )))
     });
-    m.insert("MatchData#[]", md_index);
-    m.insert("MatchData#pre_match", |i, r, _| {
+    native!(m, "MatchData#[]", md_index);
+    native!(m, "MatchData#pre_match", |i, r, _| {
         let m = md(i, r)?;
         let (st, _) = m.groups[0].unwrap_or((0, 0));
         Ok(Value::str(&m.text[..st]))
     });
-    m.insert("MatchData#post_match", |i, r, _| {
+    native!(m, "MatchData#post_match", |i, r, _| {
         let m = md(i, r)?;
         let (_, en) = m.groups[0].unwrap_or((0, 0));
         Ok(Value::str(&m.text[en..]))
     });
-    m.insert("MatchData#captures", |i, r, _| {
+    native!(m, "MatchData#captures", |i, r, _| {
         let m = md(i, r)?;
         Ok(Value::array(
             m.groups
@@ -265,12 +231,12 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
                 .collect(),
         ))
     });
-    m.insert("MatchData#to_s", |i, r, _| {
+    native!(m, "MatchData#to_s", |i, r, _| {
         let m = md(i, r)?;
         let (st, en) = m.groups[0].unwrap_or((0, 0));
         Ok(Value::str(&m.text[st..en]))
     });
-    m.insert("MatchData#begin", |i, r, a| {
+    native!(m, "MatchData#begin", |i, r, a| {
         let m = md(i, r)?;
         let n = int(i, a.arg(0), "index")? as usize;
         Ok(m.groups
@@ -280,7 +246,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             .map(|(st, _)| Value::Int(m.text[..st].chars().count() as i64))
             .unwrap_or(Value::Nil))
     });
-    m.insert("MatchData#end", |i, r, a| {
+    native!(m, "MatchData#end", |i, r, a| {
         let m = md(i, r)?;
         let n = int(i, a.arg(0), "index")? as usize;
         Ok(m.groups
@@ -329,17 +295,6 @@ pub(super) fn sb_push(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let piece = interp.to_s(args.arg(0))?;
     sb(interp, recv)?.borrow_mut().push_str(&piece);
     Ok(recv.clone())
-}
-
-fn string_format(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
-    let fmt = s(interp, recv)?;
-    let values: Vec<Value> = match args.arg(0) {
-        Value::Array(a) => a.to_values(),
-        other => vec![other.clone()],
-    };
-    Ok(Value::string(super::core::format_values(
-        interp, fmt, &values,
-    )?))
 }
 
 /// Character index (negative counts from the end) into a byte offset.
@@ -605,24 +560,6 @@ fn string_capitalize(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
     }))
 }
 
-fn string_index_of(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
-    let text = s(interp, recv)?;
-    let needle = string(interp, args.arg(0), "other")?;
-    Ok(match text.find(needle) {
-        Some(b) => Value::Int(text[..b].chars().count() as i64),
-        None => Value::Nil,
-    })
-}
-
-fn string_rindex_of(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
-    let text = s(interp, recv)?;
-    let needle = string(interp, args.arg(0), "other")?;
-    Ok(match text.rfind(needle) {
-        Some(b) => Value::Int(text[..b].chars().count() as i64),
-        None => Value::Nil,
-    })
-}
-
 enum Pad {
     Left,
     Right,
@@ -702,19 +639,6 @@ fn string_delete(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     Ok(Value::string(
         text.chars().filter(|c| set.contains(c) == negate).collect(),
     ))
-}
-
-fn string_squeeze(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
-    let text = s(interp, recv)?;
-    let mut out = String::new();
-    let mut last = None;
-    for c in text.chars() {
-        if last != Some(c) {
-            out.push(c);
-        }
-        last = Some(c);
-    }
-    Ok(Value::string(out))
 }
 
 fn string_count(interp: &Interp, recv: &Value, args: Args) -> EvalResult {

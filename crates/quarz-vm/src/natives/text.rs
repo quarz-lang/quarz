@@ -15,13 +15,13 @@ use super::{block, int, string};
 
 pub fn register(m: &mut super::Registry<NativeFn>) {
     // String
-    m.insert("String#slice", string_slice);
-    m.insert("String#codepoints", |i, r, _| {
+    native!(m, "String#slice", string_slice);
+    native!(m, "String#codepoints", |i, r, _| {
         Ok(Value::array(
             s(i, r)?.chars().map(|c| Value::Int(c as i64)).collect(),
         ))
     });
-    m.insert("String#getbyte", |i, r, a| {
+    native!(m, "String#getbyte", |i, r, a| {
         let text = s(i, r)?;
         let idx = int(i, a.arg(0), "index")?;
         let n = text.len() as i64;
@@ -32,19 +32,19 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             Value::Int(text.as_bytes()[idx as usize] as i64)
         })
     });
-    m.insert("String#each_byte", |i, r, a| {
+    native!(m, "String#each_byte", |i, r, a| {
         let b = block(i, &a)?;
         for byte in s(i, r)?.bytes() {
             i.call_block(&b, smallvec![Value::Int(byte as i64)])?;
         }
         Ok(Value::Nil)
     });
-    m.insert("String#graphemes", |i, r, _| {
+    native!(m, "String#graphemes", |i, r, _| {
         Ok(Value::array(
             s(i, r)?.graphemes(true).map(Value::str).collect(),
         ))
     });
-    m.insert("String#each_grapheme", |i, r, a| {
+    native!(m, "String#each_grapheme", |i, r, a| {
         let b = block(i, &a)?;
         let text = s(i, r)?;
         for g in text.graphemes(true) {
@@ -52,33 +52,33 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         }
         Ok(Value::Nil)
     });
-    m.insert("String#partition", |i, r, a| {
+    native!(m, "String#partition", |i, r, a| {
         string_partition(i, r, a, false)
     });
-    m.insert("String#rpartition", |i, r, a| {
+    native!(m, "String#rpartition", |i, r, a| {
         string_partition(i, r, a, true)
     });
-    m.insert("String#delete_prefix", |i, r, a| {
+    native!(m, "String#delete_prefix", |i, r, a| {
         let text = s(i, r)?;
         let prefix = string(i, a.arg(0), "prefix")?;
         Ok(Value::str(text.strip_prefix(prefix).unwrap_or(text)))
     });
-    m.insert("String#delete_suffix", |i, r, a| {
+    native!(m, "String#delete_suffix", |i, r, a| {
         let text = s(i, r)?;
         let suffix = string(i, a.arg(0), "suffix")?;
         Ok(Value::str(text.strip_suffix(suffix).unwrap_or(text)))
     });
-    m.insert("String#casecmp?", |i, r, a| {
+    native!(m, "String#casecmp?", |i, r, a| {
         let other = string(i, a.arg(0), "other")?;
         Ok(Value::Bool(s(i, r)?.to_lowercase() == other.to_lowercase()))
     });
-    m.insert("String#casecmp", |i, r, a| {
+    native!(m, "String#casecmp", |i, r, a| {
         let other = string(i, a.arg(0), "other")?;
         Ok(Value::Int(
             s(i, r)?.to_lowercase().cmp(&other.to_lowercase()) as i64,
         ))
     });
-    m.insert("String#insert", |i, r, a| {
+    native!(m, "String#insert", |i, r, a| {
         let text = s(i, r)?;
         let idx = int(i, a.arg(0), "index")?;
         let piece = string(i, a.arg(1), "other")?;
@@ -99,18 +99,18 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         out.push_str(&text[byte..]);
         Ok(Value::string(out))
     });
-    m.insert("String#prepend", |i, r, a| {
+    native!(m, "String#prepend", |i, r, a| {
         Ok(Value::string(format!(
             "{}{}",
             string(i, a.arg(0), "other")?,
             s(i, r)?
         )))
     });
-    m.insert("String#ascii_only?", |i, r, _| {
+    native!(m, "String#ascii_only?", |i, r, _| {
         Ok(Value::Bool(s(i, r)?.is_ascii()))
     });
-    m.insert("String#next", super::string::string_succ);
-    m.insert("String#upto", |i, r, a| {
+    native!(m, "String#next", super::string::string_succ);
+    native!(m, "String#upto", |i, r, a| {
         let b = block(i, &a)?;
         let last = string(i, a.arg(0), "last")?;
         let last_len = last.chars().count();
@@ -130,13 +130,13 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         }
         Ok(Value::Nil)
     });
-    m.insert("String#each_char", |i, r, a| {
+    native!(m, "String#each_char", |i, r, a| {
         if a.block.is_none() {
             return enumerator(i, r, "each_char", vec![]);
         }
         super::string::string_each_char(i, r, a)
     });
-    m.insert("String#squeeze", |i, r, a| {
+    native!(m, "String#squeeze", |i, r, a| {
         let text = s(i, r)?;
         let set: Option<Vec<char>> = match a.pos.first() {
             Some(v) => Some(string(i, v, "chars")?.chars().collect()),
@@ -154,7 +154,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         }
         Ok(Value::string(out))
     });
-    m.insert("String#chomp", |i, r, a| {
+    native!(m, "String#chomp", |i, r, a| {
         let text = s(i, r)?;
         if let Some(suffix) = a.pos.first() {
             let suffix = string(i, suffix, "suffix")?;
@@ -167,7 +167,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
                 .unwrap_or(text),
         ))
     });
-    m.insert("String#start_with?", |i, r, a| {
+    native!(m, "String#start_with?", |i, r, a| {
         let text = s(i, r)?;
         for p in &a.pos {
             let hit = match p {
@@ -180,7 +180,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         }
         Ok(Value::Bool(false))
     });
-    m.insert("String#end_with?", |i, r, a| {
+    native!(m, "String#end_with?", |i, r, a| {
         let text = s(i, r)?;
         for p in &a.pos {
             if text.ends_with(string(i, p, "suffix")?) {
@@ -189,9 +189,9 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         }
         Ok(Value::Bool(false))
     });
-    m.insert("String#index", |i, r, a| string_find(i, r, a, false));
-    m.insert("String#rindex", |i, r, a| string_find(i, r, a, true));
-    m.insert("String#lines", |i, r, a| {
+    native!(m, "String#index", |i, r, a| string_find(i, r, a, false));
+    native!(m, "String#rindex", |i, r, a| string_find(i, r, a, true));
+    native!(m, "String#lines", |i, r, a| {
         let chomp = a.arg(0).is_truthy() || a.kw(i, "chomp").is_some_and(|v| v.is_truthy());
         Ok(Value::array(
             s(i, r)?
@@ -209,10 +209,10 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
                 .collect(),
         ))
     });
-    m.insert("String#split", string_split_limit);
-    m.insert("String#sub", |i, r, a| string_sub_block(i, r, a, false));
-    m.insert("String#gsub", |i, r, a| string_sub_block(i, r, a, true));
-    m.insert("String#scan", |i, r, a| {
+    native!(m, "String#split", string_split_limit);
+    native!(m, "String#sub", |i, r, a| string_sub_block(i, r, a, false));
+    native!(m, "String#gsub", |i, r, a| string_sub_block(i, r, a, true));
+    native!(m, "String#scan", |i, r, a| {
         let Some(b) = a.block.clone() else {
             return super::string::string_scan(i, r, a);
         };
@@ -225,7 +225,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         }
         Ok(Value::Nil)
     });
-    m.insert("String#[]", |i, r, a| match (a.arg(0), a.pos.len()) {
+    native!(m, "String#[]", |i, r, a| match (a.arg(0), a.pos.len()) {
         (Value::Regexp(rx), 1) => {
             let text = s(i, r)?;
             Ok(match rx.regex.find(text) {
@@ -236,7 +236,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         (Value::Int(_), 2) => string_slice(i, r, a),
         _ => super::string::string_index(i, r, a),
     });
-    m.insert("String#%", |i, r, a| {
+    native!(m, "String#%", |i, r, a| {
         let fmt = s(i, r)?;
         let values: Vec<Value> = match a.arg(0) {
             Value::Array(items) => items.to_values(),
@@ -246,13 +246,13 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     });
 
     // String::Builder
-    m.insert("String::Builder#append", super::string::sb_push);
-    m.insert("String::Builder#prepend", |i, r, a| {
+    native!(m, "String::Builder#append", super::string::sb_push);
+    native!(m, "String::Builder#prepend", |i, r, a| {
         let piece = string(i, a.arg(0), "piece")?;
         sb(i, r)?.borrow_mut().insert_str(0, piece);
         Ok(r.clone())
     });
-    m.insert("String::Builder#insert", |i, r, a| {
+    native!(m, "String::Builder#insert", |i, r, a| {
         let b = sb(i, r)?;
         let idx = int(i, a.arg(0), "index")?;
         let piece = string(i, a.arg(1), "piece")?;
@@ -271,7 +271,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         drop(text);
         Ok(r.clone())
     });
-    m.insert("String::Builder#delete_at", |i, r, a| {
+    native!(m, "String::Builder#delete_at", |i, r, a| {
         let b = sb(i, r)?;
         let idx = int(i, a.arg(0), "index")?;
         let mut text = b.borrow_mut();
@@ -283,38 +283,38 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             None => Value::Nil,
         })
     });
-    m.insert("String::Builder#replace", |i, r, a| {
+    native!(m, "String::Builder#replace", |i, r, a| {
         let text = string(i, a.arg(0), "text")?;
         *sb(i, r)?.borrow_mut() = text.to_string();
         Ok(r.clone())
     });
-    m.insert("String::Builder#reverse!", |i, r, _| {
+    native!(m, "String::Builder#reverse!", |i, r, _| {
         let b = sb(i, r)?;
         let reversed: String = b.borrow().chars().rev().collect();
         *b.borrow_mut() = reversed;
         Ok(r.clone())
     });
-    m.insert("String::Builder#snapshot", |i, r, _| {
+    native!(m, "String::Builder#snapshot", |i, r, _| {
         Ok(Value::string(sb(i, r)?.borrow().clone()))
     });
-    m.insert("String::Builder#bytesize", |i, r, _| {
+    native!(m, "String::Builder#bytesize", |i, r, _| {
         Ok(Value::Int(sb(i, r)?.borrow().len() as i64))
     });
 
     // Symbol
-    m.insert("Symbol#length", |i, r, _| {
+    native!(m, "Symbol#length", |i, r, _| {
         Ok(Value::Int(symbol_text(i, r)?.chars().count() as i64))
     });
-    m.insert("Symbol#empty?", |i, r, _| {
+    native!(m, "Symbol#empty?", |i, r, _| {
         Ok(Value::Bool(symbol_text(i, r)?.is_empty()))
     });
-    m.insert("Symbol#upcase", |i, r, _| {
+    native!(m, "Symbol#upcase", |i, r, _| {
         Ok(Value::Symbol(i.intern(&symbol_text(i, r)?.to_uppercase())))
     });
-    m.insert("Symbol#downcase", |i, r, _| {
+    native!(m, "Symbol#downcase", |i, r, _| {
         Ok(Value::Symbol(i.intern(&symbol_text(i, r)?.to_lowercase())))
     });
-    m.insert("Symbol#capitalize", |i, r, _| {
+    native!(m, "Symbol#capitalize", |i, r, _| {
         let text = symbol_text(i, r)?;
         let mut chars = text.chars();
         let cap = match chars.next() {
@@ -323,7 +323,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         };
         Ok(Value::Symbol(i.intern(&cap)))
     });
-    m.insert("Symbol#start_with?", |i, r, a| {
+    native!(m, "Symbol#start_with?", |i, r, a| {
         let text = symbol_text(i, r)?;
         for p in &a.pos {
             if text.starts_with(string(i, p, "prefix")?) {
@@ -332,7 +332,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         }
         Ok(Value::Bool(false))
     });
-    m.insert("Symbol#end_with?", |i, r, a| {
+    native!(m, "Symbol#end_with?", |i, r, a| {
         let text = symbol_text(i, r)?;
         for p in &a.pos {
             if text.ends_with(string(i, p, "suffix")?) {
@@ -341,14 +341,14 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         }
         Ok(Value::Bool(false))
     });
-    m.insert("Symbol#succ", |i, r, _| {
+    native!(m, "Symbol#succ", |i, r, _| {
         let next =
             super::string::string_succ(i, &Value::str_rc(symbol_text(i, r)?), Args::default())?;
         Ok(Value::Symbol(i.intern(s(i, &next)?)))
     });
 
     // Regexp
-    m.insert("Regexp.new", |i, _, a| {
+    native!(m, "Regexp.new", |i, _, a| {
         let source = string(i, a.arg(0), "source")?;
         let flags = match a.pos.get(1) {
             Some(f) => string(i, f, "options")?.to_string(),
@@ -361,10 +361,10 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         }
         i.make_regexp(source, &flags)
     });
-    m.insert("Regexp.escape", |i, _, a| {
+    native!(m, "Regexp.escape", |i, _, a| {
         Ok(Value::string(regex::escape(string(i, a.arg(0), "text")?)))
     });
-    m.insert("Regexp.union", |i, _, a| {
+    native!(m, "Regexp.union", |i, _, a| {
         let mut parts = Vec::with_capacity(a.pos.len());
         for p in &a.pos {
             parts.push(match p {
@@ -374,7 +374,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         }
         i.make_regexp(&parts.join("|"), "")
     });
-    m.insert("Regexp#names", |i, r, _| {
+    native!(m, "Regexp#names", |i, r, _| {
         Ok(Value::array(
             re(i, r)?
                 .regex
@@ -384,21 +384,23 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
                 .collect(),
         ))
     });
-    m.insert("Regexp#options", |i, r, _| Ok(Value::str(&re(i, r)?.flags)));
-    m.insert("Regexp#inspect", |i, r, _| {
+    native!(m, "Regexp#options", |i, r, _| Ok(Value::str(
+        &re(i, r)?.flags
+    )));
+    native!(m, "Regexp#inspect", |i, r, _| {
         Ok(Value::string(format!(
             "/{}/{}",
             re(i, r)?.source,
             re(i, r)?.flags
         )))
     });
-    m.insert("Regexp#==", |i, r, a| {
+    native!(m, "Regexp#==", |i, r, a| {
         Ok(Value::Bool(match (re(i, r)?, a.arg(0)) {
             (x, Value::Regexp(y)) => x.source == y.source && x.flags == y.flags,
             _ => false,
         }))
     });
-    m.insert("Regexp#hash", |i, r, _| {
+    native!(m, "Regexp#hash", |i, r, _| {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
         re(i, r)?.source.hash(&mut h);
@@ -406,12 +408,12 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     });
 
     // MatchData
-    m.insert("MatchData#names", |i, r, _| {
+    native!(m, "MatchData#names", |i, r, _| {
         Ok(Value::array(
             md(i, r)?.names.iter().map(|(n, _)| Value::str(n)).collect(),
         ))
     });
-    m.insert("MatchData#named_captures", |i, r, _| {
+    native!(m, "MatchData#named_captures", |i, r, _| {
         let m = md(i, r)?;
         let mut out = ValueMap::default();
         for (name, idx) in &m.names {
@@ -419,16 +421,16 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         }
         Ok(Value::Hash(Rc::new(crate::value::HashData::from(out))))
     });
-    m.insert("MatchData#size", |i, r, _| {
+    native!(m, "MatchData#size", |i, r, _| {
         Ok(Value::Int(md(i, r)?.groups.len() as i64))
     });
-    m.insert("MatchData#to_a", |i, r, _| {
+    native!(m, "MatchData#to_a", |i, r, _| {
         let m = md(i, r)?;
         Ok(Value::array(
             (0..m.groups.len()).map(|k| group_value(m, k)).collect(),
         ))
     });
-    m.insert("MatchData#values_at", |i, r, a| {
+    native!(m, "MatchData#values_at", |i, r, a| {
         let m = md(i, r)?;
         let mut out = Vec::with_capacity(a.pos.len());
         for idx in &a.pos {
@@ -436,7 +438,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         }
         Ok(Value::array(out))
     });
-    m.insert("MatchData#inspect", |i, r, _| {
+    native!(m, "MatchData#inspect", |i, r, _| {
         Ok(Value::string(i.inspect(r)?))
     });
 }

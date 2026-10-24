@@ -11,43 +11,43 @@ use super::collections::index_data;
 
 pub fn register(m: &mut super::Registry<FastNativeFn>) {
     // ----- String -----
-    m.insert("String#size", |_, r, a| match (r.as_str(), a) {
+    fast!(m, "String#size", |_, r, a| match (r.as_str(), a) {
         (Some(s), []) => Some(Ok(Value::Int(s.chars().count() as i64))),
         _ => None,
     });
-    m.insert("String#length", |_, r, a| match (r.as_str(), a) {
+    fast!(m, "String#length", |_, r, a| match (r.as_str(), a) {
         (Some(s), []) => Some(Ok(Value::Int(s.chars().count() as i64))),
         _ => None,
     });
-    m.insert("String#bytesize", |_, r, a| match (r.as_str(), a) {
+    fast!(m, "String#bytesize", |_, r, a| match (r.as_str(), a) {
         (Some(s), []) => Some(Ok(Value::Int(s.len() as i64))),
         _ => None,
     });
-    m.insert("String#empty?", |_, r, a| match (r.as_str(), a) {
+    fast!(m, "String#empty?", |_, r, a| match (r.as_str(), a) {
         (Some(s), []) => Some(Ok(Value::Bool(s.is_empty()))),
         _ => None,
     });
-    m.insert("String#==", |_, r, a| match (r.as_str(), a) {
+    fast!(m, "String#==", |_, r, a| match (r.as_str(), a) {
         (Some(s), [o]) => Some(Ok(Value::Bool(o.as_str() == Some(s)))),
         _ => None,
     });
-    m.insert("String#!=", |_, r, a| match (r.as_str(), a) {
+    fast!(m, "String#!=", |_, r, a| match (r.as_str(), a) {
         (Some(s), [o]) => Some(Ok(Value::Bool(o.as_str() != Some(s)))),
         _ => None,
     });
-    m.insert("String#end_with?", |_, r, a| match (r.as_str(), a) {
+    fast!(m, "String#end_with?", |_, r, a| match (r.as_str(), a) {
         (Some(s), [p]) => p.as_str().map(|p| Ok(Value::Bool(s.ends_with(p)))),
         _ => None,
     });
-    m.insert("String#start_with?", |_, r, a| match (r.as_str(), a) {
+    fast!(m, "String#start_with?", |_, r, a| match (r.as_str(), a) {
         (Some(s), [p]) => p.as_str().map(|p| Ok(Value::Bool(s.starts_with(p)))),
         _ => None,
     });
-    m.insert("String#include?", |_, r, a| match (r.as_str(), a) {
+    fast!(m, "String#include?", |_, r, a| match (r.as_str(), a) {
         (Some(s), [p]) => p.as_str().map(|p| Ok(Value::Bool(s.contains(p)))),
         _ => None,
     });
-    m.insert("String#upcase", |_, r, a| match (r, a) {
+    fast!(m, "String#upcase", |_, r, a| match (r, a) {
         // A short ASCII string is converted in a copy of the value.
         (Value::Short(s), []) if s.is_ascii() => {
             let mut t = *s;
@@ -66,7 +66,7 @@ pub fn register(m: &mut super::Registry<FastNativeFn>) {
         }),
         _ => None,
     });
-    m.insert("String#downcase", |_, r, a| match (r, a) {
+    fast!(m, "String#downcase", |_, r, a| match (r, a) {
         (Value::Short(s), []) if s.is_ascii() => {
             let mut t = *s;
             t.make_ascii_lowercase();
@@ -84,7 +84,7 @@ pub fn register(m: &mut super::Registry<FastNativeFn>) {
         }),
         _ => None,
     });
-    m.insert("String#+", |_, r, a| match (r.as_str(), a) {
+    fast!(m, "String#+", |_, r, a| match (r.as_str(), a) {
         (Some(s), [o]) => o.as_str().map(|o| {
             Ok(Value::build_string(|out| {
                 out.push_str(s);
@@ -93,11 +93,11 @@ pub fn register(m: &mut super::Registry<FastNativeFn>) {
         }),
         _ => None,
     });
-    m.insert("String#to_s", |_, r, a| match (r.as_str(), a) {
+    fast!(m, "String#to_s", |_, r, a| match (r.as_str(), a) {
         (Some(_), []) => Some(Ok(r.clone())),
         _ => None,
     });
-    m.insert("Int#to_s", |_, r, a| match (r, a) {
+    fast!(m, "Int#to_s", |_, r, a| match (r, a) {
         (Value::Int(i), []) => {
             let mut digits = [0u8; 20];
             Some(Ok(Value::str(crate::value::format_int(&mut digits, *i))))
@@ -105,33 +105,35 @@ pub fn register(m: &mut super::Registry<FastNativeFn>) {
         _ => None,
     });
     // ----- String::Builder -----
-    for key in [
-        "String::Builder#<<",
-        "String::Builder#push",
-        "String::Builder#append",
-    ] {
-        m.insert(key, |_, r, a| match (r, a) {
+    fast!(
+        m,
+        [
+            "String::Builder#<<",
+            "String::Builder#push",
+            "String::Builder#append"
+        ],
+        |_, r, a| match (r, a) {
             (Value::StringBuilder(b), [p]) => {
                 b.borrow_mut().push_str(p.as_str()?);
                 Some(Ok(r.clone()))
             }
             _ => None,
-        });
-    }
+        }
+    );
     // ----- Array -----
-    m.insert("Array#size", |_, r, a| match (r, a) {
+    fast!(m, "Array#size", |_, r, a| match (r, a) {
         (Value::Array(x), []) => Some(Ok(Value::Int(x.len() as i64))),
         _ => None,
     });
-    m.insert("Array#length", |_, r, a| match (r, a) {
+    fast!(m, "Array#length", |_, r, a| match (r, a) {
         (Value::Array(x), []) => Some(Ok(Value::Int(x.len() as i64))),
         _ => None,
     });
-    m.insert("Array#empty?", |_, r, a| match (r, a) {
+    fast!(m, "Array#empty?", |_, r, a| match (r, a) {
         (Value::Array(x), []) => Some(Ok(Value::Bool(x.is_empty()))),
         _ => None,
     });
-    m.insert("Array#[]", |_, r, a| match (r, a) {
+    fast!(m, "Array#[]", |_, r, a| match (r, a) {
         (Value::Array(x), [Value::Int(i)]) => {
             let n = x.len() as i64;
             let k = if *i < 0 { n + i } else { *i };
@@ -142,38 +144,40 @@ pub fn register(m: &mut super::Registry<FastNativeFn>) {
         }
         _ => None,
     });
-    m.insert("Array#[]?", |_, r, a| match (r, a) {
+    fast!(m, "Array#[]?", |_, r, a| match (r, a) {
         (Value::Array(x), [Value::Int(i)]) => Some(Ok(index_data(x, *i))),
         _ => None,
     });
     // ----- Hash / Set -----
-    m.insert("Hash#[]", |_, r, a| match (r, a) {
+    fast!(m, "Hash#[]", |_, r, a| match (r, a) {
         (Value::Hash(h), [k]) => h.get(k).map(|v| Ok(v.clone())),
         _ => None,
     });
-    m.insert("Hash#[]?", |_, r, a| match (r, a) {
+    fast!(m, "Hash#[]?", |_, r, a| match (r, a) {
         (Value::Hash(h), [k]) => Some(Ok(h.get(k).unwrap_or(Value::Nil))),
         _ => None,
     });
-    for key in ["Hash#key?", "Hash#has_key?", "Hash#include?"] {
-        m.insert(key, |_, r, a| match (r, a) {
+    fast!(
+        m,
+        ["Hash#key?", "Hash#has_key?", "Hash#include?"],
+        |_, r, a| match (r, a) {
             (Value::Hash(h), [k]) => Some(Ok(Value::Bool(h.contains_key(k)))),
             _ => None,
-        });
-    }
-    m.insert("Hash#size", |_, r, a| match (r, a) {
+        }
+    );
+    fast!(m, "Hash#size", |_, r, a| match (r, a) {
         (Value::Hash(h), []) => Some(Ok(Value::Int(h.len() as i64))),
         _ => None,
     });
-    m.insert("Hash#length", |_, r, a| match (r, a) {
+    fast!(m, "Hash#length", |_, r, a| match (r, a) {
         (Value::Hash(h), []) => Some(Ok(Value::Int(h.len() as i64))),
         _ => None,
     });
-    m.insert("Hash#empty?", |_, r, a| match (r, a) {
+    fast!(m, "Hash#empty?", |_, r, a| match (r, a) {
         (Value::Hash(h), []) => Some(Ok(Value::Bool(h.is_empty()))),
         _ => None,
     });
-    m.insert("Set#include?", |_, r, a| match (r, a) {
+    fast!(m, "Set#include?", |_, r, a| match (r, a) {
         (Value::Set(s), [k]) => Some(Ok(Value::Bool(s.contains(*k)))),
         _ => None,
     });
