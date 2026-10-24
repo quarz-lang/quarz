@@ -5704,7 +5704,13 @@ impl Checker {
                 _ => None,
             })
             .collect();
-        if args.len() != call.args.len() || args.is_empty() || args.len() > 2 {
+        if call.args.is_empty() {
+            // The parser gives a bare `raise` in a `rescue` clause the
+            // exception to re-raise.
+            self.error("a bare `raise` re-raises only inside `rescue`", expr.span);
+            return Type::Nothing;
+        }
+        if args.len() != call.args.len() || args.len() > 2 {
             self.error(
                 "`raise` takes an exception class, an exception, or a message",
                 expr.span,

@@ -461,7 +461,7 @@ end
 value = risky rescue default   # 修飾子形式も可
 ```
 
-- 例外階層は Ruby に準じます(`Exception` > `StandardError` > ...)。`raise` の引数は例外クラス、例外オブジェクト、または文字列(`RuntimeError`)。処理中の例外を再送出する引数のない `raise` は予定です。今は `rescue E => e` と `raise e` で書きます(`rescue A, B => e` でも同じ)。
+- 例外階層は Ruby に準じます(`Exception` > `StandardError` > ...)。`raise` の引数は例外クラス、例外オブジェクト、または文字列(`RuntimeError`)。`rescue` 節の中(そこにあるブロックの中も含みますが、`def` の中は除きます)の引数のない `raise` は、処理中の例外をバックトレースを保ったまま再送出します。それ以外の場所ではコンパイルエラーです。`rescue E => e` と `raise e` でも同じことができます(`rescue A, B => e` でも同じ)。
 - 例外は投げたタスクの中で処理されます。タスクの外に漏れた例外の扱いは [04-concurrency.ja.md](04-concurrency.ja.md)。
 - 例外オブジェクトは Shareable である必要があります(他タスクに伝播するため。まだ強制していない)。
 - `raise` の型は `Nothing`(ボトム型)なので、`x = arg || raise ArgumentError` のような絞り込みができます。

@@ -699,6 +699,13 @@ fn control_flow() {
     ok("begin\n  raise ArgumentError, \"x\"\nrescue ArgumentError => e\n  puts e.message\nensure\n  puts \"done\"\nend");
     err("raise 1", "cannot raise Int");
     err("raise String", "`String` is not an exception class");
+    ok("begin\n  raise \"x\"\nrescue ArgumentError\n  raise\nend");
+    ok("begin\n  raise \"x\"\nrescue => e\n  [1].each { |x| raise }\nend");
+    err("raise", "a bare `raise` re-raises only inside `rescue`");
+    err(
+        "def f\n  raise\nend",
+        "a bare `raise` re-raises only inside `rescue`",
+    );
     ok("i = 0\nwhile i < 3\n  i += 1\n  next if i == 1\n  break if i == 2\nend");
     err("break", "`break` outside of a loop or block");
     ok("loop do\n  break\nend");

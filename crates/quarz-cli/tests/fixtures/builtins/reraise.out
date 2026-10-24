@@ -1,0 +1,6 @@
+g saw it
+ArgumentError: bad -1
+reraise.qz:4:in main#f
+block: inner
+handled nested
+after nested: IOError outer

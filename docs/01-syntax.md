@@ -463,7 +463,7 @@ end
 value = risky rescue default   # the modifier form is also allowed
 ```
 
-- The exception hierarchy follows Ruby (`Exception` > `StandardError` > ...). The argument of `raise` is an exception class, an exception object, or a string (`RuntimeError`). A bare `raise` that re-raises the exception being handled is planned; today write `rescue E => e` and `raise e` (also with `rescue A, B => e`).
+- The exception hierarchy follows Ruby (`Exception` > `StandardError` > ...). The argument of `raise` is an exception class, an exception object, or a string (`RuntimeError`). A bare `raise` in a `rescue` clause (also inside a block there, but not in a `def`) re-raises the exception being handled, keeping its backtrace; elsewhere it is a compile error. `raise e` does the same with `rescue E => e` (also with `rescue A, B => e`).
 - Exceptions are handled within the task that raised them. The handling of exceptions that escape a task is described in [04-concurrency.md](04-concurrency.md).
 - Exception objects must be Shareable (because they propagate to other tasks; not enforced yet).
 - The type of `raise` is `Nothing` (the bottom type), so narrowing such as `x = arg || raise ArgumentError` is possible.

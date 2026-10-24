@@ -122,6 +122,10 @@ pub struct Parser<'src> {
     last_span_end: u32,
     /// What `cog.name` and `cog.version` read.
     cog: CogMeta,
+    /// The variables holding the exceptions of the enclosing `rescue`
+    /// clauses (innermost last), which a bare `raise` re-raises, and
+    /// whether one did.
+    rescued: Vec<(String, bool)>,
 }
 
 impl<'src> Parser<'src> {
@@ -143,6 +147,7 @@ impl<'src> Parser<'src> {
             allow_in_match: true,
             last_span_end: 0,
             cog: CogMeta::default(),
+            rescued: Vec::new(),
         }
     }
 
@@ -1198,6 +1203,12 @@ impl<'src> Parser<'src> {
         safe_nav: bool,
         has_parens: bool,
     ) -> Expr {
+        let mut args = args;
+        if recv.is_none() && args.is_empty() && block.is_none() {
+            if let Some(exc) = self.reraised(&name) {
+                args.push(Arg::Positional(self.node(span, ExprKind::Local(exc))));
+            }
+        }
         self.node(
             span,
             ExprKind::Call(Box::new(Call {
@@ -1550,6 +1561,22 @@ impl<'src> Parser<'src> {
         } else {
             self.call_node(span, None, name.to_string(), vec![], None, false, false)
         }
+    }
+
+    /// For a bare `raise` in a `rescue` clause (not inside a `def`, where
+    /// the clause's variable is out of scope), the variable holding the
+    /// exception to re-raise.
+    fn reraised(&mut self, name: &str) -> Option<String> {
+        if name != "raise" {
+            return None;
+        }
+        let (var, _) = self.rescued.last()?;
+        if !self.is_local(var) {
+            return None;
+        }
+        let var = var.clone();
+        self.rescued.last_mut().unwrap().1 = true;
+        Some(var)
     }
 
     fn parse_block_opt(&mut self) -> PResult<Option<Block>> {
@@ -2714,7 +2741,7 @@ impl<'src> Parser<'src> {
                     classes.push(self.parse_type()?);
                 }
             }
-            let var = if self.eat(&T::FatArrow) {
+            let mut var = if self.eat(&T::FatArrow) {
                 match self.kind().clone() {
                     T::Ident(name) => {
                         self.bump();
@@ -2727,7 +2754,20 @@ impl<'src> Parser<'src> {
                 None
             };
             self.eat_then();
+            // A clause without `=> e` gets a variable no program can name
+            // when its body re-raises with a bare `raise`.
+            let name = var
+                .clone()
+                .unwrap_or_else(|| format!("(rescued {})", self.rescued.len()));
+            if var.is_none() {
+                self.declare(&name);
+            }
+            self.rescued.push((name, false));
             let body = self.parse_statements(&inner_stop);
+            let (name, used) = self.rescued.pop().unwrap();
+            if used && var.is_none() {
+                var = Some(name);
+            }
             let span = self.span_from(rstart);
             rescues.push(Rescue {
                 classes,

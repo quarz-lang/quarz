@@ -1,0 +1,47 @@
+# A bare `raise` in a `rescue` clause re-raises the exception being handled,
+# keeping where it was first raised.
+def f(n: Int) -> Int
+  raise ArgumentError, "bad #{n}" if n < 0
+  n
+end
+
+def g(n: Int) -> Int
+  begin
+    f(n)
+  rescue ArgumentError
+    puts "g saw it"
+    raise
+  end
+end
+
+begin
+  g(-1)
+rescue => e
+  puts "#{e.class}: #{e.message}"
+  puts e.backtrace[0].split("/").last
+end
+
+begin
+  begin
+    raise "inner"
+  rescue => e
+    [1].each { |x| raise if x == 1 }
+  end
+rescue RuntimeError => e2
+  puts "block: #{e2.message}"
+end
+
+begin
+  begin
+    raise IOError, "outer"
+  rescue IOError
+    begin
+      raise "nested"
+    rescue
+      puts "handled nested"
+    end
+    raise
+  end
+rescue => e3
+  puts "after nested: #{e3.class} #{e3.message}"
+end
