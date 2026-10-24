@@ -10,7 +10,10 @@ use crate::value::*;
 use smallvec::smallvec;
 
 use super::numeric::enumerator;
-use super::string::{char_offset, md, re, s, sb, slice_range, string_sub};
+use super::string::{
+    char_offset, each_match, group_names, match_value, md, re, s, sb, slice_range, string_sub,
+    substitute,
+};
 use super::{block, int, string};
 
 pub fn register(m: &mut super::Registry<NativeFn>) {
@@ -216,13 +219,24 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         let Some(b) = a.block.clone() else {
             return super::string::string_scan(i, r, a);
         };
-        let matches = super::string::string_scan(i, r, Args { block: None, ..a })?;
-        let Value::Array(items) = matches else {
-            return Ok(Value::Nil);
-        };
-        for x in items.iter() {
-            i.call_block(&b, smallvec![x.clone()])?;
-        }
+        let text = s(i, r)?;
+        let pattern = a.arg(0);
+        re(i, pattern)?;
+        let wants = wants_match(i, &b);
+        let names = group_names(pattern);
+        let mut shared: Option<Rc<str>> = None;
+        each_match(i, text, pattern, true, wants, |groups| {
+            let (st, en) = groups[0].unwrap_or((0, 0));
+            let matched = Value::str(&text[st..en]);
+            if wants {
+                let shared = shared.get_or_insert_with(|| Rc::from(text));
+                let md = match_value(shared, groups, &names);
+                i.call_block(&b, smallvec![matched, md])?;
+            } else {
+                i.call_block(&b, smallvec![matched])?;
+            }
+            Ok(())
+        })?;
         Ok(Value::Nil)
     });
     native!(m, "String#[]", |i, r, a| match (a.arg(0), a.pos.len()) {
@@ -604,61 +618,57 @@ fn string_split_limit(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     Ok(Value::array(parts.into_iter().map(Value::str).collect()))
 }
 
-/// `sub`/`gsub` with a block (the match is passed, the result replaces
-/// it) or a Hash of replacements.
+/// `sub`/`gsub` with a block (the match is passed, with its `MatchData`
+/// for a Regexp; the result replaces it) or a Hash of replacements.
 fn string_sub_block(interp: &Interp, recv: &Value, args: Args, global: bool) -> EvalResult {
-    let text = s(interp, recv)?;
-    let replacement = |matched: &str| -> Result<String, Flow> {
-        if let Some(b) = &args.block {
-            let v = interp.call_block(b, smallvec![Value::str(matched)])?;
-            return Ok(interp.to_s(&v)?.to_string());
-        }
-        if let Value::Hash(h) = args.arg(1) {
-            return Ok(match h.get(&Value::str(matched)) {
-                Some(v) => interp.to_s(&v)?.to_string(),
-                None => String::new(),
-            });
-        }
-        Ok(String::new())
-    };
     if args.block.is_none() && !matches!(args.arg(1), Value::Hash(_)) {
         return string_sub(interp, recv, args, global);
     }
-    let mut out = String::with_capacity(text.len());
-    let mut last = 0;
+    let text = s(interp, recv)?;
     let pattern = args.arg(0);
-    match (pattern, pattern.as_str()) {
-        (_, Some(pat)) => {
-            let mut from = 0;
-            while let Some(b) = text[from..].find(pat) {
-                let st = from + b;
-                let en = st + pat.len();
-                out.push_str(&text[last..st]);
-                out.push_str(&replacement(&text[st..en])?);
-                last = en;
-                from = if pat.is_empty() { en + 1 } else { en };
-                if !global || from > text.len() {
-                    break;
-                }
+    let wants = matches!(pattern, Value::Regexp(_))
+        && args.block.as_ref().is_some_and(|b| wants_match(interp, b));
+    let names = if wants {
+        group_names(pattern)
+    } else {
+        Vec::new()
+    };
+    let mut shared: Option<Rc<str>> = None;
+    let out = substitute(interp, text, pattern, global, wants, |groups, out| {
+        let (st, en) = groups[0].unwrap_or((0, 0));
+        let matched = Value::str(&text[st..en]);
+        if let Some(b) = &args.block {
+            let v = if wants {
+                let shared = shared.get_or_insert_with(|| Rc::from(text));
+                let md = match_value(shared, groups, &names);
+                interp.call_block(b, smallvec![matched, md])?
+            } else {
+                interp.call_block(b, smallvec![matched])?
+            };
+            out.push_str(&interp.to_s(&v)?);
+        } else if let Value::Hash(h) = args.arg(1) {
+            if let Some(v) = h.get(&matched) {
+                out.push_str(&interp.to_s(&v)?);
             }
         }
-        (Value::Regexp(rx), _) => {
-            for m in rx.regex.find_iter(text) {
-                out.push_str(&text[last..m.start()]);
-                out.push_str(&replacement(m.as_str())?);
-                last = m.end();
-                if !global {
-                    break;
-                }
-            }
-        }
-        (other, _) => {
-            return Err(interp.err_type(&format!(
-                "sub takes a String or Regexp, got {}",
-                interp.class_name(other)
-            )))
-        }
-    }
-    out.push_str(&text[last.min(text.len())..]);
+        Ok(())
+    })?;
     Ok(Value::string(out))
+}
+
+/// Whether a block takes a `MatchData` after the match: it requires two
+/// parameters or more (the overload checked for it; `|*xs|` and
+/// `|s, *xs|` are checked as taking the match only), or is a method.
+fn wants_match(interp: &Interp, block: &Value) -> bool {
+    match block {
+        Value::Proc(c) => match &c.body {
+            ClosureBody::Func(fid) => {
+                let arity = interp.func(*fid).arity;
+                arity >= 2 || arity <= -3
+            }
+            ClosureBody::MethodName(..) => false,
+            ClosureBody::BoundMethod { .. } | ClosureBody::Native(_) => true,
+        },
+        _ => true,
+    }
 }

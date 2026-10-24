@@ -579,10 +579,13 @@ class String
   native def rindex(pattern: Regexp, start: Int) -> Int?
   native def sub(pattern: String, &: (String) -> String) -> String
   native def sub(pattern: Regexp, &: (String) -> String) -> String
+  native def sub(pattern: Regexp, &: (String, MatchData) -> String) -> String
   native def gsub(pattern: String, &: (String) -> String) -> String
   native def gsub(pattern: Regexp, &: (String) -> String) -> String
+  native def gsub(pattern: Regexp, &: (String, MatchData) -> String) -> String
   native def gsub(pattern: Regexp, replacements: Hash[String, String]) -> String
   native def scan(pattern: Regexp, &: (String) -> Nil) -> Nil
+  native def scan(pattern: Regexp, &: (String, MatchData) -> Nil) -> Nil
 
   class Builder
     include Unshareable

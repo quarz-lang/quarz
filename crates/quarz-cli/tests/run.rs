@@ -95,7 +95,9 @@ fn regexps() {
     expect("m = \"John Smith\".match(/(\\w+) (\\w+)/)\nif m\n  puts m[1], m[2], m.pre_match.inspect, m.captures.inspect\nend", "John\nSmith\n\"\"\n[\"John\", \"Smith\"]\n");
     expect(
         "puts \"a1b22c333\".scan(/\\d+/).inspect, \"a1b2\".scan(/([a-z])(\\d)/).inspect",
-        "[\"1\", \"22\", \"333\"]\n[[\"a\", \"1\"], [\"b\", \"2\"]]\n",
+        // The whole matches, as the type says; the groups are in the
+        // MatchData a block receives.
+        "[\"1\", \"22\", \"333\"]\n[\"a1\", \"b2\"]\n",
     );
     expect("puts \"hello world\".gsub(/o/, \"0\"), \"hello\".sub(/l/, \"L\"), \"2024-01-02\".gsub(/(\\d+)-(\\d+)-(\\d+)/, \"\\\\3/\\\\2/\\\\1\")", "hell0 w0rld\nheLlo\n02/01/2024\n");
     expect(

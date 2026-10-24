@@ -401,33 +401,27 @@ pub(super) fn string_split(interp: &Interp, recv: &Value, args: Args) -> EvalRes
     Ok(Value::array(parts))
 }
 
+/// `scan` without a block: each match, whole (its groups are in the
+/// `MatchData` the block form passes).
 pub(super) fn string_scan(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let text = s(interp, recv)?;
-    let r = re(interp, args.arg(0))?;
-    let out: Vec<Value> = r
-        .regex
-        .captures_iter(text)
-        .map(|c| {
-            if c.len() > 1 {
-                if c.len() == 2 {
-                    Value::str(c.get(1).map(|m| m.as_str()).unwrap_or(""))
-                } else {
-                    Value::array(
-                        (1..c.len())
-                            .map(|i| {
-                                c.get(i)
-                                    .map(|m| Value::str(m.as_str()))
-                                    .unwrap_or(Value::Nil)
-                            })
-                            .collect(),
-                    )
-                }
-            } else {
-                Value::str(c.get(0).map(|m| m.as_str()).unwrap_or(""))
-            }
-        })
-        .collect();
+    re(interp, args.arg(0))?;
+    let mut out = Vec::new();
+    each_match(interp, text, args.arg(0), true, false, |found| {
+        let (st, en) = found[0].unwrap_or((0, 0));
+        out.push(Value::str(&text[st..en]));
+        Ok(())
+    })?;
     Ok(Value::array(out))
+}
+
+/// A `MatchData` of `text` (shared by the matches of one call).
+pub(super) fn match_value(text: &Rc<str>, groups: &Groups, names: &[(String, usize)]) -> Value {
+    Value::MatchData(Rc::new(MatchDataVal {
+        text: text.clone(),
+        groups: groups.clone(),
+        names: names.to_vec(),
+    }))
 }
 
 pub fn match_data(interp: &Interp, r: &RegexpVal, text: &str) -> EvalResult {
@@ -493,62 +487,195 @@ fn md_index(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
 }
 
 /// Convert Ruby-style `\1` references to the regex crate's `$1`.
-pub(super) fn convert_replacement(rep: &str) -> String {
-    let mut out = String::new();
-    let mut chars = rep.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\\' {
-            match chars.peek() {
-                Some(d) if d.is_ascii_digit() => {
-                    out.push('$');
-                    out.push(*d);
-                    chars.next();
-                    continue;
+/// The byte ranges of a match and of its groups (`None`: a group that
+/// took no part).
+pub(super) type Groups = Vec<Option<(usize, usize)>>;
+
+/// Calls `f` with each match of `pattern` (a String or a Regexp) in
+/// `text`, in order; only the first unless `global`. The ranges of the
+/// groups follow the match's only when `groups` (a String has none). As
+/// in Ruby, an empty match may follow a match right where it ends, and
+/// the search goes on a character after an empty one (an empty String
+/// pattern matches before each character and at the end).
+pub(super) fn each_match(
+    interp: &Interp,
+    text: &str,
+    pattern: &Value,
+    global: bool,
+    groups: bool,
+    mut f: impl FnMut(&Groups) -> Result<(), Flow>,
+) -> Result<(), Flow> {
+    let mut found: Groups = Vec::new();
+    let mut locs = match pattern {
+        Value::Regexp(rx) if groups => Some(rx.regex.capture_locations()),
+        _ => None,
+    };
+    let mut pos = 0;
+    while pos <= text.len() {
+        found.clear();
+        match (pattern, pattern.as_str()) {
+            (_, Some(pat)) => {
+                let Some(b) = text[pos..].find(pat) else {
+                    break;
+                };
+                found.push(Some((pos + b, pos + b + pat.len())));
+            }
+            (Value::Regexp(rx), _) => match &mut locs {
+                Some(locs) => {
+                    if rx.regex.captures_read_at(locs, text, pos).is_none() {
+                        break;
+                    }
+                    found.extend((0..locs.len()).map(|i| locs.get(i)));
                 }
-                Some('\\') => {
-                    out.push('\\');
-                    chars.next();
-                    continue;
+                None => {
+                    let Some(m) = rx.regex.find_at(text, pos) else {
+                        break;
+                    };
+                    found.push(Some((m.start(), m.end())));
                 }
-                _ => {}
+            },
+            (other, _) => {
+                return Err(interp.err_type(&format!(
+                    "sub takes a String or Regexp, got {}",
+                    interp.class_name(other)
+                )))
             }
         }
-        if c == '$' {
-            out.push_str("$$");
-        } else {
-            out.push(c);
+        f(&found)?;
+        let Some((st, en)) = found[0] else { break };
+        if !global {
+            break;
         }
+        pos = if en > st {
+            en
+        } else if let Some(c) = text[en..].chars().next() {
+            en + c.len_utf8()
+        } else {
+            break;
+        };
     }
-    out
+    Ok(())
+}
+
+/// `text` with each match of `pattern` replaced by what `replace` writes
+/// for it.
+pub(super) fn substitute(
+    interp: &Interp,
+    text: &str,
+    pattern: &Value,
+    global: bool,
+    groups: bool,
+    mut replace: impl FnMut(&Groups, &mut String) -> Result<(), Flow>,
+) -> Result<String, Flow> {
+    let mut out = String::with_capacity(text.len());
+    let mut last = 0;
+    each_match(interp, text, pattern, global, groups, |found| {
+        let (st, en) = found[0].unwrap_or((last, last));
+        out.push_str(&text[last..st]);
+        replace(found, &mut out)?;
+        last = en;
+        Ok(())
+    })?;
+    out.push_str(&text[last..]);
+    Ok(out)
+}
+
+/// The names of a pattern's groups, with their numbers.
+pub(super) fn group_names(pattern: &Value) -> Vec<(String, usize)> {
+    match pattern {
+        Value::Regexp(rx) => rx
+            .regex
+            .capture_names()
+            .enumerate()
+            .filter_map(|(i, n)| n.map(|n| (n.to_string(), i)))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// A replacement string as Ruby reads it: `\1`..`\9` and `\k<name>` are
+/// groups (empty when they took no part), `\0` and `\&` the match, `` \` ``
+/// and `\'` what precedes and follows it, `\\` a backslash; any other
+/// backslash stays. A `\k<` without its `>` is an error, as in Ruby.
+pub(super) fn expand_replacement(
+    interp: &Interp,
+    rep: &str,
+    text: &str,
+    groups: &Groups,
+    names: &[(String, usize)],
+    out: &mut String,
+) -> Result<(), Flow> {
+    let group = |i: usize| {
+        groups
+            .get(i)
+            .copied()
+            .flatten()
+            .map_or("", |(st, en)| &text[st..en])
+    };
+    let (st, en) = groups[0].unwrap_or((0, 0));
+    let mut chars = rep.char_indices().peekable();
+    while let Some((_, c)) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.peek().map(|(_, d)| *d) {
+            Some(d @ '0'..='9') => out.push_str(group(d as usize - '0' as usize)),
+            Some('&') => out.push_str(group(0)),
+            Some('`') => out.push_str(&text[..st]),
+            Some('\'') => out.push_str(&text[en..]),
+            Some('\\') => out.push('\\'),
+            Some('k') if rep[chars.peek().unwrap().0 + 1..].starts_with('<') => {
+                let at = chars.peek().unwrap().0 + 2;
+                let Some(close) = rep[at..].find('>') else {
+                    return Err(interp.err_arg("invalid group name reference format"));
+                };
+                let name = &rep[at..at + close];
+                let Some((_, i)) = names.iter().find(|(n, _)| n == name) else {
+                    return Err(
+                        interp.err_index(&format!("undefined group name reference: {name}"))
+                    );
+                };
+                out.push_str(group(*i));
+                while chars.next_if(|(j, _)| *j <= at + close).is_some() {}
+                continue;
+            }
+            _ => {
+                out.push('\\');
+                continue;
+            }
+        }
+        chars.next();
+    }
+    Ok(())
 }
 
 pub(super) fn string_sub(interp: &Interp, recv: &Value, args: Args, global: bool) -> EvalResult {
     let text = s(interp, recv)?;
     let rep = string(interp, args.arg(1), "replacement")?;
-    Ok(Value::string(match args.arg(0) {
-        v if v.is_str() => {
-            let pat = v.as_str().unwrap_or("");
-            if global {
-                text.replace(pat, rep)
+    let pattern = args.arg(0);
+    // Without a backslash the replacement is itself: no groups to find.
+    let escapes = rep.contains('\\');
+    let names = if escapes {
+        group_names(pattern)
+    } else {
+        Vec::new()
+    };
+    Ok(Value::string(substitute(
+        interp,
+        text,
+        pattern,
+        global,
+        escapes,
+        |groups, out| {
+            if escapes {
+                expand_replacement(interp, rep, text, groups, &names, out)
             } else {
-                text.replacen(pat, rep, 1)
+                out.push_str(rep);
+                Ok(())
             }
-        }
-        Value::Regexp(r) => {
-            let converted = convert_replacement(rep);
-            if global {
-                r.regex.replace_all(text, converted.as_str()).into_owned()
-            } else {
-                r.regex.replace(text, converted.as_str()).into_owned()
-            }
-        }
-        other => {
-            return Err(interp.err_type(&format!(
-                "sub takes a String or Regexp, got {}",
-                interp.class_name(other)
-            )))
-        }
-    }))
+        },
+    )?))
 }
 
 fn string_capitalize(interp: &Interp, recv: &Value, _: Args) -> EvalResult {

@@ -2827,6 +2827,11 @@ impl Interp {
                 self.inspect(&r.hi)?
             ),
             Value::Regexp(r) => format!("/{}/{}", r.source, r.flags),
+            // `to_s` (and interpolation) is the match, as in Ruby.
+            Value::MatchData(m) if !inspect => {
+                let (st, en) = m.groups[0].unwrap_or((0, 0));
+                m.text[st..en].to_string()
+            }
             Value::MatchData(m) => {
                 let group = |k: usize| -> String {
                     match m.groups.get(k).copied().flatten() {

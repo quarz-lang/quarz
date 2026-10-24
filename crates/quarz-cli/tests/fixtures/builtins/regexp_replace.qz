@@ -1,0 +1,32 @@
+# Replacement strings as Ruby reads them, and the MatchData a two-parameter
+# block of sub/gsub/scan receives.
+p "ab-cd".gsub(/(\w)(\w)/, "\\2\\1"), "ab".gsub(/(a)/, "\\1x")
+p "ab".gsub(/(?<x>a)/, "\\k<x>!"), "ab".gsub(/a/, "[\\0]"), "ab".gsub(/a/, "[\\&]")
+p "abc".sub(/b/, "<\\`|\\'>"), "a".sub(/a/, "\\\\"), "a".sub(/a/, "\\q"), "ab".sub(/(x)?a/, "[\\1]")
+# A String pattern too; an empty one matches between characters.
+p "ab".sub("a", "[\\0]"), "abc".gsub("", "-"), "äö".gsub("", "-")
+begin
+  "x".sub(/(?<x>x)/, "\\k<y>")
+rescue => e
+  p e.message
+end
+# Blocks: the match, then its MatchData.
+p "ab".gsub(/(a)/) { |m| m.upcase }, "hello".gsub(/l/, &:upcase)
+p "k=v, a=b".gsub(/(\w)=(\w)/) { |s, m| "#{m[2]}=#{m[1]}(#{s})" }
+p "k=v, a=b".sub(/(?<k>\w)=(?<v>\w)/) { |_, m| "#{m["v"]}<-#{m["k"]} #{m.post_match.inspect}" }
+# scan without a block gives the whole matches; with one, also the groups.
+p "k=v, a=b".scan(/(\w)=(\w)/)
+"k=v, a=b".scan(/(\w)=(\w)/) { |s, m| p [s, m[1], m[2], m.begin(0)] }
+"one two".scan(/\w+/) { |w| p w }
+# Empty matches, as Ruby finds them: one may follow a match where it ends.
+p "abc".gsub(/b*/, "-"), "abc".scan(/b*/), "héllo".gsub(/l*/, "-")
+# A MatchData shows as its match, inspected as itself.
+"k=v".scan(/(\w)=(\w)/) { |_, m| puts "#{m} #{m.inspect}" }
+# A block that does not require two parameters gets the match only.
+"ab".scan(/b/) { |*xs| p xs }
+"ab".scan(/b/) { |a, *xs| p [a, xs] }
+begin
+  "a".sub(/(?<n>a)/, "\\k<n")
+rescue => e
+  p e.message
+end

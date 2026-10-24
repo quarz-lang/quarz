@@ -1,0 +1,29 @@
+"ba-dc"
+"axb"
+"a!b"
+"[a]b"
+"[a]b"
+"a<a|c>c"
+"\\"
+"\\q"
+"[]b"
+"[a]b"
+"-a-b-c-"
+"-ä-ö-"
+"undefined group name reference: y"
+"Ab"
+"heLLo"
+"v=k(k=v), b=a(a=b)"
+"v<-k \", a=b\", a=b"
+["k=v", "a=b"]
+["k=v", "k", "v", 0]
+["a=b", "a", "b", 5]
+"one"
+"two"
+"-a--c-"
+["", "b", "", ""]
+"-h-é--o-"
+k=v #<MatchData "k=v" 1:"k" 2:"v">
+["b"]
+["b", []]
+"invalid group name reference format"
