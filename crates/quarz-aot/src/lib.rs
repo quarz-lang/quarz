@@ -51,7 +51,10 @@ fn link(object: &Path, output: &Path) -> Result<(), String> {
         .arg(object)
         .arg(&runtime)
         .arg("-Wl,--gc-sections")
-        .args(["-lpthread", "-ldl", "-lm", "-lgcc_s", "-lrt", "-lutil"])
+        // The unwinder (backtraces walk the native stack with it) linked
+        // in: one shared library fewer to load at start-up.
+        .arg("-static-libgcc")
+        .args(["-lpthread", "-ldl", "-lm", "-lrt", "-lutil"])
         .status()
         .map_err(|e| format!("cannot run cc: {e}"))?;
     if !status.success() {
