@@ -742,7 +742,7 @@ impl Interp {
                 if from >= a.len() {
                     Value::array(Vec::new())
                 } else {
-                    Value::array(a.values()[from..end.min(a.len())].to_vec())
+                    a.slice(from, end.min(a.len()))
                 }
             }
             _ => Value::array(Vec::new()),
@@ -759,7 +759,7 @@ impl Interp {
             (Value::Array(a), Value::Int(from), Value::Int(to)) => {
                 let from = (*from).clamp(0, a.len() as i64) as usize;
                 let to = (*to).clamp(from as i64, a.len() as i64) as usize;
-                Value::array(a.values()[from..to].to_vec())
+                a.slice(from, to)
             }
             _ => Value::array(Vec::new()),
         };

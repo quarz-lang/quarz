@@ -9,8 +9,8 @@ use crate::value::*;
 use smallvec::smallvec;
 
 use super::collections::{
-    ab, arr, block_ordering, hash, hash_update, hb, index_opt, range, range_to_vec, sb, set,
-    set_update, update,
+    ab, arr, arr_data, block_ordering, hash, hash_update, hb, index_opt, range, range_to_vec, sb,
+    set, set_update, update,
 };
 use super::numeric::enumerator;
 use super::{block, collect, int, string};
@@ -78,24 +78,29 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         if n < 0 {
             return Err(i.err_arg("attempt to take negative size"));
         }
-        Ok(Value::array(
-            arr(i, r)?.iter().take(n as usize).cloned().collect(),
-        ))
+        let data = arr_data(i, r)?;
+        Ok(data.slice(0, (n as usize).min(data.len())))
     });
     native!(m, "Array#drop", |i, r, a| {
         let n = int(i, a.arg(0), "count")?;
         if n < 0 {
             return Err(i.err_arg("attempt to drop negative size"));
         }
-        Ok(Value::array(
-            arr(i, r)?.iter().skip(n as usize).cloned().collect(),
-        ))
+        let data = arr_data(i, r)?;
+        Ok(data.slice((n as usize).min(data.len()), data.len()))
     });
     native!(m, "Array#values_at", |i, r, a| {
-        let items = arr(i, r)?;
+        let data = arr_data(i, r)?;
+        let n = data.len() as i64;
         let mut out = Vec::with_capacity(a.pos.len());
         for idx in &a.pos {
-            out.push(index_opt(&items, int(i, idx, "index")?));
+            let k = int(i, idx, "index")?;
+            let k = if k < 0 { n + k } else { k };
+            out.push(if (0..n).contains(&k) {
+                data.get(k as usize).unwrap_or(Value::Nil)
+            } else {
+                Value::Nil
+            });
         }
         Ok(Value::array(out))
     });
@@ -150,17 +155,18 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     });
     native!(m, "Array#bsearch", |i, r, a| {
         let b = block(i, &a)?;
-        let items = arr(i, r)?.clone();
-        let (mut lo, mut hi) = (0usize, items.len());
+        let data = arr_data(i, r)?.clone();
+        let (mut lo, mut hi) = (0usize, data.len());
         while lo < hi {
             let mid = lo + (hi - lo) / 2;
-            if i.call_block(&b, smallvec![items[mid].clone()])?.is_truthy() {
+            let x = data.get(mid).unwrap_or(Value::Nil);
+            if i.call_block(&b, smallvec![x])?.is_truthy() {
                 hi = mid;
             } else {
                 lo = mid + 1;
             }
         }
-        Ok(items.get(lo).cloned().unwrap_or(Value::Nil))
+        Ok(data.get(lo).unwrap_or(Value::Nil))
     });
 
     // Array::Builder

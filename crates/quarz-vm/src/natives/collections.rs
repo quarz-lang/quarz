@@ -300,17 +300,18 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     });
     native!(m, "Array#join", array_join);
     native!(m, "Array#sample", |i, r, a| {
-        let items = arr(i, r)?;
         if let Some(n) = a.pos.first() {
             let n = int(i, n, "count")?.max(0) as usize;
             let shuffled = array_shuffle(i, r, Args::default())?;
-            let shuffled = arr(i, &shuffled)?;
-            return Ok(Value::array(shuffled.iter().take(n).cloned().collect()));
+            let shuffled = arr_data(i, &shuffled)?;
+            return Ok(shuffled.slice(0, n.min(shuffled.len())));
         }
-        Ok(if items.is_empty() {
+        let data = arr_data(i, r)?;
+        Ok(if data.is_empty() {
             Value::Nil
         } else {
-            items[(super::random::next_random() % items.len() as u64) as usize].clone()
+            let k = (super::random::next_random() % data.len() as u64) as usize;
+            data.get(k).unwrap_or(Value::Nil)
         })
     });
     native!(m, "Array#shuffle", array_shuffle);
@@ -1128,7 +1129,7 @@ fn array_index(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
             Ok(data.get(idx as usize).unwrap_or(Value::Nil))
         }
         Value::Range(r) => match super::string::range_bounds(interp, r, data.len())? {
-            Some((st, en)) => Ok(Value::array(data.values()[st..en].to_vec())),
+            Some((st, en)) => Ok(data.slice(st, en)),
             None => Err(interp.err_index("range out of bounds")),
         },
         other => Err(interp.err_type(&format!(
@@ -1138,32 +1139,30 @@ fn array_index(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     }
 }
 
+// The array's elements are read where they are: taking its values would
+// copy a whole array stored unboxed or as references, for one element.
 fn array_first(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
-    let items = arr(interp, recv)?;
+    let data = arr_data(interp, recv)?;
     match args.pos.first() {
-        None => Ok(arr_data(interp, recv)?.get(0).unwrap_or(Value::Nil)),
+        None => Ok(data.get(0).unwrap_or(Value::Nil)),
         Some(n) => {
             let n = int(interp, n, "count")?.max(0) as usize;
-            Ok(Value::array(items.iter().take(n).cloned().collect()))
+            Ok(data.slice(0, n.min(data.len())))
         }
     }
 }
 
 fn array_last(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
-    let items = arr(interp, recv)?;
+    let data = arr_data(interp, recv)?;
     match args.pos.first() {
-        None => {
-            let data = arr_data(interp, recv)?;
-            Ok(data
-                .len()
-                .checked_sub(1)
-                .and_then(|k| data.get(k))
-                .unwrap_or(Value::Nil))
-        }
+        None => Ok(data
+            .len()
+            .checked_sub(1)
+            .and_then(|k| data.get(k))
+            .unwrap_or(Value::Nil)),
         Some(n) => {
             let n = int(interp, n, "count")?.max(0) as usize;
-            let start = items.len().saturating_sub(n);
-            Ok(Value::array(items[start..].to_vec()))
+            Ok(data.slice(data.len().saturating_sub(n), data.len()))
         }
     }
 }
@@ -1171,7 +1170,7 @@ fn array_last(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
 fn array_insert(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let idx = int(interp, args.arg(0), "index")?;
     let value = args.arg(1).clone();
-    let n = arr(interp, recv)?.len() as i64;
+    let n = arr_data(interp, recv)?.len() as i64;
     let idx = if idx < 0 { n + idx + 1 } else { idx };
     if idx < 0 || idx > n {
         return Err(interp.err_index("index out of bounds"));
@@ -1182,7 +1181,7 @@ fn array_insert(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
 fn array_set(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let idx = int(interp, args.arg(0), "index")?;
     let value = args.arg(1).clone();
-    let n = arr(interp, recv)?.len() as i64;
+    let n = arr_data(interp, recv)?.len() as i64;
     let idx = if idx < 0 { n + idx } else { idx };
     if idx < 0 || idx >= n {
         return Err(interp.err_index("index out of bounds"));
@@ -1192,7 +1191,7 @@ fn array_set(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
 
 fn array_delete_at(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let idx = int(interp, args.arg(0), "index")?;
-    let n = arr(interp, recv)?.len() as i64;
+    let n = arr_data(interp, recv)?.len() as i64;
     let idx = if idx < 0 { n + idx } else { idx };
     if idx < 0 || idx >= n {
         return Ok(recv.clone());
@@ -1303,7 +1302,7 @@ pub(super) fn enum_sort(interp: &Interp, recv: &Value, args: Args) -> EvalResult
                     xs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
                     return Ok(Value::floats(xs));
                 }
-                ArrayData::Values(_) => {}
+                ArrayData::Values(_) | ArrayData::Objects(_) => {}
             }
         }
     }

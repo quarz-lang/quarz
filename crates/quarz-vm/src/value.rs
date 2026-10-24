@@ -445,25 +445,31 @@ pub type Fields = SmallVec<[Value; 4]>;
 
 /// The elements of an array: boxed values, or unboxed machine integers
 /// or floats when every element is one (`Array[Int]`/`Array[Float]`
-/// usually are). The layout is fixed (`repr(C, u8)`: the kind byte, then
-/// the vector at offset 8) so that compiled code reads elements directly.
+/// usually are), or the references alone when every element is an object
+/// (an instance of a class, data type, variant or exception: a word each
+/// rather than a value's two). The layout is fixed (`repr(C, u8)`: the
+/// kind byte, then the vector at offset 8) so that compiled code reads
+/// elements directly.
 #[derive(Clone, Debug)]
 #[repr(C, u8)]
 pub enum ArrayData {
     Values(Vec<Value>),
     Ints(Vec<i64>),
     Floats(Vec<f64>),
+    Objects(Vec<Rc<Object>>),
 }
 
 pub const ARRAY_KIND_VALUES: u8 = 0;
 pub const ARRAY_KIND_INTS: u8 = 1;
 pub const ARRAY_KIND_FLOATS: u8 = 2;
+pub const ARRAY_KIND_OBJECTS: u8 = 3;
 
 /// Iterates an array's elements as values.
 pub enum ArrayIter<'a> {
     Values(std::slice::Iter<'a, Value>),
     Ints(std::slice::Iter<'a, i64>),
     Floats(std::slice::Iter<'a, f64>),
+    Objects(std::slice::Iter<'a, Rc<Object>>),
 }
 
 impl Iterator for ArrayIter<'_> {
@@ -474,6 +480,7 @@ impl Iterator for ArrayIter<'_> {
             ArrayIter::Values(it) => it.next().cloned(),
             ArrayIter::Ints(it) => it.next().map(|i| Value::Int(*i)),
             ArrayIter::Floats(it) => it.next().map(|f| Value::Float(*f)),
+            ArrayIter::Objects(it) => it.next().map(|o| Value::Object(o.clone())),
         }
     }
 
@@ -482,6 +489,7 @@ impl Iterator for ArrayIter<'_> {
             ArrayIter::Values(it) => it.size_hint(),
             ArrayIter::Ints(it) => it.size_hint(),
             ArrayIter::Floats(it) => it.size_hint(),
+            ArrayIter::Objects(it) => it.size_hint(),
         }
     }
 }
@@ -494,13 +502,15 @@ impl DoubleEndedIterator for ArrayIter<'_> {
             ArrayIter::Values(it) => it.next_back().cloned(),
             ArrayIter::Ints(it) => it.next_back().map(|i| Value::Int(*i)),
             ArrayIter::Floats(it) => it.next_back().map(|f| Value::Float(*f)),
+            ArrayIter::Objects(it) => it.next_back().map(|o| Value::Object(o.clone())),
         }
     }
 }
 
 impl ArrayData {
     /// Store `items` unboxed when they are all machine integers or all
-    /// floats (and there are some), boxed otherwise.
+    /// floats, as references when they are all objects (and there are
+    /// some), boxed otherwise.
     pub fn from_values(items: Vec<Value>) -> ArrayData {
         if items.is_empty() {
             return ArrayData::Values(items);
@@ -527,6 +537,17 @@ impl ArrayData {
                     .collect(),
             );
         }
+        if items.iter().all(|v| matches!(v, Value::Object(_))) {
+            return ArrayData::Objects(
+                items
+                    .into_iter()
+                    .map(|v| match v {
+                        Value::Object(o) => o,
+                        _ => unreachable!(),
+                    })
+                    .collect(),
+            );
+        }
         ArrayData::Values(items)
     }
 
@@ -535,6 +556,7 @@ impl ArrayData {
             ArrayData::Values(_) => ARRAY_KIND_VALUES,
             ArrayData::Ints(_) => ARRAY_KIND_INTS,
             ArrayData::Floats(_) => ARRAY_KIND_FLOATS,
+            ArrayData::Objects(_) => ARRAY_KIND_OBJECTS,
         }
     }
 
@@ -543,6 +565,7 @@ impl ArrayData {
             ArrayData::Values(v) => v.len(),
             ArrayData::Ints(v) => v.len(),
             ArrayData::Floats(v) => v.len(),
+            ArrayData::Objects(v) => v.len(),
         }
     }
 
@@ -555,6 +578,7 @@ impl ArrayData {
             ArrayData::Values(v) => v.get(i).cloned(),
             ArrayData::Ints(v) => v.get(i).map(|i| Value::Int(*i)),
             ArrayData::Floats(v) => v.get(i).map(|f| Value::Float(*f)),
+            ArrayData::Objects(v) => v.get(i).map(|o| Value::Object(o.clone())),
         }
     }
 
@@ -563,6 +587,7 @@ impl ArrayData {
             ArrayData::Values(v) => ArrayIter::Values(v.iter()),
             ArrayData::Ints(v) => ArrayIter::Ints(v.iter()),
             ArrayData::Floats(v) => ArrayIter::Floats(v.iter()),
+            ArrayData::Objects(v) => ArrayIter::Objects(v.iter()),
         }
     }
 
@@ -610,6 +635,14 @@ impl ArrayData {
             (ArrayData::Values(xs), Value::Float(f)) if xs.is_empty() => {
                 *self = ArrayData::Floats(vec![*f]);
             }
+            (ArrayData::Objects(xs), Value::Object(_)) => {
+                let Value::Object(o) = v else { unreachable!() };
+                xs.push(o);
+            }
+            (ArrayData::Values(xs), Value::Object(_)) if xs.is_empty() => {
+                let Value::Object(o) = v else { unreachable!() };
+                *self = ArrayData::Objects(vec![o]);
+            }
             (ArrayData::Values(xs), _) => xs.push(v),
             _ => self.with_values(|xs| xs.push(v)),
         }
@@ -620,15 +653,34 @@ impl ArrayData {
         match (&mut *self, &v) {
             (ArrayData::Ints(xs), Value::Int(x)) => xs[i] = *x,
             (ArrayData::Floats(xs), Value::Float(x)) => xs[i] = *x,
+            (ArrayData::Objects(xs), Value::Object(_)) => {
+                let Value::Object(o) = v else { unreachable!() };
+                xs[i] = o;
+            }
             (ArrayData::Values(xs), _) => xs[i] = v,
             _ => self.with_values(|xs| xs[i] = v),
         }
+    }
+
+    /// Elements `from..to` (within the array), as an array of the same
+    /// storage.
+    pub fn slice(&self, from: usize, to: usize) -> Value {
+        if from >= to {
+            return Value::empty_array();
+        }
+        Value::Array(Rc::new(match self {
+            ArrayData::Values(v) => ArrayData::Values(v[from..to].to_vec()),
+            ArrayData::Ints(v) => ArrayData::Ints(v[from..to].to_vec()),
+            ArrayData::Floats(v) => ArrayData::Floats(v[from..to].to_vec()),
+            ArrayData::Objects(v) => ArrayData::Objects(v[from..to].to_vec()),
+        }))
     }
 
     pub fn extend_from(&mut self, other: &ArrayData) {
         match (&mut *self, other) {
             (ArrayData::Ints(xs), ArrayData::Ints(ys)) => xs.extend_from_slice(ys),
             (ArrayData::Floats(xs), ArrayData::Floats(ys)) => xs.extend_from_slice(ys),
+            (ArrayData::Objects(xs), ArrayData::Objects(ys)) => xs.extend_from_slice(ys),
             (ArrayData::Values(xs), ArrayData::Values(ys)) => xs.extend_from_slice(ys),
             (ArrayData::Values(xs), _) if xs.is_empty() => *self = other.clone(),
             _ => {
@@ -2129,10 +2181,32 @@ fn mark_rc<T: ?Sized + crate::rc::Target>(immortal: bool, r: &Rc<T>) -> bool {
     }
 }
 
+/// Mark an object (see `Value::share`), and queue what it refers to.
+///
+/// # Safety
+/// As `Value::share`'s walk: the object is alive and unchanged while the
+/// queued pointers are followed.
+unsafe fn share_object(immortal: bool, r: &Rc<Object>, work: &mut Vec<ShareItem>) {
+    if mark_rc(immortal, r) {
+        // SAFETY: as the caller promises.
+        unsafe { r.value_ptrs(|x| work.push(ShareItem::Value(x))) };
+        if let Some(e) = r.exc_info() {
+            if let Some(b) = &e.backtrace {
+                mark_rc(immortal, b);
+            }
+            if let Some(c) = &e.cause {
+                work.push(ShareItem::Value(c));
+            }
+        }
+    }
+}
+
 /// What `Value::share` has still to mark.
 enum ShareItem {
     Value(*const Value),
     Frame(*const Frame),
+    /// An element of an array of objects (a reference, not a value).
+    Object(*const Rc<Object>),
 }
 
 impl Value {
@@ -2181,6 +2255,10 @@ impl Value {
                         }
                         continue;
                     }
+                    ShareItem::Object(o) => {
+                        share_object(immortal, &*o, &mut work);
+                        continue;
+                    }
                 };
                 let push = |work: &mut Vec<ShareItem>, v: &Value| work.push(ShareItem::Value(v));
                 match v {
@@ -2218,8 +2296,12 @@ impl Value {
                     }
                     Value::Array(r) => {
                         if mark_rc(immortal, r) {
-                            if let ArrayData::Values(xs) = &**r {
-                                xs.iter().for_each(|x| push(&mut work, x));
+                            match &**r {
+                                ArrayData::Values(xs) => xs.iter().for_each(|x| push(&mut work, x)),
+                                ArrayData::Objects(xs) => {
+                                    xs.iter().for_each(|o| work.push(ShareItem::Object(o)))
+                                }
+                                ArrayData::Ints(_) | ArrayData::Floats(_) => {}
                             }
                         }
                     }
@@ -2249,19 +2331,7 @@ impl Value {
                             mark_rc(immortal, &r.text);
                         }
                     }
-                    Value::Object(r) => {
-                        if mark_rc(immortal, r) {
-                            r.value_ptrs(|x| work.push(ShareItem::Value(x)));
-                            if let Some(e) = r.exc_info() {
-                                if let Some(b) = &e.backtrace {
-                                    mark_rc(immortal, b);
-                                }
-                                if let Some(c) = &e.cause {
-                                    push(&mut work, c);
-                                }
-                            }
-                        }
-                    }
+                    Value::Object(r) => share_object(immortal, r, &mut work),
                     Value::Proc(r) => {
                         if mark_rc(immortal, r) {
                             match &r.body {
