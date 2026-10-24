@@ -1795,6 +1795,10 @@ impl<'a> FnBuilder<'a> {
     }
 
     fn call(&mut self, e: &'a Expr, call: &'a ast::Call) -> Reg {
+        // `xs.map! { }` stores what `map` returns, whatever its shape.
+        if self.out.bang_assign.contains(&e.id) {
+            return self.bang_assign(e, call);
+        }
         if let Some(shape) = iter::shape(e, call, self.out, self.world) {
             return self.inline_iter(e, call, shape);
         }
@@ -1811,9 +1815,6 @@ impl<'a> FnBuilder<'a> {
             let dst = self.reg();
             self.emit(Inst::IsNil { dst, src });
             return dst;
-        }
-        if self.out.bang_assign.contains(&e.id) {
-            return self.bang_assign(e, call);
         }
         if let Some(leaves) = self.concat_chain(e, call) {
             let parts: Vec<StrPiece> = leaves
@@ -1928,9 +1929,29 @@ impl<'a> FnBuilder<'a> {
             }
         }
         let chained = !std::ptr::eq(root, recv);
-        let a = self.args(&call.args);
+        let mut a = self.args(&call.args);
+        if let Some(b) = &call.block {
+            let func = self.block_function(b, e.id, false);
+            let destructure = self.out.block_destructure.get(&e.id).map(|n| *n as u32);
+            let dst = self.reg();
+            self.emit(Inst::MakeBlock {
+                dst,
+                func,
+                destructure,
+                is_lambda: false,
+            });
+            a.block = Some(self.share_proc(e.id, dst));
+        }
         let simple = a.block.is_none() && !a.splat && a.kw_splat.is_none();
-        let owned = simple && self.world.method(method).is_native && !chained;
+        // The members of a union receiver have different methods: called
+        // by name (`foo`, without the `!`).
+        let dynamic = self.out.dynamic_calls.contains(&e.id);
+        let kind = if dynamic {
+            CallKind::Send(call.name.trim_end_matches('!').to_string())
+        } else {
+            CallKind::Method(method)
+        };
+        let owned = simple && self.world.method(method).is_native && !chained && !dynamic;
         match &root.kind {
             ExprKind::Local(_) => {
                 let r = self.var_ref(root.span);
@@ -1958,7 +1979,7 @@ impl<'a> FnBuilder<'a> {
                 let dst = self.reg();
                 self.emit(Inst::Call {
                     dst,
-                    kind: CallKind::Method(method),
+                    kind: kind.clone(),
                     recv: Some(recv_reg),
                     args: a.pos,
                     splat: a.splat,
@@ -1998,7 +2019,7 @@ impl<'a> FnBuilder<'a> {
                 let dst = self.reg();
                 self.emit(Inst::Call {
                     dst,
-                    kind: CallKind::Method(method),
+                    kind: kind.clone(),
                     recv: Some(recv_reg),
                     args: a.pos,
                     splat: a.splat,

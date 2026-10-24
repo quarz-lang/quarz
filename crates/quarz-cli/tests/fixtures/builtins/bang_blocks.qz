@@ -1,0 +1,60 @@
+# `x.foo!` with a block stores what `foo` returns, and on a union calls
+# each member's own `foo`.
+ys = [3, 1, 2]
+ys.map! { |v| v * 10 }
+p ys
+ys.select! { |v| v > 10 }
+p ys
+ys.sort_by! { |v| -v }
+p ys
+n = 4
+n.then! { |v| v + 1 }
+p n
+# A `break` gives the value stored, as in `zs = zs.map { break ... }`.
+zs: Array[Int] | String = [1, 2, 3]
+zs.map! { |v| break "stopped" if v > 1; v }
+p zs
+
+class A
+  def to_b -> B = B.new
+end
+class B
+  def to_b -> B = self
+end
+def conv(x: A | B)
+  x.to_b!
+  p x.class
+end
+conv(A.new)
+conv(B.new)
+def str(x: Int | String)
+  x.to_s!
+  p x
+end
+str(2)
+str("s")
+
+# The block is a real closure: it reads and assigns the method's locals,
+# and keeps the `self` of an `instance_exec` around it.
+def closure(k: Int)
+  ys = [1, 2, 3]
+  ys.select! { |v| v + k > 101 }
+  p ys
+  t = 0
+  ys.map! { |v| t += v; v }
+  p t
+end
+closure(100)
+class P
+  var @k: Int
+  def initialize(@k: Int); end
+  def k -> Int = @k
+  def go
+    P.new(5).instance_exec do
+      ys = [1, 2]
+      ys.map! { |v| v + k }
+      p ys
+    end
+  end
+end
+P.new(1).go

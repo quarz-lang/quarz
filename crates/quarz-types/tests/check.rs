@@ -988,3 +988,142 @@ fn namespaces_are_added_to_not_reopened() {
         "`Comparable` is already defined; modules cannot be reopened",
     );
 }
+
+#[test]
+fn variables_assigned_on_some_paths_may_be_nil() {
+    // A variable a branch or a loop body declares is nil where it was not
+    // assigned.
+    err(
+        "n = 3\nif n > 5\n  y = n\nend\nputs y + 1",
+        "undefined method `+` for Nil",
+    );
+    err(
+        "n = 3\nif n > 5\n  p 0\nelse\n  y = n\nend\nputs y + 1",
+        "undefined method `+` for Nil",
+    );
+    err(
+        "n = 0\nwhile n > 5\n  y = n\n  n += 1\nend\nputs y + 1",
+        "undefined method `+` for Nil",
+    );
+    err(
+        "n = 0\nunless n > 5\n  y = n\nend\nputs y.abs",
+        "undefined method `abs` for Nil",
+    );
+    err(
+        "def f -> Int\n  begin\n    y = 1\n  rescue\n    p 0\n  end\n  y\nend",
+        "returns Int but its body has type Int?",
+    );
+    err(
+        "n = 3\nif n > 5\n  y = 1\nelse\n  y.abs\nend",
+        "undefined method `abs` for Nil",
+    );
+    ok("n = 3\nif n > 5\n  y = n\nelse\n  y = 0\nend\nputs y + 1");
+    ok("n = 3\nif n > 5\n  y = n\nend\nputs y.to_s\nputs y + 1 if y");
+    ok("n = 3\nif n > 5\n  y = n\nelse\n  raise \"no\"\nend\nputs y + 1");
+    ok("def f -> Int\n  begin\n    y = 1\n  rescue\n    raise \"no\"\n  end\n  y\nend");
+    ok("def f -> Int\n  begin\n    p 0\n  ensure\n    y = 1\n  end\n  y\nend");
+    // A `begin ... end while` body runs once, unless it leaves early.
+    ok("n = 0\nbegin\n  y = n\n  n += 1\nend while n < 3\nputs y + 1");
+    err(
+        "n = 0\nbegin\n  break if n > 1\n  y = n\n  n += 1\nend while n < 3\nputs y + 1",
+        "undefined method `+` for Nil",
+    );
+    err(
+        "n = 0\nbegin\n  y = 1 if n > 5\n  n += 1\nend while n < 3\np y + 1",
+        "undefined method `+` for Nil",
+    );
+    // A `while true` is left by its breaks only: as they leave it.
+    ok("def f(n: Int) -> Int\n  while true\n    y = n * 2\n    break if y > 0\n    n += 1\n  end\n  y + 1\nend");
+    err(
+        "def f(n: Int) -> Int\n  while true\n    break if n > 0\n    y = n\n  end\n  y + 1\nend",
+        "undefined method `+` for Nil",
+    );
+    // `ensure` runs also when the body raised part way through, and what
+    // it assigns holds after it.
+    err("def f(s: String) -> Int\n  begin\n    v = Integer(s)\n  ensure\n    p v + 1\n  end\n  0\nend", "undefined method `+` for Nil");
+    err(
+        "y: Int? = nil\nbegin\n  y = 1\nensure\n  y = nil\nend\np y + 1",
+        "undefined method `+` for Nil",
+    );
+    ok("y: Int? = nil\nbegin\n  p 0\nensure\n  y = 1\nend\np y + 1");
+    // A pattern test binds its variables only when it matches.
+    err(
+        "def f(v: Int | String)\n  if v in Int => n\n    p 0\n  end\n  p n + 1\nend",
+        "undefined method `+` for Nil",
+    );
+    err(
+        "def f(v: Int | String)\n  ok = v in Int => n\n  p n + 1\nend",
+        "undefined method `+` for Nil",
+    );
+    ok("def f(v: Int | String)\n  if v in Int => n\n    p n + 1\n  end\nend");
+    // A `break` runs the `ensure` it leaves through.
+    err("def f -> Int\n  x: Int? = nil\n  while true\n    begin\n      x = 1\n      break\n    ensure\n      x = nil\n    end\n  end\n  x + 1\nend", "undefined method `+` for Nil");
+    // After `ensure`, as on the normal path.
+    ok("def f(c: Bool) -> Int\n  begin\n    y = 1\n  ensure\n    y = 2 if c\n  end\n  y + 1\nend");
+    ok("def f -> Int\n  x: Int? = nil\n  begin\n    x = 1\n  ensure\n    y = x\n  end\n  y || 0\nend");
+    ok("def f -> Int\n  x = 0\n  while true\n    begin\n      x = 1\n      break\n    ensure\n      p 0\n    end\n  end\n  x + 1\nend");
+    // Pattern bindings and `when` conditions assign too.
+    err("def f(v: Int?) -> Int\n  n: Int? = 1\n  i = 0\n  while i < 2\n    p n + 1\n    v in n\n    i += 1\n  end\n  0\nend", "undefined method `+` for Nil");
+    // Assignments inside hashes, ranges and index targets widen a loop's
+    // variables too.
+    err("def f -> Int\n  x: Int? = 1\n  i = 0\n  while i < 2\n    p x + 1 if i > 0\n    x = 1\n    h = {a: (x = nil)}\n    i += 1\n  end\n  0\nend", "undefined method `+` for Nil");
+}
+
+#[test]
+fn breaks_inside_expressions_and_blocks() {
+    // A `break` in an argument still leaves the loop.
+    no_warnings("data V = (x: Int, y: Int)\ndef f(n: Int) -> Int\n  j = 0\n  o = V.new(0, 0)\n  while true\n    j += 1\n    o = V.new(j, j > n ? (break) : 0)\n  end\n  o.x\nend\np f(2)");
+    no_warnings(
+        "def f(n: Int) -> Int\n  loop do\n    p [n > 1 ? (break) : 0]\n  end\n  n\nend\np f(2)",
+    );
+    // A `break` in a block leaves the block, not the loop around it.
+    warns(
+        "def f -> Int\n  while true\n    [1].each { |x| break }\n  end\n  1\nend",
+        "unreachable code",
+    );
+    warns(
+        "def f -> Int\n  loop do\n    [1].each { |x| break }\n  end\n  1\nend",
+        "unreachable code",
+    );
+    err(
+        "def g(&b: (Int) -> Int) -> Int = b.(1)\ni = 0\nwhile i < 3\n  i += 1\n  g { |x| next \"a\" }\nend",
+        "`next` has type String but the block returns Int",
+    );
+    // A lambda is left by `next`, and `break` does not leave it.
+    err(
+        "i = 0\nwhile i < 3\n  i += 1\n  f = ->(x: Int) -> Int { next \"a\" }\nend",
+        "`next` has type String but the block returns Int",
+    );
+    err(
+        "while true\n  f = ->(x: Int) -> Int { break }\nend",
+        "`break` outside of a loop or block",
+    );
+    // A block's `break` gives the call its value.
+    // `loop` also ends, with nil, at a StopIteration.
+    err(
+        "x = loop do\n  break 5\nend\np x + 1",
+        "undefined method `+` for Nil",
+    );
+    ok("x = loop do\n  break 5\nend\np x + 1 if x");
+    // A `break` in the block of a `foo!` call skips the store.
+    // A `break` in the block of a `foo!` call gives the value stored.
+    err(
+        "xs = [1, 2, 3]\nxs.map! { |v| break \"s\" if v > 1; v }",
+        "would assign Array[Int] | String",
+    );
+    // A real `foo!` assigns nothing: a loop keeps the narrowing.
+    ok("def g(b: Array::Builder[Int]?)\n  if b\n    i = 0\n    while i < 2\n      b.map! { |v| v + 1 }\n      i += 1\n    end\n    p b.to_a\n  end\nend");
+    err(
+        "class A\n  def foo! -> Int = 1\nend\ndef f(x: A?)\n  x.foo!\nend",
+        "undefined method `foo!` for Nil",
+    );
+    // On a union, the variable holds any member's result.
+    err("class A\n  def foo -> Int = 1\nend\nclass B\n  def foo -> String = \"s\"\nend\ndef f(x: A | B | Int | String)\n  case x\n  when A, B\n    x.foo!.then! { |v| v }\n    p x.size\n  end\nend", "undefined method `size` for Int");
+    err("class A\n  def foo -> Int = 1\nend\nclass B\n  def foo! -> String = \"b\"\n  def foo -> Int = 2\nend\ndef f(x: A | B | Int)\n  case x\n  when A, B\n    x.foo!\n  end\nend", "`foo!` is a method of some members of the union and `foo` of others");
+    err("class A\n  def foo -> Int = 1\n  def bar -> Int = 2\nend\nclass C\n  @x: A | Int\n  def initialize\n    @x = A.new\n    @x.foo!\n    p @x.bar\n  end\nend", "undefined method `bar` for Int");
+    err("class A\n  def foo -> Int = 1\nend\nclass B\n  def foo -> String = \"s\"\nend\ndef f(x: A | B | Int | String)\n  case x\n  when A, B\n    x.foo!\n    p x.size\n  end\nend", "undefined method `size` for Int");
+    err(
+        "z = [1, 2].map { |v| break \"s\" if v > 0; v }\np z.first",
+        "undefined method `first`",
+    );
+}
