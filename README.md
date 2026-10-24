@@ -88,7 +88,7 @@ puts counter.value        # => 100
 
 | Decision | Choice | Reason |
 |---|---|---|
-| Where type annotations go | Required on parameters; return types and locals are inferred | Separate compilation and fast type checking. Whole-program inference (Crystal) loses on compile time and error quality |
+| Where type annotations go | Required on parameters; return types and locals are inferred | Shorter compile times and better error messages |
 | Parameter type syntax | `name: Type`; keyword-only parameters after `*` | Reuses Ruby's label syntax without making whitespace significant |
 | `nil` | A separate type, allowed only via `T?` | Turns runtime `NoMethodError`s into compile-time errors |
 | Sum types | `enum` | For message types and exhaustiveness checking in `case/in` |
