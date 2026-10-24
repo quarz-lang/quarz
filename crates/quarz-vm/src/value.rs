@@ -1119,6 +1119,44 @@ impl Object {
         }
     }
 
+    /// Field `i` into `slot`, its old value dropped; false when the object
+    /// has no such field. Built where it goes (see `vm::put`): a value
+    /// returned and copied in is read back before its stores are done.
+    ///
+    /// # Safety
+    /// `slot` holds a live value, is not inside this object, and dropping
+    /// its old value cannot free this object.
+    #[inline(always)]
+    pub unsafe fn field_into(&self, i: usize, slot: *mut Value) -> bool {
+        let Some(&k) = self.layout.kinds.get(i) else {
+            return false;
+        };
+        // SAFETY: as the caller promises, and a short read of field `i`.
+        unsafe {
+            if (*slot).type_tag() as u64 >= NEEDS_DROP_FROM {
+                std::ptr::drop_in_place(slot);
+            }
+            let at = self.base().add(self.layout.offset(i));
+            match k {
+                FieldKind::Value => Value::clone_into(slot, &*(at as *const Value)),
+                FieldKind::Int => match *(at as *const i64) {
+                    INT_MARK => slot.write(aside_get(self.layout, self.base(), i)),
+                    x => slot.write(Value::Int(x)),
+                },
+                FieldKind::Float => match *(at as *const u64) {
+                    FLOAT_MARK => slot.write(aside_get(self.layout, self.base(), i)),
+                    bits => slot.write(Value::Float(f64::from_bits(bits))),
+                },
+                FieldKind::Bool => match *(at as *const u64) {
+                    0 => slot.write(Value::Bool(false)),
+                    1 => slot.write(Value::Bool(true)),
+                    _ => slot.write(aside_get(self.layout, self.base(), i)),
+                },
+            }
+        }
+        true
+    }
+
     /// Field `i` as a value in place, when it is stored as one (to read
     /// without a count).
     #[inline]

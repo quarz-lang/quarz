@@ -122,6 +122,92 @@ pub fn int_binop(op: FastOp, x: i64, y: i64) -> Option<Value> {
     })
 }
 
+/// `int_binop` into `slot` (the old value dropped), false when it gives
+/// nothing: each result is built where it goes, never aside.
+#[inline(always)]
+pub fn int_binop_into(op: FastOp, x: i64, y: i64, slot: &mut Value) -> bool {
+    #[inline(always)]
+    fn int(slot: &mut Value, r: Option<i64>) -> bool {
+        match r {
+            Some(r) => {
+                crate::vm::put(slot, Value::Int(r));
+                true
+            }
+            None => false,
+        }
+    }
+    #[inline(always)]
+    fn bool(slot: &mut Value, b: bool) -> bool {
+        crate::vm::put(slot, Value::Bool(b));
+        true
+    }
+    match op {
+        FastOp::Add => int(slot, x.checked_add(y)),
+        FastOp::Sub => int(slot, x.checked_sub(y)),
+        FastOp::Mul => int(slot, x.checked_mul(y)),
+        FastOp::Lt => bool(slot, x < y),
+        FastOp::Le => bool(slot, x <= y),
+        FastOp::Gt => bool(slot, x > y),
+        FastOp::Ge => bool(slot, x >= y),
+        FastOp::Eq => bool(slot, x == y),
+        FastOp::Ne => bool(slot, x != y),
+        FastOp::Cmp => int(slot, Some(x.cmp(&y) as i64)),
+        FastOp::Div | FastOp::Mod => match int_binop(op, x, y) {
+            Some(v) => {
+                crate::vm::put(slot, v);
+                true
+            }
+            None => false,
+        },
+    }
+}
+
+/// Two numbers of which one at least is a `Float`, as floats (what
+/// `fast_binop` computes with).
+#[inline(always)]
+pub fn float_operands(a: &Value, b: &Value) -> Option<(f64, f64)> {
+    match (a, b) {
+        (Value::Float(x), Value::Float(y)) => Some((*x, *y)),
+        (Value::Int(x), Value::Float(y)) => Some((*x as f64, *y)),
+        (Value::Float(x), Value::Int(y)) => Some((*x, *y as f64)),
+        _ => None,
+    }
+}
+
+/// `fast_binop` on floats, into `slot` (see `int_binop_into`).
+#[inline(always)]
+pub fn float_binop_into(op: FastOp, x: f64, y: f64, slot: &mut Value) {
+    use crate::vm::put;
+    use std::cmp::Ordering;
+    match op {
+        FastOp::Add => put(slot, Value::Float(x + y)),
+        FastOp::Sub => put(slot, Value::Float(x - y)),
+        FastOp::Mul => put(slot, Value::Float(x * y)),
+        FastOp::Div => put(slot, Value::Float(x / y)),
+        FastOp::Mod => {
+            let r = x % y;
+            put(
+                slot,
+                Value::Float(if r != 0.0 && ((r < 0.0) != (y < 0.0)) {
+                    r + y
+                } else {
+                    r
+                }),
+            )
+        }
+        FastOp::Lt => put(slot, Value::Bool(x < y)),
+        FastOp::Le => put(slot, Value::Bool(x <= y)),
+        FastOp::Gt => put(slot, Value::Bool(x > y)),
+        FastOp::Ge => put(slot, Value::Bool(x >= y)),
+        FastOp::Eq => put(slot, Value::Bool(x == y)),
+        FastOp::Ne => put(slot, Value::Bool(x != y)),
+        FastOp::Cmp => put(
+            slot,
+            Value::Int(x.partial_cmp(&y).unwrap_or(Ordering::Equal) as i64),
+        ),
+    }
+}
+
 /// Apply an operator to two numbers directly. `None` means the generic
 /// path must be taken (overflow, division by zero, other types).
 #[inline]
