@@ -11,8 +11,10 @@ true
 "alphabetabetaalpha"
 "alphabetax"
 "alphabeta"
+tick 1
+tick 2
+tick 3
 "123"
-[]
 "pre f1 mid f2 post"
 "alphabetac!"
 ["alpha-alpha-", "beta-beta-"]

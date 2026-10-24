@@ -12,16 +12,16 @@ p N + 1, RATE * 2.0, PI, NAME + "!", ON, TAG, TWICE, GREETING
 def f(i: Int) -> String
   "f#{i}"
 end
-log: Array[String] = []
-def tick(log: Array[String], s: String) -> String
-  log.push(s)
+# Operands are evaluated left to right.
+def tick(s: String) -> String
+  puts "tick #{s}"
   s
 end
 a = "alpha"
 b = "beta"
 p a + b + "gamma", a + b + "gamma" + "delta" + "epsilon", (a + b) + (b + a), a + (b + "x"), a + b
-r = tick(log, "1") + tick(log, "2") + tick(log, "3")
-p r, log
+r = tick("1") + tick("2") + tick("3")
+p r
 p "pre " + f(1) + " mid " + f(2) + " post", "#{a + b + "c"}!", [a, b].map { |s| s + "-" + s + "-" }.to_a
 long = "a very long string that is well past fifteen bytes"
 p long + a + long, (long + a + long).size

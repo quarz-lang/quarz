@@ -33,6 +33,23 @@ fn ok(src: &str) {
     );
 }
 
+fn no_warnings(src: &str) {
+    let prelude = parse(PRELUDE_SOURCE);
+    let base = unit_base(0);
+    let parsed = parse_with_bases(src, base, base);
+    let (_, diags) = check(&prelude.program, &parsed.program);
+    let diags: Vec<String> = diags
+        .into_iter()
+        .filter(|(file, _)| *file == 1)
+        .map(|(_, d)| d.message)
+        .collect();
+    assert!(
+        diags.is_empty(),
+        "unexpected diagnostics for {src:?}:\n{}",
+        diags.join("\n")
+    );
+}
+
 fn warns(src: &str, expected: &str) {
     let prelude = parse(PRELUDE_SOURCE);
     let base = unit_base(0);
@@ -818,6 +835,19 @@ fn reraise_block_params_overrides() {
     ok("begin\n  raise \"x\"\nrescue ArgumentError\n  raise\nend");
     ok("begin\n  raise \"x\"\nrescue => e\n  [1].each { |x| raise }\nend");
     err("raise", "a bare `raise` re-raises only inside `rescue`");
+    warns(
+        "xs = [1]\nxs.push(2)\np xs",
+        "the result of `push` is discarded; Array is immutable",
+    );
+    warns(
+        "xs = [1]\n[2].each { |x| xs.push(x) }",
+        "assign it (`xs = xs.push(...)`, or `xs.push!(...)`)",
+    );
+    warns(
+        "s = \"a\"\ns.upcase\np s",
+        "assign it (`s = s.upcase`, or `s.upcase!`)",
+    );
+    no_warnings("xs = [1]\nxs.push!(2)\nys = xs.push(3)\nxs.each { |x| p x }\np ys");
     err(
         "class B[out T]\n  def put(x: T) -> Nil = nil\nend",
         "`T` appears in a parameter position of `put`, against its variance in B",

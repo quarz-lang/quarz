@@ -1990,7 +1990,72 @@ impl Checker {
             _ => self.check_expr_inner(expr, expected),
         };
         self.record(expr.id, &t);
+        if unused {
+            self.warn_discarded_pure(expr);
+        }
         t
+    }
+
+    /// `xs.push(1)` as a statement: a method of a built-in immutable type
+    /// that takes no block only computes its result, so discarding it is
+    /// almost certainly a mistake (Ruby's `push` changed `xs`).
+    fn warn_discarded_pure(&mut self, expr: &Expr) {
+        let ExprKind::Call(call) = &expr.kind else {
+            return;
+        };
+        let Some(recv) = &call.recv else {
+            return;
+        };
+        if call.block.is_some() || self.out.bang_assign.contains(&expr.id) {
+            return;
+        }
+        let Some(CallTarget::Method { method }) = self.out.calls.get(&expr.id) else {
+            return;
+        };
+        let m = self.world.method(*method);
+        let b = &self.world.builtin;
+        if m.file != 0
+            || m.singleton
+            || m.block.is_some()
+            || !(m.owner == b.enumerable
+                || m.owner == b.comparable
+                || self.immutable_builtin(m.owner))
+        {
+            return;
+        }
+        let Some(rt) = self.out.node_types.get(&recv.id) else {
+            return;
+        };
+        let rt = self.infer.resolve(rt).without_nil(b.nil);
+        let Type::Class(cid, _) = rt else {
+            return;
+        };
+        if !self.immutable_builtin(cid) {
+            return;
+        }
+        let class = self.world.class(cid).name.clone();
+        let name = m.name.clone();
+        let hint = match &recv.kind {
+            ExprKind::Local(v) | ExprKind::IVar(v) => {
+                let v = if matches!(recv.kind, ExprKind::IVar(_)) {
+                    format!("@{v}")
+                } else {
+                    v.clone()
+                };
+                let args = if call.args.is_empty() { "" } else { "(...)" };
+                format!(": assign it (`{v} = {v}.{name}{args}`, or `{v}.{name}!{args}`)")
+            }
+            _ => String::new(),
+        };
+        self.warning(
+            format!("the result of `{name}` is discarded; {class} is immutable, so the call changes nothing{hint}"),
+            expr.span,
+        );
+    }
+
+    fn immutable_builtin(&self, cid: ClassId) -> bool {
+        let b = &self.world.builtin;
+        [b.array, b.hash, b.set, b.string, b.bytes].contains(&cid)
     }
 
     /// A `for`: when its value is not used, as nested `each` calls (it then

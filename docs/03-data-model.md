@@ -33,7 +33,7 @@ t = s + "d"
 
 Of Ruby's destructive methods (`push`/`<<`/`[]=`/`sort!`/`map!`/`concat`/`delete`/`clear`/`gsub!`…), the immutable types only have the "return a new value" versions. `<<`, `[]=` and `!`-suffixed methods are not defined on immutable types. If you write `arr << x`, the compiler reports an error suggesting that you use `Array::Builder` or write `arr = arr.push(x)` (likewise `<<` on `Set`, `String` and `Bytes`, and `[]=` on `Array` and `Hash`).
 
-Discarding the result of a pure method produces a warning (planned).
+Discarding the result of a pure method produces a warning: today the methods of the built-in immutable types (`Array`, `Hash`, `Set`, `String`, `Bytes`, and `Enumerable`/`Comparable` on them) that take no block, so `xs.push(1)` or `xs.sort` as a statement is reported. Marking other methods or types is planned.
 
 ```ruby
 arr.push(4)          # warning: result unused. arr does not change
