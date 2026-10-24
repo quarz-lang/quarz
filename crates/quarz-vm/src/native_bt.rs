@@ -2,8 +2,12 @@
 //! backend emits push no activation, so a backtrace walks the native
 //! stack with the C unwinder (every compiled function carries unwind
 //! information there) and maps each return address back to a function
-//! and a line through the executable's own symbol table and DWARF line
-//! table (the backend encodes the QIR line as the DWARF line).
+//! and a line. The backend encodes the QIR line as the DWARF line; the
+//! build then keeps only what is needed here, the typed entries' ranges
+//! and the line rows, in a section of its own (`SECTION`, written by
+//! `table`) and strips the symbols and the debug information. An
+//! executable left unstripped is read through its symbol table and DWARF
+//! line table instead.
 
 use std::borrow::Cow;
 use std::ffi::c_void;
@@ -33,16 +37,29 @@ struct Info {
 
 static INFO: OnceLock<Option<Info>> = OnceLock::new();
 
+/// The section a stripped executable keeps its table in.
+pub const SECTION: &str = ".quarz_bt";
+
 fn load() -> Option<Info> {
     let data: &'static [u8] = Box::leak(std::fs::read("/proc/self/exe").ok()?.into_boxed_slice());
     let file = object::File::parse(data).ok()?;
-    // The load base: where `qz_main` is now, against where the file
-    // says it is.
-    let link_main = file
-        .symbols()
-        .find(|s| s.name() == Ok("qz_main"))
-        .map(|s| s.address() as usize)?;
-    let base = (crate::ffi::qz_main as *const () as usize).wrapping_sub(link_main);
+    match file.section_by_name(SECTION) {
+        Some(s) => decode(s.data().ok()?),
+        None => {
+            // The load base: where `qz_main` is now, against where the
+            // file says it is.
+            let link_main = file
+                .symbols()
+                .find(|s| s.name() == Ok("qz_main"))
+                .map(|s| s.address() as usize)?;
+            let base = (crate::ffi::qz_main as *const () as usize).wrapping_sub(link_main);
+            from_dwarf(&file, base)
+        }
+    }
+}
+
+/// The typed entries and the line rows of `file`, at `base`.
+fn from_dwarf<'a>(file: &object::File<'a>, base: usize) -> Option<Info> {
     let mut typed: Vec<(usize, usize, FuncId)> = file
         .symbols()
         .filter_map(|s| {
@@ -57,18 +74,17 @@ fn load() -> Option<Info> {
         })
         .collect();
     typed.sort();
-    let section =
-        |id: gimli::SectionId| -> Result<EndianSlice<'static, RunTimeEndian>, gimli::Error> {
-            let bytes: &'static [u8] = match file.section_by_name(id.name()) {
-                Some(s) => match s.uncompressed_data() {
-                    Ok(Cow::Borrowed(b)) => b,
-                    Ok(Cow::Owned(v)) => Box::leak(v.into_boxed_slice()),
-                    Err(_) => &[],
-                },
-                None => &[],
-            };
-            Ok(EndianSlice::new(bytes, RunTimeEndian::Little))
+    let section = |id: gimli::SectionId| -> Result<EndianSlice<'a, RunTimeEndian>, gimli::Error> {
+        let bytes: &'a [u8] = match file.section_by_name(id.name()) {
+            Some(s) => match s.uncompressed_data() {
+                Ok(Cow::Borrowed(b)) => b,
+                Ok(Cow::Owned(v)) => Box::leak(v.into_boxed_slice()),
+                Err(_) => &[],
+            },
+            None => &[],
         };
+        Ok(EndianSlice::new(bytes, RunTimeEndian::Little))
+    };
     let dwarf = gimli::Dwarf::load(section).ok()?;
     let mut lines: Vec<(usize, u32)> = Vec::new();
     let mut units = dwarf.units();
@@ -89,6 +105,77 @@ fn load() -> Option<Info> {
         }
     }
     lines.sort();
+    Some(Info { typed, lines })
+}
+
+/// The table `SECTION` holds for the linked executable `exe` (for the
+/// build, before it strips it): little-endian words, the link address of
+/// `qz_main`, the count of typed entries and each one's start, end and
+/// function, then the count of line rows and each one's address and
+/// line. Only the rows inside typed entries are kept.
+pub fn table(exe: &[u8]) -> Result<Vec<u8>, String> {
+    let file = object::File::parse(exe).map_err(|e| e.to_string())?;
+    let link_main = file
+        .symbols()
+        .find(|s| s.name() == Ok("qz_main"))
+        .map(|s| s.address())
+        .ok_or("no qz_main in the executable")?;
+    let info = from_dwarf(&file, 0).ok_or("no line table in the executable")?;
+    let inside = |a: usize| {
+        let k = info.typed.partition_point(|&(start, _, _)| start <= a);
+        k.checked_sub(1)
+            .and_then(|i| info.typed.get(i))
+            .is_some_and(|&(_, end, _)| a < end)
+    };
+    let lines: Vec<(usize, u32)> = info
+        .lines
+        .iter()
+        .copied()
+        .filter(|&(a, _)| inside(a))
+        .collect();
+    let mut out: Vec<u8> = Vec::new();
+    let mut word = |w: u64| out.extend_from_slice(&w.to_le_bytes());
+    word(link_main);
+    word(info.typed.len() as u64);
+    for &(start, end, fid) in &info.typed {
+        word(start as u64);
+        word(end as u64);
+        word(u64::from(fid));
+    }
+    word(lines.len() as u64);
+    for &(addr, line) in &lines {
+        word(addr as u64);
+        word(u64::from(line));
+    }
+    Ok(out)
+}
+
+/// The table of `SECTION` (see `table`), at the running executable's
+/// load base.
+fn decode(bytes: &[u8]) -> Option<Info> {
+    let mut words = bytes
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .map(|c| u64::from_le_bytes(*c) as usize);
+    let link_main = words.next()?;
+    let base = (crate::ffi::qz_main as *const () as usize).wrapping_sub(link_main);
+    let n = words.next()?;
+    let mut typed = Vec::with_capacity(n);
+    for _ in 0..n {
+        let (start, end, fid) = (words.next()?, words.next()?, words.next()?);
+        typed.push((
+            base.wrapping_add(start),
+            base.wrapping_add(end),
+            fid as FuncId,
+        ));
+    }
+    let n = words.next()?;
+    let mut lines = Vec::with_capacity(n);
+    for _ in 0..n {
+        let (addr, line) = (words.next()?, words.next()?);
+        lines.push((base.wrapping_add(addr), line as u32));
+    }
     Some(Info { typed, lines })
 }
 

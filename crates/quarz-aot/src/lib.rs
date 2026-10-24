@@ -60,7 +60,39 @@ fn link(object: &Path, output: &Path) -> Result<(), String> {
     if !status.success() {
         return Err(format!("linking failed ({status})"));
     }
+    if std::env::var_os("QUARZ_NO_STRIP").is_none() {
+        strip(output)?;
+    }
     Ok(())
+}
+
+/// Strip the executable `output` of its symbols and debug information
+/// (most of its size: the standard library's), keeping what backtraces
+/// need of them in a section of its own (`quarz_vm::native_bt::table`).
+/// Without `objcopy` the executable stays as it is, and its backtraces
+/// read the symbols and the DWARF line table.
+fn strip(output: &Path) -> Result<(), String> {
+    let exe = std::fs::read(output).map_err(|e| format!("{}: {e}", output.display()))?;
+    let table = quarz_vm::native_bt::table(&exe)?;
+    let table_path = output.with_extension("quarz_bt");
+    std::fs::write(&table_path, &table).map_err(|e| format!("{}: {e}", table_path.display()))?;
+    let status = Command::new("objcopy")
+        .arg("--strip-all")
+        .arg("--add-section")
+        .arg(format!(
+            "{}={}",
+            quarz_vm::native_bt::SECTION,
+            table_path.display()
+        ))
+        .arg(output)
+        .status();
+    let _ = std::fs::remove_file(&table_path);
+    match status {
+        Ok(s) if s.success() => Ok(()),
+        Ok(s) => Err(format!("stripping failed ({s})")),
+        // No objcopy: left unstripped.
+        Err(_) => Ok(()),
+    }
 }
 
 /// Compile a module and link it into the executable `output`.
