@@ -699,27 +699,6 @@ fn control_flow() {
     ok("begin\n  raise ArgumentError, \"x\"\nrescue ArgumentError => e\n  puts e.message\nensure\n  puts \"done\"\nend");
     err("raise 1", "cannot raise Int");
     err("raise String", "`String` is not an exception class");
-    ok("begin\n  raise \"x\"\nrescue ArgumentError\n  raise\nend");
-    ok("begin\n  raise \"x\"\nrescue => e\n  [1].each { |x| raise }\nend");
-    err("raise", "a bare `raise` re-raises only inside `rescue`");
-    ok("def f(&b: ((Int) -> Nil)?) -> Nil\n  b&.call(1)\nend\nf\nf { |x| p x }");
-    err(
-        "def f(&b: ((Int) -> Nil)?) -> Nil\n  yield 1\nend",
-        "`yield` cannot run an optional block",
-    );
-    err("def f(&b: ((Int) -> Nil)?) -> Nil\n  b.call(1)\nend", "Nil");
-    err(
-        "def f(&b: (Int) -> Nil) -> Nil\n  b.call(1)\nend\nf",
-        "requires a block",
-    );
-    err(
-        "[1].each { |x: String| puts x }",
-        "block parameter `x` is annotated String but receives Int",
-    );
-    err(
-        "def f\n  raise\nend",
-        "a bare `raise` re-raises only inside `rescue`",
-    );
     ok("i = 0\nwhile i < 3\n  i += 1\n  next if i == 1\n  break if i == 2\nend");
     err("break", "`break` outside of a loop or block");
     ok("loop do\n  break\nend");
@@ -833,5 +812,39 @@ fn lexical_lifetimes_by_type() {
              enum U = Hold(o: Object) | Both(l: U, r: U)\nu = U::Hold.new(Object.new)"
         ),
         vec![2]
+    );
+}
+
+#[test]
+fn reraise_block_params_overrides() {
+    ok("begin\n  raise \"x\"\nrescue ArgumentError\n  raise\nend");
+    ok("begin\n  raise \"x\"\nrescue => e\n  [1].each { |x| raise }\nend");
+    err("raise", "a bare `raise` re-raises only inside `rescue`");
+    ok("module M\n  def m -> Int = 1\nend\nclass A\n  include M\n  def f -> Int = 1\n  def self.k -> Int = 1\nend\nclass B < A\n  override def f -> Int = 2\n  override def m -> Int = 2\n  override def to_s -> String = \"B\"\n  override def self.k -> Int = 2\nend");
+    err(
+        "class A\nend\nclass B < A\n  override def g -> Int = 1\nend",
+        "`g` is marked `override` but overrides no method of an ancestor",
+    );
+    err(
+        "class A\n  def f -> Int = 1\nend\nclass B < A\n  override def self.f -> Int = 1\nend",
+        "`self.f` is marked `override` but overrides no method of an ancestor",
+    );
+    ok("def f(&b: ((Int) -> Nil)?) -> Nil\n  b&.call(1)\nend\nf\nf { |x| p x }");
+    err(
+        "def f(&b: ((Int) -> Nil)?) -> Nil\n  yield 1\nend",
+        "`yield` cannot run an optional block",
+    );
+    err("def f(&b: ((Int) -> Nil)?) -> Nil\n  b.call(1)\nend", "Nil");
+    err(
+        "def f(&b: (Int) -> Nil) -> Nil\n  b.call(1)\nend\nf",
+        "requires a block",
+    );
+    err(
+        "[1].each { |x: String| puts x }",
+        "block parameter `x` is annotated String but receives Int",
+    );
+    err(
+        "def f\n  raise\nend",
+        "a bare `raise` re-raises only inside `rescue`",
     );
 }

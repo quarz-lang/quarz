@@ -123,7 +123,7 @@ end
 ```
 
 - Single inheritance. An `abstract class` cannot be instantiated and an `abstract def` has no body.
-- `override` is optional, but a method marked with it that does not exist in the parent is an error, and overriding a parent method without it is a warning. (Currently `override` is accepted but not checked: both diagnostics are planned.)
+- `override` is optional, but a method marked with it that does not exist in the parent is an error, and overriding a parent method without it is a warning. (The error is reported, for instance methods against the included modules and superclasses, for class methods against the superclasses' class methods and the modules they `extend`; the warning is planned.)
 - Since the class hierarchy is fixed at compile time for the whole program, the compiler automatically turns calls to methods that are never overridden into static calls (no `final` needed).
 - `super` works as in Ruby. A bare `super` passes the same arguments.
 
