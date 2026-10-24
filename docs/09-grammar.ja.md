@@ -57,7 +57,7 @@ positional_param = [ "@" ] IDENT [ ":" type ] [ "=" expression ] ;
     (* "*" 単独の後ろの positional_param はキーワード専用引数 *)
 
 type_params    = "[" type_param { "," type_param } "]" ;
-type_param     = [ "out" | "in" ] CONST [ ":" type_bound ] ;
+type_param     = [ "out" | "in" ] CONST [ ">:" type ] [ ":" type_bound ] ;   (* ">:": 下限。メソッドだけ *)
 type_bound     = type { "&" type } ;
 
 (* ---- 型 ---- *)

@@ -490,6 +490,8 @@ pub struct TypeParam {
     pub name: String,
     pub variance: Variance,
     pub bounds: Vec<TypeExpr>,
+    /// `U >: T`: a lower bound (method type parameters only).
+    pub lower: Option<TypeExpr>,
     pub span: Span,
 }
 

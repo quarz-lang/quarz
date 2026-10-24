@@ -304,6 +304,14 @@ fn declarations() {
     );
     assert_eq!(sexp("module M[out T]\nend"), "(module M (tparams out T))");
     assert_eq!(
+        sexp("def push[U >: T](value: U) -> Array[U]\nend"),
+        "(def push (tparams U>:T) (params value:U) -> Array[U])"
+    );
+    assert_eq!(
+        sexp("xs.each { |x: Int| x }"),
+        "(call (call _ xs) each (block (params x:Int) x))"
+    );
+    assert_eq!(
         sexp("data P = (x: Int, y: Int = 0)"),
         "(data P (fields x:Int y:Int=0))"
     );

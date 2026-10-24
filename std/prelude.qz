@@ -831,7 +831,7 @@ module Enumerable[out T]
     Set.build { |b| each { |x| b << x } }
   end
 
-  def tally -> Hash[T, Int]
+  def tally[U >: T] -> Hash[U, Int]
     Hash.build do |counts|
       each { |x| counts[x] = counts.fetch(x, 0) + 1 }
     end
@@ -940,8 +940,8 @@ module Enumerable[out T]
   def member?(value: Object) -> Bool = include?(value)
   def entries -> Array[T] = to_a
 
-  def reduce(&: (T, T) -> T) -> T?
-    acc: T? = nil
+  def reduce[U >: T](&: (U, T) -> U) -> U?
+    acc: U? = nil
     each do |x|
       current = acc
       acc = current.nil? ? x : yield(current, x)
@@ -949,7 +949,7 @@ module Enumerable[out T]
     acc
   end
 
-  def inject(&: (T, T) -> T) -> T? = reduce { |a, x| yield(a, x) }
+  def inject[U >: T](&: (U, T) -> U) -> U? = reduce[U]() { |a, x| yield(a, x) }
 
   def count(value: Object) -> Int = count { |x| x == value }
 
@@ -1122,7 +1122,7 @@ class Array[out T]
   native def [](range: Range[Int]) -> Array[T]
   native def []?(index: Int) -> T?
   native def at(index: Int) -> T?
-  native def fetch(index: Int, default: T) -> T
+  native def fetch[U >: T](index: Int, default: U) -> U
   native def first -> T?
   native def first? -> T?
   native def first(n: Int) -> Array[T]
@@ -1132,24 +1132,24 @@ class Array[out T]
   native def size -> Int
   native def length -> Int
   native def empty? -> Bool
-  native def push(value: T) -> Array[T]
+  native def push[U >: T](value: U) -> Array[U]
   native def pop -> Array[T]
   native def shift -> Array[T]
-  native def unshift(value: T) -> Array[T]
-  native def insert(index: Int, value: T) -> Array[T]
-  native def set(index: Int, value: T) -> Array[T]
-  native def delete(value: T) -> Array[T]
+  native def unshift[U >: T](value: U) -> Array[U]
+  native def insert[U >: T](index: Int, value: U) -> Array[U]
+  native def set[U >: T](index: Int, value: U) -> Array[U]
+  native def delete(value: Object) -> Array[T]
   native def delete_at(index: Int) -> Array[T]
-  native def concat(other: Array[T]) -> Array[T]
-  native def +(other: Array[T]) -> Array[T]
-  native def -(other: Array[T]) -> Array[T]
+  native def concat[U >: T](other: Array[U]) -> Array[U]
+  native def +[U >: T](other: Array[U]) -> Array[U]
+  native def -(other: Array[Object]) -> Array[T]
   native def *(count: Int) -> Array[T]
-  native def &(other: Array[T]) -> Array[T]
-  native def |(other: Array[T]) -> Array[T]
+  native def &(other: Array[Object]) -> Array[T]
+  native def |[U >: T](other: Array[U]) -> Array[U]
   native def reverse -> Array[T]
   native def rotate(count: Int = 1) -> Array[T]
-  native def index(value: T) -> Int?
-  native def rindex(value: T) -> Int?
+  native def index(value: Object) -> Int?
+  native def rindex(value: Object) -> Int?
   native def include?(value: Object) -> Bool
   native def join(separator: String = "") -> String
   native def sample -> T?
@@ -1164,16 +1164,16 @@ class Array[out T]
   native def map[U](&: (T) -> U) -> Array[U]
   native def select(&: (T) -> Object) -> Array[T]
   native def each -> Enumerator[T]
-  native def fetch(index: Int, &: (Int) -> T) -> T
+  native def fetch[U >: T](index: Int, &: (Int) -> U) -> U
   native def slice(start: Int, length: Int) -> Array[T]
   native def take(n: Int) -> Array[T]
   native def drop(n: Int) -> Array[T]
   native def values_at(*indices: Int) -> Array[T?]
   native def index(&: (T) -> Object) -> Int?
   native def rindex(&: (T) -> Object) -> Int?
-  native def push(*values: T) -> Array[T]
-  native def fill(value: T) -> Array[T]
-  native def fill(value: T, start: Int, length: Int) -> Array[T]
+  native def push[U >: T](*values: U) -> Array[U]
+  native def fill[U >: T](value: U) -> Array[U]
+  native def fill[U >: T](value: U, start: Int, length: Int) -> Array[U]
   native def flatten(depth: Int) -> Array[Object]
   native def sample(n: Int) -> Array[T]
   native def *(separator: String) -> String
@@ -1186,10 +1186,10 @@ class Array[out T]
   native def bsearch(&: (T) -> Bool) -> T?
   def delete_if(&: (T) -> Object) -> Array[T] = reject { |x| yield(x) }
   def keep_if(&: (T) -> Object) -> Array[T] = select { |x| yield(x) }
-  def union(other: Array[T]) -> Array[T] = self | other
-  def intersection(other: Array[T]) -> Array[T] = self & other
-  def difference(other: Array[T]) -> Array[T] = self - other
-  def intersect?(other: Array[T]) -> Bool = !(self & other).empty?
+  def union[U >: T](other: Array[U]) -> Array[U] = self | other
+  def intersection(other: Array[Object]) -> Array[T] = self & other
+  def difference(other: Array[Object]) -> Array[T] = self - other
+  def intersect?(other: Array[Object]) -> Bool = !(self & other).empty?
 
   class Builder[T]
     include Unshareable
@@ -1269,16 +1269,16 @@ class Hash[K, out V]
   native def each_value(&: (V) -> Nil) -> Nil
   native def [](key: K) -> V
   native def []?(key: K) -> V?
-  native def fetch(key: K, default: V) -> V
-  native def fetch(key: K, &: (K) -> V) -> V
+  native def fetch[W >: V](key: K, default: W) -> W
+  native def fetch[W >: V](key: K, &: (K) -> W) -> W
   native def dig(key: K) -> V?
   native def key?(key: K) -> Bool
   native def has_key?(key: K) -> Bool
   native def include?(key: Object) -> Bool
   native def member?(key: Object) -> Bool
-  native def value?(value: V) -> Bool
-  native def has_value?(value: V) -> Bool
-  native def key(value: V) -> K?
+  native def value?(value: Object) -> Bool
+  native def has_value?(value: Object) -> Bool
+  native def key(value: Object) -> K?
   native def values_at(*keys: K) -> Array[V?]
   native def fetch_values(*keys: K) -> Array[V]
   native def compact -> Hash[K, V]
@@ -1292,16 +1292,16 @@ class Hash[K, out V]
   native def size -> Int
   native def length -> Int
   native def empty? -> Bool
-  native def put(key: K, value: V) -> Hash[K, V]
+  native def put[W >: V](key: K, value: W) -> Hash[K, W]
   native def delete(key: K) -> Hash[K, V]
-  native def merge(other: Hash[K, V]) -> Hash[K, V]
-  native def merge(other: Hash[K, V], &: (K, V, V) -> V) -> Hash[K, V]
-  native def update(key: K, &: (V?) -> V) -> Hash[K, V]
+  native def merge[W >: V](other: Hash[K, W]) -> Hash[K, W]
+  native def merge[W >: V](other: Hash[K, W], &: (K, W, W) -> W) -> Hash[K, W]
+  native def update[W >: V](key: K, &: (V?) -> W) -> Hash[K, W]
   native def select(&: (K, V) -> Object) -> Hash[K, V]
   native def reject(&: (K, V) -> Object) -> Hash[K, V]
   native def transform_values[U](&: (V) -> U) -> Hash[K, U]
   native def transform_keys[U](&: (K) -> U) -> Hash[U, V]
-  native def invert -> Hash[V, K]
+  native def invert[W >: V] -> Hash[W, K]
   native def to_a -> Array[[K, V]]
   native def to_h -> Hash[K, V]
   native def to_s -> String
@@ -1362,25 +1362,25 @@ class Set[out T]
   native def self.build(&: (Set::Builder[T]) -> Nil) -> Set[T]
 
   native def each(&: (T) -> Nil) -> Nil
-  native def add(value: T) -> Set[T]
-  native def delete(value: T) -> Set[T]
+  native def add[U >: T](value: U) -> Set[U]
+  native def delete(value: Object) -> Set[T]
   native def include?(value: Object) -> Bool
   native def size -> Int
   native def length -> Int
   native def empty? -> Bool
-  native def |(other: Set[T]) -> Set[T]
-  native def &(other: Set[T]) -> Set[T]
-  native def -(other: Set[T]) -> Set[T]
-  native def ^(other: Set[T]) -> Set[T]
-  native def subset?(other: Set[T]) -> Bool
-  native def superset?(other: Set[T]) -> Bool
-  native def proper_subset?(other: Set[T]) -> Bool
-  native def proper_superset?(other: Set[T]) -> Bool
-  native def disjoint?(other: Set[T]) -> Bool
-  native def intersect?(other: Set[T]) -> Bool
-  native def merge(items: Array[T]) -> Set[T]
+  native def |[U >: T](other: Set[U]) -> Set[U]
+  native def &(other: Set[Object]) -> Set[T]
+  native def -(other: Set[Object]) -> Set[T]
+  native def ^[U >: T](other: Set[U]) -> Set[U]
+  native def subset?(other: Set[Object]) -> Bool
+  native def superset?(other: Set[Object]) -> Bool
+  native def proper_subset?(other: Set[Object]) -> Bool
+  native def proper_superset?(other: Set[Object]) -> Bool
+  native def disjoint?(other: Set[Object]) -> Bool
+  native def intersect?(other: Set[Object]) -> Bool
+  native def merge[U >: T](items: Array[U]) -> Set[U]
   # The set with the value added, or `nil` when it was already a member.
-  native def add?(value: T) -> Set[T]?
+  native def add?[U >: T](value: U) -> Set[U]?
   native def select(&: (T) -> Object) -> Set[T]
   native def reject(&: (T) -> Object) -> Set[T]
   native def to_a -> Array[T]
@@ -1389,14 +1389,14 @@ class Set[out T]
   native def ==(other: Object) -> Bool
   native def hash -> Int
   def self.new(items: Array[T]) -> Set[T] = Set[T].new.merge(items)
-  def +(other: Set[T]) -> Set[T] = self | other
-  def union(other: Set[T]) -> Set[T] = self | other
-  def intersection(other: Set[T]) -> Set[T] = self & other
-  def difference(other: Set[T]) -> Set[T] = self - other
-  def <=(other: Set[T]) -> Bool = subset?(other)
-  def >=(other: Set[T]) -> Bool = superset?(other)
-  def <(other: Set[T]) -> Bool = proper_subset?(other)
-  def >(other: Set[T]) -> Bool = proper_superset?(other)
+  def +[U >: T](other: Set[U]) -> Set[U] = self | other
+  def union[U >: T](other: Set[U]) -> Set[U] = self | other
+  def intersection(other: Set[Object]) -> Set[T] = self & other
+  def difference(other: Set[Object]) -> Set[T] = self - other
+  def <=(other: Set[Object]) -> Bool = subset?(other)
+  def >=(other: Set[Object]) -> Bool = superset?(other)
+  def <(other: Set[Object]) -> Bool = proper_subset?(other)
+  def >(other: Set[Object]) -> Bool = proper_superset?(other)
   def member?(value: Object) -> Bool = include?(value)
   def filter(&: (T) -> Object) -> Set[T] = select { |x| yield(x) }
   def delete_if(&: (T) -> Object) -> Set[T] = reject { |x| yield(x) }

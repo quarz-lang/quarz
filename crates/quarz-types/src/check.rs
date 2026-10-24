@@ -4836,6 +4836,24 @@ impl Checker {
                 method_vars.push((tp.clone(), t.clone()));
                 subst.insert(tp.id, t);
             }
+            // `U >: T`: without a type argument, `U` is `T` joined with
+            // what the arguments pass for it (`[1].push("a")` is an
+            // `Array[Int | String]`), not just the first of these.
+            for tp in &m.type_params {
+                let Some(lower) = &tp.lower else {
+                    continue;
+                };
+                if call.type_args.is_empty() {
+                    let lower = self.infer.resolve(&lower.subst(&subst));
+                    let t = self.widen_from_args(call, &m, tp.id, lower, &pre);
+                    for (vtp, vt) in method_vars.iter_mut() {
+                        if vtp.id == tp.id {
+                            *vt = t.clone();
+                        }
+                    }
+                    subst.insert(tp.id, t);
+                }
+            }
             match self.try_candidate(expr, call, &m, &subst, &pre, expected, single) {
                 Ok(ret) => {
                     // With several candidates, an error inside the block
@@ -4858,6 +4876,21 @@ impl Checker {
                     let mut ok = true;
                     for (tp, t) in &method_vars {
                         let rt = self.infer.resolve(t);
+                        if let Some(lower) = &tp.lower {
+                            let lower = self.infer.resolve(&lower.subst(&subst));
+                            if !self.coerce(&lower, &rt) {
+                                ok = false;
+                                self.error(
+                                    format!(
+                                        "type argument {} for `{}` is not a supertype of {}",
+                                        self.name(&rt),
+                                        tp.name,
+                                        self.name(&lower)
+                                    ),
+                                    expr.span,
+                                );
+                            }
+                        }
                         for b in &tp.bounds {
                             let b = b.subst(&subst);
                             if !self.coerce(&rt, &b) {
@@ -5032,6 +5065,111 @@ impl Checker {
     }
 
     /// Expressions whose type depends on the expected type.
+    /// The type a lower-bounded method type parameter `param` takes: its
+    /// bound joined with the types the arguments give it, as far as
+    /// they are known before the call is checked (an argument typed only
+    /// against its parameter, such as `[]`, is checked against the
+    /// result instead).
+    fn widen_from_args(
+        &mut self,
+        call: &Call,
+        m: &MethodInfo,
+        param: TypeParamId,
+        lower: Type,
+        pre: &HashMap<NodeId, Type>,
+    ) -> Type {
+        if matches!(lower, Type::Var(_)) {
+            return lower;
+        }
+        let positional: Vec<&ParamInfo> = m
+            .params
+            .iter()
+            .filter(|p| p.kind == ParamKind::Positional)
+            .collect();
+        let rest = m.params.iter().find(|p| p.kind == ParamKind::Rest);
+        let mut next = 0;
+        let mut result = lower.clone();
+        for a in &call.args {
+            let (param_ty, e) = match a {
+                Arg::Positional(e) => {
+                    let ty = if let Some(p) = positional.get(next) {
+                        next += 1;
+                        p.ty.clone()
+                    } else if let Some(r) = rest {
+                        match &r.ty {
+                            Type::Class(_, args) if args.len() == 1 => args[0].clone(),
+                            t => t.clone(),
+                        }
+                    } else {
+                        continue;
+                    };
+                    (ty, e)
+                }
+                Arg::Keyword { name, value, .. } => {
+                    match m.params.iter().find(|p| &p.name == name) {
+                        Some(p) => (p.ty.clone(), value),
+                        None => continue,
+                    }
+                }
+                _ => continue,
+            };
+            let arg_ty = match (&e.kind, pre.get(&e.id)) {
+                (_, Some(t)) => self.infer.resolve(t),
+                (ExprKind::Lambda(_), None) => continue,
+                // An integer literal fits a numeric bound as it is.
+                (ExprKind::Int(_), None) => {
+                    let int = self.world.int();
+                    let saved = self.infer.save();
+                    let fits = self.coerce(&int, &result)
+                        || matches!(&result, Type::Class(c, _) if *c == self.world.builtin.integer || *c == self.world.builtin.float);
+                    self.infer.restore(saved);
+                    if fits {
+                        continue;
+                    }
+                    int
+                }
+                // A literal typed against its parameter: typed here on
+                // its own, as overloads try arguments.
+                _ => {
+                    let saved = self.infer.save();
+                    let saved_diags = self.diagnostics.len();
+                    let t = self.check_expr(e, None);
+                    let t = self.infer.resolve(&t);
+                    self.infer.restore(saved);
+                    self.diagnostics.truncate(saved_diags);
+                    if t.has_vars() {
+                        continue;
+                    }
+                    t
+                }
+            };
+            for t in Self::at_param(&param_ty, &arg_ty, param) {
+                let saved = self.infer.save();
+                let fits = self.coerce(&t, &result);
+                self.infer.restore(saved);
+                if !fits {
+                    result = self.join(&result, &t);
+                }
+            }
+        }
+        result
+    }
+
+    /// The parts of `arg` that stand where `param_ty` has the type
+    /// parameter `param` (`Array[U]` against `Array[String]` gives
+    /// `String`).
+    fn at_param(param_ty: &Type, arg: &Type, param: TypeParamId) -> Vec<Type> {
+        match (param_ty, arg) {
+            (Type::Param(p), _) if *p == param => vec![arg.clone()],
+            (Type::Class(c, ps), Type::Class(d, args)) if c == d && ps.len() == args.len() => ps
+                .iter()
+                .zip(args)
+                .flat_map(|(p, a)| Self::at_param(p, a, param))
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
     fn needs_expectation(e: &Expr) -> bool {
         matches!(
             e.kind,

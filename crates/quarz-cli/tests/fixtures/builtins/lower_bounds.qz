@@ -1,0 +1,42 @@
+# Methods of covariant collections take `[U >: T]`: adding a value of another
+# type gives a collection of the joined type.
+xs = [1, 2]
+ys = xs.push("a")
+p ys
+p xs + [nil]
+p xs.fetch(5, "none")
+p xs.set(0, :zero)
+p xs - ["x", 2]
+p xs.reduce { |a, x| a + x }
+h = {"a" => 1}
+p h.put("b", "two")
+p h.fetch("z", nil)
+p h.merge({"c" => 3.5})
+p h.invert
+p Set[1, 2].add("x")
+p Set[1, 2] | Set["y"]
+p Set[1, 2].subset?(Set["z"])
+p [1, 1, 2].tally
+p ["a", "bb"].inject(0) { |n, s| n + s.size }
+
+# A covariant class of its own.
+class Box[out T]
+  @items: Array[T]
+
+  def initialize(@items: Array[T])
+  end
+
+  def items -> Array[T] = @items
+
+  def add[U >: T](x: U) -> Box[U]
+    Box[U].new(@items.push(x))
+  end
+end
+
+b = Box.new([1, 2])
+p b.add(3).items
+c = b.add("a")
+p c.items
+d: Box[Int?] = b.add(nil)
+p d.items
+p b.add[Object](:s).items

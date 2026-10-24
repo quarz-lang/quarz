@@ -75,7 +75,8 @@ end
 
 - Classes, modules, `data`, `enum` and methods can have type parameters.
 - Constraints are written as `T: Comparable[T]`. Multiple constraints: `T: Comparable[T] & Describable` (with any modules).
-- Variance is declared with `out` (covariant) / `in` (contravariant); unmarked parameters are invariant. The compiler checks, for example, that a covariant type parameter does not appear in a parameter position of a method (planned: today variance is used for subtyping, and the positions are not checked).
+- Variance is declared with `out` (covariant) / `in` (contravariant); unmarked parameters are invariant. The compiler checks the positions: a covariant parameter may appear where values come out (results, the parameters of a block the method takes, a lower bound), a contravariant one where they go in, and neither in a `var` field. `initialize`, class methods and private methods are not checked, since they see the exact type.
+- A method type parameter can have a **lower bound**, `U >: T`: `U` is `T` or a supertype of it. This is how a covariant type takes values: `Array[out T]` has `push[U >: T](value: U) -> Array[U]`, so `[1].push("a")` is an `Array[Int | String]`, and an `Array[Int]` seen as an `Array[Object]` never receives a `String` itself. Without type arguments, `U` is the bound joined with the types the arguments give it. Methods that only look a value up take `Object` instead (`delete(value: Object)`, `-(other: Array[Object])`).
 - Type arguments of methods are inferred at the call site. To be explicit: `max_by[Person, Int](people) { |p| p.age }`.
 - The implementation defaults to **monomorphization**: specialized code is generated for each unboxed type such as `Int`/`Float`, while reference types share code. The interpreter follows the same policy. (Planned: today generic code is compiled once, over tagged values.)
 

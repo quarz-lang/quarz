@@ -468,12 +468,10 @@ fn nil_results_and_lambda_annotations() {
     ok("l = ->(x: Int) -> Nil { x }\nl.call(1)");
     // An exception caught as a union can be raised again.
     ok("begin\n  raise IOError, \"x\"\nrescue IOError, SystemCallError => e\n  raise e\nend");
-    // `*values: T` is shown with its element type.
-    err("xs = [1]\nxs.push(\"a\", \"b\", 3)", "push(*values: T)");
-    err(
-        "xs = [1]\nxs.push(\"a\", \"b\", 3)",
-        "matches (String, String, Int)",
-    );
+    // `*keys: K` is shown with its element type.
+    err("h = {1 => 2}\nh.values_at(\"a\", 3)", "values_at(*keys: K)");
+    // Pushing other types widens the element type.
+    ok("xs = [1]\nys: Array[Int | String] = xs.push(\"a\", \"b\", 3)");
     err("p [3, 1].sort_pairs", "`sort_pairs` is private");
 }
 
@@ -820,6 +818,24 @@ fn reraise_block_params_overrides() {
     ok("begin\n  raise \"x\"\nrescue ArgumentError\n  raise\nend");
     ok("begin\n  raise \"x\"\nrescue => e\n  [1].each { |x| raise }\nend");
     err("raise", "a bare `raise` re-raises only inside `rescue`");
+    err(
+        "class B[out T]\n  def put(x: T) -> Nil = nil\nend",
+        "`T` appears in a parameter position of `put`, against its variance in B",
+    );
+    err(
+        "class B[in T]\n  def get -> T = raise \"x\"\nend",
+        "`T` appears in a result position of `get`",
+    );
+    err(
+        "class B[out T]\n  var @x: T\n  def initialize(@x: T)\n  end\nend",
+        "`T` appears in the `var` field `@x`",
+    );
+    ok("class B[out T]\n  def each(&: (T) -> Nil) -> Nil = nil\n  def with[U >: T](x: U) -> Array[U] = [x]\n  private def keep(x: T) -> Nil = nil\nend");
+    err(
+        "class K[U >: Int]\nend",
+        "only a method's type parameters take a lower bound",
+    );
+    ok("xs = [1]\nys: Array[Int | String] = xs.push(\"a\")\nzs: Array[Int?] = xs + [nil]");
     err(
         "arr = [1]\narr << 2",
         "Array is immutable: write `arr = arr.push(value)`, or build it with `Array::Builder`",

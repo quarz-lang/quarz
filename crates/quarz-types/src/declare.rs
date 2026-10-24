@@ -634,6 +634,7 @@ impl<'ast> Declarer<'ast> {
             self.check_conformance(p);
             self.check_shareable_promise(p.id);
             self.check_overrides(p.id);
+            self.check_variance(p.id);
         }
         self.check_shareable_extensions();
     }
@@ -687,6 +688,137 @@ impl<'ast> Declarer<'ast> {
                     span,
                 );
             }
+        }
+    }
+
+    /// A covariant (`out`) type parameter may appear only where values
+    /// come out (results, the parameters of a block the method takes,
+    /// lower bounds), a contravariant (`in`) one only where they go in,
+    /// and neither in a `var` field. `initialize`, class methods and
+    /// private methods are not checked: they see the exact type.
+    fn check_variance(&mut self, id: ClassId) {
+        let class = self.world.class(id);
+        let params: Vec<(TypeParamId, Variance, String)> = class
+            .type_params
+            .iter()
+            .filter(|p| p.variance != Variance::Invariant)
+            .map(|p| (p.id, p.variance, p.name.clone()))
+            .collect();
+        if params.is_empty() {
+            return;
+        }
+        let class_name = class.name.clone();
+        let mut found: Vec<(String, Span)> = Vec::new();
+        for f in &class.fields {
+            if f.mutable {
+                self.variance_walk(&f.ty, 0, &params, &mut |p, _| {
+                    found.push((
+                        format!("`{p}` appears in the `var` field `@{}`", f.name),
+                        f.span,
+                    ))
+                });
+            }
+        }
+        let methods: Vec<MethodId> = class.methods.values().flatten().copied().collect();
+        for mid in methods {
+            let m = self.world.method(mid);
+            if m.owner != id
+                || m.name == "initialize"
+                || m.visibility == Visibility::Private
+                || m.synth != Synth::None
+            {
+                continue;
+            }
+            let mut report = |p: &str, pol: i8| {
+                let place = if pol > 0 {
+                    "a result position"
+                } else if pol < 0 {
+                    "a parameter position"
+                } else {
+                    "an invariant position"
+                };
+                found.push((format!("`{p}` appears in {place} of `{}`", m.name), m.span));
+            };
+            for p in &m.params {
+                self.variance_walk(&p.ty, -1, &params, &mut report);
+            }
+            if let Some((_, t)) = &m.block {
+                self.variance_walk(t, -1, &params, &mut report);
+            }
+            if let RetType::Known(t) = &m.ret {
+                self.variance_walk(t, 1, &params, &mut report);
+            }
+            for tp in &m.type_params {
+                for b in &tp.bounds {
+                    self.variance_walk(b, -1, &params, &mut report);
+                }
+                if let Some(l) = &tp.lower {
+                    self.variance_walk(l, 1, &params, &mut report);
+                }
+            }
+        }
+        found.sort_by_key(|(_, span)| span.start);
+        found.dedup();
+        for (what, span) in found {
+            self.error(
+                format!(
+                    "{what}, against its variance in {class_name} (take a method type parameter such as `[U >: T]` instead)"
+                ),
+                span,
+            );
+        }
+    }
+
+    /// Report each variant type parameter of `params` that `t` uses
+    /// against its variance, `pol` being 1 where values come out, -1
+    /// where they go in and 0 where both.
+    fn variance_walk(
+        &self,
+        t: &Type,
+        pol: i8,
+        params: &[(TypeParamId, Variance, String)],
+        report: &mut dyn FnMut(&str, i8),
+    ) {
+        match t {
+            Type::Param(p) => {
+                if let Some((_, v, name)) = params.iter().find(|(id, _, _)| id == p) {
+                    let ok = match v {
+                        Variance::Covariant => pol > 0,
+                        Variance::Contravariant => pol < 0,
+                        Variance::Invariant => true,
+                    };
+                    if !ok {
+                        report(name, pol);
+                    }
+                }
+            }
+            Type::Class(c, args) | Type::ClassObject(c, args) => {
+                let cps = &self.world.class(*c).type_params;
+                for (i, a) in args.iter().enumerate() {
+                    let v = cps.get(i).map_or(Variance::Invariant, |p| p.variance);
+                    let pol = match v {
+                        Variance::Covariant => pol,
+                        Variance::Contravariant => -pol,
+                        Variance::Invariant => 0,
+                    };
+                    self.variance_walk(a, pol, params, report);
+                }
+            }
+            Type::Union(ms) | Type::Tuple(ms) => {
+                for m in ms {
+                    self.variance_walk(m, pol, params, report);
+                }
+            }
+            Type::Proc(recv, ps, r, _) => {
+                if let Some(recv) = recv {
+                    self.variance_walk(recv, -pol, params, report);
+                }
+                for p in ps {
+                    self.variance_walk(p, -pol, params, report);
+                }
+                self.variance_walk(r, pol, params, report);
+            }
+            _ => {}
         }
     }
 
@@ -1033,6 +1165,12 @@ impl<'ast> Declarer<'ast> {
                     .iter()
                     .filter_map(|b| self.resolve_type(b, &scope))
                     .collect();
+                if let Some(l) = &tp.lower {
+                    self.error(
+                        "only a method's type parameters take a lower bound `>:`",
+                        l.span,
+                    );
+                }
                 self.world.class_mut(id).type_params[i].bounds = bounds;
             }
         }
@@ -1161,6 +1299,12 @@ impl<'ast> Declarer<'ast> {
                 .iter()
                 .filter_map(|b| self.resolve_type(b, &scope))
                 .collect();
+            if let Some(l) = &tp.lower {
+                self.error(
+                    "only a method's type parameters take a lower bound `>:`",
+                    l.span,
+                );
+            }
             self.world.extensions[e.id as usize].type_params[i].bounds = bounds;
         }
         let Some(target) = self.resolve_type(&e.def.target, &scope) else {
@@ -1503,6 +1647,10 @@ impl<'ast> Declarer<'ast> {
                 .iter()
                 .filter_map(|b| self.resolve_type(b, &scope))
                 .collect();
+            type_params[i].lower = tp.lower.as_ref().and_then(|l| self.resolve_type(l, &scope));
+            if let Some(l) = &type_params[i].lower {
+                self.world.lower_bounds.insert(type_params[i].id, l.clone());
+            }
         }
         let mut params = Vec::new();
         let mut block = None;

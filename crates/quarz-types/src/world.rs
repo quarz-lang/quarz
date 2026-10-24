@@ -26,6 +26,8 @@ pub struct TypeParamInfo {
     pub name: String,
     pub variance: Variance,
     pub bounds: Vec<Type>,
+    /// `U >: T` (method type parameters): `U` is at least `T`.
+    pub lower: Option<Type>,
 }
 
 #[derive(Clone, Debug)]
@@ -292,6 +294,8 @@ pub struct World {
     pub active_extensions: Vec<ExtensionId>,
     next_type_param: TypeParamId,
     pub type_param_names: HashMap<TypeParamId, String>,
+    /// The lower bounds of method type parameters (`U >: T`).
+    pub lower_bounds: HashMap<TypeParamId, Type>,
     /// While checking the body of a method whose signature mentions
     /// `Self`: the class `Self` is bounded by (there, `Self` is that class
     /// or a subclass, not known which).
@@ -374,6 +378,7 @@ impl World {
             name: name.to_string(),
             variance,
             bounds: Vec::new(),
+            lower: None,
         }
     }
 
@@ -811,12 +816,25 @@ impl World {
                     && self.is_subtype(r, s)
             }
             (Type::Proc(..), Type::Class(b, _)) => *b == self.builtin.proc_,
+            // `U >: T`: what is a `T` is a `U`.
+            (_, Type::Param(u))
+                if self
+                    .param_lower(*u)
+                    .is_some_and(|l| self.is_subtype(sub, l)) =>
+            {
+                true
+            }
             (Type::Param(p), _) => {
                 let bounds = self.param_bounds(*p);
                 bounds.iter().any(|b| self.is_subtype(b, sup))
             }
             _ => false,
         }
+    }
+
+    /// The lower bound of a method type parameter (`U >: T`).
+    fn param_lower(&self, id: TypeParamId) -> Option<&Type> {
+        self.lower_bounds.get(&id)
     }
 
     fn param_bounds(&self, id: TypeParamId) -> Vec<Type> {

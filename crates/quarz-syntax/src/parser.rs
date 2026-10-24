@@ -3392,6 +3392,12 @@ impl<'src> Parser<'src> {
             }
             _ => return Err(self.error_expected("a type parameter name")),
         };
+        let mut lower = None;
+        if self.at(&T::Gt) && matches!(self.kind_at(1), T::Colon) && !self.peek_at(1).space_before {
+            self.bump();
+            self.bump();
+            lower = Some(self.parse_type_postfix()?);
+        }
         let mut bounds = Vec::new();
         if self.at(&T::Colon) {
             self.bump();
@@ -3405,6 +3411,7 @@ impl<'src> Parser<'src> {
             name,
             variance,
             bounds,
+            lower,
             span,
         })
     }
