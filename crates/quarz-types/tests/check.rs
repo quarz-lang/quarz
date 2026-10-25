@@ -436,10 +436,10 @@ fn shareable_is_promised_and_inherited() {
         "`Oops` must be Shareable, since `Exception` includes `Shareable`",
     );
     ok("class Oops < RuntimeError\n  @code: Int = 1\nend");
-    // So do builtin Shareable classes.
+    // Built-in value classes have no subclasses.
     err(
         "class MyRange < Range[Int]\n  var @n: Int = 0\nend",
-        "since `Range` includes `Shareable`",
+        "cannot inherit from the built-in class `Range`",
     );
     // A module that includes `Shareable` holds its includers to it,
     // also through an extension.
@@ -1180,4 +1180,41 @@ fn undecided_types_come_from_uses() {
     );
     ok("def f(c: Bool) -> Int\n  arr = []\n  b = arr[0]\n  if c\n    case b\n    in String => s1\n      p s1\n    else\n    end\n  end\n  b = b if c\n  arr = arr.push(5)\n  1\nend");
     no_warnings("arr = []\nb = arr[0]\nok = b in String\narr = arr.push(5)\np ok");
+}
+
+#[test]
+fn tests_narrow_only_to_what_holds() {
+    // `||` on an undecided type decides nothing; using the result does.
+    ok("def f -> Int\n  arr = []\n  x = arr[0]? || \"s\"\n  arr = arr.push(5)\n  p x\n  (arr[0]? || 0) + 1\nend");
+    // A generic class test without known arguments: an invariant one does
+    // not narrow an Object (its setters would take anything).
+    err("class Box[T]\n  var @v: T\n  def initialize(@v: T); end\n  def set(v: T) -> Nil\n    @v = v\n    nil\n  end\nend\ndef f(o: Object)\n  case o\n  in Box\n    o.set(\"str\")\n  else\n  end\nend", "undefined method `set` for Object");
+    ok("def f(o: Object) -> Int\n  case o\n  in Array then o.size\n  else 0\n  end\nend");
+    // A union of an undecided type with a decided `Pair` does not take the
+    // decided one's arguments.
+    err("data Pair[A, B] = (a: A, b: B)\ndef f -> Int\n  arr = []\n  y = [arr[0]?, Pair.new(1, \"s\")]\n  case y[0]\n  in Pair(a, b)\n    a << 1\n  else\n    0\n  end\nend", "undefined method `<<` for Object");
+    // A number pattern matches equal numbers of the other classes.
+    err(
+        "def f(x: Int | Float) -> Int\n  case x\n  in 1 then x << 1\n  else 0\n  end\nend",
+        "undefined method `<<` for Float",
+    );
+    // `== true` does not narrow a value whose `==` a class may define.
+    err("class Weird\n  def ==(o: Object) -> Bool = true\nend\ndef f(x: Object) -> Bool\n  if x == true\n    x & true\n  else\n    false\n  end\nend", "undefined method `&` for Object");
+    ok("def f(x: Int | Bool) -> Bool\n  if x == true\n    x & true\n  else\n    false\n  end\nend");
+    // A field of type `Self` deconstructs to the value's own type.
+    ok("data Node[A] = (v: A, nx: Self?)\nn = Node.new(1, Node.new(2, nil))\ncase n\nin Node(v, nx)\n  p nx.v if nx\nend");
+    // A type parameter or a supertype the class test cannot narrow stays.
+    err("class Box[T]\n  var @v: T\n  def initialize(@v: T); end\n  def set(v: T) -> Nil\n    @v = v\n    nil\n  end\nend\ndef poke[T](x: T) -> Nil\n  case x\n  in Box then x.set(\"str\")\n  else\n  end\n  nil\nend", "undefined method `set` for T");
+    ok("def f(o: Object) -> Int\n  case o\n  when Hash then o.size\n  when Range then 1\n  else 0\n  end\nend");
+    ok("def b[T](x: T) -> Int\n  case x\n  when Hash then x.size\n  when Set then x.size\n  else 0\n  end\nend");
+    // Nor `== nil` a value whose class (or a subclass) defines `==`.
+    err("class Weird\n  def ==(o: Object) -> Bool = true\nend\ndef f(x: Weird | Int) -> Int\n  if x == nil\n    n: Nil = x\n    1\n  else\n    0\n  end\nend", "cannot assign Weird | Int to `n` of type Nil");
+    ok("class Plain\nend\ndef f(x: Plain?) -> Int\n  if x == nil\n    0\n  else\n    x.hash\n  end\nend");
+    err("extension Nil\n  def ==(other: Object) -> Bool = false\nend\ndef g(x: Int?) -> Int\n  if x == nil\n    0\n  else\n    x + 1\n  end\nend", "undefined method `+` for Nil");
+    err("class Foo\n  def !=(o: Object) -> Bool = false\nend\ndef takes(n: Nil) -> Int = 0\ndef f(x: Foo?) -> Int\n  if x != nil\n    1\n  else\n    takes(x)\n  end\nend", "expects Nil but found Foo?");
+    ok("def tup(t: [Int, String]?) -> Int\n  if t == nil\n    0\n  else\n    t[0]\n  end\nend\ndef pr(f: ((Int) -> Int)?) -> Int\n  if f != nil\n    f.(1)\n  else\n    0\n  end\nend\ndef par[T](x: T?) -> T\n  if x == nil\n    raise \"none\"\n  else\n    x\n  end\nend");
+    // `?v | Int` used by an operator or under a bound is an `Int`.
+    ok("def g -> Int\n  arr = []\n  y = arr[0]? || 2\n  y += 1\n  xs = [y, 2].sort\n  arr = arr.push(4)\n  xs[0]\nend");
+    // A bound may name the class's parameters.
+    ok("module Addable[T]\n  abstract def add(o: T) -> T\nend\ndata Num(n: Int)\n  include Addable[Num]\n  def add(o: Num) -> Num = Num.new(n + o.n)\nend\ndata Acc[T: Addable[T]](x: T)\n  def twice -> T = x.add(x)\nend\np Acc.new(Num.new(2)).twice");
 }

@@ -165,6 +165,15 @@ fn cmp_num(interp: &Interp, recv: &Value, args: &Args) -> Result<std::cmp::Order
             _ => a.to_big().cmp(&b.to_big()),
         });
     }
+    // Not a number: failed, not the generic `compare` (which would send
+    // `<=>` back here without end).
+    if !matches!(other, Value::Int(_) | Value::Float(_)) {
+        return Err(interp.err_arg(&format!(
+            "comparison of {} with {} failed",
+            interp.class_name(recv),
+            interp.class_name(other)
+        )));
+    }
     interp.compare(recv, other)
 }
 
