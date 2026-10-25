@@ -107,7 +107,7 @@ end
 - **型付きの assertion。** `assert_equal[T](expected: T, actual: T?)`。`T` は `expected` で決まり、`actual` は `T` か nil でなければなりません(よくある `assert_equal(1, h["k"]?)` の nil は、型エラーではなく失敗です)。なので `assert_equal(1, "1")` と `assert_equal(2, 2.0)` はコンパイルエラーで、Test::Unit なら実行時に失敗するところです。リテラルは actual の型で書きます(`x: Float` に対する `assert_equal(2.0, x)`、`xs: Array[Int]` に対する `assert_equal([1, 2], xs)`)。本当に型が違うときは、意図して変換します(`assert_equal("1", n.to_s)`)。nil には `assert_nil(x)` を使います。`assert_equal(nil, x)` は `T = Nil` に決まり、ほかの値を取りません。`assert_predicate` はなく、`assert(x.empty?)` と書きます。
 - **失敗のメッセージ。** `assert_equal` は `inspect` を使って `<expected> expected but was <actual>` と出し、改行を含む文字列同士やコレクション同士では行の差分を添えます。任意の `message` は先頭に出ます。
 - **失敗した場所。** 失敗した assertion は `Test::AssertionFailed < Exception` を投げます(`StandardError` ではないので、テスト対象のコードの `rescue => e` に飲み込まれません)。報告には、その assertion のあるテストファイルと行を出します。バックトレースのうち `test` ライブラリの外の最初のフレームです。なので、テストクラスの補助メソッドの中の assertion は、その中の行で報告されます(Go の `t.Helper()` のように補助メソッドの呼び出し元で報告するには `helper!` を呼ぶ……*最初の版にはありません*)。
-- **`assert_raise`** は例外を返すので、続けて中身を確かめられます。例外クラスは値(`Class`)として取り、そのサブクラスも通ります。ライブラリは `Exception` を rescue して `e.kind_of?(klass)` で確かめます。これはこの作業で足すネイティブで、`Object#kind_of?(klass: Class) -> Bool` はクラスの*値*を調べます(`is_a?(T)` は*型*を調べて絞り込むので、その名前はそのために残します)。結果は `Exception` です(`message` は使えます。サブクラスのフィールドには `as` が要ります)。メッセージを渡すと、投げられた例外のメッセージがそれと等しくなければなりません。型付きの形 `assert_raise[E: Exception](klass: Class[E]) -> E` は、型システムに `Class[T]` が入るのを待ちます(§9)。
+- **`assert_raise`** は例外を返すので、続けて中身を確かめられます。例外クラスは値(`Class`)として取り、そのサブクラスも通ります。ライブラリは `Exception` を rescue して `e.is_a?(klass)` で確かめます。今の `is_a?` は定数で書いた型だけを取ります(`x.is_a?(Int)`。`x` を絞り込みます)。この作業で、クラスの*値*、つまり型が `Class` の式も取れるようにします(`e.is_a?(klass)`)。ネイティブの `Object#is_a?(klass: Class) -> Bool` で、実行時にクラスを調べ、何も絞り込みません。2 つの形は書き方で区別するので、`x.is_a?(Foo)` の意味は変わりません。結果は `Exception` です(`message` は使えます。サブクラスのフィールドには `as` が要ります)。メッセージを渡すと、投げられた例外のメッセージがそれと等しくなければなりません。型付きの形 `assert_raise[E: Exception](klass: Class[E]) -> E` は、型システムに `Class[T]` が入るのを待ちます(§9)。
 - **保留と省略。** `pend` は失敗すると分かっているテストに付けます(Test::Unit の `pend`)。保留として数え、その後でテストが*通った*ときは失敗(「pending test passed」)にして、直ったことに気づけるようにします。`omit` はテストをそこで終え、省略として数えます(環境に何かが欠けているとき)。どちらも要約に出て、`-v` では名前つきで出ます。
 - `Test::Unit::TestCase` は Ruby での名前のままの `Test::Case` で、移植したテストのためにあります。
 
@@ -192,7 +192,7 @@ Test.run(ARGV, [
 
 ## 9. 後で
 
-- `Class[T]`。クラスオブジェクトの型にインスタンスの型を添えたもので、`assert_raise[E](klass: Class[E]) -> E` と、型パラメータに対する `rescue` のため。`kind_of?` にも型付きの形ができます。
+- `Class[T]`。クラスオブジェクトの型にインスタンスの型を添えたもので、`assert_raise[E](klass: Class[E]) -> E` と、型パラメータに対する `rescue` のため。`Class[T]` を取る `x.is_a?(klass)` は `T` に絞り込めるようになります。
 - `capture_output { }`(ブロックが STDOUT/STDERR に出したもの。タスクごと)には、ランタイムがタスクの標準ストリームを差し替える仕組みが要ります。それを使う `assert_output`。
 - 補助メソッドの呼び出し元で失敗を報告する `helper!`(Go の `t.Helper()`)。
 - ベンチマーク(`bench_*` メソッドと `quarz test --bench`。Go と同じ)、`--coverage`。
