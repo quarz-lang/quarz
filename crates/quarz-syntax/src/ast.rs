@@ -6,23 +6,24 @@
 //! class body are both `Vec<Expr>`.
 
 use crate::source::Span;
+use serde::{Deserialize, Serialize};
 
 pub type NodeId = u32;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Program {
     pub body: Vec<Expr>,
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Expr {
     pub id: NodeId,
     pub span: Span,
     pub kind: ExprKind,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ExprKind {
     // ----- literals -----
     Nil,
@@ -194,7 +195,7 @@ pub enum ExprKind {
     },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IntLit {
     pub digits: String,
     pub base: u8,
@@ -213,20 +214,20 @@ impl IntLit {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Magic {
     File,
     Line,
     Method,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum StrPart {
     Lit(String),
     Interp(Expr),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConstPath {
     /// `::Foo` (lookup from the top level).
     pub absolute: bool,
@@ -265,7 +266,7 @@ impl std::fmt::Display for ConstPath {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Call {
     pub recv: Option<Expr>,
     pub name: String,
@@ -282,7 +283,7 @@ pub struct Call {
     pub type_args: Vec<TypeExpr>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Arg {
     Positional(Expr),
     Splat(Expr),
@@ -304,13 +305,13 @@ impl Arg {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum HashEntry {
     Pair { key: Expr, value: Expr },
     DoubleSplat(Expr),
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Block {
     pub params: Params,
     pub body: Vec<Expr>,
@@ -322,7 +323,7 @@ pub struct Block {
     pub ret: Option<TypeExpr>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum LValue {
     Local {
         name: String,
@@ -343,34 +344,34 @@ pub enum LValue {
     },
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum MultiTarget {
     Single(LValue),
     Splat(Option<LValue>),
     Nested(Vec<MultiTarget>),
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct When {
     pub conds: Vec<Arg>,
     pub body: Vec<Expr>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct InArm {
     pub pattern: Pattern,
     pub guard: Option<Guard>,
     pub body: Vec<Expr>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Guard {
     pub cond: Expr,
     /// `unless` guard.
     pub negate: bool,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BeginBlock {
     pub body: Vec<Expr>,
     pub rescues: Vec<Rescue>,
@@ -378,7 +379,7 @@ pub struct BeginBlock {
     pub ensure: Option<Vec<Expr>>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Rescue {
     pub classes: Vec<TypeExpr>,
     pub var: Option<String>,
@@ -388,13 +389,13 @@ pub struct Rescue {
 
 // ----- patterns -----
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Pattern {
     pub span: Span,
     pub kind: PatternKind,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum PatternKind {
     /// A literal or other value compared with `===`.
     Value(Expr),
@@ -426,7 +427,7 @@ pub enum PatternKind {
     },
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ArrayPattern {
     pub pre: Vec<Pattern>,
     /// `Some(None)` for an anonymous `*`, `Some(Some(name))` for `*name`.
@@ -434,14 +435,14 @@ pub struct ArrayPattern {
     pub post: Vec<Pattern>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct HashPattern {
     pub pairs: Vec<HashPatternPair>,
     /// `**rest` / `**nil`
     pub rest: Option<HashPatternRest>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct HashPatternPair {
     pub key: String,
     /// `None` for `key:` alone, which binds `key`.
@@ -449,7 +450,7 @@ pub struct HashPatternPair {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HashPatternRest {
     Bind(String),
     Nil,
@@ -457,13 +458,13 @@ pub enum HashPatternRest {
 
 // ----- types -----
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TypeExpr {
     pub span: Span,
     pub kind: TypeExprKind,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum TypeExprKind {
     /// `Int`, `Foo::Bar`, `Array[Int]`
     Named {
@@ -485,7 +486,7 @@ pub enum TypeExprKind {
     Nothing,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TypeParam {
     pub name: String,
     pub variance: Variance,
@@ -495,7 +496,7 @@ pub struct TypeParam {
     pub span: Span,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Variance {
     Invariant,
     Covariant,
@@ -504,7 +505,7 @@ pub enum Variance {
 
 // ----- declarations -----
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Params {
     pub list: Vec<Param>,
 }
@@ -519,7 +520,7 @@ impl Params {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Param {
     pub name: String,
     pub kind: ParamKind,
@@ -533,7 +534,7 @@ pub struct Param {
     pub span: Span,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ParamKind {
     /// Before `*`: positional or keyword.
     Positional,
@@ -547,14 +548,14 @@ pub enum ParamKind {
     Block,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Visibility {
     Public,
     Protected,
     Private,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct MethodDef {
     pub name: String,
     pub singleton: bool,
@@ -576,13 +577,13 @@ pub struct MethodDef {
 /// is not used and whose sources all have `each`: it builds nothing. The
 /// code written in the `for` (sources, guards, body) is the same nodes in
 /// both; only one expansion is checked and lowered.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ForExpr {
     pub comprehension: Expr,
     pub each: Expr,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ClassDef {
     pub name: ConstPath,
     pub type_params: Vec<TypeParam>,
@@ -591,14 +592,14 @@ pub struct ClassDef {
     pub is_abstract: bool,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ModuleDef {
     pub name: ConstPath,
     pub type_params: Vec<TypeParam>,
     pub body: Vec<Expr>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DataDef {
     pub name: String,
     pub type_params: Vec<TypeParam>,
@@ -606,7 +607,7 @@ pub struct DataDef {
     pub body: Vec<Expr>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct EnumDef {
     pub name: String,
     pub type_params: Vec<TypeParam>,
@@ -614,21 +615,21 @@ pub struct EnumDef {
     pub body: Vec<Expr>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Variant {
     pub name: String,
     pub fields: Vec<FieldDecl>,
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ExtensionDef {
     pub target: TypeExpr,
     pub type_params: Vec<TypeParam>,
     pub body: Vec<Expr>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct FieldDecl {
     pub name: String,
     pub ty: TypeExpr,
@@ -637,14 +638,14 @@ pub struct FieldDecl {
     pub span: Span,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AttrKind {
     Reader,
     Writer,
     Accessor,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MixinKind {
     Include,
     Extend,

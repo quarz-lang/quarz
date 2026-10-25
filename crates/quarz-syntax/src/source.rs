@@ -3,7 +3,9 @@
 use std::fmt;
 
 /// A half-open byte range `[start, end)` into a source file.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct Span {
     pub start: u32,
     pub end: u32,

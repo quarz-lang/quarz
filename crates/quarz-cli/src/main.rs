@@ -46,6 +46,11 @@ Cog.lock, and --offline fetches nothing.
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // The prelude declared and checked when `quarz` was built (build.rs);
+    // `QUARZ_NO_PRELUDE_CACHE=1` checks it from its source instead.
+    if std::env::var_os("QUARZ_NO_PRELUDE_CACHE").is_none_or(|v| v == "0") {
+        quarz_types::set_prelude_cache(include_bytes!(concat!(env!("OUT_DIR"), "/prelude.bin")));
+    }
     match args.first().map(String::as_str) {
         Some("tokens") => match args.get(1) {
             Some(path) => tokens(path),
@@ -220,7 +225,7 @@ impl Target {
 /// there were no errors.
 fn load_and_check(target: &Target) -> Option<(quarz_types::Checked, Vec<SourceFile>)> {
     let prelude_file = SourceFile::new("<prelude>", quarz_types::PRELUDE_SOURCE);
-    let prelude = parse(&prelude_file.text);
+    let prelude = quarz_types::parse_prelude();
     let mut failed = false;
     for diag in &prelude.diagnostics {
         eprint!("{}", diag.render(&prelude_file));

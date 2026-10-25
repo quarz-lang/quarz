@@ -8,7 +8,7 @@ use std::rc::Rc;
 use quarz_ir::Unit;
 use quarz_lower::{Lowerer, UnitInput};
 use quarz_syntax::ast::ExprKind;
-use quarz_syntax::{parse, parse_repl, Diagnostic, SourceFile};
+use quarz_syntax::{parse_repl, Diagnostic, SourceFile};
 use quarz_types::{CheckedUnit, FileDiagnostic, Session, PRELUDE_SOURCE};
 use quarz_vm::value::Frame;
 use quarz_vm::{Interp, SharedState};
@@ -89,7 +89,7 @@ pub fn needs_more(text: &str, locals: &[String]) -> bool {
 impl Repl {
     pub fn new(out: Box<dyn Write + Send>) -> Result<Repl, Vec<String>> {
         let prelude_file = SourceFile::new("<prelude>", PRELUDE_SOURCE);
-        let prelude = parse(&prelude_file.text);
+        let prelude = quarz_types::parse_prelude();
         let session = Session::new(&prelude.program).map_err(|diags| {
             diags
                 .iter()

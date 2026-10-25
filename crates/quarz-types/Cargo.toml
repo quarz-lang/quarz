@@ -8,5 +8,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+serde = { version = "1", features = ["derive", "rc"] }
+bincode = { version = "2", default-features = false, features = ["serde", "std"] }
 quarz-syntax = { workspace = true }
 rustc-hash = "2"

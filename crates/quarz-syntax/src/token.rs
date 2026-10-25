@@ -198,7 +198,7 @@ pub enum StringKind {
 }
 
 /// The operator of a compound assignment such as `+=`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum OpAssign {
     Plus,
     Minus,

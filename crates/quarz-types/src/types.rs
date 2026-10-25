@@ -9,7 +9,7 @@ pub type InferVar = u32;
 pub type ConstId = u32;
 pub type ExtensionId = u32;
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Type {
     /// The bottom type: `raise`, `return`, an empty loop.
     Nothing,

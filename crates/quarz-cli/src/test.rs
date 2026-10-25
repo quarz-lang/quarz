@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use quarz_syntax::ast::{ParamKind, Visibility};
-use quarz_syntax::{parse, Diagnostic, SourceFile, Span};
+use quarz_syntax::{Diagnostic, SourceFile, Span};
 use quarz_types::{ClassId, ClassKind, FileDiagnostic, Member, World};
 
 /// The runner's file name, which `Test.location` leaves out of backtraces.
@@ -202,7 +202,7 @@ fn load_and_check(
     opts: &quarz_cog::Options,
 ) -> Option<(quarz_types::Checked, Vec<SourceFile>)> {
     let prelude_file = SourceFile::new("<prelude>", quarz_types::PRELUDE_SOURCE);
-    let prelude = parse(&prelude_file.text);
+    let prelude = quarz_types::parse_prelude();
     let (units, decls, diagnostics) = match cog {
         Some(root) => match test_specs(root, opts) {
             Ok(specs) => quarz_types::load_movement_tests(&specs, files),

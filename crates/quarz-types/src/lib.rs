@@ -108,8 +108,19 @@ impl Session {
             body: Vec::new(),
             span: quarz_syntax::Span::empty(0),
         };
-        let mut declarer = declare::Declarer::new();
-        declarer.collect_prelude(prelude);
+        let cached = PRELUDE_CACHE.get().map(|bytes| PreludeState::decode(bytes));
+        let mut prelude_output = None;
+        let mut declarer = match cached {
+            Some(state) => {
+                prelude_output = Some((state.output, state.self_news));
+                declare::Declarer::with_world(state.world)
+            }
+            None => {
+                let mut d = declare::Declarer::new();
+                d.collect_prelude(prelude);
+                d
+            }
+        };
         declarer.collect_unit(&empty, 1);
         declarer.resolve_headers();
         let diagnostics = std::mem::take(&mut declarer.diagnostics);
@@ -118,6 +129,10 @@ impl Session {
         }
         let main = declarer.units[0].main;
         let mut checker = check::Checker::new(declarer.world, vec![None, Some(main)]);
+        if let Some((out, sites)) = prelude_output {
+            checker.set_output(out);
+            checker.set_self_news(sites);
+        }
         checker.check_all(&[(1, Vec::new())]);
         let diagnostics = checker.take_diagnostics();
         if diagnostics.iter().any(|(_, d)| d.is_error()) {
@@ -358,6 +373,69 @@ pub fn check_movement(
     check_with_extra(prelude, units, cogs, None)
 }
 
+/// The prelude declared and checked (every method body, so that a
+/// program's checking only adds to it): what `check_with_extra` starts
+/// from instead of the prelude's source when a command was built with it
+/// (`set_prelude_cache`).
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct PreludeState {
+    pub world: World,
+    pub output: Output,
+    pub self_news: Vec<check::SelfNew>,
+}
+
+impl PreludeState {
+    pub fn encode(&self) -> Vec<u8> {
+        bincode::serde::encode_to_vec(self, bincode::config::standard())
+            .expect("encode the prelude")
+    }
+
+    pub fn decode(bytes: &[u8]) -> PreludeState {
+        bincode::serde::decode_from_slice(bytes, bincode::config::standard())
+            .expect("decode the prelude")
+            .0
+    }
+}
+
+/// Declare and check the prelude alone (for `PreludeState::encode`).
+pub fn prelude_state(prelude: &Program) -> (PreludeState, Vec<FileDiagnostic>) {
+    let mut declarer = declare::Declarer::new();
+    declarer.collect_prelude(prelude);
+    declarer.resolve_headers();
+    let mut diagnostics = std::mem::take(&mut declarer.diagnostics);
+    let mut checker = check::Checker::new(declarer.world, vec![None]);
+    checker.check_all(&[]);
+    let self_news = checker.self_news().to_vec();
+    let (world, output, mut diags) = checker.into_output();
+    diagnostics.append(&mut diags);
+    (
+        PreludeState {
+            world,
+            output,
+            self_news,
+        },
+        diagnostics,
+    )
+}
+
+static PRELUDE_CACHE: std::sync::OnceLock<&'static [u8]> = std::sync::OnceLock::new();
+
+/// The prelude's syntax tree, for checking: an empty one when checking
+/// starts from a cached `PreludeState`, which has it.
+pub fn parse_prelude() -> quarz_syntax::Parsed {
+    if PRELUDE_CACHE.get().is_some() {
+        quarz_syntax::parse("")
+    } else {
+        quarz_syntax::parse(PRELUDE_SOURCE)
+    }
+}
+
+/// Start checking from this encoded `PreludeState` rather than the
+/// prelude's source, in this process.
+pub fn set_prelude_cache(bytes: &'static [u8]) {
+    let _ = PRELUDE_CACHE.set(bytes);
+}
+
 /// What makes a unit from the checked world: its source (named), or the
 /// errors that prevent it.
 pub type ExtraUnit<'a> = &'a mut dyn FnMut(&World) -> Result<SourceFile, Vec<FileDiagnostic>>;
@@ -373,8 +451,21 @@ pub fn check_with_extra(
     cogs: &[CogDecl],
     extra: Option<ExtraUnit>,
 ) -> (Option<Checked>, Vec<FileDiagnostic>) {
-    let mut declarer = declare::Declarer::new();
-    declarer.collect_prelude(prelude);
+    // The prelude declared and checked ahead of time (`prelude_state`),
+    // when the command was built with it.
+    let cached = PRELUDE_CACHE.get().map(|bytes| PreludeState::decode(bytes));
+    let mut prelude_output = None;
+    let mut declarer = match cached {
+        Some(state) => {
+            prelude_output = Some((state.output, state.self_news));
+            declare::Declarer::with_world(state.world)
+        }
+        None => {
+            let mut d = declare::Declarer::new();
+            d.collect_prelude(prelude);
+            d
+        }
+    };
     declarer.declare_cogs(cogs, units.len() as u32);
     for (i, unit) in units.iter().enumerate() {
         let file = i as u32 + 1;
@@ -404,6 +495,10 @@ pub fn check_with_extra(
         return (None, diagnostics);
     }
     let mut checker = check::Checker::new(declarer.world, file_mains.clone());
+    if let Some((out, sites)) = prelude_output {
+        checker.set_output(out);
+        checker.set_self_news(sites);
+    }
     checker.check_all(&bodies);
     let mut checked_units: Vec<CheckedUnit> = bodies
         .into_iter()

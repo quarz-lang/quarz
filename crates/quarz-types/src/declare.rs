@@ -19,7 +19,7 @@ use crate::world::*;
 pub const SELF_PARAM: TypeParamId = u32::MAX;
 
 /// A type-expression resolution scope.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct TypeScope {
     /// Namespace for constant lookup.
     pub namespace: Option<ClassId>,

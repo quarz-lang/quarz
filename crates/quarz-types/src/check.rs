@@ -17,14 +17,14 @@ use crate::world::*;
 
 /// Where a local variable lives at run time: `depth` frames up from the
 /// current one (0 = the current frame), at `slot`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct VarRef {
     pub depth: u32,
     pub slot: u32,
 }
 
 /// What a call expression was resolved to.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum CallTarget {
     /// An ordinary method call. The runtime dispatches on the receiver's
     /// class by name when it differs from the method's owner.
@@ -49,7 +49,7 @@ pub enum CallTarget {
 }
 
 /// What a constant expression refers to.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum ConstTarget {
     Class(ClassId),
     /// A field-less enum variant used as a value.
@@ -58,7 +58,7 @@ pub enum ConstTarget {
 }
 
 /// The checker's output for the evaluator.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Output {
     pub node_types: FxHashMap<NodeId, Type>,
     pub calls: FxHashMap<NodeId, CallTarget>,
@@ -161,7 +161,7 @@ pub struct Output {
     pub released_stmts: rustc_hash::FxHashSet<NodeId>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum BlockPass {
     /// `&:name`: call `name` (resolved to `method` for the parameter's
     /// static type) on the block's argument.
@@ -170,7 +170,7 @@ pub enum BlockPass {
     Proc,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct VarInfo {
     name: String,
     declared: Type,
@@ -179,7 +179,7 @@ struct VarInfo {
     listed: bool,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct Frame {
     vars: Vars,
     is_block: bool,
@@ -192,7 +192,7 @@ struct Frame {
 const SELF_SLOT: &str = "%self";
 
 /// A function whose frame may hold its `self` in a hidden slot.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum SelfOwner {
     Method(MethodId),
     /// A block or lambda, by the node of the call (or lambda) it belongs to.
@@ -205,13 +205,13 @@ pub enum SelfOwner {
 
 /// A block with a receiver being checked: what `self` was outside it,
 /// and the frame of the function that `self` belongs to.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct ReceiverCtx {
     outer_self: Type,
     outer_frame: usize,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub(crate) enum VarKey {
     Local(String),
     IVar(String),
@@ -224,7 +224,7 @@ pub(crate) type Facts = Vec<(VarKey, Type)>;
 /// the narrowed ones (by slot), and the fields'.
 type Snapshot = (Vec<FrameSnap>, HashMap<String, Type>);
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct FrameSnap {
     len: usize,
     narrowed: Vec<(usize, Type)>,
@@ -248,7 +248,7 @@ impl FrameSnap {
 /// A frame's variables, found by name, with the slots that may be
 /// narrowed listed, so that a snapshot of a branch costs what is narrowed
 /// rather than every variable.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 struct Vars {
     list: Vec<VarInfo>,
     /// The last slot of each name (a later declaration wins), once the
@@ -318,7 +318,7 @@ impl Vars {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct Env {
     frames: Vec<Frame>,
     self_type: Type,
@@ -389,7 +389,7 @@ struct Env {
 }
 
 /// What the checks of a block found for `a && b` (`Checker::logical_seen`).
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 struct LogicalSeen {
     /// A type's own method (the last found).
     method: Option<MethodId>,
@@ -401,16 +401,20 @@ struct LogicalSeen {
 
 /// What an error reported when checking is done (`Checker::ambiguous`) is
 /// about, for reporting it once: a node, or a call by its span.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 enum AmbiguousKey {
     Node(NodeId),
     /// A call by its span and method.
     Call(u32, u32, MethodId),
 }
 
+/// A class method calling `new` on its own class (`Checker::self_news`):
+/// the class, the `initialize` called, the method, where, and its file.
+pub type SelfNew = (ClassId, Option<MethodId>, MethodId, Span, u32);
+
 /// An entry of `Checker::table_journal`: a node's table and conflict
 /// flag before a change.
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 enum TableUndo {
     Union(NodeId, Option<Vec<(Type, MethodId)>>, bool),
     Interp(NodeId, Option<Vec<(ClassId, Option<MethodId>)>>),
@@ -439,7 +443,7 @@ enum TableUndo {
 /// What a piece of code may assign (`Checker::assigned_names`): local
 /// variables, and receivers of `x.foo!` calls (with the method), which
 /// assign when the receiver's type has no `foo!`.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 struct Assigned {
     names: HashSet<String>,
     bangs: Vec<(String, String)>,
@@ -517,7 +521,7 @@ impl Assigned {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 struct LoopExits {
     /// The narrowings at each `break`.
     breaks: Vec<Snapshot>,
@@ -529,7 +533,7 @@ struct LoopExits {
     ensures: u32,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct BlockCtx {
     ret: Type,
     breaks: Vec<Type>,
@@ -538,7 +542,7 @@ struct BlockCtx {
     escapes: bool,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 struct InferTable {
     bindings: Vec<Option<Type>>,
 }
@@ -664,7 +668,7 @@ pub struct Checker {
     int_literals: rustc_hash::FxHashSet<NodeId>,
     /// `new` on the receiver in class methods: (the class, its
     /// `initialize`, the class method, where).
-    self_news: Vec<(ClassId, Option<MethodId>, MethodId, Span, u32)>,
+    self_news: Vec<SelfNew>,
     /// Set by `check_body` for the statement it checks next: its value is
     /// not used (a statement before the last, or the last of a body that
     /// discards it). `check_expr` takes it, so only that statement itself
@@ -875,7 +879,9 @@ impl Checker {
     /// method must accept the same arguments in its `initialize` (keep
     /// it, or add only optional parameters), or override the method.
     fn check_inherited_constructors(&mut self) {
-        let mut sites = std::mem::take(&mut self.self_news);
+        // (Kept: a later unit's subclasses inherit them too, as the
+        // prelude's do a program's, `PreludeState::self_news`.)
+        let mut sites = self.self_news.clone();
         sites.sort_by_key(|s| (s.0, s.2, s.3.start));
         sites.dedup_by_key(|s| (s.0, s.2, s.3.start));
         let mut reported = HashSet::default();
@@ -1361,6 +1367,21 @@ impl Checker {
                 self.diagnostics.push((file, d));
             }
         }
+    }
+
+    /// Start from what checking the prelude recorded (`PreludeState`).
+    pub fn set_output(&mut self, out: Output) {
+        self.out = out;
+    }
+
+    /// The class methods that call `new` on their own class, whose
+    /// subclasses' constructors must accept the call.
+    pub fn self_news(&self) -> &[SelfNew] {
+        &self.self_news
+    }
+
+    pub fn set_self_news(&mut self, sites: Vec<SelfNew>) {
+        self.self_news = sites;
     }
 
     /// Mark `file` as written by the compiler (`quarz test`'s runner).
