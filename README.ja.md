@@ -80,6 +80,7 @@ puts counter.value        # => 100
 | [docs/08-crystal-diff.md](docs/08-crystal-diff.ja.md) | Crystal との違い 早見表 |
 | [docs/09-grammar.md](docs/09-grammar.ja.md) | 文法スケッチ(EBNF) |
 | [docs/10-cogs.md](docs/10-cogs.ja.md) | cog(パッケージ)。コミットで固定する git リポジトリ、`Cog.toml`/`Cog.lock`、cog ごとに 1 モジュール、`require` 不要、キーワード `cog` |
+| [docs/11-http.md](docs/11-http.ja.md) | HTTP サーバ(設計)。応答を返すハンドラ、接続ごとのタスク、ルータ、`Signal`。`HTTP::Client` は後から |
 | [examples/](examples/) | サンプルコード(`hello`、`shapes`、`wordcount`、`pipeline`、`bank_actor`、`extension`、`builder`) |
 
 ## 設計上の主な判断
