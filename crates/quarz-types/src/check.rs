@@ -144,11 +144,13 @@ struct VarInfo {
     name: String,
     declared: Type,
     narrowed: Option<Type>,
+    /// In its frame's `Vars::narrowed`.
+    listed: bool,
 }
 
 #[derive(Clone, Debug)]
 struct Frame {
-    vars: Vec<VarInfo>,
+    vars: Vars,
     is_block: bool,
     /// Whose `self` this frame's function runs with (for the hidden
     /// slot that blocks with receivers read the enclosing `self` from).
@@ -187,7 +189,103 @@ pub(crate) enum VarKey {
 pub(crate) type Facts = Vec<(VarKey, Type)>;
 
 /// Narrowed types of all variables and immutable fields at a point.
-type Snapshot = (Vec<Vec<Option<Type>>>, HashMap<String, Type>);
+/// The narrowings at a point: per frame, its number of variables and
+/// the narrowed ones (by slot), and the fields'.
+type Snapshot = (Vec<FrameSnap>, HashMap<String, Type>);
+
+#[derive(Clone, Debug)]
+struct FrameSnap {
+    len: usize,
+    narrowed: Vec<(usize, Type)>,
+}
+
+impl FrameSnap {
+    /// The narrowing of `slot` then; `None` for a variable declared since.
+    fn get(&self, slot: usize) -> Option<Option<&Type>> {
+        if slot >= self.len {
+            return None;
+        }
+        Some(
+            self.narrowed
+                .binary_search_by_key(&slot, |(s, _)| *s)
+                .ok()
+                .map(|i| &self.narrowed[i].1),
+        )
+    }
+}
+
+/// A frame's variables, found by name, with the slots that may be
+/// narrowed listed, so that a snapshot of a branch costs what is narrowed
+/// rather than every variable.
+#[derive(Clone, Debug, Default)]
+struct Vars {
+    list: Vec<VarInfo>,
+    /// The last slot of each name (a later declaration wins), once the
+    /// frame has `INDEXED` variables; a short one is searched.
+    index: HashMap<String, usize>,
+    /// The slots whose narrowing has been set (a superset of the narrowed
+    /// ones; `listed` marks them).
+    narrowed: Vec<usize>,
+}
+
+impl std::ops::Deref for Vars {
+    type Target = [VarInfo];
+    fn deref(&self) -> &[VarInfo] {
+        &self.list
+    }
+}
+
+impl Vars {
+    const INDEXED: usize = 32;
+
+    fn push(&mut self, v: VarInfo) {
+        self.list.push(v);
+        let n = self.list.len();
+        if n == Self::INDEXED {
+            for (i, v) in self.list.iter().enumerate() {
+                self.index.insert(v.name.clone(), i);
+            }
+        } else if n > Self::INDEXED {
+            self.index.insert(self.list[n - 1].name.clone(), n - 1);
+        }
+    }
+
+    fn find(&self, name: &str) -> Option<usize> {
+        if self.list.len() >= Self::INDEXED {
+            self.index.get(name).copied()
+        } else {
+            self.list.iter().rposition(|v| v.name == name)
+        }
+    }
+
+    fn set_narrowed(&mut self, slot: usize, t: Option<Type>) {
+        let v = &mut self.list[slot];
+        if t.is_some() && !v.listed {
+            v.listed = true;
+            self.narrowed.push(slot);
+        }
+        v.narrowed = t;
+    }
+
+    /// The narrowed slots, in order; drops the others from the list.
+    fn snapshot(&mut self) -> FrameSnap {
+        let list = &mut self.list;
+        self.narrowed.retain(|&s| {
+            let keep = list[s].narrowed.is_some();
+            list[s].listed = keep;
+            keep
+        });
+        self.narrowed.sort_unstable();
+        FrameSnap {
+            len: self.list.len(),
+            narrowed: self
+                .narrowed
+                .iter()
+                .map(|&s| (s, self.list[s].narrowed.clone().unwrap()))
+                .collect(),
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 struct Env {
@@ -382,7 +480,7 @@ impl Checker {
     pub fn new(world: World, file_mains: Vec<Option<ClassId>>) -> Checker {
         let env = Env {
             frames: vec![Frame {
-                vars: Vec::new(),
+                vars: Vars::default(),
                 is_block: false,
                 owner: SelfOwner::Init,
             }],
@@ -887,7 +985,7 @@ impl Checker {
         };
         Env {
             frames: vec![Frame {
-                vars: Vec::new(),
+                vars: Vars::default(),
                 is_block: false,
                 owner,
             }],
@@ -1124,12 +1222,13 @@ impl Checker {
         env.block_type = info.block.as_ref().map(|(_, t)| t.subst(&self_subst));
         env.block_optional = info.block_optional;
         env.in_initialize = info.name == "initialize" && !info.singleton;
-        env.frames[0].vars = Vec::new();
+        env.frames[0].vars = Vars::default();
         for p in &info.params {
             env.frames[0].vars.push(VarInfo {
                 name: p.name.clone(),
                 declared: p.ty.subst(&self_subst),
                 narrowed: None,
+                listed: false,
             });
         }
         if let Some((name, t)) = &info.block {
@@ -1142,6 +1241,7 @@ impl Checker {
                     t
                 },
                 narrowed: None,
+                listed: false,
             });
         }
         // Active extensions: the class's `using`s plus those of the file's
@@ -1601,7 +1701,7 @@ impl Checker {
         let n = self.env.frames.len();
         for (i, frame) in self.env.frames.iter().enumerate().rev() {
             // The last declaration wins (pattern variables of later arms).
-            if let Some(slot) = frame.vars.iter().rposition(|v| v.name == name) {
+            if let Some(slot) = frame.vars.find(name) {
                 return Some((n - 1 - i, slot));
             }
             if !frame.is_block {
@@ -1671,6 +1771,7 @@ impl Checker {
             name: name.to_string(),
             declared: ty,
             narrowed: None,
+            listed: false,
         });
         let r = VarRef {
             depth: 0,
@@ -1695,11 +1796,9 @@ impl Checker {
                         };
                         rec.insert(key, j);
                     }
-                    let v = &mut self.env.frames[n - 1 - depth].vars[slot];
-                    v.narrowed = match t {
-                        Some(t) if t != v.declared => Some(t),
-                        _ => None,
-                    };
+                    let vars = &mut self.env.frames[n - 1 - depth].vars;
+                    let t = t.filter(|t| *t != vars[slot].declared);
+                    vars.set_narrowed(slot, t);
                 }
             }
             VarKey::IVar(name) => match t {
@@ -1730,12 +1829,12 @@ impl Checker {
     }
 
     /// Snapshot of all narrowings (for branches).
-    fn snapshot(&self) -> Snapshot {
+    fn snapshot(&mut self) -> Snapshot {
         (
             self.env
                 .frames
-                .iter()
-                .map(|f| f.vars.iter().map(|v| v.narrowed.clone()).collect())
+                .iter_mut()
+                .map(|f| f.vars.snapshot())
                 .collect(),
             self.env.ivar_narrow.clone(),
         )
@@ -1745,8 +1844,20 @@ impl Checker {
     /// were unassigned then: they may be nil.
     fn restore(&mut self, snap: &Snapshot) {
         for (f, saved) in self.env.frames.iter_mut().zip(snap.0.iter()) {
-            for (v, s) in f.vars.iter_mut().zip(saved.iter()) {
-                v.narrowed = s.clone();
+            let now = std::mem::take(&mut f.vars.narrowed);
+            for &slot in &now {
+                f.vars.list[slot].listed = false;
+                if slot < saved.len {
+                    f.vars.list[slot].narrowed = None;
+                }
+            }
+            f.vars.narrowed = now;
+            f.vars.narrowed.retain(|&slot| slot >= saved.len);
+            for &slot in &f.vars.narrowed {
+                f.vars.list[slot].listed = true;
+            }
+            for (slot, t) in &saved.narrowed {
+                f.vars.set_narrowed(*slot, Some(t.clone()));
             }
         }
         self.unset_since(snap);
@@ -1758,9 +1869,10 @@ impl Checker {
     fn unset_since(&mut self, snap: &Snapshot) {
         let nil = self.world.nil();
         for (fi, f) in self.env.frames.iter_mut().enumerate() {
-            let known = snap.0.get(fi).map_or(0, |s| s.len());
-            for v in f.vars.iter_mut().skip(known) {
-                v.narrowed = Self::maybe_unset(&self.world, &self.infer, v, &nil);
+            let known = snap.0.get(fi).map_or(0, |s| s.len);
+            for slot in known..f.vars.len() {
+                let t = Self::maybe_unset(&self.world, &self.infer, &f.vars[slot], &nil);
+                f.vars.set_narrowed(slot, t);
             }
         }
     }
@@ -1770,7 +1882,7 @@ impl Checker {
     /// a match, and they may be nil otherwise.
     fn bound_if_matched(&mut self, snap: &Snapshot, facts: &mut Facts) {
         let frame = self.env.frames.last().unwrap();
-        let known = snap.0.last().map_or(0, |s| s.len());
+        let known = snap.0.last().map_or(0, |s| s.len);
         for v in frame.vars.iter().skip(known) {
             let t = v.narrowed.clone().unwrap_or_else(|| v.declared.clone());
             facts.push((VarKey::Local(v.name.clone()), t));
@@ -1782,12 +1894,13 @@ impl Checker {
     /// since `snap`.
     fn keep_since(&mut self, snap: &Snapshot, now: &Snapshot) {
         for (fi, f) in self.env.frames.iter_mut().enumerate() {
-            let known = snap.0.get(fi).map_or(0, |s| s.len());
+            let known = snap.0.get(fi).map_or(0, |s| s.len);
             let Some(cur) = now.0.get(fi) else {
                 continue;
             };
-            for (v, n) in f.vars.iter_mut().zip(cur.iter()).skip(known) {
-                v.narrowed = n.clone();
+            for slot in known..cur.len.min(f.vars.len()) {
+                let t = cur.get(slot).flatten().cloned();
+                f.vars.set_narrowed(slot, t);
             }
         }
     }
@@ -1818,20 +1931,34 @@ impl Checker {
             let Some(saved) = other.0.get(fi) else {
                 continue;
             };
-            for (vi, v) in f.vars.iter_mut().enumerate() {
-                let Some(s) = saved.get(vi) else {
-                    // Declared after the other branch: unassigned there.
-                    v.narrowed = Self::maybe_unset(&self.world, &self.infer, v, &nil);
-                    continue;
-                };
-                if v.narrowed != *s {
+            // Only variables narrowed in either branch can differ.
+            let mut slots: Vec<usize> = f
+                .vars
+                .narrowed
+                .iter()
+                .copied()
+                .chain(saved.narrowed.iter().map(|(s, _)| *s))
+                .filter(|&s| s < saved.len && s < f.vars.len())
+                .collect();
+            slots.sort_unstable();
+            slots.dedup();
+            for slot in slots {
+                let v = &f.vars[slot];
+                let s = saved.get(slot).flatten();
+                if v.narrowed.as_ref() != s {
                     let a = v.narrowed.clone().unwrap_or_else(|| v.declared.clone());
-                    let b = s.clone().unwrap_or_else(|| v.declared.clone());
+                    let b = s.cloned().unwrap_or_else(|| v.declared.clone());
                     let j = self
                         .world
                         .join(&self.infer.resolve(&a), &self.infer.resolve(&b));
-                    v.narrowed = if j == v.declared { None } else { Some(j) };
+                    let t = if j == v.declared { None } else { Some(j) };
+                    f.vars.set_narrowed(slot, t);
                 }
+            }
+            for slot in saved.len..f.vars.len() {
+                // Declared after the other branch: unassigned there.
+                let t = Self::maybe_unset(&self.world, &self.infer, &f.vars[slot], &nil);
+                f.vars.set_narrowed(slot, t);
             }
         }
         let keys: Vec<String> = self.env.ivar_narrow.keys().cloned().collect();
@@ -3559,14 +3686,19 @@ impl Checker {
                 // Its type at the end of the `ensure` holds too (that
                 // started wider): the narrower of the two.
                 if let Some(at_end) = end.0.get(fi).and_then(|f| f.get(slot)) {
-                    let at_end = at_end.clone().unwrap_or_else(|| v.declared.clone());
+                    let at_end = at_end.cloned().unwrap_or_else(|| v.declared.clone());
                     let at_end = self.infer.resolve(&at_end);
                     if self.world.is_subtype(&at_end, &j) {
                         j = at_end;
                     }
                 }
-                let v = &mut self.env.frames[fi].vars[slot];
-                v.narrowed = if j == v.declared { None } else { Some(j) };
+                let vars = &mut self.env.frames[fi].vars;
+                let t = if j == vars[slot].declared {
+                    None
+                } else {
+                    Some(j)
+                };
+                vars.set_narrowed(slot, t);
             }
             if let Some(rec) = &mut self.env.ensure_assigns {
                 for (k, t) in assigned {
@@ -5055,6 +5187,7 @@ impl Checker {
                     name: SELF_SLOT.to_string(),
                     declared: Type::Nothing,
                     narrowed: None,
+                    listed: false,
                 });
                 frame.vars.len() as u32 - 1
             }
@@ -5942,7 +6075,7 @@ impl Checker {
         let receiver = recv.as_ref().map(|t| self.resolve(t));
         let saved_self = self.enter_receiver(receiver.as_ref());
         self.env.frames.push(Frame {
-            vars: Vec::new(),
+            vars: Vars::default(),
             is_block: true,
             owner: SelfOwner::Block(call_id),
         });
@@ -6160,7 +6293,7 @@ impl Checker {
         let mut param_types = Vec::new();
         let saved_self = self.enter_receiver(expected_recv.as_ref());
         self.env.frames.push(Frame {
-            vars: Vec::new(),
+            vars: Vars::default(),
             is_block: true,
             owner: SelfOwner::Block(id),
         });
