@@ -84,6 +84,7 @@ puts counter.value        # => 100
 | [docs/10-cogs.md](docs/10-cogs.md) | Cogs (packages): git repositories pinned by commit, `Cog.toml`/`Cog.lock`, one module per cog, no `require`, the `cog` keyword |
 | [docs/11-http.md](docs/11-http.md) | HTTP server: handlers returning responses, one task per connection, router, `Signal`; `HTTP::Client` later |
 | [docs/12-testing.md](docs/12-testing.md) | Testing: Test::Unit-style `Test::Case`, tests found by the compiler, typed assertions, data-driven tests, `quarz test` |
+| [docs/13-doc-comments.md](docs/13-doc-comments.md) | Documentation comments (design): the comment above a declaration, Markdown, checked links, examples run by `quarz test`, `quarz doc` |
 | [examples/](examples/) | Sample code (`hello`, `shapes`, `wordcount`, `pipeline`, `bank_actor`, `extension`, `builder`) |
 
 ## Main design decisions
