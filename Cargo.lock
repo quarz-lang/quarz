@@ -523,6 +523,7 @@ dependencies = [
 name = "quarz-syntax"
 version = "0.0.1"
 dependencies = [
+ "memchr",
  "serde",
 ]
 

@@ -97,8 +97,8 @@ pub struct LineCol {
     pub col: usize,
 }
 
-/// A source file with precomputed line starts for offset → line/column
-/// conversion.
+/// A source file, with its line starts for offset → line/column
+/// conversion (found when first needed: most runs show no position).
 #[derive(Clone, Debug)]
 pub struct SourceFile {
     pub name: String,
@@ -106,7 +106,7 @@ pub struct SourceFile {
     /// Offset added to every span of this file, so that spans of different
     /// files never collide.
     pub base: u32,
-    line_starts: Vec<u32>,
+    lines: std::sync::OnceLock<Vec<u32>>,
 }
 
 impl SourceFile {
@@ -116,19 +116,20 @@ impl SourceFile {
 
     /// A file whose spans start at `base` rather than 0.
     pub fn with_base(name: impl Into<String>, text: impl Into<String>, base: u32) -> SourceFile {
-        let text = text.into();
-        let mut line_starts = vec![0];
-        for (i, b) in text.bytes().enumerate() {
-            if b == b'\n' {
-                line_starts.push(i as u32 + 1);
-            }
-        }
         SourceFile {
             name: name.into(),
-            text,
+            text: text.into(),
             base,
-            line_starts,
+            lines: std::sync::OnceLock::new(),
         }
+    }
+
+    fn line_starts(&self) -> &[u32] {
+        self.lines.get_or_init(|| {
+            let mut starts = vec![0];
+            starts.extend(memchr::memchr_iter(b'\n', self.text.as_bytes()).map(|i| i as u32 + 1));
+            starts
+        })
     }
 
     pub fn slice(&self, span: Span) -> &str {
@@ -138,16 +139,16 @@ impl SourceFile {
     }
 
     pub fn line_count(&self) -> usize {
-        self.line_starts.len()
+        self.line_starts().len()
     }
 
     pub fn line_col(&self, offset: u32) -> LineCol {
         let offset = offset.saturating_sub(self.base).min(self.text.len() as u32);
-        let line = match self.line_starts.binary_search(&offset) {
+        let line = match self.line_starts().binary_search(&offset) {
             Ok(i) => i,
             Err(i) => i - 1,
         };
-        let line_start = self.line_starts[line] as usize;
+        let line_start = self.line_starts()[line] as usize;
         let col = self.text[line_start..offset as usize].chars().count();
         LineCol {
             line: line + 1,
@@ -157,9 +158,9 @@ impl SourceFile {
 
     /// The text of the 1-based line `line`, without its newline.
     pub fn line_text(&self, line: usize) -> &str {
-        let start = self.line_starts[line - 1] as usize;
+        let start = self.line_starts()[line - 1] as usize;
         let end = self
-            .line_starts
+            .line_starts()
             .get(line)
             .map(|&s| s as usize)
             .unwrap_or(self.text.len());
