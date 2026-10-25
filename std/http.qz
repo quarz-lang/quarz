@@ -1,0 +1,1401 @@
+# HTTP: `require "http"`. An HTTP/1.1 server for use behind a reverse
+# proxy (docs/11-http.md): a handler takes a Request and returns a
+# Response; the server runs a task per connection.
+require "socket"
+require "json"
+
+module HTTP
+  # ----- errors ---------------------------------------------------------------------
+
+  # Answered with its status (and its message as a text body) when a
+  # handler raises it; the parser raises the subclasses.
+  class Error < StandardError
+    @status: Int
+
+    def initialize(@status: Int, message: String = "")
+      super(message)
+    end
+
+    def status -> Int = @status
+  end
+
+  class BadRequest < Error
+    def initialize(message: String = "Bad Request")
+      super(400, message)
+    end
+  end
+
+  class PayloadTooLarge < Error
+    def initialize(message: String = "Payload Too Large")
+      super(413, message)
+    end
+  end
+
+  class HeadersTooLarge < Error
+    def initialize(message: String = "Request Header Fields Too Large")
+      super(431, message)
+    end
+  end
+
+  REASONS = {
+    100 => "Continue", 101 => "Switching Protocols",
+    200 => "OK", 201 => "Created", 202 => "Accepted", 203 => "Non-Authoritative Information",
+    204 => "No Content", 205 => "Reset Content", 206 => "Partial Content",
+    300 => "Multiple Choices", 301 => "Moved Permanently", 302 => "Found", 303 => "See Other",
+    304 => "Not Modified", 307 => "Temporary Redirect", 308 => "Permanent Redirect",
+    400 => "Bad Request", 401 => "Unauthorized", 402 => "Payment Required", 403 => "Forbidden",
+    404 => "Not Found", 405 => "Method Not Allowed", 406 => "Not Acceptable",
+    408 => "Request Timeout", 409 => "Conflict", 410 => "Gone", 411 => "Length Required",
+    412 => "Precondition Failed", 413 => "Payload Too Large", 414 => "URI Too Long",
+    415 => "Unsupported Media Type", 416 => "Range Not Satisfiable", 417 => "Expectation Failed",
+    418 => "I'm a teapot",
+    421 => "Misdirected Request", 422 => "Unprocessable Content", 425 => "Too Early",
+    426 => "Upgrade Required", 428 => "Precondition Required", 429 => "Too Many Requests",
+    431 => "Request Header Fields Too Large", 451 => "Unavailable For Legal Reasons",
+    500 => "Internal Server Error", 501 => "Not Implemented", 502 => "Bad Gateway",
+    503 => "Service Unavailable", 504 => "Gateway Timeout", 505 => "HTTP Version Not Supported"
+  }
+
+  # The reason phrase of a status ("" for one without).
+  def self.reason(status: Int) -> String = REASONS[status]? || ""
+
+  # ----- headers --------------------------------------------------------------------
+
+  # One header field, its name lowercased.
+  data Field = (name: String, value: String)
+
+  # Header fields in order, names lowercased; a name may repeat.
+  data Headers(entries: Array[Field])
+    def self.empty -> Headers = Headers.new([])
+
+    def self.of(pairs: Hash[String, String]) -> Headers
+      Headers.new(pairs.map { |k, v| Field.new(k.downcase, v) })
+    end
+
+    # The first value of `name`.
+    def [](name: String) -> String?
+      n = name.downcase
+      found = entries.find { |e| e.name == n }
+      found ? found.value : nil
+    end
+
+    def all(name: String) -> Array[String]
+      n = name.downcase
+      entries.select { |e| e.name == n }.map(&:value)
+    end
+
+    def key?(name: String) -> Bool
+      n = name.downcase
+      entries.any? { |e| e.name == n }
+    end
+
+    # Every value of `name` replaced by `value`.
+    def put(name: String, value: String) -> Headers
+      n = name.downcase
+      Headers.new(entries.reject { |e| e.name == n }.push(Field.new(n, value)))
+    end
+
+    def add(name: String, value: String) -> Headers
+      Headers.new(entries.push(Field.new(name.downcase, value)))
+    end
+
+    def delete(name: String) -> Headers
+      n = name.downcase
+      Headers.new(entries.reject { |e| e.name == n })
+    end
+
+    def each(&: (String, String) -> Nil) -> Nil
+      entries.each { |e| yield e.name, e.value }
+    end
+
+    def size -> Int = entries.size
+    def empty? -> Bool = entries.empty?
+
+    # Whether a comma-separated header has `token` (case-insensitive):
+    # `Connection: keep-alive, Upgrade`.
+    def token?(name: String, token: String) -> Bool
+      t = token.downcase
+      all(name).any? { |v| v.split(",").any? { |p| p.strip.downcase == t } }
+    end
+
+    # `content-type` as `Content-Type`.
+    def self.canonical(name: String) -> String
+      name.split("-").map(&:capitalize).join("-")
+    end
+  end
+
+  # ----- reading --------------------------------------------------------------------
+
+  # A buffered reader over a connection (or over fixed bytes, for a
+  # request built in a test). Confined to the connection's task.
+  class Reader
+    var @io: IO?
+    var @buf: Bytes
+    var @pos: Int = 0
+    # Bounds each read from the connection (the body's reads).
+    var @read_timeout: Duration? = nil
+
+    def initialize(@io: IO?, @buf: Bytes = Bytes.new); end
+
+    def self.of(bytes: Bytes) -> Reader = Reader.new(nil, bytes)
+
+    def buffered -> Int = @buf.size - @pos
+
+    def read_timeout=(d: Duration?) -> Nil
+      @read_timeout = d
+      nil
+    end
+
+    # Read more into the buffer; false at the end of the stream.
+    def fill -> Bool
+      io = @io
+      return false if io.nil?
+      limit = @read_timeout
+      more = if limit
+        begin
+          Task.timeout(limit) { io.read_bytes(16_384) }
+        rescue Task::Timeout
+          raise Error.new(408, "Request Timeout")
+        end
+      else
+        io.read_bytes(16_384)
+      end
+      return false if more.empty?
+      @buf = @pos == 0 ? @buf + more : @buf.slice(@pos, @buf.size - @pos) + more
+      @pos = 0
+      true
+    end
+
+    # Whether the stream ended with nothing buffered.
+    def eof? -> Bool = buffered == 0 && !fill
+
+    # A line without its CRLF (or LF); nil at the end of the stream.
+    # More than `limit` bytes before the end of the line raises.
+    # `crlf`: only CRLF ends the line (chunked framing).
+    def read_line(limit: Int, crlf: Bool = false) -> Bytes?
+      # Where the search for the newline goes on, after what was scanned.
+      scanned = 0
+      loop do
+        nl = @buf.index(NL, @pos + scanned)
+        if nl
+          cr = nl > @pos && @buf[nl - 1] == 13
+          raise BadRequest.new("bare LF") if crlf && !cr
+          stop = cr ? nl - 1 : nl
+          raise HeadersTooLarge.new if stop - @pos > limit
+          line = @buf.slice(@pos, stop - @pos)
+          @pos = nl + 1
+          return line
+        end
+        raise HeadersTooLarge.new if buffered > limit + 1
+        scanned = buffered
+        unless fill
+          raise BadRequest.new("unexpected end of request") if buffered > 0
+          return nil
+        end
+      end
+    end
+
+    # Up to `max` bytes (at least one; empty at the end of the stream).
+    def read_some(max: Int) -> Bytes
+      return Bytes.new if buffered == 0 && !fill
+      n = max < buffered ? max : buffered
+      out = @buf.slice(@pos, n)
+      @pos += n
+      out
+    end
+
+    # Exactly `n` bytes; BadRequest when the stream ends first.
+    def read_exact(n: Int) -> Bytes
+      out = Bytes::Builder.new
+      while out.size < n
+        part = read_some(n - out.size)
+        raise BadRequest.new("unexpected end of body") if part.empty?
+        out << part
+      end
+      out.to_bytes
+    end
+
+    NL = Bytes[10]
+  end
+
+  # ----- bodies ---------------------------------------------------------------------
+
+  # A request body, read from the connection as the handler asks for it.
+  class Body
+    include Unshareable
+
+    var @reader: Reader
+    var @remaining: Int        # bytes left in a Content-Length body or in the current chunk
+    var @chunked: Bool
+    var @done: Bool
+    var @limit: Int
+    var @length: Int?
+    # Called before the first read (sends `100 Continue`).
+    var @on_first_read: (() -> Nil)?
+    var @started: Bool = false
+    # A read raised: the framing is lost, so the connection cannot be kept.
+    var @failed: Bool = false
+
+    def initialize(@reader: Reader, @length: Int?, @chunked: Bool, @limit: Int,
+                   @on_first_read: (() -> Nil)? = nil)
+      @remaining = @length || 0
+      @done = !@chunked && @remaining == 0
+    end
+
+    # A body with these contents (for requests built in tests).
+    def self.of(text: String) -> Body = of(text.to_bytes)
+
+    def self.of(bytes: Bytes) -> Body
+      Body.new(Reader.of(bytes), bytes.size, false, 1 << 62)
+    end
+
+    def self.empty -> Body = Body.new(Reader.of(Bytes.new), 0, false, 0)
+
+    # Content-Length, when the request has one.
+    def size -> Int? = @length
+
+    # Whether it has been read to the end.
+    def consumed? -> Bool = @done
+
+    # Whether reading has begun (a `100 Continue` has been sent, if asked).
+    def started? -> Bool = @started
+
+    # Whether a read failed (bad framing, the client stopped sending).
+    def failed? -> Bool = @failed
+
+    # How much of a Content-Length body is left (nil when chunked).
+    def remaining -> Int? = @chunked ? nil : @remaining
+
+    # The next piece of the body, up to `max` bytes; empty at its end.
+    def read_chunk(max: Int = 16_384) -> Bytes
+      raise BadRequest.new("the body could not be read") if @failed
+      @failed = true
+      part = read_chunk_raw(max)
+      @failed = false
+      part
+    end
+
+    def read_chunk_raw(max: Int) -> Bytes
+      unless @started
+        @started = true
+        cb = @on_first_read
+        cb.call if cb
+      end
+      return Bytes.new if @done
+      if @chunked && @remaining == 0
+        next_chunk
+        return Bytes.new if @done
+      end
+      part = @reader.read_some(max < @remaining ? max : @remaining)
+      raise BadRequest.new("unexpected end of body") if part.empty?
+      @remaining -= part.size
+      if @remaining == 0
+        if @chunked
+          crlf = @reader.read_line(2, true)
+          raise BadRequest.new("bad chunk") if crlf.nil? || !crlf.empty?
+        else
+          @done = true
+        end
+      end
+      part
+    end
+
+    def each_chunk(&: (Bytes) -> Nil) -> Nil
+      loop do
+        part = read_chunk
+        break if part.empty?
+        yield part
+      end
+    end
+
+    # The whole body; PayloadTooLarge past the server's `max_body_bytes`.
+    def read_bytes -> Bytes
+      len = @length
+      raise PayloadTooLarge.new if len && len > @limit
+      out = Bytes::Builder.new
+      each_chunk do |part|
+        out << part
+        raise PayloadTooLarge.new if out.size > @limit
+      end
+      out.to_bytes
+    end
+
+    def read -> String
+      bytes = read_bytes
+      text = bytes.decode?
+      raise BadRequest.new("body is not UTF-8") if text.nil?
+      text
+    end
+
+    # Read what is left, up to `max` bytes; whether the body ended.
+    def drain(max: Int) -> Bool
+      seen = 0
+      until @done
+        part = read_chunk
+        seen += part.size
+        return false if seen > max
+      end
+      true
+    end
+
+    def next_chunk -> Nil
+      line = begin
+        @reader.read_line(1024, true)
+      rescue HeadersTooLarge
+        raise BadRequest.new("bad chunk size")
+      end
+      raise BadRequest.new("unexpected end of body") if line.nil?
+      text = line.decode?
+      raise BadRequest.new("bad chunk size") if text.nil? || !text.match?(/\A[0-9A-Fa-f]{1,15}(;[^\x00-\x08\x0a-\x1f\x7f]*)?\z/)
+      @remaining = text.partition(";")[0].to_i(16)
+      if @remaining == 0
+        # Trailers: read and dropped, up to the blank line, 8 KiB in all.
+        left = 8192
+        loop do
+          t = @reader.read_line(left, true)
+          raise BadRequest.new("unexpected end of body") if t.nil?
+          break if t.empty?
+          left -= t.size + 2
+          raise HeadersTooLarge.new if left < 0
+        end
+        @done = true
+      end
+      nil
+    end
+  end
+
+  # ----- requests -------------------------------------------------------------------
+
+  data Request(
+    method: String,
+    target: String,
+    path: String,
+    query: String,
+    version: String,
+    headers: Headers,
+    body: Body,
+    remote_address: Socket::Address?,
+    params: Hash[String, String],
+    # The proxies whose X-Forwarded-* headers are believed, and whether
+    # the peer is one.
+    proxies: Proxies,
+    trusted: Bool
+  )
+    # A request for a test: `HTTP::Request.get("/users/1")`.
+    def self.build(method: String, target: String, headers: Headers = Headers.empty,
+                   body: String = "", remote_address: Socket::Address? = nil) -> Request
+      path, query = HTTP.split_target(target)
+      Request.new(method, target, path, query, "HTTP/1.1", headers, Body.of(body),
+                  remote_address, {}, Proxies.none, false)
+    end
+
+    def self.get(target: String, headers: Headers = Headers.empty) -> Request = build("GET", target, headers)
+    def self.head(target: String, headers: Headers = Headers.empty) -> Request = build("HEAD", target, headers)
+    def self.delete(target: String, headers: Headers = Headers.empty) -> Request = build("DELETE", target, headers)
+
+    def self.post(target: String, body: String = "", headers: Headers = Headers.empty) -> Request
+      build("POST", target, headers, body)
+    end
+
+    def self.put(target: String, body: String = "", headers: Headers = Headers.empty) -> Request
+      build("PUT", target, headers, body)
+    end
+
+    def self.patch(target: String, body: String = "", headers: Headers = Headers.empty) -> Request
+      build("PATCH", target, headers, body)
+    end
+
+    def host -> String? = headers["host"]
+
+    def content_length -> Int? = body.size
+
+    def query_params -> Hash[String, Array[String]] = HTTP.parse_query(query)
+
+    def form_params -> Hash[String, Array[String]]
+      ct = headers["content-type"] || ""
+      return {} unless ct.downcase.start_with?("application/x-www-form-urlencoded")
+      HTTP.parse_query(body.read)
+    end
+
+    def scheme -> String
+      if trusted
+        proto = headers["x-forwarded-proto"]
+        if proto
+          p = proto.split(",")[0].strip.downcase
+          return p if p == "http" || p == "https"
+        end
+      end
+      "http"
+    end
+
+    # The client's address: the peer's, or, from a trusted proxy, the last
+    # address of X-Forwarded-For that is not a trusted proxy's.
+    def remote_ip -> String?
+      peer = remote_address
+      peer_host = peer ? peer.host : nil
+      return peer_host unless trusted
+      chain = headers.all("x-forwarded-for").flat_map { |v| v.split(",").map(&:strip) }
+      chain.reverse.each do |a|
+        # Anything but an address ends the chain: the peer's then.
+        return peer_host if HTTP.ip_bytes(a).nil?
+        return a unless proxies.include?(a)
+      end
+      peer_host
+    end
+
+    def keep_alive? -> Bool
+      return false if headers.token?("connection", "close")
+      version == "HTTP/1.1" || headers.token?("connection", "keep-alive")
+    end
+  end
+
+  # Trusted proxies: addresses or networks (`10.0.0.0/8`, `fd00::/8`).
+  data Proxies(networks: Array[[Bytes, Int]])
+    def self.none -> Proxies = Proxies.new([])
+
+    def self.of(specs: Array[String]) -> Proxies
+      Proxies.new(specs.map do |spec|
+        addr, slash, bits = spec.partition("/")
+        bytes = HTTP.ip_bytes(addr)
+        raise ArgumentError, "not an address: #{spec}" if bytes.nil?
+        unless slash.empty? || (bits.match?(/\A[0-9]{1,3}\z/) && bits.to_i <= bytes.size * 8)
+          raise ArgumentError, "bad network prefix: #{spec}"
+        end
+        prefix = slash.empty? ? bytes.size * 8 : bits.to_i
+        [bytes, prefix]
+      end)
+    end
+
+    def empty? -> Bool = networks.empty?
+
+    def include?(host: String) -> Bool
+      bytes = HTTP.ip_bytes(host)
+      return false if bytes.nil?
+      networks.any? { |n| HTTP.in_network?(bytes, n[0], n[1]) }
+    end
+  end
+
+  # The bytes of a numeric IPv4 (4) or IPv6 (16) address; nil for
+  # anything else. An IPv4-mapped IPv6 address is its IPv4 address.
+  def self.ip_bytes(host: String) -> Bytes?
+    h = host.delete_prefix("[").delete_suffix("]")
+    if h.include?(":")
+      head, sep, tail = h.partition("::")
+      groups = ->(s: String) { s.empty? ? [] : s.split(":") }
+      left = groups.call(head)
+      right = groups.call(tail)
+      # A trailing dotted IPv4 part counts as two groups.
+      v4: Bytes? = nil
+      last = right.empty? ? (left.empty? ? nil : left[-1]) : right[-1]
+      if last && last.include?(".")
+        v4 = ip_bytes(last)
+        return nil if v4.nil? || v4.size != 4
+        if right.empty?
+          left = left.take(left.size - 1)
+        else
+          right = right.take(right.size - 1)
+        end
+      end
+      have = left.size + right.size + (v4 ? 2 : 0)
+      return nil if sep.empty? ? have != 8 : have > 7
+      all = left + (0...(8 - have)).map { |_| "0" } + right
+      out = Bytes::Builder.new
+      ok = all.all? { |g| g.match?(/\A[0-9A-Fa-f]{1,4}\z/) }
+      return nil unless ok
+      all.each do |g|
+        v = g.to_i(16)
+        out << v / 256
+        out << v % 256
+      end
+      out << v4 if v4
+      bytes = out.to_bytes
+      return nil unless bytes.size == 16
+      mapped = bytes.slice(0, 12) == Bytes[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255]
+      mapped ? bytes.slice(12, 4) : bytes
+    else
+      parts = h.split(".")
+      return nil unless parts.size == 4 && parts.all? { |p| p.match?(/\A[0-9]{1,3}\z/) && p.to_i <= 255 }
+      Bytes.from(parts.map(&:to_i))
+    end
+  end
+
+  def self.in_network?(addr: Bytes, net: Bytes, prefix: Int) -> Bool
+    return false unless addr.size == net.size
+    full = prefix / 8
+    return false unless addr.slice(0, full) == net.slice(0, full)
+    rest = prefix % 8
+    return true if rest == 0
+    mask = (0xff << (8 - rest)) & 0xff
+    (addr[full] & mask) == (net[full] & mask)
+  end
+
+  # `/a%20b?x=1` as `["/a b", "x=1"]`.
+  def self.split_target(target: String) -> [String, String]
+    path, _, query = target.partition("?")
+    [percent_decode(path) || path, query]
+  end
+
+  # Percent-decoding, nil when the result is not UTF-8. `plus` decodes
+  # `+` as a space (forms and queries).
+  def self.percent_decode(s: String, plus: Bool = false) -> String?
+    return s unless s.include?("%") || (plus && s.include?("+"))
+    out = Bytes::Builder.new
+    bytes = s.to_bytes
+    i = 0
+    n = bytes.size
+    while i < n
+      c = bytes[i]
+      if c == 37 && i + 2 < n
+        h = hex_value(bytes[i + 1])
+        l = hex_value(bytes[i + 2])
+        if h >= 0 && l >= 0
+          out << h * 16 + l
+          i += 3
+          next
+        end
+      end
+      out << (plus && c == 43 ? 32 : c)
+      i += 1
+    end
+    out.to_bytes.decode?
+  end
+
+  def self.hex_value(c: Int) -> Int
+    return c - 48 if c >= 48 && c <= 57
+    return c - 87 if c >= 97 && c <= 102
+    return c - 55 if c >= 65 && c <= 70
+    -1
+  end
+
+  # `a=1&b=2&a=3` as `{"a" => ["1", "3"], "b" => ["2"]}`.
+  def self.parse_query(q: String) -> Hash[String, Array[String]]
+    out = Hash::Builder[String, Array[String]].new
+    q.split("&").each do |pair|
+      next if pair.empty?
+      k, _, v = pair.partition("=")
+      key = percent_decode(k, plus: true) || k
+      val = percent_decode(v, plus: true) || v
+      out[key] = (out[key]? || []).push(val)
+    end
+    out.to_h
+  end
+
+  # ----- parsing --------------------------------------------------------------------
+
+  TOKEN = /\A[!#$%&'*+\-.^_`|~0-9A-Za-z]+\z/
+
+  # The request line and headers, and the body's framing; nil when the
+  # connection ends before a request begins. `on_continue` is called on
+  # the body's first read when the client expects `100 Continue`.
+  def self.read_request(reader: Reader, max_header_bytes: Int, max_body_bytes: Int,
+                        remote_address: Socket::Address?, proxies: Proxies, trusted: Bool,
+                        on_continue: (() -> Nil)? = nil) -> Request?
+    # Blank lines before a request are ignored (RFC 9112 §2.2).
+    budget = max_header_bytes
+    line = reader.read_line(budget)
+    while line && line.empty?
+      budget -= 2
+      raise HeadersTooLarge.new if budget < 0
+      line = reader.read_line(budget)
+    end
+    return nil if line.nil?
+    budget -= line.size + 2
+    text = line.decode?
+    raise BadRequest.new("bad request line") if text.nil?
+    # method SP target SP version, single spaces (RFC 9112 §3).
+    method, sp1, rest = text.partition(" ")
+    target, sp2, version = rest.partition(" ")
+    raise BadRequest.new("bad request line") if sp1.empty? || sp2.empty? || target.empty?
+    raise BadRequest.new("bad method") unless method.match?(TOKEN)
+    raise BadRequest.new("bad request target") if target.match?(/[\x00-\x20\x7f]/)
+    raise BadRequest.new("bad request line") unless version.match?(/\AHTTP\/[0-9]\.[0-9]\z/)
+    raise HTTP::Error.new(505, "HTTP Version Not Supported") unless version == "HTTP/1.1" || version == "HTTP/1.0"
+    raise BadRequest.new("bad request target") if target.include?("#")
+    headers = read_headers(reader, budget)
+    # An absolute-form target (`http://host/path`) is reduced to its path.
+    origin = if target.start_with?("/") || target == "*"
+      target
+    elsif target.match?(/\Ahttps?:\/\//i)
+      after = target.partition("://")[2]
+      cut = after.index(/[\/?]/)
+      tail = cut ? after[cut..] : ""
+      tail.start_with?("/") ? tail : "/" + tail
+    else
+      raise BadRequest.new("bad request target")
+    end
+    raw_path, _, query = origin.partition("?")
+    path = percent_decode(raw_path)
+    raise BadRequest.new("bad request target") if path.nil?
+    # Framing (RFC 9112 §6): chunked or a Content-Length, not both.
+    te = headers.all("transfer-encoding")
+    cls = headers.all("content-length")
+    chunked = false
+    length: Int? = nil
+    unless te.empty?
+      raise BadRequest.new("Transfer-Encoding and Content-Length") unless cls.empty?
+      codings = te.flat_map { |v| v.split(",").map { |c| c.strip.downcase } }
+      raise HTTP::Error.new(501, "Not Implemented") unless codings == ["chunked"]
+      chunked = true
+    end
+    unless cls.empty?
+      values = cls.flat_map { |v| v.split(",").map(&:strip) }.uniq
+      raise BadRequest.new("bad Content-Length") unless values.size == 1 && values[0].match?(/\A[0-9]{1,18}\z/)
+      length = values[0].to_i
+    end
+    continue = version == "HTTP/1.1" && headers.token?("expect", "100-continue") ? on_continue : nil
+    body = Body.new(reader, length, chunked, max_body_bytes, continue)
+    Request.new(method, target, path, query, version, headers, body, remote_address, {}, proxies, trusted)
+  end
+
+  def self.read_headers(reader: Reader, budget: Int) -> Headers
+    entries: Array[Field] = []
+    left = budget
+    loop do
+      raise HeadersTooLarge.new if left < 0
+      line = reader.read_line(left < 0 ? 0 : left)
+      raise BadRequest.new("unexpected end of headers") if line.nil?
+      left -= line.size + 2
+      break if line.empty?
+      raise BadRequest.new("obsolete line folding") if line[0] == 32 || line[0] == 9
+      text = line.decode?
+      raise BadRequest.new("bad header") if text.nil?
+      name, colon, value = text.partition(":")
+      raise BadRequest.new("bad header") if colon.empty? || !name.match?(TOKEN)
+      raise BadRequest.new("bad header value") if value.match?(/[\x00-\x08\x0a-\x1f\x7f]/)
+      entries = entries.push(Field.new(name.downcase, value.strip))
+    end
+    raise HeadersTooLarge.new if left < 0
+    Headers.new(entries)
+  end
+
+  # ----- responses ------------------------------------------------------------------
+
+  # Given to a Stream body's procedure: each `write` is a chunk.
+  class BodyWriter
+    include Unshareable
+
+    var @io: IO
+    var @chunked: Bool
+    var @timeout: Duration
+    var @head: Bool
+
+    def initialize(@io: IO, @chunked: Bool, @timeout: Duration, @head: Bool = false); end
+
+    def write(data: String) -> Nil = write(data.to_bytes)
+
+    def write(data: Bytes) -> Nil
+      return nil if @head || data.empty?
+      io = @io
+      chunked = @chunked
+      Task.timeout(@timeout) do
+        if chunked
+          io.write("#{data.size.to_s(16)}\r\n")
+          io.write(data)
+          io.write("\r\n")
+        else
+          io.write(data)
+        end
+      end
+      nil
+    end
+
+    def flush -> Nil
+      @io.flush
+      nil
+    end
+
+    def finish -> Nil
+      return nil if @head
+      io = @io
+      Task.timeout(@timeout) { io.write("0\r\n\r\n") } if @chunked
+      nil
+    end
+  end
+
+  enum ResponseBody
+    variant Empty
+    variant Text(text: String)
+    variant Binary(bytes: Bytes)
+    variant Stream(write: shareable (BodyWriter) -> Nil)
+  end
+
+  data Response(status: Int, headers: Headers, body: ResponseBody)
+    def self.empty(status: Int = 204, headers: Headers = Headers.empty) -> Response
+      Response.new(status, headers, ResponseBody::Empty)
+    end
+
+    def self.text(body: String, status: Int = 200) -> Response
+      Response.new(status, Headers.empty.add("content-type", "text/plain; charset=utf-8"),
+                   ResponseBody::Text.new(body))
+    end
+
+    def self.html(body: String, status: Int = 200) -> Response
+      Response.new(status, Headers.empty.add("content-type", "text/html; charset=utf-8"),
+                   ResponseBody::Text.new(body))
+    end
+
+    def self.json(value: JSON::Value, status: Int = 200) -> Response
+      Response.new(status, Headers.empty.add("content-type", "application/json"),
+                   ResponseBody::Text.new(JSON.generate(value)))
+    end
+
+    def self.bytes(body: Bytes, content_type: String, status: Int = 200) -> Response
+      Response.new(status, Headers.empty.add("content-type", content_type), ResponseBody::Binary.new(body))
+    end
+
+    def self.redirect(location: String, status: Int = 302) -> Response
+      Response.new(status, Headers.empty.add("location", location), ResponseBody::Empty)
+    end
+
+    def self.not_found(message: String = "Not Found") -> Response = text(message, 404)
+
+    def self.stream(status: Int = 200, headers: Headers = Headers.empty,
+                    &write: shareable (BodyWriter) -> Nil) -> Response
+      Response.new(status, headers, ResponseBody::Stream.new(write))
+    end
+
+    def header(name: String, value: String) -> Response = with(headers: headers.put(name, value))
+
+    def reason -> String = HTTP.reason(status)
+  end
+
+  # Whether a handler's status can be sent: a final status (interim ones
+  # would desynchronize the connection).
+  def self.valid_status?(status: Int) -> Bool = status >= 200 && status <= 599
+
+  # Whether a handler's headers can be sent: names are tokens, values
+  # have no CR, LF or other control characters but HTAB.
+  def self.valid_headers?(headers: Headers) -> Bool
+    headers.entries.all? { |f| f.name.match?(TOKEN) && !f.value.match?(/[\x00-\x08\x0a-\x1f\x7f]/) }
+  end
+
+  # The status line and headers of `res` as sent for `req`, with what the
+  # body implies; and whether the body is sent chunked.
+  def self.response_head(req: Request?, res: Response, keep_alive: Bool) -> [String, Bool]
+    status = res.status
+    headers = res.headers
+    no_body = (status >= 100 && status < 200) || status == 204
+    http10 = req && req.version == "HTTP/1.0"
+    chunked = false
+    # The framing is the server's: a handler's Transfer-Encoding goes,
+    # and its Content-Length stays only where no body follows it (HEAD,
+    # 304), saying what the GET would send.
+    head = req && req.method == "HEAD"
+    headers = headers.delete("transfer-encoding")
+    unless no_body
+      keep_length = (head || status == 304) && headers.key?("content-length")
+      case res.body
+      in ResponseBody::Empty
+        headers = headers.put("content-length", "0") unless keep_length || status == 304
+      in ResponseBody::Text(text:)
+        headers = headers.put("content-length", text.bytesize.to_s) unless keep_length || status == 304
+      in ResponseBody::Binary(bytes:)
+        headers = headers.put("content-length", bytes.size.to_s) unless keep_length || status == 304
+      in ResponseBody::Stream
+        unless http10 || status == 304
+          headers = headers.put("transfer-encoding", "chunked").delete("content-length")
+          chunked = true
+        end
+      end
+    end
+    headers = headers.delete("content-length").delete("transfer-encoding") if no_body
+    headers = headers.put("date", Time.now.utc.strftime("%a, %d %b %Y %H:%M:%S GMT")) unless headers.key?("date")
+    if !keep_alive
+      headers = headers.put("connection", "close")
+    elsif http10
+      headers = headers.put("connection", "keep-alive")
+    end
+    out = String::Builder.new
+    out << "HTTP/1.1 #{status} #{HTTP.reason(status)}\r\n"
+    headers.each { |k, v| out << "#{Headers.canonical(k)}: #{v}\r\n" }
+    out << "\r\n"
+    [out.to_s, chunked]
+  end
+
+  # Write `res` for `req` to `io` under `timeout` per write.
+  def self.write_response(io: IO, req: Request?, res: Response, keep_alive: Bool, timeout: Duration) -> Nil
+    head, chunked = response_head(req, res, keep_alive)
+    status = res.status
+    send_body = !(req && req.method == "HEAD") && !(status >= 100 && status < 200) && status != 204 && status != 304
+    case res.body
+    in ResponseBody::Stream(write:)
+      Task.timeout(timeout) { io.write(head) }
+      if send_body
+        writer = BodyWriter.new(io, chunked, timeout)
+        write.call(writer)
+        writer.finish
+      end
+    in ResponseBody::Text(text:)
+      Task.timeout(timeout) { io.write(send_body ? head + text : head) }
+    in ResponseBody::Binary(bytes:)
+      Task.timeout(timeout) do
+        io.write(head)
+        io.write(bytes) if send_body
+      end
+    in ResponseBody::Empty
+      Task.timeout(timeout) { io.write(head) }
+    end
+    nil
+  end
+
+  # ----- handlers -------------------------------------------------------------------
+
+  module Handler
+    include Shareable
+
+    abstract def call(req: Request) -> Response
+  end
+
+  # A handler from a procedure.
+  data ProcHandler(f: shareable (Request) -> Response)
+    include Handler
+
+    def call(req: Request) -> Response = f.call(req)
+  end
+
+  def self.handler(&f: shareable (Request) -> Response) -> Handler = ProcHandler.new(f)
+
+  # ----- the server -----------------------------------------------------------------
+
+  data Options = (
+    read_header_timeout: Duration,
+    idle_timeout: Duration,
+    read_timeout: Duration,
+    write_timeout: Duration,
+    max_header_bytes: Int,
+    max_body_bytes: Int,
+    max_connections: Int,
+    proxies: Proxies,
+    on_error: (shareable (Exception, Request?) -> Nil)?
+  )
+
+  class Server
+    include Shareable
+
+    @handler: Handler
+    @options: Options
+    @tcp: TCPServer?
+    @unix: UNIXServer?
+    # 0: not serving yet, 1: serving, 2: shutting down.
+    @state: Atom[Int]
+    # Connections waiting for a request, by number: shutdown closes them.
+    @idle: Atom[Hash[Int, IO]]
+    @next_id: Atom[Int]
+    @active: Atom[Int]
+    # A token per connection; when none is left, accepting waits.
+    @tokens: Channel[Nil]
+    @stop: Channel[Duration]
+    @drained: Channel[Nil]
+    @done: Channel[Nil]
+
+    # A server on `host`:`port`, or on a UNIX socket at `path` (whose
+    # peers count as trusted proxies). It listens at once, so that
+    # `local_address` gives the port of `port: 0`.
+    def initialize(@handler: Handler, *, host: String = "0.0.0.0", port: Int = 8080,
+                   path: String? = nil,
+                   read_header_timeout: Duration = 10.seconds, idle_timeout: Duration = 60.seconds,
+                   read_timeout: Duration = 30.seconds,
+                   write_timeout: Duration = 30.seconds, max_header_bytes: Int = 65_536,
+                   max_body_bytes: Int = 1_048_576, max_connections: Int = 10_000,
+                   trusted_proxies: Array[String] = [],
+                   on_error: (shareable (Exception, Request?) -> Nil)? = nil)
+      @options = Options.new(read_header_timeout, idle_timeout, read_timeout, write_timeout,
+                             max_header_bytes, max_body_bytes, max_connections,
+                             Proxies.of(trusted_proxies), on_error)
+      @tcp = path ? nil : TCPServer.new(host, port)
+      @unix = path ? UNIXServer.new(path) : nil
+      @state = Atom.new(0)
+      @idle = Atom[Hash[Int, IO]].new({})
+      @next_id = Atom.new(0)
+      @active = Atom.new(0)
+      @tokens = Channel[Nil].new(capacity: max_connections)
+      @stop = Channel[Duration].new(capacity: 1)
+      @drained = Channel[Nil].new(capacity: 1)
+      @done = Channel[Nil].new
+    end
+
+    def self.unix(handler: Handler, path: String, *,
+                  read_header_timeout: Duration = 10.seconds, idle_timeout: Duration = 60.seconds,
+                  read_timeout: Duration = 30.seconds,
+                  write_timeout: Duration = 30.seconds, max_header_bytes: Int = 65_536,
+                  max_body_bytes: Int = 1_048_576, max_connections: Int = 10_000,
+                  on_error: (shareable (Exception, Request?) -> Nil)? = nil) -> Server
+      Server.new(handler, path: path, read_header_timeout: read_header_timeout,
+                 idle_timeout: idle_timeout, read_timeout: read_timeout, write_timeout: write_timeout,
+                 max_header_bytes: max_header_bytes, max_body_bytes: max_body_bytes,
+                 max_connections: max_connections, on_error: on_error)
+    end
+
+    # The address the server listens on (its port, when started on 0).
+    def local_address -> Socket::Address
+      tcp = @tcp
+      raise ArgumentError, "a UNIX socket server has no address" if tcp.nil?
+      tcp.local_address
+    end
+
+    # Accept and serve until `shutdown` (or until the calling task is
+    # cancelled, which cancels every connection at once).
+    def serve -> Nil
+      return nil unless @state.compare_and_set(0, 1)
+      begin
+        Task.scope do |scope|
+          server = self
+          # Cancelled at shutdown, it ends normally: a child of the scope
+          # that failed would cancel the connections too.
+          acceptor = scope.spawn do
+            begin
+              server.accept_loop(scope)
+            rescue Task::Cancelled
+              nil
+            end
+            nil
+          end
+          grace = @stop.receive
+          # The listener is closed: the accept loop ends (cancelled, in
+          # case it waits for a token), and no connection is added after
+          # the count below.
+          acceptor.cancel
+          acceptor.await
+          if @active.value > 0
+            drained = @drained
+            Channel.select do |s|
+              s.receive(drained) { |_| nil }
+              s.after(grace) { nil }
+            end
+          end
+          scope.cancel
+        end
+      ensure
+        close_listener
+        @done.close
+      end
+      nil
+    end
+
+    # Stop accepting, close the connections waiting for a request, let
+    # those in a handler finish for up to `timeout`, then cancel them,
+    # and `serve` returns. `shutdown` itself returns at once (so a
+    # handler may call it); `wait` waits for `serve`.
+    def shutdown(timeout: Duration = 30.seconds) -> Nil
+      loop do
+        was = @state.value
+        if was == 0
+          next unless @state.compare_and_set(0, 2)
+          close_listener
+          @done.close
+          return nil
+        end
+        if was == 1
+          next unless @state.compare_and_set(1, 2)
+          close_listener
+          close_idle
+          @stop.try_send(timeout)
+        end
+        break
+      end
+      nil
+    end
+
+    # Wait until `serve` has returned (after a shutdown).
+    def wait -> Nil
+      @done.receive?
+      nil
+    end
+
+    def stopping? -> Bool = @state.value == 2
+
+    def close_listener -> Nil
+      begin
+        tcp = @tcp
+        tcp.close if tcp && !tcp.closed?
+        unix = @unix
+        unix.close if unix && !unix.closed?
+      rescue IOError, SystemCallError
+        nil
+      end
+      nil
+    end
+
+    def close_idle -> Nil
+      @idle.value.each do |_, io|
+        begin
+          io.close
+        rescue IOError, SystemCallError
+          nil
+        end
+      end
+      nil
+    end
+
+    def accept_loop(scope: Scope) -> Nil
+      server = self
+      loop do
+        @tokens.send(nil)
+        accepted = begin
+          accept_one
+        rescue IOError
+          nil
+        rescue SystemCallError => e
+          report(e, nil)
+          @tokens.receive
+          Task.sleep(100.ms)
+          next
+        end
+        break if accepted.nil?
+        conn, peer = accepted
+        if stopping?
+          conn.close
+          break
+        end
+        @active.update { |n| n + 1 }
+        id = @next_id.update { |n| n + 1 }
+        scope.spawn do
+          begin
+            server.serve_connection(id, conn, peer)
+          ensure
+            server.end_connection(id, conn)
+          end
+        end
+      end
+      nil
+    end
+
+    def accept_one -> [IO, Socket::Address?]?
+      tcp = @tcp
+      if tcp
+        c = tcp.accept
+        return [c, c.remote_address]
+      end
+      unix = @unix
+      return nil if unix.nil?
+      [unix.accept, nil]
+    end
+
+    def end_connection(id: Int, conn: IO) -> Nil
+      begin
+        conn.close unless conn.closed?
+      rescue IOError, SystemCallError
+        nil
+      end
+      @tokens.try_receive
+      left = @active.update { |n| n - 1 }
+      @drained.try_send(nil) if left == 0 && stopping?
+      nil
+    end
+
+    def report(e: Exception, req: Request?) -> Nil
+      cb = @options.on_error
+      where = req ? " (#{req.method} #{req.target})" : ""
+      if cb
+        begin
+          cb.call(e, req)
+        rescue => e2
+          STDERR.puts "HTTP::Server: on_error raised #{e2.class.name}: #{e2.message}"
+        end
+      else
+        STDERR.puts "HTTP::Server#{where}: #{e.class.name}: #{e.message}"
+      end
+      nil
+    end
+
+    # The requests of one connection, one after another. Whatever goes
+    # wrong ends this connection only.
+    def serve_connection(id: Int, conn: IO, peer: Socket::Address?) -> Nil
+      opts = @options
+      reader = Reader.new(conn)
+      first = true
+      current: Request? = nil
+      continue = -> { Task.timeout(opts.write_timeout) { conn.write("HTTP/1.1 100 Continue\r\n\r\n") }; nil }
+      begin
+        # A UNIX socket's peer is a proxy; a TCP peer, when it is one.
+        trusted = !@unix.nil? || (!peer.nil? && opts.proxies.include?(peer.host))
+        loop do
+          current = nil
+          reader.read_timeout = nil
+          # Waiting for a request: shutdown may close the connection.
+          @idle.update { |h| h.put(id, conn) }
+          break if stopping?
+          wait = first ? opts.read_header_timeout : opts.idle_timeout
+          more = Task.timeout(wait) { !reader.eof? }
+          @idle.update { |h| h.delete(id) }
+          break unless more
+          req = begin
+            Task.timeout(opts.read_header_timeout) do
+              HTTP.read_request(reader, opts.max_header_bytes, opts.max_body_bytes, peer,
+                                opts.proxies, trusted, continue)
+            end
+          rescue Error => e
+            HTTP.write_response(conn, nil, error_response(e), false, opts.write_timeout)
+            break
+          end
+          break if req.nil?
+          current = req
+          first = false
+          reader.read_timeout = opts.read_timeout
+          res = begin
+            @handler.call(req)
+          rescue Error => e
+            error_response(e)
+          rescue => e
+            report(e, req)
+            Response.empty(500)
+          end
+          unless HTTP.valid_status?(res.status)
+            report(ArgumentError.new("invalid response status #{res.status}"), req)
+            res = Response.empty(500)
+          end
+          unless HTTP.valid_headers?(res.headers)
+            report(ArgumentError.new("invalid response header (a control character or a bad name)"), req)
+            res = Response.empty(500)
+          end
+          keep = req.keep_alive? && !res.headers.token?("connection", "close") && !stopping?
+          if req.version == "HTTP/1.0"
+            # Kept only with a Content-Length; never after a
+            # Transfer-Encoding (RFC 9112 §6.1).
+            keep = false if res.body.is_a?(ResponseBody::Stream) || req.headers.key?("transfer-encoding")
+          end
+          keep = drain(req) if keep
+          HTTP.write_response(conn, req, res, keep, opts.write_timeout)
+          break unless keep
+        end
+      rescue Task::Timeout, IOError, SystemCallError
+        nil
+      rescue => e
+        # A Stream body, or the server itself, failed mid-response.
+        report(e, current)
+      ensure
+        @idle.update { |h| h.delete(id) }
+      end
+      nil
+    end
+
+    # Read what the handler left of the body, if little; whether the
+    # connection can be kept. Only a Content-Length body with at most 64
+    # KiB left is read (so the response is not held up); otherwise the
+    # connection is closed after the response.
+    def drain(req: Request) -> Bool
+      body = req.body
+      return false if body.failed?
+      return true if body.consumed?
+      # The client waits for a 100 Continue that was not sent.
+      return false if req.headers.token?("expect", "100-continue") && !body.started?
+      left = body.remaining
+      return false if left.nil? || left > 65_536
+      begin
+        body.drain(left)
+      rescue Error
+        false
+      end
+    end
+
+    def error_response(e: Error) -> Response
+      return Response.empty(500) unless HTTP.valid_status?(e.status)
+      msg = e.message.empty? ? HTTP.reason(e.status) : e.message
+      Response.text(msg, e.status)
+    end
+  end
+
+  # ----- the router -----------------------------------------------------------------
+
+  enum Segment
+    variant Literal(text: String)
+    variant Param(name: String)
+    variant Rest(name: String)
+  end
+
+  data Route = (method: String, pattern: String, segments: Array[Segment], handler: Handler)
+
+  # Routes by method and path pattern (`/users/{id}`, `/files/{path...}`):
+  # the most specific match wins; a path that only other methods have is
+  # answered 405.
+  data Router(routes: Array[Route], fallback: Handler)
+    include Handler
+
+    def self.build(&: (RouterBuilder) -> Nil) -> Router
+      b = RouterBuilder.new
+      yield b
+      b.to_router
+    end
+
+    def call(req: Request) -> Response
+      segments = HTTP.path_segments(req)
+      return fallback.call(req) if segments.nil?
+      found: Route? = nil
+      found_params: Hash[String, String] = {}
+      best: Array[Int] = []
+      allowed: Array[String] = []
+      routes.each do |route|
+        params = HTTP.match_segments(route.segments, segments)
+        next if params.nil?
+        if route.method == req.method || (req.method == "HEAD" && route.method == "GET")
+          score = HTTP.specificity(route.segments)
+          # A HEAD route beats a GET one of the same pattern.
+          if found.nil? || (score <=> best) > 0 || (score == best && route.method == req.method)
+            found = route
+            found_params = params
+            best = score
+          end
+        else
+          allowed = allowed.push(route.method)
+        end
+      end
+      chosen = found
+      if chosen
+        chosen.handler.call(req.with(params: req.params.merge(found_params)))
+      elsif allowed.empty?
+        fallback.call(req)
+      else
+        methods = allowed.uniq
+        methods = methods.push("HEAD") if methods.include?("GET") && !methods.include?("HEAD")
+        Response.text("Method Not Allowed", 405).header("allow", methods.sort.join(", "))
+      end
+    end
+  end
+
+  class RouterBuilder
+    include Unshareable
+
+    var @routes: Array[Route] = []
+    var @fallback: Handler = ProcHandler.new(->(r: Request) { Response.not_found })
+
+    def handle(method: String, pattern: String, handler: Handler) -> Nil
+      segs = HTTP.parse_pattern(pattern)
+      shape = HTTP.specificity(segs)
+      @routes.each do |r|
+        if r.method == method && HTTP.specificity(r.segments) == shape && HTTP.same_literals?(r.segments, segs)
+          raise ArgumentError, "#{method} #{pattern} conflicts with #{r.pattern}"
+        end
+      end
+      @routes = @routes.push(Route.new(method, pattern, segs, handler))
+      nil
+    end
+
+    def handle(method: String, pattern: String, &blk: shareable (Request) -> Response) -> Nil
+      handle(method, pattern, ProcHandler.new(blk))
+    end
+
+    def get(pattern: String, handler: Handler) -> Nil = handle("GET", pattern, handler)
+    def get(pattern: String, &blk: shareable (Request) -> Response) -> Nil = handle("GET", pattern, ProcHandler.new(blk))
+    def head(pattern: String, handler: Handler) -> Nil = handle("HEAD", pattern, handler)
+    def head(pattern: String, &blk: shareable (Request) -> Response) -> Nil = handle("HEAD", pattern, ProcHandler.new(blk))
+    def post(pattern: String, handler: Handler) -> Nil = handle("POST", pattern, handler)
+    def post(pattern: String, &blk: shareable (Request) -> Response) -> Nil = handle("POST", pattern, ProcHandler.new(blk))
+    def put(pattern: String, handler: Handler) -> Nil = handle("PUT", pattern, handler)
+    def put(pattern: String, &blk: shareable (Request) -> Response) -> Nil = handle("PUT", pattern, ProcHandler.new(blk))
+    def patch(pattern: String, handler: Handler) -> Nil = handle("PATCH", pattern, handler)
+    def patch(pattern: String, &blk: shareable (Request) -> Response) -> Nil = handle("PATCH", pattern, ProcHandler.new(blk))
+    def delete(pattern: String, handler: Handler) -> Nil = handle("DELETE", pattern, handler)
+    def delete(pattern: String, &blk: shareable (Request) -> Response) -> Nil = handle("DELETE", pattern, ProcHandler.new(blk))
+    def options(pattern: String, handler: Handler) -> Nil = handle("OPTIONS", pattern, handler)
+    def options(pattern: String, &blk: shareable (Request) -> Response) -> Nil = handle("OPTIONS", pattern, ProcHandler.new(blk))
+
+    # Another router's routes under `prefix`.
+    def mount(prefix: String, router: Router) -> Nil
+      pre = HTTP.parse_pattern(prefix)
+      raise ArgumentError, "a mount prefix has no {name...}" if pre.any? { |s| s.is_a?(Segment::Rest) }
+      router.routes.each do |r|
+        handle(r.method, prefix.delete_suffix("/") + r.pattern, r.handler)
+      end
+      nil
+    end
+
+    def not_found(handler: Handler) -> Nil
+      @fallback = handler
+      nil
+    end
+
+    def not_found(&blk: shareable (Request) -> Response) -> Nil
+      @fallback = ProcHandler.new(blk)
+      nil
+    end
+
+    def to_router -> Router = Router.new(@routes, @fallback)
+  end
+
+  def self.parse_pattern(pattern: String) -> Array[Segment]
+    raise ArgumentError, "a pattern starts with /: #{pattern}" unless pattern.start_with?("/")
+    parts = pattern.split("/", -1).drop(1)
+    out: Array[Segment] = []
+    parts.each_with_index do |part, i|
+      seg = if part.start_with?("{") && part.end_with?("...}")
+        raise ArgumentError, "{name...} must come last: #{pattern}" unless i == parts.size - 1
+        Segment::Rest.new(part[1...-4])
+      elsif part.start_with?("{") && part.end_with?("}")
+        Segment::Param.new(part[1...-1])
+      else
+        Segment::Literal.new(part)
+      end
+      out = out.push(seg)
+    end
+    out
+  end
+
+  # The request's path split into segments, then each percent-decoded (an
+  # escaped `/` does not separate segments); nil when it does not decode.
+  def self.path_segments(req: Request) -> Array[String]?
+    raw = req.target.partition("?")[0]
+    unless raw.start_with?("/")
+      return nil unless raw.match?(/\Ahttps?:\/\//i)
+      rest = raw.partition("://")[2]
+      slash = rest.index("/")
+      raw = slash ? rest[slash..] : "/"
+    end
+    out: Array[String] = []
+    raw.split("/", -1).drop(1).each do |part|
+      d = percent_decode(part)
+      return nil if d.nil?
+      out = out.push(d)
+    end
+    out
+  end
+
+  def self.match_segments(pattern: Array[Segment], path: Array[String]) -> Hash[String, String]?
+    params = Hash::Builder[String, String].new
+    pattern.each_with_index do |seg, i|
+      case seg
+      in Segment::Rest(name:)
+        # `/files/{p...}` matches `/files/` (an empty rest), not `/files`.
+        return nil if i >= path.size
+        params[name] = path.drop(i).join("/")
+        return params.to_h
+      in Segment::Param(name:)
+        return nil if i >= path.size || path[i].empty?
+        params[name] = path[i]
+      in Segment::Literal(text:)
+        return nil if i >= path.size || path[i] != text
+      end
+    end
+    pattern.size == path.size ? params.to_h : nil
+  end
+
+  # Literal 2, `{name}` 1, `{name...}` 0, segment by segment.
+  def self.specificity(segs: Array[Segment]) -> Array[Int]
+    segs.map do |s|
+      case s
+      in Segment::Literal then 2
+      in Segment::Param then 1
+      in Segment::Rest then 0
+      end
+    end
+  end
+
+  def self.same_literals?(a: Array[Segment], b: Array[Segment]) -> Bool
+    return false unless a.size == b.size
+    a.zip(b).all? do |pair|
+      x, y = pair
+      case x
+      in Segment::Literal(text:)
+        y.is_a?(Segment::Literal) && y == x
+      else
+        true
+      end
+    end
+  end
+
+  # Serve `port` with a handler from the block until the task is
+  # cancelled.
+  def self.serve(port: Int = 8080, host: String = "0.0.0.0",
+                 &handler: shareable (Request) -> Response) -> Nil
+    Server.new(ProcHandler.new(handler), host: host, port: port).serve
+  end
+end

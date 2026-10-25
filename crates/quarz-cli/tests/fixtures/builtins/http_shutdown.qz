@@ -1,0 +1,117 @@
+# HTTP::Server#shutdown: idle connections closed, a request in a handler
+# finished, a stuck one cancelled after the timeout; max_connections;
+# a UNIX socket server.
+require "http"
+
+def raw(port: Int, text: String) -> String
+  Socket.tcp("127.0.0.1", port) do |s|
+    s.write(text)
+    s.read.gsub(/Date: [^\r]*\r\n/, "").gsub("\r\n", "|")
+  end
+end
+
+entered = Channel[String].new(capacity: 8)
+gate = Channel[Nil].new
+handler = HTTP.handler do |req|
+  if req.path == "/wait"
+    entered.send("wait")
+    gate.receive
+    HTTP::Response.text("waited")
+  else
+    HTTP::Response.text("ok")
+  end
+end
+server = HTTP::Server.new(handler, host: "127.0.0.1", port: 0)
+port = server.local_address.port
+Task.scope do |scope|
+  scope.spawn { server.serve }
+  served = Channel[String].new(capacity: 1)
+  idle = scope.spawn do
+    Socket.tcp("127.0.0.1", port) do |s|
+      s.write("GET / HTTP/1.1\r\n\r\n")
+      served.send(s.readpartial(4096).lines[0].chomp)
+      s.readpartial?(4096) || "closed"
+    end
+  end
+  p served.receive
+  waiting = scope.spawn { raw(port, "GET /wait HTTP/1.1\r\n\r\n") }
+  p entered.receive
+  stopper = scope.spawn { server.shutdown(timeout: 5.seconds); "stopped" }
+  p idle.await
+  gate.send(nil)
+  p waiting.await, stopper.await
+  p begin
+    raw(port, "GET / HTTP/1.1\r\n\r\n")
+  rescue SystemCallError
+    "refused"
+  end
+end
+
+stuck = HTTP.handler do |req|
+  entered.send("stuck")
+  Task.sleep(30.seconds)
+  HTTP::Response.text("never")
+end
+s2 = HTTP::Server.new(stuck, host: "127.0.0.1", port: 0)
+port2 = s2.local_address.port
+Task.scope do |scope|
+  scope.spawn { s2.serve }
+  c = scope.spawn { raw(port2, "GET / HTTP/1.1\r\n\r\n") }
+  p entered.receive
+  started = Time.monotonic
+  s2.shutdown(timeout: 100.ms)
+  p (Time.monotonic - started) < 10.seconds, c.await
+end
+
+# The grace period: a handler that takes a while still answers.
+slow = HTTP.handler do |req|
+  entered.send("slow")
+  Task.sleep(200.ms)
+  HTTP::Response.text("slow done")
+end
+s5 = HTTP::Server.new(slow, host: "127.0.0.1", port: 0)
+port5 = s5.local_address.port
+Task.scope do |scope|
+  scope.spawn { s5.serve }
+  c = scope.spawn { raw(port5, "GET / HTTP/1.1\r\n\r\n") }
+  p entered.receive
+  s5.shutdown(timeout: 5.seconds)
+  s5.wait
+  p c.await
+end
+
+# max_connections: 1, so /b is accepted only when /a is done.
+order = Channel[String].new(capacity: 4)
+one = HTTP.handler do |req|
+  order.send("in #{req.path}")
+  entered.send(req.path)
+  Task.sleep(50.ms)
+  order.send("out #{req.path}")
+  HTTP::Response.text(req.path)
+end
+s3 = HTTP::Server.new(one, host: "127.0.0.1", port: 0, max_connections: 1)
+port3 = s3.local_address.port
+Task.scope do |scope|
+  scope.spawn { s3.serve }
+  a = scope.spawn { raw(port3, "GET /a HTTP/1.1\r\nConnection: close\r\n\r\n") }
+  entered.receive
+  b = scope.spawn { raw(port3, "GET /b HTTP/1.1\r\nConnection: close\r\n\r\n") }
+  a.await
+  b.await
+  p 4.times.map { |_| order.receive }
+  s3.shutdown
+end
+
+# A UNIX socket server: its peer counts as a trusted proxy.
+path = "#{Dir.tmpdir}/quarz-http-#{Process.pid}.sock"
+s4 = HTTP::Server.unix(HTTP.handler { |req| HTTP::Response.text("#{req.remote_ip} #{req.scheme}") }, path)
+Task.scope do |scope|
+  scope.spawn { s4.serve }
+  out = Socket.unix(path) do |s|
+    s.write("GET / HTTP/1.1\r\nX-Forwarded-For: 203.0.113.9\r\nX-Forwarded-Proto: https\r\nConnection: close\r\n\r\n")
+    s.read
+  end
+  puts out.gsub(/Date: [^\r]*\r\n/, "").gsub("\r\n", "|")
+  s4.shutdown
+end
+p File.exist?(path)

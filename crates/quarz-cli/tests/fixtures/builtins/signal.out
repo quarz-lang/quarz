@@ -1,0 +1,5 @@
+["HUP", "INT", "QUIT", "USR1", "USR2", "PIPE", "TERM"]
+["usr1 a", "usr1 b"]
+"term"
+nil
+alive

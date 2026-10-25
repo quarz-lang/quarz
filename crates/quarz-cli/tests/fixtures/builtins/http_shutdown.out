@@ -1,0 +1,14 @@
+"HTTP/1.1 200 OK"
+"wait"
+"closed"
+"HTTP/1.1 200 OK|Content-Type: text/plain; charset=utf-8|Content-Length: 6|Connection: close||waited"
+"stopped"
+"refused"
+"stuck"
+true
+""
+"slow"
+"HTTP/1.1 200 OK|Content-Type: text/plain; charset=utf-8|Content-Length: 9|Connection: close||slow done"
+["in /a", "out /a", "in /b", "out /b"]
+HTTP/1.1 200 OK|Content-Type: text/plain; charset=utf-8|Content-Length: 17|Connection: close||203.0.113.9 https
+false

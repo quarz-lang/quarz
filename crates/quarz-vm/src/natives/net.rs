@@ -499,7 +499,7 @@ fn udp_bind(interp: &Interp, addr: &str) -> Result<UdpSocket, Flow> {
     Ok(socket)
 }
 
-fn make_socket(_: &Interp, stream: Stream, path: Option<String>) -> Value {
+pub(crate) fn make_socket(_: &Interp, stream: Stream, path: Option<String>) -> Value {
     let (local, peer, unix) = match &stream {
         Stream::Tcp(s) => (s.local_addr().ok(), s.peer_addr().ok(), false),
         Stream::Unix(_) => (None, None, true),

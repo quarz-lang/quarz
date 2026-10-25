@@ -1,0 +1,72 @@
+# HTTP requests parsed and responses written, without sockets.
+require "http"
+
+def parse(text: String, max_header: Int = 1024, max_body: Int = 100) -> HTTP::Request?
+  r = HTTP::Reader.of(text.to_bytes)
+  HTTP.read_request(r, max_header, max_body, nil, HTTP::Proxies.none, false)
+end
+
+def show(text: String) -> Nil
+  begin
+    req = parse(text)
+    if req
+      p [req.method, req.target, req.path, req.query, req.version]
+      req.headers.each { |k, v| puts "  #{k}: #{v}" }
+      p req.body.read
+    else
+      p nil
+    end
+  rescue HTTP::Error => e
+    p [e.class.name, e.status, e.message]
+  end
+end
+
+show("GET /a%20b?x=1&y=%41 HTTP/1.1\r\nHost: example.com\r\nX-A:  1 \r\n\r\n")
+show("\r\nPOST /p HTTP/1.1\r\nContent-Length: 5\r\n\r\nhello")
+show("POST /c HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n6;ext=1\r\n world\r\n0\r\nX-T: 1\r\n\r\n")
+show("GET http://h/abs?q HTTP/1.0\n\n")
+show("")
+show("BAD\r\n\r\n")
+show("GET / HTTP/2.0\r\n\r\n")
+show("GET / HTTP/1.1\r\n folded\r\n\r\n")
+show("GET / HTTP/1.1\r\nBad Name: x\r\n\r\n")
+show("POST / HTTP/1.1\r\nContent-Length: 3\r\nTransfer-Encoding: chunked\r\n\r\n")
+show("POST / HTTP/1.1\r\nContent-Length: 3\r\nContent-Length: 4\r\n\r\n")
+show("POST / HTTP/1.1\r\nContent-Length: 300\r\n\r\n")
+show("GET / HTTP/1.1\r\nX: #{"a" * 2000}\r\n\r\n")
+show("POST / HTTP/1.1\r\nContent-Length: 10\r\n\r\nshort")
+show("POST / HTTP/1.1\r\nTransfer-Encoding: gzip\r\n\r\n")
+
+req = HTTP::Request.get("/q?a=1&b=2&a=x+y%21")
+p req.query_params, req.keep_alive?
+p HTTP::Request.post("/f", "a=1&b=%E3%81%82", HTTP::Headers.of({"Content-Type" => "application/x-www-form-urlencoded"})).form_params
+
+# Responses.
+def head(req: HTTP::Request?, res: HTTP::Response, keep: Bool = true) -> Nil
+  text, chunked = HTTP.response_head(req, res, keep)
+  puts text.lines.reject { |l| l.start_with?("Date:") }.join.gsub("\r\n", "|")
+  p chunked
+end
+head(nil, HTTP::Response.text("hi"))
+head(nil, HTTP::Response.empty)
+head(nil, HTTP::Response.new(304, HTTP::Headers.empty, HTTP::ResponseBody::Empty))
+head(HTTP::Request.get("/"), HTTP::Response.stream { |w| w.write("x") })
+head(HTTP::Request.build("GET", "/").with(version: "HTTP/1.0"), HTTP::Response.text("a"))
+head(nil, HTTP::Response.redirect("/x"), false)
+p HTTP::Response.not_found.reason, HTTP::Headers.canonical("x-forwarded-for")
+
+# Proxies.
+px = HTTP::Proxies.of(["127.0.0.1", "10.0.0.0/8", "fd00::/8", "::1"])
+p ["127.0.0.1", "10.2.3.4", "11.0.0.1", "fd12::1", "::1", "::ffff:10.0.0.1", "2001:db8::1", "nope"].map { |a| px.include?(a) }
+p HTTP.ip_bytes("2001:db8::1"), HTTP.ip_bytes("1:2:3:4:5:6:7:8"), HTTP.ip_bytes("1::2::3")
+fwd = HTTP::Request.get("/", HTTP::Headers.empty.add("X-Forwarded-For", "1.2.3.4, 10.0.0.5").add("X-Forwarded-For", "127.0.0.1").add("X-Forwarded-Proto", "https"))
+       .with(remote_address: Socket::Address.new("127.0.0.1", 9), proxies: px, trusted: true)
+p fwd.remote_ip, fwd.scheme
+p fwd.with(trusted: false).remote_ip, fwd.with(trusted: false).scheme
+head(nil, HTTP::Response.json(JSON.parse("{\"a\": [1, 2]}")))
+r = HTTP::Response.json(JSON.parse("{\"a\": [1, 2]}"))
+case r.body
+in HTTP::ResponseBody::Text(text:) then puts text
+else
+end
+p HTTP::Response.text("x").header("X-Id", "7").headers.entries

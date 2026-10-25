@@ -82,6 +82,7 @@ mod math;
 pub mod net;
 mod numeric;
 pub mod random;
+pub mod signal;
 mod string;
 mod text;
 pub mod time;
@@ -158,6 +159,7 @@ fn registry() -> Registry<NativeFn> {
     concurrency::register(&mut m);
     io::register(&mut m);
     net::register(&mut m);
+    signal::register(&mut m);
     bytes::register(&mut m);
     bytes_search::register(&mut m);
     time::register(&mut m);
