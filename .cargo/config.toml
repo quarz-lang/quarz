@@ -6,3 +6,6 @@
 # per CPU.)
 [env]
 QUARZ_THREADS = "1"
+# What the checker keeps between runs (docs/05 §2) goes under target/ for
+# the tests and `cargo run`, not the user's cache.
+QUARZ_CACHE_DIR = { value = "target/quarz-cache", relative = true }

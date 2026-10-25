@@ -7,6 +7,7 @@
 
 use std::path::{Path, PathBuf};
 
+pub mod cache;
 pub mod check;
 pub mod declare;
 pub mod init;
@@ -523,6 +524,23 @@ pub struct ExtraSource {
 /// examples), or the errors that prevent them.
 pub type ExtraUnit<'a> = &'a mut dyn FnMut(&World) -> Result<Vec<ExtraSource>, Vec<FileDiagnostic>>;
 
+thread_local! {
+    static NO_CACHE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// `check_with_extra` reading nothing back.
+fn check_uncached(
+    prelude: &Program,
+    units: &[Unit],
+    cogs: &[CogDecl],
+    extra: Option<ExtraUnit>,
+) -> (Option<Checked>, Vec<FileDiagnostic>) {
+    NO_CACHE.set(true);
+    let r = check_with_extra(prelude, units, cogs, extra);
+    NO_CACHE.set(false);
+    r
+}
+
 /// Check `units`, then the unit `extra` writes from what they declare (the
 /// test runner, `quarz test`), checked after them as one more unit, the
 /// way `Session::require` adds one. Its file index is `units.len() + 1`,
@@ -598,12 +616,76 @@ pub fn check_with_extra(
     if diagnostics.iter().any(|(_, d)| d.is_error()) {
         return (None, diagnostics);
     }
-    let mut checker = check::Checker::new(declarer.world, file_mains.clone());
-    if let Some((out, sites)) = prelude_output {
-        checker.set_output(out);
-        checker.set_self_news(sites);
+    let (mut out, mut sites) = prelude_output.unwrap_or_default();
+    // The files whose checks were kept (`cache`): their bodies are not
+    // checked again.
+    let key_of = |f: u32| -> String {
+        if f == 0 {
+            "<prelude>".to_string()
+        } else {
+            units
+                .get(f as usize - 1)
+                .map(|u| u.name.clone())
+                .unwrap_or_default()
+        }
+    };
+    let file_of = |k: &str| -> Option<u32> {
+        if k == "<prelude>" {
+            return Some(0);
+        }
+        units.iter().position(|u| u.name == k).map(|i| i as u32 + 1)
+    };
+    let mut keys: Vec<Option<u64>> = vec![None; units.len() + 1];
+    let mut reused: Vec<bool> = vec![false; units.len() + 1];
+    let mut consts_seen: Vec<u64> = Vec::new();
+    if cache::build().is_some() && cache::dir().is_some() && cogs.is_empty() && !NO_CACHE.get() {
+        let interfaces: Vec<(String, u64)> = (1..=units.len() as u32)
+            .map(|f| (key_of(f), cache::interface(&declarer.world, f)))
+            .collect();
+        let all = cache::hash(&interfaces);
+        for (i, u) in units.iter().enumerate().skip(std_units.len()) {
+            let file = i as u32 + 1;
+            if u.declarations_only {
+                continue;
+            }
+            let Some(key) = cache::key(&u.program, all) else {
+                continue;
+            };
+            keys[file as usize] = Some(key);
+            let Some(checks) =
+                cache::load(key, u.program.span.start & !((1 << load::UNIT_BITS) - 1))
+            else {
+                continue;
+            };
+            let seen = checks.consts_seen;
+            if let Some(warnings) = cache::apply(
+                &mut declarer.world,
+                &mut out,
+                &mut sites,
+                checks,
+                file,
+                &file_of,
+            ) {
+                diagnostics.extend(warnings.into_iter().map(|d| (file, d)));
+                reused[file as usize] = true;
+                consts_seen.push(seen);
+            }
+        }
     }
-    checker.check_all(&bodies);
+    let mut checker = check::Checker::new(declarer.world, file_mains.clone());
+    checker.set_output(out);
+    checker.set_self_news(sites);
+    for (f, r) in reused.iter().enumerate() {
+        if *r {
+            checker.mark_reused(f as u32);
+        }
+    }
+    let to_check: Vec<(u32, Vec<&Expr>)> = bodies
+        .iter()
+        .filter(|(f, _)| !reused[*f as usize])
+        .cloned()
+        .collect();
+    checker.check_all(&to_check);
     let mut checked_units: Vec<CheckedUnit> = std::mem::take(&mut std_units);
     checked_units.extend(bodies.into_iter().map(|(file, body)| CheckedUnit {
         file,
@@ -611,7 +693,41 @@ pub fn check_with_extra(
         main_class: file_mains[file as usize].unwrap(),
         body: body.into_iter().cloned().collect(),
     }));
-    diagnostics.append(&mut checker.take_diagnostics());
+    // A constant's type is inferred: when one differs from what a file
+    // read back was checked with, check everything again.
+    let consts_now = cache::const_types(&checker.world, &key_of);
+    if consts_seen.iter().any(|s| *s != consts_now) {
+        return check_uncached(prelude, units, cogs, extra);
+    }
+    let checked_diagnostics = checker.take_diagnostics();
+    diagnostics.extend(checked_diagnostics.iter().cloned());
+    // Keep what was checked, when it is free of errors (with its warnings,
+    // reported again when it is read back).
+    if !diagnostics.iter().any(|(_, d)| d.is_error()) {
+        for (file, key) in keys.iter().enumerate() {
+            let (Some(key), false) = (key, reused[file]) else {
+                continue;
+            };
+            let file = file as u32;
+            let base = units[file as usize - 1].program.span.start & !((1 << load::UNIT_BITS) - 1);
+            let warnings = checked_diagnostics
+                .iter()
+                .filter(|(f, _)| *f == file)
+                .map(|(_, d)| d.clone())
+                .collect();
+            let checks = cache::extract(
+                &checker.world,
+                checker.output(),
+                checker.self_news(),
+                file,
+                base,
+                warnings,
+                consts_now,
+                &key_of,
+            );
+            cache::store(*key, base, &checks);
+        }
+    }
     if let Some(extra) = extra {
         if !diagnostics.iter().any(|(_, d)| d.is_error()) {
             match extra(&checker.world) {

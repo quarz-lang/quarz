@@ -53,6 +53,7 @@ fn main() -> ExitCode {
         quarz_types::set_prelude_cache(include_bytes!(concat!(env!("OUT_DIR"), "/prelude.bin")));
         let states: &[(&str, &[u8])] = include!(concat!(env!("OUT_DIR"), "/std_states.rs"));
         quarz_types::set_std_cache(states.iter().map(|(k, b)| (k.to_string(), *b)).collect());
+        quarz_types::cache::set_build(include_str!(concat!(env!("OUT_DIR"), "/build_id.txt")));
     }
     match args.first().map(String::as_str) {
         Some("tokens") => match args.get(1) {

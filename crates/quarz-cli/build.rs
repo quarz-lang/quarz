@@ -49,4 +49,12 @@ fn main() {
         ));
     }
     std::fs::write(dir.join("std_states.rs"), format!("&[\n{list}]")).unwrap();
+    // This build of the checker, which keys what it keeps between runs
+    // (`quarz_types::cache`): the script runs again whenever the checker
+    // (a build-dependency) changes.
+    let id = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    std::fs::write(dir.join("build_id.txt"), format!("{id:x}")).unwrap();
 }

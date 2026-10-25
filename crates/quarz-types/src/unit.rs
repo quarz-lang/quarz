@@ -74,16 +74,16 @@ pub struct UnitDelta {
 
 /// The entities of each kind each file owns, in order.
 #[derive(Default)]
-struct Owned {
-    classes: HashMap<u32, Vec<ClassId>>,
-    methods: HashMap<u32, Vec<MethodId>>,
-    consts: HashMap<u32, Vec<ConstId>>,
-    aliases: HashMap<u32, Vec<u32>>,
-    extensions: HashMap<u32, Vec<ExtensionId>>,
-    type_params: HashMap<u32, Vec<TypeParamId>>,
+pub(crate) struct Owned {
+    pub(crate) classes: HashMap<u32, Vec<ClassId>>,
+    pub(crate) methods: HashMap<u32, Vec<MethodId>>,
+    pub(crate) consts: HashMap<u32, Vec<ConstId>>,
+    pub(crate) aliases: HashMap<u32, Vec<u32>>,
+    pub(crate) extensions: HashMap<u32, Vec<ExtensionId>>,
+    pub(crate) type_params: HashMap<u32, Vec<TypeParamId>>,
 }
 
-fn owned(world: &World) -> Owned {
+pub(crate) fn owned(world: &World) -> Owned {
     let mut o = Owned::default();
     for c in &world.classes {
         o.classes.entry(c.file).or_default().push(c.id);
@@ -172,30 +172,7 @@ pub fn extract(
 ) -> UnitDelta {
     let file = unit.file;
     let own = owned(world);
-    let mut keys = Keys {
-        names: key,
-        files: vec![file],
-    };
-    let owners = Owners {
-        classes: owners_of(&own.classes, world.classes.len(), &mut keys),
-        methods: owners_of(&own.methods, world.methods.len(), &mut keys),
-        consts: owners_of(&own.consts, world.consts.len(), &mut keys),
-        aliases: owners_of(&own.aliases, world.aliases.len(), &mut keys),
-        extensions: owners_of(&own.extensions, world.extensions.len(), &mut keys),
-        type_params: {
-            let mut t = HashMap::default();
-            for (f, ids) in &own.type_params {
-                if *f == 0 {
-                    continue;
-                }
-                let k = keys.index(*f);
-                for (i, p) in ids.iter().enumerate() {
-                    t.insert(*p, Owner::Unit(k, i as u32));
-                }
-            }
-            t
-        },
-    };
+    let (keys, key_files, owners) = owners(world, file, key);
     let pick = |list: &HashMap<u32, Vec<u32>>| list.get(&file).cloned().unwrap_or_default();
     let classes: Vec<ClassInfo> = pick(&own.classes)
         .iter()
@@ -283,11 +260,10 @@ pub fn extract(
         .filter(|(_, _, m, _, _)| owned_method(*m))
         .cloned()
         .collect();
-    let key_files = keys.files.clone();
-    let mut delta = UnitDelta {
+    UnitDelta {
         file,
         base,
-        keys: Vec::new(),
+        keys,
         key_files,
         owners,
         classes,
@@ -309,9 +285,43 @@ pub fn extract(
         frame_size,
         self_news,
         unit: unit.clone(),
+    }
+}
+
+/// Whose each number of `world` is, for the units file `file`'s checks
+/// refer to: their keys (its own first), their files, and the owners.
+pub(crate) fn owners(
+    world: &World,
+    file: u32,
+    key: &dyn Fn(u32) -> String,
+) -> (Vec<String>, Vec<u32>, Owners) {
+    let own = owned(world);
+    let mut keys = Keys {
+        names: key,
+        files: vec![file],
     };
-    delta.keys = delta.key_files.iter().map(|f| (keys.names)(*f)).collect();
-    delta
+    let owners = Owners {
+        classes: owners_of(&own.classes, world.classes.len(), &mut keys),
+        methods: owners_of(&own.methods, world.methods.len(), &mut keys),
+        consts: owners_of(&own.consts, world.consts.len(), &mut keys),
+        aliases: owners_of(&own.aliases, world.aliases.len(), &mut keys),
+        extensions: owners_of(&own.extensions, world.extensions.len(), &mut keys),
+        type_params: {
+            let mut t = HashMap::default();
+            for (f, ids) in &own.type_params {
+                if *f == 0 {
+                    continue;
+                }
+                let k = keys.index(*f);
+                for (i, p) in ids.iter().enumerate() {
+                    t.insert(*p, Owner::Unit(k, i as u32));
+                }
+            }
+            t
+        },
+    };
+    let names = keys.files.iter().map(|f| (keys.names)(*f)).collect();
+    (names, keys.files, owners)
 }
 
 fn top_names(top: &[(String, Member)]) -> Vec<String> {
@@ -319,7 +329,7 @@ fn top_names(top: &[(String, Member)]) -> Vec<String> {
 }
 
 /// The entries of `out` for the syntax of the unit at `base`.
-fn unit_output(world: &World, out: &Output, base: u32, file: u32) -> Output {
+pub(crate) fn unit_output(world: &World, out: &Output, base: u32, file: u32) -> Output {
     use crate::check::SelfOwner;
     let mine = |n: &u32| in_range(*n, base);
     let span_mine = |s: &quarz_syntax::Span| in_range(s.start, base);
@@ -402,7 +412,11 @@ fn unit_output(world: &World, out: &Output, base: u32, file: u32) -> Output {
 
 /// The narrowed type parameters `out` mentions, each after those its
 /// own definition does.
-fn collect_narrowed(world: &World, out: &Output, list: &mut Vec<(TypeParamId, TypeParamId, Type)>) {
+pub(crate) fn collect_narrowed(
+    world: &World,
+    out: &Output,
+    list: &mut Vec<(TypeParamId, TypeParamId, Type)>,
+) {
     let mut seen: HashSet<TypeParamId> = HashSet::default();
     let mut visit = |t: &Type, list: &mut Vec<(TypeParamId, TypeParamId, Type)>| {
         let mut stack = vec![t.clone()];
@@ -630,7 +644,7 @@ pub fn apply(
     Ok(unit)
 }
 
-fn param_table(params: &HashMap<u32, u32>) -> Table {
+pub(crate) fn param_table(params: &HashMap<u32, u32>) -> Table {
     let max = params.keys().copied().max().map_or(0, |m| m + 1);
     let mut map: Vec<u32> = (0..max).collect();
     for (k, v) in params {
@@ -639,7 +653,7 @@ fn param_table(params: &HashMap<u32, u32>) -> Table {
     Table { base: 0, map }
 }
 
-fn merge_output(out: &mut Output, o: Output) {
+pub(crate) fn merge_output(out: &mut Output, o: Output) {
     out.node_types.extend(o.node_types);
     out.calls.extend(o.calls);
     out.const_targets.extend(o.const_targets);

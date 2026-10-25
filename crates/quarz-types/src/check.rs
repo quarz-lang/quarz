@@ -613,6 +613,8 @@ pub struct Checker {
     /// What the checks of a block found for `a && b` / `a || b`: a type's
     /// own method, the built-in operator, and whether that was reported.
     logical_seen: HashMap<NodeId, LogicalSeen>,
+    /// Files whose checks were read back (`mark_reused`).
+    reused_files: rustc_hash::FxHashSet<u32>,
     op_given_up: rustc_hash::FxHashSet<(NodeId, bool)>,
     pub world: World,
     pub diagnostics: Vec<(u32, Diagnostic)>,
@@ -726,6 +728,7 @@ impl Checker {
         Checker {
             op_seen: HashMap::default(),
             logical_seen: HashMap::default(),
+            reused_files: Default::default(),
             op_given_up: Default::default(),
             world,
             diagnostics: Vec::new(),
@@ -813,7 +816,7 @@ impl Checker {
         let saved_file = self.env.file;
         for mid in 0..self.world.methods.len() as MethodId {
             let m = self.world.method(mid);
-            if m.file == 0 || m.synth != Synth::None {
+            if m.file == 0 || m.synth != Synth::None || self.reused_files.contains(&m.file) {
                 continue;
             }
             let (file, span) = (m.file, m.span);
@@ -832,7 +835,7 @@ impl Checker {
         }
         for cid in 0..self.world.classes.len() as ClassId {
             let c = self.world.class(cid);
-            if c.file == 0 {
+            if c.file == 0 || self.reused_files.contains(&c.file) {
                 continue;
             }
             self.env.file = c.file;
@@ -1369,6 +1372,23 @@ impl Checker {
     /// Start from what checking the prelude recorded (`PreludeState`).
     pub fn set_output(&mut self, out: Output) {
         self.out = out;
+    }
+
+    pub fn output(&self) -> &Output {
+        &self.out
+    }
+
+    /// The checks of `file` were read back (`cache`): its classes' field
+    /// defaults and initializers, and its signatures, are not checked
+    /// again (their warnings come with them).
+    pub fn mark_reused(&mut self, file: u32) {
+        for c in &self.world.classes {
+            if c.file == file {
+                self.defaults_checked.insert(c.id);
+                self.init_checked.insert(c.id);
+            }
+        }
+        self.reused_files.insert(file);
     }
 
     /// The class methods that call `new` on their own class, whose

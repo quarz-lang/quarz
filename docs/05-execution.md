@@ -36,7 +36,7 @@ Quarz shares one front end and one runtime across two back ends (an interpreter 
 
 | Command | Behavior |
 |---|---|
-| `quarz run app.qz [args]` | Type-check, lower to QIR and interpret it (caching type-check results for dependencies is *planned*) |
+| `quarz run app.qz [args]` | Type-check (reusing the checks of unchanged files, §2), lower to QIR and interpret it |
 | `quarz repl` | REPL. Each input is type-checked, and definitions can be added (redefinition is not allowed; use a new name instead) |
 | `quarz check app.qz` | Type-check only |
 | `quarz build app.qz -o app` | Produce a native executable, optimized through LLVM |
@@ -62,6 +62,8 @@ This section is the design, built in steps. The language already follows its rul
 - the check results for its own syntax nodes and spans, which are numbered within the unit's range (`load::unit_base`), and its QIR.
 
 Every number in it that refers to an entity says whose it is: the prelude's and the standard library's keep their numbers (they are the same in every program, `PreludeState`); another unit's is written as that unit (by its path) and the entity's position among that unit's own. Reading a `.qzi` back appends its entities to the world, gives them the next numbers, and rewrites every reference by those rules, with its nodes and spans moved to the unit's range in this program. A `.qzi` is valid while its source and the interfaces it was checked against are unchanged: its key is the source's hash, the compiler's build and, for each unit it depends on, the hash of that unit's interface (its entities' signatures, fields, constants' types and extensions, not its method bodies), so a change to a body re-checks that unit alone. The cache lives under `$XDG_CACHE_HOME/quarz` (`~/.cache/quarz`).
+
+What is built of it: `quarz_types::unit` takes a unit's check out of a program and reads it into another (tested, not yet used by the commands), and `quarz_types::cache` keeps each file's check results between runs: a file whose syntax is unchanged, in a program whose files' interfaces (`cache::interface`: each entity's declaration without bodies, values or positions) are unchanged, is parsed and declared again, but its bodies are not checked again: what checking them recorded (the results for its nodes, its methods' frame sizes, its constants' types, its warnings) is read back, renumbered. The key also holds the compiler's build, so that another build checks again; `QUARZ_CACHE_DIR` moves the cache (the test suite's is under `target/`), `QUARZ_NO_CACHE=1` turns it off, and nothing removes old entries yet. Cogs are not cached yet, and every file is still parsed, declared and lowered on every run: on a fixture of a few hundred lines, `quarz check` goes from 26.0M instructions to 18.9M with its checks reused (writing them costs 2M the first time).
 
 ## 3. QIR
 
