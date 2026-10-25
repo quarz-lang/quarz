@@ -427,10 +427,6 @@ enum TableUndo {
     NodeType(NodeId, Option<Type>),
 }
 
-/// `Checker::equality_trusted`'s cache key: a class (its class object
-/// when `true`) under the active extensions.
-type TrustKey = (ClassId, bool, Vec<ExtensionId>);
-
 /// What a piece of code may assign (`Checker::assigned_names`): local
 /// variables, and receivers of `x.foo!` calls (with the method), which
 /// assign when the receiver's type has no `foo!`.
@@ -636,8 +632,6 @@ pub struct Checker {
     /// Calls whose block has a `break` of its own, and the type of the
     /// values it gives the call (`loop { }` without one never returns).
     breaking_blocks: HashMap<NodeId, Type>,
-    /// `equality_trusted` by class and active extensions.
-    trusted_eq: std::cell::RefCell<HashMap<TrustKey, bool>>,
     /// Statements whose value is not used (calls, literals) since the last
     /// `finish_frame_types`: those whose release may be observed go to
     /// `Output::released_stmts`.
@@ -733,7 +727,6 @@ impl Checker {
             touched: Vec::new(),
             frame_vars: Vec::new(),
             breaking_blocks: HashMap::default(),
-            trusted_eq: Default::default(),
             temp_stmts: Vec::new(),
             file_mains,
             repl_env: None,
@@ -4582,41 +4575,45 @@ impl Checker {
     }
 
     /// Whether a value of type `m` compares with the built-in `==` and
-    /// `!=`: no class it may be of (its class and every subclass, in the
-    /// whole program; any class for a type parameter) has others. A tuple
-    /// is an `Array` and a procedure a `Proc` (an extension may add `==`);
-    /// a class object's singleton `==` counts.
+    /// `!=`: its class cannot be subclassed (a built-in value class, a
+    /// data type, an enum and its variants, declared together), and none
+    /// of those classes has others, its own or an active extension's. A
+    /// type that may be subclassed is not trusted: a subclass may be
+    /// declared in a file compiled separately. A tuple is an `Array`.
     fn equality_trusted(&self, m: &Type) -> bool {
         let b = &self.world.builtin;
-        let (id, singleton) = match m {
-            Type::Class(id, _) => (*id, false),
-            Type::Param(_) => (b.object, false),
-            Type::Tuple(_) => (b.array, false),
-            Type::Proc(..) => (b.proc_, false),
-            Type::ClassObject(id, _) => (*id, true),
+        let id = match m {
+            Type::Class(id, _) => *id,
+            Type::Tuple(_) => b.array,
             _ => return false,
         };
-        let key = (id, singleton, self.world.active_extensions.clone());
-        if let Some(&t) = self.trusted_eq.borrow().get(&key) {
-            return t;
+        let sealed = |c: ClassId| {
+            self.world.is_value_class(c)
+                || c == b.integer
+                || matches!(
+                    self.world.class(c).kind,
+                    ClassKind::Data | ClassKind::Enum | ClassKind::Variant
+                )
+        };
+        if !sealed(id) {
+            return false;
         }
-        let t = (0..self.world.classes.len() as ClassId)
-            .filter(|c| self.world.class_is_a(*c, id))
-            .all(|c| {
-                let t = if singleton {
-                    Type::ClassObject(c, vec![])
-                } else {
-                    Type::class(c)
-                };
-                ["==", "!="].iter().all(|name| {
-                    self.world
-                        .lookup_methods(&t, name)
-                        .iter()
-                        .all(|(mid, _)| self.world.method(*mid).is_native)
-                })
-            });
-        self.trusted_eq.borrow_mut().insert(key, t);
-        t
+        // An enum's values are its variants'.
+        let mut classes = vec![id];
+        if self.world.class(id).kind == ClassKind::Enum {
+            classes.extend(
+                (0..self.world.classes.len() as ClassId)
+                    .filter(|v| self.world.class(*v).variant_of == Some(id)),
+            );
+        }
+        classes.iter().all(|c| {
+            ["==", "!="].iter().all(|name| {
+                self.world
+                    .lookup_methods(&Type::class(*c), name)
+                    .iter()
+                    .all(|(mid, _)| self.world.method(*mid).is_native)
+            })
+        })
     }
 
     fn var_key(&self, e: &Expr) -> Option<VarKey> {

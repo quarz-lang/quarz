@@ -1236,7 +1236,16 @@ fn tests_narrow_only_to_what_holds() {
     ok("class Plain\nend\ndef f(x: Plain?) -> Int\n  if x == nil\n    0\n  else\n    x.hash\n  end\nend");
     err("extension Nil\n  def ==(other: Object) -> Bool = false\nend\ndef g(x: Int?) -> Int\n  if x == nil\n    0\n  else\n    x + 1\n  end\nend", "undefined method `+` for Nil");
     err("class Foo\n  def !=(o: Object) -> Bool = false\nend\ndef takes(n: Nil) -> Int = 0\ndef f(x: Foo?) -> Int\n  if x != nil\n    1\n  else\n    takes(x)\n  end\nend", "expects Nil but found Foo?");
-    ok("def tup(t: [Int, String]?) -> Int\n  if t == nil\n    0\n  else\n    t[0]\n  end\nend\ndef pr(f: ((Int) -> Int)?) -> Int\n  if f != nil\n    f.(1)\n  else\n    0\n  end\nend\ndef par[T](x: T?) -> T\n  if x == nil\n    raise \"none\"\n  else\n    x\n  end\nend");
+    ok("def tup(t: [Int, String]?) -> Int\n  if t == nil\n    0\n  else\n    t[0]\n  end\nend\ndef pr(f: ((Int) -> Int)?) -> Int\n  if !f.nil?\n    f.(1)\n  else\n    0\n  end\nend\ndef par[T](x: T?) -> T\n  if x.nil?\n    raise \"none\"\n  else\n    x\n  end\nend");
+    // Only types that cannot be subclassed narrow by `==` (a subclass,
+    // in a file compiled separately, may define it): not a class, a
+    // module, a procedure or a type parameter.
+    err("class Plain\n  def foo -> Int = 1\nend\ndef f(x: Plain?) -> Int\n  if x == nil\n    0\n  else\n    x.foo\n  end\nend", "undefined method `foo` for Nil");
+    err(
+        "def par[T](x: T?) -> T\n  if x == nil\n    raise \"none\"\n  else\n    x\n  end\nend",
+        "returns T but its body has type T?",
+    );
+    ok("data P = (x: Int)\nenum E = A | B(n: Int)\ndef f(p: P?, e: E?) -> Int\n  if p == nil || e == nil\n    0\n  else\n    p.x + (e == E::A ? 1 : 2)\n  end\nend");
     // `?v | Int` used by an operator or under a bound is an `Int`.
     ok("def g -> Int\n  arr = []\n  y = arr[0]? || 2\n  y += 1\n  xs = [y, 2].sort\n  arr = arr.push(4)\n  xs[0]\nend");
     // A bound may name the class's parameters.
@@ -1273,7 +1282,7 @@ fn checks_the_types_it_cannot_take_on_trust() {
     ok("def f(t: [Int, String] | Array[Int]) -> Int = 1\np f([1, 2])");
     ok("def f[T](t: [Int, String] | T) -> Int = 1\np f([1, 2])");
     // A value of a module type has Object's methods.
-    ok("module Named\n  def name -> String = \"n\"\nend\ndef md(x: Named?) -> String\n  if x == nil\n    \"nil\"\n  else\n    x.name + x.to_s\n  end\nend");
+    ok("module Named\n  def name -> String = \"n\"\nend\ndef md(x: Named?) -> String\n  if x.nil?\n    \"nil\"\n  else\n    x.name + x.to_s\n  end\nend");
     // A tuple expected among other types.
     ok("def tup(t: [Int, String]?) -> Int = t ? t[0] : 0\np tup([1, \"a\"])");
 }
