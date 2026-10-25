@@ -69,7 +69,16 @@ module HTTP
     def self.empty -> Headers = Headers.new([])
 
     def self.of(pairs: Hash[String, String]) -> Headers
-      Headers.new(pairs.map { |k, v| Field.new(k.downcase, v) })
+      Headers.new(pairs.map { |k, v| Headers.field(k, v) })
+    end
+
+    # A field that can be sent: its name a token, its value without CR,
+    # LF or another control character but HTAB (which would split the
+    # response). An `ArgumentError` otherwise, where the header is set.
+    def self.field(name: String, value: String) -> Field
+      raise ArgumentError, "invalid header name #{name.inspect}" unless name.match?(HTTP::TOKEN)
+      raise ArgumentError, "invalid header value for #{name}: #{value.inspect}" if value.match?(HTTP::CONTROL)
+      Field.new(name.downcase, value)
     end
 
     # The first value of `name`.
@@ -92,11 +101,11 @@ module HTTP
     # Every value of `name` replaced by `value`.
     def put(name: String, value: String) -> Headers
       n = name.downcase
-      Headers.new(entries.reject { |e| e.name == n }.push(Field.new(n, value)))
+      Headers.new(entries.reject { |e| e.name == n }.push(Headers.field(name, value)))
     end
 
     def add(name: String, value: String) -> Headers
-      Headers.new(entries.push(Field.new(name.downcase, value)))
+      Headers.new(entries.push(Headers.field(name, value)))
     end
 
     def delete(name: String) -> Headers
@@ -583,6 +592,8 @@ module HTTP
   # ----- parsing --------------------------------------------------------------------
 
   TOKEN = /\A[!#$%&'*+\-.^_`|~0-9A-Za-z]+\z/
+  # The characters a field value may not hold: the controls but HTAB.
+  CONTROL = /[\x00-\x08\x0a-\x1f\x7f]/
 
   # The request line and headers, and the body's framing; nil when the
   # connection ends before a request begins. `on_continue` is called on
@@ -661,7 +672,7 @@ module HTTP
       raise BadRequest.new("bad header") if text.nil?
       name, colon, value = text.partition(":")
       raise BadRequest.new("bad header") if colon.empty? || !name.match?(TOKEN)
-      raise BadRequest.new("bad header value") if value.match?(/[\x00-\x08\x0a-\x1f\x7f]/)
+      raise BadRequest.new("bad header value") if value.match?(CONTROL)
       entries = entries.push(Field.new(name.downcase, value.strip))
     end
     raise HeadersTooLarge.new if left < 0
@@ -764,9 +775,11 @@ module HTTP
   def self.valid_status?(status: Int) -> Bool = status >= 200 && status <= 599
 
   # Whether a handler's headers can be sent: names are tokens, values
-  # have no CR, LF or other control characters but HTAB.
+  # have no CR, LF or other control characters but HTAB. `Headers#put`,
+  # `add` and `of` refuse those already; this catches fields made with
+  # `Field.new`.
   def self.valid_headers?(headers: Headers) -> Bool
-    headers.entries.all? { |f| f.name.match?(TOKEN) && !f.value.match?(/[\x00-\x08\x0a-\x1f\x7f]/) }
+    headers.entries.all? { |f| f.name.match?(TOKEN) && !f.value.match?(CONTROL) }
   end
 
   # The status line and headers of `res` as sent for `req`, with what the
