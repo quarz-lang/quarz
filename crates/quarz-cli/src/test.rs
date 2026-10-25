@@ -94,6 +94,9 @@ pub fn command(args: &[String]) -> ExitCode {
     // `--doc`: a cog's or a script's examples, without its tests (the
     // given files still load, for their examples).
     let test_classes = docs != Docs::Only;
+    if docs != Docs::None {
+        quarz_types::want_docs();
+    }
     let Some((checked, sources)) =
         load_and_check(&files, cog.as_deref(), &opts, docs, std_docs, test_classes)
     else {

@@ -306,7 +306,9 @@ pub struct Builtin {
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct World {
     /// The documentation comments of every file, by the line they
-    /// document (spans are unique across files), in order.
+    /// document (spans are unique across files), in order. (Not encoded
+    /// with the world: `PreludeState` keeps them apart.)
+    #[serde(skip)]
     pub docs: Vec<quarz_syntax::doc::Doc>,
     pub classes: Vec<ClassInfo>,
     pub methods: Vec<MethodInfo>,

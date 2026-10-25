@@ -395,16 +395,45 @@ pub struct PreludeState {
 }
 
 impl PreludeState {
+    /// The state, then the world's documentation comments: more than half
+    /// of it, which only the commands that show or run them read
+    /// (`want_docs`). The state's length comes first.
     pub fn encode(&self) -> Vec<u8> {
-        bincode::serde::encode_to_vec(self, bincode::config::standard())
-            .expect("encode the prelude")
+        let config = bincode::config::standard();
+        let state = bincode::serde::encode_to_vec(self, config).expect("encode the prelude");
+        let docs = bincode::serde::encode_to_vec(&self.world.docs, config).expect("encode docs");
+        let mut bytes = (state.len() as u64).to_le_bytes().to_vec();
+        bytes.extend(state);
+        bytes.extend(docs);
+        bytes
     }
 
+    /// The state, with the documentation comments when `want_docs` asked
+    /// for them.
     pub fn decode(bytes: &[u8]) -> PreludeState {
-        bincode::serde::decode_from_slice(bytes, bincode::config::standard())
+        let config = bincode::config::standard();
+        let (len, rest) = bytes.split_at(8);
+        let len = u64::from_le_bytes(len.try_into().unwrap()) as usize;
+        let (state, docs) = rest.split_at(len);
+        let mut state: PreludeState = bincode::serde::decode_from_slice(state, config)
             .expect("decode the prelude")
-            .0
+            .0;
+        if WANT_DOCS.load(std::sync::atomic::Ordering::Relaxed) {
+            state.world.docs = bincode::serde::decode_from_slice(docs, config)
+                .expect("decode the prelude's docs")
+                .0;
+        }
+        state
     }
+}
+
+static WANT_DOCS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Keep the documentation comments of the prelude and the standard
+/// library when checking starts from their cached states (for the
+/// commands that show or run them).
+pub fn want_docs() {
+    WANT_DOCS.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Declare and check the prelude alone (for `PreludeState::encode`).

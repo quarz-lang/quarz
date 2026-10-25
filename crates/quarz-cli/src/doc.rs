@@ -29,6 +29,7 @@ struct Opts {
 }
 
 pub fn command(args: &[String]) -> ExitCode {
+    quarz_types::want_docs();
     let mut opts = Opts {
         name: None,
         file: None,
