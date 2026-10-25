@@ -973,13 +973,17 @@ pub(crate) fn markdown_text(md: &str, indent: &str) -> String {
     let mut line = String::new();
     let mut list_depth = 0usize;
     let mut in_code = false;
-    let flush = |out: &mut String, line: &mut String, extra: usize| {
-        for l in line.split('\n') {
+    // In a list, a bullet's later lines hang under its text.
+    let flush = |out: &mut String, line: &mut String, extra: usize, hang: bool| {
+        for (i, l) in line.split('\n').enumerate() {
             if l.is_empty() {
                 out.push('\n');
             } else {
                 out.push_str(indent);
                 out.push_str(&"  ".repeat(extra));
+                if hang && i > 0 {
+                    out.push_str("  ");
+                }
                 out.push_str(l);
                 out.push('\n');
             }
@@ -990,12 +994,17 @@ pub(crate) fn markdown_text(md: &str, indent: &str) -> String {
         match event {
             Event::Start(Tag::Heading { .. }) => {}
             Event::End(TagEnd::Heading(_)) => {
-                flush(&mut out, &mut line, list_depth);
+                flush(&mut out, &mut line, list_depth, false);
                 out.push('\n');
             }
             Event::Start(Tag::Paragraph) => {}
             Event::End(TagEnd::Paragraph) => {
-                flush(&mut out, &mut line, list_depth);
+                flush(
+                    &mut out,
+                    &mut line,
+                    list_depth.saturating_sub(1),
+                    list_depth > 0,
+                );
                 if list_depth == 0 {
                     out.push('\n');
                 }
@@ -1015,7 +1024,7 @@ pub(crate) fn markdown_text(md: &str, indent: &str) -> String {
             Event::Start(Tag::Item) => line.push_str("- "),
             Event::End(TagEnd::Item) => {
                 if !line.is_empty() {
-                    flush(&mut out, &mut line, list_depth.saturating_sub(1));
+                    flush(&mut out, &mut line, list_depth.saturating_sub(1), true);
                 }
             }
             Event::Text(t) if in_code => {
@@ -1032,7 +1041,7 @@ pub(crate) fn markdown_text(md: &str, indent: &str) -> String {
             Event::SoftBreak | Event::HardBreak => line.push('\n'),
             Event::End(TagEnd::Link) => {}
             Event::Rule => {
-                flush(&mut out, &mut line, 0);
+                flush(&mut out, &mut line, 0, false);
                 out.push_str(indent);
                 out.push_str("----\n\n");
             }
@@ -1040,7 +1049,7 @@ pub(crate) fn markdown_text(md: &str, indent: &str) -> String {
         }
     }
     if !line.is_empty() {
-        flush(&mut out, &mut line, 0);
+        flush(&mut out, &mut line, 0, false);
     }
     while out.ends_with("\n\n") {
         out.pop();
