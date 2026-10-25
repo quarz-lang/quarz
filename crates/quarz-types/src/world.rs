@@ -296,6 +296,10 @@ pub struct World {
     pub type_param_names: HashMap<TypeParamId, String>,
     /// The lower bounds of method type parameters (`U >: T`).
     pub lower_bounds: HashMap<TypeParamId, Type>,
+    /// Type parameters made by a test narrowing a `T` (`in Box` on a
+    /// `T`): a value that is both, with both as bounds.
+    narrowed_params: HashMap<TypeParamId, Vec<Type>>,
+    narrowed_by: HashMap<(TypeParamId, Type), TypeParamId>,
     /// While checking the body of a method whose signature mentions
     /// `Self`: the class `Self` is bounded by (there, `Self` is that class
     /// or a subclass, not known which).
@@ -370,6 +374,72 @@ impl World {
             }
         }
         id
+    }
+
+    /// The type of a `T` that a test found to be a `bound` too: a type
+    /// parameter bounded by both (still a `T`, with `bound`'s methods).
+    pub fn narrowed_param(&mut self, base: TypeParamId, bound: &Type) -> Type {
+        if let Some(id) = self.narrowed_by.get(&(base, bound.clone())) {
+            return Type::Param(*id);
+        }
+        let id = self.next_type_param;
+        self.next_type_param += 1;
+        let name = format!(
+            "{} & {}",
+            self.type_param_names
+                .get(&base)
+                .cloned()
+                .unwrap_or_default(),
+            self.type_name(bound)
+        );
+        self.type_param_names.insert(id, name);
+        self.narrowed_params
+            .insert(id, vec![Type::Param(base), bound.clone()]);
+        self.narrowed_by.insert((base, bound.clone()), id);
+        Type::Param(id)
+    }
+
+    /// `t` with each narrowed type parameter (`T & C`) back to its `T`,
+    /// for types that outlive the branch of the test (variables, inferred
+    /// types).
+    pub fn erase_narrowed(&self, t: &Type) -> Type {
+        if self.narrowed_params.is_empty() {
+            return t.clone();
+        }
+        match t {
+            Type::Param(p) => match self.narrowed_params.get(p) {
+                Some(bounds) => match bounds.first() {
+                    Some(base) => self.erase_narrowed(base),
+                    None => t.clone(),
+                },
+                None => t.clone(),
+            },
+            Type::Class(id, args) => {
+                Type::Class(*id, args.iter().map(|a| self.erase_narrowed(a)).collect())
+            }
+            Type::ClassObject(id, args) => {
+                Type::ClassObject(*id, args.iter().map(|a| self.erase_narrowed(a)).collect())
+            }
+            Type::Union(ms) => Type::union_of(ms.iter().map(|m| self.erase_narrowed(m)).collect()),
+            Type::Tuple(ts) => Type::Tuple(ts.iter().map(|m| self.erase_narrowed(m)).collect()),
+            Type::Proc(rc, ps, r, sh) => Type::Proc(
+                rc.as_ref().map(|t| Box::new(self.erase_narrowed(t))),
+                ps.iter().map(|p| self.erase_narrowed(p)).collect(),
+                Box::new(self.erase_narrowed(r)),
+                *sh,
+            ),
+            Type::Nothing | Type::Var(_) => t.clone(),
+        }
+    }
+
+    /// The class a narrowed type parameter was found to be, if any.
+    pub fn narrowed_class(&self, id: TypeParamId) -> Option<Type> {
+        let bounds = self.narrowed_params.get(&id)?;
+        bounds.iter().find_map(|b| match b {
+            Type::Class(..) => Some(b.clone()),
+            Type::Param(p) => self.narrowed_class(*p),
+            _ => None,
+        })
     }
 
     pub fn new_type_param(&mut self, name: &str, variance: Variance) -> TypeParamInfo {
@@ -841,6 +911,9 @@ impl World {
     }
 
     fn param_bounds(&self, id: TypeParamId) -> Vec<Type> {
+        if let Some(bounds) = self.narrowed_params.get(&id) {
+            return bounds.clone();
+        }
         if id == u32::MAX {
             return self.self_bound.iter().cloned().collect();
         }
@@ -976,7 +1049,13 @@ impl World {
     ) -> Vec<(MethodId, HashMap<TypeParamId, Type>)> {
         let mut out = Vec::new();
         match recv {
-            Type::Class(id, args) => self.lookup_instance_methods(*id, args, name, &mut out),
+            Type::Class(id, args) => {
+                self.lookup_instance_methods(*id, args, name, &mut out);
+                // A value of a module type is an object too.
+                if self.class(*id).kind == ClassKind::Module {
+                    self.lookup_instance_methods(self.builtin.object, &[], name, &mut out);
+                }
+            }
             Type::ClassObject(id, args) => {
                 for cid in self.superclass_chain(*id) {
                     let class = self.class(cid);
@@ -1013,9 +1092,23 @@ impl World {
             }
             Type::Param(p) => {
                 for b in self.param_bounds(*p) {
-                    if let Type::Class(bid, bargs) = &b {
-                        self.lookup_instance_methods(*bid, bargs, name, &mut out);
+                    match &b {
+                        Type::Class(bid, bargs) => {
+                            self.lookup_instance_methods(*bid, bargs, name, &mut out)
+                        }
+                        // A narrowed `T` has `T`'s methods too.
+                        Type::Param(_) => {
+                            for found in self.lookup_methods(&b, name) {
+                                if !out.iter().any(|(m, _)| *m == found.0) {
+                                    out.push(found);
+                                }
+                            }
+                        }
+                        _ => {}
                     }
+                }
+                if !out.is_empty() && self.narrowed_params.contains_key(p) {
+                    return out;
                 }
                 self.lookup_instance_methods(self.builtin.object, &[], name, &mut out);
             }

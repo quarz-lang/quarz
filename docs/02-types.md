@@ -158,7 +158,7 @@ n = obj.as?(Int)        # Int?
 f = n.to_f              # a conversion method (not a cast)
 ```
 
-Downcasts are checked at run time. Unsafe reinterpreting casts exist only in the FFI layer (`Pointer#cast`).
+Downcasts are checked at run time (`as`, `as?` and `is_a?`), together with the elements of built-in collections and tuples (`obj.as(Array[String])` checks every element; an empty array passes). Other type arguments cannot be checked at run time: `obj.as(Box[Int])` is an error unless `obj` may only be a `Box` that is already a `Box[Int]` (`Box[Int]?`). Unsafe reinterpreting casts exist only in the FFI layer (`Pointer#cast`).
 
 ## 8. Method Resolution and Overloading
 

@@ -1842,14 +1842,36 @@ impl Interp {
         out
     }
 
-    /// `value.is_a?(type)`, ignoring type arguments.
+    /// `value.is_a?(type)`: type arguments only for the elements of
+    /// built-in collections and tuples (`RtType::Elems`).
     pub fn is_a(&self, v: &Value, ty: &RtType) -> bool {
         match ty {
             RtType::Nothing => false,
             RtType::Class(cid) => self.program.world.class_is_a(self.class_of(v), *cid),
+            RtType::Elems(cid, args) => {
+                let any = RtType::Any;
+                let arg = |i: usize| args.get(i).unwrap_or(&any);
+                self.program.world.class_is_a(self.class_of(v), *cid)
+                    && match v {
+                        Value::Array(a) => a.iter().all(|x| self.is_a(&x, arg(0))),
+                        Value::Set(s) => s.iter().all(|x| self.is_a(x, arg(0))),
+                        Value::Hash(h) => h
+                            .as_map()
+                            .iter()
+                            .all(|(k, x)| self.is_a(k, arg(0)) && self.is_a(x, arg(1))),
+                        // An endless end is nil.
+                        Value::Range(r) => [&r.lo, &r.hi]
+                            .iter()
+                            .all(|x| x.is_nil() || self.is_a(x, arg(0))),
+                        _ => true,
+                    }
+            }
             RtType::ClassObject => matches!(v, Value::Class(_)),
             RtType::Union(ms) => ms.iter().any(|m| self.is_a(v, m)),
-            RtType::Tuple(n) => matches!(v, Value::Array(a) if a.len() == *n as usize),
+            RtType::Tuple(ts) => matches!(v, Value::Array(a)
+                if a.len() == ts.len()
+                    && (ts.iter().all(|t| *t == RtType::Any)
+                        || a.iter().zip(ts).all(|(x, t)| self.is_a(&x, t)))),
             RtType::Proc => matches!(v, Value::Proc(_)),
             RtType::Any => true,
         }

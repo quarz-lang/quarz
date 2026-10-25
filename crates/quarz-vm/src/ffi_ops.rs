@@ -69,10 +69,17 @@ fn decode_type(w: &[u32], at: &mut usize) -> RtType {
             RtType::Union((0..n).map(|_| decode_type(w, at)).collect())
         }
         4 => {
+            let n = w[*at] as usize;
             *at += 1;
-            RtType::Tuple(w[*at - 1])
+            RtType::Tuple((0..n).map(|_| decode_type(w, at)).collect())
         }
         5 => RtType::Proc,
+        7 => {
+            let c = w[*at];
+            let n = w[*at + 1] as usize;
+            *at += 2;
+            RtType::Elems(c, (0..n).map(|_| decode_type(w, at)).collect())
+        }
         _ => RtType::Any,
     }
 }
@@ -89,9 +96,20 @@ pub fn encode_type(ty: &RtType, out: &mut Vec<u32>) {
                 encode_type(m, out);
             }
         }
-        RtType::Tuple(n) => out.extend([4, *n]),
+        RtType::Tuple(ts) => {
+            out.extend([4, ts.len() as u32]);
+            for t in ts {
+                encode_type(t, out);
+            }
+        }
         RtType::Proc => out.push(5),
         RtType::Any => out.push(6),
+        RtType::Elems(c, args) => {
+            out.extend([7, *c, args.len() as u32]);
+            for a in args {
+                encode_type(a, out);
+            }
+        }
     }
 }
 

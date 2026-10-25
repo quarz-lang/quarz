@@ -71,6 +71,9 @@ pub struct Output {
     /// methods with no common ancestor declaring the name: looked up by
     /// name on the receiver's class at run time.
     pub dynamic_calls: rustc_hash::FxHashSet<NodeId>,
+    /// `as`/`as?`/`is_a?` calls whose run-time test must check elements:
+    /// the value may be of the class without being of the type.
+    pub element_tests: rustc_hash::FxHashSet<NodeId>,
     /// `x.foo!(args)` calls that are sugar for `x = x.foo(args)` (the
     /// receiver's type has no `foo!`): the call targets `foo` and its
     /// result is stored into the receiver, a local or a field.
@@ -600,10 +603,75 @@ impl Checker {
         }
         self.check_field_defaults();
         self.check_uninitialized_fields();
+        self.check_signature_bounds();
         for (file, body) in units {
             self.check_main(*file, body);
         }
         self.check_inherited_constructors();
+    }
+
+    /// The type arguments written in method signatures and field
+    /// declarations meet their parameters' bounds (`x: Acc[Other]?`).
+    fn check_signature_bounds(&mut self) {
+        let saved_file = self.env.file;
+        for mid in 0..self.world.methods.len() as MethodId {
+            let m = self.world.method(mid);
+            if m.file == 0 || m.synth != Synth::None {
+                continue;
+            }
+            let (file, span) = (m.file, m.span);
+            let mut types: Vec<(Type, Span)> =
+                m.params.iter().map(|p| (p.ty.clone(), p.span)).collect();
+            if let RetType::Known(t) = &m.ret {
+                types.push((t.clone(), span));
+            }
+            if let Some((_, t)) = &m.block {
+                types.push((t.clone(), span));
+            }
+            self.env.file = file;
+            for (t, span) in types {
+                self.check_bounds_deep(&t, span);
+            }
+        }
+        for cid in 0..self.world.classes.len() as ClassId {
+            let c = self.world.class(cid);
+            if c.file == 0 {
+                continue;
+            }
+            self.env.file = c.file;
+            let fields: Vec<(Type, Span)> =
+                c.fields.iter().map(|f| (f.ty.clone(), f.span)).collect();
+            for (t, span) in fields {
+                self.check_bounds_deep(&t, span);
+            }
+        }
+        self.env.file = saved_file;
+    }
+
+    /// `check_class_bounds` for every class type in `t` whose arguments
+    /// are known (not type parameters, whose bounds the signature states).
+    fn check_bounds_deep(&mut self, t: &Type, span: Span) {
+        match t {
+            Type::Class(_, args) | Type::ClassObject(_, args) => {
+                if matches!(t, Type::Class(..))
+                    && !args.iter().any(|a| a.has_vars() || a.mentions_any_param())
+                {
+                    self.check_class_bounds(t, span);
+                }
+                args.iter().for_each(|a| self.check_bounds_deep(a, span));
+            }
+            Type::Union(ms) | Type::Tuple(ms) => {
+                ms.iter().for_each(|m| self.check_bounds_deep(m, span))
+            }
+            Type::Proc(rc, ps, r, _) => {
+                if let Some(rc) = rc {
+                    self.check_bounds_deep(rc, span);
+                }
+                ps.iter().for_each(|p| self.check_bounds_deep(p, span));
+                self.check_bounds_deep(r, span);
+            }
+            Type::Nothing | Type::Param(_) | Type::Var(_) => {}
+        }
     }
 
     /// A class method that calls `new` on its receiver builds an instance
@@ -1352,6 +1420,7 @@ impl Checker {
                     t = self.join(&t, &r);
                 }
                 let t = self.settle_vars(&t);
+                let t = self.world.erase_narrowed(&t);
                 if t.has_vars() {
                     self.error(
                         format!(
@@ -1455,6 +1524,7 @@ impl Checker {
         let saved_temp_stmts = std::mem::take(&mut self.temp_stmts);
         let t = self.check_expr(&value, None);
         let t = self.settle_vars(&t);
+        let t = self.world.erase_narrowed(&t);
         if t.has_vars() {
             self.error(
                 format!("cannot infer the type of constant `{}`", info.name),
@@ -1497,8 +1567,8 @@ impl Checker {
             return true;
         }
         match (&a, &e) {
-            (_, Type::Var(v)) => self.infer.bind(*v, a.clone()),
-            (Type::Var(v), _) => self.infer.bind(*v, e.clone()),
+            (_, Type::Var(v)) => self.infer.bind(*v, self.world.erase_narrowed(&a)),
+            (Type::Var(v), _) => self.infer.bind(*v, self.world.erase_narrowed(&e)),
             (_, Type::Class(id, _)) if *id == self.world.builtin.object => true,
             (Type::Union(ms), _) => {
                 let ms = ms.clone();
@@ -1635,8 +1705,8 @@ impl Checker {
             return true;
         }
         match (&rx, &ry) {
-            (Type::Var(v), _) => self.infer.bind(*v, ry.clone()),
-            (_, Type::Var(v)) => self.infer.bind(*v, rx.clone()),
+            (Type::Var(v), _) => self.infer.bind(*v, self.world.erase_narrowed(&ry)),
+            (_, Type::Var(v)) => self.infer.bind(*v, self.world.erase_narrowed(&rx)),
             (Type::Class(a, aa), Type::Class(b, ba)) if a == b && aa.len() == ba.len() => {
                 let (aa, ba) = (aa.clone(), ba.clone());
                 aa.iter().zip(ba.iter()).all(|(p, q)| self.unify(p, q))
@@ -1944,7 +2014,7 @@ impl Checker {
                 // `?v | Nil` tells nothing of `?v`.
                 let nil = self.world.nil();
                 if !vars.is_empty() && rest.iter().any(|r| *r != nil) {
-                    let rest = Type::union_of(rest);
+                    let rest = self.world.erase_narrowed(&Type::union_of(rest));
                     for v in vars {
                         if let Type::Var(v) = v {
                             self.infer.bind(v, rest.clone());
@@ -3021,8 +3091,29 @@ impl Checker {
 
     fn check_array(&mut self, items: &[Arg], expected: Option<&Type>, span: Span) -> Type {
         let expected = expected.map(|e| self.resolve(e));
+        // A tuple expected, alone or among other types (`[Int, String]?`).
+        let expected_tuple = match &expected {
+            Some(t @ Type::Tuple(_)) => Some(t.clone()),
+            Some(Type::Union(ms)) => {
+                let tuples: Vec<&Type> = ms
+                    .iter()
+                    .filter(|m| matches!(m, Type::Tuple(ts) if ts.len() == items.len()))
+                    .collect();
+                // Another member an array may be (`Array[Int]`, a module
+                // `Array` includes, `Object`, a type parameter) may take
+                // the literal instead.
+                let array = self.world.builtin.array;
+                let arrays = ms.iter().any(|m| match m {
+                    Type::Class(id, _) => self.world.class_is_a(array, *id),
+                    Type::Param(_) | Type::Var(_) => true,
+                    _ => false,
+                });
+                (tuples.len() == 1 && !arrays).then(|| tuples[0].clone())
+            }
+            _ => None,
+        };
         // Tuple expectation.
-        if let Some(Type::Tuple(ts)) = &expected {
+        if let Some(Type::Tuple(ts)) = &expected_tuple {
             if ts.len() == items.len() && items.iter().all(|a| matches!(a, Arg::Positional(_))) {
                 let mut out = Vec::new();
                 for (a, et) in items.iter().zip(ts.iter()) {
@@ -3309,6 +3400,9 @@ impl Checker {
         std::mem::swap(&mut d.world, &mut self.world);
         for (_, diag) in d.diagnostics {
             self.diagnostics.push((self.env.file, diag));
+        }
+        if let Some(t) = &t {
+            self.check_bounds_deep(t, te.span);
         }
         t
     }
@@ -3637,9 +3731,10 @@ impl Checker {
             };
             if self.world.is_subtype(&m, &tgt) {
                 yes.push(m);
-            } else if open.is_some() && matches!(m, Type::Param(_)) {
-                // A type parameter may be anything: narrowed to the guess.
-                yes.push(tgt);
+            } else if let Type::Param(p) = m {
+                // A type parameter may be anything: still a `T`, and a
+                // `tgt` too.
+                yes.push(self.world.narrowed_param(p, &tgt));
                 no.push(m);
             } else if open.is_some()
                 && matches!((&m, &tgt), (Type::Class(mid, _), Type::Class(tid, _))
@@ -5508,6 +5603,15 @@ impl Checker {
                 .map(|_| self.infer.fresh())
                 .collect()
         };
+        // Written arguments (`Acc[Other].new`) had their bounds checked
+        // where they were resolved.
+        // (Not those naming type parameters, which `check_bounds_deep`
+        // leaves to the use.)
+        let written = !args.is_empty()
+            && !args.iter().any(|a| {
+                let a = self.infer.resolve(a);
+                a.has_vars() || a.mentions_any_param()
+            });
         let instance = Type::Class(cid, targs.clone());
         let cands = self.world.lookup_methods(&instance, "initialize");
         // Only the class's own (or inherited) initialize, not Object's.
@@ -5543,7 +5647,9 @@ impl Checker {
         self.out
             .calls
             .insert(expr.id, CallTarget::Constructor { class: cid, init });
-        self.check_class_bounds(&instance, expr.span);
+        if !written {
+            self.check_class_bounds(&instance, expr.span);
+        }
         instance
     }
 
@@ -6947,6 +7053,16 @@ impl Checker {
             ),
         );
         let rt = self.resolve(&rt);
+        self.check_testable(&rt, &target, &call.name, arg.span);
+        let checked = rt.members().iter().any(|m| {
+            target
+                .members()
+                .iter()
+                .any(|t| self.may_be_of_class(m, t) && !self.world.is_subtype(m, t))
+        });
+        if checked {
+            self.out.element_tests.insert(expr.id);
+        }
         match call.name.as_str() {
             "is_a?" => {
                 self.out.calls.insert(expr.id, CallTarget::IsA(target));
@@ -6988,6 +7104,95 @@ impl Checker {
 }
 
 impl Checker {
+    /// `x.as(T)`/`x.is_a?(T)` check at run time the class, and the
+    /// elements of built-in collections and tuples. Other type arguments
+    /// (`Box[Int]`, a procedure's parameters) are not checked, so a value
+    /// that may be of the class must already be of the type.
+    fn check_testable(&mut self, rt: &Type, target: &Type, op: &str, span: Span) {
+        let rt = self.resolve(rt);
+        for tm in target.members() {
+            if !self.unverifiable(&tm) {
+                continue;
+            }
+            for m in rt.members() {
+                if self.world.is_subtype(&m, &tm) || !self.may_be_of_class(&m, &tm) {
+                    continue;
+                }
+                self.error(
+                    format!(
+                        "`{op}` cannot check at run time that a value of type {} is a {} (type arguments are not known then)",
+                        self.name(&m),
+                        self.name(&tm)
+                    ),
+                    span,
+                );
+                return;
+            }
+        }
+    }
+
+    /// Whether the run-time test of `t` leaves part of it unchecked: a
+    /// type parameter as an argument (the elements' `T` is not known at
+    /// run time), or arguments of a class other than the built-in
+    /// collections (whose elements are checked), except `Object` for a
+    /// covariant parameter.
+    fn unverifiable(&self, t: &Type) -> bool {
+        let b = &self.world.builtin;
+        let object = |a: &Type| matches!(a, Type::Class(id, _) if *id == b.object);
+        match t {
+            Type::Class(id, args) if [b.array, b.set, b.hash, b.range].contains(id) => {
+                args.iter().any(|a| !object(a) && self.unverifiable_arg(a))
+            }
+            Type::Class(id, args) | Type::ClassObject(id, args) => {
+                let params = &self.world.class(*id).type_params;
+                args.iter().enumerate().any(|(i, a)| {
+                    !(object(a)
+                        && params
+                            .get(i)
+                            .is_some_and(|p| p.variance == Variance::Covariant))
+                })
+            }
+            Type::Tuple(ts) | Type::Union(ts) => ts.iter().any(|m| self.unverifiable(m)),
+            Type::Proc(..) => true,
+            // A type parameter is not known at run time (`o.as(T)`).
+            Type::Param(_) => true,
+            Type::Nothing | Type::Var(_) => false,
+        }
+    }
+
+    /// `unverifiable` for a type argument or element type: a type
+    /// parameter there is not known at run time.
+    fn unverifiable_arg(&self, t: &Type) -> bool {
+        match t {
+            Type::Param(_) => true,
+            Type::Union(ms) | Type::Tuple(ms) => ms.iter().any(|m| self.unverifiable_arg(m)),
+            _ => self.unverifiable(t),
+        }
+    }
+
+    /// Whether a value of type `m` may pass the class test of `t`.
+    fn may_be_of_class(&self, m: &Type, t: &Type) -> bool {
+        let class_of = |t: &Type| match t {
+            Type::Class(id, _) => Some(*id),
+            Type::Tuple(_) => Some(self.world.builtin.array),
+            Type::Proc(..) => Some(self.world.builtin.proc_),
+            _ => None,
+        };
+        match (m, t) {
+            (Type::Param(_) | Type::Var(_), _) | (_, Type::Param(_)) => true,
+            (Type::ClassObject(..), Type::ClassObject(..)) => true,
+            _ => match (class_of(m), class_of(t)) {
+                (Some(mc), Some(tc)) => {
+                    self.world.class_is_a(mc, tc)
+                        || self.world.class_is_a(tc, mc)
+                        || self.world.class(mc).kind == ClassKind::Module
+                        || self.world.class(tc).kind == ClassKind::Module
+                }
+                _ => false,
+            },
+        }
+    }
+
     /// Narrowings established when `value` matches `pattern`, with pattern
     /// variables declared. Used by `in` conditions and `=>`.
     fn check_pattern_facts(&mut self, pattern: &Pattern, value_ty: &Type, value: &Expr) -> Facts {

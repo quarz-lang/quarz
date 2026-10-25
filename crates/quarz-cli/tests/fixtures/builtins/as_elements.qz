@@ -1,0 +1,16 @@
+# `as`/`is_a?` with type arguments check the elements of built-in
+# collections at run time.
+def obj(v: Object) -> Object = v
+o = obj([1])
+x = o.as?(Array[String])
+p x
+p o.is_a?(Array[Int]), o.is_a?(Array[String])
+h = obj({"a" => 1})
+p h.as?(Hash[String, Int]), h.as?(Hash[String, String])
+e = obj([])
+p e.as?(Array[String])
+begin
+  o.as(Array[String])
+rescue TypeError => err
+  p err.class
+end
