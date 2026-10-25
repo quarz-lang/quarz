@@ -1261,8 +1261,20 @@ impl<'src> Lexer<'src> {
         };
 
         // Bytes literals keep their escapes; the parser decodes them to
-        // bytes.
+        // bytes. In `b'...'`, as in Ruby's single quotes, only `\\` and
+        // `\'` are escapes: any other backslash is itself (kept escaped
+        // for the parser).
         if kind == StringKind::Bytes {
+            if close == b'\'' {
+                if n == b'\'' {
+                    buf.push('\'');
+                    self.pos += 2;
+                } else {
+                    buf.push_str("\\\\");
+                    self.pos += if n == b'\\' { 2 } else { 1 };
+                }
+                return;
+            }
             buf.push('\\');
             self.pos += 1;
             self.take_char(buf);

@@ -1882,15 +1882,21 @@ impl<'src> Parser<'src> {
         Ok(self.node(span, kind))
     }
 
-    /// Decode the escapes of a `b"..."` literal. Characters outside ASCII
-    /// contribute their UTF-8 bytes; `\xNN` and octal escapes any byte.
+    /// Decode the escapes of a `b"..."` literal: `\xNN` and octal escapes
+    /// give any byte. A character beyond ASCII, written or as `\u`, is an
+    /// error: binary data is not text (`"é".to_bytes` gives its UTF-8).
     fn decode_bytes_literal(&mut self, parts: &[StrPart], span: Span) -> Vec<u8> {
         let mut out = Vec::new();
+        let beyond_ascii = "a Bytes literal holds ASCII and escapes (`\\xff`) only; for text's UTF-8 bytes, use `\"...\".to_bytes`";
         for part in parts {
             let StrPart::Lit(text) = part else { continue };
             let b = text.as_bytes();
             let mut i = 0;
             while i < b.len() {
+                if !b[i].is_ascii() {
+                    let _ = self.error_at(beyond_ascii, span);
+                    return out;
+                }
                 if b[i] != b'\\' {
                     out.push(b[i]);
                     i += 1;
@@ -1949,7 +1955,11 @@ impl<'src> Parser<'src> {
                             count += 1;
                         }
                         match (count == 4).then(|| char::from_u32(value)).flatten() {
-                            Some(ch) => out.extend_from_slice(ch.to_string().as_bytes()),
+                            Some(ch) if ch.is_ascii() => out.push(ch as u8),
+                            Some(_) => {
+                                let _ = self.error_at(beyond_ascii, span);
+                                return out;
+                            }
                             None => {
                                 let _ = self
                                     .error_at("invalid Unicode escape in a Bytes literal", span);

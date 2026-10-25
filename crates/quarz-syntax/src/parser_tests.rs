@@ -78,8 +78,16 @@ fn shareable_procedure_types() {
 #[test]
 fn bytes_literals() {
     assert_eq!(sexp("b\"\\x00a\\n\\377\""), "(bytes 00610aff)");
-    assert_eq!(sexp("b'\\x41é'"), "(bytes 41c3a9)");
-    assert_eq!(sexp("b\"\\u00e9\\\"\""), "(bytes c3a922)");
+    // Single quotes as Ruby's: only `\\` and `\'` are escapes.
+    assert_eq!(sexp("b'\\x41\\\\\\''"), "(bytes 5c7834315c27)");
+    assert_eq!(sexp("b\"\\u0041\\\"\""), "(bytes 4122)");
+    // Beyond ASCII, written or escaped, is text, not bytes.
+    for src in ["b\"é\"", "b'é'", "b\"\\u00e9\""] {
+        assert!(
+            errors(src)[0].contains("a Bytes literal holds ASCII"),
+            "{src}"
+        );
+    }
 }
 
 #[test]

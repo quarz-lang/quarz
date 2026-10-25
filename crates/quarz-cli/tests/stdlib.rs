@@ -28,7 +28,7 @@ p Bytes[3, 1, 2].map { |x| x * 2 }, Bytes[1, 2, 3].include?(2)
 p({ b"\x01" => "one" }[b"\x01"])
 p b"\x01\x02".reverse, b"abc".slice(1, 5), Bytes.new.empty?, b'\x41\n'
 "#,
-        "b\"\\x00\\xffab\\n\"\n5\n255\nb\"\\x00\\xff\"\n[0, 255, 97, 98, 10]\n\"00ff61620a\"\n\"Hello\"\nb\"h\\xc3\\xa9llo\"\n\"héllo\"\nnil\nerror: invalid UTF-8 byte sequence at offset 0\nb\"\\xe9\"\n\"é\"\nb\"\\x01\\x02c\"\nb\"\\x01\\x02\\x03\\x04\"\ntrue\ntrue\n[6, 2, 4]\ntrue\n\"one\"\nb\"\\x02\\x01\"\nb\"bc\"\ntrue\nb\"A\\n\"\n",
+        "b\"\\x00\\xffab\\n\"\n5\n255\nb\"\\x00\\xff\"\n[0, 255, 97, 98, 10]\n\"00ff61620a\"\n\"Hello\"\nb\"h\\xc3\\xa9llo\"\n\"héllo\"\nnil\nerror: invalid UTF-8 byte sequence at offset 0\nb\"\\xe9\"\n\"é\"\nb\"\\x01\\x02c\"\nb\"\\x01\\x02\\x03\\x04\"\ntrue\ntrue\n[6, 2, 4]\ntrue\n\"one\"\nb\"\\x02\\x01\"\nb\"bc\"\ntrue\nb\"\\\\x41\\\\n\"\n",
     );
 }
 

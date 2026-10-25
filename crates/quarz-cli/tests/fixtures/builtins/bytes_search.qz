@@ -9,7 +9,7 @@ if m
 end
 p d.scan(/./).size, d.scan(/[^\x00-\x7f]/), b"a.b.c".gsub(b".", b"-"), b"ab12".gsub(/\d/) { |x| x + x }
 p b"k=v".sub(/(\w)=(\w)/, b"\\2=\\1"), b"k=v".gsub(/(\w)=(\w)/) { |_, m| m[2] || b"" }, b"\xff\xfe".gsub(/\xff/, { b"\xff" => b"X" })
-p d.start_with?(b"GET"), d.start_with?(/G.T/), d.end_with?(b"\xfe"), d.include?(b"Host"), b"aaa".rindex(/aa/), b"abc".split(b""), b"aé".scan(/./)
+p d.start_with?(b"GET"), d.start_with?(/G.T/), d.end_with?(b"\xfe"), d.include?(b"Host"), b"aaa".rindex(/aa/), b"abc".split(b""), "aé".to_bytes.scan(/./)
 d.scan(/(\w+): (\w)/) { |s, m| p [s, m[1], m.begin(1)] }
 p b"x\n" =~ /^$/, b"a\nb\n".gsub(/^/, b"> "), b"abc".split(/b*/), ("a" * 1000).to_bytes.rindex(/a+/)
 begin

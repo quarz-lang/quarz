@@ -487,6 +487,7 @@ bytes = b"\x00\xff"        # Bytes (binary)
 ```
 
 - Strings are always UTF-8 and immutable. Binary data is a separate type, `Bytes`.
+- A Bytes literal holds ASCII and escapes only. `b"..."` reads escapes as a double-quoted string does (`\xff`, `\377`, `\0`, `\n`, `\t`, `\e`..., and `\uXXXX`, four digits, for an ASCII character), without interpolation; `b'...'`, as Ruby's single quotes, reads only `\\` and `\'`, any other backslash being itself. A character beyond ASCII, written or as `\u00e9`, is an error, as in Python and Rust: binary data is not text, and `"é".to_bytes` gives the UTF-8 bytes of text.
 - `Array`/`Hash`/`Set` created from literals are immutable: updates return new values. The empty literals `[]` and `{}` take their element types from the context ([02-types.md](02-types.md) §5).
 - The keys of `{ a: 1 }` are `Symbol`s; the keys of `{ "a" => 1 }` are `String`s. Mixing them gives `Hash[Symbol | String, Int]`.
 
