@@ -32,7 +32,7 @@ fn quarz_test(args: &[&str], threads: &str) {
         .unwrap_or(0);
     assert!(
         out.status.success()
-            && tests >= 185
+            && tests >= 293
             && summary.contains(" 0 failures, 0 errors, 0 pendings, 0 omissions"),
         "quarz test {args:?} std/test:\n{stdout}{stderr}"
     );

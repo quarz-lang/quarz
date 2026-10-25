@@ -1,0 +1,82 @@
+# HTTP::Router: patterns, specificity, mount, 405, HEAD, conflicts.
+require "http"
+require "test"
+
+class HttpRouterTest < Test::Case
+  @router: HTTP::Router = HTTP::Router.build do |r|
+    admin = HTTP::Router.build do |a|
+      a.get("/stats") { |req| HTTP::Response.text("stats") }
+      a.get("/users/{id}") { |req| HTTP::Response.text("admin user #{req.params["id"]}") }
+    end
+    r.get("/") { |req| HTTP::Response.text("root") }
+    r.get("/users/{id}") { |req| HTTP::Response.text("user #{req.params["id"]}") }
+    r.get("/users/me") { |req| HTTP::Response.text("me") }
+    r.post("/users") { |req| HTTP::Response.text("created #{req.body.read}", 201) }
+    r.get("/files/{path...}") { |req| HTTP::Response.text("file [#{req.params["path"]}]") }
+    r.get("/files/{name}") { |req| HTTP::Response.text("one file #{req.params["name"]}") }
+    r.get("/a/{x}/c") { |req| HTTP::Response.text("a x c") }
+    r.get("/{y}/b/c") { |req| HTTP::Response.text("y b c") }
+    r.mount("/admin", admin)
+    r.not_found { |req| HTTP::Response.text("nothing at #{req.path}", 404) }
+  end
+
+  # The request, the status, the text body and any Allow header.
+  def route(req: HTTP::Request) -> String
+    res = @router.call(req)
+    body = case res.body
+           in HTTP::ResponseBody::Text(text:) then text
+           else ""
+           end
+    allow = res.headers["allow"]
+    "#{req.method} #{req.target} -> #{res.status} #{body}#{allow ? " Allow: #{allow}" : ""}"
+  end
+
+  def data_get -> Hash[String, [String, String]]
+    {
+      "root" => ["/", "GET / -> 200 root"],
+      "parameter" => ["/users/42", "GET /users/42 -> 200 user 42"],
+      "literal beats parameter" => ["/users/me", "GET /users/me -> 200 me"],
+      "empty parameter" => ["/users/", "GET /users/ -> 404 nothing at /users/"],
+      "rest with encoded slash" => ["/files/a/b%2Fc", "GET /files/a/b%2Fc -> 200 file [a/b/c]"],
+      "one segment beats rest" => ["/files/x", "GET /files/x -> 200 one file x"],
+      "empty rest" => ["/files/", "GET /files/ -> 200 file []"],
+      "rest needs its slash" => ["/files", "GET /files -> 404 nothing at /files"],
+      "earlier literal wins" => ["/a/b/c", "GET /a/b/c -> 200 a x c"],
+      "later literals" => ["/z/b/c", "GET /z/b/c -> 200 y b c"],
+      "mounted" => ["/admin/stats", "GET /admin/stats -> 200 stats"],
+      "mounted parameter" => ["/admin/users/7", "GET /admin/users/7 -> 200 admin user 7"],
+      "not found" => ["/nope", "GET /nope -> 404 nothing at /nope"],
+      "percent-decoded" => ["/users/%E3%81%82", "GET /users/%E3%81%82 -> 200 user あ"],
+      "bad escape kept" => ["/users/%ZZ", "GET /users/%ZZ -> 200 user %ZZ"],
+    }
+  end
+
+  def test_get(data: [String, String])
+    target, expected = data
+    assert_equal(expected, route(HTTP::Request.get(target)))
+  end
+
+  def test_post_with_body
+    assert_equal("POST /users -> 201 created bob", route(HTTP::Request.post("/users", "bob")))
+  end
+
+  def test_method_not_allowed
+    assert_equal("DELETE /users/1 -> 405 Method Not Allowed Allow: GET, HEAD", route(HTTP::Request.delete("/users/1")))
+    assert_equal("POST / -> 405 Method Not Allowed Allow: GET, HEAD", route(HTTP::Request.post("/")))
+  end
+
+  def test_head_served_by_get
+    assert_equal("HEAD /users/1 -> 200 user 1", route(HTTP::Request.head("/users/1")))
+  end
+
+  def test_conflicting_patterns
+    e = assert_raise(ArgumentError) do
+      HTTP::Router.build do |r|
+        r.get("/x/{a}") { |req| HTTP::Response.text("1") }
+        r.get("/x/{b}") { |req| HTTP::Response.text("2") }
+      end
+      nil
+    end
+    assert_equal("GET /x/{b} conflicts with /x/{a}", e.message)
+  end
+end
