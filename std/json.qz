@@ -13,11 +13,20 @@
 # hashes, sets, `data` values and `JSON::Value`. Other objects are
 # generated from their fields, unless they define `to_json -> String`.
 module JSON
+  # The version of the library.
   VERSION = "0.1.0"
 
+  # Raised by `JSON.parse` on malformed input; the message gives the line
+  # and column.
   class ParseError < StandardError
   end
 
+  # Raised by `JSON.generate` on a value JSON cannot represent, such as a
+  # `Float` infinity or NaN.
+  #
+  # ```
+  # JSON.generate(1.0 / 0.0)   # raises JSON::GeneratorError
+  # ```
   class GeneratorError < StandardError
   end
 
@@ -27,13 +36,21 @@ module JSON
   # fraction or an exponent. Inside the enum the names are the variants:
   # the types are `::Bool`, `::String` and so on.
   enum Value
+    # JSON `null`.
     variant Null
+    # JSON `true` or `false`.
     variant Bool(value: ::Bool)
+    # A JSON number: an `Int`, an `Integer` when too large for an `Int`, or
+    # a `Float` when it has a fraction or an exponent.
     variant Number(value: ::Int | ::Integer | ::Float)
+    # A JSON string.
     variant String(value: ::String)
+    # A JSON array.
     variant Array(items: ::Array[Value])
+    # A JSON object, its members in document order.
     variant Object(members: ::Hash[::String, Value])
 
+    # Whether the value is `Null`.
     def null? -> ::Bool
       case self
       in Null then true
@@ -41,6 +58,7 @@ module JSON
       end
     end
 
+    # Whether the value is a `Bool`.
     def bool? -> ::Bool
       case self
       in Bool then true
@@ -48,6 +66,7 @@ module JSON
       end
     end
 
+    # Whether the value is a `Number`.
     def number? -> ::Bool
       case self
       in Number then true
@@ -55,6 +74,7 @@ module JSON
       end
     end
 
+    # Whether the value is a `String`.
     def string? -> ::Bool
       case self
       in String then true
@@ -62,6 +82,7 @@ module JSON
       end
     end
 
+    # Whether the value is an `Array`.
     def array? -> ::Bool
       case self
       in Array then true
@@ -69,6 +90,7 @@ module JSON
       end
     end
 
+    # Whether the value is an `Object`.
     def object? -> ::Bool
       case self
       in Object then true
@@ -76,8 +98,12 @@ module JSON
       end
     end
 
-    # Member of an object; raises `KeyError` when missing and `TypeError`
-    # on anything but an `Object`.
+    # The member named `key` of an object.
+    #
+    # ## Raises
+    #
+    # `KeyError` when the object has no such member, `TypeError` when the
+    # value is not an `Object`.
     def [](key: ::String) -> Value
       case self
       in Object(members:) then members[key]
@@ -85,7 +111,18 @@ module JSON
       end
     end
 
-    # Element of an array; raises `IndexError` when out of range.
+    # The element at `index` of an array; a negative `index` counts from
+    # the end.
+    #
+    # ## Raises
+    #
+    # `IndexError` when `index` is out of range, `TypeError` when the
+    # value is not an `Array`.
+    #
+    # ```
+    # JSON.parse("[1, 2]")[-1]   # => JSON::Value::Number(value: 2)
+    # JSON.parse("[1, 2]")[5]    # raises IndexError
+    # ```
     def [](index: ::Int) -> Value
       case self
       in Array(items:) then items[index]
@@ -93,6 +130,15 @@ module JSON
       end
     end
 
+    # Member of an object, or `nil` when it is missing or the value is not
+    # an `Object`.
+    #
+    # ```
+    # doc = JSON.parse('{"a": 1}')
+    # doc["a"]?          # => JSON::Value::Number(value: 1)
+    # doc["b"]?          # => nil
+    # doc[0]?            # => nil
+    # ```
     def []?(key: ::String) -> Value?
       case self
       in Object(members:) then members[key]?
@@ -100,6 +146,8 @@ module JSON
       end
     end
 
+    # Element of an array, or `nil` when out of range or the value is not an
+    # `Array`. A negative `index` counts from the end.
     def []?(index: ::Int) -> Value?
       case self
       in Array(items:) then items[index]?
@@ -107,6 +155,7 @@ module JSON
       end
     end
 
+    # The boolean of a `Bool`; raises `TypeError` on any other value.
     def as_bool -> ::Bool
       case self
       in Bool(value:) then value
@@ -132,6 +181,8 @@ module JSON
       end
     end
 
+    # The number as a `Float`; raises `TypeError` on anything but a
+    # `Number`.
     def as_f -> ::Float
       case self
       in Number(value:) then value.to_f
@@ -139,6 +190,7 @@ module JSON
       end
     end
 
+    # The string of a `String`; raises `TypeError` on any other value.
     def as_s -> ::String
       case self
       in String(value:) then value
@@ -146,6 +198,7 @@ module JSON
       end
     end
 
+    # The elements of an `Array`; raises `TypeError` on any other value.
     def as_a -> ::Array[Value]
       case self
       in Array(items:) then items
@@ -153,6 +206,7 @@ module JSON
       end
     end
 
+    # The members of an `Object`; raises `TypeError` on any other value.
     def as_h -> ::Hash[::String, Value]
       case self
       in Object(members:) then members
@@ -160,6 +214,7 @@ module JSON
       end
     end
 
+    # The boolean of a `Bool`, or `nil` for any other value.
     def as_bool? -> ::Bool?
       case self
       in Bool(value:) then value
@@ -167,6 +222,14 @@ module JSON
       end
     end
 
+    # The number as an `Int` (a `Float` truncated), or `nil` when the value
+    # is not a `Number`. A number too large for an `Int` still raises
+    # `OverflowError`.
+    #
+    # ```
+    # JSON.parse("2.5").as_i?     # => 2
+    # JSON.parse('"2"').as_i?     # => nil
+    # ```
     def as_i? -> ::Int?
       case self
       in Number(value:) then value.to_i
@@ -174,6 +237,8 @@ module JSON
       end
     end
 
+    # The number as an `Integer` (a `Float` truncated), or `nil` when the
+    # value is not a `Number`.
     def as_integer? -> ::Integer?
       case self
       in Number(value:) then JSON.integer_of(value)
@@ -181,6 +246,7 @@ module JSON
       end
     end
 
+    # The number as a `Float`, or `nil` when the value is not a `Number`.
     def as_f? -> ::Float?
       case self
       in Number(value:) then value.to_f
@@ -188,6 +254,7 @@ module JSON
       end
     end
 
+    # The string of a `String`, or `nil` for any other value.
     def as_s? -> ::String?
       case self
       in String(value:) then value
@@ -195,6 +262,7 @@ module JSON
       end
     end
 
+    # The elements of an `Array`, or `nil` for any other value.
     def as_a? -> ::Array[Value]?
       case self
       in Array(items:) then items
@@ -202,6 +270,7 @@ module JSON
       end
     end
 
+    # The members of an `Object`, or `nil` for any other value.
     def as_h? -> ::Hash[::String, Value]?
       case self
       in Object(members:) then members
@@ -209,7 +278,11 @@ module JSON
       end
     end
 
-    # Number of elements or members.
+    # The number of elements of an array or members of an object.
+    #
+    # ## Raises
+    #
+    # `TypeError` for any other value.
     def size -> ::Int
       case self
       in Array(items:) then items.size
@@ -218,8 +291,14 @@ module JSON
       end
     end
 
+    # The compact JSON text of the value, as `JSON.generate` gives it.
+    #
+    # ```
+    # JSON.parse("[1, true, null]").to_json   # => "[1,true,null]"
+    # ```
     def to_json -> ::String = JSON.generate(self)
 
+    # The compact JSON text of the value, as `#to_json`.
     def to_s -> ::String = to_json
   end
 
@@ -233,7 +312,19 @@ module JSON
     end
   end
 
-  # Parse a document; raises `JSON::ParseError` on malformed input.
+  # The JSON document `text` as a `JSON::Value`; whitespace around the
+  # value is allowed.
+  #
+  # ## Raises
+  #
+  # `JSON::ParseError` on malformed input (anything but one value
+  # included), with the line and column in its message.
+  #
+  # ```
+  # JSON.parse(" null ")       # => JSON::Value::Null
+  # JSON.parse("[1,")          # raises JSON::ParseError
+  # JSON.parse("1 2")          # raises JSON::ParseError
+  # ```
   native def self.parse(text: String) -> Value
 
   # The compact JSON text of a value.
@@ -242,7 +333,10 @@ module JSON
   # Indented JSON text (two spaces per level).
   native def self.pretty_generate(value: Object) -> String
 
+  # The compact JSON text of a value: `JSON.generate` under Ruby's other
+  # name.
   def self.dump(value: Object) -> String = generate(value)
 
+  # Parses a document: `JSON.parse` under Ruby's other name.
   def self.load(text: String) -> Value = parse(text)
 end
