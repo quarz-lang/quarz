@@ -112,6 +112,10 @@ pub struct FnBuilder<'a> {
     loops: Vec<LoopCtx>,
     handlers: Vec<Region<'a>>,
     retry_targets: Vec<BlockId>,
+    /// The exceptions the enclosing `rescue` clauses are handling,
+    /// innermost last: one raised or caught in a clause gets it as its
+    /// cause (`Exception#__set_cause`), as Ruby's `$!`.
+    rescuing: Vec<Reg>,
     method: Option<MethodId>,
     class_id: Option<ClassId>,
     is_block: bool,
@@ -169,6 +173,7 @@ impl<'a> FnBuilder<'a> {
                 ensure: None,
             }],
             retry_targets: Vec::new(),
+            rescuing: Vec::new(),
             method,
             class_id,
             is_block: false,
@@ -3696,6 +3701,9 @@ impl<'a> FnBuilder<'a> {
         self.switch(handler);
         let exc = self.reg();
         self.emit(Inst::CatchException { dst: exc });
+        if let Some(&outer) = self.rescuing.last() {
+            self.send(exc, "__set_cause", vec![outer]);
+        }
         for rescue in &block.rescues {
             let classes: Vec<ClassId> = match self.out.rescue_classes.get(&rescue.span) {
                 Some(ids) => ids.clone(),
@@ -3722,11 +3730,35 @@ impl<'a> FnBuilder<'a> {
             if rescue.var.is_some() {
                 self.store_site(rescue.span, exc);
             }
+            // The clause's body: an exception leaving it gets `exc` as its
+            // cause.
+            let caused = self.new_block();
+            self.handlers.push(Region {
+                handler: Some(Handler {
+                    block: caused,
+                    kind: HandlerKind::Rescue,
+                }),
+                ensure: None,
+            });
+            let clause = self.new_block();
+            self.term(Term::Jump(clause));
+            self.switch(clause);
             self.retry_targets.push(entry);
+            self.rescuing.push(exc);
             let v = self.body(&rescue.body);
+            self.rescuing.pop();
             self.retry_targets.pop();
+            self.handlers.pop();
+            let done = self.new_block();
+            self.term(Term::Jump(done));
+            self.switch(done);
             self.emit(Inst::Move { dst: res, src: v });
             self.term(Term::Jump(join));
+            self.switch(caused);
+            let raised = self.reg();
+            self.emit(Inst::CatchException { dst: raised });
+            self.send(raised, "__set_cause", vec![exc]);
+            self.term(Term::Raise(raised));
             self.switch(after);
         }
         self.term(Term::Raise(exc));

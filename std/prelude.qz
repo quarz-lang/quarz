@@ -68,10 +68,9 @@ class Object
   # or of a subclass. (`x.is_a?(Int)`, with a type, narrows `x`.)
   native def is_a?(klass: Class) -> Bool
   # Whether the value cannot be changed: false only for the builders
-  # `Array::Builder`, `Hash::Builder`, `Set::Builder` and
-  # `String::Builder`. `true` for every other value, instances of classes
-  # with `var` fields included, and `Bytes::Builder` too. NOTE: this may
-  # change, so that `Bytes::Builder` gives false.
+  # `Array::Builder`, `Hash::Builder`, `Set::Builder`, `String::Builder`
+  # and `Bytes::Builder`. `true` for every other value, instances of
+  # classes with `var` fields included.
   native def frozen? -> Bool
   # A copy of the value. A builder or an instance of a class is copied
   # (shallowly: the fields refer to the same values); an immutable built-in
@@ -941,7 +940,7 @@ class Float
   #
   # ## Raises
   #
-  # `RangeError` for NaN or an infinity, `OverflowError` beyond the `Int`
+  # `FloatDomainError` for NaN or an infinity, `OverflowError` beyond the `Int`
   # range.
   #
   # ```
@@ -950,11 +949,11 @@ class Float
   # Float::NAN.floor   # raises RangeError
   # ```
   native def floor -> Int
-  # The smallest `Int` not below `self`; `RangeError` for NaN or an
+  # The smallest `Int` not below `self`; `FloatDomainError` for NaN or an
   # infinity, `OverflowError` beyond the `Int` range.
   native def ceil -> Int
   # The nearest `Int`, a half away from zero (not to even);
-  # `RangeError` for NaN or an infinity, `OverflowError` beyond the `Int`
+  # `FloatDomainError` for NaN or an infinity, `OverflowError` beyond the `Int`
   # range.
   #
   # ```
@@ -982,7 +981,7 @@ class Float
   # 1234.5.round(-2)    # => 1200.0
   # ```
   native def round(digits: Int) -> Float
-  # The `Int` toward zero; `RangeError` for NaN or an infinity,
+  # The `Int` toward zero; `FloatDomainError` for NaN or an infinity,
   # `OverflowError` beyond the `Int` range.
   native def truncate -> Int
   # `self` rounded toward negative infinity to `digits` decimal places
@@ -1037,7 +1036,7 @@ class Float
   native def step(limit: Float, step: Float, &: (Float) -> Nil) -> Nil
   # False: a `Float` is not an integer, even a whole one.
   def integer? -> Bool = false
-  # The `Int` toward zero (`-3.9.to_i` is -3); `RangeError` for NaN or an
+  # The `Int` toward zero (`-3.9.to_i` is -3); `FloatDomainError` for NaN or an
   # infinity, `OverflowError` beyond the `Int` range.
   native def to_i -> Int
   # `self`.
@@ -5003,9 +5002,28 @@ class Exception
   # by the backtrace, one `"    from file.qz:12:in method"` line per frame:
   # what the runtime prints for an exception nothing rescued.
   native def full_message -> String
-  # The exception this one was raised in place of, or `nil`. The runtime
-  # does not set it yet: raising in a `rescue` clause leaves it `nil`.
+  # The exception being rescued when this one was raised, or `nil`, as in
+  # Ruby: an exception raised in a `rescue` clause (or rescued by a
+  # `begin` inside one) gets the one the clause is handling. An exception
+  # raised again keeps the cause it had.
+  #
+  # ```
+  # e = begin
+  #   begin
+  #     raise ArgumentError, "inner"
+  #   rescue
+  #     raise "outer"
+  #   end
+  # rescue => x
+  #   x
+  # end
+  # e.cause.inspect   # => "#<ArgumentError: inner>"
+  # ```
   native def cause -> Exception?
+  # Lowering calls it in a `rescue` clause: `cause` becomes this
+  # exception's cause, unless it has one, is `cause`, or would make a
+  # cycle.
+  native def __set_cause(cause: Exception) -> Nil
   # The message.
   def to_s -> String = message
   # `#<ArgumentError: bad size>`.
@@ -5140,10 +5158,34 @@ end
 class StopIteration < StandardError
 end
 
-# Declared for compatibility with Ruby. `exit` and `abort` do not raise
-# it: they end the program at once (running the `at_exit` blocks), and no
-# `rescue` sees them.
+# Raised by `exit` and `abort` to end the program, as in Ruby. Outside
+# `StandardError`, so a plain `rescue` lets it through: the `ensure`
+# clauses it leaves run, and one nothing rescues ends the program with
+# `#status` (from any task) after the `at_exit` blocks. `rescue SystemExit`
+# (or `Exception`) catches it; `exit!` ends the program without it.
+#
+# ```
+# status = begin
+#   exit 3
+# rescue SystemExit => e
+#   e.status
+# end
+# status   # => 3
+# ```
 class SystemExit < Exception
+  @status: Int
+
+  # A `SystemExit` with `status`, not yet raised.
+  def initialize(status: Int = 0, message: String = "exit")
+    @status = status
+    super(message)
+  end
+
+  # The status the program ends with.
+  attr_reader :status
+
+  # Whether the status is 0.
+  def success? -> Bool = @status == 0
 end
 
 # A recursion too deep for the task's stack ("stack level too deep").
@@ -5157,15 +5199,22 @@ end
 class NoMemoryError < Exception
 end
 
-# A `Float` operation outside its domain. Declared for compatibility
-# with Ruby: the runtime raises `RangeError` itself for NaN or an
-# infinity converted to an `Int`, and `Math` functions return NaN.
+# A `Float` that has no integer: NaN or an infinity converted to an `Int`
+# (`Float#to_i`, `floor`, `round`, ...), as in Ruby. A `RangeError`.
+# `Math` functions return NaN instead.
+#
+# ```
+# Float::NAN.to_i      # raises FloatDomainError
+# Float::INFINITY.round   # raises RangeError
+# ```
 class FloatDomainError < RangeError
 end
 
 # Every task is blocked (on a channel, on another task) and none can make
-# progress. The runtime reports it with the blocked tasks and stops the
-# program with status 1; it is not raised where a `rescue` can catch it.
+# progress. A fatal error, as Ruby's `fatal` and Go's "all goroutines are
+# asleep": the runtime reports it with the blocked tasks and stops the
+# program with status 1, without raising it where a `rescue` could catch
+# it or an `ensure` run.
 class DeadlockError < Exception
 end
 
@@ -6243,16 +6292,23 @@ module Kernel
   # Suspends the current task for `duration` (`Task.sleep`): other tasks
   # run in the meantime.
   native def sleep(duration: Duration) -> Nil
-  # Ends the program with `status` after running the `at_exit` blocks.
+  # Ends the program with `status`, as Ruby's: raises `SystemExit`, so the
+  # `ensure` clauses it leaves run, innermost first, then the `at_exit`
+  # blocks. A plain `rescue` lets it through; `rescue SystemExit` stops it.
   #
-  # Unlike Ruby, it raises no `SystemExit`, so no `rescue` sees it. The
-  # `ensure` clauses it leaves run before the `at_exit` blocks, innermost
-  # first, except those of a `begin` or method body that also has a
-  # `rescue` clause: those are skipped. NOTE: this may change, so that
-  # every `ensure` runs.
+  # In another task, the `SystemExit` ends the task as any exception does:
+  # `await`, the task's `Task.scope`, `Task.timeout` and `Task.blocking`
+  # raise it again in their caller. The main task raises it too, where it
+  # next waits (once, when it is the one waiting for the task), as Ruby
+  # raises a thread's in the main thread: an `exit` in an HTTP handler ends
+  # the program. Not so for `Task.timeout`'s block, which is the caller's.
   native def exit(status: Int = 0) -> Nothing
-  # Writes `message` to standard error and ends the program with status 1,
-  # as `exit` does.
+  # Ends the program with `status` at once: no `ensure` clause and no
+  # `at_exit` block runs. What the task's thread wrote is flushed; as with
+  # Ruby's `exit!`, output other threads still hold may be lost.
+  native def exit!(status: Int = 1) -> Nothing
+  # Writes `message` to standard error and raises `SystemExit` with status
+  # 1 and `message`, as `exit` does.
   native def abort(message: String) -> Nothing
   # Runs the block when the program exits.
   native def at_exit(&blk: () -> Nil) -> Nil
@@ -6328,25 +6384,30 @@ module Kernel
   native def format(format: String, *args: Object) -> String
   # :ditto:
   native def sprintf(format: String, *args: Object) -> String
-  # `text` as an `Int`: decimal with an optional sign, or hexadecimal
-  # after `0x` or `0X`, or binary after `0b`. Surrounding whitespace is
-  # ignored, and so is every `_`. Unlike Ruby, a leading `0` does not make
-  # it octal (`Integer("017")` is 17), and a prefixed one takes no sign.
+  # `text` as an `Int`, as Ruby reads it: an optional sign, then the base
+  # from a prefix (`0x` hexadecimal, `0b` binary, `0o` octal, `0d`
+  # decimal, either case), octal for a bare leading `0` as in a literal
+  # (`017` is 15), decimal otherwise. Unlike `String#to_i`, the whole text
+  # must be the number: whitespace may surround it, and a single `_` stand
+  # between digits. For a zero-padded decimal (`"08"`), pass base 10.
   #
   # ```
-  # Integer("0x1f")    # => 31
-  # Integer(" 1_000 ") # => 1000
-  # Integer("017")     # => 17
-  # Integer("12abc")   # raises ArgumentError
+  # Integer("0x1f")       # => 31
+  # Integer(" 1_000 ")    # => 1000
+  # Integer("017")        # => 15
+  # Integer("017", 10)    # => 17
+  # Integer("08")         # raises ArgumentError
+  # Integer("12abc")      # raises ArgumentError
   # ```
   #
   # ## Raises
   #
-  # `ArgumentError` for a text that is not an integer, or one too large
-  # for an `Int`.
+  # `ArgumentError` for a text that is not an integer, `OverflowError` for
+  # one too large for an `Int`.
   native def Integer(text: String) -> Int
-  # `text` as an `Int` in `base` (2 to 36), with an optional sign and no
-  # prefix. Surrounding whitespace and every `_` are ignored.
+  # `text` as an `Int` in `base` (2 to 36, or 0 for the one-argument
+  # form's reading), read as that form reads it: the prefix naming `base`
+  # is allowed (`Integer("0xff", 16)` is 255), a leading `0` is not octal.
   #
   # ## Raises
   #

@@ -779,9 +779,16 @@ fn int_step(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
 
 pub(super) fn float_to_int(interp: &Interp, f: f64) -> EvalResult {
     if f.is_nan() || f.is_infinite() {
+        // As Ruby: a `RangeError`'s subclass.
         return Err(interp.raise(
-            interp.program.exc.range_error,
-            "cannot convert NaN or Infinity to Int",
+            interp.program.exc.float_domain_error,
+            if f.is_nan() {
+                "NaN"
+            } else if f > 0.0 {
+                "Infinity"
+            } else {
+                "-Infinity"
+            },
         ));
     }
     if f.abs() < 9.2e18 {

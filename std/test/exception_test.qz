@@ -114,3 +114,132 @@ class ExceptionTest < Test::Case
     assert_equal("[1, 2]", r.inspect)
   end
 end
+
+# The exception being rescued becomes the cause of one raised (or rescued
+# again) in the clause, as Ruby's `$!`.
+class ExceptionCauseTest < Test::Case
+  def caught(&: () -> Nil) -> Exception
+    begin
+      yield
+    rescue Exception => e
+      return e
+    end
+    raise "nothing raised"
+  end
+
+  def test_raised_in_a_clause
+    e = caught do
+      begin
+        raise ArgumentError, "inner"
+      rescue
+        raise "outer"
+      end
+    end
+    assert_equal("outer", e.message)
+    assert_equal("#<ArgumentError: inner>", e.cause.inspect)
+  end
+
+  def test_a_native_raising_in_a_clause
+    e = caught do
+      begin
+        raise ArgumentError, "a"
+      rescue
+        _ = Integer("x")
+        nil
+      end
+    end
+    assert_equal("#<ArgumentError: a>", e.cause.inspect)
+  end
+
+  def test_rescued_inside_a_clause
+    got = ""
+    begin
+      raise ArgumentError, "a"
+    rescue
+      begin
+        raise "b"
+      rescue => b
+        got = b.cause.inspect
+      end
+    end
+    assert_equal("#<ArgumentError: a>", got)
+  end
+
+  def test_chains_and_raising_again
+    e = caught do
+      begin
+        begin
+          raise "1"
+        rescue
+          raise "2"
+        end
+      rescue
+        raise "3"
+      end
+    end
+    c = e.cause
+    assert_equal("2", c ? c.message : "")
+    assert_equal("#<RuntimeError: 1>", c&.cause.inspect)
+    same = caught do
+      begin
+        raise ArgumentError, "same"
+      rescue => x
+        raise x
+      end
+    end
+    assert_nil(same.cause)
+    bare = caught do
+      begin
+        raise ArgumentError, "bare"
+      rescue
+        raise
+      end
+    end
+    assert_nil(bare.cause)
+    assert_nil(caught { raise "plain" }.cause)
+  end
+end
+
+# `exit` raises SystemExit, which a plain rescue lets through.
+class SystemExitTest < Test::Case
+  def test_rescued
+    status = begin
+      exit 3
+    rescue SystemExit => e
+      e.status
+    end
+    assert_equal(3, status)
+  end
+
+  def test_not_a_standard_error
+    through = false
+    begin
+      begin
+        exit 0
+      rescue
+        flunk("a plain rescue caught SystemExit")
+      end
+    rescue SystemExit => e
+      through = e.success?
+    end
+    assert_true(through)
+  end
+
+  def test_made
+    e = SystemExit.new(2, "stop")
+    assert_equal(2, e.status)
+    assert_equal("stop", e.message)
+    assert_false(e.success?)
+    assert_equal("exit", SystemExit.new.message)
+  end
+end
+
+# A NaN or an infinity has no integer, as in Ruby.
+class FloatDomainErrorTest < Test::Case
+  def test_raised
+    e = assert_raise(FloatDomainError) { _ = Float::NAN.to_i; nil }
+    assert_equal("NaN", e.message)
+    assert_raise(RangeError) { _ = Float::INFINITY.round; nil }
+    assert_raise(FloatDomainError) { _ = (-Float::INFINITY).floor; nil }
+  end
+end

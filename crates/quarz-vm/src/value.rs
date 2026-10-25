@@ -1034,7 +1034,22 @@ impl std::fmt::Debug for Object {
 #[derive(Debug, Default)]
 pub struct ExcInfo {
     pub backtrace: Option<Rc<Vec<String>>>,
-    pub cause: Option<Value>,
+    /// Set at most once: when raised, or later by `Exception#__set_cause`
+    /// (lowering's rescue clauses, as Ruby's `$!`).
+    pub cause: std::sync::OnceLock<Value>,
+}
+
+impl ExcInfo {
+    pub fn new(backtrace: Option<Rc<Vec<String>>>, cause: Option<Value>) -> ExcInfo {
+        let cell = std::sync::OnceLock::new();
+        if let Some(c) = cause {
+            let _ = cell.set(c);
+        }
+        ExcInfo {
+            backtrace,
+            cause: cell,
+        }
+    }
 }
 
 impl Object {
@@ -1122,7 +1137,23 @@ impl Object {
     }
 
     pub fn cause(&self) -> Option<Value> {
-        self.exc_info().and_then(|e| e.cause.clone())
+        self.exc_info().and_then(|e| e.cause.get().cloned())
+    }
+
+    /// Give a raised exception the cause it has not got yet (`shared`: the
+    /// exception is, so the cause becomes so). False when it has one, or
+    /// was never raised.
+    pub fn set_cause(&self, cause: Value, shared: bool) -> bool {
+        let Some(info) = self.exc_info() else {
+            return false;
+        };
+        if info.cause.get().is_some() {
+            return false;
+        }
+        if shared {
+            cause.share();
+        }
+        info.cause.set(cause).is_ok()
     }
 
     /// The word an exception's capture is in, when its layout has one
@@ -1171,7 +1202,7 @@ impl Object {
             if let Some(b) = &info.backtrace {
                 Rc::mark_shared(b);
             }
-            if let Some(c) = &info.cause {
+            if let Some(c) = info.cause.get() {
                 c.share();
             }
         }
@@ -2680,7 +2711,7 @@ unsafe fn share_object(immortal: bool, r: &Rc<Object>, work: &mut Vec<ShareItem>
             if let Some(b) = &e.backtrace {
                 mark_rc(immortal, b);
             }
-            if let Some(c) = &e.cause {
+            if let Some(c) = e.cause.get() {
                 work.push(ShareItem::Value(c));
             }
         }

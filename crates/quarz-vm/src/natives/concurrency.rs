@@ -142,11 +142,16 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         let closure = transfer::export(i, &b)?;
         let image = i.image();
         let argv = i.program.argv.clone();
+        // What was printed before goes out first (an `exit!` on the helper
+        // thread writes its own output straight away).
+        i.flush();
         let outcome = i.block_on(move || transfer::run_on_thread(image, argv, closure))?;
         i.write_out_bytes(&outcome.output);
         match outcome.exit {
             WorkerExit::Value(t) => Ok(transfer::import(i, t)),
             WorkerExit::Raise(t) => Err(Flow::Raise(transfer::import(i, t))),
+            // A deadlock on the helper thread (or a result it could not
+            // hand back): the program ends.
             WorkerExit::Exit(code) => Err(Flow::Exit(code)),
         }
     });
@@ -169,7 +174,12 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     native!(m, "Scope#spawn", |i, r, a| {
         let b = snapshot(i, &block(i, &a)?);
         let s = scope(i, r)?.clone();
-        Ok(Value::Task(i.spawn_task(b, Some(s), "task")))
+        let t = i.spawn_task(b, Some(s.clone()), "task");
+        // Into a cancelled scope: cancelled at once, as its siblings were.
+        if s.is_cancelled() {
+            i.cancel_task(&t);
+        }
+        Ok(Value::Task(t))
     });
     native!(m, "Scope#cancel", |i, r, _| {
         let s = scope(i, r)?.clone();
@@ -322,8 +332,13 @@ fn kernel_loop(interp: &Interp, _: &Value, args: Args) -> EvalResult {
 
 // ----- scopes -------------------------------------------------------------------------
 
+/// Cancel the scope's children, once: a child already cancelled, cleaning
+/// up in an `ensure`, is not interrupted again (one spawned later is
+/// cancelled by `Scope#spawn`).
 fn cancel_children(interp: &Interp, scope: &Rc<ScopeInner>) {
-    scope.cancel();
+    if !scope.cancel() {
+        return;
+    }
     for c in scope.children() {
         interp.cancel_task(&c);
     }
@@ -346,12 +361,17 @@ fn task_scope(interp: &Interp, _: &Value, args: Args) -> EvalResult {
             break;
         };
         let r = interp.await_task(&child);
-        if let (Err(Flow::Raise(e)), false) = (&r, child.is_done()) {
+        // An error that is not the child's own result interrupted the wait.
+        let interrupted = match &r {
+            Err(Flow::Raise(e)) => !is_result_of(e, &child),
+            _ => false,
+        };
+        if let (Err(Flow::Raise(e)), true) = (&r, interrupted) {
             // The wait itself was interrupted: the task running the scope
             // was cancelled. That is the scope's failure; it cancels the
             // children and still waits for them (their `ensure` runs
             // before the scope ends).
-            if failure.is_none() {
+            if failure.is_none() || (is_exit(interp, e) && !failure_is_exit(interp, &failure)) {
                 failure = Some(Flow::Raise(e.clone()));
             }
             cancel_children(interp, &scope);
@@ -364,7 +384,9 @@ fn task_scope(interp: &Interp, _: &Value, args: Args) -> EvalResult {
                 let is_cancel = interp.exception_is_a(&e, interp.program.exc.cancelled);
                 if is_cancel && scope.is_cancelled() {
                     // Cancelled by the scope itself: expected.
-                } else if failure.is_none() {
+                } else if failure.is_none()
+                    || (is_exit(interp, &e) && !failure_is_exit(interp, &failure))
+                {
                     failure = Some(Flow::Raise(e));
                     cancel_children(interp, &scope);
                 }
@@ -382,10 +404,74 @@ fn task_scope(interp: &Interp, _: &Value, args: Args) -> EvalResult {
     }
 }
 
+/// Whether `e` is a `SystemExit`: an exit wins over the failure a scope
+/// or `Task.timeout` would raise, so that waiting does not lose it.
+fn is_exit(interp: &Interp, e: &Value) -> bool {
+    interp.exception_is_a(e, interp.program.exc.system_exit)
+}
+
+/// Whether a scope's failure already ends the program: a `SystemExit`, or
+/// a hard exit (which no `SystemExit` replaces).
+fn failure_is_exit(interp: &Interp, failure: &Option<Flow>) -> bool {
+    match failure {
+        Some(Flow::Raise(e)) => is_exit(interp, e),
+        Some(Flow::Exit(_)) => true,
+        _ => false,
+    }
+}
+
+/// Wait until `child` is done, whatever interrupts the wait, giving the
+/// `SystemExit` an interruption raised, if any (the block is the caller's,
+/// `&:`, and must not outlive the call).
+fn wait_out(interp: &Interp, child: &Rc<TaskHandle>) -> Option<Flow> {
+    let mut exit = None;
+    while !child.is_done() {
+        if let Err(Flow::Raise(e)) = interp.await_task(child) {
+            // Not the child's own result: what interrupted the wait.
+            if is_exit(interp, &e) && !is_result_of(&e, child) {
+                exit = Some(Flow::Raise(e));
+            }
+        }
+    }
+    exit
+}
+
+/// Whether `e` is the exception `child` ended with (not one that
+/// interrupted the wait for it).
+fn is_result_of(e: &Value, child: &Rc<TaskHandle>) -> bool {
+    match (child.result(), e) {
+        (Some(crate::sched::TaskResult::Error(Value::Object(r))), Value::Object(o)) => {
+            Rc::ptr_eq(&r, o)
+        }
+        // Not an exception object (one `Task.blocking` could not hand back):
+        // never one that interrupted the wait, which are fresh exceptions.
+        (Some(crate::sched::TaskResult::Error(_)), e) => !matches!(e, Value::Object(_)),
+        _ => false,
+    }
+}
+
+/// The child's own `SystemExit` (an `ensure` of the cancelled block that
+/// exits): it wins over the timeout or the cancellation, as in Ruby.
+fn own_exit(interp: &Interp, child: &Rc<TaskHandle>) -> Option<Flow> {
+    match child.result() {
+        Some(crate::sched::TaskResult::Error(e)) if is_exit(interp, &e) => Some(Flow::Raise(e)),
+        _ => None,
+    }
+}
+
 fn task_timeout(interp: &Interp, _: &Value, args: Args) -> EvalResult {
     let d = duration(interp, args.arg(0))?;
     let b = block(interp, &args)?;
-    let child = interp.spawn_task(b, None, "timeout");
+    let child = interp.spawn_task(b, None, crate::interp::TIMEOUT_TASK);
+    // The block is the caller's: in the root task, its task takes the
+    // root's exits while it runs (a scope in it takes its children's).
+    let _root = interp.stand_in_root(&child);
+    run_timeout(interp, d, &child)
+}
+
+/// `Task.timeout` once its block runs in `child`.
+fn run_timeout(interp: &Interp, d: std::time::Duration, child: &Rc<TaskHandle>) -> EvalResult {
+    let child = child.clone();
     let me = interp.current_task();
     let timer = interp.sched.borrow_mut().add_timer(d, me.id);
     let start = std::time::Instant::now();
@@ -398,10 +484,10 @@ fn task_timeout(interp: &Interp, _: &Value, args: Args) -> EvalResult {
             interp.cancel_task(&child);
             // Waited for even if this task is cancelled meanwhile: the
             // block is the caller's (`&:`) and must not outlive the call.
-            while !child.is_done() {
-                let _ = interp.await_task(&child);
-            }
-            return Err(interp.raise(interp.program.exc.timeout, "timed out"));
+            let exit = wait_out(interp, &child).or_else(|| own_exit(interp, &child));
+            return Err(
+                exit.unwrap_or_else(|| interp.raise(interp.program.exc.timeout, "timed out"))
+            );
         }
         {
             let mut joiners = lock(&child.joiners);
@@ -419,10 +505,8 @@ fn task_timeout(interp: &Interp, _: &Value, args: Args) -> EvalResult {
             lock(&child.joiners).retain(|t| *t != me.task_ref());
             interp.sched.borrow_mut().cancel_timer(timer);
             interp.cancel_task(&child);
-            while !child.is_done() {
-                let _ = interp.await_task(&child);
-            }
-            return Err(e);
+            let exit = wait_out(interp, &child).or_else(|| own_exit(interp, &child));
+            return Err(exit.unwrap_or(e));
         }
     }
 }

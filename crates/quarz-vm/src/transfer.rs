@@ -334,10 +334,10 @@ pub fn import(interp: &Interp, t: Transfer) -> Value {
             Value::Object({
                 let o = Object::new(class, fields);
                 if backtrace.is_some() || cause.is_some() {
-                    let info = crate::value::ExcInfo {
-                        backtrace: backtrace.map(Rc::new),
-                        cause: cause.map(|c| import(interp, *c)),
-                    };
+                    let info = crate::value::ExcInfo::new(
+                        backtrace.map(Rc::new),
+                        cause.map(|c| import(interp, *c)),
+                    );
                     o.init_exc(info, false);
                 }
                 o
@@ -408,6 +408,22 @@ type Worker = (usize, std::rc::Rc<Interp>, Arc<Mutex<Vec<u8>>>);
 thread_local! {
     /// The interpreter a helper thread keeps between jobs.
     static WORKER: RefCell<Option<Worker>> = const { RefCell::new(None) };
+}
+
+/// For `exit!` on a helper thread: write what the block printed so far to
+/// the process's standard output, which the caller would have written on
+/// its return. Nothing on another thread.
+pub fn write_worker_output() {
+    WORKER.with(|w| {
+        if let Some((_, interp, out)) = &*w.borrow() {
+            interp.flush();
+            let bytes = std::mem::take(&mut *out.lock().unwrap_or_else(|e| e.into_inner()));
+            use std::io::Write;
+            let mut stdout = std::io::stdout();
+            let _ = stdout.write_all(&bytes);
+            let _ = stdout.flush();
+        }
+    });
 }
 
 /// Run an exported block to completion on the current (helper) thread.
@@ -482,14 +498,28 @@ impl Interp {
     pub fn run_closure(self: &std::rc::Rc<Interp>, closure: Value) -> Result<Value, Flow> {
         let me = self.clone();
         let body: Box<dyn FnOnce() -> TaskExit> = Box::new(move || {
-            let r = me.call_block(&closure, smallvec::smallvec![]);
-            crate::interp::task_exit(&me, r)
+            match me.call_block(&closure, smallvec::smallvec![]) {
+                // A `SystemExit` goes back to the caller of `Task.blocking`,
+                // to be raised there (its `ensure`s, its `rescue`).
+                Err(Flow::Raise(e)) => TaskExit::Result(TaskResult::Error(e)),
+                r => crate::interp::task_exit(&me, r),
+            }
         });
         let root =
             self.sched
                 .borrow_mut()
                 .spawn(body, None, "blocking".to_string(), 256 * 1024 * 1024);
+        self.set_root(root.task_ref());
         let code = self.run_loop_with(&root, false);
+        // An `exit` in a task the block spawned and nobody awaited, which
+        // the block ended before raising: the caller raises it.
+        if let Some(status) = self.take_exit_request() {
+            if root.is_done() {
+                return Err(Flow::Raise(crate::natives::system_exit(
+                    self, status, "exit",
+                )));
+            }
+        }
         if !root.is_done() {
             return Err(Flow::Exit(code));
         }

@@ -38,6 +38,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     native!(m, "Exception#backtrace", exc_backtrace);
     native!(m, "Exception#full_message", exc_full_message);
     native!(m, "Exception#cause", exc_cause);
+    native!(m, "Exception#__set_cause", exc_set_cause);
     native!(m, "Exception#inspect", obj_inspect);
     native!(m, "Kernel#puts", kernel_puts);
     native!(m, "Kernel#print", kernel_print);
@@ -46,6 +47,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     native!(m, "Kernel#warn", kernel_warn);
     native!(m, "Kernel#exit", kernel_exit);
     native!(m, "Kernel#abort", kernel_abort);
+    native!(m, "Kernel#exit!", kernel_exit_now);
     native!(m, "Kernel#at_exit", kernel_at_exit);
     native!(m, "Kernel#gets", kernel_gets);
     native!(m, "Kernel#gets?", kernel_gets_opt);
@@ -119,6 +121,7 @@ fn obj_frozen(_: &Interp, recv: &Value, _: Args) -> EvalResult {
             | Value::HashBuilder(_)
             | Value::SetBuilder(_)
             | Value::StringBuilder(_)
+            | Value::BytesBuilder(_)
     )))
 }
 
@@ -135,6 +138,9 @@ fn obj_dup(_: &Interp, recv: &Value, _: Args) -> EvalResult {
         }
         Value::StringBuilder(s) => {
             Value::StringBuilder(Rc::new(std::cell::RefCell::new(s.borrow().clone())))
+        }
+        Value::BytesBuilder(b) => {
+            Value::BytesBuilder(Rc::new(std::cell::RefCell::new(b.borrow().clone())))
         }
         Value::Object(o) => Value::Object(Object::new(o.class, o.fields())),
         other => other.clone(),
@@ -207,6 +213,29 @@ fn exc_cause(_: &Interp, recv: &Value, _: Args) -> EvalResult {
     }
 }
 
+/// An exception raised (or caught) while `cause` was being rescued gets
+/// it as its cause, as Ruby's `$!` does, unless it has one, is `cause`
+/// itself (raised again), or `cause` comes from it (a cycle).
+fn exc_set_cause(_: &Interp, recv: &Value, args: Args) -> EvalResult {
+    let (Value::Object(o), Value::Object(c)) = (recv, args.arg(0)) else {
+        return Ok(Value::Nil);
+    };
+    // Shared exceptions: the check and the setting at once, so that two
+    // threads cannot each make the other's exception its cause.
+    static SHARED: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _held = (Rc::is_shared(o) || Rc::is_shared(c))
+        .then(|| SHARED.lock().unwrap_or_else(|e| e.into_inner()));
+    let mut link = Some(Value::Object(c.clone()));
+    while let Some(Value::Object(l)) = link {
+        if Rc::ptr_eq(&l, o) {
+            return Ok(Value::Nil);
+        }
+        link = l.cause();
+    }
+    o.set_cause(Value::Object(c.clone()), Rc::is_shared(o));
+    Ok(Value::Nil)
+}
+
 // ----- Kernel ---------------------------------------------------------------------
 
 pub fn puts_to(interp: &Interp, args: &[Value], out: &mut String) -> Result<(), Flow> {
@@ -274,20 +303,45 @@ fn kernel_warn(interp: &Interp, _: &Value, args: Args) -> EvalResult {
     Ok(Value::Nil)
 }
 
-fn kernel_exit(_: &Interp, _: &Value, args: Args) -> EvalResult {
+/// `exit`: raises `SystemExit`, as Ruby's, so that `ensure` clauses run
+/// and `rescue SystemExit` sees it; one nothing rescues ends the program
+/// with its status (`task_exit`).
+fn kernel_exit(interp: &Interp, _: &Value, args: Args) -> EvalResult {
     let code = match args.arg(0) {
-        Value::Int(i) => *i as i32,
+        Value::Int(i) => *i,
         _ => 0,
     };
-    Err(Flow::Exit(code))
+    Err(Flow::Raise(system_exit(interp, code, "exit")))
 }
 
+/// `abort`: the message on standard error, then `SystemExit` with status 1.
 fn kernel_abort(interp: &Interp, _: &Value, args: Args) -> EvalResult {
     interp.flush();
-    if let Some(s) = args.arg(0).as_str() {
-        eprintln!("{s}");
+    let message = args.arg(0).as_str().unwrap_or("").to_string();
+    eprintln!("{message}");
+    Err(Flow::Raise(system_exit(interp, 1, &message)))
+}
+
+/// `exit!`: ends the program at once, running no `ensure` clause and no
+/// `at_exit` block (the output written so far is flushed).
+fn kernel_exit_now(interp: &Interp, _: &Value, args: Args) -> EvalResult {
+    let code = match args.arg(0) {
+        Value::Int(i) => *i as i32,
+        _ => 1,
+    };
+    interp.flush();
+    crate::transfer::write_worker_output();
+    std::process::exit(code)
+}
+
+/// A raised `SystemExit` with `status`.
+pub(crate) fn system_exit(interp: &Interp, status: i64, message: &str) -> Value {
+    let class = interp.program.exc.system_exit;
+    let e = interp.make_exception(class, message);
+    if let (Value::Object(o), Some(i)) = (&e, interp.field_index(class, "status")) {
+        o.set_field(i, Value::Int(status));
     }
-    Err(Flow::Exit(1))
+    e
 }
 
 fn kernel_at_exit(interp: &Interp, _: &Value, args: Args) -> EvalResult {
@@ -455,35 +509,38 @@ fn sign(s: String, plus: bool, space: bool) -> String {
     }
 }
 
+/// `Integer(text)` and `Integer(text, base)`, as Ruby's: `String#to_i`'s
+/// reading (a prefix naming the base, base 0 by default taking it from the
+/// prefix, octal for a bare leading `0`), but the whole text must be the
+/// number, with blanks around it only and single `_`s between digits.
 fn kernel_integer(interp: &Interp, _: &Value, args: Args) -> EvalResult {
     let s = string(interp, args.arg(0), "Integer()")?;
-    let t = s.trim().replace('_', "");
-    if let Some(base) = args.pos.get(1) {
-        let base = int(interp, base, "base")?;
-        if !(2..=36).contains(&base) {
-            return Err(interp.err_arg(&format!("invalid radix {base}")));
-        }
-        let (neg, digits) = match t.strip_prefix('-') {
-            Some(rest) => (true, rest),
-            None => (false, t.strip_prefix('+').unwrap_or(&t)),
-        };
-        let parsed = num_bigint::BigInt::parse_bytes(digits.as_bytes(), base as u32)
-            .filter(|_| !digits.is_empty());
-        return match parsed {
-            Some(n) => interp.int_of_big(&if neg { -n } else { n }),
-            None => Err(interp.err_arg(&format!("invalid value for Integer(): {s:?}"))),
-        };
-    }
-    let parsed = if let Some(h) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
-        i64::from_str_radix(h, 16).ok()
-    } else if let Some(b) = t.strip_prefix("0b") {
-        i64::from_str_radix(b, 2).ok()
-    } else {
-        t.parse::<i64>().ok()
+    let base = match args.pos.get(1) {
+        Some(b) => int(interp, b, "base")?,
+        None => 0,
     };
-    match parsed {
-        Some(i) => Ok(Value::Int(i)),
-        None => Err(interp.err_arg(&format!("invalid value for Integer(): {s:?}"))),
+    if base != 0 && !(2..=36).contains(&base) {
+        return Err(interp.err_arg(&format!("invalid radix {base}")));
+    }
+    let (negative, digits, base, end) = super::string::int_digits(s, base as u32, 10);
+    let rest = &s.as_bytes()[end..];
+    if digits.is_empty() || !rest.iter().all(|b| b.is_ascii_whitespace() || *b == 0x0b) {
+        return Err(interp.err_arg(&format!("invalid value for Integer(): {s:?}")));
+    }
+    let digits = if negative {
+        format!("-{digits}")
+    } else {
+        digits
+    };
+    match i64::from_str_radix(&digits, base) {
+        Ok(v) => Ok(Value::Int(v)),
+        Err(_) => {
+            use num_traits::Num;
+            match num_bigint::BigInt::from_str_radix(&digits, base) {
+                Ok(n) => interp.int_of_big(&n),
+                Err(_) => Err(interp.err_arg(&format!("invalid value for Integer(): {s:?}"))),
+            }
+        }
     }
 }
 

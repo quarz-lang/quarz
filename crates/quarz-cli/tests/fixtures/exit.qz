@@ -1,0 +1,28 @@
+# `exit` raises SystemExit: the ensure clauses it leaves run (a rescue
+# clause for other exceptions does not stop it), then the at_exit blocks.
+at_exit { puts "at_exit" }
+
+def cleanup -> Nil
+  begin
+    puts "exiting"
+    exit 0
+  rescue ArgumentError
+    puts "not rescued"
+  ensure
+    puts "ensure in a method"
+  end
+end
+
+status = begin
+  exit 2
+rescue SystemExit => e
+  e.status
+end
+p status
+
+begin
+  cleanup
+ensure
+  puts "outer ensure"
+end
+puts "not reached"
