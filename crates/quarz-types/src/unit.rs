@@ -1,15 +1,13 @@
-//! A unit's interface file (`.qzi`, docs/05 §2): what checking one file
-//! added to the world, taken out of the program it was checked in
-//! (`extract`) and read back into another (`apply`), renumbered
-//! (`reloc`).
+//! What a file's check owns in the world and in the checker's results,
+//! for keeping it between runs (`cache`, docs/05 §2): whose each number
+//! is, the results for the file's own syntax, and how they merge back.
 
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
-use crate::check::{Output, SelfNew};
-use crate::reloc::{IdMap, Remap, Table};
+use crate::check::Output;
+use crate::reloc::Table;
 use crate::types::*;
 use crate::world::*;
-use crate::CheckedUnit;
 
 /// Whose an entity is: the prelude's (numbered the same in every
 /// program) or a unit's, by its key and its position among that unit's
@@ -27,49 +25,9 @@ pub struct Owners {
     pub classes: Vec<Owner>,
     pub methods: Vec<Owner>,
     pub consts: Vec<Owner>,
-    pub aliases: Vec<Owner>,
-    pub extensions: Vec<Owner>,
     /// Type parameters of declared entities (narrowed ones are made
-    /// again: `UnitDelta::narrowed`).
+    /// again: `cache::Checks::narrowed`).
     pub type_params: HashMap<TypeParamId, Owner>,
-}
-
-/// What checking a unit added.
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub struct UnitDelta {
-    /// The unit's file number and syntax range where it was checked.
-    pub file: u32,
-    pub base: u32,
-    /// The keys of the units its numbers refer to (`Owner::Unit`), its
-    /// own first.
-    pub keys: Vec<String>,
-    /// Their file numbers where it was checked.
-    pub key_files: Vec<u32>,
-    pub owners: Owners,
-    pub classes: Vec<ClassInfo>,
-    pub methods: Vec<MethodInfo>,
-    pub consts: Vec<ConstInfo>,
-    pub aliases: Vec<TypeAliasInfo>,
-    pub extensions: Vec<ExtensionInfo>,
-    /// Its own type parameters, in order: number, name, lower bound.
-    pub type_params: Vec<(TypeParamId, String, Option<Type>)>,
-    /// Narrowed type parameters (`T & C`) its results mention: number,
-    /// the parameter and the bound.
-    pub narrowed: Vec<(TypeParamId, TypeParamId, Type)>,
-    pub top: Vec<(String, Member)>,
-    /// Names it adds to namespaces it does not own (`class Geo::Line`),
-    /// and extensions it declares in them.
-    pub members: Vec<(ClassId, String, Member)>,
-    pub ns_extensions: Vec<(ClassId, ExtensionId)>,
-    pub group: Option<UnitGroup>,
-    pub std: bool,
-    pub app_names: Vec<String>,
-    pub ext_impls: Vec<(ClassId, MethodId, MethodId)>,
-    pub docs: Vec<quarz_syntax::doc::Doc>,
-    pub output: Output,
-    pub frame_size: u32,
-    pub self_news: Vec<SelfNew>,
-    pub unit: CheckedUnit,
 }
 
 /// The entities of each kind each file owns, in order.
@@ -138,7 +96,7 @@ fn owners_of(list: &HashMap<u32, Vec<u32>>, count: usize, keys: &mut Keys) -> Ve
     out
 }
 
-/// The unit keys a delta names, by file.
+/// The files a check refers to, by key (its own first).
 struct Keys<'a> {
     names: &'a dyn Fn(u32) -> String,
     files: Vec<u32>,
@@ -160,134 +118,6 @@ fn in_range(n: u32, base: u32) -> bool {
     n >= base && n - base < 1 << crate::load::UNIT_BITS
 }
 
-/// Take out what checking file `file` (of syntax range `base`) added.
-/// `key` names each file's unit (its path, or `<std:name>`).
-pub fn extract(
-    world: &World,
-    out: &Output,
-    self_news: &[SelfNew],
-    unit: &CheckedUnit,
-    base: u32,
-    key: &dyn Fn(u32) -> String,
-) -> UnitDelta {
-    let file = unit.file;
-    let own = owned(world);
-    let (keys, key_files, owners) = owners(world, file, key);
-    let pick = |list: &HashMap<u32, Vec<u32>>| list.get(&file).cloned().unwrap_or_default();
-    let classes: Vec<ClassInfo> = pick(&own.classes)
-        .iter()
-        .map(|c| world.class(*c).clone())
-        .collect();
-    let methods: Vec<MethodInfo> = pick(&own.methods)
-        .iter()
-        .map(|m| world.method(*m).clone())
-        .collect();
-    let consts: Vec<ConstInfo> = pick(&own.consts)
-        .iter()
-        .map(|c| world.consts[*c as usize].clone())
-        .collect();
-    let aliases: Vec<TypeAliasInfo> = pick(&own.aliases)
-        .iter()
-        .map(|a| world.aliases[*a as usize].clone())
-        .collect();
-    let extensions: Vec<ExtensionInfo> = pick(&own.extensions)
-        .iter()
-        .map(|e| world.extensions[*e as usize].clone())
-        .collect();
-    let type_params = pick(&own.type_params)
-        .iter()
-        .map(|p| {
-            (
-                *p,
-                world.type_param_names.get(p).cloned().unwrap_or_default(),
-                world.lower_bounds.get(p).cloned(),
-            )
-        })
-        .collect();
-    let owns = |m: &Member| match m {
-        Member::Class(c) => world.class(*c).file == file,
-        Member::Const(c) => world.consts[*c as usize].file == file,
-        Member::Alias(a) => world.aliases[*a as usize].file == file,
-    };
-    let top: Vec<(String, Member)> = world
-        .top
-        .iter()
-        .filter(|(_, m)| owns(m))
-        .map(|(n, m)| (n.clone(), *m))
-        .collect();
-    let mut members = Vec::new();
-    let mut ns_extensions = Vec::new();
-    for c in &world.classes {
-        if c.file == file {
-            continue;
-        }
-        for (n, m) in &c.members {
-            if owns(m) {
-                members.push((c.id, n.clone(), *m));
-            }
-        }
-        for e in &c.extensions {
-            if world.extensions[*e as usize].file == file {
-                ns_extensions.push((c.id, *e));
-            }
-        }
-    }
-    let owned_class = |c: ClassId| world.class(c).file == file;
-    let owned_method = |m: MethodId| world.method(m).file == file;
-    let ext_impls = world
-        .ext_impls
-        .iter()
-        .filter(|(c, _, i)| owned_class(*c) || owned_method(*i))
-        .copied()
-        .collect();
-    let app_names = top_names(&top);
-    let docs = world
-        .docs
-        .iter()
-        .filter(|d| in_range(d.span.start, base))
-        .cloned()
-        .collect();
-    let output = unit_output(world, out, base, file);
-    let mut narrowed = Vec::new();
-    collect_narrowed(world, &output, &mut narrowed);
-    let frame_size = out
-        .unit_frame_sizes
-        .get(file as usize)
-        .copied()
-        .unwrap_or(0);
-    let self_news = self_news
-        .iter()
-        .filter(|(_, _, m, _, _)| owned_method(*m))
-        .cloned()
-        .collect();
-    UnitDelta {
-        file,
-        base,
-        keys,
-        key_files,
-        owners,
-        classes,
-        methods,
-        consts,
-        aliases,
-        extensions,
-        type_params,
-        narrowed,
-        top,
-        members,
-        ns_extensions,
-        group: world.file_groups.get(&file).copied(),
-        std: world.std_files.contains(&file),
-        app_names,
-        ext_impls,
-        docs,
-        output,
-        frame_size,
-        self_news,
-        unit: unit.clone(),
-    }
-}
-
 /// Whose each number of `world` is, for the units file `file`'s checks
 /// refer to: their keys (its own first), their files, and the owners.
 pub(crate) fn owners(
@@ -304,8 +134,6 @@ pub(crate) fn owners(
         classes: owners_of(&own.classes, world.classes.len(), &mut keys),
         methods: owners_of(&own.methods, world.methods.len(), &mut keys),
         consts: owners_of(&own.consts, world.consts.len(), &mut keys),
-        aliases: owners_of(&own.aliases, world.aliases.len(), &mut keys),
-        extensions: owners_of(&own.extensions, world.extensions.len(), &mut keys),
         type_params: {
             let mut t = HashMap::default();
             for (f, ids) in &own.type_params {
@@ -322,10 +150,6 @@ pub(crate) fn owners(
     };
     let names = keys.files.iter().map(|f| (keys.names)(*f)).collect();
     (names, keys.files, owners)
-}
-
-fn top_names(top: &[(String, Member)]) -> Vec<String> {
-    top.iter().map(|(n, _)| n.clone()).collect()
 }
 
 /// The entries of `out` for the syntax of the unit at `base`.
@@ -448,200 +272,8 @@ pub(crate) fn collect_narrowed(
     for t in out.node_types.values() {
         visit(t, list);
     }
-    // Defined before used, as `apply` makes them again in order.
+    // Defined before used, as `cache::apply` makes them again in order.
     list.reverse();
-}
-
-/// What `apply` needs of the program it reads a unit into: the file
-/// number each unit key has there.
-pub struct Target<'a> {
-    pub files: &'a dyn Fn(&str) -> Option<u32>,
-    /// The syntax range of the unit read back.
-    pub base: u32,
-}
-
-/// Why a unit could not be read back: something it refers to is not
-/// there (its interface file is out of date).
-#[derive(Debug)]
-pub struct Stale;
-
-/// Read `delta` back into `world` and `out`, renumbered.
-pub fn apply(
-    world: &mut World,
-    out: &mut Output,
-    self_news: &mut Vec<SelfNew>,
-    mut delta: UnitDelta,
-    target: &Target,
-) -> Result<CheckedUnit, Stale> {
-    let own = owned(world);
-    let files: Vec<u32> = delta
-        .keys
-        .iter()
-        .map(|k| (target.files)(k).ok_or(Stale))
-        .collect::<Result<_, _>>()?;
-    let file = files[0];
-    // Where each kind's numbers go: the unit's own after what the world
-    // has, another unit's by its position there.
-    let lookup =
-        |owners: &[Owner], list: &HashMap<u32, Vec<u32>>, next: u32| -> Result<Table, Stale> {
-            let mut map = Vec::with_capacity(owners.len());
-            for (n, o) in owners.iter().enumerate() {
-                map.push(match o {
-                    Owner::Prelude => n as u32,
-                    Owner::Unit(0, i) => next + *i,
-                    Owner::Unit(k, i) => *list
-                        .get(&files[*k as usize])
-                        .and_then(|ids| ids.get(*i as usize))
-                        .ok_or(Stale)?,
-                });
-            }
-            Ok(Table { base: 0, map })
-        };
-    let classes = lookup(
-        &delta.owners.classes,
-        &own.classes,
-        world.classes.len() as u32,
-    )?;
-    let methods = lookup(
-        &delta.owners.methods,
-        &own.methods,
-        world.methods.len() as u32,
-    )?;
-    let consts = lookup(&delta.owners.consts, &own.consts, world.consts.len() as u32)?;
-    let aliases = lookup(
-        &delta.owners.aliases,
-        &own.aliases,
-        world.aliases.len() as u32,
-    )?;
-    let extensions = lookup(
-        &delta.owners.extensions,
-        &own.extensions,
-        world.extensions.len() as u32,
-    )?;
-    // Type parameters: the unit's own made anew, another unit's by its
-    // position, the prelude's kept; narrowed ones made again below.
-    let mut params: HashMap<u32, u32> = HashMap::default();
-    for (p, o) in &delta.owners.type_params {
-        let new = match o {
-            Owner::Prelude => *p,
-            Owner::Unit(0, _) => continue,
-            Owner::Unit(k, i) => *own
-                .type_params
-                .get(&files[*k as usize])
-                .and_then(|ids| ids.get(*i as usize))
-                .ok_or(Stale)?,
-        };
-        params.insert(*p, new);
-    }
-    for (p, name, _) in &delta.type_params {
-        let info = world.new_type_param(name, quarz_syntax::ast::Variance::Invariant);
-        params.insert(*p, info.id);
-    }
-    let mut file_map: Vec<u32> = (0..=delta.key_files.iter().copied().max().unwrap_or(0)).collect();
-    for (k, f) in delta.key_files.iter().enumerate() {
-        file_map[*f as usize] = files[k];
-    }
-    let mut map = IdMap {
-        classes,
-        methods,
-        consts,
-        aliases,
-        extensions,
-        type_params: Table::identity(),
-        files: Table {
-            base: 0,
-            map: file_map,
-        },
-        cogs: Table::identity(),
-        nodes: (delta.base, target.base, 1 << crate::load::UNIT_BITS),
-    };
-    // Narrowed parameters, made again from their definitions in order.
-    for (p, base, bound) in std::mem::take(&mut delta.narrowed) {
-        let base = params.get(&base).copied().unwrap_or(base);
-        let mut bound = bound;
-        map.type_params = param_table(&params);
-        bound.remap(&map);
-        if let Type::Param(id) = world.narrowed_param(base, &bound) {
-            params.insert(p, id);
-        }
-    }
-    map.type_params = param_table(&params);
-    let m = &map;
-    for (p, _, lower) in &delta.type_params {
-        if let Some(mut l) = lower.clone() {
-            l.remap(m);
-            world.lower_bounds.insert(params[p], l);
-        }
-    }
-    for mut c in std::mem::take(&mut delta.classes) {
-        c.remap(m);
-        world.classes.push(c);
-    }
-    for mut x in std::mem::take(&mut delta.methods) {
-        x.remap(m);
-        world.methods.push(x);
-    }
-    for mut x in std::mem::take(&mut delta.consts) {
-        x.remap(m);
-        world.consts.push(x);
-    }
-    for mut x in std::mem::take(&mut delta.aliases) {
-        x.remap(m);
-        world.aliases.push(x);
-    }
-    for mut x in std::mem::take(&mut delta.extensions) {
-        x.remap(m);
-        world.extensions.push(x);
-    }
-    for (n, mut x) in std::mem::take(&mut delta.top) {
-        x.remap(m);
-        world.top.insert(n, x);
-    }
-    for (ns, n, mut x) in std::mem::take(&mut delta.members) {
-        x.remap(m);
-        let ns = m.classes.get(ns);
-        world.class_mut(ns).members.insert(n, x);
-    }
-    for (ns, e) in std::mem::take(&mut delta.ns_extensions) {
-        let (ns, e) = (m.classes.get(ns), m.extensions.get(e));
-        world.class_mut(ns).extensions.push(e);
-    }
-    if let Some(mut g) = delta.group {
-        g.remap(m);
-        world.file_groups.insert(file, g);
-    }
-    if delta.std {
-        world.std_files.insert(file);
-    }
-    if !delta.std && delta.group == Some(UnitGroup::App) {
-        world.app_names.extend(delta.app_names.iter().cloned());
-    }
-    for (c, a, i) in std::mem::take(&mut delta.ext_impls) {
-        world
-            .ext_impls
-            .push((m.classes.get(c), m.methods.get(a), m.methods.get(i)));
-    }
-    world.add_docs(&delta.docs);
-    let mut o = std::mem::take(&mut delta.output);
-    o.remap(m);
-    merge_output(out, o);
-    if out.unit_frame_sizes.len() <= file as usize {
-        out.unit_frame_sizes.resize(file as usize + 1, 0);
-    }
-    out.unit_frame_sizes[file as usize] = delta.frame_size;
-    for (c, i, x, s, f) in std::mem::take(&mut delta.self_news) {
-        self_news.push((
-            m.classes.get(c),
-            i.map(|i| m.methods.get(i)),
-            m.methods.get(x),
-            s,
-            m.files.get(f),
-        ));
-    }
-    let mut unit = delta.unit;
-    unit.file = file;
-    unit.main_class = m.classes.get(unit.main_class);
-    Ok(unit)
 }
 
 pub(crate) fn param_table(params: &HashMap<u32, u32>) -> Table {
@@ -687,19 +319,4 @@ pub(crate) fn merge_output(out: &mut Output, o: Output) {
     out.not_dispatch.extend(o.not_dispatch);
     out.lexical_slots.extend(o.lexical_slots);
     out.released_stmts.extend(o.released_stmts);
-}
-
-impl UnitDelta {
-    pub fn encode(&self) -> Vec<u8> {
-        bincode::serde::encode_to_vec(self, bincode::config::standard()).expect("encode a unit")
-    }
-
-    /// Decode, with the unit's syntax moved from `from` to `to`.
-    pub fn decode(bytes: &[u8], from: u32, to: u32) -> Option<UnitDelta> {
-        quarz_syntax::rebased(from, to, 1 << crate::load::UNIT_BITS, || {
-            bincode::serde::decode_from_slice(bytes, bincode::config::standard())
-                .ok()
-                .map(|(d, _)| d)
-        })
-    }
 }

@@ -297,16 +297,11 @@ pub fn apply(
         classes: table(&checks.owners.classes, &own.classes)?,
         methods: table(&checks.owners.methods, &own.methods)?,
         consts: table(&checks.owners.consts, &own.consts)?,
-        aliases: table(&checks.owners.aliases, &own.aliases)?,
-        extensions: table(&checks.owners.extensions, &own.extensions)?,
         type_params: crate::unit::param_table(&params),
         files: Table {
             base: 0,
             map: file_map,
         },
-        cogs: Table::identity(),
-        // (Nodes and spans were moved as the checks were decoded.)
-        nodes: (0, 0, 0),
     };
     for (p, base, mut bound) in std::mem::take(&mut checks.narrowed) {
         let base = params.get(&base).copied().unwrap_or(base);
@@ -372,11 +367,12 @@ pub fn key(program: &quarz_syntax::ast::Program, interfaces: u64) -> Option<u64>
     Some(hash(&(build, program, interfaces)))
 }
 
-/// Read the checks kept under `key`, for a file at syntax range `base`.
-pub fn load(key: u64, base: u32) -> Option<Checks> {
+/// Read the checks kept under `key`. (Its syntax, in the key, holds the
+/// file's node ids and spans: checks read back are for the same range.)
+pub fn load(key: u64) -> Option<Checks> {
     let p = path(key)?;
     let bytes = std::fs::read(&p).ok()?;
-    let (from, sum, body): (u32, u64, Vec<u8>) =
+    let (sum, body): (u64, Vec<u8>) =
         bincode::serde::decode_from_slice(&bytes, bincode::config::standard())
             .ok()?
             .0;
@@ -384,11 +380,9 @@ pub fn load(key: u64, base: u32) -> Option<Checks> {
     if checksum(&body) != sum {
         return None;
     }
-    let checks = quarz_syntax::rebased(from, base, 1 << crate::load::UNIT_BITS, || {
-        bincode::serde::decode_from_slice(&body, bincode::config::standard())
-            .ok()
-            .map(|(c, _)| c)
-    })?;
+    let checks = bincode::serde::decode_from_slice(&body, bincode::config::standard())
+        .ok()
+        .map(|(c, _)| c)?;
     // (Its time says when it was last used: `sweep`.)
     if let Ok(f) = std::fs::File::options().append(true).open(&p) {
         let _ = f.set_modified(std::time::SystemTime::now());
@@ -434,14 +428,14 @@ fn sweep(dir: &std::path::Path) {
     }
 }
 
-/// Keep `checks` under `key` (made at syntax range `base`).
-pub fn store(key: u64, base: u32, checks: &Checks) {
+/// Keep `checks` under `key`.
+pub fn store(key: u64, checks: &Checks) {
     let Some(p) = path(key) else { return };
     let Ok(body) = bincode::serde::encode_to_vec(checks, bincode::config::standard()) else {
         return;
     };
     let Ok(bytes) =
-        bincode::serde::encode_to_vec((base, checksum(&body), body), bincode::config::standard())
+        bincode::serde::encode_to_vec((checksum(&body), body), bincode::config::standard())
     else {
         return;
     };

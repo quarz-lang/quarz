@@ -13,9 +13,9 @@ pub mod declare;
 pub mod init;
 pub mod load;
 pub mod patterns;
-pub mod reloc;
+mod reloc;
 pub mod types;
-pub mod unit;
+mod unit;
 pub mod world;
 
 use quarz_syntax::ast::{Expr, ExprKind, Program};
@@ -684,9 +684,7 @@ pub fn check_with_extra(
                 continue;
             };
             keys[file as usize] = Some(key);
-            let Some(checks) =
-                cache::load(key, u.program.span.start & !((1 << load::UNIT_BITS) - 1))
-            else {
+            let Some(checks) = cache::load(key) else {
                 continue;
             };
             let seen = checks.consts_seen;
@@ -763,7 +761,7 @@ pub fn check_with_extra(
                 consts_now,
                 &key_of,
             );
-            cache::store(*key, base, &checks);
+            cache::store(*key, &checks);
         }
     }
     if let Some(extra) = extra {

@@ -57,6 +57,14 @@ when the local one is older.
   one worker per CPU. `tests/threads.rs` runs `tests/threads/*.qz` with
   four workers: programs there must print the same whatever the
   scheduling.
+- The checker keeps each file's results between runs (docs/05 §2) under
+  `QUARZ_CACHE_DIR`, which `.cargo/config.toml` points at
+  `target/quarz-cache` for `cargo test`; `QUARZ_NO_CACHE=1` turns it off.
+  A change to what the checker records, or to the key (`cache::interface`,
+  `cache::cogs`), must give the same output with the cache off, on the
+  first run and on the second: run the tests twice, the second with a
+  warm `target/quarz-cache`, and `rm -rf` it after a change to the
+  encoding without a new build id.
 - `tests/copies.rs`: loops meant to update collections in place must
   copy nothing (`QUARZ_COUNT_COPIES=1` prints the count at exit, on the
   VM and in compiled programs). A regression there makes a loop

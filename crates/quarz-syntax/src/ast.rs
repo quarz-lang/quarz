@@ -20,7 +20,6 @@ pub struct Program {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Expr {
-    #[serde(deserialize_with = "crate::source::rebase_node")]
     pub id: NodeId,
     pub span: Span,
     pub kind: ExprKind,

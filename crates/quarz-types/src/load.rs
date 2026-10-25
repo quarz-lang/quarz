@@ -399,7 +399,7 @@ struct Loader {
     next_unit: u32,
 }
 
-/// Span/node-id base of the n-th loaded unit (64 MiB of ids each; the
+/// Span/node-id base of the n-th loaded unit (4M ids each, `UNIT_BITS`; the
 /// prelude uses the range starting at 0).
 pub fn unit_base(n: u32) -> u32 {
     (n + 1) << UNIT_BITS

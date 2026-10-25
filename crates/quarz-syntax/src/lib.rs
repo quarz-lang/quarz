@@ -13,7 +13,7 @@ pub mod token;
 pub use diagnostic::{Diagnostic, Severity};
 pub use lexer::{tokenize, Lexed, Lexer, LocalTable};
 pub use parser::{parse, parse_repl, parse_with_bases, Parsed, Parser};
-pub use source::{rebase, rebased, LineCol, SourceFile, Span};
+pub use source::{LineCol, SourceFile, Span};
 pub use token::{Keyword, OpAssign, StringKind, Token, TokenKind};
 
 #[cfg(test)]
