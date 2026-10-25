@@ -1,9 +1,14 @@
-# HTTP: `require "http"`. An HTTP/1.1 server for use behind a reverse
-# proxy (docs/11-http.md): a handler takes a Request and returns a
-# Response; the server runs a task per connection.
 require "socket"
 require "json"
 
+# HTTP: `require "http"`. An HTTP/1.1 server for use behind a reverse
+# proxy (docs/11-http.md): a handler takes a `Request` and returns a
+# `Response`; the server runs a task per connection.
+#
+# ```quarz no_run
+# require "http"
+# HTTP.serve(8080) { |req| HTTP::Response.text("hello #{req.path}") }
+# ```
 module HTTP
   # ----- errors ---------------------------------------------------------------------
 
@@ -37,6 +42,7 @@ module HTTP
     end
   end
 
+  # :nodoc:
   REASONS = {
     100 => "Continue", 101 => "Switching Protocols",
     200 => "OK", 201 => "Created", 202 => "Accepted", 203 => "Non-Authoritative Information",
@@ -137,6 +143,7 @@ module HTTP
 
   # ----- reading --------------------------------------------------------------------
 
+  # :nodoc:
   # A buffered reader over a connection (or over fixed bytes, for a
   # request built in a test). Confined to the connection's task.
   class Reader
@@ -286,6 +293,7 @@ module HTTP
       part
     end
 
+    # :nodoc:
     def read_chunk_raw(max: Int) -> Bytes
       unless @started
         @started = true
@@ -349,6 +357,7 @@ module HTTP
       true
     end
 
+    # :nodoc:
     def next_chunk -> Nil
       line = begin
         @reader.read_line(1024, true)
@@ -486,6 +495,7 @@ module HTTP
     end
   end
 
+  # :nodoc:
   # The bytes of a numeric IPv4 (4) or IPv6 (16) address; nil for
   # anything else. An IPv4-mapped IPv6 address is its IPv4 address.
   def self.ip_bytes(host: String) -> Bytes?
@@ -530,6 +540,7 @@ module HTTP
     end
   end
 
+  # :nodoc:
   def self.in_network?(addr: Bytes, net: Bytes, prefix: Int) -> Bool
     return false unless addr.size == net.size
     full = prefix / 8
@@ -571,6 +582,7 @@ module HTTP
     out.to_bytes.decode?
   end
 
+  # :nodoc:
   def self.hex_value(c: Int) -> Int
     return c - 48 if c >= 48 && c <= 57
     return c - 87 if c >= 97 && c <= 102
@@ -593,10 +605,13 @@ module HTTP
 
   # ----- parsing --------------------------------------------------------------------
 
+  # :nodoc:
   TOKEN = /\A[!#$%&'*+\-.^_`|~0-9A-Za-z]+\z/
+  # :nodoc:
   # The characters a field value may not hold: the controls but HTAB.
   CONTROL = /[\x00-\x08\x0a-\x1f\x7f]/
 
+  # :nodoc:
   # The request line and headers, and the body's framing; nil when the
   # connection ends before a request begins. `on_continue` is called on
   # the body's first read when the client expects `100 Continue`.
@@ -660,6 +675,7 @@ module HTTP
     Request.new(method, target, path, query, version, headers, body, remote_address, {}, proxies, trusted)
   end
 
+  # :nodoc:
   def self.read_headers(reader: Reader, budget: Int) -> Headers
     entries: Array[Field] = []
     left = budget
@@ -772,10 +788,12 @@ module HTTP
     def reason -> String = HTTP.reason(status)
   end
 
+  # :nodoc:
   # Whether a handler's status can be sent: a final status (interim ones
   # would desynchronize the connection).
   def self.valid_status?(status: Int) -> Bool = status >= 200 && status <= 599
 
+  # :nodoc:
   # Whether a handler's headers can be sent: names are tokens, values
   # have no CR, LF or other control characters but HTAB. `Headers#put`,
   # `add` and `of` refuse those already; this catches fields made with
@@ -784,6 +802,7 @@ module HTTP
     headers.entries.all? { |f| f.name.match?(TOKEN) && !f.value.match?(CONTROL) }
   end
 
+  # :nodoc:
   # The status line and headers of `res` as sent for `req`, with what the
   # body implies; and whether the body is sent chunked.
   def self.response_head(req: Request?, res: Response, keep_alive: Bool) -> [String, Bool]
@@ -827,6 +846,7 @@ module HTTP
     [out.to_s, chunked]
   end
 
+  # :nodoc:
   # Write `res` for `req` to `io` under `timeout` per write.
   def self.write_response(io: IO, req: Request?, res: Response, keep_alive: Bool, timeout: Duration) -> Nil
     head, chunked = response_head(req, res, keep_alive)
@@ -861,6 +881,7 @@ module HTTP
     abstract def call(req: Request) -> Response
   end
 
+  # :nodoc:
   # A handler from a procedure.
   data ProcHandler(f: shareable (Request) -> Response)
     include Handler
@@ -1019,6 +1040,7 @@ module HTTP
 
     def stopping? -> Bool = @state.value == 2
 
+    # :nodoc:
     def close_listener -> Nil
       begin
         tcp = @tcp
@@ -1031,6 +1053,7 @@ module HTTP
       nil
     end
 
+    # :nodoc:
     def close_idle -> Nil
       @idle.value.each do |_, io|
         begin
@@ -1042,6 +1065,7 @@ module HTTP
       nil
     end
 
+    # :nodoc:
     def accept_loop(scope: Scope) -> Nil
       server = self
       loop do
@@ -1075,6 +1099,7 @@ module HTTP
       nil
     end
 
+    # :nodoc:
     def accept_one -> [IO, Socket::Address?]?
       tcp = @tcp
       if tcp
@@ -1086,6 +1111,7 @@ module HTTP
       [unix.accept, nil]
     end
 
+    # :nodoc:
     def end_connection(id: Int, conn: IO) -> Nil
       begin
         conn.close unless conn.closed?
@@ -1098,6 +1124,7 @@ module HTTP
       nil
     end
 
+    # :nodoc:
     def report(e: Exception, req: Request?) -> Nil
       cb = @options.on_error
       # The path as sent, without the query, which may carry a token.
@@ -1116,6 +1143,7 @@ module HTTP
       nil
     end
 
+    # :nodoc:
     # The requests of one connection, one after another. Whatever goes
     # wrong ends this connection only.
     def serve_connection(id: Int, conn: IO, peer: Socket::Address?) -> Nil
@@ -1187,6 +1215,7 @@ module HTTP
       nil
     end
 
+    # :nodoc:
     # Read what the handler left of the body, if little; whether the
     # connection can be kept. Only a Content-Length body with at most 64
     # KiB left is read (so the response is not held up); otherwise the
@@ -1206,6 +1235,7 @@ module HTTP
       end
     end
 
+    # :nodoc:
     def error_response(e: Error) -> Response
       return Response.empty(500) unless HTTP.valid_status?(e.status)
       msg = e.message.empty? ? HTTP.reason(e.status) : e.message
@@ -1215,12 +1245,14 @@ module HTTP
 
   # ----- the router -----------------------------------------------------------------
 
+  # :nodoc:
   enum Segment
     variant Literal(text: String)
     variant Param(name: String)
     variant Rest(name: String)
   end
 
+  # :nodoc:
   data Route = (method: String, pattern: String, segments: Array[Segment], handler: Handler)
 
   # Routes by method and path pattern (`/users/{id}`, `/files/{path...}`):
@@ -1330,6 +1362,7 @@ module HTTP
     def to_router -> Router = Router.new(@routes, @fallback)
   end
 
+  # :nodoc:
   def self.parse_pattern(pattern: String) -> Array[Segment]
     raise ArgumentError, "a pattern starts with /: #{pattern}" unless pattern.start_with?("/")
     parts = pattern.split("/", -1).drop(1)
@@ -1348,6 +1381,7 @@ module HTTP
     out
   end
 
+  # :nodoc:
   # The request's path split into segments, then each percent-decoded (an
   # escaped `/` does not separate segments); nil when it does not decode.
   def self.path_segments(req: Request) -> Array[String]?
@@ -1367,6 +1401,7 @@ module HTTP
     out
   end
 
+  # :nodoc:
   def self.match_segments(pattern: Array[Segment], path: Array[String]) -> Hash[String, String]?
     params = Hash::Builder[String, String].new
     pattern.each_with_index do |seg, i|
@@ -1386,6 +1421,7 @@ module HTTP
     pattern.size == path.size ? params.to_h : nil
   end
 
+  # :nodoc:
   # Literal 2, `{name}` 1, `{name...}` 0, segment by segment.
   def self.specificity(segs: Array[Segment]) -> Array[Int]
     segs.map do |s|
@@ -1397,6 +1433,7 @@ module HTTP
     end
   end
 
+  # :nodoc:
   def self.same_literals?(a: Array[Segment], b: Array[Segment]) -> Bool
     return false unless a.size == b.size
     a.zip(b).all? do |pair|

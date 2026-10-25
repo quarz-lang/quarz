@@ -1,0 +1,19 @@
+LIMIT: Int  The largest stack size this program makes.
+data Point(x: Int, y: Int)  A point: with and to_h are generated.
+  Point#to_h  The fields as a Hash, by name.
+  Point#with  A copy with the fields given replaced.
+  Point#x  
+  Point#y  
+module Shout  Text helpers, by extension.
+  String#shout  Upper case, with a !.
+class Stack[T]  A last-in, first-out collection of Ts. Immutable: push and pop return the new stack, as Array#push does.
+  Stack.new  An empty stack, or one holding items.
+  Stack#push  The stack with x on top.
+  Stack#pop  The stack without its top, and the top.
+  Stack#size  The number of elements.
+  Stack#empty?  
+class Stack::Empty < StandardError  Raised by pop on an empty stack.
+enum Suit  Suits.
+  Suit::Hearts  The red ones.
+  Suit::Diamonds  The red ones.
+  Suit::Spades  

@@ -1,19 +1,17 @@
 # JSON: parsing into `JSON::Value` and generation from any value.
 #
-#   require "json"
-#   doc = JSON.parse('{"name": "quarz", "tags": ["lang", "vm"]}')
-#   doc["name"].as_s                 # => "quarz"
-#   doc["tags"][1].as_s              # => "vm"
-#   case doc
-#   in JSON::Value::Object(members:) then members.keys
-#   else []
-#   end
-#   JSON.generate({ a: 1, b: [true, nil] })   # => '{"a":1,"b":[true,null]}'
+# ```
+# require "json"
+# doc = JSON.parse('{"name": "quarz", "tags": ["lang", "vm"]}')
+# doc["name"].as_s                          # => "quarz"
+# doc["tags"][1].as_s                       # => "vm"
+# doc["missing"]                            # raises KeyError
+# JSON.generate({ a: 1, b: [true, nil] })   # => "{\"a\":1,\"b\":[true,null]}"
+# ```
 #
 # `JSON.generate` accepts `nil`, booleans, numbers, strings, symbols, arrays,
 # hashes, sets, `data` values and `JSON::Value`. Other objects are
 # generated from their fields, unless they define `to_json -> String`.
-
 module JSON
   VERSION = "0.1.0"
 
@@ -225,6 +223,7 @@ module JSON
     def to_s -> ::String = to_json
   end
 
+  # :nodoc:
   # A JSON number as an `Integer` (a `Float` truncated).
   def self.integer_of(n: Int | Integer | Float) -> Integer
     case n

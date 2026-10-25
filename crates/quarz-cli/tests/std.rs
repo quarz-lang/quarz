@@ -52,3 +52,40 @@ fn compiled() {
 fn in_parallel() {
     quarz_test(&["--parallel=8"], "4");
 }
+
+/// The examples in the standard library's documentation comments
+/// (docs/13-doc-comments.md §4), interpreted and compiled, and its docs'
+/// links.
+#[test]
+fn the_standard_librarys_examples_and_links() {
+    for release in [false, true] {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_quarz"));
+        cmd.arg("test");
+        if release {
+            cmd.arg("--release");
+        }
+        let out = cmd
+            .args(["--doc", "--std"])
+            .current_dir(root())
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            out.status.success()
+                && stdout.contains(" 0 failures, 0 errors")
+                && !stdout.contains("\n0 tests"),
+            "quarz test --doc --std (release: {release}):\n{stdout}{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    let out = Command::new(env!("CARGO_BIN_EXE_quarz"))
+        .args(["doc", "--std", "--check"])
+        .current_dir(root())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}

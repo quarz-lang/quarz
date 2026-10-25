@@ -14,6 +14,8 @@ pub type NodeId = u32;
 pub struct Program {
     pub body: Vec<Expr>,
     pub span: Span,
+    /// The documentation comments, by the line they document, in order.
+    pub docs: Vec<crate::doc::Doc>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
