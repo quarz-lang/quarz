@@ -884,6 +884,30 @@ fn reraise_block_params_narrowing() {
         "class B[out T]\n  var @x: T\n  def initialize(@x: T)\n  end\nend",
         "`T` appears in the `var` field `@x`",
     );
+    // A value is one of its superclass and included modules: an upcast to
+    // them must be sound.
+    err(
+        "class B[T]\n  var @x: T\n  def initialize(@x: T)\n  end\nend\nclass C[out T] < B[T]\n  def initialize(x: T)\n    super(x)\n  end\nend",
+        "`T` appears in the type arguments of `B`",
+    );
+    err(
+        "module M[T]\nend\nclass C[out T]\n  include M[T]\nend",
+        "`T` appears in the type arguments of `M`",
+    );
+    // An immutable field is read as a result (its reader returns it).
+    err(
+        "class B[out T]\n  @f: (T) -> Nil\n  attr_reader :f\n  def initialize(@f: (T) -> Nil)\n  end\nend",
+        "`T` appears in a result position of the field `@f`",
+    );
+    err(
+        "class Cell[T]\n  var @v: T\n  def initialize(@v: T)\n  end\nend\nclass B[out T]\n  @c: Cell[T]\n  def initialize(@c: Cell[T])\n  end\nend",
+        "`T` appears in a result position of the field `@c`",
+    );
+    ok("class B[out T]\n  @x: T\n  @f: () -> T\n  def initialize(@x: T, @f: () -> T)\n  end\nend");
+    err(
+        "class B[in T]\n  @x: T\n  def initialize(@x: T)\n  end\nend",
+        "`T` appears in a result position of the field `@x`",
+    );
     ok("class B[out T]\n  def each(&: (T) -> Nil) -> Nil = nil\n  def with[U >: T](x: U) -> Array[U] = [x]\n  private def keep(x: T) -> Nil = nil\nend");
     err(
         "class K[U >: Int]\nend",

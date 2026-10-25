@@ -1063,15 +1063,32 @@ impl<'ast> Declarer<'ast> {
         }
         let class_name = class.name.clone();
         let mut found: Vec<(String, Span)> = Vec::new();
+        // A value is one of its superclass and of the modules it includes:
+        // their arguments are results (an upcast must keep it sound).
+        let span = class.span;
+        for t in class.superclass.iter().chain(&class.includes) {
+            let owner = match t {
+                Type::Class(c, _) => self.world.class(*c).name.clone(),
+                _ => continue,
+            };
+            self.variance_walk(t, 1, &params, &mut |p, _| {
+                found.push((
+                    format!("`{p}` appears in the type arguments of `{owner}`"),
+                    span,
+                ))
+            });
+        }
         for f in &class.fields {
-            if f.mutable {
-                self.variance_walk(&f.ty, 0, &params, &mut |p, _| {
-                    found.push((
-                        format!("`{p}` appears in the `var` field `@{}`", f.name),
-                        f.span,
-                    ))
-                });
-            }
+            // A field is read as a result (by its reader, by methods); a
+            // `var` one is written too.
+            let (pol, what) = if f.mutable {
+                (0, "the `var` field")
+            } else {
+                (1, "a result position of the field")
+            };
+            self.variance_walk(&f.ty, pol, &params, &mut |p, _| {
+                found.push((format!("`{p}` appears in {what} `@{}`", f.name), f.span))
+            });
         }
         let methods: Vec<MethodId> = class.methods.values().flatten().copied().collect();
         for mid in methods {
@@ -1116,7 +1133,12 @@ impl<'ast> Declarer<'ast> {
         for (what, span) in found {
             self.error(
                 format!(
-                    "{what}, against its variance in {class_name} (take a method type parameter such as `[U >: T]` instead)"
+                    "{what}, against its variance in {class_name}{}",
+                    if what.contains(" of `") && !what.contains("type arguments") {
+                        " (take a method type parameter such as `[U >: T]` instead)"
+                    } else {
+                        ""
+                    }
                 ),
                 span,
             );
