@@ -82,6 +82,7 @@ puts counter.value        # => 100
 | [docs/08-crystal-diff.md](docs/08-crystal-diff.md) | Quick reference of differences from Crystal |
 | [docs/09-grammar.md](docs/09-grammar.md) | Grammar sketch (EBNF) |
 | [docs/10-cogs.md](docs/10-cogs.md) | Cogs (packages): git repositories pinned by commit, `Cog.toml`/`Cog.lock`, one module per cog, no `require`, the `cog` keyword |
+| [docs/11-http.md](docs/11-http.md) | HTTP server (design): handlers returning responses, one task per connection, router, `Signal`; `HTTP::Client` later |
 | [examples/](examples/) | Sample code (`hello`, `shapes`, `wordcount`, `pipeline`, `bank_actor`, `extension`, `builder`) |
 
 ## Main design decisions
