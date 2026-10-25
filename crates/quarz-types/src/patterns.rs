@@ -467,6 +467,16 @@ impl Checker {
         // A member whose arguments are not known (a type not decided yet,
         // or an `Object` a generic class test could not narrow) would
         // leave its fields out of the join: refused.
+        // A `T` narrowed to a class deconstructs as that class.
+        let t = &Type::union_of(
+            self.expand_members(t)
+                .into_iter()
+                .map(|m| match m {
+                    Type::Param(p) => self.world.narrowed_class(p).unwrap_or(m),
+                    m => m,
+                })
+                .collect(),
+        );
         let unknown = self.expand_members(t).into_iter().any(|m| match &m {
             Type::Class(cid, _) => !matches!(
                 self.world.class(*cid).kind,

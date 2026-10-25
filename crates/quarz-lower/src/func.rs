@@ -2613,6 +2613,16 @@ impl<'a> FnBuilder<'a> {
         result
     }
 
+    /// The run-time type of an `as`/`is_a?` test: with elements checked
+    /// where the value may be of the class without being of the type.
+    fn test_type(&self, e: &Expr, ty: &Type) -> RtType {
+        if self.out.element_tests.contains(&e.id) {
+            crate::rtworld::rt_type_checked(self.world, ty)
+        } else {
+            rt_type(ty)
+        }
+    }
+
     fn call_value(
         &mut self,
         e: &'a Expr,
@@ -2627,7 +2637,7 @@ impl<'a> FnBuilder<'a> {
                 self.emit(Inst::IsA {
                     dst,
                     src,
-                    ty: rt_type(ty),
+                    ty: self.test_type(e, ty),
                 });
                 return dst;
             }
@@ -2637,7 +2647,7 @@ impl<'a> FnBuilder<'a> {
                 self.emit(Inst::As {
                     dst,
                     src,
-                    ty: rt_type(ty),
+                    ty: self.test_type(e, ty),
                     optional: *optional,
                     name: self.world.type_name(ty),
                 });

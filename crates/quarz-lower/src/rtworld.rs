@@ -12,10 +12,36 @@ pub fn rt_type(t: &Type) -> RtType {
         Type::Class(id, _) => RtType::Class(*id),
         Type::ClassObject(_, _) => RtType::ClassObject,
         Type::Union(ms) => RtType::Union(ms.iter().map(rt_type).collect()),
-        Type::Tuple(ts) => RtType::Tuple(ts.len() as u32),
+        Type::Tuple(ts) => RtType::Tuple(vec![RtType::Any; ts.len()]),
         Type::Proc(..) => RtType::Proc,
         Type::Param(_) | Type::Var(_) => RtType::Any,
     }
+}
+
+/// `t` for `as`/`is_a?`: with the elements of built-in collections and
+/// tuples checked too (`xs.as(Array[String])`), which their values carry;
+/// the checker refuses other type arguments it cannot vouch for.
+pub fn rt_type_checked(world: &World, t: &Type) -> RtType {
+    let b = &world.builtin;
+    match t {
+        Type::Class(id, args)
+            if [b.array, b.set, b.hash, b.range].contains(id)
+                && args.iter().any(|a| !trivial(world, a)) =>
+        {
+            RtType::Elems(
+                *id,
+                args.iter().map(|a| rt_type_checked(world, a)).collect(),
+            )
+        }
+        Type::Union(ms) => RtType::Union(ms.iter().map(|m| rt_type_checked(world, m)).collect()),
+        Type::Tuple(ts) => RtType::Tuple(ts.iter().map(|m| rt_type_checked(world, m)).collect()),
+        _ => rt_type(t),
+    }
+}
+
+fn trivial(world: &World, t: &Type) -> bool {
+    matches!(t, Type::Param(_) | Type::Var(_))
+        || matches!(t, Type::Class(id, _) if *id == world.builtin.object)
 }
 
 fn param_kind(k: ParamKind) -> RtParamKind {

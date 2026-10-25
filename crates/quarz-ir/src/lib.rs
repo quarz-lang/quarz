@@ -380,9 +380,14 @@ impl FastOp {
 pub enum RtType {
     Nothing,
     Class(ClassId),
+    /// A built-in collection of the class whose elements are of these
+    /// types (`Array[String]`: one, `Hash[K, V]`: two), for `as`/`is_a?`
+    /// with type arguments.
+    Elems(ClassId, Vec<RtType>),
     ClassObject,
     Union(Vec<RtType>),
-    Tuple(u32),
+    /// An array of this many elements, of these types.
+    Tuple(Vec<RtType>),
     Proc,
     Any,
 }

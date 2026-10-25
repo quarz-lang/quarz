@@ -1218,3 +1218,38 @@ fn tests_narrow_only_to_what_holds() {
     // A bound may name the class's parameters.
     ok("module Addable[T]\n  abstract def add(o: T) -> T\nend\ndata Num(n: Int)\n  include Addable[Num]\n  def add(o: Num) -> Num = Num.new(n + o.n)\nend\ndata Acc[T: Addable[T]](x: T)\n  def twice -> T = x.add(x)\nend\np Acc.new(Num.new(2)).twice");
 }
+
+#[test]
+fn checks_the_types_it_cannot_take_on_trust() {
+    // `as`/`is_a?` check the elements of built-in collections at run time,
+    // and refuse type arguments they cannot check.
+    ok("def obj(v: Object) -> Object = v\nxs = obj([1]).as?(Array[String])\np xs");
+    err("class Box[T]\n  def initialize(@v: T); end\n  @v: T\nend\ndef f(o: Object) -> Box[Int] = o.as(Box[Int])", "cannot check at run time that a value of type Object is a Box[Int]");
+    ok("class Box[T]\n  def initialize(@v: T); end\n  @v: T\nend\ndef f(o: Box[Int]?) -> Box[Int] = o.as(Box[Int])");
+    err("class Box[T]\n  var @v: T\n  def initialize(@v: T); end\nend\ndef obj(v: Object) -> Object = v\nobj(Box.new(\"s\")).as(Box[Object])", "cannot check at run time that a value of type Object is a Box[Object]");
+    err(
+        "def f[T](y: Object) -> Int\n  y.is_a?(Array[T]) ? 1 : 0\nend",
+        "cannot check at run time that a value of type Object is a Array[T]",
+    );
+    err(
+        "def obj(v: Object) -> Object = v\ndef f[T](o: Object, z: T) -> T = o.as(T)",
+        "cannot check at run time that a value of type Object is a T",
+    );
+    err("module Addable[T]\n  abstract def add(o: T) -> T\nend\ndata Acc[T: Addable[T]] = (x: T)\ndef f[U](u: U) -> U = Acc[U].new(u).x", "type argument U for `T` of `Acc` must be Addable[U]");
+    // Bounds are checked in annotations too.
+    err("module Addable[T]\n  abstract def add(o: T) -> T\nend\ndata Acc[T: Addable[T]] = (x: T)\nclass Other\nend\np Acc.new(Other.new)", "type argument Other for `T` of `Acc` must be Addable[Other]");
+    err("module Addable[T]\n  abstract def add(o: T) -> T\nend\ndata Acc[T: Addable[T]] = (x: T)\nclass Other\nend\nx: Acc[Other]? = nil", "type argument Other for `T` of `Acc` must be Addable[Other]");
+    err("module Addable[T]\n  abstract def add(o: T) -> T\nend\ndata Acc[T: Addable[T]] = (x: T)\nclass Other\nend\ndef f(a: Acc[Other]) -> Int = 0", "type argument Other for `T` of `Acc` must be Addable[Other]");
+    // A `T` narrowed by a test is still a `T`.
+    ok("def keep[T](x: T) -> T\n  if x.is_a?(String)\n    p x.upcase\n    return x\n  end\n  x\nend");
+    ok("data Pair[A, B] = (a: A, b: B)\ndef f[T](x: T) -> T\n  case x\n  in Array then p x.size\n  in Pair(a, b) then p a\n  else\n  end\n  x\nend");
+    // It does not leave the branch through inferred types.
+    err("class Box[T]\n  def initialize(@v: T); end\n  @v: T\n  def s\n    @v.is_a?(String) ? @v : nil\n  end\n  def steal(b: Box[String]) -> T? = b.s\nend", "method `steal` returns T? but its body has type String?");
+    ok("def f[T](x: T, z: T) -> Array[T]\n  ys = []\n  if x.is_a?(String)\n    ys = ys.push(x)\n  end\n  ys = ys.push(z)\n  ys\nend");
+    ok("def f(t: [Int, String] | Array[Int]) -> Int = 1\np f([1, 2])");
+    ok("def f[T](t: [Int, String] | T) -> Int = 1\np f([1, 2])");
+    // A value of a module type has Object's methods.
+    ok("module Named\n  def name -> String = \"n\"\nend\ndef md(x: Named?) -> String\n  if x == nil\n    \"nil\"\n  else\n    x.name + x.to_s\n  end\nend");
+    // A tuple expected among other types.
+    ok("def tup(t: [Int, String]?) -> Int = t ? t[0] : 0\np tup([1, \"a\"])");
+}

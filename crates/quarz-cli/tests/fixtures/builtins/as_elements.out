@@ -1,0 +1,7 @@
+nil
+true
+false
+{"a" => 1}
+nil
+[]
+TypeError
