@@ -1139,3 +1139,45 @@ fn inference_never_binds_a_variable_to_itself() {
         "array elements have type Array[?0] but ?0 was expected",
     );
 }
+
+#[test]
+fn undecided_types_come_from_uses() {
+    // An `if` whose value is unused, and nil joined with an undecided
+    // type, do not decide an empty array's element type.
+    ok("def f(c: Bool) -> Int\n  arr = []\n  b = arr[0] if c\n  arr = arr.push(5)\n  1\nend");
+    ok("def g(c: Bool) -> Int\n  arr = []\n  x = c ? arr[0] : nil\n  arr = arr.push(7)\n  x ? x + 1 : 0\nend");
+    err("def g(c: Bool) -> Int\n  arr = []\n  x = c ? arr[0] : nil\n  arr = arr.push(7)\n  x + 1\nend", "undefined method `+` for Nil");
+    // A test narrows such a value inside its branch only.
+    ok("def f(n: Int) -> Int\n  arr = []\n  r = 0\n  i = 0\n  while i < n\n    case arr[0]\n    in String => s\n      r = r + s.size\n    else\n    end\n    arr = arr.push(\"ab\")\n    i += 1\n  end\n  r\nend");
+    ok("def f(c: Bool) -> Int\n  arr = []\n  b = arr[0]\n  if c\n    case b\n    in String => s1\n      p s1.size\n    else\n    end\n  end\n  b = b if c\n  arr = arr.push(5)\n  1\nend");
+    // Not by a value or range pattern (`1 === 1.0`), nor to a generic
+    // class's unknown arguments (but `Array[Object]`, covariant).
+    err("def f -> Int\n  arr = []\n  r = 0\n  case arr[0]\n  in 1..5 => k\n    r = k << 1\n  else\n  end\n  arr = arr.push(2.5)\n  r\nend", "cannot call `<<` on a value whose type is not yet known");
+    ok("def f -> Int\n  arr = []\n  r = 0\n  v = arr[0]\n  case v\n  when Array then r += v.size\n  end\n  arr = arr.push([1])\n  r\nend");
+    // A narrowing from before `?v` was decided in a later branch does not
+    // outlast the branches.
+    ok("def takes(v: Int) -> Int = v\ndef f -> Int\n  arr = []\n  r = 0\n  x = arr[0]\n  if x.is_a?(String)\n    r += x.size\n  else\n    arr = arr.push(5)\n  end\n  takes(x)\nend");
+    ok("def f(c: Bool, d: Bool) -> Int\n  arr = []\n  if c\n    p 1\n  elsif d\n    arr[0]\n  else\n    \"s\"\n  end\n  arr = arr.push(5)\n  1\nend");
+    // A data pattern deconstructs it with unknown (Object) arguments; a
+    // method every object has decides nothing.
+    ok("data Pair[A, B] = (a: A, b: B)\ndef g -> Int\n  arr = []\n  r = 0\n  case arr[0]?\n  in Pair(a, b)\n    p a\n    r = 1\n  else\n  end\n  arr = arr.push(Pair.new(1, 2))\n  r\nend");
+    ok("def f -> Int\n  arr = []\n  x = arr[0]?\n  p x.nil?, x.to_s\n  arr = arr.push(5)\n  1\nend");
+    // Not a class whose Object arguments would accept wrong values.
+    err("class Cell[T]\n  var @v: T\n  def initialize(v: T)\n    @v = v\n  end\n  def set(v: T) -> Nil\n    @v = v\n    nil\n  end\nend\ndef g -> Int\n  arr = []\n  b = arr[0]?\n  case b\n  in Cell(v:)\n    b.set(\"str\")\n  else\n  end\n  arr = arr.push(Cell.new(5))\n  1\nend", "cannot deconstruct a value whose type is not yet known");
+    err("data H[A] = (f: (A) -> Int)\ndef g -> Int\n  arr = []\n  case arr[0]?\n  in H(f)\n    f.call(\"oops\")\n  else\n  end\n  arr = arr.push(H.new(->(x: Int) { x + 1 }))\n  1\nend", "cannot deconstruct a value whose type is not yet known");
+    // Nor one with a bounded parameter; a recursive `data` is fine.
+    err("module Comb\n  abstract def weight -> Int\nend\ndata Acc[T: Comb](x: T)\n  def plus(y: T) -> Int = x.weight + y.weight\nend\ndata C[A] = (d: Acc[A])\ndef g -> Int\n  arr = []\n  case arr[0]?\n  in C(d)\n    p d.plus(\"str\")\n  else\n  end\n  1\nend", "cannot deconstruct a value whose type is not yet known");
+    err("module Comb\n  abstract def weight -> Int\nend\ndata Acc[T: Comb](x: T)\n  def plus(y: T) -> Int = x.weight + y.weight\nend\ndef g -> Int\n  arr = []\n  case arr[0]?\n  in Acc(x) => a\n    p a.plus(\"str\")\n  else\n  end\n  1\nend", "cannot deconstruct a value whose type is not yet known");
+    ok("data Node[A] = (value: A, rest: Node[A]?)\ndef g -> Int\n  arr = []\n  case arr[0]?\n  in Node(value, rest)\n    p value, rest\n  else\n  end\n  arr = arr.push(Node.new(1, nil))\n  1\nend");
+    // An empty block leaves no unused-statement mark behind.
+    err("def f(c: Bool) -> Int\n  [1].each { |i| }\n  y = begin\n    if c then 3.5 else 2.5 end\n  end\n  (y || 7) * 2\nend", "returns Int but its body has type Float");
+    // An unused `if` joins nothing; a `?v | Nil` passed as `T?` makes `?v` a `T`.
+    ok("def f(c: Bool) -> Int\n  arr = []\n  if c\n    arr[0]\n  else\n    \"x\"\n  end\n  arr = arr.push(5)\n  1\nend");
+    ok("def take(v: Int?) -> Int = v || 0\ndef f(c: Bool) -> Int\n  arr = []\n  x = c ? arr[0] : nil\n  take(x)\n  arr = arr.push(5)\n  arr[0] + 1\nend");
+    warns(
+        "def f(c: Bool) -> Int\n  if c\n    return 1\n  else\n    return 2\n  end\n  p 3\n  4\nend",
+        "unreachable code",
+    );
+    ok("def f(c: Bool) -> Int\n  arr = []\n  b = arr[0]\n  if c\n    case b\n    in String => s1\n      p s1\n    else\n    end\n  end\n  b = b if c\n  arr = arr.push(5)\n  1\nend");
+    no_warnings("arr = []\nb = arr[0]\nok = b in String\narr = arr.push(5)\np ok");
+}

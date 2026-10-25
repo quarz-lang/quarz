@@ -1342,7 +1342,7 @@ impl Checker {
                     let r = self.infer.resolve(&r);
                     t = self.join(&t, &r);
                 }
-                let t = self.infer.resolve(&t);
+                let t = self.settle_vars(&t);
                 if t.has_vars() {
                     self.error(
                         format!(
@@ -1445,7 +1445,7 @@ impl Checker {
         let saved_frame_vars = std::mem::take(&mut self.frame_vars);
         let saved_temp_stmts = std::mem::take(&mut self.temp_stmts);
         let t = self.check_expr(&value, None);
-        let t = self.infer.resolve(&t);
+        let t = self.settle_vars(&t);
         if t.has_vars() {
             self.error(
                 format!("cannot infer the type of constant `{}`", info.name),
@@ -1493,7 +1493,21 @@ impl Checker {
             (_, Type::Class(id, _)) if *id == self.world.builtin.object => true,
             (Type::Union(ms), _) => {
                 let ms = ms.clone();
-                ms.iter().all(|m| self.coerce(m, &e))
+                // `?v | Nil` into `T?`: nil goes to nil, `?v` is `T`.
+                let nil = self.world.nil();
+                let e_some = if ms.contains(&nil) && e.members().contains(&nil) {
+                    e.without_nil(self.world.builtin.nil)
+                } else {
+                    e.clone()
+                };
+                ms.iter().all(|m| {
+                    let target = if matches!(m, Type::Var(_)) {
+                        &e_some
+                    } else {
+                        &e
+                    };
+                    self.coerce(m, target)
+                })
             }
             (_, Type::Union(ms)) => {
                 let ms = ms.clone();
@@ -1637,6 +1651,12 @@ impl Checker {
         }
         if rb.is_nothing() {
             return ra;
+        }
+        // A variable joined with nil stays undecided, made nilable: its
+        // type comes from where its values are used.
+        let nil = self.world.nil();
+        if matches!(ra, Type::Var(_)) && rb == nil || matches!(rb, Type::Var(_)) && ra == nil {
+            return Type::union_of(vec![ra, rb]);
         }
         if let Type::Var(v) = ra {
             if self.infer.bind(v, rb.clone()) {
@@ -1907,6 +1927,70 @@ impl Checker {
         }
     }
 
+    /// `t` with each undecided variable that is a member of a union with
+    /// other types decided as those (`?v | Nil` used as a receiver, or as
+    /// a method's result: nothing else tells what `?v` is).
+    fn settle_vars(&mut self, t: &Type) -> Type {
+        let t = self.infer.resolve(t);
+        self.settle_in(&t);
+        self.infer.resolve(&t)
+    }
+
+    fn settle_in(&mut self, t: &Type) {
+        match t {
+            Type::Union(ms) => {
+                let (vars, rest): (Vec<Type>, Vec<Type>) =
+                    ms.iter().cloned().partition(|m| matches!(m, Type::Var(_)));
+                if !vars.is_empty() && !rest.is_empty() {
+                    let rest = Type::union_of(rest);
+                    for v in vars {
+                        if let Type::Var(v) = v {
+                            self.infer.bind(v, rest.clone());
+                        }
+                    }
+                }
+                ms.iter().for_each(|m| self.settle_in(m));
+            }
+            Type::Class(_, args) | Type::ClassObject(_, args) | Type::Tuple(args) => {
+                args.iter().for_each(|a| self.settle_in(a));
+            }
+            Type::Proc(rc, ps, r, _) => {
+                if let Some(rc) = rc {
+                    self.settle_in(rc);
+                }
+                ps.iter().for_each(|p| self.settle_in(p));
+                self.settle_in(r);
+            }
+            Type::Var(_) | Type::Nothing | Type::Param(_) => {}
+        }
+    }
+
+    /// The narrowing `j` (a join of narrowings) of a variable declared
+    /// `declared`. A variable of a type not decided yet stays undecided:
+    /// a test narrowed it inside a branch (to `String` in `in String`),
+    /// which after the branches is no more than its own type, or nil.
+    /// A narrowing made while the type was undecided, joined after `?v`
+    /// was decided in a later branch, is cut back to the declared type.
+    fn fit_narrowing(world: &World, infer: &InferTable, declared: &Type, j: Type) -> Option<Type> {
+        let d = infer.resolve(declared);
+        let nil = world.nil();
+        let with_nil = || {
+            j.members()
+                .contains(&nil)
+                .then(|| Type::union_of(vec![d.clone(), nil.clone()]))
+        };
+        if let Type::Var(_) = d {
+            return with_nil();
+        }
+        if j == *declared || j == d {
+            return None;
+        }
+        if !world.is_subtype(&j, &Type::union_of(vec![d.clone(), nil.clone()])) {
+            return with_nil();
+        }
+        Some(j)
+    }
+
     /// The narrowing of a variable that may be unassigned: its type or
     /// nil (any value it was given, on an earlier pass of a loop).
     fn maybe_unset(world: &World, infer: &InferTable, v: &VarInfo, nil: &Type) -> Option<Type> {
@@ -1953,7 +2037,7 @@ impl Checker {
                     let j = self
                         .world
                         .join(&self.infer.resolve(&a), &self.infer.resolve(&b));
-                    let t = if j == v.declared { None } else { Some(j) };
+                    let t = Self::fit_narrowing(&self.world, &self.infer, &v.declared, j);
                     f.vars.set_narrowed(slot, t);
                 }
             }
@@ -2301,10 +2385,10 @@ impl Checker {
     }
 
     fn check_body(&mut self, body: &[Expr], expected: Option<&Type>) -> Type {
+        let void = std::mem::take(&mut self.next_body_void);
         if body.is_empty() {
             return self.world.nil();
         }
-        let void = std::mem::take(&mut self.next_body_void);
         let mut result = self.world.nil();
         let mut dead = false;
         // `using M` inside a body: its extensions are active from there to
@@ -2359,6 +2443,12 @@ impl Checker {
         let unused = std::mem::take(&mut self.stmt_unused);
         let t = match &expr.kind {
             ExprKind::For(f) => self.check_for(expr, f, expected, unused),
+            // An `if` whose value is not used: its branches' types are not
+            // joined, which would decide an inference variable (`b = xs[0]
+            // if c` fixing an empty array's element type to Nil).
+            ExprKind::If { cond, then, els } if unused => {
+                self.check_if_as(cond, then, els.as_deref(), None, false)
+            }
             _ => self.check_expr_inner(expr, expected),
         };
         self.record(expr.id, &t);
@@ -3442,7 +3532,29 @@ impl Checker {
         let mut yes = Vec::new();
         let mut no = Vec::new();
         for m in self.expand_members(&t) {
-            if self.world.is_subtype(&m, target) {
+            if let Type::Var(_) = m {
+                // Not decided yet: a test narrows inside its branch
+                // without deciding it (see `fit_narrowing`). The
+                // arguments of a generic class are not known: Object for
+                // covariant ones (`Array[Object]`), else no narrowing.
+                let narrowed = match target {
+                    Type::Class(id, _) if !self.world.class(*id).type_params.is_empty() => {
+                        let params = &self.world.class(*id).type_params;
+                        params
+                            .iter()
+                            .all(|p| p.variance == Variance::Covariant && p.bounds.is_empty())
+                            .then(|| {
+                                Type::Class(
+                                    *id,
+                                    params.iter().map(|_| self.world.object()).collect(),
+                                )
+                            })
+                    }
+                    _ => Some(target.clone()),
+                };
+                yes.push(narrowed.unwrap_or_else(|| m.clone()));
+                no.push(m);
+            } else if self.world.is_subtype(&m, target) {
                 yes.push(m);
             } else if self.world.is_subtype(target, &m) {
                 // `Object` narrowed to `Int`: the member is a supertype.
@@ -3486,6 +3598,19 @@ impl Checker {
         els: Option<&[Expr]>,
         expected: Option<&Type>,
     ) -> Type {
+        self.check_if_as(cond, then, els, expected, true)
+    }
+
+    /// `if`; without `used`, its value is discarded and the branches'
+    /// types are not joined (nil, or Nothing when neither ends).
+    fn check_if_as(
+        &mut self,
+        cond: &Expr,
+        then: &[Expr],
+        els: Option<&[Expr]>,
+        expected: Option<&Type>,
+        used: bool,
+    ) -> Type {
         let (ct, facts_true, facts_false) = self.check_cond(cond);
         match self.is_truthy_type(&ct) {
             Some(true) => self.warning("condition is always true", cond.span),
@@ -3494,17 +3619,33 @@ impl Checker {
         }
         let before = self.snapshot();
         self.apply_facts(&facts_true);
+        // An unused `if`'s branches end in unused statements (an
+        // `elsif` is the `if` ending the else branch).
+        self.next_body_void = !used;
         let tt = self.check_body(then, expected);
+        self.next_body_void = false;
         let then_snap = self.snapshot();
         let then_dead = tt.is_nothing();
         self.restore(&before);
         self.apply_facts(&facts_false);
         let et = match els {
-            Some(els) => self.check_body(els, expected),
+            Some(els) => {
+                self.next_body_void = !used;
+                let t = self.check_body(els, expected);
+                self.next_body_void = false;
+                t
+            }
             None => self.world.nil(),
         };
         let else_dead = et.is_nothing();
         self.merge_with(&then_snap, then_dead, else_dead);
+        if !used {
+            return if then_dead && else_dead {
+                Type::Nothing
+            } else {
+                self.world.nil()
+            };
+        }
         self.join(&tt, &et)
     }
 
@@ -3694,13 +3835,13 @@ impl Checker {
                         j = at_end;
                     }
                 }
-                let vars = &mut self.env.frames[fi].vars;
-                let t = if j == vars[slot].declared {
-                    None
-                } else {
-                    Some(j)
-                };
-                vars.set_narrowed(slot, t);
+                let t = Self::fit_narrowing(
+                    &self.world,
+                    &self.infer,
+                    &self.env.frames[fi].vars[slot].declared,
+                    j,
+                );
+                self.env.frames[fi].vars.set_narrowed(slot, t);
             }
             if let Some(rec) = &mut self.env.ensure_assigns {
                 for (k, t) in assigned {
@@ -4544,6 +4685,34 @@ impl Checker {
         expected: Option<&Type>,
     ) -> Type {
         let name = call.name.as_str();
+        // A method every object has (`to_s`, `nil?`, `==`) is called on a
+        // value of a type not decided yet as on an Object, deciding
+        // nothing.
+        let as_object;
+        let recv_ty = if recv_ty.members().iter().any(|m| matches!(m, Type::Var(_)))
+            && !self
+                .world
+                .lookup_methods(&self.world.object(), name)
+                .is_empty()
+        {
+            let object = self.world.object();
+            as_object = Type::union_of(
+                recv_ty
+                    .members()
+                    .into_iter()
+                    .map(|m| {
+                        if matches!(m, Type::Var(_)) {
+                            object.clone()
+                        } else {
+                            m
+                        }
+                    })
+                    .collect(),
+            );
+            &as_object
+        } else {
+            recv_ty
+        };
         match recv_ty {
             Type::Union(members) => {
                 // Each member must accept the call; the result is the join.
@@ -6822,6 +6991,9 @@ impl Checker {
                 self.check_body(els, expected)
             }
             None => {
+                // Whether a type not decided yet is covered is not known
+                // here: a value no arm matches raises NoMatchingPatternError.
+                remaining.retain(|m| !matches!(self.resolve(m), Type::Var(_)));
                 if !remaining.is_empty() {
                     let names: Vec<String> = remaining.iter().map(|t| self.name(t)).collect();
                     // A union lists its alternatives explicitly, so a

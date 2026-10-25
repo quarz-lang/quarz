@@ -38,6 +38,11 @@ impl Checker {
             PatternKind::Value(expr) => {
                 let t = self.check_expr_pub(expr, None);
                 let t = self.resolve_ty(&t);
+                // `1 === 1.0`: a value of a type not decided yet is not
+                // narrowed to the literal's class.
+                if Self::undecided(&value_ty) {
+                    return value_ty;
+                }
                 let (yes, _) = self.split_by_type(&value_ty, &t);
                 if yes.is_nothing() {
                     self.warn(
@@ -56,6 +61,9 @@ impl Checker {
                 for side in [lo, hi].into_iter().flatten() {
                     let st = self.check_expr_pub(side, None);
                     t = self.join_types(&t, &st);
+                }
+                if Self::undecided(&value_ty) {
+                    return value_ty;
                 }
                 let (yes, _) = self.split_by_type(&value_ty, &t);
                 yes
@@ -85,11 +93,15 @@ impl Checker {
                 };
                 let target = self.class_type_for(cid, &value_ty);
                 let (yes, _) = self.split_by_type(&value_ty, &target);
-                let narrowed = if yes.is_nothing() {
-                    target.clone()
-                } else {
-                    yes
-                };
+                // A value of a type not decided yet is deconstructed as
+                // the class with unknown arguments (Object), when that
+                // admits no wrong value (`object_args_safe`).
+                let narrowed =
+                    if yes.is_nothing() || Self::undecided(&yes) && self.object_args_safe(cid) {
+                        target.clone()
+                    } else {
+                        yes
+                    };
                 // Positional deconstruction of data/variant fields.
                 let fields = self.deconstruct_fields(&narrowed, pattern.span);
                 let field_types: Vec<Type> = fields.iter().map(|(_, t)| t.clone()).collect();
@@ -102,11 +114,15 @@ impl Checker {
                 };
                 let target = self.class_type_for(cid, &value_ty);
                 let (yes, _) = self.split_by_type(&value_ty, &target);
-                let narrowed = if yes.is_nothing() {
-                    target.clone()
-                } else {
-                    yes
-                };
+                // A value of a type not decided yet is deconstructed as
+                // the class with unknown arguments (Object), when that
+                // admits no wrong value (`object_args_safe`).
+                let narrowed =
+                    if yes.is_nothing() || Self::undecided(&yes) && self.object_args_safe(cid) {
+                        target.clone()
+                    } else {
+                        yes
+                    };
                 let fields = self.deconstruct_fields(&narrowed, pattern.span);
                 for pair in &hp.pairs {
                     let Some((_, fty)) = fields.iter().find(|(n, _)| *n == pair.key) else {
@@ -249,6 +265,114 @@ impl Checker {
         }
     }
 
+    /// Whether `cid` with Object for its type arguments is a supertype of
+    /// all its instances for what a pattern does with it: a `data` type or
+    /// variant (whose fields cannot be set) whose parameters have no
+    /// bounds (Object would not meet them) and occur in its fields only
+    /// covariantly (not in `(A) -> R` or an invariant `Cell[A]`, which
+    /// would accept wrong values).
+    fn object_args_safe(&self, cid: ClassId) -> bool {
+        let class = self.world.class(cid);
+        matches!(class.kind, ClassKind::Data | ClassKind::Variant)
+            && class.type_params.iter().all(|p| p.bounds.is_empty())
+            && (0..class.type_params.len()).all(|i| self.param_safe(cid, i, &mut Vec::new()))
+    }
+
+    /// Whether the `i`th type parameter of the `data` type, variant or
+    /// enum `cid` has no bound and occurs in its immutable fields only
+    /// covariantly.
+    /// Classes being checked count as safe (a recursive `data Node[A] =
+    /// (v: A, rest: Node[A]?)` is).
+    fn param_safe(&self, cid: ClassId, i: usize, visiting: &mut Vec<(ClassId, usize)>) -> bool {
+        if visiting.contains(&(cid, i)) {
+            return true;
+        }
+        let class = self.world.class(cid);
+        // A bound Object does not meet: its methods use the parameter
+        // through it.
+        let Some(id) = class
+            .type_params
+            .get(i)
+            .filter(|p| p.bounds.is_empty())
+            .map(|p| p.id)
+        else {
+            return false;
+        };
+        let holders: Vec<ClassId> = match class.kind {
+            ClassKind::Data | ClassKind::Variant => vec![cid],
+            ClassKind::Enum => class.variants.clone(),
+            _ => return false,
+        };
+        visiting.push((cid, i));
+        let ok = holders.iter().all(|&h| {
+            let hc = self.world.class(h);
+            let params: Vec<Type> = hc.type_params.iter().map(|p| Type::Param(p.id)).collect();
+            let subst = self.world.class_subst(h, &params);
+            self.world.all_fields(h).iter().all(|(f, fsubst)| {
+                let ty = f.ty.subst(fsubst).subst(&subst);
+                !f.mutable && self.only_covariant(&ty, id, true, visiting)
+            })
+        });
+        visiting.pop();
+        ok
+    }
+
+    /// Whether the type parameter `id` occurs in `t` only where a wider
+    /// type is a supertype (`pos`: in a covariant position so far).
+    fn only_covariant(
+        &self,
+        t: &Type,
+        id: TypeParamId,
+        pos: bool,
+        visiting: &mut Vec<(ClassId, usize)>,
+    ) -> bool {
+        match t {
+            Type::Param(p) => *p != id || pos,
+            Type::Var(_) | Type::Nothing => true,
+            Type::Union(ms) | Type::Tuple(ms) => {
+                ms.iter().all(|m| self.only_covariant(m, id, pos, visiting))
+            }
+            Type::Class(c, args) => {
+                let vs: Vec<Variance> = self
+                    .world
+                    .class(*c)
+                    .type_params
+                    .iter()
+                    .map(|p| p.variance)
+                    .collect();
+                args.iter().enumerate().all(|(i, a)| {
+                    if !a.mentions_param(id) {
+                        return true;
+                    }
+                    match vs.get(i) {
+                        Some(Variance::Covariant) => self.only_covariant(a, id, pos, visiting),
+                        Some(Variance::Contravariant) => self.only_covariant(a, id, !pos, visiting),
+                        // An invariant parameter of a `data` type or enum
+                        // that only holds it covariantly acts covariant.
+                        _ => {
+                            self.param_safe(*c, i, visiting)
+                                && self.only_covariant(a, id, pos, visiting)
+                        }
+                    }
+                })
+            }
+            Type::ClassObject(_, args) => args.iter().all(|a| !a.mentions_param(id)),
+            Type::Proc(rc, ps, r, _) => {
+                rc.as_ref()
+                    .is_none_or(|t| self.only_covariant(t, id, !pos, visiting))
+                    && ps
+                        .iter()
+                        .all(|p| self.only_covariant(p, id, !pos, visiting))
+                    && self.only_covariant(r, id, pos, visiting)
+            }
+        }
+    }
+
+    /// Whether a member of `t` is an inference variable not decided yet.
+    fn undecided(t: &Type) -> bool {
+        t.members().iter().any(|m| matches!(m, Type::Var(_)))
+    }
+
     /// The instance type of `cid`, taking type arguments from the matched
     /// value's type when it is the same class or an enum of the variant.
     fn class_type_for(&self, cid: ClassId, value_ty: &Type) -> Type {
@@ -311,7 +435,12 @@ impl Checker {
                 }
             }
         }
-        if out.is_empty() {
+        if out.is_empty() && Self::undecided(t) {
+            self.report(
+                "cannot deconstruct a value whose type is not yet known here; add a type annotation",
+                span,
+            );
+        } else if out.is_empty() {
             self.report(
                 format!(
                     "{} cannot be deconstructed (it has no fields)",
