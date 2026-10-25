@@ -74,10 +74,12 @@ module HTTP
 
     # A field that can be sent: its name a token, its value without CR,
     # LF or another control character but HTAB (which would split the
-    # response). An `ArgumentError` otherwise, where the header is set.
+    # response). An `ArgumentError` otherwise, where the header is set;
+    # its message names the header but leaves the value out, which may
+    # come from a request (a cookie, a token) and would end up in logs.
     def self.field(name: String, value: String) -> Field
       raise ArgumentError, "invalid header name #{name.inspect}" unless name.match?(HTTP::TOKEN)
-      raise ArgumentError, "invalid header value for #{name}: #{value.inspect}" if value.match?(HTTP::CONTROL)
+      raise ArgumentError, "invalid header value for #{name} (a control character)" if value.match?(HTTP::CONTROL)
       Field.new(name.downcase, value)
     end
 
