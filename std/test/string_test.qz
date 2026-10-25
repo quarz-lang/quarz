@@ -224,3 +224,33 @@ class StringEdgeTest < Test::Case
     assert_equal("", "".succ)
   end
 end
+
+# `Integer()` reads as Ruby's: `to_i`'s prefixes and octal for a bare
+# leading 0, but the whole text must be the number.
+class IntegerConversionTest < Test::Case
+  def test_prefixes
+    assert_equal(31, Integer("0x1f"))
+    assert_equal(3, Integer("0b11"))
+    assert_equal(15, Integer("0o17"))
+    assert_equal(9, Integer("0d9"))
+    assert_equal(15, Integer("017"))
+    assert_equal(-15, Integer("-017"))
+    assert_equal(0, Integer("0"))
+    assert_equal(1000, Integer(" 1_000\n"))
+  end
+
+  def test_with_a_base
+    assert_equal(17, Integer("017", 10))
+    assert_equal(255, Integer("0xff", 16))
+    assert_equal(255, Integer("ff", 16))
+    assert_equal(15, Integer("017", 0))
+  end
+
+  def test_invalid
+    ["08", "12abc", "", "0x", "_1", "1_", "1__0", "1 2", "0x_1"].each do |s|
+      assert_raise(ArgumentError) { _ = Integer(s); nil }
+    end
+    assert_raise(ArgumentError) { _ = Integer("1", 1); nil }
+    assert_raise(OverflowError) { _ = Integer("99999999999999999999"); nil }
+  end
+end

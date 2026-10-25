@@ -18,6 +18,174 @@ fn exit_gives_the_status() {
     assert_eq!(code, 3);
 }
 
+/// `exit` raises `SystemExit`, as Ruby's: every `ensure` it leaves runs
+/// (also in a `begin` with a `rescue` clause, which does not catch it),
+/// then the `at_exit` blocks, and the status is the one given.
+#[test]
+fn exit_runs_ensure_clauses_and_at_exit_blocks() {
+    let (code, out) = run(
+        "at_exit { puts \"at_exit\" }\n\
+         begin\n  begin\n    exit 3\n  rescue => e\n    puts \"rescued\"\n  ensure\n    puts \"inner\"\n  end\n\
+         ensure\n  puts \"outer\"\nend\nputs \"after\"",
+        &[],
+    );
+    assert_eq!((code, out.as_str()), (3, "inner\nouter\nat_exit\n"));
+}
+
+#[test]
+fn rescuing_system_exit_goes_on() {
+    let (code, out) = run(
+        "begin\n  exit 4\nrescue SystemExit => e\n  p e.status, e.success?\nend\n\
+         begin\n  abort \"bye\"\nrescue SystemExit => e\n  p e.status, e.message\nend\nputs \"on\"",
+        &[],
+    );
+    assert_eq!((code, out.as_str()), (0, "4\nfalse\n1\n\"bye\"\non\n"));
+}
+
+/// In a process of its own: `exit!` ends the one it runs in.
+#[test]
+fn exit_bang_skips_ensure_and_at_exit() {
+    let dir = std::env::temp_dir().join(format!("quarz-run-exit-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("exit.qz");
+    std::fs::write(
+        &path,
+        "at_exit { puts \"at_exit\" }\nbegin\n  puts \"before\"\n  exit!(5)\nensure\n  puts \"ensure\"\nend\n",
+    )
+    .unwrap();
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_quarz"))
+        .arg("run")
+        .arg(&path)
+        .output()
+        .expect("quarz");
+    std::fs::remove_dir_all(&dir).ok();
+    assert_eq!(out.status.code(), Some(5));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "before\n");
+}
+
+/// In another task, `SystemExit` goes where the task's exceptions go: to
+/// `await`, the scope's owner, `Task.timeout`'s caller, `Task.blocking`'s.
+#[test]
+fn exit_in_an_awaited_task_is_raised_in_the_caller() {
+    for body in [
+        "Task.spawn { exit 3 }.await",
+        "Task.scope { |s| s.spawn { exit 3 } }",
+        "Task.timeout(10.seconds) { exit 3 }",
+        "Task.blocking { exit 3 }",
+    ] {
+        let (code, out) = run(
+            &format!(
+                "begin\n  {body}\nrescue SystemExit => e\n  puts \"rescued #{{e.status}}\"\nensure\n  puts \"ensure\"\nend\nputs \"after\""
+            ),
+            &[],
+        );
+        assert_eq!(
+            (code, out.as_str()),
+            (0, "rescued 3\nensure\nafter\n"),
+            "{body}"
+        );
+    }
+}
+
+/// One nobody waits for is raised in the root task (the main one, or the
+/// block of `Task.blocking`), as Ruby raises a thread's in the main thread.
+#[test]
+fn exit_in_a_task_nobody_awaits_or_a_blocking_block() {
+    let (code, out) = run(
+        "begin\n  Task.spawn { exit 6 }\n  Task.sleep(50.ms)\n  puts \"main still running\"\nensure\n  puts \"main ensure\"\nend",
+        &[],
+    );
+    assert_eq!((code, out.as_str()), (6, "main ensure\n"));
+    let (code, out) = run(
+        "begin\n  begin\n    Task.blocking { exit 7 }\n  rescue ArgumentError\n    puts \"no\"\n  ensure\n    puts \"ensure\"\n  end\n\
+         rescue SystemExit => e\n  puts \"rescued #{e.status}\"\nend",
+        &[],
+    );
+    assert_eq!((code, out.as_str()), (0, "ensure\nrescued 7\n"));
+}
+
+/// The exit of a task nobody awaits is not lost while `Task.timeout`
+/// waits for its cancelled block; `await` raises it again, as Ruby's
+/// `Thread#join` does.
+#[test]
+fn an_exit_request_is_kept() {
+    let (code, out) = run(
+        "Task.spawn { Task.sleep(30.ms); exit 4 }\nbegin\n  Task.timeout(10.ms) do\n    begin\n      Task.sleep(1.second)\n\
+         ensure\n      Task.sleep(50.ms)\n    end\n  end\nrescue Task::Timeout\n  puts \"timed out\"\nend\nputs \"after\"",
+        &[],
+    );
+    assert_eq!((code, out.as_str()), (4, ""));
+    let (code, out) = run(
+        "t = Task.spawn { exit 3 }\nbegin\n  Task.sleep(10.ms)\nrescue SystemExit => e\n  puts \"sleep raised #{e.status}\"\nend\n\
+         begin\n  p t.await\nrescue SystemExit\n  puts \"await raised\"\nend\nputs \"after\"",
+        &[],
+    );
+    assert_eq!(
+        (code, out.as_str()),
+        (0, "sleep raised 3\nawait raised\nafter\n")
+    );
+    // `Task.timeout`'s block exiting in its `ensure`: the exit wins.
+    let (code, out) = run(
+        "begin\n  Task.timeout(10.ms) do\n    begin\n      Task.sleep(1.second)\n    ensure\n      exit 4\n    end\n  end\n\
+         rescue Task::Timeout\n  puts \"timed out\"\nend",
+        &[],
+    );
+    assert_eq!((code, out.as_str()), (4, ""));
+}
+
+/// A scope child's `exit` ends the program even while the scope's owner
+/// is blocked in its own block (an HTTP server waiting for `shutdown`).
+#[test]
+fn exit_in_a_scope_child_reaches_a_blocked_owner() {
+    let (code, out) = run(
+        "begin\n  Task.scope do |s|\n    s.spawn { exit 5 }\n    Channel[Int].new.receive\n  end\nensure\n  puts \"main ensure\"\nend",
+        &[],
+    );
+    assert_eq!((code, out.as_str()), (5, "main ensure\n"));
+}
+
+/// `Task.timeout`'s block is the caller's code: a scope in it takes its
+/// children's exits as one in the caller would.
+#[test]
+fn exit_in_a_scope_in_a_timeout_block() {
+    let (code, out) = run(
+        "begin\n  Task.timeout(10.seconds) do\n    begin\n      Task.scope { |s| s.spawn { exit 1 } }\n    rescue SystemExit\n\
+         puts \"rescued in block\"\n    end\n    nil\n  end\n  puts \"after\"\nrescue SystemExit\n  puts \"rescued outside\"\nend",
+        &[],
+    );
+    assert_eq!((code, out.as_str()), (0, "rescued in block\nafter\n"));
+    // An exit the block took, then the timeout raised in its `ensure`: as in
+    // Ruby, the exception raised in an `ensure` replaces the one passing.
+    let (code, out) = run(
+        "Task.spawn { Task.sleep(30.ms); exit 3 }\nbegin\n  Task.timeout(60.ms) do\n    begin\n      Task.sleep(1.second)\n\
+         ensure\n      Task.sleep(100.ms)\n    end\n  end\nrescue Task::Timeout\n  puts \"timeout\"\nend\nputs \"after\"",
+        &[],
+    );
+    assert_eq!((code, out.as_str()), (0, "timeout\nafter\n"));
+}
+
+/// A failing scope child is not mistaken for its owner's cancellation.
+#[test]
+fn a_scope_child_failure_survives_the_owner_being_cancelled() {
+    let (code, out) = run(
+        "outer = Task.spawn do\n  begin\n    r = Task.scope do |s|\n      s.spawn { raise \"boom\" }\n      Task.yield\n      Task.yield\n      :value\n    end\n\
+         puts \"scope returned #{r}\"\n  rescue Exception => e\n    puts \"scope raised #{e.message}\"\n  end\n  nil\nend\n\
+         Task.yield\nouter.cancel\nouter.await",
+        &[],
+    );
+    assert_eq!((code, out.as_str()), (0, "scope raised boom\n"));
+}
+
+/// From another task, `exit` ends the whole program, as in Ruby.
+#[test]
+fn exit_in_a_task_ends_the_program() {
+    let (code, out) = run(
+        "t = Task.spawn do\n  begin\n    exit 6\n  ensure\n    puts \"task ensure\"\n  end\nend\nt.await\nputs \"not reached\"",
+        &[],
+    );
+    assert_eq!((code, out.as_str()), (6, "task ensure\n"));
+}
+
 #[test]
 fn a_deadlock_ends_the_program_with_1() {
     let (code, out) = run("ch = Channel[Int].new\nputs \"waiting\"\nch.receive", &[]);

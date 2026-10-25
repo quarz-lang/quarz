@@ -306,6 +306,12 @@ pub struct Global {
     variant_singletons: std::sync::Mutex<HashMap<ClassId, SharedValue>>,
     at_exit: std::sync::Mutex<Vec<SharedValue>>,
     stdout: std::sync::Mutex<Box<dyn std::io::Write + Send>>,
+    /// The status of an `exit` in a task nobody waits for, which the root
+    /// task raises as `SystemExit` where it next waits (as Ruby raises a
+    /// thread's in the main thread); `NO_EXIT` for none.
+    exit_request: std::sync::atomic::AtomicI64,
+    /// The root task, which `exit_request` goes to.
+    root: std::sync::Mutex<Option<sched::TaskRef>>,
     /// The worker threads that run the tasks.
     pub workers: std::sync::Arc<sched::Workers>,
 }
@@ -324,9 +330,29 @@ impl Global {
             variant_singletons: std::sync::Mutex::new(HashMap::new()),
             at_exit: std::sync::Mutex::new(Vec::new()),
             stdout: std::sync::Mutex::new(out),
+            exit_request: std::sync::atomic::AtomicI64::new(NO_EXIT),
+            root: std::sync::Mutex::new(None),
         }
     }
 }
+
+/// Gives the root back after `Interp::stand_in_root`.
+pub(crate) struct RootGuard<'a> {
+    interp: &'a Interp,
+    was: Option<sched::TaskRef>,
+}
+
+impl Drop for RootGuard<'_> {
+    fn drop(&mut self) {
+        *lock(&self.interp.global.root) = self.was;
+    }
+}
+
+/// `Global::exit_request` when there is none.
+const NO_EXIT: i64 = i64::MIN;
+
+/// The name of the task `Task.timeout` runs its block in.
+pub(crate) const TIMEOUT_TASK: &str = "timeout";
 
 /// Run-time state that outlives one interpreter instance (the REPL creates
 /// an interpreter per input over the same state).
@@ -400,6 +426,7 @@ pub struct ExcClasses {
     pub not_implemented: ClassId,
     pub system_exit: ClassId,
     pub range_error: ClassId,
+    pub float_domain_error: ClassId,
     pub overflow_error: ClassId,
     pub system_stack: ClassId,
 }
@@ -866,6 +893,7 @@ impl Interp {
             not_implemented: class_by_name("NotImplementedError"),
             system_exit: class_by_name("SystemExit"),
             range_error: class_by_name("RangeError"),
+            float_domain_error: class_by_name("FloatDomainError"),
             overflow_error: class_by_name("OverflowError"),
             system_stack: class_by_name("SystemStackError"),
         };
@@ -1104,7 +1132,8 @@ impl Interp {
             .borrow_mut()
             .spawn(body, None, "main".to_string(), 256 * 1024 * 1024);
         self.root_task.set(Some(root.id));
-        let code = self.run_loop(&root);
+        self.set_root(root.task_ref());
+        let code = self.pending_exit(self.run_loop(&root));
         // The other workers stop with the main program.
         self.global.workers.stop();
         let code = self.run_at_exit(code);
@@ -1139,7 +1168,8 @@ impl Interp {
                     .borrow_mut()
                     .spawn(body, None, "at_exit".to_string(), 16 * 1024 * 1024);
             self.root_task.set(Some(root.id));
-            let c = self.run_loop(&root);
+            self.set_root(root.task_ref());
+            let c = self.pending_exit(self.run_loop(&root));
             if c != 0 {
                 code = c;
             }
@@ -1183,10 +1213,15 @@ impl Interp {
             self.sched
                 .borrow_mut()
                 .spawn(run_body, None, "repl".to_string(), 256 * 1024 * 1024);
+        self.set_root(root.task_ref());
         let code = self.run_loop(&root);
         self.flush();
         if code != 0 && !root.is_done() {
             return Err(code);
+        }
+        // An exit from a task nobody awaited, the line ended before raising.
+        if let Some(status) = self.take_exit_request() {
+            return Err(status as i32);
         }
         let result = root.result();
         match result {
@@ -1399,6 +1434,19 @@ impl Interp {
             };
             match r {
                 Ok(v) => TaskExit::Result(TaskResult::Value(v)),
+                // An `exit` nothing rescued in the task: like any exception,
+                // the task's result, raised again by `await` or its scope.
+                // It also has the root task raise it where it next waits, as
+                // Ruby raises a thread's in the main thread (a scope's owner
+                // the root, it takes it once), but for `Task.timeout`'s task,
+                // whose block is its caller's.
+                Err(Flow::Raise(e)) if me.exception_is_a(&e, me.program.exc.system_exit) => {
+                    let task = me.current_task();
+                    if task.name != TIMEOUT_TASK {
+                        me.request_exit(me.exit_status(&e) as i64);
+                    }
+                    TaskExit::Result(TaskResult::Error(e))
+                }
                 Err(Flow::Raise(e)) => TaskExit::Result(TaskResult::Error(e)),
                 Err(Flow::Exit(c)) => TaskExit::Exit(c),
                 Err(other) => {
@@ -1425,7 +1473,90 @@ impl Interp {
         if task.take_cancel() {
             return Err(self.raise(self.program.exc.cancelled, "task cancelled"));
         }
-        Ok(())
+        match self.root_exit(task) {
+            Some(exit) => Err(exit),
+            None => Ok(()),
+        }
+    }
+
+    /// In the root task, the `SystemExit` of an exit request (an `exit` in
+    /// a task of `Task.spawn`), taking it.
+    fn root_exit(&self, task: &TaskHandle) -> Option<Flow> {
+        let exit = &self.global.exit_request;
+        if exit.load(std::sync::atomic::Ordering::Acquire) == NO_EXIT
+            || *lock(&self.global.root) != Some(task.task_ref())
+        {
+            return None;
+        }
+        match exit.swap(NO_EXIT, std::sync::atomic::Ordering::AcqRel) {
+            NO_EXIT => None,
+            status => Some(Flow::Raise(crate::natives::system_exit(
+                self, status, "exit",
+            ))),
+        }
+    }
+
+    /// An `exit` from a task nobody waits for, which ended in `SystemExit`:
+    /// the root task raises it where it next waits (or the program ends
+    /// with its status, if the root task ends first).
+    fn request_exit(&self, status: i64) {
+        let _ = self.global.exit_request.compare_exchange(
+            NO_EXIT,
+            status,
+            std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Acquire,
+        );
+        if let Some(root) = *lock(&self.global.root) {
+            self.wake_ref(root);
+        }
+    }
+
+    /// While the guard lives, `task` takes the root's exit requests, when
+    /// the current task is the root (`Task.timeout`'s block, which is its
+    /// caller's code).
+    pub(crate) fn stand_in_root(&self, task: &TaskHandle) -> Option<RootGuard<'_>> {
+        let mut root = lock(&self.global.root);
+        if *root != Some(self.current_task().task_ref()) {
+            return None;
+        }
+        let was = root.replace(task.task_ref());
+        drop(root);
+        // A request already pending: the stand-in takes it at its next wait.
+        if self
+            .global
+            .exit_request
+            .load(std::sync::atomic::Ordering::Acquire)
+            != NO_EXIT
+        {
+            self.wake_ref(task.task_ref());
+        }
+        Some(RootGuard { interp: self, was })
+    }
+
+    /// The task an exit request goes to (the run's root).
+    pub(crate) fn set_root(&self, root: sched::TaskRef) {
+        *lock(&self.global.root) = Some(root);
+    }
+
+    /// The exit code of a run whose root task ended with `code`, or the
+    /// status of an exit request the root task ended before raising.
+    pub(crate) fn pending_exit(&self, code: i32) -> i32 {
+        match self.take_exit_request() {
+            Some(status) if code == 0 => status as i32,
+            _ => code,
+        }
+    }
+
+    /// The status of an exit request nothing raised yet, taking it.
+    pub(crate) fn take_exit_request(&self) -> Option<i64> {
+        match self
+            .global
+            .exit_request
+            .swap(NO_EXIT, std::sync::atomic::Ordering::AcqRel)
+        {
+            NO_EXIT => None,
+            status => Some(status),
+        }
     }
 
     /// Wait until the descriptor `fd` of the IO state `st` is readable
@@ -1506,6 +1637,11 @@ impl Interp {
     pub fn await_task(&self, task: &Rc<TaskHandle>) -> EvalResult {
         loop {
             if task.is_done() {
+                // The root awaiting a task done with an `exit` it has not
+                // raised yet: that exit, once (not also the task's result).
+                if let Some(exit) = self.root_exit(&self.current_task()) {
+                    return Err(exit);
+                }
                 return match task.result() {
                     Some(TaskResult::Value(v)) => Ok(v),
                     Some(TaskResult::Error(e)) => Err(Flow::Raise(e)),
@@ -1550,13 +1686,7 @@ impl Interp {
         let bt = self.capture_backtrace();
         Value::Object({
             let o = Object::new(class, fields);
-            o.init_exc(
-                ExcInfo {
-                    backtrace: Some(Rc::new(bt)),
-                    cause: None,
-                },
-                false,
-            );
+            o.init_exc(ExcInfo::new(Some(Rc::new(bt)), None), false);
             o
         })
     }
@@ -1667,6 +1797,20 @@ impl Interp {
         }
     }
 
+    /// A `SystemExit`'s status.
+    pub fn exit_status(&self, e: &Value) -> i32 {
+        let Value::Object(o) = e else {
+            return 1;
+        };
+        match self
+            .field_index(o.class, "status")
+            .map(|i| self.logical_get(o, i))
+        {
+            Some(Value::Int(s)) => s as i32,
+            _ => 0,
+        }
+    }
+
     /// `raise` with the usual argument forms.
     pub fn eval_raise(&self, args: ArgVec) -> EvalResult {
         let mut it = args.into_iter();
@@ -1685,10 +1829,7 @@ impl Interp {
                 // Raised before: its first backtrace stays.
                 if o.exc_info().is_none() {
                     let bt = self.capture_backtrace();
-                    let info = ExcInfo {
-                        backtrace: Some(Rc::new(bt)),
-                        cause: None,
-                    };
+                    let info = ExcInfo::new(Some(Rc::new(bt)), None);
                     o.init_exc(info, Rc::is_shared(&o));
                 }
                 Value::Object(o)
@@ -3108,6 +3249,12 @@ impl Interp {
 pub(crate) fn task_exit(interp: &Interp, result: EvalResult) -> TaskExit {
     match result {
         Ok(v) => TaskExit::Result(TaskResult::Value(v)),
+        // A `SystemExit` nothing rescued ends the program with its status,
+        // from any task (as Ruby's `exit` in a thread), after the `ensure`
+        // clauses it passed.
+        Err(Flow::Raise(e)) if interp.exception_is_a(&e, interp.program.exc.system_exit) => {
+            TaskExit::Exit(interp.exit_status(&e))
+        }
         Err(Flow::Raise(e)) => TaskExit::Result(TaskResult::Error(e)),
         Err(Flow::Exit(c)) => TaskExit::Exit(c),
         Err(Flow::Return(v, 0)) => TaskExit::Result(TaskResult::Value(v)),

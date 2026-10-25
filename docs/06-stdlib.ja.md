@@ -6,7 +6,7 @@
 
 ## 1. Kernel(トップレベルで使える関数)
 
-`puts`、`print`、`printf`、`p`、`pp`、`warn`、`raise`、`loop`、`sleep`(= `Task.sleep`)、`Task.spawn`、`exit`、`abort`、`at_exit`、`require`、`require_relative`、`gets`/`gets?`、`readline`、`readlines`、`rand`/`srand`、`format`/`sprintf`、`Integer(text, base = 10)`/`Float(...)`/`String(...)`(変換・失敗で例外)。
+`puts`、`print`、`printf`、`p`、`pp`、`warn`、`raise`、`loop`、`sleep`(= `Task.sleep`)、`Task.spawn`、`exit`(Ruby と同じく `SystemExit` を投げるので `ensure` 節が実行される。他のタスクでは、Ruby のスレッドと同じくメインタスクも投げる)、`exit!`、`abort`、`at_exit`、`require`、`require_relative`、`gets`/`gets?`、`readline`、`readlines`、`rand`/`srand`、`format`/`sprintf`、`Integer(text, base = 10)`/`Float(...)`/`String(...)`(変換・失敗で例外)。
 
 `eval`、`send`、`binding`、`method`、`instance_eval`、`define_method`、`ObjectSpace`、`fork`、`system`/バッククォート(`Process.run`/`Process.sh` に移動)はありません。
 
@@ -81,7 +81,7 @@
 ## 7. 制御・エラー
 
 - 例外階層: `Exception` > (`Task::Cancelled`、`NoMemoryError`、`SystemExit`、`SystemStackError`、`DeadlockError`) / `StandardError` > (`ArgumentError`、`TypeError`、`IndexError` > `KeyError`、`RangeError` > `FloatDomainError`、`ZeroDivisionError`、`FrozenError`、`IOError` > `EOFError`、`SystemCallError`、`RuntimeError`、`NoMatchingPatternError`、`NotImplementedError`、`StopIteration`、`Channel::Closed`、`Task::Timeout`)。
-- `Exception#message backtrace cause full_message`。例外は Ruby と同じく最初の `raise` のバックトレースを保ちます(タスク間で共有した例外も同じで、同時に raise したタスクのうちどれか 1 つが設定します)。
+- `Exception#message backtrace cause full_message`。例外は Ruby と同じく最初の `raise` のバックトレースを保ちます(タスク間で共有した例外も同じで、同時に raise したタスクのうちどれか 1 つが設定します)。`rescue` 節の中で投げられた例外と、節の中の `begin` で rescue された例外は、Ruby の `$!` と同じく、その節が処理している例外を `cause` に持ちます。ただし Ruby と違い、節から呼んだメソッドの中で投げられてそこで rescue された例外と、例外が通過中の `ensure` 節で投げられた例外は持ちません。
 - `Result[T, E]`(enum): `Ok(value)`/`Err(error)`。`map`、`and_then`(別名 `flat_map`)、`unwrap`、`unwrap_or`、`ok?`、`err?`。例外を使わないエラー処理に。
 
 ## 8. 並行

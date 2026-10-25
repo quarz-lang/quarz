@@ -68,3 +68,17 @@ class BytesOperationsTest < Test::Case
     assert_true(Bytes.new.empty?)
   end
 end
+
+# A builder can be changed, as the other builders, and `dup` copies it.
+class BytesBuilderStateTest < Test::Case
+  def test_frozen_and_dup
+    b = Bytes::Builder.new
+    b << 1
+    assert_false(b.frozen?)
+    c = b.dup
+    c << 2
+    assert_equal(1, b.size)
+    assert_equal(2, c.size)
+    assert_true(b"x".frozen?)
+  end
+end

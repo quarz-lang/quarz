@@ -647,7 +647,7 @@ fn string_to_i(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
 /// The integer at the start of `text` (`int_digits`), `OverflowError`
 /// past an `Int`.
 fn read_int(interp: &Interp, text: &str, base: u32, unprefixed: u32) -> EvalResult {
-    let (negative, digits, base) = int_digits(text, base, unprefixed);
+    let (negative, digits, base, _) = int_digits(text, base, unprefixed);
     let digits = if negative {
         format!("-{digits}")
     } else {
@@ -669,9 +669,9 @@ fn read_int(interp: &Interp, text: &str, base: u32, unprefixed: u32) -> EvalResu
 /// after blanks and a sign, a prefix (`0x`, `0b`, `0o`, `0d`, either case)
 /// is skipped when it names `base`; base 0 takes the base from it, octal
 /// for a bare leading `0`, `unprefixed` otherwise. A single `_` may stand
-/// between digits. Gives the sign, the digits (empty for none) and the
-/// base.
-fn int_digits(text: &str, base: u32, unprefixed: u32) -> (bool, String, u32) {
+/// between digits. Gives the sign, the digits (empty for none), the base
+/// and the byte where the number ends.
+pub(super) fn int_digits(text: &str, base: u32, unprefixed: u32) -> (bool, String, u32, usize) {
     let b = text.as_bytes();
     let mut i = 0;
     while i < b.len() && (b[i].is_ascii_whitespace() || b[i] == 0x0b) {
@@ -712,7 +712,7 @@ fn int_digits(text: &str, base: u32, unprefixed: u32) -> (bool, String, u32) {
         }
         i += 1;
     }
-    (negative, out, base)
+    (negative, out, base, i)
 }
 
 fn string_to_f(interp: &Interp, recv: &Value, _: Args) -> EvalResult {

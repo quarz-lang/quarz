@@ -73,6 +73,7 @@ mod bytes_search;
 mod collections;
 mod concurrency;
 mod core;
+pub(crate) use self::core::system_exit;
 mod enumerable;
 mod fast;
 mod io;
