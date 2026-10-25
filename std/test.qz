@@ -22,51 +22,78 @@ module Test
   # The assertions, for `Test::Case` and for a module of tests or helpers
   # that test classes include (`module Sizes; include Test::Assertions`).
   module Assertions
-    # Count an assertion made (`Test::Case` counts a test's).
+    # Counts one assertion made: each assertion calls it once, and
+    # `Test::Case` counts its test's.
     abstract def add_assertion -> Nil
 
+    # Passes when `value` is truthy (neither `nil` nor `false`).
     def assert(value: Object?, message: String? = nil) -> Nil
       check(value ? true : false, message) { "<#{value.inspect}> is not true." }
     end
 
+    # Passes when `value` is `nil` or `false`.
     def refute(value: Object?, message: String? = nil) -> Nil
       check(value ? false : true, message) { "<#{value.inspect}> is neither nil or false." }
     end
 
+    # Passes when `value` is `true`.
     def assert_true(value: Bool, message: String? = nil) -> Nil
       check(value == true, message) { "<true> expected but was\n<#{value.inspect}>" }
     end
 
+    # Passes when `value` is `false`.
     def assert_false(value: Bool, message: String? = nil) -> Nil
       check(value == false, message) { "<false> expected but was\n<#{value.inspect}>" }
     end
 
+    # Passes when `expected == actual`. `T` is fixed by `expected`, so
+    # `actual` must be of its type or `nil` (a failure, not a type error):
+    # `assert_equal(1, "1")` does not compile. The failure shows both values'
+    # `inspect`, with a line diff when either is a string of several lines.
+    #
+    # ```
+    # class DocEqual_Test < Test::Case
+    #   def test_lookup
+    #     h = {"k" => 1}
+    #     assert_equal(1, h["k"]?)
+    #     assert_equal([1, 2], [2, 1].sort, "sorted")
+    #   end
+    # end
+    # ```
     def assert_equal[T](expected: T, actual: T?, message: String? = nil) -> Nil
       check(expected == actual, message) { Test.equal_failure(expected, actual) }
     end
 
+    # Passes when `expected != actual`; typed as `#assert_equal`.
     def refute_equal[T](expected: T, actual: T?, message: String? = nil) -> Nil
       check(expected != actual, message) { "<#{expected.inspect}> was expected to be != to\n<#{actual.inspect}>." }
     end
 
+    # Passes when `value` is `nil`.
     def assert_nil(value: Object?, message: String? = nil) -> Nil
       check(value.nil?, message) { "<#{value.inspect}> was expected to be nil." }
     end
 
+    # Passes when `value` is not `nil`.
     def refute_nil(value: Object?, message: String? = nil) -> Nil
       check(!value.nil?, message) { "<nil> was expected to not be nil." }
     end
 
+    # Passes when `expected` and `actual` are the same object (`equal?`).
     def assert_same(expected: Object, actual: Object, message: String? = nil) -> Nil
       check(expected.equal?(actual), message) { "<#{expected.inspect}> expected to be the same object as\n<#{actual.inspect}>." }
     end
 
+    # Passes when `actual` is within `delta` of `expected`.
     def assert_in_delta(expected: Float, actual: Float, delta: Float = 0.001, message: String? = nil) -> Nil
       check((expected - actual).abs <= delta, message) do
         "<#{expected.inspect}> -/+ <#{delta.inspect}> was expected to include\n<#{actual.inspect}>."
       end
     end
 
+    # Passes when `actual` is within a relative error `epsilon` of
+    # `expected`: their difference is at most `epsilon` times the smaller of
+    # the two in magnitude.
     def assert_in_epsilon(expected: Float, actual: Float, epsilon: Float = 0.001, message: String? = nil) -> Nil
       bound = (expected.abs < actual.abs ? expected.abs : actual.abs) * epsilon
       check((expected - actual).abs <= bound, message) do
@@ -74,43 +101,60 @@ module Test
       end
     end
 
+    # Passes when `actual` matches `pattern`.
     def assert_match(pattern: Regexp, actual: String, message: String? = nil) -> Nil
       check(actual.match?(pattern), message) { "<#{pattern.inspect}> was expected to be =~\n<#{actual.inspect}>." }
     end
 
+    # Passes when `actual` does not match `pattern`.
     def refute_match(pattern: Regexp, actual: String, message: String? = nil) -> Nil
       check(!actual.match?(pattern), message) { "<#{pattern.inspect}> was expected to not match\n<#{actual.inspect}>." }
     end
 
+    # Passes when `collection` includes `element` (`include?`).
     def assert_includes[T](collection: Enumerable[T], element: T, message: String? = nil) -> Nil
       check(collection.include?(element), message) do
         "<#{collection.to_a.inspect}> was expected to include\n<#{element.inspect}>."
       end
     end
 
+    # Passes when `collection` does not include `element`.
     def refute_includes[T](collection: Enumerable[T], element: T, message: String? = nil) -> Nil
       check(!collection.include?(element), message) do
         "<#{collection.to_a.inspect}> was expected to not include\n<#{element.inspect}>."
       end
     end
 
+    # Passes when `collection` has no element.
     def assert_empty(collection: Enumerable[Object], message: String? = nil) -> Nil
       check(collection.to_a.empty?, message) { "<#{collection.to_a.inspect}> was expected to be empty." }
     end
 
+    # Passes when `text` is the empty string.
     def assert_empty(text: String, message: String? = nil) -> Nil
       check(text.empty?, message) { "<#{text.inspect}> was expected to be empty." }
     end
 
+    # Passes when `collection` has an element.
     def refute_empty(collection: Enumerable[Object], message: String? = nil) -> Nil
       check(!collection.to_a.empty?, message) { "<[]> was expected to not be empty." }
     end
 
+    # Passes when `text` is not the empty string.
     def refute_empty(text: String, message: String? = nil) -> Nil
       check(!text.empty?, message) { "<\"\"> was expected to not be empty." }
     end
 
-    # `assert_compare(1, :<, 2)`.
+    # Passes when `lhs` compares to `rhs` as `op` says: `op` is one of
+    # `:<`, `:<=`, `:>`, `:>=` and `:==`, applied to `lhs <=> rhs`.
+    #
+    # `assert_compare(1, :<, 2)` passes; a failure shows both values
+    # (`<3> <= <2> should be true.`).
+    #
+    # ## Raises
+    #
+    # `ArgumentError` for another `op` (an error of the test, not a
+    # failure).
     def assert_compare[T: Comparable[T]](lhs: T, op: Symbol, rhs: T, message: String? = nil) -> Nil
       c = lhs <=> rhs
       ok = case op
@@ -182,6 +226,8 @@ module Test
       got
     end
 
+    # Passes when the block raises nothing; an exception it raises is a
+    # failure (not an error), with its class and message.
     def assert_nothing_raised(message: String? = nil, &: () -> Nil) -> Nil
       add_assertion
       begin
@@ -200,6 +246,7 @@ module Test
       nil
     end
 
+    # Fails the test, with `message`.
     def flunk(message: String = "Flunked") -> Nothing
       add_assertion
       raise AssertionFailed.new(message)
@@ -228,29 +275,48 @@ module Test
       raise AssertionFailed.new("Pending block should not be passed: #{message}")
     end
 
+    # The test does not apply here: it ends, counted as omitted.
     def omit(message: String = "omitted") -> Nothing
       raise Omitted.new(message)
     end
 
+    # Omits the test (as `#omit`) when `condition` is true.
+    #
+    # ```
+    # class DocOmit_Test < Test::Case
+    #   def test_unix_only
+    #     omit_if(File::SEPARATOR != "/", "needs a POSIX path")
+    #     assert_equal("a/b", File.join("a", "b"))
+    #   end
+    # end
+    # ```
     def omit_if(condition: Bool, message: String = "omitted") -> Nil
       raise Omitted.new(message) if condition
       nil
     end
 
+    # Omits the test (as `#omit`) unless `condition` is true.
     def omit_unless(condition: Bool, message: String = "omitted") -> Nil
       raise Omitted.new(message) unless condition
       nil
     end
 
 
-    # Count an assertion; fail with the user's message (first) and the
-    # assertion's own, built only when it fails.
+    # Counts an assertion, and fails the test unless `ok` is true: the
+    # failure's message is `message` (when given) followed by the block's
+    # text, which the block builds only then.
+    #
+    # The building block of the assertions, for assertions of one's own:
+    # `check(n.even?, msg) { "<#{n}> is not even." }`.
     def check(ok: Bool, message: String?, &: () -> String) -> Nil
       add_assertion
       fail_with(message, yield) unless ok
       nil
     end
 
+    # Fails the test: raises `Test::AssertionFailed` with `message` (when
+    # given) and `detail`. For assertions of one's own, which call
+    # `add_assertion` first.
     def fail_with(message: String?, detail: String) -> Nothing
       text = message ? "#{message}.\n#{detail}" : detail
       raise AssertionFailed.new(text)
@@ -258,18 +324,41 @@ module Test
   end
 
   # The base class of test cases: an instance is made for each test.
+  # `quarz test` runs every public `test_*` method of a class that
+  # inherits it (docs/12-testing.md); a field with an initializer is a
+  # fixture, fresh for each test.
+  #
+  # ```
+  # class ExampleStackTest < Test::Case
+  #   @items: Array[Int] = [1, 2]
+  #
+  #   def test_push
+  #     assert_equal([1, 2, 3], @items.push(3))
+  #   end
+  #
+  #   def test_fetch
+  #     e = assert_raise(IndexError) { puts @items[5] }
+  #     assert_match(/out of bounds/, e.message)
+  #   end
+  # end
+  # ```
   class Case
     include Assertions
 
     var @assertion_count: Int = 0
     var @notes: Array[String] = []
 
-    # Before and after each test (teardown also after a failure).
+    # Runs before each test, on the test's fresh instance; does nothing
+    # unless a test class overrides it.
     def setup -> Nil = nil
+    # Runs after each test, on its instance, also after a failure or an
+    # error: it undoes what `#setup` did.
     def teardown -> Nil = nil
 
-    # Once around a class's tests.
+    # Runs once before the class's first test; when it raises, every test
+    # of the class is an error.
     def self.startup -> Nil = nil
+    # Runs once after the class's last test, unless `.startup` raised.
     def self.shutdown -> Nil = nil
 
     # The class's limit per test (nil: the run's).
@@ -278,7 +367,9 @@ module Test
     # Whether the class's tests must run one at a time (`--parallel`).
     def self.serial? -> Bool = false
 
+    # The number of assertions the test has made.
     def assertion_count -> Int = @assertion_count
+    # The notes `#notify` added, in order.
     def notes -> Array[String] = @notes
 
     def add_assertion -> Nil
@@ -319,8 +410,10 @@ module Test
     def self.never -> Bool = ARGV.size < 0
   end
 
-  # Ruby's name.
+  # A module that gives `Test::Case` its Test::Unit name,
+  # `Test::Unit::TestCase`, for tests moved from Ruby.
   module Unit
+    # `Test::Case` under Test::Unit's name, for tests moved from Ruby.
     TestCase = Case
   end
 
