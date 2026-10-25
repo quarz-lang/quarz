@@ -239,7 +239,12 @@ pub(crate) fn unit(ex: &Example, k: usize) -> ExampleUnit {
                     };
                 }
                 (Check::Raises(klass), _) => {
-                    text = format!("doc_raises({klass}, {}) {{ {code} }}", loc(*line))
+                    // Assigned, so that an expression without effects
+                    // (`h[:missing]`) is not warned as discarded.
+                    text = format!(
+                        "doc_raises({klass}, {}) {{ __doc_value = ({code}) }}",
+                        loc(*line)
+                    )
                 }
             }
         }

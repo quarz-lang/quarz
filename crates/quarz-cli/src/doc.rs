@@ -474,7 +474,7 @@ pub(crate) fn method_signature(world: &World, mid: MethodId, as_new: Option<&str
             ParamKind::Positional | ParamKind::KeywordOnly => format!("{}: {ty}{default}", p.name),
             ParamKind::Rest => format!("*{}: {}", p.name, element(world, &p.ty, 0)),
             ParamKind::KeywordRest => format!("**{}: {}", p.name, element(world, &p.ty, 1)),
-            ParamKind::Block => format!("&{}: {ty}", p.name),
+            ParamKind::Block => format!("&{}: {ty}", p.name.trim_start_matches('&')),
         });
     }
     if let Some((name, ty)) = &m.block {
@@ -484,7 +484,8 @@ pub(crate) fn method_signature(world: &World, mid: MethodId, as_new: Option<&str
         } else {
             ty
         };
-        params.push(format!("&{name}: {ty}"));
+        // An anonymous block parameter's name is `&` itself.
+        params.push(format!("&{}: {ty}", name.trim_start_matches('&')));
     }
     let params = if params.is_empty() {
         String::new()
