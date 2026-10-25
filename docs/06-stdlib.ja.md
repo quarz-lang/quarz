@@ -12,7 +12,7 @@
 
 ## 2. Object
 
-`==`、`!=`、`equal?`、`hash`、`to_s`(Ruby と同じく、クラスのインスタンスではクラス名 `#<Point>`、例外ではメッセージ、`data` の値と enum のバリアントでは既定の `inspect` と同じ(トップレベルの `self` は `main`)。クラスが定義した `inspect` は呼ばない)、`inspect`、`class`(`name` を持つ `Class`)、`is_a?`、`nil?`、`tap`、`then`、`dup`(配列や文字列などの組み込みの不変な値はそのまま返し、Builder とオブジェクトはコピーする)、`as`、`as?`、`frozen?`(偽になるのは Builder だけ)、`instance_exec`(レシーバ付きブロック `self.() -> R` を、そのオブジェクトを `self` にして実行。[01-syntax.ja.md](01-syntax.ja.md) §9 参照)。
+`==`、`!=`、`equal?`、`hash`、`to_s`(Ruby と同じく、クラスのインスタンスではクラス名 `#<Point>`、例外ではメッセージ、`data` の値と enum のバリアントでは既定の `inspect` と同じ(トップレベルの `self` は `main`)。クラスが定義した `inspect` は呼ばない)、`inspect`、`class`(`name` を持つ `Class`)、`is_a?`(定数で書いた型なら絞り込み、`Class` の値なら実行時に判定)、`nil?`、`tap`、`then`、`dup`(配列や文字列などの組み込みの不変な値はそのまま返し、Builder とオブジェクトはコピーする)、`as`、`as?`、`frozen?`(偽になるのは Builder だけ)、`instance_exec`(レシーバ付きブロック `self.() -> R` を、そのオブジェクトを `self` にして実行。[01-syntax.ja.md](01-syntax.ja.md) §9 参照)。
 
 `Comparable[T]` は `<=>` を定義したクラスに `< <= > >= between? clamp(min, max) clamp(range)` を与えます。
 
@@ -105,7 +105,7 @@
 
 ## 10. その他(名指しすれば、または `require` で読み込む)
 
-`json`(`JSON.parse -> JSON::Value`。`Null | Bool | Number | String | Array | Object` の enum で(名前は Rust の serde_json に合わせている)、`as_s`・`as_i?`・`[]` などのアクセサを持つ。`Number` は `Int`、`Integer`(`Int` に収まらない整数を桁を失わずに)、`Float` のどれかを持ち、`as_i`・`as_integer`・`as_f` でその型として取り出す。`as_i` は収まらなければ `OverflowError` を投げる。`JSON.generate`/`pretty_generate`、`to_json`)、`time`(何もしない。`Time` と `Duration` は組み込み)、`socket`(§9)、`http`(HTTP/1.1 サーバ。クライアントは後から: [11-http.ja.md](11-http.ja.md))。`Set` は組み込みで、require する `set` ライブラリはない。*予定*: `data` へ直接デコードする `JSON.decode[T](str)`、`Date`、`digest`、`base64`、`uri`、`csv`、`yaml`、`optparse`、`logger`、`test`(`Test::Unit` 風。[12-testing.ja.md](12-testing.ja.md) で設計済み)、`benchmark`、`ffi`。
+`json`(`JSON.parse -> JSON::Value`。`Null | Bool | Number | String | Array | Object` の enum で(名前は Rust の serde_json に合わせている)、`as_s`・`as_i?`・`[]` などのアクセサを持つ。`Number` は `Int`、`Integer`(`Int` に収まらない整数を桁を失わずに)、`Float` のどれかを持ち、`as_i`・`as_integer`・`as_f` でその型として取り出す。`as_i` は収まらなければ `OverflowError` を投げる。`JSON.generate`/`pretty_generate`、`to_json`)、`time`(何もしない。`Time` と `Duration` は組み込み)、`socket`(§9)、`http`(HTTP/1.1 サーバ。クライアントは後から: [11-http.ja.md](11-http.ja.md))、`test`(`quarz test` が実行する `Test::Unit` 風のテスト: [12-testing.ja.md](12-testing.ja.md))。`Set` は組み込みで、require する `set` ライブラリはない。*予定*: `data` へ直接デコードする `JSON.decode[T](str)`、`Date`、`digest`、`base64`、`uri`、`csv`、`yaml`、`optparse`、`logger`、`benchmark`、`ffi`。
 
 ## 11. Ruby の組み込みで提供しないもの
 

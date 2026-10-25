@@ -1,0 +1,19 @@
+# What the tests test.
+class Stack
+  var @items: Array[Int] = []
+
+  def push(x: Int) -> Nil
+    @items = @items.push(x)
+    nil
+  end
+
+  def pop -> Int
+    raise IndexError, "empty stack" if @items.empty?
+    v = @items[-1]
+    @items = @items[0...-1]
+    v
+  end
+
+  def size -> Int = @items.size
+  def to_a -> Array[Int] = @items
+end

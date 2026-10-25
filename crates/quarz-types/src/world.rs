@@ -341,6 +341,10 @@ pub struct World {
     pub ext_impls: Vec<(ClassId, MethodId, MethodId)>,
 }
 
+/// The modules found for a module and its type arguments in one walk of
+/// the ancestors.
+type ModuleCache = HashMap<(ClassId, Vec<Type>), Vec<(ClassId, Vec<Type>)>>;
+
 impl World {
     pub fn new() -> World {
         World::default()
@@ -656,33 +660,108 @@ impl World {
     /// arguments expressed in terms of the given `args`. Retroactive
     /// conformance from active extensions is included.
     pub fn ancestors(&self, id: ClassId, args: &[Type]) -> Vec<(ClassId, Vec<Type>)> {
-        let mut out = Vec::new();
-        // The extensions that add conformances, looked up once.
-        let exts: Vec<ExtensionId> = self
-            .active_extension_ids()
-            .into_iter()
-            .filter(|e| !self.extensions[*e as usize].includes.is_empty())
-            .collect();
-        self.collect_ancestors(id, args, &exts, &mut out);
-        out
+        self.ancestors_with(id, args, &self.conformance_extensions())
     }
 
-    fn collect_ancestors(
+    /// The extensions that add conformances, looked up once per walk.
+    fn conformance_extensions(&self) -> Vec<ExtensionId> {
+        self.active_extension_ids()
+            .into_iter()
+            .filter(|e| !self.extensions[*e as usize].includes.is_empty())
+            .collect()
+    }
+
+    /// `ancestors`, with the conformances of `exts` only. As in Ruby,
+    /// including a module that is already there (through a module
+    /// included before, or the superclass chain with the same type
+    /// arguments) does nothing, so it stays below what included it
+    /// first; one included with other arguments (`Comparable[B]` below
+    /// `A`'s `Comparable[A]`) comes first and replaces the superclass's.
+    fn ancestors_with(
         &self,
         id: ClassId,
         args: &[Type],
         exts: &[ExtensionId],
+    ) -> Vec<(ClassId, Vec<Type>)> {
+        let mut out = Vec::new();
+        let mut cache = HashMap::default();
+        self.class_ancestors(id, args, exts, &mut Vec::new(), &mut cache, &mut out);
+        out
+    }
+
+    fn class_ancestors(
+        &self,
+        id: ClassId,
+        args: &[Type],
+        exts: &[ExtensionId],
+        chain: &mut Vec<ClassId>,
+        cache: &mut ModuleCache,
         out: &mut Vec<(ClassId, Vec<Type>)>,
     ) {
-        if out.iter().any(|(i, _)| *i == id) {
+        // A superclass cycle (an error) ends the walk.
+        if chain.contains(&id) {
             return;
         }
-        out.push((id, args.to_vec()));
+        chain.push(id);
+        let mut own = vec![(id, args.to_vec())];
+        own.extend(self.modules_of(id, args, exts, cache));
+        let class = self.class(id);
+        let mut sup = Vec::new();
+        match class
+            .superclass
+            .as_ref()
+            .map(|s| s.subst(&self.class_subst(id, args)))
+        {
+            Some(Type::Class(sid, sargs)) => {
+                self.class_ancestors(sid, &sargs, exts, chain, cache, &mut sup)
+            }
+            Some(_) => {}
+            None => {
+                if id != self.builtin.object && class.kind != ClassKind::Module {
+                    self.class_ancestors(self.builtin.object, &[], exts, chain, cache, &mut sup)
+                }
+            }
+        }
+        own.retain(|e| !sup.contains(e));
+        sup.retain(|(c, _)| !own.iter().any(|(o, _)| o == c));
+        out.extend(own);
+        out.extend(sup);
+    }
+
+    /// The modules of `id` in order (not `id` itself): each module it
+    /// includes, in the order of the includes, goes in front of those
+    /// before it, with the modules that one brings that are not there
+    /// yet; then those active extensions make it conform to. Computed
+    /// once per module and arguments in a walk (`cache`), so that a
+    /// diamond of modules costs no more than a tree.
+    fn modules_of(
+        &self,
+        id: ClassId,
+        args: &[Type],
+        exts: &[ExtensionId],
+        cache: &mut ModuleCache,
+    ) -> Vec<(ClassId, Vec<Type>)> {
+        let key = (id, args.to_vec());
+        if let Some(found) = cache.get(&key) {
+            return found.clone();
+        }
+        // An include cycle (an error) ends here.
+        cache.insert(key.clone(), Vec::new());
         let class = self.class(id);
         let subst = self.class_subst(id, args);
-        for inc in class.includes.iter().rev() {
+        let mut out: Vec<(ClassId, Vec<Type>)> = Vec::new();
+        let has =
+            |out: &[(ClassId, Vec<Type>)], m: ClassId| m == id || out.iter().any(|(c, _)| *c == m);
+        for inc in &class.includes {
             if let Type::Class(mid, margs) = inc.subst(&subst) {
-                self.collect_ancestors(mid, &margs, exts, out);
+                if has(&out, mid) {
+                    continue;
+                }
+                let mut brought = vec![(mid, margs.clone())];
+                brought.extend(self.modules_of(mid, &margs, exts, cache));
+                brought.retain(|(c, _)| !has(&out, *c));
+                brought.extend(out);
+                out = brought;
             }
         }
         for ext_id in exts {
@@ -693,61 +772,29 @@ impl World {
             let esubst = self.extension_subst(ext, args);
             for inc in &ext.includes {
                 if let Type::Class(mid, margs) = inc.subst(&esubst) {
-                    self.collect_ancestors(mid, &margs, exts, out);
+                    if has(&out, mid) {
+                        continue;
+                    }
+                    out.push((mid, margs.clone()));
+                    for m in self.modules_of(mid, &margs, exts, cache) {
+                        if !has(&out, m.0) {
+                            out.push(m);
+                        }
+                    }
                 }
             }
         }
-        if let Some(sup) = &class.superclass {
-            if let Type::Class(sid, sargs) = sup.subst(&subst) {
-                self.collect_ancestors(sid, &sargs, exts, out);
-            }
-        } else if id != self.builtin.object && class.kind != ClassKind::Module {
-            self.collect_ancestors(self.builtin.object, &[], exts, out);
-        }
+        cache.insert(key, out.clone());
+        out
     }
 
     /// The classes of `ancestors(id, ..)`, in the same order, without
     /// their type arguments (for lookups by name).
     pub fn ancestor_ids(&self, id: ClassId) -> Vec<ClassId> {
-        let exts: Vec<ExtensionId> = self
-            .active_extension_ids()
+        self.ancestors(id, &[])
             .into_iter()
-            .filter(|e| !self.extensions[*e as usize].includes.is_empty())
-            .collect();
-        let mut out = Vec::new();
-        self.collect_ancestor_ids(id, &exts, &mut out);
-        out
-    }
-
-    fn collect_ancestor_ids(&self, id: ClassId, exts: &[ExtensionId], out: &mut Vec<ClassId>) {
-        if out.contains(&id) {
-            return;
-        }
-        out.push(id);
-        let class = self.class(id);
-        for inc in class.includes.iter().rev() {
-            if let Type::Class(mid, _) = inc {
-                self.collect_ancestor_ids(*mid, exts, out);
-            }
-        }
-        for ext_id in exts {
-            let ext = &self.extensions[*ext_id as usize];
-            if ext.target != id {
-                continue;
-            }
-            for inc in &ext.includes {
-                if let Type::Class(mid, _) = inc {
-                    self.collect_ancestor_ids(*mid, exts, out);
-                }
-            }
-        }
-        if let Some(sup) = &class.superclass {
-            if let Type::Class(sid, _) = sup {
-                self.collect_ancestor_ids(*sid, exts, out);
-            }
-        } else if id != self.builtin.object && class.kind != ClassKind::Module {
-            self.collect_ancestor_ids(self.builtin.object, exts, out);
-        }
+            .map(|(c, _)| c)
+            .collect()
     }
 
     /// The extensions active throughout `file`: those declared at the top
@@ -1546,8 +1593,11 @@ impl World {
         if id == marker {
             return Some(marker);
         }
-        let mut ids = Vec::new();
-        self.collect_ancestor_ids(id, &[], &mut ids);
+        let ids: Vec<ClassId> = self
+            .ancestors_with(id, &[], &[])
+            .into_iter()
+            .map(|(c, _)| c)
+            .collect();
         if !ids.contains(&marker) {
             return None;
         }
@@ -1563,8 +1613,11 @@ impl World {
     /// it holds (`None` when they could): its own type parameters count
     /// as Shareable, since a use of the class checks its type arguments.
     pub fn shareable_violation(&mut self, id: ClassId) -> Option<String> {
-        let mut ids = Vec::new();
-        self.collect_ancestor_ids(id, &[], &mut ids);
+        let ids: Vec<ClassId> = self
+            .ancestors_with(id, &[], &[])
+            .into_iter()
+            .map(|(c, _)| c)
+            .collect();
         let marked = ids.iter().any(|&a| {
             self.class(a).kind == ClassKind::Module && self.class(a).name == "Unshareable"
         });

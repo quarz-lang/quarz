@@ -30,6 +30,9 @@ class Object
   native def inspect -> String
   native def nil? -> Bool
   native def class -> Class
+  # `x.is_a?(klass)` with a class value: whether `x` is an instance of it
+  # or of a subclass. (`x.is_a?(Int)`, with a type, narrows `x`.)
+  native def is_a?(klass: Class) -> Bool
   native def frozen? -> Bool
   native def dup -> Self
   # Run a block with a receiver (`self.(...) -> R`) with `self` = this object.

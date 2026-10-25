@@ -1,0 +1,11 @@
+# Under --parallel --fail-fast, the tests still running when one fails
+# are cancelled.
+class FastTest < Test::Case
+  def test_a
+    sleep(10.ms)
+    flunk("first")
+  end
+
+  def test_b = sleep(2.seconds)
+  def test_c = sleep(2.seconds)
+end

@@ -61,6 +61,10 @@ pub struct Movement {
     /// The directory of the application's `Cog.toml`.
     pub root: PathBuf,
     pub cogs: Vec<CogEntry>,
+    /// `cogs[dev_from..]` are reached only through the application's
+    /// `[dev-dependencies]` (`quarz test` loads them; `run` and `build`
+    /// leave them out).
+    pub dev_from: usize,
     pub lock: Option<Lock>,
 }
 
@@ -74,6 +78,9 @@ pub struct CogEntry {
     pub dir: PathBuf,
     /// Its dependencies: the key of its manifest and the index of the cog.
     pub imports: Vec<(String, usize)>,
+    /// The application's `[dev-dependencies]`, as `imports` (empty for
+    /// every other cog: theirs are not resolved).
+    pub dev_imports: Vec<(String, usize)>,
     /// Where it comes from; `None` for the application and a `[patch]`.
     pub source: Option<Source>,
     pub rev: Option<String>,
@@ -140,7 +147,10 @@ pub fn open(root: &Path, opts: &Options) -> Result<Movement, Error> {
     manifest.check_language(LANGUAGE_VERSION)?;
     let mut ctx = Ctx::new(root, &manifest, opts)?;
     let existing = Lock::read(root)?;
-    if manifest.dependencies.is_empty() && existing.is_none() {
+    if manifest.dependencies.is_empty()
+        && manifest.dev_dependencies.is_empty()
+        && existing.is_none()
+    {
         return ctx
             .movement_from_lock(&manifest, &empty_lock())
             .map_err(|p| match p {
@@ -290,6 +300,7 @@ impl<'a> Ctx<'a> {
             module: manifest.module(),
             dir: self.root.to_path_buf(),
             imports: Vec::new(),
+            dev_imports: Vec::new(),
             source: None,
             rev: None,
         }];
@@ -297,14 +308,29 @@ impl<'a> Ctx<'a> {
         let mut index: HashMap<Source, usize> = HashMap::new();
         let mut reached: BTreeSet<Source> = BTreeSet::new();
         let mut next = 0;
-        while next < cogs.len() {
-            let i = next;
-            next += 1;
-            let deps: Vec<(String, Dependency)> = manifests[i]
-                .dependencies
-                .iter()
-                .map(|(k, d)| (k.clone(), d.clone()))
-                .collect();
+        let mut dev_from = None;
+        loop {
+            // The cogs the dependencies reach, then (`next` at the end
+            // again) those only the application's dev-dependencies reach.
+            let (i, deps, dev) = if next < cogs.len() {
+                let deps: Vec<(String, Dependency)> = manifests[next]
+                    .dependencies
+                    .iter()
+                    .map(|(k, d)| (k.clone(), d.clone()))
+                    .collect();
+                next += 1;
+                (next - 1, deps, false)
+            } else if dev_from.is_none() {
+                dev_from = Some(cogs.len());
+                let deps: Vec<(String, Dependency)> = manifest
+                    .dev_dependencies
+                    .iter()
+                    .map(|(k, d)| (k.clone(), d.clone()))
+                    .collect();
+                (0, deps, true)
+            } else {
+                break;
+            };
             for (key, dep) in deps {
                 let source = dep.source();
                 let j = match index.get(&source) {
@@ -319,6 +345,7 @@ impl<'a> Ctx<'a> {
                                 module: m.module(),
                                 dir,
                                 imports: Vec::new(),
+                                dev_imports: Vec::new(),
                                 source: None,
                                 rev: None,
                             };
@@ -348,6 +375,7 @@ impl<'a> Ctx<'a> {
                                 module: m.module(),
                                 dir,
                                 imports: Vec::new(),
+                                dev_imports: Vec::new(),
                                 source: Some(source.clone()),
                                 rev: Some(locked.rev.clone()),
                             };
@@ -359,9 +387,14 @@ impl<'a> Ctx<'a> {
                         cogs.len() - 1
                     }
                 };
-                cogs[i].imports.push((key, j));
+                if dev {
+                    cogs[i].dev_imports.push((key, j));
+                } else {
+                    cogs[i].imports.push((key, j));
+                }
             }
         }
+        let dev_from = dev_from.unwrap_or(cogs.len());
         let pruned = Lock {
             version: 1,
             inputs: lock.inputs.clone(),
@@ -377,6 +410,7 @@ impl<'a> Ctx<'a> {
         Ok(Movement {
             root: self.root.to_path_buf(),
             cogs,
+            dev_from,
             lock: Some(pruned),
         })
     }
@@ -443,6 +477,14 @@ impl<'a> Ctx<'a> {
         }
         let mut text = String::new();
         table(&mut text, "", manifest);
+        // The application's dev-dependencies, which only it has resolved.
+        for (key, dep) in &manifest.dev_dependencies {
+            text.push_str(&format!(
+                "dev\t{key}\t{}\t{}\n",
+                dep.source().to_lock_string(),
+                describe_ref(&dep.reference()),
+            ));
+        }
         let mut patched: Vec<(&Source, &PathBuf)> = self.patches.iter().collect();
         patched.sort();
         for (source, dir) in patched {
@@ -612,6 +654,7 @@ impl<'a> Ctx<'a> {
         let mut queue: Vec<(String, bool, Dependency)> = manifest
             .dependencies
             .values()
+            .chain(manifest.dev_dependencies.values())
             .map(|d| ("the application".to_string(), true, d.clone()))
             .collect();
         let mut patched_seen: BTreeSet<Source> = BTreeSet::new();
@@ -684,7 +727,16 @@ impl<'a> Ctx<'a> {
             vec![("the application".to_string(), true, manifest.clone())];
         let mut patched_done: BTreeSet<Source> = BTreeSet::new();
         while let Some((from, is_app, m)) = stack.pop() {
-            for dep in m.dependencies.values() {
+            let dev = if is_app {
+                Some(&m.dev_dependencies)
+            } else {
+                None
+            };
+            for dep in m
+                .dependencies
+                .values()
+                .chain(dev.into_iter().flat_map(|d| d.values()))
+            {
                 let source = dep.source();
                 if let Some(dir) = self.patches.get(&source) {
                     if patched_done.insert(source.clone()) {

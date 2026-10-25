@@ -1,0 +1,59 @@
+Loaded suite test
+Started
+startup
+teardown 1
+.teardown 1
+.teardown 1
+.teardown 0
+.teardown 1
+Fteardown 1
+Fteardown 1
+.teardown 1
+Fteardown 1
+Fteardown 1
+Pteardown 1
+Fteardown 1
+Oteardown 1
+Eteardown 1
+.teardown 1
+Fshutdown
+E
+Finished in T seconds.
+
+1) Failure: test_no_raise(StackTest) [test_cmd/all_test.qz:53]:
+<IndexError> exception was expected but none was thrown.
+
+2) Failure: test_wrong_raise(StackTest) [test_cmd/all_test.qz:57]:
+<ArgumentError> exception expected but was
+<IndexError(<empty stack>)>
+
+Notification: test_assertions(StackTest): all checked
+
+3) Failure: test_message(StackTest) [test_cmd/all_test.qz:85]:
+sizes differ.
+<1> expected but was
+<2>
+
+4) Failure: test_flunk(StackTest) [test_cmd/all_test.qz:89]:
+Flunked
+
+5) Pending: test_pend_block(StackTest) [test_cmd/all_test.qz:93]:
+not yet
+
+6) Failure: test_pend_block_passes(StackTest) [test_cmd/all_test.qz:97]:
+Pending block should not be passed: fixed?
+
+7) Omission: test_omit(StackTest) [test_cmd/all_test.qz:101]:
+not here
+
+8) Error: test_hang(StackTest) [test_cmd/all_test.qz:104]:
+Task::Timeout: timed out after 200ms
+
+9) Failure: test_double[bad](StackTest) [test_cmd/all_test.qz:114]:
+<5> expected but was
+<6>
+
+10) Error: test_sleep(SerialTest) [test_cmd/all_test.qz:122]:
+Task::Timeout: timed out after 50ms
+
+16 tests, 37 assertions, 6 failures, 2 errors, 1 pendings, 1 omissions, 1 notifications

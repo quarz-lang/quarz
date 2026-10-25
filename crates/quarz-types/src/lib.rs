@@ -20,7 +20,7 @@ use quarz_syntax::{parse_with_bases, Diagnostic, SourceFile};
 
 pub use check::{BlockPass, CallTarget, ConstTarget, Output, SelfOwner, VarRef};
 pub use declare::CogDecl;
-pub use load::{load, load_movement, CogSpec, LoadedUnit, STD_MODULES};
+pub use load::{load, load_movement, load_movement_tests, CogSpec, LoadedUnit, STD_MODULES};
 pub use types::*;
 pub use world::*;
 
@@ -38,6 +38,9 @@ pub struct Unit {
     /// Whether the file may hold statements (only the application's main
     /// file, in a movement).
     pub statements: bool,
+    /// Whether its statements are left out, unchecked and not run (an
+    /// application's main file under `quarz test`).
+    pub declarations_only: bool,
 }
 
 impl Unit {
@@ -48,6 +51,7 @@ impl Unit {
             program,
             cog: None,
             statements: true,
+            declarations_only: false,
         }
     }
 }
@@ -59,6 +63,7 @@ impl From<LoadedUnit> for Unit {
             program: u.program,
             cog: u.cog,
             statements: u.statements,
+            declarations_only: u.declarations_only,
         }
     }
 }
@@ -350,6 +355,24 @@ pub fn check_movement(
     units: &[Unit],
     cogs: &[CogDecl],
 ) -> (Option<Checked>, Vec<FileDiagnostic>) {
+    check_with_extra(prelude, units, cogs, None)
+}
+
+/// What makes a unit from the checked world: its source (named), or the
+/// errors that prevent it.
+pub type ExtraUnit<'a> = &'a mut dyn FnMut(&World) -> Result<SourceFile, Vec<FileDiagnostic>>;
+
+/// Check `units`, then the unit `extra` writes from what they declare (the
+/// test runner, `quarz test`), checked after them as one more unit, the
+/// way `Session::require` adds one. Its file index is `units.len() + 1`,
+/// and it must be parsed at `load::unit_base(units.len())`, as `extra`'s
+/// `SourceFile` says.
+pub fn check_with_extra(
+    prelude: &Program,
+    units: &[Unit],
+    cogs: &[CogDecl],
+    extra: Option<ExtraUnit>,
+) -> (Option<Checked>, Vec<FileDiagnostic>) {
     let mut declarer = declare::Declarer::new();
     declarer.collect_prelude(prelude);
     declarer.declare_cogs(cogs, units.len() as u32);
@@ -371,17 +394,18 @@ pub fn check_movement(
     let mut bodies: Vec<(u32, Vec<&Expr>)> = Vec::new();
     for u in &declarer.units {
         file_mains[u.file as usize] = Some(u.main);
-        bodies.push((u.file, u.body.clone()));
+        if units[u.file as usize - 1].declarations_only {
+            bodies.push((u.file, Vec::new()));
+        } else {
+            bodies.push((u.file, u.body.clone()));
+        }
     }
     if diagnostics.iter().any(|(_, d)| d.is_error()) {
         return (None, diagnostics);
     }
     let mut checker = check::Checker::new(declarer.world, file_mains.clone());
     checker.check_all(&bodies);
-    let (world, output, mut diags) = checker.into_output();
-    diagnostics.append(&mut diags);
-    let failed = diagnostics.iter().any(|(_, d)| d.is_error());
-    let checked_units = bodies
+    let mut checked_units: Vec<CheckedUnit> = bodies
         .into_iter()
         .map(|(file, body)| CheckedUnit {
             file,
@@ -390,6 +414,49 @@ pub fn check_movement(
             body: body.into_iter().cloned().collect(),
         })
         .collect();
+    diagnostics.append(&mut checker.take_diagnostics());
+    if let Some(extra) = extra {
+        if !diagnostics.iter().any(|(_, d)| d.is_error()) {
+            let file = units.len() as u32 + 1;
+            match extra(&checker.world) {
+                Err(mut errors) => diagnostics.append(&mut errors),
+                Ok(source) => {
+                    let base = load::unit_base(units.len() as u32);
+                    let parsed = parse_with_bases(&source.text, base, base);
+                    diagnostics.extend(parsed.diagnostics.iter().map(|d| (file, d.clone())));
+                    if !diagnostics.iter().any(|(_, d)| d.is_error()) {
+                        let world = std::mem::take(&mut checker.world);
+                        let mut declarer = declare::Declarer::with_world(world);
+                        declarer.collect_unit(&parsed.program, file);
+                        declarer.resolve_headers();
+                        diagnostics.append(&mut declarer.diagnostics);
+                        let main = declarer.units[0].main;
+                        let body: Vec<Expr> = declarer.units[0]
+                            .body
+                            .iter()
+                            .map(|e| (*e).clone())
+                            .collect();
+                        checker.world = std::mem::take(&mut declarer.world);
+                        checker.add_file_main(file, main);
+                        if !diagnostics.iter().any(|(_, d)| d.is_error()) {
+                            let refs: Vec<&Expr> = body.iter().collect();
+                            checker.check_all(&[(file, refs)]);
+                            diagnostics.append(&mut checker.take_diagnostics());
+                        }
+                        checked_units.push(CheckedUnit {
+                            file,
+                            name: source.name.clone(),
+                            main_class: main,
+                            body,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    let (world, output, mut diags) = checker.into_output();
+    diagnostics.append(&mut diags);
+    let failed = diagnostics.iter().any(|(_, d)| d.is_error());
     let checked = Checked {
         world,
         output,

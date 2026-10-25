@@ -1,0 +1,868 @@
+# Tests: `require "test"`, run by `quarz test` (docs/12-testing.md). A
+# test is a `test_*` method of a class that inherits `Test::Case`; the
+# compiler finds them and generates the runner, which calls `Test.run`.
+
+module Test
+  # ----- outcomes -------------------------------------------------------------------
+
+  # A failed assertion. Not a StandardError, so that `rescue => e` in the
+  # code under test does not swallow it.
+  class AssertionFailed < Exception
+  end
+
+  # `pend`: the test is known not to pass yet.
+  class Pending < Exception
+  end
+
+  # `omit`: the test does not apply here.
+  class Omitted < Exception
+  end
+
+  # ----- test cases -----------------------------------------------------------------
+
+  # The assertions, for `Test::Case` and for a module of tests or helpers
+  # that test classes include (`module Sizes; include Test::Assertions`).
+  module Assertions
+    # Count an assertion made (`Test::Case` counts a test's).
+    abstract def add_assertion -> Nil
+
+    def assert(value: Object?, message: String? = nil) -> Nil
+      check(value ? true : false, message) { "<#{value.inspect}> is not true." }
+    end
+
+    def refute(value: Object?, message: String? = nil) -> Nil
+      check(value ? false : true, message) { "<#{value.inspect}> is neither nil or false." }
+    end
+
+    def assert_true(value: Bool, message: String? = nil) -> Nil
+      check(value == true, message) { "<true> expected but was\n<#{value.inspect}>" }
+    end
+
+    def assert_false(value: Bool, message: String? = nil) -> Nil
+      check(value == false, message) { "<false> expected but was\n<#{value.inspect}>" }
+    end
+
+    def assert_equal[T](expected: T, actual: T?, message: String? = nil) -> Nil
+      check(expected == actual, message) { Test.equal_failure(expected, actual) }
+    end
+
+    def refute_equal[T](expected: T, actual: T?, message: String? = nil) -> Nil
+      check(expected != actual, message) { "<#{expected.inspect}> was expected to be != to\n<#{actual.inspect}>." }
+    end
+
+    def assert_nil(value: Object?, message: String? = nil) -> Nil
+      check(value.nil?, message) { "<#{value.inspect}> was expected to be nil." }
+    end
+
+    def refute_nil(value: Object?, message: String? = nil) -> Nil
+      check(!value.nil?, message) { "<nil> was expected to not be nil." }
+    end
+
+    def assert_same(expected: Object, actual: Object, message: String? = nil) -> Nil
+      check(expected.equal?(actual), message) { "<#{expected.inspect}> expected to be the same object as\n<#{actual.inspect}>." }
+    end
+
+    def assert_in_delta(expected: Float, actual: Float, delta: Float = 0.001, message: String? = nil) -> Nil
+      check((expected - actual).abs <= delta, message) do
+        "<#{expected.inspect}> -/+ <#{delta.inspect}> was expected to include\n<#{actual.inspect}>."
+      end
+    end
+
+    def assert_in_epsilon(expected: Float, actual: Float, epsilon: Float = 0.001, message: String? = nil) -> Nil
+      bound = (expected.abs < actual.abs ? expected.abs : actual.abs) * epsilon
+      check((expected - actual).abs <= bound, message) do
+        "<#{expected.inspect}> -/+ (<#{expected.inspect}> * <#{epsilon.inspect}>) was expected to include\n<#{actual.inspect}>."
+      end
+    end
+
+    def assert_match(pattern: Regexp, actual: String, message: String? = nil) -> Nil
+      check(actual.match?(pattern), message) { "<#{pattern.inspect}> was expected to be =~\n<#{actual.inspect}>." }
+    end
+
+    def refute_match(pattern: Regexp, actual: String, message: String? = nil) -> Nil
+      check(!actual.match?(pattern), message) { "<#{pattern.inspect}> was expected to not match\n<#{actual.inspect}>." }
+    end
+
+    def assert_includes[T](collection: Enumerable[T], element: T, message: String? = nil) -> Nil
+      check(collection.include?(element), message) do
+        "<#{collection.to_a.inspect}> was expected to include\n<#{element.inspect}>."
+      end
+    end
+
+    def refute_includes[T](collection: Enumerable[T], element: T, message: String? = nil) -> Nil
+      check(!collection.include?(element), message) do
+        "<#{collection.to_a.inspect}> was expected to not include\n<#{element.inspect}>."
+      end
+    end
+
+    def assert_empty(collection: Enumerable[Object], message: String? = nil) -> Nil
+      check(collection.to_a.empty?, message) { "<#{collection.to_a.inspect}> was expected to be empty." }
+    end
+
+    def assert_empty(text: String, message: String? = nil) -> Nil
+      check(text.empty?, message) { "<#{text.inspect}> was expected to be empty." }
+    end
+
+    def refute_empty(collection: Enumerable[Object], message: String? = nil) -> Nil
+      check(!collection.to_a.empty?, message) { "<[]> was expected to not be empty." }
+    end
+
+    def refute_empty(text: String, message: String? = nil) -> Nil
+      check(!text.empty?, message) { "<\"\"> was expected to not be empty." }
+    end
+
+    # `assert_compare(1, :<, 2)`.
+    def assert_compare[T: Comparable[T]](lhs: T, op: Symbol, rhs: T, message: String? = nil) -> Nil
+      c = lhs <=> rhs
+      ok = case op
+           when :< then c < 0
+           when :<= then c <= 0
+           when :> then c > 0
+           when :>= then c >= 0
+           when :== then c == 0
+           else raise ArgumentError, "assert_compare: unknown operator #{op.inspect}"
+           end
+      check(ok, message) { "<#{lhs.inspect}> #{op} <#{rhs.inspect}> should be true." }
+    end
+
+    # The exception the block raises, an instance of `klass` or of a
+    # subclass (with `message`, its message too).
+    def assert_raise(klass: Class, message: String? = nil, &: () -> Nil) -> Exception
+      add_assertion
+      raised: Exception? = nil
+      begin
+        yield
+      rescue Task::Cancelled => c
+        raise c
+      rescue AssertionFailed => a
+        raise a
+      rescue Pending => pe
+        raise pe
+      rescue Omitted => o
+        raise o
+      rescue Exception => e
+        raised = e
+      end
+      got = raised
+      if got.nil?
+        fail_with(nil, "<#{klass.name}> exception was expected but none was thrown.")
+      end
+      unless got.is_a?(klass)
+        fail_with(nil, "<#{klass.name}> exception expected but was\n<#{got.class.name}(<#{got.message}>)>")
+      end
+      if message && got.message != message
+        fail_with(nil, "<#{klass.name}(<#{message}>)> exception expected but was\n<#{got.class.name}(<#{got.message}>)>")
+      end
+      got
+    end
+
+    # The exception the block raises, whose message matches (or equals) `pattern`.
+    def assert_raise_message(pattern: Regexp | String, &: () -> Nil) -> Exception
+      add_assertion
+      raised: Exception? = nil
+      begin
+        yield
+      rescue Task::Cancelled => c
+        raise c
+      rescue AssertionFailed => a
+        raise a
+      rescue Pending => pe
+        raise pe
+      rescue Omitted => o
+        raise o
+      rescue Exception => e
+        raised = e
+      end
+      got = raised
+      fail_with(nil, "<#{pattern.inspect}> exception message was expected but none was thrown.") if got.nil?
+      ok = case pattern
+           in Regexp => r then got.message.match?(r)
+           in String => s then got.message == s
+           end
+      fail_with(nil, "<#{pattern.inspect}> exception message expected but was\n<#{got.message.inspect}>.") unless ok
+      got
+    end
+
+    def assert_nothing_raised(message: String? = nil, &: () -> Nil) -> Nil
+      add_assertion
+      begin
+        yield
+      rescue Task::Cancelled => c
+        raise c
+      rescue AssertionFailed => a
+        raise a
+      rescue Pending => pe
+        raise pe
+      rescue Omitted => o
+        raise o
+      rescue Exception => e
+        fail_with(message, "Exception raised:\n#{e.class.name}(<#{e.message}>)")
+      end
+      nil
+    end
+
+    def flunk(message: String = "Flunked") -> Nothing
+      add_assertion
+      raise AssertionFailed.new(message)
+    end
+
+    # The test is pending: it ends here, counted as pending.
+    def pend(message: String = "pending") -> Nothing
+      raise Pending.new(message)
+    end
+
+    # The block is known to fail: pending when it does, a failure when it
+    # passes (the test can be un-pended).
+    def pend(message: String = "pending", &: () -> Nil) -> Nil
+      failed = false
+      begin
+        yield
+      rescue Task::Cancelled => c
+        raise c
+      rescue AssertionFailed
+        failed = true
+      rescue StandardError
+        failed = true
+      end
+      raise Pending.new(message) if failed
+      add_assertion
+      raise AssertionFailed.new("Pending block should not be passed: #{message}")
+    end
+
+    def omit(message: String = "omitted") -> Nothing
+      raise Omitted.new(message)
+    end
+
+    def omit_if(condition: Bool, message: String = "omitted") -> Nil
+      raise Omitted.new(message) if condition
+      nil
+    end
+
+    def omit_unless(condition: Bool, message: String = "omitted") -> Nil
+      raise Omitted.new(message) unless condition
+      nil
+    end
+
+
+    # Count an assertion; fail with the user's message (first) and the
+    # assertion's own, built only when it fails.
+    def check(ok: Bool, message: String?, &: () -> String) -> Nil
+      add_assertion
+      fail_with(message, yield) unless ok
+      nil
+    end
+
+    def fail_with(message: String?, detail: String) -> Nothing
+      text = message ? "#{message}.\n#{detail}" : detail
+      raise AssertionFailed.new(text)
+    end
+  end
+
+  # The base class of test cases: an instance is made for each test.
+  class Case
+    include Assertions
+
+    var @assertion_count: Int = 0
+    var @notes: Array[String] = []
+
+    # Before and after each test (teardown also after a failure).
+    def setup -> Nil = nil
+    def teardown -> Nil = nil
+
+    # Once around a class's tests.
+    def self.startup -> Nil = nil
+    def self.shutdown -> Nil = nil
+
+    # The class's limit per test (nil: the run's).
+    def self.timeout -> Duration? = nil
+
+    # Whether the class's tests must run one at a time (`--parallel`).
+    def self.serial? -> Bool = false
+
+    def assertion_count -> Int = @assertion_count
+    def notes -> Array[String] = @notes
+
+    def add_assertion -> Nil
+      @assertion_count += 1
+      nil
+    end
+
+    # A note shown in the report.
+    def notify(message: String) -> Nil
+      @notes = @notes.push(message)
+      nil
+    end
+  end
+
+  # Ruby's name.
+  module Unit
+    TestCase = Case
+  end
+
+  # `<expected> expected but was <actual>`, with a line diff when either
+  # spans lines.
+  def self.equal_failure(expected: Object?, actual: Object?) -> String
+    out = "<#{expected.inspect}> expected but was\n<#{actual.inspect}>"
+    e = expected
+    a = actual
+    return out unless e.is_a?(String) && a.is_a?(String) && (e.include?("\n") || a.include?("\n"))
+    "#{out}\n\ndiff:\n#{Test.diff_lines(e.split("\n"), a.split("\n")).join("\n")}"
+  end
+
+  # A unified-style diff of two line lists: ` ` both, `-` expected only,
+  # `+` actual only (longest common subsequence).
+  def self.diff_lines(a: Array[String], b: Array[String]) -> Array[String]
+    n = a.size
+    m = b.size
+    # t[i * w + j]: the LCS length of a[i..] and b[j..].
+    w = m + 1
+    t = Array::Builder[Int].new((n + 1) * w, 0)
+    i = n - 1
+    while i >= 0
+      j = m - 1
+      while j >= 0
+        down = t[(i + 1) * w + j]
+        right = t[i * w + j + 1]
+        t[i * w + j] = a[i] == b[j] ? t[(i + 1) * w + j + 1] + 1 : (down > right ? down : right)
+        j -= 1
+      end
+      i -= 1
+    end
+    out: Array[String] = []
+    i = 0
+    j = 0
+    while i < n && j < m
+      if a[i] == b[j]
+        out = out.push("  #{a[i]}")
+        i += 1
+        j += 1
+      elsif t[(i + 1) * w + j] >= t[i * w + j + 1]
+        out = out.push("- #{a[i]}")
+        i += 1
+      else
+        out = out.push("+ #{b[j]}")
+        j += 1
+      end
+    end
+    while i < n
+      out = out.push("- #{a[i]}")
+      i += 1
+    end
+    while j < m
+      out = out.push("+ #{b[j]}")
+      j += 1
+    end
+    out
+  end
+
+  # ----- the runner -----------------------------------------------------------------
+
+  # A test, or a data-driven test whose rows are labeled.
+  # Its file is where the method is (a base class's or a module's file
+  # for an inherited test).
+  data Entry(
+    name: String,
+    file: String,
+    line: Int,
+    call: (shareable (Case) -> Nil)?,
+    rows: (shareable (Case) -> Array[String])?,
+    row_call: (shareable (Case, String) -> Nil)?
+  )
+    def self.plain(name: String, file: String, line: Int, call: shareable (Case) -> Nil) -> Entry
+      Entry.new(name, file, line, call, nil, nil)
+    end
+
+    def self.each(name: String, file: String, line: Int, rows: shareable (Case) -> Array[String],
+                  call: shareable (Case, String) -> Nil) -> Entry
+      Entry.new(name, file, line, nil, rows, call)
+    end
+  end
+
+  # A test class: how to make an instance, its tests and class hooks.
+  data Suite = (
+    name: String,
+    file: String,
+    make: shareable () -> Case,
+    entries: Array[Entry],
+    startup: shareable () -> Nil,
+    shutdown: shareable () -> Nil,
+    timeout: Duration?,
+    serial: Bool
+  )
+
+  # One test to run: a suite's entry, with a row's label for data.
+  # `error`: why it cannot run (its class's `startup`, or its data
+  # method, raised).
+  data Item(suite: Suite, entry: Entry, row: String?, error: String?)
+    def name -> String
+      r = row
+      r ? "#{entry.name}[#{r}]" : entry.name
+    end
+
+    def full_name -> String = "#{suite.name}##{name}"
+  end
+
+  # What a test came to: :pass, :failure, :error, :pending, :omission.
+  data Result(item: Item, kind: Symbol, message: String, location: String?,
+              assertions: Int, time: Duration, notes: Array[String])
+    def mark -> String
+      case kind
+      when :pass then "."
+      when :failure then "F"
+      when :error then "E"
+      when :pending then "P"
+      else "O"
+      end
+    end
+  end
+
+  data Options = (
+    names: Array[String],
+    patterns: Array[Regexp],
+    verbose: Bool,
+    list: Bool,
+    random: Bool,
+    seed: Int,
+    fail_fast: Bool,
+    parallel: Int,
+    timeout: Duration?,
+    junit: String?
+  )
+
+  # Parse the command line; an error message for a bad option.
+  def self.parse_options(argv: Array[String]) -> Options | String
+    names: Array[String] = []
+    patterns: Array[Regexp] = []
+    verbose = false
+    list = false
+    random = false
+    seed = (Time.now.to_i * 7919 + Process.pid) % 100_000
+    fail_fast = false
+    parallel = 1
+    timeout: Duration? = 60.seconds
+    junit: String? = nil
+    i = 0
+    while i < argv.size
+      a = argv[i]
+      value = ->(prefix: String) { a.delete_prefix(prefix) }
+      if a == "-n" || a == "--name"
+        i += 1
+        return "#{a} needs a name" if i >= argv.size
+        picked = Test.name_option(argv[i])
+        return picked if picked.is_a?(String)
+        case picked
+        in Regexp => r then patterns = patterns.push(r)
+        in [String] => n then names = names.push(n[0])
+        end
+      elsif a.start_with?("--name=")
+        picked = Test.name_option(value.call("--name="))
+        return picked if picked.is_a?(String)
+        case picked
+        in Regexp => r then patterns = patterns.push(r)
+        in [String] => n then names = names.push(n[0])
+        end
+      elsif a == "-v" || a == "--verbose"
+        verbose = true
+      elsif a == "--list"
+        list = true
+      elsif a == "--order=random"
+        random = true
+      elsif a == "--order=defined"
+        random = false
+      elsif a.start_with?("--seed=")
+        s = value.call("--seed=")
+        return "bad seed: #{s}" unless s.match?(/\A[0-9]{1,18}\z/)
+        seed = s.to_i
+        random = true
+      elsif a == "--fail-fast"
+        fail_fast = true
+      elsif a == "--parallel"
+        parallel = 4
+      elsif a.start_with?("--parallel=")
+        s = value.call("--parallel=")
+        return "bad --parallel: #{s}" unless s.match?(/\A[1-9][0-9]{0,5}\z/)
+        parallel = s.to_i
+      elsif a.start_with?("--timeout=")
+        d = Test.parse_duration(value.call("--timeout="))
+        return "bad --timeout: #{a}" if d.nil?
+        timeout = d.to_f == 0.0 ? nil : d
+      elsif a.start_with?("--junit=")
+        junit = value.call("--junit=")
+      else
+        return "unknown option: #{a}"
+      end
+      i += 1
+    end
+    Options.new(names, patterns, verbose, list, random, seed, fail_fast, parallel, timeout, junit)
+  end
+
+  # `-n`'s value: a name to look for (in a one-element array), a
+  # `/pattern/`, or the error message for a bad pattern.
+  def self.name_option(name: String) -> [String] | Regexp | String
+    return [name] unless name.start_with?("/") && name.end_with?("/") && name.size > 1
+    begin
+      Regexp.new(name[1...-1])
+    rescue ArgumentError => e
+      "bad pattern #{name}: #{e.message}"
+    end
+  end
+
+  # `60s`, `500ms`, `2m`, `1.5s`, or seconds as a number; nil otherwise.
+  def self.parse_duration(s: String) -> Duration?
+    m = s.match(/\A([0-9]+(?:\.[0-9]+)?)(ms|s|m)?\z/)
+    return nil if m.nil?
+    n = (m[1] || "0").to_f
+    case m[2]
+    when "ms" then n.ms
+    when "m" then n.minutes
+    else n.seconds
+    end
+  end
+
+  # The backtrace up to the runner's frames.
+  def self.user_frames(e: Exception) -> Array[String]
+    e.backtrace.take_while { |f| !f.start_with?("<test-runner>") && !f.start_with?("<std:test>") }
+  end
+
+  # The test's lines of the backtrace: the first frame outside this
+  # library and the generated runner.
+  def self.location(e: Exception) -> String?
+    frame = e.backtrace.find { |f| !f.start_with?("<std:") && !f.start_with?("<prelude>") && !f.start_with?("<test-runner>") }
+    return nil if frame.nil?
+    frame.partition(":in ")[0]
+  end
+
+  # Run one test (or one row) on a fresh instance.
+  def self.run_item(item: Item, limit: Duration?) -> Result
+    started = Time.monotonic
+    where = "#{item.entry.file}:#{item.entry.line}"
+    broken = item.error
+    return Result.new(item, :error, broken, where, 0, Time.monotonic - started, []) if broken
+    c = begin
+      item.suite.make.call
+    rescue SystemExit => e
+      raise e
+    rescue Exception => e
+      return Result.new(item, :error, "#{item.suite.name}.new: #{Test.error_text(e)}", where, 0,
+                        Time.monotonic - started, [])
+    end
+    kind = :pass
+    message = ""
+    location: String? = nil
+    begin
+      body = -> do
+        begin
+          c.setup
+          r = item.row
+          rc = item.entry.row_call
+          call = item.entry.call
+          if r && rc
+            rc.call(c, r)
+          elsif call
+            call.call(c)
+          end
+        ensure
+          c.teardown
+        end
+        nil
+      end
+      if limit
+        Task.timeout(limit) { body.call }
+      else
+        body.call
+      end
+    rescue AssertionFailed => e
+      kind = :failure
+      message = e.message
+      location = Test.location(e)
+    rescue Pending => e
+      kind = :pending
+      message = e.message
+      location = Test.location(e)
+    rescue Omitted => e
+      kind = :omission
+      message = e.message
+      location = Test.location(e)
+    rescue Task::Timeout => e
+      kind = :error
+      # The test's own `Task.timeout` that it let out is an error of its own.
+      if limit && Time.monotonic - started >= limit
+        message = "Task::Timeout: timed out after #{limit.to_s}"
+      else
+        message = Test.error_text(e)
+        location = Test.location(e)
+      end
+    rescue SystemExit => e
+      raise e
+    rescue Exception => e
+      kind = :error
+      message = Test.error_text(e)
+      location = Test.location(e)
+    end
+    Result.new(item, kind, message, location || where, c.assertion_count, Time.monotonic - started, c.notes)
+  end
+
+  # An error's class, message and the test's frames of its backtrace.
+  def self.error_text(e: Exception) -> String
+    "#{e.class.name}: #{e.message}\n" + Test.user_frames(e).map { |f| "    #{f}" }.join("\n")
+  end
+
+  def self.selected?(item: Item, options: Options) -> Bool
+    return true if options.names.empty? && options.patterns.empty?
+    full = item.full_name
+    options.names.any? { |n| full.include?(n) } || options.patterns.any? { |p| full.match?(p) }
+  end
+
+  # The items of the suites, in order: file order, then declaration order
+  # (rows in their data's order), or shuffled by `--order=random`.
+  def self.items(suites: Array[Suite], options: Options) -> Array[Item]
+    out = Array::Builder[Item].new
+    suites.each do |s|
+      s.entries.each do |e|
+        rows = e.rows
+        if rows
+          labels = begin
+            rows.call(s.make.call)
+          rescue SystemExit => x
+            raise x
+          rescue Exception => x
+            out << Item.new(s, e, nil, "data_#{e.name.delete_prefix("test_")}: #{Test.error_text(x)}")
+            nil
+          end
+          labels&.each { |label| out << Item.new(s, e, label, nil) }
+        else
+          out << Item.new(s, e, nil, nil)
+        end
+      end
+    end
+    picked = out.to_a.select { |it| selected?(it, options) }
+    if options.random
+      srand(options.seed)
+      picked = picked.shuffle
+    end
+    picked
+  end
+
+  # Run the suites' tests as the options say; the exit status.
+  def self.run(argv: Array[String], suites: Array[Suite]) -> Int
+    parsed = parse_options(argv)
+    options = case parsed
+              in Options => o then o
+              in String => err
+                STDERR.puts "quarz test: #{err}"
+                return 2
+              end
+    all = items(suites, options)
+    if options.list
+      all.each { |it| puts it.full_name }
+      return 0
+    end
+    puts "Loaded suite test"
+    puts "Run options: --seed=#{options.seed}" if options.random
+    puts "Started"
+    started = Time.monotonic
+    results = Array::Builder[Result].new
+    # What failed outside a test (a class's shutdown).
+    problems = Array::Builder[String].new
+    stop = false
+    # A suite's items run together, between its startup and shutdown.
+    order: Array[Suite] = []
+    all.each { |it| order = order.push(it.suite) unless order.any? { |s| s.equal?(it.suite) } }
+    order.each do |suite|
+      break if stop
+      mine = all.select { |it| it.suite.equal?(suite) }
+      failed_startup = begin
+        suite.startup.call
+        nil
+      rescue SystemExit => x
+        raise x
+      rescue Exception => x
+        "#{suite.name}.startup: #{Test.error_text(x)}"
+      end
+      if failed_startup
+        # Its tests are errors, and its shutdown does not run.
+        mine.each do |it|
+          break if stop
+          r = Test.run_item(Item.new(it.suite, it.entry, it.row, failed_startup), nil)
+          results << r
+          report_progress(r, options)
+          stop = true if options.fail_fast
+        end
+        next
+      end
+      begin
+        limit = suite.timeout || options.timeout
+        width = suite.serial ? 1 : options.parallel
+        Test.run_group(mine, limit, width, options) do |r|
+          results << r
+          report_progress(r, options)
+          stop = true if options.fail_fast && (r.kind == :failure || r.kind == :error)
+          stop
+        end
+      ensure
+        begin
+          suite.shutdown.call
+        rescue SystemExit => x
+          raise x
+        rescue Exception => x
+          problems << "#{suite.name}.shutdown: #{Test.error_text(x)}"
+        end
+      end
+    end
+    elapsed = Time.monotonic - started
+    done = results.to_a
+    failed_hooks = problems.to_a
+    report(done, failed_hooks, elapsed, options)
+    junit = options.junit
+    write_junit(junit, done, elapsed) if junit
+    done.any? { |r| r.kind == :failure || r.kind == :error } || !failed_hooks.empty? ? 1 : 0
+  end
+
+  # Run items `width` at a time; `done` gets each result as it comes and
+  # says whether to stop.
+  def self.run_group(items: Array[Item], limit: Duration?, width: Int, options: Options,
+                     &done: (Result) -> Bool) -> Nil
+    if width <= 1
+      items.each do |it|
+        break if done.call(run_item(it, limit))
+      end
+      return nil
+    end
+    out = Channel[Result].new(capacity: items.size)
+    tokens = Channel[Nil].new(capacity: width)
+    spawned = 0
+    received = 0
+    stop = false
+    Task.scope do |scope|
+      # The results that came in, until `done` says to stop.
+      drain = -> do
+        while !stop
+          r = out.try_receive
+          break unless r
+          received += 1
+          stop = done.call(r)
+        end
+        nil
+      end
+      items.each do |it|
+        drain.call
+        break if stop
+        tokens.send(nil)
+        drain.call
+        break if stop
+        spawned += 1
+        # `run_item` reports what a test raises (a cancellation too), so
+        # every task sends a result.
+        scope.spawn do
+          begin
+            out.send(Test.run_item(it, limit))
+          ensure
+            tokens.try_receive
+          end
+        end
+      end
+      # The rest as they end.
+      while !stop && received < spawned
+        received += 1
+        stop = done.call(out.receive)
+      end
+      if stop
+        # Those that ended meanwhile are reported; those still running
+        # are cancelled.
+        while received < spawned
+          late = out.try_receive
+          break unless late
+          received += 1
+          done.call(late)
+        end
+        scope.cancel
+      end
+    end
+    nil
+  end
+
+  def self.report_progress(r: Result, options: Options) -> Nil
+    if options.verbose
+      puts "#{r.item.full_name}: #{r.mark} (#{format("%.3f", r.time.to_f)}s)"
+    else
+      print r.mark
+      STDOUT.flush
+    end
+    nil
+  end
+
+  def self.report(results: Array[Result], problems: Array[String], elapsed: Duration, options: Options) -> Nil
+    puts unless options.verbose
+    puts "Finished in #{format("%.6f", elapsed.to_f)} seconds."
+    n = 0
+    results.each do |r|
+      title = case r.kind
+              when :failure then "Failure"
+              when :error then "Error"
+              when :pending then "Pending"
+              when :omission then "Omission"
+              else ""
+              end
+      unless title.empty?
+        n += 1
+        where = r.location ? " [#{r.location}]" : ""
+        puts
+        puts "#{n}) #{title}: #{r.item.name}(#{r.item.suite.name})#{where}:"
+        puts r.message
+      end
+      r.notes.each do |note|
+        puts
+        puts "Notification: #{r.item.name}(#{r.item.suite.name}): #{note}"
+      end
+    end
+    problems.each do |text|
+      n += 1
+      puts
+      puts "#{n}) Error: #{text}"
+    end
+    count = ->(k: Symbol) { results.count { |r| r.kind == k } }
+    assertions = results.sum { |r| r.assertions }
+    notes = results.sum { |r| r.notes.size }
+    puts
+    puts "#{results.size} tests, #{assertions} assertions, #{count.call(:failure)} failures, " \
+         "#{count.call(:error)} errors, #{count.call(:pending)} pendings, " \
+         "#{count.call(:omission)} omissions, #{notes} notifications"
+    nil
+  end
+
+  def self.xml(s: String) -> String
+    s.gsub("&", "&amp;").gsub("<", "&lt;").gsub(">", "&gt;").gsub("\"", "&quot;")
+  end
+
+  def self.write_junit(path: String, results: Array[Result], elapsed: Duration) -> Nil
+    out = String::Builder.new
+    out << "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+    failures = results.count { |r| r.kind == :failure }
+    errors = results.count { |r| r.kind == :error }
+    skipped = results.count { |r| r.kind == :pending || r.kind == :omission }
+    out << "<testsuites tests=\"#{results.size}\" failures=\"#{failures}\" errors=\"#{errors}\" skipped=\"#{skipped}\" time=\"#{format("%.6f", elapsed.to_f)}\">\n"
+    names: Array[String] = []
+    results.each { |r| names = names.push(r.item.suite.name) unless names.include?(r.item.suite.name) }
+    names.each do |sname|
+      mine = results.select { |r| r.item.suite.name == sname }
+      out << "  <testsuite name=\"#{xml(sname)}\" tests=\"#{mine.size}\">\n"
+      mine.each do |r|
+        out << "    <testcase classname=\"#{xml(sname)}\" name=\"#{xml(r.item.name)}\" time=\"#{format("%.6f", r.time.to_f)}\""
+        case r.kind
+        when :pass
+          out << "/>\n"
+        when :failure
+          out << ">\n      <failure message=\"#{xml(r.message.lines.first.to_s.chomp)}\">#{xml(r.message)}</failure>\n    </testcase>\n"
+        when :error
+          out << ">\n      <error message=\"#{xml(r.message.lines.first.to_s.chomp)}\">#{xml(r.message)}</error>\n    </testcase>\n"
+        else
+          out << ">\n      <skipped message=\"#{xml(r.message)}\"/>\n    </testcase>\n"
+        end
+      end
+      out << "  </testsuite>\n"
+    end
+    out << "</testsuites>\n"
+    File.write(path, out.to_s)
+    nil
+  end
+end

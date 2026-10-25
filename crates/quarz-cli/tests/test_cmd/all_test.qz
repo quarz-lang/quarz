@@ -1,0 +1,125 @@
+require_relative "lib"
+
+module Sizes
+  include Test::Assertions
+
+  def test_starts_empty
+    assert_equal(0, Stack.new.size)
+  end
+end
+
+abstract class Base < Test::Case
+  include Sizes
+
+  var @stack: Stack = Stack.new
+
+  def setup
+    @stack.push(1)
+  end
+
+  def test_has_one
+    assert_equal(1, @stack.size)
+  end
+end
+
+class StackTest < Base
+  def self.startup
+    puts "startup"
+  end
+
+  def self.shutdown
+    puts "shutdown"
+  end
+
+  def teardown
+    puts "teardown #{@stack.size}"
+  end
+
+  def test_push_pop
+    @stack.push(2)
+    assert_equal(2, @stack.pop)
+    assert_equal([1], @stack.to_a)
+  end
+
+  def test_raise
+    e = assert_raise(StandardError) { Stack.new.pop; nil }
+    assert_equal("empty stack", e.message)
+    assert_raise(IndexError, "empty stack") { Stack.new.pop; nil }
+    assert_raise_message(/empty/) { Stack.new.pop; nil }
+    assert_nothing_raised { @stack.pop; nil }
+  end
+
+  def test_no_raise
+    assert_raise(IndexError) { nil }
+  end
+
+  def test_wrong_raise
+    assert_raise(ArgumentError) { Stack.new.pop; nil }
+  end
+
+  def test_assertions
+    assert(1)
+    refute(nil)
+    assert_true(1 < 2)
+    assert_false(1 > 2)
+    assert_nil(nil)
+    refute_nil(0)
+    assert_nil([1][5]?)
+    refute_equal(1, 2)
+    assert_in_delta(0.3, 0.1 + 0.2)
+    assert_in_epsilon(100.0, 100.05)
+    assert_match(/b+/, "abbc")
+    refute_match(/z/, "abc")
+    assert_includes([1, 2, 3], 2)
+    refute_includes([1, 2, 3], 4)
+    assert_empty(Array[Int].new)
+    assert_empty("")
+    refute_empty([1])
+    assert_compare(1, :<, 2)
+    s = "x"
+    assert_same(s, s)
+    notify("all checked")
+  end
+
+  def test_message
+    assert_equal(1, 2, "sizes differ")
+  end
+
+  def test_flunk
+    flunk
+  end
+
+  def test_pend_block
+    pend("not yet") { assert_equal(1, 2) }
+  end
+
+  def test_pend_block_passes
+    pend("fixed?") { assert_equal(1, 1) }
+  end
+
+  def test_omit
+    omit_if(true, "not here")
+  end
+
+  def test_hang
+    Channel[Int].new.receive
+    nil
+  end
+
+  def data_double -> Hash[String, [Int, Int]]
+    {"one" => [1, 2], "bad" => [3, 5]}
+  end
+
+  def test_double(d: [Int, Int])
+    assert_equal(d[1], d[0] * 2)
+  end
+end
+
+class SerialTest < Test::Case
+  def self.serial? -> Bool = true
+  def self.timeout -> Duration? = 50.ms
+
+  def test_sleep
+    sleep(1.seconds)
+  end
+end

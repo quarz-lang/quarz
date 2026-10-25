@@ -5242,6 +5242,14 @@ impl Checker {
         }
         if let Some(recv) = &call.recv {
             match call.name.as_str() {
+                // `x.is_a?(klass)` with a class value (not a type written as
+                // a constant) is the method `Object#is_a?(klass: Class)`,
+                // which tests at run time and narrows nothing.
+                "is_a?"
+                    if call.args.len() == 1
+                        && call.block.is_none()
+                        && matches!(&call.args[0], Arg::Positional(a)
+                            if !matches!(a.kind, ExprKind::Const(_) | ExprKind::TypeApp(_))) => {}
                 "is_a?" | "as" | "as?" if call.args.len() == 1 && call.block.is_none() => {
                     return self.check_type_test(expr, call, recv);
                 }
