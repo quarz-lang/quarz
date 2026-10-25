@@ -1,0 +1,188 @@
+require "test"
+
+class ArrayQueryTest < Test::Case
+  def test_sort_max_min_sum_reverse
+    xs = [3, 1, 2]
+    assert_equal("[1, 2, 3]", xs.sort.inspect)
+    assert_equal(3, xs.max)
+    assert_equal(1, xs.min)
+    assert_equal(6, xs.sum)
+    assert_equal("[2, 1, 3]", xs.reverse.inspect)
+    assert_true(xs.include?(2))
+    assert_equal("1", xs.index(1).inspect)
+  end
+
+  def test_select_reject_map_reduce
+    xs = [1, 2, 3, 4, 5, 6]
+    assert_equal("[2, 4, 6]", xs.select(&:even?).inspect)
+    assert_equal("[1, 3, 5]", xs.reject(&:even?).inspect)
+    assert_equal("[1, 4, 9, 16, 25, 36]", xs.map { |x| x * x }.inspect)
+    assert_equal(21, xs.reduce(0) { |a, b| a + b })
+  end
+
+  def test_each_slice
+    xs = [1, 2, 3, 4, 5, 6]
+    slices: Array[String] = []
+    xs.each_slice(4) { |s| slices = slices.push(s.inspect) }
+    assert_equal(["[1, 2, 3, 4]", "[5, 6]"], slices)
+  end
+
+  def test_partition_group_by_take_while_drop
+    xs = [1, 2, 3, 4, 5, 6]
+    assert_equal("[[2, 4, 6], [1, 3, 5]]", xs.partition(&:even?).inspect)
+    assert_equal("{1 => [1, 4], 2 => [2, 5], 0 => [3, 6]}", xs.group_by { |x| x % 3 }.inspect)
+    assert_equal("[1, 2]", xs.take_while { |x| x < 3 }.inspect)
+    assert_equal("[5, 6]", xs.drop(4).inspect)
+  end
+
+  def test_words
+    words = %w[apple banana cherry]
+    assert_equal("[\"banana\", \"cherry\", \"apple\"]", words.sort_by { |w| -w.size }.inspect)
+    assert_equal("banana", words.max_by(&:size))
+    assert_equal("apple", words.min_by(&:size))
+    assert_equal("[5, 6, 6]", words.map(&:size).inspect)
+    assert_equal("apple, banana, cherry", words.join(", "))
+    assert_equal("[\"apple\", \"banana\"]", words.first(2).inspect)
+    assert_equal("cherry", words.last)
+  end
+
+  def test_zip_flat_map_compact_tally
+    assert_equal("[[1, 3], [2, 4]]", [1, 2].zip([3, 4]).inspect)
+    assert_equal("[1, 2, 3]", [[1, 2], [3]].flat_map { |a| a }.inspect)
+    assert_equal("[1, 2]", [1, nil, 2].compact.inspect)
+    assert_equal("{1 => 1, 2 => 2, 3 => 1}", [1, 2, 2, 3].tally.inspect)
+  end
+
+  def test_each_with_index
+    lines: Array[String] = []
+    ["a", "b"].each_with_index { |x, i| lines = lines.push("#{i}:#{x}") }
+    assert_equal(["0:a", "1:b"], lines)
+  end
+
+  def test_filter_map_find_any_all_count
+    assert_equal("[2, 6]", [1, 2, 3].filter_map { |x| x * 2 if x.odd? }.inspect)
+    assert_equal("2", [1, 2, 3].find { |x| x > 1 }.inspect)
+    assert_true([1, 2].any? { |x| x > 1 })
+    assert_false([1, 2].all? { |x| x > 1 })
+    assert_false([].any?)
+    assert_equal(2, [1, 2, 3].count(&:odd?))
+  end
+end
+
+class ArrayUpdateTest < Test::Case
+  def test_builder
+    b = Array::Builder[Int].new
+    b << 3 << 1 << 2
+    b.sort!
+    b[0] = 10
+    b.map! { |x| x + 1 }
+    assert_equal("[11, 3, 4]", b.to_a.inspect)
+    assert_equal(0, b.size)
+  end
+
+  def test_persistent_updates
+    xs = [1, 2, 3]
+    ys = xs.push(4)
+    assert_equal("[1, 2, 3]", xs.inspect)
+    assert_equal("[1, 2, 3, 4]", ys.inspect)
+    assert_equal("[9, 2, 3]", xs.set(0, 9).inspect)
+    assert_equal("[1, 2, 3]", xs.inspect)
+    assert_equal("[1, 7, 2, 3]", xs.insert(1, 7).inspect)
+    assert_equal("[2, 3]", xs.delete_at(0).inspect)
+    assert_equal("[1, 2, 3, 4]", (xs + [4]).inspect)
+    assert_equal("[1, 3]", (xs - [2]).inspect)
+    assert_equal("[1, 2, 3, 1, 2, 3]", (xs * 2).inspect)
+  end
+
+  def test_growing_in_a_loop
+    acc: Array[Int] = []
+    1000.times { |i| acc = acc.push(i) }
+    assert_equal(1000, acc.size)
+    assert_equal(999, acc[999])
+    assert_equal("0", acc.first.inspect)
+    m: Hash[Int, Int] = {}
+    100.times { |i| m = m.put(i, i * i) }
+    assert_equal(100, m.size)
+    assert_equal(2500, m[50])
+  end
+end
+
+class HashTest < Test::Case
+  def test_symbol_keys
+    h = { a: 1, b: 2 }
+    h2 = h.put(:c, 3).delete(:a)
+    assert_equal("{a: 1, b: 2}", h.inspect)
+    assert_equal("{b: 2, c: 3}", h2.inspect)
+    assert_equal("[:a, :b]", h.keys.inspect)
+    assert_equal(3, h.values.sum)
+    assert_true(h.key?(:a))
+    assert_equal(2, h[:b])
+    assert_equal(0, h.fetch(:z, 0))
+    assert_equal(1, h.fetch(:z) { |k| k.to_s.size })
+    assert_equal("{a: 1, b: 20}", h.merge({ b: 20 }).inspect)
+  end
+
+  def test_string_keys
+    h = { "x" => 1, "y" => 2 }
+    assert_equal("x=1&y=2", h.map { |k, v| "#{k}=#{v}" }.join("&"))
+    assert_equal("{\"y\" => 2}", h.select { |k, v| v > 1 }.inspect)
+    assert_equal("{\"x\" => 10, \"y\" => 20}", h.transform_values { |v| v * 10 }.inspect)
+    assert_equal("[[\"x\", 1], [\"y\", 2]]", h.to_a.inspect)
+    assert_equal("[\"x\", 1]", h.min_by { |k, v| v }.inspect)
+    assert_equal("[[\"y\", 2], [\"x\", 1]]", h.sort_by { |k, v| -v }.inspect)
+  end
+
+  def test_merge_with_block_update_each_pair
+    h = { a: 1 }.merge({ a: 2, b: 3 }) { |k, old, new| old + new }
+    assert_equal("{a: 3, b: 3}", h.inspect)
+    counts = %w[a b a].reduce({}) { |acc, w| acc.update(w) { |n| (n || 0) + 1 } }
+    assert_equal("{\"a\" => 2, \"b\" => 1}", counts.inspect)
+    pairs: Array[String] = []
+    h.each_pair { |k, v| pairs = pairs.push("#{k}#{v}") }
+    assert_equal(["a3", "b3"], pairs)
+  end
+end
+
+class SetTest < Test::Case
+  def test_set_operations
+    s = Set[1, 2, 2, 3]
+    assert_equal(3, s.size)
+    assert_true(s.include?(2))
+    assert_equal(4, s.add(4).size)
+    assert_equal("[1, 2, 3, 9]", (s | Set[9]).to_a.inspect)
+    assert_equal("[2, 3]", (s & Set[2, 3, 7]).to_a.inspect)
+    assert_equal("[2, 3]", (s - Set[1]).to_a.inspect)
+    assert_equal("Set[1, 2]", [1, 1, 2].to_set.inspect)
+  end
+end
+
+class RangeTest < Test::Case
+  def test_to_a_sum_size
+    assert_equal("[1, 2, 3, 4, 5]", (1..5).to_a.inspect)
+    assert_equal(15, (1..5).sum)
+    assert_equal(4, (1...5).size)
+  end
+
+  def test_step
+    out = ""
+    (1..10).step(3) { |x| out = "#{out}#{x} " }
+    assert_equal("1 4 7 10 ", out)
+  end
+
+  def test_include_cover_strings_infinite
+    assert_true((1..3).include?(2))
+    assert_false((1..3).cover?(5))
+    assert_equal("[\"a\", \"b\", \"c\", \"d\"]", ("a".."d").to_a.inspect)
+    assert_equal("[1, 2, 3]", (1..Float::INFINITY).first(3).inspect)
+  end
+end
+
+class EnumeratorTest < Test::Case
+  def test_times_enumerator
+    e = 3.times
+    assert_equal("[0, 2, 4]", e.map { |i| i * 2 }.inspect)
+    assert_equal(0, e.next)
+    assert_equal(1, e.next)
+    assert_equal("[0, 2, 4]", 5.times.select(&:even?).inspect)
+  end
+end

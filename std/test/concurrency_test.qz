@@ -1,0 +1,137 @@
+# Tasks, scopes, channels, atoms, timeouts, select and cancellation.
+require "test"
+
+class TaskTest < Test::Case
+  def test_scope_with_channel
+    events: Array[String] = []
+    ch = Channel[Int].new
+    Task.scope do |s|
+      s.spawn { 3.times { |i| ch.send(i) }; ch.close }
+      ch.each { |v| events = events.push(v.to_s) }
+    end
+    events = events.push("done")
+    assert_equal(["0", "1", "2", "done"], events)
+  end
+
+  def test_buffered_channel_and_await
+    ch = Channel[String].new(capacity: 2)
+    t = Task.spawn { ch.send("a"); ch.send("b"); "sent" }
+    assert_equal("a", ch.receive)
+    assert_equal("b", ch.receive)
+    assert_equal("sent", t.await)
+  end
+
+  def test_scope_results_in_spawn_order
+    results = Task.scope do |s|
+      ts = [3, 1, 2].map { |n| s.spawn { Task.sleep((n * 5).ms); n } }
+      ts.map(&:await)
+    end
+    assert_equal([3, 1, 2], results)
+  end
+
+  def test_atom_records_order
+    order = Atom[Array[Int]].new([])
+    Task.scope do |s|
+      s.spawn { Task.sleep(20.ms); order.update { |o| o.push(2) } }
+      s.spawn { Task.sleep(5.ms); order.update { |o| o.push(1) } }
+    end
+    assert_equal([1, 2], order.value)
+  end
+
+  def test_atom_counts
+    n = Atom.new(0)
+    Task.scope do |s|
+      100.times { s.spawn { n.update { |v| v + 1 } } }
+    end
+    assert_equal(100, n.value)
+  end
+
+  def test_scope_raises_child_failure
+    # The sibling is cancelled when the other child fails: it never ends.
+    ended = Atom.new(false)
+    e = assert_raise(ArgumentError) do
+      Task.scope do |s|
+        s.spawn { Task.sleep(1.second); ended.set(true) }
+        s.spawn { raise ArgumentError, "child failed" }
+      end
+      nil
+    end
+    assert_equal("child failed", e.message)
+    # Not cancelled, it would have been waited for, and ended.
+    assert_false(ended.value)
+  end
+
+  def test_timeout
+    assert_raise(Task::Timeout) { Task.timeout(10.ms) { Task.sleep(1.second) }; nil }
+    assert_equal(5, Task.timeout(1.second) { 5 })
+  end
+
+  def test_cancel
+    t = Task.spawn { Task.sleep(1.second); 1 }
+    t.cancel
+    # assert_raise lets Task::Cancelled through, so rescue it here.
+    cancelled = false
+    begin
+      t.await
+    rescue Task::Cancelled
+      cancelled = true
+    end
+    assert_true(cancelled)
+  end
+
+  def test_yield_and_state
+    ch = Channel[Int].new
+    t = Task.spawn { ch.receive }
+    Task.yield
+    ch.send(7)
+    assert_equal(7, t.await)
+    assert_false(ch.closed?)
+    assert_false(Task.current.done?)
+  end
+end
+
+class ChannelTest < Test::Case
+  def test_select
+    events: Array[String] = []
+    a = Channel[Int].new
+    b = Channel[Int].new
+    Task.spawn { Task.sleep(5.ms); b.send(2) }
+    Channel.select do |s|
+      s.receive(a) { |v| events = events.push("a #{v}") }
+      s.receive(b) { |v| events = events.push("b #{v}") }
+    end
+    Channel.select do |s|
+      s.receive(a) { |v| events = events.push("a #{v}") }
+      s.after(5.ms) { events = events.push("timeout") }
+    end
+    Channel.select do |s|
+      s.receive(a) { |v| events = events.push("a #{v}") }
+      s.default { events = events.push("default") }
+    end
+    assert_equal(["b 2", "timeout", "default"], events)
+  end
+
+  def test_worker_pool
+    jobs = Channel[Int].new(capacity: 10)
+    done = Channel[Int].new(capacity: 10)
+    Task.scope do |s|
+      2.times { |w| s.spawn { jobs.each { |j| done.send(j * 10) } } }
+      5.times { |j| jobs.send(j) }
+      jobs.close
+    end
+    done.close
+    assert_equal([0, 10, 20, 30, 40], done.to_a.sort)
+  end
+
+  def test_try_operations_and_close
+    ch = Channel[Int].new(capacity: 1)
+    ch.send(1)
+    assert_false(ch.try_send(2))
+    assert_equal(1, ch.size)
+    assert_equal("1", ch.try_receive.inspect)
+    assert_equal("nil", ch.try_receive.inspect)
+    ch.close
+    assert_equal("nil", ch.receive?.inspect)
+    assert_raise(Channel::Closed) { ch.send(3); nil }
+  end
+end

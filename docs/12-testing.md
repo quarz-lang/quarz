@@ -204,6 +204,8 @@ With `--parallel`, each test of a class is a task, up to N at once, and the clas
 
 A script's own tests live next to it, `foo_test.qz` with `require_relative "foo"`, and run with `quarz test foo_test.qz`. `quarz run foo_test.qz` runs the file's top-level statements only, and a test file has none: it prints nothing. The runner is added by `quarz test`, not by an `at_exit` of the library (Test::Unit's autorun), since nothing can list the tests at run time.
 
+The language and its standard library are tested this way: `std/test/*_test.qz`, which `cargo test` runs with `quarz test std/test` interpreted, compiled (`--release`) and in parallel (`crates/quarz-cli/tests/std.rs`). What only a process shows (exit statuses, an unhandled error, a deadlock, arguments, standard output) and the checker's errors stay in Rust tests.
+
 ## 9. Later
 
 - `Class[T]`, the type of a class object with its instance type, for `assert_raise[E](klass: Class[E]) -> E` and for `rescue` on a type parameter; `x.is_a?(klass)` with a `Class[T]` could then narrow to `T`.

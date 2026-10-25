@@ -1,0 +1,116 @@
+# raise, rescue, else, ensure, retry and exception classes.
+
+class ExcTestError < StandardError
+  @code: Int
+  attr_reader :code
+  def initialize(message: String, @code: Int)
+    super(message)
+  end
+end
+
+class ExceptionTest < Test::Case
+  var @log: Array[String] = []
+
+  def record(s: String) -> Nil
+    @log = @log.push(s)
+    nil
+  end
+
+  def test_rescue_picks_matching_clause_then_ensure
+    begin
+      raise ArgumentError, "bad"
+    rescue TypeError
+      record("type")
+    rescue ArgumentError => e
+      record("arg: #{e.message}")
+    ensure
+      record("ensure")
+    end
+    assert_equal(["arg: bad", "ensure"], @log)
+  end
+
+  def test_custom_exception_class
+    rescued = false
+    begin
+      raise ExcTestError.new("boom", 7)
+    rescue ExcTestError => e
+      rescued = true
+      assert_equal("boom", e.message)
+      assert_equal(7, e.code)
+      assert_equal("ExcTestError", e.class.name)
+      assert_true(e.is_a?(StandardError))
+    end
+    assert_true(rescued)
+  end
+
+  def test_retry
+    tries = 0
+    begin
+      tries += 1
+      raise "fail" if tries < 3
+      record("ok after #{tries}")
+    rescue
+      retry
+    end
+    assert_equal(["ok after 3"], @log)
+  end
+
+  def test_rescue_value
+    x = begin
+      Integer("zz")
+    rescue ArgumentError
+      -1
+    end
+    assert_equal(-1, x)
+    y = Integer("zz") rescue -2
+    assert_equal(-2, y)
+  end
+
+  def returns_with_ensure -> Int
+    return 1
+  ensure
+    record("cleanup")
+  end
+
+  def test_ensure_runs_before_return
+    r = returns_with_ensure
+    record(r.to_s)
+    assert_equal(["cleanup", "1"], @log)
+  end
+
+  def test_else_runs_when_nothing_raised
+    begin
+      record("body")
+    rescue
+      record("never")
+    else
+      record("else")
+    ensure
+      record("ensure")
+    end
+    assert_equal(["body", "else", "ensure"], @log)
+  end
+
+  def risky -> Nil
+    raise KeyError, "k"
+  end
+
+  def test_rescue_superclass
+    caught: String? = nil
+    begin
+      risky
+    rescue IndexError => e
+      caught = "caught #{e.class.name}: #{e.message}"
+    end
+    assert_equal("caught KeyError: k", caught)
+  end
+
+  def test_index_and_key_errors
+    r = [1, 2, 3].first(2)
+    e = assert_raise(IndexError) { puts [1][5]; nil }
+    assert_equal("index 5 out of bounds (size 1)", e.message)
+    k = assert_raise(KeyError) { _v = { a: 1 }[:b]; nil }
+    assert_equal("key not found: :b", k.message)
+    assert_equal("[1, 2]", r.inspect)
+  end
+end

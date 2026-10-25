@@ -1,0 +1,134 @@
+require "json"
+require "time"
+require "test"
+
+data JsonTestPoint = (x: Int, y: Int)
+
+class JsonTestTemp
+  @celsius: Float
+
+  def initialize(celsius: Float)
+    @celsius = celsius
+  end
+
+  def to_json -> String = JSON.generate({ unit: "C", value: @celsius })
+end
+
+enum JsonTestColor
+  variant Red
+  variant Green
+end
+
+class JsonParseTest < Test::Case
+  @doc: JSON::Value = JSON.parse('{"name": "quarz", "version": 1, "pi": 3.5, "tags": ["lang", "vm"], "ok": true, "none": null, "nested": {"a": [1, {"b": "é😀"}]}}')
+
+  def test_scalars
+    assert_equal("\"quarz\"", @doc["name"].as_s.inspect)
+    assert_equal(1, @doc["version"].as_i)
+    assert_equal(3.5, @doc["pi"].as_f)
+    assert_equal("\"vm\"", @doc["tags"][1].as_s.inspect)
+  end
+
+  def test_bool_null_unicode
+    assert_true(@doc["ok"].as_bool)
+    assert_true(@doc["none"].null?)
+    assert_equal("\"é😀\"", @doc["nested"]["a"][1]["b"].as_s.inspect)
+  end
+
+  def test_missing_size_as_a
+    assert_nil(@doc["missing"]?)
+    assert_equal(2, @doc["tags"].size)
+    assert_equal("[\"lang\", \"vm\"]", @doc["tags"].as_a.map(&:as_s).inspect)
+  end
+
+  def test_to_json_round_trip
+    assert_equal("{\"name\":\"quarz\",\"version\":1,\"pi\":3.5,\"tags\":[\"lang\",\"vm\"],\"ok\":true,\"none\":null,\"nested\":{\"a\":[1,{\"b\":\"é😀\"}]}}",
+                 @doc.to_json)
+  end
+
+  def test_pretty_generate_value
+    assert_equal("{\n  \"a\": [\n    1,\n    {\n      \"b\": \"é😀\"\n    }\n  ]\n}", JSON.pretty_generate(@doc["nested"]))
+  end
+
+  def test_pattern_match_object
+    keys = case @doc
+           in JSON::Value::Object(members:) then members.keys.join(",")
+           else "not a map"
+           end
+    assert_equal("name,version,pi,tags,ok,none,nested", keys)
+  end
+
+  def test_big_numbers_and_escapes
+    assert_equal(1234567890123456789, JSON.parse("1234567890123456789").as_i)
+    assert_equal("12345678901234567890", JSON.parse("12345678901234567890").as_integer.inspect)
+    assert_equal("\"[12345678901234567890]\"", JSON.parse("[12345678901234567890]").to_json.inspect)
+    assert_equal(-1500.0, JSON.parse("-1.5e3").as_f)
+    assert_equal("\"a\\tb\"", JSON.parse('"a\\tb"').as_s.inspect)
+  end
+
+  def test_equality_ignores_spacing
+    assert_true(JSON.parse("[1,2,3]") == JSON.parse(" [1, 2, 3] "))
+  end
+
+  def test_value_inspect
+    assert_equal("JSON::Value::Array(items: [JSON::Value::Number(value: 1), JSON::Value::Null])", JSON.parse("[1, null]").inspect)
+  end
+
+  def test_version
+    assert_equal("\"0.1.0\"", JSON::VERSION.inspect)
+  end
+end
+
+class JsonGenerateTest < Test::Case
+  def test_mixed_values
+    assert_equal("{\"a\":1,\"b\":[true,null,2.5],\"c\":{\"x\":1,\"y\":2},\"d\":\"sym\",\"e\":\"q\\\"\\n\"}",
+                 JSON.generate({ a: 1, "b" => [true, nil, 2.5], c: JsonTestPoint.new(x: 1, y: 2), d: :sym, e: "q\"\n" }))
+  end
+
+  def test_empty_collections
+    assert_equal("[]", JSON.generate([]))
+    assert_equal("{}", JSON.generate({}))
+  end
+
+  def test_pretty_generate_nested
+    assert_equal("{\n  \"a\": [],\n  \"b\": {},\n  \"c\": [\n    1,\n    [\n      2\n    ]\n  ]\n}",
+                 JSON.pretty_generate({ a: [], b: {}, c: [1, [2]] }))
+  end
+
+  def test_custom_to_json
+    assert_equal("[{\"unit\":\"C\",\"value\":21.5}]", JSON.generate([JsonTestTemp.new(21.5)]))
+  end
+
+  def test_enum_and_time
+    assert_equal("\"Red\"", JSON.generate(JsonTestColor::Red))
+    assert_equal("\"2026-01-02 03:04:05 UTC\"", JSON.generate(Time.utc(2026, 1, 2, 3, 4, 5)))
+  end
+end
+
+class JsonErrorTest < Test::Case
+  def test_bad_key
+    e = assert_raise(JSON::ParseError) { JSON.parse("{bad}"); nil }
+    assert_equal("expected a string key at line 1 column 2", e.message)
+  end
+
+  def test_unexpected_end
+    e = assert_raise(JSON::ParseError) { JSON.parse("[1, 2"); nil }
+    assert_equal("unexpected end of input at line 1 column 6", e.message)
+  end
+
+  def test_too_deep
+    e = assert_raise(JSON::ParseError) { JSON.parse("[" * 101 + "]" * 101); nil }
+    assert_equal("nesting of 101 is too deep at line 1 column 101", e.message)
+  end
+
+  def test_nan
+    e = assert_raise(JSON::GeneratorError) { JSON.generate(Float::NAN); nil }
+    assert_equal("NaN not allowed in JSON", e.message)
+  end
+
+  def test_wrong_type
+    doc = JSON.parse('{"name": "quarz"}')
+    e = assert_raise(TypeError) { doc["name"].as_i; nil }
+    assert_equal("not a JSON number: JSON::Value::String(value: \"quarz\")", e.message)
+  end
+end

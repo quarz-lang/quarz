@@ -202,6 +202,8 @@ exit Test.run(ARGV, suites)
 
 スクリプトのテストはその隣に `foo_test.qz` として置き、`require_relative "foo"` して、`quarz test foo_test.qz` で実行します。`quarz run foo_test.qz` はそのファイルのトップレベルの文だけを実行し、テストファイルにはそれがないので、何も出しません。ランナーを足すのは `quarz test` で、ライブラリの `at_exit`(Test::Unit の autorun)ではありません。実行時にテストを一覧できるものがないからです。
 
+言語と標準ライブラリ自身もこの方法でテストします。`std/test/*_test.qz` を、`cargo test` が `quarz test std/test` で、解釈実行、コンパイル(`--release`)、並列の 3 通りに実行します(`crates/quarz-cli/tests/std.rs`)。プロセスとしてしか見えないもの(終了ステータス、捕まらなかったエラー、デッドロック、引数、標準出力)と型検査器のエラーは Rust のテストに残します。
+
 ## 9. 後で
 
 - `Class[T]`。クラスオブジェクトの型にインスタンスの型を添えたもので、`assert_raise[E](klass: Class[E]) -> E` と、型パラメータに対する `rescue` のため。`Class[T]` を取る `x.is_a?(klass)` は `T` に絞り込めるようになります。
