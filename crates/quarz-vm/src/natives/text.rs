@@ -9,11 +9,9 @@ use crate::interp::{Args, EvalResult, Flow, Interp, NativeFn};
 use crate::value::*;
 use smallvec::smallvec;
 
+use super::matching::{each_match, group_names, regex_split, substitute, utf8, Hay};
 use super::numeric::enumerator;
-use super::string::{
-    char_offset, each_match, group_names, match_value, md, re, regex_split, s, sb, slice_range,
-    string_sub, substitute,
-};
+use super::string::{char_offset, match_value, md, re, s, sb, slice_range, string_sub};
 use super::{block, int, string};
 
 pub fn register(m: &mut super::Registry<NativeFn>) {
@@ -174,7 +172,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         let text = s(i, r)?;
         for p in &a.pos {
             let hit = match p {
-                Value::Regexp(rx) => rx.find(text).is_some_and(|m| m.start() == 0),
+                Value::Regexp(rx) => rx.regex.find(text.as_bytes()).is_some_and(|m| m.0 == 0),
                 other => text.starts_with(string(i, other, "prefix")?),
             };
             if hit {
@@ -225,7 +223,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         let wants = wants_match(i, &b);
         let names = group_names(pattern);
         let mut shared: Option<Rc<str>> = None;
-        each_match(i, text, pattern, true, wants, |groups| {
+        each_match(i, Hay::Str(text), pattern, true, wants, |groups| {
             let (st, en) = groups[0].unwrap_or((0, 0));
             let matched = Value::str(&text[st..en]);
             if wants {
@@ -242,8 +240,8 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     native!(m, "String#[]", |i, r, a| match (a.arg(0), a.pos.len()) {
         (Value::Regexp(rx), 1) => {
             let text = s(i, r)?;
-            Ok(match rx.find(text) {
-                Some(m) => Value::str(m.as_str()),
+            Ok(match rx.regex.find(text.as_bytes()) {
+                Some((st, en)) => Value::str(&text[st..en]),
                 None => Value::Nil,
             })
         }
@@ -421,40 +419,19 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         Ok(Value::Int((h.finish() >> 1) as i64))
     });
 
-    // MatchData
-    native!(m, "MatchData#names", |i, r, _| {
-        Ok(Value::array(
-            md(i, r)?.names.iter().map(|(n, _)| Value::str(n)).collect(),
-        ))
-    });
-    native!(m, "MatchData#named_captures", |i, r, _| {
-        let m = md(i, r)?;
-        let mut out = ValueMap::default();
-        for (name, idx) in &m.names {
-            out.insert(Value::str(name), group_value(m, *idx));
-        }
-        Ok(Value::Hash(Rc::new(crate::value::HashData::from(out))))
-    });
-    native!(m, "MatchData#size", |i, r, _| {
-        Ok(Value::Int(md(i, r)?.groups.len() as i64))
-    });
-    native!(m, "MatchData#to_a", |i, r, _| {
-        let m = md(i, r)?;
-        Ok(Value::array(
-            (0..m.groups.len()).map(|k| group_value(m, k)).collect(),
-        ))
-    });
-    native!(m, "MatchData#values_at", |i, r, a| {
-        let m = md(i, r)?;
-        let mut out = Vec::with_capacity(a.pos.len());
-        for idx in &a.pos {
-            out.push(group_value(m, int(i, idx, "index")?.max(0) as usize));
-        }
-        Ok(Value::array(out))
-    });
-    native!(m, "MatchData#inspect", |i, r, _| {
-        Ok(Value::string(i.inspect(r)?))
-    });
+    // MatchData and Bytes::MatchData
+    native!(m, "MatchData#names", md_names);
+    native!(m, "Bytes::MatchData#names", md_names);
+    native!(m, "MatchData#named_captures", md_named_captures);
+    native!(m, "Bytes::MatchData#named_captures", md_named_captures);
+    native!(m, "MatchData#size", md_size);
+    native!(m, "Bytes::MatchData#size", md_size);
+    native!(m, "MatchData#to_a", md_to_a);
+    native!(m, "Bytes::MatchData#to_a", md_to_a);
+    native!(m, "MatchData#values_at", md_values_at);
+    native!(m, "Bytes::MatchData#values_at", md_values_at);
+    native!(m, "MatchData#inspect", md_inspect);
+    native!(m, "Bytes::MatchData#inspect", md_inspect);
 }
 
 // ----- helpers ---------------------------------------------------------------------
@@ -466,11 +443,43 @@ fn symbol_text(interp: &Interp, v: &Value) -> Result<Rc<str>, Flow> {
     }
 }
 
-fn group_value(m: &MatchDataVal, idx: usize) -> Value {
-    match m.groups.get(idx).copied().flatten() {
-        Some((st, en)) => Value::str(&m.text[st..en]),
-        None => Value::Nil,
+fn md_names(i: &Interp, r: &Value, _: Args) -> EvalResult {
+    Ok(Value::array(
+        md(i, r)?.names.iter().map(|(n, _)| Value::str(n)).collect(),
+    ))
+}
+
+fn md_named_captures(i: &Interp, r: &Value, _: Args) -> EvalResult {
+    let m = md(i, r)?;
+    let mut out = ValueMap::default();
+    for (name, idx) in &m.names {
+        out.insert(Value::str(name), m.group(*idx));
     }
+    Ok(Value::Hash(Rc::new(crate::value::HashData::from(out))))
+}
+
+fn md_size(i: &Interp, r: &Value, _: Args) -> EvalResult {
+    Ok(Value::Int(md(i, r)?.groups.len() as i64))
+}
+
+fn md_to_a(i: &Interp, r: &Value, _: Args) -> EvalResult {
+    let m = md(i, r)?;
+    Ok(Value::array(
+        (0..m.groups.len()).map(|k| m.group(k)).collect(),
+    ))
+}
+
+fn md_values_at(i: &Interp, r: &Value, a: Args) -> EvalResult {
+    let m = md(i, r)?;
+    let mut out = Vec::with_capacity(a.pos.len());
+    for idx in &a.pos {
+        out.push(m.group(int(i, idx, "index")?.max(0) as usize));
+    }
+    Ok(Value::array(out))
+}
+
+fn md_inspect(i: &Interp, r: &Value, _: Args) -> EvalResult {
+    Ok(Value::string(i.inspect(r)?))
 }
 
 /// `text[start, length]` / `slice(start, length)` / `slice(range)`.
@@ -500,9 +509,9 @@ fn string_partition(interp: &Interp, recv: &Value, args: Args, from_right: bool)
     let found: Option<(usize, usize)> = match args.arg(0) {
         Value::Regexp(rx) => {
             if from_right {
-                rx.last_match_before(text, text.len())
+                rx.regex.last_match_before(text.as_bytes(), text.len())
             } else {
-                rx.find(text).map(|m| (m.start(), m.end()))
+                rx.regex.find(text.as_bytes())
             }
         }
         other => {
@@ -561,10 +570,12 @@ fn string_find(interp: &Interp, recv: &Value, args: Args, from_right: bool) -> E
         Value::Regexp(rx) => {
             if from_right {
                 let limit = byte_at(start);
-                rx.last_match_before(text, limit).map(|(st, _)| st)
+                rx.regex
+                    .last_match_before(text.as_bytes(), limit)
+                    .map(|(st, _)| st)
             } else {
                 let from = byte_at(start);
-                rx.find_at(text, from).map(|m| m.start())
+                rx.regex.find_at(text.as_bytes(), from).map(|(st, _)| st)
             }
         }
         other => {
@@ -596,7 +607,10 @@ fn string_split_limit(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let mut parts: Vec<&str> = match (pat, pat.as_str()) {
         (_, Some(sep)) if limit > 0 => text.splitn(limit as usize, sep).collect(),
         (_, Some(sep)) => text.split(sep).collect(),
-        (Value::Regexp(_), _) => regex_split(interp, text, pat, limit)?,
+        (Value::Regexp(_), _) => regex_split(interp, Hay::Str(text), pat, limit)?
+            .into_iter()
+            .map(|(a, b)| &text[a..b])
+            .collect(),
         (other, _) => {
             return Err(interp.err_type(&format!(
                 "split takes a String or Regexp, got {}",
@@ -628,32 +642,39 @@ fn string_sub_block(interp: &Interp, recv: &Value, args: Args, global: bool) -> 
         Vec::new()
     };
     let mut shared: Option<Rc<str>> = None;
-    let out = substitute(interp, text, pattern, global, wants, |groups, out| {
-        let (st, en) = groups[0].unwrap_or((0, 0));
-        let matched = Value::str(&text[st..en]);
-        if let Some(b) = &args.block {
-            let v = if wants {
-                let shared = shared.get_or_insert_with(|| Rc::from(text));
-                let md = match_value(shared, groups, &names);
-                interp.call_block(b, smallvec![matched, md])?
-            } else {
-                interp.call_block(b, smallvec![matched])?
-            };
-            out.push_str(&interp.to_s(&v)?);
-        } else if let Value::Hash(h) = args.arg(1) {
-            if let Some(v) = h.get(&matched) {
-                out.push_str(&interp.to_s(&v)?);
+    let out = substitute(
+        interp,
+        Hay::Str(text),
+        pattern,
+        global,
+        wants,
+        |groups, out| {
+            let (st, en) = groups[0].unwrap_or((0, 0));
+            let matched = Value::str(&text[st..en]);
+            if let Some(b) = &args.block {
+                let v = if wants {
+                    let shared = shared.get_or_insert_with(|| Rc::from(text));
+                    let md = match_value(shared, groups, &names);
+                    interp.call_block(b, smallvec![matched, md])?
+                } else {
+                    interp.call_block(b, smallvec![matched])?
+                };
+                out.extend_from_slice(interp.to_s(&v)?.as_bytes());
+            } else if let Value::Hash(h) = args.arg(1) {
+                if let Some(v) = h.get(&matched) {
+                    out.extend_from_slice(interp.to_s(&v)?.as_bytes());
+                }
             }
-        }
-        Ok(())
-    })?;
-    Ok(Value::string(out))
+            Ok(())
+        },
+    )?;
+    Ok(Value::string(utf8(out)))
 }
 
 /// Whether a block takes a `MatchData` after the match: it requires two
 /// parameters or more (the overload checked for it; `|*xs|` and
 /// `|s, *xs|` are checked as taking the match only), or is a method.
-fn wants_match(interp: &Interp, block: &Value) -> bool {
+pub(super) fn wants_match(interp: &Interp, block: &Value) -> bool {
     match block {
         Value::Proc(c) => match &c.body {
             ClosureBody::Func(fid) => {

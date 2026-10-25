@@ -401,6 +401,63 @@ class Bytes
   native def to_s -> String
   native def inspect -> String
 
+  # Searching, as String's but byte by byte: positions are byte offsets, a
+  # Regexp's `.` is any byte and `\xFF` the byte 0xFF, its classes ASCII.
+  native def start_with?(prefix: Bytes) -> Bool
+  native def start_with?(pattern: Regexp) -> Bool
+  native def end_with?(suffix: Bytes) -> Bool
+  native def include?(other: Bytes) -> Bool
+  native def index(other: Bytes, start: Int = 0) -> Int?
+  native def index(pattern: Regexp, start: Int = 0) -> Int?
+  native def rindex(other: Bytes) -> Int?
+  native def rindex(other: Bytes, start: Int) -> Int?
+  native def rindex(pattern: Regexp) -> Int?
+  native def rindex(pattern: Regexp, start: Int) -> Int?
+  native def split(separator: Bytes, limit: Int = 0) -> Array[Bytes]
+  native def split(separator: Regexp, limit: Int = 0) -> Array[Bytes]
+  native def partition(separator: Bytes) -> [Bytes, Bytes, Bytes]
+  native def partition(pattern: Regexp) -> [Bytes, Bytes, Bytes]
+  native def rpartition(separator: Bytes) -> [Bytes, Bytes, Bytes]
+  native def rpartition(pattern: Regexp) -> [Bytes, Bytes, Bytes]
+  native def =~(pattern: Regexp) -> Int?
+  native def match(pattern: Regexp) -> Bytes::MatchData?
+  native def match?(pattern: Regexp) -> Bool
+  native def matches(pattern: Regexp) -> Array[Bytes::MatchData]
+  native def scan(pattern: Regexp) -> Array[Bytes]
+  native def scan(pattern: Regexp, &: (Bytes) -> Nil) -> Nil
+  native def scan(pattern: Regexp, &: (Bytes, Bytes::MatchData) -> Nil) -> Nil
+  native def sub(pattern: Bytes, replacement: Bytes) -> Bytes
+  native def sub(pattern: Regexp, replacement: Bytes) -> Bytes
+  native def sub(pattern: Bytes, &: (Bytes) -> Bytes) -> Bytes
+  native def sub(pattern: Regexp, &: (Bytes) -> Bytes) -> Bytes
+  native def sub(pattern: Regexp, &: (Bytes, Bytes::MatchData) -> Bytes) -> Bytes
+  native def gsub(pattern: Bytes, replacement: Bytes) -> Bytes
+  native def gsub(pattern: Regexp, replacement: Bytes) -> Bytes
+  native def gsub(pattern: Bytes, &: (Bytes) -> Bytes) -> Bytes
+  native def gsub(pattern: Regexp, &: (Bytes) -> Bytes) -> Bytes
+  native def gsub(pattern: Regexp, &: (Bytes, Bytes::MatchData) -> Bytes) -> Bytes
+  native def gsub(pattern: Regexp, replacements: Hash[Bytes, Bytes]) -> Bytes
+
+  # A match in Bytes: as MatchData, with Bytes and byte offsets.
+  class MatchData
+    include Shareable
+
+    native def [](index: Int) -> Bytes?
+    native def [](name: String) -> Bytes?
+    native def pre_match -> Bytes
+    native def post_match -> Bytes
+    native def captures -> Array[Bytes?]
+    native def named_captures -> Hash[String, Bytes?]
+    native def names -> Array[String]
+    native def values_at(*indices: Int) -> Array[Bytes?]
+    native def to_a -> Array[Bytes?]
+    native def size -> Int
+    native def to_s -> String
+    native def inspect -> String
+    native def begin(index: Int) -> Int?
+    native def end(index: Int) -> Int?
+  end
+
   class Builder
     include Unshareable
 

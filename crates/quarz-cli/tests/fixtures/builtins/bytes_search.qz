@@ -1,0 +1,27 @@
+# Searching in Bytes: a String's methods, byte by byte (positions in bytes,
+# a Regexp's . any byte and \xFF the byte 0xFF), with Bytes::MatchData.
+d = b"GET /a\xff\x00b HTTP/1.1\r\nHost: x\r\n\r\nbody\xfe"
+p d =~ /\xff/, d.match?(/HTTP\/1\.\d/), d.index(b"\r\n"), d.rindex(b"\r\n"), d.index(/\r\n/, 20), d.rindex(/\r\n/)
+p d.split(b"\r\n"), d.split(/\r\n/, 2), d.partition(b" "), d.rpartition(/\r\n/)
+m = d.match(/^(?<k>\w+): (?<v>.*)\r$/)
+if m
+  p m, m["k"], m[2], m.begin(0), m.end(0), m.pre_match.size, m.captures, m.to_s
+end
+p d.scan(/./).size, d.scan(/[^\x00-\x7f]/), b"a.b.c".gsub(b".", b"-"), b"ab12".gsub(/\d/) { |x| x + x }
+p b"k=v".sub(/(\w)=(\w)/, b"\\2=\\1"), b"k=v".gsub(/(\w)=(\w)/) { |_, m| m[2] || b"" }, b"\xff\xfe".gsub(/\xff/, { b"\xff" => b"X" })
+p d.start_with?(b"GET"), d.start_with?(/G.T/), d.end_with?(b"\xfe"), d.include?(b"Host"), b"aaa".rindex(/aa/), b"abc".split(b""), b"aé".scan(/./)
+d.scan(/(\w+): (\w)/) { |s, m| p [s, m[1], m.begin(1)] }
+p b"x\n" =~ /^$/, b"a\nb\n".gsub(/^/, b"> "), b"abc".split(/b*/), ("a" * 1000).to_bytes.rindex(/a+/)
+begin
+  b"x" =~ /\p{L}/
+rescue => e
+  p e.class
+end
+# A character beyond ASCII is its UTF-8 bytes, quantified together; in a
+# class it is an error. Group names may be beyond ASCII.
+p b"\xc3\xa9\xc3\xa9".scan(/é+/), b"xa".match(/(?<名>a)/)
+begin
+  b"\xc3\xa9".scan(/[é]/)
+rescue => e
+  p e.class
+end

@@ -1,0 +1,41 @@
+6
+true
+18
+29
+27
+29
+[b"GET /a\xff\x00b HTTP/1.1", b"Host: x", b"", b"body\xfe"]
+[b"GET /a\xff\x00b HTTP/1.1", b"Host: x\r\n\r\nbody\xfe"]
+[b"GET", b" ", b"/a\xff\x00b HTTP/1.1\r\nHost: x\r\n\r\nbody\xfe"]
+[b"GET /a\xff\x00b HTTP/1.1\r\nHost: x\r\n", b"\r\n", b"body\xfe"]
+#<Bytes::MatchData b"Host: x\r" k:b"Host" v:b"x">
+b"Host"
+b"x"
+20
+28
+20
+[b"Host", b"x"]
+"b\"Host: x\\r\""
+33
+[b"\xff", b"\xfe"]
+b"a-b-c"
+b"ab1122"
+b"v=k"
+b"v"
+b"X\xfe"
+true
+true
+true
+true
+1
+[b"a", b"b", b"c"]
+[b"a", b"\xc3", b"\xa9"]
+[b"Host: x", b"Host", 20]
+nil
+b"> a\n> b\n"
+[b"a", b"c"]
+999
+ArgumentError
+[b"\xc3\xa9\xc3\xa9"]
+#<Bytes::MatchData b"a" 名:b"a">
+ArgumentError

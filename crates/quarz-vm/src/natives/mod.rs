@@ -69,6 +69,7 @@ macro_rules! owned {
 }
 
 pub mod bytes;
+mod bytes_search;
 mod collections;
 mod concurrency;
 mod core;
@@ -76,6 +77,7 @@ mod enumerable;
 mod fast;
 mod io;
 mod json;
+mod matching;
 mod math;
 pub mod net;
 mod numeric;
@@ -157,6 +159,7 @@ fn registry() -> Registry<NativeFn> {
     io::register(&mut m);
     net::register(&mut m);
     bytes::register(&mut m);
+    bytes_search::register(&mut m);
     time::register(&mut m);
     json::register(&mut m);
     m

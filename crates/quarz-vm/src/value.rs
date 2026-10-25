@@ -1562,18 +1562,57 @@ pub struct RangeVal {
 
 #[derive(Debug)]
 pub struct RegexpVal {
-    /// Built with `^`/`$` matching at each line, as in Ruby: search
-    /// through the methods below, which also keep Ruby's `^` from
-    /// matching after a newline that ends the text.
-    pub regex: regex::Regex,
+    /// The searches of a String, `^`/`$` at each line as in Ruby.
+    pub regex: RegexEngine,
     pub source: String,
     pub flags: String,
+    /// The searches of Bytes, byte by byte: built when first used.
+    pub bytes: std::sync::OnceLock<Result<RegexEngine, String>>,
+}
+
+impl RegexpVal {
+    pub fn new(source: &str, flags: &str) -> Result<RegexpVal, String> {
+        Ok(RegexpVal {
+            regex: RegexEngine::new(source, flags, true)?,
+            source: source.to_string(),
+            flags: flags.to_string(),
+            bytes: Default::default(),
+        })
+    }
+
+    /// The searches of Bytes (an error if the pattern needs Unicode).
+    pub fn for_bytes(&self) -> Result<&RegexEngine, &str> {
+        self.bytes
+            .get_or_init(|| {
+                RegexEngine::new(&self.source, &self.flags, false)
+                    .map_err(|e| format!("invalid regexp for Bytes /{}/: {e}", self.source))
+            })
+            .as_ref()
+            .map_err(|e| e.as_str())
+    }
+}
+
+/// The byte ranges of a match and of its groups (`None`: a group that
+/// took no part).
+pub type Groups = Vec<Option<(usize, usize)>>;
+
+/// A Ruby pattern's searches, on the bytes of a String (`unicode`: UTF-8,
+/// matches at character boundaries) or of Bytes (byte by byte: `.` is
+/// any byte, `\xFF` the byte 0xFF, classes ASCII). Ruby's empty-match
+/// and anchor rules are kept here for both.
+#[derive(Debug)]
+pub struct RegexEngine {
+    /// Built with `^`/`$` matching at each line.
+    multi: regex::bytes::Regex,
+    unicode: bool,
+    source: String,
+    flags: String,
     /// The same pattern with `^` at the text's start only (`$` at its
     /// end is the same): built when a match at the end needs checking.
-    pub single_line: std::sync::OnceLock<Option<regex::Regex>>,
+    single_line: std::sync::OnceLock<Option<regex::bytes::Regex>>,
     /// The same pattern for anchored searches: built at the first
     /// `rindex` or `rpartition`.
-    pub anchored: std::sync::OnceLock<Option<regex_automata::meta::Regex>>,
+    anchored: std::sync::OnceLock<Option<regex_automata::meta::Regex>>,
 }
 
 /// A Ruby pattern and flags as the regex crate's: `\h` is a hex digit
@@ -1581,30 +1620,36 @@ pub struct RegexpVal {
 /// flags or inline (`(?m)`, `(?m:...)`), makes `.` match a newline (the
 /// regex crate's `s`). `^` and `$` match at each line (`multi_line`) as
 /// in Ruby.
-pub fn build_regex(
+fn build_regex(
     source: &str,
     flags: &str,
+    unicode: bool,
     multi_line: bool,
-) -> Result<regex::Regex, regex::Error> {
-    regex::RegexBuilder::new(&translate_regex(source, flags))
+) -> Result<regex::bytes::Regex, String> {
+    regex::bytes::RegexBuilder::new(&translate_regex(source, flags, unicode)?)
+        .unicode(unicode)
         .multi_line(multi_line)
         .case_insensitive(flags.contains('i'))
         .dot_matches_new_line(flags.contains('m'))
         .ignore_whitespace(flags.contains('x'))
         .build()
+        .map_err(|e| e.to_string())
 }
 
 /// The same pattern for searches anchored at a position (`rindex`).
-fn build_anchored(source: &str, flags: &str) -> Option<regex_automata::meta::Regex> {
+fn build_anchored(source: &str, flags: &str, unicode: bool) -> Option<regex_automata::meta::Regex> {
     regex_automata::meta::Builder::new()
+        .configure(regex_automata::meta::Config::new().utf8_empty(unicode))
         .syntax(
             regex_automata::util::syntax::Config::new()
+                .unicode(unicode)
+                .utf8(unicode)
                 .multi_line(true)
                 .case_insensitive(flags.contains('i'))
                 .dot_matches_new_line(flags.contains('m'))
                 .ignore_whitespace(flags.contains('x')),
         )
-        .build(&translate_regex(source, flags))
+        .build(&translate_regex(source, flags, unicode).ok()?)
         .ok()
 }
 
@@ -1612,18 +1657,43 @@ fn build_anchored(source: &str, flags: &str) -> Option<regex_automata::meta::Reg
 /// inline `m` (`(?m)`, `(?m:...)`) is `s`, and with a named group the
 /// plain groups do not capture (`(...)` is `(?:...)`), as in Ruby. A
 /// comment of extended mode (`x`) is copied as it is.
-fn translate_regex(source: &str, flags: &str) -> String {
-    let (pattern, named) = translate_pass(source, flags, false);
+fn translate_regex(source: &str, flags: &str, unicode: bool) -> Result<String, String> {
+    let (pattern, named) = translate_pass(source, flags, unicode, false)?;
     if named {
-        translate_pass(source, flags, true).0
+        Ok(translate_pass(source, flags, unicode, true)?.0)
     } else {
-        pattern
+        Ok(pattern)
     }
 }
 
 /// One pass of `translate_regex`, plain groups not capturing when
 /// `named`: the pattern, and whether it has a named group.
-fn translate_pass(source: &str, flags: &str, named: bool) -> (String, bool) {
+fn translate_pass(
+    source: &str,
+    flags: &str,
+    unicode: bool,
+    named: bool,
+) -> Result<(String, bool), String> {
+    // A character written out: by code point, or byte by byte for Bytes
+    // (where `\x{e9}` would be the character, not the byte), grouped so a
+    // quantifier takes them all; in a class, its bytes would be separate
+    // members, so there it is an error (as Ruby's `/[é]/n` is).
+    let literal = |pattern: &mut String, c: char, class: usize| -> Result<(), String> {
+        if unicode || c.is_ascii() {
+            pattern.push_str(&format!("\\x{{{:x}}}", c as u32));
+        } else if class > 0 {
+            return Err(format!(
+                "`{c}` in a character class cannot match Bytes, which are searched byte by byte"
+            ));
+        } else {
+            pattern.push_str("(?:");
+            for b in c.to_string().bytes() {
+                pattern.push_str(&format!("\\x{b:02X}"));
+            }
+            pattern.push(')');
+        }
+        Ok(())
+    };
     let mut has_named = false;
     // Extended mode (`x`), as the regex crate scopes it: set by the flags
     // or `(?x)`, for a group by `(?x:`, cleared by `-x`; restored at the
@@ -1641,7 +1711,7 @@ fn translate_pass(source: &str, flags: &str, named: bool) -> (String, bool) {
                 Some('H') => pattern.push_str("[^0-9a-fA-F]"),
                 // Ruby takes an escaped character beyond ASCII as itself;
                 // the regex crate rejects the escape.
-                Some(d) if !d.is_ascii() => pattern.push_str(&format!("\\x{{{:x}}}", d as u32)),
+                Some(d) if !d.is_ascii() => literal(&mut pattern, d, class)?,
                 Some(d) => {
                     pattern.push('\\');
                     pattern.push(d);
@@ -1656,7 +1726,7 @@ fn translate_pass(source: &str, flags: &str, named: bool) -> (String, bool) {
                 && c.is_whitespace()
                 && (class > 0 || !matches!(c, ' ' | '\t' | '\n' | '\r' | '\x0c')) =>
             {
-                pattern.push_str(&format!("\\x{{{:x}}}", c as u32));
+                literal(&mut pattern, c, class)?;
             }
             '#' if extended && class == 0 => {
                 pattern.push(c);
@@ -1668,7 +1738,7 @@ fn translate_pass(source: &str, flags: &str, named: bool) -> (String, bool) {
                 }
             }
             // A POSIX class is Unicode in Ruby, ASCII in the regex crate.
-            '[' if class > 0 && chars.peek() == Some(&':') => {
+            '[' if unicode && class > 0 && chars.peek() == Some(&':') => {
                 let rest: String = chars.clone().collect();
                 let posix = rest[1..].find(":]").map(|end| end + 1).and_then(|end| {
                     let name = &rest[1..end];
@@ -1732,6 +1802,15 @@ fn translate_pass(source: &str, flags: &str, named: bool) -> (String, bool) {
                     || chars.peek() == Some(&'P')
                 {
                     has_named = true;
+                    // The name as it is (it may be beyond ASCII).
+                    for d in chars.by_ref() {
+                        pattern.push(d);
+                        if d == '>' {
+                            break;
+                        }
+                    }
+                    groups.push(extended);
+                    continue;
                 }
                 // Inline flags: Ruby's `m` is the regex crate's `s`.
                 let mut inline = String::new();
@@ -1740,7 +1819,9 @@ fn translate_pass(source: &str, flags: &str, named: bool) -> (String, bool) {
                 }
                 let flagged = matches!(chars.peek(), Some(':' | ')'));
                 if flagged {
-                    inline = inline.replace('m', "s");
+                    // Ruby has no `u`: the regex crate's would let a String's
+                    // match end inside a character.
+                    inline = inline.replace('m', "s").replace('u', "");
                 }
                 pattern.push_str(&inline);
                 // `(?flags)` sets them for the rest of the enclosing group;
@@ -1760,109 +1841,156 @@ fn translate_pass(source: &str, flags: &str, named: bool) -> (String, bool) {
                 groups.push(extended);
                 pattern.push_str(if named { "(?:" } else { "(" });
             }
+            c if !unicode && !c.is_ascii() => literal(&mut pattern, c, class)?,
             _ => pattern.push(c),
         }
     }
-    (pattern, has_named)
+    Ok((pattern, has_named))
 }
 
-impl RegexpVal {
+impl RegexEngine {
+    pub fn new(source: &str, flags: &str, unicode: bool) -> Result<RegexEngine, String> {
+        Ok(RegexEngine {
+            multi: build_regex(source, flags, unicode, true)?,
+            unicode,
+            source: source.to_string(),
+            flags: flags.to_string(),
+            single_line: Default::default(),
+            anchored: Default::default(),
+        })
+    }
+
+    /// The names of the groups, by number.
+    pub fn capture_names(&self) -> regex::bytes::CaptureNames<'_> {
+        self.multi.capture_names()
+    }
+
+    /// The number of groups, the match itself included.
+    pub fn captures_len(&self) -> usize {
+        self.multi.captures_len()
+    }
+
+    pub fn capture_locations(&self) -> regex::bytes::CaptureLocations {
+        self.multi.capture_locations()
+    }
+
+    /// Where the search goes on after an empty match at `pos`: the next
+    /// character (or byte), `None` at the end.
+    pub fn after_empty(&self, text: &[u8], pos: usize) -> Option<usize> {
+        if pos >= text.len() {
+            return None;
+        }
+        let mut next = pos + 1;
+        while self.unicode && next < text.len() && text[next] & 0xC0 == 0x80 {
+            next += 1;
+        }
+        Some(next)
+    }
+
     /// Whether a match from `st` to `en` stands: the regex crate's `^`
     /// matches after a newline that ends the text, Ruby's does not, so an
     /// empty match there stands only if the pattern matches there with
     /// `^` at the text's start only. (A match that is not empty and ends
     /// with such a `^`, as `/\n^/` on "a\n", stands: telling would need a
     /// lookahead the regex crate lacks.)
-    fn stands(&self, text: &str, st: usize, en: usize) -> bool {
-        if st != text.len() || en != st || !text.ends_with('\n') {
+    fn stands(&self, text: &[u8], st: usize, en: usize) -> bool {
+        if st != text.len() || en != st || !text.ends_with(b"\n") {
             return true;
         }
+        self.single_line().is_none_or(|r| r.is_match_at(text, st))
+    }
+
+    fn single_line(&self) -> Option<&regex::bytes::Regex> {
         self.single_line
-            .get_or_init(|| build_regex(&self.source, &self.flags, false).ok())
+            .get_or_init(|| build_regex(&self.source, &self.flags, self.unicode, false).ok())
             .as_ref()
-            .is_none_or(|r| r.is_match_at(text, st))
     }
 
-    pub fn find_at<'t>(&self, text: &'t str, pos: usize) -> Option<regex::Match<'t>> {
-        let m = self.regex.find_at(text, pos)?;
-        self.stands(text, m.start(), m.end()).then_some(m)
+    pub fn find_at(&self, text: &[u8], pos: usize) -> Option<(usize, usize)> {
+        let m = self.multi.find_at(text, pos)?;
+        self.stands(text, m.start(), m.end())
+            .then_some((m.start(), m.end()))
     }
 
-    pub fn find<'t>(&self, text: &'t str) -> Option<regex::Match<'t>> {
+    pub fn find(&self, text: &[u8]) -> Option<(usize, usize)> {
         self.find_at(text, 0)
     }
 
-    pub fn is_match(&self, text: &str) -> bool {
-        if text.ends_with('\n') {
+    pub fn is_match(&self, text: &[u8]) -> bool {
+        if text.ends_with(b"\n") {
             self.find(text).is_some()
         } else {
-            self.regex.is_match(text)
+            self.multi.is_match(text)
         }
     }
 
     /// The match found from `pos` with its groups. An empty match at the
     /// end that stands takes its groups from the single-line pattern (the
     /// other may have matched there through `^`).
-    pub fn captures_at<'t>(&self, text: &'t str, pos: usize) -> Option<regex::Captures<'t>> {
-        let c = self.regex.captures_at(text, pos)?;
+    pub fn captures_at(&self, text: &[u8], pos: usize) -> Option<Groups> {
+        let c = self.multi.captures_at(text, pos)?;
         let m = c.get(0)?;
         if !self.stands(text, m.start(), m.end()) {
             return None;
         }
-        if m.start() == text.len() && text.ends_with('\n') {
-            if let Some(Some(single)) = self.single_line.get() {
-                return single.captures_at(text, m.start());
+        let groups = |c: &regex::bytes::Captures| -> Groups {
+            c.iter().map(|m| m.map(|m| (m.start(), m.end()))).collect()
+        };
+        if m.start() == text.len() && text.ends_with(b"\n") {
+            if let Some(single) = self.single_line() {
+                return single.captures_at(text, m.start()).map(|c| groups(&c));
             }
         }
-        Some(c)
+        Some(groups(&c))
     }
 
     /// Into `locs`, the match found from `pos` with its groups (for many
-    /// searches with one `locs`). An empty match at the end that stands
-    /// gives `None` too: take it from `captures_at`.
-    pub fn captures_read_at<'t>(
+    /// searches with one `locs`). An empty match at the end after a
+    /// newline gives `None` too: take it from `captures_at`.
+    pub fn captures_read_at(
         &self,
-        locs: &mut regex::CaptureLocations,
-        text: &'t str,
+        locs: &mut regex::bytes::CaptureLocations,
+        text: &[u8],
         pos: usize,
-    ) -> Option<regex::Match<'t>> {
-        let m = self.regex.captures_read_at(locs, text, pos)?;
-        (m.start() < text.len() || !text.ends_with('\n')).then_some(m)
+    ) -> Option<(usize, usize)> {
+        let m = self.multi.captures_read_at(locs, text, pos)?;
+        (m.start() < text.len() || !text.ends_with(b"\n")).then_some((m.start(), m.end()))
     }
 
-    pub fn captures<'t>(&self, text: &'t str) -> Option<regex::Captures<'t>> {
+    pub fn captures(&self, text: &[u8]) -> Option<Groups> {
         self.captures_at(text, 0)
     }
 
     /// The match starting nearest before `limit` (a byte offset): Ruby's
     /// `rindex` and `rpartition`, which try each position from `limit`
     /// back, anchored there.
-    pub fn last_match_before(&self, text: &str, limit: usize) -> Option<(usize, usize)> {
+    pub fn last_match_before(&self, text: &[u8], limit: usize) -> Option<(usize, usize)> {
         let anchored = self
             .anchored
-            .get_or_init(|| build_anchored(&self.source, &self.flags))
+            .get_or_init(|| build_anchored(&self.source, &self.flags, self.unicode))
             .as_ref()?;
         // The last start of the non-overlapping matches from the left: the
         // answer is there or right of it (a match overlapping it).
         let mut floor = None;
         let mut pos = 0;
-        while let Some(m) = self.find_at(text, pos) {
-            if m.start() > limit {
+        while let Some((st, en)) = self.find_at(text, pos) {
+            if st > limit {
                 break;
             }
-            floor = Some((m.start(), m.end()));
-            pos = if m.end() > m.start() {
-                m.end()
+            floor = Some((st, en));
+            pos = if en > st {
+                en
             } else {
-                match text[m.end()..].chars().next() {
-                    Some(c) => m.end() + c.len_utf8(),
+                match self.after_empty(text, en) {
+                    Some(next) => next,
                     None => break,
                 }
             };
         }
         let floor = floor?;
+        let boundary = |p: usize| !self.unicode || p >= text.len() || text[p] & 0xC0 != 0x80;
         let mut p = limit.min(text.len());
-        while !text.is_char_boundary(p) {
+        while !boundary(p) {
             p -= 1;
         }
         while p > floor.0 {
@@ -1875,7 +2003,7 @@ impl RegexpVal {
                 }
             }
             p -= 1;
-            while !text.is_char_boundary(p) {
+            while !boundary(p) {
                 p -= 1;
             }
         }
@@ -1885,10 +2013,52 @@ impl RegexpVal {
 
 #[derive(Debug)]
 pub struct MatchDataVal {
+    /// The text matched in: a String's (`data` is `None`) or, for a
+    /// `Bytes::MatchData`, empty.
     pub text: Rc<str>,
+    /// The Bytes matched in, for a `Bytes::MatchData`.
+    pub data: Option<Rc<[u8]>>,
     /// Byte ranges of the whole match and the groups.
     pub groups: Vec<Option<(usize, usize)>>,
     pub names: Vec<(String, usize)>,
+}
+
+impl MatchDataVal {
+    /// The text from byte `st` to `en`: a String, or Bytes.
+    pub fn piece(&self, st: usize, en: usize) -> Value {
+        match &self.data {
+            Some(data) => Value::bytes(data[st..en].to_vec()),
+            None => Value::str(&self.text[st..en]),
+        }
+    }
+
+    /// Group `k`'s text (`nil` when it took no part or is past the groups).
+    pub fn group(&self, k: usize) -> Value {
+        match self.groups.get(k).copied().flatten() {
+            Some((st, en)) => self.piece(st, en),
+            None => Value::Nil,
+        }
+    }
+
+    /// The length of the text matched in.
+    pub fn len(&self) -> usize {
+        match &self.data {
+            Some(data) => data.len(),
+            None => self.text.len(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// A position as the text counts it: characters, or bytes.
+    pub fn offset(&self, byte: usize) -> i64 {
+        match &self.data {
+            Some(_) => byte as i64,
+            None => self.text[..byte].chars().count() as i64,
+        }
+    }
 }
 
 /// A lazily evaluated enumerator: re-invokes `method` on `recv` with a
@@ -2645,6 +2815,9 @@ impl Value {
                     Value::MatchData(r) => {
                         if mark_rc(immortal, r) {
                             mark_rc(immortal, &r.text);
+                            if let Some(data) = &r.data {
+                                mark_rc(immortal, data);
+                            }
                         }
                     }
                     Value::Object(r) => share_object(immortal, r, &mut work),

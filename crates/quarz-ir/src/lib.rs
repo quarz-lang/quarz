@@ -1435,6 +1435,7 @@ pub struct RtBuiltin {
     pub set_builder: ClassId,
     pub bytes_builder: ClassId,
     pub match_data: ClassId,
+    pub bytes_match_data: ClassId,
     pub standard_error: ClassId,
 }
 

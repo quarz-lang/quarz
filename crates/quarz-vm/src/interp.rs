@@ -1711,6 +1711,7 @@ impl Interp {
             Value::Set(_) => b.set,
             Value::Range(_) => b.range,
             Value::Regexp(_) => b.regexp,
+            Value::MatchData(m) if m.data.is_some() => b.bytes_match_data,
             Value::MatchData(_) => b.match_data,
             Value::Object(o) => o.class,
             Value::Class(_) => b.class_,
@@ -2619,15 +2620,8 @@ impl Interp {
     // ----- regexps and comparisons -------------------------------------------------------
 
     pub fn make_regexp(&self, source: &str, flags: &str) -> EvalResult {
-        let built = build_regex(source, flags, true);
-        match built {
-            Ok(regex) => Ok(Value::Regexp(Rc::new(RegexpVal {
-                regex,
-                source: source.to_string(),
-                flags: flags.to_string(),
-                single_line: Default::default(),
-                anchored: Default::default(),
-            }))),
+        match RegexpVal::new(source, flags) {
+            Ok(regex) => Ok(Value::Regexp(Rc::new(regex))),
             Err(e) => Err(self.raise(
                 self.program.exc.argument_error,
                 &format!("invalid regexp /{source}/: {e}"),
@@ -2640,7 +2634,10 @@ impl Interp {
         match pattern {
             Value::Class(cid) => Ok(self.program.world.class_is_a(self.class_of(v), *cid)),
             Value::Range(r) => self.range_covers(r, v),
-            Value::Regexp(re) => Ok(v.as_str().is_some_and(|s| re.is_match(s))),
+            Value::Regexp(re) => Ok(match v {
+                Value::Bytes(b) => re.for_bytes().map_err(|e| self.err_arg(e))?.is_match(b),
+                _ => v.as_str().is_some_and(|s| re.regex.is_match(s.as_bytes())),
+            }),
             Value::Proc(_) => Ok(self.call_block(pattern, smallvec![v.clone()])?.is_truthy()),
             _ => self.values_equal(pattern, v),
         }
@@ -2814,19 +2811,31 @@ impl Interp {
                 self.inspect(&r.hi)?
             ),
             Value::Regexp(r) => format!("/{}/{}", r.source, r.flags),
-            // `to_s` (and interpolation) is the match, as in Ruby.
+            // `to_s` (and interpolation) is the match, as in Ruby (a
+            // Bytes match as Bytes shows itself).
             Value::MatchData(m) if !inspect => {
                 let (st, en) = m.groups[0].unwrap_or((0, 0));
-                m.text[st..en].to_string()
+                match &m.data {
+                    Some(data) => crate::natives::bytes::inspect_bytes(&data[st..en]),
+                    None => m.text[st..en].to_string(),
+                }
             }
             Value::MatchData(m) => {
                 let group = |k: usize| -> String {
-                    match m.groups.get(k).copied().flatten() {
-                        Some((s, e)) => inspect_str(&m.text[s..e]),
-                        None => "nil".to_string(),
+                    match (m.groups.get(k).copied().flatten(), &m.data) {
+                        (Some((s, e)), Some(data)) => {
+                            crate::natives::bytes::inspect_bytes(&data[s..e])
+                        }
+                        (Some((s, e)), None) => inspect_str(&m.text[s..e]),
+                        (None, _) => "nil".to_string(),
                     }
                 };
-                let mut out = format!("#<MatchData {}", group(0));
+                let class = if m.data.is_some() {
+                    "Bytes::MatchData"
+                } else {
+                    "MatchData"
+                };
+                let mut out = format!("#<{class} {}", group(0));
                 for k in 1..m.groups.len() {
                     let label = m
                         .names

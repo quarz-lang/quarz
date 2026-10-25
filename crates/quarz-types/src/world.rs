@@ -278,6 +278,7 @@ pub struct Builtin {
     pub string_builder: ClassId,
     pub set_builder: ClassId,
     pub match_data: ClassId,
+    pub bytes_match_data: ClassId,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1295,6 +1296,7 @@ impl World {
             b.string_builder,
             b.set_builder,
             b.match_data,
+            b.bytes_match_data,
         ]
         .contains(&id)
     }

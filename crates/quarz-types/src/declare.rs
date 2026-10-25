@@ -1329,6 +1329,7 @@ impl<'ast> Declarer<'ast> {
             string_builder: 0,
             set_builder: 0,
             match_data: get(w, "MatchData"),
+            bytes_match_data: 0,
         };
         self.world.builtin = builtin;
         let nested = |world: &World, outer: ClassId, name: &str| -> ClassId {
@@ -1346,6 +1347,8 @@ impl<'ast> Declarer<'ast> {
             nested(&self.world, self.world.builtin.string, "Builder");
         self.world.builtin.set_builder = nested(&self.world, self.world.builtin.set, "Builder");
         self.world.builtin.bytes_builder = nested(&self.world, self.world.builtin.bytes, "Builder");
+        self.world.builtin.bytes_match_data =
+            nested(&self.world, self.world.builtin.bytes, "MatchData");
     }
 
     fn class_scope(&self, id: ClassId) -> TypeScope {

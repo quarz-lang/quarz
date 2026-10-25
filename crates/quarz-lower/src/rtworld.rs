@@ -296,6 +296,7 @@ pub fn build(world: &World, lw: &Lowerer, file_names: Vec<String>) -> RtWorld {
         set_builder: b.set_builder,
         bytes_builder: b.bytes_builder,
         match_data: b.match_data,
+        bytes_match_data: b.bytes_match_data,
         standard_error,
     };
     let _ = types::ClassId::default();
