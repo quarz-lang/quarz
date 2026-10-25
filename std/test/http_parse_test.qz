@@ -1,0 +1,159 @@
+# HTTP requests parsed and responses written, without sockets.
+require "http"
+require "test"
+
+class HttpParseTest < Test::Case
+  # What the parser makes of `text`, a line per element: the request's
+  # parts, its headers and its body, or the error it raised (after what
+  # was read before the error, for a body that fails).
+  def parsed(text: String, max_header: Int = 1024, max_body: Int = 100) -> String
+    lines: Array[String] = []
+    begin
+      r = HTTP::Reader.of(text.to_bytes)
+      req = HTTP.read_request(r, max_header, max_body, nil, HTTP::Proxies.none, false)
+      if req
+        lines = lines.push([req.method, req.target, req.path, req.query, req.version].inspect)
+        req.headers.each { |k, v| lines = lines.push("  #{k}: #{v}") }
+        lines = lines.push(req.body.read.inspect)
+      else
+        lines = lines.push("nil")
+      end
+    rescue HTTP::Error => e
+      lines = lines.push([e.class.name, e.status, e.message].inspect)
+    end
+    lines.join("\n")
+  end
+
+  def data_request -> Hash[String, [String, String]]
+    {
+      "query and headers" => ["GET /a%20b?x=1&y=%41 HTTP/1.1\r\nHost: example.com\r\nX-A:  1 \r\n\r\n",
+                              "[\"GET\", \"/a%20b?x=1&y=%41\", \"/a b\", \"x=1&y=%41\", \"HTTP/1.1\"]\n  host: example.com\n  x-a: 1\n\"\""],
+      "leading CRLF, Content-Length" => ["\r\nPOST /p HTTP/1.1\r\nContent-Length: 5\r\n\r\nhello",
+                                         "[\"POST\", \"/p\", \"/p\", \"\", \"HTTP/1.1\"]\n  content-length: 5\n\"hello\""],
+      "chunked with extension and trailer" => ["POST /c HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n6;ext=1\r\n world\r\n0\r\nX-T: 1\r\n\r\n",
+                                               "[\"POST\", \"/c\", \"/c\", \"\", \"HTTP/1.1\"]\n  transfer-encoding: chunked\n\"hello world\""],
+      "absolute target, HTTP/1.0, bare LF" => ["GET http://h/abs?q HTTP/1.0\n\n",
+                                               "[\"GET\", \"http://h/abs?q\", \"/abs\", \"q\", \"HTTP/1.0\"]\n\"\""],
+      "empty input" => ["", "nil"],
+      "bad request line" => ["BAD\r\n\r\n", "[\"HTTP::BadRequest\", 400, \"bad request line\"]"],
+      "HTTP/2.0" => ["GET / HTTP/2.0\r\n\r\n", "[\"HTTP::Error\", 505, \"HTTP Version Not Supported\"]"],
+      "obsolete line folding" => ["GET / HTTP/1.1\r\n folded\r\n\r\n", "[\"HTTP::BadRequest\", 400, \"obsolete line folding\"]"],
+      "bad header name" => ["GET / HTTP/1.1\r\nBad Name: x\r\n\r\n", "[\"HTTP::BadRequest\", 400, \"bad header\"]"],
+      "Transfer-Encoding and Content-Length" => ["POST / HTTP/1.1\r\nContent-Length: 3\r\nTransfer-Encoding: chunked\r\n\r\n",
+                                                 "[\"HTTP::BadRequest\", 400, \"Transfer-Encoding and Content-Length\"]"],
+      "two Content-Lengths" => ["POST / HTTP/1.1\r\nContent-Length: 3\r\nContent-Length: 4\r\n\r\n",
+                                "[\"HTTP::BadRequest\", 400, \"bad Content-Length\"]"],
+      "body too large" => ["POST / HTTP/1.1\r\nContent-Length: 300\r\n\r\n",
+                           "[\"POST\", \"/\", \"/\", \"\", \"HTTP/1.1\"]\n  content-length: 300\n[\"HTTP::PayloadTooLarge\", 413, \"Payload Too Large\"]"],
+      "headers too large" => ["GET / HTTP/1.1\r\nX: #{"a" * 2000}\r\n\r\n",
+                              "[\"HTTP::HeadersTooLarge\", 431, \"Request Header Fields Too Large\"]"],
+      "body shorter than Content-Length" => ["POST / HTTP/1.1\r\nContent-Length: 10\r\n\r\nshort",
+                                             "[\"POST\", \"/\", \"/\", \"\", \"HTTP/1.1\"]\n  content-length: 10\n[\"HTTP::BadRequest\", 400, \"unexpected end of body\"]"],
+      "unknown Transfer-Encoding" => ["POST / HTTP/1.1\r\nTransfer-Encoding: gzip\r\n\r\n",
+                                      "[\"HTTP::Error\", 501, \"Not Implemented\"]"],
+    }
+  end
+
+  def test_request(data: [String, String])
+    text, expected = data
+    assert_equal(expected, parsed(text))
+  end
+
+  def test_query_params_and_keep_alive
+    req = HTTP::Request.get("/q?a=1&b=2&a=x+y%21")
+    assert_equal("{\"a\" => [\"1\", \"x y!\"], \"b\" => [\"2\"]}", req.query_params.inspect)
+    assert_true(req.keep_alive?)
+  end
+
+  def test_form_params
+    req = HTTP::Request.post("/f", "a=1&b=%E3%81%82", HTTP::Headers.of({"Content-Type" => "application/x-www-form-urlencoded"}))
+    assert_equal("{\"a\" => [\"1\"], \"b\" => [\"あ\"]}", req.form_params.inspect)
+  end
+
+  # The response head without its Date line, CR LF shown as `|`, and
+  # whether the body is chunked.
+  def head(req: HTTP::Request?, res: HTTP::Response, keep: Bool = true) -> [String, Bool]
+    text, chunked = HTTP.response_head(req, res, keep)
+    [text.lines.reject { |l| l.start_with?("Date:") }.join.gsub("\r\n", "|"), chunked]
+  end
+
+  def test_head_text
+    assert_equal(["HTTP/1.1 200 OK|Content-Type: text/plain; charset=utf-8|Content-Length: 2||", false],
+                 head(nil, HTTP::Response.text("hi")))
+  end
+
+  def test_head_empty
+    assert_equal(["HTTP/1.1 204 No Content||", false], head(nil, HTTP::Response.empty))
+  end
+
+  def test_head_not_modified
+    assert_equal(["HTTP/1.1 304 Not Modified||", false],
+                 head(nil, HTTP::Response.new(304, HTTP::Headers.empty, HTTP::ResponseBody::Empty)))
+  end
+
+  def test_head_stream_is_chunked
+    assert_equal(["HTTP/1.1 200 OK|Transfer-Encoding: chunked||", true],
+                 head(HTTP::Request.get("/"), HTTP::Response.stream { |w| w.write("x") }))
+  end
+
+  def test_head_http10_keep_alive
+    assert_equal(["HTTP/1.1 200 OK|Content-Type: text/plain; charset=utf-8|Content-Length: 1|Connection: keep-alive||", false],
+                 head(HTTP::Request.build("GET", "/").with(version: "HTTP/1.0"), HTTP::Response.text("a")))
+  end
+
+  def test_head_redirect_closed
+    assert_equal(["HTTP/1.1 302 Found|Location: /x|Content-Length: 0|Connection: close||", false],
+                 head(nil, HTTP::Response.redirect("/x"), false))
+  end
+
+  def test_reason_and_canonical_name
+    assert_equal("Not Found", HTTP::Response.not_found.reason)
+    assert_equal("X-Forwarded-For", HTTP::Headers.canonical("x-forwarded-for"))
+  end
+
+  @proxies: HTTP::Proxies = HTTP::Proxies.of(["127.0.0.1", "10.0.0.0/8", "fd00::/8", "::1"])
+
+  def test_proxies_include
+    hosts = ["127.0.0.1", "10.2.3.4", "11.0.0.1", "fd12::1", "::1", "::ffff:10.0.0.1", "2001:db8::1", "nope"]
+    assert_equal([true, true, false, true, true, true, false, false], hosts.map { |a| @proxies.include?(a) })
+  end
+
+  def test_ip_bytes
+    assert_equal("b\" \\x01\\r\\xb8\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\"", HTTP.ip_bytes("2001:db8::1").inspect)
+    assert_equal("b\"\\x00\\x01\\x00\\x02\\x00\\x03\\x00\\x04\\x00\\x05\\x00\\x06\\x00\\x07\\x00\\x08\"", HTTP.ip_bytes("1:2:3:4:5:6:7:8").inspect)
+    assert_nil(HTTP.ip_bytes("1::2::3"))
+  end
+
+  def forwarded -> HTTP::Request
+    HTTP::Request.get("/", HTTP::Headers.empty.add("X-Forwarded-For", "1.2.3.4, 10.0.0.5").add("X-Forwarded-For", "127.0.0.1").add("X-Forwarded-Proto", "https"))
+      .with(remote_address: Socket::Address.new("127.0.0.1", 9), proxies: @proxies, trusted: true)
+  end
+
+  def test_forwarded_from_trusted_proxy
+    fwd = forwarded
+    assert_equal("1.2.3.4", fwd.remote_ip)
+    assert_equal("https", fwd.scheme)
+  end
+
+  def test_forwarded_untrusted
+    fwd = forwarded.with(trusted: false)
+    assert_equal("127.0.0.1", fwd.remote_ip)
+    assert_equal("http", fwd.scheme)
+  end
+
+  def test_json_response
+    assert_equal(["HTTP/1.1 200 OK|Content-Type: application/json|Content-Length: 11||", false],
+                 head(nil, HTTP::Response.json(JSON.parse("{\"a\": [1, 2]}"))))
+    r = HTTP::Response.json(JSON.parse("{\"a\": [1, 2]}"))
+    text = case r.body
+           in HTTP::ResponseBody::Text(text:) then text
+           else nil
+           end
+    assert_equal("{\"a\":[1,2]}", text)
+  end
+
+  def test_header_entries
+    assert_equal("[HTTP::Field(name: \"content-type\", value: \"text/plain; charset=utf-8\"), HTTP::Field(name: \"x-id\", value: \"7\")]",
+                 HTTP::Response.text("x").header("X-Id", "7").headers.entries.inspect)
+  end
+end

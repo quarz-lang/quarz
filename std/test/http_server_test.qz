@@ -1,0 +1,180 @@
+# HTTP::Server over sockets: keep-alive, pipelining, chunked bodies both
+# ways, HEAD, HTTP/1.0, errors, limits, 100-continue, timeouts.
+require "http"
+require "test"
+
+class HttpServerTest < Test::Case
+  # What the server reports to on_error: the message and the path.
+  @errors: Channel[String] = Channel[String].new(capacity: 8)
+
+  def handler -> HTTP::Handler
+    HTTP.handler do |req|
+      case req.path
+      when "/echo" then HTTP::Response.text("#{req.method} #{req.body.read}")
+      when "/boom" then raise "kaboom"
+      when "/teapot" then raise HTTP::Error.new(418, "short and stout")
+      when "/stream"
+        HTTP::Response.stream do |w|
+          3.times { |i| w.write("part#{i};") }
+        end
+      else HTTP::Response.text("hello #{req.path} #{req.query_params}")
+      end
+    end
+  end
+
+  # Serves on a port of its own while the block runs, then shuts down.
+  def serving(&: (Int) -> Nil) -> Nil
+    errors = @errors
+    report: shareable (Exception, HTTP::Request?) -> Nil = ->(e: Exception, r: HTTP::Request?) { errors.send("#{e.message} #{r ? r.path : "-"}"); nil }
+    server = HTTP::Server.new(handler, host: "127.0.0.1", port: 0, on_error: report, idle_timeout: 300.ms,
+                              max_body_bytes: 10, max_header_bytes: 200, read_header_timeout: 300.ms)
+    Task.scope do |scope|
+      scope.spawn { server.serve }
+      begin
+        port = server.local_address.port
+        yield port
+        # Whatever the test sent, the server goes on, and it reported
+        # nothing the test did not take.
+        alive = raw(port, "GET /alive HTTP/1.1\r\nConnection: close\r\n\r\n")
+        assert_match(/\AHTTP\/1\.1 200 OK\|/, alive)
+        assert_true(alive.end_with?("||hello /alive {}"), alive)
+        assert_nil(@errors.try_receive)
+      ensure
+        server.shutdown
+      end
+    end
+    nil
+  end
+
+  # Everything the server sends until it closes, without the Date line
+  # and with CR LF shown as `|`.
+  def raw(port: Int, text: String) -> String
+    Socket.tcp("127.0.0.1", port) do |s|
+      s.write(text)
+      out = String::Builder.new
+      loop do
+        part = s.readpartial?(4096)
+        break if part.nil?
+        out << part
+      end
+      out.to_s.gsub(/Date: [^\r]*\r\n/, "").gsub("\r\n", "|")
+    end
+  end
+
+  def test_get_with_query
+    serving do |port|
+      assert_equal("HTTP/1.1 200 OK|Content-Type: text/plain; charset=utf-8|Content-Length: 24|Connection: close||hello /hi {\"a\" => [\"1\"]}",
+                   raw(port, "GET /hi?a=1 HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"))
+    end
+  end
+
+  def test_pipelined_requests
+    # Two requests on one connection, the second pipelined after the first.
+    serving do |port|
+      assert_equal("HTTP/1.1 200 OK|Content-Type: text/plain; charset=utf-8|Content-Length: 8||POST abcHTTP/1.1 200 OK|Content-Type: text/plain; charset=utf-8|Content-Length: 16|Connection: close||hello /second {}",
+                   raw(port, "POST /echo HTTP/1.1\r\nContent-Length: 3\r\n\r\nabcGET /second HTTP/1.1\r\nConnection: close\r\n\r\n"))
+    end
+  end
+
+  def test_handler_raises
+    serving do |port|
+      assert_equal("HTTP/1.1 500 Internal Server Error|Content-Length: 0|Connection: close||",
+                   raw(port, "GET /boom HTTP/1.1\r\nConnection: close\r\n\r\n"))
+      assert_equal("kaboom /boom", @errors.receive)
+    end
+  end
+
+  def test_handler_raises_http_error
+    serving do |port|
+      assert_equal("HTTP/1.1 418 I'm a teapot|Content-Type: text/plain; charset=utf-8|Content-Length: 15|Connection: close||short and stout",
+                   raw(port, "GET /teapot HTTP/1.1\r\nConnection: close\r\n\r\n"))
+    end
+  end
+
+  def test_chunked_stream
+    serving do |port|
+      assert_equal("HTTP/1.1 200 OK|Transfer-Encoding: chunked|Connection: close||6|part0;|6|part1;|6|part2;|0||",
+                   raw(port, "GET /stream HTTP/1.1\r\nConnection: close\r\n\r\n"))
+    end
+  end
+
+  def test_head_of_stream
+    serving do |port|
+      assert_equal("HTTP/1.1 200 OK|Transfer-Encoding: chunked|Connection: close||",
+                   raw(port, "HEAD /stream HTTP/1.1\r\nConnection: close\r\n\r\n"))
+    end
+  end
+
+  def test_stream_to_http10_until_close
+    serving do |port|
+      assert_equal("HTTP/1.1 200 OK|Connection: close||part0;part1;part2;",
+                   raw(port, "GET /stream HTTP/1.0\r\n\r\n"))
+    end
+  end
+
+  def test_http10_keep_alive
+    serving do |port|
+      assert_equal("HTTP/1.1 200 OK|Content-Type: text/plain; charset=utf-8|Content-Length: 11|Connection: keep-alive||hello /x {}HTTP/1.1 200 OK|Content-Type: text/plain; charset=utf-8|Content-Length: 11|Connection: close||hello /y {}",
+                   raw(port, "GET /x HTTP/1.0\r\nConnection: keep-alive\r\n\r\nGET /y HTTP/1.0\r\n\r\n"))
+    end
+  end
+
+  def test_bad_request_line
+    serving do |port|
+      assert_equal("HTTP/1.1 400 Bad Request|Content-Type: text/plain; charset=utf-8|Content-Length: 16|Connection: close||bad request line",
+                   raw(port, "BROKEN\r\n\r\n"))
+    end
+  end
+
+  def test_kept_alive_then_closed_when_idle
+    # Kept alive, then closed after idle_timeout.
+    serving do |port|
+      assert_equal("HTTP/1.1 200 OK|Content-Type: text/plain; charset=utf-8|Content-Length: 11||hello /k {}",
+                   raw(port, "GET /k HTTP/1.1\r\n\r\n"))
+    end
+  end
+
+  def test_chunked_request_body
+    serving do |port|
+      assert_equal("HTTP/1.1 200 OK|Content-Type: text/plain; charset=utf-8|Content-Length: 8|Connection: close||POST abc",
+                   raw(port, "POST /echo HTTP/1.1\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n3\r\nabc\r\n0\r\n\r\n"))
+    end
+  end
+
+  def test_body_too_large
+    serving do |port|
+      assert_equal("HTTP/1.1 413 Payload Too Large|Content-Type: text/plain; charset=utf-8|Content-Length: 17||Payload Too Large",
+                   raw(port, "POST /echo HTTP/1.1\r\nContent-Length: 20\r\n\r\n01234567890123456789"))
+    end
+  end
+
+  def test_headers_too_large
+    serving do |port|
+      assert_equal("HTTP/1.1 431 Request Header Fields Too Large|Content-Type: text/plain; charset=utf-8|Content-Length: 31|Connection: close||Request Header Fields Too Large",
+                   raw(port, "GET / HTTP/1.1\r\nX: #{"a" * 300}\r\n\r\n"))
+    end
+  end
+
+  def test_continue_when_body_read
+    # 100 Continue is sent when the handler reads the body.
+    serving do |port|
+      assert_equal("HTTP/1.1 100 Continue||HTTP/1.1 200 OK|Content-Type: text/plain; charset=utf-8|Content-Length: 8|Connection: close||POST abc",
+                   raw(port, "POST /echo HTTP/1.1\r\nExpect: 100-continue\r\nContent-Length: 3\r\nConnection: close\r\n\r\nabc"))
+    end
+  end
+
+  def test_no_continue_when_body_not_read
+    # Not read: the connection is closed after the response, not drained.
+    serving do |port|
+      assert_equal("HTTP/1.1 200 OK|Content-Type: text/plain; charset=utf-8|Content-Length: 10|Connection: close||hello / {}",
+                   raw(port, "POST / HTTP/1.1\r\nExpect: 100-continue\r\nContent-Length: 3\r\n\r\n"))
+    end
+  end
+
+  def test_headers_that_never_end
+    # Closed after read_header_timeout, with nothing sent.
+    serving do |port|
+      assert_equal("", raw(port, "GET / HTTP/1.1\r\nX: 1\r\n"))
+    end
+  end
+end
