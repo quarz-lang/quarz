@@ -2166,10 +2166,10 @@ class String
   native def each_char(&: (String) -> Nil) -> Nil
   # Calls the block with each line, as `#lines` gives them.
   native def each_line(&: (String) -> Nil) -> Nil
-  # The integer at the start of the string, in base 10: leading
-  # whitespace and a sign are allowed, and the first other character that
-  # is not a digit or `_` ends it. Unlike Ruby's, `_` is accepted anywhere
-  # among the digits (`"_1"`, `"1__2"`, `"1_"`). 0 when there is no digit.
+  # The integer at the start of the string, in base 10, as Ruby reads it:
+  # leading whitespace, a sign and a `0d` prefix are allowed, a single `_`
+  # may stand between digits (`"1_000"`; `"1__2"` is 1), and the first
+  # other character ends it. 0 when there is no digit.
   #
   # ## Raises
   #
@@ -2181,18 +2181,24 @@ class String
   # "abc".to_i              # => 0
   # ```
   native def to_i -> Int
-  # The integer at the start of the string in `base` (2 to 36), read as
-  # `#to_i` reads it. Unlike Ruby's, a prefix such as `0x` is not
-  # skipped.
+  # The integer at the start of the string in `base` (2 to 36, or 0),
+  # read as `#to_i` reads it. As in Ruby, the prefix naming `base` is
+  # skipped (`0x` for 16, `0b` for 2, `0o` for 8, `0d` for 10, in either
+  # case), and base 0 takes the base from the prefix: octal for a bare
+  # leading `0`, decimal without one.
   #
   # ## Raises
   #
   # `OverflowError` when the number does not fit in an `Int`,
-  # `ArgumentError` for a `base` outside 2..36.
+  # `ArgumentError` for a `base` that is not 0 or within 2..36.
   #
   # ```
   # "ff".to_i(16)           # => 255
+  # "0xff".to_i(16)         # => 255
   # "1012".to_i(2)          # => 5
+  # "0b101".to_i(0)         # => 5
+  # "017".to_i(0)           # => 15
+  # "0x1f".to_i(10)         # => 0
   # "10".to_i(37)           # raises ArgumentError
   # ```
   native def to_i(base: Int) -> Int
@@ -2266,32 +2272,39 @@ class String
   native def ord -> Int
   # The string read as a hexadecimal number.
   #
-  # Whitespace at the ends is ignored, and the rest must be the number
-  # whole: either a sign and digits, or a `0x` prefix and digits (no sign
-  # before the prefix). Anything else gives 0, as does a number too large
-  # for an `Int`. Unlike Ruby's, `hex` does not stop at the first
-  # character that is not a digit. NOTE: this may change to read the
-  # number at the start, as Ruby does.
+  # As Ruby's, the same as `to_i(16)`: the number at the start, after
+  # whitespace, a sign and a `0x` prefix, with a single `_` allowed between
+  # digits; 0 when there is none.
+  #
+  # ## Raises
+  #
+  # `OverflowError` when the number does not fit in an `Int`.
   #
   # ```
   # "0x1A".hex              # => 26
   # "-ff".hex               # => -255
-  # "1fg".hex               # => 0
-  # "-0x1f".hex             # => 0
+  # "1fg".hex               # => 31
+  # "-0x1f".hex             # => -31
+  # "zz".hex                # => 0
   # ```
   native def hex -> Int
   # The string read as an octal number.
   #
-  # As in `#hex`, whitespace at the ends is ignored and the rest must be
-  # the number whole: a sign and digits, or a `0o` prefix and digits;
-  # anything else gives 0. Unlike Ruby's, `oct` does not stop at the first
-  # character that is not a digit, and does not read `0x` or `0b`. NOTE:
-  # this may change to read the number at the start, as Ruby does.
+  # As Ruby's: the number at the start, read as `#to_i` reads it, in the
+  # base its prefix names (`0x`, `0b`, `0o`, `0d`) and in octal without
+  # one; 0 when there is none.
+  #
+  # ## Raises
+  #
+  # `OverflowError` when the number does not fit in an `Int`.
   #
   # ```
   # "777".oct               # => 511
   # "-17".oct               # => -15
-  # "17x".oct               # => 0
+  # "17x".oct               # => 15
+  # "0x1f".oct              # => 31
+  # "0b11".oct              # => 3
+  # "19".oct                # => 1
   # ```
   native def oct -> Int
   # The string as a format with one value, `arg`, as `%(args)` formats
@@ -4787,7 +4800,8 @@ end
 #
 # Integer ranges iterate by 1 and `String` ranges by `String#succ`, as
 # `String#upto` does; a `Float` range has no elements to iterate over
-# (`#each`, `#to_a` and `#size` raise `TypeError`) but `#include?` works.
+# (`#each` and `#to_a` raise `TypeError`) but `#include?` works. Only an
+# `Int` range has `#size`.
 # An endless integer range iterates until the block breaks; `#to_a` on it
 # raises `TypeError`. A range is `Enumerable`, so `(1..3).map { }` and
 # `(1..).first(n)` work.
@@ -4848,12 +4862,6 @@ class Range[T]
   # Whether `value` lies between the bounds, by comparison: `#include?` for
   # a `value` of the element type.
   native def cover?(value: T) -> Bool
-  # The number of values; 0 when the range is empty.
-  #
-  # ## Raises
-  #
-  # `TypeError` for an endless or beginless range or a `Float` range.
-  native def size -> Int
   # Whether the range has no value. False for an endless or beginless
   # range.
   #
@@ -4922,6 +4930,24 @@ class Range[T]
   #
   # `TypeError` when the range cannot be iterated over, as `#to_a`.
   def last(n: Int) -> Array[T] = to_a.last(n)
+end
+
+# `#size` only where the number of values can be computed without
+# iterating: a `String` range has none, as Ruby's `size` is `nil` for one
+# (use `#count`, which iterates), and a `Float` range has no values.
+extension Range[T: Int]
+  # The number of values; 0 when the range is empty.
+  #
+  # ## Raises
+  #
+  # `TypeError` for an endless or beginless range.
+  #
+  # ```
+  # (1..10).size        # => 10
+  # (1...10).size       # => 9
+  # (3..1).size         # => 0
+  # ```
+  native def size -> Int
 end
 
 # A block or a lambda as a value, of a type `(A, B) -> R`: called with

@@ -142,16 +142,10 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             .map(|c| Ok(Value::Int(c as i64)))
             .unwrap_or_else(|| Err(i.err_arg("empty string")))
     });
-    native!(m, "String#hex", |i, r, _| {
-        Ok(Value::Int(
-            i64::from_str_radix(s(i, r)?.trim().trim_start_matches("0x"), 16).unwrap_or(0),
-        ))
-    });
-    native!(m, "String#oct", |i, r, _| {
-        Ok(Value::Int(
-            i64::from_str_radix(s(i, r)?.trim().trim_start_matches("0o"), 8).unwrap_or(0),
-        ))
-    });
+    // As Ruby's: `hex` is `to_i(16)`, `oct` takes the base from a prefix
+    // as `to_i(0)` does but reads one without a prefix as octal.
+    native!(m, "String#hex", |i, r, _| read_int(i, s(i, r)?, 16, 10));
+    native!(m, "String#oct", |i, r, _| read_int(i, s(i, r)?, 0, 8));
     native!(m, "String::Builder.new", |_, _, _| {
         Ok(Value::StringBuilder(Rc::new(RefCell::new(String::new()))))
     });
@@ -644,20 +638,21 @@ fn string_to_i(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
         Some(b) => int(interp, b, "base")?,
         None => 10,
     };
-    if !(2..=36).contains(&base) {
+    if base != 0 && !(2..=36).contains(&base) {
         return Err(interp.err_arg(&format!("invalid radix {base}")));
     }
-    let base = base as u32;
-    let t = text.trim_start();
-    let mut end = 0;
-    let bytes = t.as_bytes();
-    if end < bytes.len() && (bytes[end] == b'-' || bytes[end] == b'+') {
-        end += 1;
-    }
-    while end < bytes.len() && ((bytes[end] as char).is_digit(base) || bytes[end] == b'_') {
-        end += 1;
-    }
-    let digits: String = t[..end].chars().filter(|c| *c != '_').collect();
+    read_int(interp, text, base as u32, 10)
+}
+
+/// The integer at the start of `text` (`int_digits`), `OverflowError`
+/// past an `Int`.
+fn read_int(interp: &Interp, text: &str, base: u32, unprefixed: u32) -> EvalResult {
+    let (negative, digits, base) = int_digits(text, base, unprefixed);
+    let digits = if negative {
+        format!("-{digits}")
+    } else {
+        digits
+    };
     Ok(match i64::from_str_radix(&digits, base) {
         Ok(v) => Value::Int(v),
         Err(_) => {
@@ -668,6 +663,56 @@ fn string_to_i(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
             }
         }
     })
+}
+
+/// The integer at the start of `text`, as Ruby's `String#to_i` reads it:
+/// after blanks and a sign, a prefix (`0x`, `0b`, `0o`, `0d`, either case)
+/// is skipped when it names `base`; base 0 takes the base from it, octal
+/// for a bare leading `0`, `unprefixed` otherwise. A single `_` may stand
+/// between digits. Gives the sign, the digits (empty for none) and the
+/// base.
+fn int_digits(text: &str, base: u32, unprefixed: u32) -> (bool, String, u32) {
+    let b = text.as_bytes();
+    let mut i = 0;
+    while i < b.len() && (b[i].is_ascii_whitespace() || b[i] == 0x0b) {
+        i += 1;
+    }
+    let mut negative = false;
+    if i < b.len() && (b[i] == b'-' || b[i] == b'+') {
+        negative = b[i] == b'-';
+        i += 1;
+    }
+    let mut base = base;
+    if i + 1 < b.len() && b[i] == b'0' {
+        let named = match b[i + 1].to_ascii_lowercase() {
+            b'x' => 16,
+            b'b' => 2,
+            b'o' => 8,
+            b'd' => 10,
+            _ => 0,
+        };
+        if named != 0 && (base == 0 || base == named) {
+            base = named;
+            i += 2;
+        } else if base == 0 {
+            base = 8;
+        }
+    } else if base == 0 {
+        base = unprefixed;
+    }
+    let digit = |c: u8| (c as char).is_digit(base);
+    let mut out = String::new();
+    while i < b.len() {
+        if digit(b[i]) {
+            out.push(b[i] as char);
+        } else if b[i] == b'_' && !out.is_empty() && i + 1 < b.len() && digit(b[i + 1]) {
+            // Between two digits.
+        } else {
+            break;
+        }
+        i += 1;
+    }
+    (negative, out, base)
 }
 
 fn string_to_f(interp: &Interp, recv: &Value, _: Args) -> EvalResult {

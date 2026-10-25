@@ -319,7 +319,7 @@ double = ->(x: Int) { x * 2 }          # 手続き(Ruby の lambda に相当)
 - `yield` で呼ばれるだけのブロック(エスケープしないブロック)は、コンパイラがクロージャを割り当てずに展開します。`&block` を変数に保存したり返したりして**エスケープ**させた場合にだけ、ヒープ上のクロージャになります。
 - ブロックの中の `break`/`next`/`return` の意味は Ruby と同じです。`next` はブロックの値を返し、`break` はブロックを渡した呼び出しから抜け、`return` は囲んでいるメソッドから戻ります。
 - `->(x) { }` は Ruby の lambda と同じ(引数の個数が厳密、`return` は手続きから戻る)。`Proc.new` と `proc` は廃止し、手続きは `->` かブロックから作ります。
-- `&:name` は `{ |x| x.name }` へのコンパイル時変換です。Ruby の `Symbol#to_proc` と同じく、メソッドは public でなければなりません。private や protected のメソッドは、`x.name` なら呼べる場所でもエラーです(`puts` は `Kernel` の private メソッドなので、`[1].each(&:puts)` はエラー)。
+- `&:name` は `{ |x| x.name }` へのコンパイル時変換です。Ruby の `Symbol#to_proc` と同じく、メソッドは public でなければなりません。private や protected のメソッドは、`x.name` なら呼べる場所でもエラーです(`puts` は `Kernel` の private メソッドなので、`[1].each(&:puts)` はエラー)。メソッドは引数もブロックもなしで呼ばれ、受け手の型のメソッドと extension の中から、呼び出しと同じように選ばれます。extension のメソッドはその境界が成り立つ場合だけです(`[[1.5]].map(&:sum)` は `extension Enumerable[T: Float]` の `sum` を取り、`size` は `Range[T: Int]` にだけ定義されているので `["a".."b"].map(&:size)` はエラー)。引数かブロックが必要なオーバーロードは選ばれません。
 - 手続きの型は `(Int, String) -> Bool` のように書きます。ブロックを取らないメソッドにブロックを渡すとコンパイルエラーです。
 
 ### レシーバ付きブロック

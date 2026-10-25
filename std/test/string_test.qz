@@ -135,9 +135,52 @@ end
 
 class StringEdgeTest < Test::Case
   def test_to_i_with_a_bad_base
-    assert_raise(ArgumentError) { "ff".to_i(1) }
-    assert_raise(ArgumentError) { "ff".to_i(37) }
+    assert_raise(ArgumentError) { _ = "ff".to_i(1); nil }
+    assert_raise(ArgumentError) { _ = "ff".to_i(37); nil }
+    assert_raise(ArgumentError) { _ = "ff".to_i(-1); nil }
     assert_equal(255, "ff".to_i(16))
+  end
+
+  # As Ruby's: `hex` is `to_i(16)`; `oct` takes the base from a prefix and
+  # is octal without one.
+  def test_hex_and_oct
+    assert_equal(255, "0xff".hex)
+    assert_equal(-31, "-0x1f".hex)
+    assert_equal(31, "1fg".hex)
+    assert_equal(31, "1_f".hex)
+    assert_equal(0, "zz".hex)
+    assert_equal(15, "17x".oct)
+    assert_equal(31, "0x1f".oct)
+    assert_equal(3, "0b11".oct)
+    assert_equal(15, "0o17".oct)
+    assert_equal(19, "0d19".oct)
+    assert_equal(-15, "-017".oct)
+    assert_equal(1, "19".oct)
+    assert_raise(OverflowError) { _ = "ffffffffffffffffff".hex; nil }
+  end
+
+  # As Ruby's: the prefix naming the base is skipped, base 0 takes it from
+  # the prefix, and a single `_` may stand between digits.
+  def test_to_i_with_prefixes
+    assert_equal(31, "0x1f".to_i(16))
+    assert_equal(-31, "-0X1F".to_i(16))
+    assert_equal(5, "0b101".to_i(2))
+    assert_equal(15, "0o17".to_i(8))
+    assert_equal(19, "0d19".to_i)
+    assert_equal(0, "0x1f".to_i(10))
+    assert_equal(177, "0b1".to_i(16))
+    assert_equal(31, "0x1f".to_i(0))
+    assert_equal(5, "0b101".to_i(0))
+    assert_equal(15, "0o17".to_i(0))
+    assert_equal(15, "017".to_i(0))
+    assert_equal(0, "08".to_i(0))
+    assert_equal(12, " 12".to_i(0))
+    assert_equal(0, "0x".to_i(16))
+    assert_equal(0, "0x_1f".to_i(16))
+    assert_equal(1000, "1_000".to_i)
+    assert_equal(1, "1__2".to_i)
+    assert_equal(0, "_1".to_i)
+    assert_equal(1, "0x1__f".to_i(16))
   end
 
   def test_upto_from_after_the_end
