@@ -394,14 +394,21 @@ struct Assigned {
     bangs: Vec<(String, String)>,
     /// How many places assign each name.
     counts: HashMap<String, u32>,
-    /// The method names whose block a method may keep (a named `&blk`):
-    /// a block given to a call of one may run later
-    /// (`Checker::keeping_names`). `None` when not scanning for closures.
-    keeps: Option<Rc<HashSet<String>>>,
-    /// Inside a closure that may run later (a lambda, a block given to
-    /// one of `keeps`), and what such closures assign.
+    /// Scanning for closures that may run later: whether a method keeps
+    /// its block is not known before the call is checked, so any block
+    /// counts as one.
+    late: bool,
+    /// Inside a closure that may run later (a lambda, with `late` any
+    /// block), and what such closures assign.
     escaping: u32,
     escaped: HashSet<String>,
+    /// What such closures assign that is not in scope where they are made
+    /// (assigned nowhere before them in the walk): their own locals, or
+    /// locals from before the walk (`Checker::lookup_var` tells).
+    fresh: HashSet<String>,
+    /// The names in scope at this point of the walk (assigned before it,
+    /// a closure's parameters inside it).
+    known: HashSet<String>,
     /// Inside a loop's body (`while`), whose locals are the method's,
     /// and what is assigned there.
     repeat: u32,
@@ -419,9 +426,8 @@ impl Assigned {
     fn add(&mut self, name: &str) {
         self.names.insert(name.to_string());
         *self.counts.entry(name.to_string()).or_default() += 1;
-        if self.escaping > 0 {
-            self.escaped.insert(name.to_string());
-        }
+        self.note_escaping(name);
+        self.known.insert(name.to_string());
         if self.repeat > 0 {
             self.repeated.insert(name.to_string());
         }
@@ -430,10 +436,24 @@ impl Assigned {
         }
     }
 
+    /// Inside a closure that may run later, `name` is assigned.
+    fn note_escaping(&mut self, name: &str) {
+        if self.escaping > 0 {
+            if self.known.contains(name) {
+                self.escaped.insert(name.to_string());
+            } else {
+                self.fresh.insert(name.to_string());
+            }
+        }
+    }
+
     /// Walk a closure's body: `escapes` when it may run later.
     fn closure(&mut self, block: &Block, escapes: bool) {
+        // (What it assigns first is its own: out of scope after it.)
+        let known = self.known.clone();
         for p in &block.params.list {
             self.closure_params.insert(p.name.clone());
+            self.known.insert(p.name.clone());
         }
         // (A block's own locals are new each time it runs: its body does
         // not count as code that runs again, as a loop's does.)
@@ -442,6 +462,7 @@ impl Assigned {
         Checker::assigned_names(&block.body, self);
         self.closure_depth -= 1;
         self.escaping -= escapes as u32;
+        self.known = known;
     }
 }
 
@@ -537,10 +558,6 @@ pub struct Checker {
     /// found by each check, and those given up (`note_op_method`).
     op_seen: HashMap<(NodeId, bool), Option<MethodId>>,
     op_given_up: rustc_hash::FxHashSet<(NodeId, bool)>,
-    /// `keeping_names` by file kind (prelude 0, a standard library
-    /// module's file, `u32::MAX` for the program), with the number of
-    /// methods it was computed for (the REPL adds methods).
-    keeps: HashMap<u32, (usize, Rc<HashSet<String>>)>,
     pub world: World,
     pub diagnostics: Vec<(u32, Diagnostic)>,
     pub out: Output,
@@ -637,7 +654,6 @@ impl Checker {
         Checker {
             op_seen: HashMap::default(),
             op_given_up: Default::default(),
-            keeps: HashMap::default(),
             world,
             diagnostics: Vec::new(),
             out: Output::default(),
@@ -2488,9 +2504,7 @@ impl Checker {
                     if call.name.ends_with('!') && call.name != "!=" {
                         if let ExprKind::Local(name) = &r.kind {
                             out.bangs.push((name.clone(), call.name.clone()));
-                            if out.escaping > 0 {
-                                out.escaped.insert(name.clone());
-                            }
+                            out.note_escaping(name);
                             if out.repeat > 0 {
                                 out.repeated.insert(name.clone());
                             }
@@ -2507,8 +2521,7 @@ impl Checker {
                     }
                 }
                 if let Some(b) = &call.block {
-                    let escapes = out.keeps.as_ref().is_some_and(|k| k.contains(&call.name));
-                    out.closure(b, escapes);
+                    out.closure(b, out.late);
                 }
             }
             If { cond, then, els } => {
@@ -2710,82 +2723,6 @@ impl Checker {
         }
     }
 
-    /// The method names whose block a method may keep: those of methods
-    /// (natives included) whose block parameter is named (`&blk`); an
-    /// anonymous one (`&:`) is only yielded to or passed on to another
-    /// anonymous one. A block given to a call of one of these names may
-    /// run later. Only the methods the body's file can call count: the
-    /// prelude's for the prelude, those and its own for a standard
-    /// library module (what follows it cannot change how it checks).
-    fn keeping_names(&mut self) -> Rc<HashSet<String>> {
-        let file = self.env.file;
-        // Which methods the file can call: the prelude's for the prelude,
-        // those and its own for a standard library module, those of its
-        // cog and the cogs it depends on (directly or not) for a library
-        // cog's file, any for the application's.
-        let group = self.world.file_groups.get(&file).copied();
-        let key = match group {
-            None => 0,
-            Some(UnitGroup::Std(f)) => f,
-            Some(UnitGroup::Cog(c)) => 1 << 31 | c,
-            Some(UnitGroup::App) => u32::MAX,
-        };
-        let n = self.world.methods.len();
-        if let Some((len, k)) = self.keeps.get(&key) {
-            if *len == n {
-                return k.clone();
-            }
-        }
-        let cogs: HashSet<u32> = match group {
-            Some(UnitGroup::Cog(c)) => {
-                let mut seen: HashSet<u32> = HashSet::default();
-                let mut todo = vec![c];
-                while let Some(c) = todo.pop() {
-                    if !seen.insert(c) {
-                        continue;
-                    }
-                    for root in self.world.cogs[c as usize].imports.values() {
-                        if let Some(d) = self.world.class(*root).cog {
-                            todo.push(d);
-                        }
-                    }
-                }
-                seen
-            }
-            _ => HashSet::default(),
-        };
-        let visible = |m: &MethodInfo| -> bool {
-            if m.file == 0 {
-                return true;
-            }
-            match group {
-                None => false,
-                Some(UnitGroup::App) => true,
-                Some(UnitGroup::Std(f)) => m.file == f,
-                Some(UnitGroup::Cog(_)) => match self.world.file_groups.get(&m.file) {
-                    Some(UnitGroup::Std(_)) => true,
-                    Some(UnitGroup::Cog(d)) => cogs.contains(d),
-                    _ => false,
-                },
-            }
-        };
-        let k: HashSet<String> = self
-            .world
-            .methods
-            .iter()
-            .filter(|m| m.block.as_ref().is_some_and(|(n, _)| n != "&"))
-            .filter(|m| visible(m))
-            // `C.new { }` gives the block to `initialize`.
-            .flat_map(|m| {
-                let new = (m.name == "initialize" && !m.singleton).then(|| "new".to_string());
-                std::iter::once(m.name.clone()).chain(new)
-            })
-            .collect();
-        let k = Rc::new(k);
-        self.keeps.insert(key, (n, k.clone()));
-        k
-    }
-
     /// Stop narrowing `names` from here on in the body.
     fn never_narrow(&mut self, names: impl IntoIterator<Item = String>) {
         let names: Vec<String> = names
@@ -2800,22 +2737,38 @@ impl Checker {
 
     /// Entering code that may run again (a loop's body, a block, a
     /// lambda): a closure made later in it, which may run later (a
-    /// lambda, a block given to a call that may keep it, by name), may
-    /// have assigned an outer local by the time the code runs again, so
-    /// such locals are not narrowed from here on. A local of the closure
-    /// itself (assigned nowhere outside it, not in scope here) is not one.
-    fn prescan_repeated<'e>(&mut self, body: impl IntoIterator<Item = &'e Expr>) {
+    /// lambda, or any block: whether its method keeps it is not known
+    /// yet), may have assigned an outer local by the time the code runs
+    /// again, so such locals are not narrowed from here on. A local of
+    /// the closure itself (assigned nowhere outside it, not in scope
+    /// here) is not one.
+    fn prescan_repeated<'e>(
+        &mut self,
+        body: impl IntoIterator<Item = &'e Expr>,
+        fresh_locals: bool,
+    ) {
         let mut assigned = Assigned {
-            keeps: Some(self.keeping_names()),
+            late: true,
             ..Assigned::default()
         };
         for e in body {
             Self::assigned_names_expr(e, &mut assigned);
         }
+        // The body's own locals count too when they outlive a run of it (a
+        // loop's, a body a `rescue` retries); a block's or a lambda's are
+        // new each time it runs (`fresh_locals`).
         let captured: Vec<String> = assigned
             .escaped
             .into_iter()
-            .filter(|n| assigned.outside.contains(n) || self.lookup_var(n).is_some())
+            .filter(|n| {
+                (!fresh_locals && assigned.outside.contains(n)) || self.lookup_var(n).is_some()
+            })
+            .chain(
+                assigned
+                    .fresh
+                    .into_iter()
+                    .filter(|n| self.lookup_var(n).is_some()),
+            )
             .collect();
         self.never_narrow(captured);
     }
@@ -2854,21 +2807,27 @@ impl Checker {
         }
         reassigned.extend(assigned.bangs.iter().map(|(n, _)| n.clone()));
         self.env.reassigned = Some(Rc::new(reassigned));
-        // The same walk, telling closures that may run later by name, for
-        // what they assign of the body's locals (the REPL keeps adding).
+        // The same walk, counting any block as a closure that may run
+        // later, for what they assign of the body's locals (the REPL keeps
+        // adding).
         let mut late = Assigned {
-            keeps: Some(self.keeping_names()),
+            late: true,
             ..Assigned::default()
         };
         for e in body_again {
             Self::assigned_names_expr(e, &mut late);
         }
-        let mut params_and_outside = late.outside.clone();
-        params_and_outside.extend(params_list);
+        // (`escaped` holds what is in scope where the closure is made: a
+        // local of the body or of an enclosing closure, a parameter; which
+        // of them a closure entered later sees, `enter_late_closure` asks.)
         let found: Vec<String> = late
             .escaped
             .into_iter()
-            .filter(|n| params_and_outside.contains(n) || self.lookup_var(n).is_some())
+            .chain(
+                late.fresh
+                    .into_iter()
+                    .filter(|n| params_list.contains(n) || self.lookup_var(n).is_some()),
+            )
             .collect();
         Rc::make_mut(&mut self.env.late_assigned).extend(found);
     }
@@ -2915,8 +2874,16 @@ impl Checker {
         // `initialize` assigns later.
         // (Where the body is not known whole, the REPL's top level, which
         // later inputs add to: any outer local.)
+        // (Only those in scope here: a name assigned first in the closure
+        // is its own local, whatever the body assigns to it later.)
         let late: Vec<String> = match &self.env.reassigned {
-            Some(_) => self.env.late_assigned.iter().cloned().collect(),
+            Some(_) => self
+                .env
+                .late_assigned
+                .iter()
+                .filter(|n| self.lookup_var(n).is_some())
+                .cloned()
+                .collect(),
             None => self
                 .env
                 .frames
@@ -3426,7 +3393,7 @@ impl Checker {
             } => {
                 self.widen_assigned(body);
                 self.widen_assigned(std::slice::from_ref(cond));
-                self.prescan_repeated(body.iter().chain(std::iter::once(&**cond)));
+                self.prescan_repeated(body.iter().chain(std::iter::once(&**cond)), false);
                 let (ct, facts_true, facts_false) = self.check_cond(cond);
                 let (body_facts, exit_facts) = if *negate {
                     (facts_false, facts_true)
@@ -4540,6 +4507,7 @@ impl Checker {
                     .body
                     .iter()
                     .chain(block.rescues.iter().flat_map(|r| r.body.iter())),
+                false,
             );
         }
         let before = self.snapshot();
@@ -7184,7 +7152,7 @@ impl Checker {
         let params = params.clone();
         let ret = (**ret).clone();
         self.widen_assigned(&block.body);
-        self.prescan_repeated(&block.body);
+        self.prescan_repeated(&block.body, true);
         // A block the method may keep may run later, as a lambda may.
         let escapes = std::mem::take(&mut self.env.next_block_escapes);
         let late =
@@ -7435,7 +7403,7 @@ impl Checker {
             _ => (None, None, false),
         };
         self.widen_assigned(&block.body);
-        self.prescan_repeated(&block.body);
+        self.prescan_repeated(&block.body, true);
         // A lambda may run later, after what it captures has changed (a
         // shareable one copies what it captures, and assigns none of it).
         let late = (!shareable).then(|| self.enter_late_closure(&block.body));

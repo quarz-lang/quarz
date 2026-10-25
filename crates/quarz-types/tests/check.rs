@@ -1321,6 +1321,27 @@ fn closures_that_may_run_later_end_narrowings() {
     ok("def g(s: String?) -> Int\n  x = s\n  if x\n    r = -> { x.size }\n    r.call + x.size\n  else\n    0\n  end\nend\np g(\"abc\")");
     ok("def f(xs: Array[Int]) -> Int\n  found: Int? = nil\n  xs.each { |x| found = x if x > 2 }\n  if found\n    puts found\n    found + 1\n  else\n    0\n  end\nend\np f([1, 5])");
     ok("def f(xs: Array[String?]) -> Int\n  r = -> { 0 }\n  xs.each do |e|\n    y = e\n    if y\n      r = -> { y.size }\n    end\n  end\n  r.call\nend");
+    // A local first assigned in a lambda is its own, though the body
+    // assigns the name later: narrowed inside and outside.
+    ok("def f(c: Channel[Int]) -> Int\n  n = 0\n  l = -> do\n    r = c.try_receive\n    n += r if r\n    nil\n  end\n  l.call\n  r = c.try_receive\n  return 0 unless r\n  n + r\nend");
+    // In a loop, before its calls are checked, any block counts as one
+    // that may be kept; inside the block an assignment still narrows.
+    err(
+        "def f(xs: Array[Int]) -> Int\n  i = 0\n  while i < 2\n    last: Int? = nil\n    xs.each { |v| last = v }\n    p last + 1 if last\n    i += 1\n  end\n  0\nend",
+        "undefined method `+` for Nil",
+    );
+    ok("x: String? = nil\n[\"foo\", \"bar\"].each do |i|\n  x = i\n  p x + \"123\"\nend");
+    // A block's own locals are new each time it runs: the iterator idiom
+    // works inside another block.
+    ok("def f(xs: Array[String?]) -> Int\n  t = 0\n  [1].each do |_|\n    found: String? = nil\n    xs.each { |x| found = x if x }\n    if found\n      t += found.size\n    end\n  end\n  t\nend");
+    // A closure made later in a block may change the block's own local
+    // before a lambda that tested it runs.
+    err(
+        "def f(s: String) -> Int\n  t = 0\n  [1].each do |i|\n    y: String? = s\n    k = -> { 0 }\n    a = -> do\n      if y\n        k.call\n        y.size\n      else\n        0\n      end\n    end\n    k = -> { y = nil; 0 }\n    t += a.call\n  end\n  t\nend",
+        "undefined method `size` for Nil",
+    );
+    // A block's own `y`, though the loop assigns another `y` after it.
+    ok("def f(xs: Array[String?]) -> Int\n  i = 0\n  t = 0\n  while i < 2\n    xs.each do |v|\n      y = v\n      t += y.size if y\n    end\n    y = \"z\"\n    i += 1\n  end\n  t\nend");
 }
 
 #[test]
