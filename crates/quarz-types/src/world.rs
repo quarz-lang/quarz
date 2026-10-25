@@ -339,6 +339,29 @@ pub struct World {
     /// (class, abstract method, implementation), found where the class is
     /// declared: conformance holds wherever the value goes.
     pub ext_impls: Vec<(ClassId, MethodId, MethodId)>,
+    /// `ancestors` remembered while the classes do not change (checking;
+    /// `freeze_ancestors`): a lookup computed them again and again.
+    #[serde(skip)]
+    ancestors_memo: AncestorsMemo,
+}
+
+type AncestorsKey = (ClassId, Vec<Type>, Vec<ExtensionId>);
+type AncestorList = std::rc::Rc<Vec<(ClassId, Vec<Type>)>>;
+
+#[derive(Debug, Default)]
+struct AncestorsMemo {
+    on: bool,
+    map: std::cell::RefCell<HashMap<AncestorsKey, AncestorList>>,
+}
+
+/// A copy of the world starts with nothing remembered.
+impl Clone for AncestorsMemo {
+    fn clone(&self) -> Self {
+        AncestorsMemo {
+            on: self.on,
+            map: Default::default(),
+        }
+    }
 }
 
 /// The modules found for a module and its type arguments in one walk of
@@ -660,7 +683,27 @@ impl World {
     /// arguments expressed in terms of the given `args`. Retroactive
     /// conformance from active extensions is included.
     pub fn ancestors(&self, id: ClassId, args: &[Type]) -> Vec<(ClassId, Vec<Type>)> {
-        self.ancestors_with(id, args, &self.conformance_extensions())
+        let exts = self.conformance_extensions();
+        if !self.ancestors_memo.on {
+            return self.ancestors_with(id, args, &exts);
+        }
+        let key = (id, args.to_vec(), exts);
+        if let Some(found) = self.ancestors_memo.map.borrow().get(&key) {
+            return found.as_ref().clone();
+        }
+        let found = self.ancestors_with(id, args, &key.2);
+        self.ancestors_memo
+            .map
+            .borrow_mut()
+            .insert(key, std::rc::Rc::new(found.clone()));
+        found
+    }
+
+    /// Remember `ancestors` from now on (`true`: the classes and their
+    /// headers no longer change) or forget them (`false`).
+    pub fn freeze_ancestors(&mut self, on: bool) {
+        self.ancestors_memo.on = on;
+        self.ancestors_memo.map.get_mut().clear();
     }
 
     /// The extensions that add conformances, looked up once per walk.

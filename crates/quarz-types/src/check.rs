@@ -690,6 +690,8 @@ struct MatchedArg<'a> {
 
 impl Checker {
     pub fn new(world: World, file_mains: Vec<Option<ClassId>>) -> Checker {
+        let mut world = world;
+        world.freeze_ancestors(true);
         let env = Env {
             frames: vec![Frame {
                 vars: Vars::default(),

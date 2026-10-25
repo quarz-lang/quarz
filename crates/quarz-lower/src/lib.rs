@@ -109,11 +109,12 @@ impl Lowerer {
         if self.method_funcs.len() < world.methods.len() {
             self.method_funcs.resize(world.methods.len(), None);
         }
+        let known = self.reached.len();
         if self.reached.len() < world.methods.len() {
             self.reached.resize(world.methods.len(), false);
         }
         for mid in 0..world.methods.len() {
-            if world.methods[mid].file != PRELUDE_FILE || self.reached[mid] {
+            if !self.lazy(world, world.methods[mid].file) || self.reached[mid] {
                 self.lower_method(world, out, mid as MethodId);
             }
         }
@@ -172,6 +173,16 @@ impl Lowerer {
         let mut work: Vec<MethodId> = Vec::new();
         for n in quarz_ir::shake::RUNTIME_NAMES {
             self.reach_name(world, n, &by_name, &mut work);
+        }
+        // Methods new this round (a REPL input requiring a library) whose
+        // name an earlier round reached: callable already.
+        for mid in known..world.methods.len() {
+            if self
+                .reached_names
+                .contains(world.methods[mid].name.as_str())
+            {
+                self.reach_method(world, mid as MethodId, &by_name, &mut work);
+            }
         }
         loop {
             while self.scanned < self.pending.len() {
@@ -254,6 +265,12 @@ fn methods_by_name(world: &World) -> HashMap<&str, Vec<MethodId>> {
 }
 
 impl Lowerer {
+    /// Whether the methods of `file` are lowered only once something may
+    /// call them: the prelude's and the standard library's.
+    fn lazy(&self, world: &World, file: u32) -> bool {
+        file == PRELUDE_FILE || world.std_files.contains(&file)
+    }
+
     /// Lower method `mid` if it has a body and has not been lowered.
     fn lower_method(&mut self, world: &World, out: &Output, mid: MethodId) {
         let m = &world.methods[mid as usize];
@@ -285,7 +302,7 @@ impl Lowerer {
         }
         *seen = true;
         let m = &world.methods[mid as usize];
-        if m.file == PRELUDE_FILE && self.method_funcs[mid as usize].is_none() {
+        if self.lazy(world, m.file) && self.method_funcs[mid as usize].is_none() {
             work.push(mid);
         }
         if let Some(orig) = m.alias_of {

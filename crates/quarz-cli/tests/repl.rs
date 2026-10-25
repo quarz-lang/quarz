@@ -308,3 +308,11 @@ fn standard_library_without_require() {
     ]);
     assert_eq!(out, vec!["=> \"[1,2]\"", "", "=> 3"]);
 }
+
+/// A library required by a later input: its methods that only natives
+/// call by name (`to_s` from `puts`) are lowered too.
+#[test]
+fn a_library_required_later_is_lowered() {
+    let (_, printed) = values(&["x = 1", "require \"json\"", "puts JSON.parse(\"[1]\")"]);
+    assert_eq!(printed, "[1]\n");
+}

@@ -245,6 +245,7 @@ impl Session {
             .map(|e| (*e).clone())
             .collect();
         self.checker.world = std::mem::take(&mut declarer.world);
+        self.checker.world.freeze_ancestors(true);
         self.checker.add_file_main(file, main);
         self.loaded.push((file, name.clone(), main));
         if diagnostics.iter().any(|(_, d)| d.is_error()) {
@@ -308,6 +309,7 @@ impl Session {
             .map(|e| (*e).clone())
             .collect();
         self.checker.world = std::mem::take(&mut declarer.world);
+        self.checker.world.freeze_ancestors(true);
         if diagnostics.iter().any(|(_, d)| d.is_error()) {
             return Err(diagnostics);
         }
@@ -532,6 +534,7 @@ pub fn check_with_extra(
                             .map(|e| (*e).clone())
                             .collect();
                         checker.world = std::mem::take(&mut declarer.world);
+                        checker.world.freeze_ancestors(true);
                         checker.add_file_main(file, main);
                         checker.mark_generated(file);
                         if !diagnostics.iter().any(|(_, d)| d.is_error()) {

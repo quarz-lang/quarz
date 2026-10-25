@@ -168,7 +168,8 @@ impl<'ast> Declarer<'ast> {
 
     /// A declarer adding to an existing world (REPL inputs). Builtins are
     /// looked up again only when the world is empty.
-    pub fn with_world(world: World) -> Declarer<'ast> {
+    pub fn with_world(mut world: World) -> Declarer<'ast> {
+        world.freeze_ancestors(false);
         let builtins_resolved = !world.classes.is_empty();
         Declarer {
             builtins_resolved,
