@@ -287,6 +287,14 @@ pub fn refs<'a>(f: &'a Function, visit: &mut dyn FnMut(Ref<'a>)) {
                 Inst::SymbolProc {
                     method: Some(m), ..
                 } => visit(Ref::Method(*m)),
+                // Called by name (the checks found different methods).
+                Inst::SymbolProc {
+                    method: None, name, ..
+                } => {
+                    if let Some(Constant::Str(n)) = f.consts.get(*name as usize) {
+                        visit(Ref::Name(n));
+                    }
+                }
                 Inst::MakeBlock { func, .. } => visit(Ref::Func(*func)),
                 Inst::ConstGet { id, .. } => visit(Ref::Const(*id)),
                 Inst::ClassRef { class, .. } | Inst::VariantSingleton { class, .. } => {

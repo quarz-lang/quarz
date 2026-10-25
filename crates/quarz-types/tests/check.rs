@@ -1549,6 +1549,16 @@ fn calls_a_class_test_cannot_choose_are_errors() {
         "class Foo\n  @s: String\n  def initialize(o: Int)\n    @s = \"int\"\n  end\n  def initialize(o: String)\n    @s = \"str\"\n  end\nend\ndef pk(i: Int) -> Array[Int] | Array[String] = i > 0 ? [1] : [\"a\"]\npk(1).each { |x| Foo.new(x) }",
         "cannot tell at run time which `initialize` to call",
     );
+    // A type's own `&&` for one check of a block, the built-in for another.
+    err(
+        "class Ma\n  def &&(&blk: () -> Bool) -> String = \"Ma&&\"\nend\nclass Mb\nend\ndef u(i: Int) -> Array[Ma] | Array[Mb] = [Ma.new]\nu(0).each { |x| p(x && true) }",
+        "cannot tell at run time whether `&&` is a method of",
+    );
+    // `&:name` resolved to two extensions' methods.
+    err(
+        "class Ma\nend\nclass Mb\nend\nextension Ma\n  def hi -> String = \"ma\"\nend\nextension Mb\n  def hi -> String = \"mb\"\nend\ndef u(i: Int) -> Array[Ma] | Array[Mb] = [Ma.new]\np u(0).map(&:hi)",
+        "cannot tell at run time which `hi` `&:hi` calls",
+    );
     // A module and a class that includes it.
     ok("module M\nend\nclass A\n  include M\nend\nextension A\n  def ext -> String = \"A\"\nend\nextension M\n  def ext -> String = \"M\"\nend\ndef pk(i: Int) -> A | M = A.new\nputs pk(1).ext");
 }

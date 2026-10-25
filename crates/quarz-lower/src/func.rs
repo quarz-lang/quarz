@@ -1821,7 +1821,11 @@ impl<'a> FnBuilder<'a> {
                     block = Some(match &e.kind {
                         ExprKind::Symbol(name) => {
                             let method = match self.out.block_pass.get(&e.id) {
-                                Some(quarz_types::BlockPass::Symbol(_, m)) => Some(*m),
+                                Some(quarz_types::BlockPass::Symbol(_, m))
+                                    if !self.out.varied_symbols.contains(&e.id) =>
+                                {
+                                    Some(*m)
+                                }
                                 _ => None,
                             };
                             let name = self.str_const(name);

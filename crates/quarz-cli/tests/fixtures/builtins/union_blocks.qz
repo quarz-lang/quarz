@@ -54,3 +54,45 @@ class Sub < Box[Int]
 end
 s = Sub.new(1)
 p s.v, s.n, s.w, s.sum
+
+# `!` of a type that has its own and of Bool; `&:name` resolved to
+# different methods per member.
+class Neg
+  def ! -> String = "neg"
+end
+def pn(i: Int) -> Array[Neg] | Array[Bool] = i > 0 ? [true] : [Neg.new]
+pn(1).each { |x| p(!x) }
+pn(0).each { |x| p(!x) }
+class Ma
+  def hi -> String = "ma"
+end
+class Mb
+  def hi -> String = "mb"
+end
+def pm(i: Int) -> Array[Array[Ma]] | Array[Array[Mb]] = i > 0 ? [[Mb.new]] : [[Ma.new]]
+pm(0).each { |x| p x.map(&:hi) }
+pm(1).each { |x| p x.map(&:hi) }
+def pu(i: Int) -> Array[Ma] | Array[Mb] = i > 0 ? [Mb.new] : [Ma.new]
+p pu(0).map(&:hi), pu(1).map(&:hi)
+
+# `!` on a union whose members each have their own; `&&` of two types'
+# own methods (called by name); an overload whose check is thrown away
+# leaves no `&&` behind.
+class NA
+  def ! -> String = "a"
+  def &&(&blk: () -> Bool) -> String = "NA&&"
+end
+class NB
+  def ! -> String = "b"
+  def &&(&blk: () -> Bool) -> String = "NB&&"
+end
+def nu(i: Int) -> NA | NB = i > 0 ? NB.new : NA.new
+[1, 0].each { |i| x = nu(i); p(!x) }
+def nl(i: Int) -> Array[NA] | Array[NB] = i > 0 ? [NB.new] : [NA.new]
+nl(0).each { |x| p(x && true) }
+nl(1).each { |x| p(x && true) }
+class K
+  def run(&blk: (NA) -> String) -> String = "na #{blk.call(NA.new)}"
+  def run(&blk: (Bool) -> Bool) -> String = "bool #{blk.call(true)}"
+end
+p K.new.run { |x| x && false }

@@ -86,6 +86,9 @@ pub struct Output {
     /// typed them differently: `node_types` holds the last one's, so
     /// nothing is specialized for it.
     pub varied_types: rustc_hash::FxHashSet<NodeId>,
+    /// `&:name` symbols whose checks found different methods: called by
+    /// name.
+    pub varied_symbols: rustc_hash::FxHashSet<NodeId>,
     /// Interpolations checked more than once whose `to_s` differed.
     pub interp_conflicts: rustc_hash::FxHashSet<NodeId>,
     /// Interpolated expressions (`"#{x}"`) whose type's `to_s` is an
@@ -385,6 +388,17 @@ struct Env {
     next_block_escapes: bool,
 }
 
+/// What the checks of a block found for `a && b` (`Checker::logical_seen`).
+#[derive(Clone, Debug, Default)]
+struct LogicalSeen {
+    /// A type's own method (the last found).
+    method: Option<MethodId>,
+    /// The built-in operator.
+    builtin: bool,
+    /// Reported, or called by name.
+    settled: bool,
+}
+
 /// An entry of `Checker::table_journal`: a node's table and conflict
 /// flag before a change.
 #[derive(Debug)]
@@ -401,6 +415,14 @@ enum TableUndo {
     ),
     /// A node marked in `Output::varied_types`.
     Varied(NodeId),
+    /// `Checker::logical_seen` of a node before a check changed it.
+    Logical(NodeId, Option<LogicalSeen>),
+    /// `Output::logical_calls` of a node before a check changed it.
+    LogicalCall(NodeId, Option<Box<Expr>>),
+    /// A symbol marked in `Output::varied_symbols`.
+    VariedSymbol(NodeId),
+    /// A `&:name` symbol's record before a check recorded another.
+    BlockPass(NodeId, Option<BlockPass>),
     /// A node's type before a check in a block recorded another.
     NodeType(NodeId, Option<Type>),
 }
@@ -581,6 +603,9 @@ pub struct Checker {
     /// A compound assignment's reader (`false`) and operator (`true`)
     /// found by each check, and those given up (`note_op_method`).
     op_seen: HashMap<(NodeId, bool), Option<MethodId>>,
+    /// What the checks of a block found for `a && b` / `a || b`: a type's
+    /// own method, the built-in operator, and whether that was reported.
+    logical_seen: HashMap<NodeId, LogicalSeen>,
     op_given_up: rustc_hash::FxHashSet<(NodeId, bool)>,
     pub world: World,
     pub diagnostics: Vec<(u32, Diagnostic)>,
@@ -693,6 +718,7 @@ impl Checker {
         };
         Checker {
             op_seen: HashMap::default(),
+            logical_seen: HashMap::default(),
             op_given_up: Default::default(),
             world,
             diagnostics: Vec::new(),
@@ -1260,6 +1286,27 @@ impl Checker {
                 }
                 TableUndo::Varied(id) => {
                     self.out.varied_types.remove(&id);
+                }
+                TableUndo::LogicalCall(id, call) => {
+                    match call {
+                        Some(c) => self.out.logical_calls.insert(id, *c),
+                        None => self.out.logical_calls.remove(&id),
+                    };
+                }
+                TableUndo::Logical(id, seen) => {
+                    match seen {
+                        Some(seen) => self.logical_seen.insert(id, seen),
+                        None => self.logical_seen.remove(&id),
+                    };
+                }
+                TableUndo::VariedSymbol(id) => {
+                    self.out.varied_symbols.remove(&id);
+                }
+                TableUndo::BlockPass(id, b) => {
+                    match b {
+                        Some(b) => self.out.block_pass.insert(id, b),
+                        None => self.out.block_pass.remove(&id),
+                    };
                 }
                 TableUndo::NodeType(id, t) => {
                     match t {
@@ -6436,7 +6483,13 @@ impl Checker {
         rhs: &Expr,
         expected: Option<&Type>,
     ) -> Option<Type> {
-        if !self.has_logical_method(lhs, name) {
+        let has = self.has_logical_method(lhs, name);
+        // In a block checked once per type: a type's own `&&` for one check
+        // and the built-in operator for another cannot both be lowered.
+        if !self.env.blocks.is_empty() && !has {
+            self.note_logical(expr, name, lhs, None);
+        }
+        if !has {
             return None;
         }
         let t = self.resolve(lhs);
@@ -6456,6 +6509,18 @@ impl Checker {
             type_args: vec![],
         };
         let rt = self.check_call_on(expr, &call, &t, false, expected);
+        if !self.env.blocks.is_empty() {
+            let found = match self.out.calls.get(&expr.id) {
+                Some(CallTarget::Method { method }) => Some(*method),
+                _ => None,
+            };
+            if let Some(m) = found {
+                self.note_logical(expr, name, lhs, Some(m));
+            }
+        }
+        let before = self.out.logical_calls.get(&expr.id).cloned();
+        self.table_journal
+            .push(TableUndo::LogicalCall(expr.id, before.map(Box::new)));
         self.out.logical_calls.insert(
             expr.id,
             Expr {
@@ -6503,7 +6568,7 @@ impl Checker {
                     result = self.join(&result, &rt);
                 }
                 self.out.calls.remove(&expr.id);
-                self.out.not_dispatch.insert(expr.id, targets);
+                self.note_not_dispatch(expr.id, targets);
                 return Some(result);
             }
         } else if !has_not(self, &t) {
@@ -6518,7 +6583,79 @@ impl Checker {
             has_parens: true,
             type_args: vec![],
         };
-        Some(self.check_call_on(expr, &call, &t, false, None))
+        let rt = self.check_call_on(expr, &call, &t, false, None);
+        // In a block checked once per type, another check may find no
+        // `!` (the built-in negation) or another: a test per type.
+        if !self.env.blocks.is_empty() {
+            // By member (a test of the class sees one), each its own `!`.
+            let mut targets = Vec::new();
+            for m in t.members() {
+                if let Some((id, _)) = self.world.lookup_methods(&m, "!").into_iter().next() {
+                    targets.push((m, id));
+                }
+            }
+            self.note_not_dispatch(expr.id, targets);
+        }
+        Some(rt)
+    }
+
+    /// Record what a check of a block found for `a && b` (`method`, or
+    /// the built-in operator): the built-in for one check and a method for
+    /// another is an error; two types' own methods are called by name
+    /// (an extension's is not found so: an error).
+    fn note_logical(&mut self, expr: &Expr, name: &str, lhs: &Type, method: Option<MethodId>) {
+        let before = self.logical_seen.get(&expr.id).cloned();
+        self.table_journal
+            .push(TableUndo::Logical(expr.id, before.clone()));
+        let mut seen = before.unwrap_or_default();
+        let previous = seen.method;
+        match method {
+            Some(m) => seen.method = Some(m),
+            None => seen.builtin = true,
+        }
+        if !seen.settled {
+            let message = if seen.builtin && seen.method.is_some() {
+                Some(format!(
+                    "cannot tell at run time whether `{name}` is a method of {} or the built-in operator (give the value one type first)",
+                    self.name(lhs)
+                ))
+            } else if let (Some(p), Some(m)) = (previous, method) {
+                let ext = |k: MethodId| self.world.method(k).extension.is_some();
+                if p == m {
+                    None
+                } else if ext(p) || ext(m) {
+                    Some(format!(
+                        "cannot tell at run time which `{name}` to call: {} or {} (give the value one type first)",
+                        self.method_label(p),
+                        self.method_label(m)
+                    ))
+                } else {
+                    // The classes' own: found by name.
+                    self.out.dynamic_calls.insert(expr.id);
+                    seen.settled = true;
+                    None
+                }
+            } else {
+                None
+            };
+            if let Some(message) = message {
+                seen.settled = true;
+                let d = Diagnostic::error(message, expr.span);
+                self.ambiguous.push((self.env.file, expr.id, d));
+            }
+        }
+        self.logical_seen.insert(expr.id, seen);
+    }
+
+    /// Add to what `!x` tests (`Output::not_dispatch`): the types whose
+    /// own `!` it calls, the built-in negation for any other.
+    fn note_not_dispatch(&mut self, id: NodeId, targets: Vec<(Type, MethodId)>) {
+        let entry = self.out.not_dispatch.entry(id).or_default();
+        for (t, m) in targets {
+            if !entry.iter().any(|(u, _)| *u == t) {
+                entry.push((t, m));
+            }
+        }
     }
 
     /// The innermost enclosing `self` (outside the blocks with receivers
@@ -7426,6 +7563,30 @@ impl Checker {
                             }
                             return Err(msg);
                         }
+                        // Checked again (a union receiver's members, a block
+                        // once per type) with another method: called by
+                        // name, which an extension's is not found by.
+                        if let Some(BlockPass::Symbol(_, before)) = self.out.block_pass.get(&e.id) {
+                            let before = *before;
+                            if before != mid && !self.out.varied_symbols.contains(&e.id) {
+                                self.out.varied_symbols.insert(e.id);
+                                self.table_journal.push(TableUndo::VariedSymbol(e.id));
+                                let ext = |m: MethodId| self.world.method(m).extension.is_some();
+                                if ext(before) || ext(mid) {
+                                    let (wb, wm) =
+                                        (self.method_label(before), self.method_label(mid));
+                                    let d = Diagnostic::error(
+                                        format!(
+                                            "cannot tell at run time which `{name}` `&:{name}` calls: {wb} or {wm} (give the value one type first)"
+                                        ),
+                                        e.span,
+                                    );
+                                    self.ambiguous.push((self.env.file, e.id, d));
+                                }
+                            }
+                        }
+                        let before = self.out.block_pass.get(&e.id).cloned();
+                        self.table_journal.push(TableUndo::BlockPass(e.id, before));
                         self.out
                             .block_pass
                             .insert(expr.id, BlockPass::Symbol(name.clone(), mid));
