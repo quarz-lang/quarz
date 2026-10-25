@@ -72,7 +72,7 @@ An array of a comparable element type is `Comparable` (`<=> < <= > >= between? c
 ### Set[out T], Range[T], Tuple
 
 - `Set`: `Set[1, 2]`, `Set.new(array)`, `add add? delete merge include? member? | + & - ^ union intersection difference subset? superset? proper_subset? proper_superset? <= >= < > disjoint? intersect? select filter reject delete_if keep_if size length empty? each to_a` + Enumerable. `Set::Builder`: `<< add add? delete merge subtract select! reject! delete_if keep_if clear replace to_set freeze to_a` + Enumerable.
-- `Range`: `each step reverse_each include? cover? to_a size empty? first last(n) begin end exclude_end? min max sum` + Enumerable; `each` and `step` return an enumerator without a block.
+- `Range`: `each step reverse_each include? cover? to_a size` (`Int` ranges only) `empty? first last(n) begin end exclude_end? min max sum` + Enumerable; `each` and `step` return an enumerator without a block.
 - Tuple `[A, B]`: `[0]` (statically typed), `size`, `to_a`, multiple assignment, patterns.
 
 ## 6. Procs

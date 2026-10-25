@@ -190,6 +190,18 @@ fn html() {
         "{stack}"
     );
     assert!(!stack.contains("debug_dump"), "{stack}");
+    // The list of pages folds, closed at first on a narrow screen: search
+    // results stay outside it, and the script that folds it follows it.
+    assert!(
+        stack.contains(
+            "<ul id=\"results\"></ul>\n<details id=\"pages\" open>\n<summary>Classes and modules</summary>"
+        ),
+        "{stack}"
+    );
+    assert!(
+        stack.contains("</details>\n<script>(function () { var narrow = window.matchMedia(\"(max-width: 48rem)\")"),
+        "{stack}"
+    );
     let point = std::fs::read_to_string(site.join("Point.html")).unwrap();
     assert!(point.contains("<p class=\"admonition note\">"), "{point}");
     let index_js = std::fs::read_to_string(site.join("search-index.js")).unwrap();

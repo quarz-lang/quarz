@@ -132,3 +132,95 @@ class RegexpTest < Test::Case
     assert_equal("has digit", classify("hello42"))
   end
 end
+
+class StringEdgeTest < Test::Case
+  def test_to_i_with_a_bad_base
+    assert_raise(ArgumentError) { _ = "ff".to_i(1); nil }
+    assert_raise(ArgumentError) { _ = "ff".to_i(37); nil }
+    assert_raise(ArgumentError) { _ = "ff".to_i(-1); nil }
+    assert_equal(255, "ff".to_i(16))
+  end
+
+  # As Ruby's: `hex` is `to_i(16)`; `oct` takes the base from a prefix and
+  # is octal without one.
+  def test_hex_and_oct
+    assert_equal(255, "0xff".hex)
+    assert_equal(-31, "-0x1f".hex)
+    assert_equal(31, "1fg".hex)
+    assert_equal(31, "1_f".hex)
+    assert_equal(0, "zz".hex)
+    assert_equal(15, "17x".oct)
+    assert_equal(31, "0x1f".oct)
+    assert_equal(3, "0b11".oct)
+    assert_equal(15, "0o17".oct)
+    assert_equal(19, "0d19".oct)
+    assert_equal(-15, "-017".oct)
+    assert_equal(1, "19".oct)
+    assert_raise(OverflowError) { _ = "ffffffffffffffffff".hex; nil }
+  end
+
+  # As Ruby's: the prefix naming the base is skipped, base 0 takes it from
+  # the prefix, and a single `_` may stand between digits.
+  def test_to_i_with_prefixes
+    assert_equal(31, "0x1f".to_i(16))
+    assert_equal(-31, "-0X1F".to_i(16))
+    assert_equal(5, "0b101".to_i(2))
+    assert_equal(15, "0o17".to_i(8))
+    assert_equal(19, "0d19".to_i)
+    assert_equal(0, "0x1f".to_i(10))
+    assert_equal(177, "0b1".to_i(16))
+    assert_equal(31, "0x1f".to_i(0))
+    assert_equal(5, "0b101".to_i(0))
+    assert_equal(15, "0o17".to_i(0))
+    assert_equal(15, "017".to_i(0))
+    assert_equal(0, "08".to_i(0))
+    assert_equal(12, " 12".to_i(0))
+    assert_equal(0, "0x".to_i(16))
+    assert_equal(0, "0x_1f".to_i(16))
+    assert_equal(1000, "1_000".to_i)
+    assert_equal(1, "1__2".to_i)
+    assert_equal(0, "_1".to_i)
+    assert_equal(1, "0x1__f".to_i(16))
+  end
+
+  def test_upto_from_after_the_end
+    seen = Array::Builder[String].new
+    "b".upto("a") { |s| seen << s }
+    assert_empty(seen.to_a)
+    "b".upto("aa") { |s| seen << s }
+    assert_empty(seen.to_a)
+    "a8".upto("b1") { |s| seen << s }
+    assert_equal(["a8", "a9", "b0", "b1"], seen.to_a)
+  end
+
+  def first_five -> String
+    "1".upto("9999999999") { |s| return s if s == "5" }
+    "none"
+  end
+
+  def test_upto_steps_lazily
+    assert_equal("5", first_five)
+  end
+
+  # As Ruby's: a carry crosses other characters, but not from a letter to
+  # a digit or back across them.
+  def test_succ
+    assert_equal("2.0", "1.9".succ)
+    assert_equal("b.a", "a.z".succ)
+    assert_equal("1.aa", "1.z".succ)
+    assert_equal("a.10a", "a.9z".succ)
+    assert_equal("AAa", "Zz".succ)
+    assert_equal("*+", "**".succ)
+    assert_equal("1ê0", "1é9".succ)
+    # Other scripts' letters and digits step within their runs, as in
+    # Ruby; the carry stop is between ASCII letters and digits only.
+    assert_equal("ê-0", "é-9".succ)
+    assert_equal("Ø", "Ö".succ)
+    assert_equal("אא", "ת".succ)
+    assert_equal("１０", "９".succ)
+    assert_equal("b٠", "a٩".succ)
+    assert_equal("\u{1}\u{0}", "\u{7f}".succ)
+    assert_equal("\u{1}\u{80}", "\u{7ff}".succ)
+    assert_equal("", "".succ)
+  end
+end

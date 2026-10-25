@@ -306,12 +306,21 @@ class Int
   native def <<(other: Int) -> Int
   # `self` shifted right by `other` bits, an arithmetic shift: the sign is
   # kept, so a negative number rounds toward negative infinity
-  # (`-7 >> 1` is -4) and a shift of 64 or more gives 0 or -1.
+  # (`-7 >> 1` is -4) and a shift of 64 or more gives 0 or -1. A negative
+  # `other` shifts left, as `<<` by `-other` does, with its
+  # `OverflowError` when the result leaves the `Int` range.
+  #
+  # ```
+  # -7 >> 1       # => -4
+  # 5 >> -1       # => 10
+  # 1 >> -63      # raises OverflowError
+  # ```
   native def >>(other: Int) -> Int
   # -1, 0 or 1 as `self` is less than, equal to or greater than `other`.
   native def <=>(other: Int) -> Int
-  # -1, 0 or 1 as `self` is less than, equal to or greater than `other`;
-  # 0 when `other` is NaN (where Ruby gives nil).
+  # -1, 0 or 1 as `self` is less than, equal to or greater than `other`.
+  # NaN comes after every number, as in `Float#<=>`: `1 <=> Float::NAN`
+  # is -1 (where Ruby gives nil).
   native def <=>(other: Float) -> Int
   # -1, 0 or 1 as `self` is less than, equal to or greater than `other`.
   native def <=>(other: Integer) -> Int
@@ -330,12 +339,14 @@ class Int
   native def >(other: Int) -> Bool
   # Whether `self` is greater than or equal to `other`.
   native def >=(other: Int) -> Bool
-  # Whether `self` is less than `other`; false when `other` is NaN.
+  # Whether `self` is less than `other`; false when `other` is NaN
+  # (although `<=>` orders NaN last).
   native def <(other: Float) -> Bool
   # Whether `self` is less than or equal to `other`; false when `other` is
   # NaN.
   native def <=(other: Float) -> Bool
-  # Whether `self` is greater than `other`; false when `other` is NaN.
+  # Whether `self` is greater than `other`; false when `other` is NaN
+  # (although `<=>` orders NaN last).
   native def >(other: Float) -> Bool
   # Whether `self` is greater than or equal to `other`; false when `other`
   # is NaN.
@@ -426,24 +437,31 @@ class Int
   # `ArgumentError` for a negative `exp`.
   native def pow(exp: Int) -> Int
   # `self ** exp` modulo `mod`, computed without the whole power: the
-  # result has the sign of `mod`, as with `%`. A negative `exp` is not
-  # supported; `ZeroDivisionError` when `mod` is 0.
+  # result has the sign of `mod`, as with `%`.
   #
-  # NOTE: a negative `exp` currently aborts the program instead of
-  # raising an exception; this may change.
+  # ## Raises
+  #
+  # `RangeError` for a negative `exp` (as in Ruby), `ZeroDivisionError`
+  # when `mod` is 0.
   #
   # ```
   # 2.pow(100, 1_000_000_007)   # => 976371285
   # 3.pow(4, -5)                # => -4
+  # 2.pow(-1, 5)                # raises RangeError
   # ```
   native def pow(exp: Int, mod: Int) -> Int
   # The greatest common divisor, never negative; `0.gcd(0)` is 0.
+  # `OverflowError` when it does not fit, which is only when it is 2**63:
+  # the smallest `Int`'s with 0 or with itself.
   native def gcd(other: Int) -> Int
   # The least common multiple, never negative; 0 when either is 0.
+  # `OverflowError` when it leaves the `Int` range (use `to_integer`
+  # first for a large one).
   #
   # ```
-  # 12.gcd(-18)   # => 6
-  # 4.lcm(-6)     # => 12
+  # 12.gcd(-18)                     # => 6
+  # 4.lcm(-6)                       # => 12
+  # 9223372036854775807.lcm(2)      # raises OverflowError
   # ```
   native def lcm(other: Int) -> Int
   # The number of bits `self` takes in two's complement, besides the sign
@@ -659,8 +677,9 @@ class Integer
   native def <=>(other: Int) -> Int
   # :ditto:
   native def <=>(other: Integer) -> Int
-  # -1, 0 or 1 as `self` is less than, equal to or greater than `other`;
-  # 0 when `other` is NaN.
+  # -1, 0 or 1 as `self` is less than, equal to or greater than `other`.
+  # NaN comes after every number, as in `Float#<=>`: the result is -1
+  # when `other` is NaN.
   native def <=>(other: Float) -> Int
   # Whether `other` is an `Int` or an `Integer` of the same value. Unlike
   # `Int#==`, a `Float` is never equal: `5.to_integer == 5.0` is false.
@@ -683,12 +702,14 @@ class Integer
   native def >(other: Integer) -> Bool
   # Whether `self` is greater than or equal to `other`.
   native def >=(other: Integer) -> Bool
-  # Whether `self` is less than `other`; false when `other` is NaN.
+  # Whether `self` is less than `other`; false when `other` is NaN
+  # (although `<=>` orders NaN last).
   native def <(other: Float) -> Bool
   # Whether `self` is less than or equal to `other`; false when `other` is
   # NaN.
   native def <=(other: Float) -> Bool
-  # Whether `self` is greater than `other`; false when `other` is NaN.
+  # Whether `self` is greater than `other`; false when `other` is NaN
+  # (although `<=>` orders NaN last).
   native def >(other: Float) -> Bool
   # Whether `self` is greater than or equal to `other`; false when `other`
   # is NaN.
@@ -726,11 +747,8 @@ class Integer
   # `ZeroDivisionError` when `other` is 0.
   native def divmod(other: Integer) -> [Integer, Integer]
   # `self ** exp` modulo `mod`, computed without the whole power: the
-  # result has the sign of `mod`. A negative `exp` is not supported;
+  # result has the sign of `mod`. `RangeError` for a negative `exp`,
   # `ZeroDivisionError` when `mod` is 0.
-  #
-  # NOTE: a negative `exp` currently aborts the program instead of
-  # raising an exception; this may change.
   native def pow(exp: Integer, mod: Integer) -> Integer
   # The greatest common divisor, never negative.
   native def gcd(other: Integer) -> Integer
@@ -796,8 +814,9 @@ class Float
   # Positive infinity, above every finite `Float`; `-INFINITY` is below
   # them all.
   INFINITY = 1.0 / 0.0
-  # Not a number, the result of `0.0 / 0.0`: it compares false with every
-  # `Float` and `NAN == NAN` is false, so test for it with `nan?`.
+  # Not a number, the result of `0.0 / 0.0`: `==`, `<`, `<=`, `>` and `>=`
+  # are false with it, `NAN == NAN` included, so test for it with `nan?`.
+  # `<=>` puts it after every other number, so it sorts last.
   NAN = 0.0 / 0.0
   # The difference between 1.0 and the next `Float` above it, 2**-52.
   EPSILON = 2.220446049250313e-16
@@ -852,8 +871,25 @@ class Float
   native def -@ -> Float
   # `self`.
   native def +@ -> Float
-  # -1, 0 or 1 as `self` is less than, equal to or greater than `other`;
-  # 0 when either is NaN (where Ruby gives nil).
+  # -1, 0 or 1 as `self` is less than, equal to or greater than `other`.
+  #
+  # This is a total order, where Ruby gives nil for NaN: NaN comes after
+  # every other number, infinity included, and is equal to itself
+  # (`NAN <=> NAN` is 0). So sorting puts NaN last, `min` ignores it
+  # unless every element is NaN, and `max` gives NaN when there is one.
+  # The operators `<`, `<=`, `>` and `>=` keep IEEE 754's comparisons
+  # instead: each is false when either side is NaN. -0.0 and 0.0 are
+  # equal.
+  #
+  # ```
+  # 1.0 <=> 2                          # => -1
+  # Float::NAN <=> Float::INFINITY     # => 1
+  # Float::NAN <=> Float::NAN          # => 0
+  # [3.0, Float::NAN, 1.0].sort        # => [1.0, 3.0, NaN]
+  # [3.0, Float::NAN, 1.0].min         # => 1.0
+  # [3.0, Float::NAN, 1.0].max         # => NaN
+  # Float::NAN > 1.0                   # => false
+  # ```
   native def <=>(other: Float) -> Int
   # :ditto:
   native def <=>(other: Int) -> Int
@@ -864,12 +900,14 @@ class Float
   # Whether `other` is not equal to `self` (`!(self == other)`): true for
   # NaN.
   native def !=(other: Object) -> Bool
-  # Whether `self` is less than `other`; false when either is NaN.
+  # Whether `self` is less than `other`; false when either is NaN
+  # (although `<=>` orders NaN last).
   native def <(other: Float) -> Bool
   # Whether `self` is less than or equal to `other`; false when either is
   # NaN.
   native def <=(other: Float) -> Bool
-  # Whether `self` is greater than `other`; false when either is NaN.
+  # Whether `self` is greater than `other`; false when either is NaN
+  # (although `<=>` orders NaN last).
   native def >(other: Float) -> Bool
   # Whether `self` is greater than or equal to `other`; false when either
   # is NaN.
@@ -928,47 +966,44 @@ class Float
   native def round -> Int
   # `self` rounded to `digits` decimal places (to tens, hundreds, ... for
   # a negative `digits`), a half away from zero; NaN and the infinities
-  # are returned as they are. The rounding is of the binary value scaled
-  # by `10 ** digits`, so a decimal half such as 2.675 may round either
-  # way.
+  # are returned as they are.
+  #
+  # As in Ruby, places after the point are those of the decimal form
+  # `inspect` shows, the shortest that reads back as `self`: 1.005 rounds
+  # to 1.01, though the binary number is a little below 1.005. Tens,
+  # hundreds, ... round the integer part exactly. The same holds for
+  # `floor`, `ceil` and `truncate` with `digits`, whose result is never on
+  # the wrong side of `self`; with more digits than `self` shows, `self`
+  # comes back.
   #
   # ```
   # 3.14159.round(2)    # => 3.14
+  # 1.005.round(2)      # => 1.01
   # 1234.5.round(-2)    # => 1200.0
   # ```
   native def round(digits: Int) -> Float
   # The `Int` toward zero; `RangeError` for NaN or an infinity,
   # `OverflowError` beyond the `Int` range.
   native def truncate -> Int
-  # `self` rounded toward negative infinity to `digits` decimal places.
-  # `digits` should be positive: use `floor` without one for a whole
-  # number.
-  #
-  # With a `digits` of 0 or less, the result is an `Int` at run time,
-  # although the declared type is `Float`: `15.5.floor(-1)` is `10` and
-  # `15.5.floor(0)` is `15` (where `15.5.round(-1)` is `20.0`), and
-  # `OverflowError` is raised beyond the `Int` range. NOTE: this may
-  # change to return a `Float`.
+  # `self` rounded toward negative infinity to `digits` decimal places
+  # (to tens, hundreds, ... for a negative `digits`), as a `Float`: use
+  # `floor` without `digits` for an `Int`. NaN and the infinities are
+  # returned as they are.
   #
   # ```
   # 3.14159.floor(2)     # => 3.14
   # -3.14159.floor(2)    # => -3.15
+  # 15.5.floor(0)        # => 15.0
+  # 15.5.floor(-1)       # => 10.0
   # ```
   native def floor(digits: Int) -> Float
-  # `self` rounded toward positive infinity to `digits` decimal places.
-  # `digits` should be positive: use `ceil` without one for a whole
-  # number.
-  #
-  # With a `digits` of 0 or less, the result is an `Int` at run time, as
-  # for `#floor(digits)`: `15.5.ceil(-1)` is `20`. NOTE: this may change
-  # to return a `Float`.
+  # `self` rounded toward positive infinity to `digits` decimal places,
+  # as a `Float`, as `#floor(digits)` rounds down: `15.5.ceil(-1)` is
+  # 20.0. Use `ceil` without `digits` for an `Int`.
   native def ceil(digits: Int) -> Float
-  # `self` rounded toward zero to `digits` decimal places. `digits`
-  # should be positive: use `truncate` without one for a whole number.
-  #
-  # With a `digits` of 0 or less, the result is an `Int` at run time, as
-  # for `#floor(digits)`: `15.5.truncate(-1)` is `10`. NOTE: this may
-  # change to return a `Float`.
+  # `self` rounded toward zero to `digits` decimal places, as a `Float`,
+  # as `#floor(digits)` rounds down: `-15.5.truncate(-1)` is -10.0. Use
+  # `truncate` without `digits` for an `Int`.
   native def truncate(digits: Int) -> Float
   # `[(self / other).floor, self % other]`, the modulo with the sign of
   # `other`. Unlike `/`, `ZeroDivisionError` when `other` is zero.
@@ -1052,13 +1087,21 @@ class Duration
   include Shareable
   include Comparable[Duration]
 
-  # The sum.
+  # The sum; `OverflowError` when it leaves the range a `Duration` holds.
+  #
+  # ```
+  # 1.minute + 30.seconds          # => 90s
+  # 100000.days + 100000.days      # raises OverflowError
+  # ```
   native def +(other: Duration) -> Duration
-  # The difference, negative when `other` is longer.
+  # The difference, negative when `other` is longer; `OverflowError`
+  # when it leaves the range a `Duration` holds.
   native def -(other: Duration) -> Duration
-  # The duration `factor` times as long.
+  # The duration `factor` times as long; `OverflowError` when it leaves
+  # the range a `Duration` holds.
   native def *(factor: Int) -> Duration
-  # The duration `factor` times as long, truncated to a whole nanosecond.
+  # The duration `factor` times as long, truncated to a whole nanosecond;
+  # `OverflowError` when it leaves the range (or for a NaN `factor`).
   native def *(factor: Float) -> Duration
   # -1, 0 or 1 as `self` is shorter than, as long as or longer than
   # `other`.
@@ -1586,9 +1629,9 @@ end
 # equal when they are the same instant, whatever their offsets.
 #
 # The range is that of a 64-bit count of nanoseconds since 1970: from
-# 1677-09-21 00:12:44 UTC to 2262-04-11 23:47:16 UTC. `Time.at` and `#+`
-# raise `RangeError` outside it, but `Time.utc` and `Time.local` give the
-# epoch (1970-01-01 00:00:00 UTC) instead.
+# 1677-09-21 00:12:44 UTC to 2262-04-11 23:47:16 UTC. `Time.at`,
+# `Time.utc`, `Time.local`, `Time.iso8601` and `#+` raise `RangeError`
+# outside it.
 #
 # ```
 # t = Time.utc(2024, 3, 5, 14, 7, 9)
@@ -1617,31 +1660,30 @@ class Time
   native def self.at(seconds: Float) -> Time
   # The time of the given date and time of day in UTC.
   #
-  # A time outside the range `Time` can hold (before 1677-09-21 00:12:44
-  # or after 2262-04-11 23:47:16 UTC) is the epoch, 1970-01-01 00:00:00
-  # UTC, without an error. NOTE: this may change to raise `RangeError`.
-  #
   # ## Raises
   #
   # `ArgumentError` when a part is out of range (month 13, February 30,
-  # hour 24, second 60).
+  # hour 24, second 60); `RangeError` for a time outside the range `Time`
+  # can hold (before 1677-09-21 00:12:44 or after 2262-04-11 23:47:16
+  # UTC).
   #
   # ```
   # Time.utc(2024)              # => 2024-01-01 00:00:00 UTC
   # Time.utc(2262, 4, 11)       # => 2262-04-11 00:00:00 UTC
   # Time.utc(2024, 2, 30)       # raises ArgumentError
+  # Time.utc(3000)              # raises RangeError
   # ```
   native def self.utc(year: Int, month: Int = 1, day: Int = 1, hour: Int = 0, min: Int = 0, sec: Int = 0) -> Time
   # The time of the given date and time of day in the local time zone.
   #
-  # A time that occurs twice (when clocks go back) is the earlier one. A
-  # time outside the range `Time` can hold is the epoch, as in
-  # `Time.utc`. NOTE: this may change to raise `RangeError`.
+  # A time that occurs twice (when clocks go back) is the earlier one.
   #
   # ## Raises
   #
   # `ArgumentError` when a part is out of range (month 13, hour 24), or
-  # the time does not occur locally (skipped when clocks go forward).
+  # the time does not occur locally (skipped when clocks go forward);
+  # `RangeError` for a time outside the range `Time` can hold, as in
+  # `Time.utc`.
   native def self.local(year: Int, month: Int = 1, day: Int = 1, hour: Int = 0, min: Int = 0, sec: Int = 0) -> Time
   # The time written in `text`.
   #
@@ -1652,13 +1694,22 @@ class Time
   # and the time; whitespace at the ends is ignored. A time ending in `Z`
   # is in UTC, one with an offset keeps that offset.
   #
+  # `#to_s`'s and `#inspect`'s own forms are read too: the offset may
+  # follow the time after a space (`2024-03-05 14:07:09 +0900`), and
+  # ` UTC` stands for `Z` (`2024-03-05 14:07:09 UTC`), so `#to_s` reads
+  # back as the same time.
+  #
   # ## Raises
   #
-  # `ArgumentError` when `text` is in none of these forms.
+  # `ArgumentError` when `text` is in none of these forms, `RangeError`
+  # when it is a time outside the range a `Time` holds.
   #
   # ```
   # Time.parse("2024-03-05 14:07:09Z")         # => 2024-03-05 14:07:09 UTC
   # Time.parse("2024-03-05T14:07:09+09:00").utc_offset   # => 32400
+  # Time.parse("2024-03-05 14:07:09 UTC")      # => 2024-03-05 14:07:09 UTC
+  # t = Time.utc(2024, 3, 5, 14, 7, 9)
+  # Time.parse(t.to_s) == t                    # => true
   # Time.parse("yesterday")                    # raises ArgumentError
   # ```
   native def self.parse(text: String) -> Time
@@ -1669,7 +1720,13 @@ class Time
   #
   # ## Raises
   #
-  # `ArgumentError` for any other form, a date alone included.
+  # `ArgumentError` for any other form, a date alone included;
+  # `RangeError` for a time outside the range `Time` can hold.
+  #
+  # ```
+  # Time.iso8601("2024-03-05T14:07:09Z")   # => 2024-03-05 14:07:09 UTC
+  # Time.iso8601("3000-01-01T00:00:00Z")   # raises RangeError
+  # ```
   native def self.iso8601(text: String) -> Time
   # The time elapsed since the program started, from a clock that never
   # goes back.
@@ -1730,8 +1787,14 @@ class Time
   native def -(duration: Duration) -> Time
   # The time from `other` to this time (negative when `other` is later).
   #
+  # ## Raises
+  #
+  # `RangeError` when the difference does not fit a `Duration` (about 292
+  # years either way).
+  #
   # ```
   # Time.utc(2024, 1, 2) - Time.utc(2024, 1, 1) == 1.day   # => true
+  # Time.utc(2262) - Time.utc(1678)                        # raises RangeError
   # ```
   native def -(other: Time) -> Duration
   # Compares the instants, whatever the offsets: -1, 0 or 1.
@@ -2103,10 +2166,10 @@ class String
   native def each_char(&: (String) -> Nil) -> Nil
   # Calls the block with each line, as `#lines` gives them.
   native def each_line(&: (String) -> Nil) -> Nil
-  # The integer at the start of the string, in base 10: leading
-  # whitespace and a sign are allowed, and the first other character that
-  # is not a digit or `_` ends it. Unlike Ruby's, `_` is accepted anywhere
-  # among the digits (`"_1"`, `"1__2"`, `"1_"`). 0 when there is no digit.
+  # The integer at the start of the string, in base 10, as Ruby reads it:
+  # leading whitespace, a sign and a `0d` prefix are allowed, a single `_`
+  # may stand between digits (`"1_000"`; `"1__2"` is 1), and the first
+  # other character ends it. 0 when there is no digit.
   #
   # ## Raises
   #
@@ -2118,17 +2181,25 @@ class String
   # "abc".to_i              # => 0
   # ```
   native def to_i -> Int
-  # The integer at the start of the string in `base` (2 to 36), read as
-  # `#to_i` reads it. Unlike Ruby's, a prefix such as `0x` is not
-  # skipped.
+  # The integer at the start of the string in `base` (2 to 36, or 0),
+  # read as `#to_i` reads it. As in Ruby, the prefix naming `base` is
+  # skipped (`0x` for 16, `0b` for 2, `0o` for 8, `0d` for 10, in either
+  # case), and base 0 takes the base from the prefix: octal for a bare
+  # leading `0`, decimal without one.
   #
   # ## Raises
   #
-  # `OverflowError` when the number does not fit in an `Int`.
+  # `OverflowError` when the number does not fit in an `Int`,
+  # `ArgumentError` for a `base` that is not 0 or within 2..36.
   #
   # ```
   # "ff".to_i(16)           # => 255
+  # "0xff".to_i(16)         # => 255
   # "1012".to_i(2)          # => 5
+  # "0b101".to_i(0)         # => 5
+  # "017".to_i(0)           # => 15
+  # "0x1f".to_i(10)         # => 0
+  # "10".to_i(37)           # raises ArgumentError
   # ```
   native def to_i(base: Int) -> Int
   # The decimal number at the start of the string (leading whitespace, a
@@ -2177,11 +2248,14 @@ class String
   native def hash -> Int
   # The successor, as Ruby's: the rightmost letter or digit is
   # incremented, carrying to the left (`"az"` is followed by `"ba"`, `"zz"`
-  # by `"aaa"`); a string without one increments its last character.
+  # by `"aaa"`) across other characters (`"1.9"` by `"2.0"`), but not from
+  # a letter across them to a digit or back (`"1.z"` by `"1.aa"`); a
+  # string without one increments its last character.
   #
   # ```
   # "az".succ               # => "ba"
   # "Zz9".succ              # => "AAa0"
+  # "1.9".succ              # => "2.0"
   # ```
   native def succ -> String
   # The successor: the same as `succ`.
@@ -2198,32 +2272,39 @@ class String
   native def ord -> Int
   # The string read as a hexadecimal number.
   #
-  # Whitespace at the ends is ignored, and the rest must be the number
-  # whole: either a sign and digits, or a `0x` prefix and digits (no sign
-  # before the prefix). Anything else gives 0, as does a number too large
-  # for an `Int`. Unlike Ruby's, `hex` does not stop at the first
-  # character that is not a digit. NOTE: this may change to read the
-  # number at the start, as Ruby does.
+  # As Ruby's, the same as `to_i(16)`: the number at the start, after
+  # whitespace, a sign and a `0x` prefix, with a single `_` allowed between
+  # digits; 0 when there is none.
+  #
+  # ## Raises
+  #
+  # `OverflowError` when the number does not fit in an `Int`.
   #
   # ```
   # "0x1A".hex              # => 26
   # "-ff".hex               # => -255
-  # "1fg".hex               # => 0
-  # "-0x1f".hex             # => 0
+  # "1fg".hex               # => 31
+  # "-0x1f".hex             # => -31
+  # "zz".hex                # => 0
   # ```
   native def hex -> Int
   # The string read as an octal number.
   #
-  # As in `#hex`, whitespace at the ends is ignored and the rest must be
-  # the number whole: a sign and digits, or a `0o` prefix and digits;
-  # anything else gives 0. Unlike Ruby's, `oct` does not stop at the first
-  # character that is not a digit, and does not read `0x` or `0b`. NOTE:
-  # this may change to read the number at the start, as Ruby does.
+  # As Ruby's: the number at the start, read as `#to_i` reads it, in the
+  # base its prefix names (`0x`, `0b`, `0o`, `0d`) and in octal without
+  # one; 0 when there is none.
+  #
+  # ## Raises
+  #
+  # `OverflowError` when the number does not fit in an `Int`.
   #
   # ```
   # "777".oct               # => 511
   # "-17".oct               # => -15
-  # "17x".oct               # => 0
+  # "17x".oct               # => 15
+  # "0x1f".oct              # => 31
+  # "0b11".oct              # => 3
+  # "19".oct                # => 1
   # ```
   native def oct -> Int
   # The string as a format with one value, `arg`, as `%(args)` formats
@@ -2356,9 +2437,13 @@ class String
   native def prepend(other: String) -> String
   # Whether every character is ASCII.
   native def ascii_only? -> Bool
-  # Calls the block with the string and each `#succ` after it, up to
-  # `last`, or until the successor is longer than `last`. Nothing is
-  # yielded when the string is longer than `last`.
+  # Calls the block with the strings from this one to `last`, one at a
+  # time, as Ruby steps them: two single ASCII characters by character;
+  # two strings of digits as numbers of any size, padded to this one's
+  # width (`"9".upto("10")` gives "9" and "10"); otherwise this string and
+  # each `#succ` after it, up to `last` or until one is longer than `last`
+  # in bytes or is `last.succ`. Nothing is yielded when this string sorts
+  # after `last` (`"c".upto("a")`, `"b".upto("aa")`).
   #
   # ```
   # r: Array[String] = []
@@ -3153,17 +3238,21 @@ module Enumerable[out T]
   end
 
   # The element for which the block's result is smallest (the first one on a
-  # tie), or `nil` when there is none.
+  # tie), or `nil` when there is none. Results compare with `<=>`, as in
+  # `#min`: a NaN result is the largest.
   #
   # ```
   # %w[ccc a bb].min_by { |s| s.size }   # => "a"
+  # [Float::NAN, 1.0].min_by { |x| x }   # => 1.0
   # ```
   def min_by[U: Comparable[U]](&: (T) -> U) -> T?
     best: T? = nil
     best_key: U? = nil
     each do |x|
       key = yield(x)
-      if best_key.nil? || key < best_key
+      # `<=>`, which orders a NaN key (after every number), as `min`
+      # and `max` do.
+      if best_key.nil? || (key <=> best_key) < 0
         best = x
         best_key = key
       end
@@ -3172,13 +3261,16 @@ module Enumerable[out T]
   end
 
   # The element for which the block's result is largest (the first one on a
-  # tie), or `nil` when there is none.
+  # tie), or `nil` when there is none. Results compare with `<=>`, as in
+  # `#max`: a NaN result is the largest.
   def max_by[U: Comparable[U]](&: (T) -> U) -> T?
     best: T? = nil
     best_key: U? = nil
     each do |x|
       key = yield(x)
-      if best_key.nil? || key > best_key
+      # `<=>`, which orders a NaN key (after every number), as `min`
+      # and `max` do.
+      if best_key.nil? || (key <=> best_key) > 0
         best = x
         best_key = key
       end
@@ -3882,11 +3974,15 @@ class Array[out T]
   native def fill[U >: T](value: U) -> Array[U]
   # The array with the `length` elements from `start` replaced by `value`;
   # a negative `start` counts from the end. The array grows when
-  # `start + length` passes its end.
+  # `start + length` passes its end, and a `start` equal to the size
+  # appends. `IndexError` when `start` is past the end (where Ruby fills
+  # the gap with nil).
   #
   # ```
   # [1, 2, 3].fill(0, 1, 1)   # => [1, 0, 3]
   # [1, 2].fill(0, 1, 3)      # => [1, 0, 0, 0]
+  # [1, 2].fill(0, 2, 2)      # => [1, 2, 0, 0]
+  # [1, 2].fill(0, 3, 1)      # raises IndexError
   # ```
   native def fill[U >: T](value: U, start: Int, length: Int) -> Array[U]
   # The elements with nested arrays replaced by their elements, `depth`
@@ -4020,18 +4116,20 @@ class Array[out T]
     # `index` counts from the end.
     native def []?(index: Int) -> T?
     # Replaces the element at `index` with `value`, and returns `value`. A
-    # negative `index` counts from the end; `index` may be `size` or beyond,
-    # which grows the builder.
+    # negative `index` counts from the end; an `index` equal to `size`
+    # appends.
     #
     # ## Raises
     #
-    # `IndexError` when a negative `index` is before the start.
+    # `IndexError` when `index` is past the end (where Ruby fills the gap
+    # with nil) or, negative, before the start.
     #
     # ```
     # b = Array::Builder[Int].new.push(1, 2)
     # b[-1] = 5
     # b[2] = 6
     # b.to_a   # => [1, 5, 6]
+    # b[4] = 7   # raises IndexError
     # ```
     native def []=(index: Int, value: T) -> T
     # The first element, or `nil` when the builder is empty.
@@ -4102,7 +4200,9 @@ class Array[out T]
     native def fill(value: T) -> Self
     # Replaces the `length` elements from `start` with `value`, growing the
     # builder when `start + length` passes its end; a negative `start` counts
-    # from the end. Returns the builder.
+    # from the end, and a `start` equal to the size appends. Returns the
+    # builder. `IndexError` when `start` is past the end, as in
+    # `Array#fill`.
     native def fill(value: T, start: Int, length: Int) -> Self
     # Replaces the contents with `other`'s elements, and returns the builder.
     native def replace(other: Array[T]) -> Self
@@ -4698,15 +4798,24 @@ end
 # it. Either bound may be left out: `(1..)` is endless and `(..3)`
 # beginless; their missing bound is `nil`.
 #
-# Integer ranges iterate by 1 and `String` ranges by `String#succ`; a
-# `Float` range has no elements to iterate over (`#each`, `#to_a` and
-# `#size` raise `TypeError`) but `#include?` works. An endless integer
-# range iterates until the block breaks; `#to_a` on it raises `TypeError`.
-# A range is `Enumerable`, so `(1..3).map { }` and `(1..).first(n)` work.
+# Integer ranges iterate by 1 and `String` ranges by `String#succ`, as
+# `String#upto` does; a `Float` range has no elements to iterate over
+# (`#each` and `#to_a` raise `TypeError`) but `#include?` works. Only an
+# `Int` range has `#size`.
+# An endless integer range iterates until the block breaks; `#to_a` on it
+# raises `TypeError`. A range is `Enumerable`, so `(1..3).map { }` and
+# `(1..).first(n)` work.
+#
+# A range whose start comes after its end is empty: `3..1`, and a
+# `String` range whose start sorts after its end (`"c".."a"`,
+# `"b".."aa"`); a `String` range steps as `String#upto` does, so
+# `("az".."b").to_a` is `["az"]` and `("9".."10").to_a` is `["9", "10"]`.
 #
 # ```
 # (1..3).to_a          # => [1, 2, 3]
 # (1...3).to_a         # => [1, 2]
+# ("c".."a").to_a      # => []
+# ("c".."a").empty?    # => true
 # (1..).first(2)       # => [1, 2]
 # (1.0..2.0).include?(1.5)   # => true
 # (1..3).sum           # => 6
@@ -4753,12 +4862,6 @@ class Range[T]
   # Whether `value` lies between the bounds, by comparison: `#include?` for
   # a `value` of the element type.
   native def cover?(value: T) -> Bool
-  # The number of values; 0 when the range is empty.
-  #
-  # ## Raises
-  #
-  # `TypeError` for an endless or beginless range or a `Float` range.
-  native def size -> Int
   # Whether the range has no value. False for an endless or beginless
   # range.
   #
@@ -4827,6 +4930,24 @@ class Range[T]
   #
   # `TypeError` when the range cannot be iterated over, as `#to_a`.
   def last(n: Int) -> Array[T] = to_a.last(n)
+end
+
+# `#size` only where the number of values can be computed without
+# iterating: a `String` range has none, as Ruby's `size` is `nil` for one
+# (use `#count`, which iterates), and a `Float` range has no values.
+extension Range[T: Int]
+  # The number of values; 0 when the range is empty.
+  #
+  # ## Raises
+  #
+  # `TypeError` for an endless or beginless range.
+  #
+  # ```
+  # (1..10).size        # => 10
+  # (1...10).size       # => 9
+  # (3..1).size         # => 0
+  # ```
+  native def size -> Int
 end
 
 # A block or a lambda as a value, of a type `(A, B) -> R`: called with
@@ -5491,7 +5612,9 @@ class IO
   # does.
   native def printf(format: String, *args: Object) -> Nil
   # Writes each argument's `to_s` (or a `Bytes`' bytes) in one write, and
-  # returns the number of bytes written.
+  # returns the number of bytes written. On a file open to read and write
+  # (`"r+"`, `"w+"`), a write after a read goes at the read position, and
+  # a read after a write starts after what was written.
   native def write(*args: Object) -> Int
   # Writes `value`'s `to_s` and returns the stream, for chaining:
   # `io << "n = " << n << "\n"`.
@@ -5609,12 +5732,21 @@ class File
   # `mode` is `"r"` (read, the default), `"w"` (write, created or
   # truncated), `"a"` (append, created), or one of them with `+` to read and
   # write too (`"r+"`, `"w+"`, `"a+"`); a trailing `b` is accepted and
-  # ignored.
+  # ignored. Reads and writes on such a stream share one position: a
+  # write after a read goes where the read stopped, and a read after a
+  # write starts after it (`"a+"` writes at the end whatever the
+  # position).
   #
   # ## Raises
   #
   # `SystemCallError` when the file cannot be opened, `ArgumentError` for
   # another mode.
+  #
+  # ```quarz no_run
+  # File.write("letters.txt", "abc")
+  # File.open("letters.txt", "r+") { |f| f.read(1); f.write("Z") }
+  # File.read("letters.txt")   # => "aZc"
+  # ```
   native def self.open(path: String, mode: String = "r") -> IO
   # Opens the file as `.open` does, yields the stream, closes it when the
   # block ends (also when it raises) and returns the block's value.

@@ -877,6 +877,29 @@ fn reraise_block_params_narrowing() {
         "`f` is protected for A: `&:f` calls only public methods",
     );
     err("[1].each(&:puts)", "`puts` is private");
+    // `&:name` chooses as a call does: by the bounds of an extension's
+    // parameters, and only a method callable with no argument or block.
+    ok("p [[1.5]].map(&:sum), [[1]].map(&:sum), [1..3].map(&:size)");
+    err(
+        "p [\"a\"..\"b\"].map(&:size)",
+        "`size` requires T to be Int (found String) (in `&:size`)",
+    );
+    err(
+        "p [(\"a\"..\"b\")].sum(&:size)",
+        "`size` requires T to be Int",
+    );
+    err(
+        "p [[\"a\"]].map(&:sum)",
+        "`sum` requires T to be Int (found String)",
+    );
+    err(
+        "p(%w[ab].map(&:center))",
+        "`center` needs an argument (`&:center` calls it with none)",
+    );
+    err(
+        "p (\"a\"..\"b\").size",
+        "`size` requires T to be Int (found String)",
+    );
     err("1.puts", "`puts` is private");
     warns(
         "xs = [1]\nxs.push(2)\np xs",

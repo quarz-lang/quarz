@@ -73,3 +73,114 @@ class NumericTest < Test::Case
     assert_equal("divided by 0", e.message)
   end
 end
+
+# What used to abort the program or give a wrong result.
+class NumericEdgeTest < Test::Case
+  def test_pow_with_a_modulus_and_a_negative_exponent
+    e = assert_raise(RangeError) { 3.pow(-1, 5) }
+    assert_equal("negative exponent with a modulus", e.message)
+    assert_raise(RangeError) { 3.to_integer.pow(-1.to_integer, 5.to_integer) }
+    assert_equal(4, 2.pow(10, 5))
+  end
+
+  def test_gcd_and_lcm_past_the_int_range
+    assert_raise(OverflowError) { (-9223372036854775807 - 1).gcd(0) }
+    assert_raise(OverflowError) { 9223372036854775807.lcm(2) }
+    assert_equal(6, 12.gcd(18))
+    assert_equal(36, 12.lcm(18))
+  end
+
+  def test_duration_overflow
+    assert_raise(OverflowError) { 9000000000.seconds + 9000000000.seconds }
+    assert_raise(OverflowError) { (-9000000000).seconds - 9000000000.seconds }
+    assert_equal(3000, (1.second + 2.seconds).to_ms)
+  end
+
+  def test_shift_right_by_a_negative_count_shifts_left
+    assert_equal(10, 5 >> -1)
+    assert_equal(1, 5 >> 2)
+    assert_equal(-1, -5 >> 100)
+    assert_raise(OverflowError) { 5 >> -70 }
+    # Counts too large to shift by: decided without building the number.
+    assert_raise(OverflowError) { 5 >> (-9223372036854775807 - 1) }
+    assert_raise(OverflowError) { 5 << 9223372036854775807 }
+    assert_equal(0, 5 << (-9223372036854775807 - 1))
+    assert_equal(0, 0 << 9223372036854775807)
+  end
+
+  def test_to_s_with_a_bad_base
+    assert_raise(ArgumentError) { 10.to_s(4294967312) }
+    assert_equal("a", 10.to_s(16))
+  end
+
+  def test_duration_times_past_the_range
+    assert_raise(OverflowError) { 100000.days * 2 }
+    assert_equal(3000, (2.seconds * 1.5).to_ms)
+    # An Int factor multiplies exactly, to the last nanosecond.
+    odd = Time.parse("2024-01-01 00:00:00.000000001 UTC") - Time.utc(1970)
+    assert_equal(odd, odd * 1)
+    largest = Time.parse("2262-04-11 23:47:16.854775807 UTC") - Time.utc(1970)
+    assert_equal(largest, largest * 1)
+  end
+
+  def test_rounding_to_extreme_digits
+    assert_equal("0.0", 1234.5.floor(-400).inspect)
+    assert_equal("0.0", 1.5.floor(-9223372036854775807 - 1).inspect)
+    assert_equal("-Infinity", -1234.5.floor(-400).inspect)
+    assert_equal("Infinity", 1234.5.ceil(-400).inspect)
+    assert_equal("0.0", 1234.5.round(-400).inspect)
+    assert_equal("1.5", 1.5.floor(400).inspect)
+    assert_equal("1.5", 1.5.floor(4294967296).inspect)
+    assert_equal("3.14", 3.14159.round(2).inspect)
+    assert_equal(0, 5.round(-100000000))
+    assert_equal(0, -5.ceil(-30))
+    assert_raise(OverflowError) { 5.ceil(-30) }
+  end
+
+  # Negative digits round the integer part exactly; positive ones round
+  # the shortest decimal form (what `inspect` shows), never past `self`.
+  def test_rounding_is_exact
+    assert_equal(1.0e300, 1.0e300.floor(-300))
+    assert_equal(1.0e308, 1.5.ceil(-308))
+    assert_equal(10.0, 5.0e-324.ceil(-1))
+    assert_equal(-10.0, -5.0e-324.floor(-1))
+    assert_equal(1.7976931348623157e308, 1.7976931348623157e308.floor(-20))
+    assert_equal(1152921504606846000.0, 1152921504606846976.0.floor(-3))
+    assert_equal(0.1, 0.1.ceil(300))
+    assert_equal(-0.4000250841819971, -0.4000250841819971.floor(20))
+    assert_equal(2.0e-308, 2.2250738585072014e-308.floor(308))
+    assert_equal(1.01, 1.005.round(2))
+    assert_equal(0.29, 0.285.round(2))
+    assert_equal(0.29, 0.29.floor(2))
+    assert_equal(0.3, (0.1 + 0.2).floor(16))
+  end
+
+  def test_rounding_to_digits_gives_a_float
+    assert_equal("1200.0", 1234.5.floor(-2).inspect)
+    assert_equal("1300.0", 1234.5.ceil(-2).inspect)
+    assert_equal("-1200.0", -1234.5.truncate(-2).inspect)
+    assert_equal("15.0", 15.5.floor(0).inspect)
+  end
+
+  def test_nan_orders_last
+    nan = Float::NAN
+    assert_equal(1, nan <=> 1.0)
+    assert_equal(-1, 1.0 <=> nan)
+    assert_equal(0, nan <=> nan)
+    assert_equal(-1, 1 <=> nan)
+    assert_equal("[1.0, 3.0, NaN]", [3.0, nan, 1.0].sort.inspect)
+    assert_equal(1.0, [3.0, nan, 1.0].min)
+    assert_false(nan < 1.0)
+    assert_false(nan > 1.0)
+    assert_false(nan >= nan)
+    assert_equal("NaN", [3.0, nan, 1.0].max_by { |x| x }.inspect)
+    assert_equal(1.0, [nan, 1.0].min_by { |x| x })
+  end
+
+  def test_gcd_and_lcm_signs
+    assert_equal(6, -12.gcd(18))
+    assert_equal(0, 0.gcd(0))
+    assert_equal(12, 4.lcm(-6))
+    assert_equal(0, 0.lcm(5))
+  end
+end

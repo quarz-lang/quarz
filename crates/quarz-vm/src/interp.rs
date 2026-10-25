@@ -178,7 +178,6 @@ pub fn float_operands(a: &Value, b: &Value) -> Option<(f64, f64)> {
 #[inline(always)]
 pub fn float_binop_into(op: FastOp, x: f64, y: f64, slot: &mut Value) {
     use crate::vm::put;
-    use std::cmp::Ordering;
     match op {
         FastOp::Add => put(slot, Value::Float(x + y)),
         FastOp::Sub => put(slot, Value::Float(x - y)),
@@ -201,10 +200,7 @@ pub fn float_binop_into(op: FastOp, x: f64, y: f64, slot: &mut Value) {
         FastOp::Ge => put(slot, Value::Bool(x >= y)),
         FastOp::Eq => put(slot, Value::Bool(x == y)),
         FastOp::Ne => put(slot, Value::Bool(x != y)),
-        FastOp::Cmp => put(
-            slot,
-            Value::Int(x.partial_cmp(&y).unwrap_or(Ordering::Equal) as i64),
-        ),
+        FastOp::Cmp => put(slot, Value::Int(float_order(x, y) as i64)),
     }
 }
 
@@ -212,7 +208,6 @@ pub fn float_binop_into(op: FastOp, x: f64, y: f64, slot: &mut Value) {
 /// path must be taken (overflow, division by zero, other types).
 #[inline]
 pub fn fast_binop(op: FastOp, a: &Value, b: &Value) -> Option<Value> {
-    use std::cmp::Ordering;
     match (a, b) {
         (Value::Int(x), Value::Int(y)) => int_binop(op, *x, *y),
         (Value::Float(_), Value::Float(_))
@@ -247,10 +242,21 @@ pub fn fast_binop(op: FastOp, a: &Value, b: &Value) -> Option<Value> {
                 FastOp::Ge => Value::Bool(x >= y),
                 FastOp::Eq => Value::Bool(x == y),
                 FastOp::Ne => Value::Bool(x != y),
-                FastOp::Cmp => Value::Int(x.partial_cmp(&y).unwrap_or(Ordering::Equal) as i64),
+                FastOp::Cmp => Value::Int(float_order(x, y) as i64),
             })
         }
         _ => None,
+    }
+}
+
+/// `Float#<=>`: a total order, NaN after every other number (and equal to
+/// itself), so that sorting an array with a NaN is well defined.
+pub fn float_order(x: f64, y: f64) -> std::cmp::Ordering {
+    match (x.is_nan(), y.is_nan()) {
+        (false, false) => x.partial_cmp(&y).unwrap_or(std::cmp::Ordering::Equal),
+        (true, true) => std::cmp::Ordering::Equal,
+        (true, false) => std::cmp::Ordering::Greater,
+        (false, true) => std::cmp::Ordering::Less,
     }
 }
 
@@ -3029,15 +3035,9 @@ impl Interp {
         use std::cmp::Ordering;
         match (a, b) {
             (Value::Int(x), Value::Int(y)) => return Ok(x.cmp(y)),
-            (Value::Float(x), Value::Float(y)) => {
-                return Ok(x.partial_cmp(y).unwrap_or(Ordering::Equal))
-            }
-            (Value::Int(x), Value::Float(y)) => {
-                return Ok((*x as f64).partial_cmp(y).unwrap_or(Ordering::Equal))
-            }
-            (Value::Float(x), Value::Int(y)) => {
-                return Ok(x.partial_cmp(&(*y as f64)).unwrap_or(Ordering::Equal))
-            }
+            (Value::Float(x), Value::Float(y)) => return Ok(float_order(*x, *y)),
+            (Value::Int(x), Value::Float(y)) => return Ok(float_order(*x as f64, *y)),
+            (Value::Float(x), Value::Int(y)) => return Ok(float_order(*x, *y as f64)),
             (Value::Str(_) | Value::Short(_), Value::Str(_) | Value::Short(_)) => {
                 return Ok(a.as_str().unwrap_or("").cmp(b.as_str().unwrap_or("")))
             }

@@ -109,7 +109,9 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         if a.pos.len() == 1 {
             return update(i, r, |v| v.iter_mut().for_each(|x| *x = value.clone()));
         }
-        let (start, len) = fill_bounds(i, arr(i, r)?.len(), a.arg(1), a.arg(2))?;
+        let size = arr(i, r)?.len();
+        let (start, len) = fill_bounds(i, size, a.arg(1), a.arg(2))?;
+        fill_within(i, start, len, size)?;
         update(i, r, |v| {
             if v.len() < start + len {
                 v.resize(start + len, Value::Nil);
@@ -302,6 +304,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         }
         let len_now = b.borrow().len();
         let (start, len) = fill_bounds(i, len_now, a.arg(1), a.arg(2))?;
+        fill_within(i, start, len, len_now)?;
         let mut v = b.borrow_mut();
         if v.len() < start + len {
             v.resize(start + len, Value::Nil);
@@ -591,7 +594,10 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
                 }
             }
             (_, Value::Nil) | (Value::Nil, _) => false,
-            _ => range_to_vec(i, rg)?.is_empty(),
+            _ => match super::collections::string_steps(rg) {
+                Some(mut steps) => steps.next().is_none(),
+                None => range_to_vec(i, rg)?.is_empty(),
+            },
         }))
     });
     native!(m, "Range#reverse_each", |i, r, a| {
@@ -604,6 +610,24 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
 }
 
 // ----- helpers ---------------------------------------------------------------------
+
+/// A fill starts within the array or at its end: past it, the gap would
+/// hold nils the element type may not allow. And it must fit in memory
+/// (Ruby's "argument too big").
+fn fill_within(interp: &Interp, start: usize, len: usize, size: usize) -> Result<(), Flow> {
+    if start > size {
+        return Err(interp.err_index(&format!("start {start} out of bounds (size {size})")));
+    }
+    let Some(end) = start.checked_add(len) else {
+        return Err(interp.err_arg("argument too big"));
+    };
+    // Growing by much: whether the memory is there, before the fill
+    // takes it (allocation failing aborts the program).
+    if end > size + (1 << 20) && Vec::<Value>::new().try_reserve_exact(end).is_err() {
+        return Err(interp.err_arg("argument too big"));
+    }
+    Ok(())
+}
 
 /// `start`/`length` arguments normalized to a slice of `len` elements
 /// (a negative start counts from the end; the slice is clamped).
