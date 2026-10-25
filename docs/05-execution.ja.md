@@ -38,7 +38,7 @@ Quarz は 1 つのフロントエンドと 1 つのランタイムを、2 つの
 | `quarz check app.qz` | 型検査のみ |
 | `quarz build app.qz -o app` | ネイティブ実行ファイルを生成(LLVM で最適化) |
 | `quarz ir app.qz` | 全関数の QIR を表示する(変換結果のデバッグ用)。`quarz tokens` と `quarz parse` はトークンと構文木を表示する |
-| `quarz test` | `test/**/*_test.qz` を実行(*予定*) |
+| `quarz test` | `test/**/*_test.qz`、または指定したテストファイルを実行。コンパイラが見つける Test::Unit 風のクラス([12-testing.ja.md](12-testing.ja.md)。*設計済み*、未実装) |
 | `quarz fmt` | 整形(*予定*) |
 | `quarz cog add <git-url>` | パッケージ管理。cog は `Cog.lock` でコミットに固定された git リポジトリ。マニフェストは `Cog.toml`([10-cogs.ja.md](10-cogs.ja.md))。`run`、`check`、`build`、`ir` はスクリプトのほか、アプリケーション(`Cog.toml` のあるディレクトリ、その `src/main.qz`、または省略して現在のディレクトリを囲むもの)を受け付ける |
 

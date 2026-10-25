@@ -105,7 +105,7 @@
 
 ## 10. その他(名指しすれば、または `require` で読み込む)
 
-`json`(`JSON.parse -> JSON::Value`。`Null | Bool | Number | String | Array | Object` の enum で(名前は Rust の serde_json に合わせている)、`as_s`・`as_i?`・`[]` などのアクセサを持つ。`Number` は `Int`、`Integer`(`Int` に収まらない整数を桁を失わずに)、`Float` のどれかを持ち、`as_i`・`as_integer`・`as_f` でその型として取り出す。`as_i` は収まらなければ `OverflowError` を投げる。`JSON.generate`/`pretty_generate`、`to_json`)、`time`(何もしない。`Time` と `Duration` は組み込み)、`socket`(§9)、`http`(HTTP/1.1 サーバ。クライアントは後から: [11-http.ja.md](11-http.ja.md))。`Set` は組み込みで、require する `set` ライブラリはない。*予定*: `data` へ直接デコードする `JSON.decode[T](str)`、`Date`、`digest`、`base64`、`uri`、`csv`、`yaml`、`optparse`、`logger`、`test`(`Test::Unit` 風)、`benchmark`、`ffi`。
+`json`(`JSON.parse -> JSON::Value`。`Null | Bool | Number | String | Array | Object` の enum で(名前は Rust の serde_json に合わせている)、`as_s`・`as_i?`・`[]` などのアクセサを持つ。`Number` は `Int`、`Integer`(`Int` に収まらない整数を桁を失わずに)、`Float` のどれかを持ち、`as_i`・`as_integer`・`as_f` でその型として取り出す。`as_i` は収まらなければ `OverflowError` を投げる。`JSON.generate`/`pretty_generate`、`to_json`)、`time`(何もしない。`Time` と `Duration` は組み込み)、`socket`(§9)、`http`(HTTP/1.1 サーバ。クライアントは後から: [11-http.ja.md](11-http.ja.md))。`Set` は組み込みで、require する `set` ライブラリはない。*予定*: `data` へ直接デコードする `JSON.decode[T](str)`、`Date`、`digest`、`base64`、`uri`、`csv`、`yaml`、`optparse`、`logger`、`test`(`Test::Unit` 風。[12-testing.ja.md](12-testing.ja.md) で設計済み)、`benchmark`、`ffi`。
 
 ## 11. Ruby の組み込みで提供しないもの
 
