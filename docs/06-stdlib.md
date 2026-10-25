@@ -14,7 +14,7 @@ Everything listed below exists in the prelude (`std/prelude.qz`) unless it is ma
 
 ## 2. Object
 
-`==`, `!=`, `equal?`, `hash`, `to_s` (as in Ruby, the class name, `#<Point>`, for an instance of a class, an exception's message, and the default `inspect` of a `data` value or an enum variant (`main` for the top-level `self`); it does not call an `inspect` the class defines), `inspect`, `class` (a `Class`, with `name`), `is_a?`, `nil?`, `tap`, `then`, `dup` (returns a built-in immutable value such as an array or a string as it is, and copies builders and objects), `as`, `as?`, `frozen?` (false only for builders), `instance_exec` (runs a block with a receiver, `self.() -> R`, with `self` = the object; see [01-syntax.md](01-syntax.md) §9).
+`==`, `!=`, `equal?`, `hash`, `to_s` (as in Ruby, the class name, `#<Point>`, for an instance of a class, an exception's message, and the default `inspect` of a `data` value or an enum variant (`main` for the top-level `self`); it does not call an `inspect` the class defines), `inspect`, `class` (a `Class`, with `name`), `is_a?` (a type written as a constant, which narrows, or a `Class` value, tested at run time), `nil?`, `tap`, `then`, `dup` (returns a built-in immutable value such as an array or a string as it is, and copies builders and objects), `as`, `as?`, `frozen?` (false only for builders), `instance_exec` (runs a block with a receiver, `self.() -> R`, with `self` = the object; see [01-syntax.md](01-syntax.md) §9).
 
 `Comparable[T]` gives `< <= > >= between? clamp(min, max) clamp(range)` to a class that defines `<=>`.
 
@@ -107,7 +107,7 @@ An array of a comparable element type is `Comparable` (`<=> < <= > >= between? c
 
 ## 10. Others (loaded when named, or with `require`)
 
-`json` (`JSON.parse -> JSON::Value`, an enum of `Null | Bool | Number | String | Array | Object`, named as Rust's serde_json names them, with accessors such as `as_s`, `as_i?` and `[]`; a `Number` holds an `Int`, an `Integer` (an integer too large for an `Int`, kept exact) or a `Float`: `as_i`, `as_integer` and `as_f` give it as one, `as_i` raising `OverflowError` when it does not fit; `JSON.generate`/`pretty_generate`, `to_json`), `time` (a no-op: `Time` and `Duration` are built in), `socket` (§9), `http` (an HTTP/1.1 server, with a client to come: [11-http.md](11-http.md)). `Set` is built in; there is no `set` library to require. *Planned*: `JSON.decode[T](str)` decoding directly into `data`, `Date`, `digest`, `base64`, `uri`, `csv`, `yaml`, `optparse`, `logger`, `test` (`Test::Unit`-style, designed in [12-testing.md](12-testing.md)), `benchmark`, `ffi`.
+`json` (`JSON.parse -> JSON::Value`, an enum of `Null | Bool | Number | String | Array | Object`, named as Rust's serde_json names them, with accessors such as `as_s`, `as_i?` and `[]`; a `Number` holds an `Int`, an `Integer` (an integer too large for an `Int`, kept exact) or a `Float`: `as_i`, `as_integer` and `as_f` give it as one, `as_i` raising `OverflowError` when it does not fit; `JSON.generate`/`pretty_generate`, `to_json`), `time` (a no-op: `Time` and `Duration` are built in), `socket` (§9), `http` (an HTTP/1.1 server, with a client to come: [11-http.md](11-http.md)), `test` (`Test::Unit`-style tests run by `quarz test`: [12-testing.md](12-testing.md)). `Set` is built in; there is no `set` library to require. *Planned*: `JSON.decode[T](str)` decoding directly into `data`, `Date`, `digest`, `base64`, `uri`, `csv`, `yaml`, `optparse`, `logger`, `benchmark`, `ffi`.
 
 ## 11. Ruby Built-ins Not Provided
 

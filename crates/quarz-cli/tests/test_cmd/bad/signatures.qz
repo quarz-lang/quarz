@@ -1,0 +1,25 @@
+class BadTest < Test::Case
+  def test_private_one
+    nil
+  end
+  private :test_private_one
+
+  def test_needs(x: Int)
+    nil
+  end
+
+  def test_two(a: Int, b: Int)
+    nil
+  end
+end
+
+class ArgTest < Test::Case
+  var @n: Int
+
+  def initialize(@n: Int)
+  end
+
+  def test_a
+    nil
+  end
+end

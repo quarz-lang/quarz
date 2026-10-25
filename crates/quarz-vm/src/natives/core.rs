@@ -17,6 +17,10 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     native!(m, "Object#inspect", obj_inspect);
     native!(m, "Object#nil?", obj_nil);
     native!(m, "Object#class", obj_class);
+    native!(m, "Object#is_a?", |i, r, a| match a.arg(0) {
+        Value::Class(cid) => Ok(Value::Bool(i.program.world.class_is_a(i.class_of(r), *cid))),
+        _ => Err(i.err_type("is_a? takes a class")),
+    });
     native!(m, "Object#frozen?", obj_frozen);
     native!(m, "Object#dup", obj_dup);
     native!(m, "Object#instance_exec", |i, r, a| {

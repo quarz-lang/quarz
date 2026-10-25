@@ -1,0 +1,47 @@
+Loaded suite test
+Started
+EEEEFOFFE
+Finished in T seconds.
+
+1) Error: test_never_runs(StartupTest) [test_cmd/errors_test.qz:7]:
+StartupTest.startup: RuntimeError: no database
+    test_cmd/errors_test.qz:4:in StartupTest#startup
+
+2) Error: test_never_made(MakeTest) [test_cmd/errors_test.qz:15]:
+MakeTest.new: IndexError: index 5 out of bounds (size 1)
+    test_cmd/errors_test.qz:13:in default of MakeTest#@x
+
+3) Error: test_rows(DataTest) [test_cmd/errors_test.qz:25]:
+data_rows: ArgumentError: no rows
+    test_cmd/errors_test.qz:22:in DataTest#data_rows
+
+4) Error: test_own_timeout(MiscTest) [test_cmd/errors_test.qz:32]:
+Task::Timeout: timed out
+    test_cmd/errors_test.qz:32:in MiscTest#test_own_timeout
+
+5) Failure: test_empty_failure(MiscTest) [test_cmd/errors_test.qz:36]:
+
+
+6) Omission: test_omit_in_assert_raise(MiscTest) [test_cmd/errors_test.qz:40]:
+not here
+
+7) Failure: test_backslash_n(MiscTest) [test_cmd/errors_test.qz:44]:
+<"a\\nb"> expected but was
+<"a\\nc">
+
+8) Failure: test_lines(MiscTest) [test_cmd/errors_test.qz:48]:
+<"a\nb"> expected but was
+<"a\nc">
+
+diff:
+  a
+- b
++ c
+
+9) Error: test_cancelled_inside(ShutdownTest) [test_cmd/errors_test.qz:57]:
+Task::Cancelled: task cancelled
+
+10) Error: ShutdownTest.shutdown: RuntimeError: shutdown broke
+    test_cmd/errors_test.qz:54:in ShutdownTest#shutdown
+
+9 tests, 4 assertions, 3 failures, 5 errors, 0 pendings, 1 omissions, 0 notifications

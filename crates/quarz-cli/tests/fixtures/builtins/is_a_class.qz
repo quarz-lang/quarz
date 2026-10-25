@@ -1,0 +1,72 @@
+# `x.is_a?(klass)` with a class value tests at run time; with a type
+# written as a constant it narrows.
+def check(e: Exception, klass: Class) -> Bool = e.is_a?(klass)
+
+e = ArgumentError.new("x")
+p check(e, ArgumentError), check(e, StandardError), check(e, TypeError), check(e, Exception)
+k = Int
+p 1.is_a?(k), "s".is_a?(String), [1].is_a?(Array[Int])
+classes = [Int, String, Array, Comparable]
+p classes.map { |c| "s".is_a?(c) }
+x: Int | String = 1
+if x.is_a?(Int)
+  p x + 1
+end
+
+# A module a superclass includes stays below it when a subclass's module
+# includes it again: the superclass's methods come first.
+module Greeting
+  def greet -> String = "module"
+end
+
+module Polite
+  include Greeting
+end
+
+class Base
+  include Greeting
+  def greet -> String = "base"
+end
+
+class Child < Base
+  include Polite
+end
+
+p Child.new.greet
+
+# A generic module included again with other arguments replaces the
+# superclass's: B is Comparable[B].
+class Num
+  include Comparable[Num]
+  def initialize(@n: Int)
+  end
+  @n: Int
+  def n -> Int = @n
+  def <=>(other: Num) -> Int = @n <=> other.n
+end
+
+class Big < Num
+  include Comparable[Big]
+  def <=>(other: Big) -> Int = n <=> other.n
+end
+
+def biggest[T: Comparable[T]](xs: Array[T]) -> T? = xs.max
+p biggest([Big.new(1), Big.new(3), Big.new(2)])&.n
+
+# Including a module a module included before already brought does
+# nothing: A1's method comes first.
+module Z
+  def hi -> String = "Z"
+end
+
+module A1
+  include Z
+  def hi -> String = "A1"
+end
+
+class C
+  include A1
+  include Z
+end
+
+p C.new.hi

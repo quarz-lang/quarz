@@ -4,6 +4,7 @@ use std::process::ExitCode;
 
 mod cog;
 mod repl;
+mod test;
 
 use quarz_syntax::{parse, tokenize, SourceFile, TokenKind};
 
@@ -20,6 +21,11 @@ commands:
                  without .qz, or the cog's name in its directory)
   run [TARGET] [ARGS...]   type-check and run TARGET (`--` before ARGS
                  when TARGET is left out)
+  test [PATHS...] [OPTIONS]
+                 run the tests of PATHS (`*_test.qz` files, or directories
+                 of them; default: the cog's test/), `--release` compiled;
+                 OPTIONS: -n NAME, -v, --list, --order=random, --seed=N,
+                 --fail-fast, --parallel[=N], --timeout=D, --junit=PATH
   repl           start an interactive session
   cog COMMAND    manage the cogs (packages) of the application here:
     init                      write a Cog.toml (and src/main.qz)
@@ -84,6 +90,7 @@ fn main() -> ExitCode {
             Err(code) => code,
         },
         Some("cog") => cog::command(&args[1..]),
+        Some("test") => test::command(&args[1..]),
         Some("-h" | "--help" | "help") => {
             print!("{USAGE}");
             ExitCode::SUCCESS
@@ -232,8 +239,8 @@ fn load_and_check(target: &Target) -> Option<(quarz_types::Checked, Vec<SourceFi
                     return None;
                 }
             };
-            let specs: Vec<quarz_types::CogSpec> = movement
-                .cogs
+            // Not the cogs only dev-dependencies reach (`quarz test`'s).
+            let specs: Vec<quarz_types::CogSpec> = movement.cogs[..movement.dev_from]
                 .iter()
                 .enumerate()
                 .map(|(i, c)| quarz_types::CogSpec {

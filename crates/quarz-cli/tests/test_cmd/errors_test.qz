@@ -1,0 +1,64 @@
+# What goes wrong around the tests is reported, and the run goes on.
+class StartupTest < Test::Case
+  def self.startup
+    raise "no database"
+  end
+
+  def test_never_runs
+    flunk("ran")
+  end
+end
+
+class MakeTest < Test::Case
+  var @x: Int = [1][5]
+
+  def test_never_made
+    flunk("ran")
+  end
+end
+
+class DataTest < Test::Case
+  def data_rows -> Hash[String, Int]
+    raise ArgumentError, "no rows"
+  end
+
+  def test_rows(n: Int)
+    flunk("ran")
+  end
+end
+
+class MiscTest < Test::Case
+  def test_own_timeout
+    Task.timeout(10.ms) { sleep(1.seconds) }
+  end
+
+  def test_empty_failure
+    flunk("")
+  end
+
+  def test_omit_in_assert_raise
+    assert_raise(ArgumentError) { omit("not here") }
+  end
+
+  def test_backslash_n
+    assert_equal("a\\nb", "a\\nc")
+  end
+
+  def test_lines
+    assert_equal("a\nb", "a\nc")
+  end
+end
+
+class ShutdownTest < Test::Case
+  def self.shutdown
+    raise "shutdown broke"
+  end
+
+  def test_cancelled_inside
+    Task.scope do |s|
+      t = s.spawn { sleep(1.seconds) }
+      t.cancel
+      t.await
+    end
+  end
+end

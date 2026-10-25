@@ -27,6 +27,7 @@ pub const STD_MODULES: &[(&str, &str)] = &[
     ("time", include_str!("../../../std/time.qz")),
     ("socket", include_str!("../../../std/socket.qz")),
     ("http", include_str!("../../../std/http.qz")),
+    ("test", include_str!("../../../std/test.qz")),
 ];
 
 /// The constants each standard library module declares at the top level,
@@ -66,6 +67,9 @@ pub struct LoadedUnit {
     pub cog: Option<u32>,
     /// Whether the file may hold statements.
     pub statements: bool,
+    /// Whether its statements are left out (an application's main file
+    /// under `quarz test`).
+    pub declarations_only: bool,
 }
 
 /// A cog of a movement to load: where its files are and what it calls its
@@ -104,10 +108,57 @@ pub fn load(path: &Path) -> (Vec<LoadedUnit>, Vec<LoadDiagnostic>) {
     (loader.units, loader.diagnostics)
 }
 
+/// Load each of `paths` and what it requires, in order (a file required
+/// by an earlier one is loaded once), and the standard library modules
+/// `std` names: `quarz test`'s test files.
+pub fn load_files(paths: &[PathBuf], std: &[&str]) -> (Vec<LoadedUnit>, Vec<LoadDiagnostic>) {
+    let mut loader = Loader {
+        units: Vec::new(),
+        diagnostics: Vec::new(),
+        visited: HashSet::default(),
+        in_progress: Vec::new(),
+        next_unit: 0,
+    };
+    for name in std {
+        let key = format!("<std:{name}>");
+        if !loader.visited.contains(&key) {
+            let text = STD_MODULES.iter().find(|(n, _)| n == name).unwrap().1;
+            loader.load_text(&key, text.to_string(), Path::new("."), key.clone(), None);
+        }
+    }
+    for path in paths {
+        let key = canonical(path);
+        if !loader.visited.contains(&key) {
+            loader.load_file(path, &key, None);
+        }
+    }
+    loader.load_implicit_std();
+    (loader.units, loader.diagnostics)
+}
+
 /// Load a movement: `cogs[0]` is the application, whose `src/main.qz` is
 /// the one file allowed statements. The units come back dependencies
 /// first, with the cog declarations the checker needs.
 pub fn load_movement(cogs: &[CogSpec]) -> (Vec<LoadedUnit>, Vec<CogDecl>, Vec<LoadDiagnostic>) {
+    load_cogs(cogs, None)
+}
+
+/// Load a movement to test (`quarz test`): `tests` are loaded as a
+/// script's files are (`require_relative` between them) and belong to
+/// `cogs[0]`, which is the application, its `src/main.qz` declarations
+/// only, or a root of their own (its `src` absent) importing the library
+/// under test. The standard library's `test` comes first.
+pub fn load_movement_tests(
+    cogs: &[CogSpec],
+    tests: &[PathBuf],
+) -> (Vec<LoadedUnit>, Vec<CogDecl>, Vec<LoadDiagnostic>) {
+    load_cogs(cogs, Some(tests))
+}
+
+fn load_cogs(
+    cogs: &[CogSpec],
+    tests: Option<&[PathBuf]>,
+) -> (Vec<LoadedUnit>, Vec<CogDecl>, Vec<LoadDiagnostic>) {
     let mut loader = Loader {
         units: Vec::new(),
         diagnostics: Vec::new(),
@@ -138,6 +189,9 @@ pub fn load_movement(cogs: &[CogSpec]) -> (Vec<LoadedUnit>, Vec<CogDecl>, Vec<Lo
             version: cog.version.clone(),
         };
         let mut files = Vec::new();
+        if i == 0 && tests.is_some() && !cog.src.is_dir() {
+            continue;
+        }
         if let Err(e) = qz_files(&cog.src, &mut files) {
             loader.diagnostics.push((
                 SourceFile::new(cog.src.display().to_string(), ""),
@@ -151,6 +205,16 @@ pub fn load_movement(cogs: &[CogSpec]) -> (Vec<LoadedUnit>, Vec<CogDecl>, Vec<Lo
         files.sort();
         // The application's main file last: its statements run last.
         let main = cog.src.join("main.qz");
+        if i == 0 && tests.is_some() {
+            // Tested: the main file's statements do not run.
+            for file in files {
+                loader.load_cog_file(&file, 0, &meta, file == main);
+                if file == main {
+                    loader.units.last_mut().unwrap().declarations_only = true;
+                }
+            }
+            continue;
+        }
         if i == 0 {
             files.retain(|f| *f != main);
             if !main.is_file() {
@@ -168,6 +232,25 @@ pub fn load_movement(cogs: &[CogSpec]) -> (Vec<LoadedUnit>, Vec<CogDecl>, Vec<Lo
         for file in files {
             let statements = i == 0 && file == main;
             loader.load_cog_file(&file, i as u32, &meta, statements);
+        }
+    }
+    if let Some(tests) = tests {
+        let first = loader.units.len();
+        let key = "<std:test>".to_string();
+        if !loader.visited.contains(&key) {
+            let text = STD_MODULES.iter().find(|(n, _)| *n == "test").unwrap().1;
+            loader.load_text(&key, text.to_string(), Path::new("."), key.clone(), None);
+        }
+        for path in tests {
+            let key = canonical(path);
+            if !loader.visited.contains(&key) {
+                loader.load_file(path, &key, None);
+            }
+        }
+        for u in &mut loader.units[first..] {
+            if !u.name.starts_with("<std:") {
+                u.cog = Some(0);
+            }
         }
     }
     loader.load_implicit_std();
@@ -358,6 +441,7 @@ impl Loader {
             program: parsed.program,
             cog: Some(cog),
             statements,
+            declarations_only: false,
         });
     }
 
@@ -449,6 +533,7 @@ impl Loader {
             program: parsed.program,
             cog: None,
             statements: true,
+            declarations_only: false,
         });
     }
 
