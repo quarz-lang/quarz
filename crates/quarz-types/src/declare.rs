@@ -1673,6 +1673,7 @@ impl<'ast> Declarer<'ast> {
                     }
                 }
                 ExprKind::Alias { new_name, old_name } => {
+                    self.check_sealed(self.world.class(id).file, new_name, expr.span);
                     let ids = self
                         .world
                         .class(id)
@@ -1740,6 +1741,20 @@ impl<'ast> Declarer<'ast> {
         }
     }
 
+    /// `nil?` and `is_a?` are the prelude's only: the checker narrows
+    /// types by them, and lowering relies on them, so a definition of its
+    /// own (a method, an alias, a data field's reader) would make both
+    /// wrong.
+    fn check_sealed(&mut self, file: u32, name: &str, span: Span) {
+        const SEALED: [&str; 2] = ["nil?", "is_a?"];
+        if file != 0 && SEALED.contains(&name) {
+            self.error(
+                format!("`{name}` cannot be redefined: types are narrowed by it"),
+                span,
+            );
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn add_synthetic(
         &mut self,
@@ -1751,6 +1766,7 @@ impl<'ast> Declarer<'ast> {
         span: Span,
         visibility: Visibility,
     ) {
+        self.check_sealed(self.world.class(owner).file, &name, span);
         self.world.add_method(MethodInfo {
             id: 0,
             name,
@@ -1861,6 +1877,7 @@ impl<'ast> Declarer<'ast> {
         class_scope: &TypeScope,
         class_self: &Type,
     ) {
+        self.check_sealed(self.file, &def.name, def.span);
         let type_params: Vec<TypeParamInfo> = def
             .type_params
             .iter()

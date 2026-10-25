@@ -123,6 +123,7 @@ end
 
 - Single inheritance. An `abstract class` cannot be instantiated and an `abstract def` has no body.
 - A method with the name of a parent's method overrides it; as in Ruby and Crystal, nothing marks it (no `override`).
+- `nil?` and `is_a?` cannot be defined (in a class or an extension, by an `alias`, or as a data field): the checker narrows types by them (`x.nil?`, `x.is_a?(T)`), so a definition of its own would let a value of another type through. (Open question: `final` for user classes and methods, which would let a class guarantee the same of its own methods, and let `==` narrow on its type, 02-types.md.)
 - Since the class hierarchy is fixed at compile time for the whole program, the compiler automatically turns calls to methods that are never overridden into static calls (no `final` needed).
 - `super` works as in Ruby. A bare `super` passes the same arguments.
 

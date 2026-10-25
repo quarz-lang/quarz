@@ -3535,7 +3535,18 @@ impl Checker {
                 };
                 let recv_ty = self.resolve(&self.out.node_types[&call.recv.as_ref().unwrap().id]);
                 match (call.name.as_str(), call.args.as_slice()) {
-                    ("nil?", []) => {
+                    // Only the prelude's `Object#nil?` tells (`&.` may not
+                    // have called it at all).
+                    ("nil?", [])
+                        if !call.safe_nav
+                            && call.block.is_none()
+                            && matches!(
+                                self.out.calls.get(&cond.id),
+                                Some(CallTarget::Method { method })
+                                    if self.world.method(*method).owner == self.world.builtin.object
+                                        && self.world.method(*method).is_native
+                            ) =>
+                    {
                         let nil = self.world.nil();
                         let without = recv_ty.without_nil(self.world.builtin.nil);
                         (t, vec![(key.clone(), nil)], vec![(key, without)])

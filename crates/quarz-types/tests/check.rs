@@ -1253,3 +1253,32 @@ fn checks_the_types_it_cannot_take_on_trust() {
     // A tuple expected among other types.
     ok("def tup(t: [Int, String]?) -> Int = t ? t[0] : 0\np tup([1, \"a\"])");
 }
+
+#[test]
+fn nil_p_and_is_a_are_sealed() {
+    // Types are narrowed by them: a definition of its own would let a
+    // value of another type through.
+    err(
+        "class Null\n  def nil? -> Bool = true\nend",
+        "`nil?` cannot be redefined",
+    );
+    err(
+        "class Any\n  def is_a?(c: Class) -> Bool = true\nend",
+        "`is_a?` cannot be redefined",
+    );
+    err(
+        "extension String\n  def nil? -> Bool = true\nend",
+        "`nil?` cannot be redefined",
+    );
+    // Nor by an alias, nor as a data field's reader.
+    err(
+        "class Foo\n  def yes -> Bool = true\n  alias nil? yes\nend",
+        "`nil?` cannot be redefined",
+    );
+    err("data P = (nil?: Bool)", "`nil?` cannot be redefined");
+    // `&.nil?` may not call it: no narrowing.
+    err(
+        "x: Int? = nil\nif x&.nil?\n  p 0\nelse\n  p x + 1\nend",
+        "undefined method `+` for Nil",
+    );
+}

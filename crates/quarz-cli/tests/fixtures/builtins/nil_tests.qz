@@ -1,11 +1,5 @@
-# `x.nil?` is a test of the value (IsNil) where none of the classes the
-# receiver's static type allows defines its own `nil?`. Here one class
-# does: a receiver typed Object may be one, and stays a call (the
-# class's answer counts); an Int? or String? may not, and is tested.
-class Null
-  def nil? -> Bool = true
-end
-
+# `x.nil?` is a test of the value (IsNil): no class can define its own
+# `nil?`, so the answer is the same whatever the receiver's type.
 class Plain
 end
 
@@ -21,8 +15,8 @@ def count_missing(xs: Array[Int?]) -> Int
   n
 end
 
-p count_nils([1, nil, Null.new, "a", nil])
+p count_nils([1, nil, Plain.new, "a", nil])
 p count_missing([1, nil, 3, nil, nil])
 v: Int? = nil
 s: String? = "x"
-p v.nil?, s.nil?, 3.nil?, Null.new.nil?, Plain.new.nil?
+p v.nil?, s.nil?, 3.nil?, Plain.new.nil?
