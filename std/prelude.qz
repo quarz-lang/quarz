@@ -590,6 +590,8 @@ class String
   native def to_f -> Float
   native def to_sym -> Symbol
   native def to_bytes -> Bytes
+  # Ruby's name for the same: the UTF-8 bytes (`"é".b`).
+  native def b -> Bytes
   native def encode(encoding: String = "UTF-8") -> Bytes
   native def to_s -> String
   native def inspect -> String

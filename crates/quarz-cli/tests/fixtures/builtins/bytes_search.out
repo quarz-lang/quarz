@@ -39,3 +39,5 @@ ArgumentError
 [b"\xc3\xa9\xc3\xa9"]
 #<Bytes::MatchData b"a" 名:b"a">
 ArgumentError
+b"\xc3\xa9"
+true

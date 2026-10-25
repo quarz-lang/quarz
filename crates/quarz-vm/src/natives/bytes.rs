@@ -197,9 +197,8 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         Ok(Value::string(inspect_bytes(&bb(i, r)?.borrow())))
     });
 
-    native!(m, "String#to_bytes", |i, r, _| {
-        Ok(Value::bytes(string(i, r, "receiver")?.as_bytes().to_vec()))
-    });
+    native!(m, "String#to_bytes", string_to_bytes);
+    native!(m, "String#b", string_to_bytes);
     native!(m, "String#encode", |i, r, a| {
         let text = string(i, r, "receiver")?;
         let encoding = match a.pos.first() {
@@ -215,6 +214,13 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             None => Err(i.err_arg(&format!("unknown encoding {:?}", encoding))),
         }
     });
+}
+
+/// `String#to_bytes` and `String#b`: the UTF-8 bytes.
+fn string_to_bytes(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
+    Ok(Value::bytes(
+        string(interp, recv, "receiver")?.as_bytes().to_vec(),
+    ))
 }
 
 fn bs(interp: &Interp, v: &Value) -> Result<Rc<[u8]>, Flow> {

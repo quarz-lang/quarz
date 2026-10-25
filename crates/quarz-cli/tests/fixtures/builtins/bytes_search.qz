@@ -25,3 +25,5 @@ begin
 rescue => e
   p e.class
 end
+# String#b is to_bytes under Ruby's name.
+p "é".b, "abc".b == "abc".to_bytes
