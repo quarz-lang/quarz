@@ -1571,3 +1571,9 @@ fn calls_a_class_test_cannot_choose_are_errors() {
     // A module and a class that includes it.
     ok("module M\nend\nclass A\n  include M\nend\nextension A\n  def ext -> String = \"A\"\nend\nextension M\n  def ext -> String = \"M\"\nend\ndef pk(i: Int) -> A | M = A.new\nputs pk(1).ext");
 }
+
+#[test]
+fn std_exports_are_the_top_level_declarations() {
+    let scanned: Vec<(&str, Vec<String>)> = quarz_types::load::std_exports().to_vec();
+    assert_eq!(scanned, quarz_types::load::std_exports_parsed());
+}

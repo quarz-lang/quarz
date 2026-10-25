@@ -31,30 +31,73 @@ pub const STD_MODULES: &[(&str, &str)] = &[
 ];
 
 /// The constants each standard library module declares at the top level,
-/// by module name: naming one of them loads the module.
+/// by module name: naming one of them loads the module. Read from the
+/// lines that start a top-level declaration (`class X`, `module X`,
+/// `data X`, `enum X`, `X = ...`), not by parsing the modules, which took
+/// a quarter of a short program's start-up; `std_exports_parsed` checks
+/// the two agree.
 pub fn std_exports() -> &'static [(&'static str, Vec<String>)] {
     static EXPORTS: OnceLock<Vec<(&'static str, Vec<String>)>> = OnceLock::new();
     EXPORTS.get_or_init(|| {
         STD_MODULES
             .iter()
             .map(|(name, text)| {
-                let names = parse(text)
-                    .program
-                    .body
-                    .iter()
-                    .filter_map(|e| match &e.kind {
-                        ExprKind::ClassDef(d) => d.name.names.first().cloned(),
-                        ExprKind::ModuleDef(d) => d.name.names.first().cloned(),
-                        ExprKind::DataDef(d) => Some(d.name.clone()),
-                        ExprKind::EnumDef(d) => Some(d.name.clone()),
-                        ExprKind::ConstAssign { name, .. } => Some(name.clone()),
-                        _ => None,
-                    })
-                    .collect();
+                let mut names: Vec<String> = Vec::new();
+                for line in text.lines() {
+                    let word = |rest: &str| -> Option<String> {
+                        let n: String = rest
+                            .chars()
+                            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                            .collect();
+                        (!n.is_empty()).then_some(n)
+                    };
+                    let found = ["class ", "module ", "data ", "enum "]
+                        .iter()
+                        .find_map(|k| line.strip_prefix(k).and_then(word))
+                        .or_else(|| {
+                            let n = word(line)?;
+                            let rest = line[n.len()..].trim_start();
+                            (n.starts_with(|c: char| c.is_ascii_uppercase())
+                                && rest.starts_with('=')
+                                && !rest.starts_with("=="))
+                            .then_some(n)
+                        });
+                    if let Some(n) = found {
+                        if !names.contains(&n) {
+                            names.push(n);
+                        }
+                    }
+                }
                 (*name, names)
             })
             .collect()
     })
+}
+
+/// `std_exports` by parsing the modules (what the line scan must find).
+pub fn std_exports_parsed() -> Vec<(&'static str, Vec<String>)> {
+    STD_MODULES
+        .iter()
+        .map(|(name, text)| {
+            let mut names: Vec<String> = Vec::new();
+            for e in &parse(text).program.body {
+                let n = match &e.kind {
+                    ExprKind::ClassDef(d) => d.name.names.first().cloned(),
+                    ExprKind::ModuleDef(d) => d.name.names.first().cloned(),
+                    ExprKind::DataDef(d) => Some(d.name.clone()),
+                    ExprKind::EnumDef(d) => Some(d.name.clone()),
+                    ExprKind::ConstAssign { name, .. } => Some(name.clone()),
+                    _ => None,
+                };
+                if let Some(n) = n {
+                    if !names.contains(&n) {
+                        names.push(n);
+                    }
+                }
+            }
+            (*name, names)
+        })
+        .collect()
 }
 
 /// A loaded, parsed file.
