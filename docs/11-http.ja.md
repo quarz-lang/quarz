@@ -41,7 +41,7 @@ data Logging(inner: HTTP::Handler)
   def call(req: HTTP::Request) -> HTTP::Response
     started = Time.monotonic
     res = inner.call(req)
-    STDERR.puts "#{req.method} #{req.target} #{res.status} #{Time.monotonic - started}"
+    STDERR.puts "#{req.method} #{req.target.partition("?")[0]} #{res.status} #{Time.monotonic - started}"
     res
   end
 end
@@ -184,7 +184,7 @@ end
 接続のタスクは次のことをします。
 
 1. 要求行とヘッダを読みます。最初の要求は、始まるまでに `read_header_timeout`、最初のバイトから終わりまでにもう一度同じ時間です。同じ接続の次以降の要求は、始まるまでに `idle_timeout`、終わりまでに `read_header_timeout` です。`max_header_bytes` を超えれば `431`、形式が壊れていれば `400` で、どちらも接続を閉じます。
-2. `Request` を組み立ててハンドラを呼びます。ハンドラが投げた `HTTP::Error` はその状態で応答し(§7)、それ以外の `StandardError` は本体のない `500` になって、要求と一緒に `on_error` へ(なければ STDERR へ)渡します。`Task::Cancelled` は捕まえません。ヘッダの名前がトークンでないか、値に CR や LF など HTAB 以外の制御文字を含む応答は送らず、これも `500` にします(応答分割を防ぐため。`Headers#put` と `add` がすでに拒むので、ここに届くのは `Field.new` で作ったフィールドだけです)。それ以外の失敗(ヘッダを送った後に例外を投げる `Stream` の手続き)はその接続を終えて報告し、サーバは続けます。
+2. `Request` を組み立ててハンドラを呼びます。ハンドラが投げた `HTTP::Error` はその状態で応答し(§7)、それ以外の `StandardError` は本体のない `500` になって、要求と一緒に `on_error` へ渡します。なければメソッドと、送られたままのパスを添えて STDERR に出します。パスはパーセントエンコードのままなので改行やエスケープを含みえず、クエリはトークンを含みうるので出しません。`Task::Cancelled` は捕まえません。ヘッダの名前がトークンでないか、値に CR や LF など HTAB 以外の制御文字を含む応答は送らず、これも `500` にします(応答分割を防ぐため。`Headers#put` と `add` がすでに拒むので、ここに届くのは `Field.new` で作ったフィールドだけです)。それ以外の失敗(ヘッダを送った後に例外を投げる `Stream` の手続き)はその接続を終えて報告し、サーバは続けます。
 3. 応答を `write_timeout` の内に書き、§3 のとおり読み捨てるか閉じます。
 4. 要求か応答が `Connection: close` と言った場合、要求が `Connection: keep-alive` のない HTTP/1.0 だった場合、本体を読み捨てられなかった場合を除いて、接続を保ちます。HTTP/1.0 の接続を保つのは応答に `Content-Length` があるときだけで、そのとき応答に `Connection: keep-alive` を付けます。`Transfer-Encoding` を持つ HTTP/1.0 の要求には応答してから接続を閉じます(RFC 9112 §6.1)。
 

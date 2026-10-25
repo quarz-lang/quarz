@@ -39,3 +39,50 @@ fn standard_output() {
         "to stdout\nab\n12\n1\n\"s\"\n",
     );
 }
+
+/// The server's default report of a handler's error, on STDERR, names
+/// the method and the path as sent, still encoded (a decoded `%0a` would
+/// forge a line), but not the query, which may carry a token.
+#[test]
+fn http_errors_are_reported_without_the_query() {
+    let dir = std::env::temp_dir().join(format!("quarz-run-http-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("report.qz");
+    std::fs::write(
+        &path,
+        r#"require "http"
+h = HTTP.handler { |req| raise "boom" }
+s = HTTP::Server.new(h, host: "127.0.0.1", port: 0)
+port = s.local_address.port
+Task.scope do |scope|
+  scope.spawn { s.serve }
+  ["/a/b?token=secret", "/x%0d%0aforged%3Fa?b"].each do |target|
+    Task.timeout(10.seconds) do
+      Socket.tcp("127.0.0.1", port) do |c|
+        c.write("GET #{target} HTTP/1.1\r\nConnection: close\r\n\r\n")
+        puts c.read.lines[0].chomp
+      end
+    end
+  end
+  s.shutdown
+end
+"#,
+    )
+    .unwrap();
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_quarz"))
+        .arg("run")
+        .arg(&path)
+        .output()
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "HTTP/1.1 500 Internal Server Error\n".repeat(2)
+    );
+    assert_eq!(
+        stderr,
+        "HTTP::Server (GET /a/b): RuntimeError: boom\n\
+         HTTP::Server (GET /x%0d%0aforged%3Fa): RuntimeError: boom\n"
+    );
+}

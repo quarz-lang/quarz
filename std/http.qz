@@ -1100,7 +1100,10 @@ module HTTP
 
     def report(e: Exception, req: Request?) -> Nil
       cb = @options.on_error
-      where = req ? " (#{req.method} #{req.target})" : ""
+      # The path as sent, without the query, which may carry a token.
+      # Not `req.path`: decoded, it may hold a CR, an LF or an escape,
+      # which would forge or garble the log.
+      where = req ? " (#{req.method} #{req.target.partition("?")[0]})" : ""
       if cb
         begin
           cb.call(e, req)
