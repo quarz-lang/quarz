@@ -83,7 +83,14 @@ pub fn shape(e: &Expr, call: &ast::Call, out: &Output, world: &World) -> Option<
         return None;
     };
     let m = world.method(*method);
-    if m.extension.is_some() {
+    // (Checks that found the method or typed the receiver differently, a
+    // block's once per type: the recorded ones are the last check's.)
+    let varies = out.union_conflicts.contains(&e.id)
+        || out
+            .union_calls
+            .get(&e.id)
+            .is_some_and(|t| t.iter().any(|(_, m)| *m != t[0].1));
+    if m.extension.is_some() || varies {
         return None;
     }
     let bi = &world.builtin;
@@ -106,6 +113,9 @@ pub fn shape(e: &Expr, call: &ast::Call, out: &Output, world: &World) -> Option<
         }
     } else {
         let recv = call.recv.as_ref()?;
+        if out.varied_types.contains(&recv.id) {
+            return None;
+        }
         let source = match out.node_types.get(&recv.id)? {
             Type::Class(id, _) if *id == bi.array => Source::Array,
             Type::Class(id, args) if *id == bi.range => {

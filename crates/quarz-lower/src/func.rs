@@ -614,6 +614,9 @@ impl<'a> FnBuilder<'a> {
             let Some(CallTarget::Method { method }) = self.out.calls.get(&cur_e.id) else {
                 return None;
             };
+            if self.varies(cur_e.id) {
+                return None;
+            }
             let m = self.world.method(*method);
             if !(m.is_native && m.owner == self.world.builtin.string && m.name == "+")
                 || cur.block.is_some()
@@ -650,6 +653,9 @@ impl<'a> FnBuilder<'a> {
         let Some(CallTarget::Method { method }) = self.out.calls.get(&e.id) else {
             return false;
         };
+        if self.varies(e.id) {
+            return false;
+        }
         let m = self.world.method(*method);
         m.is_native
             && m.owner == self.world.builtin.string
@@ -1959,10 +1965,35 @@ impl<'a> FnBuilder<'a> {
     /// Whether the call is to a native with an in-place variant: only
     /// the collections have them (an owned call to anything else, a
     /// number's `+` say, is a slower ordinary call).
+    /// Whether the checks of call `id` (a block's, once per type of what
+    /// it is given, or a union receiver's members) found different
+    /// methods: the recorded one is the last check's.
+    fn varies(&self, id: u32) -> bool {
+        self.out.union_conflicts.contains(&id)
+            || self
+                .out
+                .union_calls
+                .get(&id)
+                .is_some_and(|t| t.iter().any(|(_, m)| *m != t[0].1))
+    }
+
+    /// The type the checker gave node `id`, unless its checks gave it
+    /// different ones (`Output::varied_types`).
+    fn node_type(&self, id: u32) -> Option<&quarz_types::Type> {
+        if self.out.varied_types.contains(&id) {
+            return None;
+        }
+        self.out.node_types.get(&id)
+    }
+
     fn is_owned_native(&self, id: &u32) -> bool {
         let Some(CallTarget::Method { method }) = self.out.calls.get(id) else {
             return false;
         };
+        // (Members of a union with different methods: by name.)
+        if self.out.dynamic_calls.contains(id) || self.varies(*id) {
+            return false;
+        }
         let m = self.world.method(*method);
         let b = &self.world.builtin;
         m.is_native && [b.array, b.hash, b.set].contains(&m.owner)
@@ -2011,7 +2042,11 @@ impl<'a> FnBuilder<'a> {
         } else {
             CallKind::Method(method)
         };
-        let owned = simple && self.world.method(method).is_native && !chained && !dynamic;
+        let owned = simple
+            && self.world.method(method).is_native
+            && !chained
+            && !dynamic
+            && !self.varies(e.id);
         match &root.kind {
             ExprKind::Local(_) => {
                 let r = self.var_ref(root.span);
@@ -2216,7 +2251,7 @@ impl<'a> FnBuilder<'a> {
             None => self.self_reg(),
         };
         let recv_class = match &call.recv {
-            Some(r) => match self.out.node_types.get(&r.id) {
+            Some(r) => match self.node_type(r.id) {
                 Some(Type::Class(id, _)) => Some(*id),
                 _ => None,
             },
@@ -2314,7 +2349,7 @@ impl<'a> FnBuilder<'a> {
     /// Whether the checker types `e` an array whose elements are all
     /// objects (`World::instances_are_objects`).
     fn elems_are_objects(&self, e: &Expr) -> bool {
-        match self.out.node_types.get(&e.id) {
+        match self.node_type(e.id) {
             Some(quarz_types::Type::Class(c, args)) if *c == self.world.builtin.array => {
                 matches!(args.first(), Some(quarz_types::Type::Class(elem, _))
                     if self.world.instances_are_objects(*elem))
@@ -2327,7 +2362,7 @@ impl<'a> FnBuilder<'a> {
     /// `Array[Float]` (`Some(true)`).
     fn words_of(&self, e: &Expr) -> Option<bool> {
         let bi = &self.world.builtin;
-        match self.out.node_types.get(&e.id) {
+        match self.node_type(e.id) {
             Some(quarz_types::Type::Class(c, args)) if *c == bi.array => match args.first() {
                 Some(quarz_types::Type::Class(x, a)) if *x == bi.int && a.is_empty() => Some(false),
                 Some(quarz_types::Type::Class(x, a)) if *x == bi.float && a.is_empty() => {
@@ -2786,12 +2821,7 @@ impl<'a> FnBuilder<'a> {
         // different methods: the recorded one is the last check's, so no
         // shortcut taken for it (a field read, an operator on numbers);
         // `emit_call` tests the receiver.
-        let varies = self.out.union_conflicts.contains(&e.id)
-            || self
-                .out
-                .union_calls
-                .get(&e.id)
-                .is_some_and(|t| t.iter().any(|(_, m)| *m != t[0].1));
+        let varies = self.varies(e.id);
         let kind = match target {
             Some(CallTarget::Method { .. }) if self.out.dynamic_calls.contains(&e.id) => {
                 CallKind::Send(call.name.clone())
@@ -2852,7 +2882,7 @@ impl<'a> FnBuilder<'a> {
                     {
                         let int = self.world.builtin.int;
                         let float = self.world.builtin.float;
-                        let word = match self.out.node_types.get(&r.id) {
+                        let word = match self.node_type(r.id) {
                             Some(quarz_types::Type::Class(_, args)) => match args.first() {
                                 Some(quarz_types::Type::Class(c, x))
                                     if *c == int && x.is_empty() =>

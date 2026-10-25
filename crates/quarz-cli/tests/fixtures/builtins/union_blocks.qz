@@ -10,3 +10,47 @@ pk(0).each { |x| p(1 == x) }
 pk(0).each { |x| p(3.0 + x) }
 pk(0).each { |x| p([1, 2].first(x.to_i)) }
 p pk(1).map { |x| x + 1 }, pk(0).map { |x| x * 2 }
+
+# Inlined iteration, string `+` chains, in-place `!` and `x = x.f` updates,
+# array element reads and loops: none taken for the last check's types.
+class Foo
+  def times(&blk: (Int) -> Nil) -> Int
+    blk.call(42)
+    7
+  end
+  def +(o: String) -> String = "foo:" + o
+end
+def pt(i: Int) -> Array[Foo] | Array[Int] = i > 0 ? [2] : [Foo.new]
+pt(0).each { |x| x.times { |i| p(i) } }
+pt(1).each { |x| x.times { |i| p(i) } }
+def ps(i: Int) -> Array[Foo] | Array[String] = i > 0 ? ["s"] : [Foo.new]
+ps(0).each { |x| p(x + "a" + "b") }
+ps(1).each { |x| p(x + "a" + "b") }
+def pr(i: Int) -> Array[String] | Array[Array[Int]] = i > 0 ? [[1, 2]] : ["ab"]
+pr(0).each { |x| y = x; y.reverse!; p(y) }
+pr(1).each { |x| y = x; y.reverse!; p(y) }
+def pd(i: Int) -> Array[Set[Int]] | Array[Array[Int]] = i > 0 ? [[1, 2]] : [Set.new([1, 2])]
+pd(1).each { |x| y = x; y = y.delete(1); p(y) }
+pd(0).each { |x| y = x; y = y.delete(1); p(y) }
+def pw(i: Int) -> Array[Array[Float]] | Array[Array[Int]] = i > 0 ? [[1, 2]] : [[1.5]]
+pw(1).each { |x| p(x[0] + 1) }
+pw(0).each { |x| p(x[0] + 1) }
+pw(1).each { |x| x.each { |y| p(y) } }
+pw(0).each { |x| p(x.map { |y| y }) }
+
+# A field a generic superclass declares keeps its layout in a subclass
+# that gives it a type argument.
+class Box[T]
+  @v: T
+  var @n: Int = 5
+  def initialize(@v: T); end
+  def v -> T = @v
+  def n -> Int = @n
+end
+class Sub < Box[Int]
+  @w: Float = 2.5
+  def w -> Float = @w
+  def sum -> Int = v + n
+end
+s = Sub.new(1)
+p s.v, s.n, s.w, s.sum

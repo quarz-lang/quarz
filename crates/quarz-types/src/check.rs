@@ -82,6 +82,10 @@ pub struct Output {
     /// receiver's union) gave tables that disagree, or members that a
     /// test of the class cannot tell apart: called by name.
     pub union_conflicts: rustc_hash::FxHashSet<NodeId>,
+    /// Nodes whose checks (a block's, once per type of what it is given)
+    /// typed them differently: `node_types` holds the last one's, so
+    /// nothing is specialized for it.
+    pub varied_types: rustc_hash::FxHashSet<NodeId>,
     /// Interpolations checked more than once whose `to_s` differed.
     pub interp_conflicts: rustc_hash::FxHashSet<NodeId>,
     /// Interpolated expressions (`"#{x}"`) whose type's `to_s` is an
@@ -395,6 +399,10 @@ enum TableUndo {
         bool,
         Option<MethodId>,
     ),
+    /// A node marked in `Output::varied_types`.
+    Varied(NodeId),
+    /// A node's type before a check in a block recorded another.
+    NodeType(NodeId, Option<Type>),
 }
 
 /// `Checker::equality_trusted`'s cache key: a class (its class object
@@ -1250,6 +1258,15 @@ impl Checker {
                         None => map.remove(&key.0),
                     };
                 }
+                TableUndo::Varied(id) => {
+                    self.out.varied_types.remove(&id);
+                }
+                TableUndo::NodeType(id, t) => {
+                    match t {
+                        Some(t) => self.out.node_types.insert(id, t),
+                        None => self.out.node_types.remove(&id),
+                    };
+                }
                 TableUndo::Interp(id, t) => {
                     self.out.interp_conflicts.remove(&id);
                     match t {
@@ -1456,6 +1473,18 @@ impl Checker {
     }
 
     fn record(&mut self, id: NodeId, t: &Type) {
+        // In a block (checked once per type of what it is given, and in
+        // overload trials thrown away): what it replaces is journaled.
+        if !self.env.blocks.is_empty() {
+            let before = self.out.node_types.get(&id).cloned();
+            if let (Some(b), false) = (&before, self.out.varied_types.contains(&id)) {
+                if self.infer.resolve(b) != self.infer.resolve(t) {
+                    self.out.varied_types.insert(id);
+                    self.table_journal.push(TableUndo::Varied(id));
+                }
+            }
+            self.table_journal.push(TableUndo::NodeType(id, before));
+        }
         self.out.node_types.insert(id, t.clone());
         self.touched.push(id);
     }

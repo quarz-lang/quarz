@@ -53,14 +53,17 @@ fn ensure(world: &World, cid: ClassId, memo: &mut Vec<Option<Layout>>, stack: &m
     let mut ivars = Vec::new();
     let mut slots: Vec<Slot> = Vec::new();
     for (f, subst) in world.all_fields(cid) {
-        let ty = f.ty.subst(&subst);
+        // A field a superclass declares is laid out as there (its code
+        // reads it so), whatever type arguments this class gives it
+        // (`class Sub < Box[Int]` keeps `@v: T` a value, not a word).
+        let ty = f.ty.clone();
         let flat = flat_class(world, &ty, stack).filter(|d| {
             ensure(world, *d, memo, stack);
             memo[*d as usize].is_some()
         });
         ivars.push(Ivar {
             name: f.name.clone(),
-            ty: ty.clone(),
+            ty: f.ty.subst(&subst),
             slot: slots.len() as u32,
             flat,
         });
