@@ -132,3 +132,52 @@ class RegexpTest < Test::Case
     assert_equal("has digit", classify("hello42"))
   end
 end
+
+class StringEdgeTest < Test::Case
+  def test_to_i_with_a_bad_base
+    assert_raise(ArgumentError) { "ff".to_i(1) }
+    assert_raise(ArgumentError) { "ff".to_i(37) }
+    assert_equal(255, "ff".to_i(16))
+  end
+
+  def test_upto_from_after_the_end
+    seen = Array::Builder[String].new
+    "b".upto("a") { |s| seen << s }
+    assert_empty(seen.to_a)
+    "b".upto("aa") { |s| seen << s }
+    assert_empty(seen.to_a)
+    "a8".upto("b1") { |s| seen << s }
+    assert_equal(["a8", "a9", "b0", "b1"], seen.to_a)
+  end
+
+  def first_five -> String
+    "1".upto("9999999999") { |s| return s if s == "5" }
+    "none"
+  end
+
+  def test_upto_steps_lazily
+    assert_equal("5", first_five)
+  end
+
+  # As Ruby's: a carry crosses other characters, but not from a letter to
+  # a digit or back across them.
+  def test_succ
+    assert_equal("2.0", "1.9".succ)
+    assert_equal("b.a", "a.z".succ)
+    assert_equal("1.aa", "1.z".succ)
+    assert_equal("a.10a", "a.9z".succ)
+    assert_equal("AAa", "Zz".succ)
+    assert_equal("*+", "**".succ)
+    assert_equal("1ê0", "1é9".succ)
+    # Other scripts' letters and digits step within their runs, as in
+    # Ruby; the carry stop is between ASCII letters and digits only.
+    assert_equal("ê-0", "é-9".succ)
+    assert_equal("Ø", "Ö".succ)
+    assert_equal("אא", "ת".succ)
+    assert_equal("１０", "９".succ)
+    assert_equal("b٠", "a٩".succ)
+    assert_equal("\u{1}\u{0}", "\u{7f}".succ)
+    assert_equal("\u{1}\u{80}", "\u{7ff}".succ)
+    assert_equal("", "".succ)
+  end
+end

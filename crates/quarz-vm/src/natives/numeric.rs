@@ -149,6 +149,10 @@ pub(super) fn arith(interp: &Interp, recv: &Value, args: &Args, op: &str) -> Eva
     }))
 }
 
+fn has_nan(a: &Value, b: &Value) -> bool {
+    matches!(a, Value::Float(f) if f.is_nan()) || matches!(b, Value::Float(f) if f.is_nan())
+}
+
 fn cmp_num(interp: &Interp, recv: &Value, args: &Args) -> Result<std::cmp::Ordering, Flow> {
     use std::cmp::Ordering;
     let other = args.arg(0);
@@ -203,18 +207,41 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         Ok(Value::Bool(!i.values_equal(r, a.arg(0))?))
     });
     native!(m, ["Int#<=>", "Float#<=>", "Integer#<=>"], |i, r, a| {
+        // NaN sorts after every number (`<` and the others stay false).
+        let nan = |v: &Value| matches!(v, Value::Float(f) if f.is_nan());
+        if nan(r) || nan(a.arg(0)) {
+            let x = Num::of(i, r)?.to_f64();
+            let y = Num::of(i, a.arg(0))?.to_f64();
+            return Ok(Value::Int(crate::interp::float_order(x, y) as i64));
+        }
         Ok(Value::Int(cmp_num(i, r, &a)? as i64))
     });
     native!(m, ["Int#<", "Float#<", "Integer#<"], |i, r, a| {
+        // False with a NaN, as IEEE 754 says (`<=>` orders it last).
+        if has_nan(r, a.arg(0)) {
+            return Ok(Value::Bool(false));
+        }
         Ok(Value::Bool(cmp_num(i, r, &a)?.is_lt()))
     });
     native!(m, ["Int#<=", "Float#<=", "Integer#<="], |i, r, a| {
+        // False with a NaN, as IEEE 754 says (`<=>` orders it last).
+        if has_nan(r, a.arg(0)) {
+            return Ok(Value::Bool(false));
+        }
         Ok(Value::Bool(cmp_num(i, r, &a)?.is_le()))
     });
     native!(m, ["Int#>", "Float#>", "Integer#>"], |i, r, a| {
+        // False with a NaN, as IEEE 754 says (`<=>` orders it last).
+        if has_nan(r, a.arg(0)) {
+            return Ok(Value::Bool(false));
+        }
         Ok(Value::Bool(cmp_num(i, r, &a)?.is_gt()))
     });
     native!(m, ["Int#>=", "Float#>=", "Integer#>="], |i, r, a| {
+        // False with a NaN, as IEEE 754 says (`<=>` orders it last).
+        if has_nan(r, a.arg(0)) {
+            return Ok(Value::Bool(false));
+        }
         Ok(Value::Bool(cmp_num(i, r, &a)?.is_ge()))
     });
     native!(m, ["Int#+@", "Float#+@", "Integer#+@"], |_, r, _| Ok(
@@ -303,9 +330,17 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     });
     native!(m, "Int#<<", int_shl);
     native!(m, "Int#>>", |i, r, a| {
-        Ok(Value::Int(
-            int(i, r, "Int")? >> int(i, a.arg(0), "Int")?.clamp(0, 63),
-        ))
+        let n = int(i, a.arg(0), "Int")?;
+        if n < 0 {
+            // A negative count shifts left, as in Ruby (by 64 or more,
+            // `int_shl` overflows without building the number).
+            let left = Args {
+                pos: smallvec![Value::Int(n.checked_neg().unwrap_or(i64::MAX))],
+                ..Args::default()
+            };
+            return int_shl(i, r, left);
+        }
+        Ok(Value::Int(int(i, r, "Int")? >> n.min(63)))
     });
     native!(m, "Int#abs", int_abs);
     native!(m, "Int#even?", |i, r, _| {
@@ -342,11 +377,28 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     native!(m, "Int#to_s", int_to_s);
     native!(m, "Int#chr", int_chr);
     native!(m, "Int#divmod", int_divmod);
+    // In the numeric tower: a result past the `Int` range (the gcd of
+    // the smallest Int and 0, a large lcm) raises `OverflowError`.
     native!(m, "Int#gcd", |i, r, a| {
-        Ok(Value::Int(int(i, r, "Int")?.gcd(&int(i, a.arg(0), "Int")?)))
+        let (x, y) = (int(i, r, "Int")?, int(i, a.arg(0), "Int")?);
+        // In u64: only the gcd of the smallest Int and 0 or itself, 2**63,
+        // does not fit back.
+        let g = x.unsigned_abs().gcd(&y.unsigned_abs());
+        i64::try_from(g)
+            .map(Value::Int)
+            .map_err(|_| i.err_overflow())
     });
     native!(m, "Int#lcm", |i, r, a| {
-        Ok(Value::Int(int(i, r, "Int")?.lcm(&int(i, a.arg(0), "Int")?)))
+        let (x, y) = (int(i, r, "Int")?, int(i, a.arg(0), "Int")?);
+        if x == 0 || y == 0 {
+            return Ok(Value::Int(0));
+        }
+        let g = x.unsigned_abs().gcd(&y.unsigned_abs());
+        (x.unsigned_abs() / g)
+            .checked_mul(y.unsigned_abs())
+            .and_then(|l| i64::try_from(l).ok())
+            .map(Value::Int)
+            .ok_or_else(|| i.err_overflow())
     });
     // The bits of the number past its sign, as in Ruby: `~n`'s for a
     // negative one (so -1 has none, -256 has 8).
@@ -394,15 +446,32 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         )?)))
     });
     native!(m, "Duration#+", |i, r, a| {
-        Ok(Value::Duration(dur(i, r)? + dur(i, a.arg(0))?))
+        match dur(i, r)?.checked_add(dur(i, a.arg(0))?) {
+            Some(d) => Ok(Value::Duration(d)),
+            None => Err(i.err_overflow()),
+        }
     });
     native!(m, "Duration#-", |i, r, a| {
-        Ok(Value::Duration(dur(i, r)? - dur(i, a.arg(0))?))
+        match dur(i, r)?.checked_sub(dur(i, a.arg(0))?) {
+            Some(d) => Ok(Value::Duration(d)),
+            None => Err(i.err_overflow()),
+        }
     });
     native!(m, "Duration#*", |i, r, a| {
-        Ok(Value::Duration(
-            (dur(i, r)? as f64 * float(i, a.arg(0), "factor")?) as i64,
-        ))
+        // An Int factor exactly; a Float one through a Float.
+        if let Value::Int(n) = a.arg(0) {
+            return dur(i, r)?
+                .checked_mul(*n)
+                .map(Value::Duration)
+                .ok_or_else(|| i.err_overflow());
+        }
+        let ns = dur(i, r)? as f64 * float(i, a.arg(0), "factor")?;
+        // As `+` and `-`: past the range, `OverflowError` (not the nearest
+        // Duration).
+        if !ns.is_finite() || ns >= i64::MAX as f64 || ns < i64::MIN as f64 {
+            return Err(i.err_overflow());
+        }
+        Ok(Value::Duration(ns as i64))
     });
     native!(m, "Duration#<=>", |i, r, a| {
         Ok(Value::Int(dur(i, r)?.cmp(&dur(i, a.arg(0))?) as i64))
@@ -563,10 +632,23 @@ fn int_abs(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
 }
 
 fn int_shl(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
-    let x = Num::of(interp, recv)?.to_big();
     let n = int(interp, args.arg(0), "shift")?;
+    // Past 64 bits a shift is known without doing it: a nonzero Int
+    // shifted left overflows, one shifted right is 0 or -1.
+    if let Value::Int(x) = recv {
+        if *x == 0 {
+            return Ok(Value::Int(0));
+        }
+        if n >= 64 {
+            return Err(interp.err_overflow());
+        }
+        if n <= -64 {
+            return Ok(Value::Int(if *x < 0 { -1 } else { 0 }));
+        }
+    }
+    let x = Num::of(interp, recv)?.to_big();
     let r = if n < 0 {
-        x >> (-n) as usize
+        x >> n.unsigned_abs() as usize
     } else {
         x << n as usize
     };
@@ -575,12 +657,13 @@ fn int_shl(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
 
 fn int_to_s(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let base = match args.pos.first() {
-        Some(b) => int(interp, b, "base")? as u32,
+        Some(b) => int(interp, b, "base")?,
         None => 10,
     };
     if !(2..=36).contains(&base) {
-        return Err(interp.err_arg("invalid radix"));
+        return Err(interp.err_arg(&format!("invalid radix {base}")));
     }
+    let base = base as u32;
     let b = Num::of(interp, recv)?.to_big();
     Ok(Value::string(b.to_str_radix(base)))
 }
@@ -608,6 +691,12 @@ pub(super) fn int_pow_mod(interp: &Interp, recv: &Value, args: Args) -> EvalResu
     let m = Num::of(interp, args.arg(1))?.to_big();
     if m.is_zero() {
         return Err(interp.raise(interp.program.exc.zero_division, "divided by 0"));
+    }
+    if exp.is_negative() {
+        return Err(interp.raise(
+            interp.program.exc.range_error,
+            "negative exponent with a modulus",
+        ));
     }
     let r = base.modpow(&exp, &m);
     match recv {
@@ -706,10 +795,9 @@ fn float_round(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let f = float(interp, recv, "Float")?;
     match args.pos.first() {
         None => float_to_int(interp, f.round()),
-        Some(d) => {
-            let digits = int(interp, d, "digits")?;
-            let factor = 10f64.powi(digits as i32);
-            Ok(Value::Float((f * factor).round() / factor))
+        // As `floor`, `ceil` and `truncate` with digits.
+        Some(_) => {
+            super::math::float_round_digits(interp, recv, args, super::math::Rounding::Round)
         }
     }
 }

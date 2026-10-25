@@ -1,0 +1,53 @@
+# Files: reads and writes on one opened "r+".
+class FileReadWriteTest < Test::Case
+  # A file of the test's own (tests may run at once).
+  def path(name: String) -> String = "#{Dir.tmpdir}/quarz-io-test-#{Process.pid}-#{name}"
+
+  def test_a_write_after_a_read_goes_to_the_read_position
+    p = path("read-write")
+    File.write(p, "abc")
+    begin
+      first = File.open(p, "r+") do |f|
+        r = f.read(1)
+        f.write("Z")
+        r
+      end
+      assert_equal("a", first)
+      assert_equal("aZc", File.read(p))
+    ensure
+      File.delete(p)
+    end
+  end
+
+  def test_rewind_after_a_read_and_a_write
+    p = path("rewind")
+    File.write(p, "abc")
+    begin
+      got = File.open(p, "r+") do |f|
+        f.read(1)
+        f.write("Z")
+        f.rewind
+        f.read
+      end
+      assert_equal("aZc", got)
+      assert_equal("aZc", File.read(p))
+    ensure
+      File.delete(p)
+    end
+  end
+
+  def test_a_read_after_a_write_comes_after_it
+    p = path("write-read")
+    File.write(p, "abc")
+    begin
+      got = File.open(p, "r+") do |f|
+        f.write("X")
+        f.read(1)
+      end
+      assert_equal("b", got)
+      assert_equal("Xbc", File.read(p))
+    ensure
+      File.delete(p)
+    end
+  end
+end

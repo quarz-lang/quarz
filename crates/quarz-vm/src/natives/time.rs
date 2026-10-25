@@ -37,14 +37,19 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     native!(m, "Time.local", |i, _, a| make(i, &a, false));
     native!(m, "Time.parse", |i, _, a| {
         let text = string(i, a.arg(0), "text")?;
-        parse(text.trim())
-            .map(|(ns, off, utc)| time(ns, off, utc))
-            .ok_or_else(|| i.err_arg(&format!("no time information in {:?}", &*text)))
+        match parse(text.trim()) {
+            Ok((ns, off, utc)) => Ok(time(ns, off, utc)),
+            Err(Parse::OutOfRange) => Err(i.raise(i.program.exc.range_error, "time out of range")),
+            // As `Time.local` for a time that does not exist there.
+            Err(Parse::Gap) => Err(i.err_arg("argument out of range")),
+            Err(Parse::NoTime) => Err(i.err_arg(&format!("no time information in {:?}", text))),
+        }
     });
     native!(m, "Time.iso8601", |i, _, a| {
         let text = string(i, a.arg(0), "text")?;
         match DateTime::parse_from_rfc3339(text.trim()) {
-            Ok(dt) => Ok(from_datetime(&dt, text.trim().ends_with('Z'))),
+            Ok(dt) => from_datetime(&dt, text.trim().ends_with('Z'))
+                .ok_or_else(|| i.raise(i.program.exc.range_error, "time out of range")),
             Err(_) => Err(i.err_arg(&format!("invalid ISO 8601 time {:?}", text))),
         }
     });
@@ -125,7 +130,11 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     native!(m, "Time#-", |i, r, a| {
         let t = tv(i, r)?;
         match a.arg(0) {
-            Value::Time(o) => Ok(Value::Duration(t.ns - o.ns)),
+            Value::Time(o) => {
+                t.ns.checked_sub(o.ns).map(Value::Duration).ok_or_else(|| {
+                    i.raise(i.program.exc.range_error, "time difference out of range")
+                })
+            }
             v => {
                 let d = dur(i, v)?;
                 let ns =
@@ -215,12 +224,14 @@ pub fn to_datetime(t: &TimeVal) -> DateTime<FixedOffset> {
     )
 }
 
-fn from_datetime<Tz: TimeZone>(dt: &DateTime<Tz>, utc: bool) -> Value {
-    time(
-        dt.timestamp_nanos_opt().unwrap_or(0),
+/// The `Time` of `dt`; `None` past the range of a nanosecond count
+/// (1677 to 2262).
+fn from_datetime<Tz: TimeZone>(dt: &DateTime<Tz>, utc: bool) -> Option<Value> {
+    Some(time(
+        dt.timestamp_nanos_opt()?,
         dt.offset().fix().local_minus_utc(),
         utc,
-    )
+    ))
 }
 
 /// The instant `ns` in the local time zone.
@@ -242,6 +253,12 @@ fn make(interp: &Interp, args: &Args, utc: bool) -> EvalResult {
         parts[k] = int(interp, v, "time component")?;
     }
     let bad = || interp.err_arg("argument out of range");
+    let out_of_range = || interp.raise(interp.program.exc.range_error, "time out of range");
+    // A year a Time cannot hold is out of range whatever the other parts
+    // (chrono would call a far one invalid).
+    if !(1677..=2262).contains(&parts[0]) {
+        return Err(out_of_range());
+    }
     let year = i32::try_from(parts[0]).map_err(|_| bad())?;
     let [month, day, hour, min, sec] =
         [parts[1], parts[2], parts[3], parts[4], parts[5]].map(|p| u32::try_from(p).ok());
@@ -251,13 +268,13 @@ fn make(interp: &Interp, args: &Args, utc: bool) -> EvalResult {
     };
     if utc {
         match Utc.with_ymd_and_hms(year, month, day, hour, min, sec) {
-            LocalResult::Single(dt) => Ok(from_datetime(&dt, true)),
+            LocalResult::Single(dt) => from_datetime(&dt, true).ok_or_else(out_of_range),
             _ => Err(bad()),
         }
     } else {
         match Local.with_ymd_and_hms(year, month, day, hour, min, sec) {
             LocalResult::Single(dt) | LocalResult::Ambiguous(dt, _) => {
-                Ok(from_datetime(&dt, false))
+                from_datetime(&dt, false).ok_or_else(out_of_range)
             }
             LocalResult::None => Err(bad()),
         }
@@ -267,15 +284,29 @@ fn make(interp: &Interp, args: &Args, utc: bool) -> EvalResult {
 /// Parse the common written forms: RFC 3339, `YYYY-MM-DD HH:MM:SS[.frac]
 /// [+HH:MM|+HHMM|UTC|Z]`, `YYYY-MM-DD HH:MM[:SS]` and `YYYY-MM-DD` (the
 /// latter two in local time).
-fn parse(text: &str) -> Option<(i64, i32, bool)> {
+/// Why `parse` read no time.
+enum Parse {
+    NoTime,
+    OutOfRange,
+    /// A local time the zone skips (a change to summer time).
+    Gap,
+}
+
+fn parse(text: &str) -> Result<(i64, i32, bool), Parse> {
     if let Ok(dt) = DateTime::parse_from_rfc3339(text) {
-        return Some((
-            dt.timestamp_nanos_opt()?,
+        return Ok((
+            dt.timestamp_nanos_opt().ok_or(Parse::OutOfRange)?,
             dt.offset().local_minus_utc(),
             text.ends_with('Z'),
         ));
     }
-    let normalized = text.replacen('T', " ", 1);
+    // `2024-03-05T14:07:09`: the `T` between the date and the time (not
+    // the one of a trailing `UTC`).
+    let normalized = if text.as_bytes().get(10) == Some(&b'T') {
+        format!("{} {}", &text[..10], &text[11..])
+    } else {
+        text.to_string()
+    };
     let utc_suffix = normalized.ends_with(" UTC") || normalized.ends_with('Z');
     let normalized = normalized
         .trim_end_matches(" UTC")
@@ -292,8 +323,8 @@ fn parse(text: &str) -> Option<(i64, i32, bool)> {
         "%Y-%m-%d %H:%M %z",
     ] {
         if let Ok(dt) = DateTime::parse_from_str(&normalized, fmt) {
-            return Some((
-                dt.timestamp_nanos_opt()?,
+            return Ok((
+                dt.timestamp_nanos_opt().ok_or(Parse::OutOfRange)?,
                 dt.offset().local_minus_utc(),
                 utc_suffix,
             ));
@@ -309,18 +340,20 @@ fn parse(text: &str) -> Option<(i64, i32, bool)> {
         }
     }
     if let Ok(date) = chrono::NaiveDate::parse_from_str(&normalized, "%Y-%m-%d") {
-        return local_naive(date.and_hms_opt(0, 0, 0)?);
+        return local_naive(date.and_hms_opt(0, 0, 0).ok_or(Parse::OutOfRange)?);
     }
-    None
+    Err(Parse::NoTime)
 }
 
-fn local_naive(naive: chrono::NaiveDateTime) -> Option<(i64, i32, bool)> {
+/// A local time, which may fall in a gap of the zone's (`Parse::Gap`) or
+/// past what a `Time` holds.
+fn local_naive(naive: chrono::NaiveDateTime) -> Result<(i64, i32, bool), Parse> {
     let dt = match Local.from_local_datetime(&naive) {
         LocalResult::Single(dt) | LocalResult::Ambiguous(dt, _) => dt,
-        LocalResult::None => return None,
+        LocalResult::None => return Err(Parse::Gap),
     };
-    Some((
-        dt.timestamp_nanos_opt()?,
+    Ok((
+        dt.timestamp_nanos_opt().ok_or(Parse::OutOfRange)?,
         dt.offset().local_minus_utc(),
         false,
     ))

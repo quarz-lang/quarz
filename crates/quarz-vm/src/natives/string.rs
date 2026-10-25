@@ -641,9 +641,13 @@ fn string_each_line(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
 fn string_to_i(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let text = s(interp, recv)?;
     let base = match args.pos.first() {
-        Some(b) => int(interp, b, "base")? as u32,
+        Some(b) => int(interp, b, "base")?,
         None => 10,
     };
+    if !(2..=36).contains(&base) {
+        return Err(interp.err_arg(&format!("invalid radix {base}")));
+    }
+    let base = base as u32;
     let t = text.trim_start();
     let mut end = 0;
     let bytes = t.as_bytes();
@@ -694,31 +698,5 @@ fn string_to_f(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
 }
 
 pub(super) fn string_succ(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
-    let text = s(interp, recv)?;
-    let mut chars: Vec<char> = text.chars().collect();
-    let mut i = chars.len();
-    while i > 0 {
-        i -= 1;
-        let c = chars[i];
-        let (next, carry) = match c {
-            'z' => ('a', true),
-            'Z' => ('A', true),
-            '9' => ('0', true),
-            c if c.is_ascii_alphanumeric() => (char::from_u32(c as u32 + 1).unwrap_or(c), false),
-            c => (char::from_u32(c as u32 + 1).unwrap_or(c), false),
-        };
-        chars[i] = next;
-        if !carry {
-            return Ok(Value::string(chars.into_iter().collect()));
-        }
-        if i == 0 {
-            let prefix = match c {
-                'z' => 'a',
-                'Z' => 'A',
-                _ => '1',
-            };
-            chars.insert(0, prefix);
-        }
-    }
-    Ok(Value::string(chars.into_iter().collect()))
+    Ok(Value::string(super::text::succ(s(interp, recv)?)))
 }

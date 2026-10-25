@@ -186,3 +186,58 @@ class EnumeratorTest < Test::Case
     assert_equal("[0, 2, 4]", 5.times.select(&:even?).inspect)
   end
 end
+
+# Updates past the end, which would leave nils in the gap.
+class CollectionEdgeTest < Test::Case
+  def test_fill_past_the_end
+    assert_raise(IndexError) { [10, 20, 30].fill(0, 5, 1) }
+    assert_equal([10, 20, 30, 0, 0], [10, 20, 30].fill(0, 3, 2))
+    assert_equal([10, 0, 0, 0, 0, 0], [10, 20, 30].fill(0, 1, 5))
+    b = Array::Builder[Int].new
+    b << 1
+    assert_raise(IndexError) { b.fill(0, 3, 1) }
+    assert_raise(ArgumentError) { [1, 2].fill(0, 0, 9223372036854775807) }
+  end
+
+  def test_builder_store_past_the_end
+    b = Array::Builder[Int].new
+    b << 1
+    assert_raise(IndexError) { b[3] = 4 }
+    b[1] = 4
+    assert_equal([1, 4], b.to_a)
+  end
+
+  # Stepped as Ruby's `String#upto`: compared as strings, digits as
+  # numbers, single characters by character.
+  def test_string_ranges_step_as_ruby
+    assert_empty(("c".."a").to_a)
+    assert_true(("c".."a").empty?)
+    assert_empty(("b".."aa").to_a)
+    assert_equal(["az"], ("az".."b").to_a)
+    assert_equal(["9", "10"], ("9".."10").to_a)
+    assert_equal(["09", "10", "11"], ("09".."11").to_a)
+    assert_equal(["9"], ("9"..."10").to_a)
+    assert_equal(["a", "b", "c", "d"], ("a"..."e").to_a)
+    assert_equal(["a", "b", "c"], ("a".."c").to_a)
+    assert_equal(27, ("a".."aa").to_a.size)
+    assert_equal(35, ("A".."c").to_a.size)
+    assert_empty(("AAa".."Zz").to_a)
+    assert_empty(("".."").to_a)
+    assert_equal(702, ("a".."é").to_a.size)
+    assert_equal(3, ("99999999999999999999".."100000000000000000001").to_a.size)
+    assert_empty(("100000000000000000000".."99999999999999999999").to_a)
+    assert_equal(["1.9", "2.0", "2.1"], ("1.9".."2.1").to_a)
+  end
+
+  # One string at a time, not all of them first.
+  def first_over(limit: String) -> String
+    ("a".."zzzzzzzz").each { |s| return s if s > limit }
+    "none"
+  end
+
+  def test_a_string_range_steps_lazily
+    assert_equal("c", first_over("bz"))
+    assert_false(("0".."99999999999").empty?)
+    assert_equal(1000000000001, (0..1000000000000).size)
+  end
+end
