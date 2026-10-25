@@ -83,6 +83,10 @@ class HttpHardeningServerTest < Test::Case
           raise "stream broke"
         end
       when "/inject" then HTTP::Response.text("a").header("x-user", "a\r\nSet-Cookie: evil=1")
+      when "/inject-field"
+        # Past `Headers#put`: the server's own check still refuses it.
+        bad = HTTP::Headers.new([HTTP::Field.new("x-user", "a\r\nSet-Cookie: evil=1")])
+        HTTP::Response.empty(200, bad)
       when "/te" then HTTP::Response.text("hello").header("transfer-encoding", "chunked")
       when "/cl" then HTTP::Response.empty(200).header("content-length", "5")
       when "/status" then HTTP::Response.text("x", 1000)
@@ -139,8 +143,12 @@ class HttpHardeningServerTest < Test::Case
 
   def test_header_with_crlf_not_sent
     serving do |port|
+      # `header` raises in the handler, which is a 500.
       assert_equal("HTTP/1.1 500 Internal Server Error|Content-Length: 0|Connection: close||",
                    raw(port, "GET /inject HTTP/1.1\r\nConnection: close\r\n\r\n"))
+      assert_equal("invalid header value for x-user: \"a\\r\\nSet-Cookie: evil=1\"", @errors.receive)
+      assert_equal("HTTP/1.1 500 Internal Server Error|Content-Length: 0|Connection: close||",
+                   raw(port, "GET /inject-field HTTP/1.1\r\nConnection: close\r\n\r\n"))
       assert_equal("invalid response header (a control character or a bad name)", @errors.receive)
     end
   end
@@ -239,5 +247,37 @@ class HttpHardeningServerTest < Test::Case
         s3.shutdown
       end
     end
+  end
+end
+
+# Headers that would split a response are refused where they are set.
+class HttpHeaderValidationTest < Test::Case
+  def data_bad_value -> Hash[String, String]
+    {"CR LF" => "a\r\nSet-Cookie: evil=1", "LF" => "a\nb", "CR" => "a\rb", "NUL" => "a\u0000b", "DEL" => "a\u007fb"}
+  end
+
+  def test_bad_value(value: String)
+    res = HTTP::Response.text("a")
+    e = assert_raise(ArgumentError) { res.header("x-user", value) }
+    assert_equal("invalid header value for x-user: #{value.inspect}", e.message)
+    assert_raise(ArgumentError) { HTTP::Headers.empty.add("x-user", value) }
+    assert_raise(ArgumentError) { HTTP::Headers.empty.put("x-user", value) }
+    assert_raise(ArgumentError) { HTTP::Headers.of({"x-user" => value}) }
+    assert_raise(ArgumentError) { HTTP::Response.redirect("/a#{value}") }
+  end
+
+  def data_bad_name -> Hash[String, String]
+    {"space" => "x user", "colon" => "x:user", "CR LF" => "x\r\ny", "empty" => ""}
+  end
+
+  def test_bad_name(name: String)
+    e = assert_raise(ArgumentError) { HTTP::Response.text("a").header(name, "v") }
+    assert_equal("invalid header name #{name.inspect}", e.message)
+  end
+
+  def test_htab_and_utf8_are_values
+    res = HTTP::Response.text("a").header("x-a", "1\t2").header("x-b", "héllo")
+    assert_equal("1\t2", res.headers["x-a"])
+    assert_equal("héllo", res.headers["x-b"])
   end
 end

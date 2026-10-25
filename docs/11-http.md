@@ -116,7 +116,7 @@ data Headers(entries: Array[Field])               # in order; a name may repeat
 end
 ```
 
-Names are case-insensitive: they are stored lowercased and written out in the conventional form (`Content-Type`). Values are kept as received, except that leading and trailing whitespace is removed.
+Names are case-insensitive: they are stored lowercased and written out in the conventional form (`Content-Type`). Values are kept as received, except that leading and trailing whitespace is removed. `put`, `add` and `of` (and so `Response#header` and `Response.redirect`) raise `ArgumentError` for a name that is not a token or a value with CR, LF or another control character but HTAB, where the header is set: such a header would split the response (response splitting).
 
 ## 4. Responses
 
@@ -186,7 +186,7 @@ end
 A connection's task does:
 
 1. Read the request line and headers: the first request has `read_header_timeout` to begin and as long again from its first byte to finish; a later one on the same connection has `idle_timeout` to begin and `read_header_timeout` to finish. Over `max_header_bytes`: `431`. Malformed: `400`. Both close the connection.
-2. Build the `Request` and call the handler. An `HTTP::Error` it raises is answered with that status (§7); any other `StandardError` becomes a `500` with an empty body and goes to `on_error` with the request, or to STDERR; `Task::Cancelled` is not caught. A response whose headers have a name that is not a token, or a value with CR, LF or another control character but HTAB, is not sent: it becomes a `500` too (response splitting). Whatever else fails (a `Stream` procedure that raises after the headers went out) ends that connection and is reported; the server goes on.
+2. Build the `Request` and call the handler. An `HTTP::Error` it raises is answered with that status (§7); any other `StandardError` becomes a `500` with an empty body and goes to `on_error` with the request, or to STDERR; `Task::Cancelled` is not caught. A response whose headers have a name that is not a token, or a value with CR, LF or another control character but HTAB, is not sent: it becomes a `500` too (response splitting; `Headers#put` and `add` already refuse those, so only fields built with `Field.new` get this far). Whatever else fails (a `Stream` procedure that raises after the headers went out) ends that connection and is reported; the server goes on.
 3. Write the response under `write_timeout`, then drain or close as §3 says.
 4. Keep the connection unless the request or the response said `Connection: close`, the request was HTTP/1.0 without `Connection: keep-alive`, or the body could not be drained. An HTTP/1.0 connection is kept only for a response with a `Content-Length`, and the response then says `Connection: keep-alive`; an HTTP/1.0 request with `Transfer-Encoding` is answered and the connection closed (RFC 9112 §6.1).
 
