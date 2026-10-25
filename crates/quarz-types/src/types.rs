@@ -121,6 +121,23 @@ impl Type {
         }
     }
 
+    /// Whether the inference variable `v` occurs in the type.
+    pub fn mentions_var(&self, v: u32) -> bool {
+        match self {
+            Type::Var(w) => *w == v,
+            Type::Nothing | Type::Param(_) => false,
+            Type::Class(_, args) | Type::ClassObject(_, args) => {
+                args.iter().any(|a| a.mentions_var(v))
+            }
+            Type::Union(ms) | Type::Tuple(ms) => ms.iter().any(|m| m.mentions_var(v)),
+            Type::Proc(rc, ps, r, _) => {
+                rc.as_ref().is_some_and(|t| t.mentions_var(v))
+                    || ps.iter().any(|p| p.mentions_var(v))
+                    || r.mentions_var(v)
+            }
+        }
+    }
+
     /// Whether the type parameter `id` occurs in the type.
     pub fn mentions_param(&self, id: TypeParamId) -> bool {
         match self {

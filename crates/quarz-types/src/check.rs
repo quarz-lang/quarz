@@ -405,11 +405,24 @@ impl InferTable {
         }
     }
 
-    fn bind(&mut self, v: InferVar, t: Type) {
+    /// Bind `v` to `t`, never to a type that contains `v` (resolving
+    /// would not end): `v = v | Int` binds `v` to `Int`, and a binding
+    /// that nests `v` (`v = Array[v]`) fails.
+    fn bind(&mut self, v: InferVar, t: Type) -> bool {
+        let t = match self.resolve(&t) {
+            Type::Union(ms) => {
+                Type::union_of(ms.into_iter().filter(|m| *m != Type::Var(v)).collect())
+            }
+            t => t,
+        };
         if t == Type::Var(v) {
-            return;
+            return true;
+        }
+        if t.mentions_var(v) {
+            return false;
         }
         self.bindings[v as usize] = Some(t);
+        true
     }
 
     fn save(&self) -> Vec<Option<Type>> {
@@ -1475,14 +1488,8 @@ impl Checker {
             return true;
         }
         match (&a, &e) {
-            (_, Type::Var(v)) => {
-                self.infer.bind(*v, a.clone());
-                true
-            }
-            (Type::Var(v), _) => {
-                self.infer.bind(*v, e.clone());
-                true
-            }
+            (_, Type::Var(v)) => self.infer.bind(*v, a.clone()),
+            (Type::Var(v), _) => self.infer.bind(*v, e.clone()),
             (_, Type::Class(id, _)) if *id == self.world.builtin.object => true,
             (Type::Union(ms), _) => {
                 let ms = ms.clone();
@@ -1605,14 +1612,8 @@ impl Checker {
             return true;
         }
         match (&rx, &ry) {
-            (Type::Var(v), _) => {
-                self.infer.bind(*v, ry.clone());
-                true
-            }
-            (_, Type::Var(v)) => {
-                self.infer.bind(*v, rx.clone());
-                true
-            }
+            (Type::Var(v), _) => self.infer.bind(*v, ry.clone()),
+            (_, Type::Var(v)) => self.infer.bind(*v, rx.clone()),
             (Type::Class(a, aa), Type::Class(b, ba)) if a == b && aa.len() == ba.len() => {
                 let (aa, ba) = (aa.clone(), ba.clone());
                 aa.iter().zip(ba.iter()).all(|(p, q)| self.unify(p, q))
@@ -1638,12 +1639,13 @@ impl Checker {
             return ra;
         }
         if let Type::Var(v) = ra {
-            self.infer.bind(v, rb.clone());
-            return rb;
-        }
-        if let Type::Var(v) = rb {
-            self.infer.bind(v, ra.clone());
-            return ra;
+            if self.infer.bind(v, rb.clone()) {
+                return rb;
+            }
+        } else if let Type::Var(v) = rb {
+            if self.infer.bind(v, ra.clone()) {
+                return ra;
+            }
         }
         self.world.join(&ra, &rb)
     }
