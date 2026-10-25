@@ -1056,9 +1056,7 @@ impl<'ast> Declarer<'ast> {
             {
                 continue;
             }
-            let RetType::Known(mine_ret) = m.ret.clone() else {
-                continue;
-            };
+            let mine_ret = m.ret.clone();
             // The nearest method of the name with the same parameters.
             let found = ancestors.iter().find_map(|(a, aargs)| {
                 let mut subst = self.world.class_subst(*a, aargs);
@@ -1088,9 +1086,7 @@ impl<'ast> Declarer<'ast> {
                     .map(|o| (o, subst.clone()))
             });
             let Some((o, subst)) = found else { continue };
-            let RetType::Known(theirs) = self.world.method(o).ret.clone() else {
-                continue;
-            };
+            let theirs = self.world.method(o).ret.clone();
             let theirs = theirs.subst(&subst);
             if contains_self(&theirs) || contains_self(&mine_ret) {
                 continue;
@@ -1234,9 +1230,7 @@ impl<'ast> Declarer<'ast> {
             if let Some((_, t)) = &m.block {
                 self.variance_walk(t, -1, &params, &mut report);
             }
-            if let RetType::Known(t) = &m.ret {
-                self.variance_walk(t, 1, &params, &mut report);
-            }
+            self.variance_walk(&m.ret, 1, &params, &mut report);
             for tp in &m.type_params {
                 for b in &tp.bounds {
                     self.variance_walk(b, -1, &params, &mut report);
@@ -2140,7 +2134,7 @@ impl<'ast> Declarer<'ast> {
             block: None,
             block_optional: false,
             block_usings: Vec::new(),
-            ret: RetType::Known(ret),
+            ret,
             body: None,
             is_abstract: false,
             is_native: true,
@@ -2348,17 +2342,15 @@ impl<'ast> Declarer<'ast> {
             });
         }
         let ret = match &def.ret {
-            Some(t) => RetType::Known(self.resolve_type(t, &scope).unwrap_or(Type::Nothing)),
-            None if def.name == "initialize" || def.name == "deinitialize" => {
-                RetType::Known(self.world.nil())
-            }
+            Some(t) => self.resolve_type(t, &scope).unwrap_or(Type::Nothing),
+            None if def.name == "initialize" || def.name == "deinitialize" => self.world.nil(),
             None if def.is_abstract || def.is_native => {
                 self.error("abstract and native methods need a return type", def.span);
-                RetType::Known(self.world.nil())
+                self.world.nil()
             }
             // Return types are declared, not inferred: without one, a
             // method returns nil (its body's value is not used).
-            None => RetType::Known(self.world.nil()),
+            None => self.world.nil(),
         };
         if def.is_abstract
             && !self.world.class(owner).is_abstract

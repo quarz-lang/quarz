@@ -330,22 +330,6 @@ fn qz_files(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Load a program given as text (for the REPL and tests); requires resolve
-/// relative to `dir`.
-pub fn load_source(name: &str, text: &str, dir: &Path) -> (Vec<LoadedUnit>, Vec<LoadDiagnostic>) {
-    let mut loader = Loader {
-        units: Vec::new(),
-        diagnostics: Vec::new(),
-        visited: HashSet::default(),
-        in_progress: Vec::new(),
-        next_unit: 0,
-    };
-    loader.load_text(name, text.to_string(), dir, format!("<{name}>"), None);
-    loader.load_implicit_std();
-    std_first(&mut loader.units);
-    (loader.units, loader.diagnostics)
-}
-
 /// The standard library modules a program names without requiring them:
 /// those declaring a constant that some file mentions and that no file of
 /// the program declares itself (`declared`). `texts` are the files'

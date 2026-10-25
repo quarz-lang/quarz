@@ -220,18 +220,13 @@ pub fn build(world: &World, lw: &Lowerer, file_names: Vec<String>) -> RtWorld {
                 fast_op,
                 file: m.file,
                 ret: match &m.ret {
-                    types::RetType::Known(t) => match t {
-                        Type::Param(_) | Type::Var(_) => None,
-                        t => Some(world.type_name(t)),
-                    },
-                    _ => None,
+                    Type::Param(_) | Type::Var(_) => None,
+                    t => Some(world.type_name(t)),
                 },
                 overrides: overridden_methods(world, m, &mut ancestors),
                 makes: if m.is_native {
                     let mut out = Vec::new();
-                    if let types::RetType::Known(t) = &m.ret {
-                        classes_in(t, &mut out);
-                    }
+                    classes_in(&m.ret, &mut out);
                     if let Some((_, t)) = &m.block {
                         classes_in(t, &mut out);
                     }

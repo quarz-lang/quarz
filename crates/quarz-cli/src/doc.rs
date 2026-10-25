@@ -10,7 +10,7 @@ use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use quarz_syntax::ast::{ParamKind, Variance, Visibility};
 use quarz_syntax::doc::Doc;
 use quarz_syntax::{SourceFile, Span};
-use quarz_types::{ClassId, ClassKind, Member, MethodId, RetType, Synth, Type, World};
+use quarz_types::{ClassId, ClassKind, Member, MethodId, Synth, Type, World};
 
 pub(crate) mod examples;
 mod html;
@@ -497,10 +497,7 @@ pub(crate) fn method_signature(world: &World, mid: MethodId, as_new: Option<&str
     match as_new {
         Some(class) => format!("def self.new{tps}{params} -> {class}"),
         None => {
-            let ret = match &m.ret {
-                RetType::Known(t) => format!(" -> {}", world.type_name(t)),
-                _ => String::new(),
-            };
+            let ret = format!(" -> {}", world.type_name(&m.ret));
             let recv = if m.singleton { "self." } else { "" };
             format!("def {recv}{}{tps}{params}{ret}", m.name)
         }

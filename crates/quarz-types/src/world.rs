@@ -51,16 +51,6 @@ pub struct ParamInfo {
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub enum RetType {
-    Known(Type),
-    /// To be inferred from the body on first use.
-    Infer,
-    /// Currently being inferred (a call while in this state is a recursion
-    /// without an annotation).
-    Inferring,
-}
-
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct MethodInfo {
     pub id: MethodId,
     pub name: String,
@@ -76,7 +66,8 @@ pub struct MethodInfo {
     /// Extensions active inside a block literal passed to this method
     /// (`&: (A) -> R using M`).
     pub block_usings: Vec<ExtensionId>,
-    pub ret: RetType,
+    /// Declared: a method without one returns nil.
+    pub ret: Type,
     pub body: Option<Rc<MethodDef>>,
     pub is_abstract: bool,
     pub is_native: bool,
@@ -1472,10 +1463,6 @@ impl World {
             }
             ClassKind::Module | ClassKind::Main => false,
         }
-    }
-
-    pub fn is_enum_variant(&self, id: ClassId) -> bool {
-        self.class(id).kind == ClassKind::Variant
     }
 
     /// Whether values of the type may be shared between tasks.

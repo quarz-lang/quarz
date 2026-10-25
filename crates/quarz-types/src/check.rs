@@ -336,9 +336,8 @@ struct Env {
     receivers: Vec<ReceiverCtx>,
     method: Option<MethodId>,
     scope: TypeScope,
-    /// `None` while inferring.
+    /// The method's return type; `None` outside a method (the top level).
     ret_expected: Option<Type>,
-    ret_collected: Vec<Type>,
     block_type: Option<Type>,
     /// The block may be left out (`&block: ((A) -> R)?`), so `yield`
     /// cannot run it.
@@ -704,7 +703,6 @@ impl Checker {
             method: None,
             scope: TypeScope::default(),
             ret_expected: None,
-            ret_collected: Vec::new(),
             block_type: None,
             block_optional: false,
             in_initialize: false,
@@ -822,9 +820,7 @@ impl Checker {
             let (file, span) = (m.file, m.span);
             let mut types: Vec<(Type, Span)> =
                 m.params.iter().map(|p| (p.ty.clone(), p.span)).collect();
-            if let RetType::Known(t) = &m.ret {
-                types.push((t.clone(), span));
-            }
+            types.push((m.ret.clone(), span));
             if let Some((_, t)) = &m.block {
                 types.push((t.clone(), span));
             }
@@ -1401,10 +1397,6 @@ impl Checker {
         self.self_news = sites;
     }
 
-    pub fn file_main_class(&self, file: u32) -> Option<ClassId> {
-        self.file_main(file)
-    }
-
     /// Names of the variables of the REPL's top level.
     /// The REPL's local variables with their declared types (not as an
     /// assignment narrowed them: `x: String? = nil` is a `String?`).
@@ -1457,7 +1449,6 @@ impl Checker {
             method,
             scope,
             ret_expected: None,
-            ret_collected: Vec::new(),
             block_type: None,
             block_optional: false,
             in_initialize: false,
@@ -1582,25 +1573,8 @@ impl Checker {
     // ----- methods ---------------------------------------------------------
 
     /// The return type of a method (declared: one without returns nil).
-    fn method_ret(&mut self, mid: MethodId, span: Span) -> Type {
-        match self.world.method(mid).ret.clone() {
-            RetType::Known(t) => t,
-            RetType::Inferring => {
-                let name = self.world.method(mid).name.clone();
-                self.error(
-                    format!("the recursive method `{name}` needs an explicit return type"),
-                    span,
-                );
-                Type::Nothing
-            }
-            RetType::Infer => {
-                self.ensure_method_checked(mid);
-                match self.world.method(mid).ret.clone() {
-                    RetType::Known(t) => t,
-                    _ => Type::Nothing,
-                }
-            }
-        }
+    fn method_ret(&self, mid: MethodId) -> Type {
+        self.world.method(mid).ret.clone()
     }
 
     pub fn ensure_method_checked(&mut self, mid: MethodId) {
@@ -1620,9 +1594,6 @@ impl Checker {
             self.ambiguous.len(),
             self.diagnostics.len(),
         );
-        if matches!(self.world.method(mid).ret, RetType::Infer) {
-            self.world.method_mut(mid).ret = RetType::Inferring;
-        }
 
         let info = self.world.method(mid).clone();
         let owner = info.owner;
@@ -1696,10 +1667,7 @@ impl Checker {
             &mut self.world.self_bound,
             opaque.then(|| Self::self_binding(&info, &self_type)),
         );
-        env.ret_expected = match &info.ret {
-            RetType::Known(t) => Some(t.subst(&self_subst)),
-            _ => None,
-        };
+        env.ret_expected = Some(info.ret.subst(&self_subst));
         env.block_type = info.block.as_ref().map(|(_, t)| t.subst(&self_subst));
         env.block_optional = info.block_optional;
         env.in_initialize = info.name == "initialize" && !info.singleton;
@@ -1810,27 +1778,7 @@ impl Checker {
                     );
                 }
             }
-            Some(_) => {}
-            None => {
-                let mut t = self.infer.resolve(&body_ty);
-                for r in self.env.ret_collected.clone() {
-                    let r = self.infer.resolve(&r);
-                    t = self.join(&t, &r);
-                }
-                let t = self.settle_vars(&t);
-                let t = self.world.erase_narrowed(&t);
-                if t.has_vars() {
-                    self.error(
-                        format!(
-                            "cannot infer the return type of `{}` ({}); add `-> Type`",
-                            info.name,
-                            self.name(&t)
-                        ),
-                        info.span,
-                    );
-                }
-                self.world.method_mut(mid).ret = RetType::Known(t);
-            }
+            _ => {}
         }
 
         if self.env.in_initialize {
@@ -1875,9 +1823,6 @@ impl Checker {
         self.finish_frame_types();
         self.world.method_mut(mid).frame_size = frame_size;
         self.world.method_mut(mid).checked = true;
-        if matches!(self.world.method(mid).ret, RetType::Inferring) {
-            self.world.method_mut(mid).ret = RetType::Known(Type::Nothing);
-        }
         self.env = saved_env;
         self.infer = saved_infer;
         self.touched = saved_touched;
@@ -3372,7 +3317,7 @@ impl Checker {
         let is = |t: &Type| t.mentions_param(SELF_PARAM);
         m.params.iter().any(|p| is(&p.ty))
             || m.block.as_ref().is_some_and(|(_, t)| is(t))
-            || matches!(&m.ret, RetType::Known(t) if is(t))
+            || is(&m.ret)
     }
 
     /// Whether `self` is the method's own `self` with the opaque type
@@ -3737,7 +3682,7 @@ impl Checker {
                     .filter(|p| p.kind == ParamKind::Positional)
                     .map(|p| p.ty.subst(&subst))
                     .collect();
-                let ret = self.method_ret(mid, expr.span).subst(&subst);
+                let ret = self.method_ret(mid).subst(&subst);
                 self.out
                     .calls
                     .insert(expr.id, CallTarget::Method { method: mid });
@@ -3968,11 +3913,9 @@ impl Checker {
                         }
                     }
                     None => {
-                        let t = match value {
-                            Some(v) => self.check_expr(v, None),
-                            None => self.world.nil(),
-                        };
-                        self.env.ret_collected.push(t);
+                        if let Some(v) = value {
+                            self.check_expr(v, None);
+                        }
                     }
                 }
                 Type::Nothing
@@ -5482,7 +5425,7 @@ impl Checker {
                 self.out
                     .calls
                     .insert(expr.id, CallTarget::Method { method: mid });
-                return self.method_ret(mid, expr.span).subst(&subst);
+                return self.method_ret(mid).subst(&subst);
             }
             self.infer.restore(saved);
         }
@@ -7252,10 +7195,7 @@ impl Checker {
             let name = if name == "&" { "" } else { name.as_str() };
             parts.push(format!("&{name}: {}", self.world.type_name(t)));
         }
-        let ret = match &m.ret {
-            RetType::Known(t) => self.world.type_name(t),
-            _ => "?".to_string(),
-        };
+        let ret = self.world.type_name(&m.ret);
         format!("{}({}) -> {}", m.name, parts.join(", "), ret)
     }
 
@@ -7594,7 +7534,7 @@ impl Checker {
         // The return type, unified with the expected type first so that it
         // can drive inference inside the block (`Array.build { |out| ... }`
         // where the result type is known).
-        let ret = self.method_ret(m.id, expr.span).subst(subst);
+        let ret = self.method_ret(m.id).subst(subst);
         if let Some(e) = expected {
             let r = self.infer.resolve(&ret);
             if r.has_vars() {
@@ -7692,7 +7632,7 @@ impl Checker {
                         }
                         let mut msubst = msubst;
                         msubst.insert(SELF_PARAM, recv.clone());
-                        let r = self.method_ret(mid, e.span).subst(&msubst);
+                        let r = self.method_ret(mid).subst(&msubst);
                         if !self.coerce(&r, &ret) {
                             let msg = format!(
                                 "`&:{name}` returns {} but {} was expected",
@@ -8774,18 +8714,6 @@ impl Checker {
     pub fn into_output(mut self) -> (World, Output, Vec<(u32, Diagnostic)>) {
         self.flush_ambiguous();
         (self.world, self.out, self.diagnostics)
-    }
-
-    pub fn frame_var_count(&self) -> usize {
-        self.env.frames[0].vars.len()
-    }
-
-    pub fn method_ret_pub(&mut self, mid: MethodId, span: Span) -> Type {
-        self.method_ret(mid, span)
-    }
-
-    pub fn fresh_var(&mut self) -> Type {
-        self.infer.fresh()
     }
 
     pub(crate) fn resolve_path_pub(
