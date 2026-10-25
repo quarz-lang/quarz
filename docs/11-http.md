@@ -116,7 +116,7 @@ data Headers(entries: Array[Field])               # in order; a name may repeat
 end
 ```
 
-Names are case-insensitive: they are stored lowercased and written out in the conventional form (`Content-Type`). Values are kept as received, except that leading and trailing whitespace is removed. `put`, `add` and `of` (and so `Response#header` and `Response.redirect`) raise `ArgumentError` for a name that is not a token or a value with CR, LF or another control character but HTAB, where the header is set: such a header would split the response (response splitting).
+Names are case-insensitive: they are stored lowercased and written out in the conventional form (`Content-Type`). Values are kept as received, except that leading and trailing whitespace is removed. `put`, `add` and `of` (and so `Response#header` and `Response.redirect`) raise `ArgumentError` for a name that is not a token or a value with CR, LF or another control character but HTAB, where the header is set: such a header would split the response (response splitting). The message names the header, not the value, which may come from a request (a cookie, a token) and would otherwise end up in logs.
 
 ## 4. Responses
 

@@ -146,7 +146,7 @@ class HttpHardeningServerTest < Test::Case
       # `header` raises in the handler, which is a 500.
       assert_equal("HTTP/1.1 500 Internal Server Error|Content-Length: 0|Connection: close||",
                    raw(port, "GET /inject HTTP/1.1\r\nConnection: close\r\n\r\n"))
-      assert_equal("invalid header value for x-user: \"a\\r\\nSet-Cookie: evil=1\"", @errors.receive)
+      assert_equal("invalid header value for x-user (a control character)", @errors.receive)
       assert_equal("HTTP/1.1 500 Internal Server Error|Content-Length: 0|Connection: close||",
                    raw(port, "GET /inject-field HTTP/1.1\r\nConnection: close\r\n\r\n"))
       assert_equal("invalid response header (a control character or a bad name)", @errors.receive)
@@ -259,7 +259,8 @@ class HttpHeaderValidationTest < Test::Case
   def test_bad_value(value: String)
     res = HTTP::Response.text("a")
     e = assert_raise(ArgumentError) { res.header("x-user", value) }
-    assert_equal("invalid header value for x-user: #{value.inspect}", e.message)
+    # The value, which may come from a request, is not in the message.
+    assert_equal("invalid header value for x-user (a control character)", e.message)
     assert_raise(ArgumentError) { HTTP::Headers.empty.add("x-user", value) }
     assert_raise(ArgumentError) { HTTP::Headers.empty.put("x-user", value) }
     assert_raise(ArgumentError) { HTTP::Headers.of({"x-user" => value}) }
