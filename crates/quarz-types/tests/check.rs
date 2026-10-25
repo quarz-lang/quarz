@@ -1432,3 +1432,36 @@ fn closures_that_may_run_later_in_more_places() {
         "`run` cannot keep its block",
     );
 }
+
+#[test]
+fn inheritance_cycles_are_errors() {
+    err(
+        "class A < A; end",
+        "superclass cycle: `A` would inherit from itself",
+    );
+    err(
+        "class A < B; end\nclass B < A; end",
+        "superclass cycle: `B` would inherit from itself",
+    );
+    err(
+        "class G[T] < H[T]; end\nclass H[T] < G[T]; end",
+        "superclass cycle",
+    );
+    err(
+        "module M\n  include M\nend",
+        "cyclic include: `M` would include itself",
+    );
+    err(
+        "module M\n  include N\nend\nmodule N\n  include M\nend\nclass A\n  include M\nend",
+        "cyclic include: `N` would include itself",
+    );
+    // Through an extension (with growing type arguments, it used to hang).
+    err(
+        "module N[T]\nend\nmodule M[T]\n  include N[Array[T]]\nend\nextension N[T]\n  include M[T]\nend",
+        "cyclic include: `N` would include itself",
+    );
+    err(
+        "module N\nend\nmodule M\n  include N\nend\nextension N\n  include M\nend",
+        "cyclic include: `N` would include itself",
+    );
+}

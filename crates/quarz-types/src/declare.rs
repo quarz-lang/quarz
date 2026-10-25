@@ -1414,6 +1414,36 @@ impl<'ast> Declarer<'ast> {
         None
     }
 
+    /// Whether module `m` is `target` or includes it, directly or not
+    /// (through the includes resolved so far, its extensions' too, which
+    /// have no cycle).
+    fn includes_module(&self, m: ClassId, target: ClassId) -> bool {
+        let mut todo = vec![m];
+        let mut seen: Vec<ClassId> = Vec::new();
+        while let Some(c) = todo.pop() {
+            if c == target {
+                return true;
+            }
+            if seen.contains(&c) {
+                continue;
+            }
+            seen.push(c);
+            let exts = self.world.extensions.iter().filter(|e| e.target == c);
+            for t in self
+                .world
+                .class(c)
+                .includes
+                .iter()
+                .chain(exts.flat_map(|e| e.includes.iter()))
+            {
+                if let Type::Class(i, _) = t {
+                    todo.push(*i);
+                }
+            }
+        }
+        false
+    }
+
     /// A concrete method of the same name whose arity covers the abstract
     /// one's counts as its implementation.
     fn implements(&self, candidate: MethodId, abstract_id: MethodId) -> bool {
@@ -1562,7 +1592,31 @@ impl<'ast> Declarer<'ast> {
                             Type::Class(sid, _)
                                 if matches!(self.world.class(*sid).kind, ClassKind::Class) =>
                             {
-                                self.world.class_mut(id).superclass = Some(t);
+                                // (The chains set so far have no cycle: one
+                                // through `id` would be closed by this one.)
+                                let mut c = Some(*sid);
+                                let mut cycle = false;
+                                while let Some(k) = c {
+                                    if k == id {
+                                        cycle = true;
+                                        break;
+                                    }
+                                    c = match &self.world.class(k).superclass {
+                                        Some(Type::Class(s, _)) => Some(*s),
+                                        _ => None,
+                                    };
+                                }
+                                if cycle {
+                                    let name = self.world.class(id).name.clone();
+                                    self.error(
+                                        format!(
+                                            "superclass cycle: `{name}` would inherit from itself"
+                                        ),
+                                        sup.span,
+                                    );
+                                } else {
+                                    self.world.class_mut(id).superclass = Some(t);
+                                }
                             }
                             Type::Class(sid, _) => {
                                 let kind = self.world.class(*sid).kind;
@@ -1624,6 +1678,15 @@ impl<'ast> Declarer<'ast> {
                                 if self.world.class(*mid).kind == ClassKind::Module =>
                             {
                                 match kind {
+                                    MixinKind::Include if self.includes_module(*mid, id) => {
+                                        let name = self.world.class(id).name.clone();
+                                        self.error(
+                                            format!(
+                                                "cyclic include: `{name}` would include itself"
+                                            ),
+                                            t.span,
+                                        );
+                                    }
                                     MixinKind::Include => {
                                         self.world.class_mut(id).includes.push(ty)
                                     }
@@ -1708,6 +1771,16 @@ impl<'ast> Declarer<'ast> {
             {
                 for t in types {
                     if let Some(ty) = self.resolve_type(t, &scope) {
+                        if let Type::Class(mid, _) = &ty {
+                            if self.includes_module(*mid, tid) {
+                                let name = self.world.class(tid).name.clone();
+                                self.error(
+                                    format!("cyclic include: `{name}` would include itself"),
+                                    t.span,
+                                );
+                                continue;
+                            }
+                        }
                         self.ext_includes
                             .push((e.id, ty.clone(), t.span, self.file));
                         self.world.extensions[e.id as usize].includes.push(ty);
