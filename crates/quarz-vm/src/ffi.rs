@@ -1007,6 +1007,7 @@ pub unsafe extern "C" fn qz_main(
     vec_layout: u64,
     flags: u64,
 ) -> i32 {
+    crate::natives::signal::ignore_sigpipe();
     let bytes = std::slice::from_raw_parts(blob, len);
     // What start-up builds lives as long as the program (see `alloc`).
     #[cfg(feature = "mimalloc")]

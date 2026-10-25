@@ -1,0 +1,43 @@
+# An HTTP server on four workers: many clients at once, keep-alive
+# connections, a shared counter in an Atom; then a graceful shutdown.
+require "http"
+
+hits = Atom.new(0)
+router = HTTP::Router.build do |r|
+  r.get("/count") do |req|
+    n = hits.update { |c| c + 1 }
+    HTTP::Response.text(n.to_s)
+  end
+  r.post("/echo/{name}") { |req| HTTP::Response.text("#{req.params["name"]}:#{req.body.read}") }
+end
+server = HTTP::Server.new(router, host: "127.0.0.1", port: 0)
+port = server.local_address.port
+
+def get(s: TCPSocket, req: String) -> String
+  s.write(req)
+  head = String::Builder.new
+  loop do
+    line = s.gets
+    break if line == "\r\n"
+    head << line
+  end
+  len = head.to_s.lines.find { |l| l.start_with?("Content-Length:") }.to_s.split(":")[1].to_s.strip.to_i
+  s.read(len)
+end
+
+results = Task.scope do |scope|
+  scope.spawn { server.serve }
+  clients = (0...40).map do |i|
+    scope.spawn do
+      Socket.tcp("127.0.0.1", port) do |s|
+        a = get(s, "GET /count HTTP/1.1\r\n\r\n")
+        b = get(s, "POST /echo/c#{i} HTTP/1.1\r\nContent-Length: #{i.to_s.size}\r\n\r\n#{i}")
+        a.to_i > 0 && b == "c#{i}:#{i}"
+      end
+    end
+  end
+  ok = clients.map(&:await)
+  server.shutdown
+  ok
+end
+p results.all?, results.size, hits.value

@@ -1,0 +1,46 @@
+# HTTP::Router: patterns, specificity, mount, 405, HEAD, conflicts.
+require "http"
+
+admin = HTTP::Router.build do |r|
+  r.get("/stats") { |req| HTTP::Response.text("stats") }
+  r.get("/users/{id}") { |req| HTTP::Response.text("admin user #{req.params["id"]}") }
+end
+router = HTTP::Router.build do |r|
+  r.get("/") { |req| HTTP::Response.text("root") }
+  r.get("/users/{id}") { |req| HTTP::Response.text("user #{req.params["id"]}") }
+  r.get("/users/me") { |req| HTTP::Response.text("me") }
+  r.post("/users") { |req| HTTP::Response.text("created #{req.body.read}", 201) }
+  r.get("/files/{path...}") { |req| HTTP::Response.text("file [#{req.params["path"]}]") }
+  r.get("/files/{name}") { |req| HTTP::Response.text("one file #{req.params["name"]}") }
+  r.get("/a/{x}/c") { |req| HTTP::Response.text("a x c") }
+  r.get("/{y}/b/c") { |req| HTTP::Response.text("y b c") }
+  r.mount("/admin", admin)
+  r.not_found { |req| HTTP::Response.text("nothing at #{req.path}", 404) }
+end
+
+def show(router: HTTP::Router, req: HTTP::Request) -> Nil
+  res = router.call(req)
+  body = case res.body
+         in HTTP::ResponseBody::Text(text:) then text
+         else ""
+         end
+  allow = res.headers["allow"]
+  puts "#{req.method} #{req.target} -> #{res.status} #{body}#{allow ? " Allow: #{allow}" : ""}"
+end
+
+["/", "/users/42", "/users/me", "/users/", "/files/a/b%2Fc", "/files/x", "/files/", "/files", "/a/b/c", "/z/b/c",
+ "/admin/stats", "/admin/users/7", "/nope", "/users/%E3%81%82", "/users/%ZZ"].each do |t|
+  show(router, HTTP::Request.get(t))
+end
+show(router, HTTP::Request.post("/users", "bob"))
+show(router, HTTP::Request.delete("/users/1"))
+show(router, HTTP::Request.head("/users/1"))
+show(router, HTTP::Request.post("/"))
+begin
+  HTTP::Router.build do |r|
+    r.get("/x/{a}") { |req| HTTP::Response.text("1") }
+    r.get("/x/{b}") { |req| HTTP::Response.text("2") }
+  end
+rescue ArgumentError => e
+  p e.message
+end

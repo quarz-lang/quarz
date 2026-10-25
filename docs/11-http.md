@@ -4,7 +4,7 @@
 
 `require "http"` gives the `HTTP` module: an HTTP/1.1 server written in Quarz on top of the sockets ([06-stdlib.md](06-stdlib.md) §9), for use as an application server behind a reverse proxy, as Puma is used. The proxy terminates TLS and speaks HTTP/2 to the clients; the server speaks HTTP/1.1 to the proxy, with keep-alive and chunked bodies. A client, `HTTP::Client`, will follow with the same request and response types; neither follows Ruby's `net/http`.
 
-This is the design. Nothing of it is implemented yet; the sections say what the first version does and what is left for later.
+This is implemented in `std/http.qz` (and `Signal` in the prelude, with a few natives), except what §9 leaves for later.
 
 ## 1. Shape
 
@@ -62,7 +62,9 @@ module HTTP
     headers: Headers,
     body: Body,
     remote_address: Socket::Address?,   # nil on a UNIX socket
-    params: Hash[String, String]    # path parameters the router bound (§6); empty otherwise
+    params: Hash[String, String],   # path parameters the router bound (§6); empty otherwise
+    proxies: Proxies,               # the server's trusted proxies
+    trusted: Bool                   # whether the peer is one
   )
     def host -> String?                              # the Host header
     def content_length -> Int?
@@ -75,7 +77,7 @@ module HTTP
 end
 ```
 
-`Request` is a `data` value: `req.with(params: ...)` makes the routed request, and a test builds one with `HTTP::Request.new(...)` (its body an `HTTP::Body.of("...")`), or with `HTTP::Request.get("/users/1", headers: ..., body: "")` and the other method names. It is not Shareable, because its `Body` is not: a handler that hands work to another task copies the fields it needs out first (`path = req.path` before the `spawn` block).
+`Request` is a `data` value: `req.with(params: ...)` makes the routed request, and a test builds one with `HTTP::Request.get("/users/1", headers)`, `HTTP::Request.post("/users", body, headers)` (also `head`, `delete`, `put`, `patch`), or `HTTP::Request.build(method, target, headers, body)`. It is not Shareable, because its `Body` is not: a handler that hands work to another task copies the fields it needs out first (`path = req.path` before the `spawn` block).
 
 ### Bodies
 
@@ -86,17 +88,20 @@ class Body
   def read -> String                   # the whole body; HTTP::PayloadTooLarge past max_body_bytes
   def read_bytes -> Bytes
   def each_chunk(&: (Bytes) -> Nil) -> Nil   # as it arrives, without the limit
+  def read_chunk(max: Int = 16_384) -> Bytes # the next piece (empty at the end)
   def size -> Int?                     # Content-Length, when there is one
   def consumed? -> Bool                # whether it has been read to the end
 end
 ```
 
-`Content-Length` and `Transfer-Encoding: chunked` are both decoded; a request with neither has an empty body. `Expect: 100-continue` is answered with `100 Continue` when the handler first reads. What the handler did not read is drained after it returns when at most `max_body_bytes` remain and they arrive within `read_header_timeout` (so the connection can be reused); otherwise, and when the client was waiting for a `100 Continue` that was never sent, the connection is closed after the response.
+`Content-Length` and `Transfer-Encoding: chunked` are both decoded; a request with neither has an empty body. `Expect: 100-continue` is answered with `100 Continue` when the handler first reads. What the handler did not read of a `Content-Length` body is read and dropped after it returns when at most 64 KiB remain (each read within `read_timeout`), so that the connection can be reused; otherwise (a chunked body, more left, a body whose framing failed, or a client waiting for a `100 Continue` that was never sent) the connection is closed after the response. A body read that fails (bad framing, `read_timeout`) leaves the connection to be closed after the response.
 
 ### Headers
 
 ```ruby
-data Headers(entries: Array[[String, String]])    # names lowercased, order kept, a name may repeat
+data Field = (name: String, value: String)        # a name lowercased
+
+data Headers(entries: Array[Field])               # in order; a name may repeat
   def self.empty -> Headers
   def self.of(pairs: Hash[String, String]) -> Headers
   def [](name: String) -> String?                    # the first value
@@ -107,6 +112,7 @@ data Headers(entries: Array[[String, String]])    # names lowercased, order kept
   def delete(name: String) -> Headers
   def each(&: (String, String) -> Nil) -> Nil
   def size -> Int
+  def token?(name: String, token: String) -> Bool   # `Connection: keep-alive, Upgrade` has `upgrade`
 end
 ```
 
@@ -146,7 +152,7 @@ module HTTP
 end
 ```
 
-The server adds what the body implies: `Content-Length` for `Text`, `Binary` and `Empty`, `Transfer-Encoding: chunked` for `Stream` (to an HTTP/1.0 client, a `Stream` body is sent unframed and the connection closed), and `Date`. A `1xx` or `204` response carries neither `Content-Length` nor `Transfer-Encoding` and no body; a `HEAD` request and a `304` response get the headers the `GET`/`200` would have and no body (a `Stream` procedure is not run then). A `Stream` procedure runs on the connection's task after the headers are sent, so it may take as long as the client stays (server-sent events); `write_timeout` applies to each chunk.
+The server adds what the body implies: `Content-Length` for `Text`, `Binary` and `Empty`, `Transfer-Encoding: chunked` for `Stream` (to an HTTP/1.0 client, a `Stream` body is sent unframed and the connection closed), and `Date`. The framing is the server's: a handler's `Transfer-Encoding` is dropped, and its `Content-Length` kept only for a `HEAD` request or a `304` response (where it says what the `GET`/`200` would send). A `204` response carries neither and no body; a `HEAD` request and a `304` response get no body (a `Stream` procedure is not run then), and a `304` gets no `Content-Length` of its own. A handler's status must be a final one, 200 to 599: anything else is answered `500` (interim responses would desynchronize the connection). A `Stream` procedure runs on the connection's task after the headers are sent, so it may take as long as the client stays (server-sent events); `write_timeout` applies to each chunk.
 
 ## 5. The Server
 
@@ -154,10 +160,11 @@ The server adds what the body implies: `Content-Length` for `Text`, `Binary` and
 module HTTP
   class Server
     include Shareable                 # a Signal.trap block or another task may hold it: its state is in Atoms and Channels
-    def self.new(handler: Handler, *,
+    def self.new(handler: Handler, *,             # binds at once: local_address gives the port
                  host: String = "0.0.0.0", port: Int = 8080,
                  read_header_timeout: Duration = 10.seconds,   # from the first byte of a request to the end of its headers
                  idle_timeout: Duration = 60.seconds,          # waiting for the next request on a kept connection
+                 read_timeout: Duration = 30.seconds,          # each read of a request's body (408 when it runs out)
                  write_timeout: Duration = 30.seconds,         # one response, or one chunk of a stream
                  max_header_bytes: Int = 65_536,               # request line and headers together
                  max_body_bytes: Int = 1_048_576,              # what Body#read and read_bytes accept
@@ -167,7 +174,8 @@ module HTTP
     def self.unix(handler: Handler, path: String, *, ...the same options...) -> Server   # a UNIX socket
     def serve -> Nil                      # accepts until shutdown or cancellation
     def local_address -> Socket::Address  # the port actually bound (`port: 0` picks one)
-    def shutdown(timeout: Duration = 30.seconds) -> Nil
+    def shutdown(timeout: Duration = 30.seconds) -> Nil   # begins it and returns at once
+    def wait -> Nil                       # until serve has returned
   end
 
   def self.serve(port: Int = 8080, host: String = "0.0.0.0",
@@ -177,14 +185,16 @@ end
 
 A connection's task does:
 
-1. Read the request line and headers: the first request within `read_header_timeout` of the accept; a later one on the same connection has `idle_timeout` to begin and `read_header_timeout` from its first byte to finish. Over `max_header_bytes`: `431`. Malformed: `400`. Both close the connection.
-2. Build the `Request` and call the handler. An `HTTP::Error` it raises is answered with that status (§7); any other `StandardError` becomes a `500` with an empty body and goes to `on_error` with the request, or to STDERR; `Task::Cancelled` is not caught.
+1. Read the request line and headers: the first request has `read_header_timeout` to begin and as long again from its first byte to finish; a later one on the same connection has `idle_timeout` to begin and `read_header_timeout` to finish. Over `max_header_bytes`: `431`. Malformed: `400`. Both close the connection.
+2. Build the `Request` and call the handler. An `HTTP::Error` it raises is answered with that status (§7); any other `StandardError` becomes a `500` with an empty body and goes to `on_error` with the request, or to STDERR; `Task::Cancelled` is not caught. A response whose headers have a name that is not a token, or a value with CR, LF or another control character but HTAB, is not sent: it becomes a `500` too (response splitting). Whatever else fails (a `Stream` procedure that raises after the headers went out) ends that connection and is reported; the server goes on.
 3. Write the response under `write_timeout`, then drain or close as §3 says.
-4. Keep the connection unless the request or the response said `Connection: close`, the request was HTTP/1.0 without `Connection: keep-alive`, or the body could not be drained. An HTTP/1.0 connection is kept only for a response with a `Content-Length`, and the response then says `Connection: keep-alive`.
+4. Keep the connection unless the request or the response said `Connection: close`, the request was HTTP/1.0 without `Connection: keep-alive`, or the body could not be drained. An HTTP/1.0 connection is kept only for a response with a `Content-Length`, and the response then says `Connection: keep-alive`; an HTTP/1.0 request with `Transfer-Encoding` is answered and the connection closed (RFC 9112 §6.1).
+
+The parser is strict where a proxy in front could read a request differently (and stricter than RFC 9112 allows in two places: a field value must be UTF-8, without obs-text, and a chunk extension takes no whitespace before `;`): the request line is `method SP target SP version` with single spaces and no control characters in the target; a field value may hold no control character but HTAB; a chunk's size line and data end in CRLF; blank lines before a request count against `max_header_bytes`, and trailers are limited to 8 KiB.
 
 Requests on one connection are handled one after another, in order (pipelined requests are read as they come, not in parallel). Connections are independent tasks, so a slow handler holds up only its own connection.
 
-The accept loop is the server's own, shaped like `Socket.accept_loop`'s: take a token from a `Channel` of `max_connections` tokens (when none is left, wait, and the kernel's backlog queues the clients), `accept`, spawn the connection's task in the server's scope, which gives the token back when it ends. A `Channel.select` on the listener and the shutdown channel ends the loop. The open connections are registered in an `Atom` so that `shutdown` can find the idle ones. A failing `accept` (file descriptors exhausted, `SystemCallError`) is logged, waited out for a moment and retried; the server does not die of it.
+The accept loop is the server's own, shaped like `Socket.accept_loop`'s: take a token from a `Channel` of `max_connections` tokens (when none is left, wait, and the kernel's backlog queues the clients), `accept`, spawn the connection's task in the server's scope, which gives the token back when it ends. `shutdown` closes the listener, which ends the loop (a waiting `accept` raises `IOError`). The open connections are registered in an `Atom` so that `shutdown` can find the idle ones. A failing `accept` (file descriptors exhausted, `SystemCallError`) is logged, waited out for a moment and retried; the server does not die of it.
 
 A server on a UNIX socket (`Server.unix`) has no peer addresses: `remote_address` is nil, and the peer counts as a trusted proxy, so `remote_ip` and `scheme` come from the `X-Forwarded-*` headers, or are nil and `"http"` without them.
 
@@ -194,7 +204,7 @@ With `trusted_proxies: ["127.0.0.1", "::1"]` (addresses, or networks as `"10.0.0
 
 ### Shutdown and signals
 
-`shutdown` stops accepting, closes the connections waiting for a request (their reader gets `IOError`, 04-concurrency §6), lets the ones in a handler finish, and after `timeout` cancels them (`Task::Cancelled` at their next wait); then `serve` returns. `Signal` is added with this work, enough for it:
+`shutdown` stops accepting, closes the connections waiting for a request (their reader gets `IOError`, 04-concurrency §6), lets the ones in a handler finish, and after `timeout` cancels them (`Task::Cancelled` at their next wait); then `serve` returns. `shutdown` returns once it has begun, so a handler may call it; `wait` waits for `serve` to return. A shutdown before `serve` makes `serve` return at once. A connection accepted that has not sent a byte yet counts as waiting, and is closed. `Signal` is added with this work, enough for it:
 
 ```ruby
 server = HTTP::Server.new(handler, port: 8080)
@@ -203,7 +213,7 @@ Signal.trap(:INT) { server.shutdown(timeout: 1.second) }
 server.serve
 ```
 
-- `Signal.trap(name) { }` runs the block on a task of its own when the signal arrives (not in the signal handler); the block captures by value. Several traps for one signal run in the order they were set. `Signal.trap(name, :default)` restores the default action, `Signal.trap(name, :ignore)` ignores the signal. Signals: `TERM`, `INT`, `HUP`, `USR1`, `USR2`, `QUIT`, `PIPE` (`SIGPIPE` is to be ignored at the runtime's start, in `quarz run` and in compiled programs' `qz_main` alike, so that a write to a closed socket raises `SystemCallError` instead; today only `quarz run` ignores it, through Rust's start-up). `Signal.list` names them.
+- `Signal.trap(name) { }` (a `Symbol` or a `String`, with or without `SIG`) runs the block on a task of its own when the signal arrives (not in the signal handler, which only writes the signal's number to a socket pair that a task of the runtime reads); the block captures by value. Several traps for one signal each run on a task of their own. `Signal.trap(name, :default)` restores the default action (not for `PIPE`, which stays ignored), `Signal.trap(name, :ignore)` ignores the signal. Signals: `TERM`, `INT`, `HUP`, `USR1`, `USR2`, `QUIT`, `PIPE` (`SIGPIPE` is ignored from the start, in `quarz run` and in compiled programs alike, so that a write to a closed socket raises `SystemCallError` instead). A trap block that raises reports the exception to STDERR. `Signal.list` names them.
 
 ## 6. The Router
 
@@ -219,9 +229,9 @@ router = HTTP::Router.build do |r|
 end
 ```
 
-- A pattern is a path with segments; `{name}` matches one segment and `{name...}`, last, matches the rest of the path (possibly empty), including slashes. Matching is exact otherwise; a trailing slash is significant. The request's target path is split into segments before percent-decoding, so an escaped `%2F` does not separate segments (as Go's `ServeMux` matches). Among the patterns that match, the most specific wins: compared segment by segment from the left, the first segment where one has a literal and the other a parameter decides for the literal, and `{name}` wins over `{name...}`; two patterns for the same method that match the same paths with equal specificity are an error at `build`.
+- A pattern is a path with segments; `{name}` matches one segment and `{name...}`, last, matches the rest of the path (possibly empty: `/files/{p...}` matches `/files/` but not `/files`), including slashes. The rest is the decoded segments joined with `/`, and `..` segments are kept as they are: a handler that maps it to files must check it. Matching is exact otherwise; a trailing slash is significant. The request's target path is split into segments before percent-decoding, so an escaped `%2F` does not separate segments (as Go's `ServeMux` matches). Among the patterns that match, the most specific wins: compared segment by segment from the left, the first segment where one has a literal and the other a parameter decides for the literal, and `{name}` wins over `{name...}`; two patterns for the same method that match the same paths with equal specificity are an error at `build`.
 - A path that matches a pattern registered for other methods only is answered `405 Method Not Allowed` with `Allow` (listing `HEAD` with `GET`); `HEAD` is served by the `GET` route; `OPTIONS` is not special.
-- `mount` prepends the prefix to the other router's patterns; the parameters of both are in `params`.
+- `mount` prepends the prefix to the other router's patterns (so the mounted `/` is `/admin/`, not `/admin`); the parameters of both are in `params`, and the mounted router's `not_found` is not used.
 - `Router` is a `Handler` (a `data` value, built once, Shareable), so routers nest and middleware wraps them.
 
 ## 7. Errors
@@ -231,7 +241,7 @@ end
 
 ## 8. Testing
 
-A handler is called directly: `handler.call(HTTP::Request.get("/users/1"))` gives a `Response` to inspect; `HTTP::Request.post("/users", body: "...")` builds the body (`HTTP::Body.of`) from a string. The library's own tests parse and serialize requests and responses without sockets (`tests/fixtures/http/`), and run a server on `port: 0` with four workers in `tests/threads/` to check keep-alive, chunked bodies, pipelining, timeouts, the limits and `shutdown`.
+A handler is called directly: `handler.call(HTTP::Request.get("/users/1"))` gives a `Response` to inspect; `HTTP::Request.post("/users", "...")` builds the body (`HTTP::Body.of`) from a string. The library's own tests (`tests/fixtures/builtins/http_*.qz`, `signal.qz`, and `tests/threads/http.qz` on four workers) parse and serialize requests and responses without sockets, and run servers on `port: 0` to check keep-alive, pipelining, chunked bodies, `HEAD`, HTTP/1.0, the limits, `100-continue`, the timeouts, `max_connections`, `shutdown`, UNIX sockets and the router.
 
 ## 9. Later
 

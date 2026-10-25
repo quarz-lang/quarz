@@ -1,0 +1,126 @@
+# HTTP: what a client or a handler may get wrong ends one request or one
+# connection, never the server; framing is strict where proxies differ.
+require "http"
+
+def raw(port: Int, text: String) -> String
+  Socket.tcp("127.0.0.1", port) do |s|
+    s.write(text)
+    s.read.gsub(/Date: [^\r]*\r\n/, "").gsub("\r\n", "|")
+  end
+end
+
+def parse(text: String) -> String
+  r = HTTP::Reader.of(text.to_bytes)
+  req = HTTP.read_request(r, 100, 100, nil, HTTP::Proxies.none, false)
+  req ? "#{req.method} #{req.path} #{req.query} #{req.body.read.inspect}" : "nil"
+rescue HTTP::Error => e
+  "#{e.status} #{e.message}"
+end
+
+# Strict framing.
+puts parse("POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\n0\r\n\r\n")
+puts parse("POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n3\nabc\r\n0\r\n\r\n")
+puts parse("POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n 3 \r\nabc\r\n0\r\n\r\n")
+puts parse("POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n3;x=y\r\nabc\r\n0\r\n\r\n")
+puts parse("GET  /a HTTP/1.1\r\n\r\n")
+puts parse(" GET /a HTTP/1.1\r\n\r\n")
+puts parse("GET\t/a HTTP/1.1\r\n\r\n")
+puts parse("GET /a\x01b HTTP/1.1\r\n\r\n")
+puts parse("GET / HTTP/1.1\r\nX: a\rb\r\n\r\n")
+puts parse("GET / HTTP/1.1\r\nX: a\x00b\r\n\r\n")
+puts parse("GET / HTTP/1.1\r\nX: a\tb\r\n\r\n")
+puts parse("#{"\r\n" * 60}GET / HTTP/1.1\r\n\r\n")
+puts parse("GET http://h?x=1 HTTP/1.1\r\n\r\n")
+puts parse("GET http://h HTTP/1.1\r\n\r\n")
+puts parse("GET / HTTP/1.1 \r\n\r\n")
+puts parse("GET / http/1.1\r\n\r\n")
+puts parse("GET /p#frag HTTP/1.1\r\n\r\n")
+puts parse("POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n#{"0" * 2000}3\r\nabc\r\n0\r\n\r\n")
+
+# Trusted proxies are checked when given.
+["10.0.0.0/abc", "10.0.0.0/", "10.0.0.0/-8", "127.0.0.1/33", "::1/129", "nope"].each do |spec|
+  begin
+    HTTP::Proxies.of([spec])
+    puts "#{spec}: accepted"
+  rescue ArgumentError => e
+    puts e.message
+  end
+end
+p HTTP::Proxies.of(["10.0.0.0/8", "::1/128"]).include?("10.9.9.9")
+bad = HTTP::Request.get("/", HTTP::Headers.empty.add("X-Forwarded-For", "<script>, not-an-ip"))
+       .with(remote_address: Socket::Address.new("127.0.0.1", 9), proxies: HTTP::Proxies.of(["127.0.0.1"]), trusted: true)
+p bad.remote_ip
+
+errors = Channel[String].new(capacity: 8)
+report: shareable (Exception, HTTP::Request?) -> Nil = ->(e: Exception, r: HTTP::Request?) { errors.send(e.message); nil }
+handler = HTTP.handler do |req|
+  case req.path
+  when "/stream-fails"
+    HTTP::Response.stream do |w|
+      w.write("x")
+      raise "stream broke"
+    end
+  when "/inject" then HTTP::Response.text("a").header("x-user", "a\r\nSet-Cookie: evil=1")
+  when "/te" then HTTP::Response.text("hello").header("transfer-encoding", "chunked")
+  when "/cl" then HTTP::Response.empty(200).header("content-length", "5")
+  when "/status" then HTTP::Response.text("x", 1000)
+  when "/interim" then raise HTTP::Error.new(100)
+  when "/stop"
+    req.body.read
+    HTTP::Response.text("stopping")
+  else HTTP::Response.text("ok #{req.body.read}")
+  end
+end
+server = HTTP::Server.new(handler, host: "127.0.0.1", port: 0, on_error: report, read_timeout: 200.ms)
+port = server.local_address.port
+Task.scope do |scope|
+  scope.spawn { server.serve }
+  # A failing stream ends its connection; the server goes on.
+  puts raw(port, "GET /stream-fails HTTP/1.1\r\n\r\n")
+  p errors.receive
+  puts raw(port, "GET / HTTP/1.1\r\nConnection: close\r\n\r\n")
+  # A header with CR LF is not sent: 500.
+  puts raw(port, "GET /inject HTTP/1.1\r\nConnection: close\r\n\r\n")
+  p errors.receive
+  # HTTP/1.0 with Transfer-Encoding: answered, then closed.
+  puts raw(port, "POST / HTTP/1.0\r\nConnection: keep-alive\r\nTransfer-Encoding: chunked\r\n\r\n1\r\na\r\n0\r\n\r\nGET / HTTP/1.0\r\n\r\n")
+  # A bad chunk size: 400 and closed, nothing after it is served.
+  puts raw(port, "POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n5 \r\n0\r\n\r\n\r\nGET /smuggled HTTP/1.1\r\n\r\n")
+  # The framing is the server's; statuses are final ones.
+  puts raw(port, "GET /te HTTP/1.1\r\nConnection: close\r\n\r\n")
+  puts raw(port, "GET /cl HTTP/1.1\r\nConnection: close\r\n\r\n")
+  puts raw(port, "HEAD /cl HTTP/1.1\r\nConnection: close\r\n\r\n")
+  puts raw(port, "GET /status HTTP/1.1\r\nConnection: close\r\n\r\n")
+  p errors.receive
+  puts raw(port, "GET /interim HTTP/1.1\r\nConnection: close\r\n\r\n")
+  # A body that stops coming: closed after read_timeout.
+  p raw(port, "POST / HTTP/1.1\r\nContent-Length: 10\r\n\r\nabc")
+  server.shutdown
+end
+
+# shutdown before serve, twice: serve then returns at once.
+s2 = HTTP::Server.new(handler, host: "127.0.0.1", port: 0)
+s2.shutdown
+s2.shutdown
+s2.serve
+s2.wait
+puts "not served"
+
+# Shutdown keeps its timeout when every connection slot is taken.
+busy = Channel[Nil].new(capacity: 1)
+slow = HTTP.handler do |req|
+  busy.send(nil)
+  Task.sleep(30.seconds)
+  HTTP::Response.text("late")
+end
+s3 = HTTP::Server.new(slow, host: "127.0.0.1", port: 0, max_connections: 1)
+port3 = s3.local_address.port
+Task.scope do |scope|
+  scope.spawn { s3.serve }
+  c = scope.spawn { raw(port3, "GET / HTTP/1.1\r\n\r\n") }
+  busy.receive
+  started = Time.monotonic
+  s3.shutdown(timeout: 100.ms)
+  s3.wait
+  p (Time.monotonic - started) < 10.seconds, c.await
+end

@@ -1,0 +1,16 @@
+# Signal.trap: blocks run on tasks when the signal arrives; :ignore.
+got = Channel[String].new(capacity: 4)
+Signal.trap(:USR1) { got.send("usr1 a") }
+Signal.trap("USR1") { got.send("usr1 b") }
+Signal.trap(:TERM) { got.send("term") }
+p Signal.list.keys
+Process.run("kill", "-USR1", Process.pid.to_s)
+r = [got.receive, got.receive].sort
+p r
+Process.run("kill", "-TERM", Process.pid.to_s)
+p got.receive
+Signal.trap(:TERM, :ignore)
+Process.run("kill", "-TERM", Process.pid.to_s)
+Task.sleep(50.ms)
+p got.try_receive
+puts "alive"

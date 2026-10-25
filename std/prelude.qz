@@ -1835,6 +1835,73 @@ module Dir
   native def self.glob(patterns: Array[String], base: String? = nil) -> Array[String]
 end
 
+# Signals: `Signal.trap(:TERM) { }` runs the block on a task of its own
+# when the signal arrives (the signal handler only notes it).
+module Signal
+  native def self.number(name: String) -> Int?
+  native def self.names -> Array[String]
+  native def self.watch(signo: Int) -> Nil
+  native def self.action(signo: Int, ignore: Bool) -> Nil
+  native def self.reader -> IO?
+
+  # The traps by signal number, in the order they were set.
+  TRAPS = Atom[Hash[Int, Array[shareable () -> Nil]]].new({})
+
+  # The signals `trap` takes, with their numbers.
+  def self.list -> Hash[String, Int]
+    out = Hash::Builder[String, Int].new
+    names.each { |n| out[n] = number(n) || 0 }
+    out.to_h
+  end
+
+  def self.trap(name: Symbol, &handler: shareable () -> Nil) -> Nil = trap(name.to_s, &handler)
+
+  def self.trap(name: String, &handler: shareable () -> Nil) -> Nil
+    signo = number(name)
+    raise ArgumentError, "unsupported signal: #{name}" if signo.nil?
+    TRAPS.update { |h| h.put(signo, (h[signo]? || []).push(handler)) }
+    watch(signo)
+    io = reader
+    Task.spawn { dispatch(io) } if io
+    nil
+  end
+
+  # `:default` restores the default action, `:ignore` ignores the signal;
+  # either drops the traps.
+  def self.trap(name: Symbol, action: Symbol) -> Nil = trap(name.to_s, action)
+
+  def self.trap(name: String, action: Symbol) -> Nil
+    signo = number(name)
+    raise ArgumentError, "unsupported signal: #{name}" if signo.nil?
+    raise ArgumentError, "action must be :default or :ignore" unless action == :default || action == :ignore
+    # Writing to a closed socket raises instead (SIGPIPE stays ignored).
+    raise ArgumentError, "SIGPIPE cannot be given its default action" if action == :default && name.delete_prefix("SIG") == "PIPE"
+    # Writing to a closed socket raises instead (SIGPIPE stays ignored).
+    raise ArgumentError, "SIGPIPE cannot be given its default action" if action == :default && name.delete_prefix("SIG") == "PIPE"
+    TRAPS.update { |h| h.delete(signo) }
+    action(signo, action == :ignore)
+  end
+
+  def self.dispatch(io: IO) -> Nil
+    loop do
+      got = io.read_bytes(16)
+      break if got.empty?
+      got.each do |signo|
+        traps: Array[shareable () -> Nil] = TRAPS.value[signo]? || []
+        traps.each do |h|
+          Task.spawn do
+            begin
+              h.call
+            rescue => e
+              STDERR.puts "Signal.trap: #{e.class.name}: #{e.message}"
+            end
+          end
+        end
+      end
+    end
+  end
+end
+
 module Process
   # What a child process produced: `Process.run("ls", "-l")`,
   # `Process.sh("ls | wc -l")`.
