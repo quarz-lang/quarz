@@ -106,7 +106,7 @@ Inference is **bidirectional and local**. Since parameter types are known, infer
 
 - **Local variables**: the type of the first assignment. `x = 1` gives `Int`.
 - **Return type**: when omitted, the type of the body (the union of the `return` types and the last expression). For methods that call themselves recursively, `abstract def`, `extern def`, and methods exported to `.qzi` as public API (planned), an uninferable return type is an error and an annotation is required.
-- **Empty literals**: `[]`, `{}` and `Set[]` follow the expected type if there is one; otherwise they carry a type variable such as `Array[?T]`, fixed by the later uses in the same method. Only uses of the values fix it (an assignment to a typed place, an argument, `push`): a pattern or type test narrows a value of a type not fixed yet only inside its branch (and `case`/`in` on it needs no `else` to be exhaustive), an `if` whose value is not used does not join its branches, and a branch giving `nil` makes it nilable (`x = xs[0] if c` is `?T?`).
+- **Empty literals**: `[]`, `{}` and `Set[]` follow the expected type if there is one; otherwise they carry a type variable such as `Array[?T]`, fixed by the later uses in the same method. Only uses of the values fix it (an assignment to a typed place, an argument, `push`): a pattern or type test narrows a value of a type not fixed yet only inside its branch (and `case`/`in` on it needs no `else` to be exhaustive), an `if` whose value is not used does not join its branches, and joining it with another type leaves it undecided (`x = xs[0] if c` is `?T?`, `xs[0] || "s"` is `?T | String`); calling a method other than `Object`'s on such a union is a use that decides `?T` as the rest.
 
 ```ruby
 counts = words.reduce({}) { |h, w| h.put(w, h.fetch(w, 0) + 1) }   # {} is Hash[String, Int]
@@ -145,6 +145,8 @@ end
 ```
 
 Conditions that narrow: truthiness tests (`if x`), `x.nil?`, `x.is_a?(T)`, `x in Pattern` (in the true branch only), `case/in`, `==`/`!=` comparisons against `nil`, `true`/`false` (the equal side is a `Bool`) and data-less enum variants (the equal side is the variant, the other side is not), combinations with `&&`/`||`/`!`/`and`/`or`/`not`, early exits via `return`/`raise`/`next`/`break`, and assignment.
+
+A test narrows only to what holds when it passes. A number pattern matches equal numbers of the other number classes (`in 1` on an `Int | Float` leaves both), and a comparison with `true`/`false` or a variant narrows only values whose `==` and `!=` are the built-in ones: no class the value may be of (its class or a subclass, anywhere in the program) defines its own. A generic class in a pattern or `when` without arguments (`in Box`, `when Box`) takes them from the value's type; where that does not give them, an `Object` is narrowed only to a class that admits no wrong value with `Object` arguments (the built-in collections, `data` types holding their parameters covariantly, classes with covariant unbounded parameters), and otherwise stays an `Object`. The built-in value classes (`Int`, `String`, `Array`, ...) have no subclasses.
 
 What gets narrowed: **local variables, immutable fields (`@x`), and `data` fields** (when read as `@name` in the `data` body; reader calls such as `p.name` are method calls). `var` fields and the results of arbitrary method calls (`user.name`) are not narrowed, because they may change in between; assign them to a local variable first. Since the default design has no mutable fields, most Ruby idioms such as `@x && @x.foo` work as is.
 

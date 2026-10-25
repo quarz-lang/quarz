@@ -1398,6 +1398,18 @@ impl<'ast> Declarer<'ast> {
                     if let Some(t) = self.resolve_type(sup, &scope) {
                         match &t {
                             Type::Class(sid, _)
+                                if self.world.is_value_class(*sid)
+                                    || *sid == self.world.builtin.integer =>
+                            {
+                                // Its values are built in: a subclass would
+                                // make objects the runtime cannot use as them.
+                                let name = self.world.class(*sid).name.clone();
+                                self.error(
+                                    format!("cannot inherit from the built-in class `{name}`"),
+                                    sup.span,
+                                );
+                            }
+                            Type::Class(sid, _)
                                 if matches!(self.world.class(*sid).kind, ClassKind::Class) =>
                             {
                                 self.world.class_mut(id).superclass = Some(t);

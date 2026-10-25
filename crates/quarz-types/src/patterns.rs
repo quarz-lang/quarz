@@ -43,6 +43,7 @@ impl Checker {
                 if Self::undecided(&value_ty) {
                     return value_ty;
                 }
+                let t = self.numeric_widen(&t);
                 let (yes, _) = self.split_by_type(&value_ty, &t);
                 if yes.is_nothing() {
                     self.warn(
@@ -65,12 +66,13 @@ impl Checker {
                 if Self::undecided(&value_ty) {
                     return value_ty;
                 }
+                let t = self.numeric_widen(&t);
                 let (yes, _) = self.split_by_type(&value_ty, &t);
                 yes
             }
             PatternKind::Const(path) => match self.resolve_pattern_class(path, pattern.span) {
                 Some(cid) => {
-                    let target = self.class_type_for(cid, &value_ty);
+                    let target = self.open_class(cid);
                     let (yes, _) = self.split_by_type(&value_ty, &target);
                     if yes.is_nothing() {
                         self.warn(
@@ -81,7 +83,7 @@ impl Checker {
                             ),
                             pattern.span,
                         );
-                        return target;
+                        return self.dead_arm_type(cid, &value_ty);
                     }
                     yes
                 }
@@ -91,20 +93,20 @@ impl Checker {
                 let Some(cid) = self.resolve_pattern_class(path, pattern.span) else {
                     return Type::Nothing;
                 };
-                let target = self.class_type_for(cid, &value_ty);
+                let target = self.open_class(cid);
                 let (yes, _) = self.split_by_type(&value_ty, &target);
-                // A value of a type not decided yet is deconstructed as
-                // the class with unknown arguments (Object), when that
-                // admits no wrong value (`object_args_safe`).
-                let narrowed =
-                    if yes.is_nothing() || Self::undecided(&yes) && self.object_args_safe(cid) {
-                        target.clone()
-                    } else {
-                        yes
-                    };
+                let narrowed = if yes.is_nothing() {
+                    self.dead_arm_type(cid, &value_ty)
+                } else {
+                    yes
+                };
                 // Positional deconstruction of data/variant fields.
                 let fields = self.deconstruct_fields(&narrowed, pattern.span);
-                let field_types: Vec<Type> = fields.iter().map(|(_, t)| t.clone()).collect();
+                let mut field_types: Vec<Type> = fields.iter().map(|(_, t)| t.clone()).collect();
+                if fields.is_empty() {
+                    // Reported: bind the elements without another error.
+                    field_types = vec![Type::Nothing; ap.pre.len() + ap.post.len()];
+                }
                 self.check_array_pattern_elems(ap, &Type::Tuple(field_types), pattern.span);
                 narrowed
             }
@@ -112,20 +114,19 @@ impl Checker {
                 let Some(cid) = self.resolve_pattern_class(path, pattern.span) else {
                     return Type::Nothing;
                 };
-                let target = self.class_type_for(cid, &value_ty);
+                let target = self.open_class(cid);
                 let (yes, _) = self.split_by_type(&value_ty, &target);
-                // A value of a type not decided yet is deconstructed as
-                // the class with unknown arguments (Object), when that
-                // admits no wrong value (`object_args_safe`).
-                let narrowed =
-                    if yes.is_nothing() || Self::undecided(&yes) && self.object_args_safe(cid) {
-                        target.clone()
-                    } else {
-                        yes
-                    };
+                let narrowed = if yes.is_nothing() {
+                    self.dead_arm_type(cid, &value_ty)
+                } else {
+                    yes
+                };
                 let fields = self.deconstruct_fields(&narrowed, pattern.span);
                 for pair in &hp.pairs {
                     let Some((_, fty)) = fields.iter().find(|(n, _)| *n == pair.key) else {
+                        if fields.is_empty() {
+                            continue; // reported by deconstruct_fields
+                        }
                         self.report(
                             format!("{} has no field `{}`", self.type_name(&narrowed), pair.key),
                             pair.span,
@@ -368,62 +369,132 @@ impl Checker {
         }
     }
 
+    /// What a value or range pattern of type `t` matches: a number
+    /// pattern matches equal numbers of the other number classes too
+    /// (`1 === 1.0`, `(1..5) === 2.5`).
+    fn numeric_widen(&self, t: &Type) -> Type {
+        let b = &self.world.builtin;
+        let numbers = [b.int, b.integer, b.float];
+        let all_numeric = !t.is_nothing()
+            && t.members()
+                .iter()
+                .all(|m| matches!(m, Type::Class(id, _) if numbers.contains(id)));
+        if all_numeric {
+            Type::union_of(numbers.iter().map(|id| Type::class(*id)).collect())
+        } else {
+            t.clone()
+        }
+    }
+
     /// Whether a member of `t` is an inference variable not decided yet.
     fn undecided(t: &Type) -> bool {
         t.members().iter().any(|m| matches!(m, Type::Var(_)))
     }
 
-    /// The instance type of `cid`, taking type arguments from the matched
-    /// value's type when it is the same class or an enum of the variant.
-    fn class_type_for(&self, cid: ClassId, value_ty: &Type) -> Type {
+    /// `cid` as a test's target: a generic class without its arguments,
+    /// which `split_by_type` takes from what it narrows.
+    fn open_class(&self, cid: ClassId) -> Type {
+        if self.world.class(cid).type_params.is_empty() {
+            Type::class(cid)
+        } else {
+            Type::Class(cid, vec![])
+        }
+    }
+
+    /// The type of an arm that never matches (it does not run): `cid`
+    /// with the arguments a member of `value_ty` gives (a sibling variant
+    /// of an enum), else Object.
+    fn dead_arm_type(&self, cid: ClassId, value_ty: &Type) -> Type {
+        self.expand_members(value_ty)
+            .iter()
+            .find_map(|m| self.class_type_from(cid, m))
+            .unwrap_or_else(|| self.object_args(cid))
+    }
+
+    fn object_args(&self, cid: ClassId) -> Type {
+        let n = self.world.class(cid).type_params.len();
+        Type::Class(cid, (0..n).map(|_| self.world.object()).collect())
+    }
+
+    /// The instance type of `cid` that a value of type `m` is when it is a
+    /// `cid`, with the type arguments `m` gives: `m` itself, `m`'s
+    /// arguments for a variant of the enum `m`, or those of `m`'s ancestor
+    /// `cid`. `None` when `m` does not tell them.
+    pub(crate) fn class_type_from(&self, cid: ClassId, m: &Type) -> Option<Type> {
         let class = self.world.class(cid);
         if class.type_params.is_empty() {
-            return Type::class(cid);
+            return Some(Type::class(cid));
         }
-        for m in self.expand_members(value_ty) {
-            if let Type::Class(mid, args) = &m {
-                if *mid == cid {
-                    return m.clone();
-                }
-                if class.variant_of == Some(*mid) {
-                    return Type::Class(cid, args.clone());
-                }
-                // A subclass of a generic class: find the ancestor. For a
-                // variant, the arguments come from the enum (a sibling
-                // variant shares them).
-                let wanted = class.variant_of.unwrap_or(cid);
-                for (anc, anc_args) in self.world.ancestors(*mid, args) {
-                    if anc == wanted {
-                        return Type::Class(cid, anc_args);
-                    }
-                }
-            }
+        let Type::Class(mid, args) = m else {
+            return None;
+        };
+        if *mid == cid {
+            return Some(m.clone());
         }
-        // Unknown arguments: use the parameters themselves as placeholders.
-        Type::Class(
-            cid,
-            class
-                .type_params
-                .iter()
-                .map(|_| self.world.object())
-                .collect(),
-        )
+        if class.variant_of == Some(*mid) {
+            return Some(Type::Class(cid, args.clone()));
+        }
+        // A subclass of a generic class: find the ancestor. For a variant,
+        // the arguments come from the enum (a sibling variant shares them).
+        let wanted = class.variant_of.unwrap_or(cid);
+        self.world
+            .ancestors(*mid, args)
+            .into_iter()
+            .find(|(anc, _)| *anc == wanted)
+            .map(|(_, anc_args)| Type::Class(cid, anc_args))
+    }
+
+    /// `cid` with Object for type arguments not known, when that admits
+    /// no wrong value: every parameter covariant and unbounded, or a
+    /// `data` type or variant that only holds them so
+    /// (`object_args_safe`).
+    pub(crate) fn guessed_args(&self, cid: ClassId) -> Option<Type> {
+        let class = self.world.class(cid);
+        let covariant = class
+            .type_params
+            .iter()
+            .all(|p| p.variance == Variance::Covariant && p.bounds.is_empty());
+        // The built-in immutable collections are run by natives that take
+        // any value where they take a `T` (`Hash#[]`, `Range#cover?`).
+        let b = &self.world.builtin;
+        let builtin = [b.array, b.hash, b.set, b.range].contains(&cid);
+        (covariant || builtin || self.object_args_safe(cid)).then(|| self.object_args(cid))
     }
 
     /// Fields of a data type or enum variant (name and type), for
     /// `Const(...)` patterns.
     fn deconstruct_fields(&mut self, t: &Type, span: Span) -> Vec<(String, Type)> {
+        // A member whose arguments are not known (a type not decided yet,
+        // or an `Object` a generic class test could not narrow) would
+        // leave its fields out of the join: refused.
+        let unknown = self.expand_members(t).into_iter().any(|m| match &m {
+            Type::Class(cid, _) => !matches!(
+                self.world.class(*cid).kind,
+                ClassKind::Data | ClassKind::Variant | ClassKind::Class
+            ),
+            _ => true,
+        });
+        if unknown {
+            self.report(
+                if Self::undecided(t) {
+                    "cannot deconstruct a value whose type is not yet known; add a type annotation"
+                        .to_string()
+                } else {
+                    format!(
+                        "cannot deconstruct a value of type {}: its type arguments are not known here; add a type annotation",
+                        self.type_name(t)
+                    )
+                },
+                span,
+            );
+            return Vec::new();
+        }
         let mut out: Vec<(String, Type)> = Vec::new();
         for m in self.expand_members(t) {
             let Type::Class(cid, args) = &m else { continue };
-            let kind = self.world.class(*cid).kind;
-            if !matches!(
-                kind,
-                ClassKind::Data | ClassKind::Variant | ClassKind::Class
-            ) {
-                continue;
-            }
-            let subst = self.world.class_subst(*cid, args);
+            let mut subst = self.world.class_subst(*cid, args);
+            // A field of type `Self` is of the value's own type.
+            subst.insert(crate::declare::SELF_PARAM, m.clone());
             for (f, fsubst) in self.world.all_fields(*cid) {
                 let ty = f.ty.subst(&fsubst).subst(&subst);
                 match out.iter_mut().find(|(n, _)| *n == f.name) {
@@ -435,12 +506,7 @@ impl Checker {
                 }
             }
         }
-        if out.is_empty() && Self::undecided(t) {
-            self.report(
-                "cannot deconstruct a value whose type is not yet known here; add a type annotation",
-                span,
-            );
-        } else if out.is_empty() {
+        if out.is_empty() {
             self.report(
                 format!(
                     "{} cannot be deconstructed (it has no fields)",

@@ -342,6 +342,10 @@ struct Env {
     task_shareable_proc: bool,
 }
 
+/// `Checker::equality_trusted`'s cache key: a class (its class object
+/// when `true`) under the active extensions.
+type TrustKey = (ClassId, bool, Vec<ExtensionId>);
+
 /// What a piece of code may assign (`Checker::assigned_names`): local
 /// variables, and receivers of `x.foo!` calls (with the method), which
 /// assign when the receiver's type has no `foo!`.
@@ -383,9 +387,11 @@ impl InferTable {
 
     fn resolve(&self, t: &Type) -> Type {
         match t {
-            Type::Var(v) => match &self.bindings[*v as usize] {
-                Some(b) => self.resolve(b),
-                None => t.clone(),
+            // A variable of another method's table (a failed overload's
+            // result leaking out) is unbound here.
+            Type::Var(v) => match self.bindings.get(*v as usize) {
+                Some(Some(b)) => self.resolve(b),
+                _ => t.clone(),
             },
             Type::Nothing | Type::Param(_) => t.clone(),
             Type::Class(id, args) => {
@@ -448,6 +454,8 @@ pub struct Checker {
     /// Calls whose block has a `break` of its own, and the type of the
     /// values it gives the call (`loop { }` without one never returns).
     breaking_blocks: HashMap<NodeId, Type>,
+    /// `equality_trusted` by class and active extensions.
+    trusted_eq: std::cell::RefCell<HashMap<TrustKey, bool>>,
     /// Statements whose value is not used (calls, literals) since the last
     /// `finish_frame_types`: those whose release may be observed go to
     /// `Output::released_stmts`.
@@ -531,6 +539,7 @@ impl Checker {
             touched: Vec::new(),
             frame_vars: Vec::new(),
             breaking_blocks: HashMap::default(),
+            trusted_eq: Default::default(),
             temp_stmts: Vec::new(),
             file_mains,
             repl_env: None,
@@ -1652,20 +1661,11 @@ impl Checker {
         if rb.is_nothing() {
             return ra;
         }
-        // A variable joined with nil stays undecided, made nilable: its
-        // type comes from where its values are used.
-        let nil = self.world.nil();
-        if matches!(ra, Type::Var(_)) && rb == nil || matches!(rb, Type::Var(_)) && ra == nil {
+        // A variable joined with another type stays undecided (`xs[0] ||
+        // "s"` is `?v | String`): its type comes from where its values are
+        // used.
+        if matches!(ra, Type::Var(_)) || matches!(rb, Type::Var(_)) {
             return Type::union_of(vec![ra, rb]);
-        }
-        if let Type::Var(v) = ra {
-            if self.infer.bind(v, rb.clone()) {
-                return rb;
-            }
-        } else if let Type::Var(v) = rb {
-            if self.infer.bind(v, ra.clone()) {
-                return ra;
-            }
         }
         self.world.join(&ra, &rb)
     }
@@ -1941,7 +1941,9 @@ impl Checker {
             Type::Union(ms) => {
                 let (vars, rest): (Vec<Type>, Vec<Type>) =
                     ms.iter().cloned().partition(|m| matches!(m, Type::Var(_)));
-                if !vars.is_empty() && !rest.is_empty() {
+                // `?v | Nil` tells nothing of `?v`.
+                let nil = self.world.nil();
+                if !vars.is_empty() && rest.iter().any(|r| *r != nil) {
                     let rest = Type::union_of(rest);
                     for v in vars {
                         if let Type::Var(v) = v {
@@ -3457,6 +3459,14 @@ impl Checker {
                         if !is_nil {
                             return self.equality_facts(t, call, arg, key, &recv_ty);
                         }
+                        // A class's own `==` may say it equals nil.
+                        if !self
+                            .expand_members(&recv_ty)
+                            .iter()
+                            .all(|m| self.equality_trusted(m))
+                        {
+                            return (t, Vec::new(), Vec::new());
+                        }
                         let nil = self.world.nil();
                         let without = recv_ty.without_nil(self.world.builtin.nil);
                         if call.name == "==" {
@@ -3493,6 +3503,15 @@ impl Checker {
                 _ => return (t, Vec::new(), Vec::new()),
             },
         };
+        // A value whose `==` a program may define (or that may be of a
+        // subclass that does) can say it equals `true` without being it.
+        let trusted = self
+            .expand_members(&self.resolve(recv_ty))
+            .iter()
+            .all(|m| self.equality_trusted(m));
+        if !trusted {
+            return (t, Vec::new(), Vec::new());
+        }
         let (yes, no) = self.split_by_type(recv_ty, &target);
         let equal = vec![(key.clone(), yes)];
         let unequal = if singleton {
@@ -3505,6 +3524,44 @@ impl Checker {
         } else {
             (t, unequal, equal)
         }
+    }
+
+    /// Whether a value of type `m` compares with the built-in `==` and
+    /// `!=`: no class it may be of (its class and every subclass, in the
+    /// whole program; any class for a type parameter) has others. A tuple
+    /// is an `Array` and a procedure a `Proc` (an extension may add `==`);
+    /// a class object's singleton `==` counts.
+    fn equality_trusted(&self, m: &Type) -> bool {
+        let b = &self.world.builtin;
+        let (id, singleton) = match m {
+            Type::Class(id, _) => (*id, false),
+            Type::Param(_) => (b.object, false),
+            Type::Tuple(_) => (b.array, false),
+            Type::Proc(..) => (b.proc_, false),
+            Type::ClassObject(id, _) => (*id, true),
+            _ => return false,
+        };
+        let key = (id, singleton, self.world.active_extensions.clone());
+        if let Some(&t) = self.trusted_eq.borrow().get(&key) {
+            return t;
+        }
+        let t = (0..self.world.classes.len() as ClassId)
+            .filter(|c| self.world.class_is_a(*c, id))
+            .all(|c| {
+                let t = if singleton {
+                    Type::ClassObject(c, vec![])
+                } else {
+                    Type::class(c)
+                };
+                ["==", "!="].iter().all(|name| {
+                    self.world
+                        .lookup_methods(&t, name)
+                        .iter()
+                        .all(|(mid, _)| self.world.method(*mid).is_native)
+                })
+            });
+        self.trusted_eq.borrow_mut().insert(key, t);
+        t
     }
 
     fn var_key(&self, e: &Expr) -> Option<VarKey> {
@@ -3526,46 +3583,83 @@ impl Checker {
         }
     }
 
-    /// Split a type into the part that is a `target` and the rest.
+    /// Split a type into the part that is a `target` and the rest. A
+    /// generic `target` without arguments (`in Box`, `when Box`) takes them
+    /// from each member it narrows; where a member does not give them (an
+    /// `Object`, a type not decided yet), only a class that admits no
+    /// wrong value with `Object` arguments narrows (`guessed_args`), and
+    /// other members stay as they are.
     pub fn split_by_type(&mut self, t: &Type, target: &Type) -> (Type, Type) {
         let t = self.resolve(t);
+        let open = match target {
+            Type::Class(id, args)
+                if args.is_empty() && !self.world.class(*id).type_params.is_empty() =>
+            {
+                Some(*id)
+            }
+            _ => None,
+        };
         let mut yes = Vec::new();
         let mut no = Vec::new();
         for m in self.expand_members(&t) {
+            let tgt = match open {
+                Some(id) => self
+                    .class_type_from(id, &m)
+                    .or_else(|| self.guessed_args(id)),
+                None => Some(target.clone()),
+            };
             if let Type::Var(_) = m {
                 // Not decided yet: a test narrows inside its branch
-                // without deciding it (see `fit_narrowing`). The
-                // arguments of a generic class are not known: Object for
-                // covariant ones (`Array[Object]`), else no narrowing.
-                let narrowed = match target {
-                    Type::Class(id, _) if !self.world.class(*id).type_params.is_empty() => {
-                        let params = &self.world.class(*id).type_params;
-                        params
-                            .iter()
-                            .all(|p| p.variance == Variance::Covariant && p.bounds.is_empty())
-                            .then(|| {
-                                Type::Class(
-                                    *id,
-                                    params.iter().map(|_| self.world.object()).collect(),
-                                )
-                            })
+                // without deciding it (see `fit_narrowing`).
+                yes.push(tgt.unwrap_or_else(|| m.clone()));
+                no.push(m);
+                continue;
+            }
+            let Some(tgt) = tgt else {
+                // Arguments unknown: the member, unnarrowed, if it may be
+                // one.
+                let id = open.unwrap();
+                let may = match &m {
+                    Type::Class(mid, _) => {
+                        self.world.class_is_a(id, *mid)
+                            || self.world.class(id).kind == ClassKind::Module
+                            || self.world.class(*mid).kind == ClassKind::Module
                     }
-                    _ => Some(target.clone()),
+                    // A type parameter may be anything.
+                    Type::Param(_) => true,
+                    _ => false,
                 };
-                yes.push(narrowed.unwrap_or_else(|| m.clone()));
+                if may {
+                    yes.push(m.clone());
+                }
                 no.push(m);
-            } else if self.world.is_subtype(&m, target) {
+                continue;
+            };
+            if self.world.is_subtype(&m, &tgt) {
                 yes.push(m);
-            } else if self.world.is_subtype(target, &m) {
-                // `Object` narrowed to `Int`: the member is a supertype.
-                yes.push(target.clone());
+            } else if open.is_some() && matches!(m, Type::Param(_)) {
+                // A type parameter may be anything: narrowed to the guess.
+                yes.push(tgt);
                 no.push(m);
-            } else if let (Type::Class(mid, _), Type::Class(tid, _)) = (&m, target) {
+            } else if open.is_some()
+                && matches!((&m, &tgt), (Type::Class(mid, _), Type::Class(tid, _))
+                    if *mid != *tid && self.world.class_is_a(*tid, *mid)
+                        && !self.world.is_subtype(&tgt, &m))
+            {
+                // A `Base[Int]` that may be a `Box` whose arguments it does
+                // not give: unnarrowed.
+                yes.push(m.clone());
+                no.push(m);
+            } else if self.world.is_subtype(&tgt, &m) {
+                // `Object` narrowed to `Int`: the member is a supertype.
+                yes.push(tgt);
+                no.push(m);
+            } else if let (Type::Class(mid, _), Type::Class(tid, _)) = (&m, &tgt) {
                 // Unrelated classes may still overlap via a module.
                 if self.world.class(*tid).kind == ClassKind::Module
                     || self.world.class(*mid).kind == ClassKind::Module
                 {
-                    yes.push(target.clone());
+                    yes.push(tgt.clone());
                 }
                 no.push(m);
             } else {
@@ -4204,7 +4298,8 @@ impl Checker {
         rhs: &Type,
         rhs_expr: &Expr,
     ) -> Type {
-        let lhs = self.resolve(lhs);
+        // `y += 1` on `?v | Int` is a use as an `Int`.
+        let lhs = self.settle_vars(lhs);
         let cands = self.world.lookup_methods(&lhs, name);
         for (mid, subst) in cands {
             let m = self.world.method(mid).clone();
@@ -4687,14 +4782,22 @@ impl Checker {
         let name = call.name.as_str();
         // A method every object has (`to_s`, `nil?`, `==`) is called on a
         // value of a type not decided yet as on an Object, deciding
-        // nothing.
+        // nothing. Another one, on `?v | T`, is a use as a `T`: it decides
+        // `?v` as `T` (`(xs[0] || 0) + 1`).
         let as_object;
-        let recv_ty = if recv_ty.members().iter().any(|m| matches!(m, Type::Var(_)))
-            && !self
-                .world
-                .lookup_methods(&self.world.object(), name)
-                .is_empty()
-        {
+        let undecided = recv_ty.members().iter().any(|m| matches!(m, Type::Var(_)));
+        let on_object = !self
+            .world
+            .lookup_methods(&self.world.object(), name)
+            .is_empty();
+        let settled;
+        let recv_ty = if undecided && !on_object {
+            settled = self.settle_vars(recv_ty);
+            &settled
+        } else {
+            recv_ty
+        };
+        let recv_ty = if undecided && on_object {
             let object = self.world.object();
             as_object = Type::union_of(
                 recv_ty
@@ -5455,7 +5558,10 @@ impl Checker {
             if a.has_vars() {
                 continue;
             }
+            // A bound may name the parameters (`T: Addable[T]`).
+            let subst = self.world.class_subst(cid, &args);
             for b in &p.bounds {
+                let b = &b.subst(&subst);
                 let ok = if matches!(b, Type::Class(bid, _) if *bid == self.world.builtin.shareable)
                 {
                     self.world.is_shareable(a)
@@ -5628,7 +5734,12 @@ impl Checker {
                     // Bounds of method type parameters.
                     let mut ok = true;
                     for (tp, t) in &method_vars {
-                        let rt = self.infer.resolve(t);
+                        // A bound is a use: `?v | Int` sorted is an `Int`.
+                        let rt = if tp.bounds.is_empty() {
+                            self.infer.resolve(t)
+                        } else {
+                            self.settle_vars(t)
+                        };
                         if let Some(lower) = &tp.lower {
                             let lower = self.infer.resolve(&lower.subst(&subst));
                             if !self.coerce(&lower, &rt) {
@@ -5667,7 +5778,11 @@ impl Checker {
                             let Some(t) = subst.get(&tp.id).cloned() else {
                                 continue;
                             };
-                            let rt = self.infer.resolve(&t);
+                            let rt = if tp.bounds.is_empty() {
+                                self.infer.resolve(&t)
+                            } else {
+                                self.settle_vars(&t)
+                            };
                             for b in &tp.bounds {
                                 let b = b.subst(&subst);
                                 if !self.coerce(&rt, &b) {
