@@ -646,6 +646,13 @@ fn page(world: &World, id: ClassId, kind: Kind, doc: Option<Doc>, private: bool)
         }
     }
     methods.retain(|m| world.method(*m).extension.is_none());
+    // An always-active extension's (the prelude's) are the class's own,
+    // to every program.
+    for ext in &world.extensions {
+        if ext.always_active && ext.target == id {
+            methods.extend(ext.methods.values().flatten().copied());
+        }
+    }
     methods.sort_by_key(|m| world.method(*m).span.start);
     ext_methods.sort_by_key(|(m, _)| world.method(*m).span.start);
     let mut members = Vec::new();
@@ -861,6 +868,14 @@ fn find_method(world: &World, class: ClassId, name: &str, singleton: bool) -> Op
     for a in world.ancestor_ids(class) {
         if let Some(ids) = world.class(a).methods.get(name) {
             return ids.first().copied();
+        }
+        // The prelude's extensions are always active.
+        for ext in &world.extensions {
+            if ext.always_active && ext.target == a {
+                if let Some(ids) = ext.methods.get(name) {
+                    return ids.first().copied();
+                }
+            }
         }
     }
     None
