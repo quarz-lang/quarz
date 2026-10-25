@@ -293,8 +293,7 @@ module HTTP
       part
     end
 
-    # :nodoc:
-    def read_chunk_raw(max: Int) -> Bytes
+    private def read_chunk_raw(max: Int) -> Bytes
       unless @started
         @started = true
         cb = @on_first_read
@@ -357,8 +356,7 @@ module HTTP
       true
     end
 
-    # :nodoc:
-    def next_chunk -> Nil
+    private def next_chunk -> Nil
       line = begin
         @reader.read_line(1024, true)
       rescue HeadersTooLarge
@@ -1040,8 +1038,7 @@ module HTTP
 
     def stopping? -> Bool = @state.value == 2
 
-    # :nodoc:
-    def close_listener -> Nil
+    private def close_listener -> Nil
       begin
         tcp = @tcp
         tcp.close if tcp && !tcp.closed?
@@ -1053,8 +1050,7 @@ module HTTP
       nil
     end
 
-    # :nodoc:
-    def close_idle -> Nil
+    private def close_idle -> Nil
       @idle.value.each do |_, io|
         begin
           io.close
@@ -1065,8 +1061,7 @@ module HTTP
       nil
     end
 
-    # :nodoc:
-    def accept_loop(scope: Scope) -> Nil
+    protected def accept_loop(scope: Scope) -> Nil
       server = self
       loop do
         @tokens.send(nil)
@@ -1099,8 +1094,7 @@ module HTTP
       nil
     end
 
-    # :nodoc:
-    def accept_one -> [IO, Socket::Address?]?
+    private def accept_one -> [IO, Socket::Address?]?
       tcp = @tcp
       if tcp
         c = tcp.accept
@@ -1111,8 +1105,7 @@ module HTTP
       [unix.accept, nil]
     end
 
-    # :nodoc:
-    def end_connection(id: Int, conn: IO) -> Nil
+    protected def end_connection(id: Int, conn: IO) -> Nil
       begin
         conn.close unless conn.closed?
       rescue IOError, SystemCallError
@@ -1124,8 +1117,7 @@ module HTTP
       nil
     end
 
-    # :nodoc:
-    def report(e: Exception, req: Request?) -> Nil
+    private def report(e: Exception, req: Request?) -> Nil
       cb = @options.on_error
       # The path as sent, without the query, which may carry a token.
       # Not `req.path`: decoded, it may hold a CR, an LF or an escape,
@@ -1143,10 +1135,9 @@ module HTTP
       nil
     end
 
-    # :nodoc:
     # The requests of one connection, one after another. Whatever goes
     # wrong ends this connection only.
-    def serve_connection(id: Int, conn: IO, peer: Socket::Address?) -> Nil
+    protected def serve_connection(id: Int, conn: IO, peer: Socket::Address?) -> Nil
       opts = @options
       reader = Reader.new(conn)
       first = true
@@ -1215,12 +1206,11 @@ module HTTP
       nil
     end
 
-    # :nodoc:
     # Read what the handler left of the body, if little; whether the
     # connection can be kept. Only a Content-Length body with at most 64
     # KiB left is read (so the response is not held up); otherwise the
     # connection is closed after the response.
-    def drain(req: Request) -> Bool
+    private def drain(req: Request) -> Bool
       body = req.body
       return false if body.failed?
       return true if body.consumed?
@@ -1235,8 +1225,7 @@ module HTTP
       end
     end
 
-    # :nodoc:
-    def error_response(e: Error) -> Response
+    private def error_response(e: Error) -> Response
       return Response.empty(500) unless HTTP.valid_status?(e.status)
       msg = e.message.empty? ? HTTP.reason(e.status) : e.message
       Response.text(msg, e.status)
