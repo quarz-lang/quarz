@@ -79,10 +79,12 @@ impl Parser<'_> {
         let mut diagnostics = self.lexer.take_diagnostics();
         diagnostics.append(&mut self.diagnostics);
         diagnostics.sort_by_key(|d| (d.span.start, d.span.end));
+        let comments = self.lexer.comments().to_vec();
+        let docs = crate::doc::extract(src, span_base, &comments);
         Parsed {
-            program: Program { body, span },
+            program: Program { body, span, docs },
             diagnostics,
-            comments: self.lexer.comments().to_vec(),
+            comments,
             data_offset: self.lexer.data_offset(),
         }
     }

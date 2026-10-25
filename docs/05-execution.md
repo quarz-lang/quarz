@@ -42,7 +42,7 @@ Quarz shares one front end and one runtime across two back ends (an interpreter 
 | `quarz build app.qz -o app` | Produce a native executable, optimized through LLVM |
 | `quarz ir app.qz` | Print the QIR of every function (for debugging the lowering); `quarz tokens` and `quarz parse` print the tokens and the syntax tree |
 | `quarz test` | Run `test/**/*_test.qz`, or the test files given: Test::Unit-style classes found by the compiler ([12-testing.md](12-testing.md)); `--release` compiles them |
-| `quarz doc [NAME]` | Print a declaration's documentation, or generate a cog's site (`--html`), from the comments above declarations ([13-doc-comments.md](13-doc-comments.md); *designed*, not yet implemented) |
+| `quarz doc [NAME]` | Print a declaration's documentation, or generate a cog's site (`--html`), from the comments above declarations ([13-doc-comments.md](13-doc-comments.md)); `quarz test` runs the examples in them |
 | `quarz fmt` | Format (*planned*) |
 | `quarz cog add <git-url>` | Package management: a cog is a git repository pinned to a commit in `Cog.lock`; the manifest is `Cog.toml` ([10-cogs.md](10-cogs.md)). `run`, `check`, `build` and `ir` take an application (a directory with a `Cog.toml`, its `src/main.qz`, or nothing for the one around the current directory) as well as a script |
 

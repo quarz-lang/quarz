@@ -3,6 +3,7 @@
 use std::process::ExitCode;
 
 mod cog;
+mod doc;
 mod repl;
 mod test;
 
@@ -96,6 +97,7 @@ fn main() -> ExitCode {
         },
         Some("cog") => cog::command(&args[1..]),
         Some("test") => test::command(&args[1..]),
+        Some("doc") => doc::command(&args[1..]),
         Some("-h" | "--help" | "help") => {
             print!("{USAGE}");
             ExitCode::SUCCESS

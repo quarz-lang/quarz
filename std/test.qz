@@ -1,7 +1,6 @@
 # Tests: `require "test"`, run by `quarz test` (docs/12-testing.md). A
-# test is a `test_*` method of a class that inherits `Test::Case`; the
-# compiler finds them and generates the runner, which calls `Test.run`.
-
+# test is a `test_*` method of a class that inherits `Test::Case`, and the
+# compiler finds them and generates the runner.
 module Test
   # ----- outcomes -------------------------------------------------------------------
 
@@ -294,11 +293,38 @@ module Test
     end
   end
 
+  # :nodoc:
+  # The base of the classes `quarz test` makes of the examples in
+  # documentation comments (docs/13-doc-comments.md §4): `expr # => text`
+  # becomes `doc_expect`, `expr # raises K` becomes `doc_raises`.
+  class DocCase < Case
+    # `value.inspect` is `expected`; `where` is the line in the comment.
+    def doc_expect(value: Object?, expected: String, where: String) -> Nil
+      actual = value.inspect
+      check(actual == expected, nil) { "#{where}: expected => #{expected}, was #{actual}" }
+    end
+
+    # The block raises `klass` or a subclass.
+    def doc_raises(klass: Class, where: String, &: () -> Nil) -> Nil
+      begin
+        assert_raise(klass) { yield }
+      rescue AssertionFailed => e
+        raise AssertionFailed.new("#{where}: #{e.message}")
+      end
+      nil
+    end
+
+    # False, but not to the checker: what a `quarz no_run` example does
+    # is compiled under it.
+    def self.never -> Bool = ARGV.size < 0
+  end
+
   # Ruby's name.
   module Unit
     TestCase = Case
   end
 
+  # :nodoc:
   # `<expected> expected but was <actual>`, with a line diff when either
   # spans lines.
   def self.equal_failure(expected: Object?, actual: Object?) -> String
@@ -309,6 +335,7 @@ module Test
     "#{out}\n\ndiff:\n#{Test.diff_lines(e.split("\n"), a.split("\n")).join("\n")}"
   end
 
+  # :nodoc:
   # A unified-style diff of two line lists: ` ` both, `-` expected only,
   # `+` actual only (longest common subsequence).
   def self.diff_lines(a: Array[String], b: Array[String]) -> Array[String]
@@ -357,6 +384,7 @@ module Test
 
   # ----- the runner -----------------------------------------------------------------
 
+  # :nodoc:
   # A test, or a data-driven test whose rows are labeled.
   # Its file is where the method is (a base class's or a module's file
   # for an inherited test).
@@ -378,6 +406,7 @@ module Test
     end
   end
 
+  # :nodoc:
   # A test class: how to make an instance, its tests and class hooks.
   data Suite = (
     name: String,
@@ -390,6 +419,7 @@ module Test
     serial: Bool
   )
 
+  # :nodoc:
   # One test to run: a suite's entry, with a row's label for data.
   # `error`: why it cannot run (its class's `startup`, or its data
   # method, raised).
@@ -402,6 +432,7 @@ module Test
     def full_name -> String = "#{suite.name}##{name}"
   end
 
+  # :nodoc:
   # What a test came to: :pass, :failure, :error, :pending, :omission.
   data Result(item: Item, kind: Symbol, message: String, location: String?,
               assertions: Int, time: Duration, notes: Array[String])
@@ -416,6 +447,7 @@ module Test
     end
   end
 
+  # :nodoc:
   data Options = (
     names: Array[String],
     patterns: Array[Regexp],
@@ -429,6 +461,7 @@ module Test
     junit: String?
   )
 
+  # :nodoc:
   # Parse the command line; an error message for a bad option.
   def self.parse_options(argv: Array[String]) -> Options | String
     names: Array[String] = []
@@ -496,6 +529,7 @@ module Test
     Options.new(names, patterns, verbose, list, random, seed, fail_fast, parallel, timeout, junit)
   end
 
+  # :nodoc:
   # `-n`'s value: a name to look for (in a one-element array), a
   # `/pattern/`, or the error message for a bad pattern.
   def self.name_option(name: String) -> [String] | Regexp | String
@@ -507,6 +541,7 @@ module Test
     end
   end
 
+  # :nodoc:
   # `60s`, `500ms`, `2m`, `1.5s`, or seconds as a number; nil otherwise.
   def self.parse_duration(s: String) -> Duration?
     m = s.match(/\A([0-9]+(?:\.[0-9]+)?)(ms|s|m)?\z/)
@@ -519,19 +554,24 @@ module Test
     end
   end
 
+  # :nodoc:
   # The backtrace up to the runner's frames.
   def self.user_frames(e: Exception) -> Array[String]
     e.backtrace.take_while { |f| !f.start_with?("<test-runner>") && !f.start_with?("<std:test>") }
   end
 
+  # :nodoc:
   # The test's lines of the backtrace: the first frame outside this
   # library and the generated runner.
   def self.location(e: Exception) -> String?
-    frame = e.backtrace.find { |f| !f.start_with?("<std:") && !f.start_with?("<prelude>") && !f.start_with?("<test-runner>") }
+    frame = e.backtrace.find do |f|
+      !f.start_with?("<std:") && !f.start_with?("<prelude>") && !f.start_with?("<test-runner>") && !f.start_with?("<doc:")
+    end
     return nil if frame.nil?
     frame.partition(":in ")[0]
   end
 
+  # :nodoc:
   # Run one test (or one row) on a fresh instance.
   def self.run_item(item: Item, limit: Duration?) -> Result
     started = Time.monotonic
@@ -602,17 +642,20 @@ module Test
     Result.new(item, kind, message, location || where, c.assertion_count, Time.monotonic - started, c.notes)
   end
 
+  # :nodoc:
   # An error's class, message and the test's frames of its backtrace.
   def self.error_text(e: Exception) -> String
     "#{e.class.name}: #{e.message}\n" + Test.user_frames(e).map { |f| "    #{f}" }.join("\n")
   end
 
+  # :nodoc:
   def self.selected?(item: Item, options: Options) -> Bool
     return true if options.names.empty? && options.patterns.empty?
     full = item.full_name
     options.names.any? { |n| full.include?(n) } || options.patterns.any? { |p| full.match?(p) }
   end
 
+  # :nodoc:
   # The items of the suites, in order: file order, then declaration order
   # (rows in their data's order), or shuffled by `--order=random`.
   def self.items(suites: Array[Suite], options: Options) -> Array[Item]
@@ -643,6 +686,7 @@ module Test
     picked
   end
 
+  # :nodoc:
   # Run the suites' tests as the options say; the exit status.
   def self.run(argv: Array[String], suites: Array[Suite]) -> Int
     parsed = parse_options(argv)
@@ -718,6 +762,7 @@ module Test
     done.any? { |r| r.kind == :failure || r.kind == :error } || !failed_hooks.empty? ? 1 : 0
   end
 
+  # :nodoc:
   # Run items `width` at a time; `done` gets each result as it comes and
   # says whether to stop.
   def self.run_group(items: Array[Item], limit: Duration?, width: Int, options: Options,
@@ -781,6 +826,7 @@ module Test
     nil
   end
 
+  # :nodoc:
   def self.report_progress(r: Result, options: Options) -> Nil
     if options.verbose
       puts "#{r.item.full_name}: #{r.mark} (#{format("%.3f", r.time.to_f)}s)"
@@ -791,6 +837,7 @@ module Test
     nil
   end
 
+  # :nodoc:
   def self.report(results: Array[Result], problems: Array[String], elapsed: Duration, options: Options) -> Nil
     puts unless options.verbose
     puts "Finished in #{format("%.6f", elapsed.to_f)} seconds."
@@ -830,10 +877,12 @@ module Test
     nil
   end
 
+  # :nodoc:
   def self.xml(s: String) -> String
     s.gsub("&", "&amp;").gsub("<", "&lt;").gsub(">", "&gt;").gsub("\"", "&quot;")
   end
 
+  # :nodoc:
   def self.write_junit(path: String, results: Array[Result], elapsed: Duration) -> Nil
     out = String::Builder.new
     out << "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"

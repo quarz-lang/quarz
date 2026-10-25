@@ -1,0 +1,7 @@
+Stack#pop  def pop -> [Stack[T], T]
+
+  The stack without its top, and the top.
+
+  Raises
+
+  Empty when the stack has no element: check empty? first.

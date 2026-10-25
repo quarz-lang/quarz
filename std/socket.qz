@@ -1,8 +1,6 @@
-# Sockets: `require "socket"`. Every operation that would block suspends
-# only the calling task; `Task.timeout` and `cancel` interrupt it.
+# (The overview is the comment of `module Socket`, below.)
 
-# Addresses are `Socket::Address`es; `Socket` has the ways to connect
-# and serve.
+# A TCP connection: `Socket.tcp(host, port)` makes one.
 class TCPSocket < IO
   # `Socket.tcp(host, port)`.
   def self.new(host: String, port: Int) -> TCPSocket = Socket.tcp(host, port)
@@ -49,6 +47,11 @@ end
 class SocketError < StandardError
 end
 
+# Sockets: `require "socket"`. Every operation that would block suspends
+# only the calling task; `Task.timeout` and `cancel` interrupt it.
+# Addresses are `Socket::Address`es; `Socket` has the ways to connect and
+# serve, and the classes `TCPSocket`, `TCPServer`, `UDPSocket`,
+# `UNIXSocket` and `UNIXServer` the connections.
 module Socket
   # A numeric address, IPv4 or IPv6, and a port.
   data Address(host: String, port: Int)
@@ -181,9 +184,11 @@ module Socket
     accept_loop(UNIXServer.new(path), on_error: on_error, &handler)
   end
 
+  # :nodoc:
   # What a lookup for one family found.
   data Lookup = (family: Int, addresses: Array[Address], error: String?)
 
+  # :nodoc:
   # The addresses in the order to try them: the families alternating,
   # IPv6 first (RFC 8305, section 4).
   def self.interleave(addresses: Array[Address]) -> Array[Address]
@@ -197,6 +202,7 @@ module Socket
     out
   end
 
+  # :nodoc:
   def self.happy_eyeballs(host: String, port: Int) -> TCPSocket
     won, failed, unresolved, attempts = Task.scope do |scope|
       lookups = Channel[Lookup].new(capacity: 2)

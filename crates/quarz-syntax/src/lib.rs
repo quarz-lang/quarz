@@ -3,6 +3,7 @@
 
 pub mod ast;
 pub mod diagnostic;
+pub mod doc;
 pub mod lexer;
 pub mod parser;
 pub mod sexp;

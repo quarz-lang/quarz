@@ -254,6 +254,8 @@ impl<'ast> Declarer<'ast> {
         cog: u32,
         statements: bool,
     ) {
+        // (An application's file goes through `collect_unit`, which
+        // takes its docs.)
         let Some(root) = self.world.cogs[cog as usize].root else {
             self.in_app = true;
             self.collect_unit(program, file);
@@ -269,6 +271,7 @@ impl<'ast> Declarer<'ast> {
             }
             return;
         };
+        self.world.add_docs(&program.docs);
         self.file = file;
         self.world.file_groups.insert(file, UnitGroup::Cog(cog));
         let mut main = World::blank_class(
@@ -322,6 +325,7 @@ impl<'ast> Declarer<'ast> {
     /// Register the declarations of the prelude.
     pub fn collect_prelude(&mut self, program: &'ast Program) {
         self.file = 0;
+        self.world.add_docs(&program.docs);
         for expr in &program.body {
             self.collect_item(expr, None, true);
         }
@@ -331,6 +335,7 @@ impl<'ast> Declarer<'ast> {
     /// more); its other statements become the unit's body.
     pub fn collect_unit(&mut self, program: &'ast Program, file: u32) {
         self.file = file;
+        self.world.add_docs(&program.docs);
         let group = if self.world.std_files.contains(&file) {
             UnitGroup::Std(file)
         } else {
@@ -363,6 +368,7 @@ impl<'ast> Declarer<'ast> {
     /// new body.
     pub fn collect_into_unit(&mut self, program: &'ast Program, file: u32, main: ClassId) {
         self.file = file;
+        self.world.add_docs(&program.docs);
         self.world.file_groups.insert(file, UnitGroup::App);
         self.pending.push(PendingClass {
             id: main,

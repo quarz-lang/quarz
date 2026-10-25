@@ -1,0 +1,76 @@
+# A last-in, first-out collection of `T`s. Immutable: `push` and `pop`
+# return the new stack, as `Array#push` does.
+#
+# ```
+# s = Stack[Int].new.push(1).push(2)
+# s.size                 # => 2
+# s.pop[1]               # => 2
+# Stack[Int].new.pop     # raises Stack::Empty
+# ```
+class Stack[T]
+  # The elements, bottom first.
+  @items: Array[T]
+
+  # Raised by `pop` on an empty stack.
+  class Empty < StandardError
+  end
+
+  # An empty stack, or one holding `items`.
+  def initialize(items: Array[T] = [])
+    @items = items
+  end
+
+  # The stack with `x` on top.
+  def push(x: T) -> Stack[T] = Stack[T].new(@items.push(x))
+
+  # The stack without its top, and the top.
+  #
+  # ## Raises
+  #
+  # `Empty` when the stack has no element: check `empty?` first.
+  def pop -> [Stack[T], T]
+    raise Empty.new("empty stack") if @items.empty?
+    [Stack[T].new(@items[0...-1]), @items[-1]]
+  end
+
+  # The number of elements.
+  def size -> Int = @items.size # not the doc of empty?
+  def empty? -> Bool = @items.empty?
+
+  # :nodoc:
+  def debug_dump -> String = @items.inspect
+end
+
+# A point: `with` and `to_h` are generated.
+#
+# NOTE: an example may declare its own classes.
+#
+# ```
+# data Pair = (a: Int, b: Int)
+# Pair.new(1, 2).b        # => 2
+# Point.new(1, 2).with(y: 5).to_h  # => {x: 1, y: 5}
+# ```
+data Point = (x: Int, y: Int)
+
+# Suits.
+enum Suit
+  # The red ones.
+  variant Hearts, Diamonds
+  variant Spades
+end
+
+# Text helpers, by extension.
+module Shout
+  extension String
+    # Upper case, with a `!`.
+    #
+    # ```
+    # using Shout
+    # "hi".shout   # => "HI!"
+    # ```
+    def shout -> String = upcase + "!"
+  end
+end
+
+# The largest stack size this program makes.
+LIMIT = 10

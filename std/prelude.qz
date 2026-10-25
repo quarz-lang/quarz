@@ -4,11 +4,12 @@
 # the key `Class#method` or `Class.method`). Methods with bodies are ordinary
 # Quarz code. Extensions declared here are active everywhere.
 
-# Marker modules. `Shareable` is derived automatically for user classes; the
-# built-in classes declare it explicitly. `Unshareable` marks the builders.
+# A marker: values of the class can be shared between tasks. Derived
+# automatically for user classes; the built-in classes declare it.
 module Shareable
 end
 
+# A marker: the builders, which no other task may see.
 module Unshareable
 end
 
@@ -115,6 +116,7 @@ class Int
   native def <=>(other: Float) -> Int
   native def <=>(other: Integer) -> Int
   # Int's own `==`/`!=` (numeric equality): compiled code compares inline.
+
   native def ==(other: Object) -> Bool
   native def !=(other: Object) -> Bool
   native def <(other: Int) -> Bool
@@ -170,8 +172,11 @@ class Int
   native def ceildiv(other: Int) -> Int
   # Rounding to a negative number of digits: `1234.round(-2)` is 1200.
   native def floor(digits: Int) -> Int
+  # :ditto:
   native def ceil(digits: Int) -> Int
+  # :ditto:
   native def round(digits: Int) -> Int
+  # :ditto:
   native def truncate(digits: Int) -> Int
   native def [](bit: Int) -> Int
   native def bit_set?(bit: Int) -> Bool
@@ -1001,6 +1006,7 @@ module Enumerable[out T]
   def lazy -> Array[T] = to_a
 
   # Aliases that Ruby programs use.
+
   def collect[U](&: (T) -> U) -> Array[U] = map { |x| yield(x) }
   def collect_concat[U](&: (T) -> Array[U]) -> Array[U] = flat_map { |x| yield(x) }
   def find_all(&: (T) -> Object) -> Array[T] = select { |x| yield(x) }
@@ -1719,6 +1725,9 @@ class Selector
   include Unshareable
 
   # These keep their blocks, run after the `Channel.select` block returns.
+
+  # Receive from `channel`: the block gets the value, if this case is the
+  # one chosen.
   native def receive[T](channel: Channel[T], &blk: (T) -> Nil) -> Nil
   native def send[T](channel: Channel[T], value: T, &blk: () -> Nil) -> Nil
   native def after(duration: Duration, &blk: () -> Nil) -> Nil
@@ -1970,7 +1979,7 @@ module Kernel
   native def sleep(duration: Duration) -> Nil
   native def exit(status: Int = 0) -> Nothing
   native def abort(message: String) -> Nothing
-  # It keeps the block (to run it at exit).
+  # Runs the block when the program exits.
   native def at_exit(&blk: () -> Nil) -> Nil
   native def gets -> String
   native def gets? -> String?

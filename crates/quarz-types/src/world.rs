@@ -299,6 +299,9 @@ pub struct Builtin {
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct World {
+    /// The documentation comments of every file, by the line they
+    /// document (spans are unique across files), in order.
+    pub docs: Vec<quarz_syntax::doc::Doc>,
     pub classes: Vec<ClassInfo>,
     pub methods: Vec<MethodInfo>,
     pub consts: Vec<ConstInfo>,
@@ -371,6 +374,20 @@ type ModuleCache = HashMap<(ClassId, Vec<Type>), Vec<(ClassId, Vec<Type>)>>;
 impl World {
     pub fn new() -> World {
         World::default()
+    }
+
+    /// Take a file's documentation comments (docs/13-doc-comments.md).
+    pub fn add_docs(&mut self, docs: &[quarz_syntax::doc::Doc]) {
+        if docs.is_empty() {
+            return;
+        }
+        self.docs.extend(docs.iter().cloned());
+        self.docs.sort_by_key(|d| d.line.start);
+    }
+
+    /// The documentation of the declaration that starts at `span`.
+    pub fn doc_at(&self, span: Span) -> Option<&quarz_syntax::doc::Doc> {
+        quarz_syntax::doc::doc_at(&self.docs, span.start)
     }
 
     pub fn class(&self, id: ClassId) -> &ClassInfo {

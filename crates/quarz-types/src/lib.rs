@@ -107,6 +107,7 @@ impl Session {
         let empty = Program {
             body: Vec::new(),
             span: quarz_syntax::Span::empty(0),
+            docs: Vec::new(),
         };
         let cached = PRELUDE_CACHE.get().map(|bytes| PreludeState::decode(bytes));
         let mut prelude_output = None;
@@ -440,7 +441,16 @@ pub fn set_prelude_cache(bytes: &'static [u8]) {
 
 /// What makes a unit from the checked world: its source (named), or the
 /// errors that prevent it.
-pub type ExtraUnit<'a> = &'a mut dyn FnMut(&World) -> Result<SourceFile, Vec<FileDiagnostic>>;
+/// A unit `extra` writes: its source (named) and the cog it belongs to,
+/// if any (an example of a library sees the library as its users do).
+pub struct ExtraSource {
+    pub source: SourceFile,
+    pub cog: Option<u32>,
+}
+
+/// What makes units from the checked world (the test runner, a cog's
+/// examples), or the errors that prevent them.
+pub type ExtraUnit<'a> = &'a mut dyn FnMut(&World) -> Result<Vec<ExtraSource>, Vec<FileDiagnostic>>;
 
 /// Check `units`, then the unit `extra` writes from what they declare (the
 /// test runner, `quarz test`), checked after them as one more unit, the
@@ -514,40 +524,65 @@ pub fn check_with_extra(
     diagnostics.append(&mut checker.take_diagnostics());
     if let Some(extra) = extra {
         if !diagnostics.iter().any(|(_, d)| d.is_error()) {
-            let file = units.len() as u32 + 1;
             match extra(&checker.world) {
                 Err(mut errors) => diagnostics.append(&mut errors),
-                Ok(source) => {
-                    let base = load::unit_base(units.len() as u32);
-                    let parsed = parse_with_bases(&source.text, base, base);
-                    diagnostics.extend(parsed.diagnostics.iter().map(|d| (file, d.clone())));
+                Ok(sources) => {
+                    let first = units.len() as u32 + 1;
+                    let parsed: Vec<_> = sources
+                        .iter()
+                        .enumerate()
+                        .map(|(k, s)| {
+                            let base = load::unit_base(units.len() as u32 + k as u32);
+                            parse_with_bases(&s.source.text, base, base)
+                        })
+                        .collect();
+                    for (k, p) in parsed.iter().enumerate() {
+                        let file = first + k as u32;
+                        diagnostics.extend(p.diagnostics.iter().map(|d| (file, d.clone())));
+                    }
                     if !diagnostics.iter().any(|(_, d)| d.is_error()) {
+                        // Declared together, so that one (the runner) may
+                        // name another's classes (an example's).
                         let world = std::mem::take(&mut checker.world);
                         let mut declarer = declare::Declarer::with_world(world);
-                        declarer.collect_unit(&parsed.program, file);
+                        for (k, (s, p)) in sources.iter().zip(&parsed).enumerate() {
+                            let file = first + k as u32;
+                            match s.cog {
+                                Some(cog) if !cogs.is_empty() => {
+                                    declarer.collect_cog_unit(&p.program, file, cog, true)
+                                }
+                                _ => declarer.collect_unit(&p.program, file),
+                            }
+                        }
                         declarer.resolve_headers();
                         diagnostics.append(&mut declarer.diagnostics);
-                        let main = declarer.units[0].main;
-                        let body: Vec<Expr> = declarer.units[0]
-                            .body
-                            .iter()
-                            .map(|e| (*e).clone())
-                            .collect();
+                        let mut bodies: Vec<(u32, ClassId, Vec<Expr>)> = Vec::new();
+                        for u in &declarer.units {
+                            let body = u.body.iter().map(|e| (*e).clone()).collect();
+                            bodies.push((u.file, u.main, body));
+                        }
                         checker.world = std::mem::take(&mut declarer.world);
                         checker.world.freeze_ancestors(true);
-                        checker.add_file_main(file, main);
-                        checker.mark_generated(file);
+                        for (file, main, _) in &bodies {
+                            checker.add_file_main(*file, *main);
+                            checker.mark_generated(*file);
+                        }
                         if !diagnostics.iter().any(|(_, d)| d.is_error()) {
-                            let refs: Vec<&Expr> = body.iter().collect();
-                            checker.check_all(&[(file, refs)]);
+                            let refs: Vec<(u32, Vec<&Expr>)> = bodies
+                                .iter()
+                                .map(|(file, _, body)| (*file, body.iter().collect()))
+                                .collect();
+                            checker.check_all(&refs);
                             diagnostics.append(&mut checker.take_diagnostics());
                         }
-                        checked_units.push(CheckedUnit {
-                            file,
-                            name: source.name.clone(),
-                            main_class: main,
-                            body,
-                        });
+                        for (file, main, body) in bodies {
+                            checked_units.push(CheckedUnit {
+                                file,
+                                name: sources[(file - first) as usize].source.name.clone(),
+                                main_class: main,
+                                body,
+                            });
+                        }
                     }
                 }
             }
