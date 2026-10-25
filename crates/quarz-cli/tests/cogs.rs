@@ -264,6 +264,14 @@ fn keys_name_cogs_and_scopes_are_closed() {
         "puts AUtil::Table.new.who\nputs BUtil::Table.new.who\nputs AUtil::Table.name\n",
     );
     assert_eq!(w.ok("app", &["run"]), "a\nb\nUtil::Table\n");
+    // With a key renamed, the unchanged main file names nothing (what was
+    // checked and kept for it before is not used: docs/05 §2).
+    let manifest = std::fs::read_to_string(w.path("app/Cog.toml")).unwrap();
+    w.write("app/Cog.toml", &manifest.replace("AUtil =", "AaUtil ="));
+    assert!(w
+        .fails("app", &["check"])
+        .contains("unknown constant `AUtil`"));
+    w.write("app/Cog.toml", &manifest);
     // A dependency's dependency is not the application's.
     w.write("app/src/main.qz", "puts Tomlz.parse(\"x\")\n");
     assert!(w

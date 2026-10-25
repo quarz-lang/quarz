@@ -638,17 +638,18 @@ pub fn check_with_extra(
     let mut keys: Vec<Option<u64>> = vec![None; units.len() + 1];
     let mut reused: Vec<bool> = vec![false; units.len() + 1];
     let mut consts_seen: Vec<u64> = Vec::new();
-    if cache::build().is_some() && cache::dir().is_some() && cogs.is_empty() && !NO_CACHE.get() {
+    if cache::build().is_some() && cache::dir().is_some() && !NO_CACHE.get() {
         let interfaces: Vec<(String, u64)> = (1..=units.len() as u32)
             .map(|f| (key_of(f), cache::interface(&declarer.world, f)))
             .collect();
-        let all = cache::hash(&interfaces);
+        // The movement's cogs too: their root modules belong to no file.
+        let all = cache::hash(&(interfaces, cache::cogs(&declarer.world)));
         for (i, u) in units.iter().enumerate().skip(std_units.len()) {
             let file = i as u32 + 1;
             if u.declarations_only {
                 continue;
             }
-            let Some(key) = cache::key(&u.program, all) else {
+            let Some(key) = cache::key(&u.program, cache::hash(&(all, u.cog, u.statements))) else {
                 continue;
             };
             keys[file as usize] = Some(key);

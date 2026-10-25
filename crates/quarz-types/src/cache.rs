@@ -173,6 +173,32 @@ pub fn interface(world: &World, file: u32) -> u64 {
     h.finish()
 }
 
+/// The movement's cogs as declared: names, root modules and the
+/// dependencies in their scopes (the application's are top-level names).
+pub fn cogs(world: &World) -> u64 {
+    let all: Vec<_> = world
+        .cogs
+        .iter()
+        .map(|c| {
+            let mut imports: Vec<_> = c.imports.iter().collect();
+            imports.sort();
+            let root = c.root.map(|r| (r, world.class(r).name.as_str()));
+            (c.name.as_str(), root, imports)
+        })
+        .collect();
+    let roots: Vec<ClassId> = world.cogs.iter().filter_map(|c| c.root).collect();
+    let mut app: Vec<(&String, ClassId)> = world
+        .top
+        .iter()
+        .filter_map(|(k, m)| match m {
+            Member::Class(c) if roots.contains(c) => Some((k, *c)),
+            _ => None,
+        })
+        .collect();
+    app.sort();
+    hash(&(all, app))
+}
+
 /// Take out what checking file `file`'s bodies recorded.
 #[allow(clippy::too_many_arguments)]
 pub fn extract(
@@ -348,7 +374,8 @@ pub fn key(program: &quarz_syntax::ast::Program, interfaces: u64) -> Option<u64>
 
 /// Read the checks kept under `key`, for a file at syntax range `base`.
 pub fn load(key: u64, base: u32) -> Option<Checks> {
-    let bytes = std::fs::read(path(key)?).ok()?;
+    let p = path(key)?;
+    let bytes = std::fs::read(&p).ok()?;
     let (from, sum, body): (u32, u64, Vec<u8>) =
         bincode::serde::decode_from_slice(&bytes, bincode::config::standard())
             .ok()?
@@ -357,11 +384,54 @@ pub fn load(key: u64, base: u32) -> Option<Checks> {
     if checksum(&body) != sum {
         return None;
     }
-    quarz_syntax::rebased(from, base, 1 << crate::load::UNIT_BITS, || {
+    let checks = quarz_syntax::rebased(from, base, 1 << crate::load::UNIT_BITS, || {
         bincode::serde::decode_from_slice(&body, bincode::config::standard())
             .ok()
             .map(|(c, _)| c)
-    })
+    })?;
+    // (Its time says when it was last used: `sweep`.)
+    if let Ok(f) = std::fs::File::options().append(true).open(&p) {
+        let _ = f.set_modified(std::time::SystemTime::now());
+    }
+    Some(checks)
+}
+
+/// Entries unused for this long are removed.
+const UNUSED: std::time::Duration = std::time::Duration::from_secs(30 * 24 * 60 * 60);
+
+/// Remove the entries unused for `UNUSED` (and files left half written),
+/// at most once a day: the time of the file `swept` says when it last ran.
+fn sweep(dir: &std::path::Path) {
+    let now = std::time::SystemTime::now();
+    let age = |m: &std::fs::Metadata| {
+        m.modified()
+            .ok()
+            .and_then(|t| now.duration_since(t).ok())
+            .unwrap_or_default()
+    };
+    let mark = dir.join("swept");
+    match std::fs::metadata(&mark) {
+        Ok(m) if age(&m) < std::time::Duration::from_secs(24 * 60 * 60) => return,
+        Ok(_) => {}
+        // (A new directory: nothing to remove yet.)
+        Err(_) => {
+            let _ = std::fs::write(&mark, "");
+            return;
+        }
+    }
+    let _ = std::fs::write(&mark, "");
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let p = e.path();
+        let ours = p
+            .extension()
+            .is_some_and(|x| x == "bin" || x.to_str().is_some_and(|x| x.starts_with("tmp")));
+        if ours && e.metadata().is_ok_and(|m| age(&m) > UNUSED) {
+            let _ = std::fs::remove_file(p);
+        }
+    }
 }
 
 /// Keep `checks` under `key` (made at syntax range `base`).
@@ -377,6 +447,7 @@ pub fn store(key: u64, base: u32, checks: &Checks) {
     };
     if let Some(d) = p.parent() {
         let _ = std::fs::create_dir_all(d);
+        sweep(d);
     }
     // Written aside and renamed, so that a reader never sees half of it.
     let tmp = p.with_extension(format!("tmp{}", std::process::id()));
