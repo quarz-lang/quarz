@@ -399,6 +399,15 @@ struct LogicalSeen {
     settled: bool,
 }
 
+/// What an error reported when checking is done (`Checker::ambiguous`) is
+/// about, for reporting it once: a node, or a call by its span.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum AmbiguousKey {
+    Node(NodeId),
+    /// A call by its span and method.
+    Call(u32, u32, MethodId),
+}
+
 /// An entry of `Checker::table_journal`: a node's table and conflict
 /// flag before a change.
 #[derive(Debug)]
@@ -602,13 +611,15 @@ pub struct Checker {
     /// What the checks of a block found for `a && b` / `a || b`: a type's
     /// own method, the built-in operator, and whether that was reported.
     logical_seen: HashMap<NodeId, LogicalSeen>,
+    /// Files the compiler wrote (`quarz test`'s runner).
+    generated_files: rustc_hash::FxHashSet<u32>,
     op_given_up: rustc_hash::FxHashSet<(NodeId, bool)>,
     pub world: World,
     pub diagnostics: Vec<(u32, Diagnostic)>,
     /// Calls a run-time class test cannot choose a method for
     /// (`ambiguous_call`), reported once checking is done: inside a
     /// block, an error would make the method given it fail to match.
-    ambiguous: Vec<(u32, NodeId, Diagnostic)>,
+    ambiguous: Vec<(u32, AmbiguousKey, Diagnostic)>,
     /// What `note_union_table` and `note_interp_to_s` replaced, so that a
     /// check thrown away (an overload that does not match, a second pass)
     /// leaves nothing behind (`discard_tables`).
@@ -616,7 +627,7 @@ pub struct Checker {
     /// Ambiguous calls found in method bodies, checked once whatever the
     /// check that needed them (`ensure_method_checked`): kept when that
     /// check is thrown away.
-    kept_ambiguous: Vec<(u32, NodeId, Diagnostic)>,
+    kept_ambiguous: Vec<(u32, AmbiguousKey, Diagnostic)>,
     /// The ranges of `diagnostics` method bodies produced, and those
     /// rescued from a check thrown away (`truncate_diagnostics`).
     body_diagnostics: Vec<(usize, usize)>,
@@ -713,6 +724,7 @@ impl Checker {
         Checker {
             op_seen: HashMap::default(),
             logical_seen: HashMap::default(),
+            generated_files: Default::default(),
             op_given_up: Default::default(),
             world,
             diagnostics: Vec::new(),
@@ -1343,12 +1355,17 @@ impl Checker {
         self.diagnostics.append(&mut self.rescued);
         let kept = std::mem::take(&mut self.kept_ambiguous);
         self.ambiguous.splice(0..0, kept);
-        let mut seen: rustc_hash::FxHashSet<NodeId> = Default::default();
+        let mut seen: rustc_hash::FxHashSet<AmbiguousKey> = Default::default();
         for (file, id, d) in std::mem::take(&mut self.ambiguous) {
             if seen.insert(id) {
                 self.diagnostics.push((file, d));
             }
         }
+    }
+
+    /// Mark `file` as written by the compiler (`quarz test`'s runner).
+    pub fn mark_generated(&mut self, file: u32) {
+        self.generated_files.insert(file);
     }
 
     pub fn file_main_class(&self, file: u32) -> Option<ClassId> {
@@ -1532,7 +1549,41 @@ impl Checker {
     // ----- methods ---------------------------------------------------------
 
     /// The return type of a method, inferring it from the body if needed.
+    /// A call at `span` to method `mid`: one from another file needs the
+    /// method's return type written.
+    fn note_cross_file(&mut self, mid: MethodId, span: Span) {
+        // One file is one unit, compiled on its own: a method another file
+        // calls gives its result type in its signature (docs/05 §2). (Not
+        // for the code the compiler writes, as `quarz test`'s runner.)
+        let info = self.world.method(mid);
+        if info.synth == Synth::None
+            && info.file != self.env.file
+            && !self.generated_files.contains(&self.env.file)
+            && info
+                .body
+                .as_ref()
+                .is_some_and(|d| d.ret.is_none() && d.body.is_some())
+            && info.name != "initialize"
+        {
+            let label = self.method_label(mid);
+            let d = Diagnostic::error(
+                format!(
+                    "`{label}` is defined in another file without a return type: write it (`-> T`), as each file is compiled on its own"
+                ),
+                span,
+            );
+            // Reported when checking is done (`flush_ambiguous`), so that
+            // it does not make an overload being tried fail.
+            self.ambiguous.push((
+                self.env.file,
+                AmbiguousKey::Call(span.start, span.end, mid),
+                d,
+            ));
+        }
+    }
+
     fn method_ret(&mut self, mid: MethodId, span: Span) -> Type {
+        self.note_cross_file(mid, span);
         match self.world.method(mid).ret.clone() {
             RetType::Known(t) => t,
             RetType::Inferring => {
@@ -2248,7 +2299,8 @@ impl Checker {
             ),
             span,
         );
-        self.ambiguous.push((self.env.file, id, d));
+        self.ambiguous
+            .push((self.env.file, AmbiguousKey::Node(id), d));
     }
 
     /// `Owner#name`, or the extension's target for an extension's method.
@@ -2288,10 +2340,11 @@ impl Checker {
             .iter()
             .map(|p| self.world.type_name(&p.ty))
             .collect();
+        let sep = if info.singleton { "." } else { "#" };
         if params.is_empty() {
-            format!("{owner}#{}", info.name)
+            format!("{owner}{sep}{}", info.name)
         } else {
-            format!("{owner}#{}({})", info.name, params.join(", "))
+            format!("{owner}{sep}{}({})", info.name, params.join(", "))
         }
     }
 
@@ -2365,7 +2418,8 @@ impl Checker {
                 ),
                 span,
             );
-            self.ambiguous.push((self.env.file, id, d));
+            self.ambiguous
+                .push((self.env.file, AmbiguousKey::Node(id), d));
             return;
         }
         if !table.iter().any(|(d, _)| *d == cid) {
@@ -2451,7 +2505,8 @@ impl Checker {
                     ),
                     span,
                 );
-                self.ambiguous.push((self.env.file, id, d));
+                self.ambiguous
+                    .push((self.env.file, AmbiguousKey::Node(id), d));
             }
         }
         let map = if operator {
@@ -4008,6 +4063,9 @@ impl Checker {
                                 && self.extension_bounds_hold(*id, subst)
                         })
                         .map(|(m, _)| m);
+                    if let Some(m) = to_s {
+                        self.note_cross_file(m, e.span);
+                    }
                     let found = to_s.filter(|m| self.world.method(*m).extension.is_some());
                     self.note_interp_to_s(e.id, cid, found, e.span);
                 }
@@ -5357,6 +5415,7 @@ impl Checker {
                     self.out
                         .calls
                         .insert(expr.id, CallTarget::Method { method: cands[0].0 });
+                    self.note_cross_file(cands[0].0, expr.span);
                     if !self.env.blocks.is_empty() && self.test_class(&rt).is_some() {
                         self.note_union_table(expr.id, vec![(rt.clone(), cands[0].0)], expr.span);
                     }
@@ -5375,6 +5434,7 @@ impl Checker {
                     self.out
                         .calls
                         .insert(expr.id, CallTarget::Method { method: cands[0].0 });
+                    self.note_cross_file(cands[0].0, expr.span);
                     if !self.env.blocks.is_empty() && self.test_class(&rt).is_some() {
                         self.note_union_table(expr.id, vec![(rt.clone(), cands[0].0)], expr.span);
                     }
@@ -6638,7 +6698,8 @@ impl Checker {
             if let Some(message) = message {
                 seen.settled = true;
                 let d = Diagnostic::error(message, expr.span);
-                self.ambiguous.push((self.env.file, expr.id, d));
+                self.ambiguous
+                    .push((self.env.file, AmbiguousKey::Node(expr.id), d));
             }
         }
         self.logical_seen.insert(expr.id, seen);
@@ -7578,7 +7639,11 @@ impl Checker {
                                         ),
                                         e.span,
                                     );
-                                    self.ambiguous.push((self.env.file, e.id, d));
+                                    self.ambiguous.push((
+                                        self.env.file,
+                                        AmbiguousKey::Node(e.id),
+                                        d,
+                                    ));
                                 }
                             }
                         }

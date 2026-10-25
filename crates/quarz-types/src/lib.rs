@@ -438,6 +438,7 @@ pub fn check_with_extra(
                             .collect();
                         checker.world = std::mem::take(&mut declarer.world);
                         checker.add_file_main(file, main);
+                        checker.mark_generated(file);
                         if !diagnostics.iter().any(|(_, d)| d.is_error()) {
                             let refs: Vec<&Expr> = body.iter().collect();
                             checker.check_all(&[(file, refs)]);

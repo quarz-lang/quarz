@@ -13,7 +13,7 @@ Crystal is the closest relative of Quarz: a statically typed, compiled language 
 | Item | Crystal | Quarz |
 |---|---|---|
 | Type annotation syntax | `x : Int32`, `def f(a : Int32) : Bool` | `x: Int`, `def f(a: Int) -> Bool` (no space before the colon; `->` for the return type) |
-| Method parameter types | Optional: an untyped method is instantiated for each combination of argument types, which needs the whole program to be type-checked together | Required (except when a default value gives the type); return types and locals are inferred. More to write, for shorter compile times and clearer error messages ([02-types.md](02-types.md) §10) |
+| Method parameter types | Optional: an untyped method is instantiated for each combination of argument types, which needs the whole program to be type-checked together | Required (except when a default value gives the type); return types and locals are inferred, though a method another file calls declares its return type. More to write, for shorter compile times and clearer error messages ([02-types.md](02-types.md) §10) |
 | Generic type syntax | `Array(Int32)`, `Hash(String, Int32)`, `Proc(Int32, Bool)` | `Array[Int]`, `Hash[String, Int]`, `(Int) -> Bool` |
 | Empty literals | `[] of Int32`, `{} of String => Int32` | Typed from the context: `xs: Array[Int] = []`, `h: Hash[String, Int] = {}` |
 | Integers | `Int32` by default (`1_i64` for `Int64`); overflow raises `OverflowError` | `Int` is 64-bit and overflow raises `OverflowError`, as in Crystal; `Integer` is arbitrary precision (Crystal's `BigInt`), and mixing it with an `Int` gives an `Integer`. Other fixed-width types are planned for FFI |
