@@ -150,6 +150,8 @@ A test narrows only to what holds when it passes. A number pattern matches equal
 
 What gets narrowed: **local variables, immutable fields (`@x`), and `data` fields** (when read as `@name` in the `data` body; reader calls such as `p.name` are method calls). `var` fields and the results of arbitrary method calls (`user.name`) are not narrowed, because they may change in between; assign them to a local variable first. Since the default design has no mutable fields, most Ruby idioms such as `@x && @x.foo` work as is.
 
+Closures capture locals by reference, so a closure that may run later (a lambda, a block given to a method that may keep it, 01-syntax.md §9) limits narrowing: a local it assigns is not narrowed from the point it is made (any call may run it, implicit ones such as `to_s` in an interpolation included; inside a loop or a body a `rescue` retries, from its start), and inside it a local that may change before it runs (assigned in two places, in a `while` loop, a parameter assigned, or rebound by a bang method) is not narrowed by tests outside it. A block that is only yielded to, as an iterator's, runs during the call and keeps both: `found = x` in an `each` block, then `if found`, narrows `found`.
+
 ## 7. Casts
 
 ```ruby

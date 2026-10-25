@@ -6,7 +6,7 @@
 class TCPSocket < IO
   # `Socket.tcp(host, port)`.
   def self.new(host: String, port: Int) -> TCPSocket = Socket.tcp(host, port)
-  def self.open[R](host: String, port: Int, &blk: (TCPSocket) -> R) -> R = Socket.tcp(host, port, &blk)
+  def self.open[R](host: String, port: Int, &: (TCPSocket) -> R) -> R = Socket.tcp(host, port, &)
   # A connection to one address, with no lookup.
   native def self.connect(address: Socket::Address) -> TCPSocket
   native def local_address -> Socket::Address
@@ -85,10 +85,10 @@ module Socket
 
   # The same, with the connection given to the block and closed after it.
   def self.tcp[R](host: String, port: Int, connect_timeout: Duration? = nil,
-                  &blk: (TCPSocket) -> R) -> R
+                  &: (TCPSocket) -> R) -> R
     sock = tcp(host, port, connect_timeout: connect_timeout)
     begin
-      blk.call(sock)
+      yield(sock)
     ensure
       sock.close
     end
@@ -171,7 +171,7 @@ module Socket
   end
 
   def self.unix(path: String) -> UNIXSocket = UNIXSocket.new(path)
-  def self.unix[R](path: String, &blk: (UNIXSocket) -> R) -> R = UNIXSocket.open(path, &blk)
+  def self.unix[R](path: String, &: (UNIXSocket) -> R) -> R = UNIXSocket.open(path, &)
   def self.unix_server(path: String) -> UNIXServer = UNIXServer.new(path)
 
   # As `tcp_server_loop`, on a UNIX socket at `path` (removed when the

@@ -1,6 +1,8 @@
 //! Type checking of method bodies, constant initializers and the main
 //! program (phase 3).
 
+use std::rc::Rc;
+
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 use rustc_hash::FxHashMap;
@@ -343,6 +345,21 @@ struct Env {
     /// What that frame is, for diagnostics: a task block, or the body of
     /// a shareable procedure (which copies what it captures the same way).
     task_shareable_proc: bool,
+    /// The locals of this body that may change after a closure captures
+    /// them (assigned in two places or more, or parameters assigned):
+    /// inside a closure that may run later, their narrowings from outside
+    /// do not hold. `None` (a body not scanned) counts every local.
+    reassigned: Option<Rc<HashSet<String>>>,
+    /// The outer locals some closure that may run later in the body
+    /// assigns, wherever it is made: not narrowed inside such closures,
+    /// which may run after it.
+    late_assigned: Rc<HashSet<String>>,
+    /// The locals a closure that may run later (a lambda, a block given
+    /// to a method that may keep it) assigns: any call (implicit ones
+    /// included) may run it, so they are never narrowed in the body.
+    never_narrow: Rc<HashSet<String>>,
+    /// The next block checked is given to a method that may keep it.
+    next_block_escapes: bool,
 }
 
 /// `Checker::equality_trusted`'s cache key: a class (its class object
@@ -356,6 +373,57 @@ type TrustKey = (ClassId, bool, Vec<ExtensionId>);
 struct Assigned {
     names: HashSet<String>,
     bangs: Vec<(String, String)>,
+    /// How many places assign each name.
+    counts: HashMap<String, u32>,
+    /// The method names whose block a method may keep (a named `&blk`):
+    /// a block given to a call of one may run later
+    /// (`Checker::keeping_names`). `None` when not scanning for closures.
+    keeps: Option<Rc<HashSet<String>>>,
+    /// Inside a closure that may run later (a lambda, a block given to
+    /// one of `keeps`), and what such closures assign.
+    escaping: u32,
+    escaped: HashSet<String>,
+    /// Inside a loop's body (`while`), whose locals are the method's,
+    /// and what is assigned there.
+    repeat: u32,
+    repeated: HashSet<String>,
+    /// The parameters of blocks and lambdas.
+    closure_params: HashSet<String>,
+    /// Inside a block or lambda, and what is assigned outside any.
+    closure_depth: u32,
+    outside: HashSet<String>,
+    /// A `retry` was seen.
+    retries: bool,
+}
+
+impl Assigned {
+    fn add(&mut self, name: &str) {
+        self.names.insert(name.to_string());
+        *self.counts.entry(name.to_string()).or_default() += 1;
+        if self.escaping > 0 {
+            self.escaped.insert(name.to_string());
+        }
+        if self.repeat > 0 {
+            self.repeated.insert(name.to_string());
+        }
+        if self.closure_depth == 0 {
+            self.outside.insert(name.to_string());
+        }
+    }
+
+    /// Walk a closure's body: `escapes` when it may run later.
+    fn closure(&mut self, block: &Block, escapes: bool) {
+        for p in &block.params.list {
+            self.closure_params.insert(p.name.clone());
+        }
+        // (A block's own locals are new each time it runs: its body does
+        // not count as code that runs again, as a loop's does.)
+        self.closure_depth += 1;
+        self.escaping += escapes as u32;
+        Checker::assigned_names(&block.body, self);
+        self.closure_depth -= 1;
+        self.escaping -= escapes as u32;
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -375,6 +443,8 @@ struct BlockCtx {
     ret: Type,
     breaks: Vec<Type>,
     is_lambda: bool,
+    /// A block given to a method that may keep it (a named `&blk`).
+    escapes: bool,
 }
 
 #[derive(Debug, Default)]
@@ -444,6 +514,10 @@ impl InferTable {
 }
 
 pub struct Checker {
+    /// `keeping_names` by file kind (prelude 0, a standard library
+    /// module's file, `u32::MAX` for the program), with the number of
+    /// methods it was computed for (the REPL adds methods).
+    keeps: HashMap<u32, (usize, Rc<HashSet<String>>)>,
     pub world: World,
     pub diagnostics: Vec<(u32, Diagnostic)>,
     pub out: Output,
@@ -532,8 +606,13 @@ impl Checker {
             pattern_base: None,
             task_frame: None,
             task_shareable_proc: false,
+            reassigned: None,
+            late_assigned: Rc::default(),
+            never_narrow: Rc::default(),
+            next_block_escapes: false,
         };
         Checker {
+            keeps: HashMap::default(),
             world,
             diagnostics: Vec::new(),
             out: Output::default(),
@@ -927,6 +1006,7 @@ impl Checker {
                 let Some(d) = &f.default else {
                     continue;
                 };
+                self.scan_closures([&**d], std::iter::empty());
                 let t = self.check_expr(d, Some(&f.ty));
                 if !self.coerce(&t, &f.ty) {
                     self.error(
@@ -971,6 +1051,12 @@ impl Checker {
     fn check_top_level(&mut self, env: Env, file: u32, body: &[&Expr], last_used: bool) -> Env {
         let main = self.file_main(file).unwrap_or(self.world.builtin.object);
         let saved_env = std::mem::replace(&mut self.env, env);
+        self.scan_closures(body.iter().copied(), std::iter::empty());
+        // The REPL's top level goes on over inputs: what one input assigns
+        // the next may assign again.
+        if last_used {
+            self.env.reassigned = None;
+        }
         self.world.active_extensions = self.world.class(main).usings.clone();
         for (i, expr) in body.iter().enumerate() {
             self.stmt_unused = !(last_used && i + 1 == body.len());
@@ -1103,6 +1189,10 @@ impl Checker {
             pattern_base: None,
             task_frame: None,
             task_shareable_proc: false,
+            reassigned: None,
+            late_assigned: Rc::default(),
+            never_narrow: Rc::default(),
+            next_block_escapes: false,
         }
     }
 
@@ -1362,6 +1452,15 @@ impl Checker {
         let saved_temp_stmts = std::mem::take(&mut self.temp_stmts);
         let saved_active = std::mem::replace(&mut self.world.active_extensions, active);
 
+        // Closures in the body and in default values (which run in the
+        // method's frame, with its parameters).
+        if let Some(body) = &def.body {
+            self.scan_closures(
+                body.iter()
+                    .chain(info.params.iter().filter_map(|p| p.default.as_deref())),
+                info.params.iter().map(|p| p.name.as_str()),
+            );
+        }
         // Parameter slots are the first slots of the frame.
         for (i, p) in info.params.iter().enumerate() {
             self.out.var_refs.insert(
@@ -1522,6 +1621,7 @@ impl Checker {
         let saved_touched = std::mem::take(&mut self.touched);
         let saved_frame_vars = std::mem::take(&mut self.frame_vars);
         let saved_temp_stmts = std::mem::take(&mut self.temp_stmts);
+        self.scan_closures([&*value], std::iter::empty());
         let t = self.check_expr(&value, None);
         let t = self.settle_vars(&t);
         let t = self.world.erase_narrowed(&t);
@@ -1876,6 +1976,8 @@ impl Checker {
     fn set_narrowed(&mut self, key: &VarKey, t: Option<Type>) {
         match key {
             VarKey::Local(name) => {
+                // A closure that may run later assigns it.
+                let t = t.filter(|_| !self.env.never_narrow.contains(name));
                 if let Some((depth, slot)) = self.lookup_var(name) {
                     let n = self.env.frames.len();
                     if let (Some(rec), Some(t), false) =
@@ -2150,9 +2252,7 @@ impl Checker {
             For(f) => Self::assigned_names_expr(&f.comprehension, out),
             Assign { target, value } | OpAssign { target, value, .. } => {
                 match &**target {
-                    LValue::Local { name, .. } => {
-                        out.names.insert(name.clone());
-                    }
+                    LValue::Local { name, .. } => out.add(name),
                     LValue::Attr { recv, .. } => Self::assigned_names_expr(recv, out),
                     LValue::Index { recv, args } => {
                         Self::assigned_names_expr(recv, out);
@@ -2163,23 +2263,19 @@ impl Checker {
                 Self::assigned_names_expr(value, out);
             }
             MultiAssign { targets, value } => {
-                fn collect(t: &MultiTarget, out: &mut HashSet<String>) {
+                fn collect(t: &MultiTarget, out: &mut Assigned) {
                     match t {
-                        MultiTarget::Single(LValue::Local { name, .. }) => {
-                            out.insert(name.clone());
-                        }
-                        MultiTarget::Splat(Some(LValue::Local { name, .. })) => {
-                            out.insert(name.clone());
-                        }
+                        MultiTarget::Single(LValue::Local { name, .. })
+                        | MultiTarget::Splat(Some(LValue::Local { name, .. })) => out.add(name),
                         MultiTarget::Nested(ts) => ts.iter().for_each(|t| collect(t, out)),
                         _ => {}
                     }
                 }
-                targets.iter().for_each(|t| collect(t, &mut out.names));
+                targets.iter().for_each(|t| collect(t, out));
                 Self::assigned_names_expr(value, out);
             }
             TypedDecl { name, value, .. } => {
-                out.names.insert(name.clone());
+                out.add(name);
                 Self::assigned_names_expr(value, out);
             }
             Call(call) => {
@@ -2189,6 +2285,12 @@ impl Checker {
                     if call.name.ends_with('!') && call.name != "!=" {
                         if let ExprKind::Local(name) = &r.kind {
                             out.bangs.push((name.clone(), call.name.clone()));
+                            if out.escaping > 0 {
+                                out.escaped.insert(name.clone());
+                            }
+                            if out.repeat > 0 {
+                                out.repeated.insert(name.clone());
+                            }
                         }
                     }
                 }
@@ -2202,7 +2304,8 @@ impl Checker {
                     }
                 }
                 if let Some(b) = &call.block {
-                    Self::assigned_names(&b.body, out);
+                    let escapes = out.keeps.as_ref().is_some_and(|k| k.contains(&call.name));
+                    out.closure(b, escapes);
                 }
             }
             If { cond, then, els } => {
@@ -2213,8 +2316,10 @@ impl Checker {
                 }
             }
             While { cond, body, .. } => {
+                out.repeat += 1;
                 Self::assigned_names_expr(cond, out);
                 Self::assigned_names(body, out);
+                out.repeat -= 1;
             }
             And(a, b) | Or(a, b) => {
                 Self::assigned_names_expr(a, out);
@@ -2240,7 +2345,9 @@ impl Checker {
             CaseIn { subject, arms, els } => {
                 Self::assigned_names_expr(subject, out);
                 for a in arms {
-                    Self::pattern_names(&a.pattern, &mut out.names);
+                    let mut bound = HashSet::default();
+                    Self::pattern_names(&a.pattern, &mut bound);
+                    bound.iter().for_each(|n| out.add(n));
                     if let Some(g) = &a.guard {
                         Self::assigned_names_expr(&g.cond, out);
                     }
@@ -2251,10 +2358,14 @@ impl Checker {
                 }
             }
             Begin(b) => {
+                // A body a rescue retries runs again, as a loop's does.
+                let retried = b.rescues.iter().any(|r| Self::mentions_retry(&r.body));
+                out.repeat += retried as u32;
                 Self::assigned_names(&b.body, out);
+                out.repeat -= retried as u32;
                 for r in &b.rescues {
                     if let Some(v) = &r.var {
-                        out.names.insert(v.clone());
+                        out.add(v);
                     }
                     Self::assigned_names(&r.body, out);
                 }
@@ -2267,14 +2378,16 @@ impl Checker {
             }
             Seq(es) => Self::assigned_names(es, out),
             Return(Some(v)) | Break(Some(v)) | Next(Some(v)) => Self::assigned_names_expr(v, out),
-            Lambda(b) => Self::assigned_names(&b.body, out),
+            Lambda(b) => out.closure(b, true),
             Array(items) | Yield(items) => Self::assigned_names_args(items, out),
             Super { args, block } => {
                 if let Some(args) = args {
                     Self::assigned_names_args(args, out);
                 }
+                // The overridden method's block may be kept, as far as
+                // this method knows.
                 if let Some(b) = block {
-                    Self::assigned_names(&b.body, out);
+                    out.closure(b, true);
                 }
             }
             Hash(entries) => {
@@ -2295,7 +2408,9 @@ impl Checker {
             }
             MatchPattern { value, pattern, .. } => {
                 Self::assigned_names_expr(value, out);
-                Self::pattern_names(pattern, &mut out.names);
+                let mut bound = HashSet::default();
+                Self::pattern_names(pattern, &mut bound);
+                bound.iter().for_each(|n| out.add(n));
             }
             Str(parts) | DSymbol(parts) | Regexp { parts, .. } => {
                 for p in parts {
@@ -2304,11 +2419,19 @@ impl Checker {
                     }
                 }
             }
+            Retry => out.retries = true,
             _ => {}
         }
     }
 
     /// The variables a pattern binds.
+    /// Whether `body` may `retry` (a nested one counts: over, not under).
+    fn mentions_retry(body: &[Expr]) -> bool {
+        let mut a = Assigned::default();
+        Self::assigned_names(body, &mut a);
+        a.retries
+    }
+
     fn pattern_names(p: &Pattern, out: &mut HashSet<String>) {
         fn array(a: &ArrayPattern, out: &mut HashSet<String>) {
             for p in a.pre.iter().chain(&a.post) {
@@ -2382,6 +2505,243 @@ impl Checker {
         for name in assigned.names {
             self.set_narrowed(&VarKey::Local(name), None);
         }
+    }
+
+    /// The method names whose block a method may keep: those of methods
+    /// (natives included) whose block parameter is named (`&blk`); an
+    /// anonymous one (`&:`) is only yielded to or passed on to another
+    /// anonymous one. A block given to a call of one of these names may
+    /// run later. Only the methods the body's file can call count: the
+    /// prelude's for the prelude, those and its own for a standard
+    /// library module (what follows it cannot change how it checks).
+    fn keeping_names(&mut self) -> Rc<HashSet<String>> {
+        let file = self.env.file;
+        // Which methods the file can call: the prelude's for the prelude,
+        // those and its own for a standard library module, those of its
+        // cog and the cogs it depends on (directly or not) for a library
+        // cog's file, any for the application's.
+        let group = self.world.file_groups.get(&file).copied();
+        let key = match group {
+            None => 0,
+            Some(UnitGroup::Std(f)) => f,
+            Some(UnitGroup::Cog(c)) => 1 << 31 | c,
+            Some(UnitGroup::App) => u32::MAX,
+        };
+        let n = self.world.methods.len();
+        if let Some((len, k)) = self.keeps.get(&key) {
+            if *len == n {
+                return k.clone();
+            }
+        }
+        let cogs: HashSet<u32> = match group {
+            Some(UnitGroup::Cog(c)) => {
+                let mut seen: HashSet<u32> = HashSet::default();
+                let mut todo = vec![c];
+                while let Some(c) = todo.pop() {
+                    if !seen.insert(c) {
+                        continue;
+                    }
+                    for root in self.world.cogs[c as usize].imports.values() {
+                        if let Some(d) = self.world.class(*root).cog {
+                            todo.push(d);
+                        }
+                    }
+                }
+                seen
+            }
+            _ => HashSet::default(),
+        };
+        let visible = |m: &MethodInfo| -> bool {
+            if m.file == 0 {
+                return true;
+            }
+            match group {
+                None => false,
+                Some(UnitGroup::App) => true,
+                Some(UnitGroup::Std(f)) => m.file == f,
+                Some(UnitGroup::Cog(_)) => match self.world.file_groups.get(&m.file) {
+                    Some(UnitGroup::Std(_)) => true,
+                    Some(UnitGroup::Cog(d)) => cogs.contains(d),
+                    _ => false,
+                },
+            }
+        };
+        let k: HashSet<String> = self
+            .world
+            .methods
+            .iter()
+            .filter(|m| m.block.as_ref().is_some_and(|(n, _)| n != "&"))
+            .filter(|m| visible(m))
+            // `C.new { }` gives the block to `initialize`.
+            .flat_map(|m| {
+                let new = (m.name == "initialize" && !m.singleton).then(|| "new".to_string());
+                std::iter::once(m.name.clone()).chain(new)
+            })
+            .collect();
+        let k = Rc::new(k);
+        self.keeps.insert(key, (n, k.clone()));
+        k
+    }
+
+    /// Stop narrowing `names` from here on in the body.
+    fn never_narrow(&mut self, names: impl IntoIterator<Item = String>) {
+        let names: Vec<String> = names
+            .into_iter()
+            .filter(|n| !self.env.never_narrow.contains(n))
+            .collect();
+        for name in names {
+            self.set_narrowed(&VarKey::Local(name.clone()), None);
+            Rc::make_mut(&mut self.env.never_narrow).insert(name);
+        }
+    }
+
+    /// Entering code that may run again (a loop's body, a block, a
+    /// lambda): a closure made later in it, which may run later (a
+    /// lambda, a block given to a call that may keep it, by name), may
+    /// have assigned an outer local by the time the code runs again, so
+    /// such locals are not narrowed from here on. A local of the closure
+    /// itself (assigned nowhere outside it, not in scope here) is not one.
+    fn prescan_repeated<'e>(&mut self, body: impl IntoIterator<Item = &'e Expr>) {
+        let mut assigned = Assigned {
+            keeps: Some(self.keeping_names()),
+            ..Assigned::default()
+        };
+        for e in body {
+            Self::assigned_names_expr(e, &mut assigned);
+        }
+        let captured: Vec<String> = assigned
+            .escaped
+            .into_iter()
+            .filter(|n| assigned.outside.contains(n) || self.lookup_var(n).is_some())
+            .collect();
+        self.never_narrow(captured);
+    }
+
+    /// Set up the closure facts of a body (`Env::reassigned`,
+    /// `Env::never_narrow`) before checking it.
+    fn scan_closures<'e, 'p>(
+        &mut self,
+        body: impl IntoIterator<Item = &'e Expr> + Clone,
+        params: impl Iterator<Item = &'p str>,
+    ) {
+        let body_again = body.clone();
+        let params_list: Vec<String> = params.map(str::to_string).collect();
+        let params = params_list.iter().map(|s| s.as_str());
+        let mut assigned = Assigned::default();
+        for e in body {
+            Self::assigned_names_expr(e, &mut assigned);
+        }
+        // Locals that may change after a closure captures them: assigned
+        // in two places or more, where code may run again, as parameters
+        // (of the method, a block or a lambda), or rebound by a bang.
+        let mut reassigned: HashSet<String> = assigned
+            .counts
+            .iter()
+            .filter(|(_, n)| **n > 1)
+            .map(|(name, _)| name.clone())
+            .collect();
+        reassigned.extend(assigned.repeated.iter().cloned());
+        for p in params
+            .map(str::to_string)
+            .chain(assigned.closure_params.iter().cloned())
+        {
+            if assigned.names.contains(&p) {
+                reassigned.insert(p);
+            }
+        }
+        reassigned.extend(assigned.bangs.iter().map(|(n, _)| n.clone()));
+        self.env.reassigned = Some(Rc::new(reassigned));
+        // The same walk, telling closures that may run later by name, for
+        // what they assign of the body's locals (the REPL keeps adding).
+        let mut late = Assigned {
+            keeps: Some(self.keeping_names()),
+            ..Assigned::default()
+        };
+        for e in body_again {
+            Self::assigned_names_expr(e, &mut late);
+        }
+        let mut params_and_outside = late.outside.clone();
+        params_and_outside.extend(params_list);
+        let found: Vec<String> = late
+            .escaped
+            .into_iter()
+            .filter(|n| params_and_outside.contains(n) || self.lookup_var(n).is_some())
+            .collect();
+        Rc::make_mut(&mut self.env.late_assigned).extend(found);
+    }
+
+    /// Entering a closure that may run later: the narrowings of outer
+    /// locals that may change before it runs do not hold in it. Returns
+    /// what `leave_late_closure` restores.
+    /// Whether `m` runs its block in a task (`Task.spawn`, `Scope#spawn`,
+    /// `Task.blocking`): the block is checked as a task's.
+    fn runs_block_in_task(world: &World, m: &MethodInfo) -> bool {
+        (m.name == "spawn" && (m.owner == world.builtin.task || m.owner == world.builtin.scope))
+            || (m.name == "blocking" && m.owner == world.builtin.task)
+    }
+
+    /// Whether the code being checked is in a closure that may run later
+    /// (a lambda, a block a method may keep), where the method's own
+    /// anonymous block may no longer be live.
+    fn in_late_closure(&self) -> bool {
+        self.env.blocks.iter().any(|b| b.is_lambda || b.escapes)
+    }
+
+    fn enter_late_closure(&mut self, body: &[Expr]) -> (Snapshot, Rc<HashSet<String>>) {
+        // The outer locals it assigns: any call (implicit ones included)
+        // may run it from now on.
+        let mut assigned = Assigned::default();
+        Self::assigned_names(body, &mut assigned);
+        let mut captured: Vec<String> = assigned
+            .names
+            .into_iter()
+            .filter(|n| self.lookup_var(n).is_some())
+            .collect();
+        captured.extend(
+            assigned
+                .bangs
+                .into_iter()
+                .map(|(n, _)| n)
+                .filter(|n| self.lookup_var(n).is_some()),
+        );
+        self.never_narrow(captured);
+        let snap = self.snapshot();
+        let saved_never = self.env.never_narrow.clone();
+        // What other closures that may run later assign (made after this
+        // one, maybe) may have changed by the time it runs; so may a field
+        // `initialize` assigns later.
+        // (Where the body is not known whole, the REPL's top level, which
+        // later inputs add to: any outer local.)
+        let late: Vec<String> = match &self.env.reassigned {
+            Some(_) => self.env.late_assigned.iter().cloned().collect(),
+            None => self
+                .env
+                .frames
+                .iter()
+                .flat_map(|f| f.vars.iter().map(|v| v.name.clone()))
+                .collect(),
+        };
+        self.never_narrow(late);
+        if self.env.in_initialize {
+            self.env.ivar_narrow.clear();
+        }
+        let names: Vec<String> = self
+            .env
+            .frames
+            .iter()
+            .flat_map(|f| f.vars.iter().map(|v| v.name.clone()))
+            .filter(|n| self.env.reassigned.as_ref().is_none_or(|r| r.contains(n)))
+            .collect();
+        for name in names {
+            self.set_narrowed(&VarKey::Local(name), None);
+        }
+        (snap, saved_never)
+    }
+
+    fn leave_late_closure(&mut self, saved: &(Snapshot, Rc<HashSet<String>>), body: &[Expr]) {
+        self.env.never_narrow = saved.1.clone();
+        self.restore(&saved.0);
+        self.widen_assigned(body);
     }
 
     /// Whether `name.method` (`method` ends with `!`) may be the sugar
@@ -2863,6 +3223,7 @@ impl Checker {
             } => {
                 self.widen_assigned(body);
                 self.widen_assigned(std::slice::from_ref(cond));
+                self.prescan_repeated(body.iter().chain(std::iter::once(&**cond)));
                 let (ct, facts_true, facts_false) = self.check_cond(cond);
                 let (body_facts, exit_facts) = if *negate {
                     (facts_false, facts_true)
@@ -3169,6 +3530,23 @@ impl Checker {
                     }
                 }
                 _ => self.error("unexpected argument form in an array literal", a.span()),
+            }
+        }
+        // Several members the literal may be (two tuples of its length, a
+        // tuple and an array): the first tuple its elements fit, else an
+        // array (`[1, "a"]` for `[Int, String] | Array[Int]`, `[1, 2]` for
+        // `[Int, String] | [Int, Int]`).
+        if let (Some(Type::Union(ms)), Some(each)) = (&expected, &each) {
+            for m in ms {
+                let Type::Tuple(ts) = m else { continue };
+                if ts.len() != each.len() {
+                    continue;
+                }
+                let saved = self.infer.save();
+                if each.iter().zip(ts).all(|(t, et)| self.coerce(t, et)) {
+                    return Type::Tuple(ts.clone());
+                }
+                self.infer.restore(saved);
             }
         }
         if let Some(et) = &elem_expected {
@@ -3934,6 +4312,15 @@ impl Checker {
                     .any(|(name, method)| self.bang_may_assign(name, method))
         }) as u32;
         self.env.loop_exits.ensures += ensures;
+        // A body a rescue retries runs again, as a loop's does.
+        if block.rescues.iter().any(|r| Self::mentions_retry(&r.body)) {
+            self.prescan_repeated(
+                block
+                    .body
+                    .iter()
+                    .chain(block.rescues.iter().flat_map(|r| r.body.iter())),
+            );
+        }
         let before = self.snapshot();
         let bt = self.check_body(&block.body, expected);
         let body_dead = bt.is_nothing();
@@ -4137,9 +4524,13 @@ impl Checker {
                     self.error(format!("undeclared field `@{name}`"), expr.span);
                     return self.check_expr(value, None);
                 };
-                if !field.mutable && !self.env.in_initialize {
+                if !field.mutable && (!self.env.in_initialize || self.in_late_closure()) {
                     self.error(
-                        format!("field `@{name}` is immutable; declare it with `var` or assign it in `initialize`"),
+                        if self.env.in_initialize {
+                            format!("field `@{name}` is immutable: a closure that may run later, after `initialize`, cannot assign it; declare it with `var`")
+                        } else {
+                            format!("field `@{name}` is immutable; declare it with `var` or assign it in `initialize`")
+                        },
                         expr.span,
                     );
                 }
@@ -4254,7 +4645,7 @@ impl Checker {
                 let t = self.check_ivar_read(&read, name);
                 if let Some(cid) = self.env.class_id {
                     if let Some((f, _)) = self.world.find_field(cid, name) {
-                        if !f.mutable && !self.env.in_initialize {
+                        if !f.mutable && (!self.env.in_initialize || self.in_late_closure()) {
                             self.error(format!("field `@{name}` is immutable"), expr.span);
                         }
                     }
@@ -4557,7 +4948,7 @@ impl Checker {
                 match self.world.find_field(cid, name) {
                     Some((f, subst)) => {
                         let fty = f.ty.subst(&subst);
-                        if !f.mutable && !self.env.in_initialize {
+                        if !f.mutable && (!self.env.in_initialize || self.in_late_closure()) {
                             self.error(format!("field `@{name}` is immutable"), span);
                         }
                         if !self.coerce(ty, &fty) {
@@ -5390,9 +5781,13 @@ impl Checker {
                 let Some((field, subst)) = self.world.find_field(cid, name) else {
                     return Some(vt);
                 };
-                if !field.mutable && !self.env.in_initialize {
+                if !field.mutable && (!self.env.in_initialize || self.in_late_closure()) {
                     self.error(
-                        format!("field `@{name}` is immutable; declare it with `var` or assign it in `initialize`"),
+                        if self.env.in_initialize {
+                            format!("field `@{name}` is immutable: a closure that may run later, after `initialize`, cannot assign it; declare it with `var`")
+                        } else {
+                            format!("field `@{name}` is immutable; declare it with `var` or assign it in `initialize`")
+                        },
                         expr.span,
                     );
                 }
@@ -6351,9 +6746,7 @@ impl Checker {
             let block_ty = block_ty.subst(subst);
             if let Some(b) = &call.block {
                 let resolved = self.infer.resolve(&block_ty);
-                let is_task = (m.name == "spawn"
-                    && (m.owner == self.world.builtin.task || m.owner == self.world.builtin.scope))
-                    || (m.name == "blocking" && m.owner == self.world.builtin.task);
+                let is_task = Self::runs_block_in_task(&self.world, m);
                 // `&: (A) -> R using M`: the block literal sees the
                 // method's extensions.
                 let active_len = self.world.active_extensions.len();
@@ -6362,6 +6755,9 @@ impl Checker {
                         self.world.active_extensions.push(e);
                     }
                 }
+                // A named `&block` may be kept (an anonymous one is only
+                // yielded to; a native that keeps its block names it).
+                self.env.next_block_escapes = m.block.as_ref().is_some_and(|(n, _)| n != "&");
                 self.check_block_as(expr.id, b, &resolved, is_task);
                 self.world.active_extensions.truncate(active_len);
             } else if let Some(Arg::BlockPass(e)) =
@@ -6428,6 +6824,33 @@ impl Checker {
                             .insert(e.id, BlockPass::Symbol(name.clone(), mid));
                         self.record(e.id, &self.world.symbol());
                     }
+                    // The method's anonymous block, passed on: only to a
+                    // method that does not keep it either, and not from a
+                    // closure that may run later.
+                    ExprKind::Local(name)
+                        if name == "&"
+                            && (m.block.as_ref().is_some_and(|(n, _)| n != "&")
+                                || self.in_late_closure()
+                                || Self::runs_block_in_task(&self.world, m)) =>
+                    {
+                        let msg = if Self::runs_block_in_task(&self.world, m) {
+                            format!(
+                                "the method's block (`&`) cannot be passed to `{}`, which runs it in a task: a block passed on is not checked as a task's",
+                                m.name
+                            )
+                        } else if self.in_late_closure() {
+                            "the method's block (`&`) cannot be passed on from a closure that may run later: name the block parameter (`&blk`) to keep it".to_string()
+                        } else {
+                            format!(
+                                "the method's block (`&`) cannot be passed to `{}`, which may keep it: name the block parameter (`&blk`) to keep it",
+                                m.name
+                            )
+                        };
+                        if report {
+                            self.error(msg.clone(), e.span);
+                        }
+                        return Err(msg);
+                    }
                     _ => {
                         // `&block` may be `nil` when the callee's block may be
                         // left out.
@@ -6473,6 +6896,15 @@ impl Checker {
         let params = params.clone();
         let ret = (**ret).clone();
         self.widen_assigned(&block.body);
+        self.prescan_repeated(&block.body);
+        // A block the method may keep may run later, as a lambda may.
+        let escapes = std::mem::take(&mut self.env.next_block_escapes);
+        let late =
+            (escapes && !shareable && !is_task).then(|| self.enter_late_closure(&block.body));
+        // A task's block copies the locals it captures, but reads `self`'s
+        // fields live: in `initialize`, after which they may be assigned.
+        let saved_ivars = (late.is_none() && (is_task || shareable) && self.env.in_initialize)
+            .then(|| std::mem::take(&mut self.env.ivar_narrow));
         // A block with a receiver runs with `self` = the receiver: the
         // enclosing `self` stays reachable for calls it alone answers.
         let receiver = recv.as_ref().map(|t| self.resolve(t));
@@ -6491,6 +6923,9 @@ impl Checker {
             ret: ret.clone(),
             breaks: Vec::new(),
             is_lambda: false,
+            // A task's block runs elsewhere, later: the method's block may
+            // not be live there either.
+            escapes: escapes || is_task || shareable,
         });
         // `break` and `next` in a block leave the block, not a loop
         // around it.
@@ -6603,13 +7038,26 @@ impl Checker {
         self.out
             .frame_sizes
             .insert(call_id, frame.vars.len() as u32);
-        self.widen_assigned(&block.body);
+        if let Some(ivars) = saved_ivars {
+            self.env.ivar_narrow = ivars;
+        }
+        match late {
+            Some(snap) => self.leave_late_closure(&snap, &block.body),
+            None => self.widen_assigned(&block.body),
+        }
     }
 
     /// Make `recv` the `self` of the block being checked (nothing for
     /// `None`); returns what `leave_receiver` restores.
-    fn enter_receiver(&mut self, recv: Option<&Type>) -> Option<(Type, Option<ClassId>)> {
+    #[allow(clippy::type_complexity)]
+    fn enter_receiver(
+        &mut self,
+        recv: Option<&Type>,
+    ) -> Option<(Type, Option<ClassId>, bool, HashMap<String, Type>)> {
         let recv = recv?;
+        // Another object's fields are not being initialized, nor narrowed.
+        let in_initialize = std::mem::take(&mut self.env.in_initialize);
+        let ivar_narrow = std::mem::take(&mut self.env.ivar_narrow);
         let outer_self = std::mem::replace(&mut self.env.self_type, recv.clone());
         let class = match recv {
             Type::Class(id, _) => Some(*id),
@@ -6620,14 +7068,20 @@ impl Checker {
             outer_self: outer_self.clone(),
             outer_frame: self.env.frames.len() - 1,
         });
-        Some((outer_self, outer_class))
+        Some((outer_self, outer_class, in_initialize, ivar_narrow))
     }
 
-    fn leave_receiver(&mut self, saved: Option<(Type, Option<ClassId>)>) {
-        if let Some((self_type, class_id)) = saved {
+    #[allow(clippy::type_complexity)]
+    fn leave_receiver(
+        &mut self,
+        saved: Option<(Type, Option<ClassId>, bool, HashMap<String, Type>)>,
+    ) {
+        if let Some((self_type, class_id, in_initialize, ivar_narrow)) = saved {
             self.env.receivers.pop();
             self.env.self_type = self_type;
             self.env.class_id = class_id;
+            self.env.in_initialize = in_initialize;
+            self.env.ivar_narrow = ivar_narrow;
         }
     }
 
@@ -6693,6 +7147,13 @@ impl Checker {
             _ => (None, None, false),
         };
         self.widen_assigned(&block.body);
+        self.prescan_repeated(&block.body);
+        // A lambda may run later, after what it captures has changed (a
+        // shareable one copies what it captures, and assigns none of it).
+        let late = (!shareable).then(|| self.enter_late_closure(&block.body));
+        // A shareable one reads `self`'s fields live, as a task's block.
+        let saved_ivars = (shareable && self.env.in_initialize)
+            .then(|| std::mem::take(&mut self.env.ivar_narrow));
         let mut param_types = Vec::new();
         let saved_self = self.enter_receiver(expected_recv.as_ref());
         self.env.frames.push(Frame {
@@ -6723,6 +7184,7 @@ impl Checker {
             ret: ret_var.clone(),
             breaks: Vec::new(),
             is_lambda: true,
+            escapes: true,
         });
         // `break` and `next` here do not leave a loop around the lambda.
         let saved_loop = (
@@ -6776,6 +7238,12 @@ impl Checker {
         self.note_frame_vars(&frame);
         self.env.blocks.pop();
         self.leave_receiver(saved_self);
+        if let Some(ivars) = saved_ivars {
+            self.env.ivar_narrow = ivars;
+        }
+        if let Some(snap) = late {
+            self.leave_late_closure(&snap, &block.body);
+        }
         self.out.frame_sizes.insert(id, frame.vars.len() as u32);
         let ret = self.infer.resolve(&ret_var);
         Type::Proc(
@@ -6787,6 +7255,13 @@ impl Checker {
     }
 
     fn check_yield(&mut self, expr: &Expr, args: &[Arg]) -> Type {
+        // The method's anonymous block runs only while the method does.
+        if self.in_late_closure() && self.lookup_var("&").is_some() {
+            self.error(
+                "`yield` in a closure that may run later: the method's block may be gone by then; name the block parameter (`&blk`) to keep it, and call it",
+                expr.span,
+            );
+        }
         let bt = self.env.block_type.clone();
         let Some(bt) = bt.filter(|_| !self.env.block_optional) else {
             if self.env.block_optional {

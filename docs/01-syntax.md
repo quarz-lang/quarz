@@ -85,7 +85,7 @@ puts acct          # => alice: 100
 Differences from Ruby:
 
 - **Fields must be declared.** They are declared with `@name: Type`, and the object layout is fixed at compile time. Assigning to an undeclared instance variable is a compile error.
-- **Fields are immutable by default.** They must be assigned inside `initialize` (definite assignment analysis), where they may be reassigned. With an initializer (`@tags: Array[String] = []`) the assignment can be omitted.
+- **Fields are immutable by default.** They must be assigned inside `initialize` (definite assignment analysis), where they may be reassigned, though not from a closure that may run after it (a lambda, a block a method may keep, §9). With an initializer (`@tags: Array[String] = []`) the assignment can be omitted.
 - **A field is never seen before it is assigned.** A field whose type does not admit `nil` and that has no initializer (`var` or not) must be assigned on every path through `initialize`, and the object may not be used until all such fields are: no `self`, no call on the implicit receiver to a method of the class (or of a module it includes), no read of a field not yet assigned, and no block that does one of these. `raise` and functions such as `puts` are fine; a `return` must come after the assignments. A subclass assigns its own such fields *before* calling `super` (so a method the superclass's `initialize` calls, and the subclass overrides, sees them), and `super` assigns the inherited ones. A class with such a field of its own must define `initialize`. Field initializers run first, in declaration order, and may read the fields declared before them but not use the object otherwise. Hence a field always holds a value of its declared type (`@x: Float` is a `Float`, never `nil`), which compiled code relies on.
 - **Mutable fields are declared with `var`.** A class with a `var` field, or with a field of a non-Shareable type, is not Shareable ([03-data-model.md](03-data-model.md)).
 - **Classes cannot be reopened.** Defining a class with the same name twice is an error (so is a module's, §6). Adding methods to an existing class is done with `extension` (§7).
@@ -302,7 +302,7 @@ def twice(&block: (Int) -> Int) -> Int          # named: a procedure value
   block.call(1) + block.(2) + block[3]
 end
 
-def forward(&: (Int) -> Int) -> Int = twice(&)  # `&` forwards the anonymous block
+def forward(&: (Int, Int) -> Nil) -> Nil = each_pair(&)  # `&` passes the anonymous block on
 
 each_pair { |a, b| puts a + b }
 each_pair do |a, b|
@@ -316,6 +316,7 @@ double = ->(x: Int) { x * 2 }          # a procedure (equivalent to a Ruby lambd
 
 - Block parameter types are inferred from the type of the callee's block parameter. To be explicit, write `{ |x: Int| ... }`; a union there goes in parentheses, `|x: (Int | String)|`, since `|` closes the parameters. Destructuring parameters (`|(a, b), c|`) are not supported; match in the body (`pair => [a, b]`).
 - `yield` requires a block parameter (named or anonymous), since the block's type comes from its declaration; calling such a method without a block is a compile error, so an optional block is written `&block: ((Int) -> Nil)?`: the parameter is then `nil` when the caller gives no block, so the body calls it with `block.call` where it is not `nil` (`yield` cannot run it), and `&block` passes it on to another optional block.
+- **Whether a method keeps its block is part of its signature** (as Swift's `@escaping`). An anonymous block (`&:`) does not outlive the call: it is only run with `yield`, or passed on with `&` to another method whose block is anonymous; `yield` in a lambda (or in a block given to a method that may keep it, or a task's) is an error, as is passing `&` to a named `&blk`. A named block parameter may be kept (stored, returned, run later). An override cannot turn an anonymous block into a named one, since callers rely on it. A native that keeps its block names it too (`at_exit(&blk)`).
 - A block that is only invoked with `yield` (a non-escaping block) is expanded by the compiler without allocating a closure. Only when `&block` **escapes**, by being stored in a variable or returned, does it become a heap-allocated closure.
 - `break`/`next`/`return` inside a block mean the same as in Ruby. `next` returns the block's value, `break` exits the call the block was passed to, and `return` returns from the enclosing method.
 - `->(x) { }` is the same as a Ruby lambda (strict arity, `return` returns from the procedure). `Proc.new` and `proc` are dropped; procedures are created with `->` or from blocks.

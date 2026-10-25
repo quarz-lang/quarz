@@ -118,6 +118,30 @@ fn deferred_path(expr: &Expr) -> &ConstPath {
     }
 }
 
+/// Whether a call could be answered by either of two methods with these
+/// parameters: their numbers of positional arguments meet (an override, at
+/// run time, is chosen by name and number of arguments).
+fn arities_meet(a: &[ParamInfo], b: &[ParamInfo]) -> bool {
+    let range = |ps: &[ParamInfo]| {
+        let mut min = 0;
+        let mut max = 0usize;
+        for p in ps {
+            match p.kind {
+                ParamKind::Positional if p.default.is_none() => {
+                    min += 1;
+                    max = max.saturating_add(1);
+                }
+                ParamKind::Positional => max = max.saturating_add(1),
+                ParamKind::Rest => max = usize::MAX,
+                _ => {}
+            }
+        }
+        (min, max)
+    };
+    let ((amin, amax), (bmin, bmax)) = (range(a), range(b));
+    amin <= bmax && bmin <= amax
+}
+
 /// A cog of the movement, as the declarer needs it.
 #[derive(Clone, Debug)]
 pub struct CogDecl {
@@ -245,6 +269,7 @@ impl<'ast> Declarer<'ast> {
             return;
         };
         self.file = file;
+        self.world.file_groups.insert(file, UnitGroup::Cog(cog));
         let mut main = World::blank_class(
             "main".to_string(),
             ClassKind::Main,
@@ -305,6 +330,12 @@ impl<'ast> Declarer<'ast> {
     /// more); its other statements become the unit's body.
     pub fn collect_unit(&mut self, program: &'ast Program, file: u32) {
         self.file = file;
+        let group = if self.world.std_files.contains(&file) {
+            UnitGroup::Std(file)
+        } else {
+            UnitGroup::App
+        };
+        self.world.file_groups.insert(file, group);
         let mut main = World::blank_class("main".to_string(), ClassKind::Main, None, program.span);
         main.file = file;
         let id = self.world.add_class(main);
@@ -331,6 +362,7 @@ impl<'ast> Declarer<'ast> {
     /// new body.
     pub fn collect_into_unit(&mut self, program: &'ast Program, file: u32, main: ClassId) {
         self.file = file;
+        self.world.file_groups.insert(file, UnitGroup::App);
         self.pending.push(PendingClass {
             id: main,
             body: &program.body,
@@ -902,8 +934,105 @@ impl<'ast> Declarer<'ast> {
             self.check_conformance(p);
             self.check_shareable_promise(p.id);
             self.check_variance(p.id);
+            self.check_kept_blocks(p.id);
         }
+        self.check_extensions_kept_blocks();
         self.check_shareable_extensions();
+    }
+
+    /// `check_kept_blocks` for the methods of extensions: an extension's
+    /// method found before its target's own may not keep a block the one
+    /// it hides only yields to.
+    fn check_extensions_kept_blocks(&mut self) {
+        let mut errors = Vec::new();
+        for e in &self.world.extensions {
+            let ancestors = self.world.ancestor_ids(e.target);
+            for ids in e.methods.values() {
+                for mid in ids {
+                    let m = self.world.method(*mid);
+                    let Some((name, _)) = &m.block else { continue };
+                    // (A constructor is never called through a parent's.)
+                    if name == "&" || m.file == 0 || (m.name == "initialize" && !m.singleton) {
+                        continue;
+                    }
+                    let hidden = ancestors.iter().find_map(|a| {
+                        self.world
+                            .class(*a)
+                            .methods
+                            .get(&m.name)?
+                            .iter()
+                            .copied()
+                            .find(|o| {
+                                let o = self.world.method(*o);
+                                o.singleton == m.singleton
+                                    && arities_meet(&o.params, &m.params)
+                                    && o.block.as_ref().is_some_and(|(n, _)| n == "&")
+                            })
+                    });
+                    if let Some(o) = hidden {
+                        let owner = self.world.class(self.world.method(o).owner).name.clone();
+                        errors.push((
+                            m.file,
+                            format!(
+                                "`{}` cannot keep its block (`&{name}`): `{owner}#{}`, which it hides, only yields to it (`&:`), and callers rely on that",
+                                m.name, m.name
+                            ),
+                            m.span,
+                        ));
+                    }
+                }
+            }
+        }
+        for (file, msg, span) in errors {
+            self.file = file;
+            self.error(msg, span);
+        }
+    }
+
+    /// Whether a method may keep its block is part of its signature: an
+    /// anonymous block (`&:`) is only yielded to, and a caller relies on
+    /// it (a narrowing holds across a call given a block that cannot run
+    /// later). An override cannot name the block (`&blk`) to keep it.
+    fn check_kept_blocks(&mut self, id: ClassId) {
+        let class = self.world.class(id);
+        let mine: Vec<MethodId> = class.methods.values().flatten().copied().collect();
+        let ancestors: Vec<ClassId> = self
+            .world
+            .ancestor_ids(id)
+            .into_iter()
+            .filter(|a| *a != id)
+            .collect();
+        for mid in mine {
+            let m = self.world.method(mid);
+            let Some((name, _)) = &m.block else { continue };
+            if name == "&" || m.owner != id || (m.name == "initialize" && !m.singleton) {
+                continue;
+            }
+            let overridden = ancestors.iter().find_map(|a| {
+                self.world
+                    .class(*a)
+                    .methods
+                    .get(&m.name)?
+                    .iter()
+                    .copied()
+                    .find(|o| {
+                        let o = self.world.method(*o);
+                        o.singleton == m.singleton
+                            && arities_meet(&o.params, &m.params)
+                            && o.block.as_ref().is_some_and(|(n, _)| n == "&")
+                    })
+            });
+            if let Some(o) = overridden {
+                let owner = self.world.class(self.world.method(o).owner).name.clone();
+                let (mname, span) = (m.name.clone(), m.span);
+                self.error(
+                    format!(
+                        "`{mname}` cannot keep its block (`&{name}`): `{owner}#{mname}`, which it overrides, only yields to it (`&:`), and callers rely on that"
+                    ),
+                    span,
+                );
+            }
+        }
     }
 
     /// A covariant (`out`) type parameter may appear only where values

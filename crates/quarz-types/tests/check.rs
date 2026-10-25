@@ -1282,3 +1282,132 @@ fn nil_p_and_is_a_are_sealed() {
         "undefined method `+` for Nil",
     );
 }
+
+#[test]
+fn closures_that_may_run_later_end_narrowings() {
+    // A lambda that assigns a local: any call may run it, so the local is
+    // not narrowed after it is made.
+    err(
+        "def f(x: Int | String, z: Int | String) -> Int\n  reset = -> { x = z }\n  if x.is_a?(String)\n    reset.call\n    p x.upcase\n  end\n  0\nend",
+        "undefined method `upcase` for Int",
+    );
+    err(
+        "def g[T](x: T, z: T) -> Int\n  reset = -> { x = z }\n  if x.is_a?(Int)\n    reset.call\n    return x + 1\n  end\n  0\nend",
+        "undefined method `+` for T",
+    );
+    // Implicit calls run it too (interpolation calls `to_s`).
+    err(
+        "class C\n  var @r: (() -> Nil)? = nil\n  def set(r: () -> Nil) -> Nil\n    @r = r\n    nil\n  end\n  def to_s -> String\n    if r = @r\n      r.call\n    end\n    \"c\"\n  end\nend\ndef f(x: Int | String, c: C) -> Int\n  c.set(-> { x = 5; nil })\n  x = \"s\"\n  if x.is_a?(String)\n    s = \"#{c}\"\n    p x.upcase\n  end\n  0\nend",
+        "undefined method `upcase` for Int",
+    );
+    // A lambda made under a narrowing may run after the local changes.
+    err(
+        "def f(x: Int | String) -> Int\n  r = -> { 0 }\n  if x.is_a?(String)\n    r = -> { p x.upcase; 0 }\n  end\n  x = 5\n  r.call\nend",
+        "undefined method `upcase` for Int",
+    );
+    // A lambda made later in a loop's body may have run by the next turn.
+    err(
+        "def f(x: Int | String) -> Int\n  r = -> { nil }\n  i = 0\n  while i < 2\n    if x.is_a?(String)\n      r.call\n      p x.upcase\n    end\n    r = -> { x = 5; nil }\n    i += 1\n  end\n  0\nend",
+        "undefined method `upcase` for Int",
+    );
+    // A block given to a method that may keep it (a named `&blk`).
+    err(
+        "def f(x: Int | String) -> Int\n  if x.is_a?(String)\n    at_exit { p x.upcase; nil }\n  end\n  x = 5\n  0\nend",
+        "undefined method `upcase` for Int",
+    );
+    // A local assigned once keeps its narrowing in a lambda; a block only
+    // yielded to does not end narrowings; a block's own locals are new
+    // each time it runs.
+    ok("def g(s: String?) -> Int\n  x = s\n  if x\n    r = -> { x.size }\n    r.call + x.size\n  else\n    0\n  end\nend\np g(\"abc\")");
+    ok("def f(xs: Array[Int]) -> Int\n  found: Int? = nil\n  xs.each { |x| found = x if x > 2 }\n  if found\n    puts found\n    found + 1\n  else\n    0\n  end\nend\np f([1, 5])");
+    ok("def f(xs: Array[String?]) -> Int\n  r = -> { 0 }\n  xs.each do |e|\n    y = e\n    if y\n      r = -> { y.size }\n    end\n  end\n  r.call\nend");
+}
+
+#[test]
+fn an_anonymous_block_is_not_kept() {
+    // Only yielded to, or passed on to another anonymous one.
+    err(
+        "def keep(&blk: () -> Nil) -> Nil = nil\ndef fwd(&: () -> Nil) -> Nil = keep(&)",
+        "cannot be passed to `keep`, which may keep it",
+    );
+    err(
+        "def wrap(&: () -> Nil) -> (() -> Nil) = -> { yield }",
+        "`yield` in a closure that may run later",
+    );
+    ok("def anon(&: () -> Nil) -> Nil = yield\ndef fwd(&: () -> Nil) -> Nil = anon(&)");
+    // Whether a method keeps its block is part of its signature.
+    err(
+        "class A\n  def run(&: () -> Nil) -> Nil = yield\nend\nclass B < A\n  def run(&blk: () -> Nil) -> Nil = nil\nend",
+        "`run` cannot keep its block",
+    );
+}
+
+#[test]
+fn array_literals_take_the_union_member_they_fit() {
+    ok("def f(t: [Int, String] | Array[Int]) -> Int = 1\np f([1, \"a\"]), f([1, 2])");
+    ok("def g(t: [Int, String] | [Int, Int]) -> Int = 1\np g([1, 2]), g([1, \"x\"])");
+    err(
+        "def h(t: [Int, String] | [Int, Int]) -> Int = 1\np h([1, 2.0])",
+        "expects [Int, String] | [Int, Int]",
+    );
+}
+
+#[test]
+fn closures_that_may_run_later_in_more_places() {
+    // A pattern binds as an assignment does.
+    err(
+        "def f(s: Int | String) -> Int\n  x = s\n  if x.is_a?(String)\n    r = -> { p x.upcase; 0 }\n    0 => x\n    return r.call\n  end\n  0\nend",
+        "undefined method `upcase` for Int",
+    );
+    // A body a rescue retries runs again.
+    err(
+        "def f(x: Int | String) -> Int\n  r = -> { nil }\n  n = 0\n  begin\n    if x.is_a?(String)\n      r.call\n      p x.upcase\n    end\n    r = -> { x = 5; nil }\n    n += 1\n    raise \"again\" if n < 2\n  rescue RuntimeError\n    retry\n  end\n  0\nend",
+        "undefined method `upcase` for Int",
+    );
+    // A lambda in a parameter's default value.
+    err(
+        "def f(x: Int | String, r: () -> Nil = -> { x = 5; nil }) -> Int\n  if x.is_a?(String)\n    r.call\n    p x.upcase\n  end\n  0\nend",
+        "undefined method `upcase` for Int",
+    );
+    // `Channel.select`'s blocks run after its block returns.
+    err(
+        "def f(x: Int | String) -> Nil\n  Channel.select do |s|\n    if x.is_a?(String)\n      s.default { p x.upcase; nil }\n    end\n    x = 5\n  end\nend",
+        "undefined method `upcase` for Int",
+    );
+    // An immutable field cannot be assigned by a closure that may run
+    // after `initialize`.
+    err(
+        "class C\n  @x: Int\n  @r: () -> Nil\n  def initialize\n    @x = 1\n    @r = -> { @x = 5; nil }\n  end\nend",
+        "a closure that may run later, after `initialize`, cannot assign it",
+    );
+    // The method's block cannot go to a task unchecked.
+    err(
+        "def later(&: () -> Nil) -> Task[Nil] = Task.spawn(&)",
+        "which runs it in a task",
+    );
+    // A closure that may run later is run after others made later in the
+    // body, which may have assigned the local.
+    err(
+        "def f(x: Int | String) -> Nil\n  g = -> { nil }\n  a = -> { if x.is_a?(String)\n    g.call\n    p x.upcase\n  end\n  nil }\n  g = -> { x = 5; nil }\n  a.call\nend",
+        "undefined method `upcase` for Int",
+    );
+    // In `initialize`, a field's narrowing does not reach a closure that
+    // may run after the field is assigned again; nor may one assign it,
+    // by any form of assignment.
+    err(
+        "class C\n  @x: Int | String\n  @r: () -> Nil\n  def initialize\n    @x = \"s\"\n    @r = -> { nil }\n    if @x.is_a?(String)\n      @r = -> { p @x.upcase; nil }\n    end\n    @x = 5\n  end\nend",
+        "undefined method `upcase` for Int",
+    );
+    err(
+        "class C\n  @n: Int\n  @r: () -> Nil\n  def initialize\n    @n = 1\n    @r = -> { @n += 1; nil }\n  end\nend",
+        "field `@n` is immutable",
+    );
+    // An overload or a constructor is not an override.
+    ok("class P\n  def run(&: () -> Nil) -> Nil = yield\nend\nclass Q < P\n  def run(n: Int, &blk: () -> Nil) -> Nil = nil\nend");
+    ok("class C\n  def initialize(&: () -> Nil)\n    yield\n  end\nend\nclass D < C\n  def initialize(&blk: () -> Nil)\n    super(&blk)\n  end\nend");
+    // Nor can an extension's method keep a block the one it hides yields.
+    err(
+        "def keep(b: () -> Nil) -> Nil = nil\nclass A\n  def run(&: () -> Nil) -> Nil = yield\nend\nclass C < A\nend\nextension C\n  def run(&blk: () -> Nil) -> Nil = keep(blk)\nend",
+        "`run` cannot keep its block",
+    );
+}

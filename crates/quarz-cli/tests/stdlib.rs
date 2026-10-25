@@ -104,16 +104,16 @@ fn block_parameters_are_procedures() {
     expect(
         r#"def twice(&block: (Int) -> Int) -> Int = block.call(1) + block.(2) + block[3] + yield(4)
 def forward(&block: (Int) -> Int) -> Int = twice(&block)
-def forward2(&: (Int) -> Int) -> Int = twice(&)
-def pick(&block: (Int) -> Int) -> (Int) -> Int = block
 def anon(&: (Int) -> Int) -> Int = yield(2)
+def forward2(&: (Int) -> Int) -> Int = anon(&)
+def pick(&block: (Int) -> Int) -> (Int) -> Int = block
 puts twice { |x| x * 10 }
 puts forward { |x| x + 1 }
 puts forward2 { |x| x + 2 }
 puts pick { |x| x - 1 }.call(5)
 puts anon { |x| x * 3 }
 "#,
-        "100\n14\n18\n4\n6\n",
+        "100\n14\n4\n4\n6\n",
     );
 }
 

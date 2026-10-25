@@ -1715,10 +1715,11 @@ end
 class Selector
   include Unshareable
 
-  native def receive[T](channel: Channel[T], &: (T) -> Nil) -> Nil
-  native def send[T](channel: Channel[T], value: T, &: () -> Nil) -> Nil
-  native def after(duration: Duration, &: () -> Nil) -> Nil
-  native def default(&: () -> Nil) -> Nil
+  # These keep their blocks, run after the `Channel.select` block returns.
+  native def receive[T](channel: Channel[T], &blk: (T) -> Nil) -> Nil
+  native def send[T](channel: Channel[T], value: T, &blk: () -> Nil) -> Nil
+  native def after(duration: Duration, &blk: () -> Nil) -> Nil
+  native def default(&blk: () -> Nil) -> Nil
   native def stop -> Nil
 end
 
@@ -1899,7 +1900,8 @@ module Kernel
   native def sleep(duration: Duration) -> Nil
   native def exit(status: Int = 0) -> Nothing
   native def abort(message: String) -> Nothing
-  native def at_exit(&: () -> Nil) -> Nil
+  # It keeps the block (to run it at exit).
+  native def at_exit(&blk: () -> Nil) -> Nil
   native def gets -> String
   native def gets? -> String?
   native def readline -> String

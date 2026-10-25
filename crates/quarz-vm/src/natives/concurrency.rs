@@ -396,7 +396,11 @@ fn task_timeout(interp: &Interp, _: &Value, args: Args) -> EvalResult {
         }
         if start.elapsed() >= d {
             interp.cancel_task(&child);
-            let _ = interp.await_task(&child);
+            // Waited for even if this task is cancelled meanwhile: the
+            // block is the caller's (`&:`) and must not outlive the call.
+            while !child.is_done() {
+                let _ = interp.await_task(&child);
+            }
             return Err(interp.raise(interp.program.exc.timeout, "timed out"));
         }
         {
@@ -409,10 +413,15 @@ fn task_timeout(interp: &Interp, _: &Value, args: Args) -> EvalResult {
             }
         }
         if let Err(e) = interp.park() {
-            // Cancelled: so is the block.
+            // Cancelled: so is the block, which is waited for (it is the
+            // caller's block, `&:`, and may use the caller's locals: it
+            // must not outlive the call).
             lock(&child.joiners).retain(|t| *t != me.task_ref());
             interp.sched.borrow_mut().cancel_timer(timer);
             interp.cancel_task(&child);
+            while !child.is_done() {
+                let _ = interp.await_task(&child);
+            }
             return Err(e);
         }
     }

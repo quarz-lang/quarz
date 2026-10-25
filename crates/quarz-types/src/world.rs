@@ -178,6 +178,17 @@ pub struct ExtensionInfo {
     pub always_active: bool,
 }
 
+/// The files a file belongs with (`World::file_groups`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum UnitGroup {
+    /// The application's files, or a script and the files it requires.
+    App,
+    /// A library cog's files, by index.
+    Cog(u32),
+    /// A standard library module, by file.
+    Std(u32),
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Member {
     Class(ClassId),
@@ -317,6 +328,8 @@ pub struct World {
     /// The files of the standard library (`require "json"`): their
     /// modules are not the program's to add to.
     pub std_files: rustc_hash::FxHashSet<u32>,
+    /// Each user file's group (`UnitGroup`); the prelude has none.
+    pub file_groups: HashMap<u32, UnitGroup>,
 }
 
 impl World {
