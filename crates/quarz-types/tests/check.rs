@@ -1127,3 +1127,15 @@ fn breaks_inside_expressions_and_blocks() {
         "undefined method `first`",
     );
 }
+
+#[test]
+fn inference_never_binds_a_variable_to_itself() {
+    // Found by a generated program: an inference variable bound to a
+    // type containing itself made resolving overflow the stack.
+    diagnostics("def f(n: Int, x: Array[Int], a: Int?, b: String?) -> Int\n  x.each do |b|\n    unless !c\n      while true\n      end\n      case b\n      in Int => m1\n      end\n      case c\n      in String => s1\n      end\n    end\n    case c\n    in Int => m1\n      begin\n      end\n      case f\n      in String => s1\n        b = b if !c\n      end\n    end\n  end\nend");
+    // A type that would contain itself is not a solution.
+    err(
+        "def h(a: Array[Int]) -> Int\n  a[0] + 1\nend\narr = []\narr = [arr]\np(h(arr))",
+        "array elements have type Array[?0] but ?0 was expected",
+    );
+}
