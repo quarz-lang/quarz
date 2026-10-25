@@ -12,7 +12,9 @@ pub mod declare;
 pub mod init;
 pub mod load;
 pub mod patterns;
+pub mod reloc;
 pub mod types;
+pub mod unit;
 pub mod world;
 
 use quarz_syntax::ast::{Expr, ExprKind, Program};
@@ -70,7 +72,7 @@ impl From<LoadedUnit> for Unit {
 
 /// A checked compilation unit: its top-level statements and the
 /// pseudo-class holding its top-level methods.
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct CheckedUnit {
     pub file: u32,
     pub name: String,

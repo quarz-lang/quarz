@@ -3,12 +3,55 @@
 use std::fmt;
 
 /// A half-open byte range `[start, end)` into a source file.
-#[derive(
-    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize)]
 pub struct Span {
     pub start: u32,
     pub end: u32,
+}
+
+// Spans and node ids are numbered within their unit's range
+// (`quarz_types::load::unit_base`). A unit read back from its interface
+// file (`.qzi`) into another program may have another range: while
+// `rebased` runs, deserializing moves the numbers of one range to another.
+thread_local! {
+    static REBASE: std::cell::Cell<Option<(u32, u32, u32)>> = const { std::cell::Cell::new(None) };
+}
+
+/// Run `f` with the spans and node ids in `[from, from + len)` read as in
+/// `[to, to + len)`.
+pub fn rebased<R>(from: u32, to: u32, len: u32, f: impl FnOnce() -> R) -> R {
+    let saved = REBASE.with(|r| r.replace(Some((from, to, len))));
+    let out = f();
+    REBASE.with(|r| r.set(saved));
+    out
+}
+
+/// A span offset or a node id as the current `rebased` reads it.
+pub fn rebase(v: u32) -> u32 {
+    match REBASE.with(|r| r.get()) {
+        Some((from, to, len)) if v >= from && v - from <= len => v - from + to,
+        _ => v,
+    }
+}
+
+/// `deserialize_with` for a node id.
+pub fn rebase_node<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
+    <u32 as serde::Deserialize>::deserialize(d).map(rebase)
+}
+
+impl<'de> serde::Deserialize<'de> for Span {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Span, D::Error> {
+        #[derive(serde::Deserialize)]
+        struct Raw {
+            start: u32,
+            end: u32,
+        }
+        let r = Raw::deserialize(d)?;
+        Ok(Span {
+            start: rebase(r.start),
+            end: rebase(r.end),
+        })
+    }
 }
 
 impl Span {

@@ -160,6 +160,9 @@ pub struct TypeAliasInfo {
     pub type_params: Vec<TypeParamInfo>,
     pub expr: TypeExpr,
     pub resolved: Option<Type>,
+    /// The file that declares it.
+    #[serde(default)]
+    pub file: u32,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -181,6 +184,9 @@ pub struct ExtensionInfo {
     /// (`UnitGroup`): the application's or script's, the cog's, the
     /// standard library module's; not in the prelude, nor in other groups.
     pub group: Option<UnitGroup>,
+    /// The file that declares it.
+    #[serde(default)]
+    pub file: u32,
 }
 
 /// The files a file belongs with (`World::file_groups`).
@@ -311,14 +317,14 @@ pub struct World {
     pub builtin: Builtin,
     /// Extensions activated by `using` in the current lexical scope.
     pub active_extensions: Vec<ExtensionId>,
-    next_type_param: TypeParamId,
+    pub(crate) next_type_param: TypeParamId,
     pub type_param_names: HashMap<TypeParamId, String>,
     /// The lower bounds of method type parameters (`U >: T`).
     pub lower_bounds: HashMap<TypeParamId, Type>,
     /// Type parameters made by a test narrowing a `T` (`in Box` on a
     /// `T`): a value that is both, with both as bounds.
-    narrowed_params: HashMap<TypeParamId, Vec<Type>>,
-    narrowed_by: HashMap<(TypeParamId, Type), TypeParamId>,
+    pub(crate) narrowed_params: HashMap<TypeParamId, Vec<Type>>,
+    pub(crate) narrowed_by: HashMap<(TypeParamId, Type), TypeParamId>,
     /// While checking the body of a method whose signature mentions
     /// `Self`: the class `Self` is bounded by (there, `Self` is that class
     /// or a subclass, not known which).

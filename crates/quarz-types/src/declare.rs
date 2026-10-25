@@ -529,6 +529,7 @@ impl<'ast> Declarer<'ast> {
                     methods: HashMap::default(),
                     span: expr.span,
                     always_active: prelude,
+                    file: self.file,
                     group: (!prelude
                         && namespace
                             .is_none_or(|ns| self.world.cogs.iter().any(|c| c.root == Some(ns))))
@@ -575,6 +576,7 @@ impl<'ast> Declarer<'ast> {
                     type_params: params,
                     expr: ty.clone(),
                     resolved: None,
+                    file: self.file,
                 });
                 self.register_member(namespace, name, Member::Alias(id), expr.span);
             }
