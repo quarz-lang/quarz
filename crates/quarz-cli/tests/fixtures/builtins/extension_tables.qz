@@ -1,0 +1,78 @@
+# Top-level extensions take no part in by-name dispatch: what the checker
+# resolved is called, by the type each check of a block saw, and an
+# extension that implements an abstract method does wherever the value goes.
+
+module M
+  abstract def f -> String
+  def g -> String = "g:" + f
+end
+class A
+  include M
+end
+extension A
+  def f -> String = "extA"
+end
+class C < A
+  def f -> String = "C own"
+end
+class D < C
+end
+extension D
+  def f -> String = "extD"
+end
+def show(m: M) -> String = m.f
+puts show(A.new), show(C.new), show(D.new), D.new.g
+
+class Foo
+  var @a: Int = 1
+  def a -> Int = @a
+  def a=(x: Int) -> Int
+    @a = x
+  end
+end
+class Bar
+  var @s: String = "x"
+  var @b: Int = 100
+  def a -> Int = @b
+  def a=(x: Int) -> Int
+    @b = x
+  end
+end
+extension Foo
+  def to_s -> String = "Foo(#{@a})"
+  def +(o: Int) -> Int = @a + o
+end
+extension Bar
+  def to_s -> String = "Bar(#{@b})"
+  def +(o: Int) -> Int = @b + o * 10
+end
+def mk(i: Int) -> Array[Foo] | Array[Bar] = i > 0 ? [Foo.new] : [Bar.new]
+[1, 0].each do |i|
+  mk(i).each do |v|
+    v.a += 1
+    y = v
+    puts "#{v} #{v + 1} #{y.to_s}"
+  end
+end
+
+class Sub < Foo
+end
+extension Sub
+  def to_s -> String = "Sub"
+end
+class Box[T]
+  @v: T
+  def initialize(@v: T); end
+  def each(&blk: (T) -> Nil) -> Nil
+    blk.call(@v)
+    nil
+  end
+end
+# Checked as Foo and as Sub: a Sub is tested first.
+def pf(i: Int) -> Array[Foo] | Box[Sub] = i > 0 ? [Foo.new] : Box.new(Sub.new)
+pf(0).each { |x| puts "#{x} #{x.to_s}" }
+pf(1).each { |x| puts "#{x} #{x.to_s}" }
+# An extension's method is chosen by the static type: a Sub seen as a Foo
+# uses Foo's.
+def foos(i: Int) -> Array[Foo] = [Sub.new]
+foos(0).each { |x| puts "#{x}" }

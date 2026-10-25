@@ -254,9 +254,10 @@ pub fn build(world: &World, lw: &Lowerer, file_names: Vec<String>) -> RtWorld {
             file: c.file,
         })
         .collect();
-    // Every extension takes part in dynamic dispatch (a module method
-    // implemented for a class by an extension is found through it);
-    // the always-active ones come first.
+    // Every extension is listed: the always-active ones (the prelude's)
+    // take part in dispatch by name and come first; any other only
+    // through the modules it makes its target conform to (a module method
+    // implemented for a class by an extension is found through it).
     let mut extensions: Vec<RtExtension> = Vec::new();
     for always in [true, false] {
         for e in world
@@ -331,6 +332,7 @@ pub fn build(world: &World, lw: &Lowerer, file_names: Vec<String>) -> RtWorld {
         methods,
         consts,
         extensions,
+        ext_impls: world.ext_impls.clone(),
         top,
         builtin,
         file_names,

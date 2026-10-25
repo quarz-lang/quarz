@@ -176,6 +176,11 @@ pub struct ExtensionInfo {
     pub span: Span,
     /// Prelude extensions are active everywhere.
     pub always_active: bool,
+    /// An extension declared at a file's top level (in a library cog, its
+    /// root module's body) is active in the files of its group
+    /// (`UnitGroup`): the application's or script's, the cog's, the
+    /// standard library module's; not in the prelude, nor in other groups.
+    pub group: Option<UnitGroup>,
 }
 
 /// The files a file belongs with (`World::file_groups`).
@@ -330,6 +335,10 @@ pub struct World {
     pub std_files: rustc_hash::FxHashSet<u32>,
     /// Each user file's group (`UnitGroup`); the prelude has none.
     pub file_groups: HashMap<u32, UnitGroup>,
+    /// Abstract methods an extension's method implements for a class
+    /// (class, abstract method, implementation), found where the class is
+    /// declared: conformance holds wherever the value goes.
+    pub ext_impls: Vec<(ClassId, MethodId, MethodId)>,
 }
 
 impl World {
@@ -739,6 +748,19 @@ impl World {
         } else if id != self.builtin.object && class.kind != ClassKind::Module {
             self.collect_ancestor_ids(self.builtin.object, exts, out);
         }
+    }
+
+    /// The extensions active throughout `file`: those declared at the top
+    /// level of its group's files.
+    pub fn group_extensions(&self, file: u32) -> Vec<ExtensionId> {
+        let Some(group) = self.file_groups.get(&file) else {
+            return Vec::new();
+        };
+        self.extensions
+            .iter()
+            .filter(|e| e.group.as_ref() == Some(group))
+            .map(|e| e.id)
+            .collect()
     }
 
     pub fn active_extension_ids(&self) -> Vec<ExtensionId> {

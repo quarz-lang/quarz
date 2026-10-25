@@ -73,6 +73,25 @@ pub struct Output {
     /// methods with no common ancestor declaring the name: looked up by
     /// name on the receiver's class at run time.
     pub dynamic_calls: rustc_hash::FxHashSet<NodeId>,
+    /// Calls on a union receiver whose members answer with different
+    /// methods: each member with its method, for a test of the
+    /// receiver's type that calls the right one (an extension's method,
+    /// active where the call is, is not found by name at run time).
+    pub union_calls: HashMap<NodeId, Vec<(Type, MethodId)>>,
+    /// Calls whose checks (a block checked once per member of its
+    /// receiver's union) gave tables that disagree, or members that a
+    /// test of the class cannot tell apart: called by name.
+    pub union_conflicts: rustc_hash::FxHashSet<NodeId>,
+    /// Interpolations checked more than once whose `to_s` differed.
+    pub interp_conflicts: rustc_hash::FxHashSet<NodeId>,
+    /// Interpolated expressions (`"#{x}"`) whose type's `to_s` is an
+    /// extension's active there: called for the piece, which otherwise
+    /// takes the class's own.
+    pub interp_to_s: HashMap<NodeId, Vec<(ClassId, Option<MethodId>)>>,
+    /// A compound assignment's reader and operator (`f.w += 1`: `w` and
+    /// `+`); its writer is the node's `calls` entry.
+    pub op_getters: HashMap<NodeId, MethodId>,
+    pub op_operators: HashMap<NodeId, MethodId>,
     /// `as`/`as?`/`is_a?` calls whose run-time test must check elements:
     /// the value may be of the class without being of the type.
     pub element_tests: rustc_hash::FxHashSet<NodeId>,
@@ -514,6 +533,10 @@ impl InferTable {
 }
 
 pub struct Checker {
+    /// A compound assignment's reader (`false`) and operator (`true`)
+    /// found by each check, and those given up (`note_op_method`).
+    op_seen: HashMap<(NodeId, bool), Option<MethodId>>,
+    op_given_up: rustc_hash::FxHashSet<(NodeId, bool)>,
     /// `keeping_names` by file kind (prelude 0, a standard library
     /// module's file, `u32::MAX` for the program), with the number of
     /// methods it was computed for (the REPL adds methods).
@@ -612,6 +635,8 @@ impl Checker {
             next_block_escapes: false,
         };
         Checker {
+            op_seen: HashMap::default(),
+            op_given_up: Default::default(),
             keeps: HashMap::default(),
             world,
             diagnostics: Vec::new(),
@@ -1000,8 +1025,13 @@ impl Checker {
             let saved_touched = std::mem::take(&mut self.touched);
             let saved_frame_vars = std::mem::take(&mut self.frame_vars);
             let saved_temp_stmts = std::mem::take(&mut self.temp_stmts);
-            let saved_active =
-                std::mem::replace(&mut self.world.active_extensions, class.usings.clone());
+            let mut active = class.usings.clone();
+            for e in self.file_extensions(class.file) {
+                if !active.contains(&e) {
+                    active.push(e);
+                }
+            }
+            let saved_active = std::mem::replace(&mut self.world.active_extensions, active);
             for f in &class.fields {
                 let Some(d) = &f.default else {
                     continue;
@@ -1049,7 +1079,6 @@ impl Checker {
     /// file's statements' values are not used; the REPL shows its last's
     /// (`last_used`).
     fn check_top_level(&mut self, env: Env, file: u32, body: &[&Expr], last_used: bool) -> Env {
-        let main = self.file_main(file).unwrap_or(self.world.builtin.object);
         let saved_env = std::mem::replace(&mut self.env, env);
         self.scan_closures(body.iter().copied(), std::iter::empty());
         // The REPL's top level goes on over inputs: what one input assigns
@@ -1057,7 +1086,7 @@ impl Checker {
         if last_used {
             self.env.reassigned = None;
         }
-        self.world.active_extensions = self.world.class(main).usings.clone();
+        self.world.active_extensions = self.file_extensions(file);
         for (i, expr) in body.iter().enumerate() {
             self.stmt_unused = !(last_used && i + 1 == body.len());
             let t = self.check_expr(expr, None);
@@ -1425,13 +1454,11 @@ impl Checker {
             });
         }
         // Active extensions: the class's `using`s plus those of the file's
-        // top level.
+        // top level, and its group's top-level extensions.
         let mut active = class.usings.clone();
-        if let Some(fm) = self.file_main(info.file) {
-            for e in &self.world.class(fm).usings {
-                if !active.contains(e) {
-                    active.push(*e);
-                }
+        for e in self.file_extensions(info.file) {
+            if !active.contains(&e) {
+                active.push(e);
             }
         }
         // Usings of enclosing namespaces.
@@ -1622,7 +1649,10 @@ impl Checker {
         let saved_frame_vars = std::mem::take(&mut self.frame_vars);
         let saved_temp_stmts = std::mem::take(&mut self.temp_stmts);
         self.scan_closures([&*value], std::iter::empty());
+        let active = self.file_extensions(info.file);
+        let saved_active = std::mem::replace(&mut self.world.active_extensions, active);
         let t = self.check_expr(&value, None);
+        self.world.active_extensions = saved_active;
         let t = self.settle_vars(&t);
         let t = self.world.erase_narrowed(&t);
         if t.has_vars() {
@@ -1888,6 +1918,179 @@ impl Checker {
     }
 
     // ----- variables -------------------------------------------------------------
+
+    /// Record a union call's table (`Output::union_calls`), merged with
+    /// those of earlier checks of the same call: kept only while each
+    /// member is a class a test tells apart from the others (not two
+    /// instances of one generic class, not a class and its subclass) and
+    /// every check agrees on each member's method.
+    fn note_union_table(&mut self, id: NodeId, table: Vec<(Type, MethodId)>) {
+        if self.out.union_conflicts.contains(&id) {
+            return;
+        }
+        let mut merged = self.out.union_calls.remove(&id).unwrap_or_default();
+        for (t, m) in table {
+            match merged.iter().find(|(u, _)| *u == t) {
+                Some((_, n)) if *n != m => {
+                    self.out.union_conflicts.insert(id);
+                    return;
+                }
+                Some(_) => {}
+                None => merged.push((t, m)),
+            }
+        }
+        // By the class a test sees: members of one class (two tuples, two
+        // instances of a generic class) with the same method are one
+        // entry, with different methods the test cannot choose; a
+        // subclass is tested before its superclass.
+        let mut by_class: Vec<(ClassId, Type, MethodId)> = Vec::new();
+        for (t, m) in &merged {
+            let Some(c) = self.test_class(t) else {
+                self.out.union_conflicts.insert(id);
+                return;
+            };
+            match by_class.iter().find(|(d, _, _)| *d == c) {
+                Some((_, _, n)) if n != m => {
+                    self.out.union_conflicts.insert(id);
+                    return;
+                }
+                Some(_) => {}
+                None => by_class.push((c, t.clone(), *m)),
+            }
+        }
+        // (A module's member and another whose values may include it: the
+        // order is a guess, the value's class decides which comes first.)
+        self.subclasses_first(&mut by_class, |e| e.0);
+        let merged = by_class.into_iter().map(|(_, t, m)| (t, m)).collect();
+        self.out.union_calls.insert(id, merged);
+    }
+
+    /// Whether the bounds of an extension method's type parameters
+    /// (`extension Array[T: Int]`) hold for the receiver's arguments.
+    fn extension_bounds_hold(&self, id: MethodId, subst: &HashMap<TypeParamId, Type>) -> bool {
+        let Some(ext) = self.world.method(id).extension else {
+            return true;
+        };
+        let ext = &self.world.extensions[ext as usize];
+        ext.type_params.iter().all(|tp| match subst.get(&tp.id) {
+            Some(t) => {
+                let t = self.resolve(t);
+                tp.bounds
+                    .iter()
+                    .all(|b| self.world.is_subtype(&t, &b.subst(subst)))
+            }
+            None => true,
+        })
+    }
+
+    /// The class a run-time class test sees for a value of type `t`.
+    fn test_class(&self, t: &Type) -> Option<ClassId> {
+        let b = &self.world.builtin;
+        match t {
+            Type::Class(c, _) => Some(*c),
+            Type::Tuple(_) => Some(b.array),
+            Type::Proc(..) => Some(b.proc_),
+            Type::ClassObject(..) => Some(b.class_),
+            _ => None,
+        }
+    }
+
+    /// Order entries so that a subclass comes before its superclasses
+    /// (tested in order, the first that matches is the most specific).
+    fn subclasses_first<T>(&self, entries: &mut [T], class: impl Fn(&T) -> ClassId) {
+        entries.sort_by_key(|e| std::cmp::Reverse(self.world.ancestors(class(e), &[]).len()));
+    }
+
+    /// Record what an interpolation calls (`Output::interp_to_s`): for a
+    /// value of class `cid`, an extension's `to_s` or (`None`) the value's
+    /// own; a check that found another for the same class (each check of
+    /// a block) gives it up.
+    fn note_interp_to_s(&mut self, id: NodeId, cid: ClassId, m: Option<MethodId>) {
+        if self.out.interp_conflicts.contains(&id) {
+            return;
+        }
+        let mut table = self.out.interp_to_s.remove(&id).unwrap_or_default();
+        match table.iter().find(|(c, _)| *c == cid) {
+            Some((_, n)) if *n != m => {
+                self.out.interp_conflicts.insert(id);
+                return;
+            }
+            Some(_) => {}
+            None => table.push((cid, m)),
+        }
+        self.subclasses_first(&mut table, |e| e.0);
+        self.out.interp_to_s.insert(id, table);
+    }
+
+    /// A compound assignment's reader, resolved just now (a union's
+    /// members answering differently are called by name).
+    fn note_op_getter(&mut self, id: NodeId) {
+        let found = match (
+            self.out.calls.get(&id),
+            self.out.dynamic_calls.contains(&id),
+        ) {
+            (Some(CallTarget::Method { method }), false) => Some(*method),
+            _ => None,
+        };
+        self.note_op_method(id, false, found);
+        self.out.calls.remove(&id);
+        self.out.dynamic_calls.remove(&id);
+        self.out.union_calls.remove(&id);
+    }
+
+    /// The writer's union record of a compound assignment's node, set
+    /// aside while its reader (on the same node) is checked.
+    fn take_union_record(&mut self, id: NodeId) -> (Option<Vec<(Type, MethodId)>>, bool) {
+        (
+            self.out.union_calls.remove(&id),
+            self.out.union_conflicts.remove(&id),
+        )
+    }
+
+    fn restore_union_record(&mut self, id: NodeId, saved: (Option<Vec<(Type, MethodId)>>, bool)) {
+        self.out.union_calls.remove(&id);
+        self.out.union_conflicts.remove(&id);
+        if let Some(t) = saved.0 {
+            self.out.union_calls.insert(id, t);
+        }
+        if saved.1 {
+            self.out.union_conflicts.insert(id);
+        }
+    }
+
+    /// Record a compound assignment's reader (`operator` false) or
+    /// operator: given up (called by name) when a check finds none or
+    /// another check (of a block, once per type) found another.
+    fn note_op_method(&mut self, id: NodeId, operator: bool, found: Option<MethodId>) {
+        let key = (id, operator);
+        let map = if operator {
+            &mut self.out.op_operators
+        } else {
+            &mut self.out.op_getters
+        };
+        let disagree = self.op_seen.insert(key, found).is_some_and(|f| f != found);
+        if disagree || found.is_none() || self.op_given_up.contains(&key) {
+            map.remove(&id);
+            self.op_given_up.insert(key);
+        } else if let Some(m) = found {
+            map.insert(id, m);
+        }
+    }
+
+    /// The extensions active throughout a file: its top level's `using`s
+    /// and the top-level extensions of its group (`World::group_extensions`).
+    fn file_extensions(&self, file: u32) -> Vec<ExtensionId> {
+        let mut active = self
+            .file_main(file)
+            .map(|fm| self.world.class(fm).usings.clone())
+            .unwrap_or_default();
+        for e in self.world.group_extensions(file) {
+            if !active.contains(&e) {
+                active.push(e);
+            }
+        }
+        active
+    }
 
     fn lookup_var(&self, name: &str) -> Option<(usize, usize)> {
         let n = self.env.frames.len();
@@ -3445,7 +3648,25 @@ impl Checker {
     fn check_str_parts(&mut self, parts: &[StrPart]) {
         for p in parts {
             if let StrPart::Interp(e) = p {
-                self.check_expr(e, None);
+                let t = self.check_expr(e, None);
+                let t = self.resolve(&t);
+                // Each class the value may be of (`Foo?`, a union).
+                for m in t.members() {
+                    let Type::Class(cid, _) = m else { continue };
+                    let to_s = self
+                        .world
+                        .lookup_methods(&m, "to_s")
+                        .into_iter()
+                        .find(|(id, subst)| {
+                            let m = self.world.method(*id);
+                            m.params.is_empty()
+                                && m.block.is_none()
+                                && self.extension_bounds_hold(*id, subst)
+                        })
+                        .map(|(m, _)| m);
+                    let found = to_s.filter(|m| self.world.method(*m).extension.is_some());
+                    self.note_interp_to_s(e.id, cid, found);
+                }
             }
         }
     }
@@ -4664,7 +4885,11 @@ impl Checker {
                     type_args: vec![],
                 };
                 let _ = rt;
-                self.check_call_with_types(expr, &getter, None, true)
+                let saved = self.take_union_record(expr.id);
+                let t = self.check_call_with_types(expr, &getter, None, true);
+                self.note_op_getter(expr.id);
+                self.restore_union_record(expr.id, saved);
+                t
             }
             LValue::Index { recv, args } => {
                 let getter = Call {
@@ -4676,7 +4901,11 @@ impl Checker {
                     has_parens: true,
                     type_args: vec![],
                 };
-                self.check_call_with_types(expr, &getter, None, true)
+                let saved = self.take_union_record(expr.id);
+                let t = self.check_call_with_types(expr, &getter, None, true);
+                self.note_op_getter(expr.id);
+                self.restore_union_record(expr.id, saved);
+                t
             }
             LValue::Const(name) => {
                 self.error(format!("cannot reassign constant `{name}`"), expr.span);
@@ -4707,7 +4936,23 @@ impl Checker {
             _ => {
                 let name = op.as_str().trim_end_matches('=').to_string();
                 let vt = self.check_expr(value, None);
-                self.check_operator_call(expr, &current, &name, &vt, value)
+                self.out.calls.remove(&expr.id);
+                let t = self.check_operator_call(expr, &current, &name, &vt, value);
+                let found = match self.out.calls.get(&expr.id) {
+                    Some(CallTarget::Method { method }) => Some(*method),
+                    _ => None,
+                };
+                self.note_op_method(expr.id, true, found);
+                // A variable's operator in a block checked once per type: by
+                // the type each check saw (the node's table is free, which
+                // an attribute's or an index's writer takes).
+                if let (Some(m), LValue::Local { .. } | LValue::IVar(_)) = (found, target) {
+                    let ct = self.resolve(&current);
+                    if !self.env.blocks.is_empty() && self.test_class(&ct).is_some() {
+                        self.note_union_table(expr.id, vec![(ct, m)]);
+                    }
+                }
+                t
             }
         };
         // Assign back.
@@ -4763,6 +5008,9 @@ impl Checker {
                     self.out
                         .calls
                         .insert(expr.id, CallTarget::Method { method: cands[0].0 });
+                    if !self.env.blocks.is_empty() && self.test_class(&rt).is_some() {
+                        self.note_union_table(expr.id, vec![(rt.clone(), cands[0].0)]);
+                    }
                 }
             }
             LValue::Index { recv, .. } => {
@@ -4778,6 +5026,9 @@ impl Checker {
                     self.out
                         .calls
                         .insert(expr.id, CallTarget::Method { method: cands[0].0 });
+                    if !self.env.blocks.is_empty() && self.test_class(&rt).is_some() {
+                        self.note_union_table(expr.id, vec![(rt.clone(), cands[0].0)]);
+                    }
                 }
             }
             LValue::Const(_) => {}
@@ -5081,6 +5332,18 @@ impl Checker {
         };
 
         let result = self.check_call_on(expr, call, &recv_ty, implicit_self, expected);
+        // In a block, checked again for each type of what it is given: a
+        // call may resolve differently each time (`union_calls`).
+        let rt = self.resolve(&recv_ty);
+        if !self.env.blocks.is_empty() && self.test_class(&rt).is_some() {
+            if let (Some(CallTarget::Method { method }), false) = (
+                self.out.calls.get(&expr.id),
+                self.out.dynamic_calls.contains(&expr.id),
+            ) {
+                let m = *method;
+                self.note_union_table(expr.id, vec![(rt, m)]);
+            }
+        }
         if nil_passthrough {
             let nil = self.world.nil();
             self.join(&result, &nil)
@@ -5382,11 +5645,28 @@ impl Checker {
                 }
                 // The recorded target is the last member's; when the
                 // members resolve to different methods, record one that
-                // is dispatched on the receiver's class instead.
+                // is dispatched on the receiver's class instead, and each
+                // member's own for lowering to call.
                 if let Some(first) = targets.first().copied().flatten() {
-                    if targets.iter().all(|t| t.is_some())
-                        && targets.iter().any(|t| *t != Some(first))
+                    let differ = targets.iter().any(|t| *t != Some(first));
+                    // (In a block, also when they agree: another check of
+                    // it may find another method.)
+                    if targets.iter().all(|t| t.is_some()) && !differ && !self.env.blocks.is_empty()
                     {
+                        let table: Vec<(Type, MethodId)> = members
+                            .iter()
+                            .map(|m| self.resolve(m))
+                            .zip(targets.iter().flatten().copied())
+                            .collect();
+                        self.note_union_table(expr.id, table);
+                    }
+                    if targets.iter().all(|t| t.is_some()) && differ {
+                        let table: Vec<(Type, MethodId)> = members
+                            .iter()
+                            .map(|m| self.resolve(m))
+                            .zip(targets.iter().flatten().copied())
+                            .collect();
+                        self.note_union_table(expr.id, table);
                         match self.common_ancestor_method(&members, name, &targets) {
                             Some(method) => {
                                 self.out

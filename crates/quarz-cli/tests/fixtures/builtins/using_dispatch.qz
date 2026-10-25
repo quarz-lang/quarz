@@ -1,7 +1,7 @@
 # A module's extension applies only where `using` makes it visible, by the
 # receiver's static type: never through dynamic dispatch, and through
 # `&:name` only where the checker resolved it. A top-level extension is
-# active everywhere.
+# active in the files of its program (or cog), statically too.
 abstract class Shape
   abstract def area -> Float
   def name -> String = "shape"
@@ -64,3 +64,17 @@ using Describing do
   kept: Array[Describable] = [5, 6]
   p kept.map { |d| d.describe }
 end
+
+# A top-level extension's `to_s` is called where it is visible: directly,
+# and in an interpolation written there; `puts`, `p` and `inspect` call the
+# class's own.
+class Plain
+  @n: Int
+  def initialize(@n: Int); end
+end
+extension Plain
+  def to_s -> String = "Plain(#{@n})"
+end
+pl = Plain.new(1)
+puts pl.to_s, "#{pl}", [pl].map { |x| "<#{x}>" }.join
+puts pl

@@ -1203,17 +1203,20 @@ impl<'a> FnBuilder<'a> {
                     } else {
                         CallKind::Method(*method)
                     };
-                    self.emit(Inst::Call {
-                        dst,
-                        kind,
-                        recv: Some(v),
-                        args: vec![],
-                        splat: false,
-                        kw: vec![],
-                        kw_splat: None,
-                        block: None,
-                        moved: 0,
-                    });
+                    self.emit_call(
+                        e.id,
+                        Inst::Call {
+                            dst,
+                            kind,
+                            recv: Some(v),
+                            args: vec![],
+                            splat: false,
+                            kw: vec![],
+                            kw_splat: None,
+                            block: None,
+                            moved: 0,
+                        },
+                    );
                     return dst;
                 }
                 self.emit(Inst::Not { dst, src: v });
@@ -1534,7 +1537,7 @@ impl<'a> FnBuilder<'a> {
                     pieces.push(StrPiece::Lit(idx));
                 }
                 StrPart::Interp(x) => {
-                    let r = self.expr(x);
+                    let r = self.interp_piece(x);
                     pieces.push(StrPiece::Val(r));
                 }
             }
@@ -1546,6 +1549,63 @@ impl<'a> FnBuilder<'a> {
             into: Some(builder),
         });
         Some(dst)
+    }
+
+    /// An interpolated piece: its value, or, for a value of a class the
+    /// checker found an extension's `to_s` active for there
+    /// (`Output::interp_to_s`), what that makes of it.
+    fn interp_piece(&mut self, e: &'a Expr) -> Reg {
+        let r = self.expr(e);
+        let Some(mut table) = self.out.interp_to_s.get(&e.id).cloned() else {
+            return r;
+        };
+        // (Classes after the last that has an extension's `to_s` need no
+        // test: the value itself, as for any other.)
+        while table.last().is_some_and(|(_, m)| m.is_none()) {
+            table.pop();
+        }
+        if table.is_empty() {
+            return r;
+        }
+        let dst = self.reg();
+        self.emit(Inst::Move { dst, src: r });
+        let join = self.new_block();
+        for (class, method) in table {
+            let test = self.reg();
+            self.emit(Inst::ClassIsA {
+                dst: test,
+                src: r,
+                class,
+            });
+            let (yes, no) = (self.new_block(), self.new_block());
+            self.term(Term::Branch {
+                cond: test,
+                then: yes,
+                els: no,
+            });
+            self.switch(yes);
+            let Some(method) = method else {
+                self.term(Term::Jump(join));
+                self.switch(no);
+                continue;
+            };
+            self.emit(Inst::Call {
+                dst,
+                kind: CallKind::Method(method),
+                recv: Some(r),
+                args: Vec::new(),
+                splat: false,
+                kw: Vec::new(),
+                kw_splat: None,
+                block: None,
+                moved: 0,
+            });
+            self.term(Term::Jump(join));
+            self.switch(no);
+        }
+        self.term(Term::Jump(join));
+        self.switch(join);
+        dst
     }
 
     fn str_parts(&mut self, parts: &'a [StrPart]) -> Reg {
@@ -1567,7 +1627,7 @@ impl<'a> FnBuilder<'a> {
                     pieces.push(StrPiece::Lit(idx));
                 }
                 StrPart::Interp(e) => {
-                    let r = self.expr(e);
+                    let r = self.interp_piece(e);
                     pieces.push(StrPiece::Val(r));
                 }
             }
@@ -1977,17 +2037,20 @@ impl<'a> FnBuilder<'a> {
                     }
                 };
                 let dst = self.reg();
-                self.emit(Inst::Call {
-                    dst,
-                    kind: kind.clone(),
-                    recv: Some(recv_reg),
-                    args: a.pos,
-                    splat: a.splat,
-                    kw: a.kw,
-                    kw_splat: a.kw_splat,
-                    block: a.block,
-                    moved: 0,
-                });
+                self.emit_call(
+                    e.id,
+                    Inst::Call {
+                        dst,
+                        kind: kind.clone(),
+                        recv: Some(recv_reg),
+                        args: a.pos,
+                        splat: a.splat,
+                        kw: a.kw,
+                        kw_splat: a.kw_splat,
+                        block: a.block,
+                        moved: 0,
+                    },
+                );
                 if let Some(r) = r {
                     self.store_var(r, dst);
                 }
@@ -2017,23 +2080,115 @@ impl<'a> FnBuilder<'a> {
                     self.field_get(obj, class, index)
                 };
                 let dst = self.reg();
-                self.emit(Inst::Call {
-                    dst,
-                    kind: kind.clone(),
-                    recv: Some(recv_reg),
-                    args: a.pos,
-                    splat: a.splat,
-                    kw: a.kw,
-                    kw_splat: a.kw_splat,
-                    block: a.block,
-                    moved: 0,
-                });
+                self.emit_call(
+                    e.id,
+                    Inst::Call {
+                        dst,
+                        kind: kind.clone(),
+                        recv: Some(recv_reg),
+                        args: a.pos,
+                        splat: a.splat,
+                        kw: a.kw,
+                        kw_splat: a.kw_splat,
+                        block: a.block,
+                        moved: 0,
+                    },
+                );
                 let obj = self.self_reg();
                 self.field_set(obj, class, index, dst);
                 dst
             }
             _ => self.nil(),
         }
+    }
+
+    /// Emit a call; one on a union receiver whose members answer with
+    /// different methods (`Output::union_calls`) tests the receiver's type
+    /// for each member and calls its method: an extension's, active where
+    /// the call is, would not be found by name at run time, nor through
+    /// a common ancestor's method.
+    fn emit_call(&mut self, id: u32, mut inst: Inst) {
+        let name = match &inst {
+            Inst::Call {
+                kind: CallKind::Send(n),
+                recv: Some(_),
+                ..
+            } => n.clone(),
+            Inst::Call {
+                kind: CallKind::Method(m),
+                recv: Some(_),
+                ..
+            } => self.world.method(*m).name.clone(),
+            _ => {
+                self.emit(inst);
+                return;
+            }
+        };
+        // Checks of the call (a block's, once per type) that disagree, or
+        // members a class test cannot tell apart: by name, as before.
+        if self.out.union_conflicts.contains(&id) {
+            if let Inst::Call { kind, .. } = &mut inst {
+                *kind = CallKind::Send(name);
+            }
+            self.emit(inst);
+            return;
+        }
+        let Some(table) = self.out.union_calls.get(&id).cloned() else {
+            self.emit(inst);
+            return;
+        };
+        // One method whatever the type: called as the checker resolved it.
+        let mut methods: Vec<MethodId> = table.iter().map(|(_, m)| *m).collect();
+        methods.sort_unstable();
+        methods.dedup();
+        if let [only] = methods[..] {
+            if let Inst::Call { kind, .. } = &mut inst {
+                if table.len() > 1 || !matches!(kind, CallKind::Method(_)) {
+                    *kind = CallKind::Method(only);
+                }
+            }
+            self.emit(inst);
+            return;
+        }
+        let Inst::Call {
+            recv: Some(recv), ..
+        } = &inst
+        else {
+            unreachable!()
+        };
+        let recv = *recv;
+        let join = self.new_block();
+        for (ty, method) in table.iter() {
+            let mut call = inst.clone();
+            if let Inst::Call { kind, .. } = &mut call {
+                *kind = CallKind::Method(*method);
+            }
+            let test = self.reg();
+            self.emit(Inst::IsA {
+                dst: test,
+                src: recv,
+                ty: rt_type(ty),
+            });
+            let (yes, no) = (self.new_block(), self.new_block());
+            self.term(Term::Branch {
+                cond: test,
+                then: yes,
+                els: no,
+            });
+            self.switch(yes);
+            self.emit(call);
+            self.term(Term::Jump(join));
+            self.switch(no);
+        }
+        // A value of a type the checks did not see as a member here (one
+        // check of a block saw another type): by name, as before.
+        let mut call = inst;
+        if let Inst::Call { kind, .. } = &mut call {
+            *kind = CallKind::Send(name);
+        }
+        self.emit(call);
+        self.term(Term::Jump(join));
+        self.switch(join);
     }
 
     /// Whether `call` is `Object#nil?` (no arguments, no block, no `&.`):
@@ -2762,17 +2917,20 @@ impl<'a> FnBuilder<'a> {
             None => CallKind::Send(call.name.clone()),
         };
         let dst = self.reg();
-        self.emit(Inst::Call {
-            dst,
-            kind,
-            recv,
-            args: a.pos,
-            splat: a.splat,
-            kw: a.kw,
-            kw_splat: a.kw_splat,
-            block: a.block,
-            moved: 0,
-        });
+        self.emit_call(
+            e.id,
+            Inst::Call {
+                dst,
+                kind,
+                recv,
+                args: a.pos,
+                splat: a.splat,
+                kw: a.kw,
+                kw_splat: a.kw_splat,
+                block: a.block,
+                moved: 0,
+            },
+        );
         dst
     }
 
@@ -3030,24 +3188,57 @@ impl<'a> FnBuilder<'a> {
                     self.term(Term::Jump(join));
                     self.switch(go);
                     let v = self.expr(value);
-                    self.send(r, &format!("{name}="), vec![v]);
+                    self.send_resolved(e.id, r, &format!("{name}="), vec![v]);
                     self.emit(Inst::Move { dst: res, src: v });
                     self.term(Term::Jump(join));
                     self.switch(join);
                     return res;
                 }
                 let v = self.expr(value);
-                self.send(r, &format!("{name}="), vec![v]);
+                self.send_resolved(e.id, r, &format!("{name}="), vec![v]);
                 v
             }
             LValue::Index { recv, args } => {
                 let r = self.expr(recv);
                 let a = self.args(args);
                 let v = self.expr(value);
-                self.index_set(r, a, v);
+                self.index_set(e.id, r, a, v);
                 v
             }
         }
+    }
+
+    /// The call `id` the checker resolved, by its method; by name when it
+    /// did not, or when a union's members answer differently (see
+    /// `emit_call`).
+    fn resolved_kind(&self, id: u32, name: &str) -> CallKind {
+        match self.out.calls.get(&id) {
+            Some(CallTarget::Method { method }) if !self.out.dynamic_calls.contains(&id) => {
+                CallKind::Method(*method)
+            }
+            _ => CallKind::Send(name.to_string()),
+        }
+    }
+
+    /// A call with positional arguments only, as the checker resolved it.
+    fn send_resolved(&mut self, id: u32, recv: Reg, name: &str, args: Vec<Reg>) -> Reg {
+        let dst = self.reg();
+        let kind = self.resolved_kind(id, name);
+        self.emit_call(
+            id,
+            Inst::Call {
+                dst,
+                kind,
+                recv: Some(recv),
+                args,
+                splat: false,
+                kw: Vec::new(),
+                kw_splat: None,
+                block: None,
+                moved: 0,
+            },
+        );
+        dst
     }
 
     /// A call by name with positional arguments only.
@@ -3067,7 +3258,7 @@ impl<'a> FnBuilder<'a> {
         dst
     }
 
-    fn index_set(&mut self, recv: Reg, a: Args, value: Reg) {
+    fn index_set(&mut self, id: u32, recv: Reg, a: Args, value: Reg) {
         let (args, splat) = if a.splat {
             let dst = self.reg();
             self.emit(Inst::MakeArray {
@@ -3090,9 +3281,34 @@ impl<'a> FnBuilder<'a> {
             (args, false)
         };
         let dst = self.reg();
+        let kind = self.resolved_kind(id, "[]=");
+        self.emit_call(
+            id,
+            Inst::Call {
+                dst,
+                kind,
+                recv: Some(recv),
+                args,
+                splat,
+                kw: Vec::new(),
+                kw_splat: None,
+                block: None,
+                moved: 0,
+            },
+        );
+    }
+
+    /// A compound assignment's read (`f.w` in `f.w += 1`), by the method
+    /// the checker resolved (`Output::op_getters`), else by name.
+    fn op_read(&mut self, id: u32, recv: Reg, name: &str, args: Vec<Reg>, splat: bool) -> Reg {
+        let kind = match self.out.op_getters.get(&id) {
+            Some(m) => CallKind::Method(*m),
+            None => CallKind::Send(name.to_string()),
+        };
+        let dst = self.reg();
         self.emit(Inst::Call {
             dst,
-            kind: CallKind::Send("[]=".to_string()),
+            kind,
             recv: Some(recv),
             args,
             splat,
@@ -3101,6 +3317,7 @@ impl<'a> FnBuilder<'a> {
             block: None,
             moved: 0,
         });
+        dst
     }
 
     fn op_assign(&mut self, e: &'a Expr, target: &'a LValue, op: OpAssign, value: &'a Expr) -> Reg {
@@ -3129,24 +3346,13 @@ impl<'a> FnBuilder<'a> {
             }
             LValue::Attr { recv, name, .. } => {
                 let r = self.expr(recv);
-                let cur = self.send(r, name, Vec::new());
+                let cur = self.op_read(e.id, r, name, Vec::new(), false);
                 (cur, Place::Attr(r, name.clone()))
             }
             LValue::Index { recv, args } => {
                 let r = self.expr(recv);
                 let a = self.args(args);
-                let dst = self.reg();
-                self.emit(Inst::Call {
-                    dst,
-                    kind: CallKind::Send("[]".to_string()),
-                    recv: Some(r),
-                    args: a.pos.clone(),
-                    splat: a.splat,
-                    kw: Vec::new(),
-                    kw_splat: None,
-                    block: None,
-                    moved: 0,
-                });
+                let dst = self.op_read(e.id, r, "[]", a.pos.clone(), a.splat);
                 (dst, Place::Index(r, a.pos, a.splat))
             }
             LValue::Const(_) => return self.nil(),
@@ -3187,12 +3393,34 @@ impl<'a> FnBuilder<'a> {
                 let rhs = self.expr(value);
                 let name = op.as_str().trim_end_matches('=').to_string();
                 // The checker resolved the operator (`x += 1` is `x + 1`);
-                // the method tells the compiler the operand types.
-                let method = match self.out.calls.get(&e.id) {
-                    Some(CallTarget::Method { method }) => Some(*method),
-                    _ => None,
-                };
+                // the method tells the compiler the operand types. (The
+                // node's `calls` entry is the writer for an attribute or an
+                // index.)
+                let method = self.out.op_operators.get(&e.id).copied();
+                // Checks that found different operators (a block's, once
+                // per type) for a variable: by the type of its value.
+                let by_type = method.is_none()
+                    && matches!(place, Place::Local(_) | Place::IVar(_))
+                    && self.out.union_calls.contains_key(&e.id);
                 let v = match FastOp::from_name(&name) {
+                    _ if by_type => {
+                        let dst = self.reg();
+                        self.emit_call(
+                            e.id,
+                            Inst::Call {
+                                dst,
+                                kind: CallKind::Send(name.clone()),
+                                recv: Some(current),
+                                args: vec![rhs],
+                                splat: false,
+                                kw: Vec::new(),
+                                kw_splat: None,
+                                block: None,
+                                moved: 0,
+                            },
+                        );
+                        dst
+                    }
                     Some(fop) => {
                         let dst = self.reg();
                         self.emit(Inst::BinOp {
@@ -3204,7 +3432,24 @@ impl<'a> FnBuilder<'a> {
                         });
                         dst
                     }
-                    None => self.send(current, &name, vec![rhs]),
+                    None => match self.out.op_operators.get(&e.id) {
+                        Some(m) => {
+                            let dst = self.reg();
+                            self.emit(Inst::Call {
+                                dst,
+                                kind: CallKind::Method(*m),
+                                recv: Some(current),
+                                args: vec![rhs],
+                                splat: false,
+                                kw: Vec::new(),
+                                kw_splat: None,
+                                block: None,
+                                moved: 0,
+                            });
+                            dst
+                        }
+                        None => self.send(current, &name, vec![rhs]),
+                    },
                 };
                 self.emit(Inst::Move { dst: res, src: v });
             }
@@ -3222,10 +3467,11 @@ impl<'a> FnBuilder<'a> {
                 self.field_set(obj, class, index, res);
             }
             Place::Attr(recv, name) => {
-                self.send(recv, &format!("{name}="), vec![res]);
+                self.send_resolved(e.id, recv, &format!("{name}="), vec![res]);
             }
             Place::Index(recv, pos, splat) => {
                 self.index_set(
+                    e.id,
                     recv,
                     Args {
                         pos,
@@ -3333,7 +3579,7 @@ impl<'a> FnBuilder<'a> {
             LValue::Index { recv, args } => {
                 let r = self.expr(recv);
                 let a = self.args(args);
-                self.index_set(r, a, v);
+                self.index_set(u32::MAX, r, a, v);
             }
             LValue::Const(_) => {}
         }

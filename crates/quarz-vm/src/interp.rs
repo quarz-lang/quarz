@@ -2099,6 +2099,29 @@ impl Interp {
         found
     }
 
+    /// The extension's method that implements abstract method `abs` for
+    /// class `anc` itself (`RtWorld::ext_impls`): the one an extension that
+    /// makes it conform (`include`) gives, else the one found where the
+    /// class was declared.
+    fn ext_impl(&self, anc: ClassId, abs: MethodId) -> Option<MethodId> {
+        let world = &self.program.world;
+        let m = self.program.method(abs);
+        for ext in &world.extensions {
+            if ext.target == anc && world.extension_dispatches(ext, m.owner) {
+                if let Some(ids) = ext.methods.get(&m.name) {
+                    if let Some(i) = ids.iter().find(|i| !self.program.method(**i).is_abstract) {
+                        return Some(*i);
+                    }
+                }
+            }
+        }
+        world
+            .ext_impls
+            .iter()
+            .find(|(c, a, _)| *c == anc && *a == abs)
+            .map(|(_, _, i)| *i)
+    }
+
     /// A method of `cid` (or of an ancestor before the owner of `mid`)
     /// that overrides `mid`: same name, and the same signature when the
     /// name is overloaded.
@@ -2109,6 +2132,14 @@ impl Interp {
             let anc = *anc;
             if anc == m.owner {
                 return None;
+            }
+            // An abstract method an extension implements for this class
+            // (its conformance), unless the class defines its own.
+            let own = self.program.world.class(anc).methods.contains_key(&m.name);
+            if m.is_abstract && !own {
+                if let Some(i) = self.ext_impl(anc, mid) {
+                    return Some(i);
+                }
             }
             let mut candidates: Vec<MethodId> = Vec::new();
             for ext in &self.program.world.extensions {
@@ -2193,6 +2224,20 @@ impl Interp {
                         break 'outer;
                     }
                     fallback.get_or_insert(*id);
+                }
+            }
+        }
+        // An abstract method (a module's) that an extension implements for
+        // the class: conformance holds wherever the value goes.
+        if let Some(abs) = found.filter(|m| self.program.method(*m).is_abstract) {
+            let owner = self.program.method(abs).owner;
+            for anc in &self.program.world.class(cid).ancestors {
+                if *anc == owner {
+                    break;
+                }
+                if let Some(i) = self.ext_impl(*anc, abs) {
+                    found = Some(i);
+                    break;
                 }
             }
         }

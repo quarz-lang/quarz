@@ -29,7 +29,7 @@ Crystal is the closest relative of Quarz: a statically typed, compiled language 
 | `&.method` shorthand | `xs.map(&.upcase)` | `xs.map(&:upcase)` (Ruby's spelling) |
 | Block parameter types | `&block : Int32 -> Int32` | `&block: (Int) -> Int`; a method that yields declares its block (`&: (Int) -> Nil`) |
 | Reopening classes | Allowed anywhere, for the whole program | Not allowed. Methods are added to existing types with `extension`, active where `using` is in effect |
-| Making an existing type conform to a module | Reopen it and include the module (`struct Int32; include M; ...; end`), everywhere; untyped parameters also accept anything with the right methods (duck typing) | `extension Int; include M; ...; end`: active everywhere when written at the top level, or where `using` brings in the module that declares it; parameters are typed, so a value must conform |
+| Making an existing type conform to a module | Reopen it and include the module (`struct Int32; include M; ...; end`), everywhere; untyped parameters also accept anything with the right methods (duck typing) | `extension Int; include M; ...; end`: active in its program (or cog) when written at the top level, or where `using` brings in the module that declares it; the conformance holds wherever the value goes; parameters are typed, so a value must conform |
 | Type aliases | `alias UserId = Int32` | `type UserId = Int` |
 | Method references | `->obj.method` | `obj.:method` |
 | Blocks with a receiver (DSLs) | `with obj yield`: the block's implicit receiver is `obj`, whatever the block | The receiver is part of the block's type (`Html.() -> Nil`), and the block is run with `obj.instance_exec(&block)` |

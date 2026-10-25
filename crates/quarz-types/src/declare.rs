@@ -503,7 +503,12 @@ impl<'ast> Declarer<'ast> {
                     includes: Vec::new(),
                     methods: HashMap::default(),
                     span: expr.span,
-                    always_active: prelude || namespace.is_none(),
+                    always_active: prelude,
+                    group: (!prelude
+                        && namespace
+                            .is_none_or(|ns| self.world.cogs.iter().any(|c| c.root == Some(ns))))
+                    .then(|| self.world.file_groups.get(&self.file).copied())
+                    .flatten(),
                 });
                 if let Some(ns) = namespace {
                     self.world.class_mut(ns).extensions.push(id);
@@ -931,10 +936,15 @@ impl<'ast> Declarer<'ast> {
         self.resolve_usings();
         for p in &pending {
             self.file = self.pending_file(p);
+            // The top-level extensions of the class's group are active
+            // there (they may implement a module's methods for it).
+            let file = self.world.class(p.id).file;
+            self.world.active_extensions = self.world.group_extensions(file);
             self.check_conformance(p);
             self.check_shareable_promise(p.id);
             self.check_variance(p.id);
             self.check_kept_blocks(p.id);
+            self.world.active_extensions.clear();
         }
         self.check_extensions_kept_blocks();
         self.check_shareable_extensions();
@@ -1283,6 +1293,7 @@ impl<'ast> Declarer<'ast> {
                 .map(|(id, _)| id)
                 .collect();
             let mut missing: Vec<(String, ClassId)> = Vec::new();
+            let mut impls: Vec<(ClassId, MethodId, MethodId)> = Vec::new();
             for anc in &ancestors {
                 for ids in self.world.class(*anc).methods.values() {
                     for mid in ids {
@@ -1290,12 +1301,20 @@ impl<'ast> Declarer<'ast> {
                         if !m.is_abstract {
                             continue;
                         }
-                        if !self.has_implementation(&ancestors, *mid) {
-                            missing.push((m.name.clone(), *anc));
+                        match self.implementation(&ancestors, *mid) {
+                            None => missing.push((m.name.clone(), *anc)),
+                            // An extension's method (active where the class
+                            // is declared) implements it: it does wherever
+                            // the value goes (`World::ext_impls`).
+                            Some(i) if self.world.method(i).extension.is_some() => {
+                                impls.push((p.id, *mid, i));
+                            }
+                            Some(_) => {}
                         }
                     }
                 }
             }
+            self.world.ext_impls.extend(impls);
             missing.sort();
             missing.dedup();
             for (name, owner) in missing {
@@ -1370,12 +1389,14 @@ impl<'ast> Declarer<'ast> {
 
     /// Whether a concrete method implementing `abstract_id` exists on one
     /// of `ancestors` (or an active extension of one of them).
-    fn has_implementation(&self, ancestors: &[ClassId], abstract_id: MethodId) -> bool {
+    /// The method that implements `abstract_id` for a class with these
+    /// ancestors: one of theirs, or an active extension's.
+    fn implementation(&self, ancestors: &[ClassId], abstract_id: MethodId) -> Option<MethodId> {
         let name = &self.world.method(abstract_id).name;
         for anc in ancestors {
             if let Some(ids) = self.world.class(*anc).methods.get(name) {
-                if ids.iter().any(|i| self.implements(*i, abstract_id)) {
-                    return true;
+                if let Some(i) = ids.iter().find(|i| self.implements(**i, abstract_id)) {
+                    return Some(*i);
                 }
             }
             for ext_id in self.world.active_extension_ids() {
@@ -1384,13 +1405,13 @@ impl<'ast> Declarer<'ast> {
                     continue;
                 }
                 if let Some(ids) = ext.methods.get(name) {
-                    if ids.iter().any(|i| self.implements(*i, abstract_id)) {
-                        return true;
+                    if let Some(i) = ids.iter().find(|i| self.implements(**i, abstract_id)) {
+                        return Some(*i);
                     }
                 }
             }
         }
-        false
+        None
     }
 
     /// A concrete method of the same name whose arity covers the abstract

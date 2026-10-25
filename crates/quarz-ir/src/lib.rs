@@ -1401,9 +1401,10 @@ pub struct RtExtension {
     pub target: ClassId,
     #[serde(serialize_with = "sorted")]
     pub methods: HashMap<String, Vec<MethodId>>,
-    /// Active everywhere (declared outside a module): its methods take
-    /// part in dispatch by name. A module's extension applies only where
-    /// `using` makes it visible, which the checker resolves statically.
+    /// Active everywhere (the prelude's): its methods take part in
+    /// dispatch by name. Any other applies only where it is visible (by
+    /// `using`, or a top-level one in its program or cog), which the
+    /// checker resolves statically.
     pub always_active: bool,
     /// The modules the extension makes its target conform to: their
     /// methods dispatch to the extension's wherever the value goes.
@@ -1451,6 +1452,10 @@ pub struct RtWorld {
     pub methods: Vec<RtMethod>,
     pub consts: Vec<RtConst>,
     pub extensions: Vec<RtExtension>,
+    /// Abstract methods an extension's method implements for a class
+    /// (class, abstract method, implementation): its conformance, which
+    /// holds wherever the value goes.
+    pub ext_impls: Vec<(ClassId, MethodId, MethodId)>,
     /// Top-level classes and modules by name.
     #[serde(serialize_with = "sorted")]
     pub top: HashMap<String, ClassId>,

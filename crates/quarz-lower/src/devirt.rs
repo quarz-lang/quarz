@@ -72,6 +72,16 @@ fn resolve(world: &RtWorld, cid: ClassId, mid: MethodId) -> Option<Option<Method
         }) {
             return None;
         }
+        // An extension's method implementing it for this class (its
+        // conformance, `RtWorld::ext_impls`): dispatched at run time.
+        if m.is_abstract
+            && world
+                .ext_impls
+                .iter()
+                .any(|(c, a, _)| *c == anc && *a == mid)
+        {
+            return None;
+        }
         let Some(ids) = world.classes[anc as usize].methods.get(&m.name) else {
             continue;
         };

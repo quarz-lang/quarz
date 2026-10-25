@@ -110,14 +110,10 @@ fn flat_class(world: &World, ty: &Type, stack: &[ClassId]) -> Option<ClassId> {
     // structural over the physical fields: a data type with its own
     // notion of equality keeps its box.
     const OWN: [&str; 5] = ["==", "!=", "hash", "eql?", "equal?"];
+    // Decided where the type is defined: an extension's `==` is resolved
+    // statically where it is visible and takes no part in dispatch (a
+    // `Hash` compares with the type's own), so it changes nothing here.
     if OWN.iter().any(|n| c.methods.contains_key(*n)) {
-        return None;
-    }
-    if world
-        .extensions
-        .iter()
-        .any(|e| e.target == *d && OWN.iter().any(|n| e.methods.contains_key(*n)))
-    {
         return None;
     }
     let mut inner = stack.to_vec();
