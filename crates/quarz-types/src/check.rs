@@ -1763,22 +1763,19 @@ impl Checker {
         self.next_body_void = void;
         let body_ty = self.check_body(&body, if void { None } else { expected.as_ref() });
         self.mark_discarded(body.last(), void);
-        match expected {
-            Some(ret) if !void => {
-                if !body_ty.is_nothing() && !self.coerce(&body_ty, &ret) {
-                    let span = body.last().map(|e| e.span).unwrap_or(info.span);
-                    self.error(
-                        format!(
-                            "method `{}` returns {} but its body has type {}",
-                            info.name,
-                            self.name(&ret),
-                            self.name(&body_ty)
-                        ),
-                        span,
-                    );
-                }
+        if let Some(ret) = expected.filter(|_| !void) {
+            if !body_ty.is_nothing() && !self.coerce(&body_ty, &ret) {
+                let span = body.last().map(|e| e.span).unwrap_or(info.span);
+                self.error(
+                    format!(
+                        "method `{}` returns {} but its body has type {}",
+                        info.name,
+                        self.name(&ret),
+                        self.name(&body_ty)
+                    ),
+                    span,
+                );
             }
-            _ => {}
         }
 
         if self.env.in_initialize {
