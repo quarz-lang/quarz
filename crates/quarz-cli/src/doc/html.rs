@@ -167,6 +167,7 @@ nav { width: 15rem; flex: none; padding: 1rem; border-right: 1px solid var(--rul
 nav ul { list-style: none; padding: 0; margin: 0.5rem 0; }
 nav li { margin: 0.15rem 0; overflow-wrap: anywhere; }
 nav [aria-current] { font-weight: 600; }
+nav summary { margin: 0.75rem 0 0; color: var(--muted); cursor: pointer; }
 main { flex: 1; min-width: 0; padding: 1rem 2rem 4rem; }
 a { color: var(--link); text-decoration: none; }
 a:hover { text-decoration: underline; }
@@ -182,6 +183,7 @@ h1 { overflow-wrap: anywhere; }
 .admonition { padding: 0.5rem 0.8rem; border-radius: 6px; background: var(--note); }
 .admonition.warning, .admonition.deprecated { background: var(--warn); }
 #search { width: 100%; box-sizing: border-box; padding: 0.35rem 0.5rem; border: 1px solid var(--rule); border-radius: 4px; background: var(--bg); color: var(--fg); }
+/* The narrow layout; `layout`'s script folds the list of pages at the same width. */
 @media (max-width: 48rem) { .wrap { display: block; } nav { width: auto; height: auto; position: static; border-right: none; border-bottom: 1px solid var(--rule); } main { padding: 1rem; } }
 "#;
 
@@ -204,7 +206,13 @@ const SEARCH: &str = r#"(function () {
 fn layout(title: &str, api: &Api, current: Option<&str>, body: &str) -> String {
     let mut nav = String::new();
     nav.push_str("<p><a href=\"index.html\"><strong>Index</strong></a></p>\n");
-    nav.push_str("<input id=\"search\" type=\"search\" placeholder=\"Search\" aria-label=\"Search\">\n<ul id=\"results\"></ul>\n<ul>\n");
+    nav.push_str("<input id=\"search\" type=\"search\" placeholder=\"Search\" aria-label=\"Search\">\n<ul id=\"results\"></ul>\n");
+    // The list of pages folds: closed at first on a narrow screen, where
+    // it would stand between the top and the page's text (the script
+    // runs as soon as the list is read, before it is shown), and closed or
+    // opened again when the width crosses the stylesheet's breakpoint for
+    // the narrow layout (48rem, in `STYLE`).
+    nav.push_str("<details id=\"pages\" open>\n<summary>Classes and modules</summary>\n<ul>\n");
     for p in &api.pages {
         let cur = if Some(p.name.as_str()) == current {
             " aria-current=\"page\""
@@ -218,7 +226,8 @@ fn layout(title: &str, api: &Api, current: Option<&str>, body: &str) -> String {
             escape(&p.name)
         );
     }
-    nav.push_str("</ul>\n");
+    nav.push_str("</ul>\n</details>\n");
+    nav.push_str("<script>(function () { var narrow = window.matchMedia(\"(max-width: 48rem)\"), pages = document.getElementById(\"pages\"); pages.open = !narrow.matches; narrow.addEventListener(\"change\", function (e) { pages.open = !e.matches; }); })();</script>\n");
     format!(
         "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>{}</title>\n<link rel=\"stylesheet\" href=\"style.css\">\n</head>\n<body>\n<div class=\"wrap\">\n<nav>\n{nav}</nav>\n<main>\n{body}</main>\n</div>\n<script src=\"search-index.js\"></script>\n<script src=\"search.js\"></script>\n</body>\n</html>\n",
         escape(title)
