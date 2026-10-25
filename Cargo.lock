@@ -506,6 +506,7 @@ dependencies = [
  "bincode",
  "rustc-hash",
  "serde",
+ "smallvec",
 ]
 
 [[package]]

@@ -23,10 +23,14 @@ use crate::sroa::{defs_at, reaching, Holds, Site};
 pub fn propagate_copies(functions: &mut [Function]) {
     for f in functions.iter_mut() {
         // Moves chain (`Move 45 <- 41; Move 46 <- 45`); each round
-        // shortens the chains by one.
+        // shortens the chains by one. A later round looks only at the
+        // copies of registers the previous one changed: for the others,
+        // the writes and reads it judges by are as they were.
+        let mut changed = None;
         for _ in 0..6 {
-            if !propagate_in(f) {
-                break;
+            match propagate_in(f, changed.as_ref()) {
+                Some(regs) => changed = Some(regs),
+                None => break,
             }
         }
     }
@@ -47,7 +51,10 @@ fn consumes(inst: &Inst, r: Reg) -> bool {
     }
 }
 
-fn propagate_in(f: &mut Function) -> bool {
+/// One round, over the copies of registers in `only` (all at first).
+/// The registers whose writes or reads it changed (the copies removed
+/// and their sources), or `None` when it changed nothing.
+fn propagate_in(f: &mut Function, only: Option<&HashSet<Reg>>) -> Option<HashSet<Reg>> {
     let moves: Vec<(Site, Reg, Reg)> = f
         .blocks
         .iter()
@@ -61,9 +68,10 @@ fn propagate_in(f: &mut Function) -> bool {
                     _ => None,
                 })
         })
+        .filter(|(_, dst, src)| only.is_none_or(|o| o.contains(dst) || o.contains(src)))
         .collect();
     if moves.is_empty() {
-        return false;
+        return None;
     }
     let reach = reaching(f);
     let (uses, term_uses) = (&reach.uses, &reach.term_uses);
@@ -149,7 +157,7 @@ fn propagate_in(f: &mut Function) -> bool {
         term_redirect.extend(term_reads.into_iter().map(|b| (b, dst, src)));
     }
     if delete.is_empty() {
-        return false;
+        return None;
     }
     for ((bi, ii), dst, src) in redirect {
         f.blocks[bi].insts[ii].map_uses(&mut |r| if r == dst { src } else { r });
@@ -170,5 +178,6 @@ fn propagate_in(f: &mut Function) -> bool {
             blk.lines.push(line);
         }
     }
-    true
+    removed.extend(sources);
+    Some(removed)
 }

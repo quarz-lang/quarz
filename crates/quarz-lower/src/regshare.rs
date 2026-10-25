@@ -96,7 +96,7 @@ fn share_in(f: &mut Function, methods: &[RtMethod]) {
         }
     };
     let nblocks = f.blocks.len();
-    let ud: Vec<Vec<(Vec<Reg>, Vec<Reg>)>> = f
+    let ud: Vec<Vec<(Regs, Regs)>> = f
         .blocks
         .iter()
         .map(|b| b.insts.iter().map(|i| (i.uses(), i.defs())).collect())

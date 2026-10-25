@@ -801,9 +801,12 @@ pub enum Term {
     Unreachable,
 }
 
+/// The registers an instruction reads or writes: a few, kept inline.
+pub type Regs = smallvec::SmallVec<[Reg; 4]>;
+
 impl Inst {
     /// The registers an instruction may write.
-    pub fn defs(&self) -> Vec<Reg> {
+    pub fn defs(&self) -> Regs {
         match self {
             Inst::LoadConst { dst, .. }
             | Inst::Move { dst, .. }
@@ -852,21 +855,21 @@ impl Inst {
             | Inst::ObjectFields { dst, .. }
             | Inst::HashRest { dst, .. }
             | Inst::CatchException { dst }
-            | Inst::CatchAny { dst } => vec![*dst],
+            | Inst::CatchAny { dst } => smallvec::smallvec![*dst],
             Inst::ClearRegs { from, to } => (*from..*to).collect(),
-            Inst::Release { src } => vec![*src],
+            Inst::Release { src } => smallvec::smallvec![*src],
             Inst::FieldGetByName { dst, found, .. } | Inst::HashGetSym { dst, found, .. } => {
-                vec![*dst, *found]
+                smallvec::smallvec![*dst, *found]
             }
             Inst::OwnedCall { dst, recv, .. } => match recv {
-                VarLoc::Reg(r) => vec![*dst, *r],
-                _ => vec![*dst],
+                VarLoc::Reg(r) => smallvec::smallvec![*dst, *r],
+                _ => smallvec::smallvec![*dst],
             },
             Inst::FrameSet { .. }
             | Inst::FieldSet { .. }
             | Inst::ArrayPush { .. }
             | Inst::ArrayPushWord { .. }
-            | Inst::NoMatch { .. } => vec![],
+            | Inst::NoMatch { .. } => smallvec::smallvec![],
         }
     }
 
@@ -1025,7 +1028,7 @@ impl Inst {
     }
 
     /// The registers an instruction reads.
-    pub fn uses(&self) -> Vec<Reg> {
+    pub fn uses(&self) -> Regs {
         match self {
             Inst::LoadConst { .. }
             | Inst::SelfRef { .. }
@@ -1040,7 +1043,7 @@ impl Inst {
             | Inst::SymbolProc { .. }
             | Inst::CatchException { .. }
             | Inst::CatchAny { .. }
-            | Inst::ClearRegs { .. } => vec![],
+            | Inst::ClearRegs { .. } => smallvec::smallvec![],
             Inst::Move { src, .. }
             | Inst::Take { src, .. }
             | Inst::Release { src }
@@ -1058,9 +1061,11 @@ impl Inst {
             | Inst::ClassIs { src, .. }
             | Inst::IsA { src, .. }
             | Inst::As { src, .. }
-            | Inst::NoMatch { src, .. } => vec![*src],
-            Inst::FieldGet { obj, .. } | Inst::FieldGetByName { obj, .. } => vec![*obj],
-            Inst::FieldSet { obj, src, .. } => vec![*obj, *src],
+            | Inst::NoMatch { src, .. } => smallvec::smallvec![*src],
+            Inst::FieldGet { obj, .. } | Inst::FieldGetByName { obj, .. } => {
+                smallvec::smallvec![*obj]
+            }
+            Inst::FieldSet { obj, src, .. } => smallvec::smallvec![*obj, *src],
             Inst::Call {
                 recv,
                 args,
@@ -1069,7 +1074,7 @@ impl Inst {
                 block,
                 ..
             } => {
-                let mut v: Vec<Reg> = recv.iter().copied().collect();
+                let mut v: Regs = recv.iter().copied().collect();
                 v.extend(args.iter().copied());
                 v.extend(kw.iter().map(|(_, r)| *r));
                 v.extend(kw_splat.iter().copied());
@@ -1077,29 +1082,31 @@ impl Inst {
                 v
             }
             Inst::OwnedCall { recv, args, kw, .. } => {
-                let mut v: Vec<Reg> = match recv {
-                    VarLoc::Reg(r) => vec![*r],
-                    VarLoc::Field { obj, .. } => vec![*obj],
-                    VarLoc::Frame { .. } => vec![],
+                let mut v: Regs = match recv {
+                    VarLoc::Reg(r) => smallvec::smallvec![*r],
+                    VarLoc::Field { obj, .. } => smallvec::smallvec![*obj],
+                    VarLoc::Frame { .. } => smallvec::smallvec![],
                 };
                 v.extend(args.iter().copied());
                 v.extend(kw.iter().map(|(_, r)| *r));
                 v
             }
-            Inst::BinOp { lhs, rhs, .. } => vec![*lhs, *rhs],
-            Inst::CaseEq { pattern, value, .. } => vec![*pattern, *value],
-            Inst::Equal { a, b, .. } => vec![*a, *b],
-            Inst::MethodRef { recv, .. } => vec![*recv],
+            Inst::BinOp { lhs, rhs, .. } => smallvec::smallvec![*lhs, *rhs],
+            Inst::CaseEq { pattern, value, .. } => smallvec::smallvec![*pattern, *value],
+            Inst::Equal { a, b, .. } => smallvec::smallvec![*a, *b],
+            Inst::MethodRef { recv, .. } => smallvec::smallvec![*recv],
             Inst::MakeArray { items, .. } => items.iter().map(|i| i.reg).collect(),
             Inst::MakeHash { items, .. } => items
                 .iter()
-                .flat_map(|i| match i {
-                    HashItem::Pair(k, v) => vec![*k, *v],
-                    HashItem::Splat(r) => vec![*r],
+                .flat_map(|i| -> Regs {
+                    match i {
+                        HashItem::Pair(k, v) => smallvec::smallvec![*k, *v],
+                        HashItem::Splat(r) => smallvec::smallvec![*r],
+                    }
                 })
                 .collect(),
             Inst::MakeRange { lo, hi, .. } => lo.iter().chain(hi.iter()).copied().collect(),
-            Inst::MakeRegexp { source, .. } => vec![*source],
+            Inst::MakeRegexp { source, .. } => smallvec::smallvec![*source],
             Inst::Interpolate { parts, into, .. } => parts
                 .iter()
                 .filter_map(|p| match p {
@@ -1108,16 +1115,18 @@ impl Inst {
                 })
                 .chain(*into)
                 .collect(),
-            Inst::ArrayGet { arr, .. } | Inst::ArraySlice { arr, .. } => vec![*arr],
+            Inst::ArrayGet { arr, .. } | Inst::ArraySlice { arr, .. } => smallvec::smallvec![*arr],
             Inst::ArrayGetReg { arr, index, .. }
             | Inst::ArrayGetWord { arr, index, .. }
-            | Inst::ArrayIndex { arr, index, .. } => vec![*arr, *index],
-            Inst::ArrayWords { arr, .. } => vec![*arr],
-            Inst::ArrayNewWords { capacity, .. } => vec![*capacity],
-            Inst::ArrayPushWord { arr, src, .. } => vec![*arr, *src],
-            Inst::ArraySliceReg { arr, from, to, .. } => vec![*arr, *from, *to],
-            Inst::ArrayPush { arr, src } => vec![*arr, *src],
-            Inst::HashGetSym { hash, .. } | Inst::HashRest { hash, .. } => vec![*hash],
+            | Inst::ArrayIndex { arr, index, .. } => smallvec::smallvec![*arr, *index],
+            Inst::ArrayWords { arr, .. } => smallvec::smallvec![*arr],
+            Inst::ArrayNewWords { capacity, .. } => smallvec::smallvec![*capacity],
+            Inst::ArrayPushWord { arr, src, .. } => smallvec::smallvec![*arr, *src],
+            Inst::ArraySliceReg { arr, from, to, .. } => smallvec::smallvec![*arr, *from, *to],
+            Inst::ArrayPush { arr, src } => smallvec::smallvec![*arr, *src],
+            Inst::HashGetSym { hash, .. } | Inst::HashRest { hash, .. } => {
+                smallvec::smallvec![*hash]
+            }
         }
     }
 }

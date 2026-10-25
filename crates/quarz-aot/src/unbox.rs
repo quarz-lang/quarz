@@ -133,7 +133,7 @@ pub fn num_eq(inst: &Inst, st: &[State], methods: &[RtMethod], builtin: &RtBuilt
 }
 
 /// The registers an instruction may write.
-pub fn defs(inst: &Inst) -> Vec<Reg> {
+pub fn defs(inst: &Inst) -> quarz_ir::Regs {
     inst.defs()
 }
 

@@ -55,7 +55,7 @@ fn mark_in(f: &mut Function) {
             };
             let written = match inst {
                 Inst::ArrayGetReg { .. } | Inst::Release { .. } | Inst::ClearRegs { .. } => {
-                    Vec::new()
+                    Regs::new()
                 }
                 _ => inst.defs(),
             };

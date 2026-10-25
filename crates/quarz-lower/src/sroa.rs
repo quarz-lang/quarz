@@ -39,18 +39,72 @@ pub(crate) struct Reaching {
     /// Blocks entered from an exception: nothing definite is known there.
     handlers: HashSet<usize>,
     /// Each register's writes (`written`), in order.
-    writes: Vec<Vec<Site>>,
+    writes: Lists<Site>,
     /// Where each register is read: by instructions, in order (once per
     /// operand), and by terminators (their blocks).
-    pub(crate) uses: Vec<Vec<Site>>,
-    pub(crate) term_uses: Vec<Vec<usize>>,
+    pub(crate) uses: Lists<Site>,
+    pub(crate) term_uses: Lists<usize>,
+    /// The blocks a walk has seen: those marked with the current stamp.
+    seen: RefCell<(u32, Vec<u32>)>,
     /// Whether a read of a register may see anything (`UNKNOWN`).
     unknown: RefCell<HashMap<Reg, bool>>,
     /// The definitions entering a block, by block and register.
     entry: RefCell<HashMap<(usize, Reg), Sites>>,
 }
 
+/// A list for each register, in one vector: what an instruction-long
+/// function would otherwise allocate per register (`lists`).
+pub(crate) struct Lists<T> {
+    starts: Vec<u32>,
+    items: Vec<T>,
+}
+
+impl<T> std::ops::Index<usize> for Lists<T> {
+    type Output = [T];
+    fn index(&self, r: usize) -> &[T] {
+        &self.items[self.starts[r] as usize..self.starts[r + 1] as usize]
+    }
+}
+
+/// The lists of `n` registers from (register, item) pairs, each list in
+/// the pairs' order.
+fn lists<T: Copy + Default>(n: usize, pairs: &[(Reg, T)]) -> Lists<T> {
+    let mut starts = vec![0u32; n + 1];
+    for (r, _) in pairs {
+        starts[*r as usize + 1] += 1;
+    }
+    for i in 0..n {
+        starts[i + 1] += starts[i];
+    }
+    let mut next = starts.clone();
+    let mut items = vec![T::default(); pairs.len()];
+    for (r, x) in pairs {
+        items[next[*r as usize] as usize] = *x;
+        next[*r as usize] += 1;
+    }
+    Lists { starts, items }
+}
+
 impl Reaching {
+    /// Start a walk: no block seen yet.
+    fn new_walk(&self) {
+        let mut seen = self.seen.borrow_mut();
+        seen.0 = seen.0.wrapping_add(1);
+        if seen.0 == 0 {
+            seen.1.iter_mut().for_each(|x| *x = 0);
+            seen.0 = 1;
+        }
+    }
+
+    /// Mark block `b` seen in this walk: whether it was not already.
+    fn see(&self, b: usize) -> bool {
+        let mut seen = self.seen.borrow_mut();
+        let stamp = seen.0;
+        let first = seen.1[b] != stamp;
+        seen.1[b] = stamp;
+        first
+    }
+
     /// The writes of `r` in block `bi` before instruction `ii`.
     fn writes_before(&self, r: Reg, bi: usize, ii: usize) -> &[Site] {
         let w = &self.writes[r as usize];
@@ -86,7 +140,7 @@ impl Reaching {
         let uses = &self.uses[r as usize];
         let mut reads = Vec::new();
         let mut terms = Vec::new();
-        let mut seen: HashSet<usize> = HashSet::default();
+        self.new_walk();
         // Breadth first: the reads are mostly near, and once all are found
         // the walk stops.
         let mut queue = std::collections::VecDeque::from([(site.0, site.1 + 1)]);
@@ -111,7 +165,7 @@ impl Reaching {
             }
             for s in successors(&f.blocks[b]) {
                 let s = s as usize;
-                if !self.handlers.contains(&s) && seen.insert(s) {
+                if !self.handlers.contains(&s) && self.see(s) {
                     queue.push_back((s, 0));
                 }
             }
@@ -199,7 +253,7 @@ pub(crate) const UNKNOWN: Site = (usize::MAX, usize::MAX);
 /// defined registers, and the array an `ArrayPush` or `ArrayPushWord`
 /// appends to (changed in place, so a copy taken before no longer equals
 /// it).
-pub(crate) fn written(inst: &Inst) -> Vec<Reg> {
+pub(crate) fn written(inst: &Inst) -> Regs {
     let mut v = inst.defs();
     if let Inst::ArrayPush { arr, .. } | Inst::ArrayPushWord { arr, .. } = inst {
         v.push(*arr);
@@ -209,28 +263,28 @@ pub(crate) fn written(inst: &Inst) -> Vec<Reg> {
 
 pub(crate) fn reaching(f: &Function) -> Reaching {
     let mut preds: Vec<Vec<usize>> = vec![Vec::new(); f.blocks.len()];
-    let mut writes: Vec<Vec<Site>> = vec![Vec::new(); f.nregs as usize];
-    let mut uses: Vec<Vec<Site>> = vec![Vec::new(); f.nregs as usize];
-    let mut term_uses: Vec<Vec<usize>> = vec![Vec::new(); f.nregs as usize];
+    let mut writes: Vec<(Reg, Site)> = Vec::new();
+    let mut uses: Vec<(Reg, Site)> = Vec::new();
+    let mut term_uses: Vec<(Reg, usize)> = Vec::new();
     for (bi, blk) in f.blocks.iter().enumerate() {
         for s in successors(blk) {
             preds[s as usize].push(bi);
         }
         if let Some(r) = blk.term.uses() {
-            term_uses[r as usize].push(bi);
+            term_uses.push((r, bi));
         }
         for (ii, inst) in blk.insts.iter().enumerate() {
             for r in inst.uses() {
-                uses[r as usize].push((bi, ii));
+                uses.push((r, (bi, ii)));
             }
-            for r in written(inst) {
-                let w = &mut writes[r as usize];
-                if w.last() != Some(&(bi, ii)) {
-                    w.push((bi, ii));
-                }
-            }
+            let mut w = written(inst);
+            // (Once per instruction.)
+            w.sort_unstable();
+            w.dedup();
+            writes.extend(w.into_iter().map(|r| (r, (bi, ii))));
         }
     }
+    let n = f.nregs as usize;
     let handlers = f
         .blocks
         .iter()
@@ -239,9 +293,10 @@ pub(crate) fn reaching(f: &Function) -> Reaching {
     Reaching {
         preds,
         handlers,
-        writes,
-        uses,
-        term_uses,
+        writes: lists(n, &writes),
+        uses: lists(n, &uses),
+        term_uses: lists(n, &term_uses),
+        seen: RefCell::new((0, vec![0; f.blocks.len()])),
         unknown: RefCell::default(),
         entry: RefCell::default(),
     }

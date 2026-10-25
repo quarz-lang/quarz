@@ -9,7 +9,8 @@
 //! `Activation::args_owned` in the VM).
 
 use crate::{
-    Block, BlockId, Constant, FastOp, FuncKind, Function, Inst, Reg, RtMethod, RtParamKind, Term,
+    Block, BlockId, Constant, FastOp, FuncKind, Function, Inst, Reg, Regs, RtMethod, RtParamKind,
+    Term,
 };
 
 /// The blocks control can go to from `b` (its handler included: it can
@@ -35,7 +36,7 @@ pub fn liveness(f: &Function) -> Vec<Vec<Vec<bool>>> {
     let nregs = f.nregs as usize;
     let nblocks = f.blocks.len();
     let mut live_in: Vec<Vec<bool>> = vec![vec![false; nregs]; nblocks];
-    let uses_defs: Vec<Vec<(Vec<Reg>, Vec<Reg>)>> = f
+    let uses_defs: Vec<Vec<(Regs, Regs)>> = f
         .blocks
         .iter()
         .map(|blk| blk.insts.iter().map(|i| (i.uses(), i.defs())).collect())
@@ -203,7 +204,7 @@ pub fn mark_moves(f: &mut Function, heap: &[bool]) {
     let mut up = vec![vec![0u64; words]; nblocks];
     let mut kill = vec![vec![0u64; words]; nblocks];
     // Each instruction's reads and writes, kept for the second walk.
-    let ud: Vec<Vec<(Vec<Reg>, Vec<Reg>)>> = f
+    let ud: Vec<Vec<(Regs, Regs)>> = f
         .blocks
         .iter()
         .map(|blk| blk.insts.iter().map(|i| (i.uses(), i.defs())).collect())
@@ -224,44 +225,49 @@ pub fn mark_moves(f: &mut Function, heap: &[bool]) {
     }
     let succ: Vec<Vec<BlockId>> = f.blocks.iter().map(successors).collect();
     let mut live_in = vec![vec![0u64; words]; nblocks];
-    let out_of = |bi: usize, live_in: &[Vec<u64>]| {
-        let mut out = vec![0u64; words];
+    let out_of = |bi: usize, live_in: &[Vec<u64>], out: &mut Vec<u64>| {
+        out.clear();
+        out.resize(words, 0);
         for s in &succ[bi] {
             for (o, v) in out.iter_mut().zip(&live_in[*s as usize]) {
                 *o |= v;
             }
         }
-        out
     };
+    let mut out = Vec::with_capacity(words);
+    let mut new = vec![0u64; words];
     let mut changed = true;
     while changed {
         changed = false;
         for bi in (0..nblocks).rev() {
-            let out = out_of(bi, &live_in);
+            out_of(bi, &live_in, &mut out);
             let blk = &f.blocks[bi];
-            let mut new: Vec<u64> = (0..words)
-                .map(|w| up[bi][w] | (out[w] & !kill[bi][w]))
-                .collect();
+            for (w, n) in new.iter_mut().enumerate() {
+                *n = up[bi][w] | (out[w] & !kill[bi][w]);
+            }
             if let (Some(h), false) = (blk.handler, blk.insts.is_empty()) {
                 for (n, v) in new.iter_mut().zip(&live_in[h.block as usize]) {
                     *n |= v;
                 }
             }
             if new != live_in[bi] {
-                live_in[bi] = new;
+                live_in[bi].copy_from_slice(&new);
                 changed = true;
             }
         }
     }
     // Each block backwards from its end: `live` is what is read after
     // the instruction at hand.
+    let mut live = Vec::with_capacity(words);
+    let mut dead = Vec::new();
     for (bi, (blk, ud)) in f.blocks.iter_mut().zip(&ud).enumerate() {
-        let mut live = out_of(bi, &live_in);
+        out_of(bi, &live_in, &mut live);
         // Copies and constants nothing reads, into registers that never
         // hold a counted value (overwriting one releases it, which must
         // stay): dropped below.
-        let mut dead = vec![false; blk.insts.len()];
-        let handler = blk.handler.map(|h| live_in[h.block as usize].clone());
+        dead.clear();
+        dead.resize(blk.insts.len(), false);
+        let handler = blk.handler.map(|h| &live_in[h.block as usize]);
         if let Some(r) = blk.term.uses() {
             set(&mut live, r);
         }
@@ -313,7 +319,7 @@ pub fn mark_moves(f: &mut Function, heap: &[bool]) {
             for r in uses {
                 set(&mut live, *r);
             }
-            if let Some(h) = &handler {
+            if let Some(h) = handler {
                 for (l, v) in live.iter_mut().zip(h) {
                     *l |= v;
                 }
