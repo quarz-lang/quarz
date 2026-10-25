@@ -7359,6 +7359,57 @@ impl Checker {
         )
     }
 
+    /// Whether `&:name` can call `method`: with no argument and no block,
+    /// and with the bounds of its extension's parameters holding under
+    /// `subst`, with the error a call would report.
+    fn symbol_callable(
+        &mut self,
+        method: MethodId,
+        subst: &HashMap<TypeParamId, Type>,
+        name: &str,
+    ) -> Result<(), String> {
+        let m = self.world.method(method);
+        let needs_argument = m.params.iter().any(|p| {
+            matches!(p.kind, ParamKind::Positional | ParamKind::KeywordOnly) && p.default.is_none()
+        });
+        if needs_argument || (m.block.is_some() && !m.block_optional) {
+            return Err(format!(
+                "`{name}` needs {} (`&:{name}` calls it with none)",
+                if needs_argument {
+                    "an argument"
+                } else {
+                    "a block"
+                }
+            ));
+        }
+        let Some(ext) = m.extension else {
+            return Ok(());
+        };
+        let ext = self.world.extensions[ext as usize].clone();
+        for tp in &ext.type_params {
+            let Some(t) = subst.get(&tp.id).cloned() else {
+                continue;
+            };
+            let rt = if tp.bounds.is_empty() {
+                self.infer.resolve(&t)
+            } else {
+                self.settle_vars(&t)
+            };
+            for b in &tp.bounds {
+                let b = b.subst(subst);
+                if !self.coerce(&rt, &b) {
+                    return Err(format!(
+                        "`{name}` requires {} to be {} (found {}) (in `&:{name}`)",
+                        tp.name,
+                        self.name(&b),
+                        self.name(&rt)
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Try to apply a method to the call's arguments. Returns the return type
     /// (with the substitution applied) or a reason for failure.
     #[allow(clippy::too_many_arguments)]
@@ -7566,7 +7617,33 @@ impl Checker {
                         }
                         let recv = self.infer.resolve(&params[0]);
                         let cands = self.world.lookup_methods(&recv, name);
-                        let Some((mid, msubst)) = cands.first().cloned() else {
+                        // The first callable with no argument or block whose
+                        // extension's bounds the receiver satisfies, as a
+                        // call chooses (`sum` of an `Enumerable[T: Int]` or
+                        // `[T: Float]`, not the one taking a block).
+                        let mut bound_error = None;
+                        let mut chosen = None;
+                        for (m, ms) in &cands {
+                            // A rejected candidate leaves no binding behind.
+                            let saved = self.infer.save();
+                            match self.symbol_callable(*m, ms, name) {
+                                Ok(()) => {
+                                    chosen = Some((*m, ms.clone()));
+                                    break;
+                                }
+                                Err(msg) => {
+                                    self.infer.restore(saved);
+                                    bound_error.get_or_insert(msg);
+                                }
+                            }
+                        }
+                        if let (None, Some(msg)) = (&chosen, bound_error) {
+                            if report {
+                                self.error(msg.clone(), e.span);
+                            }
+                            return Err(msg);
+                        }
+                        let Some((mid, msubst)) = chosen else {
                             let msg = format!(
                                 "undefined method `{name}` for {} (in `&:{name}`)",
                                 self.name(&recv)

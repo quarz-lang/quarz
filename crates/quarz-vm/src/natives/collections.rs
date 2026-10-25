@@ -897,26 +897,21 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         Ok(Value::Bool(i.range_covers(range(i, r)?, a.arg(0))?))
     });
     native!(m, "Range#size", |i, r, _| {
+        // Declared for an `Int` range only (`extension Range[T: Int]`):
+        // computed, not collected.
         let rg = range(i, r)?;
-        // Counted, not collected.
         if let (Value::Int(lo), Value::Int(hi)) = (&rg.lo, &rg.hi) {
             let end = if rg.exclusive {
                 *hi as i128
             } else {
                 *hi as i128 + 1
             };
-            return Ok(Value::Int(
-                (end - *lo as i128).clamp(0, i64::MAX as i128) as i64
-            ));
+            let n = (end - *lo as i128).max(0);
+            return i64::try_from(n)
+                .map(Value::Int)
+                .map_err(|_| i.err_overflow());
         }
-        if let Some(mut steps) = string_steps(rg) {
-            let mut n = 0i64;
-            while steps.next().is_some() {
-                n += 1;
-            }
-            return Ok(Value::Int(n));
-        }
-        Ok(Value::Int(range_to_vec(i, rg)?.len() as i64))
+        Err(i.err_type("cannot count an endless or beginless range"))
     });
     native!(m, "Range#step", |i, r, a| {
         if a.block.is_none() {
