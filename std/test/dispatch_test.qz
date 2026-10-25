@@ -1,0 +1,102 @@
+require "test"
+
+enum DispatchTestShape
+  variant Dot
+  variant Line(len: Int)
+
+  def scale(factor: Int) -> String = "int #{factor}"
+  def scale(factor: String) -> String = "str #{factor}"
+end
+
+class DispatchTestBase
+  def f(x: Int) -> String = "base int"
+  def f(x: String) -> String = "base str"
+  def g(x: Int) -> String = "base g"
+end
+
+class DispatchTestSub < DispatchTestBase
+  def f(x: String) -> String = "sub str"
+  def g(x: Int) -> String = "sub g"
+end
+
+class BlockParameterTest < Test::Case
+  def twice(&block: (Int) -> Int) -> Int = block.call(1) + block.(2) + block[3] + yield(4)
+  def forward(&block: (Int) -> Int) -> Int = twice(&block)
+  def anon(&: (Int) -> Int) -> Int = yield(2)
+  def forward2(&: (Int) -> Int) -> Int = anon(&)
+  def pick(&block: (Int) -> Int) -> (Int) -> Int = block
+
+  def test_named_block_called_every_way
+    assert_equal(100, twice { |x| x * 10 })
+  end
+
+  def test_forward_named_block
+    assert_equal(14, forward { |x| x + 1 })
+  end
+
+  def test_forward_anonymous_block
+    assert_equal(4, forward2 { |x| x + 2 })
+  end
+
+  def test_return_block_as_proc
+    assert_equal(4, pick { |x| x - 1 }.call(5))
+  end
+
+  def test_anonymous_block
+    assert_equal(6, anon { |x| x * 3 })
+  end
+end
+
+class OverloadDispatchTest < Test::Case
+  def calls(b: DispatchTestBase) -> Array[String] = [b.f(1), b.f("s"), b.g(1)]
+
+  def test_enum_overloads
+    assert_equal("int 2", DispatchTestShape::Dot.scale(2))
+    assert_equal("str x", DispatchTestShape::Line.new(len: 1).scale("x"))
+  end
+
+  def test_subclass_overrides_one_overload
+    assert_equal(["base int", "sub str", "sub g"], calls(DispatchTestSub.new))
+  end
+
+  def test_base_overloads
+    assert_equal(["base int", "base str", "base g"], calls(DispatchTestBase.new))
+  end
+end
+
+class BacktraceTest < Test::Case
+  # The line of `def inner`, below.
+  def inner_line -> Int = __LINE__ + 1
+  def inner(n: Int) -> Int
+    raise ArgumentError, "n=#{n}" if n > 1
+    inner(n + 1)
+  end
+
+  def test_message_and_frames
+    call_line = 0
+    message = ""
+    frames: Array[String] = []
+    begin
+      call_line = __LINE__ + 1
+      inner(0)
+    rescue ArgumentError => e
+      message = e.message
+      frames = e.backtrace.first(4)
+    end
+    assert_equal("n=2", message)
+    def_line = inner_line
+    # The file as given to `quarz test`, whatever the current directory.
+    assert_equal(["#{__FILE__}:#{def_line + 1}:in BacktraceTest#inner",
+                  "#{__FILE__}:#{def_line + 2}:in BacktraceTest#inner",
+                  "#{__FILE__}:#{def_line + 2}:in BacktraceTest#inner",
+                  "#{__FILE__}:#{call_line}:in BacktraceTest#test_message_and_frames"], frames)
+    # Lines count from 1: `def inner` is line 70 of this file.
+    assert_equal(70, def_line)
+  end
+
+  def test_line_constant
+    base = __LINE__
+    assert_equal(base + 1, __LINE__)
+    [1].each { |x| assert_equal(base + 3, __LINE__ + x) }
+  end
+end

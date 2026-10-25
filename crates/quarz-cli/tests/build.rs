@@ -147,7 +147,6 @@ fn examples_compile_and_match_the_vm() {
         example("wordcount"),
         files.iter().map(|f| f.display().to_string()).collect(),
     ));
-    cases.push((fixture("json.qz"), Vec::new()));
     all_same_as_vm(&cases);
 }
 

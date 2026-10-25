@@ -1,0 +1,156 @@
+# Classes: inheritance, accessors, operators, generics, abstract
+# classes, class methods, private methods, modules and recursion.
+require "test"
+
+class ClsAnimal
+  @name: String
+  attr_reader :name
+  def initialize(@name: String); end
+  def speak -> String = "..."
+  def to_s -> String = "#{self.class.name}(#{name}): #{speak}"
+end
+
+class ClsDog < ClsAnimal
+  def speak -> String = "Woof"
+end
+
+class ClsPuppy < ClsDog
+  def speak -> String = super + "!"
+end
+
+class ClsCounter
+  var @n: Int = 0
+  attr_accessor :n
+  def bump -> ClsCounter
+    @n += 1
+    self
+  end
+end
+
+class ClsV
+  @x: Int
+  @y: Int
+  attr_reader :x, :y
+  def initialize(@x: Int, @y: Int); end
+  def +(o: ClsV) -> ClsV = ClsV.new(x + o.x, y + o.y)
+  def ==(o: Object) -> Bool
+    case o
+    in ClsV then x == o.x && y == o.y
+    else false
+    end
+  end
+  def -@ -> ClsV = ClsV.new(-x, -y)
+  def [](i: Int) -> Int = i == 0 ? x : y
+  def to_s -> String = "(#{x}, #{y})"
+end
+
+class ClsStack[T]
+  @items: Array[T]
+  def initialize(items: Array[T] = [])
+    @items = items
+  end
+  def push(x: T) -> ClsStack[T] = ClsStack[T].new(@items.push(x))
+  def peek -> T? = @items.last
+  def size -> Int = @items.size
+end
+
+abstract class ClsShape
+  abstract def area -> Float
+  def describe -> String = "#{self.class.name} #{area}"
+end
+
+class ClsSq < ClsShape
+  @s: Float
+  def initialize(@s: Float); end
+  def area -> Float = @s * @s
+end
+
+class ClsA
+  def self.create(n: Int) -> ClsA = new(n)
+  @n: Int
+  def initialize(@n: Int); end
+  def n -> Int = @n
+  private def secret -> Int = 42
+  def reveal -> Int = secret
+end
+
+module ClsGreeter
+  abstract def name -> String
+  def greet -> String = "Hi, #{name}"
+end
+
+class ClsP
+  include ClsGreeter
+  def name -> String = "Bob"
+end
+
+class ClsNode
+  @val: Int
+  @next: ClsNode?
+  attr_reader :val, :next
+  def initialize(@val: Int, @next: ClsNode? = nil); end
+  def sum -> Int
+    n = self.next
+    n ? val + n.sum : val
+  end
+end
+
+class InheritanceTest < Test::Case
+  def test_to_s_and_super
+    assert_equal("ClsAnimal(a): ...", ClsAnimal.new("a").to_s)
+    assert_equal("ClsDog(d): Woof", ClsDog.new("d").to_s)
+    assert_equal("ClsPuppy(p): Woof!", ClsPuppy.new("p").to_s)
+  end
+
+  def test_dispatch_through_base_type
+    animals: Array[ClsAnimal] = [ClsDog.new("x"), ClsPuppy.new("y")]
+    spoken: Array[String] = []
+    animals.each { |a| spoken = spoken.push(a.speak) }
+    assert_equal(["Woof", "Woof!"], spoken)
+  end
+
+  def test_abstract_class
+    assert_equal("ClsSq 9.0", ClsSq.new(3.0).describe)
+  end
+end
+
+class MembersTest < Test::Case
+  def test_accessor_and_chaining
+    c = ClsCounter.new
+    c.bump.bump
+    c.n += 10
+    assert_equal(12, c.n)
+  end
+
+  def test_operators
+    a = ClsV.new(1, 2)
+    assert_equal("(2, 4)", (a + a).to_s)
+    assert_equal("(-1, -2)", (-a).to_s)
+    assert_equal(2, a[1])
+    assert_true(a == ClsV.new(1, 2))
+    assert_false(a == ClsV.new(0, 0))
+    assert_false(a != ClsV.new(1, 2))
+  end
+
+  def test_generic_class
+    s = ClsStack[Int].new.push(1).push(2)
+    assert_equal(2, s.size)
+    assert_equal("2", s.peek.inspect)
+    assert_equal("nil", ClsStack[String].new.peek.inspect)
+  end
+
+  def test_class_method_and_private
+    assert_equal(5, ClsA.create(5).n)
+    assert_equal(42, ClsA.new(1).reveal)
+  end
+
+  def welcome(g: ClsGreeter) -> String = g.greet
+
+  def test_module_as_type
+    assert_equal("Hi, Bob", welcome(ClsP.new))
+  end
+
+  def test_recursive_optional_field
+    assert_equal(6, ClsNode.new(1, ClsNode.new(2, ClsNode.new(3))).sum)
+  end
+end

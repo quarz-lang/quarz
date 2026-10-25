@@ -1,0 +1,94 @@
+# Pattern matching: `case`/`in` with types, guards, alternatives,
+# arrays, hashes, pins, ranges, `=>` and `in` as expressions.
+require "test"
+
+class PatternTest < Test::Case
+  def f(v: Object) -> String
+    case v
+    in Int => n if n > 100 then "big #{n}"
+    in Int | Float => n then "num #{n}"
+    in String => s then "str #{s}"
+    in [x, *rest] then "arr #{x} + #{rest.size}"
+    in {name: String => name, age:} then "#{name} #{age}"
+    in nil then "nil"
+    else "other"
+    end
+  end
+
+  def object(v: Object) -> Object = v
+
+  def test_kinds_of_patterns
+    assert_equal("num 5", f(5))
+    assert_equal("big 500", f(500))
+    assert_equal("num 1.5", f(1.5))
+    assert_equal("str s", f("s"))
+    assert_equal("arr 1 + 2", f([1, 2, 3]))
+    assert_equal("A 3", f({name: "A", age: 3}))
+    assert_equal("nil", f(nil))
+    assert_equal("other", f(:sym))
+  end
+
+  def test_pin
+    expected = 3
+    r = case 3
+        in ^expected then "pinned"
+        else flunk("no match")
+        end
+    assert_equal("pinned", r)
+  end
+
+  def test_nested_and_find_patterns
+    sum = case [1, [2, 3]]
+          in [Int => a, [Int => b, Int => c]] then a + b + c
+          else flunk("no match")
+          end
+    assert_equal(6, sum)
+    post = case [1, 2, 3, 4, 5]
+           in [*, 3, *post] then post
+           else flunk("no match")
+           end
+    assert_equal("[4, 5]", post.inspect)
+  end
+
+  def test_rightward_assignment_and_in
+    config = {host: "h", port: 80}
+    config => {host:, port:}
+    assert_equal("h", host.to_s)
+    assert_equal("80", port.to_s)
+    has_host = false
+    if config in {host: String}
+      has_host = true
+    end
+    assert_true(has_host)
+    assert_true(5 in Int)
+    assert_raise(NoMatchingPatternError) { object(5) => String; nil }
+  end
+
+  def test_array_types_and_hash_rest
+    s = case [1, "a"]
+        in [Int => n, String => s] then "#{n}#{s}"
+        else flunk("no match")
+        end
+    assert_equal("1a", s)
+    case {x: 1, y: 2, z: 3}
+    in {x:, **rest}
+      assert_equal(1, x)
+      assert_equal("{y: 2, z: 3}", rest.inspect)
+    else flunk("no match")
+    end
+  end
+
+  def test_ranges_and_alternatives
+    r = case 7
+        in 1..5 then "low"
+        in 6.. then "high"
+        else flunk("no match")
+        end
+    assert_equal("high", r)
+    ab = case "b"
+         in "a" | "b" then "ab"
+         else flunk("no match")
+         end
+    assert_equal("ab", ab)
+  end
+end

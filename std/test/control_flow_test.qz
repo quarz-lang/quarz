@@ -1,0 +1,143 @@
+# Loops, conditionals, case, non-local exits and multiple assignment.
+
+class ControlFlowTest < Test::Case
+  def test_while_with_next_and_break
+    seen: Array[Int] = []
+    i = 0
+    while i < 5
+      i += 1
+      next if i == 2
+      break if i == 4
+      seen = seen.push(i)
+    end
+    assert_equal([1, 3], seen)
+    assert_equal(4, i)
+  end
+
+  def test_loop_break_value
+    r = loop do
+      break 42
+    end
+    assert_equal(42, r)
+  end
+
+  def test_until
+    i = 10
+    until i <= 7
+      i -= 1
+    end
+    assert_equal(7, i)
+  end
+
+  def test_begin_end_while_runs_once
+    i = 0
+    begin
+      i += 1
+    end while i < 0
+    assert_equal(1, i)
+  end
+
+  def test_if_elsif_else_value
+    x = if no then 1 elsif nothing then 2 else 3 end
+    assert_equal(3, x)
+  end
+
+  # Conditions the checker does not see as constants.
+  def no -> Bool = [false][0]
+  def nothing -> Object? = [nil][0]
+
+  def test_ternary_and_modifiers
+    assert_equal("y", true ? "y" : "n")
+    out: Array[Int] = []
+    out = out.push(1) if true
+    out = out.push(2) unless true
+    out = out.push(3) unless false
+    assert_equal([1, 3], out)
+  end
+
+  def size_name(n: Int) -> String
+    case n
+    when 1, 2 then "small"
+    when 3..5 then "medium"
+    when Int then "big"
+    end
+  end
+
+  def test_case_when_values_ranges_and_classes
+    assert_equal("small", size_name(1))
+    assert_equal("medium", size_name(4))
+    assert_equal("big", size_name(9))
+  end
+
+  def test_case_when_union_type
+    v: Int | String = 5
+    r = case v
+        when String then "s"
+        when Int then "i"
+        end
+    assert_equal("i", r)
+  end
+
+  def test_break_value_from_each
+    assert_equal("20", [1, 2, 3].each { |x| break x * 10 if x == 2 }.inspect)
+  end
+
+  def test_next_value_in_map
+    r = [1, 2, 3].map { |x| next 0 if x == 2; x }
+    assert_equal("[1, 0, 3]", r.inspect)
+  end
+
+  def find_first(xs: Array[Int]) -> Int?
+    xs.each { |x| return x if x > 1 }
+    nil
+  end
+
+  def test_return_from_block
+    assert_equal(2, find_first([1, 2, 3]))
+    assert_nil(find_first([0]))
+  end
+
+  def outer -> Int
+    [1, 2].each do |x|
+      [3, 4].each do |y|
+        return x * y if y == 4
+      end
+    end
+    0
+  end
+
+  def test_return_from_nested_blocks
+    assert_equal(4, outer)
+  end
+
+  def test_multiple_assignment_and_splat
+    a = 1
+    b = 2
+    a, b = b, a
+    assert_equal(2, a)
+    assert_equal(1, b)
+    x, *ys = [1, 2, 3]
+    assert_equal(1, x)
+    assert_equal("[2, 3]", ys.inspect)
+    *init, last = [1, 2, 3]
+    assert_equal("[1, 2]", init.inspect)
+    assert_equal(3, last)
+  end
+
+  def pair -> [Int, String] = [1, "one"]
+
+  def test_destructure_tuple_result
+    n, s = pair
+    assert_equal(2, n + 1)
+    assert_equal("ONE", s.upcase)
+  end
+
+  def test_ranges_step_downto
+    b = String::Builder.new
+    (1..3).each { |i| b << i.to_s << "\n" }
+    (1...3).each { |i| b << i.to_s << "\n" }
+    1.step(10, 4) { |i| b << i.to_s << "\n" }
+    3.downto(1) { |i| b << i.to_s }
+    assert_equal("1\n2\n3\n1\n2\n1\n5\n9\n321", b.to_s)
+  end
+end

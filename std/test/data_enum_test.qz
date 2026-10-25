@@ -1,0 +1,183 @@
+# Data classes, enums, Result, class-level modules (`extend`) and `for`
+# comprehensions.
+require "test"
+
+data DeP = (x: Int, y: Int = 0)
+
+data DePt(x: Int, y: Int)
+  def norm -> Int = x * x + y * y
+end
+
+enum DeColor
+  variant Red
+  variant Green
+  variant Rgb(r: Int, g: Int, b: Int)
+  def to_s -> String
+    case self
+    in Red then "red"
+    in Green then "green"
+    in Rgb(r:, g:, b:) then "rgb(#{r},#{g},#{b})"
+    end
+  end
+end
+
+enum DeHue = Red | Green | Blue
+enum DeSuit = Hearts |
+  Spades
+enum DePair[T] = Two(a: T, b: T) | Empty
+enum DeShape
+  variant Circle(radius: Float)
+  variant Point
+  def area -> Float
+    case self
+    in Circle(radius:) then 3.0 * radius * radius
+    in Point then 0.0
+    end
+  end
+end
+
+module DeNamed
+  abstract def label -> String
+  def greeting -> String = "I am #{label}"
+end
+
+module DeCounting
+  abstract def count -> Int
+  def twice -> Int = count * 2
+end
+
+class DeThing
+  extend DeNamed
+  extend DeCounting
+  def self.label -> String = "Thing"
+  def self.count -> Int = 21
+end
+
+class DeSub < DeThing
+  def self.label -> String = "Sub"
+end
+
+enum DeTree
+  variant Leaf
+  variant Node(left: DeTree, value: Int, right: DeTree)
+  def sum -> Int
+    case self
+    in Leaf then 0
+    in Node(left:, value:, right:) then left.sum + value + right.sum
+    end
+  end
+end
+
+class DataTest < Test::Case
+  def test_defaults_with_and_equality
+    p = DeP.new(1)
+    q = p.with(y: 5)
+    assert_equal("DeP(x: 1, y: 0)", p.to_s)
+    assert_equal("DeP(x: 1, y: 5)", q.inspect)
+    assert_true(p == DeP.new(1, 0))
+    assert_false(p == q)
+    assert_equal("{x: 1, y: 0}", p.to_h.inspect)
+    assert_equal(2, DeP.new(x: 2, y: 3).x)
+  end
+
+  def test_methods_and_hashing
+    h = { DePt.new(1, 2) => "a" }
+    assert_equal("a", h[DePt.new(1, 2)])
+    assert_equal(25, DePt.new(3, 4).norm)
+    assert_equal(1, [DePt.new(1, 1), DePt.new(1, 1)].uniq.size)
+  end
+end
+
+class EnumTest < Test::Case
+  def test_variants_with_to_s
+    assert_equal("red", DeColor::Red.to_s)
+    assert_equal("rgb(1,2,3)", DeColor::Rgb.new(1, 2, 3).to_s)
+    assert_true(DeColor::Red == DeColor::Red)
+    assert_false(DeColor::Red == DeColor::Green)
+    assert_true(DeColor::Rgb.new(1, 2, 3) == DeColor::Rgb.new(1, 2, 3))
+    assert_equal("DeColor::Rgb(r: 1, g: 2, b: 3)", DeColor::Rgb.new(1, 2, 3).inspect)
+  end
+
+  def test_short_forms
+    assert_equal("DeHue::Red", DeHue::Red.inspect)
+    assert_equal("DeSuit::Spades", DeSuit::Spades.inspect)
+    assert_equal("DePair::Two(a: 1, b: 2)", DePair::Two.new(1, 2).inspect)
+    assert_equal("12.0", DeShape::Circle.new(2.0).area.inspect)
+    assert_equal("0.0", DeShape::Point.area.inspect)
+  end
+
+  def hue_label(c: DeHue) -> String
+    case c
+    in DeHue::Red then "r"
+    else "gb"
+    end
+  end
+
+  def test_case_on_variant
+    assert_equal("gb", hue_label(DeHue::Green))
+    assert_equal("r", hue_label(DeHue::Red))
+  end
+
+  def test_recursive_enum
+    t = DeTree::Node.new(DeTree::Node.new(DeTree::Leaf, 1, DeTree::Leaf), 2, DeTree::Leaf)
+    assert_equal(3, t.sum)
+  end
+end
+
+class ResultTest < Test::Case
+  def test_ok
+    r: Result[Int, String] = Result::Ok.new(2)
+    assert_true(r.ok?)
+    assert_equal(2, r.unwrap)
+    assert_equal(20, r.map { |x| x * 10 }.unwrap)
+    assert_equal(2, r.unwrap_or(0))
+  end
+
+  def test_err
+    e: Result[Int, String] = Result::Err.new("no")
+    assert_true(e.err?)
+    assert_equal(9, e.unwrap_or(9))
+    assert_true(e.map { |x| x + 1 }.err?)
+    ex = assert_raise(RuntimeError) { e.unwrap; nil }
+    assert_equal("unwrap called on an Err: no", ex.message)
+  end
+end
+
+class ExtendTest < Test::Case
+  def test_class_methods_from_modules
+    assert_equal("I am Thing", DeThing.greeting)
+    assert_equal(42, DeThing.twice)
+    assert_equal("I am Sub", DeSub.greeting)
+    assert_equal(42, DeSub.twice)
+  end
+end
+
+class ForTest < Test::Case
+  def pairs(n: Int, v: Int) -> Array[[Int, Int]]
+    for i in 0...n,
+        j in 0...n when i + j == v do
+      [i, j]
+    end
+  end
+
+  def find(id: Int) -> Result[String, String] = id > 0 ? Result::Ok[String, String].new("u#{id}") : Result::Err[String, String].new("bad")
+
+  def test_nested_with_guard
+    assert_equal("[[1, 5], [2, 4], [3, 3], [4, 2], [5, 1]]", pairs(6, 6).inspect)
+    assert_equal("[20, 40]", (for x in [1, 2, 3, 4] when x.even? do x * 10 end).inspect)
+  end
+
+  def test_hash_and_dependent
+    assert_equal("[\"a=1\", \"b=2\"]", (for k, v in { a: 1, b: 2 } do "#{k}=#{v}" end).inspect)
+    assert_equal("[101, 102, 103]", (for xs in [[1, 2], [3]], x in xs do x + 100 end).inspect)
+  end
+
+  def test_over_results
+    assert_equal("Result::Ok(value: [\"u1\", 2])", (for u in find(1), n in Result::Ok[Int, String].new(u.size) do [u, n] end).inspect)
+    assert_equal("Result::Err(error: \"bad\")", (for u in find(0), n in Result::Ok[Int, String].new(u.size) do [u, n] end).inspect)
+  end
+
+  def test_as_expression
+    assert_equal(3, (for s in ["a", "bb"] do s.size end).sum)
+  end
+end

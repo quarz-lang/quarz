@@ -1,0 +1,92 @@
+# Extensions, type tests and casts, class names, recursion, value
+# semantics of collections, then/tap, __method__, inspect and Duration.
+require "test"
+
+module MiscShout
+  extension String
+    def shout -> String = upcase + "!"
+  end
+  extension Int
+    def double -> Int = self * 2
+  end
+end
+
+# `__method__` outside any method.
+MISC_TOP_METHOD = __method__.inspect
+
+class ExtensionTest < Test::Case
+  def test_using_in_a_method
+    using MiscShout
+    assert_equal("HI!", "hi".shout)
+    assert_equal(8, 4.double)
+  end
+end
+
+class TypeTest < Test::Case
+  # An Object the checker does not narrow.
+  def object(v: Object) -> Object = v
+
+  def test_is_a_as_and_respond_to
+    x: Object = 5
+    assert_true(x.is_a?(Int))
+    assert_false(x.is_a?(String))
+    assert_equal(6, x.as(Int) + 1)
+    assert_equal("nil", x.as?(String).inspect)
+    assert_true(5.respond_to?(:even?))
+    assert_false(5.respond_to?(:nope))
+    assert_raise(TypeError) { object(x).as(String); nil }
+  end
+
+  def test_nil_bool_and_class_names
+    assert_equal("\"\"", nil.to_s.inspect)
+    assert_equal("nil", nil.inspect)
+    assert_false(true & false)
+    assert_equal("Int", 1.class.name)
+    assert_equal("String", "s".class.name)
+    assert_equal("Array", [1].class.name)
+    assert_equal("Nil", nil.class.name)
+    assert_equal("Float", 1.5.class.name)
+    assert_equal("Symbol", :s.class.name)
+  end
+end
+
+class MiscTest < Test::Case
+  def fib(n: Int) -> Int = n < 2 ? n : fib(n - 1) + fib(n - 2)
+  def depth(n: Int) -> Int = n == 0 ? 0 : 1 + depth(n - 1)
+
+  def test_recursion
+    assert_equal(6765, fib(20))
+    assert_equal(2000, depth(2000))
+  end
+
+  def test_arrays_are_values
+    a = [1, 2]
+    b = a
+    a = a.push(3)
+    assert_equal([1, 2, 3], a)
+    assert_equal([1, 2], b)
+  end
+
+  def m -> String = __method__.to_s
+
+  def test_then_tap_and_method_name
+    tapped: Array[String] = []
+    x = 5
+    y = x.then { |v| v + 1 }.tap { |v| tapped = tapped.push("tapped #{v}") }
+    assert_equal(["tapped 6"], tapped)
+    assert_equal(6, y)
+    assert_equal("nil", MISC_TOP_METHOD)
+    assert_equal("m", m)
+  end
+
+  def test_nested_inspect
+    assert_equal("[1, [2, [3, nil]], \"s\", :sym, {k: [1]}, 1.5, 2..3, Set[1]]",
+                 [1, [2, [3, nil]], "s", :sym, {k: [1]}, 1.5, 2..3, Set[1]].inspect)
+  end
+
+  def test_durations
+    assert_equal("1s", 1.second.to_s)
+    assert_equal("500ms", 500.ms.to_s)
+    assert_equal(2000, (1.5.seconds + 500.ms).to_ms)
+  end
+end
