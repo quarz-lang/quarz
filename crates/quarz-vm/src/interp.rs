@@ -2619,27 +2619,14 @@ impl Interp {
     // ----- regexps and comparisons -------------------------------------------------------
 
     pub fn make_regexp(&self, source: &str, flags: &str) -> EvalResult {
-        let mut pattern = String::new();
-        let mut inline = String::new();
-        if flags.contains('i') {
-            inline.push('i');
-        }
-        if flags.contains('m') {
-            inline.push('s');
-        }
-        if flags.contains('x') {
-            inline.push('x');
-        }
-        if !inline.is_empty() {
-            pattern.push_str(&format!("(?{inline})"));
-        }
-        // Ruby's `\A`/`\z` are the same; `\h` is a hex digit.
-        pattern.push_str(&source.replace("\\h", "[0-9a-fA-F]"));
-        match regex::Regex::new(&pattern) {
+        let built = build_regex(source, flags, true);
+        match built {
             Ok(regex) => Ok(Value::Regexp(Rc::new(RegexpVal {
                 regex,
                 source: source.to_string(),
                 flags: flags.to_string(),
+                single_line: Default::default(),
+                anchored: Default::default(),
             }))),
             Err(e) => Err(self.raise(
                 self.program.exc.argument_error,
@@ -2653,7 +2640,7 @@ impl Interp {
         match pattern {
             Value::Class(cid) => Ok(self.program.world.class_is_a(self.class_of(v), *cid)),
             Value::Range(r) => self.range_covers(r, v),
-            Value::Regexp(re) => Ok(v.as_str().is_some_and(|s| re.regex.is_match(s))),
+            Value::Regexp(re) => Ok(v.as_str().is_some_and(|s| re.is_match(s))),
             Value::Proc(_) => Ok(self.call_block(pattern, smallvec![v.clone()])?.is_truthy()),
             _ => self.values_equal(pattern, v),
         }
@@ -2784,7 +2771,7 @@ impl Interp {
                     {
                         format!(":{name}")
                     } else {
-                        format!(":{}", inspect_str(&name))
+                        format!(":{}", inspect_quoted(&name, true))
                     }
                 } else {
                     name.to_string()
@@ -3123,6 +3110,12 @@ pub fn format_duration(ns: i64) -> String {
 }
 
 pub fn inspect_str(s: &str) -> String {
+    inspect_quoted(s, false)
+}
+
+/// A string as `inspect` quotes it: other control characters as Ruby
+/// shows them, `\u0001` in a String and `\x01` in a Symbol.
+pub(crate) fn inspect_quoted(s: &str, symbol: bool) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');
     for c in s.chars() {
@@ -3133,8 +3126,15 @@ pub fn inspect_str(s: &str) -> String {
             '\t' => out.push_str("\\t"),
             '\r' => out.push_str("\\r"),
             '\x1b' => out.push_str("\\e"),
+            '\x07' => out.push_str("\\a"),
+            '\x08' => out.push_str("\\b"),
+            '\x0b' => out.push_str("\\v"),
+            '\x0c' => out.push_str("\\f"),
             '#' => out.push('#'),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\x{:02X}", c as u32)),
+            c if symbol && ((c as u32) < 0x20 || c == '\x7f') => {
+                out.push_str(&format!("\\x{:02X}", c as u32))
+            }
+            c if c.is_control() => out.push_str(&format!("\\u{:04X}", c as u32)),
             c => out.push(c),
         }
     }

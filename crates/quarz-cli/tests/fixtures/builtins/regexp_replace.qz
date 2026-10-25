@@ -33,3 +33,35 @@ end
 # Every match with its groups.
 ms = "k=v, a=b".matches(/(?<k>\w)=(\w)/)
 p ms.map { |m| [m.to_s, m["k"], m[2], m.begin(0)] }, "abc".matches(/x/), "abc".matches(/b*/).map(&:to_s)
+# begin/end: nil for a group that took no part.
+m = "ab".match(/(a)(x)?/)
+if m
+  p m.begin(1), m.end(1), m.begin(2)
+  begin
+    m.begin(3)
+  rescue => e
+    p e.message
+  end
+end
+# ^ and $ match at each line, \A and \z at the text's ends; m lets . match a newline.
+p "x\ny".scan(/^./), "x\ny".scan(/.$/), "x\ny".gsub(/^/, "> "), "x\ny".scan(/\A./), "x\ny" =~ /x.y/, "x\ny" =~ /x.y/m
+# As in Ruby, ^ does not match after a newline that ends the text.
+p "a\nb\n".gsub(/^/, "> "), "a\n\n".scan(/^$/).size, "a\n" =~ /^$/, "a\n".gsub(/$/, "!"), "a\n".gsub(/\z/, "!")
+# split as Ruby splits: no empty field before an empty match where a field
+# starts, a separator's groups after the field, limits.
+p "abc".split(//), "abc".split(/b*/), "a\nb\n".split(/^/), "a-b,c".split(/(-)|(,)/), "a,b,,".split(/,/, -1), "a,b,,".split(/,/, 2), "a\n".split(/^/, -1)
+# rindex and rpartition find the last position a match starts at.
+p "aaa".rindex(/aa/), "a\nb\n".rindex(/^/), "aaa".rpartition(/aa/), "a\n".rpartition(/^/)
+# Groups of an empty match at the end; Ruby's inline m.
+p "a\n".matches(/(^)|(\z)/).map(&:captures), "a\nb" =~ /a(?m:.)b/, "a\nb" =~ /a(?-m:.)b/
+# rindex/rpartition try each position from the right; past the end, the end.
+p ("a" * 1000).rindex(/a+/), "".rindex(/\A/, 1), "abc".rindex(/b/, 10)
+# With a named group, plain groups do not capture; POSIX classes are Unicode;
+# an extended-mode comment is a comment.
+p "ab,b".split(/(?<n>a)(b)?/), "a,".gsub(/(?<n>.)(?<m>,)/, "<\\0|\\1>"), "日本 語x1".scan(/[[:alpha:]]+/), "ab1 x" =~ /b # [ comment
+  \h/x
+p "<a>b".match(/[(?<]a>(b)/).to_a, "「a」!$+".scan(/[[:punct:]]/), "a b#" =~ /a[ ]b[#]/x, "g1".scan(/\H/)
+# Extended mode is scoped as Ruby scopes it; \H in a class; [[:]].
+p "a#f" =~ /(?x:a)#\h/, "a#f" =~ /(?x)a(?-x)#\h/, "a#(b)c".match(/(?x:a)#\((b)\)(?<n>c)/).to_a, "g" =~ /[\H]/, "x:]".match(/[[:]]+/).to_s
+p "\a\b\e\f\v\x01\x7f"
+p :"a\x01b", "\u0085", "aé" =~ Regexp.new("a\\é")

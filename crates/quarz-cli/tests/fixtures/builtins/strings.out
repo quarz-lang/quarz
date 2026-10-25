@@ -101,10 +101,10 @@ error: unclosed group
 error: unknown regexp option: z
 ["first", "last"]
 {"first" => "John", "last" => "Smith"}
-4
-["John Smith 42", "John", "Smith", "42"]
-["John Smith 42", "42", nil]
-#<MatchData "John Smith 42" first:"John" last:"Smith" 3:"42">
+3
+["John Smith 42", "John", "Smith"]
+["John Smith 42", nil, nil]
+#<MatchData "John Smith 42" first:"John" last:"Smith">
 #<MatchData "a" 1:"a" 2:nil>
 ["a", "a", nil]
 1

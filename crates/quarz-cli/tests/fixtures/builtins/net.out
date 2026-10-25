@@ -14,7 +14,7 @@ timed out
 nil
 true
 b"\x00\x01"
-"\x02tail"
+"\u0002tail"
 nil
 true
 true

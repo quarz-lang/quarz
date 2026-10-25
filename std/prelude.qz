@@ -665,8 +665,8 @@ class MatchData
   native def size -> Int
   native def to_s -> String
   native def inspect -> String
-  native def begin(index: Int) -> Int
-  native def end(index: Int) -> Int
+  native def begin(index: Int) -> Int?
+  native def end(index: Int) -> Int?
 end
 
 module Enumerable[out T]

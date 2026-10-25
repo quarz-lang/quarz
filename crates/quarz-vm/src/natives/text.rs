@@ -11,8 +11,8 @@ use smallvec::smallvec;
 
 use super::numeric::enumerator;
 use super::string::{
-    char_offset, each_match, group_names, match_value, md, re, s, sb, slice_range, string_sub,
-    substitute,
+    char_offset, each_match, group_names, match_value, md, re, regex_split, s, sb, slice_range,
+    string_sub, substitute,
 };
 use super::{block, int, string};
 
@@ -174,7 +174,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         let text = s(i, r)?;
         for p in &a.pos {
             let hit = match p {
-                Value::Regexp(rx) => rx.regex.find(text).is_some_and(|m| m.start() == 0),
+                Value::Regexp(rx) => rx.find(text).is_some_and(|m| m.start() == 0),
                 other => text.starts_with(string(i, other, "prefix")?),
             };
             if hit {
@@ -242,7 +242,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     native!(m, "String#[]", |i, r, a| match (a.arg(0), a.pos.len()) {
         (Value::Regexp(rx), 1) => {
             let text = s(i, r)?;
-            Ok(match rx.regex.find(text) {
+            Ok(match rx.find(text) {
                 Some(m) => Value::str(m.as_str()),
                 None => Value::Nil,
             })
@@ -500,12 +500,9 @@ fn string_partition(interp: &Interp, recv: &Value, args: Args, from_right: bool)
     let found: Option<(usize, usize)> = match args.arg(0) {
         Value::Regexp(rx) => {
             if from_right {
-                rx.regex
-                    .find_iter(text)
-                    .last()
-                    .map(|m| (m.start(), m.end()))
+                rx.last_match_before(text, text.len())
             } else {
-                rx.regex.find(text).map(|m| (m.start(), m.end()))
+                rx.find(text).map(|m| (m.start(), m.end()))
             }
         }
         other => {
@@ -539,6 +536,8 @@ fn string_find(interp: &Interp, recv: &Value, args: Args, from_right: bool) -> E
         Some(v) => {
             let st = int(interp, v, "start")?;
             let st = if st < 0 { n + st } else { st };
+            // Past the end, `rindex` searches from the end (as in Ruby).
+            let st = if from_right { st.min(n) } else { st };
             if st < 0 || st > n {
                 return Ok(Value::Nil);
             }
@@ -562,14 +561,10 @@ fn string_find(interp: &Interp, recv: &Value, args: Args, from_right: bool) -> E
         Value::Regexp(rx) => {
             if from_right {
                 let limit = byte_at(start);
-                rx.regex
-                    .find_iter(text)
-                    .map(|m| m.start())
-                    .take_while(|b| *b <= limit)
-                    .last()
+                rx.last_match_before(text, limit).map(|(st, _)| st)
             } else {
                 let from = byte_at(start);
-                rx.regex.find_at(text, from).map(|m| m.start())
+                rx.find_at(text, from).map(|m| m.start())
             }
         }
         other => {
@@ -601,8 +596,7 @@ fn string_split_limit(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let mut parts: Vec<&str> = match (pat, pat.as_str()) {
         (_, Some(sep)) if limit > 0 => text.splitn(limit as usize, sep).collect(),
         (_, Some(sep)) => text.split(sep).collect(),
-        (Value::Regexp(rx), _) if limit > 0 => rx.regex.splitn(text, limit as usize).collect(),
-        (Value::Regexp(rx), _) => rx.regex.split(text).collect(),
+        (Value::Regexp(_), _) => regex_split(interp, text, pat, limit)?,
         (other, _) => {
             return Err(interp.err_type(&format!(
                 "split takes a String or Regexp, got {}",

@@ -1562,9 +1562,325 @@ pub struct RangeVal {
 
 #[derive(Debug)]
 pub struct RegexpVal {
+    /// Built with `^`/`$` matching at each line, as in Ruby: search
+    /// through the methods below, which also keep Ruby's `^` from
+    /// matching after a newline that ends the text.
     pub regex: regex::Regex,
     pub source: String,
     pub flags: String,
+    /// The same pattern with `^` at the text's start only (`$` at its
+    /// end is the same): built when a match at the end needs checking.
+    pub single_line: std::sync::OnceLock<Option<regex::Regex>>,
+    /// The same pattern for anchored searches: built at the first
+    /// `rindex` or `rpartition`.
+    pub anchored: std::sync::OnceLock<Option<regex_automata::meta::Regex>>,
+}
+
+/// A Ruby pattern and flags as the regex crate's: `\h` is a hex digit
+/// (`\A`/`\z` are the same), `i`/`x` are the same, and Ruby's `m`, in the
+/// flags or inline (`(?m)`, `(?m:...)`), makes `.` match a newline (the
+/// regex crate's `s`). `^` and `$` match at each line (`multi_line`) as
+/// in Ruby.
+pub fn build_regex(
+    source: &str,
+    flags: &str,
+    multi_line: bool,
+) -> Result<regex::Regex, regex::Error> {
+    regex::RegexBuilder::new(&translate_regex(source, flags))
+        .multi_line(multi_line)
+        .case_insensitive(flags.contains('i'))
+        .dot_matches_new_line(flags.contains('m'))
+        .ignore_whitespace(flags.contains('x'))
+        .build()
+}
+
+/// The same pattern for searches anchored at a position (`rindex`).
+fn build_anchored(source: &str, flags: &str) -> Option<regex_automata::meta::Regex> {
+    regex_automata::meta::Builder::new()
+        .syntax(
+            regex_automata::util::syntax::Config::new()
+                .multi_line(true)
+                .case_insensitive(flags.contains('i'))
+                .dot_matches_new_line(flags.contains('m'))
+                .ignore_whitespace(flags.contains('x')),
+        )
+        .build(&translate_regex(source, flags))
+        .ok()
+}
+
+/// A Ruby pattern in the regex crate's syntax: `\h` is a hex digit, an
+/// inline `m` (`(?m)`, `(?m:...)`) is `s`, and with a named group the
+/// plain groups do not capture (`(...)` is `(?:...)`), as in Ruby. A
+/// comment of extended mode (`x`) is copied as it is.
+fn translate_regex(source: &str, flags: &str) -> String {
+    let (pattern, named) = translate_pass(source, flags, false);
+    if named {
+        translate_pass(source, flags, true).0
+    } else {
+        pattern
+    }
+}
+
+/// One pass of `translate_regex`, plain groups not capturing when
+/// `named`: the pattern, and whether it has a named group.
+fn translate_pass(source: &str, flags: &str, named: bool) -> (String, bool) {
+    let mut has_named = false;
+    // Extended mode (`x`), as the regex crate scopes it: set by the flags
+    // or `(?x)`, for a group by `(?x:`, cleared by `-x`; restored at the
+    // end of each group.
+    let mut extended = flags.contains('x');
+    let mut groups: Vec<bool> = Vec::new();
+    let mut pattern = String::with_capacity(source.len());
+    let mut chars = source.chars().peekable();
+    let mut class = 0usize;
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => match chars.next() {
+                Some('h') if class == 0 => pattern.push_str("[0-9a-fA-F]"),
+                Some('h') => pattern.push_str("0-9a-fA-F"),
+                Some('H') => pattern.push_str("[^0-9a-fA-F]"),
+                // Ruby takes an escaped character beyond ASCII as itself;
+                // the regex crate rejects the escape.
+                Some(d) if !d.is_ascii() => pattern.push_str(&format!("\\x{{{:x}}}", d as u32)),
+                Some(d) => {
+                    pattern.push('\\');
+                    pattern.push(d);
+                }
+                None => pattern.push('\\'),
+            },
+            // In extended mode the regex crate skips any whitespace, and
+            // `#` comments in a class too; Ruby only skips space, tab, CR,
+            // LF and FF outside a class.
+            '#' if extended && class > 0 => pattern.push_str("\\#"),
+            c if extended
+                && c.is_whitespace()
+                && (class > 0 || !matches!(c, ' ' | '\t' | '\n' | '\r' | '\x0c')) =>
+            {
+                pattern.push_str(&format!("\\x{{{:x}}}", c as u32));
+            }
+            '#' if extended && class == 0 => {
+                pattern.push(c);
+                for d in chars.by_ref() {
+                    pattern.push(d);
+                    if d == '\n' {
+                        break;
+                    }
+                }
+            }
+            // A POSIX class is Unicode in Ruby, ASCII in the regex crate.
+            '[' if class > 0 && chars.peek() == Some(&':') => {
+                let rest: String = chars.clone().collect();
+                let posix = rest[1..].find(":]").map(|end| end + 1).and_then(|end| {
+                    let name = &rest[1..end];
+                    let (negated, name) = match name.strip_prefix('^') {
+                        Some(n) => (true, n),
+                        None => (false, name),
+                    };
+                    let class = match name {
+                        "alpha" => r"\p{Alphabetic}",
+                        "digit" => r"\p{Nd}",
+                        "alnum" => r"\p{Alphabetic}\p{Nd}",
+                        "upper" => r"\p{Uppercase}",
+                        "lower" => r"\p{Lowercase}",
+                        "space" => r"\s",
+                        "word" => r"\w",
+                        // Ruby's: Unicode punctuation and the ASCII symbols.
+                        "punct" => r"\p{P}\$+<=>\^`|~",
+                        _ => return None,
+                    };
+                    Some((end + 2, negated, class))
+                });
+                match posix {
+                    Some((len, false, class)) => {
+                        pattern.push_str(class);
+                        for _ in 0..rest[..len].chars().count() {
+                            chars.next();
+                        }
+                    }
+                    Some((len, true, class)) => {
+                        // `[[:^alpha:]]`: the negation as a nested class.
+                        pattern.push_str("[^");
+                        pattern.push_str(class);
+                        pattern.push(']');
+                        for _ in 0..rest[..len].chars().count() {
+                            chars.next();
+                        }
+                    }
+                    None => {
+                        class += 1;
+                        pattern.push(c);
+                    }
+                }
+            }
+            '[' => {
+                class += 1;
+                pattern.push(c);
+            }
+            ']' if class > 0 => {
+                class -= 1;
+                pattern.push(c);
+            }
+            ')' if class == 0 => {
+                extended = groups.pop().unwrap_or(extended);
+                pattern.push(c);
+            }
+            '(' if class == 0 && chars.peek() == Some(&'?') => {
+                pattern.push_str("(?");
+                chars.next();
+                let mut ahead = chars.clone();
+                if (ahead.next() == Some('<') && !matches!(ahead.next(), Some('=' | '!')))
+                    || chars.peek() == Some(&'P')
+                {
+                    has_named = true;
+                }
+                // Inline flags: Ruby's `m` is the regex crate's `s`.
+                let mut inline = String::new();
+                while let Some(f) = chars.next_if(|f| f.is_ascii_alphabetic() || *f == '-') {
+                    inline.push(f);
+                }
+                let flagged = matches!(chars.peek(), Some(':' | ')'));
+                if flagged {
+                    inline = inline.replace('m', "s");
+                }
+                pattern.push_str(&inline);
+                // `(?flags)` sets them for the rest of the enclosing group;
+                // any other `(?` opens a group.
+                if chars.peek() == Some(&')') && flagged {
+                    pattern.push(')');
+                    chars.next();
+                } else {
+                    groups.push(extended);
+                }
+                if flagged {
+                    let (on, off) = inline.split_once('-').unwrap_or((&inline, ""));
+                    extended = (extended || on.contains('x')) && !off.contains('x');
+                }
+            }
+            '(' if class == 0 => {
+                groups.push(extended);
+                pattern.push_str(if named { "(?:" } else { "(" });
+            }
+            _ => pattern.push(c),
+        }
+    }
+    (pattern, has_named)
+}
+
+impl RegexpVal {
+    /// Whether a match from `st` to `en` stands: the regex crate's `^`
+    /// matches after a newline that ends the text, Ruby's does not, so an
+    /// empty match there stands only if the pattern matches there with
+    /// `^` at the text's start only. (A match that is not empty and ends
+    /// with such a `^`, as `/\n^/` on "a\n", stands: telling would need a
+    /// lookahead the regex crate lacks.)
+    fn stands(&self, text: &str, st: usize, en: usize) -> bool {
+        if st != text.len() || en != st || !text.ends_with('\n') {
+            return true;
+        }
+        self.single_line
+            .get_or_init(|| build_regex(&self.source, &self.flags, false).ok())
+            .as_ref()
+            .is_none_or(|r| r.is_match_at(text, st))
+    }
+
+    pub fn find_at<'t>(&self, text: &'t str, pos: usize) -> Option<regex::Match<'t>> {
+        let m = self.regex.find_at(text, pos)?;
+        self.stands(text, m.start(), m.end()).then_some(m)
+    }
+
+    pub fn find<'t>(&self, text: &'t str) -> Option<regex::Match<'t>> {
+        self.find_at(text, 0)
+    }
+
+    pub fn is_match(&self, text: &str) -> bool {
+        if text.ends_with('\n') {
+            self.find(text).is_some()
+        } else {
+            self.regex.is_match(text)
+        }
+    }
+
+    /// The match found from `pos` with its groups. An empty match at the
+    /// end that stands takes its groups from the single-line pattern (the
+    /// other may have matched there through `^`).
+    pub fn captures_at<'t>(&self, text: &'t str, pos: usize) -> Option<regex::Captures<'t>> {
+        let c = self.regex.captures_at(text, pos)?;
+        let m = c.get(0)?;
+        if !self.stands(text, m.start(), m.end()) {
+            return None;
+        }
+        if m.start() == text.len() && text.ends_with('\n') {
+            if let Some(Some(single)) = self.single_line.get() {
+                return single.captures_at(text, m.start());
+            }
+        }
+        Some(c)
+    }
+
+    /// Into `locs`, the match found from `pos` with its groups (for many
+    /// searches with one `locs`). An empty match at the end that stands
+    /// gives `None` too: take it from `captures_at`.
+    pub fn captures_read_at<'t>(
+        &self,
+        locs: &mut regex::CaptureLocations,
+        text: &'t str,
+        pos: usize,
+    ) -> Option<regex::Match<'t>> {
+        let m = self.regex.captures_read_at(locs, text, pos)?;
+        (m.start() < text.len() || !text.ends_with('\n')).then_some(m)
+    }
+
+    pub fn captures<'t>(&self, text: &'t str) -> Option<regex::Captures<'t>> {
+        self.captures_at(text, 0)
+    }
+
+    /// The match starting nearest before `limit` (a byte offset): Ruby's
+    /// `rindex` and `rpartition`, which try each position from `limit`
+    /// back, anchored there.
+    pub fn last_match_before(&self, text: &str, limit: usize) -> Option<(usize, usize)> {
+        let anchored = self
+            .anchored
+            .get_or_init(|| build_anchored(&self.source, &self.flags))
+            .as_ref()?;
+        // The last start of the non-overlapping matches from the left: the
+        // answer is there or right of it (a match overlapping it).
+        let mut floor = None;
+        let mut pos = 0;
+        while let Some(m) = self.find_at(text, pos) {
+            if m.start() > limit {
+                break;
+            }
+            floor = Some((m.start(), m.end()));
+            pos = if m.end() > m.start() {
+                m.end()
+            } else {
+                match text[m.end()..].chars().next() {
+                    Some(c) => m.end() + c.len_utf8(),
+                    None => break,
+                }
+            };
+        }
+        let floor = floor?;
+        let mut p = limit.min(text.len());
+        while !text.is_char_boundary(p) {
+            p -= 1;
+        }
+        while p > floor.0 {
+            let input = regex_automata::Input::new(text)
+                .range(p..)
+                .anchored(regex_automata::Anchored::Yes);
+            if let Some(m) = anchored.search(&input) {
+                if self.stands(text, m.start(), m.end()) {
+                    return Some((m.start(), m.end()));
+                }
+            }
+            p -= 1;
+            while !text.is_char_boundary(p) {
+                p -= 1;
+            }
+        }
+        Some(floor)
+    }
 }
 
 #[derive(Debug)]

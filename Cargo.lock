@@ -530,6 +530,7 @@ dependencies = [
  "polling",
  "quarz-ir",
  "regex",
+ "regex-automata",
  "rustc-hash",
  "smallvec",
  "unicode-segmentation",
