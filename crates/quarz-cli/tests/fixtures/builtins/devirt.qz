@@ -58,3 +58,16 @@ class Leaf < Mid
 end
 xs: Array[Base] = [Base.new, Mid.new, Leaf.new]
 p xs.map { |x| x.describe }
+
+# A module a subclass includes overrides its superclass's method.
+module OverM
+  def ov -> Int = 100
+end
+class OverA
+  def ov -> Int = 1
+  def get -> Int = ov
+end
+class OverB < OverA
+  include OverM
+end
+puts OverB.new.get, OverA.new.get

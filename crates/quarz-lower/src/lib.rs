@@ -13,6 +13,7 @@ use quarz_types::{Checked, Output, World};
 
 mod borrow;
 mod capture;
+mod cha;
 mod copyprop;
 mod devirt;
 mod func;
@@ -132,10 +133,12 @@ impl Lowerer {
             let f = FnBuilder::init(self, world, out, name, c.file, c.owner, value);
             self.set_func(id, f);
         }
-        // Field defaults.
+        // Field defaults: each by the class that declares it, which its
+        // subclasses (in later units too) share.
         for class in &world.classes {
             let fields = world.all_fields(class.id);
-            for (i, (field, _)) in fields.iter().enumerate() {
+            let own = fields.len().saturating_sub(class.fields.len());
+            for (i, (field, _)) in fields.iter().enumerate().skip(own) {
                 let Some(default) = &field.default else {
                     continue;
                 };
@@ -213,6 +216,29 @@ impl Lowerer {
     }
 }
 
+impl Lowerer {
+    /// The function of the default of field `index` of class `cid`
+    /// (counting inherited fields first): the declaring class's.
+    pub(crate) fn field_default(
+        &self,
+        world: &World,
+        cid: ClassId,
+        index: usize,
+    ) -> Option<FuncId> {
+        let mut c = Some(cid);
+        while let Some(k) = c {
+            if let Some(f) = self.field_default_funcs.get(&(k, index)) {
+                return Some(*f);
+            }
+            c = match &world.class(k).superclass {
+                Some(quarz_types::Type::Class(s, _)) => Some(*s),
+                _ => None,
+            };
+        }
+        None
+    }
+}
+
 /// The file index of the prelude.
 const PRELUDE_FILE: u32 = 0;
 
@@ -265,7 +291,13 @@ impl Lowerer {
         if let Some(orig) = m.alias_of {
             self.reach_method(world, orig, by_name, work);
         }
-        self.reach_name(world, &m.name, by_name, work);
+        // A field reader nothing overrides is a field read once linked
+        // (`cha::rewrite`): it calls no method of its name.
+        let plain_reader = matches!(m.synth, quarz_types::Synth::FieldGet(_))
+            && !self.overridden.contains(&(m.owner, m.name.clone()));
+        if !plain_reader {
+            self.reach_name(world, &m.name, by_name, work);
+        }
     }
 
     /// A method called `name` may be called.
@@ -302,17 +334,49 @@ fn overridden_methods(world: &World) -> HashSet<(ClassId, String)> {
             .or_default()
             .extend(e.methods.keys().cloned());
     }
+    let ancestors: Vec<Vec<ClassId>> = world
+        .classes
+        .iter()
+        .map(|c| {
+            world
+                .ancestors(c.id, &[])
+                .into_iter()
+                .map(|(a, _)| a)
+                .collect()
+        })
+        .collect();
     let mut out = HashSet::default();
+    // (`anc`, module) pairs done: many classes include one module.
+    let mut done: HashSet<(ClassId, ClassId)> = HashSet::default();
     for c in &world.classes {
-        let Some(names) = declared.get(&c.id) else {
-            continue;
+        let own: Vec<&String> = declared.get(&c.id).into_iter().flatten().collect();
+        let mine = &ancestors[c.id as usize];
+        // Modules the class includes (not a module itself, whose methods
+        // only reach a class through it).
+        let modules: Vec<ClassId> = if c.kind == quarz_types::ClassKind::Module {
+            Vec::new()
+        } else {
+            mine.iter()
+                .copied()
+                .filter(|m| *m != c.id && world.class(*m).kind == quarz_types::ClassKind::Module)
+                .collect()
         };
-        for (anc, _) in world.ancestors(c.id, &[]) {
-            if anc == c.id {
+        for anc in mine {
+            if *anc == c.id {
                 continue;
             }
-            for name in names {
-                out.insert((anc, name.clone()));
+            for name in &own {
+                out.insert((*anc, (*name).clone()));
+            }
+            // A module the class includes overrides `anc`'s methods unless
+            // `anc` includes it too (it then comes after `anc`).
+            for m in &modules {
+                if m == anc || ancestors[*anc as usize].contains(m) || !done.insert((*anc, *m)) {
+                    continue;
+                }
+                for name in declared.get(m).into_iter().flatten() {
+                    out.insert((*anc, name.clone()));
+                }
             }
         }
     }
@@ -347,6 +411,7 @@ pub fn lower_checked(checked: &Checked, files: &[SourceFile]) -> Module {
         .collect();
     let delta = lw.lower(&checked.world, &checked.output, &inputs, all);
     let mut functions = delta.functions;
+    cha::rewrite(&mut functions, &delta.world);
     devirt::devirtualize(&mut functions, &delta.world);
     inline::inline_calls(&mut functions, &delta.world.methods, 2);
     sroa::scalar_replace(&mut functions, &delta.world.methods, &delta.world.classes);

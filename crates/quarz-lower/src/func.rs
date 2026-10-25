@@ -2780,7 +2780,7 @@ impl<'a> FnBuilder<'a> {
         e: &'a Expr,
         call: &'a ast::Call,
         target: Option<&CallTarget>,
-        recv: Option<Reg>,
+        mut recv: Option<Reg>,
     ) -> Reg {
         match target {
             Some(CallTarget::IsA(ty)) => {
@@ -2833,21 +2833,12 @@ impl<'a> FnBuilder<'a> {
             Some(CallTarget::Method { method }) if varies => CallKind::Method(*method),
             Some(CallTarget::Method { method }) => {
                 let m = self.world.method(*method);
-                // A generated field reader that nothing overrides is a
-                // field access.
-                if let quarz_types::Synth::FieldGet(name) = &m.synth {
-                    if a.pos.is_empty()
-                        && !a.splat
-                        && a.kw.is_empty()
-                        && a.kw_splat.is_none()
-                        && a.block.is_none()
-                        && !self.lw.overridden.contains(&(m.owner, m.name.clone()))
-                    {
-                        if let Some(index) = self.world.field_index(m.owner, name) {
-                            let obj = recv.unwrap_or_else(|| self.self_reg());
-                            return self.field_get(obj, m.owner, index as u32);
-                        }
-                    }
+                // A generated field reader: a call, which `cha::rewrite`
+                // makes a field access once the whole program shows that
+                // nothing overrides it (a later unit may). Its receiver
+                // is explicit for that.
+                if matches!(m.synth, quarz_types::Synth::FieldGet(_)) && recv.is_none() {
+                    recv = Some(self.self_reg());
                 }
                 let fast = m.is_native
                     && (m.owner == self.world.builtin.int || m.owner == self.world.builtin.float)
@@ -2875,8 +2866,7 @@ impl<'a> FnBuilder<'a> {
                 let array_index = m.is_native
                     && m.owner == self.world.builtin.array
                     && m.name == "[]"
-                    && matches!(&m.params[..], [p] if matches!(&p.ty, quarz_types::Type::Class(c, a) if *c == self.world.builtin.int && a.is_empty()))
-                    && !self.lw.overridden.contains(&(m.owner, m.name.clone()));
+                    && matches!(&m.params[..], [p] if matches!(&p.ty, quarz_types::Type::Class(c, a) if *c == self.world.builtin.int && a.is_empty()));
                 if let (true, Some(arr), Some(r)) = (array_index, recv, &call.recv) {
                     if a.pos.len() == 1
                         && !a.splat
@@ -2922,14 +2912,10 @@ impl<'a> FnBuilder<'a> {
                     a.pos = self.flatten_args(*class, std::mem::take(&mut a.pos));
                 }
                 // `new` on the receiver of a class method that subclasses
-                // may inherit: the class it is called on decides.
-                if self.out.self_new.contains(&e.id)
-                    && self
-                        .world
-                        .classes
-                        .iter()
-                        .any(|c| c.id != *class && self.world.class_is_a(c.id, *class))
-                {
+                // may inherit (in a later unit too): the class it is called
+                // on decides (`cha::rewrite` makes it a plain construction
+                // for a class with no subclass).
+                if self.out.self_new.contains(&e.id) {
                     let (class, init) = (*class, *init);
                     let recv = Some(recv.unwrap_or_else(|| self.self_reg()));
                     let dst = self.reg();

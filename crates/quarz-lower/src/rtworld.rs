@@ -76,7 +76,7 @@ pub fn build(world: &World, lw: &Lowerer, file_names: Vec<String>) -> RtWorld {
                     ty: ty_name(&iv.ty),
                     slot: iv.slot,
                     flat: iv.flat,
-                    default: lw.field_default_funcs.get(&(c.id, i)).copied(),
+                    default: lw.field_default(world, c.id, i),
                 })
                 .collect();
             let fields: Vec<RtField> = layout
