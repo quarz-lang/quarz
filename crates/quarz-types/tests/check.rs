@@ -1489,3 +1489,61 @@ fn inheritance_cycles_are_errors() {
         "cyclic include: `N` would include itself",
     );
 }
+
+#[test]
+fn calls_a_class_test_cannot_choose_are_errors() {
+    // Members of one class differing only in type arguments.
+    err(
+        "extension Array[T: Int]\n  def desc -> String = \"ints\"\nend\nextension Array[T: String]\n  def desc -> String = \"strs\"\nend\ndef pk(i: Int) -> Array[Int] | Array[String] = i > 0 ? [1] : [\"a\"]\nputs pk(1).desc",
+        "cannot tell at run time which `desc` to call for Array[Int] and Array[String]: extension Array[T: Int]#desc or extension Array[T: String]#desc",
+    );
+    // Overloads chosen by an argument's type, in a block checked per type.
+    err(
+        "class Foo\n  def sub(o: Int) -> Int = 1\n  def sub(o: String) -> Int = 2\nend\ndef pk(i: Int) -> Array[Int] | Array[String] = i > 0 ? [1] : [\"a\"]\nf = Foo.new\npk(1).each { |x| p f.sub(x) }",
+        "cannot tell at run time which `sub` to call on Foo: Foo#sub(Int) or Foo#sub(String)",
+    );
+    // A module and an unrelated member: a value may be both.
+    err(
+        "module M\nend\nclass A\nend\nextension A\n  def ext -> String = \"A\"\nend\nextension M\n  def ext -> String = \"M\"\nend\ndef pk(i: Int) -> A | M = A.new\nputs pk(1).ext",
+        "cannot tell at run time which `ext` to call for A and M",
+    );
+    err(
+        "extension Array[T: Int]\n  def to_s -> String = \"ints\"\nend\ndef pk(i: Int) -> Array[Int] | Array[String] = i > 0 ? [1] : [\"a\"]\nputs \"#{pk(1)}\"",
+        "cannot tell at run time which `to_s` the interpolation calls for Array",
+    );
+    // A class and its subclass, or unrelated classes: tested in order.
+    ok("class Foo\nend\nclass Sub < Foo\nend\nextension Foo\n  def ext -> String = \"F\"\nend\nextension Sub\n  def ext -> String = \"S\"\nend\ndef pk(i: Int) -> Array[Foo] | Array[Sub] = [Sub.new]\nclass Box[T]\n  @v: T\n  def initialize(@v: T); end\n  def each(&blk: (T) -> Nil) -> Nil\n    blk.call(@v)\n    nil\n  end\nend\ndef pb(i: Int) -> Array[Foo] | Box[Sub] = Box.new(Sub.new)\npb(1).each { |x| puts x.ext }");
+    // Called by name, natives' overloads and the value's own methods are
+    // found; a check thrown away (an overload that does not match)
+    // leaves nothing behind.
+    ok("def pk(i: Int) -> Array[Int] | Array[Float] = i > 0 ? [1, 2] : [1.5]\np pk(1).map { |x| x + 1 }\npk(0).each { |x| p(1 + x) }");
+    ok("module Shape\n  abstract def area -> Float\nend\nclass Sq\n  def area -> Float = 4.0\nend\nclass C\n  include Shape\n  def area -> Float = 3.0\nend\ndef pk(i: Int) -> Sq | Shape = i > 0 ? Sq.new : C.new\np pk(1).area");
+    ok("class Foo\n  def sub(o: Int) -> Int = 1\n  def sub(o: String) -> Int = 2\nend\nclass R\n  def run(&blk: (String) -> String) -> String = blk.call(\"s\")\n  def run(&blk: (Int) -> Int) -> Int = blk.call(3)\nend\nf = Foo.new\np R.new.run { |x| f.sub(x); 5 }");
+    // Overloads split between a class and its superclass: by name, the
+    // subclass's is found for every argument.
+    err(
+        "class A\n  def foo(o: Int) -> String = \"i\"\nend\nclass B < A\n  def foo(o: String) -> String = o\nend\ndef pk(i: Int) -> Array[Int] | Array[String] = i > 0 ? [1] : [\"a\"]\nb = B.new\npk(1).each { |x| puts b.foo(x) }",
+        "cannot tell at run time which `foo` to call on B: A#foo(Int) or B#foo(String)",
+    );
+    // A compound assignment's reader from two extensions.
+    err(
+        "class A\nend\nclass B\nend\nextension A\n  def w -> Int = 1\n  def w=(x: Int) -> Int = x\nend\nextension B\n  def w -> Int = 2\n  def w=(x: Int) -> Int = x\nend\ndef pk(i: Int) -> Array[A] | Array[B] = i > 0 ? [A.new] : [B.new]\npk(1).each { |o| o.w += 1 }",
+        "cannot tell at run time which `w` to call: extension A#w or extension B#w",
+    );
+    // A method body first checked within a check thrown away keeps what
+    // it found (its errors too).
+    err(
+        "class R\n  def run(&blk: (String) -> String) -> String = blk.call(\"s\")\n  def run(&blk: (Int) -> Int) -> Int = blk.call(3)\nend\ndef caller -> Int\n  R.new.run { |x| helper; x + 1 }\nend\ndef helper\n  y: Int = \"oops\"\n  1\nend\np caller",
+        "cannot assign String to `y` of type Int",
+    );
+    // A module and an unrelated class with their own methods: tested in
+    // order, each value finds its own (overloads included).
+    ok("module M\n  abstract def foo(o: Int) -> String\nend\nclass A\n  def foo(o: String) -> String = \"A-str\"\n  def foo(o: Int) -> String = \"A-int\"\nend\nclass C\n  include M\n  def foo(o: Int) -> String = \"C-int\"\nend\ndef pk(i: Int) -> A | M = i > 0 ? A.new : C.new\nputs pk(1).foo(1)");
+    // User operator overloads in a compound assignment to an attribute.
+    err(
+        "class V\n  def +(o: Int) -> V = self\n  def +(o: String) -> V = self\nend\nclass H\n  var @v: V = V.new\n  attr_accessor :v\nend\ndef pk(i: Int) -> Array[Int] | Array[String] = i > 0 ? [1] : [\"a\"]\nh = H.new\npk(1).each { |x| h.v += x }",
+        "cannot tell at run time which `+` to call",
+    );
+    // A module and a class that includes it.
+    ok("module M\nend\nclass A\n  include M\nend\nextension A\n  def ext -> String = \"A\"\nend\nextension M\n  def ext -> String = \"M\"\nend\ndef pk(i: Int) -> A | M = A.new\nputs pk(1).ext");
+}

@@ -381,6 +381,22 @@ struct Env {
     next_block_escapes: bool,
 }
 
+/// An entry of `Checker::table_journal`: a node's table and conflict
+/// flag before a change.
+#[derive(Debug)]
+enum TableUndo {
+    Union(NodeId, Option<Vec<(Type, MethodId)>>, bool),
+    Interp(NodeId, Option<Vec<(ClassId, Option<MethodId>)>>),
+    /// A compound assignment's reader or operator (`note_op_method`):
+    /// what the checks saw, whether it was given up, what was recorded.
+    Op(
+        (NodeId, bool),
+        Option<Option<MethodId>>,
+        bool,
+        Option<MethodId>,
+    ),
+}
+
 /// `Checker::equality_trusted`'s cache key: a class (its class object
 /// when `true`) under the active extensions.
 type TrustKey = (ClassId, bool, Vec<ExtensionId>);
@@ -560,6 +576,22 @@ pub struct Checker {
     op_given_up: rustc_hash::FxHashSet<(NodeId, bool)>,
     pub world: World,
     pub diagnostics: Vec<(u32, Diagnostic)>,
+    /// Calls a run-time class test cannot choose a method for
+    /// (`ambiguous_call`), reported once checking is done: inside a
+    /// block, an error would make the method given it fail to match.
+    ambiguous: Vec<(u32, NodeId, Diagnostic)>,
+    /// What `note_union_table` and `note_interp_to_s` replaced, so that a
+    /// check thrown away (an overload that does not match, a second pass)
+    /// leaves nothing behind (`discard_tables`).
+    table_journal: Vec<TableUndo>,
+    /// Ambiguous calls found in method bodies, checked once whatever the
+    /// check that needed them (`ensure_method_checked`): kept when that
+    /// check is thrown away.
+    kept_ambiguous: Vec<(u32, NodeId, Diagnostic)>,
+    /// The ranges of `diagnostics` method bodies produced, and those
+    /// rescued from a check thrown away (`truncate_diagnostics`).
+    body_diagnostics: Vec<(usize, usize)>,
+    rescued: Vec<(u32, Diagnostic)>,
     pub out: Output,
     infer: InferTable,
     env: Env,
@@ -656,6 +688,11 @@ impl Checker {
             op_given_up: Default::default(),
             world,
             diagnostics: Vec::new(),
+            ambiguous: Vec::new(),
+            table_journal: Vec::new(),
+            kept_ambiguous: Vec::new(),
+            body_diagnostics: Vec::new(),
+            rescued: Vec::new(),
             out: Output::default(),
             infer: InferTable::default(),
             env,
@@ -1159,7 +1196,102 @@ impl Checker {
     /// Discard the diagnostics of a failed REPL input and forget the
     /// variables it declared.
     pub fn take_diagnostics(&mut self) -> Vec<(u32, Diagnostic)> {
+        self.flush_ambiguous();
         std::mem::take(&mut self.diagnostics)
+    }
+
+    /// Report the ambiguous calls found (`Checker::ambiguous`).
+    /// Record a node's union table and conflict flag before a change.
+    fn journal_union(&mut self, id: NodeId) {
+        let before = self.out.union_calls.get(&id).cloned();
+        let conflict = self.out.union_conflicts.contains(&id);
+        self.table_journal
+            .push(TableUndo::Union(id, before, conflict));
+    }
+
+    /// Where the call tables and the ambiguous calls stand, for
+    /// `discard_tables`.
+    fn table_mark(&self) -> (usize, usize) {
+        (self.table_journal.len(), self.ambiguous.len())
+    }
+
+    /// Undo what the checks since `mark` recorded in the call tables.
+    fn discard_tables(&mut self, mark: (usize, usize)) {
+        while self.table_journal.len() > mark.0 {
+            match self.table_journal.pop().unwrap() {
+                TableUndo::Union(id, t, conflict) => {
+                    if conflict {
+                        self.out.union_conflicts.insert(id);
+                    } else {
+                        self.out.union_conflicts.remove(&id);
+                    }
+                    match t {
+                        Some(t) => self.out.union_calls.insert(id, t),
+                        None => self.out.union_calls.remove(&id),
+                    };
+                }
+                TableUndo::Op(key, seen, given_up, recorded) => {
+                    match seen {
+                        Some(f) => self.op_seen.insert(key, f),
+                        None => self.op_seen.remove(&key),
+                    };
+                    if given_up {
+                        self.op_given_up.insert(key);
+                    } else {
+                        self.op_given_up.remove(&key);
+                    }
+                    let map = if key.1 {
+                        &mut self.out.op_operators
+                    } else {
+                        &mut self.out.op_getters
+                    };
+                    match recorded {
+                        Some(m) => map.insert(key.0, m),
+                        None => map.remove(&key.0),
+                    };
+                }
+                TableUndo::Interp(id, t) => {
+                    self.out.interp_conflicts.remove(&id);
+                    match t {
+                        Some(t) => self.out.interp_to_s.insert(id, t),
+                        None => self.out.interp_to_s.remove(&id),
+                    };
+                }
+            }
+        }
+        self.ambiguous.truncate(mark.1);
+    }
+
+    /// Throw away the diagnostics from `n` on, except those of method
+    /// bodies checked meanwhile (checked once, whatever needed them).
+    fn truncate_diagnostics(&mut self, n: usize) {
+        while let Some(&(start, end)) = self.body_diagnostics.last() {
+            if end <= n {
+                break;
+            }
+            self.body_diagnostics.pop();
+            let start = start.max(n);
+            let end = end.min(self.diagnostics.len());
+            if start < end {
+                self.rescued
+                    .extend(self.diagnostics[start..end].iter().cloned());
+            }
+        }
+        self.diagnostics.truncate(n);
+    }
+
+    fn flush_ambiguous(&mut self) {
+        self.table_journal.clear();
+        self.body_diagnostics.clear();
+        self.diagnostics.append(&mut self.rescued);
+        let kept = std::mem::take(&mut self.kept_ambiguous);
+        self.ambiguous.splice(0..0, kept);
+        let mut seen: rustc_hash::FxHashSet<NodeId> = Default::default();
+        for (file, id, d) in std::mem::take(&mut self.ambiguous) {
+            if seen.insert(id) {
+                self.diagnostics.push((file, d));
+            }
+        }
     }
 
     pub fn file_main_class(&self, file: u32) -> Option<ClassId> {
@@ -1364,6 +1496,11 @@ impl Checker {
             return;
         };
         self.in_progress.push(mid);
+        let body_mark = (
+            self.table_journal.len(),
+            self.ambiguous.len(),
+            self.diagnostics.len(),
+        );
         if matches!(self.world.method(mid).ret, RetType::Infer) {
             self.world.method_mut(mid).ret = RetType::Inferring;
         }
@@ -1630,6 +1767,17 @@ impl Checker {
         self.world.active_extensions = saved_active;
         self.world.self_bound = saved_bound;
         self.in_progress.pop();
+        // What the body recorded is its own, checked once: a check that
+        // needed it and is thrown away must not undo it.
+        self.table_journal.truncate(body_mark.0);
+        let found = self.ambiguous.split_off(body_mark.1);
+        self.kept_ambiguous.extend(found);
+        let end = self.diagnostics.len();
+        // (Nested bodies' ranges are inside this one.)
+        self.body_diagnostics.retain(|(s, _)| *s < body_mark.2);
+        if end > body_mark.2 {
+            self.body_diagnostics.push((body_mark.2, end));
+        }
     }
 
     /// The type of a constant, checking its initializer on first use.
@@ -1940,15 +2088,18 @@ impl Checker {
     /// member is a class a test tells apart from the others (not two
     /// instances of one generic class, not a class and its subclass) and
     /// every check agrees on each member's method.
-    fn note_union_table(&mut self, id: NodeId, table: Vec<(Type, MethodId)>) {
+    fn note_union_table(&mut self, id: NodeId, table: Vec<(Type, MethodId)>, span: Span) {
         if self.out.union_conflicts.contains(&id) {
             return;
         }
+        self.journal_union(id);
         let mut merged = self.out.union_calls.remove(&id).unwrap_or_default();
         for (t, m) in table {
             match merged.iter().find(|(u, _)| *u == t) {
                 Some((_, n)) if *n != m => {
-                    self.out.union_conflicts.insert(id);
+                    // (Overloads chosen by the arguments' types.)
+                    let n = *n;
+                    self.ambiguous_call(id, &t, &t, n, m, span);
                     return;
                 }
                 Some(_) => {}
@@ -1958,27 +2109,121 @@ impl Checker {
         // By the class a test sees: members of one class (two tuples, two
         // instances of a generic class) with the same method are one
         // entry, with different methods the test cannot choose; a
-        // subclass is tested before its superclass.
+        // subclass is tested before its superclass. A module's member and
+        // another member that are not related, answered differently with an
+        // extension's method: a value may be both, and its class decides
+        // which comes first (with the classes' own methods, the test finds
+        // one the value has).
         let mut by_class: Vec<(ClassId, Type, MethodId)> = Vec::new();
         for (t, m) in &merged {
             let Some(c) = self.test_class(t) else {
                 self.out.union_conflicts.insert(id);
                 return;
             };
-            match by_class.iter().find(|(d, _, _)| *d == c) {
-                Some((_, _, n)) if n != m => {
-                    self.out.union_conflicts.insert(id);
-                    return;
-                }
-                Some(_) => {}
-                None => by_class.push((c, t.clone(), *m)),
+            let ext = |k: MethodId| self.world.method(k).extension.is_some();
+            let clash = by_class.iter().find(|(d, _, n)| {
+                n != m
+                    && (*d == c
+                        || ((self.world.class(*d).kind == ClassKind::Module
+                            || self.world.class(c).kind == ClassKind::Module)
+                            && (ext(*n) || ext(*m))
+                            && !self.world.class_is_a(*d, c)
+                            && !self.world.class_is_a(c, *d)))
+            });
+            if let Some((_, u, n)) = clash {
+                let (u, n) = (u.clone(), *n);
+                self.ambiguous_call(id, &u, t, n, *m, span);
+                return;
+            }
+            if !by_class.iter().any(|(d, _, _)| *d == c) {
+                by_class.push((c, t.clone(), *m));
             }
         }
-        // (A module's member and another whose values may include it: the
-        // order is a guess, the value's class decides which comes first.)
         self.subclasses_first(&mut by_class, |e| e.0);
         let merged = by_class.into_iter().map(|(_, t, m)| (t, m)).collect();
         self.out.union_calls.insert(id, merged);
+    }
+
+    /// A call whose method a run-time test of the receiver's class cannot
+    /// choose: `a` and `b` (the receiver's types in two members, or in two
+    /// checks of a block) resolve to `m` and `n`.
+    fn ambiguous_call(
+        &mut self,
+        id: NodeId,
+        a: &Type,
+        b: &Type,
+        m: MethodId,
+        n: MethodId,
+        span: Span,
+    ) {
+        self.out.union_conflicts.insert(id);
+        // Called by name, a native finds its overload: wrong only for an
+        // extension's method (not found by name) or user overloads (the
+        // first a lookup finds).
+        let (mi, ni) = (self.world.method(m), self.world.method(n));
+        let wrong =
+            mi.extension.is_some() || ni.extension.is_some() || (!mi.is_native && !ni.is_native);
+        if !wrong {
+            return;
+        }
+        let name = self.world.method(m).name.clone();
+        let (wm, wn) = (self.method_label(m), self.method_label(n));
+        let what = if a == b {
+            format!("on {}", self.name(a))
+        } else {
+            format!("for {} and {}", self.name(a), self.name(b))
+        };
+        let d = Diagnostic::error(
+            format!(
+                "cannot tell at run time which `{name}` to call {what}: {wm} or {wn} (give the value one type first)"
+            ),
+            span,
+        );
+        self.ambiguous.push((self.env.file, id, d));
+    }
+
+    /// `Owner#name`, or the extension's target for an extension's method.
+    fn method_label(&self, m: MethodId) -> String {
+        let info = self.world.method(m);
+        let owner = match info.extension {
+            Some(e) => {
+                // `extension Array[T: Int]`: its parameters with their bounds.
+                let ext = &self.world.extensions[e as usize];
+                let args: Vec<String> = ext
+                    .target_args
+                    .iter()
+                    .map(|a| match a {
+                        Type::Param(p) => match ext.type_params.iter().find(|tp| tp.id == *p) {
+                            Some(tp) if !tp.bounds.is_empty() => {
+                                let bs: Vec<String> =
+                                    tp.bounds.iter().map(|b| self.world.type_name(b)).collect();
+                                format!("{}: {}", tp.name, bs.join(" & "))
+                            }
+                            Some(tp) => tp.name.clone(),
+                            None => self.world.type_name(a),
+                        },
+                        _ => self.world.type_name(a),
+                    })
+                    .collect();
+                let target = &self.world.class(ext.target).name;
+                if args.is_empty() {
+                    format!("extension {target}")
+                } else {
+                    format!("extension {target}[{}]", args.join(", "))
+                }
+            }
+            None => self.world.class(info.owner).name.clone(),
+        };
+        let params: Vec<String> = info
+            .params
+            .iter()
+            .map(|p| self.world.type_name(&p.ty))
+            .collect();
+        if params.is_empty() {
+            format!("{owner}#{}", info.name)
+        } else {
+            format!("{owner}#{}({})", info.name, params.join(", "))
+        }
     }
 
     /// Whether the bounds of an extension method's type parameters
@@ -2021,18 +2266,41 @@ impl Checker {
     /// value of class `cid`, an extension's `to_s` or (`None`) the value's
     /// own; a check that found another for the same class (each check of
     /// a block) gives it up.
-    fn note_interp_to_s(&mut self, id: NodeId, cid: ClassId, m: Option<MethodId>) {
+    fn note_interp_to_s(&mut self, id: NodeId, cid: ClassId, m: Option<MethodId>, span: Span) {
         if self.out.interp_conflicts.contains(&id) {
             return;
         }
+        let before = self.out.interp_to_s.get(&id).cloned();
+        self.table_journal.push(TableUndo::Interp(id, before));
         let mut table = self.out.interp_to_s.remove(&id).unwrap_or_default();
-        match table.iter().find(|(c, _)| *c == cid) {
-            Some((_, n)) if *n != m => {
-                self.out.interp_conflicts.insert(id);
-                return;
-            }
-            Some(_) => {}
-            None => table.push((cid, m)),
+        // As for a call (`note_union_table`): one class, or a module and an
+        // unrelated member, answered differently.
+        let clash = table.iter().find(|(d, n)| {
+            *n != m
+                && (*d == cid
+                    || ((self.world.class(*d).kind == ClassKind::Module
+                        || self.world.class(cid).kind == ClassKind::Module)
+                        && !self.world.class_is_a(*d, cid)
+                        && !self.world.class_is_a(cid, *d)))
+        });
+        if let Some((d, _)) = clash {
+            let (a, b) = (
+                self.world.class(*d).name.clone(),
+                self.world.class(cid).name.clone(),
+            );
+            self.out.interp_conflicts.insert(id);
+            let what = if a == b { a } else { format!("{a} and {b}") };
+            let d = Diagnostic::error(
+                format!(
+                    "cannot tell at run time which `to_s` the interpolation calls for {what} (give the value one type first)"
+                ),
+                span,
+            );
+            self.ambiguous.push((self.env.file, id, d));
+            return;
+        }
+        if !table.iter().any(|(d, _)| *d == cid) {
+            table.push((cid, m));
         }
         self.subclasses_first(&mut table, |e| e.0);
         self.out.interp_to_s.insert(id, table);
@@ -2040,7 +2308,7 @@ impl Checker {
 
     /// A compound assignment's reader, resolved just now (a union's
     /// members answering differently are called by name).
-    fn note_op_getter(&mut self, id: NodeId) {
+    fn note_op_getter(&mut self, id: NodeId, span: Span) {
         let found = match (
             self.out.calls.get(&id),
             self.out.dynamic_calls.contains(&id),
@@ -2048,15 +2316,17 @@ impl Checker {
             (Some(CallTarget::Method { method }), false) => Some(*method),
             _ => None,
         };
-        self.note_op_method(id, false, found);
+        self.note_op_method(id, false, found, span);
         self.out.calls.remove(&id);
         self.out.dynamic_calls.remove(&id);
+        self.journal_union(id);
         self.out.union_calls.remove(&id);
     }
 
     /// The writer's union record of a compound assignment's node, set
     /// aside while its reader (on the same node) is checked.
     fn take_union_record(&mut self, id: NodeId) -> (Option<Vec<(Type, MethodId)>>, bool) {
+        self.journal_union(id);
         (
             self.out.union_calls.remove(&id),
             self.out.union_conflicts.remove(&id),
@@ -2064,6 +2334,7 @@ impl Checker {
     }
 
     fn restore_union_record(&mut self, id: NodeId, saved: (Option<Vec<(Type, MethodId)>>, bool)) {
+        self.journal_union(id);
         self.out.union_calls.remove(&id);
         self.out.union_conflicts.remove(&id);
         if let Some(t) = saved.0 {
@@ -2077,8 +2348,43 @@ impl Checker {
     /// Record a compound assignment's reader (`operator` false) or
     /// operator: given up (called by name) when a check finds none or
     /// another check (of a block, once per type) found another.
-    fn note_op_method(&mut self, id: NodeId, operator: bool, found: Option<MethodId>) {
+    fn note_op_method(&mut self, id: NodeId, operator: bool, found: Option<MethodId>, span: Span) {
         let key = (id, operator);
+        let recorded = if operator {
+            self.out.op_operators.get(&id).copied()
+        } else {
+            self.out.op_getters.get(&id).copied()
+        };
+        self.table_journal.push(TableUndo::Op(
+            key,
+            self.op_seen.get(&key).copied(),
+            self.op_given_up.contains(&key),
+            recorded,
+        ));
+        // Two checks found an extension's method and another: by name the
+        // extension's is not found (as `ambiguous_call`).
+        if let (Some(Some(before)), Some(now)) = (self.op_seen.get(&key).copied(), found) {
+            let (b, n) = (self.world.method(before), self.world.method(now));
+            // (User overloads, of one class or a class and its ancestor:
+            // the first a lookup finds.)
+            let related = b.owner == n.owner
+                || self.world.class_is_a(b.owner, n.owner)
+                || self.world.class_is_a(n.owner, b.owner);
+            let wrong = b.extension.is_some()
+                || n.extension.is_some()
+                || (related && !b.is_native && !n.is_native);
+            if before != now && wrong {
+                let name = self.world.method(now).name.clone();
+                let (wb, wn) = (self.method_label(before), self.method_label(now));
+                let d = Diagnostic::error(
+                    format!(
+                        "cannot tell at run time which `{name}` to call: {wb} or {wn} (give the value one type first)"
+                    ),
+                    span,
+                );
+                self.ambiguous.push((self.env.file, id, d));
+            }
+        }
         let map = if operator {
             &mut self.out.op_operators
         } else {
@@ -3138,6 +3444,7 @@ impl Checker {
             let infer = self.infer.save();
             let env = self.env.clone();
             let reported = self.diagnostics.len();
+            let reported_tables = self.table_mark();
             self.check_expr(&f.each, None);
             let failed = self.diagnostics[reported..]
                 .iter()
@@ -3146,7 +3453,8 @@ impl Checker {
                 self.out.for_loops.insert(expr.id);
                 return self.world.nil();
             }
-            self.diagnostics.truncate(reported);
+            self.truncate_diagnostics(reported);
+            self.discard_tables(reported_tables);
             self.infer.restore(infer);
             self.env = env;
         }
@@ -3632,7 +3940,7 @@ impl Checker {
                         })
                         .map(|(m, _)| m);
                     let found = to_s.filter(|m| self.world.method(*m).extension.is_some());
-                    self.note_interp_to_s(e.id, cid, found);
+                    self.note_interp_to_s(e.id, cid, found, e.span);
                 }
             }
         }
@@ -4855,7 +5163,7 @@ impl Checker {
                 let _ = rt;
                 let saved = self.take_union_record(expr.id);
                 let t = self.check_call_with_types(expr, &getter, None, true);
-                self.note_op_getter(expr.id);
+                self.note_op_getter(expr.id, expr.span);
                 self.restore_union_record(expr.id, saved);
                 t
             }
@@ -4871,7 +5179,7 @@ impl Checker {
                 };
                 let saved = self.take_union_record(expr.id);
                 let t = self.check_call_with_types(expr, &getter, None, true);
-                self.note_op_getter(expr.id);
+                self.note_op_getter(expr.id, expr.span);
                 self.restore_union_record(expr.id, saved);
                 t
             }
@@ -4910,14 +5218,14 @@ impl Checker {
                     Some(CallTarget::Method { method }) => Some(*method),
                     _ => None,
                 };
-                self.note_op_method(expr.id, true, found);
+                self.note_op_method(expr.id, true, found, expr.span);
                 // A variable's operator in a block checked once per type: by
                 // the type each check saw (the node's table is free, which
                 // an attribute's or an index's writer takes).
                 if let (Some(m), LValue::Local { .. } | LValue::IVar(_)) = (found, target) {
                     let ct = self.resolve(&current);
                     if !self.env.blocks.is_empty() && self.test_class(&ct).is_some() {
-                        self.note_union_table(expr.id, vec![(ct, m)]);
+                        self.note_union_table(expr.id, vec![(ct, m)], expr.span);
                     }
                 }
                 t
@@ -4977,7 +5285,7 @@ impl Checker {
                         .calls
                         .insert(expr.id, CallTarget::Method { method: cands[0].0 });
                     if !self.env.blocks.is_empty() && self.test_class(&rt).is_some() {
-                        self.note_union_table(expr.id, vec![(rt.clone(), cands[0].0)]);
+                        self.note_union_table(expr.id, vec![(rt.clone(), cands[0].0)], expr.span);
                     }
                 }
             }
@@ -4995,7 +5303,7 @@ impl Checker {
                         .calls
                         .insert(expr.id, CallTarget::Method { method: cands[0].0 });
                     if !self.env.blocks.is_empty() && self.test_class(&rt).is_some() {
-                        self.note_union_table(expr.id, vec![(rt.clone(), cands[0].0)]);
+                        self.note_union_table(expr.id, vec![(rt.clone(), cands[0].0)], expr.span);
                     }
                 }
             }
@@ -5317,7 +5625,7 @@ impl Checker {
                 self.out.dynamic_calls.contains(&expr.id),
             ) {
                 let m = *method;
-                self.note_union_table(expr.id, vec![(rt, m)]);
+                self.note_union_table(expr.id, vec![(rt, m)], expr.span);
             }
         }
         if nil_passthrough {
@@ -5569,6 +5877,7 @@ impl Checker {
                 // members are checked again under that.
                 let saved_floats = std::mem::take(&mut self.out.float_literals);
                 let ndiag = self.diagnostics.len();
+                let ndiag_tables = self.table_mark();
                 let mut per_member = Vec::new();
                 for m in &members {
                     if let (Some(k), Some(saved)) = (&bang, &bang_saved) {
@@ -5595,7 +5904,8 @@ impl Checker {
                         .into_iter()
                         .filter(|id| self.int_literals.insert(*id))
                         .collect();
-                    self.diagnostics.truncate(ndiag);
+                    self.truncate_diagnostics(ndiag);
+                    self.discard_tables(ndiag_tables);
                     result = Type::Nothing;
                     targets.clear();
                     for m in &members {
@@ -5634,7 +5944,7 @@ impl Checker {
                             .map(|m| self.resolve(m))
                             .zip(targets.iter().flatten().copied())
                             .collect();
-                        self.note_union_table(expr.id, table);
+                        self.note_union_table(expr.id, table, expr.span);
                     }
                     if targets.iter().all(|t| t.is_some()) && differ {
                         let table: Vec<(Type, MethodId)> = members
@@ -5642,7 +5952,7 @@ impl Checker {
                             .map(|m| self.resolve(m))
                             .zip(targets.iter().flatten().copied())
                             .collect();
-                        self.note_union_table(expr.id, table);
+                        self.note_union_table(expr.id, table, expr.span);
                         match self.common_ancestor_method(&members, name, &targets) {
                             Some(method) => {
                                 self.out
@@ -6434,6 +6744,7 @@ impl Checker {
             }
             let saved_infer = self.infer.save();
             let saved_diags = self.diagnostics.len();
+            let saved_diags_tables = self.table_mark();
             // Instantiate.
             let mut subst = class_subst.clone();
             // A call on `self` in a method with `Self` in its signature
@@ -6494,7 +6805,8 @@ impl Checker {
                             .map(|(_, d)| d.message.clone());
                         if let Some(message) = block_error {
                             self.infer.restore(saved_infer);
-                            self.diagnostics.truncate(saved_diags);
+                            self.truncate_diagnostics(saved_diags);
+                            self.discard_tables(saved_diags_tables);
                             failures.push(format!("{}: {message}", self.signature(&m)));
                             continue;
                         }
@@ -6573,7 +6885,8 @@ impl Checker {
                     }
                     if !ok && !single {
                         self.infer.restore(saved_infer);
-                        self.diagnostics.truncate(saved_diags);
+                        self.truncate_diagnostics(saved_diags);
+                        self.discard_tables(saved_diags_tables);
                         failures.push(format!("{}: type bounds not satisfied", self.signature(&m)));
                         continue;
                     }
@@ -6598,7 +6911,8 @@ impl Checker {
                 Err(reason) => {
                     if !single {
                         self.infer.restore(saved_infer);
-                        self.diagnostics.truncate(saved_diags);
+                        self.truncate_diagnostics(saved_diags);
+                        self.discard_tables(saved_diags_tables);
                     }
                     failures.push(reason);
                 }
@@ -6774,10 +7088,12 @@ impl Checker {
                 _ => {
                     let saved = self.infer.save();
                     let saved_diags = self.diagnostics.len();
+                    let saved_diags_tables = self.table_mark();
                     let t = self.check_expr(e, None);
                     let t = self.infer.resolve(&t);
                     self.infer.restore(saved);
-                    self.diagnostics.truncate(saved_diags);
+                    self.truncate_diagnostics(saved_diags);
+                    self.discard_tables(saved_diags_tables);
                     if t.has_vars() {
                         continue;
                     }
@@ -8110,7 +8426,8 @@ impl Checker {
 }
 
 impl Checker {
-    pub fn into_output(self) -> (World, Output, Vec<(u32, Diagnostic)>) {
+    pub fn into_output(mut self) -> (World, Output, Vec<(u32, Diagnostic)>) {
+        self.flush_ambiguous();
         (self.world, self.out, self.diagnostics)
     }
 
