@@ -2782,10 +2782,21 @@ impl<'a> FnBuilder<'a> {
             });
             a.block = Some(self.share_proc(e.id, dst));
         }
+        // Checks of the call (a block's, once per type) that found
+        // different methods: the recorded one is the last check's, so no
+        // shortcut taken for it (a field read, an operator on numbers);
+        // `emit_call` tests the receiver.
+        let varies = self.out.union_conflicts.contains(&e.id)
+            || self
+                .out
+                .union_calls
+                .get(&e.id)
+                .is_some_and(|t| t.iter().any(|(_, m)| *m != t[0].1));
         let kind = match target {
             Some(CallTarget::Method { .. }) if self.out.dynamic_calls.contains(&e.id) => {
                 CallKind::Send(call.name.clone())
             }
+            Some(CallTarget::Method { method }) if varies => CallKind::Method(*method),
             Some(CallTarget::Method { method }) => {
                 let m = self.world.method(*method);
                 // A generated field reader that nothing overrides is a

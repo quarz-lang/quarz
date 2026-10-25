@@ -1544,6 +1544,11 @@ fn calls_a_class_test_cannot_choose_are_errors() {
         "class V\n  def +(o: Int) -> V = self\n  def +(o: String) -> V = self\nend\nclass H\n  var @v: V = V.new\n  attr_accessor :v\nend\ndef pk(i: Int) -> Array[Int] | Array[String] = i > 0 ? [1] : [\"a\"]\nh = H.new\npk(1).each { |x| h.v += x }",
         "cannot tell at run time which `+` to call",
     );
+    // Overloaded `initialize` chosen by an argument's type.
+    err(
+        "class Foo\n  @s: String\n  def initialize(o: Int)\n    @s = \"int\"\n  end\n  def initialize(o: String)\n    @s = \"str\"\n  end\nend\ndef pk(i: Int) -> Array[Int] | Array[String] = i > 0 ? [1] : [\"a\"]\npk(1).each { |x| Foo.new(x) }",
+        "cannot tell at run time which `initialize` to call",
+    );
     // A module and a class that includes it.
     ok("module M\nend\nclass A\n  include M\nend\nextension A\n  def ext -> String = \"A\"\nend\nextension M\n  def ext -> String = \"M\"\nend\ndef pk(i: Int) -> A | M = A.new\nputs pk(1).ext");
 }

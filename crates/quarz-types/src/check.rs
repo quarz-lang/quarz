@@ -6616,6 +6616,16 @@ impl Checker {
             Some(CallTarget::Method { method }) => Some(*method),
             _ => None,
         };
+        // In a block checked once per type, another check may have chosen
+        // another `initialize` (by the arguments' types): only the last is
+        // recorded, so different ones are an error (`ambiguous_call`).
+        if let (Some(m), false) = (init, self.env.blocks.is_empty()) {
+            self.note_union_table(
+                expr.id,
+                vec![(Type::ClassObject(cid, Vec::new()), m)],
+                expr.span,
+            );
+        }
         self.out
             .calls
             .insert(expr.id, CallTarget::Constructor { class: cid, init });

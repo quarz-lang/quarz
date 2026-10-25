@@ -1,0 +1,12 @@
+# A block checked once per type of what it is given: an operation whose
+# methods differ by type is not compiled as the last check's.
+def pk(i: Int) -> Array[Int] | Array[Float] = i > 0 ? [1, 2] : [1.5]
+pk(0).each { |x| p(1 + x) }
+pk(1).each { |x| p(1 + x) }
+pk(0).each { |x| p(2 ** x) }
+pk(0).each { |x| p(7 % x) }
+pk(0).each { |x| p(1 < x) }
+pk(0).each { |x| p(1 == x) }
+pk(0).each { |x| p(3.0 + x) }
+pk(0).each { |x| p([1, 2].first(x.to_i)) }
+p pk(1).map { |x| x + 1 }, pk(0).map { |x| x * 2 }
