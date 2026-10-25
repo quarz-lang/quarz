@@ -36,8 +36,9 @@ when the local one is older.
   the user (`! command`) unless they ask.
 - Write commit messages that say what changed and why, with measured
   numbers for performance work.
-- Do not put a `Claude-Session:` line in commit messages (leave the ones
-  already in the history as they are).
+- Do not put a `Claude-Session:` line in commit messages, nor a Claude
+  session URL (`https://claude.ai/code/session_...`) in pull request
+  descriptions (leave the ones already there as they are).
 - Review every commit with an agent before making it: give a fresh
   subagent the diff (not your own conclusions) and ask it for
   correctness bugs. Fix the findings that need no decision from the
