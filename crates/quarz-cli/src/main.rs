@@ -51,6 +51,8 @@ fn main() -> ExitCode {
     // `QUARZ_NO_PRELUDE_CACHE=1` checks it from its source instead.
     if std::env::var_os("QUARZ_NO_PRELUDE_CACHE").is_none_or(|v| v == "0") {
         quarz_types::set_prelude_cache(include_bytes!(concat!(env!("OUT_DIR"), "/prelude.bin")));
+        let states: &[(&str, &[u8])] = include!(concat!(env!("OUT_DIR"), "/std_states.rs"));
+        quarz_types::set_std_cache(states.iter().map(|(k, b)| (k.to_string(), *b)).collect());
     }
     match args.first().map(String::as_str) {
         Some("tokens") => match args.get(1) {

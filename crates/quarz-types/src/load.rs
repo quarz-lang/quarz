@@ -148,6 +148,7 @@ pub fn load(path: &Path) -> (Vec<LoadedUnit>, Vec<LoadDiagnostic>) {
     let key = canonical(path);
     loader.load_file(path, &key, None);
     loader.load_implicit_std();
+    std_first(&mut loader.units);
     (loader.units, loader.diagnostics)
 }
 
@@ -176,6 +177,7 @@ pub fn load_files(paths: &[PathBuf], std: &[&str]) -> (Vec<LoadedUnit>, Vec<Load
         }
     }
     loader.load_implicit_std();
+    std_first(&mut loader.units);
     (loader.units, loader.diagnostics)
 }
 
@@ -305,6 +307,7 @@ fn load_cogs(
             imports: c.imports.clone(),
         })
         .collect();
+    std_first(&mut loader.units);
     (loader.units, decls, loader.diagnostics)
 }
 
@@ -339,6 +342,7 @@ pub fn load_source(name: &str, text: &str, dir: &Path) -> (Vec<LoadedUnit>, Vec<
     };
     loader.load_text(name, text.to_string(), dir, format!("<{name}>"), None);
     loader.load_implicit_std();
+    std_first(&mut loader.units);
     (loader.units, loader.diagnostics)
 }
 
@@ -398,7 +402,42 @@ struct Loader {
 /// Span/node-id base of the n-th loaded unit (64 MiB of ids each; the
 /// prelude uses the range starting at 0).
 pub fn unit_base(n: u32) -> u32 {
-    (n + 1) << 26
+    (n + 1) << UNIT_BITS
+}
+
+/// A unit's spans and node ids fit in `1 << UNIT_BITS` (4 MiB of source);
+/// unit numbers go up to `MAX_UNITS`, the standard library's after the
+/// program's.
+pub const UNIT_BITS: u32 = 22;
+pub const MAX_UNITS: u32 = 1000;
+
+/// The unit number a standard library module's spans and node ids come
+/// from, whatever loads it: the same in every program, so that its
+/// checked state can be kept (`std_state`). Above the program's files.
+pub fn std_unit(module: &str) -> u32 {
+    let i = STD_MODULES
+        .iter()
+        .position(|(n, _)| *n == module)
+        .unwrap_or(0);
+    MAX_UNITS + i as u32
+}
+
+/// Put the standard library's modules first, in `STD_MODULES` order (each
+/// after the modules it requires): they depend on nothing else, and so
+/// they take the same file numbers in every program that loads the same
+/// ones.
+fn std_first(units: &mut [LoadedUnit]) {
+    let rank = |u: &LoadedUnit| -> usize {
+        match u
+            .name
+            .strip_prefix("<std:")
+            .and_then(|n| n.strip_suffix('>'))
+        {
+            Some(m) => STD_MODULES.iter().position(|(n, _)| *n == m).unwrap_or(0),
+            None => STD_MODULES.len(),
+        }
+    };
+    units.sort_by_key(|u| rank(u));
 }
 
 pub(crate) fn canonical(path: &Path) -> String {
@@ -454,6 +493,16 @@ impl Loader {
         let base = unit_base(self.next_unit);
         self.next_unit += 1;
         let name = path.display().to_string();
+        if self.next_unit > MAX_UNITS || text.len() >= 1 << UNIT_BITS {
+            self.diagnostics.push((
+                SourceFile::new(name, ""),
+                Diagnostic::error(
+                    "cannot load more than 1000 files, or a file of 4 MiB or more",
+                    quarz_syntax::Span::empty(0),
+                ),
+            ));
+            return;
+        }
         let source = SourceFile::with_base(name.clone(), text, base);
         let parsed = parse_cog_file(&source.text, base, base, meta);
         let mut failed = false;
@@ -542,9 +591,28 @@ impl Loader {
     ) {
         self.visited.insert(key.clone());
         self.in_progress.push(key.clone());
-        // Each unit gets its own range of spans and node ids.
-        let base = unit_base(self.next_unit);
-        self.next_unit += 1;
+        // Each unit gets its own range of spans and node ids (a standard
+        // library module always the same one).
+        let base = match key.strip_prefix("<std:").and_then(|n| n.strip_suffix('>')) {
+            Some(module) => unit_base(std_unit(module)),
+            None => {
+                self.next_unit += 1;
+                unit_base(self.next_unit - 1)
+            }
+        };
+        if self.next_unit > MAX_UNITS || text.len() >= 1 << UNIT_BITS {
+            let what = if text.len() >= 1 << UNIT_BITS {
+                "a file of 4 MiB or more"
+            } else {
+                "more than 1000 files"
+            };
+            self.diagnostics.push((
+                SourceFile::new(name, ""),
+                Diagnostic::error(format!("cannot load {what}"), quarz_syntax::Span::empty(0)),
+            ));
+            self.in_progress.pop();
+            return;
+        }
         let source = SourceFile::with_base(name, text, base);
         let parsed = parse_with_bases(&source.text, base, base);
         let mut failed = false;

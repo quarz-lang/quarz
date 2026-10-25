@@ -70,6 +70,7 @@ impl From<LoadedUnit> for Unit {
 
 /// A checked compilation unit: its top-level statements and the
 /// pseudo-class holding its top-level methods.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct CheckedUnit {
     pub file: u32,
     pub name: String,
@@ -385,6 +386,9 @@ pub struct PreludeState {
     pub world: World,
     pub output: Output,
     pub self_news: Vec<check::SelfNew>,
+    /// The standard library's modules checked with it (`std_state`): the
+    /// first units of a program that loads exactly these.
+    pub units: Vec<CheckedUnit>,
 }
 
 impl PreludeState {
@@ -416,9 +420,74 @@ pub fn prelude_state(prelude: &Program) -> (PreludeState, Vec<FileDiagnostic>) {
             world,
             output,
             self_news,
+            units: Vec::new(),
         },
         diagnostics,
     )
+}
+
+/// Declare and check the prelude with the standard library's `modules`
+/// (each after those it requires, in `STD_MODULES` order), as a program
+/// that loads exactly these has them first (`load::std_first`).
+pub fn std_state(prelude: &Program, modules: &[&str]) -> (PreludeState, Vec<FileDiagnostic>) {
+    let parsed: Vec<(String, Program)> = modules
+        .iter()
+        .map(|m| {
+            let text = load::STD_MODULES.iter().find(|(n, _)| n == m).unwrap().1;
+            let base = load::unit_base(load::std_unit(m));
+            (
+                format!("<std:{m}>"),
+                parse_with_bases(text, base, base).program,
+            )
+        })
+        .collect();
+    let mut declarer = declare::Declarer::new();
+    declarer.collect_prelude(prelude);
+    for (i, (_, program)) in parsed.iter().enumerate() {
+        let file = i as u32 + 1;
+        declarer.world.std_files.insert(file);
+        declarer.collect_unit(program, file);
+    }
+    declarer.resolve_headers();
+    let mut diagnostics = std::mem::take(&mut declarer.diagnostics);
+    let mut file_mains: Vec<Option<ClassId>> = vec![None; parsed.len() + 1];
+    let mut bodies: Vec<(u32, ClassId, Vec<&Expr>)> = Vec::new();
+    for u in &declarer.units {
+        file_mains[u.file as usize] = Some(u.main);
+        bodies.push((u.file, u.main, u.body.clone()));
+    }
+    let mut checker = check::Checker::new(declarer.world, file_mains);
+    let refs: Vec<(u32, Vec<&Expr>)> = bodies.iter().map(|(f, _, b)| (*f, b.clone())).collect();
+    checker.check_all(&refs);
+    let units = bodies
+        .into_iter()
+        .map(|(file, main, body)| CheckedUnit {
+            file,
+            name: parsed[file as usize - 1].0.clone(),
+            main_class: main,
+            body: body.into_iter().cloned().collect(),
+        })
+        .collect();
+    let self_news = checker.self_news().to_vec();
+    let (world, output, mut diags) = checker.into_output();
+    diagnostics.append(&mut diags);
+    (
+        PreludeState {
+            world,
+            output,
+            self_news,
+            units,
+        },
+        diagnostics,
+    )
+}
+
+static STD_CACHE: std::sync::OnceLock<Vec<(String, &'static [u8])>> = std::sync::OnceLock::new();
+
+/// Start checking a program whose first units are exactly the standard
+/// library modules named (comma-separated) from these encoded states.
+pub fn set_std_cache(states: Vec<(String, &'static [u8])>) {
+    let _ = STD_CACHE.set(states);
 }
 
 static PRELUDE_CACHE: std::sync::OnceLock<&'static [u8]> = std::sync::OnceLock::new();
@@ -465,11 +534,29 @@ pub fn check_with_extra(
 ) -> (Option<Checked>, Vec<FileDiagnostic>) {
     // The prelude declared and checked ahead of time (`prelude_state`),
     // when the command was built with it.
-    let cached = PRELUDE_CACHE.get().map(|bytes| PreludeState::decode(bytes));
+    // And with the standard library modules the program loads first
+    // (`std_state`), when exactly those were.
+    let leading = units
+        .iter()
+        .take_while(|u| u.name.starts_with("<std:"))
+        .count();
+    let key: Vec<&str> = units[..leading]
+        .iter()
+        .map(|u| u.name.trim_start_matches("<std:").trim_end_matches('>'))
+        .collect();
+    let std_cached = (leading > 0)
+        .then(|| STD_CACHE.get())
+        .flatten()
+        .and_then(|states| states.iter().find(|(k, _)| *k == key.join(",")))
+        .map(|(_, bytes)| PreludeState::decode(bytes));
+    let cached =
+        std_cached.or_else(|| PRELUDE_CACHE.get().map(|bytes| PreludeState::decode(bytes)));
     let mut prelude_output = None;
+    let mut std_units: Vec<CheckedUnit> = Vec::new();
     let mut declarer = match cached {
         Some(state) => {
             prelude_output = Some((state.output, state.self_news));
+            std_units = state.units;
             declare::Declarer::with_world(state.world)
         }
         None => {
@@ -479,7 +566,7 @@ pub fn check_with_extra(
         }
     };
     declarer.declare_cogs(cogs, units.len() as u32);
-    for (i, unit) in units.iter().enumerate() {
+    for (i, unit) in units.iter().enumerate().skip(std_units.len()) {
         let file = i as u32 + 1;
         if unit.name.starts_with("<std:") {
             declarer.world.std_files.insert(file);
@@ -494,6 +581,9 @@ pub fn check_with_extra(
     declarer.resolve_headers();
     let mut diagnostics = std::mem::take(&mut declarer.diagnostics);
     let mut file_mains: Vec<Option<ClassId>> = vec![None; units.len() + 1];
+    for u in &std_units {
+        file_mains[u.file as usize] = Some(u.main_class);
+    }
     let mut bodies: Vec<(u32, Vec<&Expr>)> = Vec::new();
     for u in &declarer.units {
         file_mains[u.file as usize] = Some(u.main);
@@ -512,15 +602,13 @@ pub fn check_with_extra(
         checker.set_self_news(sites);
     }
     checker.check_all(&bodies);
-    let mut checked_units: Vec<CheckedUnit> = bodies
-        .into_iter()
-        .map(|(file, body)| CheckedUnit {
-            file,
-            name: units[file as usize - 1].name.clone(),
-            main_class: file_mains[file as usize].unwrap(),
-            body: body.into_iter().cloned().collect(),
-        })
-        .collect();
+    let mut checked_units: Vec<CheckedUnit> = std::mem::take(&mut std_units);
+    checked_units.extend(bodies.into_iter().map(|(file, body)| CheckedUnit {
+        file,
+        name: units[file as usize - 1].name.clone(),
+        main_class: file_mains[file as usize].unwrap(),
+        body: body.into_iter().cloned().collect(),
+    }));
     diagnostics.append(&mut checker.take_diagnostics());
     if let Some(extra) = extra {
         if !diagnostics.iter().any(|(_, d)| d.is_error()) {
