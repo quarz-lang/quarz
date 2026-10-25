@@ -114,20 +114,9 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     native!(m, "String#upto", |i, r, a| {
         let b = block(i, &a)?;
         let last = string(i, a.arg(0), "last")?;
-        let last_len = last.chars().count();
-        let mut current = r.clone();
-        if s(i, &current)?.chars().count() > last_len {
-            return Ok(Value::Nil);
-        }
-        loop {
-            i.call_block(&b, smallvec![current.clone()])?;
-            if s(i, &current)? == last {
-                break;
-            }
-            current = super::string::string_succ(i, &current, Args::default())?;
-            if s(i, &current)?.chars().count() > last_len {
-                break;
-            }
+        let mut steps = StringSteps::new(s(i, r)?, last, false);
+        while let Some(v) = steps.next() {
+            i.call_block(&b, smallvec![Value::string(v)])?;
         }
         Ok(Value::Nil)
     });
@@ -685,5 +674,299 @@ pub(super) fn wants_match(interp: &Interp, block: &Value) -> bool {
             ClosureBody::BoundMethod { .. } | ClosureBody::Native(_) => true,
         },
         _ => true,
+    }
+}
+
+/// The strings from a start to `last` (`String#upto`, a string `Range`),
+/// stepped one at a time as Ruby's `rb_str_upto_each` does: two single
+/// ASCII characters by character; two strings of digits as numbers of
+/// any size, padded to the start's width; otherwise by `succ` from the
+/// start (nothing when it sorts after `last`), ending at `last`, at
+/// `last.succ`, or once longer than `last` in bytes.
+pub(super) enum StringSteps {
+    Chars {
+        next: u8,
+        last: u8,
+        exclusive: bool,
+    },
+    /// `next` and `last` without leading zeros.
+    Digits {
+        next: String,
+        last: String,
+        width: usize,
+        exclusive: bool,
+    },
+    Succ {
+        next: Option<String>,
+        last: String,
+        after_last: String,
+        exclusive: bool,
+    },
+    Done,
+}
+
+impl StringSteps {
+    pub(super) fn new(first: &str, last: &str, exclusive: bool) -> StringSteps {
+        let (fb, lb) = (first.as_bytes(), last.as_bytes());
+        if fb.len() == 1 && lb.len() == 1 && fb[0].is_ascii() && lb[0].is_ascii() {
+            if fb[0] > lb[0] || (exclusive && fb[0] == lb[0]) {
+                return StringSteps::Done;
+            }
+            return StringSteps::Chars {
+                next: fb[0],
+                last: lb[0],
+                exclusive,
+            };
+        }
+        let digits = |t: &[u8]| !t.is_empty() && t.iter().all(u8::is_ascii_digit);
+        if digits(fb) && digits(lb) {
+            let bare = |t: &str| {
+                let t = t.trim_start_matches('0');
+                if t.is_empty() {
+                    "0".to_string()
+                } else {
+                    t.to_string()
+                }
+            };
+            return StringSteps::Digits {
+                next: bare(first),
+                last: bare(last),
+                width: first.len(),
+                exclusive,
+            };
+        }
+        let order = first.cmp(last);
+        if order.is_gt() || (exclusive && order.is_eq()) {
+            return StringSteps::Done;
+        }
+        StringSteps::Succ {
+            next: Some(first.to_string()),
+            last: last.to_string(),
+            after_last: succ(last),
+            exclusive,
+        }
+    }
+
+    pub(super) fn next(&mut self) -> Option<String> {
+        match self {
+            StringSteps::Done => None,
+            StringSteps::Chars {
+                next,
+                last,
+                exclusive,
+            } => {
+                let c = *next;
+                if c == *last || (*exclusive && c + 1 == *last) {
+                    *self = StringSteps::Done;
+                } else {
+                    *next = c + 1;
+                }
+                Some((c as char).to_string())
+            }
+            StringSteps::Digits {
+                next,
+                last,
+                width,
+                exclusive,
+            } => {
+                let order = next
+                    .len()
+                    .cmp(&last.len())
+                    .then_with(|| next.as_str().cmp(last));
+                if order.is_gt() || (*exclusive && order.is_eq()) {
+                    *self = StringSteps::Done;
+                    return None;
+                }
+                let out = format!("{next:0>width$}", width = *width);
+                increment_decimal(next);
+                Some(out)
+            }
+            StringSteps::Succ {
+                next,
+                last,
+                after_last,
+                exclusive,
+            } => {
+                let current = next.take()?;
+                if current == *after_last {
+                    return None;
+                }
+                if *exclusive || current != *last {
+                    let n = succ(&current);
+                    let stop = (*exclusive && n == *last) || n.len() > last.len() || n.is_empty();
+                    if !stop {
+                        *next = Some(n);
+                    }
+                }
+                Some(current)
+            }
+        }
+    }
+}
+
+/// Adds one to a string of decimal digits.
+pub(super) fn increment_decimal(n: &mut String) {
+    let mut bytes = std::mem::take(n).into_bytes();
+    let mut i = bytes.len();
+    loop {
+        if i == 0 {
+            bytes.insert(0, b'1');
+            break;
+        }
+        i -= 1;
+        if bytes[i] == b'9' {
+            bytes[i] = b'0';
+        } else {
+            bytes[i] += 1;
+            break;
+        }
+    }
+    *n = String::from_utf8(bytes).unwrap_or_default();
+}
+
+/// `String#succ`, as Ruby's `str_succ`: the rightmost letter or digit
+/// steps (`z` to `a`, `Z` to `A` and `9` to `0`, and the end of any
+/// other run of letters or digits to its start, carrying to the next one
+/// on the left, across other characters but not from an ASCII letter to
+/// an ASCII digit or back across them), a carry past the leftmost adding
+/// a character (`a`, `A`, `1`, ...) there; a string without letters or
+/// digits steps its last character, within its UTF-8 length.
+pub(super) fn succ(text: &str) -> String {
+    let mut chars: Vec<char> = text.chars().collect();
+    let mut carry: Option<(usize, char)> = None;
+    let mut last_alnum: Option<char> = None;
+    let mut after_other = false;
+    let mut i = chars.len();
+    while i > 0 {
+        i -= 1;
+        let c = chars[i];
+        if after_other {
+            if let Some(l) = last_alnum {
+                let (la, ld) = (l.is_ascii_alphabetic(), l.is_ascii_digit());
+                if (la && c.is_ascii_digit()) || (ld && c.is_ascii_alphabetic()) {
+                    break;
+                }
+            }
+        }
+        match succ_alnum(c) {
+            Alnum::Other => after_other = true,
+            Alnum::Found(next) => {
+                chars[i] = next;
+                return chars.into_iter().collect();
+            }
+            Alnum::Wrapped(next, w) => {
+                chars[i] = next;
+                after_other = false;
+                last_alnum = Some(next);
+                carry = Some((i, w));
+            }
+        }
+    }
+    if carry.is_none() {
+        // No letter or digit: the last character steps, a wrap (past the
+        // characters of its UTF-8 length) carrying left, then a "\x01".
+        let mut i = chars.len();
+        while i > 0 {
+            i -= 1;
+            match step_char(chars[i], true) {
+                Some(next) => {
+                    chars[i] = next;
+                    return chars.into_iter().collect();
+                }
+                None => {
+                    chars[i] = utf8_range(chars[i]).0;
+                    carry = Some((i, '\u{1}'));
+                }
+            }
+        }
+    }
+    if let Some((at, w)) = carry {
+        chars.insert(at, w);
+    }
+    chars.into_iter().collect()
+}
+
+enum Alnum {
+    Other,
+    Found(char),
+    /// The character it wraps to, and the one carried.
+    Wrapped(char, char),
+}
+
+/// One letter or digit stepped, as Ruby's `enc_succ_alnum_char`: to the
+/// next character, or the one after it, of the same kind; past the end
+/// of its run, to the run's start, carrying it (a letter) or the digit
+/// after it (`9` wraps to `0` and carries `1`).
+fn succ_alnum(c: char) -> Alnum {
+    let digit = is_decimal_digit(c);
+    if !digit && !c.is_alphabetic() {
+        return Alnum::Other;
+    }
+    let same = |x: char| {
+        if digit {
+            is_decimal_digit(x)
+        } else {
+            x.is_alphabetic()
+        }
+    };
+    let mut p = c;
+    for _ in 0..2 {
+        match step_char(p, true) {
+            Some(n) if same(n) => return Alnum::Found(n),
+            Some(n) => p = n,
+            None => break,
+        }
+    }
+    let mut start = c;
+    let mut run = 1;
+    while let Some(q) = step_char(start, false).filter(|q| same(*q)) {
+        start = q;
+        run += 1;
+    }
+    if run == 1 {
+        return Alnum::Other;
+    }
+    let carried = if digit {
+        step_char(start, true).unwrap_or(start)
+    } else {
+        start
+    };
+    Alnum::Wrapped(start, carried)
+}
+
+/// A decimal digit of any script (Unicode `Nd`), as Onigmo's DIGIT.
+fn is_decimal_digit(c: char) -> bool {
+    if c.is_ascii() {
+        return c.is_ascii_digit();
+    }
+    static ND: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let nd = ND.get_or_init(|| regex::Regex::new(r"^\p{Nd}$").expect("a valid pattern"));
+    let mut buf = [0u8; 4];
+    nd.is_match(c.encode_utf8(&mut buf))
+}
+
+/// The first and last characters of `c`'s UTF-8 length.
+fn utf8_range(c: char) -> (char, char) {
+    match c.len_utf8() {
+        1 => ('\0', '\u{7f}'),
+        2 => ('\u{80}', '\u{7ff}'),
+        3 => ('\u{800}', '\u{ffff}'),
+        _ => ('\u{10000}', char::MAX),
+    }
+}
+
+/// The character after (or before) `c` of the same UTF-8 length, `None`
+/// past the end of those.
+fn step_char(c: char, up: bool) -> Option<char> {
+    let (lo, hi) = utf8_range(c);
+    let mut n = c as u32;
+    loop {
+        if (up && n == hi as u32) || (!up && n == lo as u32) {
+            return None;
+        }
+        n = if up { n + 1 } else { n - 1 };
+        if let Some(ch) = char::from_u32(n) {
+            return Some(ch);
+        }
     }
 }

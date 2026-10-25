@@ -197,7 +197,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
                         i,
                         &io,
                         |io| reader_of(io).and_then(at_eof_buffered),
-                        |io| match io.reader.as_mut() {
+                        |io| match reader_for_read(io)? {
                             Some(r) => r.fill_buf().map(|b| b.is_empty()),
                             None => Ok(true),
                         },
@@ -225,11 +225,14 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
                     &io,
                     |_| None,
                     |io| -> std::io::Result<()> {
-                        if let Some(reader) = io.reader.as_mut() {
-                            reader.seek(std::io::SeekFrom::Start(0))?;
-                        }
+                        // The writer first: seeking it writes what it
+                        // holds where the program wrote it, before the
+                        // reader moves the shared offset.
                         if let Some(writer) = io.writer.as_mut() {
                             writer.seek(std::io::SeekFrom::Start(0))?;
+                        }
+                        if let Some(reader) = io.reader.as_mut() {
+                            reader.seek(std::io::SeekFrom::Start(0))?;
                         }
                         Ok(())
                     },
@@ -952,7 +955,22 @@ fn stdin_state() -> &'static Arc<Mutex<BufReader<std::io::Stdin>>> {
 }
 
 fn reader_of(io: &mut FileIo) -> Option<&mut BufReader<std::fs::File>> {
+    // Unwritten data first (`reader_for_read`, on the slow path).
+    if io.writer.as_ref().is_some_and(|w| !w.buffer().is_empty()) {
+        return None;
+    }
     io.reader.as_mut()
+}
+
+/// The reader, after writing what the writer holds (`"r+"`): the read
+/// then comes after the write, as the program wrote them.
+fn reader_for_read(io: &mut FileIo) -> std::io::Result<Option<&mut BufReader<std::fs::File>>> {
+    if let Some(w) = io.writer.as_mut() {
+        if !w.buffer().is_empty() {
+            w.flush()?;
+        }
+    }
+    Ok(io.reader.as_mut())
 }
 
 /// A whole line the buffer holds, taken from it.
@@ -1043,18 +1061,35 @@ fn io_write_bytes(interp: &Interp, recv: &Value, bytes: &[u8]) -> Result<(), Flo
                 f.io.clone()
             };
             // What fits in the buffer is copied there; the rest goes out
-            // on a helper thread.
+            // on a helper thread. After a read (`"r+"`), the reader has
+            // read ahead of where the program is: the write goes to the
+            // read position, so the reader's buffer is dropped and the
+            // shared offset moved back first.
             let owned = bytes.to_vec();
             buffered(
                 interp,
                 &io,
                 |io| {
+                    if io.reader.as_ref().is_some_and(|r| !r.buffer().is_empty()) {
+                        return None;
+                    }
                     let w = io.writer.as_mut()?;
                     (w.capacity() - w.buffer().len() >= bytes.len()).then(|| w.write_all(bytes))
                 },
-                move |io| match io.writer.as_mut() {
-                    Some(w) => w.write_all(&owned),
-                    None => Ok(()),
+                move |io| {
+                    if let Some(r) = io.reader.as_mut() {
+                        if !r.buffer().is_empty() {
+                            // To the read position: seeking drops the buffer
+                            // and moves the shared offset there.
+                            use std::io::Seek;
+                            let at = r.stream_position()?;
+                            r.seek(std::io::SeekFrom::Start(at))?;
+                        }
+                    }
+                    match io.writer.as_mut() {
+                        Some(w) => w.write_all(&owned),
+                        None => Ok(()),
+                    }
                 },
             )?
             .map_err(|e| os_error(interp, e, "write"))?;
@@ -1078,7 +1113,7 @@ fn io_gets(interp: &Interp, recv: &Value, raise_on_eof: bool) -> EvalResult {
                 interp,
                 &io,
                 |io| reader_of(io).and_then(line_buffered),
-                |io| match io.reader.as_mut() {
+                |io| match reader_for_read(io)? {
                     Some(r) => line_slow(r),
                     None => Ok(Vec::new()),
                 },
@@ -1130,7 +1165,7 @@ fn read_raw(interp: &Interp, recv: &Value, limit: Option<usize>) -> Result<Vec<u
                 interp,
                 &io,
                 |io| reader_of(io).and_then(|r| bytes_buffered(r, limit)),
-                move |io| match io.reader.as_mut() {
+                move |io| match reader_for_read(io)? {
                     Some(r) => bytes_slow(r, limit),
                     None => Ok(Vec::new()),
                 },

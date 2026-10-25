@@ -897,7 +897,26 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         Ok(Value::Bool(i.range_covers(range(i, r)?, a.arg(0))?))
     });
     native!(m, "Range#size", |i, r, _| {
-        Ok(Value::Int(range_to_vec(i, range(i, r)?)?.len() as i64))
+        let rg = range(i, r)?;
+        // Counted, not collected.
+        if let (Value::Int(lo), Value::Int(hi)) = (&rg.lo, &rg.hi) {
+            let end = if rg.exclusive {
+                *hi as i128
+            } else {
+                *hi as i128 + 1
+            };
+            return Ok(Value::Int(
+                (end - *lo as i128).clamp(0, i64::MAX as i128) as i64
+            ));
+        }
+        if let Some(mut steps) = string_steps(rg) {
+            let mut n = 0i64;
+            while steps.next().is_some() {
+                n += 1;
+            }
+            return Ok(Value::Int(n));
+        }
+        Ok(Value::Int(range_to_vec(i, rg)?.len() as i64))
     });
     native!(m, "Range#step", |i, r, a| {
         if a.block.is_none() {
@@ -1299,7 +1318,7 @@ pub(super) fn enum_sort(interp: &Interp, recv: &Value, args: Args) -> EvalResult
                 }
                 ArrayData::Floats(xs) => {
                     let mut xs = xs.clone();
-                    xs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                    xs.sort_by(|a, b| crate::interp::float_order(*a, *b));
                     return Ok(Value::floats(xs));
                 }
                 ArrayData::Values(_) | ArrayData::Objects(_) => {}
@@ -1338,8 +1357,7 @@ pub(super) fn enum_extreme(interp: &Interp, recv: &Value, args: &Args, min: bool
                     return Ok(Value::Int(*best.unwrap()));
                 }
                 ArrayData::Floats(xs) if !xs.is_empty() => {
-                    let pick =
-                        |a: &&f64, b: &&f64| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal);
+                    let pick = |a: &&f64, b: &&f64| crate::interp::float_order(**a, **b);
                     let best = if min {
                         xs.iter().min_by(pick)
                     } else {
@@ -1394,11 +1412,17 @@ fn ab_set(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     if idx < 0 {
         return Err(interp.err_index("index out of bounds"));
     }
+    // At the end, it appends; past it, a gap would hold nils the
+    // element type may not allow.
     let idx = idx as usize;
-    if idx >= v.len() {
-        v.resize(idx + 1, Value::Nil);
+    if idx > v.len() {
+        return Err(interp.err_index(&format!("index {idx} out of bounds (size {n})")));
     }
-    v[idx] = args.arg(1).clone();
+    if idx == v.len() {
+        v.push(args.arg(1).clone());
+    } else {
+        v[idx] = args.arg(1).clone();
+    }
     Ok(args.arg(1).clone())
 }
 
@@ -1487,31 +1511,20 @@ pub fn range_to_vec(interp: &Interp, r: &RangeVal) -> Result<Vec<Value>, Flow> {
             Ok((*lo..end).map(Value::Int).collect())
         }
         (lo, hi) if lo.is_str() && hi.is_str() => {
-            let hi = hi.as_str().unwrap_or("");
-            let mut out = Vec::new();
-            let mut cur = lo.clone();
-            let mut guard = 0;
-            while let Some(s) = cur.as_str() {
-                if s.len() > hi.len() {
-                    break;
-                }
-                if s == hi {
-                    if !r.exclusive {
-                        out.push(cur.clone());
-                    }
-                    break;
-                }
-                out.push(cur.clone());
-                cur = interp.send(&cur, "succ", smallvec![], None)?;
-                guard += 1;
-                if guard > 1_000_000 {
-                    break;
-                }
-            }
-            Ok(out)
+            let mut steps = string_steps(r).expect("a string range");
+            Ok(std::iter::from_fn(|| steps.next())
+                .map(Value::string)
+                .collect())
         }
         _ => Err(interp.err_type("cannot iterate over an endless or non-integer range")),
     }
+}
+
+/// The strings of a `String` range, one at a time (it may have more than
+/// fit in memory).
+pub(super) fn string_steps(r: &RangeVal) -> Option<super::text::StringSteps> {
+    let (lo, hi) = (r.lo.as_str()?, r.hi.as_str()?);
+    Some(super::text::StringSteps::new(lo, hi, r.exclusive))
 }
 
 pub(super) fn range_each(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
@@ -1537,6 +1550,12 @@ pub(super) fn range_each(interp: &Interp, recv: &Value, args: Args) -> EvalResul
             }
         }
         _ => {
+            if let Some(mut steps) = string_steps(r) {
+                while let Some(v) = steps.next() {
+                    interp.call_block(&b, smallvec![Value::string(v)])?;
+                }
+                return Ok(Value::Nil);
+            }
             for v in range_to_vec(interp, r)? {
                 interp.call_block(&b, smallvec![v])?;
             }
