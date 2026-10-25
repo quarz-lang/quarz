@@ -9,7 +9,7 @@ class Shape
   def self.build -> Self = new
   def self.named(n: String) -> Self = new(n)
   def self.twice -> Self = build
-  def self.me = self
+  def self.me -> Class = self
 end
 class Circle < Shape
   def self.label -> String = "circle"

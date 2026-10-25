@@ -400,12 +400,10 @@ struct LogicalSeen {
 }
 
 /// What an error reported when checking is done (`Checker::ambiguous`) is
-/// about, for reporting it once: a node, or a call by its span.
+/// about, for reporting it once.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 enum AmbiguousKey {
     Node(NodeId),
-    /// A call by its span and method.
-    Call(u32, u32, MethodId),
 }
 
 /// A class method calling `new` on its own class (`Checker::self_news`):
@@ -615,8 +613,6 @@ pub struct Checker {
     /// What the checks of a block found for `a && b` / `a || b`: a type's
     /// own method, the built-in operator, and whether that was reported.
     logical_seen: HashMap<NodeId, LogicalSeen>,
-    /// Files the compiler wrote (`quarz test`'s runner).
-    generated_files: rustc_hash::FxHashSet<u32>,
     op_given_up: rustc_hash::FxHashSet<(NodeId, bool)>,
     pub world: World,
     pub diagnostics: Vec<(u32, Diagnostic)>,
@@ -730,7 +726,6 @@ impl Checker {
         Checker {
             op_seen: HashMap::default(),
             logical_seen: HashMap::default(),
-            generated_files: Default::default(),
             op_given_up: Default::default(),
             world,
             diagnostics: Vec::new(),
@@ -1386,11 +1381,6 @@ impl Checker {
         self.self_news = sites;
     }
 
-    /// Mark `file` as written by the compiler (`quarz test`'s runner).
-    pub fn mark_generated(&mut self, file: u32) {
-        self.generated_files.insert(file);
-    }
-
     pub fn file_main_class(&self, file: u32) -> Option<ClassId> {
         self.file_main(file)
     }
@@ -1571,42 +1561,8 @@ impl Checker {
 
     // ----- methods ---------------------------------------------------------
 
-    /// The return type of a method, inferring it from the body if needed.
-    /// A call at `span` to method `mid`: one from another file needs the
-    /// method's return type written.
-    fn note_cross_file(&mut self, mid: MethodId, span: Span) {
-        // One file is one unit, compiled on its own: a method another file
-        // calls gives its result type in its signature (docs/05 §2). (Not
-        // for the code the compiler writes, as `quarz test`'s runner.)
-        let info = self.world.method(mid);
-        if info.synth == Synth::None
-            && info.file != self.env.file
-            && !self.generated_files.contains(&self.env.file)
-            && info
-                .body
-                .as_ref()
-                .is_some_and(|d| d.ret.is_none() && d.body.is_some())
-            && info.name != "initialize"
-        {
-            let label = self.method_label(mid);
-            let d = Diagnostic::error(
-                format!(
-                    "`{label}` is defined in another file without a return type: write it (`-> T`), as each file is compiled on its own"
-                ),
-                span,
-            );
-            // Reported when checking is done (`flush_ambiguous`), so that
-            // it does not make an overload being tried fail.
-            self.ambiguous.push((
-                self.env.file,
-                AmbiguousKey::Call(span.start, span.end, mid),
-                d,
-            ));
-        }
-    }
-
+    /// The return type of a method (declared: one without returns nil).
     fn method_ret(&mut self, mid: MethodId, span: Span) -> Type {
-        self.note_cross_file(mid, span);
         match self.world.method(mid).ret.clone() {
             RetType::Known(t) => t,
             RetType::Inferring => {
@@ -3968,6 +3924,18 @@ impl Checker {
                             None => self.world.nil(),
                         };
                         self.mark_discarded(value.as_deref(), void);
+                        // A method that returns nil (one without a return
+                        // type) gives no value: `return x` would drop it.
+                        let rt = self.resolve(&t);
+                        if void && !rt.is_nothing() && !self.world.is_nil_type(&rt) {
+                            self.error(
+                                format!(
+                                    "`return` gives a {} but the method returns nil (write its return type: `-> T`)",
+                                    self.name(&t)
+                                ),
+                                expr.span,
+                            );
+                        }
                         if !void && !self.coerce(&t, &ret) {
                             self.error(
                                 format!(
@@ -4086,9 +4054,6 @@ impl Checker {
                                 && self.extension_bounds_hold(*id, subst)
                         })
                         .map(|(m, _)| m);
-                    if let Some(m) = to_s {
-                        self.note_cross_file(m, e.span);
-                    }
                     let found = to_s.filter(|m| self.world.method(*m).extension.is_some());
                     self.note_interp_to_s(e.id, cid, found, e.span);
                 }
@@ -5438,7 +5403,6 @@ impl Checker {
                     self.out
                         .calls
                         .insert(expr.id, CallTarget::Method { method: cands[0].0 });
-                    self.note_cross_file(cands[0].0, expr.span);
                     if !self.env.blocks.is_empty() && self.test_class(&rt).is_some() {
                         self.note_union_table(expr.id, vec![(rt.clone(), cands[0].0)], expr.span);
                     }
@@ -5457,7 +5421,6 @@ impl Checker {
                     self.out
                         .calls
                         .insert(expr.id, CallTarget::Method { method: cands[0].0 });
-                    self.note_cross_file(cands[0].0, expr.span);
                     if !self.env.blocks.is_empty() && self.test_class(&rt).is_some() {
                         self.note_union_table(expr.id, vec![(rt.clone(), cands[0].0)], expr.span);
                     }

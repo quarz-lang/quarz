@@ -315,16 +315,35 @@ fn methods_and_calls() {
     );
     ok("def f(a: Int, *, k: Int = 1, v: Bool = false) -> Int = a + k\nputs f(1) + f(2, k: 3) + f(a: 4, v: true)");
     err("def f(a: Int)\nend\nf(b: 1)", "has no parameter `b`");
+    // Return types are declared, not inferred: without one, a method
+    // returns nil, and one defined with `=` must have it.
+    ok("def f\n  f\nend");
     err(
-        "def f\n  f\nend",
-        "recursive method `f` needs an explicit return type",
+        "def g\n  5\nend\nx: Int = g",
+        "cannot assign Nil to `x` of type Int",
     );
+    err(
+        "def h\n  return 5 if true\n  nil\nend",
+        "`return` gives a Int but the method returns nil",
+    );
+    ok("def h\n  return if true\n  return nil\nend");
+    // An override returns what the overridden method does.
+    err("abstract class Shape\n  abstract def area -> Float\nend\nclass Ci < Shape\n  def area\n    2.0\n  end\nend", "`area` returns Nil but `Shape#area`, which it overrides, returns Float (a method without a return type returns nil)");
+    err(
+        "class Foo\n  def to_s\n    \"foo\"\n  end\nend",
+        "`to_s` returns Nil but `Object#to_s`, which it overrides, returns String",
+    );
+    err(
+        "class K\n  include Comparable[K]\n  def <=>(o: K) -> String = \"x\"\nend",
+        "`<=>` returns String but `Comparable#<=>`",
+    );
+    ok("class A\n  def make -> Object = 1\nend\nclass B < A\n  def make -> Int = 2\nend");
     ok("def fact(n: Int) -> Int = n <= 1 ? 1 : n * fact(n - 1)\nputs fact(5)");
     err(
         "def f(x: Int) -> String\n  x\nend",
         "returns String but its body has type Int",
     );
-    ok("def f(x: Int)\n  x * 2\nend\ny: Int = f(2)");
+    ok("def f(x: Int) -> Int\n  x * 2\nend\ny: Int = f(2)");
     err(
         "def f\n  yield\nend",
         "`yield` in a method without a block parameter",
@@ -686,7 +705,7 @@ fn shareable_procedures() {
         "{run}f: shareable (Int) -> Int = ->(n: Int) {{ n + 1 }}\nTask.spawn {{ f.call(1) }}"
     ));
     ok(&format!(
-        "{run}def opt(f: (shareable () -> Nil)? = nil) = f\nopt(f: ->() {{ puts 1 }})"
+        "{run}def opt(f: (shareable () -> Nil)? = nil) -> (shareable () -> Nil)? = f\nopt(f: ->() {{ puts 1 }})"
     ));
     err(
         &format!("{run}n = 0\nrun {{ n += 1 }}"),
@@ -1277,7 +1296,7 @@ fn checks_the_types_it_cannot_take_on_trust() {
     ok("def keep[T](x: T) -> T\n  if x.is_a?(String)\n    p x.upcase\n    return x\n  end\n  x\nend");
     ok("data Pair[A, B] = (a: A, b: B)\ndef f[T](x: T) -> T\n  case x\n  in Array then p x.size\n  in Pair(a, b) then p a\n  else\n  end\n  x\nend");
     // It does not leave the branch through inferred types.
-    err("class Box[T]\n  def initialize(@v: T); end\n  @v: T\n  def s\n    @v.is_a?(String) ? @v : nil\n  end\n  def steal(b: Box[String]) -> T? = b.s\nend", "method `steal` returns T? but its body has type String?");
+    err("class Box[T]\n  def initialize(@v: T); end\n  @v: T\n  def s -> String?\n    @v.is_a?(String) ? @v : nil\n  end\n  def steal(b: Box[String]) -> T? = b.s\nend", "method `steal` returns T? but its body has type String?");
     ok("def f[T](x: T, z: T) -> Array[T]\n  ys = []\n  if x.is_a?(String)\n    ys = ys.push(x)\n  end\n  ys = ys.push(z)\n  ys\nend");
     ok("def f(t: [Int, String] | Array[Int]) -> Int = 1\np f([1, 2])");
     ok("def f[T](t: [Int, String] | T) -> Int = 1\np f([1, 2])");

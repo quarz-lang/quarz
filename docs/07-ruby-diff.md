@@ -13,7 +13,7 @@ A summary of the things someone who knows Ruby will first stumble on when starti
 | Item | Ruby | Quarz |
 |---|---|---|
 | Method parameters | `def f(a, b = 1, k:)` | `def f(a: Int, b: Int = 1, *, k: Bool)` — parameter types are required |
-| Return type | Not part of the language (signatures can be written in RBS files beside the code, or with Sorbet's `sig`) | `def f(...) -> Int` (inferred if omitted) |
+| Return type | Not part of the language (signatures can be written in RBS files beside the code, or with Sorbet's `sig`) | `def f(...) -> Int` (a method without one returns nil) |
 | Declaring keyword parameters | `k:` label | Written after `*`. Parameters before `*` can be passed positionally or by keyword |
 | Instance variables | Created on assignment | Declared in the class body with `@x: Int`. Immutable by default; mutable with `var @x: Int` |
 | Uninitialized instance variables | `nil` | Never seen: a field whose type does not admit `nil` and that has no initializer is assigned on every path through `initialize`, before the object is used (a compile error otherwise) |

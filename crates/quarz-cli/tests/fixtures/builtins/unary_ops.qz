@@ -2,10 +2,10 @@
 # spelled `!@`). `!x` calls the type's own `!` when it has one, and is
 # the built-in negation (truthiness) otherwise.
 class Foo
-  def !@ = "not foo"
-  def ~ = "tilde foo"
-  def -@ = "minus foo"
-  def +@ = "plus foo"
+  def !@ -> String = "not foo"
+  def ~ -> String = "tilde foo"
+  def -@ -> String = "minus foo"
+  def +@ -> String = "plus foo"
 end
 class Bar
   def ! -> String = "not bar"
@@ -32,9 +32,9 @@ end
 class Mark
   def !() -> String = "not mark"
 end
-def negate(x: Bar | Mark) = !x
+def negate(x: Bar | Mark) -> String = !x
 p negate(Bar.new), negate(Mark.new)
 # When only some members define `!`, each value uses its member's, and
 # the others the built-in negation.
-def maybe(x: Mark | Nil) = !x
+def maybe(x: Mark | Nil) -> String | Bool = !x
 p maybe(Mark.new), maybe(nil)

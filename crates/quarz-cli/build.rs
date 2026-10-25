@@ -11,10 +11,12 @@ fn main() {
         "the prelude does not parse"
     );
     let (state, diagnostics) = quarz_types::prelude_state(&prelude.program);
-    assert!(
-        diagnostics.iter().all(|(_, d)| !d.is_error()),
-        "the prelude does not check"
-    );
+    let errors: Vec<&str> = diagnostics
+        .iter()
+        .filter(|(_, d)| d.is_error())
+        .map(|(_, d)| d.message.as_str())
+        .collect();
+    assert!(errors.is_empty(), "the prelude does not check: {errors:#?}");
     let out = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("prelude.bin");
     std::fs::write(out, state.encode()).unwrap();
 }

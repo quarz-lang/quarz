@@ -66,8 +66,8 @@ fn anonymous_block_parameter() {
 #[test]
 fn shareable_procedure_types() {
     assert_eq!(
-        sexp("def f(&h: shareable (Int) -> Nil, g: (shareable () -> Int)? = nil) = h"),
-        "(def f (params &h:shareable (Int) -> Nil g:shareable () -> Int?=nil) h)"
+        sexp("def f(&h: shareable (Int) -> Nil, g: (shareable () -> Int)? = nil) -> Nil = nil"),
+        "(def f (params &h:shareable (Int) -> Nil g:shareable () -> Int?=nil) -> Nil nil)"
     );
     assert_eq!(
         errors("x: shareable Int = 1"),
@@ -285,14 +285,17 @@ fn declarations() {
         sexp("abstract class A\nabstract def f -> Int\nend"),
         "(abstract-class A (def abstract f (params) -> Int))"
     );
-    assert_eq!(sexp("private def f = 1"), "(def Private f (params) 1)");
+    assert_eq!(
+        sexp("private def f -> Int = 1"),
+        "(def Private f (params) -> Int 1)"
+    );
     assert_eq!(
         sexp("def to_s -> String = \"x\""),
         "(def to_s (params) -> String (str \"x\"))"
     );
     assert_eq!(
-        sexp("def self.create(x: Int) = new(x)"),
-        "(defs create (params x:Int) (call _ new x))"
+        sexp("def self.create(x: Int) -> Self = new(x)"),
+        "(defs create (params x:Int) -> self (call _ new x))"
     );
     assert_eq!(
         sexp("def ==(o: Foo) -> Bool = true"),
@@ -324,12 +327,12 @@ fn declarations() {
         "(data P (fields x:Int y:Int=0))"
     );
     assert_eq!(
-        sexp("data P(x: Int)\ndef f = x\nend"),
-        "(data P (fields x:Int) (def f (params) (call _ x)))"
+        sexp("data P(x: Int)\ndef f -> Int = x\nend"),
+        "(data P (fields x:Int) (def f (params) -> Int (call _ x)))"
     );
     assert_eq!(
-        sexp("enum E[T]\n  variant A\n  variant B(v: T)\ndef f = 1\nend"),
-        "(enum E (tparams T) (A) (B v:T) (def f (params) 1))"
+        sexp("enum E[T]\n  variant A\n  variant B(v: T)\ndef f -> Int = 1\nend"),
+        "(enum E (tparams T) (A) (B v:T) (def f (params) -> Int 1))"
     );
     // The one-line form: variants separated by `|`, as in a union type.
     assert_eq!(sexp("enum C = A | B(x: Int)"), "(enum C (A) (B x:Int))");
@@ -380,8 +383,8 @@ fn declarations() {
         "(enum C (A) (B x:Int) (D))"
     );
     assert_eq!(
-        sexp("enum C\n  variant A, B\n  variant D\n  def f = 1\nend"),
-        "(enum C (A) (B) (D) (def f (params) 1))"
+        sexp("enum C\n  variant A, B\n  variant D\n  def f -> Int = 1\nend"),
+        "(enum C (A) (B) (D) (def f (params) -> Int 1))"
     );
     assert_eq!(
         sexp("enum C\n  variant Only(x: Int)\nend"),
@@ -390,14 +393,14 @@ fn declarations() {
     // Variants and other declarations can be mixed, and `variant` is a
     // keyword only before a constant.
     assert_eq!(
-        sexp("enum C\n  variant A\n  def f = 1\n  variant B(\n    x: Int\n  ),\n    D\nend"),
-        "(enum C (A) (B x:Int) (D) (def f (params) 1))"
+        sexp("enum C\n  variant A\n  def f -> Int = 1\n  variant B(\n    x: Int\n  ),\n    D\nend"),
+        "(enum C (A) (B x:Int) (D) (def f (params) -> Int 1))"
     );
     assert_eq!(sexp("variant = 1"), "(= variant 1)");
     assert!(errors("enum C =\nputs 1")[0].contains("a variant after `=`"));
     assert_eq!(
-        sexp("extension Array[T: Comparable[T]]\ndef m = 1\nend"),
-        "(extension Array[T] (tparams T:Comparable[T]) (def m (params) 1))"
+        sexp("extension Array[T: Comparable[T]]\ndef m -> Int = 1\nend"),
+        "(extension Array[T] (tparams T:Comparable[T]) (def m (params) -> Int 1))"
     );
     assert_eq!(sexp("type Id = Int"), "(type Id Int)");
     assert_eq!(

@@ -565,7 +565,6 @@ pub fn check_with_extra(
                         checker.world.freeze_ancestors(true);
                         for (file, main, _) in &bodies {
                             checker.add_file_main(*file, *main);
-                            checker.mark_generated(*file);
                         }
                         if !diagnostics.iter().any(|(_, d)| d.is_error()) {
                             let refs: Vec<(u32, Vec<&Expr>)> = bodies

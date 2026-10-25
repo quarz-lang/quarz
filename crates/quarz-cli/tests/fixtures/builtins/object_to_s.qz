@@ -1,7 +1,7 @@
 class Foo
   @x: Int
   def initialize(@x: Int) end
-  def inspect = "Foo(#{to_s})"
+  def inspect -> String = "Foo(#{to_s})"
 end
 class Bar
   @y: Int

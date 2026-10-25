@@ -413,7 +413,7 @@ fn checks_that_go_where_they_can_and_cannot() {
         format!("{}{}", stdout(&out), stderr(&out))
     };
     // A declaration sharing a line with a statement; a heredoc.
-    let out = run("X = 1; X # => 1\ndef ff = 1; ff # => 1\ns = <<~EOS # => \"hi\\n\"\n  hi\nEOS\ns.size # => 3");
+    let out = run("X = 1; X # => 1\ndef ff -> Int = 1; ff # => 1\ns = <<~EOS # => \"hi\\n\"\n  hi\nEOS\ns.size # => 3");
     assert!(out.contains("1 tests, 4 assertions, 0 failures"), "{out}");
     // A check inside a block, or on a block's first line, checks nothing:
     // an error at its line.

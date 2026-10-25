@@ -121,6 +121,24 @@ fn deferred_path(expr: &Expr) -> &ConstPath {
 /// Whether a call could be answered by either of two methods with these
 /// parameters: their numbers of positional arguments meet (an override, at
 /// run time, is chosen by name and number of arguments).
+/// Whether `t` mentions `Self` (the `SELF_PARAM` marker), whose meaning
+/// an override changes.
+fn contains_self(t: &Type) -> bool {
+    match t {
+        Type::Param(p) => *p == SELF_PARAM,
+        Type::Class(_, args)
+        | Type::ClassObject(_, args)
+        | Type::Tuple(args)
+        | Type::Union(args) => args.iter().any(contains_self),
+        Type::Proc(recv, ps, r, _) => {
+            recv.as_deref().is_some_and(contains_self)
+                || ps.iter().any(contains_self)
+                || contains_self(r)
+        }
+        _ => false,
+    }
+}
+
 fn arities_meet(a: &[ParamInfo], b: &[ParamInfo]) -> bool {
     let range = |ps: &[ParamInfo]| {
         let mut min = 0;
@@ -951,6 +969,7 @@ impl<'ast> Declarer<'ast> {
             self.check_shareable_promise(p.id);
             self.check_variance(p.id);
             self.check_kept_blocks(p.id);
+            self.check_override_returns(p.id);
             self.world.active_extensions.clear();
         }
         self.check_extensions_kept_blocks();
@@ -1003,6 +1022,96 @@ impl<'ast> Declarer<'ast> {
         for (file, msg, span) in errors {
             self.file = file;
             self.error(msg, span);
+        }
+    }
+
+    /// An override returns what the method it overrides does (or a
+    /// subtype): a caller typed by the parent, or a native calling `to_s`
+    /// or `==` by name, relies on it. A method without a return type
+    /// returns nil, so it overrides none that returns a value.
+    fn check_override_returns(&mut self, id: ClassId) {
+        let class = self.world.class(id);
+        let mine: Vec<MethodId> = class.methods.values().flatten().copied().collect();
+        let args: Vec<Type> = class
+            .type_params
+            .iter()
+            .map(|p| Type::Param(p.id))
+            .collect();
+        let ancestors: Vec<(ClassId, Vec<Type>)> = self
+            .world
+            .ancestors(id, &args)
+            .into_iter()
+            .filter(|(a, _)| *a != id)
+            .collect();
+        for mid in mine {
+            let m = self.world.method(mid);
+            // (The prelude specializes some of what it overrides, as Ruby:
+            // `Hash#select` and `Hash#filter` give a `Hash`.)
+            if m.owner != id
+                || m.synth != Synth::None
+                || m.file == 0
+                || (!m.singleton && (m.name == "initialize" || m.name == "deinitialize"))
+            {
+                continue;
+            }
+            let RetType::Known(mine_ret) = m.ret.clone() else {
+                continue;
+            };
+            // The nearest method of the name with the same parameters.
+            let found = ancestors.iter().find_map(|(a, aargs)| {
+                let mut subst = self.world.class_subst(*a, aargs);
+                self.world
+                    .class(*a)
+                    .methods
+                    .get(&m.name)?
+                    .iter()
+                    .copied()
+                    .find(|o| {
+                        let o = self.world.method(*o);
+                        if o.type_params.len() != m.type_params.len() {
+                            return false;
+                        }
+                        // Its type parameters as the override's, in order.
+                        for (p, q) in o.type_params.iter().zip(&m.type_params) {
+                            subst.insert(p.id, Type::Param(q.id));
+                        }
+                        o.singleton == m.singleton
+                            && o.block.is_some() == m.block.is_some()
+                            && o.params.len() == m.params.len()
+                            && o.params
+                                .iter()
+                                .zip(&m.params)
+                                .all(|(p, q)| p.kind == q.kind && p.ty.subst(&subst) == q.ty)
+                    })
+                    .map(|o| (o, subst.clone()))
+            });
+            let Some((o, subst)) = found else { continue };
+            let RetType::Known(theirs) = self.world.method(o).ret.clone() else {
+                continue;
+            };
+            let theirs = theirs.subst(&subst);
+            if contains_self(&theirs) || contains_self(&mine_ret) {
+                continue;
+            }
+            if !self.world.is_subtype(&mine_ret, &theirs) {
+                let owner = self.world.class(self.world.method(o).owner).name.clone();
+                let (mname, span) = (m.name.clone(), m.span);
+                let (mine_s, theirs_s) = (
+                    self.world.type_name(&mine_ret),
+                    self.world.type_name(&theirs),
+                );
+                let hint = if self.world.is_nil_type(&mine_ret) {
+                    " (a method without a return type returns nil)"
+                } else {
+                    ""
+                };
+                self.error(
+                    format!(
+                        "`{mname}` returns {mine_s} but `{owner}#{mname}`, which it overrides, returns {theirs_s}{hint}"
+                    ),
+                    span,
+                );
+            }
         }
     }
 
@@ -2245,7 +2354,9 @@ impl<'ast> Declarer<'ast> {
                 self.error("abstract and native methods need a return type", def.span);
                 RetType::Known(self.world.nil())
             }
-            None => RetType::Infer,
+            // Return types are declared, not inferred: without one, a
+            // method returns nil (its body's value is not used).
+            None => RetType::Known(self.world.nil()),
         };
         if def.is_abstract
             && !self.world.class(owner).is_abstract

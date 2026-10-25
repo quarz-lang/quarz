@@ -14,7 +14,7 @@ for x in xs when x.odd? do puts "odd #{x}" end
 # Values used: an assignment, the last expression of a method.
 pairs = for x in xs when x.odd? do x * 10 end
 p pairs
-def squares(n: Int) = for i in 0...n do i * i end
+def squares(n: Int) -> Array[Int] = for i in 0...n do i * i end
 p squares(4)
 
 # Not used: a method declared to return Nil, a block that returns Nil.

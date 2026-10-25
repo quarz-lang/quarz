@@ -90,7 +90,7 @@ Differences from Ruby:
 - **Mutable fields are declared with `var`.** A class with a `var` field, or with a field of a non-Shareable type, is not Shareable ([03-data-model.md](03-data-model.md)).
 - **Classes cannot be reopened.** Defining a class with the same name twice is an error (so is a module's, §6). Adding methods to an existing class is done with `extension` (§7).
 - **Class bodies contain only declarations.** Field declarations, method definitions, `include`/`extend`, `attr_*`, constants, nested types and visibility specifiers (`private`/`protected`/`public`) are allowed. Arbitrary expressions are not.
-- **Visibility is checked statically, as in Ruby.** A `private` method is called only on `self` (implicitly or as `self.`); a `protected` one also on another receiver, but only from code whose `self` is an instance of the class or module that defines it, or of a descendant (`def richer?(o: Account) = balance > o.balance`). A class method's `self` is a class, so it cannot call an instance's protected method. `private`/`protected`/`public` apply to the methods after them, to the one they prefix (`private def f`), or to the ones they name (`protected :f`).
+- **Visibility is checked statically, as in Ruby.** A `private` method is called only on `self` (implicitly or as `self.`); a `protected` one also on another receiver, but only from code whose `self` is an instance of the class or module that defines it, or of a descendant (`def richer?(o: Account) -> Bool = balance > o.balance`). A class method's `self` is a class, so it cannot call an instance's protected method. `private`/`protected`/`public` apply to the methods after them, to the one they prefix (`private def f`), or to the ones they name (`protected :f`).
 - `attr_reader`/`attr_writer`/`attr_accessor` are built-in declarations that generate accessor methods for declared fields (`attr_writer`/`attr_accessor` can only be used on `var` fields).
 - Prefixing an `initialize` parameter with `@` also assigns the field (same as Crystal):
 
@@ -273,7 +273,7 @@ def name(a: Int, b: String = "x", *rest: Int, *, flag: Bool, limit: Int? = nil, 
 | `**opts: String` | Remaining keywords. The type is `Hash[Symbol, String]` |
 | `&block: (Int) -> Nil` | Block parameter. The type is a procedure type; `block` is a procedure value (`block.call`, `block.()`, `block[]`) |
 | `&: (Int) -> Nil` | Anonymous block parameter: only `yield` and forwarding with `f(&)` can use it |
-| `-> Ret` | Return type. If omitted it is inferred from the body (required for recursive methods) |
+| `-> Ret` | Return type, declared (not inferred). Without it the method returns nil; `def f = expr` requires it |
 
 - **Parameter types are required** (except where they can be inferred from a default value). Because types are fixed at method boundaries, compile times stay short and error messages clear.
 - Ruby 3's "separation of positional and keyword arguments" is unnecessary in Quarz because an argument list never implicitly becomes a `Hash`. Parameters before `*` can be passed either positionally or by keyword (same as Python/Crystal).

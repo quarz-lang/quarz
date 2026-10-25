@@ -3809,6 +3809,15 @@ impl<'src> Parser<'src> {
             }
             None
         } else if self.at(&T::Assign) {
+            // `def f = expr` gives a value: its type is written (a method
+            // without one returns nil).
+            if ret.is_none() && name != "initialize" && name != "deinitialize" {
+                let span = self.peek().span;
+                let _ = self.error_at(
+                    "a method defined with `=` declares its return type: `def f -> T = expr`",
+                    span,
+                );
+            }
             self.bump();
             self.skip_newlines();
             let expr = self.parse_statement()?;

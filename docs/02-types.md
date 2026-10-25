@@ -6,7 +6,7 @@ Quarz is statically typed. The structure of classes, modules and methods is fixe
 
 Design principles:
 
-1. **Write types at method boundaries, not inside them.** Parameter types are required; return types and local variables are inferred. This keeps compile times short and error messages clear.
+1. **Write types at method boundaries, not inside them.** Parameter and return types are written (a method without a return type returns nil); local variables are inferred. This keeps compile times short and error messages clear.
 2. **nil is not a value of ordinary types.** A value of type `String` is never `nil`; if `nil` is possible, write `String?`.
 3. **Union types and flow typing.** Union types such as `Int | String` can be used directly and narrowed with `if`/`case/in`/`is_a?`.
 4. **Immutable means covariant.** Immutable collections are covariant in their element type, so an `Array[Int]` can be passed where an `Array[Int | Nil]` is expected.
@@ -105,7 +105,7 @@ u = find(1) || raise NotFound    # raise has type Nothing, so u is User
 Inference is **bidirectional and local**. Since parameter types are known, inference is confined to a single method body; there is no whole-program inference.
 
 - **Local variables**: the type of the first assignment. `x = 1` gives `Int`.
-- **Return type**: when omitted, the type of the body (the union of the `return` types and the last expression). For methods that call themselves recursively, `abstract def` and `extern def`, an uninferable return type is an error and an annotation is required. Each file is compiled on its own (05-execution.md §2), so a method another file calls must declare its return type: the call is an error otherwise (`Calc.add(1, 2)` from another file, with `def self.add(a: Int, b: Int) = a + b`; write `def self.add(a: Int, b: Int) -> Int`). A REPL session counts as one file, apart from the files it requires. The code `quarz test` writes to call the tests is exempt.
+- **Return type**: declared, not inferred. A method without one returns nil, as Swift's `func` without `->` returns `Void`: its body's last value is not used (`def report` that prints, `def test_pop`, a setter). A method defined with `=` gives a value, so it declares its type (`def area -> Float = w * h`; `def area = w * h` is an error). `abstract def` and `extern def` declare it too. `return x` with a value in a method that returns nil is an error, and an override returns the overridden method's type or a subtype of it (covariantly: `-> Int` may override `-> Object`), so a `def to_s` without `-> String` is an error. Since a signature says everything a caller needs, each file can be checked on its own (05-execution.md §2), and no method's type depends on another's body.
 - **Empty literals**: `[]`, `{}` and `Set[]` follow the expected type if there is one; otherwise they carry a type variable such as `Array[?T]`, fixed by the later uses in the same method. Only uses of the values fix it (an assignment to a typed place, an argument, `push`): a pattern or type test narrows a value of a type not fixed yet only inside its branch (and `case`/`in` on it needs no `else` to be exhaustive), an `if` whose value is not used does not join its branches, and joining it with another type leaves it undecided (`x = xs[0] if c` is `?T?`, `xs[0] || "s"` is `?T | String`); calling a method other than `Object`'s on such a union is a use that decides `?T` as the rest.
 
 ```ruby

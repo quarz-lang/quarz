@@ -4,7 +4,7 @@ def nl -> Nil
 end
 p nl
 def early(x: Int) -> Nil
-  return 5 if x > 0
+  return if x > 0
   nil
 end
 p early(1)
@@ -18,7 +18,7 @@ run_block { 7 }
 [1, 2].each { |x| x }
 
 # An integer literal stays an Int on a union receiver.
-def g(x: Int | Float) = x + 1
+def g(x: Int | Float) -> Int | Float = x + 1
 p g(1), g(1.5)
 def h(x: Int | Float) -> Int | Float = x * 2
 p h(3), h(1.5)
