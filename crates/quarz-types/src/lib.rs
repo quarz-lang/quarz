@@ -638,6 +638,8 @@ pub fn check_with_extra(
     let mut keys: Vec<Option<u64>> = vec![None; units.len() + 1];
     let mut reused: Vec<bool> = vec![false; units.len() + 1];
     let mut consts_seen: Vec<u64> = Vec::new();
+    // The warnings of the files read back.
+    let mut kept: Vec<FileDiagnostic> = Vec::new();
     if cache::build().is_some() && cache::dir().is_some() && !NO_CACHE.get() {
         let interfaces: Vec<(String, u64)> = (1..=units.len() as u32)
             .map(|f| (key_of(f), cache::interface(&declarer.world, f)))
@@ -667,7 +669,7 @@ pub fn check_with_extra(
                 file,
                 &file_of,
             ) {
-                diagnostics.extend(warnings.into_iter().map(|d| (file, d)));
+                kept.extend(warnings.into_iter().map(|d| (file, d)));
                 reused[file as usize] = true;
                 consts_seen.push(seen);
             }
@@ -701,7 +703,13 @@ pub fn check_with_extra(
         return check_uncached(prelude, units, cogs, extra);
     }
     let checked_diagnostics = checker.take_diagnostics();
-    diagnostics.extend(checked_diagnostics.iter().cloned());
+    // In the order of the files and of positions in them, which is the
+    // same whether a file's warnings were found now or read back (each
+    // file's in the order they were found).
+    let mut all = kept;
+    all.extend(checked_diagnostics.iter().cloned());
+    all.sort_by_key(|(f, d)| (*f, d.span.start));
+    diagnostics.extend(all);
     // Keep what was checked, when it is free of errors (with its warnings,
     // reported again when it is read back).
     if !diagnostics.iter().any(|(_, d)| d.is_error()) {
