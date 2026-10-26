@@ -384,18 +384,15 @@ impl SharedState {
 
     /// State for a program whose tasks run on `threads` workers.
     pub fn with_threads(out: Box<dyn std::io::Write + Send>, threads: usize) -> SharedState {
-        SharedState::for_worker(std::sync::Arc::new(Global::new(out, threads)), 0)
+        let global = std::sync::Arc::new(Global::new(out, threads));
+        let sched = Scheduler::new(0, global.workers.clone());
+        SharedState::with_scheduler(global, 0, sched)
     }
 
-    /// The state of worker `worker` of the program `global` belongs to.
-    /// Each worker numbers its tags in a range of its own: a flow's tag
-    /// must not match one another worker gave out (a task's block may
-    /// have been made on another worker).
-    pub fn for_worker(global: std::sync::Arc<Global>, worker: u32) -> SharedState {
-        let sched = Scheduler::new(worker, global.workers.clone());
-        SharedState::with_scheduler(global, worker, sched)
-    }
-
+    /// The state of worker `worker` of the program `global` belongs to,
+    /// with `sched` its scheduler. Each worker numbers its tags in a range
+    /// of its own: a flow's tag must not match one another worker gave out
+    /// (a task's block may have been made on another worker).
     fn with_scheduler(
         global: std::sync::Arc<Global>,
         worker: u32,
@@ -1544,10 +1541,15 @@ impl Interp {
     fn start_worker(&self, w: u32) -> bool {
         let global = self.global.clone();
         let workers = global.workers.clone();
-        workers.start(w, || self.spawn_worker(global, w))
+        workers.start(w, |poller| self.spawn_worker(global, w, poller))
     }
 
-    fn spawn_worker(&self, global: std::sync::Arc<Global>, w: u32) -> std::io::Result<()> {
+    fn spawn_worker(
+        &self,
+        global: std::sync::Arc<Global>,
+        w: u32,
+        poller: std::sync::Arc<sched::Poller>,
+    ) -> std::io::Result<()> {
         sched::set_multi_threaded();
         let image = self.image();
         let argv = self.program.argv.clone();
@@ -1560,7 +1562,7 @@ impl Interp {
                 // as one on the main thread does (the hook has printed
                 // it).
                 let run = std::panic::AssertUnwindSafe(move || {
-                    Interp::worker_main(global, w, image, argv, native_bt)
+                    Interp::worker_main(global, w, poller, image, argv, native_bt)
                 });
                 if std::panic::catch_unwind(run).is_err() {
                     std::process::exit(101);
@@ -1573,11 +1575,13 @@ impl Interp {
     fn worker_main(
         global: std::sync::Arc<Global>,
         w: u32,
+        poller: std::sync::Arc<sched::Poller>,
         image: std::sync::Arc<crate::transfer::ProgramImage>,
         argv: Vec<String>,
         native_bt: bool,
     ) {
-        let state = SharedState::for_worker(global, w);
+        let sched = Scheduler::with_poller(w, global.workers.clone(), poller);
+        let state = SharedState::with_scheduler(global, w, sched);
         let interp = image.load(argv, state);
         interp.native_bt.set(native_bt);
         {

@@ -22,10 +22,14 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 #[cfg(target_os = "linux")]
-use crate::epoll::{Event as IoEvent, Poller};
+use crate::epoll::Event as IoEvent;
+#[cfg(target_os = "linux")]
+pub(crate) use crate::epoll::Poller;
 use corosensei::{Coroutine, CoroutineResult, Yielder};
 #[cfg(not(target_os = "linux"))]
-use polling::{Event, Events, Poller};
+pub(crate) use polling::Poller;
+#[cfg(not(target_os = "linux"))]
+use polling::{Event, Events};
 
 use crate::rc::SendRc;
 use crate::value::{SharedValue, Value};
@@ -786,17 +790,20 @@ struct WorkerSlot {
     mail: AtomicBool,
     /// The worker's poller, to wake it when it waits (set when it starts).
     poller: std::sync::OnceLock<Arc<Poller>>,
-    /// Whether its poller or its thread could not be made: it never
-    /// starts, and the tasks meant for it stay where they are spawned.
-    failed: AtomicBool,
-    /// Held while it is being started.
-    starting: Mutex<()>,
+    /// Held while it is being started: when its poller or its thread
+    /// could not be made, the time before which it is not tried again
+    /// (the tasks meant for it stay where they are spawned until then).
+    starting: Mutex<Option<Instant>>,
     /// The numbers of its tasks, given out by whoever spawns one there.
     next_id: AtomicU32,
     started: AtomicBool,
     /// Whether it has put its blocked tasks in `Workers::report`.
     reported: AtomicBool,
 }
+
+/// How long a worker that could not be started (`Workers::start`) is
+/// left before it is tried again.
+const START_RETRY: Duration = Duration::from_secs(1);
 
 /// The worker threads of a program (`QUARZ_THREADS`, by default as many
 /// as the CPUs the process may use): a slot each, the thread started when
@@ -862,33 +869,40 @@ impl Workers {
     }
 
     /// Start worker `w` unless it runs already: make its poller, then its
-    /// thread with `spawn`. Whether it runs: not when either could not be
-    /// made (out of descriptors or threads), then or before.
-    pub fn start(&self, w: u32, spawn: impl FnOnce() -> std::io::Result<()>) -> bool {
+    /// thread with `spawn`, which hands the poller to it. Whether it runs:
+    /// not when either could not be made (out of descriptors or threads),
+    /// the poller then closed, nor for `START_RETRY` after that.
+    pub fn start(&self, w: u32, spawn: impl FnOnce(Arc<Poller>) -> std::io::Result<()>) -> bool {
         let slot = &self.slots[w as usize];
         if slot.started.load(Ordering::Acquire) {
             return true;
         }
-        if slot.failed.load(Ordering::Acquire) {
-            return false;
-        }
-        let _starting = lock(&slot.starting);
+        let mut retry_at = lock(&slot.starting);
         if slot.started.load(Ordering::Acquire) {
             return true;
         }
-        if slot.failed.load(Ordering::Acquire) {
+        let now = Instant::now();
+        if retry_at.is_some_and(|t| now < t) {
             return false;
         }
-        let made = Poller::new().and_then(|p| {
-            let _ = slot.poller.set(Arc::new(p));
-            spawn()
+        let poller = Poller::new().map(Arc::new);
+        let made = poller.and_then(|p| {
+            spawn(p.clone())?;
+            Ok(p)
         });
-        if made.is_err() {
-            slot.failed.store(true, Ordering::Release);
-            return false;
+        match made {
+            Ok(p) => {
+                // Its thread sets it too (`Scheduler::with_poller`): whoever
+                // posts to it once this returns wakes it.
+                let _ = slot.poller.set(p);
+                slot.started.store(true, Ordering::Release);
+                true
+            }
+            Err(_) => {
+                *retry_at = Some(now + START_RETRY);
+                false
+            }
         }
-        slot.started.store(true, Ordering::Release);
-        true
     }
 
     pub fn set_poller(&self, w: u32, poller: Arc<Poller>) {
@@ -1083,18 +1097,23 @@ impl Scheduler {
     }
 
     /// The scheduler of worker `worker`, or why its poller could not be
-    /// made. Another worker's was made by the thread that started it
-    /// (`Workers::start`).
+    /// made.
     pub fn try_new(worker: u32, workers: Arc<Workers>) -> std::io::Result<Scheduler> {
-        let poller = match workers.slots[worker as usize].poller.get() {
-            Some(p) => p.clone(),
-            None => Arc::new(Poller::new()?),
-        };
+        Ok(Scheduler::with_poller(
+            worker,
+            workers,
+            Arc::new(Poller::new()?),
+        ))
+    }
+
+    /// The scheduler of worker `worker` waiting on `poller` (another
+    /// worker's, made by the thread that started it: `Workers::start`).
+    pub fn with_poller(worker: u32, workers: Arc<Workers>, poller: Arc<Poller>) -> Scheduler {
         let reactor = Reactor::new(poller);
         // From now on posting to this worker wakes it; what was posted
         // before is in its inbox, which it reads first.
         workers.set_poller(worker, reactor.poller.clone());
-        Ok(Scheduler {
+        Scheduler {
             worker,
             workers,
             tasks: Default::default(),
@@ -1105,7 +1124,7 @@ impl Scheduler {
             current: None,
             pending_timers: Default::default(),
             reactor,
-        })
+        }
     }
 
     // ----- IO ---------------------------------------------------------------------
