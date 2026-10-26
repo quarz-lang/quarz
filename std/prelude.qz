@@ -6132,8 +6132,6 @@ module Signal
     raise ArgumentError, "action must be :default or :ignore" unless action == :default || action == :ignore
     # Writing to a closed socket raises instead (SIGPIPE stays ignored).
     raise ArgumentError, "SIGPIPE cannot be given its default action" if action == :default && name.delete_prefix("SIG") == "PIPE"
-    # Writing to a closed socket raises instead (SIGPIPE stays ignored).
-    raise ArgumentError, "SIGPIPE cannot be given its default action" if action == :default && name.delete_prefix("SIG") == "PIPE"
     TRAPS.update { |h| h.delete(signo) }
     action(signo, action == :ignore)
   end
