@@ -62,3 +62,29 @@ class ShutdownTest < Test::Case
     end
   end
 end
+
+# What goes wrong in teardown is reported as the teardown's, after the
+# test's own result.
+class TeardownHangTest < Test::Case
+  def teardown
+    sleep(5.seconds)
+  end
+
+  def test_passes
+    assert_true(true)
+  end
+
+  def test_fails_first
+    flunk("failed first")
+  end
+end
+
+class TeardownRaiseTest < Test::Case
+  def teardown
+    raise "teardown broke"
+  end
+
+  def test_passes
+    assert_true(true)
+  end
+end

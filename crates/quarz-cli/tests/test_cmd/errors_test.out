@@ -1,6 +1,6 @@
 Loaded suite test
 Started
-EEEEFOFFE
+EEEEFOFFEEFE
 Finished in T seconds.
 
 1) Error: test_never_runs(StartupTest) [test_cmd/errors_test.qz:7]:
@@ -41,7 +41,18 @@ diff:
 9) Error: test_cancelled_inside(ShutdownTest) [test_cmd/errors_test.qz:57]:
 Task::Cancelled: task cancelled
 
-10) Error: ShutdownTest.shutdown: RuntimeError: shutdown broke
+10) Error: test_passes(TeardownHangTest) [test_cmd/errors_test.qz:73]:
+teardown timed out after 500ms
+
+11) Failure: test_fails_first(TeardownHangTest) [test_cmd/errors_test.qz:78]:
+failed first
+teardown timed out after 500ms
+
+12) Error: test_passes(TeardownRaiseTest) [test_cmd/errors_test.qz:84]:
+teardown: RuntimeError: teardown broke
+    test_cmd/errors_test.qz:84:in TeardownRaiseTest#teardown
+
+13) Error: ShutdownTest.shutdown: RuntimeError: shutdown broke
     test_cmd/errors_test.qz:54:in ShutdownTest#shutdown
 
-9 tests, 4 assertions, 3 failures, 5 errors, 0 pendings, 1 omissions, 0 notifications
+12 tests, 7 assertions, 4 failures, 7 errors, 0 pendings, 1 omissions, 0 notifications
