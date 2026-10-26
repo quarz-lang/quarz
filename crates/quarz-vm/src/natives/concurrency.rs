@@ -129,7 +129,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         Ok(Value::Nil)
     });
     native!(m, "Task.yield", |i, _, _| {
-        i.yield_now();
+        i.yield_now()?;
         Ok(Value::Nil)
     });
     native!(m, "Task.current", |i, _, _| Ok(Value::Task(
@@ -327,10 +327,8 @@ fn kernel_loop(interp: &Interp, _: &Value, args: Args) -> EvalResult {
             }
             Err(e) => return Err(e),
         }
-        // Give other tasks a chance in tight loops.
-        if interp.sched.borrow().task_count() > 1 {
-            interp.yield_now();
-        }
+        // No loop yields or checks for a cancellation by itself (as in
+        // Kotlin): one that only computes calls `Task.yield`.
     }
 }
 
@@ -728,9 +726,6 @@ fn run_select(interp: &Interp, block: &Value, looping: bool) -> EvalResult {
         select_once(interp, &state)?;
         if state.borrow().stopped || !looping {
             return Ok(Value::Nil);
-        }
-        if interp.sched.borrow().task_count() > 1 {
-            interp.yield_now();
         }
     }
 }
