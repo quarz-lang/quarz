@@ -2048,6 +2048,14 @@ impl<'ast> Declarer<'ast> {
                         let mut info = self.world.method(mid).clone();
                         info.name = new_name.clone();
                         info.alias_of = Some(mid);
+                        if !info.singleton {
+                            self.check_equality_params(
+                                new_name,
+                                &info.params,
+                                info.block.is_some(),
+                                expr.span,
+                            );
+                        }
                         self.world.add_method(info);
                     }
                 }
@@ -2107,6 +2115,34 @@ impl<'ast> Declarer<'ast> {
         if file != 0 && SEALED.contains(&name) {
             self.error(
                 format!("`{name}` cannot be redefined: types are narrowed by it"),
+                span,
+            );
+        }
+    }
+
+    /// `==` and `!=` take one parameter, an `Object`: the runtime calls a
+    /// class's own by name with any value (`x == y` with an operand typed
+    /// `Object`, `Array#==`, `case`/`when`), so one taking less would
+    /// receive a value not of its type. A method of another signature is not an override
+    /// of `Object#==` but an overload, which the check for an `Object`
+    /// parameter rules out as well.
+    fn check_equality_params(&mut self, name: &str, params: &[ParamInfo], block: bool, span: Span) {
+        if self.file == 0 || !matches!(name, "==" | "!=") {
+            return;
+        }
+        let one_object = match params {
+            [p] => {
+                p.kind == ParamKind::Positional
+                    && p.default.is_none()
+                    && self.world.is_object(&p.ty)
+            }
+            _ => false,
+        };
+        if !one_object || block {
+            self.error(
+                format!(
+                    "`{name}` takes one parameter of type `Object`: it is called with any value (`x == y` with an operand typed `Object`, `Array#==`, `case`/`when`); test the class in the body (`other.is_a?(Foo) && ...`)"
+                ),
                 span,
             );
         }
@@ -2382,6 +2418,9 @@ impl<'ast> Declarer<'ast> {
                     def.span,
                 );
             }
+        }
+        if !def.singleton {
+            self.check_equality_params(&def.name, &params, block.is_some(), def.span);
         }
         if def.name == "deinitialize" && !def.singleton {
             // Run by the runtime when an instance's last reference goes.

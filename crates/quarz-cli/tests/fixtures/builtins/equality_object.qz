@@ -1,0 +1,33 @@
+# A class's own `==` takes an `Object`: the runtime calls it by name with
+# any value (`x == y` with an operand typed `Object`, `Array#==`,
+# `case`/`when`), so it tests the class itself. A `!=` of its own is
+# called the same way.
+class Money
+  @cents: Int
+  def initialize(cents: Int)
+    @cents = cents
+  end
+  def cents -> Int = @cents
+  def ==(other: Object) -> Bool = other.is_a?(Money) && @cents == other.cents
+  def hash -> Int = @cents.hash
+end
+
+class Loose
+  def ==(other: Object) -> Bool = true
+  def !=(other: Object) -> Bool = false
+end
+
+a = Money.new(100)
+o: Object = "100"
+p a == Money.new(100)
+p a == o
+p o == a
+p [Money.new(1), o] == [Money.new(1), "100"]
+p [Money.new(1), o] == [Money.new(2), "100"]
+case o
+when Money.new(100) then puts "money"
+else puts "other"
+end
+p Loose.new == o
+p Loose.new != o
+p a != o

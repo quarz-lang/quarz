@@ -196,7 +196,7 @@ To pass a mutable object to another task, convert it to an immutable value. A Bu
 
 ## 6. Equality and Identity
 
-- `==` is **structural equality**. It is generated automatically for `data`/`enum`, element-wise for collections, and defaults to identity for user classes (overridable).
+- `==` is **structural equality**. It is generated automatically for `data`/`enum`, element-wise for collections, and defaults to identity for user classes (overridable: a class's own `==` takes an `Object` and tests the class itself, 01-syntax.md §3).
 - `hash` is defined consistently with `==`. Generated automatically for `data`/`enum`/collections.
 - `equal?` is identity. Do not attach meaning to the identity of immutable values; the implementation is free to share or copy equal values (interning of small strings, returning `self` from `with` when no field changes, and so on).
 - `eql?` is dropped. Static typing turns confusions like `{ 1 => "a" }[1.0]` into type errors, so the single pair `==`/`hash` suffices.

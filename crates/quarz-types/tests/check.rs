@@ -1619,3 +1619,32 @@ fn std_exports_are_the_top_level_declarations() {
     let scanned: Vec<(&str, Vec<String>)> = quarz_types::load::std_exports().to_vec();
     assert_eq!(scanned, quarz_types::load::std_exports_parsed());
 }
+
+#[test]
+fn equality_takes_an_object() {
+    // The runtime calls a class's own `==` by name with any value, so a
+    // narrower parameter would receive a value not of its type.
+    err(
+        "class P\n  def ==(o: P) -> Bool = true\nend",
+        "`==` takes one parameter of type `Object`",
+    );
+    err(
+        "class P\n  def !=(o: P) -> Bool = true\nend",
+        "`!=` takes one parameter of type `Object`",
+    );
+    err(
+        "class P\n  def ==(o: Object, strict: Bool = false) -> Bool = true\nend",
+        "`==` takes one parameter of type `Object`",
+    );
+    err(
+        "extension String\n  def ==(o: String) -> Bool = true\nend",
+        "`==` takes one parameter of type `Object`",
+    );
+    err(
+        "class P\n  def same(o: P) -> Bool = true\n  alias == same\nend",
+        "`==` takes one parameter of type `Object`",
+    );
+    ok("class P\n  def ==(o: Object) -> Bool = o.is_a?(P)\n  def !=(o: Object) -> Bool = !(self == o)\nend");
+    // A class method or another name is free.
+    ok("class P\n  def self.==(o: P) -> Bool = true\n  def eq(o: P) -> Bool = true\nend");
+}
