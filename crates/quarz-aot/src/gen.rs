@@ -4341,6 +4341,10 @@ impl<B: Builder> Gen<'_, B> {
                 self.store_tag(*dst, TAG_NIL);
                 self.b.jump(cont, &[]);
                 self.b.switch_to_block(cont);
+                // The home holds the argument now, whatever the register
+                // held before (an earlier parameter sharing it may have
+                // left it unboxed).
+                self.states[*dst as usize] = State::Unknown;
                 // A parameter declared Int/Float: check once, then unboxed.
                 // A failed check hands over after this instruction: the
                 // value is in the home, and may have left the area.
@@ -4428,6 +4432,9 @@ impl<B: Builder> Gen<'_, B> {
                 if dst != obj {
                     // It was an object after all.
                     self.note_obj(*obj);
+                    // The home holds the field now, not what the
+                    // register held unboxed before.
+                    self.states[*dst as usize] = State::Unknown;
                 }
                 if let Some(n) = num {
                     self.get_num(*dst, n, block, index);

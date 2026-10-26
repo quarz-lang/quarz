@@ -107,3 +107,28 @@ p v.scaled(2.0)
 sum = 0.0
 1000.times { |i| sum += Vec2.new(i.to_f, 1.0).dot(v) }
 p sum
+
+# A parameter a closure captures is copied to the frame, and the next
+# parameter may then take its register: it is read again, not taken
+# for the first.
+def captured_first(a: Int, b: Int, x: Float, y: Float) -> String
+  pr = -> { a + x }
+  "#{a} #{b} #{x} #{y} #{pr.call}"
+end
+puts captured_first(1, 3, 0.5, 2.5)
+
+# The same for a field read by the runtime (the smallest Int is kept
+# aside) into a register an earlier field's value left unboxed.
+class Pair
+  @x: Int
+  @y: Int
+  def initialize(@x: Int, @y: Int) end
+  def show -> Nil
+    a = @x
+    e = @x
+    c = a + e
+    b = @y
+    puts "#{c} #{b}"
+  end
+end
+Pair.new(1, -9223372036854775807 - 1).show
