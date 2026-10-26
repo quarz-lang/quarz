@@ -1,0 +1,12 @@
+# `Bytes#[]` with a Range, as `String#[]` and `Array#[]`: the end is cut to
+# the size, a start equal to it gives empty bytes, and a start beyond it or
+# before the beginning raises.
+d = b"abcd"
+p d[1..2], d[-2..], d[1...-1], d[2..10], d[4..], d[2..1], d[..1], d[-4..0]
+[6..8, 5.., -5..1].each do |r|
+  begin
+    p d[r]
+  rescue IndexError => e
+    puts e.message
+  end
+end

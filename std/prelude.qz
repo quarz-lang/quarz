@@ -1281,15 +1281,20 @@ class Bytes
   # b"abc"[3]                # raises IndexError
   # ```
   native def [](index: Int) -> Int
-  # The bytes in `range`, whose ends count from the end when negative.
+  # The bytes in `range`, whose ends count from the end when negative. The
+  # end is cut to the size; a start equal to the size gives empty bytes.
   #
-  # A range beyond the end gives empty bytes, where `String#[]` and
-  # `Array#[]` raise `IndexError`.
+  # ## Raises
+  #
+  # `IndexError` when the start is beyond the size or before the
+  # beginning.
   #
   # ```
   # b"abcd"[1..2]            # => b"bc"
   # b"abcd"[-2..]            # => b"cd"
-  # b"abcd"[6..8]            # => b""
+  # b"abcd"[2..10]           # => b"cd"
+  # b"abcd"[4..]             # => b""
+  # b"abcd"[6..8]            # raises IndexError
   # ```
   native def [](range: Range[Int]) -> Bytes
   # The byte at `index`, counted from the end when negative, or `nil` when
