@@ -60,10 +60,11 @@ pub fn build(world: &World, lw: &Lowerer, file_names: Vec<String>) -> RtWorld {
         .iter()
         .map(|c| {
             let layout = &lw.layouts[c.id as usize];
-            let ty_name = |t: &Type| match t {
-                Type::Param(_) | Type::Var(_) => None,
-                t => Some(world.type_name(t)),
-            };
+            // A type with a parameter in it has no name of its own: a
+            // parameter prints as its name, which may be a class's
+            // (`class Box[String]`).
+            let ty_name =
+                |t: &Type| (!t.mentions_any_param() && !t.has_vars()).then(|| world.type_name(t));
             // A declared field stored in one physical field keeps its
             // default there; a flattened one runs it through the
             // logical view.

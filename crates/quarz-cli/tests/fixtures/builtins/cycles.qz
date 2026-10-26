@@ -1,0 +1,85 @@
+# Values that refer to one another and to which nothing else refers are
+# freed by the cycle collector, which runs as candidates (objects with
+# fields that may lead back, heap frames, builders) are made. Freed
+# objects are counted by their `deinitialize`; a cycle still in use is
+# left alone.
+FREED = Atom.new(0)
+
+class Node
+  @name: String
+  var @peer: Node? = nil
+  var @items: Array[Node] = []
+  def initialize(name: String)
+    @name = name
+  end
+  def name -> String = @name
+  def peer -> Node? = @peer
+  def peer=(n: Node?) -> Nil
+    @peer = n
+  end
+  def items -> Array[Node] = @items
+  def items=(xs: Array[Node]) -> Nil
+    @items = xs
+  end
+  def deinitialize -> Nil
+    FREED.update { |n| n + 1 }
+    # The garbage it is part of is intact while it runs.
+    puts "freed #{@name}, peer #{@peer&.name}" if @name == "first"
+  end
+end
+
+# Two objects pointing at each other.
+def pair(name: String) -> Nil
+  a = Node.new(name)
+  b = Node.new("#{name}'")
+  a.peer = b
+  b.peer = a
+end
+
+# An object holding itself in an array.
+def self_loop(i: Int) -> Nil
+  n = Node.new("loop #{i}")
+  n.items = [n]
+end
+
+# A procedure kept in a variable it captures.
+def closure(i: Int) -> Int
+  total = i
+  add = ->(n: Int) { total += n; total }
+  twice = -> { add.call(1) + add.call(2) }
+  twice.call
+end
+
+# A builder holding an object that holds the builder.
+class Holder
+  var @list: Array::Builder[Holder]? = nil
+  def list=(l: Array::Builder[Holder]) -> Nil
+    @list = l
+  end
+end
+
+def builder -> Nil
+  b = Array::Builder[Holder].new
+  h = Holder.new
+  h.list = b
+  b << h
+end
+
+kept_a = Node.new("kept")
+kept_b = Node.new("kept'")
+kept_a.peer = kept_b
+kept_b.peer = kept_a
+
+pair("first")
+sum = 0
+10_000.times do |i|
+  pair("pair #{i}")
+  self_loop(i)
+  sum += closure(i)
+  builder
+end
+puts sum
+# Each pair, each loop: at least what all but the last collection saw.
+p FREED.get >= 20_000
+p kept_a.peer&.peer&.name
+p kept_b.peer&.name

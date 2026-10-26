@@ -371,7 +371,32 @@ impl Frame {
             (&raw mut (*f).parent_ptr).write(Cell::new(parent_ptr));
             (&raw mut (*f).parent).write(parent);
             (&raw mut (*f).grown).write(std::cell::UnsafeCell::new(None));
-            Rc::from_fresh(p)
+            let rc = Rc::from_fresh(p);
+            if n > 0 {
+                // A captured variable may come to hold what captures it.
+                crate::cycles::register(Rc::addr(&rc), crate::cycles::Kind::Frame);
+            }
+            rc
+        }
+    }
+
+    /// Set every slot to nil, dropping what they held (the cycle
+    /// collector freeing garbage).
+    ///
+    /// # Safety
+    /// Nothing reads or writes the slots meanwhile.
+    pub(crate) unsafe fn clear_slots(&self) {
+        let n = self.nslots.get() as usize;
+        for i in 0..n {
+            // SAFETY: a live slot, as the caller promises; the value is
+            // dropped after the store, outside the slots.
+            let old = unsafe {
+                std::mem::replace(
+                    &mut *(self.slots_ptr.get() as *mut Value).add(i),
+                    Value::Nil,
+                )
+            };
+            drop(old);
         }
     }
 
@@ -809,6 +834,9 @@ pub struct FieldLayout {
     pub exc: Option<u32>,
     /// The fields' size, in words.
     pub words: usize,
+    /// An object with this layout may be in a cycle (a field may hold
+    /// what leads back to it): it is a candidate of the cycle collector.
+    pub cyclic: bool,
 }
 
 // SAFETY: a layout is immutable once made; `offsets` points at a leaked
@@ -827,12 +855,13 @@ static NO_FIELDS: FieldLayout = FieldLayout {
     aside: None,
     exc: None,
     words: 0,
+    cyclic: false,
 };
 
 impl FieldLayout {
     /// `exc`: the objects are exceptions, with a word for what they
-    /// capture after the fields.
-    fn leak(slots: &quarz_ir::FieldSlots, exc: bool) -> &'static FieldLayout {
+    /// capture after the fields. `cyclic`: see the field.
+    fn leak(slots: &quarz_ir::FieldSlots, exc: bool, cyclic: bool) -> &'static FieldLayout {
         if slots.kinds.is_empty() && !exc {
             return &NO_FIELDS;
         }
@@ -844,6 +873,7 @@ impl FieldLayout {
             aside: slots.aside,
             exc: exc.then_some(slots.size),
             words: slots.size as usize / 8 + usize::from(exc),
+            cyclic,
         }))
     }
 
@@ -867,7 +897,8 @@ impl FieldLayout {
                 aside: None,
                 size: k as u32 * quarz_ir::VALUE_BYTES,
             };
-            cache.push(FieldLayout::leak(&slots, false));
+            // Not knowing the fields' types, a candidate.
+            cache.push(FieldLayout::leak(&slots, false, k > 0));
         }
         cache[n]
     }
@@ -893,9 +924,16 @@ pub fn register_layouts(classes: &[quarz_ir::RtClass]) {
         .map(|(id, c)| {
             let slots = quarz_ir::field_slots(&c.fields);
             let exc = c.is_exception;
+            let cyclic = may_be_cyclic(c, &slots);
             match old.get(id) {
-                Some(l) if l.kinds == slots.kinds.as_slice() && l.exc.is_some() == exc => *l,
-                _ => FieldLayout::leak(&slots, exc),
+                Some(l)
+                    if l.kinds == slots.kinds.as_slice()
+                        && l.exc.is_some() == exc
+                        && l.cyclic == cyclic =>
+                {
+                    *l
+                }
+                _ => FieldLayout::leak(&slots, exc, cyclic),
             }
         })
         .collect();
@@ -907,6 +945,82 @@ pub fn register_layouts(classes: &[quarz_ir::RtClass]) {
             std::sync::atomic::Ordering::Release,
         );
     }
+}
+
+/// Whether an instance of `c` may be in a cycle: a class (not a data
+/// type or variant, whose values are made from older ones) with a field
+/// whose declared type may hold a value that leads back to the object
+/// (anything but numbers, strings, symbols and the like, and collections
+/// of those).
+fn may_be_cyclic(c: &quarz_ir::RtClass, slots: &quarz_ir::FieldSlots) -> bool {
+    if c.structural {
+        return false;
+    }
+    c.fields
+        .iter()
+        .zip(&slots.kinds)
+        .any(|(f, k)| *k == FieldKind::Value && !f.ty.as_deref().is_some_and(acyclic_type))
+}
+
+/// Whether values of the type named `ty` (as `World::type_name` writes
+/// it) never lead to a value that can refer back.
+fn acyclic_type(ty: &str) -> bool {
+    let ty = ty.trim();
+    // Each part is shorter than the whole, so this ends.
+    let alternatives = split_top(ty, '|');
+    if alternatives.len() > 1 {
+        return alternatives.iter().all(|t| acyclic_type(t));
+    }
+    let ty = ty.strip_suffix('?').unwrap_or(ty);
+    if let Some(inner) = ty.strip_prefix('[').and_then(|t| t.strip_suffix(']')) {
+        return split_top(inner, ',').iter().all(|t| acyclic_type(t));
+    }
+    if let Some(open) = ty.find('[') {
+        // `[` is one byte, so `open + 1` is a character boundary.
+        let Some(args) = ty.strip_suffix(']').and_then(|t| t.get(open + 1..)) else {
+            return false;
+        };
+        return matches!(&ty[..open], "Array" | "Hash" | "Set" | "Range")
+            && split_top(args, ',').iter().all(|t| acyclic_type(t));
+    }
+    matches!(
+        ty,
+        "Int"
+            | "Float"
+            | "Bool"
+            | "Nil"
+            | "String"
+            | "Symbol"
+            | "Integer"
+            | "Bytes"
+            | "Regexp"
+            | "Time"
+            | "Duration"
+            | "MatchData"
+            | "Bytes::MatchData"
+            | "String::Builder"
+            | "Bytes::Builder"
+            | "Random"
+    )
+}
+
+/// `s` split at `sep` outside brackets.
+fn split_top(s: &str, sep: char) -> Vec<&str> {
+    let mut out = Vec::new();
+    let (mut depth, mut start) = (0i32, 0);
+    for (i, ch) in s.char_indices() {
+        match ch {
+            '[' | '(' => depth += 1,
+            ']' | ')' => depth -= 1,
+            c if c == sep && depth == 0 => {
+                out.push(&s[start..i]);
+                start = i + ch.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    out.push(&s[start..]);
+    out
 }
 
 /// The layout of a new object of `class` with `n` fields.
@@ -936,7 +1050,9 @@ impl<F: ?Sized + FieldTail> Drop for ObjectOf<F> {
             let fields: Fields = (0..layout.kinds.len())
                 .map(|i| unsafe { take_field_at(layout, base, i) })
                 .collect();
-            let o = Object::new(self.class, fields);
+            // No collection now: the value this is dropped from may still
+            // be in a place a collection would look at.
+            let o = crate::cycles::quietly(|| Object::new(self.class, fields));
             o.flags
                 .fetch_or(DEINITIALIZED, std::sync::atomic::Ordering::Relaxed);
             crate::deinit::queue(o);
@@ -1121,7 +1237,52 @@ impl Object {
             }
             let rc = crate::rc::Rc::from_fresh(p);
             debug_assert_eq!(std::alloc::Layout::for_value(&*p), layout);
+            if layout_of.cyclic {
+                crate::cycles::register(Rc::addr(&rc), crate::cycles::Kind::Object);
+            }
             rc
+        }
+    }
+
+    /// Whether freeing the object must run its `deinitialize` first.
+    pub(crate) fn needs_deinitialize(&self) -> bool {
+        self.flags.load(std::sync::atomic::Ordering::Relaxed) & DEINITIALIZED == 0
+            && crate::deinit::has(self.class)
+    }
+
+    /// Record that the object's `deinitialize` has run or is queued.
+    pub(crate) fn set_deinitialized(&self) {
+        self.flags
+            .fetch_or(DEINITIALIZED, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Set every value the object holds (in place or aside) to nil,
+    /// dropping what they held (the cycle collector freeing garbage).
+    ///
+    /// # Safety
+    /// The object is local, and nothing reads or writes it meanwhile.
+    pub(crate) unsafe fn clear_values(&self) {
+        // SAFETY: as the caller promises (the fields are an `UnsafeCell`,
+        // and the aside list is reached through its raw pointer).
+        // Dropping what a value held runs no user code (a `deinitialize`
+        // is queued) and frees nothing this object holds the place of:
+        // the caller holds the object.
+        unsafe {
+            let base = self.base();
+            for (i, k) in self.layout.kinds.iter().enumerate() {
+                if *k == FieldKind::Value {
+                    let at = base.add(self.layout.offset(i)) as *mut Value;
+                    drop(std::mem::replace(&mut *at, Value::Nil));
+                }
+            }
+            if let Some(a) = self.layout.aside {
+                let p = *(base.add(a as usize) as *const *mut Aside);
+                if !p.is_null() {
+                    for (_, v) in (*p).iter_mut() {
+                        drop(std::mem::replace(v, Value::Nil));
+                    }
+                }
+            }
         }
     }
 
@@ -2149,6 +2310,29 @@ impl EnumeratorVal {
             xs.iter().for_each(f);
         }
     }
+
+    /// Call `f` on each buffered element, unless the buffer is borrowed
+    /// (`false` then): the cycle collector's look into it.
+    pub(crate) fn try_each_buffered(&self, f: impl FnMut(&Value)) -> bool {
+        match self.buffer.try_borrow() {
+            Ok(b) => {
+                if let Some(xs) = &*b {
+                    xs.iter().for_each(f);
+                }
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
+    /// Drop the buffered elements (the cycle collector freeing garbage).
+    pub(crate) fn clear_buffer(&self) {
+        if let Ok(mut b) = self.buffer.try_borrow_mut() {
+            let taken = b.take();
+            drop(b);
+            drop(taken);
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -3019,6 +3203,28 @@ pub struct TimeVal {
 }
 
 impl Value {
+    /// A new `Array::Builder` holding `items` (a candidate of the cycle
+    /// collector: it may come to hold what refers to it).
+    pub fn array_builder(items: Vec<Value>) -> Rc<RefCell<Vec<Value>>> {
+        let b = Rc::new(RefCell::new(items));
+        crate::cycles::register(Rc::addr(&b), crate::cycles::Kind::ArrayBuilder);
+        b
+    }
+
+    /// A new `Hash::Builder` holding `map` (see `array_builder`).
+    pub fn hash_builder(map: ValueMap) -> Rc<RefCell<ValueMap>> {
+        let b = Rc::new(RefCell::new(map));
+        crate::cycles::register(Rc::addr(&b), crate::cycles::Kind::HashBuilder);
+        b
+    }
+
+    /// A new `Set::Builder` holding `set` (see `array_builder`).
+    pub fn set_builder(set: ValueSet) -> Rc<RefCell<ValueSet>> {
+        let b = Rc::new(RefCell::new(set));
+        crate::cycles::register(Rc::addr(&b), crate::cycles::Kind::SetBuilder);
+        b
+    }
+
     /// A string value: in the value itself when short, shared on the
     /// heap otherwise.
     pub fn str(s: &str) -> Value {
@@ -3356,4 +3562,38 @@ pub fn integer(b: BigInt) -> Value {
 pub fn fit_int(b: &BigInt) -> Option<Value> {
     use num_traits::ToPrimitive;
     b.to_i64().map(Value::Int)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::acyclic_type;
+
+    #[test]
+    fn field_types_that_cannot_lead_back() {
+        for ty in [
+            "Int",
+            "String?",
+            "Array[Int]",
+            "Hash[String, Array[Symbol]]",
+            "[Int, String]",
+            "Int | String",
+            "Array[Int | String]",
+            "Hash[String, Int | Symbol]",
+        ] {
+            assert!(acyclic_type(ty), "{ty}");
+        }
+        for ty in [
+            "Node",
+            "Node?",
+            "Array[Node]",
+            "Int | Node",
+            "Array[Int | Node]",
+            "(Int) -> Int",
+            "(Array[Int]) -> Café",
+            "Array[",
+            "Object",
+        ] {
+            assert!(!acyclic_type(ty), "{ty}");
+        }
+    }
 }

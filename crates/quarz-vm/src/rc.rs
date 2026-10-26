@@ -12,8 +12,11 @@
 //! code reads and updates inline (checked below at compile time): two
 //! words, then the value.
 //! - A local allocation (reachable from one thread only) keeps its count
-//!   in the first word, updated with plain loads and stores, and 1 in the
-//!   second (where std kept its weak count; there are no weak references).
+//!   in the first word, updated with plain loads and stores, and in the
+//!   second (where std kept its weak count; there are no weak references)
+//!   1, or, for a candidate of the cycle collector, its place in this
+//!   thread's list of them (`crate::cycles`: an even word, which only the
+//!   runtime reads).
 //! - A shared one has 0 in the first word, which no count ever is, and
 //!   its count in the second, updated atomically.
 //!
@@ -302,6 +305,8 @@ impl<T: ?Sized + Target> Rc<T> {
         if inner.is_shared() {
             return false;
         }
+        // A shared allocation is no candidate of this thread's collector.
+        crate::cycles::forget(inner.shared.get());
         // A local allocation is reachable from this thread only: plain
         // stores, published by whatever hands the value over.
         inner.shared.set(inner.local.get());
@@ -315,6 +320,7 @@ impl<T: ?Sized + Target> Rc<T> {
     pub fn make_immortal(this: &Rc<T>) -> bool {
         let inner = this.inner();
         if !inner.is_shared() {
+            crate::cycles::forget(inner.shared.get());
             inner.shared.set(IMMORTAL * 2);
             inner.local.set(SHARED);
             return true;
@@ -334,6 +340,58 @@ impl<T: ?Sized + Target> Rc<T> {
     fn layout(&self) -> Layout {
         let value = Layout::for_value(self.inner());
         Layout::from_size_align(T::PREFIX + value.size(), value.align()).unwrap()
+    }
+}
+
+/// The cycle collector's access to allocations by address (the address
+/// of their counts, `Rc::addr`): a candidate is listed by its address,
+/// with no count of its own.
+impl<T: ?Sized + Target> Rc<T> {
+    /// The address of the allocation's counts.
+    #[inline(always)]
+    pub(crate) fn addr(this: &Rc<T>) -> usize {
+        this.ptr.as_ptr() as usize
+    }
+
+    /// The value of the allocation at `addr`.
+    ///
+    /// # Safety
+    /// `addr` is the address of a live allocation of a `T`, which outlives
+    /// the reference.
+    #[inline(always)]
+    pub(crate) unsafe fn value_at<'a>(addr: usize) -> &'a T {
+        // SAFETY: as the caller promises.
+        unsafe { &(*T::inner(addr as *mut u8)).value }
+    }
+
+    /// A new reference to the allocation at `addr` (its count goes up).
+    ///
+    /// # Safety
+    /// As for `value_at`, and the allocation is local.
+    pub(crate) unsafe fn clone_at(addr: usize) -> Rc<T> {
+        // SAFETY: as the caller promises.
+        let inner = unsafe { &*T::inner(addr as *mut u8) };
+        debug_assert!(!inner.is_shared());
+        inner.local.set(inner.local.get() + 1);
+        Rc {
+            // SAFETY: the address of a live allocation is not null.
+            ptr: unsafe { NonNull::new_unchecked(addr as *mut u8) },
+            _owns: PhantomData,
+        }
+    }
+}
+
+/// The two words of the allocation at `addr` (of any value).
+///
+/// # Safety
+/// `addr` is the address of a live allocation's counts.
+#[inline(always)]
+pub(crate) unsafe fn counts_at<'a>(addr: usize) -> (&'a Cell<usize>, &'a Cell<usize>) {
+    // SAFETY: as the caller promises; the counts are the first two
+    // words of every allocation (`Inner` is `repr(C)`).
+    unsafe {
+        let inner = &*(addr as *const Inner<()>);
+        (&inner.local, &inner.shared)
     }
 }
 
@@ -399,6 +457,12 @@ impl<T: ?Sized + Target> Rc<T> {
     #[inline(never)]
     unsafe fn drop_slow(&mut self) {
         let layout = self.layout();
+        let inner = self.inner();
+        if !inner.is_shared() {
+            // Out of the cycle collector's candidates first: what the
+            // value's drop runs may start a collection.
+            crate::cycles::forget(inner.shared.get());
+        }
         // SAFETY: the caller holds the last reference.
         unsafe {
             std::ptr::drop_in_place(&raw mut (*self.inner_ptr()).value);

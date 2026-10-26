@@ -1,0 +1,37 @@
+# An object with a `deinitialize`, released when the captured variable
+# holding the object that holds it is overwritten: its rebuild for the
+# method makes a candidate of the cycle collector while the variable
+# still holds the old value, whose fields are freed already. No
+# collection may start then.
+class Fin
+  var @peer: Fin? = nil
+  def deinitialize -> Nil
+  end
+end
+
+class Leaf
+  var @a: Leaf? = nil
+  var @b: Leaf? = nil
+end
+
+class Wrap
+  var @e: Leaf? = nil
+  var @d: Fin? = nil
+  def initialize(e: Leaf, d: Fin)
+    @e = e
+    @d = d
+  end
+end
+
+def overwrite(i: Int) -> Int
+  x: Wrap? = nil
+  set = -> { x = Wrap.new(Leaf.new, Fin.new); nil }
+  clear = -> { x = nil; nil }
+  set.call
+  clear.call
+  i
+end
+
+n = 0
+100_000.times { |i| n += overwrite(i) }
+puts n

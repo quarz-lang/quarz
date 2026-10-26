@@ -127,15 +127,9 @@ fn obj_frozen(_: &Interp, recv: &Value, _: Args) -> EvalResult {
 
 fn obj_dup(_: &Interp, recv: &Value, _: Args) -> EvalResult {
     Ok(match recv {
-        Value::ArrayBuilder(a) => {
-            Value::ArrayBuilder(Rc::new(std::cell::RefCell::new(a.borrow().clone())))
-        }
-        Value::HashBuilder(h) => {
-            Value::HashBuilder(Rc::new(std::cell::RefCell::new(h.borrow().clone())))
-        }
-        Value::SetBuilder(s) => {
-            Value::SetBuilder(Rc::new(std::cell::RefCell::new(s.borrow().clone())))
-        }
+        Value::ArrayBuilder(a) => Value::ArrayBuilder(Value::array_builder(a.borrow().clone())),
+        Value::HashBuilder(h) => Value::HashBuilder(Value::hash_builder(h.borrow().clone())),
+        Value::SetBuilder(s) => Value::SetBuilder(Value::set_builder(s.borrow().clone())),
         Value::StringBuilder(s) => {
             Value::StringBuilder(Rc::new(std::cell::RefCell::new(s.borrow().clone())))
         }

@@ -683,9 +683,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     native!(m, "Hash#hash", super::core_hash);
     // Hash::Builder
     native!(m, "Hash::Builder.new", |_, _, _| {
-        Ok(Value::HashBuilder(Rc::new(RefCell::new(
-            ValueMap::default(),
-        ))))
+        Ok(Value::HashBuilder(Value::hash_builder(ValueMap::default())))
     });
     native!(m, "Hash::Builder#[]", |i, r, a| {
         match hb(i, r)?.borrow().get(a.arg(0)) {
@@ -845,9 +843,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     native!(m, "Set#hash", super::core_hash);
     // Set::Builder
     native!(m, "Set::Builder.new", |_, _, _| {
-        Ok(Value::SetBuilder(Rc::new(
-            RefCell::new(ValueSet::default()),
-        )))
+        Ok(Value::SetBuilder(Value::set_builder(ValueSet::default())))
     });
     native!(m, "Set::Builder#<<", |i, r, a| {
         sb(i, r)?.borrow_mut().insert(a.arg(0).clone());
@@ -1209,7 +1205,7 @@ fn array_new(interp: &Interp, _: &Value, args: Args) -> EvalResult {
 
 fn array_build(interp: &Interp, _: &Value, args: Args) -> EvalResult {
     let b = block(interp, &args)?;
-    let builder = Rc::new(RefCell::new(Vec::new()));
+    let builder = Value::array_builder(Vec::new());
     interp.call_block(&b, smallvec![Value::ArrayBuilder(builder.clone())])?;
     let items = std::mem::take(&mut *builder.borrow_mut());
     Ok(Value::array(items))
@@ -1486,7 +1482,7 @@ fn ab_new(interp: &Interp, _: &Value, args: Args) -> EvalResult {
             vec![args.arg(1).clone(); n]
         }
     };
-    Ok(Value::ArrayBuilder(Rc::new(RefCell::new(items))))
+    Ok(Value::ArrayBuilder(Value::array_builder(items)))
 }
 
 fn ab_set(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
@@ -1516,7 +1512,7 @@ fn ab_set(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
 
 fn hash_build(interp: &Interp, _: &Value, args: Args) -> EvalResult {
     let b = block(interp, &args)?;
-    let builder = Rc::new(RefCell::new(ValueMap::default()));
+    let builder = Value::hash_builder(ValueMap::default());
     interp.call_block(&b, smallvec![Value::HashBuilder(builder.clone())])?;
     let map = std::mem::take(&mut *builder.borrow_mut());
     Ok(Value::Hash(Rc::new(crate::value::HashData::from(map))))
@@ -1582,7 +1578,7 @@ fn hash_filter(interp: &Interp, recv: &Value, args: Args, keep: bool) -> EvalRes
 
 fn set_build(interp: &Interp, _: &Value, args: Args) -> EvalResult {
     let b = block(interp, &args)?;
-    let builder = Rc::new(RefCell::new(ValueSet::default()));
+    let builder = Value::set_builder(ValueSet::default());
     interp.call_block(&b, smallvec![Value::SetBuilder(builder.clone())])?;
     let s = std::mem::take(&mut *builder.borrow_mut());
     Ok(Value::Set(Rc::new(s)))
