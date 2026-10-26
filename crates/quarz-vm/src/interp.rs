@@ -1389,9 +1389,9 @@ impl Interp {
         self.sched.borrow().current_task()
     }
 
-    /// Spawn a task running the closure.
     /// Start a task running `closure` (marked shared: it may run on
-    /// another worker), on the worker `Workers::place` picks.
+    /// another worker), on the worker `Workers::place` picks; a
+    /// `Task.timeout` block's on this one.
     pub fn spawn_task(
         &self,
         closure: Value,
@@ -1402,7 +1402,13 @@ impl Interp {
             let s = self.sched.borrow();
             (s.worker, s.workers.clone())
         };
-        let target = workers.place(here);
+        // A `Task.timeout` block is its caller's code, which may hold what
+        // is not Shareable: it runs on the caller's worker.
+        let target = if name == TIMEOUT_TASK {
+            here
+        } else {
+            workers.place(here)
+        };
         // Where its `exit`s go: its spawner's sink; the task of a
         // `Task.timeout` block is one itself (the block is its caller's).
         let sink = {

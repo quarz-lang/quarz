@@ -105,6 +105,11 @@ fn shareable_procedures_called_from_every_worker() {
 }
 
 #[test]
+fn timeout_blocks_run_on_their_callers_worker() {
+    prints_its_out("timeout_capture.qz");
+}
+
+#[test]
 fn constants_initialized_once_across_workers() {
     prints_its_out("consts.qz");
 }
