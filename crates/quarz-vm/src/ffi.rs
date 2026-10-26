@@ -371,11 +371,12 @@ pub unsafe extern "C" fn qz_leave(
     // not need.
     {
         use std::ptr::{addr_of_mut, drop_in_place, read};
+        drop_in_place(addr_of_mut!((*buf).frame));
         read(addr_of_mut!((*buf).self_val)).fast_drop();
         read(addr_of_mut!((*buf).block)).fast_drop();
-        drop_in_place(addr_of_mut!((*buf).frame));
         drop_in_place(addr_of_mut!((*buf).yield_caller));
     }
+    rt.call_ended(&r);
     match r {
         Ok(v) => {
             *regs.add(dst as usize) = v;

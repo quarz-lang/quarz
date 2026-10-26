@@ -1,0 +1,101 @@
+# When `deinitialize` runs: at the end of the scope or statement that
+# releases the object, on both backends.
+
+class R
+  @name: String
+  def initialize(@name: String) end
+  def name -> String = @name
+  def deinitialize -> Nil
+    puts("fin #{@name}")
+  end
+end
+
+def make -> Nil
+  r = R.new("method")
+  pr = -> { r.name }
+  puts(pr.call)
+end
+
+def twice(&: (Int) -> Nil) -> Nil
+  yield(1)
+  yield(2)
+end
+
+def blocks -> Nil
+  twice do |i|
+    r = R.new("pass #{i}")
+    pr = -> { r.name }
+    puts(pr.call)
+  end
+  puts("blocks done")
+end
+
+class Holder
+  def run -> Nil
+    r = R.new("instance method")
+    pr = -> { r.name }
+    puts(pr.call)
+  end
+end
+
+make
+puts("after make")
+blocks
+puts("after blocks")
+Holder.new.run
+puts("after run")
+
+# A local a block captured lives in the call's frame: released when the
+# method returns (above). A receiver used last by the call goes at its
+# end too, also when the method is inlined.
+class H
+  def deinitialize -> Nil
+    puts("fin H")
+  end
+  def plain -> Nil
+    puts("plain")
+  end
+end
+H.new.plain
+puts("after plain")
+
+# `break`, `next` and `return` out of a block lowered in place end its
+# pass: its variables go there.
+def leave(how: Int) -> Int
+  [1, 2].each do |i|
+    r = R.new("leave #{how} #{i}")
+    puts(r.name)
+    next if how == 0 && i == 1
+    break if how == 1
+    return 5 if how == 2
+  end
+  puts("loop done")
+  0
+end
+leave(0)
+leave(1)
+puts(leave(2))
+
+def keep -> String
+  r = [1, 2].each do |i|
+    x = R.new("kept #{i}")
+    break x
+  end
+  puts("broke")
+  r&.name || ""
+end
+puts(keep)
+
+# Left by an exception: finalized at the next call's end.
+def boom -> Nil
+  r = R.new("boom")
+  pr = -> { r.name }
+  puts(pr.call)
+  raise "x"
+end
+begin
+  boom
+rescue
+  puts("rescued")
+end
+puts("end")

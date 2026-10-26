@@ -20,16 +20,23 @@ const MAX_INSTS: usize = 40;
 /// Inline the eligible calls of every function in `functions` (indexed
 /// by `FuncId`), `passes` levels deep.
 pub fn inline_calls(functions: &mut [Function], methods: &[RtMethod], passes: usize) {
+    // In a program with a `deinitialize`, what an inlined callee's
+    // registers hold is released at its return, as its activation would
+    // be (elsewhere that changes nothing the program can see, and the
+    // clear would keep `sroa` from replacing the callee's objects).
+    let release = methods
+        .iter()
+        .any(|m| m.name == "deinitialize" && m.func.is_some());
     for _ in 0..passes {
-        inline_pass(functions, methods);
+        inline_pass(functions, methods, release);
     }
 }
 
-fn inline_pass(functions: &mut [Function], methods: &[RtMethod]) {
+fn inline_pass(functions: &mut [Function], methods: &[RtMethod], release: bool) {
     let orig: Vec<Function> = functions.to_vec();
     let eligible: Vec<bool> = orig.iter().map(eligible_callee).collect();
     for g in functions.iter_mut() {
-        inline_into(g, &orig, &eligible, methods);
+        inline_into(g, &orig, &eligible, methods, release);
     }
 }
 
@@ -120,7 +127,13 @@ fn site(inst: &Inst, eligible: &[bool], methods: &[RtMethod]) -> Option<Site> {
     })
 }
 
-fn inline_into(g: &mut Function, orig: &[Function], eligible: &[bool], methods: &[RtMethod]) {
+fn inline_into(
+    g: &mut Function,
+    orig: &[Function],
+    eligible: &[bool],
+    methods: &[RtMethod],
+    release: bool,
+) {
     let blocks = std::mem::take(&mut g.blocks);
     let n = blocks.len();
     let mut out: Vec<Block> = vec![Block::default(); n];
@@ -208,6 +221,16 @@ fn inline_into(g: &mut Function, orig: &[Function], eligible: &[bool], methods: 
                             src: base_reg + r,
                         });
                         nb.lines.push(origin(cb.term_line));
+                        // What the callee's registers hold goes at its
+                        // return (a receiver it was the last to use, a
+                        // temporary, finalized there).
+                        if release {
+                            nb.insts.push(Inst::ClearRegs {
+                                from: base_reg,
+                                to: base_reg + f.nregs,
+                            });
+                            nb.lines.push(origin(cb.term_line));
+                        }
                         Term::Jump(cont_id as BlockId)
                     }
                     Term::Jump(t) => Term::Jump(base_blk as BlockId + t),

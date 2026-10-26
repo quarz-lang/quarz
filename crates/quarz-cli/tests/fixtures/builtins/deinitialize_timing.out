@@ -1,0 +1,33 @@
+method
+fin method
+after make
+pass 1
+fin pass 1
+pass 2
+fin pass 2
+blocks done
+after blocks
+instance method
+fin instance method
+after run
+plain
+fin H
+after plain
+leave 0 1
+fin leave 0 1
+leave 0 2
+fin leave 0 2
+loop done
+leave 1 1
+fin leave 1 1
+loop done
+leave 2 1
+fin leave 2 1
+5
+broke
+fin kept 1
+kept 1
+boom
+rescued
+fin boom
+end
