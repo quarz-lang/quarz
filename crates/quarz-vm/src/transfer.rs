@@ -438,9 +438,10 @@ impl std::io::Write for SyncBuffer {
     }
 }
 
-/// A helper thread's interpreter: the address of the image it was built
-/// from, the interpreter, and its output buffer.
-type Worker = (usize, std::rc::Rc<Interp>, Arc<Mutex<Vec<u8>>>);
+/// A helper thread's interpreter: the image it was built from (kept, so
+/// that another image cannot come at its address and be taken for it),
+/// the interpreter, and its output buffer.
+type Worker = (Arc<ProgramImage>, std::rc::Rc<Interp>, Arc<Mutex<Vec<u8>>>);
 
 thread_local! {
     /// The interpreter a helper thread keeps between jobs.
@@ -469,11 +470,21 @@ pub fn run_on_thread(
     argv: Vec<String>,
     closure: Transfer,
 ) -> WorkerOutcome {
-    let key = Arc::as_ptr(&image) as usize;
+    // Another image's interpreter goes first (out of the borrow): what it
+    // releases is queued under its own classes, not the next program's
+    // (`deinit::set_classes`).
+    let old = WORKER.with(|w| {
+        let mut w = w.borrow_mut();
+        match &*w {
+            Some((k, _, _)) if !Arc::ptr_eq(k, &image) => w.take(),
+            _ => None,
+        }
+    });
+    drop(old);
     let made: std::io::Result<_> = WORKER.with(|w| {
         let mut w = w.borrow_mut();
         match &*w {
-            Some((k, i, out)) if *k == key => Ok((i.clone(), out.clone())),
+            Some((k, i, out)) if Arc::ptr_eq(k, &image) => Ok((i.clone(), out.clone())),
             _ => {
                 let out = Arc::new(Mutex::new(Vec::new()));
                 let state = SharedState::try_new(Box::new(SyncBuffer(out.clone())))?;
@@ -486,7 +497,7 @@ pub fn run_on_thread(
                         }
                     }
                 }
-                *w = Some((key, interp.clone(), out.clone()));
+                *w = Some((image.clone(), interp.clone(), out.clone()));
                 Ok((interp, out))
             }
         }

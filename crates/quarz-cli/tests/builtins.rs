@@ -27,3 +27,51 @@ fn builtins_print_their_expected_output() {
         assert_eq!(out, expected, "output of {}", path.display());
     }
 }
+
+/// A program whose objects are released as its top level ends finalizes
+/// them itself: none is left queued on the thread for the next program
+/// there, which would look its class up in its own, smaller, world.
+#[test]
+fn the_next_program_on_a_thread_finalizes_nothing_of_the_last() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/builtins");
+    let (_, out) = common::run_path(&dir.join("deinitialize_copies.qz"), &[]);
+    assert!(out.ends_with("copy\nrelease\n"), "{out}");
+    common::expect("p 1", "1\n");
+}
+
+/// Nor the cyclic garbage it left uncollected: a later collection on the
+/// thread would finalize it by the next program's classes.
+#[test]
+fn the_next_program_on_a_thread_collects_nothing_of_the_last() {
+    let (_, out) = common::run(
+        "class Node\n  var @peer: Node? = nil\n  def link(n: Node) -> Nil\n    @peer = n\n    nil\n  end\n  \
+         def deinitialize -> Nil\n    puts \"node\"\n  end\nend\n\
+         def pair -> Nil\n  a = Node.new\n  b = Node.new\n  a.link(b)\n  b.link(a)\n  nil\nend\n\
+         3.times { pair }\nputs \"first\"\n",
+        &[],
+    );
+    assert_eq!(out, "first\n");
+    // A class of its own at the same id, which the first program's
+    // objects must not be finalized as.
+    common::expect(
+        "class Other\n  var @peer: Other? = nil\n  def deinitialize -> Nil\n    puts \"other\"\n  end\nend\n\
+         class Cell\n  var @next: Cell? = nil\nend\n\
+         30000.times { Cell.new }\nputs \"second\"\n",
+        "second\n",
+    );
+}
+
+/// A `Task.blocking` helper keeps the interpreter of the program it last
+/// ran: another program's image, even one allocated where the first's
+/// was, gets one of its own.
+#[test]
+fn task_blocking_runs_each_programs_own_code() {
+    for _ in 0..10 {
+        for s in ["A", "B"] {
+            common::expect(
+                &format!("def a -> String = \"{s}\"\nputs Task.blocking {{ a }}\n"),
+                &format!("{s}\n"),
+            );
+        }
+    }
+}
