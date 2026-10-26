@@ -5002,6 +5002,14 @@ class Exception
   # by the backtrace, one `"    from file.qz:12:in method"` line per frame:
   # what the runtime prints for an exception nothing rescued.
   native def full_message -> String
+  # Whether `other` is this exception: the same object, or a copy of it.
+  # Raising an exception that is referred to raises a copy (exceptions are
+  # immutable), and `Task.blocking` copies one across threads; a copy is
+  # equal to its original, and to its other copies. Two exceptions made
+  # apart are not equal, whatever their messages.
+  native def ==(other: Object) -> Bool
+  # Consistent with `==`: the same for an exception and its copies.
+  native def hash -> Int
   # The exception being handled when this one was raised, or `nil`, as
   # Ruby's `$!`: an exception raised while a `rescue` clause runs (there or
   # in what it calls) gets the one the clause is handling, and one raised

@@ -38,6 +38,8 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     native!(m, "Exception#backtrace", exc_backtrace);
     native!(m, "Exception#full_message", exc_full_message);
     native!(m, "Exception#cause", exc_cause);
+    native!(m, "Exception#==", exc_eq);
+    native!(m, "Exception#hash", exc_hash);
     native!(m, "Exception#inspect", obj_inspect);
     native!(m, "Kernel#puts", kernel_puts);
     native!(m, "Kernel#print", kernel_print);
@@ -213,6 +215,35 @@ fn exc_cause(_: &Interp, recv: &Value, _: Args) -> EvalResult {
         Value::Object(o) => Ok(o.cause().unwrap_or(Value::Nil)),
         _ => Ok(Value::Nil),
     }
+}
+
+/// `Exception#==`: the same exception, or copies of one (`ExcInfo::id`).
+/// One without an id was never copied, so it equals only itself.
+fn exc_eq(_: &Interp, recv: &Value, args: Args) -> EvalResult {
+    let (Value::Object(a), Value::Object(b)) = (recv, args.arg(0)) else {
+        return Ok(Value::Bool(false));
+    };
+    if Rc::ptr_eq(a, b) {
+        return Ok(Value::Bool(true));
+    }
+    let id = |o: &Rc<Object>| o.exc_info().map(|i| i.id);
+    Ok(Value::Bool(id(a).is_some() && id(a) == id(b)))
+}
+
+/// `Exception#hash`: of its identity, recorded now if it has none yet
+/// (as a copy records it, `raised`), so that it never changes.
+fn exc_hash(_: &Interp, recv: &Value, _: Args) -> EvalResult {
+    let Value::Object(o) = recv else {
+        return Ok(Value::Int(0));
+    };
+    if o.exc_info().is_none() {
+        o.init_exc(ExcInfo::new(None, None));
+    }
+    let id = o.exc_info().map_or(0, |i| i.id);
+    // The id mixed, as an Int's hash is.
+    Ok(Value::Int(
+        (id.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 1) as i64,
+    ))
 }
 
 /// Whether `c` may become the cause of `o`: not `o` itself, nor an
