@@ -2733,7 +2733,8 @@ class Regexp
   # ```
   native def self.escape(text: String) -> String
   # A pattern matching any of `patterns`: a string matches itself
-  # (escaped), a `Regexp` its pattern, without its flags. With no
+  # (escaped), a `Regexp` its pattern, in a group that keeps its flags
+  # (`(?i-mx:...)`); a single `Regexp` is returned as it is. With no
   # pattern, the result is `//`, which matches everywhere (Ruby's matches
   # nothing).
   #
@@ -2742,7 +2743,7 @@ class Regexp
   # `TypeError` for a pattern that is neither a `String` nor a `Regexp`.
   #
   # ```
-  # Regexp.union("a.b", /c+/)    # => /a\.b|(?:c+)/
+  # Regexp.union("a.b", /c+/i)   # => /a\.b|(?i-mx:c+)/
   # ```
   native def self.union(*patterns: Object) -> Regexp
 
@@ -3569,11 +3570,6 @@ end
 extension Enumerable[T: Integer]
   # The sum of the elements; 0 for an empty collection.
   def sum -> Integer = reduce(0.to_integer) { |acc, x| acc + x }
-end
-
-extension Array[T: Comparable[T]]
-  # Compares element by element, as `Array#<=>` does.
-  native def <=>(other: Array[T]) -> Int
 end
 
 # An external iterator over what a method yields: `xs.each`, `xs.map`,
@@ -4913,14 +4909,22 @@ class Range[T]
   #
   # `TypeError` for an endless or beginless range or a `Float` range.
   native def to_a -> Array[T]
-  # The range with its bounds' `inspect`: `"1..3"`, `"1...3"`. A missing
-  # bound shows as `nil` (`"1..nil"`), and a `String` range quotes its bounds
-  # (`"\"a\"..\"b\""`), as `#inspect` does: unlike Ruby, `to_s` is `inspect`.
-  native def to_s -> String
-  # The range as written, as `#to_s`.
+  # The range with its bounds' `to_s`, a missing one shown as nothing.
   #
   # ```
-  # (1...3).inspect   # => "1...3"
+  # (1...3).to_s      # => "1...3"
+  # ("a".."b").to_s   # => "a..b"
+  # (1..).to_s        # => "1.."
+  # ```
+  native def to_s -> String
+  # The range with its bounds' `inspect`. A missing bound is left out,
+  # unless both are.
+  #
+  # ```
+  # ("a".."b").inspect   # => "\"a\"..\"b\""
+  # (1..).inspect        # => "1.."
+  # (..3).inspect        # => "..3"
+  # (nil..nil).inspect   # => "nil..nil"
   # ```
   native def inspect -> String
   # Whether `other` is a range with `==` bounds that excludes its end just
