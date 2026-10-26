@@ -280,7 +280,7 @@ fn tcp_connect(interp: &Interp, addr: SocketAddr) -> EvalResult {
             return Err(os_error(interp, e, &label));
         }
     }
-    let sock = make_socket(interp, Stream::Tcp(stream), None);
+    let sock = make_socket_from(interp, Stream::Tcp(stream), None, Some(addr));
     if r < 0 {
         let st = socket(interp, &sock)?;
         // Until the connection is made or fails: a wake that is not the
@@ -334,12 +334,14 @@ fn tcp_connect(interp: &Interp, addr: SocketAddr) -> EvalResult {
             let _ = close(interp, &sock);
             return Err(e);
         }
-        // The addresses, now that there is a connection.
+        // The addresses, now that there is a connection: the peer as the
+        // system gives it (127.0.0.1 for a connection to 0.0.0.0), or
+        // `addr` when it has reset since.
         let mut s = st.borrow_mut();
         if let Some(Stream::Tcp(t)) = &s.stream {
             let (local, peer) = (t.local_addr().ok(), t.peer_addr().ok());
             s.local = local;
-            s.peer = peer;
+            s.peer = peer.or(Some(addr));
         }
     }
     if let Some(Stream::Tcp(t)) = &socket(interp, &sock)?.borrow().stream {
@@ -521,9 +523,20 @@ fn udp_bind(interp: &Interp, addr: &str) -> Result<UdpSocket, Flow> {
     Ok(socket)
 }
 
-pub(crate) fn make_socket(_: &Interp, stream: Stream, path: Option<String>) -> Value {
+pub(crate) fn make_socket(interp: &Interp, stream: Stream, path: Option<String>) -> Value {
+    make_socket_from(interp, stream, path, None)
+}
+
+/// A socket on `stream`, whose peer is `peer` when the system no longer
+/// gives it (a peer that has reset since `accept` or `connect`).
+fn make_socket_from(
+    _: &Interp,
+    stream: Stream,
+    path: Option<String>,
+    peer: Option<SocketAddr>,
+) -> Value {
     let (local, peer, unix) = match &stream {
-        Stream::Tcp(s) => (s.local_addr().ok(), s.peer_addr().ok(), false),
+        Stream::Tcp(s) => (s.local_addr().ok(), s.peer_addr().ok().or(peer), false),
         Stream::Unix(_) => (None, None, true),
     };
     io(IoKind::Socket(IoCell::new(SocketState {
@@ -593,12 +606,12 @@ fn listener_accept(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
                 return Err(interp.raise(interp.program.exc.io_error, "closed stream"));
             };
             match listener {
-                Listener::Tcp(l) => l.accept().map(|(s, _)| Stream::Tcp(s)),
-                Listener::Unix(l) => l.accept().map(|(s, _)| Stream::Unix(s)),
+                Listener::Tcp(l) => l.accept().map(|(s, a)| (Stream::Tcp(s), Some(a))),
+                Listener::Unix(l) => l.accept().map(|(s, _)| (Stream::Unix(s), None)),
             }
         };
         match accepted {
-            Ok(stream) => {
+            Ok((stream, peer)) => {
                 let path = st.borrow().path.clone();
                 let label = path.clone().unwrap_or_else(|| "accept".to_string());
                 match &stream {
@@ -611,7 +624,7 @@ fn listener_accept(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
                         .set_nonblocking(true)
                         .map_err(|e| os_error(interp, e, &label))?,
                 }
-                return Ok(make_socket(interp, stream, path));
+                return Ok(make_socket_from(interp, stream, path, peer));
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 let fd = listener_fd(interp, st)?;

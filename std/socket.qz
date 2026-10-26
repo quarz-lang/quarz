@@ -181,6 +181,9 @@ module Socket
   # task of its own (so the handler is a shareable procedure), and closed
   # when it returns. What the handler raises (a `StandardError`) goes to
   # `on_error` with the peer's address, or to STDERR; the server goes on.
+  # A failed accept (out of file descriptors, a connection reset before
+  # it was taken) does not end the loop either: it is written to STDERR
+  # and the loop accepts again 100 ms later.
   def self.tcp_server_loop(port: Int, on_error: (shareable (Exception, Address) -> Nil)? = nil,
                            &handler: shareable (TCPSocket, Address) -> Nil) -> Nil
     tcp_server_loop("0.0.0.0", port, on_error: on_error, &handler)
@@ -208,8 +211,14 @@ module Socket
     begin
       Task.scope do |scope|
         loop do
-          conn = server.accept
-          peer = conn.remote_address
+          accepted = begin
+            c = server.accept
+            [c, c.remote_address]
+          rescue SystemCallError => e
+            accept_failed(e)
+            next
+          end
+          conn, peer = accepted
           scope.spawn do
             begin
               handler.call(conn, peer)
@@ -236,7 +245,12 @@ module Socket
     begin
       Task.scope do |scope|
         loop do
-          conn = server.accept
+          conn = begin
+            server.accept
+          rescue SystemCallError => e
+            accept_failed(e)
+            next
+          end
           scope.spawn do
             begin
               handler.call(conn)
@@ -255,6 +269,15 @@ module Socket
     ensure
       server.close
     end
+  end
+
+  # :nodoc:
+  # Reports a failed accept and waits before the next: the error (out of
+  # file descriptors, say) may last a while.
+  def self.accept_failed(e: SystemCallError) -> Nil
+    STDERR.puts "accept: #{e.class.name}: #{e.message}"
+    Task.sleep(100.ms)
+    nil
   end
 
   # A connection to the UNIX socket at `path`: `UNIXSocket.new`.
