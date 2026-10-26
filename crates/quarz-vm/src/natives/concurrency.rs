@@ -157,6 +157,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             // A deadlock on the helper thread (or a result it could not
             // hand back): the program ends.
             WorkerExit::Exit(code) => Err(Flow::Exit(code)),
+            WorkerExit::Failed(m) => Err(i.raise(i.program.exc.system_call_error, &m)),
         }
     });
     native!(m, "Task.__contain", task_contain);

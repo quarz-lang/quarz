@@ -120,6 +120,9 @@ pub enum WorkerExit {
     Value(Transfer),
     Raise(Transfer),
     Exit(i32),
+    /// The thread could not run the block (out of descriptors for its
+    /// poller): a `SystemCallError` with this message.
+    Failed(String),
 }
 
 pub struct WorkerOutcome {
@@ -467,13 +470,13 @@ pub fn run_on_thread(
     closure: Transfer,
 ) -> WorkerOutcome {
     let key = Arc::as_ptr(&image) as usize;
-    let (interp, output) = WORKER.with(|w| {
+    let made: std::io::Result<_> = WORKER.with(|w| {
         let mut w = w.borrow_mut();
         match &*w {
-            Some((k, i, out)) if *k == key => (i.clone(), out.clone()),
+            Some((k, i, out)) if *k == key => Ok((i.clone(), out.clone())),
             _ => {
                 let out = Arc::new(Mutex::new(Vec::new()));
-                let state = SharedState::new(Box::new(SyncBuffer(out.clone())));
+                let state = SharedState::try_new(Box::new(SyncBuffer(out.clone())))?;
                 let interp = image.load(argv, state);
                 {
                     let mut compiled = interp.compiled.borrow_mut();
@@ -484,10 +487,19 @@ pub fn run_on_thread(
                     }
                 }
                 *w = Some((key, interp.clone(), out.clone()));
-                (interp, out)
+                Ok((interp, out))
             }
         }
     });
+    let (interp, output) = match made {
+        Ok(made) => made,
+        Err(e) => {
+            return WorkerOutcome {
+                exit: WorkerExit::Failed(format!("cannot create the IO poller: {e}")),
+                output: Vec::new(),
+            }
+        }
+    };
     let exit = interp.run_closure(closure);
     let exit = match exit {
         Ok(v) => match export(&interp, &v) {

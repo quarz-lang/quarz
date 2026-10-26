@@ -374,6 +374,14 @@ impl SharedState {
         SharedState::with_threads(out, 1)
     }
 
+    /// The same for a helper thread, or why its poller could not be made
+    /// (`Scheduler::try_new`).
+    pub fn try_new(out: Box<dyn std::io::Write + Send>) -> std::io::Result<SharedState> {
+        let global = std::sync::Arc::new(Global::new(out, 1));
+        let sched = Scheduler::try_new(0, global.workers.clone())?;
+        Ok(SharedState::with_scheduler(global, 0, sched))
+    }
+
     /// State for a program whose tasks run on `threads` workers.
     pub fn with_threads(out: Box<dyn std::io::Write + Send>, threads: usize) -> SharedState {
         SharedState::for_worker(std::sync::Arc::new(Global::new(out, threads)), 0)
@@ -384,10 +392,18 @@ impl SharedState {
     /// must not match one another worker gave out (a task's block may
     /// have been made on another worker).
     pub fn for_worker(global: std::sync::Arc<Global>, worker: u32) -> SharedState {
-        let workers = global.workers.clone();
+        let sched = Scheduler::new(worker, global.workers.clone());
+        SharedState::with_scheduler(global, worker, sched)
+    }
+
+    fn with_scheduler(
+        global: std::sync::Arc<Global>,
+        worker: u32,
+        sched: Scheduler,
+    ) -> SharedState {
         SharedState {
             global,
-            sched: Rc::new(RefCell::new(Scheduler::new(worker, workers))),
+            sched: Rc::new(RefCell::new(sched)),
             next_tag: Rc::new(Cell::new((u64::from(worker) << 48) | 1)),
             repl_frame: None,
             funcs: Rc::new(RefCell::new(Vec::new())),
@@ -1434,6 +1450,12 @@ impl Interp {
                 }
             }
         };
+        // A worker that cannot start leaves the task here.
+        let target = if target != here && !self.start_worker(target) {
+            here
+        } else {
+            target
+        };
         if target == here {
             let body = self.task_body(closure);
             let handle = self.sched.borrow_mut().spawn_with(
@@ -1447,7 +1469,6 @@ impl Interp {
             contain(&handle);
             return handle;
         }
-        self.start_worker(target);
         let handle = TaskHandle::with_sink(
             target,
             workers.reserve_id(target),
@@ -1512,12 +1533,15 @@ impl Interp {
     /// Start worker `w`'s thread, unless it runs already: an interpreter
     /// of its own over the program (built on that thread, whose stack
     /// limit and thread-local state it uses) and the same global state,
-    /// running the tasks placed there until the program ends.
-    fn start_worker(&self, w: u32) {
+    /// running the tasks placed there until the program ends. Whether it
+    /// runs (`Workers::start`).
+    fn start_worker(&self, w: u32) -> bool {
         let global = self.global.clone();
-        if !global.workers.claim_start(w) {
-            return;
-        }
+        let workers = global.workers.clone();
+        workers.start(w, || self.spawn_worker(global, w))
+    }
+
+    fn spawn_worker(&self, global: std::sync::Arc<Global>, w: u32) -> std::io::Result<()> {
         sched::set_multi_threaded();
         let image = self.image();
         let argv = self.program.argv.clone();
@@ -1536,7 +1560,7 @@ impl Interp {
                     std::process::exit(101);
                 }
             })
-            .expect("start a worker thread");
+            .map(|_| ())
     }
 
     /// The body of worker `w`'s thread (see `start_worker`).

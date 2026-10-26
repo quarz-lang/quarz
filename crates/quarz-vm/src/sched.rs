@@ -720,9 +720,9 @@ pub struct Reactor {
 }
 
 impl Reactor {
-    fn new() -> Reactor {
+    fn new(poller: Arc<Poller>) -> Reactor {
         Reactor {
-            poller: Arc::new(Poller::new().expect("create the IO poller")),
+            poller,
             #[cfg(target_os = "linux")]
             events: Vec::new(),
             #[cfg(not(target_os = "linux"))]
@@ -786,6 +786,11 @@ struct WorkerSlot {
     mail: AtomicBool,
     /// The worker's poller, to wake it when it waits (set when it starts).
     poller: std::sync::OnceLock<Arc<Poller>>,
+    /// Whether its poller or its thread could not be made: it never
+    /// starts, and the tasks meant for it stay where they are spawned.
+    failed: AtomicBool,
+    /// Held while it is being started.
+    starting: Mutex<()>,
     /// The numbers of its tasks, given out by whoever spawns one there.
     next_id: AtomicU32,
     started: AtomicBool,
@@ -856,10 +861,34 @@ impl Workers {
             .fetch_add(1, Ordering::Relaxed)
     }
 
-    /// Mark worker `w` started; returns whether the caller is to start
-    /// its thread (it was not started yet).
-    pub fn claim_start(&self, w: u32) -> bool {
-        !self.slots[w as usize].started.swap(true, Ordering::AcqRel)
+    /// Start worker `w` unless it runs already: make its poller, then its
+    /// thread with `spawn`. Whether it runs: not when either could not be
+    /// made (out of descriptors or threads), then or before.
+    pub fn start(&self, w: u32, spawn: impl FnOnce() -> std::io::Result<()>) -> bool {
+        let slot = &self.slots[w as usize];
+        if slot.started.load(Ordering::Acquire) {
+            return true;
+        }
+        if slot.failed.load(Ordering::Acquire) {
+            return false;
+        }
+        let _starting = lock(&slot.starting);
+        if slot.started.load(Ordering::Acquire) {
+            return true;
+        }
+        if slot.failed.load(Ordering::Acquire) {
+            return false;
+        }
+        let made = Poller::new().and_then(|p| {
+            let _ = slot.poller.set(Arc::new(p));
+            spawn()
+        });
+        if made.is_err() {
+            slot.failed.store(true, Ordering::Release);
+            return false;
+        }
+        slot.started.store(true, Ordering::Release);
+        true
     }
 
     pub fn set_poller(&self, w: u32, poller: Arc<Poller>) {
@@ -1043,12 +1072,29 @@ pub fn suspend_raw() {
 }
 
 impl Scheduler {
+    /// The scheduler of a program's main worker: the program cannot run
+    /// without its poller (the process out of descriptors before it ran
+    /// anything), and ends.
     pub fn new(worker: u32, workers: Arc<Workers>) -> Scheduler {
-        let reactor = Reactor::new();
+        Scheduler::try_new(worker, workers).unwrap_or_else(|e| {
+            eprintln!("quarz: cannot create the IO poller: {e}");
+            std::process::exit(1);
+        })
+    }
+
+    /// The scheduler of worker `worker`, or why its poller could not be
+    /// made. Another worker's was made by the thread that started it
+    /// (`Workers::start`).
+    pub fn try_new(worker: u32, workers: Arc<Workers>) -> std::io::Result<Scheduler> {
+        let poller = match workers.slots[worker as usize].poller.get() {
+            Some(p) => p.clone(),
+            None => Arc::new(Poller::new()?),
+        };
+        let reactor = Reactor::new(poller);
         // From now on posting to this worker wakes it; what was posted
         // before is in its inbox, which it reads first.
         workers.set_poller(worker, reactor.poller.clone());
-        Scheduler {
+        Ok(Scheduler {
             worker,
             workers,
             tasks: Default::default(),
@@ -1059,7 +1105,7 @@ impl Scheduler {
             current: None,
             pending_timers: Default::default(),
             reactor,
-        }
+        })
     }
 
     // ----- IO ---------------------------------------------------------------------
