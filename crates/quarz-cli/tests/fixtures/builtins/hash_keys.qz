@@ -144,7 +144,10 @@ rescue RuntimeError => copy
   p({orig => 1}.key?(copy), Set[orig].include?(copy))
 end
 
-# An atom's compare_and_set compares by `==`, own methods included.
+# An atom's compare_and_set compares by identity: no `==` runs, and an
+# equal table made apart does not count.
 cell = Atom.new({Tag.new("x") => 1, Tag.new("y") => 2})
 p cell.compare_and_set({Tag.new("X") => 1, Tag.new("Y") => 2}, {Tag.new("z") => 3})
-p cell.get.size
+p cell.compare_and_set(cell.get, {Tag.new("z") => 3}), cell.get.size
+n = Atom.new(5)
+p n.compare_and_set(5, 6), n.get

@@ -278,24 +278,20 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     native!(m, "Atom#compare_and_set", |i, r, a| {
         let new = a.arg(1).clone();
         new.share();
-        let cell = atom(i, r)?;
-        loop {
-            // Compared without the lock, by `==` (a key's or a value's
-            // own may run Quarz code), then set only if the content is
-            // still the one compared, as `update` does.
-            let current = lock(cell).clone();
-            let same = i.values_equal(&current, a.arg(0))?;
-            if !same {
-                return Ok(Value::Bool(false));
-            }
-            let mut g = lock(cell);
-            if g.identical(&current) {
-                let old = std::mem::replace(&mut *g, new.clone());
-                drop(g);
-                drop(old);
-                return Ok(Value::Bool(true));
-            }
-        }
+        // By identity, as Java's `AtomicReference` and Clojure's
+        // `compare-and-set!` compare (numbers, strings, symbols, bytes and
+        // times by their contents, `Value::identical`): whether the value
+        // is still the one read. No Quarz code runs under the lock.
+        let mut cell = lock(atom(i, r)?);
+        let same = cell.identical(a.arg(0));
+        let old = if same {
+            Some(std::mem::replace(&mut *cell, new))
+        } else {
+            None
+        };
+        drop(cell);
+        drop(old);
+        Ok(Value::Bool(same))
     });
 }
 

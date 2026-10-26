@@ -32,5 +32,8 @@ the builder is in use: a key's `==` or `hash` used it while it was being looked 
 1
 true
 true
+false
 true
 1
+true
+6

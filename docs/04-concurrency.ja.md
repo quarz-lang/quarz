@@ -107,13 +107,14 @@ counter = Atom.new(0)
 counter.update { |n| n + 1 }         # CAS ループで原子的に更新。衝突したらブロックを再実行
 counter.value                        # 読み出し(`get` も同じ)
 counter.set(0)
-counter.compare_and_set(old, new)    # Bool(== で比べる)
+counter.compare_and_set(old, new)    # Bool: まだ old のままだったか(同一性)
 
 registry = Atom[Hash[String, Channel[Message]]].new({})
 registry.update { |h| h.put(name, ch) }
 ```
 
 - `update` のブロックは副作用を持たない純粋なものにしてください(再実行されることがあります)。
+- `compare_and_set(expected, replacement)` は、Java の `AtomicReference`、Swift のアトミックな参照、Clojure の `compare-and-set!` と同じく同一性で比べます。値がまだ `expected` そのもの、つまり置き換える値を計算する前に読んだ値(`get`)のままのときだけ置き換えます。別に作った等しい値では置き換わりません。ただし内容で比べるものは除きます。同じクラスで同じ値の数値(`1` と `1.0` は別です)、文字列、シンボル、`Bytes`、`Time` の時刻、`Duration`、`nil`、真偽値です。それ以外の不変値の同一性は意味を持たないので(03-data-model.ja.md §6)、読んだ値を持っておいてそのまま渡してください。小さな `data` 型を値として持つフィールドを通った値は、そこで作り直されるので、読んだ値ではなくなります。`==` は呼びません。Atom のロックの中の比較で、Quarz のコードは走りません。
 - 永続データ構造の更新は構造共有により安価なので、大きな `Hash` を `Atom` に入れても `update` は O(log n) です。(現状ではコレクションは永続データ構造ではないので([03-data-model.ja.md](03-data-model.ja.md) §2)、`Atom` の中の更新はハッシュをコピーし、O(n) です。)
 - `Atom` を定数に入れれば、Ruby のクラス変数やグローバル変数の代替になります。
 

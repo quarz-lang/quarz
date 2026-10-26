@@ -109,13 +109,14 @@ counter = Atom.new(0)
 counter.update { |n| n + 1 }         # atomic update via a CAS loop. The block is re-run on conflict
 counter.value                        # read (also `get`)
 counter.set(0)
-counter.compare_and_set(old, new)    # Bool (compares with ==)
+counter.compare_and_set(old, new)    # Bool: whether it was still `old` (identity)
 
 registry = Atom[Hash[String, Channel[Message]]].new({})
 registry.update { |h| h.put(name, ch) }
 ```
 
 - Keep the `update` block pure, without side effects (it may be re-executed).
+- `compare_and_set(expected, replacement)` compares by identity, as Java's `AtomicReference`, Swift's atomic references and Clojure's `compare-and-set!` do: it replaces the value only if it is still the one `expected` is, which is the value read (`get`) before computing the replacement. An equal value made apart does not count, except for those compared by their contents: a number of the same class and value (`1` is not `1.0`), a string, a symbol, `Bytes`, a `Time` instant, a `Duration`, `nil`, a boolean. Since the identity of other immutable values carries no meaning otherwise (03-data-model.md §6), keep the value read and pass it back: one that went through a field holding a small `data` type by value is rebuilt there, and is not the one read. No `==` runs: a comparison under the atom's lock runs no Quarz code.
 - Updates to persistent data structures are cheap thanks to structural sharing, so even with a large `Hash` in an `Atom`, `update` is O(log n). (Currently collections are not persistent structures, see [03-data-model.md](03-data-model.md) §2: an update in an `Atom` copies the hash, O(n).)
 - Putting an `Atom` in a constant gives you a replacement for Ruby's class variables and global variables.
 

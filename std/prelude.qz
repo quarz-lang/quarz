@@ -5684,8 +5684,20 @@ class Atom[T: Shareable]
   # a.update { |h| h.put("b", 2) }   # => {"a" => 1, "b" => 2}
   # ```
   native def update(&: (T) -> T) -> T
-  # Replaces the value with `replacement` if it is `==` to `expected`:
-  # whether it did.
+  # Replaces the value with `replacement` if it is still `expected`:
+  # whether it did. Compared by identity, as Java's AtomicReference
+  # compares: `expected` is the value read (`get`), not one equal to it
+  # made apart (numbers, strings, symbols, `Bytes` and `Time` compare by
+  # their contents).
+  #
+  # ```
+  # a = Atom.new([1, 2])
+  # old = a.get
+  # a.compare_and_set(old, [3])      # => true
+  # # An equal array made apart is not the one held.
+  # a.compare_and_set([3], [4])      # => false
+  # a.compare_and_set(a.get, [4])    # => true
+  # ```
   native def compare_and_set(expected: T, replacement: T) -> Bool
 end
 
