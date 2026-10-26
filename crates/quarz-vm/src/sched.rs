@@ -186,6 +186,8 @@ pub struct TaskHandle {
     /// Tasks waiting for this one to finish.
     pub joiners: Mutex<Vec<TaskRef>>,
     cancel_requested: AtomicBool,
+    /// How deep the task is in `Task.uncancellable` blocks.
+    uncancellable: std::sync::atomic::AtomicU32,
     pub scope: Option<Rc<ScopeInner>>,
     pub name: String,
     /// The coroutine's yielder, set when the task first runs.
@@ -219,6 +221,7 @@ impl TaskHandle {
             result: Mutex::new(None),
             joiners: Mutex::new(Vec::new()),
             cancel_requested: AtomicBool::new(false),
+            uncancellable: std::sync::atomic::AtomicU32::new(0),
             scope: scope.clone(),
             name,
             yielder: AtomicPtr::new(std::ptr::null_mut()),
@@ -263,20 +266,31 @@ impl TaskHandle {
         self.is_done() && matches!(&*lock(&self.result), Some(TaskResult::Value(_)))
     }
 
+    /// Whether the task was cancelled. A state, not an event (as Trio's
+    /// and Kotlin's): once cancelled, every wait raises `Task::Cancelled`,
+    /// but inside `Task.uncancellable`.
     pub fn cancel_requested(&self) -> bool {
         self.cancel_requested.load(Ordering::Acquire)
     }
 
-    pub fn set_cancel_requested(&self, on: bool) {
-        self.cancel_requested.store(on, Ordering::Release);
+    pub fn set_cancel_requested(&self) {
+        self.cancel_requested.store(true, Ordering::Release);
     }
 
-    /// Take the cancellation request, if any.
-    pub fn take_cancel(&self) -> bool {
-        // A plain load first: a request is rare, and a swap every time a
-        // task waits costs a locked instruction.
+    /// Whether a cancellation is to be raised now: cancelled, and not in
+    /// `Task.uncancellable`.
+    pub fn cancel_due(&self) -> bool {
         self.cancel_requested.load(Ordering::Acquire)
-            && self.cancel_requested.swap(false, Ordering::AcqRel)
+            && self.uncancellable.load(Ordering::Relaxed) == 0
+    }
+
+    /// Enter or leave `Task.uncancellable` (the task's own worker only).
+    pub fn set_uncancellable(&self, on: bool) {
+        if on {
+            self.uncancellable.fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.uncancellable.fetch_sub(1, Ordering::Relaxed);
+        }
     }
 
     pub fn result(&self) -> Option<TaskResult> {
@@ -1254,7 +1268,7 @@ impl Scheduler {
                                 if scope.cancel() {
                                     for c in scope.children() {
                                         if c.task_ref() != task.task_ref() && !c.is_done() {
-                                            c.set_cancel_requested(true);
+                                            c.set_cancel_requested();
                                             self.wake_ref(c.task_ref());
                                         }
                                     }

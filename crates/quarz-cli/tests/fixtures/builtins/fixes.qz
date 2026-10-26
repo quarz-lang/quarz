@@ -35,7 +35,8 @@ Task.scope do |s|
 end
 
 # A scope cancelled while it waits for its children still waits for
-# them, so their `ensure` runs before it ends.
+# them, so their `ensure` runs before it ends (one that waits, in
+# Task.uncancellable: a cancelled task's waits raise Task::Cancelled).
 log: Atom[Array[String]] = Atom.new([])
 outer = Task.spawn do
   Task.scope do |s|
@@ -43,7 +44,7 @@ outer = Task.spawn do
       begin
         Task.sleep(100.ms)
       ensure
-        Task.sleep(20.ms)
+        Task.uncancellable { Task.sleep(20.ms) }
         log.update { |entries| entries.push("child cleaned up") }
       end
     end

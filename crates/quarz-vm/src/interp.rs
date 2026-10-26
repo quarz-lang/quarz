@@ -1470,7 +1470,7 @@ impl Interp {
     }
 
     pub fn check_cancel(&self, task: &TaskHandle) -> Result<(), Flow> {
-        if task.take_cancel() {
+        if task.cancel_due() {
             return Err(self.raise(self.program.exc.cancelled, "task cancelled"));
         }
         match self.root_exit(task) {
@@ -1603,6 +1603,17 @@ impl Interp {
         }
     }
 
+    /// Run `f` out of reach of the current task's cancellation (`Task.uncancellable`,
+    /// and the waits of a scope or `Task.timeout` for children it has
+    /// cancelled): its waits do not raise `Task::Cancelled`.
+    pub fn uncancellable<R>(&self, f: impl FnOnce() -> R) -> R {
+        let task = self.current_task();
+        task.set_uncancellable(true);
+        let r = f();
+        task.set_uncancellable(false);
+        r
+    }
+
     pub fn yield_now(&self) {
         self.sched.borrow_mut().requeue_current();
         sched::suspend_raw();
@@ -1673,7 +1684,7 @@ impl Interp {
         if task.is_done() {
             return;
         }
-        task.set_cancel_requested(true);
+        task.set_cancel_requested();
         self.wake_ref(task.task_ref());
     }
 

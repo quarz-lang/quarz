@@ -695,7 +695,13 @@ module Test
             call.call(c)
           end
         ensure
-          c.teardown
+          # After a failure, a timeout or `--fail-fast` too: cancellation
+          # is a state, so it runs uncancellably, within the same limit.
+          if limit
+            Task.uncancellable { Task.timeout(limit) { c.teardown } }
+          else
+            Task.uncancellable { c.teardown }
+          end
         end
         nil
       end

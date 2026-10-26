@@ -940,8 +940,8 @@ class Float
   #
   # ## Raises
   #
-  # `FloatDomainError` for NaN or an infinity, `OverflowError` beyond the `Int`
-  # range.
+  # `FloatDomainError` for NaN or an infinity, `OverflowError` beyond the
+  # `Int` range.
   #
   # ```
   # 3.7.floor       # => 3
@@ -953,8 +953,8 @@ class Float
   # infinity, `OverflowError` beyond the `Int` range.
   native def ceil -> Int
   # The nearest `Int`, a half away from zero (not to even);
-  # `FloatDomainError` for NaN or an infinity, `OverflowError` beyond the `Int`
-  # range.
+  # `FloatDomainError` for NaN or an infinity, `OverflowError` beyond the
+  # `Int` range.
   #
   # ```
   # 2.5.round     # => 3
@@ -1036,8 +1036,8 @@ class Float
   native def step(limit: Float, step: Float, &: (Float) -> Nil) -> Nil
   # False: a `Float` is not an integer, even a whole one.
   def integer? -> Bool = false
-  # The `Int` toward zero (`-3.9.to_i` is -3); `FloatDomainError` for NaN or an
-  # infinity, `OverflowError` beyond the `Int` range.
+  # The `Int` toward zero (`-3.9.to_i` is -3); `FloatDomainError` for NaN
+  # or an infinity, `OverflowError` beyond the `Int` range.
   native def to_i -> Int
   # `self`.
   native def to_f -> Float
@@ -5383,11 +5383,46 @@ class Task[out T: Shareable]
   # `ArgumentError` when the block captures or returns a value that cannot
   # be copied: a `Channel`, an `Atom`, a `Task`, a mutable object.
   native def self.blocking[R](&: () -> R) -> R
-  # Raises `Task::Cancelled` when the calling task has been cancelled;
-  # otherwise does nothing.
+  # Raises `Task::Cancelled` when the calling task has been cancelled
+  # (outside `.uncancellable`); otherwise does nothing.
   #
   # A loop that never waits calls it to be cancellable.
   native def self.check_cancel -> Nil
+  # Runs the block out of reach of the calling task's cancellation: its
+  # waits do not raise `Task::Cancelled`, as in Trio's shielded cancel
+  # scope and Kotlin's NonCancellable context. For cleanup that must wait
+  # (an `ensure` that tells a peer goodbye): a cancelled task raises
+  # `Task::Cancelled` at every wait, and would be interrupted again. Once
+  # the block ends, the cancellation applies again. Give the wait its own
+  # limit (`Task.timeout`), or a stuck peer holds the task forever. An
+  # `exit` from another task still reaches it (`Kernel#exit`).
+  #
+  # ```
+  # started = Channel[Nil].new(capacity: 1)
+  # cleaned = Channel[Bool].new(capacity: 1)
+  # t = Task.spawn do
+  #   begin
+  #     started.send(nil)
+  #     Task.sleep(1.second)
+  #   ensure
+  #     Task.uncancellable do
+  #       Task.sleep(1.ms)               # waits, though cancelled
+  #       cleaned.send(true)
+  #     end
+  #   end
+  # end
+  # started.receive
+  # t.cancel
+  # r = begin
+  #   t.await
+  #   :finished
+  # rescue Task::Cancelled
+  #   :cancelled
+  # end
+  # r                # => :cancelled
+  # cleaned.receive  # => true
+  # ```
+  native def self.uncancellable[R](&: () -> R) -> R
 
   # Waits for the task to finish and returns its value (at once when it has
   # finished); only the calling task waits.
@@ -5401,17 +5436,18 @@ class Task[out T: Shareable]
   native def await -> T
   # Asks the task to stop: it raises `Task::Cancelled` at its next wait (a
   # channel operation, IO, `Task.sleep`, `#await`) or `Task.check_cancel`,
-  # so its `ensure` clauses run.
+  # so its `ensure` clauses run. The task stays cancelled: every wait after
+  # raises it again (a task that rescues it cannot go on waiting), but
+  # inside `Task.uncancellable`.
   #
   # A task cancelled before it starts does not run its block. Does nothing
-  # when the task has finished.
+  # when the task has finished; cancelling twice is cancelling once.
   native def cancel -> Nil
   # Whether the task has finished, by returning, raising or being
   # cancelled.
   native def done? -> Bool
-  # Whether a cancellation has been requested and not yet delivered: true
-  # after `#cancel` until the task raises `Task::Cancelled`, false again
-  # once it has.
+  # Whether the task has been cancelled (`#cancel`, or by its scope or
+  # `Task.timeout`): it stays so.
   native def cancelled? -> Bool
 
   # Raised in a cancelled task (`Task#cancel`, `Scope#cancel`, a failing
