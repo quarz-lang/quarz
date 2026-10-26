@@ -155,6 +155,9 @@ impl Interp {
                         if let Some(r) = result {
                             let v = r?;
                             regs[c.dst as usize] = v;
+                            if c.moved != 0 && crate::deinit::enabled() {
+                                self.release_moved(regs, &c);
+                            }
                             return Ok(());
                         }
                     }
@@ -255,7 +258,34 @@ impl Interp {
             CallOp::Raise => self.eval_raise(pos),
         };
         regs[c.dst as usize] = r?;
+        // What the call released (what moved into it, a block's frame
+        // left by `break`) is finalized at its end, as compiled code does.
+        if crate::deinit::enabled() {
+            self.finalize_pending();
+        }
         Ok(())
+    }
+
+    /// After a call that read its operands in place: in a program with a
+    /// `deinitialize`, those it read for the last time (`moved`) are
+    /// released now, as when they move into a call, and finalized.
+    #[cold]
+    fn release_moved(&self, regs: &mut [Value], c: &CallOps<'_>) {
+        let mut bits = c.moved & 0x7fff;
+        for r in c.args.iter().take(15) {
+            if bits & 1 != 0 && *r != c.dst {
+                regs[*r as usize] = Value::Nil;
+            }
+            bits >>= 1;
+        }
+        if let Some(r) = c.recv {
+            if c.moved & (1 << 15) != 0 && r != c.dst {
+                regs[r as usize] = Value::Nil;
+            }
+        }
+        if crate::deinit::pending() {
+            self.run_deinitializers();
+        }
     }
 
     pub fn op_owned_call(

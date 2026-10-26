@@ -35,6 +35,11 @@ struct LoopCtx {
     depth: usize,
     /// For a block body lowered in place: where `next v` leaves its value.
     next_value: Option<Reg>,
+    /// The blocks lowered in place (`FnBuilder::inline`) whose variables
+    /// `break` and `next` release on their way out: from these indices
+    /// on (the loop's target releases the others it leaves).
+    break_from: usize,
+    next_from: usize,
 }
 
 /// A block lowered in place (see `iter`): its variables are registers of
@@ -49,16 +54,19 @@ struct InlineLevel {
     /// once, unless a loop inside it repeats some of it).
     loops: usize,
     retries: usize,
+    /// The handler regions around it (`FnBuilder::handlers`).
+    regions: usize,
 }
 
 impl InlineLevel {
-    fn new(owner: SelfOwner, loops: usize, retries: usize) -> InlineLevel {
+    fn new(owner: SelfOwner, loops: usize, retries: usize, regions: usize) -> InlineLevel {
         InlineLevel {
             slot_regs: HashMap::default(),
             owner,
             lexical: Vec::new(),
             loops,
             retries,
+            regions,
         }
     }
 }
@@ -233,6 +241,40 @@ impl<'a> FnBuilder<'a> {
         for src in level.lexical {
             self.emit(Inst::Release { src });
         }
+    }
+
+    /// Release the variables of the blocks lowered in place `from..to`
+    /// (`FnBuilder::inline`), innermost first.
+    fn release_levels(&mut self, from: usize, to: usize) {
+        let regs: Vec<Reg> = self.inline[from..to]
+            .iter()
+            .rev()
+            .flat_map(|l| l.lexical.iter().copied())
+            .collect();
+        for src in regs {
+            self.emit(Inst::Release { src });
+        }
+    }
+
+    /// Leave the handler regions above `depth` (`leave_regions`) and the
+    /// blocks lowered in place from `from` on, which a jump out of them
+    /// does: their scopes end in nesting order, a block's variables
+    /// before the `ensure` around it runs, after the one inside it.
+    fn leave_scopes(&mut self, depth: usize, from: usize) -> Vec<Region<'a>> {
+        let mut kept = self.inline.len();
+        let mut restore = Vec::new();
+        while self.handlers.len() > depth {
+            let inner = self.handlers.len() - 1;
+            let start = (from..kept)
+                .find(|&i| self.inline[i].regions > inner)
+                .unwrap_or(kept);
+            self.release_levels(start, kept);
+            kept = start;
+            restore.extend(self.leave_regions(inner));
+        }
+        self.release_levels(from.min(kept), kept);
+        restore.reverse();
+        restore
     }
 
     // ----- entry points ------------------------------------------------------------------
@@ -730,8 +772,14 @@ impl<'a> FnBuilder<'a> {
     }
 
     /// `return` from the function, running the `ensure` bodies it leaves.
-    fn return_through_ensures(&mut self, v: Reg) {
-        let restore = self.leave_regions(1);
+    fn return_through_ensures(&mut self, mut v: Reg) {
+        if self.inline.iter().any(|l| !l.lexical.is_empty()) {
+            // The value may be one of the variables released.
+            let r = self.reg();
+            self.emit(Inst::Move { dst: r, src: v });
+            v = r;
+        }
+        let restore = self.leave_scopes(1, 0);
         self.term(Term::Return(v));
         self.handlers.extend(restore);
     }
@@ -1331,6 +1379,8 @@ impl<'a> FnBuilder<'a> {
                     result: res,
                     depth: self.handlers.len(),
                     next_value: None,
+                    break_from: self.inline.len(),
+                    next_from: self.inline.len(),
                 });
                 self.body(body);
                 self.loops.pop();
@@ -1489,12 +1539,12 @@ impl<'a> FnBuilder<'a> {
                     None => self.nil(),
                 };
                 if let Some(l) = self.loops.last() {
-                    let (result, exit, depth) = (l.result, l.exit, l.depth);
+                    let (result, exit, depth, from) = (l.result, l.exit, l.depth, l.break_from);
                     self.emit(Inst::Move {
                         dst: result,
                         src: v,
                     });
-                    let restore = self.leave_regions(depth);
+                    let restore = self.leave_scopes(depth, from);
                     self.term(Term::Jump(exit));
                     self.handlers.extend(restore);
                 } else if self.is_lambda {
@@ -1510,11 +1560,12 @@ impl<'a> FnBuilder<'a> {
                     None => self.nil(),
                 };
                 if let Some(l) = self.loops.last() {
-                    let (next, depth, next_value) = (l.next, l.depth, l.next_value);
+                    let (next, depth, next_value, from) =
+                        (l.next, l.depth, l.next_value, l.next_from);
                     if let Some(dst) = next_value {
                         self.emit(Inst::Move { dst, src: v });
                     }
-                    let restore = self.leave_regions(depth);
+                    let restore = self.leave_scopes(depth, from);
                     self.term(Term::Jump(next));
                     self.handlers.extend(restore);
                 } else {
@@ -2338,6 +2389,7 @@ impl<'a> FnBuilder<'a> {
             SelfOwner::Block(e.id),
             self.loops.len(),
             self.retry_targets.len(),
+            self.handlers.len(),
         );
         self.inline.push(level);
         for pi in 0..block.params.list.len() {
@@ -2360,6 +2412,8 @@ impl<'a> FnBuilder<'a> {
             result,
             depth: self.handlers.len(),
             next_value: Some(result),
+            break_from: self.inline.len(),
+            next_from: self.inline.len(),
         });
         let v = self.body(&block.body);
         self.loops.pop();
@@ -2652,6 +2706,7 @@ impl<'a> FnBuilder<'a> {
             SelfOwner::Block(e.id),
             self.loops.len(),
             self.retry_targets.len(),
+            self.handlers.len(),
         );
         self.inline.push(level);
         let nparams = block.map_or(0, |b| b.params.list.len());
@@ -2674,6 +2729,8 @@ impl<'a> FnBuilder<'a> {
             result,
             depth: self.handlers.len(),
             next_value: Some(val),
+            break_from: self.inline.len() - 1,
+            next_from: self.inline.len(),
         });
         let v = match (block, shape.symbol) {
             (Some(block), _) => self.body(&block.body),

@@ -80,10 +80,12 @@ pub struct Activation {
     /// Source line of the instruction being executed (for backtraces).
     pub line: Cell<u32>,
     pub file: u32,
-    pub self_val: Value,
     /// The heap frame for captured variables (this function's own, or
-    /// the one a block shares with its creator).
+    /// the one a block shares with its creator). Before `self_val`: an
+    /// activation dropped in place releases it first (the callee's scope
+    /// ends, then what it was given).
     pub frame: Option<Rc<Frame>>,
+    pub self_val: Value,
     /// The block passed to the call (`Nil` when none).
     pub block: Value,
     /// Identifies this method activation for `return` from its blocks.
@@ -370,13 +372,16 @@ impl BlockCaller {
             None => interp.run_func_inner(fid, act),
         };
         interp.pop_call_stack(act);
-        match r {
+        let r = match r {
             Ok(v) => Ok(v),
             Err(Flow::Next(v)) => Ok(v),
             Err(Flow::Return(v, t)) if closure.is_lambda && t == closure.tag => Ok(v),
             Err(Flow::Break(v, t)) if closure.is_lambda && t == closure.tag => Ok(v),
             Err(e) => Err(e),
-        }
+        };
+        // (The pass's registers are released: not through `run_func`.)
+        interp.call_ended(&r);
+        r
     }
 }
 
@@ -456,12 +461,8 @@ impl Interp {
         self.push_call(act);
         let r = self.run_func_inner(fid, act);
         self.pop_call_stack(act);
-        // Objects released in the call are finalized now (when it
-        // returns: an exception on its way out leaves them to the next
-        // return, as compiled code does).
-        if r.is_ok() && crate::deinit::pending() {
-            self.run_deinitializers();
-        }
+        // (Objects released in the call are finalized by the caller, once
+        // the activation is gone too: `call_ended`.)
         r
     }
 
@@ -648,6 +649,10 @@ impl Interp {
                     Inst::ClearRegs { from, to } => {
                         for r in &mut regs[*from as usize..*to as usize] {
                             put(r, Value::Nil);
+                        }
+                        // The end of a statement or of a pass.
+                        if crate::deinit::enabled() {
+                            self.finalize_pending();
                         }
                         continue;
                     }
@@ -1200,11 +1205,14 @@ impl Interp {
                 for r in &mut regs[*from as usize..*to as usize] {
                     *r = Value::Nil;
                 }
+                if crate::deinit::pending() {
+                    self.run_deinitializers();
+                }
             }
             Inst::Release { src } => {
                 regs[*src as usize] = Value::Nil;
-                if crate::deinit::pending() {
-                    self.run_deinitializers();
+                if crate::deinit::enabled() {
+                    self.finalize_pending();
                 }
             }
             Inst::Rescuing { src, enter } => self.op_rescuing(regs, *src, *enter),
@@ -1341,10 +1349,13 @@ impl Interp {
                     block,
                     ..
                 } = act;
+                // The callee's frame first (its scope ends), then what
+                // the call was given, as in compiled code.
+                drop(frame);
                 self_val.fast_drop();
                 block.fast_drop();
-                drop(frame);
                 drop(bound);
+                self.call_ended(&r);
                 r
             }
         }
@@ -1376,11 +1387,30 @@ impl Interp {
             native: Cell::new(false),
             args_owned: Cell::new(false),
         };
-        self.run_func(fid, &act)
+        let r = self.run_func(fid, &act);
+        drop(act);
+        self.call_ended(&r);
+        r
     }
 
     /// Run a method body (parameters already bound).
     pub fn run_method(
+        &self,
+        mid: MethodId,
+        fid: FuncId,
+        recv: Value,
+        args: ArgVec,
+        provided: u64,
+        block: Option<Value>,
+    ) -> EvalResult {
+        let r = self.run_method_inner(mid, fid, recv, args, provided, block);
+        self.call_ended(&r);
+        r
+    }
+
+    /// `run_method` up to the check after its activation is gone.
+    #[inline(always)]
+    fn run_method_inner(
         &self,
         _mid: MethodId,
         fid: FuncId,
@@ -1422,10 +1452,30 @@ impl Interp {
             args_owned: Cell::new(false),
         };
         act.bind_owned(&mut args);
-        let r = self.run_func(fid, &act);
-        match r {
+        // (`act` is dropped in place after this, `frame` first.)
+        match self.run_func(fid, &act) {
             Err(Flow::Return(v, t)) if t == tag => Ok(v),
             r => r,
+        }
+    }
+
+    /// Run what waits for its `deinitialize` (in a program with one).
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn finalize_pending(&self) {
+        if crate::deinit::pending() {
+            self.run_deinitializers();
+        }
+    }
+
+    /// After a call returned and its activation was taken apart: its
+    /// receiver, arguments and frame (what blocks captured) are released
+    /// only now, past `run_func`'s check, so their `deinitialize`s run
+    /// here (not on an exception's way out, as there).
+    #[inline(always)]
+    pub(crate) fn call_ended(&self, r: &EvalResult) {
+        if crate::deinit::enabled() && r.is_ok() {
+            self.finalize_pending();
         }
     }
 

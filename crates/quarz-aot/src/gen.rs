@@ -2030,6 +2030,44 @@ impl<B: Builder> Gen<'_, B> {
         }
     }
 
+    /// After a call through `call_static`, which copies its operands: in
+    /// a program with a `deinitialize`, the ones it read for the last
+    /// time (`moved`) are released now, as the call would have when they
+    /// moved into it, and what that frees finalized (an object whose last
+    /// method call this was goes at the end of it, not at a later clear).
+    fn drop_copied_moves(&mut self, inst: &Inst, dst: Reg) {
+        let Inst::Call {
+            recv, args, moved, ..
+        } = inst
+        else {
+            return;
+        };
+        if self.h.finalize.is_none() || *moved == 0 {
+            return;
+        }
+        let mut regs: Vec<Reg> = args
+            .iter()
+            .take(15)
+            .enumerate()
+            .filter(|(i, _)| moved & (1 << i) != 0)
+            .map(|(_, r)| *r)
+            .collect();
+        if let Some(r) = recv.filter(|_| moved & (1 << 15) != 0) {
+            regs.push(r);
+        }
+        let mut dropped = false;
+        for r in regs {
+            if r != dst && self.states[r as usize].needs_release() && !self.borrowed[r as usize] {
+                self.drop_moved(r);
+                self.states[r as usize] = State::NonHeap;
+                dropped = true;
+            }
+        }
+        if dropped {
+            self.finalize();
+        }
+    }
+
     /// After a typed call: a boxed argument the call reads for the last
     /// time, lent rather than moved, is released now (and what that frees
     /// finalized, as when the callee releases what it took).
@@ -4209,6 +4247,12 @@ impl<B: Builder> Gen<'_, B> {
                     }
                     self.states[r as usize] = State::NonHeap;
                 }
+                // The end of a statement or a pass: what it released, or
+                // a call in it did (a value moved into a native), is
+                // finalized here (in a program with a `deinitialize`).
+                if from < to {
+                    self.finalize();
+                }
             }
             // The end of a variable's scope: released, then what it held
             // finalized.
@@ -4791,6 +4835,7 @@ impl<B: Builder> Gen<'_, B> {
                             self.virtual_call(
                                 inst, mid, recv, &args, blk, dst, block, index, unwind,
                             );
+                            self.drop_copied_moves(inst, dst);
                             return;
                         }
                     }
@@ -4811,6 +4856,7 @@ impl<B: Builder> Gen<'_, B> {
                                 true,
                             ),
                         }
+                        self.drop_copied_moves(inst, dst);
                         return;
                     }
                     if recv.is_none() {
@@ -4831,6 +4877,7 @@ impl<B: Builder> Gen<'_, B> {
                         ],
                     )[0];
                     self.check(status, unwind);
+                    self.drop_copied_moves(inst, dst);
                 }
                 None => self.exec(block, index, unwind),
             },

@@ -2,9 +2,10 @@
 //! object's last reference goes. The release can happen anywhere (inside
 //! a native updating a collection, in compiled code between two loads),
 //! so the object is not finalized there: it is rebuilt from its fields and
-//! queued, and the queue runs at the next call boundary (a function
-//! returning, in the interpreter or compiled code), where user code may
-//! run. The queue and the table of classes are per thread: an object
+//! queued, and the queue runs at the next point where user code may run:
+//! a call's end (once its activation is gone too), a `Release`, or the
+//! end of a statement or a pass (`ClearRegs`), in the interpreter or
+//! compiled code. The queue and the table of classes are per thread: an object
 //! released on a worker is finalized on it.
 
 use std::cell::{Cell, RefCell};
@@ -79,6 +80,12 @@ pub fn has(class: ClassId) -> bool {
 pub fn queue(obj: Rc<Object>) {
     let _ = QUEUE.try_with(|q| q.borrow_mut().push(obj));
     let _ = PENDING.try_with(|p| p.set(true));
+}
+
+/// Whether a program of this process defines `deinitialize`.
+#[inline(always)]
+pub fn enabled() -> bool {
+    ANY.load(Ordering::Relaxed)
 }
 
 /// Whether objects wait for their `deinitialize` and none is running.
