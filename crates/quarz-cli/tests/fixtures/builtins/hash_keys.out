@@ -1,0 +1,36 @@
+"a"
+false
+2
+2
+"c"
+1
+2
+true
+2
+2
+2
+2
+1
+1
+3
+1
+2
+true
+1
+true
+true
+literal: no hash for 1
+put: no hash for 2
+1
+[]=: no hash for 3
+1
+nested: no hash for 4
+1
+2
+true
+the builder is in use: a key's `==` or `hash` used it while it was being looked up or changed
+1
+true
+true
+true
+1

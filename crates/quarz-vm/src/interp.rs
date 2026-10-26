@@ -1023,6 +1023,40 @@ impl Interp {
             .map(|c| interp.deinitializer(c).is_some())
             .collect();
         crate::deinit::set_classes(deinit);
+        // A class's own `==` and `hash` (not a native's: the prelude's
+        // compare in Rust), by which hashes and sets compare its instances.
+        // Only the classes below one that declares a `==` or `hash` with a
+        // body are looked at (most programs have none: start-up pays a
+        // scan of the classes' method tables).
+        let world = &interp.program.world;
+        let owners: Vec<ClassId> = (0..world.classes.len() as ClassId)
+            .filter(|&c| world.class(c).declares_eq_hash)
+            .collect();
+        // The class's own: neither a native nor an extension's (which
+        // takes no part in dynamic dispatch, docs/01-syntax.md §7).
+        let own = |c: ClassId, name: &str, argc: usize| {
+            interp.find_method(c, name, argc, false).filter(|m| {
+                let m = interp.program.method(*m);
+                m.native_key.is_none() && !m.is_extension
+            })
+        };
+        let keys: Vec<Option<crate::keys::KeyMethods>> = if owners.is_empty() {
+            Vec::new()
+        } else {
+            (0..world.classes.len() as ClassId)
+                .map(|c| {
+                    if !world.class(c).ancestors.iter().any(|a| owners.contains(a)) {
+                        return None;
+                    }
+                    let k = crate::keys::KeyMethods {
+                        eq: own(c, "==", 1),
+                        hash: own(c, "hash", 0),
+                    };
+                    (k.eq.is_some() || k.hash.is_some()).then_some(k)
+                })
+                .collect()
+        };
+        crate::keys::set(&interp, keys);
         interp
     }
 
@@ -2652,6 +2686,9 @@ impl Interp {
         kw: Vec<(Symbol, Value)>,
         block: Option<Value>,
     ) -> EvalResult {
+        // What a key's own `==` or `hash` raised is raised before any more
+        // Quarz code runs (`crate::keys`; their own calls check first).
+        crate::keys::check()?;
         let m = self.program.method(mid);
         if let Some(native) = self.program.natives[mid as usize] {
             return native(
@@ -2774,6 +2811,17 @@ impl Interp {
                 crate::value::unique_mut(a).set(i as usize, (*v).clone());
                 true
             }
+            // A key with its own `==` or `hash` goes to the native, which
+            // looks it up before changing anything (`crate::keys`).
+            (Value::Hash(_), [k, ..]) | (Value::Set(_), [k])
+                if crate::keys::is_custom(k)
+                    && (m == o.hash_put
+                        || m == o.hash_delete
+                        || m == o.set_add
+                        || m == o.set_delete) =>
+            {
+                false
+            }
             (Value::Hash(h), [k, v]) if m == o.hash_put => {
                 crate::value::unique_mut(h).insert((*k).clone(), (*v).clone());
                 true
@@ -2787,7 +2835,7 @@ impl Interp {
                 true
             }
             (Value::Set(s), [v]) if m == o.set_delete => {
-                crate::value::unique_mut(s).shift_remove(*v);
+                crate::value::unique_mut(s).shift_remove(v);
                 true
             }
             _ => false,
@@ -3208,7 +3256,11 @@ impl Interp {
                 format!("[{}]", parts.join(", "))
             }
             Value::Hash(h) => self.format_hash(h.as_map().iter())?,
-            Value::HashBuilder(h) => self.format_hash(h.borrow().iter())?,
+            // A copy: an element's `inspect` may change the builder.
+            Value::HashBuilder(h) => {
+                let m = h.borrow().clone();
+                self.format_hash(m.iter())?
+            }
             Value::Set(s) => {
                 let mut parts = Vec::new();
                 for x in s.iter() {
@@ -3218,7 +3270,8 @@ impl Interp {
             }
             Value::SetBuilder(s) => {
                 let mut parts = Vec::new();
-                for x in s.borrow().iter() {
+                let members = s.borrow().clone();
+                for x in members.iter() {
                     parts.push(self.inspect(x)?);
                 }
                 format!("Set[{}]", parts.join(", "))
@@ -3373,7 +3426,10 @@ impl Interp {
                 return Ok(r.is_truthy());
             }
         }
-        Ok(a == b)
+        // An element's or field's own `==` (`crate::keys`) may raise.
+        let eq = a == b;
+        crate::keys::check()?;
+        Ok(eq)
     }
 
     /// `a <=> b` as an ordering, raising when incomparable.

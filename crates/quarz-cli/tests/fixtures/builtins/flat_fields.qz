@@ -13,6 +13,7 @@ end
 data Named = (name: String, at: Vec2)
 data Custom(v: Int)
   def ==(o: Object) -> Bool = o.is_a?(Custom) && v % 10 == o.v % 10
+  def hash -> Int = (v % 10).hash
 end
 class Particle
   var @pos: Vec2

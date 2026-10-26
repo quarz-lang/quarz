@@ -9,8 +9,8 @@ use crate::value::*;
 use smallvec::smallvec;
 
 use super::collections::{
-    ab, arr, arr_data, block_ordering, hash, hash_update, hb, index_opt, range, range_to_vec, sb,
-    set, set_update, update,
+    ab, arr, arr_data, block_ordering, hash, hash_update, hb, index_opt, range, range_to_vec, read,
+    sb, set, set_update, update, write,
 };
 use super::numeric::enumerator;
 use super::{block, collect, int, string};
@@ -262,7 +262,10 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     });
     native!(m, "Array::Builder#uniq!", |i, r, _| {
         let b = ab(i, r)?;
-        let seen: ValueSet = b.borrow().iter().cloned().collect();
+        // Hashed apart from the builder: an element's own `hash` may use it.
+        let items: Vec<Value> = b.borrow().clone();
+        let seen: ValueSet = items.into_iter().collect();
+        crate::keys::check()?;
         *b.borrow_mut() = seen.into_iter().collect();
         Ok(r.clone())
     });
@@ -404,18 +407,31 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         let other = hash(i, a.arg(0))?.clone();
         let other = other.as_map();
         let b = hb(i, r)?;
+        // Key by key when a key's own `==` or `hash` may run: one that
+        // raises is not put, the ones before it are (as Ruby's merge!).
+        let custom = other.keys().any(crate::keys::is_custom);
         match &a.block {
-            None => b
-                .borrow_mut()
-                .extend(other.iter().map(|(k, v)| (k.clone(), v.clone()))),
+            None if !custom => {
+                write(i, b)?.extend(other.iter().map(|(k, v)| (k.clone(), v.clone())))
+            }
+            None => {
+                for (k, v) in other.iter() {
+                    super::collections::builder_put(i, b, k.clone(), v.clone())?;
+                }
+            }
             Some(bl) => {
                 for (k, v) in other.iter() {
-                    let existing = b.borrow().get(k).cloned();
+                    let existing = read(i, b)?.get(k).cloned();
+                    crate::keys::check()?;
                     let merged = match existing {
                         Some(old) => i.call_block(bl, smallvec![k.clone(), old, v.clone()])?,
                         None => v.clone(),
                     };
-                    b.borrow_mut().insert(k.clone(), merged);
+                    if crate::keys::is_custom(k) {
+                        super::collections::builder_put(i, b, k.clone(), merged)?;
+                    } else {
+                        write(i, b)?.insert(k.clone(), merged);
+                    }
                 }
             }
         }
@@ -425,9 +441,14 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         let bl = block(i, &a)?;
         let b = hb(i, r)?;
         let key = a.arg(0).clone();
-        let current = b.borrow().get(&key).cloned().unwrap_or(Value::Nil);
+        let current = read(i, b)?.get(&key).cloned().unwrap_or(Value::Nil);
+        crate::keys::check()?;
         let next = i.call_block(&bl, smallvec![current])?;
-        b.borrow_mut().insert(key, next);
+        if crate::keys::is_custom(&key) {
+            super::collections::builder_put(i, b, key, next)?;
+        } else {
+            write(i, b)?.insert(key, next);
+        }
         Ok(r.clone())
     });
     native!(m, "Hash::Builder#each_pair", |i, r, a| {
@@ -452,7 +473,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         Ok(Value::Nil)
     });
     native!(m, "Hash::Builder#fetch", |i, r, a| {
-        let found = hb(i, r)?.borrow().get(a.arg(0)).cloned();
+        let found = read(i, hb(i, r)?)?.get(a.arg(0)).cloned();
         match (found, &a.block) {
             (Some(v), _) => Ok(v),
             (None, Some(b)) => i.call_block(b, smallvec![a.arg(0).clone()]),
@@ -460,13 +481,13 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         }
     });
     native!(m, "Hash::Builder#has_key?", |i, r, a| {
-        Ok(Value::Bool(hb(i, r)?.borrow().contains_key(a.arg(0))))
+        Ok(Value::Bool(read(i, hb(i, r)?)?.contains_key(a.arg(0))))
     });
     native!(m, "Hash::Builder#include?", |i, r, a| {
-        Ok(Value::Bool(hb(i, r)?.borrow().contains_key(a.arg(0))))
+        Ok(Value::Bool(read(i, hb(i, r)?)?.contains_key(a.arg(0))))
     });
     native!(m, "Hash::Builder#value?", |i, r, a| {
-        let values: Vec<Value> = hb(i, r)?.borrow().values().cloned().collect();
+        let values: Vec<Value> = read(i, hb(i, r)?)?.values().cloned().collect();
         Ok(Value::Bool(super::collections::any_equal(
             i,
             values.into_iter(),
@@ -474,7 +495,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         )?))
     });
     native!(m, "Hash::Builder#length", |i, r, _| {
-        Ok(Value::Int(hb(i, r)?.borrow().len() as i64))
+        Ok(Value::Int(read(i, hb(i, r)?)?.len() as i64))
     });
     native!(m, "Hash::Builder#select!", |i, r, a| {
         hash_builder_filter(i, r, a, true)
@@ -495,16 +516,16 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         for (k, v) in builder_pairs(i, r)? {
             out.insert(k, i.call_block(&bl, smallvec![v])?);
         }
-        *b.borrow_mut() = out;
+        *write(i, b)? = out;
         Ok(r.clone())
     });
     native!(m, "Hash::Builder#compact!", |i, r, _| {
-        hb(i, r)?.borrow_mut().retain(|_, v| !v.is_nil());
+        write(i, hb(i, r)?)?.retain(|_, v| !v.is_nil());
         Ok(r.clone())
     });
     native!(m, "Hash::Builder#replace", |i, r, a| {
         let other = hash(i, a.arg(0))?.as_map().into_owned();
-        *hb(i, r)?.borrow_mut() = other;
+        *write(i, hb(i, r)?)? = other;
         Ok(r.clone())
     });
 
@@ -548,32 +569,49 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
 
     // Set::Builder
     native!(m, "Set::Builder#add?", |i, r, a| {
-        Ok(Value::Bool(sb(i, r)?.borrow_mut().insert(a.arg(0).clone())))
+        if crate::keys::is_custom(a.arg(0)) {
+            return Ok(Value::Bool(super::collections::set_builder_put(
+                i,
+                sb(i, r)?,
+                a.arg(0).clone(),
+            )?));
+        }
+        Ok(Value::Bool(write(i, sb(i, r)?)?.insert(a.arg(0).clone())))
     });
     native!(m, "Set::Builder#merge", |i, r, a| {
         let items = collect(i, a.arg(0))?;
-        sb(i, r)?.borrow_mut().extend(items);
+        if items.iter().any(crate::keys::is_custom) {
+            for x in items {
+                super::collections::set_builder_put(i, sb(i, r)?, x)?;
+            }
+        } else {
+            write(i, sb(i, r)?)?.extend(items);
+        }
         Ok(r.clone())
     });
     native!(m, "Set::Builder#subtract", |i, r, a| {
         let items = collect(i, a.arg(0))?;
         let b = sb(i, r)?;
         for x in &items {
-            b.borrow_mut().shift_remove(x);
+            if crate::keys::is_custom(x) {
+                super::collections::set_builder_remove(i, b, x)?;
+            } else {
+                write(i, b)?.shift_remove(x);
+            }
         }
         Ok(r.clone())
     });
     native!(m, "Set::Builder#clear", |i, r, _| {
-        sb(i, r)?.borrow_mut().clear();
+        write(i, sb(i, r)?)?.clear();
         Ok(r.clone())
     });
     native!(m, "Set::Builder#replace", |i, r, a| {
         let items = collect(i, a.arg(0))?;
-        *sb(i, r)?.borrow_mut() = items.into_iter().collect();
+        *write(i, sb(i, r)?)? = items.into_iter().collect();
         Ok(r.clone())
     });
     native!(m, "Set::Builder#length", |i, r, _| {
-        Ok(Value::Int(sb(i, r)?.borrow().len() as i64))
+        Ok(Value::Int(read(i, sb(i, r)?)?.len() as i64))
     });
     native!(m, "Set::Builder#select!", |i, r, a| {
         set_builder_filter(i, r, a, true)
@@ -748,8 +786,7 @@ fn builder_filter(interp: &Interp, recv: &Value, args: Args, keep: bool) -> Eval
 }
 
 fn builder_pairs(interp: &Interp, recv: &Value) -> Result<Vec<(Value, Value)>, Flow> {
-    Ok(hb(interp, recv)?
-        .borrow()
+    Ok(read(interp, hb(interp, recv)?)?
         .iter()
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect())
@@ -768,7 +805,7 @@ fn hash_builder_filter(interp: &Interp, recv: &Value, args: Args, keep: bool) ->
             out.insert(k, v);
         }
     }
-    *b.borrow_mut() = out;
+    *write(interp, b)? = out;
     Ok(recv.clone())
 }
 
@@ -786,13 +823,13 @@ fn set_filter(interp: &Interp, recv: &Value, args: Args, keep: bool) -> EvalResu
 fn set_builder_filter(interp: &Interp, recv: &Value, args: Args, keep: bool) -> EvalResult {
     let bl = block(interp, &args)?;
     let b = sb(interp, recv)?;
-    let items: Vec<Value> = b.borrow().iter().cloned().collect();
+    let items: Vec<Value> = read(interp, b)?.iter().cloned().collect();
     let mut out = ValueSet::default();
     for x in items {
         if interp.call_block(&bl, smallvec![x.clone()])?.is_truthy() == keep {
             out.insert(x);
         }
     }
-    *b.borrow_mut() = out;
+    *write(interp, b)? = out;
     Ok(recv.clone())
 }

@@ -973,6 +973,7 @@ impl<'ast> Declarer<'ast> {
             self.check_kept_blocks(p.id);
             self.check_override_returns(p.id);
             self.check_copied_deinitialize(p.id);
+            self.check_eq_with_hash(p.id);
             self.world.active_extensions.clear();
         }
         self.check_extensions_kept_blocks();
@@ -1348,8 +1349,53 @@ impl<'ast> Declarer<'ast> {
         self.error(message, span);
     }
 
-    /// An extension that makes its target include a Shareable module
-    /// promises that the target is Shareable: it must be by its fields.
+    /// A class defining `==` defines `hash` too, and the other way round:
+    /// a hash's keys and a set's members are compared by them, and equal
+    /// values must hash the same (a warning, as Rust's clippy has).
+    fn check_eq_with_hash(&mut self, id: ClassId) {
+        let class = self.world.class(id);
+        // A module may bring one, the classes including it the other.
+        if class.file == 0 || class.kind == ClassKind::Module {
+            return;
+        }
+        let own = |name: &str| {
+            class.methods.get(name).and_then(|ms| {
+                ms.iter()
+                    .copied()
+                    .find(|m| !self.world.method(*m).singleton)
+            })
+        };
+        let (eq, hash) = (own("=="), own("hash"));
+        let (defined, missing, mid) = match (eq, hash) {
+            (Some(m), None) => ("==", "hash", m),
+            (None, Some(m)) => ("hash", "==", m),
+            _ => return,
+        };
+        // One inherited with a body (not `Object`'s natives) goes with it.
+        let inherited = self
+            .world
+            .ancestors(id, &[])
+            .into_iter()
+            .skip(1)
+            .any(|(a, _)| {
+                self.world.class(a).methods.get(missing).is_some_and(|ms| {
+                    ms.iter().any(|m| {
+                        let m = self.world.method(*m);
+                        !m.singleton && !m.is_native && m.body.is_some()
+                    })
+                })
+            });
+        if inherited {
+            return;
+        }
+        let span = self.world.method(mid).span;
+        let name = class.name.clone();
+        self.warning(
+            format!("`{name}` defines `{defined}` but not `{missing}`: as a Hash key or a Set member, equal values must hash the same"),
+            span,
+        );
+    }
+
     /// Whether instances of `id` are copied by the language or the
     /// implementation, so that a `deinitialize` would run once per copy: a
     /// `data` type, an enum or its variants, a built-in value class, and an
@@ -1452,6 +1498,8 @@ impl<'ast> Declarer<'ast> {
         }
     }
 
+    /// An extension that makes its target include a Shareable module
+    /// promises that the target is Shareable: it must be by its fields.
     fn check_shareable_extensions(&mut self) {
         for (ext, ty, span, file) in std::mem::take(&mut self.ext_includes) {
             let Type::Class(mid, _) = ty else {

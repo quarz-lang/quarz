@@ -533,7 +533,7 @@ impl Interp {
         regs: &mut [Value],
         dst: Reg,
         items: impl ExactSizeIterator<Item = HashItem>,
-    ) {
+    ) -> Result<(), Flow> {
         let mut map = ValueMap::with_capacity_and_hasher(items.len(), Default::default());
         for item in items {
             match item {
@@ -549,7 +549,10 @@ impl Interp {
                 }
             }
         }
+        // What a key's own `==` or `hash` raised (`crate::keys`).
+        crate::keys::check()?;
         regs[dst as usize] = Value::Hash(Rc::new(crate::value::HashData::from(map)));
+        Ok(())
     }
 
     pub fn op_make_range(
@@ -823,13 +826,10 @@ impl Interp {
         let keys: Vec<Symbol> = keys.map(|k| self.symbol_const(f, pool, k)).collect();
         let v = match &regs[hash as usize] {
             Value::Hash(h) => {
-                let mut rest = ValueMap::default();
-                for (k, val) in h.as_map().iter() {
-                    let matched = matches!(k, Value::Symbol(s) if keys.contains(s));
-                    if !matched {
-                        rest.insert(k.clone(), val.clone());
-                    }
-                }
+                // A copy, the matched keys taken out: the entries keep
+                // their hashes, so no key's own `hash` or `==` runs.
+                let mut rest: ValueMap = h.as_map().into_owned();
+                rest.retain(|k, _| !matches!(k, Value::Symbol(s) if keys.contains(s)));
                 Value::Hash(Rc::new(crate::value::HashData::from(rest)))
             }
             _ => Value::Hash(Rc::new(crate::value::HashData::from(ValueMap::default()))),

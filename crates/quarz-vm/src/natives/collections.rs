@@ -1,6 +1,7 @@
 //! Array, Hash, Set, their builders, Range, Enumerator and the
 //! comparison-based Enumerable extensions.
 
+use crate::keys;
 use crate::rc::Rc;
 use std::cell::RefCell;
 
@@ -80,22 +81,38 @@ pub fn register_owned(m: &mut super::Registry<OwnedNativeFn>) {
     });
     owned!(m, "Array#reverse", |_, r, _| owned_update(r, |v| v
         .reverse()));
+    // A key whose own `==` or `hash` may run is updated by `map_put` and
+    // the like, which leave the table as it was when they raise.
     owned!(m, "Hash#put", |_, r, a| {
+        if keys::is_custom(a.arg(0)) {
+            return owned_hash_try(r, |h| {
+                map_put(h.values_mut(), a.arg(0).clone(), a.arg(1).clone()).map(|_| ())
+            });
+        }
         owned_hash_update(r, |h| {
             h.insert(a.arg(0).clone(), a.arg(1).clone());
         })
     });
     owned!(m, "Hash#delete", |_, r, a| {
+        if keys::is_custom(a.arg(0)) {
+            return owned_hash_try(r, |h| map_remove(h.values_mut(), a.arg(0)).map(|_| ()));
+        }
         owned_hash_update(r, |h| {
             h.shift_remove(a.arg(0));
         })
     });
     owned!(m, "Set#add", |_, r, a| {
+        if keys::is_custom(a.arg(0)) {
+            return owned_set_try(r, |s| set_put(s, a.arg(0).clone()).map(|_| ()));
+        }
         owned_set_update(r, |s| {
             s.insert(a.arg(0).clone());
         })
     });
     owned!(m, "Set#delete", |_, r, a| {
+        if keys::is_custom(a.arg(0)) {
+            return owned_set_try(r, |s| set_remove(s, a.arg(0)).map(|_| ()));
+        }
         owned_set_update(r, |s| {
             s.shift_remove(a.arg(0));
         })
@@ -118,6 +135,35 @@ fn owned_hash_update(recv: Value, f: impl FnOnce(&mut HashData)) -> Result<Value
             f(crate::value::unique_mut(&mut rc));
             Ok(Value::Hash(rc))
         }
+        other => Err((Flow::Raise(Value::Nil), other)),
+    }
+}
+
+/// `owned_hash_update` with an update that may fail, having changed
+/// nothing then.
+fn owned_hash_try(
+    recv: Value,
+    f: impl FnOnce(&mut HashData) -> Result<(), Flow>,
+) -> Result<Value, (Flow, Value)> {
+    match recv {
+        Value::Hash(mut rc) => match f(crate::value::unique_mut(&mut rc)) {
+            Ok(()) => Ok(Value::Hash(rc)),
+            Err(e) => Err((e, Value::Hash(rc))),
+        },
+        other => Err((Flow::Raise(Value::Nil), other)),
+    }
+}
+
+/// `owned_set_update` with an update that may fail (see `owned_hash_try`).
+fn owned_set_try(
+    recv: Value,
+    f: impl FnOnce(&mut ValueSet) -> Result<(), Flow>,
+) -> Result<Value, (Flow, Value)> {
+    match recv {
+        Value::Set(mut rc) => match f(crate::value::unique_mut(&mut rc)) {
+            Ok(()) => Ok(Value::Set(rc)),
+            Err(e) => Err((e, Value::Set(rc))),
+        },
         other => Err((Flow::Raise(Value::Nil), other)),
     }
 }
@@ -686,7 +732,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         Ok(Value::HashBuilder(Value::hash_builder(ValueMap::default())))
     });
     native!(m, "Hash::Builder#[]", |i, r, a| {
-        match hb(i, r)?.borrow().get(a.arg(0)) {
+        match read(i, hb(i, r)?)?.get(a.arg(0)) {
             Some(v) => Ok(v.clone()),
             None => Err(i.raise(
                 i.program.exc.key_error,
@@ -695,53 +741,59 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         }
     });
     native!(m, "Hash::Builder#[]?", |i, r, a| {
-        Ok(hb(i, r)?
-            .borrow()
+        Ok(read(i, hb(i, r)?)?
             .get(a.arg(0))
             .cloned()
             .unwrap_or(Value::Nil))
     });
     native!(m, "Hash::Builder#[]=", |i, r, a| {
-        hb(i, r)?
-            .borrow_mut()
-            .insert(a.arg(0).clone(), a.arg(1).clone());
+        if keys::is_custom(a.arg(0)) {
+            builder_put(i, hb(i, r)?, a.arg(0).clone(), a.arg(1).clone())?;
+        } else {
+            write(i, hb(i, r)?)?.insert(a.arg(0).clone(), a.arg(1).clone());
+        }
         Ok(a.arg(1).clone())
     });
     native!(m, "Hash::Builder#store", |i, r, a| {
-        hb(i, r)?
-            .borrow_mut()
-            .insert(a.arg(0).clone(), a.arg(1).clone());
+        if keys::is_custom(a.arg(0)) {
+            builder_put(i, hb(i, r)?, a.arg(0).clone(), a.arg(1).clone())?;
+        } else {
+            write(i, hb(i, r)?)?.insert(a.arg(0).clone(), a.arg(1).clone());
+        }
         Ok(a.arg(1).clone())
     });
     native!(m, "Hash::Builder#delete", |i, r, a| {
-        Ok(hb(i, r)?
-            .borrow_mut()
+        if keys::is_custom(a.arg(0)) {
+            return Ok(builder_remove(i, hb(i, r)?, a.arg(0))?.unwrap_or(Value::Nil));
+        }
+        Ok(write(i, hb(i, r)?)?
             .shift_remove(a.arg(0))
             .unwrap_or(Value::Nil))
     });
     native!(m, "Hash::Builder#key?", |i, r, a| {
-        Ok(Value::Bool(hb(i, r)?.borrow().contains_key(a.arg(0))))
+        Ok(Value::Bool(read(i, hb(i, r)?)?.contains_key(a.arg(0))))
     });
     native!(m, "Hash::Builder#keys", |i, r, _| {
-        Ok(Value::array(hb(i, r)?.borrow().keys().cloned().collect()))
+        Ok(Value::array(read(i, hb(i, r)?)?.keys().cloned().collect()))
     });
     native!(m, "Hash::Builder#values", |i, r, _| {
-        Ok(Value::array(hb(i, r)?.borrow().values().cloned().collect()))
+        Ok(Value::array(
+            read(i, hb(i, r)?)?.values().cloned().collect(),
+        ))
     });
     native!(m, "Hash::Builder#size", |i, r, _| {
-        Ok(Value::Int(hb(i, r)?.borrow().len() as i64))
+        Ok(Value::Int(read(i, hb(i, r)?)?.len() as i64))
     });
     native!(m, "Hash::Builder#empty?", |i, r, _| {
-        Ok(Value::Bool(hb(i, r)?.borrow().is_empty()))
+        Ok(Value::Bool(read(i, hb(i, r)?)?.is_empty()))
     });
     native!(m, "Hash::Builder#clear", |i, r, _| {
-        hb(i, r)?.borrow_mut().clear();
+        write(i, hb(i, r)?)?.clear();
         Ok(r.clone())
     });
     native!(m, "Hash::Builder#each", |i, r, a| {
         let b = block(i, &a)?;
-        let items: Vec<(Value, Value)> = hb(i, r)?
-            .borrow()
+        let items: Vec<(Value, Value)> = read(i, hb(i, r)?)?
             .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
@@ -752,12 +804,12 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     });
     native!(m, "Hash::Builder#to_h", |i, r, _| {
         Ok(Value::Hash(Rc::new(crate::value::HashData::from(
-            std::mem::take(&mut *hb(i, r)?.borrow_mut()),
+            std::mem::take(&mut *write(i, hb(i, r)?)?),
         ))))
     });
     native!(m, "Hash::Builder#snapshot", |i, r, _| {
         Ok(Value::Hash(Rc::new(crate::value::HashData::from(
-            hb(i, r)?.borrow().clone(),
+            read(i, hb(i, r)?)?.clone(),
         ))))
     });
     native!(m, "Hash::Builder#to_s", |i, r, _| {
@@ -819,8 +871,8 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         let mine = set(i, r)?;
         let out: ValueSet = mine
             .iter()
-            .filter(|x| !other.contains(*x))
-            .chain(other.iter().filter(|x| !mine.contains(*x)))
+            .filter(|x| !other.contains(x))
+            .chain(other.iter().filter(|x| !mine.contains(x)))
             .cloned()
             .collect();
         Ok(Value::Set(Rc::new(out)))
@@ -846,41 +898,54 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         Ok(Value::SetBuilder(Value::set_builder(ValueSet::default())))
     });
     native!(m, "Set::Builder#<<", |i, r, a| {
-        sb(i, r)?.borrow_mut().insert(a.arg(0).clone());
+        if keys::is_custom(a.arg(0)) {
+            set_builder_put(i, sb(i, r)?, a.arg(0).clone())?;
+        } else {
+            write(i, sb(i, r)?)?.insert(a.arg(0).clone());
+        }
         Ok(r.clone())
     });
     native!(m, "Set::Builder#add", |i, r, a| {
-        sb(i, r)?.borrow_mut().insert(a.arg(0).clone());
+        if keys::is_custom(a.arg(0)) {
+            set_builder_put(i, sb(i, r)?, a.arg(0).clone())?;
+        } else {
+            write(i, sb(i, r)?)?.insert(a.arg(0).clone());
+        }
         Ok(r.clone())
     });
     native!(m, "Set::Builder#delete", |i, r, a| {
-        sb(i, r)?.borrow_mut().shift_remove(a.arg(0));
+        if keys::is_custom(a.arg(0)) {
+            set_builder_remove(i, sb(i, r)?, a.arg(0))?;
+        } else {
+            write(i, sb(i, r)?)?.shift_remove(a.arg(0));
+        }
         Ok(r.clone())
     });
     native!(m, "Set::Builder#include?", |i, r, a| {
-        Ok(Value::Bool(sb(i, r)?.borrow().contains(a.arg(0))))
+        Ok(Value::Bool(read(i, sb(i, r)?)?.contains(a.arg(0))))
     });
     native!(m, "Set::Builder#size", |i, r, _| {
-        Ok(Value::Int(sb(i, r)?.borrow().len() as i64))
+        Ok(Value::Int(read(i, sb(i, r)?)?.len() as i64))
     });
     native!(m, "Set::Builder#empty?", |i, r, _| {
-        Ok(Value::Bool(sb(i, r)?.borrow().is_empty()))
+        Ok(Value::Bool(read(i, sb(i, r)?)?.is_empty()))
     });
     native!(m, "Set::Builder#each", |i, r, a| {
         let b = block(i, &a)?;
-        let items: Vec<Value> = sb(i, r)?.borrow().iter().cloned().collect();
+        let items: Vec<Value> = read(i, sb(i, r)?)?.iter().cloned().collect();
         for x in items {
             i.call_block(&b, smallvec![x])?;
         }
         Ok(Value::Nil)
     });
     native!(m, "Set::Builder#to_set", |i, r, _| {
-        Ok(Value::Set(Rc::new(std::mem::take(
-            &mut *sb(i, r)?.borrow_mut(),
-        ))))
+        Ok(Value::Set(Rc::new(std::mem::take(&mut *write(
+            i,
+            sb(i, r)?,
+        )?))))
     });
     native!(m, "Set::Builder#to_a", |i, r, _| {
-        Ok(Value::array(sb(i, r)?.borrow().iter().cloned().collect()))
+        Ok(Value::array(read(i, sb(i, r)?)?.iter().cloned().collect()))
     });
     native!(m, "Set::Builder#to_s", |i, r, _| {
         Ok(Value::string(i.inspect(r)?))
@@ -1020,6 +1085,115 @@ pub(super) fn set<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Rc<ValueSet>,
     }
 }
 
+/// Updates of one key in place, for a key whose own `==` or `hash` may
+/// run (`keys::is_custom`): the key is hashed once and looked up while
+/// the table is only read, then placed or taken out without hashing or
+/// comparing again, so that what those methods raise leaves the table as
+/// it was, and a method that reads the builder being updated works.
+pub(super) fn map_put(m: &mut ValueMap, k: Value, v: Value) -> Result<Option<Value>, Flow> {
+    let h = keys::table_hash(&k)?;
+    let at = keys::find(m, h, &k)?;
+    Ok(keys::place(m, h, at, k, v))
+}
+
+/// `map_put`'s removal.
+pub(super) fn map_remove(m: &mut ValueMap, k: &Value) -> Result<Option<Value>, Flow> {
+    let h = keys::table_hash(k)?;
+    Ok(keys::find(m, h, k)?.and_then(|i| m.shift_remove_index(i).map(|(_, v)| v)))
+}
+
+/// `map_put` for a set: whether the member is new.
+pub(super) fn set_put(s: &mut ValueSet, k: Value) -> Result<bool, Flow> {
+    let h = keys::table_hash(&k)?;
+    let at = keys::find(&s.0, h, &k)?;
+    keys::place(&mut s.0, h, at, k, ());
+    Ok(at.is_none())
+}
+
+/// `map_remove` for a set: whether it was a member.
+pub(super) fn set_remove(s: &mut ValueSet, k: &Value) -> Result<bool, Flow> {
+    let h = keys::table_hash(k)?;
+    Ok(keys::find(&s.0, h, k)?.is_some_and(|i| s.shift_remove_index(i).is_some()))
+}
+
+/// `map_put` on a `Hash::Builder`: looked up under a read borrow, placed
+/// under a write one.
+pub(super) fn builder_put(
+    interp: &Interp,
+    b: &RefCell<ValueMap>,
+    k: Value,
+    v: Value,
+) -> Result<Option<Value>, Flow> {
+    let h = keys::table_hash(&k)?;
+    let at = keys::find(&*read(interp, b)?, h, &k)?;
+    Ok(keys::place(&mut *write(interp, b)?, h, at, k, v))
+}
+
+/// `map_remove` on a `Hash::Builder`.
+pub(super) fn builder_remove(
+    interp: &Interp,
+    b: &RefCell<ValueMap>,
+    k: &Value,
+) -> Result<Option<Value>, Flow> {
+    let h = keys::table_hash(k)?;
+    let at = keys::find(&*read(interp, b)?, h, k)?;
+    Ok(match at {
+        Some(i) => write(interp, b)?.shift_remove_index(i).map(|(_, v)| v),
+        None => None,
+    })
+}
+
+/// `set_put` on a `Set::Builder`.
+pub(super) fn set_builder_put(
+    interp: &Interp,
+    b: &RefCell<ValueSet>,
+    k: Value,
+) -> Result<bool, Flow> {
+    let h = keys::table_hash(&k)?;
+    let at = keys::find(&read(interp, b)?.0, h, &k)?;
+    keys::place(&mut write(interp, b)?.0, h, at, k, ());
+    Ok(at.is_none())
+}
+
+/// `set_remove` on a `Set::Builder`.
+pub(super) fn set_builder_remove(
+    interp: &Interp,
+    b: &RefCell<ValueSet>,
+    k: &Value,
+) -> Result<bool, Flow> {
+    let h = keys::table_hash(k)?;
+    let at = keys::find(&read(interp, b)?.0, h, k)?;
+    Ok(match at {
+        Some(i) => write(interp, b)?.shift_remove_index(i).is_some(),
+        None => false,
+    })
+}
+
+/// A builder's contents to read, or the error that it is being changed:
+/// a key's own `==` or `hash` runs while a builder's table is in use, and
+/// may reach the same builder (`crate::keys`).
+pub(super) fn read<'a, T>(
+    interp: &Interp,
+    cell: &'a RefCell<T>,
+) -> Result<std::cell::Ref<'a, T>, Flow> {
+    cell.try_borrow().map_err(|_| in_use(interp))
+}
+
+/// A builder's contents to change (see `read`).
+pub(super) fn write<'a, T>(
+    interp: &Interp,
+    cell: &'a RefCell<T>,
+) -> Result<std::cell::RefMut<'a, T>, Flow> {
+    cell.try_borrow_mut().map_err(|_| in_use(interp))
+}
+
+fn in_use(interp: &Interp) -> Flow {
+    interp.raise(
+        interp.program.exc.runtime_error,
+        "the builder is in use: a key's `==` or `hash` used it while it was being looked up or changed",
+    )
+}
+
 pub(super) fn sb<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Rc<RefCell<ValueSet>>, Flow> {
     match v {
         Value::SetBuilder(s) => Ok(s),
@@ -1155,6 +1329,10 @@ fn hash_eq(interp: &Interp, a: &Value, b: &Value) -> Result<bool, Flow> {
     let (Value::Hash(x), Value::Hash(y)) = (a, b) else {
         return Ok(false);
     };
+    // The same table is equal to itself, whatever its values.
+    if Rc::ptr_eq(x, y) {
+        return Ok(true);
+    }
     if x.len() != y.len() {
         return Ok(false);
     }
@@ -1514,7 +1692,7 @@ fn hash_build(interp: &Interp, _: &Value, args: Args) -> EvalResult {
     let b = block(interp, &args)?;
     let builder = Value::hash_builder(ValueMap::default());
     interp.call_block(&b, smallvec![Value::HashBuilder(builder.clone())])?;
-    let map = std::mem::take(&mut *builder.borrow_mut());
+    let map = std::mem::take(&mut *write(interp, &builder)?);
     Ok(Value::Hash(Rc::new(crate::value::HashData::from(map))))
 }
 
@@ -1580,7 +1758,7 @@ fn set_build(interp: &Interp, _: &Value, args: Args) -> EvalResult {
     let b = block(interp, &args)?;
     let builder = Value::set_builder(ValueSet::default());
     interp.call_block(&b, smallvec![Value::SetBuilder(builder.clone())])?;
-    let s = std::mem::take(&mut *builder.borrow_mut());
+    let s = std::mem::take(&mut *write(interp, &builder)?);
     Ok(Value::Set(Rc::new(s)))
 }
 

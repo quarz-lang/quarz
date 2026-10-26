@@ -21,7 +21,17 @@ macro_rules! native {
             a: crate::interp::Args,
         ) -> crate::interp::EvalResult {
             let f: crate::interp::NativeFn = $f;
-            f(i, r, a)
+            let out = f(i, r, a);
+            // What a key's own `==` or `hash` raised (`crate::keys`).
+            if crate::keys::pending() {
+                if let Some(e) = crate::keys::take_error() {
+                    return match out {
+                        Err(f) if !matches!(f, crate::interp::Flow::Raise(_)) => Err(f),
+                        _ => Err(e),
+                    };
+                }
+            }
+            out
         }
         $m.add(&[$first $(, $key)*], native, concat!("qzn.", $first));
     }};
@@ -39,6 +49,8 @@ macro_rules! fast {
             r: &crate::value::Value,
             a: &[&crate::value::Value],
         ) -> Option<crate::interp::EvalResult> {
+            // (No check of `crate::keys::pending`: one that may run a
+            // key's `==` or `hash` leaves such a key to the native.)
             let f: crate::interp::FastNativeFn = $f;
             f(i, r, a)
         }
@@ -59,7 +71,15 @@ macro_rules! owned {
             a: crate::interp::Args,
         ) -> Result<crate::value::Value, (crate::interp::Flow, crate::value::Value)> {
             let f: crate::interp::OwnedNativeFn = $f;
-            f(i, r, a)
+            let out = f(i, r, a);
+            if crate::keys::pending() {
+                if let Some(e) = crate::keys::take_error() {
+                    return match out {
+                        Ok(v) | Err((_, v)) => Err((e, v)),
+                    };
+                }
+            }
+            out
         }
         $m.add(&[$first $(, $key)*], native, concat!("qzo.", $first));
     }};

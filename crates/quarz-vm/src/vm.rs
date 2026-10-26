@@ -318,6 +318,7 @@ impl BlockCaller {
     /// Call the block with `args` (padded with nil or cut to the block's
     /// parameters).
     pub fn call(&self, args: &[Value]) -> EvalResult {
+        crate::keys::check()?;
         // SAFETY: a caller never outlives the interpreter that made it.
         let interp = unsafe { &*self.interp };
         let (closure, fid, act, compiled, nparams) = match &self.kind {
@@ -1131,7 +1132,9 @@ impl Interp {
             Inst::MakeArray { dst, items } => {
                 self.op_make_array(regs, *dst, items.iter().map(|i| (i.reg, i.splat)))
             }
-            Inst::MakeHash { dst, items } => self.op_make_hash(regs, *dst, items.iter().copied()),
+            Inst::MakeHash { dst, items } => {
+                self.op_make_hash(regs, *dst, items.iter().copied())?
+            }
             Inst::MakeRange {
                 dst,
                 lo,
@@ -1223,6 +1226,9 @@ impl Interp {
     /// Call a block, with `self` replaced by `recv` when given (a block
     /// with a receiver, run by `instance_exec`).
     pub fn call_block_on(&self, proc: &Value, recv: Option<Value>, mut args: ArgVec) -> EvalResult {
+        // What a key's own `==` or `hash` raised is raised before any more
+        // Quarz code runs (`crate::keys`).
+        crate::keys::check()?;
         let Value::Proc(closure) = proc else {
             return Err(self.err_type("not a procedure"));
         };

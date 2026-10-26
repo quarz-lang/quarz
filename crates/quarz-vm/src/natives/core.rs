@@ -138,8 +138,12 @@ fn obj_dup(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
     }
     Ok(match recv {
         Value::ArrayBuilder(a) => Value::ArrayBuilder(Value::array_builder(a.borrow().clone())),
-        Value::HashBuilder(h) => Value::HashBuilder(Value::hash_builder(h.borrow().clone())),
-        Value::SetBuilder(s) => Value::SetBuilder(Value::set_builder(s.borrow().clone())),
+        Value::HashBuilder(h) => Value::HashBuilder(Value::hash_builder(
+            super::collections::read(interp, h)?.clone(),
+        )),
+        Value::SetBuilder(s) => Value::SetBuilder(Value::set_builder(
+            super::collections::read(interp, s)?.clone(),
+        )),
         Value::StringBuilder(s) => {
             Value::StringBuilder(Rc::new(std::cell::RefCell::new(s.borrow().clone())))
         }

@@ -11,6 +11,7 @@ mod epoll;
 pub mod ffi;
 pub mod ffi_ops;
 pub mod interp;
+pub mod keys;
 pub mod layout;
 pub mod methods;
 pub mod native_bt;

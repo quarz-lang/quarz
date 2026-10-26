@@ -1709,3 +1709,17 @@ fn what_runs_deinitialize_is_not_copied() {
     );
     ok("class P\nend\nP.new.dup\nclass E < StandardError\nend\nE.new(\"e\").dup");
 }
+
+#[test]
+fn eq_comes_with_hash() {
+    // Hash keys and Set members are compared by both.
+    warns(
+        "class P\n  def ==(o: Object) -> Bool = true\nend",
+        "`P` defines `==` but not `hash`",
+    );
+    warns(
+        "class P\n  def hash -> Int = 0\nend",
+        "`P` defines `hash` but not `==`",
+    );
+    no_warnings("class P\n  def ==(o: Object) -> Bool = true\n  def hash -> Int = 0\nend");
+}

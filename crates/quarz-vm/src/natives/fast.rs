@@ -149,11 +149,16 @@ pub fn register(m: &mut super::Registry<FastNativeFn>) {
         _ => None,
     });
     // ----- Hash / Set -----
+    // A key with its own `==` or `hash` goes to the native, which raises
+    // what they raise (`crate::keys`); a built-in key runs no Quarz code
+    // (the key looked up is the receiver of `==`).
     fast!(m, "Hash#[]", |_, r, a| match (r, a) {
+        (Value::Hash(_), [k]) if crate::keys::is_custom(k) => None,
         (Value::Hash(h), [k]) => h.get(k).map(|v| Ok(v.clone())),
         _ => None,
     });
     fast!(m, "Hash#[]?", |_, r, a| match (r, a) {
+        (Value::Hash(_), [k]) if crate::keys::is_custom(k) => None,
         (Value::Hash(h), [k]) => Some(Ok(h.get(k).unwrap_or(Value::Nil))),
         _ => None,
     });
@@ -161,6 +166,7 @@ pub fn register(m: &mut super::Registry<FastNativeFn>) {
         m,
         ["Hash#key?", "Hash#has_key?", "Hash#include?"],
         |_, r, a| match (r, a) {
+            (Value::Hash(_), [k]) if crate::keys::is_custom(k) => None,
             (Value::Hash(h), [k]) => Some(Ok(Value::Bool(h.contains_key(k)))),
             _ => None,
         }
@@ -178,7 +184,8 @@ pub fn register(m: &mut super::Registry<FastNativeFn>) {
         _ => None,
     });
     fast!(m, "Set#include?", |_, r, a| match (r, a) {
-        (Value::Set(s), [k]) => Some(Ok(Value::Bool(s.contains(*k)))),
+        (Value::Set(_), [k]) if crate::keys::is_custom(k) => None,
+        (Value::Set(s), [k]) => Some(Ok(Value::Bool(s.contains(k)))),
         _ => None,
     });
 }

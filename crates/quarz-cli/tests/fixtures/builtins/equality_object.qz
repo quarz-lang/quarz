@@ -2,8 +2,8 @@
 # any value (`x == y` with an operand typed `Object`, `Array#==`,
 # `case`/`when`, `include?`, `index`, `delete`, `count`, `Hash#value?`
 # and `Hash#==` on the values), so it tests the class itself. A `!=` of
-# its own is called the same way. Hash keys and Set members compare
-# class instances by identity.
+# its own is called the same way. Hash keys and Set members compare by
+# `==` and `hash` too.
 class Money
   @cents: Int
   def initialize(cents: Int)
@@ -16,6 +16,7 @@ end
 
 class Loose
   def ==(other: Object) -> Bool = true
+  def hash -> Int = 0
   def !=(other: Object) -> Bool = false
 end
 
@@ -62,7 +63,7 @@ p h == {"a" => Money.new(1), "b" => Money.new(3)}
 hb = Hash::Builder[String, Money].new
 hb["x"] = Money.new(7)
 p hb.value?(Money.new(7))
-# Keys are compared by identity for class instances.
+# Keys are compared by the class's own `==` and `hash`.
 m1 = Money.new(1)
 p({m1 => 1}.key?(Money.new(1)))
 p({m1 => 1}.key?(m1))

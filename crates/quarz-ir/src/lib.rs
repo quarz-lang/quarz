@@ -1307,6 +1307,11 @@ pub struct RtClass {
     pub variant_of: Option<ClassId>,
     /// Instances compare and hash structurally (data, variants).
     pub structural: bool,
+    /// The class declares a `==` or `hash` with a body (not the
+    /// prelude's natives): its instances, and its descendants', are
+    /// compared by them as hash keys and set members.
+    #[serde(default)]
+    pub declares_eq_hash: bool,
     pub is_exception: bool,
     /// `abstract class`: never instantiated.
     #[serde(default)]

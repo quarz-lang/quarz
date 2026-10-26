@@ -1,0 +1,150 @@
+# Hash keys and Set members compare by their own `==` and `hash`: a class
+# that defines them is compared by calling them, the key looked up being
+# the receiver of `==`. What they raise is raised by the operation, and
+# an update in place changes nothing then.
+class Pt
+  @x: Int
+  @y: Int
+  def initialize(x: Int, y: Int)
+    @x = x
+    @y = y
+  end
+  def x -> Int = @x
+  def y -> Int = @y
+  def ==(o: Object) -> Bool = o.is_a?(Pt) && x == o.x && y == o.y
+  def hash -> Int = x * 31 + y
+  def to_s -> String = "(#{x}, #{y})"
+end
+
+h = {Pt.new(1, 2) => "a", Pt.new(3, 4) => "b"}
+p h[Pt.new(1, 2)]?, h.key?(Pt.new(2, 1)), h.size
+h = h.put(Pt.new(1, 2), "c")
+p h.size, h[Pt.new(1, 2)]?
+p h.delete(Pt.new(3, 4)).size
+s = Set[Pt.new(1, 2), Pt.new(1, 2), Pt.new(3, 4)]
+p s.size, s.include?(Pt.new(3, 4)), s.add(Pt.new(3, 4)).size
+pts = [Pt.new(1, 1), Pt.new(1, 1), Pt.new(2, 2)]
+p pts.uniq.size, pts.tally.size, pts.group_by { |q| q }.size
+p (pts - [Pt.new(1, 1)]).size, (pts & [Pt.new(2, 2)]).size, (pts | [Pt.new(9, 9)]).size
+
+# Builders.
+b = Hash::Builder[Pt, Int].new
+b[Pt.new(1, 1)] = 1
+b[Pt.new(1, 1)] = 2
+p b.size, b[Pt.new(1, 1)]?, b.key?(Pt.new(1, 1))
+sb = Set::Builder[Pt].new
+sb << Pt.new(5, 5) << Pt.new(5, 5)
+p sb.size, sb.include?(Pt.new(5, 5))
+
+# A data type with its own `==` and `hash`, instead of its fields'.
+data Tag(name: String)
+  def ==(o: Object) -> Bool = o.is_a?(Tag) && name.downcase == o.name.downcase
+  def hash -> Int = name.downcase.hash
+end
+p({Tag.new("A") => 1}.key?(Tag.new("a")))
+
+# What `hash` raises is raised; the table is as it was.
+class Bad
+  @n: Int
+  def initialize(n: Int)
+    @n = n
+  end
+  def ==(o: Object) -> Bool = o.is_a?(Bad)
+  def hash -> Int
+    raise ArgumentError, "no hash for #{@n}"
+  end
+end
+begin
+  {Bad.new(1) => 1}
+rescue ArgumentError => e
+  puts "literal: #{e.message}"
+end
+kept: Hash[Object, Int] = {Pt.new(1, 1) => 1}
+begin
+  kept = kept.put(Bad.new(2), 2)
+rescue ArgumentError => e
+  puts "put: #{e.message}"
+end
+p kept.size
+bb = Hash::Builder[Object, Int].new
+bb[Pt.new(1, 1)] = 1
+begin
+  bb[Bad.new(3)] = 2
+rescue ArgumentError => e
+  puts "[]=: #{e.message}"
+end
+p bb.size
+
+# A key held in an array is compared by its own methods too: the put
+# raises and changes nothing.
+begin
+  kept = kept.put([Bad.new(4)], 3)
+rescue ArgumentError => e
+  puts "nested: #{e.message}"
+end
+p kept.size
+
+# A key's `hash` may read the builder it goes into: it is hashed once,
+# before the builder is changed.
+class Sized
+  @n: Int
+  var @into: Set::Builder[Sized]? = nil
+  def initialize(n: Int)
+    @n = n
+  end
+  def n -> Int = @n
+  def into=(b: Set::Builder[Sized]) -> Nil
+    @into = b
+  end
+  def ==(o: Object) -> Bool = o.is_a?(Sized) && n == o.n
+  def hash -> Int
+    if (b = @into)
+      b.size
+    end
+    @n
+  end
+end
+sized = Set::Builder[Sized].new
+sized << Sized.new(1)
+reader = Sized.new(2)
+reader.into = sized
+sized << reader
+p sized.size, sized.include?(Sized.new(2))
+
+# A key's `==` may not change the builder being looked up.
+class Spy
+  var @into: Set::Builder[Spy]? = nil
+  def into=(b: Set::Builder[Spy]) -> Nil
+    @into = b
+  end
+  def ==(o: Object) -> Bool
+    if (b = @into)
+      b << Spy.new
+    end
+    true
+  end
+  def hash -> Int = 0
+end
+spies = Set::Builder[Spy].new
+spies << Spy.new
+spy = Spy.new
+spy.into = spies
+begin
+  spies << spy
+rescue RuntimeError => e
+  puts e.message
+end
+p spies.size
+
+# Exceptions: a copy is the same key as its original.
+orig = RuntimeError.new("e")
+begin
+  raise orig
+rescue RuntimeError => copy
+  p({orig => 1}.key?(copy), Set[orig].include?(copy))
+end
+
+# An atom's compare_and_set compares by `==`, own methods included.
+cell = Atom.new({Tag.new("x") => 1, Tag.new("y") => 2})
+p cell.compare_and_set({Tag.new("X") => 1, Tag.new("Y") => 2}, {Tag.new("z") => 3})
+p cell.get.size

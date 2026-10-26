@@ -10,11 +10,119 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
-use indexmap::{IndexMap, IndexSet};
+use indexmap::IndexMap;
 
 /// The maps and sets of values, hashed with the Fx hasher.
 pub type ValueMap = IndexMap<Value, Value, rustc_hash::FxBuildHasher>;
-pub type ValueSet = IndexSet<Value, rustc_hash::FxBuildHasher>;
+/// A set's members, in insertion order: a map to nothing, so that a
+/// member can be looked up by a hash computed once and placed without
+/// comparing again (the raw entries `crate::keys` uses), which an
+/// `IndexSet` does not offer. Its methods are an `IndexSet`'s.
+#[derive(Clone, Default, Debug)]
+pub struct ValueSet(pub IndexMap<Value, (), rustc_hash::FxBuildHasher>);
+
+impl ValueSet {
+    pub fn with_capacity_and_hasher(n: usize, h: rustc_hash::FxBuildHasher) -> ValueSet {
+        ValueSet(IndexMap::with_capacity_and_hasher(n, h))
+    }
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+    pub fn insert(&mut self, v: Value) -> bool {
+        self.0.insert(v, ()).is_none()
+    }
+    pub fn insert_full(&mut self, v: Value) -> (usize, bool) {
+        let (i, old) = self.0.insert_full(v, ());
+        (i, old.is_none())
+    }
+    pub fn contains(&self, v: &Value) -> bool {
+        self.0.contains_key(v)
+    }
+    pub fn get_index_of(&self, v: &Value) -> Option<usize> {
+        self.0.get_index_of(v)
+    }
+    pub fn get_index(&self, i: usize) -> Option<&Value> {
+        self.0.get_index(i).map(|(k, _)| k)
+    }
+    pub fn first(&self) -> Option<&Value> {
+        self.0.first().map(|(k, _)| k)
+    }
+    pub fn last(&self) -> Option<&Value> {
+        self.0.last().map(|(k, _)| k)
+    }
+    pub fn iter(&self) -> indexmap::map::Keys<'_, Value, ()> {
+        self.0.keys()
+    }
+    pub fn shift_remove(&mut self, v: &Value) -> bool {
+        self.0.shift_remove(v).is_some()
+    }
+    pub fn swap_remove(&mut self, v: &Value) -> bool {
+        self.0.swap_remove(v).is_some()
+    }
+    pub fn shift_remove_index(&mut self, i: usize) -> Option<Value> {
+        self.0.shift_remove_index(i).map(|(k, _)| k)
+    }
+    pub fn retain(&mut self, mut f: impl FnMut(&Value) -> bool) {
+        self.0.retain(|k, _| f(k))
+    }
+    pub fn clear(&mut self) {
+        self.0.clear()
+    }
+    pub fn is_subset(&self, other: &ValueSet) -> bool {
+        self.len() <= other.len() && self.iter().all(|v| other.contains(v))
+    }
+    pub fn is_superset(&self, other: &ValueSet) -> bool {
+        other.is_subset(self)
+    }
+    pub fn is_disjoint(&self, other: &ValueSet) -> bool {
+        self.iter().all(|v| !other.contains(v))
+    }
+    pub fn sort_by(&mut self, mut f: impl FnMut(&Value, &Value) -> std::cmp::Ordering) {
+        self.0.sort_by(|a, _, b, _| f(a, b))
+    }
+    pub fn reverse(&mut self) {
+        self.0.reverse()
+    }
+}
+
+impl PartialEq for ValueSet {
+    fn eq(&self, other: &ValueSet) -> bool {
+        self.len() == other.len() && self.iter().all(|v| other.contains(v))
+    }
+}
+
+impl Eq for ValueSet {}
+
+impl FromIterator<Value> for ValueSet {
+    fn from_iter<I: IntoIterator<Item = Value>>(items: I) -> ValueSet {
+        ValueSet(items.into_iter().map(|v| (v, ())).collect())
+    }
+}
+
+impl Extend<Value> for ValueSet {
+    fn extend<I: IntoIterator<Item = Value>>(&mut self, items: I) {
+        self.0.extend(items.into_iter().map(|v| (v, ())))
+    }
+}
+
+impl IntoIterator for ValueSet {
+    type Item = Value;
+    type IntoIter = indexmap::map::IntoKeys<Value, ()>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_keys()
+    }
+}
+
+impl<'a> IntoIterator for &'a ValueSet {
+    type Item = &'a Value;
+    type IntoIter = indexmap::map::Keys<'a, Value, ()>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.keys()
+    }
+}
 /// A hash whose keys and values are all `Int`, stored unboxed.
 pub type IntMap = IndexMap<i64, i64, rustc_hash::FxBuildHasher>;
 
@@ -3421,13 +3529,18 @@ impl PartialEq for Value {
             (Value::Array(a), Value::Array(b)) => {
                 a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| x == y)
             }
+            // The same table is equal to itself.
+            (Value::Hash(a), Value::Hash(b)) if Rc::ptr_eq(a, b) => true,
+            (Value::Set(a), Value::Set(b)) if Rc::ptr_eq(a, b) => true,
             (Value::Hash(a), Value::Hash(b)) => match (&**a, &**b) {
                 (HashData::Ints(x), HashData::Ints(y)) => {
                     x.len() == y.len() && x.iter().all(|(k, v)| y.get(k) == Some(v))
                 }
                 _ => {
                     let (a, b) = (a.as_map(), b.as_map());
-                    a.len() == b.len() && a.iter().all(|(k, v)| b.get(k).is_some_and(|w| w == v))
+                    // `self`'s values the receivers, as its keys are the
+                    // ones looked up (`crate::keys`).
+                    a.len() == b.len() && a.iter().all(|(k, v)| b.get(k).is_some_and(|w| v == w))
                 }
             },
             (Value::Set(a), Value::Set(b)) => a.len() == b.len() && a.iter().all(|x| b.contains(x)),
@@ -3439,10 +3552,26 @@ impl PartialEq for Value {
                 if Rc::ptr_eq(a, b) {
                     return true;
                 }
+                // An instance of a class with its own `==` is compared by
+                // it (`crate::keys`), the receiver being `self`: the key
+                // looked up.
+                if let Some(m) = crate::keys::of(a.class).and_then(|k| k.eq) {
+                    return crate::keys::eq(a, other, m);
+                }
+                // An exception is equal to its copies (`Exception#==`).
+                if let (Some(x), Some(y)) = (a.exc_info(), b.exc_info()) {
+                    return x.id == y.id;
+                }
                 // Data-like objects (no mutable fields) compare structurally.
                 // The interpreter decides which classes are structural by
                 // the `structural` flag kept on the object.
                 a.class == b.class && is_structural(a) && a.fields_eq(b)
+            }
+            (Value::Object(a), _) if crate::keys::of(a.class).is_some_and(|k| k.eq.is_some()) => {
+                let m = crate::keys::of(a.class)
+                    .and_then(|k| k.eq)
+                    .unwrap_or_default();
+                crate::keys::eq(a, other, m)
             }
             _ => self.identical(other),
         }
@@ -3521,6 +3650,24 @@ impl Hash for Value {
                 r.hi.hash(state);
             }
             Value::Object(o) => {
+                // By its own `hash` (`crate::keys`), whatever its class: its
+                // `==` may hold an instance of another one equal.
+                if let Some(m) = crate::keys::of(o.class).and_then(|k| k.hash) {
+                    31u8.hash(state);
+                    crate::keys::hash(o, m).unwrap_or(0).hash(state);
+                    return;
+                }
+                // An exception as its copies (`Exception#hash`): by its
+                // identity, recorded now if it has none, so that it never
+                // changes.
+                if o.layout.exc.is_some() || o.exc_info().is_some() {
+                    if o.exc_info().is_none() {
+                        o.init_exc(ExcInfo::new(None, None));
+                    }
+                    32u8.hash(state);
+                    o.exc_info().map_or(0, |i| i.id).hash(state);
+                    return;
+                }
                 12u8.hash(state);
                 o.class.hash(state);
                 if is_structural(o) {

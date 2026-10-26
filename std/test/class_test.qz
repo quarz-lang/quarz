@@ -39,6 +39,7 @@ class ClsV
     else false
     end
   end
+  def hash -> Int = [x, y].hash
   def -@ -> ClsV = ClsV.new(-x, -y)
   def [](i: Int) -> Int = i == 0 ? x : y
   def to_s -> String = "(#{x}, #{y})"

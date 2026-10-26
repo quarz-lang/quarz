@@ -370,8 +370,7 @@ op_entry!(
                     HashItem::Splat(t[1])
                 }
             }),
-        );
-        Ok(())
+        )
     }
 );
 

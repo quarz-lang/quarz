@@ -95,9 +95,8 @@ rescue Inner => z
   p z.message, z.cause.nil?
 end
 
-# A copy is equal to its original (`==`, `hash`, `include?`); exceptions
-# made apart are not, whatever their messages. Hash keys still compare
-# class instances by identity.
+# A copy is equal to its original (`==`, `hash`, `include?`, as a Hash
+# key); exceptions made apart are not, whatever their messages.
 orig = Inner.new("orig")
 before = orig.hash
 begin

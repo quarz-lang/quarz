@@ -488,7 +488,6 @@ pub fn run_on_thread(
             }
         }
     });
-    let closure = import(&interp, closure);
     let exit = interp.run_closure(closure);
     let exit = match exit {
         Ok(v) => match export(&interp, &v) {
@@ -532,11 +531,15 @@ impl Interp {
         image
     }
 
-    /// Call a block as the root task of this interpreter and run the
-    /// scheduler until it finishes.
-    pub fn run_closure(self: &std::rc::Rc<Interp>, closure: Value) -> Result<Value, Flow> {
+    /// Import a block and call it as the root task of this interpreter,
+    /// and run the scheduler until it finishes. The import is the task's:
+    /// rebuilding a captured hash or set calls its keys' own `hash` and
+    /// `==` (`crate::keys`), which may need a task (and what they raise is
+    /// the block's to raise).
+    pub fn run_closure(self: &std::rc::Rc<Interp>, closure: Transfer) -> Result<Value, Flow> {
         let me = self.clone();
         let body: Box<dyn FnOnce() -> TaskExit> = Box::new(move || {
+            let closure = import(&me, closure);
             match me.call_block(&closure, smallvec::smallvec![]) {
                 // A `SystemExit` goes back to the caller of `Task.blocking`,
                 // to be raised there (its `ensure`s, its `rescue`).
