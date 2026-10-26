@@ -28,12 +28,36 @@ thread_local! {
     /// The queue is being run (one that runs deinitializers does not
     /// start another run from inside one).
     static RUNNING: Cell<bool> = const { Cell::new(false) };
+    /// The program whose objects are queued (`set_classes`).
+    static PROGRAM: Cell<u64> = const { Cell::new(0) };
 }
 
-/// Set this thread's table of the classes with a `deinitialize`.
-pub fn set_classes(classes: Vec<bool>) {
+/// Set this thread's table of the classes with a `deinitialize`, for a
+/// new interpreter of program `program` (`Global::id`). What another
+/// program left on this thread (releases after its last call boundary,
+/// cyclic garbage not collected yet) is not this one's to finalize, nor
+/// to judge by its classes: its garbage is collected first, under its own
+/// table, and what that queues is leaked with the rest of its queue
+/// (dropping one would release what it holds under this program's
+/// table). The same program's (the REPL's previous input's) stay queued.
+/// (A program still running on the thread when another one starts there
+/// would lose its queue: nothing does that.)
+pub fn set_classes(classes: Vec<bool>, program: u64) {
     if classes.iter().any(|c| *c) {
         ANY.store(true, Ordering::Relaxed);
+    }
+    let before = PROGRAM.with(|p| p.get());
+    if before != program && !RUNNING.with(|r| r.get()) {
+        // (Nothing to look at for the thread's first program.)
+        if before != 0 {
+            if crate::cycles::candidates() != 0 {
+                crate::cycles::collect_now();
+            }
+            let stale = QUEUE.with(|q| std::mem::take(&mut *q.borrow_mut()));
+            std::mem::forget(stale);
+            PENDING.with(|p| p.set(false));
+        }
+        PROGRAM.with(|p| p.set(program));
     }
     CLASSES.with(|c| *c.borrow_mut() = classes);
 }

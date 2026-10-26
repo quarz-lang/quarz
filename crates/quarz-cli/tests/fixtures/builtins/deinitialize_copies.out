@@ -4,3 +4,4 @@ an instance of Res cannot cross Task.blocking: its class defines `deinitialize`,
 true
 release
 an instance of Res cannot cross Task.blocking: its class defines `deinitialize`, and the other thread would get a copy
+release
