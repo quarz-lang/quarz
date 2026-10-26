@@ -1150,8 +1150,9 @@ impl std::fmt::Debug for Object {
 #[derive(Debug, Default)]
 pub struct ExcInfo {
     pub backtrace: Option<Rc<Vec<String>>>,
-    /// Set at most once: when raised, or later by `Exception#__set_cause`
-    /// (lowering's rescue clauses, as Ruby's `$!`).
+    /// Set at most once: when raised, or later when raised again, or
+    /// handed over by another task, while another is handled (Ruby's `$!`,
+    /// `natives::set_cause`).
     pub cause: std::sync::OnceLock<Value>,
 }
 

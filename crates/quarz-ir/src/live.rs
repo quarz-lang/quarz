@@ -452,6 +452,7 @@ pub fn heap_possible(f: &Function, methods: &[RtMethod]) -> Vec<bool> {
                 | Inst::ArrayPushWord { .. }
                 | Inst::ClearRegs { .. }
                 | Inst::Release { .. }
+                | Inst::Rescuing { .. }
                 | Inst::NoMatch { .. } => {}
             }
         }

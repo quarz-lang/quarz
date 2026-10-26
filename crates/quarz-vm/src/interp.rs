@@ -338,6 +338,14 @@ impl Global {
 
 use sched::NO_EXIT;
 
+/// Whether two exceptions are the same object.
+fn same_object(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Object(a), Value::Object(b)) => Rc::ptr_eq(a, b),
+        _ => false,
+    }
+}
+
 /// The name of the task `Task.timeout` runs its block in.
 pub(crate) const TIMEOUT_TASK: &str = "timeout";
 
@@ -733,6 +741,13 @@ pub struct Interp {
     /// activation lives on the Rust stack for the duration of its call.
     /// The task being run by the scheduler.
     pub current_task_id: Cell<TaskId>,
+    /// The exceptions the current task is handling (`Inst::Rescuing`),
+    /// innermost last: the last one is its `$!`, the cause of an exception
+    /// it raises.
+    rescuing: RefCell<Vec<Value>>,
+    /// Those of the other tasks of this worker that are suspended while
+    /// handling one, swapped in when they run (`resume_task`).
+    parked_rescuing: RefCell<FxHashMap<TaskId, Vec<Value>>>,
     /// Backtraces also walk the native stack for compiled frames that
     /// push no activation (typed entries of the LLVM backend).
     pub native_bt: Cell<bool>,
@@ -995,6 +1010,8 @@ impl Interp {
             name_cache: RefCell::new(FxHashMap::default()),
             next_tag: state.next_tag,
             current_task_id: Cell::new(0),
+            rescuing: RefCell::new(Vec::new()),
+            parked_rescuing: RefCell::new(FxHashMap::default()),
             native_bt: Cell::new(false),
             pending_flow: RefCell::new(None),
             reg_pool: RefCell::new(Vec::new()),
@@ -1394,7 +1411,31 @@ impl Interp {
     /// program.
     fn resume_task(&self, task: Rc<TaskHandle>, mut co: sched::TaskCoroutine) -> Option<i32> {
         self.current_task_id.set(task.id);
+        // The exceptions it was handling when it was suspended, if any.
+        let parked = {
+            let mut p = self.parked_rescuing.borrow_mut();
+            if p.is_empty() {
+                None
+            } else {
+                p.remove(&task.id)
+            }
+        };
+        if let Some(stack) = parked {
+            *self.rescuing.borrow_mut() = stack;
+        }
         let result = sched::resume(&task, &mut co);
+        let stack = {
+            let mut r = self.rescuing.borrow_mut();
+            (!r.is_empty()).then(|| std::mem::take(&mut *r))
+        };
+        if let Some(stack) = stack {
+            if matches!(result, corosensei::CoroutineResult::Yield(())) {
+                self.parked_rescuing.borrow_mut().insert(task.id, stack);
+            } else {
+                // Ended (by a jump out of a handler): they go.
+                drop(stack);
+            }
+        }
         self.sched.borrow_mut().after_resume(task, co, result)
     }
 
@@ -1822,9 +1863,40 @@ impl Interp {
         let bt = self.capture_backtrace();
         Value::Object({
             let o = Object::new(class, fields);
-            o.init_exc(ExcInfo::new(Some(Rc::new(bt)), None), false);
+            o.init_exc(ExcInfo::new(Some(Rc::new(bt)), self.rescued()), false);
             o
         })
+    }
+
+    /// The current task's `$!`: the exception it is handling, innermost.
+    pub fn rescued(&self) -> Option<Value> {
+        self.rescuing.borrow().last().cloned()
+    }
+
+    /// The current task starts handling `exc` (`Inst::Rescuing`).
+    pub fn start_rescuing(&self, exc: Value) {
+        self.rescuing.borrow_mut().push(exc);
+    }
+
+    /// The current task ends handling `exc`, and those it started since
+    /// (left by a jump that did not end them).
+    pub fn end_rescuing(&self, exc: &Value) {
+        let ended: Vec<Value> = {
+            let mut r = self.rescuing.borrow_mut();
+            // The usual case: the innermost.
+            if r.last().is_some_and(|e| same_object(e, exc)) {
+                let last = r.pop();
+                drop(r);
+                drop(last);
+                return;
+            }
+            match r.iter().rposition(|e| same_object(e, exc)) {
+                Some(at) => r.split_off(at),
+                None => return,
+            }
+        };
+        // Dropped after the borrow: an exception's release may run code.
+        drop(ended);
     }
 
     /// The innermost frames of the current task's call stack, as
@@ -1967,6 +2039,9 @@ impl Interp {
                     let bt = self.capture_backtrace();
                     let info = ExcInfo::new(Some(Rc::new(bt)), None);
                     o.init_exc(info, Rc::is_shared(&o));
+                }
+                if let Some(Value::Object(c)) = self.rescued() {
+                    crate::natives::set_cause(&o, &c);
                 }
                 Value::Object(o)
             }

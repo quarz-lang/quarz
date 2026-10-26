@@ -81,7 +81,7 @@
 ## 7. 制御・エラー
 
 - 例外階層: `Exception` > (`Task::Cancelled`、`NoMemoryError`、`SystemExit`、`SystemStackError`、`DeadlockError`) / `StandardError` > (`ArgumentError`、`TypeError`、`IndexError` > `KeyError`、`RangeError` > `FloatDomainError`、`ZeroDivisionError`、`FrozenError`、`IOError` > `EOFError`、`SystemCallError`、`RuntimeError`、`NoMatchingPatternError`、`NotImplementedError`、`StopIteration`、`Channel::Closed`、`Task::Timeout`)。
-- `Exception#message backtrace cause full_message`。例外は Ruby と同じく最初の `raise` のバックトレースを保ちます(タスク間で共有した例外も同じで、同時に raise したタスクのうちどれか 1 つが設定します)。`rescue` 節の中で投げられた例外と、節の中の `begin` で rescue された例外は、Ruby の `$!` と同じく、その節が処理している例外を `cause` に持ちます。ただし Ruby と違い、節から呼んだメソッドの中で投げられてそこで rescue された例外と、例外が通過中の `ensure` 節で投げられた例外は持ちません。
+- `Exception#message backtrace cause full_message`。例外は Ruby と同じく最初の `raise` のバックトレースを保ちます(タスク間で共有した例外も同じで、同時に raise したタスクのうちどれか 1 つが設定します)。`rescue` 節の実行中に(節の中でも、節から呼んだメソッドの中でも)投げられた例外は、その節が処理している例外を `cause` に持ちます。例外が通過中の `ensure` 節の実行中に投げられた例外は、その通過中の例外を持ちます。Ruby の `$!` と同じで、タスクごとに別です。`Task.timeout` と `Task.blocking` のブロックは別のタスク(またはスレッド)で動くので、何も持たずに始まります。別のタスクが投げ、`await`、`Task.scope`、`Task.timeout`、`Task.blocking` が投げ直した例外は、`cause` がまだなければ、投げ直した場所で処理中の例外を持ちます。Ruby の `Thread#value` と同じです。
 - `Result[T, E]`(enum): `Ok(value)`/`Err(error)`。`map`、`and_then`(別名 `flat_map`)、`unwrap`、`unwrap_or`、`ok?`、`err?`。例外を使わないエラー処理に。
 
 ## 8. 並行

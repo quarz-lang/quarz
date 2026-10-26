@@ -68,6 +68,9 @@ impl InlineLevel {
 struct Region<'a> {
     handler: Option<Handler>,
     ensure: Option<&'a [Expr]>,
+    /// The exception (or flow) the region's code handles, which a jump
+    /// out of it ends (`Inst::Rescuing`).
+    rescuing: Option<Reg>,
 }
 
 /// Evaluated call arguments.
@@ -113,8 +116,7 @@ pub struct FnBuilder<'a> {
     handlers: Vec<Region<'a>>,
     retry_targets: Vec<BlockId>,
     /// The exceptions the enclosing `rescue` clauses are handling,
-    /// innermost last: one raised or caught in a clause gets it as its
-    /// cause (`Exception#__set_cause`), as Ruby's `$!`.
+    /// innermost last (`retry` ends the innermost).
     rescuing: Vec<Reg>,
     method: Option<MethodId>,
     class_id: Option<ClassId>,
@@ -171,6 +173,7 @@ impl<'a> FnBuilder<'a> {
             handlers: vec![Region {
                 handler: None,
                 ensure: None,
+                rescuing: None,
             }],
             retry_targets: Vec::new(),
             rescuing: Vec::new(),
@@ -717,6 +720,9 @@ impl<'a> FnBuilder<'a> {
                 self.switch(b);
                 self.body(body);
             }
+            if let Some(src) = region.rescuing {
+                self.emit(Inst::Rescuing { src, enter: false });
+            }
             popped.push(region);
         }
         popped.reverse();
@@ -728,6 +734,40 @@ impl<'a> FnBuilder<'a> {
         let restore = self.leave_regions(1);
         self.term(Term::Return(v));
         self.handlers.extend(restore);
+    }
+
+    /// Run `f`'s code handling the exception `src` holds (a `rescue`
+    /// clause's, or one an `ensure` clause runs for): it is Ruby's `$!`
+    /// until the code ends, however it ends.
+    fn handling(&mut self, src: Reg, f: impl FnOnce(&mut Self) -> Reg) -> Reg {
+        self.emit(Inst::Rescuing { src, enter: true });
+        // The handler block belongs to the outer region.
+        let left = self.new_block();
+        self.handlers.push(Region {
+            handler: Some(Handler {
+                block: left,
+                kind: HandlerKind::Ensure,
+            }),
+            ensure: None,
+            rescuing: Some(src),
+        });
+        let entry = self.new_block();
+        self.term(Term::Jump(entry));
+        self.switch(entry);
+        let v = f(self);
+        self.handlers.pop();
+        let done = self.new_block();
+        self.term(Term::Jump(done));
+        self.switch(done);
+        self.emit(Inst::Rescuing { src, enter: false });
+        // Left by an exception or another flow: ended, then the flow goes on.
+        self.switch(left);
+        let flow = self.reg();
+        self.emit(Inst::CatchAny { dst: flow });
+        self.emit(Inst::Rescuing { src, enter: false });
+        self.term(Term::Resume(flow));
+        self.switch(done);
+        v
     }
 
     // ----- variables -----------------------------------------------------------------------
@@ -1486,6 +1526,14 @@ impl<'a> FnBuilder<'a> {
                 match self.retry_targets.last() {
                     Some(b) => {
                         let b = *b;
+                        // Back to the `begin`: the clause's exception is
+                        // handled no more.
+                        if let Some(&exc) = self.rescuing.last() {
+                            self.emit(Inst::Rescuing {
+                                src: exc,
+                                enter: false,
+                            });
+                        }
                         self.term(Term::Jump(b));
                     }
                     None => self.term(Term::Unreachable),
@@ -3635,6 +3683,7 @@ impl<'a> FnBuilder<'a> {
                     kind: HandlerKind::Ensure,
                 }),
                 ensure: Some(ensure),
+                rescuing: None,
             });
             let entry = self.new_block();
             self.term(Term::Jump(entry));
@@ -3648,11 +3697,12 @@ impl<'a> FnBuilder<'a> {
             self.switch(after);
             self.body(ensure);
             self.term(Term::Jump(join));
-            // Abrupt completion: run `ensure`, then continue the flow.
+            // Abrupt completion: run `ensure`, then continue the flow. An
+            // exception passing through is `$!` meanwhile, as in Ruby.
             self.switch(ens_handler);
             let flow = self.reg();
             self.emit(Inst::CatchAny { dst: flow });
-            self.body(ensure);
+            self.handling(flow, |s| s.body(ensure));
             self.term(Term::Resume(flow));
         } else {
             let v = self.rescue_region(block);
@@ -3681,6 +3731,7 @@ impl<'a> FnBuilder<'a> {
                 kind: HandlerKind::Rescue,
             }),
             ensure: None,
+            rescuing: None,
         });
         let entry = self.new_block();
         self.term(Term::Jump(entry));
@@ -3701,9 +3752,6 @@ impl<'a> FnBuilder<'a> {
         self.switch(handler);
         let exc = self.reg();
         self.emit(Inst::CatchException { dst: exc });
-        if let Some(&outer) = self.rescuing.last() {
-            self.send(exc, "__set_cause", vec![outer]);
-        }
         for rescue in &block.rescues {
             let classes: Vec<ClassId> = match self.out.rescue_classes.get(&rescue.span) {
                 Some(ids) => ids.clone(),
@@ -3730,35 +3778,18 @@ impl<'a> FnBuilder<'a> {
             if rescue.var.is_some() {
                 self.store_site(rescue.span, exc);
             }
-            // The clause's body: an exception leaving it gets `exc` as its
-            // cause.
-            let caused = self.new_block();
-            self.handlers.push(Region {
-                handler: Some(Handler {
-                    block: caused,
-                    kind: HandlerKind::Rescue,
-                }),
-                ensure: None,
+            // The clause's body handles `exc`: it is `$!`, the cause of the
+            // exceptions raised meanwhile, here or in what it calls.
+            let v = self.handling(exc, |s| {
+                s.retry_targets.push(entry);
+                s.rescuing.push(exc);
+                let v = s.body(&rescue.body);
+                s.rescuing.pop();
+                s.retry_targets.pop();
+                v
             });
-            let clause = self.new_block();
-            self.term(Term::Jump(clause));
-            self.switch(clause);
-            self.retry_targets.push(entry);
-            self.rescuing.push(exc);
-            let v = self.body(&rescue.body);
-            self.rescuing.pop();
-            self.retry_targets.pop();
-            self.handlers.pop();
-            let done = self.new_block();
-            self.term(Term::Jump(done));
-            self.switch(done);
             self.emit(Inst::Move { dst: res, src: v });
             self.term(Term::Jump(join));
-            self.switch(caused);
-            let raised = self.reg();
-            self.emit(Inst::CatchException { dst: raised });
-            self.send(raised, "__set_cause", vec![exc]);
-            self.term(Term::Raise(raised));
             self.switch(after);
         }
         self.term(Term::Raise(exc));

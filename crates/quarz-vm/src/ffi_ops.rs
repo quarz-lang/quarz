@@ -507,6 +507,11 @@ op_entry!(qz_op_catch_any(dst: u32) |rt, act, f, pool, regs| {
     Ok(())
 });
 
+op_entry!(qz_op_rescuing(src: u32, enter: u32) |rt, act, f, pool, regs| {
+    rt.op_rescuing(regs, src, enter != 0);
+    Ok(())
+});
+
 op_entry!(qz_op_no_match(src: u32, is_assert: u32) |rt, act, f, pool, regs| {
     Err(rt.op_no_match(regs, src, is_assert != 0))
 });

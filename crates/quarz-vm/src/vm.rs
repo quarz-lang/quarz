@@ -1191,6 +1191,7 @@ impl Interp {
                     self.run_deinitializers();
                 }
             }
+            Inst::Rescuing { src, enter } => self.op_rescuing(regs, *src, *enter),
             Inst::NoMatch { src, is_assert } => {
                 return Err(self.op_no_match(regs, *src, *is_assert))
             }

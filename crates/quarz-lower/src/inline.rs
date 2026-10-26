@@ -691,6 +691,10 @@ pub(crate) fn rewrite_with(
         },
         Inst::CatchException { dst } => Inst::CatchException { dst: r(dst) },
         Inst::CatchAny { dst } => Inst::CatchAny { dst: r(dst) },
+        Inst::Rescuing { src, enter } => Inst::Rescuing {
+            src: r(src),
+            enter: *enter,
+        },
         Inst::NoMatch { src, is_assert } => Inst::NoMatch {
             src: r(src),
             is_assert: *is_assert,

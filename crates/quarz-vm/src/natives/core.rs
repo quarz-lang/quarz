@@ -38,7 +38,6 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     native!(m, "Exception#backtrace", exc_backtrace);
     native!(m, "Exception#full_message", exc_full_message);
     native!(m, "Exception#cause", exc_cause);
-    native!(m, "Exception#__set_cause", exc_set_cause);
     native!(m, "Exception#inspect", obj_inspect);
     native!(m, "Kernel#puts", kernel_puts);
     native!(m, "Kernel#print", kernel_print);
@@ -207,13 +206,10 @@ fn exc_cause(_: &Interp, recv: &Value, _: Args) -> EvalResult {
     }
 }
 
-/// An exception raised (or caught) while `cause` was being rescued gets
-/// it as its cause, as Ruby's `$!` does, unless it has one, is `cause`
-/// itself (raised again), or `cause` comes from it (a cycle).
-fn exc_set_cause(_: &Interp, recv: &Value, args: Args) -> EvalResult {
-    let (Value::Object(o), Value::Object(c)) = (recv, args.arg(0)) else {
-        return Ok(Value::Nil);
-    };
+/// An exception raised while `cause` was being handled (Ruby's `$!`)
+/// gets it as its cause, unless it has one, is `cause` itself (raised
+/// again), or `cause` comes from it (a cycle).
+pub(crate) fn set_cause(o: &Rc<Object>, c: &Rc<Object>) {
     // Shared exceptions: the check and the setting at once, so that two
     // threads cannot each make the other's exception its cause.
     static SHARED: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -222,12 +218,11 @@ fn exc_set_cause(_: &Interp, recv: &Value, args: Args) -> EvalResult {
     let mut link = Some(Value::Object(c.clone()));
     while let Some(Value::Object(l)) = link {
         if Rc::ptr_eq(&l, o) {
-            return Ok(Value::Nil);
+            return;
         }
         link = l.cause();
     }
     o.set_cause(Value::Object(c.clone()), Rc::is_shared(o));
-    Ok(Value::Nil)
 }
 
 // ----- Kernel ---------------------------------------------------------------------

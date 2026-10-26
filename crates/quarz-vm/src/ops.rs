@@ -855,6 +855,25 @@ impl Interp {
         regs[dst as usize] = Value::Flow(Rc::new(RefCell::new(pending.take())));
     }
 
+    pub fn op_rescuing(&self, regs: &[Value], src: Reg, enter: bool) {
+        let handle = |exc: &Value| {
+            if enter {
+                self.start_rescuing(exc.clone());
+            } else {
+                self.end_rescuing(exc);
+            }
+        };
+        match &regs[src as usize] {
+            Value::Flow(fb) => {
+                if let Some(Flow::Raise(e)) = &*fb.borrow() {
+                    handle(e);
+                }
+            }
+            e @ Value::Object(_) => handle(e),
+            _ => {}
+        }
+    }
+
     pub fn op_no_match(&self, regs: &[Value], src: Reg, is_assert: bool) -> Flow {
         let v = &regs[src as usize];
         let shown = match self.inspect(v) {

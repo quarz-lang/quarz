@@ -115,8 +115,9 @@ class ExceptionTest < Test::Case
   end
 end
 
-# The exception being rescued becomes the cause of one raised (or rescued
-# again) in the clause, as Ruby's `$!`.
+# The exception being handled becomes the cause of one raised meanwhile,
+# as Ruby's `$!`: in a `rescue` clause and what it calls, and in an
+# `ensure` clause an exception passes through.
 class ExceptionCauseTest < Test::Case
   def caught(&: () -> Nil) -> Exception
     begin
@@ -197,6 +198,121 @@ class ExceptionCauseTest < Test::Case
     end
     assert_nil(bare.cause)
     assert_nil(caught { raise "plain" }.cause)
+  end
+
+  def raise_and_rescue -> String
+    begin
+      raise "in a method"
+    rescue => e
+      e.cause.inspect
+    end
+  end
+
+  def test_in_a_method_the_clause_calls
+    got = begin
+      raise ArgumentError, "a"
+    rescue
+      raise_and_rescue
+    end
+    assert_equal("#<ArgumentError: a>", got)
+  end
+
+  def test_in_an_ensure_clause_an_exception_passes_through
+    got = ""
+    e = caught do
+      begin
+        raise ArgumentError, "passing"
+      ensure
+        begin
+          raise "b"
+        rescue => b
+          got = b.cause.inspect
+        end
+      end
+      nil
+    end
+    assert_equal("#<ArgumentError: passing>", got)
+    assert_nil(e.cause)
+  end
+
+  def returns_through_ensure -> Int
+    begin
+      raise "r"
+    ensure
+      return 1
+    end
+  end
+
+  def test_none_left_after_the_clause
+    begin
+      raise "done"
+    rescue
+      nil
+    end
+    assert_nil(caught { raise "after" }.cause)
+    i = 0
+    while i < 2
+      begin
+        raise "loop"
+      rescue
+        i += 1
+        next
+      end
+    end
+    [1, 2].each do |_|
+      begin
+        raise "block"
+      rescue
+        break
+      end
+    end
+    n = 0
+    begin
+      n += 1
+      raise "try" if n < 3
+    rescue
+      retry
+    end
+    returns_through_ensure
+    assert_nil(caught { raise "after jumps" }.cause)
+  end
+
+  def test_handed_over_by_another_task
+    got = begin
+      raise ArgumentError, "the caller's"
+    rescue
+      begin
+        Task.spawn { raise "in a task" }.await
+        ""
+      rescue => e
+        e.cause.inspect
+      end
+    end
+    assert_equal("#<ArgumentError: the caller's>", got)
+    out = caught do
+      begin
+        raise ArgumentError, "left"
+      rescue
+        Task.spawn { raise "out of the clause" }.await
+      end
+      nil
+    end
+    assert_equal("#<ArgumentError: left>", out.cause.inspect)
+  end
+
+  def test_a_task_has_its_own
+    got = begin
+      raise "the caller's"
+    rescue
+      Task.spawn do
+        begin
+          raise "in a task"
+        rescue => e
+          e.cause.inspect
+        end
+      end.await
+    end
+    assert_equal("nil", got)
   end
 end
 

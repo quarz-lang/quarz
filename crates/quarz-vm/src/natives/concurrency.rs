@@ -135,7 +135,11 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     native!(m, "Task.current", |i, _, _| Ok(Value::Task(
         i.current_task()
     )));
-    native!(m, "Task.timeout", task_timeout);
+    // The block runs in a task of its own: what it raises is handed over.
+    native!(m, "Task.timeout", |i, r, a| handed_over(
+        i,
+        task_timeout(i, r, a)
+    ));
     native!(m, "Task.blocking", |i, _, a| {
         use crate::transfer::{self, WorkerExit};
         let b = block(i, &a)?;
@@ -149,7 +153,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         i.write_out_bytes(&outcome.output);
         match outcome.exit {
             WorkerExit::Value(t) => Ok(transfer::import(i, t)),
-            WorkerExit::Raise(t) => Err(Flow::Raise(transfer::import(i, t))),
+            WorkerExit::Raise(t) => handed_over(i, Err(Flow::Raise(transfer::import(i, t)))),
             // A deadlock on the helper thread (or a result it could not
             // hand back): the program ends.
             WorkerExit::Exit(code) => Err(Flow::Exit(code)),
@@ -164,7 +168,10 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         i.check_cancel(&t)?;
         Ok(Value::Nil)
     });
-    native!(m, "Task#await", |i, r, _| i.await_task(task(i, r)?));
+    native!(m, "Task#await", |i, r, _| handed_over(
+        i,
+        i.await_task(task(i, r)?)
+    ));
     native!(m, "Task#cancel", |i, r, _| {
         i.cancel_task(task(i, r)?);
         Ok(Value::Nil)
@@ -396,7 +403,7 @@ fn task_scope(interp: &Interp, _: &Value, args: Args) -> EvalResult {
                 } else if failure.is_none()
                     || (is_exit(interp, &e) && !failure_is_exit(interp, &failure))
                 {
-                    failure = Some(Flow::Raise(e));
+                    failure = handed_over(interp, Err(Flow::Raise(e))).err();
                     cancel_children(interp, &scope);
                 }
             }
@@ -411,6 +418,18 @@ fn task_scope(interp: &Interp, _: &Value, args: Args) -> EvalResult {
         Some(e) => Err(e),
         None => Ok(value),
     }
+}
+
+/// `r`, an exception another task (or thread) raised and this one raises
+/// again: the exception this one is handling becomes its cause, unless it
+/// has one, as Ruby's `Thread#value` gives it.
+fn handed_over(interp: &Interp, r: EvalResult) -> EvalResult {
+    if let Err(Flow::Raise(Value::Object(o))) = &r {
+        if let Some(Value::Object(c)) = interp.rescued() {
+            super::set_cause(o, &c);
+        }
+    }
+    r
 }
 
 /// Whether `e` is a `SystemExit`: an exit wins over the failure a scope
