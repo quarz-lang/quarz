@@ -1405,9 +1405,9 @@ impl Interp {
         self.sched.borrow().current_task()
     }
 
-    /// Spawn a task running the closure.
     /// Start a task running `closure` (marked shared: it may run on
-    /// another worker), on the worker `Workers::place` picks.
+    /// another worker), on the worker `Workers::place` picks; a
+    /// `Task.timeout` block's on this one.
     pub fn spawn_task(
         &self,
         closure: Value,
@@ -1418,7 +1418,13 @@ impl Interp {
             let s = self.sched.borrow();
             (s.worker, s.workers.clone())
         };
-        let target = workers.place(here);
+        // A `Task.timeout` block is its caller's code, which may hold what
+        // is not Shareable: it runs on the caller's worker.
+        let target = if name == TIMEOUT_TASK {
+            here
+        } else {
+            workers.place(here)
+        };
         // Where its `exit`s go: its spawner's sink; the task of a
         // `Task.timeout` block is one itself (the block is its caller's).
         let sink = {
@@ -3326,12 +3332,26 @@ impl Interp {
                 }
                 format!("Set[{}]", parts.join(", "))
             }
-            Value::Range(r) => format!(
-                "{}{}{}",
-                self.inspect(&r.lo)?,
-                if r.exclusive { "..." } else { ".." },
-                self.inspect(&r.hi)?
-            ),
+            // As Ruby's: `to_s` shows the bounds' `to_s` (`nil` as
+            // nothing), `inspect` their `inspect`, leaving out a missing
+            // bound unless both are.
+            Value::Range(r) => {
+                let bound = |b: &Value, other: &Value| -> Result<String, Flow> {
+                    if !inspect {
+                        Ok(self.to_s(b)?.into_owned())
+                    } else if b.is_nil() && !other.is_nil() {
+                        Ok(String::new())
+                    } else {
+                        self.inspect(b)
+                    }
+                };
+                format!(
+                    "{}{}{}",
+                    bound(&r.lo, &r.hi)?,
+                    if r.exclusive { "..." } else { ".." },
+                    bound(&r.hi, &r.lo)?
+                )
+            }
             Value::Regexp(r) => format!("/{}/{}", r.source, r.flags),
             // `to_s` (and interpolation) is the match, as in Ruby (a
             // Bytes match as Bytes shows itself).

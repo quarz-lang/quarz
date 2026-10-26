@@ -92,7 +92,7 @@ true
 true
 false
 "a\\.b\\*c"
-/a\.b|(?:c+)|d/
+/a\.b|(?-mix:c+)|d/
 true
 error: invalid regexp /(/: regex parse error:
     (
@@ -108,3 +108,8 @@ error: unknown regexp option: z
 #<MatchData "a" 1:"a" 2:nil>
 ["a", "a", nil]
 1
+/(?i-mx:a)|(?-mix:b)/
+/x/mix
+1
+nil
+0
