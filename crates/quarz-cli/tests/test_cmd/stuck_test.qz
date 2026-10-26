@@ -1,0 +1,17 @@
+# A task a test leaves that cancelling does not end is waited for up to
+# the test's limit, then reported as an error of the test.
+class StuckTest < Test::Case
+  def test_leaves_an_uncancellable_task
+    ch = Channel[Int].new
+    started = Channel[Nil].new(capacity: 1)
+    Task.spawn do
+      Task.uncancellable do
+        started.send(nil)
+        ch.receive
+      end
+    end
+    # In `uncancellable` when the test ends.
+    started.receive
+    assert_true(true)
+  end
+end

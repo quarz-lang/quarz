@@ -665,8 +665,30 @@ module Test
   end
 
   # :nodoc:
-  # Run one test (or one row) on a fresh instance.
+  # Run one test (or one row) on a fresh instance. The tasks it leaves
+  # running (spawned and not waited for, in the test, its setup or its
+  # teardown) are cancelled and waited for once its teardown is done, so
+  # that one test's tasks do not run into the next; those still running
+  # after `limit` are an error of the test, and run on.
   def self.run_item(item: Item, limit: Duration?) -> Result
+    r, running = Task.__contain(limit) { Test.run_contained(item, limit) }
+    return r if running == 0
+    text = "#{running} #{running == 1 ? "task" : "tasks"} left running after the test " +
+           "(cancelled, not ended within #{limit.to_s})"
+    case r.kind
+    when :pass
+      Result.new(r.item, :error, text, r.location, r.assertions, r.time, r.notes)
+    when :failure, :error
+      Result.new(r.item, r.kind, "#{r.message}\n#{text}", r.location, r.assertions, r.time, r.notes)
+    else
+      Result.new(r.item, :error, "#{text}\n#{r.kind}: #{r.message}", r.location, r.assertions,
+                 r.time, r.notes)
+    end
+  end
+
+  # :nodoc:
+  # `run_item`, in its `Task.__contain` block.
+  def self.run_contained(item: Item, limit: Duration?) -> Result
     started = Time.monotonic
     where = "#{item.entry.file}:#{item.entry.line}"
     broken = item.error

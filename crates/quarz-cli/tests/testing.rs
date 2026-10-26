@@ -135,6 +135,72 @@ fn an_exit_in_a_test_is_caught_in_it() {
     }
 }
 
+/// The tasks a test leaves running are cancelled after it (their
+/// `ensure` runs), so a later `exit` in one does not end the run.
+#[test]
+fn leftover_tasks_end_with_their_test() {
+    for args in [
+        vec!["test_cmd/leftover_test.qz"],
+        vec!["test_cmd/leftover_test.qz", "--parallel=4"],
+    ] {
+        let out = Command::new(env!("CARGO_BIN_EXE_quarz"))
+            .arg("test")
+            .args(&args)
+            .current_dir(tests_dir())
+            .env("QUARZ_THREADS", "4")
+            .output()
+            .unwrap();
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{args:?}: {}{}",
+            stdout(&out),
+            stderr(&out)
+        );
+        assert!(
+            stdout(&out).contains("b's task cleaned up"),
+            "{args:?}: {}",
+            stdout(&out)
+        );
+        assert!(
+            stdout(&out).contains("4 tests, 4 assertions, 0 failures, 0 errors"),
+            "{args:?}: {}",
+            stdout(&out)
+        );
+    }
+}
+
+/// A leftover that cancelling does not end is waited for up to the
+/// test's limit, then the test is an error (and the run ends).
+#[test]
+fn a_stuck_leftover_is_an_error() {
+    for args in [
+        vec!["test_cmd/stuck_test.qz", "--timeout=500ms"],
+        vec!["test_cmd/stuck_test.qz", "--timeout=500ms", "--parallel=4"],
+    ] {
+        let out = Command::new(env!("CARGO_BIN_EXE_quarz"))
+            .arg("test")
+            .args(&args)
+            .current_dir(tests_dir())
+            .env("QUARZ_THREADS", "4")
+            .output()
+            .unwrap();
+        assert_eq!(
+            out.status.code(),
+            Some(1),
+            "{args:?}: {}{}",
+            stdout(&out),
+            stderr(&out)
+        );
+        assert!(
+            stdout(&out)
+                .contains("1 task left running after the test (cancelled, not ended within 500ms)"),
+            "{args:?}: {}",
+            stdout(&out)
+        );
+    }
+}
+
 #[test]
 fn list_and_names() {
     let out = quarz(&[

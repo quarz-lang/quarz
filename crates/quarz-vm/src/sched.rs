@@ -184,6 +184,58 @@ pub static ANY_CANCELLED: AtomicBool = AtomicBool::new(false);
 /// task up.
 pub static PENDING_EXITS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
+/// How many `Task.__contain` blocks are running: while none is, spawning
+/// need not look for one.
+pub static CONTAINERS: AtomicUsize = AtomicUsize::new(0);
+
+/// The tasks spawned while a `Task.__contain` block runs, and those they
+/// spawn: cancelled and waited for when it ends (a test's, by `quarz
+/// test`).
+pub struct Container {
+    /// The tasks listed; `None` once closed.
+    tasks: Mutex<Option<Vec<Rc<TaskHandle>>>>,
+}
+
+impl Container {
+    pub fn new() -> Rc<Container> {
+        Rc::new_shared(Container {
+            tasks: Mutex::new(Some(Vec::new())),
+        })
+    }
+
+    /// List `task` (false once closed), letting those that ended go when
+    /// the list is full.
+    pub fn add(&self, task: Rc<TaskHandle>) -> bool {
+        let mut guard = lock(&self.tasks);
+        let Some(tasks) = guard.as_mut() else {
+            return false;
+        };
+        if tasks.len() == tasks.capacity() {
+            tasks.retain(|t| !t.is_done());
+        }
+        tasks.push(task);
+        true
+    }
+
+    /// The tasks listed that still run, taken off the list; with `close`,
+    /// none is listed from then on.
+    pub fn take_live(&self, close: bool) -> Vec<Rc<TaskHandle>> {
+        let tasks = {
+            let mut guard = lock(&self.tasks);
+            if close {
+                guard.take()
+            } else {
+                guard.as_mut().map(std::mem::take)
+            }
+        };
+        tasks
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|t| !t.is_done())
+            .collect()
+    }
+}
+
 /// `TaskHandle::exit_request` (and `Global::exit_request`) when there is
 /// none.
 pub const NO_EXIT: i64 = i64::MIN;
@@ -214,6 +266,9 @@ pub struct TaskHandle {
     /// While this sink waits in `Task.timeout`, the block's task, which
     /// the `exit`s meant for it go to (the block is its code).
     delegate: Mutex<Option<Rc<TaskHandle>>>,
+    /// The `Task.__contain` block it runs in, if any: the tasks it spawns
+    /// are listed there.
+    container: Mutex<Option<Rc<Container>>>,
     pub scope: Option<Rc<ScopeInner>>,
     pub name: String,
     /// The coroutine's yielder, set when the task first runs.
@@ -264,6 +319,7 @@ impl TaskHandle {
             sink: Mutex::new(sink),
             exit_request: std::sync::atomic::AtomicI64::new(NO_EXIT),
             delegate: Mutex::new(None),
+            container: Mutex::new(None),
             scope: scope.clone(),
             name,
             yielder: AtomicPtr::new(std::ptr::null_mut()),
@@ -346,6 +402,17 @@ impl TaskHandle {
         Ok(())
     }
 
+    /// Set (or clear) the `Task.__contain` block it runs in; the one
+    /// before.
+    pub fn set_container(&self, c: Option<Rc<Container>>) -> Option<Rc<Container>> {
+        std::mem::replace(&mut *lock(&self.container), c)
+    }
+
+    /// The `Task.__contain` block it runs in, if any.
+    pub fn container(&self) -> Option<Rc<Container>> {
+        lock(&self.container).clone()
+    }
+
     /// Whether it is a sink.
     pub fn is_sink(&self) -> bool {
         self.is_sink.load(Ordering::Acquire)
@@ -407,10 +474,16 @@ impl TaskHandle {
     /// all, happens before a `Done` another worker reads.)
     pub fn set_state(&self, s: TaskState) {
         self.state.store(s as u8, Ordering::Release);
-        if s == TaskState::Done && !self.is_sink() {
-            // Its own exits are requested by now: a task that is no sink
-            // lets its sink go (which may hold it, in its result).
-            *lock(&self.sink) = None;
+        if s == TaskState::Done {
+            if !self.is_sink() {
+                // Its own exits are requested by now: a task that is no
+                // sink lets its sink go (which may hold it, in its result).
+                *lock(&self.sink) = None;
+            }
+            if CONTAINERS.load(Ordering::Acquire) != 0 {
+                // And its container, which lists it.
+                *lock(&self.container) = None;
+            }
         }
     }
 
@@ -468,6 +541,10 @@ pub struct ScopeInner {
     pub owner: TaskRef,
     pub children: Mutex<std::collections::VecDeque<Rc<TaskHandle>>>,
     cancelled: AtomicBool,
+    /// Set (under the children's lock) when `Task.scope` has waited for
+    /// the last child: one spawned into it from then on (a `Scope` kept
+    /// past its block) is waited for by nobody.
+    ended: AtomicBool,
 }
 
 impl std::fmt::Debug for ScopeInner {
@@ -482,6 +559,7 @@ impl ScopeInner {
             owner,
             children: Mutex::new(std::collections::VecDeque::new()),
             cancelled: AtomicBool::new(false),
+            ended: AtomicBool::new(false),
         })
     }
 
@@ -509,6 +587,21 @@ impl ScopeInner {
     /// The first child not yet waited for by `Task.scope`.
     pub fn first_child(&self) -> Option<Rc<TaskHandle>> {
         lock(&self.children).front().cloned()
+    }
+
+    /// `first_child`, or none and the scope ended (`is_ended`).
+    pub fn first_child_or_end(&self) -> Option<Rc<TaskHandle>> {
+        let children = lock(&self.children);
+        let first = children.front().cloned();
+        if first.is_none() {
+            self.ended.store(true, Ordering::Release);
+        }
+        first
+    }
+
+    /// Whether `Task.scope` waits for its children no more.
+    pub fn is_ended(&self) -> bool {
+        self.ended.load(Ordering::Acquire)
     }
 
     /// Forget a child `Task.scope` has waited for.
