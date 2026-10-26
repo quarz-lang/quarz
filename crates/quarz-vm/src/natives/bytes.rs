@@ -76,11 +76,10 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
                 Some(k) => Ok(Value::Int(data[k] as i64)),
                 None => Err(i.err_index(&format!("index {idx} out of bounds"))),
             },
-            Value::Range(range) => {
-                let (lo, hi) = super::string::range_bounds(i, range, data.len())?
-                    .unwrap_or((data.len(), data.len()));
-                Ok(Value::bytes(data[lo..hi].to_vec()))
-            }
+            Value::Range(range) => match super::string::range_bounds(i, range, data.len())? {
+                Some((lo, hi)) => Ok(Value::bytes(data[lo..hi].to_vec())),
+                None => Err(i.err_index("range out of bounds")),
+            },
             other => Err(i.err_type(&format!(
                 "Bytes#[] takes an Int or Range, got {}",
                 i.class_name(other)
