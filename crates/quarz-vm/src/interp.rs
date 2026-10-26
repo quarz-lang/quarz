@@ -1411,9 +1411,32 @@ impl Interp {
                 .and_then(|id| TaskHandle::children_sink(s.task(id)))
         };
         let is_sink = name == TIMEOUT_TASK;
+        // In a `Task.__contain` block: listed there, and its tasks too.
+        // The task of a `Task.timeout` block and a scope's child are their
+        // spawner's own code, which ends with it: they take the container
+        // (for what they spawn) but are not listed, unless the scope has
+        // ended (it waits for nobody then; checked once the child is in
+        // it, under the same lock as the scope's end).
+        let container = if sched::CONTAINERS.load(std::sync::atomic::Ordering::Acquire) != 0 {
+            let s = self.sched.borrow();
+            s.current.and_then(|id| s.task(id).container())
+        } else {
+            None
+        };
+        let contain = |handle: &Rc<TaskHandle>| {
+            if let Some(c) = &container {
+                let listed = !is_sink && handle.scope.as_ref().is_none_or(|s| s.is_ended());
+                // Set first: a task listed is one the block's end may let
+                // go (`set_container(None)`), which must win.
+                handle.set_container(Some(c.clone()));
+                if listed && !c.add(handle.clone()) {
+                    handle.set_container(None);
+                }
+            }
+        };
         if target == here {
             let body = self.task_body(closure);
-            return self.sched.borrow_mut().spawn_with(
+            let handle = self.sched.borrow_mut().spawn_with(
                 body,
                 scope,
                 name.to_string(),
@@ -1421,6 +1444,8 @@ impl Interp {
                 sink,
                 is_sink,
             );
+            contain(&handle);
+            return handle;
         }
         self.start_worker(target);
         let handle = TaskHandle::with_sink(
@@ -1431,6 +1456,7 @@ impl Interp {
             sink,
             is_sink,
         );
+        contain(&handle);
         workers.post_spawn(
             target,
             sched::SpawnRequest {

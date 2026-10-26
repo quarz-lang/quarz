@@ -1,0 +1,40 @@
+# The tasks a test leaves running are cancelled and waited for after it:
+# none runs into the next test or ends the run with its `exit`.
+class LeftTest < Test::Case
+  def test_a_leaves_a_task_that_exits
+    Task.spawn do
+      Task.sleep(100.ms)
+      exit 7
+    end
+    assert_true(true)
+  end
+
+  def test_b_leaves_a_task_with_ensure
+    started = Channel[Nil].new(capacity: 1)
+    Task.spawn do
+      begin
+        started.send(nil)
+        Task.sleep(10.seconds)
+      ensure
+        puts "b's task cleaned up"
+      end
+    end
+    # Running when the test ends (one cancelled before it starts runs
+    # nothing, `ensure` included).
+    started.receive
+    assert_true(true)
+  end
+
+  def test_c_takes_a_while
+    Task.sleep(300.ms)
+    assert_true(true)
+  end
+
+  def test_d_nested_spawn
+    Task.spawn do
+      Task.spawn { Task.sleep(100.ms); exit 9 }
+      Task.sleep(10.seconds)
+    end
+    assert_true(true)
+  end
+end

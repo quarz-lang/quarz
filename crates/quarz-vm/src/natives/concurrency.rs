@@ -159,6 +159,17 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             WorkerExit::Exit(code) => Err(Flow::Exit(code)),
         }
     });
+    native!(m, "Task.__contain", task_contain);
+    // A task outside any `Task.__contain` block: a service the library
+    // starts once for the whole program (`Signal`'s dispatcher).
+    native!(m, "Task.__spawn_service", |i, _, a| {
+        let b = snapshot(i, &block(i, &a)?);
+        let me = i.current_task();
+        let was = me.set_container(None);
+        let t = i.spawn_task(b, None, "task");
+        me.set_container(was);
+        Ok(Value::Task(t))
+    });
     native!(m, "Task.uncancellable", |i, _, a| {
         let b = block(i, &a)?;
         i.uncancellable(|| i.call_block(&b, smallvec![]))
@@ -374,7 +385,7 @@ fn task_scope(interp: &Interp, _: &Value, args: Args) -> EvalResult {
     };
     // Wait for every child; the first failure cancels the rest.
     loop {
-        let Some(child) = scope.first_child() else {
+        let Some(child) = scope.first_child_or_end() else {
             break;
         };
         // Once the children are cancelled (or a failure is kept), the wait
@@ -442,6 +453,158 @@ fn handed_over(interp: &Interp, r: EvalResult) -> EvalResult {
     }
 }
 
+/// `Task.__contain(limit)`: the block, then the tasks it left (spawned
+/// while it ran, and theirs) cancelled and waited for, as a scope's
+/// children are, but for `limit` and a grace at most (`nil`: as long as
+/// they take);
+/// `[the block's value, how many still ran then]`. Those let go spawn
+/// nothing into the container. An exit or a cancellation that comes to
+/// this task while it waits is raised once the wait is over (the block's
+/// own outcome first).
+fn task_contain(interp: &Interp, _: &Value, args: Args) -> EvalResult {
+    use std::sync::atomic::Ordering;
+    let limit = match args.arg(0) {
+        Value::Nil => None,
+        v => Some(duration(interp, v)?),
+    };
+    let b = block(interp, &args)?;
+    let me = interp.current_task();
+    let container = crate::sched::Container::new();
+    crate::sched::CONTAINERS.fetch_add(1, Ordering::AcqRel);
+    let was = me.set_container(Some(container.clone()));
+    let r = interp.call_block(&b, smallvec![]);
+    me.set_container(was);
+    let mut interrupted: Option<Flow> = None;
+    // The limit, and a grace past it for the tasks found late (spawned as
+    // the others were cancelled; a task that respawns itself as it is
+    // cancelled is let go there).
+    let deadline = limit.map(|d| std::time::Instant::now() + d + grace(limit));
+    let mut running = 0;
+    loop {
+        let left = container.take_live(false);
+        if left.is_empty() {
+            break;
+        }
+        for t in &left {
+            interp.cancel_task(t);
+        }
+        let mut stuck = Vec::new();
+        let mut late = Vec::new();
+        if deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+            late = left;
+        } else {
+            for t in &left {
+                // Waited for until it ends (or the deadline): what
+                // interrupts the wait (an exit delivered to this task) is
+                // raised afterwards, the first one.
+                loop {
+                    match interp.uncancellable(|| wait_until(interp, t, deadline)) {
+                        Ok(true) => break,
+                        Ok(false) => {
+                            stuck.push(t.clone());
+                            break;
+                        }
+                        Err(f) => {
+                            interrupted.get_or_insert(f);
+                        }
+                    }
+                }
+            }
+            if stuck.is_empty() {
+                continue;
+            }
+        }
+        // Given up: those found late (and what they spawn meanwhile) get a
+        // grace to end; then the container is closed (what is spawned from
+        // then on is listed nowhere), and those still running are let go
+        // (what they spawn runs on too).
+        let until = std::time::Instant::now() + grace(limit);
+        let mut batch = std::mem::take(&mut late);
+        loop {
+            batch.extend(container.take_live(false));
+            if batch.is_empty() {
+                break;
+            }
+            for t in &batch {
+                interp.cancel_task(t);
+            }
+            for t in &batch {
+                if let Err(f) = interp.uncancellable(|| wait_until(interp, t, Some(until))) {
+                    interrupted.get_or_insert(f);
+                }
+            }
+            late.append(&mut batch);
+            if std::time::Instant::now() >= until {
+                break;
+            }
+        }
+        for t in container.take_live(true) {
+            interp.cancel_task(&t);
+            late.push(t);
+        }
+        for t in stuck.iter().chain(&late) {
+            t.set_container(None);
+        }
+        running = stuck.len() + late.iter().filter(|t| !t.is_done()).count();
+        break;
+    }
+    // Ended: nothing is listed any more. An exit delivered as the last
+    // one ended is raised here, not in the next test.
+    let _ = container.take_live(true);
+    if let Err(f) = interp.uncancellable(|| interp.check_cancel(&me)) {
+        interrupted.get_or_insert(f);
+    }
+    crate::sched::CONTAINERS.fetch_sub(1, Ordering::AcqRel);
+    match (r, interrupted) {
+        // An exit wins over the block's failure, as in a scope.
+        (Err(f), Some(e)) if !flow_is_exit(interp, &f) && flow_is_exit(interp, &e) => Err(e),
+        (Err(f), _) => Err(f),
+        (Ok(_), Some(f)) => Err(f),
+        (Ok(v), None) => Ok(Value::array(vec![v, Value::Int(running as i64)])),
+    }
+}
+
+/// How long past its limit `Task.__contain` waits for the tasks found
+/// late (spawned as the others were cancelled).
+fn grace(limit: Option<Duration>) -> Duration {
+    limit.map_or(Duration::ZERO, |l| l.min(Duration::from_millis(50)))
+}
+
+/// Wait until `t` ends (true) or `deadline` passes (false), parking this
+/// task; what interrupts the wait is raised.
+fn wait_until(
+    interp: &Interp,
+    t: &Rc<TaskHandle>,
+    deadline: Option<std::time::Instant>,
+) -> Result<bool, Flow> {
+    let me = interp.current_task();
+    loop {
+        if t.is_done() {
+            return Ok(true);
+        }
+        let now = std::time::Instant::now();
+        if deadline.is_some_and(|d| now >= d) {
+            return Ok(false);
+        }
+        {
+            let mut joiners = lock(&t.joiners);
+            if t.is_done() {
+                continue;
+            }
+            if !joiners.contains(&me.task_ref()) {
+                joiners.push(me.task_ref());
+            }
+        }
+        let timer = deadline.map(|d| interp.sched.borrow_mut().add_timer(d - now, me.id));
+        let r = interp.park();
+        if let Some(timer) = timer {
+            interp.sched.borrow_mut().cancel_timer(timer);
+        }
+        lock(&t.joiners).retain(|j| *j != me.task_ref());
+        r?;
+    }
+}
+
 /// Whether `e` is a `SystemExit`: an exit wins over the failure a scope
 /// or `Task.timeout` would raise, so that waiting does not lose it.
 fn is_exit(interp: &Interp, e: &Value) -> bool {
@@ -451,9 +614,14 @@ fn is_exit(interp: &Interp, e: &Value) -> bool {
 /// Whether a scope's failure already ends the program: a `SystemExit`, or
 /// a hard exit (which no `SystemExit` replaces).
 fn failure_is_exit(interp: &Interp, failure: &Option<Flow>) -> bool {
-    match failure {
-        Some(Flow::Raise(e)) => is_exit(interp, e),
-        Some(Flow::Exit(_)) => true,
+    failure.as_ref().is_some_and(|f| flow_is_exit(interp, f))
+}
+
+/// Whether `f` ends the program: a `SystemExit`, or a hard exit.
+fn flow_is_exit(interp: &Interp, f: &Flow) -> bool {
+    match f {
+        Flow::Raise(e) => is_exit(interp, e),
+        Flow::Exit(_) => true,
         _ => false,
     }
 }
