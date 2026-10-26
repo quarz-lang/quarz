@@ -40,6 +40,10 @@ pub const RUNTIME_NAMES: &[&str] = &[
     "hash",
     "eql?",
     "each",
+    // An `Enumerator` subclass's, which `each` and the enumerators over
+    // it call.
+    "next",
+    "rewind",
     "succ",
     "status",
     "to_json",

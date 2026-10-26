@@ -1021,6 +1021,9 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     native!(m, "Enumerator#each", enumerator_each);
     native!(m, "Enumerator#next", enumerator_next);
     native!(m, "Enumerator#size", |i, r, _| {
+        if !matches!(r, Value::Enumerator(_)) {
+            return Err(super::steps::undefined(i, r, "size"));
+        }
         Ok(Value::Int(collect(i, r)?.len() as i64))
     });
     native!(m, "Enumerator#with_index", |i, r, a| {
@@ -1833,14 +1836,23 @@ pub(super) fn range_step(interp: &Interp, recv: &Value, args: Args) -> EvalResul
     }
     let b = block(interp, &args)?;
     let r = range(interp, recv)?;
-    let (Value::Int(lo), Value::Int(hi)) = (&r.lo, &r.hi) else {
-        return Err(interp.err_type("step needs an integer range"));
+    // The last value it may reach, `None` for an endless range.
+    let (lo, last) = match (&r.lo, &r.hi) {
+        (Value::Int(lo), Value::Int(hi)) if r.exclusive => match hi.checked_sub(1) {
+            Some(last) => (*lo, Some(last)),
+            None => return Ok(Value::Nil),
+        },
+        (Value::Int(lo), Value::Int(hi)) => (*lo, Some(*hi)),
+        (Value::Int(lo), Value::Nil) => (*lo, None),
+        _ => return Err(interp.err_type("step needs an integer range")),
     };
-    let end = if r.exclusive { *hi } else { hi + 1 };
-    let mut i = *lo;
-    while i < end {
+    let mut i = lo;
+    while last.is_none_or(|l| i <= l) {
         interp.call_block(&b, smallvec![Value::Int(i)])?;
-        i += step;
+        match i.checked_add(step) {
+            Some(n) => i = n,
+            None => break,
+        }
     }
     Ok(Value::Nil)
 }
@@ -1848,25 +1860,14 @@ pub(super) fn range_step(interp: &Interp, recv: &Value, args: Args) -> EvalResul
 // ----- Enumerator ----------------------------------------------------------------------------
 
 fn enumerator_each(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
-    let Value::Enumerator(e) = recv else {
-        return Err(interp.err_type("expected an Enumerator"));
-    };
     let b = block(interp, &args)?;
+    let Value::Enumerator(e) = recv else {
+        // A subclass's: by its `next`.
+        return super::steps::each_by_next(interp, recv, &b);
+    };
     interp.send(&e.recv, &e.method, e.args.clone().into(), Some(b))
 }
 
 fn enumerator_next(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
-    let Value::Enumerator(e) = recv else {
-        return Err(interp.err_type("expected an Enumerator"));
-    };
-    if !e.is_buffered() {
-        let items = collect(interp, recv)?;
-        e.fill(items);
-    }
-    e.current(true).ok_or_else(|| {
-        interp.raise(
-            interp.program.exc.stop_iteration,
-            "iteration reached an end",
-        )
-    })
+    super::steps::next(interp, recv)
 }

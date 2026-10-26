@@ -1,0 +1,19 @@
+# A subclass of Enumerator used only through `to_a` and `map`: its `next`
+# (and `rewind`) are called by the runtime, and stay in compiled programs.
+class Cd < Enumerator[Int]
+  var @n: Int
+  var @from: Int
+  def initialize(@n: Int)
+    @from = @n
+  end
+  def next -> Int
+    raise StopIteration, "done" if @n == 0
+    @n -= 1
+    @n + 1
+  end
+  def rewind -> Cd
+    @n = @from
+    self
+  end
+end
+p Cd.new(3).to_a, Cd.new(2).map { |x| x * 2 }

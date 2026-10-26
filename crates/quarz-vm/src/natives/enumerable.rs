@@ -34,39 +34,34 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         "Enumerable#sort_pairs",
         super::collections::enum_sort_pairs
     );
+    // Through `each`, one element at a time (an endless source's too).
     native!(m, "Enumerable#each_with_index_pairs", |i, r, a| {
         let b = block(i, &a)?;
-        for (k, x) in collect(i, r)?.into_iter().enumerate() {
-            i.call_block(&b, smallvec![Value::array(vec![x, Value::Int(k as i64)])])?;
-        }
+        let k = std::cell::Cell::new(0i64);
+        let pairs = i.native_block(move |i, args| {
+            let x = args.into_iter().next().unwrap_or(Value::Nil);
+            let n = k.replace(k.get() + 1);
+            i.call_block(&b, smallvec![Value::array(vec![x, Value::Int(n)])])
+        });
+        i.send(r, "each", smallvec![], Some(pairs))?;
         Ok(Value::Nil)
     });
     native!(m, "Enumerable#each_slice", |i, r, a| {
+        if int(i, a.arg(0), "size")? <= 0 {
+            return Err(i.err_arg("invalid size"));
+        }
         enumerator(i, r, "each_slice", a.pos.to_vec())
     });
     native!(m, "Enumerable#each_cons", |i, r, a| {
+        if int(i, a.arg(0), "size")? <= 0 {
+            return Err(i.err_arg("invalid size"));
+        }
         enumerator(i, r, "each_cons", a.pos.to_vec())
     });
 
     // Enumerator
-    native!(m, "Enumerator#peek", |i, r, _| {
-        let Value::Enumerator(e) = r else {
-            return Err(i.err_type("expected an Enumerator"));
-        };
-        if !e.is_buffered() {
-            let items = collect(i, r)?;
-            e.fill(items);
-        }
-        e.current(false)
-            .ok_or_else(|| i.raise(i.program.exc.stop_iteration, "iteration reached an end"))
-    });
-    native!(m, "Enumerator#rewind", |i, r, _| {
-        let Value::Enumerator(e) = r else {
-            return Err(i.err_type("expected an Enumerator"));
-        };
-        e.rewind();
-        Ok(r.clone())
-    });
+    native!(m, "Enumerator#peek", |i, r, _| super::steps::peek(i, r));
+    native!(m, "Enumerator#rewind", |i, r, _| super::steps::rewind(i, r));
 
     // Array
     native!(m, "Array#slice", |i, r, a| {
