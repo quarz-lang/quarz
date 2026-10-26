@@ -1482,7 +1482,7 @@ impl Interp {
         if task.cancel_due() {
             return Err(self.raise(self.program.exc.cancelled, "task cancelled"));
         }
-        match self.root_exit(task) {
+        match self.root_exit(task.task_ref()) {
             Some(exit) => Err(exit),
             None => Ok(()),
         }
@@ -1490,10 +1490,10 @@ impl Interp {
 
     /// In the root task, the `SystemExit` of an exit request (an `exit` in
     /// a task of `Task.spawn`), taking it.
-    fn root_exit(&self, task: &TaskHandle) -> Option<Flow> {
+    fn root_exit(&self, task: sched::TaskRef) -> Option<Flow> {
         let exit = &self.global.exit_request;
         if exit.load(std::sync::atomic::Ordering::Acquire) == NO_EXIT
-            || *lock(&self.global.root) != Some(task.task_ref())
+            || *lock(&self.global.root) != Some(task)
         {
             return None;
         }
@@ -1623,9 +1623,29 @@ impl Interp {
         r
     }
 
-    pub fn yield_now(&self) {
+    /// Let the other tasks run, then raise a cancellation or an exit
+    /// request that came meanwhile: `Task.yield` is a cancellation point,
+    /// as Kotlin's `yield()`.
+    pub fn yield_now(&self) -> Result<(), Flow> {
         self.sched.borrow_mut().requeue_current();
         sched::suspend_raw();
+        self.check_cancel_current()
+    }
+
+    /// `check_cancel` for the current task, without taking a reference to
+    /// it (`Task.yield` may be called often).
+    pub fn check_cancel_current(&self) -> Result<(), Flow> {
+        let (due, me) = {
+            let s = self.sched.borrow();
+            (s.current_cancel_due(), s.current_ref())
+        };
+        if due {
+            return Err(self.raise(self.program.exc.cancelled, "task cancelled"));
+        }
+        match self.root_exit(me) {
+            Some(exit) => Err(exit),
+            None => Ok(()),
+        }
     }
 
     pub fn wake(&self, id: TaskId) {
@@ -1659,7 +1679,8 @@ impl Interp {
             if task.is_done() {
                 // The root awaiting a task done with an `exit` it has not
                 // raised yet: that exit, once (not also the task's result).
-                if let Some(exit) = self.root_exit(&self.current_task()) {
+                let me = self.sched.borrow().current_ref();
+                if let Some(exit) = self.root_exit(me) {
                     return Err(exit);
                 }
                 return match task.result() {

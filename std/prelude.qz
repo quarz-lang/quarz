@@ -5297,9 +5297,10 @@ end
 # A lightweight thread, running a block concurrently with the others, and
 # the handle to its result `T`.
 #
-# Tasks switch cooperatively: at operations that wait (a channel
-# operation that must wait, `Task.sleep`, `#await`, IO), at `Task.yield`
-# and at each iteration of `loop`. A wait suspends only the calling task;
+# Tasks switch cooperatively, as in Kotlin: at operations that wait (a
+# channel operation that must wait, `Task.sleep`, `#await`, IO) and at
+# `Task.yield`; a loop that only computes keeps its worker until it calls
+# `Task.yield`. A wait suspends only the calling task;
 # the others go on running. Values cross between tasks only when they are
 # `Shareable`.
 #
@@ -5343,7 +5344,8 @@ class Task[out T: Shareable]
   # `Task::Cancelled` when the task is cancelled while it sleeps.
   native def self.sleep(duration: Duration) -> Nil
   # Suspends the calling task briefly, so that the scheduler can run other
-  # runnable tasks.
+  # runnable tasks, then raises a cancellation (`Task::Cancelled`) or an
+  # `exit` from another task that came meanwhile, as a wait does.
   #
   # With one worker thread (`QUARZ_THREADS=1`), the tasks that were
   # runnable run first, each until it finishes, waits or yields, and the
@@ -5386,7 +5388,9 @@ class Task[out T: Shareable]
   # Raises `Task::Cancelled` when the calling task has been cancelled
   # (outside `.uncancellable`); otherwise does nothing.
   #
-  # A loop that never waits calls it to be cancellable.
+  # It does not let other tasks run: a loop that only computes calls
+  # `.yield` instead, which checks too, or a task of its own worker could
+  # not run to cancel it.
   native def self.check_cancel -> Nil
   # Runs the block out of reach of the calling task's cancellation: its
   # waits do not raise `Task::Cancelled`, as in Trio's shielded cancel
@@ -5435,7 +5439,8 @@ class Task[out T: Shareable]
   # cancelled.
   native def await -> T
   # Asks the task to stop: it raises `Task::Cancelled` at its next wait (a
-  # channel operation, IO, `Task.sleep`, `#await`) or `Task.check_cancel`,
+  # channel operation, IO, `Task.sleep`, `#await`), `Task.yield` or
+  # `Task.check_cancel`,
   # so its `ensure` clauses run. The task stays cancelled: every wait after
   # raises it again (a task that rescues it cannot go on waiting), but
   # inside `Task.uncancellable`.
@@ -5615,7 +5620,8 @@ class Selector
   # (with several, the shortest wins).
   native def after(duration: Duration, &blk: () -> Nil) -> Nil
   # The case chosen when no other is ready at once: it makes the select
-  # not wait.
+  # not wait. A `Channel.select_loop` that polls with it never waits, so
+  # it calls `Task.yield` to let other tasks (the senders) run.
   native def default(&blk: () -> Nil) -> Nil
   # Ends a `Channel.select_loop` after this round.
   #
@@ -6314,7 +6320,9 @@ module Kernel
   native def warn(*args: Object) -> Nil
   # Runs the block again and again, until a `break` (or a `return` or an
   # exception) leaves it. A `StopIteration` raised in the block ends the
-  # loop, so `loop { e.next }` stops at the end of an enumerator.
+  # loop, so `loop { e.next }` stops at the end of an enumerator. As no
+  # loop does, it neither lets other tasks run nor checks for a
+  # cancellation by itself: one that only computes calls `Task.yield`.
   #
   # ```
   # n = 0

@@ -1003,6 +1003,13 @@ impl Scheduler {
         self.task(id).clone()
     }
 
+    /// Whether the current task's cancellation is due (`cancel_due`),
+    /// without taking a reference to it.
+    pub fn current_cancel_due(&self) -> bool {
+        let id = self.current.expect("no current task");
+        self.task(id).cancel_due()
+    }
+
     /// Create a task of this worker running `body` on its own coroutine
     /// stack.
     pub fn spawn(

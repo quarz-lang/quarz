@@ -230,3 +230,45 @@ class StickyCancelTest < Test::Case
     assert_equal("sibling cleaned up", log.try_receive)
   end
 end
+
+# `Task.yield` is a cancellation point (Kotlin's `yield()`): a loop that
+# only computes calls it to be cancellable.
+class YieldCancelTest < Test::Case
+  def test_a_computing_loop_that_yields_is_cancelled
+    started = Channel[Nil].new(capacity: 1)
+    t = Task.spawn do
+      n = 0
+      started.send(nil)
+      while true
+        n += 1
+        Task.yield if n % 100 == 0
+      end
+    end
+    started.receive
+    t.cancel
+    ended = begin
+      t.await
+      :finished
+    rescue Task::Cancelled
+      :cancelled
+    end
+    assert_equal(:cancelled, ended)
+  end
+
+  def test_task_yield_raises_a_cancellation
+    started = Channel[Nil].new(capacity: 1)
+    t = Task.spawn do
+      started.send(nil)
+      loop { Task.yield }
+    end
+    started.receive
+    t.cancel
+    ended = begin
+      t.await
+      :finished
+    rescue Task::Cancelled
+      :cancelled
+    end
+    assert_equal(:cancelled, ended)
+  end
+end
