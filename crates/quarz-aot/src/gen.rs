@@ -90,6 +90,7 @@ pub(crate) const OPS: &[(&str, &[Ty])] = {
         ("qz_op_hash_rest", &[I, I, P, I]),
         ("qz_op_catch_exception", &[I]),
         ("qz_op_catch_any", &[I]),
+        ("qz_op_rescuing", &[I, I]),
         ("qz_op_no_match", &[I, I]),
         ("qz_op_term", &[I, I]),
     ]
@@ -3226,6 +3227,10 @@ impl<B: Builder> Gen<'_, B> {
             }
             Inst::CatchException { dst } => ("qz_op_catch_exception", vec![w(self, *dst)]),
             Inst::CatchAny { dst } => ("qz_op_catch_any", vec![w(self, *dst)]),
+            Inst::Rescuing { src, enter } => (
+                "qz_op_rescuing",
+                vec![w(self, *src), w(self, u32::from(*enter))],
+            ),
             Inst::NoMatch { src, is_assert } => (
                 "qz_op_no_match",
                 vec![w(self, *src), w(self, u32::from(*is_assert))],

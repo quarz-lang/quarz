@@ -768,6 +768,15 @@ pub enum Inst {
     CatchAny {
         dst: Reg,
     },
+    /// Start (`enter`) or end handling the exception `src` holds (one
+    /// caught by `CatchException`, or the flow of `CatchAny` when it is
+    /// one): while a `rescue` clause or an `ensure` clause an exception
+    /// passes through runs, it is Ruby's `$!`, the cause of the exceptions
+    /// raised meanwhile. Ending it ends those handled since, left by jumps.
+    Rescuing {
+        src: Reg,
+        enter: bool,
+    },
     /// Raise NoMatchingPatternError for the value.
     NoMatch {
         src: Reg,
@@ -869,6 +878,7 @@ impl Inst {
             | Inst::FieldSet { .. }
             | Inst::ArrayPush { .. }
             | Inst::ArrayPushWord { .. }
+            | Inst::Rescuing { .. }
             | Inst::NoMatch { .. } => smallvec::smallvec![],
         }
     }
@@ -908,6 +918,7 @@ impl Inst {
             | Inst::ClassIs { src, .. }
             | Inst::IsA { src, .. }
             | Inst::As { src, .. }
+            | Inst::Rescuing { src, .. }
             | Inst::NoMatch { src, .. } => *src = f(*src),
             Inst::FieldGet { obj, .. } | Inst::FieldGetByName { obj, .. } => *obj = f(*obj),
             Inst::FieldSet { obj, src, .. } => {
@@ -1061,6 +1072,7 @@ impl Inst {
             | Inst::ClassIs { src, .. }
             | Inst::IsA { src, .. }
             | Inst::As { src, .. }
+            | Inst::Rescuing { src, .. }
             | Inst::NoMatch { src, .. } => smallvec::smallvec![*src],
             Inst::FieldGet { obj, .. } | Inst::FieldGetByName { obj, .. } => {
                 smallvec::smallvec![*obj]

@@ -5002,10 +5002,16 @@ class Exception
   # by the backtrace, one `"    from file.qz:12:in method"` line per frame:
   # what the runtime prints for an exception nothing rescued.
   native def full_message -> String
-  # The exception being rescued when this one was raised, or `nil`, as in
-  # Ruby: an exception raised in a `rescue` clause (or rescued by a
-  # `begin` inside one) gets the one the clause is handling. An exception
-  # raised again keeps the cause it had.
+  # The exception being handled when this one was raised, or `nil`, as
+  # Ruby's `$!`: an exception raised while a `rescue` clause runs (there or
+  # in what it calls) gets the one the clause is handling, and one raised
+  # while an `ensure` clause runs for an exception passing through gets
+  # that one. An exception raised again keeps the cause it had. Each task
+  # has its own: a `Task.timeout` or `Task.blocking` block, which runs in a
+  # task (or thread) of its own, starts with none. One another task raised
+  # that `await`, `Task.scope`, `Task.timeout` or `Task.blocking` raises
+  # again gets, if it has none, the one handled there (as a Ruby thread's
+  # exception raised again by its value).
   #
   # ```
   # e = begin
@@ -5020,10 +5026,6 @@ class Exception
   # e.cause.inspect   # => "#<ArgumentError: inner>"
   # ```
   native def cause -> Exception?
-  # Lowering calls it in a `rescue` clause: `cause` becomes this
-  # exception's cause, unless it has one, is `cause`, or would make a
-  # cycle.
-  native def __set_cause(cause: Exception) -> Nil
   # The message.
   def to_s -> String = message
   # `#<ArgumentError: bad size>`.
