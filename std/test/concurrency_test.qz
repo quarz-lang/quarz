@@ -135,3 +135,98 @@ class ChannelTest < Test::Case
     assert_raise(Channel::Closed) { ch.send(3); nil }
   end
 end
+
+# Cancellation is a state: every wait of a cancelled task raises it, but
+# in `Task.uncancellable`.
+class StickyCancelTest < Test::Case
+  def test_a_task_that_rescues_it_cannot_go_on_waiting
+    started = Channel[Nil].new(capacity: 1)
+    t = Task.spawn do
+      n = 0
+      started.send(nil)
+      3.times do
+        begin
+          Task.sleep(1.second)
+        rescue Task::Cancelled
+          n += 1
+        end
+      end
+      n
+    end
+    started.receive
+    t.cancel
+    assert_equal(3, t.await)
+    assert_true(t.cancelled?)
+  end
+
+  def test_uncancellable_lets_cleanup_wait
+    log = Channel[String].new(capacity: 4)
+    started = Channel[Nil].new(capacity: 1)
+    t = Task.spawn do
+      begin
+        started.send(nil)
+        Task.sleep(1.second)
+      ensure
+        Task.uncancellable do
+          Task.sleep(5.ms)
+          log.send("cleaned up")
+        end
+        begin
+          Task.sleep(1.ms)
+        rescue Task::Cancelled
+          Task.uncancellable { log.send("cancelled again after the block") }
+        end
+      end
+      nil
+    end
+    started.receive
+    t.cancel
+    # Not `assert_raise`, which lets `Task::Cancelled` through.
+    ended = begin
+      t.await
+      :finished
+    rescue Task::Cancelled
+      :cancelled
+    end
+    assert_equal(:cancelled, ended)
+    assert_equal("cleaned up", log.receive)
+    assert_equal("cancelled again after the block", log.receive)
+  end
+
+  def test_timeout_bounds_a_cancellable_cleanup
+    started = Time.monotonic
+    assert_raise(Task::Timeout) do
+      Task.timeout(10.ms) do
+        begin
+          Task.sleep(1.second)
+        ensure
+          Task.sleep(1.second)
+        end
+      end
+    end
+    assert_true(Time.monotonic - started < 500.ms)
+  end
+
+  def test_a_scope_waits_for_its_cancelled_children
+    log = Channel[String].new(capacity: 2)
+    started = Channel[Nil].new(capacity: 1)
+    assert_raise(ArgumentError) do
+      Task.scope do |s|
+        s.spawn do
+          begin
+            started.send(nil)
+            Task.sleep(1.second)
+          ensure
+            Task.uncancellable do
+              Task.sleep(5.ms)
+              log.send("sibling cleaned up")
+            end
+          end
+        end
+        s.spawn { started.receive; raise ArgumentError, "boom" }
+        nil
+      end
+    end
+    assert_equal("sibling cleaned up", log.try_receive)
+  end
+end

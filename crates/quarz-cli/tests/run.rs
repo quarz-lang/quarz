@@ -111,7 +111,7 @@ fn exit_in_a_task_nobody_awaits_or_a_blocking_block() {
 fn an_exit_request_is_kept() {
     let (code, out) = run(
         "Task.spawn { Task.sleep(30.ms); exit 4 }\nbegin\n  Task.timeout(10.ms) do\n    begin\n      Task.sleep(1.second)\n\
-         ensure\n      Task.sleep(50.ms)\n    end\n  end\nrescue Task::Timeout\n  puts \"timed out\"\nend\nputs \"after\"",
+         ensure\n      Task.uncancellable { Task.sleep(50.ms) }\n    end\n  end\nrescue Task::Timeout\n  puts \"timed out\"\nend\nputs \"after\"",
         &[],
     );
     assert_eq!((code, out.as_str()), (4, ""));

@@ -86,7 +86,7 @@
 
 ## 8. 並行
 
-`Task[T]`、`Scope`、`Channel[T]`、`Atom[T]`、`Task.scope`/`sleep`/`yield`/`timeout`/`blocking`/`current`/`check_cancel`、`Channel.select`/`select_loop`。詳細は [04-concurrency.ja.md](04-concurrency.ja.md)。`Supervisor` は *予定*。
+`Task[T]`、`Scope`、`Channel[T]`、`Atom[T]`、`Task.scope`/`sleep`/`yield`/`timeout`/`blocking`/`current`/`check_cancel`/`uncancellable`、`Channel.select`/`select_loop`。詳細は [04-concurrency.ja.md](04-concurrency.ja.md)。`Supervisor` は *予定*。
 
 ## 9. IO・OS
 

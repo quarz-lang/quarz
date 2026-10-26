@@ -49,13 +49,14 @@ r1.cancel
 e.send 3
 r2.await
 
-# A sleep cancelled leaves no timer behind to wake the next one early.
+# A sleep cancelled leaves no timer behind to wake the next one early
+# (the next one uncancellable: a cancelled task's waits raise).
 x = Task.spawn do
   begin
     sleep(50.ms)
   rescue Task::Cancelled
     t0 = Time.now
-    sleep(150.ms)
+    Task.uncancellable { sleep(150.ms) }
     p Time.now - t0 >= 140.ms
   end
 end
@@ -71,7 +72,7 @@ y = Task.spawn do
     slow.await
   rescue Task::Cancelled
     t0 = Time.now
-    sleep(150.ms)
+    Task.uncancellable { sleep(150.ms) }
     p Time.now - t0 >= 140.ms
   end
 end
@@ -96,7 +97,7 @@ v = Task.spawn do
     begin
       sleep(5.seconds)
     ensure
-      log.send "block ended"
+      Task.uncancellable { log.send "block ended" }
     end
   end
 end

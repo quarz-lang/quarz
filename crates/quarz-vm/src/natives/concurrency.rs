@@ -155,6 +155,10 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             WorkerExit::Exit(code) => Err(Flow::Exit(code)),
         }
     });
+    native!(m, "Task.uncancellable", |i, _, a| {
+        let b = block(i, &a)?;
+        i.uncancellable(|| i.call_block(&b, smallvec![]))
+    });
     native!(m, "Task.check_cancel", |i, _, _| {
         let t = i.current_task();
         i.check_cancel(&t)?;
@@ -332,9 +336,9 @@ fn kernel_loop(interp: &Interp, _: &Value, args: Args) -> EvalResult {
 
 // ----- scopes -------------------------------------------------------------------------
 
-/// Cancel the scope's children, once: a child already cancelled, cleaning
-/// up in an `ensure`, is not interrupted again (one spawned later is
-/// cancelled by `Scope#spawn`).
+/// Cancel the scope's children, once (cancellation is a state: again would
+/// only wake them for nothing; one spawned later is cancelled by
+/// `Scope#spawn`).
 fn cancel_children(interp: &Interp, scope: &Rc<ScopeInner>) {
     if !scope.cancel() {
         return;
@@ -360,7 +364,14 @@ fn task_scope(interp: &Interp, _: &Value, args: Args) -> EvalResult {
         let Some(child) = scope.first_child() else {
             break;
         };
-        let r = interp.await_task(&child);
+        // Once the children are cancelled (or a failure is kept), the wait
+        // for them is uncancellable: the owner's cancellation, a state, would
+        // otherwise interrupt every wait.
+        let r = if failure.is_some() || scope.is_cancelled() {
+            interp.uncancellable(|| interp.await_task(&child))
+        } else {
+            interp.await_task(&child)
+        };
         // An error that is not the child's own result interrupted the wait.
         let interrupted = match &r {
             Err(Flow::Raise(e)) => !is_result_of(e, &child),
@@ -426,7 +437,7 @@ fn failure_is_exit(interp: &Interp, failure: &Option<Flow>) -> bool {
 fn wait_out(interp: &Interp, child: &Rc<TaskHandle>) -> Option<Flow> {
     let mut exit = None;
     while !child.is_done() {
-        if let Err(Flow::Raise(e)) = interp.await_task(child) {
+        if let Err(Flow::Raise(e)) = interp.uncancellable(|| interp.await_task(child)) {
             // Not the child's own result: what interrupted the wait.
             if is_exit(interp, &e) && !is_result_of(&e, child) {
                 exit = Some(Flow::Raise(e));
