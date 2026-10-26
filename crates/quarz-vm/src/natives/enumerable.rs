@@ -641,7 +641,14 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     });
     native!(m, "Range#reverse_each", |i, r, a| {
         let b = block(i, &a)?;
-        for v in range_to_vec(i, range(i, r)?)?.into_iter().rev() {
+        let rg = range(i, r)?;
+        if let (Value::Int(lo), Value::Int(hi)) = (&rg.lo, &rg.hi) {
+            // Counted down, not collected.
+            let span = super::collections::int_span(*lo, *hi, rg.exclusive);
+            super::each_value(i, span.rev().map(Value::Int), &b)?;
+            return Ok(Value::Nil);
+        }
+        for v in range_to_vec(i, rg)?.into_iter().rev() {
             i.call_block(&b, smallvec![v])?;
         }
         Ok(Value::Nil)
@@ -715,7 +722,8 @@ fn range_bounds(interp: &Interp, len: usize, rg: &RangeVal) -> Result<(usize, us
             if rg.exclusive {
                 h
             } else {
-                h + 1
+                // Clamped to `len` below: `Int::MAX` fits after all.
+                h.saturating_add(1)
             }
         }
     };

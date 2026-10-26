@@ -2388,6 +2388,7 @@ impl<'a> FnBuilder<'a> {
             FastOp::Lt => "<",
             FastOp::Le => "<=",
             FastOp::Add => "+",
+            FastOp::Sub => "-",
             _ => return None,
         };
         let int = self.world.builtin.int;
@@ -2614,6 +2615,22 @@ impl<'a> FnBuilder<'a> {
             }
             (None, _) => i,
         };
+        // A range's index counts from 0, not from its start.
+        let index = match (kind, shape.source) {
+            (Kind::EachWithIndex, Some(Source::Range)) => {
+                let k = self.reg();
+                let sub = self.int_op(FastOp::Sub);
+                self.emit(Inst::BinOp {
+                    dst: k,
+                    op: FastOp::Sub,
+                    lhs: i,
+                    rhs: lo,
+                    method: sub,
+                });
+                k
+            }
+            _ => i,
+        };
         // Every register the body uses (its variables, its temporaries
         // and its value) starts each iteration as nil, which also
         // releases what the previous iteration left: `acc = acc.push(x)`
@@ -2627,7 +2644,7 @@ impl<'a> FnBuilder<'a> {
         });
         let val = self.reg();
         let yielded: Vec<Reg> = match kind {
-            Kind::EachWithIndex => vec![elem, i],
+            Kind::EachWithIndex => vec![elem, index],
             Kind::Reduce => vec![acc.unwrap(), elem],
             _ => vec![elem],
         };
@@ -2770,6 +2787,30 @@ impl<'a> FnBuilder<'a> {
             }
             _ => {}
         }
+        // An inclusive end may be `Int::MAX`, one past which does not
+        // fit: the loop stops at the end instead of counting past it,
+        // and goes on to the body (`i <= hi` holds after `i < hi`).
+        let again = if exclusive {
+            cond_b
+        } else {
+            let more = self.reg();
+            let lt = self.int_op(FastOp::Lt);
+            self.emit(Inst::BinOp {
+                dst: more,
+                op: FastOp::Lt,
+                lhs: i,
+                rhs: hi,
+                method: lt,
+            });
+            let inc_b = self.new_block();
+            self.term(Term::Branch {
+                cond: more,
+                then: inc_b,
+                els: done_b,
+            });
+            self.switch(inc_b);
+            body_b
+        };
         let one = self.load_const(Constant::Int(1));
         let next_i = self.reg();
         let add = self.int_op(FastOp::Add);
@@ -2784,7 +2825,7 @@ impl<'a> FnBuilder<'a> {
             dst: i,
             src: next_i,
         });
-        self.term(Term::Jump(cond_b));
+        self.term(Term::Jump(again));
         self.switch(done_b);
         self.emit(Inst::ClearRegs {
             from: clear_from,

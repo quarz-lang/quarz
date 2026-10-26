@@ -967,7 +967,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         let rg = range(i, r)?;
         Ok(if rg.exclusive {
             match &rg.hi {
-                Value::Int(h) => Value::Int(h - 1),
+                Value::Int(h) => Value::Int(h.checked_sub(1).ok_or_else(|| i.err_overflow())?),
                 other => other.clone(),
             }
         } else {
@@ -1772,8 +1772,7 @@ fn set_build(interp: &Interp, _: &Value, args: Args) -> EvalResult {
 pub fn range_to_vec(interp: &Interp, r: &RangeVal) -> Result<Vec<Value>, Flow> {
     match (&r.lo, &r.hi) {
         (Value::Int(lo), Value::Int(hi)) => {
-            let end = if r.exclusive { *hi } else { hi + 1 };
-            Ok((*lo..end).map(Value::Int).collect())
+            Ok(int_span(*lo, *hi, r.exclusive).map(Value::Int).collect())
         }
         (lo, hi) if lo.is_str() && hi.is_str() => {
             let mut steps = string_steps(r).expect("a string range");
@@ -1782,6 +1781,20 @@ pub fn range_to_vec(interp: &Interp, r: &RangeVal) -> Result<Vec<Value>, Flow> {
                 .collect())
         }
         _ => Err(interp.err_type("cannot iterate over an endless or non-integer range")),
+    }
+}
+
+/// The integers from `lo` to `hi`, without `hi` when `exclusive`: an
+/// inclusive end may be `Int::MAX`, one past which does not fit.
+pub(super) fn int_span(lo: i64, hi: i64, exclusive: bool) -> std::ops::RangeInclusive<i64> {
+    if exclusive {
+        match hi.checked_sub(1) {
+            Some(last) => lo..=last,
+            // Nothing is below `Int::MIN`: an empty range.
+            None => std::ops::RangeInclusive::new(1, 0),
+        }
+    } else {
+        lo..=hi
     }
 }
 
@@ -1797,22 +1810,14 @@ pub(super) fn range_each(interp: &Interp, recv: &Value, args: Args) -> EvalResul
     let r = range(interp, recv)?;
     match (&r.lo, &r.hi) {
         (Value::Int(lo), Value::Int(hi)) => {
-            let end = if r.exclusive { *hi } else { hi + 1 };
-            super::each_value(interp, (*lo..end).map(Value::Int), &b)?;
+            super::each_value(interp, int_span(*lo, *hi, r.exclusive).map(Value::Int), &b)?;
         }
+        // Endless: up to the last `Int`, as `next` does.
         (Value::Int(lo), Value::Nil) => {
-            let mut i = *lo;
-            loop {
-                interp.call_block(&b, smallvec![Value::Int(i)])?;
-                i += 1;
-            }
+            super::each_value(interp, (*lo..=i64::MAX).map(Value::Int), &b)?;
         }
         (Value::Int(lo), Value::Float(f)) if f.is_infinite() && *f > 0.0 => {
-            let mut i = *lo;
-            loop {
-                interp.call_block(&b, smallvec![Value::Int(i)])?;
-                i += 1;
-            }
+            super::each_value(interp, (*lo..=i64::MAX).map(Value::Int), &b)?;
         }
         _ => {
             if let Some(mut steps) = string_steps(r) {
