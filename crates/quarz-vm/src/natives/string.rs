@@ -318,7 +318,7 @@ pub fn range_bounds(
     let lo = if lo < 0 { n + lo } else { lo };
     let mut hi = if hi < 0 { n + hi } else { hi };
     if r.exclusive && !r.hi.is_nil() {
-        hi -= 1;
+        hi = hi.saturating_sub(1);
     }
     if lo < 0 || lo > n {
         return Ok(None);

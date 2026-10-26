@@ -120,12 +120,21 @@ fn draw(interp: &Interp, state: &mut RandomState, args: &Args) -> EvalResult {
         }
         Some(Value::Range(r)) => match (&r.lo, &r.hi) {
             (Value::Int(lo), Value::Int(hi)) => {
-                let hi = if r.exclusive { hi - 1 } else { *hi };
-                if hi < *lo {
+                let hi = if r.exclusive {
+                    hi.checked_sub(1)
+                } else {
+                    Some(*hi)
+                };
+                let Some(hi) = hi.filter(|hi| hi >= lo) else {
                     return Err(interp.err_arg("invalid argument: empty range"));
-                }
-                let span = (hi - lo) as u64 + 1;
-                Ok(Value::Int(lo + state.below(span) as i64))
+                };
+                // In 64 bits unsigned: `Int::MIN..Int::MAX` spans them all.
+                let span = hi.wrapping_sub(*lo) as u64;
+                let k = match span.checked_add(1) {
+                    Some(n) => state.below(n),
+                    None => state.next_u64(),
+                };
+                Ok(Value::Int(lo.wrapping_add(k as i64)))
             }
             (lo, hi) => {
                 let lo = float(interp, lo, "range start")?;

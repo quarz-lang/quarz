@@ -4867,8 +4867,9 @@ end
 # `String#upto` does; a `Float` range has no elements to iterate over
 # (`#each` and `#to_a` raise `TypeError`) but `#include?` works. Only an
 # `Int` range has `#size`.
-# An endless integer range iterates until the block breaks; `#to_a` on it
-# raises `TypeError`. A range is `Enumerable`, so `(1..3).map { }` and
+# An endless integer range iterates until the block breaks, or up to the
+# largest `Int` (9223372036854775807), where integer loops stop rather
+# than overflow; `#to_a` on it raises `TypeError`. A range is `Enumerable`, so `(1..3).map { }` and
 # `(1..).first(n)` work.
 #
 # A range whose start comes after its end is empty: `3..1`, and a
