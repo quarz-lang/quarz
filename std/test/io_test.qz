@@ -51,3 +51,40 @@ class FileReadWriteTest < Test::Case
     end
   end
 end
+
+# File IO in a cancelled task: in `Task.uncancellable`, it is waited for.
+class FileCancelTest < Test::Case
+  def test_a_write_in_a_cancelled_task_completes
+    p = "#{Dir.tmpdir}/quarz-io-test-#{Process.pid}-cancelled"
+    data = "x" * 5_000_000
+    begin
+      check_cancelled_write(p, data)
+    ensure
+      File.delete(p) if File.exist?(p)
+    end
+  end
+
+  def check_cancelled_write(p: String, data: String) -> Nil
+    started = Channel[Nil].new(capacity: 1)
+    t = Task.spawn do
+      begin
+        started.send(nil)
+        Task.sleep(1.second)
+      ensure
+        Task.uncancellable { File.write(p, data) }
+      end
+      nil
+    end
+    started.receive
+    t.cancel
+    ended = begin
+      t.await
+      :finished
+    rescue Task::Cancelled
+      :cancelled
+    end
+    assert_equal(:cancelled, ended)
+    assert_equal(5_000_000, File.size(p))
+    nil
+  end
+end

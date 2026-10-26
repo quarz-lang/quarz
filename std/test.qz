@@ -684,18 +684,14 @@ module Test
     location: String? = nil
     begin
       body = -> do
-        begin
-          c.setup
-          r = item.row
-          rc = item.entry.row_call
-          call = item.entry.call
-          if r && rc
-            rc.call(c, r)
-          elsif call
-            call.call(c)
-          end
-        ensure
-          c.teardown
+        c.setup
+        r = item.row
+        rc = item.entry.row_call
+        call = item.entry.call
+        if r && rc
+          rc.call(c, r)
+        elsif call
+          call.call(c)
         end
         nil
       end
@@ -726,13 +722,65 @@ module Test
         location = Test.location(e)
       end
     rescue SystemExit => e
+      # Its teardown first, as an `ensure` would (what goes wrong in it is
+      # lost: the program is ending).
+      Test.teardown(c, limit)
       raise e
     rescue Exception => e
       kind = :error
       message = Test.error_text(e)
       location = Test.location(e)
     end
+    # Teardown, after a failure, a timeout or `--fail-fast` too: it runs
+    # uncancellably (cancellation is a state), within a limit of its own,
+    # and what goes wrong in it is reported as the teardown's.
+    trouble = Test.teardown(c, limit)
+    if trouble
+      text, at, failed = trouble
+      if kind == :pass
+        # An assertion that failed in teardown is a failure, as in test-unit.
+        kind = failed ? :failure : :error
+        message = text
+        location = at
+      elsif kind == :failure || kind == :error
+        message = "#{message}\n#{text}"
+      else
+        # Pending or omitted, then a broken teardown: an error that keeps
+        # the reason.
+        message = "#{text}\n#{kind}: #{message}"
+        kind = :error
+        location = at
+      end
+    end
     Result.new(item, kind, message, location || where, c.assertion_count, Time.monotonic - started, c.notes)
+  end
+
+  # :nodoc:
+  # Run the test's `teardown`; what went wrong in it, if anything, with
+  # where and whether an assertion failed: "teardown timed out after ..."
+  # past `limit`, or its error.
+  def self.teardown(c: Case, limit: Duration?) -> [String, String?, Bool]?
+    began = Time.monotonic
+    begin
+      if limit
+        Task.uncancellable { Task.timeout(limit) { c.teardown } }
+      else
+        Task.uncancellable { c.teardown }
+      end
+      nil
+    rescue Task::Timeout => e
+      if limit && Time.monotonic - began >= limit
+        ["teardown timed out after #{limit.to_s}", nil, false]
+      else
+        ["teardown: #{Test.error_text(e)}", Test.location(e), false]
+      end
+    rescue SystemExit => e
+      raise e
+    rescue AssertionFailed => e
+      ["teardown: #{e.message}", Test.location(e), true]
+    rescue Exception => e
+      ["teardown: #{Test.error_text(e)}", Test.location(e), false]
+    end
   end
 
   # :nodoc:

@@ -109,7 +109,7 @@ Today values are reference counted without atomic operations, and updates copy u
 
 - The generator, written against a small instruction-builder trait, writes LLVM IR and compiles it with `clang -O2`, so the binary gets LLVM's optimizer and unwind tables (typed entries push no activation, since backtraces are recovered from the native stack; see §9). A second back end, Cranelift, generating machine code in-process for faster builds, was removed: the interpreter serves development, and keeping it cost a register-sharing policy of its own, a second declaration of every runtime call and about a third of the build tests' time.
 - `Int` overflow checks use `llvm.sadd.with.overflow`, `Float` is unboxed, and small `data` instances are treated as structs via scalar replacement.
-- Exceptions and non-local exits (`break`/`return` out of blocks, `exit`) are status codes that every compiled function returns and its callers test; unwind tables serve only to rebuild backtraces.
+- Exceptions (`exit` among them, as `SystemExit`) and non-local exits (`break`/`return` out of blocks, an end of the program on a deadlock) are status codes that every compiled function returns and its callers test; unwind tables serve only to rebuild backtraces.
 - Task stacks are reserved per task, and a switch is a swap of the stack pointer (`corosensei`).
 - The output links the runtime (`libquarz_vm.a`) statically and the C library dynamically. Producing a shared library (`--shared`) is *planned*.
 

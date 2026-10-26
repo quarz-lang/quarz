@@ -283,7 +283,13 @@ fn tcp_connect(interp: &Interp, addr: SocketAddr) -> EvalResult {
     let sock = make_socket(interp, Stream::Tcp(stream), None);
     if r < 0 {
         let st = socket(interp, &sock)?;
-        let waited = interp.wait_io(st, fd, true).and_then(|()| {
+        // Until the connection is made or fails: a wake that is not the
+        // socket's (a cancellation, in `Task.uncancellable`) finds it still
+        // in progress.
+        let waited = loop {
+            if let Err(e) = interp.wait_io(st, fd, true) {
+                break Err(e);
+            }
             let mut err: libc::c_int = 0;
             let mut n = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
             // SAFETY: reads an int option into `err`.
@@ -296,18 +302,34 @@ fn tcp_connect(interp: &Interp, addr: SocketAddr) -> EvalResult {
                     &mut n,
                 )
             };
-            let e = if r < 0 {
-                Some(std::io::Error::last_os_error())
-            } else if err != 0 {
-                Some(std::io::Error::from_raw_os_error(err))
-            } else {
-                None
-            };
-            match e {
-                Some(e) => Err(os_error(interp, e, &label)),
-                None => Ok(()),
+            if r < 0 {
+                break Err(os_error(interp, std::io::Error::last_os_error(), &label));
             }
-        });
+            if err != 0 {
+                break Err(os_error(
+                    interp,
+                    std::io::Error::from_raw_os_error(err),
+                    &label,
+                ));
+            }
+            // SAFETY: writes at most `len` bytes of a peer address.
+            let mut peer: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
+            let mut len = std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
+            let r = unsafe {
+                libc::getpeername(
+                    fd,
+                    &mut peer as *mut libc::sockaddr_storage as *mut libc::sockaddr,
+                    &mut len,
+                )
+            };
+            if r == 0 {
+                break Ok(());
+            }
+            let e = std::io::Error::last_os_error();
+            if e.raw_os_error() != Some(libc::ENOTCONN) {
+                break Err(os_error(interp, e, &label));
+            }
+        };
         if let Err(e) = waited {
             let _ = close(interp, &sock);
             return Err(e);
@@ -737,10 +759,27 @@ pub fn socket_write(interp: &Interp, st: &IoCell<SocketState>, data: &[u8]) -> R
                 s.writing = true;
                 break;
             }
-            s.write_waiters.push_back(me);
+            // Woken by something else (a cancellation, uncancellable),
+            // it may be listed already.
+            if !s.write_waiters.contains(&me) {
+                s.write_waiters.push_back(me);
+            }
         }
         if let Err(flow) = interp.park() {
-            st.borrow_mut().write_waiters.retain(|t| *t != me);
+            // Leaving: a turn this task was woken for (the socket free)
+            // goes to the next writer, or nobody would wake it.
+            let next = {
+                let mut s = st.borrow_mut();
+                s.write_waiters.retain(|t| *t != me);
+                if s.writing {
+                    None
+                } else {
+                    s.write_waiters.pop_front()
+                }
+            };
+            if let Some(next) = next {
+                interp.wake_ref(next);
+            }
             return Err(flow);
         }
     }

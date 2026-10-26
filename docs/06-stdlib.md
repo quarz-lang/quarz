@@ -88,7 +88,7 @@ An array of a comparable element type is `Comparable` (`<=> < <= > >= between? c
 
 ## 8. Concurrency
 
-`Task[T]`, `Scope`, `Channel[T]`, `Atom[T]`, `Task.scope`/`sleep`/`yield`/`timeout`/`blocking`/`current`/`check_cancel`, `Channel.select`/`select_loop`. Details in [04-concurrency.md](04-concurrency.md). `Supervisor` is *planned*.
+`Task[T]`, `Scope`, `Channel[T]`, `Atom[T]`, `Task.scope`/`sleep`/`yield`/`timeout`/`blocking`/`current`/`check_cancel`/`uncancellable`, `Channel.select`/`select_loop`. Details in [04-concurrency.md](04-concurrency.md). `Supervisor` is *planned*.
 
 ## 9. IO and OS
 
