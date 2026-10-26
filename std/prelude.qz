@@ -5438,9 +5438,9 @@ class Task[out T: Shareable]
   # The exception the task ended with, `Task::Cancelled` when it was
   # cancelled.
   native def await -> T
-  # Asks the task to stop: it raises `Task::Cancelled` at its next wait (a
-  # channel operation, IO, `Task.sleep`, `#await`), `Task.yield` or
-  # `Task.check_cancel`,
+  # Asks the task to stop: it raises `Task::Cancelled` at its next wait (IO,
+  # `Task.sleep`, `#await`), channel `send`, `receive` or `select` (even
+  # one that need not wait), `Task.yield` or `Task.check_cancel`,
   # so its `ensure` clauses run. The task stays cancelled: every wait after
   # raises it again (a task that rescues it cannot go on waiting), but
   # inside `Task.uncancellable`.
@@ -5535,7 +5535,10 @@ class Channel[T: Shareable]
   # ```
   native def self.select(&: (Selector) -> Nil) -> Nil
   # `.select` in a loop, until a handler (or the block) calls
-  # `Selector#stop`.
+  # `Selector#stop`. When it polls (`Selector#default` taken) it lets other
+  # tasks run after each select, as `Task.yield` does, so that it does not
+  # keep its senders from running; when its cases are ready every time,
+  # every 64 selects.
   #
   # `break` in a handler leaves only that handler.
   #
@@ -5620,8 +5623,7 @@ class Selector
   # (with several, the shortest wins).
   native def after(duration: Duration, &blk: () -> Nil) -> Nil
   # The case chosen when no other is ready at once: it makes the select
-  # not wait. A `Channel.select_loop` that polls with it never waits, so
-  # it calls `Task.yield` to let other tasks (the senders) run.
+  # not wait.
   native def default(&blk: () -> Nil) -> Nil
   # Ends a `Channel.select_loop` after this round.
   #

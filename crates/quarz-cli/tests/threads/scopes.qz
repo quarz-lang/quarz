@@ -8,7 +8,8 @@ begin
         begin
           Task.sleep(5.seconds)
         ensure
-          log.send("sibling #{i} ended")
+          # Uncancellable: a cancelled task's channel operations raise.
+          Task.uncancellable { log.send("sibling #{i} ended") }
         end
       end
     end

@@ -542,6 +542,8 @@ fn closed_error(interp: &Interp) -> Flow {
 
 fn channel_send(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let c = chan(interp, recv)?;
+    // A cancellation point even when it need not wait, as Kotlin's `send`.
+    interp.check_cancel_current()?;
     let mut value = Some(args.arg(0).clone());
     let me = interp.sched.borrow().current_ref();
     // Whether it has waited: woken by something else, it may still be
@@ -639,6 +641,9 @@ fn take_locked(st: &mut ChannelState) -> Option<(Value, Senders)> {
 type Senders = Option<std::collections::VecDeque<TaskRef>>;
 
 fn channel_receive(interp: &Interp, c: &Rc<ChannelInner>, raise_on_closed: bool) -> EvalResult {
+    // A cancellation point even when a value is there, as Kotlin's
+    // `receive`.
+    interp.check_cancel_current()?;
     let me = interp.sched.borrow().current_ref();
     let mut waited = false;
     loop {
@@ -717,20 +722,50 @@ fn channel_each(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
 // ----- select ----------------------------------------------------------------------------
 
 fn run_select(interp: &Interp, block: &Value, looping: bool) -> EvalResult {
+    let mut unwaited: u32 = 0;
     loop {
         let state = Rc::new(RefCell::new(SelectorState::default()));
         interp.call_block(block, smallvec![Value::Selector(state.clone())])?;
         if state.borrow().stopped {
             return Ok(Value::Nil);
         }
-        select_once(interp, &state)?;
+        let how = select_once(interp, &state)?;
         if state.borrow().stopped || !looping {
             return Ok(Value::Nil);
+        }
+        // `select_loop` is for tasks working together: one that polls with
+        // `default` lets the others run after each select, as `Task.yield`
+        // does, so that it does not starve its senders; one whose cases are
+        // ready every time does every 64 selects (a select that waited
+        // gave way already; each select checks for a cancellation).
+        unwaited = if how == Selected::Waited {
+            0
+        } else {
+            unwaited.wrapping_add(1)
+        };
+        let give_way = how == Selected::Default || unwaited.is_multiple_of(64);
+        // Whatever this worker's task table says: a task another worker
+        // spawned here waits in its inbox until the scheduler runs.
+        if how != Selected::Waited && give_way {
+            interp.yield_now()?;
         }
     }
 }
 
-fn select_once(interp: &Interp, state: &Rc<RefCell<SelectorState>>) -> Result<(), Flow> {
+/// How a select went: it waited (and gave way), took `default` (polling),
+/// or found a case ready.
+#[derive(Clone, Copy, PartialEq)]
+enum Selected {
+    Waited,
+    Default,
+    Ready,
+}
+
+/// One select.
+fn select_once(interp: &Interp, state: &Rc<RefCell<SelectorState>>) -> Result<Selected, Flow> {
+    // A cancellation point even when a case is ready, as Kotlin's `select`.
+    interp.check_cancel_current()?;
+    let mut how = Selected::Ready;
     let me = interp.sched.borrow().current_ref();
     let timer_start = std::time::Instant::now();
     let after = state.borrow().after.clone();
@@ -787,6 +822,7 @@ fn select_once(interp: &Interp, state: &Rc<RefCell<SelectorState>>) -> Result<()
         }
         // Default.
         if let Some(handler) = state.borrow().default.clone() {
+            how = Selected::Default;
             break 'select Ok((handler, None));
         }
         if receives.is_empty() && sends.is_empty() && after.is_none() {
@@ -817,6 +853,7 @@ fn select_once(interp: &Interp, state: &Rc<RefCell<SelectorState>>) -> Result<()
             }
         }
         if !ready {
+            how = Selected::Waited;
             if let Err(e) = interp.park() {
                 unlist(interp, &receives, &sends, me, &mut listed, &mut taken_off);
                 break 'select Err(e);
@@ -842,7 +879,7 @@ fn select_once(interp: &Interp, state: &Rc<RefCell<SelectorState>>) -> Result<()
         (handler, Some(v)) => interp.call_block(&handler, smallvec![v])?,
         (handler, None) => interp.call_block(&handler, smallvec![])?,
     };
-    Ok(())
+    Ok(how)
 }
 
 /// Take a waiting `select` off the channels it is listed on (`listed`:

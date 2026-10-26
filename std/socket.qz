@@ -322,7 +322,8 @@ module Socket
         end
       end
       # Each attempt sends its outcome on a channel of its own, which never
-      # makes it wait: a cancelled attempt has sent, or closed its socket.
+      # makes it wait: a cancelled attempt has sent, closed its socket, or
+      # (cancelled before it sent) dropped it, which closes it.
       running: Array[Channel[TCPSocket | SystemCallError]] = []
       made: Array[Channel[TCPSocket | SystemCallError]] = []
       next_at = Time.monotonic

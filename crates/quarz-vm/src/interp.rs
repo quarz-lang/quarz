@@ -1626,6 +1626,16 @@ impl Interp {
     /// `check_cancel` for the current task, without taking a reference to
     /// it (`Task.yield` may be called often).
     pub fn check_cancel_current(&self) -> Result<(), Flow> {
+        // Nothing cancelled yet and no exit request: nothing to look up.
+        if !sched::ANY_CANCELLED.load(std::sync::atomic::Ordering::Acquire)
+            && self
+                .global
+                .exit_request
+                .load(std::sync::atomic::Ordering::Acquire)
+                == NO_EXIT
+        {
+            return Ok(());
+        }
         let (due, me) = {
             let s = self.sched.borrow();
             (s.current_cancel_due(), s.current_ref())
