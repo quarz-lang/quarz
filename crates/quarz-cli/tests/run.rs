@@ -168,12 +168,24 @@ fn exit_in_a_scope_in_a_timeout_block() {
 #[test]
 fn a_scope_child_failure_survives_the_owner_being_cancelled() {
     let (code, out) = run(
-        "outer = Task.spawn do\n  begin\n    r = Task.scope do |s|\n      s.spawn { raise \"boom\" }\n      Task.yield\n      Task.yield\n      :value\n    end\n\
+        "outer = Task.spawn do\n  begin\n    r = Task.scope do |s|\n      s.spawn { raise \"boom\" }\n      Task.uncancellable do\n        Task.yield\n        Task.yield\n      end\n      :value\n    end\n\
          puts \"scope returned #{r}\"\n  rescue Exception => e\n    puts \"scope raised #{e.message}\"\n  end\n  nil\nend\n\
          Task.yield\nouter.cancel\nouter.await",
         &[],
     );
+    // The yields uncancellable: the block returns, and the scope then
+    // awaits the failed child while its owner is cancelled.
     assert_eq!((code, out.as_str()), (0, "scope raised boom\n"));
+}
+
+/// An exit reaches a main task that computes, at its `Task.yield`.
+#[test]
+fn exit_reaches_a_computing_loop_that_yields() {
+    let (code, out) = run(
+        "Task.spawn { Task.sleep(10.ms); exit 6 }\nbegin\n  x = 0\n  loop do\n    x += 1\n    Task.yield\n  end\nensure\n  puts \"main ensure\"\nend",
+        &[],
+    );
+    assert_eq!((code, out.as_str()), (6, "main ensure\n"));
 }
 
 /// From another task, `exit` ends the whole program, as in Ruby.

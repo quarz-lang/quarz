@@ -5297,9 +5297,10 @@ end
 # A lightweight thread, running a block concurrently with the others, and
 # the handle to its result `T`.
 #
-# Tasks switch cooperatively: at operations that wait (a channel
-# operation that must wait, `Task.sleep`, `#await`, IO), at `Task.yield`
-# and at each iteration of `loop`. A wait suspends only the calling task;
+# Tasks switch cooperatively, as in Kotlin: at operations that wait (a
+# channel operation that must wait, `Task.sleep`, `#await`, IO) and at
+# `Task.yield`; a loop that only computes keeps its worker until it calls
+# `Task.yield`. A wait suspends only the calling task;
 # the others go on running. Values cross between tasks only when they are
 # `Shareable`.
 #
@@ -5343,7 +5344,8 @@ class Task[out T: Shareable]
   # `Task::Cancelled` when the task is cancelled while it sleeps.
   native def self.sleep(duration: Duration) -> Nil
   # Suspends the calling task briefly, so that the scheduler can run other
-  # runnable tasks.
+  # runnable tasks, then raises a cancellation (`Task::Cancelled`) or an
+  # `exit` from another task that came meanwhile, as a wait does.
   #
   # With one worker thread (`QUARZ_THREADS=1`), the tasks that were
   # runnable run first, each until it finishes, waits or yields, and the
@@ -5376,7 +5378,8 @@ class Task[out T: Shareable]
   # immutable values (numbers, strings, collections, `data` values) and
   # return only those; what it prints is written out when it finishes.
   # Cancelling the waiting task raises in it, but the block runs to its
-  # end.
+  # end. Tasks the block spawned and left running are cancelled when it
+  # returns, and waited for (their `ensure` clauses run), as a scope's.
   #
   # ## Raises
   #
@@ -5386,7 +5389,9 @@ class Task[out T: Shareable]
   # Raises `Task::Cancelled` when the calling task has been cancelled
   # (outside `.uncancellable`); otherwise does nothing.
   #
-  # A loop that never waits calls it to be cancellable.
+  # It does not let other tasks run: a loop that only computes calls
+  # `.yield` instead, which checks too, or a task of its own worker could
+  # not run to cancel it.
   native def self.check_cancel -> Nil
   # Runs the block out of reach of the calling task's cancellation: its
   # waits do not raise `Task::Cancelled`, as in Trio's shielded cancel
@@ -5434,8 +5439,9 @@ class Task[out T: Shareable]
   # The exception the task ended with, `Task::Cancelled` when it was
   # cancelled.
   native def await -> T
-  # Asks the task to stop: it raises `Task::Cancelled` at its next wait (a
-  # channel operation, IO, `Task.sleep`, `#await`) or `Task.check_cancel`,
+  # Asks the task to stop: it raises `Task::Cancelled` at its next wait (IO,
+  # `Task.sleep`, `#await`), channel `send`, `receive` or `select` (even
+  # one that need not wait), `Task.yield` or `Task.check_cancel`,
   # so its `ensure` clauses run. The task stays cancelled: every wait after
   # raises it again (a task that rescues it cannot go on waiting), but
   # inside `Task.uncancellable`.
@@ -5530,7 +5536,10 @@ class Channel[T: Shareable]
   # ```
   native def self.select(&: (Selector) -> Nil) -> Nil
   # `.select` in a loop, until a handler (or the block) calls
-  # `Selector#stop`.
+  # `Selector#stop`. When it polls (`Selector#default` taken) it lets other
+  # tasks run after each select, as `Task.yield` does, so that it does not
+  # keep its senders from running; when its cases are ready every time,
+  # every 64 selects.
   #
   # `break` in a handler leaves only that handler.
   #
@@ -6314,7 +6323,9 @@ module Kernel
   native def warn(*args: Object) -> Nil
   # Runs the block again and again, until a `break` (or a `return` or an
   # exception) leaves it. A `StopIteration` raised in the block ends the
-  # loop, so `loop { e.next }` stops at the end of an enumerator.
+  # loop, so `loop { e.next }` stops at the end of an enumerator. As no
+  # loop does, it neither lets other tasks run nor checks for a
+  # cancellation by itself: one that only computes calls `Task.yield`.
   #
   # ```
   # n = 0
@@ -6334,10 +6345,13 @@ module Kernel
   #
   # In another task, the `SystemExit` ends the task as any exception does:
   # `await`, the task's `Task.scope`, `Task.timeout` and `Task.blocking`
-  # raise it again in their caller. The main task raises it too, where it
-  # next waits (once, when it is the one waiting for the task), as Ruby
-  # raises a thread's in the main thread: an `exit` in an HTTP handler ends
-  # the program. Not so for `Task.timeout`'s block, which is the caller's.
+  # raise it again in their caller. It is also raised where it next waits
+  # in the main task (once, when it is the one waiting for the task), as
+  # Ruby raises a thread's in the main thread: an `exit` in an HTTP handler
+  # ends the program. A `Task.timeout` block is its caller's code: while it
+  # runs, the exit of a task spawned in it, or one meant for the task
+  # waiting in it, is raised in the block instead (so `quarz test` catches
+  # one in a test, parallel or not).
   native def exit(status: Int = 0) -> Nothing
   # Ends the program with `status` at once: no `ensure` clause and no
   # `at_exit` block runs. What the task's thread wrote is flushed; as with

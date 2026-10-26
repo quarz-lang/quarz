@@ -230,3 +230,146 @@ class StickyCancelTest < Test::Case
     assert_equal("sibling cleaned up", log.try_receive)
   end
 end
+
+# `Task.yield` is a cancellation point (Kotlin's `yield()`): a loop that
+# only computes calls it to be cancellable.
+class YieldCancelTest < Test::Case
+  def test_a_computing_loop_that_yields_is_cancelled
+    started = Channel[Nil].new(capacity: 1)
+    t = Task.spawn do
+      n = 0
+      started.send(nil)
+      while true
+        n += 1
+        Task.yield if n % 100 == 0
+      end
+    end
+    started.receive
+    t.cancel
+    ended = begin
+      t.await
+      :finished
+    rescue Task::Cancelled
+      :cancelled
+    end
+    assert_equal(:cancelled, ended)
+  end
+
+  def test_task_yield_raises_a_cancellation
+    started = Channel[Nil].new(capacity: 1)
+    t = Task.spawn do
+      started.send(nil)
+      loop { Task.yield }
+    end
+    started.receive
+    t.cancel
+    ended = begin
+      t.await
+      :finished
+    rescue Task::Cancelled
+      :cancelled
+    end
+    assert_equal(:cancelled, ended)
+  end
+end
+
+# Channel operations are cancellation points even when they need not wait
+# (Kotlin's are), and `select_loop` lets other tasks run between selects.
+class ChannelCancelTest < Test::Case
+  def test_a_send_with_room_raises_a_cancellation
+    ch = Channel[Int].new(capacity: 1)
+    started = Channel[Nil].new(capacity: 1)
+    t = Task.spawn do
+      begin
+        started.send(nil)
+        Task.sleep(1.second)
+      ensure
+        # Room in the channel: it need not wait, and still raises.
+        begin
+          ch.send(1)
+        rescue Task::Cancelled
+          nil
+        end
+      end
+      nil
+    end
+    started.receive
+    t.cancel
+    ended = begin
+      t.await
+      :finished
+    rescue Task::Cancelled
+      :cancelled
+    end
+    assert_equal(:cancelled, ended)
+    assert_nil(ch.try_receive)
+  end
+
+  def test_select_loop_polling_lets_the_sender_run
+    ch = Channel[Int].new(capacity: 4)
+    Task.spawn { [1, 2, 3].each { |n| ch.send(n) } }
+    got = 0
+    spins = 0
+    Channel.select_loop do |s|
+      s.receive(ch) do |n|
+        got += 1
+        s.stop if got == 3
+      end
+      s.default do
+        spins += 1
+        s.stop if spins > 1_000_000
+      end
+    end
+    assert_equal(3, got)
+  end
+end
+
+# Tasks a `Task.blocking` block leaves are cancelled when it returns, and
+# waited for: none runs in a later block on the same helper thread.
+class BlockingLeftoverTest < Test::Case
+  # Before, a leftover (or one it spawned while cancelled) ran in the
+  # next block on the helper thread, and its `exit` was raised there.
+  def test_leftovers_end_with_the_block
+    first = Task.blocking do
+      Task.spawn do
+        begin
+          Task.sleep(1.second)
+        ensure
+          Task.spawn do
+            Task.sleep(20.ms)
+            exit 7
+          end
+        end
+      end
+      Task.yield
+      1
+    end
+    assert_equal(1, first)
+    second = begin
+      Task.blocking { Task.sleep(100.ms); 2 }
+    rescue SystemExit => e
+      -e.status
+    end
+    assert_equal(2, second)
+  end
+
+  def test_a_leftover_exit_is_raised_in_the_caller
+    status = begin
+      Task.blocking do
+        Task.spawn do
+          begin
+            Task.sleep(1.second)
+          ensure
+            exit 4
+          end
+        end
+        Task.yield
+        3
+      end
+      0
+    rescue SystemExit => e
+      e.status
+    end
+    assert_equal(4, status)
+  end
+end
