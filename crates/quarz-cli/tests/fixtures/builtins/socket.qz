@@ -15,7 +15,7 @@ listener = Socket.tcp_server("127.0.0.1", 0)
 port = listener.local_address.port
 errors = Channel[String].new(capacity: 4)
 greeting = "hello"
-report: shareable (Exception, Socket::Address) -> Nil = ->(e: Exception, peer: Socket::Address) { errors.send("#{e.message} (#{peer.host})"); nil }
+report: shareable (Exception, Socket::Address?) -> Nil = ->(e: Exception, peer: Socket::Address?) { errors.send("#{e.message} (#{peer ? peer.host : "accept"})"); nil }
 Task.scope do |scope|
   server = scope.spawn do
     Socket.accept_loop(listener, on_error: report) do |conn, peer|
