@@ -3210,7 +3210,8 @@ impl Checker {
     /// `Task.blocking`): the block is checked as a task's.
     fn runs_block_in_task(world: &World, m: &MethodInfo) -> bool {
         (m.name == "spawn" && (m.owner == world.builtin.task || m.owner == world.builtin.scope))
-            || (m.name == "blocking" && m.owner == world.builtin.task)
+            || ((m.name == "blocking" || m.name == "__spawn_service")
+                && m.owner == world.builtin.task)
     }
 
     /// Whether the code being checked is in a closure that may run later

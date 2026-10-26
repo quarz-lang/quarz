@@ -5438,6 +5438,16 @@ class Task[out T: Shareable]
   # cleaned.receive  # => true
   # ```
   native def self.uncancellable[R](&: () -> R) -> R
+  # :nodoc:
+  # Runs the block, then cancels the tasks it left (those spawned while it
+  # ran, and theirs) and waits for them, as a scope's, for `limit` and a
+  # grace (`nil`: as long as they take): the block's value and how many
+  # still ran then. `quarz test` runs each test in one.
+  native def self.__contain[R](limit: Duration?, &: () -> R) -> [R, Int]
+  # :nodoc:
+  # `Task.spawn` outside any `Task.__contain` block: a service the library
+  # starts once for the program.
+  native def self.__spawn_service[R](&: () -> R) -> Task[R]
 
   # Waits for the task to finish and returns its value (at once when it has
   # finished); only the calling task waits.
@@ -6100,7 +6110,9 @@ module Signal
     TRAPS.update { |h| h.put(signo, (h[signo]? || []).push(handler)) }
     watch(signo)
     io = reader
-    Task.spawn { dispatch(io) } if io
+    # Once for the program (`reader` hands its end out once): outside any
+    # test's tasks, which `quarz test` cancels.
+    Task.__spawn_service { dispatch(io) } if io
     nil
   end
 
