@@ -207,12 +207,12 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         }
     });
     native!(m, "Array::Builder#index", |i, r, a| {
-        Ok(ab(i, r)?
-            .borrow()
-            .iter()
-            .position(|x| x == a.arg(0))
-            .map(|p| Value::Int(p as i64))
-            .unwrap_or(Value::Nil))
+        let items = ab(i, r)?.borrow().clone();
+        Ok(
+            super::collections::position_equal(i, items.into_iter(), a.arg(0))?
+                .map(|p| Value::Int(p as i64))
+                .unwrap_or(Value::Nil),
+        )
     });
     native!(m, "Array::Builder#join", |i, r, a| {
         let items = ab(i, r)?.borrow().clone();
@@ -346,9 +346,12 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         Ok(Value::Bool(hash(i, r)?.contains_key(a.arg(0))))
     });
     native!(m, "Hash#has_value?", |i, r, a| {
-        Ok(Value::Bool(
-            hash(i, r)?.as_map().values().any(|v| v == a.arg(0)),
-        ))
+        let map = hash(i, r)?.as_map();
+        Ok(Value::Bool(super::collections::any_equal(
+            i,
+            map.values().cloned(),
+            a.arg(0),
+        )?))
     });
     native!(m, "Hash#values_at", |i, r, a| {
         let h = hash(i, r)?;
@@ -463,9 +466,12 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         Ok(Value::Bool(hb(i, r)?.borrow().contains_key(a.arg(0))))
     });
     native!(m, "Hash::Builder#value?", |i, r, a| {
-        Ok(Value::Bool(
-            hb(i, r)?.borrow().values().any(|v| v == a.arg(0)),
-        ))
+        let values: Vec<Value> = hb(i, r)?.borrow().values().cloned().collect();
+        Ok(Value::Bool(super::collections::any_equal(
+            i,
+            values.into_iter(),
+            a.arg(0),
+        )?))
     });
     native!(m, "Hash::Builder#length", |i, r, _| {
         Ok(Value::Int(hb(i, r)?.borrow().len() as i64))

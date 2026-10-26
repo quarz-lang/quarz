@@ -1,7 +1,9 @@
 # A class's own `==` takes an `Object`: the runtime calls it by name with
 # any value (`x == y` with an operand typed `Object`, `Array#==`,
-# `case`/`when`), so it tests the class itself. A `!=` of its own is
-# called the same way.
+# `case`/`when`, `include?`, `index`, `delete`, `count`, `Hash#value?`
+# and `Hash#==` on the values), so it tests the class itself. A `!=` of
+# its own is called the same way. Hash keys and Set members compare
+# class instances by identity.
 class Money
   @cents: Int
   def initialize(cents: Int)
@@ -31,3 +33,36 @@ end
 p Loose.new == o
 p Loose.new != o
 p a != o
+
+# Collections ask the element's `==`, as Ruby does: the element is the
+# receiver, the value sought the argument.
+ms = [Money.new(1), Money.new(2), Money.new(1)]
+p ms.include?(Money.new(2))
+p ms.include?(o)
+p ms.index(Money.new(1))
+p ms.rindex(Money.new(1))
+p ms.index(o)
+p ms.count(Money.new(1))
+p ms.delete(Money.new(1)).size
+p [Money.new(1), o].index(Money.new(1))
+p [Money.new(1), o].include?("100")
+p ms.find_index(Money.new(2))
+b = Array::Builder[Money].new
+b << Money.new(5) << Money.new(6) << Money.new(5)
+p b.include?(Money.new(6))
+p b.index(Money.new(6))
+b.delete(Money.new(5))
+p b.size
+h = {"a" => Money.new(1), "b" => Money.new(2)}
+p h.value?(Money.new(2))
+p h.value?(o)
+p h.key(Money.new(1))
+p h == {"a" => Money.new(1), "b" => Money.new(2)}
+p h == {"a" => Money.new(1), "b" => Money.new(3)}
+hb = Hash::Builder[String, Money].new
+hb["x"] = Money.new(7)
+p hb.value?(Money.new(7))
+# Keys are compared by identity for class instances.
+m1 = Money.new(1)
+p({m1 => 1}.key?(Money.new(1)))
+p({m1 => 1}.key?(m1))

@@ -62,9 +62,18 @@ pub fn register_owned(m: &mut super::Registry<OwnedNativeFn>) {
         let value = a.arg(1).clone();
         owned_update(r, |v| v[idx as usize] = value)
     });
-    owned!(m, "Array#delete", |_, r, a| {
-        let x = a.arg(0).clone();
-        owned_update(r, |v| v.retain(|y| *y != x))
+    owned!(m, "Array#delete", |i, r, a| {
+        let keep = match kept_by_equality(i, &r, a.arg(0)) {
+            Ok(keep) => keep,
+            Err(e) => return Err((e, r)),
+        };
+        let mut k = 0;
+        owned_update(r, |v| {
+            v.retain(|_| {
+                k += 1;
+                keep[k - 1]
+            })
+        })
     });
     owned!(m, "Array#compact", |_, r, _| {
         owned_update(r, |v| v.retain(|x| !x.is_nil()))
@@ -210,8 +219,14 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     native!(m, "Array#insert", array_insert);
     native!(m, "Array#set", array_set);
     native!(m, "Array#delete", |i, r, a| {
-        let x = a.arg(0).clone();
-        update(i, r, |v| v.retain(|y| *y != x))
+        let keep = kept_by_equality(i, r, a.arg(0))?;
+        let mut k = 0;
+        update(i, r, |v| {
+            v.retain(|_| {
+                k += 1;
+                keep[k - 1]
+            })
+        })
     });
     native!(m, "Array#delete_at", array_delete_at);
     native!(m, "Array#concat", |i, r, a| {
@@ -268,9 +283,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             }
             return Ok(Value::Nil);
         }
-        Ok(items
-            .iter()
-            .position(|x| x == a.arg(0))
+        Ok(position_equal(i, items.iter().cloned(), a.arg(0))?
             .map(|p| Value::Int(p as i64))
             .unwrap_or(Value::Nil))
     });
@@ -284,10 +297,9 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             }
             return Ok(Value::Nil);
         }
-        Ok(items
-            .iter()
-            .rposition(|x| x == a.arg(0))
-            .map(|p| Value::Int(p as i64))
+        let n = items.len();
+        Ok(position_equal(i, items.iter().rev().cloned(), a.arg(0))?
+            .map(|p| Value::Int((n - 1 - p) as i64))
             .unwrap_or(Value::Nil))
     });
     native!(m, "Array#include?", |i, r, a| {
@@ -295,7 +307,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         Ok(Value::Bool(match (&**arr_data(i, r)?, needle) {
             (ArrayData::Ints(xs), Value::Int(n)) => xs.contains(n),
             (ArrayData::Floats(xs), Value::Float(f)) => xs.contains(f),
-            (data, _) => data.iter().any(|x| &x == needle),
+            (data, _) => any_equal(i, data.iter(), needle)?,
         }))
     });
     native!(m, "Array#join", array_join);
@@ -408,10 +420,20 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         Ok(Value::Bool(ab(i, r)?.borrow().is_empty()))
     });
     native!(m, "Array::Builder#include?", |i, r, a| {
-        Ok(Value::Bool(ab(i, r)?.borrow().contains(a.arg(0))))
+        let items = ab(i, r)?.borrow().clone();
+        Ok(Value::Bool(any_equal(i, items.into_iter(), a.arg(0))?))
     });
     native!(m, "Array::Builder#delete", |i, r, a| {
-        ab(i, r)?.borrow_mut().retain(|x| x != a.arg(0));
+        // The elements are compared before the builder is borrowed
+        // mutably: an element's `==` may read the builder.
+        let items = ab(i, r)?.borrow().clone();
+        let mut kept = Vec::with_capacity(items.len());
+        for x in items {
+            if !i.values_equal(&x, a.arg(0))? {
+                kept.push(x);
+            }
+        }
+        *ab(i, r)?.borrow_mut() = kept;
         Ok(r.clone())
     });
     native!(m, "Array::Builder#delete_at", |i, r, a| {
@@ -571,17 +593,17 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         Ok(Value::Bool(hash(i, r)?.contains_key(a.arg(0))))
     });
     native!(m, "Hash#value?", |i, r, a| {
-        Ok(Value::Bool(
-            hash(i, r)?.as_map().values().any(|v| v == a.arg(0)),
-        ))
+        let map = hash(i, r)?.as_map();
+        Ok(Value::Bool(any_equal(i, map.values().cloned(), a.arg(0))?))
     });
     native!(m, "Hash#key", |i, r, a| {
-        Ok(hash(i, r)?
-            .as_map()
-            .iter()
-            .find(|(_, v)| *v == a.arg(0))
-            .map(|(k, _)| k.clone())
-            .unwrap_or(Value::Nil))
+        let map = hash(i, r)?.as_map();
+        for (k, v) in map.iter() {
+            if i.values_equal(v, a.arg(0))? {
+                return Ok(k.clone());
+            }
+        }
+        Ok(Value::Nil)
     });
     native!(m, "Hash#keys", |i, r, _| {
         Ok(Value::array(hash(i, r)?.as_map().keys().cloned().collect()))
@@ -653,7 +675,11 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     native!(m, "Hash#inspect", |i, r, _| Ok(Value::string(
         i.inspect(r)?
     )));
-    native!(m, "Hash#==", |_, r, a| Ok(Value::Bool(r == a.arg(0))));
+    native!(m, "Hash#==", |i, r, a| Ok(Value::Bool(hash_eq(
+        i,
+        r,
+        a.arg(0)
+    )?)));
     native!(m, "Hash#hash", super::core_hash);
     // Hash::Builder
     native!(m, "Hash::Builder.new", |_, _, _| {
@@ -1082,6 +1108,71 @@ pub(super) fn flatten_into(items: &[Value], out: &mut Vec<Value>, depth: i64) {
             other => out.push(other.clone()),
         }
     }
+}
+
+/// Whether an element of `items` is `==` to `needle`, by the element's
+/// own `==` (`Interp::values_equal`), as `include?` and `Hash#value?`
+/// compare in Ruby.
+pub(super) fn any_equal(
+    interp: &Interp,
+    items: impl Iterator<Item = Value>,
+    needle: &Value,
+) -> Result<bool, Flow> {
+    for x in items {
+        if interp.values_equal(&x, needle)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// The position of the first element of `items` that is `==` to `needle`,
+/// by the element's own `==`.
+pub(super) fn position_equal(
+    interp: &Interp,
+    items: impl Iterator<Item = Value>,
+    needle: &Value,
+) -> Result<Option<usize>, Flow> {
+    for (k, x) in items.enumerate() {
+        if interp.values_equal(&x, needle)? {
+            return Ok(Some(k));
+        }
+    }
+    Ok(None)
+}
+
+/// For each element of the array `recv`, whether it is not `==` to
+/// `value`: what `delete` keeps. Computed before the array is updated,
+/// since an element's `==` may raise.
+fn kept_by_equality(interp: &Interp, recv: &Value, value: &Value) -> Result<Vec<bool>, Flow> {
+    let data = arr_data(interp, recv)?;
+    let mut keep = Vec::with_capacity(data.len());
+    for x in data.iter() {
+        keep.push(!interp.values_equal(&x, value)?);
+    }
+    Ok(keep)
+}
+
+/// `Hash#==`: the same keys (as keys compare), and each key's values `==`
+/// by the value's own `==`, as `Array#==` compares elements.
+fn hash_eq(interp: &Interp, a: &Value, b: &Value) -> Result<bool, Flow> {
+    let (Value::Hash(x), Value::Hash(y)) = (a, b) else {
+        return Ok(false);
+    };
+    if x.len() != y.len() {
+        return Ok(false);
+    }
+    if let (HashData::Ints(a), HashData::Ints(b)) = (&**x, &**y) {
+        return Ok(a == b);
+    }
+    let xm = x.as_map();
+    for (k, v) in xm.iter() {
+        match y.get(k) {
+            Some(w) if interp.values_equal(v, &w)? => {}
+            _ => return Ok(false),
+        }
+    }
+    Ok(true)
 }
 
 fn array_eq(interp: &Interp, a: &Value, b: &Value) -> Result<bool, Flow> {

@@ -200,7 +200,7 @@ To pass a mutable object to another task, convert it to an immutable value. A Bu
 - `hash` is defined consistently with `==`. Generated automatically for `data`/`enum`/collections.
 - `equal?` is identity. Do not attach meaning to the identity of immutable values; the implementation is free to share or copy equal values (interning of small strings, returning `self` from `with` when no field changes, and so on).
 - `eql?` is dropped. Static typing turns confusions like `{ 1 => "a" }[1.0]` into type errors, so the single pair `==`/`hash` suffices.
-- `Hash` keys and `Set` elements must be `Hashable` (have `==` and `hash`). They do not need to be Shareable, but as in Ruby, be aware that using a mutable object as a key means its `hash` may change. (Currently there is no `Hashable` constraint, and keys compare as `==` does for the built-in types and `data`/`enum` values, but class instances by identity: a user-defined `==`/`hash` is not consulted yet.)
+- `Hash` keys and `Set` elements must be `Hashable` (have `==` and `hash`). They do not need to be Shareable, but as in Ruby, be aware that using a mutable object as a key means its `hash` may change. (Currently there is no `Hashable` constraint, and keys compare as `==` does for the built-in types and `data`/`enum` values, but class instances by identity: a user-defined `==`/`hash` is not consulted yet.) Everything else that looks for a value asks the element's own `==`, with the element as the receiver, as Ruby does: `include?`, `index`, `rindex`, `find_index`, `count`, `delete`, `Hash#value?` and `Hash#key`, and `Array#==` and `Hash#==` compare elements and values so (keys as keys compare).
 
 ## 7. Strings
 
