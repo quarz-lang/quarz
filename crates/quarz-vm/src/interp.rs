@@ -3302,12 +3302,26 @@ impl Interp {
                 }
                 format!("Set[{}]", parts.join(", "))
             }
-            Value::Range(r) => format!(
-                "{}{}{}",
-                self.inspect(&r.lo)?,
-                if r.exclusive { "..." } else { ".." },
-                self.inspect(&r.hi)?
-            ),
+            // As Ruby's: `to_s` shows the bounds' `to_s` (`nil` as
+            // nothing), `inspect` their `inspect`, leaving out a missing
+            // bound unless both are.
+            Value::Range(r) => {
+                let bound = |b: &Value, other: &Value| -> Result<String, Flow> {
+                    if !inspect {
+                        Ok(self.to_s(b)?.into_owned())
+                    } else if b.is_nil() && !other.is_nil() {
+                        Ok(String::new())
+                    } else {
+                        self.inspect(b)
+                    }
+                };
+                format!(
+                    "{}{}{}",
+                    bound(&r.lo, &r.hi)?,
+                    if r.exclusive { "..." } else { ".." },
+                    bound(&r.hi, &r.lo)?
+                )
+            }
             Value::Regexp(r) => format!("/{}/{}", r.source, r.flags),
             // `to_s` (and interpolation) is the match, as in Ruby (a
             // Bytes match as Bytes shows itself).

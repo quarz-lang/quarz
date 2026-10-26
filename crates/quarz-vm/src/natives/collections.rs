@@ -1009,7 +1009,9 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     native!(m, "Range#to_a", |i, r, _| {
         Ok(Value::array(range_to_vec(i, range(i, r)?)?))
     });
-    native!(m, "Range#to_s", |i, r, _| Ok(Value::string(i.inspect(r)?)));
+    native!(m, "Range#to_s", |i, r, _| Ok(Value::string(
+        i.to_s(r)?.into_owned()
+    )));
     native!(m, "Range#inspect", |i, r, _| Ok(Value::string(
         i.inspect(r)?
     )));

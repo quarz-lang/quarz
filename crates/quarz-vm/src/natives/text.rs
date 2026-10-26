@@ -366,10 +366,23 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         Ok(Value::string(regex::escape(string(i, a.arg(0), "text")?)))
     });
     native!(m, "Regexp.union", |i, _, a| {
+        if let [rx @ Value::Regexp(_)] = &a.pos[..] {
+            return Ok(rx.clone());
+        }
         let mut parts = Vec::with_capacity(a.pos.len());
         for p in &a.pos {
             parts.push(match p {
-                Value::Regexp(rx) => format!("(?:{})", rx.source),
+                // A group that keeps its flags, as Ruby's `Regexp#to_s`.
+                Value::Regexp(rx) => {
+                    let (on, off): (String, String) =
+                        "mix".chars().partition(|f| rx.flags.contains(*f));
+                    let off = if off.is_empty() {
+                        off
+                    } else {
+                        format!("-{off}")
+                    };
+                    format!("(?{on}{off}:{})", rx.source)
+                }
                 other => regex::escape(string(i, other, "pattern")?),
             });
         }

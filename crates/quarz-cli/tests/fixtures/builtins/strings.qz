@@ -58,3 +58,5 @@ if m2
   p m2, m2.to_a
 end
 p({ /a/ => 1 }[/a/])
+# Regexp.union keeps each pattern's flags in a group, as Ruby's does.
+p Regexp.union(/a/i, /b/), Regexp.union(/x/mix), "xAB" =~ Regexp.union(/b/, /a/i), "xB" =~ Regexp.union(/z/, /b/), "a\nb" =~ Regexp.union(/a.b/m, /z/)
