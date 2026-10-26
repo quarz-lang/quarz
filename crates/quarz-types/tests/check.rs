@@ -1658,3 +1658,54 @@ fn equality_takes_an_object() {
     // A class method or another name is free.
     ok("class P\n  def self.==(o: P) -> Bool = true\n  def eq(o: P) -> Bool = true\nend");
 }
+
+#[test]
+fn what_runs_deinitialize_is_not_copied() {
+    // An exception is copied when raised while referred to.
+    err(
+        "class E < StandardError\n  def deinitialize -> Nil\n  end\nend",
+        "an exception class cannot define `deinitialize`",
+    );
+    err(
+        "module M\n  def deinitialize -> Nil\n  end\nend\nclass E < StandardError\n  include M\nend",
+        "`E` cannot include `M`, which defines `deinitialize`",
+    );
+    // A subclass reports nothing of its own.
+    let src = "module M\n  def deinitialize -> Nil\n  end\nend\nclass E < StandardError\n  include M\nend\nclass F < E\nend";
+    assert!(!diagnostics(src)
+        .iter()
+        .any(|e| e.contains("`F` cannot include")));
+    // Data types, enums and built-in value classes are copied too.
+    err(
+        "module M\n  def deinitialize -> Nil\n  end\nend\ndata D(v: Int)\n  include M\nend",
+        "`D` cannot include `M`",
+    );
+    err(
+        "module M\n  def deinitialize -> Nil\n  end\nend\nenum Light = Red | Green\nextension Light\n  include M\nend",
+        "`Light` cannot include `M`",
+    );
+    err(
+        "module M\n  def deinitialize -> Nil\n  end\nend\nextension String\n  include M\nend",
+        "`String` cannot include `M`",
+    );
+    // Through a module the prelude's copied classes include (`Exception`
+    // includes `Shareable`).
+    err(
+        "module M\n  def deinitialize -> Nil\n  end\nend\nextension Shareable\n  include M\nend",
+        "`Shareable` cannot include `M`",
+    );
+    // A copy would release what the original owns again.
+    err(
+        "class R\n  def deinitialize -> Nil\n  end\nend\nR.new.dup",
+        "cannot dup R",
+    );
+    err(
+        "class R\n  def deinitialize -> Nil\n  end\nend\nclass S < R\nend\nS.new.dup",
+        "cannot dup S",
+    );
+    err(
+        "class R\n  def deinitialize -> Nil\n  end\n  def again -> R = dup\nend",
+        "cannot dup R",
+    );
+    ok("class P\nend\nP.new.dup\nclass E < StandardError\nend\nE.new(\"e\").dup");
+}

@@ -124,7 +124,16 @@ fn obj_frozen(_: &Interp, recv: &Value, _: Args) -> EvalResult {
     )))
 }
 
-fn obj_dup(_: &Interp, recv: &Value, _: Args) -> EvalResult {
+fn obj_dup(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
+    if let Value::Object(o) = recv {
+        if crate::deinit::has(o.class) {
+            // What it owns is released once: a copy would release it again.
+            return Err(interp.err_type(&format!(
+                "cannot dup {}: its class defines `deinitialize`",
+                interp.class_name(recv)
+            )));
+        }
+    }
     Ok(match recv {
         Value::ArrayBuilder(a) => Value::ArrayBuilder(Value::array_builder(a.borrow().clone())),
         Value::HashBuilder(h) => Value::HashBuilder(Value::hash_builder(h.borrow().clone())),

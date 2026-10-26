@@ -972,9 +972,11 @@ impl<'ast> Declarer<'ast> {
             self.check_variance(p.id);
             self.check_kept_blocks(p.id);
             self.check_override_returns(p.id);
+            self.check_copied_deinitialize(p.id);
             self.world.active_extensions.clear();
         }
         self.check_extensions_kept_blocks();
+        self.check_extensions_deinitialize();
         self.check_shareable_extensions();
     }
 
@@ -1348,6 +1350,108 @@ impl<'ast> Declarer<'ast> {
 
     /// An extension that makes its target include a Shareable module
     /// promises that the target is Shareable: it must be by its fields.
+    /// Whether instances of `id` are copied by the language or the
+    /// implementation, so that a `deinitialize` would run once per copy: a
+    /// `data` type, an enum or its variants, a built-in value class, and an
+    /// exception class (copied when raised while referred to).
+    fn copied_class(&self, id: ClassId) -> bool {
+        matches!(
+            self.world.class(id).kind,
+            ClassKind::Data | ClassKind::Enum | ClassKind::Variant
+        ) || self.world.is_value_class(id)
+            || id == self.world.builtin.integer
+            || self.world.is_exception_class(id)
+    }
+
+    /// The `deinitialize` module `ty` brings (itself or a module it
+    /// includes), if any, outside the prelude.
+    fn deinitializing_module(&self, ty: &Type) -> Option<ClassId> {
+        let Type::Class(m, _) = ty else {
+            return None;
+        };
+        let d = self.world.deinitializer(*m)?;
+        let dm = self.world.method(d);
+        (dm.file != 0).then_some(dm.owner)
+    }
+
+    /// A class whose instances are copied (`copied_class`) has no
+    /// `deinitialize`, defined or included (a `data` type's or an enum's
+    /// own `def` is refused where it is declared): it would run once per
+    /// copy (docs/03 §4).
+    fn check_copied_deinitialize(&mut self, id: ClassId) {
+        if !self.copied_class(id) {
+            return;
+        }
+        let class = self.world.class(id);
+        let own = class.methods.get("deinitialize").and_then(|ms| {
+            ms.iter()
+                .copied()
+                .find(|m| !self.world.method(*m).singleton)
+        });
+        if let Some(m) = own {
+            // A data type's or an enum's is an error already.
+            if self.world.is_exception_class(id) {
+                let span = self.world.method(m).span;
+                self.error(
+                    "an exception class cannot define `deinitialize`: an exception is copied when raised while referred to, so it would run once per copy",
+                    span,
+                );
+            }
+            return;
+        }
+        let includes = class.includes.clone();
+        let span = class.span;
+        let name = class.name.clone();
+        for inc in &includes {
+            if let Some(owner) = self.deinitializing_module(inc) {
+                let module = self.world.class(owner).name.clone();
+                self.error(
+                    format!("`{name}` cannot include `{module}`, which defines `deinitialize`: its values are copied, so it would run once per copy"),
+                    span,
+                );
+                return;
+            }
+        }
+    }
+
+    /// `check_copied_deinitialize` for the modules extensions include: a
+    /// copied class as the target, or a module some copied class includes
+    /// (the prelude's too: `Exception` includes `Shareable`).
+    fn check_extensions_deinitialize(&mut self) {
+        for (ext, ty, span, file) in self.ext_includes.clone() {
+            let Some(owner) = self.deinitializing_module(&ty) else {
+                continue;
+            };
+            let target = self.world.extensions[ext as usize].target;
+            let copied = if self.copied_class(target) {
+                Some(target)
+            } else {
+                (0..self.world.classes.len() as ClassId).find(|&c| {
+                    c != target
+                        && self.copied_class(c)
+                        && self
+                            .world
+                            .ancestors(c, &[])
+                            .iter()
+                            .any(|(a, _)| *a == target)
+                })
+            };
+            let Some(copied) = copied else {
+                continue;
+            };
+            self.file = file;
+            let target_name = self.world.class(target).name.clone();
+            let module = self.world.class(owner).name.clone();
+            let message = if copied == target {
+                format!("`{target_name}` cannot include `{module}`, which defines `deinitialize`: its values are copied, so it would run once per copy")
+            } else {
+                let by = self.world.class(copied).name.clone();
+                format!("`{target_name}` cannot include `{module}`, which defines `deinitialize`: `{by}` includes `{target_name}`, and its values are copied, so it would run once per copy")
+            };
+            self.error(message, span);
+        }
+    }
+
     fn check_shareable_extensions(&mut self) {
         for (ext, ty, span, file) in std::mem::take(&mut self.ext_includes) {
             let Type::Class(mid, _) = ty else {

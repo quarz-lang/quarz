@@ -162,6 +162,17 @@ pub fn export(interp: &Interp, v: &Value) -> Result<Transfer, Flow> {
         },
         Value::Bytes(b) => Transfer::Bytes(b.to_vec()),
         Value::Time(t) => Transfer::Time(**t),
+        Value::Object(o) if crate::deinit::has(o.class) => {
+            // Copied to the helper thread, it would be released twice.
+            return Err(interp.raise(
+                interp.program.exc.argument_error,
+                &format!(
+                    "an instance of {} cannot cross Task.blocking: its class defines \
+                     `deinitialize`, and the other thread would get a copy",
+                    interp.class_name(v)
+                ),
+            ));
+        }
         Value::Object(o) => Transfer::Object {
             class: o.class,
             fields: export_all(interp, o.fields().iter())?,
@@ -281,6 +292,16 @@ fn needed_slots(interp: &Interp, fid: FuncId) -> std::collections::HashSet<(i64,
         }
     }
     needed
+}
+
+/// An exception raised on the helper thread, for the caller: when it
+/// holds what cannot cross, the exception that says so instead.
+fn export_raised(interp: &Interp, e: &Value) -> Transfer {
+    match export(interp, e) {
+        Ok(t) => t,
+        Err(Flow::Raise(why)) => export(interp, &why).unwrap_or(Transfer::Nil),
+        Err(_) => Transfer::Nil,
+    }
 }
 
 fn not_transferable(interp: &Interp, v: &Value) -> Flow {
@@ -469,17 +490,22 @@ pub fn run_on_thread(
     });
     let closure = import(&interp, closure);
     let exit = interp.run_closure(closure);
-    interp.flush();
     let exit = match exit {
         Ok(v) => match export(&interp, &v) {
             Ok(t) => WorkerExit::Value(t),
-            Err(Flow::Raise(e)) => WorkerExit::Raise(export(&interp, &e).unwrap_or(Transfer::Nil)),
+            Err(Flow::Raise(e)) => WorkerExit::Raise(export_raised(&interp, &e)),
             Err(_) => WorkerExit::Exit(1),
         },
-        Err(Flow::Raise(e)) => WorkerExit::Raise(export(&interp, &e).unwrap_or(Transfer::Nil)),
+        Err(Flow::Raise(e)) => WorkerExit::Raise(export_raised(&interp, &e)),
         Err(Flow::Exit(code)) => WorkerExit::Exit(code),
         Err(_) => WorkerExit::Exit(1),
     };
+    // What did not cross (an object with a `deinitialize`, refused) was
+    // released here: its `deinitialize` runs now, with this job's output.
+    if crate::deinit::pending() {
+        interp.run_deinitializers();
+    }
+    interp.flush();
     let output = std::mem::take(&mut *output.lock().unwrap());
     WorkerOutcome { exit, output }
 }

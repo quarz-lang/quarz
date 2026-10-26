@@ -3646,6 +3646,7 @@ impl Checker {
             }
             Call(call) => {
                 let t = self.check_call(expr, call, expected);
+                self.check_dup(expr, call);
                 // `bump` in a `Task.spawn` block in a method of a mutable
                 // class: a call on the captured `self` (a call to a
                 // `Kernel` method such as `puts` does not use it).
@@ -5577,6 +5578,37 @@ impl Checker {
     }
 
     // ----- calls -------------------------------------------------------------------
+
+    /// `x.dup` of a class whose instances run `deinitialize`: what they
+    /// own would be released twice (a subclass's is refused at run time).
+    fn check_dup(&mut self, expr: &Expr, call: &Call) {
+        let Some(CallTarget::Method { method }) = self.out.calls.get(&expr.id) else {
+            return;
+        };
+        let m = self.world.method(*method);
+        if m.name != "dup" || m.file != 0 || m.owner != self.world.builtin.object {
+            return;
+        }
+        let rt = match &call.recv {
+            Some(recv) => match self.out.node_types.get(&recv.id) {
+                Some(rt) => self.infer.resolve(rt),
+                None => return,
+            },
+            // An implicit `self`: the method's class (or a subclass).
+            None => self.env.self_type.clone(),
+        };
+        let rt = rt.without_nil(self.world.builtin.nil);
+        let Type::Class(cid, _) = rt else {
+            return;
+        };
+        if self.world.deinitializer(cid).is_some() {
+            let name = self.world.class(cid).name.clone();
+            self.error(
+                format!("cannot dup {name}: its class defines `deinitialize`, which would run for the copy too"),
+                expr.span,
+            );
+        }
+    }
 
     fn check_call(&mut self, expr: &Expr, call: &Call, expected: Option<&Type>) -> Type {
         self.check_call_with_types(expr, call, expected, false)

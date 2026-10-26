@@ -1,0 +1,6 @@
+cannot dup Res: its class defines `deinitialize`
+release
+an instance of Res cannot cross Task.blocking: its class defines `deinitialize`, and the other thread would get a copy
+true
+release
+an instance of Res cannot cross Task.blocking: its class defines `deinitialize`, and the other thread would get a copy

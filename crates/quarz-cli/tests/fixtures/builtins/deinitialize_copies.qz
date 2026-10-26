@@ -1,0 +1,42 @@
+# An object whose class defines `deinitialize` is never copied, so what it
+# owns is released once: `dup` is a TypeError (a compile error when the
+# static type tells), and `Task.blocking`, which copies what its block
+# uses to the helper thread, refuses it.
+class Plain
+end
+class Res < Plain
+  include Shareable
+  def deinitialize -> Nil
+    puts "release"
+  end
+end
+def copy(o: Plain) -> Plain = o.dup
+begin
+  copy(Res.new)
+rescue TypeError => e
+  puts e.message
+end
+r = Res.new
+begin
+  Task.blocking { r.hash }
+rescue ArgumentError => e
+  puts e.message
+end
+p Plain.new.dup.is_a?(Plain)
+
+# An exception holding one, raised in the block, cannot come back as it
+# is: the caller gets the error saying so.
+class Holding < StandardError
+  @res: Res
+  def initialize(res: Res)
+    @res = res
+    super("holding")
+  end
+end
+begin
+  Task.blocking { raise Holding.new(Res.new) }
+rescue Holding
+  puts "holding came back"
+rescue ArgumentError => e
+  puts e.message
+end

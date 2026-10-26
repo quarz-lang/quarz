@@ -1435,6 +1435,23 @@ impl World {
         }
     }
 
+    /// The `deinitialize` instances of `id` run when released: the first
+    /// in its ancestors (a module's too).
+    pub fn deinitializer(&self, id: ClassId) -> Option<MethodId> {
+        let args: Vec<Type> = self
+            .class(id)
+            .type_params
+            .iter()
+            .map(|p| Type::Param(p.id))
+            .collect();
+        self.ancestors(id, &args).into_iter().find_map(|(a, _)| {
+            self.class(a)
+                .methods
+                .get("deinitialize")
+                .and_then(|ms| ms.iter().copied().find(|m| !self.method(*m).singleton))
+        })
+    }
+
     pub fn is_exception_class(&self, id: ClassId) -> bool {
         self.class_is_a(id, self.builtin.exception)
     }
