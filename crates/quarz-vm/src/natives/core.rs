@@ -206,23 +206,69 @@ fn exc_cause(_: &Interp, recv: &Value, _: Args) -> EvalResult {
     }
 }
 
-/// An exception raised while `cause` was being handled (Ruby's `$!`)
-/// gets it as its cause, unless it has one, is `cause` itself (raised
-/// again), or `cause` comes from it (a cycle).
-pub(crate) fn set_cause(o: &Rc<Object>, c: &Rc<Object>) {
-    // Shared exceptions: the check and the setting at once, so that two
-    // threads cannot each make the other's exception its cause.
-    static SHARED: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let _held = (Rc::is_shared(o) || Rc::is_shared(c))
-        .then(|| SHARED.lock().unwrap_or_else(|e| e.into_inner()));
-    let mut link = Some(Value::Object(c.clone()));
-    while let Some(Value::Object(l)) = link {
-        if Rc::ptr_eq(&l, o) {
-            return;
+/// Whether `c` may become the cause of `o`: not `o` itself, nor an
+/// exception whose causes lead to it, a copy counting as its original.
+fn may_cause(o: &Object, c: &Rc<Object>) -> bool {
+    let id = o.exc_info().map(|i| i.id);
+    let mut link = Some(c.clone());
+    while let Some(l) = link {
+        if std::ptr::eq(&*l, o) || (id.is_some() && l.exc_info().map(|i| i.id) == id) {
+            return false;
         }
-        link = l.cause();
+        link = match l.cause() {
+            Some(Value::Object(n)) => Some(n),
+            _ => None,
+        };
     }
-    o.set_cause(Value::Object(c.clone()), Rc::is_shared(o));
+    true
+}
+
+/// The exception to raise for `o`, with what it lacks: the backtrace
+/// `backtrace` makes, when it was never raised, and `cause`, when it has
+/// none and may have it (`may_cause`). An exception is immutable, so
+/// they go into `o` itself only when nothing else refers to it (`raise
+/// Foo.new(..)`); otherwise into a copy, which is raised in its place:
+/// the original keeps what it had, and only its identity (`ExcInfo::id`)
+/// is recorded in it if it had none, for the copy to share (unseen, and
+/// set once, safely also when shared). So an exception never refers back
+/// to itself through its cause, nor through a copy of itself.
+pub(crate) fn raised(
+    o: Rc<Object>,
+    backtrace: impl FnOnce() -> Vec<String>,
+    cause: Option<Value>,
+) -> Rc<Object> {
+    let (has_backtrace, has_cause) = match o.exc_info() {
+        Some(i) => (i.backtrace.get().is_some(), i.cause.get().is_some()),
+        None => (false, false),
+    };
+    let cause = match cause {
+        Some(Value::Object(c)) if !has_cause && may_cause(&o, &c) => Some(Value::Object(c)),
+        _ => None,
+    };
+    if has_backtrace && cause.is_none() {
+        return o;
+    }
+    let new_backtrace = (!has_backtrace).then(|| Rc::new(backtrace()));
+    if !Rc::is_shared(&o) && Rc::strong_count(&o) == 1 {
+        if o.exc_info().is_some() {
+            o.complete_exc(new_backtrace, cause);
+        } else {
+            o.init_exc(ExcInfo::new(new_backtrace, cause));
+        }
+        return o;
+    }
+    if o.exc_info().is_none() {
+        o.init_exc(ExcInfo::new(None, None));
+    }
+    let info = o.exc_info().expect("recorded above");
+    let copy_info = ExcInfo::with_id(
+        info.id,
+        new_backtrace.or_else(|| info.backtrace.get().cloned()),
+        cause.or_else(|| info.cause.get().cloned()),
+    );
+    let copy = Object::new(o.class, o.fields());
+    copy.init_exc(copy_info);
+    copy
 }
 
 // ----- Kernel ---------------------------------------------------------------------

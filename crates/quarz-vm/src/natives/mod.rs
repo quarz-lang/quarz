@@ -74,7 +74,7 @@ mod collections;
 mod concurrency;
 mod core;
 pub(crate) use self::core::system_exit;
-pub(crate) use core::set_cause;
+pub(crate) use core::raised;
 mod enumerable;
 mod fast;
 mod io;

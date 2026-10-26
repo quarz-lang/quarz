@@ -84,6 +84,8 @@ pub enum Transfer {
     Object {
         class: ClassId,
         fields: Vec<Transfer>,
+        /// A raised exception's identity (`ExcInfo::id`).
+        id: Option<u64>,
         backtrace: Option<Vec<String>>,
         cause: Option<Box<Transfer>>,
     },
@@ -163,6 +165,14 @@ pub fn export(interp: &Interp, v: &Value) -> Result<Transfer, Flow> {
         Value::Object(o) => Transfer::Object {
             class: o.class,
             fields: export_all(interp, o.fields().iter())?,
+            id: {
+                // An exception keeps its identity across: one never raised
+                // gets it recorded now (`natives::raised` does so too).
+                if o.exc_info().is_none() && interp.program.world.class(o.class).is_exception {
+                    o.init_exc(crate::value::ExcInfo::new(None, None));
+                }
+                o.exc_info().map(|i| i.id)
+            },
             backtrace: o.backtrace().map(|b| b.to_vec()),
             cause: match o.cause() {
                 Some(c) => Some(Box::new(export(interp, &c)?)),
@@ -320,6 +330,7 @@ pub fn import(interp: &Interp, t: Transfer) -> Value {
         Transfer::Object {
             class,
             fields,
+            id,
             backtrace,
             cause,
         } => {
@@ -333,12 +344,14 @@ pub fn import(interp: &Interp, t: Transfer) -> Value {
             }
             Value::Object({
                 let o = Object::new(class, fields);
-                if backtrace.is_some() || cause.is_some() {
-                    let info = crate::value::ExcInfo::new(
+                // A raised exception stays the same one (its id).
+                if let Some(id) = id {
+                    let info = crate::value::ExcInfo::with_id(
+                        id,
                         backtrace.map(Rc::new),
                         cause.map(|c| import(interp, *c)),
                     );
-                    o.init_exc(info, false);
+                    o.init_exc(info);
                 }
                 o
             })

@@ -424,12 +424,14 @@ fn task_scope(interp: &Interp, _: &Value, args: Args) -> EvalResult {
 /// again: the exception this one is handling becomes its cause, unless it
 /// has one, as Ruby's `Thread#value` gives it.
 fn handed_over(interp: &Interp, r: EvalResult) -> EvalResult {
-    if let Err(Flow::Raise(Value::Object(o))) = &r {
-        if let Some(Value::Object(c)) = interp.rescued() {
-            super::set_cause(o, &c);
+    match r {
+        // Raised before, in the other task: it lacks a cause at most.
+        Err(Flow::Raise(Value::Object(o))) if o.exc_info().is_some() => {
+            let o = super::raised(o, Vec::new, interp.rescued());
+            Err(Flow::Raise(Value::Object(o)))
         }
+        r => r,
     }
-    r
 }
 
 /// Whether `e` is a `SystemExit`: an exit wins over the failure a scope

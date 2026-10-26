@@ -798,8 +798,10 @@ struct ExcEntry(Box<ExcInfo>);
 
 // SAFETY: the table only moves the box; what it holds is reached through
 // its object, as a field of the object would be: by the object's thread
-// while it is local, and by any once it is shared, `init_exc` having
-// marked the entry's values shared too. It is dropped when the object is.
+// while it is local, and by any once it is shared, `Value::share` having
+// marked the entry's values shared too (an entry is set into a shared
+// object only empty, `natives::raised`). It is dropped when the object
+// is.
 unsafe impl Send for ExcEntry {}
 
 /// An object's key in `EXC_INFO`: the address of its header.
@@ -1146,24 +1148,44 @@ impl std::fmt::Debug for Object {
     }
 }
 
-/// The backtrace and cause of a raised exception.
-#[derive(Debug, Default)]
+/// What an exception got from being raised: its identity, backtrace and
+/// cause. Set into an exception only while nothing else refers to it, or
+/// to give a copy's original the copy's identity (`natives::raised`).
+#[derive(Debug)]
 pub struct ExcInfo {
-    pub backtrace: Option<Rc<Vec<String>>>,
-    /// Set at most once: when raised, or later when raised again, or
-    /// handed over by another task, while another is handled (Ruby's `$!`,
-    /// `natives::set_cause`).
+    /// Which exception this is: the same in a copy made to raise it with
+    /// what it lacked (`natives::raised`) or to send it to a thread
+    /// (`Task.blocking`), so that a copy counts as its original.
+    pub id: u64,
+    /// Set at most once: at the first raise (none in an original that
+    /// was only copied to be raised).
+    pub backtrace: std::sync::OnceLock<Rc<Vec<String>>>,
+    /// Set at most once: when raised, or handed over by another task,
+    /// while another is handled (Ruby's `$!`).
     pub cause: std::sync::OnceLock<Value>,
 }
 
 impl ExcInfo {
+    /// The capture of an exception raised for the first time.
     pub fn new(backtrace: Option<Rc<Vec<String>>>, cause: Option<Value>) -> ExcInfo {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        ExcInfo::with_id(id, backtrace, cause)
+    }
+
+    /// The capture of a copy of exception `id`.
+    pub fn with_id(id: u64, backtrace: Option<Rc<Vec<String>>>, cause: Option<Value>) -> ExcInfo {
         let cell = std::sync::OnceLock::new();
         if let Some(c) = cause {
             let _ = cell.set(c);
         }
+        let bt = std::sync::OnceLock::new();
+        if let Some(b) = backtrace {
+            let _ = bt.set(b);
+        }
         ExcInfo {
-            backtrace,
+            id,
+            backtrace: bt,
             cause: cell,
         }
     }
@@ -1295,27 +1317,25 @@ impl Object {
 
     /// The backtrace captured when this (exception) object was raised.
     pub fn backtrace(&self) -> Option<Rc<Vec<String>>> {
-        self.exc_info().and_then(|e| e.backtrace.clone())
+        self.exc_info().and_then(|e| e.backtrace.get().cloned())
     }
 
     pub fn cause(&self) -> Option<Value> {
         self.exc_info().and_then(|e| e.cause.get().cloned())
     }
 
-    /// Give a raised exception the cause it has not got yet (`shared`: the
-    /// exception is, so the cause becomes so). False when it has one, or
-    /// was never raised.
-    pub fn set_cause(&self, cause: Value, shared: bool) -> bool {
+    /// Give a raised exception, which nothing else refers to, what it
+    /// lacks of a backtrace and a cause (`natives::raised`).
+    pub fn complete_exc(&self, backtrace: Option<Rc<Vec<String>>>, cause: Option<Value>) {
         let Some(info) = self.exc_info() else {
-            return false;
+            return;
         };
-        if info.cause.get().is_some() {
-            return false;
+        if let Some(b) = backtrace {
+            let _ = info.backtrace.set(b);
         }
-        if shared {
-            cause.share();
+        if let Some(c) = cause {
+            let _ = info.cause.set(c);
         }
-        info.cause.set(cause).is_ok()
     }
 
     /// The word an exception's capture is in, when its layout has one
@@ -1351,22 +1371,14 @@ impl Object {
         Some(unsafe { &*info })
     }
 
-    /// Record the backtrace and cause, unless the exception has them
-    /// already (it was raised before: its first backtrace stays, as in
-    /// Ruby). Of several threads raising a shared exception at once, one
-    /// wins. `shared`: the object is shared, so what it now refers to
-    /// must be too.
-    pub fn init_exc(&self, info: ExcInfo, shared: bool) {
+    /// Record what raising gave the exception, unless it has a record
+    /// already. Only an exception nothing else refers to gets one with a
+    /// backtrace or cause; a shared one only an empty one, its identity
+    /// (`natives::raised`), of which, set by several threads at once, one
+    /// wins.
+    pub fn init_exc(&self, info: ExcInfo) {
         if self.exc_info().is_some() {
             return;
-        }
-        if shared {
-            if let Some(b) = &info.backtrace {
-                Rc::mark_shared(b);
-            }
-            if let Some(c) = info.cause.get() {
-                c.share();
-            }
         }
         if let Some(cell) = self.exc_cell() {
             let p = Box::into_raw(Box::new(info));
@@ -2893,7 +2905,7 @@ unsafe fn share_object(immortal: bool, r: &Rc<Object>, work: &mut Vec<ShareItem>
         // SAFETY: as the caller promises.
         unsafe { r.value_ptrs(|x| work.push(ShareItem::Value(x))) };
         if let Some(e) = r.exc_info() {
-            if let Some(b) = &e.backtrace {
+            if let Some(b) = e.backtrace.get() {
                 mark_rc(immortal, b);
             }
             if let Some(c) = e.cause.get() {

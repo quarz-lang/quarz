@@ -1,0 +1,96 @@
+# Exceptions are immutable: what raising gives one (a backtrace the first
+# time, the exception being handled as its cause) goes into it only when
+# nothing else refers to it, and otherwise into a copy that is raised in
+# its place. A copy is the same exception for causes: none is its own.
+class Inner < StandardError
+end
+class Wrap < StandardError
+  @inner: Inner
+  def initialize(inner: Inner)
+    @inner = inner
+    super("wrap")
+  end
+  def inner -> Inner = @inner
+end
+
+# `e` raised again while the wrapper holding it is handled: the copy
+# raised gets the wrapper as its cause; `e` keeps none, so the wrapper
+# does not lead back to what it wraps.
+e = Inner.new("inner")
+got: Inner? = nil
+begin
+  begin
+    raise Wrap.new(e)
+  rescue Wrap
+    raise e
+  end
+rescue Inner => x
+  got = x
+end
+if got
+  p got.message, got.cause.class, got.equal?(e)
+  w = got.cause
+  p w.is_a?(Wrap) && w.inner.equal?(e)
+end
+p e.cause.nil?, e.backtrace
+
+# The exception being handled, raised again, is not its own cause.
+begin
+  begin
+    raise Inner.new("again")
+  rescue Inner => a
+    raise a
+  end
+rescue Inner => b
+  p b.message, b.cause.nil?
+end
+
+# The same exception, never raised and kept, raised twice: the second
+# copy is the one being handled again, not its cause.
+twice = Inner.new("twice")
+begin
+  begin
+    raise twice
+  rescue Inner
+    raise twice
+  end
+rescue Inner => t
+  p t.message, t.cause.nil?
+end
+
+# A fresh exception raised in a `rescue` clause gets its cause in place.
+begin
+  begin
+    raise Inner.new("first")
+  rescue Inner
+    raise Wrap.new(Inner.new("x"))
+  end
+rescue Wrap => w
+  c = w.cause
+  p c.is_a?(Inner) ? c.message : nil
+end
+
+# An exception copied to a thread and back is still the one being
+# handled: it does not become its own cause.
+begin
+  begin
+    raise Inner.new("blocking")
+  rescue Inner => h
+    Task.blocking { raise h }
+  end
+rescue Inner => k
+  p k.message, k.cause.nil?
+end
+
+# One never raised, raised in a thread and then here again while that
+# copy is handled: still the same exception, so no cause.
+sent = Inner.new("sent")
+begin
+  begin
+    Task.blocking { raise sent }
+  rescue Inner
+    raise sent
+  end
+rescue Inner => z
+  p z.message, z.cause.nil?
+end

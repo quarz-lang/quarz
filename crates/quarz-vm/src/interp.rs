@@ -1863,7 +1863,7 @@ impl Interp {
         let bt = self.capture_backtrace();
         Value::Object({
             let o = Object::new(class, fields);
-            o.init_exc(ExcInfo::new(Some(Rc::new(bt)), self.rescued()), false);
+            o.init_exc(ExcInfo::new(Some(Rc::new(bt)), self.rescued()));
             o
         })
     }
@@ -2033,18 +2033,12 @@ impl Interp {
             }
             Value::Str(s) => self.make_exception(self.program.exc.runtime_error, &s),
             Value::Short(s) => self.make_exception(self.program.exc.runtime_error, s.as_str()),
-            Value::Object(o) => {
-                // Raised before: its first backtrace stays.
-                if o.exc_info().is_none() {
-                    let bt = self.capture_backtrace();
-                    let info = ExcInfo::new(Some(Rc::new(bt)), None);
-                    o.init_exc(info, Rc::is_shared(&o));
-                }
-                if let Some(Value::Object(c)) = self.rescued() {
-                    crate::natives::set_cause(&o, &c);
-                }
-                Value::Object(o)
-            }
+            // Raised before: its first backtrace stays.
+            Value::Object(o) => Value::Object(crate::natives::raised(
+                o,
+                || self.capture_backtrace(),
+                self.rescued(),
+            )),
             other => {
                 return Err(self.err_type(&format!("cannot raise {}", self.class_name(&other))))
             }
