@@ -1,0 +1,14 @@
+# A `Task.timeout` block is its caller's code: it runs on the caller's
+# worker, so what it captures and updates, a builder or a local, is not
+# touched from two threads at once.
+b = Array::Builder[Int].new
+n = 0
+tasks = (0...8).map do |k|
+  Task.spawn do
+    sum = 0
+    100.times { |i| Task.timeout(10.seconds) { sum += i } }
+    sum + k
+  end
+end
+200.times { |i| Task.timeout(10.seconds) { b << i; n += 1 } }
+p tasks.map(&:await).sum, b.size, n
