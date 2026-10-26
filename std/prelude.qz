@@ -5378,7 +5378,8 @@ class Task[out T: Shareable]
   # immutable values (numbers, strings, collections, `data` values) and
   # return only those; what it prints is written out when it finishes.
   # Cancelling the waiting task raises in it, but the block runs to its
-  # end.
+  # end. Tasks the block spawned and left running are cancelled when it
+  # returns, and waited for (their `ensure` clauses run), as a scope's.
   #
   # ## Raises
   #

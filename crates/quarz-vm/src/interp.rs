@@ -1288,6 +1288,37 @@ impl Interp {
         }
     }
 
+    /// Cancel the tasks still running (a `Task.blocking` block's, once it
+    /// returned) and run them until they end, so that their `ensure`
+    /// clauses run and none is left for a later run on this interpreter;
+    /// tasks they spawn meanwhile too. Tasks that never end (waiting
+    /// uncancellably forever) are left. The code of one that ended the
+    /// program (`Flow::Exit`), if any.
+    pub(crate) fn cancel_leftovers(&self) -> Option<i32> {
+        loop {
+            let left = self.sched.borrow().live_tasks();
+            if left.is_empty() {
+                return None;
+            }
+            for t in &left {
+                if !t.cancel_requested() {
+                    self.cancel_task(t);
+                }
+            }
+            let next = self.sched.borrow_mut().next_step();
+            match next {
+                sched::Next::Run(task, co) => {
+                    if let Some(code) = self.resume_task(task, co) {
+                        return Some(code);
+                    }
+                }
+                sched::Next::Spawn(requests) => self.adopt_tasks(requests),
+                sched::Next::Exit(code) => return Some(code),
+                sched::Next::Stop | sched::Next::Idle => return None,
+            }
+        }
+    }
+
     pub fn flush(&self) {
         use std::io::Write;
         let _ = lock(&self.global.stdout).flush();

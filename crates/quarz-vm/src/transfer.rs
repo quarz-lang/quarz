@@ -511,6 +511,14 @@ impl Interp {
                 .spawn(body, None, "blocking".to_string(), 256 * 1024 * 1024);
         self.set_root(root.task_ref());
         let code = self.run_loop_with(&root, false);
+        // The tasks the block spawned and left: cancelled and run to their
+        // end now, as a scope's would be (the interpreter is kept for later
+        // blocks, which would run them otherwise).
+        if root.is_done() {
+            if let Some(code) = self.cancel_leftovers() {
+                return Err(Flow::Exit(code));
+            }
+        }
         // An `exit` in a task the block spawned and nobody awaited, which
         // the block ended before raising: the caller raises it.
         if let Some(status) = self.take_exit_request() {
