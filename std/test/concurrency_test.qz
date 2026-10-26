@@ -323,3 +323,53 @@ class ChannelCancelTest < Test::Case
     assert_equal(3, got)
   end
 end
+
+# Tasks a `Task.blocking` block leaves are cancelled when it returns, and
+# waited for: none runs in a later block on the same helper thread.
+class BlockingLeftoverTest < Test::Case
+  # Before, a leftover (or one it spawned while cancelled) ran in the
+  # next block on the helper thread, and its `exit` was raised there.
+  def test_leftovers_end_with_the_block
+    first = Task.blocking do
+      Task.spawn do
+        begin
+          Task.sleep(1.second)
+        ensure
+          Task.spawn do
+            Task.sleep(20.ms)
+            exit 7
+          end
+        end
+      end
+      Task.yield
+      1
+    end
+    assert_equal(1, first)
+    second = begin
+      Task.blocking { Task.sleep(100.ms); 2 }
+    rescue SystemExit => e
+      -e.status
+    end
+    assert_equal(2, second)
+  end
+
+  def test_a_leftover_exit_is_raised_in_the_caller
+    status = begin
+      Task.blocking do
+        Task.spawn do
+          begin
+            Task.sleep(1.second)
+          ensure
+            exit 4
+          end
+        end
+        Task.yield
+        3
+      end
+      0
+    rescue SystemExit => e
+      e.status
+    end
+    assert_equal(4, status)
+  end
+end

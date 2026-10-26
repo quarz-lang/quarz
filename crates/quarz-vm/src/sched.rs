@@ -990,6 +990,15 @@ impl Scheduler {
         self.tasks.get(&id).expect("a task of this worker")
     }
 
+    /// This worker's tasks that have not finished.
+    pub fn live_tasks(&self) -> Vec<Rc<TaskHandle>> {
+        self.tasks
+            .values()
+            .filter(|t| !t.is_done())
+            .cloned()
+            .collect()
+    }
+
     /// How many tasks this worker has (whether any other than the current
     /// one may want to run).
     pub fn task_count(&self) -> usize {
