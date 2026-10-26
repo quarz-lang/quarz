@@ -1,0 +1,144 @@
+# `Enumerator#next` steps the built-in sources one element at a time (an
+# endless range too), raises for a method written in Quarz, and a
+# subclass that defines `next` gets `each` and Enumerable from it.
+e = (1..).each
+p e.next, e.next, e.peek, e.next
+p (10..).each_with_index.next, (1..).each_slice(2).next, (1..).each_cons(3).next
+p 3.times.next, 5.upto(7).to_a, 3.downto(1).next, 1.step(10, 4).next, (1..10).step(3).next
+c = "héllo".each_char
+p c.next, c.next, c.next
+h = {a: 1, b: 2}.each_with_index
+p h.next, h.next
+s = Set[3, 4].map
+p s.next
+b = Array::Builder[Int].new
+be = b.to_enum
+b << 1
+p be.next
+b << 2
+p be.next
+w = [5, 6].each
+p w.next, w.next
+begin
+  w.next
+rescue StopIteration
+  puts "stop"
+end
+p w.rewind.next
+nested = [1, 2, 3].each.each_slice(2)
+p nested.next, nested.next
+class Src
+  include Enumerable[Int]
+  def each(&: (Int) -> Nil) -> Nil
+    yield 1
+  end
+end
+begin
+  Src.new.each_with_index.next
+rescue NotImplementedError => x
+  puts x.message
+end
+p Src.new.each_with_index.map { |x, i| x + i }
+class Countdown < Enumerator[Int]
+  def initialize(n: Int)
+    @n = n
+  end
+  var @n: Int
+  def next -> Int
+    raise StopIteration, "done" if @n == 0
+    @n -= 1
+    @n + 1
+  end
+end
+cd = Countdown.new(3)
+p cd.next, cd.to_a
+p Countdown.new(3).map { |x| x * 10 }, Countdown.new(2).with_index { |x, i| [x, i] }
+begin
+  Countdown.new(1).peek
+rescue NotImplementedError => x
+  puts x.message
+end
+# Enumerable#zip? pads with nil, as Ruby's zip does.
+p [1, 2].zip?(["a"]), [1].zip?([3, 4]), (1..3).zip?([nil, 5])
+z = [1].zip?(["a"])[0][1]
+p z.nil?
+# A subclass as the source of another enumerator, the bounds of Int, a
+# refused step, and `first(n)` taking no element more than it returns.
+c4 = Countdown.new(4)
+p c4.first(1), c4.first(0), c4.to_a
+cw = Countdown.new(3).each_with_index
+p cw.next, cw.next, Countdown.new(5).each_slice(2).next
+mn = -9223372036854775807 - 1
+begin
+  mn.times.next
+rescue StopIteration
+  puts "times stop"
+end
+begin
+  (0...mn).each.next
+rescue StopIteration
+  puts "range stop"
+end
+[-> { 1.step(5, 0).next }, -> { (1..5).step(0).next }].each do |f|
+  begin
+    f.call
+  rescue ArgumentError => e
+    puts e.message
+  end
+end
+p (1..).first(3), [1, 2].take(5), (1..3).first(-1)
+class CdTwo < Enumerator[Int]
+  var @n: Int
+  var @from: Int
+  def initialize(@n: Int)
+    @from = @n
+  end
+  def next -> Int
+    raise StopIteration, "done" if @n == 0
+    @n -= 1
+    @n + 1
+  end
+  def rewind -> CdTwo
+    @n = @from
+    self
+  end
+end
+# String and Float-ended ranges, sizes refused, rewinding a subclass
+# under another enumerator, and an endless Range#step.
+p CdTwo.new(3).to_a
+ce = CdTwo.new(3).each_with_index
+p ce.next
+ce.rewind
+p ce.next
+sr = ("a".."c").each
+p sr.next, sr.next, (1..Float::INFINITY).each.next, ("y".."ab").each.to_a
+[-> { [1].each_cons(-1).next }, -> { (1..).each_slice(0).next }, -> { [1].each_slice(0) { |x| p x } }].each do |f|
+  begin
+    f.call
+  rescue ArgumentError => x
+    puts x.message
+  end
+end
+p (1..).step(2).first(3), (1...10).step(4).to_a
+# Rewinding over a subclass without a `rewind` of its own, a range ending
+# at Float::INFINITY, and ranges refused as the block forms do.
+class Gen < Enumerator[Int]
+  var @n: Int = 0
+  def next -> Int
+    raise StopIteration, "x" if @n == 2
+    @n += 1
+  end
+end
+en = Gen.new.each_with_index
+p en.next
+p en.rewind.next
+p (1..Float::INFINITY).each.first(2)
+[-> { p ("a".."e").step(2).next }, -> { p (1.0..2.0).each.next }, -> { p (1..2.5).each.next }, -> { p (1..2.5).to_a }].each do |f|
+  begin
+    f.call
+  rescue TypeError => e
+    puts "TypeError: #{e.message}"
+  rescue NotImplementedError => e
+    puts "NotImplementedError: #{e.message}"
+  end
+end

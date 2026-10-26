@@ -314,6 +314,9 @@ pub struct Global {
     root: std::sync::Mutex<Option<sched::TaskRef>>,
     /// The worker threads that run the tasks.
     pub workers: std::sync::Arc<sched::Workers>,
+    /// Which program of the process this is (the REPL's inputs share
+    /// one), for `deinit::set_classes`.
+    pub id: u64,
 }
 
 const _: () = {
@@ -332,6 +335,10 @@ impl Global {
             stdout: std::sync::Mutex::new(out),
             exit_request: std::sync::atomic::AtomicI64::new(NO_EXIT),
             root: std::sync::Mutex::new(None),
+            id: {
+                static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            },
         }
     }
 }
@@ -1035,7 +1042,7 @@ impl Interp {
         let deinit: Vec<bool> = (0..interp.program.world.classes.len() as ClassId)
             .map(|c| interp.deinitializer(c).is_some())
             .collect();
-        crate::deinit::set_classes(deinit);
+        crate::deinit::set_classes(deinit, interp.global.id);
         // A class's own `==` and `hash` (not a native's: the prelude's
         // compare in Rust), by which hashes and sets compare its instances.
         // Only the classes below one that declares a `==` or `hash` with a

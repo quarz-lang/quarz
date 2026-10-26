@@ -2381,10 +2381,70 @@ pub struct EnumeratorVal {
     pub recv: Value,
     pub method: Rc<str>,
     pub args: Vec<Value>,
-    /// The elements, collected at the first `next` or `peek`. (Not
-    /// Shareable: an enumerator stays in its task.)
-    buffer: RefCell<Option<Vec<Value>>>,
-    position: Cell<usize>,
+    /// The element `peek` took, which `next` returns. (Not Shareable: an
+    /// enumerator stays in its task.)
+    peeked: RefCell<Option<Value>>,
+    /// Where `next` is in the source, set at the first.
+    stepper: RefCell<Option<Stepper>>,
+}
+
+/// Where `Enumerator#next` is in a source it can step (one of the
+/// built-in collections, ranges and counting methods, or an enumerator
+/// over one): its state only, the source being the enumerator's.
+#[derive(Debug)]
+pub enum Stepper {
+    /// The next index of an array, a hash or a set (or a builder).
+    Index(usize),
+    /// Integers from `next` by `step`, up to (or down to) `last`.
+    Ints {
+        next: i64,
+        step: i64,
+        last: Option<i64>,
+    },
+    /// The byte offset of a string's next character.
+    Chars(usize),
+    /// `each_with_index`: the source's elements, with the next index.
+    Pairs(Box<Stepper>, i64),
+    /// `each_slice(n)`.
+    Slices(Box<Stepper>, usize),
+    /// `each_cons(n)`: the window so far.
+    Windows(Box<Stepper>, usize, std::collections::VecDeque<Value>),
+    /// An enumerator over an enumerator: that one's source, stepped apart
+    /// from its own `next`.
+    Inner(Box<Stepper>),
+    /// A subclass of `Enumerator`: its own `next`.
+    ByNext,
+    /// A `String` range's strings (`natives::text::StringSteps`, which
+    /// holds no value).
+    Strings(Box<dyn std::any::Any>),
+    /// Past the end.
+    Done,
+    /// Out of the enumerator, being stepped: a step may run a subclass's
+    /// `next`, which may look into the enumerator (share it, or come back
+    /// to it).
+    Running,
+}
+
+impl Stepper {
+    /// The values it holds (an `each_cons` window).
+    fn each_held(&self, f: &mut impl FnMut(&Value)) {
+        match self {
+            Stepper::Windows(base, _, window) => {
+                window.iter().for_each(&mut *f);
+                base.each_held(f);
+            }
+            Stepper::Pairs(base, _) | Stepper::Slices(base, _) | Stepper::Inner(base) => {
+                base.each_held(f)
+            }
+            Stepper::Index(_)
+            | Stepper::Ints { .. }
+            | Stepper::Chars(_)
+            | Stepper::ByNext
+            | Stepper::Strings(_)
+            | Stepper::Done
+            | Stepper::Running => {}
+        }
+    }
 }
 
 impl EnumeratorVal {
@@ -2393,64 +2453,82 @@ impl EnumeratorVal {
             recv,
             method,
             args,
-            buffer: RefCell::new(None),
-            position: Cell::new(0),
+            peeked: RefCell::new(None),
+            stepper: RefCell::new(None),
         }
     }
 
-    /// Whether the elements have been collected.
-    pub fn is_buffered(&self) -> bool {
-        self.buffer.borrow().is_some()
+    /// The element `peek` took, taken.
+    pub fn take_peeked(&self) -> Option<Value> {
+        self.peeked.borrow_mut().take()
     }
 
-    /// Keep the collected elements for `next`.
-    pub fn fill(&self, items: Vec<Value>) {
-        *self.buffer.borrow_mut() = Some(items);
+    /// Keep an element for the next `next`.
+    pub fn set_peeked(&self, v: Value) {
+        *self.peeked.borrow_mut() = Some(v);
     }
 
-    /// The element at the position (moving past it when `advance`), or
-    /// `None` at the end.
-    pub fn current(&self, advance: bool) -> Option<Value> {
-        let pos = self.position.get();
-        let v = self.buffer.borrow().as_ref()?.get(pos)?.clone();
-        if advance {
-            self.position.set(pos + 1);
+    /// The stepper taken out to step (`None` before the first `next`),
+    /// `Running` left in its place; `Err` while a step is in progress.
+    pub(crate) fn begin_step(&self) -> Result<Option<Stepper>, ()> {
+        let mut cell = self.stepper.borrow_mut();
+        if matches!(*cell, Some(Stepper::Running)) {
+            return Err(());
         }
-        Some(v)
+        Ok(cell.replace(Stepper::Running))
     }
 
-    /// Back to the start, collecting the elements again at the next use.
-    pub fn rewind(&self) {
-        self.position.set(0);
-        *self.buffer.borrow_mut() = None;
+    /// Put the stepper back after a step (`None`: not started).
+    pub(crate) fn end_step(&self, st: Option<Stepper>) {
+        let old = std::mem::replace(&mut *self.stepper.borrow_mut(), st);
+        drop(old);
     }
 
-    /// Call `f` on each buffered element (for `Value::share`).
-    fn each_buffered(&self, f: impl FnMut(&Value)) {
-        if let Some(xs) = &*self.buffer.borrow() {
-            xs.iter().for_each(f);
+    /// Back to the start: the next `next` begins again. `false`, doing
+    /// nothing, while a step is in progress.
+    pub fn rewind(&self) -> bool {
+        let Ok(mut stepper) = self.stepper.try_borrow_mut() else {
+            return false;
+        };
+        if matches!(*stepper, Some(Stepper::Running)) {
+            return false;
+        }
+        let taken = (self.peeked.borrow_mut().take(), stepper.take());
+        drop(stepper);
+        drop(taken);
+        true
+    }
+
+    /// Call `f` on the values it holds (for `Value::share`).
+    fn each_buffered(&self, mut f: impl FnMut(&Value)) {
+        self.peeked.borrow().iter().for_each(&mut f);
+        if let Some(s) = &*self.stepper.borrow() {
+            s.each_held(&mut f);
         }
     }
 
-    /// Call `f` on each buffered element, unless the buffer is borrowed
-    /// (`false` then): the cycle collector's look into it.
-    pub(crate) fn try_each_buffered(&self, f: impl FnMut(&Value)) -> bool {
-        match self.buffer.try_borrow() {
-            Ok(b) => {
-                if let Some(xs) = &*b {
-                    xs.iter().for_each(f);
-                }
-                true
-            }
-            Err(_) => false,
+    /// Call `f` on the values it holds, unless they are borrowed (`false`
+    /// then): the cycle collector's look into it.
+    pub(crate) fn try_each_buffered(&self, mut f: impl FnMut(&Value)) -> bool {
+        let (Ok(peeked), Ok(stepper)) = (self.peeked.try_borrow(), self.stepper.try_borrow())
+        else {
+            return false;
+        };
+        peeked.iter().for_each(&mut f);
+        if let Some(s) = &*stepper {
+            s.each_held(&mut f);
         }
+        true
     }
 
-    /// Drop the buffered elements (the cycle collector freeing garbage).
+    /// Drop the values it holds (the cycle collector freeing garbage).
     pub(crate) fn clear_buffer(&self) {
-        if let Ok(mut b) = self.buffer.try_borrow_mut() {
-            let taken = b.take();
-            drop(b);
+        if let (Ok(mut p), Ok(mut s)) =
+            (self.peeked.try_borrow_mut(), self.stepper.try_borrow_mut())
+        {
+            let taken = (p.take(), s.take());
+            drop(p);
+            drop(s);
             drop(taken);
         }
     }

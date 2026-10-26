@@ -1459,7 +1459,15 @@ impl Interp {
             native: Cell::new(false),
             args_owned: Cell::new(false),
         };
-        self.run_func(fid, &act)
+        let r = self.run_func(fid, &act);
+        // The frame holds what blocks captured: released only now, past
+        // the last call boundary, so their `deinitialize`s run here (not
+        // on an `exit` or an error, which other code is still to handle).
+        drop(act);
+        if r.is_ok() && crate::deinit::pending() {
+            self.run_deinitializers();
+        }
+        r
     }
 }
 
