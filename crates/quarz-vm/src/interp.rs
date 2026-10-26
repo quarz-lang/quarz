@@ -1147,12 +1147,21 @@ impl Interp {
         code
     }
 
+    /// End a session that ran pieces of a program (the REPL) with `code`:
+    /// its `at_exit` blocks run, as when a program ends. The exit code.
+    pub fn finish(self: &std::rc::Rc<Interp>, code: i32) -> i32 {
+        let code = self.run_at_exit(code);
+        self.flush();
+        code
+    }
+
     /// Run the `at_exit` blocks, the last registered first (and any they
     /// register), each as the root task of a run of its own, as Ruby does
     /// when the main program ends, also by `exit` or an exception. An
     /// exception in one is reported; a block that exits or fails sets the
     /// exit code.
     fn run_at_exit(self: &std::rc::Rc<Interp>, mut code: i32) -> i32 {
+        code = self.pending_exit(code);
         loop {
             let Some(block) = lock(&self.global.at_exit).pop() else {
                 return code;

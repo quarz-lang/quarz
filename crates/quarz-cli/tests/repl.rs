@@ -316,3 +316,27 @@ fn a_library_required_later_is_lowered() {
     let (_, printed) = values(&["x = 1", "require \"json\"", "puts JSON.parse(\"[1]\")"]);
     assert_eq!(printed, "[1]\n");
 }
+
+/// Ending the session runs the `at_exit` blocks, as a program's end does:
+/// at Ctrl-D (`finish(0)`) or after an `exit`, whose status they may change.
+#[test]
+fn ending_the_session_runs_at_exit_blocks() {
+    let buffer = Arc::new(Mutex::new(Vec::new()));
+    let mut repl = Repl::new(Box::new(Shared(buffer.clone()))).unwrap();
+    let _ = repl.feed_line("at_exit { puts \"bye\" }");
+    let _ = repl.feed_line("puts \"working\"");
+    assert_eq!(repl.finish(0), 0);
+    let printed = String::from_utf8_lossy(&buffer.lock().unwrap()).into_owned();
+    assert_eq!(printed, "working\nbye\n");
+
+    let buffer = Arc::new(Mutex::new(Vec::new()));
+    let mut repl = Repl::new(Box::new(Shared(buffer.clone()))).unwrap();
+    let _ = repl.feed_line("at_exit { puts \"bye\"; exit 5 }");
+    let code = match repl.feed_line("exit 3") {
+        Outcome::Exit(code) => code,
+        _ => panic!("no exit"),
+    };
+    assert_eq!(repl.finish(code), 5);
+    let printed = String::from_utf8_lossy(&buffer.lock().unwrap()).into_owned();
+    assert_eq!(printed, "bye\n");
+}

@@ -25,6 +25,9 @@ pub struct Repl {
     /// Source files by index: the prelude, the current input, required
     /// files.
     files: Vec<SourceFile>,
+    /// The interpreter of the last input, which `finish` ends the session
+    /// with.
+    last: Option<Rc<Interp>>,
 }
 
 /// What happened to one line of input.
@@ -107,7 +110,18 @@ impl Repl {
             buffer: String::new(),
             units: Vec::new(),
             files,
+            last: None,
         })
+    }
+
+    /// End the session with `code` (Ctrl-D: 0, or an `exit`'s): the
+    /// `at_exit` blocks registered run, as at the end of a program. The
+    /// exit code.
+    pub fn finish(&mut self, code: i32) -> i32 {
+        match self.last.take() {
+            Some(interp) => interp.finish(code),
+            None => code,
+        }
     }
 
     /// Whether a multi-line input is being accumulated.
@@ -224,6 +238,7 @@ impl Repl {
             Err(code) => Outcome::Exit(code),
         };
         self.state = interp.shared_state();
+        self.last = Some(interp);
         outcome
     }
 
@@ -274,6 +289,7 @@ impl Repl {
         let (interp, fid) = self.load(input);
         let result = interp.run_repl(unit.file, fid);
         self.state = interp.shared_state();
+        self.last = Some(interp);
         match result {
             Err(code) => Some(Outcome::Exit(code)),
             Ok(_) => None,
