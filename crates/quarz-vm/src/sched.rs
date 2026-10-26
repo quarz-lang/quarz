@@ -174,6 +174,11 @@ pub enum TaskExit {
     Exit(i32),
 }
 
+/// Whether any task (of any worker) has ever been cancelled: until one
+/// is, the checks of channel operations and `Task.yield` need not look
+/// the current task up.
+pub static ANY_CANCELLED: AtomicBool = AtomicBool::new(false);
+
 /// A task, as other tasks see it (any worker may hold it: it is
 /// allocated shared). Only the worker that runs the task changes its
 /// state and its stack fields; the others read the state, take the
@@ -274,6 +279,7 @@ impl TaskHandle {
     }
 
     pub fn set_cancel_requested(&self) {
+        ANY_CANCELLED.store(true, Ordering::Release);
         self.cancel_requested.store(true, Ordering::Release);
     }
 
