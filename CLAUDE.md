@@ -16,6 +16,14 @@ A Rust workspace, front end to back ends:
 - `docs/0N-*.md` describe the language and implementation; each has a
   `.ja.md` twin that must be updated with it.
 
+## Designs
+
+A design (in `docs/`, an issue, or one given in the conversation) may be
+wrong. When something in it looks doubtful (a bug, a contradiction, a
+weaker guarantee than it claims, a better option), do not implement it as
+written, nor depart from it on your own: ask the user first, saying what
+is in doubt and why.
+
 ## Before committing
 
 ```sh
