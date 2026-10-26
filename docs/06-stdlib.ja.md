@@ -6,7 +6,7 @@
 
 ## 1. Kernel(トップレベルで使える関数)
 
-`puts`、`print`、`printf`、`p`、`pp`、`warn`、`raise`、`loop`、`sleep`(= `Task.sleep`)、`Task.spawn`、`exit`(Ruby と同じく `SystemExit` を投げるので `ensure` 節が実行される。他のタスクでは、Ruby のスレッドと同じくメインタスクも投げる)、`exit!`、`abort`、`at_exit`、`require`、`require_relative`、`gets`/`gets?`、`readline`、`readlines`、`rand`/`srand`、`format`/`sprintf`、`Integer(text, base = 10)`/`Float(...)`/`String(...)`(変換・失敗で例外)。
+`puts`、`print`、`printf`、`p`、`pp`、`warn`、`raise`、`loop`、`sleep`(= `Task.sleep`)、`Task.spawn`、`exit`(Ruby と同じく `SystemExit` を投げるので `ensure` 節が実行される。他のタスクでは、Ruby のスレッドと同じくメインタスクも投げる。タスクを起動した `Task.timeout` のブロックの中なら、そのブロックが投げる)、`exit!`、`abort`、`at_exit`、`require`、`require_relative`、`gets`/`gets?`、`readline`、`readlines`、`rand`/`srand`、`format`/`sprintf`、`Integer(text, base = 10)`/`Float(...)`/`String(...)`(変換・失敗で例外)。
 
 `eval`、`send`、`binding`、`method`、`instance_eval`、`define_method`、`ObjectSpace`、`fork`、`system`/バッククォート(`Process.run`/`Process.sh` に移動)はありません。
 

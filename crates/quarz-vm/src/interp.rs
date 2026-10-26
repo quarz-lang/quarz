@@ -336,20 +336,7 @@ impl Global {
     }
 }
 
-/// Gives the root back after `Interp::stand_in_root`.
-pub(crate) struct RootGuard<'a> {
-    interp: &'a Interp,
-    was: Option<sched::TaskRef>,
-}
-
-impl Drop for RootGuard<'_> {
-    fn drop(&mut self) {
-        *lock(&self.interp.global.root) = self.was;
-    }
-}
-
-/// `Global::exit_request` when there is none.
-const NO_EXIT: i64 = i64::MIN;
+use sched::NO_EXIT;
 
 /// The name of the task `Task.timeout` runs its block in.
 pub(crate) const TIMEOUT_TASK: &str = "timeout";
@@ -1132,8 +1119,8 @@ impl Interp {
             .borrow_mut()
             .spawn(body, None, "main".to_string(), 256 * 1024 * 1024);
         self.root_task.set(Some(root.id));
-        self.set_root(root.task_ref());
-        let code = self.pending_exit(self.run_loop(&root));
+        self.set_root(&root);
+        let code = self.pending_exit(&root, self.run_loop(&root));
         // The other workers stop with the main program.
         self.global.workers.stop();
         let code = self.run_at_exit(code);
@@ -1161,7 +1148,11 @@ impl Interp {
     /// exception in one is reported; a block that exits or fails sets the
     /// exit code.
     fn run_at_exit(self: &std::rc::Rc<Interp>, mut code: i32) -> i32 {
-        code = self.pending_exit(code);
+        if let Some(status) = self.take_exit_request() {
+            if code == 0 {
+                code = status as i32;
+            }
+        }
         loop {
             let Some(block) = lock(&self.global.at_exit).pop() else {
                 return code;
@@ -1177,8 +1168,8 @@ impl Interp {
                     .borrow_mut()
                     .spawn(body, None, "at_exit".to_string(), 16 * 1024 * 1024);
             self.root_task.set(Some(root.id));
-            self.set_root(root.task_ref());
-            let c = self.pending_exit(self.run_loop(&root));
+            self.set_root(&root);
+            let c = self.pending_exit(&root, self.run_loop(&root));
             if c != 0 {
                 code = c;
             }
@@ -1222,14 +1213,18 @@ impl Interp {
             self.sched
                 .borrow_mut()
                 .spawn(run_body, None, "repl".to_string(), 256 * 1024 * 1024);
-        self.set_root(root.task_ref());
+        self.set_root(&root);
         let code = self.run_loop(&root);
         self.flush();
         if code != 0 && !root.is_done() {
+            // Ending: an exit the root has not raised goes with it.
+            let _ = root.take_exit();
             return Err(code);
         }
-        // An exit from a task nobody awaited, the line ended before raising.
-        if let Some(status) = self.take_exit_request() {
+        // An exit from a task nobody awaited, the line ended before raising
+        // (both taken: the first one wins).
+        let (own, global) = (root.take_exit(), self.take_exit_request());
+        if let Some(status) = own.or(global) {
             return Err(status as i32);
         }
         let result = root.result();
@@ -1326,15 +1321,34 @@ impl Interp {
             (s.worker, s.workers.clone())
         };
         let target = workers.place(here);
+        // Where its `exit`s go: its spawner's sink; the task of a
+        // `Task.timeout` block is one itself (the block is its caller's).
+        let sink = {
+            let s = self.sched.borrow();
+            s.current
+                .and_then(|id| TaskHandle::children_sink(s.task(id)))
+        };
+        let is_sink = name == TIMEOUT_TASK;
         if target == here {
             let body = self.task_body(closure);
-            return self
-                .sched
-                .borrow_mut()
-                .spawn(body, scope, name.to_string(), sched::TASK_STACK);
+            return self.sched.borrow_mut().spawn_with(
+                body,
+                scope,
+                name.to_string(),
+                sched::TASK_STACK,
+                sink,
+                is_sink,
+            );
         }
         self.start_worker(target);
-        let handle = TaskHandle::new(target, workers.reserve_id(target), scope, name.to_string());
+        let handle = TaskHandle::with_sink(
+            target,
+            workers.reserve_id(target),
+            scope,
+            name.to_string(),
+            sink,
+            is_sink,
+        );
         workers.post_spawn(
             target,
             sched::SpawnRequest {
@@ -1445,10 +1459,11 @@ impl Interp {
                 Ok(v) => TaskExit::Result(TaskResult::Value(v)),
                 // An `exit` nothing rescued in the task: like any exception,
                 // the task's result, raised again by `await` or its scope.
-                // It also has the root task raise it where it next waits, as
-                // Ruby raises a thread's in the main thread (a scope's owner
-                // the root, it takes it once), but for `Task.timeout`'s task,
-                // whose block is its caller's.
+                // It also goes to the task's sink (the root, or the
+                // `Task.timeout` block it was spawned under), which raises it
+                // where it next waits, as Ruby raises a thread's in the main
+                // thread (a scope's owner the sink, it takes it once); but
+                // not from `Task.timeout`'s task, whose block is its caller's.
                 Err(Flow::Raise(e)) if me.exception_is_a(&e, me.program.exc.system_exit) => {
                     let task = me.current_task();
                     if task.name != TIMEOUT_TASK {
@@ -1482,81 +1497,114 @@ impl Interp {
         if task.cancel_due() {
             return Err(self.raise(self.program.exc.cancelled, "task cancelled"));
         }
-        match self.root_exit(task.task_ref()) {
+        match self.own_exit(task) {
             Some(exit) => Err(exit),
             None => Ok(()),
         }
     }
 
-    /// In the root task, the `SystemExit` of an exit request (an `exit` in
-    /// a task of `Task.spawn`), taking it.
-    fn root_exit(&self, task: sched::TaskRef) -> Option<Flow> {
-        let exit = &self.global.exit_request;
-        if exit.load(std::sync::atomic::Ordering::Acquire) == NO_EXIT
-            || *lock(&self.global.root) != Some(task)
-        {
+    /// The `SystemExit` of an `exit` delivered to `task` as a sink (or, for
+    /// the run's root, one no live sink took), taking it.
+    fn own_exit(&self, task: &TaskHandle) -> Option<Flow> {
+        // None delivered anywhere: nothing to look at (each is counted
+        // before it is stored, and its sink woken after).
+        if sched::PENDING_EXITS.load(std::sync::atomic::Ordering::Acquire) == 0 {
             return None;
         }
-        match exit.swap(NO_EXIT, std::sync::atomic::Ordering::AcqRel) {
-            NO_EXIT => None,
-            status => Some(Flow::Raise(crate::natives::system_exit(
-                self, status, "exit",
-            ))),
-        }
+        let status = match task.take_exit() {
+            Some(status) => status,
+            None => {
+                let global = &self.global.exit_request;
+                if global.load(std::sync::atomic::Ordering::Acquire) == NO_EXIT
+                    || *lock(&self.global.root) != Some(task.task_ref())
+                {
+                    return None;
+                }
+                let mut status = self.take_exit_request()?;
+                // The root waiting in `Task.timeout`: the block takes it.
+                if let Some(d) = task.live_delegate() {
+                    match d.deliver_exit(status) {
+                        Ok(()) => {
+                            self.wake_ref(d.task_ref());
+                            return None;
+                        }
+                        Err(s) => status = s,
+                    }
+                }
+                status
+            }
+        };
+        Some(Flow::Raise(crate::natives::system_exit(
+            self, status, "exit",
+        )))
     }
 
-    /// An `exit` from a task nobody waits for, which ended in `SystemExit`:
-    /// the root task raises it where it next waits (or the program ends
-    /// with its status, if the root task ends first).
-    fn request_exit(&self, status: i64) {
-        let _ = self.global.exit_request.compare_exchange(
-            NO_EXIT,
-            status,
-            std::sync::atomic::Ordering::AcqRel,
-            std::sync::atomic::Ordering::Acquire,
-        );
+    /// An `exit` from the current task, which ended in `SystemExit`: its
+    /// sink (or the nearest one still running) raises it where it next
+    /// waits; with none, the run's root, or the program ends with its
+    /// status if the root ended first.
+    fn request_exit(&self, mut status: i64) {
+        let mut next = self.current_task().live_sink();
+        while let Some(sink) = next {
+            let target = sink.live_delegate().unwrap_or_else(|| sink.clone());
+            // Checked again once stored: one that finished meanwhile gives
+            // it back, and the next sink up takes it.
+            match target.deliver_exit(status) {
+                Ok(()) => {
+                    self.wake_ref(target.task_ref());
+                    return;
+                }
+                Err(s) => status = s,
+            }
+            // A delegate that just finished: its sink takes it.
+            if !Rc::ptr_eq(&target, &sink) {
+                match sink.deliver_exit(status) {
+                    Ok(()) => {
+                        self.wake_ref(sink.task_ref());
+                        return;
+                    }
+                    Err(s) => status = s,
+                }
+            }
+            next = sink.live_sink();
+        }
+        sched::PENDING_EXITS.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        if self
+            .global
+            .exit_request
+            .compare_exchange(
+                NO_EXIT,
+                status,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            )
+            .is_err()
+        {
+            sched::PENDING_EXITS.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+        }
         if let Some(root) = *lock(&self.global.root) {
             self.wake_ref(root);
         }
     }
 
-    /// While the guard lives, `task` takes the root's exit requests, when
-    /// the current task is the root (`Task.timeout`'s block, which is its
-    /// caller's code).
-    pub(crate) fn stand_in_root(&self, task: &TaskHandle) -> Option<RootGuard<'_>> {
-        let mut root = lock(&self.global.root);
-        if *root != Some(self.current_task().task_ref()) {
-            return None;
-        }
-        let was = root.replace(task.task_ref());
-        drop(root);
-        // A request already pending: the stand-in takes it at its next wait.
-        if self
-            .global
-            .exit_request
-            .load(std::sync::atomic::Ordering::Acquire)
-            != NO_EXIT
-        {
-            self.wake_ref(task.task_ref());
-        }
-        Some(RootGuard { interp: self, was })
-    }
-
-    /// The task an exit request goes to (the run's root).
-    pub(crate) fn set_root(&self, root: sched::TaskRef) {
-        *lock(&self.global.root) = Some(root);
+    /// The run's root task: a sink, and the one an exit no live sink takes
+    /// goes to.
+    pub(crate) fn set_root(&self, root: &TaskHandle) {
+        root.make_sink();
+        *lock(&self.global.root) = Some(root.task_ref());
     }
 
     /// The exit code of a run whose root task ended with `code`, or the
-    /// status of an exit request the root task ended before raising.
-    pub(crate) fn pending_exit(&self, code: i32) -> i32 {
-        match self.take_exit_request() {
+    /// status of an exit the root task ended before raising.
+    pub(crate) fn pending_exit(&self, root: &TaskHandle, code: i32) -> i32 {
+        match root.take_exit().or_else(|| self.take_exit_request()) {
             Some(status) if code == 0 => status as i32,
             _ => code,
         }
     }
 
-    /// The status of an exit request nothing raised yet, taking it.
+    /// The status of an exit no sink took and nothing raised yet, taking
+    /// it.
     pub(crate) fn take_exit_request(&self) -> Option<i64> {
         match self
             .global
@@ -1564,7 +1612,10 @@ impl Interp {
             .swap(NO_EXIT, std::sync::atomic::Ordering::AcqRel)
         {
             NO_EXIT => None,
-            status => Some(status),
+            status => {
+                sched::PENDING_EXITS.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+                Some(status)
+            }
         }
     }
 
@@ -1635,27 +1686,29 @@ impl Interp {
     /// `check_cancel` for the current task, without taking a reference to
     /// it (`Task.yield` may be called often).
     pub fn check_cancel_current(&self) -> Result<(), Flow> {
-        // Nothing cancelled yet and no exit request: nothing to look up.
+        // Nothing cancelled yet and no exit delivered: nothing to look up.
         if !sched::ANY_CANCELLED.load(std::sync::atomic::Ordering::Acquire)
-            && self
-                .global
-                .exit_request
-                .load(std::sync::atomic::Ordering::Acquire)
-                == NO_EXIT
+            && sched::PENDING_EXITS.load(std::sync::atomic::Ordering::Acquire) == 0
         {
             return Ok(());
         }
-        let (due, me) = {
+        // Nothing for the current task: no need to take a reference to it.
+        let quiet = {
             let s = self.sched.borrow();
-            (s.current_cancel_due(), s.current_ref())
+            let task = s.task(s.current.expect("no current task"));
+            !task.cancel_due()
+                && task.exit_request.load(std::sync::atomic::Ordering::Acquire) == NO_EXIT
+                && (self
+                    .global
+                    .exit_request
+                    .load(std::sync::atomic::Ordering::Acquire)
+                    == NO_EXIT
+                    || *lock(&self.global.root) != Some(task.task_ref()))
         };
-        if due {
-            return Err(self.raise(self.program.exc.cancelled, "task cancelled"));
+        if quiet {
+            return Ok(());
         }
-        match self.root_exit(me) {
-            Some(exit) => Err(exit),
-            None => Ok(()),
-        }
+        self.check_cancel(&self.current_task())
     }
 
     pub fn wake(&self, id: TaskId) {
@@ -1687,11 +1740,12 @@ impl Interp {
     pub fn await_task(&self, task: &Rc<TaskHandle>) -> EvalResult {
         loop {
             if task.is_done() {
-                // The root awaiting a task done with an `exit` it has not
+                // A sink awaiting a task done with an `exit` it has not
                 // raised yet: that exit, once (not also the task's result).
-                let me = self.sched.borrow().current_ref();
-                if let Some(exit) = self.root_exit(me) {
-                    return Err(exit);
+                if sched::PENDING_EXITS.load(std::sync::atomic::Ordering::Acquire) != 0 {
+                    if let Some(exit) = self.own_exit(&self.current_task()) {
+                        return Err(exit);
+                    }
                 }
                 return match task.result() {
                     Some(TaskResult::Value(v)) => Ok(v),

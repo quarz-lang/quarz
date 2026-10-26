@@ -179,6 +179,15 @@ pub enum TaskExit {
 /// the current task up.
 pub static ANY_CANCELLED: AtomicBool = AtomicBool::new(false);
 
+/// How many `exit`s are delivered and not yet taken (in sinks or the
+/// global request): while none is, the checks need not look the current
+/// task up.
+pub static PENDING_EXITS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// `TaskHandle::exit_request` (and `Global::exit_request`) when there is
+/// none.
+pub const NO_EXIT: i64 = i64::MIN;
+
 /// A task, as other tasks see it (any worker may hold it: it is
 /// allocated shared). Only the worker that runs the task changes its
 /// state and its stack fields; the others read the state, take the
@@ -193,6 +202,18 @@ pub struct TaskHandle {
     cancel_requested: AtomicBool,
     /// How deep the task is in `Task.uncancellable` blocks.
     uncancellable: std::sync::atomic::AtomicU32,
+    /// Whether the `exit`s of the tasks it spawns (and theirs) go to it: a
+    /// root task, the task of a `Task.timeout` block (its caller's code).
+    is_sink: AtomicBool,
+    /// Where this task's `exit`s go, and its children's unless it is a
+    /// sink itself: its spawner's sink, set once before it runs.
+    sink: Mutex<Option<Rc<TaskHandle>>>,
+    /// The status of an `exit` delivered to it as a sink, which it raises
+    /// where it next waits (`NO_EXIT`: none).
+    pub exit_request: std::sync::atomic::AtomicI64,
+    /// While this sink waits in `Task.timeout`, the block's task, which
+    /// the `exit`s meant for it go to (the block is its code).
+    delegate: Mutex<Option<Rc<TaskHandle>>>,
     pub scope: Option<Rc<ScopeInner>>,
     pub name: String,
     /// The coroutine's yielder, set when the task first runs.
@@ -219,6 +240,18 @@ impl TaskHandle {
         scope: Option<Rc<ScopeInner>>,
         name: String,
     ) -> Rc<TaskHandle> {
+        Self::with_sink(worker, id, scope, name, None, false)
+    }
+
+    /// `new`, with where its `exit`s go, and whether it is a sink itself.
+    pub fn with_sink(
+        worker: u32,
+        id: TaskId,
+        scope: Option<Rc<ScopeInner>>,
+        name: String,
+        sink: Option<Rc<TaskHandle>>,
+        is_sink: bool,
+    ) -> Rc<TaskHandle> {
         let handle = Rc::new_shared(TaskHandle {
             id,
             worker,
@@ -227,6 +260,10 @@ impl TaskHandle {
             joiners: Mutex::new(Vec::new()),
             cancel_requested: AtomicBool::new(false),
             uncancellable: std::sync::atomic::AtomicU32::new(0),
+            is_sink: AtomicBool::new(is_sink),
+            sink: Mutex::new(sink),
+            exit_request: std::sync::atomic::AtomicI64::new(NO_EXIT),
+            delegate: Mutex::new(None),
             scope: scope.clone(),
             name,
             yielder: AtomicPtr::new(std::ptr::null_mut()),
@@ -238,6 +275,116 @@ impl TaskHandle {
             scope.add_child(handle.clone());
         }
         handle
+    }
+
+    /// Make it a sink for the `exit`s of the tasks it spawns.
+    pub fn make_sink(&self) {
+        self.is_sink.store(true, Ordering::Release);
+    }
+
+    /// Where its `exit`s go: its spawner's sink (none for a root task).
+    pub fn sink(&self) -> Option<Rc<TaskHandle>> {
+        lock(&self.sink).clone()
+    }
+
+    /// The sink for the tasks it spawns: itself, if it is one; none when
+    /// all of its sinks finished (their exits go to the run's root).
+    pub fn children_sink(task: &Rc<TaskHandle>) -> Option<Rc<TaskHandle>> {
+        if task.is_sink.load(Ordering::Acquire) {
+            return Some(task.clone());
+        }
+        task.live_sink()
+    }
+
+    /// Its nearest sink still running, if any, kept as its sink: the sinks
+    /// that finished are let go (a chain of them would grow without end in
+    /// a task that respawns itself from a `Task.timeout` block).
+    pub fn live_sink(&self) -> Option<Rc<TaskHandle>> {
+        let mut next = {
+            let sink = lock(&self.sink);
+            match &*sink {
+                Some(s) if !s.is_done() => return Some(s.clone()),
+                None => return None,
+                Some(s) => s.sink(),
+            }
+        };
+        while let Some(s) = &next {
+            if !s.is_done() {
+                break;
+            }
+            next = s.sink();
+        }
+        *lock(&self.sink) = next.clone();
+        next
+    }
+
+    /// Deliver an `exit` to it (the first one stays). When it has finished
+    /// meanwhile, the exit it holds that nobody took yet, taken back for
+    /// another sink.
+    pub fn deliver_exit(&self, status: i64) -> Result<(), i64> {
+        // Counted first, so that a taker never brings the count below zero.
+        PENDING_EXITS.fetch_add(1, Ordering::AcqRel);
+        if self
+            .exit_request
+            .compare_exchange(NO_EXIT, status, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            PENDING_EXITS.fetch_sub(1, Ordering::AcqRel);
+        }
+        // Under the joiners' lock, which the task is marked done under:
+        // either this sees it done, or whoever sees it done sees the exit
+        // stored.
+        let done = {
+            let _joiners = lock(&self.joiners);
+            self.is_done()
+        };
+        if done {
+            if let Some(status) = self.take_exit() {
+                return Err(status);
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether it is a sink.
+    pub fn is_sink(&self) -> bool {
+        self.is_sink.load(Ordering::Acquire)
+    }
+
+    /// Set (or clear) the task its `exit`s go to while it waits in
+    /// `Task.timeout`; the one there before.
+    pub fn set_delegate(&self, to: Option<Rc<TaskHandle>>) -> Option<Rc<TaskHandle>> {
+        std::mem::replace(&mut *lock(&self.delegate), to)
+    }
+
+    /// Where an `exit` meant for this sink goes now, if not to it: down
+    /// the delegates still running.
+    pub fn live_delegate(&self) -> Option<Rc<TaskHandle>> {
+        let mut found: Option<Rc<TaskHandle>> = None;
+        loop {
+            let next = match &found {
+                Some(t) => lock(&t.delegate).clone(),
+                None => lock(&self.delegate).clone(),
+            };
+            match next {
+                Some(d) if !d.is_done() => found = Some(d),
+                _ => return found,
+            }
+        }
+    }
+
+    /// The exit delivered to it, taking it.
+    pub fn take_exit(&self) -> Option<i64> {
+        if self.exit_request.load(Ordering::Acquire) == NO_EXIT {
+            return None;
+        }
+        match self.exit_request.swap(NO_EXIT, Ordering::AcqRel) {
+            NO_EXIT => None,
+            status => {
+                PENDING_EXITS.fetch_sub(1, Ordering::AcqRel);
+                Some(status)
+            }
+        }
     }
 
     pub fn task_ref(&self) -> TaskRef {
@@ -260,6 +407,11 @@ impl TaskHandle {
     /// all, happens before a `Done` another worker reads.)
     pub fn set_state(&self, s: TaskState) {
         self.state.store(s as u8, Ordering::Release);
+        if s == TaskState::Done && !self.is_sink() {
+            // Its own exits are requested by now: a task that is no sink
+            // lets its sink go (which may hold it, in its result).
+            *lock(&self.sink) = None;
+        }
     }
 
     pub fn is_done(&self) -> bool {
@@ -1009,13 +1161,6 @@ impl Scheduler {
         self.task(id).clone()
     }
 
-    /// Whether the current task's cancellation is due (`cancel_due`),
-    /// without taking a reference to it.
-    pub fn current_cancel_due(&self) -> bool {
-        let id = self.current.expect("no current task");
-        self.task(id).cancel_due()
-    }
-
     /// Create a task of this worker running `body` on its own coroutine
     /// stack.
     pub fn spawn(
@@ -1025,8 +1170,22 @@ impl Scheduler {
         name: String,
         stack_size: usize,
     ) -> Rc<TaskHandle> {
+        self.spawn_with(body, scope, name, stack_size, None, false)
+    }
+
+    /// `spawn`, with the task's sink, and whether it is one itself
+    /// (`TaskHandle::with_sink`).
+    pub fn spawn_with(
+        &mut self,
+        body: Box<dyn FnOnce() -> TaskExit>,
+        scope: Option<Rc<ScopeInner>>,
+        name: String,
+        stack_size: usize,
+        sink: Option<Rc<TaskHandle>>,
+        is_sink: bool,
+    ) -> Rc<TaskHandle> {
         let id = self.workers.reserve_id(self.worker);
-        let handle = TaskHandle::new(self.worker, id, scope, name);
+        let handle = TaskHandle::with_sink(self.worker, id, scope, name, sink, is_sink);
         self.adopt(handle.clone(), body, stack_size);
         handle
     }
@@ -1245,7 +1404,11 @@ impl Scheduler {
                 drop(co);
                 match exit {
                     TaskExit::Exit(code) => {
-                        task.set_state(TaskState::Done);
+                        // Under the joiners' lock, as below (`deliver_exit`).
+                        {
+                            let _joiners = lock(&task.joiners);
+                            task.set_state(TaskState::Done);
+                        }
                         if self.worker != 0 {
                             // The main worker ends the program.
                             self.workers.request_exit(code);

@@ -1,0 +1,19 @@
+# An `exit` in a test is raised in the test (its `Task.timeout` block), so
+# `assert_raise` catches it, run in parallel or not.
+class ExitInTestTest < Test::Case
+  def test_scope_child_exit
+    assert_raise(SystemExit) { Task.scope { |s| s.spawn { exit 1 } }; nil }
+  end
+
+  def test_awaited_exit
+    assert_raise(SystemExit) { Task.spawn { exit 2 }.await; nil }
+  end
+
+  def test_unawaited_exit
+    assert_raise(SystemExit) do
+      Task.spawn { exit 3 }
+      Task.sleep(1.second)
+      nil
+    end
+  end
+end

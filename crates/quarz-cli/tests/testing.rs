@@ -105,6 +105,36 @@ fn fail_fast_cancels_parallel_tests() {
     assert!(started.elapsed() < std::time::Duration::from_millis(1500));
 }
 
+/// An `exit` in a test is raised in that test, also run in parallel
+/// (each test a scope child of the runner) with several workers.
+#[test]
+fn an_exit_in_a_test_is_caught_in_it() {
+    for args in [
+        vec!["test_cmd/exit_test.qz"],
+        vec!["test_cmd/exit_test.qz", "--parallel=4"],
+    ] {
+        let out = Command::new(env!("CARGO_BIN_EXE_quarz"))
+            .arg("test")
+            .args(&args)
+            .current_dir(tests_dir())
+            .env("QUARZ_THREADS", "4")
+            .output()
+            .unwrap();
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{args:?}: {}{}",
+            stdout(&out),
+            stderr(&out)
+        );
+        assert!(
+            stdout(&out).contains("3 tests, 3 assertions, 0 failures, 0 errors"),
+            "{args:?}: {}",
+            stdout(&out)
+        );
+    }
+}
+
 #[test]
 fn list_and_names() {
     let out = quarz(&[

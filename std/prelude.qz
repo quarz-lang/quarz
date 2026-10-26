@@ -6344,10 +6344,13 @@ module Kernel
   #
   # In another task, the `SystemExit` ends the task as any exception does:
   # `await`, the task's `Task.scope`, `Task.timeout` and `Task.blocking`
-  # raise it again in their caller. The main task raises it too, where it
-  # next waits (once, when it is the one waiting for the task), as Ruby
-  # raises a thread's in the main thread: an `exit` in an HTTP handler ends
-  # the program. Not so for `Task.timeout`'s block, which is the caller's.
+  # raise it again in their caller. It is also raised where it next waits
+  # in the main task (once, when it is the one waiting for the task), as
+  # Ruby raises a thread's in the main thread: an `exit` in an HTTP handler
+  # ends the program. A `Task.timeout` block is its caller's code: while it
+  # runs, the exit of a task spawned in it, or one meant for the task
+  # waiting in it, is raised in the block instead (so `quarz test` catches
+  # one in a test, parallel or not).
   native def exit(status: Int = 0) -> Nothing
   # Ends the program with `status` at once: no `ensure` clause and no
   # `at_exit` block runs. What the task's thread wrote is flushed; as with
