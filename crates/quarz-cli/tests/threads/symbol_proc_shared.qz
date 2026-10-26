@@ -1,0 +1,46 @@
+# An `&:name` procedure the checker resolved to no single method (checked
+# once per type of the block's parameter) looks its method up by name; a
+# shared one, called by tasks on several workers at once with values of
+# different classes, keeps no cache (whose writes would race: a class
+# paired with another class's method).
+class Ma
+  include Shareable
+  def hi -> String = "ma"
+end
+class Ma2 < Ma
+  def hi -> String = "ma2"
+end
+class Mb
+  include Shareable
+  def hi -> String = "mb"
+end
+class Mb2 < Mb
+  def hi -> String = "mb2"
+end
+def keep[T](sample: T, &blk: shareable (T) -> String) -> shareable (T) -> String = blk
+def pick(i: Int) -> Array[[Ma, Ma]] | Array[[Mb, Mb]]
+  if i > 0
+    b: [Mb, Mb] = [Mb.new, Mb2.new]
+    [b]
+  else
+    a: [Ma, Ma] = [Ma.new, Ma2.new]
+    [a]
+  end
+end
+[0, 1].each do |i|
+  pick(i).each do |pair|
+    f = keep(pair[0], &:hi)
+    ts = (0..3).map do |w|
+      Task.spawn do
+        wrong = 0
+        20_000.times do |k|
+          x = (k + w).even? ? pair[0] : pair[1]
+          want = x.is_a?(Ma2) ? "ma2" : x.is_a?(Ma) ? "ma" : x.is_a?(Mb2) ? "mb2" : "mb"
+          wrong += 1 unless f.call(x) == want
+        end
+        wrong
+      end
+    end
+    p ts.map(&:await)
+  end
+end

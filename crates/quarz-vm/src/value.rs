@@ -1695,6 +1695,10 @@ fn no_field(i: usize, n: usize) -> ! {
 pub type NativeBlock =
     std::rc::Rc<dyn Fn(&crate::interp::Interp, crate::interp::ArgVec) -> crate::interp::EvalResult>;
 
+/// An `&:name` procedure's method for the last (class, argument count)
+/// it was called with.
+pub type MethodCache = Cell<Option<(ClassId, usize, MethodId)>>;
+
 /// The body a closure runs: a QIR function, a method reference
 /// (`&:name`), or a native function.
 pub enum ClosureBody {
@@ -1703,11 +1707,7 @@ pub enum ClosureBody {
     /// method found for the last (class, argument count); the method is
     /// the checker's resolution for the parameter's static type (an
     /// extension method is only reachable through it).
-    MethodName(
-        Rc<str>,
-        Cell<Option<(ClassId, usize, MethodId)>>,
-        Option<MethodId>,
-    ),
+    MethodName(Rc<str>, MethodCache, Option<MethodId>),
     /// `obj.:name`: call `name` on a captured receiver.
     BoundMethod {
         recv: Value,

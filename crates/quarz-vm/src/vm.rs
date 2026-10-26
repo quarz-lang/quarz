@@ -12,6 +12,7 @@ use crate::interp::{
     float_binop_into, float_operands, int_binop_into, ArgVec, EvalResult, Flow, Interp, SharedState,
 };
 use crate::sched;
+use crate::value::MethodCache;
 use crate::value::*;
 
 /// The interpreter, installed by what interprets
@@ -263,7 +264,7 @@ impl Interp {
         recv: &Value,
         args: &[Value],
         name: &str,
-        cache: &Cell<Option<(ClassId, usize, MethodId)>>,
+        cache: Option<&MethodCache>,
         method: Option<MethodId>,
     ) -> EvalResult {
         let cid = self.class_of(recv);
@@ -272,12 +273,14 @@ impl Interp {
         // is dispatched as a call would be (an extension method visible
         // there, or a module's method a value conforms to through an
         // extension, is not found by name).
-        let mid = match (method, cache.get()) {
+        let mid = match (method, cache.and_then(Cell::get)) {
             (Some(m), _) => self.resolve_dynamic(recv, m),
             (None, Some((c, n, mid))) if c == cid && n == argc => mid,
             _ => match self.find_method(cid, name, argc, false) {
                 Some(mid) => {
-                    cache.set(Some((cid, argc, mid)));
+                    if let Some(cache) = cache {
+                        cache.set(Some((cid, argc, mid)));
+                    }
                     mid
                 }
                 None => return self.send(recv, name, args.iter().cloned().collect(), None),
@@ -301,6 +304,16 @@ impl Interp {
     }
 }
 
+/// The method cache of an `&:name` procedure, unless the procedure is
+/// shared: tasks on other threads may call it at once, and the cache is
+/// a plain cell (the method is then looked up each time).
+fn own_cache<'a>(
+    closure: &crate::rc::Rc<Closure>,
+    cache: &'a MethodCache,
+) -> Option<&'a MethodCache> {
+    (!crate::rc::Rc::is_shared(closure)).then_some(cache)
+}
+
 impl BlockCaller {
     /// Call the block with `args` (padded with nil or cut to the block's
     /// parameters).
@@ -322,7 +335,7 @@ impl BlockCaller {
                 let Some((recv, rest)) = args.split_first() else {
                     return Err(interp.err_arg("block needs an argument"));
                 };
-                return interp.call_named(recv, rest, name, cache, *method);
+                return interp.call_named(recv, rest, name, own_cache(closure, cache), *method);
             }
         };
         if sched::stack_exhausted() {
@@ -1218,7 +1231,7 @@ impl Interp {
                     return Err(self.err_arg("block needs an argument"));
                 }
                 let recv = args.remove(0);
-                self.call_named(&recv, &args, name, cache, *method)
+                self.call_named(&recv, &args, name, own_cache(closure, cache), *method)
             }
             ClosureBody::BoundMethod { recv, name } => self.send(recv, name, args, None),
             ClosureBody::Native(f) => f(self, args),
