@@ -471,11 +471,31 @@ fn own_exit(interp: &Interp, child: &Rc<TaskHandle>) -> Option<Flow> {
 fn task_timeout(interp: &Interp, _: &Value, args: Args) -> EvalResult {
     let d = duration(interp, args.arg(0))?;
     let b = block(interp, &args)?;
+    // The block is the caller's: its task is the sink of the `exit`s of
+    // the tasks it spawns (a scope in it takes its children's, as one in
+    // the caller would).
     let child = interp.spawn_task(b, None, crate::interp::TIMEOUT_TASK);
-    // The block is the caller's: in the root task, its task takes the
-    // root's exits while it runs (a scope in it takes its children's).
-    let _root = interp.stand_in_root(&child);
-    run_timeout(interp, d, &child)
+    // And so are the exits meant for its caller, while the block runs.
+    let me = interp.current_task();
+    let was = me.is_sink().then(|| me.set_delegate(Some(child.clone())));
+    let r = run_timeout(interp, d, &child);
+    if let Some(was) = was {
+        me.set_delegate(was);
+    }
+    // The tasks spawned in the block keep it as their sink: it lets the
+    // sinks above go that have finished, so they do not pile up.
+    let _ = child.live_sink();
+    // An exit delivered to the block that it ended before raising: raised
+    // here, in its place.
+    match child.take_exit() {
+        Some(status)
+            if !matches!(&r, Err(Flow::Raise(e)) if is_exit(interp, e))
+                && !matches!(r, Err(Flow::Exit(_))) =>
+        {
+            Err(Flow::Raise(super::system_exit(interp, status, "exit")))
+        }
+        _ => r,
+    }
 }
 
 /// `Task.timeout` once its block runs in `child`.

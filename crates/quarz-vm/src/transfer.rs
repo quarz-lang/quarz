@@ -509,7 +509,7 @@ impl Interp {
             self.sched
                 .borrow_mut()
                 .spawn(body, None, "blocking".to_string(), 256 * 1024 * 1024);
-        self.set_root(root.task_ref());
+        self.set_root(&root);
         let code = self.run_loop_with(&root, false);
         // The tasks the block spawned and left: cancelled and run to their
         // end now, as a scope's would be (the interpreter is kept for later
@@ -521,7 +521,7 @@ impl Interp {
         }
         // An `exit` in a task the block spawned and nobody awaited, which
         // the block ended before raising: the caller raises it.
-        if let Some(status) = self.take_exit_request() {
+        if let Some(status) = root.take_exit().or_else(|| self.take_exit_request()) {
             if root.is_done() {
                 return Err(Flow::Raise(crate::natives::system_exit(
                     self, status, "exit",
