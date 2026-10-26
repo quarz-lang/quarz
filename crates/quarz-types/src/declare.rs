@@ -2109,15 +2109,18 @@ impl<'ast> Declarer<'ast> {
     /// `nil?` and `is_a?` are the prelude's only: the checker narrows
     /// types by them, and lowering relies on them, so a definition of its
     /// own (a method, an alias, a data field's reader) would make both
-    /// wrong.
+    /// wrong. `equal?` is identity, the one comparison a class cannot
+    /// change.
     fn check_sealed(&mut self, file: u32, name: &str, span: Span) {
-        const SEALED: [&str; 2] = ["nil?", "is_a?"];
-        if file != 0 && SEALED.contains(&name) {
-            self.error(
-                format!("`{name}` cannot be redefined: types are narrowed by it"),
-                span,
-            );
+        if file == 0 {
+            return;
         }
+        let why = match name {
+            "nil?" | "is_a?" => "types are narrowed by it",
+            "equal?" => "it is identity",
+            _ => return,
+        };
+        self.error(format!("`{name}` cannot be redefined: {why}"), span);
     }
 
     /// `==` and `!=` take one parameter, an `Object`: the runtime calls a

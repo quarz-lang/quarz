@@ -44,6 +44,7 @@ Ruby を知っている人が Quarz を書き始めるときに最初に引っ�
 | `Comparable`、`Enumerable` | モジュール | 同じ。ただしジェネリック(`Comparable[T]`、`Enumerable[T]`) |
 | `Array[1, 2]` | 配列を作る | `Array[Int]` は型。配列は `[1, 2]` |
 | 同名メソッドの再定義 | 上書き | 引数型による多重定義。同じシグネチャの再定義はエラー |
+| `nil?`、`is_a?`、`equal?`、`==` | どのクラスも再定義できる(`equal?` はドキュメントで再定義すべきでないとされる) | `nil?` と `is_a?`(型検査が型を絞り込む)と `equal?`(同一性)は定義できない。クラス独自の `==`/`!=` は `Object` を取る(01-syntax.ja.md §3) |
 | 例外 `rescue => e` | `StandardError` | 同じ。`Task::Cancelled` は `Exception` 直下なので捕まらない |
 
 ## 追加機能

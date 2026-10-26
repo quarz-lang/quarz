@@ -1351,6 +1351,16 @@ fn nil_p_and_is_a_are_sealed() {
         "`nil?` cannot be redefined",
     );
     err("data P = (nil?: Bool)", "`nil?` cannot be redefined");
+    // `equal?` is identity.
+    err(
+        "class P\n  def equal?(o: Object) -> Bool = true\nend",
+        "`equal?` cannot be redefined: it is identity",
+    );
+    err(
+        "extension String\n  def equal?(o: Object) -> Bool = true\nend",
+        "`equal?` cannot be redefined",
+    );
+    err("data Q = (equal?: Bool)", "`equal?` cannot be redefined");
     // `&.nil?` may not call it: no narrowing.
     err(
         "x: Int? = nil\nif x&.nil?\n  p 0\nelse\n  p x + 1\nend",

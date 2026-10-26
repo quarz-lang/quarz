@@ -112,7 +112,8 @@ fn flat_class(world: &World, ty: &Type, stack: &[ClassId]) -> Option<ClassId> {
     // Equality, hashing and identity of the containing object are
     // structural over the physical fields: a data type with its own
     // notion of equality keeps its box.
-    const OWN: [&str; 5] = ["==", "!=", "hash", "eql?", "equal?"];
+    // (`equal?` is identity and cannot be redefined; `eql?` is not Quarz's.)
+    const OWN: [&str; 3] = ["==", "!=", "hash"];
     // Decided where the type is defined: an extension's `==` is resolved
     // statically where it is visible and takes no part in dispatch (a
     // `Hash` compares with the type's own), so it changes nothing here.
