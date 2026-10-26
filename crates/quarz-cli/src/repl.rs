@@ -226,10 +226,12 @@ pub fn repl() -> ExitCode {
             Outcome::Value(None) => {}
             Outcome::Exit(code) => {
                 save(&mut editor);
+                let code = repl.finish(code);
                 return ExitCode::from(code.clamp(0, 255) as u8);
             }
         }
     }
     save(&mut editor);
-    ExitCode::SUCCESS
+    let code = repl.finish(0);
+    ExitCode::from(code.clamp(0, 255) as u8)
 }
