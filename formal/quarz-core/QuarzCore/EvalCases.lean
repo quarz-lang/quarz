@@ -467,6 +467,19 @@ theorem hasTy_flatMap {s : Store} {v : Value} {ms : List Method} {mt : Method} (
   obtain ⟨a, ha, b, hb, hab⟩ := h
   exact ⟨a, ha, b, List.mem_flatMap.mpr ⟨mt, hm, hb⟩, hab⟩
 
+/-- A value of a class other than `Object`: an object of a subclass. -/
+theorem obj_of_hasTy_cls {s : Store} {v : Value} {k : Nat} (hv : s.hasTy P v [.cls k]) (hk : k ≠ 0) :
+    ∃ l o, v = .obj l ∧ s.objs[l]? = some o ∧ k ∈ P.classes.ancestors o.cls := by
+  rw [hasTy_iff] at hv
+  obtain ⟨a, ha, b, hb, hab⟩ := hv
+  simp at hb; subst hb
+  cases v with
+  | obj l =>
+    simp [Store.typeOf] at ha
+    obtain ⟨o, ho, rfl⟩ := ha
+    exact ⟨l, o, rfl, ho, by simpa [Atom.le, ClassTable.subclass_iff] using hab⟩
+  | _ => simp [Store.typeOf] at ha; subst ha; simp [Atom.le] at hab; exact absurd hab hk
+
 /-- The receiver of a call: of the class the method was found in. -/
 theorem recv_of {s : Store} {v : Value} {t : Ty} {m : String} {ms : List Method}
     (hv : s.hasTy P v t) (hres : P.resolve t m = some ms) :
@@ -1138,7 +1151,7 @@ theorem eval_succ : EvalGood P orc (n + 1) := by
       unfold argsOk at hok
       simp only [Bool.and_eq_true, beq_iff_eq] at hok
       have hvs' : AllTy c.prog s2 vs (mt.params.map (·.2)) := hvs.le_params hwf hok.1 hok.2
-      have hsend := ih.send s2 Λ2 v k _ mt vs none [] hw2 hrecv hk hl hvs'
+      have hsend := ih.send s2 Λ2 v k _ mt vs none [] hw2 (obj_of_hasTy_cls hrecv hk) hl hvs'
         (by rw [hblk]; exact ⟨trivial, fun l h => by simp [chainLocs] at h⟩)
       revert hsend
       generalize send c.prog orc n s2 v _ vs none = r
@@ -1298,7 +1311,7 @@ theorem eval_succ : EvalGood P orc (n + 1) := by
         · exact hf2.core.inStore x l hx
         · exact hf2.chainIn l hl
       have hsend := ih.send s2 Λ2 v k m mt vs (some (.mk fr.vars fr.self fr.blk ps body))
-        ((c, Δ', ob) :: ws) hw2 hrecv hk hl hvs' (by rw [hblk]; exact ⟨hat, hin⟩)
+        ((c, Δ', ob) :: ws) hw2 (obj_of_hasTy_cls hrecv hk) hl hvs' (by rw [hblk]; exact ⟨hat, hin⟩)
       revert hsend
       generalize send c.prog orc n s2 v m vs _ = r
       intro hsend
