@@ -27,3 +27,4 @@ Enumerable#drop: ArgumentError: attempt to drop negative size
 [3, 2]
 [2, 3]
 RangeError: cannot get the last element of endless range
+4

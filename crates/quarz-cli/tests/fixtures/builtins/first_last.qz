@@ -39,3 +39,7 @@ begin
 rescue RangeError => e
   puts("RangeError: #{e.message}")
 end
+# The bounds are values of the element type, not optional.
+lo: Int = (1..3).first
+hi: Int = (1...3).last
+p(lo + hi)

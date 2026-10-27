@@ -4924,15 +4924,17 @@ class Range[T]
   native def begin -> T?
   # The last bound (included or not), or `nil` for an endless range.
   native def end -> T?
-  # The first bound: `#begin`, as Ruby's. It is returned even when the
-  # range is empty (`(3..1).first` is 3).
+  # The first bound: `#begin`, as Ruby's, without the nil (`#begin` gives
+  # `nil` for a beginless range). It is returned even when the range is
+  # empty (`(3..1).first` is 3).
   #
   # ## Raises
   #
   # `RangeError` for a beginless range.
-  native def first -> T?
+  native def first -> T
   # The last bound: `#end`, as Ruby's, included or not (`(1...3).last` is
-  # 3, `(1...1).last` is 1); `#max` is the largest value a range holds.
+  # 3, `(1...1).last` is 1), without the nil (`#end` gives `nil` for an
+  # endless range); `#max` is the largest value a range holds.
   #
   # ```
   # (1..3).last    # => 3
@@ -4942,7 +4944,7 @@ class Range[T]
   # ## Raises
   #
   # `RangeError` for an endless range.
-  native def last -> T?
+  native def last -> T
   # Whether the range leaves out its end (`1...3`).
   native def exclude_end? -> Bool
   # Whether `value` lies between the bounds, by comparison, not by
