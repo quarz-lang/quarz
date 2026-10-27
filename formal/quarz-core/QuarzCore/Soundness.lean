@@ -15,8 +15,8 @@ variable (P : Program) (orc : Oracle)
 
 /-- With no fuel, everything times out (but an empty argument list). -/
 theorem good_zero : Good P orc 0 where
-  eval := fun _ _ _ _ _ _ _ _ _ _ _ _ => by simp [eval, Post]
-  args := fun c Γ es ao fr s Λ _ ht hw hf hs => by
+  eval := fun _ _ _ _ _ _ _ _ _ _ _ _ _ => by simp [eval, Post]
+  args := fun c Γ es ao fr s Λ ws _ ht hw hf hs => by
     cases es with
     | nil =>
       cases ht
