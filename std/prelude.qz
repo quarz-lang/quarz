@@ -4081,7 +4081,11 @@ class Array[out T]
   # ```
   native def flatten(depth: Int) -> Array[Object]
   # `n` elements at distinct random positions, or all of them shuffled when
-  # there are fewer; `[]` when `n` is 0 or negative.
+  # there are fewer; `[]` when `n` is 0.
+  #
+  # ## Raises
+  #
+  # `ArgumentError` for a negative `n`.
   native def sample(n: Int) -> Array[T]
   # The elements joined with `separator`: `#join`.
   #
