@@ -28,3 +28,7 @@ Enumerable#drop: ArgumentError: attempt to drop negative size
 [2, 3]
 RangeError: cannot get the last element of endless range
 4
+sample: ArgumentError: negative sample number
+[]
+[1, 2]
+[]

@@ -359,7 +359,9 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     native!(m, "Array#join", array_join);
     native!(m, "Array#sample", |i, r, a| {
         if let Some(n) = a.pos.first() {
-            let n = int(i, n, "count")?.max(0) as usize;
+            let n = int(i, n, "count")?;
+            // As Ruby.
+            let n = usize::try_from(n).map_err(|_| i.err_arg("negative sample number"))?;
             let shuffled = array_shuffle(i, r, Args::default())?;
             let shuffled = arr_data(i, &shuffled)?;
             return Ok(shuffled.slice(0, n.min(shuffled.len())));
