@@ -363,6 +363,28 @@ theorem pathHolds_of_val (hwf : WfClasses P.classes) {c : Ctx} {Δ : Env} {fr : 
           rw [hfv] at k7; cases k7; exact k8
       · simp [hvar] at ht
 
+/-- `==` against `nil`, `true` or `false` of a value that is no object:
+built-in equality. -/
+theorem equal_nonobj {n : Nat} {s : Store} {v w : Value} (hv : ∀ l, v ≠ .obj l) :
+    equal P orc n s v w = .timeout ∨ equal P orc n s v w = .ok (.bool (v == w)) s := by
+  cases n with
+  | zero => exact .inl rfl
+  | succ n =>
+    right
+    cases v with
+    | obj l => exact absurd rfl (hv l)
+    | _ => rfl
+
+theorem finalRead_eq {c : Ctx} {Δ : Env} {e : Expr} {p : Path} {t : Ty} (hp : e.path? = some p)
+    (ht : c.pathTy Δ p = some t) : finalRead c Δ e = t.allFinal := by
+  simp [finalRead, hp, ht]
+
+theorem OutOK.stable {c : Ctx} {g : Option Env} {fr : Frame} {s s' : Store} {W : Nat → Prop}
+    {Λ Λ' : List Ty} (h : OutOK P c g fr s) (he : Ext P W Λ Λ' s s')
+    (hw : ∀ l, frameLocs fr.vars l → ¬ W l) : OutOK P c g fr s' := by
+  obtain ⟨Γ, rfl, hs⟩ := h
+  exact ⟨Γ, rfl, hs.stable he hw⟩
+
 theorem testOut_ty (c : Ctx) (e : Expr) (Δ : Env) (T F : Ty → Ty) :
     (testOut c e Δ T F).ty = [.bool] := by
   unfold testOut; split <;> rfl
@@ -373,8 +395,10 @@ theorem testOut_ok (hwf : WfClasses P.classes) {c : Ctx} {e : Expr} {Δ : Env} {
     {Λ : List Ty} {s : Store} (hc : c.prog = P) (hs : Sat P c Δ fr s) (hf : FrameOK P c Λ fr s)
     (hw : WfStore P Λ s) {tyT tyF : Ty → Ty} {v : Value} {b : Bool}
     (hval : ∀ p, e.path? = some p → PathVal P fr s p v)
-    (hT : ∀ t, s.hasTy P v t → b = true → s.hasTy P v (tyT t))
-    (hF : ∀ t, s.hasTy P v t → b = false → s.hasTy P v (tyF t)) :
+    (hT : ∀ p t, e.path? = some p → c.pathTy Δ p = some t → s.hasTy P v t → b = true →
+      s.hasTy P v (tyT t))
+    (hF : ∀ p t, e.path? = some p → c.pathTy Δ p = some t → s.hasTy P v t → b = false →
+      s.hasTy P v (tyF t)) :
     OutOK P c (testOut c e Δ tyT tyF).out fr s ∧
     (b = true → OutOK P c (testOut c e Δ tyT tyF).tt fr s) ∧
     (b = false → OutOK P c (testOut c e Δ tyT tyF).ff fr s) := by
@@ -386,9 +410,9 @@ theorem testOut_ok (hwf : WfClasses P.classes) {c : Ctx} {e : Expr} {Δ : Env} {
     cases heq
     obtain ⟨hvt, hre⟩ := pathHolds_of_val hwf hc hs hf hw ht' (hval _ hp')
     refine ⟨⟨Δ, rfl, hs⟩, fun hb => ?_, fun hb => ?_⟩
-    · have h := hT _ hvt hb
+    · have h := hT _ _ hp' ht' hvt hb
       exact ⟨_, narrow_eq Δ _ (ne_nil_of_hasTy h), hs.set (hre _ h)⟩
-    · have h := hF _ hvt hb
+    · have h := hF _ _ hp' ht' hvt hb
       exact ⟨_, narrow_eq Δ _ (ne_nil_of_hasTy h), hs.set (hre _ h)⟩
   · exact ⟨⟨Δ, rfl, hs⟩, fun _ => ⟨Δ, rfl, hs⟩, fun _ => ⟨Δ, rfl, hs⟩⟩
 
@@ -718,8 +742,8 @@ theorem eval_succ : EvalGood P orc (n + 1) := by
     have hval : ∀ p, e.path? = some p → PathVal c.prog fr s1 p v := fun p hp => by
       obtain ⟨rfl, h⟩ := eval_read hp hr; exact h
     obtain ⟨h1, h2, h3⟩ := testOut_ok (b := v == .nil) hwf rfl hs1 hf1 hw1 hval
-      (fun t ht hb => by simp at hb; subst hb; exact hasTy_nilTy ht)
-      (fun t ht hb => hasTy_remove_nil ht (by simpa using hb))
+      (fun _ t _ _ ht hb => by simp at hb; subst hb; exact hasTy_nilTy ht)
+      (fun _ t _ _ ht hb => hasTy_remove_nil ht (by simpa using hb))
     exact ⟨Λ1, hw1, he1.mono (evalW_mono (by simp [Expr.assigned])), hf1, by rw [testOut_ty]; exact hasTy_lit_bool, h1,
       fun h => h2 (by rwa [truthy_bool] at h), fun h => h3 (by rwa [truthy_bool] at h)⟩
   | isA he hout =>
@@ -735,7 +759,8 @@ theorem eval_succ : EvalGood P orc (n + 1) := by
     have hval : ∀ p, e.path? = some p → PathVal c.prog fr s1 p v := fun p hp => by
       obtain ⟨rfl, h⟩ := eval_read hp hr; exact h
     obtain ⟨h1, h2, h3⟩ := testOut_ok (b := u.le c.prog.classes a) hwf rfl hs1 hf1 hw1 hval
-      (fun t ht hb => hasTy_isATrue hwf ht hu hb) (fun t ht hb => hasTy_isAFalse hwf ht hu hb)
+      (fun _ t _ _ ht hb => hasTy_isATrue hwf ht hu hb)
+      (fun _ t _ _ ht hb => hasTy_isAFalse hwf ht hu hb)
     exact ⟨Λ1, hw1, he1.mono (evalW_mono (by simp [Expr.assigned])), hf1, by rw [testOut_ty]; exact hasTy_lit_bool, h1,
       fun h => h2 (by rwa [truthy_bool] at h), fun h => h3 (by rwa [truthy_bool] at h)⟩
   | testDead he hout hform =>
@@ -746,6 +771,274 @@ theorem eval_succ : EvalGood P orc (n + 1) := by
       intro v s1 Λ1 _ _ _ _ ho1 _ _
       obtain ⟨_, hΔ, _⟩ := ho1
       rw [hout] at hΔ; cases hΔ
+  | eqNil he hout =>
+    rename_i e o' Δ
+    simp only [eval]
+    refine (ih.eval _ _ _ _ fr s Λ rfl he hw hf hs).bindEq
+      (evalW_mono (by simp [Expr.assigned])) ?_
+    intro v s1 Λ1 hr hw1 he1 hf1 hv1 ho1 _ _
+    obtain ⟨Δ', hΔ, hs1⟩ := ho1
+    rw [hout] at hΔ; cases hΔ
+    have hval : ∀ p, e.path? = some p → PathVal c.prog fr s1 p v := fun p hp => by
+      obtain ⟨rfl, h⟩ := eval_read hp hr; exact h
+    by_cases hfin : ∃ p t, e.path? = some p ∧ c.pathTy Δ p = some t ∧ t.allFinal = true
+    · -- A read of final atoms: no object, the built-in `==`, which narrows.
+      obtain ⟨p, t, hp, ht, htf⟩ := hfin
+      have hvt := (pathHolds_of_val hwf rfl hs1 hf1 hw1 ht (hval p hp)).1
+      rcases equal_nonobj (orc := orc) (n := n) (s := s1) (w := .nil) (not_obj_of_final hvt htf)
+        with h | h
+      · rw [h]; trivial
+      · rw [h]
+        obtain ⟨h1, h2, h3⟩ := testOut_ok (b := v == .nil)
+          (tyT := fun t => if finalRead c Δ e then t.keep [.nil] else t)
+          (tyF := fun t => if finalRead c Δ e then t.remove .nil else t) hwf rfl hs1 hf1 hw1 hval
+          (fun p' t' hp' ht' hvt' hb => by
+            rw [hp] at hp'; cases hp'; rw [ht] at ht'; cases ht'
+            rw [finalRead_eq hp ht, htf, if_pos rfl]
+            simp at hb; subst hb
+            exact hasTy_keep hvt' htf rfl)
+          (fun p' t' hp' ht' hvt' hb => by
+            rw [hp] at hp'; cases hp'; rw [ht] at ht'; cases ht'
+            rw [finalRead_eq hp ht, htf, if_pos rfl]
+            exact hasTy_remove_nil hvt' (by simpa using hb))
+        exact ⟨Λ1, hw1, he1.mono (evalW_mono (by simp [Expr.assigned])), hf1,
+          by rw [testOut_ty]; exact hasTy_lit_bool, h1, fun h => h2 (by rwa [truthy_bool] at h),
+          fun h => h3 (by rwa [truthy_bool] at h)⟩
+    · -- Otherwise the test narrows nothing.
+      have hid : ∀ p t, e.path? = some p → c.pathTy Δ p = some t → finalRead c Δ e = false :=
+        fun p t hp ht => by
+          rw [finalRead_eq hp ht]
+          cases h : t.allFinal
+          · rfl
+          · exact absurd ⟨p, t, hp, ht, h⟩ hfin
+      obtain ⟨h1, h2, _⟩ := testOut_ok (b := true)
+        (tyT := fun t => if finalRead c Δ e then t.keep [.nil] else t)
+        (tyF := fun t => if finalRead c Δ e then t.remove .nil else t) hwf rfl hs1 hf1 hw1 hval
+        (fun p t hp ht hvt _ => by rw [hid p t hp ht]; simpa using hvt)
+        (fun _ _ _ _ _ hb => by cases hb)
+      obtain ⟨_, _, h3⟩ := testOut_ok (b := false)
+        (tyT := fun t => if finalRead c Δ e then t.keep [.nil] else t)
+        (tyF := fun t => if finalRead c Δ e then t.remove .nil else t) hwf rfl hs1 hf1 hw1 hval
+        (fun _ _ _ _ _ hb => by cases hb)
+        (fun p t hp ht hvt _ => by rw [hid p t hp ht]; simpa using hvt)
+      have := ih.equal s1 Λ1 v .nil _ hw1 hv1 (.inl rfl)
+      revert this
+      generalize equal c.prog orc n s1 v .nil = r
+      intro this
+      cases r with
+      | ok r s2 =>
+        obtain ⟨Λ2, hw2, he2, hr2, _⟩ := this
+        have hno : ∀ l, frameLocs fr.vars l → ¬ blkW none l := fun _ _ h => by simp [blkW] at h
+        refine ⟨Λ2, hw2, (he1.trans he2 hw).mono ?_, hf1.stable he2 (fun _ _ h => by simp [blkW] at h),
+          by rw [testOut_ty]; exact hr2, h1.stable he2 hno, fun _ => (h2 rfl).stable he2 hno,
+          fun _ => (h3 rfl).stable he2 hno⟩
+        rintro l (h | h)
+        · exact evalW_mono (by simp [Expr.assigned]) l h
+        · simp [blkW] at h
+      | stuck => exact this
+      | returned => exact this.elim
+      | raised => trivial
+      | timeout => trivial
+  | neNil he hout =>
+    rename_i e o' Δ
+    simp only [eval]
+    refine (ih.eval _ _ _ _ fr s Λ rfl he hw hf hs).bindEq
+      (evalW_mono (by simp [Expr.assigned])) ?_
+    intro v s1 Λ1 hr hw1 he1 hf1 hv1 ho1 _ _
+    obtain ⟨Δ', hΔ, hs1⟩ := ho1
+    rw [hout] at hΔ; cases hΔ
+    have hval : ∀ p, e.path? = some p → PathVal c.prog fr s1 p v := fun p hp => by
+      obtain ⟨rfl, h⟩ := eval_read hp hr; exact h
+    by_cases hfin : ∃ p t, e.path? = some p ∧ c.pathTy Δ p = some t ∧ t.allFinal = true
+    · -- A read of final atoms: no object, the built-in `==`, which narrows.
+      obtain ⟨p, t, hp, ht, htf⟩ := hfin
+      have hvt := (pathHolds_of_val hwf rfl hs1 hf1 hw1 ht (hval p hp)).1
+      rcases equal_nonobj (orc := orc) (n := n) (s := s1) (w := .nil) (not_obj_of_final hvt htf)
+        with h | h
+      · rw [h]; trivial
+      · rw [h]
+        simp only [Result.bind, truthy_bool]
+        obtain ⟨h1, h2, h3⟩ := testOut_ok (b := !(v == .nil))
+          (tyT := fun t => if finalRead c Δ e then t.remove .nil else t)
+          (tyF := fun t => if finalRead c Δ e then t.keep [.nil] else t) hwf rfl hs1 hf1 hw1 hval
+          (fun p' t' hp' ht' hvt' hb => by
+            rw [hp] at hp'; cases hp'; rw [ht] at ht'; cases ht'
+            rw [finalRead_eq hp ht, htf, if_pos rfl]
+            exact hasTy_remove_nil hvt' (by simpa using hb))
+          (fun p' t' hp' ht' hvt' hb => by
+            rw [hp] at hp'; cases hp'; rw [ht] at ht'; cases ht'
+            rw [finalRead_eq hp ht, htf, if_pos rfl]
+            simp at hb; subst hb
+            exact hasTy_keep hvt' htf rfl)
+        exact ⟨Λ1, hw1, he1.mono (evalW_mono (by simp [Expr.assigned])), hf1,
+          by rw [testOut_ty]; exact hasTy_lit_bool, h1, fun h => h2 (by rwa [truthy_bool] at h),
+          fun h => h3 (by rwa [truthy_bool] at h)⟩
+    · -- Otherwise the test narrows nothing.
+      have hid : ∀ p t, e.path? = some p → c.pathTy Δ p = some t → finalRead c Δ e = false :=
+        fun p t hp ht => by
+          rw [finalRead_eq hp ht]
+          cases h : t.allFinal
+          · rfl
+          · exact absurd ⟨p, t, hp, ht, h⟩ hfin
+      obtain ⟨h1, h2, _⟩ := testOut_ok (b := true)
+        (tyT := fun t => if finalRead c Δ e then t.remove .nil else t)
+        (tyF := fun t => if finalRead c Δ e then t.keep [.nil] else t) hwf rfl hs1 hf1 hw1 hval
+        (fun p t hp ht hvt _ => by rw [hid p t hp ht]; simpa using hvt)
+        (fun _ _ _ _ _ hb => by cases hb)
+      obtain ⟨_, _, h3⟩ := testOut_ok (b := false)
+        (tyT := fun t => if finalRead c Δ e then t.remove .nil else t)
+        (tyF := fun t => if finalRead c Δ e then t.keep [.nil] else t) hwf rfl hs1 hf1 hw1 hval
+        (fun _ _ _ _ _ hb => by cases hb)
+        (fun p t hp ht hvt _ => by rw [hid p t hp ht]; simpa using hvt)
+      have := ih.equal s1 Λ1 v .nil _ hw1 hv1 (.inl rfl)
+      revert this
+      generalize equal c.prog orc n s1 v .nil = r
+      intro this
+      cases r with
+      | ok r s2 =>
+        simp only [Result.bind]
+        obtain ⟨Λ2, hw2, he2, hr2, _⟩ := this
+        have hno : ∀ l, frameLocs fr.vars l → ¬ blkW none l := fun _ _ h => by simp [blkW] at h
+        refine ⟨Λ2, hw2, (he1.trans he2 hw).mono ?_, hf1.stable he2 (fun _ _ h => by simp [blkW] at h),
+          by rw [testOut_ty]; exact hasTy_lit_bool, h1.stable he2 hno, fun _ => (h2 rfl).stable he2 hno,
+          fun _ => (h3 rfl).stable he2 hno⟩
+        rintro l (h | h)
+        · exact evalW_mono (by simp [Expr.assigned]) l h
+        · simp [blkW] at h
+      | stuck => exact this
+      | returned => exact this.elim
+      | raised => trivial
+      | timeout => trivial
+  | eqTrue he hout =>
+    rename_i e o' Δ
+    simp only [eval]
+    refine (ih.eval _ _ _ _ fr s Λ rfl he hw hf hs).bindEq
+      (evalW_mono (by simp [Expr.assigned])) ?_
+    intro v s1 Λ1 hr hw1 he1 hf1 hv1 ho1 _ _
+    obtain ⟨Δ', hΔ, hs1⟩ := ho1
+    rw [hout] at hΔ; cases hΔ
+    have hval : ∀ p, e.path? = some p → PathVal c.prog fr s1 p v := fun p hp => by
+      obtain ⟨rfl, h⟩ := eval_read hp hr; exact h
+    by_cases hfin : ∃ p t, e.path? = some p ∧ c.pathTy Δ p = some t ∧ t.allFinal = true
+    · -- A read of final atoms: no object, the built-in `==`, which narrows.
+      obtain ⟨p, t, hp, ht, htf⟩ := hfin
+      have hvt := (pathHolds_of_val hwf rfl hs1 hf1 hw1 ht (hval p hp)).1
+      rcases equal_nonobj (orc := orc) (n := n) (s := s1) (w := (.bool true)) (not_obj_of_final hvt htf)
+        with h | h
+      · rw [h]; trivial
+      · rw [h]
+        obtain ⟨h1, h2, h3⟩ := testOut_ok (b := v == (.bool true))
+          (tyT := fun t => if finalRead c Δ e then t.keep [.bool] else t)
+          (tyF := id) hwf rfl hs1 hf1 hw1 hval
+          (fun p' t' hp' ht' hvt' hb => by
+            rw [hp] at hp'; cases hp'; rw [ht] at ht'; cases ht'
+            rw [finalRead_eq hp ht, htf, if_pos rfl]
+            simp at hb; subst hb
+            exact hasTy_keep hvt' htf rfl)
+          (fun _ _ _ _ hvt' _ => hvt')
+        exact ⟨Λ1, hw1, he1.mono (evalW_mono (by simp [Expr.assigned])), hf1,
+          by rw [testOut_ty]; exact hasTy_lit_bool, h1, fun h => h2 (by rwa [truthy_bool] at h),
+          fun h => h3 (by rwa [truthy_bool] at h)⟩
+    · -- Otherwise the test narrows nothing.
+      have hid : ∀ p t, e.path? = some p → c.pathTy Δ p = some t → finalRead c Δ e = false :=
+        fun p t hp ht => by
+          rw [finalRead_eq hp ht]
+          cases h : t.allFinal
+          · rfl
+          · exact absurd ⟨p, t, hp, ht, h⟩ hfin
+      obtain ⟨h1, h2, _⟩ := testOut_ok (b := true)
+        (tyT := fun t => if finalRead c Δ e then t.keep [.bool] else t)
+        (tyF := id) hwf rfl hs1 hf1 hw1 hval
+        (fun p t hp ht hvt _ => by rw [hid p t hp ht]; simpa using hvt)
+        (fun _ _ _ _ _ hb => by cases hb)
+      obtain ⟨_, _, h3⟩ := testOut_ok (b := false)
+        (tyT := fun t => if finalRead c Δ e then t.keep [.bool] else t)
+        (tyF := id) hwf rfl hs1 hf1 hw1 hval
+        (fun _ _ _ _ _ hb => by cases hb)
+        (fun _ _ _ _ hvt _ => hvt)
+      have := ih.equal s1 Λ1 v (.bool true) _ hw1 hv1 (.inr (.inl rfl))
+      revert this
+      generalize equal c.prog orc n s1 v (.bool true) = r
+      intro this
+      cases r with
+      | ok r s2 =>
+        obtain ⟨Λ2, hw2, he2, hr2, _⟩ := this
+        have hno : ∀ l, frameLocs fr.vars l → ¬ blkW none l := fun _ _ h => by simp [blkW] at h
+        refine ⟨Λ2, hw2, (he1.trans he2 hw).mono ?_, hf1.stable he2 (fun _ _ h => by simp [blkW] at h),
+          by rw [testOut_ty]; exact hr2, h1.stable he2 hno, fun _ => (h2 rfl).stable he2 hno,
+          fun _ => (h3 rfl).stable he2 hno⟩
+        rintro l (h | h)
+        · exact evalW_mono (by simp [Expr.assigned]) l h
+        · simp [blkW] at h
+      | stuck => exact this
+      | returned => exact this.elim
+      | raised => trivial
+      | timeout => trivial
+  | eqFalse he hout =>
+    rename_i e o' Δ
+    simp only [eval]
+    refine (ih.eval _ _ _ _ fr s Λ rfl he hw hf hs).bindEq
+      (evalW_mono (by simp [Expr.assigned])) ?_
+    intro v s1 Λ1 hr hw1 he1 hf1 hv1 ho1 _ _
+    obtain ⟨Δ', hΔ, hs1⟩ := ho1
+    rw [hout] at hΔ; cases hΔ
+    have hval : ∀ p, e.path? = some p → PathVal c.prog fr s1 p v := fun p hp => by
+      obtain ⟨rfl, h⟩ := eval_read hp hr; exact h
+    by_cases hfin : ∃ p t, e.path? = some p ∧ c.pathTy Δ p = some t ∧ t.allFinal = true
+    · -- A read of final atoms: no object, the built-in `==`, which narrows.
+      obtain ⟨p, t, hp, ht, htf⟩ := hfin
+      have hvt := (pathHolds_of_val hwf rfl hs1 hf1 hw1 ht (hval p hp)).1
+      rcases equal_nonobj (orc := orc) (n := n) (s := s1) (w := (.bool false)) (not_obj_of_final hvt htf)
+        with h | h
+      · rw [h]; trivial
+      · rw [h]
+        obtain ⟨h1, h2, h3⟩ := testOut_ok (b := v == (.bool false))
+          (tyT := fun t => if finalRead c Δ e then t.keep [.bool] else t)
+          (tyF := id) hwf rfl hs1 hf1 hw1 hval
+          (fun p' t' hp' ht' hvt' hb => by
+            rw [hp] at hp'; cases hp'; rw [ht] at ht'; cases ht'
+            rw [finalRead_eq hp ht, htf, if_pos rfl]
+            simp at hb; subst hb
+            exact hasTy_keep hvt' htf rfl)
+          (fun _ _ _ _ hvt' _ => hvt')
+        exact ⟨Λ1, hw1, he1.mono (evalW_mono (by simp [Expr.assigned])), hf1,
+          by rw [testOut_ty]; exact hasTy_lit_bool, h1, fun h => h2 (by rwa [truthy_bool] at h),
+          fun h => h3 (by rwa [truthy_bool] at h)⟩
+    · -- Otherwise the test narrows nothing.
+      have hid : ∀ p t, e.path? = some p → c.pathTy Δ p = some t → finalRead c Δ e = false :=
+        fun p t hp ht => by
+          rw [finalRead_eq hp ht]
+          cases h : t.allFinal
+          · rfl
+          · exact absurd ⟨p, t, hp, ht, h⟩ hfin
+      obtain ⟨h1, h2, _⟩ := testOut_ok (b := true)
+        (tyT := fun t => if finalRead c Δ e then t.keep [.bool] else t)
+        (tyF := id) hwf rfl hs1 hf1 hw1 hval
+        (fun p t hp ht hvt _ => by rw [hid p t hp ht]; simpa using hvt)
+        (fun _ _ _ _ _ hb => by cases hb)
+      obtain ⟨_, _, h3⟩ := testOut_ok (b := false)
+        (tyT := fun t => if finalRead c Δ e then t.keep [.bool] else t)
+        (tyF := id) hwf rfl hs1 hf1 hw1 hval
+        (fun _ _ _ _ _ hb => by cases hb)
+        (fun _ _ _ _ hvt _ => hvt)
+      have := ih.equal s1 Λ1 v (.bool false) _ hw1 hv1 (.inr (.inr rfl))
+      revert this
+      generalize equal c.prog orc n s1 v (.bool false) = r
+      intro this
+      cases r with
+      | ok r s2 =>
+        obtain ⟨Λ2, hw2, he2, hr2, _⟩ := this
+        have hno : ∀ l, frameLocs fr.vars l → ¬ blkW none l := fun _ _ h => by simp [blkW] at h
+        refine ⟨Λ2, hw2, (he1.trans he2 hw).mono ?_, hf1.stable he2 (fun _ _ h => by simp [blkW] at h),
+          by rw [testOut_ty]; exact hr2, h1.stable he2 hno, fun _ => (h2 rfl).stable he2 hno,
+          fun _ => (h3 rfl).stable he2 hno⟩
+        rintro l (h | h)
+        · exact evalW_mono (by simp [Expr.assigned]) l h
+        · simp [blkW] at h
+      | stuck => exact this
+      | returned => exact this.elim
+      | raised => trivial
+      | timeout => trivial
   | _ => sorry
 
 end QuarzCore
