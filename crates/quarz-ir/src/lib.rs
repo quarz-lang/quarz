@@ -222,6 +222,22 @@ pub struct Handler {
     pub kind: HandlerKind,
 }
 
+/// The handler a flow other than an exception (`break`, `return`,
+/// `exit`) leaving `b` goes to: the first `Ensure` along its chain of
+/// handlers, past the `Rescue`s (whose own handlers cover them), or none.
+pub fn flow_handler(blocks: &[Block], b: &Block) -> Option<BlockId> {
+    let mut h = b.handler;
+    // (A chain is never longer than the blocks.)
+    for _ in 0..=blocks.len() {
+        let hd = h?;
+        if hd.kind == HandlerKind::Ensure {
+            return Some(hd.block);
+        }
+        h = blocks[hd.block as usize].handler;
+    }
+    None
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HandlerKind {
     /// Receives raised exceptions only.

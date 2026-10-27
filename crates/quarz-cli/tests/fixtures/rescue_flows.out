@@ -1,0 +1,32 @@
+ensure ret_block
+1
+ensure break_block
+10
+next_block 1
+rest 1
+ensure next 1
+rescued 2
+ensure next 2
+next_block 3
+rest 3
+ensure next 3
+rescued in block 1
+ensure in block 1
+method ensure from_rescue
+7
+ensure 1
+ensure 2
+5
+inner ensure
+outer ensure
+9
+deinitialize block
+ensure sees outer
+deinitialize outer
+deinitialize inner
+1
+after with_resources
+rescue 1
+inner ensure 1
+method ensure 1
+10

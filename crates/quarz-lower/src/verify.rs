@@ -583,8 +583,10 @@ impl Checker<'_> {
                 transfer(inst, &mut state);
             }
             // A terminator leaving with a flow: an exception reaches any
-            // handler, `break`/`return` out of a block only an ensure one.
-            let ensure = blk.handler.is_some_and(|h| h.kind == HandlerKind::Ensure);
+            // handler, `break`/`return` out of a block only an ensure one
+            // (past the rescues, which the ensure covers: through them,
+            // as an approximation).
+            let ensure = quarz_ir::flow_handler(&f.blocks, blk).is_some();
             match blk.term {
                 Term::Raise(_) | Term::Resume(_) => or_into(&mut any, &state),
                 Term::BreakOut(_) | Term::ReturnOut(_) if ensure => or_into(&mut any, &state),

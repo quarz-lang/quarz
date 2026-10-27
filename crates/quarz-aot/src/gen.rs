@@ -721,8 +721,19 @@ pub(crate) fn gen_function<B: Builder>(
                 b.jump(blocks[h.block as usize], &[]);
             }
             Some(h) => {
+                // Another flow goes past the rescues to the ensure that
+                // covers them.
                 let is_raise = b.icmp_imm(IntCC::Equal, status, STATUS_RAISE);
-                b.brif(is_raise, blocks[h.block as usize], &[], exit, &[status]);
+                match quarz_ir::flow_handler(&f.blocks, blk) {
+                    Some(e) => b.brif(
+                        is_raise,
+                        blocks[h.block as usize],
+                        &[],
+                        blocks[e as usize],
+                        &[],
+                    ),
+                    None => b.brif(is_raise, blocks[h.block as usize], &[], exit, &[status]),
+                }
             }
             None => {
                 b.jump(exit, &[status]);
