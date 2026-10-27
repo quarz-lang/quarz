@@ -325,10 +325,16 @@ pub fn mark_moves(f: &mut Function, heap: &[bool]) {
                 }
             }
         }
+        // The lines go with their instructions (parallel to them).
         let mut k = 0;
         blk.insts.retain(|_| {
             k += 1;
             !dead[k - 1]
+        });
+        let mut k = 0;
+        blk.lines.retain(|_| {
+            k += 1;
+            !dead.get(k - 1).copied().unwrap_or(false)
         });
     }
 }
