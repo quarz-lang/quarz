@@ -420,3 +420,97 @@ fn a_parameter_past_the_method_is_found() {
     });
     assert!(found.iter().any(|w| w == "parameter 5 of 1"), "{found:?}");
 }
+
+// ----- Moves (C) -----
+
+/// Where `pick` first matches in `f`: (block, instruction).
+fn find(f: &quarz_ir::Function, pick: impl Fn(&Inst) -> bool) -> (usize, usize) {
+    f.blocks
+        .iter()
+        .enumerate()
+        .find_map(|(bi, b)| b.insts.iter().position(&pick).map(|ii| (bi, ii)))
+        .expect("the instruction")
+}
+
+#[test]
+fn a_read_after_a_take_is_found() {
+    let found = broken(Stage::Moves, |f| {
+        let (bi, ii) = find(f, |i| matches!(i, Inst::Take { .. }));
+        let Inst::Take { src, .. } = f.blocks[bi].insts[ii] else {
+            unreachable!()
+        };
+        // Its source read again just after.
+        f.blocks[bi]
+            .insts
+            .insert(ii + 1, Inst::IsNil { dst: src, src });
+        f.blocks[bi].lines.insert(ii + 1, 0);
+    });
+    assert!(
+        found.iter().any(|w| w.contains("moved out or released")),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn a_read_after_a_release_is_found() {
+    // (A call after the last read keeps the end of `c`'s scope.)
+    let mut module =
+        common::lower("class C\nend\ndef h -> Nil\n  c = C.new\n  p c\n  p 1\nend\nh\n");
+    let n = module.functions.len();
+    let f = module
+        .functions
+        .iter_mut()
+        .find(|f| f.name == "main#h")
+        .unwrap();
+    let (bi, ii) = find(f, |i| matches!(i, Inst::Release { .. }));
+    let Inst::Release { src } = f.blocks[bi].insts[ii] else {
+        unreachable!()
+    };
+    f.blocks[bi]
+        .insts
+        .insert(ii + 1, Inst::IsNil { dst: src, src });
+    f.blocks[bi].lines.insert(ii + 1, 0);
+    let found: Vec<String> = verify(f, &module.world, n, Stage::Moves)
+        .into_iter()
+        .map(|v| v.what)
+        .collect();
+    assert!(
+        found.iter().any(|w| w.contains("moved out or released")),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn an_operand_moved_and_read_again_is_found() {
+    let found = broken(Stage::Moves, |f| {
+        let (bi, ii) = find(
+            f,
+            |i| matches!(i, Inst::Call { args, .. } if !args.is_empty()),
+        );
+        let Inst::Call { args, moved, .. } = &mut f.blocks[bi].insts[ii] else {
+            unreachable!()
+        };
+        // The first argument moved, and read once more after the call.
+        *moved |= 1;
+        let a = args[0];
+        f.blocks[bi]
+            .insts
+            .insert(ii + 1, Inst::IsNil { dst: a, src: a });
+        f.blocks[bi].lines.insert(ii + 1, 0);
+    });
+    assert!(
+        found.iter().any(|w| w.contains("moved out or released")),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn a_take_into_itself_is_found() {
+    let found = broken(Stage::Moves, |f| {
+        let Inst::Take { dst, src } = first_inst(f, |i| matches!(i, Inst::Take { .. })) else {
+            unreachable!()
+        };
+        *dst = *src;
+    });
+    assert!(found.iter().any(|w| w.contains("into itself")), "{found:?}");
+}
