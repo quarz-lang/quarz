@@ -1,0 +1,79 @@
+# Narrowing within QCore's range (formal/quarz-core): each read's type
+# is what the Rust checker narrows it to, which the model must allow.
+class Shape
+  @name: String
+  @size: Int?
+  def initialize(@name: String, @size: Int?)
+  end
+  def size_or(d: Int) -> Int
+    if @size
+      @size
+    else
+      d
+    end
+  end
+  def name -> String = @name
+end
+
+class Square < Shape
+  def area -> Int?
+    s = @size
+    return nil if s.nil?
+    s
+  end
+end
+
+def describe(s: Shape?) -> String
+  return "none" if s.nil?
+  if s.is_a?(Square)
+    "square #{s.name}"
+  else
+    "shape #{s.name}"
+  end
+end
+
+def first_set(a: Int?, b: Int?) -> Int?
+  if a != nil
+    a
+  elsif b == nil
+    nil
+  else
+    b
+  end
+end
+
+def count(n: Int?) -> Int
+  x = n
+  while x.nil?
+    x = 1
+  end
+  x
+end
+
+def truthy(b: Bool?) -> String
+  if b == true
+    "true"
+  elsif b
+    "also true"
+  else
+    "false or nil"
+  end
+end
+
+def both(a: Int?, b: String?) -> String
+  if a && b
+    "#{a} #{b}"
+  elsif !a
+    "no a"
+  else
+    "no b"
+  end
+end
+
+p describe(Square.new("sq", 2))
+p describe(nil)
+p first_set(nil, 3)
+p count(nil)
+p truthy(true)
+p both(1, nil)
+p Shape.new("s", nil).size_or(4)
