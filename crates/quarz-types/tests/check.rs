@@ -319,6 +319,11 @@ fn classes_and_fields() {
         "data Q(a: Int)\n  def initialize(s: String)\n    @a = s.size\n  end\nend\nputs Q.new(1).a",
         "expects String but found Int",
     );
+    // With an `initialize` of other parameters, there is no `with`.
+    err(
+        "data Q(a: Int)\n  def initialize(s: String)\n    @a = s.size\n  end\nend\nputs Q.new(\"ab\").with(a: 1)",
+        "undefined method `with`",
+    );
     err(
         "data P(x: Int)\n  def ==(other: P) -> Bool = true\nend",
         "takes one parameter of type `Object`",

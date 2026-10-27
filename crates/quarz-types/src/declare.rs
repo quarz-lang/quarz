@@ -495,6 +495,9 @@ impl<'ast> Declarer<'ast> {
                     return true;
                 };
                 self.world.class_mut(id).is_abstract = true;
+                // The enum first: its body's methods replace the
+                // variants' generated ones (`declare_data_methods`).
+                let mut variants = Vec::new();
                 for variant in &def.variants {
                     let vpath = ConstPath::simple(variant.name.clone());
                     if let Some(vid) =
@@ -503,7 +506,7 @@ impl<'ast> Declarer<'ast> {
                         self.world.class_mut(vid).variant_of = Some(id);
                         self.world.class_mut(vid).auto_initialize = true;
                         self.world.class_mut(id).variants.push(vid);
-                        self.pending.push(PendingClass {
+                        variants.push(PendingClass {
                             id: vid,
                             body: &[],
                             def: PendingDef::Variant(variant),
@@ -516,6 +519,7 @@ impl<'ast> Declarer<'ast> {
                     body: &def.body,
                     def: PendingDef::Enum(def),
                 });
+                self.pending.extend(variants);
             }
             ExprKind::ExtensionDef(def) => {
                 let id = self.world.extensions.len() as ExtensionId;
@@ -2434,10 +2438,18 @@ impl<'ast> Declarer<'ast> {
     }
 
     /// The methods a data type generates: defaults, each left out when
-    /// the body defines a method of its name (docs/01 §4).
+    /// the body defines a method of its name (docs/01 §4), or for an enum
+    /// variant, when the enum's body does (§5).
     fn declare_data_methods(&mut self, id: ClassId, class_self: Type, span: Span) {
         let fields = self.world.class(id).fields.clone();
-        let own = |s: &Self, name: &str| s.world.class(id).methods.contains_key(name);
+        let enum_id = self.world.class(id).variant_of;
+        // (A variant keeps its own `initialize`: the enum's cannot assign
+        // the variant's fields.)
+        let own = |s: &Self, name: &str| {
+            s.world.class(id).methods.contains_key(name)
+                || name != "initialize"
+                    && enum_id.is_some_and(|e| s.world.class(e).methods.contains_key(name))
+        };
         // Readers.
         for f in &fields {
             if own(self, &f.name) {
@@ -2453,10 +2465,29 @@ impl<'ast> Declarer<'ast> {
                 Visibility::Public,
             );
         }
-        if !own(self, "initialize") {
+        let own_init = own(self, "initialize");
+        if !own_init {
             self.declare_data_init(id, &fields, span);
         }
-        if !own(self, "with") {
+        // `with` builds its value through `initialize`: the generated one,
+        // or the body's when it takes the fields, in order. With another
+        // `initialize` there is none (the body may define its own).
+        let init_takes_fields = |s: &Self| {
+            s.world
+                .class(id)
+                .methods
+                .get("initialize")
+                .is_some_and(|ms| {
+                    ms.iter().any(|m| {
+                        let ps = &s.world.method(*m).params;
+                        ps.len() == fields.len()
+                            && ps.iter().zip(&fields).all(|(p, f)| {
+                                p.kind == ParamKind::Positional && p.name == f.name && p.ty == f.ty
+                            })
+                    })
+                })
+        };
+        if !own(self, "with") && (!own_init || init_takes_fields(self)) {
             self.declare_data_with(id, &fields, class_self, span);
         }
         if !own(self, "to_h") {

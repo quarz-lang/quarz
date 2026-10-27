@@ -151,7 +151,7 @@ in Point(x:, y:) then puts "#{x}, #{y}"
 end
 ```
 
-`data` generates the following automatically: fields (immutable), reader methods, `initialize`, `==`/`hash`, `to_s`/`inspect`, `with`, `to_h`. Each is a default: a method of the same name in the body replaces it (`def to_s`, `def with(*, x: Int)`, `def initialize(s: String)`, which then is the only constructor), and a body's `==` takes an `Object` as any class's does (§3). (`deconstruct`/`deconstruct_keys` methods are not generated: patterns read the declared fields directly, §11.) A `data` type without methods is written on one line with `=` (`data Point = (x: Int, y: Int)`), like the one-line `enum`; without `=`, a body with methods follows and `end` closes it. `data` types cannot be inherited (they can `include`).
+`data` generates the following automatically: fields (immutable), reader methods, `initialize`, `==`/`hash`, `to_s`/`inspect`, `with`, `to_h`. Each is a default: a method of the same name in the body replaces it (`def to_s`, `def with(*, x: Int)`, `def initialize(s: String)`), and a body's `==` takes an `Object` as any class's does (§3). `with` builds its value through `initialize`, so what that checks holds for the copy: through the body's `initialize` when it takes the fields in order, positionally, with their types (`def initialize(lo: Int, hi: Int)`), which then runs on every field, changed or not, and with one of other parameters `with` is not generated (the body may define its own). (`deconstruct`/`deconstruct_keys` methods are not generated: patterns read the declared fields directly, §11.) A `data` type without methods is written on one line with `=` (`data Point = (x: Int, y: Int)`), like the one-line `enum`; without `=`, a body with methods follows and `end` closes it. `data` types cannot be inherited (they can `include`).
 
 
 ### Data values stored in place
@@ -187,6 +187,7 @@ s.area
 - A variant without data (`Point`) is a singleton; writing `Shape::Point` yields the value.
 - `case/in` checks exhaustiveness. Missing a variant is a compile error.
 - In the block form, `variant` declares variants, one or several per line (`variant Hearts, Spades`), alongside the methods, as `def` declares methods. The one-line form `enum Name = A | B` declares an enum without a body and needs no `end` (like `data Name = (...)`); a line that ends with `|` continues on the next.
+- A variant is generated the methods a `data` type is (§4), except those the enum's body defines (a `def to_h` there is every variant's), and `initialize`, which a variant always has its own of.
 - The standard library's `Result[T, E]` is `enum Result[T, E] = Ok(value: T) | Err(error: E)` plus its methods.
 
 ## 6. Modules
