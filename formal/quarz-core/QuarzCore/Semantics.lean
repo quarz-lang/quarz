@@ -84,9 +84,14 @@ def setLoc (s : Store) (l : Nat) (v : Value) : Store := { s with locs := s.locs.
 def setField (s : Store) (l i : Nat) (v : Value) : Store :=
   { s with objs := s.objs.modify l fun o => { o with fields := o.fields.set i v } }
 
+/-- The names at consecutive locations from `base`. -/
+def allocVars : Nat → List String → List (String × Nat)
+  | _, [] => []
+  | base, x :: xs => (x, base) :: allocVars (base + 1) xs
+
 /-- Fresh locations, one per name, holding `nil`. -/
 def alloc (s : Store) (names : List String) : Store × List (String × Nat) :=
-  (⟨s.locs ++ names.map fun _ => .nil, s.objs⟩, names.zipIdx.map fun (x, i) => (x, s.locs.length + i))
+  (⟨s.locs ++ names.map fun _ => .nil, s.objs⟩, allocVars s.locs.length names)
 
 end Store
 

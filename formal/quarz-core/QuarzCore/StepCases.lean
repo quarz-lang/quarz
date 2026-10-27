@@ -154,6 +154,47 @@ theorem Sat.foldl_set {c : Ctx} {fr : Frame} {s : Store} :
     exact Sat.foldl_set ps (h.set (hp x t (List.mem_cons_self ..)))
       fun y u hy => hp y u (List.mem_cons_of_mem _ hy)
 
+theorem lookupVar_cons (x y : String) (l : Nat) (rest : List (String × Nat)) :
+    lookupVar ((x, l) :: rest) y = if x = y then some l else lookupVar rest y := by
+  by_cases h : x = y
+  · simp [lookupVar, List.find?, h]
+  · have : (x == y) = false := by simpa using h
+    simp [lookupVar, List.find?, this, h]
+
+/-- A new frame's names, each at its fresh location. -/
+theorem lookupVar_alloc : ∀ {names : List String} {base j : Nat} {x : String}, names.Nodup →
+    names[j]? = some x → lookupVar (Store.allocVars base names) x = some (base + j)
+  | [], _, _, _, _, h => by simp at h
+  | y :: ys, base, j, x, hnd, h => by
+    have hnd' := List.nodup_cons.mp hnd
+    simp only [Store.allocVars, lookupVar_cons]
+    cases j with
+    | zero => simp at h; subst h; simp
+    | succ j =>
+      simp at h
+      have hxy : y ≠ x := fun e => hnd'.1 (e ▸ List.mem_of_getElem? h)
+      rw [if_neg hxy, lookupVar_alloc hnd'.2 h]
+      congr 1; omega
+
+theorem lookupVar_alloc_inv : ∀ {names : List String} {base l : Nat} {x : String},
+    lookupVar (Store.allocVars base names) x = some l → ∃ j, names[j]? = some x ∧ l = base + j
+  | [], _, _, _, h => by simp [Store.allocVars, lookupVar] at h
+  | y :: ys, base, l, x, h => by
+    simp only [Store.allocVars, lookupVar_cons] at h
+    split at h
+    · rename_i hyx; cases h; exact ⟨0, by simp [hyx], rfl⟩
+    · obtain ⟨j, hj, rfl⟩ := lookupVar_alloc_inv h
+      exact ⟨j + 1, by simpa using hj, by omega⟩
+
+theorem mem_allocVars : ∀ {names : List String} {base l : Nat} {x : String},
+    (x, l) ∈ Store.allocVars base names → base ≤ l ∧ l < base + names.length
+  | [], _, _, _, h => by simp [Store.allocVars] at h
+  | y :: ys, base, l, x, h => by
+    simp only [Store.allocVars, List.mem_cons] at h
+    rcases h with h | h
+    · cases h; simp
+    · have := mem_allocVars h; simp; omega
+
 variable (hP : WfProg P) (horc : OracleOK P orc) {n : Nat} (ih : Good P orc n)
 include hP horc ih
 
