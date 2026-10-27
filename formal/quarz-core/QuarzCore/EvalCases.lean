@@ -416,6 +416,79 @@ theorem testOut_ok (hwf : WfClasses P.classes) {c : Ctx} {e : Expr} {Δ : Env} {
       exact ⟨_, narrow_eq Δ _ (ne_nil_of_hasTy h), hs.set (hre _ h)⟩
   · exact ⟨⟨Δ, rfl, hs⟩, fun _ => ⟨Δ, rfl, hs⟩, fun _ => ⟨Δ, rfl, hs⟩⟩
 
+theorem resolve_mem {t : Ty} {m : String} {ms : List Method} (h : P.resolve t m = some ms)
+    {b : Atom} (hb : b ∈ t) : ∃ k mt, b = .cls k ∧ k ≠ 0 ∧ P.lookup k m = some mt ∧ mt ∈ ms := by
+  induction t generalizing ms with
+  | nil => cases hb
+  | cons a t ih =>
+    simp only [Program.resolve, List.mapM_cons, bind, Option.bind_eq_some_iff] at h
+    obtain ⟨mt0, h0, ms', h', hms⟩ := h
+    simp [pure] at hms; subst hms
+    rcases List.mem_cons.mp hb with rfl | hb
+    · cases b with
+      | cls k =>
+        by_cases hk : k = 0
+        · simp [hk] at h0
+        · simp [hk] at h0
+          exact ⟨k, mt0, rfl, hk, h0, by simp⟩
+      | _ => simp at h0
+    · obtain ⟨k, mt, h1, h2, h3, h4⟩ := ih (by simpa [Program.resolve] using h') hb
+      exact ⟨k, mt, h1, h2, h3, List.mem_cons_of_mem _ h4⟩
+
+theorem AllTy.le (hwf : WfClasses P.classes) {s : Store} :
+    ∀ {vs : List Value} {ts us : List Ty}, AllTy P s vs ts → ts.length = us.length →
+      ((ts.zip us).all fun (t, u) => t.le P.classes u) = true → AllTy P s vs us
+  | [], [], [], _, _, _ => trivial
+  | _ :: _, _ :: _, _ :: _, ⟨h1, h2⟩, hl, ha => by
+    simp only [List.zip_cons_cons, List.all_cons, Bool.and_eq_true] at ha
+    exact ⟨hasTy_le hwf h1 ha.1, AllTy.le hwf h2 (by simpa using hl) ha.2⟩
+  | [], [], _ :: _, _, hl, _ => by simp at hl
+  | [], _ :: _, _, h, _, _ => h.elim
+  | _ :: _, [], _, h, _, _ => h.elim
+  | _ :: _, _ :: _, [], _, hl, _ => by simp at hl
+
+/-- Arguments of types fitting the parameters (`argsOk`). -/
+theorem AllTy.le_params (hwf : WfClasses P.classes) {s : Store} :
+    ∀ {vs : List Value} {ts : List Ty} {ps : List (String × Ty)}, AllTy P s vs ts →
+      ts.length = ps.length → ((ts.zip ps).all fun (t, (_, u)) => t.le P.classes u) = true →
+      AllTy P s vs (ps.map (·.2))
+  | [], [], [], _, _, _ => trivial
+  | _ :: _, _ :: _, _ :: _, ⟨h1, h2⟩, hl, ha => by
+    simp only [List.zip_cons_cons, List.all_cons, Bool.and_eq_true] at ha
+    exact ⟨hasTy_le hwf h1 ha.1, AllTy.le_params hwf h2 (by simpa using hl) ha.2⟩
+  | [], [], _ :: _, _, hl, _ => by simp at hl
+  | [], _ :: _, _, h, _, _ => h.elim
+  | _ :: _, [], _, h, _, _ => h.elim
+  | _ :: _, _ :: _, [], _, hl, _ => by simp at hl
+
+theorem hasTy_flatMap {s : Store} {v : Value} {ms : List Method} {mt : Method} (hm : mt ∈ ms)
+    (h : s.hasTy P v mt.ret) : s.hasTy P v (ms.flatMap (·.ret)) := by
+  rw [hasTy_iff] at *
+  obtain ⟨a, ha, b, hb, hab⟩ := h
+  exact ⟨a, ha, b, List.mem_flatMap.mpr ⟨mt, hm, hb⟩, hab⟩
+
+/-- The receiver of a call: of the class the method was found in. -/
+theorem recv_of {s : Store} {v : Value} {t : Ty} {m : String} {ms : List Method}
+    (hv : s.hasTy P v t) (hres : P.resolve t m = some ms) :
+    ∃ k mt, k ≠ 0 ∧ P.lookup k m = some mt ∧ mt ∈ ms ∧ s.hasTy P v [.cls k] := by
+  rw [hasTy_iff] at hv
+  obtain ⟨a, ha, b, hb, hab⟩ := hv
+  obtain ⟨k, mt, rfl, hk, hl, hm⟩ := resolve_mem hres hb
+  exact ⟨k, mt, hk, hl, hm, hasTy_iff.mpr ⟨a, ha, .cls k, List.mem_singleton.mpr rfl, hab⟩⟩
+
+theorem blkW_chain : ∀ {blk : Option Closure} {l : Nat}, blkW blk l → chainLocs blk l
+  | none, _, h => by simp [blkW] at h
+  | some (.mk vars me outer ps body), l, h => by
+    simp only [blkW, chainLocs] at h ⊢
+    rcases h with ⟨x, _, hx⟩ | h
+    · exact .inl ⟨x, lookupVar_mem hx⟩
+    · exact .inr (blkW_chain h)
+
+/-- What a frame's block writes misses the frame. -/
+theorem FrameOK.blk_not_own {c : Ctx} {Λ : List Ty} {fr : Frame} {s : Store} (hf : FrameOK P c Λ fr s) :
+    ∀ l, frameLocs fr.vars l → ¬ blkW fr.blk l := fun l hl hb =>
+  Nat.lt_irrefl _ (hf.above l l hl (blkW_chain hb))
+
 variable (hP : WfProg P) (horc : OracleOK P orc) {n : Nat} (ih : Good P orc n)
 include hP horc ih
 
@@ -1037,6 +1110,148 @@ theorem eval_succ : EvalGood P orc (n + 1) := by
         · simp [blkW] at h
       | stuck => exact this
       | returned => exact this.elim
+      | raised => trivial
+      | timeout => trivial
+  | call hr hout hargs hres hall =>
+    simp only [eval]
+    refine (ih.eval _ _ _ _ fr s Λ rfl hr hw hf hs).bind
+      (evalW_mono (by simp [Expr.assigned]; intros; simp_all)) ?_
+    intro v s1 Λ1 hw1 he1 hf1 hv1 ho1 _ _
+    obtain ⟨Δ1, hΔ, hs1⟩ := ho1
+    rw [hout] at hΔ; cases hΔ
+    have := ih.args _ _ _ _ fr s1 Λ1 rfl hargs hw1 hf1 hs1
+    revert this
+    generalize evalArgs c.prog orc n fr s1 _ = ar
+    intro this
+    cases ar with
+    | other r =>
+      exact (this.other (evalWs_mono (by simp [Expr.assigned]; intros; simp_all))).extend he1 hw
+        (evalW_mono (by simp [Expr.assigned]; intros; simp_all)) (fun _ h => h)
+    | ok vs s2 =>
+      obtain ⟨tys', Δ2, hao, Λ2, hw2, he2, hf2, hs2, hvs⟩ := this
+      cases hao
+      dsimp only
+      obtain ⟨k, mt, hk, hl, hmem, hrecv⟩ := recv_of (he2.hasTy hv1) hres
+      have hmt := List.all_eq_true.mp hall mt hmem
+      simp only [Bool.and_eq_true, Option.isNone_iff_eq_none] at hmt
+      obtain ⟨hblk, hok⟩ := hmt
+      unfold argsOk at hok
+      simp only [Bool.and_eq_true, beq_iff_eq] at hok
+      have hvs' : AllTy c.prog s2 vs (mt.params.map (·.2)) := hvs.le_params hwf hok.1 hok.2
+      have hsend := ih.send s2 Λ2 v k _ mt vs none default hw2 hrecv hk hl hvs' (by rw [hblk]; trivial)
+      revert hsend
+      generalize send c.prog orc n s2 v _ vs none = r
+      intro hsend
+      cases r with
+      | ok w s3 =>
+        obtain ⟨Λ3, hw3, he3, hw', _⟩ := hsend
+        have hno : ∀ l, frameLocs fr.vars l → ¬ blkW none l := fun _ _ h => by simp [blkW] at h
+        refine ⟨Λ3, hw3, ((he1.trans he2 hw).trans he3 (by exact hw)).mono ?_,
+          hf2.stable he3 (fun _ _ h => by simp [blkW] at h), hasTy_flatMap hmem hw',
+          ⟨_, rfl, hs2.stable he3 hno⟩, fun _ => ⟨_, rfl, hs2.stable he3 hno⟩,
+          fun _ => ⟨_, rfl, hs2.stable he3 hno⟩⟩
+        rintro l ((h | h) | h)
+        · exact evalW_mono (by simp [Expr.assigned]; intros; simp_all) l h
+        · exact evalWs_mono (by simp [Expr.assigned]; intros; simp_all) l h
+        · simp [blkW] at h
+      | stuck => exact hsend
+      | returned => exact hsend.elim
+      | raised => trivial
+      | timeout => trivial
+  | callDeadRecv hr hout =>
+    simp only [eval]
+    refine (ih.eval _ _ _ _ fr s Λ rfl hr hw hf hs).bind
+      (evalW_mono (by simp [Expr.assigned]; intros; simp_all)) ?_
+    intro v s1 Λ1 _ _ _ _ ho1 _ _
+    obtain ⟨_, hΔ, _⟩ := ho1
+    rw [hout] at hΔ; cases hΔ
+  | callDeadArgs hr hout hargs =>
+    simp only [eval]
+    refine (ih.eval _ _ _ _ fr s Λ rfl hr hw hf hs).bind
+      (evalW_mono (by simp [Expr.assigned]; intros; simp_all)) ?_
+    intro v s1 Λ1 hw1 he1 hf1 _ ho1 _ _
+    obtain ⟨Δ1, hΔ, hs1⟩ := ho1
+    rw [hout] at hΔ; cases hΔ
+    have := ih.args _ _ _ _ fr s1 Λ1 rfl hargs hw1 hf1 hs1
+    revert this
+    generalize evalArgs c.prog orc n fr s1 _ = ar
+    intro this
+    cases ar with
+    | other r =>
+      exact (this.other (evalWs_mono (by simp [Expr.assigned]; intros; simp_all))).extend he1 hw
+        (evalW_mono (by simp [Expr.assigned]; intros; simp_all)) (fun _ h => h)
+    | ok vs s2 => obtain ⟨_, _, hao, _⟩ := this; cases hao
+  | callBlkDeadRecv hr hout =>
+    simp only [eval]
+    refine (ih.eval _ _ _ _ fr s Λ rfl hr hw hf hs).bind
+      (evalW_mono (by simp [Expr.assigned]; intros; simp_all)) ?_
+    intro v s1 Λ1 _ _ _ _ ho1 _ _
+    obtain ⟨_, hΔ, _⟩ := ho1
+    rw [hout] at hΔ; cases hΔ
+  | callBlkDeadArgs hr hout hargs =>
+    simp only [eval]
+    refine (ih.eval _ _ _ _ fr s Λ rfl hr hw hf hs).bind
+      (evalW_mono (by simp [Expr.assigned]; intros; simp_all)) ?_
+    intro v s1 Λ1 hw1 he1 hf1 _ ho1 _ _
+    obtain ⟨Δ1, hΔ, hs1⟩ := ho1
+    rw [hout] at hΔ; cases hΔ
+    have := ih.args _ _ _ _ fr s1 Λ1 rfl hargs hw1 hf1 hs1
+    revert this
+    generalize evalArgs c.prog orc n fr s1 _ = ar
+    intro this
+    cases ar with
+    | other r =>
+      exact (this.other (evalWs_mono (by simp [Expr.assigned]; intros; simp_all))).extend he1 hw
+        (evalW_mono (by simp [Expr.assigned]; intros; simp_all)) (fun _ h => h)
+    | ok vs s2 => obtain ⟨_, _, hao, _⟩ := this; cases hao
+  | yieldDead hsig hargs =>
+    simp only [eval]
+    have := ih.args _ _ _ _ fr s Λ rfl hargs hw hf hs
+    revert this
+    generalize evalArgs c.prog orc n fr s _ = ar
+    intro this
+    cases ar with
+    | other r => exact this.other (evalWs_mono (by simp [Expr.assigned]))
+    | ok vs s1 => obtain ⟨_, _, hao, _⟩ := this; cases hao
+  | «yield» hsig hargs hlen hall =>
+    rename_i sig args tys Δ
+    simp only [eval]
+    have := ih.args _ _ _ _ fr s Λ rfl hargs hw hf hs
+    revert this
+    generalize evalArgs c.prog orc n fr s _ = ar
+    intro this
+    cases ar with
+    | other r => exact this.other (evalWs_mono (by simp [Expr.assigned]))
+    | ok vs s1 =>
+      obtain ⟨tys', Δ', hao, Λ1, hw1, he1, hf1, hs1, hvs⟩ := this
+      cases hao
+      dsimp only
+      obtain ⟨clo, hblk, hok⟩ := hf1.blk sig hsig
+      rw [hblk]
+      dsimp only
+      obtain ⟨c', Δ'', ob', hat⟩ := (closureOK_iff c.prog).mp hok
+      have hvs' : AllTy c.prog s1 vs sig.params := hvs.le hwf hlen hall
+      have hres := ih.block s1 Λ1 clo sig vs (c', Δ'', ob') hw1
+        ⟨hat, fun l hl => hf1.chainIn l (by rw [hblk]; exact hl)⟩ hvs'
+      revert hres
+      generalize runBlock c.prog orc n s1 clo vs = r
+      intro hres
+      cases r with
+      | ok v s2 =>
+        obtain ⟨Λ2, hw2, he2, hv2, hat2, hin2⟩ := hres
+        have hno : ∀ l, frameLocs fr.vars l → ¬ blkW (some clo) l := by
+          rw [← hblk]; exact hf1.blk_not_own
+        refine ⟨Λ2, hw2, (he1.trans he2 hw).mono ?_, ⟨hf1.core.stable he2, fun sig' hsig' => ?_,
+          hf1.above, fun l hl => hin2 l (by rw [← hblk]; exact hl)⟩, hv2,
+          ⟨_, rfl, hs1.stable he2 hno⟩, fun _ => ⟨_, rfl, hs1.stable he2 hno⟩,
+          fun _ => ⟨_, rfl, hs1.stable he2 hno⟩⟩
+        · rintro l (h | h)
+          · exact evalWs_mono (by simp [Expr.assigned]) l h
+          · exact .inr (by rw [hblk]; exact h)
+        · rw [hsig] at hsig'; cases hsig'
+          exact ⟨clo, hblk, (closureOK_iff c.prog).mpr ⟨_, _, _, hat2⟩⟩
+      | stuck => exact hres
+      | returned => exact hres.elim
       | raised => trivial
       | timeout => trivial
   | _ => sorry

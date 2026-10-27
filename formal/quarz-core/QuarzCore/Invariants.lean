@@ -110,10 +110,33 @@ def ClosureOK (Λ : List Ty) (s : Store) : Closure → BlockSig → Prop
         | some Γb => Δ.join Γb
         | none => Δ) ⟨vars, self, outer⟩ s
 
+/-- A block as checked in context `c`, its call's environment `Δ`, its
+body checked as `ob` (what `ClosureOK` says there is). -/
+def ClosureAt (Λ : List Ty) (s : Store) (c : Ctx) (Δ : Env) (ob : Out) : Closure → BlockSig → Prop
+  | .mk vars self outer ps body, sig =>
+      c.prog = P ∧
+      FrameCore P c Λ vars self s ∧
+      (∀ sig', c.meth.block = some sig' → match outer with
+        | some clo => ClosureOK P Λ s clo sig'
+        | none => False) ∧
+      (∀ l l', frameLocs vars l → chainLocs outer l' → l' < l) ∧
+      blockParamsOk c ps sig = true ∧
+      Typed { c with inBlock := true } (blockEnv c Δ ps sig body) body ob ∧
+      ob.ty.le c.ct sig.ret = true ∧
+      Sat P c (c.reset Δ (ps ++ body.assigned)) ⟨vars, self, outer⟩ s ∧
+      Sat P c (match ob.out with
+        | some Γb => Δ.join Γb
+        | none => Δ) ⟨vars, self, outer⟩ s
+
+theorem closureOK_iff {Λ : List Ty} {s : Store} {clo : Closure} {sig : BlockSig} :
+    ClosureOK P Λ s clo sig ↔ ∃ c Δ ob, ClosureAt P Λ s c Δ ob clo sig := by
+  cases clo; unfold ClosureOK ClosureAt; rfl
+
 structure FrameOK (c : Ctx) (Λ : List Ty) (fr : Frame) (s : Store) : Prop where
   core : FrameCore P c Λ fr.vars fr.self s
   blk : ∀ sig, c.meth.block = some sig → ∃ clo, fr.blk = some clo ∧ ClosureOK P Λ s clo sig
   above : ∀ l l', frameLocs fr.vars l → chainLocs fr.blk l' → l' < l
+  chainIn : ∀ l, chainLocs fr.blk l → l < s.locs.length
 
 /-- The built-in methods answer with values of the types asked for. -/
 def OracleOK (orc : Oracle) : Prop := ∀ n s t v, orc n s t = some v → s.hasTy P v t

@@ -87,5 +87,21 @@ theorem FrameOK.stable {c : Ctx} {Λ Λ' : List Ty} {fr : Frame} {s s' : Store} 
     obtain ⟨clo, h1, h2⟩ := h.blk sig hsig
     exact ⟨clo, h1, ClosureOK.stable he clo sig (by rw [h1] at hw; exact hw) h2⟩
   above := h.above
+  chainIn := fun l hl => he.len (h.chainIn l hl)
+
+theorem ClosureAt.stable {Λ Λ' : List Ty} {s s' : Store} {W : Nat → Prop}
+    (he : Ext P W Λ Λ' s s') {c : Ctx} {Δ : Env} {ob : Out} :
+    ∀ (clo : Closure) (sig : BlockSig), (∀ l, chainLocs (some clo) l → ¬ W l) →
+      ClosureAt P Λ s c Δ ob clo sig → ClosureAt P Λ' s' c Δ ob clo sig
+  | .mk vars me outer ps body, sig, hw, h => by
+    unfold ClosureAt at h ⊢
+    simp only [chainLocs] at hw
+    obtain ⟨hc, hcore, hblk, habove, hps, hty, hret, hR, hJ⟩ := h
+    have hwf : ∀ l, frameLocs vars l → ¬ W l := fun l hl => hw l (Or.inl hl)
+    refine ⟨hc, hcore.stable he, fun sig' hsig => ?_, habove, hps, hty, hret,
+      hR.stable he hwf, hJ.stable he hwf⟩
+    have := hblk sig' hsig
+    match outer, this with
+    | some clo, this => exact ClosureOK.stable he clo sig' (fun l hl => hw l (Or.inr hl)) this
 
 end QuarzCore

@@ -43,41 +43,45 @@ def ArgsGood (n : Nat) : Prop :=
     c.prog = P → TypedArgs c Γ es ao → WfStore P Λ s → FrameOK P c Λ fr s → Sat P c Γ fr s →
     ArgsPost P c ao fr Λ s (evalWs fr es) (evalArgs P orc n fr s es)
 
-/-- A block given to a method that takes `b`, as it may be. -/
-def BlkGiven (Λ : List Ty) (s : Store) : Option BlockSig → Option Closure → Prop
+/-- A block given to a method that takes `b`, as it was checked
+(`w`: its context, call environment and body's `Out`). -/
+def BlkGiven (Λ : List Ty) (s : Store) (w : Ctx × Env × Out) :
+    Option BlockSig → Option Closure → Prop
   | none, none => True
-  | some sig, some clo => ClosureOK P Λ s clo sig ∧ ∀ l, chainLocs (some clo) l → l < s.locs.length
+  | some sig, some clo => ClosureAt P Λ s w.1 w.2.1 w.2.2 clo sig ∧
+      ∀ l, chainLocs (some clo) l → l < s.locs.length
   | _, _ => False
 
 /-- What a call gives: never stuck; a value of the method's result type,
 the store grown as the block's writes allow, the block as it was. -/
-def SendPost (ret : Ty) (sig : Option BlockSig) (blk : Option Closure) (Λ : List Ty) (s : Store) :
-    Result → Prop
+def SendPost (ret : Ty) (sig : Option BlockSig) (blk : Option Closure) (w : Ctx × Env × Out)
+    (Λ : List Ty) (s : Store) : Result → Prop
   | .ok v s' => ∃ Λ', WfStore P Λ' s' ∧ Ext P (blkW blk) Λ Λ' s s' ∧ s'.hasTy P v ret ∧
-      BlkGiven P Λ' s' sig blk
+      BlkGiven P Λ' s' w sig blk
   | .stuck | .returned _ _ => False
   | _ => True
 
 def SendGood (n : Nat) : Prop :=
   ∀ (s : Store) (Λ : List Ty) (recv : Value) (k : Nat) (m : String) (mt : Method)
-    (vs : List Value) (blk : Option Closure),
+    (vs : List Value) (blk : Option Closure) (w : Ctx × Env × Out),
     WfStore P Λ s → s.hasTy P recv [.cls k] → k ≠ 0 → P.lookup k m = some mt →
     AllTy P s vs (mt.params.map (·.2)) →
-    BlkGiven P Λ s mt.block blk →
-    SendPost P mt.ret mt.block blk Λ s (send P orc n s recv m vs blk)
+    BlkGiven P Λ s w mt.block blk →
+    SendPost P mt.ret mt.block blk w Λ s (send P orc n s recv m vs blk)
 
 def BlockGood (n : Nat) : Prop :=
-  ∀ (s : Store) (Λ : List Ty) (clo : Closure) (sig : BlockSig) (vs : List Value),
-    WfStore P Λ s → BlkGiven P Λ s (some sig) (some clo) →
+  ∀ (s : Store) (Λ : List Ty) (clo : Closure) (sig : BlockSig) (vs : List Value)
+    (w : Ctx × Env × Out),
+    WfStore P Λ s → BlkGiven P Λ s w (some sig) (some clo) →
     AllTy P s vs sig.params →
-    SendPost P sig.ret (some sig) (some clo) Λ s (runBlock P orc n s clo vs)
+    SendPost P sig.ret (some sig) (some clo) w Λ s (runBlock P orc n s clo vs)
 
 /-- `v == w` (`w` nil, true or false): never stuck, a boolean or what a
 user `==` gives (a boolean, `wfMethod`), no local written. -/
 def EqualGood (n : Nat) : Prop :=
   ∀ (s : Store) (Λ : List Ty) (v w : Value) (t : Ty),
     WfStore P Λ s → s.hasTy P v t → (w = .nil ∨ w = .bool true ∨ w = .bool false) →
-    SendPost P [.bool] none none Λ s (equal P orc n s v w)
+    SendPost P [.bool] none none default Λ s (equal P orc n s v w)
 
 structure Good (n : Nat) : Prop where
   eval : EvalGood P orc n
