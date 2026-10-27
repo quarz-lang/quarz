@@ -35,7 +35,7 @@ Quarz は 1 つのフロントエンドと 1 つのランタイムを、2 つの
 |---|---|
 | `quarz run app.qz [args]` | 型検査し(変わっていないファイルの検査結果は再利用する。§2)、QIR に変換(lowering)して解釈実行する |
 | `quarz repl` | REPL。入力ごとに型検査し、定義を追加できる(再定義は不可、代わりに新しい名前を使う) |
-| `quarz check app.qz` | 型検査のみ |
+| `quarz check app.qz` | 型検査のみ。`--tree` を付けると、検査した構文木を各ノードの型とともに JSON で出力する(`formal/` の差分テスト用。形式は予告なく変わる) |
 | `quarz build app.qz -o app` | ネイティブ実行ファイルを生成(LLVM で最適化) |
 | `quarz ir app.qz` | 全関数の QIR を表示する(変換結果のデバッグ用)。`quarz tokens` と `quarz parse` はトークンと構文木を表示する |
 | `quarz test` | `test/**/*_test.qz`、または指定したテストファイルを実行。コンパイラが見つける Test::Unit 風のクラス([12-testing.ja.md](12-testing.ja.md))。`--release` でコンパイルして実行 |
