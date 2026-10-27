@@ -55,8 +55,8 @@ def PathHolds (c : Ctx) (fr : Frame) (s : Store) : Path → Ty → Prop
   | .local x, t => ∃ l v d, lookupVar fr.vars x = some l ∧ s.locs[l]? = some v ∧
       c.decl x = some d ∧ s.hasTy P v t ∧ s.hasTy P v d
   | .field f, t => ∃ l o fd i v, fr.self = .obj l ∧ s.objs[l]? = some o ∧ c.field? f = some fd ∧
-      fd.var = false ∧ fieldIndex P.classes o.cls f = some i ∧ o.fields[i]? = some v ∧
-      s.hasTy P v t
+      fd.var = false ∧ fieldIndex P.classes o.cls f = some i ∧
+      (P.classes.allFields o.cls)[i]? = some fd ∧ o.fields[i]? = some v ∧ s.hasTy P v t
 
 def Sat (c : Ctx) (Γ : Env) (fr : Frame) (s : Store) : Prop :=
   ∀ p t, Γ.get p = some t → PathHolds P c fr s p t

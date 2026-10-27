@@ -109,6 +109,23 @@ theorem ancestors_eq (hwf : WfClasses ct) (c : Nat) :
     rw [← hn']
     exact ancestorsAux_enough ct hwf d n ct.length (by omega) (by omega)
 
+/-- What is above `c` is not after it in the table. -/
+theorem ancestors_le (hwf : WfClasses ct) : ∀ c d, d ∈ ct.ancestors c → d ≤ c := by
+  intro c
+  induction c using Nat.strongRecOn with
+  | _ c ih =>
+    intro d hd
+    rw [ancestors_eq hwf] at hd
+    rcases List.mem_cons.mp hd with rfl | hd
+    · exact Nat.le_refl _
+    · cases hs : superOf ct c with
+      | none => simp [hs] at hd
+      | some s =>
+        simp only [hs] at hd
+        have := ih s (superOf_lt hwf hs) d hd
+        have := superOf_lt hwf hs
+        omega
+
 theorem mem_ancestors_self (hwf : WfClasses ct) (c : Nat) : c ∈ ct.ancestors c := by
   rw [ancestors_eq hwf]; simp
 
@@ -179,6 +196,30 @@ theorem superOf_zero (hwf : WfClasses ct) : superOf ct 0 = none := by
 
 theorem ancestors_zero (hwf : WfClasses ct) : ct.ancestors 0 = [0] := by
   rw [ancestors_eq hwf, superOf_zero hwf]
+
+/-- A class's chain ends with the chain of each class above it. -/
+theorem ancestors_suffix (hwf : WfClasses ct) :
+    ∀ c d, d ∈ ct.ancestors c → ∃ pre, ct.ancestors c = pre ++ ct.ancestors d ∧ d ∉ pre := by
+  intro c
+  induction c using Nat.strongRecOn with
+  | _ c ih =>
+    intro d hd
+    rw [ancestors_eq hwf] at hd
+    rcases List.mem_cons.mp hd with rfl | hd
+    · exact ⟨[], by simp, by simp⟩
+    · cases hs : superOf ct c with
+      | none => simp [hs] at hd
+      | some s =>
+        simp only [hs] at hd
+        obtain ⟨pre, hpre, hnot⟩ := ih s (superOf_lt hwf hs) d hd
+        have hle := ancestors_le hwf s d hd
+        have hlt := superOf_lt hwf hs
+        refine ⟨c :: pre, by simp only [ancestors_eq hwf c, hs, hpre, List.cons_append], ?_⟩
+        intro hm
+        rcases List.mem_cons.mp hm with h | h
+        · -- `d` above `s` above `c`: not `c` (a chain descends).
+          omega
+        · exact hnot h
 
 theorem subclass_iff (c d : Nat) : ct.subclass c d = true ↔ d ∈ ct.ancestors c := by
   simp [subclass]

@@ -221,8 +221,8 @@ theorem PathHolds.le (hwf : WfClasses P.classes) {p : Path} {t u : Ty}
     obtain ⟨l, v, d, h1, h2, h3, h4, h5⟩ := h
     exact ⟨l, v, d, h1, h2, h3, hasTy_le hwf h4 hle, h5⟩
   | field f =>
-    obtain ⟨l, o, fd, i, v, h1, h2, h3, h4, h5, h6, h7⟩ := h
-    exact ⟨l, o, fd, i, v, h1, h2, h3, h4, h5, h6, hasTy_le hwf h7 hle⟩
+    obtain ⟨l, o, fd, i, v, h1, h2, h3, h4, h5, h6, h7, h8⟩ := h
+    exact ⟨l, o, fd, i, v, h1, h2, h3, h4, h5, h6, h7, hasTy_le hwf h8 hle⟩
 
 theorem Sat.join_left (hwf : WfClasses P.classes) {Γ Δ : Env} (h : Sat P c Γ fr s) :
     Sat P c (Γ.join Δ) fr s := by
