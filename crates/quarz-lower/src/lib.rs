@@ -440,7 +440,11 @@ pub fn lower_checked(checked: &Checked, files: &[SourceFile]) -> Module {
     check(&functions, verify::Stage::Inline);
     sroa::scalar_replace(&mut functions, &delta.world.methods, &delta.world.classes);
     check(&functions, verify::Stage::Sroa);
+    let before = verify::enabled().then(|| functions.clone());
     copyprop::propagate_copies(&mut functions);
+    if let Some(before) = before {
+        verify::check_copyprop(&before, &functions);
+    }
     check(&functions, verify::Stage::Copyprop);
     release::drop_unobserved(&mut functions, &delta.world.methods, &delta.world.builtin);
     check(&functions, verify::Stage::Release);

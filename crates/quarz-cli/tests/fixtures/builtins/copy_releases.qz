@@ -1,0 +1,34 @@
+# Copies of a parameter and of a new object, released together at the end
+# of the method: copy propagation removes the copies' releases (the
+# parameter still holds its value) and releases the object through the
+# register it was made in (the copy was all that read it). The QIR
+# verifier (debug builds) checks each release against what it was.
+class Foo
+  var @n: Int
+  def initialize(@n: Int)
+  end
+  def n -> Int = @n
+  def deinitialize -> Nil
+    puts "deinitialize #{@n}"
+  end
+end
+
+def run(o: Foo) -> Int
+  x = o
+  y = o
+  z = Foo.new(3)
+  x.n + y.n + z.n + o.n
+end
+
+def run2(o: Foo, q: Foo) -> Int
+  z = Foo.new(4)
+  x = o
+  y = o
+  w = q
+  z.n + x.n + y.n + w.n
+end
+
+f = Foo.new(1)
+p run(f)
+p run2(f, Foo.new(5))
+p f.n
