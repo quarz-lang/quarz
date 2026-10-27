@@ -21,11 +21,7 @@ x = rand(min..max)
 p(x.is_a?(Int))
 p(rand(max..max))
 p(rand(min..min))
-begin
-  (0...min).last
-rescue OverflowError
-  puts("OverflowError")
-end
+p((0...min).last)
 e = (max - 1..).each
 p([e.next, e.next])
 begin
