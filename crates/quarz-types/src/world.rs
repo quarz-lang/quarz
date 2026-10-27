@@ -915,6 +915,20 @@ impl World {
         out
     }
 
+    /// Whether a field of type `t` without a default may be left unassigned
+    /// (nil): its type admits `nil` (`Object` does). A type parameter's
+    /// never does, whatever its bounds (upper ones: `G[T: Object?]` may
+    /// be a `G[Int]`); `T?` does.
+    pub fn field_may_stay_nil(&self, t: &Type) -> bool {
+        match t {
+            Type::Class(c, _) => *c == self.builtin.nil || *c == self.builtin.object,
+            Type::Union(ms) => ms
+                .iter()
+                .any(|m| matches!(m, Type::Class(c, _) if *c == self.builtin.nil)),
+            _ => false,
+        }
+    }
+
     /// Whether a class has fields that an `initialize` must assign (docs/01
     /// §3): every field of a data type or a variant; otherwise one without
     /// a default whose type does not admit `nil` (a type parameter's may
@@ -925,14 +939,7 @@ impl World {
         if matches!(self.class(id).kind, ClassKind::Data | ClassKind::Variant) {
             return true;
         }
-        let admits_nil = |t: &Type| match t {
-            Type::Class(c, _) => *c == self.builtin.nil || *c == self.builtin.object,
-            Type::Union(ms) => ms
-                .iter()
-                .any(|m| matches!(m, Type::Class(c, _) if *c == self.builtin.nil)),
-            _ => false,
-        };
-        let needs = |f: &FieldInfo| f.default.is_none() && !admits_nil(&f.ty);
+        let needs = |f: &FieldInfo| f.default.is_none() && !self.field_may_stay_nil(&f.ty);
         if inherited {
             self.all_fields(id).iter().any(|(f, _)| needs(f))
         } else {
