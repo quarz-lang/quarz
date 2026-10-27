@@ -272,6 +272,10 @@ theorem over_facts (hwf : WfClasses P.classes) {mt mt' : Method} {s : Store} {vs
     obtain ⟨⟨⟨hl, hall⟩, hret⟩, hblk⟩ := h
     exact ⟨by rw [hvs.length]; simp [hl], hvs.over hwf hl.symm hall, hret, hblk⟩
 
+theorem zip_fst_snd : ∀ (ps : List (String × Ty)), (ps.map (·.1)).zip (ps.map (·.2)) = ps
+  | [] => rfl
+  | (x, t) :: ps => by simp [zip_fst_snd ps]
+
 variable (hP : WfProg P) (horc : OracleOK P orc) {n : Nat} (ih : Good P orc n)
 include hP horc ih
 
@@ -554,6 +558,103 @@ theorem send_succ : SendGood P orc (n + 1) := by
   have hlookj : ∀ j x d, mt'.locals[j]? = some (x, d) →
       lookupVar (Store.allocVars s.locs.length (mt'.locals.map (·.1))) x = some (s.locs.length + j) :=
     fun j x d hj => lookupVar_alloc hnd (by simp [hj])
-  sorry
+  -- The parameters are the first locals.
+  have hptake : mt'.params = mt'.locals.take mt'.params.length := by
+    apply List.ext_getElem (by simp; omega)
+    intro i h1 h2
+    have hil : i < mt'.locals.length := by omega
+    have hz : (mt'.params.zip mt'.locals)[i]? = some (mt'.params[i], mt'.locals[i]) := by
+      simp [List.zip, List.getElem?_zipWith, h1, hil]
+    have := List.all_eq_true.mp hpre _ (List.mem_iff_getElem?.mpr ⟨i, hz⟩)
+    simp at this; simp [this]
+  have hpnd : (mt'.params.map (·.1)).Nodup := by
+    rw [hptake, List.map_take]; exact hnd.sublist (List.take_sublist _ _)
+  have hexists : ∀ x ∈ mt'.params.map (·.1),
+      ∃ l, lookupVar (Store.allocVars s.locs.length (mt'.locals.map (·.1))) x = some l := by
+    intro x hx
+    obtain ⟨⟨y, t⟩, hm, rfl⟩ := List.mem_map.mp hx
+    obtain ⟨j, hj⟩ := hcl y t (decl_param hwfm hm)
+    exact ⟨_, hlookj j y t hj⟩
+  obtain ⟨s2, hb⟩ := bindAll_some (vars := Store.allocVars s.locs.length (mt'.locals.map (·.1)))
+    ⟨s.locs ++ (mt'.locals.map (·.1)).map fun _ => .nil, s.objs⟩ (by rw [List.length_map, hlen']) hexists
+  simp only [hb]
+  obtain ⟨hobjs, hlen2, hsame⟩ := bindAll_same hb
+  simp only [List.length_append, List.length_map] at hlen2
+  have hge : ∀ x l', lookupVar (Store.allocVars s.locs.length (mt'.locals.map (·.1))) x = some l' →
+      s.locs.length ≤ l' ∧ l' < s.locs.length + mt'.locals.length := fun x l' h => by
+    have := mem_allocVars (lookupVar_mem h); simpa using this
+  have mono : ∀ {v : Value} {t : Ty}, s.hasTy P v t → s2.hasTy P v t := fun h => by
+    unfold Store.hasTy Store.hasType Store.typeOf at *; rw [hobjs]; exact h
+  have he12 : Ext P (fun _ => False) Λ (Λ ++ mt'.locals.map (·.2)) s s2 := by
+    refine ⟨List.prefix_append _ _, fun l' v hv => ⟨v, ?_, .inl rfl⟩, fun l' o' ho' =>
+      ⟨o', by rw [hobjs]; exact ho', rfl, fun _ _ _ _ => rfl⟩⟩
+    have hl' := (List.getElem?_eq_some_iff.mp hv).1
+    rw [hsame l' fun x _ hx => by have := (hge x l' hx).1; omega]
+    simp [List.getElem?_append_left hl', hv]
+  have hw2 : WfStore P (Λ ++ mt'.locals.map (·.2)) s2 :=
+    ⟨by simp [hw.len, hlen2], fun l' o' ho' => by
+      rw [hobjs] at ho'
+      obtain ⟨a, b, d⟩ := hw.objs l' o' ho'
+      exact ⟨a, b, fun i v f h1 h2 => mono (d i v f h1 h2)⟩⟩
+  have hcore : FrameCore P ⟨P, mt', false⟩ (Λ ++ mt'.locals.map (·.2))
+      (Store.allocVars s.locs.length (mt'.locals.map (·.1))) (.obj l) s2 := by
+    refine ⟨fun x d hd => ?_, fun x y l' hx hy => ?_, fun x l' hm => ?_, ?_, ⟨l, rfl⟩⟩
+    · obtain ⟨j, hj⟩ := hcl x d hd
+      refine ⟨_, hlookj j x d hj, ?_⟩
+      have hjl := (List.getElem?_eq_some_iff.mp hj).1
+      rw [List.getElem?_append_right (by rw [hw.len]; omega)]
+      simp [hw.len, hj]
+    · obtain ⟨jx, hjx, rfl⟩ := lookupVar_alloc_inv hx
+      obtain ⟨jy, hjy, hjj⟩ := lookupVar_alloc_inv hy
+      have : jx = jy := by omega
+      subst this; rw [hjx] at hjy; cases hjy; rfl
+    · have := mem_allocVars hm; simp [hlen2] at this ⊢; omega
+    · refine hasTy_iff.mpr ⟨.cls o.cls, ?_, .cls mt'.owner, List.mem_singleton.mpr rfl, ?_⟩
+      · simp [Store.typeOf, hobjs, ho]
+      · simpa [Atom.le, ClassTable.subclass_iff] using howner
+  obtain ⟨hch, hin⟩ := hblk
+  rw [← hblk'] at hch
+  have hf2 : FrameOK P ⟨P, mt', false⟩ (Λ ++ mt'.locals.map (·.2))
+      ⟨Store.allocVars s.locs.length (mt'.locals.map (·.1)), .obj l, blk⟩ s2 ws :=
+    ⟨hcore, hch.stable he12 _ _ _ (fun _ _ h => h), fun l1 l2 ⟨x, hx⟩ hc => by
+      have := (mem_allocVars hx).1; have := hin l2 hc; omega,
+      fun l1 hc => by have := hin l1 hc; omega⟩
+  have hs2 : Sat P ⟨P, mt', false⟩ (mt'.params.map fun (x, t) => (.local x, t))
+      ⟨Store.allocVars s.locs.length (mt'.locals.map (·.1)), .obj l, blk⟩ s2 := by
+    intro p t hp
+    obtain ⟨x, rfl, hm⟩ := params_get hp
+    have hd := decl_param hwfm hm
+    obtain ⟨v, hvm, hvt⟩ := zip_val hvs' x t (by rw [zip_fst_snd]; exact hm)
+    obtain ⟨lx, hlx, hv⟩ := bindAll_val hcore.inj hb hpnd
+      (fun y _ l' hl' => by have := hge y l' hl'; simp; omega) x v hvm
+    exact ⟨lx, v, t, hlx, hv, hd, mono hvt, mono hvt⟩
+  have := ih.eval ⟨P, mt', false⟩ _ mt'.body o' _ s2 _ ws rfl hty hw2 hf2 hs2
+  revert this
+  generalize eval P orc n _ s2 mt'.body = r
+  intro this
+  have hrestrict : ∀ l', l' < s.locs.length →
+      (False ∨ evalW ⟨Store.allocVars s.locs.length (mt'.locals.map (·.1)), .obj l, blk⟩ mt'.body l') →
+      blkW blk l' := by
+    rintro l' hl' (h | ⟨x, _, hx⟩ | h)
+    · exact h.elim
+    · have := (hge x l' hx).1; omega
+    · exact h
+  cases r with
+  | ok v s3 =>
+    obtain ⟨Λ3, hw3, he3, hf3, hv3, ho3, _, _⟩ := this
+    have hret3 : s3.hasTy P v mt.ret := by
+      rcases hout with h | h
+      · obtain ⟨_, h', _⟩ := ho3; rw [h] at h'; cases h'
+      · exact hasTy_le hwf (hasTy_le hwf hv3 h) hret'
+    refine ⟨Λ3, hw3, (he12.trans he3 hw).restrict hrestrict, hret3, ?_, hf3.chainIn⟩
+    rw [← hblk']; exact hf3.chain
+  | returned v s3 =>
+    obtain ⟨Λ3, hw3, he3, hf3, hv3, _⟩ := this
+    refine ⟨Λ3, hw3, (he12.trans he3 hw).restrict hrestrict, hasTy_le hwf hv3 hret', ?_,
+      hf3.chainIn⟩
+    rw [← hblk']; exact hf3.chain
+  | raised => trivial
+  | timeout => trivial
+  | stuck => exact this
 
 end QuarzCore

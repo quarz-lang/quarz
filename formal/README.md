@@ -38,13 +38,23 @@ overloads.
 
 ## Status
 
-- `check_typed` is proved.
-- The soundness theorem (a checked program, run with any fuel and any
-  well-typed oracle, never gets stuck, and every narrowed read holds) is
-  not yet: until it is, the random test stands in for it.
+- `run_sound` (Soundness.lean) is proved: a program `Program.check`
+  accepts, run with any fuel and any oracle giving values of the types
+  asked for, never gets stuck. In particular each read of a local or an
+  immutable field gives a value of the type the checker narrowed it to.
+  `#print axioms` shows only Lean's standard ones (`Axioms.lean`).
+- The proof is by induction on the fuel over the interpreter's five
+  functions (`Good`: SoundDefs.lean, EvalCases.lean, StepCases.lean),
+  with the invariants of Invariants.lean: the store typed, a frame's
+  locals where the ghost location types say, its block chain as it was
+  checked (`ChainAt`: for each block, what held at its call minus what it
+  assigns, and the call's environment joined with the body's end), the
+  narrowing environment holding, and writes confined to what the
+  expression may assign (`Ext`).
+- `check_typed` (Check.lean): what `check` accepts, `Typed` derives.
 - `lake exe fuzz [N]` makes N random programs over a fixed class table,
-  runs those `check` accepts, and fails on one that gets stuck (none has,
-  in runs of 100,000).
+  runs those `check` accepts, and fails on one that gets stuck: a quick
+  check of rule changes before their proofs are redone.
 - `./conformance.sh` turns what `quarz check --tree` prints (docs/05 §1)
   into QCore and checks it with the model, for `corpus/` (in range by
   design) and every fixture and example (mostly out of range for now).
