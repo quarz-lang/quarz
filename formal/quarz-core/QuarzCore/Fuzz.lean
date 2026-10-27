@@ -20,7 +20,7 @@ def classes : ClassTable :=
    ⟨"B", some 1, []⟩,
    ⟨"E", some 0, []⟩]
 
-def atoms : List Atom := [.nil, .bool, .int, .str, .cls 0, .cls 1, .cls 2, .cls 3]
+def atoms : List Atom := [.nil, .bool, .int, .str, .float, .cls 0, .cls 1, .cls 2, .cls 3]
 
 def methods : List Method :=
   [ -- A#get -> Int?: reads and narrows its field.
@@ -38,7 +38,7 @@ def methods : List Method :=
 /-- The top level's locals. -/
 def locals : List (String × Ty) :=
   [("x", [.int, .nil]), ("y", [.cls 1, .nil]), ("z", [.bool, .nil, .int]), ("e", [.cls 3, .nil]),
-   ("k", [.int]), ("o", [.cls 0])]
+   ("k", [.int]), ("o", [.cls 0]), ("f", [.float, .nil])]
 
 def genTy : Gen Ty := do
   let n ← Gen.choose Nat 0 3 (by omega)
@@ -61,7 +61,7 @@ partial def genExpr : Nat → Gen Expr
     let x ← genVar
     let t := (locals.find? (·.1 == x)).map (·.2) |>.getD []
     Gen.oneOfWithDefault (pure .nil)
-      [pure .nil, pure .tru, pure (.int 1), pure (.str "s"), pure (.var x t),
+      [pure .nil, pure .tru, pure (.int 1), pure (.str "s"), pure (.flt "0.5"), pure (.var x t),
        do return .var x (← genTy), pure (.new 1 [.int 1, .str "v"]), pure (.new 2 [.nil, .str "w"]),
        pure (.new 3 [])]
   | d + 1 => do
@@ -110,12 +110,14 @@ def oracle : Oracle := fun n s t =>
   | some .bool => some (.bool (n % 2 == 0))
   | some .int => some (.int n)
   | some .str => some (.str "o")
+  | some .float => some (.flt "1.5")
   -- `Object` holds every value.
-  | some (.cls 0) => some (match n % 5 with
+  | some (.cls 0) => some (match n % 6 with
     | 0 => .nil
     | 1 => .bool false
     | 2 => .int 3
     | 3 => .str "p"
+    | 4 => .flt "2.5"
     | _ => .obj 0)
   | some (.cls k) =>
     (s.objs.zipIdx.find? fun (o, _) => classes.subclass o.cls k).map fun (_, l) => .obj l

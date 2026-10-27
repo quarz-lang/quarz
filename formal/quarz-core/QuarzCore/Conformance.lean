@@ -12,10 +12,12 @@ the methods' bodies: literals, locals and fields read and assigned,
 `self`, calls (of a user method, a call; of a built-in one, or an
 interpolation, a `prim` with the types the methods table declares),
 `yield` and blocks, `if`, `while`, `return`, `raise`, `nil?`, `is_a?`,
-`==`/`!=` against `nil`/`true`/`false`, `&&`, `||`, `!`. A local's
+`==`/`!=` against `nil`/`true`/`false`, `&&`, `||`, `!`, `Float` literals,
+and constants (not narrowed: a read of one is a value of its type, its
+initializer checked as a method of the top level's class). A local's
 declared type is its first assignment's, as the Rust checker's. Anything
 else puts the program out of range: so do a node checked with different
-types (`varied_types`), constants, field defaults, and required files.
+types (`varied_types`), field defaults, and required files.
 -/
 
 import Lean.Data.Json
@@ -51,6 +53,8 @@ structure Tables where
   nodeTypes : Json
   varied : Array Json
   calls : Json
+  constTargets : Json
+  consts : Array Json
   /-- The QCore class of each user class (by Rust id), class 0 being
   `Object` (and the files' main classes). -/
   qclass : Nat → Option Nat
@@ -80,6 +84,7 @@ partial def Tables.ty (T : Tables) (j : Json) : M Ty := do
     | "Bool" => pure [.bool]
     | "Int" => pure [.int]
     | "String" => pure [.str]
+    | "Float" => pure [.float]
     | _ => match T.qclass id with
       | some k => pure [.cls k]
       | none => throw s!"type {← T.className id}"
@@ -129,6 +134,21 @@ partial def expr (T : Tables) (e : Json) : CM Expr := do
   | "True" => pure .tru
   | "False" => pure .fls
   | "SelfRef" => pure .self
+  | "Float" => pure (.flt v.compress)
+  -- A constant: not narrowed (docs/02 §6), a value of its own type. The
+  -- type the Rust checker gave the read must be that one.
+  | "Const" =>
+    let target ← match T.constTargets.getObjVal? (toString id) with
+      | .ok t => pure t
+      | .error _ => throw "a constant read not resolved"
+    unless (← str (← field target "t")) == "const" do throw "a class as a value"
+    let cid ← nat (← field target "id")
+    let some k := T.consts.find? fun k => (k.getObjValAs? Nat "id").toOption == some cid
+      | throw "a constant of another file"
+    let declared ← field k "type"
+    unless (← field T.nodeTypes (toString id)) == declared do
+      throw s!"disagree: constant read {id} not of the constant's type"
+    pure (.prim "const" [] [] (← T.ty declared))
   | "Int" => pure (.int (← match (← field v "value") with
       | .num n => pure n.mantissa
       | _ => throw "a big integer"))
@@ -312,10 +332,10 @@ def program (j : Json) : M Program := do
     else if mainClasses.contains id then some 1
     else (userIds.idxOf? id).map (· + 2)
   unless units.size == 1 do throw "a required file"
-  unless (← arr (← field j "consts")).isEmpty do throw "a constant"
   unless (← arr (← field j "field_defaults")).isEmpty do throw "a field default"
   let T : Tables := ⟨classes, ← arr (← field j "methods"), ← arr (← field j "definitions"),
-    ← field j "node_types", ← arr (← field j "varied_types"), ← field j "calls", qclass, objectId⟩
+    ← field j "node_types", ← arr (← field j "varied_types"), ← field j "calls",
+    (← field j "const_targets"), (← arr (← field j "consts")), qclass, objectId⟩
   let qclasses ← user.mapM fun c => do
     let sup ← match ← field c "superclass" with
       | .null => pure 0
@@ -336,10 +356,23 @@ def program (j : Json) : M Program := do
       match qclass (← nat (← field m "owner")) with
       | some owner => pure (some (← method T owner m def_))
       | none => throw "a method of a class out of range"
+  -- Each constant's initializer, checked as a method of the top level's
+  -- class giving the constant's type.
+  let consts ← (← arr (← field j "consts")).toList.mapM fun k => do
+    -- A class's constant is checked with that class as `self`: not here.
+    unless (← field k "owner") == .null do throw "a class constant"
+    let ty ← match ← field k "type" with
+      | .null => throw "a constant of no type"
+      | t => T.ty t
+    match ← field k "value" with
+    | .null => throw "a constant with no initializer"
+    | v =>
+      let (bd, ls) ← ((expr T v).run true).run []
+      pure (⟨1, "const " ++ (← str (← field k "name")), [], ty, none, ls, bd⟩ : Method)
   let some mainUnit := units.back? | throw "no unit"
   let (mainBody, mainLocals) ← ((body T (← arr (← field mainUnit "body"))).run true).run []
   let all : Ty := [.nil, .bool, .int, .str, .cls 0]
-  pure ⟨⟨"Object", none, []⟩ :: ⟨"<main>", some 0, []⟩ :: qclasses, methods,
+  pure ⟨⟨"Object", none, []⟩ :: ⟨"<main>", some 0, []⟩ :: qclasses, methods ++ consts,
     ⟨1, "<main>", [], all, none, mainLocals, mainBody⟩⟩
 
 end QuarzCore.Conformance

@@ -19,6 +19,8 @@ inductive Expr where
   | fls
   | int (n : Int)
   | str (s : String)
+  /-- A `Float` literal (its digits: the model needs no arithmetic). -/
+  | flt (s : String)
   /-- A local's read, with the type the checker gave it there. -/
   | var (x : String) (t : Ty)
   | assign (x : String) (e : Expr)

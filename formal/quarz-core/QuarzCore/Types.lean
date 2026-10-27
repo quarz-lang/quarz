@@ -7,7 +7,7 @@ membership). The empty type is `Nothing`.
 namespace QuarzCore
 
 /-- An atom of a union (a class by its index in the class table). `Nil`,
-`Bool`, `Int` and `Str` are the value classes: final (nothing subclasses them), so `==` against them may
+`Bool`, `Int`, `Str` and `Float` are the value classes: final (nothing subclasses them), so `==` against them may
 narrow. A user class is never final: a subclass elsewhere may define
 `==` (09b19e3). -/
 inductive Atom where
@@ -15,6 +15,7 @@ inductive Atom where
   | bool
   | int
   | str
+  | float
   | cls (c : Nat)
   deriving DecidableEq, Repr, Inhabited
 

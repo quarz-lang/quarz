@@ -22,6 +22,7 @@ inductive Value where
   | bool (b : Bool)
   | int (n : Int)
   | str (s : String)
+  | flt (s : String)
   /-- An object, by its index in the store's `objs`. -/
   | obj (l : Nat)
   deriving DecidableEq, Repr, Inhabited
@@ -72,6 +73,7 @@ def typeOf (s : Store) : Value → Option Atom
   | .bool _ => some .bool
   | .int _ => some .int
   | .str _ => some .str
+  | .flt _ => some .float
   | .obj l => (s.objs[l]?).map fun o => .cls o.cls
 
 def hasType (ct : ClassTable) (s : Store) (v : Value) (t : Ty) : Bool :=
@@ -141,6 +143,7 @@ def eval (P : Program) (orc : Oracle) : Nat → Frame → Store → Expr → Res
     | .fls => .ok (.bool false) s
     | .int k => .ok (.int k) s
     | .str t => .ok (.str t) s
+    | .flt t => .ok (.flt t) s
     | .var x t =>
       match (lookupVar fr.vars x).bind (s.locs[·]?) with
       | some v => if s.hasType P.classes v t then .ok v s else .stuck
