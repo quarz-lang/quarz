@@ -246,6 +246,32 @@ theorem decl_param {mt : Method} (h : P.wfMethod mt = true) {x : String} {t : Ty
   have hloc : (x, t) ∈ mt.locals := by rw [heq]; exact List.getElem_mem hil
   exact find_nodup hnd hloc
 
+/-- Arguments for a method, for one overriding it. -/
+theorem AllTy.over (hwf : WfClasses P.classes) {s : Store} :
+    ∀ {vs : List Value} {sup sub : List (String × Ty)}, AllTy P s vs (sup.map (·.2)) →
+      sup.length = sub.length → ((sup.zip sub).all fun ((_, t), (_, u)) => t.le P.classes u) = true →
+      AllTy P s vs (sub.map (·.2))
+  | [], [], [], _, _, _ => trivial
+  | _ :: _, _ :: _, _ :: _, ⟨h1, h2⟩, hl, ha => by
+    simp only [List.zip_cons_cons, List.all_cons, Bool.and_eq_true] at ha
+    exact ⟨hasTy_le hwf h1 ha.1, AllTy.over hwf h2 (by simpa using hl) ha.2⟩
+  | [], [], _ :: _, _, hl, _ => by simp at hl
+  | [], _ :: _, _, h, _, _ => h.elim
+  | _ :: _, [], _, h, _, _ => h.elim
+  | _ :: _, _ :: _, [], _, hl, _ => by simp at hl
+
+/-- What the method run for a call takes and gives, against the one
+found: the same, or an override of it. -/
+theorem over_facts (hwf : WfClasses P.classes) {mt mt' : Method} {s : Store} {vs : List Value}
+    (h : mt' = mt ∨ P.overrides mt' mt = true) (hvs : AllTy P s vs (mt.params.map (·.2))) :
+    vs.length = mt'.params.length ∧ AllTy P s vs (mt'.params.map (·.2)) ∧
+      mt'.ret.le P.classes mt.ret = true ∧ mt'.block = mt.block := by
+  rcases h with rfl | h
+  · exact ⟨by rw [hvs.length]; simp, hvs, Ty.le_refl hwf _, rfl⟩
+  · simp only [Program.overrides, Bool.and_eq_true, beq_iff_eq] at h
+    obtain ⟨⟨⟨hl, hall⟩, hret⟩, hblk⟩ := h
+    exact ⟨by rw [hvs.length]; simp [hl], hvs.over hwf hl.symm hall, hret, hblk⟩
+
 variable (hP : WfProg P) (horc : OracleOK P orc) {n : Nat} (ih : Good P orc n)
 include hP horc ih
 
@@ -501,5 +527,33 @@ theorem block_succ : BlockGood P orc (n + 1) := by
   | raised => trivial
   | timeout => trivial
   | stuck => exact this
+
+theorem send_succ : SendGood P orc (n + 1) := by
+  intro s Λ recv k m mt vs blk ws hw hobj hl hvs hblk
+  have hwf := hP.classes
+  obtain ⟨l, o, rfl, ho, hk⟩ := hobj
+  obtain ⟨mt', hl', hsub⟩ := Program.lookup_sub hwf (fun mt h => (hP.methods mt h).1) hl hk
+  obtain ⟨hlen', hvs', hret', hblk'⟩ := over_facts hwf hsub hvs
+  obtain ⟨hmem', howner, _⟩ := Program.lookup_spec hl'
+  obtain ⟨hwfm, o', hty, hout⟩ := hP.methods mt' hmem'
+  simp only [send, ho, Option.bind_some, hl']
+  rw [if_neg (by simp [hlen'])]
+  simp only [Store.alloc]
+  -- The new frame: the method's locals at fresh locations.
+  have hwfm' := hwfm
+  simp only [Program.wfMethod, Bool.and_eq_true, decide_eq_true_eq] at hwfm'
+  obtain ⟨⟨⟨⟨⟨_, hplen⟩, hnd⟩, hpre⟩, _⟩, _⟩ := hwfm'
+  have hcl : ∀ x d, (⟨P, mt', false⟩ : Ctx).decl x = some d →
+      ∃ j, mt'.locals[j]? = some (x, d) := fun x d hd => by
+    simp only [Ctx.decl, Option.map_eq_some_iff] at hd
+    obtain ⟨⟨y, d'⟩, hf, hd'⟩ := hd
+    simp at hd'; subst hd'
+    have hp := List.find?_some hf
+    simp at hp; subst hp
+    exact List.mem_iff_getElem?.mp (List.mem_of_find?_eq_some hf)
+  have hlookj : ∀ j x d, mt'.locals[j]? = some (x, d) →
+      lookupVar (Store.allocVars s.locs.length (mt'.locals.map (·.1))) x = some (s.locs.length + j) :=
+    fun j x d hj => lookupVar_alloc hnd (by simp [hj])
+  sorry
 
 end QuarzCore
