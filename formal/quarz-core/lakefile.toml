@@ -1,0 +1,26 @@
+name = "QuarzCore"
+defaultTargets = ["QuarzCore", "conformance", "fuzz"]
+
+[[require]]
+name = "batteries"
+git = "https://github.com/leanprover-community/batteries"
+rev = "v4.35.0"
+
+[[require]]
+name = "plausible"
+git = "https://github.com/leanprover-community/plausible"
+rev = "v4.35.0"
+
+[[lean_lib]]
+name = "QuarzCore"
+
+# Reads `quarz check --tree` output and compares the model's checker with
+# the Rust one (docs: ../README.md).
+[[lean_exe]]
+name = "conformance"
+root = "Main"
+
+# Random programs, checked and run: none may get stuck (design §5).
+[[lean_exe]]
+name = "fuzz"
+root = "FuzzMain"

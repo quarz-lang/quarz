@@ -50,3 +50,38 @@ jobs:
       - run: rustc --version
         env:
           RUSTUP_TOOLCHAIN: "1.96"
+
+  # The Lean model of the checker's core (formal/README.md): the proofs
+  # (and no `sorry` under them), the random test, and the differential
+  # test against the Rust checker.
+  formal:
+    name: Formal (Lean)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: formal/quarz-core
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install elan
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -o elan-init.sh
+          sh elan-init.sh -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      - uses: actions/cache@v4
+        with:
+          path: formal/quarz-core/.lake
+          key: lake-${{ hashFiles('formal/quarz-core/lean-toolchain', 'formal/quarz-core/lake-manifest.json') }}
+      - name: Build
+        run: lake build
+      - name: No sorry
+        run: "! lake env lean Axioms.lean | grep sorryAx"
+      - name: Random programs
+        run: lake exe fuzz 20000
+      - name: Build quarz
+        run: cargo build -p quarz-cli
+        working-directory: .
+      - name: Conformance
+        run: ./conformance.sh
