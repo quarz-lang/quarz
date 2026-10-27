@@ -1061,9 +1061,9 @@ impl Checker {
         {
             let calls = |id: NodeId| self.out.calls.get(&id).cloned();
             let world = &self.world;
-            let user = |mid: MethodId| {
+            let uses_self = |mid: MethodId| {
                 let m = world.method(mid);
-                !m.is_native && m.owner != world.builtin.kernel && m.owner != world.builtin.object
+                !(m.is_native && m.owner == world.builtin.kernel)
             };
             let mut set: Vec<String> = Vec::new();
             for f in &fields {
@@ -1075,7 +1075,7 @@ impl Checker {
                         .iter()
                         .any(|g| g.name == f.name)
                     {
-                        let mut c = crate::init::InitCheck::new(&all, &own, &calls, &user);
+                        let mut c = crate::init::InitCheck::new(&all, &own, &calls, &uses_self);
                         c.default(d, &set);
                         errors.extend(c.errors);
                     }
@@ -1794,13 +1794,14 @@ impl Checker {
             let errors = {
                 let calls = |id: NodeId| self.out.calls.get(&id).cloned();
                 let world = &self.world;
-                let user = |mid: MethodId| {
+                // Every method on `self` but a built-in `Kernel` function
+                // (which takes no `self`; one an `extension Kernel` adds
+                // does) may read the object's fields.
+                let uses_self = |mid: MethodId| {
                     let m = world.method(mid);
-                    !m.is_native
-                        && m.owner != world.builtin.kernel
-                        && m.owner != world.builtin.object
+                    !(m.is_native && m.owner == world.builtin.kernel)
                 };
-                let mut c = crate::init::InitCheck::new(&required, &own, &calls, &user);
+                let mut c = crate::init::InitCheck::new(&required, &own, &calls, &uses_self);
                 c.method(&params, &body, info.span);
                 (c.errors, c.usable_after, c.usable_on_entry)
             };

@@ -3,12 +3,15 @@
 //! A *required* field (a declared type that does not admit `nil`, and no
 //! default) must be assigned on every path through `initialize`, and the
 //! new object must not be used before all of them are: no `self`, no
-//! call on the implicit receiver that may run user code, no read of a
-//! field that is not assigned yet. A subclass assigns its own required
-//! fields before `super`, which assigns the inherited ones (so a method
-//! the superclass's `initialize` calls, and the subclass overrides, sees
-//! them). Hence a field's value always has the field's declared type,
-//! which compiled code relies on.
+//! call on the implicit receiver (but to a built-in `Kernel` function,
+//! which takes no `self`: a native method on `self` may read its fields
+//! too),
+//! no read of a field that is not assigned yet; `raise` ends a path. A
+//! field's default does not use the object at all. A subclass assigns
+//! its own required fields before `super`, which assigns the inherited
+//! ones (so a method the superclass's `initialize` calls, and the
+//! subclass overrides, sees them). Hence a field's value always has the
+//! field's declared type, which compiled code relies on.
 
 use rustc_hash::FxHashSet as HashSet;
 use std::collections::BTreeSet;
@@ -29,16 +32,17 @@ pub struct InitCheck<'a> {
     /// The class's own required fields.
     pub own: &'a BTreeSet<String>,
     pub calls: &'a dyn Fn(NodeId) -> Option<CallTarget>,
-    /// Whether calling `method` on the implicit receiver may run user
-    /// code that sees the object (a native, or a `Kernel` function,
-    /// does not).
-    pub runs_user_code: &'a dyn Fn(MethodId) -> bool,
+    /// Whether calling `method` on the implicit receiver uses the object
+    /// (anything but a built-in `Kernel` function).
+    pub uses_self: &'a dyn Fn(MethodId) -> bool,
     pub errors: Vec<(String, Span)>,
     /// The assignments and `super` calls after which the object becomes
     /// usable (every required field assigned) on some path, and whether
     /// it is from the start (after the parameters).
     pub usable_after: Vec<NodeId>,
     pub usable_on_entry: bool,
+    /// Checking a field's default, where the object is not usable.
+    in_default: bool,
     /// For each enclosing loop or block (innermost last): the states
     /// where a `break` or `next` leaves it (joined).
     exits: Vec<St>,
@@ -51,16 +55,17 @@ impl<'a> InitCheck<'a> {
         required: &'a BTreeSet<String>,
         own: &'a BTreeSet<String>,
         calls: &'a dyn Fn(NodeId) -> Option<CallTarget>,
-        runs_user_code: &'a dyn Fn(MethodId) -> bool,
+        uses_self: &'a dyn Fn(MethodId) -> bool,
     ) -> Self {
         InitCheck {
             required,
             own,
             calls,
-            runs_user_code,
+            uses_self,
             errors: Vec::new(),
             usable_after: Vec::new(),
             usable_on_entry: false,
+            in_default: false,
             exits: Vec::new(),
             reported: HashSet::default(),
         }
@@ -98,8 +103,11 @@ impl<'a> InitCheck<'a> {
         );
     }
 
-    /// Check a field's default, run when the fields in `set` are.
+    /// Check a field's default, run when the fields in `set` are: it may
+    /// read those, and not use the object otherwise (docs/01 §3), even
+    /// once it has assigned every field.
     pub fn default(&mut self, e: &Expr, set: &[String]) {
+        self.in_default = true;
         self.expr(e, Some(set.iter().cloned().collect()));
     }
 
@@ -122,6 +130,14 @@ impl<'a> InitCheck<'a> {
 
     fn self_use(&mut self, st: &St, span: Span) {
         if self.reported.contains("self") {
+            return;
+        }
+        if self.in_default {
+            if st.is_some() {
+                self.reported.insert("self");
+                self.errors
+                    .push(("a field's default cannot use the object".to_string(), span));
+            }
             return;
         }
         if let Some(f) = self.missing(st, self.required) {
@@ -364,12 +380,17 @@ impl<'a> InitCheck<'a> {
                 // `recv&.m(args)` runs nothing more on a nil receiver.
                 let skipped = call.safe_nav.then(|| st.clone());
                 let st = self.args(&call.args, st);
+                // `raise` (the special form, docs/02): control does not
+                // get past it.
+                if call.recv.is_none() && call.name == "raise" {
+                    return None;
+                }
                 if call.recv.is_none() {
-                    let user = match (self.calls)(e.id) {
-                        Some(CallTarget::Method { method }) => (self.runs_user_code)(method),
+                    let uses = match (self.calls)(e.id) {
+                        Some(CallTarget::Method { method }) => (self.uses_self)(method),
                         _ => false,
                     };
-                    if user {
+                    if uses {
                         self.self_use(&st, e.span);
                     }
                 }

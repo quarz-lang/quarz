@@ -1,0 +1,45 @@
+# `raise` ends a path through `initialize` (docs/01 §3): after an `if`
+# whose other branch raises, the field is assigned and the object usable.
+class Pos
+  @x: Int
+  def initialize(v: Int)
+    if v > 0
+      @x = v
+    else
+      raise ArgumentError, "not positive: #{v}"
+    end
+    show
+  end
+
+  def show -> Nil
+    puts "made #{@x}"
+  end
+end
+
+class Pair
+  @a: Int
+  @b: Int
+  def initialize(a: Int, b: Int)
+    @a = a
+    case b
+    when 0 then raise "zero"
+    else @b = b
+    end
+    puts sum
+  end
+
+  def sum -> Int = @a + @b
+end
+
+Pos.new(1)
+begin
+  Pos.new(-2)
+rescue ArgumentError => e
+  puts "rescued #{e.message}"
+end
+Pair.new(1, 2)
+begin
+  Pair.new(1, 0)
+rescue => e
+  puts "rescued #{e.message}"
+end
