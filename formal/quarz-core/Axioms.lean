@@ -4,3 +4,5 @@ import QuarzCore
 
 #print axioms QuarzCore.check_typed
 #print axioms QuarzCore.checkArgs_typed
+#print axioms QuarzCore.good
+#print axioms QuarzCore.run_sound
