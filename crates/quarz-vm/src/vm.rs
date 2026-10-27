@@ -727,7 +727,7 @@ impl Interp {
                         if let (true, Some(sh)) = (VERIFY, &mut shadow) {
                             Interp::shadow_after(sh, inst, false);
                         }
-                        match self.unwind(b, flow, pending) {
+                        match self.unwind(blocks, b, flow, pending) {
                             Step::Jump(h) => {
                                 block = h;
                                 start = 0;
@@ -763,21 +763,23 @@ impl Interp {
                     act.line.set(b.term_line);
                     match &b.term {
                         Term::Raise(r) => {
-                            self.unwind(b, Flow::Raise(regs[*r as usize].clone()), pending)
+                            self.unwind(blocks, b, Flow::Raise(regs[*r as usize].clone()), pending)
                         }
                         Term::BreakOut(r) => self.unwind(
+                            blocks,
                             b,
                             Flow::Break(regs[*r as usize].clone(), act.closure_tag),
                             pending,
                         ),
                         Term::ReturnOut(r) => self.unwind(
+                            blocks,
                             b,
                             Flow::Return(regs[*r as usize].clone(), act.method_tag),
                             pending,
                         ),
                         Term::Resume(r) => match &regs[*r as usize] {
                             Value::Flow(fb) => match fb.borrow_mut().take() {
-                                Some(flow) => self.unwind(b, flow, pending),
+                                Some(flow) => self.unwind(blocks, b, flow, pending),
                                 None => Step::Done(Ok(Value::Nil)),
                             },
                             _ => Step::Done(Ok(Value::Nil)),
@@ -799,13 +801,24 @@ impl Interp {
     }
 
     /// Route a flow leaving `b` to its handler, or out of the function.
-    fn unwind(&self, b: &quarz_ir::Block, flow: Flow, pending: &mut Option<Flow>) -> Step {
-        match b.handler {
-            Some(h) if h.kind == HandlerKind::Ensure || matches!(flow, Flow::Raise(_)) => {
+    fn unwind(
+        &self,
+        blocks: &[Block],
+        b: &quarz_ir::Block,
+        flow: Flow,
+        pending: &mut Option<Flow>,
+    ) -> Step {
+        let to = match (b.handler, &flow) {
+            (Some(h), Flow::Raise(_)) => Some(h.block),
+            // Past the rescues to the ensure that covers them.
+            _ => quarz_ir::flow_handler(blocks, b),
+        };
+        match to {
+            Some(h) => {
                 *pending = Some(flow);
-                Step::Jump(h.block)
+                Step::Jump(h)
             }
-            _ => Step::Done(Err(flow)),
+            None => Step::Done(Err(flow)),
         }
     }
 

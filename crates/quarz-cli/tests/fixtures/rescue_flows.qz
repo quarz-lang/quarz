@@ -1,0 +1,171 @@
+# break, next and return through a rescue: the ensure clauses around it
+# still run, innermost first, as in Ruby (docs/01). A rescue handles
+# exceptions only; a flow goes past it to the ensure that covers it.
+
+# A call that is not inlined (it recurses): a `break` or `return` in its
+# block comes back from the call as a flow, not as a jump.
+def each_of(xs: Array[Int], n: Int, &blk: (Int) -> Nil) -> Nil
+  return nil if n >= xs.size
+  blk.call(xs[n])
+  each_of(xs, n + 1, &blk)
+end
+
+# return from a block, through a call under a rescue, under an ensure
+def ret_block -> Int
+  begin
+    begin
+      each_of([1, 2], 0) { |x| return x }
+    rescue => e
+      puts "not rescued"
+    end
+  ensure
+    puts "ensure ret_block"
+  end
+  0
+end
+p ret_block
+
+# break out of a block the same way
+def break_block -> Int?
+  r = begin
+    begin
+      each_of([1, 2], 0) { |x| break x * 10 }
+    rescue => e
+      puts "not rescued"
+      0
+    end
+  ensure
+    puts "ensure break_block"
+  end
+  r
+end
+p break_block
+
+# next in such a block: each element goes on
+def next_block -> Nil
+  each_of([1, 2, 3], 0) do |x|
+    begin
+      begin
+        raise "x" if x == 2
+        puts "next_block #{x}"
+      rescue => e
+        puts "rescued #{x}"
+        next
+      end
+      puts "rest #{x}"
+    ensure
+      puts "ensure next #{x}"
+    end
+  end
+end
+next_block
+
+# break and return from a rescue clause inside the block
+def from_rescue -> Int
+  each_of([1, 2], 0) do |x|
+    begin
+      begin
+        raise "x"
+      rescue => e
+        puts "rescued in block #{x}"
+        return x * 7
+      end
+    ensure
+      puts "ensure in block #{x}"
+    end
+  end
+  0
+ensure
+  puts "method ensure from_rescue"
+end
+p from_rescue
+
+# nested ensures around a rescue, the flow coming from a call: inner first
+def nested -> Int
+  begin
+    begin
+      begin
+        each_of([5], 0) { |x| return x }
+      rescue => e
+        puts "not rescued"
+      end
+    ensure
+      puts "ensure 1"
+    end
+  ensure
+    puts "ensure 2"
+  end
+  0
+end
+p nested
+
+# an ensure inside a rescue's body, the flow continuing from it to an
+# ensure outside the rescue
+def through_inner_ensure -> Int
+  begin
+    begin
+      begin
+        each_of([9], 0) { |x| return x }
+      ensure
+        puts "inner ensure"
+      end
+    rescue => e
+      puts "not rescued"
+    end
+  ensure
+    puts "outer ensure"
+  end
+  0
+end
+p through_inner_ensure
+
+# What the ensure clauses read is still there when they run, and the
+# objects go (deinitialize) after the last of them, as the method ends.
+class Res
+  @name: String
+  def initialize(@name: String)
+  end
+  def name -> String = @name
+  def deinitialize -> Nil
+    puts "deinitialize #{@name}"
+  end
+end
+
+def with_resources -> Int
+  outer = Res.new("outer")
+  begin
+    inner = Res.new("inner")
+    begin
+      each_of([1], 0) do |x|
+        local = Res.new("block")
+        return x if local.name.size > 0
+      end
+    rescue => e
+      puts "not rescued"
+    end
+    puts "not reached #{inner.name}"
+  ensure
+    puts "ensure sees #{outer.name}"
+  end
+  0
+end
+p with_resources
+puts "after with_resources"
+
+# return from a rescue clause: the begin has no value on that path (the
+# QIR verifier must not take the register it would be in as live)
+def ret(n: Int) -> Int
+  begin
+    begin
+      raise "x"
+    rescue => e
+      puts "rescue #{n}"
+      return n * 10
+    end
+  ensure
+    puts "inner ensure #{n}"
+  end
+ensure
+  puts "method ensure #{n}"
+end
+p ret(1)
