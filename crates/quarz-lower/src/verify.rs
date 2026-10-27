@@ -102,9 +102,11 @@ pub fn verify(f: &Function, world: &RtWorld, nfuncs: usize, stage: Stage) -> Vec
         f,
         world,
         out: Vec::new(),
+        early: Vec::new(),
     };
     v.structure(nfuncs, stage);
-    // The value flow is checked on sound structure only.
+    // The value flow is checked on sound structure only (marks of a later
+    // pass found early do not make it unsound).
     if v.out.is_empty() {
         v.words();
         v.resumes();
@@ -114,17 +116,32 @@ pub fn verify(f: &Function, world: &RtWorld, nfuncs: usize, stage: Stage) -> Vec
         if stage >= Stage::Moves {
             v.read_once();
         }
+        // (Not after mark_moves for now: `own_dying_receivers` may then
+        // update the array in place at a borrowed element's last read.)
+        if (Stage::Borrow..Stage::Moves).contains(&stage) {
+            v.borrows();
+        }
     }
-    v.out
+    let mut out = v.early;
+    out.append(&mut v.out);
+    out
 }
 
 struct Checker<'a> {
     f: &'a Function,
     world: &'a RtWorld,
     out: Vec<Violation>,
+    /// The marks of a later pass found before it (A6).
+    early: Vec<Violation>,
 }
 
 impl Checker<'_> {
+    fn report_early(&mut self, block: usize, inst: usize, what: String) {
+        self.report(block, Some(inst), what);
+        let v = self.out.pop().expect("the violation");
+        self.early.push(v);
+    }
+
     fn report(&mut self, block: usize, inst: Option<usize>, what: String) {
         let b = &self.f.blocks[block];
         let line = match inst {
@@ -215,19 +232,17 @@ impl Checker<'_> {
                         self.report(bi, Some(ii), "CatchAny outside an ensure handler".into())
                     }
                     Inst::Take { .. } if stage < Stage::Moves => {
-                        self.report(bi, Some(ii), "Take before mark_moves".into())
+                        self.report_early(bi, ii, "Take before mark_moves".into())
                     }
                     Inst::Call { moved, .. } if *moved != 0 && stage < Stage::Moves => {
-                        self.report(bi, Some(ii), "moved operands before mark_moves".into())
+                        self.report_early(bi, ii, "moved operands before mark_moves".into())
                     }
                     Inst::OwnedCall { unused: true, .. } if stage < Stage::Moves => {
-                        self.report(bi, Some(ii), "an unused OwnedCall before mark_moves".into())
+                        self.report_early(bi, ii, "an unused OwnedCall before mark_moves".into())
                     }
-                    Inst::ArrayGetReg { borrow: true, .. } if stage < Stage::Borrow => self.report(
-                        bi,
-                        Some(ii),
-                        "a borrowed element before mark_borrows".into(),
-                    ),
+                    Inst::ArrayGetReg { borrow: true, .. } if stage < Stage::Borrow => {
+                        self.report_early(bi, ii, "a borrowed element before mark_borrows".into())
+                    }
                     _ => {}
                 }
             }
@@ -677,6 +692,148 @@ impl Checker<'_> {
     }
 }
 
+impl Checker<'_> {
+    /// D13: a borrowed element register (`ArrayGetReg` with `borrow`)
+    /// still meets what `borrow::mark_in` required of it: written only by
+    /// borrowed reads of one array, `Release` and `ClearRegs`; never moved
+    /// out, returned, raised or updated in place; the array live and
+    /// unchanged wherever it is; no handler in the function.
+    fn borrows(&mut self) {
+        let f = self.f;
+        let mut arrays: Vec<Option<Reg>> = vec![None; f.nregs as usize];
+        let mut any = false;
+        for blk in &f.blocks {
+            for inst in &blk.insts {
+                if let Inst::ArrayGetReg {
+                    dst,
+                    arr,
+                    borrow: true,
+                    ..
+                } = inst
+                {
+                    arrays[*dst as usize] = Some(*arr);
+                    any = true;
+                }
+            }
+        }
+        if !any {
+            return;
+        }
+        if let Some(bi) = f.blocks.iter().position(|b| b.handler.is_some()) {
+            self.report(
+                bi,
+                None,
+                "a borrowed element in a function with handlers".into(),
+            );
+            return;
+        }
+        for (bi, blk) in f.blocks.iter().enumerate() {
+            for (ii, inst) in blk.insts.iter().enumerate() {
+                let written: Vec<Reg> = match inst {
+                    Inst::ArrayGetReg {
+                        dst,
+                        arr,
+                        borrow: true,
+                        ..
+                    } => {
+                        if arrays[*dst as usize] != Some(*arr) {
+                            self.report(
+                                bi,
+                                Some(ii),
+                                format!("r{dst} borrows elements of two arrays"),
+                            );
+                        }
+                        Vec::new()
+                    }
+                    Inst::Release { .. } | Inst::ClearRegs { .. } => Vec::new(),
+                    _ => inst.defs().to_vec(),
+                };
+                for r in written {
+                    if arrays[r as usize].is_some() {
+                        self.report(
+                            bi,
+                            Some(ii),
+                            format!("writes r{r}, a borrowed element's register"),
+                        );
+                    }
+                }
+                let consumed: Vec<Reg> = match inst {
+                    Inst::Take { src, .. } => vec![*src],
+                    Inst::ArrayPush { arr, .. } => vec![*arr],
+                    Inst::OwnedCall {
+                        recv: quarz_ir::VarLoc::Reg(r),
+                        ..
+                    } => vec![*r],
+                    Inst::Call {
+                        recv, args, moved, ..
+                    } => {
+                        let mut v: Vec<Reg> = args
+                            .iter()
+                            .enumerate()
+                            .take(15)
+                            .filter(|(i, _)| moved & (1 << i) != 0)
+                            .map(|(_, r)| *r)
+                            .collect();
+                        v.extend(recv.filter(|_| moved & (1 << 15) != 0));
+                        v
+                    }
+                    _ => Vec::new(),
+                };
+                for r in consumed {
+                    if arrays[r as usize].is_some() {
+                        self.report(
+                            bi,
+                            Some(ii),
+                            format!("moves or updates r{r}, a borrowed element"),
+                        );
+                    }
+                }
+            }
+            if let Term::Return(r)
+            | Term::Raise(r)
+            | Term::BreakOut(r)
+            | Term::ReturnOut(r)
+            | Term::Resume(r) = blk.term
+            {
+                if arrays[r as usize].is_some() {
+                    self.report(
+                        bi,
+                        None,
+                        format!("r{r}, a borrowed element, leaves the function"),
+                    );
+                }
+            }
+        }
+        // The array holds the element wherever the element is live.
+        let live = quarz_ir::live::liveness(f);
+        for (bi, blk) in f.blocks.iter().enumerate() {
+            for (ii, here) in live[bi].iter().enumerate() {
+                let inst = blk.insts.get(ii);
+                for (e, a) in arrays.iter().enumerate() {
+                    let Some(a) = *a else { continue };
+                    if !here[e] {
+                        continue;
+                    }
+                    let changes = inst.is_some_and(|i| {
+                        i.defs().contains(&a)
+                            || matches!(i, Inst::ArrayPush { arr, .. } if *arr == a)
+                            || matches!(i, Inst::OwnedCall { recv: quarz_ir::VarLoc::Reg(r), .. } if *r == a)
+                    });
+                    if !here[a as usize] || changes {
+                        let inst = (ii < blk.insts.len()).then_some(ii);
+                        self.report(
+                            bi,
+                            inst,
+                            format!("r{e} borrows from r{a}, which does not hold it here"),
+                        );
+                        return;
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Reaching definitions, one register at a time, with handler edges: a
 /// handler is entered from any point of the blocks it covers, so what
 /// enters it is what any of them held anywhere (unlike `sroa`'s, which
@@ -790,4 +947,222 @@ fn may_raise(f: &Function, inst: &Inst) -> bool {
 fn inst_name(inst: &Inst) -> String {
     let s = format!("{inst:?}");
     s.split([' ', '{', '(']).next().unwrap_or("").to_string()
+}
+
+/// E14: check what register sharing did to each function it renumbered
+/// (`maps`, from `regshare::share_registers`, against the functions
+/// `before` it); panic as `check` does.
+pub fn check_regshare(
+    before: &[Function],
+    after: &[Function],
+    maps: &[Option<Vec<Reg>>],
+    world: &RtWorld,
+) {
+    for (id, ((old, new), map)) in before.iter().zip(after).zip(maps).enumerate() {
+        let Some(map) = map else { continue };
+        let found = regshare(old, new, map, world);
+        if let Some(v) = found.first() {
+            let mut dump = String::new();
+            quarz_ir::dump::dump_function(&mut dump, id as u32, old);
+            panic!(
+                "QIR verifier: {} after regshare: block {} (line {}): {}\nbefore it:\n{dump}",
+                old.name, v.block, v.line, v.what
+            );
+        }
+    }
+}
+
+/// What register sharing must keep, `old` renumbered by `map` into
+/// `new`: counted and non-counted registers apart, and a borrowed
+/// element's register to itself; a result apart from its operands; and
+/// every register a `ClearRegs` cleared that is read after it or may
+/// hold a counted value still cleared.
+pub fn regshare(old: &Function, new: &Function, map: &[Reg], world: &RtWorld) -> Vec<Violation> {
+    let mut out = Vec::new();
+    let mut report = |block: usize, what: String| {
+        out.push(Violation {
+            block: block as BlockId,
+            inst: None,
+            line: 0,
+            what,
+        })
+    };
+    let heap = quarz_ir::live::heap_possible(old, &world.methods);
+    let borrowed = quarz_ir::live::borrowed_regs(old);
+    // The registers `old` mentions, by new number.
+    let mut mentioned = vec![false; old.nregs as usize];
+    for b in &old.blocks {
+        for i in &b.insts {
+            for r in i.uses().into_iter().chain(i.defs()) {
+                mentioned[r as usize] = true;
+            }
+        }
+        if let Some(r) = b.term.uses() {
+            mentioned[r as usize] = true;
+        }
+    }
+    let mut kinds: Vec<Option<(bool, Option<Reg>)>> = vec![None; new.nregs as usize];
+    for r in 0..old.nregs {
+        if !mentioned[r as usize] {
+            continue;
+        }
+        let n = map[r as usize] as usize;
+        let kind = (heap[r as usize], borrowed[r as usize].then_some(r));
+        match kinds[n] {
+            None => kinds[n] = Some(kind),
+            Some((h, _)) if h != kind.0 => report(
+                0,
+                format!("r{n} holds a counted and a non-counted register (r{r})"),
+            ),
+            Some((_, b)) if b.is_some() || kind.1.is_some() => report(
+                0,
+                format!("r{n} holds a borrowed element's register and another (r{r})"),
+            ),
+            _ => {}
+        }
+    }
+    let live = quarz_ir::live::liveness(old);
+    let m = |r: Reg| map[r as usize];
+    for (bi, (ob, nb)) in old.blocks.iter().zip(&new.blocks).enumerate() {
+        let mut j = 0;
+        let mut i = 0;
+        while i < ob.insts.len() {
+            let inst = &ob.insts[i];
+            if let Inst::ClearRegs { .. } = inst {
+                // A run of clears renumbered into a run of clears.
+                // (Moves between them that sharing dropped do not end it.)
+                let start = i;
+                while i < ob.insts.len()
+                    && match ob.insts[i] {
+                        Inst::ClearRegs { .. } => true,
+                        Inst::Move { dst, src } | Inst::Take { dst, src } => m(dst) == m(src),
+                        _ => false,
+                    }
+                {
+                    i += 1;
+                }
+                let mut cleared: Vec<Reg> = Vec::new();
+                while j < nb.insts.len() {
+                    let Inst::ClearRegs { from, to } = nb.insts[j] else {
+                        break;
+                    };
+                    cleared.extend(from..to);
+                    j += 1;
+                }
+                // Nor more: a number cleared is not one an old register
+                // live after the run has, unless the run cleared it.
+                let old_cleared: Vec<Reg> = ob.insts[start..i]
+                    .iter()
+                    .flat_map(|inst| match inst {
+                        Inst::ClearRegs { from, to } => *from..*to,
+                        _ => 0..0,
+                    })
+                    .collect();
+                for r in 0..old.nregs {
+                    if live[bi][i][r as usize]
+                        && cleared.contains(&m(r))
+                        && !old_cleared.contains(&r)
+                    {
+                        report(bi, format!("clears r{} (r{r}), live after it", m(r)));
+                    }
+                }
+                for k in start..i {
+                    let Inst::ClearRegs { from, to } = ob.insts[k] else {
+                        continue;
+                    };
+                    for r in from..to {
+                        let kept = live[bi][k + 1][r as usize] || heap[r as usize];
+                        if kept && !cleared.contains(&m(r)) {
+                            report(bi, format!("no longer clears r{r} (now r{})", m(r)));
+                        }
+                    }
+                }
+                continue;
+            }
+            i += 1;
+            if let Inst::Move { dst, src } | Inst::Take { dst, src } = inst {
+                if m(*dst) == m(*src) {
+                    continue;
+                }
+            }
+            let renumbered = crate::inline::rewrite_with(inst, &m, &|c| c);
+            if nb.insts.get(j) != Some(&renumbered) {
+                report(
+                    bi,
+                    format!("instruction {} is not renumbered as it was", i - 1),
+                );
+                return out;
+            }
+            j += 1;
+            if !matches!(inst, Inst::Move { .. } | Inst::Take { .. }) {
+                let uses = inst.uses();
+                let defs = inst.defs();
+                for (k, a) in defs.iter().enumerate() {
+                    for b in &defs[k + 1..] {
+                        if a != b && m(*a) == m(*b) {
+                            report(
+                                bi,
+                                format!("instruction {}'s results r{a} and r{b} share", i - 1),
+                            );
+                        }
+                    }
+                }
+                for d in defs {
+                    for u in &uses {
+                        if d != *u && m(d) == m(*u) {
+                            report(
+                                bi,
+                                format!(
+                                    "instruction {}'s result r{d} shares with its operand r{u}",
+                                    i - 1
+                                ),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        if j != nb.insts.len() {
+            report(bi, "instructions added".into());
+        }
+        let mut term = ob.term.clone();
+        term.map_uses(&mut |r| m(r));
+        if nb.term != term || nb.handler != ob.handler {
+            report(
+                bi,
+                "the terminator or handler is not renumbered as it was".into(),
+            );
+        }
+    }
+    if old.blocks.len() != new.blocks.len() {
+        report(0, "blocks added or removed".into());
+    }
+    // What the back end reads of the new function agrees.
+    let new_heap = quarz_ir::live::heap_possible(new, &world.methods);
+    for (n, kind) in kinds.iter().enumerate() {
+        if let Some((h, _)) = kind {
+            if new_heap.get(n).copied().unwrap_or(false) != *h {
+                report(
+                    0,
+                    format!("r{n}'s registers and the new function disagree on counting"),
+                );
+            }
+        }
+    }
+    out
+}
+
+/// `f` with each register `r` renumbered `map[r]` (as register sharing
+/// does, but dropping no move): for tests of `regshare`.
+pub fn renumber(f: &Function, map: &[Reg]) -> Function {
+    let mut g = f.clone();
+    // (A clear's end may be one past the last register.)
+    let m = |r: Reg| map.get(r as usize).copied().unwrap_or(r);
+    for b in &mut g.blocks {
+        for inst in &mut b.insts {
+            *inst = crate::inline::rewrite_with(inst, &m, &|c| c);
+        }
+        b.term.map_uses(&mut |r| m(r));
+    }
+    g
 }

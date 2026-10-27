@@ -22,10 +22,10 @@ use quarz_ir::*;
 
 use crate::inline::rewrite_with;
 
-pub fn share_registers(functions: &mut [Function], methods: &[RtMethod]) {
-    for f in functions.iter_mut() {
-        share_in(f, methods);
-    }
+/// Share registers in every function; for each, the new number of each
+/// old register (`None`: the function is as it was).
+pub fn share_registers(functions: &mut [Function], methods: &[RtMethod]) -> Vec<Option<Vec<Reg>>> {
+    functions.iter_mut().map(|f| share_in(f, methods)).collect()
 }
 
 /// A set of registers: a list to go through and a flag per register,
@@ -76,10 +76,10 @@ impl Live {
     }
 }
 
-fn share_in(f: &mut Function, methods: &[RtMethod]) {
+fn share_in(f: &mut Function, methods: &[RtMethod]) -> Option<Vec<Reg>> {
     let n = f.nregs as usize;
     if n <= 1 {
-        return;
+        return None;
     }
     // Registers that may hold a counted value share only among
     // themselves: compiled code releases by register (a number's
@@ -327,7 +327,7 @@ fn share_in(f: &mut Function, methods: &[RtMethod]) {
     }
     let new_n = kind_color.len().max(1) as u32;
     if new_n >= f.nregs {
-        return;
+        return None;
     }
     let map = |r: Reg| color[r as usize].unwrap_or(0);
     for (bi, blk) in f.blocks.iter_mut().enumerate() {
@@ -372,4 +372,5 @@ fn share_in(f: &mut Function, methods: &[RtMethod]) {
         blk.term.map_uses(&mut |r| map(r));
     }
     f.nregs = new_n;
+    Some((0..n as Reg).map(map).collect())
 }
