@@ -319,6 +319,10 @@ fn classes_and_fields() {
         "data Q(a: Int)\n  def initialize(s: String)\n    @a = s.size\n  end\nend\nputs Q.new(1).a",
         "expects String but found Int",
     );
+    err(
+        "enum Shape\n  variant Circle(radius: Float)\n  def initialize\n  end\nend",
+        "an enum cannot define `initialize`",
+    );
     // With an `initialize` of other parameters, there is no `with`.
     err(
         "data Q(a: Int)\n  def initialize(s: String)\n    @a = s.size\n  end\nend\nputs Q.new(\"ab\").with(a: 1)",
