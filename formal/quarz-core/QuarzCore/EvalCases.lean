@@ -214,6 +214,77 @@ theorem WfStore.newObj {Λ : List Ty} {s : Store} (hw : WfStore P Λ s) {k : Nat
         exact hall (t, f) (List.mem_iff_getElem?.mpr ⟨i, by simp [List.zip, List.getElem?_zipWith, ht, h2]⟩)
       exact hasTy_le hwf hvt hle
 
+/-- A field of `self`, as the method's class declares it: where the
+object has it, holding a value of its type. -/
+theorem self_field (hwf : WfClasses P.classes) {c : Ctx} {Λ : List Ty} {fr : Frame} {s : Store}
+    (hc : c.prog = P) (hf : FrameOK P c Λ fr s) (hw : WfStore P Λ s) {f : String} {fd : Field}
+    (hfd : c.field? f = some fd) :
+    ∃ l o i v, fr.self = .obj l ∧ s.objs[l]? = some o ∧ fieldIndex P.classes o.cls f = some i ∧
+      (P.classes.allFields o.cls)[i]? = some fd ∧ o.fields[i]? = some v ∧ s.hasTy P v fd.ty := by
+  subst hc
+  obtain ⟨l, hl⟩ := hf.core.selfObj
+  have hself := hf.core.self
+  rw [hl, hasTy_iff] at hself
+  obtain ⟨a, ha, b, hb, hab⟩ := hself
+  simp [Store.typeOf] at ha
+  obtain ⟨o, ho, rfl⟩ := ha
+  simp at hb; subst hb
+  have hsub : c.meth.owner ∈ c.prog.classes.ancestors o.cls := by
+    simpa [Atom.le, ClassTable.subclass_iff] using hab
+  obtain ⟨i, hi, hfi⟩ := field_in_subclass hwf hsub hfd
+  obtain ⟨_, hlen, hty⟩ := hw.objs l o ho
+  have hil : i < o.fields.length := by rw [hlen]; exact (List.getElem?_eq_some_iff.mp hfi).1
+  exact ⟨l, o, i, o.fields[i], hl, ho, hi, hfi, by simp [hil], hty i _ fd (by simp [hil]) hfi⟩
+
+theorem Store.setField_objs (s : Store) (l i : Nat) (v : Value) (l' : Nat) :
+    (s.setField l i v).objs[l']? =
+      if l' = l then (s.objs[l']?).map fun o => { o with fields := o.fields.set i v }
+      else s.objs[l']? := by
+  unfold Store.setField
+  by_cases h : l' = l
+  · subst h; simp [List.getElem?_modify]
+  · simp [List.getElem?_modify, h, Ne.symm h]
+
+/-- Assigning a `var` field a value of its type. -/
+theorem Ext.setField {W : Nat → Prop} {Λ : List Ty} {s : Store} {l i : Nat} {v : Value} {o : Obj}
+    {fd : Field} (ho : s.objs[l]? = some o) (hfi : (P.classes.allFields o.cls)[i]? = some fd)
+    (hvar : fd.var = true) : Ext P W Λ Λ s (s.setField l i v) where
+  tys := List.prefix_refl Λ
+  locs := fun _ w h => ⟨w, h, .inl rfl⟩
+  objs := fun l' o' h => by
+    rw [Store.setField_objs]
+    by_cases hl : l' = l
+    · subst hl; rw [ho] at h; cases h
+      refine ⟨{ o with fields := o.fields.set i v }, by simp [ho], rfl, fun j f hj hfv => ?_⟩
+      have hji : j ≠ i := by rintro rfl; rw [hfi] at hj; cases hj; simp_all
+      exact List.getElem?_set_ne (Ne.symm hji)
+    · exact ⟨o', by simp [hl, h], rfl, fun _ _ _ _ => rfl⟩
+
+theorem WfStore.setField (hwf : WfClasses P.classes) {Λ : List Ty} {s : Store} (hw : WfStore P Λ s)
+    {l i : Nat} {v : Value} {o : Obj} {fd : Field} (ho : s.objs[l]? = some o)
+    (hfi : (P.classes.allFields o.cls)[i]? = some fd) (hvar : fd.var = true)
+    (hv : s.hasTy P v fd.ty) : WfStore P Λ (s.setField l i v) where
+  len := hw.len
+  objs := fun l' o' h => by
+    have hm := (Ext.setField (W := fun _ => False) (Λ := Λ) (v := v) ho hfi hvar).objs
+    have mono : ∀ {w : Value} {t : Ty}, s.hasTy P w t → (s.setField l i v).hasTy P w t :=
+      fun hw' => hasTy_mono (fun l o h => by
+        obtain ⟨o', a, b, _⟩ := hm l o h; exact ⟨o', a, b⟩) hw'
+    rw [Store.setField_objs] at h
+    by_cases hl : l' = l
+    · subst hl; rw [if_pos rfl, ho] at h; cases h
+      obtain ⟨a, b, d⟩ := hw.objs l' o ho
+      refine ⟨a, by simp [b], fun j w f hj hf => ?_⟩
+      by_cases hji : j = i
+      · subst hji; rw [hfi] at hf; cases hf
+        have : j < o.fields.length := by rw [b]; exact (List.getElem?_eq_some_iff.mp hfi).1
+        simp [this] at hj; subst hj; exact mono hv
+      · rw [List.getElem?_set_ne (Ne.symm hji)] at hj
+        exact mono (d j w f hj hf)
+    · rw [if_neg hl] at h
+      obtain ⟨a, b, d⟩ := hw.objs l' o' h
+      exact ⟨a, b, fun j w f hj hf => mono (d j w f hj hf)⟩
+
 variable (hP : WfProg P) (horc : OracleOK P orc) {n : Nat} (ih : Good P orc n)
 include hP horc ih
 
@@ -475,6 +546,60 @@ theorem eval_succ : EvalGood P orc (n + 1) := by
     cases ar with
     | other r => exact this.other (evalWs_mono (by simp [Expr.assigned]))
     | ok vs s1 => obtain ⟨_, _, hao, _⟩ := this; cases hao
+  | fieldVar hfd hvar hle =>
+    obtain ⟨l, o, i, v, hl, ho, hi, hfi, hv, hty⟩ := self_field hwf rfl hf hw hfd
+    have hvt := hasTy_le hwf hty hle
+    simp only [eval, hl, ho, hi, Option.bind_some, hv]
+    simp only [Store.hasTy] at hvt
+    rw [if_pos hvt]
+    exact post_plain hw hf hs hvt
+  | fieldImm hfd hvar hu hle =>
+    rename_i fd u f t
+    obtain ⟨l, o, i, v, hl, ho, hi, hfi, hv, hty⟩ := self_field hwf rfl hf hw hfd
+    have hvu : s.hasTy c.prog v u := by
+      cases hg : Γ.get (.field f) with
+      | none => rw [hg] at hu; simp at hu; subst hu; exact hty
+      | some u' =>
+        rw [hg] at hu; simp at hu; subst hu
+        obtain ⟨l', o', fd', i', w, h1, h2, _, _, h5, _, h7, h8⟩ := hs _ _ hg
+        rw [hl] at h1; cases h1; rw [ho] at h2; cases h2; rw [hi] at h5; cases h5
+        rw [hv] at h7; cases h7; exact h8
+    have hvt := hasTy_le hwf hvu hle
+    simp only [eval, hl, ho, hi, Option.bind_some, hv]
+    simp only [Store.hasTy] at hvt
+    rw [if_pos hvt]
+    refine ⟨Λ, hw, Ext.refl _ Λ s, hf, hvt, ⟨Γ, rfl, hs⟩, fun htr => ?_, fun hfa => ?_⟩
+    · have h1 := hasTy_truthy hvu htr
+      exact ⟨_, narrow_eq Γ _ (ne_nil_of_hasTy h1), hs.set ⟨l, o, fd, i, v, hl, ho, hfd, hvar, hi,
+        hfi, hv, h1⟩⟩
+    · have h1 := hasTy_falsy hvu hfa
+      exact ⟨_, narrow_eq Γ _ (ne_nil_of_hasTy h1), hs.set ⟨l, o, fd, i, v, hl, ho, hfd, hvar, hi,
+        hfi, hv, h1⟩⟩
+  | setField hfd hvar he hle hout =>
+    simp only [eval]
+    refine (ih.eval _ _ _ _ fr s Λ rfl he hw hf hs).bind
+      (evalW_mono (by simp [Expr.assigned])) ?_
+    intro v s1 Λ1 hw1 he1 hf1 hv1 ho1 _ _
+    obtain ⟨Δ', hΔ, hs1⟩ := ho1
+    rw [hout] at hΔ; cases hΔ
+    obtain ⟨l, o, i, w, hl, ho, hi, hfi, _, _⟩ := self_field hwf rfl hf1 hw1 hfd
+    simp only [hl, ho, hi, Option.bind_some]
+    have he2 : Ext c.prog (fun _ => False) Λ1 Λ1 s1 (s1.setField l i v) := Ext.setField ho hfi hvar
+    have hvd := hasTy_le hwf hv1 hle
+    refine ⟨Λ1, hw1.setField hwf ho hfi hvar hvd, (he1.trans he2 hw).mono ?_,
+      hf1.stable he2 (fun _ _ h => h), he2.hasTy hv1, ⟨_, rfl, hs1.stable he2 (fun _ _ h => h)⟩,
+      fun _ => ⟨_, rfl, hs1.stable he2 (fun _ _ h => h)⟩,
+      fun _ => ⟨_, rfl, hs1.stable he2 (fun _ _ h => h)⟩⟩
+    rintro l' (h | h)
+    · exact evalW_mono (by simp [Expr.assigned]) l' h
+    · exact h.elim
+  | setFieldDead hfd hvar he hle hout =>
+    simp only [eval]
+    refine (ih.eval _ _ _ _ fr s Λ rfl he hw hf hs).bind
+      (evalW_mono (by simp [Expr.assigned])) ?_
+    intro v s1 Λ1 _ _ _ _ ho1 _ _
+    obtain ⟨_, hΔ, _⟩ := ho1
+    rw [hout] at hΔ; cases hΔ
   | _ => sorry
 
 end QuarzCore
