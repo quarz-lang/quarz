@@ -195,6 +195,57 @@ theorem mem_allocVars : ∀ {names : List String} {base l : Nat} {x : String},
     · cases h; simp
     · have := mem_allocVars h; simp; omega
 
+theorem Ext.restrict {W W' : Nat → Prop} {Λ Λ' : List Ty} {s s' : Store} (h : Ext P W Λ Λ' s s')
+    (hw : ∀ l, l < s.locs.length → W l → W' l) : Ext P W' Λ Λ' s s' where
+  tys := h.tys
+  locs := fun l v hv => by
+    obtain ⟨v', h1, h2⟩ := h.locs l v hv
+    refine ⟨v', h1, ?_⟩
+    rcases h2 with h2 | ⟨hwl, t, ht, hty⟩
+    · exact .inl h2
+    · exact .inr ⟨hw l (List.getElem?_eq_some_iff.mp hv).1 hwl, t, ht, hty⟩
+  objs := h.objs
+
+theorem params_get : ∀ {ps : List (String × Ty)} {p : Path} {t : Ty},
+    Env.get (ps.map fun (x, t) => ((.local x : Path), t)) p = some t → ∃ x, p = .local x ∧ (x, t) ∈ ps
+  | [], _, _, h => by simp [Env.get] at h
+  | (y, u) :: ps, p, t, h => by
+    simp only [List.map_cons, Env.get_cons] at h
+    split at h
+    · rename_i hp; cases h; exact ⟨y, hp.symm, List.mem_cons_self ..⟩
+    · obtain ⟨x, hx, hm⟩ := params_get h; exact ⟨x, hx, List.mem_cons_of_mem _ hm⟩
+
+theorem find_nodup : ∀ {l : List (String × Ty)} {x : String} {t : Ty}, (l.map (·.1)).Nodup →
+    (x, t) ∈ l → (l.find? (·.1 == x)).map (·.2) = some t
+  | [], _, _, _, h => by cases h
+  | (y, u) :: l, x, t, hnd, h => by
+    have hnd' := List.nodup_cons.mp hnd
+    by_cases hy : y = x
+    · subst hy
+      rcases List.mem_cons.mp h with he | hm
+      · cases he; simp [List.find?]
+      · exact absurd (List.mem_map.mpr ⟨_, hm, rfl⟩) hnd'.1
+    · have hne : (y == x) = false := by simpa using hy
+      rcases List.mem_cons.mp h with he | hm
+      · cases he; exact absurd rfl hy
+      · simp only [List.find?, hne]; exact find_nodup hnd'.2 hm
+
+/-- A method's parameter: a local of its type (`wfMethod`). -/
+theorem decl_param {mt : Method} (h : P.wfMethod mt = true) {x : String} {t : Ty}
+    (hm : (x, t) ∈ mt.params) : (⟨P, mt, false⟩ : Ctx).decl x = some t := by
+  simp only [Program.wfMethod, Bool.and_eq_true, decide_eq_true_eq, List.all_eq_true,
+    beq_iff_eq] at h
+  obtain ⟨⟨⟨⟨⟨_, hlen⟩, hnd⟩, hpre⟩, _⟩, _⟩ := h
+  obtain ⟨i, hi⟩ := List.mem_iff_getElem?.mp hm
+  have hpl := (List.getElem?_eq_some_iff.mp hi).1
+  have hil : i < mt.locals.length := by omega
+  have hz : (mt.params.zip mt.locals)[i]? = some ((x, t), mt.locals[i]) := by
+    simp [List.zip, List.getElem?_zipWith, hi, hil]
+  have heq := hpre _ (List.mem_iff_getElem?.mpr ⟨i, hz⟩)
+  simp only at heq
+  have hloc : (x, t) ∈ mt.locals := by rw [heq]; exact List.getElem_mem hil
+  exact find_nodup hnd hloc
+
 variable (hP : WfProg P) (horc : OracleOK P orc) {n : Nat} (ih : Good P orc n)
 include hP horc ih
 
