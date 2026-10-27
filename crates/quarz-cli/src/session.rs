@@ -251,6 +251,13 @@ impl Repl {
             &[input],
             self.files.clone(),
         );
+        // The REPL runs no QIR passes: only what lowering must leave.
+        quarz_lower::verify::check_from(
+            &delta.functions,
+            delta.base,
+            &delta.world,
+            quarz_lower::verify::Stage::Lowered,
+        );
         let unit = delta.units.into_iter().next().expect("one unit lowered");
         let fid = unit.body;
         // The REPL unit (file 1) is replaced each time; required files

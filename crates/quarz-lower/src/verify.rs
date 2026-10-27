@@ -10,8 +10,11 @@
 
 use std::sync::OnceLock;
 
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
+
 use quarz_ir::{
-    BlockId, CallKind, FuncKind, Function, HandlerKind, Inst, Reg, RtWorld, Term, INLINE_LINE_FLAG,
+    BlockId, CallKind, FuncId, FuncKind, Function, HandlerKind, Inst, Reg, RtWorld, Term,
+    INLINE_LINE_FLAG,
 };
 
 use crate::sroa::{successors, written};
@@ -73,11 +76,19 @@ pub fn enabled() -> bool {
 /// Check every function after `stage`; panic at the first one breaking
 /// an invariant, with the function's QIR.
 pub fn check(functions: &[Function], world: &RtWorld, stage: Stage) {
+    check_from(functions, 0, world, stage);
+}
+
+/// `check` for functions numbered from `base` (a REPL round's, after
+/// the functions of the rounds before it).
+pub fn check_from(functions: &[Function], base: FuncId, world: &RtWorld, stage: Stage) {
     if !enabled() {
         return;
     }
-    for (id, f) in functions.iter().enumerate() {
-        let found = verify(f, world, functions.len(), stage);
+    let nfuncs = base as usize + functions.len();
+    for (i, f) in functions.iter().enumerate() {
+        let id = base as usize + i;
+        let found = verify(f, world, nfuncs, stage);
         if let Some(v) = found.first() {
             let mut dump = String::new();
             quarz_ir::dump::dump_function(&mut dump, id as u32, f);
@@ -1137,6 +1148,82 @@ pub fn regshare(old: &Function, new: &Function, map: &[Reg], world: &RtWorld) ->
     if old.blocks.len() != new.blocks.len() {
         report(0, "blocks added or removed".into());
     }
+    // (d) Interference. The pairs a dropped move joins hold one value
+    // where both are live (exempted everywhere); any other two registers
+    // live at one point hold different numbers, and a register written
+    // takes no number another live after the write has. A handler's live
+    // set counts throughout its block. (Sharing itself only separates a
+    // register written from those live after the write: two read while
+    // neither has been written on any path, both nil, could share; this
+    // check assumes lowering never reads such registers.)
+    let joined = |a: Reg, b: Reg, at: &Inst| {
+        matches!(at, Inst::Move { dst, src } | Inst::Take { dst, src }
+            if (*dst, *src) == (a, b) || (*dst, *src) == (b, a))
+    };
+    let mut dropped: HashSet<(Reg, Reg)> = HashSet::default();
+    for b in &old.blocks {
+        for inst in &b.insts {
+            if let Inst::Move { dst, src } | Inst::Take { dst, src } = inst {
+                if dst != src && m(*dst) == m(*src) {
+                    dropped.insert((*dst.min(src), *dst.max(src)));
+                }
+            }
+        }
+    }
+    for (bi, ob) in old.blocks.iter().enumerate() {
+        let handler = ob
+            .handler
+            .filter(|_| !ob.insts.is_empty())
+            .map(|h| &live[h.block as usize][0]);
+        let at = |k: usize| -> Vec<Reg> {
+            (0..old.nregs)
+                .filter(|r| live[bi][k][*r as usize] || handler.is_some_and(|h| h[*r as usize]))
+                .collect()
+        };
+        for k in 0..=ob.insts.len() {
+            let regs = at(k);
+            let mut by_number: HashMap<Reg, Vec<Reg>> = HashMap::default();
+            for r in regs.iter().copied() {
+                let sharing = by_number.entry(m(r)).or_default();
+                for &q in sharing.iter() {
+                    if !dropped.contains(&(q.min(r), q.max(r))) {
+                        report(
+                            bi,
+                            format!(
+                                "r{q} and r{r}, both live at instruction {k}, share r{}",
+                                m(r)
+                            ),
+                        );
+                    }
+                }
+                sharing.push(r);
+            }
+            let Some(inst) = ob.insts.get(k) else {
+                continue;
+            };
+            let after = at(k + 1);
+            let writes: Vec<Reg> = match inst {
+                // A clear writes only what it keeps.
+                Inst::ClearRegs { from, to } => (*from..*to)
+                    .filter(|r| live[bi][k + 1][*r as usize] || heap[*r as usize])
+                    .collect(),
+                _ => inst.defs().to_vec(),
+            };
+            for d in writes {
+                for &l in &after {
+                    if l != d && m(l) == m(d) && !joined(d, l, inst) {
+                        report(
+                            bi,
+                            format!(
+                                "instruction {k} writes r{d} while r{l}, live after it, shares r{}",
+                                m(d)
+                            ),
+                        );
+                    }
+                }
+            }
+        }
+    }
     // What the back end reads of the new function agrees.
     let new_heap = quarz_ir::live::heap_possible(new, &world.methods);
     for (n, kind) in kinds.iter().enumerate() {
@@ -1145,6 +1232,221 @@ pub fn regshare(old: &Function, new: &Function, map: &[Reg], world: &RtWorld) ->
                 report(
                     0,
                     format!("r{n}'s registers and the new function disagree on counting"),
+                );
+            }
+        }
+    }
+    out
+}
+
+/// E15: check what copy propagation did to each function (against the
+/// functions `before` it); panic as `check` does.
+pub fn check_copyprop(before: &[Function], after: &[Function]) {
+    for (id, (old, new)) in before.iter().zip(after).enumerate() {
+        let found = copyprop(old, new);
+        if let Some(v) = found.first() {
+            let mut dump = String::new();
+            quarz_ir::dump::dump_function(&mut dump, id as u32, old);
+            panic!(
+                "QIR verifier: {} after copyprop: block {} inst {} (line {}): {}\nbefore it:\n{dump}",
+                old.name,
+                v.block,
+                v.inst.unwrap_or(0),
+                v.line,
+                v.what
+            );
+        }
+    }
+}
+
+/// What copy propagation must keep of `old`'s releases in `new`: each
+/// `Release` of a register `d` stays, goes with a copy into `d` it
+/// removed (the source still holds the value), or releases the source
+/// `s` of such a copy (a chain of them) when that copy was all that read
+/// `s`. A release redirected to another variable would end a scope
+/// whose release can be observed somewhere else.
+pub fn copyprop(old: &Function, new: &Function) -> Vec<Violation> {
+    let mut out = Vec::new();
+    let mut report = |block: usize, inst: Option<usize>, what: String| {
+        let line = inst
+            .and_then(|i| old.blocks[block].lines.get(i).copied())
+            .unwrap_or(0);
+        out.push(Violation {
+            block: block as BlockId,
+            inst,
+            line,
+            what,
+        })
+    };
+    if old.blocks.len() != new.blocks.len() {
+        report(0, None, "blocks added or removed".into());
+        return out;
+    }
+    let flexible = |i: &Inst| matches!(i, Inst::Move { .. } | Inst::Release { .. });
+    // Align each block's instructions: copy propagation only removes
+    // moves and releases, and changes what instructions read. Between
+    // two other instructions, the new moves and releases are some of the
+    // old ones, in order.
+    let mut removed: HashMap<Reg, Vec<Reg>> = HashMap::default();
+    let mut deleted: HashSet<(usize, usize)> = HashSet::default();
+    // Each run's releases: (block, old indices, new sources).
+    let mut runs: Vec<(usize, Vec<usize>, Vec<Reg>)> = Vec::new();
+    for (bi, (ob, nb)) in old.blocks.iter().zip(&new.blocks).enumerate() {
+        let (mut i, mut j) = (0, 0);
+        while i < ob.insts.len() || j < nb.insts.len() {
+            let (i0, j0) = (i, j);
+            while i < ob.insts.len() && flexible(&ob.insts[i]) {
+                i += 1;
+            }
+            while j < nb.insts.len() && flexible(&nb.insts[j]) {
+                j += 1;
+            }
+            // Moves: each new one is the next old one into its register
+            // (from the same source, if one is: the first may be a dead
+            // copy removed).
+            let mut k = i0;
+            for n in &nb.insts[j0..j] {
+                let Inst::Move { dst: d, src: ns } = n else {
+                    continue;
+                };
+                let same = (k..i).find(
+                    |k| matches!(ob.insts[*k], Inst::Move { dst, src } if dst == *d && src == *ns),
+                );
+                let target = same.or_else(|| {
+                    (k..i).find(|k| matches!(ob.insts[*k], Inst::Move { dst, .. } if dst == *d))
+                });
+                while k < i && Some(k) != target {
+                    if let Inst::Move { dst, src } = ob.insts[k] {
+                        removed.entry(dst).or_default().push(src);
+                        deleted.insert((bi, k));
+                    }
+                    k += 1;
+                }
+                if k == i {
+                    report(bi, None, format!("a move into r{d} added"));
+                    return out;
+                }
+                k += 1;
+            }
+            for k in k..i {
+                if let Inst::Move { dst, src } = ob.insts[k] {
+                    removed.entry(dst).or_default().push(src);
+                    deleted.insert((bi, k));
+                }
+            }
+            let old_rel: Vec<usize> = (i0..i)
+                .filter(|k| matches!(ob.insts[*k], Inst::Release { .. }))
+                .collect();
+            let new_rel: Vec<Reg> = nb.insts[j0..j]
+                .iter()
+                .filter_map(|n| match n {
+                    Inst::Release { src } => Some(*src),
+                    _ => None,
+                })
+                .collect();
+            runs.push((bi, old_rel, new_rel));
+            match (ob.insts.get(i), nb.insts.get(j)) {
+                (Some(o), Some(n)) if std::mem::discriminant(o) == std::mem::discriminant(n) => {
+                    i += 1;
+                    j += 1;
+                }
+                (None, None) => {}
+                (Some(o), _) => {
+                    report(bi, Some(i), format!("{} is not as it was", inst_name(o)));
+                    return out;
+                }
+                (None, Some(_)) => {
+                    report(bi, None, "instructions added".into());
+                    return out;
+                }
+            }
+        }
+    }
+    // Whether something besides the removed copies reads each register,
+    // before the pass and after it. Releases do not count (the pass may
+    // have removed or redirected them in an earlier round), and a read
+    // counts only when it is there on both sides: a round sees reads that
+    // an earlier one redirected away, or onto the source.
+    let reads_in = |f: &Function, skip: &dyn Fn(usize, usize) -> bool| {
+        let mut reads = vec![false; old.nregs as usize];
+        for (bi, b) in f.blocks.iter().enumerate() {
+            for (ii, i) in b.insts.iter().enumerate() {
+                if !skip(bi, ii) && !matches!(i, Inst::Release { .. }) {
+                    for r in i.uses() {
+                        if let Some(x) = reads.get_mut(r as usize) {
+                            *x = true;
+                        }
+                    }
+                }
+            }
+            if let Some(x) = b.term.uses().and_then(|r| reads.get_mut(r as usize)) {
+                *x = true;
+            }
+        }
+        reads
+    };
+    let before = reads_in(old, &|bi, ii| deleted.contains(&(bi, ii)));
+    let after = reads_in(new, &|_, _| false);
+    let kept_reads: Vec<bool> = before.iter().zip(&after).map(|(a, b)| *a && *b).collect();
+    // Whether `to` is the source of a chain of removed copies into `d`,
+    // nothing else reading it. (Weaker than the pass's condition: a copy
+    // of `to` it removed earlier, or a release of `to`, is not counted;
+    // nor is it checked that the copy removed is the one reaching the
+    // release.)
+    let from_source = |d: Reg, to: Reg| -> bool {
+        let mut work = vec![d];
+        let mut seen: HashSet<Reg> = HashSet::default();
+        while let Some(r) = work.pop() {
+            if !seen.insert(r) {
+                continue;
+            }
+            for &s in removed.get(&r).into_iter().flatten() {
+                if s == to && !kept_reads[s as usize] {
+                    return true;
+                }
+                work.push(s);
+            }
+        }
+        false
+    };
+    for (bi, old_rel, new_rel) in runs {
+        let src_of = |k: usize| match old.blocks[bi].insts[k] {
+            Inst::Release { src } => src,
+            _ => unreachable!(),
+        };
+        // Each new release is the next old one it may stand for (one of
+        // the same register first); the old ones passed over were removed.
+        let mut at = 0;
+        let mut dropped: Vec<usize> = Vec::new();
+        for s in new_rel {
+            let found = old_rel[at..]
+                .iter()
+                .position(|k| src_of(*k) == s)
+                .or_else(|| {
+                    old_rel[at..]
+                        .iter()
+                        .position(|k| from_source(src_of(*k), s))
+                });
+            let Some(p) = found else {
+                let first = old_rel.get(at).copied();
+                let what = match first {
+                    Some(k) => format!("releases r{s} instead of r{}", src_of(k)),
+                    None => format!("a release of r{s} added"),
+                };
+                report(bi, first, what);
+                return out;
+            };
+            dropped.extend(&old_rel[at..at + p]);
+            at += p + 1;
+        }
+        dropped.extend(&old_rel[at..]);
+        for k in dropped {
+            let d = src_of(k);
+            if !removed.contains_key(&d) {
+                report(
+                    bi,
+                    Some(k),
+                    format!("the release of r{d} is removed, with no copy into it"),
                 );
             }
         }

@@ -657,6 +657,78 @@ fn a_clear_left_out_is_found() {
     );
 }
 
+#[test]
+fn two_live_registers_sharing_are_found() {
+    let (module, main, mut map) = regshare_sample();
+    let f = &module.functions[main];
+    let heap = quarz_ir::live::heap_possible(f, &module.world.methods);
+    let live = quarz_ir::live::liveness(f);
+    // Two registers of one kind live at once.
+    let (a, b) = live
+        .iter()
+        .flatten()
+        .find_map(|at| {
+            let regs: Vec<u32> = (0..f.nregs).filter(|r| at[*r as usize]).collect();
+            regs.iter().find_map(|a| {
+                regs.iter()
+                    .find(|b| a < *b && heap[*a as usize] == heap[**b as usize])
+                    .map(|b| (*a, *b))
+            })
+        })
+        .unwrap();
+    map[b as usize] = a;
+    let new = quarz_lower::verify::renumber(f, &map);
+    let found = regshare_found(f, &new, &map, &module.world);
+    assert!(
+        found
+            .iter()
+            .any(|w| w.contains(&format!("r{a} and r{b}, both live"))),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn a_release_redirected_to_another_variable_is_found() {
+    let (module, main, _) = regshare_sample();
+    let f = &module.functions[main];
+    let (bi, ii) = find(f, |i| matches!(i, Inst::Release { .. }));
+    let Inst::Release { src } = f.blocks[bi].insts[ii] else {
+        unreachable!()
+    };
+    let other = (0..f.nregs).find(|r| *r != src).unwrap();
+    let mut new = f.clone();
+    new.blocks[bi].insts[ii] = Inst::Release { src: other };
+    let found: Vec<String> = quarz_lower::verify::copyprop(f, &new)
+        .into_iter()
+        .map(|v| v.what)
+        .collect();
+    assert!(
+        found
+            .iter()
+            .any(|w| w.contains(&format!("releases r{other} instead of r{src}"))),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn a_release_removed_without_its_copy_is_found() {
+    let (module, main, _) = regshare_sample();
+    let f = &module.functions[main];
+    assert!(quarz_lower::verify::copyprop(f, f).is_empty());
+    let (bi, ii) = find(f, |i| matches!(i, Inst::Release { .. }));
+    let mut new = f.clone();
+    new.blocks[bi].insts.remove(ii);
+    new.blocks[bi].lines.remove(ii);
+    let found: Vec<String> = quarz_lower::verify::copyprop(f, &new)
+        .into_iter()
+        .map(|v| v.what)
+        .collect();
+    assert!(
+        found.iter().any(|w| w.contains("is removed, with no copy")),
+        "{found:?}"
+    );
+}
+
 // ----- The moved shadow (QUARZ_VERIFY=moves) -----
 
 #[test]
