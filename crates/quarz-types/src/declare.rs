@@ -2276,6 +2276,16 @@ impl<'ast> Declarer<'ast> {
                 }
                 ExprKind::Alias { new_name, old_name } => {
                     self.check_sealed(self.world.class(id).file, new_name, expr.span);
+                    // An alias named `initialize` would skip definite
+                    // assignment, and one of `initialize` would run it on
+                    // a built object, assigning its immutable fields again.
+                    if new_name == "initialize" || old_name == "initialize" {
+                        self.error(
+                            "`initialize` cannot be aliased: it runs only from `new`",
+                            expr.span,
+                        );
+                        continue;
+                    }
                     let ids = self
                         .world
                         .class(id)

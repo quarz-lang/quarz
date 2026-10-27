@@ -122,6 +122,7 @@ pub fn build(world: &World, lw: &Lowerer, file_names: Vec<String>) -> RtWorld {
                     .collect(),
                 fields,
                 ivars,
+                module_init: !world.has_fields_to_assign(c.id, true),
                 methods: c
                     .methods
                     .iter()

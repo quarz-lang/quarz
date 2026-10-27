@@ -915,6 +915,31 @@ impl World {
         out
     }
 
+    /// Whether a class has fields that an `initialize` must assign (docs/01
+    /// §3): every field of a data type or a variant; otherwise one without
+    /// a default whose type does not admit `nil` (a type parameter's may
+    /// not), its own or (`inherited`) its superclasses' too. Which
+    /// `initialize` may make it goes by this, in the checker and at run
+    /// time.
+    pub fn has_fields_to_assign(&self, id: ClassId, inherited: bool) -> bool {
+        if matches!(self.class(id).kind, ClassKind::Data | ClassKind::Variant) {
+            return true;
+        }
+        let admits_nil = |t: &Type| match t {
+            Type::Class(c, _) => *c == self.builtin.nil || *c == self.builtin.object,
+            Type::Union(ms) => ms
+                .iter()
+                .any(|m| matches!(m, Type::Class(c, _) if *c == self.builtin.nil)),
+            _ => false,
+        };
+        let needs = |f: &FieldInfo| f.default.is_none() && !admits_nil(&f.ty);
+        if inherited {
+            self.all_fields(id).iter().any(|(f, _)| needs(f))
+        } else {
+            self.class(id).fields.iter().any(needs)
+        }
+    }
+
     /// Fields of a class including inherited ones, superclass fields first.
     pub fn all_fields(&self, id: ClassId) -> Vec<(FieldInfo, HashMap<TypeParamId, Type>)> {
         let mut chain = self.superclass_chain(id);

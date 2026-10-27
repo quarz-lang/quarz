@@ -963,6 +963,22 @@ impl Checker {
     /// The fields `initialize` must assign (see `init`): every field and
     /// the class's own ones whose declared type does not admit `nil`
     /// and that have no default.
+    /// Whether `m`, an `initialize` found for `cid`, may make a `cid`:
+    /// it can assign every field that needs it.
+    fn constructs(&self, cid: ClassId, m: &MethodInfo) -> bool {
+        let owner = self.world.class(m.owner);
+        if m.extension.is_some() || owner.kind == ClassKind::Module {
+            return !self.world.has_fields_to_assign(cid, true);
+        }
+        // The classes from `cid` up to the owner, the owner aside.
+        !self
+            .world
+            .superclass_chain(cid)
+            .into_iter()
+            .take_while(|k| *k != m.owner)
+            .any(|k| self.world.has_fields_to_assign(k, false))
+    }
+
     pub(crate) fn required_fields(
         &self,
         cid: ClassId,
@@ -6807,10 +6823,17 @@ impl Checker {
             });
         let instance = Type::Class(cid, targs.clone());
         let cands = self.world.lookup_methods(&instance, "initialize");
-        // Only the class's own (or inherited) initialize, not Object's.
+        // Only the class's own (or inherited) initialize, not Object's,
+        // and only one that can assign the fields (docs/01 §3): a
+        // superclass's when no class below it has fields of its own to
+        // assign (a data type's or a variant's all are), a module's or an
+        // extension's when the class has none at all.
         let cands: Vec<_> = cands
             .into_iter()
-            .filter(|(m, _)| !self.world.method(*m).singleton)
+            .filter(|(m, _)| {
+                let m = self.world.method(*m);
+                !m.singleton && self.constructs(cid, m)
+            })
             .collect();
         if cands.is_empty() {
             if !call.args.is_empty() || call.block.is_some() {
