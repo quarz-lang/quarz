@@ -6,8 +6,8 @@ Quarz shares one front end and one runtime across two back ends (an interpreter 
 
 ```
                     ┌────────────┐   ┌──────────────┐   ┌───────────────┐
-  foo.qz ─────────▶ │ Lexing and │─▶ │ Name resol.  │─▶ │  QIR (typed   │
-  (+ required files)│  parsing   │   │ & type check │   │   IR)         │
+  foo.qz ─────────▶ │ Lexing and │─▶ │ Name resol.  │─▶ │  QIR (from    │
+  (+ required files)│  parsing   │   │ & type check │   │ checked code) │
                     └────────────┘   └──────────────┘   └───────┬───────┘
                                                                  │
                        ┌─────────────────────────────────────────┼─────────────────────┐

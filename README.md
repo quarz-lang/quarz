@@ -8,7 +8,7 @@ Quarz is a programming language that feels like Ruby, but is built on static typ
 - **Static class and method definitions** — there is no class reopening, no `define_method`, no `method_missing`, no `eval`. Method calls are resolved at compile time and the class hierarchy is fixed for the whole program. Additions to existing types are made with `extension`/`using`, which are confined to a lexical scope.
 - **Immutable built-in data by default** — `String`/`Array`/`Hash`/`Set` are immutable: updates return new values and leave the old ones unchanged. When a reference is unique the update happens in place, so a straightforward loop is about as fast as one over a mutable array. Where mutation is needed, Builder types with the same API as Ruby are available.
 - **Lightweight tasks** — `Task`s scheduled M:N like goroutines / Erlang processes, typed `Channel`s, structured concurrency (`Task.scope`) and `Atom`s that share immutable values. The type system (`Shareable`) checks that mutable objects never cross task boundaries, eliminating data races at compile time.
-- **Interpreter and AOT compiler together** — one typed intermediate representation (QIR) and one runtime (libquarz) are shared: `quarz run` executes on the spot and gives you a REPL, `quarz build` produces machine code. The behavior of both is identical; only the performance differs.
+- **Interpreter and AOT compiler together** — one intermediate representation (QIR), lowered from the type-checked program, and one runtime (libquarz) are shared: `quarz run` executes on the spot and gives you a REPL, `quarz build` produces machine code. The behavior of both is identical; only the performance differs.
 
 ## Quarz at a glance
 
