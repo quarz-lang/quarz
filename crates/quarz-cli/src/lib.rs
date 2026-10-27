@@ -5,6 +5,7 @@
 pub mod complete;
 pub mod highlight;
 pub mod session;
+pub mod tree;
 
 use quarz_syntax::SourceFile;
 use quarz_types::Checked;

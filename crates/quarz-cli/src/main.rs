@@ -15,7 +15,9 @@ usage: quarz <command> [args]
 commands:
   tokens FILE    print the tokens of FILE (for debugging the lexer)
   parse FILE     print the syntax tree of FILE (for debugging the parser)
-  check [TARGET] type-check TARGET
+  check [--tree] [TARGET]
+                 type-check TARGET (--tree: print the checked tree as JSON,
+                 for formal/'s tests; the format changes without notice)
   ir [TARGET]    print the QIR of TARGET (for debugging the lowering)
   build [TARGET] [-o OUT]
                  compile TARGET to a native executable (default: a script
@@ -64,11 +66,14 @@ fn main() -> ExitCode {
             Some(path) => parse_file(path),
             None => usage(),
         },
-        Some("check") => match Target::parse(&args[1..]) {
-            Ok((target, rest)) if rest.is_empty() => check_file(&target),
-            Ok(_) => usage(),
-            Err(code) => code,
-        },
+        Some("check") => {
+            let tree = args.get(1).is_some_and(|a| a == "--tree");
+            match Target::parse(&args[1 + usize::from(tree)..]) {
+                Ok((target, rest)) if rest.is_empty() => check_file(&target, tree),
+                Ok(_) => usage(),
+                Err(code) => code,
+            }
+        }
         Some("ir") => match Target::parse(&args[1..]) {
             Ok((target, rest)) if rest.is_empty() => ir_file(&target),
             Ok(_) => usage(),
@@ -321,9 +326,16 @@ fn build_file(target: &Target, out: &std::path::Path) -> ExitCode {
     }
 }
 
-fn check_file(target: &Target) -> ExitCode {
+/// `quarz check [--tree]`: with `--tree`, the checked program as JSON on
+/// standard output (`quarz_cli::tree`).
+fn check_file(target: &Target, tree: bool) -> ExitCode {
     match load_and_check(target) {
-        Some(_) => ExitCode::SUCCESS,
+        Some((checked, _)) => {
+            if tree {
+                println!("{}", quarz_cli::tree::tree(&checked));
+            }
+            ExitCode::SUCCESS
+        }
         None => ExitCode::FAILURE,
     }
 }

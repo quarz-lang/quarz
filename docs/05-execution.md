@@ -38,7 +38,7 @@ Quarz shares one front end and one runtime across two back ends (an interpreter 
 |---|---|
 | `quarz run app.qz [args]` | Type-check (reusing the checks of unchanged files, §2), lower to QIR and interpret it |
 | `quarz repl` | REPL. Each input is type-checked, and definitions can be added (redefinition is not allowed; use a new name instead) |
-| `quarz check app.qz` | Type-check only |
+| `quarz check app.qz` | Type-check only; `--tree` prints the checked syntax tree, with each node's type, as JSON (for the differential tests of `formal/`: the format changes without notice) |
 | `quarz build app.qz -o app` | Produce a native executable, optimized through LLVM |
 | `quarz ir app.qz` | Print the QIR of every function (for debugging the lowering); `quarz tokens` and `quarz parse` print the tokens and the syntax tree |
 | `quarz test` | Run `test/**/*_test.qz`, or the test files given: Test::Unit-style classes found by the compiler ([12-testing.md](12-testing.md)); `--release` compiles them |
