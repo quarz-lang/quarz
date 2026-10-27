@@ -123,4 +123,24 @@ theorem Post.bind {c : Ctx} {o o' : Out} {fr : Frame} {Λ : List Ty} {s : Store}
   | timeout => trivial
   | stuck => exact h
 
+/-- `Post.bind`, the continuation also told which result it follows. -/
+theorem Post.bindEq {c : Ctx} {o o' : Out} {fr : Frame} {Λ : List Ty} {s : Store}
+    {W W' : Nat → Prop} {r : Result} {k : Value → Store → Result}
+    (h : Post P c o fr Λ s W r) (hW : ∀ l, W l → W' l)
+    (hk : ∀ v s1 Λ1, r = .ok v s1 → WfStore P Λ1 s1 → Ext P W Λ Λ1 s s1 → FrameOK P c Λ1 fr s1 →
+      s1.hasTy P v o.ty → OutOK P c o.out fr s1 →
+      (v.truthy = true → OutOK P c o.tt fr s1) → (v.truthy = false → OutOK P c o.ff fr s1) →
+      Post P c o' fr Λ s W' (k v s1)) :
+    Post P c o' fr Λ s W' (r.bind k) := by
+  cases r with
+  | ok v s1 =>
+    obtain ⟨Λ1, a, e, f, g, i, j, k'⟩ := h
+    exact hk v s1 Λ1 rfl a e f g i j k'
+  | returned v s' =>
+    obtain ⟨Λ', a, e, f, g, i⟩ := h
+    exact ⟨Λ', a, e.mono hW, f, g, i⟩
+  | raised => trivial
+  | timeout => trivial
+  | stuck => exact h
+
 end QuarzCore

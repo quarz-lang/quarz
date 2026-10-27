@@ -15,3 +15,4 @@ import QuarzCore.StableLemmas
 import QuarzCore.SoundDefs
 import QuarzCore.Soundness
 import QuarzCore.EvalCases
+import QuarzCore.TestLemmas

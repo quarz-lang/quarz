@@ -4,6 +4,7 @@ case by case, as `Typed` derives the expression.
 -/
 
 import QuarzCore.SoundDefs
+import QuarzCore.TestLemmas
 
 set_option linter.deprecated false
 
@@ -64,6 +65,8 @@ theorem post_plain {c : Ctx} {Γ : Env} {fr : Frame} {Λ : List Ty} {s : Store} 
     {v : Value} {t : Ty} (hw : WfStore P Λ s) (hf : FrameOK P c Λ fr s) (hs : Sat P c Γ fr s)
     (hv : s.hasTy P v t) : Post P c (.plain t Γ) fr Λ s W (.ok v s) :=
   ⟨Λ, hw, Ext.refl _ Λ s, hf, hv, ⟨Γ, rfl, hs⟩, fun _ => ⟨Γ, rfl, hs⟩, fun _ => ⟨Γ, rfl, hs⟩⟩
+
+theorem truthy_bool (b : Bool) : (Value.bool b).truthy = b := by cases b <;> rfl
 
 theorem evalW_mono {fr : Frame} {e e' : Expr} (h : ∀ x ∈ e.assigned, x ∈ e'.assigned) :
     ∀ l, evalW fr e l → evalW fr e' l := by
@@ -284,6 +287,110 @@ theorem WfStore.setField (hwf : WfClasses P.classes) {Λ : List Ty} {s : Store} 
     · rw [if_neg hl] at h
       obtain ⟨a, b, d⟩ := hw.objs l' o' h
       exact ⟨a, b, fun j w f hj hf => mono (d j w f hj hf)⟩
+
+/-- A path's value in a frame. -/
+def PathVal (P : Program) (fr : Frame) (s : Store) : Path → Value → Prop
+  | .local x, v => ∃ l, lookupVar fr.vars x = some l ∧ s.locs[l]? = some v
+  | .field f, v => ∃ l o i, fr.self = .obj l ∧ s.objs[l]? = some o ∧
+      fieldIndex P.classes o.cls f = some i ∧ o.fields[i]? = some v
+
+/-- A read gives its path's value, and changes nothing. -/
+theorem eval_read {e : Expr} {p : Path} (hp : e.path? = some p) {n : Nat} {fr : Frame} {s s1 : Store}
+    {v : Value} (h : eval P orc n fr s e = .ok v s1) : s1 = s ∧ PathVal P fr s p v := by
+  cases n with
+  | zero => simp [eval] at h
+  | succ n =>
+    cases e <;> simp [Expr.path?] at hp <;> subst hp
+    · simp only [eval] at h
+      split at h
+      · rename_i w hw
+        split at h
+        · cases h
+          simp [Option.bind_eq_some_iff] at hw
+          obtain ⟨l, hl, hv⟩ := hw
+          exact ⟨rfl, l, hl, hv⟩
+        · cases h
+      · cases h
+    · simp only [eval] at h
+      split at h
+      · rename_i l hl
+        split at h
+        · rename_i o ho
+          split at h
+          · rename_i w hw
+            split at h
+            · cases h
+              simp [Option.bind_eq_some_iff] at hw
+              obtain ⟨i, hi, hv⟩ := hw
+              exact ⟨rfl, l, o, i, hl, ho, hi, hv⟩
+            · cases h
+          · cases h
+        · cases h
+      · cases h
+
+/-- A path's value, of what the environment says it holds, and of any
+type it is narrowed to that it has. -/
+theorem pathHolds_of_val (hwf : WfClasses P.classes) {c : Ctx} {Δ : Env} {fr : Frame} {Λ : List Ty}
+    {s : Store} (hc : c.prog = P) (hs : Sat P c Δ fr s) (hf : FrameOK P c Λ fr s)
+    (hw : WfStore P Λ s) {p : Path} {t : Ty} (ht : c.pathTy Δ p = some t) {v : Value}
+    (hv : PathVal P fr s p v) :
+    s.hasTy P v t ∧ ∀ t', s.hasTy P v t' → PathHolds P c fr s p t' := by
+  cases p with
+  | «local» x =>
+    obtain ⟨l, hl, hlv⟩ := hv
+    obtain ⟨l', w, d, h1, h2, h3, h4, h5⟩ := hs _ _ ht
+    rw [hl] at h1; cases h1; rw [hlv] at h2; cases h2
+    exact ⟨h4, fun t' h => ⟨l, v, d, hl, hlv, h3, h, h5⟩⟩
+  | field f =>
+    obtain ⟨l, o, i, hl, ho, hi, hfv⟩ := hv
+    simp only [Ctx.pathTy] at ht
+    cases hfd : c.field? f with
+    | none => rw [hfd] at ht; cases ht
+    | some fd =>
+      rw [hfd] at ht
+      cases hvar : fd.var
+      · simp [hvar] at ht
+        obtain ⟨l', o', i', w, h1, h2, h3, h4, h5, h6⟩ := self_field hwf hc hf hw hfd
+        rw [hl] at h1; cases h1; rw [ho] at h2; cases h2; rw [hi] at h3; cases h3
+        rw [hfv] at h5; cases h5
+        refine ⟨?_, fun t' h => ⟨l, o, fd, i, v, hl, ho, hfd, hvar, hi, h4, hfv, h⟩⟩
+        cases hg : Δ.get (.field f) with
+        | none => rw [hg] at ht; simp at ht; subst ht; exact h6
+        | some u =>
+          rw [hg] at ht; simp at ht; subst ht
+          obtain ⟨_, _, _, _, _, k1, k2, _, _, k5, _, k7, k8⟩ := hs _ _ hg
+          rw [hl] at k1; cases k1; rw [ho] at k2; cases k2; rw [hi] at k5; cases k5
+          rw [hfv] at k7; cases k7; exact k8
+      · simp [hvar] at ht
+
+theorem testOut_ty (c : Ctx) (e : Expr) (Δ : Env) (T F : Ty → Ty) :
+    (testOut c e Δ T F).ty = [.bool] := by
+  unfold testOut; split <;> rfl
+
+/-- A test's environments where its value says so, given what each side
+tells of the value tested. -/
+theorem testOut_ok (hwf : WfClasses P.classes) {c : Ctx} {e : Expr} {Δ : Env} {fr : Frame}
+    {Λ : List Ty} {s : Store} (hc : c.prog = P) (hs : Sat P c Δ fr s) (hf : FrameOK P c Λ fr s)
+    (hw : WfStore P Λ s) {tyT tyF : Ty → Ty} {v : Value} {b : Bool}
+    (hval : ∀ p, e.path? = some p → PathVal P fr s p v)
+    (hT : ∀ t, s.hasTy P v t → b = true → s.hasTy P v (tyT t))
+    (hF : ∀ t, s.hasTy P v t → b = false → s.hasTy P v (tyF t)) :
+    OutOK P c (testOut c e Δ tyT tyF).out fr s ∧
+    (b = true → OutOK P c (testOut c e Δ tyT tyF).tt fr s) ∧
+    (b = false → OutOK P c (testOut c e Δ tyT tyF).ff fr s) := by
+  unfold testOut
+  split
+  · rename_i p t hpt
+    simp only [Option.bind_eq_some_iff, Option.map_eq_some_iff] at hpt
+    obtain ⟨p', hp', t', ht', heq⟩ := hpt
+    cases heq
+    obtain ⟨hvt, hre⟩ := pathHolds_of_val hwf hc hs hf hw ht' (hval _ hp')
+    refine ⟨⟨Δ, rfl, hs⟩, fun hb => ?_, fun hb => ?_⟩
+    · have h := hT _ hvt hb
+      exact ⟨_, narrow_eq Δ _ (ne_nil_of_hasTy h), hs.set (hre _ h)⟩
+    · have h := hF _ hvt hb
+      exact ⟨_, narrow_eq Δ _ (ne_nil_of_hasTy h), hs.set (hre _ h)⟩
+  · exact ⟨⟨Δ, rfl, hs⟩, fun _ => ⟨Δ, rfl, hs⟩, fun _ => ⟨Δ, rfl, hs⟩⟩
 
 variable (hP : WfProg P) (horc : OracleOK P orc) {n : Nat} (ih : Good P orc n)
 include hP horc ih
@@ -600,6 +707,45 @@ theorem eval_succ : EvalGood P orc (n + 1) := by
     intro v s1 Λ1 _ _ _ _ ho1 _ _
     obtain ⟨_, hΔ, _⟩ := ho1
     rw [hout] at hΔ; cases hΔ
+  | isNil he hout =>
+    rename_i e o' Δ
+    simp only [eval]
+    refine (ih.eval _ _ _ _ fr s Λ rfl he hw hf hs).bindEq
+      (evalW_mono (by simp [Expr.assigned])) ?_
+    intro v s1 Λ1 hr hw1 he1 hf1 hv1 ho1 _ _
+    obtain ⟨Δ', hΔ, hs1⟩ := ho1
+    rw [hout] at hΔ; cases hΔ
+    have hval : ∀ p, e.path? = some p → PathVal c.prog fr s1 p v := fun p hp => by
+      obtain ⟨rfl, h⟩ := eval_read hp hr; exact h
+    obtain ⟨h1, h2, h3⟩ := testOut_ok (b := v == .nil) hwf rfl hs1 hf1 hw1 hval
+      (fun t ht hb => by simp at hb; subst hb; exact hasTy_nilTy ht)
+      (fun t ht hb => hasTy_remove_nil ht (by simpa using hb))
+    exact ⟨Λ1, hw1, he1.mono (evalW_mono (by simp [Expr.assigned])), hf1, by rw [testOut_ty]; exact hasTy_lit_bool, h1,
+      fun h => h2 (by rwa [truthy_bool] at h), fun h => h3 (by rwa [truthy_bool] at h)⟩
+  | isA he hout =>
+    rename_i e o' Δ a
+    simp only [eval]
+    refine (ih.eval _ _ _ _ fr s Λ rfl he hw hf hs).bindEq
+      (evalW_mono (by simp [Expr.assigned])) ?_
+    intro v s1 Λ1 hr hw1 he1 hf1 hv1 ho1 _ _
+    obtain ⟨Δ', hΔ, hs1⟩ := ho1
+    rw [hout] at hΔ; cases hΔ
+    obtain ⟨u, hu, _⟩ := hasTy_iff.mp hv1
+    simp only [hu]
+    have hval : ∀ p, e.path? = some p → PathVal c.prog fr s1 p v := fun p hp => by
+      obtain ⟨rfl, h⟩ := eval_read hp hr; exact h
+    obtain ⟨h1, h2, h3⟩ := testOut_ok (b := u.le c.prog.classes a) hwf rfl hs1 hf1 hw1 hval
+      (fun t ht hb => hasTy_isATrue hwf ht hu hb) (fun t ht hb => hasTy_isAFalse hwf ht hu hb)
+    exact ⟨Λ1, hw1, he1.mono (evalW_mono (by simp [Expr.assigned])), hf1, by rw [testOut_ty]; exact hasTy_lit_bool, h1,
+      fun h => h2 (by rwa [truthy_bool] at h), fun h => h3 (by rwa [truthy_bool] at h)⟩
+  | testDead he hout hform =>
+    rcases hform with rfl | ⟨a, rfl⟩ | rfl | rfl | rfl | rfl <;>
+    · simp only [eval]
+      refine (ih.eval _ _ _ _ fr s Λ rfl he hw hf hs).bind
+        (evalW_mono (by simp [Expr.assigned])) ?_
+      intro v s1 Λ1 _ _ _ _ ho1 _ _
+      obtain ⟨_, hΔ, _⟩ := ho1
+      rw [hout] at hΔ; cases hΔ
   | _ => sorry
 
 end QuarzCore
