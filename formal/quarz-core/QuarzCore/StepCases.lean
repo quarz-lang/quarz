@@ -275,4 +275,139 @@ theorem equal_succ : EqualGood P orc (n + 1) := by
         exact this.weaken hwf hret
   | _ => exact plain _
 
+omit hP horc ih in
+/-- `(x, t)` of the parameters and types: the value given for `x`, of `t`. -/
+theorem zip_val {s : Store} :
+    ∀ {ps : List String} {ts : List Ty} {vs : List Value}, AllTy P s vs ts →
+      ∀ x t, (x, t) ∈ ps.zip ts → ∃ v, (x, v) ∈ ps.zip vs ∧ s.hasTy P v t
+  | [], _, _, _, _, _, hm => by simp at hm
+  | _ :: _, [], _, _, _, _, hm => by simp at hm
+  | p :: ps, t' :: ts, [], h, _, _, _ => h.elim
+  | p :: ps, t' :: ts, v :: vs, ⟨h1, h2⟩, x, t, hm => by
+    rcases List.mem_cons.mp hm with he | hm
+    · cases he; exact ⟨v, List.mem_cons_self .., h1⟩
+    · obtain ⟨w, hw, hwt⟩ := zip_val h2 x t hm
+      exact ⟨w, List.mem_cons_of_mem _ hw, hwt⟩
+
+omit hP horc ih in
+/-- A frame of a method is one of its blocks' too. -/
+theorem FrameCore.inBlock {c : Ctx} {Λ : List Ty} {vars : List (String × Nat)} {me : Value}
+    {s : Store} (h : FrameCore P c Λ vars me s) (b : Bool) :
+    FrameCore P { c with inBlock := b } Λ vars me s :=
+  ⟨h.decls, h.inj, h.inStore, h.self, h.selfObj⟩
+
+omit hP horc ih in
+theorem FrameCore.ofBlock {c : Ctx} {Λ : List Ty} {vars : List (String × Nat)} {me : Value}
+    {s : Store} {b : Bool} (h : FrameCore P { c with inBlock := b } Λ vars me s) :
+    FrameCore P c Λ vars me s :=
+  ⟨h.decls, h.inj, h.inStore, h.self, h.selfObj⟩
+
+theorem block_succ : BlockGood P orc (n + 1) := by
+  intro s Λ clo sig vs ws hw hgiven hvs
+  obtain ⟨hch, hin⟩ := hgiven
+  have hwf := hP.classes
+  obtain ⟨vars, me, outer, ps, body⟩ := clo
+  cases ws with
+  | nil => simp [ChainAt] at hch
+  | cons w ws' =>
+  obtain ⟨c, Δ, ob⟩ := w
+  simp only [ChainAt] at hch
+  obtain ⟨hc, hcore, hch', habove, hps, hty, hret, hR, hJ⟩ := hch
+  subst hc
+  simp only [blockParamsOk, Bool.and_eq_true, beq_iff_eq, decide_eq_true_eq, List.all_eq_true] at hps
+  obtain ⟨⟨hlen, hnd⟩, hpd⟩ := hps
+  -- Each parameter: a local, declared at least as wide as its type.
+  have hdecl : ∀ x t, (x, t) ∈ ps.zip sig.params → ∃ d, c.decl x = some d ∧ t.le c.ct d = true :=
+    fun x t hm => by
+      have := hpd (x, t) hm
+      simp only at this
+      split at this
+      · rename_i d hd; exact ⟨d, hd, this⟩
+      · cases this
+  have hlook : ∀ x ∈ ps, ∃ l, lookupVar vars x = some l := fun x hx => by
+    obtain ⟨t, ht⟩ : ∃ t, (x, t) ∈ ps.zip sig.params := by
+      obtain ⟨i, hi⟩ := List.mem_iff_getElem?.mp hx
+      have hil : i < sig.params.length := by rw [← hlen]; exact (List.getElem?_eq_some_iff.mp hi).1
+      exact ⟨sig.params[i], List.mem_iff_getElem?.mpr ⟨i, by simp [List.zip, List.getElem?_zipWith, hi, hil]⟩⟩
+    obtain ⟨d, hd, _⟩ := hdecl x t ht
+    obtain ⟨l, hl, _⟩ := hcore.decls x d hd
+    exact ⟨l, hl⟩
+  obtain ⟨s1, hb⟩ := bindAll_some (vars := vars) s (by rw [hlen, hvs.length]) hlook
+  simp only [runBlock, hb]
+  obtain ⟨hobjs, hlen1, hsame⟩ := bindAll_same hb
+  have hval := bindAll_val hcore.inj hb hnd (fun x _ l hl => hcore.inStore x l (lookupVar_mem hl))
+  have mono : ∀ {v : Value} {t : Ty}, s.hasTy c.prog v t → s1.hasTy c.prog v t := fun h => by
+    unfold Store.hasTy Store.hasType Store.typeOf at *; rw [hobjs]; exact h
+  -- Binding: each parameter's location gets a value of its declared type.
+  have he1 : Ext c.prog (frameW vars ps) Λ Λ s s1 := by
+    refine ⟨List.prefix_refl Λ, fun l v hv => ?_, fun l o ho => ⟨o, by rw [hobjs]; exact ho, rfl,
+      fun _ _ _ _ => rfl⟩⟩
+    by_cases hl : ∃ x ∈ ps, lookupVar vars x = some l
+    · obtain ⟨x, hx, hxl⟩ := hl
+      obtain ⟨t, ht⟩ : ∃ t, (x, t) ∈ ps.zip sig.params := by
+        obtain ⟨i, hi⟩ := List.mem_iff_getElem?.mp hx
+        have hil : i < sig.params.length := by rw [← hlen]; exact (List.getElem?_eq_some_iff.mp hi).1
+        exact ⟨sig.params[i], List.mem_iff_getElem?.mpr ⟨i, by simp [List.zip, List.getElem?_zipWith, hi, hil]⟩⟩
+      obtain ⟨w, hwm, hwt⟩ := zip_val hvs x t ht
+      obtain ⟨l', hl', hw'⟩ := hval x w hwm
+      rw [hxl] at hl'; cases hl'
+      obtain ⟨d, hd, htd⟩ := hdecl x t ht
+      obtain ⟨l'', hl'', hΛ⟩ := hcore.decls x d hd
+      rw [hxl] at hl''; cases hl''
+      exact ⟨w, hw', .inr ⟨⟨x, hx, hxl⟩, d, hΛ, mono (hasTy_le hwf hwt htd)⟩⟩
+    · exact ⟨v, by rw [hsame l fun x hx hxl => hl ⟨x, hx, hxl⟩]; exact hv, .inl rfl⟩
+  have hw1 : WfStore c.prog Λ s1 := ⟨by rw [hlen1]; exact hw.len, fun l o ho => by
+    rw [hobjs] at ho
+    obtain ⟨a, b, d⟩ := hw.objs l o ho
+    exact ⟨a, b, fun i v f h1 h2 => mono (d i v f h1 h2)⟩⟩
+  have hframe : ∀ l, frameW vars ps l → ¬ chainLocs outer l := fun l ⟨x, _, hxl⟩ hc =>
+    Nat.lt_irrefl _ (habove l l ⟨x, lookupVar_mem hxl⟩ hc)
+  have hf1 : FrameOK c.prog { c with inBlock := true } Λ ⟨vars, me, outer⟩ s1 ws' :=
+    ⟨(hcore.stable he1).inBlock true, hch'.stable he1 _ _ _ (fun l hl hw => hframe l hw hl), habove,
+      fun l hl => by rw [hlen1]; exact hin l (by simp only [chainLocs]; exact Or.inr hl)⟩
+  have hs1 : Sat c.prog c (blockEnv c Δ ps sig body) ⟨vars, me, outer⟩ s1 := by
+    refine Sat.foldl_set _ (hR.reset_typed hcore he1 fun l h _ => ?_) fun x t hm => ?_
+    · obtain ⟨x, hx, hxl⟩ := h; exact ⟨x, List.mem_append_left _ hx, hxl⟩
+    · obtain ⟨w, hwm, hwt⟩ := zip_val hvs x t hm
+      obtain ⟨l, hl, hw'⟩ := hval x w hwm
+      obtain ⟨d, hd, htd⟩ := hdecl x t hm
+      exact ⟨l, w, d, hl, hw', hd, mono hwt, mono (hasTy_le hwf hwt htd)⟩
+  have := ih.eval { c with inBlock := true } _ body ob ⟨vars, me, outer⟩ s1 Λ ws' rfl hty hw1 hf1 hs1
+  revert this
+  generalize eval c.prog orc n ⟨vars, me, outer⟩ s1 body = r
+  intro this
+  cases r with
+  | ok v s2 =>
+    obtain ⟨Λ2, hw2, he2, hf2, hv2, ho2, _, _⟩ := this
+    have he12 := he1.trans he2 hw
+    have hblkW : ∀ l, (frameW vars ps l ∨ evalW ⟨vars, me, outer⟩ body l) →
+        blkW (some (.mk vars me outer ps body)) l := by
+      rintro l (⟨x, hx, hl⟩ | ⟨x, hx, hl⟩ | h) <;> simp only [blkW]
+      · exact Or.inl ⟨x, List.mem_append_left _ hx, hl⟩
+      · exact Or.inl ⟨x, List.mem_append_right _ hx, hl⟩
+      · exact Or.inr h
+    obtain ⟨Γb, hΓb, hsb⟩ := ho2
+    refine ⟨Λ2, hw2, he12.mono hblkW, hasTy_le hwf hv2 hret, ?_, fun l hl => ?_⟩
+    · simp only [ChainAt]
+      refine ⟨trivial, hf2.core.ofBlock, hf2.chain, habove, ?_, hty, hret,
+        hR.reset_typed hcore he12 fun l h hfl => ?_, ?_⟩
+      · simp only [blockParamsOk, Bool.and_eq_true, beq_iff_eq, decide_eq_true_eq, List.all_eq_true]
+        exact ⟨⟨hlen, hnd⟩, hpd⟩
+      · rcases h with ⟨x, hx, hl⟩ | ⟨x, hx, hl⟩ | h
+        · exact ⟨x, List.mem_append_left _ hx, hl⟩
+        · exact ⟨x, List.mem_append_right _ hx, hl⟩
+        · obtain ⟨y, hy⟩ := hfl
+          exact absurd (habove l l ⟨y, hy⟩ (blkW_chain h)) (Nat.lt_irrefl _)
+      · rw [hΓb]; exact hsb.join_right hwf
+    · simp only [chainLocs] at hl
+      rcases hl with ⟨x, hx⟩ | hl
+      · exact hf2.core.inStore x l hx
+      · exact hf2.chainIn l hl
+  | returned v s2 =>
+    obtain ⟨_, _, _, _, _, hib⟩ := this
+    cases hib
+  | raised => trivial
+  | timeout => trivial
+  | stuck => exact this
+
 end QuarzCore
