@@ -25,6 +25,7 @@ mod release;
 
 mod rtworld;
 mod sroa;
+pub mod verify;
 
 use func::FnBuilder;
 
@@ -428,14 +429,25 @@ pub fn lower_checked(checked: &Checked, files: &[SourceFile]) -> Module {
         .collect();
     let delta = lw.lower(&checked.world, &checked.output, &inputs, all);
     let mut functions = delta.functions;
+    // After each pass, what it must leave (`verify`).
+    let check = |functions: &[Function], stage| verify::check(functions, &delta.world, stage);
+    check(&functions, verify::Stage::Lowered);
     cha::rewrite(&mut functions, &delta.world);
+    check(&functions, verify::Stage::Cha);
     devirt::devirtualize(&mut functions, &delta.world);
+    check(&functions, verify::Stage::Devirt);
     inline::inline_calls(&mut functions, &delta.world.methods, 2);
+    check(&functions, verify::Stage::Inline);
     sroa::scalar_replace(&mut functions, &delta.world.methods, &delta.world.classes);
+    check(&functions, verify::Stage::Sroa);
     copyprop::propagate_copies(&mut functions);
+    check(&functions, verify::Stage::Copyprop);
     release::drop_unobserved(&mut functions, &delta.world.methods, &delta.world.builtin);
+    check(&functions, verify::Stage::Release);
     borrow::mark_borrows(&mut functions);
+    check(&functions, verify::Stage::Borrow);
     regshare::share_registers(&mut functions, &delta.world.methods);
+    check(&functions, verify::Stage::Regshare);
     // Last: where values move rather than copy, for every way the
     // functions run.
     let in_place: Vec<bool> = delta
@@ -453,6 +465,7 @@ pub fn lower_checked(checked: &Checked, files: &[SourceFile]) -> Module {
         quarz_ir::live::mark_moves(f, &heap);
         quarz_ir::live::own_dying_receivers(f, &in_place);
     }
+    check(&functions, verify::Stage::Moves);
     Module {
         world: delta.world,
         functions,
