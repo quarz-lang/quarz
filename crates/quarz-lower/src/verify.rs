@@ -108,6 +108,12 @@ pub fn verify(f: &Function, world: &RtWorld, nfuncs: usize, stage: Stage) -> Vec
     if v.out.is_empty() {
         v.words();
         v.resumes();
+        if stage >= Stage::Release {
+            v.moves(stage);
+        }
+        if stage >= Stage::Moves {
+            v.read_once();
+        }
     }
     v.out
 }
@@ -470,6 +476,207 @@ impl Checker<'_> {
     }
 }
 
+impl Checker<'_> {
+    /// C9: no register is read after its value moved out of it (`Take`,
+    /// a moved operand, once `mark_moves` ran) or its scope ended
+    /// (`Release`) before something wrote it again: a forward dataflow
+    /// of each register's "moved" state, joined by "moved on some path",
+    /// handlers entered from every point of the blocks they cover.
+    fn moves(&mut self, stage: Stage) {
+        let f = self.f;
+        let n = f.nregs as usize;
+        let nblocks = f.blocks.len();
+        let moves = stage >= Stage::Moves;
+        let releases = f.blocks.iter().flat_map(|b| &b.insts).any(|i| {
+            matches!(i, Inst::Release { .. })
+                || (moves && matches!(i, Inst::Take { .. } | Inst::Call { moved: 1.., .. }))
+        });
+        if !releases {
+            return;
+        }
+        // What an instruction leaves moved, after its writes.
+        // What an instruction moves out of its operands (done before it
+        // writes its results: a call's result may go to an operand it
+        // moved, and is there when it raises).
+        let moved_out = |inst: &Inst, state: &mut [bool]| match inst {
+            Inst::Take { src, .. } if moves => state[*src as usize] = true,
+            Inst::Call {
+                recv, args, moved, ..
+            } if moves && *moved != 0 => {
+                for (i, a) in args.iter().enumerate().take(15) {
+                    if moved & (1 << i) != 0 {
+                        state[*a as usize] = true;
+                    }
+                }
+                if let Some(r) = recv.filter(|_| moved & (1 << 15) != 0) {
+                    state[r as usize] = true;
+                }
+            }
+            _ => {}
+        };
+        let transfer = |inst: &Inst, state: &mut [bool]| {
+            moved_out(inst, state);
+            for r in inst.defs() {
+                state[r as usize] = false;
+            }
+            if let Inst::Release { src } = inst {
+                state[*src as usize] = true;
+            }
+        };
+        let mut entry: Vec<Vec<bool>> = vec![vec![false; n]; nblocks];
+        let mut done = vec![false; nblocks];
+        let mut todo: Vec<usize> = vec![0];
+        let or_into = |to: &mut Vec<bool>, from: &[bool]| -> bool {
+            let mut changed = false;
+            for (t, v) in to.iter_mut().zip(from) {
+                if *v && !*t {
+                    *t = true;
+                    changed = true;
+                }
+            }
+            changed
+        };
+        // To a fixed point: each block's entry state, from its
+        // predecessors' exits and, for a handler, every point of what it
+        // covers.
+        while let Some(b) = todo.pop() {
+            let blk = &f.blocks[b];
+            let mut state = entry[b].clone();
+            // What a handler of the block may see: the state where
+            // something raises (before an instruction that may, or at a
+            // terminator that leaves with a flow).
+            let mut any = vec![false; n];
+            for inst in &blk.insts {
+                if may_raise(f, inst) {
+                    // What it moved out is gone when it raises; what it
+                    // writes is not written.
+                    let mut raised = state.clone();
+                    moved_out(inst, &mut raised);
+                    or_into(&mut any, &raised);
+                }
+                transfer(inst, &mut state);
+            }
+            // A terminator leaving with a flow: an exception reaches any
+            // handler, `break`/`return` out of a block only an ensure one.
+            let ensure = blk.handler.is_some_and(|h| h.kind == HandlerKind::Ensure);
+            match blk.term {
+                Term::Raise(_) | Term::Resume(_) => or_into(&mut any, &state),
+                Term::BreakOut(_) | Term::ReturnOut(_) if ensure => or_into(&mut any, &state),
+                _ => false,
+            };
+            let mut targets: Vec<(usize, &[bool])> = Vec::new();
+            for s in crate::sroa::successors(blk) {
+                if blk.handler.is_some_and(|h| h.block == s) {
+                    targets.push((s as usize, &any));
+                } else {
+                    targets.push((s as usize, &state));
+                }
+            }
+            for (s, st) in targets {
+                if or_into(&mut entry[s], st) || !done[s] {
+                    done[s] = true;
+                    todo.push(s);
+                }
+            }
+        }
+        // The reads, against the fixed point.
+        for (bi, blk) in f.blocks.iter().enumerate() {
+            if !done[bi] && bi != 0 {
+                continue;
+            }
+            let mut state = entry[bi].clone();
+            for (ii, inst) in blk.insts.iter().enumerate() {
+                for r in inst.uses() {
+                    if state[r as usize] {
+                        self.report(bi, Some(ii), format!("reads r{r}, {}", self.why_moved()));
+                    }
+                }
+                transfer(inst, &mut state);
+            }
+            if let Some(r) = blk.term.uses() {
+                if state[r as usize] {
+                    self.report(bi, None, format!("reads r{r}, {}", self.why_moved()));
+                }
+            }
+        }
+    }
+
+    fn why_moved(&self) -> &'static str {
+        "moved out or released before (on some path)"
+    }
+
+    /// C10, C11: a `Take` moves to another register; an operand moved
+    /// into a call is read by it once and is not a borrowed element; the
+    /// result of an `OwnedCall` marked unused is not read.
+    fn read_once(&mut self) {
+        let f = self.f;
+        let borrowed = quarz_ir::live::borrowed_regs(f);
+        let mut live: Option<Vec<Vec<Vec<bool>>>> = None;
+        for (bi, blk) in f.blocks.iter().enumerate() {
+            for (ii, inst) in blk.insts.iter().enumerate() {
+                match inst {
+                    Inst::Take { dst, src } if dst == src => {
+                        self.report(bi, Some(ii), format!("Take of r{src} into itself"))
+                    }
+                    Inst::Call {
+                        recv,
+                        args,
+                        kw,
+                        kw_splat,
+                        block,
+                        moved,
+                        ..
+                    } if *moved != 0 => {
+                        let mut operands: Vec<Reg> = recv.iter().copied().collect();
+                        operands.extend(args.iter().copied());
+                        operands.extend(kw.iter().map(|(_, r)| *r));
+                        operands.extend(kw_splat.iter().copied());
+                        operands.extend(block.iter().copied());
+                        let mut moved_regs: Vec<Reg> = args
+                            .iter()
+                            .enumerate()
+                            .take(15)
+                            .filter(|(i, _)| moved & (1 << i) != 0)
+                            .map(|(_, r)| *r)
+                            .collect();
+                        moved_regs.extend(recv.filter(|_| moved & (1 << 15) != 0));
+                        for r in moved_regs {
+                            let n = operands.iter().filter(|o| **o == r).count();
+                            if n != 1 {
+                                self.report(
+                                    bi,
+                                    Some(ii),
+                                    format!("moves r{r}, which it reads {n} times"),
+                                );
+                            }
+                            if borrowed[r as usize] {
+                                self.report(
+                                    bi,
+                                    Some(ii),
+                                    format!("moves r{r}, a borrowed element"),
+                                );
+                            }
+                        }
+                    }
+                    Inst::OwnedCall {
+                        dst, unused: true, ..
+                    } => {
+                        let live = live.get_or_insert_with(|| quarz_ir::live::liveness(f));
+                        if live[bi][ii + 1][*dst as usize] {
+                            self.report(
+                                bi,
+                                Some(ii),
+                                format!("an unused OwnedCall's r{dst} is read"),
+                            );
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
 /// Reaching definitions, one register at a time, with handler edges: a
 /// handler is entered from any point of the blocks it covers, so what
 /// enters it is what any of them held anywhere (unlike `sroa`'s, which
@@ -540,6 +747,43 @@ impl<'a> Defs<'a> {
         out.dedup();
         out
     }
+}
+
+/// Whether running `inst` may end in a flow a handler catches: anything
+/// but the moves of values between registers and the like.
+fn may_raise(f: &Function, inst: &Inst) -> bool {
+    if let Inst::LoadConst { idx, .. } = inst {
+        // Only a regexp is compiled (and may fail) when loaded.
+        return matches!(
+            f.consts.get(*idx as usize),
+            Some(quarz_ir::Constant::Regexp { .. })
+        );
+    }
+    !matches!(
+        inst,
+        Inst::Move { .. }
+            | Inst::Take { .. }
+            | Inst::Release { .. }
+            | Inst::ClearRegs { .. }
+            | Inst::SelfRef { .. }
+            | Inst::Arg { .. }
+            | Inst::HasArg { .. }
+            | Inst::BlockParam { .. }
+            | Inst::IsNil { .. }
+            | Inst::Not { .. }
+            | Inst::ClassRef { .. }
+            | Inst::ClassIs { .. }
+            | Inst::ClassIsA { .. }
+            | Inst::IsA { .. }
+            | Inst::IsArray { .. }
+            | Inst::IsHash { .. }
+            | Inst::IsObject { .. }
+            | Inst::Len { .. }
+            | Inst::MakeBlock { .. }
+            | Inst::SymbolProc { .. }
+            | Inst::CatchAny { .. }
+            | Inst::Rescuing { .. }
+    )
 }
 
 /// The instruction's kind, for messages.
