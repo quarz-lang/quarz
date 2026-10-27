@@ -120,6 +120,15 @@ fn flat_class(world: &World, ty: &Type, stack: &[ClassId]) -> Option<ClassId> {
     if OWN.iter().any(|n| c.methods.contains_key(*n)) {
         return None;
     }
+    // A read rebuilds the value with the generated `initialize`: one of
+    // the body's own (which replaces it, docs/01 §4) keeps the box.
+    let generated_init = c
+        .methods
+        .get("initialize")
+        .is_some_and(|ms| ms.iter().any(|m| world.method(*m).synth == Synth::DataInit));
+    if !generated_init {
+        return None;
+    }
     let mut inner = stack.to_vec();
     inner.push(*d);
     let all = c

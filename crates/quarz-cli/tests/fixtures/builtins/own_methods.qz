@@ -1,0 +1,48 @@
+# Keyword-only parameters' names tell overloads apart, and an override
+# replaces only the overload of its names.
+class C
+  def f(*, a: Int) -> String = "C#f(a: #{a})"
+  def f(*, b: Int) -> String = "C#f(b: #{b})"
+end
+
+class D < C
+  def f(*, b: Int) -> String = "D#f(b: #{b})"
+end
+
+x: C = D.new
+puts x.f(a: 1)
+puts x.f(b: 2)
+puts D.new.f(a: 3)
+puts C.new.f(b: 4)
+
+# A data type's generated methods give way to the body's own.
+data P(x: Int, y: Int)
+  def to_s -> String = "P<#{x}, #{y}>"
+  def with(*, x: Int) -> P = P.new(x, y + 100)
+  def to_h -> Hash[Symbol, Object] = {x: x}
+end
+
+v = P.new(1, 2)
+puts v
+puts v.with(x: 5)
+p v.to_h
+p v.inspect
+
+# A data type with its own `initialize`, held in a field: kept boxed,
+# so a read gives the fields it set.
+data Q(x: Int, y: Int)
+  def initialize(s: Int)
+    @x = s
+    @y = s * 2
+  end
+end
+
+class Box
+  @q: Q
+  def initialize(@q: Q); end
+  def q -> Q = @q
+end
+
+q = Box.new(Q.new(3)).q
+puts q.x + q.y
+p q
