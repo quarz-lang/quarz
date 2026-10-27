@@ -33,7 +33,7 @@ def Value.truthy : Value → Bool
 /-- An object: its class and its fields' values (`ClassTable.allFields`
 order). -/
 structure Obj where
-  cls : ClassId
+  cls : Nat
   fields : List Value
   deriving Repr, Inhabited
 
@@ -102,7 +102,7 @@ def bindAll (s : Store) (vars : List (String × Nat)) : List String → List Val
   | _, _ => none
 
 /-- The index of field `f` in instances of `c`. -/
-def fieldIndex (ct : ClassTable) (c : ClassId) (f : String) : Option Nat :=
+def fieldIndex (ct : ClassTable) (c : Nat) (f : String) : Option Nat :=
   (ct.allFields c).findIdx? (·.name == f)
 
 /-- What `eval` gives on to the code after an expression that did not
