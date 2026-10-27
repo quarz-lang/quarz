@@ -974,11 +974,96 @@ impl<'ast> Declarer<'ast> {
             self.check_override_returns(p.id);
             self.check_copied_deinitialize(p.id);
             self.check_eq_with_hash(p.id);
+            self.check_duplicate_methods(p.id);
             self.world.active_extensions.clear();
         }
         self.check_extensions_kept_blocks();
+        self.check_extensions_duplicates();
         self.check_extensions_deinitialize();
         self.check_shareable_extensions();
+    }
+
+    /// Whether two methods have the same signature: parameters (kinds
+    /// and types) and block, their own type parameters renamed in order.
+    fn same_signature(&self, a: &MethodInfo, b: &MethodInfo) -> bool {
+        if a.type_params.len() != b.type_params.len() {
+            return false;
+        }
+        let rename: HashMap<TypeParamId, Type> = b
+            .type_params
+            .iter()
+            .zip(&a.type_params)
+            .map(|(q, p)| (q.id, Type::Param(p.id)))
+            .collect();
+        let same = |t: &Type, u: &Type| *t == u.subst(&rename);
+        a.type_params.iter().zip(&b.type_params).all(|(p, q)| {
+            p.bounds.len() == q.bounds.len()
+                && p.bounds.iter().zip(&q.bounds).all(|(x, y)| same(x, y))
+        }) && match (&a.block, &b.block) {
+            (Some((_, t)), Some((_, u))) => same(t, u),
+            (None, None) => true,
+            _ => false,
+        } && a.block_optional == b.block_optional
+            && a.params.len() == b.params.len()
+            && a.params
+                .iter()
+                .zip(&b.params)
+                .all(|(p, q)| p.kind == q.kind && same(&p.ty, &q.ty))
+    }
+
+    /// Two methods of one name and the same signature (`same_signature`)
+    /// in one class, module or extension: a call could not tell them
+    /// apart, so one is an error (a `def` beside an accessor `attr_*`
+    /// makes, or two `def`s). Other parameters make an overload (docs/01
+    /// §9).
+    fn duplicate_errors(&self, ids: &[MethodId], errors: &mut Vec<(String, Span, u32)>) {
+        for (i, later) in ids.iter().enumerate() {
+            let b = self.world.method(*later);
+            if let Some(earlier) = ids[..i]
+                .iter()
+                .find(|e| self.same_signature(self.world.method(**e), b))
+            {
+                // Reported at the one the user wrote (a data type's
+                // generated methods are declared after its own).
+                let a = self.world.method(*earlier);
+                let at = if b.synth != Synth::None { a } else { b };
+                errors.push((
+                    format!("`{}` is already defined with the same parameters", b.name),
+                    at.span,
+                    at.file,
+                ));
+            }
+        }
+    }
+
+    fn check_duplicate_methods(&mut self, cid: ClassId) {
+        let mut errors = Vec::new();
+        let class = self.world.class(cid);
+        for table in [&class.methods, &class.singleton_methods] {
+            for ids in table.values() {
+                self.duplicate_errors(ids, &mut errors);
+            }
+        }
+        self.report_at(errors);
+    }
+
+    fn check_extensions_duplicates(&mut self) {
+        let mut errors = Vec::new();
+        for e in &self.world.extensions {
+            for ids in e.methods.values() {
+                self.duplicate_errors(ids, &mut errors);
+            }
+        }
+        self.report_at(errors);
+    }
+
+    fn report_at(&mut self, errors: Vec<(String, Span, u32)>) {
+        for (msg, span, file) in errors {
+            let saved = self.file;
+            self.file = file;
+            self.error(msg, span);
+            self.file = saved;
+        }
     }
 
     /// `check_kept_blocks` for the methods of extensions: an extension's

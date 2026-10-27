@@ -279,6 +279,25 @@ fn definite_initialization() {
 
 #[test]
 fn classes_and_fields() {
+    // Two definitions of one signature are an error; another signature
+    // is an overload.
+    err(
+        "class C\n  def f -> Int = 1\n  def f -> Int = 2\nend",
+        "`f` is already defined with the same parameters",
+    );
+    err(
+        "class C\n  @x: Int\n  attr_reader :x\n  def x -> Int = @x\n  def initialize(@x: Int); end\nend",
+        "`x` is already defined with the same parameters",
+    );
+    ok("class C\n  def g(a: Int) -> Int = a\n  def g(a: String) -> Int = 0\nend\nputs C.new.g(1) + C.new.g(\"s\")");
+    err(
+        "class C\n  def f[T](x: T) -> T = x\n  def f[U](x: U) -> U = x\nend",
+        "`f` is already defined with the same parameters",
+    );
+    err(
+        "class C\nend\nextension C\n  def g -> Int = 2\n  def g -> Int = 3\nend",
+        "`g` is already defined with the same parameters",
+    );
     ok("class C\n  @x: Int\n  attr_reader :x\n  def initialize(@x: Int); end\nend\nputs C.new(1).x");
     err(
         "class C\n  @x: Int\n  def initialize\n  end\nend",
