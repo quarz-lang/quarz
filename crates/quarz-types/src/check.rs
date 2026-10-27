@@ -1065,6 +1065,7 @@ impl Checker {
                 let m = world.method(mid);
                 !(m.is_native && m.owner == world.builtin.kernel)
             };
+            let diverges = |mid: MethodId| world.method(mid).ret.is_nothing();
             let mut set: Vec<String> = Vec::new();
             for f in &fields {
                 if let Some(d) = &f.default {
@@ -1075,7 +1076,8 @@ impl Checker {
                         .iter()
                         .any(|g| g.name == f.name)
                     {
-                        let mut c = crate::init::InitCheck::new(&all, &own, &calls, &uses_self);
+                        let mut c =
+                            crate::init::InitCheck::new(&all, &own, &calls, &uses_self, &diverges);
                         c.default(d, &set);
                         errors.extend(c.errors);
                     }
@@ -1801,7 +1803,9 @@ impl Checker {
                     let m = world.method(mid);
                     !(m.is_native && m.owner == world.builtin.kernel)
                 };
-                let mut c = crate::init::InitCheck::new(&required, &own, &calls, &uses_self);
+                let diverges = |mid: MethodId| world.method(mid).ret.is_nothing();
+                let mut c =
+                    crate::init::InitCheck::new(&required, &own, &calls, &uses_self, &diverges);
                 c.method(&params, &body, info.span);
                 (c.errors, c.usable_after, c.usable_on_entry)
             };
@@ -3662,10 +3666,12 @@ impl Checker {
                 self.check_dup(expr, call);
                 // `bump` in a `Task.spawn` block in a method of a mutable
                 // class: a call on the captured `self` (a call to a
-                // `Kernel` method such as `puts` does not use it).
+                // built-in `Kernel` function such as `puts` does not use
+                // it; one an `extension Kernel` adds does).
                 if call.recv.is_none() {
                     if let Some(CallTarget::Method { method }) = self.out.calls.get(&expr.id) {
-                        if self.world.method(*method).owner != self.world.builtin.kernel {
+                        let m = self.world.method(*method);
+                        if !(m.is_native && m.owner == self.world.builtin.kernel) {
                             let what = format!("calling `{}` uses `self`, which", call.name);
                             self.check_task_self(&what, expr.span);
                         }
@@ -8328,6 +8334,9 @@ impl Checker {
     }
 
     fn check_raise(&mut self, expr: &Expr, call: &Call) -> Type {
+        if let Some(b) = &call.block {
+            self.error("`raise` takes no block", b.span);
+        }
         let args: Vec<&Expr> = call
             .args
             .iter()

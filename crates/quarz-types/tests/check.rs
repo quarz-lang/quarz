@@ -251,7 +251,14 @@ fn definite_initialization() {
         "class C\n  var @a: Int = (@a = 1; geta)\n  def geta -> Int = @a\nend",
         "a field's default cannot use the object",
     );
-    // `raise` ends a path.
+    // `raise` ends a path, as does a call of type `Nothing`.
+    ok("class C\n  @x: Int\n  def initialize(v: Int)\n    if v > 0\n      @x = v\n    else\n      abort(\"neg\")\n    end\n    show\n  end\n  def show -> Nil = p(@x)\nend\nC.new(1)");
+    err("raise(\"a\") { puts 1 }", "`raise` takes no block");
+    // Not one `&.` may skip.
+    err(
+        "class D\n  def die -> Nothing = raise \"x\"\nend\nclass C\n  @x: Int\n  def initialize(d: D?)\n    d&.die\n    show\n  end\n  def show -> Nil = p(@x)\nend",
+        "the object is used before field `@x` is assigned",
+    );
     ok("class C\n  @x: Int\n  def initialize(v: Int)\n    if v > 0\n      @x = v\n    else\n      raise \"neg\"\n    end\n    show\n  end\n  def show -> Nil = p(@x)\nend\nC.new(1)");
     // A native method on `self` (an accessor, `inspect`) may read the
     // fields too: only `Kernel` functions are fine before they are set.
@@ -472,6 +479,14 @@ fn captured_self_in_task_blocks() {
     ok("class P\n  include Shareable\n  @x: Int\n  def initialize(@x: Int); end\n  def twice -> Int = @x * 2\n  def run -> Int = Task.spawn { twice + @x + self.twice }.await\nend\nputs P.new(2).run");
     ok("class B\n  var @v: Int = 1\n  def run -> Int = Task.spawn { puts \"hi\"; 5 }.await\n  def html -> String\n    Task.spawn do\n      b = String::Builder.new\n      b.instance_exec { self << \"ok\" }\n      b.to_s\n    end.await\n  end\nend\nputs B.new.run");
     ok("def helper(x: Int) -> Int = x + 1\nputs Task.spawn { helper(1) }.await");
+    // A method an extension adds to `Kernel` takes `self`.
+    err(
+        &format!(
+            "extension Kernel\n  def leak -> Int = 1\nend\n{}",
+            counter.replace("BODY", "Task.spawn { leak }.await")
+        ),
+        "calling `leak` uses `self`",
+    );
     // The same failure through two candidates is reported once.
     let errs = diagnostics(&counter.replace("BODY", "Task.scope { |s| s.spawn { bump } }"));
     assert_eq!(errs[0].matches("calling `bump`").count(), 1, "{errs:?}");

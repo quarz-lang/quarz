@@ -6,7 +6,9 @@
 //! call on the implicit receiver (but to a built-in `Kernel` function,
 //! which takes no `self`: a native method on `self` may read its fields
 //! too),
-//! no read of a field that is not assigned yet; `raise` ends a path. A
+//! no read of a field that is not assigned yet. `raise`, and a call of a
+//! method whose result type is `Nothing` (`exit`, `abort`; not one `&.`
+//! may skip), ends a path. A
 //! field's default does not use the object at all. A subclass assigns
 //! its own required fields before `super`, which assigns the inherited
 //! ones (so a method the superclass's `initialize` calls, and the
@@ -35,6 +37,9 @@ pub struct InitCheck<'a> {
     /// Whether calling `method` on the implicit receiver uses the object
     /// (anything but a built-in `Kernel` function).
     pub uses_self: &'a dyn Fn(MethodId) -> bool,
+    /// Whether `method`'s result type is `Nothing`: control does not get
+    /// past a call of it.
+    pub diverges: &'a dyn Fn(MethodId) -> bool,
     pub errors: Vec<(String, Span)>,
     /// The assignments and `super` calls after which the object becomes
     /// usable (every required field assigned) on some path, and whether
@@ -56,12 +61,14 @@ impl<'a> InitCheck<'a> {
         own: &'a BTreeSet<String>,
         calls: &'a dyn Fn(NodeId) -> Option<CallTarget>,
         uses_self: &'a dyn Fn(MethodId) -> bool,
+        diverges: &'a dyn Fn(MethodId) -> bool,
     ) -> Self {
         InitCheck {
             required,
             own,
             calls,
             uses_self,
+            diverges,
             errors: Vec::new(),
             usable_after: Vec::new(),
             usable_on_entry: false,
@@ -396,6 +403,12 @@ impl<'a> InitCheck<'a> {
                 }
                 if let Some(b) = &call.block {
                     self.block(b, &st);
+                }
+                if let Some(CallTarget::Method { method }) = (self.calls)(e.id) {
+                    // (Unless `recv&.m` skipped it.)
+                    if (self.diverges)(method) {
+                        return skipped.unwrap_or(None);
+                    }
                 }
                 match skipped {
                     Some(nil) => Self::join(st, nil),
