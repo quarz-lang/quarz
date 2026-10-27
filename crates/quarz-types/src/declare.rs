@@ -2572,6 +2572,18 @@ impl<'ast> Declarer<'ast> {
         class_self: &Type,
     ) {
         self.check_sealed(self.file, &def.name, def.span);
+        // An enum has no fields, and its variants their own `initialize`
+        // (docs/01 §5).
+        if def.name == "initialize"
+            && !def.singleton
+            && extension.is_none()
+            && self.world.class(owner).kind == ClassKind::Enum
+        {
+            self.error(
+                "an enum cannot define `initialize`: its variants make their own values",
+                def.span,
+            );
+        }
         let type_params: Vec<TypeParamInfo> = def
             .type_params
             .iter()

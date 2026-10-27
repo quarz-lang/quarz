@@ -149,7 +149,7 @@ in Point(x:, y:) then puts "#{x}, #{y}"
 end
 ```
 
-`data` は次を自動生成します: フィールド(不変)、読み出しメソッド、`initialize`、`==`/`hash`、`to_s`/`inspect`、`with`、`to_h`。どれも既定のもので、本体に同じ名前のメソッドがあればそちらに置き換わります(`def to_s`、`def with(*, x: Int)`、`def initialize(s: String)`)。本体の `==` は、どのクラスとも同じく `Object` を取ります(§3)。`with` は `initialize` を通して値を作るので、`initialize` が確かめる条件はコピーでも成り立ちます。本体の `initialize` がフィールドを順に、位置引数として同じ型で取るとき(`def initialize(lo: Int, hi: Int)`)はそれを通り(変えなかったフィールドも含め、すべてのフィールドがそこを通ります)、別のパラメータの `initialize` があるときは `with` を生成しません(本体で定義できます)。(`deconstruct`/`deconstruct_keys` メソッドは生成しません。パターンは宣言されたフィールドを直接読みます。§11)。メソッドのない `data` は、一行形式の `enum` と同じく `=` を使って 1 行で書きます(`data Point = (x: Int, y: Int)`)。`=` がなければメソッドを書く本体が続き、`end` で閉じます。`data` は継承できません(`include` はできます)。
+`data` は次を自動生成します: フィールド(不変)、読み出しメソッド、`initialize`、`==`/`hash`、`to_s`/`inspect`、`with`、`to_h`。どれも既定のもので、本体に同じ名前のメソッドがあればそちらに置き換わります(`def to_s`、`def with(*, x: Int)`、`def initialize(s: String)`)。本体の `==` は、どのクラスとも同じく `Object` を取ります(§3)。`with` は `initialize` を通して値を作るので、`initialize` が確かめる条件はコピーでも成り立ちます。本体の `initialize` がフィールドを順に、位置引数として同じ型で取るとき(`def initialize(lo: Int, hi: Int)`)はそれを通り(変えなかったフィールドも含め、すべてのフィールドがそこを通ります)、別のパラメータの `initialize` があるときは `with` を生成しません(本体で定義できます)。`initialize` は `new` でも `with` でも動くので、検証や正規化にとどめ、もう一度適用しても同じ結果になるようにします。値を積み重ねてはいけません。(`deconstruct`/`deconstruct_keys` メソッドは生成しません。パターンは宣言されたフィールドを直接読みます。§11)。メソッドのない `data` は、一行形式の `enum` と同じく `=` を使って 1 行で書きます(`data Point = (x: Int, y: Int)`)。`=` がなければメソッドを書く本体が続き、`end` で閉じます。`data` は継承できません(`include` はできます)。
 
 
 ### その場に格納される data 値
@@ -185,7 +185,7 @@ s.area
 - データを持たないバリアント(`Point`)はシングルトンで、`Shape::Point` と書けば値になります。
 - `case/in` は網羅性を検査します。バリアントを取りこぼすとコンパイルエラーです。
 - ブロック形式では、`def` がメソッドを宣言するのと同じく、`variant` がバリアントを宣言します。1 行に 1 つでも複数でも書けます(`variant Hearts, Spades`)。一行形式 `enum Name = A | B` は本体を持たない enum を宣言し、`end` は不要です(`data Name = (...)` と同じ)。行末が `|` なら次の行に続きます。
-- バリアントには `data` 型と同じメソッドが生成されます(§4)。ただし enum の本体が定義するものは除きます(本体の `def to_h` はすべてのバリアントのものになります)。`initialize` だけは、バリアントが常に自分のものを持ちます。
+- バリアントには `data` 型と同じメソッドが生成されます(§4)。ただし enum の本体が定義するものは除きます(本体の `def to_h` はすべてのバリアントのものになります)。`initialize` だけは、バリアントが常に自分のものを持ちます。enum の本体は `initialize` を定義できません(enum はフィールドを持たず、フィールドのないバリアントには `new` がありません)。
 - 標準ライブラリの `Result[T, E]` は `enum Result[T, E] = Ok(value: T) | Err(error: E)` にメソッドを加えたものです。
 
 ## 6. モジュール
