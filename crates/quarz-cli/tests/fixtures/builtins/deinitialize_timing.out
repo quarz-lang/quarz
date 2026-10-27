@@ -31,3 +31,11 @@ boom
 rescued
 fin boom
 end
+ensure ensured 0 1
+fin ensured 0 1
+0
+ensure ensured 1 1
+fin ensured 1 1
+7
+fin rescued 1
+0
