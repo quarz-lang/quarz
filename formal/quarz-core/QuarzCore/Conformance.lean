@@ -68,6 +68,16 @@ def Tables.cls (T : Tables) (id : Nat) : M Json := do
 def Tables.className (T : Tables) (id : Nat) : M String := do
   str (← field (← T.cls id) "name")
 
+/-- A class's fields' names, inherited ones first (the model's layout). -/
+partial def Tables.allFieldNames (T : Tables) (id : Nat) : M (List String) := do
+  let c ← T.cls id
+  let own ← (← arr (← field c "fields")).toList.mapM fun f => do str (← field f "name")
+  match ← field c "superclass" with
+  | .null => pure own
+  | sup =>
+    let sid ← nat (← field sup "id")
+    if sid == T.objectId then pure own else pure ((← T.allFieldNames sid) ++ own)
+
 /-- A Rust type as atoms. -/
 partial def Tables.ty (T : Tables) (j : Json) : M Ty := do
   match ← str (← field j "t") with
@@ -107,6 +117,27 @@ def Tables.method (T : Tables) (id : Nat) : M Json := do
   match T.methods.find? fun m => (m.getObjValAs? Nat "id").toOption == some id with
   | some m => pure m
   | none => throw s!"method {id}"
+
+/-- `initialize` that only assigns every field from its parameters, in the
+layout's order (`def initialize(@a: A, @b: B); end`), or none for a class
+with no fields: `new` gives the fields directly, as the model's does. -/
+def Tables.plainInit (T : Tables) (k : Nat) (init : Json) : M Bool := do
+  let names ← T.allFieldNames k
+  match init with
+  | .null => pure names.isEmpty
+  | i =>
+    let mid ← nat i
+    let m ← T.method mid
+    let ps ← arr (← field m "params")
+    let all ← ps.toList.allM fun p => do
+      pure ((← field p "assigns_ivar") == .bool true && (← field p "default") == .bool false)
+    let pnames ← ps.toList.mapM fun p => do str (← field p "name")
+    let some d := T.defs.find? fun d => (d.getObjValAs? Nat "method").toOption == some mid
+      | pure false
+    let empty := match (← field d "def").getObjVal? "body" with
+      | .ok (.arr b) => b.isEmpty
+      | _ => false
+    pure (all && pnames == names && empty)
 
 /-- The locals assigned so far, with their declared types. -/
 abbrev Locals := List (String × Ty)
@@ -243,12 +274,14 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
     | _ => throw "is_a? of a union"
   | "raise" => return .raise
   | "constructor" =>
-    -- `C.new(args)`: opaque (`initialize` assigns immutable fields, which
-    -- v1 does not model), giving a `C`.
+    -- `C.new(args)`: the model's `new` when `initialize` only assigns the
+    -- fields from its parameters; otherwise opaque (`initialize` is not
+    -- in the model yet), giving a `C`.
     unless blk == .null do throw "a block given to new"
     let k ← nat (← field target "class")
     let some q := T.qclass k | throw s!"new of {← T.className k}"
     let as ← args.mapM (expr T)
+    if ← T.plainInit k (← field target "init") then return .new q as
     let params ← match ← field target "init" with
       | .null => pure []
       | i => do
