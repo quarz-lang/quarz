@@ -2582,6 +2582,14 @@ impl<'ast> Declarer<'ast> {
         class_self: &Type,
     ) {
         self.check_sealed(self.file, &def.name, def.span);
+        // An extension's `initialize` would make objects its target's
+        // `new` in an inherited class method does not (docs/01 §7).
+        if def.name == "initialize" && !def.singleton && extension.is_some() {
+            self.error(
+                "an extension cannot define `initialize`: objects are made by their class's own",
+                def.span,
+            );
+        }
         // An enum has no fields, and its variants their own `initialize`
         // (docs/01 §5).
         if def.name == "initialize"

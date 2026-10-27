@@ -335,10 +335,6 @@ fn classes_and_fields() {
     ] {
         err(&format!("{m}{src}"), &format!("is missing the argument `{missing}`"));
     }
-    err(
-        "enum Shape\n  variant Circle(radius: Float)\nend\nextension Shape\n  def initialize\n  end\nend\nputs Shape::Circle.new.radius",
-        "is missing the argument `radius`",
-    );
     // Nor past a class below with fields to assign, nor a module's in a
     // class with fields anywhere.
     err(
@@ -361,6 +357,21 @@ fn classes_and_fields() {
     err(
         "class A\n  def initialize(s: String); end\nend\nclass B[T] < A\n  @y: T\n  def initialize(@y: T)\n    super(\"a\")\n  end\nend\nclass C < B[Int]\nend\nC.new(\"x\")",
         "expects Int but found String",
+    );
+    // A field of a type parameter needs assigning, whatever its bound.
+    err(
+        "class G[T]\n  @v: T\nend",
+        "field `@v` has no default and `G` has no `initialize` to assign it",
+    );
+    err(
+        "class G[T: Object?]\n  @v: T\nend",
+        "field `@v` has no default and `G` has no `initialize` to assign it",
+    );
+    ok("class G[T]\n  @v: T?\nend\nG[Int].new");
+    // An extension cannot define `initialize`.
+    err(
+        "class C\nend\nextension C\n  def initialize\n  end\nend",
+        "an extension cannot define `initialize`",
     );
     // A nilable field needs no assignment: the superclass's still makes it.
     ok("class E < StandardError\n  @code: Int?\nend\nraise E.new(\"boom\")");

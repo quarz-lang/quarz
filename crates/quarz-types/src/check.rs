@@ -986,19 +986,11 @@ impl Checker {
         std::collections::BTreeSet<String>,
         std::collections::BTreeSet<String>,
     ) {
-        let admits_nil = |t: &Type| match t {
-            Type::Class(id, _) => *id == self.world.builtin.nil || *id == self.world.builtin.object,
-            Type::Union(ms) => ms
-                .iter()
-                .any(|m| matches!(m, Type::Class(id, _) if *id == self.world.builtin.nil)),
-            Type::Param(_) | Type::Var(_) => true,
-            _ => false,
-        };
         let all = self
             .world
             .all_fields(cid)
             .into_iter()
-            .filter(|(f, _)| f.default.is_none() && !admits_nil(&f.ty))
+            .filter(|(f, _)| f.default.is_none() && !self.world.field_may_stay_nil(&f.ty))
             .map(|(f, _)| f.name)
             .collect();
         let own = self
@@ -1006,7 +998,7 @@ impl Checker {
             .class(cid)
             .fields
             .iter()
-            .filter(|f| f.default.is_none() && !admits_nil(&f.ty))
+            .filter(|f| f.default.is_none() && !self.world.field_may_stay_nil(&f.ty))
             .map(|f| f.name.clone())
             .collect();
         (all, own)
