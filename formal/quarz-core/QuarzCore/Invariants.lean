@@ -12,9 +12,9 @@ What a checked program's run keeps (design §4), for the soundness proof
   local there holds a value of its narrowed and of its declared type,
   each immutable field of `self` one of its narrowed type).
 - `FrameOK`: the frame's locals are where `Λ` says, `self` is of the
-  method's class, and its block (`ClosureOK`) is as it was checked.
-- `ClosureOK`: an anonymous block, its body checked from the block's
-  environment, and two facts about its frame: what held at the call,
+  method's class, and its block chain (`ChainAt`) is as it was checked.
+- `ChainAt`: each anonymous block of the chain, its body checked from the
+  block's environment, and two facts about its frame: what held at the call,
   with what the block assigns un-narrowed (`R`: kept while the method
   called runs, the block writing only what it assigns, with values of
   their declared types), and what holds after the call (`J`: the call's
@@ -92,15 +92,17 @@ structure FrameCore (c : Ctx) (Λ : List Ty) (vars : List (String × Nat)) (me :
   self : s.hasTy P me [.cls c.meth.owner]
   selfObj : ∃ l, me = .obj l
 
-def ClosureOK (Λ : List Ty) (s : Store) : Closure → BlockSig → Prop
-  | .mk vars self outer ps body, sig => ∃ (c : Ctx) (Δ : Env) (ob : Out),
+/-- A frame's block chain as it was checked: for each block (innermost
+first) the context it was written in, the environment at its call and
+its body's `Out` (`ws`), which stay the same while the block lives. A
+block's own method takes the next block of the chain. -/
+def ChainAt (Λ : List Ty) (s : Store) : List (Ctx × Env × Out) → Option Closure →
+    Option BlockSig → Prop
+  | [], none, none => True
+  | (c, Δ, ob) :: ws, some (.mk vars self outer ps body), some sig =>
       c.prog = P ∧
       FrameCore P c Λ vars self s ∧
-      -- What this block's method takes, as checked.
-      (∀ sig', c.meth.block = some sig' → match outer with
-        | some clo => ClosureOK Λ s clo sig'
-        | none => False) ∧
-      -- This frame's locations are above those of the frames below it.
+      ChainAt Λ s ws outer c.meth.block ∧
       (∀ l l', frameLocs vars l → chainLocs outer l' → l' < l) ∧
       blockParamsOk c ps sig = true ∧
       Typed { c with inBlock := true } (blockEnv c Δ ps sig body) body ob ∧
@@ -109,32 +111,12 @@ def ClosureOK (Λ : List Ty) (s : Store) : Closure → BlockSig → Prop
       Sat P c (match ob.out with
         | some Γb => Δ.join Γb
         | none => Δ) ⟨vars, self, outer⟩ s
+  | _, _, _ => False
 
-/-- A block as checked in context `c`, its call's environment `Δ`, its
-body checked as `ob` (what `ClosureOK` says there is). -/
-def ClosureAt (Λ : List Ty) (s : Store) (c : Ctx) (Δ : Env) (ob : Out) : Closure → BlockSig → Prop
-  | .mk vars self outer ps body, sig =>
-      c.prog = P ∧
-      FrameCore P c Λ vars self s ∧
-      (∀ sig', c.meth.block = some sig' → match outer with
-        | some clo => ClosureOK P Λ s clo sig'
-        | none => False) ∧
-      (∀ l l', frameLocs vars l → chainLocs outer l' → l' < l) ∧
-      blockParamsOk c ps sig = true ∧
-      Typed { c with inBlock := true } (blockEnv c Δ ps sig body) body ob ∧
-      ob.ty.le c.ct sig.ret = true ∧
-      Sat P c (c.reset Δ (ps ++ body.assigned)) ⟨vars, self, outer⟩ s ∧
-      Sat P c (match ob.out with
-        | some Γb => Δ.join Γb
-        | none => Δ) ⟨vars, self, outer⟩ s
-
-theorem closureOK_iff {Λ : List Ty} {s : Store} {clo : Closure} {sig : BlockSig} :
-    ClosureOK P Λ s clo sig ↔ ∃ c Δ ob, ClosureAt P Λ s c Δ ob clo sig := by
-  cases clo; unfold ClosureOK ClosureAt; rfl
-
-structure FrameOK (c : Ctx) (Λ : List Ty) (fr : Frame) (s : Store) : Prop where
+structure FrameOK (c : Ctx) (Λ : List Ty) (fr : Frame) (s : Store) (ws : List (Ctx × Env × Out)) :
+    Prop where
   core : FrameCore P c Λ fr.vars fr.self s
-  blk : ∀ sig, c.meth.block = some sig → ∃ clo, fr.blk = some clo ∧ ClosureOK P Λ s clo sig
+  chain : ChainAt P Λ s ws fr.blk c.meth.block
   above : ∀ l l', frameLocs fr.vars l → chainLocs fr.blk l' → l' < l
   chainIn : ∀ l, chainLocs fr.blk l → l < s.locs.length
 
@@ -158,14 +140,14 @@ after it holding (where its value is truthy and falsy too); a `return`
 of the method's result type (not in a block); an exception (which ends
 the run: v1 has no `rescue`). The store grows as `Ext` allows, the frame
 stays as checked. -/
-def Post (c : Ctx) (o : Out) (fr : Frame) (Λ : List Ty) (s : Store) (W : Nat → Prop) :
-    Result → Prop
+def Post (c : Ctx) (o : Out) (fr : Frame) (ws : List (Ctx × Env × Out)) (Λ : List Ty) (s : Store)
+    (W : Nat → Prop) : Result → Prop
   | .stuck => False
   | .timeout => True
-  | .ok v s' => ∃ Λ', WfStore P Λ' s' ∧ Ext P W Λ Λ' s s' ∧ FrameOK P c Λ' fr s' ∧
+  | .ok v s' => ∃ Λ', WfStore P Λ' s' ∧ Ext P W Λ Λ' s s' ∧ FrameOK P c Λ' fr s' ws ∧
       s'.hasTy P v o.ty ∧ OutOK P c o.out fr s' ∧
       (v.truthy = true → OutOK P c o.tt fr s') ∧ (v.truthy = false → OutOK P c o.ff fr s')
-  | .returned v s' => ∃ Λ', WfStore P Λ' s' ∧ Ext P W Λ Λ' s s' ∧ FrameOK P c Λ' fr s' ∧
+  | .returned v s' => ∃ Λ', WfStore P Λ' s' ∧ Ext P W Λ Λ' s s' ∧ FrameOK P c Λ' fr s' ws ∧
       s'.hasTy P v c.meth.ret ∧ c.inBlock = false
   -- No `rescue` in v1: an exception ends the run.
   | .raised _ => True

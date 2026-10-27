@@ -64,44 +64,29 @@ theorem FrameCore.stable {c : Ctx} {Λ Λ' : List Ty} {vars : List (String × Na
   self := he.hasTy h.self
   selfObj := h.selfObj
 
-theorem ClosureOK.stable {Λ Λ' : List Ty} {s s' : Store} {W : Nat → Prop}
+theorem ChainAt.stable {Λ Λ' : List Ty} {s s' : Store} {W : Nat → Prop}
     (he : Ext P W Λ Λ' s s') :
-    ∀ (clo : Closure) (sig : BlockSig), (∀ l, chainLocs (some clo) l → ¬ W l) →
-      ClosureOK P Λ s clo sig → ClosureOK P Λ' s' clo sig
-  | .mk vars me outer ps body, sig, hw, h => by
-    unfold ClosureOK at h ⊢
+    ∀ (ws : List (Ctx × Env × Out)) (blk : Option Closure) (sig : Option BlockSig),
+      (∀ l, chainLocs blk l → ¬ W l) → ChainAt P Λ s ws blk sig → ChainAt P Λ' s' ws blk sig
+  | [], none, none, _, _ => trivial
+  | (c, Δ, ob) :: ws, some (.mk vars me outer ps body), some sig, hw, h => by
+    simp only [ChainAt] at h ⊢
     simp only [chainLocs] at hw
-    obtain ⟨c, Δ, ob, hc, hcore, hblk, habove, hps, hty, hret, hR, hJ⟩ := h
+    obtain ⟨hc, hcore, hch, habove, hps, hty, hret, hR, hJ⟩ := h
     have hwf : ∀ l, frameLocs vars l → ¬ W l := fun l hl => hw l (Or.inl hl)
-    refine ⟨c, Δ, ob, hc, hcore.stable he, fun sig' hsig => ?_, habove, hps, hty, hret,
-      hR.stable he hwf, hJ.stable he hwf⟩
-    have := hblk sig' hsig
-    match outer, this with
-    | some clo, this => exact ClosureOK.stable he clo sig' (fun l hl => hw l (Or.inr hl)) this
+    exact ⟨hc, hcore.stable he, ChainAt.stable he ws outer _ (fun l hl => hw l (Or.inr hl)) hch,
+      habove, hps, hty, hret, hR.stable he hwf, hJ.stable he hwf⟩
+  | [], some _, _, _, h => by simp [ChainAt] at h
+  | [], none, some _, _, h => by simp [ChainAt] at h
+  | _ :: _, none, _, _, h => by simp [ChainAt] at h
+  | _ :: _, some (.mk _ _ _ _ _), none, _, h => by simp [ChainAt] at h
 
 theorem FrameOK.stable {c : Ctx} {Λ Λ' : List Ty} {fr : Frame} {s s' : Store} {W : Nat → Prop}
-    (h : FrameOK P c Λ fr s) (he : Ext P W Λ Λ' s s')
-    (hw : ∀ l, chainLocs fr.blk l → ¬ W l) : FrameOK P c Λ' fr s' where
+    {ws : List (Ctx × Env × Out)} (h : FrameOK P c Λ fr s ws) (he : Ext P W Λ Λ' s s')
+    (hw : ∀ l, chainLocs fr.blk l → ¬ W l) : FrameOK P c Λ' fr s' ws where
   core := h.core.stable he
-  blk := fun sig hsig => by
-    obtain ⟨clo, h1, h2⟩ := h.blk sig hsig
-    exact ⟨clo, h1, ClosureOK.stable he clo sig (by rw [h1] at hw; exact hw) h2⟩
+  chain := ChainAt.stable he ws fr.blk _ hw h.chain
   above := h.above
   chainIn := fun l hl => he.len (h.chainIn l hl)
-
-theorem ClosureAt.stable {Λ Λ' : List Ty} {s s' : Store} {W : Nat → Prop}
-    (he : Ext P W Λ Λ' s s') {c : Ctx} {Δ : Env} {ob : Out} :
-    ∀ (clo : Closure) (sig : BlockSig), (∀ l, chainLocs (some clo) l → ¬ W l) →
-      ClosureAt P Λ s c Δ ob clo sig → ClosureAt P Λ' s' c Δ ob clo sig
-  | .mk vars me outer ps body, sig, hw, h => by
-    unfold ClosureAt at h ⊢
-    simp only [chainLocs] at hw
-    obtain ⟨hc, hcore, hblk, habove, hps, hty, hret, hR, hJ⟩ := h
-    have hwf : ∀ l, frameLocs vars l → ¬ W l := fun l hl => hw l (Or.inl hl)
-    refine ⟨hc, hcore.stable he, fun sig' hsig => ?_, habove, hps, hty, hret,
-      hR.stable he hwf, hJ.stable he hwf⟩
-    have := hblk sig' hsig
-    match outer, this with
-    | some clo, this => exact ClosureOK.stable he clo sig' (fun l hl => hw l (Or.inr hl)) this
 
 end QuarzCore
