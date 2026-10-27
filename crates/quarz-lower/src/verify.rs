@@ -1152,10 +1152,10 @@ pub fn regshare(old: &Function, new: &Function, map: &[Reg], world: &RtWorld) ->
     // where both are live (exempted everywhere); any other two registers
     // live at one point hold different numbers, and a register written
     // takes no number another live after the write has. A handler's live
-    // set counts throughout its block. (Sharing itself only separates a
-    // register written from those live after the write: two read while
-    // neither has been written on any path, both nil, could share; this
-    // check assumes lowering never reads such registers.)
+    // set counts throughout its block. Live in an unreachable block (the
+    // code after a `rescue` ending in `return`, say) is not live, nor are
+    // two registers no path to a point has written (both nil): sharing
+    // only separates a register written from those live after the write.
     let joined = |a: Reg, b: Reg, at: &Inst| {
         matches!(at, Inst::Move { dst, src } | Inst::Take { dst, src }
             if (*dst, *src) == (a, b) || (*dst, *src) == (b, a))
@@ -1170,6 +1170,18 @@ pub fn regshare(old: &Function, new: &Function, map: &[Reg], world: &RtWorld) ->
             }
         }
     }
+    let written = maybe_written(old);
+    let mut reachable = vec![false; old.blocks.len()];
+    let mut work = vec![0usize];
+    while let Some(b) = work.pop() {
+        if !std::mem::replace(&mut reachable[b], true) {
+            work.extend(
+                quarz_ir::live::successors(&old.blocks[b])
+                    .into_iter()
+                    .map(|s| s as usize),
+            );
+        }
+    }
     for (bi, ob) in old.blocks.iter().enumerate() {
         let handler = ob
             .handler
@@ -1177,16 +1189,19 @@ pub fn regshare(old: &Function, new: &Function, map: &[Reg], world: &RtWorld) ->
             .map(|h| &live[h.block as usize][0]);
         let at = |k: usize| -> Vec<Reg> {
             (0..old.nregs)
-                .filter(|r| live[bi][k][*r as usize] || handler.is_some_and(|h| h[*r as usize]))
+                .filter(|r| live[bi][k][*r as usize] || handler.is_some_and(|l| l[*r as usize]))
                 .collect()
         };
+        let unwritten = |k: usize, r: Reg| !written[bi][k][r as usize];
         for k in 0..=ob.insts.len() {
-            let regs = at(k);
+            let regs = if reachable[bi] { at(k) } else { Vec::new() };
             let mut by_number: HashMap<Reg, Vec<Reg>> = HashMap::default();
             for r in regs.iter().copied() {
                 let sharing = by_number.entry(m(r)).or_default();
                 for &q in sharing.iter() {
-                    if !dropped.contains(&(q.min(r), q.max(r))) {
+                    if !dropped.contains(&(q.min(r), q.max(r)))
+                        && !(unwritten(k, q) && unwritten(k, r))
+                    {
                         report(
                             bi,
                             format!(
@@ -1237,6 +1252,54 @@ pub fn regshare(old: &Function, new: &Function, map: &[Reg], world: &RtWorld) ->
         }
     }
     out
+}
+
+/// For each point (`result[b][i]`, as `live::liveness` numbers them), the
+/// registers some path from the entry writes before it. A handler is
+/// entered with what its region may have written.
+fn maybe_written(f: &Function) -> Vec<Vec<Vec<bool>>> {
+    let n = f.nregs as usize;
+    let nblocks = f.blocks.len();
+    let mut entry = vec![vec![false; n]; nblocks];
+    let out_of = |bi: usize, entry: &[Vec<bool>]| {
+        let mut w = entry[bi].clone();
+        for inst in &f.blocks[bi].insts {
+            for r in inst.defs() {
+                w[r as usize] = true;
+            }
+        }
+        w
+    };
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for bi in 0..nblocks {
+            let out = out_of(bi, &entry);
+            for s in quarz_ir::live::successors(&f.blocks[bi]) {
+                for (e, o) in entry[s as usize].iter_mut().zip(&out) {
+                    if *o && !*e {
+                        *e = true;
+                        changed = true;
+                    }
+                }
+            }
+        }
+    }
+    f.blocks
+        .iter()
+        .enumerate()
+        .map(|(bi, b)| {
+            let mut w = entry[bi].clone();
+            let mut points = vec![w.clone()];
+            for inst in &b.insts {
+                for r in inst.defs() {
+                    w[r as usize] = true;
+                }
+                points.push(w.clone());
+            }
+            points
+        })
+        .collect()
 }
 
 /// E15: check what copy propagation did to each function (against the
