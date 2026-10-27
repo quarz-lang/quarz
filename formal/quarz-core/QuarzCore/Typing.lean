@@ -21,14 +21,19 @@ abbrev Env := List (Path × Ty)
 
 namespace Env
 
-def get (Γ : Env) (p : Path) : Option Ty := (Γ.find? (·.1 == p)).map (·.2)
+def get : Env → Path → Option Ty
+  | [], _ => none
+  | (q, t) :: Γ, p => if q = p then some t else get Γ p
 
 def set (Γ : Env) (p : Path) (t : Ty) : Env := (p, t) :: Γ.filter (·.1 != p)
 
 /-- Where control may come from either side: the paths both have, with
 either type. -/
-def join (Γ Δ : Env) : Env :=
-  Γ.filterMap fun (p, t) => (Δ.get p).map fun u => (p, t ++ u)
+def join : Env → Env → Env
+  | [], _ => []
+  | (p, t) :: Γ, Δ => match Δ.get p with
+    | some u => (p, t ++ u) :: join Γ Δ
+    | none => join Γ Δ
 
 /-- `Γ` says at least what `Δ` says (each path of `Δ` is in `Γ`, with a
 type below `Δ`'s). -/
@@ -120,14 +125,18 @@ where
 /-- `Γ ∖ xs`: the locals in `xs` back to their declared types (design
 §2.2, `while`): what a loop's body or a block assigns may differ on the
 next pass. -/
-def Ctx.reset (c : Ctx) (Γ : Env) (xs : List String) : Env :=
-  Γ.filterMap fun (p, t) => match p with
-    | .local x => if xs.contains x then (c.decl x).map fun d => (p, d) else some (p, t)
-    | .field _ => some (p, t)
+def Ctx.reset (c : Ctx) : Env → List String → Env
+  | [], _ => []
+  | (.field f, t) :: Γ, xs => (.field f, t) :: c.reset Γ xs
+  | (.local x, t) :: Γ, xs =>
+    if x ∈ xs then match c.decl x with
+      | some d => (.local x, d) :: c.reset Γ xs
+      | none => c.reset Γ xs
+    else (.local x, t) :: c.reset Γ xs
 
 /-- The method `m` instances of class `c` run: the first of `c`'s
 ancestors that defines it. -/
-def Program.lookup (P : Program) (c : ClassId) (m : String) : Option Method :=
+def Program.lookup (P : Program) (c : Nat) (m : String) : Option Method :=
   (P.classes.ancestors c).findSome? fun d => P.methods.find? fun mt => mt.owner == d && mt.name == m
 
 /-- The methods a call of `m` on a receiver of type `t` may run, one per

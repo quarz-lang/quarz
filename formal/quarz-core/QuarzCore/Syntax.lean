@@ -28,7 +28,7 @@ inductive Expr where
   | setField (f : String) (e : Expr)
   | self
   /-- `C.new(args)`: the arguments are its fields, inherited ones first. -/
-  | new (c : ClassId) (args : List Expr)
+  | new (c : Nat) (args : List Expr)
   /-- `recv.m(args)`. -/
   | call (recv : Expr) (m : String) (args : List Expr)
   /-- `recv.m(args) { |params| body }`: an anonymous block. Its parameters
@@ -66,7 +66,7 @@ structure BlockSig where
   deriving DecidableEq, Repr, Inhabited
 
 structure Method where
-  owner : ClassId
+  owner : Nat
   name : String
   params : List (String × Ty)
   ret : Ty

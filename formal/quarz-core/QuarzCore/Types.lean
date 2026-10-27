@@ -6,11 +6,8 @@ membership). The empty type is `Nothing`.
 
 namespace QuarzCore
 
-/-- A class, by its index in the class table. -/
-abbrev ClassId := Nat
-
-/-- An atom of a union. `Nil`, `Bool`, `Int` and `Str` are the value
-classes: final (nothing subclasses them), so `==` against them may
+/-- An atom of a union (a class by its index in the class table). `Nil`,
+`Bool`, `Int` and `Str` are the value classes: final (nothing subclasses them), so `==` against them may
 narrow. A user class is never final: a subclass elsewhere may define
 `==` (09b19e3). -/
 inductive Atom where
@@ -18,7 +15,7 @@ inductive Atom where
   | bool
   | int
   | str
-  | cls (c : ClassId)
+  | cls (c : Nat)
   deriving DecidableEq, Repr, Inhabited
 
 /-- A type: a union of atoms. -/
@@ -40,7 +37,7 @@ structure Field where
 fields. Class 0 is `Object`. -/
 structure Class where
   name : String
-  super : Option ClassId
+  super : Option Nat
   fields : List Field
   deriving Repr, Inhabited
 
@@ -50,26 +47,26 @@ namespace ClassTable
 
 /-- The superclass chain of `c`, `c` first (at most as long as the table:
 a cycle is cut there, and `wf` rules it out). -/
-def ancestorsAux (ct : ClassTable) : Nat → ClassId → List ClassId
+def ancestorsAux (ct : ClassTable) : Nat → Nat → List Nat
   | 0, _ => []
   | n + 1, c =>
     c :: match (ct[c]?).bind (·.super) with
       | some d => ancestorsAux ct n d
       | none => []
 
-def ancestors (ct : ClassTable) (c : ClassId) : List ClassId :=
+def ancestors (ct : ClassTable) (c : Nat) : List Nat :=
   ancestorsAux ct ct.length c
 
 /-- `c` is `d` or a subclass of it. -/
-def subclass (ct : ClassTable) (c d : ClassId) : Bool :=
+def subclass (ct : ClassTable) (c d : Nat) : Bool :=
   (ct.ancestors c).contains d
 
 /-- Every field of an instance of `c`, inherited ones first: the layout
 `new` fills in order. -/
-def allFields (ct : ClassTable) (c : ClassId) : List Field :=
+def allFields (ct : ClassTable) (c : Nat) : List Field :=
   ((ct.ancestors c).reverse.filterMap (ct[·]?)).flatMap (·.fields)
 
-def field? (ct : ClassTable) (c : ClassId) (f : String) : Option Field :=
+def field? (ct : ClassTable) (c : Nat) (f : String) : Option Field :=
   (ct.allFields c).find? (·.name == f)
 
 end ClassTable
