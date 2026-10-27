@@ -73,30 +73,56 @@ theorem hasTy_append_right (hwf : WfClasses P.classes) {s : Store} {v : Value} {
 theorem not_hasTy_nil {s : Store} {v : Value} : ¬ s.hasTy P v [] := by
   simp [hasTy_iff]
 
-/-- Objects keeping their classes, values keep their types. -/
-theorem typeOf_mono {s s' : Store}
-    (h : ∀ (l : Nat) (o : Obj), s.objs[l]? = some o → ∃ o' : Obj, s'.objs[l]? = some o' ∧ o'.cls = o.cls)
+/-- Every flag set, by index. -/
+theorem all_id_iff {bs : List Bool} : bs.all id = true ↔ ∀ i, i < bs.length → bs[i]? = some true := by
+  constructor
+  · intro h i hi
+    have := List.all_eq_true.mp h bs[i] (List.getElem_mem hi)
+    simp at this; simp [hi, this]
+  · intro h
+    apply List.all_eq_true.mpr
+    intro b hb
+    obtain ⟨i, hi, rfl⟩ := List.getElem_of_mem hb
+    have := h i hi; simp [hi] at this; simpa using this
+
+/-- An object made (every field set) stays made. -/
+theorem all_set_grow {o o' : Obj} (hl : o'.set.length = o.set.length)
+    (hs : ∀ i : Nat, o.set[i]? = some true → o'.set[i]? = some true) (h : o.set.all id = true) :
+    o'.set.all id = true :=
+  all_id_iff.mpr fun i hi => hs i (all_id_iff.mp h i (hl ▸ hi))
+
+theorem typeOf_obj {s : Store} {l : Nat} {a : Atom} (h : s.typeOf (.obj l) = some a) :
+    ∃ o, s.objs[l]? = some o ∧ o.set.all id = true ∧ a = .cls o.cls := by
+  simp only [Store.typeOf, Option.bind_eq_some_iff] at h
+  obtain ⟨o, ho, h⟩ := h
+  split at h
+  · cases h; exact ⟨o, ho, by assumption, rfl⟩
+  · cases h
+
+theorem typeOf_obj_of {s : Store} {l : Nat} {o : Obj} (ho : s.objs[l]? = some o)
+    (h : o.set.all id = true) : s.typeOf (.obj l) = some (.cls o.cls) := by
+  simp only [Store.typeOf, ho, Option.bind_some, h, if_true]
+
+/-- Objects keeping their classes and the fields set, values keep their
+types. -/
+theorem typeOf_mono {s s' : Store} (h : ObjsGrow s s')
     {v : Value} {a : Atom} (hv : s.typeOf v = some a) : s'.typeOf v = some a := by
   cases v with
   | obj l =>
-    simp [Store.typeOf] at hv ⊢
-    obtain ⟨o, ho, rfl⟩ := hv
-    obtain ⟨o', ho', hc⟩ := h l o ho
-    exact ⟨o', ho', by rw [hc]⟩
+    obtain ⟨o, ho, hall, rfl⟩ := typeOf_obj hv
+    obtain ⟨o', ho', hc, hl, hs⟩ := h l o ho
+    rw [typeOf_obj_of ho' (all_set_grow hl hs hall), hc]
   | _ => simpa [Store.typeOf] using hv
 
-theorem hasTy_mono {s s' : Store}
-    (h : ∀ (l : Nat) (o : Obj), s.objs[l]? = some o → ∃ o' : Obj, s'.objs[l]? = some o' ∧ o'.cls = o.cls)
+theorem hasTy_mono {s s' : Store} (h : ObjsGrow s s')
     {v : Value} {t : Ty} (hv : s.hasTy P v t) : s'.hasTy P v t := by
   rw [hasTy_iff] at *
   obtain ⟨a, ha, rest⟩ := hv
   exact ⟨a, typeOf_mono h ha, rest⟩
 
-theorem Ext.hasTy {W : Nat → Prop} {Λ Λ' : List Ty} {s s' : Store} (he : Ext P W Λ Λ' s s')
+theorem Ext.hasTy {W Wo : Nat → Prop} {Λ Λ' : List Ty} {s s' : Store} (he : Ext P W Wo Λ Λ' s s')
     {v : Value} {t : Ty} (hv : s.hasTy P v t) : s'.hasTy P v t :=
-  hasTy_mono (fun l o ho => by
-    obtain ⟨o', h1, h2, _⟩ := he.objs l o ho
-    exact ⟨o', h1, h2⟩) hv
+  hasTy_mono he.grow hv
 
 /-! ### Environments -/
 
@@ -236,8 +262,9 @@ theorem PathHolds.le (hwf : WfClasses P.classes) {p : Path} {t u : Ty}
     obtain ⟨l, v, d, h1, h2, h3, h4, h5⟩ := h
     exact ⟨l, v, d, h1, h2, h3, hasTy_le hwf h4 hle, h5⟩
   | field f =>
-    obtain ⟨l, o, fd, i, v, h1, h2, h3, h4, h5, h6, h7, h8⟩ := h
-    exact ⟨l, o, fd, i, v, h1, h2, h3, h4, h5, h6, h7, hasTy_le hwf h8 hle⟩
+    obtain ⟨l, o, fd, i, h1, h2, h3, h4, h5, h6, h7⟩ := h
+    exact ⟨l, o, fd, i, h1, h2, h3, h4, h5, h6, fun hv => by
+      obtain ⟨v, h8, h9⟩ := h7 hv; exact ⟨v, h8, hasTy_le hwf h9 hle⟩⟩
 
 theorem Sat.join_left (hwf : WfClasses P.classes) {Γ Δ : Env} (h : Sat P c Γ fr s) :
     Sat P c (Γ.join Δ) fr s := by
@@ -250,6 +277,16 @@ theorem Sat.join_right (hwf : WfClasses P.classes) {Γ Δ : Env} (h : Sat P c Δ
   intro p t hp
   obtain ⟨t1, t2, _, h2, rfl⟩ := Env.get_join hp
   exact (h p t2 h2).le hwf (Ty.le_append_right hwf _ _)
+
+/-- `Γ.set p t` holds where `p` holds `t` and the rest of `Γ` does. -/
+theorem Sat.set_of {Γ : Env} {p : Path} {t : Ty}
+    (h : ∀ q u, Γ.get q = some u → q ≠ p → PathHolds P c fr s q u)
+    (hp : PathHolds P c fr s p t) : Sat P c (Γ.set p t) fr s := by
+  intro q u hq
+  rw [Env.get_set] at hq
+  split at hq
+  · subst_vars; simp at hq; subst hq; exact hp
+  · rename_i hne; exact h q u hq hne
 
 theorem Sat.set {Γ : Env} {p : Path} {t : Ty} (h : Sat P c Γ fr s)
     (hp : PathHolds P c fr s p t) : Sat P c (Γ.set p t) fr s := by

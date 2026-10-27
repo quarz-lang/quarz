@@ -49,6 +49,17 @@ theorem field_in_subclass (hwf : WfClasses ct) {c d : Nat} (h : c ∈ ct.ancesto
   · unfold fieldIndex; rw [hr]; exact findIdx?_append_of hi
   · rw [hr, List.getElem?_append_left (List.getElem?_eq_some_iff.mp hl).1]; exact hl
 
+/-- `field_in_subclass`, the index also within the class's own layout. -/
+theorem field_in_subclass' (hwf : WfClasses ct) {c d : Nat} (h : c ∈ ct.ancestors d) {f : String}
+    {fd : Field} (hf : ct.field? c f = some fd) :
+    ∃ i, fieldIndex ct d f = some i ∧ (ct.allFields d)[i]? = some fd ∧
+      (ct.allFields c)[i]? = some fd := by
+  obtain ⟨rest, hr⟩ := allFields_prefix hwf h
+  obtain ⟨i, hi, hl⟩ := find?_idx hf
+  refine ⟨i, ?_, ?_, hl⟩
+  · unfold fieldIndex; rw [hr]; exact findIdx?_append_of hi
+  · rw [hr, List.getElem?_append_left (List.getElem?_eq_some_iff.mp hl).1]; exact hl
+
 theorem ancestors_nodup (hwf : WfClasses ct) : ∀ c, (ct.ancestors c).Nodup := by
   intro c
   induction c using Nat.strongRecOn with
@@ -64,12 +75,13 @@ theorem ancestors_nodup (hwf : WfClasses ct) : ∀ c, (ct.ancestors c).Nodup := 
       omega
 
 /-- What `wfMethod` says of a method's overriding. -/
-theorem Program.wfMethod_overrides {P : Program} {mt : Method} (h : P.wfMethod mt = true) :
+theorem Program.wfMethod_overrides {P : Program} {mt : Method} (h : P.wfMethod mt = true)
+    (hi : mt.name ≠ "initialize") :
     ∀ d ∈ (P.classes.ancestors mt.owner).drop 1, ∀ sup, P.lookup d mt.name = some sup →
       P.overrides mt sup = true := by
   intro d hd sup hsup
-  simp only [Program.wfMethod, Bool.and_eq_true, List.all_eq_true] at h
-  have := h.1.2 d hd
+  simp only [Program.wfMethod, Bool.and_eq_true, Bool.or_eq_true, beq_iff_eq, List.all_eq_true] at h
+  have := (h.1.2.resolve_left hi) d hd
   rw [hsup] at this
   exact this
 
@@ -87,7 +99,7 @@ theorem Program.lookup_spec {P : Program} {c : Nat} {m : String} {mt : Method}
 /-- The method a subclass runs: the one found, or one overriding it. -/
 theorem Program.lookup_sub {P : Program} (hwf : WfClasses P.classes)
     (hm : ∀ mt ∈ P.methods, P.wfMethod mt = true) {k rc : Nat} {m : String} {mt : Method}
-    (h : P.lookup k m = some mt) (hk : k ∈ P.classes.ancestors rc) :
+    (h : P.lookup k m = some mt) (hk : k ∈ P.classes.ancestors rc) (hi : m ≠ "initialize") :
     ∃ mt', P.lookup rc m = some mt' ∧ (mt' = mt ∨ P.overrides mt' mt = true) := by
   obtain ⟨pre, hpre, _⟩ := ancestors_suffix hwf rc k hk
   have hnd := ancestors_nodup hwf rc
@@ -117,7 +129,7 @@ theorem Program.lookup_sub {P : Program} (hwf : WfClasses P.classes)
         rcases List.mem_cons.mp h1 with h2 | h2
         · exact absurd h2 hke
         · simpa using h2
-      have := Program.wfMethod_overrides (hm mt' hmem) k (by rw [hown]; exact hdrop) mt
+      have := Program.wfMethod_overrides (hm mt' hmem) (by rw [hname]; exact hi) k (by rw [hown]; exact hdrop) mt
         (by rw [hname]; unfold Program.lookup; exact h)
       exact this
 
