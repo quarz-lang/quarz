@@ -11,3 +11,5 @@ import QuarzCore.Invariants
 import QuarzCore.Lemmas
 import QuarzCore.ExtLemmas
 import QuarzCore.Soundness
+import QuarzCore.InheritLemmas
+import QuarzCore.StableLemmas
