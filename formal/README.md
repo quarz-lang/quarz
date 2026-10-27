@@ -41,7 +41,11 @@ overloads.
 - `run_sound` (Soundness.lean) is proved: a program `Program.check`
   accepts, run with any fuel and any oracle giving values of the types
   asked for, never gets stuck. In particular each read of a local or an
-  immutable field gives a value of the type the checker narrowed it to.
+  immutable field gives a value of its annotation, which `check` accepts
+  only when it is at least what the rules narrow the path to: with the
+  Rust checker's types as annotations (`conformance.sh`), the types
+  compiled code relies on hold. (`eval` checks reads, not writes: an
+  ill-typed write would show at its read.)
   `#print axioms` shows only Lean's standard ones (`Axioms.lean`).
 - The proof is by induction on the fuel over the interpreter's five
   functions (`Good`: SoundDefs.lean, EvalCases.lean, StepCases.lean),

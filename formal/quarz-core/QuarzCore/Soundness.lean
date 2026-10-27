@@ -68,8 +68,11 @@ theorem Program.check_wf (h : P.check = true) :
 /-- **Soundness** (design §4): a checked program, run with any fuel and
 any oracle giving values of the types asked for, never gets stuck. In
 particular every read of a local or of an immutable field gives a value
-of the type the checker narrowed it to (`eval` checks it), which is what
-compiled code relies on. -/
+of the type it is annotated with (`eval` checks it), which `check`
+accepts only when it is at least what the rules narrow the path to there:
+annotated with the types the Rust checker gave (conformance.sh), those
+are what compiled code relies on. (Writes are not checked by `eval`: an
+ill-typed write would show at its read.) -/
 theorem run_sound (h : P.check = true) (horc : OracleOK P orc) (fuel : Nat) :
     run P orc fuel ≠ .stuck := by
   obtain ⟨hP, hown, hnf, hpar, hblk, hwfm, o, ho, _⟩ := Program.check_wf h
