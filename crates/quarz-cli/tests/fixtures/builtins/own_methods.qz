@@ -46,3 +46,44 @@ end
 q = Box.new(Q.new(3)).q
 puts q.x + q.y
 p q
+
+# `with` builds its value through the body's `initialize` when it takes
+# the fields, so what `initialize` checks holds for the copy too.
+data Range2(lo: Int, hi: Int)
+  def initialize(lo: Int, hi: Int)
+    raise ArgumentError.new("lo > hi") if lo > hi
+    @lo = lo
+    @hi = hi
+  end
+end
+
+r = Range2.new(1, 5)
+p r.with(hi: 9)
+begin
+  r.with(lo: 7)
+rescue ArgumentError => e
+  puts "with: #{e.message}"
+end
+
+# Among overloads, `with` takes the `initialize` of the fields' types.
+data Len(n: Int)
+  def initialize(n: String)
+    @n = n.size
+  end
+  def initialize(n: Int)
+    @n = n * 10
+  end
+end
+p Len.new(1).with(n: 2)
+
+# An enum's methods replace the generated ones of its variants.
+enum Shape
+  variant Circle(radius: Float)
+  variant Dot
+  def to_h -> Hash[Symbol, Object] = {kind: "shape"}
+end
+
+s: Shape = Shape::Circle.new(2.0)
+p s.to_h
+p Shape::Circle.new(1.0).to_h
+p Shape::Dot.to_h

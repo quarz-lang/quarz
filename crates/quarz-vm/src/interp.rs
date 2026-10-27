@@ -2810,6 +2810,27 @@ impl Interp {
                         self.logical_set(&copy, i, v);
                     }
                 }
+                // The body's `initialize` taking the fields builds the
+                // value, as `new` would (docs/01 §4).
+                let class = self.program.world.class(o.class);
+                let own_init = class.methods.get("initialize").and_then(|ids| {
+                    ids.iter().copied().find(|i| {
+                        let im = self.program.method(*i);
+                        im.synth != RtSynth::DataInit
+                            && im.params.len() == class.ivars.len()
+                            && im.params.iter().zip(&class.ivars).all(|(p, f)| {
+                                p.kind == RtParamKind::Positional
+                                    && p.name == f.name
+                                    && (p.ty == f.ty || p.ty.is_none() || f.ty.is_none())
+                            })
+                    })
+                });
+                if let Some(init) = own_init {
+                    let args: ArgVec = (0..class.ivars.len())
+                        .map(|i| self.logical_get(&copy, i))
+                        .collect();
+                    return self.construct(o.class, Some(init), args, Vec::new(), None);
+                }
                 return Ok(Value::Object(copy));
             }
             RtSynth::DataToH => {

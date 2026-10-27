@@ -8,3 +8,9 @@ P<5, 102>
 "P(x: 1, y: 2)"
 9
 Q(x: 3, y: 6)
+Range2(lo: 1, hi: 9)
+with: lo > hi
+Len(n: 20)
+{kind: "shape"}
+{kind: "shape"}
+{kind: "shape"}
