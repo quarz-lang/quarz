@@ -129,6 +129,91 @@ theorem FrameOK.own_not_chain {c : Ctx} {Λ : List Ty} {fr : Frame} {s : Store} 
   rintro l' hc rfl
   exact Nat.lt_irrefl _ (hf.above _ _ ⟨x, lookupVar_mem hl⟩ hc)
 
+/-- The arguments did not all give values: what the call gives. -/
+theorem ArgsPost.other {c : Ctx} {ao : ArgsOut} {fr : Frame} {Λ : List Ty} {s : Store}
+    {W W' : Nat → Prop} {r : Result} {o : Out} (h : ArgsPost P c ao fr Λ s W (.other r))
+    (hW : ∀ l, W l → W' l) : Post P c o fr Λ s W' r := by
+  cases r with
+  | ok => exact absurd h id
+  | stuck => exact h
+  | returned v s' =>
+    obtain ⟨Λ', a, e, f, g, i⟩ := h
+    exact ⟨Λ', a, e.mono hW, f, g, i⟩
+  | raised => trivial
+  | timeout => trivial
+
+theorem mem_assignedArgs {es : List Expr} {e : Expr} {x : String} (he : e ∈ es)
+    (hx : x ∈ e.assigned) : x ∈ Expr.assigned.assignedArgs es := by
+  induction es with
+  | nil => cases he
+  | cons e' es ih =>
+    simp only [Expr.assigned.assignedArgs, List.mem_append]
+    rcases List.mem_cons.mp he with rfl | he
+    · exact .inl hx
+    · exact .inr (ih he)
+
+theorem evalWs_mono {fr : Frame} {es : List Expr} {e : Expr}
+    (h : ∀ x, x ∈ Expr.assigned.assignedArgs es → x ∈ e.assigned) :
+    ∀ l, evalWs fr es l → evalW fr e l := by
+  rintro l (⟨e', he', x, hx, hl⟩ | hb)
+  · exact .inl ⟨x, h x (mem_assignedArgs he' hx), hl⟩
+  · exact .inr hb
+
+theorem AllTy.length {s : Store} : ∀ {vs : List Value} {ts : List Ty}, AllTy P s vs ts →
+    vs.length = ts.length
+  | [], [], _ => rfl
+  | _ :: _, _ :: _, ⟨_, h⟩ => by simp [AllTy.length h]
+
+theorem AllTy.get {s : Store} : ∀ {vs : List Value} {ts : List Ty}, AllTy P s vs ts →
+    ∀ (i : Nat) (v : Value) (t : Ty), vs[i]? = some v → ts[i]? = some t → s.hasTy P v t
+  | [], [], _, _, _, _, h, _ => by simp at h
+  | v :: vs, t :: ts, ⟨h1, h2⟩, 0, w, u, hv, ht => by simp at hv ht; subst hv ht; exact h1
+  | v :: vs, t :: ts, ⟨_, h2⟩, i + 1, w, u, hv, ht => AllTy.get h2 i w u (by simpa using hv)
+      (by simpa using ht)
+
+theorem AllTy.mono {s s' : Store}
+    (h : ∀ (l : Nat) (o : Obj), s.objs[l]? = some o → ∃ o' : Obj, s'.objs[l]? = some o' ∧ o'.cls = o.cls) :
+    ∀ {vs : List Value} {ts : List Ty}, AllTy P s vs ts → AllTy P s' vs ts
+  | [], [], _ => trivial
+  | _ :: _, _ :: _, ⟨h1, h2⟩ => ⟨hasTy_mono h h1, AllTy.mono h h2⟩
+
+theorem objs_append_mono {s : Store} (o : Obj) :
+    ∀ (l : Nat) (o' : Obj), s.objs[l]? = some o' →
+      ∃ o'' : Obj, ({ s with objs := s.objs ++ [o] } : Store).objs[l]? = some o'' ∧ o''.cls = o'.cls :=
+  fun l o' h => ⟨o', by
+    show (s.objs ++ [o])[l]? = some o'
+    rw [List.getElem?_append_left (List.getElem?_eq_some_iff.mp h).1]; exact h, rfl⟩
+
+/-- A new object of class `k`, its fields' values of their types. -/
+theorem WfStore.newObj {Λ : List Ty} {s : Store} (hw : WfStore P Λ s) {k : Nat}
+    (hk : k < P.classes.length) {vs : List Value} {tys : List Ty} (hv : AllTy P s vs tys)
+    (hlen : tys.length = (P.classes.allFields k).length)
+    (hall : ((tys.zip (P.classes.allFields k)).all fun (t, f) => t.le P.classes f.ty) = true)
+    (hwf : WfClasses P.classes) :
+    WfStore P Λ { s with objs := s.objs ++ [⟨k, vs⟩] } where
+  len := hw.len
+  objs := fun l o ho => by
+    by_cases hl : l < s.objs.length
+    · rw [show ({ s with objs := s.objs ++ [⟨k, vs⟩] } : Store).objs = s.objs ++ [⟨k, vs⟩] from rfl,
+        List.getElem?_append_left hl] at ho
+      obtain ⟨a, b, d⟩ := hw.objs l o ho
+      exact ⟨a, b, fun i v f h1 h2 => hasTy_mono (objs_append_mono _) (d i v f h1 h2)⟩
+    · have hl' : l = s.objs.length := by
+        have := (List.getElem?_eq_some_iff.mp ho).1
+        simp at this; omega
+      subst hl'
+      simp at ho
+      subst ho
+      refine ⟨hk, by rw [hv.length, hlen], fun i v f h1 h2 => ?_⟩
+      obtain ⟨t, ht⟩ : ∃ t, tys[i]? = some t := by
+        have := (List.getElem?_eq_some_iff.mp h2).1
+        exact ⟨tys[i], by simp [hlen ▸ this]⟩
+      have hvt := hasTy_mono (s' := { s with objs := s.objs ++ [⟨k, vs⟩] }) (objs_append_mono ⟨k, vs⟩) (hv.get i v t h1 ht)
+      have hle : t.le P.classes f.ty = true := by
+        rw [List.all_eq_true] at hall
+        exact hall (t, f) (List.mem_iff_getElem?.mpr ⟨i, by simp [List.zip, List.getElem?_zipWith, ht, h2]⟩)
+      exact hasTy_le hwf hvt hle
+
 variable (hP : WfProg P) (horc : OracleOK P orc) {n : Nat} (ih : Good P orc n)
 include hP horc ih
 
@@ -327,6 +412,69 @@ theorem eval_succ : EvalGood P orc (n + 1) := by
     intro v s1 Λ1 _ _ _ _ ho1 _ _
     obtain ⟨_, hΔ, _⟩ := ho1
     rw [hout] at hΔ; cases hΔ
+  | prim hargs hlen hall =>
+    simp only [eval]
+    have := ih.args _ _ _ _ fr s Λ rfl hargs hw hf hs
+    revert this
+    generalize evalArgs c.prog orc n fr s _ = ar
+    intro this
+    cases ar with
+    | other r => exact this.other (evalWs_mono (by simp [Expr.assigned]))
+    | ok vs s1 =>
+      obtain ⟨tys', Δ', hao, Λ1, hw1, he1, hf1, hs1, _⟩ := this
+      cases hao
+      dsimp only
+      cases ho : orc n s1 _ with
+      | none => dsimp only; trivial
+      | some v =>
+        dsimp only
+        exact ⟨Λ1, hw1, he1.mono (evalWs_mono (by simp [Expr.assigned])), hf1, horc _ _ _ _ ho,
+          ⟨_, rfl, hs1⟩, fun _ => ⟨_, rfl, hs1⟩, fun _ => ⟨_, rfl, hs1⟩⟩
+  | primDead hargs =>
+    simp only [eval]
+    have := ih.args _ _ _ _ fr s Λ rfl hargs hw hf hs
+    revert this
+    generalize evalArgs c.prog orc n fr s _ = ar
+    intro this
+    cases ar with
+    | other r => exact this.other (evalWs_mono (by simp [Expr.assigned]))
+    | ok vs s1 => obtain ⟨_, _, hao, _⟩ := this; cases hao
+  | new hk hargs hlen hall =>
+    rename_i k args tys Δ
+    simp only [eval]
+    have := ih.args _ _ _ _ fr s Λ rfl hargs hw hf hs
+    revert this
+    generalize evalArgs c.prog orc n fr s _ = ar
+    intro this
+    cases ar with
+    | other r => exact this.other (evalWs_mono (by simp [Expr.assigned]))
+    | ok vs s1 =>
+      obtain ⟨tys', Δ', hao, Λ1, hw1, he1, hf1, hs1, hvs⟩ := this
+      cases hao
+      dsimp only
+      have hl : (vs.length == (c.prog.classes.allFields k).length) = true := by
+        exact beq_iff_eq.mpr (by rw [hvs.length, hlen]; rfl)
+      rw [if_pos hl]
+      have he2 : Ext c.prog (fun _ => False) Λ1 Λ1 s1 { s1 with objs := s1.objs ++ [⟨k, vs⟩] } :=
+        Ext.newObj _
+      refine ⟨Λ1, hw1.newObj hk hvs hlen hall hwf, (he1.trans he2 hw).mono ?_,
+        hf1.stable he2 (fun _ _ h => h), ?_, ⟨_, rfl, hs1.stable he2 (fun _ _ h => h)⟩,
+        fun _ => ⟨_, rfl, hs1.stable he2 (fun _ _ h => h)⟩,
+        fun _ => ⟨_, rfl, hs1.stable he2 (fun _ _ h => h)⟩⟩
+      · rintro l (h | h)
+        · exact evalWs_mono (fun _ h => by simpa [Expr.assigned] using h) l h
+        · exact h.elim
+      · refine hasTy_iff.mpr ⟨.cls k, by simp [Store.typeOf], .cls k, List.mem_singleton.mpr rfl, ?_⟩
+        exact Atom.le_refl hwf _
+  | newDead hk hargs =>
+    simp only [eval]
+    have := ih.args _ _ _ _ fr s Λ rfl hargs hw hf hs
+    revert this
+    generalize evalArgs c.prog orc n fr s _ = ar
+    intro this
+    cases ar with
+    | other r => exact this.other (evalWs_mono (by simp [Expr.assigned]))
+    | ok vs s1 => obtain ⟨_, _, hao, _⟩ := this; cases hao
   | _ => sorry
 
 end QuarzCore
