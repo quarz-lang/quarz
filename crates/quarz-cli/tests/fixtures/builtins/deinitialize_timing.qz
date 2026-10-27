@@ -99,3 +99,37 @@ rescue
   puts("rescued")
 end
 puts("end")
+
+# `break` or `return` out of a block through its `ensure`: the ensure
+# body still sees the block's variables, which go after it.
+def each_twice(&: (Int) -> Nil) -> Nil
+  yield(1)
+  yield(2)
+end
+def through_ensure(how: Int) -> Int
+  each_twice do |i|
+    r = R.new("ensured #{how} #{i}")
+    begin
+      break if how == 0
+      return 7 if how == 1
+    ensure
+      puts("ensure #{r.name}")
+    end
+  end
+  0
+end
+p(through_ensure(0))
+p(through_ensure(1))
+# (A `rescue` does not catch the `break`: the variables go with it.)
+def through_rescue -> Int
+  each_twice do |i|
+    r = R.new("rescued #{i}")
+    begin
+      break if i == 1
+    rescue
+      puts("rescue #{r.name}")
+    end
+  end
+  0
+end
+p(through_rescue)

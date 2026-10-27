@@ -217,12 +217,41 @@ impl<'a> FnBuilder<'a> {
     }
 
     /// The function, its lexical variables released at each exit (but the
-    /// one it returns).
+    /// one it returns), a flow leaving through `ensure` bodies after the
+    /// last of them.
     fn finish(mut self) -> Function {
         if !self.lexical.is_empty() {
-            for blk in self.func.blocks.iter_mut() {
-                let (Term::Return(v) | Term::BreakOut(v) | Term::ReturnOut(v)) = blk.term else {
-                    continue;
+            // A block an `ensure` covers, left by `break` or `return` out
+            // of the block: the ensure body still runs, and may read them
+            // (they go when the function ends).
+            let ensured: Vec<bool> = (0..self.func.blocks.len())
+                .map(|b| {
+                    let mut h = self.func.blocks[b].handler;
+                    let mut steps = 0;
+                    while let Some(hd) = h {
+                        if hd.kind == HandlerKind::Ensure {
+                            return true;
+                        }
+                        steps += 1;
+                        if steps > self.func.blocks.len() {
+                            break;
+                        }
+                        h = self.func.blocks[hd.block as usize].handler;
+                    }
+                    false
+                })
+                .collect();
+            for (bi, blk) in self.func.blocks.iter_mut().enumerate() {
+                let v = match blk.term {
+                    Term::Return(v) => v,
+                    // Released after the ensure bodies: where the last of
+                    // them continues the flow, leaving the function.
+                    Term::BreakOut(_) | Term::ReturnOut(_) if ensured[bi] => continue,
+                    Term::BreakOut(v) | Term::ReturnOut(v) => v,
+                    // (A flow continued under a handler may be an
+                    // exception it catches: the function goes on.)
+                    Term::Resume(v) if blk.handler.is_none() => v,
+                    _ => continue,
                 };
                 for &src in &self.lexical {
                     if src != v {
