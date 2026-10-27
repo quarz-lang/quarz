@@ -132,8 +132,9 @@ def OutOK (c : Ctx) (g : Option Env) (fr : Frame) (s : Store) : Prop :=
 /-- What evaluating an expression checked as `o` in context `c`, frame
 `fr`, may give: never stuck; a value of its type, with the environments
 after it holding (where its value is truthy and falsy too); a `return`
-of the method's result type (not in a block); an exception. The store
-grows as `Ext` allows, the frame stays as checked. -/
+of the method's result type (not in a block); an exception (which ends
+the run: v1 has no `rescue`). The store grows as `Ext` allows, the frame
+stays as checked. -/
 def Post (c : Ctx) (o : Out) (fr : Frame) (Λ : List Ty) (s : Store) (W : Nat → Prop) :
     Result → Prop
   | .stuck => False
@@ -143,6 +144,7 @@ def Post (c : Ctx) (o : Out) (fr : Frame) (Λ : List Ty) (s : Store) (W : Nat �
       (v.truthy = true → OutOK P c o.tt fr s') ∧ (v.truthy = false → OutOK P c o.ff fr s')
   | .returned v s' => ∃ Λ', WfStore P Λ' s' ∧ Ext P W Λ Λ' s s' ∧ FrameOK P c Λ' fr s' ∧
       s'.hasTy P v c.meth.ret ∧ c.inBlock = false
-  | .raised s' => ∃ Λ', WfStore P Λ' s' ∧ Ext P W Λ Λ' s s' ∧ FrameOK P c Λ' fr s'
+  -- No `rescue` in v1: an exception ends the run.
+  | .raised _ => True
 
 end QuarzCore

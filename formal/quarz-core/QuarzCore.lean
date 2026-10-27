@@ -10,3 +10,4 @@ import QuarzCore.TypeLemmas
 import QuarzCore.Invariants
 import QuarzCore.Lemmas
 import QuarzCore.ExtLemmas
+import QuarzCore.Soundness
