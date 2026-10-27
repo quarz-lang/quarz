@@ -607,14 +607,21 @@ impl Interp {
     ) -> EvalResult {
         let mut block: BlockId = 0;
         let mut start = 0;
+        // The moved shadow (`QUARZ_VERIFY=moves`): per register, a value
+        // moved out of it or its scope ended.
+        let mut shadow: Option<Vec<bool>> =
+            (VERIFY && crate::verify::moves()).then(|| vec![false; regs.len()]);
         'blocks: loop {
             let b = &blocks[block as usize];
             for (i, inst) in b.insts.iter().enumerate().skip(start) {
                 // The commonest instructions that cannot fail, here rather
                 // than through `exec_inst` (a large frame for one store).
                 // They raise nothing, so the line is not needed either.
-                // (Checked, those with a fact to check go to `exec_inst`.)
-                if !VERIFY || !matches!(inst, Inst::Arg { .. } | Inst::BinOp { .. }) {
+                // (Checked, those with a fact to check go to `exec_inst`;
+                // with the moved shadow, all of them.)
+                if !VERIFY
+                    || !(shadow.is_some() || matches!(inst, Inst::Arg { .. } | Inst::BinOp { .. }))
+                {
                     match inst {
                         Inst::LoadConst { dst, idx } => {
                             // SAFETY: the pool is only borrowed mutably inside
@@ -703,24 +710,38 @@ impl Interp {
                 act.line.set(b.lines[i]);
                 if VERIFY {
                     self.verify_before(regs, inst);
+                    if let Some(sh) = &shadow {
+                        self.shadow_reads(sh, inst);
+                    }
                 }
                 match self.exec_inst(f, pool, act, regs, pending, inst) {
                     Ok(()) => {
                         if VERIFY {
                             self.verify_after(f, regs, inst);
+                            if let Some(sh) = &mut shadow {
+                                Interp::shadow_after(sh, inst, true);
+                            }
                         }
                     }
-                    Err(flow) => match self.unwind(b, flow, pending) {
-                        Step::Jump(h) => {
-                            block = h;
-                            start = 0;
-                            continue 'blocks;
+                    Err(flow) => {
+                        if let (true, Some(sh)) = (VERIFY, &mut shadow) {
+                            Interp::shadow_after(sh, inst, false);
                         }
-                        Step::Done(r) => return r,
-                    },
+                        match self.unwind(b, flow, pending) {
+                            Step::Jump(h) => {
+                                block = h;
+                                start = 0;
+                                continue 'blocks;
+                            }
+                            Step::Done(r) => return r,
+                        }
+                    }
                 }
             }
             start = 0;
+            if let (true, Some(sh)) = (VERIFY, &shadow) {
+                self.shadow_term(sh, &b.term);
+            }
             let step = match &b.term {
                 Term::Jump(t) => {
                     block = *t;

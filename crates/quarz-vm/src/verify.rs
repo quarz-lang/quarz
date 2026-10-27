@@ -25,6 +25,35 @@ pub fn enabled() -> bool {
     })
 }
 
+/// Whether it also asks for the moved shadow (`moves`): the interpreter
+/// tracks which registers a value moved out of, or whose scope ended,
+/// and stops at a read of one before it is written again.
+pub fn moves() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var("QUARZ_VERIFY").is_ok_and(|v| v == "moves"))
+}
+
+/// What `inst` moves out of its operands (when it runs, even if it
+/// then raises): a `Take`'s source, a call's moved operands.
+fn moved_out(inst: &Inst, shadow: &mut [bool]) {
+    match inst {
+        Inst::Take { src, .. } => shadow[*src as usize] = true,
+        Inst::Call {
+            recv, args, moved, ..
+        } if *moved != 0 => {
+            for (i, a) in args.iter().enumerate().take(15) {
+                if moved & (1 << i) != 0 {
+                    shadow[*a as usize] = true;
+                }
+            }
+            if let Some(r) = recv.filter(|_| moved & (1 << 15) != 0) {
+                shadow[r as usize] = true;
+            }
+        }
+        _ => {}
+    }
+}
+
 fn is_int(v: &Value) -> bool {
     // Only a machine Int: a big one is an `Integer` (`value::integer`),
     // and an `Int` that overflows raises.
@@ -301,6 +330,46 @@ impl Interp {
         }
     }
 
+    /// The moved shadow, before `inst` runs: none of its operands is a
+    /// register a value moved out of or whose scope ended.
+    pub(crate) fn shadow_reads(&self, shadow: &[bool], inst: &Inst) {
+        for r in inst.uses() {
+            if shadow[r as usize] {
+                self.violated(format!(
+                    "{} reads r{r}, moved out or released before",
+                    inst_name(inst)
+                ));
+            }
+        }
+    }
+
+    /// The same for a terminator's operand.
+    pub(crate) fn shadow_term(&self, shadow: &[bool], term: &quarz_ir::Term) {
+        if let Some(r) = term.uses() {
+            if shadow[r as usize] {
+                self.violated(format!(
+                    "the terminator reads r{r}, moved out or released before"
+                ));
+            }
+        }
+    }
+
+    /// The shadow after `inst` ran (`ok`) or raised: its moved operands
+    /// gone either way; on success its results written (valid again)
+    /// and a released variable's scope ended.
+    pub(crate) fn shadow_after(shadow: &mut [bool], inst: &Inst, ok: bool) {
+        moved_out(inst, shadow);
+        if !ok {
+            return;
+        }
+        for r in inst.defs() {
+            shadow[r as usize] = false;
+        }
+        if let Inst::Release { src } = inst {
+            shadow[*src as usize] = true;
+        }
+    }
+
     /// The machine-word kind of field `index` of `class`, by this
     /// program's classes (the layouts objects carry may be another
     /// program's in a process that runs several).
@@ -334,4 +403,10 @@ impl Interp {
         let _ = std::io::stderr().write_all(msg.as_bytes());
         std::process::exit(101);
     }
+}
+
+/// The instruction's kind, for messages.
+fn inst_name(inst: &Inst) -> String {
+    let s = format!("{inst:?}");
+    s.split([' ', '{', '(']).next().unwrap_or("").to_string()
 }

@@ -13,6 +13,15 @@ use quarz_ir::{Inst, Module};
 /// named `name` with `QUARZ_VERIFY_CHILD` set and runs it there: the
 /// child's exit code and standard error.
 fn in_child(name: &str, module: impl FnOnce() -> Module) -> (Option<i32>, String) {
+    in_child_with(name, "1", module)
+}
+
+/// `in_child`, with `QUARZ_VERIFY` set to `verify`.
+fn in_child_with(
+    name: &str,
+    verify: &str,
+    module: impl FnOnce() -> Module,
+) -> (Option<i32>, String) {
     if std::env::var("QUARZ_VERIFY_CHILD").as_deref() == Ok(name) {
         let code = quarz_cli::run_module(module(), Vec::new());
         std::process::exit(code);
@@ -20,7 +29,7 @@ fn in_child(name: &str, module: impl FnOnce() -> Module) -> (Option<i32>, String
     let out = Command::new(std::env::current_exe().unwrap())
         .args([name, "--exact", "--nocapture", "--test-threads=1"])
         .env("QUARZ_VERIFY_CHILD", name)
-        .env("QUARZ_VERIFY", "1")
+        .env("QUARZ_VERIFY", verify)
         .output()
         .expect("run the test binary");
     (
@@ -648,3 +657,30 @@ fn a_clear_left_out_is_found() {
     );
 }
 
+// ----- The moved shadow (QUARZ_VERIFY=moves) -----
+
+#[test]
+fn a_run_reading_a_moved_register_stops() {
+    let name = "a_run_reading_a_moved_register_stops";
+    let (code, err) = in_child_with(name, "moves", || {
+        let mut module = common::lower("def f(s: String) -> String = s + \"!\"\np f(\"a\" * 2)\n");
+        let main = module.units.last().unwrap().body as usize;
+        let f = &mut module.functions[main];
+        let (bi, ii) = find(
+            f,
+            |i| matches!(i, Inst::Call { moved, .. } if *moved & 0x7fff != 0),
+        );
+        let Inst::Call { args, moved, .. } = &f.blocks[bi].insts[ii] else {
+            unreachable!()
+        };
+        // The operand the call moved, read again after it.
+        let r = args[moved.trailing_zeros() as usize];
+        f.blocks[bi]
+            .insts
+            .insert(ii + 1, Inst::IsNil { dst: r, src: r });
+        f.blocks[bi].lines.insert(ii + 1, 0);
+        module
+    });
+    assert_eq!(code, Some(101), "{err}");
+    assert!(err.contains("QIR fact violated: IsNil reads r"), "{err}");
+}
