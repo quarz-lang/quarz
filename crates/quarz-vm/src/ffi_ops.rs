@@ -511,6 +511,11 @@ op_entry!(qz_op_rescuing(src: u32, enter: u32) |rt, act, f, pool, regs| {
     Ok(())
 });
 
+op_entry!(qz_op_mark_usable(obj: u32) |rt, act, f, pool, regs| {
+    rt.op_mark_usable(regs, obj);
+    Ok(())
+});
+
 op_entry!(qz_op_no_match(src: u32, is_assert: u32) |rt, act, f, pool, regs| {
     Err(rt.op_no_match(regs, src, is_assert != 0))
 });

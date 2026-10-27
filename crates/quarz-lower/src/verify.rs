@@ -953,6 +953,7 @@ fn may_raise(f: &Function, inst: &Inst) -> bool {
             | Inst::SymbolProc { .. }
             | Inst::CatchAny { .. }
             | Inst::Rescuing { .. }
+            | Inst::MarkUsable { .. }
     )
 }
 

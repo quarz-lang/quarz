@@ -14,6 +14,7 @@ use rustc_hash::FxHashSet as HashSet;
 use std::collections::BTreeSet;
 
 use quarz_syntax::ast::*;
+use quarz_syntax::token::OpAssign;
 use quarz_syntax::Span;
 
 use crate::check::CallTarget;
@@ -33,6 +34,14 @@ pub struct InitCheck<'a> {
     /// does not).
     pub runs_user_code: &'a dyn Fn(MethodId) -> bool,
     pub errors: Vec<(String, Span)>,
+    /// The assignments and `super` calls after which the object becomes
+    /// usable (every required field assigned) on some path, and whether
+    /// it is from the start (after the parameters).
+    pub usable_after: Vec<NodeId>,
+    pub usable_on_entry: bool,
+    /// For each enclosing loop or block (innermost last): the states
+    /// where a `break` or `next` leaves it (joined).
+    exits: Vec<St>,
     /// One "used before" error is enough.
     reported: HashSet<&'static str>,
 }
@@ -50,6 +59,9 @@ impl<'a> InitCheck<'a> {
             calls,
             runs_user_code,
             errors: Vec::new(),
+            usable_after: Vec::new(),
+            usable_on_entry: false,
+            exits: Vec::new(),
             reported: HashSet::default(),
         }
     }
@@ -63,14 +75,21 @@ impl<'a> InitCheck<'a> {
         span: Span,
     ) {
         let mut st: St = Some(BTreeSet::new());
-        for (default, field) in params {
+        // A default runs only when its argument is left out: what it
+        // assigns does not count, nor is the object usable after it (it
+        // runs before `initialize` proper, as Swift's default arguments).
+        // The `@x` parameters are assigned after all the parameters.
+        let noted = self.usable_after.len();
+        for (default, _) in params {
             if let Some(d) = default {
-                st = self.expr(d, st);
-            }
-            if let (Some(f), Some(s)) = (field, st.as_mut()) {
-                s.insert(f.clone());
+                self.expr(d, st.clone());
             }
         }
+        self.usable_after.truncate(noted);
+        if let Some(s) = st.as_mut() {
+            s.extend(params.iter().filter_map(|(_, f)| f.clone()));
+        }
+        self.usable_on_entry = self.complete(&st);
         let st = self.body(body, st);
         self.check_complete(
             &st,
@@ -82,6 +101,12 @@ impl<'a> InitCheck<'a> {
     /// Check a field's default, run when the fields in `set` are.
     pub fn default(&mut self, e: &Expr, set: &[String]) {
         self.expr(e, Some(set.iter().cloned().collect()));
+    }
+
+    /// Whether every required field is assigned (at a point control
+    /// reaches).
+    fn complete(&self, st: &St) -> bool {
+        st.is_some() && self.missing(st, self.required).is_none()
     }
 
     fn missing(&self, st: &St, of: &BTreeSet<String>) -> Option<String> {
@@ -141,6 +166,13 @@ impl<'a> InitCheck<'a> {
     /// checked against the state where it is written, what it assigns
     /// does not count.
     fn block(&mut self, b: &Block, st: &St) {
+        // Its `next` and `break` leave the block, not a loop around it.
+        self.exits.push(None);
+        self.block_body(b, st);
+        self.exits.pop();
+    }
+
+    fn block_body(&mut self, b: &Block, st: &St) {
         let mut inner = st.clone();
         for p in &b.params.list {
             if let Some(d) = &p.default {
@@ -148,6 +180,46 @@ impl<'a> InitCheck<'a> {
             }
         }
         self.body(&b.body, inner);
+    }
+
+    /// The expressions a pattern evaluates (values, pins, bounds) are
+    /// checked against `st`; they assign nothing that counts.
+    fn pattern(&mut self, p: &Pattern, st: &St) {
+        match &p.kind {
+            PatternKind::Value(e) | PatternKind::Pin(e) => {
+                self.expr(e, st.clone());
+            }
+            PatternKind::Range { lo, hi, .. } => {
+                for e in [lo, hi].into_iter().flatten() {
+                    self.expr(e, st.clone());
+                }
+            }
+            PatternKind::Capture(p, _) => self.pattern(p, st),
+            PatternKind::Alt(ps) | PatternKind::Find { middle: ps, .. } => {
+                for p in ps {
+                    self.pattern(p, st);
+                }
+            }
+            PatternKind::ConstArray(_, a) => self.array_pattern(a, st),
+            PatternKind::Array(a) => self.array_pattern(a, st),
+            PatternKind::ConstHash(_, h) => self.hash_pattern(h, st),
+            PatternKind::Hash(h) => self.hash_pattern(h, st),
+            PatternKind::Bind(_) | PatternKind::Const(_) => {}
+        }
+    }
+
+    fn array_pattern(&mut self, a: &ArrayPattern, st: &St) {
+        for p in a.pre.iter().chain(&a.post) {
+            self.pattern(p, st);
+        }
+    }
+
+    fn hash_pattern(&mut self, h: &HashPattern, st: &St) {
+        for pair in &h.pairs {
+            if let Some(p) = &pair.pattern {
+                self.pattern(p, st);
+            }
+        }
     }
 
     fn join(a: St, b: St) -> St {
@@ -158,17 +230,31 @@ impl<'a> InitCheck<'a> {
     }
 
     fn assign(&mut self, target: &LValue, st: St) -> St {
+        let st = self.operands(target, st);
+        Self::set(target, st)
+    }
+
+    /// What a target evaluates before the value it is given (the
+    /// receiver, the index): `recv[i] = v` runs `recv`, `i`, then `v`.
+    fn operands(&mut self, target: &LValue, st: St) -> St {
         match target {
-            LValue::IVar(name) => st.map(|mut s| {
-                s.insert(name.clone());
-                s
-            }),
             LValue::Attr { recv, .. } => self.expr(recv, st),
             LValue::Index { recv, args } => {
                 let st = self.expr(recv, st);
                 self.args(args, st)
             }
-            LValue::Local { .. } | LValue::Const(_) => st,
+            LValue::IVar(_) | LValue::Local { .. } | LValue::Const(_) => st,
+        }
+    }
+
+    /// The assignment itself, once the operands and the value ran.
+    fn set(target: &LValue, st: St) -> St {
+        match target {
+            LValue::IVar(name) => st.map(|mut s| {
+                s.insert(name.clone());
+                s
+            }),
+            _ => st,
         }
     }
 
@@ -183,7 +269,20 @@ impl<'a> InitCheck<'a> {
         st
     }
 
+    /// The state after `e`. Each expression after which it becomes
+    /// complete is noted (an assignment, `super`, a `begin` whose `ensure`
+    /// assigns the rest, and what encloses them, since a path may become
+    /// complete only there): the object is usable after it.
     fn expr(&mut self, e: &Expr, st: St) -> St {
+        let before = self.complete(&st);
+        let after = self.expr_inner(e, st);
+        if !before && self.complete(&after) {
+            self.usable_after.push(e.id);
+        }
+        after
+    }
+
+    fn expr_inner(&mut self, e: &Expr, st: St) -> St {
         match &e.kind {
             // Both expansions assign the same.
             ExprKind::For(f) => self.expr(&f.comprehension, st),
@@ -262,6 +361,8 @@ impl<'a> InitCheck<'a> {
                     Some(r) => self.expr(r, st),
                     None => st,
                 };
+                // `recv&.m(args)` runs nothing more on a nil receiver.
+                let skipped = call.safe_nav.then(|| st.clone());
                 let st = self.args(&call.args, st);
                 if call.recv.is_none() {
                     let user = match (self.calls)(e.id) {
@@ -275,7 +376,10 @@ impl<'a> InitCheck<'a> {
                 if let Some(b) = &call.block {
                     self.block(b, &st);
                 }
-                st
+                match skipped {
+                    Some(nil) => Self::join(st, nil),
+                    None => st,
+                }
             }
             ExprKind::MethodRef { recv, .. } => self.expr(recv, st),
             ExprKind::Yield(args) => self.args(args, st),
@@ -299,11 +403,24 @@ impl<'a> InitCheck<'a> {
                     s
                 })
             }
-            ExprKind::Assign { target, value } => {
-                let st = self.expr(value, st);
-                self.assign(target, st)
-            }
-            ExprKind::OpAssign { target, value, .. } => {
+            ExprKind::Assign { target, value } => match &**target {
+                // `recv&.x = value`: no value on a nil receiver.
+                LValue::Attr {
+                    recv,
+                    safe_nav: true,
+                    ..
+                } => {
+                    let st = self.expr(recv, st);
+                    let after = self.expr(value, st.clone());
+                    Self::join(st, after)
+                }
+                _ => {
+                    let st = self.operands(target, st);
+                    let st = self.expr(value, st);
+                    Self::set(target, st)
+                }
+            },
+            ExprKind::OpAssign { target, op, value } => {
                 let st = match &**target {
                     LValue::IVar(name) => self.expr(
                         &Expr {
@@ -315,8 +432,15 @@ impl<'a> InitCheck<'a> {
                     ),
                     _ => st,
                 };
+                let st = self.operands(target, st);
+                // `x ||= v` and `x &&= v` may leave `v` unevaluated.
+                let skipped = matches!(op, OpAssign::OrOr | OpAssign::AndAnd).then(|| st.clone());
                 let st = self.expr(value, st);
-                self.assign(target, st)
+                let st = Self::set(target, st);
+                match skipped {
+                    Some(kept) => Self::join(st, kept),
+                    None => st,
+                }
             }
             ExprKind::MultiAssign { targets, value } => {
                 let st = self.expr(value, st);
@@ -345,13 +469,20 @@ impl<'a> InitCheck<'a> {
                 ..
             } => {
                 if *do_while {
-                    let st = self.body(body, st);
-                    self.expr(cond, st)
+                    // A `next` goes to the test and a `break` out of the
+                    // loop, with what was assigned where they are.
+                    self.exits.push(None);
+                    let end = self.body(body, st);
+                    let exits = self.exits.pop().flatten();
+                    let tested = self.expr(cond, Self::join(end, exits.clone()));
+                    Self::join(tested, exits)
                 } else {
                     // The body may not run at all, and a `break` leaves
                     // it with no less than the state after the test.
                     let st = self.expr(cond, st);
+                    self.exits.push(None);
                     self.body(body, st.clone());
+                    self.exits.pop();
                     st
                 }
             }
@@ -366,8 +497,13 @@ impl<'a> InitCheck<'a> {
                 };
                 let mut out: St = None;
                 for w in whens {
-                    st = self.args(&w.conds, st);
-                    let b = self.body(&w.body, st.clone());
+                    // The body runs after whichever condition matched.
+                    let mut matched: St = None;
+                    for c in &w.conds {
+                        st = self.args(std::slice::from_ref(c), st);
+                        matched = Self::join(matched, st.clone());
+                    }
+                    let b = self.body(&w.body, matched.or_else(|| st.clone()));
                     out = Self::join(out, b);
                 }
                 let e = match els {
@@ -380,6 +516,7 @@ impl<'a> InitCheck<'a> {
                 let st = self.expr(subject, st);
                 let mut out: St = None;
                 for arm in arms {
+                    self.pattern(&arm.pattern, &st);
                     let mut a = st.clone();
                     if let Some(g) = &arm.guard {
                         a = self.expr(&g.cond, a);
@@ -396,7 +533,11 @@ impl<'a> InitCheck<'a> {
                     None => out,
                 }
             }
-            ExprKind::MatchPattern { value, .. } => self.expr(value, st),
+            ExprKind::MatchPattern { value, pattern, .. } => {
+                let st = self.expr(value, st);
+                self.pattern(pattern, &st);
+                st
+            }
             ExprKind::Begin(b) => {
                 let entry = st.clone();
                 let mut end = self.body(&b.body, st);
@@ -430,9 +571,12 @@ impl<'a> InitCheck<'a> {
                     Some(v) => self.expr(v, st),
                     None => st,
                 };
-                // Control continues after the loop (or the block's
-                // call) with no less than the state there.
-                let _ = st;
+                // Control continues at the loop's test or after it (or
+                // after the block's call), with no less than the state
+                // there: a do-while loop joins it (`exits`).
+                if let Some(top) = self.exits.last_mut() {
+                    *top = Self::join(top.take(), st);
+                }
                 None
             }
             ExprKind::Seq(es) => self.body(es, st),

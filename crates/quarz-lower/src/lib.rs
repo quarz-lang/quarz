@@ -54,6 +54,10 @@ pub struct Lowerer {
     pub(crate) method_funcs: Vec<Option<FuncId>>,
     pub(crate) const_funcs: Vec<Option<FuncId>>,
     pub(crate) field_default_funcs: HashMap<(ClassId, usize), FuncId>,
+    /// Whether an instance of the class (one of a subclass included) may
+    /// have a `deinitialize`: its `initialize` marks where the object
+    /// becomes usable (`Inst::MarkUsable`).
+    pub(crate) may_deinitialize: HashMap<ClassId, bool>,
     next_func: FuncId,
     /// Functions of the current round, by id minus `round_base`.
     pending: Vec<Option<Function>>,

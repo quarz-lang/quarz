@@ -855,7 +855,7 @@ pub struct ObjectOf<F: ?Sized + FieldTail> {
     /// Where its fields are. First in the layout, right after the
     /// allocation's two counts (compiled code reads the offsets there).
     pub layout: &'static FieldLayout,
-    /// `DEINITIALIZED` and `HAS_EXC`.
+    /// `DEINITIALIZED`, `HAS_EXC` and `USABLE`.
     flags: std::sync::atomic::AtomicU32,
     pub class: ClassId,
     /// The fields, without a borrow flag: an object that tasks share (its
@@ -893,6 +893,10 @@ const DEINITIALIZED: u32 = 1;
 /// captured then (set once, under the table's lock, by whichever of
 /// several threads raising a shared exception gets there first).
 const HAS_EXC: u32 = 2;
+/// An object's flag: its `initialize` reached the point where the object
+/// is usable (`Inst::MarkUsable`): failing after it, `initialize` leaves
+/// an object to finalize as any other (see `Interp::construct`).
+const USABLE: u32 = 4;
 
 /// What raised exceptions captured, by the address of their allocation,
 /// for an exception whose layout has no word for it (one made with other
@@ -1379,6 +1383,17 @@ impl Object {
     pub(crate) fn needs_deinitialize(&self) -> bool {
         self.flags.load(std::sync::atomic::Ordering::Relaxed) & DEINITIALIZED == 0
             && crate::deinit::has(self.class)
+    }
+
+    /// Record that the object is usable (see `USABLE`).
+    pub(crate) fn set_usable(&self) {
+        self.flags
+            .fetch_or(USABLE, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Whether the object became usable in its `initialize`.
+    pub(crate) fn is_usable(&self) -> bool {
+        self.flags.load(std::sync::atomic::Ordering::Relaxed) & USABLE != 0
     }
 
     /// Record that the object's `deinitialize` has run or is queued.

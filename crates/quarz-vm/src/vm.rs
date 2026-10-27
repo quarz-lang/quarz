@@ -1267,6 +1267,7 @@ impl Interp {
                 }
             }
             Inst::Rescuing { src, enter } => self.op_rescuing(regs, *src, *enter),
+            Inst::MarkUsable { obj } => self.op_mark_usable(regs, *obj),
             Inst::NoMatch { src, is_assert } => {
                 return Err(self.op_no_match(regs, *src, *is_assert))
             }

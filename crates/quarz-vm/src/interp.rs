@@ -3115,17 +3115,30 @@ impl Interp {
         }
         let obj = Object::new(class, smallvec![Value::Nil; info.fields.len()]);
         let value = Value::Object(obj.clone());
-        // Field defaults (data types evaluate them in their constructor).
-        if !matches!(info.kind, RtClassKind::Data | RtClassKind::Variant) {
-            for (i, f) in info.ivars.iter().enumerate() {
-                if let Some(d) = f.default {
-                    let v = self.run_init(d, value.clone(), info.file)?;
-                    self.logical_set(&obj, i, v);
+        let made = (|| {
+            // Field defaults (data types evaluate them in their constructor).
+            if !matches!(info.kind, RtClassKind::Data | RtClassKind::Variant) {
+                for (i, f) in info.ivars.iter().enumerate() {
+                    if let Some(d) = f.default {
+                        let v = self.run_init(d, value.clone(), info.file)?;
+                        self.logical_set(&obj, i, v);
+                    }
                 }
             }
-        }
-        if let Some(init) = init {
-            self.invoke(init, value.clone(), args, kw, block)?;
+            if let Some(init) = init {
+                self.invoke(init, value.clone(), args, kw, block)?;
+            }
+            Ok(())
+        })();
+        if let Err(flow) = made {
+            // Failing before the object was usable (docs/03 §4), as a
+            // Swift `init` before its first phase ends: nothing has seen
+            // it, and its `deinitialize`, which may read any field, does
+            // not run (the fields assigned are released as they go).
+            if !obj.is_usable() {
+                obj.set_deinitialized();
+            }
+            return Err(flow);
         }
         Ok(value)
     }

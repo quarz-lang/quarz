@@ -793,6 +793,12 @@ pub enum Inst {
         src: Reg,
         enter: bool,
     },
+    /// In `initialize`: the object `obj` is usable from here on (every
+    /// field it requires is assigned), so an `initialize` failing later
+    /// leaves it to be finalized as any object (docs/03 §4).
+    MarkUsable {
+        obj: Reg,
+    },
     /// Raise NoMatchingPatternError for the value.
     NoMatch {
         src: Reg,
@@ -895,6 +901,7 @@ impl Inst {
             | Inst::ArrayPush { .. }
             | Inst::ArrayPushWord { .. }
             | Inst::Rescuing { .. }
+            | Inst::MarkUsable { .. }
             | Inst::NoMatch { .. } => smallvec::smallvec![],
         }
     }
@@ -935,6 +942,7 @@ impl Inst {
             | Inst::IsA { src, .. }
             | Inst::As { src, .. }
             | Inst::Rescuing { src, .. }
+            | Inst::MarkUsable { obj: src }
             | Inst::NoMatch { src, .. } => *src = f(*src),
             Inst::FieldGet { obj, .. } | Inst::FieldGetByName { obj, .. } => *obj = f(*obj),
             Inst::FieldSet { obj, src, .. } => {
@@ -1089,6 +1097,7 @@ impl Inst {
             | Inst::IsA { src, .. }
             | Inst::As { src, .. }
             | Inst::Rescuing { src, .. }
+            | Inst::MarkUsable { obj: src }
             | Inst::NoMatch { src, .. } => smallvec::smallvec![*src],
             Inst::FieldGet { obj, .. } | Inst::FieldGetByName { obj, .. } => {
                 smallvec::smallvec![*obj]

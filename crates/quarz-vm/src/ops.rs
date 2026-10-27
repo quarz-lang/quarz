@@ -904,6 +904,14 @@ impl Interp {
         }
     }
 
+    /// `Inst::MarkUsable`: an `initialize` failing from here on leaves an
+    /// object whose `deinitialize` runs (see `Interp::construct`).
+    pub fn op_mark_usable(&self, regs: &[Value], obj: Reg) {
+        if let Value::Object(o) = &regs[obj as usize] {
+            o.set_usable();
+        }
+    }
+
     pub fn op_no_match(&self, regs: &[Value], src: Reg, is_assert: bool) -> Flow {
         let v = &regs[src as usize];
         let shown = match self.inspect(v) {

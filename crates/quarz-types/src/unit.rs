@@ -209,6 +209,13 @@ pub(crate) fn unit_output(world: &World, out: &Output, base: u32, file: u32) -> 
             .filter(|(k, _)| owner_mine(k))
             .map(|(k, v)| (*k, *v))
             .collect(),
+        usable_after: set!(usable_after),
+        usable_on_entry: out
+            .usable_on_entry
+            .iter()
+            .filter(|k| owner_mine(k))
+            .copied()
+            .collect(),
         frame_sizes: map!(frame_sizes),
         unit_frame_sizes: Vec::new(),
         ivar_fields: map!(ivar_fields),
@@ -303,6 +310,8 @@ pub(crate) fn merge_output(out: &mut Output, o: Output) {
     out.element_tests.extend(o.element_tests);
     out.bang_assign.extend(o.bang_assign);
     out.self_slots.extend(o.self_slots);
+    out.usable_after.extend(o.usable_after);
+    out.usable_on_entry.extend(o.usable_on_entry);
     out.frame_sizes.extend(o.frame_sizes);
     out.ivar_fields.extend(o.ivar_fields);
     out.pattern_classes.extend(o.pattern_classes);

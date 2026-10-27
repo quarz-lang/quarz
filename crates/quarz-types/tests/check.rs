@@ -200,6 +200,46 @@ fn definite_initialization() {
         "class A\n  @a: Int\n  def initialize(@a: Int); end\nend\nclass B < A\n  @b: Int\nend",
         "field `@b` has no default and `B` has no `initialize` to assign it",
     );
+    // A `next` in a do-while loop skips the rest of the body; a `when`
+    // body runs after whichever of its conditions matched.
+    err(
+        "class C\n  @a: Int\n  def initialize(c: Bool)\n    begin\n      next if c\n      @a = 1\n    end while false\n  end\nend",
+        "field `@a` is not assigned on every path",
+    );
+    ok("class C\n  @a: Int\n  def initialize(c: Bool)\n    begin\n      @a = 1\n    end while c\n  end\nend\nC.new(false)");
+    ok("class C\n  @a: Int\n  def initialize(c: Bool)\n    begin\n      @a = 1\n      break if c\n      [1].each { |x| next if x > 0 }\n    end while false\n  end\nend\nC.new(false)");
+    err(
+        "class C\n  @a: Int\n  def initialize(x: Int)\n    case x\n    in ^@a then puts \"same\"\n    else\n    end\n    @a = 1\n  end\nend",
+        "field `@a` is read before it is assigned",
+    );
+    err(
+        "class C\n  @a: Int\n  def initialize(x: Int)\n    case x\n    when 1, (@a = 2)\n      puts @a\n    else\n      @a = 3\n    end\n  end\nend",
+        "field `@a` is read before it is assigned",
+    );
+    ok("class C\n  @a: Int\n  def initialize(x: Int)\n    case (@a = x)\n    when 1, 2\n      puts @a\n    end\n  end\nend\nC.new(1)");
+    // What `||=` and `&.` may not evaluate assigns nothing for sure.
+    err(
+        "class C\n  @b: Int\n  def initialize(t: Bool)\n    x = t\n    x ||= (@b = 1) == 1\n  end\nend",
+        "field `@b` is not assigned on every path",
+    );
+    err(
+        "class D\n  def f(x: Bool) -> Nil = nil\nend\nclass C\n  @b: Int\n  def initialize(d: D?)\n    d&.f((@b = 1) == 1)\n  end\nend",
+        "field `@b` is not assigned on every path",
+    );
+    // A parameter's default runs only when the argument is left out; an
+    // index target's operands run before the value.
+    err(
+        "class C\n  @x: String\n  def initialize(a: Int = (@x = \"s\"; 0))\n  end\nend",
+        "field `@x` is not assigned on every path",
+    );
+    err(
+        "class C\n  @a: Int\n  def initialize(@a: Int, b: Int = @a)\n  end\nend",
+        "field `@a` is read before it is assigned",
+    );
+    err(
+        "class C\n  @x: String\n  def initialize(b: Array::Builder[Int])\n    b[@x.size] = (@x = \"abc\"; 0)\n  end\nend",
+        "field `@x` is read before it is assigned",
+    );
     // Defaults run before `initialize`.
     ok("class C\n  var @a: Float = 1.0\n  var @b: Float = @a + 1.0\nend\nC.new");
     err(
