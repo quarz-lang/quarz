@@ -962,17 +962,21 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     });
     native!(m, "Range#begin", |i, r, _| Ok(range(i, r)?.lo.clone()));
     native!(m, "Range#end", |i, r, _| Ok(range(i, r)?.hi.clone()));
-    native!(m, "Range#first", |i, r, _| Ok(range(i, r)?.lo.clone()));
-    native!(m, "Range#last", |i, r, _| {
-        let rg = range(i, r)?;
-        Ok(if rg.exclusive {
-            match &rg.hi {
-                Value::Int(h) => Value::Int(h.checked_sub(1).ok_or_else(|| i.err_overflow())?),
-                other => other.clone(),
-            }
-        } else {
-            rg.hi.clone()
-        })
+    // As Ruby: the bounds, included or not, and `RangeError` for a
+    // missing one.
+    native!(m, "Range#first", |i, r, _| match &range(i, r)?.lo {
+        Value::Nil => Err(i.raise(
+            i.program.exc.range_error,
+            "cannot get the first element of beginless range",
+        )),
+        lo => Ok(lo.clone()),
+    });
+    native!(m, "Range#last", |i, r, _| match &range(i, r)?.hi {
+        Value::Nil => Err(i.raise(
+            i.program.exc.range_error,
+            "cannot get the last element of endless range",
+        )),
+        hi => Ok(hi.clone()),
     });
     native!(m, "Range#exclude_end?", |i, r, _| {
         Ok(Value::Bool(range(i, r)?.exclusive))
@@ -1430,7 +1434,7 @@ fn array_first(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     match args.pos.first() {
         None => Ok(data.get(0).unwrap_or(Value::Nil)),
         Some(n) => {
-            let n = int(interp, n, "count")?.max(0) as usize;
+            let n = count(interp, n)?;
             Ok(data.slice(0, n.min(data.len())))
         }
     }
@@ -1445,10 +1449,17 @@ fn array_last(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
             .and_then(|k| data.get(k))
             .unwrap_or(Value::Nil)),
         Some(n) => {
-            let n = int(interp, n, "count")?.max(0) as usize;
+            let n = count(interp, n)?;
             Ok(data.slice(data.len().saturating_sub(n), data.len()))
         }
     }
+}
+
+/// The `n` of `first(n)`/`last(n)`: `ArgumentError` when negative, as in
+/// Ruby.
+pub(super) fn count(interp: &Interp, n: &Value) -> Result<usize, Flow> {
+    let n = int(interp, n, "count")?;
+    usize::try_from(n).map_err(|_| interp.err_arg("negative array size"))
 }
 
 fn array_insert(interp: &Interp, recv: &Value, args: Args) -> EvalResult {

@@ -3073,13 +3073,17 @@ module Enumerable[out T]
   end
 
   # The first `n` elements, or all of them when there are fewer. Stops
-  # iterating once it has them, so it works on an endless range; a negative
-  # `n` gives `[]`.
+  # iterating once it has them, so it works on an endless range.
   #
   # ```
   # (1..).first(3)   # => [1, 2, 3]
   # ```
+  #
+  # ## Raises
+  #
+  # `ArgumentError` for a negative `n`.
   def first(n: Int) -> Array[T]
+    raise ArgumentError.new("attempt to take negative size") if n < 0
     Array.build do |out|
       # (Not one element more: an enumerator's `next` would lose it.)
       if n > 0
@@ -3095,7 +3099,12 @@ module Enumerable[out T]
   def take(n: Int) -> Array[T] = first(n)
 
   # The elements after the first `n`; `[]` when there are no more than `n`.
+  #
+  # ## Raises
+  #
+  # `ArgumentError` for a negative `n`.
   def drop(n: Int) -> Array[T]
+    raise ArgumentError.new("attempt to drop negative size") if n < 0
     Array.build do |out|
       i = 0
       each do |x|
@@ -3574,15 +3583,21 @@ extension Enumerable[T: Comparable[T]]
   # ```
   native def minmax -> [T?, T?]
   # The `n` smallest elements, smallest first (all of them when there are
-  # fewer).
-  def min(n: Int) -> Array[T] = sort.first(n)
+  # fewer); `ArgumentError` for a negative `n`.
+  def min(n: Int) -> Array[T]
+    raise ArgumentError.new("negative size (#{n})") if n < 0
+    sort.first(n)
+  end
   # The `n` largest elements, largest first (all of them when there are
-  # fewer).
+  # fewer); `ArgumentError` for a negative `n`.
   #
   # ```
   # [3, 1, 2].max(2)   # => [3, 2]
   # ```
-  def max(n: Int) -> Array[T] = sort.reverse.first(n)
+  def max(n: Int) -> Array[T]
+    raise ArgumentError.new("negative size (#{n})") if n < 0
+    sort.reverse.first(n)
+  end
 end
 
 extension Enumerable[T: Int]
@@ -3808,18 +3823,26 @@ class Array[out T]
   # The first element, or `nil` when the array is empty: `#first`.
   native def first? -> T?
   # The first `n` elements, or all of them when there are fewer; `[]` when
-  # `n` is 0 or negative.
+  # `n` is 0.
+  #
+  # ## Raises
+  #
+  # `ArgumentError` for a negative `n`.
   native def first(n: Int) -> Array[T]
   # The last element, or `nil` when the array is empty.
   native def last -> T?
   # The last element, or `nil` when the array is empty: `#last`.
   native def last? -> T?
   # The last `n` elements, or all of them when there are fewer; `[]` when
-  # `n` is 0 or negative.
+  # `n` is 0.
   #
   # ```
   # [1, 2, 3].last(2)   # => [2, 3]
   # ```
+  #
+  # ## Raises
+  #
+  # `ArgumentError` for a negative `n`.
   native def last(n: Int) -> Array[T]
   # The number of elements.
   native def size -> Int
@@ -4010,7 +4033,7 @@ class Array[out T]
   #
   # ## Raises
   #
-  # `ArgumentError` when `n` is negative (`first(n)` returns `[]` then).
+  # `ArgumentError` when `n` is negative.
   native def take(n: Int) -> Array[T]
   # The elements after the first `n`; `[]` when there are no more than `n`.
   #
@@ -4237,10 +4260,10 @@ class Array[out T]
     # start past the end gives `[]`, and one before the start is cut there.
     native def [](range: Range[Int]) -> Array[T]
     # The first `n` elements (all of them when there are fewer), as an
-    # immutable array.
+    # immutable array; `ArgumentError` for a negative `n`.
     native def first(n: Int) -> Array[T]
     # The last `n` elements (all of them when there are fewer), as an
-    # immutable array.
+    # immutable array; `ArgumentError` for a negative `n`.
     native def last(n: Int) -> Array[T]
     # The index of the first element `==` to `value`, or `nil`.
     native def index(value: T) -> Int?
@@ -4901,17 +4924,24 @@ class Range[T]
   native def begin -> T?
   # The last bound (included or not), or `nil` for an endless range.
   native def end -> T?
-  # The first bound, or `nil` for a beginless range: `#begin`. It is returned
-  # even when the range is empty (`(3..1).first` is 3).
+  # The first bound: `#begin`, as Ruby's. It is returned even when the
+  # range is empty (`(3..1).first` is 3).
+  #
+  # ## Raises
+  #
+  # `RangeError` for a beginless range.
   native def first -> T?
-  # The last value: `end`, or `end - 1` for an exclusive integer range;
-  # `nil` for an endless range. It does not check that the range is empty
-  # (`(1...1).last` is 0), and a non-integer exclusive range gives `end`.
+  # The last bound: `#end`, as Ruby's, included or not (`(1...3).last` is
+  # 3, `(1...1).last` is 1); `#max` is the largest value a range holds.
   #
   # ```
   # (1..3).last    # => 3
-  # (1...3).last   # => 2
+  # (1...3).last   # => 3
   # ```
+  #
+  # ## Raises
+  #
+  # `RangeError` for an endless range.
   native def last -> T?
   # Whether the range leaves out its end (`1...3`).
   native def exclude_end? -> Bool
@@ -5002,8 +5032,13 @@ class Range[T]
   #
   # ## Raises
   #
-  # `TypeError` when the range cannot be iterated over, as `#to_a`.
-  def last(n: Int) -> Array[T] = to_a.last(n)
+  # `RangeError` for an endless range, `TypeError` when the range cannot
+  # be iterated over otherwise (as `#to_a`), `ArgumentError` for a
+  # negative `n`.
+  def last(n: Int) -> Array[T]
+    raise RangeError.new("cannot get the last element of endless range") if self.end.nil?
+    to_a.last(n)
+  end
 end
 
 # `#size` only where the number of values can be computed without

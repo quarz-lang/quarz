@@ -185,7 +185,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         match a.pos.first() {
             None => Ok(items.first().cloned().unwrap_or(Value::Nil)),
             Some(n) => {
-                let n = int(i, n, "count")?.max(0) as usize;
+                let n = super::collections::count(i, n)?;
                 Ok(Value::array(items.iter().take(n).cloned().collect()))
             }
         }
@@ -195,7 +195,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         match a.pos.first() {
             None => Ok(items.last().cloned().unwrap_or(Value::Nil)),
             Some(n) => {
-                let n = int(i, n, "count")?.max(0) as usize;
+                let n = super::collections::count(i, n)?;
                 let skip = items.len().saturating_sub(n);
                 Ok(Value::array(items.iter().skip(skip).cloned().collect()))
             }
