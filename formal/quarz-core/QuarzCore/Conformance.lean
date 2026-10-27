@@ -330,11 +330,14 @@ def accessor (T : Tables) (owner : Nat) (m : Json) : M (Option Method) := do
 
 /-- A Rust method as a QCore one. -/
 def method (T : Tables) (owner : Nat) (m : Json) (d : Json) : M Method := do
+  if (← field m "singleton") == .bool true then throw "a class method"
   let name ← str (← field m "name")
   let params ← (← arr (← field m "params")).toList.mapM fun p => do
     if (← str (← field p "kind")) != "Positional" then throw "a parameter not positional"
+    if (← field p "default") == .bool true then throw "a parameter with a default"
     pure (← str (← field p "name"), ← T.ty (← field p "type"))
   let ret ← T.ty (← field m "ret")
+  if (← field m "block_optional") == .bool true then throw "an optional block"
   let block ← match ← field m "block" with
     | .null => pure none
     | b => do
@@ -380,6 +383,8 @@ def program (j : Json) : M Program := do
     ← field j "node_types", ← arr (← field j "varied_types"), ← field j "calls",
     (← field j "const_targets"), (← arr (← field j "consts")), qclass, objectId, kernelId⟩
   let qclasses ← user.mapM fun c => do
+    -- An included module's methods are not the model's.
+    unless (← arr (← field c "includes")).isEmpty do throw "an include"
     let sup ← match ← field c "superclass" with
       | .null => pure 0
       | t => match ← T.ty t with
@@ -422,22 +427,26 @@ def program (j : Json) : M Program := do
     let (x, ls) ← ((expr T (← field e "value")).run false).run []
     unless ls.isEmpty do throw "a field default with locals"
     pure x
-  -- The user classes' accessors (one beside a `def` of its name: which
-  -- the Rust checker calls is its own matter, out of range).
+  -- The user classes' accessors.
   let accessors ← (← arr (← field j "methods")).toList.filterMapM fun m => do
     match qclass (← nat (← field m "owner")) with
-    | some q =>
-      if q ≥ 2 then
-        let a ← accessor T q m
-        if let some a := a then
-          if methods.any (fun mt => mt.owner == a.owner && mt.name == a.name) then
-            throw s!"an accessor and a method both named {a.name}"
-        pure a
-      else pure none
+    | some q => if q ≥ 2 then accessor T q m else pure none
     | none => pure none
+  let own := methods ++ accessors
   let P : Program := ⟨⟨"Object", none, []⟩ :: ⟨"<main>", some 0, []⟩ :: qclasses,
-    methods ++ accessors ++ consts,
+    own ++ consts,
     ⟨1, "<main>", [], all, none, mainLocals, mainBody⟩, defaults⟩
+  -- Two methods of one name in a class, or in a class and its ancestor
+  -- with other parameters or block, are overloads (one signature twice in
+  -- a class is a Rust error): the Rust checker picks the one that fits,
+  -- `Program.lookup` the nearest. Out of range.
+  for a in own do
+    for b in own do
+      if a.name == b.name && a.owner != b.owner && P.classes.subclass a.owner b.owner &&
+          (a.params.map (·.2) != b.params.map (·.2) || a.block != b.block) then
+        throw s!"overloads of {a.name}"
+    if (own.filter fun m => m.owner == a.owner && m.name == a.name).length > 1 then
+      throw s!"overloads of {a.name}"
   -- An `initialize` with fields to assign above it needs `super`: not yet.
   unless (List.range P.classes.length).all (fun k => !P.ownInit k ||
       !((match (P.classes[k]?).bind (·.super) with
