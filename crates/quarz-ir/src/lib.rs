@@ -1316,6 +1316,10 @@ pub struct RtClass {
     /// The declared fields, with where each lives.
     #[serde(default)]
     pub ivars: Vec<RtIvar>,
+    /// No field needs an `initialize` to assign it, so a module's
+    /// `initialize` may make one (`World::has_fields_to_assign`).
+    #[serde(default)]
+    pub module_init: bool,
     /// Methods declared by the class, by name (overloads in declaration
     /// order).
     #[serde(serialize_with = "sorted")]

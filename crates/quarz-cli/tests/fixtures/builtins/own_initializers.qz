@@ -1,0 +1,94 @@
+# `new` takes a class's own `initialize` when the class has fields of its
+# own to assign; a module's, an extension's or an ancestor's is not a
+# constructor there.
+module Greeter
+  def initialize
+    puts "Greeter#initialize"
+  end
+  def greet -> String = "hello"
+end
+
+class Point
+  include Greeter
+  @x: Float
+  def initialize(@x: Float)
+  end
+  def x -> Float = @x
+end
+p Point.new(1.5).x + 1.0
+
+data Pair(a: Int, b: Int)
+  include Greeter
+end
+p Pair.new(1, 2)
+puts Pair.new(3, 4).greet
+
+enum Shape
+  include Greeter
+  variant Circle(radius: Float)
+  variant Dot
+end
+p Shape::Circle.new(2.0).radius
+
+# A class without fields of its own inherits its superclass's.
+class Base
+  @n: Int
+  def initialize(@n: Int)
+  end
+  def n -> Int = @n
+end
+class Derived < Base
+  def twice -> Int = n * 2
+end
+p Derived.new(21).twice
+
+# A class with no fields at all still takes an included module's.
+class Plain
+  include Greeter
+end
+Plain.new
+
+# `new` in an inherited class method passes over a module's `initialize`
+# too.
+class Built
+  @x: Int
+  def initialize(@x: Int)
+  end
+  def x -> Int = @x
+  def self.build -> Built = new(1)
+end
+module Takes
+  def initialize(a: Int)
+  end
+end
+class BuiltMore < Built
+  include Takes
+  @y: String = "d"
+end
+p BuiltMore.build.x
+
+# A nilable field needs no assignment: the superclass's `initialize`
+# still makes the object.
+class Failure < StandardError
+  @code: Int?
+end
+p Failure.new("boom").message
+
+# A class with no fields to assign takes an included module's
+# `initialize`, through `new` and through an inherited class method alike.
+class Logged
+  def initialize(n: Int)
+    puts "Logged#initialize"
+  end
+  def self.build -> Logged = new(1)
+end
+module Announces
+  def initialize(n: Int)
+    puts "Announces#initialize"
+  end
+end
+class LoggedMore < Logged
+  include Announces
+end
+LoggedMore.new(1)
+LoggedMore.build

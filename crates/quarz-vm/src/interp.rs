@@ -3100,6 +3100,13 @@ impl Interp {
             if *anc == class {
                 break;
             }
+            // A module's `initialize` makes only a class with no fields
+            // to assign (docs/01 §3), as the checker has it.
+            if self.program.world.class(*anc).kind == RtClassKind::Module
+                && !self.program.world.class(cid).module_init
+            {
+                continue;
+            }
             if let Some(ids) = self.program.world.class(*anc).methods.get("initialize") {
                 let pick = init
                     .and_then(|i| {

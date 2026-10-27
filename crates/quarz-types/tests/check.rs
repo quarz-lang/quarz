@@ -323,6 +323,58 @@ fn classes_and_fields() {
         "enum Shape\n  variant Circle(radius: Float)\n  def initialize\n  end\nend",
         "an enum cannot define `initialize`",
     );
+    // A class with fields of its own to assign is made only by its own
+    // `initialize`: not a module's, an extension's or an ancestor's.
+    let m = "module M\n  def initialize\n  end\nend\n";
+    for (src, missing) in [
+        ("enum Shape\n  include M\n  variant Circle(radius: Float)\nend\nputs Shape::Circle.new.radius", "radius"),
+        ("enum Shape\n  variant Circle(radius: Float)\nend\nextension Shape\n  include M\nend\nputs Shape::Circle.new.radius", "radius"),
+        ("data P(x: Float)\n  include M\nend\nputs P.new.x", "x"),
+        ("class C\n  include M\n  @x: Float\n  def initialize(@x: Float)\n  end\nend\nC.new", "x"),
+        ("class A\n  def initialize\n  end\nend\nclass B < A\n  @x: Float\n  def initialize(@x: Float)\n  end\nend\nB.new", "x"),
+    ] {
+        err(&format!("{m}{src}"), &format!("is missing the argument `{missing}`"));
+    }
+    err(
+        "enum Shape\n  variant Circle(radius: Float)\nend\nextension Shape\n  def initialize\n  end\nend\nputs Shape::Circle.new.radius",
+        "is missing the argument `radius`",
+    );
+    // Nor past a class below with fields to assign, nor a module's in a
+    // class with fields anywhere.
+    err(
+        "class A\n  @x: Float\n  def initialize(@x: Float); end\nend\nclass B < A\n  @y: String\n  def initialize(@y: String)\n    super(1.0)\n  end\nend\nclass C < B\nend\nC.new(2.0)",
+        "expects String but found Float",
+    );
+    err(
+        &format!("{m}class A\n  @x: Float\n  def initialize(@x: Float); end\nend\nclass B < A\n  include M\nend\nB.new"),
+        "is missing the argument `x`",
+    );
+    err(
+        &format!("{m}class A\n  include M\n  @x: Float\n  def initialize(@x: Float); end\nend\nclass B < A\nend\nB.new"),
+        "is missing the argument `x`",
+    );
+    // A field of a type parameter counts as one to assign.
+    err(
+        &format!("{m}class G[T]\n  @v: T\n  def initialize(@v: T); end\nend\nclass H < G[Int]\n  include M\nend\nH.new"),
+        "is missing the argument `v`",
+    );
+    err(
+        "class A\n  def initialize(s: String); end\nend\nclass B[T] < A\n  @y: T\n  def initialize(@y: T)\n    super(\"a\")\n  end\nend\nclass C < B[Int]\nend\nC.new(\"x\")",
+        "expects Int but found String",
+    );
+    // A nilable field needs no assignment: the superclass's still makes it.
+    ok("class E < StandardError\n  @code: Int?\nend\nraise E.new(\"boom\")");
+    // Without fields of its own, a class inherits its superclass's.
+    ok("class A\n  @x: Int\n  def initialize(@x: Int); end\nend\nclass B < A\nend\nB.new(1)");
+    // `initialize` cannot be aliased, either way.
+    err(
+        "class C\n  @x: Int\n  def initialize(@x: Int); end\n  def init2 -> Nil\n  end\n  alias initialize init2\nend",
+        "`initialize` cannot be aliased",
+    );
+    err(
+        "class C\n  @x: Int\n  def initialize(@x: Int); end\n  alias reset initialize\nend",
+        "`initialize` cannot be aliased",
+    );
     // With an `initialize` of other parameters, there is no `with`.
     err(
         "data Q(a: Int)\n  def initialize(s: String)\n    @a = s.size\n  end\nend\nputs Q.new(\"ab\").with(a: 1)",
