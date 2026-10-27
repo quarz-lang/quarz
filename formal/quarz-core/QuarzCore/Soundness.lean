@@ -22,8 +22,8 @@ theorem good_zero : Good P orc 0 where
       cases ht
       exact ⟨[], Γ, rfl, Λ, hw, Ext.refl _ Λ s, hf, hs, trivial⟩
     | cons e es => simp [evalArgs, ArgsPost]
-  send := fun _ _ _ _ _ _ _ _ _ _ _ _ _ _ => by simp [send, SendPost]
-  block := fun _ _ _ _ _ _ _ _ => by simp [runBlock, SendPost]
+  send := fun _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ => by simp [send, SendPost]
+  block := fun _ _ _ _ _ _ _ _ _ => by simp [runBlock, SendPost]
   equal := fun _ _ _ _ _ _ _ _ => by simp [equal, SendPost]
 
 theorem good (hP : WfProg P) (horc : OracleOK P orc) : ∀ n, Good P orc n := by
