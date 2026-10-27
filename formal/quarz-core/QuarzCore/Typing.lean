@@ -187,10 +187,10 @@ its parameters given. -/
 def blockEnv (c : Ctx) (Δ : Env) (ps : List String) (sig : BlockSig) (body : Expr) : Env :=
   (ps.zip sig.params).foldl (fun g (x, t) => g.set (.local x) t) (c.reset Δ (ps ++ body.assigned))
 
-/-- The block's parameters are its method's locals, declared at least
-as wide as what `yield` gives. -/
+/-- The block's parameters are its method's locals, distinct, declared at
+least as wide as what `yield` gives. -/
 def blockParamsOk (c : Ctx) (ps : List String) (sig : BlockSig) : Bool :=
-  ps.length == sig.params.length &&
+  ps.length == sig.params.length && decide ps.Nodup &&
   (ps.zip sig.params).all fun (x, t) => match c.decl x with
     | some d => t.le c.ct d
     | none => false
