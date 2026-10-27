@@ -244,7 +244,29 @@ fn definite_initialization() {
     ok("class C\n  var @a: Float = 1.0\n  var @b: Float = @a + 1.0\nend\nC.new");
     err(
         "class C\n  var @a: Float = twice\n  var @b: Float\n  def initialize(@b: Float); end\n  def twice -> Float = @b * 2.0\nend",
-        "the object is used before field `@a` is assigned",
+        "a field's default cannot use the object",
+    );
+    // Not even once it has assigned every field itself.
+    err(
+        "class C\n  var @a: Int = (@a = 1; geta)\n  def geta -> Int = @a\nend",
+        "a field's default cannot use the object",
+    );
+    // `raise` ends a path.
+    ok("class C\n  @x: Int\n  def initialize(v: Int)\n    if v > 0\n      @x = v\n    else\n      raise \"neg\"\n    end\n    show\n  end\n  def show -> Nil = p(@x)\nend\nC.new(1)");
+    // A native method on `self` (an accessor, `inspect`) may read the
+    // fields too: only `Kernel` functions are fine before they are set.
+    err(
+        "class C\n  @x: Int\n  @y: Int\n  attr_reader :y\n  def initialize\n    @x = y + 1\n    @y = 2\n  end\nend",
+        "the object is used before field `@x` is assigned",
+    );
+    err(
+        "class C\n  @x: Int\n  def initialize\n    puts inspect\n    @x = 1\n  end\nend",
+        "the object is used before field `@x` is assigned",
+    );
+    // A method an extension adds to `Kernel` does take `self`.
+    err(
+        "extension Kernel\n  def leak -> String = inspect\nend\nclass C\n  @x: Int\n  def initialize\n    puts leak\n    @x = 1\n  end\nend",
+        "the object is used before field `@x` is assigned",
     );
 }
 
