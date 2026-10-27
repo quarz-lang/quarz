@@ -26,10 +26,10 @@ inductive Expr where
   | assign (x : String) (e : Expr)
   /-- A field of `self`, with the type the checker gave the read. -/
   | field (f : String) (t : Ty)
-  /-- Assigning a `var` field of `self`. -/
+  /-- Assigning a field of `self` (an immutable one in `initialize`). -/
   | setField (f : String) (e : Expr)
   | self
-  /-- `C.new(args)`: the arguments are its fields, inherited ones first. -/
+  /-- `C.new(args)`: the fields' defaults, then `initialize(args)`. -/
   | new (c : Nat) (args : List Expr)
   /-- `recv.m(args)`. -/
   | call (recv : Expr) (m : String) (args : List Expr)
@@ -84,6 +84,9 @@ structure Program where
   methods : List Method
   /-- The top level: a method of class 0 with no parameters. -/
   main : Method
+  /-- The fields' defaults (`Field.default`), each run with `self` the
+  object being made, before its `initialize`. -/
+  defaults : List Expr := []
   deriving Repr, Inhabited
 
 /-- What can be narrowed: a local, or an immutable field of `self`. -/

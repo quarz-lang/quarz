@@ -26,10 +26,11 @@ inductive Typed : Ctx → Env → Expr → Out → Prop where
       Typed c Γ (.var x t) ⟨t, some Γ, narrow Γ (.local x) (truthyTy u),
         narrow Γ (.local x) (falsyTy c.ct u)⟩
   /-- A `var` field read: never narrowed. -/
-  | fieldVar : c.field? f = some fd → fd.var = true → fd.ty.le c.ct t →
-      Typed c Γ (.field f t) (.plain t Γ)
+  | fieldVar : c.field? f = some fd → (!c.inInit || (Γ.get (.field f)).isSome) = true →
+      fd.var = true → fd.ty.le c.ct t → Typed c Γ (.field f t) (.plain t Γ)
   /-- An immutable field read: narrowed as a local. -/
-  | fieldImm : c.field? f = some fd → fd.var = false → (Γ.get (.field f)).getD fd.ty = u →
+  | fieldImm : c.field? f = some fd → (!c.inInit || (Γ.get (.field f)).isSome) = true →
+      fd.var = false → (Γ.get (.field f)).getD fd.ty = u →
       u.le c.ct t →
       Typed c Γ (.field f t) ⟨t, some Γ, narrow Γ (.field f) (truthyTy u),
         narrow Γ (.field f) (falsyTy c.ct u)⟩
@@ -37,15 +38,22 @@ inductive Typed : Ctx → Env → Expr → Out → Prop where
       Typed c Γ (.assign x e) (.plain o.ty (Δ.set (.local x) o.ty))
   | assignDead : Typed c Γ e o → c.decl x = some d → o.ty.le c.ct d → o.out = none →
       Typed c Γ (.assign x e) .dead
-  | setField : c.field? f = some fd → fd.var = true → Typed c Γ e o → o.ty.le c.ct fd.ty →
-      o.out = some Δ → Typed c Γ (.setField f e) (.plain o.ty Δ)
-  | setFieldDead : c.field? f = some fd → fd.var = true → Typed c Γ e o →
+  /-- A field assigned: a `var` one, or in `initialize` (not in a block of
+  it) any; there it holds a value from then on. -/
+  | setField : c.field? f = some fd → (fd.var || (c.inInit && !c.inBlock)) = true →
+      Typed c Γ e o → o.ty.le c.ct fd.ty → o.out = some Δ →
+      Typed c Γ (.setField f e) (.plain o.ty (if c.inInit then
+        Δ.set (.field f) (if fd.var then fd.ty else o.ty) else Δ))
+  | setFieldDead : c.field? f = some fd → (fd.var || (c.inInit && !c.inBlock)) = true → Typed c Γ e o →
       o.ty.le c.ct fd.ty → o.out = none → Typed c Γ (.setField f e) .dead
-  | self : Typed c Γ .self (.plain [.cls c.meth.owner] Γ)
-  /-- `new`: the arguments the class's fields, in order. -/
+  /-- `self`: in `initialize`, once every field is set. -/
+  | self : (!c.inInit || c.allSet Γ) = true → Typed c Γ .self (.plain [.cls c.meth.owner] Γ)
+  /-- `new`: the arguments its `initialize`'s (none without one). -/
   | new : k < c.ct.length → TypedArgs c Γ args (.live tys Δ) →
-      tys.length = (c.ct.allFields k).length →
-      ((tys.zip (c.ct.allFields k)).all fun (t, f) => t.le c.ct f.ty) = true →
+      c.prog.lookup k "initialize" = some mi → (mi.block.isNone && argsOk c tys mi) = true →
+      Typed c Γ (.new k args) (.plain [.cls k] Δ)
+  | newNoInit : k < c.ct.length → TypedArgs c Γ args (.live tys Δ) →
+      c.prog.lookup k "initialize" = none → tys.isEmpty = true →
       Typed c Γ (.new k args) (.plain [.cls k] Δ)
   | newDead : k < c.ct.length → TypedArgs c Γ args .dead → Typed c Γ (.new k args) .dead
   /-- A call: each atom of the receiver's type a class that has the
@@ -98,7 +106,7 @@ inductive Typed : Ctx → Env → Expr → Out → Prop where
       oc.tt = some Δ → Typed c Δ b ob → (ob.out.all (·.implies c.ct Γ0)) = true →
       Typed c Γ (.while cnd b) ⟨[.nil], oc.ff, oc.ff, oc.ff⟩
   | ret : c.inBlock = false → Typed c Γ e o → o.ty.le c.ct c.meth.ret →
-      Typed c Γ (.ret e) .dead
+      (!c.inInit || o.out.all (c.allSet ·)) = true → Typed c Γ (.ret e) .dead
   | raise : Typed c Γ .raise .dead
   /-- The tests (design §2.1), each of a value: of a path, they narrow
   it (`testOut`). -/

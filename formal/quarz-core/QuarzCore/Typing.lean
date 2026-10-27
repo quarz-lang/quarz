@@ -99,6 +99,19 @@ def pathTy (c : Ctx) (Γ : Env) : Path → Option Ty
 
 end Ctx
 
+namespace Ctx
+
+/-- Code of an `initialize` (or a field's default): the object may not
+be complete yet. -/
+def inInit (c : Ctx) : Bool := c.meth.name == "initialize"
+
+/-- Every field of `self` holds a value (has an entry in `Γ`, inside an
+`initialize`): the object may be used. -/
+def allSet (c : Ctx) (Γ : Env) : Bool :=
+  (c.ct.allFields c.meth.owner).all fun f => (Γ.get (.field f.name)).isSome
+
+end Ctx
+
 /-- The path an expression reads, if it is one (a narrowable read). -/
 def Expr.path? : Expr → Option Path
   | .var x _ => some (.local x)
@@ -142,6 +155,9 @@ def Program.lookup (P : Program) (c : Nat) (m : String) : Option Method :=
 /-- The methods a call of `m` on a receiver of type `t` may run, one per
 atom (each must be a class that has it: `nil` has no methods). -/
 def Program.resolve (P : Program) (t : Ty) (m : String) : Option (List Method) :=
+  -- `initialize` runs from `new` only: called again, it would assign a
+  -- made object's immutable fields.
+  if m == "initialize" then none else
   t.mapM fun
     -- `Object` holds the value classes' values too, which have no
     -- methods in v1.
@@ -216,6 +232,8 @@ def check (c : Ctx) (Γ : Env) : Expr → Option Out
       narrow Γ (.local x) (falsyTy c.ct u)⟩
   | .field f t => do
     let fd ← c.field? f
+    -- In `initialize`, only a field already set (docs/01 §3).
+    guard (!c.inInit || (Γ.get (.field f)).isSome)
     if fd.var then
       guard (fd.ty.le c.ct t)
       some (.plain t Γ)
@@ -233,22 +251,32 @@ def check (c : Ctx) (Γ : Env) : Expr → Option Out
     | some Δ => some (.plain o.ty (Δ.set (.local x) o.ty))
   | .setField f e => do
     let fd ← c.field? f
-    guard fd.var
+    -- An immutable field only in `initialize` (not in a block of it).
+    guard (fd.var || (c.inInit && !c.inBlock))
     let o ← check c Γ e
     guard (o.ty.le c.ct fd.ty)
     match o.out with
     | none => some .dead
-    | some Δ => some (.plain o.ty Δ)
-  | .self => some (.plain [.cls c.meth.owner] Γ)
+    | some Δ => some (.plain o.ty (if c.inInit then Δ.set (.field f) (if fd.var then fd.ty else o.ty)
+        else Δ))
+  | .self => do
+    -- The object is used: in `initialize`, every field set.
+    guard (!c.inInit || c.allSet Γ)
+    some (.plain [.cls c.meth.owner] Γ)
   | .new k args => do
     guard (k < c.ct.length)
     match checkArgs c Γ args with
     | none => none
     | some .dead => some .dead
     | some (.live tys Δ) =>
-      let fs := c.ct.allFields k
-      guard (tys.length == fs.length && (tys.zip fs).all fun (t, f) => t.le c.ct f.ty)
-      some (.plain [.cls k] Δ)
+      -- Its `initialize`'s arguments (none without one).
+      match c.prog.lookup k "initialize" with
+      | some mt =>
+        guard (mt.block.isNone && argsOk c tys mt)
+        some (.plain [.cls k] Δ)
+      | none =>
+        guard tys.isEmpty
+        some (.plain [.cls k] Δ)
   | .call r m args => do
     let o ← check c Γ r
     match o.out with
@@ -324,6 +352,8 @@ def check (c : Ctx) (Γ : Env) : Expr → Option Out
     guard (!c.inBlock)
     let o ← check c Γ e
     guard (o.ty.le c.ct c.meth.ret)
+    -- An `initialize` returns only once every field is set.
+    guard (!c.inInit || (o.out.all (c.allSet ·)))
     some .dead
   | .raise => some .dead
   | .isNil e => do
