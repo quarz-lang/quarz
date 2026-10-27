@@ -26,12 +26,14 @@ def Atom.final : Atom → Bool
   | .cls _ => false
   | _ => true
 
-/-- A field of a class: its name, declared type, and whether it is `var`
-(only an immutable field is narrowed, and only a `var` one assigned). -/
+/-- A field of a class: its name, declared type, whether it is `var`
+(only an immutable field is narrowed, and outside `initialize` only a
+`var` one assigned), and its default (an index into `Program.defaults`). -/
 structure Field where
   name : String
   ty : Ty
   var : Bool
+  default : Option Nat := none
   deriving Repr, Inhabited
 
 /-- A class: its superclass (none for the root, `Object`) and its own

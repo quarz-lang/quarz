@@ -1,0 +1,61 @@
+# initialize, field defaults and definite assignment (docs/01 §3), in
+# the model's range: every field assigned before the object is used.
+
+class Point
+  @x: Int
+  @y: Int
+  @label: String = "p"
+  @norm: Int = 0
+  @note: String?
+
+  def initialize(@x: Int, y: Int)
+    puts "making a point"
+    @note = nil
+    if y > 0
+      @y = y
+    else
+      @y = 0
+    end
+    # A field with a default may be assigned again.
+    @norm = @x + @y
+    describe
+  end
+
+  def describe -> Nil
+    puts "#{@label} #{@x} #{@y} #{@norm}"
+  end
+
+  def note -> String?
+    @note
+  end
+end
+
+class Counter
+  var @count: Int
+  @start: Int = 10
+  @limit: Int = @start * 2
+
+  def initialize
+    @count = @start
+  end
+
+  def bump -> Int
+    @count = @count + 1
+    @count
+  end
+end
+
+class Plain
+  @name: String = "plain"
+
+  def name -> String
+    @name
+  end
+end
+
+pt = Point.new(1, 2)
+pt.describe
+puts pt.note.nil?
+c = Counter.new
+puts c.bump
+puts Plain.new.name

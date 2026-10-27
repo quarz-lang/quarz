@@ -21,19 +21,28 @@ theorem check_typed : ∀ {c : Ctx} {Γ : Env} {e : Expr} {o : Out}, check c Γ 
   | c, Γ, .int _, o, h => by simp [check] at h; subst h; exact .int
   | c, Γ, .str _, o, h => by simp [check] at h; subst h; exact .str
   | c, Γ, .flt _, o, h => by simp [check] at h; subst h; exact .flt
-  | c, Γ, .self, o, h => by simp [check] at h; subst h; exact .self
+  | c, Γ, .self, o, h => by
+    simp only [check, bind, Option.bind_eq_some_iff, guard_eq] at h
+    obtain ⟨_, hg, h⟩ := h
+    split at hg
+    · rename_i hc; cases h; exact .self (by simpa using hc)
+    · cases hg
   | c, Γ, .raise, o, h => by simp [check] at h; subst h; exact .raise
   | c, Γ, .var x t, o, h => by
     simp [check] at h
     obtain ⟨u, hu, hle, rfl⟩ := h
     exact .var hu hle
   | c, Γ, .field f t, o, h => by
-    simp [check] at h
-    obtain ⟨fd, hfd, h⟩ := h
+    simp only [check, bind, Option.bind_eq_some_iff, guard_eq] at h
+    obtain ⟨fd, hfd, _, hg, h⟩ := h
+    have hin : (!c.inInit || (Γ.get (.field f)).isSome) = true := by
+      split at hg
+      · assumption
+      · cases hg
     split at h
-    · rename_i hv; simp at h; obtain ⟨hle, rfl⟩ := h; exact .fieldVar hfd hv hle
-    · rename_i hv; simp at h; obtain ⟨hle, rfl⟩ := h
-      exact .fieldImm hfd (by simpa using hv) rfl hle
+    · rename_i hv; simp [guard_eq] at h; obtain ⟨hle, rfl⟩ := h; exact .fieldVar hfd hin hv hle
+    · rename_i hv; simp [guard_eq] at h; obtain ⟨hle, rfl⟩ := h
+      exact .fieldImm hfd hin (by simpa using hv) rfl hle
   | c, Γ, .assign x e, o, h => by
     simp [check] at h
     obtain ⟨oe, he, d, hd, hle, h⟩ := h
@@ -41,8 +50,16 @@ theorem check_typed : ∀ {c : Ctx} {Γ : Env} {e : Expr} {o : Out}, check c Γ 
     · simp at h; subst h; exact .assignDead (check_typed he) hd hle (by assumption)
     · simp at h; subst h; exact .assign (check_typed he) hd hle (by assumption)
   | c, Γ, .setField f e, o, h => by
-    simp [check] at h
-    obtain ⟨fd, hfd, hv, oe, he, hle, h⟩ := h
+    simp only [check, bind, Option.bind_eq_some_iff, guard_eq] at h
+    obtain ⟨fd, hfd, _, hg, oe, he, _, hg2, h⟩ := h
+    have hv : (fd.var || (c.inInit && !c.inBlock)) = true := by
+      split at hg
+      · assumption
+      · cases hg
+    have hle : oe.ty.le c.ct fd.ty = true := by
+      split at hg2
+      · assumption
+      · cases hg2
     split at h
     · simp at h; subst h; exact .setFieldDead hfd hv (check_typed he) hle (by assumption)
     · simp at h; subst h; exact .setField hfd hv (check_typed he) hle (by assumption)
@@ -52,8 +69,13 @@ theorem check_typed : ∀ {c : Ctx} {Γ : Env} {e : Expr} {o : Out}, check c Γ 
     split at h
     · simp at h
     · simp at h; subst h; exact .newDead hk (checkArgs_typed (by assumption))
-    · simp at h; obtain ⟨⟨hl, hall⟩, rfl⟩ := h
-      exact .new hk (checkArgs_typed (by assumption)) hl (by simpa using hall)
+    · split at h
+      · rename_i mi hmi
+        simp at h; obtain ⟨hok, rfl⟩ := h
+        exact .new hk (checkArgs_typed (by assumption)) hmi (by simpa using hok)
+      · rename_i hmi
+        simp at h; obtain ⟨hnil, rfl⟩ := h
+        exact .newNoInit hk (checkArgs_typed (by assumption)) hmi (by simpa using hnil)
   | c, Γ, .call r m args, o, h => by
     simp [check] at h
     obtain ⟨orr, hr, h⟩ := h
@@ -114,8 +136,9 @@ theorem check_typed : ∀ {c : Ctx} {Γ : Env} {e : Expr} {o : Out}, check c Γ 
         (by cases hob : ob.out <;> simp_all)
   | c, Γ, .ret e, o, h => by
     simp [check] at h
-    obtain ⟨hib, oe, he, hle, rfl⟩ := h
-    exact .ret (by simpa using hib) (check_typed he) hle
+    obtain ⟨hib, oe, he, hle, hall, rfl⟩ := h
+    exact .ret (by simpa using hib) (check_typed he) hle (by
+      cases hi : c.inInit <;> simp_all)
   | c, Γ, .isNil e, o, h => by
     simp [check] at h
     obtain ⟨oe, he, h⟩ := h

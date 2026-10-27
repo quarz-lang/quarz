@@ -16,7 +16,7 @@ open Plausible
 Str`; B < A; E < Object, whose `==` says yes to anything. -/
 def classes : ClassTable :=
   [⟨"Object", none, []⟩,
-   ⟨"A", some 0, [⟨"a", [.int, .nil], false⟩, ⟨"v", [.str], true⟩]⟩,
+   ⟨"A", some 0, [⟨"a", [.int, .nil], false, none⟩, ⟨"v", [.str], true, none⟩]⟩,
    ⟨"B", some 1, []⟩,
    ⟨"E", some 0, []⟩]
 
@@ -33,7 +33,12 @@ def methods : List Method :=
       [("n", [.int])], .seq (.yield [.var "n" [.int]]) (.seq (.yield [.int 2]) .nil)⟩,
     -- A#set(s: Str): assigns the var field.
     ⟨1, "set", [("s", [.str])], [.str], none, [("s", [.str])], .setField "v" (.var "s" [.str])⟩,
-    ⟨3, "==", [("o", [.nil, .bool, .cls 0])], [.bool], none, [("o", [.nil, .bool, .cls 0])], .tru⟩ ]
+    ⟨3, "==", [("o", [.nil, .bool, .cls 0])], [.bool], none, [("o", [.nil, .bool, .cls 0])], .tru⟩,
+    -- A#initialize(a: Int?, v: Str): sets both (B inherits it).
+    ⟨1, "initialize", [("a", [.int, .nil]), ("v", [.str])], [.nil], none,
+      [("a", [.int, .nil]), ("v", [.str])],
+      .seq (.setField "a" (.var "a" [.int, .nil]))
+        (.seq (.setField "v" (.var "v" [.str])) .nil)⟩ ]
 
 /-- The top level's locals. -/
 def locals : List (String × Ty) :=
@@ -124,6 +129,6 @@ def oracle : Oracle := fun n s t =>
   | none => none
 
 def program (body : Expr) : Program :=
-  ⟨classes, methods, ⟨0, "<main>", [], [.nil, .bool, .int, .str, .cls 0], none, locals, body⟩⟩
+  ⟨classes, methods, ⟨0, "<main>", [], [.nil, .bool, .int, .str, .cls 0], none, locals, body⟩, []⟩
 
 end QuarzCore.Fuzz

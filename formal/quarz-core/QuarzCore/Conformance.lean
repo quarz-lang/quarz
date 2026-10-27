@@ -13,11 +13,14 @@ the methods' bodies: literals, locals and fields read and assigned,
 interpolation, a `prim` with the types the methods table declares),
 `yield` and blocks, `if`, `while`, `return`, `raise`, `nil?`, `is_a?`,
 `==`/`!=` against `nil`/`true`/`false`, `&&`, `||`, `!`, `Float` literals,
-and constants (not narrowed: a read of one is a value of its type, its
-initializer checked as a method of the top level's class). A local's
-declared type is its first assignment's, as the Rust checker's. Anything
-else puts the program out of range: so do a node checked with different
-types (`varied_types`), field defaults, and required files.
+constants (not narrowed: a read of one is a value of its type, its
+initializer checked as a method of the top level's class), `new` with
+the fields' defaults and `initialize` (its `@x` parameters assigning
+their fields first). A local's declared type is its first assignment's,
+as the Rust checker's. Anything else puts the program out of range: so
+do a node checked with different types (`varied_types`), a default with
+locals, an `initialize` under fields it must leave to `super`, and
+required files.
 -/
 
 import Lean.Data.Json
@@ -68,16 +71,6 @@ def Tables.cls (T : Tables) (id : Nat) : M Json := do
 def Tables.className (T : Tables) (id : Nat) : M String := do
   str (← field (← T.cls id) "name")
 
-/-- A class's fields' names, inherited ones first (the model's layout). -/
-partial def Tables.allFieldNames (T : Tables) (id : Nat) : M (List String) := do
-  let c ← T.cls id
-  let own ← (← arr (← field c "fields")).toList.mapM fun f => do str (← field f "name")
-  match ← field c "superclass" with
-  | .null => pure own
-  | sup =>
-    let sid ← nat (← field sup "id")
-    if sid == T.objectId then pure own else pure ((← T.allFieldNames sid) ++ own)
-
 /-- A Rust type as atoms. -/
 partial def Tables.ty (T : Tables) (j : Json) : M Ty := do
   match ← str (← field j "t") with
@@ -117,27 +110,6 @@ def Tables.method (T : Tables) (id : Nat) : M Json := do
   match T.methods.find? fun m => (m.getObjValAs? Nat "id").toOption == some id with
   | some m => pure m
   | none => throw s!"method {id}"
-
-/-- `initialize` that only assigns every field from its parameters, in the
-layout's order (`def initialize(@a: A, @b: B); end`), or none for a class
-with no fields: `new` gives the fields directly, as the model's does. -/
-def Tables.plainInit (T : Tables) (k : Nat) (init : Json) : M Bool := do
-  let names ← T.allFieldNames k
-  match init with
-  | .null => pure names.isEmpty
-  | i =>
-    let mid ← nat i
-    let m ← T.method mid
-    let ps ← arr (← field m "params")
-    let all ← ps.toList.allM fun p => do
-      pure ((← field p "assigns_ivar") == .bool true && (← field p "default") == .bool false)
-    let pnames ← ps.toList.mapM fun p => do str (← field p "name")
-    let some d := T.defs.find? fun d => (d.getObjValAs? Nat "method").toOption == some mid
-      | pure false
-    let empty := match (← field d "def").getObjVal? "body" with
-      | .ok (.arr b) => b.isEmpty
-      | _ => false
-    pure (all && pnames == names && empty)
 
 /-- The locals assigned so far, with their declared types. -/
 abbrev Locals := List (String × Ty)
@@ -274,20 +246,11 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
     | _ => throw "is_a? of a union"
   | "raise" => return .raise
   | "constructor" =>
-    -- `C.new(args)`: the model's `new` when `initialize` only assigns the
-    -- fields from its parameters; otherwise opaque (`initialize` is not
-    -- in the model yet), giving a `C`.
+    -- `C.new(args)`: the fields' defaults, then `initialize`.
     unless blk == .null do throw "a block given to new"
     let k ← nat (← field target "class")
     let some q := T.qclass k | throw s!"new of {← T.className k}"
-    let as ← args.mapM (expr T)
-    if ← T.plainInit k (← field target "init") then return .new q as
-    let params ← match ← field target "init" with
-      | .null => pure []
-      | i => do
-        let m ← T.method (← nat i)
-        (← arr (← field m "params")).toList.mapM fun p => do T.ty (← field p "type")
-    return .prim "new" as params [.cls q]
+    return .new q (← args.mapM (expr T))
   | "method" =>
     let m ← T.method (← nat (← field target "method"))
     let native := (← field m "native") == .bool true
@@ -342,6 +305,12 @@ def method (T : Tables) (owner : Nat) (m : Json) (d : Json) : M Method := do
       let ps ← (← arr (← field t "params")).toList.mapM T.ty
       pure (some ⟨ps, ← T.ty (← field t "ret")⟩)
   let (bd, ls) ← ((body T (← arr (← field d "body"))).run (owner == 1)).run params
+  -- `def initialize(@x: T)`: the field assigned from the parameter first.
+  let ivars ← (← arr (← field m "params")).toList.filterMapM fun p => do
+    if (← field p "assigns_ivar") == .bool true then
+      pure (some (← str (← field p "name"), ← T.ty (← field p "type")))
+    else pure none
+  let bd := ivars.foldr (fun (x, t) b => .seq (.setField x (.var x t)) b) bd
   pure ⟨owner, name, params, ret, block, ls, bd⟩
 
 /-- The QCore program of a tree. -/
@@ -365,7 +334,7 @@ def program (j : Json) : M Program := do
     else if mainClasses.contains id then some 1
     else (userIds.idxOf? id).map (· + 2)
   unless units.size == 1 do throw "a required file"
-  unless (← arr (← field j "field_defaults")).isEmpty do throw "a field default"
+  let fdefs ← arr (← field j "field_defaults")
   let T : Tables := ⟨classes, ← arr (← field j "methods"), ← arr (← field j "definitions"),
     ← field j "node_types", ← arr (← field j "varied_types"), ← field j "calls",
     (← field j "const_targets"), (← arr (← field j "consts")), qclass, objectId⟩
@@ -375,14 +344,17 @@ def program (j : Json) : M Program := do
       | t => match ← T.ty t with
         | [.cls k] => pure k
         | _ => throw "a superclass"
+    let cid ← nat (← field c "id")
     let fields ← (← arr (← field c "fields")).toList.mapM fun f => do
-      pure (⟨← str (← field f "name"), ← T.ty (← field f "type"), (← field f "var") == .bool true⟩ : Field)
+      let name ← str (← field f "name")
+      -- Its default, by its place in `field_defaults`.
+      let d := fdefs.toList.findIdx? fun e =>
+        (e.getObjValAs? Nat "class").toOption == some cid &&
+        (e.getObjValAs? String "field").toOption == some name
+      pure (⟨name, ← T.ty (← field f "type"), (← field f "var") == .bool true, d⟩ : Field)
     pure (⟨← str (← field c "name"), some sup, fields⟩ : Class)
   let methods ← T.defs.toList.filterMapM fun d => do
     let m ← T.method (← nat (← field d "method"))
-    match ← field d "def" with
-    | .null => pure none
-    | _ => if (← str (← field m "name")) == "initialize" then pure none else
     match ← field d "def" with
     | .null => pure none
     | def_ =>
@@ -405,7 +377,18 @@ def program (j : Json) : M Program := do
   let some mainUnit := units.back? | throw "no unit"
   let (mainBody, mainLocals) ← ((body T (← arr (← field mainUnit "body"))).run true).run []
   let all : Ty := [.nil, .bool, .int, .str, .cls 0]
-  pure ⟨⟨"Object", none, []⟩ :: ⟨"<main>", some 0, []⟩ :: qclasses, methods ++ consts,
-    ⟨1, "<main>", [], all, none, mainLocals, mainBody⟩⟩
+  let defaults ← fdefs.toList.mapM fun e => do
+    let (x, ls) ← ((expr T (← field e "value")).run false).run []
+    unless ls.isEmpty do throw "a field default with locals"
+    pure x
+  let P : Program := ⟨⟨"Object", none, []⟩ :: ⟨"<main>", some 0, []⟩ :: qclasses, methods ++ consts,
+    ⟨1, "<main>", [], all, none, mainLocals, mainBody⟩, defaults⟩
+  -- An `initialize` with fields to assign above it needs `super`: not yet.
+  unless (List.range P.classes.length).all (fun k => !P.ownInit k ||
+      !((match (P.classes[k]?).bind (·.super) with
+        | some d => P.classes.allFields d
+        | none => []).any (·.required P.classes))) do
+    throw "an initialize under fields it must leave to super"
+  pure P
 
 end QuarzCore.Conformance

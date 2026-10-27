@@ -11,6 +11,10 @@ less unit of fuel, so the recursion is structural.
 Locals live in the store (`locs`) and frames map names to locations, so
 that a block, which runs in the frame it is written in while the method
 it is given to runs, assigns its method's locals there.
+
+An object records which of its fields are set: reading one that is not
+is stuck, so that a field read before `initialize` assigns it is a run
+the soundness theorem rules out.
 -/
 
 import QuarzCore.Typing
@@ -36,6 +40,10 @@ order). -/
 structure Obj where
   cls : Nat
   fields : List Value
+  /-- Which fields hold a value: all once the object is made (a field
+  with no default that admits `nil` holds it from the start, one with a
+  default once that ran, the others once `initialize` assigned them). -/
+  set : List Bool
   deriving Repr, Inhabited
 
 structure Store where
@@ -67,14 +75,16 @@ inductive Result where
 
 namespace Store
 
-/-- A value's atom: its class (an object's is its run-time class). -/
+/-- A value's atom: its class (an object's is its run-time class). An
+object still being made (a field not set yet) has none: no value of it
+may go anywhere but its `initialize`'s `self`. -/
 def typeOf (s : Store) : Value → Option Atom
   | .nil => some .nil
   | .bool _ => some .bool
   | .int _ => some .int
   | .str _ => some .str
   | .flt _ => some .float
-  | .obj l => (s.objs[l]?).map fun o => .cls o.cls
+  | .obj l => (s.objs[l]?).bind fun o => if o.set.all id then some (.cls o.cls) else none
 
 def hasType (ct : ClassTable) (s : Store) (v : Value) (t : Ty) : Bool :=
   match s.typeOf v with
@@ -84,7 +94,7 @@ def hasType (ct : ClassTable) (s : Store) (v : Value) (t : Ty) : Bool :=
 def setLoc (s : Store) (l : Nat) (v : Value) : Store := { s with locs := s.locs.set l v }
 
 def setField (s : Store) (l i : Nat) (v : Value) : Store :=
-  { s with objs := s.objs.modify l fun o => { o with fields := o.fields.set i v } }
+  { s with objs := s.objs.modify l fun o => { o with fields := o.fields.set i v, set := o.set.set i true } }
 
 /-- The names at consecutive locations from `base`. -/
 def allocVars : Nat → List String → List (String × Nat)
@@ -155,7 +165,8 @@ def eval (P : Program) (orc : Oracle) : Nat → Frame → Store → Expr → Res
     | .field f t =>
       match fr.self with
       | .obj l => match s.objs[l]? with
-        | some o => match (fieldIndex P.classes o.cls f).bind (o.fields[·]?) with
+        | some o => match (fieldIndex P.classes o.cls f).bind fun i =>
+            if o.set[i]? = some true then o.fields[i]? else none with
           | some v => if s.hasType P.classes v t then .ok v s else .stuck
           | none => .stuck
         | none => .stuck
@@ -169,10 +180,7 @@ def eval (P : Program) (orc : Oracle) : Nat → Frame → Store → Expr → Res
     | .self => .ok fr.self s
     | .new k args => match evalArgs P orc n fr s args with
       | .other r => r
-      | .ok vs s =>
-        if vs.length == (P.classes.allFields k).length then
-          .ok (.obj s.objs.length) { s with objs := s.objs ++ [⟨k, vs⟩] }
-        else .stuck
+      | .ok vs s => construct P orc n s k vs
     | .call r m args => (eval P orc n fr s r).bind fun v s =>
       match evalArgs P orc n fr s args with
       | .other r => r
@@ -256,6 +264,43 @@ def runBlock (P : Program) (orc : Oracle) : Nat → Store → Closure → List V
       | r => r
     | none => .stuck
 
+/-- `C.new(args)`: a new object, its fields' defaults run in order, then
+its class's `initialize` (a field that admits `nil` and has no default
+holds it from the start; the others are set by their default or by
+`initialize`). -/
+def construct (P : Program) (orc : Oracle) : Nat → Store → Nat → List Value → Result
+  | 0, _, _, _ => .timeout
+  | n + 1, s, k, vs =>
+    let fs := P.classes.allFields k
+    let l := s.objs.length
+    let s := { s with objs := s.objs ++ [⟨k, fs.map fun _ => .nil,
+      fs.map fun f => f.default.isNone && Ty.le P.classes [.nil] f.ty⟩] }
+    match runDefaults P orc n s l fs.zipIdx with
+    | .ok _ s => match P.lookup k "initialize" with
+      | some mt =>
+        if vs.length != mt.params.length then .stuck else
+        let (s, vars) := s.alloc (mt.locals.map (·.1))
+        match bindAll s vars (mt.params.map (·.1)) vs with
+        | some s => match eval P orc n ⟨vars, .obj l, none⟩ s mt.body with
+          | .ok _ s | .returned _ s => .ok (.obj l) s
+          | r => r
+        | none => .stuck
+      | none => if vs.isEmpty then .ok (.obj l) s else .stuck
+    | .returned _ _ => .stuck
+    | r => r
+
+/-- The defaults of the fields `fs` (with their indices) of object `l`,
+in order, each run with `self` the object. -/
+def runDefaults (P : Program) (orc : Oracle) : Nat → Store → Nat → List (Field × Nat) → Result
+  | _, s, _, [] => .ok .nil s
+  | 0, _, _, _ :: _ => .timeout
+  | n + 1, s, l, (f, i) :: rest => match f.default with
+    | none => runDefaults P orc n s l rest
+    | some d => match P.defaults[d]? with
+      | some e => (eval P orc n ⟨[], .obj l, none⟩ s e).bind fun v s =>
+        runDefaults P orc n (s.setField l i v) l rest
+      | none => .stuck
+
 /-- `v == w` against `nil`, `true` or `false`: an object whose class
 defines `==` answers it (so a test of one tells nothing, 09b19e3);
 otherwise it is identity. -/
@@ -273,7 +318,7 @@ end
 /-- Run the program's top level. -/
 def run (P : Program) (orc : Oracle) (fuel : Nat) : Result :=
   -- `self` is an instance of the top level's class (it has no fields).
-  let (s, vars) := Store.alloc ⟨[], [⟨P.main.owner, []⟩]⟩ (P.main.locals.map (·.1))
+  let (s, vars) := Store.alloc ⟨[], [⟨P.main.owner, [], []⟩]⟩ (P.main.locals.map (·.1))
   match eval P orc fuel ⟨vars, .obj 0, none⟩ s P.main.body with
   | .returned v s => .ok v s
   | r => r
