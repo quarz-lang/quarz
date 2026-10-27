@@ -397,7 +397,7 @@ theorem construct_succ (hP : WfProg P) {n : Nat} (ihs : ∀ m, m ≤ n → Good 
       obtain ⟨hmem', howner, hname'⟩ := Program.lookup_spec hl
       obtain ⟨hwfm, oB, hty, hout, hallset⟩ := hP.methods mi hmem'
       have hni : (mi.name == "initialize") = true := by simp [hname']
-      have hinInit : (⟨P, mi, false⟩ : Ctx).inInit = true := hni
+      have hinInit : (⟨P, mi, false, false⟩ : Ctx).inInit = true := hni
       rw [hni] at hty
       simp only [if_true] at hty
       have hlen' : vs.length = mi.params.length := by rw [hvs.length]; simp
@@ -407,7 +407,7 @@ theorem construct_succ (hP : WfProg P) {n : Nat} (ihs : ∀ m, m ≤ n → Good 
       have hwfm' := hwfm
       simp only [Program.wfMethod, Bool.and_eq_true, decide_eq_true_eq] at hwfm'
       obtain ⟨⟨⟨⟨⟨_, hplen⟩, hnd⟩, hpre⟩, _⟩, _⟩ := hwfm'
-      have hcl : ∀ x d, (⟨P, mi, false⟩ : Ctx).decl x = some d →
+      have hcl : ∀ x d, (⟨P, mi, false, false⟩ : Ctx).decl x = some d →
           ∃ j, mi.locals[j]? = some (x, d) := fun x d hd => by
         simp only [Ctx.decl, Option.map_eq_some_iff] at hd
         obtain ⟨⟨y, d'⟩, hf, hd'⟩ := hd
@@ -460,7 +460,7 @@ theorem construct_succ (hP : WfProg P) {n : Nat} (ihs : ∀ m, m ≤ n → Good 
       have ho3 : s3.objs[l]? = some o2 := by rw [hobjs]; exact ho2
       have hsub : mi.owner ∈ P.classes.ancestors o2.cls := by rw [hc2]; exact howner
       obtain ⟨rest, hrest, hrestnr⟩ := init_beyond hwf hP.inits hl
-      have hcore : FrameCore P ⟨P, mi, false⟩ (Λ2 ++ mi.locals.map (·.2))
+      have hcore : FrameCore P ⟨P, mi, false, false⟩ (Λ2 ++ mi.locals.map (·.2))
           (Store.allocVars s2.locs.length (mi.locals.map (·.1))) (.obj l) s3 := by
         refine ⟨fun x d hd => ?_, fun x y l' hx hy => ?_, fun x l' hm => ?_,
           fun h => (by rw [hinInit] at h; cases h), fun _ => ⟨l, o2, rfl, ho3, hsub, fun i h1 h2 => ?_⟩,
@@ -485,11 +485,11 @@ theorem construct_succ (hP : WfProg P) {n : Nat} (ihs : ∀ m, m ≤ n → Good 
             rw [hrest, List.getElem?_append_right h1]
           rw [hfi] at this
           exact List.mem_of_getElem? this.symm
-      have hf3 : FrameOK P ⟨P, mi, false⟩ (Λ2 ++ mi.locals.map (·.2))
+      have hf3 : FrameOK P ⟨P, mi, false, false⟩ (Λ2 ++ mi.locals.map (·.2))
           ⟨Store.allocVars s2.locs.length (mi.locals.map (·.1)), .obj l, none⟩ s3 [] :=
         ⟨hcore, by simp [ChainAt, hblk], fun _ _ _ h => by simp [chainLocs] at h,
           fun _ h => by simp [chainLocs] at h, fun _ _ => rfl⟩
-      have hs3 : Sat P ⟨P, mi, false⟩ (mi.params.map (fun (x, t) => (.local x, t)) ++
+      have hs3 : Sat P ⟨P, mi, false, false⟩ (mi.params.map (fun (x, t) => (.local x, t)) ++
           Program.heldEnv P.classes (P.classes.allFields mi.owner))
           ⟨Store.allocVars s2.locs.length (mi.locals.map (·.1)), .obj l, none⟩ s3 := by
         intro p t hp
@@ -503,13 +503,13 @@ theorem construct_succ (hP : WfProg P) {n : Nat} (ihs : ∀ m, m ≤ n → Good 
           obtain ⟨lx, hlx, hv⟩ := bindAll_val hcore.inj hb hpnd
             (fun y _ l' hl' => by have := hge y l' hl'; simp; omega) x v hvm
           exact ⟨lx, v, t, hlx, hv, hd, mono hvt, mono hvt⟩
-        · have := sat_held (c := ⟨P, mi, false⟩) (j := (P.classes.allFields mi.owner).length) hwf rfl
+        · have := sat_held (c := ⟨P, mi, false, false⟩) (j := (P.classes.allFields mi.owner).length) hwf rfl
             hw3 (fr := ⟨Store.allocVars s2.locs.length (mi.locals.map (·.1)), .obj l, none⟩) rfl ho3 hsub
             (fun i hi f hf hr => hset2 i f (by
               rw [hrest, List.getElem?_append_left hi]; exact hf) hr)
           rw [List.take_length] at this
           exact this p t hp
-      have := (ihs n (Nat.le_refl n)).eval ⟨P, mi, false⟩ _ mi.body oB _ s3 _ [] rfl hty hw3 hf3 hs3
+      have := (ihs n (Nat.le_refl n)).eval ⟨P, mi, false, false⟩ _ mi.body oB _ s3 _ [] rfl hty hw3 hf3 hs3
       revert this
       generalize eval P orc n _ s3 mi.body = r
       intro this
@@ -523,13 +523,13 @@ theorem construct_succ (hP : WfProg P) {n : Nat} (ihs : ∀ m, m ≤ n → Good 
           have := he12.len hl'
           omega
         · simp [blkW] at h
-      have hWo : ∀ l', initW ⟨P, mi, false⟩
+      have hWo : ∀ l', initW ⟨P, mi, false, false⟩
           ⟨Store.allocVars s2.locs.length (mi.locals.map (·.1)), .obj l, none⟩ l' → l' = l :=
         fun _ ⟨_, _, h⟩ => by cases h; rfl
       -- What `new` gives: the object, made.
       have hfin : ∀ {Λ4 : List Ty} {s4 : Store}, WfStore P Λ4 s4 →
           Ext P (evalW ⟨Store.allocVars s2.locs.length (mi.locals.map (·.1)), .obj l, none⟩ mi.body)
-            (initW ⟨P, mi, false⟩ ⟨Store.allocVars s2.locs.length (mi.locals.map (·.1)), .obj l, none⟩)
+            (initW ⟨P, mi, false, false⟩ ⟨Store.allocVars s2.locs.length (mi.locals.map (·.1)), .obj l, none⟩)
             (Λ2 ++ mi.locals.map (·.2)) Λ4 s3 s4 →
           (s4.typeOf (.obj l)).isSome = true → ConstructPost P k Λ s (.ok (.obj l) s4) := by
         intro Λ4 s4 hw4 he4 hmade

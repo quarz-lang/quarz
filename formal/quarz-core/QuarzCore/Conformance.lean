@@ -62,6 +62,7 @@ structure Tables where
   `Object` (and the files' main classes). -/
   qclass : Nat → Option Nat
   objectId : Nat
+  kernelId : Nat
 
 def Tables.cls (T : Tables) (id : Nat) : M Json := do
   match T.classes.find? fun c => (c.getObjValAs? Nat "id").toOption == some id with
@@ -126,6 +127,18 @@ def positional (a : Json) : M Json := do
   match ← variant a with
   | ("Positional", e) => pure e
   | (k, _) => throw s!"a {k} argument"
+
+/-- Whether an expression has a `return` (in a block of it too). -/
+partial def hasRet : Expr → Bool
+  | .ret _ => true
+  | .assign _ e | .setField _ e | .isNil e | .isA e _ | .eqNil e | .neNil e | .eqTrue e
+  | .eqFalse e | .not e => hasRet e
+  | .new _ as | .yield as | .prim _ as _ _ => as.any hasRet
+  | .call r _ as => hasRet r || as.any hasRet
+  | .callBlk r _ as _ b => hasRet r || as.any hasRet || hasRet b
+  | .seq a b | .while a b | .and a b | .or a b => hasRet a || hasRet b
+  | .ite c t e => hasRet c || hasRet t || hasRet e
+  | _ => false
 
 mutual
 
@@ -256,8 +269,13 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
     let native := (← field m "native") == .bool true
     let synth ← str (← field m "synth")
     let as ← args.mapM (expr T)
-    if native || synth != "None" then
-      -- A built-in method: its declared types.
+    -- An accessor `attr_*` makes is a method of the model (`accessor`).
+    let accessor := (synth.startsWith "FieldGet(" || synth.startsWith "FieldSet(") &&
+      (T.qclass (← nat (← field m "owner"))).any (· ≥ 2)
+    if (native || synth != "None") && !accessor then
+      -- A built-in method: its declared types. On the implicit receiver,
+      -- it takes `self` (it may read its fields), but a `Kernel`
+      -- function.
       unless blk == .null do throw s!"a block given to built-in {name}"
       let params ← (← arr (← field m "params")).toList.mapM fun p => do T.tyOrTop (← field p "type")
       let ret ← T.tyOrTop (← field m "ret")
@@ -265,7 +283,9 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
         | some r => do
           let rt ← T.nodeTy (← nat (← field recvJ "id"))
           pure ([r], [rt])
-        | none => pure ([], [])
+        | none =>
+          if (← nat (← field m "owner")) == T.kernelId then pure ([], [])
+          else pure ([.self], [[.cls 0]])
       return .prim name (rs ++ as) (rps ++ params) ret
     if recv.isNone && T.qclass (← nat (← field m "owner")) == some 1 && !(← read) then
       throw "a top-level method called from a class"
@@ -285,10 +305,28 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
         for (x, t) in ps.zip tys do modify (addLocal · x t)
       | _ => throw "a block type"
       let bd ← body T (← arr (← field b "body"))
+      -- A `return` from a block is not in v1.
+      if hasRet bd then throw "a return in a block"
       return .callBlk r name as ps bd
   | t => throw s!"a {t} call"
 
 end
+
+/-- The method an `attr_reader` or `attr_writer` makes, of QCore class
+`owner`. -/
+def accessor (T : Tables) (owner : Nat) (m : Json) : M (Option Method) := do
+  let synth ← str (← field m "synth")
+  let name ← str (← field m "name")
+  let fieldOf (pre : String) : String := String.ofList ((synth.toList.drop pre.length).dropLast.dropLast)
+  let ret ← T.ty (← field m "ret")
+  if synth.startsWith "FieldGet(\"" then
+    pure (some ⟨owner, name, [], ret, none, [], .field (fieldOf "FieldGet(\"") ret⟩)
+  else if synth.startsWith "FieldSet(\"" then
+    let [p] := (← arr (← field m "params")).toList | throw "a writer's parameters"
+    let t ← T.ty (← field p "type")
+    pure (some ⟨owner, name, [("v", t)], ret, none, [("v", t)],
+      .setField (fieldOf "FieldSet(\"") (.var "v" t)⟩)
+  else pure none
 
 /-- A Rust method as a QCore one. -/
 def method (T : Tables) (owner : Nat) (m : Json) (d : Json) : M Method := do
@@ -322,6 +360,9 @@ def program (j : Json) : M Program := do
   let some objectJ := classes.find? fun c => (c.getObjValAs? String "name").toOption == some "Object"
     | throw "no Object"
   let objectId ← nat (← field objectJ "id")
+  let some kernelJ := classes.find? fun c => (c.getObjValAs? String "name").toOption == some "Kernel"
+    | throw "no Kernel"
+  let kernelId ← nat (← field kernelJ "id")
   -- The user classes, in Rust id order (a superclass is declared first).
   let user ← classes.toList.filterM fun c => do
     pure (files.contains (← nat (← field c "file")) && (← str (← field c "kind")) == "Class" &&
@@ -337,7 +378,7 @@ def program (j : Json) : M Program := do
   let fdefs ← arr (← field j "field_defaults")
   let T : Tables := ⟨classes, ← arr (← field j "methods"), ← arr (← field j "definitions"),
     ← field j "node_types", ← arr (← field j "varied_types"), ← field j "calls",
-    (← field j "const_targets"), (← arr (← field j "consts")), qclass, objectId⟩
+    (← field j "const_targets"), (← arr (← field j "consts")), qclass, objectId, kernelId⟩
   let qclasses ← user.mapM fun c => do
     let sup ← match ← field c "superclass" with
       | .null => pure 0
@@ -381,7 +422,21 @@ def program (j : Json) : M Program := do
     let (x, ls) ← ((expr T (← field e "value")).run false).run []
     unless ls.isEmpty do throw "a field default with locals"
     pure x
-  let P : Program := ⟨⟨"Object", none, []⟩ :: ⟨"<main>", some 0, []⟩ :: qclasses, methods ++ consts,
+  -- The user classes' accessors (one beside a `def` of its name: which
+  -- the Rust checker calls is its own matter, out of range).
+  let accessors ← (← arr (← field j "methods")).toList.filterMapM fun m => do
+    match qclass (← nat (← field m "owner")) with
+    | some q =>
+      if q ≥ 2 then
+        let a ← accessor T q m
+        if let some a := a then
+          if methods.any (fun mt => mt.owner == a.owner && mt.name == a.name) then
+            throw s!"an accessor and a method both named {a.name}"
+        pure a
+      else pure none
+    | none => pure none
+  let P : Program := ⟨⟨"Object", none, []⟩ :: ⟨"<main>", some 0, []⟩ :: qclasses,
+    methods ++ accessors ++ consts,
     ⟨1, "<main>", [], all, none, mainLocals, mainBody⟩, defaults⟩
   -- An `initialize` with fields to assign above it needs `super`: not yet.
   unless (List.range P.classes.length).all (fun k => !P.ownInit k ||

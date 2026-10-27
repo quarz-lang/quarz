@@ -234,7 +234,7 @@ theorem find_nodup : ∀ {l : List (String × Ty)} {x : String} {t : Ty}, (l.map
 
 /-- A method's parameter: a local of its type (`wfMethod`). -/
 theorem decl_param {mt : Method} (h : P.wfMethod mt = true) {x : String} {t : Ty}
-    (hm : (x, t) ∈ mt.params) : (⟨P, mt, false⟩ : Ctx).decl x = some t := by
+    (hm : (x, t) ∈ mt.params) : (⟨P, mt, false, false⟩ : Ctx).decl x = some t := by
   simp only [Program.wfMethod, Bool.and_eq_true, decide_eq_true_eq, List.all_eq_true,
     beq_iff_eq] at h
   obtain ⟨⟨⟨⟨⟨_, hlen⟩, hnd⟩, hpre⟩, _⟩, _⟩ := h
@@ -554,7 +554,7 @@ theorem send_succ : SendGood P orc (n + 1) := by
   obtain ⟨hwfm, o', hty, hout, _⟩ := hP.methods mt' hmem'
   -- Not `initialize` (`Program.resolve`): its own parameters only.
   have hni' : (mt'.name == "initialize") = false := by simp [hname', hni]
-  have hnotInit : (⟨P, mt', false⟩ : Ctx).inInit = false := hni'
+  have hnotInit : (⟨P, mt', false, false⟩ : Ctx).inInit = false := hni'
   rw [hni'] at hty
   simp only [Bool.false_eq_true, if_false, List.append_nil] at hty
   -- The receiver is of a type: made.
@@ -569,7 +569,7 @@ theorem send_succ : SendGood P orc (n + 1) := by
   have hwfm' := hwfm
   simp only [Program.wfMethod, Bool.and_eq_true, decide_eq_true_eq] at hwfm'
   obtain ⟨⟨⟨⟨⟨_, hplen⟩, hnd⟩, hpre⟩, _⟩, _⟩ := hwfm'
-  have hcl : ∀ x d, (⟨P, mt', false⟩ : Ctx).decl x = some d →
+  have hcl : ∀ x d, (⟨P, mt', false, false⟩ : Ctx).decl x = some d →
       ∃ j, mt'.locals[j]? = some (x, d) := fun x d hd => by
     simp only [Ctx.decl, Option.map_eq_some_iff] at hd
     obtain ⟨⟨y, d'⟩, hf, hd'⟩ := hd
@@ -619,7 +619,7 @@ theorem send_succ : SendGood P orc (n + 1) := by
       rw [hobjs] at ho'
       obtain ⟨a, b, b2, d⟩ := hw.objs l' o' ho'
       exact ⟨a, b, b2, fun i v f h0 h1 h2 => mono (d i v f h0 h1 h2)⟩⟩
-  have hcore : FrameCore P ⟨P, mt', false⟩ (Λ ++ mt'.locals.map (·.2))
+  have hcore : FrameCore P ⟨P, mt', false, false⟩ (Λ ++ mt'.locals.map (·.2))
       (Store.allocVars s.locs.length (mt'.locals.map (·.1))) (.obj l) s2 := by
     refine ⟨fun x d hd => ?_, fun x y l' hx hy => ?_, fun x l' hm => ?_, fun _ => ?_,
       fun h => absurd h (by rw [hnotInit]; simp), ⟨l, rfl⟩⟩
@@ -638,12 +638,12 @@ theorem send_succ : SendGood P orc (n + 1) := by
       · simpa [Atom.le, ClassTable.subclass_iff] using howner
   obtain ⟨hch, hin⟩ := hblk
   rw [← hblk'] at hch
-  have hf2 : FrameOK P ⟨P, mt', false⟩ (Λ ++ mt'.locals.map (·.2))
+  have hf2 : FrameOK P ⟨P, mt', false, false⟩ (Λ ++ mt'.locals.map (·.2))
       ⟨Store.allocVars s.locs.length (mt'.locals.map (·.1)), .obj l, blk⟩ s2 ws :=
     ⟨hcore, hch.stable he12 _ _ _ (fun _ _ h => h) (fun _ h => h.elim), fun l1 l2 ⟨x, hx⟩ hc => by
       have := (mem_allocVars hx).1; have := hin l2 hc; omega,
       fun l1 hc => by have := hin l1 hc; omega, fun h => absurd h (by rw [hnotInit]; simp)⟩
-  have hs2 : Sat P ⟨P, mt', false⟩ (mt'.params.map fun (x, t) => (.local x, t))
+  have hs2 : Sat P ⟨P, mt', false, false⟩ (mt'.params.map fun (x, t) => (.local x, t))
       ⟨Store.allocVars s.locs.length (mt'.locals.map (·.1)), .obj l, blk⟩ s2 := by
     intro p t hp
     obtain ⟨x, rfl, hm⟩ := params_get hp
@@ -652,7 +652,7 @@ theorem send_succ : SendGood P orc (n + 1) := by
     obtain ⟨lx, hlx, hv⟩ := bindAll_val hcore.inj hb hpnd
       (fun y _ l' hl' => by have := hge y l' hl'; simp; omega) x v hvm
     exact ⟨lx, v, t, hlx, hv, hd, mono hvt, mono hvt⟩
-  have := ih.eval ⟨P, mt', false⟩ _ mt'.body o' _ s2 _ ws rfl hty hw2 hf2 hs2
+  have := ih.eval ⟨P, mt', false, false⟩ _ mt'.body o' _ s2 _ ws rfl hty hw2 hf2 hs2
   revert this
   generalize eval P orc n _ s2 mt'.body = r
   intro this
@@ -664,7 +664,7 @@ theorem send_succ : SendGood P orc (n + 1) := by
     · have := (hge x l' hx).1; omega
     · exact h
   -- The method assigns no immutable field.
-  have hnoW : ∀ {fr : Frame} l, initW ⟨P, mt', false⟩ fr l → False :=
+  have hnoW : ∀ {fr : Frame} l, initW ⟨P, mt', false, false⟩ fr l → False :=
     fun _ ⟨hi, _⟩ => by rw [hnotInit] at hi; cases hi
   cases r with
   | ok v s3 =>
