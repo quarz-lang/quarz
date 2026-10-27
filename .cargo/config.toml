@@ -9,6 +9,6 @@ QUARZ_THREADS = "1"
 # What the checker keeps between runs (docs/05 §2) goes under target/ for
 # the tests and `cargo run`, not the user's cache.
 QUARZ_CACHE_DIR = { value = "target/quarz-cache", relative = true }
-# The interpreter checks the facts compiled code trusts (crates/quarz-vm/
-# src/verify.rs) in every test and `cargo run`.
-QUARZ_VERIFY = "1"
+# The interpreter checks the facts compiled code trusts, and the moves
+# (crates/quarz-vm/src/verify.rs), in every test and `cargo run`.
+QUARZ_VERIFY = "moves"
