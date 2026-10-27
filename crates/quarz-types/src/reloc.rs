@@ -169,6 +169,11 @@ impl Remap for Output {
             k.remap(m);
             self.self_slots.insert(k, v);
         }
+        let old = std::mem::take(&mut self.usable_on_entry);
+        for mut k in old {
+            k.remap(m);
+            self.usable_on_entry.insert(k);
+        }
         values(&mut self.pattern_classes, |c| class(m, c));
         values(&mut self.block_pass, |b| b.remap(m));
         values(&mut self.rescue_classes, |cs| {

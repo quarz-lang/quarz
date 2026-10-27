@@ -1,0 +1,45 @@
+before the fields
+  rescued before
+  deinitialize half's res
+after the fields
+  rescued after
+  deinitialize half 1
+  deinitialize half's res
+before super
+  rescued before super
+in the superclass, after its fields
+  rescued in base
+  deinitialize Sub
+after super
+  rescued after super
+  deinitialize Sub
+nothing to assign
+  rescued free
+  deinitialize free
+assigned by the parameters
+  rescued params
+  deinitialize params 5
+assigned on both branches
+  rescued branches
+  deinitialize branches 2
+completed by an ensure
+  rescued ensured
+  deinitialize ensured 3
+completed in the body
+  rescued rescued
+  deinitialize rescued 3 1
+completed by the rescue and the ensure
+  rescued rescued
+  deinitialize rescued 3 2
+a field default
+  rescued index 9 out of bounds (size 2)
+break before the fields
+1
+break after the fields
+  deinitialize yielding 1
+2
+escaped
+  rescued escaping, held: true
+  dropping it
+  deinitialize escaping 7
+end

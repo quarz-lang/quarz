@@ -91,6 +91,7 @@ pub(crate) const OPS: &[(&str, &[Ty])] = {
         ("qz_op_catch_exception", &[I]),
         ("qz_op_catch_any", &[I]),
         ("qz_op_rescuing", &[I, I]),
+        ("qz_op_mark_usable", &[I]),
         ("qz_op_no_match", &[I, I]),
         ("qz_op_term", &[I, I]),
     ]
@@ -3280,6 +3281,7 @@ impl<B: Builder> Gen<'_, B> {
                 "qz_op_rescuing",
                 vec![w(self, *src), w(self, u32::from(*enter))],
             ),
+            Inst::MarkUsable { obj } => ("qz_op_mark_usable", vec![w(self, *obj)]),
             Inst::NoMatch { src, is_assert } => (
                 "qz_op_no_match",
                 vec![w(self, *src), w(self, u32::from(*is_assert))],

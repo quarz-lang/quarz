@@ -108,6 +108,12 @@ pub struct Output {
     pub bang_assign: rustc_hash::FxHashSet<NodeId>,
     /// Functions that must store their `self` in a hidden frame slot.
     pub self_slots: FxHashMap<SelfOwner, u32>,
+    /// In `initialize`: the assignments and `super` calls after which the
+    /// object is usable (its required fields assigned, docs/03 §4), and
+    /// the methods where it is from the start. Failing before that point,
+    /// `initialize` leaves an object whose `deinitialize` does not run.
+    pub usable_after: rustc_hash::FxHashSet<NodeId>,
+    pub usable_on_entry: rustc_hash::FxHashSet<SelfOwner>,
     /// Frame sizes of blocks (keyed by the call node) and lambdas (keyed by
     /// the lambda node).
     pub frame_sizes: FxHashMap<NodeId, u32>,
@@ -1796,10 +1802,15 @@ impl Checker {
                 };
                 let mut c = crate::init::InitCheck::new(&required, &own, &calls, &user);
                 c.method(&params, &body, info.span);
-                c.errors
+                (c.errors, c.usable_after, c.usable_on_entry)
             };
+            let (errors, usable_after, usable_on_entry) = errors;
             for (msg, span) in errors {
                 self.error(msg, span);
+            }
+            self.out.usable_after.extend(usable_after);
+            if usable_on_entry {
+                self.out.usable_on_entry.insert(SelfOwner::Method(mid));
             }
             let fields = self.world.all_fields(owner);
             for (f, _) in fields {

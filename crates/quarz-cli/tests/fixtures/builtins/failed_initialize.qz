@@ -1,0 +1,202 @@
+# An `initialize` that fails runs the object's `deinitialize` only if it
+# fails after the object became usable (every field it requires
+# assigned), as Swift's `deinit` after an `init` fails in its second
+# phase (docs/03 §4). Before that point nothing has seen the object, and
+# the fields already assigned go as any value does.
+class Res
+  @name: String
+  def initialize(@name: String)
+  end
+  def name -> String = @name
+  def deinitialize -> Nil
+    puts "  deinitialize #{@name}"
+  end
+end
+
+def attempt(what: String, &blk: () -> Nil) -> Nil
+  puts what
+  begin
+    blk.call
+  rescue => e
+    puts "  rescued #{e.message}"
+  end
+end
+
+class Half
+  @res: Res
+  @n: Int
+  def initialize(fail_before: Bool, fail_after: Bool)
+    @res = Res.new("half's res")
+    raise "before" if fail_before
+    @n = 1
+    raise "after" if fail_after
+  end
+  def deinitialize -> Nil
+    puts "  deinitialize half #{@n}"
+  end
+end
+attempt("before the fields") { Half.new(true, false); nil }
+attempt("after the fields") { Half.new(false, true); nil }
+
+# A subclass assigns its own fields before `super`: the object is usable
+# once the superclass's `initialize` has assigned its own.
+class Base
+  @a: Int
+  def initialize(fail: Bool)
+    @a = 1
+    raise "in base" if fail
+  end
+  def deinitialize -> Nil
+    puts "  deinitialize #{self.class.name}"
+  end
+end
+class Sub < Base
+  @b: Int
+  def initialize(where: Int)
+    @b = 2
+    raise "before super" if where == 0
+    super(where == 1)
+    raise "after super" if where == 2
+  end
+end
+attempt("before super") { Sub.new(0); nil }
+attempt("in the superclass, after its fields") { Sub.new(1); nil }
+attempt("after super") { Sub.new(2); nil }
+
+# A class with nothing to assign is usable from the start (after the
+# parameters' defaults); one whose `@x` parameters assign everything is
+# usable after them.
+class Free
+  var @note: String?
+  def initialize
+    raise "free"
+  end
+  def deinitialize -> Nil
+    puts "  deinitialize free"
+  end
+end
+attempt("nothing to assign") { Free.new; nil }
+class Params
+  @n: Int
+  def initialize(@n: Int)
+    raise "params"
+  end
+  def deinitialize -> Nil
+    puts "  deinitialize params #{@n}"
+  end
+end
+attempt("assigned by the parameters") { Params.new(5); nil }
+
+# Assigned on each branch: usable after either.
+class Branches
+  @n: Int
+  def initialize(c: Bool)
+    if c
+      @n = 1
+    else
+      @n = 2
+    end
+    raise "branches"
+  end
+  def deinitialize -> Nil
+    puts "  deinitialize branches #{@n}"
+  end
+end
+attempt("assigned on both branches") { Branches.new(false); nil }
+
+# Completed by an `ensure`: usable after the `begin`.
+class Ensured
+  @a: Int
+  @b: Int
+  def initialize
+    begin
+      @a = 1
+    ensure
+      @b = 2
+    end
+    raise "ensured"
+  end
+  def deinitialize -> Nil
+    puts "  deinitialize ensured #{@a + @b}"
+  end
+end
+attempt("completed by an ensure") { Ensured.new; nil }
+
+# Completed on each path: by the body, or by its rescue clause and the
+# ensure after it.
+class Rescued
+  @a: Int
+  @b: Int
+  def initialize(fail: Bool)
+    begin
+      raise "inside" if fail
+      @b = 1
+    rescue
+      @b = 2
+    ensure
+      @a = 3
+    end
+    raise "rescued"
+  end
+  def deinitialize -> Nil
+    puts "  deinitialize rescued #{@a} #{@b}"
+  end
+end
+attempt("completed in the body") { Rescued.new(false); nil }
+attempt("completed by the rescue and the ensure") { Rescued.new(true); nil }
+
+# A field default that raises fails before the object is usable.
+class Defaulted
+  @n: Int = [1, 2][9]
+  def deinitialize -> Nil
+    puts "  deinitialize defaulted"
+  end
+end
+attempt("a field default") { Defaulted.new; nil }
+
+# Leaving by `break` from the block given to `new` fails the same way.
+class Yielding
+  @n: Int
+  def initialize(before: Bool, &blk: () -> Nil)
+    blk.call if before
+    @n = 1
+    blk.call
+  end
+  def deinitialize -> Nil
+    puts "  deinitialize yielding #{@n}"
+  end
+end
+puts "break before the fields"
+p(Yielding.new(true) { break 1 })
+puts "break after the fields"
+p(Yielding.new(false) { break 2 })
+
+# Usable, the object may already be held elsewhere: it goes when that
+# reference does.
+class Holder
+  var @it: Escaping?
+  attr_accessor :it
+end
+class Escaping
+  @n: Int
+  def initialize(into: Holder)
+    @n = 7
+    into.it = self
+    raise "escaping"
+  end
+  def deinitialize -> Nil
+    puts "  deinitialize escaping #{@n}"
+  end
+end
+def escape -> Nil
+  held = Holder.new
+  begin
+    Escaping.new(held)
+  rescue => e
+    puts "  rescued #{e.message}, held: #{!held.it.nil?}"
+  end
+  puts "  dropping it"
+end
+puts "escaped"
+escape
+puts "end"

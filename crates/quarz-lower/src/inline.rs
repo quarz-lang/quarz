@@ -722,5 +722,6 @@ pub(crate) fn rewrite_with(
             src: r(src),
             is_assert: *is_assert,
         },
+        Inst::MarkUsable { obj } => Inst::MarkUsable { obj: r(obj) },
     }
 }

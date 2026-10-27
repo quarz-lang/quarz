@@ -403,10 +403,30 @@ impl<'a> FnBuilder<'a> {
                 }
             }
         }
+        if out.usable_on_entry.contains(&SelfOwner::Method(mid)) {
+            b.mark_usable();
+        }
         b.store_self_slot(SelfOwner::Method(mid));
         let v = b.body(body);
         b.term(Term::Return(v));
         b.finish()
+    }
+
+    /// In `initialize`: the object is usable from here on (docs/03 §4),
+    /// which matters only to an object that may have a `deinitialize`.
+    /// (A subclass defining one in a later REPL input finds the
+    /// `initialize`s lowered before it unmarked.)
+    fn mark_usable(&mut self) {
+        let Some(class) = self.class_id else { return };
+        let world = self.world;
+        let may = *self.lw.may_deinitialize.entry(class).or_insert_with(|| {
+            (0..world.classes.len() as ClassId)
+                .any(|c| world.class_is_a(c, class) && world.deinitializer(c).is_some())
+        });
+        if may {
+            let obj = self.self_reg();
+            self.emit(Inst::MarkUsable { obj });
+        }
     }
 
     /// A constant initializer or field default: one expression evaluated
@@ -1001,6 +1021,9 @@ impl<'a> FnBuilder<'a> {
         let saved = self.line;
         self.line = self.line_of(e.span);
         let mut r = self.expr_inner(e);
+        if self.out.usable_after.contains(&e.id) {
+            self.mark_usable();
+        }
         // The result of something declared to return `Nil`.
         if self.out.discarded.contains(&e.id) {
             r = self.nil();
