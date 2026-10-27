@@ -18,6 +18,7 @@ inductive Typed : Ctx → Env → Expr → Out → Prop where
   | fls : Typed c Γ .fls (.plain [.bool] Γ)
   | int : Typed c Γ (.int k) (.plain [.int] Γ)
   | str : Typed c Γ (.str t) (.plain [.str] Γ)
+  | flt : Typed c Γ (.flt t) (.plain [.float] Γ)
   /-- A local read: assigned on every path, holding `u`, annotated with a
   type at least `u`; a test of it narrows it to `u`'s truthy or falsy
   atoms. -/

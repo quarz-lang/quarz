@@ -20,6 +20,7 @@ theorem check_typed : ∀ {c : Ctx} {Γ : Env} {e : Expr} {o : Out}, check c Γ 
   | c, Γ, .fls, o, h => by simp [check] at h; subst h; exact .fls
   | c, Γ, .int _, o, h => by simp [check] at h; subst h; exact .int
   | c, Γ, .str _, o, h => by simp [check] at h; subst h; exact .str
+  | c, Γ, .flt _, o, h => by simp [check] at h; subst h; exact .flt
   | c, Γ, .self, o, h => by simp [check] at h; subst h; exact .self
   | c, Γ, .raise, o, h => by simp [check] at h; subst h; exact .raise
   | c, Γ, .var x t, o, h => by

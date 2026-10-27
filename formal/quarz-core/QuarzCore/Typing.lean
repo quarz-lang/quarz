@@ -207,6 +207,7 @@ def check (c : Ctx) (Γ : Env) : Expr → Option Out
   | .tru | .fls => some (.plain [.bool] Γ)
   | .int _ => some (.plain [.int] Γ)
   | .str _ => some (.plain [.str] Γ)
+  | .flt _ => some (.plain [.float] Γ)
   | .var x t => do
     -- The annotation: at least what the local holds here.
     let u ← Γ.get (.local x)

@@ -7,14 +7,15 @@
 //! checker gave each of their nodes (a variable read's
 //! is the type it is narrowed to there; constants' initializers and field
 //! defaults are there too), the nodes checked more than once with
-//! different types, the expansion each `for` was checked as, what each call resolved to, every class (the
+//! different types, the expansion each `for` was checked as, what each call resolved to and
+//! each constant read names, every class (the
 //! built-in ones included: types refer to classes by id), and the
 //! methods the units define or call. Which programs are in the model's
 //! range is for the Lean side to judge.
 
 use serde_json::{json, Map, Value};
 
-use quarz_types::check::CallTarget;
+use quarz_types::check::{CallTarget, ConstTarget};
 use quarz_types::types::{MethodId, Type};
 use quarz_types::world::World;
 use quarz_types::Checked;
@@ -96,6 +97,7 @@ pub fn tree(checked: &Checked) -> Value {
     ids.dedup();
     let mut node_types = Map::new();
     let mut calls = Map::new();
+    let mut const_targets = Map::new();
     let mut methods: Vec<MethodId> = Vec::new();
     for &id in &ids {
         let id32 = id as u32;
@@ -104,6 +106,14 @@ pub fn tree(checked: &Checked) -> Value {
         }
         if let Some(c) = out.calls.get(&id32) {
             calls.insert(id.to_string(), call(c, &mut methods));
+        }
+        if let Some(t) = out.const_targets.get(&id32) {
+            let (kind, n) = match t {
+                ConstTarget::Const(n) => ("const", *n),
+                ConstTarget::Class(n) => ("class", *n),
+                ConstTarget::VariantSingleton(n) => ("variant", *n),
+            };
+            const_targets.insert(id.to_string(), json!({ "t": kind, "id": n }));
         }
     }
     let among = |set: &dyn Fn(u32) -> bool| -> Vec<u64> {
@@ -129,6 +139,7 @@ pub fn tree(checked: &Checked) -> Value {
         "varied_types": varied,
         "for_each": for_each,
         "calls": calls,
+        "const_targets": const_targets,
         "classes": classes(world),
         "methods": methods.iter().map(|m| method(world, *m)).collect::<Vec<_>>(),
         "definitions": definitions,

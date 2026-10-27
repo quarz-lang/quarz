@@ -1,0 +1,22 @@
+# Constants (not narrowed: a read is a value of the constant's type) and
+# Float values, within QCore's range.
+LIMIT = 3
+SCALE = 1.5
+
+def scaled(x: Float?) -> Float
+  if x.nil?
+    SCALE
+  else
+    x
+  end
+end
+
+def limit_or(n: Int?) -> Int
+  return LIMIT if n == nil
+  n
+end
+
+p scaled(nil)
+p scaled(2.5)
+p limit_or(nil)
+p limit_or(7)

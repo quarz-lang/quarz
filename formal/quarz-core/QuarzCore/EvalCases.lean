@@ -23,6 +23,9 @@ theorem hasTy_lit_int {s : Store} {k : Int} : s.hasTy P (.int k) [.int] := by
 theorem hasTy_lit_str {s : Store} {k : String} : s.hasTy P (.str k) [.str] := by
   simp [Store.hasTy, Store.hasType, Store.typeOf, Ty.le, Atom.le]
 
+theorem hasTy_lit_flt {s : Store} {k : String} : s.hasTy P (.flt k) [.float] := by
+  simp [Store.hasTy, Store.hasType, Store.typeOf, Ty.le, Atom.le]
+
 theorem ne_nil_of_hasTy {s : Store} {v : Value} {t : Ty} (h : s.hasTy P v t) : t ≠ [] := by
   rintro rfl; exact not_hasTy_nil h
 
@@ -515,6 +518,7 @@ theorem eval_succ : EvalGood P orc (n + 1) := by
   | fls => exact post_plain hw hf hs hasTy_lit_bool
   | int => exact post_plain hw hf hs hasTy_lit_int
   | str => exact post_plain hw hf hs hasTy_lit_str
+  | flt => exact post_plain hw hf hs hasTy_lit_flt
   | self => exact post_plain hw hf hs hf.core.self
   | raise => trivial
   | var hu hle =>
