@@ -49,11 +49,11 @@ theorem good (hP : WfProg P) (horc : OracleOK P orc) : ∀ n, Good P orc n := by
 variable {P orc}
 
 theorem Program.checkMethod_typed {mt : Method} (h : P.checkMethod mt = true) :
-    ∃ o, Typed ⟨P, mt, false⟩ (mt.params.map (fun (x, t) => (.local x, t)) ++
+    ∃ o, Typed ⟨P, mt, false, false⟩ (mt.params.map (fun (x, t) => (.local x, t)) ++
         (if mt.name == "initialize" then Program.heldEnv P.classes (P.classes.allFields mt.owner) else []))
       mt.body o ∧
       (mt.name ≠ "initialize" → o.out = none ∨ o.ty.le P.classes mt.ret = true) ∧
-      (mt.name = "initialize" → o.out.all (Ctx.allSet ⟨P, mt, false⟩ ·) = true) := by
+      (mt.name = "initialize" → o.out.all (Ctx.allSet ⟨P, mt, false, false⟩ ·) = true) := by
   unfold Program.checkMethod at h
   dsimp only at h
   split at h
@@ -92,7 +92,7 @@ theorem Program.checkDefaults_typed {k : Nat} (h : P.checkDefaults k = true) :
 theorem Program.check_wf (h : P.check = true) :
     WfProg P ∧ P.main.owner < P.classes.length ∧ (P.classes.allFields P.main.owner).isEmpty ∧
       P.main.params = [] ∧ P.main.block = none ∧ P.wfMethod P.main = true ∧
-      ∃ o, Typed ⟨P, P.main, false⟩ [] P.main.body o ∧
+      ∃ o, Typed ⟨P, P.main, false, false⟩ [] P.main.body o ∧
         (P.main.name ≠ "initialize" → o.out = none ∨ o.ty.le P.classes P.main.ret = true) := by
   simp only [Program.check, Bool.and_eq_true, decide_eq_true_eq, List.all_eq_true,
     List.isEmpty_iff, Option.isNone_iff_eq_none, List.mem_range] at h
@@ -135,7 +135,7 @@ theorem run_sound (h : P.check = true) (horc : OracleOK P orc) (fuel : Nat) :
       simp at ho; subst ho
       exact ⟨hown, by simp [hnf], rfl, fun i v f h1 _ => by simp at h1⟩
     | succ l => simp at ho⟩
-  have hcl : ∀ x d, (⟨P, P.main, false⟩ : Ctx).decl x = some d →
+  have hcl : ∀ x d, (⟨P, P.main, false, false⟩ : Ctx).decl x = some d →
       ∃ j, P.main.locals[j]? = some (x, d) := fun x d hd => by
     simp only [Ctx.decl, Option.map_eq_some_iff] at hd
     obtain ⟨⟨y, d'⟩, hf, hd'⟩ := hd
@@ -143,7 +143,7 @@ theorem run_sound (h : P.check = true) (horc : OracleOK P orc) (fuel : Nat) :
     have hp := List.find?_some hf
     simp at hp; subst hp
     exact List.mem_iff_getElem?.mp (List.mem_of_find?_eq_some hf)
-  have hcore : FrameCore P ⟨P, P.main, false⟩ Λ (s0.alloc names).2 (.obj 0) (s0.alloc names).1 := by
+  have hcore : FrameCore P ⟨P, P.main, false, false⟩ Λ (s0.alloc names).2 (.obj 0) (s0.alloc names).1 := by
     refine ⟨fun x d hd => ?_, fun x y l hx hy => ?_, fun x l hm => ?_, fun _ => ?_,
       fun _ => ⟨0, ⟨P.main.owner, [], []⟩, rfl, rfl, ClassTable.mem_ancestors_self hwf _,
         fun i _ h => by simp at h⟩, ⟨0, rfl⟩⟩
@@ -157,13 +157,13 @@ theorem run_sound (h : P.check = true) (horc : OracleOK P orc) (fuel : Nat) :
     · have := mem_allocVars hm; simp [Store.alloc, s0, names] at this ⊢; omega
     · exact hasTy_iff.mpr ⟨.cls P.main.owner, typeOf_obj_of (o := ⟨P.main.owner, [], []⟩) rfl rfl,
         .cls P.main.owner, List.mem_singleton.mpr rfl, Atom.le_refl hwf _⟩
-  have hf : FrameOK P ⟨P, P.main, false⟩ Λ ⟨(s0.alloc names).2, .obj 0, none⟩ (s0.alloc names).1 [] :=
+  have hf : FrameOK P ⟨P, P.main, false, false⟩ Λ ⟨(s0.alloc names).2, .obj 0, none⟩ (s0.alloc names).1 [] :=
     ⟨hcore, by simp [hblk, ChainAt], fun _ _ _ h => by simp [chainLocs] at h,
       fun _ h => by simp [chainLocs] at h, fun _ _ => rfl⟩
-  have hs : Sat P ⟨P, P.main, false⟩ [] ⟨(s0.alloc names).2, .obj 0, none⟩ (s0.alloc names).1 :=
+  have hs : Sat P ⟨P, P.main, false, false⟩ [] ⟨(s0.alloc names).2, .obj 0, none⟩ (s0.alloc names).1 :=
     fun _ _ h => by simp [Env.get] at h
-  have := (good P orc hP horc fuel).eval ⟨P, P.main, false⟩ [] P.main.body o _ _ Λ [] rfl ho hw hf hs
-  have key : ∀ r : Result, Post P ⟨P, P.main, false⟩ o ⟨(s0.alloc names).2, .obj 0, none⟩ [] Λ
+  have := (good P orc hP horc fuel).eval ⟨P, P.main, false, false⟩ [] P.main.body o _ _ Λ [] rfl ho hw hf hs
+  have key : ∀ r : Result, Post P ⟨P, P.main, false, false⟩ o ⟨(s0.alloc names).2, .obj 0, none⟩ [] Λ
       (s0.alloc names).1 (evalW ⟨(s0.alloc names).2, .obj 0, none⟩ P.main.body) r →
       (match r with
         | .returned v s => Result.ok v s

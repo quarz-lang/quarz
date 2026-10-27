@@ -101,4 +101,15 @@ def assignX : Expr := .setField "x" (.var "v" [.int])
 #guard !(initProg assignX (extra := [setx])).check
 #guard !(initProg assignX (main := .call (.new 1 [.int 3]) "initialize" [.int 4])).check
 
+/-- A class with only `var @a: Int = default`, and `geta`. -/
+def defaultProg (default : Expr) : Program :=
+  ⟨[object, ⟨"Q", some 0, [⟨"a", [.int], true, some 0⟩]⟩],
+    [⟨1, "geta", [], [.int], none, [], .field "a" [.int]⟩],
+    ⟨0, "<main>", [], [.nil, .bool, .int, .str, .cls 0], none, [], .call (.new 1 []) "geta" []⟩,
+    [default]⟩
+
+-- A default never uses the object, even once it has set every field.
+#guard (defaultProg (.seq (.setField "a" (.int 1)) (.int 2))).check
+#guard !(defaultProg (.seq (.setField "a" (.int 1)) (.call .self "geta" []))).check
+
 end QuarzCore.Examples

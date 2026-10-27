@@ -78,6 +78,8 @@ structure Ctx where
   prog : Program
   meth : Method
   inBlock : Bool
+  /-- A field's default: the object may not be used at all (docs/01 §3). -/
+  inDefault : Bool
   deriving Inhabited
 
 namespace Ctx
@@ -260,8 +262,9 @@ def check (c : Ctx) (Γ : Env) : Expr → Option Out
     | some Δ => some (.plain o.ty (if c.inInit then Δ.set (.field f) (if fd.var then fd.ty else o.ty)
         else Δ))
   | .self => do
-    -- The object is used: in `initialize`, every field set.
-    guard (!c.inInit || c.allSet Γ)
+    -- The object is used: in `initialize`, every field set; never in a
+    -- default.
+    guard (!c.inDefault && (!c.inInit || c.allSet Γ))
     some (.plain [.cls c.meth.owner] Γ)
   | .new k args => do
     guard (k < c.ct.length)

@@ -156,11 +156,11 @@ def OracleOK (orc : Oracle) : Prop := ∀ n s t v, orc n s t = some v → s.hasT
 structure WfProg : Prop where
   classes : WfClasses P.classes
   methods : ∀ mt ∈ P.methods, P.wfMethod mt = true ∧
-    ∃ o, Typed ⟨P, mt, false⟩ (mt.params.map (fun (x, t) => (.local x, t)) ++
+    ∃ o, Typed ⟨P, mt, false, false⟩ (mt.params.map (fun (x, t) => (.local x, t)) ++
         (if mt.name == "initialize" then Program.heldEnv P.classes (P.classes.allFields mt.owner) else []))
       mt.body o ∧
       (mt.name ≠ "initialize" → o.out = none ∨ o.ty.le P.classes mt.ret = true) ∧
-      (mt.name = "initialize" → o.out.all (Ctx.allSet ⟨P, mt, false⟩ ·) = true)
+      (mt.name = "initialize" → o.out.all (Ctx.allSet ⟨P, mt, false, false⟩ ·) = true)
   inits : ∀ k, k < P.classes.length → P.wfInit k = true
   defaults : ∀ k, k < P.classes.length → ∀ j f d, (P.classes.allFields k)[j]? = some f →
     f.default = some d → ∃ e o, P.defaults[d]? = some e ∧

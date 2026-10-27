@@ -41,13 +41,11 @@ nothing after them); a field is read, `self` used (so a call on it) and
 `return` taken only where the rules say it is set (every field, for
 `self` and `return`); a block in it assigns no immutable field. A
 default runs before `initialize`, reading only the fields before it that
-hold a value, and checked as `initialize` is (as in a block of it). No
-call reaches `initialize` but `new`. The model accepts more than the Rust
-checker in two places, which soundness does not need: an immutable field
-that admits `nil` and that `initialize` does not assign holds `nil`
-(docs/01 §3 requires the assignment), and a default that itself assigns
-every field not set yet (its own and those after it, all `var`) may use
-`self`.
+hold a value, and checked as a block of `initialize` is, but that it
+never uses `self`. No call reaches `initialize` but `new`. The model
+accepts more than the Rust checker in one place, which soundness does
+not need: an immutable field that admits `nil` and that `initialize`
+does not assign holds `nil` (docs/01 §3 requires the assignment).
 
 Not in v1 (design in `/tmp`, kept by the maintainers): closures (lambdas,
 named blocks, what a closure assigns being un-narrowed from where it is
@@ -89,7 +87,12 @@ extensions and overloads.
   into QCore and checks it with the model, for `corpus/` (in range by
   design) and every fixture and example (mostly out of range for now).
   A disagreement is the Rust checker narrowing further than the rules
-  allow, or the model being stricter: either is looked at.
+  allow, or the model being stricter: either is looked at. The methods
+  `attr_reader` and `attr_writer` make are methods of the model; another
+  built-in method called on the implicit receiver is a `prim` taking
+  `self` (it may read the fields), but for a `Kernel` function: so a
+  call of either before every field is set disagrees (as `attr_reader`
+  calls did before #70).
 
 ## Setup
 

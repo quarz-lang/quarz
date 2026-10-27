@@ -1,0 +1,43 @@
+# initialize's paths (docs/01 §3): `raise` ends one, an accessor is a
+# method of the class (so it waits for every field), a default reads
+# the fields before it and does not use the object.
+
+class Pos
+  @x: Int
+  def initialize(v: Int)
+    if v > 0
+      @x = v
+    else
+      raise "not positive"
+    end
+    show
+  end
+
+  def show -> Nil
+    puts @x
+  end
+end
+
+class Pair
+  @x: Int
+  @y: Int
+  attr_reader :x
+  attr_reader :y
+  def initialize(v: Int)
+    @x = v
+    @y = @x + 1
+    puts x + y
+  end
+end
+
+class Counter
+  var @a: Int = 1
+  var @b: Int = @a + 1
+  attr_reader :b
+  attr_reader :a
+end
+
+Pos.new(1)
+p Pair.new(2).y
+c = Counter.new
+p c.a + c.b

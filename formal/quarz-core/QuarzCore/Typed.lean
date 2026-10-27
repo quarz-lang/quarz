@@ -46,8 +46,9 @@ inductive Typed : Ctx → Env → Expr → Out → Prop where
         Δ.set (.field f) (if fd.var then fd.ty else o.ty) else Δ))
   | setFieldDead : c.field? f = some fd → (fd.var || (c.inInit && !c.inBlock)) = true → Typed c Γ e o →
       o.ty.le c.ct fd.ty → o.out = none → Typed c Γ (.setField f e) .dead
-  /-- `self`: in `initialize`, once every field is set. -/
-  | self : (!c.inInit || c.allSet Γ) = true → Typed c Γ .self (.plain [.cls c.meth.owner] Γ)
+  /-- `self`: in `initialize`, once every field is set; never in a default. -/
+  | self : (!c.inDefault && (!c.inInit || c.allSet Γ)) = true →
+      Typed c Γ .self (.plain [.cls c.meth.owner] Γ)
   /-- `new`: the arguments its `initialize`'s (none without one). -/
   | new : k < c.ct.length → TypedArgs c Γ args (.live tys Δ) →
       c.prog.lookup k "initialize" = some mi → (mi.block.isNone && argsOk c tys mi) = true →

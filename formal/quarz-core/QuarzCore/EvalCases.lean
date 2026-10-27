@@ -672,7 +672,9 @@ theorem eval_succ : EvalGood P orc (n + 1) := by
   | int => exact post_plain hw hf hs hasTy_lit_int
   | str => exact post_plain hw hf hs hasTy_lit_str
   | flt => exact post_plain hw hf hs hasTy_lit_flt
-  | self ha => exact post_plain hw hf hs (self_typed hwf rfl hf hw hs ha)
+  | self ha =>
+    simp only [Bool.and_eq_true] at ha
+    exact post_plain hw hf hs (self_typed hwf rfl hf hw hs ha.2)
   | raise => trivial
   | var hu hle =>
     obtain ⟨l, v, d, hl, hv, hd, hvu, hvd⟩ := hs _ _ hu
