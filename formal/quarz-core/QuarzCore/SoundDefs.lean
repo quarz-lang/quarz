@@ -63,7 +63,8 @@ def SendPost (ret : Ty) (sig : Option BlockSig) (blk : Option Closure) (w : List
 def SendGood (n : Nat) : Prop :=
   ∀ (s : Store) (Λ : List Ty) (recv : Value) (k : Nat) (m : String) (mt : Method)
     (vs : List Value) (blk : Option Closure) (w : List (Ctx × Env × Out)),
-    WfStore P Λ s → s.hasTy P recv [.cls k] → k ≠ 0 → P.lookup k m = some mt →
+    WfStore P Λ s → (∃ l o, recv = .obj l ∧ s.objs[l]? = some o ∧ k ∈ P.classes.ancestors o.cls) →
+    P.lookup k m = some mt →
     AllTy P s vs (mt.params.map (·.2)) →
     BlkGiven P Λ s w mt.block blk →
     SendPost P mt.ret mt.block blk w Λ s (send P orc n s recv m vs blk)
