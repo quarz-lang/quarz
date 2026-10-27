@@ -1,0 +1,30 @@
+1
+3
+3
+0
+3
+2.5
+"c"
+RangeError: cannot get the last element of endless range
+RangeError: cannot get the first element of beginless range
+3
+1
+2
+[1, 2]
+Array#first: ArgumentError: negative array size
+Array#last: ArgumentError: negative array size
+Array#take: ArgumentError: attempt to take negative size
+Enumerable#first: ArgumentError: attempt to take negative size
+Enumerable#take: ArgumentError: attempt to take negative size
+Range#last: ArgumentError: negative array size
+Builder#first: ArgumentError: negative array size
+Builder#last: ArgumentError: negative array size
+[]
+min: ArgumentError: negative size (-1)
+max: ArgumentError: negative size (-1)
+Enumerable#drop: ArgumentError: attempt to drop negative size
+[1, 2]
+[3, 2]
+[2, 3]
+RangeError: cannot get the last element of endless range
+4

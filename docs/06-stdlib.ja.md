@@ -70,7 +70,7 @@
 ### Set[out T]、Range[T]、Tuple
 
 - `Set`: `Set[1, 2]`、`Set.new(array)`、`add add? delete merge include? member? | + & - ^ union intersection difference subset? superset? proper_subset? proper_superset? <= >= < > disjoint? intersect? select filter reject delete_if keep_if size length empty? each to_a` + Enumerable。`Set::Builder`: `<< add add? delete merge subtract select! reject! delete_if keep_if clear replace to_set freeze to_a` + Enumerable。
-- `Range`: `each step reverse_each include? cover? to_a size`(`Int` の範囲のみ)`empty? first last(n) begin end exclude_end? min max sum` + Enumerable。`each` と `step` はブロックなしで Enumerator を返します。
+- `Range`: `each step reverse_each include? cover? to_a size`(`Int` の範囲のみ)`empty? first last last(n) begin end exclude_end? min max sum` + Enumerable(`first` と `last` は Ruby と同じく端の値です。`(1...3).last` は 3 で、端がなければ `RangeError` を送出します)。`each` と `step` はブロックなしで Enumerator を返します。
 - タプル `[A, B]`: `[0]`(型は静的)、`size`、`to_a`、多重代入、パターン。
 
 ## 6. 手続き
