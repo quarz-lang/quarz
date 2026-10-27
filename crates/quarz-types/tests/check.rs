@@ -299,6 +299,30 @@ fn classes_and_fields() {
         "`g` is already defined with the same parameters",
     );
     ok("class C\n  @x: Int\n  attr_reader :x\n  def initialize(@x: Int); end\nend\nputs C.new(1).x");
+    // Keyword-only parameters' names are part of the signature.
+    ok("class C\n  def f(*, a: Int) -> Int = 1\n  def f(*, b: Int) -> Int = 2\nend\nputs C.new.f(a: 0) + C.new.f(b: 0)");
+    err(
+        "class C\n  def f(a: Int) -> Int = 1\n  def f(b: Int) -> Int = 2\nend",
+        "`f` is already defined with the same parameters",
+    );
+    // An override replaces the overload of its keyword names only.
+    ok("class C\n  def f(*, a: Int) -> Int = a\n  def f(*, b: Int) -> String = \"b\"\nend\nclass D < C\n  def f(*, b: Int) -> String = \"d\"\nend\nputs D.new.f(a: 1)");
+    // A duplicate alias is reported at the alias.
+    err_at(
+        "class C\n  def f -> Int = 1\n  alias g f\n  alias g f\nend",
+        "`g` is already defined with the same parameters",
+        4,
+    );
+    // A data type's generated methods give way to the body's own.
+    ok("data P(x: Int)\n  def to_s -> String = \"P\"\n  def with(*, x: Int) -> P = P.new(x + 1)\n  def to_h -> Hash[Symbol, Object] = {}\n  def x -> Int = 0\nend\nputs P.new(1).with(x: 2).to_s");
+    err(
+        "data Q(a: Int)\n  def initialize(s: String)\n    @a = s.size\n  end\nend\nputs Q.new(1).a",
+        "expects String but found Int",
+    );
+    err(
+        "data P(x: Int)\n  def ==(other: P) -> Bool = true\nend",
+        "takes one parameter of type `Object`",
+    );
     err(
         "class C\n  @x: Int\n  def initialize\n  end\nend",
         "field `@x` is not assigned on every path through `initialize`",

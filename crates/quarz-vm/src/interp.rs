@@ -2639,7 +2639,9 @@ impl Interp {
         let (a, b) = (self.program.method(a), self.program.method(b));
         a.params.len() == b.params.len()
             && a.params.iter().zip(&b.params).all(|(p, q)| {
-                p.kind == q.kind && (p.ty == q.ty || p.ty.is_none() || q.ty.is_none())
+                p.kind == q.kind
+                    && (p.kind != RtParamKind::KeywordOnly || p.name == q.name)
+                    && (p.ty == q.ty || p.ty.is_none() || q.ty.is_none())
             })
     }
 

@@ -1005,10 +1005,13 @@ impl<'ast> Declarer<'ast> {
             _ => false,
         } && a.block_optional == b.block_optional
             && a.params.len() == b.params.len()
-            && a.params
-                .iter()
-                .zip(&b.params)
-                .all(|(p, q)| p.kind == q.kind && same(&p.ty, &q.ty))
+            && a.params.iter().zip(&b.params).all(|(p, q)| {
+                // A call binds keyword-only parameters by name, so
+                // their names tell overloads apart.
+                p.kind == q.kind
+                    && same(&p.ty, &q.ty)
+                    && (p.kind != ParamKind::KeywordOnly || p.name == q.name)
+            })
     }
 
     /// Two methods of one name and the same signature (`same_signature`)
@@ -1166,10 +1169,11 @@ impl<'ast> Declarer<'ast> {
                         o.singleton == m.singleton
                             && o.block.is_some() == m.block.is_some()
                             && o.params.len() == m.params.len()
-                            && o.params
-                                .iter()
-                                .zip(&m.params)
-                                .all(|(p, q)| p.kind == q.kind && p.ty.subst(&subst) == q.ty)
+                            && o.params.iter().zip(&m.params).all(|(p, q)| {
+                                p.kind == q.kind
+                                    && (p.kind != ParamKind::KeywordOnly || p.name == q.name)
+                                    && p.ty.subst(&subst) == q.ty
+                            })
                     })
                     .map(|o| (o, subst.clone()))
             });
@@ -2285,6 +2289,10 @@ impl<'ast> Declarer<'ast> {
                         let mut info = self.world.method(mid).clone();
                         info.name = new_name.clone();
                         info.alias_of = Some(mid);
+                        // Its errors (a duplicate, an override) are the
+                        // `alias` line's.
+                        info.span = expr.span;
+                        info.file = self.file;
                         if !info.singleton {
                             self.check_equality_params(
                                 new_name,
@@ -2425,11 +2433,14 @@ impl<'ast> Declarer<'ast> {
         });
     }
 
+    /// The methods a data type generates: defaults, each left out when
+    /// the body defines a method of its name (docs/01 §4).
     fn declare_data_methods(&mut self, id: ClassId, class_self: Type, span: Span) {
         let fields = self.world.class(id).fields.clone();
+        let own = |s: &Self, name: &str| s.world.class(id).methods.contains_key(name);
         // Readers.
         for f in &fields {
-            if self.world.class(id).methods.contains_key(&f.name) {
+            if own(self, &f.name) {
                 continue;
             }
             self.add_synthetic(
@@ -2442,7 +2453,28 @@ impl<'ast> Declarer<'ast> {
                 Visibility::Public,
             );
         }
-        // initialize(field..., positional or keyword)
+        if !own(self, "initialize") {
+            self.declare_data_init(id, &fields, span);
+        }
+        if !own(self, "with") {
+            self.declare_data_with(id, &fields, class_self, span);
+        }
+        if !own(self, "to_h") {
+            let to_h = self.world.hash_of(self.world.symbol(), self.world.object());
+            self.add_synthetic(
+                id,
+                "to_h".to_string(),
+                vec![],
+                to_h,
+                Synth::DataToH,
+                span,
+                Visibility::Public,
+            );
+        }
+    }
+
+    /// initialize(field..., positional or keyword)
+    fn declare_data_init(&mut self, id: ClassId, fields: &[FieldInfo], span: Span) {
         let params: Vec<ParamInfo> = fields
             .iter()
             .map(|f| ParamInfo {
@@ -2463,7 +2495,16 @@ impl<'ast> Declarer<'ast> {
             span,
             Visibility::Public,
         );
-        // with(field: value = current, ...)
+    }
+
+    /// with(field: value = current, ...)
+    fn declare_data_with(
+        &mut self,
+        id: ClassId,
+        fields: &[FieldInfo],
+        class_self: Type,
+        span: Span,
+    ) {
         let with_params: Vec<ParamInfo> = fields
             .iter()
             .map(|f| ParamInfo {
@@ -2483,19 +2524,8 @@ impl<'ast> Declarer<'ast> {
             id,
             "with".to_string(),
             with_params,
-            class_self.clone(),
+            class_self,
             Synth::DataWith,
-            span,
-            Visibility::Public,
-        );
-        // to_h
-        let to_h = self.world.hash_of(self.world.symbol(), self.world.object());
-        self.add_synthetic(
-            id,
-            "to_h".to_string(),
-            vec![],
-            to_h,
-            Synth::DataToH,
             span,
             Visibility::Public,
         );

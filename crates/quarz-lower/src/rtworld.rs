@@ -393,7 +393,9 @@ fn overridden_methods(
                 && pm.block.is_some() == m.block.is_some()
                 && pm.params.iter().zip(&m.params).all(|(pp, cp)| {
                     let pt = pp.ty.subst(&subst);
-                    pp.kind == cp.kind && (pt == cp.ty || world.is_subtype(&pt, &cp.ty))
+                    pp.kind == cp.kind
+                        && (pp.kind != ParamKind::KeywordOnly || pp.name == cp.name)
+                        && (pt == cp.ty || world.is_subtype(&pt, &cp.ty))
                 })
                 && m.params[pm.params.len()..].iter().all(|cp| {
                     cp.default.is_some()
