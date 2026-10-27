@@ -101,6 +101,34 @@ theorem Post.weaken {c : Ctx} {o o' : Out} {fr : Frame} {Λ : List Ty} {s : Stor
   | timeout => trivial
   | stuck => exact h
 
+/-- Assigning `x`: it holds the value, the other paths what they held. -/
+theorem Sat.assign {c : Ctx} {Δ : Env} {fr : Frame} {Λ : List Ty} {s : Store} {x : String}
+    {l : Nat} {d t : Ty} {v : Value} (hs : Sat P c Δ fr s) (hcore : FrameCore P c Λ fr.vars fr.self s)
+    (hl : lookupVar fr.vars x = some l) (hd : c.decl x = some d) (hlen : l < s.locs.length)
+    (hvt : s.hasTy P v t) (hvd : s.hasTy P v d) :
+    Sat P c (Δ.set (.local x) t) fr (s.setLoc l v) := by
+  intro p u hp
+  rw [Env.get_set] at hp
+  split at hp
+  · rename_i hpx; subst hpx; cases hp
+    exact ⟨l, v, d, hl, by simp [Store.setLoc, hlen], hd, hvt, hvd⟩
+  · rename_i hpx
+    cases p with
+    | «local» y =>
+      obtain ⟨ly, w, dy, h1, h2, h3, h4, h5⟩ := hs _ _ hp
+      have hne : ly ≠ l := fun e => hpx (by rw [hcore.inj y x l (e ▸ h1) hl])
+      exact ⟨ly, w, dy, h1, by simpa [Store.setLoc, List.getElem?_set_ne (Ne.symm hne)] using h2,
+        h3, h4, h5⟩
+    | field f =>
+      obtain ⟨lo, o, fd, i, w, h1, h2, h3, h4, h5, h6, h7, h8⟩ := hs _ _ hp
+      exact ⟨lo, o, fd, i, w, h1, h2, h3, h4, h5, h6, h7, h8⟩
+
+/-- A write to the frame's own locals misses the blocks below it. -/
+theorem FrameOK.own_not_chain {c : Ctx} {Λ : List Ty} {fr : Frame} {s : Store} (hf : FrameOK P c Λ fr s)
+    {x : String} {l : Nat} (hl : lookupVar fr.vars x = some l) : ∀ l', chainLocs fr.blk l' → ¬ l' = l := by
+  rintro l' hc rfl
+  exact Nat.lt_irrefl _ (hf.above _ _ ⟨x, lookupVar_mem hl⟩ hc)
+
 variable (hP : WfProg P) (horc : OracleOK P orc) {n : Nat} (ih : Good P orc n)
 include hP horc ih
 
@@ -237,6 +265,68 @@ theorem eval_succ : EvalGood P orc (n + 1) := by
       exact ⟨Λ1, hw1, he1.mono (evalW_mono (by simp [Expr.assigned]; intros; simp_all)), hf1,
         hasTy_append_left hwf _ hv1, hto.join_left hwf, fun _ => hto.join_left hwf,
         fun h => absurd (hv.symm.trans h) (by simp)⟩
+  | whileNever h0 hc htt =>
+    simp only [eval]
+    subst h0
+    refine (ih.eval _ _ _ _ fr s Λ rfl hc hw hf hs.reset).bind
+      (evalW_mono (by simp [Expr.assigned]; intros; simp_all)) ?_
+    intro v s1 Λ1 hw1 he1 hf1 _ _ hvt hvf
+    cases hv : v.truthy
+    · rw [if_neg (by simp)]
+      have := hvf hv
+      exact ⟨Λ1, hw1, he1.mono (evalW_mono (by simp [Expr.assigned]; intros; simp_all)), hf1,
+        hasTy_lit_nil, this, fun _ => this, fun _ => this⟩
+    · obtain ⟨_, h, _⟩ := hvt hv; rw [htt] at h; cases h
+  | «while» h0 hc htt hb himp =>
+    simp only [eval]
+    subst h0
+    have hTy := Typed.while (Ctx.reset_idem _ _ _) hc htt hb himp
+    refine (ih.eval _ _ _ _ fr s Λ rfl hc hw hf hs.reset).bind
+      (evalW_mono (by simp [Expr.assigned]; intros; simp_all)) ?_
+    intro v s1 Λ1 hw1 he1 hf1 _ _ hvt hvf
+    cases hv : v.truthy
+    · rw [if_neg (by simp)]
+      have := hvf hv
+      exact ⟨Λ1, hw1, he1.mono (evalW_mono (by simp [Expr.assigned]; intros; simp_all)), hf1,
+        hasTy_lit_nil, this, fun _ => this, fun _ => this⟩
+    · rw [if_pos rfl]
+      obtain ⟨Δ', hΔ, hs1⟩ := hvt hv
+      rw [htt] at hΔ; cases hΔ
+      refine ((ih.eval _ _ _ _ fr s1 Λ1 rfl hb hw1 hf1 hs1).bind
+        (evalW_mono (by simp [Expr.assigned]; intros; simp_all)) ?_).extend he1 hw
+        (evalW_mono (by simp [Expr.assigned]; intros; simp_all)) (fun _ h => h)
+      intro _ s2 Λ2 hw2 he2 hf2 _ ho2 _ _
+      obtain ⟨Γb, hΓb, hs2⟩ := ho2
+      have hs0 := hs2.implies hwf (by rw [hΓb] at himp; simpa [Ctx.ct] using himp)
+      exact (ih.eval _ _ _ _ fr s2 Λ2 rfl hTy hw2 hf2 hs0).extend he2 hw1
+        (evalW_mono (by simp [Expr.assigned]; intros; simp_all)) (fun _ h => h)
+  | assign he hd hle hout =>
+    rename_i e o' x d Δ
+    simp only [eval]
+    refine (ih.eval _ _ _ _ fr s Λ rfl he hw hf hs).bind
+      (evalW_mono (by simp [Expr.assigned]; intros; simp_all)) ?_
+    intro v s1 Λ1 hw1 he1 hf1 hv1 ho1 _ _
+    obtain ⟨Δ', hΔ, hs1⟩ := ho1
+    rw [hout] at hΔ; cases hΔ
+    obtain ⟨l, hl, hΛ⟩ := hf1.core.decls x d hd
+    have hlen := hf1.core.inStore x l (lookupVar_mem hl)
+    simp only [hl]
+    have hvd := hasTy_le hwf hv1 hle
+    have he2 : Ext c.prog (fun l' => l' = l) Λ1 Λ1 s1 (s1.setLoc l v) :=
+      Ext.setLoc hlen hΛ hvd rfl
+    refine ⟨Λ1, hw1.setLoc l v, (he1.trans he2 hw).mono ?_, hf1.stable he2 (hf1.own_not_chain hl),
+      hv1, ⟨_, rfl, hs1.assign hf1.core hl hd hlen hv1 hvd⟩, fun _ => ⟨_, rfl,
+      hs1.assign hf1.core hl hd hlen hv1 hvd⟩, fun _ => ⟨_, rfl, hs1.assign hf1.core hl hd hlen hv1 hvd⟩⟩
+    rintro l' (h | rfl)
+    · exact evalW_mono (by simp [Expr.assigned]; intros; simp_all) l' h
+    · exact .inl ⟨x, by simp [Expr.assigned], hl⟩
+  | assignDead he hd hle hout =>
+    simp only [eval]
+    refine (ih.eval _ _ _ _ fr s Λ rfl he hw hf hs).bind
+      (evalW_mono (by simp [Expr.assigned]; intros; simp_all)) ?_
+    intro v s1 Λ1 _ _ _ _ ho1 _ _
+    obtain ⟨_, hΔ, _⟩ := ho1
+    rw [hout] at hΔ; cases hΔ
   | _ => sorry
 
 end QuarzCore
