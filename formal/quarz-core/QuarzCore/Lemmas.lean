@@ -209,6 +209,21 @@ theorem Ctx.reset_get_local {c : Ctx} {Γ : Env} {xs : List String} {x : String}
         · rw [if_neg hyx, Env.get_cons, if_neg hne] at h
           exact ih h
 
+theorem Ctx.reset_idem (c : Ctx) (Γ : Env) (xs : List String) :
+    c.reset (c.reset Γ xs) xs = c.reset Γ xs := by
+  induction Γ with
+  | nil => rfl
+  | cons e Γ ih =>
+    obtain ⟨q, u⟩ := e
+    cases q with
+    | field f => simp only [Ctx.reset, ih]
+    | «local» x =>
+      by_cases hx : x ∈ xs
+      · cases hd : c.decl x with
+        | none => simp only [Ctx.reset, hx, if_true, hd, ih]
+        | some d => simp only [Ctx.reset, hx, if_true, hd, ih]
+      · simp only [Ctx.reset, hx, if_false, ih]
+
 /-! ### What holds -/
 
 section
