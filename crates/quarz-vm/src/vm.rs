@@ -519,7 +519,11 @@ impl Interp {
             regs.set_len(n);
         }
         let mut pending: Option<Flow> = None;
-        let r = self.run_blocks(f, blocks, pool, act, &mut regs, &mut pending);
+        let r = if self.verify {
+            self.run_blocks::<true>(f, blocks, pool, act, &mut regs, &mut pending)
+        } else {
+            self.run_blocks::<false>(f, blocks, pool, act, &mut regs, &mut pending)
+        };
         release_regs(&mut regs);
         if regs.spilled() {
             let v = regs.into_vec();
@@ -589,8 +593,10 @@ impl Interp {
     /// Run the function's blocks from the entry to the end of the
     /// function (blocks follow one another here rather than through the
     /// caller: a step between blocks is a jump).
+    /// With `VERIFY` (`QUARZ_VERIFY`), an instruction that trusts a fact
+    /// goes through `exec_inst`, between the checks of it (`verify.rs`).
     #[allow(clippy::too_many_arguments)]
-    fn run_blocks(
+    fn run_blocks<const VERIFY: bool>(
         &self,
         f: &FuncInfo,
         blocks: &[Block],
@@ -607,100 +613,111 @@ impl Interp {
                 // The commonest instructions that cannot fail, here rather
                 // than through `exec_inst` (a large frame for one store).
                 // They raise nothing, so the line is not needed either.
-                match inst {
-                    Inst::LoadConst { dst, idx } => {
-                        // SAFETY: the pool is only borrowed mutably inside
-                        // `constant` (to cache a regexp), never while the
-                        // block loop reads it here.
-                        let consts: &Vec<Value> = unsafe { &*pool.as_ptr() };
-                        let c = &consts[*idx as usize];
-                        let v = match c {
-                            Value::Int(i) => Value::Int(*i),
-                            Value::Float(x) => Value::Float(*x),
-                            Value::Bool(b) => Value::Bool(*b),
-                            Value::Nil => Value::Nil,
-                            other => other.clone(),
-                        };
-                        if !v.is_nil()
-                            || !matches!(f.consts[*idx as usize], Constant::Regexp { .. })
-                        {
+                // (Checked, those with a fact to check go to `exec_inst`.)
+                if !VERIFY || !matches!(inst, Inst::Arg { .. } | Inst::BinOp { .. }) {
+                    match inst {
+                        Inst::LoadConst { dst, idx } => {
+                            // SAFETY: the pool is only borrowed mutably inside
+                            // `constant` (to cache a regexp), never while the
+                            // block loop reads it here.
+                            let consts: &Vec<Value> = unsafe { &*pool.as_ptr() };
+                            let c = &consts[*idx as usize];
+                            let v = match c {
+                                Value::Int(i) => Value::Int(*i),
+                                Value::Float(x) => Value::Float(*x),
+                                Value::Bool(b) => Value::Bool(*b),
+                                Value::Nil => Value::Nil,
+                                other => other.clone(),
+                            };
+                            if !v.is_nil()
+                                || !matches!(f.consts[*idx as usize], Constant::Regexp { .. })
+                            {
+                                put(&mut regs[*dst as usize], v);
+                                continue;
+                            }
+                        }
+                        Inst::Move { dst, src } => {
+                            let v = regs[*src as usize].clone();
                             put(&mut regs[*dst as usize], v);
                             continue;
                         }
-                    }
-                    Inst::Move { dst, src } => {
-                        let v = regs[*src as usize].clone();
-                        put(&mut regs[*dst as usize], v);
-                        continue;
-                    }
-                    Inst::Take { dst, src } => {
-                        let v = std::mem::replace(&mut regs[*src as usize], Value::Nil);
-                        put(&mut regs[*dst as usize], v);
-                        continue;
-                    }
-                    Inst::Arg { dst, index } => {
-                        put(&mut regs[*dst as usize], act.take_arg(*index));
-                        continue;
-                    }
-                    Inst::SelfRef { dst } => {
-                        put(&mut regs[*dst as usize], act.self_val.clone());
-                        continue;
-                    }
-                    Inst::ClearRegs { from, to } => {
-                        for r in &mut regs[*from as usize..*to as usize] {
-                            put(r, Value::Nil);
-                        }
-                        // The end of a statement or of a pass.
-                        if crate::deinit::enabled() {
-                            self.finalize_pending();
-                        }
-                        continue;
-                    }
-                    Inst::Release { src } => {
-                        put(&mut regs[*src as usize], Value::Nil);
-                        if crate::deinit::pending() {
-                            self.run_deinitializers();
-                        }
-                        continue;
-                    }
-                    Inst::IsNil { dst, src } => {
-                        let v = Value::Bool(regs[*src as usize].is_nil());
-                        put(&mut regs[*dst as usize], v);
-                        continue;
-                    }
-                    Inst::BinOp {
-                        dst, op, lhs, rhs, ..
-                    } => {
-                        // Two Ints, the commonest case, computed here and
-                        // written straight into the register: a value built
-                        // aside and copied in is read back before its stores
-                        // are done, which costs more than the arithmetic.
-                        if let (Value::Int(x), Value::Int(y)) =
-                            (&regs[*lhs as usize], &regs[*rhs as usize])
-                        {
-                            let (x, y) = (*x, *y);
-                            if int_binop_into(*op, x, y, &mut regs[*dst as usize]) {
-                                continue;
-                            }
-                        } else if let Some((x, y)) =
-                            float_operands(&regs[*lhs as usize], &regs[*rhs as usize])
-                        {
-                            float_binop_into(*op, x, y, &mut regs[*dst as usize]);
+                        Inst::Take { dst, src } => {
+                            let v = std::mem::replace(&mut regs[*src as usize], Value::Nil);
+                            put(&mut regs[*dst as usize], v);
                             continue;
                         }
+                        Inst::Arg { dst, index } => {
+                            put(&mut regs[*dst as usize], act.take_arg(*index));
+                            continue;
+                        }
+                        Inst::SelfRef { dst } => {
+                            put(&mut regs[*dst as usize], act.self_val.clone());
+                            continue;
+                        }
+                        Inst::ClearRegs { from, to } => {
+                            for r in &mut regs[*from as usize..*to as usize] {
+                                put(r, Value::Nil);
+                            }
+                            // The end of a statement or of a pass.
+                            if crate::deinit::enabled() {
+                                self.finalize_pending();
+                            }
+                            continue;
+                        }
+                        Inst::Release { src } => {
+                            put(&mut regs[*src as usize], Value::Nil);
+                            if crate::deinit::pending() {
+                                self.run_deinitializers();
+                            }
+                            continue;
+                        }
+                        Inst::IsNil { dst, src } => {
+                            let v = Value::Bool(regs[*src as usize].is_nil());
+                            put(&mut regs[*dst as usize], v);
+                            continue;
+                        }
+                        Inst::BinOp {
+                            dst, op, lhs, rhs, ..
+                        } => {
+                            // Two Ints, the commonest case, computed here and
+                            // written straight into the register: a value built
+                            // aside and copied in is read back before its stores
+                            // are done, which costs more than the arithmetic.
+                            if let (Value::Int(x), Value::Int(y)) =
+                                (&regs[*lhs as usize], &regs[*rhs as usize])
+                            {
+                                let (x, y) = (*x, *y);
+                                if int_binop_into(*op, x, y, &mut regs[*dst as usize]) {
+                                    continue;
+                                }
+                            } else if let Some((x, y)) =
+                                float_operands(&regs[*lhs as usize], &regs[*rhs as usize])
+                            {
+                                float_binop_into(*op, x, y, &mut regs[*dst as usize]);
+                                continue;
+                            }
+                        }
+                        _ => {}
                     }
-                    _ => {}
                 }
                 act.line.set(b.lines[i]);
-                if let Err(flow) = self.exec_inst(f, pool, act, regs, pending, inst) {
-                    match self.unwind(b, flow, pending) {
+                if VERIFY {
+                    self.verify_before(regs, inst);
+                }
+                match self.exec_inst(f, pool, act, regs, pending, inst) {
+                    Ok(()) => {
+                        if VERIFY {
+                            self.verify_after(f, regs, inst);
+                        }
+                    }
+                    Err(flow) => match self.unwind(b, flow, pending) {
                         Step::Jump(h) => {
                             block = h;
                             start = 0;
                             continue 'blocks;
                         }
                         Step::Done(r) => return r,
-                    }
+                    },
                 }
             }
             start = 0;
