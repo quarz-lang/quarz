@@ -1254,6 +1254,80 @@ theorem eval_succ : EvalGood P orc (n + 1) := by
       | returned => exact hres.elim
       | raised => trivial
       | timeout => trivial
-  | _ => sorry
+  | callBlk hr hout hargs hres hm0 hsig hall hps hb hret =>
+    rename_i r o' Δ args tys Δ' m ms m0 sig ps body ob
+    simp only [eval]
+    refine (ih.eval _ _ _ _ fr s Λ rfl hr hw hf hs).bind
+      (evalW_mono (by simp [Expr.assigned]; intros; simp_all)) ?_
+    intro v s1 Λ1 hw1 he1 hf1 hv1 ho1 _ _
+    obtain ⟨Δ1, hΔ, hs1⟩ := ho1
+    rw [hout] at hΔ; cases hΔ
+    have := ih.args _ _ _ _ fr s1 Λ1 rfl hargs hw1 hf1 hs1
+    revert this
+    generalize evalArgs c.prog orc n fr s1 _ = ar
+    intro this
+    cases ar with
+    | other r =>
+      exact (this.other (evalWs_mono (by simp [Expr.assigned]; intros; simp_all))).extend he1 hw
+        (evalW_mono (by simp [Expr.assigned]; intros; simp_all)) (fun _ h => h)
+    | ok vs s2 =>
+      obtain ⟨tys', Δ2, hao, Λ2, hw2, he2, hf2, hs2, hvs⟩ := this
+      cases hao
+      dsimp only
+      obtain ⟨k, mt, hk, hl, hmem, hrecv⟩ := recv_of (he2.hasTy hv1) hres
+      have hmt := List.all_eq_true.mp hall mt hmem
+      simp only [Bool.and_eq_true, beq_iff_eq] at hmt
+      obtain ⟨hblk, hok⟩ := hmt
+      unfold argsOk at hok
+      simp only [Bool.and_eq_true, beq_iff_eq] at hok
+      have hvs' : AllTy c.prog s2 vs (mt.params.map (·.2)) := hvs.le_params hwf hok.1 hok.2
+      -- The block, as checked here.
+      have hat : ClosureAt c.prog Λ2 s2 c Δ' ob (.mk fr.vars fr.self fr.blk ps body) sig := by
+        refine ⟨rfl, hf2.core, fun sig' h => ?_, hf2.above, hps, hb, hret, hs2.reset, ?_⟩
+        · obtain ⟨clo', h1, h2⟩ := hf2.blk sig' h
+          rw [h1]; exact h2
+        · cases ob.out with
+          | none => exact hs2
+          | some Γb => exact hs2.join_left hwf
+      have hin : ∀ l, chainLocs (some (.mk fr.vars fr.self fr.blk ps body)) l → l < s2.locs.length := by
+        intro l hl
+        simp only [chainLocs] at hl
+        rcases hl with ⟨x, hx⟩ | hl
+        · exact hf2.core.inStore x l hx
+        · exact hf2.chainIn l hl
+      have hsend := ih.send s2 Λ2 v k m mt vs (some (.mk fr.vars fr.self fr.blk ps body)) (c, Δ', ob)
+        hw2 hrecv hk hl hvs' (by rw [hblk]; exact ⟨hat, hin⟩)
+      revert hsend
+      generalize send c.prog orc n s2 v m vs _ = r
+      intro hsend
+      cases r with
+      | ok w s3 =>
+        obtain ⟨Λ3, hw3, he3, hw', hg3⟩ := hsend
+        rw [hblk] at hg3
+        obtain ⟨hat3, hin3⟩ := hg3
+        obtain ⟨_, hcore3, hblk3, _, _, _, _, _, hJ⟩ := hat3
+        have hfr : (⟨fr.vars, fr.self, fr.blk⟩ : Frame) = fr := rfl
+        rw [hfr] at hJ
+        have hf3 : FrameOK c.prog c Λ3 fr s3 := ⟨hcore3, fun sig' h => by
+          have := hblk3 sig' h
+          cases hfb : fr.blk with
+          | none => rw [hfb] at this; exact this.elim
+          | some clo' => rw [hfb] at this; exact ⟨clo', rfl, this⟩,
+          hf2.above, fun l hl => hin3 l (by simp only [chainLocs]; exact .inr hl)⟩
+        refine ⟨Λ3, hw3, ((he1.trans he2 hw).trans he3 hw).mono ?_, hf3, hasTy_flatMap hmem hw',
+          ⟨_, rfl, hJ⟩, fun _ => ⟨_, rfl, hJ⟩, fun _ => ⟨_, rfl, hJ⟩⟩
+        rintro l ((h | h) | h)
+        · exact evalW_mono (by simp [Expr.assigned]; intros; simp_all) l h
+        · exact evalWs_mono (by simp [Expr.assigned]; intros; simp_all) l h
+        · simp only [blkW] at h
+          rcases h with ⟨x, hx, hl⟩ | h
+          · refine .inl ⟨x, ?_, hl⟩
+            simp only [Expr.assigned, List.mem_append] at hx ⊢
+            rcases hx with hx | hx <;> simp [hx]
+          · exact .inr h
+      | stuck => exact hsend
+      | returned => exact hsend.elim
+      | raised => trivial
+      | timeout => trivial
 
 end QuarzCore
