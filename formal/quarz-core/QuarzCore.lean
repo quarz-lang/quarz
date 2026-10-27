@@ -17,3 +17,4 @@ import QuarzCore.Soundness
 import QuarzCore.EvalCases
 import QuarzCore.TestLemmas
 import QuarzCore.StepCases
+import QuarzCore.ConstructCases

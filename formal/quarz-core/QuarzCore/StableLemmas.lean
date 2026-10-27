@@ -25,68 +25,87 @@ theorem lookupVar_mem {vars : List (String × Nat)} {x : String} {l : Nat}
     subst hp h
     exact this
 
-theorem Ext.loc_same {W : Nat → Prop} {Λ Λ' : List Ty} {s s' : Store} (he : Ext P W Λ Λ' s s')
+theorem Ext.loc_same {W Wo : Nat → Prop} {Λ Λ' : List Ty} {s s' : Store} (he : Ext P W Wo Λ Λ' s s')
     {l : Nat} {v : Value} (hv : s.locs[l]? = some v) (hw : ¬ W l) : s'.locs[l]? = some v := by
   obtain ⟨v', h1, h2⟩ := he.locs l v hv
   rcases h2 with rfl | ⟨hw', _⟩
   · exact h1
   · exact absurd hw' hw
 
-theorem Ext.len {W : Nat → Prop} {Λ Λ' : List Ty} {s s' : Store} (he : Ext P W Λ Λ' s s')
+theorem Ext.len {W Wo : Nat → Prop} {Λ Λ' : List Ty} {s s' : Store} (he : Ext P W Wo Λ Λ' s s')
     {l : Nat} (hl : l < s.locs.length) : l < s'.locs.length := by
   obtain ⟨v', h1, _⟩ := he.locs l s.locs[l] (by simp [hl])
   exact (List.getElem?_eq_some_iff.mp h1).1
 
-theorem PathHolds.stable {c : Ctx} {fr : Frame} {s s' : Store} {W : Nat → Prop} {Λ Λ' : List Ty}
-    (he : Ext P W Λ Λ' s s') (hw : ∀ l, frameLocs fr.vars l → ¬ W l) :
+theorem InitSelf.stable {k : Nat} {me : Value} {s s' : Store} (hg : ObjsGrow s s')
+    (h : InitSelf P k me s) : InitSelf P k me s' := by
+  obtain ⟨l, o, rfl, ho, hk, hs⟩ := h
+  obtain ⟨o', ho', hc, hl, hs'⟩ := hg l o ho
+  exact ⟨l, o', rfl, ho', by rw [hc]; exact hk, fun i h1 h2 => hs' i (hs i h1 (hl ▸ h2))⟩
+
+/-- A path of a frame holds after writes that miss its locals and leave
+its `self`'s immutable fields alone. -/
+theorem PathHolds.stable {c : Ctx} {fr : Frame} {s s' : Store} {W Wo : Nat → Prop} {Λ Λ' : List Ty}
+    (he : Ext P W Wo Λ Λ' s s') (hw : ∀ l, frameLocs fr.vars l → ¬ W l)
+    (hwo : ∀ l, fr.self = .obj l → ¬ Wo l) :
     ∀ {p t}, PathHolds P c fr s p t → PathHolds P c fr s' p t
   | .local x, t, ⟨l, v, d, h1, h2, h3, h4, h5⟩ =>
     ⟨l, v, d, h1, he.loc_same h2 (hw l ⟨x, lookupVar_mem h1⟩), h3, he.hasTy h4, he.hasTy h5⟩
-  | .field f, t, ⟨l, o, fd, i, v, h1, h2, h3, h4, h5, h6, h7, h8⟩ => by
-    obtain ⟨o', ho', hc, hf⟩ := he.objs l o h2
-    refine ⟨l, o', fd, i, v, h1, ho', h3, h4, by rw [hc]; exact h5, by rw [hc]; exact h6, ?_,
-      he.hasTy h8⟩
-    rw [hf i fd h6 h4]; exact h7
+  | .field f, t, ⟨l, o, fd, i, h1, h2, h3, h4, h5, h6, h7⟩ => by
+    obtain ⟨o', ho', hc, _, hs⟩ := he.grow l o h2
+    refine ⟨l, o', fd, i, h1, ho', h3, by rw [hc]; exact h4, by rw [hc]; exact h5, hs i h6,
+      fun hv => ?_⟩
+    obtain ⟨v, h8, h9⟩ := h7 hv
+    exact ⟨v, by rw [he.imm l o o' h2 ho' (hwo l h1) i fd h5 hv]; exact h8, he.hasTy h9⟩
 
-theorem Sat.stable {c : Ctx} {Γ : Env} {fr : Frame} {s s' : Store} {W : Nat → Prop}
-    {Λ Λ' : List Ty} (h : Sat P c Γ fr s) (he : Ext P W Λ Λ' s s')
-    (hw : ∀ l, frameLocs fr.vars l → ¬ W l) : Sat P c Γ fr s' :=
-  fun p t hp => (h p t hp).stable he hw
+theorem Sat.stable {c : Ctx} {Γ : Env} {fr : Frame} {s s' : Store} {W Wo : Nat → Prop}
+    {Λ Λ' : List Ty} (h : Sat P c Γ fr s) (he : Ext P W Wo Λ Λ' s s')
+    (hw : ∀ l, frameLocs fr.vars l → ¬ W l) (hwo : ∀ l, fr.self = .obj l → ¬ Wo l) :
+    Sat P c Γ fr s' :=
+  fun p t hp => (h p t hp).stable he hw hwo
 
 theorem FrameCore.stable {c : Ctx} {Λ Λ' : List Ty} {vars : List (String × Nat)} {me : Value}
-    {s s' : Store} {W : Nat → Prop} (h : FrameCore P c Λ vars me s) (he : Ext P W Λ Λ' s s') :
+    {s s' : Store} {W Wo : Nat → Prop} (h : FrameCore P c Λ vars me s) (he : Ext P W Wo Λ Λ' s s') :
     FrameCore P c Λ' vars me s' where
   decls := fun x d hd => by
     obtain ⟨l, h1, h2⟩ := h.decls x d hd
     exact ⟨l, h1, prefix_getElem? he.tys h2⟩
   inj := h.inj
   inStore := fun x l hm => he.len (h.inStore x l hm)
-  self := he.hasTy h.self
+  self := fun hi => he.hasTy (h.self hi)
+  selfInit := fun hi => (h.selfInit hi).stable he.grow
   selfObj := h.selfObj
 
-theorem ChainAt.stable {Λ Λ' : List Ty} {s s' : Store} {W : Nat → Prop}
-    (he : Ext P W Λ Λ' s s') :
+/-- A block chain stays as checked under writes that miss its frames'
+locals (and assign no immutable field, when there is a block). -/
+theorem ChainAt.stable {Λ Λ' : List Ty} {s s' : Store} {W Wo : Nat → Prop}
+    (he : Ext P W Wo Λ Λ' s s') :
     ∀ (ws : List (Ctx × Env × Out)) (blk : Option Closure) (sig : Option BlockSig),
-      (∀ l, chainLocs blk l → ¬ W l) → ChainAt P Λ s ws blk sig → ChainAt P Λ' s' ws blk sig
-  | [], none, none, _, _ => trivial
-  | (c, Δ, ob) :: ws, some (.mk vars me outer ps body), some sig, hw, h => by
+      (∀ l, chainLocs blk l → ¬ W l) → (∀ l, Wo l → blk = none) →
+      ChainAt P Λ s ws blk sig → ChainAt P Λ' s' ws blk sig
+  | [], none, none, _, _, _ => trivial
+  | (c, Δ, ob) :: ws, some (.mk vars me outer ps body), some sig, hw, hwo, h => by
     simp only [ChainAt] at h ⊢
     simp only [chainLocs] at hw
     obtain ⟨hc, hcore, hch, habove, hps, hty, hret, hR, hJ⟩ := h
     have hwf : ∀ l, frameLocs vars l → ¬ W l := fun l hl => hw l (Or.inl hl)
-    exact ⟨hc, hcore.stable he, ChainAt.stable he ws outer _ (fun l hl => hw l (Or.inr hl)) hch,
-      habove, hps, hty, hret, hR.stable he hwf, hJ.stable he hwf⟩
-  | [], some _, _, _, h => by simp [ChainAt] at h
-  | [], none, some _, _, h => by simp [ChainAt] at h
-  | _ :: _, none, _, _, h => by simp [ChainAt] at h
-  | _ :: _, some (.mk _ _ _ _ _), none, _, h => by simp [ChainAt] at h
+    have hwo' : ∀ l, ¬ Wo l := fun l h => by cases hwo l h
+    exact ⟨hc, hcore.stable he, ChainAt.stable he ws outer _ (fun l hl => hw l (Or.inr hl))
+        (fun l h => absurd h (hwo' l)) hch,
+      habove, hps, hty, hret, hR.stable he hwf (fun l _ => hwo' l), hJ.stable he hwf (fun l _ => hwo' l)⟩
+  | [], some _, _, _, _, h => by simp [ChainAt] at h
+  | [], none, some _, _, _, h => by simp [ChainAt] at h
+  | _ :: _, none, _, _, _, h => by simp [ChainAt] at h
+  | _ :: _, some (.mk _ _ _ _ _), none, _, _, h => by simp [ChainAt] at h
 
-theorem FrameOK.stable {c : Ctx} {Λ Λ' : List Ty} {fr : Frame} {s s' : Store} {W : Nat → Prop}
-    {ws : List (Ctx × Env × Out)} (h : FrameOK P c Λ fr s ws) (he : Ext P W Λ Λ' s s')
-    (hw : ∀ l, chainLocs fr.blk l → ¬ W l) : FrameOK P c Λ' fr s' ws where
+theorem FrameOK.stable {c : Ctx} {Λ Λ' : List Ty} {fr : Frame} {s s' : Store} {W Wo : Nat → Prop}
+    {ws : List (Ctx × Env × Out)} (h : FrameOK P c Λ fr s ws) (he : Ext P W Wo Λ Λ' s s')
+    (hw : ∀ l, chainLocs fr.blk l → ¬ W l) (hwo : ∀ l, Wo l → fr.blk = none) :
+    FrameOK P c Λ' fr s' ws where
   core := h.core.stable he
-  chain := ChainAt.stable he ws fr.blk _ hw h.chain
+  chain := ChainAt.stable he ws fr.blk _ hw hwo h.chain
   above := h.above
   chainIn := fun l hl => he.len (h.chainIn l hl)
+  initBlk := h.initBlk
 
 end QuarzCore

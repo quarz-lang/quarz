@@ -14,12 +14,13 @@ structure WfClasses (ct : ClassTable) : Prop where
   nonempty : 0 < ct.length
   root : ∀ k, ct[0]? = some k → k.super = none
   super : ∀ i k, 0 < i → ct[i]? = some k → ∃ d, k.super = some d ∧ d < i
+  names : ∀ i, i < ct.length → ((ct.allFields i).map (·.name)).Nodup
 
 theorem Program.wfClasses_sound {P : Program} (h : P.wfClasses = true) : WfClasses P.classes := by
   simp only [Program.wfClasses, Bool.and_eq_true, decide_eq_true_eq, List.all_eq_true,
     List.mem_range] at h
-  obtain ⟨hne, hall⟩ := h
-  refine ⟨hne, fun k hk => ?_, fun i k hi hk => ?_⟩
+  obtain ⟨⟨hne, hall⟩, hnames⟩ := h
+  refine ⟨hne, fun k hk => ?_, fun i k hi hk => ?_, hnames⟩
   · have := hall 0 hne
     simp [hk] at this
     exact this

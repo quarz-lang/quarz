@@ -71,7 +71,9 @@ theorem hasTy_remove_nil {s : Store} {v : Value} {t : Ty} (hv : s.hasTy P v t) (
   refine ⟨a, ha, b, List.mem_filter.mpr ⟨hb, ?_⟩, hab⟩
   cases b <;> simp
   cases a <;> simp_all [Atom.le]
-  cases v <;> simp_all [Store.typeOf]
+  cases v with
+  | obj l => obtain ⟨_, _, _, h⟩ := typeOf_obj ha; cases h
+  | _ => simp_all [Store.typeOf]
 
 /-- A value of a type of final atoms is no object. -/
 theorem not_obj_of_final {s : Store} {v : Value} {t : Ty} (hv : s.hasTy P v t)
@@ -79,8 +81,7 @@ theorem not_obj_of_final {s : Store} {v : Value} {t : Ty} (hv : s.hasTy P v t)
   rintro l rfl
   rw [hasTy_iff] at hv
   obtain ⟨a, ha, b, hb, hab⟩ := hv
-  simp [Store.typeOf] at ha
-  obtain ⟨o, _, rfl⟩ := ha
+  obtain ⟨o, _, _, rfl⟩ := typeOf_obj ha
   have := List.all_eq_true.mp hfin b hb
   cases b <;> simp_all [Atom.final, Atom.le]
 
