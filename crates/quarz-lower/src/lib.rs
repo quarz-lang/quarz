@@ -446,7 +446,11 @@ pub fn lower_checked(checked: &Checked, files: &[SourceFile]) -> Module {
     check(&functions, verify::Stage::Release);
     borrow::mark_borrows(&mut functions);
     check(&functions, verify::Stage::Borrow);
-    regshare::share_registers(&mut functions, &delta.world.methods);
+    let before = verify::enabled().then(|| functions.clone());
+    let maps = regshare::share_registers(&mut functions, &delta.world.methods);
+    if let Some(before) = before {
+        verify::check_regshare(&before, &functions, &maps, &delta.world);
+    }
     check(&functions, verify::Stage::Regshare);
     // Last: where values move rather than copy, for every way the
     // functions run.

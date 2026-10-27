@@ -514,3 +514,137 @@ fn a_take_into_itself_is_found() {
     });
     assert!(found.iter().any(|w| w.contains("into itself")), "{found:?}");
 }
+
+// ----- Borrows (D) and register sharing (E) -----
+
+#[test]
+fn a_write_of_a_borrowed_element_register_is_found() {
+    let mut module = common::lower(
+        "class P\n  @v: Int\n  def initialize(@v: Int) end\n  def v -> Int = @v\nend\n\
+         def s(ps: Array[P]) -> Int\n  t = 0\n  ps.each { |q| t += q.v }\n  t\nend\n\
+         p s([P.new(1), P.new(2)])\n",
+    );
+    let n = module.functions.len();
+    let f = module
+        .functions
+        .iter_mut()
+        .find(|f| f.name == "main#s")
+        .unwrap();
+    let (bi, ii) = find(f, |i| matches!(i, Inst::ArrayGetReg { borrow: true, .. }));
+    let Inst::ArrayGetReg { dst, .. } = f.blocks[bi].insts[ii] else {
+        unreachable!()
+    };
+    // (Checked up to register sharing, see `verify::Checker::borrows`:
+    // the final QIR's moves are too early there, and not the point.)
+    let world = &module.world;
+    let borrow_found = |f: &quarz_ir::Function| -> Vec<String> {
+        verify(f, world, n, Stage::Regshare)
+            .into_iter()
+            .map(|v| v.what)
+            .filter(|w| w.contains("borrow"))
+            .collect()
+    };
+    assert!(borrow_found(f).is_empty());
+    f.blocks[bi]
+        .insts
+        .insert(ii + 1, Inst::LoadConst { dst, idx: 0 });
+    f.blocks[bi].lines.insert(ii + 1, 0);
+    let found = borrow_found(f);
+    assert!(
+        found
+            .iter()
+            .any(|w| w.contains("a borrowed element's register")),
+        "{found:?}"
+    );
+}
+
+/// The lowered sample, its `<main>`'s index and the identity map of its
+/// registers.
+fn regshare_sample() -> (quarz_ir::Module, usize, Vec<u32>) {
+    let module = common::lower(SAMPLE);
+    let main = module.units.last().unwrap().body as usize;
+    let map: Vec<u32> = (0..module.functions[main].nregs).collect();
+    (module, main, map)
+}
+
+fn regshare_found(
+    old: &quarz_ir::Function,
+    new: &quarz_ir::Function,
+    map: &[u32],
+    world: &quarz_ir::RtWorld,
+) -> Vec<String> {
+    quarz_lower::verify::regshare(old, new, map, world)
+        .into_iter()
+        .map(|v| v.what)
+        .collect()
+}
+
+#[test]
+fn sharing_a_counted_and_a_number_register_is_found() {
+    let (module, main, mut map) = regshare_sample();
+    let f = &module.functions[main];
+    let heap = quarz_ir::live::heap_possible(f, &module.world.methods);
+    let mentioned = |r: u32| {
+        f.blocks
+            .iter()
+            .flat_map(|b| &b.insts)
+            .any(|i| i.defs().contains(&r) || i.uses().contains(&r))
+    };
+    let counted = (0..f.nregs)
+        .find(|r| heap[*r as usize] && mentioned(*r))
+        .unwrap();
+    let number = (0..f.nregs)
+        .find(|r| !heap[*r as usize] && mentioned(*r))
+        .unwrap();
+    map[number as usize] = counted;
+    let new = quarz_lower::verify::renumber(f, &map);
+    let found = regshare_found(f, &new, &map, &module.world);
+    assert!(
+        found
+            .iter()
+            .any(|w| w.contains("a counted and a non-counted")),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn a_result_sharing_an_operand_is_found() {
+    let (module, main, mut map) = regshare_sample();
+    let f = &module.functions[main];
+    let (dst, lhs) = f
+        .blocks
+        .iter()
+        .flat_map(|b| &b.insts)
+        .find_map(|i| match i {
+            Inst::BinOp { dst, lhs, .. } if dst != lhs => Some((*dst, *lhs)),
+            _ => None,
+        })
+        .unwrap();
+    map[dst as usize] = lhs;
+    let new = quarz_lower::verify::renumber(f, &map);
+    let found = regshare_found(f, &new, &map, &module.world);
+    assert!(
+        found.iter().any(|w| w.contains("shares with its operand")),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn a_clear_left_out_is_found() {
+    let (module, main, map) = regshare_sample();
+    let f = &module.functions[main];
+    let heap = quarz_ir::live::heap_possible(f, &module.world.methods);
+    let mut new = f.clone();
+    let (bi, ii) = find(
+        &new,
+        |i| matches!(i, Inst::ClearRegs { from, to } if (*from..*to).any(|r| heap[r as usize])),
+    );
+    new.blocks[bi].insts.remove(ii);
+    new.blocks[bi].lines.remove(ii);
+    let found = regshare_found(f, &new, &map, &module.world);
+    assert!(
+        found.iter().any(|w| w.contains("no longer clears")),
+        "{found:?}"
+    );
+}
+
