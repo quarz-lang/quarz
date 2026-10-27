@@ -21,6 +21,7 @@ pub mod rc;
 pub mod sched;
 pub mod transfer;
 pub mod value;
+pub mod verify;
 pub mod vm;
 
 pub use interp::{Interp, SharedState};

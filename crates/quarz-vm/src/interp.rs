@@ -777,6 +777,10 @@ pub struct Interp {
     /// next interpreted call that needs one (an allocation per call
     /// otherwise).
     pub reg_pool: RefCell<Vec<Vec<Value>>>,
+    /// Check the facts instructions trust as they run (`verify.rs`).
+    pub verify: bool,
+    /// The kinds of each class's fields, for those checks.
+    pub(crate) verify_kinds: RefCell<Vec<Option<Vec<quarz_ir::FieldKind>>>>,
     self_rc: RefCell<Weak<Interp>>,
     pub root_task: Cell<Option<TaskId>>,
 }
@@ -1035,6 +1039,8 @@ impl Interp {
             native_bt: Cell::new(false),
             pending_flow: RefCell::new(None),
             reg_pool: RefCell::new(Vec::new()),
+            verify: crate::verify::enabled(),
+            verify_kinds: RefCell::new(Vec::new()),
             self_rc: RefCell::new(Weak::new()),
             root_task: Cell::new(None),
         });

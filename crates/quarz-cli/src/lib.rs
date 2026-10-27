@@ -16,6 +16,11 @@ pub fn run(checked: Checked, files: &[SourceFile], argv: Vec<String>) -> i32 {
     quarz_vm::run(module, argv)
 }
 
+/// Run a lowered program (for tests that change its QIR first).
+pub fn run_module(module: quarz_ir::Module, argv: Vec<String>) -> i32 {
+    quarz_vm::run(module, argv)
+}
+
 /// Compile a checked program to the executable `output`.
 pub fn build(
     checked: Checked,

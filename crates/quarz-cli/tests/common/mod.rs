@@ -7,6 +7,21 @@ use quarz_types::PRELUDE_SOURCE;
 /// Type-check and run a program, returning the exit code and its standard
 /// output. Panics on compile errors.
 pub fn run(src: &str, argv: &[&str]) -> (i32, String) {
+    let (checked, files) = check(src);
+    let argv = argv.iter().map(|s| s.to_string()).collect();
+    quarz_cli::run_capturing(checked, &files, argv)
+}
+
+/// Type-check and lower a program. Panics on compile errors.
+#[allow(dead_code)]
+pub fn lower(src: &str) -> quarz_ir::Module {
+    let (checked, files) = check(src);
+    quarz_cli::lower(&checked, &files)
+}
+
+/// Type-check a program, with the sources to lower it from. Panics on
+/// compile errors.
+fn check(src: &str) -> (quarz_types::Checked, Vec<SourceFile>) {
     let prelude = parse(PRELUDE_SOURCE);
     // The program's spans and node ids must not collide with the prelude's.
     let base = unit_base(0);
@@ -26,9 +41,8 @@ pub fn run(src: &str, argv: &[&str]) -> (i32, String) {
         .map(|(_, d)| d.render(&file))
         .collect();
     assert!(errors.is_empty(), "check errors:\n{}", errors.join("\n"));
-    let argv = argv.iter().map(|s| s.to_string()).collect();
     let prelude_file = SourceFile::new("<prelude>", PRELUDE_SOURCE);
-    quarz_cli::run_capturing(checked.unwrap(), &[prelude_file, file], argv)
+    (checked.unwrap(), vec![prelude_file, file])
 }
 
 /// Load a file (and what it requires), check and run it.
