@@ -82,7 +82,11 @@
 
 - 例外階層: `Exception` > (`Task::Cancelled`、`NoMemoryError`、`SystemExit`、`SystemStackError`、`DeadlockError`) / `StandardError` > (`ArgumentError`、`TypeError`、`IndexError` > `KeyError`、`RangeError` > `FloatDomainError`、`ZeroDivisionError`、`FrozenError`、`IOError` > `EOFError`、`SystemCallError`、`RuntimeError`、`NoMatchingPatternError`、`NotImplementedError`、`StopIteration`、`Channel::Closed`、`Task::Timeout`)。
 - `Exception#message backtrace cause full_message == hash`。例外は、自分自身と、raise や `Task.blocking` が作るそのコピー(下に書きます)にだけ等しく、別々に作った例外は、メッセージが同じでも等しくありません。`e.dup` も `e` とは等しくありません(`hash` もこれに合わせ、コピーは `Hash` のキーや `Set` の要素としても元と同じです。03-data-model.ja.md §6)。例外は Ruby と同じく最初の `raise` のバックトレースを保ちます。ただし例外は不変です。raise が例外に与えるもの(そのバックトレースと、下に書く `cause`)は、ほかから参照されていないとき(`raise Foo.new(..)`)だけ例外そのものに入り、それ以外のときは、それを足したコピーが代わりに投げられます。そのため、`e = Foo.new(..)` の後で `raise e` しても `e` にはバックトレースが入らず、`rescue` で受けた例外は `e` と `equal?` で一致しません。コピーは `cause` の上では同じ例外として扱われ、`Task.blocking` が作るコピーを通しても、自分自身の `cause` にはなりません。一度も投げられていない共有された例外は、投げるタスクごとに、自分のバックトレースを持つコピーとして投げられます。`rescue` 節の実行中に(節の中でも、節から呼んだメソッドの中でも)投げられた例外は、その節が処理している例外を `cause` に持ちます。例外が通過中の `ensure` 節の実行中に投げられた例外は、その通過中の例外を持ちます。Ruby の `$!` と同じで、タスクごとに別です。`Task.timeout` と `Task.blocking` のブロックは別のタスク(またはスレッド)で動くので、何も持たずに始まります。別のタスクが投げ、`await`、`Task.scope`、`Task.timeout`、`Task.blocking` が投げ直した例外は、`cause` がまだなければ、投げ直した場所で処理中の例外を持ちます。Ruby の `Thread#value` と同じです。
-- `Result[T, E]`(enum): `Ok(value)`/`Err(error)`。`map`、`and_then`(別名 `flat_map`)、`unwrap`、`unwrap_or`、`ok?`、`err?`。例外を使わないエラー処理に。
+- `Result[T, E]`(enum): `Ok(value)`/`Err(error)`。例外を使わないエラー処理に。
+  - 生成: `Result.ok(value)`、`Result.err(error)`。型引数は結果の行き先から決まります(何も決めないときは `Result[Int, String].ok(1)`)。
+  - 調べる: `ok?`、`err?`、`ok` と `err`(`T?`、`E?`)、`unwrap`、`expect(message)` と `unwrap_err`(`RuntimeError` を投げる)、`unwrap_or`、`unwrap_or_else { |e| }`。
+  - 組み合わせる: `map`、`and_then`(別名 `flat_map`。`for` 内包表記が使う)、`map_err`、`or_else`、`on_ok`/`on_err`(片方のときにブロックを呼び、レシーバを返す)。
+  - 橋渡し: `Result.capture { }`(ブロックの値、または投げた `StandardError` を `Err` に)、`E` が例外のときの `get`(値を返すか、エラーを投げる)、`T?` からの `Result.ok_or(value, error)`、`Result.all(results)`(値の配列か最初のエラー)、`Result.partition(results)`、`Task#result`(`Result.capture { await }`)。
 
 ## 8. 並行
 

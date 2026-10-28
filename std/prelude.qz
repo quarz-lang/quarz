@@ -5345,14 +5345,17 @@ class DeadlockError < Exception
 end
 
 # The result of an operation that can fail, as a value instead of an
-# exception: `Ok` with the value or `Err` with the error. Take it apart
-# with `case`/`in`, or chain it with `map` and `and_then` (a `for`
-# comprehension desugars to `flat_map`).
+# exception: `Ok` with the value or `Err` with the error. Make one with
+# `Result.ok` and `Result.err`, take it apart with `case`/`in`, or chain it
+# with `map` and `and_then` (a `for` comprehension desugars to
+# `flat_map`). `Result.capture` turns an exception into an `Err`, and
+# `get` raises an `Err`'s exception again; `ok` and `Result.ok_or` go to
+# and from `T?`.
 #
 # ```
-# r = Result::Ok[Int, String].new(3)
+# r: Result[Int, String] = Result.ok(3)
 # r.map { |x| x * 2 }   # => Result::Ok(value: 6)
-# e = Result::Err[Int, String].new("bad")
+# e = Result[Int, String].err("bad")
 # e.unwrap_or(0)        # => 0
 # e.unwrap              # raises RuntimeError
 # ```
@@ -5361,6 +5364,89 @@ enum Result[T, E]
   variant Ok(value: T)
   # A failure, with its error.
   variant Err(error: E)
+
+  # An `Ok` with `value`. The type arguments come from where the result
+  # goes (an annotated variable, a return or parameter type, a block's
+  # type), or are written: `Result[Int, String].ok(1)`.
+  #
+  # ```
+  # r: Result[Int, String] = Result.ok(1)
+  # r   # => Result::Ok(value: 1)
+  # ```
+  def self.ok(value: T) -> Result[T, E] = Ok.new(value)
+
+  # An `Err` with `error`, typed as `Result.ok`.
+  #
+  # ```
+  # Result[Int, String].err("bad")   # => Result::Err(error: "bad")
+  # ```
+  def self.err(error: E) -> Result[T, E] = Err.new(error)
+
+  # The block's value as an `Ok`, or the `StandardError` it raises as an
+  # `Err`. Other exceptions (`Task::Cancelled`, `SystemExit`...) go
+  # through, as past a bare `rescue`.
+  #
+  # ```
+  # Result.capture { 6 * 7 }              # => Result::Ok(value: 42)
+  # Result.capture { raise "no" }.err?    # => true
+  # ```
+  def self.capture(&: () -> T) -> Result[T, StandardError]
+    Result::Ok[T, StandardError].new(yield)
+  rescue => e
+    Result::Err[T, StandardError].new(e)
+  end
+
+  # An `Ok` with `value` unless it is `nil`, else an `Err` with `error`.
+  #
+  # ```
+  # h = {"a" => 1}
+  # Result.ok_or(h["a"]?, "missing")   # => Result::Ok(value: 1)
+  # Result.ok_or(h["b"]?, "missing")   # => Result::Err(error: "missing")
+  # ```
+  def self.ok_or(value: T?, error: E) -> Result[T, E]
+    if value.nil?
+      Err.new(error)
+    else
+      Ok.new(value)
+    end
+  end
+
+  # The values of `results` in order, or the first error.
+  #
+  # ```
+  # rs: Array[Result[Int, String]] = [Result.ok(1), Result.ok(2)]
+  # Result.all(rs)   # => Result::Ok(value: [1, 2])
+  # ```
+  def self.all(results: Enumerable[Result[T, E]]) -> Result[Array[T], E]
+    values = Array::Builder[T].new
+    results.each do |r|
+      case r
+      in Ok(value:) then values << value
+      in Err(error:) then return Result::Err[Array[T], E].new(error)
+      end
+      nil
+    end
+    Result::Ok[Array[T], E].new(values.to_a)
+  end
+
+  # The values and the errors of `results`, each in order.
+  #
+  # ```
+  # rs: Array[Result[Int, String]] = [Result.ok(1), Result.err("x"), Result.ok(2)]
+  # Result.partition(rs)   # => [[1, 2], ["x"]]
+  # ```
+  def self.partition(results: Enumerable[Result[T, E]]) -> [Array[T], Array[E]]
+    values = Array::Builder[T].new
+    errors = Array::Builder[E].new
+    results.each do |r|
+      case r
+      in Ok(value:) then values << value
+      in Err(error:) then errors << error
+      end
+      nil
+    end
+    [values.to_a, errors.to_a]
+  end
 
   # Whether it is an `Ok`.
   def ok? -> Bool
@@ -5372,6 +5458,22 @@ enum Result[T, E]
 
   # Whether it is an `Err`.
   def err? -> Bool = !ok?
+
+  # The value of an `Ok`, `nil` for an `Err`.
+  def ok -> T?
+    case self
+    in Ok(value:) then value
+    in Err then nil
+    end
+  end
+
+  # The error of an `Err`, `nil` for an `Ok`.
+  def err -> E?
+    case self
+    in Ok then nil
+    in Err(error:) then error
+    end
+  end
 
   # The value of an `Ok`.
   #
@@ -5385,11 +5487,48 @@ enum Result[T, E]
     end
   end
 
+  # The value of an `Ok`.
+  #
+  # ## Raises
+  #
+  # `RuntimeError` on an `Err`, with `message` and the error in its
+  # message: `"#{message}: #{error}"`.
+  def expect(message: String) -> T
+    case self
+    in Ok(value:) then value
+    in Err(error:) then raise RuntimeError, "#{message}: #{error}"
+    end
+  end
+
+  # The error of an `Err`.
+  #
+  # ## Raises
+  #
+  # `RuntimeError` on an `Ok`, with the value in the message.
+  def unwrap_err -> E
+    case self
+    in Ok(value:) then raise RuntimeError, "unwrap_err called on an Ok: #{value}"
+    in Err(error:) then error
+    end
+  end
+
   # The value of an `Ok`, or `default` for an `Err`.
   def unwrap_or(default: T) -> T
     case self
     in Ok(value:) then value
     in Err then default
+    end
+  end
+
+  # The value of an `Ok`, or the block's result for the error of an `Err`.
+  #
+  # ```
+  # Result[Int, String].err("abc").unwrap_or_else { |e| e.size }   # => 3
+  # ```
+  def unwrap_or_else(&: (E) -> T) -> T
+    case self
+    in Ok(value:) then value
+    in Err(error:) then yield(error)
     end
   end
 
@@ -5418,6 +5557,74 @@ enum Result[T, E]
 
   # `and_then` under the name `for` comprehensions desugar to.
   def flat_map[U](&: (T) -> Result[U, E]) -> Result[U, E] = and_then { |v| yield(v) }
+
+  # An `Err` with the block's result for the error; an `Ok` as it is.
+  #
+  # ```
+  # Result[Int, String].err("bad").map_err { |e| e.size }   # => Result::Err(error: 3)
+  # ```
+  def map_err[F](&: (E) -> F) -> Result[T, F]
+    case self
+    in Ok(value:) then Result::Ok[T, F].new(value)
+    in Err(error:) then Result::Err[T, F].new(yield(error))
+    end
+  end
+
+  # The block's result for the error of an `Err`, which may itself
+  # succeed; an `Ok` as it is.
+  #
+  # ```
+  # r = Result[Int, String].err("7")
+  # r.or_else { |e| Result[Int, Nil].ok(e.to_i) }   # => Result::Ok(value: 7)
+  # ```
+  def or_else[F](&: (E) -> Result[T, F]) -> Result[T, F]
+    case self
+    in Ok(value:) then Result::Ok[T, F].new(value)
+    in Err(error:) then yield(error)
+    end
+  end
+
+  # Calls the block with the value of an `Ok`, and returns `self`.
+  #
+  # ```
+  # Result[Int, String].ok(1).on_ok { |x| puts x }.ok?   # prints 1, => true
+  # ```
+  def on_ok(&: (T) -> Nil) -> Result[T, E]
+    case self
+    in Ok(value:) then yield(value)
+    in Err then nil
+    end
+    self
+  end
+
+  # Calls the block with the error of an `Err`, and returns `self`.
+  def on_err(&: (E) -> Nil) -> Result[T, E]
+    case self
+    in Ok then nil
+    in Err(error:) then yield(error)
+    end
+    self
+  end
+end
+
+# `Result` methods for errors that are exceptions.
+extension Result[T, E: Exception]
+  # The value of an `Ok`; raises the error of an `Err` itself.
+  #
+  # ```
+  # Result.capture { Integer.parse("12") }.get   # => 12
+  # Result.capture { Integer.parse("x") }.get    # raises ArgumentError
+  # ```
+  #
+  # ## Raises
+  #
+  # The error of an `Err`.
+  def get -> T
+    case self
+    in Result::Ok(value:) then value
+    in Result::Err(error:) then raise error
+    end
+  end
 end
 
 # A lightweight thread, running a block concurrently with the others, and
@@ -5575,6 +5782,16 @@ class Task[out T: Shareable]
   # The exception the task ended with, `Task::Cancelled` when it was
   # cancelled.
   native def await -> T
+  # The task's value as a `Result::Ok`, or the `StandardError` it ended
+  # with as a `Result::Err`: `Result.capture { await }`. Waits as `#await`
+  # does. `U` is `T` unless written: `t.result[Int?]()` for a wider one
+  # (`Task` is covariant in `T`, `Result` is not).
+  #
+  # ## Raises
+  #
+  # `Task::Cancelled` when it was cancelled, and the exceptions that are
+  # not `StandardError`s it ended with.
+  def result[U >: T] -> Result[U, StandardError] = Result[U, StandardError].capture { await }
   # Asks the task to stop: it raises `Task::Cancelled` at its next wait (IO,
   # `Task.sleep`, `#await`), channel `send`, `receive` or `select` (even
   # one that need not wait), `Task.yield` or `Task.check_cancel`,
