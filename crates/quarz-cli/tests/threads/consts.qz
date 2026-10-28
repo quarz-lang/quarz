@@ -15,14 +15,20 @@ ts = (0...8).map { |_| Task.spawn { late } }
 p ts.map(&:await), RUNS.get
 LATE = slow
 
-# The task running an initializer is cancelled while it sleeps: a task
-# waiting for the constant runs it again.
+# The task running an initializer is cancelled while it waits: a task
+# waiting for the constant runs it again. The first run waits on a
+# channel nothing sends to, so only the cancel ends it, whenever the
+# tasks are scheduled.
 STARTED = Channel[Int].new(capacity: 1)
+NEVER = Channel[Int].new
 
 def stalls -> Int
-  STARTED.send(0) if RUNS.get == 0
+  first_run = RUNS.get == 0
   RUNS.update { |n| n + 1 }
-  Task.sleep(50.ms)
+  if first_run
+    STARTED.send(0)
+    NEVER.receive
+  end
   7
 end
 
@@ -32,6 +38,7 @@ RUNS.set(0)
 first = Task.spawn { stalled }
 STARTED.receive
 waiters = (0...4).map { |_| Task.spawn { stalled } }
+# (Only makes it likely that the waiters wait for the constant already.)
 Task.sleep(10.ms)
 first.cancel
 begin
@@ -43,17 +50,24 @@ p waiters.map(&:await), RUNS.get
 STALLED = stalls
 
 # A task cancelled while it waits for a constant: the others still get it.
+# The initializer goes on only once the quitter's cancel has been seen.
+RUNNING = Channel[Int].new(capacity: 1)
+RELEASE = Channel[Int].new(capacity: 1)
+
 def slower -> Int
-  Task.sleep(50.ms)
+  RUNNING.send(0)
+  RELEASE.receive
   9
 end
 
 def slowest -> Int = SLOWEST
 
 runner = Task.spawn { slowest }
-Task.sleep(10.ms)
+RUNNING.receive
 quitter = Task.spawn { slowest }
 others = (0...3).map { |_| Task.spawn { slowest } }
+# (Only makes it likely that they wait for the constant already; the
+# output is the same if they have not started.)
 Task.sleep(10.ms)
 quitter.cancel
 begin
@@ -61,5 +75,6 @@ begin
 rescue Task::Cancelled
   puts "quitter cancelled"
 end
+RELEASE.send(0)
 p runner.await, others.map(&:await)
 SLOWEST = slower
