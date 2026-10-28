@@ -1991,8 +1991,26 @@ impl<'ast> Declarer<'ast> {
                                 }
                             }
                             Type::Class(sid, _) => {
-                                let kind = self.world.class(*sid).kind;
-                                self.error(format!("cannot inherit from a {kind:?}"), sup.span);
+                                let class = self.world.class(*sid);
+                                let name = class.name.clone();
+                                let msg = match class.kind {
+                                    ClassKind::Data => format!(
+                                        "cannot inherit from data type `{name}`: a data type cannot be subclassed (include a module to share behaviour)"
+                                    ),
+                                    ClassKind::Enum => format!(
+                                        "cannot inherit from enum `{name}`: its variants are the ones it declares"
+                                    ),
+                                    ClassKind::Variant => {
+                                        format!("cannot inherit from enum variant `{name}`")
+                                    }
+                                    ClassKind::Module => format!(
+                                        "cannot inherit from module `{name}`: include it instead"
+                                    ),
+                                    ClassKind::Class | ClassKind::Main => {
+                                        format!("cannot inherit from `{name}`")
+                                    }
+                                };
+                                self.error(msg, sup.span);
                             }
                             _ => self.error("superclass must be a class", sup.span),
                         }
