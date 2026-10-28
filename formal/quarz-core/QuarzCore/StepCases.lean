@@ -64,56 +64,6 @@ theorem SendPost.weaken {ret ret' : Ty} {sig : Option BlockSig} {blk : Option Cl
   | raised => trivial
   | timeout => trivial
 
-/-- What binding values to names does: only their locations change. -/
-theorem bindAll_same {vars : List (String × Nat)} :
-    ∀ {xs : List String} {vs : List Value} {s s' : Store}, bindAll s vars xs vs = some s' →
-      s'.objs = s.objs ∧ s'.locs.length = s.locs.length ∧
-      ∀ l, (∀ x ∈ xs, lookupVar vars x ≠ some l) → s'.locs[l]? = s.locs[l]?
-  | [], [], s, s', h => by simp [bindAll] at h; subst h; exact ⟨rfl, rfl, fun _ _ => rfl⟩
-  | x :: xs, v :: vs, s, s', h => by
-    simp only [bindAll, bind, Option.bind_eq_some_iff] at h
-    obtain ⟨l, hl, h⟩ := h
-    obtain ⟨h1, h2, h3⟩ := bindAll_same h
-    refine ⟨h1, by rw [h2]; simp [Store.setLoc], fun l' hl' => ?_⟩
-    rw [h3 l' fun y hy => hl' y (List.mem_cons_of_mem _ hy)]
-    have : l' ≠ l := fun e => hl' x (List.mem_cons_self ..) (e ▸ hl)
-    simp [Store.setLoc, List.getElem?_set_ne (Ne.symm this)]
-  | [], _ :: _, _, _, h => by simp [bindAll] at h
-  | _ :: _, [], _, _, h => by simp [bindAll] at h
-
-/-- Bound to distinct names, at distinct locations: each holds its value. -/
-theorem bindAll_val {vars : List (String × Nat)}
-    (hinj : ∀ x y l, lookupVar vars x = some l → lookupVar vars y = some l → x = y) :
-    ∀ {xs : List String} {vs : List Value} {s s' : Store}, bindAll s vars xs vs = some s' →
-      xs.Nodup → (∀ x ∈ xs, ∀ l, lookupVar vars x = some l → l < s.locs.length) →
-      ∀ x v, (x, v) ∈ xs.zip vs → ∃ l, lookupVar vars x = some l ∧ s'.locs[l]? = some v
-  | [], [], _, _, _, _, _, _, _, hm => by simp at hm
-  | x :: xs, w :: vs, s, s', h, hnd, hin, y, v, hm => by
-    simp only [bindAll, bind, Option.bind_eq_some_iff] at h
-    obtain ⟨l, hl, h⟩ := h
-    have hnd' := List.nodup_cons.mp hnd
-    rcases List.mem_cons.mp hm with he | hm
-    · cases he
-      refine ⟨l, hl, ?_⟩
-      rw [(bindAll_same h).2.2 l fun z hz hzl => hnd'.1 (by rw [hinj z x l hzl hl] at hz; exact hz)]
-      simp [Store.setLoc, hin x (List.mem_cons_self ..) l hl]
-    · exact bindAll_val hinj h hnd'.2 (fun z hz l' hl' => by
-        simpa [Store.setLoc] using hin z (List.mem_cons_of_mem _ hz) l' hl') y v hm
-  | [], _ :: _, _, _, h, _, _, _, _, _ => by simp [bindAll] at h
-  | _ :: _, [], _, _, h, _, _, _, _, _ => by simp [bindAll] at h
-
-theorem bindAll_some {vars : List (String × Nat)} :
-    ∀ {xs : List String} {vs : List Value} (s : Store), xs.length = vs.length →
-      (∀ x ∈ xs, ∃ l, lookupVar vars x = some l) → ∃ s', bindAll s vars xs vs = some s'
-  | [], [], s, _, _ => ⟨s, rfl⟩
-  | x :: xs, v :: vs, s, hlen, hl => by
-    obtain ⟨l, hx⟩ := hl x (List.mem_cons_self ..)
-    obtain ⟨s', hs'⟩ := bindAll_some (s.setLoc l v) (by simpa using hlen)
-      fun y hy => hl y (List.mem_cons_of_mem _ hy)
-    exact ⟨s', by simp [bindAll, hx, hs']⟩
-  | [], _ :: _, _, h, _ => by simp at h
-  | _ :: _, [], _, h, _ => by simp at h
-
 /-- The un-narrowed environment of what `xs` names holds after writes of
 values of their declared types to those locals only. -/
 theorem Sat.reset_typed {c : Ctx} {Δ : Env} {xs : List String} {fr : Frame} {Λ Λ' : List Ty}
@@ -155,99 +105,6 @@ theorem Sat.foldl_set {c : Ctx} {fr : Frame} {s : Store} :
     exact Sat.foldl_set ps (h.set (hp x t (List.mem_cons_self ..)))
       fun y u hy => hp y u (List.mem_cons_of_mem _ hy)
 
-theorem lookupVar_cons (x y : String) (l : Nat) (rest : List (String × Nat)) :
-    lookupVar ((x, l) :: rest) y = if x = y then some l else lookupVar rest y := by
-  by_cases h : x = y
-  · simp [lookupVar, List.find?, h]
-  · have : (x == y) = false := by simpa using h
-    simp [lookupVar, List.find?, this, h]
-
-/-- A new frame's names, each at its fresh location. -/
-theorem lookupVar_alloc : ∀ {names : List String} {base j : Nat} {x : String}, names.Nodup →
-    names[j]? = some x → lookupVar (Store.allocVars base names) x = some (base + j)
-  | [], _, _, _, _, h => by simp at h
-  | y :: ys, base, j, x, hnd, h => by
-    have hnd' := List.nodup_cons.mp hnd
-    simp only [Store.allocVars, lookupVar_cons]
-    cases j with
-    | zero => simp at h; subst h; simp
-    | succ j =>
-      simp at h
-      have hxy : y ≠ x := fun e => hnd'.1 (e ▸ List.mem_of_getElem? h)
-      rw [if_neg hxy, lookupVar_alloc hnd'.2 h]
-      congr 1; omega
-
-theorem lookupVar_alloc_inv : ∀ {names : List String} {base l : Nat} {x : String},
-    lookupVar (Store.allocVars base names) x = some l → ∃ j, names[j]? = some x ∧ l = base + j
-  | [], _, _, _, h => by simp [Store.allocVars, lookupVar] at h
-  | y :: ys, base, l, x, h => by
-    simp only [Store.allocVars, lookupVar_cons] at h
-    split at h
-    · rename_i hyx; cases h; exact ⟨0, by simp [hyx], rfl⟩
-    · obtain ⟨j, hj, rfl⟩ := lookupVar_alloc_inv h
-      exact ⟨j + 1, by simpa using hj, by omega⟩
-
-theorem mem_allocVars : ∀ {names : List String} {base l : Nat} {x : String},
-    (x, l) ∈ Store.allocVars base names → base ≤ l ∧ l < base + names.length
-  | [], _, _, _, h => by simp [Store.allocVars] at h
-  | y :: ys, base, l, x, h => by
-    simp only [Store.allocVars, List.mem_cons] at h
-    rcases h with h | h
-    · cases h; simp
-    · have := mem_allocVars h; simp; omega
-
-theorem Ext.restrict {W W' Wo : Nat → Prop} {Λ Λ' : List Ty} {s s' : Store} (h : Ext P W Wo Λ Λ' s s')
-    (hw : ∀ l, l < s.locs.length → W l → W' l) : Ext P W' Wo Λ Λ' s s' where
-  tys := h.tys
-  locs := fun l v hv => by
-    obtain ⟨v', h1, h2⟩ := h.locs l v hv
-    refine ⟨v', h1, ?_⟩
-    rcases h2 with h2 | ⟨hwl, t, ht, hty⟩
-    · exact .inl h2
-    · exact .inr ⟨hw l (List.getElem?_eq_some_iff.mp hv).1 hwl, t, ht, hty⟩
-  grow := h.grow
-  imm := h.imm
-
-theorem params_get : ∀ {ps : List (String × Ty)} {p : Path} {t : Ty},
-    Env.get (ps.map fun (x, t) => ((.local x : Path), t)) p = some t → ∃ x, p = .local x ∧ (x, t) ∈ ps
-  | [], _, _, h => by simp [Env.get] at h
-  | (y, u) :: ps, p, t, h => by
-    simp only [List.map_cons, Env.get_cons] at h
-    split at h
-    · rename_i hp; cases h; exact ⟨y, hp.symm, List.mem_cons_self ..⟩
-    · obtain ⟨x, hx, hm⟩ := params_get h; exact ⟨x, hx, List.mem_cons_of_mem _ hm⟩
-
-theorem find_nodup : ∀ {l : List (String × Ty)} {x : String} {t : Ty}, (l.map (·.1)).Nodup →
-    (x, t) ∈ l → (l.find? (·.1 == x)).map (·.2) = some t
-  | [], _, _, _, h => by cases h
-  | (y, u) :: l, x, t, hnd, h => by
-    have hnd' := List.nodup_cons.mp hnd
-    by_cases hy : y = x
-    · subst hy
-      rcases List.mem_cons.mp h with he | hm
-      · cases he; simp [List.find?]
-      · exact absurd (List.mem_map.mpr ⟨_, hm, rfl⟩) hnd'.1
-    · have hne : (y == x) = false := by simpa using hy
-      rcases List.mem_cons.mp h with he | hm
-      · cases he; exact absurd rfl hy
-      · simp only [List.find?, hne]; exact find_nodup hnd'.2 hm
-
-/-- A method's parameter: a local of its type (`wfMethod`). -/
-theorem decl_param {mt : Method} (h : P.wfMethod mt = true) {x : String} {t : Ty}
-    (hm : (x, t) ∈ mt.params) : (⟨P, mt, false, false⟩ : Ctx).decl x = some t := by
-  simp only [Program.wfMethod, Bool.and_eq_true, decide_eq_true_eq, List.all_eq_true,
-    beq_iff_eq] at h
-  obtain ⟨⟨⟨⟨⟨_, hlen⟩, hnd⟩, hpre⟩, _⟩, _⟩ := h
-  obtain ⟨i, hi⟩ := List.mem_iff_getElem?.mp hm
-  have hpl := (List.getElem?_eq_some_iff.mp hi).1
-  have hil : i < mt.locals.length := by omega
-  have hz : (mt.params.zip mt.locals)[i]? = some ((x, t), mt.locals[i]) := by
-    simp [List.zip, List.getElem?_zipWith, hi, hil]
-  have heq := hpre _ (List.mem_iff_getElem?.mpr ⟨i, hz⟩)
-  simp only at heq
-  have hloc : (x, t) ∈ mt.locals := by rw [heq]; exact List.getElem_mem hil
-  exact find_nodup hnd hloc
-
 /-- Arguments for a method, for one overriding it. -/
 theorem AllTy.over (hwf : WfClasses P.classes) {s : Store} :
     ∀ {vs : List Value} {sup sub : List (String × Ty)}, AllTy P s vs (sup.map (·.2)) →
@@ -273,10 +130,6 @@ theorem over_facts (hwf : WfClasses P.classes) {mt mt' : Method} {s : Store} {vs
   · simp only [Program.overrides, Bool.and_eq_true, beq_iff_eq] at h
     obtain ⟨⟨⟨hl, hall⟩, hret⟩, hblk⟩ := h
     exact ⟨by rw [hvs.length]; simp [hl], hvs.over hwf hl.symm hall, hret, hblk⟩
-
-theorem zip_fst_snd : ∀ (ps : List (String × Ty)), (ps.map (·.1)).zip (ps.map (·.2)) = ps
-  | [] => rfl
-  | (x, t) :: ps => by simp [zip_fst_snd ps]
 
 variable (hP : WfProg P) (horc : OracleOK P orc) {n : Nat} (ih : Good P orc n)
 include hP horc ih
@@ -405,20 +258,6 @@ theorem equal_succ : EqualGood P orc (n + 1) := by
         rw [hblk] at this
         exact this.weaken hwf hret
   | _ => exact plain _
-
-omit hP horc ih in
-/-- `(x, t)` of the parameters and types: the value given for `x`, of `t`. -/
-theorem zip_val {s : Store} :
-    ∀ {ps : List String} {ts : List Ty} {vs : List Value}, AllTy P s vs ts →
-      ∀ x t, (x, t) ∈ ps.zip ts → ∃ v, (x, v) ∈ ps.zip vs ∧ s.hasTy P v t
-  | [], _, _, _, _, _, hm => by simp at hm
-  | _ :: _, [], _, _, _, _, hm => by simp at hm
-  | p :: ps, t' :: ts, [], h, _, _, _ => h.elim
-  | p :: ps, t' :: ts, v :: vs, ⟨h1, h2⟩, x, t, hm => by
-    rcases List.mem_cons.mp hm with he | hm
-    · cases he; exact ⟨v, List.mem_cons_self .., h1⟩
-    · obtain ⟨w, hw, hwt⟩ := zip_val h2 x t hm
-      exact ⟨w, List.mem_cons_of_mem _ hw, hwt⟩
 
 omit hP horc ih in
 /-- A frame of a method is one of its blocks' too. -/

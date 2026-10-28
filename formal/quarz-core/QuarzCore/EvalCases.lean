@@ -3,7 +3,7 @@
 case by case, as `Typed` derives the expression.
 -/
 
-import QuarzCore.SoundDefs
+import QuarzCore.FrameLemmas
 import QuarzCore.TestLemmas
 
 set_option linter.deprecated false
@@ -248,21 +248,6 @@ theorem self_field (hwf : WfClasses P.classes) {c : Ctx} {Λ : List Ty} {fr : Fr
   obtain ⟨_, hlen, hslen, _⟩ := hw.objs l o ho
   have hil : i < o.fields.length := by rw [hlen]; exact (List.getElem?_eq_some_iff.mp hfi).1
   exact ⟨l, o, i, hl, ho, hi, hfi, hil, hslen ▸ hil⟩
-
-theorem findIdx?_name {l : List Field} (hn : (l.map (·.name)).Nodup) {i : Nat} {f : Field}
-    (hi : l[i]? = some f) : l.findIdx? (·.name == f.name) = some i := by
-  obtain ⟨hil, rfl⟩ := List.getElem?_eq_some_iff.mp hi
-  rw [List.findIdx?_eq_some_iff_getElem]
-  refine ⟨hil, by simp, fun j hj => ?_⟩
-  simp only [beq_iff_eq]
-  intro he
-  rw [List.nodup_iff_pairwise_ne, List.pairwise_iff_getElem] at hn
-  exact hn j i (by simp; omega) (by simp; omega) hj (by simpa using he)
-
-/-- A field's index is where it is (the names are distinct). -/
-theorem fieldIndex_at (hwf : WfClasses P.classes) {k : Nat} (hk : k < P.classes.length) {i : Nat}
-    {f : Field} (hi : (P.classes.allFields k)[i]? = some f) : fieldIndex P.classes k f.name = some i :=
-  findIdx?_name (hwf.names k hk) hi
 
 /-- `self` may be used (in `initialize`, once every field is set): it is
 of the method's class. -/
@@ -658,6 +643,321 @@ theorem FrameOK.blk_not_own {c : Ctx} {Λ : List Ty} {fr : Frame} {s : Store} {w
     ∀ l, frameLocs fr.vars l → ¬ blkW fr.blk l := fun l hl hb =>
   Nat.lt_irrefl _ (hf.above l l hl (blkW_chain hb))
 
+/-! ### `initialize` run on an object (`new`, `super`) -/
+
+variable (P) in
+/-- What running `initialize`'s body on object `l` gives: never stuck;
+when it ends (with a value or a `return`), the object made, no location
+of `s` written, and no immutable field but the object's. -/
+def InitPost (l : Nat) (Λ : List Ty) (s : Store) : Result → Prop
+  | .ok _ s' | .returned _ s' => ∃ Λ', WfStore P Λ' s' ∧ Ext P (fun _ => False) (· = l) Λ Λ' s s' ∧
+      (s'.typeOf (.obj l)).isSome = true
+  | .stuck => False
+  | _ => True
+
+/-- `initialize` (`mi`) run on object `l`, every field of which is set but
+those of `mi`'s class to assign: its frame (as `send_succ` builds one),
+then its body. -/
+theorem init_run (hP : WfProg P) {n : Nat} (ihe : EvalGood P orc n) {s : Store} {Λ : List Ty}
+    {mi : Method} {vs : List Value} {l : Nat} {o : Obj} (hw : WfStore P Λ s)
+    (hmem : mi ∈ P.methods) (hname : mi.name = "initialize") (hblk : mi.block = none)
+    (hvs : AllTy P s vs (mi.params.map (·.2))) (ho : s.objs[l]? = some o)
+    (hsub : mi.owner ∈ P.classes.ancestors o.cls)
+    (hset : ∀ i f, (P.classes.allFields o.cls)[i]? = some f →
+      ((P.classes.allFields mi.owner).length ≤ i ∨ f.required P.classes = false) →
+      o.set[i]? = some true) :
+    vs.length = mi.params.length ∧ ∃ s3, bindAll ⟨s.locs ++ (mi.locals.map (·.1)).map fun _ => .nil, s.objs⟩
+        (Store.allocVars s.locs.length (mi.locals.map (·.1))) (mi.params.map (·.1)) vs = some s3 ∧
+      InitPost P l Λ s
+        (eval P orc n ⟨Store.allocVars s.locs.length (mi.locals.map (·.1)), .obj l, none⟩ s3 mi.body) := by
+  have hwf := hP.classes
+  obtain ⟨hwfm, oB, hty, _, hallset⟩ := hP.methods mi hmem
+  have hni : (mi.name == "initialize") = true := by simp [hname]
+  have hinInit : (⟨P, mi, false, false⟩ : Ctx).inInit = true := hni
+  rw [hni] at hty
+  simp only [if_true] at hty
+  have hlen' : vs.length = mi.params.length := by rw [hvs.length]; simp
+  refine ⟨hlen', ?_⟩
+  -- The frame: `initialize`'s locals at fresh locations.
+  have hwfm' := hwfm
+  simp only [Program.wfMethod, Bool.and_eq_true, decide_eq_true_eq] at hwfm'
+  obtain ⟨⟨⟨⟨⟨_, hplen⟩, hnd⟩, hpre⟩, _⟩, _⟩ := hwfm'
+  have hcl : ∀ x d, (⟨P, mi, false, false⟩ : Ctx).decl x = some d →
+      ∃ j, mi.locals[j]? = some (x, d) := fun x d hd => by
+    simp only [Ctx.decl, Option.map_eq_some_iff] at hd
+    obtain ⟨⟨y, d'⟩, hf, hd'⟩ := hd
+    simp at hd'; subst hd'
+    have hp := List.find?_some hf
+    simp at hp; subst hp
+    exact List.mem_iff_getElem?.mp (List.mem_of_find?_eq_some hf)
+  have hlookj : ∀ j x d, mi.locals[j]? = some (x, d) →
+      lookupVar (Store.allocVars s.locs.length (mi.locals.map (·.1))) x = some (s.locs.length + j) :=
+    fun j x d hj => lookupVar_alloc hnd (by simp [hj])
+  have hptake : mi.params = mi.locals.take mi.params.length := by
+    apply List.ext_getElem (by simp; omega)
+    intro i h1 h2
+    have hil : i < mi.locals.length := by omega
+    have hz : (mi.params.zip mi.locals)[i]? = some (mi.params[i], mi.locals[i]) := by
+      simp [List.zip, List.getElem?_zipWith, h1, hil]
+    have := List.all_eq_true.mp hpre _ (List.mem_iff_getElem?.mpr ⟨i, hz⟩)
+    simp at this; simp [this]
+  have hpnd : (mi.params.map (·.1)).Nodup := by
+    rw [hptake, List.map_take]; exact hnd.sublist (List.take_sublist _ _)
+  have hexists : ∀ x ∈ mi.params.map (·.1),
+      ∃ l, lookupVar (Store.allocVars s.locs.length (mi.locals.map (·.1))) x = some l := by
+    intro x hx
+    obtain ⟨⟨y, t⟩, hm, rfl⟩ := List.mem_map.mp hx
+    obtain ⟨j, hj⟩ := hcl y t (decl_param hwfm hm)
+    exact ⟨_, hlookj j y t hj⟩
+  obtain ⟨s3, hb⟩ := bindAll_some (vars := Store.allocVars s.locs.length (mi.locals.map (·.1)))
+    ⟨s.locs ++ (mi.locals.map (·.1)).map fun _ => .nil, s.objs⟩ (by rw [List.length_map, hlen'])
+    hexists
+  refine ⟨s3, hb, ?_⟩
+  obtain ⟨hobjs, hlen3, hsame⟩ := bindAll_same hb
+  simp only [List.length_append, List.length_map] at hlen3
+  have hge : ∀ x l', lookupVar (Store.allocVars s.locs.length (mi.locals.map (·.1))) x = some l' →
+      s.locs.length ≤ l' ∧ l' < s.locs.length + mi.locals.length := fun x l' h => by
+    have := mem_allocVars (lookupVar_mem h); simpa using this
+  have mono : ∀ {v : Value} {t : Ty}, s.hasTy P v t → s3.hasTy P v t := fun h => by
+    unfold Store.hasTy Store.hasType Store.typeOf at *; rw [hobjs]; exact h
+  have he23 : Ext P (fun _ => False) (fun _ => False) Λ (Λ ++ mi.locals.map (·.2)) s s3 := by
+    refine ⟨List.prefix_append _ _, fun l' v hv => ⟨v, ?_, .inl rfl⟩, fun l' o' ho' =>
+      ⟨o', by rw [hobjs]; exact ho', rfl, rfl, fun _ h => h⟩,
+      fun _ o1 o2 h1 h2 _ _ _ _ _ => by rw [hobjs, h1] at h2; cases h2; rfl⟩
+    have hl' := (List.getElem?_eq_some_iff.mp hv).1
+    rw [hsame l' fun x _ hx => by have := (hge x l' hx).1; omega]
+    simp [List.getElem?_append_left hl', hv]
+  have hw3 : WfStore P (Λ ++ mi.locals.map (·.2)) s3 :=
+    ⟨by simp [hw.len, hlen3], fun l' o' ho' => by
+      rw [hobjs] at ho'
+      obtain ⟨a, b, b2, d⟩ := hw.objs l' o' ho'
+      exact ⟨a, b, b2, fun i v f h0 h1 h2 => mono (d i v f h0 h1 h2)⟩⟩
+  have ho3 : s3.objs[l]? = some o := by rw [hobjs]; exact ho
+  obtain ⟨rest, hrest⟩ := allFields_prefix hwf hsub
+  obtain ⟨_, hflen, hslen, _⟩ := hw.objs l o ho
+  have hcore : FrameCore P ⟨P, mi, false, false⟩ (Λ ++ mi.locals.map (·.2))
+      (Store.allocVars s.locs.length (mi.locals.map (·.1))) (.obj l) s3 := by
+    refine ⟨fun x d hd => ?_, fun x y l' hx hy => ?_, fun x l' hm => ?_,
+      fun h => (by rw [hinInit] at h; cases h), fun _ => ⟨l, o, rfl, ho3, hsub, fun i h1 h2 => ?_⟩,
+      ⟨l, rfl⟩⟩
+    · obtain ⟨j, hj⟩ := hcl x d hd
+      refine ⟨_, hlookj j x d hj, ?_⟩
+      have hjl := (List.getElem?_eq_some_iff.mp hj).1
+      rw [List.getElem?_append_right (by rw [hw.len]; omega)]
+      simp [hw.len, hj]
+    · obtain ⟨jx, hjx, rfl⟩ := lookupVar_alloc_inv hx
+      obtain ⟨jy, hjy, hjj⟩ := lookupVar_alloc_inv hy
+      have : jx = jy := by omega
+      subst this; rw [hjx] at hjy; cases hjy; rfl
+    · have := mem_allocVars hm; simp [hlen3] at this ⊢; omega
+    · -- A field past `initialize`'s class: set.
+      have hi : i < (P.classes.allFields o.cls).length := by omega
+      exact hset i _ (List.getElem?_eq_getElem hi) (.inl h1)
+  have hf3 : FrameOK P ⟨P, mi, false, false⟩ (Λ ++ mi.locals.map (·.2))
+      ⟨Store.allocVars s.locs.length (mi.locals.map (·.1)), .obj l, none⟩ s3 [] :=
+    ⟨hcore, by simp [ChainAt, hblk], fun _ _ _ h => by simp [chainLocs] at h,
+      fun _ h => by simp [chainLocs] at h, fun _ _ => rfl⟩
+  have hs3 : Sat P ⟨P, mi, false, false⟩ (mi.params.map (fun (x, t) => (.local x, t)) ++
+      Program.heldEnv P.classes (P.classes.allFields mi.owner))
+      ⟨Store.allocVars s.locs.length (mi.locals.map (·.1)), .obj l, none⟩ s3 := by
+    intro p t hp
+    rw [Env.get_append] at hp
+    split at hp
+    · cases hp
+      rename_i hp
+      obtain ⟨x, rfl, hm⟩ := params_get hp
+      have hd := decl_param hwfm hm
+      obtain ⟨v, hvm, hvt⟩ := zip_val hvs x t (by rw [zip_fst_snd]; exact hm)
+      obtain ⟨lx, hlx, hv⟩ := bindAll_val hcore.inj hb hpnd
+        (fun y _ l' hl' => by have := hge y l' hl'; simp; omega) x v hvm
+      exact ⟨lx, v, t, hlx, hv, hd, mono hvt, mono hvt⟩
+    · have := sat_held (c := ⟨P, mi, false, false⟩) (j := (P.classes.allFields mi.owner).length) hwf rfl
+        hw3 (fr := ⟨Store.allocVars s.locs.length (mi.locals.map (·.1)), .obj l, none⟩) rfl ho3 hsub
+        (fun i hi f hf hr => hset i f (by rw [hrest, List.getElem?_append_left hi]; exact hf) (.inr hr))
+      rw [List.take_length] at this
+      exact this p t hp
+  have := ihe ⟨P, mi, false, false⟩ _ mi.body oB _ s3 _ [] rfl hty hw3 hf3 hs3
+  revert this
+  generalize eval P orc n _ s3 mi.body = r
+  intro this
+  -- No location of `s` written, only the object's immutable fields.
+  have hfin : ∀ {Λ4 : List Ty} {s4 : Store},
+      Ext P (evalW ⟨Store.allocVars s.locs.length (mi.locals.map (·.1)), .obj l, none⟩ mi.body)
+        (initW ⟨P, mi, false, false⟩ ⟨Store.allocVars s.locs.length (mi.locals.map (·.1)), .obj l, none⟩)
+        (Λ ++ mi.locals.map (·.2)) Λ4 s3 s4 →
+      Ext P (fun _ => False) (· = l) Λ Λ4 s s4 := fun he4 =>
+    ((he23.trans he4 hw).mono (fun _ h => h) (fun l' h => h.elim False.elim fun ⟨_, _, h⟩ => by
+      cases h; rfl)).restrict fun l' hl' h => by
+        rcases h with h | ⟨x, _, hx⟩ | h
+        · exact h
+        · have := (hge x l' hx).1; omega
+        · simp [blkW] at h
+  cases r with
+  | ok v s4 =>
+    obtain ⟨Λ4, hw4, he4, hf4, _, ⟨Γ4, hΓ4, hs4⟩, _⟩ := this
+    refine ⟨Λ4, hw4, hfin he4, ?_⟩
+    have hall := hallset hname
+    rw [hΓ4] at hall
+    have := self_typed hwf rfl hf4 hw4 hs4 (by simpa [hinInit] using hall)
+    obtain ⟨_, ha, _⟩ := hasTy_iff.mp this
+    simp [ha]
+  | returned v s4 =>
+    obtain ⟨Λ4, hw4, he4, _, _, _, hmade⟩ := this
+    exact ⟨Λ4, hw4, hfin he4, hmade hinInit⟩
+  | stuck => exact (this : False).elim
+  | raised => trivial
+  | timeout => trivial
+
+/-! ### `super` -/
+
+/-- After setting each field to its type: a field's entry is its type, the
+other paths' what they were. -/
+theorem Env.get_foldl_set_field : ∀ (fs : List Field) (Δ : Env) (p : Path) (t : Ty),
+    (fs.foldl (fun Δ f => Δ.set (.field f.name) f.ty) Δ).get p = some t →
+    (∃ f ∈ fs, p = .field f.name ∧ t = f.ty) ∨ ((∀ f ∈ fs, p ≠ .field f.name) ∧ Δ.get p = some t)
+  | [], _, _, _, h => .inr ⟨fun _ h => (by cases h), h⟩
+  | f :: fs, Δ, p, t, h => by
+    simp only [List.foldl_cons] at h
+    rcases Env.get_foldl_set_field fs _ p t h with ⟨g, hg, h1, h2⟩ | ⟨hne, h'⟩
+    · exact .inl ⟨g, List.mem_cons_of_mem _ hg, h1, h2⟩
+    · rw [Env.get_set] at h'
+      split at h'
+      · rename_i hp; cases h'; exact .inl ⟨f, List.mem_cons_self .., hp, rfl⟩
+      · rename_i hp
+        exact .inr ⟨fun g hg => (List.mem_cons.mp hg).elim (fun e => e ▸ hp) (hne g), h'⟩
+
+/-- A class's superclass is above it. -/
+theorem super_mem_ancestors {ct : ClassTable} (hwf : WfClasses ct) {k d : Nat}
+    (h : (ct[k]?).bind (·.super) = some d) : d ∈ ct.ancestors k := by
+  rw [ClassTable.ancestors_eq hwf]
+  have : ClassTable.superOf ct k = some d := h
+  simp [this, ClassTable.mem_ancestors_self hwf]
+
+/-- Before `super` into `d`, the superclass of the method's class: each
+field holds a value, or is one of `d`'s, to assign. -/
+theorem preSuper_field (hwf : WfClasses P.classes) {c : Ctx} (hc : c.prog = P) {d : Nat} {Γ : Env}
+    (hd : (P.classes[c.meth.owner]?).bind (·.super) = some d) (hpre : c.preSuper d Γ = true)
+    {i : Nat} {f : Field} (hf : (P.classes.allFields c.meth.owner)[i]? = some f) :
+    (Γ.get (.field f.name)).isSome = true ∨
+      ((P.classes.allFields d)[i]? = some f ∧ f.required P.classes = true) := by
+  subst hc
+  unfold Ctx.preSuper at hpre
+  simp only [Ctx.ct] at hpre
+  have := List.all_eq_true.mp hpre f (List.mem_of_getElem? hf)
+  simp only [Bool.or_eq_true, Bool.and_eq_true, List.any_eq_true, beq_iff_eq] at this
+  rcases this with ⟨⟨g, hg, hgn⟩, hreq⟩ | h
+  · refine .inr ⟨?_, hreq⟩
+    have hk : c.meth.owner < c.prog.classes.length := by
+      cases h : c.prog.classes[c.meth.owner]? with
+      | none => rw [h] at hd; cases hd
+      | some _ => exact (List.getElem?_eq_some_iff.mp h).1
+    obtain ⟨rest, hrest⟩ := allFields_prefix hwf (super_mem_ancestors hwf hd)
+    obtain ⟨j, hj⟩ := List.mem_iff_getElem?.mp hg
+    have hjk : (c.prog.classes.allFields c.meth.owner)[j]? = some g := by
+      rw [hrest, List.getElem?_append_left (List.getElem?_eq_some_iff.mp hj).1]; exact hj
+    have h1 := fieldIndex_at hwf hk hf
+    have h2 := fieldIndex_at hwf hk hjk
+    rw [hgn, h1] at h2; cases h2
+    rw [hjk] at hf; cases hf; exact hj
+  · exact .inl h
+
+/-- A field with an entry in an environment that held is set, and stays
+so as objects grow. -/
+theorem Sat.field_set (hwf : WfClasses P.classes) {c : Ctx} (hc : c.prog = P) {Γ : Env}
+    {fr : Frame} {s s1 : Store} (hs : Sat P c Γ fr s) (hg : ObjsGrow s s1) {l i : Nat} {o1 : Obj}
+    {f : Field} (hl : fr.self = .obj l) (ho1 : s1.objs[l]? = some o1)
+    (hcls : o1.cls < P.classes.length) (hf : (P.classes.allFields o1.cls)[i]? = some f)
+    (hin : (Γ.get (.field f.name)).isSome = true) : o1.set[i]? = some true := by
+  subst hc
+  obtain ⟨t, ht⟩ := Option.isSome_iff_exists.mp hin
+  obtain ⟨l', o, _, j, h1, h2, _, h4, _, h6, _⟩ := hs _ _ ht
+  rw [hl] at h1; cases h1
+  obtain ⟨o1', ho1', hc1, _, hs1⟩ := hg l o h2
+  rw [ho1] at ho1'; cases ho1'
+  rw [← hc1, fieldIndex_at hwf hcls hf] at h4; cases h4
+  exact hs1 _ h6
+
+/-- At `super` into `d` (its arguments evaluated, objects grown): each
+field of `self` is set, or one of `d`'s, to assign. -/
+theorem super_pre (hwf : WfClasses P.classes) {c : Ctx} (hc : c.prog = P) {d : Nat} {Γ : Env}
+    {fr : Frame} {Λ1 : List Ty} {s s1 : Store} (hgo : c.superOk d Γ = true) (hs : Sat P c Γ fr s)
+    (hg : ObjsGrow s s1) (hw1 : WfStore P Λ1 s1) {l : Nat} {o1 : Obj} (hl : fr.self = .obj l)
+    (ho1 : s1.objs[l]? = some o1) (hk1 : c.meth.owner ∈ P.classes.ancestors o1.cls)
+    (hbeyond : ∀ i, (P.classes.allFields c.meth.owner).length ≤ i → i < o1.set.length →
+      o1.set[i]? = some true) :
+    ∀ (i : Nat) (f : Field), (P.classes.allFields o1.cls)[i]? = some f →
+      o1.set[i]? = some true ∨ ((P.classes.allFields d)[i]? = some f ∧ f.required P.classes = true) := by
+  subst hc
+  simp only [Ctx.superOk, Bool.and_eq_true, beq_iff_eq] at hgo
+  obtain ⟨⟨_, hsup⟩, hpre⟩ := hgo
+  obtain ⟨hcls, hflen, hslen, _⟩ := hw1.objs l o1 ho1
+  obtain ⟨rest, hrest⟩ := allFields_prefix hwf hk1
+  intro i f hf
+  by_cases hik : i < (c.prog.classes.allFields c.meth.owner).length
+  · have hfk : (c.prog.classes.allFields c.meth.owner)[i]? = some f := by
+      rw [hrest, List.getElem?_append_left hik] at hf; exact hf
+    rcases preSuper_field hwf rfl hsup hpre hfk with hin | h
+    · exact .inl (hs.field_set hwf rfl hg hl ho1 hcls hf hin)
+    · exact .inr h
+  · have := (List.getElem?_eq_some_iff.mp hf).1
+    exact .inl (hbeyond i (by omega) (by omega))
+
+/-- After `super`, `self` made: each field at its declared type, the
+locals as before. -/
+theorem Sat.afterSuper (hwf : WfClasses P.classes) {c : Ctx} (hc : c.prog = P) {Δ : Env}
+    {fr : Frame} {Λ Λ' : List Ty} {s s' : Store} {Wo : Nat → Prop} {l : Nat} {o : Obj}
+    (hs : Sat P c Δ fr s) (he : Ext P (fun _ => False) Wo Λ Λ' s s') (hw' : WfStore P Λ' s')
+    (hl : fr.self = .obj l) (ho : s.objs[l]? = some o) (hk : c.meth.owner ∈ P.classes.ancestors o.cls)
+    (hmade : (s'.typeOf (.obj l)).isSome = true) : Sat P c (c.afterSuper Δ) fr s' := by
+  subst hc
+  intro p t hp
+  rcases Env.get_foldl_set_field _ Δ p t hp with ⟨f, hf, rfl, rfl⟩ | ⟨hne, hp'⟩
+  · obtain ⟨a, ha⟩ := Option.isSome_iff_exists.mp hmade
+    obtain ⟨o', ho', hall, _⟩ := typeOf_obj ha
+    obtain ⟨o'', ho'', hc', _, _⟩ := he.grow l o ho
+    rw [ho'] at ho''; cases ho''
+    obtain ⟨hcls, hflen, hslen, hty⟩ := hw'.objs l o' ho'
+    have hk' : c.meth.owner ∈ c.prog.classes.ancestors o'.cls := by rw [hc']; exact hk
+    have hown : c.meth.owner < c.prog.classes.length :=
+      Nat.lt_of_le_of_lt (ClassTable.ancestors_le hwf _ _ hk') hcls
+    obtain ⟨j, hj⟩ := List.mem_iff_getElem?.mp hf
+    simp only [Ctx.ct] at hj
+    obtain ⟨rest, hrest⟩ := allFields_prefix hwf hk'
+    have hjl := (List.getElem?_eq_some_iff.mp hj).1
+    have hfo : (c.prog.classes.allFields o'.cls)[j]? = some f := by
+      rw [hrest, List.getElem?_append_left hjl]; exact hj
+    have hfl : j < o'.fields.length := by rw [hflen]; exact (List.getElem?_eq_some_iff.mp hfo).1
+    have hset : o'.set[j]? = some true := all_id_iff.mp hall j (by omega)
+    exact ⟨l, o', f, j, hl, ho', field?_at hwf hown hj, fieldIndex_at hwf hcls hfo, hfo, hset,
+      fun _ => ⟨o'.fields[j], by simp [hfl], hty j _ f hset (by simp [hfl]) hfo⟩⟩
+  · cases p with
+    | «local» x =>
+      obtain ⟨l0, v, d, h1, h2, h3, h4, h5⟩ := hs _ _ hp'
+      exact ⟨l0, v, d, h1, he.loc_same h2 id, h3, he.hasTy h4, he.hasTy h5⟩
+    | field g =>
+      obtain ⟨_, _, fd, _, _, _, h3, _⟩ := hs _ _ hp'
+      simp only [Ctx.field?, ClassTable.field?] at h3
+      have hn := List.find?_some h3
+      simp only [beq_iff_eq] at hn
+      exact absurd (by rw [hn]) (hne fd (List.mem_of_find?_eq_some h3))
+
+/-- What `super` gives once `d`'s `initialize` (if any) made `self`. -/
+theorem Post.ofSuper (hwf : WfClasses P.classes) {c : Ctx} (hc : c.prog = P) {d : Nat} {args : List Expr} {Δ : Env}
+    {fr : Frame} {ws : List (Ctx × Env × Out)} {Λ Λ1 Λ4 : List Ty} {s s1 s4 : Store} {l : Nat}
+    {o1 : Obj} (hii : c.inInit = true) (hib : c.inBlock = false) (hw : WfStore P Λ s)
+    (he1 : Ext P (evalWs fr args) (initW c fr) Λ Λ1 s s1) (hf1 : FrameOK P c Λ1 fr s1 ws)
+    (hs1 : Sat P c Δ fr s1) (hl : fr.self = .obj l) (ho1 : s1.objs[l]? = some o1)
+    (hk1 : c.meth.owner ∈ P.classes.ancestors o1.cls) (hw4 : WfStore P Λ4 s4)
+    (he4 : Ext P (fun _ => False) (· = l) Λ1 Λ4 s1 s4) (hmade : (s4.typeOf (.obj l)).isSome = true) :
+    Post P c (.plain [.nil] (c.afterSuper Δ)) fr ws Λ s (evalW fr (.superInit d args)) (.ok .nil s4) := by
+  subst hc
+  have hs4 := hs1.afterSuper hwf rfl he4 hw4 hl ho1 hk1 hmade
+  exact ⟨Λ4, hw4, (he1.trans he4 hw).mono
+      (fun l' h => h.elim (evalWs_mono (by simp [Expr.assigned]) l') False.elim)
+      (fun l' h => h.elim id fun h => h ▸ ⟨hii, hib, hl⟩),
+    hf1.stable he4 (fun _ _ h => h) (fun _ _ => hf1.initBlk hii hib), hasTy_lit_nil,
+    ⟨_, rfl, hs4⟩, fun _ => ⟨_, rfl, hs4⟩, fun _ => ⟨_, rfl, hs4⟩⟩
+
 variable (hP : WfProg P) (horc : OracleOK P orc) {n : Nat} (ih : Good P orc n)
 include hP horc ih
 
@@ -892,9 +1192,99 @@ theorem eval_succ : EvalGood P orc (n + 1) := by
     cases ar with
     | other r => exact this.other (evalWs_mono (by simp [Expr.assigned]))
     | ok vs s1 => obtain ⟨_, _, hao, _⟩ := this; cases hao
-  | superInit hg hargs hmi hok => sorry
-  | superNoInit hg hargs hmi hnil => sorry
-  | superDead hg hargs => sorry
+  | superInit hg hargs hmi hok =>
+    rename_i d args tys Δ mi
+    simp only [eval]
+    have := ih.args _ _ _ _ fr s Λ ws rfl hargs hw hf hs
+    revert this
+    generalize evalArgs c.prog orc n fr s _ = ar
+    intro this
+    cases ar with
+    | other r => exact this.other (evalWs_mono (by simp [Expr.assigned]))
+    | ok vs s1 =>
+      obtain ⟨tys', Δ', hao, Λ1, hw1, he1, hf1, hs1, hvs⟩ := this
+      cases hao
+      dsimp only
+      simp only [Bool.and_eq_true, Option.isNone_iff_eq_none, argsOk, beq_iff_eq] at hok
+      obtain ⟨hblk, hlen, hall⟩ := hok
+      have hg' := hg
+      simp only [Ctx.superOk, Bool.and_eq_true, Bool.not_eq_true', beq_iff_eq] at hg'
+      obtain ⟨⟨⟨⟨hii, hib⟩, _⟩, hsup⟩, _⟩ := hg'
+      obtain ⟨l, o1, hl, ho1, hk1, hbeyond⟩ := hf1.core.selfInit hii
+      have hpre := super_pre hwf rfl hg hs he1.grow hw1 hl ho1 hk1 hbeyond
+      obtain ⟨hmem, howner, hname⟩ := Program.lookup_spec hmi
+      obtain ⟨rest, hrest, hrestnr⟩ := init_beyond hwf hP.inits hmi
+      -- Every field set but those `d`'s `initialize` assigns.
+      obtain ⟨hlen', s3, hb, hpost⟩ := init_run hP ih.eval hw1 hmem hname hblk
+        (AllTy.le_params hwf hvs hlen hall) ho1
+        (ClassTable.ancestors_trans hwf _ _ _ hk1
+          (ClassTable.ancestors_trans hwf _ _ _ (super_mem_ancestors hwf hsup) howner))
+        fun i f hf hor => by
+          rcases hpre i f hf with h | ⟨hfd, hreq⟩
+          · exact h
+          · exfalso
+            rcases hor with h | h
+            · rw [hrest, List.getElem?_append_right h] at hfd
+              rw [hrestnr f (List.mem_of_getElem? hfd)] at hreq; cases hreq
+            · rw [h] at hreq; cases hreq
+      simp only [hmi]
+      rw [if_neg (by simp [hlen']), hl]
+      simp only [Store.alloc, hb]
+      revert hpost
+      generalize eval c.prog orc n _ s3 mi.body = r
+      intro hpost
+      cases r with
+      | ok v s4 =>
+        obtain ⟨Λ4, hw4, he4, hmade⟩ := hpost
+        exact Post.ofSuper hwf rfl hii hib hw (he1.monoW fun _ h => h) hf1 hs1 hl ho1 hk1 hw4 he4 hmade
+      | returned v s4 =>
+        obtain ⟨Λ4, hw4, he4, hmade⟩ := hpost
+        exact Post.ofSuper hwf rfl hii hib hw (he1.monoW fun _ h => h) hf1 hs1 hl ho1 hk1 hw4 he4 hmade
+      | stuck => exact (hpost : False).elim
+      | raised => trivial
+      | timeout => trivial
+  | superNoInit hg hargs hmi hnil =>
+    rename_i d args tys Δ
+    simp only [eval]
+    have := ih.args _ _ _ _ fr s Λ ws rfl hargs hw hf hs
+    revert this
+    generalize evalArgs c.prog orc n fr s _ = ar
+    intro this
+    cases ar with
+    | other r => exact this.other (evalWs_mono (by simp [Expr.assigned]))
+    | ok vs s1 =>
+      obtain ⟨tys', Δ', hao, Λ1, hw1, he1, hf1, hs1, hvs⟩ := this
+      cases hao
+      dsimp only
+      have hvs0 : vs = [] := by
+        have := hvs.length; simp only [List.isEmpty_iff] at hnil; subst hnil
+        exact List.length_eq_zero_iff.mp this
+      subst hvs0
+      have hg' := hg
+      simp only [Ctx.superOk, Bool.and_eq_true, Bool.not_eq_true', beq_iff_eq] at hg'
+      obtain ⟨⟨⟨⟨hii, hib⟩, _⟩, _⟩, _⟩ := hg'
+      obtain ⟨l, o1, hl, ho1, hk1, hbeyond⟩ := hf1.core.selfInit hii
+      have hpre := super_pre hwf rfl hg hs he1.grow hw1 hl ho1 hk1 hbeyond
+      -- No `initialize` above: no field to assign there, so every field set.
+      obtain ⟨_, hflen, hslen, _⟩ := hw1.objs l o1 ho1
+      have hall : o1.set.all id = true := all_id_iff.mpr fun i hi => by
+        have hfi : (c.prog.classes.allFields o1.cls)[i]? = some (c.prog.classes.allFields o1.cls)[i] :=
+          List.getElem?_eq_getElem (by omega)
+        rcases hpre i _ hfi with h | ⟨hfd, hreq⟩
+        · exact h
+        · rw [no_init_fields hP.inits hmi _ (List.mem_of_getElem? hfd)] at hreq; cases hreq
+      simp only [hmi, List.isEmpty_nil, if_true]
+      exact Post.ofSuper hwf rfl hii hib hw (he1.monoW fun _ h => h) hf1 hs1 hl ho1 hk1 hw1
+        (Ext.refl _ _ Λ1 s1) (by rw [typeOf_obj_of ho1 hall]; rfl)
+  | superDead hg hargs =>
+    simp only [eval]
+    have := ih.args _ _ _ _ fr s Λ ws rfl hargs hw hf hs
+    revert this
+    generalize evalArgs c.prog orc n fr s _ = ar
+    intro this
+    cases ar with
+    | other r => exact this.other (evalWs_mono (by simp [Expr.assigned]))
+    | ok vs s1 => obtain ⟨_, _, hao, _⟩ := this; cases hao
   | new hk hargs hmi hok =>
     rename_i k args tys Δ mi
     simp only [eval]
