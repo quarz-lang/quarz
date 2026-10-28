@@ -1,6 +1,6 @@
 # Working on Quarz
 
-Code, comments, commit messages and the English docs are in English.
+Code, comments, commit messages and the docs are in English.
 
 ## Layout
 
@@ -13,8 +13,7 @@ A Rust workspace, front end to back ends:
   `Builder` trait, for LLVM IR text compiled by clang).
 - `quarz-ir` is QIR itself, with `live.rs` (liveness, last reads, moves).
 - `quarz-cli` is the `quarz` command and the integration tests.
-- `docs/0N-*.md` describe the language and implementation; each has a
-  `.ja.md` twin that must be updated with it.
+- `docs/0N-*.md` describe the language and implementation.
 
 ## Designs
 

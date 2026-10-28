@@ -1,7 +1,5 @@
 # Documentation Comments: `quarz doc`
 
-日本語版: [13-doc-comments.ja.md](13-doc-comments.ja.md)
-
 A comment written directly above a declaration documents it. The text is Markdown; a code span that names a class or a method is a link, and a fenced code block is an example that `quarz test` compiles and runs. `quarz doc` prints the documentation of a name in the terminal or generates a site for a cog. The shape is Ruby's (RDoc and Crystal document the comment above a definition), the checked links and the run examples are Rust's and Elixir's.
 
 ## 1. Shape

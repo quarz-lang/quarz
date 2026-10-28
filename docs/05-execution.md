@@ -1,7 +1,5 @@
 # Execution Model: Interpreter and AOT Compiler
 
-日本語版: [05-execution.ja.md](05-execution.ja.md)
-
 Quarz shares one front end and one runtime across two back ends (an interpreter of the QIR and machine code). During development, `quarz run` gives fast startup and a REPL; for production, `quarz build` gives execution speed; and **the observable behavior of the two is identical**.
 
 ```

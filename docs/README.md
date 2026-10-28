@@ -1,6 +1,6 @@
 # Design documents
 
-The documents in this directory describe the language and its implementation. Each has a Japanese twin, `NN-name.ja.md` ([README.ja.md](README.ja.md) lists them). For a short introduction, see the [guide at quarz.dev](https://quarz.dev/guide/); the standard library's API reference is at [quarz.dev/std](https://quarz.dev/std/).
+The documents in this directory describe the language and its implementation. For a short introduction, see the [guide at quarz.dev](https://quarz.dev/guide/); the standard library's API reference is at [quarz.dev/std](https://quarz.dev/std/).
 
 ## Documents
 

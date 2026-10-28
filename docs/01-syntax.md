@@ -1,7 +1,5 @@
 # Syntax
 
-日本語版: [01-syntax.ja.md](01-syntax.ja.md)
-
 The syntax of Quarz is based on Ruby, with only the minimal changes needed to "define statically" and "default to immutable". This document focuses on the differences from Ruby. Everything that is the same as Ruby (operator precedence, string literals, heredocs, `%w[]`, the `if` modifier, `unless`/`until`, `begin/rescue/ensure`, the ternary operator, `&.`, and so on) follows the Ruby 3.x specification in principle.
 
 ## 1. Lexical structure

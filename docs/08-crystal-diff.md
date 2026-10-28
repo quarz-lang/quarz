@@ -1,7 +1,5 @@
 # Differences from Crystal: Quick Reference
 
-日本語版: [08-crystal-diff.ja.md](08-crystal-diff.ja.md)
-
 Crystal is the closest relative of Quarz: a statically typed, compiled language with Ruby's syntax. This page lists what someone who knows Crystal will notice first. The two share most of their surface; they differ in where types must be written, in mutability, in how memory and concurrency work, and in what can be changed at compile time.
 
 ## What works the same

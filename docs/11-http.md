@@ -1,7 +1,5 @@
 # HTTP: The Server
 
-日本語版: [11-http.ja.md](11-http.ja.md)
-
 `require "http"` gives the `HTTP` module: an HTTP/1.1 server written in Quarz on top of the sockets ([06-stdlib.md](06-stdlib.md) §9), for use as an application server behind a reverse proxy, as Puma is used. The proxy terminates TLS and speaks HTTP/2 to the clients; the server speaks HTTP/1.1 to the proxy, with keep-alive and chunked bodies. A client, `HTTP::Client`, will follow with the same request and response types; neither follows Ruby's `net/http`.
 
 This is implemented in `std/http.qz` (and `Signal` in the prelude, with a few natives), except what §9 leaves for later.
