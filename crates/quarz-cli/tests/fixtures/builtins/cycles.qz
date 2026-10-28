@@ -14,14 +14,14 @@ class Node
   end
   def name -> String = @name
   def peer -> Node? = @peer
-  def peer=(n: Node?) -> Nil
+  def peer=(n: Node?) -> Void
     @peer = n
   end
   def items -> Array[Node] = @items
-  def items=(xs: Array[Node]) -> Nil
+  def items=(xs: Array[Node]) -> Void
     @items = xs
   end
-  def deinitialize -> Nil
+  def deinitialize -> Void
     FREED.update { |n| n + 1 }
     # The garbage it is part of is intact while it runs.
     puts "freed #{@name}, peer #{@peer&.name}" if @name == "first"
@@ -29,7 +29,7 @@ class Node
 end
 
 # Two objects pointing at each other.
-def pair(name: String) -> Nil
+def pair(name: String) -> Void
   a = Node.new(name)
   b = Node.new("#{name}'")
   a.peer = b
@@ -37,7 +37,7 @@ def pair(name: String) -> Nil
 end
 
 # An object holding itself in an array.
-def self_loop(i: Int) -> Nil
+def self_loop(i: Int) -> Void
   n = Node.new("loop #{i}")
   n.items = [n]
 end
@@ -53,12 +53,12 @@ end
 # A builder holding an object that holds the builder.
 class Holder
   var @list: Array::Builder[Holder]? = nil
-  def list=(l: Array::Builder[Holder]) -> Nil
+  def list=(l: Array::Builder[Holder]) -> Void
     @list = l
   end
 end
 
-def builder -> Nil
+def builder -> Void
   b = Array::Builder[Holder].new
   h = Holder.new
   h.list = b

@@ -1,5 +1,5 @@
 # A block parameter of an optional type may be left out; it is then nil.
-def each_twice(n: Int, &block: ((Int) -> Nil)?) -> Int
+def each_twice(n: Int, &block: ((Int) -> Void)?) -> Int
   if block
     block.call(n)
     block.(n + 1)
@@ -12,14 +12,14 @@ def transform(xs: Array[Int], &f: ((Int) -> Int)?) -> Array[Int]
   xs.map { |x| f.call(x) }
 end
 
-def forward(n: Int, &block: ((Int) -> Nil)?) -> Int
+def forward(n: Int, &block: ((Int) -> Void)?) -> Int
   each_twice(n, &block)
 end
 
 class Counter
   var @count: Int = 0
 
-  def tick(&on_tick: ((Int) -> Nil)?) -> Nil
+  def tick(&on_tick: ((Int) -> Void)?) -> Void
     @count += 1
     on_tick&.call(@count)
   end

@@ -63,7 +63,7 @@ end
 class Box[T]
   @v: T
   def initialize(@v: T); end
-  def each(&blk: (T) -> Nil) -> Nil
+  def each(&blk: (T) -> Void) -> Nil
     blk.call(@v)
     nil
   end

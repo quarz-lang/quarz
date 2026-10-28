@@ -174,7 +174,7 @@ fn definite_initialization() {
     ok("class C\n  var @x: Float?\n  var @y: Int = 0\nend\nC.new");
     // The object is not used before its fields are assigned.
     err(
-        "class C\n  var @x: Float\n  def initialize\n    show\n    @x = 1.0\n  end\n  def show -> Nil = p(@x)\nend",
+        "class C\n  var @x: Float\n  def initialize\n    show\n    @x = 1.0\n  end\n  def show -> Void = p(@x)\nend",
         "the object is used before field `@x` is assigned",
     );
     err(
@@ -186,10 +186,10 @@ fn definite_initialization() {
         "field `@y` is read before it is assigned",
     );
     err(
-        "class C\n  var @x: Int\n  def initialize(xs: Array[Int])\n    xs.each { |v| show }\n    @x = 1\n  end\n  def show -> Nil = nil\nend",
+        "class C\n  var @x: Int\n  def initialize(xs: Array[Int])\n    xs.each { |v| show }\n    @x = 1\n  end\n  def show -> Void = nil\nend",
         "the object is used before field `@x` is assigned",
     );
-    ok("class C\n  var @xs: Array[Int]\n  def initialize(ys: Array[Int])\n    puts \"making\"\n    @xs = ys.map { |y| y * 2 }\n    show\n  end\n  def show -> Nil = p(@xs)\nend\nC.new([1])");
+    ok("class C\n  var @xs: Array[Int]\n  def initialize(ys: Array[Int])\n    puts \"making\"\n    @xs = ys.map { |y| y * 2 }\n    show\n  end\n  def show -> Void = p(@xs)\nend\nC.new([1])");
     // A subclass assigns its own fields before `super`.
     ok("class A\n  @a: Int\n  def initialize(@a: Int); end\nend\nclass B < A\n  @b: Int\n  def initialize(@b: Int)\n    super(@b)\n  end\nend\nB.new(1)");
     err(
@@ -223,7 +223,7 @@ fn definite_initialization() {
         "field `@b` is not assigned on every path",
     );
     err(
-        "class D\n  def f(x: Bool) -> Nil = nil\nend\nclass C\n  @b: Int\n  def initialize(d: D?)\n    d&.f((@b = 1) == 1)\n  end\nend",
+        "class D\n  def f(x: Bool) -> Void = nil\nend\nclass C\n  @b: Int\n  def initialize(d: D?)\n    d&.f((@b = 1) == 1)\n  end\nend",
         "field `@b` is not assigned on every path",
     );
     // A parameter's default runs only when the argument is left out; an
@@ -252,14 +252,14 @@ fn definite_initialization() {
         "a field's default cannot use the object",
     );
     // `raise` ends a path, as does a call of type `Nothing`.
-    ok("class C\n  @x: Int\n  def initialize(v: Int)\n    if v > 0\n      @x = v\n    else\n      abort(\"neg\")\n    end\n    show\n  end\n  def show -> Nil = p(@x)\nend\nC.new(1)");
+    ok("class C\n  @x: Int\n  def initialize(v: Int)\n    if v > 0\n      @x = v\n    else\n      abort(\"neg\")\n    end\n    show\n  end\n  def show -> Void = p(@x)\nend\nC.new(1)");
     err("raise(\"a\") { puts 1 }", "`raise` takes no block");
     // Not one `&.` may skip.
     err(
-        "class D\n  def die -> Nothing = raise \"x\"\nend\nclass C\n  @x: Int\n  def initialize(d: D?)\n    d&.die\n    show\n  end\n  def show -> Nil = p(@x)\nend",
+        "class D\n  def die -> Nothing = raise \"x\"\nend\nclass C\n  @x: Int\n  def initialize(d: D?)\n    d&.die\n    show\n  end\n  def show -> Void = p(@x)\nend",
         "the object is used before field `@x` is assigned",
     );
-    ok("class C\n  @x: Int\n  def initialize(v: Int)\n    if v > 0\n      @x = v\n    else\n      raise \"neg\"\n    end\n    show\n  end\n  def show -> Nil = p(@x)\nend\nC.new(1)");
+    ok("class C\n  @x: Int\n  def initialize(v: Int)\n    if v > 0\n      @x = v\n    else\n      raise \"neg\"\n    end\n    show\n  end\n  def show -> Void = p(@x)\nend\nC.new(1)");
     // A native method on `self` (an accessor, `inspect`) may read the
     // fields too: only `Kernel` functions are fine before they are set.
     err(
@@ -282,12 +282,12 @@ fn initialize_only_from_new() {
     // `initialize` runs only from `new` and from `super` in an
     // `initialize` (docs/01 §3).
     let only = "`initialize` is called only by `new` and by `super` in `initialize`";
-    let c = "class C\n  @x: Int\n  def initialize(@x: Int); end\n  def initialize\n    @x = 0\n  end\n  def reset(n: Int) -> Nil\n    initialize(n)\n    nil\n  end\nend\n";
+    let c = "class C\n  @x: Int\n  def initialize(@x: Int); end\n  def initialize\n    @x = 0\n  end\n  def reset(n: Int) -> Void\n    initialize(n)\n    nil\n  end\nend\n";
     err(&format!("{c}C.new(1).initialize(5)"), only);
     err(&format!("{c}c = C.new\nc.initialize"), only);
     err(&format!("{c}C.new(1).reset(2)"), only);
     err(
-        "class C\n  @x: Int\n  def initialize(@x: Int); end\n  def again -> Nil\n    self.initialize(7)\n    nil\n  end\nend",
+        "class C\n  @x: Int\n  def initialize(@x: Int); end\n  def again -> Void\n    self.initialize(7)\n    nil\n  end\nend",
         only,
     );
     err(
@@ -325,7 +325,7 @@ fn super_in_initialize_is_direct() {
     let direct = "`super` in `initialize` must be called directly, not from a block or lambda";
     let a = "class A\n  @a: Int?\n  def initialize(a: Int?)\n    @a = a\n  end\nend\n";
     err(
-        &format!("{a}class B < A\n  var @f: (() -> Nil)?\n  def initialize\n    super(1)\n    @f = -> {{ super(nil); nil }}\n  end\nend"),
+        &format!("{a}class B < A\n  var @f: (() -> Void)?\n  def initialize\n    super(1)\n    @f = -> {{ super(nil); nil }}\n  end\nend"),
         direct,
     );
     err(
@@ -396,14 +396,14 @@ fn narrowing_does_not_survive_assignments() {
     // The `ensure` runs when the body raised before narrowing, and the
     // fields it assigns are not narrowed after it.
     err(
-        "def f(x: Int?) -> Nil\n  begin\n    raise \"x\" unless x.is_a?(Int)\n  ensure\n    puts x + 1\n  end\nend",
+        "def f(x: Int?) -> Void\n  begin\n    raise \"x\" unless x.is_a?(Int)\n  ensure\n    puts x + 1\n  end\nend",
         nil_plus,
     );
     err(
         "class C\n  @x: Int?\n  def initialize(n: Int)\n    @x = 1\n    begin\n      puts @x + 1\n    ensure\n      @x = nil if n > 0\n    end\n    puts @x + 1\n  end\nend",
         nil_plus,
     );
-    ok("def f(x: Int?) -> Nil\n  return if x.nil?\n  begin\n    puts x + 1\n  ensure\n    puts x + 2\n  end\n  puts x + 3\nend\nf(1)");
+    ok("def f(x: Int?) -> Void\n  return if x.nil?\n  begin\n    puts x + 1\n  ensure\n    puts x + 2\n  end\n  puts x + 3\nend\nf(1)");
     ok("class C\n  @x: Int?\n  def initialize(n: Int)\n    @x = 1\n    begin\n      puts @x + 1\n    ensure\n      puts n\n    end\n    puts @x + 1\n  end\nend\nC.new(1)");
     // A fact of `&&`'s left operand about a variable its right assigns,
     // or about an inherited field once it called `super`, is gone.
@@ -422,7 +422,7 @@ fn narrowing_does_not_survive_assignments() {
     ok("x: Int? = 1\ny: Int? = nil\nx.is_a?(Int) && (y = nil; true) && puts(x + 1)\nif x.is_a?(Int) || (y = 2; false)\n  puts x + 1\nend");
     // A `!` method the type lacks rebinds the variable (docs/01 §9).
     err(
-        "class Foo\n  def foo -> Bar = Bar.new\nend\nclass Bar\n  def bar -> Int = 1\nend\ndef f(x: Foo | Bar) -> Nil\n  x.is_a?(Foo) && (x.foo!; true) && puts(x.foo.bar)\nend",
+        "class Foo\n  def foo -> Bar = Bar.new\nend\nclass Bar\n  def bar -> Int = 1\nend\ndef f(x: Foo | Bar) -> Void\n  x.is_a?(Foo) && (x.foo!; true) && puts(x.foo.bar)\nend",
         "undefined method `foo` for Bar",
     );
     // In a method other than `initialize`, `super` assigns no field: an
@@ -443,7 +443,7 @@ fn patterns_narrow_object_to_classes_admitting_object_arguments() {
         "undefined method `get` for Object",
     );
     err(
-        "class Cell[T]\n  var @v: T\n  def initialize(@v: T); end\n  def set(v: T) -> Nil\n    @v = v\n  end\nend\ndef f(o: Object) -> Nil\n  case o\n  in Cell then o.set(\"s\")\n  else nil\n  end\nend",
+        "class Cell[T]\n  var @v: T\n  def initialize(@v: T); end\n  def set(v: T) -> Void\n    @v = v\n  end\nend\ndef f(o: Object) -> Void\n  case o\n  in Cell then o.set(\"s\")\n  else nil\n  end\nend",
         "undefined method `set` for Object",
     );
 }
@@ -471,12 +471,12 @@ fn super_in_extension_reaches_the_hidden_method() {
 #[test]
 fn case_on_self() {
     // `case` on `Self` matches as on the receiver's class.
-    no_warnings("enum R[T, E]\n  variant Ok(value: T)\n  variant Err(error: E)\n  def on_ok(&: (T) -> Nil) -> Self\n    case self\n    in Ok(value:) then yield(value)\n    in Err then nil\n    end\n    self\n  end\nend");
+    no_warnings("enum R[T, E]\n  variant Ok(value: T)\n  variant Err(error: E)\n  def on_ok(&: (T) -> Void) -> Self\n    case self\n    in Ok(value:) then yield(value)\n    in Err then nil\n    end\n    self\n  end\nend");
     // A binding keeps `Self`.
     ok("class S\n  def same -> Self\n    x = self\n    case x\n    in S then x\n    else x\n    end\n  end\n  def bind -> Self\n    case self\n    in s then s\n    end\n  end\nend");
     // In a block with a receiver, `Self` is the method's, not the receiver's.
-    err("class B\n  def bonly -> Int = 1\n  def run(&blk: B.() -> Nil) -> Nil = instance_exec(&blk)\nend\nclass A\n  def go -> Self\n    x: Self = self\n    B.new.run { case x\n    in y then puts(y.bonly)\n    end }\n    self\n  end\nend", "undefined method `bonly` for Self");
-    no_warnings("enum R[T, E]\n  variant Ok(value: T)\n  variant Err(error: E)\n  def on_err(&: (E) -> Nil) -> Self\n    r: R[T, E] = self\n    case r\n    in Err(error:) then yield(error)\n    in Ok then nil\n    end\n    self\n  end\nend");
+    err("class B\n  def bonly -> Int = 1\n  def run(&blk: B.() -> Void) -> Void = instance_exec(&blk)\nend\nclass A\n  def go -> Self\n    x: Self = self\n    B.new.run { case x\n    in y then puts(y.bonly)\n    end }\n    self\n  end\nend", "undefined method `bonly` for Self");
+    no_warnings("enum R[T, E]\n  variant Ok(value: T)\n  variant Err(error: E)\n  def on_err(&: (E) -> Void) -> Self\n    r: R[T, E] = self\n    case r\n    in Err(error:) then yield(error)\n    in Ok then nil\n    end\n    self\n  end\nend");
 }
 
 #[test]
@@ -497,10 +497,10 @@ fn overload_resolution() {
     // The more specific wins.
     ok("def h(a: Object) -> Int = 1\ndef h(a: Int) -> String = \"i\"\ns: String = h(1)");
     // Overloads differing only in the block: the one of the block's arity.
-    ok("class S\n  def each_m(&: (String) -> Nil) -> Int = 1\n  def each_m(&: (String, Int) -> Nil) -> String = \"two\"\nend\na: Int = S.new.each_m { |s| }\nb: String = S.new.each_m { |s, i| }");
+    ok("class S\n  def each_m(&: (String) -> Void) -> Int = 1\n  def each_m(&: (String, Int) -> Void) -> String = \"two\"\nend\na: Int = S.new.each_m { |s| }\nb: String = S.new.each_m { |s, i| }");
     // A block with fewer parameters than every overload's takes the
     // fewest.
-    ok("class S\n  def each_m(&: (String) -> Nil) -> Int = 1\n  def each_m(&: (String, Int) -> Nil) -> String = \"two\"\nend\na: Int = S.new.each_m { }");
+    ok("class S\n  def each_m(&: (String) -> Void) -> Int = 1\n  def each_m(&: (String, Int) -> Void) -> String = \"two\"\nend\na: Int = S.new.each_m { }");
     ok("puts \"hello world\".gsub(/o/) { \"0\" }");
     // An argument still to be inferred takes the first overload that fits.
     ok("p [].reduce(1) { |a, x| a * x }");
@@ -625,7 +625,7 @@ fn classes_and_fields() {
     ok("class A\n  @x: Int\n  def initialize(@x: Int); end\nend\nclass B < A\nend\nB.new(1)");
     // `initialize` cannot be aliased, either way.
     err(
-        "class C\n  @x: Int\n  def initialize(@x: Int); end\n  def init2 -> Nil\n  end\n  alias initialize init2\nend",
+        "class C\n  @x: Int\n  def initialize(@x: Int); end\n  def init2 -> Void\n  end\n  alias initialize init2\nend",
         "`initialize` cannot be aliased",
     );
     err(
@@ -650,10 +650,10 @@ fn classes_and_fields() {
         "field `@x` must be assigned in `initialize`",
     );
     err(
-        "class C\n  @x: Int\n  def initialize(@x: Int); end\n  def bump -> Nil\n    @x = 2\n  end\nend",
+        "class C\n  @x: Int\n  def initialize(@x: Int); end\n  def bump -> Void\n    @x = 2\n  end\nend",
         "field `@x` is immutable",
     );
-    ok("class C\n  var @x: Int = 0\n  attr_accessor :x\n  def bump -> Nil\n    @x += 1\n  end\nend\nc = C.new\nc.bump\nc.x = 5");
+    ok("class C\n  var @x: Int = 0\n  attr_accessor :x\n  def bump -> Void\n    @x += 1\n  end\nend\nc = C.new\nc.bump\nc.x = 5");
     err(
         "class C\n  @x: Int = 0\n  attr_accessor :x\nend",
         "is immutable; declare it with `var`",
@@ -745,8 +745,8 @@ fn methods_and_calls() {
     );
     ok("def f(a: Int, *, k: Int = 1, v: Bool = false) -> Int = a + k\nputs f(1) + f(2, k: 3) + f(a: 4, v: true)");
     err("def f(a: Int)\nend\nf(b: 1)", "has no parameter `b`");
-    // Return types are declared, not inferred: without one, a method
-    // returns nil, and one defined with `=` must have it.
+    // Return types are declared, not inferred: without one, a method is
+    // `-> Void` (it returns nil), and one defined with `=` must have it.
     ok("def f\n  f\nend");
     err(
         "def g\n  5\nend\nx: Int = g",
@@ -754,14 +754,14 @@ fn methods_and_calls() {
     );
     err(
         "def h\n  return 5 if true\n  nil\nend",
-        "`return` gives a Int but the method returns nil",
+        "`return` gives a Int but the method is `-> Void`, which returns nil",
     );
     ok("def h\n  return if true\n  return nil\nend");
     // An override returns what the overridden method does.
-    err("abstract class Shape\n  abstract def area -> Float\nend\nclass Ci < Shape\n  def area\n    2.0\n  end\nend", "`area` returns Nil but `Shape#area`, which it overrides, returns Float (a method without a return type returns nil)");
+    err("abstract class Shape\n  abstract def area -> Float\nend\nclass Ci < Shape\n  def area\n    2.0\n  end\nend", "`area` returns Void but `Shape#area`, which it overrides, returns Float (a `-> Void` method, as one without a return type, returns nil)");
     err(
         "class Foo\n  def to_s\n    \"foo\"\n  end\nend",
-        "`to_s` returns Nil but `Object#to_s`, which it overrides, returns String",
+        "`to_s` returns Void but `Object#to_s`, which it overrides, returns String",
     );
     err(
         "class K\n  include Comparable[K]\n  def <=>(o: K) -> String = \"x\"\nend",
@@ -802,9 +802,9 @@ fn extensions() {
         "undefined method `double`",
     );
     ok("module M\n  extension Int\n    def double -> Int = self * 2\n  end\nend\nusing M\nputs 1.double");
-    ok("module Describable\n  abstract def describe -> String\nend\nmodule M\n  extension Int\n    include Describable\n    def describe -> String = \"int\"\n  end\nend\nusing M\ndef show(d: Describable) -> Nil\n  puts d.describe\nend\nshow(1)");
+    ok("module Describable\n  abstract def describe -> String\nend\nmodule M\n  extension Int\n    include Describable\n    def describe -> String = \"int\"\n  end\nend\nusing M\ndef show(d: Describable) -> Void\n  puts d.describe\nend\nshow(1)");
     err(
-        "module Describable\n  abstract def describe -> String\nend\ndef show(d: Describable) -> Nil\n  puts d.describe\nend\nshow(1)",
+        "module Describable\n  abstract def describe -> String\nend\ndef show(d: Describable) -> Void\n  puts d.describe\nend\nshow(1)",
         "expects Describable but found Int",
     );
     err("using Nope", "unknown constant `Nope`");
@@ -813,7 +813,7 @@ fn extensions() {
 #[test]
 fn captured_self_in_task_blocks() {
     // `self` is captured like a variable: a mutable object cannot be.
-    let counter = "class Counter\n  var @n: Int = 0\n  def bump -> Nil\n    @n += 1\n    nil\n  end\n  def run -> Int\n    BODY\n    @n\n  end\nend";
+    let counter = "class Counter\n  var @n: Int = 0\n  def bump -> Void\n    @n += 1\n    nil\n  end\n  def run -> Int\n    BODY\n    @n\n  end\nend";
     for (body, msg) in [
         (
             "Task.spawn { bump }.await",
@@ -856,7 +856,7 @@ fn captured_self_in_task_blocks() {
 #[test]
 fn enumerators_stay_in_their_task() {
     // An enumerator has a position, and its receiver may be mutable.
-    let counter = "class Counter\n  include Enumerable[Int]\n  var @n: Int = 0\n  def each(&: (Int) -> Nil) -> Nil\n    @n += 1\n    yield @n\n  end\nend\n";
+    let counter = "class Counter\n  include Enumerable[Int]\n  var @n: Int = 0\n  def each(&: (Int) -> Void) -> Void\n    @n += 1\n    yield @n\n  end\nend\n";
     err(
         &format!("{counter}e = Counter.new.to_enum\nt = Task.spawn {{ e.next }}"),
         "`e` has the non-shareable type Enumerator[Int]",
@@ -946,6 +946,97 @@ fn task_results_are_shareable() {
 }
 
 #[test]
+fn void_and_strict_nil() {
+    // `-> Void` discards the body's value; callers see `Nil`.
+    ok("def f(x: Int) -> Void\n  x + 1\nend\ny: Nil = f(1)");
+    ok("def f(x: Int) -> Void = x + 1\np f(1)");
+    err(
+        "def f -> Void = 1\nx: Int = f",
+        "cannot assign Nil to `x` of type Int",
+    );
+    // `-> Nil` is strict, as any other type.
+    err(
+        "def f(x: Int) -> Nil\n  x + 1\nend",
+        "method `f` returns Nil but its body has type Int; to discard the body's value, write `-> Void`",
+    );
+    ok("def f(x: Int) -> Nil\n  p x\n  nil\nend");
+    ok("def f -> Nil = nil");
+    ok("def g(x: Int?) -> Nil = x.nil? ? nil : nil");
+    // Blocks and lambdas alike.
+    err(
+        "def each(&: (Int) -> Nil) -> Void = yield(1)\neach { |x| x + 1 }",
+        "block returns Int but Nil was expected",
+    );
+    ok("def each(&: (Int) -> Nil) -> Void = yield(1)\neach { |x| nil }");
+    ok("def each(&: (Int) -> Void) -> Void = yield(1)\neach { |x| x + 1 }");
+    err(
+        "l = ->(x: Int) -> Nil { x }",
+        "lambda returns Int but Nil was expected",
+    );
+    ok("l = ->(x: Int) -> Void { x }\ny: Nil = l.call(1)");
+    ok("h: (Int) -> Void = ->(x: Int) { x + 1 }\nh.call(1)");
+    err(
+        "h: (Int) -> Nil = ->(x: Int) { x + 1 }",
+        "lambda returns Int but Nil was expected",
+    );
+    // `yield` and `f.call` of a `Void` procedure give `Nil`.
+    err(
+        "def run(&: () -> Void) -> Int\n  x: Int = yield\n  x\nend",
+        "cannot assign Nil to `x` of type Int",
+    );
+    // `Void` is only a result.
+    for src in [
+        "x: Void? = nil",
+        "def f(x: Void) -> Int = 1",
+        "x: Array[Void] = []",
+        "def f -> Int | Void = 1",
+        "class C\n  @v: Void\nend",
+        "def f(t: Task[Void]) -> Void = nil",
+        "def f[T <: Void](x: T) -> Void = nil",
+        "type V = Void\nx: V = nil",
+    ] {
+        err(src, "`Void` is only a result type");
+    }
+    ok("type Handler = (Int) -> Void\nh: Handler = ->(x: Int) { x }\nh.call(1)");
+    ok("f: shareable () -> Void = -> { 1 }\nf.call");
+    // `(Int) -> Void` and `(Int) -> Nil` are the same type.
+    ok("v: (Int) -> Void = ->(x: Int) -> Nil { nil }\nn: (Int) -> Nil = v\nv = n");
+    err(
+        "i: (Int) -> Int = ->(x: Int) { x }\nv: (Int) -> Void = i",
+        "cannot assign (Int) -> Int to `v` of type (Int) -> Void",
+    );
+    // A procedure's type argument is never `Void`: callers see `Nil`.
+    ok("def f -> Void = 1\ng = ->() -> Void { 1 }\nxs = [1].map { |x| g.call }\nys: Array[Nil] = xs");
+    // Overrides: `-> Void` and `-> Nil` replace each other.
+    ok("class A\n  def f -> Nil = nil\n  def g -> Void = 1\nend\nclass B < A\n  def f -> Void = 2\n  def g -> Nil = nil\nend");
+    ok("abstract class A\n  abstract def f(&: (Int) -> Nil) -> Void\nend\nclass B < A\n  def f(&: (Int) -> Void) -> Void = yield(1)\nend\nB.new.f { |x| nil }");
+    // `return` in a `Void` method gives no value.
+    ok("def f(x: Int) -> Void\n  return if x > 0\n  x\nend");
+    err(
+        "def f(x: Int) -> Void\n  return x if x > 0\nend",
+        "the method is `-> Void`",
+    );
+    err(
+        "l = ->(x: Int) -> Void { return x }",
+        "the lambda is `-> Void`",
+    );
+    // The top level is `-> Void` too.
+    err(
+        "[1, 2].each do |x|\n  return 5 if x > 1\nend",
+        "the method is `-> Void`",
+    );
+    // Overloads differing only by `Void`/`Nil` are the same.
+    err(
+        "def f(x: (Int) -> Void) -> Int = 1\ndef f(x: (Int) -> Nil) -> Int = 2",
+        "already defined with the same parameters",
+    );
+    err(
+        "class C\n  def v -> Void = 1\nend\nxs: Array[Int] = [C.new].map(&:v)",
+        "`&:v` returns Nil but Int was expected",
+    );
+}
+
+#[test]
 fn nil_results_and_lambda_annotations() {
     // A lambda's declared result is checked like a method's.
     err(
@@ -953,7 +1044,7 @@ fn nil_results_and_lambda_annotations() {
         "lambda returns Int but String was expected",
     );
     ok("l = ->(x: Int) -> Int | String { x }\nputs l.call(1)");
-    ok("l = ->(x: Int) -> Nil { x }\nl.call(1)");
+    ok("l = ->(x: Int) -> Void { x }\nl.call(1)");
     // An exception caught as a union can be raised again.
     ok("begin\n  raise IOError, \"x\"\nrescue IOError, SystemCallError => e\n  raise e\nend");
     // `*keys: K` is shown with its element type.
@@ -1014,12 +1105,12 @@ fn tuple_inference() {
 #[test]
 fn self_type_positions() {
     // `Self` where the method hands a value out is fine.
-    ok("module M\n  def ok1(&: (Self) -> Nil) -> Self = self\n  def ok2 -> Array[Self] = [self]\n  def ok3(f: (Self) -> Int) -> Int = f.call(self)\n  def ok4 -> Self? = nil\nend");
+    ok("module M\n  def ok1(&: (Self) -> Void) -> Self = self\n  def ok2 -> Array[Self] = [self]\n  def ok3(f: (Self) -> Int) -> Int = f.call(self)\n  def ok4 -> Self? = nil\nend");
     // Where the caller hands one in, a subclass would get its parent's.
     for src in [
         "module M\n  abstract def cmp(other: Self) -> Int\nend",
-        "module M\n  def a(&: () -> Self) -> Nil = nil\nend",
-        "module M\n  def b(x: Array[Self]) -> Nil = nil\nend",
+        "module M\n  def a(&: () -> Self) -> Void = nil\nend",
+        "module M\n  def b(x: Array[Self]) -> Void = nil\nend",
         "class C\n  def c(f: ((Self) -> Int) -> Int) -> Int = 0\nend",
     ] {
         err(
@@ -1125,7 +1216,7 @@ fn concurrency_rules() {
     err("Channel[Array::Builder[Int]].new", "must be Shareable");
     err("B = Array::Builder[Int].new", "non-shareable type");
     ok("ch = Channel[Int].new\nTask.scope do |scope|\n  scope.spawn { ch.send(1) }\n  puts ch.receive\nend");
-    ok("class Counter\n  var @n: Int = 0\n  def bump -> Nil\n    @n += 1\n  end\nend\nc = Counter.new\nc.bump");
+    ok("class Counter\n  var @n: Int = 0\n  def bump -> Void\n    @n += 1\n  end\nend\nc = Counter.new\nc.bump");
     err(
         "class Counter\n  var @n: Int = 0\nend\nc = Counter.new\nTask.spawn { c }",
         "non-shareable type Counter",
@@ -1135,7 +1226,7 @@ fn concurrency_rules() {
 
 #[test]
 fn shareable_procedures() {
-    let run = "def run(&h: shareable () -> Nil) -> Nil\n  Task.spawn { h.call }.await\nend\n";
+    let run = "def run(&h: shareable () -> Void) -> Void\n  Task.spawn { h.call }.await\nend\n";
     // A block or lambda where one is expected captures by value, like a
     // `spawn` block: Shareable values, no assignment.
     ok(&format!("{run}x = 1\nrun {{ puts x }}"));
@@ -1143,7 +1234,7 @@ fn shareable_procedures() {
         "{run}f: shareable (Int) -> Int = ->(n: Int) {{ n + 1 }}\nTask.spawn {{ f.call(1) }}"
     ));
     ok(&format!(
-        "{run}def opt(f: (shareable () -> Nil)? = nil) -> (shareable () -> Nil)? = f\nopt(f: ->() {{ puts 1 }})"
+        "{run}def opt(f: (shareable () -> Void)? = nil) -> (shareable () -> Void)? = f\nopt(f: ->() {{ puts 1 }})"
     ));
     err(
         &format!("{run}n = 0\nrun {{ n += 1 }}"),
@@ -1189,7 +1280,7 @@ fn control_flow() {
     ok("def f[E <: Exception](e: E) -> Nothing = raise e");
     ok("extension Result[T, E <: Exception]\n  def get! -> T\n    case self\n    in Result::Ok(value:) then value\n    in Result::Err(error:) then raise error\n    end\n  end\nend");
     ok("class H[E <: Exception]\n  @e: E\n  def initialize(@e: E)\n  end\n  def go -> Nothing = raise @e\nend");
-    ok("def f[T](x: T) -> Nil\n  case x\n  in IOError then raise x\n  else nil\n  end\nend");
+    ok("def f[T](x: T) -> Void\n  case x\n  in IOError then raise x\n  else nil\n  end\nend");
     ok("def f[E <: Exception](e: E, b: Bool) -> Nothing\n  x = b ? e : IOError.new(\"io\")\n  raise x\nend");
     err(
         "def f[E](e: E, b: Bool) -> Nothing\n  x = b ? e : IOError.new(\"io\")\n  raise x\nend",
@@ -1259,7 +1350,7 @@ fn module_contracts() {
 #[test]
 fn deinitialize_declarations() {
     ok("class R\n  def deinitialize\n    puts 1\n  end\nend");
-    ok("module Cleanup\n  def deinitialize -> Nil = nil\nend\nclass R\n  include Cleanup\nend");
+    ok("module Cleanup\n  def deinitialize -> Void = nil\nend\nclass R\n  include Cleanup\nend");
     err(
         "class R\n  def deinitialize(x: Int) = nil\nend",
         "`deinitialize` takes no parameters",
@@ -1372,7 +1463,7 @@ fn reraise_block_params_narrowing() {
     );
     no_warnings("xs = [1]\nxs.push!(2)\nys = xs.push(3)\nxs.each { |x| p x }\np ys");
     err(
-        "class B[out T]\n  def put(x: T) -> Nil = nil\nend",
+        "class B[out T]\n  def put(x: T) -> Void = nil\nend",
         "`T` appears in a parameter position of `put`, against its variance in B",
     );
     err(
@@ -1395,7 +1486,7 @@ fn reraise_block_params_narrowing() {
     );
     // An immutable field is read as a result (its reader returns it).
     err(
-        "class B[out T]\n  @f: (T) -> Nil\n  attr_reader :f\n  def initialize(@f: (T) -> Nil)\n  end\nend",
+        "class B[out T]\n  @f: (T) -> Void\n  attr_reader :f\n  def initialize(@f: (T) -> Void)\n  end\nend",
         "`T` appears in a result position of the field `@f`",
     );
     err(
@@ -1407,7 +1498,7 @@ fn reraise_block_params_narrowing() {
         "class B[in T]\n  @x: T\n  def initialize(@x: T)\n  end\nend",
         "`T` appears in a result position of the field `@x`",
     );
-    ok("class B[out T]\n  def each(&: (T) -> Nil) -> Nil = nil\n  def with[U >: T](x: U) -> Array[U] = [x]\n  private def keep(x: T) -> Nil = nil\nend");
+    ok("class B[out T]\n  def each(&: (T) -> Void) -> Void = nil\n  def with[U >: T](x: U) -> Array[U] = [x]\n  private def keep(x: T) -> Void = nil\nend");
     err(
         "class K[U >: Int]\nend",
         "only a method's type parameters take a lower bound",
@@ -1425,14 +1516,17 @@ fn reraise_block_params_narrowing() {
         "def f(b: Bool?) -> Bool\n  b != true ? b : false\nend",
         "Bool?",
     );
-    ok("def f(&b: ((Int) -> Nil)?) -> Nil\n  b&.call(1)\nend\nf\nf { |x| p x }");
+    ok("def f(&b: ((Int) -> Void)?) -> Void\n  b&.call(1)\nend\nf\nf { |x| p x }");
     err(
-        "def f(&b: ((Int) -> Nil)?) -> Nil\n  yield 1\nend",
+        "def f(&b: ((Int) -> Void)?) -> Void\n  yield 1\nend",
         "`yield` cannot run an optional block",
     );
-    err("def f(&b: ((Int) -> Nil)?) -> Nil\n  b.call(1)\nend", "Nil");
     err(
-        "def f(&b: (Int) -> Nil) -> Nil\n  b.call(1)\nend\nf",
+        "def f(&b: ((Int) -> Void)?) -> Void\n  b.call(1)\nend",
+        "Nil",
+    );
+    err(
+        "def f(&b: (Int) -> Void) -> Void\n  b.call(1)\nend\nf",
         "requires a block",
     );
     err(
@@ -1686,7 +1780,7 @@ fn undecided_types_come_from_uses() {
     ok("data Pair[A, B] = (a: A, b: B)\ndef g -> Int\n  arr = []\n  r = 0\n  case arr[0]?\n  in Pair(a, b)\n    p a\n    r = 1\n  else\n  end\n  arr = arr.push(Pair.new(1, 2))\n  r\nend");
     ok("def f -> Int\n  arr = []\n  x = arr[0]?\n  p x.nil?, x.to_s\n  arr = arr.push(5)\n  1\nend");
     // Not a class whose Object arguments would accept wrong values.
-    err("class Cell[T]\n  var @v: T\n  def initialize(v: T)\n    @v = v\n  end\n  def set(v: T) -> Nil\n    @v = v\n    nil\n  end\nend\ndef g -> Int\n  arr = []\n  b = arr[0]?\n  case b\n  in Cell(v:)\n    b.set(\"str\")\n  else\n  end\n  arr = arr.push(Cell.new(5))\n  1\nend", "cannot deconstruct a value whose type is not yet known");
+    err("class Cell[T]\n  var @v: T\n  def initialize(v: T)\n    @v = v\n  end\n  def set(v: T) -> Void\n    @v = v\n    nil\n  end\nend\ndef g -> Int\n  arr = []\n  b = arr[0]?\n  case b\n  in Cell(v:)\n    b.set(\"str\")\n  else\n  end\n  arr = arr.push(Cell.new(5))\n  1\nend", "cannot deconstruct a value whose type is not yet known");
     err("data H[A] = (f: (A) -> Int)\ndef g -> Int\n  arr = []\n  case arr[0]?\n  in H(f)\n    f.call(\"oops\")\n  else\n  end\n  arr = arr.push(H.new(->(x: Int) { x + 1 }))\n  1\nend", "cannot deconstruct a value whose type is not yet known");
     // Nor one with a bounded parameter; a recursive `data` is fine.
     err("module Comb\n  abstract def weight -> Int\nend\ndata Acc[T <: Comb](x: T)\n  def plus(y: T) -> Int = x.weight + y.weight\nend\ndata C[A] = (d: Acc[A])\ndef g -> Int\n  arr = []\n  case arr[0]?\n  in C(d)\n    p d.plus(\"str\")\n  else\n  end\n  1\nend", "cannot deconstruct a value whose type is not yet known");
@@ -1711,7 +1805,7 @@ fn tests_narrow_only_to_what_holds() {
     ok("def f -> Int\n  arr = []\n  x = arr[0]? || \"s\"\n  arr = arr.push(5)\n  p x\n  (arr[0]? || 0) + 1\nend");
     // A generic class test without known arguments: an invariant one does
     // not narrow an Object (its setters would take anything).
-    err("class Box[T]\n  var @v: T\n  def initialize(@v: T); end\n  def set(v: T) -> Nil\n    @v = v\n    nil\n  end\nend\ndef f(o: Object)\n  case o\n  in Box\n    o.set(\"str\")\n  else\n  end\nend", "undefined method `set` for Object");
+    err("class Box[T]\n  var @v: T\n  def initialize(@v: T); end\n  def set(v: T) -> Void\n    @v = v\n    nil\n  end\nend\ndef f(o: Object)\n  case o\n  in Box\n    o.set(\"str\")\n  else\n  end\nend", "undefined method `set` for Object");
     ok("def f(o: Object) -> Int\n  case o\n  in Array then o.size\n  else 0\n  end\nend");
     // A union of an undecided type with a decided `Pair` does not take the
     // decided one's arguments.
@@ -1727,7 +1821,7 @@ fn tests_narrow_only_to_what_holds() {
     // A field of type `Self` deconstructs to the value's own type.
     ok("data Node[A] = (v: A, nx: Self?)\nn = Node.new(1, Node.new(2, nil))\ncase n\nin Node(v, nx)\n  p nx.v if nx\nend");
     // A type parameter or a supertype the class test cannot narrow stays.
-    err("class Box[T]\n  var @v: T\n  def initialize(@v: T); end\n  def set(v: T) -> Nil\n    @v = v\n    nil\n  end\nend\ndef poke[T](x: T) -> Nil\n  case x\n  in Box then x.set(\"str\")\n  else\n  end\n  nil\nend", "undefined method `set` for T");
+    err("class Box[T]\n  var @v: T\n  def initialize(@v: T); end\n  def set(v: T) -> Void\n    @v = v\n    nil\n  end\nend\ndef poke[T](x: T) -> Void\n  case x\n  in Box then x.set(\"str\")\n  else\n  end\n  nil\nend", "undefined method `set` for T");
     ok("def f(o: Object) -> Int\n  case o\n  when Hash then o.size\n  when Range then 1\n  else 0\n  end\nend");
     ok("def b[T](x: T) -> Int\n  case x\n  when Hash then x.size\n  when Set then x.size\n  else 0\n  end\nend");
     // Nor `== nil` a value whose class (or a subclass) defines `==`.
@@ -1839,7 +1933,7 @@ fn closures_that_may_run_later_end_narrowings() {
     );
     // Implicit calls run it too (interpolation calls `to_s`).
     err(
-        "class C\n  var @r: (() -> Nil)? = nil\n  def set(r: () -> Nil) -> Nil\n    @r = r\n    nil\n  end\n  def to_s -> String\n    if r = @r\n      r.call\n    end\n    \"c\"\n  end\nend\ndef f(x: Int | String, c: C) -> Int\n  c.set(-> { x = 5; nil })\n  x = \"s\"\n  if x.is_a?(String)\n    s = \"#{c}\"\n    p x.upcase\n  end\n  0\nend",
+        "class C\n  var @r: (() -> Void)? = nil\n  def set(r: () -> Void) -> Void\n    @r = r\n    nil\n  end\n  def to_s -> String\n    if r = @r\n      r.call\n    end\n    \"c\"\n  end\nend\ndef f(x: Int | String, c: C) -> Int\n  c.set(-> { x = 5; nil })\n  x = \"s\"\n  if x.is_a?(String)\n    s = \"#{c}\"\n    p x.upcase\n  end\n  0\nend",
         "undefined method `upcase` for Int",
     );
     // A lambda made under a narrowing may run after the local changes.
@@ -1890,17 +1984,17 @@ fn closures_that_may_run_later_end_narrowings() {
 fn an_anonymous_block_is_not_kept() {
     // Only yielded to, or passed on to another anonymous one.
     err(
-        "def keep(&blk: () -> Nil) -> Nil = nil\ndef fwd(&: () -> Nil) -> Nil = keep(&)",
+        "def keep(&blk: () -> Void) -> Void = nil\ndef fwd(&: () -> Void) -> Void = keep(&)",
         "cannot be passed to `keep`, which may keep it",
     );
     err(
-        "def wrap(&: () -> Nil) -> (() -> Nil) = -> { yield }",
+        "def wrap(&: () -> Void) -> (() -> Void) = -> { yield }",
         "`yield` in a closure that may run later",
     );
-    ok("def anon(&: () -> Nil) -> Nil = yield\ndef fwd(&: () -> Nil) -> Nil = anon(&)");
+    ok("def anon(&: () -> Void) -> Void = yield\ndef fwd(&: () -> Void) -> Void = anon(&)");
     // Whether a method keeps its block is part of its signature.
     err(
-        "class A\n  def run(&: () -> Nil) -> Nil = yield\nend\nclass B < A\n  def run(&blk: () -> Nil) -> Nil = nil\nend",
+        "class A\n  def run(&: () -> Void) -> Void = yield\nend\nclass B < A\n  def run(&blk: () -> Void) -> Void = nil\nend",
         "`run` cannot keep its block",
     );
 }
@@ -1929,48 +2023,48 @@ fn closures_that_may_run_later_in_more_places() {
     );
     // A lambda in a parameter's default value.
     err(
-        "def f(x: Int | String, r: () -> Nil = -> { x = 5; nil }) -> Int\n  if x.is_a?(String)\n    r.call\n    p x.upcase\n  end\n  0\nend",
+        "def f(x: Int | String, r: () -> Void = -> { x = 5; nil }) -> Int\n  if x.is_a?(String)\n    r.call\n    p x.upcase\n  end\n  0\nend",
         "undefined method `upcase` for Int",
     );
     // `Channel.select`'s blocks run after its block returns.
     err(
-        "def f(x: Int | String) -> Nil\n  Channel.select do |s|\n    if x.is_a?(String)\n      s.default { p x.upcase; nil }\n    end\n    x = 5\n  end\nend",
+        "def f(x: Int | String) -> Void\n  Channel.select do |s|\n    if x.is_a?(String)\n      s.default { p x.upcase; nil }\n    end\n    x = 5\n  end\nend",
         "undefined method `upcase` for Int",
     );
     // An immutable field cannot be assigned by a closure that may run
     // after `initialize`.
     err(
-        "class C\n  @x: Int\n  @r: () -> Nil\n  def initialize\n    @x = 1\n    @r = -> { @x = 5; nil }\n  end\nend",
+        "class C\n  @x: Int\n  @r: () -> Void\n  def initialize\n    @x = 1\n    @r = -> { @x = 5; nil }\n  end\nend",
         "a closure that may run later, after `initialize`, cannot assign it",
     );
     // The method's block cannot go to a task unchecked.
     err(
-        "def later(&: () -> Nil) -> Task[Nil] = Task.spawn(&)",
+        "def later(&: () -> Void) -> Task[Nil] = Task.spawn(&)",
         "which runs it in a task",
     );
     // A closure that may run later is run after others made later in the
     // body, which may have assigned the local.
     err(
-        "def f(x: Int | String) -> Nil\n  g = -> { nil }\n  a = -> { if x.is_a?(String)\n    g.call\n    p x.upcase\n  end\n  nil }\n  g = -> { x = 5; nil }\n  a.call\nend",
+        "def f(x: Int | String) -> Void\n  g = -> { nil }\n  a = -> { if x.is_a?(String)\n    g.call\n    p x.upcase\n  end\n  nil }\n  g = -> { x = 5; nil }\n  a.call\nend",
         "undefined method `upcase` for Int",
     );
     // In `initialize`, a field's narrowing does not reach a closure that
     // may run after the field is assigned again; nor may one assign it,
     // by any form of assignment.
     err(
-        "class C\n  @x: Int | String\n  @r: () -> Nil\n  def initialize\n    @x = \"s\"\n    @r = -> { nil }\n    if @x.is_a?(String)\n      @r = -> { p @x.upcase; nil }\n    end\n    @x = 5\n  end\nend",
+        "class C\n  @x: Int | String\n  @r: () -> Void\n  def initialize\n    @x = \"s\"\n    @r = -> { nil }\n    if @x.is_a?(String)\n      @r = -> { p @x.upcase; nil }\n    end\n    @x = 5\n  end\nend",
         "undefined method `upcase` for Int",
     );
     err(
-        "class C\n  @n: Int\n  @r: () -> Nil\n  def initialize\n    @n = 1\n    @r = -> { @n += 1; nil }\n  end\nend",
+        "class C\n  @n: Int\n  @r: () -> Void\n  def initialize\n    @n = 1\n    @r = -> { @n += 1; nil }\n  end\nend",
         "field `@n` is immutable",
     );
     // An overload or a constructor is not an override.
-    ok("class P\n  def run(&: () -> Nil) -> Nil = yield\nend\nclass Q < P\n  def run(n: Int, &blk: () -> Nil) -> Nil = nil\nend");
-    ok("class C\n  def initialize(&: () -> Nil)\n    yield\n  end\nend\nclass D < C\n  def initialize(&blk: () -> Nil)\n    super(&blk)\n  end\nend");
+    ok("class P\n  def run(&: () -> Void) -> Void = yield\nend\nclass Q < P\n  def run(n: Int, &blk: () -> Void) -> Void = nil\nend");
+    ok("class C\n  def initialize(&: () -> Void)\n    yield\n  end\nend\nclass D < C\n  def initialize(&blk: () -> Void)\n    super(&blk)\n  end\nend");
     // Nor can an extension's method keep a block the one it hides yields.
     err(
-        "def keep(b: () -> Nil) -> Nil = nil\nclass A\n  def run(&: () -> Nil) -> Nil = yield\nend\nclass C < A\nend\nextension C\n  def run(&blk: () -> Nil) -> Nil = keep(blk)\nend",
+        "def keep(b: () -> Void) -> Void = nil\nclass A\n  def run(&: () -> Void) -> Void = yield\nend\nclass C < A\nend\nextension C\n  def run(&blk: () -> Void) -> Void = keep(blk)\nend",
         "`run` cannot keep its block",
     );
 }
@@ -2030,7 +2124,7 @@ fn calls_a_class_test_cannot_choose_are_errors() {
         "cannot tell at run time which `to_s` the interpolation calls for Array",
     );
     // A class and its subclass, or unrelated classes: tested in order.
-    ok("class Foo\nend\nclass Sub < Foo\nend\nextension Foo\n  def ext -> String = \"F\"\nend\nextension Sub\n  def ext -> String = \"S\"\nend\ndef pk(i: Int) -> Array[Foo] | Array[Sub] = [Sub.new]\nclass Box[T]\n  @v: T\n  def initialize(@v: T); end\n  def each(&blk: (T) -> Nil) -> Nil\n    blk.call(@v)\n    nil\n  end\nend\ndef pb(i: Int) -> Array[Foo] | Box[Sub] = Box.new(Sub.new)\npb(1).each { |x| puts x.ext }");
+    ok("class Foo\nend\nclass Sub < Foo\nend\nextension Foo\n  def ext -> String = \"F\"\nend\nextension Sub\n  def ext -> String = \"S\"\nend\ndef pk(i: Int) -> Array[Foo] | Array[Sub] = [Sub.new]\nclass Box[T]\n  @v: T\n  def initialize(@v: T); end\n  def each(&blk: (T) -> Void) -> Void\n    blk.call(@v)\n    nil\n  end\nend\ndef pb(i: Int) -> Array[Foo] | Box[Sub] = Box.new(Sub.new)\npb(1).each { |x| puts x.ext }");
     // Called by name, natives' overloads and the value's own methods are
     // found; a check thrown away (an overload that does not match)
     // leaves nothing behind.
@@ -2120,48 +2214,48 @@ fn equality_takes_an_object() {
 fn what_runs_deinitialize_is_not_copied() {
     // An exception is copied when raised while referred to.
     err(
-        "class E < StandardError\n  def deinitialize -> Nil\n  end\nend",
+        "class E < StandardError\n  def deinitialize -> Void\n  end\nend",
         "an exception class cannot define `deinitialize`",
     );
     err(
-        "module M\n  def deinitialize -> Nil\n  end\nend\nclass E < StandardError\n  include M\nend",
+        "module M\n  def deinitialize -> Void\n  end\nend\nclass E < StandardError\n  include M\nend",
         "`E` cannot include `M`, which defines `deinitialize`",
     );
     // A subclass reports nothing of its own.
-    let src = "module M\n  def deinitialize -> Nil\n  end\nend\nclass E < StandardError\n  include M\nend\nclass F < E\nend";
+    let src = "module M\n  def deinitialize -> Void\n  end\nend\nclass E < StandardError\n  include M\nend\nclass F < E\nend";
     assert!(!diagnostics(src)
         .iter()
         .any(|e| e.contains("`F` cannot include")));
     // Data types, enums and built-in value classes are copied too.
     err(
-        "module M\n  def deinitialize -> Nil\n  end\nend\ndata D(v: Int)\n  include M\nend",
+        "module M\n  def deinitialize -> Void\n  end\nend\ndata D(v: Int)\n  include M\nend",
         "`D` cannot include `M`",
     );
     err(
-        "module M\n  def deinitialize -> Nil\n  end\nend\nenum Light = Red | Green\nextension Light\n  include M\nend",
+        "module M\n  def deinitialize -> Void\n  end\nend\nenum Light = Red | Green\nextension Light\n  include M\nend",
         "`Light` cannot include `M`",
     );
     err(
-        "module M\n  def deinitialize -> Nil\n  end\nend\nextension String\n  include M\nend",
+        "module M\n  def deinitialize -> Void\n  end\nend\nextension String\n  include M\nend",
         "`String` cannot include `M`",
     );
     // Through a module the prelude's copied classes include (`Exception`
     // includes `Shareable`).
     err(
-        "module M\n  def deinitialize -> Nil\n  end\nend\nextension Shareable\n  include M\nend",
+        "module M\n  def deinitialize -> Void\n  end\nend\nextension Shareable\n  include M\nend",
         "`Shareable` cannot include `M`",
     );
     // A copy would release what the original owns again.
     err(
-        "class R\n  def deinitialize -> Nil\n  end\nend\nR.new.dup",
+        "class R\n  def deinitialize -> Void\n  end\nend\nR.new.dup",
         "cannot dup R",
     );
     err(
-        "class R\n  def deinitialize -> Nil\n  end\nend\nclass S < R\nend\nS.new.dup",
+        "class R\n  def deinitialize -> Void\n  end\nend\nclass S < R\nend\nS.new.dup",
         "cannot dup S",
     );
     err(
-        "class R\n  def deinitialize -> Nil\n  end\n  def again -> R = dup\nend",
+        "class R\n  def deinitialize -> Void\n  end\n  def again -> R = dup\nend",
         "cannot dup R",
     );
     ok("class P\nend\nP.new.dup\nclass E < StandardError\nend\nE.new(\"e\").dup");

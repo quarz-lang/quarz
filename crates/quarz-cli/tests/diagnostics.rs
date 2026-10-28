@@ -10,17 +10,17 @@ fn receiver_block_errors() {
     let out = common::diagnostics(
         r#"class Box
   var @n: Int = 0
-  def bump(&b: Box.() -> Nil) -> Nil
+  def bump(&b: Box.() -> Void) -> Void
     instance_exec(&b)
   end
   def n -> Int = @n
 end
 Box.new.bump { @n = 1 }
-def run(&b: Box.() -> Nil) -> Nil
+def run(&b: Box.() -> Void) -> Void
   yield
 end
 f: (Int) -> Int = -> (x: Int) { x }
-g: Box.() -> Nil = f
+g: Box.() -> Void = f
 Box.new.bump { nothing_here }
 def n -> Int = 42
 Box.new.bump { n }
@@ -43,7 +43,7 @@ Builder.new.instance_exec { inner { item } }
         "{out}"
     );
     assert!(
-        out.contains("cannot assign (Int) -> Int to `g` of type Box.() -> Nil"),
+        out.contains("cannot assign (Int) -> Int to `g` of type Box.() -> Void"),
         "{out}"
     );
     assert!(
@@ -115,7 +115,7 @@ xs.nope!
 [1, 2].push!(3)
 class C
   @n: Int = 0
-  def bump -> Nil
+  def bump -> Void
     @n.succ!
   end
 end

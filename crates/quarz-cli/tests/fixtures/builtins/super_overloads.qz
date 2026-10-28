@@ -70,14 +70,14 @@ puts Pair2.new(2, "b").g(1, 2, a: "x")
 
 # ... and the block, named or anonymous.
 class Yielder
-  def each_twice(x: Int, &: (Int) -> Nil) -> Nil
+  def each_twice(x: Int, &: (Int) -> Void) -> Void
     yield(x)
     yield(x + 1)
   end
   def named(x: Int, &b: (Int) -> Int) -> Int = b.call(x) * 2
 end
 class Yielder2 < Yielder
-  def each_twice(x: Int, &: (Int) -> Nil) -> Nil
+  def each_twice(x: Int, &: (Int) -> Void) -> Void
     puts "Yielder2"
     super
   end

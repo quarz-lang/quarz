@@ -78,6 +78,8 @@ def Tables.className (T : Tables) (id : Nat) : M String := do
 partial def Tables.ty (T : Tables) (j : Json) : M Ty := do
   match ← str (← field j "t") with
   | "nothing" => pure []
+  -- `-> Void`: the body's value is discarded and the result is nil.
+  | "void" => pure [.nil]
   | "union" => do
     let ms ← arr (← field j "members")
     ms.toList.flatMapM T.ty

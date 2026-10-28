@@ -63,56 +63,56 @@ module Test
   # The assertions: `Case` includes them, and so may a module of tests
   # or helpers (§7). Each counts itself through `add_assertion`.
   module Assertions
-    abstract def add_assertion -> Nil
+    abstract def add_assertion -> Void
 
-    def assert(value: Object?, message: String? = nil) -> Nil        # truthy
-    def refute(value: Object?, message: String? = nil) -> Nil        # falsy
-    def assert_true(value: Bool, message: String? = nil) -> Nil
-    def assert_false(value: Bool, message: String? = nil) -> Nil
-    def assert_equal[T](expected: T, actual: T?, message: String? = nil) -> Nil
-    def refute_equal[T](expected: T, actual: T?, message: String? = nil) -> Nil
-    def assert_nil(value: Object?, message: String? = nil) -> Nil
-    def refute_nil(value: Object?, message: String? = nil) -> Nil
-    def assert_same(expected: Object, actual: Object, message: String? = nil) -> Nil   # equal?
-    def assert_in_delta(expected: Float, actual: Float, delta: Float = 0.001, message: String? = nil) -> Nil
-    def assert_in_epsilon(expected: Float, actual: Float, epsilon: Float = 0.001, message: String? = nil) -> Nil
-    def assert_match(pattern: Regexp, actual: String, message: String? = nil) -> Nil
-    def refute_match(pattern: Regexp, actual: String, message: String? = nil) -> Nil
-    def assert_includes[T](collection: Enumerable[T], element: T, message: String? = nil) -> Nil
-    def refute_includes[T](collection: Enumerable[T], element: T, message: String? = nil) -> Nil
-    def assert_empty(collection: Enumerable[Object], message: String? = nil) -> Nil
-    def refute_empty(collection: Enumerable[Object], message: String? = nil) -> Nil
-    def assert_empty(text: String, message: String? = nil) -> Nil
-    def refute_empty(text: String, message: String? = nil) -> Nil
-    def assert_compare[T <: Comparable[T]](lhs: T, op: Symbol, rhs: T, message: String? = nil) -> Nil   # :<, :<=, :>, :>=, :==
-    def assert_raise(klass: Class, message: String? = nil, &: () -> Nil) -> Exception   # klass or a subclass
-    def assert_raise_message(pattern: Regexp | String, &: () -> Nil) -> Exception
-    def assert_nothing_raised(message: String? = nil, &: () -> Nil) -> Nil
+    def assert(value: Object?, message: String? = nil) -> Void        # truthy
+    def refute(value: Object?, message: String? = nil) -> Void        # falsy
+    def assert_true(value: Bool, message: String? = nil) -> Void
+    def assert_false(value: Bool, message: String? = nil) -> Void
+    def assert_equal[T](expected: T, actual: T?, message: String? = nil) -> Void
+    def refute_equal[T](expected: T, actual: T?, message: String? = nil) -> Void
+    def assert_nil(value: Object?, message: String? = nil) -> Void
+    def refute_nil(value: Object?, message: String? = nil) -> Void
+    def assert_same(expected: Object, actual: Object, message: String? = nil) -> Void   # equal?
+    def assert_in_delta(expected: Float, actual: Float, delta: Float = 0.001, message: String? = nil) -> Void
+    def assert_in_epsilon(expected: Float, actual: Float, epsilon: Float = 0.001, message: String? = nil) -> Void
+    def assert_match(pattern: Regexp, actual: String, message: String? = nil) -> Void
+    def refute_match(pattern: Regexp, actual: String, message: String? = nil) -> Void
+    def assert_includes[T](collection: Enumerable[T], element: T, message: String? = nil) -> Void
+    def refute_includes[T](collection: Enumerable[T], element: T, message: String? = nil) -> Void
+    def assert_empty(collection: Enumerable[Object], message: String? = nil) -> Void
+    def refute_empty(collection: Enumerable[Object], message: String? = nil) -> Void
+    def assert_empty(text: String, message: String? = nil) -> Void
+    def refute_empty(text: String, message: String? = nil) -> Void
+    def assert_compare[T <: Comparable[T]](lhs: T, op: Symbol, rhs: T, message: String? = nil) -> Void   # :<, :<=, :>, :>=, :==
+    def assert_raise(klass: Class, message: String? = nil, &: () -> Void) -> Exception   # klass or a subclass
+    def assert_raise_message(pattern: Regexp | String, &: () -> Void) -> Exception
+    def assert_nothing_raised(message: String? = nil, &: () -> Void) -> Void
 
     def flunk(message: String = "Flunked") -> Nothing
     def pend(message: String = "pending") -> Nothing     # the test ends here, counted as pending
-    def pend(message: String = "pending", &: () -> Nil) -> Nil   # pending if the block fails, a failure if it passes
+    def pend(message: String = "pending", &: () -> Void) -> Void   # pending if the block fails, a failure if it passes
     def omit(message: String = "omitted") -> Nothing     # the test ends here, counted as omitted
-    def omit_if(condition: Bool, message: String = "omitted") -> Nil
-    def omit_unless(condition: Bool, message: String = "omitted") -> Nil
+    def omit_if(condition: Bool, message: String = "omitted") -> Void
+    def omit_unless(condition: Bool, message: String = "omitted") -> Void
   end
 
   class Case
     include Assertions
 
     # Before and after each test; the instance is fresh for each.
-    def setup -> Nil = nil
-    def teardown -> Nil = nil
+    def setup -> Void = nil
+    def teardown -> Void = nil
     # Once around a class's tests, with no instance (class methods).
-    def self.startup -> Nil = nil
-    def self.shutdown -> Nil = nil
+    def self.startup -> Void = nil
+    def self.shutdown -> Void = nil
 
     # The test's own time limit (default: the run's, 60 s).
     def self.timeout -> Duration? = nil
     # Whether the class's tests run one at a time under --parallel (§6).
     def self.serial? -> Bool = false
 
-    def notify(message: String) -> Nil                   # a note in the report
+    def notify(message: String) -> Void                   # a note in the report
   end
 end
 ```
@@ -167,7 +167,7 @@ suites: Array[Test::Suite] = [
 exit Test.run(ARGV, suites)
 ```
 
-- `Test::Suite` holds the class name, its file, how to make an instance (`shareable () -> Test::Case`; a `Test::Case` subclass has no `initialize` with parameters, or the runner's `.new` fails to compile and says so) and its entries; `Test::Entry` a test's name, file and line (of its method: a base class's or a module's for an inherited test) and call (`shareable (Test::Case) -> Nil`; for data, the rows' labels and a call taking one). Neither is generic: the suites of several classes go in one array, which a `Suite[C]` would not allow (an array of `Suite[StackTest]` and `Suite[ParseTest]` is a union, not a `Suite[Case]`), so the generated lambdas cast the instance to the suite's class with `as`, which cannot fail. Both are Shareable, and their procedures `shareable`: the generated lambdas capture nothing, so they qualify, and a test can run in another task (§6). `Test.run` runs them, prints the report and exits with 1 when a test failed or errored (0 when every test passed, pending or omitted).
+- `Test::Suite` holds the class name, its file, how to make an instance (`shareable () -> Test::Case`; a `Test::Case` subclass has no `initialize` with parameters, or the runner's `.new` fails to compile and says so) and its entries; `Test::Entry` a test's name, file and line (of its method: a base class's or a module's for an inherited test) and call (`shareable (Test::Case) -> Void`; for data, the rows' labels and a call taking one). Neither is generic: the suites of several classes go in one array, which a `Suite[C]` would not allow (an array of `Suite[StackTest]` and `Suite[ParseTest]` is a union, not a `Suite[Case]`), so the generated lambdas cast the instance to the suite's class with `as`, which cannot fail. Both are Shareable, and their procedures `shareable`: the generated lambdas capture nothing, so they qualify, and a test can run in another task (§6). `Test.run` runs them, prints the report and exits with 1 when a test failed or errored (0 when every test passed, pending or omitted).
 - The runner is generated after the test files are declared and checked (what inherits `Test::Case` is not visible syntactically: aliases, abstract bases), and added to the checked program as one more unit (`quarz_types::check_with_extra`), the way `Session::require` adds a file to the REPL's, rather than by checking everything twice. Its warnings are not shown (a test that always raises makes the `nil` after its call unreachable); its errors are reported on the test methods.
 - A test runs as: `startup` once before the class's first test, then for each test a fresh instance, `setup`, the test, `teardown` (also after a failure or a timeout: it runs uncancellably, within a limit of its own, so a test takes at most twice the limit, three times (and up to twice 50ms) with the wait for the tasks it leaves (below); what goes wrong in it is reported as the teardown's, "teardown timed out after 60s" or "teardown: RuntimeError: ...", an error of a test that passed (a failure, for an assertion that failed in it), a line added to one that failed, and an error that keeps the reason of one pending or omitted), each test inside `Task.timeout(limit)`: a test that waits forever (a channel, a socket, a `sleep`) is an error ("Task::Timeout: timed out after 60s"), not a hung run; a loop that never waits still hangs the run, as it would any program ([04-concurrency.md](04-concurrency.md) §2). The timeout is `Task::Timeout`, a `StandardError`, so a `rescue => e` in the code under test can swallow it; the runner then reports the test as failed to end. The tasks a test leaves running (spawned with `Task.spawn` in it, its `setup` or its `teardown`, and those they spawn) are cancelled once its teardown is done and waited for, as a scope's children are (one they spawn as they are cancelled, as in an `ensure`, is cancelled in turn, and may run nothing; a `Task.timeout` block or scope in them is their own code, which ends with them), so that they cannot run into the next test (nor end the run with an `exit`, unless one exits as it is cancelled); those still running after the test's limit (one that cancelling does not end: `Task.uncancellable`, or a loop that never waits, which with one worker hangs the run instead) are an error of the test, "1 task left running after the test (cancelled, not ended within 60s)", and run on; a task started in `setup` is still there for `teardown`, and one a test starts for later tests (a service kept in a constant on first use) is cancelled too: start those in `startup`. `shutdown` after the class's last test.
 - What a test raises other than `Test::AssertionFailed` is an **error** (E), with its class, message and backtrace. So is a test whose instance cannot be made (a field's initializer raised), a data-driven test whose `data_*` method raised, and every test of a class whose `startup` raised (its `shutdown` then does not run); a `shutdown` that raises is reported as an error of its own; the run goes on, and exits with 1. `DeadlockError` (every task waiting, no timer pending) ends the process, as it does in any program, and the runner cannot catch it; it does not happen while a test runs under its timeout, whose timer is pending, only with `--timeout=0`.

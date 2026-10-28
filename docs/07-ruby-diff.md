@@ -13,7 +13,7 @@ A summary of the things someone who knows Ruby will first stumble on when starti
 | Item | Ruby | Quarz |
 |---|---|---|
 | Method parameters | `def f(a, b = 1, k:)` | `def f(a: Int, b: Int = 1, *, k: Bool)` — parameter types are required |
-| Return type | Not part of the language (signatures can be written in RBS files beside the code, or with Sorbet's `sig`) | `def f(...) -> Int` (a method without one returns nil) |
+| Return type | Not part of the language (signatures can be written in RBS files beside the code, or with Sorbet's `sig`) | `def f(...) -> Int`; a method without one is `-> Void`: its body's value is discarded and it returns nil (`-> Nil` is strict, as any type) |
 | Declaring keyword parameters | `k:` label | Written after `*`. Parameters before `*` can be passed positionally or by keyword |
 | Instance variables | Created on assignment | Declared in the class body with `@x: Int`. Immutable by default; mutable with `var @x: Int` |
 | Uninitialized instance variables | `nil` | Never seen: a field whose type does not admit `nil` and that has no initializer is assigned on every path through `initialize`, before the object is used (a compile error otherwise) |
@@ -61,7 +61,7 @@ A summary of the things someone who knows Ruby will first stumble on when starti
 - `Result[T, E]`
 - `Shareable` (an automatically derived marker)
 - `obj.:method` (method reference)
-- Blocks with a receiver (`Html.() -> Nil`, run with `instance_exec`) for DSLs, and `using M do ... end`
+- Blocks with a receiver (`Html.() -> Void`, run with `instance_exec`) for DSLs, and `using M do ... end`
 - Nil-returning variants such as `[]?` and `gets?`
 
 ## Rewriting example
@@ -107,7 +107,7 @@ puts Inventory.new.add("apple").add("pear", 2).report
 class Inventory
   var @items: Hash[String, Int] = {}
 
-  def add(name: String, qty: Int = 1) -> Nil
+  def add(name: String, qty: Int = 1) -> Void
     @items = @items.update(name) { |q| (q || 0) + qty }
   end
 

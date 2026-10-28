@@ -24,7 +24,7 @@ end
 class Counter
   var @n: Int = 0
   def n -> Int = @n
-  def bump(times: Int, double: Bool) -> Nil
+  def bump(times: Int, double: Bool) -> Void
     return nil if times == 0
     @n += double ? 2 : 1
     bump(times - 1, !double)

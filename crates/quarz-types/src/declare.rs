@@ -999,7 +999,7 @@ impl<'ast> Declarer<'ast> {
             .zip(&a.type_params)
             .map(|(q, p)| (q.id, Type::Param(p.id)))
             .collect();
-        let same = |t: &Type, u: &Type| *t == u.subst(&rename);
+        let same = |t: &Type, u: &Type| self.world.same_type(t, &u.subst(&rename));
         a.type_params.iter().zip(&b.type_params).all(|(p, q)| {
             p.bounds.len() == q.bounds.len()
                 && p.bounds.iter().zip(&q.bounds).all(|(x, y)| same(x, y))
@@ -1176,7 +1176,7 @@ impl<'ast> Declarer<'ast> {
                             && o.params.iter().zip(&m.params).all(|(p, q)| {
                                 p.kind == q.kind
                                     && (p.kind != ParamKind::KeywordOnly || p.name == q.name)
-                                    && p.ty.subst(&subst) == q.ty
+                                    && self.world.same_type(&p.ty.subst(&subst), &q.ty)
                             })
                     })
                     .map(|o| (o, subst.clone()))
@@ -1194,8 +1194,8 @@ impl<'ast> Declarer<'ast> {
                     self.world.type_name(&mine_ret),
                     self.world.type_name(&theirs),
                 );
-                let hint = if self.world.is_nil_type(&mine_ret) {
-                    " (a method without a return type returns nil)"
+                let hint = if mine_ret == Type::Void {
+                    " (a `-> Void` method, as one without a return type, returns nil)"
                 } else {
                     ""
                 };
@@ -2492,7 +2492,9 @@ impl<'ast> Declarer<'ast> {
                         let ps = &s.world.method(*m).params;
                         ps.len() == fields.len()
                             && ps.iter().zip(&fields).all(|(p, f)| {
-                                p.kind == ParamKind::Positional && p.name == f.name && p.ty == f.ty
+                                p.kind == ParamKind::Positional
+                                    && p.name == f.name
+                                    && s.world.same_type(&p.ty, &f.ty)
                             })
                     })
                 })
@@ -2531,7 +2533,7 @@ impl<'ast> Declarer<'ast> {
             id,
             "initialize".to_string(),
             params,
-            self.world.nil(),
+            Type::Void,
             Synth::DataInit,
             span,
             Visibility::Public,
@@ -2663,7 +2665,7 @@ impl<'ast> Declarer<'ast> {
                         }
                     }
                     None => self.error(
-                        "a block parameter needs a type, e.g. `&block: (Int) -> Nil`",
+                        "a block parameter needs a type, e.g. `&block: (Int) -> Void`",
                         p.span,
                     ),
                 }
@@ -2709,15 +2711,16 @@ impl<'ast> Declarer<'ast> {
             });
         }
         let ret = match &def.ret {
-            Some(t) => self.resolve_type(t, &scope).unwrap_or(Type::Nothing),
-            None if def.name == "initialize" || def.name == "deinitialize" => self.world.nil(),
+            Some(t) => self.resolve_result_type(t, &scope).unwrap_or(Type::Nothing),
+            None if def.name == "initialize" || def.name == "deinitialize" => Type::Void,
             None if def.is_abstract || def.is_native => {
                 self.error("abstract and native methods need a return type", def.span);
-                self.world.nil()
+                Type::Void
             }
             // Return types are declared, not inferred: without one, a
-            // method returns nil (its body's value is not used).
-            None => self.world.nil(),
+            // method is `-> Void` (its body's value is discarded and it
+            // returns nil).
+            None => Type::Void,
         };
         if def.is_abstract
             && !self.world.class(owner).is_abstract
@@ -2906,9 +2909,25 @@ impl<'ast> Declarer<'ast> {
         member
     }
 
+    /// A result type: a method's or a procedure type's, the only places
+    /// `Void` may be written.
+    pub fn resolve_result_type(&mut self, expr: &TypeExpr, scope: &TypeScope) -> Option<Type> {
+        match expr.kind {
+            TypeExprKind::Void => Some(Type::Void),
+            _ => self.resolve_type(expr, scope),
+        }
+    }
+
     pub fn resolve_type(&mut self, expr: &TypeExpr, scope: &TypeScope) -> Option<Type> {
         match &expr.kind {
             TypeExprKind::Nothing => Some(Type::Nothing),
+            TypeExprKind::Void => {
+                self.error(
+                    "`Void` is only a result type (`-> Void`, `(A) -> Void`): a value's type is `Nil`",
+                    expr.span,
+                );
+                Some(self.world.nil())
+            }
             TypeExprKind::SelfType => {
                 Some(scope.self_type.clone().unwrap_or(Type::Param(SELF_PARAM)))
             }
@@ -2944,7 +2963,7 @@ impl<'ast> Declarer<'ast> {
                 for p in params {
                     ps.push(self.resolve_type(p, scope)?);
                 }
-                let r = self.resolve_type(ret, scope)?;
+                let r = self.resolve_result_type(ret, scope)?;
                 Some(Type::Proc(rc, ps, Box::new(r), *shareable))
             }
             TypeExprKind::Named { path, args } => {
@@ -3026,7 +3045,7 @@ impl<'ast> Declarer<'ast> {
 /// Where `Self` appears in a contravariant position of `t`,
 /// `t` itself being in a covariant position when `covariant`: a method
 /// parameter is contravariant, the parameters of a procedure type flip
-/// the position and its result keeps it. `&: (Self) -> Nil` (the method
+/// the position and its result keeps it. `&: (Self) -> Void` (the method
 /// hands `self` to the block) is fine; `other: Self` and `&: () -> Self`
 /// (the caller hands one in) are not.
 fn self_against_variance(t: &TypeExpr, covariant: bool) -> Option<Span> {
@@ -3047,6 +3066,6 @@ fn self_against_variance(t: &TypeExpr, covariant: bool) -> Option<Span> {
             .chain(params.iter())
             .find_map(|a| self_against_variance(a, !covariant))
             .or_else(|| self_against_variance(ret, covariant)),
-        TypeExprKind::Nothing => None,
+        TypeExprKind::Nothing | TypeExprKind::Void => None,
     }
 }

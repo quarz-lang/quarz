@@ -30,7 +30,7 @@ end
 class Bag
   var @items: Array[String] = []
   def items -> Array[String] = @items
-  def keep(s: String, times: Int) -> Nil
+  def keep(s: String, times: Int) -> Void
     return nil if times == 0
     @items = @items.push(s)
     keep(s, times - 1)

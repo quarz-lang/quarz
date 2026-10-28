@@ -24,11 +24,11 @@ class Particle
   attr_reader :pos, :vel, :origin, :path, :tag
   attr_writer :vel
   def initialize(@pos: Vec2, @vel: Vec2); end
-  def step(dt: Float) -> Nil
+  def step(dt: Float) -> Void
     @pos = @pos + @vel.scale(dt)
     @path = Segment.new(@origin, @pos)
   end
-  def shift(d: Vec2) -> Nil
+  def shift(d: Vec2) -> Void
     @pos = @pos + d
   end
 end

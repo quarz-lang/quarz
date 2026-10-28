@@ -32,7 +32,7 @@ class ProcTest < Test::Case
     assert_equal([1, 4, 9], [1, 2, 3].map(&sq))
   end
 
-  def each_pair_sum(&block: (Int, Int) -> Nil) -> Nil
+  def each_pair_sum(&block: (Int, Int) -> Void) -> Void
     yield 1, 2
     yield 3, 4
   end

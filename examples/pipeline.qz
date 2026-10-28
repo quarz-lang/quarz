@@ -3,7 +3,7 @@
 data Job = (id: Int, payload: String)
 data Done = (id: Int, result: String, worker: Int)
 
-def worker(id: Int, jobs: Channel[Job], results: Channel[Done]) -> Nil
+def worker(id: Int, jobs: Channel[Job], results: Channel[Done]) -> Void
   jobs.each do |job|                      # jobs が閉じられるまで受け取る
     Task.sleep(10.ms)                     # 重い処理のつもり
     results.send(Done.new(job.id, job.payload.upcase, id))

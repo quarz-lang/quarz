@@ -11,7 +11,8 @@ Crystal は Quarz に最も近い言語です。Ruby の構文を持つ、静的
 | 項目 | Crystal | Quarz |
 |---|---|---|
 | 型注釈の書き方 | `x : Int32`、`def f(a : Int32) : Bool` | `x: Int`、`def f(a: Int) -> Bool`(コロンの前に空白を入れず、戻り値の型は `->`) |
-| メソッドの引数の型 | 省略できる。型のないメソッドは引数の型の組み合わせごとに具体化され、そのためにプログラム全体をまとめて型検査する | 必須(既定値から型が決まる場合を除く)。戻り値の型も書く(書かないメソッドは Swift と同じく nil を返す)。局所変数は推論する。書く量は増えるが、コンパイル時間を短く、エラーメッセージを分かりやすく保てる([02-types.ja.md](02-types.ja.md) §10) |
+| メソッドの引数の型 | 省略できる。型のないメソッドは引数の型の組み合わせごとに具体化され、そのためにプログラム全体をまとめて型検査する | 必須(既定値から型が決まる場合を除く)。戻り値の型も書く(書かないメソッドは Swift と同じく `-> Void` で nil を返す)。局所変数は推論する。書く量は増えるが、コンパイル時間を短く、エラーメッセージを分かりやすく保てる([02-types.ja.md](02-types.ja.md) §10) |
+| メソッドの値を捨てる | `def f : Nil`: 本体の値が何であれ nil を返す | `def f -> Void`(または戻り値型の省略)。`-> Nil` は他の型と同じで、本体は `Nil` を返さなければならない |
 | ジェネリック型の書き方 | `Array(Int32)`、`Hash(String, Int32)`、`Proc(Int32, Bool)` | `Array[Int]`、`Hash[String, Int]`、`(Int) -> Bool` |
 | 空のリテラル | `[] of Int32`、`{} of String => Int32` | 文脈から型が決まる: `xs: Array[Int] = []`、`h: Hash[String, Int] = {}` |
 | 整数 | 既定は `Int32`(`Int64` は `1_i64`)。溢れると `OverflowError` | `Int` は 64 ビットで、Crystal と同じく溢れると `OverflowError`。`Integer` は任意精度(Crystal の `BigInt`)で、`Int` と混ぜた演算は `Integer` になる。ほかの固定幅の型は FFI 用に予定 |
@@ -25,12 +26,12 @@ Crystal は Quarz に最も近い言語です。Ruby の構文を持つ、静的
 | `struct` | 可変な値型。代入でコピーされる | ユーザ定義の値型はない。`data` は不変なので、コピーと共有の違いは観察できない |
 | `enum` | 名前付きの整数定数(フラグも可)。直和型は型の合併か、抽象 struct の階層で書く | 代数的データ型: `enum Shape = Circle(r: Float) \| Rect(w: Float, h: Float)`。`case/in` で網羅性を検査する |
 | `&.method` の短縮形 | `xs.map(&.upcase)` | `xs.map(&:upcase)`(Ruby の書き方) |
-| ブロック引数の型 | `&block : Int32 -> Int32` | `&block: (Int) -> Int`。`yield` するメソッドはブロックを宣言する(`&: (Int) -> Nil`) |
+| ブロック引数の型 | `&block : Int32 -> Int32` | `&block: (Int) -> Int`。`yield` するメソッドはブロックを宣言する(`&: (Int) -> Void`) |
 | クラスの再オープン | どこでもでき、プログラム全体に効く | できない。既存の型へのメソッド追加は `extension` で行い、`using` が有効な範囲でだけ効く |
 | 既存の型をモジュールに適合させる | 型を再オープンしてモジュールを include する(`struct Int32; include M; ...; end`)。どこでも効く。型のない引数は、必要なメソッドを持つものなら何でも受け付ける(ダックタイピング) | `extension Int; include M; ...; end`。トップレベルに書けばそのプログラム(または cog)の中で有効で、モジュールの中に書けば `using` でそのモジュールを持ち込んだ範囲で有効になる。適合は値がどこへ行っても保たれる。引数には型があるので、値は適合していなければならない |
 | 型の別名 | `alias UserId = Int32` | `type UserId = Int` |
 | メソッド参照 | `->obj.method` | `obj.:method` |
-| レシーバ付きのブロック(DSL) | `with obj yield`。ブロックが何であれ、暗黙のレシーバが `obj` になる | レシーバはブロックの型の一部(`Html.() -> Nil`)で、`obj.instance_exec(&block)` で実行する |
+| レシーバ付きのブロック(DSL) | `with obj yield`。ブロックが何であれ、暗黙のレシーバが `obj` になる | レシーバはブロックの型の一部(`Html.() -> Void`)で、`obj.instance_exec(&block)` で実行する |
 | マクロ | `macro`、`{{ }}`、`@type`、アノテーション | ない。コンパイラによるコード生成は `data` や `attr_*` などに限る |
 | フィールドの絞り込み | インスタンス変数は絞り込まれない(局所変数に代入する) | 不変フィールドと `data` のフィールドは絞り込まれる。`var` フィールドは絞り込まれない |
 | `to_s` | `to_s(io : IO)` を上書きする | `def to_s -> String` |
@@ -86,7 +87,7 @@ class Particle
   @vel: Vec2
   attr_reader :pos
   def initialize(@pos: Vec2, @vel: Vec2); end
-  def step(dt: Float) -> Nil
+  def step(dt: Float) -> Void
     @pos = Vec2.new(@pos.x + @vel.x * dt, @pos.y + @vel.y * dt)
   end
 end

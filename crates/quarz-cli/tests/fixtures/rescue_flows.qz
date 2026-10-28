@@ -4,7 +4,7 @@
 
 # A call that is not inlined (it recurses): a `break` or `return` in its
 # block comes back from the call as a flow, not as a jump.
-def each_of(xs: Array[Int], n: Int, &blk: (Int) -> Nil) -> Nil
+def each_of(xs: Array[Int], n: Int, &blk: (Int) -> Void) -> Void
   return nil if n >= xs.size
   blk.call(xs[n])
   each_of(xs, n + 1, &blk)
@@ -42,7 +42,7 @@ end
 p break_block
 
 # next in such a block: each element goes on
-def next_block -> Nil
+def next_block -> Void
   each_of([1, 2, 3], 0) do |x|
     begin
       begin
@@ -126,7 +126,7 @@ class Res
   def initialize(@name: String)
   end
   def name -> String = @name
-  def deinitialize -> Nil
+  def deinitialize -> Void
     puts "deinitialize #{@name}"
   end
 end

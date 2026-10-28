@@ -90,7 +90,7 @@ impl Remap for Type {
                 // The `Self` marker and the like stay.
                 *p = m.type_params.get(*p);
             }
-            Type::Nothing | Type::Var(_) => {}
+            Type::Nothing | Type::Void | Type::Var(_) => {}
         }
     }
 }

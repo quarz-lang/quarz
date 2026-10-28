@@ -70,6 +70,10 @@ fn shareable_procedure_types() {
         "(def f (params &h:shareable (Int) -> Nil g:shareable () -> Int?=nil) -> Nil nil)"
     );
     assert_eq!(
+        sexp("def f(&: (Int) -> Void) -> Void = nil"),
+        "(def f (params &&:(Int) -> Void) -> Void nil)"
+    );
+    assert_eq!(
         errors("x: shareable Int = 1"),
         vec!["`shareable` applies to a procedure type"]
     );

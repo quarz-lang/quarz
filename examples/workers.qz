@@ -16,7 +16,7 @@ def crunch(job: Job) -> Int
   acc
 end
 
-def worker(id: Int, jobs: Channel[Job], results: Channel[Outcome], retried: Atom[Set[Int]]) -> Nil
+def worker(id: Int, jobs: Channel[Job], results: Channel[Outcome], retried: Atom[Set[Int]]) -> Void
   jobs.each do |job|
     begin
       raise ArgumentError, "size must be positive" if job.size <= 0

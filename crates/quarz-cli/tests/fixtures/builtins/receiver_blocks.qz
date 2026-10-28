@@ -5,10 +5,10 @@ class Node
   var @tag: String
   var @children: Array[String] = []
   def initialize(@tag: String); end
-  def text(s: String) -> Nil
+  def text(s: String) -> Void
     @children = @children.push(s)
   end
-  def node(tag: String, &build: Node.() -> Nil) -> Nil
+  def node(tag: String, &build: Node.() -> Void) -> Void
     child = Node.new(tag)
     child.instance_exec(&build)
     @children = @children.push(child.render)
@@ -16,7 +16,7 @@ class Node
   def render -> String = "<#{@tag}>#{@children.join("")}</#{@tag}>"
 end
 
-def html(&build: Node.() -> Nil) -> String
+def html(&build: Node.() -> Void) -> String
   root = Node.new("html")
   root.instance_exec(&build)
   root.render

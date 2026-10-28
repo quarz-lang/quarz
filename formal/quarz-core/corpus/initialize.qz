@@ -21,7 +21,7 @@ class Point
     describe
   end
 
-  def describe -> Nil
+  def describe -> Void
     puts "#{@label} #{@x} #{@y} #{@norm}"
   end
 

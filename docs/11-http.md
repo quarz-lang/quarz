@@ -87,7 +87,7 @@ The body is read from the socket as the handler asks for it, so `Body` is a clas
 class Body
   def read -> String                   # the whole body; HTTP::PayloadTooLarge past max_body_bytes
   def read_bytes -> Bytes
-  def each_chunk(&: (Bytes) -> Nil) -> Nil   # as it arrives, without the limit
+  def each_chunk(&: (Bytes) -> Void) -> Void   # as it arrives, without the limit
   def read_chunk(max: Int = 16_384) -> Bytes # the next piece (empty at the end)
   def size -> Int?                     # Content-Length, when there is one
   def consumed? -> Bool                # whether it has been read to the end
@@ -110,7 +110,7 @@ data Headers(entries: Array[Field])               # in order; a name may repeat
   def put(name: String, value: String) -> Headers    # replaces every value of the name
   def add(name: String, value: String) -> Headers    # appends one
   def delete(name: String) -> Headers
-  def each(&: (String, String) -> Nil) -> Nil
+  def each(&: (String, String) -> Void) -> Void
   def size -> Int
   def token?(name: String, token: String) -> Bool   # `Connection: keep-alive, Upgrade` has `upgrade`
 end
@@ -131,7 +131,7 @@ module HTTP
     def self.redirect(location: String, status: Int = 302) -> Response
     def self.not_found(message: String = "Not Found") -> Response
     def self.stream(status: Int = 200, headers: Headers = Headers.empty,
-                    &write: shareable (BodyWriter) -> Nil) -> Response
+                    &write: shareable (BodyWriter) -> Void) -> Response
     def header(name: String, value: String) -> Response                   # with(headers: headers.put(...))
     def reason -> String                                                  # "OK" for 200
   end
@@ -140,14 +140,14 @@ module HTTP
     variant Empty
     variant Text(text: String)
     variant Binary(bytes: Bytes)
-    variant Stream(write: shareable (BodyWriter) -> Nil)
+    variant Stream(write: shareable (BodyWriter) -> Void)
   end
 
   # Given to a Stream body's procedure: each `write` is sent as one chunk.
   class BodyWriter
-    def write(data: String) -> Nil
-    def write(data: Bytes) -> Nil
-    def flush -> Nil
+    def write(data: String) -> Void
+    def write(data: Bytes) -> Void
+    def flush -> Void
   end
 end
 ```
@@ -170,16 +170,16 @@ module HTTP
                  max_body_bytes: Int = 1_048_576,              # what Body#read and read_bytes accept
                  max_connections: Int = 10_000,                # accepted at once; beyond it, accept waits
                  trusted_proxies: Array[String] = [],          # peers whose X-Forwarded-* headers are believed
-                 on_error: (shareable (Exception, Request?) -> Nil)? = nil) -> Server
+                 on_error: (shareable (Exception, Request?) -> Void)? = nil) -> Server
     def self.unix(handler: Handler, path: String, *, ...the same options...) -> Server   # a UNIX socket
-    def serve -> Nil                      # accepts until shutdown or cancellation
+    def serve -> Void                      # accepts until shutdown or cancellation
     def local_address -> Socket::Address  # the port actually bound (`port: 0` picks one)
-    def shutdown(timeout: Duration = 30.seconds) -> Nil   # begins it and returns at once
-    def wait -> Nil                       # until serve has returned
+    def shutdown(timeout: Duration = 30.seconds) -> Void   # begins it and returns at once
+    def wait -> Void                       # until serve has returned
   end
 
   def self.serve(port: Int = 8080, host: String = "0.0.0.0",
-                 &handler: shareable (Request) -> Response) -> Nil
+                 &handler: shareable (Request) -> Response) -> Void
 end
 ```
 

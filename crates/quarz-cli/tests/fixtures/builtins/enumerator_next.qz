@@ -29,7 +29,7 @@ nested = [1, 2, 3].each.each_slice(2)
 p nested.next, nested.next
 class Src
   include Enumerable[Int]
-  def each(&: (Int) -> Nil) -> Nil
+  def each(&: (Int) -> Void) -> Void
     yield 1
   end
 end

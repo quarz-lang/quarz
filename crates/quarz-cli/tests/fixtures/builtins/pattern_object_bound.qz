@@ -19,7 +19,7 @@ end
 class Cell[T]
   var @v: T
   def initialize(@v: T); end
-  def set(v: T) -> Nil
+  def set(v: T) -> Void
     @v = v
   end
 end

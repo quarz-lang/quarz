@@ -8,11 +8,11 @@ class Acc
   def initialize(@total: Float)
     @count = 0
   end
-  def add(x: Float) -> Nil
+  def add(x: Float) -> Void
     @total = @total + x
     @count += 1
   end
-  def grow -> Nil
+  def grow -> Void
     @count = @count * 1_000_000_007
   end
 end
@@ -47,7 +47,7 @@ class Base
   var @x: Float
   attr_reader :x
   def initialize(@x: Float); end
-  def bump -> Nil
+  def bump -> Void
     @x = @x + 1.0
   end
 end
@@ -57,7 +57,7 @@ class Derived < Base
   def initialize(@y: Float)
     super(@y * 10.0)
   end
-  def bump -> Nil
+  def bump -> Void
     super
     @y = @y + @x
   end

@@ -69,7 +69,7 @@ class Account
     @owner = owner
   end
 
-  def deposit(amount: Int) -> Nil
+  def deposit(amount: Int) -> Void
     raise ArgumentError, "amount must be positive" unless amount > 0
     @balance += amount
   end
@@ -265,7 +265,7 @@ DEFAULT_HEADERS = { "Content-Type" => "application/json" }
 ## 9. Method definitions
 
 ```ruby
-def name(a: Int, b: String = "x", *rest: Int, *, flag: Bool, limit: Int? = nil, **opts: String, &block: (Int) -> Nil) -> Ret
+def name(a: Int, b: String = "x", *rest: Int, *, flag: Bool, limit: Int? = nil, **opts: String, &block: (Int) -> Void) -> Ret
 ```
 
 | Syntax | Meaning |
@@ -276,13 +276,13 @@ def name(a: Int, b: String = "x", *rest: Int, *, flag: Bool, limit: Int? = nil, 
 | `*` | Everything after this is keyword-only (the same holds after `*rest`) |
 | `flag: Bool` (after `*`) | Required keyword parameter |
 | `**opts: String` | Remaining keywords. The type is `Hash[Symbol, String]` |
-| `&block: (Int) -> Nil` | Block parameter. The type is a procedure type; `block` is a procedure value (`block.call`, `block.()`, `block[]`) |
-| `&: (Int) -> Nil` | Anonymous block parameter: only `yield` and forwarding with `f(&)` can use it |
-| `-> Ret` | Return type, declared (not inferred). Without it the method returns nil; `def f = expr` requires it |
+| `&block: (Int) -> Void` | Block parameter. The type is a procedure type; `block` is a procedure value (`block.call`, `block.()`, `block[]`) |
+| `&: (Int) -> Void` | Anonymous block parameter: only `yield` and forwarding with `f(&)` can use it |
+| `-> Ret` | Return type, declared (not inferred). Without it the method is `-> Void`; `def f = expr` requires it |
 
 - **Parameter types are required** (except where they can be inferred from a default value). Because types are fixed at method boundaries, compile times stay short and error messages clear.
 - Ruby 3's "separation of positional and keyword arguments" is unnecessary in Quarz because an argument list never implicitly becomes a `Hash`. Parameters before `*` can be passed either positionally or by keyword (same as Python/Crystal).
-- A method whose return type is `Nil` discards the value of the last expression in its body (equivalent to `void`).
+- A method declared `-> Void` discards the value of the last expression in its body and returns nil: a caller sees its result as `Nil`. A method without a return type is `-> Void`. `-> Nil` is a type like any other: the body's value must be `Nil` (a body ending in an `Int` is an error that suggests `-> Void`). The same holds for blocks and lambdas, by the procedure type expected (`&: (T) -> Void`) or declared (`->(x: Int) -> Void { }`). `Void` is written only as a result (02-types.md §1).
 - Methods of the same name can be **overloaded** by parameter count and types, and by the names of keyword-only parameters (`def f(*, a: Int)` and `def f(*, b: Int)`: a call binds them by name, as with Swift's argument labels). Resolution is at compile time, over every overload that fits the call:
   1. Those that fit with each integer literal at its default type (`Int`, or `Integer` for one too large for an `Int`; docs/02 §5) come first: `x + 1` is `Int#+(Int)`, though `1` would also fit `Int#+(Float)` as a `Float`; only when none fits is a literal taken as a `Float` or an `Integer`.
   2. Among them, the most specific: each of its parameter's types within the other's (positional ones by place, keyword ones by name, with the receiver's type arguments in; a type parameter of the other's own takes anything, wherever it appears; a fixed parameter is more specific than a rest one).
@@ -298,7 +298,7 @@ def name(a: Int, b: String = "x", *rest: Int, *, flag: Bool, limit: Int? = nil, 
 ### Blocks, `yield` and procedures
 
 ```ruby
-def each_pair(&: (Int, Int) -> Nil) -> Nil     # anonymous block: used with yield
+def each_pair(&: (Int, Int) -> Void) -> Void     # anonymous block: used with yield
   yield 1, 2
   yield 3, 4
 end
@@ -313,7 +313,7 @@ def twice(&block: (Int) -> Int) -> Int          # named: a procedure value
   block.call(1) + block.(2) + block[3]
 end
 
-def forward(&: (Int, Int) -> Nil) -> Nil = each_pair(&)  # `&` passes the anonymous block on
+def forward(&: (Int, Int) -> Void) -> Void = each_pair(&)  # `&` passes the anonymous block on
 
 each_pair { |a, b| puts a + b }
 each_pair do |a, b|
@@ -326,7 +326,7 @@ double = ->(x: Int) { x * 2 }          # a procedure (equivalent to a Ruby lambd
 ```
 
 - Block parameter types are inferred from the type of the callee's block parameter. To be explicit, write `{ |x: Int| ... }`; a union there goes in parentheses, `|x: (Int | String)|`, since `|` closes the parameters. Destructuring parameters (`|(a, b), c|`) are not supported; match in the body (`pair => [a, b]`).
-- `yield` requires a block parameter (named or anonymous), since the block's type comes from its declaration; calling such a method without a block is a compile error, so an optional block is written `&block: ((Int) -> Nil)?`: the parameter is then `nil` when the caller gives no block, so the body calls it with `block.call` where it is not `nil` (`yield` cannot run it), and `&block` passes it on to another optional block.
+- `yield` requires a block parameter (named or anonymous), since the block's type comes from its declaration; calling such a method without a block is a compile error, so an optional block is written `&block: ((Int) -> Void)?`: the parameter is then `nil` when the caller gives no block, so the body calls it with `block.call` where it is not `nil` (`yield` cannot run it), and `&block` passes it on to another optional block.
 - **Whether a method keeps its block is part of its signature** (as Swift's `@escaping`). An anonymous block (`&:`) does not outlive the call: it is only run with `yield`, or passed on with `&` to another method whose block is anonymous; `yield` in a lambda (or in a block given to a method that may keep it, or a task's) is an error, as is passing `&` to a named `&blk`. A named block parameter may be kept (stored, returned, run later). An override cannot turn an anonymous block into a named one, since callers rely on it. A native that keeps its block names it too (`at_exit(&blk)`).
 - A block that is only invoked with `yield` (a non-escaping block) is expanded by the compiler without allocating a closure. Only when `&block` **escapes**, by being stored in a variable or returned, does it become a heap-allocated closure.
 - `break`/`next`/`return` inside a block mean the same as in Ruby. `next` returns the block's value, `break` exits the call the block was passed to, and `return` returns from the enclosing method.
@@ -336,20 +336,20 @@ double = ->(x: Int) { x * 2 }          # a procedure (equivalent to a Ruby lambd
 
 ### Blocks with a receiver
 
-A procedure type can name a receiver: `Html.() -> Nil` is a block that runs with `self` = an `Html` (Kotlin's `Html.() -> Unit`). Such a block is declared as a named block parameter and run with `instance_exec`, which replaces its `self`; it is how DSLs are built.
+A procedure type can name a receiver: `Html.() -> Void` is a block that runs with `self` = an `Html` (Kotlin's `Html.() -> Unit`). Such a block is declared as a named block parameter and run with `instance_exec`, which replaces its `self`; it is how DSLs are built.
 
 ```ruby
 class Html
   var @parts: Array[String] = []
-  def title(s: String) -> Nil = (@parts = @parts.push("<title>#{s}</title>"))
-  def body(&b: Body.() -> Nil) -> Nil
+  def title(s: String) -> Void = (@parts = @parts.push("<title>#{s}</title>"))
+  def body(&b: Body.() -> Void) -> Void
     node = Body.new
     node.instance_exec(&b)              # the block's self is `node`
     @parts = @parts.push(node.render)
   end
 end
 
-def html(&build: Html.() -> Nil) -> Html
+def html(&build: Html.() -> Void) -> Html
   h = Html.new
   h.instance_exec(&build)
   h
@@ -425,7 +425,7 @@ for u in find_user(id), o in latest_order(u) do [u, o] end   # Result[[User, Ord
 - The variables are block parameters, so nothing leaks out; later iterators, guards and the body see the earlier variables. The guard's block and the body's block are siblings, so a temporary assigned in a guard is not visible in the body.
 - Any type with `flat_map`/`map` (and `filter`, for `when`) works: `Enumerable`, `Range`, `Result` (`flat_map` is an alias of `and_then`; guards are not available). The type is inferred from the desugared expression as usual.
 - The body runs once per combination, in order, and its value is the element of the result; `next v` gives `v` for that element, and `return` returns from the enclosing method. `break` inside the body or a guard is a compile error (it could only leave the innermost generated block).
-- Where its value is not used (a statement before the last of a body, the last of a body whose value is discarded: a method or block declared to return `Nil`, a file's top level), a `for` whose sources all have `each` runs as nested `each` calls instead (`source.each { |x| if guard then … end }`), which build no collection; the body still runs once per combination, in order. With a source that has no `each` (a `Result`), it is the comprehension wherever it is.
+- Where its value is not used (a statement before the last of a body, the last of a body whose value is discarded: a method or block declared `-> Void`, a file's top level), a `for` whose sources all have `each` runs as nested `each` calls instead (`source.each { |x| if guard then … end }`), which build no collection; the body still runs once per combination, in order. With a source that has no `each` (a `Result`), it is the comprehension wherever it is.
 - `for` is a contextual keyword: only `for variable in` starts a comprehension.
 
 ### Pattern matching

@@ -3,7 +3,7 @@
 module Pool
   # Run `job` for 0...n, `width` tasks at a time; `on_error` gets what a
   # job raised.
-  def self.each(n: Int, on_error: (shareable (Exception, Int) -> Nil)? = nil,
+  def self.each(n: Int, on_error: (shareable (Exception, Int) -> Void)? = nil,
                 &job: shareable (Int) -> String) -> Array[String]
     results = Channel[String].new(capacity: n)
     Task.scope do |scope|
@@ -30,7 +30,7 @@ prefix = "later"          # the procedure copied `prefix` when it was made
 puts out
 
 errors = Atom.new(0)
-log: shareable (Exception, Int) -> Nil = ->(e: Exception, i: Int) { errors.update { |n| n + 1 }; nil }
+log: shareable (Exception, Int) -> Void = ->(e: Exception, i: Int) { errors.update { |n| n + 1 }; nil }
 puts Pool.each(6, on_error: log) { |i| raise "odd" if i.odd?; "ok #{i}" }
 p errors.value
 

@@ -464,7 +464,7 @@ fn a_read_after_a_take_is_found() {
 fn a_read_after_a_release_is_found() {
     // (A call after the last read keeps the end of `c`'s scope.)
     let mut module =
-        common::lower("class C\nend\ndef h -> Nil\n  c = C.new\n  p c\n  p 1\nend\nh\n");
+        common::lower("class C\nend\ndef h -> Void\n  c = C.new\n  p c\n  p 1\nend\nh\n");
     let n = module.functions.len();
     let f = module
         .functions

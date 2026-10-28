@@ -7,7 +7,7 @@ class Particle
   var @vel: Vec2
   attr_reader :pos
   def initialize(@pos: Vec2, @vel: Vec2); end
-  def step(dt: Float) -> Nil
+  def step(dt: Float) -> Void
     @pos = @pos + @vel.scale(dt)
   end
 end

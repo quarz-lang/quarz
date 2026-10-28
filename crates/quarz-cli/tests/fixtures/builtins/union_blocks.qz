@@ -14,7 +14,7 @@ p pk(1).map { |x| x + 1 }, pk(0).map { |x| x * 2 }
 # Inlined iteration, string `+` chains, in-place `!` and `x = x.f` updates,
 # array element reads and loops: none taken for the last check's types.
 class Foo
-  def times(&blk: (Int) -> Nil) -> Int
+  def times(&blk: (Int) -> Void) -> Int
     blk.call(42)
     7
   end

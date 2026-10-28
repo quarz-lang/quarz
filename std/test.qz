@@ -24,25 +24,25 @@ module Test
   module Assertions
     # Counts one assertion made: each assertion calls it once, and
     # `Test::Case` counts its test's.
-    abstract def add_assertion -> Nil
+    abstract def add_assertion -> Void
 
     # Passes when `value` is truthy (neither `nil` nor `false`).
-    def assert(value: Object?, message: String? = nil) -> Nil
+    def assert(value: Object?, message: String? = nil) -> Void
       check(value ? true : false, message) { "<#{value.inspect}> is not true." }
     end
 
     # Passes when `value` is `nil` or `false`.
-    def refute(value: Object?, message: String? = nil) -> Nil
+    def refute(value: Object?, message: String? = nil) -> Void
       check(value ? false : true, message) { "<#{value.inspect}> is neither nil or false." }
     end
 
     # Passes when `value` is `true`.
-    def assert_true(value: Bool, message: String? = nil) -> Nil
+    def assert_true(value: Bool, message: String? = nil) -> Void
       check(value == true, message) { "<true> expected but was\n<#{value.inspect}>" }
     end
 
     # Passes when `value` is `false`.
-    def assert_false(value: Bool, message: String? = nil) -> Nil
+    def assert_false(value: Bool, message: String? = nil) -> Void
       check(value == false, message) { "<false> expected but was\n<#{value.inspect}>" }
     end
 
@@ -60,32 +60,32 @@ module Test
     #   end
     # end
     # ```
-    def assert_equal[T](expected: T, actual: T?, message: String? = nil) -> Nil
+    def assert_equal[T](expected: T, actual: T?, message: String? = nil) -> Void
       check(expected == actual, message) { Test.equal_failure(expected, actual) }
     end
 
     # Passes when `expected != actual`; typed as `#assert_equal`.
-    def refute_equal[T](expected: T, actual: T?, message: String? = nil) -> Nil
+    def refute_equal[T](expected: T, actual: T?, message: String? = nil) -> Void
       check(expected != actual, message) { "<#{expected.inspect}> was expected to be != to\n<#{actual.inspect}>." }
     end
 
     # Passes when `value` is `nil`.
-    def assert_nil(value: Object?, message: String? = nil) -> Nil
+    def assert_nil(value: Object?, message: String? = nil) -> Void
       check(value.nil?, message) { "<#{value.inspect}> was expected to be nil." }
     end
 
     # Passes when `value` is not `nil`.
-    def refute_nil(value: Object?, message: String? = nil) -> Nil
+    def refute_nil(value: Object?, message: String? = nil) -> Void
       check(!value.nil?, message) { "<nil> was expected to not be nil." }
     end
 
     # Passes when `expected` and `actual` are the same object (`equal?`).
-    def assert_same(expected: Object, actual: Object, message: String? = nil) -> Nil
+    def assert_same(expected: Object, actual: Object, message: String? = nil) -> Void
       check(expected.equal?(actual), message) { "<#{expected.inspect}> expected to be the same object as\n<#{actual.inspect}>." }
     end
 
     # Passes when `actual` is within `delta` of `expected`.
-    def assert_in_delta(expected: Float, actual: Float, delta: Float = 0.001, message: String? = nil) -> Nil
+    def assert_in_delta(expected: Float, actual: Float, delta: Float = 0.001, message: String? = nil) -> Void
       check((expected - actual).abs <= delta, message) do
         "<#{expected.inspect}> -/+ <#{delta.inspect}> was expected to include\n<#{actual.inspect}>."
       end
@@ -94,7 +94,7 @@ module Test
     # Passes when `actual` is within a relative error `epsilon` of
     # `expected`: their difference is at most `epsilon` times the smaller of
     # the two in magnitude.
-    def assert_in_epsilon(expected: Float, actual: Float, epsilon: Float = 0.001, message: String? = nil) -> Nil
+    def assert_in_epsilon(expected: Float, actual: Float, epsilon: Float = 0.001, message: String? = nil) -> Void
       bound = (expected.abs < actual.abs ? expected.abs : actual.abs) * epsilon
       check((expected - actual).abs <= bound, message) do
         "<#{expected.inspect}> -/+ (<#{expected.inspect}> * <#{epsilon.inspect}>) was expected to include\n<#{actual.inspect}>."
@@ -102,46 +102,46 @@ module Test
     end
 
     # Passes when `actual` matches `pattern`.
-    def assert_match(pattern: Regexp, actual: String, message: String? = nil) -> Nil
+    def assert_match(pattern: Regexp, actual: String, message: String? = nil) -> Void
       check(actual.match?(pattern), message) { "<#{pattern.inspect}> was expected to be =~\n<#{actual.inspect}>." }
     end
 
     # Passes when `actual` does not match `pattern`.
-    def refute_match(pattern: Regexp, actual: String, message: String? = nil) -> Nil
+    def refute_match(pattern: Regexp, actual: String, message: String? = nil) -> Void
       check(!actual.match?(pattern), message) { "<#{pattern.inspect}> was expected to not match\n<#{actual.inspect}>." }
     end
 
     # Passes when `collection` includes `element` (`include?`).
-    def assert_includes[T](collection: Enumerable[T], element: T, message: String? = nil) -> Nil
+    def assert_includes[T](collection: Enumerable[T], element: T, message: String? = nil) -> Void
       check(collection.include?(element), message) do
         "<#{collection.to_a.inspect}> was expected to include\n<#{element.inspect}>."
       end
     end
 
     # Passes when `collection` does not include `element`.
-    def refute_includes[T](collection: Enumerable[T], element: T, message: String? = nil) -> Nil
+    def refute_includes[T](collection: Enumerable[T], element: T, message: String? = nil) -> Void
       check(!collection.include?(element), message) do
         "<#{collection.to_a.inspect}> was expected to not include\n<#{element.inspect}>."
       end
     end
 
     # Passes when `collection` has no element.
-    def assert_empty(collection: Enumerable[Object], message: String? = nil) -> Nil
+    def assert_empty(collection: Enumerable[Object], message: String? = nil) -> Void
       check(collection.to_a.empty?, message) { "<#{collection.to_a.inspect}> was expected to be empty." }
     end
 
     # Passes when `text` is the empty string.
-    def assert_empty(text: String, message: String? = nil) -> Nil
+    def assert_empty(text: String, message: String? = nil) -> Void
       check(text.empty?, message) { "<#{text.inspect}> was expected to be empty." }
     end
 
     # Passes when `collection` has an element.
-    def refute_empty(collection: Enumerable[Object], message: String? = nil) -> Nil
+    def refute_empty(collection: Enumerable[Object], message: String? = nil) -> Void
       check(!collection.to_a.empty?, message) { "<[]> was expected to not be empty." }
     end
 
     # Passes when `text` is not the empty string.
-    def refute_empty(text: String, message: String? = nil) -> Nil
+    def refute_empty(text: String, message: String? = nil) -> Void
       check(!text.empty?, message) { "<\"\"> was expected to not be empty." }
     end
 
@@ -155,7 +155,7 @@ module Test
     #
     # `ArgumentError` for another `op` (an error of the test, not a
     # failure).
-    def assert_compare[T <: Comparable[T]](lhs: T, op: Symbol, rhs: T, message: String? = nil) -> Nil
+    def assert_compare[T <: Comparable[T]](lhs: T, op: Symbol, rhs: T, message: String? = nil) -> Void
       c = lhs <=> rhs
       ok = case op
            when :< then c < 0
@@ -170,7 +170,7 @@ module Test
 
     # The exception the block raises, an instance of `klass` or of a
     # subclass (with `message`, its message too).
-    def assert_raise(klass: Class, message: String? = nil, &: () -> Nil) -> Exception
+    def assert_raise(klass: Class, message: String? = nil, &: () -> Void) -> Exception
       add_assertion
       raised: Exception? = nil
       begin
@@ -200,7 +200,7 @@ module Test
     end
 
     # The exception the block raises, whose message matches (or equals) `pattern`.
-    def assert_raise_message(pattern: Regexp | String, &: () -> Nil) -> Exception
+    def assert_raise_message(pattern: Regexp | String, &: () -> Void) -> Exception
       add_assertion
       raised: Exception? = nil
       begin
@@ -228,7 +228,7 @@ module Test
 
     # Passes when the block raises nothing; an exception it raises is a
     # failure (not an error), with its class and message.
-    def assert_nothing_raised(message: String? = nil, &: () -> Nil) -> Nil
+    def assert_nothing_raised(message: String? = nil, &: () -> Void) -> Void
       add_assertion
       begin
         yield
@@ -259,7 +259,7 @@ module Test
 
     # The block is known to fail: pending when it does, a failure when it
     # passes (the test can be un-pended).
-    def pend(message: String = "pending", &: () -> Nil) -> Nil
+    def pend(message: String = "pending", &: () -> Void) -> Void
       failed = false
       begin
         yield
@@ -290,13 +290,13 @@ module Test
     #   end
     # end
     # ```
-    def omit_if(condition: Bool, message: String = "omitted") -> Nil
+    def omit_if(condition: Bool, message: String = "omitted") -> Void
       raise Omitted.new(message) if condition
       nil
     end
 
     # Omits the test (as `#omit`) unless `condition` is true.
-    def omit_unless(condition: Bool, message: String = "omitted") -> Nil
+    def omit_unless(condition: Bool, message: String = "omitted") -> Void
       raise Omitted.new(message) unless condition
       nil
     end
@@ -308,7 +308,7 @@ module Test
     #
     # The building block of the assertions, for assertions of one's own:
     # `check(n.even?, msg) { "<#{n}> is not even." }`.
-    def check(ok: Bool, message: String?, &: () -> String) -> Nil
+    def check(ok: Bool, message: String?, &: () -> String) -> Void
       add_assertion
       fail_with(message, yield) unless ok
       nil
@@ -350,16 +350,16 @@ module Test
 
     # Runs before each test, on the test's fresh instance; does nothing
     # unless a test class overrides it.
-    def setup -> Nil = nil
+    def setup -> Void = nil
     # Runs after each test, on its instance, also after a failure or an
     # error: it undoes what `#setup` did.
-    def teardown -> Nil = nil
+    def teardown -> Void = nil
 
     # Runs once before the class's first test; when it raises, every test
     # of the class is an error.
-    def self.startup -> Nil = nil
+    def self.startup -> Void = nil
     # Runs once after the class's last test, unless `.startup` raised.
-    def self.shutdown -> Nil = nil
+    def self.shutdown -> Void = nil
 
     # The class's limit per test (nil: the run's).
     def self.timeout -> Duration? = nil
@@ -372,13 +372,13 @@ module Test
     # The notes `#notify` added, in order.
     def notes -> Array[String] = @notes
 
-    def add_assertion -> Nil
+    def add_assertion -> Void
       @assertion_count += 1
       nil
     end
 
     # A note shown in the report.
-    def notify(message: String) -> Nil
+    def notify(message: String) -> Void
       @notes = @notes.push(message)
       nil
     end
@@ -390,13 +390,13 @@ module Test
   # becomes `doc_expect`, `expr # raises K` becomes `doc_raises`.
   class DocCase < Case
     # `value.inspect` is `expected`; `where` is the line in the comment.
-    def doc_expect(value: Object?, expected: String, where: String) -> Nil
+    def doc_expect(value: Object?, expected: String, where: String) -> Void
       actual = value.inspect
       check(actual == expected, nil) { "#{where}: expected => #{expected}, was #{actual}" }
     end
 
     # The block raises `klass` or a subclass.
-    def doc_raises(klass: Class, where: String, &: () -> Nil) -> Nil
+    def doc_raises(klass: Class, where: String, &: () -> Void) -> Void
       begin
         assert_raise(klass) { yield }
       rescue AssertionFailed => e
@@ -485,16 +485,16 @@ module Test
     name: String,
     file: String,
     line: Int,
-    call: (shareable (Case) -> Nil)?,
+    call: (shareable (Case) -> Void)?,
     rows: (shareable (Case) -> Array[String])?,
-    row_call: (shareable (Case, String) -> Nil)?
+    row_call: (shareable (Case, String) -> Void)?
   )
-    def self.plain(name: String, file: String, line: Int, call: shareable (Case) -> Nil) -> Entry
+    def self.plain(name: String, file: String, line: Int, call: shareable (Case) -> Void) -> Entry
       Entry.new(name, file, line, call, nil, nil)
     end
 
     def self.each(name: String, file: String, line: Int, rows: shareable (Case) -> Array[String],
-                  call: shareable (Case, String) -> Nil) -> Entry
+                  call: shareable (Case, String) -> Void) -> Entry
       Entry.new(name, file, line, nil, rows, call)
     end
   end
@@ -506,8 +506,8 @@ module Test
     file: String,
     make: shareable () -> Case,
     entries: Array[Entry],
-    startup: shareable () -> Nil,
-    shutdown: shareable () -> Nil,
+    startup: shareable () -> Void,
+    shutdown: shareable () -> Void,
     timeout: Duration?,
     serial: Bool
   )
@@ -929,7 +929,7 @@ module Test
   # Run items `width` at a time; `done` gets each result as it comes and
   # says whether to stop.
   def self.run_group(items: Array[Item], limit: Duration?, width: Int, options: Options,
-                     &done: (Result) -> Bool) -> Nil
+                     &done: (Result) -> Bool) -> Void
     if width <= 1
       items.each do |it|
         break if done.call(run_item(it, limit))
@@ -990,7 +990,7 @@ module Test
   end
 
   # :nodoc:
-  def self.report_progress(r: Result, options: Options) -> Nil
+  def self.report_progress(r: Result, options: Options) -> Void
     if options.verbose
       puts "#{r.item.full_name}: #{r.mark} (#{format("%.3f", r.time.to_f)}s)"
     else
@@ -1001,7 +1001,7 @@ module Test
   end
 
   # :nodoc:
-  def self.report(results: Array[Result], problems: Array[String], elapsed: Duration, options: Options) -> Nil
+  def self.report(results: Array[Result], problems: Array[String], elapsed: Duration, options: Options) -> Void
     puts unless options.verbose
     puts "Finished in #{format("%.6f", elapsed.to_f)} seconds."
     n = 0
@@ -1046,7 +1046,7 @@ module Test
   end
 
   # :nodoc:
-  def self.write_junit(path: String, results: Array[Result], elapsed: Duration) -> Nil
+  def self.write_junit(path: String, results: Array[Result], elapsed: Duration) -> Void
     out = String::Builder.new
     out << "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
     failures = results.count { |r| r.kind == :failure }

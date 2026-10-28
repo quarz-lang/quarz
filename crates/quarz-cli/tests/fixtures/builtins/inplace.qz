@@ -6,16 +6,16 @@ class Bag
   var @items: Array[Int] = []
   var @index: Hash[String, Int] = {}
   var @seen: Set[Int] = Set.new
-  def add(x: Int) -> Nil
+  def add(x: Int) -> Void
     @items = @items.push(x)
     @index = @index.put(x.to_s, @items.size)
     @seen = @seen.add(x)
   end
-  def forget(x: Int) -> Nil
+  def forget(x: Int) -> Void
     @index = @index.delete(x.to_s)
     @seen = @seen.delete(x)
   end
-  def fix(i: Int, v: Int) -> Nil
+  def fix(i: Int, v: Int) -> Void
     @items = @items.set(i, v)
   end
   def items -> Array[Int] = @items

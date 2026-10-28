@@ -1,0 +1,52 @@
+# `-> Void`: the body's value is discarded and the caller gets nil, for
+# methods, blocks, lambdas and procedure parameters alike.
+class Counter
+  var @n: Int = 0
+  attr_reader :n
+  def bump -> Void
+    @n += 1
+  end
+  def bump_by(k: Int) -> Void = @n += k
+  def each_bump(&: (Int) -> Void) -> Void
+    bump
+    yield @n
+  end
+end
+
+c = Counter.new
+p c.bump
+p c.bump_by(5)
+p c.n
+
+# A block where `(Int) -> Void` is expected: its `Int` is dropped.
+r = c.each_bump { |n| n * 10 }
+p r
+p c.n
+
+# A lambda declared `-> Void`, and one where `(Int) -> Void` is expected.
+l = ->(x: Int) -> Void { x + 1 }
+p l.call(1)
+h: (Int) -> Void = ->(x: Int) { x * 2 }
+p h.call(4)
+
+# `(Int) -> Void` and `(Int) -> Nil` are the same type.
+n: (Int) -> Nil = h
+p n.call(5)
+
+# A method without a return type is `-> Void`.
+def report(s: String)
+  puts s
+  s.size * 2
+end
+p report("hi")
+
+# A strict `-> Nil` body that ends in nil.
+def quiet(x: Int) -> Nil
+  return nil if x > 0
+  nil
+end
+p quiet(1), quiet(0)
+
+# A `Void` procedure stored and called later.
+handlers: Array[(String) -> Void] = [->(s: String) { s.size + 1 }, ->(s: String) { puts "got #{s}" }]
+handlers.each { |f| p f.call("x") }

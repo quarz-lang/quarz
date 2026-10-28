@@ -320,7 +320,7 @@ pub struct Block {
     pub span: Span,
     /// `{ }` rather than `do ... end` (affects nothing semantically).
     pub braces: bool,
-    /// The declared result of a lambda (`->(x: Int) -> Nil { }`); `None`
+    /// The declared result of a lambda (`->(x: Int) -> Void { }`); `None`
     /// for blocks.
     pub ret: Option<TypeExpr>,
 }
@@ -486,6 +486,9 @@ pub enum TypeExprKind {
     },
     SelfType,
     Nothing,
+    /// `Void`: a result whose value is discarded (callers see `Nil`);
+    /// written only as a method's or a procedure type's result.
+    Void,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

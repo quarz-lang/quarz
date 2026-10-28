@@ -35,7 +35,7 @@ end
 
 def money(amount: Float) -> String = format("%.2f", amount)
 
-def print_table(title: String, rows: Array[Summary]) -> Nil
+def print_table(title: String, rows: Array[Summary]) -> Void
   puts title
   puts format("%-12s %6s %10s %6s %9s", "key", "units", "revenue", "orders", "avg")
   rows.each do |r|

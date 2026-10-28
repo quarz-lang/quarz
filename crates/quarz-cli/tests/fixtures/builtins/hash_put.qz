@@ -15,7 +15,7 @@ p m
 class Box
   var @h: Hash[Int, Int] = {}
   attr_reader :h
-  def add(k: Int) -> Nil
+  def add(k: Int) -> Void
     @h = @h.put(k, k * k)
   end
 end

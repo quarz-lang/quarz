@@ -11,7 +11,7 @@ class Pos
     show
   end
 
-  def show -> Nil
+  def show -> Void
     puts "made #{@x}"
   end
 end
