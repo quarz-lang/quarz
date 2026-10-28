@@ -50,3 +50,15 @@ p quiet(1), quiet(0)
 # A `Void` procedure stored and called later.
 handlers: Array[(String) -> Void] = [->(s: String) { s.size + 1 }, ->(s: String) { puts "got #{s}" }]
 handlers.each { |f| p f.call("x") }
+
+# `&:name` given to a `(T) -> Void` block: the call's value is discarded.
+def each_seen(&: (Int) -> Void) -> Void
+  r = yield 5
+  p r
+end
+each_seen(&:to_s)
+def keep(&blk: (Int) -> Void) -> (Int) -> Void = blk
+p keep(&:succ).call(1)
+# A bare `next` in a `Void` block.
+[1, 2, 3].each { |x| next if x == 2
+  p x }

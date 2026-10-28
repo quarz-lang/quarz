@@ -3384,7 +3384,7 @@ impl<'src> Parser<'src> {
                 break;
             }
         }
-        self.expect(&T::RBracket, "`]`")?;
+        self.expect(&T::RBracket, "`,` or `]`")?;
         Ok(params)
     }
 
@@ -3423,31 +3423,35 @@ impl<'src> Parser<'src> {
         let mut lower = None;
         let mut bounds = Vec::new();
         loop {
+            // A second `<:` or `>:`, told before what follows it is read
+            // (as it is with spaces around it).
             let at = self.peek().span.start as usize;
+            let second = match self.kind() {
+                T::Lt => !bounds.is_empty(),
+                T::Gt => lower.is_some(),
+                _ => false,
+            };
+            if second
+                && !self.peek_at(1).space_before
+                && matches!(
+                    self.kind_at(1),
+                    T::Colon | T::Symbol(_) | T::ColonColon | T::StringBegin(StringKind::Symbol)
+                )
+            {
+                let span = Span::new(at, at + 2);
+                let msg = if lower.is_some() && self.at(&T::Gt) {
+                    format!("type parameter `{name}` has two lower bounds")
+                } else {
+                    format!("type parameter `{name}` has two upper bounds (join them with `&`)")
+                };
+                return Err(self.error_at(msg, span));
+            }
             let Some(is_lower) = self.eat_bound_op()? else {
                 break;
             };
-            // The second `<:` or `>:`.
-            let op_span = Span::new(at, at + 2);
             if is_lower {
-                if lower.is_some() {
-                    let span = op_span;
-                    return Err(self.error_at(
-                        format!("type parameter `{name}` has two lower bounds"),
-                        span,
-                    ));
-                }
                 lower = Some(self.parse_type_postfix()?);
             } else {
-                if !bounds.is_empty() {
-                    let span = op_span;
-                    return Err(self.error_at(
-                        format!(
-                            "type parameter `{name}` has two upper bounds (join them with `&`)"
-                        ),
-                        span,
-                    ));
-                }
                 bounds.push(self.parse_type_postfix()?);
                 while self.eat(&T::Amp) {
                     bounds.push(self.parse_type_postfix()?);
@@ -3478,12 +3482,14 @@ impl<'src> Parser<'src> {
         let op = if is_lower { ">:" } else { "<:" };
         let next = self.peek_at(1).clone();
         let adjacent = !next.space_before;
-        // The lexer takes a setter's `=` into a symbol (`T<:X=`, `T<:[]=`).
+        // The lexer takes a setter's `=` into a symbol (`T<:X=`, `T<:[]=`):
+        // the error is the one for `T <: X =`. (A lowercase name is no
+        // type: the `=` is dropped below, for the same error as `T <: x`.)
         if let T::Symbol(name) = &next.kind {
             if adjacent
                 && name.len() > 1
                 && name.ends_with('=')
-                && (name == "[]=" || name.starts_with(|c: char| c == '_' || c.is_alphabetic()))
+                && (name == "[]=" || name.starts_with(|c: char| c.is_ascii_uppercase()))
             {
                 let at = next.span.end as usize - 1;
                 return Err(self.error_at("expected `,` or `]`, found `=`", Span::new(at, at + 1)));
@@ -3502,6 +3508,7 @@ impl<'src> Parser<'src> {
                 let kind = if name.starts_with(|c: char| c.is_ascii_uppercase()) {
                     T::Const(name)
                 } else {
+                    let name = name.strip_suffix('=').map_or(name.clone(), str::to_string);
                     K::from_ident(&name).map_or(T::Ident(name), T::Keyword)
                 };
                 let span = Span::new(next.span.start as usize + 1, next.span.end as usize);
@@ -3537,14 +3544,26 @@ impl<'src> Parser<'src> {
                 let span = Span::new(sym.span.start as usize + 1, sym.span.end as usize);
                 self.tokens[self.idx + 1] = Token::new(T::Const(name), span, false);
             }
-            T::Colon | T::Symbol(_) if !adjacent => {
+            T::Colon | T::Symbol(_) | T::StringBegin(StringKind::Symbol) if !adjacent => {
                 let span = self.peek().span;
                 return Err(self.error_at(format!("`{op}` is written without a space"), span));
             }
-            // `<::X`, `<:<=>`, `<:"X"`: a colon, but no type after it.
-            T::ColonColon | T::Symbol(_) | T::StringBegin(_) if adjacent => {
-                let span = Span::new(self.peek().span.start as usize, next.span.end as usize);
-                return Err(self.error_at(format!("expected a type after `{op}`"), span));
+            // `<::X`, `<:<=>`, `<:"X"`: a colon, then no type. The error
+            // names what follows the colon, as with a space after `<:`.
+            T::ColonColon | T::Symbol(_) | T::StringBegin(StringKind::Symbol) if adjacent => {
+                let found = match &next.kind {
+                    // `<::X` is `<:` and `:X`.
+                    T::ColonColon => match self.kind_at(2).clone() {
+                        T::Const(n) | T::Ident(n) if !self.peek_at(2).space_before => {
+                            describe(&T::Symbol(n))
+                        }
+                        _ => describe(&T::Colon),
+                    },
+                    T::Symbol(s) => format!("`{s}`"),
+                    _ => describe(&T::StringBegin(StringKind::String)),
+                };
+                let span = Span::new(next.span.start as usize + 1, next.span.end as usize);
+                return Err(self.error_at(format!("expected a type, found {found}"), span));
             }
             _ => {
                 return Err(self.error_expected("`<:` or `>:` (a bound), `,` or `]`"));

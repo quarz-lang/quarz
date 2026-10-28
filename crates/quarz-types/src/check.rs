@@ -170,8 +170,10 @@ pub struct Output {
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum BlockPass {
     /// `&:name`: call `name` (resolved to `method` for the parameter's
-    /// static type) on the block's argument.
-    Symbol(String, MethodId),
+    /// static type) on the block's argument; with `true`, for a block
+    /// whose result is `Void`, the call's value is discarded (the
+    /// procedure gives nil), as in `{ |x| x.name }`.
+    Symbol(String, MethodId, bool),
     /// `&expr`: the expression evaluates to a procedure.
     Proc,
 }
@@ -4098,6 +4100,18 @@ impl Checker {
                         None => self.world.nil(),
                     };
                     self.mark_discarded(value.as_deref(), void);
+                    // A block whose result is `Void` gives no value, as a
+                    // `-> Void` method's `return` does not.
+                    let rt = self.resolve(&t);
+                    if void && !rt.is_nothing() && !self.world.is_nil_type(&rt) {
+                        self.error(
+                            format!(
+                                "`next` gives a {} but the block's result is `Void`, which gives nil (use a bare `next`)",
+                                self.name(&t)
+                            ),
+                            expr.span,
+                        );
+                    }
                     if !void && !self.coerce(&t, &ret) {
                         self.error(
                             format!(
@@ -8152,7 +8166,10 @@ impl Checker {
                         let mut msubst = msubst;
                         msubst.insert(SELF_PARAM, recv.clone());
                         let r = self.world.unvoid(&self.method_ret(mid)).subst(&msubst);
-                        if !self.coerce(&r, &ret) {
+                        // Given where a `Void` result is expected, the
+                        // call's value is discarded, as the block's would be.
+                        let discard = self.infer.resolve(&ret) == Type::Void;
+                        if !discard && !self.coerce(&r, &ret) {
                             let msg = format!(
                                 "`&:{name}` returns {} but {} was expected",
                                 self.name(&r),
@@ -8166,8 +8183,22 @@ impl Checker {
                         // Checked again (a union receiver's members, a block
                         // once per type) with another method: called by
                         // name, which an extension's is not found by.
-                        if let Some(BlockPass::Symbol(_, before)) = self.out.block_pass.get(&e.id) {
+                        if let Some(BlockPass::Symbol(_, before, discarded)) =
+                            self.out.block_pass.get(&e.id)
+                        {
                             let before = *before;
+                            // One procedure serves every check: it cannot
+                            // both keep the value and give nil.
+                            if *discarded != discard {
+                                let d = Diagnostic::error(
+                                    format!(
+                                        "cannot tell at run time whether `&:{name}` gives the value of `{name}` or nil: one method takes a block whose result is `Void`, another one whose result is used (give the value one type first, or write the block)"
+                                    ),
+                                    e.span,
+                                );
+                                self.ambiguous
+                                    .push((self.env.file, AmbiguousKey::Node(e.id), d));
+                            }
                             if before != mid && !self.out.varied_symbols.contains(&e.id) {
                                 self.out.varied_symbols.insert(e.id);
                                 self.table_journal.push(TableUndo::VariedSymbol(e.id));
@@ -8193,11 +8224,11 @@ impl Checker {
                         self.table_journal.push(TableUndo::BlockPass(e.id, before));
                         self.out
                             .block_pass
-                            .insert(expr.id, BlockPass::Symbol(name.clone(), mid));
+                            .insert(expr.id, BlockPass::Symbol(name.clone(), mid, discard));
                         // Also by the symbol itself, for the lowering.
                         self.out
                             .block_pass
-                            .insert(e.id, BlockPass::Symbol(name.clone(), mid));
+                            .insert(e.id, BlockPass::Symbol(name.clone(), mid, discard));
                         self.record(e.id, &self.world.symbol());
                     }
                     // The method's anonymous block, passed on: only to a

@@ -509,6 +509,7 @@ impl Interp {
         }));
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn op_symbol_proc(
         &self,
         f: &FuncInfo,
@@ -517,6 +518,7 @@ impl Interp {
         dst: Reg,
         name: u32,
         method: Option<MethodId>,
+        discard: bool,
     ) {
         let tag = self.new_tag();
         regs[dst as usize] = Value::Proc(Rc::new(Closure {
@@ -524,6 +526,7 @@ impl Interp {
                 Rc::from(self.str_const(f, name)),
                 Cell::new(None),
                 method,
+                discard,
             ),
             frame: None,
             self_val: Value::Nil,

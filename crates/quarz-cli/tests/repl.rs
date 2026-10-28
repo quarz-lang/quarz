@@ -255,6 +255,13 @@ fn highlighting_colors_tokens() {
     ] {
         assert!(h.contains(part), "{part:?} in {h:?}");
     }
+    // In a type parameter list, `T<:Shape` is `<:` and a constant; out
+    // of one, `a <:b` is `<` and a symbol.
+    let h = highlight("def f[T<:Shape, U>:T](x: T) -> T = x");
+    assert!(h.contains("<:\x1b[1;34mShape\x1b[0m"), "{h:?}");
+    assert!(h.contains(">:\x1b[1;34mT\x1b[0m"), "{h:?}");
+    let h = highlight("a <:b");
+    assert!(h.contains("\x1b[33m:b"), "{h:?}");
     // An unfinished input is highlighted as far as it goes; the text is
     // kept as it is.
     let h = highlight("\"open #{");

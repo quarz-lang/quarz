@@ -31,7 +31,35 @@ pub fn highlight(src: &str) -> String {
     // The colors of the string literals being read (an interpolation's
     // tokens get their own colors, the literal's go on after it).
     let mut strings: Vec<&str> = Vec::new();
-    for tok in &lexed.tokens {
+    // For each open `[`, whether it may be a type parameter list (right
+    // after a name), where `T<:Shape` is `<:` and a constant, not `<`
+    // and a symbol.
+    let mut brackets: Vec<bool> = Vec::new();
+    let toks = &lexed.tokens;
+    for (i, tok) in toks.iter().enumerate() {
+        let prev = |n: usize| i.checked_sub(n).map(|j| &toks[j]);
+        match &tok.kind {
+            TokenKind::LBracket => brackets.push(
+                !tok.space_before
+                    && prev(1).is_some_and(|p| {
+                        matches!(p.kind, TokenKind::Const(_) | TokenKind::Ident(_))
+                    }),
+            ),
+            TokenKind::RBracket => {
+                brackets.pop();
+            }
+            TokenKind::Symbol(name)
+                if brackets.last() == Some(&true)
+                    && !tok.space_before
+                    && name.starts_with(|c: char| c.is_ascii_uppercase())
+                    && prev(1).is_some_and(|p| matches!(p.kind, TokenKind::Lt | TokenKind::Gt))
+                    && prev(2).is_some_and(|p| matches!(p.kind, TokenKind::Const(_))) =>
+            {
+                spans.push((tok.span.start as usize + 1, tok.span.end as usize, CONSTANT));
+                continue;
+            }
+            _ => {}
+        }
         let color = match &tok.kind {
             TokenKind::Keyword(k) => match k {
                 Keyword::Nil

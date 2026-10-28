@@ -532,10 +532,16 @@ pub(crate) fn rewrite_with(
             recv: r(recv),
             name: cst(*name),
         },
-        Inst::SymbolProc { dst, name, method } => Inst::SymbolProc {
+        Inst::SymbolProc {
+            dst,
+            name,
+            method,
+            discard,
+        } => Inst::SymbolProc {
             dst: r(dst),
             name: cst(*name),
             method: *method,
+            discard: *discard,
         },
         Inst::MakeArray { dst, items } => Inst::MakeArray {
             dst: r(dst),

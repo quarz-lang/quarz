@@ -341,8 +341,8 @@ op_entry!(qz_op_method_ref(dst: u32, recv: u32, name: u32) |rt, act, f, pool, re
     Ok(())
 });
 
-op_entry!(qz_op_symbol_proc(dst: u32, name: u32, method: u32) |rt, act, f, pool, regs| {
-    rt.op_symbol_proc(f, act, regs, dst, name, opt(method));
+op_entry!(qz_op_symbol_proc(dst: u32, name: u32, method: u32, discard: u32) |rt, act, f, pool, regs| {
+    rt.op_symbol_proc(f, act, regs, dst, name, opt(method), discard != 0);
     Ok(())
 });
 

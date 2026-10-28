@@ -58,7 +58,7 @@ pub fn shape(e: &Expr, call: &ast::Call, out: &Output, world: &World) -> Option<
     // calling `name` on it.
     let symbol = match (&call.block, call.args.as_slice()) {
         (None, [Arg::BlockPass(x)]) => match out.block_pass.get(&x.id) {
-            Some(quarz_types::BlockPass::Symbol(_, m))
+            Some(quarz_types::BlockPass::Symbol(_, m, _))
                 if matches!(x.kind, ExprKind::Symbol(_)) && !out.varied_symbols.contains(&x.id) =>
             {
                 Some(*m)

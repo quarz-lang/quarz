@@ -551,16 +551,27 @@ fn type_param_bounds() {
     assert!(errors("def f[U >: X >: Y](x: U) -> U = x")[0].contains("two lower bounds"));
     assert!(errors("class A[T < X]\nend")[0].contains("expected `<:` or `>:`"));
     assert!(errors("class A[T :X]\nend")[0].contains("upper bound is written `T <: X`"));
-    for src in [
-        "class A[T<::X]\nend",
-        "class A[T<:<=>]\nend",
-        "class A[T<:\"X\"]\nend",
+    // Without spaces, the same errors as with them.
+    for (tight, spaced) in [
+        ("T<::X", "T <: :X"),
+        ("T<:<=>", "T <: <=>"),
+        ("T<:\"X\"", "T <: \"X\""),
+        ("T<:X=", "T <: X ="),
+        ("T<:x=", "T <: x ="),
+        ("T<:[]=", "T <: [] ="),
+        ("U>:X>:Y=", "U >: X >: Y ="),
+        ("T<:X>:Y<:Z", "T <: X >: Y <: Z"),
+        ("T<:X<Y", "T <: X < Y"),
+        ("U>:X>Y", "U >: X > Y"),
+        ("T<:X<:\"Y\"", "T <: X <: \"Y\""),
+        ("T<\"Y\"", "T < \"Y\""),
+        ("T<:X>\"Y\"", "T <: X > \"Y\""),
     ] {
-        let errs = errors(src);
-        assert!(
-            errs[0].contains("expected a type after `<:`"),
-            "{src}: {errs:?}"
+        let (a, b) = (
+            errors(&format!("class A[{tight}]\nend")),
+            errors(&format!("class A[{spaced}]\nend")),
         );
+        assert_eq!(a[0], b[0], "{tight} / {spaced}");
     }
     assert!(errors("class A[T :\"X\"]\nend")[0].contains("upper bound is written `T <: X`"));
     for src in [

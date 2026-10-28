@@ -65,7 +65,7 @@ pub(crate) const OPS: &[(&str, &[Ty])] = {
         ("qz_op_as", &[I, I, P, I, P, I, P, I]),
         ("qz_op_make_block", &[I, I, I, I]),
         ("qz_op_method_ref", &[I, I, I]),
-        ("qz_op_symbol_proc", &[I, I, I]),
+        ("qz_op_symbol_proc", &[I, I, I, I]),
         ("qz_op_make_array", &[I, P, I]),
         ("qz_op_make_hash", &[I, P, I]),
         ("qz_op_make_range", &[I, I, I, I]),
@@ -3114,9 +3114,19 @@ impl<B: Builder> Gen<'_, B> {
                 "qz_op_method_ref",
                 vec![w(self, *dst), w(self, *recv), w(self, *name)],
             ),
-            Inst::SymbolProc { dst, name, method } => (
+            Inst::SymbolProc {
+                dst,
+                name,
+                method,
+                discard,
+            } => (
                 "qz_op_symbol_proc",
-                vec![w(self, *dst), w(self, *name), w(self, opt(*method))],
+                vec![
+                    w(self, *dst),
+                    w(self, *name),
+                    w(self, opt(*method)),
+                    w(self, u32::from(*discard)),
+                ],
             ),
             Inst::MakeArray { dst, items } => {
                 let words: Vec<u32> = items
