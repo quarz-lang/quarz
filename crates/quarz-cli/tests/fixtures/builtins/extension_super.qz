@@ -1,0 +1,27 @@
+# `super` in an extension's method calls the method the extension hides:
+# the class's own, chosen among its overloads, or the ancestors' when the
+# class has none.
+class Base
+  def greet(n: Int) -> String = "base #{n}"
+  def greet(s: String) -> String = "base #{s}"
+end
+class Mid < Base
+  def greet(n: Int) -> String = "mid #{n}"
+  def greet(s: String) -> String = "mid #{s}"
+end
+class Leaf < Mid
+end
+module Loud
+  extension Mid
+    def greet(n: Int) -> String = super(n).upcase + "!"
+    def greet(s: String) -> String = super.upcase + "?"
+  end
+  extension Leaf
+    def greet(n: Int) -> String = "please, " + super
+  end
+end
+using Loud
+puts Mid.new.greet(1)
+puts Mid.new.greet("a")
+puts Leaf.new.greet(2)
+puts Leaf.new.greet("b")

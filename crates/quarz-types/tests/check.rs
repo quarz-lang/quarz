@@ -449,6 +449,26 @@ fn patterns_narrow_object_to_classes_admitting_object_arguments() {
 }
 
 #[test]
+fn super_in_extension_reaches_the_hidden_method() {
+    // `super` in an extension's method calls the method it hides: the
+    // class's own (among its overloads), else the ancestors' (docs/01 §7).
+    let classes = "class Base\n  def greet(n: Int) -> String = \"base\"\n  def greet(s: String) -> String = \"base\"\nend\nclass Mid < Base\n  def greet(n: Int) -> String = \"mid\"\n  def greet(s: String) -> String = \"mid\"\nend\nclass Leaf < Mid\nend\n";
+    ok(&format!("{classes}module Loud\n  extension Mid\n    def greet(n: Int) -> String = super(n) + \"!\"\n    def greet(s: String) -> String = super + \"?\"\n  end\n  extension Leaf\n    def greet(n: Int) -> String = \"please, \" + super\n    def greet(s: String) -> String = super(s)\n  end\nend\nusing Loud\nputs Mid.new.greet(1)\nputs Leaf.new.greet(\"a\")"));
+    // Also where the extension's module is not `using`-ed (a library's
+    // layout: defined in one place, used in others).
+    ok(&format!("{classes}module Loud\n  extension Mid\n    def greet(n: Int) -> String = super(n) + \"!\"\n  end\n  extension Leaf\n    def greet(n: Int) -> String = \"please, \" + super\n  end\nend\nclass User\n  using Loud\n  def go -> String = Leaf.new.greet(1)\nend\nputs User.new.go"));
+    // The hidden method is the class's own, with its signature.
+    err(
+        &format!("{classes}module Loud\n  extension Leaf\n    def greet(n: Int) -> String = super(1.5)\n  end\nend\nusing Loud\nputs Leaf.new.greet(1)"),
+        "no overload of `greet` on Leaf matches",
+    );
+    err(
+        "class Base\n  def other -> Int = 1\nend\nmodule M\n  extension Base\n    def shout -> String = super\n  end\nend\nusing M\nputs Base.new.shout",
+        "no superclass method `shout`",
+    );
+}
+
+#[test]
 fn case_on_self() {
     // `case` on `Self` matches as on the receiver's class.
     no_warnings("enum R[T, E]\n  variant Ok(value: T)\n  variant Err(error: E)\n  def on_ok(&: (T) -> Nil) -> Self\n    case self\n    in Ok(value:) then yield(value)\n    in Err then nil\n    end\n    self\n  end\nend");
