@@ -30,10 +30,13 @@ class TaskTest < Test::Case
   end
 
   def test_atom_records_order
+    # The task spawned first updates last: it waits for the other's
+    # signal, so the order does not depend on how the tasks are scheduled.
     order = Atom[Array[Int]].new([])
+    first_done = Channel[Nil].new(capacity: 1)
     Task.scope do |s|
-      s.spawn { Task.sleep(20.ms); order.update { |o| o.push(2) } }
-      s.spawn { Task.sleep(5.ms); order.update { |o| o.push(1) } }
+      s.spawn { first_done.receive; order.update { |o| o.push(2) } }
+      s.spawn { order.update { |o| o.push(1) }; first_done.send(nil) }
     end
     assert_equal([1, 2], order.value)
   end
