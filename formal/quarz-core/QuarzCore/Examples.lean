@@ -7,7 +7,7 @@ import QuarzCore.Semantics
 
 namespace QuarzCore.Examples
 
-def object : Class := ⟨"Object", none, []⟩
+def object : Class := ⟨"Object", none, [], [], []⟩
 
 /-- No built-in method returns. -/
 def noPrim : Oracle := fun _ _ _ => none
@@ -32,17 +32,17 @@ def unnarrowed : Program :=
 
 /-- A class whose `==` says yes to `nil` (09b19e3): `c == nil` does not
 narrow `c`, of a class type. -/
-def eqClass : Class := ⟨"E", some 0, []⟩
+def eqClass : Class := ⟨"E", some 0, [], [], []⟩
 
 def eqMethod : Method :=
-  ⟨1, "==", [("o", [.cls 0])], [.bool], none, [("o", [.cls 0])], .tru⟩
+  ⟨1, "==", [("o", [.cls 0 []])], [.bool], none, [("o", [.cls 0 []])], .tru⟩
 
 def equalNil (ann : Ty) : Program :=
-  ⟨[object, eqClass], [eqMethod], ⟨0, "<main>", [], [.cls 1, .nil], none, [("c", [.cls 1, .nil])],
-    .seq (.assign "c" (.new 1 []))
-      (.ite (.eqNil (.var "c" [.cls 1, .nil])) (.var "c" ann) .nil)⟩, []⟩
+  ⟨[object, eqClass], [eqMethod], ⟨0, "<main>", [], [.cls 1 [], .nil], none, [("c", [.cls 1 [], .nil])],
+    .seq (.assign "c" (.new 1 [] []))
+      (.ite (.eqNil (.var "c" [.cls 1 [], .nil])) (.var "c" ann) .nil)⟩, []⟩
 
-#guard (equalNil [.cls 1, .nil]).check
+#guard (equalNil [.cls 1 [], .nil]).check
 #guard !(equalNil [.nil]).check
 #guard match run (equalNil [.nil]) noPrim 100 with | .stuck => true | _ => false
 
@@ -61,7 +61,7 @@ Int` (to be assigned) and `@lbl: String = "p"`; `initialize(v: Int)`
 runs `body`. -/
 
 def initClass (extra : List Field := []) : Class :=
-  ⟨"P", some 0, [⟨"x", [.int], false, none⟩, ⟨"lbl", [.str], false, some 0⟩] ++ extra⟩
+  ⟨"P", some 0, [⟨"x", [.int], false, none⟩, ⟨"lbl", [.str], false, some 0⟩] ++ extra, [], []⟩
 
 def initMethod (body : Expr) : Method :=
   ⟨1, "initialize", [("v", [.int])], [.nil], none, [("v", [.int])], body⟩
@@ -70,11 +70,11 @@ def getx : Method := ⟨1, "getx", [], [.int], none, [], .field "x" [.int]⟩
 
 def setx : Method := ⟨1, "setx", [], [.int], none, [], .setField "x" (.int 1)⟩
 
-def initProg (body : Expr) (main : Expr := .call (.new 1 [.int 3]) "getx" [])
+def initProg (body : Expr) (main : Expr := .call (.new 1 [] [.int 3]) "getx" [])
     (extra : List Method := []) (fields : List Field := []) (defaults : List Expr := [.str "p"]) :
     Program :=
   ⟨[object, initClass fields], [initMethod body, getx] ++ extra,
-    ⟨0, "<main>", [], [.nil, .bool, .int, .str, .cls 0], none, [], main⟩, defaults⟩
+    ⟨0, "<main>", [], [.nil, .bool, .int, .str, .cls 0 []], none, [], main⟩, defaults⟩
 
 def assignX : Expr := .setField "x" (.var "v" [.int])
 
@@ -99,13 +99,13 @@ def assignX : Expr := .setField "x" (.var "v" [.int])
   (defaults := [.str "p", .field "lbl" [.str]])).check
 -- An immutable field is assigned only in `initialize`, which no call reaches.
 #guard !(initProg assignX (extra := [setx])).check
-#guard !(initProg assignX (main := .call (.new 1 [.int 3]) "initialize" [.int 4])).check
+#guard !(initProg assignX (main := .call (.new 1 [] [.int 3]) "initialize" [.int 4])).check
 
 /-- A class with only `var @a: Int = default`, and `geta`. -/
 def defaultProg (default : Expr) : Program :=
-  ⟨[object, ⟨"Q", some 0, [⟨"a", [.int], true, some 0⟩]⟩],
+  ⟨[object, ⟨"Q", some 0, [⟨"a", [.int], true, some 0⟩], [], []⟩],
     [⟨1, "geta", [], [.int], none, [], .field "a" [.int]⟩],
-    ⟨0, "<main>", [], [.nil, .bool, .int, .str, .cls 0], none, [], .call (.new 1 []) "geta" []⟩,
+    ⟨0, "<main>", [], [.nil, .bool, .int, .str, .cls 0 []], none, [], .call (.new 1 [] []) "geta" []⟩,
     [default]⟩
 
 -- A default never uses the object, even once it has set every field.
@@ -118,13 +118,13 @@ P has `@x : Int`, assigned by its `initialize`, which then calls `who`;
 C < P has `@y : Int` and overrides `who` to read it. -/
 
 def superProg (body : Expr) : Program :=
-  ⟨[object, ⟨"P", some 0, [⟨"x", [.int], false, none⟩]⟩, ⟨"C", some 1, [⟨"y", [.int], false, none⟩]⟩],
+  ⟨[object, ⟨"P", some 0, [⟨"x", [.int], false, none⟩], [], []⟩, ⟨"C", some 1, [⟨"y", [.int], false, none⟩], [], []⟩],
     [⟨1, "initialize", [("v", [.int])], [.nil], none, [("v", [.int])],
         .seq (.setField "x" (.var "v" [.int])) (.call .self "who" [])⟩,
      ⟨1, "who", [], [.int], none, [], .field "x" [.int]⟩,
      ⟨2, "initialize", [("w", [.int])], [.nil], none, [("w", [.int])], body⟩,
      ⟨2, "who", [], [.int], none, [], .field "y" [.int]⟩],
-    ⟨0, "<main>", [], [.nil, .bool, .int, .str, .cls 0], none, [], .call (.new 2 [.int 5]) "who" []⟩, []⟩
+    ⟨0, "<main>", [], [.nil, .bool, .int, .str, .cls 0 []], none, [], .call (.new 2 [] [.int 5]) "who" []⟩, []⟩
 
 def assignY : Expr := .setField "y" (.var "w" [.int])
 
@@ -149,5 +149,68 @@ def assignY : Expr := .setField "y" (.var "w" [.int])
 #guard !(superProg (.seq assignY (.while (.prim "c" [] [] [.bool]) (.superInit 1 [.int 2])))).check
 #guard !(superProg (.seq assignY (.seq (.ite (.prim "c" [] [] [.bool]) (.ret .nil) .nil)
   (.superInit 1 [.int 2])))).check
+
+/-! ### Generics (G1a)
+
+Box[T] with an immutable `@v : T`; IntBox < Box[Int], overriding `get`;
+Pair[S, T], whose `swap` makes a `Pair[T, S]`. -/
+
+def boxProg (body : Expr) (locals : List (String × Ty) := []) : Program :=
+  ⟨[object,
+    ⟨"Box", some 0, [⟨"v", [.param 0], false, none⟩], [.inv], []⟩,
+    ⟨"IntBox", some 1, [], [], [[.int]]⟩,
+    ⟨"Pair", some 0, [⟨"a", [.param 0], false, none⟩, ⟨"b", [.param 1], false, none⟩], [.inv, .inv], []⟩],
+   [⟨1, "get", [], [.param 0], none, [], .field "v" [.param 0]⟩,
+    ⟨1, "initialize", [("v", [.param 0])], [.nil], none, [("v", [.param 0])],
+      .setField "v" (.var "v" [.param 0])⟩,
+    ⟨2, "get", [], [.int], none, [], .field "v" [.int]⟩,
+    ⟨3, "swap", [], [.cls 3 [[.param 1], [.param 0]]], none, [],
+      .new 3 [[.param 1], [.param 0]] [.field "b" [.param 1], .field "a" [.param 0]]⟩,
+    ⟨3, "initialize", [("a", [.param 0]), ("b", [.param 1])], [.nil], none,
+      [("a", [.param 0]), ("b", [.param 1])],
+      .seq (.setField "a" (.var "a" [.param 0])) (.setField "b" (.var "b" [.param 1]))⟩],
+   ⟨0, "<main>", [], [.nil, .bool, .int, .str, .cls 0 []], none, locals, body⟩, []⟩
+
+-- `Box[Int].new(3).get` is an `Int`; `IntBox.new(4).get` runs the
+-- override, reading the inherited field at `Int`.
+#guard (boxProg (.call (.new 1 [[.int]] [.int 3]) "get" [])).check
+#guard match run (boxProg (.call (.new 1 [[.int]] [.int 3]) "get" [])) noPrim 100 with
+  | .ok (.int 3) _ => true | _ => false
+#guard (boxProg (.call (.new 2 [] [.int 4]) "get" [])).check
+#guard match run (boxProg (.call (.new 2 [] [.int 4]) "get" [])) noPrim 100 with
+  | .ok (.int 4) _ => true | _ => false
+-- `Pair[Int, Str].new(1, "a").swap.swap`: a `Pair[Int, Str]` again.
+#guard (boxProg (.assign "p" (.call (.call (.new 3 [[.int], [.str]] [.int 1, .str "a"]) "swap" []) "swap" []))
+  [("p", [.cls 3 [[.int], [.str]], .nil])]).check
+#guard !(boxProg (.assign "p" (.call (.new 3 [[.int], [.str]] [.int 1, .str "a"]) "swap" []))
+  [("p", [.cls 3 [[.int], [.str]], .nil])]).check
+#guard match run (boxProg (.call (.call (.new 3 [[.int], [.str]] [.int 1, .str "a"]) "swap" []) "swap" []))
+    noPrim 100 with
+  | .ok (.obj _) _ => true | _ => false
+-- Ill-typed arguments, the wrong number of type arguments, a `Str` box
+-- where an `Int` one is declared: rejected.
+#guard !(boxProg (.new 1 [[.int]] [.str "x"])).check
+#guard !(boxProg (.new 1 [] [.int 1])).check
+#guard (boxProg (.assign "b" (.new 1 [[.int]] [.int 1])) [("b", [.cls 1 [[.int]]])]).check
+#guard !(boxProg (.assign "b" (.new 1 [[.str]] [.str "x"])) [("b", [.cls 1 [[.int]]])]).check
+-- Invariant: an `IntBox` is a `Box[Int]`, not a `Box[Object]`.
+#guard (boxProg (.assign "b" (.new 2 [] [.int 1])) [("b", [.cls 1 [[.int]]])]).check
+#guard !(boxProg (.assign "b" (.new 2 [] [.int 1])) [("b", [.cls 1 [[.cls 0 []]]])]).check
+-- `is_a?(Box[Int])` on an `Object` cannot be checked at run time; on a
+-- `Box[Int]?` it can, as can `is_a?(IntBox)` on anything. (A local is
+-- read only once assigned: here from a built-in call of its type.)
+def withLocal (x : String) (t : Ty) (body : Expr) : Expr := .seq (.assign x (.prim "h" [] [] t)) body
+#guard !(boxProg (withLocal "o" [.cls 0 []] (.isA (.var "o" [.cls 0 []]) (.cls 1 [[.int]])))
+  [("o", [.cls 0 []])]).check
+#guard (boxProg (withLocal "b" [.cls 1 [[.int]], .nil] (.isA (.var "b" [.cls 1 [[.int]], .nil]) (.cls 1 [[.int]])))
+  [("b", [.cls 1 [[.int]], .nil])]).check
+#guard (boxProg (withLocal "o" [.cls 0 []] (.isA (.var "o" [.cls 0 []]) (.cls 2 [])))
+  [("o", [.cls 0 []])]).check
+-- A local of the class's type narrowed by the test: an `IntBox` below
+-- it; `Box` without its argument is no test.
+#guard (boxProg (withLocal "b" [.cls 1 [[.int]], .nil] (.ite (.isA (.var "b" [.cls 1 [[.int]], .nil]) (.cls 2 []))
+    (.call (.var "b" [.cls 2 []]) "get" []) .nil)) [("b", [.cls 1 [[.int]], .nil])]).check
+#guard !(boxProg (withLocal "b" [.cls 1 [[.int]], .nil] (.isA (.var "b" [.cls 1 [[.int]], .nil]) (.cls 1 [])))
+  [("b", [.cls 1 [[.int]], .nil])]).check
 
 end QuarzCore.Examples

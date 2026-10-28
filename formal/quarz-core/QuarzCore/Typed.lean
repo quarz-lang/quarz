@@ -48,24 +48,28 @@ inductive Typed : Ctx → Env → Expr → Out → Prop where
       o.ty.le c.ct fd.ty → o.out = none → Typed c Γ (.setField f e) .dead
   /-- `self`: in `initialize`, once every field is set; never in a default. -/
   | self : (!c.inDefault && (!c.inInit || c.allSet Γ)) = true →
-      Typed c Γ .self (.plain [.cls c.meth.owner] Γ)
-  /-- `new`: the arguments its `initialize`'s (none without one). -/
-  | new : k < c.ct.length → TypedArgs c Γ args (.live tys Δ) →
-      c.prog.lookup k "initialize" = some mi → (mi.block.isNone && argsOk c tys mi) = true →
-      Typed c Γ (.new k args) (.plain [.cls k] Δ)
-  | newNoInit : k < c.ct.length → TypedArgs c Γ args (.live tys Δ) →
-      c.prog.lookup k "initialize" = none → tys.isEmpty = true →
-      Typed c Γ (.new k args) (.plain [.cls k] Δ)
-  | newDead : k < c.ct.length → TypedArgs c Γ args .dead → Typed c Γ (.new k args) .dead
-  /-- `super(args)` in `initialize`: into the superclass, the class's own
-  fields assigned first; the inherited ones after. -/
+      Typed c Γ .self (.plain c.selfTy Γ)
+  /-- `new`: the class given well-formed arguments, the call's arguments
+  its `initialize`'s as that class sees them (none without one). -/
+  | new : c.argsWf k targs = true → TypedArgs c Γ args (.live tys Δ) →
+      c.prog.lookupAt k targs "initialize" = some mi → (mi.block.isNone && argsOk c tys mi) = true →
+      Typed c Γ (.new k targs args) (.plain [.cls k targs] Δ)
+  | newNoInit : c.argsWf k targs = true → TypedArgs c Γ args (.live tys Δ) →
+      c.prog.lookupAt k targs "initialize" = none → tys.isEmpty = true →
+      Typed c Γ (.new k targs args) (.plain [.cls k targs] Δ)
+  | newDead : c.argsWf k targs = true → TypedArgs c Γ args .dead →
+      Typed c Γ (.new k targs args) .dead
+  /-- `super(args)` in `initialize`: into the superclass (given the
+  arguments this class gives it), the class's own fields assigned first;
+  the inherited ones after. -/
   | superInit : c.superOk d Γ = true →
       TypedArgs c Γ args (.live tys Δ) →
-      c.prog.lookup d "initialize" = some mi → (mi.block.isNone && argsOk c tys mi) = true →
+      c.prog.lookupAt d (c.superArgs d) "initialize" = some mi →
+      (mi.block.isNone && argsOk c tys mi) = true →
       Typed c Γ (.superInit d args) (.plain [.nil] (c.afterSuper Δ))
   | superNoInit : c.superOk d Γ = true →
       TypedArgs c Γ args (.live tys Δ) →
-      c.prog.lookup d "initialize" = none → tys.isEmpty = true →
+      c.prog.lookupAt d (c.superArgs d) "initialize" = none → tys.isEmpty = true →
       Typed c Γ (.superInit d args) (.plain [.nil] (c.afterSuper Δ))
   | superDead : c.superOk d Γ = true →
       TypedArgs c Γ args .dead → Typed c Γ (.superInit d args) .dead
@@ -125,7 +129,9 @@ inductive Typed : Ctx → Env → Expr → Out → Prop where
   it (`testOut`). -/
   | isNil : Typed c Γ e o → o.out = some Δ →
       Typed c Γ (.isNil e) (testOut c e Δ (nilTy c.ct) (·.remove .nil))
-  | isA : Typed c Γ e o → o.out = some Δ →
+  /-- A class test: of a class whose arguments follow from the static
+  type (the run-time test sees the class only). -/
+  | isA : Typed c Γ e o → o.out = some Δ → (a.closed && a.wf c.ct && verifiable c.ct o.ty a) = true →
       Typed c Γ (.isA e a) (testOut c e Δ (isATrue c.ct · a) (isAFalse c.ct · a))
   | eqNil : Typed c Γ e o → o.out = some Δ →
       Typed c Γ (.eqNil e) (testOut c e Δ (fun t => if finalRead c Δ e then t.keep [.nil] else t)

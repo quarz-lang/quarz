@@ -14,15 +14,24 @@ open Plausible
 
 /-- Object; A < Object with an immutable `@a : Int?` and a `var @v :
 Str`; B < A; E < Object, whose `==` says yes to anything; D < A with an
-immutable `@c : Int` to assign, its `initialize` generated (`super`). -/
+immutable `@c : Int` to assign, its `initialize` generated (`super`).
+Generic: Box[T] with an immutable `@v : T` and a `var @w : T?`;
+IntBox < Box[Int]; Pair[S, T] with `@a : S` and `@b : T`. -/
 def classes : ClassTable :=
-  [⟨"Object", none, []⟩,
-   ⟨"A", some 0, [⟨"a", [.int, .nil], false, none⟩, ⟨"v", [.str], true, none⟩]⟩,
-   ⟨"B", some 1, []⟩,
-   ⟨"E", some 0, []⟩,
-   ⟨"D", some 1, [⟨"c", [.int], false, none⟩]⟩]
+  [⟨"Object", none, [], [], []⟩,
+   ⟨"A", some 0, [⟨"a", [.int, .nil], false, none⟩, ⟨"v", [.str], true, none⟩], [], []⟩,
+   ⟨"B", some 1, [], [], []⟩,
+   ⟨"E", some 0, [], [], []⟩,
+   ⟨"D", some 1, [⟨"c", [.int], false, none⟩], [], []⟩,
+   ⟨"Box", some 0, [⟨"v", [.param 0], false, none⟩, ⟨"w", [.param 0, .nil], true, none⟩], [.inv], []⟩,
+   ⟨"IntBox", some 5, [], [], [[.int]]⟩,
+   ⟨"Pair", some 0, [⟨"a", [.param 0], false, none⟩, ⟨"b", [.param 1], false, none⟩], [.inv, .inv], []⟩]
 
-def atoms : List Atom := [.nil, .bool, .int, .str, .float, .cls 0, .cls 1, .cls 2, .cls 3, .cls 4]
+/-- The atoms of random types and `is_a?` tests (`Box` without its
+argument is ill formed: the checker rejects a test of it). -/
+def atoms : List Atom :=
+  [.nil, .bool, .int, .str, .float, .cls 0 [], .cls 1 [], .cls 2 [], .cls 3 [], .cls 4 [],
+   .cls 5 [[.int]], .cls 5 [[.str]], .cls 5 [], .cls 6 [], .cls 7 [[.int], [.str]]]
 
 def methods : List Method :=
   [ -- A#get -> Int?: reads and narrows its field.
@@ -31,23 +40,40 @@ def methods : List Method :=
     -- B#get: an override.
     ⟨2, "get", [], [.int], none, [], .int 7⟩,
     -- A#each(n: Int) { |Int| }: yields twice.
-    ⟨1, "each", [("n", [.int])], [.nil], some ⟨[[.int]], [.int, .nil, .bool, .str, .cls 0]⟩,
+    ⟨1, "each", [("n", [.int])], [.nil], some ⟨[[.int]], [.int, .nil, .bool, .str, .cls 0 []]⟩,
       [("n", [.int])], .seq (.yield [.var "n" [.int]]) (.seq (.yield [.int 2]) .nil)⟩,
     -- A#set(s: Str): assigns the var field.
     ⟨1, "set", [("s", [.str])], [.str], none, [("s", [.str])], .setField "v" (.var "s" [.str])⟩,
-    ⟨3, "==", [("o", [.nil, .bool, .cls 0])], [.bool], none, [("o", [.nil, .bool, .cls 0])], .tru⟩,
+    ⟨3, "==", [("o", [.nil, .bool, .cls 0 []])], [.bool], none, [("o", [.nil, .bool, .cls 0 []])], .tru⟩,
     -- A#initialize(a: Int?, v: Str): sets both (B inherits it), then
     -- calls `get`, which D overrides to read the field it sets before
     -- `super`.
     ⟨1, "initialize", [("a", [.int, .nil]), ("v", [.str])], [.nil], none,
       [("a", [.int, .nil]), ("v", [.str])],
       .seq (.setField "a" (.var "a" [.int, .nil]))
-        (.seq (.setField "v" (.var "v" [.str])) (.call .self "get" []))⟩ ]
+        (.seq (.setField "v" (.var "v" [.str])) (.call .self "get" []))⟩,
+    -- Box#get -> T; Box#put(x: T) -> T?: assigns the var field;
+    -- Box#initialize(v: T).
+    ⟨5, "get", [], [.param 0], none, [], .field "v" [.param 0]⟩,
+    ⟨5, "put", [("x", [.param 0])], [.param 0, .nil], none, [("x", [.param 0])],
+      .seq (.setField "w" (.var "x" [.param 0])) (.field "w" [.param 0, .nil])⟩,
+    ⟨5, "initialize", [("v", [.param 0])], [.nil], none, [("v", [.param 0])],
+      .setField "v" (.var "v" [.param 0])⟩,
+    -- IntBox#get -> Int: an override reading the inherited field at `Int`.
+    ⟨6, "get", [], [.int], none, [], .field "v" [.int]⟩,
+    -- Pair#swap -> Pair[T, S], naming the class's parameters in `new`.
+    ⟨7, "swap", [], [.cls 7 [[.param 1], [.param 0]]], none, [],
+      .new 7 [[.param 1], [.param 0]] [.field "b" [.param 1], .field "a" [.param 0]]⟩,
+    ⟨7, "initialize", [("a", [.param 0]), ("b", [.param 1])], [.nil], none,
+      [("a", [.param 0]), ("b", [.param 1])],
+      .seq (.setField "a" (.var "a" [.param 0])) (.setField "b" (.var "b" [.param 1]))⟩ ]
 
 /-- The top level's locals. -/
 def locals : List (String × Ty) :=
-  [("x", [.int, .nil]), ("y", [.cls 1, .nil]), ("z", [.bool, .nil, .int]), ("e", [.cls 3, .nil]),
-   ("k", [.int]), ("o", [.cls 0]), ("f", [.float, .nil])]
+  [("x", [.int, .nil]), ("y", [.cls 1 [], .nil]), ("z", [.bool, .nil, .int]), ("e", [.cls 3 [], .nil]),
+   ("k", [.int]), ("o", [.cls 0 []]), ("f", [.float, .nil]),
+   ("bi", [.cls 5 [[.int]], .nil]), ("bs", [.cls 5 [[.str]]]), ("ib", [.cls 6 [], .nil]),
+   ("p", [.cls 7 [[.int], [.str]], .nil])]
 
 def genTy : Gen Ty := do
   let n ← Gen.choose Nat 0 3 (by omega)
@@ -71,15 +97,20 @@ partial def genExpr : Nat → Gen Expr
     let t := (locals.find? (·.1 == x)).map (·.2) |>.getD []
     Gen.oneOfWithDefault (pure .nil)
       [pure .nil, pure .tru, pure (.int 1), pure (.str "s"), pure (.flt "0.5"), pure (.var x t),
-       do return .var x (← genTy), pure (.new 1 [.int 1, .str "v"]), pure (.new 2 [.nil, .str "w"]),
-       pure (.new 3 []), pure (.new 4 [.int 4])]
+       do return .var x (← genTy), pure (.new 1 [] [.int 1, .str "v"]), pure (.new 2 [] [.nil, .str "w"]),
+       pure (.new 3 [] []), pure (.new 4 [] [.int 4]),
+       pure (.new 5 [[.int]] [.int 1]), pure (.new 5 [[.str]] [.str "s"]), pure (.new 6 [] [.int 2]),
+       pure (.new 7 [[.int], [.str]] [.int 1, .str "a"]),
+       -- Ill typed, the wrong number of type arguments: rejected.
+       pure (.new 5 [[.int]] [.str "x"]), pure (.new 5 [] [.int 1])]
   | d + 1 => do
     let sub := genExpr d
     let x ← genVar
     let t := (locals.find? (·.1 == x)).map (·.2) |>.getD []
     -- A read narrowed as a test would narrow it: the tests' types.
     let narrowed ← Gen.elements [t, Ty.remove t .nil, Ty.keep t [.nil], Ty.keep t [.nil, .bool],
-      t.filter (·.le classes (.cls 1)), [.int], [.cls 1]] (by simp)
+      t.filter (·.le classes (.cls 1 [])), [.int], [.cls 1 []],
+      t.filter (·.le classes (.cls 5 [[.int]])), [.cls 6 []]] (by simp)
     Gen.frequency (pure .nil)
       [(3, genExpr 0),
        (2, return .var x narrowed),
@@ -89,11 +120,19 @@ partial def genExpr : Nat → Gen Expr
        (1, do return .while (← genTest d) (← sub)),
        (2, do return .call (← sub) "get" []),
        (1, do return .call (← sub) "set" [.str "t"]),
+       (1, do return .call (← sub) "put" [.int 1]),
+       (1, do return .call (← sub) "put" [.str "q"]),
+       (1, do return .call (← sub) "swap" []),
+       -- Flows between the boxes: a `Box[Str]` into the `Box[Int]?` local,
+       -- what a box gives into the `Int` local (the arguments' soundness).
+       (2, do return .assign "bi" (← sub)),
+       (2, do return .assign "ib" (← sub)),
+       (2, do return .assign "k" (.call (← sub) "get" [])),
        (2, do return .callBlk (← sub) "each" [.int 3] ["k"] (← sub)),
        (1, pure .raise),
        (2, do return .prim "f" [] [] (← genTy)),
-       (1, return .assign "o" (.prim "h" [] [] [.cls 0])),
-       (1, do return .prim "g" [← sub] [[.nil, .bool, .int, .str, .cls 0]] [.int, .nil]),
+       (1, return .assign "o" (.prim "h" [] [] [.cls 0 []])),
+       (1, do return .prim "g" [← sub] [[.nil, .bool, .int, .str, .cls 0 []]] [.int, .nil]),
        (2, do return .and (← sub) (← sub)),
        (2, do return .or (← sub) (← sub)),
        (1, do return .not (← sub))]
@@ -126,6 +165,37 @@ partial def genInit : Nat → Gen Expr
        (1, pure .raise),
        (1, do return .ret (← sub))]
 
+/-- Uses of the boxes: boxes made and assigned to the box locals (of the
+right argument or not), what they give assigned to the `Int` local, the
+locals read, tests of them; most orders the checker rejects, and the
+rest must not get stuck: a `Box[Str]` read as a `Box[Int]` would. -/
+partial def genBox : Nat → Gen Expr
+  | 0 => Gen.frequency (pure .nil)
+      [(3, pure (.assign "bi" (.new 5 [[.int]] [.int 1]))), (3, pure (.assign "bi" (.new 5 [[.str]] [.str "s"]))),
+       (1, pure (.assign "bs" (.new 5 [[.str]] [.str "s"]))), (1, pure (.assign "bi" (.var "bs" [.cls 5 [[.str]]]))),
+       (2, pure (.assign "ib" (.new 6 [] [.int 2]))), (2, pure (.assign "bi" (.var "ib" [.cls 6 []]))),
+       (3, pure (.assign "x" (.call (.var "bi" [.cls 5 [[.int]]]) "get" []))),
+       (1, pure (.assign "x" (.call (.var "ib" [.cls 6 []]) "get" []))),
+       (1, pure (.assign "x" (.call (.var "bi" [.cls 5 [[.int]]]) "put" [.int 3]))),
+       (1, pure (.call (.var "bs" [.cls 5 [[.str]]]) "put" [.str "q"])),
+       (1, pure (.call (.var "bs" [.cls 5 [[.str]]]) "put" [.int 1])),
+       (1, pure (.var "x" [.int, .nil])), (1, pure (.var "bi" [.cls 5 [[.int]], .nil])),
+       (1, pure (.assign "p" (.new 7 [[.int], [.str]] [.int 1, .str "a"]))),
+       (1, pure (.assign "p" (.call (.call (.var "p" [.cls 7 [[.int], [.str]]]) "swap" []) "swap" []))),
+       (1, pure (.assign "p" (.call (.var "p" [.cls 7 [[.int], [.str]]]) "swap" []))),
+       (1, pure (.ite (.isA (.var "bi" [.cls 5 [[.int]], .nil]) (.cls 6 []))
+         (.assign "x" (.call (.var "bi" [.cls 6 []]) "get" [])) .nil)),
+       (1, pure (.ite (.isNil (.var "bi" [.cls 5 [[.int]], .nil])) .nil
+         (.assign "x" (.call (.var "bi" [.cls 5 [[.int]]]) "get" []))))]
+  | d + 1 => do
+    let sub := genBox d
+    Gen.frequency (pure .nil)
+      [(3, genBox 0),
+       (6, do return .seq (← sub) (← sub)),
+       (2, do return .ite (.prim "b" [] [] [.bool]) (← sub) (← sub)),
+       (1, do return .while (.prim "b" [] [] [.bool]) (← sub)),
+       (1, do return .ite (← genTest 1) (← sub) (← sub))]
+
 end
 
 /-- Built-in methods answering at random (seeded by the fuel left): a
@@ -139,21 +209,23 @@ def oracle : Oracle := fun n s t =>
   | some .str => some (.str "o")
   | some .float => some (.flt "1.5")
   -- `Object` holds every value.
-  | some (.cls 0) => some (match n % 6 with
+  | some (.cls 0 []) => some (match n % 6 with
     | 0 => .nil
     | 1 => .bool false
     | 2 => .int 3
     | 3 => .str "p"
     | 4 => .flt "2.5"
     | _ => .obj 0)
-  | some (.cls k) =>
-    (s.objs.zipIdx.find? fun (o, _) => classes.subclass o.cls k).map fun (_, l) => .obj l
+  | some (.cls k as) =>
+    (s.objs.zipIdx.find? fun (_, l) => s.hasType classes (.obj l) [.cls k as]).map fun (_, l) => .obj l
+  -- A type parameter: no value here.
+  | some (.param _) => none
   | none => none
 
 def program (body : Expr) (init : Expr := .seq (.setField "c" (.var "c" [.int])) (.superInit 1 [.nil, .str "d"])) :
     Program :=
   ⟨classes, methods ++ [⟨4, "initialize", [("c", [.int])], [.nil], none, [("c", [.int]), ("k", [.int])], init⟩,
     ⟨4, "get", [], [.int], none, [], .field "c" [.int]⟩],
-    ⟨0, "<main>", [], [.nil, .bool, .int, .str, .cls 0], none, locals, body⟩, []⟩
+    ⟨0, "<main>", [], [.nil, .bool, .int, .str, .cls 0 []], none, locals, body⟩, []⟩
 
 end QuarzCore.Fuzz

@@ -22,11 +22,11 @@ def AllTy (s : Store) : List Value → List Ty → Prop
 def ArgsPost (c : Ctx) (ao : ArgsOut) (fr : Frame) (ws : List (Ctx × Env × Out)) (Λ : List Ty)
     (s : Store) (W : Nat → Prop) : ArgsResult → Prop
   | .ok vs s' => ∃ tys Δ, ao = .live tys Δ ∧ ∃ Λ', WfStore P Λ' s' ∧ Ext P W (initW c fr) Λ Λ' s s' ∧
-      FrameOK P c Λ' fr s' ws ∧ Sat P c Δ fr s' ∧ AllTy P s' vs tys
+      FrameOK P c Λ' fr s' ws ∧ Sat P c Δ fr s' ∧ AllTy P s' vs (tys.map (Ty.subst fr.selfArgs))
   | .other .stuck => False
   | .other (.ok _ _) => False
   | .other (.returned v s') => ∃ Λ', WfStore P Λ' s' ∧ Ext P W (initW c fr) Λ Λ' s s' ∧
-      FrameOK P c Λ' fr s' ws ∧ s'.hasTy P v c.meth.ret ∧ c.inBlock = false ∧
+      FrameOK P c Λ' fr s' ws ∧ s'.hasTy P v (c.meth.ret.subst fr.selfArgs) ∧ c.inBlock = false ∧
       (c.inInit = true → (s'.typeOf fr.self).isSome)
   | .other _ => True
 
@@ -61,11 +61,15 @@ def SendPost (ret : Ty) (sig : Option BlockSig) (blk : Option Closure) (w : List
   | .stuck | .returned _ _ => False
   | _ => True
 
+/-- A call on a receiver seen as `k[as]` (a class above its own, given
+the arguments the chain gives it), of the method that view finds
+(`lookupAt`: its signature with `k`'s parameters substituted): the
+arguments of its parameters' types, a value of its result type. -/
 def SendGood (n : Nat) : Prop :=
-  ∀ (s : Store) (Λ : List Ty) (recv : Value) (k : Nat) (m : String) (mt : Method)
+  ∀ (s : Store) (Λ : List Ty) (recv : Value) (k : Nat) (as : List Ty) (m : String) (mt : Method)
     (vs : List Value) (blk : Option Closure) (w : List (Ctx × Env × Out)),
     WfStore P Λ s → (∃ l o, recv = .obj l ∧ s.objs[l]? = some o ∧ k ∈ P.classes.ancestors o.cls) →
-    s.hasTy P recv [.cls k] → m ≠ "initialize" → P.lookup k m = some mt →
+    s.hasTy P recv [.cls k as] → m ≠ "initialize" → P.lookupAt k as m = some mt →
     AllTy P s vs (mt.params.map (·.2)) →
     BlkGiven P Λ s w mt.block blk →
     SendPost P mt.ret mt.block blk w Λ s (send P orc n s recv m vs blk)
@@ -86,18 +90,23 @@ def EqualGood (n : Nat) : Prop :=
 
 /-- What `C.new(args)` gives: never stuck; an instance of `C`, no
 location written, no object there before changed but as `Ext` allows. -/
-def ConstructPost (k : Nat) (Λ : List Ty) (s : Store) : Result → Prop
+def ConstructPost (k : Nat) (targs : List Ty) (Λ : List Ty) (s : Store) : Result → Prop
   | .ok v s' => ∃ Λ', WfStore P Λ' s' ∧ Ext P (fun _ => False) (fun _ => False) Λ Λ' s s' ∧
-      s'.hasTy P v [.cls k]
+      s'.hasTy P v [.cls k targs]
   | .stuck | .returned _ _ => False
   | _ => True
 
+/-- `C[targs].new(args)`, the arguments closed and as many as `C`'s
+parameters, the call's arguments of its `initialize`'s types as `C`
+given `targs` sees them. -/
 def ConstructGood (n : Nat) : Prop :=
-  ∀ (s : Store) (Λ : List Ty) (k : Nat) (vs : List Value),
+  ∀ (s : Store) (Λ : List Ty) (k : Nat) (targs : List Ty) (vs : List Value),
     WfStore P Λ s → k < P.classes.length →
-    (∀ mi, P.lookup k "initialize" = some mi → mi.block = none ∧ AllTy P s vs (mi.params.map (·.2))) →
-    (P.lookup k "initialize" = none → vs = []) →
-    ConstructPost P k Λ s (construct P orc n s k vs)
+    Ty.closedArgs targs = true → targs.length = (((P.classes[k]?).map (·.params)).getD []).length →
+    (∀ mi, P.lookupAt k targs "initialize" = some mi →
+      mi.block = none ∧ AllTy P s vs (mi.params.map (·.2))) →
+    (P.lookupAt k targs "initialize" = none → vs = []) →
+    ConstructPost P k targs Λ s (construct P orc n s k targs vs)
 
 structure Good (n : Nat) : Prop where
   eval : EvalGood P orc n
@@ -133,7 +142,7 @@ theorem Post.bind {c : Ctx} {o o' : Out} {fr : Frame} {ws : List (Ctx × Env × 
     {W W' : Nat → Prop} {r : Result} {k : Value → Store → Result}
     (h : Post P c o fr ws Λ s W r) (hW : ∀ l, W l → W' l)
     (hk : ∀ v s1 Λ1, WfStore P Λ1 s1 → Ext P W (initW c fr) Λ Λ1 s s1 → FrameOK P c Λ1 fr s1 ws →
-      s1.hasTy P v o.ty → OutOK P c o.out fr s1 →
+      s1.hasTy P v (o.ty.subst fr.selfArgs) → OutOK P c o.out fr s1 →
       (v.truthy = true → OutOK P c o.tt fr s1) → (v.truthy = false → OutOK P c o.ff fr s1) →
       Post P c o' fr ws Λ s W' (k v s1)) :
     Post P c o' fr ws Λ s W' (r.bind k) := by
@@ -155,7 +164,7 @@ theorem Post.bindEq {c : Ctx} {o o' : Out} {fr : Frame} {ws : List (Ctx × Env �
     (h : Post P c o fr ws Λ s W r) (hW : ∀ l, W l → W' l)
     (hk : ∀ v s1 Λ1, r = .ok v s1 → WfStore P Λ1 s1 → Ext P W (initW c fr) Λ Λ1 s s1 →
       FrameOK P c Λ1 fr s1 ws →
-      s1.hasTy P v o.ty → OutOK P c o.out fr s1 →
+      s1.hasTy P v (o.ty.subst fr.selfArgs) → OutOK P c o.out fr s1 →
       (v.truthy = true → OutOK P c o.tt fr s1) → (v.truthy = false → OutOK P c o.ff fr s1) →
       Post P c o' fr ws Λ s W' (k v s1)) :
     Post P c o' fr ws Λ s W' (r.bind k) := by

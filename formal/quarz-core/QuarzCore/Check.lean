@@ -63,7 +63,7 @@ theorem check_typed : ∀ {c : Ctx} {Γ : Env} {e : Expr} {o : Out}, check c Γ 
     split at h
     · simp at h; subst h; exact .setFieldDead hfd hv (check_typed he) hle (by assumption)
     · simp at h; subst h; exact .setField hfd hv (check_typed he) hle (by assumption)
-  | c, Γ, .new k args, o, h => by
+  | c, Γ, .new k targs args, o, h => by
     simp [check] at h
     obtain ⟨hk, h⟩ := h
     split at h
@@ -163,7 +163,8 @@ theorem check_typed : ∀ {c : Ctx} {Γ : Env} {e : Expr} {o : Out}, check c Γ 
     obtain ⟨oe, he, h⟩ := h
     split at h
     · simp at h; subst h; exact .testDead (check_typed he) (by assumption) (by simp)
-    · simp at h; subst h; exact .isA (check_typed he) (by assumption)
+    · simp at h; obtain ⟨hv, rfl⟩ := h
+      exact .isA (check_typed he) (by assumption) (by simp only [Bool.and_eq_true]; exact ⟨⟨hv.1, hv.2.1⟩, hv.2.2⟩)
   | c, Γ, .eqNil e, o, h => by
     simp [check] at h
     obtain ⟨oe, he, h⟩ := h

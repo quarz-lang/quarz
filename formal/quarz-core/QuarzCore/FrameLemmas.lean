@@ -6,6 +6,7 @@ hold a value before `initialize` (or `super`) runs: shared by `new`,
 -/
 
 import QuarzCore.SoundDefs
+import QuarzCore.InheritLemmas
 
 set_option linter.deprecated false
 
@@ -197,6 +198,20 @@ theorem fieldIndex_at (hwf : WfClasses P.classes) {k : Nat} (hk : k < P.classes.
 section
 variable {ct : ClassTable}
 
+/-- The fields with their declaring classes, without the classes. -/
+theorem snd_decl (ct : ClassTable) : ∀ ds : List Nat,
+    (((ds.filterMap fun d => (ct[d]?).map (d, ·)).flatMap fun (d, k) => k.fields.map (d, ·)).map (·.2))
+      = (ds.filterMap (ct[·]?)).flatMap (·.fields)
+  | [] => rfl
+  | d :: ds => by
+    cases hk : ct[d]? with
+    | none => simp [List.filterMap_cons, hk, snd_decl ct ds]
+    | some k => simp [List.filterMap_cons, hk, snd_decl ct ds, Function.comp_def]
+
+theorem allFields_eq (ct : ClassTable) (k : Nat) :
+    ct.allFields k = ((ct.ancestors k).reverse.filterMap (ct[·]?)).flatMap (·.fields) := by
+  rw [ClassTable.allFields, ClassTable.allFieldsDecl, snd_decl]
+
 /-- A class's fields: those of a class above it, then those of the
 classes between. -/
 theorem allFields_split (hwf : WfClasses ct) {e k : Nat} (h : e ∈ ct.ancestors k) :
@@ -204,7 +219,7 @@ theorem allFields_split (hwf : WfClasses ct) {e k : Nat} (h : e ∈ ct.ancestors
       ct.allFields k = ct.allFields e ++ (pre.reverse.filterMap (ct[·]?)).flatMap (·.fields) := by
   obtain ⟨pre, hpre, hn⟩ := ClassTable.ancestors_suffix hwf k e h
   refine ⟨pre, hpre, hn, ?_⟩
-  simp [ClassTable.allFields, hpre, List.reverse_append, List.filterMap_append, List.flatMap_append]
+  simp [allFields_eq, hpre, List.reverse_append, List.filterMap_append, List.flatMap_append]
 
 theorem mem_classes_fields {pre : List Nat} {f : Field}
     (h : f ∈ (pre.reverse.filterMap (ct[·]?)).flatMap (·.fields)) :
@@ -273,7 +288,7 @@ theorem init_beyond (hwf : WfClasses P.classes) (hi : ∀ d, d < P.classes.lengt
 theorem no_init_fields (hi : ∀ d, d < P.classes.length → P.wfInit d = true) {k : Nat}
     (h : P.lookup k "initialize" = none) : ∀ f ∈ P.classes.allFields k, f.required P.classes = false := by
   intro f hf
-  unfold ClassTable.allFields at hf
+  rw [allFields_eq] at hf
   obtain ⟨d, hd, cl, hcl, hfc⟩ := mem_classes_fields (pre := (P.classes.ancestors k).reverse)
     (by simpa using hf)
   have hnone : P.methods.find? (fun mt => mt.owner == d && mt.name == "initialize") = none := by
@@ -308,32 +323,147 @@ theorem field?_at (hwf : WfClasses P.classes) {k : Nat} (hk : k < P.classes.leng
   obtain ⟨_, _, hmin⟩ := List.findIdx?_eq_some_iff_getElem.mp hidx
   simpa using hmin j hj
 
+/-- With distinct names, a field seen from the class is found by its name. -/
+theorem fieldAt?_at (hwf : WfClasses P.classes) {k : Nat} (hk : k < P.classes.length) (as : List Ty)
+    {i : Nat} {f : Field} (hi : (P.classes.allFieldsAt k as)[i]? = some f) :
+    P.classes.fieldAt? k as f.name = some f := by
+  have hn : ((P.classes.allFieldsAt k as).map (·.name)).Nodup := by
+    rw [allFieldsAt_names]; exact hwf.names k hk
+  have hidx := findIdx?_name hn hi
+  unfold ClassTable.fieldAt?
+  obtain ⟨hil, rfl⟩ := List.getElem?_eq_some_iff.mp hi
+  rw [List.find?_eq_some_iff_getElem]
+  refine ⟨by simp, i, hil, rfl, fun j hj => ?_⟩
+  obtain ⟨_, _, hmin⟩ := List.findIdx?_eq_some_iff_getElem.mp hidx
+  simpa using hmin j hj
+
+/-- A class's own parameters, given arguments, are those arguments. -/
+theorem substArgs_selfArgs (ct : ClassTable) {k : Nat} {σ : List Ty}
+    (hl : σ.length = (((ct[k]?).map (·.params)).getD []).length) :
+    Ty.substArgs σ (ct.selfArgs k) = σ := by
+  apply List.ext_getElem?
+  intro i
+  rw [Ty.substArgs_getElem?]
+  simp only [ClassTable.selfArgs, List.getElem?_map, List.getElem?_range']
+  by_cases hi : i < σ.length
+  · have : i < (((ct[k]?).map (·.params)).getD []).length := hl ▸ hi
+    simp [this, Ty.subst, Atom.subst, List.getElem?_eq_getElem hi]
+  · have : ¬ i < (((ct[k]?).map (·.params)).getD []).length := hl ▸ hi
+    simp [this, List.getElem?_eq_none_iff.mpr (by omega : σ.length ≤ i)]
+
+/-- A field as the class `k` (an ancestor, given the arguments the object's
+class gives it) sees it, then with those arguments substituted, is the
+field as the object's class sees it. -/
+theorem fieldAt_coherent (hwf : WfClasses P.classes) {rc : Nat} {as : List Ty}
+    (hlen : as.length = (((P.classes[rc]?).map (·.params)).getD []).length)
+    {k : Nat} {σ : List Ty} (hσ : P.classes.ancestorArgs rc as k = some σ) {i : Nat} {f : Field}
+    (hf : (P.classes.allFieldsAt k (P.classes.selfArgs k))[i]? = some f) :
+    (P.classes.allFieldsAt rc as)[i]? = some { f with ty := f.ty.subst σ } := by
+  obtain ⟨d, f0, hd, _, rfl⟩ := ClassTable.allFieldsAt_some P.classes hf
+  have hk : k ∈ P.classes.ancestors rc := ClassTable.ancestorArgs_mem hwf rc as k σ hσ
+  obtain ⟨rest, hr⟩ := allFieldsDecl_prefix hwf hk
+  have hd' : (P.classes.allFieldsDecl rc)[i]? = some (d, f0) := by
+    rw [hr, List.getElem?_append_left (List.getElem?_eq_some_iff.mp hd).1]; exact hd
+  rw [ClassTable.allFieldsAt_getElem?, hd']
+  simp only [Option.map_some, Option.some.injEq]
+  -- The declaring class `d` is above `k`: its arguments through `k`.
+  have hdk : d ∈ P.classes.ancestors k := by
+    have := List.mem_of_getElem? hd
+    unfold ClassTable.allFieldsDecl at this
+    obtain ⟨⟨d', cl⟩, hmem, hf'⟩ := List.mem_flatMap.mp this
+    obtain ⟨e, he, hcd⟩ := List.mem_filterMap.mp hmem
+    have := List.mem_map.mp hf'
+    obtain ⟨_, _, heq⟩ := this
+    cases hcd' : P.classes[e]? with
+    | none => simp [hcd'] at hcd
+    | some cl' =>
+      simp [hcd'] at hcd
+      obtain ⟨rfl, rfl⟩ := hcd
+      cases heq; exact List.mem_reverse.mp he
+  obtain ⟨τ, hτ⟩ := ClassTable.ancestorArgs_of_mem hwf k (P.classes.selfArgs k) d hdk
+  have hσlen : σ.length = (((P.classes[k]?).map (·.params)).getD []).length :=
+    ClassTable.ancestorArgs_length hwf rc as k σ hσ hlen
+  have hτ' : P.classes.ancestorArgs k σ d = some (Ty.substArgs σ τ) := by
+    have := ClassTable.ancestorArgs_subst P.classes σ hτ
+    rwa [substArgs_selfArgs P.classes hσlen] at this
+  have hcomp := ClassTable.ancestorArgs_trans hwf hσ hτ'
+  simp only [hτ, hcomp, Option.getD_some]
+  congr 1
+  exact (Ty.subst_comp σ τ f0.ty).symm
+
+/-- A field of a view with the view's own parameters, as an instance given
+`targs` has it. -/
+theorem fieldAt_of_static (hwf : WfClasses P.classes) {k : Nat} {targs : List Ty}
+    (hlen : targs.length = (((P.classes[k]?).map (·.params)).getD []).length) {i : Nat} {f : Field}
+    (hf : (P.classes.allFieldsAt k targs)[i]? = some f) :
+    ∃ f', (P.classes.allFieldsAt k (P.classes.selfArgs k))[i]? = some f' ∧
+      f = { f' with ty := f'.ty.subst targs } := by
+  have hi := (List.getElem?_eq_some_iff.mp hf).1
+  rw [ClassTable.allFieldsAt_length] at hi
+  obtain ⟨f', hf'⟩ : ∃ f', (P.classes.allFieldsAt k (P.classes.selfArgs k))[i]? = some f' :=
+    ⟨_, List.getElem?_eq_getElem (by rw [ClassTable.allFieldsAt_length]; exact hi)⟩
+  have := fieldAt_coherent hwf hlen (ClassTable.ancestorArgs_self hwf k targs) hf'
+  rw [hf] at this; cases this
+  exact ⟨f', hf', rfl⟩
+
+/-- A field as an instance has it and as a class above sees it: the same
+but for the type. -/
+theorem fieldAt_default (hwf : WfClasses P.classes) {rc : Nat} {as : List Ty}
+    (hlen : as.length = (((P.classes[rc]?).map (·.params)).getD []).length)
+    {k : Nat} (hk : k ∈ P.classes.ancestors rc) {i : Nat} {f fs : Field}
+    (hf : (P.classes.allFieldsAt rc as)[i]? = some f)
+    (hfs : (P.classes.allFieldsAt k (P.classes.selfArgs k))[i]? = some fs) :
+    f.default = fs.default ∧ f.name = fs.name ∧ f.var = fs.var := by
+  obtain ⟨σ, hσ⟩ := ClassTable.ancestorArgs_of_mem hwf rc as k hk
+  have := fieldAt_coherent hwf hlen hσ hfs
+  rw [hf] at this; cases this; exact ⟨rfl, rfl, rfl⟩
+
+/-- A field not to assign stays so with its type's parameters substituted
+(`nil` stays below it). -/
+theorem required_subst {ct : ClassTable} (hwf : WfClasses ct) {f : Field} (σ : List Ty)
+    (h : f.required ct = false) : ({ f with ty := f.ty.subst σ } : Field).required ct = false := by
+  simp only [Field.required, Bool.and_eq_false_iff, Bool.not_eq_false'] at h ⊢
+  rcases h with h | h
+  · exact Or.inl h
+  · right
+    have := Ty.subst_le hwf σ h
+    simpa using this
+
 /-- The fields of `k` before `j` that hold a value, as an environment:
 they hold it in the frame of `self`, an object of `k` or a subclass. -/
 theorem sat_held (hwf : WfClasses P.classes) {c : Ctx} (hc : c.prog = P) {fr : Frame} {Λ : List Ty}
     {s : Store} (hw : WfStore P Λ s) {l : Nat} {o : Obj} (hl : fr.self = .obj l)
-    (ho : s.objs[l]? = some o) (hsub : c.meth.owner ∈ P.classes.ancestors o.cls) {j : Nat}
-    (hset : ∀ i, i < j → ∀ f, (P.classes.allFields c.meth.owner)[i]? = some f →
+    (ho : s.objs[l]? = some o) (hsub : c.meth.owner ∈ P.classes.ancestors o.cls)
+    (hsa : fr.selfArgs = s.argsFor P.classes l c.meth.owner) {j : Nat}
+    (hset : ∀ i, i < j → ∀ f, c.fields[i]? = some f →
       f.required P.classes = false → o.set[i]? = some true) :
-    Sat P c (Program.heldEnv P.classes ((P.classes.allFields c.meth.owner).take j)) fr s := by
+    Sat P c (Program.heldEnv P.classes (c.fields.take j)) fr s := by
   subst hc
   intro p t hp
   obtain ⟨f, hf, hr, rfl, rfl⟩ := mem_heldEnv (Env.get_mem hp)
   obtain ⟨i, hij, hfi⟩ := List.mem_take_iff_getElem.mp hf
   have hij' : i < j := by have := Nat.lt_min.mp hij; omega
-  have hil : i < (c.prog.classes.allFields c.meth.owner).length := by
+  have hil : i < c.fields.length := by
     have := Nat.lt_min.mp hij; omega
-  have hfi' : (c.prog.classes.allFields c.meth.owner)[i]? = some f := by rw [← hfi]; simp [hil]
-  obtain ⟨hcls, hflen, hslen, hty⟩ := hw.objs l o ho
+  have hfi' : c.fields[i]? = some f := by rw [← hfi]; simp [hil]
+  obtain ⟨hcls, hclosed, hlen, hflen, hslen, hty⟩ := hw.objs l o ho
   have hown : c.meth.owner < c.prog.classes.length :=
     Nat.lt_of_le_of_lt (ClassTable.ancestors_le hwf _ _ hsub) hcls
+  obtain ⟨σ, hσ⟩ := ClassTable.ancestorArgs_of_mem hwf o.cls o.args c.meth.owner hsub
+  have hsa' : fr.selfArgs = σ := by rw [hsa]; simp [Store.argsFor, ho, hσ]
+  have hfo := fieldAt_coherent hwf hlen hσ hfi'
+  obtain ⟨d, f0, _, hf0, hff⟩ := ClassTable.allFieldsAt_some c.prog.classes hfi'
   obtain ⟨rest, hr'⟩ := allFields_prefix hwf hsub
-  have hfo : (c.prog.classes.allFields o.cls)[i]? = some f := by
-    rw [hr', List.getElem?_append_left hil]; exact hfi'
+  have hfo0 : (c.prog.classes.allFields o.cls)[i]? = some f0 := by
+    rw [hr', List.getElem?_append_left (List.getElem?_eq_some_iff.mp hf0).1]; exact hf0
+  have hname : f.name = f0.name := by rw [hff]
   have hs := hset i hij' f hfi' hr
-  have hfl : i < o.fields.length := by rw [hflen]; exact (List.getElem?_eq_some_iff.mp hfo).1
-  exact ⟨l, o, f, i, hl, ho, field?_at hwf hown hfi', fieldIndex_at hwf hcls hfo, hfo, hs,
-    fun _ => ⟨o.fields[i], by simp [hfl], hty i _ f hs (by simp [hfl]) hfo⟩⟩
+  have hfl : i < o.fields.length := by
+    rw [hflen]; exact (List.getElem?_eq_some_iff.mp hfo0).1
+  refine ⟨l, o, f, i, hl, ho, fieldAt?_at hwf hown _ hfi', by rw [hname]; exact fieldIndex_at hwf hcls hfo0,
+    by rw [hsa']; exact hfo, hs, fun _ => ⟨o.fields[i], by simp [hfl], ?_⟩⟩
+  rw [hsa']
+  exact hty i _ _ hs (by simp [hfl]) hfo
 
 theorem Env.get_append : ∀ (Γ Δ : Env) (p : Path),
     (Γ ++ Δ).get p = match Γ.get p with
@@ -350,11 +480,11 @@ theorem Env.get_append : ∀ (Γ Δ : Env) (p : Path),
 theorem made_of {s : Store} {l : Nat} {o : Obj} {Λ : List Ty} (hwf : WfClasses P.classes)
     (hw : WfStore P Λ s) (ho : s.objs[l]? = some o)
     (hall : ∀ (i : Nat) (f : Field), (P.classes.allFields o.cls)[i]? = some f → o.set[i]? = some true) :
-    s.hasTy P (.obj l) [.cls o.cls] := by
-  obtain ⟨_, hflen, hslen, _⟩ := hw.objs l o ho
+    s.hasTy P (.obj l) [.cls o.cls o.args] := by
+  obtain ⟨_, _, _, hflen, hslen, _⟩ := hw.objs l o ho
   have : o.set.all id = true := all_id_iff.mpr fun i hi =>
     hall i _ (by rw [List.getElem?_eq_getElem (by omega)])
-  exact hasTy_iff.mpr ⟨_, typeOf_obj_of ho this, .cls o.cls, List.mem_singleton.mpr rfl,
+  exact hasTy_iff.mpr ⟨_, typeOf_obj_of ho this, .cls o.cls o.args, List.mem_singleton.mpr rfl,
     Atom.le_refl hwf _⟩
 
 end QuarzCore

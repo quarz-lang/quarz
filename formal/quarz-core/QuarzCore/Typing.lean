@@ -89,7 +89,16 @@ def ct (c : Ctx) : ClassTable := c.prog.classes
 /-- `Σ(x)`: a local's declared type. -/
 def decl (c : Ctx) (x : String) : Option Ty := (c.meth.locals.find? (·.1 == x)).map (·.2)
 
-def field? (c : Ctx) (f : String) : Option Field := c.ct.field? c.meth.owner f
+/-- The class's own parameters, as its body sees `self`'s arguments. -/
+def selfArgs (c : Ctx) : List Ty := c.ct.selfArgs c.meth.owner
+
+/-- The type of `self`. -/
+def selfTy (c : Ctx) : Ty := [.cls c.meth.owner c.selfArgs]
+
+/-- The fields of `self`, their types as the class's body sees them. -/
+def fields (c : Ctx) : List Field := c.ct.allFieldsAt c.meth.owner c.selfArgs
+
+def field? (c : Ctx) (f : String) : Option Field := c.ct.fieldAt? c.meth.owner c.selfArgs f
 
 /-- What a path holds in `Γ`: a local only once assigned; an immutable
 field its narrowed or declared type. -/
@@ -110,13 +119,13 @@ def inInit (c : Ctx) : Bool := c.meth.name == "initialize"
 /-- Every field of `self` holds a value (has an entry in `Γ`, inside an
 `initialize`): the object may be used. -/
 def allSet (c : Ctx) (Γ : Env) : Bool :=
-  (c.ct.allFields c.meth.owner).all fun f => (Γ.get (.field f.name)).isSome
+  c.fields.all fun f => (Γ.get (.field f.name)).isSome
 
 /-- Before `super` into class `d`: every field holds a value but the
 inherited ones to assign (the class's own assigned, docs/01 §3; those
 with a default or that admit `nil` hold one from the start). -/
 def preSuper (c : Ctx) (d : Nat) (Γ : Env) : Bool :=
-  (c.ct.allFields c.meth.owner).all fun f =>
+  c.fields.all fun f =>
     ((c.ct.allFields d).any (·.name == f.name) && f.required c.ct) ||
       (Γ.get (.field f.name)).isSome
 
@@ -131,7 +140,11 @@ def superOk (c : Ctx) (d : Nat) (Γ : Env) : Bool :=
 superclass's `initialize` assigned the inherited ones, and may have
 assigned any, as far as the rules say). -/
 def afterSuper (c : Ctx) (Δ : Env) : Env :=
-  (c.ct.allFields c.meth.owner).foldl (fun Δ f => Δ.set (.field f.name) f.ty) Δ
+  c.fields.foldl (fun Δ f => Δ.set (.field f.name) f.ty) Δ
+
+/-- The arguments the superclass `d` gets from this class's body. -/
+def superArgs (c : Ctx) (d : Nat) : List Ty :=
+  (c.ct.ancestorArgs c.meth.owner c.selfArgs d).getD []
 
 end Ctx
 
@@ -147,7 +160,7 @@ def Expr.assigned : Expr → List String
   | .assign x e => x :: e.assigned
   | .setField _ e | .ret e | .isNil e | .isA e _ | .eqNil e | .neNil e
   | .eqTrue e | .eqFalse e | .not e => e.assigned
-  | .new _ args | .superInit _ args | .yield args | .prim _ args _ _ => assignedArgs args
+  | .new _ _ args | .superInit _ args | .yield args | .prim _ args _ _ => assignedArgs args
   | .call r _ args => r.assigned ++ assignedArgs args
   | .callBlk r _ args ps b => r.assigned ++ assignedArgs args ++ ps ++ b.assigned
   | .seq a b | .while a b | .and a b | .or a b => a.assigned ++ b.assigned
@@ -175,6 +188,23 @@ ancestors that defines it. -/
 def Program.lookup (P : Program) (c : Nat) (m : String) : Option Method :=
   (P.classes.ancestors c).findSome? fun d => P.methods.find? fun mt => mt.owner == d && mt.name == m
 
+/-- A block's signature with the parameters it names substituted. -/
+def BlockSig.subst (as : List Ty) (sig : BlockSig) : BlockSig :=
+  ⟨sig.params.map (·.subst as), sig.ret.subst as⟩
+
+/-- A method's signature with its owner's parameters substituted (as a
+receiver of class `c` given `as` sees it). -/
+def Method.inst (mt : Method) (as : List Ty) : Method :=
+  { mt with
+    params := mt.params.map fun (x, t) => (x, t.subst as),
+    ret := mt.ret.subst as,
+    block := mt.block.map (BlockSig.subst as) }
+
+/-- The method `m` run on an instance of `c` given `as`, as that
+receiver sees its signature. -/
+def Program.lookupAt (P : Program) (c : Nat) (as : List Ty) (m : String) : Option Method :=
+  (P.lookup c m).bind fun mt => (P.classes.ancestorArgs c as mt.owner).map mt.inst
+
 /-- The methods a call of `m` on a receiver of type `t` may run, one per
 atom (each must be a class that has it: `nil` has no methods). -/
 def Program.resolve (P : Program) (t : Ty) (m : String) : Option (List Method) :=
@@ -184,7 +214,7 @@ def Program.resolve (P : Program) (t : Ty) (m : String) : Option (List Method) :
   t.mapM fun
     -- `Object` holds the value classes' values too, which have no
     -- methods in v1.
-    | .cls c => if c == 0 then none else P.lookup c m
+    | .cls c as => if c == 0 then none else P.lookupAt c as m
     | _ => none
 
 /-- Narrowing a path (design §2.1): `p` holds `t` where the test is
@@ -192,12 +222,62 @@ true. An empty type means control does not get there. -/
 def narrow (Γ : Env) (p : Path) (t : Ty) : Option Env :=
   if t.isEmpty then none else some (Γ.set p t)
 
-/-- The table of design §2.1 for one test of a path holding `t`. -/
+/-- The class of an atom's values, if it is a class. -/
+def Atom.classOf : Atom → Option Nat
+  | .cls c _ => some c
+  | _ => none
+
+/-- `a`'s class and `b`'s are related, one below the other (the arguments
+aside: what the run-time test sees). -/
+def Atom.classRelated (ct : ClassTable) (a b : Atom) : Bool :=
+  match a.classOf, b.classOf with
+  | some c, some d => ct.subclass c d || ct.subclass d c
+  | _, _ => false
+
+/-- The table of design §2.1 for one test of a path holding `t`: the
+atoms below `a` stay, and `a` itself comes in where `t` has an atom
+above it, one of a class related to `a`'s (the arguments may be the
+class's parameters, which the run-time class test does not see), or a
+type parameter: the value is an `a`, whatever `T` is. -/
 def isATrue (ct : ClassTable) (t : Ty) (a : Atom) : Ty :=
-  t.filter (·.le ct a) ++ (if t.any (fun b => a.le ct b && a != b) then [a] else [])
+  t.filter (·.le ct a) ++
+    (if t.any (fun b => (a.le ct b && a != b) || a.classRelated ct b || b.isParam) then [a] else [])
 
 def isAFalse (ct : ClassTable) (t : Ty) (a : Atom) : Ty :=
   t.filter fun b => !(b.le ct a)
+
+/-- A class test's atom: a class of the table given as many arguments as
+it has parameters (or a value class). -/
+def Atom.wf (ct : ClassTable) : Atom → Bool
+  | .cls c args => match ct[c]? with
+    | some k => args.length == k.params.length
+    | none => false
+  | .param _ => false
+  | _ => true
+
+/-- Whether `is_a?(a)` can be checked at run time for a value of type `t`
+(docs/02 §7): the run-time test sees the class only, so a class with
+arguments is allowed when each atom of `t` that may pass it already
+carries those arguments (an atom of the class or a subclass), or has
+them trivially (`Object` arguments for covariant parameters: the next
+stage; here a class without parameters). -/
+def verifiable (ct : ClassTable) (t : Ty) (a : Atom) : Bool :=
+  match a with
+  | .cls c args =>
+    t.all fun b => match b with
+      -- An atom of the class or a subclass: the same arguments. One of a
+      -- superclass (`Object` included) or a parameter: the arguments are
+      -- not known at run time, so only a class without parameters (the
+      -- next stage allows `Object` arguments of covariant parameters). An
+      -- unrelated class never passes the test.
+      | .cls d bs => if ct.subclass d c then
+          match ct.ancestorArgs d bs c with
+          | some as' => Ty.beqArgs as' args
+          | none => false
+        else args.isEmpty || !ct.subclass c d
+      | .param _ => args.isEmpty
+      | _ => true
+  | _ => true
 
 /-- `test` gives the types where it is true and false; a test of an
 expression that is not a path narrows nothing. -/
@@ -206,15 +286,20 @@ def testOut (c : Ctx) (e : Expr) (Γ : Env) (tyT tyF : Ty → Ty) : Out :=
   | some (p, t) => ⟨[.bool], some Γ, narrow Γ p (tyT t), narrow Γ p (tyF t)⟩
   | none => Out.plain [.bool] Γ
 
-/-- The truthy and falsy sides of a read holding `u` (design §2.1). -/
+/-- The truthy and falsy sides of a read holding `u` (design §2.1). A type
+parameter stays on both sides: what it stands for may hold `nil` or
+`false`. -/
 def truthyTy (u : Ty) : Ty := u.remove .nil
 
 /-- The falsy values a type holds: `nil` and `false` where it holds
-them (`Object` does, as every value class). -/
-def falsyTy (ct : ClassTable) (u : Ty) : Ty := [.nil, .bool].filter fun a => Ty.le ct [a] u
+them (`Object` does, as every value class), and its parameters. -/
+def falsyTy (ct : ClassTable) (u : Ty) : Ty :=
+  u.filter Atom.isParam ++ [.nil, .bool].filter fun a => Ty.le ct [a] u
 
-/-- The `nil` a type holds, if it does. -/
-def nilTy (ct : ClassTable) (u : Ty) : Ty := [Atom.nil].filter fun a => Ty.le ct [a] u
+/-- What a value of `u` found to be `nil` is: `nil`, if `u` holds it or
+has a parameter (whose instantiation may). -/
+def nilTy (ct : ClassTable) (u : Ty) : Ty :=
+  if u.any Atom.isParam || Ty.le ct [.nil] u then [.nil] else []
 
 /-- Whether `==` against `nil`, `true` or `false` may narrow what `e`
 reads in `Δ`: only a value no subclass can redefine `==` for. -/
@@ -233,6 +318,13 @@ def blockParamsOk (c : Ctx) (ps : List String) (sig : BlockSig) : Bool :=
   (ps.zip sig.params).all fun (x, t) => match c.decl x with
     | some d => t.le c.ct d
     | none => false
+
+/-- `k[targs]` is a class with as many parameters, each argument naming
+only the class's own parameters (no bounds yet). -/
+def Ctx.argsWf (c : Ctx) (k : Nat) (targs : List Ty) : Bool :=
+  match c.ct[k]? with
+  | some cl => targs.length == cl.params.length && Ty.argsParamsBelow c.selfArgs.length targs
+  | none => false
 
 /-- The argument types fit the method's parameters. -/
 def argsOk (c : Ctx) (tys : List Ty) (mt : Method) : Bool :=
@@ -286,28 +378,29 @@ def check (c : Ctx) (Γ : Env) : Expr → Option Out
     -- The object is used: in `initialize`, every field set; never in a
     -- default.
     guard (!c.inDefault && (!c.inInit || c.allSet Γ))
-    some (.plain [.cls c.meth.owner] Γ)
-  | .new k args => do
-    guard (k < c.ct.length)
+    some (.plain c.selfTy Γ)
+  | .new k targs args => do
+    guard (c.argsWf k targs)
     match checkArgs c Γ args with
     | none => none
     | some .dead => some .dead
     | some (.live tys Δ) =>
-      -- Its `initialize`'s arguments (none without one).
-      match c.prog.lookup k "initialize" with
+      -- Its `initialize`'s arguments (none without one), as the class
+      -- given `targs` sees them.
+      match c.prog.lookupAt k targs "initialize" with
       | some mt =>
         guard (mt.block.isNone && argsOk c tys mt)
-        some (.plain [.cls k] Δ)
+        some (.plain [.cls k targs] Δ)
       | none =>
         guard tys.isEmpty
-        some (.plain [.cls k] Δ)
+        some (.plain [.cls k targs] Δ)
   | .superInit d args => do
     guard (c.superOk d Γ)
     match checkArgs c Γ args with
     | none => none
     | some .dead => some .dead
     | some (.live tys Δ) =>
-      match c.prog.lookup d "initialize" with
+      match c.prog.lookupAt d (c.superArgs d) "initialize" with
       | some mt =>
         guard (mt.block.isNone && argsOk c tys mt)
         some (.plain [.nil] (c.afterSuper Δ))
@@ -402,7 +495,11 @@ def check (c : Ctx) (Γ : Env) : Expr → Option Out
     let o ← check c Γ e
     match o.out with
     | none => some .dead
-    | some Δ => some (testOut c e Δ (isATrue c.ct · a) (isAFalse c.ct · a))
+    | some Δ =>
+      -- A class test checks the class only: its arguments must follow
+      -- from the static type (docs/02 §7).
+      guard (a.closed && a.wf c.ct && verifiable c.ct o.ty a)
+      some (testOut c e Δ (isATrue c.ct · a) (isAFalse c.ct · a))
   | .eqNil e => do
     let o ← check c Γ e
     match o.out with
