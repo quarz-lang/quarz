@@ -112,6 +112,27 @@ def inInit (c : Ctx) : Bool := c.meth.name == "initialize"
 def allSet (c : Ctx) (Γ : Env) : Bool :=
   (c.ct.allFields c.meth.owner).all fun f => (Γ.get (.field f.name)).isSome
 
+/-- Before `super` into class `d`: every field holds a value but the
+inherited ones to assign (the class's own assigned, docs/01 §3; those
+with a default or that admit `nil` hold one from the start). -/
+def preSuper (c : Ctx) (d : Nat) (Γ : Env) : Bool :=
+  (c.ct.allFields c.meth.owner).all fun f =>
+    ((c.ct.allFields d).any (·.name == f.name) && f.required c.ct) ||
+      (Γ.get (.field f.name)).isSome
+
+/-- Where `super` into class `d` may be: in `initialize` itself (not a
+block, not a default), `d` the superclass, the class's own fields
+assigned first (`preSuper`). -/
+def superOk (c : Ctx) (d : Nat) (Γ : Env) : Bool :=
+  c.inInit && !c.inBlock && !c.inDefault &&
+    (c.ct[c.meth.owner]?).bind (·.super) == some d && c.preSuper d Γ
+
+/-- After `super`: every field holds a value of its declared type (the
+superclass's `initialize` assigned the inherited ones, and may have
+assigned any, as far as the rules say). -/
+def afterSuper (c : Ctx) (Δ : Env) : Env :=
+  (c.ct.allFields c.meth.owner).foldl (fun Δ f => Δ.set (.field f.name) f.ty) Δ
+
 end Ctx
 
 /-- The path an expression reads, if it is one (a narrowable read). -/
@@ -126,7 +147,7 @@ def Expr.assigned : Expr → List String
   | .assign x e => x :: e.assigned
   | .setField _ e | .ret e | .isNil e | .isA e _ | .eqNil e | .neNil e
   | .eqTrue e | .eqFalse e | .not e => e.assigned
-  | .new _ args | .yield args | .prim _ args _ _ => assignedArgs args
+  | .new _ args | .superInit _ args | .yield args | .prim _ args _ _ => assignedArgs args
   | .call r _ args => r.assigned ++ assignedArgs args
   | .callBlk r _ args ps b => r.assigned ++ assignedArgs args ++ ps ++ b.assigned
   | .seq a b | .while a b | .and a b | .or a b => a.assigned ++ b.assigned
@@ -280,6 +301,19 @@ def check (c : Ctx) (Γ : Env) : Expr → Option Out
       | none =>
         guard tys.isEmpty
         some (.plain [.cls k] Δ)
+  | .superInit d args => do
+    guard (c.superOk d Γ)
+    match checkArgs c Γ args with
+    | none => none
+    | some .dead => some .dead
+    | some (.live tys Δ) =>
+      match c.prog.lookup d "initialize" with
+      | some mt =>
+        guard (mt.block.isNone && argsOk c tys mt)
+        some (.plain [.nil] (c.afterSuper Δ))
+      | none =>
+        guard tys.isEmpty
+        some (.plain [.nil] (c.afterSuper Δ))
   | .call r m args => do
     let o ← check c Γ r
     match o.out with

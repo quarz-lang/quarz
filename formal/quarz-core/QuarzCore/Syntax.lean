@@ -31,6 +31,9 @@ inductive Expr where
   | self
   /-- `C.new(args)`: the fields' defaults, then `initialize(args)`. -/
   | new (c : Nat) (args : List Expr)
+  /-- `super(args)` in `initialize`: the `initialize` class `d` (the
+  superclass) has, run on `self`, which assigns the inherited fields. -/
+  | superInit (d : Nat) (args : List Expr)
   /-- `recv.m(args)`. -/
   | call (recv : Expr) (m : String) (args : List Expr)
   /-- `recv.m(args) { |params| body }`: an anonymous block. Its parameters

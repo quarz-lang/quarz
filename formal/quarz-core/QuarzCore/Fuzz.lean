@@ -13,14 +13,16 @@ namespace QuarzCore.Fuzz
 open Plausible
 
 /-- Object; A < Object with an immutable `@a : Int?` and a `var @v :
-Str`; B < A; E < Object, whose `==` says yes to anything. -/
+Str`; B < A; E < Object, whose `==` says yes to anything; D < A with an
+immutable `@c : Int` to assign, its `initialize` generated (`super`). -/
 def classes : ClassTable :=
   [⟨"Object", none, []⟩,
    ⟨"A", some 0, [⟨"a", [.int, .nil], false, none⟩, ⟨"v", [.str], true, none⟩]⟩,
    ⟨"B", some 1, []⟩,
-   ⟨"E", some 0, []⟩]
+   ⟨"E", some 0, []⟩,
+   ⟨"D", some 1, [⟨"c", [.int], false, none⟩]⟩]
 
-def atoms : List Atom := [.nil, .bool, .int, .str, .float, .cls 0, .cls 1, .cls 2, .cls 3]
+def atoms : List Atom := [.nil, .bool, .int, .str, .float, .cls 0, .cls 1, .cls 2, .cls 3, .cls 4]
 
 def methods : List Method :=
   [ -- A#get -> Int?: reads and narrows its field.
@@ -34,11 +36,13 @@ def methods : List Method :=
     -- A#set(s: Str): assigns the var field.
     ⟨1, "set", [("s", [.str])], [.str], none, [("s", [.str])], .setField "v" (.var "s" [.str])⟩,
     ⟨3, "==", [("o", [.nil, .bool, .cls 0])], [.bool], none, [("o", [.nil, .bool, .cls 0])], .tru⟩,
-    -- A#initialize(a: Int?, v: Str): sets both (B inherits it).
+    -- A#initialize(a: Int?, v: Str): sets both (B inherits it), then
+    -- calls `get`, which D overrides to read the field it sets before
+    -- `super`.
     ⟨1, "initialize", [("a", [.int, .nil]), ("v", [.str])], [.nil], none,
       [("a", [.int, .nil]), ("v", [.str])],
       .seq (.setField "a" (.var "a" [.int, .nil]))
-        (.seq (.setField "v" (.var "v" [.str])) .nil)⟩ ]
+        (.seq (.setField "v" (.var "v" [.str])) (.call .self "get" []))⟩ ]
 
 /-- The top level's locals. -/
 def locals : List (String × Ty) :=
@@ -68,7 +72,7 @@ partial def genExpr : Nat → Gen Expr
     Gen.oneOfWithDefault (pure .nil)
       [pure .nil, pure .tru, pure (.int 1), pure (.str "s"), pure (.flt "0.5"), pure (.var x t),
        do return .var x (← genTy), pure (.new 1 [.int 1, .str "v"]), pure (.new 2 [.nil, .str "w"]),
-       pure (.new 3 [])]
+       pure (.new 3 []), pure (.new 4 [.int 4])]
   | d + 1 => do
     let sub := genExpr d
     let x ← genVar
@@ -104,6 +108,24 @@ partial def genTest (d : Nat) : Gen Expr := do
      (2, do return .not (← genTest d)), (1, do return .and (← genTest d) (← genTest d)),
      (1, do return .or (← genTest d) (← genTest d)), (1, genExpr d)]
 
+/-- A body for `D#initialize(c: Int)`: assigning `@c`, `super` (with
+fitting arguments or not), uses of the object, in any order; most orders
+the checker rejects. -/
+partial def genInit : Nat → Gen Expr
+  | 0 => Gen.elements [.nil, .setField "c" (.var "c" [.int]), .superInit 1 [.var "c" [.int], .str "s"],
+      .superInit 1 [.nil, .str "t"], .superInit 1 [.str "u"], .call .self "get" [], .self,
+      .field "c" [.int], .field "a" [.int, .nil]] (by simp)
+  | d + 1 => do
+    let sub := genInit d
+    Gen.frequency (pure .nil)
+      [(4, genInit 0),
+       (4, do return .seq (← sub) (← sub)),
+       (2, do return .ite (.prim "b" [] [] [.bool]) (← sub) (← sub)),
+       (1, do return .while (.prim "b" [] [] [.bool]) (← sub)),
+       (1, do return .callBlk .self "each" [.int 1] ["k"] (← sub)),
+       (1, pure .raise),
+       (1, do return .ret (← sub))]
+
 end
 
 /-- Built-in methods answering at random (seeded by the fuel left): a
@@ -128,7 +150,10 @@ def oracle : Oracle := fun n s t =>
     (s.objs.zipIdx.find? fun (o, _) => classes.subclass o.cls k).map fun (_, l) => .obj l
   | none => none
 
-def program (body : Expr) : Program :=
-  ⟨classes, methods, ⟨0, "<main>", [], [.nil, .bool, .int, .str, .cls 0], none, locals, body⟩, []⟩
+def program (body : Expr) (init : Expr := .seq (.setField "c" (.var "c" [.int])) (.superInit 1 [.nil, .str "d"])) :
+    Program :=
+  ⟨classes, methods ++ [⟨4, "initialize", [("c", [.int])], [.nil], none, [("c", [.int]), ("k", [.int])], init⟩,
+    ⟨4, "get", [], [.int], none, [], .field "c" [.int]⟩],
+    ⟨0, "<main>", [], [.nil, .bool, .int, .str, .cls 0], none, locals, body⟩, []⟩
 
 end QuarzCore.Fuzz

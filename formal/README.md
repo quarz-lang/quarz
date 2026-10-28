@@ -42,7 +42,18 @@ nothing after them); a field is read, `self` used (so a call on it) and
 `self` and `return`); a block in it assigns no immutable field. A
 default runs before `initialize`, reading only the fields before it that
 hold a value, and checked as a block of `initialize` is, but that it
-never uses `self`. No call reaches `initialize` but `new`. The model
+never uses `self`. `super(args)` in `initialize` (not in a block of
+it) runs the superclass's `initialize` on the object: the class's own
+fields to assign must be set before it, and the inherited ones are set
+after it (docs/01 §3), so the superclass's `initialize`, which may call
+a method the subclass overrides once its own fields are set, finds the
+subclass's set. After `super`, every field is at its declared type: a
+narrowing of a field before `super` does not survive it (the Rust checker
+keeps the class's own, which the model's invariants cannot yet tell from
+the inherited ones: stricter than the Rust checker, not unsound). An
+`initialize` that does not set every field by its end, by `super` or
+itself, is rejected. No call reaches `initialize` but `new` and `super`.
+The model
 accepts more than the Rust checker in one place, which soundness does
 not need: an immutable field that admits `nil` and that `initialize`
 does not assign holds `nil` (docs/01 §3 requires the assignment).
@@ -50,9 +61,8 @@ does not assign holds `nil` (docs/01 §3 requires the assignment).
 Not in v1 (design in `/tmp`, kept by the maintainers): closures (lambdas,
 named blocks, what a closure assigns being un-narrowed from where it is
 made), generics, patterns, `data`/`enum`, `rescue`/`ensure`, `super`
-(so a class that defines `initialize` below a class with fields to
-assign is out of range: `Program.wfInit`), Shareable and tasks,
-extensions and overloads.
+outside `initialize` (Ruby's `super` in other methods), in a block of
+it, or with a block, Shareable and tasks, extensions and overloads.
 
 ## Status
 
@@ -63,8 +73,8 @@ extensions and overloads.
   only when it is at least what the rules narrow the path to: with the
   Rust checker's types as annotations (`conformance.sh`), the types
   compiled code relies on hold. No field is read before it is set: an
-  object's immutable fields only after its defaults or `initialize`
-  assigned them. (`eval`
+  object's immutable fields only after its defaults, `initialize` or
+  `super` assigned them. (`eval`
   checks reads, not writes: an ill-typed write would show at its read.)
   `#print axioms` shows only Lean's standard ones (`Axioms.lean`).
 - The proof is by induction on the fuel over the interpreter's functions
@@ -80,9 +90,11 @@ extensions and overloads.
   type, `Store.typeOf` giving none to an object not made; and an object's
   immutable fields change only in its own defaults and `initialize`).
 - `check_typed` (Check.lean): what `check` accepts, `Typed` derives.
-- `lake exe fuzz [N]` makes N random programs over a fixed class table,
-  runs those `check` accepts, and fails on one that gets stuck: a quick
-  check of rule changes before their proofs are redone.
+- `lake exe fuzz [N]` makes N random programs over a fixed class table
+  (half of them with a generated `initialize` assigning a field and
+  calling `super` in some order), runs those `check` accepts, and fails
+  on one that gets stuck: a quick check of rule changes before their
+  proofs are redone.
 - `./conformance.sh` turns what `quarz check --tree` prints (docs/05 §1)
   into QCore and checks it with the model, for `corpus/` (in range by
   design) and every fixture and example (mostly out of range for now).

@@ -112,4 +112,42 @@ def defaultProg (default : Expr) : Program :=
 #guard (defaultProg (.seq (.setField "a" (.int 1)) (.int 2))).check
 #guard !(defaultProg (.seq (.setField "a" (.int 1)) (.call .self "geta" []))).check
 
+/-! ### `super` in `initialize`
+
+P has `@x : Int`, assigned by its `initialize`, which then calls `who`;
+C < P has `@y : Int` and overrides `who` to read it. -/
+
+def superProg (body : Expr) : Program :=
+  ⟨[object, ⟨"P", some 0, [⟨"x", [.int], false, none⟩]⟩, ⟨"C", some 1, [⟨"y", [.int], false, none⟩]⟩],
+    [⟨1, "initialize", [("v", [.int])], [.nil], none, [("v", [.int])],
+        .seq (.setField "x" (.var "v" [.int])) (.call .self "who" [])⟩,
+     ⟨1, "who", [], [.int], none, [], .field "x" [.int]⟩,
+     ⟨2, "initialize", [("w", [.int])], [.nil], none, [("w", [.int])], body⟩,
+     ⟨2, "who", [], [.int], none, [], .field "y" [.int]⟩],
+    ⟨0, "<main>", [], [.nil, .bool, .int, .str, .cls 0], none, [], .call (.new 2 [.int 5]) "who" []⟩, []⟩
+
+def assignY : Expr := .setField "y" (.var "w" [.int])
+
+-- Its own field first, then `super`: P's `initialize` calls C's `who`,
+-- which reads `@y`, already set.
+#guard (superProg (.seq assignY (.superInit 1 [.int 2]))).check
+#guard match run (superProg (.seq assignY (.superInit 1 [.int 2]))) noPrim 100 with
+  | .ok (.int 5) _ => true | _ => false
+-- After `super`, the object may be used.
+#guard (superProg (.seq assignY (.seq (.superInit 1 [.int 2]) (.call .self "who" [])))).check
+-- `super` before its own field, `self` before `super`, no `super` (the
+-- inherited field never set), `super` into another class, or in a block:
+-- all rejected.
+#guard !(superProg (.seq (.superInit 1 [.int 2]) assignY)).check
+#guard !(superProg (.seq assignY (.seq .self (.superInit 1 [.int 2])))).check
+#guard !(superProg assignY).check
+#guard !(superProg (.seq assignY (.superInit 0 []))).check
+#guard !(superProg (.seq assignY (.callBlk .self "who" [] [] (.superInit 1 [.int 2])))).check
+-- `super` twice is fine; in a loop, or after a `return` path, the
+-- inherited field is not set at the end.
+#guard (superProg (.seq assignY (.seq (.superInit 1 [.int 2]) (.superInit 1 [.int 3])))).check
+#guard !(superProg (.seq assignY (.while (.prim "c" [] [] [.bool]) (.superInit 1 [.int 2])))).check
+#guard !(superProg (.seq assignY (.seq (.ite (.prim "c" [] [] [.bool]) (.ret .nil) .nil)
+  (.superInit 1 [.int 2])))).check
+
 end QuarzCore.Examples

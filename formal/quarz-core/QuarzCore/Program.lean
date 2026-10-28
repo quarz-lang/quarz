@@ -49,11 +49,6 @@ def wfMethod (P : Program) (mt : Method) : Bool :=
     | [(_, t)] => Ty.le P.classes [.nil, .bool] t
     | _ => false))
 
-/-- A field that must be assigned in `initialize`: no default, and a type
-without `nil` (docs/01 §3; `var` or not). -/
-def _root_.QuarzCore.Field.required (ct : ClassTable) (f : Field) : Bool :=
-  f.default.isNone && !Ty.le ct [.nil] f.ty
-
 /-- The fields of instances of `k` that hold a value before
 `initialize` runs (those with a default, and those that admit `nil`),
 as entries of an environment: what `initialize` may read. -/
@@ -77,15 +72,11 @@ def ownInit (P : Program) (k : Nat) : Bool :=
   P.methods.any fun mt => mt.owner == k && mt.name == "initialize"
 
 /-- A class's fields and `initialize`: one with a field that must be
-assigned defines `initialize`; one that defines it has no such field
-above it (`super` is not in the model yet: out of range). -/
+assigned defines `initialize` (whose end, with every field set, needs
+`super` for those above it). -/
 def wfInit (P : Program) (k : Nat) : Bool :=
   let own := ((P.classes[k]?).map (·.fields)).getD []
-  let above := match (P.classes[k]?).bind (·.super) with
-    | some d => P.classes.allFields d
-    | none => []
-  (!(own.any (·.required P.classes)) || P.ownInit k) &&
-  (!P.ownInit k || !(above.any (·.required P.classes)))
+  !(own.any (·.required P.classes)) || P.ownInit k
 
 /-- The context a field default of class `k` is checked in: `self` the
 object being made, which may not be used (`Ctx.inDefault`), as in a

@@ -892,6 +892,9 @@ theorem eval_succ : EvalGood P orc (n + 1) := by
     cases ar with
     | other r => exact this.other (evalWs_mono (by simp [Expr.assigned]))
     | ok vs s1 => obtain ⟨_, _, hao, _⟩ := this; cases hao
+  | superInit hg hargs hmi hok => sorry
+  | superNoInit hg hargs hmi hnil => sorry
+  | superDead hg hargs => sorry
   | new hk hargs hmi hok =>
     rename_i k args tys Δ mi
     simp only [eval]
