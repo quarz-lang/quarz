@@ -163,7 +163,7 @@ The REPL's completion shows a candidate's summary.
 
 - `DEPRECATED:` as a compiler warning at the call sites (the checker has the docs), with `--deny-deprecated`.
 - Hover and completion documentation in an editor (the language server), and a `help` command in the REPL, which has no command layer today (every line is an expression, and `Stack#pop` lexes as a comment).
-- A hosted site of the standard library's docs, and of cogs' (the `docs.rs` of cogs; 10-cogs.md §8 leaves discovery for later).
+- A hosted site of cogs' docs (the `docs.rs` of cogs; 10-cogs.md §8 leaves discovery for later). The standard library's are at [quarz.dev/std](https://quarz.dev/std/), which quarz-lang/quarz.dev builds daily from this repository's main.
 - Doc coverage in `quarz doc --missing`'s output as a percentage.
 - Examples that check what a program prints (with `capture_output`, 12-testing.md §9).
 

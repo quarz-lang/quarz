@@ -161,7 +161,7 @@ REPL の補完は候補の要約を示します。
 
 - 呼び出し側でのコンパイラの警告としての `DEPRECATED:`(型検査器がドキュメントを持っている)。`--deny-deprecated`。
 - エディタでのホバーと補完のドキュメント(言語サーバ)と、REPL の `help` コマンド。REPL には今コマンドの層がなく(すべての行が式で、`Stack#pop` はコメントになる)、それが要ります。
-- 標準ライブラリと cog のドキュメントのホスティング(cog の `docs.rs`。10-cogs.ja.md §8 は発見の仕組みを後に回しています)。
+- cog のドキュメントのホスティング(cog の `docs.rs`。10-cogs.ja.md §8 は発見の仕組みを後に回しています)。標準ライブラリのものは [quarz.dev/std](https://quarz.dev/std/) にあり、quarz-lang/quarz.dev がこのリポジトリの main から毎日作っています。
 - `quarz doc --missing` の出力にドキュメントのカバレッジを百分率で。
 - プログラムの出力を確かめる例(`capture_output`、12-testing.ja.md §9)。
 
