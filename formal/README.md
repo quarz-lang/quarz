@@ -53,7 +53,13 @@ narrowing of a field before `super` does not survive it (the Rust checker
 keeps the class's own, which the model's invariants cannot yet tell from
 the inherited ones: stricter than the Rust checker, not unsound). An
 `initialize` that does not set every field by its end, by `super` or
-itself, is rejected. No call reaches `initialize` but `new` and `super`.
+itself, is rejected. No call reaches `initialize` but `new` and `super`
+(the Rust checker enforces this too). A `while` un-narrows what its body
+assigns before the test and the body, a field included: in `initialize`,
+a field set before the loop and assigned again in its body counts as
+unset after the loop, so `@x = 1; while c; @x = nil; ...; end` is
+rejected where the Rust checker accepts it (it widens the field to its
+declared type): stricter than the Rust checker, not unsound.
 The model
 accepts more than the Rust checker in one place, which soundness does
 not need: an immutable field that admits `nil` and that `initialize`
