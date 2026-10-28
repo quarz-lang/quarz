@@ -3184,6 +3184,7 @@ impl<'a> FnBuilder<'a> {
                 // zsuper: forward the current method's parameters.
                 let mut items = Vec::new();
                 let mut kw = Vec::new();
+                let mut kw_splat = None;
                 let mut has_rest = false;
                 if let Some(mid) = self.method {
                     let m = self.world.method(mid);
@@ -3204,7 +3205,8 @@ impl<'a> FnBuilder<'a> {
                                     splat: true,
                                 });
                             }
-                            ParamKind::KeywordRest | ParamKind::Block => {}
+                            ParamKind::KeywordRest => kw_splat = Some(v),
+                            ParamKind::Block => {}
                             ParamKind::Positional => items.push(ArrayItem {
                                 reg: v,
                                 splat: false,
@@ -3223,7 +3225,7 @@ impl<'a> FnBuilder<'a> {
                     pos,
                     splat,
                     kw,
-                    kw_splat: None,
+                    kw_splat,
                     block: None,
                 }
             }

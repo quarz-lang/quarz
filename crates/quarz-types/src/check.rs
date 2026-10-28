@@ -8632,51 +8632,75 @@ impl Checker {
             return Type::Nothing;
         }
         let owner = m.owner;
-        // Find the next definition in the ancestor chain after the owner.
+        // The definitions of the first ancestor after the owner that has
+        // the method (its own and its extensions' in scope), chosen among
+        // as a call's overloads are (docs/01 §9); none further, as Ruby's
+        // `super`.
         let self_ty = self.env.self_type.clone();
-        let cands = self.world.lookup_methods(&self_ty, &m.name);
+        let found = self.world.lookup_methods(&self_ty, &m.name);
         let mut after_owner = false;
-        let mut target = None;
-        for (c, subst) in cands {
+        let mut next_owner = None;
+        let mut cands = Vec::new();
+        for (c, subst) in found {
             let cm = self.world.method(c);
             if cm.owner == owner && cm.extension.is_none() {
                 after_owner = true;
                 continue;
             }
-            if after_owner && cm.singleton == m.singleton {
-                target = Some((c, subst));
+            if !after_owner || cm.singleton != m.singleton {
+                continue;
+            }
+            if *next_owner.get_or_insert(cm.owner) != cm.owner {
                 break;
             }
+            cands.push((c, subst));
         }
-        let Some((sid, subst)) = target else {
+        if cands.is_empty() {
             self.error(format!("no superclass method `{}`", m.name), expr.span);
             return Type::Nothing;
-        };
+        }
         let call = Call {
             recv: None,
             name: m.name.clone(),
             args: match args {
                 Some(a) => a.to_vec(),
                 None => {
-                    // zsuper: forward the parameters.
-                    m.params
+                    // zsuper: forward the parameters, each read as a
+                    // local of its own node (the ids are outside the
+                    // file's range, and nothing is recorded for them
+                    // beyond this resolution).
+                    let local = |i: usize, name: &str| Expr {
+                        id: u32::MAX - 1 - i as u32,
+                        span: expr.span,
+                        kind: ExprKind::Local(name.to_string()),
+                    };
+                    let mut forwarded: Vec<Arg> = m
+                        .params
                         .iter()
-                        .map(|p| {
-                            let e = Expr {
-                                id: u32::MAX - 1,
-                                span: expr.span,
-                                kind: ExprKind::Local(p.name.clone()),
-                            };
+                        .enumerate()
+                        .map(|(i, p)| {
+                            let e = local(i, &p.name);
                             match p.kind {
                                 ParamKind::KeywordOnly => Arg::Keyword {
                                     name: p.name.clone(),
                                     value: e,
                                     span: expr.span,
                                 },
-                                _ => Arg::Positional(e),
+                                ParamKind::Rest => Arg::Splat(e),
+                                ParamKind::KeywordRest => Arg::DoubleSplat(e),
+                                ParamKind::Positional | ParamKind::Block => Arg::Positional(e),
                             }
                         })
-                        .collect()
+                        .collect();
+                    // The method's block too (`&` when anonymous), unless
+                    // the `super` has one of its own. An optional block
+                    // is not written: the superclass may take none, and
+                    // one that takes an optional block gets it at run
+                    // time all the same.
+                    if let (Some((name, _)), false, None) = (&m.block, m.block_optional, block) {
+                        forwarded.push(Arg::BlockPass(local(m.params.len(), name)));
+                    }
+                    forwarded
                 }
             },
             block: block.cloned(),
@@ -8688,7 +8712,7 @@ impl Checker {
             expr,
             &call,
             &self_ty,
-            vec![(sid, subst)],
+            cands,
             true,
             None,
             m.name == "initialize",
