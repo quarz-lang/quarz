@@ -8612,6 +8612,25 @@ impl Checker {
             return Type::Nothing;
         };
         let m = self.world.method(mid).clone();
+        if m.name == "initialize" && !m.singleton && !self.env.blocks.is_empty() {
+            // A block or lambda may run after `initialize` (its callee or
+            // a field may keep it) and would then assign the immutable
+            // inherited fields again (as Swift's `super.init`; docs/01 §3).
+            self.error(
+                "`super` in `initialize` must be called directly, not from a block or lambda",
+                expr.span,
+            );
+            self.check_args_blindly(&Call {
+                recv: None,
+                name: m.name.clone(),
+                args: args.map(|a| a.to_vec()).unwrap_or_default(),
+                block: block.cloned(),
+                safe_nav: false,
+                has_parens: true,
+                type_args: vec![],
+            });
+            return Type::Nothing;
+        }
         let owner = m.owner;
         // Find the next definition in the ancestor chain after the owner.
         let self_ty = self.env.self_type.clone();

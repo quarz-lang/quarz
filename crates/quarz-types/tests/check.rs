@@ -319,6 +319,37 @@ fn initialize_only_from_new() {
 }
 
 #[test]
+fn super_in_initialize_is_direct() {
+    // `super` in `initialize` is written in the body, not in a block or
+    // lambda that may run again once the object is made (docs/01 §3).
+    let direct = "`super` in `initialize` must be called directly, not from a block or lambda";
+    let a = "class A\n  @a: Int?\n  def initialize(a: Int?)\n    @a = a\n  end\nend\n";
+    err(
+        &format!("{a}class B < A\n  var @f: (() -> Nil)?\n  def initialize\n    super(1)\n    @f = -> {{ super(nil); nil }}\n  end\nend"),
+        direct,
+    );
+    err(
+        &format!("{a}class B < A\n  def initialize\n    super(1)\n    [nil].each {{ |x| super(x) }}\n  end\nend"),
+        direct,
+    );
+    err(
+        &format!("{a}class B < A\n  def initialize\n    super(1)\n    [1].each {{ |i| [2].each {{ |j| super(i + j) }} }}\n  end\nend"),
+        direct,
+    );
+    // A bare `super` in a block too; and `super` in another method's block
+    // is fine (Ruby).
+    err(
+        &format!(
+            "{a}class B < A\n  def initialize(a: Int?)\n    [1].each {{ |i| super }}\n  end\nend"
+        ),
+        direct,
+    );
+    ok("class A\n  def f(x: Int) -> Int = x\nend\nclass B < A\n  def f(x: Int) -> Int = [x].map { |y| super(y) }.first || 0\nend\nputs B.new.f(1)");
+    // Directly in the body, in a branch.
+    ok(&format!("{a}class B < A\n  def initialize(c: Bool)\n    if c\n      super(1)\n    else\n      super(nil)\n    end\n  end\nend\nB.new(true)"));
+}
+
+#[test]
 fn case_on_self() {
     // `case` on `Self` matches as on the receiver's class.
     no_warnings("enum R[T, E]\n  variant Ok(value: T)\n  variant Err(error: E)\n  def on_ok(&: (T) -> Nil) -> Self\n    case self\n    in Ok(value:) then yield(value)\n    in Err then nil\n    end\n    self\n  end\nend");
