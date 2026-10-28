@@ -8710,22 +8710,40 @@ impl Checker {
             return Type::Nothing;
         }
         let owner = m.owner;
-        // The definitions of the first ancestor after the owner that has
-        // the method (its own and its extensions' in scope), chosen among
-        // as a call's overloads are (docs/01 §9); none further, as Ruby's
-        // `super`.
+        // The definitions the method hides: those of the first owner after
+        // its own group in the lookup order that has the method (an
+        // ancestor's own and its extensions' in scope; for an extension's
+        // method, its target's own first, as `super` in a Ruby refinement,
+        // docs/01 §7), chosen among as a call's overloads are (docs/01 §9);
+        // none further, as Ruby's `super`.
         let self_ty = self.env.self_type.clone();
+        // An extension is not active in its own body unless `using`-ed
+        // there: its method is listed (as the group to pass) only while it
+        // is, last among the extensions in scope.
+        let own_ext = m
+            .extension
+            .filter(|e| !self.world.active_extensions.contains(e));
+        if let Some(e) = own_ext {
+            self.world.active_extensions.push(e);
+        }
         let found = self.world.lookup_methods(&self_ty, &m.name);
-        let mut after_owner = false;
+        if own_ext.is_some() {
+            self.world.active_extensions.pop();
+        }
+        let mut after_own = false;
         let mut next_owner = None;
         let mut cands = Vec::new();
         for (c, subst) in found {
             let cm = self.world.method(c);
-            if cm.owner == owner && cm.extension.is_none() {
-                after_owner = true;
+            let own_group = match m.extension {
+                Some(e) => cm.extension == Some(e),
+                None => cm.owner == owner && cm.extension.is_none(),
+            };
+            if own_group {
+                after_own = true;
                 continue;
             }
-            if !after_owner || cm.singleton != m.singleton {
+            if !after_own || cm.singleton != m.singleton {
                 continue;
             }
             if *next_owner.get_or_insert(cm.owner) != cm.owner {
