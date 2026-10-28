@@ -2281,7 +2281,7 @@ impl<'ast> Declarer<'ast> {
                     // a built object, assigning its immutable fields again.
                     if new_name == "initialize" || old_name == "initialize" {
                         self.error(
-                            "`initialize` cannot be aliased: it runs only from `new`",
+                            "`initialize` cannot be aliased: it runs only from `new` and `super`",
                             expr.span,
                         );
                         continue;

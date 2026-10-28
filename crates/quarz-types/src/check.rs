@@ -3724,6 +3724,15 @@ impl Checker {
                     return Type::Nothing;
                 };
                 let m = self.world.method(mid).clone();
+                // `initialize` runs only from `new` and `super` (docs/01
+                // §3): a reference to it would run it on a made object.
+                if name == "initialize" && !m.singleton {
+                    self.error(
+                        "`initialize` is called only by `new` and by `super` in `initialize` (in `.:initialize`)",
+                        expr.span,
+                    );
+                    return Type::Nothing;
+                }
                 let mut subst = subst;
                 subst.insert(SELF_PARAM, Self::self_binding(&m, &rt));
                 let params: Vec<Type> = m
@@ -7018,6 +7027,7 @@ impl Checker {
         let block_given =
             call.block.is_some() || call.args.iter().any(|a| matches!(a, Arg::BlockPass(_)));
         let single = cands.len() == 1;
+        let diags_at_entry = self.diagnostics.len();
         let mut failures: Vec<String> = Vec::new();
         // With several candidates, each is tried and its checks undone
         // (docs/01 §9), from the last to the first; `pick_overload` chooses
@@ -7040,6 +7050,17 @@ impl Checker {
                 continue;
             }
             let m = self.world.method(*mid).clone();
+            // `initialize` runs only from `new` and from `super` in an
+            // `initialize` (docs/01 §3): called otherwise, on any
+            // receiver, it would write a made object's immutable fields
+            // again, and a superclass's could re-enter a subclass's.
+            if m.name == "initialize" && !m.singleton && !is_init {
+                failures.push(
+                    "`initialize` is called only by `new` and by `super` in `initialize`"
+                        .to_string(),
+                );
+                continue;
+            }
             // Visibility.
             if m.visibility == Visibility::Private && !implicit_self && !is_init {
                 failures.push(format!("`{}` is private", m.name));
@@ -7312,7 +7333,10 @@ impl Checker {
                 ),
                 expr.span,
             );
-        } else if self.diagnostics.is_empty() {
+        } else if self.diagnostics.len() == diags_at_entry {
+            // The single candidate failed a check before its arguments
+            // were tried (visibility, block, `initialize`), which
+            // reported nothing: say why here.
             self.error(failures.join("; "), expr.span);
         }
         // Still type the block for its own diagnostics.
@@ -7988,6 +8012,17 @@ impl Checker {
                             }
                             return Err(msg);
                         };
+                        // `initialize` runs only from `new` and `super`
+                        // (docs/01 §3).
+                        if name == "initialize" && !self.world.method(mid).singleton {
+                            let msg = format!(
+                                "`initialize` is called only by `new` and by `super` in `initialize` (in `&:{name}`)"
+                            );
+                            if report {
+                                self.error(msg.clone(), e.span);
+                            }
+                            return Err(msg);
+                        }
                         // As Ruby's `Symbol#to_proc`, only a public method.
                         let visibility = self.world.method(mid).visibility;
                         if visibility != Visibility::Public {
