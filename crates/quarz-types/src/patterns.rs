@@ -445,15 +445,14 @@ impl Checker {
     }
 
     /// `cid` with Object for type arguments not known, when that admits
-    /// no wrong value: every parameter covariant and unbounded, or a
+    /// no wrong value: every parameter covariant with bounds `Object`
+    /// meets (as `is_a?` allows, `World::param_admits_object`), or a
     /// `data` type or variant that only holds them so
     /// (`object_args_safe`).
     pub(crate) fn guessed_args(&self, cid: ClassId) -> Option<Type> {
         let class = self.world.class(cid);
-        let covariant = class
-            .type_params
-            .iter()
-            .all(|p| p.variance == Variance::Covariant && p.bounds.is_empty());
+        let covariant =
+            (0..class.type_params.len()).all(|i| self.world.param_admits_object(cid, i));
         // The built-in immutable collections are run by natives that take
         // any value where they take a `T` (`Hash#[]`, `Range#cover?`).
         let b = &self.world.builtin;
