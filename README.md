@@ -70,7 +70,7 @@ puts counter.value        # => 100
 
 ## Design documents
 
-They can also be read at [quarz.dev](https://quarz.dev/docs/), with the standard library's API reference at [quarz.dev/std](https://quarz.dev/std/).
+For a short introduction to the language, see the [guide at quarz.dev](https://quarz.dev/guide/); the standard library's API reference is at [quarz.dev/std](https://quarz.dev/std/).
 
 | Document | Contents |
 |---|---|

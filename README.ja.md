@@ -68,7 +68,7 @@ puts counter.value        # => 100
 
 ## 設計文書
 
-[quarz.dev](https://quarz.dev/ja/docs/) でも読めます。標準ライブラリの API リファレンスは [quarz.dev/std](https://quarz.dev/std/) にあります。
+言語の短い入門は [quarz.dev のガイド](https://quarz.dev/guide/)(英語)にあります。標準ライブラリの API リファレンスは [quarz.dev/std](https://quarz.dev/std/) にあります。
 
 | 文書 | 内容 |
 |---|---|
