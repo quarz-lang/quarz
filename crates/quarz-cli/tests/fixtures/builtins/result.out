@@ -1,0 +1,49 @@
+Result::Ok(value: 1)
+Result::Err(error: "bad")
+Result::Ok(value: 2)
+Result::Err(error: "3 is odd")
+true
+false
+false
+true
+1
+nil
+nil
+"bad"
+1
+"bad"
+1
+RuntimeError: parsing: bad
+RuntimeError: unwrap_err called on an Ok: 1
+0
+3
+1
+Result::Ok(value: 1)
+Result::Err(error: 3)
+Result::Ok(value: 3)
+Result::Ok(value: 1)
+Result::Err(error: "positive")
+Result::Err(error: "1 is odd")
+ok 1
+Result::Ok(value: 1)
+err bad
+Result::Err(error: "bad")
+Result::Ok(value: 12)
+true
+ArgumentError
+12
+ArgumentError: invalid value for Integer.parse: "x"
+SystemExit goes through: 3
+Result::Ok(value: 1)
+Result::Err(error: "missing")
+Result::Ok(value: [1, 2, 3])
+Result::Err(error: "3 is odd")
+[[1, 2, 3], []]
+[[1, 2], ["3 is odd", "5 is odd"]]
+Result::Ok(value: [1, 2, 3])
+Result::Ok(value: [])
+[[], []]
+Result::Ok(value: 42)
+ArgumentError
+Result::Err(error: "gone")
+Result::Ok(value: 42)

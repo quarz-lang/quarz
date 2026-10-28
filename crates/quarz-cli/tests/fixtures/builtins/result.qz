@@ -1,0 +1,76 @@
+# Result: constructors, inspection, combinators and the bridges to
+# exceptions, `T?`, collections and tasks.
+
+def half(n: Int) -> Result[Int, String]
+  n.even? ? Result.ok(n / 2) : Result.err("#{n} is odd")
+end
+
+# Constructors, from the expected type or written.
+a: Result[Int, String] = Result.ok(1)
+b = Result[Int, String].err("bad")
+p a, b
+p half(4), half(3)
+
+# Inspection.
+p a.ok?, a.err?, b.ok?, b.err?
+p a.ok, a.err, b.ok, b.err
+p a.unwrap, b.unwrap_err, a.expect("a")
+begin
+  b.expect("parsing")
+rescue => e
+  puts "#{e.class}: #{e.message}"
+end
+begin
+  a.unwrap_err
+rescue => e
+  puts "#{e.class}: #{e.message}"
+end
+
+# Combinators.
+p b.unwrap_or(0), b.unwrap_or_else { |e| e.size }, a.unwrap_or_else { |e| e.size }
+p a.map_err { |e| e.size }, b.map_err { |e| e.size }
+p b.or_else { |e| Result[Int, Symbol].ok(e.size) }, a.or_else { |e| Result[Int, Symbol].err(:never) }
+p a.and_then { |x| x > 0 ? Result.err("positive") : Result.ok(x) }
+p half(8).and_then { |x| half(x) }.and_then { |x| half(x) }.and_then { |x| half(x) }
+p(a.on_ok { |x| puts "ok #{x}" }.on_err { |e| puts "err #{e}" })
+p(b.on_ok { |x| puts "ok #{x}" }.on_err { |e| puts "err #{e}" })
+
+# Exceptions to Result, and back.
+c = Result.capture { Integer.parse("12") }
+d = Result.capture { Integer.parse("x") }
+p c, d.err?
+p d.err.class
+p c.get
+begin
+  d.get
+rescue ArgumentError => e
+  puts "ArgumentError: #{e.message}"
+end
+begin
+  Result.capture { exit(3) }
+rescue SystemExit => e
+  puts "SystemExit goes through: #{e.status}"
+end
+
+# T? to Result.
+h = {"a" => 1}
+p Result.ok_or(h["a"]?, "missing"), Result.ok_or(h["b"]?, "missing")
+
+# Collections.
+good = [half(2), half(4), half(6)]
+mixed = [half(2), half(3), half(4), half(5)]
+p Result.all(good), Result.all(mixed)
+p Result.partition(good), Result.partition(mixed)
+p Result.all((1..3).map { |n| half(n * 2) })
+empty: Array[Result[Int, String]] = []
+p Result.all(empty), Result.partition(empty)
+
+# Tasks.
+t = Task.spawn { 6 * 7 }
+u = Task.spawn { raise ArgumentError, "no" }
+p t.result
+p u.result.err.class
+v: Task[Int] = Task.spawn { raise IOError, "gone" }
+p(v.result.map_err { |e| e.message })
+wide: Result[Int?, StandardError] = t.result[Int?]()
+p wide
