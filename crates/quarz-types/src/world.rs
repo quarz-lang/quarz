@@ -441,6 +441,29 @@ impl World {
         id
     }
 
+    /// Whether the `i`th type parameter of `cid` takes `Object` without
+    /// admitting a wrong value: covariant (values only come out), with
+    /// bounds `Object` meets, the class's parameters all being `Object`
+    /// (docs/02 §6, §7: a class test or pattern without arguments narrows
+    /// to such a class with `Object` arguments).
+    pub fn param_admits_object(&self, cid: ClassId, i: usize) -> bool {
+        let class = self.class(cid);
+        let Some(p) = class.type_params.get(i) else {
+            return false;
+        };
+        if p.variance != Variance::Covariant {
+            return false;
+        }
+        let object = Type::class(self.builtin.object);
+        let args: Vec<Type> = class.type_params.iter().map(|_| object.clone()).collect();
+        let subst = self.class_subst(cid, &args);
+        p.bounds.iter().all(|b| {
+            let b = b.subst(&subst);
+            !matches!(&b, Type::Class(bid, _) if *bid == self.builtin.shareable)
+                && self.is_subtype(&object, &b)
+        })
+    }
+
     /// The type of a `T` that a test found to be a `bound` too: a type
     /// parameter bounded by both (still a `T`, with `bound`'s methods).
     pub fn narrowed_param(&mut self, base: TypeParamId, bound: &Type) -> Type {

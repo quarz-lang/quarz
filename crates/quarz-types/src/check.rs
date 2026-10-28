@@ -9015,15 +9015,10 @@ impl Checker {
             Type::Class(id, args) if [b.array, b.set, b.hash, b.range].contains(id) => {
                 args.iter().any(|a| !object(a) && self.unverifiable_arg(a))
             }
-            Type::Class(id, args) | Type::ClassObject(id, args) => {
-                let params = &self.world.class(*id).type_params;
-                args.iter().enumerate().any(|(i, a)| {
-                    !(object(a)
-                        && params
-                            .get(i)
-                            .is_some_and(|p| p.variance == Variance::Covariant))
-                })
-            }
+            Type::Class(id, args) | Type::ClassObject(id, args) => args
+                .iter()
+                .enumerate()
+                .any(|(i, a)| !(object(a) && self.world.param_admits_object(*id, i))),
             Type::Tuple(ts) | Type::Union(ts) => ts.iter().any(|m| self.unverifiable(m)),
             Type::Proc(..) => true,
             // A type parameter is not known at run time (`o.as(T)`).

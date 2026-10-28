@@ -1,0 +1,43 @@
+# A pattern or `when` without type arguments narrows an `Object` to a
+# generic class only when `Object` arguments admit no wrong value: every
+# parameter covariant with bounds `Object` meets (as `is_a?(Box[Object])`
+# allows; docs/02 §6, §7). A bound `Object` does not meet (`SBox`), or an
+# invariant parameter (`Cell`), leaves it an `Object`.
+class Shape
+  def area -> Int = 1
+end
+class Box[out T: Object]
+  @v: T
+  def initialize(@v: T); end
+  def get -> T = @v
+end
+class SBox[out T: Shape]
+  @v: T
+  def initialize(@v: T); end
+  def get -> T = @v
+end
+class Cell[T]
+  var @v: T
+  def initialize(@v: T); end
+  def set(v: T) -> Nil
+    @v = v
+  end
+end
+def f(o: Object) -> String
+  case o
+  in Box then "box #{o.get.inspect}"
+  in SBox then "sbox"
+  in Cell then "cell"
+  else "other"
+  end
+end
+def g(o: Object) -> String
+  case o
+  when Box then "box #{o.get.inspect}"
+  else "other"
+  end
+end
+puts f(Box.new(1))
+puts f(SBox.new(Shape.new))
+puts f(Cell.new(1))
+puts g(Box.new("s"))

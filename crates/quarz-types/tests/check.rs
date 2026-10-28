@@ -431,6 +431,24 @@ fn narrowing_does_not_survive_assignments() {
 }
 
 #[test]
+fn patterns_narrow_object_to_classes_admitting_object_arguments() {
+    // `in Box`/`when Box` on an `Object` narrows to `Box[Object]` when every
+    // parameter is covariant with bounds `Object` meets, as `is_a?` allows
+    // (docs/02 §6, §7); not to a class with a bound `Object` does not meet,
+    // nor to one with an invariant parameter.
+    let shape = "class Shape\n  def area -> Int = 1\nend\n";
+    ok(&format!("{shape}class Box[out T: Object]\n  @v: T\n  def initialize(@v: T); end\n  def get -> T = @v\nend\ndef f(o: Object) -> String\n  case o\n  in Box then o.get.inspect\n  else \"other\"\n  end\nend\ndef g(o: Object) -> String\n  case o\n  when Box then o.get.inspect\n  else \"other\"\n  end\nend\nputs f(Box.new(1))\nputs g(Box.new(1))"));
+    err(
+        &format!("{shape}class SBox[out T: Shape]\n  @v: T\n  def initialize(@v: T); end\n  def get -> T = @v\nend\ndef f(o: Object) -> Int\n  case o\n  in SBox then o.get.area\n  else 0\n  end\nend"),
+        "undefined method `get` for Object",
+    );
+    err(
+        "class Cell[T]\n  var @v: T\n  def initialize(@v: T); end\n  def set(v: T) -> Nil\n    @v = v\n  end\nend\ndef f(o: Object) -> Nil\n  case o\n  in Cell then o.set(\"s\")\n  else nil\n  end\nend",
+        "undefined method `set` for Object",
+    );
+}
+
+#[test]
 fn case_on_self() {
     // `case` on `Self` matches as on the receiver's class.
     no_warnings("enum R[T, E]\n  variant Ok(value: T)\n  variant Err(error: E)\n  def on_ok(&: (T) -> Nil) -> Self\n    case self\n    in Ok(value:) then yield(value)\n    in Err then nil\n    end\n    self\n  end\nend");
