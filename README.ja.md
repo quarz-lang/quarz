@@ -70,37 +70,7 @@ puts counter.value        # => 100
 
 言語の短い入門は [quarz.dev のガイド](https://quarz.dev/guide/)(英語)にあります。標準ライブラリの API リファレンスは [quarz.dev/std](https://quarz.dev/std/) にあります。
 
-| 文書 | 内容 |
-|---|---|
-| [docs/01-syntax.md](docs/01-syntax.ja.md) | 文法。クラス、`data`、`enum`、`module`、`extension`/`using`、メソッド定義、ブロック、パターンマッチ、例外 |
-| [docs/02-types.md](docs/02-types.ja.md) | 型システム。合併型と nil 安全性、ジェネリクスと変位、推論、フロー型付け、多重定義 |
-| [docs/03-data-model.md](docs/03-data-model.ja.md) | 不変データと Builder、`Shareable` の導出規則、等価性、文字列、Ruby の慣用句の書き換え |
-| [docs/04-concurrency.md](docs/04-concurrency.ja.md) | タスク、構造化並行性とキャンセル、チャネルと `Channel.select`、`Atom`、アクターと監視、ランタイム |
-| [docs/05-execution.md](docs/05-execution.ja.md) | インタプリタと AOT コンパイラ、QIR、分割コンパイル、参照カウントによるメモリ管理、ブートストラップ計画 |
-| [docs/06-stdlib.md](docs/06-stdlib.ja.md) | 標準ライブラリ。Ruby の組み込みクラスとの対応 |
-| [docs/07-ruby-diff.md](docs/07-ruby-diff.ja.md) | Ruby からの変更点 早見表 |
-| [docs/08-crystal-diff.md](docs/08-crystal-diff.ja.md) | Crystal との違い 早見表 |
-| [docs/09-grammar.md](docs/09-grammar.ja.md) | 文法スケッチ(EBNF) |
-| [docs/10-cogs.md](docs/10-cogs.ja.md) | cog(パッケージ)。コミットで固定する git リポジトリ、`Cog.toml`/`Cog.lock`、cog ごとに 1 モジュール、`require` 不要、キーワード `cog` |
-| [docs/11-http.md](docs/11-http.ja.md) | HTTP サーバ。応答を返すハンドラ、接続ごとのタスク、ルータ、`Signal`。`HTTP::Client` は後から |
-| [docs/12-testing.md](docs/12-testing.ja.md) | テスト。Test::Unit 風の `Test::Case`、コンパイラが見つけるテスト、型付きの assertion、データ駆動、`quarz test` |
-| [docs/13-doc-comments.md](docs/13-doc-comments.ja.md) | ドキュメントコメント。宣言の上のコメント、Markdown、検査されるリンク、`quarz test` が実行する例、`quarz doc` |
-| [examples/](examples/) | サンプルコード(`hello`、`shapes`、`wordcount`、`pipeline`、`bank_actor`、`extension`、`builder`) |
-
-## 設計上の主な判断
-
-| 判断 | 選んだもの | 理由 |
-|---|---|---|
-| 型注釈の位置 | 引数と戻り値は必須(戻り値を省略すると nil)、ローカルは推論 | コンパイル時間の短縮とエラーの質のため |
-| 引数の型の書き方 | `name: Type`、キーワード専用は `*` の後 | Ruby のラベル構文を流用でき、空白に意味を持たせずに済む |
-| `nil` | 独立した型。`T?` でのみ許容 | 実行時の `NoMethodError` をコンパイル時に |
-| 直和型 | `enum` | メッセージ型と `case/in` の網羅性検査のため |
-| 既存クラスの拡張 | `extension` + `using`(静的 refinements) | 再オープンを許さず、影響範囲を字句スコープに限定 |
-| コレクション | 不変の値(共有されていればコピーして更新)+ Builder | 共有の安全性と、一意性を利用したその場更新による速度 |
-| 共有可変状態 | 禁止。`Atom` と `Channel` のみ | データ競合をコンパイル時に排除。ロック不要 |
-| 軽量スレッド | スタックを持つ M:N タスク(`mmap` 予約 + 遅延コミット) | async/await の色分けなしに Ruby 風の同期コードを書ける |
-| メモリ管理 | 参照カウント + その場更新 + 可変オブジェクト限定のサイクル回収 | AOT との相性(スタックマップ不要)、不変値のその場更新 |
-| `arr[i]`/`h[k]` | 範囲外・欠損は例外。`[]?` が `nil` | 静的型の下で `nil` 検査を書く手間を減らす(Crystal の実績) |
+設計文書 `docs/0N-*.md` は言語とその実装を詳しく説明します。一覧と設計上の主な判断は [docs/README.ja.md](docs/README.ja.md) にあります。
 
 ## 状態
 

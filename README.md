@@ -72,37 +72,7 @@ puts counter.value        # => 100
 
 For a short introduction to the language, see the [guide at quarz.dev](https://quarz.dev/guide/); the standard library's API reference is at [quarz.dev/std](https://quarz.dev/std/).
 
-| Document | Contents |
-|---|---|
-| [docs/01-syntax.md](docs/01-syntax.md) | Syntax. Classes, `data`, `enum`, `module`, `extension`/`using`, method definitions, blocks, pattern matching, exceptions |
-| [docs/02-types.md](docs/02-types.md) | Type system. Union types and nil safety, generics and variance, inference, flow typing, overloading |
-| [docs/03-data-model.md](docs/03-data-model.md) | Immutable data and Builders, derivation rules for `Shareable`, equality, strings, rewriting Ruby idioms |
-| [docs/04-concurrency.md](docs/04-concurrency.md) | Tasks, structured concurrency and cancellation, channels and `Channel.select`, `Atom`, actors and supervision, the runtime |
-| [docs/05-execution.md](docs/05-execution.md) | Interpreter and AOT compiler, QIR, separate compilation, reference-counted memory management, implementation plan |
-| [docs/06-stdlib.md](docs/06-stdlib.md) | Standard library. Correspondence with Ruby's built-in classes |
-| [docs/07-ruby-diff.md](docs/07-ruby-diff.md) | Quick reference of changes from Ruby |
-| [docs/08-crystal-diff.md](docs/08-crystal-diff.md) | Quick reference of differences from Crystal |
-| [docs/09-grammar.md](docs/09-grammar.md) | Grammar sketch (EBNF) |
-| [docs/10-cogs.md](docs/10-cogs.md) | Cogs (packages): git repositories pinned by commit, `Cog.toml`/`Cog.lock`, one module per cog, no `require`, the `cog` keyword |
-| [docs/11-http.md](docs/11-http.md) | HTTP server: handlers returning responses, one task per connection, router, `Signal`; `HTTP::Client` later |
-| [docs/12-testing.md](docs/12-testing.md) | Testing: Test::Unit-style `Test::Case`, tests found by the compiler, typed assertions, data-driven tests, `quarz test` |
-| [docs/13-doc-comments.md](docs/13-doc-comments.md) | Documentation comments: the comment above a declaration, Markdown, checked links, examples run by `quarz test`, `quarz doc` |
-| [examples/](examples/) | Sample code (`hello`, `shapes`, `wordcount`, `pipeline`, `bank_actor`, `extension`, `builder`) |
-
-## Main design decisions
-
-| Decision | Choice | Reason |
-|---|---|---|
-| Where type annotations go | Required on parameters and return types (none means nil); locals are inferred | Shorter compile times and better error messages |
-| Parameter type syntax | `name: Type`; keyword-only parameters after `*` | Reuses Ruby's label syntax without making whitespace significant |
-| `nil` | A separate type, allowed only via `T?` | Turns runtime `NoMethodError`s into compile-time errors |
-| Sum types | `enum` | For message types and exhaustiveness checking in `case/in` |
-| Extending existing classes | `extension` + `using` (static refinements) | No reopening; the effect is limited to a lexical scope |
-| Collections | Immutable values (copied on update when shared) + Builders | Safe sharing, and speed through in-place updates exploiting uniqueness |
-| Shared mutable state | Forbidden. Only `Atom` and `Channel` | Data races eliminated at compile time. No locks |
-| Lightweight threads | Stackful M:N tasks (`mmap` reservation + lazy commit) | Ruby-style synchronous code without async/await function coloring |
-| Memory management | Reference counting + in-place updates + cycle collection limited to mutable objects | Fits AOT (no stack maps), in-place updates of immutable values |
-| `arr[i]`/`h[k]` | Out of range / missing key raises. `[]?` returns `nil` | Reduces the nil checks you have to write under static typing (proven by Crystal) |
+The design documents, `docs/0N-*.md`, describe the language and its implementation in full; [docs/README.md](docs/README.md) lists them, with the main design decisions.
 
 ## Status
 
