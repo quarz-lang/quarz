@@ -21,7 +21,7 @@ module Describing
   end
 end
 
-def show(x: Describable) -> Nil
+def show(x: Describable) -> Void
   puts x.describe
 end
 

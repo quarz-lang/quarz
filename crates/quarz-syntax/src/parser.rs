@@ -3278,6 +3278,12 @@ impl<'src> Parser<'src> {
                         kind: TypeExprKind::Nothing,
                     });
                 }
+                if path.names.len() == 1 && path.names[0] == "Void" && args.is_empty() {
+                    return Ok(TypeExpr {
+                        span,
+                        kind: TypeExprKind::Void,
+                    });
+                }
                 Ok(TypeExpr {
                     span,
                     kind: TypeExprKind::Named { path, args },
@@ -4073,7 +4079,7 @@ impl<'src> Parser<'src> {
                         self.bump();
                         (ParamKind::Block, name, false)
                     }
-                    // `&: (Int) -> Nil`: an anonymous block, used with
+                    // `&: (Int) -> Void`: an anonymous block, used with
                     // `yield` or forwarded as `f(&)`.
                     T::Colon => (ParamKind::Block, "&".to_string(), false),
                     _ => return Err(self.error_expected("a name or `:` after `&`")),

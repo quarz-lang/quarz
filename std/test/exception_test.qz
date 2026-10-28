@@ -11,7 +11,7 @@ end
 class ExceptionTest < Test::Case
   var @log: Array[String] = []
 
-  def record(s: String) -> Nil
+  def record(s: String) -> Void
     @log = @log.push(s)
     nil
   end
@@ -91,7 +91,7 @@ class ExceptionTest < Test::Case
     assert_equal(["body", "else", "ensure"], @log)
   end
 
-  def risky -> Nil
+  def risky -> Void
     raise KeyError, "k"
   end
 
@@ -119,7 +119,7 @@ end
 # as Ruby's `$!`: in a `rescue` clause and what it calls, and in an
 # `ensure` clause an exception passes through.
 class ExceptionCauseTest < Test::Case
-  def caught(&: () -> Nil) -> Exception
+  def caught(&: () -> Void) -> Exception
     begin
       yield
     rescue Exception => e

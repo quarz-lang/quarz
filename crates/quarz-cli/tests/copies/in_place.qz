@@ -47,7 +47,7 @@ n.times { |k| s = s.add(k % 100) }
 class Log
   var @lines: Array[String] = []
   attr_reader :lines
-  def add(line: String) -> Nil
+  def add(line: String) -> Void
     @lines = @lines.push(line)
   end
 end

@@ -93,7 +93,7 @@ class Sized
     @n = n
   end
   def n -> Int = @n
-  def into=(b: Set::Builder[Sized]) -> Nil
+  def into=(b: Set::Builder[Sized]) -> Void
     @into = b
   end
   def ==(o: Object) -> Bool = o.is_a?(Sized) && n == o.n
@@ -114,7 +114,7 @@ p sized.size, sized.include?(Sized.new(2))
 # A key's `==` may not change the builder being looked up.
 class Spy
   var @into: Set::Builder[Spy]? = nil
-  def into=(b: Set::Builder[Spy]) -> Nil
+  def into=(b: Set::Builder[Spy]) -> Void
     @into = b
   end
   def ==(o: Object) -> Bool

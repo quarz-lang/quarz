@@ -6,6 +6,6 @@ class FastTest < Test::Case
     flunk("first")
   end
 
-  def test_b -> Nil = sleep(2.seconds)
-  def test_c -> Nil = sleep(2.seconds)
+  def test_b -> Void = sleep(2.seconds)
+  def test_c -> Void = sleep(2.seconds)
 end

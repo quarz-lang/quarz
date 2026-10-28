@@ -5,23 +5,23 @@ class R
   @name: String
   def initialize(@name: String) end
   def name -> String = @name
-  def deinitialize -> Nil
+  def deinitialize -> Void
     puts("fin #{@name}")
   end
 end
 
-def make -> Nil
+def make -> Void
   r = R.new("method")
   pr = -> { r.name }
   puts(pr.call)
 end
 
-def twice(&: (Int) -> Nil) -> Nil
+def twice(&: (Int) -> Void) -> Void
   yield(1)
   yield(2)
 end
 
-def blocks -> Nil
+def blocks -> Void
   twice do |i|
     r = R.new("pass #{i}")
     pr = -> { r.name }
@@ -31,7 +31,7 @@ def blocks -> Nil
 end
 
 class Holder
-  def run -> Nil
+  def run -> Void
     r = R.new("instance method")
     pr = -> { r.name }
     puts(pr.call)
@@ -49,10 +49,10 @@ puts("after run")
 # method returns (above). A receiver used last by the call goes at its
 # end too, also when the method is inlined.
 class H
-  def deinitialize -> Nil
+  def deinitialize -> Void
     puts("fin H")
   end
-  def plain -> Nil
+  def plain -> Void
     puts("plain")
   end
 end
@@ -87,7 +87,7 @@ end
 puts(keep)
 
 # Left by an exception: finalized at the next call's end.
-def boom -> Nil
+def boom -> Void
   r = R.new("boom")
   pr = -> { r.name }
   puts(pr.call)
@@ -102,7 +102,7 @@ puts("end")
 
 # `break` or `return` out of a block through its `ensure`: the ensure
 # body still sees the block's variables, which go after it.
-def each_twice(&: (Int) -> Nil) -> Nil
+def each_twice(&: (Int) -> Void) -> Void
   yield(1)
   yield(2)
 end

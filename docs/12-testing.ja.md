@@ -61,56 +61,56 @@ module Test
   # assertion。`Case` が include し、テストや補助のモジュールも include
   # できる(§7)。それぞれ `add_assertion` で自分を数える
   module Assertions
-    abstract def add_assertion -> Nil
+    abstract def add_assertion -> Void
 
-    def assert(value: Object?, message: String? = nil) -> Nil        # 真
-    def refute(value: Object?, message: String? = nil) -> Nil        # 偽
-    def assert_true(value: Bool, message: String? = nil) -> Nil
-    def assert_false(value: Bool, message: String? = nil) -> Nil
-    def assert_equal[T](expected: T, actual: T?, message: String? = nil) -> Nil
-    def refute_equal[T](expected: T, actual: T?, message: String? = nil) -> Nil
-    def assert_nil(value: Object?, message: String? = nil) -> Nil
-    def refute_nil(value: Object?, message: String? = nil) -> Nil
-    def assert_same(expected: Object, actual: Object, message: String? = nil) -> Nil   # equal?
-    def assert_in_delta(expected: Float, actual: Float, delta: Float = 0.001, message: String? = nil) -> Nil
-    def assert_in_epsilon(expected: Float, actual: Float, epsilon: Float = 0.001, message: String? = nil) -> Nil
-    def assert_match(pattern: Regexp, actual: String, message: String? = nil) -> Nil
-    def refute_match(pattern: Regexp, actual: String, message: String? = nil) -> Nil
-    def assert_includes[T](collection: Enumerable[T], element: T, message: String? = nil) -> Nil
-    def refute_includes[T](collection: Enumerable[T], element: T, message: String? = nil) -> Nil
-    def assert_empty(collection: Enumerable[Object], message: String? = nil) -> Nil
-    def refute_empty(collection: Enumerable[Object], message: String? = nil) -> Nil
-    def assert_empty(text: String, message: String? = nil) -> Nil
-    def refute_empty(text: String, message: String? = nil) -> Nil
-    def assert_compare[T <: Comparable[T]](lhs: T, op: Symbol, rhs: T, message: String? = nil) -> Nil   # :<, :<=, :>, :>=, :==
-    def assert_raise(klass: Class, message: String? = nil, &: () -> Nil) -> Exception   # klass かそのサブクラス
-    def assert_raise_message(pattern: Regexp | String, &: () -> Nil) -> Exception
-    def assert_nothing_raised(message: String? = nil, &: () -> Nil) -> Nil
+    def assert(value: Object?, message: String? = nil) -> Void        # 真
+    def refute(value: Object?, message: String? = nil) -> Void        # 偽
+    def assert_true(value: Bool, message: String? = nil) -> Void
+    def assert_false(value: Bool, message: String? = nil) -> Void
+    def assert_equal[T](expected: T, actual: T?, message: String? = nil) -> Void
+    def refute_equal[T](expected: T, actual: T?, message: String? = nil) -> Void
+    def assert_nil(value: Object?, message: String? = nil) -> Void
+    def refute_nil(value: Object?, message: String? = nil) -> Void
+    def assert_same(expected: Object, actual: Object, message: String? = nil) -> Void   # equal?
+    def assert_in_delta(expected: Float, actual: Float, delta: Float = 0.001, message: String? = nil) -> Void
+    def assert_in_epsilon(expected: Float, actual: Float, epsilon: Float = 0.001, message: String? = nil) -> Void
+    def assert_match(pattern: Regexp, actual: String, message: String? = nil) -> Void
+    def refute_match(pattern: Regexp, actual: String, message: String? = nil) -> Void
+    def assert_includes[T](collection: Enumerable[T], element: T, message: String? = nil) -> Void
+    def refute_includes[T](collection: Enumerable[T], element: T, message: String? = nil) -> Void
+    def assert_empty(collection: Enumerable[Object], message: String? = nil) -> Void
+    def refute_empty(collection: Enumerable[Object], message: String? = nil) -> Void
+    def assert_empty(text: String, message: String? = nil) -> Void
+    def refute_empty(text: String, message: String? = nil) -> Void
+    def assert_compare[T <: Comparable[T]](lhs: T, op: Symbol, rhs: T, message: String? = nil) -> Void   # :<, :<=, :>, :>=, :==
+    def assert_raise(klass: Class, message: String? = nil, &: () -> Void) -> Exception   # klass かそのサブクラス
+    def assert_raise_message(pattern: Regexp | String, &: () -> Void) -> Exception
+    def assert_nothing_raised(message: String? = nil, &: () -> Void) -> Void
 
     def flunk(message: String = "Flunked") -> Nothing
     def pend(message: String = "pending") -> Nothing     # テストはここで終わり、保留として数える
-    def pend(message: String = "pending", &: () -> Nil) -> Nil   # ブロックが失敗すれば保留、通れば失敗
+    def pend(message: String = "pending", &: () -> Void) -> Void   # ブロックが失敗すれば保留、通れば失敗
     def omit(message: String = "omitted") -> Nothing     # テストはここで終わり、省略として数える
-    def omit_if(condition: Bool, message: String = "omitted") -> Nil
-    def omit_unless(condition: Bool, message: String = "omitted") -> Nil
+    def omit_if(condition: Bool, message: String = "omitted") -> Void
+    def omit_unless(condition: Bool, message: String = "omitted") -> Void
   end
 
   class Case
     include Assertions
 
     # 各テストの前後。インスタンスはテストごとに新しい
-    def setup -> Nil = nil
-    def teardown -> Nil = nil
+    def setup -> Void = nil
+    def teardown -> Void = nil
     # クラスのテスト全体の前後に 1 回。インスタンスなし(クラスメソッド)
-    def self.startup -> Nil = nil
-    def self.shutdown -> Nil = nil
+    def self.startup -> Void = nil
+    def self.shutdown -> Void = nil
 
     # このクラスのテストの制限時間(既定は実行全体のもの、60 秒)
     def self.timeout -> Duration? = nil
     # --parallel でもこのクラスのテストを 1 つずつ実行するか(§6)
     def self.serial? -> Bool = false
 
-    def notify(message: String) -> Nil                   # 報告に載せるメモ
+    def notify(message: String) -> Void                   # 報告に載せるメモ
   end
 end
 ```
@@ -165,7 +165,7 @@ suites: Array[Test::Suite] = [
 exit Test.run(ARGV, suites)
 ```
 
-- `Test::Suite` は、クラス名、ファイル、インスタンスの作り方(`shareable () -> Test::Case`。`Test::Case` のサブクラスはパラメータ付きの `initialize` を持てません。持つとランナーの `.new` がコンパイルできず、そう報告されます)、エントリを持ちます。`Test::Entry` はテストの名前、ファイルと行(そのメソッドのもの。継承したテストでは基底クラスやモジュールのもの)、呼び出し(`shareable (Test::Case) -> Nil`。データでは行のラベルと、1 つを取る呼び出し)です。どちらもジェネリックではありません。複数のクラスのスイートを 1 つの配列に入れるためで、`Suite[C]` ではそれができません(`Suite[StackTest]` と `Suite[ParseTest]` の配列は union であって `Suite[Case]` ではありません)。そのため生成されるラムダは、インスタンスをスイートのクラスへ `as` でキャストします。これは失敗しません。どちらも Shareable で、手続きは `shareable` です。生成されるラムダは何も捕捉しないのでこれを満たし、テストを別のタスクで実行できます(§6)。`Test.run` がそれらを実行し、報告を出し、失敗かエラーがあれば 1 で終了します(すべて通過か保留か省略なら 0)。
+- `Test::Suite` は、クラス名、ファイル、インスタンスの作り方(`shareable () -> Test::Case`。`Test::Case` のサブクラスはパラメータ付きの `initialize` を持てません。持つとランナーの `.new` がコンパイルできず、そう報告されます)、エントリを持ちます。`Test::Entry` はテストの名前、ファイルと行(そのメソッドのもの。継承したテストでは基底クラスやモジュールのもの)、呼び出し(`shareable (Test::Case) -> Void`。データでは行のラベルと、1 つを取る呼び出し)です。どちらもジェネリックではありません。複数のクラスのスイートを 1 つの配列に入れるためで、`Suite[C]` ではそれができません(`Suite[StackTest]` と `Suite[ParseTest]` の配列は union であって `Suite[Case]` ではありません)。そのため生成されるラムダは、インスタンスをスイートのクラスへ `as` でキャストします。これは失敗しません。どちらも Shareable で、手続きは `shareable` です。生成されるラムダは何も捕捉しないのでこれを満たし、テストを別のタスクで実行できます(§6)。`Test.run` がそれらを実行し、報告を出し、失敗かエラーがあれば 1 で終了します(すべて通過か保留か省略なら 0)。
 - ランナーは、テストファイルを宣言・検査した後に生成します(何が `Test::Case` を継承するかは構文からは見えません。別名や抽象クラスの基底があるためです)。そして、`Session::require` が REPL にファイルを足すのと同じ方法(`quarz_types::check_with_extra`)で、検査済みのプログラムにもう 1 つの単位として加えます。全体を 2 回検査するのではありません。その警告は出しません(いつも例外を投げるテストでは、呼び出しの後の `nil` が到達不能になります)。エラーはテストメソッドの位置で報告します。
 - 1 つのテストは次のように動きます。クラスの最初のテストの前に `startup` を 1 回。各テストでは新しいインスタンスに `setup`、テスト、`teardown`(失敗やタイムアウトの後も。キャンセル不能に、独自の制限時間で実行されるので、1 つのテストは最長で制限時間の 2 倍、後述の残したタスクを待つ時間も含めると 3 倍(と最大 50ms の 2 倍)かかります。その中で起きた問題は「teardown timed out after 60s」や「teardown: RuntimeError: ...」として teardown のものと報告され、成功したテストではエラー(その中でアサーションが失敗したなら失敗)に、失敗したテストでは報告に 1 行加わり、保留・省略のテストは理由を残したエラーになります)。各テストは `Task.timeout(limit)` の中で動くので、永遠に待つテスト(チャネル、ソケット、`sleep`)はエラー(「Task::Timeout: timed out after 60s」)になって、実行全体は止まりません。待たないループは、どのプログラムでもそうであるように実行を止めてしまいます([04-concurrency.ja.md](04-concurrency.ja.md) §2)。タイムアウトは `StandardError` の `Task::Timeout` なので、テスト対象のコードの `rescue => e` が飲み込むことがあり、そのときランナーはテストを終わらなかったものとして失敗にします。テストが動かしたまま残したタスク(テスト、`setup`、`teardown` の中で `Task.spawn` したものと、それらが起動したもの)は、teardown が終わった後にキャンセルされ、スコープの子と同じく終わるまで待たれます(キャンセルされる途中で `ensure` などから起動されたタスクも、続けてキャンセルされます。何も実行しないこともあります。その中の `Task.timeout` のブロックやスコープは、そのタスク自身のコードとして、そのタスクとともに終わります)。そのため、次のテストに入り込むことも、`exit` で実行全体を終わらせることもありません(キャンセルされたときに `exit` するものは除きます)。テストの制限時間が過ぎても動いているもの(`Task.uncancellable` の中や、待たないループなど、キャンセルしても終わらないもの。待たないループは、ワーカーが 1 つなら実行全体を止めてしまいます)は、「1 task left running after the test (cancelled, not ended within 60s)」としてそのテストのエラーになり、そのまま動き続けます。`setup` で起動したタスクは `teardown` の時点ではまだ動いています。テストが後のテストのために起動したタスク(初めて使うときに起動して定数に保持するサービスなど)もキャンセルされるので、そうしたタスクは `startup` で起動してください。クラスの最後のテストの後に `shutdown`。
 - テストが投げた `Test::AssertionFailed` 以外のものは**エラー**(E)で、クラス、メッセージ、バックトレースを出します。インスタンスを作れなかったテスト(フィールドの初期化式が例外を投げた)、`data_*` メソッドが例外を投げたデータ駆動のテスト、`startup` が例外を投げたクラスのすべてのテストもエラーです(そのときその `shutdown` は動きません)。例外を投げた `shutdown` はそれだけで 1 つのエラーとして報告します。実行は続き、終了ステータスは 1 です。`DeadlockError`(すべてのタスクが待っていて、タイマーもない)はどのプログラムでもそうであるようにプロセスを終わらせ、ランナーには捕まえられません。制限時間付きで動いているテストの間はタイマーがあるので起きず、`--timeout=0` のときだけ起きます。

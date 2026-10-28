@@ -6,7 +6,7 @@ class Plain
 end
 class Res < Plain
   include Shareable
-  def deinitialize -> Nil
+  def deinitialize -> Void
     puts "release"
   end
 end

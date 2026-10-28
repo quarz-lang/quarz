@@ -56,7 +56,7 @@ class Account
   var @balance: Int = 0    # mutable field → this class is not Shareable
   attr_reader :id, :balance
   def initialize(@id: Int); end
-  def deposit(amount: Int) -> Nil
+  def deposit(amount: Int) -> Void
     @balance += amount
   end
 end

@@ -1,5 +1,5 @@
 # A method, block or lambda declared to return Nil returns nil.
-def nl -> Nil
+def nl -> Void
   5
 end
 p nl
@@ -8,9 +8,9 @@ def early(x: Int) -> Nil
   nil
 end
 p early(1)
-l = ->(x: Int) -> Nil { x }
+l = ->(x: Int) -> Void { x }
 p l.call(3)
-def run_block(&: () -> Nil) -> Nil
+def run_block(&: () -> Void) -> Void
   r = yield
   p r
 end

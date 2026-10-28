@@ -146,6 +146,7 @@ pub fn type_sexp(ty: &TypeExpr) -> String {
         ),
         TypeExprKind::SelfType => "self".to_string(),
         TypeExprKind::Nothing => "Nothing".to_string(),
+        TypeExprKind::Void => "Void".to_string(),
     }
 }
 

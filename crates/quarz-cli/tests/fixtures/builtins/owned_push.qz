@@ -5,7 +5,7 @@ class Bag
   var @names: Array[String]
   attr_reader :items, :names
   def initialize; @items = []; @names = []; end
-  def add(x: Int) -> Nil
+  def add(x: Int) -> Void
     @items = @items.push(x)
     @names = @names.push(x.to_s)
   end

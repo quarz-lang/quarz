@@ -54,7 +54,7 @@ class Account
   var @balance: Int = 0    # 可変フィールド → このクラスは Shareable ではない
   attr_reader :id, :balance
   def initialize(@id: Int); end
-  def deposit(amount: Int) -> Nil
+  def deposit(amount: Int) -> Void
     @balance += amount
   end
 end

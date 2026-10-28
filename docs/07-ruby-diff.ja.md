@@ -11,7 +11,7 @@ Ruby を知っている人が Quarz を書き始めるときに最初に引っ�
 | 項目 | Ruby | Quarz |
 |---|---|---|
 | メソッドの引数 | `def f(a, b = 1, k:)` | `def f(a: Int, b: Int = 1, *, k: Bool)` — 引数型は必須 |
-| 戻り値型 | 言語の一部ではない(シグネチャはコードとは別の RBS ファイルか、Sorbet の `sig` で書ける) | `def f(...) -> Int`(省略したメソッドは nil を返す) |
+| 戻り値型 | 言語の一部ではない(シグネチャはコードとは別の RBS ファイルか、Sorbet の `sig` で書ける) | `def f(...) -> Int`。省略したメソッドは `-> Void` で、本体の値を捨てて nil を返す(`-> Nil` は他の型と同じく厳密) |
 | キーワード引数の宣言 | `k:` ラベル | `*` の後ろに書く。`*` の前の引数は位置でもキーワードでも渡せる |
 | インスタンス変数 | 代入すれば生える | `@x: Int` でクラス本体に宣言。既定で不変、可変は `var @x: Int` |
 | 未初期化のインスタンス変数 | `nil` | 見えない。型が `nil` を許さず初期化子もないフィールドは、`initialize` のすべての経路で、オブジェクトを使う前に代入する(しなければコンパイルエラー) |
@@ -59,7 +59,7 @@ Ruby を知っている人が Quarz を書き始めるときに最初に引っ�
 - `Result[T, E]`
 - `Shareable`(自動導出のマーカー)
 - `obj.:method`(メソッド参照)
-- DSL 向けのレシーバ付きブロック(`Html.() -> Nil` を `instance_exec` で実行)と `using M do ... end`
+- DSL 向けのレシーバ付きブロック(`Html.() -> Void` を `instance_exec` で実行)と `using M do ... end`
 - `[]?`、`gets?` などの `nil` 許容版
 
 ## 書き換えの例
@@ -105,7 +105,7 @@ puts Inventory.new.add("apple").add("pear", 2).report
 class Inventory
   var @items: Hash[String, Int] = {}
 
-  def add(name: String, qty: Int = 1) -> Nil
+  def add(name: String, qty: Int = 1) -> Void
     @items = @items.update(name) { |q| (q || 0) + qty }
   end
 

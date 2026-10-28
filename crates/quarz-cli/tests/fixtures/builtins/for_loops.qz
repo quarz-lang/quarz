@@ -18,7 +18,7 @@ def squares(n: Int) -> Array[Int] = for i in 0...n do i * i end
 p squares(4)
 
 # Not used: a method declared to return Nil, a block that returns Nil.
-def show(n: Int) -> Nil
+def show(n: Int) -> Void
   for i in 0...n, j in 0...n when i < j do
     puts "#{i} #{j}"
   end

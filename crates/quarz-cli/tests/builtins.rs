@@ -44,9 +44,9 @@ fn the_next_program_on_a_thread_finalizes_nothing_of_the_last() {
 #[test]
 fn the_next_program_on_a_thread_collects_nothing_of_the_last() {
     let (_, out) = common::run(
-        "class Node\n  var @peer: Node? = nil\n  def link(n: Node) -> Nil\n    @peer = n\n    nil\n  end\n  \
-         def deinitialize -> Nil\n    puts \"node\"\n  end\nend\n\
-         def pair -> Nil\n  a = Node.new\n  b = Node.new\n  a.link(b)\n  b.link(a)\n  nil\nend\n\
+        "class Node\n  var @peer: Node? = nil\n  def link(n: Node) -> Void\n    @peer = n\n    nil\n  end\n  \
+         def deinitialize -> Void\n    puts \"node\"\n  end\nend\n\
+         def pair -> Void\n  a = Node.new\n  b = Node.new\n  a.link(b)\n  b.link(a)\n  nil\nend\n\
          3.times { pair }\nputs \"first\"\n",
         &[],
     );
@@ -54,7 +54,7 @@ fn the_next_program_on_a_thread_collects_nothing_of_the_last() {
     // A class of its own at the same id, which the first program's
     // objects must not be finalized as.
     common::expect(
-        "class Other\n  var @peer: Other? = nil\n  def deinitialize -> Nil\n    puts \"other\"\n  end\nend\n\
+        "class Other\n  var @peer: Other? = nil\n  def deinitialize -> Void\n    puts \"other\"\n  end\nend\n\
          class Cell\n  var @next: Cell? = nil\nend\n\
          30000.times { Cell.new }\nputs \"second\"\n",
         "second\n",

@@ -8,12 +8,12 @@ class Res
   def initialize(@name: String)
   end
   def name -> String = @name
-  def deinitialize -> Nil
+  def deinitialize -> Void
     puts "  deinitialize #{@name}"
   end
 end
 
-def attempt(what: String, &blk: () -> Nil) -> Nil
+def attempt(what: String, &blk: () -> Void) -> Void
   puts what
   begin
     blk.call
@@ -31,7 +31,7 @@ class Half
     @n = 1
     raise "after" if fail_after
   end
-  def deinitialize -> Nil
+  def deinitialize -> Void
     puts "  deinitialize half #{@n}"
   end
 end
@@ -46,7 +46,7 @@ class Base
     @a = 1
     raise "in base" if fail
   end
-  def deinitialize -> Nil
+  def deinitialize -> Void
     puts "  deinitialize #{self.class.name}"
   end
 end
@@ -71,7 +71,7 @@ class Free
   def initialize
     raise "free"
   end
-  def deinitialize -> Nil
+  def deinitialize -> Void
     puts "  deinitialize free"
   end
 end
@@ -81,7 +81,7 @@ class Params
   def initialize(@n: Int)
     raise "params"
   end
-  def deinitialize -> Nil
+  def deinitialize -> Void
     puts "  deinitialize params #{@n}"
   end
 end
@@ -98,7 +98,7 @@ class Branches
     end
     raise "branches"
   end
-  def deinitialize -> Nil
+  def deinitialize -> Void
     puts "  deinitialize branches #{@n}"
   end
 end
@@ -116,7 +116,7 @@ class Ensured
     end
     raise "ensured"
   end
-  def deinitialize -> Nil
+  def deinitialize -> Void
     puts "  deinitialize ensured #{@a + @b}"
   end
 end
@@ -138,7 +138,7 @@ class Rescued
     end
     raise "rescued"
   end
-  def deinitialize -> Nil
+  def deinitialize -> Void
     puts "  deinitialize rescued #{@a} #{@b}"
   end
 end
@@ -148,7 +148,7 @@ attempt("completed by the rescue and the ensure") { Rescued.new(true); nil }
 # A field default that raises fails before the object is usable.
 class Defaulted
   @n: Int = [1, 2][9]
-  def deinitialize -> Nil
+  def deinitialize -> Void
     puts "  deinitialize defaulted"
   end
 end
@@ -157,12 +157,12 @@ attempt("a field default") { Defaulted.new; nil }
 # Leaving by `break` from the block given to `new` fails the same way.
 class Yielding
   @n: Int
-  def initialize(before: Bool, &blk: () -> Nil)
+  def initialize(before: Bool, &blk: () -> Void)
     blk.call if before
     @n = 1
     blk.call
   end
-  def deinitialize -> Nil
+  def deinitialize -> Void
     puts "  deinitialize yielding #{@n}"
   end
 end
@@ -184,11 +184,11 @@ class Escaping
     into.it = self
     raise "escaping"
   end
-  def deinitialize -> Nil
+  def deinitialize -> Void
     puts "  deinitialize escaping #{@n}"
   end
 end
-def escape -> Nil
+def escape -> Void
   held = Holder.new
   begin
     Escaping.new(held)

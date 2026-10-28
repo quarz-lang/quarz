@@ -7,7 +7,7 @@ enum Msg
   variant Stop
 end
 
-def account_actor(inbox: Channel[Msg]) -> Nil
+def account_actor(inbox: Channel[Msg]) -> Void
   balance = 0
   inbox.each do |msg|
     case msg
@@ -34,7 +34,7 @@ class Account
   @inbox: Channel[Msg]
   def initialize(@inbox: Channel[Msg]); end
 
-  def deposit(amount: Int) -> Nil = @inbox.send(Msg::Deposit.new(amount))
+  def deposit(amount: Int) -> Void = @inbox.send(Msg::Deposit.new(amount))
 
   def withdraw(amount: Int) -> Result[Int, String]
     reply = Channel[Result[Int, String]].new
@@ -48,7 +48,7 @@ class Account
     reply.receive
   end
 
-  def stop -> Nil = @inbox.send(Msg::Stop)
+  def stop -> Void = @inbox.send(Msg::Stop)
 end
 
 Task.scope do |scope|

@@ -576,7 +576,7 @@ impl InferTable {
                 Some(Some(b)) => self.resolve(b),
                 _ => t.clone(),
             },
-            Type::Nothing | Type::Param(_) => t.clone(),
+            Type::Nothing | Type::Void | Type::Param(_) => t.clone(),
             Type::Class(id, args) => {
                 Type::Class(*id, args.iter().map(|a| self.resolve(a)).collect())
             }
@@ -884,7 +884,7 @@ impl Checker {
                 ps.iter().for_each(|p| self.check_bounds_deep(p, span));
                 self.check_bounds_deep(r, span);
             }
-            Type::Nothing | Type::Param(_) | Type::Var(_) => {}
+            Type::Nothing | Type::Void | Type::Param(_) | Type::Var(_) => {}
         }
     }
 
@@ -1191,7 +1191,7 @@ impl Checker {
             TypeScope::default(),
             file,
         );
-        env.ret_expected = Some(self.world.nil());
+        env.ret_expected = Some(Type::Void);
         let saved_infer = std::mem::take(&mut self.infer);
         self.check_top_level(env, file, body, false);
         self.infer = saved_infer;
@@ -1253,7 +1253,7 @@ impl Checker {
                     TypeScope::default(),
                     file,
                 );
-                env.ret_expected = Some(self.world.nil());
+                env.ret_expected = Some(Type::Void);
                 env
             }
         };
@@ -1607,7 +1607,7 @@ impl Checker {
 
     // ----- methods ---------------------------------------------------------
 
-    /// The return type of a method (declared: one without returns nil).
+    /// The return type of a method (declared: one without is `Void`).
     fn method_ret(&self, mid: MethodId) -> Type {
         self.world.method(mid).ret.clone()
     }
@@ -1794,16 +1794,21 @@ impl Checker {
 
         let body = def.body.as_ref().cloned().unwrap_or_default();
         let expected = self.env.ret_expected.clone();
-        let void = expected.as_ref().is_some_and(|t| self.world.is_nil_type(t));
+        let void = expected == Some(Type::Void);
         self.next_body_void = void;
         let body_ty = self.check_body(&body, if void { None } else { expected.as_ref() });
         self.mark_discarded(body.last(), void);
         if let Some(ret) = expected.filter(|_| !void) {
             if !body_ty.is_nothing() && !self.coerce(&body_ty, &ret) {
                 let span = body.last().map(|e| e.span).unwrap_or(info.span);
+                let hint = if self.world.is_nil_type(&ret) {
+                    "; to discard the body's value, write `-> Void`"
+                } else {
+                    ""
+                };
                 self.error(
                     format!(
-                        "method `{}` returns {} but its body has type {}",
+                        "method `{}` returns {} but its body has type {}{hint}",
                         info.name,
                         self.name(&ret),
                         self.name(&body_ty)
@@ -1959,8 +1964,9 @@ impl Checker {
     /// Whether a value of type `actual` can be used where `expected` is
     /// required, binding inference variables on either side.
     fn coerce(&mut self, actual: &Type, expected: &Type) -> bool {
-        let a = self.infer.resolve(actual);
-        let e = self.infer.resolve(expected);
+        // A `Void` result is `Nil` here: no variable is bound to `Void`.
+        let a = self.world.unvoid(&self.infer.resolve(actual));
+        let e = self.world.unvoid(&self.infer.resolve(expected));
         if a == e || a.is_nothing() {
             return true;
         }
@@ -2097,8 +2103,8 @@ impl Checker {
 
     /// Both directions (for invariant type arguments).
     fn unify(&mut self, x: &Type, y: &Type) -> bool {
-        let rx = self.infer.resolve(x);
-        let ry = self.infer.resolve(y);
+        let rx = self.world.unvoid(&self.infer.resolve(x));
+        let ry = self.world.unvoid(&self.infer.resolve(y));
         if rx == ry {
             return true;
         }
@@ -2768,7 +2774,7 @@ impl Checker {
                 ps.iter().for_each(|p| self.settle_in(p));
                 self.settle_in(r);
             }
-            Type::Var(_) | Type::Nothing | Type::Param(_) => {}
+            Type::Var(_) | Type::Nothing | Type::Void | Type::Param(_) => {}
         }
     }
 
@@ -3983,19 +3989,25 @@ impl Checker {
                 let in_lambda = self.env.blocks.last().is_some_and(|b| b.is_lambda);
                 if in_lambda {
                     let ret = self.env.blocks.last().unwrap().ret.clone();
+                    let void = self.resolve(&ret) == Type::Void;
                     let t = match value {
-                        Some(v) => self.check_expr(v, Some(&ret)),
+                        Some(v) => self.check_expr(v, if void { None } else { Some(&ret) }),
                         None => self.world.nil(),
                     };
                     if !self.coerce(&t, &ret) {
-                        self.error(
+                        let message = if void {
+                            format!(
+                                "`return` gives a {} but the lambda is `-> Void`, which returns nil",
+                                self.name(&t)
+                            )
+                        } else {
                             format!(
                                 "lambda returns {} but `return` has type {}",
                                 self.name(&ret),
                                 self.name(&t)
-                            ),
-                            expr.span,
-                        );
+                            )
+                        };
+                        self.error(message, expr.span);
                     }
                     return Type::Nothing;
                 }
@@ -4014,19 +4026,19 @@ impl Checker {
                 }
                 match self.env.ret_expected.clone() {
                     Some(ret) => {
-                        let void = self.world.is_nil_type(&ret);
+                        let void = ret == Type::Void;
                         let t = match value {
                             Some(v) => self.check_expr(v, if void { None } else { Some(&ret) }),
                             None => self.world.nil(),
                         };
                         self.mark_discarded(value.as_deref(), void);
-                        // A method that returns nil (one without a return
+                        // A `-> Void` method (or one without a return
                         // type) gives no value: `return x` would drop it.
                         let rt = self.resolve(&t);
                         if void && !rt.is_nothing() && !self.world.is_nil_type(&rt) {
                             self.error(
                                 format!(
-                                    "`return` gives a {} but the method returns nil (write its return type: `-> T`)",
+                                    "`return` gives a {} but the method is `-> Void`, which returns nil (write its return type: `-> T`)",
                                     self.name(&t)
                                 ),
                                 expr.span,
@@ -4080,7 +4092,7 @@ impl Checker {
                 }
                 if in_block && self.env.loop_depth == 0 {
                     let ret = self.env.blocks.last().unwrap().ret.clone();
-                    let void = self.world.is_nil_type(&self.resolve(&ret));
+                    let void = self.resolve(&ret) == Type::Void;
                     let t = match value {
                         Some(v) => self.check_expr(v, if void { None } else { Some(&ret) }),
                         None => self.world.nil(),
@@ -4476,10 +4488,28 @@ impl Checker {
     }
 
     pub fn resolve_type_expr(&mut self, te: &TypeExpr, scope: &TypeScope) -> Option<Type> {
+        self.resolve_type_expr_as(te, scope, false)
+    }
+
+    /// A lambda's declared result, which may be `Void`.
+    fn resolve_result_type_expr(&mut self, te: &TypeExpr, scope: &TypeScope) -> Option<Type> {
+        self.resolve_type_expr_as(te, scope, true)
+    }
+
+    fn resolve_type_expr_as(
+        &mut self,
+        te: &TypeExpr,
+        scope: &TypeScope,
+        result: bool,
+    ) -> Option<Type> {
         // Reuse the declarer's resolution logic through a temporary.
         let mut d = crate::declare::Declarer::new();
         std::mem::swap(&mut d.world, &mut self.world);
-        let t = d.resolve_type(te, scope);
+        let t = if result {
+            d.resolve_result_type(te, scope)
+        } else {
+            d.resolve_type(te, scope)
+        };
         std::mem::swap(&mut d.world, &mut self.world);
         for (_, diag) in d.diagnostics {
             self.diagnostics.push((self.env.file, diag));
@@ -5562,7 +5592,7 @@ impl Checker {
                 self.out
                     .calls
                     .insert(expr.id, CallTarget::Method { method: mid });
-                return self.method_ret(mid).subst(&subst);
+                return self.world.unvoid(&self.method_ret(mid).subst(&subst));
             }
             self.infer.restore(saved);
         }
@@ -6236,7 +6266,7 @@ impl Checker {
             // `f.call(x)`, `f.(x)` and `f[x]` all call the procedure.
             Type::Proc(None, params, ret, _) if name == "call" || name == "[]" => {
                 let params = params.clone();
-                let ret = (**ret).clone();
+                let ret = self.world.unvoid(ret);
                 let positional: Vec<&Expr> = call
                     .args
                     .iter()
@@ -8011,7 +8041,8 @@ impl Checker {
         // The return type, unified with the expected type first so that it
         // can drive inference inside the block (`Array.build { |out| ... }`
         // where the result type is known).
-        let ret = self.method_ret(m.id).subst(subst);
+        // A caller sees a `Void` result as `Nil`.
+        let ret = self.world.unvoid(&self.method_ret(m.id)).subst(subst);
         if let Some(e) = expected {
             let r = self.infer.resolve(&ret);
             if r.has_vars() {
@@ -8120,7 +8151,7 @@ impl Checker {
                         }
                         let mut msubst = msubst;
                         msubst.insert(SELF_PARAM, recv.clone());
-                        let r = self.method_ret(mid).subst(&msubst);
+                        let r = self.world.unvoid(&self.method_ret(mid)).subst(&msubst);
                         if !self.coerce(&r, &ret) {
                             let msg = format!(
                                 "`&:{name}` returns {} but {} was expected",
@@ -8338,7 +8369,7 @@ impl Checker {
             }
             self.declare_var(&p.name, t, p.span);
         }
-        let void = self.world.is_nil_type(&self.infer.resolve(&ret));
+        let void = self.infer.resolve(&ret) == Type::Void;
         self.next_body_void = void;
         let bt = self.check_body(&block.body, if void { None } else { Some(&ret) });
         self.mark_discarded(block.body.last(), void);
@@ -8518,7 +8549,8 @@ impl Checker {
         // one, else inferred from the body.
         let declared = block.ret.as_ref().map(|te| {
             let scope = self.env.scope.clone();
-            self.resolve_type_expr(te, &scope).unwrap_or(Type::Nothing)
+            self.resolve_result_type_expr(te, &scope)
+                .unwrap_or(Type::Nothing)
         });
         let ret_var = match (&declared, &expected_proc) {
             (Some(d), _) => d.clone(),
@@ -8556,7 +8588,7 @@ impl Checker {
             param_types.push(t.clone());
             self.declare_var(&p.name, t, p.span);
         }
-        let void = self.world.is_nil_type(&self.infer.resolve(&ret_var));
+        let void = self.infer.resolve(&ret_var) == Type::Void;
         self.next_body_void = void;
         let bt = self.check_body(
             &block.body,
@@ -8666,7 +8698,7 @@ impl Checker {
             for e in positional {
                 self.check_expr(e, None);
             }
-            return *ret;
+            return self.world.unvoid(&ret);
         }
         for (e, p) in positional.iter().zip(params.iter()) {
             let t = self.check_expr(e, Some(p));
@@ -8681,7 +8713,7 @@ impl Checker {
                 );
             }
         }
-        *ret
+        self.world.unvoid(&ret)
     }
 
     fn check_super(&mut self, expr: &Expr, args: Option<&[Arg]>, block: Option<&Block>) -> Type {
@@ -9041,7 +9073,7 @@ impl Checker {
             Type::Proc(..) => true,
             // A type parameter is not known at run time (`o.as(T)`).
             Type::Param(_) => true,
-            Type::Nothing | Type::Var(_) => false,
+            Type::Nothing | Type::Void | Type::Var(_) => false,
         }
     }
 

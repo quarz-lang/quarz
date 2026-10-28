@@ -40,7 +40,7 @@ class Counter
 
   def count -> Int = @count
   def total -> Float = @total
-  def count=(v: Int) -> Nil
+  def count=(v: Int) -> Void
     @count = v
   end
 
@@ -123,7 +123,7 @@ class Pair
   @x: Int
   @y: Int
   def initialize(@x: Int, @y: Int) end
-  def show -> Nil
+  def show -> Void
     a = @x
     e = @x
     c = a + e

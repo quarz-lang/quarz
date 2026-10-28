@@ -77,7 +77,7 @@ fn unplaced(t: &mut quarz_syntax::ast::TypeExpr) {
             params.iter_mut().for_each(unplaced);
             unplaced(ret);
         }
-        K::SelfType | K::Nothing => {}
+        K::SelfType | K::Nothing | K::Void => {}
     }
 }
 

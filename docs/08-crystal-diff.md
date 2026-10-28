@@ -13,7 +13,8 @@ Crystal is the closest relative of Quarz: a statically typed, compiled language 
 | Item | Crystal | Quarz |
 |---|---|---|
 | Type annotation syntax | `x : Int32`, `def f(a : Int32) : Bool` | `x: Int`, `def f(a: Int) -> Bool` (no space before the colon; `->` for the return type) |
-| Method parameter types | Optional: an untyped method is instantiated for each combination of argument types, which needs the whole program to be type-checked together | Required (except when a default value gives the type), and so are return types (a method without one returns nil, as Swift's); locals are inferred. More to write, for shorter compile times and clearer error messages ([02-types.md](02-types.md) §10) |
+| Method parameter types | Optional: an untyped method is instantiated for each combination of argument types, which needs the whole program to be type-checked together | Required (except when a default value gives the type), and so are return types (a method without one is `-> Void` and returns nil, as Swift's); locals are inferred. More to write, for shorter compile times and clearer error messages ([02-types.md](02-types.md) §10) |
+| Discarding a method's value | `def f : Nil`: the method returns nil whatever its body's value | `def f -> Void` (or no return type); `-> Nil` is a type like any other, so the body must give `Nil` |
 | Generic type syntax | `Array(Int32)`, `Hash(String, Int32)`, `Proc(Int32, Bool)` | `Array[Int]`, `Hash[String, Int]`, `(Int) -> Bool` |
 | Empty literals | `[] of Int32`, `{} of String => Int32` | Typed from the context: `xs: Array[Int] = []`, `h: Hash[String, Int] = {}` |
 | Integers | `Int32` by default (`1_i64` for `Int64`); overflow raises `OverflowError` | `Int` is 64-bit and overflow raises `OverflowError`, as in Crystal; `Integer` is arbitrary precision (Crystal's `BigInt`), and mixing it with an `Int` gives an `Integer`. Other fixed-width types are planned for FFI |
@@ -27,12 +28,12 @@ Crystal is the closest relative of Quarz: a statically typed, compiled language 
 | `struct` | Mutable value type, copied on assignment | No user value types: `data` is immutable, so copying and sharing cannot be told apart |
 | `enum` | Named integer constants (with flags); sum types are written as unions of types or an abstract struct hierarchy | Algebraic data types: `enum Shape = Circle(r: Float) \| Rect(w: Float, h: Float)`, matched exhaustively with `case/in` |
 | `&.method` shorthand | `xs.map(&.upcase)` | `xs.map(&:upcase)` (Ruby's spelling) |
-| Block parameter types | `&block : Int32 -> Int32` | `&block: (Int) -> Int`; a method that yields declares its block (`&: (Int) -> Nil`) |
+| Block parameter types | `&block : Int32 -> Int32` | `&block: (Int) -> Int`; a method that yields declares its block (`&: (Int) -> Void`) |
 | Reopening classes | Allowed anywhere, for the whole program | Not allowed. Methods are added to existing types with `extension`, active where `using` is in effect |
 | Making an existing type conform to a module | Reopen it and include the module (`struct Int32; include M; ...; end`), everywhere; untyped parameters also accept anything with the right methods (duck typing) | `extension Int; include M; ...; end`: active in its program (or cog) when written at the top level, or where `using` brings in the module that declares it; the conformance holds wherever the value goes; parameters are typed, so a value must conform |
 | Type aliases | `alias UserId = Int32` | `type UserId = Int` |
 | Method references | `->obj.method` | `obj.:method` |
-| Blocks with a receiver (DSLs) | `with obj yield`: the block's implicit receiver is `obj`, whatever the block | The receiver is part of the block's type (`Html.() -> Nil`), and the block is run with `obj.instance_exec(&block)` |
+| Blocks with a receiver (DSLs) | `with obj yield`: the block's implicit receiver is `obj`, whatever the block | The receiver is part of the block's type (`Html.() -> Void`), and the block is run with `obj.instance_exec(&block)` |
 | Macros | `macro`, `{{ }}`, `@type`, annotations | None. Code generation by the compiler only for `data`, `attr_*` and friends |
 | Narrowing fields | Instance variables are not narrowed (assign to a local first) | Immutable fields and `data` fields are narrowed; `var` fields are not |
 | `to_s` | Overridden as `to_s(io : IO)` | `def to_s -> String` |
@@ -88,7 +89,7 @@ class Particle
   @vel: Vec2
   attr_reader :pos
   def initialize(@pos: Vec2, @vel: Vec2); end
-  def step(dt: Float) -> Nil
+  def step(dt: Float) -> Void
     @pos = Vec2.new(@pos.x + @vel.x * dt, @pos.y + @vel.y * dt)
   end
 end

@@ -15,6 +15,8 @@ pub fn rt_type(t: &Type) -> RtType {
         Type::Tuple(ts) => RtType::Tuple(vec![RtType::Any; ts.len()]),
         Type::Proc(..) => RtType::Proc,
         Type::Param(_) | Type::Var(_) => RtType::Any,
+        // Only a result (no value's type), so never tested.
+        Type::Void => RtType::Any,
     }
 }
 
@@ -63,8 +65,10 @@ pub fn build(world: &World, lw: &Lowerer, file_names: Vec<String>) -> RtWorld {
             // A type with a parameter in it has no name of its own: a
             // parameter prints as its name, which may be a class's
             // (`class Box[String]`).
-            let ty_name =
-                |t: &Type| (!t.mentions_any_param() && !t.has_vars()).then(|| world.type_name(t));
+            let ty_name = |t: &Type| {
+                (!t.mentions_any_param() && !t.has_vars())
+                    .then(|| world.type_name(&world.devoid(t)))
+            };
             // A declared field stored in one physical field keeps its
             // default there; a flattened one runs it through the
             // logical view.
@@ -209,9 +213,10 @@ pub fn build(world: &World, lw: &Lowerer, file_names: Vec<String>) -> RtWorld {
                         name: p.name.clone(),
                         kind: param_kind(p.kind),
                         has_default: p.default.is_some(),
+                        // (`Void` is `Nil` at run time.)
                         ty: match &p.ty {
                             Type::Param(_) | Type::Var(_) => None,
-                            t => Some(world.type_name(t)),
+                            t => Some(world.type_name(&world.devoid(t))),
                         },
                     })
                     .collect(),
@@ -231,7 +236,7 @@ pub fn build(world: &World, lw: &Lowerer, file_names: Vec<String>) -> RtWorld {
                 file: m.file,
                 ret: match &m.ret {
                     Type::Param(_) | Type::Var(_) => None,
-                    t => Some(world.type_name(t)),
+                    t => Some(world.type_name(&world.devoid(t))),
                 },
                 overrides: overridden_methods(world, m, &mut ancestors),
                 makes: if m.is_native {
@@ -433,6 +438,6 @@ fn classes_in(t: &Type, out: &mut Vec<ClassId>) {
             }
             classes_in(ret, out);
         }
-        Type::Nothing | Type::Param(_) | Type::Var(_) => {}
+        Type::Nothing | Type::Void | Type::Param(_) | Type::Var(_) => {}
     }
 }

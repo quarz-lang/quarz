@@ -2,7 +2,7 @@
 # clause for other exceptions does not stop it), then the at_exit blocks.
 at_exit { puts "at_exit" }
 
-def cleanup -> Nil
+def cleanup -> Void
   begin
     puts "exiting"
     exit 0

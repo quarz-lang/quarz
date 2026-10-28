@@ -5,7 +5,7 @@
 # collection may start then.
 class Fin
   var @peer: Fin? = nil
-  def deinitialize -> Nil
+  def deinitialize -> Void
   end
 end
 

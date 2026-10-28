@@ -1,11 +1,11 @@
 # Eight tests that each wait: with --parallel=8 they wait together.
 class WaitTest < Test::Case
-  def test_1 -> Nil = sleep(500.ms)
-  def test_2 -> Nil = sleep(500.ms)
-  def test_3 -> Nil = sleep(500.ms)
-  def test_4 -> Nil = sleep(500.ms)
-  def test_5 -> Nil = sleep(500.ms)
-  def test_6 -> Nil = sleep(500.ms)
-  def test_7 -> Nil = sleep(500.ms)
-  def test_8 -> Nil = sleep(500.ms)
+  def test_1 -> Void = sleep(500.ms)
+  def test_2 -> Void = sleep(500.ms)
+  def test_3 -> Void = sleep(500.ms)
+  def test_4 -> Void = sleep(500.ms)
+  def test_5 -> Void = sleep(500.ms)
+  def test_6 -> Void = sleep(500.ms)
+  def test_7 -> Void = sleep(500.ms)
+  def test_8 -> Void = sleep(500.ms)
 end

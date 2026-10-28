@@ -5,7 +5,7 @@ enum Outcome[T, E]
   variant Good(value: T)
   variant Bad(error: E)
 
-  def on_good(&: (T) -> Nil) -> Self
+  def on_good(&: (T) -> Void) -> Self
     case self
     in Good(value:) then yield(value)
     in Bad then nil
@@ -13,7 +13,7 @@ enum Outcome[T, E]
     self
   end
 
-  def on_bad(&: (E) -> Nil) -> Self
+  def on_bad(&: (E) -> Void) -> Self
     r: Outcome[T, E] = self
     case r
     in Bad(error:) then yield(error)

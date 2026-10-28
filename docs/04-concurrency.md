@@ -22,7 +22,7 @@ Task.current                          # the current Task
 ```
 
 - `Task.spawn { }` creates a new task, registers it with the scheduler, and returns immediately. The `T` in the returned `Task[T]` is the type of the block.
-- The block **captures by value**. Outer local variables are copied at the time of `Task.spawn`, and the block cannot assign to outer variables. Every captured value must be Shareable, and so must `self` when the block uses it (its fields, its methods, or `self` itself): a `Task.spawn` block in a method of a mutable class cannot touch the object. A block for a parameter of a shareable procedure type (`&job: shareable (Int) -> Nil`) captures the same way, so that a method can run it in tasks of its own ([02-types.md](02-types.md) §9).
+- The block **captures by value**. Outer local variables are copied at the time of `Task.spawn`, and the block cannot assign to outer variables. Every captured value must be Shareable, and so must `self` when the block uses it (its fields, its methods, or `self` itself): a `Task.spawn` block in a method of a mutable class cannot touch the object. A block for a parameter of a shareable procedure type (`&job: shareable (Int) -> Void`) captures the same way, so that a method can run it in tasks of its own ([02-types.md](02-types.md) §9).
 - `await` waits for the task to complete and returns its value. If the task ended with an exception, that exception is re-raised on the side that called `await`.
 - Tasks switch cooperatively at safepoints inserted by the compiler (method entry, loop back-edges, channel operations, allocation). Even a pure computational loop switches at loop boundaries, so no single task can monopolize the scheduler. (Not so today: scheduling is cooperative, as in Kotlin, and tasks switch only at operations that wait (a channel operation that must wait, `sleep`, `await`, IO) and at `Task.yield`; a loop that does neither, `loop` or `while` alike, keeps its worker until it finishes. Preemption is an open question, §2.)
 - Each task has its own stack (§7), so Ruby methods can be called recursively as usual. There is no function coloring like `async`/`await`. Blocking operations (channels, IO, `sleep`) can be called from anywhere, and only the calling task stops.
@@ -137,7 +137,7 @@ enum Msg
   variant Stop
 end
 
-def account_actor(inbox: Channel[Msg]) -> Nil
+def account_actor(inbox: Channel[Msg]) -> Void
   balance = 0
   inbox.each do |msg|
     case msg

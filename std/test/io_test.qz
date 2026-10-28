@@ -64,7 +64,7 @@ class FileCancelTest < Test::Case
     end
   end
 
-  def check_cancelled_write(p: String, data: String) -> Nil
+  def check_cancelled_write(p: String, data: String) -> Void
     started = Channel[Nil].new(capacity: 1)
     t = Task.spawn do
       begin

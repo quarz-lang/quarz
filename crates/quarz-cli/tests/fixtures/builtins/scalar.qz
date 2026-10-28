@@ -27,7 +27,7 @@ p total, k
 # escaping: stored, returned, passed, kept in an array
 class Holder
   var @last: Pt = Pt.new(0.0, 0.0)
-  def keep(q: Pt) -> Nil
+  def keep(q: Pt) -> Void
     @last = q
   end
   def last -> Pt = @last

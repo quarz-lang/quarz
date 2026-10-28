@@ -97,9 +97,9 @@ class HttpHardeningServerTest < Test::Case
   end
 
   # Serves on a port of its own while the block runs, then shuts down.
-  def serving(&: (Int) -> Nil) -> Nil
+  def serving(&: (Int) -> Void) -> Void
     errors = @errors
-    report: shareable (Exception, HTTP::Request?) -> Nil = ->(e: Exception, r: HTTP::Request?) { errors.send(e.message); nil }
+    report: shareable (Exception, HTTP::Request?) -> Void = ->(e: Exception, r: HTTP::Request?) { errors.send(e.message); nil }
     server = HTTP::Server.new(handler, host: "127.0.0.1", port: 0, on_error: report, read_timeout: 200.ms)
     Task.scope do |scope|
       scope.spawn { server.serve }

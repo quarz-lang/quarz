@@ -90,7 +90,7 @@ class Object
 
   # Yields the receiver to the block and returns the receiver, to look at a
   # value in the middle of a chain.
-  def tap(&: (Self) -> Nil) -> Self
+  def tap(&: (Self) -> Void) -> Self
     yield self
     self
   end
@@ -479,7 +479,7 @@ class Int
   native def digits(base: Int) -> Array[Int]
   # Calls the block with each of 0 up to `self - 1`; with none when
   # `self` is not positive.
-  native def times(&: (Int) -> Nil) -> Nil
+  native def times(&: (Int) -> Void) -> Void
   # An `Enumerator` of 0 up to `self - 1`.
   #
   # ```
@@ -489,7 +489,7 @@ class Int
   native def times -> Enumerator[Int]
   # Calls the block with each of `self` up to `limit`, both included;
   # with none when `limit` is below `self`.
-  native def upto(limit: Int, &: (Int) -> Nil) -> Nil
+  native def upto(limit: Int, &: (Int) -> Void) -> Void
   # An `Enumerator` of `self` up to `limit`, both included.
   #
   # ```
@@ -499,13 +499,13 @@ class Int
   native def upto(limit: Int) -> Enumerator[Int]
   # Calls the block with each of `self` down to `limit`, both included;
   # with none when `limit` is above `self`.
-  native def downto(limit: Int, &: (Int) -> Nil) -> Nil
+  native def downto(limit: Int, &: (Int) -> Void) -> Void
   # An `Enumerator` of `self` down to `limit`, both included.
   native def downto(limit: Int) -> Enumerator[Int]
   # Calls the block with `self`, `self + step`, `self + 2 * step` and so on
   # while not past `limit` (above it for a positive `step`, below it for a
   # negative one); `ArgumentError` when `step` is 0.
-  native def step(limit: Int, step: Int, &: (Int) -> Nil) -> Nil
+  native def step(limit: Int, step: Int, &: (Int) -> Void) -> Void
   # An `Enumerator` of `self`, `self + step` and so on while not past
   # `limit`; `ArgumentError` when `step` is 0.
   #
@@ -1033,7 +1033,7 @@ class Float
   # negative one); `ArgumentError` when `step` is 0.0. The number of steps
   # is counted first, as in Ruby, so that rounding errors do not lose the
   # last one: `0.0.step(1.0, 0.1)` calls the block 11 times.
-  native def step(limit: Float, step: Float, &: (Float) -> Nil) -> Nil
+  native def step(limit: Float, step: Float, &: (Float) -> Void) -> Void
   # False: a `Float` is not an integer, even a whole one.
   def integer? -> Bool = false
   # The `Int` toward zero (`-3.9.to_i` is -3); `FloatDomainError` for NaN
@@ -1257,12 +1257,12 @@ class Bytes
   # ```
   # Bytes.build { |b| b << 104 << "é" }   # => b"h\xc3\xa9"
   # ```
-  native def self.build(&: (Bytes::Builder) -> Nil) -> Bytes
+  native def self.build(&: (Bytes::Builder) -> Void) -> Bytes
 
   # Calls the block with each byte, first to last.
-  native def each(&: (Int) -> Nil) -> Nil
+  native def each(&: (Int) -> Void) -> Void
   # Calls the block with each byte, first to last: the same as `#each`.
-  native def each_byte(&: (Int) -> Nil) -> Nil
+  native def each_byte(&: (Int) -> Void) -> Void
   # The number of bytes.
   native def size -> Int
   # The number of bytes: the same as `#size`.
@@ -1469,10 +1469,10 @@ class Bytes
   native def scan(pattern: Regexp) -> Array[Bytes]
   # Calls the block with the bytes of every match of `pattern`, first to
   # last.
-  native def scan(pattern: Regexp, &: (Bytes) -> Nil) -> Nil
+  native def scan(pattern: Regexp, &: (Bytes) -> Void) -> Void
   # Calls the block with the bytes and the `Bytes::MatchData` of every match
   # of `pattern`, first to last.
-  native def scan(pattern: Regexp, &: (Bytes, Bytes::MatchData) -> Nil) -> Nil
+  native def scan(pattern: Regexp, &: (Bytes, Bytes::MatchData) -> Void) -> Void
   # The bytes with the first occurrence of `pattern` replaced by
   # `replacement`, read as `String#sub` reads it: `\0` (or `\&`) is the
   # match, `\1` to `\9` and `\k<name>` are groups, `\\` is a backslash.
@@ -1877,7 +1877,7 @@ class String
   # ```
   # String.build { |b| b << "a" << "b"; b.push("c") }   # => "abc"
   # ```
-  native def self.build(&: (String::Builder) -> Nil) -> String
+  native def self.build(&: (String::Builder) -> Void) -> String
 
   # The string followed by `other`.
   native def +(other: String) -> String
@@ -2167,9 +2167,9 @@ class String
   # its own here).
   native def reverse -> String
   # Calls the block with each character.
-  native def each_char(&: (String) -> Nil) -> Nil
+  native def each_char(&: (String) -> Void) -> Void
   # Calls the block with each line, as `#lines` gives them.
-  native def each_line(&: (String) -> Nil) -> Nil
+  native def each_line(&: (String) -> Void) -> Void
   # The integer at the start of the string, in base 10, as Ruby reads it:
   # leading whitespace, a sign and a `0d` prefix are allowed, a single `_`
   # may stand between digits (`"1_000"`; `"1__2"` is 1), and the first
@@ -2354,7 +2354,7 @@ class String
   # ```
   native def getbyte(index: Int) -> Int?
   # Calls the block with each byte of the UTF-8 encoding.
-  native def each_byte(&: (Int) -> Nil) -> Nil
+  native def each_byte(&: (Int) -> Void) -> Void
   # An enumerator of the characters.
   native def each_char -> Enumerator[String]
   # The extended grapheme clusters: what a reader sees as one character,
@@ -2367,7 +2367,7 @@ class String
   native def graphemes -> Array[String]
   # Calls the block with each grapheme cluster, as `#graphemes` gives
   # them.
-  native def each_grapheme(&: (String) -> Nil) -> Nil
+  native def each_grapheme(&: (String) -> Void) -> Void
   # The lines, without their line ending when `chomp` is true.
   #
   # ```
@@ -2454,7 +2454,7 @@ class String
   # "a8".upto("b1") { |s| r = r.push(s) }
   # r                       # => ["a8", "a9", "b0", "b1"]
   # ```
-  native def upto(last: String, &: (String) -> Nil) -> Nil
+  native def upto(last: String, &: (String) -> Void) -> Void
   # The string with each run of the same character made one, for the
   # characters in `chars` only (a set written as `#tr`'s `from`).
   #
@@ -2540,10 +2540,10 @@ class String
   # ```
   native def gsub(pattern: Regexp, replacements: Hash[String, String]) -> String
   # Calls the block with the text of every match of `pattern`.
-  native def scan(pattern: Regexp, &: (String) -> Nil) -> Nil
+  native def scan(pattern: Regexp, &: (String) -> Void) -> Void
   # Calls the block with the text and the `MatchData` of every match of
   # `pattern`, for its groups.
-  native def scan(pattern: Regexp, &: (String, MatchData) -> Nil) -> Nil
+  native def scan(pattern: Regexp, &: (String, MatchData) -> Void) -> Void
 
   # A mutable buffer of text, to build a `String` in pieces without
   # copying at each step. `to_s` (and `freeze`) hand the contents over
@@ -2880,7 +2880,7 @@ end
 # class DocDigits_Enumerable
 #   include Enumerable[Int]
 #
-#   def each(&: (Int) -> Nil) -> Nil
+#   def each(&: (Int) -> Void) -> Void
 #     yield 3
 #     yield 1
 #     yield 2
@@ -2897,7 +2897,7 @@ end
 module Enumerable[out T]
   # Calls the block with each element in turn. The one method an includer
   # must define.
-  abstract def each(&: (T) -> Nil) -> Nil
+  abstract def each(&: (T) -> Void) -> Void
 
   # The block's results for each element, in order.
   #
@@ -2969,7 +2969,7 @@ module Enumerable[out T]
   def inject[U](initial: U, &: (U, T) -> U) -> U = reduce(initial) { |a, x| yield(a, x) }
 
   # Calls the block with each element and its index, from 0.
-  def each_with_index(&: (T, Int) -> Nil) -> Nil
+  def each_with_index(&: (T, Int) -> Void) -> Void
     i = 0
     each do |x|
       yield x, i
@@ -2984,7 +2984,7 @@ module Enumerable[out T]
   # [1, 2].each_with_object(Array::Builder[Int].new) { |x, b| b << x * 3 }.to_a
   # # => [3, 6]
   # ```
-  def each_with_object[U](memo: U, &: (T, U) -> Nil) -> U
+  def each_with_object[U](memo: U, &: (T, U) -> Void) -> U
     each { |x| yield x, memo }
     memo
   end
@@ -3207,7 +3207,7 @@ module Enumerable[out T]
 
   # Calls the block with consecutive slices of `n` elements; the last one may
   # be shorter. Nothing is yielded for an empty collection.
-  def each_slice(n: Int, &: (Array[T]) -> Nil) -> Nil
+  def each_slice(n: Int, &: (Array[T]) -> Void) -> Void
     raise ArgumentError, "invalid size" if n <= 0
     chunk = Array::Builder[T].new
     each do |x|
@@ -3372,7 +3372,7 @@ module Enumerable[out T]
   def find_index(value: Object) -> Int? = find_index { |x| x == value }
 
   # Calls the block with each element, last first. Collects them first.
-  def reverse_each(&: (T) -> Nil) -> Nil
+  def reverse_each(&: (T) -> Void) -> Void
     to_a.reverse_each { |x| yield(x) }
   end
 
@@ -3386,7 +3386,7 @@ module Enumerable[out T]
   # ```
   # (1..4).each_cons(2).to_a   # => [[1, 2], [2, 3], [3, 4]]
   # ```
-  def each_cons(n: Int, &: (Array[T]) -> Nil) -> Nil
+  def each_cons(n: Int, &: (Array[T]) -> Void) -> Void
     raise ArgumentError, "invalid size" if n <= 0
     window = Array::Builder[T].new
     each do |x|
@@ -3483,7 +3483,7 @@ module Enumerable[out T]
 
   # Calls the block with each element, `n` times over. Collects the
   # elements first; does nothing when there are none.
-  def cycle(n: Int, &: (T) -> Nil) -> Nil
+  def cycle(n: Int, &: (T) -> Void) -> Void
     items = to_a
     return nil if items.empty?
     n.times { items.each { |x| yield(x) } }
@@ -3491,7 +3491,7 @@ module Enumerable[out T]
 
   # Calls the block with each element, over and over, until the block
   # breaks or raises. Returns `nil` at once when there are no elements.
-  def cycle(&: (T) -> Nil) -> Nil
+  def cycle(&: (T) -> Void) -> Void
     items = to_a
     return nil if items.empty?
     while true
@@ -3500,7 +3500,7 @@ module Enumerable[out T]
   end
 
   # Calls the block with each element: `#each`.
-  def each_entry(&: (T) -> Nil) -> Nil = each { |x| yield(x) }
+  def each_entry(&: (T) -> Void) -> Void = each { |x| yield(x) }
 
   # The sum of the block's results; 0 for an empty collection.
   def sum(&: (T) -> Int) -> Int = reduce(0) { |acc, x| acc + yield(x) }
@@ -3542,7 +3542,7 @@ module Enumerable[out T]
   # %w[a b].each_with_index.to_a   # => [["a", 0], ["b", 1]]
   # ```
   native def each_with_index -> Enumerator[[T, Int]]
-  private native def each_with_index_pairs(&: ([T, Int]) -> Nil) -> Nil
+  private native def each_with_index_pairs(&: ([T, Int]) -> Void) -> Void
   # `[key, value]` pairs sorted by key (for `sort_by`).
   private native def sort_pairs[K, V](pairs: Array[[K, V]]) -> Array[[K, V]]
   # An enumerator of the slices `each_slice(n) { }` would yield.
@@ -3672,7 +3672,7 @@ class Enumerator[out T]
   # Calls the block with each element, by calling the underlying method
   # from the start (leaving the position of `#next` as it is); a
   # subclass's by its `#next`.
-  native def each(&: (T) -> Nil) -> Nil
+  native def each(&: (T) -> Void) -> Void
   # The element at the position, and moves past it.
   #
   # ## Raises
@@ -3759,14 +3759,14 @@ class Array[out T]
   # ```
   # Array.build { |b| 3.times { |i| b << i * 2 } }   # => [0, 2, 4]
   # ```
-  native def self.build(&: (Array::Builder[T]) -> Nil) -> Array[T]
+  native def self.build(&: (Array::Builder[T]) -> Void) -> Array[T]
 
   # Calls the block with each element in order.
-  native def each(&: (T) -> Nil) -> Nil
+  native def each(&: (T) -> Void) -> Void
   # Calls the block with each index, from 0.
-  native def each_index(&: (Int) -> Nil) -> Nil
+  native def each_index(&: (Int) -> Void) -> Void
   # Calls the block with each element, last first.
-  native def reverse_each(&: (T) -> Nil) -> Nil
+  native def reverse_each(&: (T) -> Void) -> Void
   # The element at `index`; a negative `index` counts from the end.
   #
   # ## Raises
@@ -4254,9 +4254,9 @@ class Array[out T]
     # Removes the elements for which the block is truthy, and returns the builder.
     native def reject!(&: (T) -> Object) -> Self
     # Calls the block with each element in order.
-    native def each(&: (T) -> Nil) -> Nil
+    native def each(&: (T) -> Void) -> Void
     # Calls the block with each element and its index, from 0.
-    native def each_with_index(&: (T, Int) -> Nil) -> Nil
+    native def each_with_index(&: (T, Int) -> Void) -> Void
     # Appends `values` in order, and returns the builder.
     native def push(*values: T) -> Self
     # The elements in `range`, as an immutable array (a copy). A negative
@@ -4389,17 +4389,17 @@ class Hash[K, out V]
   # Hash[String, Int].build { |b| %w[x yy].each { |s| b[s] = s.size } }
   # # => {"x" => 1, "yy" => 2}
   # ```
-  native def self.build(&: (Hash::Builder[K, V]) -> Nil) -> Hash[K, V]
+  native def self.build(&: (Hash::Builder[K, V]) -> Void) -> Hash[K, V]
 
   # Calls the block with each `[key, value]` pair, in insertion order; a
   # block with two parameters takes the pair apart.
-  native def each(&: ([K, V]) -> Nil) -> Nil
+  native def each(&: ([K, V]) -> Void) -> Void
   # Calls the block with each key and its value, in insertion order.
-  native def each_pair(&: (K, V) -> Nil) -> Nil
+  native def each_pair(&: (K, V) -> Void) -> Void
   # Calls the block with each key, in insertion order.
-  native def each_key(&: (K) -> Nil) -> Nil
+  native def each_key(&: (K) -> Void) -> Void
   # Calls the block with each value, in the insertion order of the keys.
-  native def each_value(&: (V) -> Nil) -> Nil
+  native def each_value(&: (V) -> Void) -> Void
   # The value for `key`.
   #
   # Raises `KeyError` when there is none: `#[]?` returns `nil` and `#fetch`
@@ -4613,13 +4613,13 @@ class Hash[K, out V]
     # `nil` when there is none, and returns the builder.
     native def update(key: K, &: (V?) -> V) -> Self
     # Calls the block with each `[key, value]` pair, in insertion order.
-    native def each(&: ([K, V]) -> Nil) -> Nil
+    native def each(&: ([K, V]) -> Void) -> Void
     # Calls the block with each key and its value, in insertion order.
-    native def each_pair(&: (K, V) -> Nil) -> Nil
+    native def each_pair(&: (K, V) -> Void) -> Void
     # Calls the block with each key, in insertion order.
-    native def each_key(&: (K) -> Nil) -> Nil
+    native def each_key(&: (K) -> Void) -> Void
     # Calls the block with each value, in the insertion order of the keys.
-    native def each_value(&: (V) -> Nil) -> Nil
+    native def each_value(&: (V) -> Void) -> Void
     # The value for `key`, or the block's result, called with `key`, when
     # there is none. Nothing is stored.
     native def fetch(key: K, &: (K) -> V) -> V
@@ -4698,10 +4698,10 @@ class Set[out T]
   native def self.[](*items: T) -> Set[T]
   # Calls the block with a new `Set::Builder` and returns what it holds
   # afterwards.
-  native def self.build(&: (Set::Builder[T]) -> Nil) -> Set[T]
+  native def self.build(&: (Set::Builder[T]) -> Void) -> Set[T]
 
   # Calls the block with each member, in insertion order.
-  native def each(&: (T) -> Nil) -> Nil
+  native def each(&: (T) -> Void) -> Void
   # The set with `value` added: last when it is new, the same members when
   # it is already one.
   native def add[U >: T](value: U) -> Set[U]
@@ -4872,7 +4872,7 @@ class Set[out T]
     # Whether there is no member.
     native def empty? -> Bool
     # Calls the block with each member, in insertion order.
-    native def each(&: (T) -> Nil) -> Nil
+    native def each(&: (T) -> Void) -> Void
     # The members as a `Set`, handed over without copying: the builder is left
     # empty, and can be filled again.
     native def to_set -> Set[T]
@@ -4923,7 +4923,7 @@ class Range[T]
   #
   # `TypeError` for a beginless range or a range that is neither of `Int`
   # nor of `String` (a `Float` range).
-  native def each(&: (T) -> Nil) -> Nil
+  native def each(&: (T) -> Void) -> Void
   # The first bound, or `nil` for a beginless range.
   native def begin -> T?
   # The last bound (included or not), or `nil` for an endless range.
@@ -4984,7 +4984,7 @@ class Range[T]
   # (1..10).step(3).to_a   # => [1, 4, 7, 10]
   # (10..1).step(-3).to_a  # raises ArgumentError
   # ```
-  native def step(step: Int, &: (T) -> Nil) -> Nil
+  native def step(step: Int, &: (T) -> Void) -> Void
   # An enumerator of every `step`-th value.
   #
   # The enumerator is made whatever `step` and the range are: a `step`
@@ -5004,7 +5004,7 @@ class Range[T]
   # ## Raises
   #
   # `TypeError` for an endless range, as `#each` does.
-  native def reverse_each(&: (T) -> Nil) -> Nil
+  native def reverse_each(&: (T) -> Void) -> Void
   # The values as an array.
   #
   # ## Raises
@@ -5589,7 +5589,7 @@ enum Result[T, E]
   # ```
   # Result[Int, String].ok(1).on_ok { |x| puts x }.ok?   # prints 1, => true
   # ```
-  def on_ok(&: (T) -> Nil) -> Result[T, E]
+  def on_ok(&: (T) -> Void) -> Result[T, E]
     case self
     in Ok(value:) then yield(value)
     in Err then nil
@@ -5598,7 +5598,7 @@ enum Result[T, E]
   end
 
   # Calls the block with the error of an `Err`, and returns `self`.
-  def on_err(&: (E) -> Nil) -> Result[T, E]
+  def on_err(&: (E) -> Void) -> Result[T, E]
     case self
     in Ok then nil
     in Err(error:) then yield(error)
@@ -5675,7 +5675,7 @@ class Task[out T <: Shareable]
   # ## Raises
   #
   # `Task::Cancelled` when the task is cancelled while it sleeps.
-  native def self.sleep(duration: Duration) -> Nil
+  native def self.sleep(duration: Duration) -> Void
   # Suspends the calling task briefly, so that the scheduler can run other
   # runnable tasks, then raises a cancellation (`Task::Cancelled`) or an
   # `exit` from another task that came meanwhile, as a wait does.
@@ -5685,7 +5685,7 @@ class Task[out T <: Shareable]
   # caller goes on after them. With several, the others run in parallel
   # and need not have run, nor finished, when the caller goes on: wait for
   # a task (`#await`) or use a `Channel` to know that it did something.
-  native def self.yield -> Nil
+  native def self.yield -> Void
   # The task running the caller (the main code is a task too).
   native def self.current -> Task[Object]
   # Runs the block in a child task and returns its value, or raises
@@ -5725,7 +5725,7 @@ class Task[out T <: Shareable]
   # It does not let other tasks run: a loop that only computes calls
   # `.yield` instead, which checks too, or a task of its own worker could
   # not run to cancel it.
-  native def self.check_cancel -> Nil
+  native def self.check_cancel -> Void
   # Runs the block out of reach of the calling task's cancellation: its
   # waits do not raise `Task::Cancelled`, as in Trio's shielded cancel
   # scope and Kotlin's NonCancellable context. For cleanup that must wait
@@ -5801,7 +5801,7 @@ class Task[out T <: Shareable]
   #
   # A task cancelled before it starts does not run its block. Does nothing
   # when the task has finished; cancelling twice is cancelling once.
-  native def cancel -> Nil
+  native def cancel -> Void
   # Whether the task has finished, by returning, raising or being
   # cancelled.
   native def done? -> Bool
@@ -5832,7 +5832,7 @@ class Scope
   native def spawn[T](&: () -> T) -> Task[T]
   # Cancels the scope's tasks (`Task#cancel`); `Task.scope` then waits for
   # them and returns the block's value normally.
-  native def cancel -> Nil
+  native def cancel -> Void
 end
 
 # A typed queue between tasks: all communication and synchronization
@@ -5887,7 +5887,7 @@ class Channel[T <: Shareable]
   # end
   # got              # => 7
   # ```
-  native def self.select(&: (Selector) -> Nil) -> Nil
+  native def self.select(&: (Selector) -> Void) -> Void
   # `.select` in a loop, until a handler (or the block) calls
   # `Selector#stop`. When it polls (`Selector#default` taken) it lets other
   # tasks run after each select, as `Task.yield` does, so that it does not
@@ -5906,7 +5906,7 @@ class Channel[T <: Shareable]
   # end
   # sum              # => 6
   # ```
-  native def self.select_loop(&: (Selector) -> Nil) -> Nil
+  native def self.select_loop(&: (Selector) -> Void) -> Void
 
   # Sends `value`, waiting while the buffer is full (on a capacity-0
   # channel, until a receiver takes it).
@@ -5915,7 +5915,7 @@ class Channel[T <: Shareable]
   #
   # `Channel::Closed` when the channel is closed, or is closed while the
   # task waits.
-  native def send(value: T) -> Nil
+  native def send(value: T) -> Void
   # The next value, waiting while the channel is empty. The values
   # buffered before `#close` are still received.
   #
@@ -5941,7 +5941,7 @@ class Channel[T <: Shareable]
   # `Channel::Closed` (or nil from `#receive?`).
   #
   # Closing again does nothing.
-  native def close -> Nil
+  native def close -> Void
   # Whether `#close` has been called.
   native def closed? -> Bool
   # Whether no value is buffered.
@@ -5950,7 +5950,7 @@ class Channel[T <: Shareable]
   native def size -> Int
   # Receives values and yields each until the channel is closed and
   # empty, waiting in between.
-  native def each(&: (T) -> Nil) -> Nil
+  native def each(&: (T) -> Void) -> Void
 
   # Raised by sending on a closed channel and by `Channel#receive` on one
   # that is closed and empty.
@@ -5969,21 +5969,21 @@ class Selector
 
   # Receive from `channel`: the block gets the value, if this case is the
   # one chosen.
-  native def receive[T](channel: Channel[T], &blk: (T) -> Nil) -> Nil
+  native def receive[T](channel: Channel[T], &blk: (T) -> Void) -> Void
   # Send `value` on `channel`: the block runs once it is sent, if this case
   # is the one chosen.
-  native def send[T](channel: Channel[T], value: T, &blk: () -> Nil) -> Nil
+  native def send[T](channel: Channel[T], value: T, &blk: () -> Void) -> Void
   # A timeout: the block runs if no other case is ready within `duration`
   # (with several, the shortest wins).
-  native def after(duration: Duration, &blk: () -> Nil) -> Nil
+  native def after(duration: Duration, &blk: () -> Void) -> Void
   # The case chosen when no other is ready at once: it makes the select
   # not wait.
-  native def default(&blk: () -> Nil) -> Nil
+  native def default(&blk: () -> Void) -> Void
   # Ends a `Channel.select_loop` after this round.
   #
   # Called in the `Channel.select` block itself, before any operation is
   # chosen, it ends the select without performing one.
-  native def stop -> Nil
+  native def stop -> Void
 end
 
 # A shared cell holding an immutable value, which any task can read and
@@ -6005,7 +6005,7 @@ class Atom[T <: Shareable]
   # The value held now (as `#value`).
   native def get -> T
   # Replaces the value with `value`.
-  native def set(value: T) -> Nil
+  native def set(value: T) -> Void
   # Replaces the value with the block's result for the current value, and
   # returns the new value.
   #
@@ -6064,12 +6064,12 @@ class IO
   # Writes each argument followed by a newline, unless it already ends in
   # one; an array writes each element so, `nil` and no argument an empty
   # line.
-  native def puts(*args: Object) -> Nil
+  native def puts(*args: Object) -> Void
   # Writes each argument's `to_s`, with no separator or newline.
-  native def print(*args: Object) -> Nil
+  native def print(*args: Object) -> Void
   # Writes `format` filled with `args`, as `format` (`Kernel#format`)
   # does.
-  native def printf(format: String, *args: Object) -> Nil
+  native def printf(format: String, *args: Object) -> Void
   # Writes each argument's `to_s` (or a `Bytes`' bytes) in one write, and
   # returns the number of bytes written. On a file open to read and write
   # (`"r+"`, `"w+"`), a write after a read goes at the read position, and
@@ -6121,26 +6121,26 @@ class IO
   # Raw bytes, up to `length` (empty at the end). `write` accepts Bytes.
   native def read_bytes(length: Int) -> Bytes
   # Yields each remaining line, with its newline.
-  native def each_line(&: (String) -> Nil) -> Nil
+  native def each_line(&: (String) -> Void) -> Void
   # Shuts down the writing side of a socket: the peer reads the end of the
   # stream, and the socket can still be read.
   #
   # ## Raises
   #
   # `TypeError` on a stream that is not a connected socket.
-  native def close_write -> Nil
+  native def close_write -> Void
   # Shuts down the reading side of a socket.
   #
   # ## Raises
   #
   # `TypeError` on a stream that is not a connected socket.
-  native def close_read -> Nil
+  native def close_read -> Void
   # Writes out what the stream has buffered.
-  native def flush -> Nil
+  native def flush -> Void
   # Flushes and closes the stream; operations waiting on it raise `IOError`.
   #
   # Closing again does nothing, and so does closing a standard stream.
-  native def close -> Nil
+  native def close -> Void
   # Whether the stream has been closed.
   native def closed? -> Bool
   # Whether a read would find the end of the stream, waiting for input if
@@ -6153,7 +6153,7 @@ class IO
   # ## Raises
   #
   # `IOError` on a socket.
-  native def rewind -> Nil
+  native def rewind -> Void
   # Whether the stream is a terminal (only a standard stream can be).
   native def tty? -> Bool
   # The path a file was opened with or a UNIX socket is bound to; nil
@@ -6260,9 +6260,9 @@ class File
   # when `chomp` is true.
   native def self.readlines(path: String, chomp: Bool = false) -> Array[String]
   # Yields each line of the file at `path`, with its newline.
-  native def self.each_line(path: String, &: (String) -> Nil) -> Nil
+  native def self.each_line(path: String, &: (String) -> Void) -> Void
   # Yields each line of the file at `path`, as `.each_line`.
-  native def self.foreach(path: String, &: (String) -> Nil) -> Nil
+  native def self.foreach(path: String, &: (String) -> Void) -> Void
   # The last part of `path`, without trailing separators, and without
   # `suffix` when it ends with it (`".*"`: any extension).
   #
@@ -6376,7 +6376,7 @@ module Dir
   # The names in the directory `path`, sorted, without `"."` and `".."`.
   native def self.children(path: String) -> Array[String]
   # Yields each name `.children` returns.
-  native def self.each_child(path: String, &: (String) -> Nil) -> Nil
+  native def self.each_child(path: String, &: (String) -> Void) -> Void
   # The paths matching `pattern`: `*`, `?`, `[...]`, `**` and `{a,b}`;
   # the results are sorted.
   #
@@ -6415,16 +6415,16 @@ module Signal
   native def self.names -> Array[String]
   # :nodoc:
   # Internal to `trap`: routes the signal to the socket `reader` returns.
-  native def self.watch(signo: Int) -> Nil
+  native def self.watch(signo: Int) -> Void
   # :nodoc:
   # Internal to `trap`: sets the signal's action to ignore or default.
-  native def self.action(signo: Int, ignore: Bool) -> Nil
+  native def self.action(signo: Int, ignore: Bool) -> Void
   # :nodoc:
   # Internal to `trap`: the socket the signals arrive on, once (nil after).
   native def self.reader -> IO?
 
   # The traps by signal number, in the order they were set.
-  TRAPS = Atom[Hash[Int, Array[shareable () -> Nil]]].new({})
+  TRAPS = Atom[Hash[Int, Array[shareable () -> Void]]].new({})
 
   # The signals `trap` takes, with their numbers.
   def self.list -> Hash[String, Int]
@@ -6446,10 +6446,10 @@ module Signal
   # ## Raises
   #
   # `ArgumentError` for a signal not in `.names` (`:KILL`).
-  def self.trap(name: Symbol, &handler: shareable () -> Nil) -> Nil = trap(name.to_s, &handler)
+  def self.trap(name: Symbol, &handler: shareable () -> Void) -> Void = trap(name.to_s, &handler)
 
   # :ditto:
-  def self.trap(name: String, &handler: shareable () -> Nil) -> Nil
+  def self.trap(name: String, &handler: shareable () -> Void) -> Void
     signo = number(name)
     raise ArgumentError, "unsupported signal: #{name}" if signo.nil?
     TRAPS.update { |h| h.put(signo, (h[signo]? || []).push(handler)) }
@@ -6468,10 +6468,10 @@ module Signal
   #
   # `ArgumentError` for a signal not in `.names`, for another action, and
   # for `:default` on `:PIPE` (which stays ignored).
-  def self.trap(name: Symbol, action: Symbol) -> Nil = trap(name.to_s, action)
+  def self.trap(name: Symbol, action: Symbol) -> Void = trap(name.to_s, action)
 
   # :ditto:
-  def self.trap(name: String, action: Symbol) -> Nil
+  def self.trap(name: String, action: Symbol) -> Void
     signo = number(name)
     raise ArgumentError, "unsupported signal: #{name}" if signo.nil?
     raise ArgumentError, "action must be :default or :ignore" unless action == :default || action == :ignore
@@ -6483,12 +6483,12 @@ module Signal
 
   # :nodoc:
   # Internal to `trap`: runs the traps of the signals read from `io`.
-  def self.dispatch(io: IO) -> Nil
+  def self.dispatch(io: IO) -> Void
     loop do
       got = io.read_bytes(16)
       break if got.empty?
       got.each do |signo|
-        traps: Array[shareable () -> Nil] = TRAPS.value[signo]? || []
+        traps: Array[shareable () -> Void] = TRAPS.value[signo]? || []
         traps.each do |h|
           Task.spawn do
             begin
@@ -6668,10 +6668,10 @@ module Kernel
   # unless it ends with one. An array writes its elements, each on its own
   # line (an empty one, an empty line); `nil` and no argument write an empty
   # line.
-  native def puts(*args: Object) -> Nil
+  native def puts(*args: Object) -> Void
   # Writes each argument's `to_s` to standard output, with no separator and
   # no newline.
-  native def print(*args: Object) -> Nil
+  native def print(*args: Object) -> Void
   # Writes `value`'s `inspect` and a newline to standard output, and returns
   # `value`, so it can wrap an expression.
   #
@@ -6680,12 +6680,12 @@ module Kernel
   # ```
   native def p[T](value: T) -> T
   # Writes each value's `inspect` on a line of its own; returns `nil`.
-  native def p(*values: Object) -> Nil
+  native def p(*values: Object) -> Void
   # The same as `p` with one value.
   native def pp[T](value: T) -> T
   # Writes the arguments to standard error as `puts` writes them to
   # standard output (flushing standard output first).
-  native def warn(*args: Object) -> Nil
+  native def warn(*args: Object) -> Void
   # Runs the block again and again, until a `break` (or a `return` or an
   # exception) leaves it. A `StopIteration` raised in the block ends the
   # loop, so `loop { e.next }` stops at the end of an enumerator. As no
@@ -6700,10 +6700,10 @@ module Kernel
   # end
   # n   # => 3
   # ```
-  native def loop(&: () -> Nil) -> Nil
+  native def loop(&: () -> Void) -> Void
   # Suspends the current task for `duration` (`Task.sleep`): other tasks
   # run in the meantime.
-  native def sleep(duration: Duration) -> Nil
+  native def sleep(duration: Duration) -> Void
   # Ends the program with `status`, as Ruby's: raises `SystemExit`, so the
   # `ensure` clauses it leaves run, innermost first, then the `at_exit`
   # blocks. A plain `rescue` lets it through; `rescue SystemExit` stops it.
@@ -6726,7 +6726,7 @@ module Kernel
   # 1 and `message`, as `exit` does.
   native def abort(message: String) -> Nothing
   # Runs the block when the program exits.
-  native def at_exit(&blk: () -> Nil) -> Nil
+  native def at_exit(&blk: () -> Void) -> Void
   # The next line of standard input, with its newline (the last line may
   # have none).
   #
@@ -6744,7 +6744,7 @@ module Kernel
   # the end of the input.
   native def readlines -> Array[String]
   # Writes `format(format, *args)` to standard output.
-  native def printf(format: String, *args: Object) -> Nil
+  native def printf(format: String, *args: Object) -> Void
   # A random `Float` in `0.0...1.0`, from the default generator (seeded by
   # `srand`; `Random` makes generators of their own).
   native def rand -> Float

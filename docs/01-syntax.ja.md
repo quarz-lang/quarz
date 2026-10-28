@@ -67,7 +67,7 @@ class Account
     @owner = owner
   end
 
-  def deposit(amount: Int) -> Nil
+  def deposit(amount: Int) -> Void
     raise ArgumentError, "amount must be positive" unless amount > 0
     @balance += amount
   end
@@ -263,7 +263,7 @@ DEFAULT_HEADERS = { "Content-Type" => "application/json" }
 ## 9. メソッド定義
 
 ```ruby
-def name(a: Int, b: String = "x", *rest: Int, *, flag: Bool, limit: Int? = nil, **opts: String, &block: (Int) -> Nil) -> Ret
+def name(a: Int, b: String = "x", *rest: Int, *, flag: Bool, limit: Int? = nil, **opts: String, &block: (Int) -> Void) -> Ret
 ```
 
 | 構文 | 意味 |
@@ -274,13 +274,13 @@ def name(a: Int, b: String = "x", *rest: Int, *, flag: Bool, limit: Int? = nil, 
 | `*` | これ以降はキーワード専用(`*rest` の後ろも同様) |
 | `flag: Bool` (`*` の後) | 必須キーワード引数 |
 | `**opts: String` | 残余キーワード。型は `Hash[Symbol, String]` |
-| `&block: (Int) -> Nil` | ブロック引数。型は手続き型で、`block` は手続きの値(`block.call`、`block.()`、`block[]`) |
-| `&: (Int) -> Nil` | 無名のブロック引数。`yield` と `f(&)` での転送からだけ使える |
-| `-> Ret` | 戻り値型。推論せず宣言する。省略するとメソッドは nil を返す。`def f = expr` では必須 |
+| `&block: (Int) -> Void` | ブロック引数。型は手続き型で、`block` は手続きの値(`block.call`、`block.()`、`block[]`) |
+| `&: (Int) -> Void` | 無名のブロック引数。`yield` と `f(&)` での転送からだけ使える |
+| `-> Ret` | 戻り値型。推論せず宣言する。省略するとメソッドは `-> Void`。`def f = expr` では必須 |
 
 - **引数の型は必須**です(既定値から推論できる場合を除く)。メソッドの境界で型が確定しているため、コンパイル時間を短く、エラーメッセージを分かりやすく保てます。
 - Ruby 3 の「位置引数とキーワード引数の分離」は、Quarz では引数リストが暗黙に `Hash` になることがないので不要です。`*` より前の引数は位置・キーワードのどちらでも渡せます(Python/Crystal と同じ)。
-- 戻り値型が `Nil` のメソッドは本体の最後の式の値を捨てます(`void` 相当)。
+- `-> Void` と宣言したメソッドは本体の最後の式の値を捨てて nil を返します。呼び出し側から見た結果の型は `Nil` です。戻り値型を省いたメソッドは `-> Void` です。`-> Nil` は他の型と同じで、本体の値が `Nil` でなければなりません(`Int` で終わる本体はエラーになり、`-> Void` を勧めます)。ブロックと lambda も、期待される手続きの型(`&: (T) -> Void`)や宣言(`->(x: Int) -> Void { }`)によって同じです。`Void` は結果の位置にだけ書けます(02-types.ja.md §1)。
 - 同名メソッドを引数の個数・型と、キーワード専用引数の名前で**多重定義**できます(`def f(*, a: Int)` と `def f(*, b: Int)`。呼び出しは名前で束縛します。Swift の引数ラベルと同じです)。解決はコンパイル時で、呼び出しに当てはまるすべてのオーバーロードから選びます。
   1. 整数リテラルをそれぞれ既定の型(`Int`。`Int` に収まらないものは `Integer`。docs/02 §5)にして当てはまるものを先にします。`x + 1` は `Int#+(Int)` です。`1` は `Float` として `Int#+(Float)` にも当てはまりますが、リテラルを `Float` や `Integer` として扱うのは、既定の型で当てはまるものがないときだけです。
   2. その中で最も具体的なものを選びます。各パラメータの型が相手の型に含まれるものです(位置引数は位置で、キーワード引数は名前で、受け手の型引数を入れて比べます。相手のメソッド自身の型パラメータは、どこに現れても何でも受け取ります。固定の引数は rest 引数より具体的です)。
@@ -296,7 +296,7 @@ def name(a: Int, b: String = "x", *rest: Int, *, flag: Bool, limit: Int? = nil, 
 ### ブロック、`yield`、手続き
 
 ```ruby
-def each_pair(&: (Int, Int) -> Nil) -> Nil     # 無名ブロック: yield で呼ぶ
+def each_pair(&: (Int, Int) -> Void) -> Void     # 無名ブロック: yield で呼ぶ
   yield 1, 2
   yield 3, 4
 end
@@ -311,7 +311,7 @@ def twice(&block: (Int) -> Int) -> Int          # 名前付き: 手続きの値�
   block.call(1) + block.(2) + block[3]
 end
 
-def forward(&: (Int, Int) -> Nil) -> Nil = each_pair(&)  # `&` は無名ブロックをそのまま渡す
+def forward(&: (Int, Int) -> Void) -> Void = each_pair(&)  # `&` は無名ブロックをそのまま渡す
 
 each_pair { |a, b| puts a + b }
 each_pair do |a, b|
@@ -324,7 +324,7 @@ double = ->(x: Int) { x * 2 }          # 手続き(Ruby の lambda に相当)
 ```
 
 - ブロックの引数型は、呼び出し先のブロック引数の型から推論されます。明示したければ `{ |x: Int| ... }` と書けます。`|` は引数の終わりを表すので、そこでの union は `|x: (Int | String)|` のように括弧で囲みます。分解する引数(`|(a, b), c|`)は使えないので、本体でマッチします(`pair => [a, b]`)。
-- `yield` にはブロック引数(名前付きでも無名でも)の宣言が必要です。ブロックの型は宣言から決まるためで、ブロックなしでそのメソッドを呼ぶとコンパイルエラーになります。省略可能なブロックは `&block: ((Int) -> Nil)?` と書きます。呼び出し側がブロックを渡さなければ引数は `nil` になるので、本体では `nil` でないところで `block.call` で呼びます(`yield` では呼べません)。`&block` で、別の省略可能なブロックにそのまま渡せます。
+- `yield` にはブロック引数(名前付きでも無名でも)の宣言が必要です。ブロックの型は宣言から決まるためで、ブロックなしでそのメソッドを呼ぶとコンパイルエラーになります。省略可能なブロックは `&block: ((Int) -> Void)?` と書きます。呼び出し側がブロックを渡さなければ引数は `nil` になるので、本体では `nil` でないところで `block.call` で呼びます(`yield` では呼べません)。`&block` で、別の省略可能なブロックにそのまま渡せます。
 - **メソッドがブロックを保持するかどうかはシグネチャの一部です**(Swift の `@escaping` と同じ)。無名ブロック(`&:`)は呼び出しより長く生きません。`yield` で実行するか、ブロックが無名の別のメソッドへ `&` で渡すことしかできず、ラムダの中(または、ブロックを保持しうるメソッドやタスクに渡したブロックの中)での `yield` や、名前付きの `&blk` への `&` の受け渡しはエラーです。名前付きのブロック引数は保持できます(保存する、返す、あとで実行する)。呼び出し側がこれを前提にするので、オーバーライドで無名ブロックを名前付きに変えることはできません。ブロックを保持する組み込みメソッドも名前を付けています(`at_exit(&blk)`)。
 - `yield` で呼ばれるだけのブロック(エスケープしないブロック)は、コンパイラがクロージャを割り当てずに展開します。`&block` を変数に保存したり返したりして**エスケープ**させた場合にだけ、ヒープ上のクロージャになります。
 - ブロックの中の `break`/`next`/`return` の意味は Ruby と同じです。`next` はブロックの値を返し、`break` はブロックを渡した呼び出しから抜け、`return` は囲んでいるメソッドから戻ります。
@@ -334,20 +334,20 @@ double = ->(x: Int) { x * 2 }          # 手続き(Ruby の lambda に相当)
 
 ### レシーバ付きブロック
 
-手続きの型にはレシーバを付けられます。`Html.() -> Nil` は `self` を `Html` にして走るブロックです(Kotlin の `Html.() -> Unit`)。名前付きのブロック引数として受け取り、`self` を差し替える `instance_exec` で実行します。DSL はこれで作ります。
+手続きの型にはレシーバを付けられます。`Html.() -> Void` は `self` を `Html` にして走るブロックです(Kotlin の `Html.() -> Unit`)。名前付きのブロック引数として受け取り、`self` を差し替える `instance_exec` で実行します。DSL はこれで作ります。
 
 ```ruby
 class Html
   var @parts: Array[String] = []
-  def title(s: String) -> Nil = (@parts = @parts.push("<title>#{s}</title>"))
-  def body(&b: Body.() -> Nil) -> Nil
+  def title(s: String) -> Void = (@parts = @parts.push("<title>#{s}</title>"))
+  def body(&b: Body.() -> Void) -> Void
     node = Body.new
     node.instance_exec(&b)              # ブロックの self は node
     @parts = @parts.push(node.render)
   end
 end
 
-def html(&build: Html.() -> Nil) -> Html
+def html(&build: Html.() -> Void) -> Html
   h = Html.new
   h.instance_exec(&build)
   h
@@ -423,7 +423,7 @@ for u in find_user(id), o in latest_order(u) do [u, o] end   # Result[[User, Ord
 - 変数はブロック引数なので外に漏れません。後続のイテレータ、`when`、本体から先行の変数が見えます。`when` のブロックと本体のブロックは兄弟なので、`when` の中で代入した一時変数は本体から見えません。
 - `flat_map`/`map`(と `when` に必要な `filter`)を持つ型なら何でも使えます: `Enumerable`、`Range`、`Result`(`flat_map` は `and_then` の別名。`when` は使えません)。型は脱糖後の式から普通に推論されます。
 - 本体は組み合わせごとに順に 1 回ずつ実行され、その値が結果の要素になります。`next v` はその要素を `v` にし、`return` は囲むメソッドから戻ります。本体や `when` の中の `break` はコンパイルエラーです(どのブロックを抜けるかが読めないため)。
-- 値が使われない位置(本体の最後より前の文、値を捨てる本体の最後の文。つまり `Nil` を返すと宣言したメソッドやブロック、ファイルのトップレベル)では、反復元がすべて `each` を持つ `for` は、`each` の入れ子(`source.each { |x| if 条件 then … end }`)として実行します。コレクションは作りません。本体は、やはり組み合わせごとに順に 1 回ずつ実行されます。`each` を持たない反復元(`Result`)があれば、どの位置でも内包表記です。
+- 値が使われない位置(本体の最後より前の文、値を捨てる本体の最後の文。つまり `-> Void` と宣言したメソッドやブロック、ファイルのトップレベル)では、反復元がすべて `each` を持つ `for` は、`each` の入れ子(`source.each { |x| if 条件 then … end }`)として実行します。コレクションは作りません。本体は、やはり組み合わせごとに順に 1 回ずつ実行されます。`each` を持たない反復元(`Result`)があれば、どの位置でも内包表記です。
 - `for` は文脈キーワードで、`for 変数 in` の形のときだけ内包表記です。
 
 ### パターンマッチ

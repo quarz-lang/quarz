@@ -169,7 +169,7 @@ module HTTP
     end
 
     # Yields each field's name (lowercased) and value, in order.
-    def each(&: (String, String) -> Nil) -> Nil
+    def each(&: (String, String) -> Void) -> Void
       entries.each { |e| yield e.name, e.value }
     end
 
@@ -215,7 +215,7 @@ module HTTP
 
     def buffered -> Int = @buf.size - @pos
 
-    def read_timeout=(d: Duration?) -> Nil
+    def read_timeout=(d: Duration?) -> Void
       @read_timeout = d
       nil
     end
@@ -305,7 +305,7 @@ module HTTP
     var @limit: Int
     var @length: Int?
     # Called before the first read (sends `100 Continue`).
-    var @on_first_read: (() -> Nil)?
+    var @on_first_read: (() -> Void)?
     var @started: Bool = false
     # A read raised: the framing is lost, so the connection cannot be kept.
     var @failed: Bool = false
@@ -313,7 +313,7 @@ module HTTP
     # A body read from `reader`: `length` bytes, or chunked, accepting up to
     # `limit` bytes. The server makes it; a test uses `.of`.
     def initialize(@reader: Reader, @length: Int?, @chunked: Bool, @limit: Int,
-                   @on_first_read: (() -> Nil)? = nil)
+                   @on_first_read: (() -> Void)? = nil)
       @remaining = @length || 0
       @done = !@chunked && @remaining == 0
     end
@@ -382,7 +382,7 @@ module HTTP
 
     # Yields the body's pieces as they arrive, until its end. Unlike
     # `#read`, it is not bounded by `max_body_bytes`.
-    def each_chunk(&: (Bytes) -> Nil) -> Nil
+    def each_chunk(&: (Bytes) -> Void) -> Void
       loop do
         part = read_chunk
         break if part.empty?
@@ -430,7 +430,7 @@ module HTTP
       true
     end
 
-    private def next_chunk -> Nil
+    private def next_chunk -> Void
       line = begin
         @reader.read_line(1024, true)
       rescue HeadersTooLarge
@@ -771,7 +771,7 @@ module HTTP
   # the body's first read when the client expects `100 Continue`.
   def self.read_request(reader: Reader, max_header_bytes: Int, max_body_bytes: Int,
                         remote_address: Socket::Address?, proxies: Proxies, trusted: Bool,
-                        on_continue: (() -> Nil)? = nil) -> Request?
+                        on_continue: (() -> Void)? = nil) -> Request?
     # Blank lines before a request are ignored (RFC 9112 §2.2).
     budget = max_header_bytes
     line = reader.read_line(budget)
@@ -867,10 +867,10 @@ module HTTP
 
     # Sends `data` as one chunk, within the server's `write_timeout`; empty
     # data sends nothing.
-    def write(data: String) -> Nil = write(data.to_bytes)
+    def write(data: String) -> Void = write(data.to_bytes)
 
     # :ditto:
-    def write(data: Bytes) -> Nil
+    def write(data: Bytes) -> Void
       return nil if @head || data.empty?
       io = @io
       chunked = @chunked
@@ -887,14 +887,14 @@ module HTTP
     end
 
     # Flushes what has been written to the connection.
-    def flush -> Nil
+    def flush -> Void
       @io.flush
       nil
     end
 
     # Ends a chunked body (the last, empty chunk). The server calls it when
     # the `ResponseBody::Stream` procedure returns.
-    def finish -> Nil
+    def finish -> Void
       return nil if @head
       io = @io
       Task.timeout(@timeout) { io.write("0\r\n\r\n") } if @chunked
@@ -913,7 +913,7 @@ module HTTP
     variant Binary(bytes: Bytes)
     # A body the procedure writes, chunk by chunk, after the headers have
     # gone out (it is not run for HEAD or `304`).
-    variant Stream(write: shareable (BodyWriter) -> Nil)
+    variant Stream(write: shareable (BodyWriter) -> Void)
   end
 
   # What a handler returns. A `data` value: `#header` and `with` make
@@ -989,7 +989,7 @@ module HTTP
     # end
     # ```
     def self.stream(status: Int = 200, headers: Headers = Headers.empty,
-                    &write: shareable (BodyWriter) -> Nil) -> Response
+                    &write: shareable (BodyWriter) -> Void) -> Response
       Response.new(status, headers, ResponseBody::Stream.new(write))
     end
 
@@ -1061,7 +1061,7 @@ module HTTP
 
   # :nodoc:
   # Write `res` for `req` to `io` under `timeout` per write.
-  def self.write_response(io: IO, req: Request?, res: Response, keep_alive: Bool, timeout: Duration) -> Nil
+  def self.write_response(io: IO, req: Request?, res: Response, keep_alive: Bool, timeout: Duration) -> Void
     head, chunked = response_head(req, res, keep_alive)
     status = res.status
     send_body = !(req && req.method == "HEAD") && !(status >= 100 && status < 200) && status != 204 && status != 304
@@ -1159,7 +1159,7 @@ module HTTP
     # The procedure called with what a handler raised (other than an
     # `HTTP::Error`) and the request; when nil, the error is written to
     # STDERR.
-    on_error: (shareable (Exception, Request?) -> Nil)?
+    on_error: (shareable (Exception, Request?) -> Void)?
   )
 
   # An HTTP/1.1 server: a task per connection, requests on one connection
@@ -1202,7 +1202,7 @@ module HTTP
                    write_timeout: Duration = 30.seconds, max_header_bytes: Int = 65_536,
                    max_body_bytes: Int = 1_048_576, max_connections: Int = 10_000,
                    trusted_proxies: Array[String] = [],
-                   on_error: (shareable (Exception, Request?) -> Nil)? = nil)
+                   on_error: (shareable (Exception, Request?) -> Void)? = nil)
       @options = Options.new(read_header_timeout, idle_timeout, read_timeout, write_timeout,
                              max_header_bytes, max_body_bytes, max_connections,
                              Proxies.of(trusted_proxies), on_error)
@@ -1226,7 +1226,7 @@ module HTTP
                   read_timeout: Duration = 30.seconds,
                   write_timeout: Duration = 30.seconds, max_header_bytes: Int = 65_536,
                   max_body_bytes: Int = 1_048_576, max_connections: Int = 10_000,
-                  on_error: (shareable (Exception, Request?) -> Nil)? = nil) -> Server
+                  on_error: (shareable (Exception, Request?) -> Void)? = nil) -> Server
       Server.new(handler, path: path, read_header_timeout: read_header_timeout,
                  idle_timeout: idle_timeout, read_timeout: read_timeout, write_timeout: write_timeout,
                  max_header_bytes: max_header_bytes, max_body_bytes: max_body_bytes,
@@ -1245,7 +1245,7 @@ module HTTP
     #
     # It returns at once when the server is already serving or was shut
     # down.
-    def serve -> Nil
+    def serve -> Void
       return nil unless @state.compare_and_set(0, 1)
       begin
         Task.scope do |scope|
@@ -1288,7 +1288,7 @@ module HTTP
     #
     # `shutdown` itself returns at once (so a handler may call it);
     # `#wait` waits for `#serve` to return.
-    def shutdown(timeout: Duration = 30.seconds) -> Nil
+    def shutdown(timeout: Duration = 30.seconds) -> Void
       loop do
         was = @state.value
         if was == 0
@@ -1309,7 +1309,7 @@ module HTTP
     end
 
     # Waits until `#serve` has returned (after a `#shutdown`).
-    def wait -> Nil
+    def wait -> Void
       @done.receive?
       nil
     end
@@ -1317,7 +1317,7 @@ module HTTP
     # Whether `#shutdown` has been called.
     def stopping? -> Bool = @state.value == 2
 
-    private def close_listener -> Nil
+    private def close_listener -> Void
       begin
         tcp = @tcp
         tcp.close if tcp && !tcp.closed?
@@ -1329,7 +1329,7 @@ module HTTP
       nil
     end
 
-    private def close_idle -> Nil
+    private def close_idle -> Void
       @idle.value.each do |_, io|
         begin
           io.close
@@ -1340,7 +1340,7 @@ module HTTP
       nil
     end
 
-    protected def accept_loop(scope: Scope) -> Nil
+    protected def accept_loop(scope: Scope) -> Void
       server = self
       loop do
         @tokens.send(nil)
@@ -1384,7 +1384,7 @@ module HTTP
       [unix.accept, nil]
     end
 
-    protected def end_connection(id: Int, conn: IO) -> Nil
+    protected def end_connection(id: Int, conn: IO) -> Void
       begin
         conn.close unless conn.closed?
       rescue IOError, SystemCallError
@@ -1396,7 +1396,7 @@ module HTTP
       nil
     end
 
-    private def report(e: Exception, req: Request?) -> Nil
+    private def report(e: Exception, req: Request?) -> Void
       cb = @options.on_error
       # The path as sent, without the query, which may carry a token.
       # Not `req.path`: decoded, it may hold a CR, an LF or an escape,
@@ -1416,7 +1416,7 @@ module HTTP
 
     # The requests of one connection, one after another. Whatever goes
     # wrong ends this connection only.
-    protected def serve_connection(id: Int, conn: IO, peer: Socket::Address?) -> Nil
+    protected def serve_connection(id: Int, conn: IO, peer: Socket::Address?) -> Void
       opts = @options
       reader = Reader.new(conn)
       first = true
@@ -1550,7 +1550,7 @@ module HTTP
     # A router of the routes the block adds to its `RouterBuilder`. Raises
     # `ArgumentError` for two routes of a method that match the same paths
     # with equal specificity, or a pattern not starting with `/`.
-    def self.build(&: (RouterBuilder) -> Nil) -> Router
+    def self.build(&: (RouterBuilder) -> Void) -> Router
       b = RouterBuilder.new
       yield b
       b.to_router
@@ -1608,7 +1608,7 @@ module HTTP
     # Routes `method` requests matching `pattern` to `handler`. Raises
     # `ArgumentError` for a pattern that does not start with `/`, or one
     # conflicting with a route already added.
-    def handle(method: String, pattern: String, handler: Handler) -> Nil
+    def handle(method: String, pattern: String, handler: Handler) -> Void
       segs = HTTP.parse_pattern(pattern)
       shape = HTTP.specificity(segs)
       @routes.each do |r|
@@ -1621,41 +1621,41 @@ module HTTP
     end
 
     # The same, with a handler from the block.
-    def handle(method: String, pattern: String, &blk: shareable (Request) -> Response) -> Nil
+    def handle(method: String, pattern: String, &blk: shareable (Request) -> Response) -> Void
       handle(method, pattern, ProcHandler.new(blk))
     end
 
     # Routes GET requests matching `pattern`: `#handle`.
-    def get(pattern: String, handler: Handler) -> Nil = handle("GET", pattern, handler)
+    def get(pattern: String, handler: Handler) -> Void = handle("GET", pattern, handler)
     # :ditto:
-    def get(pattern: String, &blk: shareable (Request) -> Response) -> Nil = handle("GET", pattern, ProcHandler.new(blk))
+    def get(pattern: String, &blk: shareable (Request) -> Response) -> Void = handle("GET", pattern, ProcHandler.new(blk))
     # Routes HEAD requests matching `pattern`: `#handle`.
-    def head(pattern: String, handler: Handler) -> Nil = handle("HEAD", pattern, handler)
+    def head(pattern: String, handler: Handler) -> Void = handle("HEAD", pattern, handler)
     # :ditto:
-    def head(pattern: String, &blk: shareable (Request) -> Response) -> Nil = handle("HEAD", pattern, ProcHandler.new(blk))
+    def head(pattern: String, &blk: shareable (Request) -> Response) -> Void = handle("HEAD", pattern, ProcHandler.new(blk))
     # Routes POST requests matching `pattern`: `#handle`.
-    def post(pattern: String, handler: Handler) -> Nil = handle("POST", pattern, handler)
+    def post(pattern: String, handler: Handler) -> Void = handle("POST", pattern, handler)
     # :ditto:
-    def post(pattern: String, &blk: shareable (Request) -> Response) -> Nil = handle("POST", pattern, ProcHandler.new(blk))
+    def post(pattern: String, &blk: shareable (Request) -> Response) -> Void = handle("POST", pattern, ProcHandler.new(blk))
     # Routes PUT requests matching `pattern`: `#handle`.
-    def put(pattern: String, handler: Handler) -> Nil = handle("PUT", pattern, handler)
+    def put(pattern: String, handler: Handler) -> Void = handle("PUT", pattern, handler)
     # :ditto:
-    def put(pattern: String, &blk: shareable (Request) -> Response) -> Nil = handle("PUT", pattern, ProcHandler.new(blk))
+    def put(pattern: String, &blk: shareable (Request) -> Response) -> Void = handle("PUT", pattern, ProcHandler.new(blk))
     # Routes PATCH requests matching `pattern`: `#handle`.
-    def patch(pattern: String, handler: Handler) -> Nil = handle("PATCH", pattern, handler)
+    def patch(pattern: String, handler: Handler) -> Void = handle("PATCH", pattern, handler)
     # :ditto:
-    def patch(pattern: String, &blk: shareable (Request) -> Response) -> Nil = handle("PATCH", pattern, ProcHandler.new(blk))
+    def patch(pattern: String, &blk: shareable (Request) -> Response) -> Void = handle("PATCH", pattern, ProcHandler.new(blk))
     # Routes DELETE requests matching `pattern`: `#handle`.
-    def delete(pattern: String, handler: Handler) -> Nil = handle("DELETE", pattern, handler)
+    def delete(pattern: String, handler: Handler) -> Void = handle("DELETE", pattern, handler)
     # :ditto:
-    def delete(pattern: String, &blk: shareable (Request) -> Response) -> Nil = handle("DELETE", pattern, ProcHandler.new(blk))
+    def delete(pattern: String, &blk: shareable (Request) -> Response) -> Void = handle("DELETE", pattern, ProcHandler.new(blk))
     # Routes OPTIONS requests matching `pattern`: `#handle`.
-    def options(pattern: String, handler: Handler) -> Nil = handle("OPTIONS", pattern, handler)
+    def options(pattern: String, handler: Handler) -> Void = handle("OPTIONS", pattern, handler)
     # :ditto:
-    def options(pattern: String, &blk: shareable (Request) -> Response) -> Nil = handle("OPTIONS", pattern, ProcHandler.new(blk))
+    def options(pattern: String, &blk: shareable (Request) -> Response) -> Void = handle("OPTIONS", pattern, ProcHandler.new(blk))
 
     # Another router's routes under `prefix`.
-    def mount(prefix: String, router: Router) -> Nil
+    def mount(prefix: String, router: Router) -> Void
       pre = HTTP.parse_pattern(prefix)
       raise ArgumentError, "a mount prefix has no {name...}" if pre.any? { |s| s.is_a?(Segment::Rest) }
       router.routes.each do |r|
@@ -1665,13 +1665,13 @@ module HTTP
     end
 
     # The handler of a path no route has (by default, `Response.not_found`).
-    def not_found(handler: Handler) -> Nil
+    def not_found(handler: Handler) -> Void
       @fallback = handler
       nil
     end
 
     # :ditto:
-    def not_found(&blk: shareable (Request) -> Response) -> Nil
+    def not_found(&blk: shareable (Request) -> Response) -> Void
       @fallback = ProcHandler.new(blk)
       nil
     end
@@ -1771,7 +1771,7 @@ module HTTP
   # A shorthand for `HTTP::Server.new` with a handler from the block
   # (`HTTP.handler`) and `HTTP::Server#serve`.
   def self.serve(port: Int = 8080, host: String = "0.0.0.0",
-                 &handler: shareable (Request) -> Response) -> Nil
+                 &handler: shareable (Request) -> Response) -> Void
     Server.new(ProcHandler.new(handler), host: host, port: port).serve
   end
 end

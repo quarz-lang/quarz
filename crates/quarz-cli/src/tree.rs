@@ -178,6 +178,7 @@ fn ty(t: &Type) -> Value {
     let all = |ts: &[Type]| ts.iter().map(ty).collect::<Vec<_>>();
     match t {
         Type::Nothing => json!({ "t": "nothing" }),
+        Type::Void => json!({ "t": "void" }),
         Type::Class(id, args) => json!({ "t": "class", "id": id, "args": all(args) }),
         Type::ClassObject(id, args) => {
             json!({ "t": "class_object", "id": id, "args": all(args) })

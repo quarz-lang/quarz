@@ -1,6 +1,6 @@
 # A shared exception keeps the backtrace of its first raise.
 Boom = RuntimeError.new("boom")
-def fail_once -> Nil
+def fail_once -> Void
   raise Boom
 end
 lines = (1..2).map do |_|

@@ -8,7 +8,7 @@ class Foo
   def initialize(@n: Int)
   end
   def n -> Int = @n
-  def deinitialize -> Nil
+  def deinitialize -> Void
     puts "deinitialize #{@n}"
   end
 end

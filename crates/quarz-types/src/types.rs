@@ -32,6 +32,10 @@ pub enum Type {
     Param(TypeParamId),
     /// An inference variable, bound by unification during checking.
     Var(InferVar),
+    /// `-> Void`: the result of a method or procedure whose body's value
+    /// is discarded. Only a result is `Void` (never a value's type: a
+    /// call's is `Nil`), and it compares as `Nil`.
+    Void,
 }
 
 impl Type {
@@ -87,6 +91,7 @@ impl Type {
         }
         match self {
             Type::Nothing => Type::Nothing,
+            Type::Void => Type::Void,
             Type::Class(id, args) => Type::Class(*id, args.iter().map(|a| a.subst(map)).collect()),
             Type::ClassObject(id, args) => {
                 Type::ClassObject(*id, args.iter().map(|a| a.subst(map)).collect())
@@ -110,7 +115,7 @@ impl Type {
     pub fn has_vars(&self) -> bool {
         match self {
             Type::Var(_) => true,
-            Type::Nothing | Type::Param(_) => false,
+            Type::Nothing | Type::Void | Type::Param(_) => false,
             Type::Class(_, args) | Type::ClassObject(_, args) => args.iter().any(Type::has_vars),
             Type::Union(ms) | Type::Tuple(ms) => ms.iter().any(Type::has_vars),
             Type::Proc(rc, ps, r, _) => {
@@ -125,7 +130,7 @@ impl Type {
     pub fn mentions_var(&self, v: u32) -> bool {
         match self {
             Type::Var(w) => *w == v,
-            Type::Nothing | Type::Param(_) => false,
+            Type::Nothing | Type::Void | Type::Param(_) => false,
             Type::Class(_, args) | Type::ClassObject(_, args) => {
                 args.iter().any(|a| a.mentions_var(v))
             }
@@ -142,7 +147,7 @@ impl Type {
     pub fn mentions_any_param(&self) -> bool {
         match self {
             Type::Param(_) => true,
-            Type::Var(_) | Type::Nothing => false,
+            Type::Var(_) | Type::Nothing | Type::Void => false,
             Type::Class(_, args) | Type::ClassObject(_, args) => {
                 args.iter().any(Type::mentions_any_param)
             }
@@ -159,7 +164,7 @@ impl Type {
     pub fn mentions_param(&self, id: TypeParamId) -> bool {
         match self {
             Type::Param(p) => *p == id,
-            Type::Var(_) | Type::Nothing => false,
+            Type::Var(_) | Type::Nothing | Type::Void => false,
             Type::Class(_, args) | Type::ClassObject(_, args) => {
                 args.iter().any(|a| a.mentions_param(id))
             }
@@ -175,7 +180,7 @@ impl Type {
     pub fn has_params(&self) -> bool {
         match self {
             Type::Param(_) => true,
-            Type::Nothing | Type::Var(_) => false,
+            Type::Nothing | Type::Void | Type::Var(_) => false,
             Type::Class(_, args) | Type::ClassObject(_, args) => args.iter().any(Type::has_params),
             Type::Union(ms) | Type::Tuple(ms) => ms.iter().any(Type::has_params),
             Type::Proc(rc, ps, r, _) => {
@@ -189,7 +194,7 @@ impl Type {
     pub fn for_each_var(&self, f: &mut dyn FnMut(InferVar)) {
         match self {
             Type::Var(v) => f(*v),
-            Type::Nothing | Type::Param(_) => {}
+            Type::Nothing | Type::Void | Type::Param(_) => {}
             Type::Class(_, args) | Type::ClassObject(_, args) => {
                 args.iter().for_each(|a| a.for_each_var(f))
             }

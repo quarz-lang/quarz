@@ -329,7 +329,7 @@ impl Checker {
     ) -> bool {
         match t {
             Type::Param(p) => *p != id || pos,
-            Type::Var(_) | Type::Nothing => true,
+            Type::Var(_) | Type::Nothing | Type::Void => true,
             Type::Union(ms) | Type::Tuple(ms) => {
                 ms.iter().all(|m| self.only_covariant(m, id, pos, visiting))
             }

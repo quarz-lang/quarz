@@ -100,7 +100,7 @@ end
 
 class Counter
   var @count: Int = 0
-  def increment -> Nil
+  def increment -> Void
     @count += 1
   end
 end
@@ -126,7 +126,7 @@ class TempFile
   end
 end
 
-def with_scratch -> Nil
+def with_scratch -> Void
   f = TempFile.new("/tmp/scratch")
   File.write("/tmp/scratch", "data")   # f is not used after this line,
   run_tool("/tmp/scratch")             # but the file is still there

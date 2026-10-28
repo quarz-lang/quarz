@@ -85,7 +85,7 @@ end
 class Body
   def read -> String                   # 全体。max_body_bytes を超えると HTTP::PayloadTooLarge
   def read_bytes -> Bytes
-  def each_chunk(&: (Bytes) -> Nil) -> Nil   # 届いた分ずつ。上限なし
+  def each_chunk(&: (Bytes) -> Void) -> Void   # 届いた分ずつ。上限なし
   def read_chunk(max: Int = 16_384) -> Bytes # 次の一片(終わりでは空)
   def size -> Int?                     # Content-Length があれば
   def consumed? -> Bool                # 末尾まで読んだかどうか
@@ -108,7 +108,7 @@ data Headers(entries: Array[Field])               # 順序を保ち、同じ名�
   def put(name: String, value: String) -> Headers    # その名前の値をすべて置き換える
   def add(name: String, value: String) -> Headers    # 1 つ足す
   def delete(name: String) -> Headers
-  def each(&: (String, String) -> Nil) -> Nil
+  def each(&: (String, String) -> Void) -> Void
   def size -> Int
   def token?(name: String, token: String) -> Bool   # `Connection: keep-alive, Upgrade` は `upgrade` を持つ
 end
@@ -129,7 +129,7 @@ module HTTP
     def self.redirect(location: String, status: Int = 302) -> Response
     def self.not_found(message: String = "Not Found") -> Response
     def self.stream(status: Int = 200, headers: Headers = Headers.empty,
-                    &write: shareable (BodyWriter) -> Nil) -> Response
+                    &write: shareable (BodyWriter) -> Void) -> Response
     def header(name: String, value: String) -> Response                   # with(headers: headers.put(...))
     def reason -> String                                                  # 200 なら "OK"
   end
@@ -138,14 +138,14 @@ module HTTP
     variant Empty
     variant Text(text: String)
     variant Binary(bytes: Bytes)
-    variant Stream(write: shareable (BodyWriter) -> Nil)
+    variant Stream(write: shareable (BodyWriter) -> Void)
   end
 
   # Stream 本体の手続きに渡される。`write` 1 回が 1 チャンクとして送られる
   class BodyWriter
-    def write(data: String) -> Nil
-    def write(data: Bytes) -> Nil
-    def flush -> Nil
+    def write(data: String) -> Void
+    def write(data: Bytes) -> Void
+    def flush -> Void
   end
 end
 ```
@@ -168,16 +168,16 @@ module HTTP
                  max_body_bytes: Int = 1_048_576,              # Body#read と read_bytes が受け付ける大きさ
                  max_connections: Int = 10_000,                # 同時に受け付ける数。超えると accept が待つ
                  trusted_proxies: Array[String] = [],          # X-Forwarded-* を信じる相手
-                 on_error: (shareable (Exception, Request?) -> Nil)? = nil) -> Server
+                 on_error: (shareable (Exception, Request?) -> Void)? = nil) -> Server
     def self.unix(handler: Handler, path: String, *, ...同じオプション...) -> Server   # UNIX ソケット
-    def serve -> Nil                      # shutdown かキャンセルまで受け付ける
+    def serve -> Void                      # shutdown かキャンセルまで受け付ける
     def local_address -> Socket::Address  # 実際に束縛したポート(`port: 0` なら空いているもの)
-    def shutdown(timeout: Duration = 30.seconds) -> Nil   # 停止を始めてすぐ戻る
-    def wait -> Nil                       # serve が戻るまで待つ
+    def shutdown(timeout: Duration = 30.seconds) -> Void   # 停止を始めてすぐ戻る
+    def wait -> Void                       # serve が戻るまで待つ
   end
 
   def self.serve(port: Int = 8080, host: String = "0.0.0.0",
-                 &handler: shareable (Request) -> Response) -> Nil
+                 &handler: shareable (Request) -> Response) -> Void
 end
 ```
 

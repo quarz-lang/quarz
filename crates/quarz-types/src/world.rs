@@ -516,7 +516,7 @@ impl World {
                 Box::new(self.erase_narrowed(r)),
                 *sh,
             ),
-            Type::Nothing | Type::Var(_) => t.clone(),
+            Type::Nothing | Type::Void | Type::Var(_) => t.clone(),
         }
     }
 
@@ -626,6 +626,42 @@ impl World {
         matches!(t, Type::Class(id, _) if *id == self.builtin.nil)
     }
 
+    /// Whether `a` and `b` are the same type, `Void` being `Nil`.
+    pub fn same_type(&self, a: &Type, b: &Type) -> bool {
+        a == b || self.devoid(a) == self.devoid(b)
+    }
+
+    /// `t` with `Nil` for every `Void` in it.
+    pub fn devoid(&self, t: &Type) -> Type {
+        match t {
+            Type::Void => self.nil(),
+            Type::Nothing | Type::Param(_) | Type::Var(_) => t.clone(),
+            Type::Class(id, args) => {
+                Type::Class(*id, args.iter().map(|a| self.devoid(a)).collect())
+            }
+            Type::ClassObject(id, args) => {
+                Type::ClassObject(*id, args.iter().map(|a| self.devoid(a)).collect())
+            }
+            Type::Union(ms) => Type::union_of(ms.iter().map(|m| self.devoid(m)).collect()),
+            Type::Tuple(ts) => Type::Tuple(ts.iter().map(|m| self.devoid(m)).collect()),
+            Type::Proc(rc, ps, r, sh) => Type::Proc(
+                rc.as_ref().map(|t| Box::new(self.devoid(t))),
+                ps.iter().map(|p| self.devoid(p)).collect(),
+                Box::new(self.devoid(r)),
+                *sh,
+            ),
+        }
+    }
+
+    /// `Nil` for `Void`: what a caller sees of a result, and how `Void`
+    /// compares (`(A) -> Void` and `(A) -> Nil` are the same type).
+    pub fn unvoid(&self, t: &Type) -> Type {
+        match t {
+            Type::Void => self.nil(),
+            t => t.clone(),
+        }
+    }
+
     pub fn is_object(&self, t: &Type) -> bool {
         matches!(t, Type::Class(id, _) if *id == self.builtin.object)
     }
@@ -635,6 +671,7 @@ impl World {
     pub fn type_name(&self, t: &Type) -> String {
         match t {
             Type::Nothing => "Nothing".to_string(),
+            Type::Void => "Void".to_string(),
             Type::Class(id, args) => {
                 let name = &self.class(*id).name;
                 if args.is_empty() {
@@ -1031,6 +1068,9 @@ impl World {
         if sub == sup || sub.is_nothing() {
             return true;
         }
+        if matches!(sub, Type::Void) || matches!(sup, Type::Void) {
+            return self.is_subtype(&self.unvoid(sub), &self.unvoid(sup));
+        }
         if self.is_object(sup) {
             return true;
         }
@@ -1308,6 +1348,7 @@ impl World {
                 }
                 self.lookup_instance_methods(self.builtin.object, &[], name, &mut out);
             }
+            Type::Void => return self.lookup_methods(&self.nil(), name),
             Type::Union(_) | Type::Nothing | Type::Var(_) => {}
         }
         out
@@ -1540,7 +1581,7 @@ impl World {
     /// Whether values of the type may be shared between tasks.
     pub fn is_shareable(&mut self, t: &Type) -> bool {
         match t {
-            Type::Nothing => true,
+            Type::Nothing | Type::Void => true,
             Type::Class(id, args) => {
                 let id = *id;
                 if !self.class_shareable(id) {
@@ -1614,7 +1655,7 @@ impl World {
     /// arguments say, and a `data` type or enum what its fields do.
     pub fn release_observable(&mut self, t: &Type) -> bool {
         match t {
-            Type::Nothing | Type::ClassObject(_, _) | Type::Var(_) => false,
+            Type::Nothing | Type::Void | Type::ClassObject(_, _) | Type::Var(_) => false,
             Type::Class(id, args) => {
                 let id = *id;
                 let own = if self.is_value_class(id) {

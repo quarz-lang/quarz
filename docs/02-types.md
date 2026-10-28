@@ -6,7 +6,7 @@ Quarz is statically typed. The structure of classes, modules and methods is fixe
 
 Design principles:
 
-1. **Write types at method boundaries, not inside them.** Parameter and return types are written (a method without a return type returns nil); local variables are inferred. This keeps compile times short and error messages clear.
+1. **Write types at method boundaries, not inside them.** Parameter and return types are written (a method without a return type is `-> Void`: it returns nil); local variables are inferred. This keeps compile times short and error messages clear.
 2. **nil is not a value of ordinary types.** A value of type `String` is never `nil`; if `nil` is possible, write `String?`.
 3. **Union types and flow typing.** Union types such as `Int | String` can be used directly and narrowed with `if`/`case/in`/`is_a?`.
 4. **Immutable means covariant.** Immutable collections are covariant in their element type, so an `Array[Int]` can be passed where an `Array[Int | Nil]` is expected.
@@ -20,11 +20,12 @@ Design principles:
 | Nilable | `String?` | Shorthand for `String \| Nil` |
 | Union | `Int \| String \| Nil` | |
 | Tuple | `[Int, String]` | Fixed length and per-element types |
-| Procedure | `(Int, String) -> Bool`, `() -> Nil` | Type of blocks and lambdas |
+| Procedure | `(Int, String) -> Bool`, `() -> Void` | Type of blocks and lambdas |
 | Top | `Object` | Supertype of every type |
 | Bottom | `Nothing` | Type of `raise`, `exit` and infinite loops. Subtype of every type |
+| Discarded result | `Void` | Only as a result (`-> Void`, `(Int) -> Void`): the body's value is discarded and a caller gets `nil`, so a call's type is `Nil`, and `(Int) -> Void` is the same type as `(Int) -> Nil`. Not a value's type: `Void?`, `Array[Void]` or a parameter of type `Void` is an error |
 | Type variable | `T`, `K`, `V` | Declared type parameters |
-| Self type | `Self` | The receiver's class (in a class method, its instances: `def self.build -> Self = new`), where a method hands a value out: `def dup -> Self`, `&: (Self) -> Nil`. Not where the caller hands one in (a parameter, a block's result): a subclass would receive its parent's values; use a type parameter (`Comparable[T]`). In the body, `Self` is the class or a subclass, not known which: only `self`, what calls on it return as `Self`, and `new` on a class method's receiver are a `Self` (`Shape.new` is not) |
+| Self type | `Self` | The receiver's class (in a class method, its instances: `def self.build -> Self = new`), where a method hands a value out: `def dup -> Self`, `&: (Self) -> Void`. Not where the caller hands one in (a parameter, a block's result): a subclass would receive its parent's values; use a type parameter (`Comparable[T]`). In the body, `Self` is the class or a subclass, not known which: only `self`, what calls on it return as `Self`, and `new` on a class method's receiver are a `Self` (`Shape.new` is not) |
 
 Writing `Array[Int]` in expression context yields an expression denoting the type itself, so it can be used as in `Array[Int].new` (there is no `Array.[]` constructor as in Ruby).
 
@@ -105,7 +106,7 @@ u = find(1) || raise NotFound    # raise has type Nothing, so u is User
 Inference is **bidirectional and local**. Since parameter types are known, inference is confined to a single method body; there is no whole-program inference.
 
 - **Local variables**: the type of the first assignment. `x = 1` gives `Int`.
-- **Return type**: declared, not inferred. A method without one returns nil, as Swift's `func` without `->` returns `Void`: its body's last value is not used (`def report` that prints, `def test_pop`, a setter). A method defined with `=` gives a value, so it declares its type (`def area -> Float = w * h`; `def area = w * h` is an error). `abstract def` and `extern def` declare it too. `return x` with a value in a method that returns nil is an error, and an override returns the overridden method's type or a subtype of it (covariantly: `-> Int` may override `-> Object`), so a `def to_s` without `-> String` is an error. Since a signature says everything a caller needs, each file can be checked on its own (05-execution.md §2), and no method's type depends on another's body.
+- **Return type**: declared, not inferred. A method without one is `-> Void`, as Swift's `func` without `->` returns `Void`: its body's last value is not used and it returns nil (`def report` that prints, `def test_pop`, a setter). `-> Nil` is strict, as any type: its body must give `Nil`. A method defined with `=` gives a value, so it declares its type (`def area -> Float = w * h`; `def area = w * h` is an error). `abstract def` and `extern def` declare it too. `return x` with a value in a `-> Void` method is an error, and an override returns the overridden method's type or a subtype of it (covariantly: `-> Int` may override `-> Object`), so a `def to_s` without `-> String` is an error. Since a signature says everything a caller needs, each file can be checked on its own (05-execution.md §2), and no method's type depends on another's body.
 - **Empty literals**: `[]`, `{}` and `Set[]` follow the expected type if there is one; otherwise they carry a type variable such as `Array[?T]`, fixed by the later uses in the same method. Only uses of the values fix it (an assignment to a typed place, an argument, `push`): a pattern or type test narrows a value of a type not fixed yet only inside its branch (and `case`/`in` on it needs no `else` to be exhaustive), an `if` whose value is not used does not join its branches, and joining it with another type leaves it undecided (`x = xs[0] if c` is `?T?`, `xs[0] || "s"` is `?T | String`); calling a method other than `Object`'s on such a union is a use that decides `?T` as the rest.
 
 ```ruby
@@ -183,15 +184,15 @@ def self.spawn[T <: Shareable](&block: () -> T) -> Task[T]   # the variables cap
 
 `include Shareable` is a promise that the subtypes keep: a value of a Shareable type is Shareable whatever its class. So whether a type is Shareable is decided where it is defined, from its own declaration and its ancestors', without looking at the rest of the program (which separate compilation needs).
 
-A procedure type is not Shareable: a block reads and assigns the variables of the code around it, which another task must not. `shareable (A) -> R` is the type of one that is. A block or lambda written where such a type is expected (a block parameter `&job: shareable (Int) -> Nil`, an argument, an annotated variable) captures by value, as a `Task.spawn` block does: the variables it reads are copied when it is made, their values must be Shareable (and so must `self`, if it uses it), and it cannot assign them. Any task may then call it, at once with others: a worker pool or a server loop can take one and run it in tasks of its own.
+A procedure type is not Shareable: a block reads and assigns the variables of the code around it, which another task must not. `shareable (A) -> R` is the type of one that is. A block or lambda written where such a type is expected (a block parameter `&job: shareable (Int) -> Void`, an argument, an annotated variable) captures by value, as a `Task.spawn` block does: the variables it reads are copied when it is made, their values must be Shareable (and so must `self`, if it uses it), and it cannot assign them. Any task may then call it, at once with others: a worker pool or a server loop can take one and run it in tasks of its own.
 
 ```ruby
-def each_in_tasks(n: Int, &job: shareable (Int) -> Nil) -> Nil
+def each_in_tasks(n: Int, &job: shareable (Int) -> Void) -> Void
   Task.scope { |s| n.times { |i| s.spawn { job.call(i) } } }
 end
 label = "item"
 each_in_tasks(3) { |i| puts "#{label} #{i}" }    # copies `label`
-log: shareable (String) -> Nil = ->(s: String) { STDERR.puts(s) }
+log: shareable (String) -> Void = ->(s: String) { STDERR.puts(s) }
 ```
 
 A shareable procedure is a procedure (`shareable (A) -> R` is a subtype of `(A) -> R`); a procedure is not a shareable one, so `f: shareable () -> Int = g` with `g = ->() { 1 }` is an error: annotate where the lambda is written.

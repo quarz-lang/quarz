@@ -105,7 +105,7 @@ end
 p sum_until(10)
 
 # `yield` inside a loop body yields to the method's block
-def each_double(xs: Array[Int], &: (Int) -> Nil) -> Nil
+def each_double(xs: Array[Int], &: (Int) -> Void) -> Void
   xs.each { |x| yield x * 2 }
 end
 each_double([1, 2]) { |v| p v }

@@ -54,10 +54,10 @@ class UDPSocket < IO
   native def self.new -> UDPSocket
   # Binds the socket to `port` of `host` (port 0: a free one), replacing
   # its address. Raises `SystemCallError` when the address is taken.
-  native def bind(host: String, port: Int) -> Nil
+  native def bind(host: String, port: Int) -> Void
   # Sets the default destination of `#send` without a host, and receives
   # only from it.
-  native def connect(host: String, port: Int) -> Nil
+  native def connect(host: String, port: Int) -> Void
   # Sends `data` as one datagram to `host` at `port`; the number of bytes
   # sent.
   native def send(data: String, host: String, port: Int) -> Int
@@ -185,8 +185,8 @@ module Socket
   # it was taken) does not end the loop either: it goes to `on_error`
   # with no address, or to STDERR, and the loop accepts again 100 ms
   # later.
-  def self.tcp_server_loop(port: Int, on_error: (shareable (Exception, Address?) -> Nil)? = nil,
-                           &handler: shareable (TCPSocket, Address) -> Nil) -> Nil
+  def self.tcp_server_loop(port: Int, on_error: (shareable (Exception, Address?) -> Void)? = nil,
+                           &handler: shareable (TCPSocket, Address) -> Void) -> Void
     tcp_server_loop("0.0.0.0", port, on_error: on_error, &handler)
   end
 
@@ -199,16 +199,16 @@ module Socket
   # end
   # ```
   def self.tcp_server_loop(host: String, port: Int,
-                           on_error: (shareable (Exception, Address?) -> Nil)? = nil,
-                           &handler: shareable (TCPSocket, Address) -> Nil) -> Nil
+                           on_error: (shareable (Exception, Address?) -> Void)? = nil,
+                           &handler: shareable (TCPSocket, Address) -> Void) -> Void
     accept_loop(TCPServer.new(host, port), on_error: on_error, &handler)
   end
 
   # As `tcp_server_loop`, on a server already listening (its port known
   # before the first connection: `TCPServer.new(0)`). The server is
   # closed when the loop ends.
-  def self.accept_loop(server: TCPServer, on_error: (shareable (Exception, Address?) -> Nil)? = nil,
-                       &handler: shareable (TCPSocket, Address) -> Nil) -> Nil
+  def self.accept_loop(server: TCPServer, on_error: (shareable (Exception, Address?) -> Void)? = nil,
+                       &handler: shareable (TCPSocket, Address) -> Void) -> Void
     begin
       Task.scope do |scope|
         loop do
@@ -246,8 +246,8 @@ module Socket
   end
 
   # The same on a UNIX socket server, whose peers have no address.
-  def self.accept_loop(server: UNIXServer, on_error: (shareable (Exception) -> Nil)? = nil,
-                       &handler: shareable (UNIXSocket) -> Nil) -> Nil
+  def self.accept_loop(server: UNIXServer, on_error: (shareable (Exception) -> Void)? = nil,
+                       &handler: shareable (UNIXSocket) -> Void) -> Void
     begin
       Task.scope do |scope|
         loop do
@@ -291,8 +291,8 @@ module Socket
 
   # As `tcp_server_loop`, on a UNIX socket at `path` (removed when the
   # server closes).
-  def self.unix_server_loop(path: String, on_error: (shareable (Exception) -> Nil)? = nil,
-                            &handler: shareable (UNIXSocket) -> Nil) -> Nil
+  def self.unix_server_loop(path: String, on_error: (shareable (Exception) -> Void)? = nil,
+                            &handler: shareable (UNIXSocket) -> Void) -> Void
     accept_loop(UNIXServer.new(path), on_error: on_error, &handler)
   end
 

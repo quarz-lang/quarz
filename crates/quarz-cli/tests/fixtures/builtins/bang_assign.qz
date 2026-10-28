@@ -29,7 +29,7 @@ p bump(4)
 class Bag
   var @items: Array[String] = []
   var @count: Int = 0
-  def add(s: String) -> Nil
+  def add(s: String) -> Void
     @items.push!(s)
     @count.succ!
   end
