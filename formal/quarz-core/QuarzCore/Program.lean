@@ -9,14 +9,18 @@ namespace QuarzCore
 
 namespace Program
 
-/-- Class 0 is the root; every other class's superclass comes before it
-(so the chains end); a class's fields have distinct names. -/
+/-- Class 0 is the root (without parameters); every other class's
+superclass comes before it (so the chains end) and gets as many
+arguments as it has parameters, each naming only the class's own
+parameters; a class's fields have distinct names. -/
 def wfClasses (P : Program) : Bool :=
   0 < P.classes.length &&
   (List.range P.classes.length).all (fun i => match P.classes[i]? with
-    | some k => if i == 0 then k.super.isNone else
+    | some k => if i == 0 then k.super.isNone && k.params.isEmpty && k.superArgs.isEmpty else
       (match k.super with
-        | some d => decide (d < i)
+        | some d => decide (d < i) &&
+            k.superArgs.length == (((P.classes[d]?).map (·.params)).getD []).length &&
+            Ty.argsParamsBelow k.params.length k.superArgs
         | none => false)
     | none => true) &&
   -- A class's fields' names distinct, inherited ones included.
@@ -41,8 +45,9 @@ def wfMethod (P : Program) (mt : Method) : Bool :=
   decide (mt.locals.map (·.1)).Nodup &&
   (mt.params.zip mt.locals).all (fun (p, l) => p == l) &&
   -- `initialize` is not called by name (`Program.resolve`): its own.
+  -- What it overrides is seen with the superclass's arguments.
   (mt.name == "initialize" || ((P.classes.ancestors mt.owner).drop 1).all (fun d =>
-    match P.lookup d mt.name with
+    match P.lookupAt d ((P.classes.ancestorArgs mt.owner (P.classes.selfArgs mt.owner) d).getD []) mt.name with
     | some sup => P.overrides mt sup
     | none => true)) &&
   (mt.name != "==" || (mt.ret.le P.classes [.bool] && mt.block.isNone && match mt.params with
@@ -61,7 +66,7 @@ def heldEnv (ct : ClassTable) (fs : List Field) : Env :=
 the object). -/
 def checkMethod (P : Program) (mt : Method) : Bool :=
   let c : Ctx := ⟨P, mt, false, false⟩
-  let held := if c.inInit then heldEnv P.classes (P.classes.allFields mt.owner) else []
+  let held := if c.inInit then heldEnv P.classes c.fields else []
   match check c (mt.params.map (fun (x, t) => (.local x, t)) ++ held) mt.body with
   | some o => (c.inInit || o.out.isNone || o.ty.le P.classes mt.ret) &&
       (!c.inInit || o.out.all (c.allSet ·))
@@ -87,7 +92,7 @@ def defaultCtx (P : Program) (k : Nat) (t : Ty) : Ctx :=
 /-- Each of class `k`'s own fields' defaults: of the field's type, reading
 only the fields before it that hold a value. -/
 def checkDefaults (P : Program) (k : Nat) : Bool :=
-  let fs := P.classes.allFields k
+  let fs := P.classes.allFieldsAt k (P.classes.selfArgs k)
   fs.zipIdx.all fun (f, i) => match f.default with
     | none => true
     | some d => match P.defaults[d]? with
@@ -99,8 +104,9 @@ def checkDefaults (P : Program) (k : Nat) : Bool :=
 def check (P : Program) : Bool :=
   P.wfClasses &&
   -- The top level runs with `self` an instance of its class, which has
-  -- no fields (`run`).
+  -- no fields and no parameters (`run`).
   (P.main.owner < P.classes.length && (P.classes.allFields P.main.owner).isEmpty &&
+    (((P.classes[P.main.owner]?).map (·.params)).getD []).isEmpty &&
     P.main.params.isEmpty && P.main.block.isNone) &&
   (P.main :: P.methods).all (fun mt => P.wfMethod mt && P.checkMethod mt) &&
   (List.range P.classes.length).all fun k => P.wfInit k && P.checkDefaults k

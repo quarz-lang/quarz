@@ -29,8 +29,10 @@ inductive Expr where
   /-- Assigning a field of `self` (an immutable one in `initialize`). -/
   | setField (f : String) (e : Expr)
   | self
-  /-- `C.new(args)`: the fields' defaults, then `initialize(args)`. -/
-  | new (c : Nat) (args : List Expr)
+  /-- `C[targs].new(args)`: the fields' defaults, then `initialize(args)`;
+  `targs` (which may name the enclosing class's parameters) are the
+  object's type arguments. -/
+  | new (c : Nat) (targs : List Ty) (args : List Expr)
   /-- `super(args)` in `initialize`: the `initialize` class `d` (the
   superclass) has, run on `self`, which assigns the inherited fields. -/
   | superInit (d : Nat) (args : List Expr)
@@ -51,7 +53,9 @@ inductive Expr where
   | raise
   /-- `e.nil?`, `e.is_a?(a)`, `e == nil`, `e != nil`, `e == true`,
   `e == false`: forms, not calls (`nil?` and `is_a?` cannot be
-  redefined, e63bc57; `==` is the built-in one). -/
+  redefined, e63bc57; `==` is the built-in one). `is_a?` names a class
+  with its arguments (`Box[Int]`), closed; at run time it tests the
+  class only (docs/02 §7 says which are allowed). -/
   | isNil (e : Expr)
   | isA (e : Expr) (a : Atom)
   | eqNil (e : Expr)

@@ -45,6 +45,74 @@ theorem Ty.append_le {ct : ClassTable} {s t u : Ty} (h1 : s.le ct u = true)
   · exact h1 a ha
   · exact h2 a ha
 
+/-! ### Substitution keeps the order -/
+
+theorem Ty.mem_subst {σ : List Ty} : ∀ {s : Ty} {a' : Atom},
+    a' ∈ Ty.subst σ s ↔ ∃ a ∈ s, a' ∈ a.subst σ := by
+  intro s a'
+  induction s with
+  | nil => simp [Ty.subst]
+  | cons a s ih =>
+    simp only [Ty.subst, List.mem_append, ih, List.mem_cons]
+    constructor
+    · rintro (h | ⟨b, hb, h⟩)
+      · exact ⟨a, Or.inl rfl, h⟩
+      · exact ⟨b, Or.inr hb, h⟩
+    · rintro ⟨b, rfl | hb, h⟩
+      · exact Or.inl h
+      · exact Or.inr ⟨b, hb, h⟩
+
+theorem Atom.subst_le {ct : ClassTable} (hwf : WfClasses ct) (σ : List Ty) {a b : Atom}
+    (h : a.le ct b = true) : Ty.le ct (a.subst σ) (b.subst σ) = true := by
+  cases b
+  case cls d bs =>
+    cases a
+    -- Two classes: the top, or the chain's arguments substituted.
+    case cls c as =>
+      rw [Atom.le_cls_iff] at h
+      rcases h with ⟨rfl, rfl⟩ | h
+      · simp [Atom.subst, Ty.le, Atom.le]
+      · simp only [Atom.subst, Ty.le, List.all_cons, List.all_nil, List.any_cons, List.any_nil,
+          Bool.or_false, Bool.and_true]
+        rw [(Atom.le_cls_iff c _ d _).mpr (Or.inr (ClassTable.ancestorArgs_subst ct σ h))]
+    -- A parameter below `Object`: what it stands for is too.
+    case param i =>
+      simp only [Atom.le, Bool.and_eq_true, beq_iff_eq, List.isEmpty_iff] at h
+      obtain ⟨rfl, rfl⟩ := h
+      simp only [Atom.subst]
+      cases σ[i]? with
+      | none => simp [Option.getD, Ty.le, Atom.le]
+      | some t =>
+        simp only [Option.getD, Ty.le]
+        exact List.all_eq_true.mpr fun a _ => by simp [Atom.le_top]
+    -- A value below `Object`.
+    all_goals
+      simp only [Atom.le, Bool.and_eq_true, beq_iff_eq, List.isEmpty_iff] at h
+      obtain ⟨rfl, rfl⟩ := h
+      simp [Atom.subst, Ty.le, Atom.le]
+  case param j =>
+    cases a
+    case param i =>
+      simp only [Atom.le, beq_iff_eq] at h
+      subst h
+      simp only [Atom.subst]
+      cases σ[i]? with
+      | none => simp [Option.getD, Ty.le, Atom.le]
+      | some t => simp only [Option.getD]; exact Ty.le_refl hwf t
+    all_goals simp_all [Atom.le]
+  -- A value atom: only itself is below it.
+  all_goals cases a <;> simp_all [Atom.le] <;> simp [Atom.subst, Ty.le, Atom.le]
+
+theorem Ty.subst_le {ct : ClassTable} (hwf : WfClasses ct) (σ : List Ty) {s t : Ty}
+    (h : s.le ct t = true) : Ty.le ct (s.subst σ) (t.subst σ) = true := by
+  rw [Ty.le_iff] at h ⊢
+  intro a' ha'
+  obtain ⟨a, ha, ha'⟩ := Ty.mem_subst.mp ha'
+  obtain ⟨b, hb, hab⟩ := h a ha
+  have := Ty.le_iff.mp (Atom.subst_le hwf σ hab) a' ha'
+  obtain ⟨b', hb', h'⟩ := this
+  exact ⟨b', Ty.mem_subst.mpr ⟨b, hb, hb'⟩, h'⟩
+
 /-! ### Values -/
 
 theorem hasTy_iff {s : Store} {v : Value} {t : Ty} :
@@ -92,7 +160,7 @@ theorem all_set_grow {o o' : Obj} (hl : o'.set.length = o.set.length)
   all_id_iff.mpr fun i hi => hs i (all_id_iff.mp h i (hl ▸ hi))
 
 theorem typeOf_obj {s : Store} {l : Nat} {a : Atom} (h : s.typeOf (.obj l) = some a) :
-    ∃ o, s.objs[l]? = some o ∧ o.set.all id = true ∧ a = .cls o.cls := by
+    ∃ o, s.objs[l]? = some o ∧ o.set.all id = true ∧ a = .cls o.cls o.args := by
   simp only [Store.typeOf, Option.bind_eq_some_iff] at h
   obtain ⟨o, ho, h⟩ := h
   split at h
@@ -100,7 +168,7 @@ theorem typeOf_obj {s : Store} {l : Nat} {a : Atom} (h : s.typeOf (.obj l) = som
   · cases h
 
 theorem typeOf_obj_of {s : Store} {l : Nat} {o : Obj} (ho : s.objs[l]? = some o)
-    (h : o.set.all id = true) : s.typeOf (.obj l) = some (.cls o.cls) := by
+    (h : o.set.all id = true) : s.typeOf (.obj l) = some (.cls o.cls o.args) := by
   simp only [Store.typeOf, ho, Option.bind_some, h, if_true]
 
 /-- Objects keeping their classes and the fields set, values keep their
@@ -110,8 +178,8 @@ theorem typeOf_mono {s s' : Store} (h : ObjsGrow s s')
   cases v with
   | obj l =>
     obtain ⟨o, ho, hall, rfl⟩ := typeOf_obj hv
-    obtain ⟨o', ho', hc, hl, hs⟩ := h l o ho
-    rw [typeOf_obj_of ho' (all_set_grow hl hs hall), hc]
+    obtain ⟨o', ho', hc, ha, hl, hs⟩ := h l o ho
+    rw [typeOf_obj_of ho' (all_set_grow hl hs hall), hc, ha]
   | _ => simpa [Store.typeOf] using hv
 
 theorem hasTy_mono {s s' : Store} (h : ObjsGrow s s')
@@ -257,14 +325,15 @@ variable {c : Ctx} {fr : Frame} {s : Store}
 
 theorem PathHolds.le (hwf : WfClasses P.classes) {p : Path} {t u : Ty}
     (h : PathHolds P c fr s p t) (hle : t.le P.classes u = true) : PathHolds P c fr s p u := by
+  have hle' := Ty.subst_le hwf fr.selfArgs hle
   cases p with
   | «local» x =>
     obtain ⟨l, v, d, h1, h2, h3, h4, h5⟩ := h
-    exact ⟨l, v, d, h1, h2, h3, hasTy_le hwf h4 hle, h5⟩
+    exact ⟨l, v, d, h1, h2, h3, hasTy_le hwf h4 hle', h5⟩
   | field f =>
     obtain ⟨l, o, fd, i, h1, h2, h3, h4, h5, h6, h7⟩ := h
     exact ⟨l, o, fd, i, h1, h2, h3, h4, h5, h6, fun hv => by
-      obtain ⟨v, h8, h9⟩ := h7 hv; exact ⟨v, h8, hasTy_le hwf h9 hle⟩⟩
+      obtain ⟨v, h8, h9⟩ := h7 hv; exact ⟨v, h8, hasTy_le hwf h9 hle'⟩⟩
 
 theorem Sat.join_left (hwf : WfClasses P.classes) {Γ Δ : Env} (h : Sat P c Γ fr s) :
     Sat P c (Γ.join Δ) fr s := by

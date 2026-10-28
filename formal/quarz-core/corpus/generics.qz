@@ -1,0 +1,58 @@
+# Generic classes within QCore's range (formal/quarz-core, G1a): invariant
+# parameters, fields and signatures naming them, a superclass given
+# arguments, `new` with the arguments the checker infers, and `is_a?` of
+# a class whose arguments the static type already fixes.
+class Box[T]
+  @v: T
+  def initialize(v: T)
+    @v = v
+  end
+  def get -> T = @v
+end
+
+class IntBox < Box[Int]
+  def initialize(v: Int)
+    super(v)
+  end
+  # An override reading the inherited field at `Int`.
+  def get -> Int = @v + 1
+end
+
+class Pair[A, B]
+  @a: A
+  @b: B
+  def initialize(a: A, b: B)
+    @a = a
+    @b = b
+  end
+  def first -> A = @a
+  def second -> B = @b
+  def swap -> Pair[B, A] = Pair[B, A].new(@b, @a)
+end
+
+def show(b: Box[Int]?) -> Int
+  return 0 if b.nil?
+  if b.is_a?(IntBox)
+    b.get
+  else
+    b.get
+  end
+end
+
+b = Box[Int].new(3)
+puts b.get
+ib = IntBox.new(4)
+puts ib.get
+puts show(b)
+puts show(ib)
+puts show(nil)
+s = Box[String].new("s")
+puts s.get
+p = Pair[Int, String].new(1, "a")
+q = p.swap
+puts q.first
+puts q.second
+puts q.swap.first
+if b.is_a?(Box[Int])
+  puts b.get
+end

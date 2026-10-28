@@ -65,6 +65,13 @@ structure Tables where
   qclass : Nat → Option Nat
   objectId : Nat
   kernelId : Nat
+  /-- A class type parameter's id ↦ (its class's Rust id, its position),
+  from the classes' `type_params`. -/
+  classParam : Nat → Option (Nat × Nat)
+  /-- A narrowed parameter's id (`T & C`) ↦ its bounds. -/
+  narrowed : Nat → Option (Array Json)
+  /-- The id `Self` goes by. -/
+  selfParam : Nat
 
 def Tables.cls (T : Tables) (id : Nat) : M Json := do
   match T.classes.find? fun c => (c.getObjValAs? Nat "id").toOption == some id with
@@ -74,7 +81,12 @@ def Tables.cls (T : Tables) (id : Nat) : M Json := do
 def Tables.className (T : Tables) (id : Nat) : M String := do
   str (← field (← T.cls id) "name")
 
-/-- A Rust type as atoms. -/
+/-- A Rust type as atoms. A user class comes with its arguments; a class
+type parameter is `.param i` (the position in its class: the body of
+another class never names it, the checker having substituted); a
+parameter a class test made (`T & C`) is the class it was narrowed to
+(a larger type than the Rust checker's, so a weaker annotation: sound);
+method and extension type parameters, and `Self`, are out of range. -/
 partial def Tables.ty (T : Tables) (j : Json) : M Ty := do
   match ← str (← field j "t") with
   | "nothing" => pure []
@@ -86,24 +98,44 @@ partial def Tables.ty (T : Tables) (j : Json) : M Ty := do
   | "class" =>
     let id ← nat (← field j "id")
     let args ← arr (← field j "args")
-    unless args.isEmpty do throw "a generic type"
     match ← T.className id with
-    | "Nil" => pure [.nil]
-    | "Bool" => pure [.bool]
-    | "Int" => pure [.int]
-    | "String" => pure [.str]
-    | "Float" => pure [.float]
+    | "Nil" => if args.isEmpty then pure [.nil] else throw "a generic type"
+    | "Bool" => if args.isEmpty then pure [.bool] else throw "a generic type"
+    | "Int" => if args.isEmpty then pure [.int] else throw "a generic type"
+    | "String" => if args.isEmpty then pure [.str] else throw "a generic type"
+    | "Float" => if args.isEmpty then pure [.float] else throw "a generic type"
     | _ => match T.qclass id with
-      | some k => pure [.cls k]
+      | some k => pure [.cls k (← args.toList.mapM T.ty)]
       | none => throw s!"type {← T.className id}"
+  | "param" =>
+    let id ← nat (← field j "id")
+    if id == T.selfParam then throw "a Self type"
+    match T.classParam id with
+    | some (cid, i) =>
+      unless (T.qclass cid).any (· ≥ 2) do throw "a type parameter of a class out of range"
+      pure [.param i]
+    | none => match T.narrowed id with
+      | some bounds =>
+        -- `T & C`: the `C`.
+        let cs ← bounds.toList.filterM fun b => do pure ((← str (← field b "t")) != "param")
+        match cs with
+        | [c] => T.ty c
+        | _ => throw "a narrowed type parameter without a class"
+      | none => throw "a method or extension type parameter"
   | t => throw s!"a {t} type"
+
+/-- A Rust class type as a QCore class with its arguments. -/
+def Tables.tyClass (T : Tables) (j : Json) : M (Nat × List Ty) := do
+  match ← T.ty j with
+  | [.cls k as] => pure (k, as)
+  | _ => throw "a class type"
 
 /-- A built-in method's parameter or result: a type QCore has no atoms
 for (a type parameter, a generic class) is any value here. -/
 def Tables.tyOrTop (T : Tables) (j : Json) : M Ty :=
   match T.ty j with
   | .ok t => pure t
-  | .error _ => pure [.nil, .bool, .int, .str, .cls 0]
+  | .error _ => pure [.nil, .bool, .int, .str, .cls 0 []]
 
 def Tables.nodeTy (T : Tables) (id : Nat) : M Ty := do
   if T.varied.contains (.num id) then throw s!"node {id} checked with different types"
@@ -157,7 +189,7 @@ partial def hasRet : Expr → Bool
   | .ret _ => true
   | .assign _ e | .setField _ e | .isNil e | .isA e _ | .eqNil e | .neNil e | .eqTrue e
   | .eqFalse e | .not e => hasRet e
-  | .new _ as | .superInit _ as | .yield as | .prim _ as _ _ => as.any hasRet
+  | .new _ _ as | .superInit _ as | .yield as | .prim _ as _ _ => as.any hasRet
   | .call r _ as => hasRet r || as.any hasRet
   | .callBlk r _ as _ b => hasRet r || as.any hasRet || hasRet b
   | .seq a b | .while a b | .and a b | .or a b => hasRet a || hasRet b
@@ -302,7 +334,12 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
       | .null => none
       | j => j.getNat?.toOption
     unless init == (← T.nearestInit k) do throw "a new taking an initialize further up"
-    return .new q (← args.mapM (expr T))
+    -- The type arguments the checker gave the object (one type across
+    -- the passes, as `nodeTy` asks).
+    if T.varied.contains (.num id) then throw s!"node {id} checked with different types"
+    let (q', targs) ← T.tyClass (← field T.nodeTypes (toString id))
+    unless q' == q do throw "a new of another class than its type"
+    return .new q targs (← args.mapM (expr T))
   | "method" =>
     let m ← T.method (← nat (← field target "method"))
     let native := (← field m "native") == .bool true
@@ -324,7 +361,7 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
           pure ([r], [rt])
         | none =>
           if (← nat (← field m "owner")) == T.kernelId then pure ([], [])
-          else pure ([.self], [[.cls 0]])
+          else pure ([.self], [[.cls 0 []]])
       return .prim name (rs ++ as) (rps ++ params) ret
     if recv.isNone && T.qclass (← nat (← field m "owner")) == some 1 && !(← read).top then
       throw "a top-level method called from a class"
@@ -370,6 +407,8 @@ def accessor (T : Tables) (owner : Nat) (m : Json) : M (Option Method) := do
 /-- A Rust method as a QCore one. -/
 def method (T : Tables) (owner : Nat) (m : Json) (d : Json) : M Method := do
   if (← field m "singleton") == .bool true then throw "a class method"
+  unless (← arr (← field m "type_params")).isEmpty do throw "a method type parameter"
+  unless (← field m "extension") == .null do throw "an extension's method"
   let name ← str (← field m "name")
   let params ← (← arr (← field m "params")).toList.mapM fun p => do
     if (← str (← field p "kind")) != "Positional" then throw "a parameter not positional"
@@ -388,9 +427,7 @@ def method (T : Tables) (owner : Nat) (m : Json) (d : Json) : M Method := do
   let init ← if name != "initialize" then pure none else do
     let sup ← match ← field (← T.cls (← nat (← field m "owner"))) "superclass" with
       | .null => pure 0
-      | t => match ← T.ty t with
-        | [.cls k] => pure k
-        | _ => throw "a superclass"
+      | t => pure (← T.tyClass t).1
     pure (some (params, sup))
   let w : Where := ⟨owner == 1, init⟩
   let (bd, ls) ← ((body T (← arr (← field d "body"))).run w).run params
@@ -427,18 +464,31 @@ def program (j : Json) : M Program := do
     else (userIds.idxOf? id).map (· + 2)
   unless units.size == 1 do throw "a required file"
   let fdefs ← arr (← field j "field_defaults")
+  -- The classes' type parameters by id, and the narrowed ones.
+  let classParams ← classes.toList.flatMapM fun c => do
+    let cid ← nat (← field c "id")
+    (← arr (← field c "type_params")).toList.zipIdx.mapM fun (p, i) => do
+      pure (← nat (← field p "id"), (cid, i))
+  let narrowedList ← (← arr (← field j "narrowed_params")).toList.mapM fun p => do
+    pure (← nat (← field p "id"), ← arr (← field p "bounds"))
+  let selfParam ← nat (← field j "self_param")
   let T : Tables := ⟨classes, ← arr (← field j "methods"), ← arr (← field j "definitions"),
     ← field j "node_types", ← arr (← field j "varied_types"), ← field j "calls",
-    (← field j "const_targets"), (← arr (← field j "consts")), qclass, objectId, kernelId⟩
+    (← field j "const_targets"), (← arr (← field j "consts")), qclass, objectId, kernelId,
+    fun id => (classParams.find? (·.1 == id)).map (·.2),
+    fun id => (narrowedList.find? (·.1 == id)).map (·.2), selfParam⟩
   let qclasses ← user.mapM fun c => do
     -- An included module's methods are not the model's.
     unless (← arr (← field c "includes")).isEmpty do throw "an include"
     let sup ← match ← field c "superclass" with
-      | .null => pure 0
-      | t => match ← T.ty t with
-        | [.cls k] => pure k
-        | _ => throw "a superclass"
+      | .null => pure (0, [])
+      | t => T.tyClass t
     let cid ← nat (← field c "id")
+    -- The type parameters: invariant and unbounded in this stage.
+    let params ← (← arr (← field c "type_params")).toList.mapM fun p => do
+      unless (← str (← field p "variance")) == "Invariant" do throw "a variant type parameter"
+      unless (← arr (← field p "bounds")).isEmpty do throw "a bounded type parameter"
+      pure Variance.inv
     let fields ← (← arr (← field c "fields")).toList.mapM fun f => do
       let name ← str (← field f "name")
       -- Its default, by its place in `field_defaults`.
@@ -446,7 +496,7 @@ def program (j : Json) : M Program := do
         (e.getObjValAs? Nat "class").toOption == some cid &&
         (e.getObjValAs? String "field").toOption == some name
       pure (⟨name, ← T.ty (← field f "type"), (← field f "var") == .bool true, d⟩ : Field)
-    pure (⟨← str (← field c "name"), some sup, fields⟩ : Class)
+    pure (⟨← str (← field c "name"), some sup.1, fields, params, sup.2⟩ : Class)
   let methods ← T.defs.toList.filterMapM fun d => do
     let m ← T.method (← nat (← field d "method"))
     match ← field d "def" with
@@ -470,7 +520,7 @@ def program (j : Json) : M Program := do
       pure (⟨1, "const " ++ (← str (← field k "name")), [], ty, none, ls, bd⟩ : Method)
   let some mainUnit := units.back? | throw "no unit"
   let (mainBody, mainLocals) ← ((body T (← arr (← field mainUnit "body"))).run ⟨true, none⟩).run []
-  let all : Ty := [.nil, .bool, .int, .str, .cls 0]
+  let all : Ty := [.nil, .bool, .int, .str, .cls 0 []]
   let defaults ← fdefs.toList.mapM fun e => do
     let (x, ls) ← ((expr T (← field e "value")).run ⟨false, none⟩).run []
     unless ls.isEmpty do throw "a field default with locals"
@@ -481,7 +531,7 @@ def program (j : Json) : M Program := do
     | some q => if q ≥ 2 then accessor T q m else pure none
     | none => pure none
   let own := methods ++ accessors
-  let P : Program := ⟨⟨"Object", none, []⟩ :: ⟨"<main>", some 0, []⟩ :: qclasses,
+  let P : Program := ⟨⟨"Object", none, [], [], []⟩ :: ⟨"<main>", some 0, [], [], []⟩ :: qclasses,
     own ++ consts,
     ⟨1, "<main>", [], all, none, mainLocals, mainBody⟩, defaults⟩
   -- Two methods of one name in a class, or in a class and its ancestor

@@ -11,13 +11,13 @@ namespace QuarzCore
 variable {P : Program}
 
 theorem ObjsGrow.refl (s : Store) : ObjsGrow s s :=
-  fun _ o h => ⟨o, h, rfl, rfl, fun _ h => h⟩
+  fun _ o h => ⟨o, h, rfl, rfl, rfl, fun _ h => h⟩
 
 theorem ObjsGrow.trans {s1 s2 s3 : Store} (h1 : ObjsGrow s1 s2) (h2 : ObjsGrow s2 s3) :
     ObjsGrow s1 s3 := fun l o ho => by
-  obtain ⟨o2, ho2, hc2, hl2, hs2⟩ := h1 l o ho
-  obtain ⟨o3, ho3, hc3, hl3, hs3⟩ := h2 l o2 ho2
-  exact ⟨o3, ho3, hc3.trans hc2, hl3.trans hl2, fun i h => hs3 i (hs2 i h)⟩
+  obtain ⟨o2, ho2, hc2, ha2, hl2, hs2⟩ := h1 l o ho
+  obtain ⟨o3, ho3, hc3, ha3, hl3, hs3⟩ := h2 l o2 ho2
+  exact ⟨o3, ho3, hc3.trans hc2, ha3.trans ha2, hl3.trans hl2, fun i h => hs3 i (hs2 i h)⟩
 
 theorem Ext.refl (W Wo : Nat → Prop) (Λ : List Ty) (s : Store) : Ext P W Wo Λ Λ s s where
   tys := List.prefix_refl Λ
@@ -113,15 +113,15 @@ theorem Ext.setLoc {W Wo : Nat → Prop} {Λ : List Ty} {s : Store} {l : Nat} {v
       refine ⟨v, by simp [Store.setLoc, hl], .inr ⟨hw, t, ht, ?_⟩⟩
       exact hv
     · exact ⟨v', by simpa [Store.setLoc, getElem?_set_ne' he] using h, .inl rfl⟩
-  grow := fun _ o h => ⟨o, h, rfl, rfl, fun _ h => h⟩
+  grow := fun _ o h => ⟨o, h, rfl, rfl, rfl, fun _ h => h⟩
   imm := fun _ o o' h h' _ _ _ _ _ => by simp [Store.setLoc] at h'; rw [h] at h'; cases h'; rfl
 
 theorem WfStore.setLoc {Λ : List Ty} {s : Store} (h : WfStore P Λ s) (l : Nat) (v : Value) :
     WfStore P Λ (s.setLoc l v) where
   len := by simp [Store.setLoc, h.len]
   objs := fun l o ho => by
-    obtain ⟨h1, h2, h3, h4⟩ := h.objs l o ho
-    exact ⟨h1, h2, h3, fun i w f hs hw hf => h4 i w f hs hw hf⟩
+    obtain ⟨h1, h1a, h1b, h2, h3, h4⟩ := h.objs l o ho
+    exact ⟨h1, h1a, h1b, h2, h3, fun i w f hs hw hf => h4 i w f hs hw hf⟩
 
 /-- A new object at the end. -/
 theorem Ext.newObj {W Wo : Nat → Prop} {Λ : List Ty} {s : Store} (o : Obj) :
@@ -130,7 +130,7 @@ theorem Ext.newObj {W Wo : Nat → Prop} {Λ : List Ty} {s : Store} (o : Obj) :
   locs := fun _ v h => ⟨v, h, .inl rfl⟩
   grow := fun l o' h => ⟨o', by
       rw [List.getElem?_append_left (List.getElem?_eq_some_iff.mp h).1]; exact h,
-    rfl, rfl, fun _ h => h⟩
+    rfl, rfl, rfl, fun _ h => h⟩
   imm := fun l o1 o2 h h' _ _ _ _ _ => by
     rw [List.getElem?_append_left (List.getElem?_eq_some_iff.mp h).1, h] at h'; cases h'; rfl
 
@@ -141,7 +141,7 @@ theorem Ext.alloc {W Wo : Nat → Prop} {Λ : List Ty} {s : Store} (names : List
   locs := fun l v h => ⟨v, by
       simp only [Store.alloc]
       rw [List.getElem?_append_left (List.getElem?_eq_some_iff.mp h).1]; exact h, .inl rfl⟩
-  grow := fun _ o h => ⟨o, h, rfl, rfl, fun _ h => h⟩
+  grow := fun _ o h => ⟨o, h, rfl, rfl, rfl, fun _ h => h⟩
   imm := fun _ o o' h h' _ _ _ _ _ => by simp [Store.alloc] at h'; rw [h] at h'; cases h'; rfl
 
 end QuarzCore

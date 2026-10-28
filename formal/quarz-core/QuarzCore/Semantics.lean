@@ -35,10 +35,13 @@ def Value.truthy : Value → Bool
   | .nil | .bool false => false
   | _ => true
 
-/-- An object: its class and its fields' values (`ClassTable.allFields`
+/-- An object: its class with the type arguments it was made with (ghost:
+nothing in the program reads them; the interpreter's checks and the
+soundness invariants do), and its fields' values (`ClassTable.allFields`
 order). -/
 structure Obj where
   cls : Nat
+  args : List Ty := []
   fields : List Value
   /-- Which fields hold a value: all once the object is made (a field
   with no default that admits `nil` holds it from the start, one with a
@@ -55,13 +58,17 @@ structure Store where
 names of that method's locals, `self`, and that method's own block, for
 a `yield` in it), with its parameters and body. -/
 inductive Closure where
-  | mk (vars : List (String × Nat)) (self : Value) (outer : Option Closure)
+  | mk (vars : List (String × Nat)) (self : Value) (selfArgs : List Ty) (outer : Option Closure)
       (params : List String) (body : Expr)
   deriving Repr, Inhabited
 
+/-- A method's activation: its locals' locations, `self`, and the
+arguments `self`'s class gives the method's owner (what the owner's
+type parameters stand for here, closed), and the block it was given. -/
 structure Frame where
   vars : List (String × Nat)
   self : Value
+  selfArgs : List Ty := []
   blk : Option Closure
   deriving Repr, Inhabited
 
@@ -84,7 +91,7 @@ def typeOf (s : Store) : Value → Option Atom
   | .int _ => some .int
   | .str _ => some .str
   | .flt _ => some .float
-  | .obj l => (s.objs[l]?).bind fun o => if o.set.all id then some (.cls o.cls) else none
+  | .obj l => (s.objs[l]?).bind fun o => if o.set.all id then some (.cls o.cls o.args) else none
 
 def hasType (ct : ClassTable) (s : Store) (v : Value) (t : Ty) : Bool :=
   match s.typeOf v with
@@ -106,6 +113,11 @@ def alloc (s : Store) (names : List String) : Store × List (String × Nat) :=
   (⟨s.locs ++ names.map fun _ => .nil, s.objs⟩, allocVars s.locs.length names)
 
 end Store
+
+/-- The arguments object `l`'s class gives its ancestor `d` (the owner
+of a method run on it): what `d`'s parameters stand for. -/
+def Store.argsFor (s : Store) (ct : ClassTable) (l : Nat) (d : Nat) : List Ty :=
+  ((s.objs[l]?).bind fun o => ct.ancestorArgs o.cls o.args d).getD []
 
 def lookupVar (vars : List (String × Nat)) (x : String) : Option Nat :=
   (vars.find? (·.1 == x)).map (·.2)
@@ -156,7 +168,7 @@ def eval (P : Program) (orc : Oracle) : Nat → Frame → Store → Expr → Res
     | .flt t => .ok (.flt t) s
     | .var x t =>
       match (lookupVar fr.vars x).bind (s.locs[·]?) with
-      | some v => if s.hasType P.classes v t then .ok v s else .stuck
+      | some v => if s.hasType P.classes v (t.subst fr.selfArgs) then .ok v s else .stuck
       | none => .stuck
     | .assign x e => (eval P orc n fr s e).bind fun v s =>
       match lookupVar fr.vars x with
@@ -167,7 +179,7 @@ def eval (P : Program) (orc : Oracle) : Nat → Frame → Store → Expr → Res
       | .obj l => match s.objs[l]? with
         | some o => match (fieldIndex P.classes o.cls f).bind fun i =>
             if o.set[i]? = some true then o.fields[i]? else none with
-          | some v => if s.hasType P.classes v t then .ok v s else .stuck
+          | some v => if s.hasType P.classes v (t.subst fr.selfArgs) then .ok v s else .stuck
           | none => .stuck
         | none => .stuck
       | _ => .stuck
@@ -178,20 +190,21 @@ def eval (P : Program) (orc : Oracle) : Nat → Frame → Store → Expr → Res
         | none => .stuck
       | _ => .stuck
     | .self => .ok fr.self s
-    | .new k args => match evalArgs P orc n fr s args with
+    | .new k targs args => match evalArgs P orc n fr s args with
       | .other r => r
-      | .ok vs s => construct P orc n s k vs
+      | .ok vs s => construct P orc n s k (Ty.substArgs fr.selfArgs targs) vs
     | .superInit d args => match evalArgs P orc n fr s args with
       | .other r => r
       | .ok vs s => match P.lookup d "initialize" with
         | some mt =>
           if vs.length != mt.params.length then .stuck else
           let (s, vars) := s.alloc (mt.locals.map (·.1))
-          match bindAll s vars (mt.params.map (·.1)) vs with
-          | some s => match eval P orc n ⟨vars, fr.self, none⟩ s mt.body with
+          match fr.self, bindAll s vars (mt.params.map (·.1)) vs with
+          | .obj l, some s =>
+            match eval P orc n ⟨vars, fr.self, s.argsFor P.classes l mt.owner, none⟩ s mt.body with
             | .ok _ s | .returned _ s => .ok .nil s
             | r => r
-          | none => .stuck
+          | _, _ => .stuck
         | none => if vs.isEmpty then .ok .nil s else .stuck
     | .call r m args => (eval P orc n fr s r).bind fun v s =>
       match evalArgs P orc n fr s args with
@@ -200,7 +213,7 @@ def eval (P : Program) (orc : Oracle) : Nat → Frame → Store → Expr → Res
     | .callBlk r m args ps body => (eval P orc n fr s r).bind fun v s =>
       match evalArgs P orc n fr s args with
       | .other r => r
-      | .ok vs s => send P orc n s v m vs (some (.mk fr.vars fr.self fr.blk ps body))
+      | .ok vs s => send P orc n s v m vs (some (.mk fr.vars fr.self fr.selfArgs fr.blk ps body))
     | .yield args => match evalArgs P orc n fr s args with
       | .other r => r
       | .ok vs s => match fr.blk with
@@ -208,7 +221,7 @@ def eval (P : Program) (orc : Oracle) : Nat → Frame → Store → Expr → Res
         | none => .stuck
     | .prim _ args _ ret => match evalArgs P orc n fr s args with
       | .other r => r
-      | .ok _ s => match orc n s ret with
+      | .ok _ s => match orc n s (ret.subst fr.selfArgs) with
         | some v => .ok v s
         | none => .raised s
     | .seq a b => (eval P orc n fr s a).bind fun _ s => eval P orc n fr s b
@@ -222,10 +235,12 @@ def eval (P : Program) (orc : Oracle) : Nat → Frame → Store → Expr → Res
       | r => r
     | .raise => .raised s
     | .isNil e => (eval P orc n fr s e).bind fun v s => .ok (.bool (v == .nil)) s
+    -- A class test sees the class, not the arguments (erased).
     | .isA e a => (eval P orc n fr s e).bind fun v s =>
-      match s.typeOf v with
-      | some u => .ok (.bool (u.le P.classes a)) s
-      | none => .stuck
+      match s.typeOf v, a with
+      | some (.cls c _), .cls d _ => .ok (.bool (P.classes.subclass c d)) s
+      | some u, _ => .ok (.bool (u.le P.classes a)) s
+      | none, _ => .stuck
     | .eqNil e => (eval P orc n fr s e).bind fun v s => equal P orc n s v .nil
     | .neNil e => (eval P orc n fr s e).bind fun v s =>
       (equal P orc n s v .nil).bind fun r s => .ok (.bool (!r.truthy)) s
@@ -258,7 +273,8 @@ def send (P : Program) (orc : Oracle) : Nat → Store → Value → String → L
         if vs.length != mt.params.length then .stuck else
         let (s, vars) := s.alloc (mt.locals.map (·.1))
         match bindAll s vars (mt.params.map (·.1)) vs with
-        | some s => match eval P orc n ⟨vars, recv, blk⟩ s mt.body with
+        | some s =>
+          match eval P orc n ⟨vars, recv, s.argsFor P.classes l mt.owner, blk⟩ s mt.body with
           | .ok v s | .returned v s => .ok v s
           | r => r
         | none => .stuck
@@ -269,23 +285,23 @@ def send (P : Program) (orc : Oracle) : Nat → Store → Value → String → L
 is not in v1. -/
 def runBlock (P : Program) (orc : Oracle) : Nat → Store → Closure → List Value → Result
   | 0, _, _, _ => .timeout
-  | n + 1, s, .mk vars self outer ps body, vs =>
+  | n + 1, s, .mk vars self selfArgs outer ps body, vs =>
     match bindAll s vars ps vs with
-    | some s => match eval P orc n ⟨vars, self, outer⟩ s body with
+    | some s => match eval P orc n ⟨vars, self, selfArgs, outer⟩ s body with
       | .returned _ _ => .stuck
       | r => r
     | none => .stuck
 
-/-- `C.new(args)`: a new object, its fields' defaults run in order, then
-its class's `initialize` (a field that admits `nil` and has no default
-holds it from the start; the others are set by their default or by
-`initialize`). -/
-def construct (P : Program) (orc : Oracle) : Nat → Store → Nat → List Value → Result
-  | 0, _, _, _ => .timeout
-  | n + 1, s, k, vs =>
-    let fs := P.classes.allFields k
+/-- `C[targs].new(args)`: a new object of `C` given `targs` (closed), its
+fields' defaults run in order, then its class's `initialize` (a field
+that admits `nil` and has no default holds it from the start; the
+others are set by their default or by `initialize`). -/
+def construct (P : Program) (orc : Oracle) : Nat → Store → Nat → List Ty → List Value → Result
+  | 0, _, _, _, _ => .timeout
+  | n + 1, s, k, targs, vs =>
+    let fs := P.classes.allFieldsAt k targs
     let l := s.objs.length
-    let s := { s with objs := s.objs ++ [⟨k, fs.map fun _ => .nil,
+    let s := { s with objs := s.objs ++ [⟨k, targs, fs.map fun _ => .nil,
       fs.map fun f => f.default.isNone && Ty.le P.classes [.nil] f.ty⟩] }
     match runDefaults P orc n s l fs.zipIdx with
     | .ok _ s => match P.lookup k "initialize" with
@@ -293,7 +309,8 @@ def construct (P : Program) (orc : Oracle) : Nat → Store → Nat → List Valu
         if vs.length != mt.params.length then .stuck else
         let (s, vars) := s.alloc (mt.locals.map (·.1))
         match bindAll s vars (mt.params.map (·.1)) vs with
-        | some s => match eval P orc n ⟨vars, .obj l, none⟩ s mt.body with
+        | some s =>
+          match eval P orc n ⟨vars, .obj l, s.argsFor P.classes l mt.owner, none⟩ s mt.body with
           | .ok _ s | .returned _ s => .ok (.obj l) s
           | r => r
         | none => .stuck
@@ -309,7 +326,7 @@ def runDefaults (P : Program) (orc : Oracle) : Nat → Store → Nat → List (F
   | n + 1, s, l, (f, i) :: rest => match f.default with
     | none => runDefaults P orc n s l rest
     | some d => match P.defaults[d]? with
-      | some e => (eval P orc n ⟨[], .obj l, none⟩ s e).bind fun v s =>
+      | some e => (eval P orc n ⟨[], .obj l, s.argsFor P.classes l (((s.objs[l]?).map (·.cls)).getD 0), none⟩ s e).bind fun v s =>
         runDefaults P orc n (s.setField l i v) l rest
       | none => .stuck
 
@@ -330,8 +347,8 @@ end
 /-- Run the program's top level. -/
 def run (P : Program) (orc : Oracle) (fuel : Nat) : Result :=
   -- `self` is an instance of the top level's class (it has no fields).
-  let (s, vars) := Store.alloc ⟨[], [⟨P.main.owner, [], []⟩]⟩ (P.main.locals.map (·.1))
-  match eval P orc fuel ⟨vars, .obj 0, none⟩ s P.main.body with
+  let (s, vars) := Store.alloc ⟨[], [⟨P.main.owner, [], [], []⟩]⟩ (P.main.locals.map (·.1))
+  match eval P orc fuel ⟨vars, .obj 0, [], none⟩ s P.main.body with
   | .returned v s => .ok v s
   | r => r
 
