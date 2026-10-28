@@ -1,0 +1,4 @@
+ArgumentError: bad
+KeyError: k
+RangeError: r
+IOError: io

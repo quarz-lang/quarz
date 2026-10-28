@@ -1,0 +1,32 @@
+# `raise` of a value whose type is a type parameter bounded by an
+# exception class.
+
+def fail_with[E: Exception](e: E) -> Nothing = raise e
+
+class Holder[E: Exception]
+  @e: E
+  def initialize(@e: E)
+  end
+  def go -> Nothing = raise @e
+end
+
+def pick[E: Exception](e: E, mine: Bool) -> Nothing
+  x = mine ? e : IOError.new("io")
+  raise x
+end
+
+begin
+  fail_with(ArgumentError.new("bad"))
+rescue ArgumentError => e
+  puts "ArgumentError: #{e.message}"
+end
+begin
+  Holder.new(KeyError.new("k")).go
+rescue KeyError => e
+  puts "KeyError: #{e.message}"
+end
+[true, false].each do |mine|
+  pick(RangeError.new("r"), mine)
+rescue => e
+  puts "#{e.class}: #{e.message}"
+end

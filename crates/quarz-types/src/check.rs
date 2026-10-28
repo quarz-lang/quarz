@@ -8720,11 +8720,12 @@ impl Checker {
                     );
                 }
             }
-            // `rescue IOError, SystemCallError => e` then `raise e`.
-            Type::Union(ms)
-                if ms.iter().all(
-                    |m| matches!(m, Type::Class(cid, _) if self.world.is_exception_class(*cid)),
-                ) =>
+            // `rescue IOError, SystemCallError => e` then `raise e`, and
+            // `error: E` with `E: Exception` (`extension Result[T, E: Exception]`).
+            Type::Union(_) | Type::Param(_)
+                if self
+                    .world
+                    .is_subtype(&first, &Type::class(self.world.builtin.exception)) =>
             {
                 if args.len() > 1 {
                     self.error(

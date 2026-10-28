@@ -976,6 +976,25 @@ fn control_flow() {
     ok("begin\n  raise ArgumentError, \"x\"\nrescue ArgumentError => e\n  puts e.message\nensure\n  puts \"done\"\nend");
     err("raise 1", "cannot raise Int");
     err("raise String", "`String` is not an exception class");
+    // A type parameter bounded by an exception class can be raised.
+    ok("def f[E: Exception](e: E) -> Nothing = raise e");
+    ok("extension Result[T, E: Exception]\n  def get! -> T\n    case self\n    in Result::Ok(value:) then value\n    in Result::Err(error:) then raise error\n    end\n  end\nend");
+    ok("class H[E: Exception]\n  @e: E\n  def initialize(@e: E)\n  end\n  def go -> Nothing = raise @e\nend");
+    ok("def f[T](x: T) -> Nil\n  case x\n  in IOError then raise x\n  else nil\n  end\nend");
+    ok("def f[E: Exception](e: E, b: Bool) -> Nothing\n  x = b ? e : IOError.new(\"io\")\n  raise x\nend");
+    err(
+        "def f[E](e: E, b: Bool) -> Nothing\n  x = b ? e : IOError.new(\"io\")\n  raise x\nend",
+        "cannot raise",
+    );
+    err("def f[E](e: E) -> Nothing = raise e", "cannot raise E");
+    err(
+        "def f[E: Comparable[E]](e: E) -> Nothing = raise e",
+        "cannot raise E",
+    );
+    err(
+        "def f[E: Exception](e: E) -> Nothing = raise e, \"m\"",
+        "`raise` with an exception object takes no second argument",
+    );
     ok("i = 0\nwhile i < 3\n  i += 1\n  next if i == 1\n  break if i == 2\nend");
     err("break", "`break` outside of a loop or block");
     ok("loop do\n  break\nend");
