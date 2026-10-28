@@ -57,6 +57,18 @@ inductive Typed : Ctx → Env → Expr → Out → Prop where
       c.prog.lookup k "initialize" = none → tys.isEmpty = true →
       Typed c Γ (.new k args) (.plain [.cls k] Δ)
   | newDead : k < c.ct.length → TypedArgs c Γ args .dead → Typed c Γ (.new k args) .dead
+  /-- `super(args)` in `initialize`: into the superclass, the class's own
+  fields assigned first; the inherited ones after. -/
+  | superInit : c.superOk d Γ = true →
+      TypedArgs c Γ args (.live tys Δ) →
+      c.prog.lookup d "initialize" = some mi → (mi.block.isNone && argsOk c tys mi) = true →
+      Typed c Γ (.superInit d args) (.plain [.nil] (c.afterSuper Δ))
+  | superNoInit : c.superOk d Γ = true →
+      TypedArgs c Γ args (.live tys Δ) →
+      c.prog.lookup d "initialize" = none → tys.isEmpty = true →
+      Typed c Γ (.superInit d args) (.plain [.nil] (c.afterSuper Δ))
+  | superDead : c.superOk d Γ = true →
+      TypedArgs c Γ args .dead → Typed c Γ (.superInit d args) .dead
   /-- A call: each atom of the receiver's type a class that has the
   method, the arguments fitting each, no block expected; its type the
   union of their results. -/

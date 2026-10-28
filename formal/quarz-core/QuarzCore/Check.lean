@@ -76,6 +76,19 @@ theorem check_typed : ∀ {c : Ctx} {Γ : Env} {e : Expr} {o : Out}, check c Γ 
       · rename_i hmi
         simp at h; obtain ⟨hnil, rfl⟩ := h
         exact .newNoInit hk (checkArgs_typed (by assumption)) hmi (by simpa using hnil)
+  | c, Γ, .superInit d args, o, h => by
+    simp [check] at h
+    obtain ⟨hg, h⟩ := h
+    split at h
+    · simp at h
+    · simp at h; subst h; exact .superDead hg (checkArgs_typed (by assumption))
+    · split at h
+      · rename_i mi hmi
+        simp at h; obtain ⟨hok, rfl⟩ := h
+        exact .superInit hg (checkArgs_typed (by assumption)) hmi (by simpa using hok)
+      · rename_i hmi
+        simp at h; obtain ⟨hnil, rfl⟩ := h
+        exact .superNoInit hg (checkArgs_typed (by assumption)) hmi (by simpa using hnil)
   | c, Γ, .call r m args, o, h => by
     simp [check] at h
     obtain ⟨orr, hr, h⟩ := h

@@ -43,7 +43,7 @@ theorem own_not_required {d : Nat} (hi : P.wfInit d = true) (hno : P.ownInit d =
     Bool.and_eq_true, Bool.not_eq_true', List.any_eq_false] at hi
   cases h : f.required P.classes
   · rfl
-  · exact absurd h (hi.1 f hf)
+  · exact absurd h (hi f hf)
 
 /-- The classes `lookup` passed over do not define the method. -/
 theorem lookup_before {k : Nat} {m : String} {mt : Method} (hwf : WfClasses P.classes)

@@ -97,4 +97,9 @@ def Ty.keep (t : Ty) (as : List Atom) : Ty := t.filter (as.contains ·)
 
 def Ty.allFinal (t : Ty) : Bool := t.all Atom.final
 
+/-- A field that must be assigned in `initialize`: no default, and a type
+without `nil` (docs/01 §3; `var` or not). -/
+def Field.required (ct : ClassTable) (f : Field) : Bool :=
+  f.default.isNone && !Ty.le ct [.nil] f.ty
+
 end QuarzCore

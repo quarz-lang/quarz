@@ -19,8 +19,10 @@ the fields' defaults and `initialize` (its `@x` parameters assigning
 their fields first). A local's declared type is its first assignment's,
 as the Rust checker's. Anything else puts the program out of range: so
 do a node checked with different types (`varied_types`), a default with
-locals, an `initialize` under fields it must leave to `super`, and
-required files.
+locals, a `new` whose `initialize` (the Rust checker's choice among the
+ancestors' overloads) is not the nearest one (`Program.lookup`), `super`
+outside `initialize` or with a block, and required files. `super(args)`
+in `initialize` is `superInit`, a bare `super` passing the parameters.
 -/
 
 import Lean.Data.Json
@@ -112,6 +114,20 @@ def Tables.method (T : Tables) (id : Nat) : M Json := do
   | some m => pure m
   | none => throw s!"method {id}"
 
+/-- The `initialize` the model's `new` of Rust class `id` runs: the
+nearest one, in the class or a superclass (`Program.lookup`), by Rust
+method id. -/
+partial def Tables.nearestInit (T : Tables) (id : Nat) : M (Option Nat) := do
+  let own := T.methods.find? fun m =>
+    (m.getObjValAs? Nat "owner").toOption == some id &&
+    (m.getObjValAs? String "name").toOption == some "initialize" &&
+    (m.getObjVal? "singleton").toOption != some (.bool true)
+  match own with
+  | some m => pure (m.getObjValAs? Nat "id").toOption
+  | none => match ← field (← T.cls id) "superclass" with
+    | .null => pure none
+    | t => T.nearestInit (← nat (← field t "id"))
+
 /-- The locals assigned so far, with their declared types. -/
 abbrev Locals := List (String × Ty)
 
@@ -119,9 +135,15 @@ def addLocal (ls : Locals) (x : String) (t : Ty) : Locals :=
   -- The first assignment declares it (docs/02 §6).
   if ls.any (·.1 == x) then ls else ls ++ [(x, t)]
 
-/-- Converting a body: whether it is top-level code (the top level, or a
-method of its class), and the locals so far. -/
-abbrev CM := ReaderT Bool (StateT Locals M)
+/-- Where a body is converted: whether it is top-level code (the top
+level, or a method of its class), and for an `initialize`, its
+parameters and its class's superclass (`super`). -/
+structure Where where
+  top : Bool
+  init : Option (List (String × Ty) × Nat) := none
+
+/-- Converting a body, with the locals so far. -/
+abbrev CM := ReaderT Where (StateT Locals M)
 
 def positional (a : Json) : M Json := do
   match ← variant a with
@@ -133,7 +155,7 @@ partial def hasRet : Expr → Bool
   | .ret _ => true
   | .assign _ e | .setField _ e | .isNil e | .isA e _ | .eqNil e | .neNil e | .eqTrue e
   | .eqFalse e | .not e => hasRet e
-  | .new _ as | .yield as | .prim _ as _ _ => as.any hasRet
+  | .new _ as | .superInit _ as | .yield as | .prim _ as _ _ => as.any hasRet
   | .call r _ as => hasRet r || as.any hasRet
   | .callBlk r _ as _ b => hasRet r || as.any hasRet || hasRet b
   | .seq a b | .while a b | .and a b | .or a b => hasRet a || hasRet b
@@ -216,6 +238,15 @@ partial def expr (T : Tables) (e : Json) : CM Expr := do
   | "Seq" => body T (← arr v)
   | "Yield" => pure (.yield (← (← arr v).toList.mapM fun a => do expr T (← positional a)))
   | "Call" => call T id v
+  | "Super" =>
+    -- `super` in `initialize`, into the superclass's.
+    unless (← field v "block") == .null do throw "a block given to super"
+    let some (params, d) := (← read).init | throw "super outside initialize"
+    let args ← match ← field v "args" with
+      -- A bare `super` passes the method's arguments.
+      | .null => pure (params.map fun (x, t) => Expr.var x t)
+      | a => (← arr a).toList.mapM fun a => do expr T (← positional a)
+    return .superInit d args
   | k => throw s!"a {k} expression"
 
 partial def body (T : Tables) (es : Array Json) : CM Expr := do
@@ -263,6 +294,12 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
     unless blk == .null do throw "a block given to new"
     let k ← nat (← field target "class")
     let some q := T.qclass k | throw s!"new of {← T.className k}"
+    -- The Rust checker picks among the ancestors' overloads: in range
+    -- only where it picks the one the model's `new` runs.
+    let init := match ← field target "init" with
+      | .null => none
+      | j => j.getNat?.toOption
+    unless init == (← T.nearestInit k) do throw "a new taking an initialize further up"
     return .new q (← args.mapM (expr T))
   | "method" =>
     let m ← T.method (← nat (← field target "method"))
@@ -287,7 +324,7 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
           if (← nat (← field m "owner")) == T.kernelId then pure ([], [])
           else pure ([.self], [[.cls 0]])
       return .prim name (rs ++ as) (rps ++ params) ret
-    if recv.isNone && T.qclass (← nat (← field m "owner")) == some 1 && !(← read) then
+    if recv.isNone && T.qclass (← nat (← field m "owner")) == some 1 && !(← read).top then
       throw "a top-level method called from a class"
     let r := recv.getD .self
     match blk with
@@ -345,7 +382,16 @@ def method (T : Tables) (owner : Nat) (m : Json) (d : Json) : M Method := do
       unless (← str (← field t "t")) == "proc" do throw "a block type"
       let ps ← (← arr (← field t "params")).toList.mapM T.ty
       pure (some ⟨ps, ← T.ty (← field t "ret")⟩)
-  let (bd, ls) ← ((body T (← arr (← field d "body"))).run (owner == 1)).run params
+  -- (In `initialize`, the superclass, for `super`.)
+  let init ← if name != "initialize" then pure none else do
+    let sup ← match ← field (← T.cls (← nat (← field m "owner"))) "superclass" with
+      | .null => pure 0
+      | t => match ← T.ty t with
+        | [.cls k] => pure k
+        | _ => throw "a superclass"
+    pure (some (params, sup))
+  let w : Where := ⟨owner == 1, init⟩
+  let (bd, ls) ← ((body T (← arr (← field d "body"))).run w).run params
   -- `def initialize(@x: T)`: the field assigned from the parameter first.
   let ivars ← (← arr (← field m "params")).toList.filterMapM fun p => do
     if (← field p "assigns_ivar") == .bool true then
@@ -418,13 +464,13 @@ def program (j : Json) : M Program := do
     match ← field k "value" with
     | .null => throw "a constant with no initializer"
     | v =>
-      let (bd, ls) ← ((expr T v).run true).run []
+      let (bd, ls) ← ((expr T v).run ⟨true, none⟩).run []
       pure (⟨1, "const " ++ (← str (← field k "name")), [], ty, none, ls, bd⟩ : Method)
   let some mainUnit := units.back? | throw "no unit"
-  let (mainBody, mainLocals) ← ((body T (← arr (← field mainUnit "body"))).run true).run []
+  let (mainBody, mainLocals) ← ((body T (← arr (← field mainUnit "body"))).run ⟨true, none⟩).run []
   let all : Ty := [.nil, .bool, .int, .str, .cls 0]
   let defaults ← fdefs.toList.mapM fun e => do
-    let (x, ls) ← ((expr T (← field e "value")).run false).run []
+    let (x, ls) ← ((expr T (← field e "value")).run ⟨false, none⟩).run []
     unless ls.isEmpty do throw "a field default with locals"
     pure x
   -- The user classes' accessors.
@@ -439,20 +485,17 @@ def program (j : Json) : M Program := do
   -- Two methods of one name in a class, or in a class and its ancestor
   -- with other parameters or block, are overloads (one signature twice in
   -- a class is a Rust error): the Rust checker picks the one that fits,
-  -- `Program.lookup` the nearest. Out of range.
+  -- `Program.lookup` the nearest. Out of range. (Not `initialize`, which
+  -- no call dispatches on: `super` takes the nearest above in both, and
+  -- a `new` taking another than the model's is out of range there.)
   for a in own do
     for b in own do
-      if a.name == b.name && a.owner != b.owner && P.classes.subclass a.owner b.owner &&
+      if a.name == b.name && a.name != "initialize" && a.owner != b.owner &&
+          P.classes.subclass a.owner b.owner &&
           (a.params.map (·.2) != b.params.map (·.2) || a.block != b.block) then
         throw s!"overloads of {a.name}"
     if (own.filter fun m => m.owner == a.owner && m.name == a.name).length > 1 then
       throw s!"overloads of {a.name}"
-  -- An `initialize` with fields to assign above it needs `super`: not yet.
-  unless (List.range P.classes.length).all (fun k => !P.ownInit k ||
-      !((match (P.classes[k]?).bind (·.super) with
-        | some d => P.classes.allFields d
-        | none => []).any (·.required P.classes))) do
-    throw "an initialize under fields it must leave to super"
   pure P
 
 end QuarzCore.Conformance

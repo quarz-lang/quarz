@@ -1,0 +1,48 @@
+# `super` in `initialize`: a subclass assigns its own fields first, then
+# `super` assigns the inherited ones; the superclass's `initialize` may
+# then call a method the subclass overrides, which sees the subclass's
+# fields set.
+class Shape
+  @name: String
+  def initialize(name: String)
+    @name = name
+    describe
+  end
+
+  def describe -> Nil
+    puts @name
+  end
+end
+
+class Circle < Shape
+  @r: Int
+  def initialize(r: Int)
+    @r = r
+    super("circle")
+  end
+
+  def describe -> Nil
+    puts @r
+  end
+end
+
+# Two levels up, and a bare `super` passing the same arguments.
+class Unit < Circle
+  @tag: String
+  def initialize(r: Int)
+    @tag = "unit"
+    super
+    puts @tag
+  end
+end
+
+# A class with no fields of its own still calls `super` for those above.
+class Named < Shape
+  def initialize
+    super("named")
+  end
+end
+
+Circle.new(2)
+Unit.new(1)
+Named.new

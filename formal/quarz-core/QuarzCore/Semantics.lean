@@ -181,6 +181,18 @@ def eval (P : Program) (orc : Oracle) : Nat → Frame → Store → Expr → Res
     | .new k args => match evalArgs P orc n fr s args with
       | .other r => r
       | .ok vs s => construct P orc n s k vs
+    | .superInit d args => match evalArgs P orc n fr s args with
+      | .other r => r
+      | .ok vs s => match P.lookup d "initialize" with
+        | some mt =>
+          if vs.length != mt.params.length then .stuck else
+          let (s, vars) := s.alloc (mt.locals.map (·.1))
+          match bindAll s vars (mt.params.map (·.1)) vs with
+          | some s => match eval P orc n ⟨vars, fr.self, none⟩ s mt.body with
+            | .ok _ s | .returned _ s => .ok .nil s
+            | r => r
+          | none => .stuck
+        | none => if vs.isEmpty then .ok .nil s else .stuck
     | .call r m args => (eval P orc n fr s r).bind fun v s =>
       match evalArgs P orc n fr s args with
       | .other r => r
