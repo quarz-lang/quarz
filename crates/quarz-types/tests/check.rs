@@ -278,6 +278,17 @@ fn definite_initialization() {
 }
 
 #[test]
+fn case_on_self() {
+    // `case` on `Self` matches as on the receiver's class.
+    no_warnings("enum R[T, E]\n  variant Ok(value: T)\n  variant Err(error: E)\n  def on_ok(&: (T) -> Nil) -> Self\n    case self\n    in Ok(value:) then yield(value)\n    in Err then nil\n    end\n    self\n  end\nend");
+    // A binding keeps `Self`.
+    ok("class S\n  def same -> Self\n    x = self\n    case x\n    in S then x\n    else x\n    end\n  end\n  def bind -> Self\n    case self\n    in s then s\n    end\n  end\nend");
+    // In a block with a receiver, `Self` is the method's, not the receiver's.
+    err("class B\n  def bonly -> Int = 1\n  def run(&blk: B.() -> Nil) -> Nil = instance_exec(&blk)\nend\nclass A\n  def go -> Self\n    x: Self = self\n    B.new.run { case x\n    in y then puts(y.bonly)\n    end }\n    self\n  end\nend", "undefined method `bonly` for Self");
+    no_warnings("enum R[T, E]\n  variant Ok(value: T)\n  variant Err(error: E)\n  def on_err(&: (E) -> Nil) -> Self\n    r: R[T, E] = self\n    case r\n    in Err(error:) then yield(error)\n    in Ok then nil\n    end\n    self\n  end\nend");
+}
+
+#[test]
 fn overload_resolution() {
     // An integer literal takes its default type first: `x + 1` is
     // `Int#+(Int)`, `1.5 / 2` is `Float#/(Int)`.
@@ -410,6 +421,13 @@ fn classes_and_fields() {
         "class C\nend\nextension C\n  def initialize\n  end\nend",
         "an extension cannot define `initialize`",
     );
+    // `super` assigns the inherited fields: what was narrowed before it
+    // is not after; the class's own fields keep theirs.
+    err(
+        "class P\n  @x: Int?\n  def initialize\n    @x = nil\n  end\nend\nclass C < P\n  def initialize\n    @x = 1\n    super\n    puts(@x + 1)\n  end\nend",
+        "undefined method `+` for Nil",
+    );
+    ok("class P\n  @x: Int?\n  def initialize\n    @x = nil\n  end\nend\nclass C < P\n  @y: Int?\n  def initialize\n    @y = 1\n    super\n    puts(@y + 1)\n  end\nend\nC.new");
     // A nilable field needs no assignment: the superclass's still makes it.
     ok("class E < StandardError\n  @code: Int?\nend\nraise E.new(\"boom\")");
     // Without fields of its own, a class inherits its superclass's.

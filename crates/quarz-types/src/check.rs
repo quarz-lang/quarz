@@ -8643,7 +8643,9 @@ impl Checker {
             self.out.calls.insert(expr.id, CallTarget::Super { method });
         }
         if m.name == "initialize" {
-            // The superclass initialize assigned its fields.
+            // The superclass initialize assigned its fields, perhaps other
+            // values than the ones narrowed before (the class's own it
+            // cannot assign).
             let fields = self.world.all_fields(owner);
             for (f, _) in fields {
                 if self
@@ -8653,6 +8655,7 @@ impl Checker {
                     .iter()
                     .all(|own| own.name != f.name)
                 {
+                    self.env.ivar_narrow.remove(&f.name);
                     self.env.assigned_fields.insert(f.name);
                 }
             }
@@ -8999,16 +9002,53 @@ impl Checker {
     ) -> Type {
         let st = self.check_expr(subject, None);
         let st = self.resolve(&st);
-        let key = self.var_key(subject);
+        // A `Self` (`case self` in a method returning `Self`) is matched
+        // as a value of the receiver's class where a pattern names a class
+        // or variant (an enum's `case self` covers its variants); other
+        // patterns (a binding, `nil`, an array) keep `Self`. (Not in a
+        // block with a receiver, whose `self_type` is the receiver's.)
+        let st_class = if st.mentions_param(SELF_PARAM)
+            && self.env.receivers.is_empty()
+            && !matches!(self.env.self_type, Type::ClassObject(..))
+        {
+            let subst: HashMap<TypeParamId, Type> = [(SELF_PARAM, self.env.self_type.clone())]
+                .into_iter()
+                .collect();
+            st.subst(&subst)
+        } else {
+            st.clone()
+        };
+        fn names_class(p: &Pattern) -> bool {
+            match &p.kind {
+                PatternKind::Const(_)
+                | PatternKind::ConstArray(..)
+                | PatternKind::ConstHash(..) => true,
+                PatternKind::Alt(ps) => ps.iter().any(names_class),
+                PatternKind::Capture(p, _) => names_class(p),
+                _ => false,
+            }
+        }
+        // (The subject stays `Self` then: what a pattern narrows a value
+        // of the class to is no `Self`.)
+        let key = if st_class == st {
+            self.var_key(subject)
+        } else {
+            None
+        };
         let before = self.snapshot();
-        let mut remaining: Vec<Type> = self.expand_members(&st);
+        let mut remaining: Vec<Type> = self.expand_members(&st_class);
         let mut result = Type::Nothing;
         let mut snaps = Vec::new();
         let saved_base = self.env.pattern_base;
         self.env.pattern_base = Some(self.env.frames.last().unwrap().vars.len());
         for arm in arms {
             self.restore(&before);
-            let narrowed = self.check_pattern(&arm.pattern, &st);
+            let on = if names_class(&arm.pattern) {
+                &st_class
+            } else {
+                &st
+            };
+            let narrowed = self.check_pattern(&arm.pattern, on);
             if let Some(k) = &key {
                 self.narrow_subject(k, Some(narrowed));
             }
