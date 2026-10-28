@@ -1,7 +1,5 @@
 # Cogs: Packages
 
-日本語版: [10-cogs.ja.md](10-cogs.ja.md)
-
 A Quarz package is a **cog**: a git repository with a `Cog.toml` at its root, fetched as source and compiled with the program that uses it. The program being built, with every cog it brings in, is a **movement**. There is no registry and nothing is distributed as a binary: a cog is named by the URL of its repository, and the lock file pins it to one commit. A cog is used without `require`: naming it in the manifest makes its module visible.
 
 This is the design, and it is implemented (crates `quarz-cog` for manifests, locks, resolution and fetching; `quarz-types` for loading and checking a movement) except where a paragraph says *not yet*. Scripts keep `require_relative` ([01-syntax.md](01-syntax.md) §2).

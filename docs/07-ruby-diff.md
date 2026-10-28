@@ -1,7 +1,5 @@
 # Changes from Ruby: Quick Reference
 
-日本語版: [07-ruby-diff.ja.md](07-ruby-diff.ja.md)
-
 A summary of the things someone who knows Ruby will first stumble on when starting to write Quarz.
 
 ## What works as is

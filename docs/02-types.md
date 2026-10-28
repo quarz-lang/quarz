@@ -1,7 +1,5 @@
 # Type System
 
-日本語版: [02-types.ja.md](02-types.ja.md)
-
 Quarz is statically typed. The structure of classes, modules and methods is fixed at compile time, and every method call is resolved at compile time. To keep the Ruby feel, however, the language is designed so that you rarely need to write types anywhere other than at method boundaries.
 
 Design principles:

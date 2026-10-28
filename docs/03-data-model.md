@@ -1,7 +1,5 @@
 # Data Model and Immutability
 
-日本語版: [03-data-model.ja.md](03-data-model.ja.md)
-
 The principle in Quarz is "values are immutable by default; mutability is explicit and task-local". This principle supports both the safety of concurrent programming (no shared mutable state) and execution efficiency (uniqueness detection via reference counting lets immutable values be updated in place).
 
 ## 1. Everything Is an Object

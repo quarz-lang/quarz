@@ -1,7 +1,5 @@
 # Quarz
 
-日本語版: [README.ja.md](README.ja.md)
-
 Quarz is a programming language that feels like Ruby, but is built on static typing, immutability, and concurrency.
 
 - **Ruby-like syntax and built-in classes** — `def ... end`, blocks and `yield`, `case/in`, `#{}`, `Enumerable`/`Comparable` and exception handling are kept as they are.

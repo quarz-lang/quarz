@@ -1,7 +1,5 @@
 # Testing: `quarz test`
 
-日本語版: [12-testing.ja.md](12-testing.ja.md)
-
 `require "test"` gives the `Test` module, and `quarz test` runs the tests of a cog or a script. The shape is Ruby's Test::Unit: a test is a `test_*` method of a class that inherits `Test::Case`, with `setup`/`teardown` and `assert_*`; what differs comes from the language and from Go, Rust, Zig and Swift Testing. Quarz has no reflection, so the compiler finds the tests, as `go test` finds `TestXxx` functions; the assertions are typed; and since mutable state never crosses a task, tests can run in parallel without a flag per test.
 
 ## 1. Shape

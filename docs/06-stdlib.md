@@ -1,7 +1,5 @@
 # Standard Library
 
-日本語版: [06-stdlib.ja.md](06-stdlib.ja.md)
-
 The names of built-in classes and methods follow Ruby. The differences boil down to three points: "no destructive methods (immutable types)," "operations that may return `nil` have a `?` variant," and "concurrency primitives are added."
 
 Everything listed below exists in the prelude (`std/prelude.qz`) unless it is marked *planned*. The prelude is the authoritative list: every built-in method is declared there with its type, so `quarz check` knows them all.

@@ -1,7 +1,5 @@
 # Concurrent Programming
 
-日本語版: [04-concurrency.ja.md](04-concurrency.ja.md)
-
 Quarz's concurrency model consists of three parts.
 
 1. **Tasks** — lightweight threads corresponding to goroutines / Erlang processes. They are M:N scheduled, and hundreds of thousands can run at once. (Currently a task stays on the worker thread it starts on; see §7.)
