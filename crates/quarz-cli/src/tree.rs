@@ -10,18 +10,21 @@
 //! different types, the expansion each `for` was checked as, what each call resolved to and
 //! each constant read names, every class (the
 //! built-in ones included: types refer to classes by id), and the
-//! methods the units define or call. Which programs are in the model's
-//! range is for the Lean side to judge.
+//! methods the units define or call, with their type parameters (and the
+//! parameters a class test made, `T & C`: `narrowed_params`; the
+//! extensions' too, and the id `Self` goes by). Which
+//! programs are in the model's range is for the Lean side to judge.
 
 use serde_json::{json, Map, Value};
 
 use quarz_types::check::{CallTarget, ConstTarget};
+use quarz_types::declare::SELF_PARAM;
 use quarz_types::types::{MethodId, Type};
-use quarz_types::world::World;
+use quarz_types::world::{TypeParamInfo, World};
 use quarz_types::Checked;
 
 /// The version of the format, bumped when it changes.
-const FORMAT: u32 = 1;
+const FORMAT: u32 = 2;
 
 pub fn tree(checked: &Checked) -> Value {
     let world = &checked.world;
@@ -145,7 +148,58 @@ pub fn tree(checked: &Checked) -> Value {
         "definitions": definitions,
         "consts": consts,
         "field_defaults": defaults,
+        "narrowed_params": narrowed_params(world),
+        "extensions": extensions(world),
+        // `Self` in a signature, a type parameter of its own.
+        "self_param": SELF_PARAM,
     })
+}
+
+/// The extensions, with their type parameters (an extension's method
+/// names them: `methods[].extension`) and what they extend.
+fn extensions(world: &World) -> Vec<Value> {
+    world
+        .extensions
+        .iter()
+        .map(|e| {
+            json!({
+                "id": e.id,
+                "target": e.target,
+                "type_params": e.type_params.iter().map(type_param).collect::<Vec<_>>(),
+                "target_args": e.target_args.iter().map(ty).collect::<Vec<_>>(),
+            })
+        })
+        .collect()
+}
+
+/// A type parameter: its id (what `Type::Param` names), name, variance
+/// and bounds; a method's may have a lower bound (`U >: T`).
+fn type_param(p: &TypeParamInfo) -> Value {
+    json!({
+        "id": p.id,
+        "name": p.name,
+        "variance": format!("{:?}", p.variance),
+        "bounds": p.bounds.iter().map(ty).collect::<Vec<_>>(),
+        "lower": p.lower.as_ref().map(ty),
+    })
+}
+
+/// The type parameters a class test made (`x.is_a?(C)` on an `x: T`
+/// gives `x` the type `T & C`): each with the parameter it narrows and
+/// the bounds it adds.
+fn narrowed_params(world: &World) -> Vec<Value> {
+    let mut all: Vec<Value> = world
+        .narrowed_params()
+        .map(|(id, bounds)| {
+            json!({
+                "id": id,
+                "name": world.type_param_name(id),
+                "bounds": bounds.iter().map(ty).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    all.sort_by_key(|v| v["id"].as_u64());
+    all
 }
 
 /// The ids of the expressions in a serialized tree (objects with an
@@ -231,7 +285,7 @@ fn classes(world: &World) -> Vec<Value> {
                 "name": c.name,
                 "kind": format!("{:?}", c.kind),
                 "file": c.file,
-                "type_params": c.type_params.iter().map(|p| p.name.clone()).collect::<Vec<_>>(),
+                "type_params": c.type_params.iter().map(type_param).collect::<Vec<_>>(),
                 "superclass": c.superclass.as_ref().map(ty),
                 "includes": c.includes.iter().map(ty).collect::<Vec<_>>(),
                 "fields": c.fields.iter().map(|f| json!({
@@ -257,6 +311,8 @@ fn method(world: &World, id: MethodId) -> Value {
         // Made by the checker (a data constructor, a field reader...):
         // no definition.
         "synth": format!("{:?}", m.synth),
+        "type_params": m.type_params.iter().map(type_param).collect::<Vec<_>>(),
+        "extension": m.extension,
         "params": m.params.iter().map(|p| json!({
             "name": p.name,
             "kind": format!("{:?}", p.kind),

@@ -487,6 +487,19 @@ impl World {
         Type::Param(id)
     }
 
+    /// The type parameters class tests made (`T & C`), each with its
+    /// bounds (the `T` and the `C`).
+    pub fn narrowed_params(&self) -> impl Iterator<Item = (TypeParamId, &[Type])> {
+        self.narrowed_params
+            .iter()
+            .map(|(id, b)| (*id, b.as_slice()))
+    }
+
+    /// A type parameter's name (`T`, or `T & C` for a narrowed one).
+    pub fn type_param_name(&self, id: TypeParamId) -> String {
+        self.type_param_names.get(&id).cloned().unwrap_or_default()
+    }
+
     /// `t` with each narrowed type parameter (`T & C`) back to its `T`,
     /// for types that outlive the branch of the test (variables, inferred
     /// types).
