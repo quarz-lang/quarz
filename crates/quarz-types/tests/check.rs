@@ -278,6 +278,47 @@ fn definite_initialization() {
 }
 
 #[test]
+fn initialize_only_from_new() {
+    // `initialize` runs only from `new` and from `super` in an
+    // `initialize` (docs/01 §3).
+    let only = "`initialize` is called only by `new` and by `super` in `initialize`";
+    let c = "class C\n  @x: Int\n  def initialize(@x: Int); end\n  def initialize\n    @x = 0\n  end\n  def reset(n: Int) -> Nil\n    initialize(n)\n    nil\n  end\nend\n";
+    err(&format!("{c}C.new(1).initialize(5)"), only);
+    err(&format!("{c}c = C.new\nc.initialize"), only);
+    err(&format!("{c}C.new(1).reset(2)"), only);
+    err(
+        "class C\n  @x: Int\n  def initialize(@x: Int); end\n  def again -> Nil\n    self.initialize(7)\n    nil\n  end\nend",
+        only,
+    );
+    err(
+        "class C\n  @x: Int\n  def initialize(@x: Int)\n    initialize if @x > 100\n  end\n  def initialize\n    @x = 0\n  end\nend",
+        only,
+    );
+    // A superclass's `initialize` cannot re-enter a subclass's: its
+    // implicit call is rejected in its own body.
+    err(
+        "class A\n  def initialize(n: Int)\n    initialize if n > 0\n  end\n  def initialize; end\nend\nclass B < A\n  @s: String\n  def initialize(@s: String)\n    super(1)\n  end\n  def initialize\n    @s = \"x\"\n  end\nend",
+        only,
+    );
+    err(&format!("{c}[C.new(1)].each(&:initialize)"), only);
+    err(&format!("{c}f = C.new(1).:initialize\nf.(5)"), only);
+    // Reported after a warning too (a single candidate's failure before
+    // its arguments are tried was once reported only with no diagnostic
+    // so far).
+    err(
+        "class C\n  @x: Int\n  def initialize(@x: Int); end\nend\nx = 1\nputs x&.to_s\nC.new(1).initialize(5)",
+        only,
+    );
+    err(
+        "class C\n  private def secret -> Int = 1\nend\nx = 1\nputs x&.to_s\nC.new.secret",
+        "`secret` is private",
+    );
+    // `new`, `super` (with arguments and bare) and a module's `initialize`.
+    ok("class A\n  @a: Int\n  def initialize(@a: Int); end\n  def initialize(s: String)\n    @a = s.size\n  end\nend\nclass B < A\n  @b: Int\n  def initialize(@b: Int)\n    super(@b)\n  end\nend\nclass D < A\n  def initialize(a: Int)\n    super\n  end\nend\nB.new(1)\nD.new(2)\nA.new(\"ab\")");
+    ok("module M\n  def initialize\n    puts \"m\"\n  end\nend\nclass C\n  include M\nend\nC.new");
+}
+
+#[test]
 fn case_on_self() {
     // `case` on `Self` matches as on the receiver's class.
     no_warnings("enum R[T, E]\n  variant Ok(value: T)\n  variant Err(error: E)\n  def on_ok(&: (T) -> Nil) -> Self\n    case self\n    in Ok(value:) then yield(value)\n    in Err then nil\n    end\n    self\n  end\nend");
