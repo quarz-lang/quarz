@@ -1842,8 +1842,10 @@ pub enum ClosureBody {
     /// `&:name`: call `name` on the first argument. The cache holds the
     /// method found for the last (class, argument count); the method is
     /// the checker's resolution for the parameter's static type (an
-    /// extension method is only reachable through it).
-    MethodName(Rc<str>, MethodCache, Option<MethodId>),
+    /// extension method is only reachable through it). With `true`, the
+    /// call's value is discarded: the procedure gives nil (`&:name` for a
+    /// `Void` block).
+    MethodName(Rc<str>, MethodCache, Option<MethodId>, bool),
     /// `obj.:name`: call `name` on a captured receiver.
     BoundMethod {
         recv: Value,
@@ -3254,7 +3256,7 @@ impl Value {
                         if mark_rc(immortal, r) {
                             match &r.body {
                                 ClosureBody::Func(_) | ClosureBody::Native(_) => {}
-                                ClosureBody::MethodName(name, _, _) => {
+                                ClosureBody::MethodName(name, _, _, _) => {
                                     mark_rc(immortal, name);
                                 }
                                 ClosureBody::BoundMethod { recv, name } => {

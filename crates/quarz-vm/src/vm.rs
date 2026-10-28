@@ -332,13 +332,14 @@ impl BlockCaller {
                 nparams,
             } => (closure, *fid, act, *compiled, *nparams),
             CallerKind::Named { closure } => {
-                let ClosureBody::MethodName(name, cache, method) = &closure.body else {
+                let ClosureBody::MethodName(name, cache, method, discard) = &closure.body else {
                     unreachable!()
                 };
                 let Some((recv, rest)) = args.split_first() else {
                     return Err(interp.err_arg("block needs an argument"));
                 };
-                return interp.call_named(recv, rest, name, own_cache(closure, cache), *method);
+                let v = interp.call_named(recv, rest, name, own_cache(closure, cache), *method)?;
+                return Ok(if *discard { Value::Nil } else { v });
             }
         };
         if sched::stack_exhausted() {
@@ -1182,9 +1183,12 @@ impl Interp {
             Inst::MethodRef { dst, recv, name } => {
                 self.op_method_ref(f, act, regs, *dst, *recv, *name)
             }
-            Inst::SymbolProc { dst, name, method } => {
-                self.op_symbol_proc(f, act, regs, *dst, *name, *method)
-            }
+            Inst::SymbolProc {
+                dst,
+                name,
+                method,
+                discard,
+            } => self.op_symbol_proc(f, act, regs, *dst, *name, *method, *discard),
             Inst::MakeArray { dst, items } => {
                 self.op_make_array(regs, *dst, items.iter().map(|i| (i.reg, i.splat)))
             }
@@ -1293,12 +1297,13 @@ impl Interp {
             return Err(self.err_type("not a procedure"));
         };
         match &closure.body {
-            ClosureBody::MethodName(name, cache, method) => {
+            ClosureBody::MethodName(name, cache, method, discard) => {
                 if args.is_empty() {
                     return Err(self.err_arg("block needs an argument"));
                 }
                 let recv = args.remove(0);
-                self.call_named(&recv, &args, name, own_cache(closure, cache), *method)
+                let v = self.call_named(&recv, &args, name, own_cache(closure, cache), *method)?;
+                Ok(if *discard { Value::Nil } else { v })
             }
             ClosureBody::BoundMethod { recv, name } => self.send(recv, name, args, None),
             ClosureBody::Native(f) => f(self, args),

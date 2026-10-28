@@ -122,7 +122,7 @@ impl Remap for ConstTarget {
 
 impl Remap for BlockPass {
     fn remap(&mut self, m: &IdMap) {
-        if let BlockPass::Symbol(_, x) = self {
+        if let BlockPass::Symbol(_, x, _) = self {
             method(m, x);
         }
     }

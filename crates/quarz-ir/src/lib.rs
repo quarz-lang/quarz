@@ -594,10 +594,13 @@ pub enum Inst {
     /// `&:name`: a procedure calling `name` on its argument; `method`
     /// is the one the checker resolved for the block's parameter type
     /// (an extension method visible there is only reachable this way).
+    /// With `discard`, the procedure gives nil instead of the call's value
+    /// (given to a block whose result is `Void`).
     SymbolProc {
         dst: Reg,
         name: u32,
         method: Option<MethodId>,
+        discard: bool,
     },
     MakeArray {
         dst: Reg,

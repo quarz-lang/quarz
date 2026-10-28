@@ -569,10 +569,7 @@ impl<'ast> Declarer<'ast> {
                 type_params,
                 ty,
             } => {
-                let params = type_params
-                    .iter()
-                    .map(|p| self.world.new_type_param(&p.name, p.variance))
-                    .collect();
+                let params = self.new_type_params(type_params);
                 let id = self.world.aliases.len() as u32;
                 self.world.aliases.push(TypeAliasInfo {
                     name: name.clone(),
@@ -718,8 +715,12 @@ impl<'ast> Declarer<'ast> {
         namespace: Option<ClassId>,
         span: Span,
     ) -> Option<ClassId> {
-        if path.names.last().is_some_and(|n| n == "Self") {
-            self.error("`Self` is reserved: it is the type of the receiver", span);
+        if let Some(msg) = path
+            .names
+            .last()
+            .and_then(|n| quarz_syntax::reserved_type_name(n))
+        {
+            self.error(msg, span);
             return None;
         }
         // A library cog declares only inside its root module: `::X` would
@@ -880,8 +881,8 @@ impl<'ast> Declarer<'ast> {
         member: Member,
         span: Span,
     ) {
-        if name == "Self" {
-            self.error("`Self` is reserved: it is the type of the receiver", span);
+        if let Some(msg) = quarz_syntax::reserved_type_name(name) {
+            self.error(msg, span);
             return;
         }
         if self.shadows_dependency(namespace, name) {
@@ -922,10 +923,7 @@ impl<'ast> Declarer<'ast> {
                 PendingDef::Enum(d) => (&d.type_params, ()),
                 PendingDef::Variant(_) | PendingDef::Main | PendingDef::CogRoot(_) => continue,
             };
-            let infos: Vec<TypeParamInfo> = params
-                .iter()
-                .map(|tp| self.world.new_type_param(&tp.name, tp.variance))
-                .collect();
+            let infos: Vec<TypeParamInfo> = self.new_type_params(params);
             self.world.class_mut(p.id).type_params = infos;
         }
         // Variants share the enum's parameters.
@@ -938,12 +936,7 @@ impl<'ast> Declarer<'ast> {
         }
         let pending_ext = std::mem::take(&mut self.pending_ext);
         for e in &pending_ext {
-            let infos: Vec<TypeParamInfo> = e
-                .def
-                .type_params
-                .iter()
-                .map(|tp| self.world.new_type_param(&tp.name, tp.variance))
-                .collect();
+            let infos: Vec<TypeParamInfo> = self.new_type_params(&e.def.type_params);
             self.world.extensions[e.id as usize].type_params = infos;
         }
 
@@ -2604,11 +2597,7 @@ impl<'ast> Declarer<'ast> {
                 def.span,
             );
         }
-        let type_params: Vec<TypeParamInfo> = def
-            .type_params
-            .iter()
-            .map(|tp| self.world.new_type_param(&tp.name, tp.variance))
-            .collect();
+        let type_params: Vec<TypeParamInfo> = self.new_type_params(&def.type_params);
         let mut scope = class_scope.with_params(&type_params);
         scope.self_type = None;
         let _ = class_self;
@@ -2916,6 +2905,19 @@ impl<'ast> Declarer<'ast> {
             TypeExprKind::Void => Some(Type::Void),
             _ => self.resolve_type(expr, scope),
         }
+    }
+
+    /// The type parameters `tps` declare (`Self`, `Void` and `Nothing`
+    /// cannot name one).
+    fn new_type_params(&mut self, tps: &[TypeParam]) -> Vec<TypeParamInfo> {
+        tps.iter()
+            .map(|tp| {
+                if let Some(msg) = quarz_syntax::reserved_type_name(&tp.name) {
+                    self.error(msg, tp.span);
+                }
+                self.world.new_type_param(&tp.name, tp.variance)
+            })
+            .collect()
     }
 
     pub fn resolve_type(&mut self, expr: &TypeExpr, scope: &TypeScope) -> Option<Type> {

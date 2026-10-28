@@ -1976,17 +1976,25 @@ impl<'a> FnBuilder<'a> {
                 Arg::BlockPass(e) => {
                     block = Some(match &e.kind {
                         ExprKind::Symbol(name) => {
-                            let method = match self.out.block_pass.get(&e.id) {
-                                Some(quarz_types::BlockPass::Symbol(_, m))
+                            let pass = self.out.block_pass.get(&e.id);
+                            let method = match pass {
+                                Some(quarz_types::BlockPass::Symbol(_, m, _))
                                     if !self.out.varied_symbols.contains(&e.id) =>
                                 {
                                     Some(*m)
                                 }
                                 _ => None,
                             };
+                            let discard =
+                                matches!(pass, Some(quarz_types::BlockPass::Symbol(_, _, true)));
                             let name = self.str_const(name);
                             let dst = self.reg();
-                            self.emit(Inst::SymbolProc { dst, name, method });
+                            self.emit(Inst::SymbolProc {
+                                dst,
+                                name,
+                                method,
+                                discard,
+                            });
                             dst
                         }
                         _ => self.expr(e),

@@ -1037,6 +1037,49 @@ fn void_and_strict_nil() {
 }
 
 #[test]
+fn void_followups() {
+    // `Self`, `Void` and `Nothing` cannot name a declared type.
+    for (src, name) in [
+        ("class Void\nend", "Void"),
+        ("module Nothing\nend", "Nothing"),
+        ("data Void = (x: Int)", "Void"),
+        ("enum Nothing = A | B", "Nothing"),
+        ("type Void = Int", "Void"),
+        ("class M\nend\nclass M::Nothing\nend", "Nothing"),
+        ("def f[Void](x: Int) -> Int = x", "Void"),
+        ("class Box[Nothing]\nend", "Nothing"),
+        ("def f[Self](x: Int) -> Int = x", "Self"),
+    ] {
+        err(src, &format!("`{name}` is reserved"));
+    }
+    // `&:name` where a `Void` result is expected discards the call's
+    // value, as `{ |x| x.name }` does.
+    ok("[1, 2].each(&:to_s)");
+    ok("def run(&: (Int) -> Void) -> Void\n  x: Nil = yield 1\nend\nrun(&:succ)");
+    err(
+        "def run(&: (Int) -> Nil) -> Void = yield(1)\nrun(&:succ)",
+        "`&:succ` returns Int but Nil was expected",
+    );
+    // A union's members cannot disagree on discarding it.
+    err(
+        "class A\n  def run(&: (Int) -> Void) -> Void = yield(5)\nend\nclass B\n  def run(&: (Int) -> Int) -> Int = yield(5)\nend\ndef pick(n: Int) -> A | B = n > 0 ? A.new : B.new\npick(1).run(&:succ)",
+        "cannot tell at run time whether `&:succ` gives the value",
+    );
+    err(
+        "class B\n  def run(&: (Int) -> Int) -> Int = yield(5)\nend\nclass A\n  def run(&: (Int) -> Void) -> Void = yield(5)\nend\ndef pick(n: Int) -> B | A = n > 0 ? A.new : B.new\npick(1).run(&:succ)",
+        "cannot tell at run time whether `&:succ` gives the value",
+    );
+    // `next value` in a `Void` block is an error; a bare `next` is not.
+    err(
+        "[1, 2].each { |x| next x if x > 1 }",
+        "`next` gives a Int but the block's result is `Void`",
+    );
+    ok("[1, 2].each { |x| next if x > 1\n  p x }");
+    ok("[1, 2].each { |x| next nil if x > 1\n  p x }");
+    ok("p [1, 2].map { |x| next 0 if x > 1\n  x }");
+}
+
+#[test]
 fn nil_results_and_lambda_annotations() {
     // A lambda's declared result is checked like a method's.
     err(
