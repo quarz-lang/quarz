@@ -18,3 +18,4 @@ import QuarzCore.EvalCases
 import QuarzCore.TestLemmas
 import QuarzCore.StepCases
 import QuarzCore.ConstructCases
+import QuarzCore.FrameLemmas

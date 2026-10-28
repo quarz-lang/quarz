@@ -80,7 +80,11 @@ it, or with a block, Shareable and tasks, extensions and overloads.
 - The proof is by induction on the fuel over the interpreter's functions
   (`Good`: SoundDefs.lean, EvalCases.lean, StepCases.lean,
   ConstructCases.lean for `new`, which gives an object with every field
-  set: `ConstructPost`), with the invariants of Invariants.lean:
+  set: `ConstructPost`; `init_run` in EvalCases.lean runs an
+  `initialize` for `new` and for `super`, on an object whose fields are
+  set but those its class has to assign, and gives its frame `InitSelf`;
+  the lemmas about frames, fields and `initialize` these share are in
+  FrameLemmas.lean), with the invariants of Invariants.lean:
   the store typed (the fields set), a frame's locals where the ghost
   location types say, its block chain as it was checked (`ChainAt`: for
   each block, what held at its call minus what it assigns, and the call's
