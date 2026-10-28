@@ -19,7 +19,7 @@
 | [11-http.ja.md](11-http.ja.md) | HTTP サーバ。応答を返すハンドラ、接続ごとのタスク、ルータ、`Signal`。`HTTP::Client` は後から |
 | [12-testing.ja.md](12-testing.ja.md) | テスト。Test::Unit 風の `Test::Case`、コンパイラが見つけるテスト、型付きの assertion、データ駆動、`quarz test` |
 | [13-doc-comments.ja.md](13-doc-comments.ja.md) | ドキュメントコメント。宣言の上のコメント、Markdown、検査されるリンク、`quarz test` が実行する例、`quarz doc` |
-| [examples/](../examples/) | サンプルコード(`hello`、`shapes`、`wordcount`、`pipeline`、`bank_actor`、`extension`、`builder`) |
+| [examples/](../examples/) | サンプルプログラム(`bank_actor`、`builder`、`extension`、`geometry`、`hello`、`json_report`、`markdown`、`multi_file`、`pipeline`、`sales_report`、`shapes`、`wordcount`、`workers`) |
 
 ## 設計上の主な判断
 
