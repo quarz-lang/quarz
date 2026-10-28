@@ -66,7 +66,7 @@ A summary of the things someone who knows Ruby will first stumble on when starti
 
 ## Rewriting example
 
-```ruby
+```rb
 # Ruby
 class Inventory
   def initialize
