@@ -1,0 +1,45 @@
+# `case` on a value of type `Self` (`self` in a method returning `Self`)
+# matches it as the receiver's class: an enum's variants, a class's
+# subclasses.
+enum Outcome[T, E]
+  variant Good(value: T)
+  variant Bad(error: E)
+
+  def on_good(&: (T) -> Nil) -> Self
+    case self
+    in Good(value:) then yield(value)
+    in Bad then nil
+    end
+    self
+  end
+
+  def on_bad(&: (E) -> Nil) -> Self
+    r: Outcome[T, E] = self
+    case r
+    in Bad(error:) then yield(error)
+    in Good then nil
+    end
+    self
+  end
+end
+
+g: Outcome[Int, String] = Outcome::Good.new(1)
+g.on_good { |v| p v + 1 }.on_bad { |e| puts "bad #{e}" }
+b: Outcome[Int, String] = Outcome::Bad.new("no")
+b.on_good { |v| p v }.on_bad { |e| puts "bad #{e}" }
+
+class Shape
+  def describe -> Self
+    case self
+    in Circle then puts "a circle"
+    in Shape then puts "a shape"
+    end
+    self
+  end
+end
+
+class Circle < Shape
+end
+
+Circle.new.describe
+Shape.new.describe
