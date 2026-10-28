@@ -18,7 +18,7 @@ edition = "2021"
 # checks this version, and nothing older is tested).
 rust-version = "1.96"
 license = "MIT-0"
-repository = "https://github.com/shugo/quarz"
+repository = "https://github.com/quarz-lang/quarz"
 
 [workspace.dependencies]
 quarz-syntax = { path = "crates/quarz-syntax" }
