@@ -41,7 +41,7 @@
 
 ## 5. コレクション
 
-### Enumerable[T](モジュール)
+### Enumerable[T]（モジュール）
 
 `abstract def each(&: (T) -> Void)` を実装すれば使えます。Ruby と同じメソッド群: `map collect flat_map collect_concat filter_map select filter find_all reject reduce inject(初期値あり・なし) sum(ブロック付き。Int または Float) min max minmax(比較可能な要素、または比較ブロック) min(n) max(n) min_by max_by sort(比較ブロック可) sort_by group_by partition chunk_while slice_when each_slice each_cons each_with_index each_with_object each_entry zip(Ruby のように nil で埋めるのは `zip?`。`zip` は IndexError を投げます) take drop take_while drop_while find detect find_index include? member? count(値またはブロック) tally tally_by uniq(ブロック可) first first(n) to_a entries to_set to_h(ブロック付き) lazy any? all? none? one? cycle reverse_each`。
 
@@ -49,7 +49,7 @@
 
 タプルのコレクションに対するブロックは分解して受け取れます: `hash.map { |k, v| }`、`xs.each_with_index.map { |x, i| }`。
 
-### Array[out T](不変)
+### Array[out T]（不変）
 
 要素がすべて `Int` またはすべて `Float` の配列は要素を非ボックス化して保持します。観察できる違いはありません(`sort`、`min`、`max`、`include?`、`sum` は直接の経路を取ります)。
 
@@ -60,7 +60,7 @@
 - `Array::Builder[T]`(可変): Ruby の `Array` の破壊的 API。`<< push pop shift unshift insert []= [] []? [range] first(n) last(n) index include? delete delete_at delete_if keep_if compact! reverse! rotate! shuffle! sort!(比較ブロック可) sort_by! uniq! map! select! reject! concat fill replace slice! clear join each each_with_index` + Enumerable。`to_a`/`freeze` は中身をコピーせずに不変な配列として渡し、Builder は空になる(また詰められる)。`snapshot` は複製。
 - `Array.build { |b| }`、`Array.new(n) { |i| }`、`Array[Int].new`。
 
-### Hash[K, out V](不変・挿入順)
+### Hash[K, out V]（不変・挿入順）
 
 - 読み出し: `[] []? fetch(既定値またはブロック) dig(キー 1 つ。`[]?` と同じ) key? has_key? include? member? value? has_value? key keys values values_at fetch_values size length empty? each each_pair each_key each_value to_a to_h invert` + Enumerable(要素は `[K, V]` タプルなので `each { |k, v| }`、`map { |k, v| }`、`min_by { |k, v| }` …)。
 - 更新: `put delete merge(&block) update(k) { |v| } select filter reject delete_if keep_if compact except slice transform_values transform_keys`。

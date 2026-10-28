@@ -33,6 +33,11 @@ jobs:
         run: cargo build --workspace
       - name: Test
         run: cargo test --workspace
+      # The standard library's API reference is published by
+      # quarz-lang/quarz.dev (https://quarz.dev/std/); here its links are
+      # checked.
+      - name: Check the standard library's docs
+        run: ./target/debug/quarz doc --std --check
 
   msrv:
     name: Check (Rust 1.96)

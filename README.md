@@ -70,6 +70,8 @@ puts counter.value        # => 100
 
 ## Design documents
 
+They can also be read at [quarz.dev](https://quarz.dev/docs/), with the standard library's API reference at [quarz.dev/std](https://quarz.dev/std/).
+
 | Document | Contents |
 |---|---|
 | [docs/01-syntax.md](docs/01-syntax.md) | Syntax. Classes, `data`, `enum`, `module`, `extension`/`using`, method definitions, blocks, pattern matching, exceptions |

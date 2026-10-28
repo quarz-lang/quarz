@@ -68,6 +68,8 @@ puts counter.value        # => 100
 
 ## 設計文書
 
+[quarz.dev](https://quarz.dev/ja/docs/) でも読めます。標準ライブラリの API リファレンスは [quarz.dev/std](https://quarz.dev/std/) にあります。
+
 | 文書 | 内容 |
 |---|---|
 | [docs/01-syntax.md](docs/01-syntax.ja.md) | 文法。クラス、`data`、`enum`、`module`、`extension`/`using`、メソッド定義、ブロック、パターンマッチ、例外 |
