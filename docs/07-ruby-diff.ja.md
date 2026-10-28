@@ -64,7 +64,7 @@ Ruby を知っている人が Quarz を書き始めるときに最初に引っ�
 
 ## 書き換えの例
 
-```ruby
+```rb
 # Ruby
 class Inventory
   def initialize
