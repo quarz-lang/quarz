@@ -42,6 +42,7 @@ Ruby を知っている人が Quarz を書き始めるときに最初に引っ�
 | `respond_to?` | 実行時 | コンパイル時定数 |
 | `obj.method(:foo)` | `Method` | `obj.:foo`(手続き) |
 | `Comparable`、`Enumerable` | モジュール | 同じ。ただしジェネリック(`Comparable[T]`、`Enumerable[T]`) |
+| クラスの間の `<` | `A < B` は厳密: `Object < Object` は false | 型パラメータの上限 `T <: X` は反射的: `T` が `X` そのものでもよい(02-types.ja.md §3) |
 | `Array[1, 2]` | 配列を作る | `Array[Int]` は型。配列は `[1, 2]` |
 | 同名メソッドの再定義 | 上書き | 引数型による多重定義。同じシグネチャの再定義はエラー |
 | `nil?`、`is_a?`、`equal?`、`==` | どのクラスも再定義できる(`equal?` はドキュメントで再定義すべきでないとされる) | `nil?` と `is_a?`(型検査が型を絞り込む)と `equal?`(同一性)は定義できない。クラス独自の `==`/`!=` は `Object` を取る(01-syntax.ja.md §3) |

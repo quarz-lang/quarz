@@ -3402,18 +3402,50 @@ impl<'src> Parser<'src> {
             }
             _ => return Err(self.error_expected("a type parameter name")),
         };
-        let mut lower = None;
-        if self.at(&T::Gt) && matches!(self.kind_at(1), T::Colon) && !self.peek_at(1).space_before {
-            self.bump();
-            self.bump();
-            lower = Some(self.parse_type_postfix()?);
+        // `T: X`, or `T :X` / `T :"X"`, which the lexer makes a symbol.
+        if matches!(
+            self.kind(),
+            T::Colon | T::Symbol(_) | T::StringBegin(StringKind::Symbol)
+        ) {
+            let span = self.peek().span;
+            return Err(self.error_at(
+                format!("a type parameter's upper bound is written `{name} <: X`, not `{name}: X`"),
+                span,
+            ));
         }
+        // `U >: T` (lower) and `T <: X & Y` (upper), in either order.
+        let mut lower = None;
         let mut bounds = Vec::new();
-        if self.at(&T::Colon) {
-            self.bump();
-            bounds.push(self.parse_type_postfix()?);
-            while self.eat(&T::Amp) {
+        loop {
+            let at = self.peek().span.start as usize;
+            let Some(is_lower) = self.eat_bound_op()? else {
+                break;
+            };
+            // The second `<:` or `>:`.
+            let op_span = Span::new(at, at + 2);
+            if is_lower {
+                if lower.is_some() {
+                    let span = op_span;
+                    return Err(self.error_at(
+                        format!("type parameter `{name}` has two lower bounds"),
+                        span,
+                    ));
+                }
+                lower = Some(self.parse_type_postfix()?);
+            } else {
+                if !bounds.is_empty() {
+                    let span = op_span;
+                    return Err(self.error_at(
+                        format!(
+                            "type parameter `{name}` has two upper bounds (join them with `&`)"
+                        ),
+                        span,
+                    ));
+                }
                 bounds.push(self.parse_type_postfix()?);
+                while self.eat(&T::Amp) {
+                    bounds.push(self.parse_type_postfix()?);
+                }
             }
         }
         let span = self.span_from(start);
@@ -3424,6 +3456,95 @@ impl<'src> Parser<'src> {
             lower,
             span,
         })
+    }
+
+    /// Eats `<:` (giving `Some(false)`) or `>:` (`Some(true)`) after a
+    /// type parameter's name. They are not tokens of their own (`a <:sym`
+    /// stays `a < :sym`), so the colon is the next token with no space
+    /// before it, or, when a name follows it directly (`T<:Shape`), the
+    /// start of a symbol the lexer made, which is split back into the name.
+    fn eat_bound_op(&mut self) -> PResult<Option<bool>> {
+        let is_lower = match self.kind() {
+            T::Lt => false,
+            T::Gt => true,
+            _ => return Ok(None),
+        };
+        let op = if is_lower { ">:" } else { "<:" };
+        let next = self.peek_at(1).clone();
+        let adjacent = !next.space_before;
+        // The lexer takes a setter's `=` into a symbol (`T<:X=`, `T<:[]=`).
+        if let T::Symbol(name) = &next.kind {
+            if adjacent
+                && name.len() > 1
+                && name.ends_with('=')
+                && (name == "[]=" || name.starts_with(|c: char| c == '_' || c.is_alphabetic()))
+            {
+                let at = next.span.end as usize - 1;
+                return Err(self.error_at("expected `,` or `]`, found `=`", Span::new(at, at + 1)));
+            }
+        }
+        match next.kind {
+            T::Colon if adjacent => {
+                self.bump();
+                self.bump();
+            }
+            T::Symbol(name)
+                if adjacent && name.starts_with(|c: char| c == '_' || c.is_alphabetic()) =>
+            {
+                self.bump();
+                // What the lexer gives the name on its own (`cog::X`).
+                let kind = if name.starts_with(|c: char| c.is_ascii_uppercase()) {
+                    T::Const(name)
+                } else {
+                    K::from_ident(&name).map_or(T::Ident(name), T::Keyword)
+                };
+                let span = Span::new(next.span.start as usize + 1, next.span.end as usize);
+                self.tokens[self.idx] = Token::new(kind, span, false);
+            }
+            // `T<:[]`: the empty tuple, which the lexer made `:[]`.
+            T::Symbol(name) if adjacent && name == "[]" => {
+                self.bump();
+                let at = next.span.start as usize + 1;
+                self.tokens[self.idx] = Token::new(T::LBracket, Span::new(at, at + 1), false);
+                let close = Token::new(T::RBracket, Span::new(at + 1, at + 2), false);
+                self.tokens.insert(self.idx + 1, close);
+            }
+            // `T<:::X`: `<:` and `::X`, which the lexer made `::` and `:X`.
+            T::ColonColon
+                if adjacent
+                    && matches!(self.kind_at(2), T::Symbol(n) if n.starts_with(|c: char| c.is_ascii_uppercase()))
+                    && !self.peek_at(2).space_before =>
+            {
+                let sym = self.peek_at(2).clone();
+                let T::Symbol(name) = sym.kind else {
+                    unreachable!()
+                };
+                if name.ends_with('=') {
+                    let at = sym.span.end as usize - 1;
+                    return Err(
+                        self.error_at("expected `,` or `]`, found `=`", Span::new(at, at + 1))
+                    );
+                }
+                self.bump();
+                let at = next.span.start as usize + 1;
+                self.tokens[self.idx] = Token::new(T::ColonColon, Span::new(at, at + 2), false);
+                let span = Span::new(sym.span.start as usize + 1, sym.span.end as usize);
+                self.tokens[self.idx + 1] = Token::new(T::Const(name), span, false);
+            }
+            T::Colon | T::Symbol(_) if !adjacent => {
+                let span = self.peek().span;
+                return Err(self.error_at(format!("`{op}` is written without a space"), span));
+            }
+            // `<::X`, `<:<=>`, `<:"X"`: a colon, but no type after it.
+            T::ColonColon | T::Symbol(_) | T::StringBegin(_) if adjacent => {
+                let span = Span::new(self.peek().span.start as usize, next.span.end as usize);
+                return Err(self.error_at(format!("expected a type after `{op}`"), span));
+            }
+            _ => {
+                return Err(self.error_expected("`<:` or `>:` (a bound), `,` or `]`"));
+            }
+        }
+        Ok(Some(is_lower))
     }
 
     // ----- declarations ----------------------------------------------------
@@ -3692,7 +3813,7 @@ impl<'src> Parser<'src> {
         let start = self.bump().span; // extension
         let tstart = self.peek().span;
         let path = self.parse_const_path()?;
-        // `extension Array[T: Describable]`: the bracket declares type
+        // `extension Array[T <: Describable]`: the bracket declares type
         // parameters with bounds, which also serve as the target's arguments.
         let type_params = self.parse_type_params_opt()?;
         let args = type_params

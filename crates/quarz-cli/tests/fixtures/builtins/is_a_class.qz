@@ -50,7 +50,7 @@ class Big < Num
   def <=>(other: Big) -> Int = n <=> other.n
 end
 
-def biggest[T: Comparable[T]](xs: Array[T]) -> T? = xs.max
+def biggest[T <: Comparable[T]](xs: Array[T]) -> T? = xs.max
 p biggest([Big.new(1), Big.new(3), Big.new(2)])&.n
 
 # Including a module a module included before already brought does

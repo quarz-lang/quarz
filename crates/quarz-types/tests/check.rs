@@ -437,9 +437,9 @@ fn patterns_narrow_object_to_classes_admitting_object_arguments() {
     // (docs/02 §6, §7); not to a class with a bound `Object` does not meet,
     // nor to one with an invariant parameter.
     let shape = "class Shape\n  def area -> Int = 1\nend\n";
-    ok(&format!("{shape}class Box[out T: Object]\n  @v: T\n  def initialize(@v: T); end\n  def get -> T = @v\nend\ndef f(o: Object) -> String\n  case o\n  in Box then o.get.inspect\n  else \"other\"\n  end\nend\ndef g(o: Object) -> String\n  case o\n  when Box then o.get.inspect\n  else \"other\"\n  end\nend\nputs f(Box.new(1))\nputs g(Box.new(1))"));
+    ok(&format!("{shape}class Box[out T <: Object]\n  @v: T\n  def initialize(@v: T); end\n  def get -> T = @v\nend\ndef f(o: Object) -> String\n  case o\n  in Box then o.get.inspect\n  else \"other\"\n  end\nend\ndef g(o: Object) -> String\n  case o\n  when Box then o.get.inspect\n  else \"other\"\n  end\nend\nputs f(Box.new(1))\nputs g(Box.new(1))"));
     err(
-        &format!("{shape}class SBox[out T: Shape]\n  @v: T\n  def initialize(@v: T); end\n  def get -> T = @v\nend\ndef f(o: Object) -> Int\n  case o\n  in SBox then o.get.area\n  else 0\n  end\nend"),
+        &format!("{shape}class SBox[out T <: Shape]\n  @v: T\n  def initialize(@v: T); end\n  def get -> T = @v\nend\ndef f(o: Object) -> Int\n  case o\n  in SBox then o.get.area\n  else 0\n  end\nend"),
         "undefined method `get` for Object",
     );
     err(
@@ -603,7 +603,7 @@ fn classes_and_fields() {
         "field `@v` has no default and `G` has no `initialize` to assign it",
     );
     err(
-        "class G[T: Object?]\n  @v: T\nend",
+        "class G[T <: Object?]\n  @v: T\nend",
         "field `@v` has no default and `G` has no `initialize` to assign it",
     );
     ok("class G[T]\n  @v: T?\nend\nG[Int].new");
@@ -788,8 +788,8 @@ fn methods_and_calls() {
     ok("xs = [3, 1, 2]\nputs xs.sort.first\nputs xs.max_by { |x| -x }\nputs xs.map(&:to_s).join(\",\")");
     err("[1, 2].max_by { |x| x }.foo", "undefined method `foo`");
     ok("def g[T](x: T) -> T = x\nputs g(1) + 1\nputs g(\"s\").size");
-    ok("def h[T: Comparable[T]](a: T, b: T) -> T = a > b ? a : b\nputs h(1, 2)");
-    err("def h[T: Comparable[T]](a: T, b: T) -> T = a > b ? a : b\nh(->(x: Int) { x }, ->(x: Int) { x })", "does not satisfy the bound");
+    ok("def h[T <: Comparable[T]](a: T, b: T) -> T = a > b ? a : b\nputs h(1, 2)");
+    err("def h[T <: Comparable[T]](a: T, b: T) -> T = a > b ? a : b\nh(->(x: Int) { x }, ->(x: Int) { x })", "does not satisfy the bound");
     ok("x = [1, 2].first\nputs x + 1 if x");
     ok("puts [1, 2].first?.to_s");
     ok("class A\n  def f(x: Int) -> Int = x\n  def f(x: String) -> String = x\nend\nputs A.new.f(1) + 1\nputs A.new.f(\"s\").size");
@@ -1186,22 +1186,22 @@ fn control_flow() {
     err("raise 1", "cannot raise Int");
     err("raise String", "`String` is not an exception class");
     // A type parameter bounded by an exception class can be raised.
-    ok("def f[E: Exception](e: E) -> Nothing = raise e");
-    ok("extension Result[T, E: Exception]\n  def get! -> T\n    case self\n    in Result::Ok(value:) then value\n    in Result::Err(error:) then raise error\n    end\n  end\nend");
-    ok("class H[E: Exception]\n  @e: E\n  def initialize(@e: E)\n  end\n  def go -> Nothing = raise @e\nend");
+    ok("def f[E <: Exception](e: E) -> Nothing = raise e");
+    ok("extension Result[T, E <: Exception]\n  def get! -> T\n    case self\n    in Result::Ok(value:) then value\n    in Result::Err(error:) then raise error\n    end\n  end\nend");
+    ok("class H[E <: Exception]\n  @e: E\n  def initialize(@e: E)\n  end\n  def go -> Nothing = raise @e\nend");
     ok("def f[T](x: T) -> Nil\n  case x\n  in IOError then raise x\n  else nil\n  end\nend");
-    ok("def f[E: Exception](e: E, b: Bool) -> Nothing\n  x = b ? e : IOError.new(\"io\")\n  raise x\nend");
+    ok("def f[E <: Exception](e: E, b: Bool) -> Nothing\n  x = b ? e : IOError.new(\"io\")\n  raise x\nend");
     err(
         "def f[E](e: E, b: Bool) -> Nothing\n  x = b ? e : IOError.new(\"io\")\n  raise x\nend",
         "cannot raise",
     );
     err("def f[E](e: E) -> Nothing = raise e", "cannot raise E");
     err(
-        "def f[E: Comparable[E]](e: E) -> Nothing = raise e",
+        "def f[E <: Comparable[E]](e: E) -> Nothing = raise e",
         "cannot raise E",
     );
     err(
-        "def f[E: Exception](e: E) -> Nothing = raise e, \"m\"",
+        "def f[E <: Exception](e: E) -> Nothing = raise e, \"m\"",
         "`raise` with an exception object takes no second argument",
     );
     ok("i = 0\nwhile i < 3\n  i += 1\n  next if i == 1\n  break if i == 2\nend");
@@ -1689,8 +1689,8 @@ fn undecided_types_come_from_uses() {
     err("class Cell[T]\n  var @v: T\n  def initialize(v: T)\n    @v = v\n  end\n  def set(v: T) -> Nil\n    @v = v\n    nil\n  end\nend\ndef g -> Int\n  arr = []\n  b = arr[0]?\n  case b\n  in Cell(v:)\n    b.set(\"str\")\n  else\n  end\n  arr = arr.push(Cell.new(5))\n  1\nend", "cannot deconstruct a value whose type is not yet known");
     err("data H[A] = (f: (A) -> Int)\ndef g -> Int\n  arr = []\n  case arr[0]?\n  in H(f)\n    f.call(\"oops\")\n  else\n  end\n  arr = arr.push(H.new(->(x: Int) { x + 1 }))\n  1\nend", "cannot deconstruct a value whose type is not yet known");
     // Nor one with a bounded parameter; a recursive `data` is fine.
-    err("module Comb\n  abstract def weight -> Int\nend\ndata Acc[T: Comb](x: T)\n  def plus(y: T) -> Int = x.weight + y.weight\nend\ndata C[A] = (d: Acc[A])\ndef g -> Int\n  arr = []\n  case arr[0]?\n  in C(d)\n    p d.plus(\"str\")\n  else\n  end\n  1\nend", "cannot deconstruct a value whose type is not yet known");
-    err("module Comb\n  abstract def weight -> Int\nend\ndata Acc[T: Comb](x: T)\n  def plus(y: T) -> Int = x.weight + y.weight\nend\ndef g -> Int\n  arr = []\n  case arr[0]?\n  in Acc(x) => a\n    p a.plus(\"str\")\n  else\n  end\n  1\nend", "cannot deconstruct a value whose type is not yet known");
+    err("module Comb\n  abstract def weight -> Int\nend\ndata Acc[T <: Comb](x: T)\n  def plus(y: T) -> Int = x.weight + y.weight\nend\ndata C[A] = (d: Acc[A])\ndef g -> Int\n  arr = []\n  case arr[0]?\n  in C(d)\n    p d.plus(\"str\")\n  else\n  end\n  1\nend", "cannot deconstruct a value whose type is not yet known");
+    err("module Comb\n  abstract def weight -> Int\nend\ndata Acc[T <: Comb](x: T)\n  def plus(y: T) -> Int = x.weight + y.weight\nend\ndef g -> Int\n  arr = []\n  case arr[0]?\n  in Acc(x) => a\n    p a.plus(\"str\")\n  else\n  end\n  1\nend", "cannot deconstruct a value whose type is not yet known");
     ok("data Node[A] = (value: A, rest: Node[A]?)\ndef g -> Int\n  arr = []\n  case arr[0]?\n  in Node(value, rest)\n    p value, rest\n  else\n  end\n  arr = arr.push(Node.new(1, nil))\n  1\nend");
     // An empty block leaves no unused-statement mark behind.
     err("def f(c: Bool) -> Int\n  [1].each { |i| }\n  y = begin\n    if c then 3.5 else 2.5 end\n  end\n  (y || 7) * 2\nend", "returns Int but its body has type Float");
@@ -1748,7 +1748,7 @@ fn tests_narrow_only_to_what_holds() {
     // `?v | Int` used by an operator or under a bound is an `Int`.
     ok("def g -> Int\n  arr = []\n  y = arr[0]? || 2\n  y += 1\n  xs = [y, 2].sort\n  arr = arr.push(4)\n  xs[0]\nend");
     // A bound may name the class's parameters.
-    ok("module Addable[T]\n  abstract def add(o: T) -> T\nend\ndata Num(n: Int)\n  include Addable[Num]\n  def add(o: Num) -> Num = Num.new(n + o.n)\nend\ndata Acc[T: Addable[T]](x: T)\n  def twice -> T = x.add(x)\nend\np Acc.new(Num.new(2)).twice");
+    ok("module Addable[T]\n  abstract def add(o: T) -> T\nend\ndata Num(n: Int)\n  include Addable[Num]\n  def add(o: Num) -> Num = Num.new(n + o.n)\nend\ndata Acc[T <: Addable[T]](x: T)\n  def twice -> T = x.add(x)\nend\np Acc.new(Num.new(2)).twice");
 }
 
 #[test]
@@ -1767,11 +1767,11 @@ fn checks_the_types_it_cannot_take_on_trust() {
         "def obj(v: Object) -> Object = v\ndef f[T](o: Object, z: T) -> T = o.as(T)",
         "cannot check at run time that a value of type Object is a T",
     );
-    err("module Addable[T]\n  abstract def add(o: T) -> T\nend\ndata Acc[T: Addable[T]] = (x: T)\ndef f[U](u: U) -> U = Acc[U].new(u).x", "type argument U for `T` of `Acc` must be Addable[U]");
+    err("module Addable[T]\n  abstract def add(o: T) -> T\nend\ndata Acc[T <: Addable[T]] = (x: T)\ndef f[U](u: U) -> U = Acc[U].new(u).x", "type argument U for `T` of `Acc` must be Addable[U]");
     // Bounds are checked in annotations too.
-    err("module Addable[T]\n  abstract def add(o: T) -> T\nend\ndata Acc[T: Addable[T]] = (x: T)\nclass Other\nend\np Acc.new(Other.new)", "type argument Other for `T` of `Acc` must be Addable[Other]");
-    err("module Addable[T]\n  abstract def add(o: T) -> T\nend\ndata Acc[T: Addable[T]] = (x: T)\nclass Other\nend\nx: Acc[Other]? = nil", "type argument Other for `T` of `Acc` must be Addable[Other]");
-    err("module Addable[T]\n  abstract def add(o: T) -> T\nend\ndata Acc[T: Addable[T]] = (x: T)\nclass Other\nend\ndef f(a: Acc[Other]) -> Int = 0", "type argument Other for `T` of `Acc` must be Addable[Other]");
+    err("module Addable[T]\n  abstract def add(o: T) -> T\nend\ndata Acc[T <: Addable[T]] = (x: T)\nclass Other\nend\np Acc.new(Other.new)", "type argument Other for `T` of `Acc` must be Addable[Other]");
+    err("module Addable[T]\n  abstract def add(o: T) -> T\nend\ndata Acc[T <: Addable[T]] = (x: T)\nclass Other\nend\nx: Acc[Other]? = nil", "type argument Other for `T` of `Acc` must be Addable[Other]");
+    err("module Addable[T]\n  abstract def add(o: T) -> T\nend\ndata Acc[T <: Addable[T]] = (x: T)\nclass Other\nend\ndef f(a: Acc[Other]) -> Int = 0", "type argument Other for `T` of `Acc` must be Addable[Other]");
     // A `T` narrowed by a test is still a `T`.
     ok("def keep[T](x: T) -> T\n  if x.is_a?(String)\n    p x.upcase\n    return x\n  end\n  x\nend");
     ok("data Pair[A, B] = (a: A, b: B)\ndef f[T](x: T) -> T\n  case x\n  in Array then p x.size\n  in Pair(a, b) then p a\n  else\n  end\n  x\nend");
@@ -2012,8 +2012,8 @@ fn inheritance_cycles_are_errors() {
 fn calls_a_class_test_cannot_choose_are_errors() {
     // Members of one class differing only in type arguments.
     err(
-        "extension Array[T: Int]\n  def desc -> String = \"ints\"\nend\nextension Array[T: String]\n  def desc -> String = \"strs\"\nend\ndef pk(i: Int) -> Array[Int] | Array[String] = i > 0 ? [1] : [\"a\"]\nputs pk(1).desc",
-        "cannot tell at run time which `desc` to call for Array[Int] and Array[String]: extension Array[T: Int]#desc or extension Array[T: String]#desc",
+        "extension Array[T <: Int]\n  def desc -> String = \"ints\"\nend\nextension Array[T <: String]\n  def desc -> String = \"strs\"\nend\ndef pk(i: Int) -> Array[Int] | Array[String] = i > 0 ? [1] : [\"a\"]\nputs pk(1).desc",
+        "cannot tell at run time which `desc` to call for Array[Int] and Array[String]: extension Array[T <: Int]#desc or extension Array[T <: String]#desc",
     );
     // Overloads chosen by an argument's type, in a block checked per type.
     err(
@@ -2026,7 +2026,7 @@ fn calls_a_class_test_cannot_choose_are_errors() {
         "cannot tell at run time which `ext` to call for A and M",
     );
     err(
-        "extension Array[T: Int]\n  def to_s -> String = \"ints\"\nend\ndef pk(i: Int) -> Array[Int] | Array[String] = i > 0 ? [1] : [\"a\"]\nputs \"#{pk(1)}\"",
+        "extension Array[T <: Int]\n  def to_s -> String = \"ints\"\nend\ndef pk(i: Int) -> Array[Int] | Array[String] = i > 0 ? [1] : [\"a\"]\nputs \"#{pk(1)}\"",
         "cannot tell at run time which `to_s` the interpolation calls for Array",
     );
     // A class and its subclass, or unrelated classes: tested in order.

@@ -990,7 +990,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         Ok(Value::Bool(i.range_covers(range(i, r)?, a.arg(0))?))
     });
     native!(m, "Range#size", |i, r, _| {
-        // Declared for an `Int` range only (`extension Range[T: Int]`):
+        // Declared for an `Int` range only (`extension Range[T <: Int]`):
         // computed, not collected.
         let rg = range(i, r)?;
         if let (Value::Int(lo), Value::Int(hi)) = (&rg.lo, &rg.hi) {

@@ -3279,7 +3279,7 @@ module Enumerable[out T]
   # %w[ccc a bb].min_by { |s| s.size }   # => "a"
   # [Float::NAN, 1.0].min_by { |x| x }   # => 1.0
   # ```
-  def min_by[U: Comparable[U]](&: (T) -> U) -> T?
+  def min_by[U <: Comparable[U]](&: (T) -> U) -> T?
     best: T? = nil
     best_key: U? = nil
     each do |x|
@@ -3297,7 +3297,7 @@ module Enumerable[out T]
   # The element for which the block's result is largest (the first one on a
   # tie), or `nil` when there is none. Results compare with `<=>`, as in
   # `#max`: a NaN result is the largest.
-  def max_by[U: Comparable[U]](&: (T) -> U) -> T?
+  def max_by[U <: Comparable[U]](&: (T) -> U) -> T?
     best: T? = nil
     best_key: U? = nil
     each do |x|
@@ -3318,7 +3318,7 @@ module Enumerable[out T]
   # ```
   # %w[ccc a bb].sort_by { |s| s.size }   # => ["a", "bb", "ccc"]
   # ```
-  def sort_by[U: Comparable[U]](&: (T) -> U) -> Array[T]
+  def sort_by[U <: Comparable[U]](&: (T) -> U) -> Array[T]
     pairs: Array[[U, T]] = map { |x| [yield(x), x] }
     sort_pairs(pairs).map { |pair| pair[1] }
   end
@@ -3559,7 +3559,7 @@ module Enumerable[out T]
   native def each_cons(n: Int) -> Enumerator[Array[T]]
 end
 
-extension Enumerable[T: Comparable[T]]
+extension Enumerable[T <: Comparable[T]]
   # The elements in ascending order (by `<=>`). The sort is stable.
   #
   # ```
@@ -3600,17 +3600,17 @@ extension Enumerable[T: Comparable[T]]
   end
 end
 
-extension Enumerable[T: Int]
+extension Enumerable[T <: Int]
   # The sum of the elements; 0 for an empty collection.
   def sum -> Int = reduce(0) { |acc, x| acc + x }
 end
 
-extension Enumerable[T: Float]
+extension Enumerable[T <: Float]
   # The sum of the elements; 0.0 for an empty collection.
   def sum -> Float = reduce(0.0) { |acc, x| acc + x }
 end
 
-extension Enumerable[T: Integer]
+extension Enumerable[T <: Integer]
   # The sum of the elements; 0 for an empty collection.
   def sum -> Integer = reduce(0.to_integer) { |acc, x| acc + x }
 end
@@ -4278,7 +4278,7 @@ class Array[out T]
     native def sort!(&: (T, T) -> Int) -> Self
     # Sorts the elements by the block's result (stable), and returns the
     # builder.
-    native def sort_by![U: Comparable[U]](&: (T) -> U) -> Self
+    native def sort_by![U <: Comparable[U]](&: (T) -> U) -> Self
     # Removes duplicate elements, keeping the first of each, and returns the builder.
     native def uniq! -> Self
     # Removes the `nil` elements, and returns the builder.
@@ -4341,7 +4341,7 @@ end
 
 # Arrays of comparable elements compare element by element (as tuples
 # do, whose elements may differ in type; the checker handles those).
-extension Array[T: Comparable[T]]
+extension Array[T <: Comparable[T]]
   include Comparable[Array[T]]
   # Compares element by element: the first pair that differs decides, and
   # when one array is a prefix of the other, the shorter is smaller.
@@ -5050,7 +5050,7 @@ end
 # `#size` only where the number of values can be computed without
 # iterating: a `String` range has none, as Ruby's `size` is `nil` for one
 # (use `#count`, which iterates), and a `Float` range has no values.
-extension Range[T: Int]
+extension Range[T <: Int]
   # The number of values; 0 when the range is empty.
   #
   # ## Raises
@@ -5608,7 +5608,7 @@ enum Result[T, E]
 end
 
 # `Result` methods for errors that are exceptions.
-extension Result[T, E: Exception]
+extension Result[T, E <: Exception]
   # The value of an `Ok`; raises the error of an `Err` itself.
   #
   # ```
@@ -5642,7 +5642,7 @@ end
 # t.await          # => 6
 # Task.scope { |s| [s.spawn { 1 }, s.spawn { 2 }].map(&:await) }   # => [1, 2]
 # ```
-class Task[out T: Shareable]
+class Task[out T <: Shareable]
   include Shareable
 
   # Starts a task running the block and returns it at once.
@@ -5855,7 +5855,7 @@ end
 # ch.receive?      # => nil
 # ch.receive       # raises Channel::Closed
 # ```
-class Channel[T: Shareable]
+class Channel[T <: Shareable]
   include Shareable
   include Enumerable[T]
 
@@ -5995,7 +5995,7 @@ end
 # Task.scope { |s| 3.times { s.spawn { hits.update { |n| n + 1 } } } }
 # hits.value       # => 3
 # ```
-class Atom[T: Shareable]
+class Atom[T <: Shareable]
   include Shareable
 
   # A new atom holding `value`.

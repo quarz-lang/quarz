@@ -62,7 +62,7 @@ class Stack[T]
   def peek -> T? = @items.last?
 end
 
-def max_by[T, U: Comparable[U]](xs: Array[T], &key: (T) -> U) -> T?
+def max_by[T, U <: Comparable[U]](xs: Array[T], &key: (T) -> U) -> T?
   ...
 end
 
@@ -72,9 +72,9 @@ end
 ```
 
 - クラス、モジュール、`data`、`enum`、メソッドが型パラメータを持てます。
-- 制約は `T: Comparable[T]` のように書きます。複数は `T: Comparable[T] & Describable`(任意のモジュール)。
+- 上限は `T <: Comparable[T]` と書きます。`T` は `Comparable[T]` かその部分型です。複数は `&` でつなぎます: `T <: Comparable[T] & Describable`(任意のモジュール)。上限 `<:`・下限 `>:`(下記)は Scala・Julia と同じで、同じく反射的です(`T <: X` は `T` が `X` そのものでもよい)。変位の `out`/`in` は RBS と同じです。
 - 変位は `out`(共変)/`in`(反変)で宣言し、無印は不変です。コンパイラは現れる位置を検査します。共変のパラメータは値が出ていく位置(戻り値、メソッドが受け取るブロックの引数、下限)にだけ、反変のパラメータは値が入ってくる位置にだけ現れてよく、どちらも `var` フィールドには使えません。不変フィールドの型は戻り値の位置として扱います(リーダーやパターンで読み出されるため)。スーパークラスや include したモジュールの型引数も同じです(値はそれらとして使えるため)。`initialize`、クラスメソッド、private メソッドは正確な型を知っているので検査しません。
-- メソッドの型パラメータには**下限** `U >: T` を付けられます。`U` は `T` かその上位型です。共変な型はこれで値を受け取ります。`Array[out T]` は `push[U >: T](value: U) -> Array[U]` を持つので、`[1].push("a")` は `Array[Int | String]` になり、`Array[Object]` として見た `Array[Int]` 自体に `String` が入ることはありません。型引数を書かなければ、`U` は下限と、引数が `U` の位置に渡す型の join です。値を探すだけのメソッドは代わりに `Object` を取ります(`delete(value: Object)`、`-(other: Array[Object])`)。
+- メソッドの型パラメータには**下限** `U >: T` を付けられます。`U` は `T` かその上位型です(上限と併せるときはどちらの順でもよい: `[U >: T <: Object]`)。共変な型はこれで値を受け取ります。`Array[out T]` は `push[U >: T](value: U) -> Array[U]` を持つので、`[1].push("a")` は `Array[Int | String]` になり、`Array[Object]` として見た `Array[Int]` 自体に `String` が入ることはありません。型引数を書かなければ、`U` は下限と、引数が `U` の位置に渡す型の join です。値を探すだけのメソッドは代わりに `Object` を取ります(`delete(value: Object)`、`-(other: Array[Object])`)。
 - メソッドの型引数は呼び出し時に推論されます。明示したいときは `max_by[Person, Int](people) { |p| p.age }`。
 - 実装は**単相化**(monomorphization)を既定とし、`Int`/`Float` などの非ボックス型についてはそれぞれ専用のコードが生成されます。参照型どうしはコードを共有します。インタプリタでも同じ方針です(予定。今はジェネリックなコードをタグ付きの値に対して 1 度だけコンパイルする)。
 
@@ -174,9 +174,9 @@ f = n.to_f              # 変換メソッド(キャストではない)
 `Shareable` は「他のタスクに安全に渡せる型」を表すマーカーモジュールです。`data` と `enum` については、コンパイラがフィールドから導出します。クラスとモジュールは `include Shareable` で宣言し、コンパイラはそのクラスと、それを継承または include するすべてのクラスが規則を満たすか検査します。詳細は [03-data-model.ja.md](03-data-model.ja.md) §5 ですが、型システムの観点では次のように使われます。
 
 ```ruby
-class Channel[T: Shareable]
-class Atom[T: Shareable]
-def self.spawn[T: Shareable](&block: () -> T) -> Task[T]   # ブロックの捕捉変数も Shareable である必要がある
+class Channel[T <: Shareable]
+class Atom[T <: Shareable]
+def self.spawn[T <: Shareable](&block: () -> T) -> Task[T]   # ブロックの捕捉変数も Shareable である必要がある
 ```
 
 `include Shareable` は、サブタイプも守る約束です。Shareable な型の値は、どのクラスの値であっても Shareable です。そのため、型が Shareable かどうかは、その定義の場所で、自身と祖先の宣言だけから決まります。プログラムの残りを見る必要はありません(分割コンパイルにはこれが必要です)。

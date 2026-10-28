@@ -64,7 +64,7 @@ class Stack[T]
   def peek -> T? = @items.last?
 end
 
-def max_by[T, U: Comparable[U]](xs: Array[T], &key: (T) -> U) -> T?
+def max_by[T, U <: Comparable[U]](xs: Array[T], &key: (T) -> U) -> T?
   ...
 end
 
@@ -74,9 +74,9 @@ end
 ```
 
 - Classes, modules, `data`, `enum` and methods can have type parameters.
-- Constraints are written as `T: Comparable[T]`. Multiple constraints: `T: Comparable[T] & Describable` (with any modules).
+- An upper bound is written `T <: Comparable[T]`: `T` is `Comparable[T]` or a subtype of it. Several are joined with `&`: `T <: Comparable[T] & Describable` (with any modules). The upper `<:` and lower `>:` (below) are those of Scala and Julia, and reflexive like them (`T <: X` lets `T` be `X` itself); the variance markers `out`/`in` are RBS's.
 - Variance is declared with `out` (covariant) / `in` (contravariant); unmarked parameters are invariant. The compiler checks the positions: a covariant parameter may appear where values come out (results, the parameters of a block the method takes, a lower bound), a contravariant one where they go in, and neither in a `var` field; an immutable field's type counts as a result (it is read, by its reader and by patterns too), and so do the type arguments of the superclass and of included modules (a value may be used as one of them). `initialize`, class methods and private methods are not checked, since they see the exact type.
-- A method type parameter can have a **lower bound**, `U >: T`: `U` is `T` or a supertype of it. This is how a covariant type takes values: `Array[out T]` has `push[U >: T](value: U) -> Array[U]`, so `[1].push("a")` is an `Array[Int | String]`, and an `Array[Int]` seen as an `Array[Object]` never receives a `String` itself. Without type arguments, `U` is the bound joined with the types the arguments give it. Methods that only look a value up take `Object` instead (`delete(value: Object)`, `-(other: Array[Object])`).
+- A method type parameter can have a **lower bound**, `U >: T`: `U` is `T` or a supertype of it (with an upper bound too, in either order: `[U >: T <: Object]`). This is how a covariant type takes values: `Array[out T]` has `push[U >: T](value: U) -> Array[U]`, so `[1].push("a")` is an `Array[Int | String]`, and an `Array[Int]` seen as an `Array[Object]` never receives a `String` itself. Without type arguments, `U` is the bound joined with the types the arguments give it. Methods that only look a value up take `Object` instead (`delete(value: Object)`, `-(other: Array[Object])`).
 - Type arguments of methods are inferred at the call site. To be explicit: `max_by[Person, Int](people) { |p| p.age }`.
 - The implementation defaults to **monomorphization**: specialized code is generated for each unboxed type such as `Int`/`Float`, while reference types share code. The interpreter follows the same policy. (Planned: today generic code is compiled once, over tagged values.)
 
@@ -176,9 +176,9 @@ Downcasts are checked at run time (`as`, `as?` and `is_a?`), together with the e
 `Shareable` is a marker module denoting "a type whose values can safely be passed to another task". The compiler derives it for `data` and `enum` types from their fields; a class or module declares it with `include Shareable`, and the compiler holds it, and every class that inherits or includes it, to the rules. The details are in [03-data-model.md](03-data-model.md) §5; from the type system's point of view it is used as follows.
 
 ```ruby
-class Channel[T: Shareable]
-class Atom[T: Shareable]
-def self.spawn[T: Shareable](&block: () -> T) -> Task[T]   # the variables captured by the block must be Shareable too
+class Channel[T <: Shareable]
+class Atom[T <: Shareable]
+def self.spawn[T <: Shareable](&block: () -> T) -> Task[T]   # the variables captured by the block must be Shareable too
 ```
 
 `include Shareable` is a promise that the subtypes keep: a value of a Shareable type is Shareable whatever its class. So whether a type is Shareable is decided where it is defined, from its own declaration and its ancestors', without looking at the rest of the program (which separate compilation needs).
