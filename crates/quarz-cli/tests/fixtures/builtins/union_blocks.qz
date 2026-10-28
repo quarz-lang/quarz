@@ -95,4 +95,4 @@ class K
   def run(&blk: (NA) -> String) -> String = "na #{blk.call(NA.new)}"
   def run(&blk: (Bool) -> Bool) -> String = "bool #{blk.call(true)}"
 end
-p K.new.run { |x| x && false }
+p K.new.run { |x: NA| x && false }

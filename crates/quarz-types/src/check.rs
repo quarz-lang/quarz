@@ -415,6 +415,10 @@ enum AmbiguousKey {
 /// the class, the `initialize` called, the method, where, and its file.
 pub type SelfNew = (ClassId, Option<MethodId>, MethodId, Span, u32);
 
+/// The first overload's result and the marks to undo its checks, kept
+/// while the others are tried (`resolve_pretyped`).
+type KeptFirst = (Type, Vec<Option<Type>>, usize, (usize, usize));
+
 /// An entry of `Checker::table_journal`: a node's table and conflict
 /// flag before a change.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -441,6 +445,10 @@ enum TableUndo {
     BlockPass(NodeId, Option<BlockPass>),
     /// A node's type before a check in a block recorded another.
     NodeType(NodeId, Option<Type>),
+    /// An integer literal marked in `Output::float_literals` (`true`) or
+    /// `integer_literals`, and whether that is not its default type (the
+    /// overload rule's literal level, docs/01 §9).
+    Literal(NodeId, bool, bool),
 }
 
 /// What a piece of code may assign (`Checker::assigned_names`): local
@@ -1309,6 +1317,13 @@ impl Checker {
                 }
                 TableUndo::Varied(id) => {
                     self.out.varied_types.remove(&id);
+                }
+                TableUndo::Literal(id, float, _) => {
+                    if float {
+                        self.out.float_literals.remove(&id);
+                    } else {
+                        self.out.integer_literals.remove(&id);
+                    }
                 }
                 TableUndo::LogicalCall(id, call) => {
                     match call {
@@ -3570,16 +3585,26 @@ impl Checker {
                 if let Some(e) = expected {
                     let e = self.resolve(e);
                     if e == self.world.float() && !self.int_literals.contains(&expr.id) {
-                        self.out.float_literals.insert(expr.id);
+                        if self.out.float_literals.insert(expr.id) {
+                            self.table_journal
+                                .push(TableUndo::Literal(expr.id, true, true));
+                        }
                         return self.world.float();
                     }
                     if e == self.world.integer() {
-                        self.out.integer_literals.insert(expr.id);
+                        if self.out.integer_literals.insert(expr.id) {
+                            let converted = lit.value.is_some();
+                            self.table_journal
+                                .push(TableUndo::Literal(expr.id, false, converted));
+                        }
                         return self.world.integer();
                     }
                 }
                 if lit.value.is_none() {
-                    self.out.integer_literals.insert(expr.id);
+                    if self.out.integer_literals.insert(expr.id) {
+                        self.table_journal
+                            .push(TableUndo::Literal(expr.id, false, false));
+                    }
                     return self.world.integer();
                 }
                 self.world.int()
@@ -6820,13 +6845,20 @@ impl Checker {
         // superclass's when no class below it has fields of its own to
         // assign (a data type's or a variant's all are), a module's or an
         // extension's when the class has none at all.
-        let cands: Vec<_> = cands
+        let mut cands: Vec<_> = cands
             .into_iter()
             .filter(|(m, _)| {
                 let m = self.world.method(*m);
                 !m.singleton && self.constructs(cid, m)
             })
             .collect();
+        // The class's own `initialize` hides its ancestors' (docs/01 §9).
+        if cands
+            .iter()
+            .any(|(m, _)| self.world.method(*m).owner == cid)
+        {
+            cands.retain(|(m, _)| self.world.method(*m).owner == cid);
+        }
         if cands.is_empty() {
             if !call.args.is_empty() || call.block.is_some() {
                 self.error(
@@ -6946,8 +6978,6 @@ impl Checker {
     ) -> Type {
         // Pre-type arguments that do not benefit from an expected type.
         let mut pre: HashMap<NodeId, Type> = HashMap::default();
-        let block_given =
-            call.block.is_some() || call.args.iter().any(|a| matches!(a, Arg::BlockPass(_)));
         for a in &call.args {
             let e = match a {
                 Arg::Positional(e) | Arg::Splat(e) | Arg::DoubleSplat(e) => e,
@@ -6959,10 +6989,56 @@ impl Checker {
                 pre.insert(e.id, t);
             }
         }
+        self.resolve_pretyped(
+            expr,
+            call,
+            recv_ty,
+            cands,
+            implicit_self,
+            expected,
+            is_init,
+            &pre,
+        )
+    }
 
+    /// `resolve_overloads_as` once the arguments that need no expected
+    /// type are typed (`pre`).
+    #[allow(clippy::too_many_arguments)]
+    fn resolve_pretyped(
+        &mut self,
+        expr: &Expr,
+        call: &Call,
+        recv_ty: &Type,
+        cands: Vec<(MethodId, HashMap<TypeParamId, Type>)>,
+        implicit_self: bool,
+        expected: Option<&Type>,
+        is_init: bool,
+        pre: &HashMap<NodeId, Type>,
+    ) -> Type {
+        let block_given =
+            call.block.is_some() || call.args.iter().any(|a| matches!(a, Arg::BlockPass(_)));
         let single = cands.len() == 1;
         let mut failures: Vec<String> = Vec::new();
-        for (mid, class_subst) in &cands {
+        // With several candidates, each is tried and its checks undone
+        // (docs/01 §9), from the last to the first; `pick_overload` chooses
+        // among those that fit, and the one chosen must be the last
+        // checked, so that what its checks record stands: the first
+        // candidate's (the usual winner) are kept, any other is checked
+        // again. One that a fit at the literals' defaults beats is not
+        // tried.
+        let block_arity = Self::block_arity(call);
+        let inferring = pre.values().any(|t| self.infer.resolve(t).has_vars());
+        let mut fits: Vec<(usize, MethodId, bool)> = Vec::new();
+        let mut kept: Option<KeptFirst> = None;
+        for (index, (mid, class_subst)) in cands.iter().enumerate().rev() {
+            if !single
+                && !inferring
+                && fits
+                    .iter()
+                    .any(|f| !f.2 && self.beats((f.0, f.1), (index, *mid), &cands, block_arity))
+            {
+                continue;
+            }
             let m = self.world.method(*mid).clone();
             // Visibility.
             if m.visibility == Visibility::Private && !implicit_self && !is_init {
@@ -7029,7 +7105,7 @@ impl Checker {
                 };
                 if call.type_args.is_empty() {
                     let lower = self.infer.resolve(&lower.subst(&subst));
-                    let t = self.widen_from_args(call, &m, tp.id, lower, &pre);
+                    let t = self.widen_from_args(call, &m, tp.id, lower, pre);
                     for (vtp, vt) in method_vars.iter_mut() {
                         if vtp.id == tp.id {
                             *vt = t.clone();
@@ -7038,7 +7114,7 @@ impl Checker {
                     subst.insert(tp.id, t);
                 }
             }
-            match self.try_candidate(expr, call, &m, &subst, &pre, expected, single) {
+            match self.try_candidate(expr, call, &m, &subst, pre, expected, single) {
                 Ok(ret) => {
                     // With several candidates, an error inside the block
                     // (its result has the wrong type, say) rules this one
@@ -7136,23 +7212,23 @@ impl Checker {
                         failures.push(format!("{}: type bounds not satisfied", self.signature(&m)));
                         continue;
                     }
-                    self.out
-                        .calls
-                        .insert(expr.id, CallTarget::Method { method: *mid });
-                    // `loop { }` without `break` never returns.
-                    let broken = self.breaking_blocks.get(&expr.id).cloned();
-                    if m.name == "loop"
-                        && m.owner == self.world.builtin.kernel
-                        && call.block.is_some()
-                        && broken.is_none()
-                    {
-                        return Type::Nothing;
+                    if single {
+                        return self.finish_call(expr, call, &m, ret);
                     }
-                    // A `break` in the block gives the call its value.
-                    if let Some(t) = broken {
-                        return self.join(&ret, &t);
+                    // An integer literal given another type than its
+                    // default (`1` as a `Float`) puts it a level down.
+                    let converted = self.table_journal[saved_diags_tables.0..]
+                        .iter()
+                        .any(|u| matches!(u, TableUndo::Literal(_, _, true)));
+                    fits.push((index, *mid, converted));
+                    if index == 0 {
+                        kept = Some((ret, saved_infer, saved_diags, saved_diags_tables));
+                    } else {
+                        self.infer.restore(saved_infer);
+                        self.truncate_diagnostics(saved_diags);
+                        self.discard_tables(saved_diags_tables);
                     }
-                    return ret;
+                    continue;
                 }
                 Err(reason) => {
                     if !single {
@@ -7164,13 +7240,70 @@ impl Checker {
                 }
             }
         }
+        if !fits.is_empty() {
+            fits.reverse();
+            let (mut winner, mut rivals) = self.pick_overload(&fits, &cands, block_arity);
+            // An argument whose type is still to be inferred fits every
+            // overload, binding it: the first that fits takes it, as the
+            // checks of the arguments cannot tell them apart.
+            if inferring {
+                let best_level = fits.iter().any(|f| !f.2);
+                if let Some(f) = fits.iter().find(|f| f.2 != best_level) {
+                    winner = f.1;
+                }
+                rivals.clear();
+            }
+            let t = match kept {
+                Some((ret, ..)) if winner == cands[0].0 => {
+                    let m = self.world.method(winner).clone();
+                    self.finish_call(expr, call, &m, ret)
+                }
+                kept => {
+                    // The first candidate's checks, kept, give way.
+                    if let Some((_, infer, diags, tables)) = kept {
+                        self.infer.restore(infer);
+                        self.truncate_diagnostics(diags);
+                        self.discard_tables(tables);
+                    }
+                    let cand = cands.iter().find(|(m, _)| *m == winner).cloned().unwrap();
+                    self.resolve_pretyped(
+                        expr,
+                        call,
+                        recv_ty,
+                        vec![cand],
+                        implicit_self,
+                        expected,
+                        is_init,
+                        pre,
+                    )
+                }
+            };
+            if !rivals.is_empty() {
+                let mut names: Vec<String> = std::iter::once(winner)
+                    .chain(rivals)
+                    .map(|m| self.signature(self.world.method(m)))
+                    .collect();
+                names.dedup();
+                self.error(
+                    format!(
+                        "the call of `{}` is ambiguous: these overloads fit it equally (pass arguments of the types of one):\n    {}",
+                        call.name,
+                        names.join("\n    ")
+                    ),
+                    expr.span,
+                );
+            }
+            return t;
+        }
+        // Tried from the last: listed in declaration order.
+        failures.reverse();
         if !single || cands.is_empty() {
             // A method and the one it overrides can fail for the same
             // reason: say it once.
             let mut seen = HashSet::default();
             failures.retain(|f| seen.insert(f.clone()));
             let recv_name = self.name(recv_ty);
-            let arg_desc = self.describe_args(call, &pre);
+            let arg_desc = self.describe_args(call, pre);
             self.error(
                 format!(
                     "no overload of `{}` on {recv_name} matches ({arg_desc}):\n    {}",
@@ -7193,6 +7326,185 @@ impl Checker {
             );
         }
         Type::Nothing
+    }
+
+    /// What a call that a method was chosen for gives.
+    fn finish_call(&mut self, expr: &Expr, call: &Call, m: &MethodInfo, ret: Type) -> Type {
+        self.out
+            .calls
+            .insert(expr.id, CallTarget::Method { method: m.id });
+        // `loop { }` without `break` never returns.
+        let broken = self.breaking_blocks.get(&expr.id).cloned();
+        if m.name == "loop"
+            && m.owner == self.world.builtin.kernel
+            && call.block.is_some()
+            && broken.is_none()
+        {
+            return Type::Nothing;
+        }
+        // A `break` in the block gives the call its value.
+        if let Some(t) = broken {
+            return self.join(&ret, &t);
+        }
+        ret
+    }
+
+    /// The parameters of a call's literal block, for telling overloads
+    /// that differ only in theirs apart (`&:name` and `|*xs|` take one).
+    fn block_arity(call: &Call) -> Option<usize> {
+        match &call.block {
+            Some(b) if b.params.list.iter().any(|p| p.kind == ParamKind::Rest) => Some(1),
+            Some(b) => Some(
+                b.params
+                    .list
+                    .iter()
+                    .filter(|p| p.kind != ParamKind::Block)
+                    .count(),
+            ),
+            None if call.args.iter().any(|a| matches!(a, Arg::BlockPass(_))) => Some(1),
+            None => None,
+        }
+    }
+
+    /// Among the overloads that fit a call (`(index, method, converted)`,
+    /// in the candidates' order: a subclass's first), the one it calls
+    /// (docs/01 §9): those that fit with every integer literal at its
+    /// default type come first; among them, the one that `beats` the
+    /// others. The rest are the ones that fit as well as the winner: the
+    /// call is ambiguous.
+    fn pick_overload(
+        &self,
+        fits: &[(usize, MethodId, bool)],
+        cands: &[(MethodId, HashMap<TypeParamId, Type>)],
+        block_arity: Option<usize>,
+    ) -> (MethodId, Vec<MethodId>) {
+        let best_level = fits.iter().any(|f| !f.2);
+        let level: Vec<&(usize, MethodId, bool)> =
+            fits.iter().filter(|f| f.2 != best_level).collect();
+        let top: Vec<MethodId> = level
+            .iter()
+            .filter(|x| {
+                !level
+                    .iter()
+                    .any(|y| self.beats((y.0, y.1), (x.0, x.1), cands, block_arity))
+            })
+            .map(|x| x.1)
+            .collect();
+        let winner = top.first().copied().unwrap_or(level[0].1);
+        (winner, top.into_iter().skip(1).collect())
+    }
+
+    /// Whether candidate `x` (its index and method) is chosen over `y`
+    /// at the same literal level: it is more specific; or, as specific,
+    /// its block takes as many parameters as the call's (`block_arity`),
+    /// or else the fewest more than it,
+    /// or it is an extension's method in scope beside the class's own, or
+    /// it comes first from another owner (an override, a subclass's).
+    fn beats(
+        &self,
+        x: (usize, MethodId),
+        y: (usize, MethodId),
+        cands: &[(MethodId, HashMap<TypeParamId, Type>)],
+        block_arity: Option<usize>,
+    ) -> bool {
+        let (a, b) = (self.world.method(x.1), self.world.method(y.1));
+        let (sa, sb) = (&cands[x.0].1, &cands[y.0].1);
+        let (ab, ba) = (
+            self.as_specific(a, sa, b, sb),
+            self.as_specific(b, sb, a, sa),
+        );
+        if ab != ba {
+            return ab;
+        }
+        if !ab {
+            return false;
+        }
+        // The block's arity: the same as the call's first, then the
+        // fewest above it (`{ "0" }` takes `(String)` over `(String,
+        // MatchData)`).
+        let rank = |m: &MethodInfo| match (&m.block, block_arity) {
+            (Some((_, Type::Proc(_, ps, _, _))), Some(n)) if ps.len() == n => Some(0),
+            (Some((_, Type::Proc(_, ps, _, _))), Some(n)) if ps.len() > n => Some(ps.len()),
+            _ => None,
+        };
+        match (rank(a), rank(b)) {
+            (Some(x), Some(y)) if x != y => return x < y,
+            (Some(_), None) => return true,
+            (None, Some(_)) => return false,
+            _ => {}
+        }
+        if a.owner == b.owner && a.extension.is_some() != b.extension.is_some() {
+            return a.extension.is_some();
+        }
+        a.owner != b.owner && x.0 < y.0
+    }
+
+    /// Whether `a` is at least as specific as `b`: every call `a` takes,
+    /// `b` takes (each parameter's type within `b`'s, positional ones by
+    /// place, keyword ones by name), with the receiver's type arguments
+    /// (`sa`, `sb`) in; a type parameter of `b`'s own takes anything,
+    /// wherever it appears.
+    fn as_specific(
+        &self,
+        a: &MethodInfo,
+        sa: &HashMap<TypeParamId, Type>,
+        b: &MethodInfo,
+        sb: &HashMap<TypeParamId, Type>,
+    ) -> bool {
+        let own: Vec<TypeParamId> = b.type_params.iter().map(|p| p.id).collect();
+        fn within(c: &Checker, own: &[TypeParamId], t: &Type, u: &Type) -> bool {
+            match (t, u) {
+                (_, Type::Param(p)) if own.contains(p) => true,
+                (Type::Class(x, xs), Type::Class(y, ys))
+                    if x == y && xs.len() == ys.len() && !xs.is_empty() =>
+                {
+                    xs.iter().zip(ys).all(|(t, u)| within(c, own, t, u))
+                }
+                _ => t == u || c.world.is_subtype(t, u),
+            }
+        }
+        let ty = |t: &Type, s: &HashMap<TypeParamId, Type>| self.infer.resolve(&t.subst(s));
+        // A rest parameter's type is the array of its elements'.
+        let elem = |t: Type| match t {
+            Type::Class(c, args) if c == self.world.builtin.array && args.len() == 1 => {
+                args[0].clone()
+            }
+            t => t,
+        };
+        fn of(m: &MethodInfo, k: ParamKind) -> Vec<&ParamInfo> {
+            m.params.iter().filter(|p| p.kind == k).collect()
+        }
+        let (pa, pb) = (of(a, ParamKind::Positional), of(b, ParamKind::Positional));
+        let (ra, rb) = (of(a, ParamKind::Rest), of(b, ParamKind::Rest));
+        let (ka, kb) = (of(a, ParamKind::KeywordOnly), of(b, ParamKind::KeywordOnly));
+        let (xa, xb) = (of(a, ParamKind::KeywordRest), of(b, ParamKind::KeywordRest));
+        if (!ra.is_empty() && rb.is_empty()) || (!xa.is_empty() && xb.is_empty()) {
+            return false;
+        }
+        let fits = |p: &ParamInfo, u: &Type| within(self, &own, &ty(&p.ty, sa), u);
+        let positional = match rb.first() {
+            Some(r) => {
+                let r = elem(ty(&r.ty, sb));
+                pa.len() >= pb.len()
+                    && pa.iter().enumerate().all(|(i, p)| {
+                        let u = pb.get(i).map_or(r.clone(), |q| ty(&q.ty, sb));
+                        fits(p, &u)
+                    })
+                    && ra
+                        .iter()
+                        .all(|p| within(self, &own, &elem(ty(&p.ty, sa)), &r))
+            }
+            None => {
+                pa.len() == pb.len() && pa.iter().zip(&pb).all(|(p, q)| fits(p, &ty(&q.ty, sb)))
+            }
+        };
+        positional
+            && ka.len() == kb.len()
+            && ka.iter().all(|p| {
+                kb.iter()
+                    .find(|q| q.name == p.name)
+                    .is_some_and(|q| fits(p, &ty(&q.ty, sb)))
+            })
     }
 
     fn describe_args(&self, call: &Call, pre: &HashMap<NodeId, Type>) -> String {
