@@ -1,0 +1,87 @@
+# `super` chooses among the superclass's overloads of the method as a
+# call does (docs/01 §9): all the definitions of the first ancestor that
+# has one, none further.
+class Base
+  @a: Int
+  def initialize(x: Int)
+    @a = x
+  end
+  def initialize(s: String)
+    @a = s.size * 10
+  end
+  def a -> Int = @a
+  def f(x: Int) -> String = "int #{x}"
+  def f(s: String) -> String = "str #{s}"
+  def f(x: Int, s: String) -> String = "both #{x} #{s}"
+end
+
+class Mid < Base
+  def initialize(s: String)
+    super(s)
+  end
+  def initialize(n: Int)
+    super(n)
+  end
+  def f(s: String) -> String = "Mid " + super(s)
+  def f(x: Int) -> String = "Mid " + super
+end
+
+# A bare `super` forwards the parameters, chosen by their types.
+class Fwd < Base
+  def initialize(x: Int)
+    super
+  end
+  def initialize(x: Int, s: String)
+    super(s)
+  end
+end
+
+# `super` sees only the first ancestor with the method: Mid's two `f`,
+# not Base's three.
+class Leaf < Mid
+  def f(s: String) -> String = "Leaf " + super
+end
+
+puts Mid.new("abc").a
+puts Mid.new(7).a
+puts Fwd.new(3).a
+puts Fwd.new(1, "ab").a
+puts Mid.new(1).f("a")
+puts Mid.new(1).f(1)
+puts Leaf.new(1).f("z")
+puts Leaf.new(1).f(2)
+
+# A bare `super` forwards every parameter: positional ones of different
+# types, `*rest` and `**opts`.
+class Pair
+  def initialize(x: Int, s: String)
+    puts "Pair #{x} #{s}"
+  end
+  def g(*xs: Int, **kw: String) -> Int = xs.size + kw.size
+end
+class Pair2 < Pair
+  def initialize(x: Int, s: String)
+    super
+  end
+  def g(*xs: Int, **kw: String) -> Int = super + 100
+end
+Pair2.new(1, "a")
+puts Pair2.new(2, "b").g(1, 2, a: "x")
+
+# ... and the block, named or anonymous.
+class Yielder
+  def each_twice(x: Int, &: (Int) -> Nil) -> Nil
+    yield(x)
+    yield(x + 1)
+  end
+  def named(x: Int, &b: (Int) -> Int) -> Int = b.call(x) * 2
+end
+class Yielder2 < Yielder
+  def each_twice(x: Int, &: (Int) -> Nil) -> Nil
+    puts "Yielder2"
+    super
+  end
+  def named(x: Int, &b: (Int) -> Int) -> Int = super + 1
+end
+Yielder2.new.each_twice(1) { |i| puts i }
+puts Yielder2.new.named(5) { |i| i + 1 }

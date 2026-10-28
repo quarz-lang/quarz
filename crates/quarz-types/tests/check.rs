@@ -350,6 +350,33 @@ fn super_in_initialize_is_direct() {
 }
 
 #[test]
+fn super_chooses_among_overloads() {
+    // `super` resolves against all the overloads of the first ancestor
+    // that has the method, as a call does (docs/01 §9).
+    let base = "class Base\n  @a: Int\n  def initialize(x: Int)\n    @a = x\n  end\n  def initialize(s: String)\n    @a = s.size\n  end\n  def f(x: Int) -> String = \"int\"\n  def f(s: String) -> String = \"str\"\n  def f(x: Int, s: String) -> String = \"both\"\nend\n";
+    ok(&format!("{base}class Mid < Base\n  def initialize(s: String)\n    super(s)\n  end\n  def initialize(n: Int)\n    super(n)\n  end\n  def f(s: String) -> String = \"Mid \" + super(s)\n  def f(x: Int) -> String = \"Mid \" + super\nend\nMid.new(\"a\")\nMid.new(1)"));
+    // A bare `super` forwards the parameters, chosen by their types.
+    ok(&format!("{base}class Fwd < Base\n  def initialize(x: Int, s: String)\n    super(s)\n  end\n  def initialize(x: Int)\n    super\n  end\nend\nFwd.new(1, \"a\")"));
+    err(
+        &format!(
+            "{base}class Fwd < Base\n  def initialize(x: Int, s: String)\n    super\n  end\nend"
+        ),
+        "no overload of `initialize` on Fwd matches",
+    );
+    // Only the first ancestor with the method: not Base's `f(Int, String)`
+    // past Mid's `f(String)`.
+    err(
+        &format!("{base}class Mid < Base\n  def f(s: String) -> String = super(s)\nend\nclass Leaf < Mid\n  def f(s: String) -> String = super(1, s)\nend"),
+        "takes 1 positional argument(s)",
+    );
+    // A tie is the usual error.
+    err(
+        "class Base\n  def f(x: Int, y: Int? = nil) -> String = \"a\"\n  def f(x: Int, s: String = \"\") -> String = \"b\"\nend\nclass Mid < Base\n  def f(x: Int) -> String = super(x)\nend",
+        "the call of `f` is ambiguous",
+    );
+}
+
+#[test]
 fn case_on_self() {
     // `case` on `Self` matches as on the receiver's class.
     no_warnings("enum R[T, E]\n  variant Ok(value: T)\n  variant Err(error: E)\n  def on_ok(&: (T) -> Nil) -> Self\n    case self\n    in Ok(value:) then yield(value)\n    in Err then nil\n    end\n    self\n  end\nend");
