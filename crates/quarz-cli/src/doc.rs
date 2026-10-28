@@ -433,7 +433,7 @@ fn type_params(world: &World, params: &[quarz_types::TypeParamInfo]) -> String {
             };
             if !p.bounds.is_empty() {
                 let b: Vec<String> = p.bounds.iter().map(|t| world.type_name(t)).collect();
-                s.push_str(&format!(": {}", b.join(" & ")));
+                s.push_str(&format!(" <: {}", b.join(" & ")));
             }
             if let Some(l) = &p.lower {
                 s.push_str(&format!(" >: {}", world.type_name(l)));

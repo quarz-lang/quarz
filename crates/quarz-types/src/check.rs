@@ -2292,7 +2292,7 @@ impl Checker {
         let info = self.world.method(m);
         let owner = match info.extension {
             Some(e) => {
-                // `extension Array[T: Int]`: its parameters with their bounds.
+                // `extension Array[T <: Int]`: its parameters with their bounds.
                 let ext = &self.world.extensions[e as usize];
                 let args: Vec<String> = ext
                     .target_args
@@ -2302,7 +2302,7 @@ impl Checker {
                             Some(tp) if !tp.bounds.is_empty() => {
                                 let bs: Vec<String> =
                                     tp.bounds.iter().map(|b| self.world.type_name(b)).collect();
-                                format!("{}: {}", tp.name, bs.join(" & "))
+                                format!("{} <: {}", tp.name, bs.join(" & "))
                             }
                             Some(tp) => tp.name.clone(),
                             None => self.world.type_name(a),
@@ -2333,7 +2333,7 @@ impl Checker {
     }
 
     /// Whether the bounds of an extension method's type parameters
-    /// (`extension Array[T: Int]`) hold for the receiver's arguments.
+    /// (`extension Array[T <: Int]`) hold for the receiver's arguments.
     fn extension_bounds_hold(&self, id: MethodId, subst: &HashMap<TypeParamId, Type>) -> bool {
         let Some(ext) = self.world.method(id).extension else {
             return true;
@@ -6991,7 +6991,7 @@ impl Checker {
     }
 
     /// Check the bounds of a class's type parameters against the arguments
-    /// of an instance type (`Channel[T: Shareable]`).
+    /// of an instance type (`Channel[T <: Shareable]`).
     fn check_class_bounds(&mut self, instance: &Type, span: Span) {
         let Type::Class(cid, args) = self.resolve(instance) else {
             return;
@@ -7001,7 +7001,7 @@ impl Checker {
             if a.has_vars() {
                 continue;
             }
-            // A bound may name the parameters (`T: Addable[T]`).
+            // A bound may name the parameters (`T <: Addable[T]`).
             let subst = self.world.class_subst(cid, &args);
             for b in &p.bounds {
                 let b = &b.subst(&subst);
@@ -8056,8 +8056,8 @@ impl Checker {
                         let cands = self.world.lookup_methods(&recv, name);
                         // The first callable with no argument or block whose
                         // extension's bounds the receiver satisfies, as a
-                        // call chooses (`sum` of an `Enumerable[T: Int]` or
-                        // `[T: Float]`, not the one taking a block).
+                        // call chooses (`sum` of an `Enumerable[T <: Int]` or
+                        // `[T <: Float]`, not the one taking a block).
                         let mut bound_error = None;
                         let mut chosen = None;
                         for (m, ms) in &cands {
@@ -8889,7 +8889,7 @@ impl Checker {
                 }
             }
             // `rescue IOError, SystemCallError => e` then `raise e`, and
-            // `error: E` with `E: Exception` (`extension Result[T, E: Exception]`).
+            // `error: E` with `E <: Exception` (`extension Result[T, E <: Exception]`).
             Type::Union(_) | Type::Param(_)
                 if self
                     .world

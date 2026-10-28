@@ -155,7 +155,7 @@ module Test
     #
     # `ArgumentError` for another `op` (an error of the test, not a
     # failure).
-    def assert_compare[T: Comparable[T]](lhs: T, op: Symbol, rhs: T, message: String? = nil) -> Nil
+    def assert_compare[T <: Comparable[T]](lhs: T, op: Symbol, rhs: T, message: String? = nil) -> Nil
       c = lhs <=> rhs
       ok = case op
            when :< then c < 0

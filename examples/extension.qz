@@ -16,7 +16,7 @@ module Describing
     def shout -> String = upcase + "!"
   end
 
-  extension Array[T: Describable]
+  extension Array[T <: Describable]
     def describe_all -> String = map(&:describe).join(", ")
   end
 end

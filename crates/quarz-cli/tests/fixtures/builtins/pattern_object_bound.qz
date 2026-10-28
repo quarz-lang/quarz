@@ -6,12 +6,12 @@
 class Shape
   def area -> Int = 1
 end
-class Box[out T: Object]
+class Box[out T <: Object]
   @v: T
   def initialize(@v: T); end
   def get -> T = @v
 end
-class SBox[out T: Shape]
+class SBox[out T <: Shape]
   @v: T
   def initialize(@v: T); end
   def get -> T = @v

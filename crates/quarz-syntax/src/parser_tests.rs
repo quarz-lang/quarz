@@ -399,8 +399,8 @@ fn declarations() {
     assert_eq!(sexp("variant = 1"), "(= variant 1)");
     assert!(errors("enum C =\nputs 1")[0].contains("a variant after `=`"));
     assert_eq!(
-        sexp("extension Array[T: Comparable[T]]\ndef m -> Int = 1\nend"),
-        "(extension Array[T] (tparams T:Comparable[T]) (def m (params) -> Int 1))"
+        sexp("extension Array[T <: Comparable[T]]\ndef m -> Int = 1\nend"),
+        "(extension Array[T] (tparams T<:Comparable[T]) (def m (params) -> Int 1))"
     );
     assert_eq!(sexp("type Id = Int"), "(type Id Int)");
     assert_eq!(
@@ -493,4 +493,87 @@ fn cog_keyword() {
         "(case-in (call _ x) (in cog::A 1))"
     );
     assert!(!errors("cog = 1").is_empty());
+}
+
+#[test]
+fn type_param_bounds() {
+    assert_eq!(sexp("class A[T<:X]\nend"), "(class A (tparams T<:X))");
+    assert_eq!(sexp("class A[T <: X]\nend"), "(class A (tparams T<:X))");
+    assert_eq!(sexp("class A[T <:X]\nend"), "(class A (tparams T<:X))");
+    assert_eq!(
+        sexp("def f[U>:T<:Object](x: U) -> U = x"),
+        "(def f (tparams U>:T<:Object) (params x:U) -> U x)"
+    );
+    assert_eq!(
+        sexp("def f[U <: Object >: T](x: U) -> U = x"),
+        "(def f (tparams U>:T<:Object) (params x:U) -> U x)"
+    );
+    assert_eq!(
+        sexp("class A[out T <: Shape, in U]\nend"),
+        "(class A (tparams out T<:Shape in U))"
+    );
+    assert_eq!(
+        sexp("def f[T <: Comparable[T] & Describable](x: T) -> T = x"),
+        "(def f (tparams T<:Comparable[T]&Describable) (params x:T) -> T x)"
+    );
+    assert_eq!(
+        sexp("def f[T<:M::Shape?](x: T) -> T = x"),
+        "(def f (tparams T<:M::Shape?) (params x:T) -> T x)"
+    );
+    assert_eq!(
+        sexp("class Box[T <: Shape] < Base[T]\nend"),
+        "(class Box (tparams T<:Shape) < Base[T])"
+    );
+    // Outside a type parameter list `<:` is still `<` and a symbol.
+    assert_eq!(sexp("a <:b"), "(call (call _ a) < :b)");
+
+    let old = errors("def f[T: Comparable[T]](x: T) -> T = x");
+    assert!(
+        old[0].contains("upper bound is written `T <: X`, not `T: X`"),
+        "{old:?}"
+    );
+    for src in [
+        "class A[T < : X]\nend",
+        "class A[T < :X]\nend",
+        "def f[U > : T](x: U) -> U = x",
+    ] {
+        let errs = errors(src);
+        assert!(
+            errs[0].contains("is written without a space"),
+            "{src}: {errs:?}"
+        );
+    }
+    assert!(errors("class A[T <: X <: Y]\nend")[0].contains("two upper bounds"));
+    assert!(errors("def f[U >: X >: Y](x: U) -> U = x")[0].contains("two lower bounds"));
+    assert!(errors("class A[T < X]\nend")[0].contains("expected `<:` or `>:`"));
+    assert!(errors("class A[T :X]\nend")[0].contains("upper bound is written `T <: X`"));
+    for src in [
+        "class A[T<::X]\nend",
+        "class A[T<:<=>]\nend",
+        "class A[T<:\"X\"]\nend",
+    ] {
+        let errs = errors(src);
+        assert!(
+            errs[0].contains("expected a type after `<:`"),
+            "{src}: {errs:?}"
+        );
+    }
+    assert!(errors("class A[T :\"X\"]\nend")[0].contains("upper bound is written `T <: X`"));
+    for src in [
+        "class A[T<:X=]\nend",
+        "class A[T<:[]=]\nend",
+        "class A[T<:::X=]\nend",
+    ] {
+        let errs = errors(src);
+        assert!(
+            errs[0].contains("expected `,` or `]`, found `=`"),
+            "{src}: {errs:?}"
+        );
+    }
+    assert_eq!(sexp("class A[T<:[]]\nend"), sexp("class A[T <: []]\nend"));
+    assert_eq!(sexp("class A[T<:::X]\nend"), sexp("class A[T <: ::X]\nend"));
+    assert_eq!(
+        sexp("def f[U>:cog::A](x: U) -> U = x"),
+        "(def f (tparams U>:cog::A) (params x:U) -> U x)"
+    );
 }

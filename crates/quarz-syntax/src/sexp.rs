@@ -168,7 +168,7 @@ fn type_params(out: &mut String, tps: &[TypeParam]) {
                 o.push_str(&type_sexp(l));
             }
             if !tp.bounds.is_empty() {
-                o.push(':');
+                o.push_str("<:");
                 o.push_str(
                     &tp.bounds
                         .iter()

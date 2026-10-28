@@ -53,7 +53,7 @@ module Describing
     include Describable
     def describe -> String = "int #{self}"
   end
-  extension Array[T: Describable]
+  extension Array[T <: Describable]
     def describe_all -> String = map(&:describe).join(", ")
   end
 end

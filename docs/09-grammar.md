@@ -59,7 +59,8 @@ positional_param = [ "@" ] IDENT [ ":" type ] [ "=" expression ] ;
     (* a positional_param after a bare "*" is a keyword-only parameter *)
 
 type_params    = "[" type_param { "," type_param } "]" ;
-type_param     = [ "out" | "in" ] CONST [ ">:" type ] [ ":" type_bound ] ;   (* ">:": a lower bound, methods only *)
+type_param     = [ "out" | "in" ] CONST [ bound [ bound ] ] ;
+bound          = "<:" type_bound | ">:" type ;   (* ">:": a lower bound, methods only; each at most once, no space inside "<:" / ">:" *)
 type_bound     = type { "&" type } ;
 
 (* ---- types ---- *)

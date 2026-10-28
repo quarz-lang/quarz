@@ -908,7 +908,7 @@ impl World {
     }
 
     /// Map an extension's type parameters to the receiver's type arguments
-    /// (`extension Array[T: X]` applied to `Array[Int]` gives `T := Int`).
+    /// (`extension Array[T <: X]` applied to `Array[Int]` gives `T := Int`).
     pub fn extension_subst(
         &self,
         ext: &ExtensionInfo,
@@ -940,7 +940,7 @@ impl World {
 
     /// Whether a field of type `t` without a default may be left unassigned
     /// (nil): its type admits `nil` (`Object` does). A type parameter's
-    /// never does, whatever its bounds (upper ones: `G[T: Object?]` may
+    /// never does, whatever its bounds (upper ones: `G[T <: Object?]` may
     /// be a `G[Int]`); `T?` does.
     pub fn field_may_stay_nil(&self, t: &Type) -> bool {
         match t {

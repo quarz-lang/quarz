@@ -1,16 +1,16 @@
 # `raise` of a value whose type is a type parameter bounded by an
 # exception class.
 
-def fail_with[E: Exception](e: E) -> Nothing = raise e
+def fail_with[E <: Exception](e: E) -> Nothing = raise e
 
-class Holder[E: Exception]
+class Holder[E <: Exception]
   @e: E
   def initialize(@e: E)
   end
   def go -> Nothing = raise @e
 end
 
-def pick[E: Exception](e: E, mine: Bool) -> Nothing
+def pick[E <: Exception](e: E, mine: Bool) -> Nothing
   x = mine ? e : IOError.new("io")
   raise x
 end
