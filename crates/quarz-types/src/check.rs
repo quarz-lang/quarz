@@ -486,6 +486,10 @@ struct Assigned {
     outside: HashSet<String>,
     /// A `retry` was seen.
     retries: bool,
+    /// The fields assigned (`@x = v`), and whether a `super` was seen
+    /// (in `initialize`, it assigns the inherited fields).
+    ivars: HashSet<String>,
+    supers: bool,
 }
 
 impl Assigned {
@@ -2882,6 +2886,9 @@ impl Checker {
             Assign { target, value } | OpAssign { target, value, .. } => {
                 match &**target {
                     LValue::Local { name, .. } => out.add(name),
+                    LValue::IVar(name) => {
+                        out.ivars.insert(name.clone());
+                    }
                     LValue::Attr { recv, .. } => Self::assigned_names_expr(recv, out),
                     LValue::Index { recv, args } => {
                         Self::assigned_names_expr(recv, out);
@@ -2896,6 +2903,10 @@ impl Checker {
                     match t {
                         MultiTarget::Single(LValue::Local { name, .. })
                         | MultiTarget::Splat(Some(LValue::Local { name, .. })) => out.add(name),
+                        MultiTarget::Single(LValue::IVar(name))
+                        | MultiTarget::Splat(Some(LValue::IVar(name))) => {
+                            out.ivars.insert(name.clone());
+                        }
                         MultiTarget::Nested(ts) => ts.iter().for_each(|t| collect(t, out)),
                         _ => {}
                     }
@@ -3007,6 +3018,7 @@ impl Checker {
             Lambda(b) => out.closure(b, true),
             Array(items) | Yield(items) => Self::assigned_names_args(items, out),
             Super { args, block } => {
+                out.supers = true;
                 if let Some(args) = args {
                     Self::assigned_names_args(args, out);
                 }
@@ -3123,6 +3135,7 @@ impl Checker {
     fn widen_assigned(&mut self, body: &[Expr]) {
         let mut assigned = Assigned::default();
         Self::assigned_names(body, &mut assigned);
+        self.widen_fields(&assigned);
         for (name, method) in assigned.bangs {
             if !assigned.names.contains(&name) && self.bang_may_assign(&name, &method) {
                 assigned.names.insert(name);
@@ -3131,6 +3144,65 @@ impl Checker {
         for name in assigned.names {
             self.set_narrowed(&VarKey::Local(name), None);
         }
+    }
+
+    /// The fields the code scanned into `assigned` may assign (in
+    /// `initialize`; elsewhere only `var` fields, never narrowed) are
+    /// not narrowed from here on; a `super` there assigns the inherited
+    /// ones.
+    fn widen_fields(&mut self, assigned: &Assigned) {
+        for name in &assigned.ivars {
+            self.env.ivar_narrow.remove(name);
+        }
+        if assigned.supers && self.env.in_initialize {
+            for name in self.inherited_fields() {
+                self.env.ivar_narrow.remove(&name);
+            }
+        }
+    }
+
+    /// The names of the fields the current method's owner inherits (which
+    /// its `initialize`'s `super` assigns).
+    fn inherited_fields(&self) -> Vec<String> {
+        let Some(owner) = self.env.method.map(|m| self.world.method(m).owner) else {
+            return Vec::new();
+        };
+        let own = &self.world.class(owner).fields;
+        self.world
+            .all_fields(owner)
+            .into_iter()
+            .filter(|(f, _)| own.iter().all(|o| o.name != f.name))
+            .map(|(f, _)| f.name)
+            .collect()
+    }
+
+    /// The facts of the left operand of `&&`/`||` that still hold after
+    /// the right one ran: not those about a variable it assigns (or
+    /// rebinds by a `!` method), nor, when it calls `super` in
+    /// `initialize`, about an inherited field.
+    fn facts_surviving(&self, facts: Facts, right: &Expr) -> Facts {
+        let mut assigned = Assigned::default();
+        Self::assigned_names_expr(right, &mut assigned);
+        for (name, method) in &assigned.bangs {
+            if self.bang_may_assign(name, method) {
+                assigned.names.insert(name.clone());
+            }
+        }
+        let inherited = if assigned.supers && self.env.in_initialize {
+            self.inherited_fields()
+        } else {
+            Vec::new()
+        };
+        if assigned.names.is_empty() && assigned.ivars.is_empty() && inherited.is_empty() {
+            return facts;
+        }
+        facts
+            .into_iter()
+            .filter(|(key, _)| match key {
+                VarKey::Local(n) => !assigned.names.contains(n),
+                VarKey::IVar(n) => !assigned.ivars.contains(n) && !inherited.contains(n),
+            })
+            .collect()
     }
 
     /// Stop narrowing `names` from here on in the body.
@@ -4448,7 +4520,7 @@ impl Checker {
                 self.apply_facts(&fat);
                 let (tb, fbt, _) = self.check_cond(b);
                 self.merge_with(&snap, false, tb.is_nothing());
-                let mut facts_true = fat;
+                let mut facts_true = self.facts_surviving(fat, b);
                 facts_true.extend(fbt);
                 let t = if self.resolve(&ta) == self.world.bool_()
                     && self.resolve(&tb) == self.world.bool_()
@@ -4471,7 +4543,7 @@ impl Checker {
                 self.apply_facts(&faf);
                 let (tb, _, fbf) = self.check_cond(b);
                 self.merge_with(&snap, false, tb.is_nothing());
-                let mut facts_false = faf;
+                let mut facts_false = self.facts_surviving(faf, b);
                 facts_false.extend(fbf);
                 let t = if self.resolve(&ta) == self.world.bool_()
                     && self.resolve(&tb) == self.world.bool_()
@@ -5025,7 +5097,9 @@ impl Checker {
         if let Some(ensure) = &block.ensure {
             let saved = self.snapshot();
             // It also runs when the body or a `rescue` raised part way
-            // through.
+            // through: it starts as the `begin` did, with what they may
+            // have assigned widened and what they declare unset.
+            self.restore(&before);
             self.widen_assigned(&block.body);
             for r in &block.rescues {
                 self.widen_assigned(&r.body);
@@ -5039,10 +5113,14 @@ impl Checker {
             let assigned =
                 std::mem::replace(&mut self.env.ensure_assigns, outer).unwrap_or_default();
             // After it, as on the normal path, joined with what it
-            // assigns; what it declares, as at its end.
+            // assigns; what it declares, as at its end; the fields it
+            // assigns, no longer narrowed.
             let end = self.snapshot();
             self.restore(&saved);
             self.keep_since(&saved, &end);
+            let mut in_ensure = Assigned::default();
+            Self::assigned_names(ensure, &mut in_ensure);
+            self.widen_fields(&in_ensure);
             let n = self.env.frames.len();
             for (&(fi, slot), t) in &assigned {
                 if fi >= n || slot >= self.env.frames[fi].vars.len() {
@@ -8724,18 +8802,9 @@ impl Checker {
             // The superclass initialize assigned its fields, perhaps other
             // values than the ones narrowed before (the class's own it
             // cannot assign).
-            let fields = self.world.all_fields(owner);
-            for (f, _) in fields {
-                if self
-                    .world
-                    .class(owner)
-                    .fields
-                    .iter()
-                    .all(|own| own.name != f.name)
-                {
-                    self.env.ivar_narrow.remove(&f.name);
-                    self.env.assigned_fields.insert(f.name);
-                }
+            for name in self.inherited_fields() {
+                self.env.ivar_narrow.remove(&name);
+                self.env.assigned_fields.insert(name);
             }
         }
         t

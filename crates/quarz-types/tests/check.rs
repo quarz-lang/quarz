@@ -377,6 +377,60 @@ fn super_chooses_among_overloads() {
 }
 
 #[test]
+fn narrowing_does_not_survive_assignments() {
+    // A narrowing of a field (in `initialize`) or a local ends where the
+    // variable may be assigned again: in a loop's body, in a `rescue` or
+    // `ensure` the body left part way, and on the right of `&&`/`||`.
+    let nil_plus = "undefined method `+` for Nil";
+    // The loop's body assigns the field after the test before it.
+    err(
+        "class C\n  @x: Int?\n  def initialize(n: Int)\n    @x = 1\n    if @x.is_a?(Int)\n      i = 0\n      while i < n\n        @x = nil\n        i += 1\n      end\n      puts @x + 1\n    end\n  end\nend",
+        nil_plus,
+    );
+    ok("class C\n  @x: Int?\n  @y: Int?\n  def initialize(n: Int)\n    @x = 1\n    @y = nil\n    if @x.is_a?(Int)\n      i = 0\n      while i < n\n        @y = nil\n        i += 1\n      end\n      puts @x + 1\n    end\n  end\nend\nC.new(1)");
+    // The `rescue` runs when the body raised after assigning the field.
+    err(
+        "class C\n  @x: Int?\n  def initialize(n: Int)\n    @x = 1\n    begin\n      @x = nil\n      raise \"boom\" if n > 0\n    rescue\n      puts @x + 1\n    end\n  end\nend",
+        nil_plus,
+    );
+    // The `ensure` runs when the body raised before narrowing, and the
+    // fields it assigns are not narrowed after it.
+    err(
+        "def f(x: Int?) -> Nil\n  begin\n    raise \"x\" unless x.is_a?(Int)\n  ensure\n    puts x + 1\n  end\nend",
+        nil_plus,
+    );
+    err(
+        "class C\n  @x: Int?\n  def initialize(n: Int)\n    @x = 1\n    begin\n      puts @x + 1\n    ensure\n      @x = nil if n > 0\n    end\n    puts @x + 1\n  end\nend",
+        nil_plus,
+    );
+    ok("def f(x: Int?) -> Nil\n  return if x.nil?\n  begin\n    puts x + 1\n  ensure\n    puts x + 2\n  end\n  puts x + 3\nend\nf(1)");
+    ok("class C\n  @x: Int?\n  def initialize(n: Int)\n    @x = 1\n    begin\n      puts @x + 1\n    ensure\n      puts n\n    end\n    puts @x + 1\n  end\nend\nC.new(1)");
+    // A fact of `&&`'s left operand about a variable its right assigns,
+    // or about an inherited field once it called `super`, is gone.
+    err(
+        "x: Int? = 1\nx.is_a?(Int) && (x = nil; true) && puts(x + 1)",
+        nil_plus,
+    );
+    err(
+        "class C\n  @x: Int?\n  def initialize\n    @x = 1\n    @x.is_a?(Int) && (@x = nil; true) && puts(@x + 1)\n  end\nend",
+        nil_plus,
+    );
+    err(
+        "class P\n  @f: Int?\n  def initialize(v: Int?)\n    @f = v\n  end\nend\nclass C < P\n  def initialize(cond: Bool)\n    @f = 1\n    if @f.is_a?(Int) && (super(nil); true)\n      puts @f + 1\n    end\n  end\nend",
+        nil_plus,
+    );
+    ok("x: Int? = 1\ny: Int? = nil\nx.is_a?(Int) && (y = nil; true) && puts(x + 1)\nif x.is_a?(Int) || (y = 2; false)\n  puts x + 1\nend");
+    // A `!` method the type lacks rebinds the variable (docs/01 §9).
+    err(
+        "class Foo\n  def foo -> Bar = Bar.new\nend\nclass Bar\n  def bar -> Int = 1\nend\ndef f(x: Foo | Bar) -> Nil\n  x.is_a?(Foo) && (x.foo!; true) && puts(x.foo.bar)\nend",
+        "undefined method `foo` for Bar",
+    );
+    // In a method other than `initialize`, `super` assigns no field: an
+    // inherited field keeps its narrowing past it.
+    ok("class P\n  @p: Int?\n  def initialize(@p: Int?); end\n  def go(c: Bool) -> Int = 0\n  def go2(c: Bool) -> Int = 0\nend\nclass C < P\n  def go(c: Bool) -> Int\n    if @p.is_a?(Int)\n      while c\n        super\n        c = false\n      end\n      return @p + 1\n    end\n    0\n  end\n  def go2(c: Bool) -> Int\n    y = @p.is_a?(Int) && (super(c); true) && @p + 1\n    y.is_a?(Int) ? y : 0\n  end\nend\nC.new(1).go(true)\nC.new(1).go2(true)");
+}
+
+#[test]
 fn case_on_self() {
     // `case` on `Self` matches as on the receiver's class.
     no_warnings("enum R[T, E]\n  variant Ok(value: T)\n  variant Err(error: E)\n  def on_ok(&: (T) -> Nil) -> Self\n    case self\n    in Ok(value:) then yield(value)\n    in Err then nil\n    end\n    self\n  end\nend");
