@@ -1,0 +1,11 @@
+# A fact of `&&`'s left operand holds on its right only while nothing
+# there assigns the variable: `y` is assigned, `x` is not.
+def both(x: Int?, y: Int?) -> Int
+  if x && (y = nil; true) && (x + 1 > 0)
+    x + 1
+  else
+    0
+  end
+end
+puts(both(1, 2))
+puts(both(nil, 2))
