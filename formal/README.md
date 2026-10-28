@@ -43,7 +43,8 @@ nothing after them); a field is read, `self` used (so a call on it) and
 default runs before `initialize`, reading only the fields before it that
 hold a value, and checked as a block of `initialize` is, but that it
 never uses `self`. `super(args)` in `initialize` (not in a block of
-it) runs the superclass's `initialize` on the object: the class's own
+it: the Rust checker rejects one there too) runs the superclass's
+`initialize` on the object: the class's own
 fields to assign must be set before it, and the inherited ones are set
 after it (docs/01 §3), so the superclass's `initialize`, which may call
 a method the subclass overrides once its own fields are set, finds the
