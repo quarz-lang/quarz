@@ -278,6 +278,43 @@ fn definite_initialization() {
 }
 
 #[test]
+fn overload_resolution() {
+    // An integer literal takes its default type first: `x + 1` is
+    // `Int#+(Int)`, `1.5 / 2` is `Float#/(Int)`.
+    ok("x = 3\ny: Int = x + 1\nputs y");
+    ok("z: Float = 1.5 / 2\nputs z");
+    // Overloads that fit a call equally make it ambiguous.
+    err(
+        "def g(*, a: Int, b: Int = 0) -> Int = 1\ndef g(*, b: Int, a: Int = 0) -> Int = 2\ng(a: 1, b: 2)",
+        "the call of `g` is ambiguous",
+    );
+    err(
+        "def k(a: Int = 0) -> Int = 1\ndef k(a: Int = 0, b: Int = 0) -> Int = 2\nk",
+        "the call of `k` is ambiguous",
+    );
+    // The more specific wins.
+    ok("def h(a: Object) -> Int = 1\ndef h(a: Int) -> String = \"i\"\ns: String = h(1)");
+    // Overloads differing only in the block: the one of the block's arity.
+    ok("class S\n  def each_m(&: (String) -> Nil) -> Int = 1\n  def each_m(&: (String, Int) -> Nil) -> String = \"two\"\nend\na: Int = S.new.each_m { |s| }\nb: String = S.new.each_m { |s, i| }");
+    // A block with fewer parameters than every overload's takes the
+    // fewest.
+    ok("class S\n  def each_m(&: (String) -> Nil) -> Int = 1\n  def each_m(&: (String, Int) -> Nil) -> String = \"two\"\nend\na: Int = S.new.each_m { }");
+    ok("puts \"hello world\".gsub(/o/) { \"0\" }");
+    // An argument still to be inferred takes the first overload that fits.
+    ok("p [].reduce(1) { |a, x| a * x }");
+    ok("def f(a: Object) -> String = \"O\"\ndef f(a: Array[Int]) -> String = \"AI\"\nx = []\nputs f(x)\ny: Array[String] = x");
+    // An extension's method in scope hides the class's own.
+    ok("class C\n  def name -> String = \"own\"\nend\nextension C\n  def name -> String = \"ext\"\nend\nputs C.new.name");
+    // Overloads by block type both fitting a block are ambiguous.
+    err(
+        "class K\n  def run(&blk: (Int) -> Int) -> Int = 1\n  def run(&blk: (Float) -> Float) -> Int = 2\nend\nK.new.run { |x| x }",
+        "the call of `run` is ambiguous",
+    );
+    // A class's own `initialize` hides its ancestors'.
+    ok("class A\n  def initialize(s: String = \"a\"); end\nend\nclass B < A\n  def initialize(n: Int = 0, s: String = \"b\"); end\nend\nB.new");
+}
+
+#[test]
 fn classes_and_fields() {
     // Two definitions of one signature are an error; another signature
     // is an overload.
