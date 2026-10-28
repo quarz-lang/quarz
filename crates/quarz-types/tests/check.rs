@@ -898,6 +898,23 @@ fn shareable_is_promised_and_inherited() {
         "class MyRange < Range[Int]\n  var @n: Int = 0\nend",
         "cannot inherit from the built-in class `Range`",
     );
+    // Each kind that cannot be inherited from says so by name.
+    err(
+        "module N\n  data P = (x: Int)\nend\nclass C < N::P\nend",
+        "cannot inherit from data type `N::P`: a data type cannot be subclassed (include a module to share behaviour)",
+    );
+    err(
+        "enum E = A | B(x: Int)\nclass C < E\nend",
+        "cannot inherit from enum `E`: its variants are the ones it declares",
+    );
+    err(
+        "enum E = A | B(x: Int)\nclass C < E::B\nend",
+        "cannot inherit from enum variant `E::B`",
+    );
+    err(
+        "module M\nend\nclass C < M\nend",
+        "cannot inherit from module `M`: include it instead",
+    );
     // A module that includes `Shareable` holds its includers to it,
     // also through an extension.
     let marked = "module Marked\n  include Shareable\nend\n";
