@@ -2705,3 +2705,26 @@ fn a_rescue_clauses_variable_is_its_own() {
     // The outer local keeps its narrowing: the clause assigns its own.
     ok("def r(n: Int | Nil) -> Int\n  e = n\n  return 0 unless e\n  i = 0\n  while i < 2\n    begin\n      raise ArgumentError, \"a\"\n    rescue ArgumentError => e\n      e = ArgumentError.new(\"b\")\n    ensure\n      p e + 1\n    end\n    i += 1\n  end\n  e + 1\nend");
 }
+
+#[test]
+fn a_class_method_has_no_fields() {
+    // `self` is the class there: reading `@a` checked, then failed at run
+    // time ("instance variable access outside of an object").
+    err(
+        "class C\n  @a: Int?\n  def initialize\n    @a = 1\n  end\n  def self.f -> Int? = @a\nend\np C.f",
+        "instance variables are not available here: `self` is a class",
+    );
+    err(
+        "data D(n: Int)\n  def self.g -> Int = @n\nend",
+        "instance variables are not available here: `self` is a class",
+    );
+    // A field parameter of a class method, and a constant's initializer.
+    err(
+        "class C\n  var @a: Int? = nil\n  def initialize\n  end\n  def self.f(@a: Int) -> Nil = nil\nend\nC.f(1)",
+        "instance variables are not available here: `self` is a class",
+    );
+    err(
+        "class C\n  @a: Int = 1\n  X = @a\nend",
+        "instance variables are not available here: `self` is a class",
+    );
+}
