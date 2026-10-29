@@ -2601,3 +2601,21 @@ fn rescue_and_raise_build_what_they_say() {
     );
     ok("class Sp < StandardError\n  def initialize(message: String, *rest: Int)\n    super(message)\n  end\nend\ndef f -> Nothing = raise Sp, \"x\"");
 }
+
+#[test]
+fn a_kept_closure_reads_fields_as_declared() {
+    // `initialize` may assign a field after a method it calls made the
+    // closure (docs/02 §6).
+    let c = "class C\n  @a: Int?\n  var @f: (() -> Int)?\n  def initialize\n    @a = 1\n    @f = nil\n    make\n    @a = nil\n  end\n";
+    err(
+        &format!("{c}  def make -> Nil\n    if @a\n      @f = ->() -> Int {{ @a + 1 }}\n    end\n    nil\n  end\nend"),
+        "undefined method `+` for Nil",
+    );
+    err(
+        &format!("{c}  def make -> Nil\n    if @a\n      Task.spawn {{ @a + 1 }}\n    end\n    nil\n  end\nend"),
+        "undefined method `+` for Nil",
+    );
+    // A local copy keeps it; so does a block only yielded to.
+    ok(&format!("{c}  def make -> Nil\n    a = @a\n    if a\n      @f = ->() -> Int {{ a + 1 }}\n    end\n    nil\n  end\nend"));
+    ok(&format!("{c}  def make -> Nil\n    if @a\n      [1].each {{ |x| p @a + x }}\n    end\n    nil\n  end\nend"));
+}
