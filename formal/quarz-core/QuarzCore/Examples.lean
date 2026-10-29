@@ -371,4 +371,39 @@ def caseBoth : Expr := .seq (.assign "e" (.new 3 [] []))
 #guard !(enumProg (.new 1 [] [])).check
 #guard !(enumProg .nil [] (enumClasses ++ [⟨"W", some 2, [], [], [], [], .cls⟩])).check
 
+/-! ### `rescue` and `ensure`
+
+Exception < Object, MyErr < Exception. -/
+
+def excClasses : ClassTable :=
+  [object, ⟨"Exception", some 0, [], [], [], [], .cls⟩, ⟨"MyErr", some 1, [], [], [], [], .cls⟩]
+
+def excProg (body : Expr) : Program :=
+  ⟨excClasses, [], ⟨0, "<main>", [], [.nil, .bool, .int, .str, .cls 0 []], none,
+    [("e", [.cls 1 []]), ("r", [.int, .nil])], body⟩, []⟩
+
+def raiseMy : Expr := .raise (.new 2 [] [])
+
+-- Raised, rescued: the handler runs.
+#guard (excProg (.seq (.rescue raiseMy "e" (.assign "r" (.int 1)) (.assign "r" (.int 2)))
+  (.var "r" [.int]))).check
+#guard match run (excProg (.seq (.rescue raiseMy "e" (.assign "r" (.int 1)) (.assign "r" (.int 2)))
+    (.var "r" [.int]))) noPrim 100 with
+  | .ok (.int 1) _ => true | _ => false
+-- Only exceptions are raised.
+#guard !(excProg (.raise (.str "x"))).check
+-- The handler sees what the body assigns un-narrowed: `r` may be `nil`.
+#guard !(excProg (.seq (.assign "r" (.int 1))
+  (.rescue (.seq (.assign "r" .nil) raiseMy) "e" (.var "r" [.int]) .nil))).check
+-- After `ensure`, what it assigns as at its end.
+#guard (excProg (.seq (.assign "r" .nil) (.seq (.ensure (.assign "r" .nil) (.assign "r" (.int 3)))
+  (.var "r" [.int])))).check
+#guard match run (excProg (.seq (.assign "r" .nil) (.seq (.ensure (.assign "r" .nil) (.assign "r" (.int 3)))
+    (.var "r" [.int])))) noPrim 100 with
+  | .ok (.int 3) _ => true | _ => false
+-- An exception through `ensure`: it runs, the exception goes on.
+#guard match run (excProg (.rescue (.ensure raiseMy (.assign "r" (.int 4))) "e" (.var "r" [.int, .nil]) .nil))
+    noPrim 100 with
+  | .ok (.int 4) _ => true | _ => false
+
 end QuarzCore.Examples

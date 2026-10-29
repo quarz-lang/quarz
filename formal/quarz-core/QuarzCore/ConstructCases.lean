@@ -62,6 +62,8 @@ def DefaultsPost (l k : Nat) (targs : List Ty) (Λ : List Ty) (s : Store) : Resu
       ∃ o', s'.objs[l]? = some o' ∧
         ∀ (i : Nat) (f : Field), (P.classes.allFieldsAt k targs)[i]? = some f →
           f.required P.classes = false → o'.set[i]? = some true
+  | .raised v s' => ∃ Λ', WfStore P Λ' s' ∧ Ext P (fun _ => False) (· = l) Λ Λ' s s' ∧
+      s'.hasTy P v [.cls P.exn []]
   | .stuck | .returned _ _ => False
   | _ => True
 
@@ -173,13 +175,23 @@ theorem defaults_good (hP : WfProg P) {N : Nat} (ihs : ∀ m, m ≤ N → Good P
               (fun _ h => h), rest⟩
           | stuck => exact (hrest : False).elim
           | returned => exact (hrest : False).elim
-          | raised => exact trivial
+          | raised w s3 =>
+            obtain ⟨Λ3, hw3, he3, hv3⟩ := hrest
+            have he1' : Ext P (fun _ => False) (· = l) Λ Λ1 s s1 := he1.mono
+              (fun _ h => by rcases h with ⟨_, _, h⟩ | h <;> simp [lookupVar, blkW] at h)
+              (fun _ ⟨_, hb, _⟩ => by simp [Program.defaultCtx] at hb)
+            exact ⟨Λ3, hw3, ((he1'.transW he2 hw).transW he3 hw).mono (fun _ h => by simp_all)
+              (fun _ h => h), hv3⟩
           | timeout => exact trivial
         | returned v s1 =>
           obtain ⟨_, _, _, _, _, hib, _⟩ := this
           simp [Program.defaultCtx] at hib
         | stuck => exact (this : False).elim
-        | raised => exact trivial
+        | raised v s1 =>
+          obtain ⟨Λ1, hw1, he1, _, hv1⟩ := this
+          exact ⟨Λ1, hw1, he1.mono
+              (fun _ h => by rcases h with ⟨_, _, h⟩ | h <;> simp [lookupVar, blkW] at h)
+              (fun _ ⟨_, hb, _⟩ => by simp [Program.defaultCtx] at hb), hv1⟩
         | timeout => exact trivial
     · rw [zipIdx_drop_nil (by omega)]
       simp only [runDefaults]
@@ -340,11 +352,17 @@ theorem construct_succ (hP : WfProg P) {n : Nat} (ihs : ∀ m, m ≤ n → Good 
       | ok v s4 => obtain ⟨Λ4, hw4, he4, hmade⟩ := hpost; exact hfin hw4 he4 hmade
       | returned v s4 => obtain ⟨Λ4, hw4, he4, hmade⟩ := hpost; exact hfin hw4 he4 hmade
       | stuck => exact (hpost : False).elim
-      | raised => exact trivial
+      | raised v s4 =>
+        obtain ⟨Λ4, hw4, he4, hv⟩ := hpost
+        exact ⟨Λ4, hw4, hfresh (he12.transW he4 hw) (fun _ _ h => h.elim id id), hv⟩
       | timeout => exact trivial
   | stuck => exact (hd : False).elim
   | returned => exact (hd : False).elim
-  | raised => exact trivial
+  | raised v s2 =>
+    obtain ⟨Λ2, hw2, he2, hv⟩ := hd
+    have he12 : Ext P (fun _ => False) (· = l) Λ Λ2 s s2 :=
+      (he1.trans he2 hw).mono (fun _ h => h.elim False.elim False.elim) (fun _ h => h.elim False.elim id)
+    exact ⟨Λ2, hw2, (he12.restrict (fun _ _ h => h)).fresh fun _ h => by rw [h]; exact Nat.le_refl _, hv⟩
   | timeout => exact trivial
 
 end QuarzCore

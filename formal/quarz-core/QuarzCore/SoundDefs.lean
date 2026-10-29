@@ -28,6 +28,8 @@ def ArgsPost (c : Ctx) (ao : ArgsOut) (fr : Frame) (ws : List (Ctx × Env × Out
   | .other (.returned v s') => ∃ Λ', WfStore P Λ' s' ∧ Ext P W (initW c fr) Λ Λ' s s' ∧
       FrameOK P c Λ' fr s' ws ∧ s'.hasTy P v (c.meth.ret.subst fr.selfArgs) ∧ c.inBlock = false ∧
       (c.inInit = true → (s'.typeOf fr.self).isSome)
+  | .other (.raised v s') => ∃ Λ', WfStore P Λ' s' ∧ Ext P W (initW c fr) Λ Λ' s s' ∧
+      FrameOK P c Λ' fr s' ws ∧ s'.hasTy P v [.cls P.exn []]
   | .other _ => True
 
 /-- The writes of evaluating `es` in `fr`. -/
@@ -58,6 +60,8 @@ def SendPost (ret : Ty) (sig : Option BlockSig) (blk : Option Closure) (w : List
     (Λ : List Ty) (s : Store) : Result → Prop
   | .ok v s' => ∃ Λ', WfStore P Λ' s' ∧ Ext P (blkW blk) (fun _ => False) Λ Λ' s s' ∧ s'.hasTy P v ret ∧
       BlkGiven P Λ' s' w sig blk
+  | .raised v s' => ∃ Λ', WfStore P Λ' s' ∧ Ext P (blkW blk) (fun _ => False) Λ Λ' s s' ∧
+      s'.hasTy P v [.cls P.exn []] ∧ BlkGiven P Λ' s' w sig blk
   | .stuck | .returned _ _ => False
   | _ => True
 
@@ -93,6 +97,8 @@ location written, no object there before changed but as `Ext` allows. -/
 def ConstructPost (k : Nat) (targs : List Ty) (Λ : List Ty) (s : Store) : Result → Prop
   | .ok v s' => ∃ Λ', WfStore P Λ' s' ∧ Ext P (fun _ => False) (fun _ => False) Λ Λ' s s' ∧
       s'.hasTy P v [.cls k targs]
+  | .raised v s' => ∃ Λ', WfStore P Λ' s' ∧ Ext P (fun _ => False) (fun _ => False) Λ Λ' s s' ∧
+      s'.hasTy P v [.cls P.exn []]
   | .stuck | .returned _ _ => False
   | _ => True
 
@@ -133,7 +139,10 @@ theorem Post.extend {c : Ctx} {o : Out} {fr : Frame} {ws : List (Ctx × Env × O
     obtain ⟨Λ', a, e, f, g, i⟩ := h
     exact ⟨Λ', a, (he.trans e hw).mono (fun l hl => hl.elim (h1 l) (h2 l)) (fun l hl => hl.elim id id),
       f, g, i⟩
-  | raised => trivial
+  | raised v s' =>
+    obtain ⟨Λ', a, e, f, g⟩ := h
+    exact ⟨Λ', a, (he.trans e hw).mono (fun l hl => hl.elim (h1 l) (h2 l)) (fun l hl => hl.elim id id),
+      f, g⟩
   | timeout => trivial
   | stuck => exact h
 
@@ -154,7 +163,9 @@ theorem Post.bind {c : Ctx} {o o' : Out} {fr : Frame} {ws : List (Ctx × Env × 
   | returned v s' =>
     obtain ⟨Λ', a, e, f, g, i⟩ := h
     exact ⟨Λ', a, e.mono hW (fun _ h => h), f, g, i⟩
-  | raised => trivial
+  | raised v s' =>
+    obtain ⟨Λ', a, e, f, g⟩ := h
+    exact ⟨Λ', a, e.mono hW (fun _ h => h), f, g⟩
   | timeout => trivial
   | stuck => exact h
 
@@ -176,7 +187,9 @@ theorem Post.bindEq {c : Ctx} {o o' : Out} {fr : Frame} {ws : List (Ctx × Env �
   | returned v s' =>
     obtain ⟨Λ', a, e, f, g, i⟩ := h
     exact ⟨Λ', a, e.mono hW (fun _ h => h), f, g, i⟩
-  | raised => trivial
+  | raised v s' =>
+    obtain ⟨Λ', a, e, f, g⟩ := h
+    exact ⟨Λ', a, e.mono hW (fun _ h => h), f, g⟩
   | timeout => trivial
   | stuck => exact h
 

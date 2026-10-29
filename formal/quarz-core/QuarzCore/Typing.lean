@@ -42,6 +42,13 @@ def implies (ct : ClassTable) (Γ Δ : Env) : Bool :=
     | some u => u.le ct [] t
     | none => false
 
+/-- After `ensure`: the locals in `xs` (what it assigns) as `Δe` (its end)
+has them, the rest as `Δ`. -/
+def takeFrom (Δ Δe : Env) (xs : List String) : Env :=
+  Δ.filterMap fun (p, t) => match p with
+    | .local x => if x ∈ xs then (Δe.get p).map (p, ·) else some (p, t)
+    | .field _ => some (p, t)
+
 end Env
 
 /-- An environment where control may not get: `none`. -/
@@ -163,13 +170,15 @@ def Expr.path? : Expr → Option Path
 those a loop, or a block that may run again, starts with un-narrowed. -/
 def Expr.assigned : Expr → List String
   | .assign x e => x :: e.assigned
-  | .setField _ e | .ret e | .isNil e | .isA e _ | .eqNil e | .neNil e
+  | .setField _ e | .ret e | .raise e | .isNil e | .isA e _ | .eqNil e | .neNil e
   | .eqTrue e | .eqFalse e | .not e => e.assigned
   | .new _ _ args | .superInit _ args | .yield args | .prim _ args _ _ => assignedArgs args
   | .call r _ args => r.assigned ++ assignedArgs args
   | .callBlk r _ args ps b => r.assigned ++ assignedArgs args ++ ps ++ b.assigned
   | .seq a b | .while a b | .and a b | .or a b => a.assigned ++ b.assigned
   | .ite c t e => c.assigned ++ t.assigned ++ e.assigned
+  | .rescue b x h els => b.assigned ++ x :: h.assigned ++ els.assigned
+  | .ensure b e => b.assigned ++ e.assigned
   | _ => []
 where
   assignedArgs : List Expr → List String
@@ -514,9 +523,10 @@ def check (c : Ctx) (Γ : Env) : Expr → Option Out
         -- with what it assigns un-narrowed, its parameters given.
         let ob ← check { c with inBlock := true } (blockEnv c Δ' ps sig body) body
         guard (ob.ty.le c.ct c.bounds sig.ret)
-        some (.plain (ms.flatMap (·.ret)) (match ob.out with
-          | some Γb => Δ'.join Γb
-          | none => Δ'))
+        -- After the call, what the block assigns un-narrowed: it may have
+        -- stopped anywhere (an exception the method rescued), as the Rust
+        -- checker has it.
+        some (.plain (ms.flatMap (·.ret)) (c.reset Δ' (ps ++ body.assigned)))
   | .yield args => do
     let sig ← c.meth.block
     match checkArgs c Γ args with
@@ -562,7 +572,32 @@ def check (c : Ctx) (Γ : Env) : Expr → Option Out
     -- An `initialize` returns only once every field is set.
     guard (!c.inInit || (o.out.all (c.allSet ·)))
     some .dead
-  | .raise => some .dead
+  | .raise e => do
+    let o ← check c Γ e
+    -- An exception: a value of the program's exception class.
+    guard (o.ty.le c.ct c.bounds [.cls c.prog.exn []])
+    some .dead
+  | .rescue b x h els => do
+    -- Not in `initialize` or a default (fields being set: design §12.6 Q3).
+    guard (!c.inInit && !c.inDefault)
+    guard (c.decl x == some [.cls c.prog.exn []])
+    let ob ← check c Γ b
+    let oe ← checkBranch c ob.out els
+    -- The handler: raised anywhere in the body, so with what it assigns
+    -- un-narrowed; the exception in `x`.
+    let oh ← check c ((c.reset Γ b.assigned).set (.local x) [.cls c.prog.exn []]) h
+    some ⟨oe.ty ++ oh.ty, ojoin oe.out oh.out, ojoin oe.tt oh.tt, ojoin oe.ff oh.ff⟩
+  | .ensure b e => do
+    guard (!c.inInit && !c.inDefault)
+    let ob ← check c Γ b
+    -- It runs however the body ends: with what the body assigns
+    -- un-narrowed.
+    let oe ← check c (c.reset Γ b.assigned) e
+    match oe.out with
+    | none => some .dead
+    | some Δe =>
+      let g := ob.out.map (·.takeFrom Δe e.assigned)
+      some ⟨ob.ty, g, g, g⟩
   -- Only where control cannot get (a dead branch is not checked).
   | .absurd => none
   | .isNil e => do

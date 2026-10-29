@@ -164,10 +164,7 @@ def ChainAt (Λ : List Ty) (s : Store) : List (Ctx × Env × Out) → Option Clo
         blockParamsOk c ps sig0 = true ∧
         Typed { c with inBlock := true } (blockEnv c Δ ps sig0 body) body ob ∧
         ob.ty.le c.ct c.bounds sig0.ret = true) ∧
-      Sat P c (c.reset Δ (ps ++ body.assigned)) ⟨vars, self, sa, outer⟩ s ∧
-      Sat P c (match ob.out with
-        | some Γb => Δ.join Γb
-        | none => Δ) ⟨vars, self, sa, outer⟩ s
+      Sat P c (c.reset Δ (ps ++ body.assigned)) ⟨vars, self, sa, outer⟩ s
   | _, _, _ => False
 
 structure FrameOK (c : Ctx) (Λ : List Ty) (fr : Frame) (s : Store) (ws : List (Ctx × Env × Out)) :
@@ -208,8 +205,7 @@ def OutOK (c : Ctx) (g : Option Env) (fr : Frame) (s : Store) : Prop :=
 `fr`, may give: never stuck; a value of its type, with the environments
 after it holding (where its value is truthy and falsy too); a `return`
 of the method's result type (not in a block; in `initialize`, with the
-object made); an exception (which ends
-the run: v1 has no `rescue`). The store grows as `Ext` allows, the frame
+object made); an exception, of the exception class. The store grows as `Ext` allows, the frame
 stays as checked. -/
 def Post (c : Ctx) (o : Out) (fr : Frame) (ws : List (Ctx × Env × Out)) (Λ : List Ty) (s : Store)
     (W : Nat → Prop) : Result → Prop
@@ -222,7 +218,9 @@ def Post (c : Ctx) (o : Out) (fr : Frame) (ws : List (Ctx × Env × Out)) (Λ : 
       s'.hasTy P v (c.meth.ret.subst fr.selfArgs) ∧ c.inBlock = false ∧
       -- An `initialize` returns once its object is made.
       (c.inInit = true → (s'.typeOf fr.self).isSome)
-  -- No `rescue` in v1: an exception ends the run.
-  | .raised _ => True
+  -- An exception, of the exception class (`rescue` takes it on with the
+  -- frame and the store as here).
+  | .raised v s' => ∃ Λ', WfStore P Λ' s' ∧ Ext P W (initW c fr) Λ Λ' s s' ∧ FrameOK P c Λ' fr s' ws ∧
+      s'.hasTy P v [.cls P.exn []]
 
 end QuarzCore

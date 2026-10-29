@@ -86,7 +86,8 @@ inductive Typed : Ctx → Env → Expr → Out → Prop where
   /-- A call with a block: the methods all take the same anonymous block;
   its body, checked from `blockEnv` (it runs 0 or more times, during the
   call), gives at most the block's result; after the call, what held
-  before it or what held at the body's end (design §2.2). -/
+  before it with what the block assigns un-narrowed (it may have stopped
+  anywhere: an exception the method rescued). -/
   | callBlk : Typed c Γ r o → o.out = some Δ → TypedArgs c Δ args (.live tys Δ') →
       c.prog.resolve c.bounds o.ty m = some ms → ms.head? = some m0 → m0.block = some sig →
       (ms.all fun mt' => mt'.block == some sig && argsOk c tys mt') = true →
@@ -94,9 +95,7 @@ inductive Typed : Ctx → Env → Expr → Out → Prop where
       Typed { c with inBlock := true } (blockEnv c Δ' ps sig body) body ob →
       ob.ty.le c.ct c.bounds sig.ret →
       Typed c Γ (.callBlk r m args ps body) (.plain (ms.flatMap (·.ret))
-        (match ob.out with
-          | some Γb => Δ'.join Γb
-          | none => Δ'))
+        (c.reset Δ' (ps ++ body.assigned)))
   | callBlkDeadRecv : Typed c Γ r o → o.out = none → Typed c Γ (.callBlk r m args ps body) .dead
   | callBlkDeadArgs : Typed c Γ r o → o.out = some Δ → TypedArgs c Δ args .dead →
       Typed c Γ (.callBlk r m args ps body) .dead
@@ -124,7 +123,22 @@ inductive Typed : Ctx → Env → Expr → Out → Prop where
       Typed c Γ (.while cnd b) ⟨[.nil], oc.ff, oc.ff, oc.ff⟩
   | ret : c.inBlock = false → Typed c Γ e o → o.ty.le c.ct c.bounds c.meth.ret →
       (!c.inInit || o.out.all (c.allSet ·)) = true → Typed c Γ (.ret e) .dead
-  | raise : Typed c Γ .raise .dead
+  | raise : Typed c Γ e o → o.ty.le c.ct c.bounds [.cls c.prog.exn []] → Typed c Γ (.raise e) .dead
+  /-- `rescue`: the handler from what held before the body, what the body
+  assigns un-narrowed, the exception in `x`; `els` after the body. -/
+  | rescue : (!c.inInit && !c.inDefault) = true → c.decl x = some [.cls c.prog.exn []] →
+      Typed c Γ b ob → TypedBranch c ob.out els oe →
+      Typed c ((c.reset Γ b.assigned).set (.local x) [.cls c.prog.exn []]) h oh →
+      Typed c Γ (.rescue b x h els) ⟨oe.ty ++ oh.ty, ojoin oe.out oh.out, ojoin oe.tt oh.tt,
+        ojoin oe.ff oh.ff⟩
+  /-- `ensure`: from what held before the body, what it assigns
+  un-narrowed; after it, what it assigns as at its end. -/
+  | ensure : (!c.inInit && !c.inDefault) = true → Typed c Γ b ob →
+      Typed c (c.reset Γ b.assigned) e oe → oe.out = some Δe →
+      Typed c Γ (.ensure b e) ⟨ob.ty, ob.out.map (·.takeFrom Δe e.assigned),
+        ob.out.map (·.takeFrom Δe e.assigned), ob.out.map (·.takeFrom Δe e.assigned)⟩
+  | ensureDead : (!c.inInit && !c.inDefault) = true → Typed c Γ b ob →
+      Typed c (c.reset Γ b.assigned) e oe → oe.out = none → Typed c Γ (.ensure b e) .dead
   /-- The tests (design §2.1), each of a value: of a path, they narrow
   it (`testOut`). -/
   | isNil : Typed c Γ e o → o.out = some Δ →

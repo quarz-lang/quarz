@@ -116,12 +116,12 @@ theorem ChainAt.stable {Λ Λ' : List Ty} {s s' : Store} {W Wo : Nat → Prop}
   | (c, Δ, ob) :: ws, some (.mk vars me sa outer ps body), some sig, hw, hwo, h => by
     simp only [ChainAt] at h ⊢
     simp only [chainLocs] at hw
-    obtain ⟨hc, hcore, hch, habove, hsig, hR, hJ⟩ := h
+    obtain ⟨hc, hcore, hch, habove, hsig, hR⟩ := h
     have hwf : ∀ l, frameLocs vars l → ¬ W l := fun l hl => hw l (Or.inl hl)
     have hwo' : ∀ l, ¬ Wo l := fun l h => by cases hwo l h
     exact ⟨hc, hcore.stable he, ChainAt.stable he ws outer _ (fun l hl => hw l (Or.inr hl))
         (fun l h => absurd h (hwo' l)) hch,
-      habove, hsig, hR.stable he hwf (fun l _ => hwo' l), hJ.stable he hwf (fun l _ => hwo' l)⟩
+      habove, hsig, hR.stable he hwf (fun l _ => hwo' l)⟩
   | [], some _, _, _, _, h => by simp [ChainAt] at h
   | [], none, some _, _, _, h => by simp [ChainAt] at h
   | _ :: _, none, _, _, _, h => by simp [ChainAt] at h
@@ -159,11 +159,11 @@ theorem ChainAt.weaken (hwf : WfClasses P.classes) {Λ : List Ty} {s : Store}
       | some clo =>
         obtain ⟨vars, me, sa, outer, ps, body⟩ := clo
         simp only [ChainAt] at h ⊢
-        obtain ⟨hc, hcore, hch, habove, ⟨sig0, hrel, hrest⟩, hR, hJ⟩ := h
+        obtain ⟨hc, hcore, hch, habove, ⟨sig0, hrel, hrest⟩, hR⟩ := h
         have hct : c.ct = P.classes := by simp [Ctx.ct, hc]
         have hwf' : WfClasses c.ct := hct ▸ hwf
         have hle' : BlockSig.le c.ct a b := hct ▸ hle
-        exact ⟨hc, hcore, hch, habove, ⟨sig0, BlockSig.le_trans hwf' hle' hrel, hrest⟩, hR, hJ⟩
+        exact ⟨hc, hcore, hch, habove, ⟨sig0, BlockSig.le_trans hwf' hle' hrel, hrest⟩, hR⟩
 
 /-- The chain after a run with a signature `sig'`, given it was checked
 for `sig` before: the same for `sig` (the signature's part is static). -/
@@ -184,9 +184,9 @@ theorem ChainAt.restore {Λ Λ' : List Ty} {s s' : Store}
       | some clo =>
         obtain ⟨vars, me, sa, outer, ps, body⟩ := clo
         simp only [ChainAt] at h h' ⊢
-        obtain ⟨_, _, _, _, hsig, _, _⟩ := h
-        obtain ⟨hc, hcore, hch, habove, _, hR, hJ⟩ := h'
-        exact ⟨hc, hcore, hch, habove, hsig, hR, hJ⟩
+        obtain ⟨_, _, _, _, hsig, _⟩ := h
+        obtain ⟨hc, hcore, hch, habove, _, hR⟩ := h'
+        exact ⟨hc, hcore, hch, habove, hsig, hR⟩
 
 theorem FrameOK.stable {c : Ctx} {Λ Λ' : List Ty} {fr : Frame} {s s' : Store} {W Wo : Nat → Prop}
     {ws : List (Ctx × Env × Out)} (h : FrameOK P c Λ fr s ws) (he : Ext P W Wo Λ Λ' s s')

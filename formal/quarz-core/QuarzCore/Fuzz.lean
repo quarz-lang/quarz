@@ -59,6 +59,11 @@ def methods : List Method :=
     -- A#each(n: Int) { |Int| }: yields twice.
     ⟨1, "each", [("n", [.int])], [.nil], some ⟨[[.int]], [.int, .nil, .bool, .str, .cls 0 []]⟩,
       [("n", [.int])], .seq (.yield [.var "n" [.int]]) (.seq (.yield [.int 2]) .nil)⟩,
+    -- A#safe_each(n: Int) { |Int| }: yields, rescuing what the block
+    -- raises (the block may stop anywhere: after the call, what it
+    -- assigns is un-narrowed).
+    ⟨1, "safe_each", [("n", [.int])], [.nil], some ⟨[[.int]], [.int, .nil, .bool, .str, .cls 0 []]⟩,
+      [("n", [.int]), ("ex", [.cls 0 []])], .rescue (.yield [.var "n" [.int]]) "ex" .nil .nil⟩,
     -- A#set(s: Str): assigns the var field.
     ⟨1, "set", [("s", [.str])], [.str], none, [("s", [.str])], .setField "v" (.var "s" [.str])⟩,
     ⟨3, "==", [("o", [.nil, .bool, .cls 0 []])], [.bool], none, [("o", [.nil, .bool, .cls 0 []])], .tru⟩,
@@ -123,7 +128,7 @@ def locals : List (String × Ty) :=
    ("si", [.cls 10 [[.int]], .nil]),
    ("ah", [.cls 12 [[.cls 2 []]], .nil]), ("ae", [.cls 12 [[.cls 3 []]], .nil]),
    ("dp", [.cls 13 [], .nil]), ("de", [.cls 14 [], .nil]),
-   ("sh", [.cls 15 []]), ("cc", [.cls 16 []])]
+   ("sh", [.cls 15 []]), ("cc", [.cls 16 []]), ("ex", [.cls 0 []])]
 
 def genTy : Gen Ty := do
   let n ← Gen.choose Nat 0 3 (by omega)
@@ -179,7 +184,23 @@ partial def genExpr : Nat → Gen Expr
        (2, do return .assign "ib" (← sub)),
        (2, do return .assign "k" (.call (← sub) "get" [])),
        (2, do return .callBlk (← sub) "each" [.int 3] ["k"] (← sub)),
-       (1, pure .raise),
+       (1, pure (.raise (.str "boom"))),
+       -- `rescue`, its exception in `ex` (this table has no `Exception`:
+       -- any value is one), and `ensure`.
+       (2, do return .rescue (← sub) "ex" (← sub) (← sub)),
+       (1, do return .ensure (← sub) (← sub)),
+       (1, pure (.raise (.var "ex" [.cls 0 []]))),
+       -- The body changes `x`, then raises (or a built-in call does): the
+       -- handler must not see `x` as before.
+       (1, pure (.seq (.assign "x" (.int 1)) (.rescue (.seq (.assign "x" .nil) (.raise (.str "boom")))
+         "ex" (.assign "x" (.var "x" [.int])) .nil))),
+       (1, pure (.seq (.assign "x" (.int 1)) (.ensure (.seq (.assign "x" .nil) (.raise (.str "boom")))
+         (.assign "x" (.var "x" [.int]))))),
+       -- A block that changes `x` and raises, rescued by the method: `x`
+       -- is not as the block's end has it.
+       (1, do return .seq (.assign "x" (.int 1)) (.seq (.callBlk (.new 1 [] [.int 1, .str "v"]) "safe_each" [.int 3] ["k"]
+         (.seq (.assign "x" .nil) (.seq (.raise (.str "boom")) (.assign "x" (.int 2)))))
+         (.assign "x" (.var "x" [.int])))),
        (2, do return .prim "f" [] [] (← genTy)),
        (1, return .assign "o" (.prim "h" [] [] [.cls 0 []])),
        (1, do return .prim "g" [← sub] [[.nil, .bool, .int, .str, .cls 0 []]] [.int, .nil]),
@@ -212,7 +233,7 @@ partial def genInit : Nat → Gen Expr
        (2, do return .ite (.prim "b" [] [] [.bool]) (← sub) (← sub)),
        (1, do return .while (.prim "b" [] [] [.bool]) (← sub)),
        (1, do return .callBlk .self "each" [.int 1] ["k"] (← sub)),
-       (1, pure .raise),
+       (1, pure (.raise (.str "boom"))),
        (1, do return .ret (← sub))]
 
 /-- Uses of the boxes: boxes made and assigned to the box locals (of the

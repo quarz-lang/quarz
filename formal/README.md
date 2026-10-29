@@ -29,8 +29,13 @@ A small language with Quarz's core and nothing else (`QuarzCore/`):
   arguments the checker inferred (the fields' defaults, then
   `initialize`), calls (with an anonymous block, live
   during the call: `yield`), built-in calls
-  (`prim`: opaque, typed by their declarations), `if`, `while`, `return`,
-  `raise`, `absurd` (where no value gets: what a `case/in` on a closed
+  (`prim`: opaque, typed by their declarations; one may raise, as the
+  oracle says), `if`, `while`, `return`,
+  `raise e` (an exception: a value of the class named `Exception`, or any
+  value in a program without it), `rescue body x handler els` (an
+  exception the body raises in `x`, then the handler; otherwise `els`),
+  `ensure body ens` (`ens` after the body however it ends, its result
+  kept unless `ens` raises or returns), `absurd` (where no value gets: what a `case/in` on a closed
   type reaches when no arm matches), the tests (`nil?`, `is_a?`, `==`/`!=` against `nil`, `true`,
   `false`, as forms, not calls), `&&`, `||`, `!`. A read of a local or of
   an immutable field carries the type the checker gave it there.
@@ -107,7 +112,9 @@ undefined), and one whose bound is `Nothing` is vacuous (no value).
 Not in v1 (design in `/tmp`, kept by the maintainers): closures (lambdas,
 named blocks, what a closure assigns being un-narrowed from where it is
 made), array, hash, find, range and pin patterns, generic `data`
-types and `enum`s, `rescue`/`ensure`, `super`
+types and `enum`s, `rescue`/`ensure` in `initialize` and in defaults
+(fields being set: design §12) and `retry` but at the end of a clause
+of a `begin` used as a statement, `super`
 outside `initialize` (Ruby's `super` in other methods), in a block of
 it, or with a block, Shareable and tasks, extensions and overloads. Of
 generics: method type parameters and lower bounds `U >: T`, the
@@ -187,8 +194,9 @@ stricter, not unsound.
   FrameLemmas.lean), with the invariants of Invariants.lean:
   the store typed (the fields set), a frame's locals where the ghost
   location types say, its block chain as it was checked (`ChainAt`: for
-  each block, what held at its call minus what it assigns, and the call's
-  environment joined with the body's end), the narrowing environment
+  each block, what held at its call minus what it assigns: after the
+  call, that holds, as the body may have stopped anywhere, an exception
+  the method rescued), the narrowing environment
   holding, and writes confined to what the expression may assign (`Ext`:
   objects keep the fields set, so a value of a made object keeps its
   type, `Store.typeOf` giving none to an object not made; and an object's
@@ -268,6 +276,19 @@ stricter, not unsound.
   parameter narrowed by a
   class test (`T & C`) is annotated `C`, a larger type than the Rust
   checker's, so a weaker claim.
+  `begin`/`rescue`/`else`/`ensure` (docs/01 §12) becomes `rescue` and
+  `ensure`: the exception held in a local no program can spell, each
+  clause a class test of it (a clause without a class `StandardError`),
+  its variable assigned, the last raising it again (as a bare `raise` in
+  a clause does); without `else`, the body's value held in a local too.
+  The built-in exception classes are classes of the model without
+  fields, their methods built-in calls, an exception made (`E.new(m)`,
+  `raise E, m`, `raise "m"`) an opaque built-in call of its class. A
+  `retry`, at the end of a clause of a `begin` used as a statement, makes
+  it a loop: a flag the clause sets, the body run again while it is set
+  (`while`'s rule, what the body and the clauses assign un-narrowed at
+  its start, is the rule for a body a `rescue` retries), `ensure`
+  outside the loop.
   A disagreement is the Rust checker narrowing further than the rules
   allow, or the model being stricter: either is looked at. The methods
   `attr_reader` and `attr_writer` make are methods of the model; another
@@ -279,13 +300,20 @@ stricter, not unsound.
   (`if @v ... else @v end` with `@v : T` types the else branch
   `Nothing`), while an unbounded `T` may be `Bool` or `Int?` (a
   `T <: Shape` is indeed never falsy); the model keeps `T` on the falsy
-  side. And: the Rust checker does not compare a superclass's type
+  side. And: the Rust checker did not compare a superclass's type
   arguments with its bounds (`class G[U] < H[U]` with
-  `class H[T <: Shape]` checks, and `G[Int].new` then reads a field of an
-  `Int` at run time); the model's `wfClasses` does. And with variance: expansive inheritance
+  `class H[T <: Shape]` checked, and `G[Int].new` then read a field of an
+  `Int` at run time), as the model's `wfClasses` does; #116 made it
+  (superclasses, included modules' arguments and bounds too). And with variance: expansive inheritance
   (`class N[in Z]; class C[X] < N[N[C[C[X]]]]`), out of the model's
   range, makes the Rust checker's subtype check recurse without end on
-  `def f(x: C[Int]) -> N[C[Int]] = x` (a stack overflow). And: in a
+  `def f(x: C[Int]) -> N[C[Int]] = x` (a stack overflow). And with
+  `rescue`: `raise K, m` (and `raise K`) makes a `K` without running its
+  `initialize` or its fields' defaults, so a field it declares is `nil`
+  where its type says otherwise (the translator puts such a `raise` out
+  of range); a clause's variable that names an existing local is
+  narrowed to the exception's classes whatever its declared type; a
+  `retry` in a block in a clause is accepted and fails at run time. And: in a
   generic class, `b : Box[T]` tested with `is_a?(IntBox)` (`IntBox <
   Box[Int]`) is narrowed to nothing by the Rust checker, so the branch
   goes unchecked (`s: String = b` checks, and fails at run time); the

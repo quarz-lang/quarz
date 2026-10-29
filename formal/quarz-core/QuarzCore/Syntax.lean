@@ -50,7 +50,15 @@ inductive Expr where
   | ite (c t e : Expr)
   | while (c b : Expr)
   | ret (e : Expr)
-  | raise
+  /-- `raise e`: `e` an exception (of the program's exception class). -/
+  | raise (e : Expr)
+  /-- `begin body rescue => x; handler else els end`: an exception the body
+  raises goes to `x`, then the handler (which tests its class and raises it
+  again when no clause takes it: the translator writes the clauses so);
+  otherwise `els`. -/
+  | rescue (body : Expr) (x : String) (handler : Expr) (els : Expr)
+  /-- `begin body ensure ens end`: `ens` after the body however it ends. -/
+  | ensure (body : Expr) (ens : Expr)
   /-- What a `case/in` without `else` reaches when no arm matches, on a
   closed type (docs/01 §11): never, as the checker requires the arms to
   cover the type (it accepts the form only where control cannot get). -/
@@ -99,6 +107,11 @@ structure Program where
   object being made, before its `initialize`. -/
   defaults : List Expr := []
   deriving Repr, Inhabited
+
+/-- The class every exception is of: the one named `Exception`, or
+`Object` in a program without it. -/
+def Program.exn (P : Program) : Nat :=
+  (P.classes.findIdx? (·.name == "Exception")).getD 0
 
 /-- What can be narrowed: a local, or an immutable field of `self`. -/
 inductive Path where
