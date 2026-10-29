@@ -291,21 +291,20 @@ stricter, not unsound.
   goes unchecked (`s: String = b` checks, and fails at run time); the
   model's true side keeps `IntBox`.
 - Known disagreements that are the model's limits, not the Rust
-  checker's holes (none in the corpus, the fixtures or the examples;
-  the translator does not yet put them out of range):
-  - A class test of a type parameter's value (`x.is_a?(A)` or `in A` with
-    `x : T`): the Rust checker narrows to `T & A`, still a `T`; the model,
-    without intersection types, to `A`, so a use of `x` as a `T` after it
-    is rejected.
-  - A local assigned in some branches only and read after them (`if c;
-    x = 3; end; y = x`, or a name bound by one `case` arm and read in
-    another arm, in `else` or after the `case`): the Rust checker reads
-    it as `T?`; the model, whose environment after the branches drops a
-    local not assigned on every path, rejects the read.
-  - A name first assigned in a block and assigned again in the method
-    after it, with values of different types (`each { x = 1 }; x =
-    "s"`): two locals for the Rust checker (docs/02 §6), one for the
-    model, which declares a name once per method.
+  checker's holes (none in the corpus, the fixtures or the examples):
+  a class test of a type parameter's value (`x.is_a?(A)` or `in A` with
+  `x : T`): the Rust checker narrows to `T & A`, still a `T`; the model,
+  without intersection types, to `A`, so a use of `x` as a `T` after it
+  is rejected. Two others the translator puts out of range: a read of a
+  local not assigned on every path before it (`if c; x = 3; end; y =
+  x`: the Rust checker reads it as `T?`, the model's environment has no
+  entry for it; branches a test makes dead count here, so this is
+  stricter than the model), and a name that is two locals for the Rust
+  checker, docs/02 §6, and one for the model, which declares a name once
+  per method: first assigned in a block and assigned again outside it or
+  in another block, a block parameter named like another local, or two
+  blocks' parameters of one name and different types (dead code counts:
+  the model declares a name where it is first written).
 
 ## Setup
 

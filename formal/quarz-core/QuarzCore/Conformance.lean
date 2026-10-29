@@ -211,6 +211,128 @@ partial def narrows : Expr → Bool
   | .seq a b => narrows a || narrows b
   | _ => false
 
+/-! ### Locals the model and the Rust checker see differently -/
+
+/-- What the walk of a method's body (`daWalk`) knows: the locals
+assigned on every path so far (none: control does not get here). -/
+abbrev LM := M
+
+structure DA where
+  out : Option (List String)
+  tt : Option (List String)
+  ff : Option (List String)
+
+def DA.plain (s : Option (List String)) : DA := ⟨s, s, s⟩
+
+def daJoin : Option (List String) → Option (List String) → Option (List String)
+  | none, b => b
+  | a, none => a
+  | some a, some b => some (a.filter (b.contains ·))
+
+/-- Out of range: a read of a local not assigned on every path before it
+(the Rust checker reads it as `T?`, the model's environment has no entry
+for it). The walk knows no narrowing, so it walks the branches a test
+makes dead too: stricter than the model there. -/
+partial def daWalk (inBlk : List String) (s : Option (List String)) (e : Expr) : LM DA := do
+  let some S := s | return DA.plain none
+  let seqArgs (S : List String) (as : List Expr) : LM (Option (List String)) :=
+    as.foldlM (fun acc a => do match acc with
+      | none => pure none
+      | some S => pure (← daWalk inBlk (some S) a).out) (some S)
+  match e with
+  | .var x _ =>
+    unless S.contains x do throw s!"a read of {x}, not assigned on every path before it"
+    pure (.plain s)
+  | .assign x v =>
+    let r ← daWalk inBlk s v
+    pure (.plain (r.out.map (fun S => if S.contains x then S else x :: S)))
+  | .setField _ v | .isNil v | .isA v _ | .eqNil v | .neNil v | .eqTrue v | .eqFalse v =>
+    pure (.plain (← daWalk inBlk s v).out)
+  | .ret v => let _ ← daWalk inBlk s v; pure (.plain none)
+  | .raise | .absurd => pure (.plain none)
+  | .new _ _ as | .superInit _ as | .yield as | .prim _ as _ _ => pure (.plain (← seqArgs S as))
+  | .call r _ as =>
+    match (← daWalk inBlk s r).out with
+    | none => pure (.plain none)
+    | some S => pure (.plain (← seqArgs S as))
+  | .callBlk r _ as ps b =>
+    let some S ← (do match (← daWalk inBlk s r).out with
+        | none => pure none
+        | some S => seqArgs S as) | pure (.plain none)
+    let _ ← daWalk inBlk (some (S ++ ps)) b
+    pure (.plain (some S))
+  | .seq a b =>
+    let ra ← daWalk inBlk s a
+    daWalk inBlk ra.out b
+  | .ite c t f =>
+    let rc ← daWalk inBlk s c
+    let rt ← daWalk inBlk rc.tt t
+    let rf ← daWalk inBlk rc.ff f
+    pure (.plain (daJoin rt.out rf.out))
+  | .while c b =>
+    let rc ← daWalk inBlk s c
+    let _ ← daWalk inBlk rc.tt b
+    pure (.plain rc.ff)
+  | .and a b =>
+    let ra ← daWalk inBlk s a
+    let rb ← daWalk inBlk ra.tt b
+    pure ⟨daJoin ra.ff rb.out, rb.tt, daJoin ra.ff rb.ff⟩
+  | .or a b =>
+    let ra ← daWalk inBlk s a
+    let rb ← daWalk inBlk ra.ff b
+    pure ⟨daJoin ra.tt rb.out, daJoin ra.tt rb.tt, rb.ff⟩
+  | .not a =>
+    let ra ← daWalk inBlk s a
+    pure ⟨ra.out, ra.ff, ra.tt⟩
+  | _ => pure (.plain s)
+
+/-- The names of a method by where the Rust checker declares them, in
+source order: the method's (`method`: its parameters and the names it
+assigns first), the blocks' own (assigned first in a block), and block
+parameters; `cur` the names the enclosing blocks declare. -/
+structure Scopes where
+  method : List String
+  blockLocals : List String := []
+  params : List String := []
+  cur : List String := []
+
+/-- Out of range: a name that is two locals for the Rust checker and one
+for the model, which declares a name once per method (docs/02 §6: a
+local first assigned in a block is the block's own; a block parameter
+is the block's and hides an outer name). Dead code counts: the model
+declares a name where it is first written. -/
+partial def scopeWalk (inBlock : Bool) (e : Expr) : StateT Scopes M Unit := do
+  let walk := scopeWalk inBlock
+  match e with
+  | .assign x v =>
+    walk v
+    let st ← get
+    if st.method.contains x || st.cur.contains x then return
+    if st.blockLocals.contains x || st.params.contains x then
+      throw s!"{x}: two locals for the Rust checker (a block's own, and another)"
+    if inBlock then set { st with blockLocals := st.blockLocals ++ [x], cur := st.cur ++ [x] }
+    else set { st with method := st.method ++ [x] }
+  | .callBlk r _ as ps b =>
+    walk r; for a in as do walk a
+    let st ← get
+    for p in ps do
+      if st.method.contains p || st.cur.contains p || st.blockLocals.contains p then
+        throw s!"{p}: a block parameter named like another local"
+    set { st with params := st.params ++ ps, cur := st.cur ++ ps }
+    scopeWalk true b
+    modify fun st' => { st' with cur := st.cur }
+  | .setField _ v | .isNil v | .isA v _ | .eqNil v | .neNil v | .eqTrue v | .eqFalse v | .ret v
+  | .not v => walk v
+  | .new _ _ as | .superInit _ as | .yield as | .prim _ as _ _ => for a in as do walk a
+  | .call r _ as => walk r; for a in as do walk a
+  | .seq a b | .while a b | .and a b | .or a b => walk a; walk b
+  | .ite c t f => walk c; walk t; walk f
+  | _ => pure ()
+
+def localsInRange (params : List String) (body : Expr) : M Unit := do
+  let _ ← daWalk [] (some params) body
+  let _ ← (scopeWalk false body).run { method := params }
+
 /-! ### Patterns (docs/01 §11) as tests -/
 
 /-- A pattern compiled against a subject, matching and binding in the
@@ -847,7 +969,12 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
             unless owner == some k do throw "a block of a generic method through a subclass"
             pure (tys.map (Ty.subst as))
           | _ => throw "a block of a generic method on a union"
-        for (x, t) in ps.zip tys do modify (addLocal · x t)
+        -- A parameter named like a local of another type (another
+        -- block's parameter: one local for the model).
+        for (x, t) in ps.zip tys do
+          if (← get).any (fun (y, u) => y == x && u != t) then
+            throw s!"block parameter {x} of two types"
+          modify (addLocal · x t)
       | _ => throw "a block type"
       let bd ← body T (← arr (← field b "body"))
       -- A `return` from a block is not in v1.
@@ -1066,6 +1193,7 @@ def program (j : Json) : M Program := do
   let P : Program := ⟨⟨"Object", none, [], [], [], [], .cls⟩ :: ⟨"<main>", some 0, [], [], [], [], .cls⟩ :: qclasses,
     own ++ consts,
     ⟨1, "<main>", [], all, none, mainLocals, mainBody⟩, defaults⟩
+  for m in P.main :: P.methods do localsInRange (m.params.map (·.1)) m.body
   -- Two methods of one name in a class, or in a class and its ancestor
   -- with other parameters or block, are overloads (one signature twice in
   -- a class is a Rust error): the Rust checker picks the one that fits,
