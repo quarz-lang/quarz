@@ -319,6 +319,21 @@ fn a_failed_require_can_be_retried() {
 }
 
 #[test]
+fn a_task_suspended_in_a_call_outlives_inputs() {
+    // A task an earlier input started, suspended in a call, while later
+    // inputs load their functions into the interpreter's tables.
+    let (out, printed) = values(&[
+        "t = Task.spawn { Task.sleep(1.ms); puts \"ran\"; 7 }",
+        "i = 0",
+        "while i < 200000; i += 1; end",
+        "def later -> Int = 1",
+        "t.await + later",
+    ]);
+    assert_eq!(out[4], "=> 8", "{out:?}");
+    assert!(printed.contains("ran"), "{printed}");
+}
+
+#[test]
 fn state_persists_across_inputs() {
     let (out, printed) = values(&[
         "x = 1",

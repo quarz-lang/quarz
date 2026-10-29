@@ -47,15 +47,49 @@ fn body_table(cell: &std::cell::OnceCell<std::rc::Rc<dyn std::any::Any>>) -> &Bo
     unsafe { &*(std::rc::Rc::as_ptr(table) as *const BodyTable) }
 }
 
-/// Load the bodies of the functions from `base` on (those below stay).
+/// Load the bodies of the functions from `base` on, past the table's end:
+/// it is extend-only (`entry`), so nothing is replaced.
 pub(crate) fn load_bodies(
     state: &SharedState,
     base: FuncId,
     bodies: impl IntoIterator<Item = Vec<Block>>,
 ) {
     let mut table = body_table(&state.bodies).borrow_mut();
-    table.truncate(base as usize);
+    assert_eq!(table.len(), base as usize, "bodies loaded out of order");
     table.extend(bodies.into_iter().map(std::rc::Rc::from));
+}
+
+/// Entry `i` of one of the interpreter's function tables (`funcs`,
+/// `pools`, the bodies), without borrowing the table: what a call runs is
+/// read here, and a call may last as long as a task suspended in it, while
+/// the REPL loads the next input's functions into the same tables.
+///
+/// The invariant that makes it sound: these tables are **extend-only**.
+/// An entry is pushed and never removed, replaced or moved out
+/// (`Interp::with_state` pushes, `load_bodies` skips what is there), and
+/// each is an `Rc` whose allocation does not move. A pushed entry
+/// reallocates the vector of `Rc` pointers, never the allocations they
+/// point to, so a reference into an entry's allocation stays valid for as
+/// long as the table lives, whatever is pushed meanwhile. The tables are
+/// not shared across threads (`Rc`), and the code that pushes runs no
+/// interpreter code while it holds the table mutably.
+/// (`P` is `std::rc::Rc` or this crate's `rc::Rc`: a pointer to a heap
+/// allocation of its own.)
+///
+/// # Safety
+///
+/// `table` is one of those extend-only tables (`Interp::funcs`,
+/// `Interp::pools`, the bodies): its entries are never removed, replaced
+/// or moved out, and no `&mut` to it is live during the call.
+#[inline]
+unsafe fn entry<P: std::ops::Deref>(table: &RefCell<Vec<P>>, i: usize) -> &P::Target {
+    // SAFETY: as the caller promises; the reference returned points into
+    // the entry's own allocation, which outlives it.
+    unsafe {
+        let entries: &Vec<P> = &*table.as_ptr();
+        let target: *const P::Target = &*entries[i];
+        &*target
+    }
 }
 
 fn export_bodies(rt: &Interp) -> Option<Bodies> {
@@ -482,9 +516,13 @@ impl Interp {
     /// code. Only what interprets calls this.
     pub fn install_interpreter() {
         let _ = INTERPRETER.set(Interpreter {
+            // SAFETY: the bodies table is extend-only (`entry`).
             run: |rt, fid, act| {
-                let table = body_table(&rt.bodies).borrow();
-                rt.interpret(&table[fid as usize], fid, act)
+                rt.interpret(
+                    unsafe { entry(body_table(&rt.bodies), fid as usize) },
+                    fid,
+                    act,
+                )
             },
             export: export_bodies,
             import: import_bodies,
@@ -493,10 +531,9 @@ impl Interp {
     }
 
     fn interpret(&self, blocks: &[Block], fid: FuncId, act: &Activation) -> EvalResult {
-        let funcs = self.funcs.borrow();
-        let f = &funcs[fid as usize];
-        let pools = self.pools.borrow();
-        let pool = &pools[fid as usize];
+        // SAFETY: `funcs` and `pools` are extend-only (`entry`).
+        let f = unsafe { entry(&*self.funcs, fid as usize) };
+        let pool = unsafe { entry(&*self.pools, fid as usize) };
         let n = f.nregs as usize;
         let mut regs: SmallVec<[Value; 16]> = if n <= 16 {
             SmallVec::new()
@@ -1321,8 +1358,8 @@ impl Interp {
                 if sched::stack_exhausted() {
                     return Err(self.raise(self.program.exc.system_stack, "stack level too deep"));
                 }
-                let funcs = self.funcs.borrow();
-                let f = &funcs[*fid as usize];
+                // SAFETY: `funcs` is extend-only (`entry`).
+                let f = unsafe { entry(&*self.funcs, *fid as usize) };
                 let frame = if f.frame_size > 0 {
                     Some(Frame::new(f.frame_size as usize, closure.frame.clone()))
                 } else {
