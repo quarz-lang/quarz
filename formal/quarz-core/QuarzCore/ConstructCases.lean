@@ -44,7 +44,10 @@ theorem frame_default (hwf : WfClasses P.classes) {k : Nat} {t : Ty} {Λ : List 
     selfObj := ⟨l, rfl, by
       show o.args = s.argsFor P.classes l k
       rw [← hk]; simp [Store.argsFor, ho, ClassTable.ancestorArgs_self hwf]⟩
-    closed := (hw.objs l o ho).2.1 }
+    closed := (hw.objs l o ho).2.1
+    bounded := by
+      show ArgsIn P.classes (P.classes.boundsOf k) o.args
+      rw [← hk]; exact hw.bounds l o ho }
   chain := by simp [ChainAt, Program.defaultCtx]
   above := fun _ _ _ h => by simp [chainLocs] at h
   chainIn := fun _ h => by simp [chainLocs] at h
@@ -134,7 +137,9 @@ theorem defaults_good (hP : WfProg P) {N : Nat} (ihs : ∀ m, m ≤ N → Good P
           have hfi' : (P.classes.allFieldsAt o1.cls o1.args)[j]? =
               some { f' with ty := f'.ty.subst targs } := by rw [hc1, ha1, hc, ha]; exact hfj
           have hvf : s1.hasTy P v (f'.ty.subst targs) := by
-            rw [ha] at hv1; exact hasTy_le hwf hv1 (Ty.subst_le hwf targs hle)
+            have hin : ArgsIn P.classes (P.classes.boundsOf k) targs := by
+              rw [← hc, ← ha]; exact hw.bounds l o ho
+            rw [ha] at hv1; exact hasTy_le hwf hv1 (Ty.subst_leK hwf targs hin hle)
           have he2 : Ext P (fun _ => False) (· = l) Λ1 Λ1 s1 (s1.setField l j v) :=
             Ext.setField ho1 hfi fun _ => rfl
           have ho2 : (s1.setField l j v).objs[l]? =
@@ -185,13 +190,13 @@ theorem defaults_good (hP : WfProg P) {N : Nat} (ihs : ∀ m, m ≤ N → Good P
 
 theorem construct_succ (hP : WfProg P) {n : Nat} (ihs : ∀ m, m ≤ n → Good P orc m) :
     ConstructGood P orc (n + 1) := by
-  intro s Λ k targs vs hw hk hclosed hlen hinit hnone
+  intro s Λ k targs vs hw hk hclosed hlen hin hinit hnone
   have hwf := hP.classes
   simp only [construct]
   -- The new object: a field that admits `nil` and has no default holds it.
   generalize hfs : P.classes.allFieldsAt k targs = fs
   let o0 : Obj := ⟨k, targs, fs.map fun _ => .nil,
-    fs.map fun f => f.default.isNone && Ty.le P.classes [.nil] f.ty⟩
+    fs.map fun f => f.default.isNone && Ty.le P.classes [] [.nil] f.ty⟩
   let l := s.objs.length
   have ho1 : ({ s with objs := s.objs ++ [o0] } : Store).objs[l]? = some o0 := by simp [l]
   have hfslen : fs.length = (P.classes.allFields k).length := by
@@ -216,7 +221,18 @@ theorem construct_succ (hP : WfProg P) {n : Nat} (ihs : ∀ m, m ≤ n → Good 
       rw [hf'] at h2'; cases h2'; subst hv
       simp only [Bool.and_eq_true] at hset
       obtain ⟨b, hb, hnb⟩ := Ty.le_iff.mp hset.2 .nil (List.mem_singleton.mpr rfl)
-      exact hasTy_iff.mpr ⟨.nil, rfl, b, hb, hnb⟩⟩
+      exact hasTy_iff.mpr ⟨.nil, rfl, b, hb, hnb⟩,
+    fun l' o ho => by
+      by_cases hl : l' < s.objs.length
+      · rw [show ({ s with objs := s.objs ++ [o0] } : Store).objs = s.objs ++ [o0] from rfl,
+          List.getElem?_append_left hl] at ho
+        exact hw.bounds l' o ho
+      · have hl' : l' = s.objs.length := by
+          have := (List.getElem?_eq_some_iff.mp ho).1
+          simp at this; omega
+        subst hl'
+        simp at ho; subst ho
+        exact hin⟩
   have he1 : Ext P (fun _ => False) (fun _ => False) Λ Λ s { s with objs := s.objs ++ [o0] } :=
     Ext.newObj _
   have hd := defaults_good (orc := orc) (k := k) (targs := targs) hP ihs hk n (Nat.le_refl n) 0 _ Λ o0

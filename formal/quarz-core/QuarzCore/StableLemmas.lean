@@ -103,6 +103,7 @@ theorem FrameCore.stable {c : Ctx} {Λ Λ' : List Ty} {vars : List (String × Na
     obtain ⟨o, ho⟩ := this
     rw [argsFor_stable he.grow ho]; exact hsa
   closed := h.closed
+  bounded := h.bounded
 
 /-- A block chain stays as checked under writes that miss its frames'
 locals (and assign no immutable field, when there is a block). -/

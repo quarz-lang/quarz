@@ -19,20 +19,22 @@ Generic: Box[T] with an immutable `@v : T` and a `var @w : T?`;
 IntBox < Box[Int]; Pair[S, T] with `@a : S` and `@b : T`; OBox[out T]
 with `@v : T`, `get` and `each` (yields `@v`); Cell[T] with `var @v : T`
 and `set`; Sink[in T] with `put(x: T)`; IntOBox < OBox[Int], overriding
-`get`. -/
+`get`; AHold[T <: A] with `@v : T` and `ag`, calling `get` through the
+bound. -/
 def classes : ClassTable :=
-  [⟨"Object", none, [], [], []⟩,
-   ⟨"A", some 0, [⟨"a", [.int, .nil], false, none⟩, ⟨"v", [.str], true, none⟩], [], []⟩,
-   ⟨"B", some 1, [], [], []⟩,
-   ⟨"E", some 0, [], [], []⟩,
-   ⟨"D", some 1, [⟨"c", [.int], false, none⟩], [], []⟩,
-   ⟨"Box", some 0, [⟨"v", [.param 0], false, none⟩, ⟨"w", [.param 0, .nil], true, none⟩], [.inv], []⟩,
-   ⟨"IntBox", some 5, [], [], [[.int]]⟩,
-   ⟨"Pair", some 0, [⟨"a", [.param 0], false, none⟩, ⟨"b", [.param 1], false, none⟩], [.inv, .inv], []⟩,
-   ⟨"OBox", some 0, [⟨"v", [.param 0], false, none⟩], [.co], []⟩,
-   ⟨"Cell", some 0, [⟨"v", [.param 0], true, none⟩], [.inv], []⟩,
-   ⟨"Sink", some 0, [], [.contra], []⟩,
-   ⟨"IntOBox", some 8, [], [], [[.int]]⟩]
+  [⟨"Object", none, [], [], [], []⟩,
+   ⟨"A", some 0, [⟨"a", [.int, .nil], false, none⟩, ⟨"v", [.str], true, none⟩], [], [], []⟩,
+   ⟨"B", some 1, [], [], [], []⟩,
+   ⟨"E", some 0, [], [], [], []⟩,
+   ⟨"D", some 1, [⟨"c", [.int], false, none⟩], [], [], []⟩,
+   ⟨"Box", some 0, [⟨"v", [.param 0], false, none⟩, ⟨"w", [.param 0, .nil], true, none⟩], [.inv], [], []⟩,
+   ⟨"IntBox", some 5, [], [], [[.int]], []⟩,
+   ⟨"Pair", some 0, [⟨"a", [.param 0], false, none⟩, ⟨"b", [.param 1], false, none⟩], [.inv, .inv], [], []⟩,
+   ⟨"OBox", some 0, [⟨"v", [.param 0], false, none⟩], [.co], [], []⟩,
+   ⟨"Cell", some 0, [⟨"v", [.param 0], true, none⟩], [.inv], [], []⟩,
+   ⟨"Sink", some 0, [], [.contra], [], []⟩,
+   ⟨"IntOBox", some 8, [], [], [[.int]], []⟩,
+   ⟨"AHold", some 0, [⟨"v", [.param 0], false, none⟩], [.inv], [], [[.cls 1 []]]⟩]
 
 /-- The atoms of random types and `is_a?` tests (`Box` without its
 argument is ill formed: the checker rejects a test of it). -/
@@ -87,6 +89,10 @@ def methods : List Method :=
     -- Sink#put(x: T); IntOBox#get -> Int, reading the inherited field.
     ⟨10, "put", [("x", [.param 0])], [.nil], none, [("x", [.param 0])], .nil⟩,
     ⟨11, "get", [], [.int], none, [], .field "v" [.int]⟩,
+    -- AHold#ag -> Int?: `@v.get`, `@v` a `T <: A`; AHold#initialize(v: T).
+    ⟨12, "ag", [], [.int, .nil], none, [], .call (.field "v" [.param 0]) "get" []⟩,
+    ⟨12, "initialize", [("v", [.param 0])], [.nil], none, [("v", [.param 0])],
+      .setField "v" (.var "v" [.param 0])⟩,
     -- Cell#get -> T; Cell#set(x: T) -> T; Cell#initialize(v: T).
     ⟨9, "get", [], [.param 0], none, [], .field "v" [.param 0]⟩,
     ⟨9, "set", [("x", [.param 0])], [.param 0], none, [("x", [.param 0])],
@@ -102,7 +108,8 @@ def locals : List (String × Ty) :=
    ("p", [.cls 7 [[.int], [.str]], .nil]),
    ("oi", [.cls 8 [[.int]], .nil]), ("oo", [.cls 8 [[.cls 0 []]], .nil]),
    ("ci", [.cls 9 [[.int]], .nil]), ("co", [.cls 9 [[.cls 0 []]], .nil]),
-   ("si", [.cls 10 [[.int]], .nil])]
+   ("si", [.cls 10 [[.int]], .nil]),
+   ("ah", [.cls 12 [[.cls 2 []]], .nil]), ("ae", [.cls 12 [[.cls 3 []]], .nil])]
 
 def genTy : Gen Ty := do
   let n ← Gen.choose Nat 0 3 (by omega)
@@ -138,8 +145,8 @@ partial def genExpr : Nat → Gen Expr
     let t := (locals.find? (·.1 == x)).map (·.2) |>.getD []
     -- A read narrowed as a test would narrow it: the tests' types.
     let narrowed ← Gen.elements [t, Ty.remove t .nil, Ty.keep t [.nil], Ty.keep t [.nil, .bool],
-      t.filter (·.le classes (.cls 1 [])), [.int], [.cls 1 []],
-      t.filter (·.le classes (.cls 5 [[.int]])), [.cls 6 []]] (by simp)
+      t.filter (·.le classes [] (.cls 1 [])), [.int], [.cls 1 []],
+      t.filter (·.le classes [] (.cls 5 [[.int]])), [.cls 6 []]] (by simp)
     Gen.frequency (pure .nil)
       [(3, genExpr 0),
        (2, return .var x narrowed),
@@ -269,7 +276,15 @@ def varSteps : List Expr :=
      (.callBlk (.var "oi" [.cls 8 [[.int]]]) "each" [] ["k"] (.assign "x" (.var "k" [.int]))),
    .assign "si" (.new 10 [[.cls 0 []]] []),
    .ite (.isNil (.var "si" [.cls 10 [[.int]], .nil])) .nil
-     (.call (.var "si" [.cls 10 [[.int]]]) "put" [.int 1])]
+     (.call (.var "si" [.cls 10 [[.int]]]) "put" [.int 1]),
+   -- Bounds: an `AHold[B]` (B < A) and its `ag`; an `AHold[E]` (E is no
+   -- `A`) made, which the bound check rejects, and its `ag`.
+   .assign "ah" (.new 12 [[.cls 2 []]] [.new 2 [] [.nil, .str "w"]]),
+   .ite (.isNil (.var "ah" [.cls 12 [[.cls 2 []]], .nil])) .nil
+     (.assign "x" (.call (.var "ah" [.cls 12 [[.cls 2 []]]]) "ag" [])),
+   .assign "ae" (.new 12 [[.cls 3 []]] [.new 3 [] []]),
+   .ite (.isNil (.var "ae" [.cls 12 [[.cls 3 []]], .nil])) .nil
+     (.assign "x" (.call (.var "ae" [.cls 12 [[.cls 3 []]]]) "ag" []))]
 
 /-- `n` steps of the variance scenario, in a random order. -/
 def genVarSeq : Nat → Gen Expr

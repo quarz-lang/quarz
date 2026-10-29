@@ -13,14 +13,14 @@ variable {P : Program}
 /-! ### Values -/
 
 theorem hasTy_iff {s : Store} {v : Value} {t : Ty} :
-    s.hasTy P v t ↔ ∃ a, s.typeOf v = some a ∧ ∃ b ∈ t, a.le P.classes b = true := by
+    s.hasTy P v t ↔ ∃ a, s.typeOf v = some a ∧ ∃ b ∈ t, a.le P.classes [] b = true := by
   unfold Store.hasTy Store.hasType
   cases h : s.typeOf v with
   | none => simp
   | some a => simp [Ty.le]
 
 theorem hasTy_le (hwf : WfClasses P.classes) {s : Store} {v : Value} {t u : Ty}
-    (h : s.hasTy P v t) (hle : t.le P.classes u = true) : s.hasTy P v u := by
+    (h : s.hasTy P v t) (hle : t.le P.classes [] u = true) : s.hasTy P v u := by
   rw [hasTy_iff] at *
   obtain ⟨a, ha, b, hb, hab⟩ := h
   obtain ⟨c, hc, hbc⟩ := Ty.le_iff.mp hle b hb
@@ -55,6 +55,19 @@ theorem all_set_grow {o o' : Obj} (hl : o'.set.length = o.set.length)
     (hs : ∀ i : Nat, o.set[i]? = some true → o'.set[i]? = some true) (h : o.set.all id = true) :
     o'.set.all id = true :=
   all_id_iff.mpr fun i hi => hs i (all_id_iff.mp h i (hl ▸ hi))
+
+/-- A value's type is no parameter. -/
+@[simp] theorem typeOf_ne_param (s : Store) (v : Value) (i : Nat) :
+    (s.typeOf v = some (.param i)) = False := by
+  apply propext; constructor
+  · intro h
+    cases v
+    case obj l =>
+      simp only [Store.typeOf, Option.bind_eq_some_iff] at h
+      obtain ⟨o, _, h⟩ := h
+      split at h <;> simp at h
+    all_goals simp [Store.typeOf] at h
+  · intro h; exact h.elim
 
 theorem typeOf_obj {s : Store} {l : Nat} {a : Atom} (h : s.typeOf (.obj l) = some a) :
     ∃ o, s.objs[l]? = some o ∧ o.set.all id = true ∧ a = .cls o.cls o.args := by
@@ -221,7 +234,7 @@ section
 variable {c : Ctx} {fr : Frame} {s : Store}
 
 theorem PathHolds.le (hwf : WfClasses P.classes) {p : Path} {t u : Ty}
-    (h : PathHolds P c fr s p t) (hle : t.le P.classes u = true) : PathHolds P c fr s p u := by
+    (h : PathHolds P c fr s p t) (hle : t.le P.classes [] u = true) : PathHolds P c fr s p u := by
   have hle' := Ty.subst_le hwf fr.selfArgs hle
   cases p with
   | «local» x =>
@@ -275,7 +288,7 @@ theorem Sat.reset {Γ : Env} {xs : List String} (h : Sat P c Γ fr s) :
     · subst hx; exact h _ _ hu
 
 theorem Env.implies_get {ct : ClassTable} {Γ Δ : Env} (hi : Γ.implies ct Δ = true) {p : Path}
-    {t : Ty} (hp : Δ.get p = some t) : ∃ u, Γ.get p = some u ∧ u.le ct t = true := by
+    {t : Ty} (hp : Δ.get p = some t) : ∃ u, Γ.get p = some u ∧ u.le ct [] t = true := by
   unfold Env.implies at hi
   induction Δ with
   | nil => simp [Env.get] at hp

@@ -13,10 +13,12 @@ A small language with Quarz's core and nothing else (`QuarzCore/`):
   type arguments, a type parameter of the enclosing class; the value
   classes final, a class never: a subclass may define `==`), unions as
   lists of atoms, the class table (each class with its parameters'
-  variances and the arguments it gives its superclass), `≤` (a class is
-  below another when its chain gives that class arguments below the
-  other's as the parameters' variances say: `out` as they are, `in` the
-  other way, an invariant one both ways), substitution of a class's
+  variances and bounds and the arguments it gives its superclass), `≤`
+  (a class is below another when its chain gives that class arguments
+  below the other's as the parameters' variances say: `out` as they
+  are, `in` the other way, an invariant one both ways; a parameter is
+  below what its bound is below, with the bounds of the class whose
+  types are compared, none for values' types), substitution of a class's
   parameters, the variance check of where a type names a parameter
   (docs/02 §3). `≤` recurses into the arguments with fuel, as much as
   the two atoms are deep, which is enough (LeLemmas.lean) because a
@@ -45,7 +47,8 @@ A small language with Quarz's core and nothing else (`QuarzCore/`):
   type arguments (a value read as a `Box[Int]` was made as one).
 - `Program`: a whole program checked (the class table and the methods
   well formed: superclass arguments as many as the parameters, in a
-  positive position, overrides take at least and give at most what they
+  positive position and within the superclass's bounds, no more bounds
+  than parameters, `new`'s type arguments within the bounds, overrides take at least and give at most what they
   override, as the subclass sees the overridden signature; the variance
   check of each method's signature but `initialize`'s, and of each
   class's fields; the fields' defaults and each `initialize` checked).
@@ -86,17 +89,22 @@ unset after the loop, so `@x = 1; while c; @x = nil; ...; end` is
 rejected where the Rust checker accepts it (it widens the field to its
 declared type): stricter than the Rust checker, not unsound.
 The model
-accepts more than the Rust checker in one place, which soundness does
-not need: an immutable field that admits `nil` and that `initialize`
-does not assign holds `nil` (docs/01 §3 requires the assignment).
+accepts more than the Rust checker where soundness does not need the
+Rust rule: an immutable field that admits `nil` and that `initialize`
+does not assign holds `nil` (docs/01 §3 requires the assignment); a
+type naming a generic class with arguments outside its bounds
+(`h: Holder[Int]`) is accepted in annotations and signatures, the bounds
+being checked where an object is made (`new`) and in superclass
+arguments; a call on a value of a parameter whose bound is a union of
+classes finds each class's method (the Rust checker reports the method
+undefined), and one whose bound is `Nothing` is vacuous (no value).
 
 Not in v1 (design in `/tmp`, kept by the maintainers): closures (lambdas,
 named blocks, what a closure assigns being un-narrowed from where it is
 made), patterns, `data`/`enum`, `rescue`/`ensure`, `super`
 outside `initialize` (Ruby's `super` in other methods), in a block of
 it, or with a block, Shareable and tasks, extensions and overloads. Of
-generics: bounds `T <: X` (a class's parameters are unbounded here: the
-next stage), method type parameters and lower bounds `U >: T`, the
+generics: method type parameters and lower bounds `U >: T`, the
 built-in generic classes (`Array`, `Hash`: built-in calls' arguments and
 results stay opaque), and `is_a?(C[args])` where the static type does
 not fix the arguments but for `Object` arguments of covariant
@@ -108,8 +116,24 @@ rule): a superclass's arguments take no arguments themselves
 (`class IntBox < Box[Int]`, `class Pair[A, B] < Box[A]`,
 `class X[T] < Box[T?]`, not `class X < Box[Box[Int]]`), which bounds the
 types `≤` compares (with such arguments, expansive inheritance and
-variance make subtyping undecidable: Kennedy and Pierce, 2007); the
-conformance translator puts other programs out of range. The variance
+variance make subtyping undecidable: Kennedy and Pierce, 2007); a
+parameter's bound is one type, closed, whose atoms take no arguments
+(`T <: Shape`, `T <: Int | String`; not `T <: Comparable[T]` nor
+`T <: A & B`). The conformance translator puts other programs out of
+range. Where values flow (arguments, results, assignments, reads'
+annotations), the checker compares with the bounds of the method's
+class, and a call on a parameter's value finds the bound's method; a
+narrowing (`is_a?`, `nil?`, truthiness, `==`) and a loop's environment
+compare without them, so a test of a `T <: Shape` value against `Shape`
+keeps `T` on its false side where the Rust checker may drop it:
+stricter, not unsound; likewise for the true side of such a test (the
+model narrows `x : T?` to `Shape`, where the Rust checker keeps `T`),
+for truthiness of a bounded parameter (`T <: Shape` is never falsy, the
+model keeps `T` on the false side), for a loop's environment, and for
+`is_a?(C[args])` checks, whose arguments compared through bounds the
+model rejects as not checkable (`x : OBox[T]?`, `x.is_a?(OBox[Shape])`).
+A union bound is compared atom by atom (a `T` is below `X | Y` when the
+whole bound is below `X`, or below `Y`), as the Rust checker does. The variance
 check applies to every method of the model, where the Rust checker
 skips private methods and the accessors `attr_reader`/`attr_writer`
 make (whose signatures pass it anyway): the translator puts a private
@@ -163,24 +187,29 @@ stricter, not unsound.
 - `lake exe fuzz [N]` makes N random programs over a fixed class table
   with generic classes (`Box[T]`, `IntBox < Box[Int]`, `Pair[S, T]`,
   `OBox[out T]` with `each`, `Cell[T]` with a `var` field and `set`,
-  `Sink[in T]`, `IntOBox < OBox[Int]`; one program in
+  `Sink[in T]`, `IntOBox < OBox[Int]`, `AHold[T <: A]` calling `A#get`
+  through its bound; one program in
   four with a generated `initialize` assigning a field and calling
   `super` in some order, one in four opening with uses of the boxes:
   boxes of either argument assigned to the box locals, what they give
   assigned to an `Int` local, tests of them; one in four a variance
   scenario: boxes, cells and sinks seen through a wider argument, called,
-  written and given blocks through it, read back at the narrow one),
+  written and given blocks through it, read back at the narrow one, and
+  holders made with an argument within the bound or not),
   runs those `check` accepts,
   and fails on one that gets stuck: a quick check of rule changes before
   their proofs are redone. With `≤` made to ignore the type arguments it
   finds a stuck program (a `Box[Str]` read as a `Box[Int]`) within
   20000, and so it does with invariant parameters compared as covariant
-  ones (a `Str` set through a `Cell[Object]` that is a `Cell[Int]`).
+  ones (a `Str` set through a `Cell[Object]` that is a `Cell[Int]`) and
+  with `new`'s arguments not checked against the bounds (an `AHold[E]`,
+  `E` no `A`, whose `ag` calls `get` on an `E`).
 - `./conformance.sh` turns what `quarz check --tree` prints (docs/05 §1)
   into QCore and checks it with the model, for `corpus/` (in range by
   design) and every fixture and example (mostly out of range for now).
-  The program's generic classes are in range when their parameters are
-  unbounded and their superclass's arguments take no arguments; methods
+  The program's generic classes are in range when each parameter has at
+  most one bound, closed and of atoms taking no arguments, and their
+  superclass's arguments take no arguments; methods
   a `static` statement generated (docs/14 §5: their bodies are not in
   the tree) and `Type[T]` types are out of range; a read of a type
   parameter narrowed by a
@@ -195,8 +224,12 @@ stricter, not unsound.
   calls did before #70). Found by the model with generics: the Rust
   checker takes a value of a type parameter's type as always truthy
   (`if @v ... else @v end` with `@v : T` types the else branch
-  `Nothing`), while `T` may be `Bool` or `Int?`; the model keeps `T` on
-  the falsy side. And with variance: expansive inheritance
+  `Nothing`), while an unbounded `T` may be `Bool` or `Int?` (a
+  `T <: Shape` is indeed never falsy); the model keeps `T` on the falsy
+  side. And: the Rust checker does not compare a superclass's type
+  arguments with its bounds (`class G[U] < H[U]` with
+  `class H[T <: Shape]` checks, and `G[Int].new` then reads a field of an
+  `Int` at run time); the model's `wfClasses` does. And with variance: expansive inheritance
   (`class N[in Z]; class C[X] < N[N[C[C[X]]]]`), out of the model's
   range, makes the Rust checker's subtype check recurse without end on
   `def f(x: C[Int]) -> N[C[Int]] = x` (a stack overflow).
