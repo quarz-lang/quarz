@@ -319,13 +319,20 @@ impl Session {
             diagnostics.append(&mut self.checker.take_diagnostics());
             return Err(diagnostics);
         }
-        self.run_static_stmts(file, base, runner);
+        self.run_static_stmts(file, base, runner.as_deref_mut());
         diagnostics.append(&mut self.checker.take_diagnostics());
         if diagnostics.iter().any(|(_, d)| d.is_error()) {
             return Err(diagnostics);
         }
         let refs: Vec<&Expr> = body.iter().collect();
+        // Its `static(...)` expressions under its unit's staging rule
+        // (docs/14 §8), evaluated with it.
+        self.checker.repl_unit = Some((file, base));
         self.checker.check_all(&[(file, refs)]);
+        if self.checker.error_count() == 0 {
+            self.checker.eval_static_exprs(runner, &|f| f == file);
+        }
+        self.checker.repl_unit = None;
         diagnostics.append(&mut self.checker.take_diagnostics());
         if diagnostics.iter().any(|(_, d)| d.is_error()) {
             return Err(diagnostics);
@@ -382,7 +389,7 @@ impl Session {
         &mut self,
         program: &Program,
         base: u32,
-        runner: Option<&mut (dyn StaticRunner + '_)>,
+        mut runner: Option<&mut (dyn StaticRunner + '_)>,
     ) -> Result<Vec<Expr>, Vec<FileDiagnostic>> {
         let world = std::mem::take(&mut self.checker.world);
         let mut declarer = declare::Declarer::with_world(world);
@@ -402,13 +409,20 @@ impl Session {
             diagnostics.append(&mut self.checker.take_diagnostics());
             return Err(diagnostics);
         }
-        self.run_static_stmts(1, base, runner);
+        self.run_static_stmts(1, base, runner.as_deref_mut());
         diagnostics.append(&mut self.checker.take_diagnostics());
         if diagnostics.iter().any(|(_, d)| d.is_error()) {
             return Err(diagnostics);
         }
         let refs: Vec<&Expr> = body.iter().collect();
+        // The staging rule of the input's unit, for its `static(...)`
+        // expressions too (docs/14 §8).
+        self.checker.repl_unit = Some((1, base));
         self.checker.check_repl(1, &refs);
+        if self.checker.error_count() == 0 {
+            self.checker.eval_static_exprs(runner, &|f| f == 1);
+        }
+        self.checker.repl_unit = None;
         diagnostics.append(&mut self.checker.take_diagnostics());
         if diagnostics.iter().any(|(_, d)| d.is_error()) {
             return Err(diagnostics);
@@ -556,6 +570,20 @@ pub trait StaticRunner {
         stmt: &StaticStmt,
         callee: MethodId,
     ) -> Result<(), StaticFailure>;
+    /// Run a `static(...)`'s call (`stmt.expr`, of `callee`) and give its
+    /// value, baked (docs/14 §8).
+    fn eval(
+        &mut self,
+        _host: &mut dyn StaticHost,
+        _stmt: &world::StaticStmt,
+        _callee: MethodId,
+    ) -> Result<world::Baked, StaticFailure> {
+        Err(StaticFailure {
+            message: "`static(...)` cannot be evaluated here: there is no compile-time runner"
+                .to_string(),
+            notes: Vec::new(),
+        })
+    }
     /// Forget everything lowered and run so far: the check starts over
     /// (`check_uncached` after a cache mismatch).
     fn reset(&mut self);
@@ -935,6 +963,13 @@ pub fn check_with_extra(
         .cloned()
         .collect();
     checker.check_all(&to_check);
+    // The `static(...)` expressions, of every file, read back or not
+    // (docs/14 §8: their values are not kept by the cache).
+    if checker.error_count() == 0 {
+        // Recomputed: a file read back brings the values of its last check.
+        checker.out.static_values.clear();
+        checker.eval_static_exprs(runner.as_deref_mut(), &|_| true);
+    }
     let mut checked_units: Vec<CheckedUnit> = std::mem::take(&mut std_units);
     checked_units.extend(bodies.into_iter().map(|(file, body)| CheckedUnit {
         file,
@@ -1031,8 +1066,11 @@ pub fn check_with_extra(
                                 .collect();
                             // The extra units' own `static` statements (a test file's,
                             // a doc example's).
-                            checker.check_static_stmts(runner);
+                            checker.check_static_stmts(runner.as_deref_mut());
                             checker.check_all(&refs);
+                            if checker.error_count() == 0 {
+                                checker.eval_static_exprs(runner, &|_| true);
+                            }
                             diagnostics.append(&mut checker.take_diagnostics());
                         }
                         for (file, main, body) in bodies {

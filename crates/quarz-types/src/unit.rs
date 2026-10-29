@@ -191,6 +191,8 @@ pub(crate) fn unit_output(world: &World, out: &Output, base: u32, file: u32) -> 
         lifted_blocks: map!(lifted_blocks),
         quoted_blocks: map!(quoted_blocks),
         quoted_lits: set!(quoted_lits),
+        static_exprs: map!(static_exprs),
+        static_values: map!(static_values),
         type_args: map!(type_args),
         calls: map!(calls),
         const_targets: map!(const_targets),
@@ -325,6 +327,8 @@ pub(crate) fn merge_output(out: &mut Output, o: Output) {
     out.lifted_blocks.extend(o.lifted_blocks);
     out.quoted_blocks.extend(o.quoted_blocks);
     out.quoted_lits.extend(o.quoted_lits);
+    out.static_exprs.extend(o.static_exprs);
+    out.static_values.extend(o.static_values);
     out.type_args.extend(o.type_args);
     out.usable_after.extend(o.usable_after);
     out.usable_on_entry.extend(o.usable_on_entry);

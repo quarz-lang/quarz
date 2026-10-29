@@ -517,6 +517,10 @@ pub fn expr_to_sexp(expr: &Expr, out: &mut String) {
             o.push(' ');
             expr_to_sexp(a, o);
         }),
+        Static(a) => list(out, "static", |o| {
+            o.push(' ');
+            expr_to_sexp(a, o);
+        }),
         If { cond, then, els } => list(out, "if", |o| {
             o.push(' ');
             expr_to_sexp(cond, o);

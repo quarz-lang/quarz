@@ -793,6 +793,30 @@ impl<'a> FnBuilder<'a> {
         }
     }
 
+    /// A value baked at compile time (`Baked`, docs/14 §5), made here as
+    /// the generated methods' captures are (`lift::Baker`).
+    fn baked_value(&mut self, v: &quarz_types::world::Baked) -> Reg {
+        let dst = self.reg();
+        let mut insts = Vec::new();
+        let layouts = std::mem::take(&mut self.lw.layouts);
+        let mut baker = crate::lift::Baker::new(&layouts, self.func.nregs);
+        baker.bake(&mut insts, dst, v);
+        let (nregs, consts) = baker.finish();
+        self.lw.layouts = layouts;
+        self.func.nregs = nregs;
+        for inst in insts {
+            let inst = match inst {
+                Inst::LoadConst { dst, idx } => Inst::LoadConst {
+                    dst,
+                    idx: self.const_idx(consts[idx as usize].clone()),
+                },
+                other => other,
+            };
+            self.emit(inst);
+        }
+        dst
+    }
+
     fn load_const(&mut self, c: Constant) -> Reg {
         let idx = self.const_idx(c);
         let dst = self.reg();
@@ -1340,6 +1364,16 @@ impl<'a> FnBuilder<'a> {
                 self.switch(join);
                 res
             }
+            // `static(call)` (docs/14 §8): the value the compiler computed,
+            // baked; before it did (in code run at compile time), the call.
+            Static(inner) => match self.out.static_values.get(&e.id) {
+                Some(v) => self.baked_value(v),
+                None => {
+                    // Lowered again once the value is known.
+                    self.lw.static_fallback = true;
+                    self.expr(inner)
+                }
+            },
             Not(a) => {
                 let v = self.expr(a);
                 // On a union with `!` in some members: a type test per

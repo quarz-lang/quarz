@@ -115,6 +115,14 @@ pub struct Output {
     /// body, the top level): each is an error after lowering when the
     /// callee turns out to be compile-time only (docs/14 §3).
     pub static_calls: Vec<(u32, Span, MethodId)>,
+    /// The `static(...)` expressions (docs/14 §8), by their node: the file,
+    /// the class whose class methods an implicit receiver names, and the
+    /// call, evaluated at compile time once every file is checked.
+    #[serde(default)]
+    pub static_exprs: FxHashMap<NodeId, (u32, ClassId, Expr)>,
+    /// Their values, baked (filled by the runner, `StaticRunner::eval`).
+    #[serde(default)]
+    pub static_values: FxHashMap<NodeId, crate::world::Baked>,
     /// The blocks given to `Meta::ClassDef`'s generating natives
     /// (`def_method`), by their call: the procedure type each was checked
     /// as, from which the generated method takes its signature (docs/14
@@ -410,6 +418,9 @@ struct Env {
     /// §5), which becomes a method's body: it captures by value too, and
     /// cannot leave the enclosing method or use its `self`.
     lifted_frame: Option<usize>,
+    /// The frame of a block given to the call in `static(...)` (docs/14
+    /// §8): it runs at compile time and captures nothing.
+    static_frame: Option<usize>,
     /// The next block checked is one (set by the call's check).
     next_block_lifted: bool,
     /// The locals of this body that may change after a closure captures
@@ -692,6 +703,9 @@ pub struct Checker {
     /// checked once per type) found its block parameter a `Quoted`: they
     /// must agree, the call passing one value (docs/14 §6).
     quoted_seen: HashMap<NodeId, bool>,
+    /// The call of the `static(...)` being checked: it runs at compile
+    /// time, so it may be compile-time only (docs/14 §8).
+    static_expr_call: Option<NodeId>,
     /// The calls whose checks disagreed on that, with where they are:
     /// reported once the check ends (`flush_ambiguous`), so that the
     /// order the checks ran in (a union's members) does not matter.
@@ -816,6 +830,7 @@ impl Checker {
             never_narrow: Rc::default(),
             next_block_escapes: false,
             lifted_frame: None,
+            static_frame: None,
             next_block_lifted: false,
         };
         Checker {
@@ -824,6 +839,7 @@ impl Checker {
             reused_files: Default::default(),
             static_done: Vec::new(),
             quoted_seen: HashMap::default(),
+            static_expr_call: None,
             quoted_conflicts: HashMap::default(),
             repl_unit: None,
             op_given_up: Default::default(),
@@ -1700,7 +1716,13 @@ impl Checker {
     /// to be judged once the method's reach is known (docs/14 §3).
     fn note_static_call(&mut self, expr: &Expr, mid: MethodId) {
         let m = self.world.method(mid);
-        if !m.is_static || self.env.is_static {
+        // (Inside `static(...)`, the call and a block given to it run at
+        // compile time.)
+        if !m.is_static
+            || self.env.is_static
+            || self.static_expr_call == Some(expr.id)
+            || self.env.static_frame.is_some()
+        {
             return;
         }
         if m.is_native {
@@ -1810,6 +1832,57 @@ impl Checker {
             self.diagnostics.append(&mut declarer.diagnostics);
             self.world = std::mem::take(&mut declarer.world);
             self.world.freeze_ancestors(true);
+        }
+    }
+
+    /// Evaluate the `static(...)` expressions of the files `in_files`
+    /// (docs/14 §8) with `runner`, recording their values
+    /// (`Output::static_values`): after the check, every time, also for
+    /// files read back from the cache, so that a dependency's `static
+    /// def` that changed is seen.
+    pub fn eval_static_exprs(
+        &mut self,
+        mut runner: Option<&mut (dyn crate::StaticRunner + '_)>,
+        in_files: &dyn Fn(u32) -> bool,
+    ) {
+        let mut todo: Vec<(NodeId, u32, ClassId, Expr)> = self
+            .out
+            .static_exprs
+            .iter()
+            .filter(|(id, (file, _, _))| {
+                in_files(*file) && !self.out.static_values.contains_key(id)
+            })
+            .map(|(id, (file, class, e))| (*id, *file, *class, e.clone()))
+            .collect();
+        todo.sort_by_key(|(id, ..)| *id);
+        for (id, file, class, e) in todo {
+            let Some(CallTarget::Method { method }) = self.out.calls.get(&e.id).cloned() else {
+                continue;
+            };
+            let span = e.span;
+            let stmt = StaticStmt {
+                class,
+                file,
+                expr: std::rc::Rc::new(e),
+                span,
+            };
+            let result = match runner.as_deref_mut() {
+                Some(r) => r.eval(self, &stmt, method),
+                None => continue,
+            };
+            match result {
+                Ok(v) => {
+                    self.out.static_values.insert(id, v);
+                }
+                Err(failure) => {
+                    let mut message = failure.message;
+                    for note in failure.notes {
+                        message.push('\n');
+                        message.push_str(&note);
+                    }
+                    self.error_in(file, message, span);
+                }
+            }
         }
     }
 
@@ -1996,6 +2069,7 @@ impl Checker {
             never_narrow: Rc::default(),
             next_block_escapes: false,
             lifted_frame: None,
+            static_frame: None,
             next_block_lifted: false,
         }
     }
@@ -3158,6 +3232,13 @@ impl Checker {
         if !self.captured_across_task(depth) {
             return;
         }
+        if self.env.static_frame.is_some() && self.env.static_frame == self.env.task_frame {
+            self.error(
+                format!("a block in `static(...)` captures nothing: `{name}` is not a constant (docs/14 §8)"),
+                span,
+            );
+            return;
+        }
         let rt = self.resolve(t);
         if rt.has_vars() {
             return;
@@ -3565,7 +3646,7 @@ impl Checker {
                 Self::assigned_names_expr(a, out);
                 Self::assigned_names_expr(b, out);
             }
-            Not(a) => Self::assigned_names_expr(a, out),
+            Not(a) | Static(a) => Self::assigned_names_expr(a, out),
             Case {
                 subject,
                 whens,
@@ -4305,6 +4386,15 @@ impl Checker {
             Bytes(_) => Type::class(self.world.builtin.bytes),
             Magic(m) => match m {
                 quarz_syntax::ast::Magic::Line => self.world.int(),
+                // A block in `static(...)` runs at compile time, outside
+                // the method it is written in (docs/14 §8).
+                quarz_syntax::ast::Magic::Method if self.env.static_frame.is_some() => {
+                    self.error(
+                        "a block in `static(...)` captures nothing: `__method__` is the method's name, not a constant (docs/14 §8)",
+                        expr.span,
+                    );
+                    self.world.string()
+                }
                 // `__method__` is nil outside a method.
                 quarz_syntax::ast::Magic::Method if self.env.method.is_none() => {
                     self.world.nilable(self.world.string())
@@ -4492,6 +4582,7 @@ impl Checker {
                 let truthy = self.truthy_part(&ta);
                 self.join(&truthy, &tb)
             }
+            Static(inner) => self.check_static_expr(expr, inner, expected),
             Not(a) => {
                 let t = self.check_expr(a, None);
                 match self.not_method(expr, a, &t) {
@@ -9069,6 +9160,163 @@ impl Checker {
         Ok(ret)
     }
 
+    /// `static(call)` (docs/14 §8): the call of a `static def`, of a
+    /// dependency, with constant receiver and arguments, whose result can
+    /// be baked: checked as the call, then recorded for the runner.
+    fn check_static_expr(&mut self, expr: &Expr, inner: &Expr, expected: Option<&Type>) -> Type {
+        // A block given to `def_method` is copied into the generated
+        // method, not lowered where it is: its value would be its call.
+        if self.env.lifted_frame.is_some() {
+            self.error(
+                "`static(...)` cannot be used in a block given to `def_method`: compute the value in the `static def` and use it in the block (it is baked)",
+                expr.span,
+            );
+        }
+        let saved = self.static_expr_call.replace(inner.id);
+        let t = self.check_expr(inner, expected);
+        self.static_expr_call = saved;
+        let ExprKind::Call(call) = &inner.kind else {
+            self.error(
+                "`static(...)` takes a call of a `static def`, run at compile time (docs/14 §8)",
+                inner.span,
+            );
+            return t;
+        };
+        let errors_before = self.error_count();
+        let Some(CallTarget::Method { method }) = self.out.calls.get(&inner.id).cloned() else {
+            self.error(
+                format!(
+                    "`static(...)` takes a call of a `static def`; `{}` is not one",
+                    call.name
+                ),
+                inner.span,
+            );
+            return t;
+        };
+        let m = self.world.method(method).clone();
+        if !m.is_static || m.is_native {
+            self.error(
+                format!(
+                    "`static(...)` takes a call of a `static def`; `{}` is not one",
+                    m.name
+                ),
+                inner.span,
+            );
+            return t;
+        }
+        // The staging rule of `static` statements (docs/14 §2).
+        let allowed = match self.repl_unit {
+            Some((file, base)) => {
+                if m.file == file && m.span.start >= base {
+                    Err("this input".to_string())
+                } else {
+                    Ok(())
+                }
+            }
+            None => self.world.static_callee_allowed(self.env.file, m.file),
+        };
+        if let Err(why) = allowed {
+            self.error(
+                format!("`{}` is a `static def` of {why}: `static(...)` runs only those of the cogs (or required files) this file depends on", m.name),
+                inner.span,
+            );
+            return t;
+        }
+        // An implicit receiver names the class it is written in, whose
+        // class method it must be.
+        let class = self.env.class_id.unwrap_or(self.world.builtin.object);
+        match &call.recv {
+            Some(r) => self.check_static_constant(r),
+            None if m.singleton => {}
+            None => self.error(
+                format!(
+                    "`static({})`: the receiver of an instance `static def` is written, a constant",
+                    call.name
+                ),
+                inner.span,
+            ),
+        }
+        for a in &call.args {
+            match a {
+                Arg::Positional(x) => self.check_static_constant(x),
+                Arg::BlockPass(x) if matches!(x.kind, ExprKind::Symbol(_)) => {}
+                _ => self.error(
+                    "`static(...)` takes positional arguments, constants",
+                    inner.span,
+                ),
+            }
+        }
+        let rt = self.resolve(&t);
+        if !self.bakeable_type(&rt) {
+            self.error(
+                format!("`static(...)` gives a {}, which cannot be baked into the program: its value must be a literal, a class or `data` of such (docs/14 §5)", self.world.type_name(&rt)),
+                expr.span,
+            );
+        }
+        if self.error_count() == errors_before {
+            self.out
+                .static_exprs
+                .insert(expr.id, (self.env.file, class, inner.clone()));
+        }
+        t
+    }
+
+    /// A receiver or argument of `static(...)`: a literal (of constants),
+    /// a constant, a class, or another `static(...)`.
+    fn check_static_constant(&mut self, e: &Expr) {
+        let ok = match &e.kind {
+            ExprKind::Nil
+            | ExprKind::True
+            | ExprKind::False
+            | ExprKind::Int(_)
+            | ExprKind::Float(_)
+            | ExprKind::Bytes(_)
+            | ExprKind::Symbol(_)
+            | ExprKind::Static(_)
+            | ExprKind::TypeApp(_) => true,
+            ExprKind::Str(parts) | ExprKind::Regexp { parts, .. } => {
+                parts.iter().all(|p| matches!(p, StrPart::Lit(_)))
+            }
+            ExprKind::Const(_) => self.out.const_targets.contains_key(&e.id),
+            ExprKind::Array(items) => {
+                for a in items {
+                    match a {
+                        Arg::Positional(x) => self.check_static_constant(x),
+                        _ => self.error("a splat is not a constant", e.span),
+                    }
+                }
+                true
+            }
+            ExprKind::Hash(entries) => {
+                for h in entries {
+                    match h {
+                        HashEntry::Pair { key, value } => {
+                            self.check_static_constant(key);
+                            self.check_static_constant(value);
+                        }
+                        HashEntry::DoubleSplat(_) => {
+                            self.error("a double splat is not a constant", e.span)
+                        }
+                    }
+                }
+                true
+            }
+            ExprKind::Range { lo, hi, .. } => {
+                for x in lo.iter().chain(hi.iter()) {
+                    self.check_static_constant(x);
+                }
+                true
+            }
+            _ => false,
+        };
+        if !ok {
+            self.error(
+                "`static(...)`'s receiver and arguments are constants: literals, constants, classes and `static(...)` (docs/14 §8)",
+                e.span,
+            );
+        }
+    }
+
     /// A block given as a `Quoted` (docs/14 §6) holds only what
     /// `Meta::Expr` represents: each other construct is an error at its
     /// node. The constants whose values become literals of the tree are
@@ -9104,7 +9352,9 @@ impl Checker {
             | ExprKind::Bytes(_)
             | ExprKind::Symbol(_)
             | ExprKind::Local(_)
-            | ExprKind::IVar(_) => return,
+            | ExprKind::IVar(_)
+            // A value computed at compile time: a literal of the tree.
+            | ExprKind::Static(_) => return,
             ExprKind::Str(parts) => {
                 for part in parts {
                     if let StrPart::Interp(x) = part {
@@ -9304,9 +9554,16 @@ impl Checker {
             owner: SelfOwner::Block(call_id),
         });
         let saved_task_frame = (self.env.task_frame, self.env.task_shareable_proc);
-        if is_task || shareable || lifted {
+        // The block of the call in `static(...)`: as a task's, where any
+        // capture is refused (`check_task_capture`, `check_task_self`).
+        let in_static = self.static_expr_call == Some(call_id);
+        let saved_static = self.env.static_frame;
+        if is_task || shareable || lifted || in_static {
             self.env.task_frame = Some(self.env.frames.len() - 1);
             self.env.task_shareable_proc = shareable;
+        }
+        if in_static {
+            self.env.static_frame = self.env.task_frame;
         }
         // A lifted block's body is run-time code (the generated method's),
         // whatever the `static def` around it may call.
@@ -9441,6 +9698,7 @@ impl Checker {
         }
         (self.env.loop_depth, self.env.loop_exits) = saved_loop;
         (self.env.task_frame, self.env.task_shareable_proc) = saved_task_frame;
+        self.env.static_frame = saved_static;
         (self.env.lifted_frame, self.env.is_static) = saved_lifted;
         self.leave_receiver(saved_self);
         self.out
@@ -9513,6 +9771,13 @@ impl Checker {
     /// A task block captures `self` like a variable: it must be Shareable.
     fn check_task_self(&mut self, what: &str, span: Span) {
         if !self.self_crosses_task() {
+            return;
+        }
+        if self.env.static_frame.is_some() && self.env.static_frame == self.env.task_frame {
+            self.error(
+                format!("a block in `static(...)` captures nothing: {what} is not a constant (docs/14 §8)"),
+                span,
+            );
             return;
         }
         let t = self.resolve(&self.env.self_type.clone());

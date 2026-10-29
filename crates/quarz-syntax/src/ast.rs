@@ -107,6 +107,10 @@ pub enum ExprKind {
     And(Box<Expr>, Box<Expr>),
     Or(Box<Expr>, Box<Expr>),
     Not(Box<Expr>),
+    /// `static(expr)`: a call of a `static def` with constant arguments,
+    /// run at compile time; its value is baked into the program
+    /// (docs/14 §8).
+    Static(Box<Expr>),
 
     // ----- control flow -----
     If {

@@ -29,7 +29,7 @@ The following words are treated as keywords **only in declaration positions**; e
 | `type` | At the start of a line, followed by `type Constant =` |
 | `extern` | At the start of a line, followed by `extern def` / `extern "C"` (FFI is planned, §14) |
 | `for` | `for variable in` (a comprehension, §11) |
-| `static` | `static def` (a method callable at compile time, [14-metaprogramming.md](14-metaprogramming.md)); `static(` is reserved |
+| `static` | `static def` (a method callable at compile time) and `static(call)` (a value computed at compile time), [14-metaprogramming.md](14-metaprogramming.md) |
 
 Of Ruby's reserved words, `defined?`, `undef`, `redo`, `BEGIN`, `END`, and `__ENCODING__` are dropped (`for` returns as a contextual keyword with a different meaning, §11). The others (`alias`, `retry`, `yield`, `super`, `self`, `and`/`or`/`not`, etc.) are kept.
 

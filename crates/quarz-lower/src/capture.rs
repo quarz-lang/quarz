@@ -345,6 +345,9 @@ pub fn walk_expr(e: &Expr, nest: Nest, cx: &mut Cx) {
             walk_operand(e, b, nest, cx);
         }
         Not(a) => walk_expr(a, nest, cx),
+        // Its value is baked; what it reads are constants (docs/14 §8).
+        // (Run as code only at compile time, before its value is known.)
+        Static(a) => walk_expr(a, nest, cx),
         If { cond, then, els } => {
             walk_expr(cond, nest, cx);
             walk_body(then, nest, cx);
