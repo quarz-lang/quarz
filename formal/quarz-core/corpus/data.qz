@@ -1,0 +1,45 @@
+# `data` types within QCore's range (formal/quarz-core, P1): final record
+# types with a generated `initialize` and readers, methods of their own,
+# and `== nil` narrowing a value of one (nothing subclasses it, and its
+# `==` is the built-in one unless the body defines it).
+data Pt = (x: Int, y: Int)
+
+data Seg(from: Pt, to: Pt)
+  def dx -> Int = to.x - from.x
+end
+
+data Tag(name: String)
+  def ==(other: Object) -> Bool = true
+  def hash -> Int = 0
+end
+
+def sum(p: Pt?) -> Int
+  if p == nil
+    0
+  else
+    p.x + p.y
+  end
+end
+
+def width(s: Seg?) -> Int
+  return 0 if s == nil
+  s.dx
+end
+
+def label(t: Tag?) -> String
+  # `Tag` defines `==`: `t == nil` narrows nothing (`nil?` does).
+  if t == nil
+    "none?"
+  elsif t.nil?
+    "none"
+  else
+    t.name
+  end
+end
+
+puts sum(Pt.new(1, 2))
+puts sum(nil)
+puts width(Seg.new(Pt.new(1, 1), Pt.new(4, 2)))
+puts width(nil)
+puts label(Tag.new("a"))
+puts label(nil)

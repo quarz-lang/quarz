@@ -234,9 +234,12 @@ partial def expr (T : Tables) (e : Json) : CM Expr := do
     unless (← field T.nodeTypes (toString id)) == declared do
       throw s!"disagree: constant read {id} not of the constant's type"
     pure (.prim "const" [] [] (← T.ty declared))
-  | "Int" => pure (.int (← match (← field v "value") with
+  | "Int" =>
+    let n ← match (← field v "value") with
       | .num n => pure n.mantissa
-      | _ => throw "a big integer"))
+      | _ => throw "a big integer"
+    -- An integer literal where a `Float` is expected is one (docs/02 §5).
+    if (← T.nodeTy id) == [.float] then pure (.flt s!"{n}.0") else pure (.int n)
   | "Str" =>
     let parts ← arr v
     let interps ← parts.toList.filterMapM fun p => do
@@ -327,6 +330,12 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
     | "False" => return .eqFalse r
     | _ => pure ()
   | "!=", some r, [a], .null =>
+    -- The model's `!=` is `!(==)`; a program's own `!=` (a `data` type may
+    -- define one) is out of range.
+    -- (The call resolves to `Object#!=` on an `X?`: look for any.)
+    if ← T.methods.anyM (fun m => do
+        pure ((← str (← field m "name")) == "!=" && (← field m "native") != .bool true)) then
+      throw "a user-defined !="
     if (← lit a) == "Nil" then return .neNil r
   | _, _, _, _ => pure ()
   match ← str (← field target "t") with
@@ -366,7 +375,21 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
       -- it takes `self` (it may read its fields), but a `Kernel`
       -- function.
       unless blk == .null do throw s!"a block given to built-in {name}"
-      let params ← (← arr (← field m "params")).toList.mapM fun p => do T.tyOrTop (← field p "type")
+      -- A rest parameter (`*args`) takes as many arguments as are given
+      -- (any value: its declared `Array[E]` is no type of the model's).
+      -- Otherwise the positional parameters the call fills; those it
+      -- leaves, and keyword ones, must have defaults.
+      let ps := (← arr (← field m "params")).toList
+      let params ← if ← ps.anyM (fun p => do pure ((← str (← field p "kind")) == "Rest")) then
+          match ps with
+          | [p] => do let t ← T.tyOrTop (← field p "type"); pure (as.map fun _ => t)
+          | _ => throw "a rest parameter with others"
+        else do
+          let pos ← ps.filterM fun p => do pure ((← str (← field p "kind")) == "Positional")
+          let rest := ps.filter fun p => !(pos.take as.length).contains p
+          for p in rest do
+            unless (← field p "default") == .bool true do throw "a built-in call leaving a parameter"
+          (pos.take as.length).mapM fun p => do T.tyOrTop (← field p "type")
       let ret ← T.tyOrTop (← field m "ret")
       let (rs, rps) ← match recv with
         | some r => do
@@ -420,6 +443,8 @@ def accessor (T : Tables) (owner : Nat) (m : Json) : M (Option Method) := do
   let synth ← str (← field m "synth")
   let name ← str (← field m "name")
   let fieldOf (pre : String) : String := String.ofList ((synth.toList.drop pre.length).dropLast.dropLast)
+  -- (Other generated methods, `with` and `to_h`, are built-in calls.)
+  unless synth.startsWith "Field" || synth == "DataInit" do return none
   let ret ← T.ty (← field m "ret")
   if synth.startsWith "FieldGet(\"" then
     pure (some ⟨owner, name, [], ret, none, [], .field (fieldOf "FieldGet(\"") ret⟩)
@@ -428,6 +453,14 @@ def accessor (T : Tables) (owner : Nat) (m : Json) : M (Option Method) := do
     let t ← T.ty (← field p "type")
     pure (some ⟨owner, name, [("v", t)], ret, none, [("v", t)],
       .setField (fieldOf "FieldSet(\"") (.var "v" t)⟩)
+  else if synth == "DataInit" then
+    -- A `data` type's `initialize`: each field from the parameter of its
+    -- name, in order.
+    let ps ← (← arr (← field m "params")).toList.mapM fun p => do
+      if (← field p "default") == .bool true then throw "a data field with a default"
+      pure (← str (← field p "name"), ← T.ty (← field p "type"))
+    let bd := ps.foldr (fun (x, t) acc => .seq (.setField x (.var x t)) acc) .nil
+    pure (some ⟨owner, name, ps, [.nil], none, ps, bd⟩)
   else pure none
 
 /-- A Rust method as a QCore one. -/
@@ -496,7 +529,8 @@ def program (j : Json) : M Program := do
   let kernelId ← nat (← field kernelJ "id")
   -- The user classes, in Rust id order (a superclass is declared first).
   let user ← classes.toList.filterM fun c => do
-    pure (files.contains (← nat (← field c "file")) && (← str (← field c "kind")) == "Class" &&
+    let kind ← str (← field c "kind")
+    pure (files.contains (← nat (← field c "file")) && (kind == "Class" || kind == "Data") &&
       !mainClasses.contains (← nat (← field c "id")))
   let userIds ← user.mapM fun c => do nat (← field c "id")
   -- `Object` is 0, the files' main classes (the top level and its
@@ -556,7 +590,13 @@ def program (j : Json) : M Program := do
         (e.getObjValAs? Nat "class").toOption == some cid &&
         (e.getObjValAs? String "field").toOption == some name
       pure (⟨name, ← T.ty (← field f "type"), (← field f "var") == .bool true, d⟩ : Field)
-    pure (⟨← str (← field c "name"), some sup.1, fields, params, sup.2, pbs.map (·.2)⟩ : Class)
+    -- A `data` type (docs/01 §4): final; its generated methods below.
+    let kind ← match ← str (← field c "kind") with
+      | "Data" =>
+        unless params.isEmpty do throw "a generic data type"
+        pure ClassKind.data
+      | _ => pure ClassKind.cls
+    pure (⟨← str (← field c "name"), some sup.1, fields, params, sup.2, pbs.map (·.2), kind⟩ : Class)
   let methods ← T.defs.toList.filterMapM fun d => do
     let m ← T.method (← nat (← field d "method"))
     match ← field d "def" with
@@ -596,7 +636,7 @@ def program (j : Json) : M Program := do
     | some q => if q ≥ 2 then accessor T q m else pure none
     | none => pure none
   let own := methods ++ accessors
-  let P : Program := ⟨⟨"Object", none, [], [], [], []⟩ :: ⟨"<main>", some 0, [], [], [], []⟩ :: qclasses,
+  let P : Program := ⟨⟨"Object", none, [], [], [], [], .cls⟩ :: ⟨"<main>", some 0, [], [], [], [], .cls⟩ :: qclasses,
     own ++ consts,
     ⟨1, "<main>", [], all, none, mainLocals, mainBody⟩, defaults⟩
   -- Two methods of one name in a class, or in a class and its ancestor

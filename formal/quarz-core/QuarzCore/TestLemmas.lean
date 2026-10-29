@@ -394,48 +394,115 @@ theorem hasTy_remove_nil {s : Store} {v : Value} {t : Ty} (hv : s.hasTy P v t) (
   | obj l => obtain ⟨_, _, _, h⟩ := typeOf_obj ha; cases h
   | _ => simp_all [Store.typeOf]
 
-/-- A type of final atoms (the value classes) is closed: it substitutes
-to itself. -/
-theorem Ty.closed_of_allFinal {t : Ty} (h : t.allFinal = true) : t.closed = true := by
+/-- A type of final atoms (the value classes, `data` types without
+arguments) is closed: it substitutes to itself. -/
+theorem Ty.closed_of_allFinalIn {t : Ty} (h : t.allFinalIn P = true) : t.closed = true := by
   induction t with
   | nil => rfl
   | cons a t ih =>
-    simp only [Ty.allFinal, List.all_cons, Bool.and_eq_true] at h
+    simp only [Ty.allFinalIn, List.all_cons, Bool.and_eq_true] at h
     simp only [Ty.closed, Bool.and_eq_true]
     refine ⟨?_, ih h.2⟩
-    cases a <;> simp_all [Atom.final, Atom.closed]
+    have h1 := h.1
+    cases a with
+    | cls c args => cases args <;> simp_all [Atom.finalIn, Atom.final, Atom.closed, Ty.closedArgs]
+    | _ => simp_all [Atom.finalIn, Atom.final, Atom.closed]
 
-theorem Ty.subst_of_allFinal (σ : List Ty) {t : Ty} (h : t.allFinal = true) : Ty.subst σ t = t :=
-  Ty.subst_closed_id σ t (Ty.closed_of_allFinal h)
+theorem Ty.subst_of_allFinalIn (σ : List Ty) {t : Ty} (h : t.allFinalIn P = true) : Ty.subst σ t = t :=
+  Ty.subst_closed_id σ t (Ty.closed_of_allFinalIn h)
 
-theorem Ty.allFinal_keep {t : Ty} (h : t.allFinal = true) (as : List Atom) : (t.keep as).allFinal = true := by
-  simp only [Ty.allFinal, Ty.keep, List.all_eq_true] at h ⊢
+theorem Ty.allFinalIn_keep {t : Ty} (h : t.allFinalIn P = true) (as : List Atom) :
+    (t.keep as).allFinalIn P = true := by
+  simp only [Ty.allFinalIn, Ty.keep, List.all_eq_true] at h ⊢
   exact fun a ha => h a (List.mem_filter.mp ha).1
 
-theorem Ty.allFinal_remove {t : Ty} (h : t.allFinal = true) (a : Atom) : (t.remove a).allFinal = true := by
-  simp only [Ty.allFinal, Ty.remove, List.all_eq_true] at h ⊢
+theorem Ty.allFinalIn_remove {t : Ty} (h : t.allFinalIn P = true) (a : Atom) :
+    (t.remove a).allFinalIn P = true := by
+  simp only [Ty.allFinalIn, Ty.remove, List.all_eq_true] at h ⊢
   exact fun b hb => h b (List.mem_filter.mp hb).1
 
-/-- A value of a type of final atoms is no object. -/
-theorem not_obj_of_final {s : Store} {v : Value} {t : Ty} (hv : s.hasTy P v t)
-    (hfin : t.allFinal = true) : ∀ l, v ≠ .obj l := by
-  rintro l rfl
-  rw [hasTy_iff] at hv
-  obtain ⟨a, ha, b, hb, hab⟩ := hv
-  obtain ⟨o, _, _, rfl⟩ := typeOf_obj ha
-  have := List.all_eq_true.mp hfin b hb
-  cases b <;> simp_all [Atom.final, Atom.le]
+/-- Only a `data` type itself is below it: nothing subclasses it. -/
+theorem ancestorArgs_data (hwf : WfClasses P.classes) {d : Nat} (hd : P.classes.kindOf d = .data) :
+    ∀ (c : Nat) (as bs : List Ty), P.classes.ancestorArgs c as d = some bs → c = d := by
+  intro c
+  induction c using Nat.strongRecOn with
+  | _ c ih =>
+    intro as bs h
+    rw [ClassTable.ancestorArgs_unfold hwf] at h
+    by_cases hcd : (c == d) = true
+    · simpa using hcd
+    · rw [if_neg hcd] at h
+      cases hk : P.classes[c]? with
+      | none => simp [hk] at h
+      | some k =>
+        simp only [hk] at h
+        cases hs : k.super with
+        | none => simp [hs] at h
+        | some p =>
+          simp only [hs] at h
+          have hpc : p < c := by
+            have := ClassTable.superOf_lt hwf (show ClassTable.superOf P.classes c = some p by
+              simp [ClassTable.superOf, hk, hs])
+            exact this
+          have := ih p hpc _ bs h
+          subst this
+          exact absurd hd (hwf.dataLeaf c k p hk hs)
 
-/-- A value of final atoms equal to `w` (no object): of `w`'s atoms. -/
-theorem hasTy_keep {s : Store} {v : Value} {t : Ty} {a : Atom} (hv : s.hasTy P v t)
-    (hfin : t.allFinal = true) (ha : s.typeOf v = some a) : s.hasTy P v (t.keep [a]) := by
+/-- A value of a type of final atoms: no object, or one whose class
+defines no `==` (a `data` type's). -/
+theorem value_finalIn (hwf : WfClasses P.classes) {s : Store} {v : Value} {t : Ty} (hv : s.hasTy P v t)
+    (hfin : t.allFinalIn P = true) :
+    (∀ l, v ≠ .obj l) ∨ ∃ l o, v = .obj l ∧ s.objs[l]? = some o ∧ P.lookup o.cls "==" = none := by
+  cases v
+  case obj l =>
+    right
+    rw [hasTy_iff] at hv
+    obtain ⟨a, ha, b, hb, hab⟩ := hv
+    obtain ⟨o, ho, _, rfl⟩ := typeOf_obj ha
+    have hfb := List.all_eq_true.mp hfin b hb
+    cases b with
+    | cls c args =>
+      cases args with
+      | cons => simp [Atom.finalIn, Atom.final] at hfb
+      | nil =>
+        simp only [Atom.finalIn, Bool.and_eq_true, beq_iff_eq, Option.isNone_iff_eq_none] at hfb
+        obtain ⟨hkd, hlk⟩ := hfb
+        rw [Atom.le_cls_iff hwf] at hab
+        rcases hab with ⟨rfl, _⟩ | ⟨x, hx, _⟩
+        · -- The root is no `data` type.
+          exfalso
+          cases h0 : P.classes[0]? with
+          | none => simp [ClassTable.kindOf, h0] at hkd
+          | some k0 => simp [ClassTable.kindOf, h0, hwf.rootKind k0 h0] at hkd
+        · have := ancestorArgs_data hwf hkd _ _ _ hx
+          exact ⟨l, o, rfl, ho, by rw [this]; exact hlk⟩
+    | _ => simp_all [Atom.finalIn, Atom.final, Atom.le]
+  all_goals exact .inl fun l h => by cases h
+
+/-- A value of final atoms whose atom is a value class's: of that atom
+alone. -/
+theorem hasTy_keep (hwf : WfClasses P.classes) {s : Store} {v : Value} {t : Ty} {a : Atom}
+    (hv : s.hasTy P v t) (hfin : t.allFinalIn P = true) (ha : s.typeOf v = some a)
+    (hfa : a.final = true) : s.hasTy P v (t.keep [a]) := by
   rw [hasTy_iff] at *
   obtain ⟨a', ha', b, hb, hab⟩ := hv
   rw [ha] at ha'; cases ha'
   have hfb := List.all_eq_true.mp hfin b hb
-  -- Below a final atom is only itself.
+  -- Below a final atom, a value class's atom is only itself.
   have hba : b = a := by
-    cases a <;> cases b <;> simp_all [Atom.final, Atom.le]
+    cases b with
+    | cls c args =>
+      cases args with
+      | cons => simp [Atom.finalIn, Atom.final] at hfb
+      | nil =>
+        simp only [Atom.finalIn, Bool.and_eq_true, beq_iff_eq] at hfb
+        exfalso
+        cases a <;> simp [Atom.final] at hfa <;> simp only [Atom.le, Bool.and_eq_true, beq_iff_eq] at hab <;>
+          (obtain ⟨rfl, _⟩ := hab
+           cases h0 : P.classes[0]? with
+           | none => simp [ClassTable.kindOf, h0] at hfb
+           | some k0 => simp [ClassTable.kindOf, h0, hwf.rootKind k0 h0] at hfb)
+    | _ => cases a <;> simp_all [Atom.finalIn, Atom.final, Atom.le]
   subst hba
   exact ⟨_, ha, _, List.mem_filter.mpr ⟨hb, by simp [Ty.keep]⟩, hab⟩
 

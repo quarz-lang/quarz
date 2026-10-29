@@ -567,8 +567,23 @@ theorem equal_nonobj {n : Nat} {s : Store} {v w : Value} (hv : ∀ l, v ≠ .obj
     | obj l => exact absurd rfl (hv l)
     | _ => rfl
 
+/-- `v == w` (`w` no object) on a value of final atoms: the built-in
+comparison. -/
+theorem equal_finalIn {n : Nat} {s : Store} {v w : Value} (hw : ∀ l, w ≠ .obj l)
+    (h : (∀ l, v ≠ .obj l) ∨ ∃ l o, v = .obj l ∧ s.objs[l]? = some o ∧ P.lookup o.cls "==" = none) :
+    equal P orc n s v w = .timeout ∨ equal P orc n s v w = .ok (.bool (v == w)) s := by
+  rcases h with h | ⟨l, o, rfl, ho, hl⟩
+  · exact equal_nonobj h
+  · cases n with
+    | zero => exact .inl rfl
+    | succ n =>
+      right
+      cases w
+      case obj l' => exact absurd rfl (hw l')
+      all_goals simp [equal, ho, hl]
+
 theorem finalRead_eq {c : Ctx} {Δ : Env} {e : Expr} {p : Path} {t : Ty} (hp : e.path? = some p)
-    (ht : c.pathTy Δ p = some t) : finalRead c Δ e = t.allFinal := by
+    (ht : c.pathTy Δ p = some t) : finalRead c Δ e = t.allFinalIn c.prog := by
   simp [finalRead, hp, ht]
 
 theorem OutOK.stable {c : Ctx} {g : Option Env} {fr : Frame} {s s' : Store} {W Wo : Nat → Prop}
@@ -1806,11 +1821,11 @@ theorem eval_succ : EvalGood P orc (n + 1) := by
     rw [hout] at hΔ; cases hΔ
     have hval : ∀ p, e.path? = some p → PathVal c.prog fr s1 p v := fun p hp => by
       obtain ⟨rfl, h⟩ := eval_read hp hr; exact h
-    by_cases hfin : ∃ p t, e.path? = some p ∧ c.pathTy Δ p = some t ∧ t.allFinal = true
+    by_cases hfin : ∃ p t, e.path? = some p ∧ c.pathTy Δ p = some t ∧ t.allFinalIn c.prog = true
     · -- A read of final atoms: no object, the built-in `==`, which narrows.
       obtain ⟨p, t, hp, ht, htf⟩ := hfin
       have hvt := (pathHolds_of_val hwf rfl hs1 hf1 hw1 ht (hval p hp)).1
-      rcases equal_nonobj (orc := orc) (n := n) (s := s1) (w := .nil) (not_obj_of_final (by rwa [Ty.subst_of_allFinal fr.selfArgs htf] at hvt) htf)
+      rcases equal_finalIn (orc := orc) (n := n) (s := s1) (w := .nil) (fun _ h => by cases h) (value_finalIn hwf (by rwa [Ty.subst_of_allFinalIn fr.selfArgs htf] at hvt) htf)
         with h | h
       · rw [h]; trivial
       · rw [h]
@@ -1821,14 +1836,14 @@ theorem eval_succ : EvalGood P orc (n + 1) := by
             rw [hp] at hp'; cases hp'; rw [ht] at ht'; cases ht'
             rw [finalRead_eq hp ht, htf, if_pos rfl]
             simp at hb; subst hb
-            rw [Ty.subst_of_allFinal fr.selfArgs (Ty.allFinal_keep htf _)]
-            rw [Ty.subst_of_allFinal fr.selfArgs htf] at hvt'
-            exact hasTy_keep hvt' htf rfl)
+            rw [Ty.subst_of_allFinalIn fr.selfArgs (Ty.allFinalIn_keep htf _)]
+            rw [Ty.subst_of_allFinalIn fr.selfArgs htf] at hvt'
+            exact hasTy_keep hwf hvt' htf rfl rfl)
           (fun p' t' hp' ht' hvt' hb => by
             rw [hp] at hp'; cases hp'; rw [ht] at ht'; cases ht'
             rw [finalRead_eq hp ht, htf, if_pos rfl]
-            rw [Ty.subst_of_allFinal fr.selfArgs (Ty.allFinal_remove htf _)]
-            rw [Ty.subst_of_allFinal fr.selfArgs htf] at hvt'
+            rw [Ty.subst_of_allFinalIn fr.selfArgs (Ty.allFinalIn_remove htf _)]
+            rw [Ty.subst_of_allFinalIn fr.selfArgs htf] at hvt'
             exact hasTy_remove_nil hvt' (by simpa using hb))
         exact ⟨Λ1, hw1, he1.monoW (evalW_mono (by simp [Expr.assigned])), hf1,
           by rw [testOut_ty]; exact hasTy_lit_bool, h1, fun h => h2 (by rwa [truthy_bool] at h),
@@ -1837,7 +1852,7 @@ theorem eval_succ : EvalGood P orc (n + 1) := by
       have hid : ∀ p t, e.path? = some p → c.pathTy Δ p = some t → finalRead c Δ e = false :=
         fun p t hp ht => by
           rw [finalRead_eq hp ht]
-          cases h : t.allFinal
+          cases h : t.allFinalIn c.prog
           · rfl
           · exact absurd ⟨p, t, hp, ht, h⟩ hfin
       obtain ⟨h1, h2, _⟩ := testOut_ok (b := true)
@@ -1879,11 +1894,11 @@ theorem eval_succ : EvalGood P orc (n + 1) := by
     rw [hout] at hΔ; cases hΔ
     have hval : ∀ p, e.path? = some p → PathVal c.prog fr s1 p v := fun p hp => by
       obtain ⟨rfl, h⟩ := eval_read hp hr; exact h
-    by_cases hfin : ∃ p t, e.path? = some p ∧ c.pathTy Δ p = some t ∧ t.allFinal = true
+    by_cases hfin : ∃ p t, e.path? = some p ∧ c.pathTy Δ p = some t ∧ t.allFinalIn c.prog = true
     · -- A read of final atoms: no object, the built-in `==`, which narrows.
       obtain ⟨p, t, hp, ht, htf⟩ := hfin
       have hvt := (pathHolds_of_val hwf rfl hs1 hf1 hw1 ht (hval p hp)).1
-      rcases equal_nonobj (orc := orc) (n := n) (s := s1) (w := .nil) (not_obj_of_final (by rwa [Ty.subst_of_allFinal fr.selfArgs htf] at hvt) htf)
+      rcases equal_finalIn (orc := orc) (n := n) (s := s1) (w := .nil) (fun _ h => by cases h) (value_finalIn hwf (by rwa [Ty.subst_of_allFinalIn fr.selfArgs htf] at hvt) htf)
         with h | h
       · rw [h]; trivial
       · rw [h]
@@ -1894,16 +1909,16 @@ theorem eval_succ : EvalGood P orc (n + 1) := by
           (fun p' t' hp' ht' hvt' hb => by
             rw [hp] at hp'; cases hp'; rw [ht] at ht'; cases ht'
             rw [finalRead_eq hp ht, htf, if_pos rfl]
-            rw [Ty.subst_of_allFinal fr.selfArgs (Ty.allFinal_remove htf _)]
-            rw [Ty.subst_of_allFinal fr.selfArgs htf] at hvt'
+            rw [Ty.subst_of_allFinalIn fr.selfArgs (Ty.allFinalIn_remove htf _)]
+            rw [Ty.subst_of_allFinalIn fr.selfArgs htf] at hvt'
             exact hasTy_remove_nil hvt' (by simpa using hb))
           (fun p' t' hp' ht' hvt' hb => by
             rw [hp] at hp'; cases hp'; rw [ht] at ht'; cases ht'
             rw [finalRead_eq hp ht, htf, if_pos rfl]
             simp at hb; subst hb
-            rw [Ty.subst_of_allFinal fr.selfArgs (Ty.allFinal_keep htf _)]
-            rw [Ty.subst_of_allFinal fr.selfArgs htf] at hvt'
-            exact hasTy_keep hvt' htf rfl)
+            rw [Ty.subst_of_allFinalIn fr.selfArgs (Ty.allFinalIn_keep htf _)]
+            rw [Ty.subst_of_allFinalIn fr.selfArgs htf] at hvt'
+            exact hasTy_keep hwf hvt' htf rfl rfl)
         exact ⟨Λ1, hw1, he1.monoW (evalW_mono (by simp [Expr.assigned])), hf1,
           by rw [testOut_ty]; exact hasTy_lit_bool, h1, fun h => h2 (by rwa [truthy_bool] at h),
           fun h => h3 (by rwa [truthy_bool] at h)⟩
@@ -1911,7 +1926,7 @@ theorem eval_succ : EvalGood P orc (n + 1) := by
       have hid : ∀ p t, e.path? = some p → c.pathTy Δ p = some t → finalRead c Δ e = false :=
         fun p t hp ht => by
           rw [finalRead_eq hp ht]
-          cases h : t.allFinal
+          cases h : t.allFinalIn c.prog
           · rfl
           · exact absurd ⟨p, t, hp, ht, h⟩ hfin
       obtain ⟨h1, h2, _⟩ := testOut_ok (b := true)
@@ -1954,11 +1969,11 @@ theorem eval_succ : EvalGood P orc (n + 1) := by
     rw [hout] at hΔ; cases hΔ
     have hval : ∀ p, e.path? = some p → PathVal c.prog fr s1 p v := fun p hp => by
       obtain ⟨rfl, h⟩ := eval_read hp hr; exact h
-    by_cases hfin : ∃ p t, e.path? = some p ∧ c.pathTy Δ p = some t ∧ t.allFinal = true
+    by_cases hfin : ∃ p t, e.path? = some p ∧ c.pathTy Δ p = some t ∧ t.allFinalIn c.prog = true
     · -- A read of final atoms: no object, the built-in `==`, which narrows.
       obtain ⟨p, t, hp, ht, htf⟩ := hfin
       have hvt := (pathHolds_of_val hwf rfl hs1 hf1 hw1 ht (hval p hp)).1
-      rcases equal_nonobj (orc := orc) (n := n) (s := s1) (w := (.bool true)) (not_obj_of_final (by rwa [Ty.subst_of_allFinal fr.selfArgs htf] at hvt) htf)
+      rcases equal_finalIn (orc := orc) (n := n) (s := s1) (w := (.bool true)) (fun _ h => by cases h) (value_finalIn hwf (by rwa [Ty.subst_of_allFinalIn fr.selfArgs htf] at hvt) htf)
         with h | h
       · rw [h]; trivial
       · rw [h]
@@ -1969,9 +1984,9 @@ theorem eval_succ : EvalGood P orc (n + 1) := by
             rw [hp] at hp'; cases hp'; rw [ht] at ht'; cases ht'
             rw [finalRead_eq hp ht, htf, if_pos rfl]
             simp at hb; subst hb
-            rw [Ty.subst_of_allFinal fr.selfArgs (Ty.allFinal_keep htf _)]
-            rw [Ty.subst_of_allFinal fr.selfArgs htf] at hvt'
-            exact hasTy_keep hvt' htf rfl)
+            rw [Ty.subst_of_allFinalIn fr.selfArgs (Ty.allFinalIn_keep htf _)]
+            rw [Ty.subst_of_allFinalIn fr.selfArgs htf] at hvt'
+            exact hasTy_keep hwf hvt' htf rfl rfl)
           (fun _ _ _ _ hvt' _ => hvt')
         exact ⟨Λ1, hw1, he1.monoW (evalW_mono (by simp [Expr.assigned])), hf1,
           by rw [testOut_ty]; exact hasTy_lit_bool, h1, fun h => h2 (by rwa [truthy_bool] at h),
@@ -1980,7 +1995,7 @@ theorem eval_succ : EvalGood P orc (n + 1) := by
       have hid : ∀ p t, e.path? = some p → c.pathTy Δ p = some t → finalRead c Δ e = false :=
         fun p t hp ht => by
           rw [finalRead_eq hp ht]
-          cases h : t.allFinal
+          cases h : t.allFinalIn c.prog
           · rfl
           · exact absurd ⟨p, t, hp, ht, h⟩ hfin
       obtain ⟨h1, h2, _⟩ := testOut_ok (b := true)
@@ -2022,11 +2037,11 @@ theorem eval_succ : EvalGood P orc (n + 1) := by
     rw [hout] at hΔ; cases hΔ
     have hval : ∀ p, e.path? = some p → PathVal c.prog fr s1 p v := fun p hp => by
       obtain ⟨rfl, h⟩ := eval_read hp hr; exact h
-    by_cases hfin : ∃ p t, e.path? = some p ∧ c.pathTy Δ p = some t ∧ t.allFinal = true
+    by_cases hfin : ∃ p t, e.path? = some p ∧ c.pathTy Δ p = some t ∧ t.allFinalIn c.prog = true
     · -- A read of final atoms: no object, the built-in `==`, which narrows.
       obtain ⟨p, t, hp, ht, htf⟩ := hfin
       have hvt := (pathHolds_of_val hwf rfl hs1 hf1 hw1 ht (hval p hp)).1
-      rcases equal_nonobj (orc := orc) (n := n) (s := s1) (w := (.bool false)) (not_obj_of_final (by rwa [Ty.subst_of_allFinal fr.selfArgs htf] at hvt) htf)
+      rcases equal_finalIn (orc := orc) (n := n) (s := s1) (w := (.bool false)) (fun _ h => by cases h) (value_finalIn hwf (by rwa [Ty.subst_of_allFinalIn fr.selfArgs htf] at hvt) htf)
         with h | h
       · rw [h]; trivial
       · rw [h]
@@ -2037,9 +2052,9 @@ theorem eval_succ : EvalGood P orc (n + 1) := by
             rw [hp] at hp'; cases hp'; rw [ht] at ht'; cases ht'
             rw [finalRead_eq hp ht, htf, if_pos rfl]
             simp at hb; subst hb
-            rw [Ty.subst_of_allFinal fr.selfArgs (Ty.allFinal_keep htf _)]
-            rw [Ty.subst_of_allFinal fr.selfArgs htf] at hvt'
-            exact hasTy_keep hvt' htf rfl)
+            rw [Ty.subst_of_allFinalIn fr.selfArgs (Ty.allFinalIn_keep htf _)]
+            rw [Ty.subst_of_allFinalIn fr.selfArgs htf] at hvt'
+            exact hasTy_keep hwf hvt' htf rfl rfl)
           (fun _ _ _ _ hvt' _ => hvt')
         exact ⟨Λ1, hw1, he1.monoW (evalW_mono (by simp [Expr.assigned])), hf1,
           by rw [testOut_ty]; exact hasTy_lit_bool, h1, fun h => h2 (by rwa [truthy_bool] at h),
@@ -2048,7 +2063,7 @@ theorem eval_succ : EvalGood P orc (n + 1) := by
       have hid : ∀ p t, e.path? = some p → c.pathTy Δ p = some t → finalRead c Δ e = false :=
         fun p t hp ht => by
           rw [finalRead_eq hp ht]
-          cases h : t.allFinal
+          cases h : t.allFinalIn c.prog
           · rfl
           · exact absurd ⟨p, t, hp, ht, h⟩ hfin
       obtain ⟨h1, h2, _⟩ := testOut_ok (b := true)

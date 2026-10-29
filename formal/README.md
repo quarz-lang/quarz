@@ -11,7 +11,9 @@ A small language with Quarz's core and nothing else (`QuarzCore/`):
 
 - `Types`: atoms (`Nil`, `Bool`, `Int`, `Str`, `Float`, a class with its
   type arguments, a type parameter of the enclosing class; the value
-  classes final, a class never: a subclass may define `==`), unions as
+  classes final, and a `data` type without type arguments whose `==` is
+  the built-in one, as nothing subclasses it; a class never: a subclass
+  may define `==`), unions as
   lists of atoms, the class table (each class with its parameters'
   variances and bounds and the arguments it gives its superclass), `≤`
   (a class is below another when its chain gives that class arguments
@@ -46,7 +48,8 @@ A small language with Quarz's core and nothing else (`QuarzCore/`):
   parameters, is checked with those substituted: the theorem holds up to
   type arguments (a value read as a `Box[Int]` was made as one).
 - `Program`: a whole program checked (the class table and the methods
-  well formed: superclass arguments as many as the parameters, in a
+  well formed: no class below a `data` type, superclass arguments as many
+  as the parameters, in a
   positive position and within the superclass's bounds, no more bounds
   than parameters, `new`'s type arguments within the bounds, overrides take at least and give at most what they
   override, as the subclass sees the overridden signature; the variance
@@ -101,7 +104,7 @@ undefined), and one whose bound is `Nothing` is vacuous (no value).
 
 Not in v1 (design in `/tmp`, kept by the maintainers): closures (lambdas,
 named blocks, what a closure assigns being un-narrowed from where it is
-made), patterns, `data`/`enum`, `rescue`/`ensure`, `super`
+made), patterns, `enum`, generic `data` types, `rescue`/`ensure`, `super`
 outside `initialize` (Ruby's `super` in other methods), in a block of
 it, or with a block, Shareable and tasks, extensions and overloads. Of
 generics: method type parameters and lower bounds `U >: T`, the
@@ -192,14 +195,16 @@ stricter, not unsound.
   with generic classes (`Box[T]`, `IntBox < Box[Int]`, `Pair[S, T]`,
   `OBox[out T]` with `each`, `Cell[T]` with a `var` field and `set`,
   `Sink[in T]`, `IntOBox < OBox[Int]`, `AHold[T <: A]` calling `A#get`
-  through its bound; one program in
+  through its bound, `data` types `DPt` and `DEq` (the latter with its
+  own `==`); one program in
   four with a generated `initialize` assigning a field and calling
   `super` in some order, one in four opening with uses of the boxes:
   boxes of either argument assigned to the box locals, what they give
   assigned to an `Int` local, tests of them; one in four a variance
   scenario: boxes, cells and sinks seen through a wider argument, called,
   written and given blocks through it, read back at the narrow one, and
-  holders made with an argument within the bound or not),
+  holders made with an argument within the bound or not, and `== nil`
+  tests of data values),
   runs those `check` accepts,
   and fails on one that gets stuck: a quick check of rule changes before
   their proofs are redone. With `≤` made to ignore the type arguments it
@@ -207,7 +212,9 @@ stricter, not unsound.
   20000, and so it does with invariant parameters compared as covariant
   ones (a `Str` set through a `Cell[Object]` that is a `Cell[Int]`) and
   with `new`'s arguments not checked against the bounds (an `AHold[E]`,
-  `E` no `A`, whose `ag` calls `get` on an `E`).
+  `E` no `A`, whose `ag` calls `get` on an `E`), and with a `data` type
+  taken as final though it defines `==` (a `DEq` read as `nil` after
+  `de == nil`).
 - `./conformance.sh` turns what `quarz check --tree` prints (docs/05 §1)
   into QCore and checks it with the model, for `corpus/` (in range by
   design) and every fixture and example (mostly out of range for now).
@@ -215,7 +222,12 @@ stricter, not unsound.
   most one bound, closed and of atoms taking no arguments, and their
   superclass's arguments take no arguments; methods
   a `static` statement generated (docs/14 §5: their bodies are not in
-  the tree) and `Type[T]` types are out of range; a read of a type
+  the tree) and `Type[T]` types are out of range; a `data` type without
+  type parameters is in range (its generated `initialize` assigns each
+  field in order; `to_h`, and `with` without keyword arguments, are
+  built-in calls); the model's `!=` is `!(==)`, so a program defining
+  its own `!=` is out of range where it tests `!= nil`; an integer
+  literal the Rust checker types as a `Float` is one; a read of a type
   parameter narrowed by a
   class test (`T & C`) is annotated `C`, a larger type than the Rust
   checker's, so a weaker claim.
