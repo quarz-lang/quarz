@@ -272,6 +272,7 @@ impl Session {
         self.loaded.push((file, name.clone(), main));
         if diagnostics.iter().any(|(_, d)| d.is_error()) {
             self.checker.drop_static_stmts(file, base);
+            diagnostics.append(&mut self.checker.take_diagnostics());
             return Err(diagnostics);
         }
         self.run_static_stmts(file, base, runner);
@@ -354,6 +355,7 @@ impl Session {
         if diagnostics.iter().any(|(_, d)| d.is_error()) {
             // Its statements do not run, now or with a later input.
             self.checker.drop_static_stmts(1, base);
+            diagnostics.append(&mut self.checker.take_diagnostics());
             return Err(diagnostics);
         }
         self.run_static_stmts(1, base, runner);

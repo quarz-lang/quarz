@@ -1640,6 +1640,25 @@ impl Checker {
                 self.static_done[i] = true;
             }
         }
+        // The unit's classes whose conformance waited for its statements
+        // are checked now: they stay declared, and a later unit's check
+        // would report them at its own place.
+        let (due, later): (Vec<ClassId>, Vec<ClassId>) =
+            std::mem::take(&mut self.world.conformance_deferred)
+                .into_iter()
+                .partition(|c| {
+                    let class = self.world.class(*c);
+                    class.file == file && class.span.start >= base
+                });
+        self.world.conformance_deferred = later;
+        if !due.is_empty() {
+            let world = std::mem::take(&mut self.world);
+            let mut declarer = crate::declare::Declarer::with_world(world);
+            declarer.recheck_conformance(&due);
+            self.diagnostics.append(&mut declarer.diagnostics);
+            self.world = std::mem::take(&mut declarer.world);
+            self.world.freeze_ancestors(true);
+        }
     }
 
     /// The classes whose `static` statements have not all run yet: their

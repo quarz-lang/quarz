@@ -209,6 +209,29 @@ fn static_statements_with_requires_and_failures() {
 }
 
 #[test]
+fn a_failed_inputs_classes_are_checked_with_it() {
+    // A class whose conformance waits for its input's statements (docs/14
+    // §5) is checked with that input when the input fails to declare, not
+    // reported by the next one.
+    let dir = std::env::temp_dir().join(format!("quarz-repl-conf-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("lib.qz"),
+        "abstract class Shape\n  abstract def side -> Int\n  static def self.a(m: Symbol) -> Void\n    def_method(m) { 1 }\n  end\nend\n",
+    )
+    .unwrap();
+    let lib = dir.join("lib").display().to_string();
+    let (out, _) = values(&[
+        &format!("require_relative \"{lib}\""),
+        "class Bad < Shape; a :side; def x -> Nope = 1; end",
+        "2 + 2",
+    ]);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(out[1].contains("unknown constant `Nope`"), "{out:?}");
+    assert!(!out[2].contains("must implement"), "{out:?}");
+}
+
+#[test]
 fn state_persists_across_inputs() {
     let (out, printed) = values(&[
         "x = 1",
