@@ -5,7 +5,7 @@
 //! resolve superclasses, includes, field types and method signatures in any
 //! order.
 
-use rustc_hash::FxHashMap as HashMap;
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::rc::Rc;
 
 use quarz_syntax::ast::*;
@@ -965,6 +965,10 @@ impl<'ast> Declarer<'ast> {
             self.file = e.file;
             self.resolve_extension(e);
         }
+        self.check_expansive_inheritance(
+            &pending.iter().map(|p| p.id).collect::<Vec<_>>(),
+            &pending_ext.iter().map(|e| e.id).collect::<Vec<_>>(),
+        );
         for p in &pending {
             self.file = self.pending_file(p);
             self.resolve_class_members(p);
@@ -1131,6 +1135,264 @@ impl<'ast> Declarer<'ast> {
                         ),
                         e.def.target.span,
                     );
+                }
+            }
+        }
+    }
+
+    /// Expansive inheritance is an error (Kennedy and Pierce): with
+    /// variance, `class C[X] < N[N[C[C[X]]]]` makes a subtype question
+    /// whose sub-questions grow without end. The graph's nodes are the
+    /// classes' parameter positions; a type application `D[.., a, ..]` in a
+    /// class's superclass or includes (an extension's includes too, its
+    /// parameters taken as the target class's) adds an edge from each of
+    /// the class's parameters in `a` to `D`'s position, expansive when `a`
+    /// nests the parameter in a class application, a tuple or a procedure
+    /// (a union with it as a member does not grow: `T?`). A parameter that
+    /// reaches itself through an expansive edge is refused at the class or
+    /// extension declared now (`ids`, `exts`; the cycle may go through
+    /// earlier files' classes), and the parent that makes it is dropped, so
+    /// that what follows terminates. (`extend` is left out: a class's
+    /// extended modules give class methods, not supertypes.)
+    fn check_expansive_inheritance(&mut self, ids: &[ClassId], exts: &[ExtensionId]) {
+        type Node = (ClassId, usize);
+        #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        enum Slot {
+            Super(ClassId),
+            Include(ClassId, usize),
+            Ext(ExtensionId, usize),
+        }
+        type Edges = HashMap<Node, Vec<(Node, bool, Slot)>>;
+        fn nests(a: &Type, p: TypeParamId) -> bool {
+            match a {
+                Type::Param(_) => false,
+                Type::Union(ms) => ms.iter().any(|m| nests(m, p)),
+                _ => a.mentions_param(p),
+            }
+        }
+        fn walk(t: &Type, params: &[TypeParamId], from: ClassId, slot: Slot, edges: &mut Edges) {
+            match t {
+                Type::Class(d, args) | Type::ClassObject(d, args) => {
+                    for (j, a) in args.iter().enumerate() {
+                        for (i, p) in params.iter().enumerate() {
+                            if a.mentions_param(*p) {
+                                edges.entry((from, i)).or_default().push((
+                                    (*d, j),
+                                    nests(a, *p),
+                                    slot,
+                                ));
+                            }
+                        }
+                        walk(a, params, from, slot, edges);
+                    }
+                }
+                Type::Union(ms) | Type::Tuple(ms) => {
+                    for m in ms {
+                        walk(m, params, from, slot, edges);
+                    }
+                }
+                Type::Proc(rc, ps, r, _) => {
+                    for x in rc
+                        .iter()
+                        .map(|b| &**b)
+                        .chain(ps)
+                        .chain(std::iter::once(&**r))
+                    {
+                        walk(x, params, from, slot, edges);
+                    }
+                }
+                Type::TypeOf(x) => walk(x, params, from, slot, edges),
+                _ => {}
+            }
+        }
+        let mut edges: Edges = HashMap::default();
+        for cid in 0..self.world.classes.len() as ClassId {
+            let class = self.world.class(cid);
+            if class.type_params.is_empty() {
+                continue;
+            }
+            let params: Vec<TypeParamId> = class.type_params.iter().map(|p| p.id).collect();
+            if let Some(t) = &class.superclass {
+                walk(t, &params, cid, Slot::Super(cid), &mut edges);
+            }
+            for (k, t) in class.includes.iter().enumerate() {
+                walk(t, &params, cid, Slot::Include(cid, k), &mut edges);
+            }
+        }
+        for (e, ext) in self.world.extensions.iter().enumerate() {
+            let target = self.world.class(ext.target);
+            if target.type_params.is_empty() || ext.includes.is_empty() {
+                continue;
+            }
+            let params: Vec<TypeParamId> = target.type_params.iter().map(|p| p.id).collect();
+            // The extension's parameters as the target's, where its target
+            // arguments are bare parameters.
+            let subst: HashMap<TypeParamId, Type> = ext
+                .target_args
+                .iter()
+                .zip(&params)
+                .filter_map(|(a, p)| match a {
+                    Type::Param(q) => Some((*q, Type::Param(*p))),
+                    _ => None,
+                })
+                .collect();
+            for (k, t) in ext.includes.iter().enumerate() {
+                walk(
+                    &t.subst(&subst),
+                    &params,
+                    ext.target,
+                    Slot::Ext(e as ExtensionId, k),
+                    &mut edges,
+                );
+            }
+        }
+        let new_slot = |slot: &Slot| match slot {
+            Slot::Super(c) | Slot::Include(c, _) => ids.contains(c),
+            Slot::Ext(e, _) => exts.contains(e),
+        };
+        // Every expansive edge's cycle (an old one may be closed by a new
+        // edge, in the REPL), refused at a slot declared now: the
+        // expansive one if new, else the first new edge on the cycle.
+        let mut refused: Vec<(Slot, ClassId, usize, Vec<ClassId>)> = Vec::new();
+        let sources: Vec<Node> = edges.keys().copied().collect();
+        for src in sources {
+            for &(to, expansive, slot) in edges[&src].clone().iter() {
+                if !expansive {
+                    continue;
+                }
+                let mut seen: HashSet<Node> = HashSet::default();
+                let mut prev: HashMap<Node, (Node, Slot)> = HashMap::default();
+                let mut queue = std::collections::VecDeque::from([to]);
+                seen.insert(to);
+                let mut found = false;
+                while let Some(u) = queue.pop_front() {
+                    if u == src {
+                        found = true;
+                        break;
+                    }
+                    for &(v, _, sl) in edges.get(&u).map(|v| v.as_slice()).unwrap_or(&[]) {
+                        if seen.insert(v) {
+                            prev.insert(v, (u, sl));
+                            queue.push_back(v);
+                        }
+                    }
+                }
+                if found {
+                    let mut through = vec![to.0];
+                    let mut path_slots = Vec::new();
+                    let mut u = src;
+                    while let Some(&(p, sl)) = prev.get(&u) {
+                        through.push(u.0);
+                        path_slots.push(sl);
+                        u = p;
+                    }
+                    let at = if new_slot(&slot) {
+                        Some(slot)
+                    } else {
+                        path_slots.iter().rev().copied().find(|sl| new_slot(sl))
+                    };
+                    if let Some(at) = at {
+                        refused.push((at, src.0, src.1, through));
+                    }
+                }
+            }
+        }
+        refused.sort_by_key(|r| r.0);
+        refused.dedup_by_key(|r| r.0);
+        for (slot, cid, i, through) in &refused {
+            let class = self.world.class(*cid).clone();
+            let mut names: Vec<String> = Vec::new();
+            for c in through {
+                let n = self.world.class(*c).name.clone();
+                if !names.contains(&n) {
+                    names.push(n);
+                }
+            }
+            let names: Vec<String> = names.iter().map(|n| format!("`{n}`")).collect();
+            let params: Vec<String> = class
+                .type_params
+                .iter()
+                .map(|p| self.world.type_param_name(p.id))
+                .collect();
+            let head = format!("{}[{}]", class.name, params.join(", "));
+            let (decl, span, file) = match *slot {
+                Slot::Super(_) => (
+                    format!(
+                        "{head} < {}",
+                        self.world.type_name(class.superclass.as_ref().unwrap())
+                    ),
+                    class.span,
+                    class.file,
+                ),
+                Slot::Include(_, k) => (
+                    format!(
+                        "{head} includes {}",
+                        self.world.type_name(&class.includes[k])
+                    ),
+                    class.span,
+                    class.file,
+                ),
+                Slot::Ext(e, k) => {
+                    // (In the extension's own names.)
+                    let ext = &self.world.extensions[e as usize];
+                    let own: Vec<String> = ext
+                        .type_params
+                        .iter()
+                        .map(|p| self.world.type_param_name(p.id))
+                        .collect();
+                    (
+                        format!(
+                            "extension {}[{}] includes {}",
+                            self.world.class(ext.target).name,
+                            own.join(", "),
+                            self.world.type_name(&ext.includes[k])
+                        ),
+                        ext.span,
+                        ext.file,
+                    )
+                }
+            };
+            let param = match *slot {
+                Slot::Ext(e, _) if self.world.extensions[e as usize].target == *cid => {
+                    match self.world.extensions[e as usize].target_args.get(*i) {
+                        Some(Type::Param(q)) => self.world.type_param_name(*q),
+                        _ => self.world.type_param_name(class.type_params[*i].id),
+                    }
+                }
+                _ => self.world.type_param_name(class.type_params[*i].id),
+            };
+            // (Whose parameter, when the refused slot is another's.)
+            let owner = match *slot {
+                Slot::Super(c) | Slot::Include(c, _) => c,
+                Slot::Ext(e, _) => self.world.extensions[e as usize].target,
+            };
+            let of = if owner == *cid {
+                String::new()
+            } else {
+                format!(" of `{}`", class.name)
+            };
+            self.file = file;
+            self.error(
+                format!("`{decl}`: expansive inheritance, `{param}`{of} grows through {}; subtyping would not terminate", names.join(" and ")),
+                span,
+            );
+        }
+        // Drop the refused parents (includes from the last, so that the
+        // others keep their indices).
+        let mut slots: Vec<Slot> = refused.into_iter().map(|r| r.0).collect();
+        slots.sort_by(|a, b| b.cmp(a));
+        for slot in slots {
+            match slot {
+                Slot::Super(c) => self.world.class_mut(c).superclass = None,
+                Slot::Include(c, k) => {
+                    self.world.class_mut(c).includes.remove(k);
+                }
+                Slot::Ext(e, k) => {
+                    let ty = self.world.extensions[e as usize].includes.remove(k);
+                    // (Nor checked later as an included module.)
+                    if let Some(at) = self.ext_includes.iter().position(|x| x.0 == e && x.1 == ty) {
+                        self.ext_includes.remove(at);
+                    }
                 }
             }
         }

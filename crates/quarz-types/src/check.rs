@@ -756,6 +756,10 @@ pub struct ReplSnapshot {
     self_news: Vec<SelfNew>,
 }
 
+/// The deepest `coerce` recursion: a defensive limit (see
+/// `World::is_subtype`).
+const COERCE_DEPTH: u32 = 256;
+
 pub struct Checker {
     /// A compound assignment's reader (`false`) and operator (`true`)
     /// found by each check, and those given up (`note_op_method`).
@@ -837,6 +841,10 @@ pub struct Checker {
     int_literals: rustc_hash::FxHashSet<NodeId>,
     /// `new` on the receiver in class methods: (the class, its
     /// `initialize`, the class method, where).
+    /// How deep `coerce` is in its own recursion (`COERCE_DEPTH`).
+    coerce_depth: u32,
+    /// The questions `coerce` is answering (`World::subtype_open`).
+    coerce_open: Vec<(Type, Type)>,
     self_news: Vec<SelfNew>,
     /// Set by `check_body` for the statement it checks next: its value is
     /// not used (a statement before the last, or the last of a body that
@@ -931,6 +939,8 @@ impl Checker {
             defaults_checked: HashSet::default(),
             init_checked: HashSet::default(),
             int_literals: Default::default(),
+            coerce_depth: 0,
+            coerce_open: Vec::new(),
             self_news: Vec::new(),
             stmt_unused: false,
             next_body_void: false,
@@ -2687,6 +2697,25 @@ impl Checker {
     /// Whether a value of type `actual` can be used where `expected` is
     /// required, binding inference variables on either side.
     fn coerce(&mut self, actual: &Type, expected: &Type) -> bool {
+        // A defensive limit, as `World::is_subtype`'s.
+        if self.coerce_depth >= COERCE_DEPTH {
+            return false;
+        }
+        // A question met again while being answered: no (see
+        // `World::subtype_open`).
+        let key = (self.infer.resolve(actual), self.infer.resolve(expected));
+        if key.0 != key.1 && self.coerce_open.contains(&key) {
+            return false;
+        }
+        self.coerce_open.push(key);
+        self.coerce_depth += 1;
+        let r = self.coerce_at(actual, expected);
+        self.coerce_depth -= 1;
+        self.coerce_open.pop();
+        r
+    }
+
+    fn coerce_at(&mut self, actual: &Type, expected: &Type) -> bool {
         // A `Void` result is `Nil` here: no variable is bound to `Void`.
         let a = self.world.unvoid(&self.infer.resolve(actual));
         let e = self.world.unvoid(&self.infer.resolve(expected));

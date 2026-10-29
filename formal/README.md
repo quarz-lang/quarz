@@ -133,7 +133,9 @@ rule): a superclass's arguments take no arguments themselves
 (`class IntBox < Box[Int]`, `class Pair[A, B] < Box[A]`,
 `class X[T] < Box[T?]`, not `class X < Box[Box[Int]]`), which bounds the
 types `≤` compares (with such arguments, expansive inheritance and
-variance make subtyping undecidable: Kennedy and Pierce, 2007); a
+variance make subtyping undecidable: Kennedy and Pierce, 2007; the
+Rust checker refuses only expansive inheritance, as docs/02 §3 says,
+so this range is stricter than the language); a
 parameter's bound is one type, closed, whose atoms take no arguments
 (`T <: Shape`, `T <: Int | String`; not `T <: Comparable[T]` nor
 `T <: A & B`). The conformance translator puts other programs out of
@@ -363,8 +365,9 @@ stricter, not unsound.
   `Int` at run time), as the model's `wfClasses` does; #116 made it
   (superclasses, included modules' arguments and bounds too). And with variance: expansive inheritance
   (`class N[in Z]; class C[X] < N[N[C[C[X]]]]`), out of the model's
-  range, makes the Rust checker's subtype check recurse without end on
-  `def f(x: C[Int]) -> N[C[Int]] = x` (a stack overflow). And with
+  range, made the Rust checker's subtype check recurse without end on
+  `def f(x: C[Int]) -> N[C[Int]] = x` (a stack overflow); the class is
+  now refused (docs/02 §3). And with
   `rescue`: `raise K, m` (and `raise K`) makes a `K` without running its
   `initialize` or its fields' defaults, so a field it declares is `nil`
   where its type says otherwise (the translator puts such a `raise` out

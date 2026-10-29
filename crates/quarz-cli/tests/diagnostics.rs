@@ -139,3 +139,57 @@ end
         "{out}"
     );
 }
+
+/// Expansive inheritance through a class of a required file.
+#[test]
+fn expansive_inheritance_across_files() {
+    let dir = std::env::temp_dir().join(format!("quarz-expansive-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("lib.qz"), "class N[in Z]\nend\n").unwrap();
+    std::fs::write(
+        dir.join("app.qz"),
+        "require_relative \"lib\"\nclass C[X] < N[N[C[C[X]]]]\nend\ndef f(x: C[Int]) -> N[C[Int]] = x\n",
+    )
+    .unwrap();
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_quarz"))
+        .args(["check", "app.qz"])
+        .current_dir(&dir)
+        .env("QUARZ_NO_CACHE", "1")
+        .output()
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success());
+    assert!(err.contains("expansive inheritance"), "{err}");
+}
+
+/// A 63-deep covariant coercion (the subtype checks' defensive depth
+/// limit is far above it).
+#[test]
+fn a_deep_coercion_is_checked() {
+    let dir = std::env::temp_dir().join(format!("quarz-deep-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let (mut t, mut u, mut v) = ("Int".to_string(), "Int?".to_string(), "1".to_string());
+    for _ in 0..63 {
+        t = format!("Array[{t}]");
+        u = format!("Array[{u}]");
+        v = format!("[{v}]");
+    }
+    std::fs::write(
+        dir.join("deep.qz"),
+        format!("def g(x: {t}) -> {u} = x\np g({v}).size\n"),
+    )
+    .unwrap();
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_quarz"))
+        .args(["check", "deep.qz"])
+        .current_dir(&dir)
+        .env("QUARZ_NO_CACHE", "1")
+        .output()
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}

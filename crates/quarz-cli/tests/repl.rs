@@ -638,3 +638,16 @@ fn ending_the_session_runs_at_exit_blocks() {
     let printed = String::from_utf8_lossy(&buffer.lock().unwrap()).into_owned();
     assert_eq!(printed, "bye\n");
 }
+
+#[test]
+fn expansive_inheritance_closed_by_a_later_input() {
+    // An extension in a later input closes an earlier class's expansive
+    // cycle: refused at the extension (it hung).
+    let (out, _) = values(&[
+        "module N[in Z]; end",
+        "class D[Y]; end",
+        "module C[X]\n  include N[N[D[D[X]]] | N[D[X]]]\nend",
+        "extension D[Y]\n  include C[Y]\nend",
+    ]);
+    assert!(out[3].contains("expansive inheritance"), "{out:?}");
+}
