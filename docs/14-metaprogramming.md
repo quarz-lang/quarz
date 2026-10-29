@@ -10,7 +10,7 @@ The mechanisms:
 | `static` statement | A call, in a class body, of a `static def` class method of a dependency | A Rails class macro (`has_many`), run when the class is compiled |
 | `Meta` | What compile-time code sees of the program: `Meta::ClassDef` (the class being declared), `Meta::Field`, `Meta::MethodSig` | `Module#instance_methods` and friends, at compile time only |
 
-No macros over strings or over untyped syntax trees (Rust's procedural macros): what runs at compile time is checked code, and what it builds is checked code.
+No macros over strings or over untyped syntax trees: what runs at compile time is checked code, and what it builds is checked code.
 
 ## 1. `static def`
 
