@@ -419,6 +419,11 @@ pub struct World {
     /// (`is_shareable`: bounds may be cyclic).
     #[serde(skip)]
     pub(crate) shareable_params: Vec<TypeParamId>,
+    /// The parameters taken as Shareable while their own class bound's
+    /// arguments are checked (`U <: B[U]`, `B` promising: every `U` is a
+    /// `B`, Shareable whatever the cycle).
+    #[serde(skip)]
+    shareable_assumed: Vec<TypeParamId>,
     /// The `data` types and enums whose observability is being computed
     /// (`data_observable`), and whether a computation leaned on one of
     /// them (its negative answer then holds only once they are done).
@@ -1203,6 +1208,32 @@ impl World {
 
     /// `sub <: sup` for types without unresolved inference variables (a
     /// `Var` is only a subtype of itself).
+    /// Whether `a[aargs]` seen as `b` keeps `b`'s Shareable promise: a
+    /// type Shareable by its arguments (a built-in collection, a `data`
+    /// type, an enum) is a Shareable `b` only when they are (docs/03): an
+    /// `Array[() -> Int]` is no `Shareable`.
+    pub fn keeps_shareable(&self, a: ClassId, aargs: &[Type], b: ClassId) -> bool {
+        if aargs.is_empty() || self.shareable_promise(b).is_none() {
+            return true;
+        }
+        let by_args = |c: ClassId| {
+            self.is_value_class(c)
+                || matches!(
+                    self.class(c).kind,
+                    ClassKind::Data | ClassKind::Enum | ClassKind::Variant
+                )
+        };
+        // (Seen as one that carries the arguments, `Array[T]` as
+        // `Array[U]`, its own rules apply.)
+        if !by_args(a) || by_args(b) {
+            return true;
+        }
+        let shareable = Type::class(self.builtin.shareable);
+        aargs
+            .iter()
+            .all(|t| t.has_vars() || self.is_subtype(t, &shareable))
+    }
+
     pub fn is_subtype(&self, sub: &Type, sup: &Type) -> bool {
         if sub == sup || sub.is_nothing() {
             return true;
@@ -1219,7 +1250,8 @@ impl World {
             (Type::Class(a, aargs), Type::Class(b, bargs)) => {
                 for (anc, anc_args) in self.ancestors(*a, aargs) {
                     if anc == *b {
-                        return self.args_compatible(*b, &anc_args, bargs);
+                        return self.args_compatible(*b, &anc_args, bargs)
+                            && self.keeps_shareable(*a, aargs, *b);
                     }
                 }
                 false
@@ -1268,7 +1300,12 @@ impl World {
                     _ => false,
                 }
             }
-            (Type::Tuple(_), Type::Class(b, _)) => self.class_is_a(self.builtin.array, *b),
+            // (Seen as an array of its elements, also for the Shareable
+            // promise: `[counter, 1]` is no `Shareable`.)
+            (Type::Tuple(xs), Type::Class(b, _)) => {
+                self.class_is_a(self.builtin.array, *b)
+                    && self.keeps_shareable(self.builtin.array, &[Type::union_of(xs.clone())], *b)
+            }
             (Type::Proc(ra, ps, r, sa), Type::Proc(rb, qs, s, sb)) => {
                 // A shareable procedure is a procedure; not the reverse.
                 if *sb && !*sa {
@@ -1898,6 +1935,9 @@ impl World {
             // enum, which nothing extends, that is Shareable; another
             // parameter, by its own bounds.
             Type::Param(p) => {
+                if self.shareable_assumed.contains(p) {
+                    return true;
+                }
                 if self.shareable_params.contains(p) {
                     return false;
                 }
@@ -1909,25 +1949,24 @@ impl World {
                         if id == self.builtin.shareable {
                             return true;
                         }
+                        // (A built-in value class, `Int`, has no
+                        // subclasses either.)
                         let closed =
-                            matches!(self.class(id).kind, ClassKind::Data | ClassKind::Enum);
+                            matches!(self.class(id).kind, ClassKind::Data | ClassKind::Enum)
+                                || self.is_value_class(id);
                         if self.shareable_promise(id).is_some() || closed {
-                            self.is_shareable(&Type::Class(id, args.clone()))
+                            self.shareable_assumed.push(*p);
+                            let r = self.is_shareable(&Type::Class(id, args.clone()));
+                            self.shareable_assumed.pop();
+                            r
                         } else {
                             false
                         }
                     }
                     // (A parameter met again, through cyclic bounds, is
                     // not taken as Shareable.)
-                    Type::Param(q) => {
-                        if self.shareable_params.contains(q) {
-                            return false;
-                        }
-                        self.shareable_params.push(*q);
-                        let r = self.is_shareable(b);
-                        self.shareable_params.pop();
-                        r
-                    }
+                    // (Its own arm guards against a cycle.)
+                    Type::Param(_) => self.is_shareable(b),
                     _ => false,
                 });
                 self.shareable_params.pop();
@@ -2140,11 +2179,53 @@ impl World {
             .chain(enum_params.iter().flatten())
             .map(|p| (p.id, Type::Nothing))
             .collect();
+        // A class that promises Shareable keeps the promise for every
+        // instance, whatever its arguments: a parameter in a field's type
+        // must be Shareable by its bounds (docs/03). (A `data` type or an
+        // enum is Shareable by its arguments instead, as a collection.)
+        // (So does a `data` type or an enum that takes the promise from a
+        // module: the module's methods see its values as the module's
+        // type, which carries no arguments.)
+        let marker = self.builtin.shareable;
+        let promised = match self.shareable_promise(id) {
+            Some(via) => {
+                class.kind == ClassKind::Class
+                    || (via != marker && self.class(via).kind == ClassKind::Module)
+            }
+            None => false,
+        };
+        let own: Vec<TypeParamId> = class
+            .type_params
+            .iter()
+            .chain(enum_params.iter().flatten())
+            .map(|p| p.id)
+            .collect();
         for (f, subst) in self.all_fields(id) {
             if f.mutable {
                 return Some(format!("its field `@{}` is `var`", f.name));
             }
-            let ty = f.ty.subst(&subst).subst(&erase);
+            let ty = f.ty.subst(&subst);
+            if promised {
+                for &p in &own {
+                    // (Only where the argument can make the field's value
+                    // non-Shareable: not in a `Type[T]` or a shareable
+                    // procedure's type.)
+                    let unshareable = Type::Proc(None, Vec::new(), Box::new(Type::Nothing), false);
+                    let witness: HashMap<TypeParamId, Type> =
+                        [(p, unshareable)].into_iter().collect();
+                    if ty.mentions_param(p)
+                        && !self.is_shareable(&ty.subst(&witness).subst(&erase))
+                        && !self.is_shareable(&Type::Param(p))
+                    {
+                        let name = self.type_param_name(p);
+                        return Some(format!(
+                            "its parameter `{name}` may be a non-Shareable type (its field `@{}` holds one): bound it `{name} <: Shareable`",
+                            f.name
+                        ));
+                    }
+                }
+            }
+            let ty = ty.subst(&erase);
             if !self.is_shareable(&ty) {
                 return Some(format!(
                     "its field `@{}` has the non-shareable type {}",

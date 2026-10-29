@@ -2619,6 +2619,9 @@ impl Checker {
                 let Some((_, anc_args)) = ancestors.into_iter().find(|(id, _)| id == eid) else {
                     return false;
                 };
+                if !self.world.keeps_shareable(*aid, aargs, *eid) {
+                    return false;
+                }
                 if anc_args.len() != eargs.len() {
                     return anc_args.is_empty() || eargs.is_empty();
                 }
@@ -2691,7 +2694,11 @@ impl Checker {
                     let target = eargs[0].clone();
                     return self.coerce(&elem, &target);
                 }
-                self.world.class_is_a(self.world.builtin.array, *eid)
+                let array = self.world.builtin.array;
+                self.world.class_is_a(array, *eid)
+                    && self
+                        .world
+                        .keeps_shareable(array, &[Type::union_of(xs.clone())], *eid)
             }
             (Type::Proc(ra, ps, r, sa), Type::Proc(rb, qs, s, sb)) => {
                 // A shareable procedure is a procedure; not the reverse.
@@ -5850,7 +5857,9 @@ impl Checker {
                 let ct = self.resolve(&ct);
                 if let (Some(st), Type::ClassObject(cid, _)) = (&subject_ty, &ct) {
                     let target = Type::class(*cid);
-                    let (yes, no) = self.split_by_type(st, &target);
+                    let st = st.clone();
+                    self.check_testable(&st, &target, "when", ce.span);
+                    let (yes, no) = self.split_by_type(&st, &target);
                     narrowed_to.push(yes);
                     if let Some(rem) = &remaining {
                         let (_, rest) = self.split_by_type(rem, &target);
@@ -10615,8 +10624,39 @@ impl Checker {
     /// elements of built-in collections and tuples. Other type arguments
     /// (`Box[Int]`, a procedure's parameters) are not checked, so a value
     /// that may be of the class must already be of the type.
-    fn check_testable(&mut self, rt: &Type, target: &Type, op: &str, span: Span) {
+    pub(crate) fn check_testable(&mut self, rt: &Type, target: &Type, op: &str, span: Span) {
         let rt = self.resolve(rt);
+        // Against `Shareable` (or a module that promises it), the run-time
+        // test sees the class only: of a value Shareable by its arguments
+        // or elements (`[counter]` is an `Array`, which includes
+        // `Shareable`), it would answer yes (docs/03).
+        for tm in target.members() {
+            let Type::Class(tid, _) = &tm else { continue };
+            let tid = *tid;
+            let promising = tid == self.world.builtin.shareable
+                || (self.world.class(tid).kind == ClassKind::Module
+                    && self.world.shareable_promise(tid).is_some());
+            if !promising {
+                continue;
+            }
+            for m in rt.members() {
+                if self.world.is_subtype(&m, &tm)
+                    || !self.may_be_of_class(&m, &tm)
+                    || !self.shareable_by_args(&m)
+                {
+                    continue;
+                }
+                self.error(
+                    format!(
+                        "`{op}` cannot be checked at run time against {}: whether a value of type {} is Shareable depends on what it holds, which the test does not see",
+                        self.name(&tm),
+                        self.name(&m)
+                    ),
+                    span,
+                );
+                return;
+            }
+        }
         for tm in target.members() {
             if !self.unverifiable(&tm) {
                 continue;
@@ -10635,6 +10675,31 @@ impl Checker {
                 );
                 return;
             }
+        }
+    }
+
+    /// Whether a value of type `t` may be one whose Shareability depends on
+    /// its arguments or elements, which a run-time class test does not see:
+    /// a collection, a tuple, a generic `data` type or enum, or what may
+    /// hold one (`Object`, a module, a parameter not bounded Shareable).
+    fn shareable_by_args(&mut self, t: &Type) -> bool {
+        let b = self.world.builtin.clone();
+        match t {
+            Type::Class(id, args) => {
+                let class = self.world.class(*id);
+                *id == b.object
+                    || class.kind == ClassKind::Module
+                    || (!args.is_empty()
+                        && (self.world.is_value_class(*id)
+                            || matches!(
+                                class.kind,
+                                ClassKind::Data | ClassKind::Enum | ClassKind::Variant
+                            )))
+            }
+            Type::Tuple(_) => true,
+            Type::Param(_) => !self.world.is_shareable(t),
+            Type::Union(ms) => ms.clone().iter().any(|m| self.shareable_by_args(m)),
+            _ => false,
         }
     }
 
