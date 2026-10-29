@@ -526,11 +526,6 @@ impl<'src> Parser<'src> {
             {
                 return self.parse_modified_declaration();
             }
-            // Reserved for a compile-time evaluation form (docs/14).
-            "static" if matches!(next, T::LParen) => {
-                let span = self.peek().span;
-                return Err(self.error_at("`static(...)` is reserved", span));
-            }
             "private" | "protected" | "public"
                 if matches!(next, T::Symbol(_) | T::Newline | T::Eof) =>
             {
@@ -1744,10 +1739,16 @@ impl<'src> Parser<'src> {
                 let expr = self.node(span, ExprKind::Const(path));
                 self.maybe_type_app(expr)
             }
-            // Reserved for a compile-time evaluation form (docs/14).
+            // `static(expr)`: evaluated at compile time (docs/14 §8).
             T::Ident(name) if name == "static" && matches!(self.kind_at(1), T::LParen) => {
-                let span = self.peek().span;
-                Err(self.error_at("`static(...)` is reserved", span))
+                self.bump();
+                self.expect(&T::LParen, "`(`")?;
+                self.skip_newlines();
+                let inner = self.parse_expr()?;
+                self.skip_newlines();
+                self.expect(&T::RParen, "`)`")?;
+                let span = self.span_from(start);
+                Ok(self.node(span, ExprKind::Static(Box::new(inner))))
             }
             T::Ident(name) => {
                 // `using M do ... end` is an expression too.

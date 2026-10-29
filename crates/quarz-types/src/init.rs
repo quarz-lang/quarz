@@ -487,6 +487,7 @@ impl<'a> InitCheck<'a> {
                 Self::join(st, after_b)
             }
             ExprKind::Not(a) => self.expr(a, st),
+            ExprKind::Static(a) => self.expr(a, st),
             ExprKind::If { cond, then, els } => {
                 let st = self.expr(cond, st);
                 let t = self.body(then, st.clone());

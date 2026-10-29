@@ -2483,15 +2483,10 @@ fn static_declarations() {
     // A `static def` that does not reach `Meta` is also an ordinary
     // method, callable at run time.
     ok("class M\n  static def self.twice(x: Int) -> Int = x * 2\nend\np M.twice(2)");
-    // `static(...)` is reserved.
-    let parsed = quarz_syntax::parse("x = static(1)");
-    assert!(
-        parsed
-            .diagnostics
-            .iter()
-            .any(|d| d.message.contains("`static(...)` is reserved")),
-        "{:?}",
-        parsed.diagnostics
+    // `static(...)` takes a call of a `static def` (docs/14 §8).
+    err(
+        "x = static(1)",
+        "`static(...)` takes a call of a `static def`",
     );
     let parsed = quarz_syntax::parse("class A\n  static abstract def x -> Int\nend");
     assert!(

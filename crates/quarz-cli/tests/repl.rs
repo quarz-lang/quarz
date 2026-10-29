@@ -334,6 +334,29 @@ fn a_task_suspended_in_a_call_outlives_inputs() {
 }
 
 #[test]
+fn static_expressions_in_the_session() {
+    // docs/14 §8: `static(...)` of an earlier input's `static def`.
+    let (out, _) = values(&[
+        "class K; static def self.v(n: Int) -> Int = n * 10; end",
+        "static(K.v(4)) + 1",
+        "class J; static def self.w -> Int = 1; def x -> Int = static(J.w); end",
+    ]);
+    assert_eq!(out[1], "=> 41", "{out:?}");
+    assert!(
+        out[2].contains("`w` is a `static def` of this input"),
+        "{out:?}"
+    );
+    // A field default's value is baked, not computed on each `new`.
+    let (out2, printed) = values(&[
+        "class K2; static def self.v(n: Int) -> Int; puts \"ran\"; n * 10; end; end",
+        "class H2; @f: Int = static(K2.v(3)); def f -> Int = @f; end",
+        "H2.new.f + H2.new.f",
+    ]);
+    assert_eq!(out2[2], "=> 60", "{out2:?}");
+    assert_eq!(printed.matches("ran").count(), 1, "printed: {printed:?}");
+}
+
+#[test]
 fn state_persists_across_inputs() {
     let (out, printed) = values(&[
         "x = 1",

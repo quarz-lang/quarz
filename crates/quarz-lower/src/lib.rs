@@ -99,6 +99,13 @@ pub struct Lowerer {
     pub(crate) quoted_once: bool,
     /// Those constants, after the world's: each builds a tree.
     pub(crate) quoted_consts: Vec<RtConst>,
+    /// Set by the function being built when a `static(...)` in it had no
+    /// value yet (a compile-time run reached it before the expressions
+    /// were evaluated) and was lowered as its call (docs/14 §8).
+    pub(crate) static_fallback: bool,
+    /// The methods, constants and field defaults lowered so, lowered
+    /// again once the values are known (`relower_static_fallbacks`).
+    static_fallbacks: Vec<FallbackOwner>,
     pub(crate) field_default_funcs: HashMap<(ClassId, usize), FuncId>,
     /// Whether an instance of the class (one of a subclass included) may
     /// have a `deinitialize`: its `initialize` marks where the object
@@ -126,7 +133,58 @@ pub struct Lowerer {
     scanned: usize,
 }
 
+/// What a function lowered with a `static(...)` as its call belongs to.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum FallbackOwner {
+    Method(MethodId),
+    Const(ConstId),
+    FieldDefault(ClassId, usize),
+}
+
 impl Lowerer {
+    /// Lower again what was lowered while a `static(...)` in it had no
+    /// value (`static_fallback`): the program must bake the value, not
+    /// call (docs/14 §8). Its old functions stay, unreferenced.
+    pub fn relower_static_fallbacks(&mut self) {
+        for owner in std::mem::take(&mut self.static_fallbacks) {
+            match owner {
+                // As `invalidate_layout` does: a static round lowers them
+                // again too (`static_retry`: the names they were reached by
+                // are not walked again).
+                FallbackOwner::Method(m) => {
+                    if let Some(f) = self.method_funcs.get_mut(m as usize) {
+                        *f = None;
+                    }
+                    if let Some(r) = self.reached.get_mut(m as usize) {
+                        *r = false;
+                    }
+                    self.static_retry.push(m);
+                }
+                FallbackOwner::Const(c) => {
+                    if let Some(f) = self.const_funcs.get_mut(c as usize) {
+                        *f = None;
+                    }
+                    self.static_retry_consts.push(c);
+                }
+                FallbackOwner::FieldDefault(c, i) => {
+                    self.field_default_funcs.remove(&(c, i));
+                }
+            }
+        }
+    }
+
+    /// Build with `f`, noting `owner` when what it builds lowered a
+    /// `static(...)` as its call.
+    fn noting_fallback<R>(&mut self, owner: FallbackOwner, f: impl FnOnce(&mut Self) -> R) -> R {
+        let outer = std::mem::take(&mut self.static_fallback);
+        let r = f(self);
+        if self.static_fallback && !self.static_fallbacks.contains(&owner) {
+            self.static_fallbacks.push(owner);
+        }
+        self.static_fallback = outer;
+        r
+    }
+
     /// Forget what was lowered for the methods, constants and classes
     /// from `methods`, `consts` and `classes` on: the REPL rolled back a
     /// failed input (docs/05 §7), whose ids the next input reuses. The
@@ -469,7 +527,9 @@ impl Lowerer {
         }
         let id = self.alloc_func();
         self.method_funcs[mid as usize] = Some(id);
-        let f = FnBuilder::method(self, world, out, mid, body);
+        let f = self.noting_fallback(FallbackOwner::Method(mid), |lw| {
+            FnBuilder::method(lw, world, out, mid, body)
+        });
         self.set_func(id, f);
     }
 
@@ -562,7 +622,9 @@ impl Lowerer {
         let id = self.alloc_func();
         self.const_funcs[cid as usize] = Some(id);
         let name = format!("const {}", c.name);
-        let f = FnBuilder::init(self, world, out, name, c.file, c.owner, value);
+        let f = self.noting_fallback(FallbackOwner::Const(cid), |lw| {
+            FnBuilder::init(lw, world, out, name, c.file, c.owner, value)
+        });
         self.set_func(id, f);
     }
 
@@ -623,15 +685,17 @@ impl Lowerer {
                 }
                 let id = self.alloc_func();
                 self.field_default_funcs.insert((class_info.id, i), id);
-                let f = FnBuilder::init(
-                    self,
-                    world,
-                    out,
-                    name,
-                    class_info.file,
-                    Some(class_info.id),
-                    default,
-                );
+                let f = self.noting_fallback(FallbackOwner::FieldDefault(class_info.id, i), |lw| {
+                    FnBuilder::init(
+                        lw,
+                        world,
+                        out,
+                        name,
+                        class_info.file,
+                        Some(class_info.id),
+                        default,
+                    )
+                });
                 self.set_func(id, f);
             }
         }
@@ -870,6 +934,7 @@ pub fn lower_checked_with(mut lw: Lowerer, checked: &Checked, files: &[SourceFil
         })
         .collect();
     lw.quoted_once = true;
+    lw.relower_static_fallbacks();
     let delta = lw.lower(&checked.world, &checked.output, &inputs, all);
     let mut functions = std::mem::take(&mut lw.done);
     assert_eq!(functions.len(), delta.base as usize);

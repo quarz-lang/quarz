@@ -1354,7 +1354,7 @@ impl Interp {
         fid: FuncId,
         self_val: Value,
         file: u32,
-    ) -> Result<(), StaticEnd> {
+    ) -> Result<Value, StaticEnd> {
         let me = self.clone();
         let run_body: Box<dyn FnOnce() -> TaskExit> = Box::new(move || {
             let result = me.run_init(fid, self_val, file);
@@ -1373,7 +1373,7 @@ impl Interp {
             return Err(StaticEnd::Exited(status as i32));
         }
         match root.result() {
-            Some(TaskResult::Value(_)) => Ok(()),
+            Some(TaskResult::Value(v)) => Ok(v),
             Some(TaskResult::Error(e)) => Err(StaticEnd::Raised(e)),
             None => Err(StaticEnd::Exited(code)),
         }

@@ -152,6 +152,8 @@ impl Remap for Output {
             method(m, x);
         }
         values(&mut self.lifted_blocks, |t| t.remap(m));
+        values(&mut self.static_exprs, |(_, c, _)| class(m, c));
+        // (`static_values` are filled after the check, never read back.)
         values(&mut self.type_args, |args| {
             for (p, t) in args {
                 *p = m.type_params.get(*p);

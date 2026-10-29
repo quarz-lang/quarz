@@ -201,6 +201,9 @@ impl Repl {
             );
             match loaded {
                 Ok(units) => {
+                    // What its runs lowered before its `static(...)` values
+                    // were known, lowered again with them (docs/14 §8).
+                    self.lowerer.relower_static_fallbacks();
                     for unit in units {
                         if let Some(outcome) = self.run_unit(unit) {
                             return outcome;
@@ -228,6 +231,9 @@ impl Repl {
                 );
                 match loaded {
                     Ok(units) => {
+                        // What its runs lowered before its `static(...)` values
+                        // were known, lowered again with them (docs/14 §8).
+                        self.lowerer.relower_static_fallbacks();
                         for unit in units {
                             if let Some(outcome) = self.run_unit(unit) {
                                 return outcome;
@@ -261,6 +267,7 @@ impl Repl {
             Ok(body) => body,
             Err(diags) => return Outcome::Errors(self.render(&diags, &file)),
         };
+        self.lowerer.relower_static_fallbacks();
         // Declarations, `require`s and `using`s have no value to show.
         if body
             .iter()

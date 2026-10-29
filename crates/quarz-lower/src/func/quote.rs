@@ -159,7 +159,8 @@ impl<'a> FnBuilder<'a> {
             | ExprKind::Float(_)
             | ExprKind::Bytes(_)
             | ExprKind::Symbol(_)
-            | ExprKind::Regexp { .. } => self.lit(e, line),
+            | ExprKind::Regexp { .. }
+            | ExprKind::Static(_) => self.lit(e, line),
             ExprKind::Str(parts) => {
                 if parts.iter().all(|p| matches!(p, StrPart::Lit(_))) {
                     return self.lit(e, line);

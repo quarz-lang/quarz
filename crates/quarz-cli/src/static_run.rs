@@ -610,13 +610,16 @@ fn methods_by_name(world: &RtWorld) -> HashMap<&str, Vec<MethodId>> {
     out
 }
 
-impl StaticRunner for Runner {
-    fn run(
+impl Runner {
+    /// A statement's or a `static(...)`'s call (docs/14 §2, §8), lowered,
+    /// checked for what it reaches, and run: its value, what it asked to
+    /// generate, and the interpreter it ran on.
+    fn execute(
         &mut self,
         host: &mut dyn StaticHost,
         stmt: &StaticStmt,
         callee: MethodId,
-    ) -> Result<(), StaticFailure> {
+    ) -> Result<(Value, Vec<Pending>, std::rc::Rc<Interp>), StaticFailure> {
         if !self.prepared {
             host.prepare();
             self.prepared = true;
@@ -672,10 +675,9 @@ impl StaticRunner for Runner {
             .set(Some(std::time::Instant::now() + limit()));
         let result = interp.run_static(fid, Value::Class(stmt.class), stmt.file);
         match result {
-            Ok(()) => {
+            Ok(value) => {
                 let pending = std::mem::take(&mut *reflect.generated.borrow_mut());
-                drop(interp);
-                self.generate(host, stmt, pending)
+                Ok((value, pending, interp))
             }
             Err(StaticEnd::Raised(exc)) => {
                 let class = interp.class_name(&exc);
@@ -696,6 +698,42 @@ impl StaticRunner for Runner {
                 notes: Vec::new(),
             }),
         }
+    }
+}
+
+impl StaticRunner for Runner {
+    fn run(
+        &mut self,
+        host: &mut dyn StaticHost,
+        stmt: &StaticStmt,
+        callee: MethodId,
+    ) -> Result<(), StaticFailure> {
+        let (_, pending, interp) = self.execute(host, stmt, callee)?;
+        drop(interp);
+        self.generate(host, stmt, pending)
+    }
+
+    fn eval(
+        &mut self,
+        host: &mut dyn StaticHost,
+        stmt: &StaticStmt,
+        callee: MethodId,
+    ) -> Result<Baked, StaticFailure> {
+        let (value, pending, interp) = self.execute(host, stmt, callee)?;
+        let fail = |message: String| StaticFailure {
+            message,
+            notes: Vec::new(),
+        };
+        if !pending.is_empty() {
+            return Err(fail(
+                "`static(...)` gives a value: what it calls cannot generate members (`def_method`, `def_field`)".to_string(),
+            ));
+        }
+        bake(&interp, &value).map_err(|why| {
+            fail(format!(
+                "`static(...)` gives a value that cannot be baked into the program: {why}"
+            ))
+        })
     }
 
     fn reset(&mut self) {
@@ -757,7 +795,7 @@ struct PendingGen {
 fn bake(interp: &Interp, v: &Value) -> Result<Baked, String> {
     let cannot = |interp: &Interp, v: &Value| {
         Err(format!(
-            "a value of class `{}` cannot be baked into a generated method; a block given to `def_method` captures only immutable values (literals, classes, `data`)",
+            "a value of class `{}` cannot be baked into the program: only immutable values can (literals, classes, `data` of such)",
             interp.class_name(v)
         ))
     };
@@ -1069,6 +1107,9 @@ pub fn compile_time_only_calls_in(
     // statement ran: no class is left out any more.
     let lowerer = &mut runner.lowerer;
     lowerer.static_skip.clear();
+    // What the statements' runs lowered before the `static(...)` values
+    // were known, lowered again with them (docs/14 §8).
+    lowerer.relower_static_fallbacks();
     let mut rt: Option<RtWorld> = None;
     let dummy = quarz_syntax::ast::Expr {
         id: u32::MAX,
