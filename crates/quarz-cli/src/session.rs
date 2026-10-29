@@ -30,6 +30,9 @@ pub struct Repl {
     /// The interpreter of the last input, which `finish` ends the session
     /// with.
     last: Option<Rc<Interp>>,
+    /// The sources of the files a failed input loaded, gone from the
+    /// session with it, for its diagnostics.
+    failed_sources: Vec<(u32, SourceFile)>,
 }
 
 /// What happened to one line of input.
@@ -113,6 +116,7 @@ impl Repl {
             units: Vec::new(),
             files,
             last: None,
+            failed_sources: Vec::new(),
         })
     }
 
@@ -181,7 +185,7 @@ impl Repl {
             self.session.std_loaded(m)
         });
         for module in implicit {
-            let loaded = self.with_runner(
+            let loaded = self.guarded(
                 |session, runner| -> Result<Vec<CheckedUnit>, Vec<FileDiagnostic>> {
                     let units = session.require(
                         module,
@@ -208,7 +212,7 @@ impl Repl {
         }
         for expr in &parsed.program.body {
             if let ExprKind::Require { path, relative } = &expr.kind {
-                let loaded = self.with_runner(
+                let loaded = self.guarded(
                     |session, runner| -> Result<Vec<CheckedUnit>, Vec<FileDiagnostic>> {
                         let units = session.require(
                             path,
@@ -237,7 +241,7 @@ impl Repl {
         // The input's class bodies' `static` statements run in the
         // session (docs/14 §2); a call of a compile-time-only `static def`
         // in it (or in what it required) is an error, as in a program.
-        let fed = self.with_runner(|session, runner| {
+        let fed = self.guarded(|session, runner| {
             let body = session.feed(&parsed.program, base, Some(&mut *runner))?;
             let files = runner.files().to_vec();
             let errors = crate::static_run::compile_time_only_calls_in(
@@ -282,6 +286,32 @@ impl Repl {
         self.state = interp.shared_state();
         self.last = Some(interp);
         outcome
+    }
+
+    /// `with_runner`, and if `f` fails, the session as it was before it
+    /// (docs/05 §7: a failed input is discarded): the checker's state, and
+    /// what the lowering and the interpreter keep by the ids of the
+    /// classes, methods and constants it declared, which the next input
+    /// reuses.
+    fn guarded<T>(
+        &mut self,
+        f: impl FnOnce(&mut Session, &mut Runner) -> Result<T, Vec<FileDiagnostic>>,
+    ) -> Result<T, Vec<FileDiagnostic>> {
+        let checkpoint = self.session.checkpoint();
+        let (classes, methods, consts) =
+            (checkpoint.classes, checkpoint.methods, checkpoint.consts);
+        let result = self.with_runner(f);
+        if let Err(diags) = &result {
+            self.failed_sources = diags
+                .iter()
+                .filter_map(|(i, _)| Some((*i, self.session.source(*i)?.clone())))
+                .collect();
+            self.session.rollback(checkpoint);
+            self.lowerer.forget(methods, consts, classes);
+            self.state.forget(consts, classes);
+            quarz_vm::deinit::forget_classes_from(classes);
+        }
+        result
     }
 
     /// `f` with a compile-time runner (docs/14 §2) that continues the
@@ -371,7 +401,17 @@ impl Repl {
             .map(|(index, d)| match *index {
                 0 => d.render(&self.prelude_file),
                 1 => d.render(input),
-                other => d.render(self.session.source(other).unwrap_or(input)),
+                other => d.render(
+                    self.session
+                        .source(other)
+                        .or_else(|| {
+                            self.failed_sources
+                                .iter()
+                                .find(|(i, _)| *i == other)
+                                .map(|(_, f)| f)
+                        })
+                        .unwrap_or(input),
+                ),
             })
             .collect()
     }

@@ -384,6 +384,15 @@ impl SharedState {
         self.reset_consts_from(0);
     }
 
+    /// Forget the constants' values from `consts` on and the variants'
+    /// shared values from `classes` on: the REPL rolled back a failed
+    /// input (a `static` statement may have run), whose ids the next one
+    /// reuses.
+    pub fn forget(&self, consts: usize, classes: usize) {
+        self.reset_consts_from(consts);
+        lock(&self.global.variant_singletons).retain(|c, _| (*c as usize) < classes);
+    }
+
     /// `reset_consts` for the constants from `first` on (the REPL keeps
     /// those of earlier inputs, which cannot hold an instance of a class
     /// a statement of a later one adds a field to).
