@@ -142,7 +142,7 @@ receiver's view found (`mt0` with `bs`, the arguments the receiver's
 class gives `mt0`'s owner): the same method, or an override of it, whose
 own view of `mt0` (through `σ`, the arguments the class gives the
 override's owner) is the receiver's. -/
-theorem over_facts (hwf : WfClasses P.classes) {mt0 mt' : Method} {c : Nat} {as bs σ : List Ty}
+theorem over_facts_exact (hwf : WfClasses P.classes) {mt0 mt' : Method} {c : Nat} {as bs σ : List Ty}
     {s : Store} {vs : List Value}
     (h : mt' = mt0 ∨ (P.overrides mt' (mt0.inst ((P.classes.ancestorArgs mt'.owner
         (P.classes.selfArgs mt'.owner) mt0.owner).getD [])) = true ∧
@@ -181,6 +181,67 @@ theorem over_facts (hwf : WfClasses P.classes) {mt0 mt' : Method} {c : Nat} {as 
       congr 1
       funext sig
       simp [Function.comp, BlockSig.subst_subst, hτσ]
+
+/-- Values of types below others, mapped. -/
+theorem AllTy.map_le (hwf : WfClasses P.classes) {s : Store} {f g : Ty → Ty} :
+    ∀ {vs : List Value} {ts : List Ty}, AllTy P s vs (ts.map f) →
+      (∀ t ∈ ts, Ty.le P.classes (f t) (g t) = true) → AllTy P s vs (ts.map g)
+  | [], [], _, _ => trivial
+  | _ :: _, t :: ts, ⟨h1, h2⟩, h => ⟨hasTy_le hwf h1 (h t (List.mem_cons_self)),
+      AllTy.map_le hwf h2 fun u hu => h u (List.mem_cons_of_mem _ hu)⟩
+  | [], _ :: _, h, _ => h.elim
+  | _ :: _, [], h, _ => h.elim
+
+/-- What the method run for a call takes and gives, against the one the
+receiver's view found (`mt0` with `bs`): through the object's own
+arguments for `mt0`'s owner (`bs0`, below `bs` as the owner's variances
+say), where the variance check of `mt0`'s signature makes the
+parameters take at least and the result and block give at most; then as
+`over_facts_exact` says for an override. -/
+theorem over_facts (hwf : WfClasses P.classes) {mt0 mt' : Method} {c : Nat} {as bs bs0 σ : List Ty}
+    {s : Store} {vs : List Value}
+    (h : mt' = mt0 ∨ (P.overrides mt' (mt0.inst ((P.classes.ancestorArgs mt'.owner
+        (P.classes.selfArgs mt'.owner) mt0.owner).getD [])) = true ∧
+      mt0.owner ∈ P.classes.ancestors mt'.owner))
+    (hpos : P.methodPosOk mt0 = true)
+    (hbs0 : P.classes.ancestorArgs c as mt0.owner = some bs0)
+    (hrel : argsLeWith (Atom.le P.classes) (P.classes.variances mt0.owner) bs0 bs = true)
+    (hσ : P.classes.ancestorArgs c as mt'.owner = some σ)
+    (hσlen : σ.length = (((P.classes[mt'.owner]?).map (·.params)).getD []).length)
+    (hvs : AllTy P s vs ((mt0.inst bs).params.map (·.2))) :
+    vs.length = mt'.params.length ∧ AllTy P s vs ((mt'.params.map (·.2)).map (Ty.subst σ)) ∧
+      Ty.le P.classes (mt'.ret.subst σ) (mt0.inst bs).ret = true ∧
+      BlockSig.optLe P.classes (mt'.block.map (BlockSig.subst σ)) (mt0.inst bs).block := by
+  simp only [Program.methodPosOk, Bool.and_eq_true, List.all_eq_true] at hpos
+  obtain ⟨⟨hpp, hpr⟩, hpb⟩ := hpos
+  have hneg : ∀ t : Ty, t.posOk P.classes (P.classes.variances mt0.owner) false = true →
+      Ty.le P.classes (t.subst bs) (t.subst bs0) = true := fun t ht => by
+    simpa using Ty.subst_var hwf hrel t false ht
+  have hposi : ∀ t : Ty, t.posOk P.classes (P.classes.variances mt0.owner) true = true →
+      Ty.le P.classes (t.subst bs0) (t.subst bs) = true := fun t ht => by
+    simpa using Ty.subst_var hwf hrel t true ht
+  have hvs0 : AllTy P s vs ((mt0.inst bs0).params.map (·.2)) := by
+    rw [Method.inst_params_snd] at hvs ⊢
+    refine AllTy.map_le hwf hvs fun t ht => hneg t ?_
+    obtain ⟨p, hp, rfl⟩ := List.mem_map.mp ht
+    exact hpp p hp
+  obtain ⟨hl, hvsσ, hretσ, hblkσ⟩ := over_facts_exact hwf h hbs0 hσ hσlen hvs0
+  refine ⟨hl, hvsσ, ?_, ?_⟩
+  · rw [Method.inst_ret] at hretσ ⊢
+    exact Ty.le_trans hwf hretσ (hposi _ hpr)
+  · rw [hblkσ]
+    simp only [Method.inst]
+    cases hb : mt0.block with
+    | none => trivial
+    | some sig =>
+      rw [hb] at hpb
+      simp only [Bool.and_eq_true, List.all_eq_true] at hpb
+      simp only [Option.map_some, BlockSig.optLe, BlockSig.le, BlockSig.subst, List.length_map]
+      refine ⟨trivial, fun i t t' ht ht' => ?_, hneg _ hpb.2⟩
+      simp only [List.getElem?_map] at ht ht'
+      obtain ⟨p, hp, rfl⟩ := Option.map_eq_some_iff.mp ht
+      rw [hp] at ht'; simp at ht'; subst ht'
+      exact hposi p (hpb.1 p (List.mem_of_getElem? hp))
 
 variable (hP : WfProg P) (horc : OracleOK P orc) {n : Nat} (ih : Good P orc n)
 include hP horc ih
@@ -344,8 +405,28 @@ theorem block_succ : BlockGood P orc (n + 1) := by
   | cons w ws' =>
   obtain ⟨c, Δ, ob⟩ := w
   simp only [ChainAt] at hch
-  obtain ⟨hc, hcore, hch', habove, ⟨sig0, rfl, hps, hty, hret⟩, hR, hJ⟩ := hch
+  obtain ⟨hc, hcore, hch', habove, ⟨sig0, hrel, hps, hty, hret⟩, hR, hJ⟩ := hch
   subst hc
+  -- The values the method gives: of the block's parameters' types.
+  have hvs : AllTy c.prog s vs (sig0.subst sa).params := by
+    obtain ⟨hl, hp, _⟩ := hrel
+    revert hvs hl hp
+    generalize sig.params = xs
+    generalize (sig0.subst sa).params = ys
+    intro hvs hl hp
+    induction xs generalizing vs ys with
+    | nil => cases ys with
+      | nil => exact hvs
+      | cons => simp at hl
+    | cons x xs ihx =>
+      cases ys with
+      | nil => simp at hl
+      | cons y ys =>
+        cases vs with
+        | nil => exact hvs.elim
+        | cons v vs =>
+          exact ⟨hasTy_le hP.classes hvs.1 (hp 0 x y rfl rfl),
+            ihx vs ys hvs.2 (by simpa using hl) fun i t t' h1 h2 => hp (i + 1) t t' h1 h2⟩
   simp only [blockParamsOk, Bool.and_eq_true, beq_iff_eq, decide_eq_true_eq, List.all_eq_true] at hps
   obtain ⟨⟨hlen, hnd⟩, hpd⟩ := hps
   -- The values: of the signature's types as the block's writer named
@@ -429,9 +510,10 @@ theorem block_succ : BlockGood P orc (n + 1) := by
       · exact Or.inl ⟨x, List.mem_append_right _ hx, hl⟩
       · exact Or.inr h
     obtain ⟨Γb, hΓb, hsb⟩ := ho2
-    refine ⟨Λ2, hw2, he12.monoW hblkW, hasTy_le hwf hv2 (Ty.subst_le hwf sa hret), ?_, fun l hl => ?_⟩
+    refine ⟨Λ2, hw2, he12.monoW hblkW, hasTy_le hwf (hasTy_le hwf hv2 (Ty.subst_le hwf sa hret)) hrel.2.2, ?_,
+      fun l hl => ?_⟩
     · simp only [ChainAt]
-      refine ⟨trivial, hf2.core.ofBlock, hf2.chain, habove, ⟨sig0, rfl, ?_, hty, hret⟩,
+      refine ⟨trivial, hf2.core.ofBlock, hf2.chain, habove, ⟨sig0, hrel, ?_, hty, hret⟩,
         hR.reset_typed hcore he12 fun l h hfl => ?_, ?_⟩
       · simp only [blockParamsOk, Bool.and_eq_true, beq_iff_eq, decide_eq_true_eq, List.all_eq_true]
         exact ⟨⟨hlen, hnd⟩, hpd⟩
@@ -462,31 +544,41 @@ theorem send_succ : SendGood P orc (n + 1) := by
     obtain ⟨a, ha, _⟩ := hasTy_iff.mp hrecv
     obtain ⟨o', ho', hall, rfl⟩ := typeOf_obj ha
     rw [ho] at ho'; cases ho'; exact ha
-  -- Its view `k[as]`: the arguments its class gives `k`.
-  have hkas : P.classes.ancestorArgs o.cls o.args k = some as := by
+  -- Its view `k[as]`: the arguments its class gives `k` are below `as`,
+  -- as `k`'s variances say.
+  have hkas : ∃ as0, P.classes.ancestorArgs o.cls o.args k = some as0 ∧
+      argsLeWith (Atom.le P.classes) (P.classes.variances k) as0 as = true := by
     obtain ⟨a, ha, b, hb, hab⟩ := hasTy_iff.mp hrecv
     rw [hmade] at ha; cases ha
     rw [List.mem_singleton] at hb; subst hb
-    rcases (Atom.le_cls_iff ..).mp hab with ⟨rfl, rfl⟩ | h
+    rcases (Atom.le_cls_iff hwf ..).mp hab with ⟨rfl, rfl⟩ | h
     · obtain ⟨bs, hbs⟩ := ClassTable.ancestorArgs_of_mem hwf o.cls o.args 0 hk
       have hlen := ClassTable.ancestorArgs_length hwf _ _ _ _ hbs halen
       have hb0 : bs = [] := by
         cases h0 : P.classes[0]? with
         | none => simp only [List.getElem?_eq_none_iff] at h0; have := hwf.nonempty; omega
         | some r => have hr := hwf.rootParams r h0; simpa [h0, hr] using hlen
-      rw [hb0] at hbs; exact hbs
+      rw [hb0] at hbs; exact ⟨[], hbs, by simp [argsLeWith]⟩
     · exact h
+  obtain ⟨as0, hkas, hasle⟩ := hkas
   -- The method found, as declared (`mt0`), and the one the receiver's
   -- class runs (`mt'`), with the arguments the class gives each owner.
   obtain ⟨mt0, bs, hl0, hbs, rfl⟩ := Program.lookupAt_spec hl
   obtain ⟨mt', hl', hsub⟩ := Program.lookup_sub hwf (fun mt h => (hP.methods mt h).1) hl0 hk hni
   obtain ⟨hmem', howner, hname'⟩ := Program.lookup_spec hl'
   obtain ⟨σ, hσ⟩ := ClassTable.ancestorArgs_of_mem hwf o.cls o.args mt'.owner howner
-  have hbs' : P.classes.ancestorArgs o.cls o.args mt0.owner = some bs :=
-    ClassTable.ancestorArgs_trans hwf hkas hbs
+  -- The object's own arguments for `mt0`'s owner, below the view's.
+  obtain ⟨bs0, hbs0k⟩ := ClassTable.ancestorArgs_of_mem hwf k as0 mt0.owner
+    (ClassTable.ancestorArgs_mem hwf _ _ _ _ hbs)
+  have hbs' : P.classes.ancestorArgs o.cls o.args mt0.owner = some bs0 :=
+    ClassTable.ancestorArgs_trans hwf hkas hbs0k
+  have hrel := ClassTable.chain_mono hwf hbs0k hbs hasle
+  have hpos : P.methodPosOk mt0 = true := by
+    obtain ⟨hmem0, _, hname0⟩ := Program.lookup_spec hl0
+    exact Program.wfMethod_pos (hP.methods mt0 hmem0).1 (by rw [hname0]; exact hni)
   have hσclosed := ClassTable.ancestorArgs_closed P.classes hσ hclosed
   have hσlen := ClassTable.ancestorArgs_length hwf _ _ _ _ hσ halen
-  obtain ⟨hlen', hvs', hret', hblk'⟩ := over_facts hwf hsub hbs' hσ hσlen hvs
+  obtain ⟨hlen', hvs', hret', hblk'⟩ := over_facts hwf hsub hpos hbs' hrel hσ hσlen hvs
   obtain ⟨hwfm, o', hty, hout, _⟩ := hP.methods mt' hmem'
   -- Not `initialize` (`Program.resolve`): its own parameters only.
   have hni' : (mt'.name == "initialize") = false := by simp [hname', hni]
@@ -567,9 +659,9 @@ theorem send_succ : SendGood P orc (n + 1) := by
     · have := mem_allocVars hm; simp [hlen2] at this ⊢; omega
     · refine hasTy_iff.mpr ⟨.cls o.cls o.args, ?_, .cls mt'.owner σ, List.mem_singleton.mpr rfl, ?_⟩
       · exact typeOf_mono (fun l' o' h => ⟨o', by rw [hobjs]; exact h, rfl, rfl, rfl, fun _ h => h⟩) hmade
-      · exact (Atom.le_cls_iff ..).mpr (.inr hσ)
-  obtain ⟨hch, hin⟩ := hblk
-  rw [← hblk'] at hch
+      · exact Atom.le_of_ancestorArgs hwf hσ
+  obtain ⟨hch0, hin⟩ := hblk
+  have hch := ChainAt.weaken hwf ws blk hch0 hblk'
   have hf2 : FrameOK P ⟨P, mt', false, false⟩ (Λ ++ (mt'.locals.map (·.2)).map (Ty.subst σ))
       ⟨Store.allocVars s.locs.length (mt'.locals.map (·.1)), .obj l, σ, blk⟩ s2 ws :=
     ⟨hcore, hch.stable he12 _ _ _ (fun _ _ h => h) (fun _ h => h.elim), fun l1 l2 ⟨x, hx⟩ hc => by
@@ -607,14 +699,14 @@ theorem send_succ : SendGood P orc (n + 1) := by
       · obtain ⟨_, h', _⟩ := ho3; rw [h] at h'; cases h'
       · exact hasTy_le hwf (hasTy_le hwf hv3 (Ty.subst_le hwf σ h)) hret'
     refine ⟨Λ3, hw3, ((he12.trans he3 hw).mono (fun _ h => h) (fun _ h => h.elim id id)).restrict hrestrict, hret3, ?_, hf3.chainIn⟩
-    rw [← hblk']; exact hf3.chain
+    exact ChainAt.restore ws blk hf3.chain hch0 hblk'
   | returned v s3 =>
     obtain ⟨Λ3, hw3, he3, hf3, hv3, _⟩ := this
     have he3 := he3.mono (Wo' := fun _ => False) (fun _ h => h) (fun l h => (hnoW l h).elim)
     refine ⟨Λ3, hw3, ((he12.trans he3 hw).mono (fun _ h => h) (fun _ h => h.elim id id)).restrict hrestrict,
       hasTy_le hwf (hasTy_le hwf hv3 (Ty.subst_le hwf σ ?_)) hret', ?_, hf3.chainIn⟩
     · exact Ty.le_refl hwf _
-    rw [← hblk']; exact hf3.chain
+    exact ChainAt.restore ws blk hf3.chain hch0 hblk'
   | raised => trivial
   | timeout => trivial
   | stuck => exact this

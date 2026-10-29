@@ -13,53 +13,6 @@ open ClassTable
 
 variable {P : Program}
 
-/-- Two atoms above one are ordered (single inheritance). -/
-theorem Atom.le_total_above (hwf : WfClasses P.classes) {u a b : Atom}
-    (ha : u.le P.classes a = true) (hb : u.le P.classes b = true) :
-    a.le P.classes b = true ∨ b.le P.classes a = true := by
-  cases u
-  case cls c as =>
-    cases a
-    case cls d bs =>
-      cases b
-      case cls e cs =>
-        rw [Atom.le_cls_iff] at ha hb ⊢
-        rw [Atom.le_cls_iff]
-        rcases ha with ⟨rfl, rfl⟩ | ha
-        · exact Or.inr (Or.inl ⟨rfl, rfl⟩)
-        rcases hb with ⟨rfl, rfl⟩ | hb
-        · exact Or.inl (Or.inl ⟨rfl, rfl⟩)
-        have hd := ancestorArgs_mem hwf c as d bs ha
-        have he := ancestorArgs_mem hwf c as e cs hb
-        rcases ancestors_total hwf c d e hd he with h | h
-        · exact Or.inr (Or.inr (ancestorArgs_through hwf c as e cs d bs hb ha h))
-        · exact Or.inl (Or.inr (ancestorArgs_through hwf c as d bs e cs ha hb h))
-      all_goals simp [Atom.le] at hb
-    all_goals simp [Atom.le] at ha
-  all_goals cases a <;> cases b <;> simp_all [Atom.le]
-
-/-- `is_a?` true: of the atoms below the class, or of the class itself
-when it is below one of them (design §2.1, 270e62e), or when the type
-has a parameter (a value is never typed by one). -/
-theorem hasTy_isATrue (hwf : WfClasses P.classes) {s : Store} {v : Value} {t : Ty} {a u : Atom}
-    (hv : s.hasTy P v t) (hu : s.typeOf v = some u) (hua : u.le P.classes a = true) :
-    s.hasTy P v (isATrue P.classes t a) := by
-  rw [hasTy_iff] at hv ⊢
-  obtain ⟨u', hu', b, hb, hub⟩ := hv
-  rw [hu] at hu'; cases hu'
-  refine ⟨u, hu, ?_⟩
-  by_cases hba : b.le P.classes a = true
-  · exact ⟨b, List.mem_append_left _ (List.mem_filter.mpr ⟨hb, hba⟩), hub⟩
-  · have hab : a.le P.classes b = true := by
-      rcases Atom.le_total_above hwf hua hub with h | h
-      · exact h
-      · exact absurd h hba
-    have hne : a ≠ b := by rintro rfl; exact hba (Atom.le_refl hwf _)
-    refine ⟨a, List.mem_append_right _ ?_, hua⟩
-    have : t.any (fun b => (a.le P.classes b && a != b) || a.classRelated P.classes b || b.isParam) = true :=
-      List.any_eq_true.mpr ⟨b, hb, by simp [hab, hne]⟩
-    simp [this]
-
 /-- `is_a?` false: of the atoms not below the class. -/
 theorem hasTy_isAFalse (hwf : WfClasses P.classes) {s : Store} {v : Value} {t : Ty} {a u : Atom}
     (hv : s.hasTy P v t) (hu : s.typeOf v = some u) (hua : u.le P.classes a = false) :
@@ -170,28 +123,46 @@ theorem hasTy_nilTy_subst {s : Store} {σ : List Ty} {u : Ty} (h : s.hasTy P .ni
 same arguments. -/
 theorem verifiable_sub {ct : ClassTable} {t : Ty} {d : Nat} {args : List Ty}
     (hver : verifiable ct t (.cls d args) = true) {e : Nat} {bs : List Ty}
-    (hb : Atom.cls e bs ∈ t) : (ct.subclass e d = true → ct.ancestorArgs e bs d = some args) ∧
-      (ct.subclass e d = false → args = [] ∨ ct.subclass d e = false) := by
+    (hb : Atom.cls e bs ∈ t) : (ct.subclass e d = true → ∃ as', ct.ancestorArgs e bs d = some as' ∧
+        (argsLeWith (Atom.le ct) (ct.variances d) as' args = true ∨ objectArgs ct d args = true)) ∧
+      (ct.subclass e d = false → objectArgs ct d args = true ∨ ct.subclass d e = false) := by
   simp only [verifiable, List.all_eq_true] at hver
   have := hver _ hb
   constructor
   · intro hed; simp only [hed, if_true] at this
     split at this
-    · rename_i as' h'; rw [h']; congr; exact Ty.beqArgs_eq _ _ this
+    · rename_i as' h'; exact ⟨as', h', by simpa using this⟩
     · simp at this
   · intro hed
-    simp only [hed, Bool.false_eq_true, if_false, Bool.or_eq_true, List.isEmpty_iff,
+    simp only [hed, Bool.false_eq_true, if_false, Bool.or_eq_true,
       Bool.not_eq_true'] at this
     exact this
 
 /-- No parameter in a type a class test with arguments is verifiable on. -/
 theorem verifiable_no_param {ct : ClassTable} {t : Ty} {d : Nat} {args : List Ty}
-    (hver : verifiable ct t (.cls d args) = true) (hne : args ≠ []) {i : Nat}
+    (hver : verifiable ct t (.cls d args) = true) (hne : objectArgs ct d args = false) {i : Nat}
     (hb : Atom.param i ∈ t) : False := by
   simp only [verifiable, List.all_eq_true] at hver
   have := hver _ hb
-  simp [List.isEmpty_iff] at this
-  exact hne this
+  simp only at this
+  rw [hne] at this; cases this
+
+/-- `Object` arguments for covariant parameters are above any. -/
+theorem objectArgs_le {ct : ClassTable} (hwf : WfClasses ct) : ∀ {vs : List Variance} {args bs : List Ty},
+    args.length = vs.length →
+    ((args.zip vs).all fun (t, v) => t == [.cls 0 []] && v == .co) = true →
+    bs.length = vs.length → argsLeWith (Atom.le ct) vs bs args = true
+  | [], [], [], _, _, _ => by simp [argsLeWith]
+  | v :: vs, t :: args, b :: bs, hl, ha, hb => by
+    simp only [List.zip_cons_cons, List.all_cons, Bool.and_eq_true, beq_iff_eq] at ha
+    obtain ⟨⟨rfl, rfl⟩, ha⟩ := ha
+    simp only [argsLeWith, List.headD_cons, List.tail_cons, Variance.leWith, Bool.and_eq_true,
+      Ty.leWith_le]
+    exact ⟨Ty.le_top hwf b, objectArgs_le hwf (by simpa using hl) ha (by simpa using hb)⟩
+  | [], _ :: _, _, hl, _, _ => by simp at hl
+  | [], [], _ :: _, _, _, hb => by simp at hb
+  | _ :: _, [], _, hl, _, _ => by simp at hl
+  | _ :: _, _ :: _, [], _, _, hb => by simp at hb
 
 /-- A value's class and its arguments: the object's. -/
 theorem typeOf_cls {s : Store} {v : Value} {cu : Nat} {asu : List Ty}
@@ -226,68 +197,81 @@ theorem isA_class_test (hwf : WfClasses P.classes) {Λ : List Ty} {s : Store} (h
   apply Bool.eq_iff_iff.mpr
   constructor
   · intro hsub
-    rw [Atom.le_cls_iff]
+    rw [Atom.le_cls_iff hwf]
     rw [ClassTable.subclass_iff] at hsub
-    by_cases hnil : args = []
-    · subst hnil
-      obtain ⟨bs, hbs⟩ := ClassTable.ancestorArgs_of_mem hwf o.cls o.args d hsub
-      have := ClassTable.ancestorArgs_length hwf o.cls o.args d bs hbs holen
-      rw [← hdparams] at this
-      simp at this; subst this
-      exact Or.inr hbs
-    · right
+    obtain ⟨bs, hbs⟩ := ClassTable.ancestorArgs_of_mem hwf o.cls o.args d hsub
+    cases hobj : objectArgs P.classes d args
+    case true =>
+      -- Arguments every instance has.
+      right
+      simp only [objectArgs, Bool.and_eq_true, beq_iff_eq] at hobj
+      refine ⟨bs, hbs, objectArgs_le hwf hobj.1 hobj.2 ?_⟩
+      exact ClassTable.ancestorArgs_length hwf o.cls o.args d bs hbs holen
+    case false =>
+      right
       rw [hasTy_iff] at hv
       obtain ⟨u', hu', b', hb', hab⟩ := hv
       rw [hu] at hu'; cases hu'
       obtain ⟨b, hb, hbb'⟩ := Ty.mem_subst.mp hb'
       cases b with
-      | param i => exact (verifiable_no_param hver hnil hb).elim
-      | cls e bs =>
+      | param i => exact (verifiable_no_param hver hobj hb).elim
+      | cls e bs0 =>
         simp at hbb'; subst hbb'
-        rw [Atom.le_cls_iff] at hab
+        rw [Atom.le_cls_iff hwf] at hab
         obtain ⟨h1, h2⟩ := verifiable_sub hver hb
-        rcases hab with ⟨rfl, hbs⟩ | hab
+        rcases hab with ⟨rfl, hbs0⟩ | ⟨x, hx, hab⟩
         · -- `b` is `Object`: the test's class is below it, not allowed.
-          have hbs' : bs = [] := by cases bs <;> simp_all [Ty.substArgs]
+          have hbs' : bs0 = [] := by cases bs0 <;> simp_all [Ty.substArgs]
           subst hbs'
           by_cases hd0 : d = 0
           · subst hd0
-            -- The root has no parameters: `args = []`.
-            exfalso; apply hnil
+            -- The root has no parameters: `args = []`, which every
+            -- instance has.
+            exfalso
             cases h0 : P.classes[0]? with
             | none => simp only [List.getElem?_eq_none_iff] at h0; omega
             | some k =>
-              have := hwf.rootParams k h0
+              have hr := hwf.rootParams k h0
               have hw0 := hwfa
-              simp only [Atom.wf, h0, this, List.length_nil, beq_iff_eq] at hw0
-              exact List.eq_nil_of_length_eq_zero hw0
+              simp only [Atom.wf, h0, hr, List.length_nil, beq_iff_eq] at hw0
+              have := List.eq_nil_of_length_eq_zero hw0; subst this
+              simp [objectArgs, ClassTable.variances, h0, hr] at hobj
           · have hs0 : P.classes.subclass 0 d = false := by
               rw [Bool.eq_false_iff, ne_eq, ClassTable.subclass_iff]
               intro hmem; rw [ClassTable.ancestors_zero hwf] at hmem; simp at hmem; exact hd0 hmem
             rcases h2 hs0 with this | this
-            · exact absurd this hnil
+            · rw [hobj] at this; cases this
             rw [Bool.eq_false_iff, ne_eq, ClassTable.subclass_iff] at this
             exact absurd (ClassTable.root_mem_ancestors hwf d hd) this
-        · have he : e ∈ P.classes.ancestors o.cls := ClassTable.ancestorArgs_mem hwf _ _ _ _ hab
+        · have he : e ∈ P.classes.ancestors o.cls := ClassTable.ancestorArgs_mem hwf _ _ _ _ hx
           cases hed : P.classes.subclass e d with
           | true =>
-            have h3 := ClassTable.ancestorArgs_subst P.classes σ (h1 hed)
-            have hclosed' : Ty.closedArgs args = true := by simpa [Atom.closed] using hclosed
-            rw [Ty.substArgs_closed_id σ args hclosed'] at h3
-            exact ClassTable.ancestorArgs_trans hwf hab h3
+            -- The static atom's chain gives arguments below the tested
+            -- ones; the object's are below the static atom's, and the
+            -- chain keeps that up to `d`.
+            obtain ⟨as', has', hle | hobj'⟩ := h1 hed
+            · have h3 := ClassTable.ancestorArgs_subst P.classes σ has'
+              have hclosed' : Ty.closedArgs args = true := by simpa [Atom.closed] using hclosed
+              have hle' := argsLeWith_subst hwf σ hle
+              rw [Ty.substArgs_closed_id σ args hclosed'] at hle'
+              have hde : d ∈ P.classes.ancestors e := ClassTable.ancestorArgs_mem hwf _ _ _ _ h3
+              obtain ⟨y, hy⟩ := ClassTable.ancestorArgs_of_mem hwf e x d hde
+              exact ⟨y, ClassTable.ancestorArgs_trans hwf hx hy,
+                argsLeWith_le_trans hwf (ClassTable.chain_mono hwf hy h3 hab) hle'⟩
+            · rw [hobj] at hobj'; cases hobj'
           | false =>
             rcases h2 hed with h3 | h3
-            · exact absurd h3 hnil
+            · rw [hobj] at h3; cases h3
             rw [Bool.eq_false_iff, ne_eq, ClassTable.subclass_iff] at h3 hed
             rcases ClassTable.ancestors_total hwf o.cls e d he hsub with h | h
             · exact absurd h h3
             · exact absurd h hed
       | _ => simp at hbb'; subst hbb'; simp [Atom.le] at hab
   · intro hle
-    rw [Atom.le_cls_iff] at hle
-    rcases hle with ⟨rfl, _⟩ | hle
+    rw [Atom.le_cls_iff hwf] at hle
+    rcases hle with ⟨rfl, _⟩ | ⟨x, hx, _⟩
     · exact (ClassTable.subclass_iff _ _).mpr (ClassTable.root_mem_ancestors hwf _ hcls)
-    · exact (ClassTable.subclass_iff _ _).mpr (ClassTable.ancestorArgs_mem hwf _ _ _ _ hle)
+    · exact (ClassTable.subclass_iff _ _).mpr (ClassTable.ancestorArgs_mem hwf _ _ _ _ hx)
 
 /-- `is_a?` true (through `σ`): the value is of an atom of `t` below the
 class, or of the class itself (which `t` having an atom above it, one of
@@ -324,17 +308,17 @@ theorem hasTy_isATrue_subst (hwf : WfClasses P.classes) {s : Store} {v : Value} 
       all_goals try
         (simp only [Atom.le, Bool.and_eq_true, beq_iff_eq, List.isEmpty_iff] at hua
          obtain ⟨rfl, rfl⟩ := hua
-         exact absurd (Atom.le_object e bs) hba)
+         exact absurd (Atom.le_object hwf e bs) hba)
       rename_i cu asu
-      rw [Atom.le_cls_iff] at hub hua
-      rcases hua with ⟨rfl, rfl⟩ | hua
-      · exact absurd (Atom.le_object e bs) hba
-      rcases hub with ⟨rfl, hbs⟩ | hub
+      rw [Atom.le_cls_iff hwf] at hub hua
+      rcases hua with ⟨rfl, rfl⟩ | ⟨_, hua, _⟩
+      · exact absurd (Atom.le_object hwf e bs) hba
+      rcases hub with ⟨rfl, hbs⟩ | ⟨_, hub, _⟩
       · -- `b` is `Object`: `a` is below it, and not it.
         have hbs' : bs = [] := by cases bs <;> simp_all [Ty.substArgs]
         subst hbs'
         left
-        refine ⟨Atom.le_object d args, ?_⟩
+        refine ⟨Atom.le_object hwf d args, ?_⟩
         rintro h; cases h
         exact hba (Atom.le_refl hwf _)
       -- Both classes are above the object's: related.

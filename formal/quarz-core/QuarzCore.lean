@@ -7,6 +7,7 @@ import QuarzCore.Examples
 import QuarzCore.Typed
 import QuarzCore.Check
 import QuarzCore.TypeLemmas
+import QuarzCore.LeLemmas
 import QuarzCore.Invariants
 import QuarzCore.Lemmas
 import QuarzCore.ExtLemmas

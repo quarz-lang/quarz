@@ -233,8 +233,8 @@ theorem self_obj (hwf : WfClasses P.classes) {c : Ctx} {Λ : List Ty} {fr : Fram
     obtain ⟨o, ho, _, rfl⟩ := typeOf_obj ha
     simp at hb; subst hb
     refine ⟨l, o, hl, ho, ?_, hsa⟩
-    rw [Atom.le_cls_iff] at hab
-    rcases hab with ⟨h0, _⟩ | hab
+    rw [Atom.le_cls_iff hwf] at hab
+    rcases hab with ⟨h0, _⟩ | ⟨_, hab, _⟩
     · rw [h0]; exact ClassTable.root_mem_ancestors hwf _ (hw.objs l o ho).1
     · exact ClassTable.ancestorArgs_mem hwf _ _ _ _ hab
   · obtain ⟨l', o, h1, h2, h3, _⟩ := hf.core.selfInit hi
@@ -323,7 +323,7 @@ theorem self_typed (hwf : WfClasses P.classes) {c : Ctx} {Γ : Env} {Λ : List T
     have hsa' : fr.selfArgs = σ := by rw [hsa]; simp [Store.argsFor, ho, hσ]
     rw [hsa']
     exact hasTy_iff.mpr ⟨.cls o.cls o.args, by rw [hl]; exact typeOf_obj_of ho hall, .cls _ _,
-      List.mem_singleton.mpr rfl, (Atom.le_cls_iff _ _ _ _).mpr (Or.inr hσ)⟩
+      List.mem_singleton.mpr rfl, Atom.le_of_ancestorArgs hwf hσ⟩
 
 theorem Store.setField_objs (s : Store) (l i : Nat) (v : Value) (l' : Nat) :
     (s.setField l i v).objs[l']? =
@@ -690,8 +690,8 @@ theorem obj_of_hasTy_cls (hwf : WfClasses P.classes) {s : Store} {v : Value} {k 
   cases v with
   | obj l =>
     obtain ⟨o, ho, _, rfl⟩ := typeOf_obj ha
-    rw [Atom.le_cls_iff] at hab
-    rcases hab with ⟨h0, _⟩ | hab
+    rw [Atom.le_cls_iff hwf] at hab
+    rcases hab with ⟨h0, _⟩ | ⟨_, hab, _⟩
     · exact absurd h0 hk
     · exact ⟨l, o, rfl, ho, ClassTable.ancestorArgs_mem hwf _ _ _ _ hab⟩
   | _ => simp [Store.typeOf] at ha; subst ha; simp [Atom.le] at hab; exact absurd hab.1 hk
@@ -2194,7 +2194,7 @@ theorem eval_succ : EvalGood P orc (n + 1) := by
       have hat : ChainAt c.prog Λ2 s2 ((c, Δ', ob) :: ws)
           (some (.mk fr.vars fr.self fr.selfArgs fr.blk ps body)) (some (sig.subst fr.selfArgs)) := by
         simp only [ChainAt]
-        refine ⟨trivial, hf2.core, hf2.chain, hf2.above, ⟨sig, rfl, hps, hb, hret⟩, hs2.reset, ?_⟩
+        refine ⟨trivial, hf2.core, hf2.chain, hf2.above, ⟨sig, BlockSig.le_refl hwf _, hps, hb, hret⟩, hs2.reset, ?_⟩
         cases ob.out with
         | none => exact hs2
         | some Γb => exact hs2.join_left hwf

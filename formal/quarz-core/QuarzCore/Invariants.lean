@@ -32,7 +32,7 @@ frame of the method it is given to, and its locations are below.
 
 import QuarzCore.Typed
 import QuarzCore.Semantics
-import QuarzCore.TypeLemmas
+import QuarzCore.LeLemmas
 
 namespace QuarzCore
 
@@ -141,9 +141,11 @@ structure FrameCore (c : Ctx) (Λ : List Ty) (vars : List (String × Nat)) (me :
 first) the context it was written in, the environment at its call and
 its body's `Out` (`ws`), which stay the same while the block lives. A
 block's own method takes the next block of the chain. The signature is
-the one the method run sees (the block's writer's parameters
-substituted with its frame's arguments); the block was checked against
-the signature as its writer named it. -/
+the one the method run sees: it gives values the block takes, and takes
+what it gives (`BlockSig.le`), as the block was checked against the
+signature its writer named, with the writer's frame's arguments (the
+method run may see a smaller one: its own class's arguments, below the
+caller's view as its variances say). -/
 def ChainAt (Λ : List Ty) (s : Store) : List (Ctx × Env × Out) → Option Closure →
     Option BlockSig → Prop
   | [], none, none => True
@@ -152,7 +154,7 @@ def ChainAt (Λ : List Ty) (s : Store) : List (Ctx × Env × Out) → Option Clo
       FrameCore P c Λ vars self sa s ∧
       ChainAt Λ s ws outer (c.meth.block.map (BlockSig.subst sa)) ∧
       (∀ l l', frameLocs vars l → chainLocs outer l' → l' < l) ∧
-      (∃ sig0, sig = sig0.subst sa ∧
+      (∃ sig0, BlockSig.le c.ct sig (sig0.subst sa) ∧
         blockParamsOk c ps sig0 = true ∧
         Typed { c with inBlock := true } (blockEnv c Δ ps sig0 body) body ob ∧
         ob.ty.le c.ct sig0.ret = true) ∧

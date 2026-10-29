@@ -1,0 +1,81 @@
+# Variance within QCore's range (formal/quarz-core, G1b): covariant and
+# contravariant class parameters, a subclass fixing them, a superclass
+# given a parameter, values seen through a wider type, and `is_a?` of a
+# covariant class with `Object` arguments.
+class Box[out T]
+  @v: T
+  def initialize(v: T)
+    @v = v
+  end
+  def get -> T = @v
+end
+
+class IntBox < Box[Int]
+  def initialize(v: Int)
+    super(v)
+  end
+  def get -> Int = @v + 1
+end
+
+class Pair[out A, out B] < Box[A]
+  @b: B
+  def initialize(a: A, b: B)
+    @b = b
+    super(a)
+  end
+  def second -> B = @b
+end
+
+class Sink[in T]
+  var @count: Int
+  def initialize
+    @count = 0
+  end
+  def put(x: T) -> Int
+    @count = @count + 1
+    @count
+  end
+end
+
+class Cell[T]
+  var @v: T
+  def initialize(v: T)
+    @v = v
+  end
+  def get -> T = @v
+  def set(v: T) -> T
+    @v = v
+    v
+  end
+end
+
+def first(b: Box[Int?]) -> Int
+  x = b.get
+  return 0 if x.nil?
+  x
+end
+
+def feed(s: Sink[Int]) -> Int = s.put(1)
+
+def show(o: Object) -> Int
+  if o.is_a?(Box[Object])
+    1
+  else
+    0
+  end
+end
+
+b = Box[Int].new(3)
+puts first(b)
+ib = IntBox.new(4)
+puts first(ib)
+p = Pair[Int, String].new(5, "five")
+puts first(p)
+puts p.second
+s = Sink[Object].new
+puts feed(s)
+c = Cell[Int].new(1)
+puts c.set(2)
+puts c.get
+puts show(b)
+puts show(c)

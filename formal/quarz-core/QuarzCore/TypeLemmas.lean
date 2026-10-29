@@ -20,12 +20,19 @@ structure WfClasses (ct : ClassTable) : Prop where
   superArgs : ∀ (i : Nat) (k : Class) (d : Nat), ct[i]? = some k → k.super = some d →
     k.superArgs.length = (((ct[d]?).map Class.params).getD []).length
   names : ∀ i, i < ct.length → ((ct.allFields i).map (·.name)).Nodup
+  /-- A superclass's arguments take no arguments themselves. -/
+  superDepth : ∀ (i : Nat) (k : Class), ct[i]? = some k → ∀ t ∈ k.superArgs, t.depth ≤ 1
+  /-- A superclass's arguments name the class's parameters as their
+  variances allow, in a positive position. -/
+  superPos : ∀ (i : Nat) (k : Class) (d : Nat), ct[i]? = some k → k.super = some d →
+    Ty.argsPosOk ct k.params true (ct.variances d) k.superArgs = true
 
 theorem Program.wfClasses_sound {P : Program} (h : P.wfClasses = true) : WfClasses P.classes := by
   simp only [Program.wfClasses, Bool.and_eq_true, decide_eq_true_eq, List.all_eq_true,
     List.mem_range] at h
   obtain ⟨⟨hne, hall⟩, hnames⟩ := h
-  refine ⟨hne, fun k hk => ?_, fun k hk => ?_, fun i k hi hk => ?_, fun i k d hk hs => ?_, hnames⟩
+  refine ⟨hne, fun k hk => ?_, fun k hk => ?_, fun i k hi hk => ?_, fun i k d hk hs => ?_, hnames,
+    fun i k hk t ht => ?_, fun i k d hk hs => ?_⟩
   · have := hall 0 hne
     simp [hk] at this
     exact this.1.1
@@ -41,7 +48,7 @@ theorem Program.wfClasses_sound {P : Program} (h : P.wfClasses = true) : WfClass
     revert this
     cases hs : k.super with
     | none => simp
-    | some d => intro this; exact ⟨d, rfl, by simp at this; exact this.1.1⟩
+    | some d => intro this; exact ⟨d, rfl, by simp at this; exact this.1.1.1.1⟩
   · have hlt : i < P.classes.length := by
       rcases List.getElem?_eq_some_iff.mp hk with ⟨h, _⟩; exact h
     have := hall i hlt
@@ -50,7 +57,29 @@ theorem Program.wfClasses_sound {P : Program} (h : P.wfClasses = true) : WfClass
     · subst hi0; have h0 := hall 0 hne; simp [hk] at h0; simp [h0.1.1] at hs
     · have hi0' : (i == 0) = false := by simp [hi0]
       simp only [hi0', hs] at this
-      simp at this; exact this.1.2
+      simp at this; exact this.1.1.1.2
+  · have hlt : i < P.classes.length := by
+      rcases List.getElem?_eq_some_iff.mp hk with ⟨h, _⟩; exact h
+    have := hall i hlt
+    simp only [hk] at this
+    by_cases hi0 : i = 0
+    · subst hi0; simp at this; rw [this.2] at ht; simp at ht
+    · have hi0' : (i == 0) = false := by simp [hi0]
+      simp only [hi0'] at this
+      cases hs : k.super with
+      | none => simp [hs] at this
+      | some d =>
+        simp only [hs] at this
+        simp at this; exact this.1.2 t ht
+  · have hlt : i < P.classes.length := by
+      rcases List.getElem?_eq_some_iff.mp hk with ⟨h, _⟩; exact h
+    have := hall i hlt
+    simp only [hk] at this
+    by_cases hi0 : i = 0
+    · subst hi0; have h0 := hall 0 hne; simp [hk] at h0; simp [h0.1.1] at hs
+    · have hi0' : (i == 0) = false := by simp [hi0]
+      simp only [hi0', hs] at this
+      simp at this; exact this.2
 
 namespace ClassTable
 
@@ -718,69 +747,6 @@ theorem ancestorArgs_root (hwf : WfClasses ct) (e : Nat) (cs : List Ty)
 
 end ClassTable
 
-namespace Atom
-
-open ClassTable
-
-variable {ct : ClassTable}
-
-theorem le_refl (hwf : WfClasses ct) (a : Atom) : a.le ct a = true := by
-  cases a <;> simp [Atom.le]
-  rename_i c args
-  simp [ancestorArgs_self hwf, Ty.beqArgs_refl]
-
-/-- `cls c as ≤ cls d bs` says what it is: the root with no arguments is
-above every class; otherwise the chain from `c` gives `d` the arguments
-`bs`. -/
-theorem le_cls_iff (c : Nat) (as : List Ty) (d : Nat) (bs : List Ty) :
-    (Atom.cls c as).le ct (.cls d bs) = true ↔
-      (d = 0 ∧ bs = []) ∨ ct.ancestorArgs c as d = some bs := by
-  simp only [Atom.le, Bool.or_eq_true, Bool.and_eq_true, beq_iff_eq, List.isEmpty_iff]
-  constructor
-  · rintro (h | h)
-    · exact Or.inl h
-    · right
-      split at h
-      · rename_i as' h'; rw [h']; congr; exact Ty.beqArgs_eq _ _ h
-      · simp at h
-  · rintro (h | h)
-    · exact Or.inl h
-    · right; rw [h]; simp [Ty.beqArgs_refl]
-
-theorem le_object (c : Nat) (as : List Ty) : (Atom.cls c as).le ct (.cls 0 []) = true := by
-  simp [Atom.le]
-
-/-- Every atom is below `Object`. -/
-theorem le_top (a : Atom) : a.le ct (.cls 0 []) = true := by
-  cases a <;> simp [Atom.le]
-
-theorem le_trans (hwf : WfClasses ct) {a b c : Atom} (hab : a.le ct b = true)
-    (hbc : b.le ct c = true) : a.le ct c = true := by
-  cases b
-  case cls d bs =>
-    cases c
-    case cls e cs =>
-      cases a
-      -- Three classes: the chains compose, or the top is reached.
-      case cls c1 as1 =>
-        rw [le_cls_iff] at hab hbc ⊢
-        rcases hbc with ⟨rfl, rfl⟩ | hbc
-        · exact Or.inl ⟨rfl, rfl⟩
-        · rcases hab with ⟨rfl, rfl⟩ | hab
-          · obtain ⟨rfl, rfl⟩ := ancestorArgs_root hwf e cs hbc; exact Or.inl ⟨rfl, rfl⟩
-          · exact Or.inr (ancestorArgs_trans hwf hab hbc)
-      -- A value or a parameter below a class: that class is the root,
-      -- and nothing is above the root but itself.
-      all_goals
-        simp only [Atom.le, Bool.and_eq_true, beq_iff_eq, List.isEmpty_iff] at hab
-        obtain ⟨rfl, rfl⟩ := hab
-        rcases (le_cls_iff 0 [] e cs).mp hbc with ⟨rfl, rfl⟩ | hbc
-        · simp [Atom.le]
-        · obtain ⟨rfl, rfl⟩ := ancestorArgs_root hwf e cs hbc; simp [Atom.le]
-    all_goals cases a <;> simp_all [Atom.le]
-  all_goals cases a <;> cases c <;> simp_all [Atom.le]
-
-end Atom
 
 /-! ### Substitution -/
 

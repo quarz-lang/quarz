@@ -112,7 +112,7 @@ theorem Program.check_wf (h : P.check = true) :
   exact ⟨⟨Program.wfClasses_sound hc, fun mt hmt =>
       ⟨(hall mt (List.mem_cons_of_mem _ hmt)).1,
         Program.checkMethod_typed (hall mt (List.mem_cons_of_mem _ hmt)).2⟩,
-      fun k hk => (hcls k hk).1, fun k hk => Program.checkDefaults_typed (hcls k hk).2⟩,
+      fun k hk => (hcls k hk).1.1, fun k hk => Program.checkDefaults_typed (hcls k hk).1.2⟩,
     hown, by simpa using hf, hmp, hp, hb, hm.1, o, ho, hret⟩
 
 /-- **Soundness** (design §4): a checked program, run with any fuel and
