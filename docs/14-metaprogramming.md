@@ -45,7 +45,22 @@ class Post < Model
 end
 ```
 
-A class body holds declarations ([01-syntax.md](01-syntax.md) §3) and **statements of one shape: a call, on the class being declared, of a `static def` class method**. The callee is found as any call on the class is (a class method of the class or of an ancestor); one that is not a `static def` class method is an error, and so is any other statement. Module bodies take them too; the top level does not. The callee comes from the class hierarchy: a `static def` of a module, reached through `extend`, is refused with a message naming the route (its `self` could not be typed soundly: §9 records the form that will allow it).
+A class body holds declarations ([01-syntax.md](01-syntax.md) §3) and **statements of one shape: a call, on the class being declared, of a `static def` class method**. The callee is found as any call on the class is (a class method of the class or of an ancestor); one that is not a `static def` class method is an error, and so is any other statement. Module bodies take them too; the top level does not. The callee comes from the class hierarchy, or from a generic module the class extends with itself:
+
+```ruby
+module Macros[T <: Model]
+  static def has_many(target: Type[Model]) -> Void   # self: Meta::ClassDef[T]
+    ...
+  end
+end
+
+class Post < Model
+  extend Macros[Post]
+  has_many Comment
+end
+```
+
+A module's `static def` (an instance method of the module, a class method of the class that extends it) has for `self` the `Meta::ClassDef` of the module's first type parameter, which `extend Macros[Post]` makes the class itself, so that the bound (`T <: Model`) types what the lifted blocks do with `self` as a `static def self.` of `Model` would. A module with `static def`s is therefore extended, never included (by a class or by an `extension`), and only as `extend M[C]` with `C` the extending class's own instance type (`extend Macros[Box[E]]` in `class Box[E]`: not `Box[Int]`, whose members would go into every `Box`, nor a subclass), and with arguments that meet the bounds of the module's type parameters (with the arguments substituted: `module F[T <: Comparable[T]]`), since the `static def`s were checked under them: anything else is an error at the `extend`. An `extension` declares no `static def`. A statement calling a `static def` of a module without type parameters is refused with what to write instead. A class under `Post` runs the module's `static def`s too, as it does its superclasses' class methods.
 
 In the REPL, a class body's `static` statements run when the input that declares the class is entered, before its code is checked, and those of a file it requires when that file is loaded: an input's statement calls the `static def`s of the inputs entered before and of the files required, not of its own input (nor a file's of its own file), and what a statement prints goes to the session's output. A call of a compile-time-only `static def` (§1) in an input is an error there, as in a program.
 
@@ -210,5 +225,4 @@ app.qz:9:10: error: `boom` raised ArgumentError: bad 2
 
 ## 9. Later
 
-- A module's `static def` as a statement's callee, through a generic module whose parameter is the extending class: `module Macros[T <: Model]` with `static def has_many` seeing `self: Meta::ClassDef[T]`, used as `extend Macros[Post]` (`include`/`extend` already take type arguments), so that the bound gives the lifted blocks' `self` its type without new syntax.
 - `Meta.read_file` (schemas), an on-demand order between statements of one cog, `def_data`, `extend_type`, an `inherited` hook.
