@@ -279,3 +279,46 @@ fn a_method_lowered_again_is_judged_again() {
         "{err}"
     );
 }
+
+#[test]
+fn the_value_is_made_once_and_shared() {
+    // docs/14 §8: a constant of its own, read by every evaluation.
+    let d = dir();
+    write(&d.0, "lib.qz", LIB);
+    write(
+        &d.0,
+        "app.qz",
+        "require_relative \"lib\"\ndef q -> Sql = static(Q.sql(\"t\", [:a]))\np q.equal?(q)\nts = (1..4).map { Task.spawn { q.text.size } }\np ts.map(&:await)\n",
+    );
+    let expected = "true\n[15, 15, 15, 15]\n";
+    let (ok, out, err) = quarz(&d.0, &["run", "app.qz"], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(out, expected);
+    let (ok, _, err) = quarz(&d.0, &["build", "app.qz", "-o", "app.bin"], &[]);
+    assert!(ok, "{err}");
+    let run = Command::new(d.0.join("app.bin")).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&run.stdout), expected);
+}
+
+#[test]
+fn shared_however_the_site_was_lowered() {
+    // `join` is lowered by the run that evaluates the later `static(...)`
+    // (`Q.sql` calls a `join`), after its own value is known: lowered
+    // again for the program. A quoted block's tree and its closure share
+    // the value.
+    let d = dir();
+    write(&d.0, "lib.qz", LIB);
+    write(
+        &d.0,
+        "app.qz",
+        "require_relative \"lib\"\nclass Repo\n  def self.join -> Sql = static(Q.sql(\"r\", [:b]))\nend\nY = static(Q.sql(\"t\", [:a]))\np Repo.join.equal?(Repo.join)\nclass R\n  def where(&c: Quoted[shareable (Int) -> Sql]) -> Quoted[shareable (Int) -> Sql] = c\nend\ndef at -> Quoted[shareable (Int) -> Sql] = R.new.where { |x| static(Q.sql(\"t\", [:a])) }\ncase at.expr\nin Meta::Expr::Block(body: b)\n  case b[0]\n  in Meta::Expr::Lit(value: v)\n    p v.equal?(at.proc.call(0))\n  else\n    p :no\n  end\nelse\n  p :no\nend\n",
+    );
+    let expected = "true\ntrue\n";
+    let (ok, out, err) = quarz(&d.0, &["run", "app.qz"], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(out, expected);
+    let (ok, _, err) = quarz(&d.0, &["build", "app.qz", "-o", "app.bin"], &[]);
+    assert!(ok, "{err}");
+    let run = Command::new(d.0.join("app.bin")).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&run.stdout), expected);
+}

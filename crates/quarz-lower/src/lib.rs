@@ -99,6 +99,9 @@ pub struct Lowerer {
     pub(crate) quoted_once: bool,
     /// Those constants, after the world's: each builds a tree.
     pub(crate) quoted_consts: Vec<RtConst>,
+    /// The constant each `static(...)` site's value was made into, in
+    /// the final lowering (`FnBuilder::static_constant`).
+    pub(crate) static_consts: HashMap<quarz_syntax::ast::NodeId, ConstId>,
     /// Set by the function being built when a `static(...)` in it had no
     /// value yet (a compile-time run reached it before the expressions
     /// were evaluated) and was lowered as its call (docs/14 §8).
@@ -202,6 +205,11 @@ impl Lowerer {
         self.static_retry.retain(|m| (*m as usize) < methods);
         self.unchecked_consts.retain(|c| (*c as usize) < consts);
         self.static_retry_consts.retain(|c| (*c as usize) < consts);
+        self.static_fallbacks.retain(|o| match *o {
+            FallbackOwner::Method(m) => (m as usize) < methods,
+            FallbackOwner::Const(c) => (c as usize) < consts,
+            FallbackOwner::FieldDefault(c, _) => class_ok(&c),
+        });
     }
 
     /// A constant whose initializer `init` builds a quoted block's tree
@@ -215,7 +223,7 @@ impl Lowerer {
     ) -> ConstId {
         let id = (world.consts.len() + self.quoted_consts.len()) as ConstId;
         self.quoted_consts.push(RtConst {
-            name: format!("<tree of the block at line {line}>"),
+            name: format!("<value at line {line}>"),
             owner: None,
             init: Some(init),
             file,
