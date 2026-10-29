@@ -42,7 +42,8 @@ def classes : ClassTable :=
    ⟨"Ci", some 15, [⟨"r", [.int], false, none⟩], [], [], [], .variant⟩,
    ⟨"Pt", some 15, [], [], [], [], .variant⟩,
    ⟨"Proc0", some 0, [], [.co], [], [], .proc⟩,
-   ⟨"Proc1", some 0, [], [.contra, .co], [], [], .proc⟩]
+   ⟨"Proc1", some 0, [], [.contra, .co], [], [], .proc⟩,
+   ⟨"Arr", some 0, [], [.co], [], [], .builtin⟩]
 
 /-- The atoms of random types and `is_a?` tests (`Box` without its
 argument is ill formed: the checker rejects a test of it). -/
@@ -131,7 +132,8 @@ def locals : List (String × Ty) :=
    ("ah", [.cls 12 [[.cls 2 []]], .nil]), ("ae", [.cls 12 [[.cls 3 []]], .nil]),
    ("dp", [.cls 13 [], .nil]), ("de", [.cls 14 [], .nil]),
    ("sh", [.cls 15 []]), ("cc", [.cls 16 []]), ("ex", [.cls 0 []]),
-   ("pf", [.cls 18 [[.nil]]]), ("pg", [.cls 19 [[.int], [.int, .nil]]])]
+   ("pf", [.cls 18 [[.nil]]]), ("pg", [.cls 19 [[.int], [.int, .nil]]]),
+   ("xs", [.cls 20 [[.int]], .nil]), ("ys", [.cls 20 [[.int, .nil]], .nil])]
 
 def genTy : Gen Ty := do
   let n ← Gen.choose Nat 0 3 (by omega)
@@ -230,6 +232,16 @@ partial def genExpr : Nat → Gen Expr
          (.seq (.assign "x" .nil) (.seq (.raise (.str "boom")) (.assign "x" (.int 2)))))
          (.assign "x" (.var "x" [.int])))),
        (2, do return .prim "f" [] [] (← genTy)),
+       -- Arrays (design §14): made by built-in calls, covariant, their
+       -- elements read.
+       (1, return .assign "xs" (.prim "arr" [.int 1] [[.int]] [.cls 20 [[.int]]])),
+       (1, return .assign "ys" (.prim "arr" [.nil] [[.int, .nil]] [.cls 20 [[.int, .nil]]])),
+       (1, pure (.seq (.assign "xs" (.prim "arr" [] [] [.cls 20 [[.int]]]))
+         (.assign "ys" (.var "xs" [.cls 20 [[.int]]])))),
+       (1, pure (.seq (.assign "xs" (.prim "arr" [] [] [.cls 20 [[.int]]]))
+         (.assign "k" (.prim "at" [.var "xs" [.cls 20 [[.int]]]] [[.cls 20 [[.int]]]] [.int])))),
+       (1, pure (.assign "ys" (.prim "push" [.var "ys" [.cls 20 [[.int, .nil]], .nil]]
+         [[.cls 20 [[.int, .nil]], .nil]] [.cls 20 [[.int, .nil]]]))),
        (1, return .assign "o" (.prim "h" [] [] [.cls 0 []])),
        (1, do return .prim "g" [← sub] [[.nil, .bool, .int, .str, .cls 0 []]] [.int, .nil]),
        (2, do return .and (← sub) (← sub)),

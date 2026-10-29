@@ -110,7 +110,7 @@ def ConstructGood (n : Nat) : Prop :=
     WfStore P Λ s → k < P.classes.length →
     Ty.closedArgs targs = true → targs.length = (((P.classes[k]?).map (·.params)).getD []).length →
     ArgsIn P.classes (P.classes.boundsOf k) targs →
-    (P.classes.kindOf k ≠ .enumC ∧ P.classes.kindOf k ≠ .proc) →
+    (P.classes.kindOf k ≠ .enumC ∧ P.classes.kindOf k ≠ .proc ∧ P.classes.kindOf k ≠ .builtin) →
     (∀ mi, P.lookupAt k targs "initialize" = some mi →
       mi.block = none ∧ AllTy P s vs (mi.params.map (·.2))) →
     (P.lookupAt k targs "initialize" = none → vs = []) →

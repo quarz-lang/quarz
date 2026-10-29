@@ -97,6 +97,7 @@ theorem typeOf_proc {s : Store} {i : Nat} {a : Atom} (h : s.typeOf (.proc i) = s
 /-- Objects keeping their classes and the fields set, values keep their
 types. -/
 theorem typeOf_mono {s s' : Store} (h : ObjsGrow s s') (hp : s.procs <+: s'.procs)
+    (hb : s.builts <+: s'.builts)
     {v : Value} {a : Atom} (hv : s.typeOf v = some a) : s'.typeOf v = some a := by
   cases v with
   | obj l =>
@@ -108,17 +109,23 @@ theorem typeOf_mono {s s' : Store} (h : ObjsGrow s s') (hp : s.procs <+: s'.proc
     obtain ⟨p, hp', h⟩ := hv
     obtain ⟨r, hr⟩ := hp
     exact ⟨p, by rw [← hr, List.getElem?_append_left (List.getElem?_eq_some_iff.mp hp').1]; exact hp', h⟩
+  | builtin i =>
+    simp only [Store.typeOf, Option.map_eq_some_iff] at hv ⊢
+    obtain ⟨e, he, h⟩ := hv
+    obtain ⟨r, hr⟩ := hb
+    exact ⟨e, by rw [← hr, List.getElem?_append_left (List.getElem?_eq_some_iff.mp he).1]; exact he, h⟩
   | _ => simpa [Store.typeOf] using hv
 
 theorem hasTy_mono {s s' : Store} (h : ObjsGrow s s') (hp : s.procs <+: s'.procs)
+    (hb : s.builts <+: s'.builts)
     {v : Value} {t : Ty} (hv : s.hasTy P v t) : s'.hasTy P v t := by
   rw [hasTy_iff] at *
   obtain ⟨a, ha, rest⟩ := hv
-  exact ⟨a, typeOf_mono h hp ha, rest⟩
+  exact ⟨a, typeOf_mono h hp hb ha, rest⟩
 
 theorem Ext.hasTy {W Wo : Nat → Prop} {Λ Λ' : List Ty} {s s' : Store} (he : Ext P W Wo Λ Λ' s s')
     {v : Value} {t : Ty} (hv : s.hasTy P v t) : s'.hasTy P v t :=
-  hasTy_mono he.grow he.procs hv
+  hasTy_mono he.grow he.procs he.builts hv
 
 /-! ### Environments -/
 

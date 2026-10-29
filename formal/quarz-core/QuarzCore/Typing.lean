@@ -282,7 +282,8 @@ def Program.resolve (P : Program) (κ : List Ty) (t : Ty) (m : String) : Option 
     -- `Object` holds the value classes' values too, which have no
     -- methods in v1.
     -- A procedures' class has none either (its values are procedures).
-    | .cls c as => if c == 0 || P.classes.kindOf c == .proc then none else P.lookupAt c as m
+    | .cls c as => if c == 0 || P.classes.kindOf c == .proc || P.classes.kindOf c == .builtin then none
+      else P.lookupAt c as m
     | _ => none
 
 /-- Narrowing a path (design §2.1): `p` holds `t` where the test is
@@ -473,6 +474,17 @@ def blockParamsOk (c : Ctx) (ps : List String) (sig : BlockSig) : Bool :=
     | some d => t.le c.ct c.bounds d
     | none => false
 
+/-- A built-in call's result of a built-in generic class `k[targs]` (it
+makes the value: design §14): as many arguments as `k`'s parameters, each
+naming only the class's own parameters and within its bound. -/
+def Ctx.builtinOk (c : Ctx) (ret : Ty) : Bool :=
+  match ret with
+  | [.cls k targs] => c.prog.classes.kindOf k != .builtin || match c.ct[k]? with
+    | some cl => targs.length == cl.params.length && Ty.argsParamsBelow c.selfArgs.length targs &&
+        (targs.zipIdx.all fun (t, i) => Ty.le c.ct c.bounds t (Ty.boundOf cl.bounds i))
+    | none => false
+  | _ => true
+
 /-- `k[targs]` is a class with as many parameters, each argument naming
 only the class's own parameters (no bounds yet). -/
 def Ctx.argsWf (c : Ctx) (k : Nat) (targs : List Ty) : Bool :=
@@ -481,7 +493,7 @@ def Ctx.argsWf (c : Ctx) (k : Nat) (targs : List Ty) : Bool :=
       -- Each argument within its parameter's bound.
       (targs.zipIdx.all fun (t, i) => t.le c.ct c.bounds (Ty.boundOf cl.bounds i)) &&
       -- No object is of an `enum` itself, nor of a procedures' class.
-      cl.kind != .enumC && cl.kind != .proc
+      cl.kind != .enumC && cl.kind != .proc && cl.kind != .builtin
   | none => false
 
 /-- The argument types fit the method's parameters. -/
@@ -615,6 +627,7 @@ def check (c : Ctx) (Γ : Env) : Expr → Option Out
     | some (.live tys Δ) =>
       guard (tys.length == params.length &&
         (tys.zip params).all fun (t, u) => t.le c.ct c.bounds u)
+      guard (c.builtinOk ret)
       -- (A built-in method may call one of the program: `to_s` in an
       -- interpolation, `puts`'s.)
       some (.plain ret (c.afterCall Δ))

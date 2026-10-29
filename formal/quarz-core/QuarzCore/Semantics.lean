@@ -31,6 +31,9 @@ inductive Value where
   | obj (l : Nat)
   /-- A procedure, by its index in the store's `procs`. -/
   | proc (i : Nat)
+  /-- A value of a built-in generic class (design §14), by its index in
+  the store's `builts` (its class and its type arguments, ghost). -/
+  | builtin (i : Nat)
   deriving DecidableEq, Repr, Inhabited
 
 def Value.truthy : Value → Bool
@@ -77,6 +80,8 @@ structure Store where
   may write it, its local being pinned where it was made (design
   §13.10). -/
   pins : List Bool := []
+  /-- Ghost: the class and type arguments of each built-in value. -/
+  builts : List (Nat × List Ty) := []
   deriving Repr, Inhabited
 
 /-- A method's activation: its locals' locations, `self`, and the
@@ -112,6 +117,7 @@ def typeOf (s : Store) : Value → Option Atom
   | .proc i => (s.procs[i]?).bind fun p => match p.ty with
     | .cls k as => some (.cls k as)
     | _ => none
+  | .builtin i => (s.builts[i]?).map fun (k, as) => .cls k as
 
 def hasType (ct : ClassTable) (s : Store) (v : Value) (t : Ty) : Bool :=
   match s.typeOf v with
@@ -243,13 +249,19 @@ def eval (P : Program) (orc : Oracle) : Nat → Frame → Store → Expr → Res
         | none => .stuck
     | .prim _ args _ ret => match evalArgs P orc n fr s args with
       | .other r => r
-      | .ok _ s => match orc n s (ret.subst fr.selfArgs) with
-        | some v => .ok v s
-        -- It raises: an exception the oracle gives (of the exception
-        -- class), or none, as when it runs out.
-        | none => match orc (n + 1) s [.cls P.exn []] with
-          | some e => .raised e s
-          | none => .timeout
+      | .ok _ s =>
+        let ask : Result := match orc n s (ret.subst fr.selfArgs) with
+          | some v => .ok v s
+          -- It raises: an exception the oracle gives (of the exception
+          -- class), or none, as when it runs out.
+          | none => match orc (n + 1) s [.cls P.exn []] with
+            | some e => .raised e s
+            | none => .timeout
+        -- A value of a built-in generic class (an array): made here.
+        match P.builtinOf ret with
+        | some (k, as) =>
+          .ok (.builtin s.builts.length) { s with builts := s.builts ++ [(k, Ty.substArgs fr.selfArgs as)] }
+        | none => ask
     | .seq a b => (eval P orc n fr s a).bind fun _ s => eval P orc n fr s b
     | .ite c t e => (eval P orc n fr s c).bind fun v s =>
       if v.truthy then eval P orc n fr s t else eval P orc n fr s e
@@ -410,7 +422,7 @@ end
 /-- Run the program's top level. -/
 def run (P : Program) (orc : Oracle) (fuel : Nat) : Result :=
   -- `self` is an instance of the top level's class (it has no fields).
-  let (s, vars) := Store.alloc ⟨[], [⟨P.main.owner, [], [], []⟩], [], []⟩ (P.main.locals.map (·.1))
+  let (s, vars) := Store.alloc ⟨[], [⟨P.main.owner, [], [], []⟩], [], [], []⟩ (P.main.locals.map (·.1))
     P.main.body.procAssigned
   match eval P orc fuel ⟨vars, .obj 0, [], none⟩ s P.main.body with
   | .returned v s => .ok v s

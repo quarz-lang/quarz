@@ -88,6 +88,17 @@ def Tables.className (T : Tables) (id : Nat) : M String := do
 classes `Proc0` to `Proc{procMax}`). -/
 def procMax : Nat := 7
 
+/-- The model's class of arrays (`Array[out T]`, a built-in generic class:
+design §14), right after the procedures' classes. -/
+def arrIdx : Nat := 3 + procMax
+
+/-- `Array`'s Rust id and its parameter's. -/
+def Tables.arrayInfo (T : Tables) : M (Nat × Nat) := do
+  let some c := T.classes.find? fun c => (c.getObjValAs? String "name").toOption == some "Array"
+    | throw "no Array"
+  let [p] := (← arr (← field c "type_params")).toList | throw "Array's parameters"
+  pure (← nat (← field c "id"), ← nat (← field p "id"))
+
 /-- `ProcN[in A1, .., in An, out R]` (design §13.7). -/
 def procClassOf (n : Nat) : Class :=
   ⟨s!"Proc{n}", some 0, [], List.replicate n .contra ++ [.co], [], [], .proc⟩
@@ -98,14 +109,14 @@ another class never names it, the checker having substituted); a
 parameter a class test made (`T & C`) is the class it was narrowed to
 (a larger type than the Rust checker's, so a weaker annotation: sound);
 method and extension type parameters, and `Self`, are out of range. -/
-partial def Tables.ty (T : Tables) (j : Json) : M Ty := do
+partial def Tables.tyIn (T : Tables) (env : List (Nat × Ty)) (j : Json) : M Ty := do
   match ← str (← field j "t") with
   | "nothing" => pure []
   -- `-> Void`: the body's value is discarded and the result is nil.
   | "void" => pure [.nil]
   | "union" => do
     let ms ← arr (← field j "members")
-    ms.toList.flatMapM T.ty
+    ms.toList.flatMapM (T.tyIn env)
   | "class" =>
     let id ← nat (← field j "id")
     let args ← arr (← field j "args")
@@ -116,10 +127,11 @@ partial def Tables.ty (T : Tables) (j : Json) : M Ty := do
     | "String" => if args.isEmpty then pure [.str] else throw "a generic type"
     | "Float" => if args.isEmpty then pure [.float] else throw "a generic type"
     | _ => match T.qclass id with
-      | some k => pure [.cls k (← args.toList.mapM T.ty)]
+      | some k => pure [.cls k (← args.toList.mapM (T.tyIn env))]
       | none => throw s!"type {← T.className id}"
   | "param" =>
     let id ← nat (← field j "id")
+    if let some t := (env.find? (·.1 == id)).map (·.2) then return t
     if id == T.selfParam then throw "a Self type"
     match T.classParam id with
     | some (cid, i) =>
@@ -130,7 +142,7 @@ partial def Tables.ty (T : Tables) (j : Json) : M Ty := do
         -- `T & C`: the `C`.
         let cs ← bounds.toList.filterM fun b => do pure ((← str (← field b "t")) != "param")
         match cs with
-        | [c] => T.ty c
+        | [c] => T.tyIn env c
         | _ => throw "a narrowed type parameter without a class"
       | none => throw "a method or extension type parameter"
   -- `Type[T]` (a class as a value of its type): no class objects here.
@@ -141,10 +153,31 @@ partial def Tables.ty (T : Tables) (j : Json) : M Ty := do
     unless (← field j "recv") == .null do throw "a procedure type with a receiver"
     -- A shareable one captures by value (docs/02 §9): not the model's.
     if (← field j "shareable") == .bool true then throw "a shareable procedure type"
-    let ps ← (← arr (← field j "params")).toList.mapM T.ty
+    let ps ← (← arr (← field j "params")).toList.mapM (T.tyIn env)
     unless ps.length ≤ procMax do throw "a procedure type of many parameters"
-    pure [.cls (2 + ps.length) (ps ++ [← T.ty (← field j "ret")])]
+    pure [.cls (2 + ps.length) (ps ++ [← T.tyIn env (← field j "ret")])]
   | t => throw s!"a {t} type"
+
+def Tables.ty (T : Tables) (j : Json) : M Ty := T.tyIn [] j
+
+/-- The type parameters a declared type (`j`) binds against a type (`t`),
+added to `env`: what a call's result type tells of the method's
+instantiation. -/
+partial def Tables.solve (T : Tables) (env : List (Nat × Ty)) (j : Json) (t : Ty) :
+    M (List (Nat × Ty)) := do
+  match ← str (← field j "t") with
+  | "param" =>
+    let id ← nat (← field j "id")
+    if env.any (·.1 == id) then pure env else pure (env ++ [(id, t)])
+  | "class" =>
+    match t with
+    | [.cls _ as] =>
+      let args ← arr (← field j "args")
+      if args.size == as.length then
+        (args.toList.zip as).foldlM (fun env (a, u) => T.solve env a u) env
+      else pure env
+    | _ => pure env
+  | _ => pure env
 
 /-- A Rust class type as a QCore class with its arguments. -/
 def Tables.tyClass (T : Tables) (j : Json) : M (Nat × List Ty) := do
@@ -822,6 +855,15 @@ partial def expr (T : Tables) (e : Json) : CM Expr := do
     | .null => pure (.ret .nil)
     | x => pure (.ret (← expr T x))
   | "Seq" => body T (← arr v)
+  -- An array literal: a built-in call making one (design §14), its
+  -- elements of the element type the checker gave it.
+  | "Array" =>
+    let es ← (← arr v).toList.mapM fun a => do expr T (← positional a)
+    match ← T.nodeTy id with
+    | [.cls k [e]] =>
+      unless k == arrIdx do throw "an array literal's type"
+      pure (.prim "array" es (es.map fun _ => e) [.cls k [e]])
+    | _ => throw "an array literal's type"
   | "Yield" =>
     let as ← (← arr v).toList.mapM fun a => do expr T (← positional a)
     match (← read).blkProc with
@@ -1197,6 +1239,10 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
   | "is_a" =>
     let some r := recv | throw "is_a? without a receiver"
     match ← T.ty (← field target "type") with
+    | [.cls k as] =>
+      -- (The Rust checker tests an array's elements: docs/02 §7.)
+      if k == arrIdx then throw "is_a? of an array type"
+      return .isA r (.cls k as)
     | [a] => return .isA r a
     | _ => throw "is_a? of a union"
   -- `raise` (docs/01 §12): an exception, a class (made without a
@@ -1270,6 +1316,13 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
   | "method" =>
     let m ← T.method (← nat (← field target "method"))
     let native := (← field m "native") == .bool true
+    -- On an array: `Array`'s own native methods only (the inherited ones,
+    -- `Enumerable`'s and `Object`'s, and those `Array` defines in Quarz
+    -- are out of range).
+    if let some rj := (recvJ.getObjVal? "id").toOption then
+      if (← T.nodeTy (← nat rj)).any (fun a => match a with | .cls k _ => k == arrIdx | _ => false) then
+        unless native && (← nat (← field m "owner")) == (← T.arrayInfo).1 do
+          throw s!"an array's method {name} not Array's own native one"
     let synth ← str (← field m "synth")
     let as ← args.mapM (expr T)
     -- An accessor `attr_*` makes is a method of the model (`accessor`).
@@ -1282,14 +1335,46 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
       -- function.
       unless blk == .null do throw s!"a block given to built-in {name}"
       if bpass.isSome then throw s!"a block pass to built-in {name}"
-      -- A rest parameter (`*args`) takes as many arguments as are given
-      -- (any value: its declared `Array[E]` is no type of the model's).
+      -- A rest parameter (`*args`) takes as many arguments as are given,
+      -- each of its element type.
       -- Otherwise the positional parameters the call fills; those it
       -- leaves, and keyword ones, must have defaults.
       let ps := (← arr (← field m "params")).toList
+      -- An array's method: its declared types, the receiver's element type
+      -- for `Array`'s parameter, the method's own from the call's result
+      -- type (the checker's instantiation).
+      if (← T.arrayInfo).1 == (← nat (← field m "owner")) then
+        let some r := recv | throw "an array method without a receiver"
+        let rt ← T.nodeTy (← nat (← field recvJ "id"))
+        let [.cls _ [e]] := rt | throw "an array method on a union"
+        let env ← T.solve [((← T.arrayInfo).2, e)] (← field m "ret") (← T.nodeTy id)
+        -- (A lower bound, `U >: T`, widens what the checker chose: a
+        -- result it narrowed below the bound disagrees.)
+        let mut env := env
+        for tp in (← arr (← field m "type_params")) do
+          let tid ← nat (← field tp "id")
+          let some u := (env.find? (·.1 == tid)).map (·.2) | throw "a method type parameter not in the result"
+          unless (← arr (← field tp "bounds")).isEmpty do throw "a bounded method type parameter"
+          match ← field tp "lower" with
+          | .null => pure ()
+          | lj =>
+            let lo ← T.tyIn env lj
+            env := env.map fun (i, t) => if i == tid then (i, t ++ lo.filter (!t.contains ·)) else (i, t)
+        if ← ps.anyM (fun p => do pure ((← str (← field p "kind")) != "Positional")) then
+          throw "an array method's parameters"
+        let rest := ps.drop as.length
+        for p in rest do
+          unless (← field p "default") == .bool true do throw "a built-in call leaving a parameter"
+        let params ← (ps.take as.length).mapM fun p => do T.tyIn env (← field p "type")
+        return .prim name (r :: as) (rt :: params) (← T.tyIn env (← field m "ret"))
       let params ← if ← ps.anyM (fun p => do pure ((← str (← field p "kind")) == "Rest")) then
           match ps with
-          | [p] => do let t ← T.tyOrTop (← field p "type"); pure (as.map fun _ => t)
+          | [p] => do
+            -- (Its declared type, `Array[E]`: each argument an `E`.)
+            let t ← match ← T.tyOrTop (← field p "type") with
+              | [.cls k [e]] => pure (if k == arrIdx then e else [.cls k [e]])
+              | t => pure t
+            pure (as.map fun _ => t)
           | _ => throw "a rest parameter with others"
         else do
           let pos ← ps.filterM fun p => do pure ((← str (← field p "kind")) == "Positional")
@@ -1616,10 +1701,14 @@ def program (j : Json) : M Program := do
   let userIds := excIds ++ (← user.mapM fun c => do nat (← field c "id"))
   -- `Object` is 0, the files' main classes (the top level and its
   -- methods) 1, the user classes from 2.
+  let arrayId ← match classes.find? fun c => (c.getObjValAs? String "name").toOption == some "Array" with
+    | some c => nat (← field c "id")
+    | none => throw "no Array"
   let qclass : Nat → Option Nat := fun id =>
     if id == objectId then some 0
     else if mainClasses.contains id then some 1
-    else (userIds.idxOf? id).map (· + 3 + procMax)
+    else if id == arrayId then some arrIdx
+    else (userIds.idxOf? id).map (· + 4 + procMax)
   unless units.size == 1 do throw "a required file"
   let fdefs ← arr (← field j "field_defaults")
   -- The classes' type parameters by id, and the narrowed ones.
@@ -1730,7 +1819,8 @@ def program (j : Json) : M Program := do
     | none => pure none
   let own := methods ++ accessors
   let P : Program := ⟨⟨"Object", none, [], [], [], [], .cls⟩ :: ⟨"<main>", some 0, [], [], [], [], .cls⟩ ::
-      ((List.range (procMax + 1)).map procClassOf ++ excClasses ++ qclasses),
+      ((List.range (procMax + 1)).map procClassOf ++ [⟨"Array", some 0, [], [.co], [], [], .builtin⟩] ++
+        excClasses ++ qclasses),
     own ++ consts,
     ⟨1, "<main>", [], all, none, mainLocals, mainBody⟩, defaults⟩
   for m in P.main :: P.methods do localsInRange (m.params.map (·.1)) m.body

@@ -51,6 +51,12 @@ structure WfClasses (ct : ClassTable) : Prop where
   procShape : ∀ (i : Nat) (k : Class), ct[i]? = some k → k.kind = .proc →
     k.super = some 0 ∧ k.fields = [] ∧ k.superArgs = [] ∧
     k.params = List.replicate (k.params.length - 1) .contra ++ [.co]
+  /-- A built-in generic class: no subclasses, right below `Object`,
+  without fields. -/
+  builtinLeaf : ∀ (i : Nat) (k : Class) (d : Nat), ct[i]? = some k → k.super = some d →
+    ct.kindOf d ≠ .builtin
+  builtinShape : ∀ (i : Nat) (k : Class), ct[i]? = some k → k.kind = .builtin →
+    k.super = some 0 ∧ k.fields = [] ∧ k.superArgs = []
 
 /-- What `wfClasses` says of a class other than the root. -/
 theorem Program.wfClasses_class {P : Program} (h : P.wfClasses = true) {i : Nat} {k : Class}
@@ -90,7 +96,8 @@ theorem Program.wfClasses_sound {P : Program} (h : P.wfClasses = true) : WfClass
   refine ⟨hne, fun k hk => (root k hk).1, fun k hk => (root k hk).2.1, fun i k hi hk => ?_,
     fun i k d hk hs => ?_, hnames, fun i k hk t ht a ha => ?_, fun i k d hk hs => ?_,
     fun i k d hk hs j t hj => ?_, fun i k hk => ?_, fun i k d hk hs => ?_, fun i k d hk hs => ?_,
-    fun i k d hk hs hd => ?_, fun k hk => ?_, fun i k d hk hs => ?_, fun i k hk hp => ?_⟩
+    fun i k d hk hs hd => ?_, fun k hk => ?_, fun i k d hk hs => ?_, fun i k hk hp => ?_,
+    fun i k d hk hs => ?_, fun i k hk hp => ?_⟩
   · obtain ⟨d, hd, h1, _⟩ := Program.wfClasses_class h hk (by omega)
     exact ⟨d, hd, h1⟩
   · obtain ⟨d', hd', _, h2, _⟩ := Program.wfClasses_class h hk (hnz i k hk (by simp [hs]))
@@ -110,24 +117,33 @@ theorem Program.wfClasses_sound {P : Program} (h : P.wfClasses = true) : WfClass
     exact this
   · have := hkind i (List.getElem?_eq_some_iff.mp hk).1
     simp only [hk, hs, Bool.and_eq_true, bne_iff_ne, ne_eq] at this
-    exact this.1.1.1.1.1
+    exact this.1.1.1.1.1.1.1
+  · have := hkind i (List.getElem?_eq_some_iff.mp hk).1
+    simp only [hk, hs, Bool.and_eq_true, bne_iff_ne, ne_eq] at this
+    exact this.1.1.1.1.1.1.2
+  · have := hkind i (List.getElem?_eq_some_iff.mp hk).1
+    simp only [hk, hs, Bool.and_eq_true, bne_iff_ne, ne_eq, Bool.or_eq_true, beq_iff_eq,
+      List.isEmpty_iff] at this
+    exact this.1.1.1.2.resolve_left (by simpa using hd)
+  · have := hkind 0 hne
+    simp [hk] at this
+    exact this.1.1.2
+  · have := hkind i (List.getElem?_eq_some_iff.mp hk).1
+    simp only [hk, hs, Bool.and_eq_true, bne_iff_ne, ne_eq] at this
+    exact this.1.1.1.1.1.2
+  · have := hkind i (List.getElem?_eq_some_iff.mp hk).1
+    simp only [hk, hp, Bool.and_eq_true, bne_iff_ne, ne_eq, Bool.or_eq_true, beq_iff_eq,
+      List.isEmpty_iff, not_true_eq_false, false_or, reduceCtorEq, not_false_eq_true, true_or,
+      and_true] at this
+    exact ⟨this.2.1.1.1.1, this.2.1.1.1.2, this.2.1.1.2, this.2.2⟩
   · have := hkind i (List.getElem?_eq_some_iff.mp hk).1
     simp only [hk, hs, Bool.and_eq_true, bne_iff_ne, ne_eq] at this
     exact this.1.1.1.1.2
   · have := hkind i (List.getElem?_eq_some_iff.mp hk).1
-    simp only [hk, hs, Bool.and_eq_true, bne_iff_ne, ne_eq, Bool.or_eq_true, beq_iff_eq,
-      List.isEmpty_iff] at this
-    exact this.1.1.2.resolve_left (by simpa using hd)
-  · have := hkind 0 hne
-    simp [hk] at this
-    exact this.1.2
-  · have := hkind i (List.getElem?_eq_some_iff.mp hk).1
-    simp only [hk, hs, Bool.and_eq_true, bne_iff_ne, ne_eq] at this
-    exact this.1.1.1.2
-  · have := hkind i (List.getElem?_eq_some_iff.mp hk).1
     simp only [hk, hp, Bool.and_eq_true, bne_iff_ne, ne_eq, Bool.or_eq_true, beq_iff_eq,
-      List.isEmpty_iff, not_true_eq_false, false_or] at this
-    exact ⟨this.2.1.1.1.1, this.2.1.1.1.2, this.2.1.1.2, this.2.2⟩
+      List.isEmpty_iff, not_true_eq_false, false_or, reduceCtorEq, not_false_eq_true, true_or,
+      and_true] at this
+    exact ⟨this.2.1.1.1, this.2.1.1.2, this.2.1.2⟩
 
 namespace ClassTable
 

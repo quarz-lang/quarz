@@ -121,7 +121,7 @@ inductive Typed : Ctx → Env → Expr → Out → Prop where
   | yieldDead : c.meth.block = some sig → TypedArgs c Γ args .dead →
       Typed c Γ (.yield args) .dead
   | prim : TypedArgs c Γ args (.live tys Δ) → tys.length = params.length →
-      ((tys.zip params).all fun (t, u) => t.le c.ct c.bounds u) = true →
+      ((tys.zip params).all fun (t, u) => t.le c.ct c.bounds u) = true → c.builtinOk ret = true →
       Typed c Γ (.prim f args params ret) (.plain ret (c.afterCall Δ))
   | primDead : TypedArgs c Γ args .dead → Typed c Γ (.prim f args params ret) .dead
   | seq : Typed c Γ a oa → oa.out = some Δ → Typed c Δ b ob → Typed c Γ (.seq a b) ob

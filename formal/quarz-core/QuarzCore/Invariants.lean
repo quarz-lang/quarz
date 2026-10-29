@@ -59,6 +59,8 @@ structure Ext (W Wo : Nat → Prop) (Λ Λ' : List Ty) (s s' : Store) : Prop whe
   /-- The marks stay: a pinned location (a procedure may write it, any
   call may) is written as any other, at its type. -/
   pins : s.pins <+: s'.pins
+  /-- Built-in values stay as made. -/
+  builts : s.builts <+: s'.builts
 
 /-- What a path holds in frame `fr` of a method checked in `c`: the types
 the body names (which may name the class's parameters) are read with
@@ -172,11 +174,17 @@ structure WfStore (Λ : List Ty) (s : Store) : Prop where
       (P.classes.allFieldsAt o.cls o.args)[i]? = some f → s.hasTy P v f.ty
   /-- No object is of an `enum` itself, nor of a procedures' class. -/
   noEnum : ∀ (l : Nat) (o : Obj), s.objs[l]? = some o →
-    P.classes.kindOf o.cls ≠ .enumC ∧ P.classes.kindOf o.cls ≠ .proc
+    P.classes.kindOf o.cls ≠ .enumC ∧ P.classes.kindOf o.cls ≠ .proc ∧ P.classes.kindOf o.cls ≠ .builtin
   /-- Each object's type arguments are within its class's bounds. -/
   bounds : ∀ (l : Nat) (o : Obj), s.objs[l]? = some o → ArgsIn P.classes (P.classes.boundsOf o.cls) o.args
   /-- Each procedure is a lambda as checked, its frame as it was. -/
   procs : ∀ (i : Nat) (p : ProcV), s.procs[i]? = some p → ProcOK P Λ s p
+  /-- Each built-in value is of a built-in generic class, its arguments
+  closed, as many as its parameters, within their bounds. -/
+  builts : ∀ (i k : Nat) (as : List Ty), s.builts[i]? = some (k, as) →
+    k < P.classes.length ∧ P.classes.kindOf k = .builtin ∧ Ty.closedArgs as = true ∧
+    as.length = (((P.classes[k]?).map (·.params)).getD []).length ∧
+    ArgsIn P.classes (P.classes.boundsOf k) as
 
 /-- A frame's block chain as it was checked: for each block (innermost
 first) the context it was written in, the environment at its call and

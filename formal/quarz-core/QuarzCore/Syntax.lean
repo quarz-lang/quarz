@@ -119,6 +119,11 @@ structure Program where
 def Program.exn (P : Program) : Nat :=
   (P.classes.findIdx? (·.name == "Exception")).getD 0
 
+/-- A type that is one built-in generic class's (design §14). -/
+def Program.builtinOf (P : Program) : List Atom → Option (Nat × List Ty)
+  | [.cls k as] => if P.classes.kindOf k == .builtin then some (k, as) else none
+  | _ => none
+
 /-- The class of procedures of `n` parameters (`ProcN[in A1, .., in An,
 out R]`): the first of kind `proc` with `n + 1` parameters. -/
 def Program.procClass (P : Program) (n : Nat) : Option Nat :=

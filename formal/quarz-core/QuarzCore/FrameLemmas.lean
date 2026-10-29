@@ -57,6 +57,18 @@ theorem bindAll_pins {vars : List (String × Nat)} :
   | [], _ :: _, _, _, h => by simp [bindAll] at h
   | _ :: _, [], _, _, h => by simp [bindAll] at h
 
+/-- Binding leaves the built-in values. -/
+theorem bindAll_builts {vars : List (String × Nat)} :
+    ∀ {xs : List String} {vs : List Value} {s s' : Store}, bindAll s vars xs vs = some s' →
+      s'.builts = s.builts
+  | [], [], s, s', h => by simp [bindAll] at h; subst h; rfl
+  | x :: xs, v :: vs, s, s', h => by
+    simp only [bindAll, bind, Option.bind_eq_some_iff] at h
+    obtain ⟨l, _, h⟩ := h
+    rw [bindAll_builts h]; rfl
+  | [], _ :: _, _, _, h => by simp [bindAll] at h
+  | _ :: _, [], _, _, h => by simp [bindAll] at h
+
 /-- Bound to distinct names, at distinct locations: each holds its value. -/
 theorem bindAll_val {vars : List (String × Nat)}
     (hinj : ∀ x y l, lookupVar vars x = some l → lookupVar vars y = some l → x = y) :
@@ -136,6 +148,7 @@ theorem Ext.restrict {W W' Wo : Nat → Prop} {Λ Λ' : List Ty} {s s' : Store} 
   tys := h.tys
   procs := h.procs
   pins := h.pins
+  builts := h.builts
   locs := fun l v hv => by
     obtain ⟨v', h1, h2⟩ := h.locs l v hv
     refine ⟨v', h1, ?_⟩
@@ -151,6 +164,7 @@ theorem Ext.restrictP {W W' Wo : Nat → Prop} {Λ Λ' : List Ty} {s s' : Store}
   tys := h.tys
   procs := h.procs
   pins := h.pins
+  builts := h.builts
   locs := fun l v hv => by
     obtain ⟨v', h1, h2⟩ := h.locs l v hv
     refine ⟨v', h1, ?_⟩

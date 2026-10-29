@@ -161,8 +161,8 @@ theorem check_typed : ∀ {c : Ctx} {Γ : Env} {e : Expr} {o : Out}, check c Γ 
     split at h
     · simp at h
     · simp at h; subst h; exact .primDead (checkArgs_typed (by assumption))
-    · simp at h; obtain ⟨⟨hl, hall⟩, rfl⟩ := h
-      exact .prim (checkArgs_typed (by assumption)) hl (by simpa using hall)
+    · simp at h; obtain ⟨⟨hl, hall⟩, hb, rfl⟩ := h
+      exact .prim (checkArgs_typed (by assumption)) hl (by simpa using hall) hb
   | c, Γ, .seq a b, o, h => by
     simp [check] at h
     obtain ⟨oa, ha, h⟩ := h
