@@ -144,6 +144,9 @@ theorem Post.weaken {c : Ctx} {o o' : Out} {fr : Frame} {ws : List (Ctx × Env �
   | timeout => trivial
   | stuck => exact h
 
+theorem Env.set_set (Γ : Env) (p : Path) (t t' : Ty) : (Γ.set p t).set p t' = Γ.set p t' := by
+  simp [Env.set, List.filter_filter]
+
 /-- Assigning `x`: it holds the value, the other paths what they held. -/
 theorem Sat.assign {c : Ctx} {Δ : Env} {fr : Frame} {Λ : List Ty} {s : Store} {x : String}
     {l : Nat} {d t : Ty} {v : Value} (hs : Sat P c Δ fr s)
@@ -2227,7 +2230,7 @@ theorem eval_succ : EvalGood P orc (n + 1) := by
     · rw [if_neg (by simp)]
       have hfo := hff hv
       exact ⟨Λ1, hw1, he1.monoW (evalW_mono (by simp [Expr.assigned]; intros; simp_all)), hf1,
-        (by rw [Ty.subst_append]; exact hasTy_append_left hwf _ hv1), hfo.join_left hwf, fun h => absurd (hv.symm.trans h) (by simp),
+        (by rw [Ty.subst_append]; exact hasTy_append_left hwf _ (hasTy_falsy_subst hwf hv1 hv)), hfo.join_left hwf, fun h => absurd (hv.symm.trans h) (by simp),
         fun _ => hfo.join_left hwf⟩
     · rw [if_pos rfl]
       obtain ⟨Δ, hΔ, hs1⟩ := htt hv
@@ -2258,7 +2261,7 @@ theorem eval_succ : EvalGood P orc (n + 1) := by
     · rw [if_pos rfl]
       have hto := htt hv
       exact ⟨Λ1, hw1, he1.monoW (evalW_mono (by simp [Expr.assigned]; intros; simp_all)), hf1,
-        (by rw [Ty.subst_append]; exact hasTy_append_left hwf _ hv1), hto.join_left hwf, fun _ => hto.join_left hwf,
+        (by rw [Ty.subst_append]; exact hasTy_append_left hwf _ (hasTy_truthy_subst hv1 hv)), hto.join_left hwf, fun _ => hto.join_left hwf,
         fun h => absurd (hv.symm.trans h) (by simp)⟩
   | whileNever h0 hc htt =>
     simp only [eval]
@@ -2309,10 +2312,22 @@ theorem eval_succ : EvalGood P orc (n + 1) := by
     have hvd := hasTy_le hwf hv1 (hf.substLe hwf hle)
     have he2 : Ext c.prog (fun l' => l' = l) (fun _ => False) Λ1 Λ1 s1 (s1.setLoc l v) :=
       Ext.setLoc hlen hΛ hvd rfl
+    -- The value's test narrows `x` too.
+    have hnar : ∀ {t' : Ty}, s1.hasTy c.prog v (t'.subst fr.selfArgs) →
+        OutOK c.prog c (narrow (Δ.set (.local x) o'.ty) (.local x) t') fr (s1.setLoc l v) := by
+      intro t' ht'
+      unfold narrow
+      split
+      · rename_i hem
+        rw [List.isEmpty_iff.mp hem] at ht'
+        simp [hasTy_iff, Ty.subst] at ht'
+      · refine ⟨_, rfl, ?_⟩
+        rw [Env.set_set]
+        exact hs1.assign hf1.core hl hd hlen ht' hvd
     refine ⟨Λ1, hw1.setLoc hlen hΛ hvd, (he1.transF he2 hw).monoW ?_,
       hf1.stable he2 (hf1.own_not_chain hl) (fun _ h => h.elim),
-      hv1, ⟨_, rfl, hs1.assign hf1.core hl hd hlen hv1 hvd⟩, fun _ => ⟨_, rfl,
-      hs1.assign hf1.core hl hd hlen hv1 hvd⟩, fun _ => ⟨_, rfl, hs1.assign hf1.core hl hd hlen hv1 hvd⟩⟩
+      hv1, ⟨_, rfl, hs1.assign hf1.core hl hd hlen hv1 hvd⟩, fun ht => hnar (hasTy_truthy_subst hv1 ht),
+      fun ht => hnar (hasTy_falsy_subst hwf hv1 ht)⟩
     rintro l' (h | rfl)
     · exact evalW_mono (by simp [Expr.assigned]; intros; simp_all) l' h
     · exact .inl ⟨x, by simp [Expr.assigned], hl⟩

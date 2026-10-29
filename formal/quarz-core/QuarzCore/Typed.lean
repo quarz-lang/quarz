@@ -35,7 +35,7 @@ inductive Typed : Ctx → Env → Expr → Out → Prop where
       Typed c Γ (.field f t) ⟨t, some Γ, narrow Γ (.field f) (truthyTy u),
         narrow Γ (.field f) (falsyTy c.ct u)⟩
   | assign : Typed c Γ e o → c.decl x = some d → o.ty.le c.ct c.bounds d → o.out = some Δ →
-      Typed c Γ (.assign x e) (.plain o.ty (Δ.set (.local x) o.ty))
+      Typed c Γ (.assign x e) (assignOut c Δ x o.ty)
   | assignDead : Typed c Γ e o → c.decl x = some d → o.ty.le c.ct c.bounds d → o.out = none →
       Typed c Γ (.assign x e) .dead
   /-- A field assigned: a `var` one, or in `initialize` (not in a block of
@@ -178,9 +178,9 @@ inductive Typed : Ctx → Env → Expr → Out → Prop where
       (t = .isNil e ∨ (∃ a, t = .isA e a) ∨ t = .eqNil e ∨ t = .neNil e ∨ t = .eqTrue e ∨
         t = .eqFalse e) → Typed c Γ t .dead
   | and : Typed c Γ a oa → TypedBranch c oa.tt b ob →
-      Typed c Γ (.and a b) ⟨oa.ty ++ ob.ty, ojoin oa.ff ob.out, ob.tt, ojoin oa.ff ob.ff⟩
+      Typed c Γ (.and a b) ⟨falsyTy c.ct oa.ty ++ ob.ty, ojoin oa.ff ob.out, ob.tt, ojoin oa.ff ob.ff⟩
   | or : Typed c Γ a oa → TypedBranch c oa.ff b ob →
-      Typed c Γ (.or a b) ⟨oa.ty ++ ob.ty, ojoin oa.tt ob.out, ojoin oa.tt ob.tt, ob.ff⟩
+      Typed c Γ (.or a b) ⟨truthyTy oa.ty ++ ob.ty, ojoin oa.tt ob.out, ojoin oa.tt ob.tt, ob.ff⟩
   | not : Typed c Γ a oa → Typed c Γ (.not a) ⟨[.bool], oa.out, oa.ff, oa.tt⟩
 
 /-- Code reached only where `Γ` holds (`some`), or not at all (`none`:
