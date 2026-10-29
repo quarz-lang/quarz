@@ -106,10 +106,11 @@ when the local one is older.
 - A compiled program carries no QIR instructions and no interpreter:
   an instruction its code does not do inline calls the runtime's entry
   for its kind (`ffi_ops.rs`, `qz_op_*`, listed in `gen::OPS`), which
-  runs the interpreter's code for it (`ops.rs`). Only `quarz run` and
-  the REPL install the interpreter (`Interp::install_interpreter`);
-  nothing a compiled program reaches may name `Inst`, `Block` or the
-  interpreter, or the linker keeps them.
+  runs the interpreter's code for it (`ops.rs`). Only the `quarz`
+  command installs the interpreter (`Interp::install_interpreter`: for
+  `run`, the REPL, and the compile-time runs of `static` statements in
+  `check` and `build`); nothing a compiled program reaches may name
+  `Inst`, `Block` or the interpreter, or the linker keeps them.
 - Natives are registered with `native!`/`fast!`/`owned!`
   (`natives/mod.rs`): each is a function of its own, exported as
   `qzn.`/`qzf.`/`qzo.` and its first key, and a compiled program's table

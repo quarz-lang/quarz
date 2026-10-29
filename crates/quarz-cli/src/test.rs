@@ -302,6 +302,10 @@ fn load_and_check(
     // Checks in examples that apply to nothing.
     let mut example_errors: Vec<String> = Vec::new();
     let unit_cog = own_cog.map(|_| 0);
+    // The class bodies' `static` statements run during the check (docs/14).
+    let mut runner_files = vec![prelude_file.clone()];
+    runner_files.extend(sources.iter().cloned());
+    let mut runner = quarz_cli::static_run::Runner::new(runner_files.clone());
     let mut extra = |world: &World| {
         let mut all_files = vec![prelude_file.clone()];
         all_files.extend(sources.iter().cloned());
@@ -347,12 +351,23 @@ fn load_and_check(
         out.push(quarz_types::ExtraSource { source, cog: None });
         Ok(out)
     };
-    let (checked, diagnostics) =
-        quarz_types::check_with_extra(&prelude.program, &to_check, &decls, Some(&mut extra));
+    let (checked, mut diagnostics) = quarz_types::check_with_extra(
+        &prelude.program,
+        &to_check,
+        &decls,
+        Some(&mut extra),
+        Some(&mut runner),
+    );
     for e in &example_errors {
         eprintln!("{e}");
     }
     let checked = checked.filter(|_| example_errors.is_empty());
+    let checked = checked.filter(|c| {
+        let errors = quarz_cli::static_run::compile_time_only_calls(c, &runner_files);
+        let ok = errors.is_empty();
+        diagnostics.extend(errors);
+        ok
+    });
     for (file_index, diag) in &diagnostics {
         let extra = file_index
             .checked_sub(first_extra)

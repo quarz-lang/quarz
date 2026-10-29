@@ -282,7 +282,18 @@ fn load_and_check(target: &Target) -> Option<(quarz_types::Checked, Vec<SourceFi
     }
     let sources: Vec<SourceFile> = units.iter().map(|u| u.source.clone()).collect();
     let to_check: Vec<quarz_types::Unit> = units.into_iter().map(quarz_types::Unit::from).collect();
-    let (checked, diagnostics) = quarz_types::check_movement(&prelude.program, &to_check, &cogs);
+    let mut files = vec![prelude_file.clone()];
+    files.extend(sources.iter().cloned());
+    // The class bodies' `static` statements run during the check (docs/14).
+    let mut runner = quarz_cli::static_run::Runner::new(files.clone());
+    let (checked, mut diagnostics) =
+        quarz_types::check_movement_with(&prelude.program, &to_check, &cogs, &mut runner);
+    let checked = checked.filter(|c| {
+        let errors = quarz_cli::static_run::compile_time_only_calls(c, &files);
+        let ok = errors.is_empty();
+        diagnostics.extend(errors);
+        ok
+    });
     for (file_index, diag) in &diagnostics {
         let f = if *file_index == 0 {
             &prelude_file
@@ -291,8 +302,6 @@ fn load_and_check(target: &Target) -> Option<(quarz_types::Checked, Vec<SourceFi
         };
         eprint!("{}", diag.render(f));
     }
-    let mut files = vec![prelude_file];
-    files.extend(sources);
     checked.map(|c| (c, files))
 }
 

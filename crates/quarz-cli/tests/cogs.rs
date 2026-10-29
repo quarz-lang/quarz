@@ -240,6 +240,49 @@ fn an_application_uses_its_cogs_without_require() {
 }
 
 #[test]
+fn static_defs_run_from_dependency_cogs() {
+    // A library cog's `static def` runs, at compile time, from a class
+    // body of the application; one of the application's own cog does not
+    // (docs/14 §2).
+    let w = World::new();
+    w.write(
+        "orm/Cog.toml",
+        "[cog]\nname = \"orm\"\nversion = \"0.1.0\"\n",
+    );
+    w.write(
+        "orm/src/model.qz",
+        "class Model\n  static def self.table(name: String) -> Void\n    puts \"#{self.name} -> #{name} (#{fields.size} fields)\"\n  end\nend\n",
+    );
+    w.commit("orm", Some("v0.1.0"));
+    w.app(
+        &format!("Orm = {{ git = \"{}\", tag = \"v0.1.0\" }}\n", w.url("orm")),
+        "class Post < Orm::Model\n  @title: String\n  def initialize(@title: String); end\n  table \"posts\"\nend\nputs Post.new(\"t\").class.name\n",
+    );
+    let out = w.quarz("app", &["run"]);
+    assert!(out.ok, "{}", out.stderr);
+    assert_eq!(out.stdout, "Post\n");
+    // The statement's output, after the fetch's progress lines.
+    let said: Vec<&str> = out
+        .stderr
+        .lines()
+        .filter(|l| !l.starts_with("quarz: "))
+        .collect();
+    assert_eq!(said, ["Post -> posts (1 fields)"]);
+    w.write(
+        "app/src/main.qz",
+        "class Base\n  static def self.own -> Void; end\nend\nclass K < Base\n  own\nend\n",
+    );
+    let out = w.quarz("app", &["check"]);
+    assert!(!out.ok);
+    assert!(
+        out.stderr
+            .contains("`own` is a `static def` of the application"),
+        "{}",
+        out.stderr
+    );
+}
+
+#[test]
 fn keys_name_cogs_and_scopes_are_closed() {
     let w = World::new();
     w.libraries();

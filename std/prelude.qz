@@ -121,10 +121,49 @@ class Type[T]
   # Whether the class is `other` or a subclass of it (or includes it,
   # for a module): `Int <= Comparable`. Type arguments are not compared.
   native def <=(other: Type[Object]) -> Bool
+  # Reflection, at compile time only (in a `static def` or a `static`
+  # statement): the class's fields, its own and inherited, in
+  # declaration order.
+  static native def fields -> Array[Meta::Field]
+  # The field named `name`, if any.
+  static native def field(name: Symbol) -> Meta::Field?
+  # The signatures of the class's instance methods, its own and
+  # inherited, in declaration order; at compile time only.
+  static native def methods -> Array[Meta::MethodSig]
+  # Whether the class has an instance method named `name`; at compile
+  # time only.
+  static native def method?(name: Symbol) -> Bool
+  # Whether the class includes the module `m` (or is `m`, or a subclass
+  # of it); at compile time only.
+  static native def includes?(m: Type[Object]) -> Bool
 end
 
 # `Type[Object]`, the type of any class value: what `x.class` returns.
 type Class = Type[Object]
+
+# What a `static def` sees of the program at compile time (docs/14).
+# `Meta::ClassDef` exists at compile time only; the `data` types are
+# ordinary values.
+module Meta
+  # A field of a class: its name, declared type (type arguments erased),
+  # whether it is `var`, and whether it has a default.
+  data Field = (name: Symbol, type: Type[Object], mutable: Bool, default: Bool)
+  # How a parameter is passed.
+  enum ParamKind = Required | Optional | Rest | Keyword | Block
+  # A parameter of a method signature.
+  data Param = (name: Symbol, type: Type[Object], kind: ParamKind)
+  # A method's signature: no body is visible.
+  data MethodSig = (name: Symbol, params: Array[Param], result: Type[Object], static: Bool)
+
+  # The class being declared, as a `static` statement and the `static`
+  # class method it calls see it through `self`: a `Type[T]` (the class
+  # as a value, with its class methods and the reflection) that will
+  # also take the members a `static def` generates. At run time, in a
+  # `static def` that is not compile-time only, `self` is the class
+  # value itself.
+  class ClassDef[T] < Type[T]
+  end
+end
 
 # The class of `nil`, the absence of a value. A type `T?` is `T` or `Nil`.
 class Nil

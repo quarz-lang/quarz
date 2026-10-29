@@ -2418,3 +2418,60 @@ fn class_values_in_tests_and_patterns() {
         "cannot raise",
     );
 }
+
+/// `static def` and class bodies' `static` statements (docs/14): what
+/// the checker accepts and rejects; running them is quarz-cli's.
+#[test]
+fn static_declarations() {
+    // A `static` class method's `self` is the class's `Meta::ClassDef`,
+    // a `Type[Self]` with reflection; the body may call the class's own
+    // class methods and `Type`'s.
+    ok("class Model\n  def self.table -> String = \"t\"\n  static def self.describe -> String = name + table + fields.size.to_s + method?(:x).to_s\nend");
+    // A statement in a class body calls a `static def` class method of a
+    // file loaded earlier; here there is none, so of this file: an error
+    // that names the rule, not \"only declarations\".
+    err(
+        "class Model\n  static def self.has_many(t: Type[Object]) -> Void; end\nend\nclass Post < Model\n  has_many Post\nend",
+        "`has_many` is a `static def` of this file",
+    );
+    err(
+        "class Model\n  def self.plain -> Void; end\nend\nclass Post < Model\n  plain\nend",
+        "a statement in a class body must call a `static def` class method; `plain` is not one",
+    );
+    err(
+        "class P\n  1 + 1\nend",
+        "only declarations are allowed in a class body",
+    );
+    // Reflection is compile-time only: not from ordinary code.
+    err("p Int.fields", "`fields` runs at compile time only");
+    err(
+        "def f[T](t: Type[T]) -> Bool = t.method?(:x)",
+        "`method?` runs at compile time only",
+    );
+    // A `static def` that does not reach `Meta` is also an ordinary
+    // method, callable at run time.
+    ok("class M\n  static def self.twice(x: Int) -> Int = x * 2\nend\np M.twice(2)");
+    // `static(...)` is reserved.
+    let parsed = quarz_syntax::parse("x = static(1)");
+    assert!(
+        parsed
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("`static(...)` is reserved")),
+        "{:?}",
+        parsed.diagnostics
+    );
+    let parsed = quarz_syntax::parse("class A\n  static abstract def x -> Int\nend");
+    assert!(
+        parsed
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("a `static def` cannot be abstract")),
+        "{:?}",
+        parsed.diagnostics
+    );
+    // `Meta::ClassDef[X]` is a `Type[X]`.
+    ok("class Model\n  static def self.me -> Type[Model] = self\n  static def self.named -> String = self.name\nend");
+    // `Type` is not for subclassing outside the prelude.
+    err("class K < Type[Int]; end", "cannot inherit from `Type`");
+}

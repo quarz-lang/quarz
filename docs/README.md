@@ -19,6 +19,7 @@ The documents in this directory describe the language and its implementation. Fo
 | [11-http.md](11-http.md) | HTTP server: handlers returning responses, one task per connection, router, `Signal`; `HTTP::Client` later |
 | [12-testing.md](12-testing.md) | Testing: Test::Unit-style `Test::Case`, tests found by the compiler, typed assertions, data-driven tests, `quarz test` |
 | [13-doc-comments.md](13-doc-comments.md) | Documentation comments: the comment above a declaration, Markdown, checked links, examples run by `quarz test`, `quarz doc` |
+| [14-metaprogramming.md](14-metaprogramming.md) | Compile-time metaprogramming: `static def`, class bodies' `static` statements, `Meta` reflection, the compile-time rules |
 | [examples/](../examples/) | Sample programs (`bank_actor`, `builder`, `extension`, `geometry`, `hello`, `json_report`, `markdown`, `multi_file`, `pipeline`, `sales_report`, `shapes`, `wordcount`, `workers`) |
 
 ## Main design decisions

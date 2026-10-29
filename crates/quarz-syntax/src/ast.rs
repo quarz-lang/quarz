@@ -571,6 +571,8 @@ pub struct MethodDef {
     pub body: Option<Vec<Expr>>,
     pub is_abstract: bool,
     pub is_native: bool,
+    /// `static def`: callable at compile time (docs/14).
+    pub is_static: bool,
     pub visibility: Option<Visibility>,
     pub span: Span,
 }

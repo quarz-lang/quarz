@@ -745,6 +745,11 @@ impl Interp {
             }
             let step = match &b.term {
                 Term::Jump(t) => {
+                    // A loop's back edge: where a compile-time run past its
+                    // time limit stops (docs/14 §5).
+                    if self.deadline.get().is_some() {
+                        self.check_deadline()?;
+                    }
                     block = *t;
                     continue 'blocks;
                 }
@@ -1293,6 +1298,11 @@ impl Interp {
         // What a key's own `==` or `hash` raised is raised before any more
         // Quarz code runs (`crate::keys`).
         crate::keys::check()?;
+        // A block a native loops over (`loop { }`) has no back edge of its
+        // own: a compile-time run's time limit is checked here.
+        if self.deadline.get().is_some() {
+            self.check_deadline()?;
+        }
         let Value::Proc(closure) = proc else {
             return Err(self.err_type("not a procedure"));
         };

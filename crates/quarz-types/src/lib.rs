@@ -377,7 +377,54 @@ pub fn check_movement(
     units: &[Unit],
     cogs: &[CogDecl],
 ) -> (Option<Checked>, Vec<FileDiagnostic>) {
-    check_with_extra(prelude, units, cogs, None)
+    check_with_extra(prelude, units, cogs, None, None)
+}
+
+/// `check_movement` with a runner for the class bodies' `static`
+/// statements (docs/14): without one, they are checked but not run.
+pub fn check_movement_with(
+    prelude: &Program,
+    units: &[Unit],
+    cogs: &[CogDecl],
+    runner: &mut (dyn StaticRunner + '_),
+) -> (Option<Checked>, Vec<FileDiagnostic>) {
+    check_with_extra(prelude, units, cogs, None, Some(runner))
+}
+
+/// What a `StaticRunner` may ask of the checker while it runs a
+/// `static` statement: the world and the results so far, and the check
+/// of a method the statement's callee reaches.
+pub trait StaticHost {
+    fn world(&self) -> &World;
+    fn output(&self) -> &Output;
+    fn ensure_method_checked(&mut self, mid: MethodId);
+    fn ensure_const_checked(&mut self, cid: ConstId);
+    /// Before the first run: what every run may need checked (the field
+    /// defaults, for constructions at compile time).
+    fn prepare(&mut self);
+    /// The errors reported so far: a run is skipped when the checks it
+    /// asked for added some.
+    fn error_count(&self) -> usize;
+}
+
+/// Why a `static` statement could not run: reported at its position.
+pub struct StaticFailure {
+    pub message: String,
+    pub notes: Vec<String>,
+}
+
+/// Runs a class body's `static` statement at compile time (the
+/// interpreter lives above this crate: `quarz-cli` provides one).
+pub trait StaticRunner {
+    fn run(
+        &mut self,
+        host: &mut dyn StaticHost,
+        stmt: &StaticStmt,
+        callee: MethodId,
+    ) -> Result<(), StaticFailure>;
+    /// Forget everything lowered and run so far: the check starts over
+    /// (`check_uncached` after a cache mismatch).
+    fn reset(&mut self);
 }
 
 /// The prelude declared and checked (every method body, so that a
@@ -563,9 +610,14 @@ fn check_uncached(
     units: &[Unit],
     cogs: &[CogDecl],
     extra: Option<ExtraUnit>,
+    runner: Option<&mut (dyn StaticRunner + '_)>,
 ) -> (Option<Checked>, Vec<FileDiagnostic>) {
     NO_CACHE.set(true);
-    let r = check_with_extra(prelude, units, cogs, extra);
+    let mut runner = runner;
+    if let Some(r) = runner.as_deref_mut() {
+        r.reset();
+    }
+    let r = check_with_extra(prelude, units, cogs, extra, runner);
     NO_CACHE.set(false);
     r
 }
@@ -580,6 +632,7 @@ pub fn check_with_extra(
     units: &[Unit],
     cogs: &[CogDecl],
     extra: Option<ExtraUnit>,
+    mut runner: Option<&mut (dyn StaticRunner + '_)>,
 ) -> (Option<Checked>, Vec<FileDiagnostic>) {
     // The prelude declared and checked ahead of time (`prelude_state`),
     // when the command was built with it.
@@ -710,6 +763,17 @@ pub fn check_with_extra(
             checker.mark_reused(f as u32);
         }
     }
+    // A constant's type is inferred: when one differs from what a file
+    // read back was checked with, check everything again, before any
+    // `static` statement runs on the stale results.
+    checker.check_consts();
+    let consts_now = cache::const_types(&checker.world, &key_of);
+    if consts_seen.iter().any(|s| *s != consts_now) {
+        return check_uncached(prelude, units, cogs, extra, runner);
+    }
+    // The class bodies' `static` statements run now, before the bodies
+    // are checked (docs/14): what they call is checked on demand.
+    checker.check_static_stmts(runner.as_deref_mut());
     let to_check: Vec<(u32, Vec<&Expr>)> = bodies
         .iter()
         .filter(|(f, _)| !reused[*f as usize])
@@ -723,12 +787,6 @@ pub fn check_with_extra(
         main_class: file_mains[file as usize].unwrap(),
         body: body.into_iter().cloned().collect(),
     }));
-    // A constant's type is inferred: when one differs from what a file
-    // read back was checked with, check everything again.
-    let consts_now = cache::const_types(&checker.world, &key_of);
-    if consts_seen.iter().any(|s| *s != consts_now) {
-        return check_uncached(prelude, units, cogs, extra);
-    }
     let checked_diagnostics = checker.take_diagnostics();
     // In the order of the files and of positions in them, which is the
     // same whether a file's warnings were found now or read back (each
@@ -813,6 +871,9 @@ pub fn check_with_extra(
                                 .iter()
                                 .map(|(file, _, body)| (*file, body.iter().collect()))
                                 .collect();
+                            // The extra units' own `static` statements (a test file's,
+                            // a doc example's).
+                            checker.check_static_stmts(runner);
                             checker.check_all(&refs);
                             diagnostics.append(&mut checker.take_diagnostics());
                         }

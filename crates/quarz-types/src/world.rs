@@ -71,6 +71,9 @@ pub struct MethodInfo {
     pub body: Option<Rc<MethodDef>>,
     pub is_abstract: bool,
     pub is_native: bool,
+    /// `static def`: callable at compile time, by a class body's `static`
+    /// statement (docs/14). A `static native def` only there.
+    pub is_static: bool,
     pub visibility: Visibility,
     pub span: Span,
     /// The extension the method was declared in, if any.
@@ -142,6 +145,17 @@ pub struct ConstInfo {
     /// Set while the initializer is being checked.
     pub checking: bool,
     pub file: u32,
+}
+
+/// A `static` statement of a class or module body: a call, on the class
+/// being declared, of a `static def` of a dependency (docs/14).
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct StaticStmt {
+    /// The class or module whose body holds it.
+    pub class: ClassId,
+    pub file: u32,
+    pub expr: Rc<Expr>,
+    pub span: Span,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -279,6 +293,8 @@ pub struct Builtin {
     pub class_: ClassId,
     /// The prelude's `type Class = Type[Object]`.
     pub class_alias: u32,
+    /// `Meta::ClassDef`, the `self` of a `static` statement (docs/14).
+    pub meta_classdef: ClassId,
     pub shareable: ClassId,
     pub task: ClassId,
     pub channel: ClassId,
@@ -339,6 +355,10 @@ pub struct World {
     pub std_files: rustc_hash::FxHashSet<u32>,
     /// Each user file's group (`UnitGroup`); the prelude has none.
     pub file_groups: HashMap<u32, UnitGroup>,
+    /// The `static` statements of class and module bodies (docs/14), in
+    /// the order they are declared: run at compile time, after the
+    /// declarations, by the cog they belong to.
+    pub static_stmts: Vec<StaticStmt>,
     /// Abstract methods an extension's method implements for a class
     /// (class, abstract method, implementation), found where the class is
     /// declared: conformance holds wherever the value goes.
@@ -1120,6 +1140,13 @@ impl World {
                     _ => true,
                 }
             }
+            // `Meta::ClassDef[X]` is a `Type[X]`.
+            (Type::Class(..), Type::ClassObject(..) | Type::TypeOf(_)) => {
+                match (self.class_object_instance(sub), sup.instance_of()) {
+                    (Some(a), Some(b)) => self.is_subtype(&a, &b),
+                    _ => false,
+                }
+            }
             (Type::Tuple(xs), Type::Tuple(ys)) => {
                 xs.len() == ys.len() && xs.iter().zip(ys).all(|(x, y)| self.is_subtype(x, y))
             }
@@ -1319,10 +1346,25 @@ impl World {
         let mut out = Vec::new();
         match recv {
             Type::Class(id, args) => {
-                self.lookup_instance_methods(*id, args, name, &mut out);
+                // `Meta::ClassDef[X]`: the class methods of `X` first, as
+                // on a `Type[X]`.
+                if let Some(instance) = self.class_object_instance(recv) {
+                    for found in self.lookup_methods(&Type::type_of(instance), name) {
+                        if !out.iter().any(|(m, _)| *m == found.0) {
+                            out.push(found);
+                        }
+                    }
+                }
+                let mut own = Vec::new();
+                self.lookup_instance_methods(*id, args, name, &mut own);
                 // A value of a module type is an object too.
                 if self.class(*id).kind == ClassKind::Module {
-                    self.lookup_instance_methods(self.builtin.object, &[], name, &mut out);
+                    self.lookup_instance_methods(self.builtin.object, &[], name, &mut own);
+                }
+                for found in own {
+                    if !out.iter().any(|(m, _)| *m == found.0) {
+                        out.push(found);
+                    }
                 }
             }
             Type::ClassObject(id, args) => {
@@ -1527,6 +1569,92 @@ impl World {
     /// A constant whose initializer is a constant path naming a class or
     /// module (`Short = Some::Long::Name`) stands for that class in
     /// constant paths and types; any other member is returned unchanged.
+    /// For an instance type of a subclass of `Type` (`Meta::ClassDef[X]`,
+    /// docs/14), the class it stands for: `X`. `None` for other types.
+    pub fn class_object_instance(&self, t: &Type) -> Option<Type> {
+        let Type::Class(id, args) = t else {
+            return None;
+        };
+        // `Meta::ClassDef` is the one subclass of `Type` (the declarer
+        // refuses others), so this is a comparison, not an ancestor walk.
+        if *id != self.builtin.meta_classdef {
+            return None;
+        }
+        self.ancestors(*id, args)
+            .into_iter()
+            .find(|(a, _)| *a == self.builtin.class_)
+            .and_then(|(_, aa)| aa.first().cloned())
+    }
+
+    /// Whether a `static` statement in `file` may run a `static def`
+    /// declared in `callee_file` (docs/14 §2): one of the standard
+    /// library, of a cog the file's cog depends on (transitively), or, in
+    /// a script, of a file loaded before it. `Err` names where the callee
+    /// is.
+    pub fn static_callee_allowed(&self, file: u32, callee_file: u32) -> Result<(), String> {
+        let group = |f: u32| self.file_groups.get(&f).cloned();
+        let callee = group(callee_file);
+        if callee_file == 0 || matches!(callee, Some(UnitGroup::Std(_))) {
+            return Ok(());
+        }
+        match (group(file), callee) {
+            (Some(UnitGroup::Cog(a)), Some(UnitGroup::Cog(b))) if a == b => {
+                Err("this cog".to_string())
+            }
+            (Some(UnitGroup::Cog(a)), Some(UnitGroup::Cog(b))) => {
+                if self.cog_depends_on(a, b) {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "the cog `{}`, which this cog does not depend on",
+                        self.cogs[b as usize].name
+                    ))
+                }
+            }
+            // The application depends on every cog of its movement.
+            (Some(UnitGroup::App), Some(UnitGroup::Cog(_))) => Ok(()),
+            (_, Some(UnitGroup::App)) if !self.cogs.is_empty() => {
+                Err("the application".to_string())
+            }
+            // A script: the files it (transitively) requires are loaded
+            // before it.
+            _ => {
+                if callee_file < file {
+                    Ok(())
+                } else {
+                    Err("this file".to_string())
+                }
+            }
+        }
+    }
+
+    /// Whether cog `a` imports cog `b`, directly or through its imports.
+    fn cog_depends_on(&self, a: u32, b: u32) -> bool {
+        let index_of_root = |root: ClassId| {
+            self.cogs
+                .iter()
+                .position(|c| c.root == Some(root))
+                .map(|i| i as u32)
+        };
+        let mut seen = vec![false; self.cogs.len()];
+        let mut work = vec![a];
+        while let Some(c) = work.pop() {
+            if c as usize >= seen.len() || seen[c as usize] {
+                continue;
+            }
+            seen[c as usize] = true;
+            for root in self.cogs[c as usize].imports.values() {
+                if let Some(i) = index_of_root(*root) {
+                    if i == b {
+                        return true;
+                    }
+                    work.push(i);
+                }
+            }
+        }
+        false
+    }
+
     pub fn through_alias(&self, member: Member) -> Member {
         let mut member = member;
         // A chain of aliases is followed a few steps (a cycle is not

@@ -703,9 +703,24 @@ impl<'ast> Declarer<'ast> {
 
     fn collect_body(&mut self, id: ClassId, body: &'ast [Expr], prelude: bool) {
         for expr in body {
-            if !self.collect_item(expr, Some(id), prelude) {
-                self.error("only declarations are allowed in a class body", expr.span);
+            if self.collect_item(expr, Some(id), prelude) {
+                continue;
             }
+            // A call on the class being declared (`has_many Comment`) is a
+            // `static` statement, run at compile time (docs/14), in a
+            // class or module body outside the prelude.
+            let kind = self.world.class(id).kind;
+            let is_call = matches!(&expr.kind, ExprKind::Call(call) if call.recv.is_none());
+            if is_call && !prelude && matches!(kind, ClassKind::Class | ClassKind::Module) {
+                self.world.static_stmts.push(StaticStmt {
+                    class: id,
+                    file: self.file,
+                    expr: Rc::new(expr.clone()),
+                    span: expr.span,
+                });
+                continue;
+            }
+            self.error("only declarations are allowed in a class body", expr.span);
         }
     }
 
@@ -1853,8 +1868,16 @@ impl<'ast> Declarer<'ast> {
             Some(Member::Alias(id)) => *id,
             _ => panic!("prelude does not define `type Class`"),
         };
+        let meta_classdef = match w.top.get("Meta") {
+            Some(Member::Class(meta)) => match w.class(*meta).members.get("ClassDef") {
+                Some(Member::Class(id)) => *id,
+                _ => panic!("prelude does not define `Meta::ClassDef`"),
+            },
+            _ => panic!("prelude does not define `Meta`"),
+        };
         let builtin = Builtin {
             class_alias,
+            meta_classdef,
             object: get(w, "Object"),
             nil: get(w, "Nil"),
             bool_: get(w, "Bool"),
@@ -1956,52 +1979,69 @@ impl<'ast> Declarer<'ast> {
             PendingDef::Class(d) => {
                 if let Some(sup) = &d.superclass {
                     if let Some(t) = self.resolve_type(sup, &scope) {
-                        match &t {
-                            Type::Class(sid, _)
-                                if self.world.is_value_class(*sid)
-                                    || *sid == self.world.builtin.integer =>
-                            {
-                                // Its values are built in: a subclass would
-                                // make objects the runtime cannot use as them.
-                                let name = self.world.class(*sid).name.clone();
-                                self.error(
-                                    format!("cannot inherit from the built-in class `{name}`"),
-                                    sup.span,
-                                );
+                        // `Type[X]` resolves to the class object of `X`; as
+                        // a superclass it is the class `Type` itself, which
+                        // only the prelude's `Meta::ClassDef` extends.
+                        let class_ = self.world.builtin.class_;
+                        let t = match t {
+                            Type::TypeOf(inner) => Type::Class(class_, vec![*inner]),
+                            Type::ClassObject(c, args) => {
+                                Type::Class(class_, vec![Type::Class(c, args)])
                             }
-                            Type::Class(sid, _)
-                                if matches!(self.world.class(*sid).kind, ClassKind::Class) =>
-                            {
-                                // (The chains set so far have no cycle: one
-                                // through `id` would be closed by this one.)
-                                let mut c = Some(*sid);
-                                let mut cycle = false;
-                                while let Some(k) = c {
-                                    if k == id {
-                                        cycle = true;
-                                        break;
-                                    }
-                                    c = match &self.world.class(k).superclass {
-                                        Some(Type::Class(s, _)) => Some(*s),
-                                        _ => None,
-                                    };
-                                }
-                                if cycle {
-                                    let name = self.world.class(id).name.clone();
+                            t => t,
+                        };
+                        if matches!(&t, Type::Class(sid, _) if self.world.class_is_a(*sid, class_))
+                            && self.world.class(id).file != 0
+                        {
+                            self.error("cannot inherit from `Type`", sup.span);
+                        } else {
+                            match &t {
+                                Type::Class(sid, _)
+                                    if (self.world.is_value_class(*sid)
+                                        || *sid == self.world.builtin.integer)
+                                        && !(*sid == class_ && self.world.class(id).file == 0) =>
+                                {
+                                    // Its values are built in: a subclass would
+                                    // make objects the runtime cannot use as them.
+                                    let name = self.world.class(*sid).name.clone();
                                     self.error(
-                                        format!(
-                                            "superclass cycle: `{name}` would inherit from itself"
-                                        ),
+                                        format!("cannot inherit from the built-in class `{name}`"),
                                         sup.span,
                                     );
-                                } else {
-                                    self.world.class_mut(id).superclass = Some(t);
                                 }
-                            }
-                            Type::Class(sid, _) => {
-                                let class = self.world.class(*sid);
-                                let name = class.name.clone();
-                                let msg = match class.kind {
+                                Type::Class(sid, _)
+                                    if matches!(self.world.class(*sid).kind, ClassKind::Class) =>
+                                {
+                                    // (The chains set so far have no cycle: one
+                                    // through `id` would be closed by this one.)
+                                    let mut c = Some(*sid);
+                                    let mut cycle = false;
+                                    while let Some(k) = c {
+                                        if k == id {
+                                            cycle = true;
+                                            break;
+                                        }
+                                        c = match &self.world.class(k).superclass {
+                                            Some(Type::Class(s, _)) => Some(*s),
+                                            _ => None,
+                                        };
+                                    }
+                                    if cycle {
+                                        let name = self.world.class(id).name.clone();
+                                        self.error(
+                                            format!(
+                                            "superclass cycle: `{name}` would inherit from itself"
+                                        ),
+                                            sup.span,
+                                        );
+                                    } else {
+                                        self.world.class_mut(id).superclass = Some(t);
+                                    }
+                                }
+                                Type::Class(sid, _) => {
+                                    let class = self.world.class(*sid);
+                                    let name = class.name.clone();
+                                    let msg = match class.kind {
                                     ClassKind::Data => format!(
                                         "cannot inherit from data type `{name}`: a data type cannot be subclassed (include a module to share behaviour)"
                                     ),
@@ -2018,9 +2058,10 @@ impl<'ast> Declarer<'ast> {
                                         format!("cannot inherit from `{name}`")
                                     }
                                 };
-                                self.error(msg, sup.span);
+                                    self.error(msg, sup.span);
+                                }
+                                _ => self.error("superclass must be a class", sup.span),
                             }
-                            _ => self.error("superclass must be a class", sup.span),
                         }
                     }
                 }
@@ -2455,6 +2496,7 @@ impl<'ast> Declarer<'ast> {
             body: None,
             is_abstract: false,
             is_native: true,
+            is_static: false,
             visibility,
             span,
             extension: None,
@@ -2801,6 +2843,7 @@ impl<'ast> Declarer<'ast> {
             body: def.body.as_ref().map(|_| Rc::new(def.clone())),
             is_abstract: def.is_abstract,
             is_native: def.is_native,
+            is_static: def.is_static,
             visibility,
             span: def.span,
             extension,
