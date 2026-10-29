@@ -53,6 +53,8 @@ structure WfStore (Λ : List Ty) (s : Store) : Prop where
     o.set.length = o.fields.length ∧
     ∀ (i : Nat) (v : Value) (f : Field), o.set[i]? = some true → o.fields[i]? = some v →
       (P.classes.allFieldsAt o.cls o.args)[i]? = some f → s.hasTy P v f.ty
+  /-- No object is of an `enum` itself. -/
+  noEnum : ∀ (l : Nat) (o : Obj), s.objs[l]? = some o → P.classes.kindOf o.cls ≠ .enumC
   /-- Each object's type arguments are within its class's bounds. -/
   bounds : ∀ (l : Nat) (o : Obj), s.objs[l]? = some o → ArgsIn P.classes (P.classes.boundsOf o.cls) o.args
 

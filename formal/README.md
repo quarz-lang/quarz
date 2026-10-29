@@ -11,9 +11,9 @@ A small language with Quarz's core and nothing else (`QuarzCore/`):
 
 - `Types`: atoms (`Nil`, `Bool`, `Int`, `Str`, `Float`, a class with its
   type arguments, a type parameter of the enclosing class; the value
-  classes final, and a `data` type without type arguments whose `==` is
-  the built-in one, as nothing subclasses it; a class never: a subclass
-  may define `==`), unions as
+  classes final, and a `data` type or an enum's variant without type
+  arguments whose `==` is the built-in one, as nothing subclasses it; a
+  class never: a subclass may define `==`), unions as
   lists of atoms, the class table (each class with its parameters'
   variances and bounds and the arguments it gives its superclass), `≤`
   (a class is below another when its chain gives that class arguments
@@ -30,7 +30,8 @@ A small language with Quarz's core and nothing else (`QuarzCore/`):
   `initialize`), calls (with an anonymous block, live
   during the call: `yield`), built-in calls
   (`prim`: opaque, typed by their declarations), `if`, `while`, `return`,
-  `raise`, the tests (`nil?`, `is_a?`, `==`/`!=` against `nil`, `true`,
+  `raise`, `absurd` (where no value gets: what a `case/in` on a closed
+  type reaches when no arm matches), the tests (`nil?`, `is_a?`, `==`/`!=` against `nil`, `true`,
   `false`, as forms, not calls), `&&`, `||`, `!`. A read of a local or of
   an immutable field carries the type the checker gave it there.
 - `Typing`: `check`, the rules as a function; `Typed`, the same rules as
@@ -48,8 +49,9 @@ A small language with Quarz's core and nothing else (`QuarzCore/`):
   parameters, is checked with those substituted: the theorem holds up to
   type arguments (a value read as a `Box[Int]` was made as one).
 - `Program`: a whole program checked (the class table and the methods
-  well formed: no class below a `data` type, superclass arguments as many
-  as the parameters, in a
+  well formed: no class below a `data` type or a variant, an enum's
+  subclasses its variants (without parameters), superclass arguments as
+  many as the parameters, in a
   positive position and within the superclass's bounds, no more bounds
   than parameters, `new`'s type arguments within the bounds, overrides take at least and give at most what they
   override, as the subclass sees the overridden signature; the variance
@@ -104,7 +106,8 @@ undefined), and one whose bound is `Nothing` is vacuous (no value).
 
 Not in v1 (design in `/tmp`, kept by the maintainers): closures (lambdas,
 named blocks, what a closure assigns being un-narrowed from where it is
-made), patterns, `enum`, generic `data` types, `rescue`/`ensure`, `super`
+made), patterns but class tests and bindings in `case/in`, generic
+`data` types and `enum`s, `rescue`/`ensure`, `super`
 outside `initialize` (Ruby's `super` in other methods), in a block of
 it, or with a block, Shareable and tasks, extensions and overloads. Of
 generics: method type parameters and lower bounds `U >: T`, the
@@ -196,15 +199,16 @@ stricter, not unsound.
   `OBox[out T]` with `each`, `Cell[T]` with a `var` field and `set`,
   `Sink[in T]`, `IntOBox < OBox[Int]`, `AHold[T <: A]` calling `A#get`
   through its bound, `data` types `DPt` and `DEq` (the latter with its
-  own `==`); one program in
+  own `==`), an enum `Sh` with variants `Ci` and `Pt`; one program in
   four with a generated `initialize` assigning a field and calling
   `super` in some order, one in four opening with uses of the boxes:
   boxes of either argument assigned to the box locals, what they give
   assigned to an `Int` local, tests of them; one in four a variance
   scenario: boxes, cells and sinks seen through a wider argument, called,
   written and given blocks through it, read back at the narrow one, and
-  holders made with an argument within the bound or not, and `== nil`
-  tests of data values),
+  holders made with an argument within the bound or not, `== nil`
+  tests of data values, and `case/in` on an enum covering one variant or
+  both),
   runs those `check` accepts,
   and fails on one that gets stuck: a quick check of rule changes before
   their proofs are redone. With `≤` made to ignore the type arguments it
@@ -214,7 +218,8 @@ stricter, not unsound.
   with `new`'s arguments not checked against the bounds (an `AHold[E]`,
   `E` no `A`, whose `ag` calls `get` on an `E`), and with a `data` type
   taken as final though it defines `==` (a `DEq` read as `nil` after
-  `de == nil`).
+  `de == nil`), and with an enum expanded to one of its variants only (a
+  `case/in` missing `Pt` reaching `absurd`).
 - `./conformance.sh` turns what `quarz check --tree` prints (docs/05 §1)
   into QCore and checks it with the model, for `corpus/` (in range by
   design) and every fixture and example (mostly out of range for now).
@@ -223,6 +228,24 @@ stricter, not unsound.
   superclass's arguments take no arguments; methods
   a `static` statement generated (docs/14 §5: their bodies are not in
   the tree) and `Type[T]` types are out of range; a `data` type without
+  type parameters is in range, so is an `enum` (its variants, a
+  variant without data written as its value); `case/in` becomes tests: an
+  arm `in C` (`in C => x`) an `is_a?(C)` (and `x` assigned), `in x` an
+  assignment taking the rest; without `else`, a closed subject (variants,
+  `data`, `nil`, `Bool`, as the Rust checker's `is_closed_type`, or
+  more than one member once enums are expanded) ends in `absurd`, so the
+  checker requires the arms to cover it (an enum is expanded to its
+  variants on a test's false side), an open one in `raise`; a capture
+  is declared with the type the match narrows the subject to (an enum
+  as its variants, on both sides of a test), a `var` field subject is
+  read once into a local, and a name bound in two arms, or bound in one
+  and assigned in the `case` besides, is out of range (the Rust checker
+  declares it afresh in each arm, and after the `case` it is the last
+  arm's). Later arms see the subject
+  narrowed by the earlier ones' false sides, and arms after an `in x`
+  are not checked, where the Rust checker checks each arm with the whole
+  subject type: more lenient, not unsound. Guards and other patterns
+  are out of range. A `data` type without
   type parameters is in range (its generated `initialize` assigns each
   field in order; `to_h`, and `with` without keyword arguments, are
   built-in calls); the model's `!=` is `!(==)`, so a program defining

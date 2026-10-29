@@ -13,18 +13,6 @@ open ClassTable
 
 variable {P : Program}
 
-/-- `is_a?` false: of the atoms not below the class. -/
-theorem hasTy_isAFalse (hwf : WfClasses P.classes) {s : Store} {v : Value} {t : Ty} {a u : Atom}
-    (hv : s.hasTy P v t) (hu : s.typeOf v = some u) (hua : u.le P.classes [] a = false) :
-    s.hasTy P v (isAFalse P.classes t a) := by
-  rw [hasTy_iff] at hv ⊢
-  obtain ⟨u', hu', b, hb, hub⟩ := hv
-  rw [hu] at hu'; cases hu'
-  refine ⟨u, hu, b, List.mem_filter.mpr ⟨hb, ?_⟩, hub⟩
-  cases hba : b.le P.classes [] a
-  · rfl
-  · have := Atom.le_trans hwf hub hba; simp_all
-
 /-! ### The tests, through a substitution of the enclosing class's parameters
 
 A value's type is closed; the type the body names may have a parameter
@@ -276,10 +264,10 @@ theorem isA_class_test (hwf : WfClasses P.classes) {Λ : List Ty} {s : Store} (h
 /-- `is_a?` true (through `σ`): the value is of an atom of `t` below the
 class, or of the class itself (which `t` having an atom above it, one of
 a related class, or a parameter keeps in). -/
-theorem hasTy_isATrue_subst (hwf : WfClasses P.classes) {s : Store} {v : Value} {σ : List Ty}
+theorem hasTy_isATrueOn_subst (hwf : WfClasses P.classes) {s : Store} {v : Value} {σ : List Ty}
     {t : Ty} {a u : Atom} (hclosed : a.closed = true)
     (hv : s.hasTy P v (t.subst σ)) (hu : s.typeOf v = some u) (hua : u.le P.classes [] a = true) :
-    s.hasTy P v ((isATrue P.classes t a).subst σ) := by
+    s.hasTy P v ((isATrueOn P.classes t a).subst σ) := by
   have ha : Atom.subst σ a = [a] := Atom.subst_closed_id σ a hclosed
   rw [hasTy_iff] at hv ⊢
   obtain ⟨u', hu', b', hb', hub⟩ := hv
@@ -288,8 +276,9 @@ theorem hasTy_isATrue_subst (hwf : WfClasses P.classes) {s : Store} {v : Value} 
   obtain ⟨b, hb, hbb'⟩ := Ty.mem_subst.mp hb'
   -- `a` itself is in where `t` has an atom above it, of a related class,
   -- or a parameter.
-  have hain : (∃ c ∈ t, (a.le P.classes [] c && a != c) || a.classRelated P.classes c || c.isParam) →
-      a ∈ Ty.subst σ (isATrue P.classes t a) := fun ⟨c, hc, hac⟩ => by
+  have hain : (∃ c ∈ t, (a.le P.classes [] c && a != c) ||
+      ((a.classRelated P.classes c || c.isParam) && !(c.le P.classes [] a))) →
+      a ∈ Ty.subst σ (isATrueOn P.classes t a) := fun ⟨c, hc, hac⟩ => by
     refine Ty.mem_subst.mpr ⟨a, List.mem_append_right _ ?_, by rw [ha]; simp⟩
     simp only [List.any_eq_true]
     rw [if_pos ⟨c, hc, hac⟩]; simp
@@ -298,10 +287,9 @@ theorem hasTy_isATrue_subst (hwf : WfClasses P.classes) {s : Store} {v : Value} 
   refine ⟨a, hain ⟨b, hb, ?_⟩, hua⟩
   simp only [Bool.or_eq_true, Bool.and_eq_true, bne_iff_ne, ne_eq]
   cases b with
-  | param i => exact Or.inr (by simp [Atom.isParam])
+  | param i => exact Or.inr ⟨Or.inr (by simp [Atom.isParam]), by simpa using hba⟩
   | cls e bs =>
     simp at hbb'; subst hbb'
-    left
     -- The value's atom is no parameter.
     have hup : u.isParam = false := by cases u <;> simp_all [Atom.isParam]
     cases a with
@@ -326,6 +314,7 @@ theorem hasTy_isATrue_subst (hwf : WfClasses P.classes) {s : Store} {v : Value} 
         exact hba (Atom.le_refl hwf _)
       -- Both classes are above the object's: related.
       right
+      refine ⟨Or.inl ?_, by simpa using hba⟩
       have he := ClassTable.ancestorArgs_mem hwf _ _ _ _ hub
       have hd := ClassTable.ancestorArgs_mem hwf _ _ _ _ hua
       simp only [Atom.classRelated, Atom.classOf, Bool.or_eq_true, ClassTable.subclass_iff]
@@ -347,8 +336,142 @@ theorem hasTy_isATrue_subst (hwf : WfClasses P.classes) {s : Store} {v : Value} 
     exfalso
     cases u <;> simp_all [Atom.le]
 
-/-- `is_a?` false (through `σ`): of the atoms of `t` not below the class. -/
-theorem hasTy_isAFalse_subst (hwf : WfClasses P.classes) {s : Store} {v : Value} {σ : List Ty} {t : Ty} {a u : Atom}
+/-- Only a `data` type or a variant itself is below it: nothing
+subclasses it. -/
+theorem ancestorArgs_data (hwf : WfClasses P.classes) {d : Nat}
+    (hd : P.classes.kindOf d = .data ∨ P.classes.kindOf d = .variant) :
+    ∀ (c : Nat) (as bs : List Ty), P.classes.ancestorArgs c as d = some bs → c = d := by
+  intro c
+  induction c using Nat.strongRecOn with
+  | _ c ih =>
+    intro as bs h
+    rw [ClassTable.ancestorArgs_unfold hwf] at h
+    by_cases hcd : (c == d) = true
+    · simpa using hcd
+    · rw [if_neg hcd] at h
+      cases hk : P.classes[c]? with
+      | none => simp [hk] at h
+      | some k =>
+        simp only [hk] at h
+        cases hs : k.super with
+        | none => simp [hs] at h
+        | some p =>
+          simp only [hs] at h
+          have hpc : p < c := by
+            have := ClassTable.superOf_lt hwf (show ClassTable.superOf P.classes c = some p by
+              simp [ClassTable.superOf, hk, hs])
+            exact this
+          have := ih p hpc _ bs h
+          subst this
+          rcases hd with hd | hd
+          · exact absurd hd (hwf.dataLeaf c k p hk hs)
+          · exact absurd hd (hwf.variantLeaf c k p hk hs)
+
+/-- One step of the chain: a class gives its superclass the arguments
+substituted. -/
+theorem ancestorArgs_super (hwf : WfClasses P.classes) {c p : Nat} {k : Class}
+    (hk : P.classes[c]? = some k) (hs : k.super = some p) (as : List Ty) :
+    P.classes.ancestorArgs c as p = some (Ty.substArgs as k.superArgs) := by
+  rw [ClassTable.ancestorArgs_unfold hwf]
+  have hpc : p < c := ClassTable.superOf_lt hwf (by simp [ClassTable.superOf, hk, hs])
+  have : (c == p) = false := by simp; omega
+  rw [if_neg (by simp [this])]
+  simp only [hk, hs]
+  exact ClassTable.ancestorArgs_self hwf p _
+
+/-- A class strictly below `e` is below a class whose superclass is `e`. -/
+theorem ancestorArgs_child (hwf : WfClasses P.classes) {e : Nat} :
+    ∀ (c : Nat) (as bs : List Ty), P.classes.ancestorArgs c as e = some bs → c ≠ e →
+      ∃ V k, P.classes[V]? = some k ∧ k.super = some e ∧ ∃ ys, P.classes.ancestorArgs c as V = some ys := by
+  intro c
+  induction c using Nat.strongRecOn with
+  | _ c ih =>
+    intro as bs h hce
+    rw [ClassTable.ancestorArgs_unfold hwf] at h
+    rw [if_neg (by simpa using hce)] at h
+    cases hk : P.classes[c]? with
+    | none => simp [hk] at h
+    | some k =>
+      simp only [hk] at h
+      cases hs : k.super with
+      | none => simp [hs] at h
+      | some p =>
+        simp only [hs] at h
+        by_cases hpe : p = e
+        · subst hpe
+          exact ⟨c, k, hk, hs, as, ClassTable.ancestorArgs_self hwf c as⟩
+        · have hpc : p < c := ClassTable.superOf_lt hwf (by simp [ClassTable.superOf, hk, hs])
+          obtain ⟨V, kv, hkv, hsv, ys, hys⟩ := ih p hpc _ bs h hpe
+          exact ⟨V, kv, hkv, hsv, ys, ClassTable.ancestorArgs_trans hwf (ancestorArgs_super hwf hk hs as) hys⟩
+
+/-- A value below an `enum`: of one of its variants (no object is of the
+`enum` itself, and its variants have no subclasses nor parameters). -/
+theorem enum_variant (hwf : WfClasses P.classes) {Λ : List Ty} {s : Store} (hw : WfStore P Λ s)
+    {v : Value} {u : Atom} (hu : s.typeOf v = some u) {E : Nat} (hE : P.classes.kindOf E = .enumC)
+    (hle : u.le P.classes [] (.cls E []) = true) :
+    ∃ V, V ∈ P.classes.variantsOf E ∧ u = .cls V [] := by
+  have hE0 : E ≠ 0 := by
+    rintro rfl
+    cases h0 : P.classes[0]? with
+    | none => simp [ClassTable.kindOf, h0] at hE
+    | some k0 => simp [ClassTable.kindOf, h0, hwf.rootKind k0 h0] at hE
+  cases v
+  case obj l =>
+    obtain ⟨o, ho, _, rfl⟩ := typeOf_obj hu
+    rw [Atom.le_cls_iff hwf] at hle
+    rcases hle with ⟨h0, _⟩ | ⟨x, hx, _⟩
+    · exact absurd h0 hE0
+    have hne : o.cls ≠ E := fun h => hw.noEnum l o ho (h ▸ hE)
+    obtain ⟨V, kv, hkv, hsv, ys, hys⟩ := ancestorArgs_child hwf o.cls o.args x hx hne
+    obtain ⟨hvar, hpar⟩ := hwf.enumChild V kv E hkv hsv hE
+    have hkV : P.classes.kindOf V = .variant := by simp [ClassTable.kindOf, hkv, hvar]
+    have hcV := ancestorArgs_data hwf (.inr hkV) _ _ _ hys
+    obtain ⟨_, _, hlen, _⟩ := hw.objs l o ho
+    rw [hcV] at hlen
+    simp [hkv, hpar] at hlen
+    refine ⟨V, ?_, by rw [hcV, hlen]⟩
+    simp only [ClassTable.variantsOf, List.mem_filter, List.mem_range, beq_iff_eq]
+    exact ⟨(List.getElem?_eq_some_iff.mp hkv).1, by simp [hkv, hsv]⟩
+  all_goals
+    simp [Store.typeOf] at hu; subst hu
+    simp [Atom.le, hE0] at hle
+
+/-- A value of `t` is one of `t` with its enums expanded to their
+variants (no object is of an `enum` itself). -/
+theorem hasTy_expandEnums_subst (hwf : WfClasses P.classes) {Λ : List Ty} {s : Store}
+    (hw : WfStore P Λ s) {v : Value} {σ : List Ty} {t : Ty} {u : Atom}
+    (hv : s.hasTy P v (t.subst σ)) (hu : s.typeOf v = some u) :
+    s.hasTy P v ((Ty.expandEnums P.classes t).subst σ) := by
+  rw [hasTy_iff] at hv ⊢
+  obtain ⟨u', hu', b', hb', hub⟩ := hv
+  rw [hu] at hu'; cases hu'
+  obtain ⟨b, hb, hbb'⟩ := Ty.mem_subst.mp hb'
+  have hexp : ∃ b0 ∈ Ty.expandEnums P.classes t, ∃ b0' ∈ Atom.subst σ b0, u.le P.classes [] b0' = true := by
+    cases b
+    case cls E args =>
+      cases args
+      case nil =>
+        by_cases hE : P.classes.kindOf E = .enumC
+        · simp at hbb'; subst hbb'
+          obtain ⟨V, hV, rfl⟩ := enum_variant hwf hw hu hE hub
+          refine ⟨.cls V [], List.mem_flatMap.mpr ⟨_, hb, ?_⟩, .cls V [], by simp, Atom.le_refl hwf _⟩
+          simp [hE]; exact hV
+        · exact ⟨_, List.mem_flatMap.mpr ⟨_, hb, by simp [hE]⟩, b', hbb', hub⟩
+      all_goals exact ⟨_, List.mem_flatMap.mpr ⟨_, hb, by simp⟩, b', hbb', hub⟩
+    all_goals exact ⟨_, List.mem_flatMap.mpr ⟨_, hb, by simp⟩, b', hbb', hub⟩
+  obtain ⟨b0, hb0, b0', hb0', hub0⟩ := hexp
+  exact ⟨u, hu, b0', Ty.mem_subst.mpr ⟨b0, hb0, hb0'⟩, hub0⟩
+
+theorem hasTy_isATrue_subst (hwf : WfClasses P.classes) {Λ : List Ty} {s : Store} (hw : WfStore P Λ s)
+    {v : Value} {σ : List Ty} {t : Ty} {a u : Atom} (hclosed : a.closed = true)
+    (hv : s.hasTy P v (t.subst σ)) (hu : s.typeOf v = some u) (hua : u.le P.classes [] a = true) :
+    s.hasTy P v ((isATrue P.classes t a).subst σ) :=
+  hasTy_isATrueOn_subst hwf hclosed (hasTy_expandEnums_subst hwf hw hv hu) hu hua
+
+/-- `is_a?` false (through `σ`): of the atoms of `t` not below the class,
+an `enum` as its variants. -/
+theorem hasTy_isAFalse_subst (hwf : WfClasses P.classes) {Λ : List Ty} {s : Store} (hw : WfStore P Λ s)
+    {v : Value} {σ : List Ty} {t : Ty} {a u : Atom}
     (hclosed : a.closed = true)
     (hv : s.hasTy P v (t.subst σ)) (hu : s.typeOf v = some u) (hua : u.le P.classes [] a = false) :
     s.hasTy P v ((isAFalse P.classes t a).subst σ) := by
@@ -356,16 +479,32 @@ theorem hasTy_isAFalse_subst (hwf : WfClasses P.classes) {s : Store} {v : Value}
   obtain ⟨u', hu', b', hb', hub⟩ := hv
   rw [hu] at hu'; cases hu'
   obtain ⟨b, hb, hbb'⟩ := Ty.mem_subst.mp hb'
-  refine ⟨u, hu, b', Ty.mem_subst.mpr ⟨b, List.mem_filter.mpr ⟨hb, ?_⟩, hbb'⟩, hub⟩
-  cases hba : b.le P.classes [] a
+  -- The atom standing for the value in `t` expanded: `b`, or the variant
+  -- of the `enum` `b` the value is of.
+  have hexp : ∃ b0 ∈ Ty.expandEnums P.classes t, ∃ b0' ∈ Atom.subst σ b0, u.le P.classes [] b0' = true := by
+    cases b
+    case cls E args =>
+      cases args
+      case nil =>
+        by_cases hE : P.classes.kindOf E = .enumC
+        · simp at hbb'; subst hbb'
+          obtain ⟨V, hV, rfl⟩ := enum_variant hwf hw hu hE hub
+          refine ⟨.cls V [], List.mem_flatMap.mpr ⟨_, hb, ?_⟩, .cls V [], by simp, Atom.le_refl hwf _⟩
+          simp [hE]; exact hV
+        · exact ⟨_, List.mem_flatMap.mpr ⟨_, hb, by simp [hE]⟩, b', hbb', hub⟩
+      all_goals exact ⟨_, List.mem_flatMap.mpr ⟨_, hb, by simp⟩, b', hbb', hub⟩
+    all_goals exact ⟨_, List.mem_flatMap.mpr ⟨_, hb, by simp⟩, b', hbb', hub⟩
+  obtain ⟨b0, hb0, b0', hb0', hub0⟩ := hexp
+  refine ⟨u, hu, b0', Ty.mem_subst.mpr ⟨b0, List.mem_filter.mpr ⟨hb0, ?_⟩, hb0'⟩, hub0⟩
+  cases hba : b0.le P.classes [] a
   · rfl
-  · -- `b ≤ a` carries to `b'` (`a` closed), so the value would be of `a`.
+  · -- `b0 ≤ a` carries to `b0'` (`a` closed), so the value would be of `a`.
     exfalso
-    have := Ty.le_iff.mp (Atom.subst_le hwf σ hba) b' hbb'
+    have := Ty.le_iff.mp (Atom.subst_le hwf σ hba) b0' hb0'
     obtain ⟨a', ha', hba'⟩ := this
     rw [Atom.subst_closed_id σ a hclosed] at ha'
     simp at ha'; subst ha'
-    have := Atom.le_trans hwf hub hba'
+    have := Atom.le_trans hwf hub0 hba'
     rw [hua] at this; cases this
 
 /-- A value other than `nil`, of `u` (through `σ`): of `u` without `nil`. -/
@@ -421,33 +560,6 @@ theorem Ty.allFinalIn_remove {t : Ty} (h : t.allFinalIn P = true) (a : Atom) :
   simp only [Ty.allFinalIn, Ty.remove, List.all_eq_true] at h ⊢
   exact fun b hb => h b (List.mem_filter.mp hb).1
 
-/-- Only a `data` type itself is below it: nothing subclasses it. -/
-theorem ancestorArgs_data (hwf : WfClasses P.classes) {d : Nat} (hd : P.classes.kindOf d = .data) :
-    ∀ (c : Nat) (as bs : List Ty), P.classes.ancestorArgs c as d = some bs → c = d := by
-  intro c
-  induction c using Nat.strongRecOn with
-  | _ c ih =>
-    intro as bs h
-    rw [ClassTable.ancestorArgs_unfold hwf] at h
-    by_cases hcd : (c == d) = true
-    · simpa using hcd
-    · rw [if_neg hcd] at h
-      cases hk : P.classes[c]? with
-      | none => simp [hk] at h
-      | some k =>
-        simp only [hk] at h
-        cases hs : k.super with
-        | none => simp [hs] at h
-        | some p =>
-          simp only [hs] at h
-          have hpc : p < c := by
-            have := ClassTable.superOf_lt hwf (show ClassTable.superOf P.classes c = some p by
-              simp [ClassTable.superOf, hk, hs])
-            exact this
-          have := ih p hpc _ bs h
-          subst this
-          exact absurd hd (hwf.dataLeaf c k p hk hs)
-
 /-- A value of a type of final atoms: no object, or one whose class
 defines no `==` (a `data` type's). -/
 theorem value_finalIn (hwf : WfClasses P.classes) {s : Store} {v : Value} {t : Ty} (hv : s.hasTy P v t)
@@ -465,15 +577,16 @@ theorem value_finalIn (hwf : WfClasses P.classes) {s : Store} {v : Value} {t : T
       cases args with
       | cons => simp [Atom.finalIn, Atom.final] at hfb
       | nil =>
-        simp only [Atom.finalIn, Bool.and_eq_true, beq_iff_eq, Option.isNone_iff_eq_none] at hfb
+        simp only [Atom.finalIn, Bool.and_eq_true, Bool.or_eq_true, beq_iff_eq,
+          Option.isNone_iff_eq_none] at hfb
         obtain ⟨hkd, hlk⟩ := hfb
         rw [Atom.le_cls_iff hwf] at hab
         rcases hab with ⟨rfl, _⟩ | ⟨x, hx, _⟩
-        · -- The root is no `data` type.
+        · -- The root is no `data` type nor variant.
           exfalso
           cases h0 : P.classes[0]? with
-          | none => simp [ClassTable.kindOf, h0] at hkd
-          | some k0 => simp [ClassTable.kindOf, h0, hwf.rootKind k0 h0] at hkd
+          | none => rcases hkd with hkd | hkd <;> simp [ClassTable.kindOf, h0] at hkd
+          | some k0 => rcases hkd with hkd | hkd <;> simp [ClassTable.kindOf, h0, hwf.rootKind k0 h0] at hkd
         · have := ancestorArgs_data hwf hkd _ _ _ hx
           exact ⟨l, o, rfl, ho, by rw [this]; exact hlk⟩
     | _ => simp_all [Atom.finalIn, Atom.final, Atom.le]
@@ -495,13 +608,13 @@ theorem hasTy_keep (hwf : WfClasses P.classes) {s : Store} {v : Value} {t : Ty} 
       cases args with
       | cons => simp [Atom.finalIn, Atom.final] at hfb
       | nil =>
-        simp only [Atom.finalIn, Bool.and_eq_true, beq_iff_eq] at hfb
+        simp only [Atom.finalIn, Bool.and_eq_true, Bool.or_eq_true, beq_iff_eq] at hfb
         exfalso
         cases a <;> simp [Atom.final] at hfa <;> simp only [Atom.le, Bool.and_eq_true, beq_iff_eq] at hab <;>
           (obtain ⟨rfl, _⟩ := hab
            cases h0 : P.classes[0]? with
-           | none => simp [ClassTable.kindOf, h0] at hfb
-           | some k0 => simp [ClassTable.kindOf, h0, hwf.rootKind k0 h0] at hfb)
+           | none => rcases hfb.1 with h | h <;> simp [ClassTable.kindOf, h0] at h
+           | some k0 => rcases hfb.1 with h | h <;> simp [ClassTable.kindOf, h0, hwf.rootKind k0 h0] at h)
     | _ => cases a <;> simp_all [Atom.finalIn, Atom.final, Atom.le]
   subst hba
   exact ⟨_, ha, _, List.mem_filter.mpr ⟨hb, by simp [Ty.keep]⟩, hab⟩

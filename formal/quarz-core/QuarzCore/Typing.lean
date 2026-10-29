@@ -261,17 +261,37 @@ def Atom.classRelated (ct : ClassTable) (a b : Atom) : Bool :=
   | some c, some d => ct.subclass c d || ct.subclass d c
   | _, _ => false
 
+/-- The variants of enum `e`: the classes it is the superclass of. -/
+def ClassTable.variantsOf (ct : ClassTable) (e : Nat) : List Nat :=
+  (List.range ct.length).filter fun i => ((ct[i]?).bind (·.super)) == some e
+
+/-- A type with each `enum` (without arguments) replaced by its variants:
+what a value of it is, as no object is of an `enum` itself. -/
+def Ty.expandEnums (ct : ClassTable) (t : Ty) : Ty := t.flatMap fun a => match a with
+  | .cls c [] => if ct.kindOf c == .enumC then (ct.variantsOf c).map (.cls · []) else [a]
+  | a => [a]
+
+/-- `is_a?` false: the atoms not below the class, an `enum` as its
+variants (so that a `case/in` covering them leaves nothing). -/
+def isAFalse (ct : ClassTable) (t : Ty) (a : Atom) : Ty :=
+  (Ty.expandEnums ct t).filter fun b => !(b.le ct [] a)
+
 /-- The table of design §2.1 for one test of a path holding `t`: the
 atoms below `a` stay, and `a` itself comes in where `t` has an atom
 above it, one of a class related to `a`'s (the arguments may be the
 class's parameters, which the run-time class test does not see), or a
-type parameter: the value is an `a`, whatever `T` is. -/
-def isATrue (ct : ClassTable) (t : Ty) (a : Atom) : Ty :=
+type parameter: the value is an `a`, whatever `T` is (unless that atom
+is below `a` already, kept as it is). -/
+def isATrueOn (ct : ClassTable) (t : Ty) (a : Atom) : Ty :=
   t.filter (·.le ct [] a) ++
-    (if t.any (fun b => (a.le ct [] b && a != b) || a.classRelated ct b || b.isParam) then [a] else [])
+    (if t.any (fun b => (a.le ct [] b && a != b) ||
+        ((a.classRelated ct b || b.isParam) && !(b.le ct [] a)))
+      then [a] else [])
 
-def isAFalse (ct : ClassTable) (t : Ty) (a : Atom) : Ty :=
-  t.filter fun b => !(b.le ct [] a)
+/-- `is_a?` true, an `enum` as its variants (as on the false side, and as
+the Rust checker's `split_by_type`). -/
+def isATrue (ct : ClassTable) (t : Ty) (a : Atom) : Ty :=
+  isATrueOn ct (Ty.expandEnums ct t) a
 
 /-- A class test's atom: a class of the table given as many arguments as
 it has parameters (or a value class). -/
@@ -340,7 +360,8 @@ def nilTy (ct : ClassTable) (u : Ty) : Ty :=
 built-in `==`, and which nothing subclasses: a value class, or a `data`
 type without type arguments that defines no `==` (docs/02 §6). -/
 def Atom.finalIn (P : Program) : Atom → Bool
-  | .cls c [] => P.classes.kindOf c == .data && (P.lookup c "==").isNone
+  | .cls c [] => (P.classes.kindOf c == .data || P.classes.kindOf c == .variant) &&
+      (P.lookup c "==").isNone
   | a => a.final
 
 def Ty.allFinalIn (P : Program) (t : Ty) : Bool := t.all (Atom.finalIn P)
@@ -369,7 +390,9 @@ def Ctx.argsWf (c : Ctx) (k : Nat) (targs : List Ty) : Bool :=
   match c.ct[k]? with
   | some cl => targs.length == cl.params.length && Ty.argsParamsBelow c.selfArgs.length targs &&
       -- Each argument within its parameter's bound.
-      (targs.zipIdx.all fun (t, i) => t.le c.ct c.bounds (Ty.boundOf cl.bounds i))
+      (targs.zipIdx.all fun (t, i) => t.le c.ct c.bounds (Ty.boundOf cl.bounds i)) &&
+      -- No object is of an `enum` itself.
+      cl.kind != .enumC
   | none => false
 
 /-- The argument types fit the method's parameters. -/
@@ -532,6 +555,8 @@ def check (c : Ctx) (Γ : Env) : Expr → Option Out
     guard (!c.inInit || (o.out.all (c.allSet ·)))
     some .dead
   | .raise => some .dead
+  -- Only where control cannot get (a dead branch is not checked).
+  | .absurd => none
   | .isNil e => do
     let o ← check c Γ e
     match o.out with

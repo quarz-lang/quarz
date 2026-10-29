@@ -376,6 +376,11 @@ theorem WfStore.setField {Λ : List Ty} {s : Store} (hw : WfStore P Λ s)
     by_cases hl : l' = l
     · subst hl; rw [if_pos rfl, ho] at h; cases h; exact hw.bounds l' o ho
     · rw [if_neg hl] at h; exact hw.bounds l' o' h
+  noEnum := fun l' o' h => by
+    rw [Store.setField_objs] at h
+    by_cases hl : l' = l
+    · subst hl; rw [if_pos rfl, ho] at h; cases h; exact hw.noEnum l' o ho
+    · rw [if_neg hl] at h; exact hw.noEnum l' o' h
   objs := fun l' o' h => by
     have mono : ∀ {w : Value} {t : Ty}, s.hasTy P w t → (s.setField l i v).hasTy P w t :=
       fun hw' => hasTy_mono setField_grow hw'
@@ -875,6 +880,7 @@ theorem init_run (hP : WfProg P) {n : Nat} (ihe : EvalGood P orc n) {s : Store} 
       rw [hobjs] at ho'
       obtain ⟨a, a1, a2, b, b2, d⟩ := hw.objs l' o' ho'
       exact ⟨a, a1, a2, b, b2, fun i v f h0 h1 h2 => mono (d i v f h0 h1 h2)⟩,
+    fun l' o' ho' => by rw [hobjs] at ho'; exact hw.noEnum l' o' ho',
     fun l' o' ho' => by rw [hobjs] at ho'; exact hw.bounds l' o' ho'⟩
   have ho3 : s3.objs[l]? = some o := by rw [hobjs]; exact ho
   obtain ⟨rest, hrest⟩ := allFields_prefix hwf hsub
@@ -1170,7 +1176,7 @@ theorem argsWf_in (hwf : WfClasses P.classes) {c : Ctx} (hc : c.prog = P) {k : N
   | some cl =>
     rw [hk] at h
     simp only [Bool.and_eq_true, beq_iff_eq, List.all_eq_true] at h
-    obtain ⟨⟨hlen, _⟩, hall⟩ := h
+    obtain ⟨⟨⟨hlen, _⟩, hall⟩, _⟩ := h
     have hk' : c.prog.classes[k]? = some cl := hk
     have hb : c.prog.classes.boundsOf k = cl.bounds := by simp [ClassTable.boundsOf, hk']
     rw [hb]
@@ -1188,6 +1194,18 @@ theorem argsWf_in (hwf : WfClasses P.classes) {c : Ctx} (hc : c.prog = P) {k : N
       simp only [Option.map_some, Option.getD_some]
       have := Ty.subst_leK hwf σ hσ (hall (t, i) (List.mem_zipIdx_iff_getElem?.mpr hi))
       rwa [Ty.subst_closed_id σ _ (Ty.boundOf_closed _ _)] at this
+
+/-- `new` makes no object of an `enum` itself. -/
+theorem argsWf_kind {c : Ctx} {k : Nat} {targs : List Ty} (h : c.argsWf k targs = true) :
+    c.prog.classes.kindOf k ≠ .enumC := by
+  unfold Ctx.argsWf at h
+  cases hk : c.ct[k]? with
+  | none => rw [hk] at h; cases h
+  | some cl =>
+    rw [hk] at h
+    simp only [Bool.and_eq_true, bne_iff_ne, ne_eq] at h
+    have hk' : c.prog.classes[k]? = some cl := hk
+    simp [ClassTable.kindOf, hk', h.2]
 
 /-- A comparison the checker made (with the method's class's bounds),
 through the frame's arguments (within them). -/
@@ -1643,7 +1661,7 @@ theorem eval_succ : EvalGood P orc (n + 1) := by
       obtain ⟨hk', hlenk⟩ := argsWf_facts hk
       exact Post.ofConstruct rfl (ih.construct s1 Λ1 k _ vs hw1 hk'
           (Ty.substArgs_closed _ hf1.core.closed _) (by rw [Ty.substArgs_length]; exact hlenk)
-          (argsWf_in hwf rfl hk hf.core.bounded)
+          (argsWf_in hwf rfl hk hf.core.bounded) (argsWf_kind hk)
           (fun mi' h => by
             rw [Program.lookupAt_subst fr.selfArgs hmi] at h; cases h
             refine ⟨(Method.inst_block_none _ _).mpr hblk, ?_⟩
@@ -1669,7 +1687,7 @@ theorem eval_succ : EvalGood P orc (n + 1) := by
         (Program.lookupAt_none_iff hwf _ _ _).mpr ((Program.lookupAt_none_iff hwf _ _ _).mp hmi)
       exact Post.ofConstruct rfl (ih.construct s1 Λ1 k _ vs hw1 hk'
           (Ty.substArgs_closed _ hf1.core.closed _) (by rw [Ty.substArgs_length]; exact hlenk)
-          (argsWf_in hwf rfl hk hf.core.bounded)
+          (argsWf_in hwf rfl hk hf.core.bounded) (argsWf_kind hk)
           (fun mi' h => by rw [hmi'] at h; cases h)
           (fun _ => by
             have := hvs.length; simp only [List.isEmpty_iff] at hnil; subst hnil
@@ -1795,8 +1813,8 @@ theorem eval_succ : EvalGood P orc (n + 1) := by
           (evalW fr (.isA e a)) (.ok (.bool bres) s1) := by
       intro bres hb; subst hb
       obtain ⟨h1, h2, h3⟩ := testOut_ok (b := u.le c.prog.classes [] a) hwf rfl hs1 hf1 hw1 hval
-        (fun _ t _ _ ht hb => hasTy_isATrue_subst hwf hclosed ht hu hb)
-        (fun _ t _ _ ht hb => hasTy_isAFalse_subst hwf hclosed ht hu hb)
+        (fun _ t _ _ ht hb => hasTy_isATrue_subst hwf hw1 hclosed ht hu hb)
+        (fun _ t _ _ ht hb => hasTy_isAFalse_subst hwf hw1 hclosed ht hu hb)
       exact ⟨Λ1, hw1, he1.monoW (evalW_mono (by simp [Expr.assigned])), hf1,
         by rw [testOut_ty]; exact hasTy_lit_bool, h1,
         fun h => h2 (by rwa [truthy_bool] at h), fun h => h3 (by rwa [truthy_bool] at h)⟩

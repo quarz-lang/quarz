@@ -484,6 +484,7 @@ theorem block_succ : BlockGood P orc (n + 1) := by
     rw [hobjs] at ho
     obtain ⟨a, a1, a2, b, b2, d⟩ := hw.objs l o ho
     exact ⟨a, a1, a2, b, b2, fun i v f h0 h1 h2 => mono (d i v f h0 h1 h2)⟩,
+    fun l o ho => by rw [hobjs] at ho; exact hw.noEnum l o ho,
     fun l o ho => by rw [hobjs] at ho; exact hw.bounds l o ho⟩
   have hframe : ∀ l, frameW vars ps l → ¬ chainLocs outer l := fun l ⟨x, _, hxl⟩ hc =>
     Nat.lt_irrefl _ (habove l l ⟨x, lookupVar_mem hxl⟩ hc)
@@ -649,6 +650,7 @@ theorem send_succ : SendGood P orc (n + 1) := by
       rw [hobjs] at ho'
       obtain ⟨a, a1, a2, b, b2, d⟩ := hw.objs l' o' ho'
       exact ⟨a, a1, a2, b, b2, fun i v f h0 h1 h2 => mono (d i v f h0 h1 h2)⟩,
+      fun l' o' ho' => by rw [hobjs] at ho'; exact hw.noEnum l' o' ho',
       fun l' o' ho' => by rw [hobjs] at ho'; exact hw.bounds l' o' ho'⟩
   have hcore : FrameCore P ⟨P, mt', false, false⟩ (Λ ++ (mt'.locals.map (·.2)).map (Ty.subst σ))
       (Store.allocVars s.locs.length (mt'.locals.map (·.1))) (.obj l) σ s2 := by

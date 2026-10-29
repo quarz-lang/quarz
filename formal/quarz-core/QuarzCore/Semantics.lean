@@ -234,6 +234,7 @@ def eval (P : Program) (orc : Oracle) : Nat → Frame → Store → Expr → Res
       | .ok v s => .returned v s
       | r => r
     | .raise => .raised s
+    | .absurd => .stuck
     | .isNil e => (eval P orc n fr s e).bind fun v s => .ok (.bool (v == .nil)) s
     -- A class test sees the class, not the arguments (erased).
     | .isA e a => (eval P orc n fr s e).bind fun v s =>

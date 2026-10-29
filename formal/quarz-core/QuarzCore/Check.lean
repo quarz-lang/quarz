@@ -28,6 +28,7 @@ theorem check_typed : ∀ {c : Ctx} {Γ : Env} {e : Expr} {o : Out}, check c Γ 
     · rename_i hc; cases h; exact .self (by simpa using hc)
     · cases hg
   | c, Γ, .raise, o, h => by simp [check] at h; subst h; exact .raise
+  | c, Γ, .absurd, o, h => by simp [check] at h
   | c, Γ, .var x t, o, h => by
     simp [check] at h
     obtain ⟨u, hu, hle, rfl⟩ := h
