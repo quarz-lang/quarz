@@ -68,7 +68,7 @@ puts counter.value        # => 100
 
 ## Design documents
 
-For a short introduction to the language, see the [guide at quarz.dev](https://quarz.dev/guide/); the standard library's API reference is at [quarz.dev/std](https://quarz.dev/std/).
+For a short introduction to the language, see the [guide at quarz.dev](https://quarz.dev/guide/); the standard library's API reference is at [api.quarz.dev](https://api.quarz.dev/).
 
 The design documents, `docs/0N-*.md`, describe the language and its implementation in full; [docs/README.md](docs/README.md) lists them, with the main design decisions.
 
