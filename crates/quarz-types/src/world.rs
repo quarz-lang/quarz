@@ -415,6 +415,10 @@ pub struct World {
     /// `Self`: the class `Self` is bounded by (there, `Self` is that class
     /// or a subclass, not known which).
     pub self_bound: Option<Type>,
+    /// The type parameters whose shareability is being decided
+    /// (`is_shareable`: bounds may be cyclic).
+    #[serde(skip)]
+    pub(crate) shareable_params: Vec<TypeParamId>,
     /// The `data` types and enums whose observability is being computed
     /// (`data_observable`), and whether a computation leaned on one of
     /// them (its negative answer then holds only once they are done).
@@ -1887,11 +1891,47 @@ impl World {
                 Some(b) => self.is_shareable(&b),
                 None => false,
             },
+            // A parameter is Shareable when a bound makes every type it
+            // admits Shareable: `Shareable` itself, a class or module that
+            // promises it (its descendants and includers must keep the
+            // promise: `check_shareable_promise`), or a `data` type or
+            // enum, which nothing extends, that is Shareable; another
+            // parameter, by its own bounds.
             Type::Param(p) => {
+                if self.shareable_params.contains(p) {
+                    return false;
+                }
                 let bounds = self.param_bounds(*p);
-                bounds
-                    .iter()
-                    .any(|b| matches!(b, Type::Class(id, _) if *id == self.builtin.shareable))
+                self.shareable_params.push(*p);
+                let r = bounds.iter().any(|b| match b {
+                    Type::Class(id, args) => {
+                        let id = *id;
+                        if id == self.builtin.shareable {
+                            return true;
+                        }
+                        let closed =
+                            matches!(self.class(id).kind, ClassKind::Data | ClassKind::Enum);
+                        if self.shareable_promise(id).is_some() || closed {
+                            self.is_shareable(&Type::Class(id, args.clone()))
+                        } else {
+                            false
+                        }
+                    }
+                    // (A parameter met again, through cyclic bounds, is
+                    // not taken as Shareable.)
+                    Type::Param(q) => {
+                        if self.shareable_params.contains(q) {
+                            return false;
+                        }
+                        self.shareable_params.push(*q);
+                        let r = self.is_shareable(b);
+                        self.shareable_params.pop();
+                        r
+                    }
+                    _ => false,
+                });
+                self.shareable_params.pop();
+                r
             }
             Type::Var(_) => true,
         }
