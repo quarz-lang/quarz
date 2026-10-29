@@ -4141,8 +4141,11 @@ impl Checker {
         // A field read in it is its declared type: `initialize` may assign
         // the field after the closure is made, there or in a method it
         // calls (one a subclass in another file may override, so which
-        // methods those are is not known here; docs/02 §6).
-        self.env.ivar_narrow.clear();
+        // methods those are is not known here; docs/02 §6). Not where
+        // only a generated constructor assigns them.
+        if !self.fields_fixed_at_construction() {
+            self.env.ivar_narrow.clear();
+        }
         let names: Vec<String> = self
             .env
             .frames
@@ -4154,6 +4157,21 @@ impl Checker {
             self.set_narrowed(&VarKey::Local(name), None);
         }
         (snap, saved_never)
+    }
+
+    /// Whether `self`'s fields are all assigned before any of its code
+    /// runs: a `data` type or enum variant whose only `initialize` is the
+    /// generated one, which calls no method (and which nothing subclasses).
+    fn fields_fixed_at_construction(&self) -> bool {
+        let Some(c) = self.env.class_id else {
+            return false;
+        };
+        let class = self.world.class(c);
+        matches!(class.kind, ClassKind::Data | ClassKind::Variant)
+            && class.methods.get("initialize").is_none_or(|ids| {
+                ids.iter()
+                    .all(|m| matches!(self.world.method(*m).synth, Synth::DataInit))
+            })
     }
 
     fn leave_late_closure(&mut self, saved: &(Snapshot, Rc<HashSet<String>>), body: &[Expr]) {
@@ -9635,8 +9653,9 @@ impl Checker {
             (escapes && !shareable && !is_task).then(|| self.enter_late_closure(&block.body));
         // A task's block copies the locals it captures, but reads `self`'s
         // fields live, as their declared types (as a late closure does).
-        let saved_ivars = (late.is_none() && (is_task || shareable))
-            .then(|| std::mem::take(&mut self.env.ivar_narrow));
+        let saved_ivars =
+            (late.is_none() && (is_task || shareable) && !self.fields_fixed_at_construction())
+                .then(|| std::mem::take(&mut self.env.ivar_narrow));
         // A block with a receiver runs with `self` = the receiver: the
         // enclosing `self` stays reachable for calls it alone answers.
         let receiver = recv.as_ref().map(|t| self.resolve(t));
@@ -9927,7 +9946,8 @@ impl Checker {
         // shareable one copies what it captures, and assigns none of it).
         let late = (!shareable).then(|| self.enter_late_closure(&block.body));
         // A shareable one reads `self`'s fields live, as a task's block.
-        let saved_ivars = shareable.then(|| std::mem::take(&mut self.env.ivar_narrow));
+        let saved_ivars = (shareable && !self.fields_fixed_at_construction())
+            .then(|| std::mem::take(&mut self.env.ivar_narrow));
         let mut param_types = Vec::new();
         let saved_self = self.enter_receiver(expected_recv.as_ref());
         // `retry` belongs directly in a rescue clause, not in a block or
