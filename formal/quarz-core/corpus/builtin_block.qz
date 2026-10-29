@@ -1,0 +1,32 @@
+# Blocks given to built-in methods (design §14, part B): a loop running
+# the block any number of times; narrowings of what it does not assign
+# kept after the call.
+def m(s0: String?) -> Int
+  s = s0
+  total = 0
+  if s
+    [1, 2].each { |x| total = total + x }
+    total + s.size
+  else
+    3.times { |i| total = total + i }
+    total
+  end
+end
+def n -> Int
+  ys = [1, 2, 3].map { |x| x * 2 }
+  z = 0
+  ys.each do |y|
+    w = y + 1
+    z = z + w
+  end
+  z + ys.size
+end
+def lam -> Int
+  t = 0
+  f = ->(k: Int) -> Int { [k, k].each { |x| t = t + x }; t }
+  f.call(2)
+end
+puts m("ab")
+puts m(nil)
+puts n
+puts lam
