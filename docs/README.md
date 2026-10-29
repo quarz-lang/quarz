@@ -25,7 +25,7 @@ The documents in this directory describe the language and its implementation. Fo
 
 | Decision | Choice | Reason |
 |---|---|---|
-| Where type annotations go | Required on parameters and return types (none means nil); locals are inferred | Shorter compile times and better error messages |
+| Where type annotations go | Required on parameters and return types (none means `-> Void`); locals are inferred | Shorter compile times and better error messages |
 | Parameter type syntax | `name: Type`; keyword-only parameters after `*` | Reuses Ruby's label syntax without making whitespace significant |
 | `nil` | A separate type, allowed only via `T?` | Turns runtime `NoMethodError`s into compile-time errors |
 | Sum types | `enum` | For message types and exhaustiveness checking in `case/in` |
