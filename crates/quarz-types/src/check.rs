@@ -2509,7 +2509,8 @@ impl Checker {
                     );
                 }
             }
-            if p.assigns_ivar {
+            // (A field parameter of a class method has no object to go to.)
+            if p.assigns_ivar && self.check_ivar_access(p.span) {
                 self.env.assigned_fields.insert(p.name.clone());
             }
         }
@@ -10057,6 +10058,17 @@ impl Checker {
             let recv = self.name(&self.env.self_type.clone());
             self.error(
                 format!("instance variables of {recv} are not accessible from this block (it runs with `self` = {recv})"),
+                span,
+            );
+            return false;
+        }
+        // In a class method or a class body, `self` is the class: it has
+        // no fields.
+        if self.env.receivers.is_empty()
+            && matches!(self.env.self_type, Type::ClassObject(..) | Type::TypeOf(_))
+        {
+            self.error(
+                "instance variables are not available here: `self` is a class (in a class method or a class body)",
                 span,
             );
             return false;
