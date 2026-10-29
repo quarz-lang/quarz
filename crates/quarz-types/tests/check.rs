@@ -2619,3 +2619,15 @@ fn a_kept_closure_reads_fields_as_declared() {
     ok(&format!("{c}  def make -> Nil\n    a = @a\n    if a\n      @f = ->() -> Int {{ a + 1 }}\n    end\n    nil\n  end\nend"));
     ok(&format!("{c}  def make -> Nil\n    if @a\n      [1].each {{ |x| p @a + x }}\n    end\n    nil\n  end\nend"));
 }
+
+#[test]
+fn a_data_types_fields_keep_their_narrowing_in_closures() {
+    // Only a generated constructor assigns them, before any code of the
+    // type runs: a kept closure keeps their narrowing (docs/02 §6).
+    ok("data D(n: Int?)\n  def later -> Int\n    if @n\n      Task.spawn { @n + 1 }.await\n    else\n      0\n    end\n  end\n  def f -> (() -> Int)?\n    if @n\n      -> { @n + 1 }\n    end\n  end\nend");
+    // Not where the type has an `initialize` of its own.
+    err(
+        "data D2(n: Int?)\n  def initialize(n: Int?)\n    @n = n\n  end\n  def f -> (() -> Int)?\n    if @n\n      -> { @n + 1 }\n    end\n  end\nend",
+        "undefined method `+` for Nil",
+    );
+}
