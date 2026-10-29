@@ -234,6 +234,9 @@ structure Where where
   /-- In a lambda: the locals of the code around it (the method's, the
   enclosing lambdas' and blocks'), which it captures. -/
   captured : Locals := []
+  /-- In a method with a named block parameter: it, a procedure (its
+  `yield` calls it). -/
+  blkProc : Option (String × Ty) := none
 
 /-- Converting a body, with the locals so far. -/
 abbrev CM := ReaderT Where (StateT Locals M)
@@ -819,7 +822,11 @@ partial def expr (T : Tables) (e : Json) : CM Expr := do
     | .null => pure (.ret .nil)
     | x => pure (.ret (← expr T x))
   | "Seq" => body T (← arr v)
-  | "Yield" => pure (.yield (← (← arr v).toList.mapM fun a => do expr T (← positional a)))
+  | "Yield" =>
+    let as ← (← arr v).toList.mapM fun a => do expr T (← positional a)
+    match (← read).blkProc with
+    | some (b, t) => pure (.callProc (.var b t) as)
+    | none => pure (.yield as)
   | "Call" => call T id v
   | "Super" =>
     -- `super` in `initialize`, into the superclass's.
@@ -841,9 +848,6 @@ partial def expr (T : Tables) (e : Json) : CM Expr := do
   -- parameters, and the names first assigned in it); it may assign the
   -- locals around it.
   | "Lambda" =>
-    let w ← read
-    if w.init.isSome then throw "a lambda in initialize"
-    if w.rcls.isNone && !w.top then throw "a lambda in a default"
     let pj ← field T.nodeTypes (toString id)
     unless (← str (← field pj "t")) == "proc" do throw "a lambda not of a procedure type"
     unless (← field pj "recv") == .null do throw "a lambda with a receiver"
@@ -857,77 +861,7 @@ partial def expr (T : Tables) (e : Json) : CM Expr := do
       unless (← field p "default") == .null do throw "a lambda parameter with a default"
       str (← field p "name")
     unless names.length == pts.length do throw "a lambda's parameters"
-    let outer ← get
-    let around := (outer ++ w.captured).filter fun (x, _) => !names.contains x
-    -- Its parameters, then the locals around it (it may assign them: C1),
-    -- then its own (first assigned in it).
-    set ((names.zip pts ++ around : Locals))
-    let bd ← withReader (fun w => { w with exc := none, retryFlag := none, captured := around })
-      (body T (← arr (← field v "body")))
-    let mine ← get
-    set outer
-    let own := mine.drop (names.length + around.length)
-    let mine := names.zip pts ++ own
-    if hasRet bd then throw "a return in a lambda"
-    -- Its body reads the method's locals and `self`'s fields as declared
-    -- (R2a): a read the Rust checker narrows further is out of range.
-    let narrower (decl t : Ty) : Bool := !(decl.all fun a => t.contains a)
-    let fieldDecl (f : String) : CM (Option Ty) := do
-      let some rc := (← read).rcls | pure none
-      let mut c := rc
-      for _ in [0:T.classes.size] do
-        let cj ← T.cls c
-        for fj in (← arr (← field cj "fields")) do
-          if (← str (← field fj "name")) == f then return some (← T.ty (← field fj "type"))
-        match ← field cj "superclass" with
-        | .null => return none
-        | sj => c ← nat (← field sj "id")
-      pure none
-    let rec reads : Expr → List (Bool × String × Ty)
-      | .var x t => [(true, x, t)]
-      | .field f t => [(false, f, t)]
-      | .assign _ e | .setField _ e | .ret e | .raise e | .isNil e | .isA e _ | .eqNil e | .neNil e
-      | .eqTrue e | .eqFalse e | .not e => reads e
-      | .new _ _ as | .superInit _ as | .yield as | .prim _ as _ _ => as.flatMap reads
-      | .call r _ as | .callProc r as => reads r ++ as.flatMap reads
-      | .callBlk r _ as _ b => reads r ++ as.flatMap reads ++ reads b
-      | .seq a b | .while a b | .and a b | .or a b | .ensure a b => reads a ++ reads b
-      | .ite c t e => reads c ++ reads t ++ reads e
-      | .rescue b _ h e => reads b ++ reads h ++ reads e
-      | .lambda _ _ _ b => reads b
-      | _ => []
-    -- (A test in the body narrows there: the model does too; a local as a
-    -- condition, its truthiness tested.)
-    let cond : Expr → List String := fun e => match e with
-      | .var x _ => [x]
-      | _ => []
-    let rec tested : Expr → List String
-      | .isNil (.var x _) | .isA (.var x _) _ | .eqNil (.var x _) | .neNil (.var x _)
-      | .eqTrue (.var x _) | .eqFalse (.var x _) => [x]
-      | .assign _ e | .setField _ e | .ret e | .raise e | .isNil e | .isA e _ | .eqNil e | .neNil e
-      | .eqTrue e | .eqFalse e => tested e
-      | .new _ _ as | .superInit _ as | .yield as | .prim _ as _ _ => as.flatMap tested
-      | .call r _ as | .callProc r as => tested r ++ as.flatMap tested
-      | .callBlk r _ as _ b => tested r ++ as.flatMap tested ++ tested b
-      | .seq a b | .ensure a b => tested a ++ tested b
-      | .while c b | .and c b | .or c b => cond c ++ tested c ++ tested b
-      | .ite c t e => cond c ++ tested c ++ tested t ++ tested e
-      | .not c => cond c ++ tested c
-      | .rescue b _ h e => tested b ++ tested h ++ tested e
-      | .lambda _ _ _ b => tested b
-      | _ => []
-    let tested := tested bd
-    for (isLocal, x, t) in reads bd do
-      if isLocal then
-        if let some (_, d) := around.find? (·.1 == x) then
-          if !mine.any (·.1 == x) && !tested.contains x && narrower d t then
-            throw s!"a lambda reading {x} narrower than declared"
-      else
-        if let some d ← fieldDecl x then
-          if narrower d t then throw s!"a lambda reading @{x} narrower than declared"
-    -- `-> Void`: its value discarded, nil.
-    let bd := if void then Expr.seq bd .nil else bd
-    pure (.lambda (names.zip pts) own ret bd)
+    lambdaOf T names pts ret void (← arr (← field v "body"))
   | "Retry" =>
     let some f := (← read).retryFlag | throw "a retry outside a rescue clause"
     pure (.assign f .tru)
@@ -1194,7 +1128,13 @@ partial def matchPattern (T : Tables) (id : Nat) (v : Json) : CM Expr := do
 partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
   let name ← str (← field c "name")
   let recvJ ← field c "recv"
-  let args ← (← arr (← field c "args")).toList.mapM fun a => (positional a : CM Json)
+  -- (`&p`: a procedure given as the block.)
+  let mut args : List Json := []
+  let mut bpass : Option Json := none
+  for a in (← arr (← field c "args")) do
+    match ← variant a with
+    | ("BlockPass", e) => bpass := some e
+    | _ => args := args ++ [← positional a]
   let blk ← field c "block"
   -- (The receiver of `new`, a class, is not an expression here.)
   let isNew := match T.calls.getObjVal? (toString id) with
@@ -1206,6 +1146,10 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
   let target ← match T.calls.getObjVal? (toString id) with
     | .ok t => pure t
     | .error _ => throw s!"call {name} not resolved"
+  -- `&p` reaches a program's method only (below).
+  if bpass.isSome then
+    if (← str (← field target "t")) != "method" || ["nil?", "==", "!=", "is_a?"].contains name then
+      throw "a block pass to a built-in"
   let lit (a : Json) : M String := do pure (← variant (← field a "kind")).1
   -- A data-less variant as a value (compared below).
   let isVariant (a : Json) : M Bool := do
@@ -1337,6 +1281,7 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
       -- it takes `self` (it may read its fields), but a `Kernel`
       -- function.
       unless blk == .null do throw s!"a block given to built-in {name}"
+      if bpass.isSome then throw s!"a block pass to built-in {name}"
       -- A rest parameter (`*args`) takes as many arguments as are given
       -- (any value: its declared `Array[E]` is no type of the model's).
       -- Otherwise the positional parameters the call fills; those it
@@ -1364,9 +1309,63 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
     if recv.isNone && T.qclass (← nat (← field m "owner")) == some 1 && !(← read).top then
       throw "a top-level method called from a class"
     let r := recv.getD .self
+    -- A named block parameter: the method takes a procedure (its last
+    -- parameter), the block given made a lambda.
+    -- (Of a union, the classes' methods may differ in whether they keep
+    -- the block: out of range when a method of the name keeps it.)
+    if blk != .null || bpass.isSome then
+      if let some rj := (recvJ.getObjVal? "id").toOption then
+        let classes := (← T.nodeTy (← nat rj)).filter fun a => match a with | .cls .. => true | _ => false
+        let keeps ← T.methods.anyM fun m' => do
+          if (← str (← field m' "name")) != name then return false
+          match ← field m' "block" with
+          | .null => pure false
+          | b => pure (match ← field b "name" with | .null | .str "&" => false | _ => true)
+        if classes.length > 1 && keeps then throw "a block given to a union receiver"
+    let named ← match ← field m "block" with
+      | .null => pure false
+      | sig => do match ← field sig "name" with
+        | .null | .str "&" => pure false
+        | _ => pure true
+    if let some e := bpass then
+      unless blk == .null do throw "a block and a block pass"
+      let pe ← expr T e
+      if named then return .call r name (as ++ [pe])
+      -- Into an anonymous block: a block calling it, the procedure read
+      -- once, before the call (the receiver and the arguments plain, so
+      -- the order does not matter).
+      let plain : Expr → Bool := fun x => match x with
+        | .var .. | .self | .nil | .tru | .fls | .int _ | .str _ | .flt _ => true
+        | _ => false
+      unless plain r && as.all plain do throw "a block pass after a call"
+      unless (match pe with | .var .. => true | _ => false) do throw "a block pass of an expression"
+      let sig ← field m "block"
+      let ty ← field sig "type"
+      unless (← str (← field ty "t")) == "proc" do throw "a block type"
+      let tys ← (← arr (← field ty "params")).toList.mapM fun t => (T.ty t : M Ty)
+      unless tys.all Ty.closed do throw "a block pass to a generic method"
+      let void := (← str (← field (← field ty "ret") "t")) == "void"
+      let pt ← T.nodeTy (← nat (← field e "id"))
+      let tmp := s!"&{id}"
+      let ps := (List.range tys.length).map fun i => s!"&{id}.{i}"
+      modify (addLocal · tmp pt)
+      for (x, t) in ps.zip tys do modify (addLocal · x t)
+      let run := Expr.callProc (.var tmp pt) ((ps.zip tys).map fun (x, t) => .var x t)
+      return .seq (.assign tmp pe) (.callBlk r name as ps (if void then .seq run .nil else run))
     match blk with
     | .null => return .call r name as
     | b =>
+      if named then
+        let ps ← (← arr (← field (← field b "params") "list")).toList.mapM fun p => do
+          str (← field p "name")
+        let ty ← field (← field m "block") "type"
+        let tys ← (← arr (← field ty "params")).toList.mapM fun t => (T.ty t : M Ty)
+        unless tys.all Ty.closed do throw "a kept block of a generic method"
+        unless ps.length == tys.length do throw "a block's parameters"
+        let rj ← field ty "ret"
+        unless (← T.ty rj).closed do throw "a kept block of a generic method"
+        let lam ← lambdaOf T ps tys (← T.ty rj) ((← str (← field rj "t")) == "void") (← arr (← field b "body"))
+        return .call r name (as ++ [lam])
       let ps ← (← arr (← field (← field b "params") "list")).toList.mapM fun p => do
         str (← field p "name")
       -- The block's parameters, as the method's block declares them.
@@ -1405,6 +1404,87 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
         | .error _ => false
       return .callBlk r name as ps (if void then .seq bd .nil else bd)
   | t => throw s!"a {t} call"
+
+
+/-- A lambda of parameters `names` of types `pts`, giving `ret` (`void`:
+`-> Void`), of body `bodyJ` (a block given to a method that may keep it
+too: design §13.10). -/
+partial def lambdaOf (T : Tables) (names : List String) (pts : List Ty) (ret : Ty) (void : Bool)
+    (bodyJ : Array Json) : CM Expr := do
+  let w ← read
+  if w.init.isSome then throw "a lambda in initialize"
+  if w.rcls.isNone && !w.top then throw "a lambda in a default"
+  let outer ← get
+  let around := (outer ++ w.captured).filter fun (x, _) => !names.contains x
+  -- Its parameters, then the locals around it (it may assign them: C1),
+  -- then its own (first assigned in it).
+  set ((names.zip pts ++ around : Locals))
+  let bd ← withReader (fun w => { w with exc := none, retryFlag := none, captured := around })
+    (body T bodyJ)
+  let mine ← get
+  set outer
+  let own := mine.drop (names.length + around.length)
+  let mine := names.zip pts ++ own
+  if hasRet bd then throw "a return in a lambda"
+  -- Its body reads the method's locals and `self`'s fields as declared
+  -- (R2a): a read the Rust checker narrows further is out of range.
+  let narrower (decl t : Ty) : Bool := !(decl.all fun a => t.contains a)
+  let fieldDecl (f : String) : CM (Option Ty) := do
+    let some rc := (← read).rcls | pure none
+    let mut c := rc
+    for _ in [0:T.classes.size] do
+      let cj ← T.cls c
+      for fj in (← arr (← field cj "fields")) do
+        if (← str (← field fj "name")) == f then return some (← T.ty (← field fj "type"))
+      match ← field cj "superclass" with
+      | .null => return none
+      | sj => c ← nat (← field sj "id")
+    pure none
+  let rec reads : Expr → List (Bool × String × Ty)
+    | .var x t => [(true, x, t)]
+    | .field f t => [(false, f, t)]
+    | .assign _ e | .setField _ e | .ret e | .raise e | .isNil e | .isA e _ | .eqNil e | .neNil e
+    | .eqTrue e | .eqFalse e | .not e => reads e
+    | .new _ _ as | .superInit _ as | .yield as | .prim _ as _ _ => as.flatMap reads
+    | .call r _ as | .callProc r as => reads r ++ as.flatMap reads
+    | .callBlk r _ as _ b => reads r ++ as.flatMap reads ++ reads b
+    | .seq a b | .while a b | .and a b | .or a b | .ensure a b => reads a ++ reads b
+    | .ite c t e => reads c ++ reads t ++ reads e
+    | .rescue b _ h e => reads b ++ reads h ++ reads e
+    | .lambda _ _ _ b => reads b
+    | _ => []
+  -- (A test in the body narrows there: the model does too; a local as a
+  -- condition, its truthiness tested.)
+  let cond : Expr → List String := fun e => match e with
+    | .var x _ => [x]
+    | _ => []
+  let rec tested : Expr → List String
+    | .isNil (.var x _) | .isA (.var x _) _ | .eqNil (.var x _) | .neNil (.var x _)
+    | .eqTrue (.var x _) | .eqFalse (.var x _) => [x]
+    | .assign _ e | .setField _ e | .ret e | .raise e | .isNil e | .isA e _ | .eqNil e | .neNil e
+    | .eqTrue e | .eqFalse e => tested e
+    | .new _ _ as | .superInit _ as | .yield as | .prim _ as _ _ => as.flatMap tested
+    | .call r _ as | .callProc r as => tested r ++ as.flatMap tested
+    | .callBlk r _ as _ b => tested r ++ as.flatMap tested ++ tested b
+    | .seq a b | .ensure a b => tested a ++ tested b
+    | .while c b | .and c b | .or c b => cond c ++ tested c ++ tested b
+    | .ite c t e => cond c ++ tested c ++ tested t ++ tested e
+    | .not c => cond c ++ tested c
+    | .rescue b _ h e => tested b ++ tested h ++ tested e
+    | .lambda _ _ _ b => tested b
+    | _ => []
+  let tested := tested bd
+  for (isLocal, x, t) in reads bd do
+    if isLocal then
+      if let some (_, d) := around.find? (·.1 == x) then
+        if !mine.any (·.1 == x) && !tested.contains x && narrower d t then
+          throw s!"a lambda reading {x} narrower than declared"
+    else
+      if let some d ← fieldDecl x then
+        if narrower d t then throw s!"a lambda reading @{x} narrower than declared"
+  -- `-> Void`: its value discarded, nil.
+  let bd := if void then Expr.seq bd .nil else bd
+  pure (.lambda (names.zip pts) own ret bd)
 
 end
 
@@ -1456,25 +1536,33 @@ def method (T : Tables) (owner : Nat) (m : Json) (d : Json) : M Method := do
   if (← field m "generated") == .bool true then throw "a generated method"
   let ret ← T.ty (← field m "ret")
   if (← field m "block_optional") == .bool true then throw "an optional block"
-  let block ← match ← field m "block" with
-    | .null => pure none
+  let (block, bproc) ← match ← field m "block" with
+    | .null => pure (none, none)
     | b => do
-      -- A named block may be kept (design §13): not yet the model's.
-      match ← field b "name" with
-      | .null | .str "&" => pure ()
-      | _ => throw "a named block parameter"
       let t ← field b "type"
       unless (← str (← field t "t")) == "proc" do throw "a block type"
-      let ps ← (← arr (← field t "params")).toList.mapM T.ty
-      pure (some ⟨ps, ← T.ty (← field t "ret")⟩)
+      match ← field b "name" with
+      | .null | .str "&" =>
+        let ps ← (← arr (← field t "params")).toList.mapM T.ty
+        pure (some ⟨ps, ← T.ty (← field t "ret")⟩, none)
+      | .str n =>
+        -- A named block, which the method may keep: its last parameter,
+        -- a procedure (design §13.10).
+        if name == "initialize" then throw "a named block parameter of initialize"
+        pure (none, some (n, ← T.ty t))
+      | _ => throw "a block parameter's name"
+  let params := params ++ bproc.toList
   -- (In `initialize`, the superclass, for `super`.)
   let init ← if name != "initialize" then pure none else do
     let sup ← match ← field (← T.cls (← nat (← field m "owner"))) "superclass" with
       | .null => pure 0
       | t => pure (← T.tyClass t).1
     pure (some (params, sup))
-  let w : Where := ⟨owner == 1, init, some (← nat (← field m "owner")), none, none, []⟩
+  let w : Where := ⟨owner == 1, init, some (← nat (← field m "owner")), none, none, [], bproc⟩
   let (bd, ls) ← ((body T (← arr (← field d "body"))).run w).run params
+  -- (`yield` runs the block given, whatever the parameter holds later.)
+  if let some (n, _) := bproc then
+    if (bd.assigned ++ bd.procAssigned).contains n then throw "a named block parameter assigned"
   -- The model narrows without the bounds (a test of a `T <: Shape` value
   -- keeps `T` where the Rust checker may not): a method of a class with a
   -- bounded parameter that tests or loops is out of range.
@@ -1620,17 +1708,17 @@ def program (j : Json) : M Program := do
     match ← field k "value" with
     | .null => throw "a constant with no initializer"
     | v =>
-      let (bd, ls) ← ((expr T v).run ⟨true, none, none, none, none, []⟩).run []
+      let (bd, ls) ← ((expr T v).run ⟨true, none, none, none, none, [], none⟩).run []
       pure (⟨1, "const " ++ (← str (← field k "name")), [], ty, none, ls, bd⟩ : Method)
   let some mainUnit := units.back? | throw "no unit"
-  let (mainBody, mainLocals) ← ((body T (← arr (← field mainUnit "body"))).run ⟨true, none, none, none, none, []⟩).run []
+  let (mainBody, mainLocals) ← ((body T (← arr (← field mainUnit "body"))).run ⟨true, none, none, none, none, [], none⟩).run []
   let all : Ty := [.nil, .bool, .int, .str, .cls 0 []]
   -- A default that tests or loops, with a bounded parameter anywhere (it
   -- is checked in each inheriting class): out of range, as in `method`.
   let bounded ← user.anyM fun c => do
     (← arr (← field c "type_params")).anyM fun p => do pure !(← arr (← field p "bounds")).isEmpty
   let defaults ← fdefs.toList.mapM fun e => do
-    let (x, ls) ← ((expr T (← field e "value")).run ⟨false, none, none, none, none, []⟩).run []
+    let (x, ls) ← ((expr T (← field e "value")).run ⟨false, none, none, none, none, [], none⟩).run []
     unless ls.isEmpty do throw "a field default with locals"
     if bounded && narrows x then throw "a test in a default with a bounded parameter"
     pure x

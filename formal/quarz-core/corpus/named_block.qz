@@ -1,0 +1,25 @@
+# Named block parameters (a method may keep its block): the block, a
+# lambda given as the method's last parameter; `&p`, a procedure given
+# as the block (design §13.10).
+def twice(&blk: (Int) -> Void) -> Nil
+  blk.call(1)
+  yield 2
+  nil
+end
+def each2(&: (Int) -> Void) -> Nil
+  yield 1
+  nil
+end
+def keep(&blk: () -> Int) -> () -> Int
+  blk
+end
+def m -> Int
+  t = 0
+  twice { |i| t = t + i }
+  f = keep { 5 }
+  p = ->(i: Int) -> Nil { t = t + i; nil }
+  twice(&p)
+  each2(&p)
+  t + f.call
+end
+puts m
