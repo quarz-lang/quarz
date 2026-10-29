@@ -120,9 +120,10 @@ types and `enum`s, `rescue`/`ensure` in `initialize` and in defaults
 of a `begin` used as a statement, `super`
 outside `initialize` (Ruby's `super` in other methods), in a block of
 it, or with a block, Shareable and tasks, extensions and overloads. Of
-generics: method type parameters and lower bounds `U >: T`, the
-built-in generic classes (`Array`, `Hash`: built-in calls' arguments and
-results stay opaque), and `is_a?(C[args])` where the static type does
+generics: method type parameters and lower bounds `U >: T` (but a
+built-in call's, which the translator instantiates), the built-in
+generic classes but `Array` (`Hash`, `Range`, `Set`), a block given to a
+built-in method, and `is_a?(C[args])` where the static type does
 not fix the arguments but for `Object` arguments of covariant
 parameters (docs/02 §7: the Rust checker rejects the rest too, as it
 does `is_a?(C)` of a generic class without arguments).
@@ -292,6 +293,21 @@ stricter, not unsound.
   (`while`'s rule, what the body and the clauses assign un-narrowed at
   its start, is the rule for a body a `rescue` retries), `ensure`
   outside the loop.
+  `Array[out T]` is the model's class of kind `builtin` (design §14):
+  right below `Object`, without fields, no method, nothing below it and
+  no `new` of it. Its values are opaque (`Value.builtin`, their class
+  and arguments ghost in the store): a built-in call whose declared
+  result is one such class makes one, any other built-in result comes
+  from the oracle. An array literal is a built-in call (its elements of
+  the element type the checker gave it), and an array's methods are
+  built-in calls typed by their declarations, `Array`'s parameter the
+  receiver's element type and the method's own parameters what the
+  call's result type says (the checker's instantiation). The model does
+  not keep elements: an element read gives a value of the declared
+  type, which the theorem assumes of built-in calls (so the variance of
+  `Array` is the declaration's, not checked against element reads).
+  `xs == nil` of an array narrows nothing (a class atom is not final),
+  stricter than the Rust checker.
   A procedure type `(A1, .., An) -> R` is the model's class
   `ProcN[in A1, .., in An, out R]` (kind `proc`: right below `Object`,
   without fields, no method, nothing below it and no `new` of it; its

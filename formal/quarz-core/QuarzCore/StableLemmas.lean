@@ -361,6 +361,7 @@ theorem WfStore.setLoc {Λ : List Ty} {s : Store} (h : WfStore P Λ s) {l : Nat}
     exact ⟨h1, h1a, h1b, h2, h3, fun i w f hs hw hf => h4 i w f hs hw hf⟩
   bounds := fun l o ho => h.bounds l o ho
   noEnum := fun l o ho => h.noEnum l o ho
+  builts := h.builts
   procs := fun i p hp => (h.procs i p hp).stable (Ext.setLoc (W := fun _ => True) (Wo := fun _ => False) hl ht hv trivial)
 
 /-- A new procedure, as checked. -/
@@ -374,6 +375,7 @@ theorem WfStore.newProc {Λ : List Ty} {s : Store} (hw : WfStore P Λ s) {p : Pr
       (Wo := fun _ => False) (Λ := Λ) p).hasTy (h4 i w f hs hw' hf)⟩
   noEnum := fun l o ho => hw.noEnum l o ho
   bounds := fun l o ho => hw.bounds l o ho
+  builts := hw.builts
   procs := fun i q hq => by
     have he := Ext.newProc (P := P) (W := fun _ => False) (Wo := fun _ => False) (Λ := Λ) (s := s) p
     by_cases hi : i < s.procs.length

@@ -23,6 +23,7 @@ theorem Ext.refl (W Wo : Nat → Prop) (Λ : List Ty) (s : Store) : Ext P W Wo �
   tys := List.prefix_refl Λ
   procs := List.prefix_refl _
   pins := List.prefix_refl _
+  builts := List.prefix_refl _
   locs := fun _ v h => ⟨v, h, .inl rfl⟩
   grow := ObjsGrow.refl s
   imm := fun _ o o' h h' _ _ _ _ _ => by rw [h] at h'; cases h'; rfl
@@ -33,6 +34,7 @@ theorem Ext.mono {W W' Wo Wo' : Nat → Prop} {Λ Λ' : List Ty} {s s' : Store}
   tys := h.tys
   procs := h.procs
   pins := h.pins
+  builts := h.builts
   locs := fun l v hv => by
     obtain ⟨v', h1, h2⟩ := h.locs l v hv
     refine ⟨v', h1, ?_⟩
@@ -63,6 +65,7 @@ theorem Ext.trans {W1 W2 Wo1 Wo2 : Nat → Prop} {Λ1 Λ2 Λ3 : List Ty} {s1 s2 
   tys := h1.tys.trans h2.tys
   procs := h1.procs.trans h2.procs
   pins := h1.pins.trans h2.pins
+  builts := h1.builts.trans h2.builts
   locs := fun l v hv => by
     obtain ⟨v2, hv2, hc2⟩ := h1.locs l v hv
     obtain ⟨v3, hv3, hc3⟩ := h2.locs l v2 hv2
@@ -106,6 +109,7 @@ theorem Ext.fresh {W Wo : Nat → Prop} {Λ Λ' : List Ty} {s s' : Store}
   tys := h.tys
   procs := h.procs
   pins := h.pins
+  builts := h.builts
   locs := h.locs
   grow := h.grow
   imm := fun l o o' h1 h2 _ => h.imm l o o' h1 h2 fun hw =>
@@ -123,6 +127,7 @@ theorem Ext.setLoc {W Wo : Nat → Prop} {Λ : List Ty} {s : Store} {l : Nat} {v
   tys := List.prefix_refl Λ
   procs := List.prefix_refl _
   pins := List.prefix_refl _
+  builts := List.prefix_refl _
   locs := fun l' v' h => by
     by_cases he : l' = l
     · subst he
@@ -138,6 +143,7 @@ theorem Ext.newProc {W Wo : Nat → Prop} {Λ : List Ty} {s : Store} (p : ProcV)
   tys := List.prefix_refl Λ
   procs := List.prefix_append _ _
   pins := List.prefix_refl _
+  builts := List.prefix_refl _
   locs := fun _ v h => ⟨v, h, .inl rfl⟩
   grow := fun _ o h => ⟨o, h, rfl, rfl, rfl, fun _ h => h⟩
   imm := fun _ o o' h h' _ _ _ _ _ => by simp at h'; rw [h] at h'; cases h'; rfl
@@ -148,6 +154,7 @@ theorem Ext.newObj {W Wo : Nat → Prop} {Λ : List Ty} {s : Store} (o : Obj) :
   tys := List.prefix_refl Λ
   procs := List.prefix_refl _
   pins := List.prefix_refl _
+  builts := List.prefix_refl _
   locs := fun _ v h => ⟨v, h, .inl rfl⟩
   grow := fun l o' h => ⟨o', by
       rw [List.getElem?_append_left (List.getElem?_eq_some_iff.mp h).1]; exact h,
@@ -161,6 +168,7 @@ theorem Ext.alloc {W Wo : Nat → Prop} {Λ : List Ty} {s : Store} (names pin : 
   tys := List.prefix_append Λ tys
   procs := List.prefix_refl _
   pins := List.prefix_append _ _
+  builts := List.prefix_refl _
   locs := fun l v h => ⟨v, by
       simp only [Store.alloc]
       rw [List.getElem?_append_left (List.getElem?_eq_some_iff.mp h).1]; exact h, .inl rfl⟩

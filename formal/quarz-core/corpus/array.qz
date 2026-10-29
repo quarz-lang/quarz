@@ -1,0 +1,15 @@
+# Arrays (design §14): Array[out T], a built-in generic class; literals and
+# its methods built-in calls typed by their declarations.
+def m -> Int
+  xs = [1, 2]
+  ys = xs.push(3)
+  n = xs[0]
+  zs = xs.push("a")
+  k = zs.size
+  f = xs.first
+  if f
+    n = n + f
+  end
+  n + ys.size + k
+end
+puts m

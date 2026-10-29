@@ -178,6 +178,28 @@ theorem proc_ancestors (hwf : WfClasses P.classes) {k : Nat} (hk : P.classes.kin
     | none => exact absurd (List.getElem?_eq_none_iff.mp h0) (by have := hwf.nonempty; omega)
     | some k0 => simp [ClassTable.superOf, h0, hwf.root k0 h0]
 
+/-- A built-in generic class is right below `Object`. -/
+theorem builtin_ancestors (hwf : WfClasses P.classes) {k : Nat} (hk : P.classes.kindOf k = .builtin) :
+    P.classes.ancestors k = [k, 0] := by
+  cases hck : P.classes[k]? with
+  | none => simp [ClassTable.kindOf, hck] at hk
+  | some cl =>
+    have hkind : cl.kind = .builtin := by simpa [ClassTable.kindOf, hck] using hk
+    obtain ⟨hs, _⟩ := hwf.builtinShape k cl hck hkind
+    rw [ClassTable.ancestors_eq hwf k]
+    simp only [ClassTable.superOf, hck, Option.bind_some, hs]
+    rw [ClassTable.ancestors_eq hwf 0]
+    cases h0 : P.classes[0]? with
+    | none => exact absurd (List.getElem?_eq_none_iff.mp h0) (by have := hwf.nonempty; omega)
+    | some k0 => simp [ClassTable.superOf, h0, hwf.root k0 h0]
+
+/-- A built-in value's type: of a built-in generic class. -/
+theorem typeOf_builtin_kind {Λ : List Ty} {s : Store} (hw : WfStore P Λ s) {i : Nat} {u : Atom}
+    (hu : s.typeOf (.builtin i) = some u) : ∃ k as, u = .cls k as ∧ P.classes.kindOf k = .builtin := by
+  simp only [Store.typeOf, Option.map_eq_some_iff] at hu
+  obtain ⟨⟨k, as⟩, he, rfl⟩ := hu
+  exact ⟨k, as, rfl, (hw.builts i k as he).2.1⟩
+
 /-- A procedure's type: of a procedures' class. -/
 theorem typeOf_proc_kind {Λ : List Ty} {s : Store} (hw : WfStore P Λ s) {i : Nat} {u : Atom}
     (hu : s.typeOf (.proc i) = some u) : ∃ k as, u = .cls k as ∧ P.classes.kindOf k = .proc := by
@@ -217,6 +239,12 @@ theorem typeOf_cls_wf {Λ : List Ty} {s : Store} (hw : WfStore P Λ s) {v : Valu
     cases hck : P.classes[cu]? with
     | none => rw [hck] at hn; cases hn
     | some cl => rw [hck] at hn; simp at hn ⊢; simp [hn]
+  | builtin i =>
+    simp only [Store.typeOf, Option.map_eq_some_iff] at hu
+    obtain ⟨⟨k, as⟩, he, h⟩ := hu
+    cases h
+    obtain ⟨h1, _, h3, h4, _⟩ := hw.builts i _ _ he
+    exact ⟨h1, h3, h4⟩
   | _ => simp [Store.typeOf] at hu
 
 /-- The run-time class test answers as `≤` on the value's atom does, for a
@@ -535,6 +563,17 @@ theorem enum_variant (hwf : WfClasses P.classes) {Λ : List Ty} {s : Store} (hw 
     · exact absurd h0 hE0
     have hmem := ClassTable.ancestorArgs_mem hwf _ _ _ _ hx
     rw [proc_ancestors hwf hkp] at hmem
+    simp only [List.mem_cons, List.not_mem_nil, or_false] at hmem
+    rcases hmem with rfl | rfl
+    · rw [hkp] at hE; cases hE
+    · exact absurd rfl hE0
+  case builtin i =>
+    obtain ⟨k, as, rfl, hkp⟩ := typeOf_builtin_kind hw hu
+    rw [Atom.le_cls_iff hwf] at hle
+    rcases hle with ⟨h0, _⟩ | ⟨x, hx, _⟩
+    · exact absurd h0 hE0
+    have hmem := ClassTable.ancestorArgs_mem hwf _ _ _ _ hx
+    rw [builtin_ancestors hwf hkp] at hmem
     simp only [List.mem_cons, List.not_mem_nil, or_false] at hmem
     rcases hmem with rfl | rfl
     · rw [hkp] at hE; cases hE

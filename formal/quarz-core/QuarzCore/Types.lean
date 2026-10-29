@@ -181,6 +181,9 @@ inductive ClassKind where
   /-- `ProcN[in A1, .., in An, out R]`: the type of procedures of `n`
   parameters; its values are procedures, not objects (design §13.7). -/
   | proc
+  /-- A built-in generic class (`Array[out T]`, design §14): its values
+  are opaque (built-in calls make them), not objects. -/
+  | builtin
   deriving DecidableEq, Repr, Inhabited
 
 /-- A class: its superclass (none for the root, `Object`) with the type
