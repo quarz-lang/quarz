@@ -817,6 +817,48 @@ impl<'a> FnBuilder<'a> {
         dst
     }
 
+    /// A `static(...)`'s value as a constant the final lowering adds after
+    /// the checker's (`Lowerer::add_quoted_const`): its initializer makes
+    /// the baked value, once; every evaluation reads it (docs/14 §8).
+    fn static_constant(
+        &mut self,
+        site: ast::NodeId,
+        v: &quarz_types::world::Baked,
+        span: Span,
+    ) -> Reg {
+        // One per site: a quoted block's tree and its closure share it.
+        if let Some(&cid) = self.lw.static_consts.get(&site) {
+            let dst = self.reg();
+            self.emit(Inst::ConstGet { dst, id: cid });
+            return dst;
+        }
+        let id = self.lw.alloc_func();
+        let mut init = FnBuilder::new(
+            &mut *self.lw,
+            self.world,
+            self.out,
+            format!("static value in {}", self.func.name),
+            FuncKind::Init,
+            self.file,
+            &[],
+            Vec::new(),
+            HashSet::default(),
+            false,
+            None,
+            self.class_id,
+        );
+        let r = init.baked_value(v);
+        init.term(Term::Return(r));
+        let f = init.finish();
+        self.lw.set_func(id, f);
+        let line = self.line_of(span);
+        let cid = self.lw.add_quoted_const(self.world, self.file, line, id);
+        self.lw.static_consts.insert(site, cid);
+        let dst = self.reg();
+        self.emit(Inst::ConstGet { dst, id: cid });
+        dst
+    }
+
     fn load_const(&mut self, c: Constant) -> Reg {
         let idx = self.const_idx(c);
         let dst = self.reg();
@@ -1367,7 +1409,20 @@ impl<'a> FnBuilder<'a> {
             // `static(call)` (docs/14 §8): the value the compiler computed,
             // baked; before it did (in code run at compile time), the call.
             Static(inner) => match self.out.static_values.get(&e.id) {
-                Some(v) => self.baked_value(v),
+                // In the final lowering, made once, by a constant of its own
+                // (as a quoted block's tree, docs/14 §6).
+                Some(v) if self.lw.quoted_once => {
+                    let v = v.clone();
+                    self.static_constant(e.id, &v, e.span)
+                }
+                Some(v) => {
+                    // Made in place by a compile-time run: lowered again
+                    // for the program, which makes it once.
+                    if self.lw.static_mode {
+                        self.lw.static_fallback = true;
+                    }
+                    self.baked_value(v)
+                }
                 None => {
                     // Lowered again once the value is known.
                     self.lw.static_fallback = true;
