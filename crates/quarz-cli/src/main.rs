@@ -233,7 +233,9 @@ impl Target {
 /// Load the target and everything it requires, then type-check. Returns
 /// the checked program and the source files by index (0 = the prelude) if
 /// there were no errors.
-fn load_and_check(target: &Target) -> Option<(quarz_types::Checked, Vec<SourceFile>)> {
+fn load_and_check(
+    target: &Target,
+) -> Option<(quarz_types::Checked, Vec<SourceFile>, quarz_lower::Lowerer)> {
     let prelude_file = SourceFile::new("<prelude>", quarz_types::PRELUDE_SOURCE);
     let prelude = quarz_types::parse_prelude();
     let mut failed = false;
@@ -289,7 +291,7 @@ fn load_and_check(target: &Target) -> Option<(quarz_types::Checked, Vec<SourceFi
     let (checked, mut diagnostics) =
         quarz_types::check_movement_with(&prelude.program, &to_check, &cogs, &mut runner);
     let checked = checked.filter(|c| {
-        let errors = quarz_cli::static_run::compile_time_only_calls(c, &files);
+        let errors = quarz_cli::static_run::compile_time_only_calls(c, &files, &mut runner);
         let ok = errors.is_empty();
         diagnostics.extend(errors);
         ok
@@ -302,31 +304,31 @@ fn load_and_check(target: &Target) -> Option<(quarz_types::Checked, Vec<SourceFi
         };
         eprint!("{}", diag.render(f));
     }
-    checked.map(|c| (c, files))
+    checked.map(|c| (c, files, runner.into_lowerer()))
 }
 
 fn run_file(target: &Target, argv: Vec<String>) -> ExitCode {
-    let Some((checked, files)) = load_and_check(target) else {
+    let Some((checked, files, lowerer)) = load_and_check(target) else {
         return ExitCode::FAILURE;
     };
-    let code = quarz_cli::run(checked, &files, argv);
+    let code = quarz_cli::run_with(checked, &files, lowerer, argv);
     ExitCode::from(code.clamp(0, 255) as u8)
 }
 
 fn ir_file(target: &Target) -> ExitCode {
-    let Some((checked, files)) = load_and_check(target) else {
+    let Some((checked, files, lowerer)) = load_and_check(target) else {
         return ExitCode::FAILURE;
     };
-    let module = quarz_cli::lower(&checked, &files);
+    let module = quarz_cli::lower_with(&checked, &files, lowerer);
     print!("{}", quarz_ir::dump::dump_module(&module));
     ExitCode::SUCCESS
 }
 
 fn build_file(target: &Target, out: &std::path::Path) -> ExitCode {
-    let Some((checked, files)) = load_and_check(target) else {
+    let Some((checked, files, lowerer)) = load_and_check(target) else {
         return ExitCode::FAILURE;
     };
-    match quarz_cli::build(checked, &files, out) {
+    match quarz_cli::build_with(checked, &files, lowerer, out) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("quarz: {e}");
@@ -339,7 +341,7 @@ fn build_file(target: &Target, out: &std::path::Path) -> ExitCode {
 /// standard output (`quarz_cli::tree`).
 fn check_file(target: &Target, tree: bool) -> ExitCode {
     match load_and_check(target) {
-        Some((checked, _)) => {
+        Some((checked, _, _)) => {
             if tree {
                 println!("{}", quarz_cli::tree::tree(&checked));
             }

@@ -162,6 +162,18 @@ module Meta
   # `static def` that is not compile-time only, `self` is the class
   # value itself.
   class ClassDef[T] < Type[T]
+    # Generation (docs/14 §5): a method `name` of the class, whose body
+    # is the block (its `self` an instance; the values it captures are
+    # baked into the method). The block's parameters take the names
+    # given, in order; the block cannot assign what it captures, leave
+    # the enclosing method or use its `self`.
+    static native def def_method[R](name: Symbol, *, visibility: Symbol = :public, &body: T.() -> R) -> Void
+    static native def def_method[A, R](name: Symbol, param: Symbol, *, visibility: Symbol = :public, &body: T.(A) -> R) -> Void
+    static native def def_method[A, B, R](name: Symbol, params: [Symbol, Symbol], *, visibility: Symbol = :public, &body: T.(A, B) -> R) -> Void
+    # The same for a class method: the block's `self` is the class.
+    static native def def_class_method[R](name: Symbol, *, visibility: Symbol = :public, &body: Type[T].() -> R) -> Void
+    # The documentation comment of the next method generated.
+    static native def doc(text: String) -> Void
   end
 end
 

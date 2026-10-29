@@ -58,6 +58,9 @@ pub enum ConstTarget {
 }
 
 /// The checker's output for the evaluator.
+/// The type parameters of a method's call, bound (`Output::type_args`).
+pub type TypeArgs = Vec<(TypeParamId, Type)>;
+
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Output {
     pub node_types: FxHashMap<NodeId, Type>,
@@ -112,6 +115,15 @@ pub struct Output {
     /// body, the top level): each is an error after lowering when the
     /// callee turns out to be compile-time only (docs/14 §3).
     pub static_calls: Vec<(u32, Span, MethodId)>,
+    /// The blocks given to `Meta::ClassDef`'s generating natives
+    /// (`def_method`), by their call: the procedure type each was checked
+    /// as, from which the generated method takes its signature (docs/14
+    /// §5).
+    pub lifted_blocks: FxHashMap<NodeId, Type>,
+    /// The type arguments a call of a `static def` was resolved with (the
+    /// callee's type parameters, bound), for the signatures of what it
+    /// generates.
+    pub type_args: FxHashMap<NodeId, TypeArgs>,
     /// In `initialize`: the assignments and `super` calls after which the
     /// object is usable (its required fields assigned, docs/03 §4), and
     /// the methods where it is from the start. Failing before that point,
@@ -385,6 +397,12 @@ struct Env {
     /// What that frame is, for diagnostics: a task block, or the body of
     /// a shareable procedure (which copies what it captures the same way).
     task_shareable_proc: bool,
+    /// The frame of the innermost block given to `def_method` (docs/14
+    /// §5), which becomes a method's body: it captures by value too, and
+    /// cannot leave the enclosing method or use its `self`.
+    lifted_frame: Option<usize>,
+    /// The next block checked is one (set by the call's check).
+    next_block_lifted: bool,
     /// The locals of this body that may change after a closure captures
     /// them (assigned in two places or more, or parameters assigned):
     /// inside a closure that may run later, their narrowings from outside
@@ -564,6 +582,9 @@ struct BlockCtx {
     is_lambda: bool,
     /// A block given to a method that may keep it (a named `&blk`).
     escapes: bool,
+    /// A block given to `def_method`: `break` would leave the generated
+    /// method's body.
+    lifted: bool,
 }
 
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -644,7 +665,7 @@ pub struct Checker {
     reused_files: rustc_hash::FxHashSet<u32>,
     /// How many of `world.static_stmts` have been checked (and run):
     /// the extra units of a test run add theirs later.
-    static_done: usize,
+    static_done: Vec<bool>,
     op_given_up: rustc_hash::FxHashSet<(NodeId, bool)>,
     pub world: World,
     pub diagnostics: Vec<(u32, Diagnostic)>,
@@ -668,6 +689,9 @@ pub struct Checker {
     infer: InferTable,
     env: Env,
     touched: Vec<NodeId>,
+    /// The type arguments of each candidate tried for a call of a
+    /// `static def` (`try_candidate`); `finish_call` keeps the chosen one.
+    type_args_trials: Vec<(NodeId, MethodId, TypeArgs)>,
     /// The variables of the frames checked since the last
     /// `finish_frame_types`, with their declared types: those whose
     /// release may be observed go to `Output::lexical_slots`.
@@ -754,12 +778,14 @@ impl Checker {
             late_assigned: Rc::default(),
             never_narrow: Rc::default(),
             next_block_escapes: false,
+            lifted_frame: None,
+            next_block_lifted: false,
         };
         Checker {
             op_seen: HashMap::default(),
             logical_seen: HashMap::default(),
             reused_files: Default::default(),
-            static_done: 0,
+            static_done: Vec::new(),
             op_given_up: Default::default(),
             world,
             diagnostics: Vec::new(),
@@ -772,6 +798,7 @@ impl Checker {
             infer: InferTable::default(),
             env,
             touched: Vec::new(),
+            type_args_trials: Vec::new(),
             frame_vars: Vec::new(),
             breaking_blocks: HashMap::default(),
             temp_stmts: Vec::new(),
@@ -838,6 +865,33 @@ impl Checker {
         for cid in 0..count as ConstId {
             self.const_type(cid, Span::empty(0));
         }
+    }
+
+    /// The constants of the files `in_files` accepts.
+    pub fn check_consts_of(&mut self, in_files: &dyn Fn(u32) -> bool) {
+        let count = self.world.consts.len();
+        for cid in 0..count as ConstId {
+            if in_files(self.world.consts[cid as usize].file) {
+                self.const_type(cid, Span::empty(0));
+            }
+        }
+    }
+
+    /// Read a file's cached checks into this checker (`cache::apply`).
+    pub fn apply_cached(
+        &mut self,
+        checks: crate::cache::Checks,
+        file: u32,
+        files: &dyn Fn(&str) -> Option<u32>,
+    ) -> Option<Vec<Diagnostic>> {
+        crate::cache::apply(
+            &mut self.world,
+            &mut self.out,
+            &mut self.self_news,
+            checks,
+            file,
+            files,
+        )
     }
 
     pub fn check_all(&mut self, units: &[(u32, Vec<&Expr>)]) {
@@ -1512,9 +1566,28 @@ impl Checker {
     /// Check the class bodies' `static` statements (docs/14) and, with a
     /// `runner`, run them: each is a call, on the class's `Meta::ClassDef`,
     /// of a `static` class method of a dependency.
-    pub fn check_static_stmts(&mut self, mut runner: Option<&mut (dyn crate::StaticRunner + '_)>) {
-        let stmts = self.world.static_stmts[self.static_done..].to_vec();
-        self.static_done = self.world.static_stmts.len();
+    pub fn check_static_stmts(&mut self, runner: Option<&mut (dyn crate::StaticRunner + '_)>) {
+        self.check_static_stmts_of(runner, &|_| true);
+    }
+
+    /// The same for the statements of the files `in_files` accepts (a
+    /// cog's, docs/14 §2), those not checked yet.
+    pub fn check_static_stmts_of(
+        &mut self,
+        mut runner: Option<&mut (dyn crate::StaticRunner + '_)>,
+        in_files: &dyn Fn(u32) -> bool,
+    ) {
+        let total = self.world.static_stmts.len();
+        if self.static_done.len() < total {
+            self.static_done.resize(total, false);
+        }
+        let mut stmts = Vec::new();
+        for (i, stmt) in self.world.static_stmts.iter().enumerate() {
+            if !self.static_done[i] && in_files(stmt.file) {
+                stmts.push(stmt.clone());
+                self.static_done[i] = true;
+            }
+        }
         for stmt in stmts {
             let Some(callee) = self.check_static_stmt(&stmt) else {
                 continue;
@@ -1669,6 +1742,8 @@ impl Checker {
             late_assigned: Rc::default(),
             never_narrow: Rc::default(),
             next_block_escapes: false,
+            lifted_frame: None,
+            next_block_lifted: false,
         }
     }
 
@@ -1734,6 +1809,18 @@ impl Checker {
             if let Some(t) = self.out.node_types.get(&id) {
                 let r = self.infer.resolve(t);
                 self.out.node_types.insert(id, r);
+            }
+        }
+        for t in self.out.lifted_blocks.values_mut() {
+            if t.has_vars() {
+                *t = self.infer.resolve(t);
+            }
+        }
+        for args in self.out.type_args.values_mut() {
+            for (_, t) in args.iter_mut() {
+                if t.has_vars() {
+                    *t = self.infer.resolve(t);
+                }
             }
         }
         // Call targets with types (is_a?, as) are resolved too.
@@ -2754,7 +2841,9 @@ impl Checker {
     /// The innermost frame that captures by value, in diagnostics about
     /// assigning to what it captured.
     fn task_block_name(&self) -> &'static str {
-        if self.env.task_shareable_proc {
+        if self.env.lifted_frame == self.env.task_frame && self.env.lifted_frame.is_some() {
+            "a block given to `def_method` (it becomes a method's body)"
+        } else if self.env.task_shareable_proc {
             "a shareable procedure"
         } else {
             "a task block (`Task.spawn`, `Task.blocking`)"
@@ -2763,10 +2852,43 @@ impl Checker {
 
     /// The same, in diagnostics about what it may capture.
     fn task_capture_name(&self) -> &'static str {
-        if self.env.task_shareable_proc {
+        if self.env.lifted_frame == self.env.task_frame && self.env.lifted_frame.is_some() {
+            "a block given to `def_method`"
+        } else if self.env.task_shareable_proc {
             "a shareable procedure"
         } else {
             "a `Task.spawn` block"
+        }
+    }
+
+    /// Whether a value of type `t` may be baked into a generated method
+    /// (docs/14 §5): what has a literal or is immutable data. `Object`, a
+    /// type parameter and a module type may hold such a value; the
+    /// statement's run decides for them.
+    fn bakeable_type(&mut self, t: &Type) -> bool {
+        let t = self.resolve(t);
+        match &t {
+            Type::Nothing | Type::Void | Type::Var(_) | Type::Param(_) => true,
+            Type::ClassObject(_, _) | Type::TypeOf(_) => true,
+            Type::Union(ms) | Type::Tuple(ms) => ms.clone().iter().all(|m| self.bakeable_type(m)),
+            Type::Proc(..) => false,
+            Type::Class(id, args) => {
+                let id = *id;
+                let b = &self.world.builtin;
+                let literal = [
+                    b.nil, b.bool_, b.int, b.integer, b.float, b.string, b.symbol, b.regexp,
+                    b.bytes, b.array, b.hash, b.range, b.class_,
+                ]
+                .contains(&id);
+                let class = self.world.class(id);
+                let ok = literal
+                    || id == b.object
+                    || matches!(
+                        class.kind,
+                        ClassKind::Data | ClassKind::Enum | ClassKind::Variant | ClassKind::Module
+                    );
+                ok && args.clone().iter().all(|a| self.bakeable_type(a))
+            }
         }
     }
 
@@ -2785,6 +2907,18 @@ impl Checker {
         }
         let rt = self.resolve(t);
         if rt.has_vars() {
+            return;
+        }
+        if self.env.lifted_frame.is_some() && self.env.lifted_frame == self.env.task_frame {
+            if !self.bakeable_type(&rt) {
+                self.error(
+                    format!(
+                        "`{name}` has type {}, whose values cannot be baked into a generated method; a block given to `def_method` captures only immutable values (literals, classes, `data`)",
+                        self.world.type_name(&rt)
+                    ),
+                    span,
+                );
+            }
             return;
         }
         if !self.world.is_shareable(&rt) {
@@ -4202,6 +4336,16 @@ impl Checker {
             Begin(block) => self.check_begin(block, expected),
             Return(value) => {
                 let in_lambda = self.env.blocks.last().is_some_and(|b| b.is_lambda);
+                if !in_lambda && self.env.lifted_frame.is_some() {
+                    self.error(
+                        "`return` in a block given to `def_method`: the block becomes the generated method's body, whose value is its last expression",
+                        expr.span,
+                    );
+                    if let Some(v) = value {
+                        self.check_expr(v, None);
+                    }
+                    return Type::Nothing;
+                }
                 if in_lambda {
                     let ret = self.env.blocks.last().unwrap().ret.clone();
                     let void = self.resolve(&ret) == Type::Void;
@@ -4282,6 +4426,12 @@ impl Checker {
                 let in_block = self.env.blocks.last().is_some_and(|b| !b.is_lambda);
                 if self.env.loop_depth == 0 && !in_block {
                     self.error("`break` outside of a loop or block", expr.span);
+                }
+                if self.env.loop_depth == 0 && self.env.blocks.last().is_some_and(|b| b.lifted) {
+                    self.error(
+                        "`break` in a block given to `def_method`: the block becomes the generated method's body, which `break` cannot leave",
+                        expr.span,
+                    );
                 }
                 let t = match value {
                     Some(v) => self.check_expr(v, None),
@@ -7197,6 +7347,18 @@ impl Checker {
     /// reads like a captured variable.
     fn bind_outer_self(&mut self, expr: &Expr, k: usize) {
         let owner_frame = self.env.receivers[k].outer_frame;
+        if self.env.lifted_frame.is_some_and(|lf| owner_frame < lf) {
+            let name = match &expr.kind {
+                ExprKind::Call(c) => c.name.clone(),
+                _ => String::new(),
+            };
+            self.error(
+                format!(
+                    "`{name}` is a method of the enclosing `self`, which a block given to `def_method` cannot use: in the generated method, `self` is the receiver"
+                ),
+                expr.span,
+            );
+        }
         let frame = &mut self.env.frames[owner_frame];
         let slot = match frame.vars.iter().position(|v| v.name == SELF_SLOT) {
             Some(i) => i as u32,
@@ -7772,6 +7934,17 @@ impl Checker {
             .calls
             .insert(expr.id, CallTarget::Method { method: m.id });
         self.note_static_call(expr, m.id);
+        if m.is_static {
+            // The chosen candidate's type arguments.
+            let trials = std::mem::take(&mut self.type_args_trials);
+            if let Some((_, _, args)) = trials
+                .into_iter()
+                .rev()
+                .find(|(id, mid, _)| *id == expr.id && *mid == m.id)
+            {
+                self.out.type_args.insert(expr.id, args);
+            }
+        }
         // `loop { }` without `break` never returns.
         let broken = self.breaking_blocks.get(&expr.id).cloned();
         if m.name == "loop"
@@ -8197,6 +8370,10 @@ impl Checker {
         expected: Option<&Type>,
         report: bool,
     ) -> Result<Type, String> {
+        if m.is_static {
+            let args = subst.iter().map(|(k, v)| (*k, v.clone())).collect();
+            self.type_args_trials.push((expr.id, m.id, args));
+        }
         // Match arguments to parameters.
         let positional: Vec<usize> = m
             .params
@@ -8376,7 +8553,12 @@ impl Checker {
                 // A named `&block` may be kept (an anonymous one is only
                 // yielded to; a native that keeps its block names it).
                 self.env.next_block_escapes = m.block.as_ref().is_some_and(|(n, _)| n != "&");
+                // A block given to `Meta::ClassDef`'s generating natives
+                // becomes a method's body (docs/14 §5).
+                self.env.next_block_lifted =
+                    m.is_native && m.owner == self.world.builtin.meta_classdef;
                 self.check_block_as(expr.id, b, &resolved, is_task);
+                self.env.next_block_lifted = false;
                 self.world.active_extensions.truncate(active_len);
             } else if let Some(Arg::BlockPass(e)) =
                 call.args.iter().find(|a| matches!(a, Arg::BlockPass(_)))
@@ -8594,6 +8776,22 @@ impl Checker {
         if shareable {
             self.out.shareable_procs.insert(call_id);
         }
+        let lifted = std::mem::take(&mut self.env.next_block_lifted);
+        if lifted {
+            self.out.lifted_blocks.insert(call_id, proc_ty.clone());
+            // The generated method's parameters are the block's, plain.
+            if let Some(p) = block
+                .params
+                .list
+                .iter()
+                .find(|p| p.kind != ParamKind::Positional || p.default.is_some())
+            {
+                self.error(
+                    "a block given to `def_method` takes plain parameters only (no `*rest`, keywords, defaults or `&block`): they become the generated method's",
+                    p.span,
+                );
+            }
+        }
         let params = params.clone();
         let ret = (**ret).clone();
         self.widen_assigned(&block.body);
@@ -8616,9 +8814,16 @@ impl Checker {
             owner: SelfOwner::Block(call_id),
         });
         let saved_task_frame = (self.env.task_frame, self.env.task_shareable_proc);
-        if is_task || shareable {
+        if is_task || shareable || lifted {
             self.env.task_frame = Some(self.env.frames.len() - 1);
             self.env.task_shareable_proc = shareable;
+        }
+        // A lifted block's body is run-time code (the generated method's),
+        // whatever the `static def` around it may call.
+        let saved_lifted = (self.env.lifted_frame, self.env.is_static);
+        if lifted {
+            self.env.lifted_frame = Some(self.env.frames.len() - 1);
+            self.env.is_static = false;
         }
         self.env.blocks.push(BlockCtx {
             ret: ret.clone(),
@@ -8626,7 +8831,8 @@ impl Checker {
             is_lambda: false,
             // A task's block runs elsewhere, later: the method's block may
             // not be live there either.
-            escapes: escapes || is_task || shareable,
+            escapes: escapes || is_task || shareable || lifted,
+            lifted,
         });
         // `break` and `next` in a block leave the block, not a loop
         // around it.
@@ -8735,6 +8941,7 @@ impl Checker {
         }
         (self.env.loop_depth, self.env.loop_exits) = saved_loop;
         (self.env.task_frame, self.env.task_shareable_proc) = saved_task_frame;
+        (self.env.lifted_frame, self.env.is_static) = saved_lifted;
         self.leave_receiver(saved_self);
         self.out
             .frame_sizes
@@ -8793,7 +9000,12 @@ impl Checker {
     /// receiver of a block run with `instance_exec` inside the task).
     fn self_crosses_task(&self) -> bool {
         match self.env.task_frame {
-            Some(tf) => !self.env.receivers.iter().any(|r| r.outer_frame >= tf),
+            // A block given to `def_method` has a receiver: its `self` is
+            // the generated method's, not captured.
+            Some(tf) => !self.env.receivers.iter().any(|r| {
+                r.outer_frame >= tf
+                    || (self.env.lifted_frame == Some(tf) && r.outer_frame + 1 == tf)
+            }),
             None => false,
         }
     }
@@ -8887,6 +9099,7 @@ impl Checker {
             breaks: Vec::new(),
             is_lambda: true,
             escapes: true,
+            lifted: false,
         });
         // `break` and `next` here do not leave a loop around the lambda.
         let saved_loop = (
@@ -8957,6 +9170,12 @@ impl Checker {
     }
 
     fn check_yield(&mut self, expr: &Expr, args: &[Arg]) -> Type {
+        if self.env.lifted_frame.is_some() {
+            self.error(
+                "`yield` in a block given to `def_method`: the generated method has no block to yield to",
+                expr.span,
+            );
+        }
         // The method's anonymous block runs only while the method does.
         if self.in_late_closure() && self.lookup_var("&").is_some() {
             self.error(
@@ -9703,5 +9922,47 @@ impl crate::StaticHost for Checker {
     }
     fn error_count(&self) -> usize {
         Checker::error_count(self)
+    }
+    fn add_generated(&mut self, info: MethodInfo) -> Result<MethodId, String> {
+        // What the name demands (the declarer's rules for a written one).
+        if let Some(why) = crate::declare::method_name_rule(
+            &self.world,
+            &info.name,
+            info.singleton,
+            &info.params,
+            info.block.as_ref().map(|(_, t)| t),
+            info.owner,
+        ) {
+            return Err(why);
+        }
+        let class = self.world.class(info.owner);
+        let table = if info.singleton {
+            &class.singleton_methods
+        } else {
+            &class.methods
+        };
+        if let Some(existing) = table.get(&info.name).and_then(|ids| ids.first()) {
+            let m = self.world.method(*existing);
+            let how = if m.generated.is_some() {
+                " (generated by an earlier `static` statement)"
+            } else {
+                ""
+            };
+            return Err(format!(
+                "`{}` already has a {}method `{}`{how}",
+                class.name,
+                if info.singleton { "class " } else { "" },
+                info.name
+            ));
+        }
+        Ok(self.world.add_method(info))
+    }
+    fn recheck_classes(&mut self, classes: &[ClassId]) {
+        let world = std::mem::take(&mut self.world);
+        let mut declarer = crate::declare::Declarer::with_world(world);
+        declarer.recheck_classes(classes);
+        self.diagnostics.append(&mut declarer.diagnostics);
+        self.world = std::mem::take(&mut declarer.world);
+        self.world.freeze_ancestors(true);
     }
 }

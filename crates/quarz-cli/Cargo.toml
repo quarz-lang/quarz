@@ -19,6 +19,7 @@ quarz-ir = { workspace = true }
 quarz-lower = { workspace = true }
 quarz-aot = { workspace = true }
 quarz-cog = { workspace = true }
+rustc-hash = "2"
 # Line editing and history for `quarz repl` (no default features: the
 # history file and a binding for Enter are what is needed, and the home
 # directory is $HOME).

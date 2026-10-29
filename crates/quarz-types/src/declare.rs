@@ -1635,8 +1635,54 @@ impl<'ast> Declarer<'ast> {
     /// module's abstract methods on its class side. Including a module
     /// that has no instance methods (a namespace) is pointless, and said
     /// so with a warning.
+    /// The declaration-time checks of `classes` again, after a `static`
+    /// statement generated members into one of them (docs/14 §5): each
+    /// with its descendants and the classes that include it, since what
+    /// they inherit changed.
+    pub fn recheck_classes(&mut self, classes: &[ClassId]) {
+        let mut todo: Vec<ClassId> = Vec::new();
+        for &c in classes {
+            if !todo.contains(&c) {
+                todo.push(c);
+            }
+        }
+        let mut i = 0;
+        while i < todo.len() {
+            let c = todo[i];
+            i += 1;
+            for k in &self.world.classes {
+                let inherits = k.superclass.iter().chain(&k.includes).chain(&k.extends);
+                if inherits
+                    .clone()
+                    .any(|t| matches!(t, Type::Class(id, _) if *id == c))
+                    && !todo.contains(&k.id)
+                {
+                    todo.push(k.id);
+                }
+            }
+        }
+        todo.sort_unstable();
+        for id in todo {
+            let class = self.world.class(id);
+            self.file = class.file;
+            // The shareable promise is checked from scratch: a field may
+            // have been added.
+            self.world.class_mut(id).shareable = None;
+            let file = self.world.class(id).file;
+            self.world.active_extensions = self.world.group_extensions(file);
+            self.check_conformance_of(id);
+            self.check_shareable_promise(id);
+            self.check_variance(id);
+            self.check_kept_blocks(id);
+            self.check_override_returns(id);
+            self.check_copied_deinitialize(id);
+            self.check_eq_with_hash(id);
+            self.check_duplicate_methods(id);
+            self.world.active_extensions.clear();
+        }
+    }
+
     fn check_conformance(&mut self, p: &PendingClass<'ast>) {
-        let class = self.world.class(p.id).clone();
         // Namespace modules used as mixins.
         for expr in p.body {
             let ExprKind::Mixin { kind, types } = &expr.kind else {
@@ -1669,6 +1715,13 @@ impl<'ast> Declarer<'ast> {
                 }
             }
         }
+        self.check_conformance_of(p.id);
+    }
+
+    /// The conformance of class `id` to what it inherits: the abstract
+    /// methods its ancestors leave to it, implemented.
+    fn check_conformance_of(&mut self, id: ClassId) {
+        let class = self.world.class(id).clone();
         let concrete = match class.kind {
             ClassKind::Class => !class.is_abstract,
             ClassKind::Data | ClassKind::Variant => true,
@@ -1678,7 +1731,7 @@ impl<'ast> Declarer<'ast> {
             // Instance side: abstract methods of ancestors.
             let ancestors: Vec<ClassId> = self
                 .world
-                .ancestors(p.id, &[])
+                .ancestors(id, &[])
                 .into_iter()
                 .map(|(id, _)| id)
                 .collect();
@@ -1697,7 +1750,7 @@ impl<'ast> Declarer<'ast> {
                             // is declared) implements it: it does wherever
                             // the value goes (`World::ext_impls`).
                             Some(i) if self.world.method(i).extension.is_some() => {
-                                impls.push((p.id, *mid, i));
+                                impls.push((id, *mid, i));
                             }
                             Some(_) => {}
                         }
@@ -1721,7 +1774,7 @@ impl<'ast> Declarer<'ast> {
         // Class side: abstract methods of extended modules must be
         // implemented as singleton methods (or by another extended module).
         if class.kind != ClassKind::Module {
-            let chain = self.world.superclass_chain(p.id);
+            let chain = self.world.superclass_chain(id);
             let mut extended: Vec<ClassId> = Vec::new();
             for cid in &chain {
                 for ext in &self.world.class(*cid).extends {
@@ -2434,12 +2487,9 @@ impl<'ast> Declarer<'ast> {
         if file == 0 {
             return;
         }
-        let why = match name {
-            "nil?" | "is_a?" => "types are narrowed by it",
-            "equal?" => "it is identity",
-            _ => return,
-        };
-        self.error(format!("`{name}` cannot be redefined: {why}"), span);
+        if let Some(message) = sealed_name(name) {
+            self.error(message, span);
+        }
     }
 
     /// `==` and `!=` take one parameter, an `Object`: the runtime calls a
@@ -2449,24 +2499,11 @@ impl<'ast> Declarer<'ast> {
     /// of `Object#==` but an overload, which the check for an `Object`
     /// parameter rules out as well.
     fn check_equality_params(&mut self, name: &str, params: &[ParamInfo], block: bool, span: Span) {
-        if self.file == 0 || !matches!(name, "==" | "!=") {
+        if self.file == 0 {
             return;
         }
-        let one_object = match params {
-            [p] => {
-                p.kind == ParamKind::Positional
-                    && p.default.is_none()
-                    && self.world.is_object(&p.ty)
-            }
-            _ => false,
-        };
-        if !one_object || block {
-            self.error(
-                format!(
-                    "`{name}` takes one parameter of type `Object`: it is called with any value (`x == y` with an operand typed `Object`, `Array#==`, `case`/`when`); test the class in the body (`other.is_a?(Foo) && ...`)"
-                ),
-                span,
-            );
+        if let Some(message) = equality_params_rule(&self.world, name, params, block) {
+            self.error(message, span);
         }
     }
 
@@ -2504,6 +2541,7 @@ impl<'ast> Declarer<'ast> {
             checked: true,
             synth,
             alias_of: None,
+            generated: None,
             file: self.file,
         });
     }
@@ -2788,27 +2826,15 @@ impl<'ast> Declarer<'ast> {
                 def.span,
             );
         }
-        if def.name == "&&" || def.name == "||" {
-            // Called as `a && b` with `b` as the block: the method decides
-            // whether `b` is evaluated.
-            let only_block = def.params.list.len() == 1
-                && matches!(&block, Some((_, Type::Proc(_, ps, _, _))) if ps.is_empty());
-            if !only_block || def.singleton {
-                self.error(
-                    format!(
-                        "`{}` takes only a block with no parameters, the right operand (`def {}(&: () -> T) -> R`)",
-                        def.name, def.name
-                    ),
-                    def.span,
-                );
-            }
-            let b = &self.world.builtin;
-            if owner == b.bool_ || owner == b.nil {
-                self.error(
-                    format!("`{}` cannot be defined on Bool or Nil", def.name),
-                    def.span,
-                );
-            }
+        if let Some(message) = logical_operator_rule(
+            &self.world,
+            &def.name,
+            def.singleton,
+            def.params.list.len(),
+            block.as_ref().map(|(_, t)| t),
+            owner,
+        ) {
+            self.error(message, def.span);
         }
         if !def.singleton {
             self.check_equality_params(&def.name, &params, block.is_some(), def.span);
@@ -2851,6 +2877,7 @@ impl<'ast> Declarer<'ast> {
             checked: def.is_native || def.is_abstract,
             synth: Synth::None,
             alias_of: None,
+            generated: None,
             file: self.file,
         });
     }
@@ -3166,4 +3193,108 @@ fn self_against_variance(t: &TypeExpr, covariant: bool) -> Option<Span> {
             .or_else(|| self_against_variance(ret, covariant)),
         TypeExprKind::Nothing | TypeExprKind::Void => None,
     }
+}
+
+/// `nil?`, `is_a?` and `equal?` cannot be redefined by a program: why,
+/// when `name` is one.
+fn sealed_name(name: &str) -> Option<String> {
+    let why = match name {
+        "nil?" | "is_a?" => "types are narrowed by it",
+        "equal?" => "it is identity",
+        _ => return None,
+    };
+    Some(format!("`{name}` cannot be redefined: {why}"))
+}
+
+/// `==` and `!=` take one parameter, an `Object`: the runtime calls a
+/// class's own by name with any value (`x == y` with an operand typed
+/// `Object`, `Array#==`, `case`/`when`), so one taking less would
+/// receive a value not of its type. A method of another signature is not an override
+/// of `Object#==` but an overload, which the check for an `Object`
+/// parameter rules out as well.
+fn equality_params_rule(
+    world: &World,
+    name: &str,
+    params: &[ParamInfo],
+    block: bool,
+) -> Option<String> {
+    if !matches!(name, "==" | "!=") {
+        return None;
+    }
+    let one_object = match params {
+        [p] => p.kind == ParamKind::Positional && p.default.is_none() && world.is_object(&p.ty),
+        _ => false,
+    };
+    (!one_object || block).then(|| {
+    format!(
+        "`{name}` takes one parameter of type `Object`: it is called with any value (`x == y` with an operand typed `Object`, `Array#==`, `case`/`when`); test the class in the body (`other.is_a?(Foo) && ...`)"
+    )
+})
+}
+
+/// `&&` and `||` are called as `a && b` with `b` as the block: the
+/// method decides whether `b` is evaluated. So they take only a block
+/// without parameters, and not on Bool or Nil, whose own are the
+/// language's.
+fn logical_operator_rule(
+    world: &World,
+    name: &str,
+    singleton: bool,
+    nparams: usize,
+    block: Option<&Type>,
+    owner: ClassId,
+) -> Option<String> {
+    if name != "&&" && name != "||" {
+        return None;
+    }
+    let only_block =
+        nparams == 1 && matches!(block, Some(Type::Proc(_, ps, _, _)) if ps.is_empty());
+    if !only_block || singleton {
+        return Some(format!(
+        "`{name}` takes only a block with no parameters, the right operand (`def {name}(&: () -> T) -> R`)"
+    ));
+    }
+    let b = &world.builtin;
+    (owner == b.bool_ || owner == b.nil)
+        .then(|| format!("`{name}` cannot be defined on Bool or Nil"))
+}
+
+/// What a method's name demands of it, for one declared by a program or
+/// generated at compile time (docs/14 §5): the rules above, and that the
+/// constructor and destructor names are written (their bodies are held
+/// to rules of their own, docs/03 §4).
+pub fn method_name_rule(
+    world: &World,
+    name: &str,
+    singleton: bool,
+    params: &[ParamInfo],
+    block: Option<&Type>,
+    owner: ClassId,
+) -> Option<String> {
+    let special = if singleton {
+        matches!(name, "new" | "allocate")
+    } else {
+        matches!(name, "initialize" | "deinitialize")
+    };
+    if special {
+        return Some(format!("`{name}` cannot be generated"));
+    }
+    if !singleton {
+        if let Some(m) = sealed_name(name) {
+            return Some(m);
+        }
+        if let Some(m) = equality_params_rule(world, name, params, block.is_some()) {
+            return Some(m);
+        }
+    }
+    // A generated method's block parameter would be a `&block` of the
+    // block: refused before, so `nparams` is the parameters' count.
+    logical_operator_rule(
+        world,
+        name,
+        singleton,
+        params.len() + usize::from(block.is_some()),
+        block,
+        owner,
+    )
 }

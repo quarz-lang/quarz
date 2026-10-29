@@ -1,6 +1,6 @@
 # Compile-Time Metaprogramming: `static def` and `Meta`
 
-Quarz defines its classes statically: no reopening, no `define_method`, no `method_missing`, no `eval` ([01-syntax.md](01-syntax.md) §3, [07-ruby-diff.md](07-ruby-diff.md)). This document adds, without giving that up, code that runs **while the program is compiled**: a method marked `static def` can be called from a class body, where it sees the class being declared, and everything it runs is ordinary, type-checked Quarz. The aim is what a library does in Ruby with a line like `has_many Comment` in a class body: generate typed members of that class. This document covers the first part, the compile-time execution itself and reflection; the generation of members (`Meta::ClassDef#def_method`) follows it.
+Quarz defines its classes statically: no reopening, no `define_method`, no `method_missing`, no `eval` ([01-syntax.md](01-syntax.md) §3, [07-ruby-diff.md](07-ruby-diff.md)). This document adds, without giving that up, code that runs **while the program is compiled**: a method marked `static def` can be called from a class body, where it sees the class being declared, and everything it runs is ordinary, type-checked Quarz. The aim is what a library does in Ruby with a line like `has_many Comment` in a class body: generate typed members of that class. This document covers the compile-time execution itself, reflection, and the generation of methods (`Meta::ClassDef#def_method`, §5); fields (`def_field`) follow.
 
 The mechanisms:
 
@@ -8,7 +8,8 @@ The mechanisms:
 |---|---|---|
 | `static def` | A method, checked and lowered like any other, that a class body's statement can run at compile time | D's CTFE, Zig's `comptime` calls, Scala 3's `inline` |
 | `static` statement | A call, in a class body, of a `static def` class method of a dependency | A Rails class macro (`has_many`), run when the class is compiled |
-| `Meta` | What compile-time code sees of the program: `Meta::ClassDef` (the class being declared), `Meta::Field`, `Meta::MethodSig` | `Module#instance_methods` and friends, at compile time only |
+| `Meta` | What compile-time code sees of the program: `Meta::ClassDef` (the class being declared, which takes the generated members), `Meta::Field`, `Meta::MethodSig` | `Module#instance_methods` and friends, at compile time only |
+| `def_method` | A method of the class being declared whose body is a block of the `static def`, with the values it captured baked in | `define_method`, but typed, checked where the block is written, and compiled like a written method |
 
 No macros over strings or over untyped syntax trees: what runs at compile time is checked code, and what it builds is checked code.
 
@@ -42,11 +43,11 @@ class Post < Model
 end
 ```
 
-A class body holds declarations ([01-syntax.md](01-syntax.md) §3) and **statements of one shape: a call, on the class being declared, of a `static def` class method**. The callee is found as any call on the class is (a class method of the class or of an ancestor); one that is not a `static def` class method is an error, and so is any other statement. Module bodies take them too; the top level does not. A module cannot provide one yet (a `static def` of a module, brought in by `extend`, is not accepted as a callee): that comes with the generation of members.
+A class body holds declarations ([01-syntax.md](01-syntax.md) §3) and **statements of one shape: a call, on the class being declared, of a `static def` class method**. The callee is found as any call on the class is (a class method of the class or of an ancestor); one that is not a `static def` class method is an error, and so is any other statement. Module bodies take them too; the top level does not. A module cannot provide one yet (a `static def` of a module, brought in by `extend`, is not accepted as a callee), and the REPL, which has no compile-time runner yet, refuses a `static` statement in its input.
 
 The statements run while the program is checked, after every file is declared (so a statement sees the fields and methods written later in its class) and before the bodies are checked. The checker type-checks the statement with `self` a `Meta::ClassDef[C]`, then the compiler lowers the callee and everything it reaches (checking those bodies first, on demand), and runs the statement on the interpreter. What a run prints with `puts`, `p` and friends goes to the compiler's standard error, from `quarz check` too.
 
-**Order.** The statements of a cog run in a fixed order, file name order and text order within a file, so that errors are reproducible. The statements of one cog do not depend on one another through the declarations: the reflection answers from the declarations as they stood when the cog's statements started. They do share the interpreter's state (a constant initialized by one statement is initialized for the next), as the methods of one program do.
+**Order.** The statements of a cog run in a fixed order, file name order and text order within a file, so that errors are reproducible, and the members a statement generates are declared in the order of its `def_method` calls. The statements of one cog do not depend on one another through the declarations: the reflection answers from the declarations as they stood when the cog's statements started, and a block checked in the `static def` cannot name what another statement generates. They do share the interpreter's state (a constant initialized by one statement is initialized for the next), as the methods of one program do.
 
 **Where the callee may come from (the staging rule).** A `static def` must be lowered before it can run, with everything it reaches; so a statement in cog U may call only a `static def` declared in a **cog U depends on** (directly or through its dependencies, [10-cogs.md](10-cogs.md) §2), in the standard library, or, in a script, in a file U `require`s (loaded before it). Calling a `static def` of the same cog, or of the same script file, is an error. This is the rule of Rust's procedural macros (another crate) and of Scala 3's macros (another compilation unit); for an ORM cog used by an application, it costs nothing.
 
@@ -80,20 +81,55 @@ end
 - `Meta::ClassDef[T]` is the type of `self` in a `static` class method and in a `static` statement: a `Type[T]` (so the class's name, `<=`, `==` and its class methods are there, and an implicit-self call reaches the class's class methods) with the reflection. It is the class that will take the generated members; the methods that generate them are the next part of this document. The `data` types and the enum of `Meta` are ordinary values, usable at run time too.
 - `Type` cannot be subclassed by a program: `Meta::ClassDef` is the prelude's.
 
-## 5. Implementation notes
+## 5. Generation: `def_method`
 
-- The parser marks `static def` (`MethodDef::is_static`) and reserves `static(...)` (§6). The declarer records a class body's call statements as `World::static_stmts`, in order. The checker checks each statement with `self: Meta::ClassDef[C]` (`Checker::check_static_stmt`), verifies the callee and the staging rule, and hands it to a `StaticRunner` (`quarz_types::StaticRunner`, implemented in `quarz-cli`, `static_run.rs`), which lowers the statement and the callee's reach with `Lowerer::lower_static` (rounds: a method whose body is not checked yet is returned, checked by the host, and the next round continues), refuses an impure reach (`quarz_vm::natives::compile_time_allowed`), and runs the statement on an `Interp` with a deadline (`Interp::deadline`) and the reflection data (`Interp::reflect`, a snapshot of the checker's declarations).
+```ruby
+abstract class Model
+  static def self.has_many[T <: Model](target: Type[T]) -> Void
+    fk = target.field("#{name.downcase}_id".to_sym) || raise "#{target.name} has no foreign key to #{name}"
+    doc "The #{target.name}s whose #{fk.name} is this #{name}'s id."
+    def_method(target.name.downcase.pluralize.to_sym) { target.relation.where(fk.name, id) }
+  end
+end
+
+class Post < Model
+  has_many Comment      # Post#comments -> Relation[Comment]
+end
+```
+
+`Meta::ClassDef[T]` generates methods of `T`, the class whose `ClassDef` it is (for `self`, the class the statement is declared in):
+
+```ruby
+def_method[R](name: Symbol, *, visibility: Symbol = :public, &body: T.() -> R) -> Void
+def_method[A, R](name: Symbol, param: Symbol, *, visibility: Symbol = :public, &body: T.(A) -> R) -> Void
+def_method[A, B, R](name: Symbol, params: [Symbol, Symbol], *, visibility: Symbol = :public, &body: T.(A, B) -> R) -> Void
+def_class_method[R](name: Symbol, *, visibility: Symbol = :public, &body: Type[T].() -> R) -> Void
+doc(text: String) -> Void
+```
+
+- **The block is the body.** `def_method(name) { ... }` makes `name` a method of the class whose body is the block, lifted: the block's QIR, copied, becomes the method's function. The block is a block with a receiver ([01-syntax.md](01-syntax.md) §9): its `self` is an instance of `T` (`Type[T]` for `def_class_method`), so it calls the class's methods and reads its fields as a method would, and its last expression is the method's value. The parameters take the names given (`:by`, `[:x, :y]`), not the block's own, and their types and the result type come from the block's procedure type (`A`, `B`, `R`, inferred from the annotations and the body); the parameter count is the overload's. `visibility:` is `:public`, `:private` or `:protected`; `doc` gives the next generated method its documentation comment.
+- **Checked where it is written.** The block is type-checked in the `static def`, once, under its constraints (`T <: Model` above): names resolve lexically, so the generated method sees the library's namespace, not the class's; what is unhygienic is the method's name, which is passed for that. The signature substitutes the type arguments of the statement's call (`T := Comment`) and `Self` (the class generated into); a type parameter of another method, such as a helper the `static def` calls `def_method` through, cannot be carried and is an error.
+- **Captured values are baked in.** A variable of the `static def` the block reads (`target`, `fk`) is a compile-time value, which the generated method embeds as a constant where the block read it (the method is specialized to it, as Scala 3's `inline` or Zig's `comptime` arguments specialize). What can be baked is what is immutable and has a literal or a construction without code of its own: `nil`, booleans, numbers, strings, symbols, regexps, classes (`Type[T]` values), enum variants, `data` values (`Meta::Field` is one), and arrays, hashes and ranges of such. The checker refuses a capture whose type cannot be (a procedure, an object of an ordinary class); a capture typed `Object` or by a type parameter is decided when the statement runs, and a value that cannot be baked is an error at the statement. A `Meta::ClassDef` (the `static def`'s `self`) cannot be captured: an implicit call of a method of the enclosing `self` from the block is an error.
+- **A block that becomes a method's body cannot leave the method it was written in.** It cannot assign a variable it captures (it is captured by value), `return` (its value is its last expression), `break` out of itself, nor `yield` to the `static def`'s block. Nested blocks inside it are copied with it and may `break` out of themselves as usual.
+- **Run-time code.** The block runs when the generated method is called, not at compile time: it is checked as ordinary code, so it cannot call the reflection, and a call in it of a compile-time-only `static def` is an error at the call (§1).
+- **The generated method is a declaration of the class**, in the file of the `static` statement, indistinguishable from a written one everywhere else: it is found by lookup, overrides and is overridden, is checked for duplicates and return types (the declaration-time checks of the class, its descendants and its includers run again after the statement), is compiled to machine code by `quarz build`, and `quarz check --tree` lists it with `"generated": true` and no body. A name the class already has (written or generated earlier) is an error at the statement, and so are `initialize`, `deinitialize` and `new`, whose bodies the compiler holds to rules of their own. It cannot implement an abstract method: that a concrete class implements what it inherits is checked when the classes are declared, before any statement runs. The block's parameters are plain (no `*rest`, keywords, defaults or `&block`), and their types and the result type must be settled by the block (annotate a parameter nothing else types).
+
+## 6. Implementation notes
+
+- The parser marks `static def` (`MethodDef::is_static`) and reserves `static(...)` (§7). The declarer records a class body's call statements as `World::static_stmts`, in order. The checker checks each statement with `self: Meta::ClassDef[C]` (`Checker::check_static_stmt`), verifies the callee and the staging rule, and hands it to a `StaticRunner` (`quarz_types::StaticRunner`, implemented in `quarz-cli`, `static_run.rs`), which lowers the statement and the callee's reach with `Lowerer::lower_static` (rounds: a method whose body is not checked yet is returned, checked by the host, and the next round continues), refuses an impure reach (`quarz_vm::natives::compile_time_allowed`), and runs the statement on an `Interp` with a deadline (`Interp::deadline`) and the reflection data (`Interp::reflect`, a snapshot of the checker's declarations).
+- Generation (§5): the checker marks a block given to a `Meta::ClassDef` native as lifted (`Output::lifted_blocks`, its procedure type; the capture rules of a task block with the bakeable types instead of the shareable ones) and records the type arguments of a `static def`'s call (`Output::type_args`). `def_method` (a native, `Reflect::generate`) hands the runner the block's function, from `Closure`, and the values of the frame slots it reads outside itself (`captured_slots`, as a `Task.spawn` block copies them), which the runner turns into `Baked` values; after the statement's run it declares each method (`MethodInfo::generated`: the function, the captures, where) through `StaticHost::add_generated`, then `Declarer::recheck_classes` runs the declaration-time checks of the classes concerned again. The final lowering continues the runner's `Lowerer` (`lower_checked_with`; its functions so far are `Lowerer::done`), and the method's function is the block's copied with each captured `FrameGet` replaced by the instructions that make the value (`lift.rs`; a `data` value by its constructor given every field), its nested blocks copied the same way.
+- Order and the cache ([05-execution.md](05-execution.md) §2): cog by cog in dependency order (a script file by file), the statements run first, then the cog's files are keyed and read back from the cache, so that the generated members, which the kept checks refer to and which belong to the statement's file's interface, exist; a change in a dependency's `static def` that changes what it generates changes the file's key. A method of the cog that a statement reaches (an override, `Post.table_name`) is checked from its syntax before the file is read back, which overlays the same results.
 - The compile-time interpreter is the ordinary one, installed by the `quarz` command for `check` and `build` too. A compiled program embeds none of it, nor the reflection: the natives of a `static def` that only a statement calls are not in its table (`quarz_ir::shake`).
 - The compile-time-only decision (`static_run::compile_time_only_calls`) lowers every `static def` with its reach after the check and walks it for the compile-time-only natives (`quarz_vm::natives::compile_time_only`) and `Meta::ClassDef` in signatures; the calls recorded in `Output::static_calls` are then reported.
-- The cache of a file's check ([05-execution.md](05-execution.md) §2) does not yet carry what a statement ran: a change to a dependency's `static def` body is seen when the dependency is checked again, which the members it generates will require (the next part adds the reach's hash to the key). When a constant's type turns out to differ from what a cached file was checked with, the check starts over before any statement runs, with a fresh runner.
+- The statements run on every check, read back or not; what they generate is part of the interface, so nothing of their reach needs hashing into the key. When a constant's type turns out to differ from what a cached file was checked with, the check starts over, with a fresh runner.
 - Compile-time runs happen on a root task of the compiler's interpreter, so constants initialize and blocks run as in a program. A denied native reached in spite of the analysis (a callback a native makes, such as `to_s` for `puts`) raises at the call, which becomes the statement's error.
 
-## 6. Reserved: `static(expr)`
+## 7. Reserved: `static(expr)`
 
 `static(expr)`, the evaluation of an expression at compile time (a call of a `static def` with constant arguments, whose result becomes a constant of the program: a query's SQL, for instance), is reserved: the parser refuses it today. Its rules come with the second part of this design.
 
-## 7. Later
+## 8. Later
 
-- `Meta::ClassDef`'s generation: `def_method` and `def_class_method` from blocks with a receiver (their captured values baked into the generated method as constants), `def_field`, `doc`, `quarz check --expand` to show what was generated.
+- `def_field` (a field with a default, which changes the layout of the class and its descendants), `quarz check --expand` to show what was generated, `quarz doc` showing a generated method's `doc` and origin, a module's `static def` brought in by `extend` as a statement's callee, `static` statements in the REPL.
 - `Quoted[P]`, a block parameter received as a typed expression tree, and `Meta::Expr`.
-- `Meta.read_file` (schemas), the cache key of what a statement ran, an on-demand order between statements of one cog, `def_data`, `extend_type`, an `inherited` hook.
+- `Meta.read_file` (schemas), an on-demand order between statements of one cog, `def_data`, `extend_type`, an `inherited` hook.

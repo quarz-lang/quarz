@@ -8,18 +8,24 @@
 //! out to be compile-time only (they reach the reflection natives or a
 //! `Meta::ClassDef`) and reports the calls of those from ordinary code.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use quarz_ir::{shake, ClassId, FuncId, Function, MethodId, RtWorld};
+use quarz_ir::{shake, ClassId, FuncId, MethodId, RtClassKind, RtWorld};
 use quarz_lower::Lowerer;
+use quarz_syntax::ast::{ParamKind, Visibility};
 use quarz_syntax::{Diagnostic, SourceFile, Span};
+use quarz_types::declare::SELF_PARAM;
 use quarz_types::{
-    Checked, ParamInfo, StaticFailure, StaticHost, StaticRunner, StaticStmt, Type, World,
+    Baked, Checked, Generated, MethodInfo, ParamInfo, StaticFailure, StaticHost, StaticRunner,
+    StaticStmt, Synth, Type, TypeParamId, World,
 };
 use quarz_vm::interp::{Interp, SharedState, StaticEnd};
 use quarz_vm::natives::{compile_time_allowed, compile_time_denied_class, compile_time_only};
-use quarz_vm::reflect::{Reflect, ReflectField, ReflectKind, ReflectMethod, ReflectParam};
+use quarz_vm::reflect::{
+    GenRequest, Reflect, ReflectField, ReflectKind, ReflectMethod, ReflectParam,
+};
 use quarz_vm::value::Value;
 
 /// The time a `static` statement may run (docs/14 §5): 10 seconds, or
@@ -40,23 +46,210 @@ pub struct Runner {
     bad_methods: std::collections::HashSet<MethodId>,
     bad_consts: std::collections::HashSet<u32>,
     /// The interpreter's state, shared by every statement's run (the
-    /// functions are append-only, so each run sees the earlier ones).
+    /// functions are append-only, so each run sees the earlier ones; the
+    /// lowerer keeps them, `Lowerer::done`).
     state: Option<SharedState>,
-    /// Every function lowered so far, by id.
-    functions: Vec<Function>,
     world: Option<RtWorld>,
     files: Vec<SourceFile>,
     prepared: bool,
 }
 
 impl Runner {
+    /// The lowerer, with every function lowered so far, for the final
+    /// lowering to continue (the generated methods' bodies are copied
+    /// from them, docs/14 §5).
+    pub fn into_lowerer(self) -> Lowerer {
+        self.lowerer
+    }
+
+    /// The members a statement's run asked for (`def_method`), declared
+    /// in the order of the calls, then the classes they went into
+    /// checked again.
+    fn generate(
+        &mut self,
+        host: &mut dyn StaticHost,
+        stmt: &StaticStmt,
+        pending: Vec<PendingGen>,
+    ) -> Result<(), StaticFailure> {
+        let mut classes: Vec<ClassId> = Vec::new();
+        let result = self.generate_each(host, stmt, pending, &mut classes);
+        // The classes generated into are checked again, whatever came
+        // after the last generation into them.
+        if !classes.is_empty() {
+            host.recheck_classes(&classes);
+        }
+        result
+    }
+
+    fn generate_each(
+        &mut self,
+        host: &mut dyn StaticHost,
+        stmt: &StaticStmt,
+        pending: Vec<PendingGen>,
+        classes: &mut Vec<ClassId>,
+    ) -> Result<(), StaticFailure> {
+        let fail = |message: String| StaticFailure {
+            message,
+            notes: Vec::new(),
+        };
+        for g in pending {
+            let at = format!(
+                "`{}(:{})`",
+                if g.singleton {
+                    "def_class_method"
+                } else {
+                    "def_method"
+                },
+                g.name
+            );
+            let reads = quarz_lower::lift::check(&self.lowerer.done, g.func)
+                .map_err(|why| fail(format!("{at}: {why}")))?;
+            if let Some((d, s)) = reads
+                .iter()
+                .find(|(d, s)| !g.captures.iter().any(|(cd, cs, _)| (cd, cs) == (d, s)))
+            {
+                return Err(fail(format!(
+                    "{at}: internal: no value recorded for the captured slot {s} at depth {d}"
+                )));
+            }
+            let not_literal = || {
+                fail(format!(
+                    "{at}: the block must be written at the call: it becomes the method's body"
+                ))
+            };
+            let call_id = *self
+                .lowerer
+                .block_calls
+                .get(&g.func)
+                .ok_or_else(not_literal)?;
+            let proc_ty = host
+                .output()
+                .lifted_blocks
+                .get(&call_id)
+                .cloned()
+                .ok_or_else(not_literal)?;
+            let Type::Proc(_, param_types, ret, _) = proc_ty else {
+                return Err(not_literal());
+            };
+            if param_types.len() != g.params.len() {
+                return Err(fail(format!(
+                    "{at}: the block takes {} parameter(s) but {} name(s) were given",
+                    param_types.len(),
+                    g.params.len()
+                )));
+            }
+            // The signature: the block's type with the `static def`'s type
+            // arguments (those of the statement's call) and `Self` (the
+            // class generated into) substituted.
+            let world = host.world();
+            let mut subst: rustc_hash::FxHashMap<TypeParamId, Type> = host
+                .output()
+                .type_args
+                .get(&stmt.expr.id)
+                .map(|args| args.iter().cloned().collect())
+                .unwrap_or_default();
+            let target = world.class(g.class);
+            let own: Vec<TypeParamId> = target.type_params.iter().map(|p| p.id).collect();
+            subst.insert(
+                SELF_PARAM,
+                Type::Class(g.class, own.iter().map(|p| Type::Param(*p)).collect()),
+            );
+            let param_types: Vec<Type> = param_types.iter().map(|t| t.subst(&subst)).collect();
+            let ret = ret.subst(&subst);
+            if let Some(p) = param_types
+                .iter()
+                .chain(std::iter::once(&ret))
+                .find_map(|t| free_param(t, &own))
+            {
+                return Err(fail(format!(
+                    "{at}: the block's type mentions `{}`, a type parameter the generated method cannot carry (only the `static def` the statement calls has its type arguments)",
+                    world.type_name(&Type::Param(p))
+                )));
+            }
+            // The block's type must be settled: a parameter without an
+            // annotation or a result nothing constrained is not.
+            if param_types
+                .iter()
+                .chain(std::iter::once(&ret))
+                .any(|t| t.has_vars())
+            {
+                return Err(fail(format!(
+                    "{at}: the block's parameter or result type could not be inferred: annotate its parameters (`|x: Int|`); a block that only raises has no result type"
+                )));
+            }
+            if let Some((_, dup)) = g
+                .params
+                .iter()
+                .enumerate()
+                .find(|(i, n)| g.params[..*i].contains(n))
+            {
+                return Err(fail(format!(
+                    "{at}: the parameter name `{dup}` is given twice"
+                )));
+            }
+            let visibility = match g.visibility.as_str() {
+                "private" => Visibility::Private,
+                "protected" => Visibility::Protected,
+                _ => Visibility::Public,
+            };
+            let params = g
+                .params
+                .iter()
+                .zip(param_types)
+                .map(|(name, ty)| ParamInfo {
+                    name: name.clone(),
+                    kind: ParamKind::Positional,
+                    ty,
+                    default: None,
+                    assigns_ivar: false,
+                    span: stmt.span,
+                })
+                .collect();
+            let info = MethodInfo {
+                id: 0,
+                name: g.name.clone(),
+                owner: g.class,
+                singleton: g.singleton,
+                type_params: Vec::new(),
+                params,
+                block: None,
+                block_optional: false,
+                block_usings: Vec::new(),
+                ret,
+                body: None,
+                is_abstract: false,
+                is_native: false,
+                is_static: false,
+                visibility,
+                span: stmt.span,
+                extension: None,
+                frame_size: 0,
+                checked: true,
+                synth: Synth::None,
+                alias_of: None,
+                file: stmt.file,
+                generated: Some(Generated {
+                    func: g.func,
+                    captures: g.captures,
+                    by: (stmt.file, stmt.span),
+                    doc: g.doc,
+                }),
+            };
+            host.add_generated(info)
+                .map_err(|why| fail(format!("{at}: {why}")))?;
+            if !classes.contains(&g.class) {
+                classes.push(g.class);
+            }
+        }
+        Ok(())
+    }
+
     pub fn new(files: Vec<SourceFile>) -> Runner {
         Runner {
             lowerer: Lowerer::default(),
             bad_methods: Default::default(),
             bad_consts: Default::default(),
             state: None,
-            functions: Vec::new(),
             world: None,
             files,
             prepared: false,
@@ -76,8 +269,10 @@ impl Runner {
                 callee,
                 self.files.clone(),
             );
-            debug_assert_eq!(self.functions.len(), round.delta.base as usize);
-            self.functions.extend(round.delta.functions.iter().cloned());
+            debug_assert_eq!(self.lowerer.done.len(), round.delta.base as usize);
+            self.lowerer
+                .done
+                .extend(round.delta.functions.iter().cloned());
             let state = self
                 .state
                 .get_or_insert_with(|| SharedState::with_threads(Box::new(std::io::stderr()), 1))
@@ -119,7 +314,7 @@ impl Runner {
         }
         let world = self.world.as_ref()?;
         let by_name = methods_by_name(world);
-        let mut seen = vec![false; self.functions.len()];
+        let mut seen = vec![false; self.lowerer.done.len()];
         let mut work: Vec<FuncId> = vec![root];
         while let Some(fid) = work.pop() {
             if fid as usize >= seen.len() || seen[fid as usize] {
@@ -128,7 +323,7 @@ impl Runner {
             seen[fid as usize] = true;
             let mut methods: Vec<MethodId> = Vec::new();
             let mut found: Option<String> = None;
-            shake::refs(&self.functions[fid as usize], &mut |r| match r {
+            shake::refs(&self.lowerer.done[fid as usize], &mut |r| match r {
                 shake::Ref::Method(m) => {
                     methods.push(m);
                     methods.extend(overrides_of(world, &by_name, m));
@@ -168,7 +363,7 @@ impl Runner {
     fn impure_reach(&self, root: FuncId) -> Option<Vec<String>> {
         let world = self.world.as_ref()?;
         let by_name = methods_by_name(world);
-        let mut seen = vec![false; self.functions.len()];
+        let mut seen = vec![false; self.lowerer.done.len()];
         // Each function with the path of method names that reached it.
         let mut work: Vec<(FuncId, Vec<String>)> = vec![(root, Vec::new())];
         while let Some((fid, path)) = work.pop() {
@@ -179,7 +374,7 @@ impl Runner {
             let mut methods: Vec<MethodId> = Vec::new();
             let mut funcs: Vec<FuncId> = Vec::new();
             let mut consts: Vec<u32> = Vec::new();
-            shake::refs(&self.functions[fid as usize], &mut |r| match r {
+            shake::refs(&self.lowerer.done[fid as usize], &mut |r| match r {
                 // A method and its overrides: a subclass's runs in its
                 // place.
                 shake::Ref::Method(m) => {
@@ -322,23 +517,27 @@ impl StaticRunner for Runner {
                 notes: Vec::new(),
             });
         }
-        let reflect: Rc<dyn Reflect> = Rc::new(WorldReflect::snapshot(host.world()));
+        let reflect = Rc::new(WorldReflect::snapshot(host.world()));
         let world = self.world.clone().expect("lowered");
         let interp = Interp::with_state(
             world,
-            self.functions.len() as FuncId,
+            self.lowerer.done.len() as FuncId,
             Vec::new(),
             Vec::new(),
             Vec::new(),
             self.state.clone().expect("state"),
         );
-        *interp.reflect.borrow_mut() = Some(reflect);
+        *interp.reflect.borrow_mut() = Some(reflect.clone());
         interp
             .deadline
             .set(Some(std::time::Instant::now() + limit()));
         let result = interp.run_static(fid, Value::Class(stmt.class), stmt.file);
         match result {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                let pending = std::mem::take(&mut *reflect.generated.borrow_mut());
+                drop(interp);
+                self.generate(host, stmt, pending)
+            }
             Err(StaticEnd::Raised(exc)) => {
                 let class = interp.class_name(&exc);
                 let message = interp.exception_message(&exc);
@@ -371,6 +570,108 @@ impl StaticRunner for Runner {
 struct WorldReflect {
     fields: HashMap<ClassId, Vec<Rc<[ReflectField]>>>,
     methods: HashMap<ClassId, Vec<Rc<[ReflectMethod]>>>,
+    /// What the statement's run asked to generate, in call order.
+    generated: RefCell<Vec<PendingGen>>,
+    /// The `doc` given, for the next generation.
+    doc: RefCell<Option<String>>,
+}
+
+/// A `def_method` call's request, its captured values baked.
+struct PendingGen {
+    class: ClassId,
+    name: String,
+    params: Vec<String>,
+    singleton: bool,
+    visibility: String,
+    func: FuncId,
+    captures: Vec<(u32, u32, Baked)>,
+    doc: Option<String>,
+}
+
+/// A compile-time value as a generated method embeds it (docs/14 §5),
+/// or why it cannot.
+fn bake(interp: &Interp, v: &Value) -> Result<Baked, String> {
+    let cannot = |interp: &Interp, v: &Value| {
+        Err(format!(
+            "a value of class `{}` cannot be baked into a generated method; a block given to `def_method` captures only immutable values (literals, classes, `data`)",
+            interp.class_name(v)
+        ))
+    };
+    Ok(match v {
+        Value::Nil => Baked::Nil,
+        Value::Bool(b) => Baked::Bool(*b),
+        Value::Int(i) => Baked::Int(*i),
+        Value::Float(f) => Baked::Float(*f),
+        Value::Symbol(s) => Baked::Symbol(interp.symbol_name(*s).to_string()),
+        Value::Short(_) | Value::Str(_) => Baked::Str(v.as_str().unwrap_or_default().to_string()),
+        Value::BigInt(b) => Baked::BigInt {
+            digits: b.to_str_radix(10),
+            base: 10,
+        },
+        Value::Class(c) => Baked::Class(*c),
+        Value::Bytes(b) => Baked::Bytes(b.to_vec()),
+        Value::Regexp(r) => Baked::Regexp {
+            source: r.source.clone(),
+            flags: r.flags.clone(),
+        },
+        Value::Array(a) => Baked::Array(
+            a.iter()
+                .map(|x| bake(interp, &x))
+                .collect::<Result<_, _>>()?,
+        ),
+        Value::Hash(h) => Baked::Hash(
+            h.as_map()
+                .iter()
+                .map(|(k, v)| Ok((bake(interp, k)?, bake(interp, v)?)))
+                .collect::<Result<_, String>>()?,
+        ),
+        Value::Range(r) => {
+            let bound = |b: &Value| -> Result<Option<Box<Baked>>, String> {
+                Ok(match b {
+                    Value::Nil => None,
+                    other => Some(Box::new(bake(interp, other)?)),
+                })
+            };
+            Baked::Range {
+                lo: bound(&r.lo)?,
+                hi: bound(&r.hi)?,
+                exclusive: r.exclusive,
+            }
+        }
+        Value::Object(o) => {
+            let class = interp.program.world.class(o.class);
+            match class.kind {
+                RtClassKind::Variant if o.field_count() == 0 => Baked::Variant(o.class),
+                RtClassKind::Data | RtClassKind::Variant => Baked::Data(
+                    o.class,
+                    o.fields()
+                        .iter()
+                        .map(|f| bake(interp, f))
+                        .collect::<Result<_, _>>()?,
+                ),
+                _ => return cannot(interp, v),
+            }
+        }
+        _ => return cannot(interp, v),
+    })
+}
+
+/// A type parameter `t` mentions that is not one of `own`.
+fn free_param(t: &Type, own: &[TypeParamId]) -> Option<TypeParamId> {
+    match t {
+        Type::Param(p) => (!own.contains(p)).then_some(*p),
+        Type::Class(_, args) | Type::ClassObject(_, args) => {
+            args.iter().find_map(|a| free_param(a, own))
+        }
+        Type::TypeOf(inner) => free_param(inner, own),
+        Type::Union(ms) | Type::Tuple(ms) => ms.iter().find_map(|m| free_param(m, own)),
+        Type::Proc(recv, ps, r, _) => recv
+            .as_deref()
+            .and_then(|r| free_param(r, own))
+            .or_else(|| ps.iter().find_map(|p| free_param(p, own)))
+            .or_else(|| free_param(r, own)),
+        Type::Var(_) | Type::Nothing | Type::Void => None,
+    }
 }
 
 impl WorldReflect {
@@ -433,7 +734,12 @@ impl WorldReflect {
             let ms: Vec<ReflectMethod> = ms.into_iter().map(|(_, m)| m).collect();
             methods.insert(class.id, vec![Rc::from(ms)]);
         }
-        WorldReflect { fields, methods }
+        WorldReflect {
+            fields,
+            methods,
+            generated: RefCell::new(Vec::new()),
+            doc: RefCell::new(None),
+        }
     }
 }
 
@@ -524,13 +830,38 @@ impl Reflect for WorldReflect {
             })
             .unwrap_or_default()
     }
+    fn generate(&self, interp: &Interp, request: GenRequest) -> Result<(), String> {
+        let captures = request
+            .captures
+            .iter()
+            .map(|(d, s, v)| Ok((*d, *s, bake(interp, v)?)))
+            .collect::<Result<Vec<_>, String>>()?;
+        self.generated.borrow_mut().push(PendingGen {
+            class: request.class,
+            name: request.name,
+            params: request.params,
+            singleton: request.singleton,
+            visibility: request.visibility,
+            func: request.func,
+            captures,
+            doc: self.doc.borrow_mut().take(),
+        });
+        Ok(())
+    }
+    fn doc(&self, text: String) {
+        *self.doc.borrow_mut() = Some(text);
+    }
 }
 
 /// The calls, from code that is not static, of `static def`s that are
 /// compile-time only: they reach the reflection natives, a
 /// `Meta::ClassDef` type, or another such method (docs/14 §3). Each is an
 /// error at the call.
-pub fn compile_time_only_calls(checked: &Checked, files: &[SourceFile]) -> Vec<(u32, Diagnostic)> {
+pub fn compile_time_only_calls(
+    checked: &Checked,
+    files: &[SourceFile],
+    runner: &mut Runner,
+) -> Vec<(u32, Diagnostic)> {
     let world = &checked.world;
     let statics: Vec<MethodId> = (0..world.methods.len() as MethodId)
         .filter(|m| {
@@ -541,9 +872,9 @@ pub fn compile_time_only_calls(checked: &Checked, files: &[SourceFile]) -> Vec<(
     if statics.is_empty() || checked.output.static_calls.is_empty() {
         return Vec::new();
     }
-    // Every static def's reach, lowered as for a compile-time run.
-    let mut lowerer = Lowerer::default();
-    let mut functions: Vec<Function> = Vec::new();
+    // Every static def's reach, lowered as for a compile-time run, by the
+    // runner's lowerer (the generated methods' bodies are in it).
+    let lowerer = &mut runner.lowerer;
     let mut rt: Option<RtWorld> = None;
     let dummy = quarz_syntax::ast::Expr {
         id: u32::MAX,
@@ -561,9 +892,10 @@ pub fn compile_time_only_calls(checked: &Checked, files: &[SourceFile]) -> Vec<(
             m,
             files.to_vec(),
         );
-        functions.extend(round.delta.functions);
+        lowerer.done.extend(round.delta.functions);
         rt = Some(round.delta.world);
     }
+    let functions = &lowerer.done;
     let Some(rt) = rt else {
         return Vec::new();
     };

@@ -66,6 +66,16 @@ fn require_loads_libraries_once() {
 }
 
 #[test]
+fn static_statements_are_refused() {
+    // The REPL has no compile-time runner yet (docs/14 §2).
+    let (out, _) = values(&["class Foo", "  puts 1", "end"]);
+    assert!(
+        out[2].contains("`static` statements do not run in the REPL yet"),
+        "{out:?}"
+    );
+}
+
+#[test]
 fn state_persists_across_inputs() {
     let (out, printed) = values(&[
         "x = 1",
