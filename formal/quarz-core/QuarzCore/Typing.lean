@@ -336,10 +336,19 @@ has a parameter (whose instantiation may). -/
 def nilTy (ct : ClassTable) (u : Ty) : Ty :=
   if u.any Atom.isParam || Ty.le ct [] [.nil] u then [.nil] else []
 
+/-- An atom whose values compare with `nil`, `true` and `false` by the
+built-in `==`, and which nothing subclasses: a value class, or a `data`
+type without type arguments that defines no `==` (docs/02 §6). -/
+def Atom.finalIn (P : Program) : Atom → Bool
+  | .cls c [] => P.classes.kindOf c == .data && (P.lookup c "==").isNone
+  | a => a.final
+
+def Ty.allFinalIn (P : Program) (t : Ty) : Bool := t.all (Atom.finalIn P)
+
 /-- Whether `==` against `nil`, `true` or `false` may narrow what `e`
 reads in `Δ`: only a value no subclass can redefine `==` for. -/
 def finalRead (c : Ctx) (Δ : Env) (e : Expr) : Bool :=
-  (e.path?.bind (c.pathTy Δ)).all Ty.allFinal
+  (e.path?.bind (c.pathTy Δ)).all (Ty.allFinalIn c.prog)
 
 /-- The block's starting environment: what it may assign un-narrowed,
 its parameters given. -/

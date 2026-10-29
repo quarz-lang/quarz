@@ -171,6 +171,15 @@ structure Field where
   default : Option Nat := none
   deriving Repr, Inhabited
 
+/-- What a class is (docs/01 §3–§5): a class, a `data` type (final:
+nothing subclasses it), an `enum` or one of its variants. -/
+inductive ClassKind where
+  | cls
+  | data
+  | enumC
+  | variant
+  deriving DecidableEq, Repr, Inhabited
+
 /-- A class: its superclass (none for the root, `Object`) with the type
 arguments it is given (which may name the class's own parameters:
 `class IntBox < Box[Int]`, `class Pair[A, B] < Box[A]`), its type
@@ -184,6 +193,7 @@ structure Class where
   superArgs : List Ty := []
   /-- The parameters' upper bounds (`T <: X`; `Object` past the end). -/
   bounds : List Ty := []
+  kind : ClassKind := .cls
   deriving Repr, Inhabited
 
 abbrev ClassTable := List Class
@@ -236,6 +246,10 @@ def ancestorArgsAux (ct : ClassTable) : Nat → Nat → List Ty → Nat → Opti
 
 def ancestorArgs (ct : ClassTable) (c : Nat) (as : List Ty) (d : Nat) : Option (List Ty) :=
   ancestorArgsAux ct ct.length c as d
+
+/-- What class `d` is. -/
+def kindOf (ct : ClassTable) (d : Nat) : ClassKind :=
+  ((ct[d]?).map (·.kind)).getD .cls
 
 /-- The upper bounds of class `d`'s parameters. -/
 def boundsOf (ct : ClassTable) (d : Nat) : List Ty :=

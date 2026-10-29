@@ -34,6 +34,11 @@ structure WfClasses (ct : ClassTable) : Prop where
     ∀ (j : Nat) (t : Ty), k.superArgs[j]? = some t → t.le ct k.bounds (Ty.boundOf (ct.boundsOf d) j) = true
   /-- No more bounds than parameters. -/
   boundsLen : ∀ (i : Nat) (k : Class), ct[i]? = some k → k.bounds.length ≤ k.params.length
+  /-- A `data` type has no subclasses. -/
+  dataLeaf : ∀ (i : Nat) (k : Class) (d : Nat), ct[i]? = some k → k.super = some d →
+    ct.kindOf d ≠ .data
+  /-- The root is a class. -/
+  rootKind : ∀ (k : Class), ct[0]? = some k → k.kind = .cls
 
 /-- What `wfClasses` says of a class other than the root. -/
 theorem Program.wfClasses_class {P : Program} (h : P.wfClasses = true) {i : Nat} {k : Class}
@@ -45,7 +50,7 @@ theorem Program.wfClasses_class {P : Program} (h : P.wfClasses = true) {i : Nat}
       (k.superArgs.zipIdx.all fun (t, j) =>
         t.le P.classes k.bounds (Ty.boundOf (P.classes.boundsOf d) j)) = true := by
   simp only [Program.wfClasses, Bool.and_eq_true, List.all_eq_true, List.mem_range] at h
-  have := h.1.1.2 i (List.getElem?_eq_some_iff.mp hk).1
+  have := h.1.1.1.2 i (List.getElem?_eq_some_iff.mp hk).1
   have hi' : (i == 0) = false := by simp [hi]
   simp only [hk, hi', Bool.false_eq_true, if_false] at this
   revert this
@@ -61,7 +66,7 @@ theorem Program.wfClasses_sound {P : Program} (h : P.wfClasses = true) : WfClass
   have h' := h
   simp only [Program.wfClasses, Bool.and_eq_true, decide_eq_true_eq, List.all_eq_true,
     List.mem_range] at h'
-  obtain ⟨⟨⟨hne, hall⟩, hnames⟩, hblen⟩ := h'
+  obtain ⟨⟨⟨⟨hne, hall⟩, hnames⟩, hblen⟩, hkind⟩ := h'
   have root : ∀ k, P.classes[0]? = some k → k.super = none ∧ k.params = [] ∧ k.superArgs = [] := by
     intro k hk
     have := hall 0 hne
@@ -72,7 +77,7 @@ theorem Program.wfClasses_sound {P : Program} (h : P.wfClasses = true) : WfClass
     rw [(root k hk).1] at hs; cases hs
   refine ⟨hne, fun k hk => (root k hk).1, fun k hk => (root k hk).2.1, fun i k hi hk => ?_,
     fun i k d hk hs => ?_, hnames, fun i k hk t ht a ha => ?_, fun i k d hk hs => ?_,
-    fun i k d hk hs j t hj => ?_, fun i k hk => ?_⟩
+    fun i k d hk hs j t hj => ?_, fun i k hk => ?_, fun i k d hk hs => ?_, fun k hk => ?_⟩
   · obtain ⟨d, hd, h1, _⟩ := Program.wfClasses_class h hk (by omega)
     exact ⟨d, hd, h1⟩
   · obtain ⟨d', hd', _, h2, _⟩ := Program.wfClasses_class h hk (hnz i k hk (by simp [hs]))
@@ -90,6 +95,12 @@ theorem Program.wfClasses_sound {P : Program} (h : P.wfClasses = true) : WfClass
   · have := hblen i (List.getElem?_eq_some_iff.mp hk).1
     simp only [hk, decide_eq_true_eq] at this
     exact this
+  · have := hkind i (List.getElem?_eq_some_iff.mp hk).1
+    simp only [hk, hs, Bool.and_eq_true, bne_iff_ne, ne_eq] at this
+    exact this.1
+  · have := hkind 0 hne
+    simp [hk] at this
+    exact this.2
 
 namespace ClassTable
 

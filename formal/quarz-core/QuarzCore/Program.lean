@@ -36,8 +36,14 @@ def wfClasses (P : Program) : Bool :=
   ((List.range P.classes.length).all fun i =>
     decide ((P.classes.allFields i).map (·.name)).Nodup) &&
   -- No more bounds than parameters.
-  (List.range P.classes.length).all fun i => match P.classes[i]? with
+  ((List.range P.classes.length).all fun i => match P.classes[i]? with
     | some k => decide (k.bounds.length ≤ k.params.length)
+    | none => true) &&
+  -- A `data` type has no subclasses, and the root is a class.
+  (List.range P.classes.length).all fun i => match P.classes[i]? with
+    | some k => (match k.super with
+        | some d => P.classes.kindOf d != .data
+        | none => true) && (i != 0 || k.kind == .cls)
     | none => true
 
 /-- An override takes at least what it overrides takes, gives at most

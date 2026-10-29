@@ -20,21 +20,23 @@ IntBox < Box[Int]; Pair[S, T] with `@a : S` and `@b : T`; OBox[out T]
 with `@v : T`, `get` and `each` (yields `@v`); Cell[T] with `var @v : T`
 and `set`; Sink[in T] with `put(x: T)`; IntOBox < OBox[Int], overriding
 `get`; AHold[T <: A] with `@v : T` and `ag`, calling `get` through the
-bound. -/
+bound; data DPt(n: Int); data DEq whose `==` says yes to anything. -/
 def classes : ClassTable :=
-  [⟨"Object", none, [], [], [], []⟩,
-   ⟨"A", some 0, [⟨"a", [.int, .nil], false, none⟩, ⟨"v", [.str], true, none⟩], [], [], []⟩,
-   ⟨"B", some 1, [], [], [], []⟩,
-   ⟨"E", some 0, [], [], [], []⟩,
-   ⟨"D", some 1, [⟨"c", [.int], false, none⟩], [], [], []⟩,
-   ⟨"Box", some 0, [⟨"v", [.param 0], false, none⟩, ⟨"w", [.param 0, .nil], true, none⟩], [.inv], [], []⟩,
-   ⟨"IntBox", some 5, [], [], [[.int]], []⟩,
-   ⟨"Pair", some 0, [⟨"a", [.param 0], false, none⟩, ⟨"b", [.param 1], false, none⟩], [.inv, .inv], [], []⟩,
-   ⟨"OBox", some 0, [⟨"v", [.param 0], false, none⟩], [.co], [], []⟩,
-   ⟨"Cell", some 0, [⟨"v", [.param 0], true, none⟩], [.inv], [], []⟩,
-   ⟨"Sink", some 0, [], [.contra], [], []⟩,
-   ⟨"IntOBox", some 8, [], [], [[.int]], []⟩,
-   ⟨"AHold", some 0, [⟨"v", [.param 0], false, none⟩], [.inv], [], [[.cls 1 []]]⟩]
+  [⟨"Object", none, [], [], [], [], .cls⟩,
+   ⟨"A", some 0, [⟨"a", [.int, .nil], false, none⟩, ⟨"v", [.str], true, none⟩], [], [], [], .cls⟩,
+   ⟨"B", some 1, [], [], [], [], .cls⟩,
+   ⟨"E", some 0, [], [], [], [], .cls⟩,
+   ⟨"D", some 1, [⟨"c", [.int], false, none⟩], [], [], [], .cls⟩,
+   ⟨"Box", some 0, [⟨"v", [.param 0], false, none⟩, ⟨"w", [.param 0, .nil], true, none⟩], [.inv], [], [], .cls⟩,
+   ⟨"IntBox", some 5, [], [], [[.int]], [], .cls⟩,
+   ⟨"Pair", some 0, [⟨"a", [.param 0], false, none⟩, ⟨"b", [.param 1], false, none⟩], [.inv, .inv], [], [], .cls⟩,
+   ⟨"OBox", some 0, [⟨"v", [.param 0], false, none⟩], [.co], [], [], .cls⟩,
+   ⟨"Cell", some 0, [⟨"v", [.param 0], true, none⟩], [.inv], [], [], .cls⟩,
+   ⟨"Sink", some 0, [], [.contra], [], [], .cls⟩,
+   ⟨"IntOBox", some 8, [], [], [[.int]], [], .cls⟩,
+   ⟨"AHold", some 0, [⟨"v", [.param 0], false, none⟩], [.inv], [], [[.cls 1 []]], .cls⟩,
+   ⟨"DPt", some 0, [⟨"n", [.int], false, none⟩], [], [], [], .data⟩,
+   ⟨"DEq", some 0, [], [], [], [], .data⟩]
 
 /-- The atoms of random types and `is_a?` tests (`Box` without its
 argument is ill formed: the checker rejects a test of it). -/
@@ -93,6 +95,10 @@ def methods : List Method :=
     ⟨12, "ag", [], [.int, .nil], none, [], .call (.field "v" [.param 0]) "get" []⟩,
     ⟨12, "initialize", [("v", [.param 0])], [.nil], none, [("v", [.param 0])],
       .setField "v" (.var "v" [.param 0])⟩,
+    -- DPt's generated `initialize`; DEq#==.
+    ⟨13, "initialize", [("n", [.int])], [.nil], none, [("n", [.int])], .setField "n" (.var "n" [.int])⟩,
+    ⟨13, "n", [], [.int], none, [], .field "n" [.int]⟩,
+    ⟨14, "==", [("o", [.nil, .bool, .cls 0 []])], [.bool], none, [("o", [.nil, .bool, .cls 0 []])], .tru⟩,
     -- Cell#get -> T; Cell#set(x: T) -> T; Cell#initialize(v: T).
     ⟨9, "get", [], [.param 0], none, [], .field "v" [.param 0]⟩,
     ⟨9, "set", [("x", [.param 0])], [.param 0], none, [("x", [.param 0])],
@@ -109,7 +115,8 @@ def locals : List (String × Ty) :=
    ("oi", [.cls 8 [[.int]], .nil]), ("oo", [.cls 8 [[.cls 0 []]], .nil]),
    ("ci", [.cls 9 [[.int]], .nil]), ("co", [.cls 9 [[.cls 0 []]], .nil]),
    ("si", [.cls 10 [[.int]], .nil]),
-   ("ah", [.cls 12 [[.cls 2 []]], .nil]), ("ae", [.cls 12 [[.cls 3 []]], .nil])]
+   ("ah", [.cls 12 [[.cls 2 []]], .nil]), ("ae", [.cls 12 [[.cls 3 []]], .nil]),
+   ("dp", [.cls 13 [], .nil]), ("de", [.cls 14 [], .nil])]
 
 def genTy : Gen Ty := do
   let n ← Gen.choose Nat 0 3 (by omega)
@@ -284,7 +291,13 @@ def varSteps : List Expr :=
      (.assign "x" (.call (.var "ah" [.cls 12 [[.cls 2 []]]]) "ag" [])),
    .assign "ae" (.new 12 [[.cls 3 []]] [.new 3 [] []]),
    .ite (.isNil (.var "ae" [.cls 12 [[.cls 3 []]], .nil])) .nil
-     (.assign "x" (.call (.var "ae" [.cls 12 [[.cls 3 []]]]) "ag" []))]
+     (.assign "x" (.call (.var "ae" [.cls 12 [[.cls 3 []]]]) "ag" [])),
+   -- `data`: `== nil` narrows a DPt (final), not a DEq (its own `==`).
+   .assign "dp" (.new 13 [] [.int 2]),
+   .ite (.eqNil (.var "dp" [.cls 13 [], .nil])) (.var "dp" [.nil])
+     (.assign "x" (.call (.var "dp" [.cls 13 []]) "n" [])),
+   .assign "de" (.new 14 [] []),
+   .ite (.eqNil (.var "de" [.cls 14 [], .nil])) (.var "de" [.nil]) .nil]
 
 /-- `n` steps of the variance scenario, in a random order. -/
 def genVarSeq : Nat → Gen Expr
