@@ -131,6 +131,10 @@ when the local one is older.
   callee's `Arg` takes them out of an argument list the call owns
   (`Activation::args_owned`). A pure-region entry and a failed typed
   check must not re-read an `Arg` that already took its value.
+- The interpreter's function tables (`Interp::funcs`, `pools`, the
+  bodies) are extend-only: entries are pushed, never removed, replaced or
+  moved (`vm::entry` reads them without borrowing, for tasks suspended in
+  a call while the REPL loads more).
 
 ## Performance work
 
