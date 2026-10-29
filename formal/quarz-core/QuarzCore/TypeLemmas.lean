@@ -20,66 +20,76 @@ structure WfClasses (ct : ClassTable) : Prop where
   superArgs : ∀ (i : Nat) (k : Class) (d : Nat), ct[i]? = some k → k.super = some d →
     k.superArgs.length = (((ct[d]?).map Class.params).getD []).length
   names : ∀ i, i < ct.length → ((ct.allFields i).map (·.name)).Nodup
-  /-- A superclass's arguments take no arguments themselves. -/
-  superDepth : ∀ (i : Nat) (k : Class), ct[i]? = some k → ∀ t ∈ k.superArgs, t.depth ≤ 1
+  /-- A superclass's arguments take no arguments themselves (their atoms
+  are parameters or take none). -/
+  superFlat : ∀ (i : Nat) (k : Class), ct[i]? = some k → ∀ t ∈ k.superArgs, ∀ a ∈ t,
+    a.isParam = true ∨ a.depth ≤ 1
   /-- A superclass's arguments name the class's parameters as their
   variances allow, in a positive position. -/
   superPos : ∀ (i : Nat) (k : Class) (d : Nat), ct[i]? = some k → k.super = some d →
     Ty.argsPosOk ct k.params true (ct.variances d) k.superArgs = true
+  /-- A superclass's arguments are within its parameters' bounds (with
+  the class's own parameters at theirs). -/
+  superBounds : ∀ (i : Nat) (k : Class) (d : Nat), ct[i]? = some k → k.super = some d →
+    ∀ (j : Nat) (t : Ty), k.superArgs[j]? = some t → t.le ct k.bounds (Ty.boundOf (ct.boundsOf d) j) = true
+  /-- No more bounds than parameters. -/
+  boundsLen : ∀ (i : Nat) (k : Class), ct[i]? = some k → k.bounds.length ≤ k.params.length
+
+/-- What `wfClasses` says of a class other than the root. -/
+theorem Program.wfClasses_class {P : Program} (h : P.wfClasses = true) {i : Nat} {k : Class}
+    (hk : P.classes[i]? = some k) (hi : i ≠ 0) :
+    ∃ d, k.super = some d ∧ d < i ∧
+      k.superArgs.length = (((P.classes[d]?).map Class.params).getD []).length ∧
+      (k.superArgs.all fun t => t.all fun a => a.isParam || decide (a.depth ≤ 1)) = true ∧
+      Ty.argsPosOk P.classes k.params true (P.classes.variances d) k.superArgs = true ∧
+      (k.superArgs.zipIdx.all fun (t, j) =>
+        t.le P.classes k.bounds (Ty.boundOf (P.classes.boundsOf d) j)) = true := by
+  simp only [Program.wfClasses, Bool.and_eq_true, List.all_eq_true, List.mem_range] at h
+  have := h.1.1.2 i (List.getElem?_eq_some_iff.mp hk).1
+  have hi' : (i == 0) = false := by simp [hi]
+  simp only [hk, hi', Bool.false_eq_true, if_false] at this
+  revert this
+  cases hs : k.super with
+  | none => simp
+  | some d =>
+    intro this
+    simp only [Bool.and_eq_true, beq_iff_eq, decide_eq_true_eq] at this
+    obtain ⟨⟨⟨⟨⟨h1, h2⟩, _⟩, h4⟩, h5⟩, h6⟩ := this
+    exact ⟨d, rfl, h1, h2, h4, h5, h6⟩
 
 theorem Program.wfClasses_sound {P : Program} (h : P.wfClasses = true) : WfClasses P.classes := by
+  have h' := h
   simp only [Program.wfClasses, Bool.and_eq_true, decide_eq_true_eq, List.all_eq_true,
-    List.mem_range] at h
-  obtain ⟨⟨hne, hall⟩, hnames⟩ := h
-  refine ⟨hne, fun k hk => ?_, fun k hk => ?_, fun i k hi hk => ?_, fun i k d hk hs => ?_, hnames,
-    fun i k hk t ht => ?_, fun i k d hk hs => ?_⟩
-  · have := hall 0 hne
+    List.mem_range] at h'
+  obtain ⟨⟨⟨hne, hall⟩, hnames⟩, hblen⟩ := h'
+  have root : ∀ k, P.classes[0]? = some k → k.super = none ∧ k.params = [] ∧ k.superArgs = [] := by
+    intro k hk
+    have := hall 0 hne
     simp [hk] at this
-    exact this.1.1
-  · have := hall 0 hne
-    simp [hk] at this
-    exact this.1.2
-  · have hlt : i < P.classes.length := by
-      rcases List.getElem?_eq_some_iff.mp hk with ⟨h, _⟩; exact h
-    have := hall i hlt
-    simp only [hk] at this
-    have hi0 : (i == 0) = false := by simp; omega
-    simp only [hi0] at this
-    revert this
-    cases hs : k.super with
-    | none => simp
-    | some d => intro this; exact ⟨d, rfl, by simp at this; exact this.1.1.1.1⟩
-  · have hlt : i < P.classes.length := by
-      rcases List.getElem?_eq_some_iff.mp hk with ⟨h, _⟩; exact h
-    have := hall i hlt
-    simp only [hk] at this
-    by_cases hi0 : i = 0
-    · subst hi0; have h0 := hall 0 hne; simp [hk] at h0; simp [h0.1.1] at hs
-    · have hi0' : (i == 0) = false := by simp [hi0]
-      simp only [hi0', hs] at this
-      simp at this; exact this.1.1.1.2
-  · have hlt : i < P.classes.length := by
-      rcases List.getElem?_eq_some_iff.mp hk with ⟨h, _⟩; exact h
-    have := hall i hlt
-    simp only [hk] at this
-    by_cases hi0 : i = 0
-    · subst hi0; simp at this; rw [this.2] at ht; simp at ht
-    · have hi0' : (i == 0) = false := by simp [hi0]
-      simp only [hi0'] at this
-      cases hs : k.super with
-      | none => simp [hs] at this
-      | some d =>
-        simp only [hs] at this
-        simp at this; exact this.1.2 t ht
-  · have hlt : i < P.classes.length := by
-      rcases List.getElem?_eq_some_iff.mp hk with ⟨h, _⟩; exact h
-    have := hall i hlt
-    simp only [hk] at this
-    by_cases hi0 : i = 0
-    · subst hi0; have h0 := hall 0 hne; simp [hk] at h0; simp [h0.1.1] at hs
-    · have hi0' : (i == 0) = false := by simp [hi0]
-      simp only [hi0', hs] at this
-      simp at this; exact this.2
+    exact ⟨this.1.1, this.1.2, this.2⟩
+  have hnz : ∀ i k, P.classes[i]? = some k → k.super.isSome → i ≠ 0 := by
+    rintro i k hk hs rfl
+    rw [(root k hk).1] at hs; cases hs
+  refine ⟨hne, fun k hk => (root k hk).1, fun k hk => (root k hk).2.1, fun i k hi hk => ?_,
+    fun i k d hk hs => ?_, hnames, fun i k hk t ht a ha => ?_, fun i k d hk hs => ?_,
+    fun i k d hk hs j t hj => ?_, fun i k hk => ?_⟩
+  · obtain ⟨d, hd, h1, _⟩ := Program.wfClasses_class h hk (by omega)
+    exact ⟨d, hd, h1⟩
+  · obtain ⟨d', hd', _, h2, _⟩ := Program.wfClasses_class h hk (hnz i k hk (by simp [hs]))
+    rw [hs] at hd'; cases hd'; exact h2
+  · by_cases hi : i = 0
+    · subst hi; rw [(root k hk).2.2] at ht; cases ht
+    · obtain ⟨_, _, _, _, h4, _⟩ := Program.wfClasses_class h hk hi
+      simp only [List.all_eq_true, Bool.or_eq_true, decide_eq_true_eq] at h4
+      exact h4 t ht a ha
+  · obtain ⟨d', hd', _, _, _, h5, _⟩ := Program.wfClasses_class h hk (hnz i k hk (by simp [hs]))
+    rw [hs] at hd'; cases hd'; exact h5
+  · obtain ⟨d', hd', _, _, _, _, h6⟩ := Program.wfClasses_class h hk (hnz i k hk (by simp [hs]))
+    rw [hs] at hd'; cases hd'
+    exact List.all_eq_true.mp h6 (t, j) (List.mem_zipIdx_iff_getElem?.mpr hj)
+  · have := hblen i (List.getElem?_eq_some_iff.mp hk).1
+    simp only [hk, decide_eq_true_eq] at this
+    exact this
 
 namespace ClassTable
 

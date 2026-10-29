@@ -103,6 +103,7 @@ def ConstructGood (n : Nat) : Prop :=
   ∀ (s : Store) (Λ : List Ty) (k : Nat) (targs : List Ty) (vs : List Value),
     WfStore P Λ s → k < P.classes.length →
     Ty.closedArgs targs = true → targs.length = (((P.classes[k]?).map (·.params)).getD []).length →
+    ArgsIn P.classes (P.classes.boundsOf k) targs →
     (∀ mi, P.lookupAt k targs "initialize" = some mi →
       mi.block = none ∧ AllTy P s vs (mi.params.map (·.2))) →
     (P.lookupAt k targs "initialize" = none → vs = []) →

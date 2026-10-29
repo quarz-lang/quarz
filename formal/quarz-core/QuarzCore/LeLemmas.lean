@@ -12,7 +12,7 @@ set_option linter.deprecated false
 
 namespace QuarzCore
 
-variable {ct : ClassTable}
+variable {ct : ClassTable} {κ : List Ty}
 
 /-! ### Depth -/
 
@@ -75,12 +75,12 @@ theorem Ty.mem_subst {σ : List Ty} : ∀ {s : Ty} {a' : Atom},
 
 /-- A type whose atoms take no arguments (a superclass's argument),
 substituted: no deeper than the arguments, or 1. -/
-theorem Ty.subst_depth (σ : List Ty) {t : Ty} (ht : t.depth ≤ 1) :
+theorem Ty.subst_depth (σ : List Ty) {t : Ty} (ht : ∀ a ∈ t, a.isParam = true ∨ a.depth ≤ 1) :
     (Ty.subst σ t).depth ≤ max (Ty.argsDepth σ) 1 := by
   apply Ty.depth_le
   intro a' ha'
   obtain ⟨a, ha, ha'⟩ := Ty.mem_subst.mp ha'
-  have hda := Nat.le_trans (Ty.depth_mem ha) ht
+  have hda : a.isParam = true ∨ a.depth ≤ 1 := ht a ha
   cases a with
   | param i =>
     simp only [Atom.subst] at ha'
@@ -92,6 +92,7 @@ theorem Ty.subst_depth (σ : List Ty) {t : Ty} (ht : t.depth ≤ 1) :
         (Nat.le_trans (Ty.argsDepth_mem (List.mem_of_getElem? hi)) (Nat.le_max_left _ _))
   | cls c args =>
     simp only [Atom.subst, List.mem_singleton] at ha'; subst ha'
+    have hda := hda.resolve_left (by simp [Atom.isParam])
     simp only [Atom.depth] at hda ⊢
     have h0 : Ty.argsDepth args = 0 := by omega
     have : Ty.argsDepth (Ty.substArgs σ args) = 0 := by
@@ -140,7 +141,7 @@ theorem ancestorArgsAux_depth (hwf : WfClasses ct) : ∀ n c as d bs,
           | none => rw [hj] at hi; cases hi
           | some w =>
             rw [hj] at hi; simp at hi; subst hi
-            exact Ty.subst_depth as (hwf.superDepth c k hk w (List.mem_of_getElem? hj))
+            exact Ty.subst_depth as (hwf.superFlat c k hk w (List.mem_of_getElem? hj))
 
 theorem ancestorArgs_depth (hwf : WfClasses ct) {c : Nat} {as : List Ty} {d : Nat} {bs : List Ty}
     (h : ct.ancestorArgs c as d = some bs) : Ty.argsDepth bs ≤ max (Ty.argsDepth as) 1 :=
@@ -201,9 +202,23 @@ theorem argsLeWith_length {f : Atom → Atom → Bool} : ∀ {vs : List Variance
 
 /-! ### Fuel -/
 
+theorem Ty.boundOf_nil (i : Nat) : Ty.boundOf [] i = [.cls 0 []] := by
+  simp [Ty.boundOf, Atom.closed, Ty.closedArgs, Atom.depth, Ty.argsDepth]
+
+/-- A bound `≤` uses: closed, of atoms taking no arguments. -/
+theorem Ty.boundOf_mem {κ : List Ty} {i : Nat} {x : Atom} (h : x ∈ Ty.boundOf κ i) :
+    x.closed = true ∧ x.depth ≤ 1 := by
+  unfold Ty.boundOf at h
+  split at h
+  · rename_i hall
+    have := List.all_eq_true.mp hall x h
+    simp only [Bool.and_eq_true, decide_eq_true_eq] at this
+    exact this
+  · simp at h; subst h; simp [Atom.closed, Atom.depth, Ty.closedArgs, Ty.argsDepth]
+
 namespace Atom
 
-theorem leF_succ : ∀ (n : Nat) (a b : Atom), leF ct n a b = true → leF ct (n + 1) a b = true
+theorem leF_succ : ∀ (n : Nat) (a b : Atom), leF ct κ n a b = true → leF ct κ (n + 1) a b = true
   | 0, a, b, h => by simp [leF] at h
   | n + 1, a, b, h => by
     cases a <;> cases b
@@ -217,10 +232,12 @@ theorem leF_succ : ∀ (n : Nat) (a b : Atom), leF ct n a b = true → leF ct (n
         | some as' =>
           rw [hca] at h
           exact argsLeWith_mono _ _ _ (fun a b _ hab => leF_succ n a b hab) h
-    all_goals simpa [leF] using h
+    all_goals first
+      | (simp only [leF, List.all_eq_true] at h ⊢; exact fun x hx => leF_succ n x _ (h x hx))
+      | simpa [leF] using h
 
-theorem leF_mono {n m : Nat} (hnm : n ≤ m) {a b : Atom} (h : leF ct n a b = true) :
-    leF ct m a b = true := by
+theorem leF_mono {n m : Nat} (hnm : n ≤ m) {a b : Atom} (h : leF ct κ n a b = true) :
+    leF ct κ m a b = true := by
   induction hnm with
   | refl => exact h
   | step _ ih => exact leF_succ _ a b ih
@@ -229,11 +246,11 @@ theorem depth_sum (a b : Atom) : ∃ k, a.depth + b.depth = k + 1 :=
   ⟨a.depth + b.depth - 1, by have := depth_pos a; omega⟩
 
 /-- `le` is `leF` with the depths' fuel, for any atoms. -/
-theorem le_eq_leF (a b : Atom) : a.le ct b = leF ct (a.depth + b.depth) a b := by
+theorem le_eq_leF (a b : Atom) : a.le ct κ b = leF ct κ (a.depth + b.depth) a b := by
   obtain ⟨k, hk⟩ := depth_sum a b
   cases a <;> cases b
   case cls.cls => rfl
-  all_goals rw [hk]; simp [leF, Atom.le]
+  all_goals first | rfl | (rw [hk]; simp [leF, Atom.le])
 
 /-- The depth bound the fuel rests on: an atom the chain gives an
 ancestor and one of the other side's arguments are, together, less deep
@@ -253,7 +270,7 @@ theorem pair_depth (hwf : WfClasses ct) {c : Nat} {as : List Ty} {d : Nat} {bs a
     omega
 
 /-- Fuel beyond the depths' changes nothing. -/
-theorem leF_enough (hwf : WfClasses ct) : ∀ (n : Nat) (a b : Atom), leF ct n a b = true → a.le ct b = true
+theorem leF_enough (hwf : WfClasses ct) : ∀ (n : Nat) (a b : Atom), leF ct κ n a b = true → a.le ct κ b = true
   | 0, a, b, h => by simp [leF] at h
   | n + 1, a, b, h => by
     rw [le_eq_leF]
@@ -273,17 +290,25 @@ theorem leF_enough (hwf : WfClasses ct) : ∀ (n : Nat) (a b : Atom), leF ct n a
           have h1 := leF_enough hwf n x y hf
           rw [le_eq_leF] at h1
           exact leF_mono (by have := pair_depth hwf hca hxy; omega) h1
-    all_goals simpa [leF] using h
+    -- A parameter: its bound's atoms, less deep, below the other.
+    all_goals first
+      | (simp only [leF, List.all_eq_true] at h ⊢
+         intro x hx
+         have h1 := leF_enough hwf n x _ (h x hx)
+         rw [le_eq_leF] at h1
+         have := (Ty.boundOf_mem hx).2
+         exact leF_mono (by simp only [Atom.depth] at hk ⊢; omega) h1)
+      | simpa [leF] using h
 
-theorem le_iff_leF (hwf : WfClasses ct) {a b : Atom} : a.le ct b = true ↔ ∃ n, leF ct n a b = true :=
+theorem le_iff_leF (hwf : WfClasses ct) {a b : Atom} : a.le ct κ b = true ↔ ∃ n, leF ct κ n a b = true :=
   ⟨fun h => ⟨_, (le_eq_leF a b) ▸ h⟩, fun ⟨n, h⟩ => leF_enough hwf n a b h⟩
 
 /-- A class is below another: the other is `Object`, or the chain gives
 it arguments below its own, as its parameters' variances say. -/
 theorem le_cls_iff (hwf : WfClasses ct) (c : Nat) (as : List Ty) (d : Nat) (bs : List Ty) :
-    (Atom.cls c as).le ct (.cls d bs) = true ↔
+    (Atom.cls c as).le ct κ (.cls d bs) = true ↔
       (d = 0 ∧ bs = []) ∨ ∃ as', ct.ancestorArgs c as d = some as' ∧
-        argsLeWith (Atom.le ct) (ct.variances d) as' bs = true := by
+        argsLeWith (Atom.le ct κ) (ct.variances d) as' bs = true := by
   rw [le_eq_leF]
   obtain ⟨k, hk⟩ := depth_sum (.cls c as) (.cls d bs)
   rw [hk]
@@ -327,7 +352,7 @@ theorem argsLeWith_refl_of {f : Atom → Atom → Bool} : ∀ (vs : List Varianc
       argsLeWith_refl_of vs.tail ts fun a ha => h a (by simp only [List.flatten_cons, List.mem_append]; exact .inr ha)⟩
 
 mutual
-theorem Atom.leF_refl (hwf : WfClasses ct) : ∀ a : Atom, Atom.leF ct a.depth a a = true
+theorem Atom.leF_refl (hwf : WfClasses ct) : ∀ a : Atom, Atom.leF ct κ a.depth a a = true
   | .nil | .bool | .int | .str | .float => by simp [Atom.depth, Atom.leF]
   | .param i => by simp [Atom.depth, Atom.leF]
   | .cls c as => by
@@ -335,14 +360,14 @@ theorem Atom.leF_refl (hwf : WfClasses ct) : ∀ a : Atom, Atom.leF ct a.depth a
     exact .inr (argsLeWith_refl_of _ as fun a ha => by
       obtain ⟨t, ht, hat⟩ := List.mem_flatten.mp ha
       exact Ty.argsAtoms_refl hwf as t ht a hat)
-theorem Ty.atoms_refl (hwf : WfClasses ct) : ∀ (t : Ty) (a : Atom), a ∈ t → Atom.leF ct t.depth a a = true
+theorem Ty.atoms_refl (hwf : WfClasses ct) : ∀ (t : Ty) (a : Atom), a ∈ t → Atom.leF ct κ t.depth a a = true
   | [], _, h => by cases h
   | b :: t, a, h => by
     rcases List.mem_cons.mp h with h | h
     · rw [h]; exact Atom.leF_mono (Nat.le_max_left _ _) (Atom.leF_refl hwf b)
     · exact Atom.leF_mono (Nat.le_max_right _ _) (Ty.atoms_refl hwf t a h)
 theorem Ty.argsAtoms_refl (hwf : WfClasses ct) : ∀ (ts : List Ty) (t : Ty), t ∈ ts → ∀ a ∈ t,
-    Atom.leF ct (Ty.argsDepth ts) a a = true
+    Atom.leF ct κ (Ty.argsDepth ts) a a = true
   | [], _, h, _, _ => by cases h
   | u :: ts, t, h, a, ha => by
     rcases List.mem_cons.mp h with h | h
@@ -352,62 +377,95 @@ end
 
 namespace Atom
 
-theorem le_refl (hwf : WfClasses ct) (a : Atom) : a.le ct a = true :=
+theorem le_refl (hwf : WfClasses ct) (a : Atom) : a.le ct κ a = true :=
   (le_iff_leF hwf).mpr ⟨_, leF_refl hwf a⟩
 
 theorem le_object (hwf : WfClasses ct) (c : Nat) (as : List Ty) :
-    (Atom.cls c as).le ct (.cls 0 []) = true :=
+    (Atom.cls c as).le ct κ (.cls 0 []) = true :=
   (le_cls_iff hwf c as 0 []).mpr (.inl ⟨rfl, rfl⟩)
 
+/-- A parameter is below an atom other than a parameter when its bound's
+atoms are. -/
+theorem le_param_iff (hwf : WfClasses ct) (i : Nat) {b : Atom} (hb : b.isParam = false) :
+    (Atom.param i).le ct κ b = true ↔ ∀ x ∈ Ty.boundOf κ i, x.le ct κ b = true := by
+  rw [le_eq_leF]
+  obtain ⟨k, hk⟩ := depth_sum (.param i) b
+  rw [hk]
+  cases b
+  case param => simp [Atom.isParam] at hb
+  all_goals
+    simp only [leF, List.all_eq_true]
+    constructor
+    · intro h x hx; exact leF_enough hwf k x _ (h x hx)
+    · intro h x hx
+      have h1 := h x hx
+      rw [le_eq_leF] at h1
+      have := (Ty.boundOf_mem hx).2
+      exact leF_mono (by simp only [Atom.depth] at hk ⊢; omega) h1
+
+/-- With no bounds, a parameter is below no value class. -/
+@[simp] theorem le_param_nil_value (i : Nat) {b : Atom} (hb : b.final = true) :
+    (Atom.param i).le ct [] b = false := by
+  cases b <;> simp [Atom.final] at hb <;>
+    simp [Atom.le, Atom.leF, Ty.boundOf_nil, Atom.depth]
+
 /-- Every atom is below `Object`. -/
-theorem le_top (hwf : WfClasses ct) (a : Atom) : a.le ct (.cls 0 []) = true := by
+theorem le_top (hwf : WfClasses ct) (a : Atom) : a.le ct κ (.cls 0 []) = true := by
   cases a
   case cls c as => exact le_object hwf c as
+  case param i =>
+    rw [le_param_iff hwf i rfl]
+    intro x hx
+    have hc := (Ty.boundOf_mem hx).1
+    cases x
+    case cls c as => exact le_object hwf c as
+    case param => simp [Atom.closed] at hc
+    all_goals simp [Atom.le]
   all_goals simp [Atom.le]
 
 end Atom
 
 /-! ### Types -/
 
-theorem Ty.leWith_le {s t : Ty} : Ty.leWith (Atom.le ct) s t = Ty.le ct s t := rfl
+theorem Ty.leWith_le {s t : Ty} : Ty.leWith (Atom.le ct κ) s t = Ty.le ct κ s t := rfl
 
 theorem Ty.le_iff {s t : Ty} :
-    s.le ct t = true ↔ ∀ a ∈ s, ∃ b ∈ t, a.le ct b = true := by
+    s.le ct κ t = true ↔ ∀ a ∈ s, ∃ b ∈ t, a.le ct κ b = true := by
   simp [Ty.le]
 
-theorem Ty.le_refl (hwf : WfClasses ct) (t : Ty) : t.le ct t = true :=
+theorem Ty.le_refl (hwf : WfClasses ct) (t : Ty) : t.le ct κ t = true :=
   Ty.le_iff.mpr fun a ha => ⟨a, ha, Atom.le_refl hwf a⟩
 
 theorem Ty.le_of_subset (hwf : WfClasses ct) {s t : Ty}
-    (h : ∀ a ∈ s, a ∈ t) : s.le ct t = true :=
+    (h : ∀ a ∈ s, a ∈ t) : s.le ct κ t = true :=
   Ty.le_iff.mpr fun a ha => ⟨a, h a ha, Atom.le_refl hwf a⟩
 
 theorem Ty.le_append_left (hwf : WfClasses ct) (s t : Ty) :
-    s.le ct (s ++ t) = true := Ty.le_of_subset hwf fun a ha => List.mem_append_left _ ha
+    s.le ct κ (s ++ t) = true := Ty.le_of_subset hwf fun a ha => List.mem_append_left _ ha
 
 theorem Ty.le_append_right (hwf : WfClasses ct) (s t : Ty) :
-    t.le ct (s ++ t) = true := Ty.le_of_subset hwf fun a ha => List.mem_append_right _ ha
+    t.le ct κ (s ++ t) = true := Ty.le_of_subset hwf fun a ha => List.mem_append_right _ ha
 
-theorem Ty.append_le {s t u : Ty} (h1 : s.le ct u = true)
-    (h2 : t.le ct u = true) : (s ++ t).le ct u = true := by
+theorem Ty.append_le {s t u : Ty} (h1 : s.le ct κ u = true)
+    (h2 : t.le ct κ u = true) : (s ++ t).le ct κ u = true := by
   rw [Ty.le_iff] at *
   intro a ha
   rcases List.mem_append.mp ha with ha | ha
   · exact h1 a ha
   · exact h2 a ha
 
-theorem Ty.le_append_mono {s s' t t' : Ty} (h1 : s.le ct s' = true) (h2 : t.le ct t' = true) :
-    (s ++ t).le ct (s' ++ t') = true := by
+theorem Ty.le_append_mono {s s' t t' : Ty} (h1 : s.le ct κ s' = true) (h2 : t.le ct κ t' = true) :
+    (s ++ t).le ct κ (s' ++ t') = true := by
   rw [Ty.le_iff] at *
   intro a ha
   rcases List.mem_append.mp ha with ha | ha
   · obtain ⟨b, hb, h⟩ := h1 a ha; exact ⟨b, List.mem_append_left _ hb, h⟩
   · obtain ⟨b, hb, h⟩ := h2 a ha; exact ⟨b, List.mem_append_right _ hb, h⟩
 
-theorem Ty.le_top (hwf : WfClasses ct) (t : Ty) : t.le ct [.cls 0 []] = true :=
+theorem Ty.le_top (hwf : WfClasses ct) (t : Ty) : t.le ct κ [.cls 0 []] = true :=
   Ty.le_iff.mpr fun a _ => ⟨_, List.mem_singleton.mpr rfl, Atom.le_top hwf a⟩
 
-theorem Ty.le_singleton {a b : Atom} : Ty.le ct [a] [b] = a.le ct b := by simp [Ty.le]
+theorem Ty.le_singleton {a b : Atom} : Ty.le ct κ [a] [b] = a.le ct κ b := by simp [Ty.le]
 
 theorem Ty.substArgs_eq_map (σ : List Ty) : ∀ ts : List Ty, Ty.substArgs σ ts = ts.map (Ty.subst σ)
   | [] => rfl
@@ -494,9 +552,9 @@ theorem if_not_pos {α} (pos : Bool) (x y : α) : (if (!pos) = true then x else 
 
 mutual
 theorem Atom.subst_var (hwf : WfClasses ct) {vs : List Variance} {xs ys : List Ty}
-    (hxy : argsLeWith (Atom.le ct) vs xs ys = true) :
+    (hxy : argsLeWith (Atom.le ct κ) vs xs ys = true) :
     ∀ (a : Atom) (pos : Bool), a.posOk ct vs pos = true →
-      Ty.le ct (a.subst (if pos then xs else ys)) (a.subst (if pos then ys else xs)) = true
+      Ty.le ct κ (a.subst (if pos then xs else ys)) (a.subst (if pos then ys else xs)) = true
   | .param i, pos, h => by
     have hlen := argsLeWith_length hxy
     simp only [Atom.subst]
@@ -534,18 +592,18 @@ theorem Atom.subst_var (hwf : WfClasses ct) {vs : List Variance} {xs ys : List T
   | .nil, _, _ | .bool, _, _ | .int, _, _ | .str, _, _ | .float, _, _ => by
     simp [Atom.subst, Ty.le_singleton, Atom.le]
 theorem Ty.subst_var (hwf : WfClasses ct) {vs : List Variance} {xs ys : List Ty}
-    (hxy : argsLeWith (Atom.le ct) vs xs ys = true) :
+    (hxy : argsLeWith (Atom.le ct κ) vs xs ys = true) :
     ∀ (t : Ty) (pos : Bool), t.posOk ct vs pos = true →
-      Ty.le ct (t.subst (if pos then xs else ys)) (t.subst (if pos then ys else xs)) = true
+      Ty.le ct κ (t.subst (if pos then xs else ys)) (t.subst (if pos then ys else xs)) = true
   | [], _, _ => by simp [Ty.subst, Ty.le]
   | a :: t, pos, h => by
     simp only [Ty.posOk, Bool.and_eq_true] at h
     simp only [Ty.subst]
     exact Ty.le_append_mono (Atom.subst_var hwf hxy a pos h.1) (Ty.subst_var hwf hxy t pos h.2)
 theorem Ty.substArgs_var (hwf : WfClasses ct) {vs : List Variance} {xs ys : List Ty}
-    (hxy : argsLeWith (Atom.le ct) vs xs ys = true) :
+    (hxy : argsLeWith (Atom.le ct κ) vs xs ys = true) :
     ∀ (ts : List Ty) (pos : Bool) (ws : List Variance), Ty.argsPosOk ct vs pos ws ts = true →
-      argsLeWith (Atom.le ct) ws (Ty.substArgs (if pos then xs else ys) ts)
+      argsLeWith (Atom.le ct κ) ws (Ty.substArgs (if pos then xs else ys) ts)
         (Ty.substArgs (if pos then ys else xs) ts) = true
   | [], _, _, _ => by simp [Ty.substArgs, argsLeWith]
   | t :: ts, pos, ws, h => by
@@ -572,8 +630,8 @@ ancestors arguments below the others' (the superclass's arguments stand
 in positive positions). -/
 theorem chain_monoAux (hwf : WfClasses ct) : ∀ n d xs ys e xs' ys',
     ancestorArgsAux ct n d xs e = some xs' → ancestorArgsAux ct n d ys e = some ys' →
-    argsLeWith (Atom.le ct) (ct.variances d) xs ys = true →
-    argsLeWith (Atom.le ct) (ct.variances e) xs' ys' = true := by
+    argsLeWith (Atom.le ct κ) (ct.variances d) xs ys = true →
+    argsLeWith (Atom.le ct κ) (ct.variances e) xs' ys' = true := by
   intro n
   induction n with
   | zero => intro d xs ys e xs' ys' h; simp [ancestorArgsAux] at h
@@ -598,8 +656,8 @@ theorem chain_monoAux (hwf : WfClasses ct) : ∀ n d xs ys e xs' ys',
 
 theorem chain_mono (hwf : WfClasses ct) {d : Nat} {xs ys : List Ty} {e : Nat} {xs' ys' : List Ty}
     (h1 : ct.ancestorArgs d xs e = some xs') (h2 : ct.ancestorArgs d ys e = some ys')
-    (hxy : argsLeWith (Atom.le ct) (ct.variances d) xs ys = true) :
-    argsLeWith (Atom.le ct) (ct.variances e) xs' ys' = true :=
+    (hxy : argsLeWith (Atom.le ct κ) (ct.variances d) xs ys = true) :
+    argsLeWith (Atom.le ct κ) (ct.variances e) xs' ys' = true :=
   chain_monoAux hwf _ d xs ys e xs' ys' h1 h2 hxy
 
 end ClassTable
@@ -609,9 +667,29 @@ end ClassTable
 namespace Atom
 
 theorem le_trans_aux (hwf : WfClasses ct) : ∀ (n : Nat) (a b c : Atom),
-    a.depth + b.depth + c.depth ≤ n → a.le ct b = true → b.le ct c = true → a.le ct c = true
+    a.depth + b.depth + c.depth ≤ n → a.le ct κ b = true → b.le ct κ c = true → a.le ct κ c = true
   | 0, a, _, _, hn, _, _ => absurd hn (by have := depth_pos a; omega)
   | n + 1, a, b, c, hn, hab, hbc => by
+    cases ha : a.isParam
+    case true =>
+      -- A parameter: below a parameter only itself; below another atom
+      -- as its bound's atoms are.
+      cases a <;> simp [Atom.isParam] at ha
+      rename_i i
+      cases hb : b.isParam
+      case true =>
+        cases b <;> simp [Atom.isParam] at hb
+        simp [Atom.le] at hab; subst hab; exact hbc
+      case false =>
+        have hcp : c.isParam = false := by
+          cases c <;> simp [Atom.isParam]
+          cases b <;> simp_all [Atom.le, Atom.isParam]
+        rw [le_param_iff hwf i hb] at hab
+        rw [le_param_iff hwf i hcp]
+        intro x hx
+        have := (Ty.boundOf_mem hx).2
+        exact le_trans_aux hwf n x b c (by simp only [Atom.depth] at hn; omega) (hab x hx) hbc
+    case false =>
     cases c
     case cls e cs =>
       cases b
@@ -647,33 +725,34 @@ theorem le_trans_aux (hwf : WfClasses ct) : ∀ (n : Nat) (a b c : Atom),
             omega
           exact ⟨fun h1 h2 => le_trans_aux hwf n x y z this h1 h2,
             fun h1 h2 => le_trans_aux hwf n z y x (by omega) h1 h2⟩
-        all_goals
-          simp only [Atom.le, Bool.and_eq_true, beq_iff_eq, List.isEmpty_iff] at hab
-          obtain ⟨rfl, rfl⟩ := hab
-          rcases (le_cls_iff hwf 0 [] e cs).mp hbc with ⟨rfl, rfl⟩ | ⟨bs', hbs', hbc⟩
-          · simp [Atom.le]
-          · obtain ⟨rfl, rfl⟩ := ClassTable.ancestorArgs_root hwf e bs' hbs'
-            have := argsLeWith_length hbc
-            cases cs with
-            | nil => simp [Atom.le]
-            | cons => simp at this
-      all_goals cases a <;> simp_all [Atom.le]
-    all_goals cases b <;> cases a <;> simp_all [Atom.le]
+        all_goals first
+          | (simp [Atom.isParam] at ha; done)
+          | (simp only [Atom.le, Bool.and_eq_true, beq_iff_eq, List.isEmpty_iff] at hab
+             obtain ⟨rfl, rfl⟩ := hab
+             rcases (le_cls_iff hwf 0 [] e cs).mp hbc with ⟨rfl, rfl⟩ | ⟨bs', hbs', hbc⟩
+             · simp [Atom.le]
+             · obtain ⟨rfl, rfl⟩ := ClassTable.ancestorArgs_root hwf e bs' hbs'
+               have := argsLeWith_length hbc
+               cases cs with
+               | nil => simp [Atom.le]
+               | cons => simp at this)
+      all_goals cases a <;> simp_all [Atom.le, Atom.isParam]
+    all_goals cases b <;> cases a <;> simp_all [Atom.le, Atom.isParam]
 
-theorem le_trans (hwf : WfClasses ct) {a b c : Atom} (hab : a.le ct b = true)
-    (hbc : b.le ct c = true) : a.le ct c = true :=
+theorem le_trans (hwf : WfClasses ct) {a b c : Atom} (hab : a.le ct κ b = true)
+    (hbc : b.le ct κ c = true) : a.le ct κ c = true :=
   le_trans_aux hwf _ a b c (Nat.le_refl _) hab hbc
 
 /-- A class is below an ancestor given exactly the arguments the chain
 gives it. -/
 theorem le_of_ancestorArgs (hwf : WfClasses ct) {c : Nat} {as : List Ty} {d : Nat} {bs : List Ty}
-    (h : ct.ancestorArgs c as d = some bs) : (Atom.cls c as).le ct (.cls d bs) = true :=
+    (h : ct.ancestorArgs c as d = some bs) : (Atom.cls c as).le ct κ (.cls d bs) = true :=
   (le_cls_iff hwf c as d bs).mpr (.inr ⟨bs, h, argsLeWith_refl_of _ _ fun a _ => le_refl hwf a⟩)
 
 end Atom
 
 theorem Ty.le_trans (hwf : WfClasses ct) {s t u : Ty}
-    (h1 : s.le ct t = true) (h2 : t.le ct u = true) : s.le ct u = true := by
+    (h1 : s.le ct κ t = true) (h2 : t.le ct κ u = true) : s.le ct κ u = true := by
   rw [Ty.le_iff] at *
   intro a ha
   obtain ⟨b, hb, hab⟩ := h1 a ha
@@ -682,9 +761,9 @@ theorem Ty.le_trans (hwf : WfClasses ct) {s t u : Ty}
 
 /-! ### Substitution keeps the order -/
 
-theorem Ty.subst_le_of {σ : List Ty} {s t : Ty}
-    (h : ∀ a ∈ s, ∀ b ∈ t, a.le ct b = true → Ty.le ct (a.subst σ) (b.subst σ) = true)
-    (hst : s.le ct t = true) : Ty.le ct (s.subst σ) (t.subst σ) = true := by
+theorem Ty.subst_le_of {κ' : List Ty} {σ : List Ty} {s t : Ty}
+    (h : ∀ a ∈ s, ∀ b ∈ t, a.le ct κ b = true → Ty.le ct κ' (a.subst σ) (b.subst σ) = true)
+    (hst : s.le ct κ t = true) : Ty.le ct κ' (s.subst σ) (t.subst σ) = true := by
   rw [Ty.le_iff] at hst ⊢
   intro a' ha'
   obtain ⟨a, ha, ha'⟩ := Ty.mem_subst.mp ha'
@@ -692,10 +771,34 @@ theorem Ty.subst_le_of {σ : List Ty} {s t : Ty}
   obtain ⟨b', hb', h'⟩ := Ty.le_iff.mp (h a ha b hb hab) a' ha'
   exact ⟨b', Ty.mem_subst.mpr ⟨b, hb, hb'⟩, h'⟩
 
-theorem Atom.subst_le_aux (hwf : WfClasses ct) (σ : List Ty) : ∀ (n : Nat) (a b : Atom),
-    a.depth + b.depth ≤ n → a.le ct b = true → Ty.le ct (a.subst σ) (b.subst σ) = true
+/-- Substitution keeps the order, the arguments within the bounds `κ`
+(compared with their own parameters' bounds `κ'`). -/
+theorem Atom.subst_leK_aux (hwf : WfClasses ct) (σ : List Ty) {κ' : List Ty}
+    (hσ : ∀ i, Ty.le ct κ' ((σ[i]?).getD [.cls 0 []]) (Ty.boundOf κ i) = true) :
+    ∀ (n : Nat) (a b : Atom),
+    a.depth + b.depth ≤ n → a.le ct κ b = true → Ty.le ct κ' (a.subst σ) (b.subst σ) = true
   | 0, a, _, hn, _ => absurd hn (by have := depth_pos a; omega)
   | n + 1, a, b, hn, h => by
+    cases ha : a.isParam
+    case true =>
+      cases a <;> simp [Atom.isParam] at ha
+      rename_i i
+      cases hb : b.isParam
+      case true =>
+        cases b <;> simp [Atom.isParam] at hb
+        simp [Atom.le] at h; subst h
+        exact Ty.le_refl hwf _
+      case false =>
+        -- What `σ` gives is within the bound, whose atoms (closed) are
+        -- below `b`, so below `b` substituted.
+        rw [Atom.le_param_iff hwf _ hb] at h
+        simp only [Atom.subst]
+        refine Ty.le_trans hwf (hσ i) (Ty.le_iff.mpr fun x hx => ?_)
+        obtain ⟨hxc, hxd⟩ := Ty.boundOf_mem hx
+        have := Atom.subst_leK_aux hwf σ hσ n x b (by simp only [Atom.depth] at hn; omega) (h x hx)
+        rw [Atom.subst_closed_id σ x hxc] at this
+        exact Ty.le_iff.mp this x (List.mem_singleton.mpr rfl)
+    case false =>
     cases b
     case cls d bs =>
       cases a
@@ -710,50 +813,140 @@ theorem Atom.subst_le_aux (hwf : WfClasses ct) (σ : List Ty) : ∀ (n : Nat) (a
           simp only [Atom.depth] at hn
           refine argsLeWith_map _ _ _ (fun s hs t ht => ⟨fun hst => ?_, fun hts => ?_⟩) h
           · rw [Ty.leWith_le] at hst ⊢
-            refine Ty.subst_le_of (fun x hx y hy hxy => Atom.subst_le_aux hwf σ n x y ?_ hxy) hst
+            refine Ty.subst_le_of (fun x hx y hy hxy => Atom.subst_leK_aux hwf σ hσ n x y ?_ hxy) hst
             have := Nat.le_trans (Ty.depth_mem hx) (Ty.argsDepth_mem hs)
             have := Nat.le_trans (Ty.depth_mem hy) (Ty.argsDepth_mem ht)
             have : max (Ty.argsDepth as) 1 ≤ Ty.argsDepth as + 1 := Nat.max_le.mpr ⟨by omega, by omega⟩
             omega
           · rw [Ty.leWith_le] at hts ⊢
-            refine Ty.subst_le_of (fun x hx y hy hxy => Atom.subst_le_aux hwf σ n x y ?_ hxy) hts
+            refine Ty.subst_le_of (fun x hx y hy hxy => Atom.subst_leK_aux hwf σ hσ n x y ?_ hxy) hts
             have := Nat.le_trans (Ty.depth_mem hx) (Ty.argsDepth_mem ht)
             have := Nat.le_trans (Ty.depth_mem hy) (Ty.argsDepth_mem hs)
             have : max (Ty.argsDepth as) 1 ≤ Ty.argsDepth as + 1 := Nat.max_le.mpr ⟨by omega, by omega⟩
             omega
-      all_goals
-        simp only [Atom.le, Bool.and_eq_true, beq_iff_eq, List.isEmpty_iff] at h
-        obtain ⟨rfl, rfl⟩ := h
-        simp only [Atom.subst, Ty.substArgs]; exact Ty.le_top hwf _
+      all_goals first
+        | (simp [Atom.isParam] at ha; done)
+        | (simp only [Atom.le, Bool.and_eq_true, beq_iff_eq, List.isEmpty_iff] at h
+           obtain ⟨rfl, rfl⟩ := h
+           simp only [Atom.subst, Ty.substArgs]; exact Ty.le_top hwf _)
     case param j =>
-      cases a
-      case param i =>
-        simp only [Atom.le, beq_iff_eq] at h
-        subst h
-        exact Ty.le_refl hwf _
-      all_goals simp_all [Atom.le]
-    all_goals cases a <;> simp_all [Atom.le] <;> simp [Atom.subst, Ty.le, Atom.le]
+      cases a <;> simp_all [Atom.le, Atom.isParam]
+    all_goals cases a <;> simp_all [Atom.le, Atom.isParam] <;> simp [Atom.subst, Ty.le, Atom.le]
+
+theorem Atom.subst_leK (hwf : WfClasses ct) (σ : List Ty) {κ' : List Ty}
+    (hσ : ∀ i, Ty.le ct κ' ((σ[i]?).getD [.cls 0 []]) (Ty.boundOf κ i) = true) {a b : Atom}
+    (h : a.le ct κ b = true) : Ty.le ct κ' (a.subst σ) (b.subst σ) = true :=
+  Atom.subst_leK_aux hwf σ hσ _ a b (Nat.le_refl _) h
+
+theorem Ty.subst_leK (hwf : WfClasses ct) (σ : List Ty) {κ' : List Ty}
+    (hσ : ∀ i, Ty.le ct κ' ((σ[i]?).getD [.cls 0 []]) (Ty.boundOf κ i) = true) {s t : Ty}
+    (h : s.le ct κ t = true) : Ty.le ct κ' (s.subst σ) (t.subst σ) = true :=
+  Ty.subst_le_of (fun _ _ _ _ hab => Atom.subst_leK hwf σ hσ hab) h
+
+/-- Any arguments are within no bounds. -/
+theorem bounds_nil (hwf : WfClasses ct) (σ κ' : List Ty) :
+    ∀ i, Ty.le ct κ' ((σ[i]?).getD [.cls 0 []]) (Ty.boundOf [] i) = true :=
+  fun i => by rw [Ty.boundOf_nil]; exact Ty.le_top hwf _
 
 theorem Atom.subst_le (hwf : WfClasses ct) (σ : List Ty) {a b : Atom}
-    (h : a.le ct b = true) : Ty.le ct (a.subst σ) (b.subst σ) = true :=
-  Atom.subst_le_aux hwf σ _ a b (Nat.le_refl _) h
+    (h : a.le ct [] b = true) : Ty.le ct [] (a.subst σ) (b.subst σ) = true :=
+  Atom.subst_leK hwf σ (bounds_nil hwf σ []) h
 
 theorem Ty.subst_le (hwf : WfClasses ct) (σ : List Ty) {s t : Ty}
-    (h : s.le ct t = true) : Ty.le ct (s.subst σ) (t.subst σ) = true :=
-  Ty.subst_le_of (fun _ _ _ _ hab => Atom.subst_le hwf σ hab) h
+    (h : s.le ct [] t = true) : Ty.le ct [] (s.subst σ) (t.subst σ) = true :=
+  Ty.subst_leK hwf σ (bounds_nil hwf σ []) h
 
 /-- Argument lists compared by variance, substituted. -/
 theorem argsLeWith_subst (hwf : WfClasses ct) (σ : List Ty) {vs : List Variance} {xs ys : List Ty}
-    (h : argsLeWith (Atom.le ct) vs xs ys = true) :
-    argsLeWith (Atom.le ct) vs (Ty.substArgs σ xs) (Ty.substArgs σ ys) = true := by
+    (h : argsLeWith (Atom.le ct []) vs xs ys = true) :
+    argsLeWith (Atom.le ct []) vs (Ty.substArgs σ xs) (Ty.substArgs σ ys) = true := by
   rw [Ty.substArgs_eq_map, Ty.substArgs_eq_map]
   exact argsLeWith_map _ _ _ (fun s _ t _ => ⟨fun h => by rw [Ty.leWith_le] at h ⊢; exact Ty.subst_le hwf σ h,
     fun h => by rw [Ty.leWith_le] at h ⊢; exact Ty.subst_le hwf σ h⟩) h
 
 theorem argsLeWith_le_trans (hwf : WfClasses ct) {vs : List Variance} {xs ys zs : List Ty}
-    (h1 : argsLeWith (Atom.le ct) vs xs ys = true) (h2 : argsLeWith (Atom.le ct) vs ys zs = true) :
-    argsLeWith (Atom.le ct) vs xs zs = true :=
+    (h1 : argsLeWith (Atom.le ct κ) vs xs ys = true) (h2 : argsLeWith (Atom.le ct κ) vs ys zs = true) :
+    argsLeWith (Atom.le ct κ) vs xs zs = true :=
   argsLeWith_trans _ _ _ _ (fun _ _ _ _ _ _ => ⟨fun a b => Atom.le_trans hwf a b,
     fun a b => Atom.le_trans hwf a b⟩) h1 h2
+
+/-! ### Arguments within bounds -/
+
+/-- Arguments within the bounds `κ` (closed ones: compared with no bounds
+of their own). -/
+def ArgsIn (ct : ClassTable) (κ σ : List Ty) : Prop :=
+  ∀ i, Ty.le ct [] ((σ[i]?).getD [.cls 0 []]) (Ty.boundOf κ i) = true
+
+theorem Ty.boundOf_closed (κ : List Ty) (i : Nat) : Ty.closed (Ty.boundOf κ i) = true := by
+  have h : ∀ t : Ty, (∀ a ∈ t, a.closed = true) → Ty.closed t = true := by
+    intro t ht
+    induction t with
+    | nil => rfl
+    | cons a t ih =>
+      simp only [Ty.closed, Bool.and_eq_true]
+      exact ⟨ht a (List.mem_cons_self), ih fun b hb => ht b (List.mem_cons_of_mem _ hb)⟩
+  exact h _ fun a ha => (Ty.boundOf_mem ha).1
+
+theorem Ty.boundOf_out {κ : List Ty} {i : Nat} (h : κ.length ≤ i) : Ty.boundOf κ i = [.cls 0 []] := by
+  have : κ[i]? = none := List.getElem?_eq_none h
+  simp [Ty.boundOf, List.getD_eq_getElem?_getD, this, Atom.closed, Ty.closedArgs, Atom.depth, Ty.argsDepth]
+
+theorem ArgsIn.nil (hwf : WfClasses ct) (σ : List Ty) : ArgsIn ct [] σ :=
+  fun i => by rw [Ty.boundOf_nil]; exact Ty.le_top hwf _
+
+namespace ClassTable
+
+/-- Arguments within a class's bounds give its ancestors arguments within
+theirs. -/
+theorem ancestorArgsAux_in (hwf : WfClasses ct) : ∀ n c as d bs,
+    ancestorArgsAux ct n c as d = some bs →
+    as.length = (((ct[c]?).map (·.params)).getD []).length →
+    ArgsIn ct (ct.boundsOf c) as → ArgsIn ct (ct.boundsOf d) bs := by
+  intro n
+  induction n with
+  | zero => intro c as d bs h; simp [ancestorArgsAux] at h
+  | succ n ih =>
+    intro c as d bs h hl hin
+    rw [ancestorArgsAux_succ] at h
+    by_cases hcd : (c == d) = true
+    · rw [if_pos hcd] at h; simp at h hcd; subst h; subst hcd; exact hin
+    · rw [if_neg hcd] at h
+      cases hk : ct[c]? with
+      | none => simp [hk] at h
+      | some k =>
+        simp only [hk] at h
+        cases hs : k.super with
+        | none => simp [hs] at h
+        | some p =>
+          simp only [hs] at h
+          have hlen := hwf.superArgs c k p hk hs
+          refine ih p _ d bs h (by rw [Ty.substArgs_length]; exact hlen) fun j => ?_
+          have hbk : ct.boundsOf c = k.bounds := by simp [boundsOf, hk]
+          rw [hbk] at hin
+          cases hj : k.superArgs[j]? with
+          | none =>
+            have hj' := List.getElem?_eq_none_iff.mp hj
+            have : (Ty.substArgs as k.superArgs)[j]? = none := by
+              rw [Ty.substArgs_getElem?, hj]; rfl
+            rw [this, Ty.boundOf_out]
+            · exact Ty.le_top hwf _
+            · have hpl : (((ct[p]?).map Class.params).getD []).length ≥ (ct.boundsOf p).length := by
+                cases hp : ct[p]? with
+                | none => simp [boundsOf, hp]
+                | some kp => simp [boundsOf, hp]; exact hwf.boundsLen p kp hp
+              omega
+          | some t =>
+            rw [Ty.substArgs_getElem?, hj]
+            simp only [Option.map_some, Option.getD_some]
+            have := Ty.subst_leK hwf as hin (hwf.superBounds c k p hk hs j t hj)
+            rwa [Ty.subst_closed_id as _ (Ty.boundOf_closed _ _)] at this
+
+theorem ancestorArgs_in (hwf : WfClasses ct) {c : Nat} {as : List Ty} {d : Nat} {bs : List Ty}
+    (h : ct.ancestorArgs c as d = some bs)
+    (hl : as.length = (((ct[c]?).map (·.params)).getD []).length)
+    (hin : ArgsIn ct (ct.boundsOf c) as) : ArgsIn ct (ct.boundsOf d) bs :=
+  ancestorArgsAux_in hwf _ c as d bs h hl hin
+
+end ClassTable
 
 end QuarzCore

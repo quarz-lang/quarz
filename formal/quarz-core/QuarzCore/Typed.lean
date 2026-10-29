@@ -22,30 +22,30 @@ inductive Typed : Ctx → Env → Expr → Out → Prop where
   /-- A local read: assigned on every path, holding `u`, annotated with a
   type at least `u`; a test of it narrows it to `u`'s truthy or falsy
   atoms. -/
-  | var : Γ.get (.local x) = some u → u.le c.ct t →
+  | var : Γ.get (.local x) = some u → u.le c.ct c.bounds t →
       Typed c Γ (.var x t) ⟨t, some Γ, narrow Γ (.local x) (truthyTy u),
         narrow Γ (.local x) (falsyTy c.ct u)⟩
   /-- A `var` field read: never narrowed. -/
   | fieldVar : c.field? f = some fd → (!c.inInit || (Γ.get (.field f)).isSome) = true →
-      fd.var = true → fd.ty.le c.ct t → Typed c Γ (.field f t) (.plain t Γ)
+      fd.var = true → fd.ty.le c.ct c.bounds t → Typed c Γ (.field f t) (.plain t Γ)
   /-- An immutable field read: narrowed as a local. -/
   | fieldImm : c.field? f = some fd → (!c.inInit || (Γ.get (.field f)).isSome) = true →
       fd.var = false → (Γ.get (.field f)).getD fd.ty = u →
-      u.le c.ct t →
+      u.le c.ct c.bounds t →
       Typed c Γ (.field f t) ⟨t, some Γ, narrow Γ (.field f) (truthyTy u),
         narrow Γ (.field f) (falsyTy c.ct u)⟩
-  | assign : Typed c Γ e o → c.decl x = some d → o.ty.le c.ct d → o.out = some Δ →
+  | assign : Typed c Γ e o → c.decl x = some d → o.ty.le c.ct c.bounds d → o.out = some Δ →
       Typed c Γ (.assign x e) (.plain o.ty (Δ.set (.local x) o.ty))
-  | assignDead : Typed c Γ e o → c.decl x = some d → o.ty.le c.ct d → o.out = none →
+  | assignDead : Typed c Γ e o → c.decl x = some d → o.ty.le c.ct c.bounds d → o.out = none →
       Typed c Γ (.assign x e) .dead
   /-- A field assigned: a `var` one, or in `initialize` (not in a block of
   it) any; there it holds a value from then on. -/
   | setField : c.field? f = some fd → (fd.var || (c.inInit && !c.inBlock)) = true →
-      Typed c Γ e o → o.ty.le c.ct fd.ty → o.out = some Δ →
+      Typed c Γ e o → o.ty.le c.ct c.bounds fd.ty → o.out = some Δ →
       Typed c Γ (.setField f e) (.plain o.ty (if c.inInit then
         Δ.set (.field f) (if fd.var then fd.ty else o.ty) else Δ))
   | setFieldDead : c.field? f = some fd → (fd.var || (c.inInit && !c.inBlock)) = true → Typed c Γ e o →
-      o.ty.le c.ct fd.ty → o.out = none → Typed c Γ (.setField f e) .dead
+      o.ty.le c.ct c.bounds fd.ty → o.out = none → Typed c Γ (.setField f e) .dead
   /-- `self`: in `initialize`, once every field is set; never in a default. -/
   | self : (!c.inDefault && (!c.inInit || c.allSet Γ)) = true →
       Typed c Γ .self (.plain c.selfTy Γ)
@@ -77,7 +77,7 @@ inductive Typed : Ctx → Env → Expr → Out → Prop where
   method, the arguments fitting each, no block expected; its type the
   union of their results. -/
   | call : Typed c Γ r o → o.out = some Δ → TypedArgs c Δ args (.live tys Δ') →
-      c.prog.resolve o.ty m = some ms →
+      c.prog.resolve c.bounds o.ty m = some ms →
       (ms.all fun mt => mt.block.isNone && argsOk c tys mt) = true →
       Typed c Γ (.call r m args) (.plain (ms.flatMap (·.ret)) Δ')
   | callDeadRecv : Typed c Γ r o → o.out = none → Typed c Γ (.call r m args) .dead
@@ -88,11 +88,11 @@ inductive Typed : Ctx → Env → Expr → Out → Prop where
   call), gives at most the block's result; after the call, what held
   before it or what held at the body's end (design §2.2). -/
   | callBlk : Typed c Γ r o → o.out = some Δ → TypedArgs c Δ args (.live tys Δ') →
-      c.prog.resolve o.ty m = some ms → ms.head? = some m0 → m0.block = some sig →
+      c.prog.resolve c.bounds o.ty m = some ms → ms.head? = some m0 → m0.block = some sig →
       (ms.all fun mt' => mt'.block == some sig && argsOk c tys mt') = true →
       blockParamsOk c ps sig = true →
       Typed { c with inBlock := true } (blockEnv c Δ' ps sig body) body ob →
-      ob.ty.le c.ct sig.ret →
+      ob.ty.le c.ct c.bounds sig.ret →
       Typed c Γ (.callBlk r m args ps body) (.plain (ms.flatMap (·.ret))
         (match ob.out with
           | some Γb => Δ'.join Γb
@@ -101,12 +101,12 @@ inductive Typed : Ctx → Env → Expr → Out → Prop where
   | callBlkDeadArgs : Typed c Γ r o → o.out = some Δ → TypedArgs c Δ args .dead →
       Typed c Γ (.callBlk r m args ps body) .dead
   | yield : c.meth.block = some sig → TypedArgs c Γ args (.live tys Δ) →
-      tys.length = sig.params.length → ((tys.zip sig.params).all fun (t, u) => t.le c.ct u) = true →
+      tys.length = sig.params.length → ((tys.zip sig.params).all fun (t, u) => t.le c.ct c.bounds u) = true →
       Typed c Γ (.yield args) (.plain sig.ret Δ)
   | yieldDead : c.meth.block = some sig → TypedArgs c Γ args .dead →
       Typed c Γ (.yield args) .dead
   | prim : TypedArgs c Γ args (.live tys Δ) → tys.length = params.length →
-      ((tys.zip params).all fun (t, u) => t.le c.ct u) = true →
+      ((tys.zip params).all fun (t, u) => t.le c.ct c.bounds u) = true →
       Typed c Γ (.prim f args params ret) (.plain ret Δ)
   | primDead : TypedArgs c Γ args .dead → Typed c Γ (.prim f args params ret) .dead
   | seq : Typed c Γ a oa → oa.out = some Δ → Typed c Δ b ob → Typed c Γ (.seq a b) ob
@@ -122,7 +122,7 @@ inductive Typed : Ctx → Env → Expr → Out → Prop where
   | while : c.reset Γ (Expr.assigned (.while cnd b)) = Γ0 → Typed c Γ0 cnd oc →
       oc.tt = some Δ → Typed c Δ b ob → (ob.out.all (·.implies c.ct Γ0)) = true →
       Typed c Γ (.while cnd b) ⟨[.nil], oc.ff, oc.ff, oc.ff⟩
-  | ret : c.inBlock = false → Typed c Γ e o → o.ty.le c.ct c.meth.ret →
+  | ret : c.inBlock = false → Typed c Γ e o → o.ty.le c.ct c.bounds c.meth.ret →
       (!c.inInit || o.out.all (c.allSet ·)) = true → Typed c Γ (.ret e) .dead
   | raise : Typed c Γ .raise .dead
   /-- The tests (design §2.1), each of a value: of a path, they narrow

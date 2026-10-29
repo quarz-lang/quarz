@@ -25,20 +25,27 @@ def wfClasses (P : Program) : Bool :=
             -- arguments themselves (`Box[T]`, `Box[Int?]`, not
             -- `Box[Box[T]]`), which bounds what `≤` compares; and they
             -- stand in a positive position (docs/02 §3).
-            k.superArgs.all (fun t => decide (t.depth ≤ 1)) &&
-            Ty.argsPosOk P.classes k.params true (P.classes.variances d) k.superArgs
+            k.superArgs.all (fun t => t.all fun a => a.isParam || decide (a.depth ≤ 1)) &&
+            Ty.argsPosOk P.classes k.params true (P.classes.variances d) k.superArgs &&
+            -- Each within the superclass's parameter's bound.
+            (k.superArgs.zipIdx.all fun (t, j) =>
+              t.le P.classes k.bounds (Ty.boundOf (P.classes.boundsOf d) j))
         | none => false)
     | none => true) &&
   -- A class's fields' names distinct, inherited ones included.
-  (List.range P.classes.length).all fun i =>
-    decide ((P.classes.allFields i).map (·.name)).Nodup
+  ((List.range P.classes.length).all fun i =>
+    decide ((P.classes.allFields i).map (·.name)).Nodup) &&
+  -- No more bounds than parameters.
+  (List.range P.classes.length).all fun i => match P.classes[i]? with
+    | some k => decide (k.bounds.length ≤ k.params.length)
+    | none => true
 
 /-- An override takes at least what it overrides takes, gives at most
 what it gives, and takes the same block. -/
 def overrides (P : Program) (sub sup : Method) : Bool :=
   sub.params.length == sup.params.length &&
-  (sup.params.zip sub.params).all (fun ((_, t), (_, u)) => t.le P.classes u) &&
-  sub.ret.le P.classes sup.ret &&
+  (sup.params.zip sub.params).all (fun ((_, t), (_, u)) => t.le P.classes (P.classes.boundsOf sub.owner) u) &&
+  sub.ret.le P.classes (P.classes.boundsOf sub.owner) sup.ret &&
   sub.block == sup.block
 
 /-- The variance check of a method's signature (docs/02 §3): its
@@ -69,8 +76,9 @@ def wfMethod (P : Program) (mt : Method) : Bool :=
     match P.lookupAt d ((P.classes.ancestorArgs mt.owner (P.classes.selfArgs mt.owner) d).getD []) mt.name with
     | some sup => P.overrides mt sup
     | none => true)) &&
-  (mt.name != "==" || (mt.ret.le P.classes [.bool] && mt.block.isNone && match mt.params with
-    | [(_, t)] => Ty.le P.classes [.nil, .bool] t
+  (mt.name != "==" || (mt.ret.le P.classes (P.classes.boundsOf mt.owner) [.bool] && mt.block.isNone &&
+    match mt.params with
+    | [(_, t)] => Ty.le P.classes (P.classes.boundsOf mt.owner) [.nil, .bool] t
     | _ => false))
 
 /-- The fields of instances of `k` that hold a value before
@@ -87,7 +95,7 @@ def checkMethod (P : Program) (mt : Method) : Bool :=
   let c : Ctx := ⟨P, mt, false, false⟩
   let held := if c.inInit then heldEnv P.classes c.fields else []
   match check c (mt.params.map (fun (x, t) => (.local x, t)) ++ held) mt.body with
-  | some o => (c.inInit || o.out.isNone || o.ty.le P.classes mt.ret) &&
+  | some o => (c.inInit || o.out.isNone || o.ty.le P.classes c.bounds mt.ret) &&
       (!c.inInit || o.out.all (c.allSet ·))
   | none => false
 
@@ -116,7 +124,7 @@ def checkDefaults (P : Program) (k : Nat) : Bool :=
     | none => true
     | some d => match P.defaults[d]? with
       | some e => match check (P.defaultCtx k f.ty) (heldEnv P.classes (fs.take i)) e with
-        | some o => o.ty.le P.classes f.ty
+        | some o => o.ty.le P.classes (P.classes.boundsOf k) f.ty
         | none => false
       | none => false
 

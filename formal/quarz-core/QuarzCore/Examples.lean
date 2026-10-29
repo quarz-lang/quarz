@@ -7,7 +7,7 @@ import QuarzCore.Semantics
 
 namespace QuarzCore.Examples
 
-def object : Class := ⟨"Object", none, [], [], []⟩
+def object : Class := ⟨"Object", none, [], [], [], []⟩
 
 /-- No built-in method returns. -/
 def noPrim : Oracle := fun _ _ _ => none
@@ -32,7 +32,7 @@ def unnarrowed : Program :=
 
 /-- A class whose `==` says yes to `nil` (09b19e3): `c == nil` does not
 narrow `c`, of a class type. -/
-def eqClass : Class := ⟨"E", some 0, [], [], []⟩
+def eqClass : Class := ⟨"E", some 0, [], [], [], []⟩
 
 def eqMethod : Method :=
   ⟨1, "==", [("o", [.cls 0 []])], [.bool], none, [("o", [.cls 0 []])], .tru⟩
@@ -61,7 +61,7 @@ Int` (to be assigned) and `@lbl: String = "p"`; `initialize(v: Int)`
 runs `body`. -/
 
 def initClass (extra : List Field := []) : Class :=
-  ⟨"P", some 0, [⟨"x", [.int], false, none⟩, ⟨"lbl", [.str], false, some 0⟩] ++ extra, [], []⟩
+  ⟨"P", some 0, [⟨"x", [.int], false, none⟩, ⟨"lbl", [.str], false, some 0⟩] ++ extra, [], [], []⟩
 
 def initMethod (body : Expr) : Method :=
   ⟨1, "initialize", [("v", [.int])], [.nil], none, [("v", [.int])], body⟩
@@ -103,7 +103,7 @@ def assignX : Expr := .setField "x" (.var "v" [.int])
 
 /-- A class with only `var @a: Int = default`, and `geta`. -/
 def defaultProg (default : Expr) : Program :=
-  ⟨[object, ⟨"Q", some 0, [⟨"a", [.int], true, some 0⟩], [], []⟩],
+  ⟨[object, ⟨"Q", some 0, [⟨"a", [.int], true, some 0⟩], [], [], []⟩],
     [⟨1, "geta", [], [.int], none, [], .field "a" [.int]⟩],
     ⟨0, "<main>", [], [.nil, .bool, .int, .str, .cls 0 []], none, [], .call (.new 1 [] []) "geta" []⟩,
     [default]⟩
@@ -118,7 +118,7 @@ P has `@x : Int`, assigned by its `initialize`, which then calls `who`;
 C < P has `@y : Int` and overrides `who` to read it. -/
 
 def superProg (body : Expr) : Program :=
-  ⟨[object, ⟨"P", some 0, [⟨"x", [.int], false, none⟩], [], []⟩, ⟨"C", some 1, [⟨"y", [.int], false, none⟩], [], []⟩],
+  ⟨[object, ⟨"P", some 0, [⟨"x", [.int], false, none⟩], [], [], []⟩, ⟨"C", some 1, [⟨"y", [.int], false, none⟩], [], [], []⟩],
     [⟨1, "initialize", [("v", [.int])], [.nil], none, [("v", [.int])],
         .seq (.setField "x" (.var "v" [.int])) (.call .self "who" [])⟩,
      ⟨1, "who", [], [.int], none, [], .field "x" [.int]⟩,
@@ -157,9 +157,9 @@ Pair[S, T], whose `swap` makes a `Pair[T, S]`. -/
 
 def boxProg (body : Expr) (locals : List (String × Ty) := []) : Program :=
   ⟨[object,
-    ⟨"Box", some 0, [⟨"v", [.param 0], false, none⟩], [.inv], []⟩,
-    ⟨"IntBox", some 1, [], [], [[.int]]⟩,
-    ⟨"Pair", some 0, [⟨"a", [.param 0], false, none⟩, ⟨"b", [.param 1], false, none⟩], [.inv, .inv], []⟩],
+    ⟨"Box", some 0, [⟨"v", [.param 0], false, none⟩], [.inv], [], []⟩,
+    ⟨"IntBox", some 1, [], [], [[.int]], []⟩,
+    ⟨"Pair", some 0, [⟨"a", [.param 0], false, none⟩, ⟨"b", [.param 1], false, none⟩], [.inv, .inv], [], []⟩],
    [⟨1, "get", [], [.param 0], none, [], .field "v" [.param 0]⟩,
     ⟨1, "initialize", [("v", [.param 0])], [.nil], none, [("v", [.param 0])],
       .setField "v" (.var "v" [.param 0])⟩,
@@ -220,9 +220,9 @@ OBox[out T] with `@v : T` and `get`; Cell[T] (invariant) with
 
 def varClasses : ClassTable :=
   [object,
-   ⟨"OBox", some 0, [⟨"v", [.param 0], false, none⟩], [.co], []⟩,
-   ⟨"Cell", some 0, [⟨"v", [.param 0], true, none⟩], [.inv], []⟩,
-   ⟨"Sink", some 0, [], [.contra], []⟩]
+   ⟨"OBox", some 0, [⟨"v", [.param 0], false, none⟩], [.co], [], []⟩,
+   ⟨"Cell", some 0, [⟨"v", [.param 0], true, none⟩], [.inv], [], []⟩,
+   ⟨"Sink", some 0, [], [.contra], [], []⟩]
 
 def varProg (body : Expr) (locals : List (String × Ty) := []) (extra : List Method := []) : Program :=
   ⟨varClasses,
@@ -266,9 +266,44 @@ def varProg (body : Expr) (locals : List (String × Ty) := []) (extra : List Met
 #guard !(varProg (withLocal "o" [.cls 0 []] (.isA (.var "o" [.cls 0 []]) (.cls 2 [[.cls 0 []]])))
   [("o", [.cls 0 []])]).check
 -- The model's range: a superclass's arguments take no arguments.
-#guard !(Program.wfClasses ⟨varClasses ++ [⟨"Deep", some 1, [], [], [[.cls 1 [[.int]]]]⟩],
+#guard !(Program.wfClasses ⟨varClasses ++ [⟨"Deep", some 1, [], [], [[.cls 1 [[.int]]]], []⟩],
   [], ⟨0, "<main>", [], [.nil], none, [], .nil⟩, []⟩)
-#guard (Program.wfClasses ⟨varClasses ++ [⟨"IntOBox", some 1, [], [], [[.int, .nil]]⟩],
+#guard (Program.wfClasses ⟨varClasses ++ [⟨"IntOBox", some 1, [], [], [[.int, .nil]], []⟩],
   [], ⟨0, "<main>", [], [.nil], none, [], .nil⟩, []⟩)
+
+/-! ### Bounds (G1c)
+
+Shp with `@n : Int` and `sides -> Int`; Sq < Shp; Hold[T <: Shp] with
+`@v : T`, `get -> T`, `shape -> Shp` (`@v` given back at the bound) and
+`sides -> Int` (`@v.sides`, the bound's method). -/
+
+def boundClasses : ClassTable :=
+  [object,
+   ⟨"Shp", some 0, [⟨"n", [.int], false, none⟩], [], [], []⟩,
+   ⟨"Sq", some 1, [], [], [], []⟩,
+   ⟨"Hold", some 0, [⟨"v", [.param 0], false, none⟩], [.inv], [], [[.cls 1 []]]⟩]
+
+def boundProg (body : Expr) (locals : List (String × Ty) := []) (extra : List Method := []) : Program :=
+  ⟨boundClasses,
+   [⟨1, "initialize", [("n", [.int])], [.nil], none, [("n", [.int])], .setField "n" (.var "n" [.int])⟩,
+    ⟨1, "sides", [], [.int], none, [], .int 0⟩,
+    ⟨2, "sides", [], [.int], none, [], .int 4⟩,
+    ⟨3, "initialize", [("v", [.param 0])], [.nil], none, [("v", [.param 0])],
+      .setField "v" (.var "v" [.param 0])⟩,
+    ⟨3, "get", [], [.param 0], none, [], .field "v" [.param 0]⟩,
+    ⟨3, "shape", [], [.cls 1 []], none, [], .field "v" [.param 0]⟩,
+    ⟨3, "sides", [], [.int], none, [], .call (.field "v" [.param 0]) "sides" []⟩] ++ extra,
+   ⟨0, "<main>", [], [.nil, .bool, .int, .str, .cls 0 []], none, locals, body⟩, []⟩
+
+-- `Hold[Sq].new(Sq.new(1)).sides` runs `Sq#sides` through the bound.
+#guard (boundProg (.call (.new 3 [[.cls 2 []]] [.new 2 [] [.int 1]]) "sides" [])).check
+#guard match run (boundProg (.call (.new 3 [[.cls 2 []]] [.new 2 [] [.int 1]]) "sides" [])) noPrim 100 with
+  | .ok (.int 4) _ => true | _ => false
+-- An argument outside the bound is rejected at `new`.
+#guard !(boundProg (.new 3 [[.int]] [.int 1])).check
+-- Without the bound, `@v.sides` and giving `@v` back as a `Shp` are not
+-- allowed.
+def unboundHold : Class := ⟨"Hold", some 0, [⟨"v", [.param 0], false, none⟩], [.inv], [], []⟩
+#guard !(Program.check { boundProg .nil with classes := boundClasses.set 3 unboundHold })
 
 end QuarzCore.Examples

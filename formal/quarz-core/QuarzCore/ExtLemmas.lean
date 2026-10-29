@@ -122,6 +122,7 @@ theorem WfStore.setLoc {Λ : List Ty} {s : Store} (h : WfStore P Λ s) (l : Nat)
   objs := fun l o ho => by
     obtain ⟨h1, h1a, h1b, h2, h3, h4⟩ := h.objs l o ho
     exact ⟨h1, h1a, h1b, h2, h3, fun i w f hs hw hf => h4 i w f hs hw hf⟩
+  bounds := fun l o ho => h.bounds l o ho
 
 /-- A new object at the end. -/
 theorem Ext.newObj {W Wo : Nat → Prop} {Λ : List Ty} {s : Store} (o : Obj) :

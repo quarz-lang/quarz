@@ -56,7 +56,7 @@ theorem check_typed : ∀ {c : Ctx} {Γ : Env} {e : Expr} {o : Out}, check c Γ 
       split at hg
       · assumption
       · cases hg
-    have hle : oe.ty.le c.ct fd.ty = true := by
+    have hle : oe.ty.le c.ct c.bounds fd.ty = true := by
       split at hg2
       · assumption
       · cases hg2

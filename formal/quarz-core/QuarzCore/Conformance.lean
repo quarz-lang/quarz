@@ -510,16 +510,27 @@ def program (j : Json) : M Program := do
       | t => T.tyClass t
     -- The model's range: a superclass's arguments take no arguments
     -- themselves (`Box[T]`, `Box[Int?]`, not `Box[Box[T]]`).
-    unless sup.2.all (fun t => decide (t.depth ≤ 1)) do throw "a superclass argument with arguments"
+    unless sup.2.all (fun t => t.all fun a => a.isParam || decide (a.depth ≤ 1)) do
+      throw "a superclass argument with arguments"
     let cid ← nat (← field c "id")
-    -- The type parameters: their variances; bounds are the next stage.
-    let params ← (← arr (← field c "type_params")).toList.mapM fun p => do
-      unless (← arr (← field p "bounds")).isEmpty do throw "a bounded type parameter"
-      match ← str (← field p "variance") with
-      | "Covariant" => pure Variance.co
-      | "Contravariant" => pure Variance.contra
-      | "Invariant" => pure Variance.inv
-      | v => throw s!"a {v} type parameter"
+    -- The type parameters: their variances and bounds (one bound, closed,
+    -- of atoms taking no arguments: `T <: Shape`; `T <: Comparable[T]`
+    -- and `T <: A & B` are out of range).
+    let pbs ← (← arr (← field c "type_params")).toList.mapM fun p => do
+      let bound ← match (← arr (← field p "bounds")).toList with
+        | [] => pure [Atom.cls 0 []]
+        | [b] =>
+          let t ← T.ty b
+          unless t.all (fun a => a.closed && decide (a.depth ≤ 1)) do throw "a bound with arguments"
+          pure t
+        | _ => throw "a type parameter with several bounds"
+      let v ← match ← str (← field p "variance") with
+        | "Covariant" => pure Variance.co
+        | "Contravariant" => pure Variance.contra
+        | "Invariant" => pure Variance.inv
+        | v => throw s!"a {v} type parameter"
+      pure (v, bound)
+    let params := pbs.map (·.1)
     let fields ← (← arr (← field c "fields")).toList.mapM fun f => do
       let name ← str (← field f "name")
       -- Its default, by its place in `field_defaults`.
@@ -527,7 +538,7 @@ def program (j : Json) : M Program := do
         (e.getObjValAs? Nat "class").toOption == some cid &&
         (e.getObjValAs? String "field").toOption == some name
       pure (⟨name, ← T.ty (← field f "type"), (← field f "var") == .bool true, d⟩ : Field)
-    pure (⟨← str (← field c "name"), some sup.1, fields, params, sup.2⟩ : Class)
+    pure (⟨← str (← field c "name"), some sup.1, fields, params, sup.2, pbs.map (·.2)⟩ : Class)
   let methods ← T.defs.toList.filterMapM fun d => do
     let m ← T.method (← nat (← field d "method"))
     match ← field d "def" with
@@ -562,7 +573,7 @@ def program (j : Json) : M Program := do
     | some q => if q ≥ 2 then accessor T q m else pure none
     | none => pure none
   let own := methods ++ accessors
-  let P : Program := ⟨⟨"Object", none, [], [], []⟩ :: ⟨"<main>", some 0, [], [], []⟩ :: qclasses,
+  let P : Program := ⟨⟨"Object", none, [], [], [], []⟩ :: ⟨"<main>", some 0, [], [], [], []⟩ :: qclasses,
     own ++ consts,
     ⟨1, "<main>", [], all, none, mainLocals, mainBody⟩, defaults⟩
   -- Two methods of one name in a class, or in a class and its ancestor

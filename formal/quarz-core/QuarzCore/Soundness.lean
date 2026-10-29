@@ -52,7 +52,7 @@ theorem Program.checkMethod_typed {mt : Method} (h : P.checkMethod mt = true) :
     ∃ o, Typed ⟨P, mt, false, false⟩ (mt.params.map (fun (x, t) => (.local x, t)) ++
         (if mt.name == "initialize" then Program.heldEnv P.classes (Ctx.fields ⟨P, mt, false, false⟩) else []))
       mt.body o ∧
-      (mt.name ≠ "initialize" → o.out = none ∨ o.ty.le P.classes mt.ret = true) ∧
+      (mt.name ≠ "initialize" → o.out = none ∨ o.ty.le P.classes (P.classes.boundsOf mt.owner) mt.ret = true) ∧
       (mt.name = "initialize" → o.out.all (Ctx.allSet ⟨P, mt, false, false⟩ ·) = true) := by
   unfold Program.checkMethod at h
   dsimp only at h
@@ -77,7 +77,7 @@ theorem Program.checkDefaults_typed {k : Nat} (h : P.checkDefaults k = true) :
       ∃ e o, P.defaults[d]? = some e ∧
       Typed (P.defaultCtx k f.ty)
         (Program.heldEnv P.classes ((P.classes.allFieldsAt k (P.classes.selfArgs k)).take j)) e o ∧
-      o.ty.le P.classes f.ty = true := by
+      o.ty.le P.classes (P.classes.boundsOf k) f.ty = true := by
   intro j f d hf hd
   unfold Program.checkDefaults at h
   have := List.all_eq_true.mp h (f, j) (List.mem_zipIdx_iff_getElem?.mpr hf)
@@ -96,7 +96,8 @@ theorem Program.check_wf (h : P.check = true) :
       (((P.classes[P.main.owner]?).map (·.params)).getD []) = [] ∧
       P.main.params = [] ∧ P.main.block = none ∧ P.wfMethod P.main = true ∧
       ∃ o, Typed ⟨P, P.main, false, false⟩ [] P.main.body o ∧
-        (P.main.name ≠ "initialize" → o.out = none ∨ o.ty.le P.classes P.main.ret = true) := by
+        (P.main.name ≠ "initialize" → o.out = none ∨
+          o.ty.le P.classes (P.classes.boundsOf P.main.owner) P.main.ret = true) := by
   simp only [Program.check, Bool.and_eq_true, decide_eq_true_eq, List.all_eq_true,
     List.isEmpty_iff, Option.isNone_iff_eq_none, List.mem_range] at h
   obtain ⟨⟨⟨hc, ⟨⟨⟨⟨hown, hf⟩, hmp⟩, hp⟩, hb⟩⟩, hall⟩, hcls⟩ := h
@@ -136,6 +137,15 @@ theorem run_sound (h : P.check = true) (horc : OracleOK P orc) (fuel : Nat) :
   let s0 : Store := ⟨[], [⟨P.main.owner, [], [], []⟩]⟩
   let names := P.main.locals.map (·.1)
   let Λ := P.main.locals.map fun x => x.2.subst []
+  -- The top level's class has no parameters, so no bounds.
+  have hbm : P.classes.boundsOf P.main.owner = [] := by
+    cases hk : P.classes[P.main.owner]? with
+    | none => simp [ClassTable.boundsOf, hk]
+    | some k =>
+      have hb := hwf.boundsLen _ k hk
+      simp [hk] at hmp
+      rw [hmp] at hb
+      simp [ClassTable.boundsOf, hk, List.eq_nil_of_length_eq_zero (Nat.le_zero.mp hb)]
   have hw : WfStore P Λ (s0.alloc names).1 := ⟨by simp [Store.alloc, Λ, names, s0], fun l o ho => by
     have : (s0.alloc names).1.objs = [⟨P.main.owner, [], [], []⟩] := rfl
     rw [this] at ho
@@ -143,7 +153,13 @@ theorem run_sound (h : P.check = true) (horc : OracleOK P orc) (fuel : Nat) :
     | zero =>
       simp at ho; subst ho
       exact ⟨hown, rfl, by simp [hmp], by simp [hnf], rfl, fun i v f h1 _ => by simp at h1⟩
-    | succ l => simp at ho⟩
+    | succ l => simp at ho,
+    fun l o ho => by
+      have : (s0.alloc names).1.objs = [⟨P.main.owner, [], [], []⟩] := rfl
+      rw [this] at ho
+      cases l with
+      | zero => simp at ho; subst ho; show ArgsIn P.classes (P.classes.boundsOf P.main.owner) []; rw [hbm]; exact ArgsIn.nil hwf _
+      | succ l => simp at ho⟩
   have hcl : ∀ x d, (⟨P, P.main, false, false⟩ : Ctx).decl x = some d →
       ∃ j, P.main.locals[j]? = some (x, d) := fun x d hd => by
     simp only [Ctx.decl, Option.map_eq_some_iff] at hd
@@ -160,7 +176,8 @@ theorem run_sound (h : P.check = true) (horc : OracleOK P orc) (fuel : Nat) :
           have := (List.getElem?_eq_some_iff.mp hf).1
           rw [ClassTable.allFieldsAt_length] at this
           simp [hnf] at this⟩,
-      ⟨0, rfl, by simp [Store.argsFor, Store.alloc, s0, ClassTable.ancestorArgs_self hwf]⟩, rfl⟩
+      ⟨0, rfl, by simp [Store.argsFor, Store.alloc, s0, ClassTable.ancestorArgs_self hwf]⟩, rfl,
+      by show ArgsIn P.classes (P.classes.boundsOf P.main.owner) []; rw [hbm]; exact ArgsIn.nil hwf _⟩
     · obtain ⟨j, hj⟩ := hcl x d hd
       refine ⟨j, by simpa [Store.alloc, s0] using lookupVar_alloc (base := 0) hnd (by simp [names, hj]), ?_⟩
       simp [Λ, hj]

@@ -39,7 +39,7 @@ def join : Env → Env → Env
 type below `Δ`'s). -/
 def implies (ct : ClassTable) (Γ Δ : Env) : Bool :=
   Δ.all fun (p, t) => match Γ.get p with
-    | some u => u.le ct t
+    | some u => u.le ct [] t
     | none => false
 
 end Env
@@ -85,6 +85,11 @@ structure Ctx where
 namespace Ctx
 
 def ct (c : Ctx) : ClassTable := c.prog.classes
+
+/-- The bounds of the parameters of the method's class: what a value of
+one of them is (`T <: X`), where values flow (arguments, results,
+assignments). Narrowing compares without them. -/
+def bounds (c : Ctx) : List Ty := c.ct.boundsOf c.meth.owner
 
 /-- `Σ(x)`: a local's declared type. -/
 def decl (c : Ctx) (x : String) : Option Ty := (c.meth.locals.find? (·.1 == x)).map (·.2)
@@ -198,8 +203,8 @@ block's parameters' types, and what the block gives back is of the
 result it takes. -/
 def BlockSig.le (ct : ClassTable) (sig sig' : BlockSig) : Prop :=
   sig.params.length = sig'.params.length ∧
-  (∀ (i : Nat) (t t' : Ty), sig.params[i]? = some t → sig'.params[i]? = some t' → t.le ct t' = true) ∧
-  sig'.ret.le ct sig.ret = true
+  (∀ (i : Nat) (t t' : Ty), sig.params[i]? = some t → sig'.params[i]? = some t' → t.le ct [] t' = true) ∧
+  sig'.ret.le ct [] sig.ret = true
 
 /-- `BlockSig.le` on a method's optional block. -/
 def BlockSig.optLe (ct : ClassTable) : Option BlockSig → Option BlockSig → Prop
@@ -220,13 +225,20 @@ receiver sees its signature. -/
 def Program.lookupAt (P : Program) (c : Nat) (as : List Ty) (m : String) : Option Method :=
   (P.lookup c m).bind fun mt => (P.classes.ancestorArgs c as mt.owner).map mt.inst
 
+/-- A type with each parameter replaced by its bound's atoms (in `κ`):
+what a value of it is, for finding the methods a call may run. -/
+def Ty.expand (κ : List Ty) (t : Ty) : Ty := t.flatMap fun a => match a with
+  | .param i => Ty.boundOf κ i
+  | a => [a]
+
 /-- The methods a call of `m` on a receiver of type `t` may run, one per
 atom (each must be a class that has it: `nil` has no methods). -/
-def Program.resolve (P : Program) (t : Ty) (m : String) : Option (List Method) :=
+def Program.resolve (P : Program) (κ : List Ty) (t : Ty) (m : String) : Option (List Method) :=
   -- `initialize` runs from `new` only: called again, it would assign a
   -- made object's immutable fields.
   if m == "initialize" then none else
-  t.mapM fun
+  -- A parameter's methods are its bound's (`T <: Shape`).
+  (Ty.expand κ t).mapM fun
     -- `Object` holds the value classes' values too, which have no
     -- methods in v1.
     | .cls c as => if c == 0 then none else P.lookupAt c as m
@@ -255,11 +267,11 @@ above it, one of a class related to `a`'s (the arguments may be the
 class's parameters, which the run-time class test does not see), or a
 type parameter: the value is an `a`, whatever `T` is. -/
 def isATrue (ct : ClassTable) (t : Ty) (a : Atom) : Ty :=
-  t.filter (·.le ct a) ++
-    (if t.any (fun b => (a.le ct b && a != b) || a.classRelated ct b || b.isParam) then [a] else [])
+  t.filter (·.le ct [] a) ++
+    (if t.any (fun b => (a.le ct [] b && a != b) || a.classRelated ct b || b.isParam) then [a] else [])
 
 def isAFalse (ct : ClassTable) (t : Ty) (a : Atom) : Ty :=
-  t.filter fun b => !(b.le ct a)
+  t.filter fun b => !(b.le ct [] a)
 
 /-- A class test's atom: a class of the table given as many arguments as
 it has parameters (or a value class). -/
@@ -295,7 +307,7 @@ def verifiable (ct : ClassTable) (t : Ty) (a : Atom) : Bool :=
       -- covariant ones). An unrelated class never passes the test.
       | .cls d bs => if ct.subclass d c then
           match ct.ancestorArgs d bs c with
-          | some as' => argsLeWith (Atom.le ct) (ct.variances c) as' args || objectArgs ct c args
+          | some as' => argsLeWith (Atom.le ct []) (ct.variances c) as' args || objectArgs ct c args
           | none => false
         else objectArgs ct c args || !ct.subclass c d
       | .param _ => objectArgs ct c args
@@ -317,12 +329,12 @@ def truthyTy (u : Ty) : Ty := u.remove .nil
 /-- The falsy values a type holds: `nil` and `false` where it holds
 them (`Object` does, as every value class), and its parameters. -/
 def falsyTy (ct : ClassTable) (u : Ty) : Ty :=
-  u.filter Atom.isParam ++ [.nil, .bool].filter fun a => Ty.le ct [a] u
+  u.filter Atom.isParam ++ [.nil, .bool].filter fun a => Ty.le ct [] [a] u
 
 /-- What a value of `u` found to be `nil` is: `nil`, if `u` holds it or
 has a parameter (whose instantiation may). -/
 def nilTy (ct : ClassTable) (u : Ty) : Ty :=
-  if u.any Atom.isParam || Ty.le ct [.nil] u then [.nil] else []
+  if u.any Atom.isParam || Ty.le ct [] [.nil] u then [.nil] else []
 
 /-- Whether `==` against `nil`, `true` or `false` may narrow what `e`
 reads in `Δ`: only a value no subclass can redefine `==` for. -/
@@ -339,19 +351,21 @@ least as wide as what `yield` gives. -/
 def blockParamsOk (c : Ctx) (ps : List String) (sig : BlockSig) : Bool :=
   ps.length == sig.params.length && decide ps.Nodup &&
   (ps.zip sig.params).all fun (x, t) => match c.decl x with
-    | some d => t.le c.ct d
+    | some d => t.le c.ct c.bounds d
     | none => false
 
 /-- `k[targs]` is a class with as many parameters, each argument naming
 only the class's own parameters (no bounds yet). -/
 def Ctx.argsWf (c : Ctx) (k : Nat) (targs : List Ty) : Bool :=
   match c.ct[k]? with
-  | some cl => targs.length == cl.params.length && Ty.argsParamsBelow c.selfArgs.length targs
+  | some cl => targs.length == cl.params.length && Ty.argsParamsBelow c.selfArgs.length targs &&
+      -- Each argument within its parameter's bound.
+      (targs.zipIdx.all fun (t, i) => t.le c.ct c.bounds (Ty.boundOf cl.bounds i))
   | none => false
 
 /-- The argument types fit the method's parameters. -/
 def argsOk (c : Ctx) (tys : List Ty) (mt : Method) : Bool :=
-  tys.length == mt.params.length && (tys.zip mt.params).all fun (t, (_, u)) => t.le c.ct u
+  tys.length == mt.params.length && (tys.zip mt.params).all fun (t, (_, u)) => t.le c.ct c.bounds u
 
 mutual
 
@@ -365,7 +379,7 @@ def check (c : Ctx) (Γ : Env) : Expr → Option Out
   | .var x t => do
     -- The annotation: at least what the local holds here.
     let u ← Γ.get (.local x)
-    guard (u.le c.ct t)
+    guard (u.le c.ct c.bounds t)
     some ⟨t, some Γ, narrow Γ (.local x) (truthyTy u),
       narrow Γ (.local x) (falsyTy c.ct u)⟩
   | .field f t => do
@@ -373,17 +387,17 @@ def check (c : Ctx) (Γ : Env) : Expr → Option Out
     -- In `initialize`, only a field already set (docs/01 §3).
     guard (!c.inInit || (Γ.get (.field f)).isSome)
     if fd.var then
-      guard (fd.ty.le c.ct t)
+      guard (fd.ty.le c.ct c.bounds t)
       some (.plain t Γ)
     else
       let u := (Γ.get (.field f)).getD fd.ty
-      guard (u.le c.ct t)
+      guard (u.le c.ct c.bounds t)
       some ⟨t, some Γ, narrow Γ (.field f) (truthyTy u),
         narrow Γ (.field f) (falsyTy c.ct u)⟩
   | .assign x e => do
     let o ← check c Γ e
     let d ← c.decl x
-    guard (o.ty.le c.ct d)
+    guard (o.ty.le c.ct c.bounds d)
     match o.out with
     | none => some .dead
     | some Δ => some (.plain o.ty (Δ.set (.local x) o.ty))
@@ -392,7 +406,7 @@ def check (c : Ctx) (Γ : Env) : Expr → Option Out
     -- An immutable field only in `initialize` (not in a block of it).
     guard (fd.var || (c.inInit && !c.inBlock))
     let o ← check c Γ e
-    guard (o.ty.le c.ct fd.ty)
+    guard (o.ty.le c.ct c.bounds fd.ty)
     match o.out with
     | none => some .dead
     | some Δ => some (.plain o.ty (if c.inInit then Δ.set (.field f) (if fd.var then fd.ty else o.ty)
@@ -439,7 +453,7 @@ def check (c : Ctx) (Γ : Env) : Expr → Option Out
       | none => none
       | some .dead => some .dead
       | some (.live tys Δ') =>
-        let ms ← c.prog.resolve o.ty m
+        let ms ← c.prog.resolve c.bounds o.ty m
         guard (ms.all fun mt => mt.block.isNone && argsOk c tys mt)
         some (.plain (ms.flatMap (·.ret)) Δ')
   | .callBlk r m args ps body => do
@@ -451,7 +465,7 @@ def check (c : Ctx) (Γ : Env) : Expr → Option Out
       | none => none
       | some .dead => some .dead
       | some (.live tys Δ') =>
-        let ms ← c.prog.resolve o.ty m
+        let ms ← c.prog.resolve c.bounds o.ty m
         let mt ← ms.head?
         let sig ← mt.block
         guard (ms.all fun mt' => mt'.block == some sig && argsOk c tys mt')
@@ -459,7 +473,7 @@ def check (c : Ctx) (Γ : Env) : Expr → Option Out
         -- The block runs 0 or more times, during the call: its body starts
         -- with what it assigns un-narrowed, its parameters given.
         let ob ← check { c with inBlock := true } (blockEnv c Δ' ps sig body) body
-        guard (ob.ty.le c.ct sig.ret)
+        guard (ob.ty.le c.ct c.bounds sig.ret)
         some (.plain (ms.flatMap (·.ret)) (match ob.out with
           | some Γb => Δ'.join Γb
           | none => Δ'))
@@ -470,7 +484,7 @@ def check (c : Ctx) (Γ : Env) : Expr → Option Out
     | some .dead => some .dead
     | some (.live tys Δ) =>
       guard (tys.length == sig.params.length &&
-        (tys.zip sig.params).all fun (t, u) => t.le c.ct u)
+        (tys.zip sig.params).all fun (t, u) => t.le c.ct c.bounds u)
       some (.plain sig.ret Δ)
   | .prim _ args params ret => do
     match checkArgs c Γ args with
@@ -478,7 +492,7 @@ def check (c : Ctx) (Γ : Env) : Expr → Option Out
     | some .dead => some .dead
     | some (.live tys Δ) =>
       guard (tys.length == params.length &&
-        (tys.zip params).all fun (t, u) => t.le c.ct u)
+        (tys.zip params).all fun (t, u) => t.le c.ct c.bounds u)
       some (.plain ret Δ)
   | .seq a b => do
     let oa ← check c Γ a
@@ -504,7 +518,7 @@ def check (c : Ctx) (Γ : Env) : Expr → Option Out
   | .ret e => do
     guard (!c.inBlock)
     let o ← check c Γ e
-    guard (o.ty.le c.ct c.meth.ret)
+    guard (o.ty.le c.ct c.bounds c.meth.ret)
     -- An `initialize` returns only once every field is set.
     guard (!c.inInit || (o.out.all (c.allSet ·)))
     some .dead

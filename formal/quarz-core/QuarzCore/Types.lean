@@ -130,10 +130,12 @@ def Ty.closedArgs : List Ty → Bool
   | t :: ts => t.closed && Ty.closedArgs ts
 end
 
--- How deep the type arguments nest: an atom without arguments is 1.
+-- How deep the type arguments nest: an atom without arguments is 1, a
+-- parameter 2 (deeper than its bound, which `≤` compares in its place).
 mutual
 def Atom.depth : Atom → Nat
   | .cls _ args => Ty.argsDepth args + 1
+  | .param _ => 2
   | _ => 1
 def Ty.depth : Ty → Nat
   | [] => 0
@@ -180,6 +182,8 @@ structure Class where
   fields : List Field
   params : List Variance := []
   superArgs : List Ty := []
+  /-- The parameters' upper bounds (`T <: X`; `Object` past the end). -/
+  bounds : List Ty := []
   deriving Repr, Inhabited
 
 abbrev ClassTable := List Class
@@ -233,6 +237,10 @@ def ancestorArgsAux (ct : ClassTable) : Nat → Nat → List Ty → Nat → Opti
 def ancestorArgs (ct : ClassTable) (c : Nat) (as : List Ty) (d : Nat) : Option (List Ty) :=
   ancestorArgsAux ct ct.length c as d
 
+/-- The upper bounds of class `d`'s parameters. -/
+def boundsOf (ct : ClassTable) (d : Nat) : List Ty :=
+  ((ct[d]?).map (·.bounds)).getD []
+
 /-- The variances of class `d`'s parameters. -/
 def variances (ct : ClassTable) (d : Nat) : List Variance :=
   ((ct[d]?).map (·.params)).getD []
@@ -273,35 +281,41 @@ def argsLeWith (f : Atom → Atom → Bool) : List Variance → List Ty → List
   | vs, s :: ss, t :: ts => (vs.headD .inv).leWith f s t && argsLeWith f vs.tail ss ts
   | _, _, _ => false
 
+/-- Parameter `i`'s bound among `κ` (a class's parameters' bounds), when
+it is one `≤` can use in its place: closed, of atoms taking no
+arguments; otherwise, and past the end, `Object`. -/
+def Ty.boundOf (κ : List Ty) (i : Nat) : Ty :=
+  if (κ.getD i [.cls 0 []]).all fun a => a.closed && decide (a.depth ≤ 1) then κ.getD i [.cls 0 []]
+  else [.cls 0 []]
+
 /-- Atom order with fuel (the arguments' comparison recurses into types
 that the chain may make no smaller: `le` gives it enough). The value
 classes are direct subclasses of `Object` (class 0) and have no
 subclasses. A class is below an ancestor when the chain gives that
 ancestor arguments below the other's, as its parameters' variances say,
-and every class is below `Object`. A parameter is only below itself
-and `Object`. -/
-def Atom.leF (ct : ClassTable) : Nat → Atom → Atom → Bool
+and every class is below `Object`. A parameter is below itself and
+what its bound (in `κ`) is below. -/
+def Atom.leF (ct : ClassTable) (κ : List Ty) : Nat → Atom → Atom → Bool
   | 0, _, _ => false
   | n + 1, .cls c as, .cls d bs => (d == 0 && bs.isEmpty) || match ct.ancestorArgs c as d with
-    | some as' => argsLeWith (Atom.leF ct n) (ct.variances d) as' bs
+    | some as' => argsLeWith (Atom.leF ct κ n) (ct.variances d) as' bs
     | none => false
   | _ + 1, .cls _ _, _ => false
   | _ + 1, .param i, .param j => i == j
-  | _ + 1, .param _, .cls d bs => d == 0 && bs.isEmpty
-  | _ + 1, .param _, _ => false
+  | n + 1, .param i, b => (Ty.boundOf κ i).all fun a => Atom.leF ct κ n a b
   | _ + 1, _, .cls d bs => d == 0 && bs.isEmpty
   | _ + 1, a, b => a == b
 
-/-- Atom order: `leF` with as much fuel as the two atoms are deep, which
-is enough when the superclasses' arguments take no arguments themselves
-(`WfClasses`). -/
-def Atom.le (ct : ClassTable) : Atom → Atom → Bool
+/-- Atom order, with `κ` the bounds of the parameters of the class whose
+types are compared (none, `[]`, for values' types): `leF` with as much
+fuel as the two atoms are deep, which is enough when the superclasses'
+arguments take no arguments themselves (`WfClasses`). -/
+def Atom.le (ct : ClassTable) (κ : List Ty) : Atom → Atom → Bool
   | .cls c as, .cls d bs =>
-    Atom.leF ct ((Atom.cls c as).depth + (Atom.cls d bs).depth) (.cls c as) (.cls d bs)
+    Atom.leF ct κ ((Atom.cls c as).depth + (Atom.cls d bs).depth) (.cls c as) (.cls d bs)
   | .cls _ _, _ => false
   | .param i, .param j => i == j
-  | .param _, .cls d bs => d == 0 && bs.isEmpty
-  | .param _, _ => false
+  | .param i, b => Atom.leF ct κ ((Atom.param i).depth + b.depth) (.param i) b
   | _, .cls d bs => d == 0 && bs.isEmpty
   | a, b => a == b
 
@@ -333,8 +347,8 @@ def Ty.argsPosOk (ct : ClassTable) (vs : List Variance) (pos : Bool) :
 end
 
 /-- `S ≤ T`: each atom of `S` is below one of `T`. -/
-def Ty.le (ct : ClassTable) (s t : Ty) : Bool :=
-  s.all fun a => t.any fun b => a.le ct b
+def Ty.le (ct : ClassTable) (κ : List Ty) (s t : Ty) : Bool :=
+  s.all fun a => t.any fun b => a.le ct κ b
 
 def Ty.nothing : Ty := []
 
@@ -350,6 +364,6 @@ def Ty.allFinal (t : Ty) : Bool := t.all Atom.final
 /-- A field that must be assigned in `initialize`: no default, and a type
 without `nil` (docs/01 §3; `var` or not). -/
 def Field.required (ct : ClassTable) (f : Field) : Bool :=
-  f.default.isNone && !Ty.le ct [.nil] f.ty
+  f.default.isNone && !Ty.le ct [] [.nil] f.ty
 
 end QuarzCore

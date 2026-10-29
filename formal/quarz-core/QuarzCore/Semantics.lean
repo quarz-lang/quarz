@@ -95,7 +95,7 @@ def typeOf (s : Store) : Value → Option Atom
 
 def hasType (ct : ClassTable) (s : Store) (v : Value) (t : Ty) : Bool :=
   match s.typeOf v with
-  | some a => Ty.le ct [a] t
+  | some a => Ty.le ct [] [a] t
   | none => false
 
 def setLoc (s : Store) (l : Nat) (v : Value) : Store := { s with locs := s.locs.set l v }
@@ -239,7 +239,7 @@ def eval (P : Program) (orc : Oracle) : Nat → Frame → Store → Expr → Res
     | .isA e a => (eval P orc n fr s e).bind fun v s =>
       match s.typeOf v, a with
       | some (.cls c _), .cls d _ => .ok (.bool (P.classes.subclass c d)) s
-      | some u, _ => .ok (.bool (u.le P.classes a)) s
+      | some u, _ => .ok (.bool (u.le P.classes [] a)) s
       | none, _ => .stuck
     | .eqNil e => (eval P orc n fr s e).bind fun v s => equal P orc n s v .nil
     | .neNil e => (eval P orc n fr s e).bind fun v s =>
@@ -302,7 +302,7 @@ def construct (P : Program) (orc : Oracle) : Nat → Store → Nat → List Ty �
     let fs := P.classes.allFieldsAt k targs
     let l := s.objs.length
     let s := { s with objs := s.objs ++ [⟨k, targs, fs.map fun _ => .nil,
-      fs.map fun f => f.default.isNone && Ty.le P.classes [.nil] f.ty⟩] }
+      fs.map fun f => f.default.isNone && Ty.le P.classes [] [.nil] f.ty⟩] }
     match runDefaults P orc n s l fs.zipIdx with
     | .ok _ s => match P.lookup k "initialize" with
       | some mt =>

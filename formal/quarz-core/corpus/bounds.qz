@@ -1,0 +1,49 @@
+# Bounds within QCore's range (formal/quarz-core, G1c): a class parameter
+# bounded by a class (`T <: Shape`), its values given back where the
+# bound is expected and their methods (the bound's) called; arguments
+# checked against the bound at `new`.
+class Shape
+  @name: String
+  def initialize(name: String)
+    @name = name
+  end
+  def name -> String = @name
+  def sides -> Int = 0
+end
+
+class Square < Shape
+  def initialize
+    super("square")
+  end
+  def sides -> Int = 4
+end
+
+class Holder[T <: Shape]
+  @v: T
+  def initialize(v: T)
+    @v = v
+  end
+  def get -> T = @v
+  def shape -> Shape = @v
+  def label -> String = @v.name
+  def sides -> Int = @v.sides
+end
+
+class Pen[out T <: Shape]
+  @v: T
+  def initialize(v: T)
+    @v = v
+  end
+  def get -> T = @v
+end
+
+h = Holder[Square].new(Square.new)
+puts h.label
+puts h.shape.name
+puts h.sides
+puts h.get.sides
+g = Holder[Shape].new(Shape.new("blob"))
+puts g.label
+puts g.sides
+p = Pen[Square].new(Square.new)
+puts p.get.name

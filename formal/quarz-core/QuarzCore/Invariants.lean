@@ -53,6 +53,8 @@ structure WfStore (Λ : List Ty) (s : Store) : Prop where
     o.set.length = o.fields.length ∧
     ∀ (i : Nat) (v : Value) (f : Field), o.set[i]? = some true → o.fields[i]? = some v →
       (P.classes.allFieldsAt o.cls o.args)[i]? = some f → s.hasTy P v f.ty
+  /-- Each object's type arguments are within its class's bounds. -/
+  bounds : ∀ (l : Nat) (o : Obj), s.objs[l]? = some o → ArgsIn P.classes (P.classes.boundsOf o.cls) o.args
 
 /-- Objects keep their classes, their type arguments and the fields set. -/
 def ObjsGrow (s s' : Store) : Prop :=
@@ -136,6 +138,8 @@ structure FrameCore (c : Ctx) (Λ : List Ty) (vars : List (String × Nat)) (me :
   selfInit : c.inInit = true → InitSelf P c.meth.owner me s
   selfObj : ∃ l, me = .obj l ∧ sa = s.argsFor P.classes l c.meth.owner
   closed : Ty.closedArgs sa = true
+  /-- The arguments are within the method's class's bounds. -/
+  bounded : ArgsIn P.classes c.bounds sa
 
 /-- A frame's block chain as it was checked: for each block (innermost
 first) the context it was written in, the environment at its call and
@@ -157,7 +161,7 @@ def ChainAt (Λ : List Ty) (s : Store) : List (Ctx × Env × Out) → Option Clo
       (∃ sig0, BlockSig.le c.ct sig (sig0.subst sa) ∧
         blockParamsOk c ps sig0 = true ∧
         Typed { c with inBlock := true } (blockEnv c Δ ps sig0 body) body ob ∧
-        ob.ty.le c.ct sig0.ret = true) ∧
+        ob.ty.le c.ct c.bounds sig0.ret = true) ∧
       Sat P c (c.reset Δ (ps ++ body.assigned)) ⟨vars, self, sa, outer⟩ s ∧
       Sat P c (match ob.out with
         | some Γb => Δ.join Γb
@@ -183,7 +187,7 @@ structure WfProg : Prop where
     ∃ o, Typed ⟨P, mt, false, false⟩ (mt.params.map (fun (x, t) => (.local x, t)) ++
         (if mt.name == "initialize" then Program.heldEnv P.classes (Ctx.fields ⟨P, mt, false, false⟩) else []))
       mt.body o ∧
-      (mt.name ≠ "initialize" → o.out = none ∨ o.ty.le P.classes mt.ret = true) ∧
+      (mt.name ≠ "initialize" → o.out = none ∨ o.ty.le P.classes (P.classes.boundsOf mt.owner) mt.ret = true) ∧
       (mt.name = "initialize" → o.out.all (Ctx.allSet ⟨P, mt, false, false⟩ ·) = true)
   inits : ∀ k, k < P.classes.length → P.wfInit k = true
   /-- Each field default, checked in its class's view of the fields. -/
@@ -192,7 +196,7 @@ structure WfProg : Prop where
     f.default = some d → ∃ e o, P.defaults[d]? = some e ∧
       Typed (P.defaultCtx k f.ty)
         (Program.heldEnv P.classes ((P.classes.allFieldsAt k (P.classes.selfArgs k)).take j)) e o ∧
-      o.ty.le P.classes f.ty = true
+      o.ty.le P.classes (P.classes.boundsOf k) f.ty = true
 
 /-- Where an environment holds after an expression, if control gets there. -/
 def OutOK (c : Ctx) (g : Option Env) (fr : Frame) (s : Store) : Prop :=

@@ -371,6 +371,11 @@ theorem WfStore.setField {Λ : List Ty} {s : Store} (hw : WfStore P Λ s)
     (hfi : (P.classes.allFieldsAt o.cls o.args)[i]? = some fd)
     (hv : s.hasTy P v fd.ty) : WfStore P Λ (s.setField l i v) where
   len := hw.len
+  bounds := fun l' o' h => by
+    rw [Store.setField_objs] at h
+    by_cases hl : l' = l
+    · subst hl; rw [if_pos rfl, ho] at h; cases h; exact hw.bounds l' o ho
+    · rw [if_neg hl] at h; exact hw.bounds l' o' h
   objs := fun l' o' h => by
     have mono : ∀ {w : Value} {t : Ty}, s.hasTy P w t → (s.setField l i v).hasTy P w t :=
       fun hw' => hasTy_mono setField_grow hw'
@@ -604,13 +609,14 @@ theorem testOut_ok (hwf : WfClasses P.classes) {c : Ctx} {e : Expr} {Δ : Env} {
       exact ⟨_, narrow_eq Δ _ (Ty.ne_nil_of_subst (ne_nil_of_hasTy h)), hs.set (hre _ h)⟩
   · exact ⟨⟨Δ, rfl, hs⟩, fun _ => ⟨Δ, rfl, hs⟩, fun _ => ⟨Δ, rfl, hs⟩⟩
 
-theorem resolve_mem {t : Ty} {m : String} {ms : List Method} (h : P.resolve t m = some ms)
-    {b : Atom} (hb : b ∈ t) :
+theorem resolve_mem {κ : List Ty} {t : Ty} {m : String} {ms : List Method}
+    (h : P.resolve κ t m = some ms) {b : Atom} (hb : b ∈ Ty.expand κ t) :
     ∃ k as mt, b = .cls k as ∧ k ≠ 0 ∧ P.lookupAt k as m = some mt ∧ mt ∈ ms := by
   unfold Program.resolve at h
   split at h
   · cases h
   clear ‹¬_›
+  generalize Ty.expand κ t = t at h hb
   induction t generalizing ms with
   | nil => cases hb
   | cons a t ih =>
@@ -625,17 +631,18 @@ theorem resolve_mem {t : Ty} {m : String} {ms : List Method} (h : P.resolve t m 
         · simp [hk] at h0
           exact ⟨k, as, mt0, rfl, hk, h0, by simp⟩
       | _ => simp at h0
-    · obtain ⟨k, as, mt, h1, h2, h3, h4⟩ := ih hb h'
+    · obtain ⟨k, as, mt, h1, h2, h3, h4⟩ := ih h' hb
       exact ⟨k, as, mt, h1, h2, h3, List.mem_cons_of_mem _ h4⟩
 
 /-- No call reaches `initialize`. -/
-theorem resolve_not_init {t : Ty} {m : String} {ms : List Method} (h : P.resolve t m = some ms) :
+theorem resolve_not_init {κ : List Ty} {t : Ty} {m : String} {ms : List Method}
+    (h : P.resolve κ t m = some ms) :
     m ≠ "initialize" := by
   rintro rfl; simp [Program.resolve] at h
 
 theorem AllTy.le (hwf : WfClasses P.classes) {s : Store} :
     ∀ {vs : List Value} {ts us : List Ty}, AllTy P s vs ts → ts.length = us.length →
-      ((ts.zip us).all fun (t, u) => t.le P.classes u) = true → AllTy P s vs us
+      ((ts.zip us).all fun (t, u) => t.le P.classes [] u) = true → AllTy P s vs us
   | [], [], [], _, _, _ => trivial
   | _ :: _, _ :: _, _ :: _, ⟨h1, h2⟩, hl, ha => by
     simp only [List.zip_cons_cons, List.all_cons, Bool.and_eq_true] at ha
@@ -648,7 +655,7 @@ theorem AllTy.le (hwf : WfClasses P.classes) {s : Store} :
 /-- Arguments of types fitting the parameters (`argsOk`). -/
 theorem AllTy.le_params (hwf : WfClasses P.classes) {s : Store} :
     ∀ {vs : List Value} {ts : List Ty} {ps : List (String × Ty)}, AllTy P s vs ts →
-      ts.length = ps.length → ((ts.zip ps).all fun (t, (_, u)) => t.le P.classes u) = true →
+      ts.length = ps.length → ((ts.zip ps).all fun (t, (_, u)) => t.le P.classes [] u) = true →
       AllTy P s vs (ps.map (·.2))
   | [], [], [], _, _, _ => trivial
   | _ :: _, _ :: _, _ :: _, ⟨h1, h2⟩, hl, ha => by
@@ -700,17 +707,38 @@ theorem obj_of_hasTy_cls (hwf : WfClasses P.classes) {s : Store} {v : Value} {k 
 class the method was found in, given the arguments its view of the
 receiver has substituted, where the method found is that view's
 instantiated. -/
-theorem recv_of {s : Store} {v : Value} {σ : List Ty} {t : Ty} {m : String} {ms : List Method}
-    (hv : s.hasTy P v (t.subst σ)) (hres : P.resolve t m = some ms) :
+theorem recv_of (hwf : WfClasses P.classes) {κ σ : List Ty} (hσ : ArgsIn P.classes κ σ)
+    {s : Store} {v : Value} {t : Ty} {m : String} {ms : List Method}
+    (hv : s.hasTy P v (t.subst σ)) (hres : P.resolve κ t m = some ms) :
     ∃ k as mt, k ≠ 0 ∧ P.lookupAt k (Ty.substArgs σ as) m = some (mt.inst σ) ∧ mt ∈ ms ∧
       s.hasTy P v [.cls k (Ty.substArgs σ as)] := by
   rw [hasTy_iff] at hv
   obtain ⟨a, ha, b', hb', hab⟩ := hv
   obtain ⟨b, hb, hbb'⟩ := Ty.mem_subst.mp hb'
-  obtain ⟨k, as, mt, rfl, hk, hl, hm⟩ := resolve_mem hres hb
-  simp at hbb'; subst hbb'
-  exact ⟨k, as, mt, hk, Program.lookupAt_subst σ hl, hm,
-    hasTy_iff.mpr ⟨a, ha, .cls k _, List.mem_singleton.mpr rfl, hab⟩⟩
+  cases b
+  case param i =>
+    -- What the parameter stands for is within its bound: the value is of
+    -- one of the bound's (closed) atoms, whose method the call runs.
+    simp only [Atom.subst] at hbb'
+    obtain ⟨β, hβ, hbβ⟩ := Ty.le_iff.mp (hσ i) b' hbb'
+    have hβt : β ∈ Ty.expand κ t := List.mem_flatMap.mpr ⟨.param i, hb, hβ⟩
+    obtain ⟨k, as, mt, rfl, hk, hl, hm⟩ := resolve_mem hres hβt
+    have hc : Ty.closedArgs as = true := by
+      have := (Ty.boundOf_mem hβ).1; simpa [Atom.closed] using this
+    refine ⟨k, as, mt, hk, Program.lookupAt_subst σ hl, hm, ?_⟩
+    rw [Ty.substArgs_closed_id σ as hc]
+    exact hasTy_iff.mpr ⟨a, ha, .cls k as, List.mem_singleton.mpr rfl, Atom.le_trans hwf hab hbβ⟩
+  case cls c0 as0 =>
+    obtain ⟨k, as, mt, hbk, hk, hl, hm⟩ := resolve_mem hres
+      (List.mem_flatMap.mpr ⟨_, hb, List.mem_singleton.mpr rfl⟩)
+    cases hbk
+    simp at hbb'; subst hbb'
+    exact ⟨c0, as0, mt, hk, Program.lookupAt_subst σ hl, hm,
+      hasTy_iff.mpr ⟨a, ha, .cls c0 _, List.mem_singleton.mpr rfl, hab⟩⟩
+  all_goals
+    obtain ⟨k, as, mt, hbk, _⟩ := resolve_mem hres
+      (List.mem_flatMap.mpr ⟨_, hb, List.mem_singleton.mpr rfl⟩)
+    cases hbk
 
 /-- A value of a method's result type, substituted, is of the union of the
 candidates' results, substituted. -/
@@ -831,7 +859,8 @@ theorem init_run (hP : WfProg P) {n : Nat} (ihe : EvalGood P orc n) {s : Store} 
     ⟨by simp [hw.len, hlen3], fun l' o' ho' => by
       rw [hobjs] at ho'
       obtain ⟨a, a1, a2, b, b2, d⟩ := hw.objs l' o' ho'
-      exact ⟨a, a1, a2, b, b2, fun i v f h0 h1 h2 => mono (d i v f h0 h1 h2)⟩⟩
+      exact ⟨a, a1, a2, b, b2, fun i v f h0 h1 h2 => mono (d i v f h0 h1 h2)⟩,
+    fun l' o' ho' => by rw [hobjs] at ho'; exact hw.bounds l' o' ho'⟩
   have ho3 : s3.objs[l]? = some o := by rw [hobjs]; exact ho
   obtain ⟨rest, hrest⟩ := allFields_prefix hwf hsub
   have hsa3 : s3.argsFor P.classes l mi.owner = σ := by simp [Store.argsFor, ho3, hσ]
@@ -840,7 +869,8 @@ theorem init_run (hP : WfProg P) {n : Nat} (ihe : EvalGood P orc n) {s : Store} 
     refine ⟨fun x d hd => ?_, fun x y l' hx hy => ?_, fun x l' hm => ?_,
       fun h => (by rw [hinInit] at h; cases h),
       fun _ => ⟨l, o, rfl, ho3, hsub, fun i h1 h2 => ?_, fun i f hf _ hr => hset i f hf (.inr hr)⟩,
-      ⟨l, rfl, hsa3.symm⟩, ClassTable.ancestorArgs_closed P.classes hσ hclosed⟩
+      ⟨l, rfl, hsa3.symm⟩, ClassTable.ancestorArgs_closed P.classes hσ hclosed,
+      ClassTable.ancestorArgs_in hwf hσ hlen' (hw.bounds l o ho)⟩
     · obtain ⟨j, hj⟩ := hcl x d hd
       refine ⟨_, hlookj j x d hj, ?_⟩
       have hjl := (List.getElem?_eq_some_iff.mp hj).1
@@ -1113,11 +1143,50 @@ theorem superArgs_runtime (hwf : WfClasses P.classes) {c : Ctx} (hc : c.prog = P
   have h4 := ClassTable.ancestorArgs_trans hwf h2 h3
   simp [Store.argsFor, ho, h4]
 
+/-- `new`'s type arguments, through the frame's arguments: within the
+class's bounds, as the checker compared them. -/
+theorem argsWf_in (hwf : WfClasses P.classes) {c : Ctx} (hc : c.prog = P) {k : Nat} {targs : List Ty}
+    (h : c.argsWf k targs = true) {σ : List Ty} (hσ : ArgsIn P.classes c.bounds σ) :
+    ArgsIn P.classes (P.classes.boundsOf k) (Ty.substArgs σ targs) := by
+  subst hc
+  unfold Ctx.argsWf at h
+  cases hk : c.ct[k]? with
+  | none => rw [hk] at h; cases h
+  | some cl =>
+    rw [hk] at h
+    simp only [Bool.and_eq_true, beq_iff_eq, List.all_eq_true] at h
+    obtain ⟨⟨hlen, _⟩, hall⟩ := h
+    have hk' : c.prog.classes[k]? = some cl := hk
+    have hb : c.prog.classes.boundsOf k = cl.bounds := by simp [ClassTable.boundsOf, hk']
+    rw [hb]
+    intro i
+    cases hi : targs[i]? with
+    | none =>
+      have : (Ty.substArgs σ targs)[i]? = none := by rw [Ty.substArgs_getElem?, hi]; rfl
+      rw [this, Ty.boundOf_out]
+      · exact Ty.le_top hwf _
+      · have hbl := hwf.boundsLen k cl (by simpa [Ctx.ct] using hk)
+        have := List.getElem?_eq_none_iff.mp hi
+        omega
+    | some t =>
+      rw [Ty.substArgs_getElem?, hi]
+      simp only [Option.map_some, Option.getD_some]
+      have := Ty.subst_leK hwf σ hσ (hall (t, i) (List.mem_zipIdx_iff_getElem?.mpr hi))
+      rwa [Ty.subst_closed_id σ _ (Ty.boundOf_closed _ _)] at this
+
+/-- A comparison the checker made (with the method's class's bounds),
+through the frame's arguments (within them). -/
+theorem FrameOK.substLe {c : Ctx} {Λ : List Ty} {fr : Frame} {s : Store} {ws : List (Ctx × Env × Out)}
+    (hwf : WfClasses c.prog.classes) (hf : FrameOK c.prog c Λ fr s ws) {t u : Ty}
+    (h : Ty.le c.ct c.bounds t u = true) :
+    Ty.le c.prog.classes [] (t.subst fr.selfArgs) (u.subst fr.selfArgs) = true :=
+  Ty.subst_leK hwf fr.selfArgs hf.core.bounded h
+
 /-- Values of types below others, both seen through the frame's arguments. -/
-theorem AllTy.le_subst (hwf : WfClasses P.classes) {s : Store} {σ : List Ty}
-    {vs : List Value} {ts us : List Ty}
+theorem AllTy.le_subst (hwf : WfClasses P.classes) {s : Store} {σ κ : List Ty}
+    (hσ : ArgsIn P.classes κ σ) {vs : List Value} {ts us : List Ty}
     (h : AllTy P s vs (ts.map (Ty.subst σ))) (hl : ts.length = us.length)
-    (ha : ((ts.zip us).all fun (t, u) => t.le P.classes u) = true) :
+    (ha : ((ts.zip us).all fun (t, u) => t.le P.classes κ u) = true) :
     AllTy P s vs (us.map (Ty.subst σ)) := by
   induction ts generalizing vs us with
   | nil => cases us with
@@ -1134,14 +1203,14 @@ theorem AllTy.le_subst (hwf : WfClasses P.classes) {s : Store} {σ : List Ty}
       | cons v vs =>
         simp only [List.map_cons, AllTy] at h ⊢
         simp only [List.zip_cons_cons, List.all_cons, Bool.and_eq_true] at ha
-        exact ⟨hasTy_le hwf h.1 (Ty.subst_le hwf σ ha.1), ih h.2 (by simpa using hl) ha.2⟩
+        exact ⟨hasTy_le hwf h.1 (Ty.subst_leK hwf σ hσ ha.1), ih h.2 (by simpa using hl) ha.2⟩
 
 /-- Arguments of types fitting the parameters (`argsOk`), both seen through
 the frame's arguments. -/
-theorem AllTy.le_params_subst (hwf : WfClasses P.classes) {s : Store} {σ : List Ty}
-    {vs : List Value} {ts : List Ty} {ps : List (String × Ty)}
+theorem AllTy.le_params_subst (hwf : WfClasses P.classes) {s : Store} {σ κ : List Ty}
+    (hσ : ArgsIn P.classes κ σ) {vs : List Value} {ts : List Ty} {ps : List (String × Ty)}
     (h : AllTy P s vs (ts.map (Ty.subst σ))) (hl : ts.length = ps.length)
-    (ha : ((ts.zip ps).all fun (t, (_, u)) => t.le P.classes u) = true) :
+    (ha : ((ts.zip ps).all fun (t, (_, u)) => t.le P.classes κ u) = true) :
     AllTy P s vs ((ps.map (·.2)).map (Ty.subst σ)) := by
   induction ts generalizing vs ps with
   | nil => cases ps with
@@ -1158,7 +1227,7 @@ theorem AllTy.le_params_subst (hwf : WfClasses P.classes) {s : Store} {σ : List
       | cons v vs =>
         simp only [List.map_cons, AllTy] at h ⊢
         simp only [List.zip_cons_cons, List.all_cons, Bool.and_eq_true] at ha
-        exact ⟨hasTy_le hwf h.1 (Ty.subst_le hwf σ ha.1), ih h.2 (by simpa using hl) ha.2⟩
+        exact ⟨hasTy_le hwf h.1 (Ty.subst_leK hwf σ hσ ha.1), ih h.2 (by simpa using hl) ha.2⟩
 
 /-- What `argsWf` says: the class is one, with as many parameters as
 arguments. -/
@@ -1194,7 +1263,7 @@ theorem eval_succ : EvalGood P orc (n + 1) := by
   | raise => trivial
   | var hu hle =>
     obtain ⟨l, v, d, hl, hv, hd, hvu, hvd⟩ := hs _ _ hu
-    have hvt := hasTy_le hwf hvu (Ty.subst_le hwf fr.selfArgs hle)
+    have hvt := hasTy_le hwf hvu (hf.substLe hwf hle)
     simp only [eval, hl, Option.bind_some, hv]
     simp only [Store.hasTy] at hvt
     rw [if_pos hvt]
@@ -1232,7 +1301,7 @@ theorem eval_succ : EvalGood P orc (n + 1) := by
     | ok v s1 =>
       obtain ⟨Λ1, a, b, d, g, ⟨Γ1, hΓ1, hs1⟩, _⟩ := this
       refine ⟨Λ1, a, b.monoW (evalW_mono (by simp [Expr.assigned])), d,
-        hasTy_le hwf g (Ty.subst_le hwf fr.selfArgs hle), hib, fun hi => ?_⟩
+        hasTy_le hwf g (hf.substLe hwf hle), hib, fun hi => ?_⟩
       rw [hΓ1, hi] at hall
       have := self_typed hwf rfl d a hs1 (by simpa [hi] using hall)
       obtain ⟨_, ha, _⟩ := hasTy_iff.mp this
@@ -1366,7 +1435,7 @@ theorem eval_succ : EvalGood P orc (n + 1) := by
     obtain ⟨l, hl, hΛ⟩ := hf1.core.decls x d hd
     have hlen := hf1.core.inStore x l (lookupVar_mem hl)
     simp only [hl]
-    have hvd := hasTy_le hwf hv1 (Ty.subst_le hwf fr.selfArgs hle)
+    have hvd := hasTy_le hwf hv1 (hf.substLe hwf hle)
     have he2 : Ext c.prog (fun l' => l' = l) (fun _ => False) Λ1 Λ1 s1 (s1.setLoc l v) :=
       Ext.setLoc hlen hΛ hvd rfl
     refine ⟨Λ1, hw1.setLoc l v, (he1.transF he2 hw).monoW ?_,
@@ -1442,7 +1511,7 @@ theorem eval_succ : EvalGood P orc (n + 1) := by
       obtain ⟨hlen', s3, hb, hargs3, hpost⟩ := init_run hP ih.eval hw1 hmem hname hblk0
         (by
           rw [hargs0]
-          have := AllTy.le_params_subst hwf hvs hlen hall
+          have := AllTy.le_params_subst hwf hf.core.bounded hvs hlen hall
           rwa [Method.inst_params_snd, Ty.substArgs_comp_fun] at this)
         ho1
         (ClassTable.ancestors_trans hwf _ _ _ hk1
@@ -1559,11 +1628,12 @@ theorem eval_succ : EvalGood P orc (n + 1) := by
       obtain ⟨hk', hlenk⟩ := argsWf_facts hk
       exact Post.ofConstruct rfl (ih.construct s1 Λ1 k _ vs hw1 hk'
           (Ty.substArgs_closed _ hf1.core.closed _) (by rw [Ty.substArgs_length]; exact hlenk)
+          (argsWf_in hwf rfl hk hf.core.bounded)
           (fun mi' h => by
             rw [Program.lookupAt_subst fr.selfArgs hmi] at h; cases h
             refine ⟨(Method.inst_block_none _ _).mpr hblk, ?_⟩
             rw [Method.inst_params_snd]
-            exact AllTy.le_params_subst hwf hvs hlen hall)
+            exact AllTy.le_params_subst hwf hf.core.bounded hvs hlen hall)
           (fun h => by rw [Program.lookupAt_subst fr.selfArgs hmi] at h; cases h))
         (he1.monoW (evalWs_mono (by simp [Expr.assigned]))) hw hf1 hs1
   | newNoInit hk hargs hmi hnil =>
@@ -1584,6 +1654,7 @@ theorem eval_succ : EvalGood P orc (n + 1) := by
         (Program.lookupAt_none_iff hwf _ _ _).mpr ((Program.lookupAt_none_iff hwf _ _ _).mp hmi)
       exact Post.ofConstruct rfl (ih.construct s1 Λ1 k _ vs hw1 hk'
           (Ty.substArgs_closed _ hf1.core.closed _) (by rw [Ty.substArgs_length]; exact hlenk)
+          (argsWf_in hwf rfl hk hf.core.bounded)
           (fun mi' h => by rw [hmi'] at h; cases h)
           (fun _ => by
             have := hvs.length; simp only [List.isEmpty_iff] at hnil; subst hnil
@@ -1600,7 +1671,7 @@ theorem eval_succ : EvalGood P orc (n + 1) := by
     | ok vs s1 => obtain ⟨_, _, hao, _⟩ := this; cases hao
   | fieldVar hfd hin hvar hle =>
     obtain ⟨l, o, i, v, hl, ho, hi, hfi, hset, hv, hty⟩ := self_field_read hwf rfl hf hw hs hfd hin
-    have hvt := hasTy_le hwf hty (Ty.subst_le hwf fr.selfArgs hle)
+    have hvt := hasTy_le hwf hty (hf.substLe hwf hle)
     simp only [eval, hl, ho, hi, Option.bind_some, hset, if_true, hv]
     simp only [Store.hasTy] at hvt
     rw [if_pos hvt]
@@ -1618,7 +1689,7 @@ theorem eval_succ : EvalGood P orc (n + 1) := by
         rw [hfd] at h3; cases h3
         obtain ⟨w, h8, h9⟩ := h7 hvar
         rw [hv] at h8; cases h8; exact h9
-    have hvt := hasTy_le hwf hvu (Ty.subst_le hwf fr.selfArgs hle)
+    have hvt := hasTy_le hwf hvu (hf.substLe hwf hle)
     simp only [eval, hl, ho, hi, Option.bind_some, hset, if_true, hv]
     simp only [Store.hasTy] at hvt
     rw [if_pos hvt]
@@ -1644,7 +1715,7 @@ theorem eval_succ : EvalGood P orc (n + 1) := by
       exact ⟨hvar.1, hvar.2, hl⟩
     have he2 : Ext c.prog (fun _ => False) (initW c fr) Λ1 Λ1 s1 (s1.setField l i v) :=
       Ext.setField ho hfo0 (fun h => hW (hvar0 ▸ h))
-    have hvd := hasTy_le hwf hv1 (Ty.subst_le hwf fr.selfArgs hle)
+    have hvd := hasTy_le hwf hv1 (hf.substLe hwf hle)
     -- The environment after: `f` set, holding the value (if immutable).
     have hs2 : Sat c.prog c (if c.inInit then Δ.set (.field f) (if fd.var then fd.ty else o'.ty) else Δ)
         fr (s1.setField l i v) := by
@@ -1704,11 +1775,11 @@ theorem eval_succ : EvalGood P orc (n + 1) := by
     -- The run-time test (of the class alone) answers as `≤` does, the
     -- arguments following from the static type (`verifiable`).
     have hclosed : a.closed = true := by simp only [Bool.and_eq_true] at hver; exact hver.1.1
-    have tail : ∀ bres : Bool, bres = u.le c.prog.classes a →
+    have tail : ∀ bres : Bool, bres = u.le c.prog.classes [] a →
         Post c.prog c (testOut c e Δ (isATrue c.ct · a) (isAFalse c.ct · a)) fr ws Λ s
           (evalW fr (.isA e a)) (.ok (.bool bres) s1) := by
       intro bres hb; subst hb
-      obtain ⟨h1, h2, h3⟩ := testOut_ok (b := u.le c.prog.classes a) hwf rfl hs1 hf1 hw1 hval
+      obtain ⟨h1, h2, h3⟩ := testOut_ok (b := u.le c.prog.classes [] a) hwf rfl hs1 hf1 hw1 hval
         (fun _ t _ _ ht hb => hasTy_isATrue_subst hwf hclosed ht hu hb)
         (fun _ t _ _ ht hb => hasTy_isAFalse_subst hwf hclosed ht hu hb)
       exact ⟨Λ1, hw1, he1.monoW (evalW_mono (by simp [Expr.assigned])), hf1,
@@ -2028,14 +2099,14 @@ theorem eval_succ : EvalGood P orc (n + 1) := by
       obtain ⟨tys', Δ2, hao, Λ2, hw2, he2, hf2, hs2, hvs⟩ := this
       cases hao
       dsimp only
-      obtain ⟨k, as, mt, hk, hl, hmem, hrecv⟩ := recv_of (he2.hasTy hv1) hres
+      obtain ⟨k, as, mt, hk, hl, hmem, hrecv⟩ := recv_of hwf hf.core.bounded (he2.hasTy hv1) hres
       have hmt := List.all_eq_true.mp hall mt hmem
       simp only [Bool.and_eq_true, Option.isNone_iff_eq_none] at hmt
       obtain ⟨hblk, hok⟩ := hmt
       unfold argsOk at hok
       simp only [Bool.and_eq_true, beq_iff_eq] at hok
       have hvs' : AllTy c.prog s2 vs ((mt.inst fr.selfArgs).params.map (·.2)) := by
-        rw [Method.inst_params_snd]; exact AllTy.le_params_subst hwf hvs hok.1 hok.2
+        rw [Method.inst_params_snd]; exact AllTy.le_params_subst hwf hf.core.bounded hvs hok.1 hok.2
       have hsend := ih.send s2 Λ2 v k _ _ (mt.inst fr.selfArgs) vs none [] hw2
         (obj_of_hasTy_cls hwf hrecv hk) hrecv (resolve_not_init hres) hl hvs'
         (by
@@ -2137,7 +2208,7 @@ theorem eval_succ : EvalGood P orc (n + 1) := by
       rw [hfb] at hch
       dsimp only
       have hvs' : AllTy c.prog s1 vs (sig.subst fr.selfArgs).params :=
-        AllTy.le_subst hwf hvs hlen hall
+        AllTy.le_subst hwf hf.core.bounded hvs hlen hall
       have hres := ih.block s1 Λ1 clo (sig.subst fr.selfArgs) vs ws hw1
         ⟨hch, fun l hl => hf1.chainIn l (by rw [hfb]; exact hl)⟩ hvs'
       revert hres
@@ -2181,14 +2252,14 @@ theorem eval_succ : EvalGood P orc (n + 1) := by
       obtain ⟨tys', Δ2, hao, Λ2, hw2, he2, hf2, hs2, hvs⟩ := this
       cases hao
       dsimp only
-      obtain ⟨k, as, mt, hk, hl, hmem, hrecv⟩ := recv_of (he2.hasTy hv1) hres
+      obtain ⟨k, as, mt, hk, hl, hmem, hrecv⟩ := recv_of hwf hf.core.bounded (he2.hasTy hv1) hres
       have hmt := List.all_eq_true.mp hall mt hmem
       simp only [Bool.and_eq_true, beq_iff_eq] at hmt
       obtain ⟨hblk, hok⟩ := hmt
       unfold argsOk at hok
       simp only [Bool.and_eq_true, beq_iff_eq] at hok
       have hvs' : AllTy c.prog s2 vs ((mt.inst fr.selfArgs).params.map (·.2)) := by
-        rw [Method.inst_params_snd]; exact AllTy.le_params_subst hwf hvs hok.1 hok.2
+        rw [Method.inst_params_snd]; exact AllTy.le_params_subst hwf hf.core.bounded hvs hok.1 hok.2
       -- The block, as checked here: the method run sees its signature
       -- with this frame's arguments.
       have hat : ChainAt c.prog Λ2 s2 ((c, Δ', ob) :: ws)
