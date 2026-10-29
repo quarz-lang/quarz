@@ -381,7 +381,14 @@ impl SharedState {
     /// field was added to a class whose instances a constant may hold
     /// with the old layout (docs/14 §5).
     pub fn reset_consts(&self) {
-        for cell in lock(&self.global.consts).iter_mut() {
+        self.reset_consts_from(0);
+    }
+
+    /// `reset_consts` for the constants from `first` on (the REPL keeps
+    /// those of earlier inputs, which cannot hold an instance of a class
+    /// a statement of a later one adds a field to).
+    pub fn reset_consts_from(&self, first: usize) {
+        for cell in lock(&self.global.consts).iter_mut().skip(first) {
             *cell = Default::default();
         }
     }

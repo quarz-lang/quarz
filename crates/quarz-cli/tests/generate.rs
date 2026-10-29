@@ -692,3 +692,65 @@ fn generated_values_and_docs_in_detail() {
     );
     assert!(all.contains("app.qz:6: warning: `Post#nope_body`"), "{all}");
 }
+
+#[test]
+fn a_block_that_only_raises_gives_nothing() {
+    // docs/14 §5: the method's result type is `Nothing`, which implements
+    // any method; a result nothing settles is still an error.
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        "abstract class Model\n  abstract def save -> Bool\n  static def self.stub(n: Symbol) -> Void\n    def_method(n) { raise NotImplementedError, \"#{n} is not implemented\" }\n  end\n  static def self.empty(n: Symbol) -> Void\n    def_method(n) { [] }\n  end\nend\n",
+    );
+    write(
+        &d.0,
+        "app.qz",
+        "require_relative \"lib\"\nclass Post < Model\n  stub :save\nend\nbegin\n  Post.new.save\nrescue => e\n  p e\nend\n",
+    );
+    let expected = "#<NotImplementedError: save is not implemented>\n";
+    let (ok, out, err) = quarz(&d.0, &["run", "app.qz"], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(out, expected);
+    let (ok, _, err) = quarz(&d.0, &["build", "app.qz", "-o", "app.bin"], &[]);
+    assert!(ok, "{err}");
+    let run = Command::new(d.0.join("app.bin")).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&run.stdout), expected);
+    let (ok, out, err) = quarz(&d.0, &["check", "--expand", "app.qz"], &[]);
+    assert!(ok, "{err}");
+    assert!(
+        out.contains("  def save -> Nothing = <block at lib.qz:4>\n"),
+        "{out}"
+    );
+    write(
+        &d.0,
+        "bad.qz",
+        "require_relative \"lib\"\nclass Q < Model\n  stub :save\n  empty :e\nend\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", "bad.qz"], &[]);
+    assert!(!ok);
+    assert!(
+        err.contains(
+            "`def_method(:e)`: the block's parameter or result type could not be inferred"
+        ),
+        "{err}"
+    );
+    // The result is bound to `Nothing`, not only recorded so: a `next`
+    // whose value's type is settled after the block must agree.
+    write(
+        &d.0,
+        "late.qz",
+        "class Late\n  static def self.nx(n: Symbol, flag: Bool) -> Void\n    xs = []\n    i = 0\n    while i < 2\n      if i == 1\n        ys = xs.dup\n        def_method(n) do\n          next ys[0] if flag\n          raise \"no\"\n        end\n      end\n      xs = xs.push(5)\n      i += 1\n    end\n  end\nend\n",
+    );
+    write(
+        &d.0,
+        "late_app.qz",
+        "require_relative \"late\"\nclass Post < Late\n  nx :a, true\nend\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", "late_app.qz"], &[]);
+    assert!(!ok);
+    assert!(
+        err.contains("cannot assign Array[Int] to `xs` of type Array[Nothing]"),
+        "{err}"
+    );
+}

@@ -103,6 +103,10 @@ pub struct Session {
     /// Units loaded by `require`: file index, name and pseudo-class.
     loaded: Vec<(u32, String, ClassId)>,
     loaded_keys: rustc_hash::FxHashSet<String>,
+    /// The file index the next required file takes (a file's own
+    /// requires are loaded after it took one: `loaded` is pushed to only
+    /// once they are).
+    next_file: u32,
     sources: Vec<(u32, SourceFile)>,
 }
 
@@ -149,6 +153,7 @@ impl Session {
             inputs: 0,
             loaded: Vec::new(),
             loaded_keys: rustc_hash::FxHashSet::default(),
+            next_file: 2,
             sources: Vec::new(),
         })
     }
@@ -183,6 +188,7 @@ impl Session {
         dir: &Path,
         from: u32,
         span: quarz_syntax::Span,
+        mut runner: Option<&mut (dyn StaticRunner + '_)>,
     ) -> Result<Vec<CheckedUnit>, Vec<FileDiagnostic>> {
         let (key, name, text, module_dir) = if relative {
             let mut target = dir.join(path);
@@ -214,11 +220,15 @@ impl Session {
         if !self.loaded_keys.insert(key) {
             return Ok(Vec::new());
         }
-        let file = self.loaded.len() as u32 + 2;
+        let file = self.next_file;
+        self.next_file += 1;
         let base = self.next_base();
         self.inputs += 1;
         let source = SourceFile::with_base(name.clone(), text, base);
         let parsed = parse_with_bases(&source.text, base, base);
+        if let Some(r) = runner.as_deref_mut() {
+            r.add_file(file, source.clone());
+        }
         self.sources.push((file, source));
         let mut diagnostics: Vec<FileDiagnostic> = parsed
             .diagnostics
@@ -232,7 +242,14 @@ impl Session {
         let mut units = Vec::new();
         for expr in &parsed.program.body {
             if let ExprKind::Require { path, relative } = &expr.kind {
-                units.extend(self.require(path, *relative, &module_dir, file, expr.span)?);
+                units.extend(self.require(
+                    path,
+                    *relative,
+                    &module_dir,
+                    file,
+                    expr.span,
+                    runner.as_deref_mut(),
+                )?);
             }
         }
         let world = std::mem::take(&mut self.checker.world);
@@ -253,6 +270,12 @@ impl Session {
         self.checker.world.freeze_ancestors(true);
         self.checker.add_file_main(file, main);
         self.loaded.push((file, name.clone(), main));
+        if diagnostics.iter().any(|(_, d)| d.is_error()) {
+            self.checker.drop_static_stmts(file, base);
+            return Err(diagnostics);
+        }
+        self.run_static_stmts(file, base, runner);
+        diagnostics.append(&mut self.checker.take_diagnostics());
         if diagnostics.iter().any(|(_, d)| d.is_error()) {
             return Err(diagnostics);
         }
@@ -284,6 +307,13 @@ impl Session {
         load::unit_base(self.inputs + 1)
     }
 
+    /// Take the base `next_base` gave for an input that parsed, before
+    /// what it requires is loaded: each unit has its own spans and node
+    /// ids (a compile-time run reuses a statement's function by node id).
+    pub fn reserve_input(&mut self) {
+        self.inputs += 1;
+    }
+
     pub fn main_class(&self) -> ClassId {
         self.main
     }
@@ -299,26 +329,21 @@ impl Session {
         self.checker.repl_local_types()
     }
 
-    /// Declare and check one input. On success, returns the statements to
-    /// run; the world and output are available through `snapshot`.
-    pub fn feed(&mut self, program: &Program) -> Result<Vec<Expr>, Vec<FileDiagnostic>> {
-        self.inputs += 1;
+    /// Declare and check one input, parsed at `base`; its class bodies'
+    /// `static` statements run with `runner` (docs/14 §2). On success,
+    /// returns the statements to run; the world and output are available
+    /// through `snapshot`.
+    pub fn feed(
+        &mut self,
+        program: &Program,
+        base: u32,
+        runner: Option<&mut (dyn StaticRunner + '_)>,
+    ) -> Result<Vec<Expr>, Vec<FileDiagnostic>> {
         let world = std::mem::take(&mut self.checker.world);
         let mut declarer = declare::Declarer::with_world(world);
-        let stmts_before = declarer.world.static_stmts.len();
         declarer.collect_into_unit(program, 1, self.main);
         declarer.resolve_headers();
         let mut diagnostics = std::mem::take(&mut declarer.diagnostics);
-        // The REPL has no compile-time runner yet (docs/14 §2).
-        for stmt in &declarer.world.static_stmts[stmts_before..] {
-            diagnostics.push((
-                stmt.file,
-                Diagnostic::error(
-                    "`static` statements do not run in the REPL yet".to_string(),
-                    stmt.span,
-                ),
-            ));
-        }
         let body: Vec<Expr> = declarer.units[0]
             .body
             .iter()
@@ -326,6 +351,13 @@ impl Session {
             .collect();
         self.checker.world = std::mem::take(&mut declarer.world);
         self.checker.world.freeze_ancestors(true);
+        if diagnostics.iter().any(|(_, d)| d.is_error()) {
+            // Its statements do not run, now or with a later input.
+            self.checker.drop_static_stmts(1, base);
+            return Err(diagnostics);
+        }
+        self.run_static_stmts(1, base, runner);
+        diagnostics.append(&mut self.checker.take_diagnostics());
         if diagnostics.iter().any(|(_, d)| d.is_error()) {
             return Err(diagnostics);
         }
@@ -339,6 +371,39 @@ impl Session {
             let _ = d;
         }
         Ok(body)
+    }
+
+    /// The `static` statements of the unit just declared (`file`, its
+    /// spans from `base`), run with `runner`, before its bodies are
+    /// checked, as a program's run before its files' (docs/14 §2).
+    /// Without a runner they are an error.
+    fn run_static_stmts(
+        &mut self,
+        file: u32,
+        base: u32,
+        runner: Option<&mut (dyn StaticRunner + '_)>,
+    ) {
+        if runner.is_none() {
+            let new: Vec<(u32, quarz_syntax::Span)> = self
+                .checker
+                .world
+                .static_stmts
+                .iter()
+                .filter(|s| s.file == file && s.span.start >= base)
+                .map(|s| (s.file, s.span))
+                .collect();
+            for (f, span) in new {
+                self.checker.error_in(
+                    f,
+                    "`static` statements do not run here: there is no compile-time runner"
+                        .to_string(),
+                    span,
+                );
+            }
+        }
+        self.checker.repl_unit = Some((file, base));
+        self.checker.check_static_stmts_of(runner, &|f| f == file);
+        self.checker.repl_unit = None;
     }
 
     /// Warnings of the last input are returned by `feed` only on error; the
@@ -448,6 +513,9 @@ pub trait StaticRunner {
     /// Forget everything lowered and run so far: the check starts over
     /// (`check_uncached` after a cache mismatch).
     fn reset(&mut self);
+    /// A source file loaded while checking (a file the REPL requires),
+    /// for the line numbers of what is lowered from it.
+    fn add_file(&mut self, _index: u32, _file: SourceFile) {}
 }
 
 /// The prelude declared and checked (every method body, so that a

@@ -666,6 +666,10 @@ pub struct Checker {
     /// How many of `world.static_stmts` have been checked (and run):
     /// the extra units of a test run add theirs later.
     static_done: Vec<bool>,
+    /// In the REPL, the unit being declared (its file and the offset its
+    /// spans start at): a `static` statement may call a `static def` of
+    /// an earlier input or of a required file, not of its own unit.
+    pub repl_unit: Option<(u32, u32)>,
     op_given_up: rustc_hash::FxHashSet<(NodeId, bool)>,
     pub world: World,
     pub diagnostics: Vec<(u32, Diagnostic)>,
@@ -786,6 +790,7 @@ impl Checker {
             logical_seen: HashMap::default(),
             reused_files: Default::default(),
             static_done: Vec::new(),
+            repl_unit: None,
             op_given_up: Default::default(),
             world,
             diagnostics: Vec::new(),
@@ -824,7 +829,7 @@ impl Checker {
 
     /// An error in `file`, which is not the environment's (a `static`
     /// statement reported after its check).
-    fn error_in(&mut self, file: u32, message: impl Into<String>, span: Span) {
+    pub(crate) fn error_in(&mut self, file: u32, message: impl Into<String>, span: Span) {
         self.diagnostics
             .push((file, Diagnostic::error(message, span)));
     }
@@ -1623,6 +1628,20 @@ impl Checker {
         }
     }
 
+    /// The `static` statements of a unit that failed to declare (the
+    /// REPL's: `file`, spans from `base`), marked done without running.
+    pub fn drop_static_stmts(&mut self, file: u32, base: u32) {
+        let total = self.world.static_stmts.len();
+        if self.static_done.len() < total {
+            self.static_done.resize(total, false);
+        }
+        for (i, stmt) in self.world.static_stmts.iter().enumerate() {
+            if stmt.file == file && stmt.span.start >= base {
+                self.static_done[i] = true;
+            }
+        }
+    }
+
     /// The classes whose `static` statements have not all run yet: their
     /// members, and their descendants', may still be generated, so a
     /// compile-time run does not check their bodies ahead of a call
@@ -1714,10 +1733,32 @@ impl Checker {
             self.error_in(stmt.file, message, stmt.span);
             return None;
         }
-        if let Err(why) = self.world.static_callee_allowed(stmt.file, m.file) {
+        let allowed = match self.repl_unit {
+            Some((file, base)) => {
+                if m.file == file && m.span.start >= base {
+                    Err(if file == 1 {
+                        "this input".to_string()
+                    } else {
+                        "this file".to_string()
+                    })
+                } else {
+                    Ok(())
+                }
+            }
+            None => self.world.static_callee_allowed(stmt.file, m.file),
+        };
+        if let Err(why) = allowed {
+            let only = if self.repl_unit.is_some() {
+                "those of the files required or the inputs entered before"
+            } else {
+                "those of the cogs (or required files) its file depends on"
+            };
             self.error_in(
                 stmt.file,
-                format!("`{}` is a `static def` of {why}: a `static` statement runs only those of the cogs (or required files) its file depends on", m.name),
+                format!(
+                    "`{}` is a `static def` of {why}: a `static` statement runs only {only}",
+                    m.name
+                ),
                 stmt.span,
             );
             return None;
@@ -8959,6 +9000,16 @@ impl Checker {
                     span,
                 );
             }
+        }
+        // A block lifted to a method's body that never returns (it only
+        // raises: `return` and `break` it cannot use, and a `next`
+        // would have typed the result) gives the method the result type
+        // `Nothing` (docs/14 §5), rather than one nothing settles.
+        // The result is bound to `Nothing` (not only recorded so): a
+        // `next` whose value's type is settled later in the `static
+        // def` then has to be `Nothing` too, an error otherwise.
+        if lifted && bt.is_nothing() && matches!(self.infer.resolve(&ret), Type::Var(_)) {
+            self.coerce(&ret, &Type::Nothing);
         }
         if !void && !bt.is_nothing() && !self.coerce(&bt, &ret) {
             let span = block.body.last().map(|e| e.span).unwrap_or(block.span);
