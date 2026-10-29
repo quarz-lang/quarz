@@ -1670,7 +1670,13 @@ impl<'ast> Declarer<'ast> {
             self.world.class_mut(id).shareable = None;
             let file = self.world.class(id).file;
             self.world.active_extensions = self.world.group_extensions(file);
-            self.check_conformance_of(id);
+            // A class whose conformance waits for its file's statements
+            // (`World::conformance_deferred`, docs/14 §5) is checked once
+            // they all ran, not after each: a later one may generate what
+            // it still lacks.
+            if !self.world.conformance_deferred.contains(&id) {
+                self.check_conformance_of(id);
+            }
             self.check_shareable_promise(id);
             self.check_variance(id);
             self.check_kept_blocks(id);

@@ -754,3 +754,42 @@ fn a_block_that_only_raises_gives_nothing() {
         "{err}"
     );
 }
+
+#[test]
+fn abstract_methods_implemented_across_statements() {
+    // docs/14 §5: a class's conformance is checked after all its file's
+    // statements ran, not after each.
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        "abstract class Shape\n  abstract def area -> Int\n  abstract def side -> Int\n  static def self.a(m: Symbol) -> Void\n    def_method(m) { 1 }\n  end\n  static def self.b(m: Symbol) -> Void\n    def_method(m) { 2 }\n  end\n  static def self.stub(m: Symbol) -> Void\n    def_method(m) { raise NotImplementedError, m.to_s }\n  end\nend\n",
+    );
+    write(
+        &d.0,
+        "app.qz",
+        "require_relative \"lib\"\nclass Two < Shape\n  a :area\n  b :side\nend\nclass Twice < Shape\n  a :area\n  a :side\nend\nclass Stubbed < Shape\n  a :area\n  stub :side\nend\np [Two.new.area, Two.new.side, Twice.new.side]\nbegin\n  Stubbed.new.side\nrescue => e\n  p e\nend\n",
+    );
+    let expected = "[1, 2, 1]\n#<NotImplementedError: side>\n";
+    let (ok, out, err) = quarz(&d.0, &["run", "app.qz"], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(out, expected);
+    let (ok, _, err) = quarz(&d.0, &["build", "app.qz", "-o", "app.bin"], &[]);
+    assert!(ok, "{err}");
+    let run = Command::new(d.0.join("app.bin")).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&run.stdout), expected);
+    // Still missing after the statements: reported once.
+    write(
+        &d.0,
+        "bad.qz",
+        "require_relative \"lib\"\nclass Half < Shape\n  a :area\n  a :other\nend\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", "bad.qz"], &[]);
+    assert!(!ok);
+    assert_eq!(
+        err.matches("error: `Half` must implement `side` (abstract in `Shape`)")
+            .count(),
+        1,
+        "{err}"
+    );
+}
