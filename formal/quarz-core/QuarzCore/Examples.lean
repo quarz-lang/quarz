@@ -406,7 +406,7 @@ def raiseMy : Expr := .raise (.new 2 [] [])
     noPrim 100 with
   | .ok (.int 4) _ => true | _ => false
 
-/-! ### Lambdas (design §13.8, C0)
+/-! ### Lambdas (design §13.8, §13.10)
 
 Proc1[in A, out R] at 1. -/
 
@@ -427,8 +427,8 @@ def incr : Expr := .lambda [("x", [.int])] [] [.int] (.var "x" [.int])
 -- An argument of another type: rejected.
 #guard !(procProg (.seq (.assign "f" incr) (.callProc (.var "f" [.cls 1 [[.int], [.int]]]) [.str "a"]))
   [("f", [.cls 1 [[.int], [.int]]])]).check
--- Assigning a local of the method: rejected (C0).
-#guard !(procProg (.seq (.assign "n" (.int 1)) (.assign "f" (.lambda [("x", [.int])] [] [.int]
+-- Assigning a local of the method (pinned, C1).
+#guard (procProg (.seq (.assign "n" (.int 1)) (.assign "f" (.lambda [("x", [.int])] [] [.int]
     (.seq (.assign "n" (.var "x" [.int])) (.int 0)))))
   [("n", [.int, .nil]), ("f", [.cls 1 [[.int], [.int]]])]).check
 -- A local of the method read as narrowed where the lambda is made:

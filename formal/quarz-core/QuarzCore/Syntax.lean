@@ -60,7 +60,7 @@ inductive Expr where
   /-- `begin body ensure ens end`: `ens` after the body however it ends. -/
   | ensure (body : Expr) (ens : Expr)
   /-- `->(x: T, ...) -> R { body }`: a procedure, closed over this frame's
-  locals (by reference, read only: design §13.8, C0); its parameters and
+  locals (by reference: design §13.8, §13.10); its parameters and
   `own` locals (those first assigned in it) fresh at each call. -/
   | lambda (ps : List (String × Ty)) (own : List (String × Ty)) (ret : Ty) (body : Expr)
   /-- `f.call(args)`: run procedure `f`. -/

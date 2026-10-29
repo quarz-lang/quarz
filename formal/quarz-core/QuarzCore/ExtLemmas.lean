@@ -22,6 +22,7 @@ theorem ObjsGrow.trans {s1 s2 s3 : Store} (h1 : ObjsGrow s1 s2) (h2 : ObjsGrow s
 theorem Ext.refl (W Wo : Nat → Prop) (Λ : List Ty) (s : Store) : Ext P W Wo Λ Λ s s where
   tys := List.prefix_refl Λ
   procs := List.prefix_refl _
+  pins := List.prefix_refl _
   locs := fun _ v h => ⟨v, h, .inl rfl⟩
   grow := ObjsGrow.refl s
   imm := fun _ o o' h h' _ _ _ _ _ => by rw [h] at h'; cases h'; rfl
@@ -31,12 +32,13 @@ theorem Ext.mono {W W' Wo Wo' : Nat → Prop} {Λ Λ' : List Ty} {s s' : Store}
     Ext P W' Wo' Λ Λ' s s' where
   tys := h.tys
   procs := h.procs
+  pins := h.pins
   locs := fun l v hv => by
     obtain ⟨v', h1, h2⟩ := h.locs l v hv
     refine ⟨v', h1, ?_⟩
     rcases h2 with h2 | ⟨hw', t, ht, hty⟩
     · exact .inl h2
-    · exact .inr ⟨hw l hw', t, ht, hty⟩
+    · exact .inr ⟨hw'.imp (hw l) id, t, ht, hty⟩
   grow := h.grow
   imm := fun l o o' h1 h2 hn => h.imm l o o' h1 h2 (fun hw => hn (ho l hw))
 
@@ -49,11 +51,18 @@ theorem prefix_getElem? {Λ Λ' : List Ty} (h : Λ <+: Λ') {l : Nat} {t : Ty} (
   obtain ⟨r, rfl⟩ := h
   rw [List.getElem?_append_left (List.getElem?_eq_some_iff.mp ht).1]; exact ht
 
+/-- A mark of a location there before is as it was. -/
+theorem pins_back {s1 s2 : Store} {l : Nat} (h : s1.pins <+: s2.pins) (hl : l < s1.pins.length)
+    (hp : s2.pins[l]? = some true) : s1.pins[l]? = some true := by
+  obtain ⟨r, hr⟩ := h
+  rwa [← hr, List.getElem?_append_left hl] at hp
+
 theorem Ext.trans {W1 W2 Wo1 Wo2 : Nat → Prop} {Λ1 Λ2 Λ3 : List Ty} {s1 s2 s3 : Store}
     (h1 : Ext P W1 Wo1 Λ1 Λ2 s1 s2) (h2 : Ext P W2 Wo2 Λ2 Λ3 s2 s3) (hw : WfStore P Λ1 s1) :
     Ext P (fun l => W1 l ∨ W2 l) (fun l => Wo1 l ∨ Wo2 l) Λ1 Λ3 s1 s3 where
   tys := h1.tys.trans h2.tys
   procs := h1.procs.trans h2.procs
+  pins := h1.pins.trans h2.pins
   locs := fun l v hv => by
     obtain ⟨v2, hv2, hc2⟩ := h1.locs l v hv
     obtain ⟨v3, hv3, hc3⟩ := h2.locs l v2 hv2
@@ -66,12 +75,12 @@ theorem Ext.trans {W1 W2 Wo1 Wo2 : Nat → Prop} {Λ1 Λ2 Λ3 : List Ty} {s1 s2 
     · rcases hc3 with rfl | ⟨hw2, t2, ht2, hty2⟩
       · exact .inl rfl
       · rw [prefix_getElem? h1.tys ht] at ht2; cases ht2
-        exact .inr ⟨.inr hw2, t, ht, hty2⟩
+        exact .inr ⟨hw2.imp .inr (pins_back h1.pins (by rw [hw.pinsLen, ← hw.len]; exact hl)), t, ht, hty2⟩
     · rw [ht] at ht1; cases ht1
       rcases hc3 with rfl | ⟨_, t2, ht2, hty2⟩
-      · exact .inr ⟨.inl hw1, _, ht, h2.hasTy hty1⟩
+      · exact .inr ⟨hw1.imp .inl id, _, ht, h2.hasTy hty1⟩
       · rw [prefix_getElem? h1.tys ht] at ht2; cases ht2
-        exact .inr ⟨.inl hw1, _, ht, hty2⟩
+        exact .inr ⟨hw1.imp .inl id, _, ht, hty2⟩
   grow := h1.grow.trans h2.grow
   imm := fun l o o3 ho ho3 hn i f hf hv => by
     obtain ⟨o2, ho2, hc2, _, _⟩ := h1.grow l o ho
@@ -96,6 +105,7 @@ theorem Ext.fresh {W Wo : Nat → Prop} {Λ Λ' : List Ty} {s s' : Store}
     Ext P W (fun _ => False) Λ Λ' s s' where
   tys := h.tys
   procs := h.procs
+  pins := h.pins
   locs := h.locs
   grow := h.grow
   imm := fun l o o' h1 h2 _ => h.imm l o o' h1 h2 fun hw =>
@@ -112,10 +122,11 @@ theorem Ext.setLoc {W Wo : Nat → Prop} {Λ : List Ty} {s : Store} {l : Nat} {v
     Ext P W Wo Λ Λ s (s.setLoc l v) where
   tys := List.prefix_refl Λ
   procs := List.prefix_refl _
+  pins := List.prefix_refl _
   locs := fun l' v' h => by
     by_cases he : l' = l
     · subst he
-      refine ⟨v, by simp [Store.setLoc, hl], .inr ⟨hw, t, ht, ?_⟩⟩
+      refine ⟨v, by simp [Store.setLoc, hl], .inr ⟨.inl hw, t, ht, ?_⟩⟩
       exact hv
     · exact ⟨v', by simpa [Store.setLoc, getElem?_set_ne' he] using h, .inl rfl⟩
   grow := fun _ o h => ⟨o, h, rfl, rfl, rfl, fun _ h => h⟩
@@ -126,6 +137,7 @@ theorem Ext.newProc {W Wo : Nat → Prop} {Λ : List Ty} {s : Store} (p : ProcV)
     Ext P W Wo Λ Λ s { s with procs := s.procs ++ [p] } where
   tys := List.prefix_refl Λ
   procs := List.prefix_append _ _
+  pins := List.prefix_refl _
   locs := fun _ v h => ⟨v, h, .inl rfl⟩
   grow := fun _ o h => ⟨o, h, rfl, rfl, rfl, fun _ h => h⟩
   imm := fun _ o o' h h' _ _ _ _ _ => by simp at h'; rw [h] at h'; cases h'; rfl
@@ -135,6 +147,7 @@ theorem Ext.newObj {W Wo : Nat → Prop} {Λ : List Ty} {s : Store} (o : Obj) :
     Ext P W Wo Λ Λ s { s with objs := s.objs ++ [o] } where
   tys := List.prefix_refl Λ
   procs := List.prefix_refl _
+  pins := List.prefix_refl _
   locs := fun _ v h => ⟨v, h, .inl rfl⟩
   grow := fun l o' h => ⟨o', by
       rw [List.getElem?_append_left (List.getElem?_eq_some_iff.mp h).1]; exact h,
@@ -143,10 +156,11 @@ theorem Ext.newObj {W Wo : Nat → Prop} {Λ : List Ty} {s : Store} (o : Obj) :
     rw [List.getElem?_append_left (List.getElem?_eq_some_iff.mp h).1, h] at h'; cases h'; rfl
 
 /-- Fresh locations, for the locals `names` of a new frame. -/
-theorem Ext.alloc {W Wo : Nat → Prop} {Λ : List Ty} {s : Store} (names : List String) (tys : List Ty) :
-    Ext P W Wo Λ (Λ ++ tys) s (s.alloc names).1 where
+theorem Ext.alloc {W Wo : Nat → Prop} {Λ : List Ty} {s : Store} (names pin : List String) (tys : List Ty) :
+    Ext P W Wo Λ (Λ ++ tys) s (s.alloc names pin).1 where
   tys := List.prefix_append Λ tys
   procs := List.prefix_refl _
+  pins := List.prefix_append _ _
   locs := fun l v h => ⟨v, by
       simp only [Store.alloc]
       rw [List.getElem?_append_left (List.getElem?_eq_some_iff.mp h).1]; exact h, .inl rfl⟩

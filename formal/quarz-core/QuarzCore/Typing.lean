@@ -179,13 +179,33 @@ def Expr.assigned : Expr → List String
   | .ite c t e => c.assigned ++ t.assigned ++ e.assigned
   | .rescue b x h els => b.assigned ++ x :: h.assigned ++ els.assigned
   | .ensure b e => b.assigned ++ e.assigned
-  -- (Making a lambda assigns nothing; running one, only its own locals.)
+  -- (Making a lambda assigns nothing; what running one assigns of this
+  -- frame is pinned, `Ctx.pinned`.)
   | .callProc f args => f.assigned ++ assignedArgs args
   | _ => []
 where
   assignedArgs : List Expr → List String
     | [] => []
     | e :: es => e.assigned ++ assignedArgs es
+
+/-- The locals the lambdas in an expression assign when they run (their
+parameters included), wherever they are: what any call may change once
+one is made (design §13.10, C1). -/
+def Expr.procAssigned : Expr → List String
+  | .lambda ps own _ b => (ps ++ own).map (·.1) ++ b.assigned ++ b.procAssigned
+  | .assign _ e | .setField _ e | .ret e | .raise e | .isNil e | .isA e _ | .eqNil e | .neNil e
+  | .eqTrue e | .eqFalse e | .not e => e.procAssigned
+  | .new _ _ args | .superInit _ args | .yield args | .prim _ args _ _ => procArgs args
+  | .call r _ args | .callProc r args => r.procAssigned ++ procArgs args
+  | .callBlk r _ args _ b => r.procAssigned ++ procArgs args ++ b.procAssigned
+  | .seq a b | .while a b | .and a b | .or a b | .ensure a b => a.procAssigned ++ b.procAssigned
+  | .ite c t e => c.procAssigned ++ t.procAssigned ++ e.procAssigned
+  | .rescue b _ h els => b.procAssigned ++ h.procAssigned ++ els.procAssigned
+  | _ => []
+where
+  procArgs : List Expr → List String
+    | [] => []
+    | e :: es => e.procAssigned ++ procArgs es
 
 /-- `Γ ∖ xs`: the locals in `xs` back to their declared types (design
 §2.2, `while`): what a loop's body or a block assigns may differ on the
@@ -198,6 +218,15 @@ def Ctx.reset (c : Ctx) : Env → List String → Env
       | some d => (.local x, d) :: c.reset Γ xs
       | none => c.reset Γ xs
     else (.local x, t) :: c.reset Γ xs
+
+/-- The locals any call may change (design §13.10, C1): those the
+method's lambdas assign when they run. After a call they are
+un-narrowed. -/
+def Ctx.pinned (c : Ctx) : List String := c.meth.body.procAssigned
+
+/-- After a call (which may run a procedure): the pinned locals
+un-narrowed. -/
+def Ctx.afterCall (c : Ctx) (Δ : Env) : Env := c.reset Δ c.pinned
 
 /-- The method `m` instances of class `c` run: the first of `c`'s
 ancestors that defines it. -/
@@ -391,17 +420,33 @@ reads in `Δ`: only a value no subclass can redefine `==` for. -/
 def finalRead (c : Ctx) (Δ : Env) (e : Expr) : Bool :=
   (e.path?.bind (c.pathTy Δ)).all (Ty.allFinalIn c.prog)
 
+/-- Whether `==` against `nil`, `true` or `false` surely calls no
+method of the program (its value's type, the path's narrowing if it is
+one, all final): otherwise it is a call, after which the pinned locals
+are un-narrowed. -/
+def eqNoCall (c : Ctx) (Δ : Env) (e : Expr) (t : Ty) : Bool :=
+  ((e.path?.bind (c.pathTy Δ)).getD t).allFinalIn c.prog
+
+/-- `e == nil` (or `true`, `false`), `e` of type `t`: the test's
+narrowing when it calls no method, else a call (nothing narrowed, the
+pinned locals un-narrowed after it). -/
+def eqOut (c : Ctx) (Δ : Env) (e : Expr) (t : Ty) (tyT tyF : Ty → Ty) : Out :=
+  if eqNoCall c Δ e t then testOut c e Δ tyT tyF else Out.plain [.bool] (c.afterCall Δ)
+
 /-- The block's starting environment: what it may assign un-narrowed,
 its parameters given. -/
 def blockEnv (c : Ctx) (Δ : Env) (ps : List String) (sig : BlockSig) (body : Expr) : Env :=
-  (ps.zip sig.params).foldl (fun g (x, t) => g.set (.local x) t) (c.reset Δ (ps ++ body.assigned))
+  (ps.zip sig.params).foldl (fun g (x, t) => g.set (.local x) t) (c.reset Δ (ps ++ body.assigned ++ c.pinned))
 
 /-- A lambda's own locals (parameters first): distinct, none a local of
-the method; its body assigns only them (C0: no captured local). -/
+the method (it may assign the method's: they are `pinned`, C1). -/
 def Ctx.lambdaOk (c : Ctx) (ps own : List (String × Ty)) (body : Expr) : Bool :=
   decide ((ps ++ own).map (·.1)).Nodup &&
   ((ps ++ own).all fun (x, _) => (c.meth.locals.find? (·.1 == x)).isNone) &&
-  (body.assigned.all fun x => (ps ++ own).any (·.1 == x))
+  (body.assigned.all fun x => (ps ++ own).any (·.1 == x) || (c.meth.locals.any (·.1 == x))) &&
+  -- (Pinned: what it and the lambdas in it assign, checked as part of the
+  -- method's body, where it is.)
+  (((ps ++ own).map (·.1) ++ body.assigned ++ body.procAssigned).all (· ∈ c.pinned))
 
 /-- A lambda's body is checked as a block of its method with the
 lambda's parameters and own locals added, no block and no `return`. -/
@@ -503,10 +548,10 @@ def check (c : Ctx) (Γ : Env) : Expr → Option Out
       match c.prog.lookupAt k targs "initialize" with
       | some mt =>
         guard (mt.block.isNone && argsOk c tys mt)
-        some (.plain [.cls k targs] Δ)
+        some (.plain [.cls k targs] (c.afterCall Δ))
       | none =>
         guard tys.isEmpty
-        some (.plain [.cls k targs] Δ)
+        some (.plain [.cls k targs] (c.afterCall Δ))
   | .superInit d args => do
     guard (c.superOk d Γ)
     match checkArgs c Γ args with
@@ -516,10 +561,10 @@ def check (c : Ctx) (Γ : Env) : Expr → Option Out
       match c.prog.lookupAt d (c.superArgs d) "initialize" with
       | some mt =>
         guard (mt.block.isNone && argsOk c tys mt)
-        some (.plain [.nil] (c.afterSuper Δ))
+        some (.plain [.nil] (c.afterSuper (c.afterCall Δ)))
       | none =>
         guard tys.isEmpty
-        some (.plain [.nil] (c.afterSuper Δ))
+        some (.plain [.nil] (c.afterSuper (c.afterCall Δ)))
   | .call r m args => do
     let o ← check c Γ r
     match o.out with
@@ -531,7 +576,7 @@ def check (c : Ctx) (Γ : Env) : Expr → Option Out
       | some (.live tys Δ') =>
         let ms ← c.prog.resolve c.bounds o.ty m
         guard (ms.all fun mt => mt.block.isNone && argsOk c tys mt)
-        some (.plain (ms.flatMap (·.ret)) Δ')
+        some (.plain (ms.flatMap (·.ret)) (c.afterCall Δ'))
   | .callBlk r m args ps body => do
     let o ← check c Γ r
     match o.out with
@@ -553,7 +598,7 @@ def check (c : Ctx) (Γ : Env) : Expr → Option Out
         -- After the call, what the block assigns un-narrowed: it may have
         -- stopped anywhere (an exception the method rescued), as the Rust
         -- checker has it.
-        some (.plain (ms.flatMap (·.ret)) (c.reset Δ' (ps ++ body.assigned)))
+        some (.plain (ms.flatMap (·.ret)) (c.reset Δ' (ps ++ body.assigned ++ c.pinned)))
   | .yield args => do
     let sig ← c.meth.block
     match checkArgs c Γ args with
@@ -562,7 +607,7 @@ def check (c : Ctx) (Γ : Env) : Expr → Option Out
     | some (.live tys Δ) =>
       guard (tys.length == sig.params.length &&
         (tys.zip sig.params).all fun (t, u) => t.le c.ct c.bounds u)
-      some (.plain sig.ret Δ)
+      some (.plain sig.ret (c.afterCall Δ))
   | .prim _ args params ret => do
     match checkArgs c Γ args with
     | none => none
@@ -570,7 +615,9 @@ def check (c : Ctx) (Γ : Env) : Expr → Option Out
     | some (.live tys Δ) =>
       guard (tys.length == params.length &&
         (tys.zip params).all fun (t, u) => t.le c.ct c.bounds u)
-      some (.plain ret Δ)
+      -- (A built-in method may call one of the program: `to_s` in an
+      -- interpolation, `puts`'s.)
+      some (.plain ret (c.afterCall Δ))
   | .seq a b => do
     let oa ← check c Γ a
     match oa.out with
@@ -583,8 +630,9 @@ def check (c : Ctx) (Γ : Env) : Expr → Option Out
     some ⟨ot.ty ++ oe.ty, ojoin ot.out oe.out, ojoin ot.tt oe.tt, ojoin ot.ff oe.ff⟩
   | .while cnd b => do
     -- Each pass starts with what the loop assigns un-narrowed (docs/02
-    -- §6): the body must end with at least that.
-    let Γ0 := c.reset Γ (Expr.assigned (.while cnd b))
+    -- §6), and the pinned locals (a call in it un-narrows them): the body
+    -- must end with at least that.
+    let Γ0 := c.reset Γ (Expr.assigned (.while cnd b) ++ c.pinned)
     let oc ← check c Γ0 cnd
     match oc.tt with
     | none => some { Out.plain [.nil] Γ with out := oc.ff, tt := oc.ff, ff := oc.ff }
@@ -609,7 +657,7 @@ def check (c : Ctx) (Γ : Env) : Expr → Option Out
     let k ← c.prog.procClass ps.length
     guard ((c.ct[k]?).map (·.params.length) == some (ps.length + 1))
     -- Its own locals (parameters first): distinct, none a local of the
-    -- method; the body assigns only them (C0: no captured local).
+    -- method; what it assigns of the method's, pinned (C1).
     guard (c.lambdaOk ps own body)
     -- It may run any time later: the captured locals as declared (R2a),
     -- its parameters as declared; no block (`yield` is an error in it),
@@ -632,7 +680,7 @@ def check (c : Ctx) (Γ : Env) : Expr → Option Out
         | [.cls k as] =>
           guard (c.prog.procClass (as.length - 1) == some k && as.length == tys.length + 1)
           guard ((tys.zip as).all fun (t, u) => t.le c.ct c.bounds u)
-          some (.plain (as.getLast?.getD []) Δ')
+          some (.plain (as.getLast?.getD []) (c.afterCall Δ'))
         | _ => none
   | .rescue b x h els => do
     -- Not in `initialize` or a default (fields being set: design §12.6 Q3).
@@ -642,18 +690,18 @@ def check (c : Ctx) (Γ : Env) : Expr → Option Out
     let oe ← checkBranch c ob.out els
     -- The handler: raised anywhere in the body, so with what it assigns
     -- un-narrowed; the exception in `x`.
-    let oh ← check c ((c.reset Γ b.assigned).set (.local x) [.cls c.prog.exn []]) h
+    let oh ← check c ((c.reset Γ (b.assigned ++ c.pinned)).set (.local x) [.cls c.prog.exn []]) h
     some ⟨oe.ty ++ oh.ty, ojoin oe.out oh.out, ojoin oe.tt oh.tt, ojoin oe.ff oh.ff⟩
   | .ensure b e => do
     guard (!c.inInit && !c.inDefault)
     let ob ← check c Γ b
     -- It runs however the body ends: with what the body assigns
     -- un-narrowed.
-    let oe ← check c (c.reset Γ b.assigned) e
+    let oe ← check c (c.reset Γ (b.assigned ++ c.pinned)) e
     match oe.out with
     | none => some .dead
     | some Δe =>
-      let g := ob.out.map (·.takeFrom Δe e.assigned)
+      let g := ob.out.map (·.takeFrom Δe (e.assigned ++ c.pinned))
       some ⟨ob.ty, g, g, g⟩
   -- Only where control cannot get (a dead branch is not checked).
   | .absurd => none
@@ -677,21 +725,21 @@ def check (c : Ctx) (Γ : Env) : Expr → Option Out
     | none => some .dead
     | some Δ =>
       -- Only a value no subclass can redefine `==` for narrows (09b19e3).
-      some (testOut c e Δ (fun t => if finalRead c Δ e then t.keep [.nil] else t)
+      some (eqOut c Δ e o.ty (fun t => if finalRead c Δ e then t.keep [.nil] else t)
         (fun t => if finalRead c Δ e then t.remove .nil else t))
   | .neNil e => do
     let o ← check c Γ e
     match o.out with
     | none => some .dead
     | some Δ =>
-      some (testOut c e Δ (fun t => if finalRead c Δ e then t.remove .nil else t)
+      some (eqOut c Δ e o.ty (fun t => if finalRead c Δ e then t.remove .nil else t)
         (fun t => if finalRead c Δ e then t.keep [.nil] else t))
   | .eqTrue e | .eqFalse e => do
     let o ← check c Γ e
     match o.out with
     | none => some .dead
     | some Δ =>
-      some (testOut c e Δ (fun t => if finalRead c Δ e then t.keep [.bool] else t) id)
+      some (eqOut c Δ e o.ty (fun t => if finalRead c Δ e then t.keep [.bool] else t) id)
   | .and a b => do
     let oa ← check c Γ a
     let ob ← checkBranch c oa.tt b

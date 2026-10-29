@@ -73,6 +73,10 @@ structure Store where
   locs : List Value
   objs : List Obj
   procs : List ProcV := []
+  /-- Ghost (no program observes it): per location, whether a procedure
+  may write it, its local being pinned where it was made (design
+  §13.10). -/
+  pins : List Bool := []
   deriving Repr, Inhabited
 
 /-- A method's activation: its locals' locations, `self`, and the
@@ -124,9 +128,11 @@ def allocVars : Nat → List String → List (String × Nat)
   | _, [] => []
   | base, x :: xs => (x, base) :: allocVars (base + 1) xs
 
-/-- Fresh locations, one per name, holding `nil`. -/
-def alloc (s : Store) (names : List String) : Store × List (String × Nat) :=
-  ({ s with locs := s.locs ++ names.map fun _ => .nil }, allocVars s.locs.length names)
+/-- Fresh locations, one per name, holding `nil`; those of the names in
+`pin` marked (ghost). -/
+def alloc (s : Store) (names pin : List String) : Store × List (String × Nat) :=
+  ({ s with locs := s.locs ++ names.map (fun _ => .nil), pins := s.pins ++ names.map (decide <| · ∈ pin) },
+    allocVars s.locs.length names)
 
 end Store
 
@@ -214,7 +220,7 @@ def eval (P : Program) (orc : Oracle) : Nat → Frame → Store → Expr → Res
       | .ok vs s => match P.lookup d "initialize" with
         | some mt =>
           if vs.length != mt.params.length then .stuck else
-          let (s, vars) := s.alloc (mt.locals.map (·.1))
+          let (s, vars) := s.alloc (mt.locals.map (·.1)) mt.body.procAssigned
           match fr.self, bindAll s vars (mt.params.map (·.1)) vs with
           | .obj l, some s =>
             match eval P orc n ⟨vars, fr.self, s.argsFor P.classes l mt.owner, none⟩ s mt.body with
@@ -271,7 +277,7 @@ def eval (P : Program) (orc : Oracle) : Nat → Frame → Store → Expr → Res
       | .ok vs s => match v with
         | .proc i => match s.procs[i]? with
           | some ⟨.mk vars me sa _ ps body, own, _⟩ =>
-            let (s, nv) := s.alloc own
+            let (s, nv) := s.alloc own own
             match bindAll s nv ps vs with
             | some s => match eval P orc n ⟨nv ++ vars, me, sa, none⟩ s body with
               | .returned _ _ => .stuck
@@ -328,7 +334,7 @@ def send (P : Program) (orc : Oracle) : Nat → Store → Value → String → L
     | .obj l => match (s.objs[l]?).bind fun o => P.lookup o.cls m with
       | some mt =>
         if vs.length != mt.params.length then .stuck else
-        let (s, vars) := s.alloc (mt.locals.map (·.1))
+        let (s, vars) := s.alloc (mt.locals.map (·.1)) mt.body.procAssigned
         match bindAll s vars (mt.params.map (·.1)) vs with
         | some s =>
           match eval P orc n ⟨vars, recv, s.argsFor P.classes l mt.owner, blk⟩ s mt.body with
@@ -364,7 +370,7 @@ def construct (P : Program) (orc : Oracle) : Nat → Store → Nat → List Ty �
     | .ok _ s => match P.lookup k "initialize" with
       | some mt =>
         if vs.length != mt.params.length then .stuck else
-        let (s, vars) := s.alloc (mt.locals.map (·.1))
+        let (s, vars) := s.alloc (mt.locals.map (·.1)) mt.body.procAssigned
         match bindAll s vars (mt.params.map (·.1)) vs with
         | some s =>
           match eval P orc n ⟨vars, .obj l, s.argsFor P.classes l mt.owner, none⟩ s mt.body with
@@ -404,7 +410,8 @@ end
 /-- Run the program's top level. -/
 def run (P : Program) (orc : Oracle) (fuel : Nat) : Result :=
   -- `self` is an instance of the top level's class (it has no fields).
-  let (s, vars) := Store.alloc ⟨[], [⟨P.main.owner, [], [], []⟩], []⟩ (P.main.locals.map (·.1))
+  let (s, vars) := Store.alloc ⟨[], [⟨P.main.owner, [], [], []⟩], [], []⟩ (P.main.locals.map (·.1))
+    P.main.body.procAssigned
   match eval P orc fuel ⟨vars, .obj 0, [], none⟩ s P.main.body with
   | .returned v s => .ok v s
   | r => r

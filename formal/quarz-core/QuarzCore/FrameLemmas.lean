@@ -45,6 +45,18 @@ theorem bindAll_procs {vars : List (String × Nat)} :
   | [], _ :: _, _, _, h => by simp [bindAll] at h
   | _ :: _, [], _, _, h => by simp [bindAll] at h
 
+/-- Binding leaves the marks. -/
+theorem bindAll_pins {vars : List (String × Nat)} :
+    ∀ {xs : List String} {vs : List Value} {s s' : Store}, bindAll s vars xs vs = some s' →
+      s'.pins = s.pins
+  | [], [], s, s', h => by simp [bindAll] at h; subst h; rfl
+  | x :: xs, v :: vs, s, s', h => by
+    simp only [bindAll, bind, Option.bind_eq_some_iff] at h
+    obtain ⟨l, _, h⟩ := h
+    rw [bindAll_pins h]; rfl
+  | [], _ :: _, _, _, h => by simp [bindAll] at h
+  | _ :: _, [], _, _, h => by simp [bindAll] at h
+
 /-- Bound to distinct names, at distinct locations: each holds its value. -/
 theorem bindAll_val {vars : List (String × Nat)}
     (hinj : ∀ x y l, lookupVar vars x = some l → lookupVar vars y = some l → x = y) :
@@ -123,14 +135,40 @@ theorem Ext.restrict {W W' Wo : Nat → Prop} {Λ Λ' : List Ty} {s s' : Store} 
     (hw : ∀ l, l < s.locs.length → W l → W' l) : Ext P W' Wo Λ Λ' s s' where
   tys := h.tys
   procs := h.procs
+  pins := h.pins
   locs := fun l v hv => by
     obtain ⟨v', h1, h2⟩ := h.locs l v hv
     refine ⟨v', h1, ?_⟩
     rcases h2 with h2 | ⟨hwl, t, ht, hty⟩
     · exact .inl h2
-    · exact .inr ⟨hw l (List.getElem?_eq_some_iff.mp hv).1 hwl, t, ht, hty⟩
+    · exact .inr ⟨hwl.imp (hw l (List.getElem?_eq_some_iff.mp hv).1) id, t, ht, hty⟩
   grow := h.grow
   imm := h.imm
+
+/-- Writes `W` allows, or to marked locations. -/
+theorem Ext.restrictP {W W' Wo : Nat → Prop} {Λ Λ' : List Ty} {s s' : Store} (h : Ext P W Wo Λ Λ' s s')
+    (hw : ∀ l, l < s.locs.length → W l → W' l ∨ s.pins[l]? = some true) : Ext P W' Wo Λ Λ' s s' where
+  tys := h.tys
+  procs := h.procs
+  pins := h.pins
+  locs := fun l v hv => by
+    obtain ⟨v', h1, h2⟩ := h.locs l v hv
+    refine ⟨v', h1, ?_⟩
+    rcases h2 with h2 | ⟨hwl, t, ht, hty⟩
+    · exact .inl h2
+    · exact .inr ⟨hwl.elim (hw l (List.getElem?_eq_some_iff.mp hv).1) .inr, t, ht, hty⟩
+  grow := h.grow
+  imm := h.imm
+
+/-- A fresh frame's marks: those of the names in `pin`. -/
+theorem fresh_pins {s s2 : Store} {names pin : List String} (hpl : s.pins.length = s.locs.length)
+    (hp2 : s2.pins = s.pins ++ names.map (decide <| · ∈ pin)) {x : String} {l : Nat}
+    (hl : lookupVar (Store.allocVars s.locs.length names) x = some l) :
+    (s2.pins[l]? = some true ↔ x ∈ pin) ∧ l < s2.pins.length := by
+  obtain ⟨j, hj, rfl⟩ := lookupVar_alloc_inv hl
+  have hjl := (List.getElem?_eq_some_iff.mp hj).1
+  rw [hp2, List.getElem?_append_right (by omega), hpl, Nat.add_sub_cancel_left, List.getElem?_map, hj]
+  simp; omega
 
 theorem params_get : ∀ {ps : List (String × Ty)} {p : Path} {t : Ty},
     Env.get (ps.map fun (x, t) => ((.local x : Path), t)) p = some t → ∃ x, p = .local x ∧ (x, t) ∈ ps

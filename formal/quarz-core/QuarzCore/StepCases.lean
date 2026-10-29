@@ -355,13 +355,13 @@ omit hP horc ih in
 theorem FrameCore.inBlock {c : Ctx} {Λ : List Ty} {vars : List (String × Nat)} {me : Value}
     {sa : List Ty} {s : Store} (h : FrameCore P c Λ vars me sa s) (b : Bool) :
     FrameCore P { c with inBlock := b } Λ vars me sa s :=
-  ⟨h.decls, h.inj, h.inStore, h.self, h.selfInit, h.selfObj, h.closed, h.bounded⟩
+  ⟨h.decls, h.inj, h.inStore, h.self, h.selfInit, h.selfObj, h.closed, h.bounded, h.pins, h.pinsIn⟩
 
 omit hP horc ih in
 theorem FrameCore.ofBlock {c : Ctx} {Λ : List Ty} {vars : List (String × Nat)} {me : Value}
     {sa : List Ty} {s : Store} {b : Bool} (h : FrameCore P { c with inBlock := b } Λ vars me sa s) :
     FrameCore P c Λ vars me sa s :=
-  ⟨h.decls, h.inj, h.inStore, h.self, h.selfInit, h.selfObj, h.closed, h.bounded⟩
+  ⟨h.decls, h.inj, h.inStore, h.self, h.selfInit, h.selfObj, h.closed, h.bounded, h.pins, h.pinsIn⟩
 
 theorem block_succ : BlockGood P orc (n + 1) := by
   intro s Λ clo sig vs ws hw hgiven hvs
@@ -424,6 +424,7 @@ theorem block_succ : BlockGood P orc (n + 1) := by
   simp only [runBlock, hb]
   obtain ⟨hobjs, hlen1, hsame⟩ := bindAll_same hb
   have hprocs := bindAll_procs hb
+  have hpins1 := bindAll_pins hb
   have hval := bindAll_val hcore.inj hb hnd (fun x _ l hl => hcore.inStore x l (lookupVar_mem hl))
   have mono : ∀ {v : Value} {t : Ty}, s.hasTy c.prog v t → s1.hasTy c.prog v t := fun h => by
     unfold Store.hasTy Store.hasType Store.typeOf at *; rw [hobjs, hprocs]; exact h
@@ -431,7 +432,7 @@ theorem block_succ : BlockGood P orc (n + 1) := by
   have he1 : Ext c.prog (frameW vars ps) (fun _ => False) Λ Λ s s1 := by
     refine ⟨List.prefix_refl Λ, fun l v hv => ?_, fun l o ho => ⟨o, by rw [hobjs]; exact ho, rfl,
       rfl, rfl, fun _ h => h⟩, fun l o o' ho ho' _ _ _ _ _ => by rw [hobjs, ho] at ho'; cases ho'; rfl,
-      by rw [hprocs]; exact List.prefix_refl _⟩
+      by rw [hprocs]; exact List.prefix_refl _, by rw [hpins1]; exact List.prefix_refl _⟩
     by_cases hl : ∃ x ∈ ps, lookupVar vars x = some l
     · obtain ⟨x, hx, hxl⟩ := hl
       obtain ⟨t, ht⟩ : ∃ t, (x, t) ∈ ps.zip sig0.params := by
@@ -444,9 +445,10 @@ theorem block_succ : BlockGood P orc (n + 1) := by
       obtain ⟨d, hd, htd⟩ := hdecl x t ht
       obtain ⟨l'', hl'', hΛ⟩ := hcore.decls x d hd
       rw [hxl] at hl''; cases hl''
-      exact ⟨w, hw', .inr ⟨⟨x, hx, hxl⟩, d.subst sa, hΛ, mono (hasTy_le hwf hwt (Ty.subst_leK hwf sa hcore.bounded htd))⟩⟩
+      exact ⟨w, hw', .inr ⟨.inl ⟨x, hx, hxl⟩, d.subst sa, hΛ, mono (hasTy_le hwf hwt (Ty.subst_leK hwf sa hcore.bounded htd))⟩⟩
     · exact ⟨v, by rw [hsame l fun x hx hxl => hl ⟨x, hx, hxl⟩]; exact hv, .inl rfl⟩
-  have hw1 : WfStore c.prog Λ s1 := ⟨by rw [hlen1]; exact hw.len, fun l o ho => by
+  have hw1 : WfStore c.prog Λ s1 := ⟨by rw [hlen1]; exact hw.len, by rw [hpins1, hlen1]; exact hw.pinsLen,
+    fun l o ho => by
     rw [hobjs] at ho
     obtain ⟨a, a1, a2, b, b2, d⟩ := hw.objs l o ho
     exact ⟨a, a1, a2, b, b2, fun i v f h0 h1 h2 => mono (d i v f h0 h1 h2)⟩,
@@ -461,8 +463,9 @@ theorem block_succ : BlockGood P orc (n + 1) := by
       fun l hl => by rw [hlen1]; exact hin l (by simp only [chainLocs]; exact Or.inr hl),
       fun _ h => by simp at h⟩
   have hs1 : Sat c.prog c (blockEnv c Δ ps sig0 body) ⟨vars, me, sa, outer⟩ s1 := by
-    refine Sat.foldl_set _ (hR.reset_typed hcore he1 fun l h _ => ?_) fun x t hm => ?_
-    · obtain ⟨x, hx, hxl⟩ := h; exact ⟨x, List.mem_append_left _ hx, hxl⟩
+    refine Sat.foldl_set _ (hR.reset_typed hcore he1 (fun l h _ => ?_) (fun _ h => List.mem_append_right _ h))
+      fun x t hm => ?_
+    · obtain ⟨x, hx, hxl⟩ := h; exact ⟨x, List.mem_append_left _ (List.mem_append_left _ hx), hxl⟩
     · obtain ⟨w, hwm, hwt⟩ := hzip x t hm
       obtain ⟨l, hl, hw'⟩ := hval x w hwm
       obtain ⟨d, hd, htd⟩ := hdecl x t hm
@@ -486,12 +489,12 @@ theorem block_succ : BlockGood P orc (n + 1) := by
       fun l hl => ?_⟩
     · simp only [ChainAt]
       refine ⟨trivial, hf2.core.ofBlock, hf2.chain, habove, ⟨sig0, hrel, ?_, hty, hret⟩,
-        hR.reset_typed hcore he12 fun l h hfl => ?_⟩
+        hR.reset_typed hcore he12 (fun l h hfl => ?_) (fun _ h => List.mem_append_right _ h)⟩
       · simp only [blockParamsOk, Bool.and_eq_true, beq_iff_eq, decide_eq_true_eq, List.all_eq_true]
         exact ⟨⟨hlen, hnd⟩, hpd⟩
       · rcases h with ⟨x, hx, hl⟩ | ⟨x, hx, hl⟩ | h
-        · exact ⟨x, List.mem_append_left _ hx, hl⟩
-        · exact ⟨x, List.mem_append_right _ hx, hl⟩
+        · exact ⟨x, List.mem_append_left _ (List.mem_append_left _ hx), hl⟩
+        · exact ⟨x, List.mem_append_left _ (List.mem_append_right _ hx), hl⟩
         · obtain ⟨y, hy⟩ := hfl
           exact absurd (habove l l ⟨y, hy⟩ (blkW_chain h)) (Nat.lt_irrefl _)
     · simp only [chainLocs] at hl
@@ -514,12 +517,12 @@ theorem block_succ : BlockGood P orc (n + 1) := by
     refine ⟨Λ2, hw2, he12.monoW hblkW, hv2, ?_, fun l hl => ?_⟩
     · simp only [ChainAt]
       refine ⟨trivial, hf2.core.ofBlock, hf2.chain, habove, ⟨sig0, hrel, ?_, hty, hret⟩,
-        hR.reset_typed hcore he12 fun l h hfl => ?_⟩
+        hR.reset_typed hcore he12 (fun l h hfl => ?_) (fun _ h => List.mem_append_right _ h)⟩
       · simp only [blockParamsOk, Bool.and_eq_true, beq_iff_eq, decide_eq_true_eq, List.all_eq_true]
         exact ⟨⟨hlen, hnd⟩, hpd⟩
       · rcases h with ⟨x, hx, hl⟩ | ⟨x, hx, hl⟩ | h
-        · exact ⟨x, List.mem_append_left _ hx, hl⟩
-        · exact ⟨x, List.mem_append_right _ hx, hl⟩
+        · exact ⟨x, List.mem_append_left _ (List.mem_append_left _ hx), hl⟩
+        · exact ⟨x, List.mem_append_left _ (List.mem_append_right _ hx), hl⟩
         · obtain ⟨y, hy⟩ := hfl
           exact absurd (habove l l ⟨y, hy⟩ (blkW_chain h)) (Nat.lt_irrefl _)
     · simp only [chainLocs] at hl
@@ -617,9 +620,13 @@ theorem send_succ : SendGood P orc (n + 1) := by
     obtain ⟨j, hj⟩ := hcl y t (decl_param hwfm hm)
     exact ⟨_, hlookj j y t hj⟩
   obtain ⟨s2, hb⟩ := bindAll_some (vars := Store.allocVars s.locs.length (mt'.locals.map (·.1)))
-    ⟨s.locs ++ (mt'.locals.map (·.1)).map fun _ => .nil, s.objs, s.procs⟩ (by rw [List.length_map, hlen']) hexists
+    ⟨s.locs ++ (mt'.locals.map (·.1)).map (fun _ => .nil), s.objs, s.procs,
+      s.pins ++ (mt'.locals.map (·.1)).map (fun x => decide (x ∈ mt'.body.procAssigned))⟩
+    (by rw [List.length_map, hlen']) hexists
   obtain ⟨hobjs, hlen2, hsame⟩ := bindAll_same hb
   have hprocs := bindAll_procs hb
+  have hpins := bindAll_pins hb
+  simp only at hpins
   have hsa2 : s2.argsFor P.classes l mt'.owner = σ := by simp [Store.argsFor, hobjs, ho, hσ]
   simp only [hb, hsa2]
   simp only [List.length_append, List.length_map] at hlen2
@@ -632,12 +639,12 @@ theorem send_succ : SendGood P orc (n + 1) := by
     refine ⟨List.prefix_append _ _, fun l' v hv => ⟨v, ?_, .inl rfl⟩, fun l' o' ho' =>
       ⟨o', by rw [hobjs]; exact ho', rfl, rfl, rfl, fun _ h => h⟩,
       fun _ o1 o2 h1 h2 _ _ _ _ _ => by rw [hobjs, h1] at h2; cases h2; rfl,
-      by rw [hprocs]; exact List.prefix_refl _⟩
+      by rw [hprocs]; exact List.prefix_refl _, by rw [hpins]; exact List.prefix_append _ _⟩
     have hl' := (List.getElem?_eq_some_iff.mp hv).1
     rw [hsame l' fun x _ hx => by have := (hge x l' hx).1; omega]
     simp [List.getElem?_append_left hl', hv]
   have hw2 : WfStore P (Λ ++ (mt'.locals.map (·.2)).map (Ty.subst σ)) s2 :=
-    ⟨by simp [hw.len, hlen2], fun l' o' ho' => by
+    ⟨by simp [hw.len, hlen2], by rw [hpins, hlen2]; simp [hw.pinsLen], fun l' o' ho' => by
       rw [hobjs] at ho'
       obtain ⟨a, a1, a2, b, b2, d⟩ := hw.objs l' o' ho'
       exact ⟨a, a1, a2, b, b2, fun i v f h0 h1 h2 => mono (d i v f h0 h1 h2)⟩,
@@ -647,7 +654,8 @@ theorem send_succ : SendGood P orc (n + 1) := by
   have hcore : FrameCore P ⟨P, mt', false, false⟩ (Λ ++ (mt'.locals.map (·.2)).map (Ty.subst σ))
       (Store.allocVars s.locs.length (mt'.locals.map (·.1))) (.obj l) σ s2 := by
     refine ⟨fun x d hd => ?_, fun x y l' hx hy => ?_, fun x l' hm => ?_, fun _ => ?_,
-      fun h => absurd h (by rw [hnotInit]; simp), ⟨l, rfl, hsa2.symm⟩, hσclosed, hσin⟩
+      fun h => absurd h (by rw [hnotInit]; simp), ⟨l, rfl, hsa2.symm⟩, hσclosed, hσin,
+      fun x l' hl' => (fresh_pins hw.pinsLen hpins hl').1, fun x l' hl' => (fresh_pins hw.pinsLen hpins hl').2⟩
     · obtain ⟨j, hj⟩ := hcl x d hd
       refine ⟨_, hlookj j x d hj, ?_⟩
       have hjl := (List.getElem?_eq_some_iff.mp hj).1

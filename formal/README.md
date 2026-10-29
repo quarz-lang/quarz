@@ -36,10 +36,11 @@ A small language with Quarz's core and nothing else (`QuarzCore/`):
   exception the body raises in `x`, then the handler; otherwise `els`),
   `ensure body ens` (`ens` after the body however it ends, its result
   kept unless `ens` raises or returns), `lambda ps own ret body` (a
-  procedure closed over the frame's locals by reference: design §13.8,
-  C0, its body assigning only its own locals, its parameters and `own`,
-  which are fresh at each call, and reading the frame's as declared, since
-  it may run when they hold other values) and `callProc f args`, `absurd` (where no value gets: what a `case/in` on a closed
+  procedure closed over the frame's locals by reference: design §13.8
+  and §13.10, its parameters and `own` fresh at each call, reading the
+  frame's locals as declared, since it may run when they hold other
+  values, and assigning them at their declared types) and
+  `callProc f args`, `absurd` (where no value gets: what a `case/in` on a closed
   type reaches when no arm matches), the tests (`nil?`, `is_a?`, `==`/`!=` against `nil`, `true`,
   `false`, as forms, not calls), `&&`, `||`, `!`. A read of a local or of
   an immutable field carries the type the checker gave it there.
@@ -113,10 +114,8 @@ arguments; a call on a value of a parameter whose bound is a union of
 classes finds each class's method (the Rust checker reports the method
 undefined), and one whose bound is `Nothing` is vacuous (no value).
 
-Not in v1 (design in `/tmp`, kept by the maintainers): closures that
-assign a local of their method (design §13.7, C1: what such a closure
-assigns is un-narrowed after any call once it is made; the model's
-lambdas assign only their own locals, C0) and named (kept) blocks, array, hash, find, range and pin patterns, generic `data`
+Not in v1 (design in `/tmp`, kept by the maintainers): named (kept)
+blocks, array, hash, find, range and pin patterns, generic `data`
 types and `enum`s, `rescue`/`ensure` in `initialize` and in defaults
 (fields being set: design §12) and `retry` but at the end of a clause
 of a `begin` used as a statement, `super`
@@ -298,20 +297,34 @@ stricter, not unsound.
   `ProcN[in A1, .., in An, out R]` (kind `proc`: right below `Object`,
   without fields, no method, nothing below it and no `new` of it; its
   values are procedures), so procedure types compare as the variances
-  say. A lambda is in range when it assigns none of its method's locals
-  (its own, the names first assigned in it, are fresh at each call, as
-  in Quarz); its body sees the method's locals as declared, where the
+  say. A lambda's own locals (the names first assigned in it) are fresh
+  at each call, as in Quarz. What the method's lambdas assign of its
+  locals (`Ctx.pinned`) is un-narrowed after every call (a method's,
+  a block's, `yield`, `new`, `super`, a procedure's, a built-in one,
+  which may call the program's `to_s`, an `==` that may call one) and
+  where a block, a `rescue` handler, an `ensure` clause and each pass of
+  a loop start: any of these may run a lambda, which writes such a local at its
+  declared type (the proof: the store marks the locations of pinned
+  locals, ghost, and any call may write a marked location). The Rust
+  checker never narrows such a local once the lambda is made, and
+  narrows it before: the model un-narrows it after a call before the
+  lambda is made too, so a program narrowing it there across a call
+  disagrees (stricter, not unsound: design §13.10). The translator puts
+  `!x` of an object out of range (a class may define `!`, which the
+  model's `!` does not call). Its body sees the method's locals as declared, where the
   Rust checker keeps the narrowing of one assigned once (design §13.4,
   R2b, later), so a read the Rust checker narrows further is a model
   limit for now: the translator puts such a read out of range (one of a
-  local or a field the body does not test itself), as it does a lambda
-  that assigns a local around it (C0) and a shareable procedure type (it
-  captures by value). A method with a named block parameter (a block it
+  local or a field the body does not test itself), as it does a shareable
+  procedure type (it captures by value). A method with a named block parameter (a block it
   may keep) is out of range. A `-> Void` block's body gets `nil` at its
   end, as a `-> Void` lambda's does. The Rust checker counts any block as one that
   may run later while the method it is given to is not known
   (`prescan_repeated`); the model resolves the call first, so it is only
   more precise there.
+  A known translator gap: a bang method's sugar (`x.other!`, which is
+  `x = x.other`) is not translated as the assignment it is, so a
+  program using it disagrees.
   A disagreement is the Rust checker narrowing further than the rules
   allow, or the model being stricter: either is looked at. The methods
   `attr_reader` and `attr_writer` make are methods of the model; another

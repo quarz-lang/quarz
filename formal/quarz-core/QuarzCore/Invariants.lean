@@ -49,13 +49,16 @@ def ObjsGrow (s s' : Store) : Prop :=
 structure Ext (W Wo : Nat → Prop) (Λ Λ' : List Ty) (s s' : Store) : Prop where
   tys : Λ <+: Λ'
   locs : ∀ (l : Nat) (v : Value), s.locs[l]? = some v → ∃ v' : Value, s'.locs[l]? = some v' ∧
-    (v' = v ∨ (W l ∧ ∃ t, Λ[l]? = some t ∧ s'.hasTy P v' t))
+    (v' = v ∨ ((W l ∨ s.pins[l]? = some true) ∧ ∃ t, Λ[l]? = some t ∧ s'.hasTy P v' t))
   grow : ObjsGrow s s'
   imm : ∀ (l : Nat) (o o' : Obj), s.objs[l]? = some o → s'.objs[l]? = some o' → ¬ Wo l →
     ∀ (i : Nat) (f : Field), (P.classes.allFields o.cls)[i]? = some f → f.var = false →
       o'.fields[i]? = o.fields[i]?
   /-- Procedures stay as made. -/
   procs : s.procs <+: s'.procs
+  /-- The marks stay: a pinned location (a procedure may write it, any
+  call may) is written as any other, at its type. -/
+  pins : s.pins <+: s'.pins
 
 /-- What a path holds in frame `fr` of a method checked in `c`: the types
 the body names (which may name the class's parameters) are read with
@@ -71,6 +74,11 @@ def PathHolds (c : Ctx) (fr : Frame) (s : Store) : Path → Ty → Prop
 
 def Sat (c : Ctx) (Γ : Env) (fr : Frame) (s : Store) : Prop :=
   ∀ p t, Γ.get p = some t → PathHolds P c fr s p t
+
+/-- An environment narrows no pinned local (a call may write those):
+after a call, and where a block or a handler starts. -/
+def PinsDecl (c : Ctx) (Γ : Env) : Prop :=
+  ∀ x t, Γ.get (.local x) = some t → x ∈ c.pinned → c.decl x = some t
 
 /-- The locations a frame's locals are at. -/
 def frameLocs (vars : List (String × Nat)) (l : Nat) : Prop := ∃ x, (x, l) ∈ vars
@@ -126,8 +134,12 @@ structure FrameCore (c : Ctx) (Λ : List Ty) (vars : List (String × Nat)) (me :
   closed : Ty.closedArgs sa = true
   /-- The arguments are within the method's class's bounds. -/
   bounded : ArgsIn P.classes c.bounds sa
+  /-- A local's location is marked (a call may write it) when the local
+  is pinned (design §13.10). -/
+  pins : ∀ x l, lookupVar vars x = some l → (s.pins[l]? = some true ↔ x ∈ c.pinned)
+  pinsIn : ∀ x l, lookupVar vars x = some l → l < s.pins.length
 
-/-- A procedure in the store (design §13.8, C0): a lambda checked in `c`
+/-- A procedure in the store (design §13.8, §13.10): a lambda checked in `c`
 where `Γ` held, of the frame it captured (its locals' locations, by
 reference, as `FrameCore` says, those assigned there holding values of
 their declared types), with its own locals fresh at each call. -/
@@ -146,6 +158,7 @@ def ProcOK (Λ : List Ty) (s : Store) (p : ProcV) : Prop :=
 
 structure WfStore (Λ : List Ty) (s : Store) : Prop where
   len : Λ.length = s.locs.length
+  pinsLen : s.pins.length = s.locs.length
   /-- Each object's class is one, its type arguments (ghost) closed and as
   many as the class's parameters, and its fields that are set hold values
   of their declared types given those arguments. -/
@@ -186,7 +199,7 @@ def ChainAt (Λ : List Ty) (s : Store) : List (Ctx × Env × Out) → Option Clo
         blockParamsOk c ps sig0 = true ∧
         Typed { c with inBlock := true } (blockEnv c Δ ps sig0 body) body ob ∧
         ob.ty.le c.ct c.bounds sig0.ret = true) ∧
-      Sat P c (c.reset Δ (ps ++ body.assigned)) ⟨vars, self, sa, outer⟩ s
+      Sat P c (c.reset Δ (ps ++ body.assigned ++ c.pinned)) ⟨vars, self, sa, outer⟩ s
   | _, _, _ => False
 
 structure FrameOK (c : Ctx) (Λ : List Ty) (fr : Frame) (s : Store) (ws : List (Ctx × Env × Out)) :

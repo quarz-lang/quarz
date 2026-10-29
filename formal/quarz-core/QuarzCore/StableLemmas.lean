@@ -26,11 +26,12 @@ theorem lookupVar_mem {vars : List (String × Nat)} {x : String} {l : Nat}
     exact this
 
 theorem Ext.loc_same {W Wo : Nat → Prop} {Λ Λ' : List Ty} {s s' : Store} (he : Ext P W Wo Λ Λ' s s')
-    {l : Nat} {v : Value} (hv : s.locs[l]? = some v) (hw : ¬ W l) : s'.locs[l]? = some v := by
+    {l : Nat} {v : Value} (hv : s.locs[l]? = some v) (hw : ¬ W l) (hp : s.pins[l]? ≠ some true) :
+    s'.locs[l]? = some v := by
   obtain ⟨v', h1, h2⟩ := he.locs l v hv
   rcases h2 with rfl | ⟨hw', _⟩
   · exact h1
-  · exact absurd hw' hw
+  · exact absurd hw' (by rintro (h | h) <;> contradiction)
 
 theorem Ext.len {W Wo : Nat → Prop} {Λ Λ' : List Ty} {s s' : Store} (he : Ext P W Wo Λ Λ' s s')
     {l : Nat} (hl : l < s.locs.length) : l < s'.locs.length := by
@@ -53,15 +54,50 @@ theorem argsFor_stable {s s' : Store} (hg : ObjsGrow s s') {l : Nat} {o : Obj}
   obtain ⟨o', ho', hc, ha, _, _⟩ := hg l o ho
   simp [Store.argsFor, ho, ho', hc, ha]
 
+/-- A local of a frame holds after writes that miss it, but if it is
+pinned, at its declared type. -/
+theorem PathHolds.local_stable {c : Ctx} {fr : Frame} {s s' : Store} {W Wo : Nat → Prop} {Λ Λ' : List Ty}
+    (he : Ext P W Wo Λ Λ' s s') (hw : ∀ l, frameLocs fr.vars l → ¬ W l)
+    (hcore : FrameCore P c Λ fr.vars fr.self fr.selfArgs s) {x : String} {t : Ty}
+    (hpd : x ∈ c.pinned → c.decl x = some t) (h : PathHolds P c fr s (.local x) t) :
+    PathHolds P c fr s' (.local x) t := by
+  obtain ⟨l, v, d, h1, h2, h3, h4, h5⟩ := h
+  obtain ⟨v', h1', h2'⟩ := he.locs l v h2
+  rcases h2' with heq | ⟨hw', t', ht', hty⟩
+  · subst heq; exact ⟨l, _, d, h1, h1', h3, he.hasTy h4, he.hasTy h5⟩
+  · rcases hw' with hw' | hp
+    · exact absurd hw' (hw l ⟨x, lookupVar_mem h1⟩)
+    · have hd := hpd ((hcore.pins x l h1).mp hp)
+      obtain ⟨l', hl', hΛ⟩ := hcore.decls x t hd
+      rw [h1] at hl'; cases hl'
+      rw [hΛ] at ht'; cases ht'
+      have hdt : d = t := Option.some.inj (h3.symm.trans hd)
+      subst hdt
+      exact ⟨l, v', _, h1, h1', h3, hty, hty⟩
+
 /-- A path of a frame holds after writes that miss its locals and leave
-its `self`'s immutable fields alone. -/
+its `self`'s immutable fields alone, but for those to pinned locals
+(marked), at their declared types: a pinned local's path holds when it
+is at its declared type. -/
 theorem PathHolds.stable {c : Ctx} {fr : Frame} {s s' : Store} {W Wo : Nat → Prop} {Λ Λ' : List Ty}
     (he : Ext P W Wo Λ Λ' s s') (hw : ∀ l, frameLocs fr.vars l → ¬ W l)
-    (hwo : ∀ l, fr.self = .obj l → ¬ Wo l) :
-    ∀ {p t}, PathHolds P c fr s p t → PathHolds P c fr s' p t
-  | .local x, t, ⟨l, v, d, h1, h2, h3, h4, h5⟩ =>
-    ⟨l, v, d, h1, he.loc_same h2 (hw l ⟨x, lookupVar_mem h1⟩), h3, he.hasTy h4, he.hasTy h5⟩
-  | .field f, t, ⟨l, o, fd, i, h1, h2, h3, h4, h5, h6, h7⟩ => by
+    (hwo : ∀ l, fr.self = .obj l → ¬ Wo l) (hcore : FrameCore P c Λ fr.vars fr.self fr.selfArgs s) :
+    ∀ {p t}, (∀ x, p = .local x → x ∈ c.pinned → c.decl x = some t) →
+      PathHolds P c fr s p t → PathHolds P c fr s' p t
+  | .local x, t, hpd, ⟨l, v, d, h1, h2, h3, h4, h5⟩ => by
+    obtain ⟨v', h1', h2'⟩ := he.locs l v h2
+    rcases h2' with heq | ⟨hw', t', ht', hty⟩
+    · subst heq; exact ⟨l, _, d, h1, h1', h3, he.hasTy h4, he.hasTy h5⟩
+    · rcases hw' with hw' | hp
+      · exact absurd hw' (hw l ⟨x, lookupVar_mem h1⟩)
+      · have hd := hpd x rfl ((hcore.pins x l h1).mp hp)
+        obtain ⟨l', hl', hΛ⟩ := hcore.decls x t hd
+        rw [h1] at hl'; cases hl'
+        rw [hΛ] at ht'; cases ht'
+        have hdt : d = t := Option.some.inj (h3.symm.trans hd)
+        subst hdt
+        exact ⟨l, v', _, h1, h1', h3, hty, hty⟩
+  | .field f, t, _, ⟨l, o, fd, i, h1, h2, h3, h4, h5, h6, h7⟩ => by
     obtain ⟨o', ho', hc, ha, _, hs⟩ := he.grow l o h2
     refine ⟨l, o', fd, i, h1, ho', h3, by rw [hc]; exact h4, by rw [hc, ha]; exact h5, hs i h6,
       fun hv => ?_⟩
@@ -73,9 +109,27 @@ theorem PathHolds.stable {c : Ctx} {fr : Frame} {s s' : Store} {W Wo : Nat → P
 
 theorem Sat.stable {c : Ctx} {Γ : Env} {fr : Frame} {s s' : Store} {W Wo : Nat → Prop}
     {Λ Λ' : List Ty} (h : Sat P c Γ fr s) (he : Ext P W Wo Λ Λ' s s')
-    (hw : ∀ l, frameLocs fr.vars l → ¬ W l) (hwo : ∀ l, fr.self = .obj l → ¬ Wo l) :
+    (hw : ∀ l, frameLocs fr.vars l → ¬ W l) (hwo : ∀ l, fr.self = .obj l → ¬ Wo l)
+    (hcore : FrameCore P c Λ fr.vars fr.self fr.selfArgs s) (hpd : PinsDecl c Γ) :
     Sat P c Γ fr s' :=
-  fun p t hp => (h p t hp).stable he hw hwo
+  fun p t hp => (h p t hp).stable he hw hwo hcore (fun x hx hm => by subst hx; exact hpd x t hp hm)
+
+/-- What holds of a frame after a step that wrote no location. -/
+theorem Sat.stable_locs {c : Ctx} {Γ : Env} {fr : Frame} {s s' : Store} {Wo : Nat → Prop}
+    {Λ Λ' : List Ty} (h : Sat P c Γ fr s) (he : Ext P (fun _ => False) Wo Λ Λ' s s')
+    (hwo : ∀ l, fr.self = .obj l → ¬ Wo l) (hcore : FrameCore P c Λ fr.vars fr.self fr.selfArgs s)
+    (hl : s'.locs = s.locs) : Sat P c Γ fr s' := by
+  intro p t hp
+  cases p with
+  | «local» x =>
+    obtain ⟨l, v, d, h1, h2, h3, h4, h5⟩ := h _ _ hp
+    exact ⟨l, v, d, h1, by rw [hl]; exact h2, h3, he.hasTy h4, he.hasTy h5⟩
+  | field f => exact (h _ _ hp).stable he (fun _ _ h => h) hwo hcore (fun _ hx => by cases hx)
+
+theorem pins_same {s1 s2 : Store} {l : Nat} (h : s1.pins <+: s2.pins) (hl : l < s1.pins.length) :
+    s2.pins[l]? = some true ↔ s1.pins[l]? = some true := by
+  obtain ⟨r, hr⟩ := h
+  rw [← hr, List.getElem?_append_left hl]
 
 theorem FrameCore.stable {c : Ctx} {Λ Λ' : List Ty} {vars : List (String × Nat)} {me : Value}
     {sa : List Ty} {s s' : Store} {W Wo : Nat → Prop} (h : FrameCore P c Λ vars me sa s)
@@ -104,6 +158,37 @@ theorem FrameCore.stable {c : Ctx} {Λ Λ' : List Ty} {vars : List (String × Na
     rw [argsFor_stable he.grow ho]; exact hsa
   closed := h.closed
   bounded := h.bounded
+  pins := fun x l hl => by rw [← h.pins x l hl]; exact pins_same he.pins (h.pinsIn x l hl)
+  pinsIn := fun x l hl => Nat.lt_of_lt_of_le (h.pinsIn x l hl) he.pins.length_le
+
+theorem Ctx.get_reset_local {c : Ctx} : ∀ {Δ : Env} {xs : List String} {x : String} {t : Ty},
+    (c.reset Δ xs).get (.local x) = some t → x ∈ xs → c.decl x = some t
+  | [], _, _, _, h, _ => by simp [Ctx.reset, Env.get] at h
+  | (.field f, u) :: Δ, xs, x, t, h, hx => by
+    simp [Ctx.reset, Env.get] at h
+    exact Ctx.get_reset_local (by simpa [Env.get] using h) hx
+  | (.local y, u) :: Δ, xs, x, t, h, hx => by
+    simp only [Ctx.reset] at h
+    by_cases hy : y ∈ xs
+    · rw [if_pos hy] at h
+      cases hd : c.decl y with
+      | none => rw [hd] at h; exact Ctx.get_reset_local h hx
+      | some d =>
+        rw [hd] at h
+        by_cases hxy : x = y
+        · subst hxy; simp [Env.get] at h; rw [hd, h]
+        · simp [Env.get, Ne.symm hxy] at h
+          exact Ctx.get_reset_local h hx
+    · rw [if_neg hy] at h
+      by_cases hxy : x = y
+      · subst hxy; exact absurd hx hy
+      · simp [Env.get, Ne.symm hxy] at h
+        exact Ctx.get_reset_local h hx
+
+/-- What un-narrows the pinned locals narrows none. -/
+theorem pinsDecl_reset {c : Ctx} {Δ : Env} {xs : List String} (h : ∀ x ∈ c.pinned, x ∈ xs) :
+    PinsDecl c (c.reset Δ xs) :=
+  fun _ _ hg hm => Ctx.get_reset_local hg (h _ hm)
 
 /-- A block chain stays as checked under writes that miss its frames'
 locals (and assign no immutable field, when there is a block). -/
@@ -121,7 +206,7 @@ theorem ChainAt.stable {Λ Λ' : List Ty} {s s' : Store} {W Wo : Nat → Prop}
     have hwo' : ∀ l, ¬ Wo l := fun l h => by cases hwo l h
     exact ⟨hc, hcore.stable he, ChainAt.stable he ws outer _ (fun l hl => hw l (Or.inr hl))
         (fun l h => absurd h (hwo' l)) hch,
-      habove, hsig, hR.stable he hwf (fun l _ => hwo' l)⟩
+      habove, hsig, hR.stable he hwf (fun l _ => hwo' l) hcore (pinsDecl_reset (fun _ h => by simp [h]))⟩
   | [], some _, _, _, _, h => by simp [ChainAt] at h
   | [], none, some _, _, _, h => by simp [ChainAt] at h
   | _ :: _, none, _, _, _, h => by simp [ChainAt] at h
@@ -270,6 +355,7 @@ theorem WfStore.setLoc {Λ : List Ty} {s : Store} (h : WfStore P Λ s) {l : Nat}
     (hl : l < s.locs.length) (ht : Λ[l]? = some t) (hv : s.hasTy P v t) :
     WfStore P Λ (s.setLoc l v) where
   len := by simp [Store.setLoc, h.len]
+  pinsLen := by simp [Store.setLoc, h.pinsLen]
   objs := fun l o ho => by
     obtain ⟨h1, h1a, h1b, h2, h3, h4⟩ := h.objs l o ho
     exact ⟨h1, h1a, h1b, h2, h3, fun i w f hs hw hf => h4 i w f hs hw hf⟩
@@ -281,6 +367,7 @@ theorem WfStore.setLoc {Λ : List Ty} {s : Store} (h : WfStore P Λ s) {l : Nat}
 theorem WfStore.newProc {Λ : List Ty} {s : Store} (hw : WfStore P Λ s) {p : ProcV}
     (hp : ProcOK P Λ s p) : WfStore P Λ { s with procs := s.procs ++ [p] } where
   len := hw.len
+  pinsLen := hw.pinsLen
   objs := fun l o ho => by
     obtain ⟨h1, h1a, h1b, h2, h3, h4⟩ := hw.objs l o ho
     exact ⟨h1, h1a, h1b, h2, h3, fun i w f hs hw' hf => (Ext.newProc (W := fun _ => False)
