@@ -1957,6 +1957,20 @@ fn checks_the_types_it_cannot_take_on_trust() {
         &format!("{shape}def f[V <: H[Int]](x: V) -> Int = 0"),
         "type argument Int for `T` of `H` must be Shape",
     );
+    // A parameter is Shareable when a bound makes every type it admits
+    // Shareable: one that promises it (`Int`, a module including
+    // `Shareable`), a Shareable `data` type or enum, a parameter that is.
+    let boxed = "class Box[T <: Shareable]\nend\n";
+    ok(&format!("{boxed}module Sendable\n  include Shareable\nend\nclass B3[U <: Sendable] < Box[U]\nend\nclass B4[U <: Int] < Box[U]\nend\ndata D = (x: Int)\nclass B9[U <: D] < Box[U]\nend\nenum E = A | B\nclass B10[U <: E] < Box[U]\nend\nclass B11[V <: Shareable, U <: V] < Box[U]\nend\ndef g[U <: Int](x: U) -> Int\n  c = Channel[U].new\n  0\nend"));
+    err(
+        &format!("{boxed}class M\n  var @x: Int = 0\nend\nclass B7[U <: M] < Box[U]\nend"),
+        "type argument U for `T` of `Box` must be Shareable",
+    );
+    // A class Shareable without promising it may have a subclass that is not.
+    err(
+        &format!("{boxed}class P\n  @x: Int = 1\nend\nclass B8[U <: P] < Box[U]\nend"),
+        "type argument U for `T` of `Box` must be Shareable",
+    );
     ok("class Cmp[X <: Cmp[X]]\nend\nclass K < Cmp[K]\nend\nmodule Ord[T <: Comparable[T]]\nend\nclass V\n  include Comparable[V]\n  include Ord[V]\n  def <=>(o: V) -> Int = 0\nend");
     // A `T` narrowed by a test is still a `T`.
     ok("def keep[T](x: T) -> T\n  if x.is_a?(String)\n    p x.upcase\n    return x\n  end\n  x\nend");

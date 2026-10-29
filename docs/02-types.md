@@ -188,6 +188,8 @@ class Atom[T <: Shareable]
 def self.spawn[T <: Shareable](&block: () -> T) -> Task[T]   # the variables captured by the block must be Shareable too
 ```
 
+A type parameter is Shareable when one of its bounds makes every type it admits Shareable: `Shareable` itself, a class or module that includes it (`U <: Int`, `U <: Sendable` for a module `Sendable` including `Shareable`), a Shareable `data` type or enum (nothing extends them), or another parameter that is. A class that is Shareable without including `Shareable` does not: a subclass of it may add a `var` field.
+
 `include Shareable` is a promise that the subtypes keep: a value of a Shareable type is Shareable whatever its class. So whether a type is Shareable is decided where it is defined, from its own declaration and its ancestors', without looking at the rest of the program (which separate compilation needs).
 
 A procedure type is not Shareable: a block reads and assigns the variables of the code around it, which another task must not. `shareable (A) -> R` is the type of one that is. A block or lambda written where such a type is expected (a block parameter `&job: shareable (Int) -> Void`, an argument, an annotated variable) captures by value, as a `Task.spawn` block does: the variables it reads are copied when it is made, their values must be Shareable (and so must `self`, if it uses it), and it cannot assign them. Any task may then call it, at once with others: a worker pool or a server loop can take one and run it in tasks of its own.
