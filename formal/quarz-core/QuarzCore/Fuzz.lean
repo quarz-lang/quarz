@@ -232,6 +232,14 @@ partial def genExpr : Nat → Gen Expr
          (.seq (.assign "x" .nil) (.seq (.raise (.str "boom")) (.assign "x" (.int 2)))))
          (.assign "x" (.var "x" [.int])))),
        (2, do return .prim "f" [] [] (← genTy)),
+       -- `x || 0`, and an assignment's test narrowing its local.
+       (1, pure (.assign "k" (.or (.var "x" [.int, .nil]) (.int 0)))),
+       (1, pure (.assign "x" (.and (.var "z" [.bool, .nil, .int]) (.var "x" [.int, .nil])))),
+       (1, pure (.ite (.assign "x" (.prim "f" [] [] [.int, .nil])) (.assign "k" (.var "x" [.int]))
+         (.assign "x" (.var "x" [.nil])))),
+       (1, pure (.ite (.assign "x" (.prim "f" [] [] [.int, .nil])) .nil (.assign "k" (.var "x" [.int])))),
+       (1, pure (.seq (.assign "z" (.or (.prim "f" [] [] [.bool, .nil]) (.int 0)))
+         (.assign "k" (.var "z" [.int])))),
        -- Arrays (design §14): made by built-in calls, covariant, their
        -- elements read.
        (1, return .assign "xs" (.prim "arr" [.int 1] [[.int]] [.cls 20 [[.int]]])),

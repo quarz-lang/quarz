@@ -42,7 +42,9 @@ A small language with Quarz's core and nothing else (`QuarzCore/`):
   values, and assigning them at their declared types) and
   `callProc f args`, `absurd` (where no value gets: what a `case/in` on a closed
   type reaches when no arm matches), the tests (`nil?`, `is_a?`, `==`/`!=` against `nil`, `true`,
-  `false`, as forms, not calls), `&&`, `||`, `!`. A read of a local or of
+  `false`, as forms, not calls), `&&`, `||` (`a || b` of `a`'s truthy
+  part and `b`'s type, `a && b` of `a`'s falsy part and `b`'s), `!`. An
+  assignment's value tested narrows its local too (`if (x = e)`). A read of a local or of
   an immutable field carries the type the checker gave it there.
 - `Typing`: `check`, the rules as a function; `Typed`, the same rules as
   a syntax-directed relation, which the metatheory is about; `Check`:

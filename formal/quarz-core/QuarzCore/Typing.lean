@@ -401,6 +401,12 @@ them (`Object` does, as every value class), and its parameters. -/
 def falsyTy (ct : ClassTable) (u : Ty) : Ty :=
   u.filter Atom.isParam ++ [.nil, .bool].filter fun a => Ty.le ct [] [a] u
 
+/-- After `x = e`, `e` of type `t`: `x` holds its value, so the value's
+test narrows `x` too (`if (x = e)`). -/
+def assignOut (c : Ctx) (Δ : Env) (x : String) (t : Ty) : Out :=
+  let Δx := Δ.set (.local x) t
+  ⟨t, some Δx, narrow Δx (.local x) (truthyTy t), narrow Δx (.local x) (falsyTy c.ct t)⟩
+
 /-- What a value of `u` found to be `nil` is: `nil`, if `u` holds it or
 has a parameter (whose instantiation may). -/
 def nilTy (ct : ClassTable) (u : Ty) : Ty :=
@@ -533,7 +539,7 @@ def check (c : Ctx) (Γ : Env) : Expr → Option Out
     guard (o.ty.le c.ct c.bounds d)
     match o.out with
     | none => some .dead
-    | some Δ => some (.plain o.ty (Δ.set (.local x) o.ty))
+    | some Δ => some (assignOut c Δ x o.ty)
   | .setField f e => do
     let fd ← c.field? f
     -- An immutable field only in `initialize` (not in a block of it).
@@ -756,11 +762,13 @@ def check (c : Ctx) (Γ : Env) : Expr → Option Out
   | .and a b => do
     let oa ← check c Γ a
     let ob ← checkBranch c oa.tt b
-    some ⟨oa.ty ++ ob.ty, ojoin oa.ff ob.out, ob.tt, ojoin oa.ff ob.ff⟩
+    -- (Its value: `a`'s if falsy, so of `a`'s falsy part.)
+    some ⟨falsyTy c.ct oa.ty ++ ob.ty, ojoin oa.ff ob.out, ob.tt, ojoin oa.ff ob.ff⟩
   | .or a b => do
     let oa ← check c Γ a
     let ob ← checkBranch c oa.ff b
-    some ⟨oa.ty ++ ob.ty, ojoin oa.tt ob.out, ojoin oa.tt ob.tt, ob.ff⟩
+    -- (Its value: `a`'s if truthy, so of `a`'s truthy part.)
+    some ⟨truthyTy oa.ty ++ ob.ty, ojoin oa.tt ob.out, ojoin oa.tt ob.tt, ob.ff⟩
   | .not a => do
     let oa ← check c Γ a
     some ⟨[.bool], oa.out, oa.ff, oa.tt⟩
