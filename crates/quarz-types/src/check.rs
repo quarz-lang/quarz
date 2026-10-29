@@ -9051,9 +9051,13 @@ impl Checker {
                 return;
             }
             ExprKind::Call(call) => {
+                // A call that did not type-check was reported already.
+                let Some(target) = self.out.calls.get(&e.id) else {
+                    return;
+                };
                 let ok = matches!(
-                    self.out.calls.get(&e.id),
-                    Some(CallTarget::Method { .. } | CallTarget::Constructor { .. })
+                    target,
+                    CallTarget::Method { .. } | CallTarget::Constructor { .. }
                 );
                 if !ok {
                     let message = refuse(&format!("`{}` here", call.name));

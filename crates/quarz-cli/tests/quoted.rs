@@ -362,3 +362,24 @@ fn the_tree_is_built_once_per_call_site() {
     let run = Command::new(d.0.join("app.bin")).output().unwrap();
     assert_eq!(String::from_utf8_lossy(&run.stdout), expected);
 }
+
+#[test]
+fn a_call_that_failed_its_check_is_not_also_unquotable() {
+    let d = dir();
+    write(
+        &d.0,
+        "bad.qz",
+        "def keep(&cond: Quoted[(Int) -> Bool]) -> Bool = cond.proc.call(1)\nkeep { |x| x > \"one\" }\nkeep { |x| x.nope }\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", "bad.qz"], &[]);
+    assert!(!ok);
+    assert!(
+        err.contains("bad.qz:2:12: error: no overload of `>` on Int matches (String)"),
+        "{err}"
+    );
+    assert!(
+        err.contains("bad.qz:3:12: error: undefined method `nope` for Int"),
+        "{err}"
+    );
+    assert!(!err.contains("cannot be quoted"), "{err}");
+}
