@@ -1,0 +1,93 @@
+# `enum`s and `case/in` within QCore's range (formal/quarz-core, P2): an
+# enum's variants (with fields, and one without, a value), `case/in` by
+# class with captures and bindings, exhaustive on closed types (no
+# `else`: the checker requires every variant covered) and with `else`;
+# a capture by a class above the subject's, and a `case` on a `var`
+# field. (A name bound in two arms is out of range: Rust declares it
+# afresh in each arm.)
+enum Shape
+  variant Circle(r: Int)
+  variant Rect(w: Int, h: Int)
+  variant Dot
+end
+
+def area(s: Shape) -> Int
+  case s
+  in Shape::Circle => c then 3 * c.r * c.r
+  in Shape::Rect => r then r.w * r.h
+  in Shape::Dot then 0
+  end
+end
+
+def round?(s: Shape) -> Bool
+  case s
+  in Shape::Circle then true
+  else false
+  end
+end
+
+def size(x: Int | String) -> Int
+  case x
+  in Int => n then n
+  in String => t then t.size
+  end
+end
+
+def first(s: Shape?) -> String
+  case s
+  in Shape::Rect then "rect"
+  in other then "other"
+  end
+end
+
+def width(s: Shape) -> Int
+  case s
+  in Shape::Circle => c then 2 * c.r
+  in Shape::Rect => r then r.w
+  in Shape::Dot then 0
+  end
+end
+
+class Animal
+end
+
+class Dog < Animal
+  def bark -> String
+    "woof"
+  end
+end
+
+def call(x: Dog | Int) -> String
+  case x
+  in Animal => a then a.bark
+  in Int then "int"
+  end
+end
+
+class Holder
+  var @s: Shape
+
+  def initialize(@s: Shape)
+  end
+
+  def kind -> String
+    case @s
+    in Shape::Circle then "circle"
+    in Shape::Rect then "rect"
+    in Shape::Dot then "dot"
+    end
+  end
+end
+
+puts area(Shape::Circle.new(2))
+puts area(Shape::Rect.new(2, 3))
+puts area(Shape::Dot)
+puts round?(Shape::Dot)
+puts size(4)
+puts size("four")
+puts first(Shape::Rect.new(1, 1))
+puts first(nil)
+puts width(Shape::Rect.new(5, 1))
+puts call(Dog.new)
+puts call(1)
+puts Holder.new(Shape::Dot).kind

@@ -34,9 +34,14 @@ structure WfClasses (ct : ClassTable) : Prop where
     ∀ (j : Nat) (t : Ty), k.superArgs[j]? = some t → t.le ct k.bounds (Ty.boundOf (ct.boundsOf d) j) = true
   /-- No more bounds than parameters. -/
   boundsLen : ∀ (i : Nat) (k : Class), ct[i]? = some k → k.bounds.length ≤ k.params.length
-  /-- A `data` type has no subclasses. -/
+  /-- A `data` type has no subclasses, nor has a variant; an `enum`'s are
+  its variants. -/
   dataLeaf : ∀ (i : Nat) (k : Class) (d : Nat), ct[i]? = some k → k.super = some d →
     ct.kindOf d ≠ .data
+  variantLeaf : ∀ (i : Nat) (k : Class) (d : Nat), ct[i]? = some k → k.super = some d →
+    ct.kindOf d ≠ .variant
+  enumChild : ∀ (i : Nat) (k : Class) (d : Nat), ct[i]? = some k → k.super = some d →
+    ct.kindOf d = .enumC → k.kind = .variant ∧ k.params = []
   /-- The root is a class. -/
   rootKind : ∀ (k : Class), ct[0]? = some k → k.kind = .cls
 
@@ -77,7 +82,8 @@ theorem Program.wfClasses_sound {P : Program} (h : P.wfClasses = true) : WfClass
     rw [(root k hk).1] at hs; cases hs
   refine ⟨hne, fun k hk => (root k hk).1, fun k hk => (root k hk).2.1, fun i k hi hk => ?_,
     fun i k d hk hs => ?_, hnames, fun i k hk t ht a ha => ?_, fun i k d hk hs => ?_,
-    fun i k d hk hs j t hj => ?_, fun i k hk => ?_, fun i k d hk hs => ?_, fun k hk => ?_⟩
+    fun i k d hk hs j t hj => ?_, fun i k hk => ?_, fun i k d hk hs => ?_, fun i k d hk hs => ?_,
+    fun i k d hk hs hd => ?_, fun k hk => ?_⟩
   · obtain ⟨d, hd, h1, _⟩ := Program.wfClasses_class h hk (by omega)
     exact ⟨d, hd, h1⟩
   · obtain ⟨d', hd', _, h2, _⟩ := Program.wfClasses_class h hk (hnz i k hk (by simp [hs]))
@@ -97,7 +103,14 @@ theorem Program.wfClasses_sound {P : Program} (h : P.wfClasses = true) : WfClass
     exact this
   · have := hkind i (List.getElem?_eq_some_iff.mp hk).1
     simp only [hk, hs, Bool.and_eq_true, bne_iff_ne, ne_eq] at this
-    exact this.1
+    exact this.1.1.1
+  · have := hkind i (List.getElem?_eq_some_iff.mp hk).1
+    simp only [hk, hs, Bool.and_eq_true, bne_iff_ne, ne_eq] at this
+    exact this.1.1.2
+  · have := hkind i (List.getElem?_eq_some_iff.mp hk).1
+    simp only [hk, hs, Bool.and_eq_true, bne_iff_ne, ne_eq, Bool.or_eq_true, beq_iff_eq,
+      List.isEmpty_iff] at this
+    exact this.1.2.resolve_left (by simpa using hd)
   · have := hkind 0 hne
     simp [hk] at this
     exact this.2

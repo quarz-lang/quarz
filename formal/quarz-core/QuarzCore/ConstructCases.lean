@@ -190,7 +190,7 @@ theorem defaults_good (hP : WfProg P) {N : Nat} (ihs : ∀ m, m ≤ N → Good P
 
 theorem construct_succ (hP : WfProg P) {n : Nat} (ihs : ∀ m, m ≤ n → Good P orc m) :
     ConstructGood P orc (n + 1) := by
-  intro s Λ k targs vs hw hk hclosed hlen hin hinit hnone
+  intro s Λ k targs vs hw hk hclosed hlen hin hne hinit hnone
   have hwf := hP.classes
   simp only [construct]
   -- The new object: a field that admits `nil` and has no default holds it.
@@ -222,6 +222,17 @@ theorem construct_succ (hP : WfProg P) {n : Nat} (ihs : ∀ m, m ≤ n → Good 
       simp only [Bool.and_eq_true] at hset
       obtain ⟨b, hb, hnb⟩ := Ty.le_iff.mp hset.2 .nil (List.mem_singleton.mpr rfl)
       exact hasTy_iff.mpr ⟨.nil, rfl, b, hb, hnb⟩,
+    fun l' o ho => by
+      by_cases hl : l' < s.objs.length
+      · rw [show ({ s with objs := s.objs ++ [o0] } : Store).objs = s.objs ++ [o0] from rfl,
+          List.getElem?_append_left hl] at ho
+        exact hw.noEnum l' o ho
+      · have hl' : l' = s.objs.length := by
+          have := (List.getElem?_eq_some_iff.mp ho).1
+          simp at this; omega
+        subst hl'
+        simp at ho; subst ho
+        exact hne,
     fun l' o ho => by
       by_cases hl : l' < s.objs.length
       · rw [show ({ s with objs := s.objs ++ [o0] } : Store).objs = s.objs ++ [o0] from rfl,

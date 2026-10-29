@@ -39,10 +39,12 @@ def wfClasses (P : Program) : Bool :=
   ((List.range P.classes.length).all fun i => match P.classes[i]? with
     | some k => decide (k.bounds.length ≤ k.params.length)
     | none => true) &&
-  -- A `data` type has no subclasses, and the root is a class.
+  -- A `data` type and a variant have no subclasses, an `enum`'s are its
+  -- variants, and the root is a class.
   (List.range P.classes.length).all fun i => match P.classes[i]? with
     | some k => (match k.super with
-        | some d => P.classes.kindOf d != .data
+        | some d => P.classes.kindOf d != .data && P.classes.kindOf d != .variant &&
+            (P.classes.kindOf d != .enumC || (k.kind == .variant && k.params.isEmpty))
         | none => true) && (i != 0 || k.kind == .cls)
     | none => true
 
@@ -150,7 +152,7 @@ def check (P : Program) : Bool :=
   -- no fields and no parameters (`run`).
   (P.main.owner < P.classes.length && (P.classes.allFields P.main.owner).isEmpty &&
     (((P.classes[P.main.owner]?).map (·.params)).getD []).isEmpty &&
-    P.main.params.isEmpty && P.main.block.isNone) &&
+    P.main.params.isEmpty && P.main.block.isNone && P.classes.kindOf P.main.owner != .enumC) &&
   (P.main :: P.methods).all (fun mt => P.wfMethod mt && P.checkMethod mt) &&
   (List.range P.classes.length).all fun k => P.wfInit k && P.checkDefaults k && P.fieldsPosOk k
 

@@ -177,6 +177,8 @@ parameters and its class's superclass (`super`). -/
 structure Where where
   top : Bool
   init : Option (List (String × Ty) × Nat) := none
+  /-- The Rust id of the method's class (for its fields). -/
+  rcls : Option Nat := none
 
 /-- Converting a body, with the locals so far. -/
 abbrev CM := ReaderT Where (StateT Locals M)
@@ -226,6 +228,11 @@ partial def expr (T : Tables) (e : Json) : CM Expr := do
     let target ← match T.constTargets.getObjVal? (toString id) with
       | .ok t => pure t
       | .error _ => throw "a constant read not resolved"
+    -- A variant without data: its value (a new one each time: the model's
+    -- equality of variants is their class's).
+    if (← str (← field target "t")) == "variant" then
+      let some q := T.qclass (← nat (← field target "id")) | throw "a variant out of range"
+      return .new q [] []
     unless (← str (← field target "t")) == "const" do throw "a class as a value"
     let cid ← nat (← field target "id")
     let some k := T.consts.find? fun k => (k.getObjValAs? Nat "id").toOption == some cid
@@ -297,12 +304,164 @@ partial def expr (T : Tables) (e : Json) : CM Expr := do
       | .null => pure (params.map fun (x, t) => Expr.var x t)
       | a => (← arr a).toList.mapM fun a => do expr T (← positional a)
     return .superInit d args
+  | "CaseIn" => caseIn T id v
   | k => throw s!"a {k} expression"
 
 partial def body (T : Tables) (es : Array Json) : CM Expr := do
   match es.toList with
   | [] => pure .nil
   | e :: es => es.foldlM (fun acc x => do pure (.seq acc (← expr T x))) (← expr T e)
+
+/-- `case subject in arms else els` (docs/01 §11) as tests: each arm a
+class test on the subject (as `is_a?` narrows), a binding an assignment;
+without `else`, a closed type (variants, `data`, `nil`, `Bool`, or more
+than one member) must be covered (`absurd`, docs/02 §6), an open one
+raises `NoMatchingPatternError`. -/
+partial def caseIn (T : Tables) (id : Nat) (v : Json) : CM Expr := do
+  let subjJ ← field v "subject"
+  let st ← field T.nodeTypes (toString (← nat (← field subjJ "id")))
+  let stTy ← T.ty st
+  let before ← get
+  -- Whether a field of the method's class (or one above) is `var`: the
+  -- model narrows only immutable ones.
+  let fieldVar (f : String) : CM Bool := do
+    let some rc := (← read).rcls | pure true
+    let mut c := rc
+    for _ in [0:T.classes.size] do
+      let cj ← T.cls c
+      for fj in (← arr (← field cj "fields")) do
+        if (← str (← field fj "name")) == f then return (← field fj "var") == .bool true
+      match ← field cj "superclass" with
+      | .null => return true
+      | sj => c ← nat (← field sj "id")
+    pure true
+  -- The subject read again in each arm (a path the model narrows), or
+  -- held in a local (evaluated once, as Rust does).
+  let tmpRoute : CM (Expr × (Ty → Expr)) := do
+    -- A name no program can spell.
+    let tmp := s!"case#{id}"
+    let e ← expr T subjJ
+    modify (addLocal · tmp stTy)
+    pure (Expr.assign tmp e, fun t => Expr.var tmp t)
+  let (pre, read) ← match ← variant (← field subjJ "kind") with
+    | ("Local", x) => do let x ← str x; pure (Expr.nil, fun t => Expr.var x t)
+    | ("IVar", f) => do
+      let f ← str f
+      if ← fieldVar f then tmpRoute else pure (Expr.nil, fun t => Expr.field f t)
+    | _ => tmpRoute
+  -- Rust's subclass relation, by class ids.
+  let rsub (c d : Nat) : M Bool := do
+    let mut x := c
+    for _ in [0:T.classes.size + 1] do
+      if x == d then return true
+      match ← field (← T.cls x) "superclass" with
+      | .null => return false
+      | sj => x ← nat (← field sj "id")
+    pure false
+  -- A pattern's class (its Rust id and atom), by its name.
+  let classOf (names : Json) : M (Nat × Atom) := do
+    let ns ← (← arr (← field names "names")).toList.mapM str
+    let full := "::".intercalate ns
+    let cands ← T.classes.toList.filterM fun c => do
+      let n ← str (← field c "name")
+      pure (n == full || n.endsWith ("::" ++ full))
+    let [c] := cands | throw s!"pattern class {full}"
+    let cid ← nat (← field c "id")
+    unless (← arr (← field c "type_params")).isEmpty do throw "a pattern of a generic class"
+    if (← str (← field c "kind")) == "Enum" then throw "a pattern of an enum"
+    match ← T.ty (Json.mkObj [("t", "class"), ("id", cid), ("args", Json.arr #[])]) with
+    | [a] => pure (cid, a)
+    | _ => throw s!"pattern class {full}"
+  -- What a match narrows the subject to (Rust's `split_by_type`): each
+  -- member below the class stays, one above it gives the class.
+  let members ← match ← str (← field st "t") with
+    | "union" => do pure (← arr (← field st "members")).toList
+    | _ => pure [st]
+  -- The members with an enum as its variants (Rust's `expand_members`).
+  let expanded ← members.flatMapM fun m => do
+    if (← str (← field m "t")) != "class" then return [m]
+    let c ← T.cls (← nat (← field m "id"))
+    if (← str (← field c "kind")) != "Enum" then return [m]
+    let cid ← nat (← field c "id")
+    let vs ← T.classes.toList.filterM fun d => do
+      match ← field d "superclass" with
+      | .null => pure false
+      | s => pure ((← nat (← field s "id")) == cid && (← str (← field d "kind")) == "Variant")
+    vs.mapM fun d => do
+      pure (Json.mkObj [("t", "class"), ("id", ← nat (← field d "id")), ("args", Json.arr #[])])
+  let yesOf (pid : Nat) (a : Atom) : M Ty := do
+    let mut out : Ty := []
+    for m in expanded do
+      match ← str (← field m "t") with
+      | "class" =>
+        let mid ← nat (← field m "id")
+        if ← rsub mid pid then out := out ++ (← T.ty m)
+        else if ← rsub pid mid then out := out ++ [a]
+      | t => throw s!"a capture on a {t} subject"
+    -- A dead arm: Rust declares the pattern's class (`dead_arm_type`).
+    pure (if out.isEmpty then [a] else out.eraseDups)
+  let arms ← (← arr (← field v "arms")).toList.mapM fun arm => do
+    unless (← field arm "guard") == .null do throw "a guard"
+    let bd ← body T (← arr (← field arm "body"))
+    let (k, p) ← variant (← field (← field arm "pattern") "kind")
+    match k with
+    | "Const" => pure (some (← classOf p).2, none, bd)
+    | "Capture" =>
+      let [inner, x] := (← arr p).toList | throw "a capture"
+      let x ← str x
+      let (ik, ip) ← variant (← field inner "kind")
+      unless ik == "Const" do throw s!"a {ik} pattern"
+      let (pid, a) ← classOf ip
+      pure (some a, some (x, ← yesOf pid a), bd)
+    | "Bind" =>
+      let x ← str p
+      if x == "_" then pure (none, none, bd) else pure (none, some (x, stTy), bd)
+    | k => throw s!"a {k} pattern"
+  -- A name bound in an arm, declared with its pattern's type unless
+  -- declared before. Rust declares it afresh in each arm (after the
+  -- `case`, the name is the last arm's): one bound in two arms, or
+  -- assigned in the `case` besides, is out of range.
+  let binds := arms.filterMap (·.2.1)
+  let mid ← get
+  for (x, t) in binds do
+    unless before.any (·.1 == x) do
+      if (binds.filter (·.1 == x)).length > 1 || mid.any (·.1 == x) then
+        throw "a name bound in a case arm and assigned in another"
+      modify (addLocal · x t)
+  let els ← match ← field v "els" with
+    | .null => pure none
+    | e => pure (some (← body T (← arr e)))
+  -- Closed as the Rust checker has it (`is_closed_type` for each member,
+  -- or more than one member once enums are expanded).
+  let closedOne (m : Json) : M (Bool × Nat) := do
+    match ← str (← field m "t") with
+    | "class" =>
+      let c ← T.cls (← nat (← field m "id"))
+      let kind ← str (← field c "kind")
+      let name ← str (← field c "name")
+      let n ← if kind == "Enum" then do
+          let cid ← nat (← field c "id")
+          let vs ← T.classes.toList.filterM fun d => do
+            match ← field d "superclass" with
+            | .null => pure false
+            | s => pure ((← nat (← field s "id")) == cid && (← str (← field d "kind")) == "Variant")
+          pure vs.length
+        else pure 1
+      pure (kind == "Data" || kind == "Variant" || kind == "Enum" || name == "Nil" || name == "Bool", n)
+    | _ => pure (false, 1)
+  let infos : List (Bool × Nat) ← members.mapM fun m => (closedOne m : CM (Bool × Nat))
+  let closed := infos.all (fun i => i.1) || (infos.map (fun i => i.2)).sum > 1
+  let last := match els with
+    | some e => e
+    | none => if closed then .absurd else .raise
+  let chain := arms.foldr (fun (a, bind, bd) rest =>
+    let bd := match bind with
+      | some (x, t) => Expr.seq (.assign x (read t)) bd
+      | none => bd
+    match a with
+    | some a => Expr.ite (.isA (read stTy) a) bd rest
+    | none => bd) last
+  return .seq pre chain
 
 partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
   let name ← str (← field c "name")
@@ -320,6 +479,16 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
     | .ok t => pure t
     | .error _ => throw s!"call {name} not resolved"
   let lit (a : Json) : M String := do pure (← variant (← field a "kind")).1
+  -- A data-less variant as a value: Rust narrows `x == V` (`!=`) by
+  -- identity, the model does not.
+  let isVariant (a : Json) : M Bool := do
+    unless (← lit a) == "Const" do return false
+    match T.constTargets.getObjVal? (toString (← nat (← field a "id"))) with
+    | .ok t => pure ((← str (← field t "t")) == "variant")
+    | .error _ => pure false
+  if name == "==" || name == "!=" then
+    if (← (recvJ :: args).filterM fun a => if a == .null then pure false else isVariant a) != [] then
+      throw "a comparison with a variant value"
   -- The tests: forms of their own (design §1.3).
   match name, recv, args, blk with
   | "nil?", some r, [], .null => return .isNil r
@@ -498,7 +667,7 @@ def method (T : Tables) (owner : Nat) (m : Json) (d : Json) : M Method := do
       | .null => pure 0
       | t => pure (← T.tyClass t).1
     pure (some (params, sup))
-  let w : Where := ⟨owner == 1, init⟩
+  let w : Where := ⟨owner == 1, init, some (← nat (← field m "owner"))⟩
   let (bd, ls) ← ((body T (← arr (← field d "body"))).run w).run params
   -- The model narrows without the bounds (a test of a `T <: Shape` value
   -- keeps `T` where the Rust checker may not): a method of a class with a
@@ -530,7 +699,8 @@ def program (j : Json) : M Program := do
   -- The user classes, in Rust id order (a superclass is declared first).
   let user ← classes.toList.filterM fun c => do
     let kind ← str (← field c "kind")
-    pure (files.contains (← nat (← field c "file")) && (kind == "Class" || kind == "Data") &&
+    pure (files.contains (← nat (← field c "file")) &&
+      (kind == "Class" || kind == "Data" || kind == "Enum" || kind == "Variant") &&
       !mainClasses.contains (← nat (← field c "id")))
   let userIds ← user.mapM fun c => do nat (← field c "id")
   -- `Object` is 0, the files' main classes (the top level and its
@@ -595,6 +765,12 @@ def program (j : Json) : M Program := do
       | "Data" =>
         unless params.isEmpty do throw "a generic data type"
         pure ClassKind.data
+      | "Enum" =>
+        unless params.isEmpty do throw "a generic enum"
+        pure ClassKind.enumC
+      | "Variant" =>
+        unless params.isEmpty do throw "a generic enum"
+        pure ClassKind.variant
       | _ => pure ClassKind.cls
     pure (⟨← str (← field c "name"), some sup.1, fields, params, sup.2, pbs.map (·.2), kind⟩ : Class)
   let methods ← T.defs.toList.filterMapM fun d => do
@@ -616,17 +792,17 @@ def program (j : Json) : M Program := do
     match ← field k "value" with
     | .null => throw "a constant with no initializer"
     | v =>
-      let (bd, ls) ← ((expr T v).run ⟨true, none⟩).run []
+      let (bd, ls) ← ((expr T v).run ⟨true, none, none⟩).run []
       pure (⟨1, "const " ++ (← str (← field k "name")), [], ty, none, ls, bd⟩ : Method)
   let some mainUnit := units.back? | throw "no unit"
-  let (mainBody, mainLocals) ← ((body T (← arr (← field mainUnit "body"))).run ⟨true, none⟩).run []
+  let (mainBody, mainLocals) ← ((body T (← arr (← field mainUnit "body"))).run ⟨true, none, none⟩).run []
   let all : Ty := [.nil, .bool, .int, .str, .cls 0 []]
   -- A default that tests or loops, with a bounded parameter anywhere (it
   -- is checked in each inheriting class): out of range, as in `method`.
   let bounded ← user.anyM fun c => do
     (← arr (← field c "type_params")).anyM fun p => do pure !(← arr (← field p "bounds")).isEmpty
   let defaults ← fdefs.toList.mapM fun e => do
-    let (x, ls) ← ((expr T (← field e "value")).run ⟨false, none⟩).run []
+    let (x, ls) ← ((expr T (← field e "value")).run ⟨false, none, none⟩).run []
     unless ls.isEmpty do throw "a field default with locals"
     if bounded && narrows x then throw "a test in a default with a bounded parameter"
     pure x

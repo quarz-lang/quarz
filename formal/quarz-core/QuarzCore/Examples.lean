@@ -334,4 +334,36 @@ def dataProg (body : Expr) (locals : List (String × Ty) := []) (cls : ClassTabl
 -- Nothing subclasses a `data` type.
 #guard !(dataProg .nil [] (dataClasses ++ [⟨"Sub", some 1, [], [], [], [], .cls⟩])).check
 
+/-! ### `enum` and `case/in` (P2)
+
+En with variants V1(n: Int) and V2; `case e in V1 … in V2 … end` as the
+translator writes it: tests, the rest `absurd` (accepted only where no
+value gets). -/
+
+def enumClasses : ClassTable :=
+  [object,
+   ⟨"En", some 0, [], [], [], [], .enumC⟩,
+   ⟨"V1", some 1, [⟨"n", [.int], false, none⟩], [], [], [], .variant⟩,
+   ⟨"V2", some 1, [], [], [], [], .variant⟩]
+
+def enumProg (body : Expr) (locals : List (String × Ty) := []) (cls : ClassTable := enumClasses) : Program :=
+  ⟨cls,
+   [⟨2, "initialize", [("n", [.int])], [.nil], none, [("n", [.int])], .setField "n" (.var "n" [.int])⟩],
+   ⟨0, "<main>", [], [.nil, .bool, .int, .str, .cls 0 []], none, locals, body⟩, []⟩
+
+def caseBoth : Expr := .seq (.assign "e" (.new 3 [] []))
+  (.ite (.isA (.var "e" [.cls 1 []]) (.cls 2 [])) (.int 1)
+    (.ite (.isA (.var "e" [.cls 1 []]) (.cls 3 [])) (.int 2) .absurd))
+
+-- Covering both variants: the `absurd` branch is dead, accepted.
+#guard (enumProg caseBoth [("e", [.cls 1 []])]).check
+#guard match run (enumProg caseBoth [("e", [.cls 1 []])]) noPrim 100 with
+  | .ok (.int 2) _ => true | _ => false
+-- Missing one: rejected.
+#guard !(enumProg (.seq (.assign "e" (.new 3 [] []))
+  (.ite (.isA (.var "e" [.cls 1 []]) (.cls 2 [])) (.int 1) .absurd)) [("e", [.cls 1 []])]).check
+-- No object of the enum itself, and nothing below a variant.
+#guard !(enumProg (.new 1 [] [])).check
+#guard !(enumProg .nil [] (enumClasses ++ [⟨"W", some 2, [], [], [], [], .cls⟩])).check
+
 end QuarzCore.Examples

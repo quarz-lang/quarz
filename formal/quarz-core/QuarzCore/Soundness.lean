@@ -94,13 +94,14 @@ theorem Program.checkDefaults_typed {k : Nat} (h : P.checkDefaults k = true) :
 theorem Program.check_wf (h : P.check = true) :
     WfProg P ∧ P.main.owner < P.classes.length ∧ (P.classes.allFields P.main.owner).isEmpty ∧
       (((P.classes[P.main.owner]?).map (·.params)).getD []) = [] ∧
-      P.main.params = [] ∧ P.main.block = none ∧ P.wfMethod P.main = true ∧
+      P.main.params = [] ∧ P.main.block = none ∧ P.classes.kindOf P.main.owner ≠ .enumC ∧
+      P.wfMethod P.main = true ∧
       ∃ o, Typed ⟨P, P.main, false, false⟩ [] P.main.body o ∧
         (P.main.name ≠ "initialize" → o.out = none ∨
           o.ty.le P.classes (P.classes.boundsOf P.main.owner) P.main.ret = true) := by
   simp only [Program.check, Bool.and_eq_true, decide_eq_true_eq, List.all_eq_true,
-    List.isEmpty_iff, Option.isNone_iff_eq_none, List.mem_range] at h
-  obtain ⟨⟨⟨hc, ⟨⟨⟨⟨hown, hf⟩, hmp⟩, hp⟩, hb⟩⟩, hall⟩, hcls⟩ := h
+    List.isEmpty_iff, Option.isNone_iff_eq_none, List.mem_range, bne_iff_ne, ne_eq] at h
+  obtain ⟨⟨⟨hc, ⟨⟨⟨⟨⟨hown, hf⟩, hmp⟩, hp⟩, hb⟩, hke⟩⟩, hall⟩, hcls⟩ := h
   have hm := hall P.main (List.mem_cons_self ..)
   obtain ⟨o, ho, hret, _⟩ := Program.checkMethod_typed hm.2
   rw [hp] at ho
@@ -114,7 +115,7 @@ theorem Program.check_wf (h : P.check = true) :
       ⟨(hall mt (List.mem_cons_of_mem _ hmt)).1,
         Program.checkMethod_typed (hall mt (List.mem_cons_of_mem _ hmt)).2⟩,
       fun k hk => (hcls k hk).1.1, fun k hk => Program.checkDefaults_typed (hcls k hk).1.2⟩,
-    hown, by simpa using hf, hmp, hp, hb, hm.1, o, ho, hret⟩
+    hown, by simpa using hf, hmp, hp, hb, hke, hm.1, o, ho, hret⟩
 
 /-- **Soundness** (design §4): a checked program, run with any fuel and
 any oracle giving values of the types asked for, never gets stuck. In
@@ -126,7 +127,7 @@ are what compiled code relies on. (Writes are not checked by `eval`: an
 ill-typed write would show at its read.) -/
 theorem run_sound (h : P.check = true) (horc : OracleOK P orc) (fuel : Nat) :
     run P orc fuel ≠ .stuck := by
-  obtain ⟨hP, hown, hnf, hmp, hpar, hblk, hwfm, o, ho, _⟩ := Program.check_wf h
+  obtain ⟨hP, hown, hnf, hmp, hpar, hblk, hke, hwfm, o, ho, _⟩ := Program.check_wf h
   have hwf := hP.classes
   simp only [List.isEmpty_iff] at hnf
   simp only [Program.wfMethod, Bool.and_eq_true, decide_eq_true_eq] at hwfm
@@ -154,6 +155,12 @@ theorem run_sound (h : P.check = true) (horc : OracleOK P orc) (fuel : Nat) :
       simp at ho; subst ho
       exact ⟨hown, rfl, by simp [hmp], by simp [hnf], rfl, fun i v f h1 _ => by simp at h1⟩
     | succ l => simp at ho,
+    fun l o ho => by
+      have : (s0.alloc names).1.objs = [⟨P.main.owner, [], [], []⟩] := rfl
+      rw [this] at ho
+      cases l with
+      | zero => simp at ho; subst ho; exact hke
+      | succ l => simp at ho,
     fun l o ho => by
       have : (s0.alloc names).1.objs = [⟨P.main.owner, [], [], []⟩] := rfl
       rw [this] at ho

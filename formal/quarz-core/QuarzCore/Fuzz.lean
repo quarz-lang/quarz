@@ -20,7 +20,8 @@ IntBox < Box[Int]; Pair[S, T] with `@a : S` and `@b : T`; OBox[out T]
 with `@v : T`, `get` and `each` (yields `@v`); Cell[T] with `var @v : T`
 and `set`; Sink[in T] with `put(x: T)`; IntOBox < OBox[Int], overriding
 `get`; AHold[T <: A] with `@v : T` and `ag`, calling `get` through the
-bound; data DPt(n: Int); data DEq whose `==` says yes to anything. -/
+bound; data DPt(n: Int); data DEq whose `==` says yes to anything;
+enum Sh with variants Ci(r: Int) and Pt. -/
 def classes : ClassTable :=
   [⟨"Object", none, [], [], [], [], .cls⟩,
    ⟨"A", some 0, [⟨"a", [.int, .nil], false, none⟩, ⟨"v", [.str], true, none⟩], [], [], [], .cls⟩,
@@ -36,7 +37,10 @@ def classes : ClassTable :=
    ⟨"IntOBox", some 8, [], [], [[.int]], [], .cls⟩,
    ⟨"AHold", some 0, [⟨"v", [.param 0], false, none⟩], [.inv], [], [[.cls 1 []]], .cls⟩,
    ⟨"DPt", some 0, [⟨"n", [.int], false, none⟩], [], [], [], .data⟩,
-   ⟨"DEq", some 0, [], [], [], [], .data⟩]
+   ⟨"DEq", some 0, [], [], [], [], .data⟩,
+   ⟨"Sh", some 0, [], [], [], [], .enumC⟩,
+   ⟨"Ci", some 15, [⟨"r", [.int], false, none⟩], [], [], [], .variant⟩,
+   ⟨"Pt", some 15, [], [], [], [], .variant⟩]
 
 /-- The atoms of random types and `is_a?` tests (`Box` without its
 argument is ill formed: the checker rejects a test of it). -/
@@ -98,6 +102,8 @@ def methods : List Method :=
     -- DPt's generated `initialize`; DEq#==.
     ⟨13, "initialize", [("n", [.int])], [.nil], none, [("n", [.int])], .setField "n" (.var "n" [.int])⟩,
     ⟨13, "n", [], [.int], none, [], .field "n" [.int]⟩,
+    ⟨16, "initialize", [("r", [.int])], [.nil], none, [("r", [.int])], .setField "r" (.var "r" [.int])⟩,
+    ⟨16, "r", [], [.int], none, [], .field "r" [.int]⟩,
     ⟨14, "==", [("o", [.nil, .bool, .cls 0 []])], [.bool], none, [("o", [.nil, .bool, .cls 0 []])], .tru⟩,
     -- Cell#get -> T; Cell#set(x: T) -> T; Cell#initialize(v: T).
     ⟨9, "get", [], [.param 0], none, [], .field "v" [.param 0]⟩,
@@ -116,7 +122,8 @@ def locals : List (String × Ty) :=
    ("ci", [.cls 9 [[.int]], .nil]), ("co", [.cls 9 [[.cls 0 []]], .nil]),
    ("si", [.cls 10 [[.int]], .nil]),
    ("ah", [.cls 12 [[.cls 2 []]], .nil]), ("ae", [.cls 12 [[.cls 3 []]], .nil]),
-   ("dp", [.cls 13 [], .nil]), ("de", [.cls 14 [], .nil])]
+   ("dp", [.cls 13 [], .nil]), ("de", [.cls 14 [], .nil]),
+   ("sh", [.cls 15 []]), ("cc", [.cls 16 []])]
 
 def genTy : Gen Ty := do
   let n ← Gen.choose Nat 0 3 (by omega)
@@ -297,7 +304,26 @@ def varSteps : List Expr :=
    .ite (.eqNil (.var "dp" [.cls 13 [], .nil])) (.var "dp" [.nil])
      (.assign "x" (.call (.var "dp" [.cls 13 []]) "n" [])),
    .assign "de" (.new 14 [] []),
-   .ite (.eqNil (.var "de" [.cls 14 [], .nil])) (.var "de" [.nil]) .nil]
+   .ite (.eqNil (.var "de" [.cls 14 [], .nil])) (.var "de" [.nil]) .nil,
+   -- `case/in` on an enum, as the translator writes it: covering both
+   -- variants (the rest `absurd`), or one only (rejected), or with a
+   -- capture.
+   .assign "sh" (.new 16 [] [.int 3]),
+   .assign "sh" (.new 17 [] []),
+   -- An `Sh` from a built-in call: of the enum's type, not narrowed; then
+   -- a `case` covering one variant (rejected) or both.
+   .assign "sh" (.prim "sh" [] [] [.cls 15 []]),
+   .seq (.assign "sh" (.new 17 [] [])) (.seq (.assign "sh" (.prim "sh" [] [] [.cls 15 []]))
+     (.ite (.isA (.var "sh" [.cls 15 []]) (.cls 16 [])) (.assign "x" .nil) .absurd)),
+   .seq (.assign "sh" (.new 17 [] [])) (.seq (.assign "sh" (.prim "sh" [] [] [.cls 15 []]))
+     (.ite (.isA (.var "sh" [.cls 15 []]) (.cls 16 [])) (.assign "x" .nil)
+       (.ite (.isA (.var "sh" [.cls 15 []]) (.cls 17 [])) (.assign "x" (.int 1)) .absurd))),
+   .ite (.isA (.var "sh" [.cls 15 []]) (.cls 16 [])) (.assign "x" .nil)
+     (.ite (.isA (.var "sh" [.cls 15 []]) (.cls 17 [])) (.assign "x" (.int 0)) .absurd),
+   .ite (.isA (.var "sh" [.cls 15 []]) (.cls 16 [])) (.assign "x" .nil) .absurd,
+   .ite (.isA (.var "sh" [.cls 15 []]) (.cls 16 []))
+     (.seq (.assign "cc" (.var "sh" [.cls 16 []])) (.assign "x" (.call (.var "cc" [.cls 16 []]) "r" [])))
+     (.ite (.isA (.var "sh" [.cls 15 []]) (.cls 17 [])) .nil .absurd)]
 
 /-- `n` steps of the variance scenario, in a random order. -/
 def genVarSeq : Nat → Gen Expr
