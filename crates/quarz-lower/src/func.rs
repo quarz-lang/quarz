@@ -13,6 +13,8 @@ use crate::iter::{self, Kind, Shape, Source};
 use crate::rtworld::rt_type;
 use crate::{Lowerer, UnitInput};
 
+mod quote;
+
 /// Key for constant-pool deduplication (floats by bit pattern).
 #[derive(Clone, PartialEq, Eq, Hash)]
 enum ConstKey {
@@ -91,6 +93,9 @@ struct Args {
 }
 
 pub struct FnBuilder<'a> {
+    /// The `Quoted` values made for calls being lowered (call id, its
+    /// register), released after their call (docs/14 §6).
+    quoted_regs: Vec<(u32, Reg)>,
     lw: &'a mut Lowerer,
     world: &'a World,
     out: &'a Output,
@@ -160,6 +165,7 @@ impl<'a> FnBuilder<'a> {
             func.frame_size = captured.iter().copied().max().unwrap_or(0) + 1;
         }
         FnBuilder {
+            quoted_regs: Vec::new(),
             lw,
             world,
             out,
@@ -766,6 +772,27 @@ impl<'a> FnBuilder<'a> {
             && call.recv.is_some()
     }
 
+    /// The value a call passes for its block literal `b`, made in `dst`:
+    /// the closure, or the `Quoted` holding it when the block is given
+    /// for a `Quoted` parameter (docs/14 §6).
+    fn block_value(&mut self, call_id: u32, b: &'a AstBlock, dst: Reg) -> Reg {
+        let proc_reg = self.share_proc(call_id, dst);
+        if self.out.quoted_blocks.contains_key(&call_id) {
+            // A snapshot at the call: the closure reads the values its
+            // tree's captures hold, as a shareable block's does.
+            let proc_reg = if self.out.shareable_procs.contains(&call_id) {
+                proc_reg
+            } else {
+                self.send(proc_reg, "__snapshot", Vec::new())
+            };
+            let q = self.quoted(call_id, b, proc_reg);
+            self.quoted_regs.push((call_id, q));
+            q
+        } else {
+            proc_reg
+        }
+    }
+
     fn load_const(&mut self, c: Constant) -> Reg {
         let idx = self.const_idx(c);
         let dst = self.reg();
@@ -1222,7 +1249,19 @@ impl<'a> FnBuilder<'a> {
                 }
                 None => self.nil(),
             },
-            Call(call) => self.call(e, call),
+            Call(call) => {
+                let v = self.call(e, call);
+                // The `Quoted` passed for its block goes with the call:
+                // what it holds (its captures, its closure's copies) does
+                // not stay referenced until the register is reused, which
+                // would keep a collection updated in place shared.
+                if let Some(i) = self.quoted_regs.iter().position(|(id, _)| *id == e.id) {
+                    let (_, r) = self.quoted_regs.swap_remove(i);
+                    let idx = self.const_idx(Constant::Nil);
+                    self.emit(Inst::LoadConst { dst: r, idx });
+                }
+                v
+            }
             MethodRef { recv, name } => {
                 let r = self.expr(recv);
                 let name = self.str_const(name);
@@ -2199,7 +2238,7 @@ impl<'a> FnBuilder<'a> {
                 destructure,
                 is_lambda: false,
             });
-            a.block = Some(self.share_proc(e.id, dst));
+            a.block = Some(self.block_value(e.id, b, dst));
         }
         let simple = a.block.is_none() && !a.splat && a.kw_splat.is_none();
         // The members of a union receiver have different methods: called
@@ -3030,7 +3069,7 @@ impl<'a> FnBuilder<'a> {
                 destructure,
                 is_lambda: false,
             });
-            a.block = Some(self.share_proc(e.id, dst));
+            a.block = Some(self.block_value(e.id, b, dst));
         }
         // Checks of the call (a block's, once per type) that found
         // different methods: the recorded one is the last check's, so no
@@ -3249,7 +3288,7 @@ impl<'a> FnBuilder<'a> {
                     destructure,
                     is_lambda: false,
                 });
-                Some(self.share_proc(e.id, dst))
+                Some(self.block_value(e.id, b, dst))
             }
             None => {
                 let dst = self.reg();

@@ -30,7 +30,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         i.call_block_on(&b, Some(r.clone()), a.pos)
     });
     native!(m, "Type#name", class_name);
-    // Reflection, at compile time only (docs/14 §6): the natives read the
+    // Reflection, at compile time only (docs/14 §4): the natives read the
     // declarations the compiler hands the interpreter (`Interp::reflect`).
     native!(m, "Type#fields", |i, r, _| {
         let class = reflected_class(i, r)?;

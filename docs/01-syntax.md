@@ -277,6 +277,7 @@ def name(a: Int, b: String = "x", *rest: Int, *, flag: Bool, limit: Int? = nil, 
 | `**opts: String` | Remaining keywords. The type is `Hash[Symbol, String]` |
 | `&block: (Int) -> Void` | Block parameter. The type is a procedure type; `block` is a procedure value (`block.call`, `block.()`, `block[]`) |
 | `&: (Int) -> Void` | Anonymous block parameter: only `yield` and forwarding with `f(&)` can use it |
+| `&cond: Quoted[(Int) -> Bool]` | A block received as a typed tree as well as a closure: the block written at the call is checked as the procedure type and `cond` is a `Quoted` (its tree `cond.expr`, its closure `cond.proc`); only a block literal, or another `Quoted` with `&`, can be given ([14-metaprogramming.md](14-metaprogramming.md) §6) |
 | `-> Ret` | Return type, declared (not inferred). Without it the method is `-> Void`; `def f = expr` requires it |
 
 - **Parameter types are required** (except where they can be inferred from a default value). Because types are fixed at method boundaries, compile times stay short and error messages clear.

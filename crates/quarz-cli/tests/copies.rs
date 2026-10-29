@@ -90,3 +90,10 @@ fn updates_of_unshared_collections_copy_nothing() {
 fn updates_of_shared_collections_copy_once_each() {
     check("shared.qz", 3);
 }
+
+#[test]
+fn a_quoted_block_leaves_no_reference_behind() {
+    // The `Quoted` given for a block (docs/14 §6), with its captures and
+    // its closure's copies, is released after its call.
+    check("quoted.qz", 0);
+}

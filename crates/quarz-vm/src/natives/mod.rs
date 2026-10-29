@@ -219,7 +219,7 @@ pub fn compile_time_allowed(key: &str) -> bool {
 }
 
 /// The natives that exist at compile time only: the reflection on a class
-/// (docs/14 §6). A method reaching one is compile-time only.
+/// (docs/14 §4). A method reaching one is compile-time only.
 pub fn compile_time_only(key: &str) -> bool {
     matches!(
         key,

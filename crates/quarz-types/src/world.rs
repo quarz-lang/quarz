@@ -365,6 +365,11 @@ pub struct Builtin {
     pub class_alias: u32,
     /// `Meta::ClassDef`, the `self` of a `static` statement (docs/14).
     pub meta_classdef: ClassId,
+    /// `Meta::Expr` and `Meta::MethodRef`, a quoted block's tree, and
+    /// `Quoted` (docs/14 §6).
+    pub meta_expr: ClassId,
+    pub meta_method_ref: ClassId,
+    pub quoted: ClassId,
     pub shareable: ClassId,
     pub task: ClassId,
     pub channel: ClassId,
@@ -2025,6 +2030,12 @@ impl World {
     fn class_shareable(&mut self, id: ClassId) -> bool {
         if let Some(s) = self.class(id).shareable {
             return s;
+        }
+        // A `Quoted[P]` is as shareable as `P` (docs/14 §6): a block given
+        // for a `shareable` procedure type captures shareable values only,
+        // which its `captures` (an `Array[Object]`) then hold.
+        if id == self.builtin.quoted {
+            return true;
         }
         // Provisionally true to handle recursive types.
         self.class_mut(id).shareable = Some(true);

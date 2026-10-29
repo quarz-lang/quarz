@@ -180,6 +180,64 @@ module Meta
     # The documentation comment of the next method generated.
     static native def doc(text: String) -> Void
   end
+
+  # A method a quoted block calls (docs/14 §6): its owner, name and side,
+  # and which of the owner's methods of that name it is (`index`, in
+  # declaration order: stable within one compiled program), with the
+  # extension it comes from, if any.
+  data MethodRef = (owner: Type[Object], name: Symbol, singleton: Bool, index: Int, extension: Type[Object]?)
+
+  # A quoted block's body as a tree (docs/14 §6), each node with its line.
+  enum Expr
+    # A literal, or a constant whose value is one.
+    variant Lit(value: Object, line: Int)
+    # A value from outside the block: `Quoted#captures[index]`.
+    variant Capture(index: Int, name: Symbol, line: Int)
+    # A parameter of the `depth`-th enclosing `Block` (0: the innermost;
+    # the quoted block itself is the outermost).
+    variant Arg(name: Symbol, depth: Int, line: Int)
+    # The block's `self`, when its procedure type has a receiver.
+    variant SelfRef(line: Int)
+    # A call of a method the checker chose.
+    variant Call(recv: Expr?, method: MethodRef, args: Array[Expr], block: Expr?, line: Int)
+    # The built-in `&&`, `||` and `!`.
+    variant And(left: Expr, right: Expr, line: Int)
+    variant Or(left: Expr, right: Expr, line: Int)
+    variant Not(operand: Expr, line: Int)
+    # `if`, `unless` (its condition under a `Not`) and `?:`.
+    variant If(cond: Expr, then_expr: Expr, else_expr: Expr?, line: Int)
+    variant ArrayLit(items: Array[Expr], line: Int)
+    variant HashLit(pairs: Array[[Expr, Expr]], line: Int)
+    # A string with interpolation: its parts, literals and expressions.
+    variant Interp(parts: Array[Expr], line: Int)
+    # A block given to a call inside the quoted one (and the quoted
+    # block itself): its parameters' names and its statements.
+    variant Block(params: Array[Symbol], body: Array[Expr], line: Int)
+  end
+end
+
+# A block received as a typed tree rather than as a closure (docs/14 §6):
+# a method declares `&cond: Quoted[P]`, `P` a procedure type, and the
+# block written at the call is checked as a `P`, then given as its tree
+# (`expr`), the values it captures (`captures`) and as the closure too
+# (`proc`). It is made only from a block literal.
+class Quoted[out P]
+  @expr: Meta::Expr
+  @captures: Array[Object]
+  @proc: P
+  @file: String
+
+  def initialize(@expr: Meta::Expr, @captures: Array[Object], @proc: P, @file: String); end
+
+  # The block's body as a tree.
+  def expr -> Meta::Expr = @expr
+  # The values the tree's `Meta::Expr::Capture` nodes stand for, read
+  # at the call.
+  def captures -> Array[Object] = @captures
+  # The block as a closure, to run it as written.
+  def proc -> P = @proc
+  # The file the block is written in (each node has its line).
+  def file -> String = @file
 end
 
 # The class of `nil`, the absence of a value. A type `T?` is `T` or `Nil`.
@@ -5151,6 +5209,7 @@ class Proc
   native def arity -> Int
   # Lowering calls it on a block or lambda made as a shareable procedure.
   native def __copy_captures -> Proc
+  native def __snapshot -> Proc
 end
 
 # The root of the exception classes. `raise` takes an instance of one
