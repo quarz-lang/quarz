@@ -2770,7 +2770,9 @@ impl Checker {
             (Type::Class(aid, aargs), Type::Class(eid, eargs)) => {
                 let ancestors = self.world.ancestors(*aid, aargs);
                 let Some((_, anc_args)) = ancestors.into_iter().find(|(id, _)| id == eid) else {
-                    return false;
+                    // (A `data` type or enum Shareable by its fields.)
+                    return *eid == self.world.builtin.shareable
+                        && self.world.derived_shareable(*aid, aargs);
                 };
                 if !self.world.keeps_shareable(*aid, aargs, *eid) {
                     return false;

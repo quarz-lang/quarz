@@ -119,11 +119,23 @@ pub fn build(world: &World, lw: &Lowerer, file_names: Vec<String>) -> RtWorld {
                     Some(Type::Class(id, _)) => Some(*id),
                     _ => None,
                 },
-                ancestors: world
-                    .ancestors(c.id, &[])
-                    .into_iter()
-                    .map(|(id, _)| id)
-                    .collect(),
+                ancestors: {
+                    let mut a: Vec<ClassId> = world
+                        .ancestors(c.id, &[])
+                        .into_iter()
+                        .map(|(id, _)| id)
+                        .collect();
+                    // A non-generic `data` type or enum Shareable by its
+                    // fields is a `Shareable` at run time too (docs/03).
+                    let marker = world.builtin.shareable;
+                    if c.type_params.is_empty()
+                        && !a.contains(&marker)
+                        && world.derived_shareable(c.id, &[])
+                    {
+                        a.push(marker);
+                    }
+                    a
+                },
                 fields,
                 ivars,
                 module_init: !world.has_fields_to_assign(c.id, true),

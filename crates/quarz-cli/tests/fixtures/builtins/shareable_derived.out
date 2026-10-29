@@ -1,0 +1,6 @@
+Point(x: 1, y: 2)
+[Point(x: 1, y: 2)]
+{"a" => [Col::Red]}
+[Point(x: 3, y: 4)]
+true
+Point(x: 5, y: 6)

@@ -1,0 +1,17 @@
+# A `data` type or enum Shareable by its fields is a `Shareable` without
+# including it, and so are collections of them (docs/03).
+data Point = (x: Int, y: Int)
+enum Col = Red | Green
+class Counter
+  var @n: Int = 0
+end
+data Holds = (c: Counter)
+x: Shareable = Point.new(1, 2)
+y: Shareable = [Point.new(1, 2)]
+z: Shareable = {"a" => [Col::Red]}
+ch = Channel[Shareable].new(1)
+ch.send([Point.new(3, 4)])
+p x, y, z, ch.receive
+o: Object = Point.new(5, 6)
+p o.is_a?(Shareable)
+p(o.as(Shareable))
