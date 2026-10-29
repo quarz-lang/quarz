@@ -114,8 +114,7 @@ arguments; a call on a value of a parameter whose bound is a union of
 classes finds each class's method (the Rust checker reports the method
 undefined), and one whose bound is `Nothing` is vacuous (no value).
 
-Not in v1 (design in `/tmp`, kept by the maintainers): named (kept)
-blocks, array, hash, find, range and pin patterns, generic `data`
+Not in v1 (design in `/tmp`, kept by the maintainers): array, hash, find, range and pin patterns, generic `data`
 types and `enum`s, `rescue`/`ensure` in `initialize` and in defaults
 (fields being set: design §12) and `retry` but at the end of a clause
 of a `begin` used as a statement, `super`
@@ -316,8 +315,14 @@ stricter, not unsound.
   R2b, later), so a read the Rust checker narrows further is a model
   limit for now: the translator puts such a read out of range (one of a
   local or a field the body does not test itself), as it does a shareable
-  procedure type (it captures by value). A method with a named block parameter (a block it
-  may keep) is out of range. A `-> Void` block's body gets `nil` at its
+  procedure type (it captures by value). A named block parameter (a
+  block the method may keep) is a last parameter of procedure type,
+  `yield` a call of it (out of range when the method assigns it), and a
+  block given to such a method a lambda; `&p` passes a procedure (into
+  an anonymous block, a block calling it). Out of range: `&p` to a
+  built-in method, `&` of an expression but a local into an anonymous
+  block, a block of a generic method keeping it, and a block given to a
+  union receiver when a method of that name keeps its block. A `-> Void` block's body gets `nil` at its
   end, as a `-> Void` lambda's does. The Rust checker counts any block as one that
   may run later while the method it is given to is not known
   (`prescan_repeated`); the model resolves the call first, so it is only
