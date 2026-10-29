@@ -1,0 +1,80 @@
+# `rescue` and `ensure` within QCore's range (formal/quarz-core, §12 of
+# the design): clauses by class with a variable, a clause without a class
+# (StandardError), `else`, `ensure`, a bare `raise` again, `raise` of a
+# string, a class, an exception made with `new`, `retry` at the end of a
+# clause, and what a handler sees of locals the body assigned.
+class ParseError < StandardError
+end
+
+def parse(s: String) -> Int
+  raise ParseError, "empty" if s == ""
+  raise "bad" if s == "x"
+  s.size
+end
+
+def safe(s: String) -> Int
+  begin
+    parse(s)
+  rescue ParseError => e
+    puts "parse error: #{e.message}"
+    -1
+  rescue
+    -2
+  end
+end
+
+def counted(s: String) -> String
+  n = s.size > 99 ? 0 : nil
+  begin
+    n = parse(s)
+  rescue ParseError
+    puts "n is #{n.inspect}"
+  else
+    puts "parsed"
+  ensure
+    puts "done"
+  end
+  "ok"
+end
+
+def again(s: String) -> Int
+  begin
+    parse(s)
+  rescue ArgumentError => e
+    raise
+  rescue => e
+    raise e
+  end
+end
+
+def tries(limit: Int) -> Int
+  count = 0
+  begin
+    count = count + 1
+    raise ArgumentError, "again" if count < limit
+  rescue ArgumentError
+    retry
+  end
+  count
+end
+
+def made -> String
+  begin
+    raise ParseError.new("made")
+  rescue ParseError => e
+    e.message
+  end
+end
+
+puts safe("abc")
+puts safe("")
+puts safe("x")
+puts counted("ab")
+puts counted("")
+puts tries(3)
+puts made
+begin
+  again("")
+rescue ParseError => e
+  puts "again: #{e.message}"
+end

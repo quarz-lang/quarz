@@ -72,6 +72,9 @@ structure Tables where
   narrowed : Nat → Option (Array Json)
   /-- The id `Self` goes by. -/
   selfParam : Nat
+  /-- The built-in exception classes (`Exception` and below it): classes
+  of the model without fields, their methods built-in calls. -/
+  excIds : List Nat := []
 
 def Tables.cls (T : Tables) (id : Nat) : M Json := do
   match T.classes.find? fun c => (c.getObjValAs? Nat "id").toOption == some id with
@@ -164,6 +167,34 @@ partial def Tables.nearestInit (T : Tables) (id : Nat) : M (Option Nat) := do
     | .null => pure none
     | t => T.nearestInit (← nat (← field t "id"))
 
+/-- A class's Rust id by its name. -/
+def Tables.classId (T : Tables) (n : String) : M (Option Nat) := do
+  match T.classes.find? fun c => (c.getObjValAs? String "name").toOption == some n with
+  | some c => pure (some (← nat (← field c "id")))
+  | none => pure none
+
+/-- Whether `new` of class `id` runs a built-in exception's `initialize`. -/
+def Tables.excInit (T : Tables) (id : Nat) : M Bool := do
+  match ← T.nearestInit id with
+  | none => pure false
+  | some mid =>
+    let m ← T.method mid
+    pure (T.excIds.contains (← nat (← field m "owner")))
+
+/-- Whether an exception of class `id` made by the run time (`raise K`,
+`raise K, m`, which run neither `initialize` nor the fields' defaults) is
+what the model takes it for: no class from `id` up to the built-in ones
+declares a field or an `initialize`. -/
+partial def Tables.excPlain (T : Tables) (id : Nat) : M Bool := do
+  if T.excIds.contains id then return true
+  let c ← T.cls id
+  unless (← arr (← field c "fields")).isEmpty do return false
+  if T.methods.any (fun m => (m.getObjValAs? Nat "owner").toOption == some id &&
+      (m.getObjValAs? String "name").toOption == some "initialize") then return false
+  match ← field c "superclass" with
+  | .null => pure false
+  | sj => T.excPlain (← nat (← field sj "id"))
+
 /-- The locals assigned so far, with their declared types. -/
 abbrev Locals := List (String × Ty)
 
@@ -179,6 +210,10 @@ structure Where where
   init : Option (List (String × Ty) × Nat) := none
   /-- The Rust id of the method's class (for its fields). -/
   rcls : Option Nat := none
+  /-- In a `rescue` clause: the local holding the exception (a bare
+  `raise` raises it again), and the flag a `retry` sets. -/
+  exc : Option String := none
+  retryFlag : Option String := none
 
 /-- Converting a body, with the locals so far. -/
 abbrev CM := ReaderT Where (StateT Locals M)
@@ -191,24 +226,27 @@ def positional (a : Json) : M Json := do
 /-- Whether an expression has a `return` (in a block of it too). -/
 partial def hasRet : Expr → Bool
   | .ret _ => true
-  | .assign _ e | .setField _ e | .isNil e | .isA e _ | .eqNil e | .neNil e | .eqTrue e
+  | .assign _ e | .setField _ e | .raise e | .isNil e | .isA e _ | .eqNil e | .neNil e | .eqTrue e
   | .eqFalse e | .not e => hasRet e
   | .new _ _ as | .superInit _ as | .yield as | .prim _ as _ _ => as.any hasRet
   | .call r _ as => hasRet r || as.any hasRet
   | .callBlk r _ as _ b => hasRet r || as.any hasRet || hasRet b
   | .seq a b | .while a b | .and a b | .or a b => hasRet a || hasRet b
   | .ite c t e => hasRet c || hasRet t || hasRet e
+  | .rescue b _ h e => hasRet b || hasRet h || hasRet e
+  | .ensure b e => hasRet b || hasRet e
   | _ => false
 
 /-- Whether an expression tests or loops (what may narrow a path). -/
 partial def narrows : Expr → Bool
   | .ite .. | .while .. | .isNil _ | .isA .. | .eqNil _ | .neNil _ | .eqTrue _ | .eqFalse _
   | .and .. | .or .. | .not _ => true
-  | .assign _ e | .setField _ e | .ret e => narrows e
+  | .assign _ e | .setField _ e | .ret e | .raise e => narrows e
   | .new _ _ as | .superInit _ as | .yield as | .prim _ as _ _ => as.any narrows
   | .call r _ as => narrows r || as.any narrows
   | .callBlk r _ as _ b => narrows r || as.any narrows || narrows b
   | .seq a b => narrows a || narrows b
+  | .rescue .. | .ensure .. => true
   | _ => false
 
 /-! ### Locals the model and the Rust checker see differently -/
@@ -248,8 +286,21 @@ partial def daWalk (inBlk : List String) (s : Option (List String)) (e : Expr) :
     pure (.plain (r.out.map (fun S => if S.contains x then S else x :: S)))
   | .setField _ v | .isNil v | .isA v _ | .eqNil v | .neNil v | .eqTrue v | .eqFalse v =>
     pure (.plain (← daWalk inBlk s v).out)
-  | .ret v => let _ ← daWalk inBlk s v; pure (.plain none)
-  | .raise | .absurd => pure (.plain none)
+  | .ret v | .raise v => let _ ← daWalk inBlk s v; pure (.plain none)
+  | .rescue b x h els =>
+    let rb ← daWalk inBlk s b
+    let re ← daWalk inBlk rb.out els
+    -- The handler: what held before the body, and the exception.
+    let rh ← daWalk inBlk (some (x :: S)) h
+    pure (.plain (daJoin re.out rh.out))
+  | .ensure b e =>
+    let rb ← daWalk inBlk s b
+    let re ← daWalk inBlk (some S) e
+    let ea := e.assigned
+    pure (.plain (match rb.out, re.out with
+      | some Sb, some Se => some (Sb.filter fun x => !ea.contains x || Se.contains x)
+      | _, _ => none))
+  | .absurd => pure (.plain none)
   | .new _ _ as | .superInit _ as | .yield as | .prim _ as _ _ => pure (.plain (← seqArgs S as))
   | .call r _ as =>
     match (← daWalk inBlk s r).out with
@@ -285,6 +336,14 @@ partial def daWalk (inBlk : List String) (s : Option (List String)) (e : Expr) :
     let ra ← daWalk inBlk s a
     pure ⟨ra.out, ra.ff, ra.tt⟩
   | _ => pure (.plain s)
+
+/-- The clause variables of a handler: the locals it assigns the
+exception (held in `x`). -/
+partial def clauseVars (x : String) : Expr → List String
+  | .assign y (.var z _) => if z == x then [y] else []
+  | .seq a b | .and a b | .or a b | .while a b => clauseVars x a ++ clauseVars x b
+  | .ite c t e => clauseVars x c ++ clauseVars x t ++ clauseVars x e
+  | _ => []
 
 /-- The names of a method by where the Rust checker declares them, in
 source order: the method's (`method`: its parameters and the names it
@@ -322,16 +381,34 @@ partial def scopeWalk (inBlock : Bool) (e : Expr) : StateT Scopes M Unit := do
     scopeWalk true b
     modify fun st' => { st' with cur := st.cur }
   | .setField _ v | .isNil v | .isA v _ | .eqNil v | .neNil v | .eqTrue v | .eqFalse v | .ret v
-  | .not v => walk v
+  | .raise v | .not v => walk v
   | .new _ _ as | .superInit _ as | .yield as | .prim _ as _ _ => for a in as do walk a
   | .call r _ as => walk r; for a in as do walk a
   | .seq a b | .while a b | .and a b | .or a b => walk a; walk b
   | .ite c t f => walk c; walk t; walk f
+  | .rescue b x h els =>
+    walk b
+    -- In a block, a clause's variable (assigned the exception, `x`) is a
+    -- new local of the block unless the block has one (Rust: at depth 0),
+    -- not the method's of that name.
+    let st ← get
+    for y in clauseVars x h do
+      if inBlock && st.method.contains y && !st.cur.contains y then
+        throw s!"{y}: a rescue variable in a block, named like a local outside it"
+    walk (.assign x .nil); walk h; walk els
+  | .ensure b e => walk b; walk e
   | _ => pure ()
 
 def localsInRange (params : List String) (body : Expr) : M Unit := do
   let _ ← daWalk [] (some params) body
   let _ ← (scopeWalk false body).run { method := params }
+
+/-- What a `case/in` or a match on an open type raises when nothing
+matches: a `NoMatchingPatternError` (made by the run time: opaque). -/
+def noMatchE (T : Tables) : M Expr := do
+  let some cid ← T.classId "NoMatchingPatternError" | throw "no NoMatchingPatternError"
+  let some q := T.qclass cid | throw "NoMatchingPatternError out of range"
+  pure (.raise (.prim "new" [] [] [.cls q []]))
 
 /-! ### Patterns (docs/01 §11) as tests -/
 
@@ -638,7 +715,20 @@ partial def expr (T : Tables) (e : Json) : CM Expr := do
     let tys ← interps.mapM fun x => do T.nodeTy (← nat (← field x "id"))
     pure (.prim "interpolate" args tys [.str])
   | "Local" => pure (.var (← str v) (← T.nodeTy id))
-  | "IVar" => pure (.field (← str v) (← T.nodeTy id))
+  | "IVar" =>
+    -- A field a built-in exception class declares (`@message`): not one
+    -- of the model's.
+    if let some rc := (← read).rcls then
+      let f ← str v
+      let mut c := rc
+      for _ in [0:T.classes.size] do
+        if T.excIds.contains c then throw "a field of a built-in exception class"
+        let cj ← T.cls c
+        if ← (← arr (← field cj "fields")).anyM (fun fj => do pure ((← str (← field fj "name")) == f)) then break
+        match ← field cj "superclass" with
+        | .null => break
+        | sj => c ← nat (← field sj "id")
+    pure (.field (← str v) (← T.nodeTy id))
   | "Assign" =>
     let value ← expr T (← field v "value")
     let vt ← T.nodeTy (← nat (← field (← field v "value") "id"))
@@ -678,19 +768,148 @@ partial def expr (T : Tables) (e : Json) : CM Expr := do
     -- `super` in `initialize`, into the superclass's.
     unless (← field v "block") == .null do throw "a block given to super"
     let some (params, d) := (← read).init | throw "super outside initialize"
+    if let some rc := (← read).rcls then
+      if let some sj := ((← T.cls rc).getObjVal? "superclass").toOption then
+        if sj != .null then
+          if ← T.excInit (← nat (← field sj "id")) then
+            throw "super into a built-in exception's initialize"
     let args ← match ← field v "args" with
       -- A bare `super` passes the method's arguments.
       | .null => pure (params.map fun (x, t) => Expr.var x t)
       | a => (← arr a).toList.mapM fun a => do expr T (← positional a)
     return .superInit d args
   | "CaseIn" => caseIn T id v
+  | "Begin" => beginE T id v false
+  | "Retry" =>
+    let some f := (← read).retryFlag | throw "a retry outside a rescue clause"
+    pure (.assign f .tru)
   | "MatchPattern" => matchPattern T id v
   | k => throw s!"a {k} expression"
 
 partial def body (T : Tables) (es : Array Json) : CM Expr := do
+  -- A statement (not the body's value): a `begin` whose `rescue` retries
+  -- is in range there (a loop, its value unused).
+  let stmt (x : Json) (last : Bool) : CM Expr := do
+    match ← variant (← field x "kind") with
+    | ("Begin", v) => if last then expr T x else beginE T (← nat (← field x "id")) v true
+    | _ => expr T x
   match es.toList with
   | [] => pure .nil
-  | e :: es => es.foldlM (fun acc x => do pure (.seq acc (← expr T x))) (← expr T e)
+  | e :: rest =>
+    let n := rest.length
+    let first ← stmt e (n == 0)
+    (rest.zipIdx).foldlM (fun acc (x, i) => do pure (.seq acc (← stmt x (i + 1 == n)))) first
+
+/-- Whether a body (in a `rescue` clause) has `retry` only where it ends
+the clause: its last statement, or the last of an `if`'s branches there. -/
+partial def retryTail (es : List Json) : M Bool := do
+  let mentions (j : Json) : Bool := (j.compress.splitOn "\"Retry\"").length > 1
+  match es.reverse with
+  | [] => pure true
+  | last :: before =>
+    if before.any mentions then return false
+    match ← variant (← field last "kind") with
+    | ("Retry", _) => pure true
+    | ("If", v) =>
+      let t ← retryTail (← arr (← field v "then")).toList
+      let e ← match ← field v "els" with
+        | .null => pure true
+        | els => retryTail (← arr els).toList
+      pure (t && e && !mentions (← field v "cond"))
+    | _ => pure !(mentions last)
+
+/-- `begin body rescue C => e; h ... else els ensure ens end` (docs/01
+§12). Each clause a class test of the exception (held in a local no
+program can spell), the last raising it again; the body's value, without
+`else`, held in a local too. A `retry` (in a statement, at the end of a
+clause) makes it a loop: a flag the clause sets, the body run again
+while it is set; `ensure` outside the loop. -/
+partial def beginE (T : Tables) (id : Nat) (v : Json) (stmt : Bool) : CM Expr := do
+  let w ← read
+  if w.init.isSome then throw "a begin in initialize"
+  if w.rcls.isNone && !w.top then throw "a begin in a default"
+  let rescues := (← arr (← field v "rescues")).toList
+  let bodyJ := (← arr (← field v "body"))
+  let bd ← body T bodyJ
+  -- (The rest in source order, as the Rust checker declares locals:
+  -- the clauses, then `else`, then `ensure`.)
+  let elseBody : CM (Option Expr) := do
+    match ← field v "else_body" with
+    | .null => pure none
+    | e => pure (some (← body T (← arr e)))
+  let some eid ← T.classId "Exception" | throw "no Exception"
+  let some excQ := T.qclass eid | throw "Exception out of range"
+  let excTy : Ty := [.cls excQ []]
+  let retries : Bool := rescues.any fun r => match (r.getObjVal? "body").toOption with
+    | some b => decide ((b.compress.splitOn "\"Retry\"").length > 1)
+    | none => false
+  if retries && !stmt then throw "a begin that retries used as a value"
+  let core ← if rescues.isEmpty then do
+      unless (← field v "else_body") == .null do throw "else without rescue"
+      pure bd
+    else do
+      let tmp := s!"rescue#{id}"
+      modify (addLocal · tmp excTy)
+      let flag := s!"retry#{id}"
+      if retries then modify (addLocal · flag [.bool])
+      let clauseAtoms (r : Json) : CM Ty := do
+        match (← arr (← field r "classes")).toList with
+          | [] =>
+            let some sid ← T.classId "StandardError" | throw "no StandardError"
+            let some q := T.qclass sid | throw "StandardError out of range"
+            pure [Atom.cls q []]
+          | cs => cs.mapM fun c => do
+            let (k, n) ← variant (← field c "kind")
+            unless k == "Named" do throw s!"a {k} rescue class"
+            unless (← arr (← field n "args")).isEmpty do throw "a generic rescue class"
+            let ns ← (← arr (← field (← field n "path") "names")).toList.mapM fun j => (str j : CM String)
+            -- By its full name only (the tree has not the class Rust
+            -- resolved: a name in a module, or a type alias, would be
+            -- another class).
+            let full := "::".intercalate ns
+            let some cid ← T.classId full | throw s!"a rescue class by a partial name {full}"
+            let cj ← T.cls cid
+            let some q := T.qclass (← nat (← field cj "id")) | throw "a rescue class out of range"
+            pure (Atom.cls q [])
+      -- A variable named in several clauses: one local, of their classes.
+      let vars ← rescues.filterMapM fun r => do
+        match ← field r "var" with
+        | .null => pure none
+        | x => pure (some (← str x, ← clauseAtoms r))
+      for (x, _) in vars do
+        modify (addLocal · x (vars.filter (·.1 == x) |>.flatMap (·.2)).eraseDups)
+      let clauses ← rescues.mapM fun r => do
+        let atoms ← clauseAtoms r
+        let stmts := (← arr (← field r "body")).toList
+        if retries then
+          unless ← retryTail stmts do throw "a retry not at the end of its clause"
+          if stmts.any (fun j => (j.compress.splitOn "\"Begin\"").length > 1) then
+            throw "a begin in a clause that retries"
+        let hb ← withReader (fun w => { w with exc := some tmp, retryFlag := if retries then some flag else none })
+          (body T (← arr (← field r "body")))
+        let hb ← match ← field r "var" with
+          | .null => pure hb
+          | x => pure (Expr.seq (.assign (← str x) (.var tmp atoms)) hb)
+        pure (atoms, hb)
+      let handler := clauses.foldr (fun (atoms, hb) rest =>
+        match atoms.map (fun a => Expr.isA (.var tmp excTy) a) with
+        | t :: ts => Expr.ite (ts.foldl .or t) hb rest
+        | [] => rest) (.raise (.var tmp excTy))
+      let node ← match ← elseBody with
+        | some e => pure (Expr.rescue bd tmp handler e)
+        | none =>
+          let tv := s!"begin#{id}"
+          let bty ← match bodyJ.back? with
+            | some last => T.nodeTy (← nat (← field last "id"))
+            | none => pure [.nil]
+          modify (addLocal · tv bty)
+          pure (Expr.rescue (.assign tv bd) tmp handler (.var tv bty))
+      if retries then
+        pure (Expr.seq (.assign flag .tru) (.while (.var flag [.bool]) (.seq (.assign flag .fls) node)))
+      else pure node
+  match ← field v "ensure" with
+  | .null => pure core
+  | e => pure (.ensure core (← body T (← arr e)))
 
 /-- Where a `case` or a match reads its subject: a path the model narrows
 (a local, an immutable field of `self`), or a local it is held in
@@ -787,9 +1006,10 @@ partial def caseIn (T : Tables) (id : Nat) (v : Json) : CM Expr := do
     | _ => pure (false, 1)
   let infos : List (Bool × Nat) ← members.mapM fun m => (closedOne m : CM (Bool × Nat))
   let closed := infos.all (fun i => i.1) || (infos.map (fun i => i.2)).sum > 1
+  let nm ← noMatchE T
   let last := match els with
     | some e => e
-    | none => if closed then .absurd else .raise
+    | none => if closed then .absurd else nm
   let chain := arms.foldr (fun (c, guard, bd) rest =>
     match guard with
     | some g => Expr.ite (PatC.testOr (PatC.conj (c.test, c.post) (some g, .nil)).1) bd rest
@@ -811,8 +1031,9 @@ partial def matchPattern (T : Tables) (id : Nat) (v : Json) : CM Expr := do
     if c.names.any (·.1 == x) then throw "a match whose pattern assigns its subject"
   declarePat before c
   if (← field v "raises") == .bool true then
+    let nm ← noMatchE T
     return .seq pre (match c.test with
-      | some t => .ite t (.seq c.post .nil) .raise
+      | some t => .ite t (.seq c.post .nil) nm
       | none => .seq c.post .nil)
   else
     -- (`in`'s value: its bindings after the test made where it is true,
@@ -886,12 +1107,57 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
     match ← T.ty (← field target "type") with
     | [a] => return .isA r a
     | _ => throw "is_a? of a union"
-  | "raise" => return .raise
+  -- `raise` (docs/01 §12): an exception, a class (made without a
+  -- message, or with the second argument), a string (a `RuntimeError`);
+  -- bare in a `rescue` clause, the exception being handled.
+  | "raise" =>
+    let excAtom (cid : Nat) : M Atom := do
+      match T.qclass cid with
+      | some q => pure (.cls q [])
+      | none => throw s!"raise of {← T.className cid}"
+    let made (cid : Nat) (as : List Expr) : CM Expr := do
+      -- The run time makes it with its fields `nil`, no `initialize` run.
+      unless ← T.excPlain cid do throw "raise of an exception class with fields or initialize"
+      pure (.prim "new" as (as.map fun _ => [.nil, .bool, .int, .str, .cls 0 []]) [← excAtom cid])
+    match args with
+    | [] =>
+      let some x := (← read).exc | throw "a bare raise outside rescue"
+      let some eid ← T.classId "Exception" | throw "no Exception"
+      return .raise (.var x [← excAtom eid])
+    | [a] =>
+      let aty ← field T.nodeTypes (toString (← nat (← field a "id")))
+      match ← str (← field aty "t") with
+      | "class_object" =>
+        unless (← variant (← field a "kind")).1 == "Const" do throw "raise of a class value"
+        let target ← match T.constTargets.getObjVal? (toString (← nat (← field a "id"))) with
+          | .ok t => pure t
+          | .error _ => throw "a constant read not resolved"
+        unless (← str (← field target "t")) == "class" do throw "raise of a class value"
+        return .raise (← made (← nat (← field target "id")) [])
+      | _ =>
+        match ← T.ty aty with
+        | [.str] =>
+          let some rid ← T.classId "RuntimeError" | throw "no RuntimeError"
+          return .raise (← made rid [← expr T a])
+        | _ => return .raise (← expr T a)
+    | [k, msg] =>
+      unless (← variant (← field k "kind")).1 == "Const" do throw "raise of a class value"
+      let target ← match T.constTargets.getObjVal? (toString (← nat (← field k "id"))) with
+        | .ok t => pure t
+        | .error _ => throw "a constant read not resolved"
+      unless (← str (← field target "t")) == "class" do throw "raise of a class value"
+      return .raise (← made (← nat (← field target "id")) [← expr T msg])
+    | _ => throw "raise with more arguments"
   | "constructor" =>
     -- `C.new(args)`: the fields' defaults, then `initialize`.
     unless blk == .null do throw "a block given to new"
     let k ← nat (← field target "class")
     let some q := T.qclass k | throw s!"new of {← T.className k}"
+    -- An exception made: what the built-in `initialize` gives, opaque.
+    if ← T.excInit k then
+      unless ← T.excPlain k do throw "new of an exception class with fields"
+      return .prim "new" (← args.mapM (expr T)) (← args.mapM fun _ => pure [.nil, .bool, .int, .str, .cls 0 []])
+        [.cls q []]
     -- The Rust checker picks among the ancestors' overloads: in range
     -- only where it picks the one the model's `new` runs.
     let init := match ← field target "init" with
@@ -910,9 +1176,10 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
     let synth ← str (← field m "synth")
     let as ← args.mapM (expr T)
     -- An accessor `attr_*` makes is a method of the model (`accessor`).
+    let owner ← nat (← field m "owner")
     let accessor := (synth.startsWith "FieldGet(" || synth.startsWith "FieldSet(") &&
-      (T.qclass (← nat (← field m "owner"))).any (· ≥ 2)
-    if (native || synth != "None") && !accessor then
+      (T.qclass owner).any (· ≥ 2) && !T.excIds.contains owner
+    if (native || synth != "None" || T.excIds.contains owner) && !accessor then
       -- A built-in method: its declared types. On the implicit receiver,
       -- it takes `self` (it may read its fields), but a `Kernel`
       -- function.
@@ -1045,7 +1312,7 @@ def method (T : Tables) (owner : Nat) (m : Json) (d : Json) : M Method := do
       | .null => pure 0
       | t => pure (← T.tyClass t).1
     pure (some (params, sup))
-  let w : Where := ⟨owner == 1, init, some (← nat (← field m "owner"))⟩
+  let w : Where := ⟨owner == 1, init, some (← nat (← field m "owner")), none, none⟩
   let (bd, ls) ← ((body T (← arr (← field d "body"))).run w).run params
   -- The model narrows without the bounds (a test of a `T <: Shape` value
   -- keeps `T` where the Rust checker may not): a method of a class with a
@@ -1080,7 +1347,24 @@ def program (j : Json) : M Program := do
     pure (files.contains (← nat (← field c "file")) &&
       (kind == "Class" || kind == "Data" || kind == "Enum" || kind == "Variant") &&
       !mainClasses.contains (← nat (← field c "id")))
-  let userIds ← user.mapM fun c => do nat (← field c "id")
+  -- The built-in exception classes: `Exception` and the classes below it
+  -- outside the program's files (in Rust id order: a superclass first).
+  let some excJ := classes.find? fun c => (c.getObjValAs? String "name").toOption == some "Exception"
+    | throw "no Exception"
+  let excRoot ← nat (← field excJ "id")
+  let below (c : Json) : M Bool := do
+    let mut x ← nat (← field c "id")
+    for _ in [0:classes.size + 1] do
+      if x == excRoot then return true
+      match ← field (← match classes.find? fun d => (d.getObjValAs? Nat "id").toOption == some x with
+          | some d => pure d | none => throw "class") "superclass" with
+      | .null => return false
+      | sj => x ← nat (← field sj "id")
+    pure false
+  let excs ← classes.toList.filterM fun c => do
+    pure (!files.contains (← nat (← field c "file")) && (← below c))
+  let excIds ← excs.mapM fun c => do nat (← field c "id")
+  let userIds := excIds ++ (← user.mapM fun c => do nat (← field c "id"))
   -- `Object` is 0, the files' main classes (the top level and its
   -- methods) 1, the user classes from 2.
   let qclass : Nat → Option Nat := fun id =>
@@ -1101,7 +1385,12 @@ def program (j : Json) : M Program := do
     ← field j "node_types", ← arr (← field j "varied_types"), ← field j "calls",
     (← field j "const_targets"), (← arr (← field j "consts")), qclass, objectId, kernelId,
     fun id => (classParams.find? (·.1 == id)).map (·.2),
-    fun id => (narrowedList.find? (·.1 == id)).map (·.2), selfParam⟩
+    fun id => (narrowedList.find? (·.1 == id)).map (·.2), selfParam, excIds⟩
+  let excClasses ← excs.mapM fun c => do
+    let sup ← match ← field c "superclass" with
+      | .null => pure 0
+      | t => pure (← T.tyClass t).1
+    pure (⟨← str (← field c "name"), some sup, [], [], [], [], .cls⟩ : Class)
   let qclasses ← user.mapM fun c => do
     -- An included module's methods are not the model's.
     unless (← arr (← field c "includes")).isEmpty do throw "an include"
@@ -1170,27 +1459,29 @@ def program (j : Json) : M Program := do
     match ← field k "value" with
     | .null => throw "a constant with no initializer"
     | v =>
-      let (bd, ls) ← ((expr T v).run ⟨true, none, none⟩).run []
+      let (bd, ls) ← ((expr T v).run ⟨true, none, none, none, none⟩).run []
       pure (⟨1, "const " ++ (← str (← field k "name")), [], ty, none, ls, bd⟩ : Method)
   let some mainUnit := units.back? | throw "no unit"
-  let (mainBody, mainLocals) ← ((body T (← arr (← field mainUnit "body"))).run ⟨true, none, none⟩).run []
+  let (mainBody, mainLocals) ← ((body T (← arr (← field mainUnit "body"))).run ⟨true, none, none, none, none⟩).run []
   let all : Ty := [.nil, .bool, .int, .str, .cls 0 []]
   -- A default that tests or loops, with a bounded parameter anywhere (it
   -- is checked in each inheriting class): out of range, as in `method`.
   let bounded ← user.anyM fun c => do
     (← arr (← field c "type_params")).anyM fun p => do pure !(← arr (← field p "bounds")).isEmpty
   let defaults ← fdefs.toList.mapM fun e => do
-    let (x, ls) ← ((expr T (← field e "value")).run ⟨false, none, none⟩).run []
+    let (x, ls) ← ((expr T (← field e "value")).run ⟨false, none, none, none, none⟩).run []
     unless ls.isEmpty do throw "a field default with locals"
     if bounded && narrows x then throw "a test in a default with a bounded parameter"
     pure x
   -- The user classes' accessors.
   let accessors ← (← arr (← field j "methods")).toList.filterMapM fun m => do
-    match qclass (← nat (← field m "owner")) with
-    | some q => if q ≥ 2 then accessor T q m else pure none
+    let o ← nat (← field m "owner")
+    match qclass o with
+    | some q => if q ≥ 2 && !excIds.contains o then accessor T q m else pure none
     | none => pure none
   let own := methods ++ accessors
-  let P : Program := ⟨⟨"Object", none, [], [], [], [], .cls⟩ :: ⟨"<main>", some 0, [], [], [], [], .cls⟩ :: qclasses,
+  let P : Program := ⟨⟨"Object", none, [], [], [], [], .cls⟩ :: ⟨"<main>", some 0, [], [], [], [], .cls⟩ ::
+      (excClasses ++ qclasses),
     own ++ consts,
     ⟨1, "<main>", [], all, none, mainLocals, mainBody⟩, defaults⟩
   for m in P.main :: P.methods do localsInRange (m.params.map (·.1)) m.body

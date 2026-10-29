@@ -22,7 +22,9 @@ theorem ArgsPost.extend_other {c : Ctx} {ao ao' : ArgsOut} {fr : Frame}
   | returned v s' =>
     obtain ⟨Λ', a, e, f, g, i⟩ := h
     exact ⟨Λ', a, (he.transW e hw).monoW fun l hl => hl.elim (h1 l) (h2 l), f, g, i⟩
-  | raised => trivial
+  | raised v s' =>
+    obtain ⟨Λ', a, e, f, g⟩ := h
+    exact ⟨Λ', a, (he.transW e hw).monoW fun l hl => hl.elim (h1 l) (h2 l), f, g⟩
   | timeout => trivial
 
 theorem evalWs_cons_left {fr : Frame} {e : Expr} {es : List Expr} :
@@ -63,39 +65,6 @@ theorem SendPost.weaken {ret ret' : Ty} {sig : Option BlockSig} {blk : Option Cl
   | returned => exact h
   | raised => trivial
   | timeout => trivial
-
-/-- The un-narrowed environment of what `xs` names holds after writes of
-values of their declared types to those locals only. -/
-theorem Sat.reset_typed {c : Ctx} {Δ : Env} {xs : List String} {fr : Frame} {Λ Λ' : List Ty}
-    {s s' : Store} {W : Nat → Prop} (hs : Sat P c (c.reset Δ xs) fr s)
-    (hcore : FrameCore P c Λ fr.vars fr.self fr.selfArgs s) (he : Ext P W (fun _ => False) Λ Λ' s s')
-    (hW : ∀ l, W l → frameLocs fr.vars l → frameW fr.vars xs l) : Sat P c (c.reset Δ xs) fr s' := by
-  intro p t hp
-  cases p with
-  | field f =>
-    obtain ⟨l, o, fd, i, h1, h2, h3, h4, h5, h6, h7⟩ := hs _ _ hp
-    obtain ⟨o', ho', hc, ha, _, hs'⟩ := he.grow l o h2
-    refine ⟨l, o', fd, i, h1, ho', h3, by rw [hc]; exact h4, by rw [hc, ha]; exact h5, hs' i h6,
-      fun hv => ?_⟩
-    obtain ⟨v, h8, h9⟩ := h7 hv
-    obtain ⟨d, f0, _, hf0, hf⟩ := ClassTable.allFieldsAt_some P.classes h5
-    have hv0 : f0.var = false := by have := congrArg Field.var hf; simpa [hv] using this.symm
-    exact ⟨v, by rw [he.imm l o o' h2 ho' id i f0 hf0 hv0]; exact h8, he.hasTy h9⟩
-  | «local» x =>
-    obtain ⟨l, v, d, h1, h2, h3, h4, h5⟩ := hs _ _ hp
-    obtain ⟨v', hv', hch⟩ := he.locs l v h2
-    rcases hch with rfl | ⟨hwl, t', ht', hty⟩
-    · exact ⟨l, _, d, h1, hv', h3, he.hasTy h4, he.hasTy h5⟩
-    · obtain ⟨y, hy, hyl⟩ := hW l hwl ⟨x, lookupVar_mem h1⟩
-      have hyx := hcore.inj y x l hyl h1
-      subst hyx
-      obtain ⟨u, _, hif⟩ := Ctx.reset_get_local hp
-      rw [if_pos hy, h3] at hif
-      cases hif
-      obtain ⟨l', hl', hΛ⟩ := hcore.decls y _ h3
-      rw [h1] at hl'; cases hl'
-      rw [hΛ] at ht'; cases ht'
-      exact ⟨l, v', _, h1, hv', h3, hty, hty⟩
 
 /-- Setting paths one after another, each holding its type. -/
 theorem Sat.foldl_set {c : Ctx} {fr : Frame} {s : Store} :
@@ -280,7 +249,9 @@ theorem args_succ : ArgsGood P orc (n + 1) := by
     | returned v s1 =>
       obtain ⟨Λ1, a, e, f, g, i⟩ := this
       exact ⟨Λ1, a, e.monoW evalWs_cons_left, f, g, i⟩
-    | raised => trivial
+    | raised v s1 =>
+      obtain ⟨Λ1, a, e, f, g⟩ := this
+      exact ⟨Λ1, a, e.monoW evalWs_cons_left, f, g⟩
     | timeout => trivial
     | stuck => exact this
   | consDead he hout =>
@@ -297,7 +268,9 @@ theorem args_succ : ArgsGood P orc (n + 1) := by
     | returned v s1 =>
       obtain ⟨Λ1, a, e, f, g, i⟩ := this
       exact ⟨Λ1, a, e.monoW evalWs_cons_left, f, g, i⟩
-    | raised => trivial
+    | raised v s1 =>
+      obtain ⟨Λ1, a, e, f, g⟩ := this
+      exact ⟨Λ1, a, e.monoW evalWs_cons_left, f, g⟩
     | timeout => trivial
     | stuck => exact this
   | restDead he hout hes =>
@@ -322,7 +295,9 @@ theorem args_succ : ArgsGood P orc (n + 1) := by
     | returned v s1 =>
       obtain ⟨Λ1, a, e, f, g, i⟩ := this
       exact ⟨Λ1, a, e.monoW evalWs_cons_left, f, g, i⟩
-    | raised => trivial
+    | raised v s1 =>
+      obtain ⟨Λ1, a, e, f, g⟩ := this
+      exact ⟨Λ1, a, e.monoW evalWs_cons_left, f, g⟩
     | timeout => trivial
     | stuck => exact this
 
@@ -409,7 +384,7 @@ theorem block_succ : BlockGood P orc (n + 1) := by
   | cons w ws' =>
   obtain ⟨c, Δ, ob⟩ := w
   simp only [ChainAt] at hch
-  obtain ⟨hc, hcore, hch', habove, ⟨sig0, hrel, hps, hty, hret⟩, hR, hJ⟩ := hch
+  obtain ⟨hc, hcore, hch', habove, ⟨sig0, hrel, hps, hty, hret⟩, hR⟩ := hch
   subst hc
   -- The values the method gives: of the block's parameters' types.
   have hvs : AllTy c.prog s vs (sig0.subst sa).params := by
@@ -515,12 +490,11 @@ theorem block_succ : BlockGood P orc (n + 1) := by
       · exact Or.inl ⟨x, List.mem_append_left _ hx, hl⟩
       · exact Or.inl ⟨x, List.mem_append_right _ hx, hl⟩
       · exact Or.inr h
-    obtain ⟨Γb, hΓb, hsb⟩ := ho2
     refine ⟨Λ2, hw2, he12.monoW hblkW, hasTy_le hwf (hasTy_le hwf hv2 (Ty.subst_leK hwf sa hcore.bounded hret)) hrel.2.2, ?_,
       fun l hl => ?_⟩
     · simp only [ChainAt]
       refine ⟨trivial, hf2.core.ofBlock, hf2.chain, habove, ⟨sig0, hrel, ?_, hty, hret⟩,
-        hR.reset_typed hcore he12 fun l h hfl => ?_, ?_⟩
+        hR.reset_typed hcore he12 fun l h hfl => ?_⟩
       · simp only [blockParamsOk, Bool.and_eq_true, beq_iff_eq, decide_eq_true_eq, List.all_eq_true]
         exact ⟨⟨hlen, hnd⟩, hpd⟩
       · rcases h with ⟨x, hx, hl⟩ | ⟨x, hx, hl⟩ | h
@@ -528,7 +502,6 @@ theorem block_succ : BlockGood P orc (n + 1) := by
         · exact ⟨x, List.mem_append_right _ hx, hl⟩
         · obtain ⟨y, hy⟩ := hfl
           exact absurd (habove l l ⟨y, hy⟩ (blkW_chain h)) (Nat.lt_irrefl _)
-      · rw [hΓb]; exact hsb.join_right hwf
     · simp only [chainLocs] at hl
       rcases hl with ⟨x, hx⟩ | hl
       · exact hf2.core.inStore x l hx
@@ -536,7 +509,31 @@ theorem block_succ : BlockGood P orc (n + 1) := by
   | returned v s2 =>
     obtain ⟨_, _, _, _, _, hib, _⟩ := this
     cases hib
-  | raised => trivial
+  | raised v s2 =>
+    obtain ⟨Λ2, hw2, he2, hf2, hv2⟩ := this
+    have he12 : Ext c.prog _ (fun _ => False) _ _ _ _ := (he1.trans he2 hw).mono (fun _ h => h)
+      (fun _ h => h.elim False.elim fun ⟨_, hb, _⟩ => by simp at hb)
+    have hblkW : ∀ l, (frameW vars ps l ∨ evalW ⟨vars, me, sa, outer⟩ body l) →
+        blkW (some (.mk vars me sa outer ps body)) l := by
+      rintro l (⟨x, hx, hl⟩ | ⟨x, hx, hl⟩ | h) <;> simp only [blkW]
+      · exact Or.inl ⟨x, List.mem_append_left _ hx, hl⟩
+      · exact Or.inl ⟨x, List.mem_append_right _ hx, hl⟩
+      · exact Or.inr h
+    refine ⟨Λ2, hw2, he12.monoW hblkW, hv2, ?_, fun l hl => ?_⟩
+    · simp only [ChainAt]
+      refine ⟨trivial, hf2.core.ofBlock, hf2.chain, habove, ⟨sig0, hrel, ?_, hty, hret⟩,
+        hR.reset_typed hcore he12 fun l h hfl => ?_⟩
+      · simp only [blockParamsOk, Bool.and_eq_true, beq_iff_eq, decide_eq_true_eq, List.all_eq_true]
+        exact ⟨⟨hlen, hnd⟩, hpd⟩
+      · rcases h with ⟨x, hx, hl⟩ | ⟨x, hx, hl⟩ | h
+        · exact ⟨x, List.mem_append_left _ hx, hl⟩
+        · exact ⟨x, List.mem_append_right _ hx, hl⟩
+        · obtain ⟨y, hy⟩ := hfl
+          exact absurd (habove l l ⟨y, hy⟩ (blkW_chain h)) (Nat.lt_irrefl _)
+    · simp only [chainLocs] at hl
+      rcases hl with ⟨x, hx⟩ | hl
+      · exact hf2.core.inStore x l hx
+      · exact hf2.chainIn l hl
   | timeout => trivial
   | stuck => exact this
 
@@ -716,7 +713,12 @@ theorem send_succ : SendGood P orc (n + 1) := by
       hasTy_le hwf (hasTy_le hwf hv3 (Ty.subst_le hwf σ ?_)) hret', ?_, hf3.chainIn⟩
     · exact Ty.le_refl hwf _
     exact ChainAt.restore ws blk hf3.chain hch0 hblk'
-  | raised => trivial
+  | raised v s3 =>
+    obtain ⟨Λ3, hw3, he3, hf3, hv3⟩ := this
+    have he3 := he3.mono (Wo' := fun _ => False) (fun _ h => h) (fun l h => (hnoW l h).elim)
+    refine ⟨Λ3, hw3, ((he12.trans he3 hw).mono (fun _ h => h) (fun _ h => h.elim id id)).restrict hrestrict,
+      hv3, ?_, hf3.chainIn⟩
+    exact ChainAt.restore ws blk hf3.chain hch0 hblk'
   | timeout => trivial
   | stuck => exact this
 

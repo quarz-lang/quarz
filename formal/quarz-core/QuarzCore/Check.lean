@@ -27,8 +27,21 @@ theorem check_typed : ∀ {c : Ctx} {Γ : Env} {e : Expr} {o : Out}, check c Γ 
     split at hg
     · rename_i hc; cases h; exact .self (by simpa using hc)
     · cases hg
-  | c, Γ, .raise, o, h => by simp [check] at h; subst h; exact .raise
+  | c, Γ, .raise e, o, h => by
+    simp [check] at h
+    obtain ⟨oe, he, hle, rfl⟩ := h
+    exact .raise (check_typed he) hle
   | c, Γ, .absurd, o, h => by simp [check] at h
+  | c, Γ, .rescue b x hd els, o, h => by
+    simp [check] at h
+    obtain ⟨hg, hx, ob, hb, oe, hoe, oh, hoh, rfl⟩ := h
+    exact .rescue (by simp_all) hx (check_typed hb) (checkBranch_typed hoe) (check_typed hoh)
+  | c, Γ, .ensure b e, o, h => by
+    simp [check] at h
+    obtain ⟨hg, ob, hb, oe, he, h⟩ := h
+    split at h
+    · simp at h; subst h; exact .ensureDead (by simp_all) (check_typed hb) (check_typed he) (by assumption)
+    · simp at h; subst h; exact .ensure (by simp_all) (check_typed hb) (check_typed he) (by assumption)
   | c, Γ, .var x t, o, h => by
     simp [check] at h
     obtain ⟨u, hu, hle, rfl⟩ := h

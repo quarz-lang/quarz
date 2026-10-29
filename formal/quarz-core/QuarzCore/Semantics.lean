@@ -74,7 +74,7 @@ structure Frame where
 
 inductive Result where
   | ok (v : Value) (s : Store)
-  | raised (s : Store)
+  | raised (exc : Value) (s : Store)
   | returned (v : Value) (s : Store)
   | timeout
   | stuck
@@ -139,7 +139,7 @@ end with a value (an exception, a `return`, no fuel left, stuck). -/
 def Result.bind (r : Result) (k : Value → Store → Result) : Result :=
   match r with
   | .ok v s => k v s
-  | .raised s => .raised s
+  | .raised e s => .raised e s
   | .returned v s => .returned v s
   | .timeout => .timeout
   | .stuck => .stuck
@@ -223,7 +223,11 @@ def eval (P : Program) (orc : Oracle) : Nat → Frame → Store → Expr → Res
       | .other r => r
       | .ok _ s => match orc n s (ret.subst fr.selfArgs) with
         | some v => .ok v s
-        | none => .raised s
+        -- It raises: an exception the oracle gives (of the exception
+        -- class), or none, as when it runs out.
+        | none => match orc (n + 1) s [.cls P.exn []] with
+          | some e => .raised e s
+          | none => .timeout
     | .seq a b => (eval P orc n fr s a).bind fun _ s => eval P orc n fr s b
     | .ite c t e => (eval P orc n fr s c).bind fun v s =>
       if v.truthy then eval P orc n fr s t else eval P orc n fr s e
@@ -233,7 +237,18 @@ def eval (P : Program) (orc : Oracle) : Nat → Frame → Store → Expr → Res
     | .ret e => match eval P orc n fr s e with
       | .ok v s => .returned v s
       | r => r
-    | .raise => .raised s
+    | .raise e => (eval P orc n fr s e).bind fun v s => .raised v s
+    | .rescue b x h els => match eval P orc n fr s b with
+      | .raised v s1 => match lookupVar fr.vars x with
+        | some l => eval P orc n fr (s1.setLoc l v) h
+        | none => .stuck
+      | .ok _ s1 => eval P orc n fr s1 els
+      | r => r
+    | .ensure b e => match eval P orc n fr s b with
+      | .ok v s1 => (eval P orc n fr s1 e).bind fun _ s2 => .ok v s2
+      | .returned v s1 => (eval P orc n fr s1 e).bind fun _ s2 => .returned v s2
+      | .raised v s1 => (eval P orc n fr s1 e).bind fun _ s2 => .raised v s2
+      | r => r
     | .absurd => .stuck
     | .isNil e => (eval P orc n fr s e).bind fun v s => .ok (.bool (v == .nil)) s
     -- A class test sees the class, not the arguments (erased).
