@@ -342,3 +342,23 @@ fn overloads_by_block_kind() {
     let run = Command::new(d.0.join("app.bin")).output().unwrap();
     assert_eq!(String::from_utf8_lossy(&run.stdout), expected);
 }
+
+#[test]
+fn the_tree_is_built_once_per_call_site() {
+    // docs/14 §6: two calls of one site share the tree (a constant),
+    // another site has its own; captures stay per call.
+    let d = dir();
+    write(
+        &d.0,
+        "app.qz",
+        "class R\n  def where(&cond: Quoted[(Int) -> Bool]) -> Quoted[(Int) -> Bool] = cond\nend\ndef q(n: Int) -> Quoted[(Int) -> Bool] = R.new.where { |x| x > n && x.even? }\na = q(1)\nb = q(2)\np a.expr.equal?(b.expr), a.captures, b.captures, a.proc.call(4), b.proc.call(2)\nc = R.new.where { |x| x > 1 && x.even? }\np a.expr.equal?(c.expr), a.expr == c.expr\n",
+    );
+    let expected = "true\n[1]\n[2]\ntrue\nfalse\nfalse\nfalse\n";
+    let (ok, out, err) = quarz(&d.0, &["run", "app.qz"], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(out, expected);
+    let (ok, _, err) = quarz(&d.0, &["build", "app.qz", "-o", "app.bin"], &[]);
+    assert!(ok, "{err}");
+    let run = Command::new(d.0.join("app.bin")).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&run.stdout), expected);
+}

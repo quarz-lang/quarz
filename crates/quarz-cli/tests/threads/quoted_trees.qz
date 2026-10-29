@@ -1,0 +1,24 @@
+# A quoted block's tree is a constant made once per call site (docs/14
+# §6): tasks on several workers build and read the same one at once.
+data Col = (name: String)
+TABLE = Col.new("t")
+LIMIT = 5
+
+class R
+  def where(&cond: Quoted[shareable (Int) -> Bool]) -> Quoted[shareable (Int) -> Bool] = cond
+end
+
+def at(n: Int) -> Quoted[shareable (Int) -> Bool] =
+  R.new.where { |x| x > LIMIT && [TABLE, "s", :y, 1.5, nil].size > n && x.even? }
+
+tasks = (1..8).map do |i|
+  Task.spawn do
+    q = at(i)
+    "#{q.expr.inspect.size} #{q.captures} #{q.proc.call(i * 2)}"
+  end
+end
+results = tasks.map(&:await)
+p results.map { |r| r.split(" ")[0] }.uniq.size
+p results.map { |r| r.split(" ")[1] }
+p results.map { |r| r.split(" ")[2] }
+p at(1).expr.equal?(at(2).expr)

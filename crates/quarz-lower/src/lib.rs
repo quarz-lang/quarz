@@ -92,6 +92,13 @@ pub struct Lowerer {
     pub block_calls: HashMap<FuncId, (quarz_syntax::ast::NodeId, quarz_syntax::Span)>,
     pub(crate) method_funcs: Vec<Option<FuncId>>,
     pub(crate) const_funcs: Vec<Option<FuncId>>,
+    /// Whether a quoted block's tree is built once, by a constant of its
+    /// own (docs/14 §6): in the final lowering, whose world no longer
+    /// grows, so that the constants can follow the checker's. The REPL
+    /// and compile-time runs build it at each call.
+    pub(crate) quoted_once: bool,
+    /// Those constants, after the world's: each builds a tree.
+    pub(crate) quoted_consts: Vec<RtConst>,
     pub(crate) field_default_funcs: HashMap<(ClassId, usize), FuncId>,
     /// Whether an instance of the class (one of a subclass included) may
     /// have a `deinitialize`: its `initialize` marks where the object
@@ -120,6 +127,25 @@ pub struct Lowerer {
 }
 
 impl Lowerer {
+    /// A constant whose initializer `init` builds a quoted block's tree
+    /// (docs/14 §6), after the world's constants: its id.
+    pub(crate) fn add_quoted_const(
+        &mut self,
+        world: &World,
+        file: u32,
+        line: u32,
+        init: FuncId,
+    ) -> ConstId {
+        let id = (world.consts.len() + self.quoted_consts.len()) as ConstId;
+        self.quoted_consts.push(RtConst {
+            name: format!("<tree of the block at line {line}>"),
+            owner: None,
+            init: Some(init),
+            file,
+        });
+        id
+    }
+
     pub fn new() -> Lowerer {
         Lowerer::default()
     }
@@ -824,6 +850,7 @@ pub fn lower_checked_with(mut lw: Lowerer, checked: &Checked, files: &[SourceFil
             repl: false,
         })
         .collect();
+    lw.quoted_once = true;
     let delta = lw.lower(&checked.world, &checked.output, &inputs, all);
     let mut functions = std::mem::take(&mut lw.done);
     assert_eq!(functions.len(), delta.base as usize);

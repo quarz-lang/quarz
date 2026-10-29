@@ -254,7 +254,7 @@ pub fn build(world: &World, lw: &Lowerer, file_names: Vec<String>) -> RtWorld {
             }
         })
         .collect();
-    let consts: Vec<RtConst> = world
+    let mut consts: Vec<RtConst> = world
         .consts
         .iter()
         .map(|c| RtConst {
@@ -264,6 +264,8 @@ pub fn build(world: &World, lw: &Lowerer, file_names: Vec<String>) -> RtWorld {
             file: c.file,
         })
         .collect();
+    // The quoted blocks' trees (docs/14 §6), after the world's.
+    consts.extend(lw.quoted_consts.iter().cloned());
     // Every extension is listed: the always-active ones (the prelude's)
     // take part in dispatch by name and come first; any other only
     // through the modules it makes its target conform to (a module method
