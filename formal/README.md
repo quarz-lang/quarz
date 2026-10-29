@@ -271,7 +271,27 @@ stricter, not unsound.
   `Int` at run time); the model's `wfClasses` does. And with variance: expansive inheritance
   (`class N[in Z]; class C[X] < N[N[C[C[X]]]]`), out of the model's
   range, makes the Rust checker's subtype check recurse without end on
-  `def f(x: C[Int]) -> N[C[Int]] = x` (a stack overflow).
+  `def f(x: C[Int]) -> N[C[Int]] = x` (a stack overflow). And: in a
+  generic class, `b : Box[T]` tested with `is_a?(IntBox)` (`IntBox <
+  Box[Int]`) is narrowed to nothing by the Rust checker, so the branch
+  goes unchecked (`s: String = b` checks, and fails at run time); the
+  model's true side keeps `IntBox`.
+- Known disagreements that are the model's limits, not the Rust
+  checker's holes (none in the corpus, the fixtures or the examples;
+  the translator does not yet put them out of range):
+  - A class test of a type parameter's value (`x.is_a?(A)` or `in A` with
+    `x : T`): the Rust checker narrows to `T & A`, still a `T`; the model,
+    without intersection types, to `A`, so a use of `x` as a `T` after it
+    is rejected.
+  - A local assigned in some branches only and read after them (`if c;
+    x = 3; end; y = x`, or a name bound by one `case` arm and read in
+    another arm, in `else` or after the `case`): the Rust checker reads
+    it as `T?`; the model, whose environment after the branches drops a
+    local not assigned on every path, rejects the read.
+  - A name first assigned in a block and assigned again in the method
+    after it, with values of different types (`each { x = 1 }; x =
+    "s"`): two locals for the Rust checker (docs/02 §6), one for the
+    model, which declares a name once per method.
 
 ## Setup
 
