@@ -327,6 +327,22 @@ impl Vars {
         }
     }
 
+    /// Rename `slot` (hiding a scoped variable), keeping the index.
+    fn rename(&mut self, slot: usize, to: String) {
+        let from = std::mem::replace(&mut self.list[slot].name, to.clone());
+        if self.list.len() >= Self::INDEXED {
+            match self.list.iter().rposition(|v| v.name == from) {
+                Some(i) => {
+                    self.index.insert(from, i);
+                }
+                None => {
+                    self.index.remove(&from);
+                }
+            }
+            self.index.insert(to, slot);
+        }
+    }
+
     fn find(&self, name: &str) -> Option<usize> {
         if self.list.len() >= Self::INDEXED {
             self.index.get(name).copied()
@@ -573,6 +589,51 @@ impl Assigned {
     }
 
     /// Walk a closure's body: `escapes` when it may run later.
+    /// Scan with `f` code where `name` is a local of its own (a rescue
+    /// clause's variable): what it assigns to `name` is not the outer
+    /// local's.
+    fn scoped(&mut self, name: &str, f: impl FnOnce(&mut Self)) {
+        let sets = |a: &Self| {
+            [
+                a.names.contains(name),
+                a.escaped.contains(name),
+                a.fresh.contains(name),
+                a.known.contains(name),
+                a.repeated.contains(name),
+                a.outside.contains(name),
+            ]
+        };
+        let had = sets(self);
+        let count = self.counts.get(name).copied();
+        let bangs = self.bangs.len();
+        f(self);
+        for (was, set) in had.into_iter().zip([
+            &mut self.names,
+            &mut self.escaped,
+            &mut self.fresh,
+            &mut self.known,
+            &mut self.repeated,
+            &mut self.outside,
+        ]) {
+            if !was {
+                set.remove(name);
+            }
+        }
+        match count {
+            Some(c) => {
+                self.counts.insert(name.to_string(), c);
+            }
+            None => {
+                self.counts.remove(name);
+            }
+        }
+        let mut i = 0;
+        self.bangs.retain(|(n, _)| {
+            i += 1;
+            i <= bangs || n != name
+        });
+    }
+
     fn closure(&mut self, block: &Block, escapes: bool) {
         // (What it assigns first is its own: out of scope after it.)
         let known = self.known.clone();
@@ -3771,10 +3832,11 @@ impl Checker {
                 Self::assigned_names(&b.body, out);
                 out.repeat -= retried as u32;
                 for r in &b.rescues {
-                    if let Some(v) = &r.var {
-                        out.add(v);
+                    // (The clause's variable is its own: docs/01 §12.)
+                    match &r.var {
+                        Some(v) => out.scoped(v, |out| Self::assigned_names(&r.body, out)),
+                        None => Self::assigned_names(&r.body, out),
                     }
-                    Self::assigned_names(&r.body, out);
                 }
                 if let Some(x) = &b.else_body {
                     Self::assigned_names(x, out);
@@ -3903,8 +3965,17 @@ impl Checker {
 
     /// Reset the narrowing of outer variables assigned inside `body`.
     fn widen_assigned(&mut self, body: &[Expr]) {
+        self.widen_assigned_except(body, None);
+    }
+
+    /// `widen_assigned`, with `own` a local of the body's own (a rescue
+    /// clause's variable), which the outer local of the name is not.
+    fn widen_assigned_except(&mut self, body: &[Expr], own: Option<&str>) {
         let mut assigned = Assigned::default();
-        Self::assigned_names(body, &mut assigned);
+        match own {
+            Some(v) => assigned.scoped(v, |a| Self::assigned_names(body, a)),
+            None => Self::assigned_names(body, &mut assigned),
+        }
         self.widen_fields(&assigned);
         for (name, method) in assigned.bangs {
             if !assigned.names.contains(&name) && self.bang_may_assign(&name, &method) {
@@ -5953,24 +6024,23 @@ impl Checker {
                 }
             }
             self.out.rescue_classes.insert(r.span, class_ids);
-            if let Some(var) = &r.var {
-                if self.lookup_var(var).is_none_or(|(d, _)| d != 0) {
-                    self.declare_var(var, exc_ty.clone(), r.span);
-                } else {
-                    let (depth, slot) = self.lookup_var(var).unwrap();
-                    self.out.var_refs.insert(
-                        r.span,
-                        VarRef {
-                            depth: depth as u32,
-                            slot: slot as u32,
-                        },
-                    );
-                    self.set_narrowed(&VarKey::Local(var.clone()), Some(exc_ty.clone()));
-                }
-            }
+            // The clause's variable is its own, as a block's parameter:
+            // declared fresh with the clause's classes, shadowing an outer
+            // local of the name, and gone after the clause (docs/01 §12).
+            let own = r
+                .var
+                .as_ref()
+                .map(|var| self.declare_var(var, exc_ty.clone(), r.span).slot as usize);
             self.env.in_rescue += 1;
             let rt = self.check_body(&r.body, expected);
             self.env.in_rescue -= 1;
+            if let Some(slot) = own {
+                // (Its slot stays, for the code that refers to it; its name
+                // no longer finds it.)
+                let frame = self.env.frames.last_mut().unwrap();
+                let hidden = format!("{} (rescue clause)", frame.vars.list[slot].name);
+                frame.vars.rename(slot, hidden);
+            }
             snaps.push((self.snapshot(), rt.is_nothing()));
             result = self.join(&result, &rt);
         }
@@ -5995,7 +6065,7 @@ impl Checker {
             self.restore(&before);
             self.widen_assigned(&block.body);
             for r in &block.rescues {
-                self.widen_assigned(&r.body);
+                self.widen_assigned_except(&r.body, r.var.as_deref());
             }
             if let Some(x) = &block.else_body {
                 self.widen_assigned(x);

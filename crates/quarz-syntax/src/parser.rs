@@ -2775,10 +2775,16 @@ impl<'src> Parser<'src> {
                     classes.push(self.parse_type()?);
                 }
             }
+            // The clause's variable is a local of the clause only (docs/01
+            // §12): after it, the name is what it was before.
+            let mut scoped = None;
             let mut var = if self.eat(&T::FatArrow) {
                 match self.kind().clone() {
                     T::Ident(name) => {
                         self.bump();
+                        if !self.is_local(&name) {
+                            scoped = Some(name.clone());
+                        }
                         self.declare(&name);
                         Some(name)
                     }
@@ -2799,6 +2805,9 @@ impl<'src> Parser<'src> {
             self.rescued.push((name, false));
             let body = self.parse_statements(&inner_stop);
             let (name, used) = self.rescued.pop().unwrap();
+            if let Some(s) = &scoped {
+                self.lexer.locals.undeclare(s);
+            }
             if used && var.is_none() {
                 var = Some(name);
             }
