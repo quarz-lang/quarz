@@ -86,7 +86,7 @@ A documentation comment goes above:
 
 A cog's overview is its `README.md`, as a crate's or a gem's: the generated site starts with it, and the root module's page is that file. The language has no `module` declaration for the root module, and a comment at the top of a file documents nothing (a file is not a unit of the API). A standard library module (`require "http"`) is documented by the comment above its `module HTTP`.
 
-Private and protected methods, and fields without accessors, are left out unless `--private` is given, except the functions of `Kernel` (`puts`, `rand`, `exit`), which are private so that they are called without a receiver, and are the program's functions: `quarz doc puts` shows them. `:nodoc:` as the first line of a public declaration's comment hides it and its members from the output; the compiler still reads the comment, its examples run (§4), and `--private` shows it.
+Private and protected methods, and fields without accessors, are left out unless `--private` is given, except the functions of `Kernel` (`puts`, `rand`, `exit`), which are private so that they are called without a receiver, and are the program's functions: `quarz doc puts` shows them. `:nodoc:` as the first line of a public declaration's comment hides it and its members from the output; the compiler still reads the comment, its examples run (§4), and `--private` shows it. A member a class body's `static` statement generated ([14-metaprogramming.md](14-metaprogramming.md) §5) is documented by the `doc` its `static def` gave it, not by the comment above the statement, so a `:nodoc:` there hides nothing; the page names the statement the member came from.
 
 ## 3. The Text: Markdown
 

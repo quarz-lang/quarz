@@ -52,6 +52,9 @@ pub struct Runner {
     world: Option<RtWorld>,
     files: Vec<SourceFile>,
     prepared: bool,
+    /// The constants a `def_field` leaves initialized: those of the REPL's
+    /// earlier inputs (`continuing`).
+    keep_consts: usize,
 }
 
 impl Runner {
@@ -180,7 +183,7 @@ impl Runner {
                     // hold an instance with the old layout: all of them
                     // initialize again when next read.
                     if let Some(state) = &self.state {
-                        state.reset_consts();
+                        state.reset_consts_from(self.keep_consts);
                     }
                     if !classes.contains(&f.class) {
                         classes.push(f.class);
@@ -269,7 +272,7 @@ impl Runner {
                 .any(|t| t.has_vars())
             {
                 return Err(fail(format!(
-                    "{at}: the block's parameter or result type could not be inferred: annotate its parameters (`|x: Int|`); a block that only raises has no result type"
+                    "{at}: the block's parameter or result type could not be inferred: annotate its parameters (`|x: Int|`)"
                 )));
             }
             if let Some((_, dup)) = g
@@ -349,7 +352,37 @@ impl Runner {
             world: None,
             files,
             prepared: false,
+            keep_consts: 0,
         }
+    }
+
+    /// A runner continuing `lowerer` (whose `done` holds every function
+    /// lowered so far, all loaded into `state`) and running on `state`:
+    /// the REPL's, whose inputs' statements run in the session itself
+    /// (docs/14 §2). The first `keep_consts` constants, the earlier
+    /// inputs', stay initialized whatever the statements do.
+    pub fn continuing(
+        lowerer: Lowerer,
+        state: SharedState,
+        files: Vec<SourceFile>,
+        keep_consts: usize,
+    ) -> Runner {
+        Runner {
+            lowerer,
+            state: Some(state),
+            keep_consts,
+            ..Runner::new(files)
+        }
+    }
+
+    /// The source files it lowers with, by index.
+    pub fn files(&self) -> &[SourceFile] {
+        &self.files
+    }
+
+    /// The lowerer and the state back (`continuing`).
+    pub fn into_parts(self) -> (Lowerer, Option<SharedState>) {
+        (self.lowerer, self.state)
     }
 
     /// The statement's function and what it reaches, lowered: rounds of
@@ -667,6 +700,14 @@ impl StaticRunner for Runner {
 
     fn reset(&mut self) {
         *self = Runner::new(std::mem::take(&mut self.files));
+    }
+
+    fn add_file(&mut self, index: u32, file: SourceFile) {
+        let i = index as usize;
+        if self.files.len() <= i {
+            self.files.resize(i + 1, SourceFile::new("", ""));
+        }
+        self.files[i] = file;
     }
 }
 
@@ -1002,14 +1043,25 @@ pub fn compile_time_only_calls(
     files: &[SourceFile],
     runner: &mut Runner,
 ) -> Vec<(u32, Diagnostic)> {
-    let world = &checked.world;
+    compile_time_only_calls_in(&checked.world, &checked.output, files, runner, &|_, _| true)
+}
+
+/// `compile_time_only_calls` on a world and output, reporting only the
+/// calls `report` takes (the REPL: those of the input).
+pub fn compile_time_only_calls_in(
+    world: &World,
+    output: &quarz_types::check::Output,
+    files: &[SourceFile],
+    runner: &mut Runner,
+    report: &dyn Fn(u32, Span) -> bool,
+) -> Vec<(u32, Diagnostic)> {
     let statics: Vec<MethodId> = (0..world.methods.len() as MethodId)
         .filter(|m| {
             let m = world.method(*m);
             m.is_static && !m.is_native && m.body.is_some()
         })
         .collect();
-    if statics.is_empty() || checked.output.static_calls.is_empty() {
+    if statics.is_empty() || !output.static_calls.iter().any(|(f, s, _)| report(*f, *s)) {
         return Vec::new();
     }
     // Every static def's reach, lowered as for a compile-time run, by the
@@ -1027,13 +1079,25 @@ pub fn compile_time_only_calls(
         let owner = world.method(m).owner;
         let round = lowerer.lower_static(
             world,
-            &checked.output,
+            output,
             &dummy,
             owner,
             world.method(m).file,
             m,
             files.to_vec(),
         );
+        // Loaded into the runner's state, which a REPL goes on running
+        // (`continuing`): its functions must be all of `done`.
+        if let Some(state) = &runner.state {
+            let _ = Interp::with_state(
+                round.delta.world.clone(),
+                round.delta.base,
+                round.delta.functions.clone(),
+                Vec::new(),
+                Vec::new(),
+                state.clone(),
+            );
+        }
         lowerer.done.extend(round.delta.functions);
         rt = Some(round.delta.world);
     }
@@ -1090,8 +1154,8 @@ pub fn compile_time_only_calls(
         only.insert(m, is_only);
     }
     let mut out = Vec::new();
-    for (file, span, mid) in &checked.output.static_calls {
-        if only.get(mid).copied().unwrap_or(false) {
+    for (file, span, mid) in &output.static_calls {
+        if only.get(mid).copied().unwrap_or(false) && report(*file, *span) {
             let m = world.method(*mid);
             out.push((
                 *file,

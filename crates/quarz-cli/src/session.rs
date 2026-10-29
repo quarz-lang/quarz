@@ -10,6 +10,8 @@ use quarz_lower::{Lowerer, UnitInput};
 use quarz_syntax::ast::ExprKind;
 use quarz_syntax::{parse_repl, Diagnostic, SourceFile};
 use quarz_types::{CheckedUnit, FileDiagnostic, Session, PRELUDE_SOURCE};
+
+use crate::static_run::Runner;
 use quarz_vm::value::Frame;
 use quarz_vm::{Interp, SharedState};
 
@@ -170,6 +172,8 @@ impl Repl {
             return Outcome::Errors(parsed.diagnostics.iter().map(|d| d.render(&file)).collect());
         }
         self.buffer.clear();
+        // The input keeps its base: what it requires is parsed after it.
+        self.session.reserve_input();
         // The standard library modules the input names without requiring
         // them, then what it requires, running each library's top level
         // the first time it is loaded.
@@ -177,13 +181,21 @@ impl Repl {
             self.session.std_loaded(m)
         });
         for module in implicit {
-            match self.session.require(
-                module,
-                false,
-                Path::new("."),
-                1,
-                quarz_syntax::Span::empty(0),
-            ) {
+            let loaded = self.with_runner(
+                |session, runner| -> Result<Vec<CheckedUnit>, Vec<FileDiagnostic>> {
+                    let units = session.require(
+                        module,
+                        false,
+                        Path::new("."),
+                        1,
+                        quarz_syntax::Span::empty(0),
+                        Some(&mut *runner),
+                    )?;
+                    compile_time_only_in(session, runner, &units)?;
+                    Ok(units)
+                },
+            );
+            match loaded {
                 Ok(units) => {
                     for unit in units {
                         if let Some(outcome) = self.run_unit(unit) {
@@ -196,9 +208,20 @@ impl Repl {
         }
         for expr in &parsed.program.body {
             if let ExprKind::Require { path, relative } = &expr.kind {
-                let loaded = self
-                    .session
-                    .require(path, *relative, Path::new("."), 1, expr.span);
+                let loaded = self.with_runner(
+                    |session, runner| -> Result<Vec<CheckedUnit>, Vec<FileDiagnostic>> {
+                        let units = session.require(
+                            path,
+                            *relative,
+                            Path::new("."),
+                            1,
+                            expr.span,
+                            Some(&mut *runner),
+                        )?;
+                        compile_time_only_in(session, runner, &units)?;
+                        Ok(units)
+                    },
+                );
                 match loaded {
                     Ok(units) => {
                         for unit in units {
@@ -211,7 +234,26 @@ impl Repl {
                 }
             }
         }
-        let body = match self.session.feed(&parsed.program) {
+        // The input's class bodies' `static` statements run in the
+        // session (docs/14 §2); a call of a compile-time-only `static def`
+        // in it (or in what it required) is an error, as in a program.
+        let fed = self.with_runner(|session, runner| {
+            let body = session.feed(&parsed.program, base, Some(&mut *runner))?;
+            let files = runner.files().to_vec();
+            let errors = crate::static_run::compile_time_only_calls_in(
+                session.world(),
+                session.output(),
+                &files,
+                runner,
+                &|f, span| f == 1 && span.start >= base,
+            );
+            if errors.is_empty() {
+                Ok(body)
+            } else {
+                Err(errors)
+            }
+        });
+        let body = match fed {
             Ok(body) => body,
             Err(diags) => return Outcome::Errors(self.render(&diags, &file)),
         };
@@ -242,6 +284,23 @@ impl Repl {
         outcome
     }
 
+    /// `f` with a compile-time runner (docs/14 §2) that continues the
+    /// session's lowerer and runs on its state, so that what a `static`
+    /// statement lowers and generates is the session's.
+    fn with_runner<R>(&mut self, f: impl FnOnce(&mut Session, &mut Runner) -> R) -> R {
+        let lowerer = std::mem::take(&mut self.lowerer);
+        let consts = self.session.world().consts.len();
+        let mut runner =
+            Runner::continuing(lowerer, self.state.clone(), self.files.clone(), consts);
+        let result = f(&mut self.session, &mut runner);
+        let (lowerer, state) = runner.into_parts();
+        self.lowerer = lowerer;
+        if let Some(state) = state {
+            self.state = state;
+        }
+        result
+    }
+
     /// Lower a unit body (with everything else new in the world) and
     /// create an interpreter over the shared state that has it loaded.
     fn load(&mut self, input: UnitInput) -> (Rc<Interp>, quarz_ir::FuncId) {
@@ -251,6 +310,9 @@ impl Repl {
             &[input],
             self.files.clone(),
         );
+        // Every function so far, for a compile-time run to continue from
+        // (`Runner::continuing`) and generated methods to copy blocks of.
+        self.lowerer.done.extend(delta.functions.iter().cloned());
         // The REPL runs no QIR passes: only what lowering must leave.
         quarz_lower::verify::check_from(
             &delta.functions,
@@ -312,5 +374,31 @@ impl Repl {
                 other => d.render(self.session.source(other).unwrap_or(input)),
             })
             .collect()
+    }
+}
+
+/// The calls of compile-time-only `static def`s in files just required
+/// (docs/14 §1), reported before their top levels run, as a program's
+/// are before it runs.
+fn compile_time_only_in(
+    session: &Session,
+    runner: &mut Runner,
+    units: &[CheckedUnit],
+) -> Result<(), Vec<FileDiagnostic>> {
+    if units.is_empty() {
+        return Ok(());
+    }
+    let files = runner.files().to_vec();
+    let errors = crate::static_run::compile_time_only_calls_in(
+        session.world(),
+        session.output(),
+        &files,
+        runner,
+        &|f, _| units.iter().any(|u| u.file == f),
+    );
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
     }
 }
