@@ -12,6 +12,7 @@ use quarz_syntax::{parse, tokenize, SourceFile, TokenKind};
 
 const USAGE: &str = "\
 usage: quarz <command> [args]
+       quarz --version     print the version of quarz
 
 commands:
   tokens FILE    print the tokens of FILE (for debugging the lexer)
@@ -113,6 +114,10 @@ fn main() -> ExitCode {
         Some("cog") => cog::command(&args[1..]),
         Some("test") => test::command(&args[1..]),
         Some("doc") => doc::command(&args[1..]),
+        Some("--version") => {
+            println!("quarz {}", env!("CARGO_PKG_VERSION"));
+            ExitCode::SUCCESS
+        }
         Some("-h" | "--help" | "help") => {
             print!("{USAGE}");
             ExitCode::SUCCESS
