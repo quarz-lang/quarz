@@ -3508,7 +3508,7 @@ impl Interp {
                     bound(&r.hi, &r.lo)?
                 )
             }
-            Value::Regexp(r) => format!("/{}/{}", r.source, r.flags),
+            Value::Regexp(r) => crate::value::regexp_literal(&r.source, &r.flags),
             // `to_s` (and interpolation) is the match, as in Ruby (a
             // Bytes match as Bytes shows itself).
             Value::MatchData(m) if !inspect => {

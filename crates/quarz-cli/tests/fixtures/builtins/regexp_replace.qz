@@ -65,3 +65,7 @@ p "<a>b".match(/[(?<]a>(b)/).to_a, "「a」!$+".scan(/[[:punct:]]/), "a b#" =~ /
 p "a#f" =~ /(?x:a)#\h/, "a#f" =~ /(?x)a(?-x)#\h/, "a#(b)c".match(/(?x:a)#\((b)\)(?<n>c)/).to_a, "g" =~ /[\H]/, "x:]".match(/[[:]]+/).to_s
 p "\a\b\e\f\v\x01\x7f"
 p :"a\x01b", "\u0085", "aé" =~ Regexp.new("a\\é")
+# A `/` in the source is escaped in the literal shown.
+p(%r{a/b}, /a\/b\/c/i, %r{a\/b})
+p(%r{a/b} == /a\/b/)
+puts(%r{a/b}.to_s, "#{%r{a/b}}")

@@ -202,25 +202,7 @@ fn baked(world: &World, layouts: &[Layout], b: &Baked) -> String {
                 format!(":{}", quote(s))
             }
         }
-        Baked::Regexp { source, flags } => {
-            // The lexer keeps no escape of the delimiter (`/a\/b/` and
-            // `%r{a/b}` hold `a/b`): put one back.
-            let mut out = String::from("/");
-            let mut chars = source.chars();
-            while let Some(c) = chars.next() {
-                match c {
-                    '\\' => {
-                        out.push(c);
-                        if let Some(next) = chars.next() {
-                            out.push(next);
-                        }
-                    }
-                    '/' => out.push_str("\\/"),
-                    c => out.push(c),
-                }
-            }
-            format!("{out}/{flags}")
-        }
+        Baked::Regexp { source, flags } => quarz_vm::value::regexp_literal(source, flags),
         Baked::Bytes(bytes) => {
             let mut s = String::from("b\"");
             for &c in bytes {

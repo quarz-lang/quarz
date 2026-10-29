@@ -3819,6 +3819,29 @@ pub fn fit_int(b: &BigInt) -> Option<Value> {
     b.to_i64().map(Value::Int)
 }
 
+/// A regexp as the literal that makes it: `/source/flags`, with a `/` the
+/// source holds unescaped (from `%r{a/b}`, or `/a\/b/`, whose escape the
+/// lexer does not keep) escaped.
+pub fn regexp_literal(source: &str, flags: &str) -> String {
+    let mut out = String::from("/");
+    let mut chars = source.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => {
+                out.push(c);
+                if let Some(next) = chars.next() {
+                    out.push(next);
+                }
+            }
+            '/' => out.push_str("\\/"),
+            c => out.push(c),
+        }
+    }
+    out.push('/');
+    out.push_str(flags);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::acyclic_type;
