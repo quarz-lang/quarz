@@ -188,6 +188,8 @@ pub(crate) fn unit_output(world: &World, out: &Output, base: u32, file: u32) -> 
     }
     Output {
         node_types: map!(node_types),
+        lifted_blocks: map!(lifted_blocks),
+        type_args: map!(type_args),
         calls: map!(calls),
         const_targets: map!(const_targets),
         var_refs: spans!(var_refs),
@@ -318,6 +320,8 @@ pub(crate) fn merge_output(out: &mut Output, o: Output) {
     out.bang_assign.extend(o.bang_assign);
     out.self_slots.extend(o.self_slots);
     out.static_calls.extend(o.static_calls);
+    out.lifted_blocks.extend(o.lifted_blocks);
+    out.type_args.extend(o.type_args);
     out.usable_after.extend(o.usable_after);
     out.usable_on_entry.extend(o.usable_on_entry);
     out.frame_sizes.extend(o.frame_sizes);

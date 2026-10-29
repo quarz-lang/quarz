@@ -20,6 +20,7 @@ mod func;
 mod inline;
 mod iter;
 pub(crate) mod layout;
+pub mod lift;
 mod regshare;
 mod release;
 
@@ -75,6 +76,13 @@ pub struct Lowerer {
     /// The statement function of the previous static round, reused when
     /// the next round is for the same statement.
     static_stmt_func: Option<(quarz_syntax::ast::NodeId, FuncId)>,
+    /// The functions of the rounds before this one, by id (the runner
+    /// of `static` statements hands each round's back): what a lifted
+    /// block's function is copied from.
+    pub done: Vec<Function>,
+    /// The call each block function was written at, for the generation
+    /// of methods from blocks (docs/14 §5).
+    pub block_calls: HashMap<FuncId, quarz_syntax::ast::NodeId>,
     pub(crate) method_funcs: Vec<Option<FuncId>>,
     pub(crate) const_funcs: Vec<Option<FuncId>>,
     pub(crate) field_default_funcs: HashMap<(ClassId, usize), FuncId>,
@@ -128,6 +136,7 @@ impl Lowerer {
         units: &[UnitInput],
         files: Vec<SourceFile>,
     ) -> Delta {
+        self.static_mode = false;
         self.round_base = self.next_func;
         self.pending.clear();
         self.files = files;
@@ -278,6 +287,18 @@ impl Lowerer {
     fn lower_method(&mut self, world: &World, out: &Output, mid: MethodId) {
         let m = &world.methods[mid as usize];
         if self.method_funcs[mid as usize].is_some() {
+            return;
+        }
+        if let Some(g) = &m.generated {
+            // A block lifted to a method (docs/14 §5).
+            let name = format!(
+                "{}{}{}",
+                world.class(m.owner).name,
+                if m.singleton { "." } else { "#" },
+                m.name
+            );
+            let id = self.lift(mid, name, g);
+            self.method_funcs[mid as usize] = Some(id);
             return;
         }
         let Some(def) = &m.body else { return };
@@ -599,7 +620,14 @@ fn overridden_methods(world: &World) -> HashSet<(ClassId, String)> {
 /// Lower a whole checked program into a module. `files` are the source
 /// files by index (0 = the prelude), used for line numbers.
 pub fn lower_checked(checked: &Checked, files: &[SourceFile]) -> Module {
-    let mut lw = Lowerer::new();
+    lower_checked_with(Lowerer::new(), checked, files)
+}
+
+/// `lower_checked` continuing `lw`, the lowerer the `static` statements
+/// ran with (docs/14 §5): its functions so far (`Lowerer::done`) are the
+/// program's first, and the bodies of the methods they generated are
+/// copied from them.
+pub fn lower_checked_with(mut lw: Lowerer, checked: &Checked, files: &[SourceFile]) -> Module {
     let max_file = checked.units.iter().map(|u| u.file).max().unwrap_or(0);
     let mut all: Vec<SourceFile> = files.to_vec();
     while all.len() <= max_file as usize {
@@ -623,7 +651,9 @@ pub fn lower_checked(checked: &Checked, files: &[SourceFile]) -> Module {
         })
         .collect();
     let delta = lw.lower(&checked.world, &checked.output, &inputs, all);
-    let mut functions = delta.functions;
+    let mut functions = std::mem::take(&mut lw.done);
+    assert_eq!(functions.len(), delta.base as usize);
+    functions.extend(delta.functions);
     // After each pass, what it must leave (`verify`).
     let check = |functions: &[Function], stage| verify::check(functions, &delta.world, stage);
     check(&functions, verify::Stage::Lowered);

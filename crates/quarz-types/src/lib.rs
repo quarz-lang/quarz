@@ -305,9 +305,20 @@ impl Session {
         self.inputs += 1;
         let world = std::mem::take(&mut self.checker.world);
         let mut declarer = declare::Declarer::with_world(world);
+        let stmts_before = declarer.world.static_stmts.len();
         declarer.collect_into_unit(program, 1, self.main);
         declarer.resolve_headers();
         let mut diagnostics = std::mem::take(&mut declarer.diagnostics);
+        // The REPL has no compile-time runner yet (docs/14 §2).
+        for stmt in &declarer.world.static_stmts[stmts_before..] {
+            diagnostics.push((
+                stmt.file,
+                Diagnostic::error(
+                    "`static` statements do not run in the REPL yet".to_string(),
+                    stmt.span,
+                ),
+            ));
+        }
         let body: Vec<Expr> = declarer.units[0]
             .body
             .iter()
@@ -405,6 +416,12 @@ pub trait StaticHost {
     /// The errors reported so far: a run is skipped when the checks it
     /// asked for added some.
     fn error_count(&self) -> usize;
+    /// A member a statement generated (docs/14 §5): declared, or refused
+    /// with the reason (a name the class has already).
+    fn add_generated(&mut self, info: MethodInfo) -> Result<MethodId, String>;
+    /// After a statement's generations: the declaration-time checks of
+    /// the classes they went into, again.
+    fn recheck_classes(&mut self, classes: &[ClassId]);
 }
 
 /// Why a `static` statement could not run: reported at its position.
@@ -698,7 +715,7 @@ pub fn check_with_extra(
     if diagnostics.iter().any(|(_, d)| d.is_error()) {
         return (None, diagnostics);
     }
-    let (mut out, mut sites) = prelude_output.unwrap_or_default();
+    let (out, sites) = prelude_output.unwrap_or_default();
     // The files whose checks were kept (`cache`): their bodies are not
     // checked again.
     let key_of = |f: u32| -> String {
@@ -722,15 +739,51 @@ pub fn check_with_extra(
     let mut consts_seen: Vec<u64> = Vec::new();
     // The warnings of the files read back.
     let mut kept: Vec<FileDiagnostic> = Vec::new();
-    if cache::build().is_some() && cache::dir().is_some() && !NO_CACHE.get() {
-        let interfaces: Vec<(String, u64)> = (1..=units.len() as u32)
-            .map(|f| (key_of(f), cache::interface(&declarer.world, f)))
-            .collect();
+    let mut checker = check::Checker::new(declarer.world, file_mains.clone());
+    checker.set_output(out);
+    checker.set_self_news(sites);
+    // Cog by cog, in dependency order (a script file by file, in load
+    // order): the class bodies' `static` statements run first, before any
+    // body is checked (docs/14; what they call is checked on demand) and
+    // generate members; then the cog's files are keyed and read back from
+    // the cache. Read back after, so that the generated members, which
+    // the kept checks refer to and which are part of the files'
+    // interfaces, exist (docs/05 §2).
+    let use_cache = cache::build().is_some() && cache::dir().is_some() && !NO_CACHE.get();
+    let mut groups: Vec<Vec<u32>> = Vec::new();
+    let mut last_cog: Option<u32> = None;
+    for (i, u) in units.iter().enumerate() {
+        let file = i as u32 + 1;
+        match (u.cog, groups.last_mut()) {
+            (Some(c), Some(last)) if last_cog == Some(c) => last.push(file),
+            _ => groups.push(vec![file]),
+        }
+        last_cog = u.cog;
+    }
+    let mut interfaces: Vec<(String, u64)> =
+        (1..=units.len() as u32).map(|f| (key_of(f), 0)).collect();
+    let cogs_hash = cache::cogs(&checker.world);
+    for group in groups {
+        let in_group = |f: u32| group.contains(&f);
+        checker.check_static_stmts_of(runner.as_deref_mut(), &in_group);
+        // The constants of these files: a type inferred from what the
+        // statements generated is possible, so after them.
+        checker.check_consts_of(&in_group);
+        if !use_cache {
+            continue;
+        }
         // The movement's cogs too: their root modules belong to no file.
-        let all = cache::hash(&(interfaces, cache::cogs(&declarer.world)));
-        for (i, u) in units.iter().enumerate().skip(std_units.len()) {
-            let file = i as u32 + 1;
-            if u.declarations_only {
+        // The interfaces of the groups to come are those before their
+        // own statements run, the same on every check.
+        for f in 1..=units.len() as u32 {
+            if interfaces[f as usize - 1].1 == 0 || in_group(f) {
+                interfaces[f as usize - 1].1 = cache::interface(&checker.world, f);
+            }
+        }
+        let all = cache::hash(&(&interfaces, cogs_hash));
+        for &file in &group {
+            let u = &units[file as usize - 1];
+            if (file as usize) <= std_units.len() || u.declarations_only {
                 continue;
             }
             let Some(key) = cache::key(&u.program, cache::hash(&(all, u.cog, u.statements))) else {
@@ -741,39 +794,21 @@ pub fn check_with_extra(
                 continue;
             };
             let seen = checks.consts_seen;
-            if let Some(warnings) = cache::apply(
-                &mut declarer.world,
-                &mut out,
-                &mut sites,
-                checks,
-                file,
-                &file_of,
-            ) {
+            if let Some(warnings) = checker.apply_cached(checks, file, &file_of) {
                 kept.extend(warnings.into_iter().map(|d| (file, d)));
                 reused[file as usize] = true;
                 consts_seen.push(seen);
+                checker.mark_reused(file);
             }
         }
     }
-    let mut checker = check::Checker::new(declarer.world, file_mains.clone());
-    checker.set_output(out);
-    checker.set_self_news(sites);
-    for (f, r) in reused.iter().enumerate() {
-        if *r {
-            checker.mark_reused(f as u32);
-        }
-    }
     // A constant's type is inferred: when one differs from what a file
-    // read back was checked with, check everything again, before any
-    // `static` statement runs on the stale results.
+    // read back was checked with, check everything again.
     checker.check_consts();
     let consts_now = cache::const_types(&checker.world, &key_of);
     if consts_seen.iter().any(|s| *s != consts_now) {
         return check_uncached(prelude, units, cogs, extra, runner);
     }
-    // The class bodies' `static` statements run now, before the bodies
-    // are checked (docs/14): what they call is checked on demand.
-    checker.check_static_stmts(runner.as_deref_mut());
     let to_check: Vec<(u32, Vec<&Expr>)> = bodies
         .iter()
         .filter(|(f, _)| !reused[*f as usize])
@@ -794,6 +829,9 @@ pub fn check_with_extra(
     let mut all = kept;
     all.extend(checked_diagnostics.iter().cloned());
     all.sort_by_key(|(f, d)| (*f, d.span.start));
+    // A method of a file read back that a `static` statement reached
+    // before was checked then too: its warnings once.
+    all.dedup_by(|a, b| a.0 == b.0 && a.1.span == b.1.span && a.1.message == b.1.message);
     diagnostics.extend(all);
     // Keep what was checked, when it is free of errors (with its warnings,
     // reported again when it is read back).

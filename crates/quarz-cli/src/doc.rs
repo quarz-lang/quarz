@@ -249,7 +249,13 @@ fn load(opts: &Opts) -> Option<Loaded> {
         own.push(0);
     }
     let to_check: Vec<quarz_types::Unit> = units.into_iter().map(quarz_types::Unit::from).collect();
-    let (checked, diagnostics) = quarz_types::check_movement(&prelude.program, &to_check, &decls);
+    // The class bodies' `static` statements run during the check (docs/14):
+    // the members they generate are documented too.
+    let mut runner_files = vec![prelude_file.clone()];
+    runner_files.extend(sources.iter().cloned());
+    let mut runner = quarz_cli::static_run::Runner::new(runner_files);
+    let (checked, diagnostics) =
+        quarz_types::check_movement_with(&prelude.program, &to_check, &decls, &mut runner);
     for (file_index, diag) in &diagnostics {
         if !diag.is_error() {
             continue;

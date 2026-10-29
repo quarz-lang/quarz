@@ -97,7 +97,7 @@ pub fn command(args: &[String]) -> ExitCode {
     if docs != Docs::None {
         quarz_types::want_docs();
     }
-    let Some((checked, sources)) =
+    let Some((checked, sources, lowerer)) =
         load_and_check(&files, cog.as_deref(), &opts, docs, std_docs, test_classes)
     else {
         return ExitCode::FAILURE;
@@ -109,7 +109,7 @@ pub fn command(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
         let exe = dir.join("test");
-        let built = quarz_cli::build(checked, &sources, &exe);
+        let built = quarz_cli::build_with(checked, &sources, lowerer, &exe);
         let code = match built {
             Ok(()) => match std::process::Command::new(&exe).args(&argv).status() {
                 Ok(status) => ExitCode::from(status.code().unwrap_or(1).clamp(0, 255) as u8),
@@ -126,7 +126,7 @@ pub fn command(args: &[String]) -> ExitCode {
         let _ = std::fs::remove_dir_all(&dir);
         return code;
     }
-    let code = quarz_cli::run(checked, &sources, argv);
+    let code = quarz_cli::run_with(checked, &sources, lowerer, argv);
     ExitCode::from(code.clamp(0, 255) as u8)
 }
 
@@ -237,7 +237,7 @@ fn load_and_check(
     docs: Docs,
     std_docs: bool,
     test_classes: bool,
-) -> Option<(quarz_types::Checked, Vec<SourceFile>)> {
+) -> Option<(quarz_types::Checked, Vec<SourceFile>, quarz_lower::Lowerer)> {
     let prelude_file = SourceFile::new("<prelude>", quarz_types::PRELUDE_SOURCE);
     let prelude = quarz_types::parse_prelude();
     let all_std: Vec<&str> = quarz_types::STD_MODULES.iter().map(|(n, _)| *n).collect();
@@ -363,7 +363,7 @@ fn load_and_check(
     }
     let checked = checked.filter(|_| example_errors.is_empty());
     let checked = checked.filter(|c| {
-        let errors = quarz_cli::static_run::compile_time_only_calls(c, &runner_files);
+        let errors = quarz_cli::static_run::compile_time_only_calls(c, &runner_files, &mut runner);
         let ok = errors.is_empty();
         diagnostics.extend(errors);
         ok
@@ -415,7 +415,7 @@ fn load_and_check(
     let mut files = vec![prelude_file];
     files.append(&mut sources);
     files.extend(extras.into_iter().map(|e| e.source));
-    checked.map(|c| (c, files))
+    checked.map(|c| (c, files, runner.into_lowerer()))
 }
 
 /// A unit `quarz test` adds: an example's (with the comment's line of each

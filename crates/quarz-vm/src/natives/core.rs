@@ -81,6 +81,21 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         (Value::Class(c), Value::Class(d)) => Ok(Value::Bool(i.program.world.class_is_a(*c, *d))),
         _ => Err(i.err_type("Type#<= takes a class")),
     });
+    // Generation (docs/14 §5), at compile time only: the block lifted to
+    // a method of the class, recorded for the compiler.
+    native!(m, "Meta::ClassDef#def_method", |i, r, a| def_method(
+        i, r, &a, false
+    ));
+    native!(m, "Meta::ClassDef#def_class_method", |i, r, a| {
+        def_method(i, r, &a, true)
+    });
+    native!(m, "Meta::ClassDef#doc", |i, _, a| {
+        let Some(text) = a.arg(0).as_str() else {
+            return Err(i.err_type("doc takes a string"));
+        };
+        reflect_of(i)?.doc(text.to_string());
+        Ok(Value::Nil)
+    });
     native!(m, "Nil#to_a", |_, _, _| Ok(Value::array(vec![])));
     native!(m, "Nil#&", |_, _, _| Ok(Value::Bool(false)));
     native!(m, "Nil#|", |_, _, a| Ok(Value::Bool(a.arg(0).is_truthy())));
@@ -213,6 +228,81 @@ fn reflected_class(interp: &Interp, recv: &Value) -> Result<ClassId, Flow> {
         Value::Class(c) => Ok(*c),
         _ => Err(interp.err_type("reflection takes a class")),
     }
+}
+
+/// `def_method(name, params?, *, visibility:) { }` and
+/// `def_class_method`: the block's function and what it captured, handed
+/// to the compiler (`Reflect::generate`).
+fn def_method(interp: &Interp, recv: &Value, a: &Args, singleton: bool) -> EvalResult {
+    let what = if singleton {
+        "def_class_method"
+    } else {
+        "def_method"
+    };
+    let class = reflected_class(interp, recv)?;
+    let Value::Symbol(name) = a.arg(0) else {
+        return Err(interp.err_type(&format!("{what} takes the method's name as a symbol")));
+    };
+    let name = interp.symbol_name(*name).to_string();
+    let symbol = |v: &Value| -> Result<String, Flow> {
+        match v {
+            Value::Symbol(s) => Ok(interp.symbol_name(*s).to_string()),
+            _ => Err(interp.err_type(&format!("{what} takes parameter names as symbols"))),
+        }
+    };
+    let params: Vec<String> = match a.pos.len() {
+        1 => Vec::new(),
+        2 => match a.arg(1) {
+            Value::Array(items) => items.iter().map(|v| symbol(&v)).collect::<Result<_, _>>()?,
+            v => vec![symbol(v)?],
+        },
+        _ => return Err(interp.err_arg(&format!("{what} takes a name and the parameter names"))),
+    };
+    let visibility = match a.kw(interp, "visibility") {
+        None => "public".to_string(),
+        Some(v) => {
+            let s = symbol(v)?;
+            if !["public", "private", "protected"].contains(&s.as_str()) {
+                return Err(interp.err_arg(&format!(
+                    "visibility must be :public, :private or :protected, not :{s}"
+                )));
+            }
+            s
+        }
+    };
+    let Some(Value::Proc(closure)) = &a.block else {
+        return Err(interp.err_arg(&format!("{what} takes a block, the method's body")));
+    };
+    let ClosureBody::Func(func) = &closure.body else {
+        return Err(interp.err_arg(&format!(
+            "the block given to {what} must be written at the call: it becomes the method's body"
+        )));
+    };
+    let mut captures = Vec::new();
+    for (depth, slots) in super::concurrency::captured_slots(interp, *func)
+        .iter()
+        .enumerate()
+    {
+        for &slot in slots {
+            let Some(frame) = &closure.frame else {
+                return Err(interp.err_runtime("the block's frames are gone"));
+            };
+            captures.push((depth as u32, slot, frame.get(depth as u32, slot)));
+        }
+    }
+    let request = crate::reflect::GenRequest {
+        class,
+        name,
+        params,
+        singleton,
+        visibility,
+        func: *func,
+        captures,
+    };
+    reflect_of(interp)?
+        .generate(interp, request)
+        .map_err(|m| interp.err_runtime(&m))?;
+    Ok(Value::Nil)
 }
 
 fn reflect_of(interp: &Interp) -> Result<std::rc::Rc<dyn crate::reflect::Reflect>, Flow> {

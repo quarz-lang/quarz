@@ -4,7 +4,10 @@
 //! has none (the natives are compile-time only), and a compiled program
 //! embeds nothing for them.
 
-use quarz_ir::ClassId;
+use quarz_ir::{ClassId, FuncId};
+
+use crate::interp::Interp;
+use crate::value::Value;
 
 /// A field as `Meta::Field` shows it: the declared type's class (type
 /// arguments erased, `Object` for a type parameter or a union).
@@ -46,4 +49,25 @@ pub trait Reflect {
     /// The class's instance methods, its own and inherited, in
     /// declaration order (an overriding method once).
     fn methods(&self, class: ClassId) -> Vec<ReflectMethod>;
+    /// `Meta::ClassDef#def_method` (docs/14 §5): a method to generate,
+    /// recorded for the compiler, or why it cannot be (the message of
+    /// the exception raised at the call).
+    fn generate(&self, interp: &Interp, request: GenRequest) -> Result<(), String>;
+    /// `Meta::ClassDef#doc`: the documentation of the next generation.
+    fn doc(&self, text: String);
+}
+
+/// A method `def_method` asks for: the block lifted to it, with the
+/// values it captured (`captures`: frame depth above the block's own,
+/// slot, value; see `natives::concurrency::captured_slots`).
+pub struct GenRequest {
+    pub class: ClassId,
+    pub name: String,
+    /// The parameters' names (as many as the block takes).
+    pub params: Vec<String>,
+    pub singleton: bool,
+    /// `public`, `private` or `protected`.
+    pub visibility: String,
+    pub func: FuncId,
+    pub captures: Vec<(u32, u32, Value)>,
 }

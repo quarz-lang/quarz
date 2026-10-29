@@ -492,6 +492,7 @@ dependencies = [
  "quarz-syntax",
  "quarz-types",
  "quarz-vm",
+ "rustc-hash",
  "rustyline",
  "serde_json",
 ]

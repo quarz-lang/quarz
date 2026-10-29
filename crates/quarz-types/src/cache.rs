@@ -146,6 +146,12 @@ pub fn interface(world: &World, file: u32) -> u64 {
         m.body = None;
         m.checked = false;
         m.frame_size = 0;
+        // A generated method's function number depends on what was
+        // lowered before it, not on the interface.
+        if let Some(g) = &mut m.generated {
+            g.func = 0;
+            g.by.1 = Default::default();
+        }
         for p in &mut m.params {
             p.span = Default::default();
             p.default = p.default.as_ref().map(|_| dummy());

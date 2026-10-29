@@ -223,7 +223,14 @@ pub fn compile_time_allowed(key: &str) -> bool {
 pub fn compile_time_only(key: &str) -> bool {
     matches!(
         key,
-        "Type#fields" | "Type#field" | "Type#methods" | "Type#method?" | "Type#includes?"
+        "Type#fields"
+            | "Type#field"
+            | "Type#methods"
+            | "Type#method?"
+            | "Type#includes?"
+            | "Meta::ClassDef#def_method"
+            | "Meta::ClassDef#def_class_method"
+            | "Meta::ClassDef#doc"
     )
 }
 
