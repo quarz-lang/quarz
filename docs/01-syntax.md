@@ -477,7 +477,18 @@ end
 value = risky rescue default   # the modifier form is also allowed
 ```
 
-- The exception hierarchy follows Ruby (`Exception` > `StandardError` > ...). The argument of `raise` is an exception class, an exception object, or a string (`RuntimeError`). `raise K, message` is `raise K.new(message)`: `K`'s `initialize` (and its fields' defaults) runs, and must take one String (its other parameters optional), else it is an error. `raise K` is `raise K.new("K")` (the class name as the message, `raise ArgumentError`'s message is `"ArgumentError"`), or `raise K.new` when `initialize` takes no String but needs no argument (`raise SystemExit`). Of several `initialize` overloads, the most specific that fits is run, as `new` would. An abstract class, or one that defines or inherits `self.new`, cannot be raised by name: build the exception and raise it. The class is written by name: raising a class value (`k: Type[StandardError]`, `raise k, message`) is an error, since a subclass's `initialize` may take other arguments (as for `new`); build the exception and raise it.
+- The exception hierarchy follows Ruby (`Exception` > `StandardError` > ...). The argument of `raise` is an exception class, an exception object, or a string (`RuntimeError`). `raise K, message` is `raise K.new(message)`: `K`'s `initialize` (and its fields' defaults) runs, and must take one String (its other parameters optional), else it is an error. `raise K` is `raise K.new("K")` (the class name as the message, `raise ArgumentError`'s message is `"ArgumentError"`), or `raise K.new` when `initialize` takes no String but needs no argument (`raise SystemExit`). Of several `initialize` overloads, the most specific that fits is run, as `new` would. An abstract class, or one that defines or inherits `self.new`, cannot be raised by name: build the exception and raise it. The class is written by name: raising a class value (`k: Type[StandardError]`, `raise k, message`) is an error, for the same reason `k.new` is: `k` may be a subclass whose `initialize` takes other arguments, so which `initialize` runs, and with what, is not known. The ways around it (with a `FooError` whose `initialize` takes a message and a code):
+
+  ```ruby
+  raise FooError.new(msg, 42)            # build the exception by name
+  e = FooError.new(msg, 42)              # or build it first, raise it later
+  raise e
+
+  # Choosing the exception at run time: pass what builds it, not its class.
+  def fail_with(make: (String) -> StandardError) -> Nothing = raise make.call("bad input")
+  fail_with(->(m: String) { ArgumentError.new(m) })
+  ```
+
 - `retry` is directly in a `rescue` clause (not in a block or lambda there). A bare `raise` in a `rescue` clause (also inside a block there, but not in a `def`) re-raises the exception being handled, keeping its backtrace; elsewhere it is a compile error. `raise e` does the same with `rescue E => e` (also with `rescue A, B => e`). A clause's variable (`rescue E => e`) is the clause's own, as a block's parameter is: declared there with the clause's class (`A | B` for `rescue A, B => e`), it shadows an outer local of the same name, which the clause does not change, and the `else` and `ensure` bodies and the code after the `begin` do not see it (in Ruby it is a local of the method). So separate `begin`s may each bind `e` to another class.
 - Exceptions are handled within the task that raised them. The handling of exceptions that escape a task is described in [04-concurrency.md](04-concurrency.md).
 - Exception objects must be Shareable (because they propagate to other tasks; not enforced yet).
