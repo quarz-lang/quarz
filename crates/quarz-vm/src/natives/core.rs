@@ -5,6 +5,8 @@ use std::hash::{Hash, Hasher};
 
 use crate::interp::{Args, EvalResult, Flow, Interp, NativeFn};
 use crate::value::*;
+use quarz_ir::ClassId;
+use smallvec::smallvec;
 
 use super::{int, string};
 
@@ -28,6 +30,52 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         i.call_block_on(&b, Some(r.clone()), a.pos)
     });
     native!(m, "Type#name", class_name);
+    // Reflection, at compile time only (docs/14 §6): the natives read the
+    // declarations the compiler hands the interpreter (`Interp::reflect`).
+    native!(m, "Type#fields", |i, r, _| {
+        let class = reflected_class(i, r)?;
+        let fields = reflect_of(i)?.fields(class);
+        let out: Result<Vec<Value>, Flow> = fields.iter().map(|f| meta_field(i, f)).collect();
+        Ok(Value::array(out?))
+    });
+    native!(m, "Type#field", |i, r, a| {
+        let class = reflected_class(i, r)?;
+        let Value::Symbol(name) = a.arg(0) else {
+            return Err(i.err_type("field takes a symbol"));
+        };
+        let name = i.symbol_name(*name);
+        let fields = reflect_of(i)?.fields(class);
+        match fields.iter().find(|f| f.name.as_str() == &*name) {
+            Some(f) => meta_field(i, f),
+            None => Ok(Value::Nil),
+        }
+    });
+    native!(m, "Type#methods", |i, r, _| {
+        let class = reflected_class(i, r)?;
+        let methods = reflect_of(i)?.methods(class);
+        let out: Result<Vec<Value>, Flow> = methods.iter().map(|m| meta_method(i, m)).collect();
+        Ok(Value::array(out?))
+    });
+    native!(m, "Type#method?", |i, r, a| {
+        let class = reflected_class(i, r)?;
+        let Value::Symbol(name) = a.arg(0) else {
+            return Err(i.err_type("method? takes a symbol"));
+        };
+        let name = i.symbol_name(*name);
+        Ok(Value::Bool(
+            reflect_of(i)?
+                .methods(class)
+                .iter()
+                .any(|m| m.name.as_str() == &*name),
+        ))
+    });
+    native!(m, "Type#includes?", |i, r, a| {
+        let class = reflected_class(i, r)?;
+        let Value::Class(m) = a.arg(0) else {
+            return Err(i.err_type("includes? takes a class"));
+        };
+        Ok(Value::Bool(i.program.world.class_is_a(class, *m)))
+    });
     // Classes only: the values carry no type arguments.
     native!(m, "Type#<=", |i, r, a| match (r, a.arg(0)) {
         (Value::Class(c), Value::Class(d)) => Ok(Value::Bool(i.program.world.class_is_a(*c, *d))),
@@ -158,6 +206,77 @@ fn obj_dup(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
         Value::Object(o) => Value::Object(Object::new(o.class, o.fields())),
         other => other.clone(),
     })
+}
+
+fn reflected_class(interp: &Interp, recv: &Value) -> Result<ClassId, Flow> {
+    match recv {
+        Value::Class(c) => Ok(*c),
+        _ => Err(interp.err_type("reflection takes a class")),
+    }
+}
+
+fn reflect_of(interp: &Interp) -> Result<std::rc::Rc<dyn crate::reflect::Reflect>, Flow> {
+    interp
+        .reflect
+        .borrow()
+        .clone()
+        .ok_or_else(|| interp.err_runtime("reflection is available at compile time only"))
+}
+
+fn meta_class(interp: &Interp, name: &str) -> Result<ClassId, Flow> {
+    interp
+        .program
+        .world
+        .class_by_name(name)
+        .ok_or_else(|| interp.err_runtime(&format!("the prelude has no `{name}`")))
+}
+
+/// A `Meta::Field` value.
+fn meta_field(interp: &Interp, f: &crate::reflect::ReflectField) -> EvalResult {
+    let class = meta_class(interp, "Meta::Field")?;
+    let name = Value::Symbol(interp.intern(&f.name));
+    Ok(Value::Object(Object::new(
+        class,
+        smallvec![
+            name,
+            Value::Class(f.ty),
+            Value::Bool(f.mutable),
+            Value::Bool(f.default)
+        ],
+    )))
+}
+
+/// A `Meta::MethodSig` value, with its `Meta::Param`s.
+fn meta_method(interp: &Interp, m: &crate::reflect::ReflectMethod) -> EvalResult {
+    use crate::reflect::ReflectKind;
+    let sig = meta_class(interp, "Meta::MethodSig")?;
+    let param = meta_class(interp, "Meta::Param")?;
+    let mut params = Vec::with_capacity(m.params.len());
+    for p in &m.params {
+        let kind = match p.kind {
+            ReflectKind::Required => "Meta::ParamKind::Required",
+            ReflectKind::Optional => "Meta::ParamKind::Optional",
+            ReflectKind::Rest => "Meta::ParamKind::Rest",
+            ReflectKind::Keyword => "Meta::ParamKind::Keyword",
+            ReflectKind::Block => "Meta::ParamKind::Block",
+        };
+        let kind = interp.variant_singleton(meta_class(interp, kind)?);
+        let name = Value::Symbol(interp.intern(&p.name));
+        params.push(Value::Object(Object::new(
+            param,
+            smallvec![name, Value::Class(p.ty), kind],
+        )));
+    }
+    let name = Value::Symbol(interp.intern(&m.name));
+    Ok(Value::Object(Object::new(
+        sig,
+        smallvec![
+            name,
+            Value::array(params),
+            Value::Class(m.ret),
+            Value::Bool(m.is_static)
+        ],
+    )))
 }
 
 fn class_name(interp: &Interp, recv: &Value, _: Args) -> EvalResult {

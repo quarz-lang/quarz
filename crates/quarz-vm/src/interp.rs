@@ -765,6 +765,11 @@ pub struct Interp {
     /// innermost last: the last one is its `$!`, the cause of an exception
     /// it raises.
     rescuing: RefCell<Vec<Value>>,
+    /// A compile-time run's time limit (docs/14): checked where code
+    /// loops and calls; `None` for a program.
+    pub deadline: Cell<Option<std::time::Instant>>,
+    /// The declarations a compile-time run reflects on (docs/14).
+    pub reflect: RefCell<Option<std::rc::Rc<dyn crate::reflect::Reflect>>>,
     /// Those of the other tasks of this worker that are suspended while
     /// handling one, swapped in when they run (`resume_task`).
     parked_rescuing: RefCell<FxHashMap<TaskId, Vec<Value>>>,
@@ -1035,6 +1040,8 @@ impl Interp {
             next_tag: state.next_tag,
             current_task_id: Cell::new(0),
             rescuing: RefCell::new(Vec::new()),
+            deadline: Cell::new(None),
+            reflect: RefCell::new(None),
             parked_rescuing: RefCell::new(FxHashMap::default()),
             native_bt: Cell::new(false),
             pending_flow: RefCell::new(None),
@@ -1309,6 +1316,40 @@ impl Interp {
             Some(TaskResult::Value(v)) => Ok(Some(v)),
             Some(TaskResult::Error(_)) => Ok(None),
             None => Err(code),
+        }
+    }
+
+    /// Run a compile-time `static` statement (docs/14): the function `fid`
+    /// with `self_val`, as a root task of its own (constants and blocks
+    /// need one), under the deadline set. The exception it raised, or
+    /// its exit status, comes back for the compiler's diagnostic.
+    pub fn run_static(
+        self: &std::rc::Rc<Interp>,
+        fid: FuncId,
+        self_val: Value,
+        file: u32,
+    ) -> Result<(), StaticEnd> {
+        let me = self.clone();
+        let run_body: Box<dyn FnOnce() -> TaskExit> = Box::new(move || {
+            let result = me.run_init(fid, self_val, file);
+            task_exit(&me, result)
+        });
+        let root = self.sched.borrow_mut().spawn(
+            run_body,
+            None,
+            "static statement".to_string(),
+            256 * 1024 * 1024,
+        );
+        self.set_root(&root);
+        let code = self.run_loop_with(&root, false);
+        self.flush();
+        if let Some(status) = root.take_exit().or(self.take_exit_request()) {
+            return Err(StaticEnd::Exited(status as i32));
+        }
+        match root.result() {
+            Some(TaskResult::Value(_)) => Ok(()),
+            Some(TaskResult::Error(e)) => Err(StaticEnd::Raised(e)),
+            None => Err(StaticEnd::Exited(code)),
         }
     }
 
@@ -2090,6 +2131,21 @@ impl Interp {
         self.raise(self.program.exc.type_error, message)
     }
 
+    pub fn err_runtime(&self, message: &str) -> Flow {
+        self.raise(self.program.exc.runtime_error, message)
+    }
+
+    /// A compile-time run past its time limit raises (docs/14 §5).
+    #[inline]
+    pub fn check_deadline(&self) -> Result<(), Flow> {
+        match self.deadline.get() {
+            Some(d) if std::time::Instant::now() > d => {
+                Err(self.err_runtime("compile-time evaluation took too long"))
+            }
+            _ => Ok(()),
+        }
+    }
+
     pub fn err_index(&self, message: &str) -> Flow {
         self.raise(self.program.exc.index_error, message)
     }
@@ -2764,8 +2820,22 @@ impl Interp {
         // What a key's own `==` or `hash` raised is raised before any more
         // Quarz code runs (`crate::keys`; their own calls check first).
         crate::keys::check()?;
+        if self.deadline.get().is_some() {
+            self.check_deadline()?;
+        }
         let m = self.program.method(mid);
         if let Some(native) = self.program.natives[mid as usize] {
+            // A compile-time run refuses the natives that act on the
+            // outside world, whatever the analysis before it missed.
+            if self.deadline.get().is_some() {
+                if let Some(key) = m.native_key.as_deref() {
+                    if !crate::natives::compile_time_allowed(key) {
+                        return Err(
+                            self.err_runtime(&format!("`{key}` cannot run at compile time"))
+                        );
+                    }
+                }
+            }
             return native(
                 self,
                 &recv,
@@ -2866,6 +2936,11 @@ impl Interp {
             ));
         }
         let Some(fid) = m.func else {
+            if self.deadline.get().is_some() {
+                // A compile-time run: a body not lowered is a bug of the
+                // compiler, not a nil (docs/14).
+                return Err(self.err_runtime(&format!("`{}` has no body at compile time", m.name)));
+            }
             return Ok(Value::Nil);
         };
         // Positional parameters only: the arguments are bound as they
@@ -3637,6 +3712,12 @@ impl Interp {
 }
 
 /// Convert the result of a task body into its exit.
+/// How a compile-time run ended other than normally (`Interp::run_static`).
+pub enum StaticEnd {
+    Raised(Value),
+    Exited(i32),
+}
+
 pub(crate) fn task_exit(interp: &Interp, result: EvalResult) -> TaskExit {
     match result {
         Ok(v) => TaskExit::Result(TaskResult::Value(v)),

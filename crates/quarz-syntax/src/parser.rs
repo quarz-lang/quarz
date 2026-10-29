@@ -435,7 +435,7 @@ impl<'src> Parser<'src> {
         match self.kind().clone() {
             T::Keyword(K::Class) => return self.parse_class(false),
             T::Keyword(K::Module) => return self.parse_module(),
-            T::Keyword(K::Def) => return self.parse_def(None, false, false),
+            T::Keyword(K::Def) => return self.parse_def(None, false, false, false),
             T::Keyword(K::Alias) => return self.parse_alias(),
             T::Star => return self.parse_multi_assign(None),
             T::IVar(name) if self.is_adjacent_colon(1) => {
@@ -521,10 +521,15 @@ impl<'src> Parser<'src> {
                 self.parse_field_decl(true, &field)?
             }
             "extern" if matches!(next, T::StringBegin(_)) => self.parse_extern()?,
-            "abstract" | "native" | "private" | "protected" | "public"
+            "abstract" | "native" | "private" | "protected" | "public" | "static"
                 if matches!(next, T::Keyword(K::Def | K::Class) | T::Ident(_)) =>
             {
                 return self.parse_modified_declaration();
+            }
+            // Reserved for a compile-time evaluation form (docs/14).
+            "static" if matches!(next, T::LParen) => {
+                let span = self.peek().span;
+                return Err(self.error_at("`static(...)` is reserved", span));
             }
             "private" | "protected" | "public"
                 if matches!(next, T::Symbol(_) | T::Newline | T::Eof) =>
@@ -578,25 +583,31 @@ impl<'src> Parser<'src> {
         Ok(Some(expr))
     }
 
-    /// `abstract def`, `private def`, `native def`, `abstract class`, and
-    /// combinations such as `private abstract def`.
+    /// `abstract def`, `private def`, `native def`, `static def`,
+    /// `abstract class`, and combinations such as `private abstract def`.
     fn parse_modified_declaration(&mut self) -> PResult<Option<Expr>> {
         let mark = self.mark();
         let mut is_abstract = false;
         let mut is_native = false;
+        let mut is_static = false;
         let mut visibility = None;
         loop {
             match self.kind().clone() {
                 T::Ident(m) if m == "abstract" => is_abstract = true,
                 T::Ident(m) if m == "native" => is_native = true,
+                T::Ident(m) if m == "static" => is_static = true,
                 T::Ident(m) if matches!(m.as_str(), "private" | "protected" | "public") => {
                     visibility = Some(visibility_of(&m))
                 }
                 T::Keyword(K::Def) => {
-                    let def = self.parse_def(visibility, is_abstract, is_native)?;
+                    if is_static && is_abstract {
+                        let span = self.peek().span;
+                        return Err(self.error_at("a `static def` cannot be abstract", span));
+                    }
+                    let def = self.parse_def(visibility, is_abstract, is_native, is_static)?;
                     return Ok(Some(def));
                 }
-                T::Keyword(K::Class) if is_abstract && !is_native => {
+                T::Keyword(K::Class) if is_abstract && !is_native && !is_static => {
                     return Ok(Some(self.parse_class(true)?));
                 }
                 _ => {
@@ -1733,6 +1744,11 @@ impl<'src> Parser<'src> {
                 let expr = self.node(span, ExprKind::Const(path));
                 self.maybe_type_app(expr)
             }
+            // Reserved for a compile-time evaluation form (docs/14).
+            T::Ident(name) if name == "static" && matches!(self.kind_at(1), T::LParen) => {
+                let span = self.peek().span;
+                Err(self.error_at("`static(...)` is reserved", span))
+            }
             T::Ident(name) => {
                 // `using M do ... end` is an expression too.
                 if name == "using"
@@ -2477,7 +2493,7 @@ impl<'src> Parser<'src> {
             K::While | K::Until => self.parse_while(),
             K::Case => self.parse_case(),
             K::Begin => self.parse_begin(),
-            K::Def => self.parse_def(None, false, false),
+            K::Def => self.parse_def(None, false, false, false),
             K::Class => self.parse_class(false),
             K::Module => self.parse_module(),
             K::Return | K::Break | K::Next => {
@@ -3900,7 +3916,7 @@ impl<'src> Parser<'src> {
             if self.at_kw(K::End) || self.at(&T::Eof) {
                 break;
             }
-            match self.parse_def(None, false, true)? {
+            match self.parse_def(None, false, true, false)? {
                 Expr {
                     kind: ExprKind::MethodDef(def),
                     ..
@@ -3918,6 +3934,7 @@ impl<'src> Parser<'src> {
         visibility: Option<Visibility>,
         is_abstract: bool,
         is_native: bool,
+        is_static: bool,
     ) -> PResult<Expr> {
         let start = self.expect_kw(K::Def)?.span;
         let mut singleton = false;
@@ -3986,6 +4003,7 @@ impl<'src> Parser<'src> {
                 body,
                 is_abstract,
                 is_native,
+                is_static,
                 visibility,
                 span,
             })),

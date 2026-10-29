@@ -150,6 +150,10 @@ cog.version          # "1.4.0", from the manifest: no second copy in the source
 
 In the application and in a script, `cog` is the top level; `cog.name` is then the name in the application's manifest, or the file's name without its extension for a script, and `cog.version` is its version or `"0.0.0"`. `cog` is a keyword rather than a predefined constant so that no cog can shadow it, and it is not spelled `::` because Ruby's `::Foo` (the top level) is still needed to reach a standard class that the cog's own declarations hide.
 
+### Compile-time code
+
+A class body's `static` statement ([14-metaprogramming.md](14-metaprogramming.md)) runs, while the program is checked, a `static def` class method of a cog the file's cog **depends on** (directly or through its dependencies), of the standard library, or, in a script, of a file it `require`s: never one of the same cog. The dependency's code therefore runs inside `quarz check` as well as `run` and `build`, under the compile-time rules: it cannot reach the natives that touch the outside world (IO, processes, tasks, time, randomness), and a statement is cut off after ten seconds.
+
 ## 7. Commands
 
 | Command | Behavior |

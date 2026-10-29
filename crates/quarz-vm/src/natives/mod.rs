@@ -154,6 +154,79 @@ pub struct Natives {
     pub owned: Registry<OwnedNativeFn>,
 }
 
+/// Whether a class's natives are denied at compile time (docs/14 §5):
+/// the classes that act on the outside world, wait, or depend on the
+/// moment. Their values come only from such natives (or from a constant
+/// initialized by one, `STDOUT`), so their methods (an override of
+/// `Object#to_s`, say) cannot be reached otherwise; `Time` values made
+/// from parts exist, but `Time` has no methods of its own in Quarz.
+pub fn compile_time_denied_class(class: &str) -> bool {
+    const DENIED_CLASSES: &[&str] = &[
+        "IO",
+        "File",
+        "Dir",
+        "Process",
+        "Task",
+        "Scope",
+        "Selector",
+        "Channel",
+        "Atom",
+        "Signal",
+        "Random",
+        "TCPSocket",
+        "TCPServer",
+        "UDPSocket",
+        "UNIXSocket",
+        "UNIXServer",
+        "Socket",
+        "Time",
+    ];
+    DENIED_CLASSES.contains(&class)
+}
+
+/// Whether a native may run at compile time (docs/14 §5): nothing that
+/// reads or writes the outside world, waits, or depends on the moment.
+/// Printing is allowed (it goes to the compiler's standard error).
+///
+/// `Interp::invoke` refuses a denied plain native under a deadline, as a
+/// guard behind the analysis; the `fast!` and `owned!` paths skip that
+/// guard, so their keys must all be allowed (`fast_and_owned_natives_are_
+/// pure` checks it).
+pub fn compile_time_allowed(key: &str) -> bool {
+    const DENIED_KERNEL: &[&str] = &[
+        "Kernel#gets",
+        "Kernel#gets?",
+        "Kernel#readline",
+        "Kernel#readlines",
+        "Kernel#exit",
+        "Kernel#exit!",
+        "Kernel#abort",
+        "Kernel#at_exit",
+        "Kernel#sleep",
+        "Kernel#rand",
+        "Kernel#srand",
+    ];
+    // Pure arithmetic of a denied file (`Duration`, `Time` values made
+    // from parts) stays allowed: the denial is by class.
+    // The class is the key's first name (`Process::Output#status` is
+    // `Process`'s).
+    let class = key.split(['#', '.', ':']).next().unwrap_or("");
+    if compile_time_denied_class(class) {
+        return matches!(key, "Time.at" | "Time.utc" | "Time.local" | "Time.parse")
+            || key.starts_with("Time#");
+    }
+    !DENIED_KERNEL.contains(&key)
+}
+
+/// The natives that exist at compile time only: the reflection on a class
+/// (docs/14 §6). A method reaching one is compile-time only.
+pub fn compile_time_only(key: &str) -> bool {
+    matches!(
+        key,
+        "Type#fields" | "Type#field" | "Type#methods" | "Type#method?" | "Type#includes?"
+    )
+}
+
 pub fn all() -> Natives {
     Natives {
         plain: registry(),
@@ -345,4 +418,54 @@ pub fn core_gets(interp: &Interp, raise_on_eof: bool) -> EvalResult {
 pub(crate) fn clock_start() -> std::time::Instant {
     static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
     *START.get_or_init(std::time::Instant::now)
+}
+
+#[cfg(test)]
+mod compile_time_tests {
+    use super::*;
+
+    #[test]
+    fn fast_and_owned_natives_are_pure() {
+        let mut keys: Vec<&str> = fast_registry().entries.iter().map(|e| e.0).collect();
+        keys.extend(owned_registry().entries.iter().map(|e| e.0));
+        for key in keys {
+            assert!(
+                compile_time_allowed(key),
+                "{key} bypasses the compile-time guard"
+            );
+        }
+    }
+
+    #[test]
+    fn the_registry_is_classified_as_intended() {
+        let all = registry();
+        for (key, _, _) in &all.entries {
+            let class = key.split(['#', '.', ':']).next().unwrap_or("");
+            let denied = matches!(
+                class,
+                "IO" | "File" | "Dir" | "Process" | "Task" | "Channel"
+            ) || matches!(
+                *key,
+                "Time.now" | "Kernel#sleep" | "Kernel#exit" | "Kernel#gets"
+            );
+            if denied {
+                assert!(
+                    !compile_time_allowed(key),
+                    "{key} must be denied at compile time"
+                );
+            }
+            if matches!(
+                class,
+                "String" | "Array" | "Hash" | "Int" | "Float" | "Symbol" | "Type"
+            ) || matches!(
+                *key,
+                "Kernel#puts" | "Kernel#p" | "Duration#+" | "Time#year"
+            ) {
+                assert!(
+                    compile_time_allowed(key),
+                    "{key} must be allowed at compile time"
+                );
+            }
+        }
+    }
 }

@@ -209,6 +209,12 @@ pub(crate) fn unit_output(world: &World, out: &Output, base: u32, file: u32) -> 
             .filter(|(k, _)| owner_mine(k))
             .map(|(k, v)| (*k, *v))
             .collect(),
+        static_calls: out
+            .static_calls
+            .iter()
+            .filter(|(f, _, _)| *f == file)
+            .cloned()
+            .collect(),
         usable_after: set!(usable_after),
         usable_on_entry: out
             .usable_on_entry
@@ -311,6 +317,7 @@ pub(crate) fn merge_output(out: &mut Output, o: Output) {
     out.element_tests.extend(o.element_tests);
     out.bang_assign.extend(o.bang_assign);
     out.self_slots.extend(o.self_slots);
+    out.static_calls.extend(o.static_calls);
     out.usable_after.extend(o.usable_after);
     out.usable_on_entry.extend(o.usable_on_entry);
     out.frame_sizes.extend(o.frame_sizes);

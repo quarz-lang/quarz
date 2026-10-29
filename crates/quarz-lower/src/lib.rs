@@ -49,8 +49,32 @@ pub struct Delta {
     pub units: Vec<Unit>,
 }
 
+/// One round of `Lowerer::lower_static`: the functions it added, the
+/// statement's own function, and the methods and constants it reached
+/// whose checks are not done yet (the caller checks them and asks for
+/// another round, which continues where this one stopped).
+pub struct StaticRound {
+    pub delta: Delta,
+    pub stmt_func: FuncId,
+    pub unchecked: Vec<MethodId>,
+    pub unchecked_consts: Vec<ConstId>,
+}
+
 #[derive(Default)]
 pub struct Lowerer {
+    /// Lowering for a compile-time run (docs/14): every method is lazy,
+    /// reached from the statement, and one whose body is not checked yet
+    /// is reported instead of lowered.
+    static_mode: bool,
+    unchecked: Vec<MethodId>,
+    unchecked_consts: Vec<ConstId>,
+    /// What the previous static round left unchecked: reached again in
+    /// the next one, once checked.
+    static_retry: Vec<MethodId>,
+    static_retry_consts: Vec<ConstId>,
+    /// The statement function of the previous static round, reused when
+    /// the next round is for the same statement.
+    static_stmt_func: Option<(quarz_syntax::ast::NodeId, FuncId)>,
     pub(crate) method_funcs: Vec<Option<FuncId>>,
     pub(crate) const_funcs: Vec<Option<FuncId>>,
     pub(crate) field_default_funcs: HashMap<(ClassId, usize), FuncId>,
@@ -189,33 +213,7 @@ impl Lowerer {
                 self.reach_method(world, mid as MethodId, &by_name, &mut work);
             }
         }
-        loop {
-            while self.scanned < self.pending.len() {
-                let i = self.scanned;
-                self.scanned += 1;
-                let Some(f) = self.pending[i].take() else {
-                    continue;
-                };
-                let mut methods = Vec::new();
-                let mut names = Vec::new();
-                quarz_ir::shake::refs(&f, &mut |r| match r {
-                    quarz_ir::shake::Ref::Method(m) => methods.push(m),
-                    quarz_ir::shake::Ref::Name(n) => names.push(n.to_string()),
-                    _ => {}
-                });
-                self.pending[i] = Some(f);
-                for m in methods {
-                    self.reach_method(world, m, &by_name, &mut work);
-                }
-                for n in names {
-                    self.reach_name(world, &n, &by_name, &mut work);
-                }
-            }
-            let Some(mid) = work.pop() else {
-                break;
-            };
-            self.lower_method(world, out, mid);
-        }
+        self.reach_all(world, out, &by_name, &mut work);
         let functions: Vec<Function> = self
             .pending
             .drain(..)
@@ -273,7 +271,7 @@ impl Lowerer {
     /// Whether the methods of `file` are lowered only once something may
     /// call them: the prelude's and the standard library's.
     fn lazy(&self, world: &World, file: u32) -> bool {
-        file == PRELUDE_FILE || world.std_files.contains(&file)
+        self.static_mode || file == PRELUDE_FILE || world.std_files.contains(&file)
     }
 
     /// Lower method `mid` if it has a body and has not been lowered.
@@ -284,10 +282,203 @@ impl Lowerer {
         }
         let Some(def) = &m.body else { return };
         let Some(body) = &def.body else { return };
+        if self.static_mode && !m.checked {
+            // Not lowerable yet: the caller checks it and comes back.
+            self.unchecked.push(mid);
+            self.reached[mid as usize] = false;
+            return;
+        }
         let id = self.alloc_func();
         self.method_funcs[mid as usize] = Some(id);
         let f = FnBuilder::method(self, world, out, mid, body);
         self.set_func(id, f);
+    }
+
+    /// Lower what the functions lowered so far reach, until nothing new
+    /// is reached: methods by id and by name, and, in static mode,
+    /// constants (which `lower` lowered up front).
+    fn reach_all(
+        &mut self,
+        world: &World,
+        out: &Output,
+        by_name: &HashMap<&str, Vec<MethodId>>,
+        work: &mut Vec<MethodId>,
+    ) {
+        loop {
+            while self.scanned < self.pending.len() {
+                let i = self.scanned;
+                self.scanned += 1;
+                let Some(f) = self.pending[i].take() else {
+                    continue;
+                };
+                let mut methods = Vec::new();
+                let mut names = Vec::new();
+                let mut consts = Vec::new();
+                quarz_ir::shake::refs(&f, &mut |r| match r {
+                    quarz_ir::shake::Ref::Method(m) => methods.push(m),
+                    quarz_ir::shake::Ref::Name(n) => names.push(n.to_string()),
+                    quarz_ir::shake::Ref::Const(c) => consts.push(c),
+                    _ => {}
+                });
+                self.pending[i] = Some(f);
+                for m in methods {
+                    self.reach_method(world, m, by_name, work);
+                }
+                for n in names {
+                    self.reach_name(world, &n, by_name, work);
+                }
+                if self.static_mode {
+                    for c in consts {
+                        self.lower_const_static(world, out, c);
+                    }
+                }
+            }
+            let Some(mid) = work.pop() else {
+                break;
+            };
+            self.lower_method(world, out, mid);
+        }
+    }
+
+    /// In static mode, a constant's initializer when it is reached: only
+    /// once its type is checked (`const_type`), else reported.
+    fn lower_const_static(&mut self, world: &World, out: &Output, cid: ConstId) {
+        if self.const_funcs.len() < world.consts.len() {
+            self.const_funcs.resize(world.consts.len(), None);
+        }
+        if self.const_funcs[cid as usize].is_some() {
+            return;
+        }
+        let c = &world.consts[cid as usize];
+        let Some(value) = &c.value else { return };
+        if c.ty.is_none() {
+            if !self.unchecked_consts.contains(&cid) {
+                self.unchecked_consts.push(cid);
+            }
+            return;
+        }
+        let id = self.alloc_func();
+        self.const_funcs[cid as usize] = Some(id);
+        let name = format!("const {}", c.name);
+        let f = FnBuilder::init(self, world, out, name, c.file, c.owner, value);
+        self.set_func(id, f);
+    }
+
+    /// Lower a class body's `static` statement (docs/14) with what it
+    /// reaches, for a compile-time run: the statement as an init function
+    /// (its `self` the class), the `static def` it calls, and every method
+    /// and constant those reach. A method whose body is not checked yet is
+    /// returned in `unchecked` rather than lowered: the caller checks it
+    /// and calls again, which continues from the functions already made.
+    #[allow(clippy::too_many_arguments)]
+    pub fn lower_static(
+        &mut self,
+        world: &World,
+        out: &Output,
+        stmt: &Expr,
+        class: ClassId,
+        file: u32,
+        callee: MethodId,
+        files: Vec<SourceFile>,
+    ) -> StaticRound {
+        self.static_mode = true;
+        self.unchecked.clear();
+        self.unchecked_consts.clear();
+        self.round_base = self.next_func;
+        self.pending.clear();
+        self.files = files;
+        self.overridden = overridden_methods(world);
+        self.layouts = layout::compute(world);
+        if self.method_funcs.len() < world.methods.len() {
+            self.method_funcs.resize(world.methods.len(), None);
+        }
+        if self.reached.len() < world.methods.len() {
+            self.reached.resize(world.methods.len(), false);
+        }
+        // Field defaults whose expressions are checked (a construction
+        // at compile time needs them).
+        for class_info in &world.classes {
+            let fields = world.all_fields(class_info.id);
+            let own = fields.len().saturating_sub(class_info.fields.len());
+            for (i, (field, _)) in fields.iter().enumerate().skip(own) {
+                let Some(default) = &field.default else {
+                    continue;
+                };
+                if self.field_default_funcs.contains_key(&(class_info.id, i))
+                    || !out.node_types.contains_key(&default.id)
+                {
+                    continue;
+                }
+                let id = self.alloc_func();
+                self.field_default_funcs.insert((class_info.id, i), id);
+                let name = format!("default of {}#@{}", class_info.name, field.name);
+                let f = FnBuilder::init(
+                    self,
+                    world,
+                    out,
+                    name,
+                    class_info.file,
+                    Some(class_info.id),
+                    default,
+                );
+                self.set_func(id, f);
+            }
+        }
+        let stmt_func = match self.static_stmt_func {
+            Some((id, f)) if id == stmt.id => f,
+            _ => {
+                let fid = self.alloc_func();
+                let f = FnBuilder::init(
+                    self,
+                    world,
+                    out,
+                    "static statement".to_string(),
+                    file,
+                    Some(class),
+                    stmt,
+                );
+                self.set_func(fid, f);
+                self.static_stmt_func = Some((stmt.id, fid));
+                fid
+            }
+        };
+        self.scanned = 0;
+        let by_name = methods_by_name(world);
+        let mut work: Vec<MethodId> = Vec::new();
+        for n in quarz_ir::shake::RUNTIME_NAMES {
+            self.reach_name(world, n, &by_name, &mut work);
+        }
+        self.reach_method(world, callee, &by_name, &mut work);
+        // What the previous round could not lower, checked since.
+        for m in std::mem::take(&mut self.static_retry) {
+            self.reached[m as usize] = false;
+            self.reach_method(world, m, &by_name, &mut work);
+        }
+        for c in std::mem::take(&mut self.static_retry_consts) {
+            self.lower_const_static(world, out, c);
+        }
+        self.reach_all(world, out, &by_name, &mut work);
+        let functions: Vec<Function> = self
+            .pending
+            .drain(..)
+            .map(|f| f.expect("function lowered"))
+            .collect();
+        let file_names = self.files.iter().map(|f| f.name.clone()).collect();
+        let rt = rtworld::build(world, self, file_names);
+        self.static_mode = false;
+        self.static_retry = self.unchecked.clone();
+        self.static_retry_consts = self.unchecked_consts.clone();
+        StaticRound {
+            delta: Delta {
+                world: rt,
+                base: self.round_base,
+                functions,
+                units: Vec::new(),
+            },
+            stmt_func,
+            unchecked: std::mem::take(&mut self.unchecked),
+            unchecked_consts: std::mem::take(&mut self.unchecked_consts),
+        }
     }
 
     /// Method `mid` may be called: so may every method of its name (and

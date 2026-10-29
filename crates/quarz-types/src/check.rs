@@ -108,6 +108,10 @@ pub struct Output {
     pub bang_assign: rustc_hash::FxHashSet<NodeId>,
     /// Functions that must store their `self` in a hidden frame slot.
     pub self_slots: FxHashMap<SelfOwner, u32>,
+    /// Calls of a `static def` from code that is not static (a method
+    /// body, the top level): each is an error after lowering when the
+    /// callee turns out to be compile-time only (docs/14 §3).
+    pub static_calls: Vec<(u32, Span, MethodId)>,
     /// In `initialize`: the assignments and `super` calls after which the
     /// object is usable (its required fields assigned, docs/03 §4), and
     /// the methods where it is from the start. Failing before that point,
@@ -351,6 +355,9 @@ struct Env {
     /// cannot run it.
     block_optional: bool,
     in_initialize: bool,
+    /// In a `static def`'s body or a `static` statement: code that runs
+    /// at compile time, which may call compile-time-only methods.
+    is_static: bool,
     assigned_fields: HashSet<String>,
     loop_depth: u32,
     /// Whether a `break`, and a `next`, of the innermost loop has been
@@ -635,6 +642,9 @@ pub struct Checker {
     logical_seen: HashMap<NodeId, LogicalSeen>,
     /// Files whose checks were read back (`mark_reused`).
     reused_files: rustc_hash::FxHashSet<u32>,
+    /// How many of `world.static_stmts` have been checked (and run):
+    /// the extra units of a test run add theirs later.
+    static_done: usize,
     op_given_up: rustc_hash::FxHashSet<(NodeId, bool)>,
     pub world: World,
     pub diagnostics: Vec<(u32, Diagnostic)>,
@@ -727,6 +737,7 @@ impl Checker {
             block_type: None,
             block_optional: false,
             in_initialize: false,
+            is_static: false,
             assigned_fields: HashSet::default(),
             loop_depth: 0,
             loop_exits: LoopExits::default(),
@@ -748,6 +759,7 @@ impl Checker {
             op_seen: HashMap::default(),
             logical_seen: HashMap::default(),
             reused_files: Default::default(),
+            static_done: 0,
             op_given_up: Default::default(),
             world,
             diagnostics: Vec::new(),
@@ -783,6 +795,13 @@ impl Checker {
             .push((self.env.file, Diagnostic::error(message, span)));
     }
 
+    /// An error in `file`, which is not the environment's (a `static`
+    /// statement reported after its check).
+    fn error_in(&mut self, file: u32, message: impl Into<String>, span: Span) {
+        self.diagnostics
+            .push((file, Diagnostic::error(message, span)));
+    }
+
     fn warning(&mut self, message: impl Into<String>, span: Span) {
         self.diagnostics
             .push((self.env.file, Diagnostic::warning(message, span)));
@@ -811,11 +830,18 @@ impl Checker {
 
     /// Check every method body, constant initializer and each file's
     /// top-level statements.
-    pub fn check_all(&mut self, units: &[(u32, Vec<&Expr>)]) {
+    /// The constants' types, inferred from their initializers (the first
+    /// step of `check_all`, also done before the `static` statements run:
+    /// the cache's constant check must come before them).
+    pub fn check_consts(&mut self) {
         let count = self.world.consts.len();
         for cid in 0..count as ConstId {
             self.const_type(cid, Span::empty(0));
         }
+    }
+
+    pub fn check_all(&mut self, units: &[(u32, Vec<&Expr>)]) {
+        self.check_consts();
         let count = self.world.methods.len();
         for mid in 0..count as MethodId {
             self.ensure_method_checked(mid);
@@ -1457,6 +1483,141 @@ impl Checker {
         }
     }
 
+    /// A call of `mid` at `expr`: when `mid` is a `static def` and the
+    /// code is not static, it is an error if `mid` is compile-time only
+    /// by declaration (a `static native def`), and otherwise recorded,
+    /// to be judged once the method's reach is known (docs/14 §3).
+    fn note_static_call(&mut self, expr: &Expr, mid: MethodId) {
+        let m = self.world.method(mid);
+        if !m.is_static || self.env.is_static {
+            return;
+        }
+        if m.is_native {
+            self.error(
+                format!(
+                    "`{}` runs at compile time only: call it in a `static def` or a `static` statement",
+                    m.name
+                ),
+                expr.span,
+            );
+            return;
+        }
+        let entry = (self.env.file, expr.span, mid);
+        // A block checked once per overload notes its call once.
+        if !self.out.static_calls.contains(&entry) {
+            self.out.static_calls.push(entry);
+        }
+    }
+
+    /// Check the class bodies' `static` statements (docs/14) and, with a
+    /// `runner`, run them: each is a call, on the class's `Meta::ClassDef`,
+    /// of a `static` class method of a dependency.
+    pub fn check_static_stmts(&mut self, mut runner: Option<&mut (dyn crate::StaticRunner + '_)>) {
+        let stmts = self.world.static_stmts[self.static_done..].to_vec();
+        self.static_done = self.world.static_stmts.len();
+        for stmt in stmts {
+            let Some(callee) = self.check_static_stmt(&stmt) else {
+                continue;
+            };
+            let Some(r) = runner.as_deref_mut() else {
+                continue;
+            };
+            if let Err(failure) = r.run(self, &stmt, callee) {
+                let mut message = failure.message;
+                for note in failure.notes {
+                    message.push('\n');
+                    message.push_str(&note);
+                }
+                self.error_in(stmt.file, message, stmt.span);
+            }
+        }
+    }
+
+    /// Type-check one `static` statement and validate what it calls:
+    /// the `static def` class method, which must belong to a dependency.
+    fn check_static_stmt(&mut self, stmt: &StaticStmt) -> Option<MethodId> {
+        let class = self.world.class(stmt.class).clone();
+        let instance = Type::Class(
+            stmt.class,
+            class
+                .type_params
+                .iter()
+                .map(|p| Type::Param(p.id))
+                .collect(),
+        );
+        let self_type = Type::Class(self.world.builtin.meta_classdef, vec![instance]);
+        let scope = TypeScope {
+            namespace: Some(stmt.class),
+            params: class
+                .type_params
+                .iter()
+                .map(|p| (p.name.clone(), p.id))
+                .collect(),
+            self_type: None,
+        };
+        let mut env = self.fresh_env(self_type, Some(stmt.class), None, scope, stmt.file);
+        env.is_static = true;
+        let errors_before = self.error_count();
+        let saved_env = std::mem::replace(&mut self.env, env);
+        let saved_infer = std::mem::take(&mut self.infer);
+        let saved_touched = std::mem::take(&mut self.touched);
+        let saved_frame_vars = std::mem::take(&mut self.frame_vars);
+        let saved_temp_stmts = std::mem::take(&mut self.temp_stmts);
+        self.scan_closures([&*stmt.expr], std::iter::empty());
+        let active = self.file_extensions(stmt.file);
+        let saved_active = std::mem::replace(&mut self.world.active_extensions, active);
+        let t = self.check_expr(&stmt.expr, None);
+        let _ = self.settle_vars(&t);
+        self.world.active_extensions = saved_active;
+        self.finish_frame_types();
+        self.env = saved_env;
+        self.infer = saved_infer;
+        self.touched = saved_touched;
+        self.frame_vars = saved_frame_vars;
+        self.temp_stmts = saved_temp_stmts;
+        let callee = match self.out.calls.get(&stmt.expr.id) {
+            Some(CallTarget::Method { method }) => *method,
+            _ => {
+                if self.error_count() == errors_before {
+                    self.error_in(
+                        stmt.file,
+                        "a statement in a class body must call a `static def` class method",
+                        stmt.span,
+                    );
+                }
+                return None;
+            }
+        };
+        let m = self.world.method(callee).clone();
+        if !m.is_static || !m.singleton || m.is_native {
+            self.error_in(
+                stmt.file,
+                format!(
+                    "a statement in a class body must call a `static def` class method; `{}` is not one",
+                    m.name
+                ),
+                stmt.span,
+            );
+            return None;
+        }
+        if let Err(why) = self.world.static_callee_allowed(stmt.file, m.file) {
+            self.error_in(
+                stmt.file,
+                format!("`{}` is a `static def` of {why}: a `static` statement runs only those of the cogs (or required files) its file depends on", m.name),
+                stmt.span,
+            );
+            return None;
+        }
+        Some(callee)
+    }
+
+    fn error_count(&self) -> usize {
+        self.diagnostics
+            .iter()
+            .filter(|(_, d)| d.is_error())
+            .count()
+    }
+
     fn fresh_env(
         &self,
         self_type: Type,
@@ -1491,6 +1652,7 @@ impl Checker {
             block_type: None,
             block_optional: false,
             in_initialize: false,
+            is_static: false,
             assigned_fields: HashSet::default(),
             loop_depth: 0,
             loop_exits: LoopExits::default(),
@@ -1647,7 +1809,19 @@ impl Checker {
                 parent: c.parent,
             }
         };
-        let self_type = if info.singleton {
+        let instance = Type::Class(
+            owner,
+            class
+                .type_params
+                .iter()
+                .map(|p| Type::Param(p.id))
+                .collect(),
+        );
+        let self_type = if info.singleton && info.is_static && !info.is_native {
+            // A `static` class method runs on the class being declared:
+            // `self` is its `Meta::ClassDef` (docs/14).
+            Type::Class(self.world.builtin.meta_classdef, vec![instance])
+        } else if info.singleton {
             Type::ClassObject(
                 owner,
                 class
@@ -1697,19 +1871,21 @@ impl Checker {
         let self_subst: HashMap<TypeParamId, Type> = if opaque {
             HashMap::default()
         } else {
-            [(SELF_PARAM, Self::self_binding(&info, &self_type))]
-                .into_iter()
-                .collect()
+            [(
+                SELF_PARAM,
+                Self::self_binding(&self.world, &info, &self_type),
+            )]
+            .into_iter()
+            .collect()
         };
         env.self_opaque = opaque;
-        let saved_bound = std::mem::replace(
-            &mut self.world.self_bound,
-            opaque.then(|| Self::self_binding(&info, &self_type)),
-        );
+        let bound = opaque.then(|| Self::self_binding(&self.world, &info, &self_type));
+        let saved_bound = std::mem::replace(&mut self.world.self_bound, bound);
         env.ret_expected = Some(info.ret.subst(&self_subst));
         env.block_type = info.block.as_ref().map(|(_, t)| t.subst(&self_subst));
         env.block_optional = info.block_optional;
         env.in_initialize = info.name == "initialize" && !info.singleton;
+        env.is_static = info.is_static;
         env.frames[0].vars = Vars::default();
         for p in &info.params {
             env.frames[0].vars.push(VarInfo {
@@ -2053,6 +2229,18 @@ impl Checker {
                 match (actual.instance_of(), eargs.first()) {
                     (Some(a), Some(e)) => self.coerce(&a, e),
                     _ => true,
+                }
+            }
+            // `Meta::ClassDef[X]` to `Type[Y]`: `X` to `Y`.
+            (Type::Class(..), Type::ClassObject(..) | Type::TypeOf(_))
+                if self.world.class_object_instance(actual).is_some() =>
+            {
+                match (
+                    self.world.class_object_instance(actual),
+                    expected.instance_of(),
+                ) {
+                    (Some(a), Some(e)) => self.coerce(&a, &e),
+                    _ => false,
                 }
             }
             (Type::Tuple(xs), Type::Tuple(ys)) => {
@@ -3478,11 +3666,14 @@ impl Checker {
     /// What `Self` stands for in method `m` called on (or run with) `recv`:
     /// the receiver's type, or for a class method (`def self.build ->
     /// Self`), whose receiver is a class, that class's instances.
-    fn self_binding(m: &MethodInfo, recv: &Type) -> Type {
+    fn self_binding(world: &World, m: &MethodInfo, recv: &Type) -> Type {
         match recv {
             Type::ClassObject(id, args) if m.singleton => Type::Class(*id, args.clone()),
             Type::TypeOf(t) if m.singleton => (**t).clone(),
-            t => t.clone(),
+            t => match (m.singleton, world.class_object_instance(t)) {
+                (true, Some(instance)) => instance,
+                _ => t.clone(),
+            },
         }
     }
 
@@ -3835,7 +4026,7 @@ impl Checker {
                     return Type::Nothing;
                 }
                 let mut subst = subst;
-                subst.insert(SELF_PARAM, Self::self_binding(&m, &rt));
+                subst.insert(SELF_PARAM, Self::self_binding(&self.world, &m, &rt));
                 let params: Vec<Type> = m
                     .params
                     .iter()
@@ -3846,6 +4037,7 @@ impl Checker {
                 self.out
                     .calls
                     .insert(expr.id, CallTarget::Method { method: mid });
+                self.note_static_call(expr, mid);
                 Type::Proc(None, params, Box::new(ret), false)
             }
             Yield(args) => self.check_yield(expr, args),
@@ -5649,6 +5841,7 @@ impl Checker {
                 self.out
                     .calls
                     .insert(expr.id, CallTarget::Method { method: mid });
+                self.note_static_call(expr, mid);
                 return self.world.unvoid(&self.method_ret(mid).subst(&subst));
             }
             self.infer.restore(saved);
@@ -6161,6 +6354,14 @@ impl Checker {
         expected: Option<&Type>,
     ) -> Type {
         let name = call.name.as_str();
+        // `new` on a `Meta::ClassDef[C]` (a `static` class method's `self`,
+        // docs/14) constructs `C`, as on the class.
+        if name == "new" {
+            if let Some(instance) = self.world.class_object_instance(recv_ty) {
+                let class_object = Type::type_of(instance);
+                return self.check_call_on(expr, call, &class_object, implicit_self, expected);
+            }
+        }
         // A method every object has (`to_s`, `nil?`, `==`) is called on a
         // value of a type not decided yet as on an Object, deciding
         // nothing. Another one, on `?v | T`, is a use as a `T`: it decides
@@ -7308,7 +7509,7 @@ impl Checker {
             let bound_self = if implicit_self && self.self_is_opaque_for(recv_ty) {
                 Type::Param(SELF_PARAM)
             } else {
-                Self::self_binding(&m, recv_ty)
+                Self::self_binding(&self.world, &m, recv_ty)
             };
             subst.insert(SELF_PARAM, bound_self);
             let mut method_vars = Vec::new();
@@ -7570,6 +7771,7 @@ impl Checker {
         self.out
             .calls
             .insert(expr.id, CallTarget::Method { method: m.id });
+        self.note_static_call(expr, m.id);
         // `loop { }` without `break` never returns.
         let broken = self.breaking_blocks.get(&expr.id).cloned();
         if m.name == "loop"
@@ -8320,6 +8522,7 @@ impl Checker {
                         self.out
                             .block_pass
                             .insert(e.id, BlockPass::Symbol(name.clone(), mid, discard));
+                        self.note_static_call(e, mid);
                         self.record(e.id, &self.world.symbol());
                     }
                     // The method's anonymous block, passed on: only to a
@@ -9479,4 +9682,26 @@ struct OwnerInfo {
     kind: ClassKind,
     usings: Vec<ExtensionId>,
     parent: Option<ClassId>,
+}
+
+impl crate::StaticHost for Checker {
+    fn world(&self) -> &World {
+        &self.world
+    }
+    fn output(&self) -> &Output {
+        &self.out
+    }
+    fn ensure_method_checked(&mut self, mid: MethodId) {
+        Checker::ensure_method_checked(self, mid)
+    }
+    fn ensure_const_checked(&mut self, cid: ConstId) {
+        let span = self.world.consts[cid as usize].span;
+        self.const_type(cid, span);
+    }
+    fn prepare(&mut self) {
+        self.check_field_defaults();
+    }
+    fn error_count(&self) -> usize {
+        Checker::error_count(self)
+    }
 }
