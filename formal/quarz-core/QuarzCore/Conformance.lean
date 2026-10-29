@@ -431,7 +431,12 @@ partial def scopeWalk (inBlock : Bool) (e : Expr) : StateT Scopes M Unit := do
     for x in mine do
       if st.method.contains x || st.cur.contains x || st.blockLocals.contains x || st.params.contains x then
         throw s!"{x}: a lambda's own local named like another"
-    let ((), inner) ← (scopeWalk false b).run { method := ps.map (·.1), lambdaLocals := st.lambdaLocals }
+    -- (A block's own local or parameter out of scope here, the block
+    -- closed, is another local for the Rust checker: out of range if the
+    -- body assigns it.)
+    let closed := (st.blockLocals ++ st.params).filter fun x => !st.cur.contains x && !st.method.contains x
+    let ((), inner) ← (scopeWalk false b).run
+      { method := ps.map (·.1), blockLocals := closed, lambdaLocals := st.lambdaLocals }
     set { st with lambdaLocals := (st.lambdaLocals ++ mine ++ inner.lambdaLocals).eraseDups }
   | .callProc f as => walk f; for a in as do walk a
   | .rescue b x h els =>
@@ -793,7 +798,11 @@ partial def expr (T : Tables) (e : Json) : CM Expr := do
   | "Or" => match v with
     | .arr #[a, b] => pure (.or (← expr T a) (← expr T b))
     | _ => throw "Or"
-  | "Not" => pure (.not (← expr T v))
+  | "Not" =>
+    -- A class may define `!` (a call, which the model's `!` is not).
+    if (← T.nodeTy (← nat (← field v "id"))).any (fun a => match a with | .cls .. => true | _ => false) then
+      throw "a ! of an object"
+    pure (.not (← expr T v))
   | "If" =>
     let c ← expr T (← field v "cond")
     let t ← body T (← arr (← field v "then"))
@@ -828,9 +837,9 @@ partial def expr (T : Tables) (e : Json) : CM Expr := do
     return .superInit d args
   | "CaseIn" => caseIn T id v
   | "Begin" => beginE T id v false
-  -- A lambda (design §13.8, C0): its body with its own locals (its
-  -- parameters, and the names first assigned in it); one assigning a
-  -- local of the method is out of range.
+  -- A lambda (design §13.8, §13.10): its body with its own locals (its
+  -- parameters, and the names first assigned in it); it may assign the
+  -- locals around it.
   | "Lambda" =>
     let w ← read
     if w.init.isSome then throw "a lambda in initialize"
@@ -849,14 +858,16 @@ partial def expr (T : Tables) (e : Json) : CM Expr := do
       str (← field p "name")
     unless names.length == pts.length do throw "a lambda's parameters"
     let outer ← get
-    let around := outer ++ w.captured
-    set (names.zip pts : Locals)
+    let around := (outer ++ w.captured).filter fun (x, _) => !names.contains x
+    -- Its parameters, then the locals around it (it may assign them: C1),
+    -- then its own (first assigned in it).
+    set ((names.zip pts ++ around : Locals))
     let bd ← withReader (fun w => { w with exc := none, retryFlag := none, captured := around })
       (body T (← arr (← field v "body")))
     let mine ← get
     set outer
-    if let some (x, _) := mine.find? fun (x, _) => around.any (·.1 == x) then
-      throw s!"a lambda assigning {x}, a local around it"
+    let own := mine.drop (names.length + around.length)
+    let mine := names.zip pts ++ own
     if hasRet bd then throw "a return in a lambda"
     -- Its body reads the method's locals and `self`'s fields as declared
     -- (R2a): a read the Rust checker narrows further is out of range.
@@ -914,7 +925,6 @@ partial def expr (T : Tables) (e : Json) : CM Expr := do
       else
         if let some d ← fieldDecl x then
           if narrower d t then throw s!"a lambda reading @{x} narrower than declared"
-    let own := mine.drop names.length
     -- `-> Void`: its value discarded, nil.
     let bd := if void then Expr.seq bd .nil else bd
     pure (.lambda (names.zip pts) own ret bd)

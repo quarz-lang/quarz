@@ -136,7 +136,7 @@ theorem run_sound (h : P.check = true) (horc : OracleOK P orc) (fuel : Nat) :
   -- The top level's frame: its locals at fresh locations, `self` an
   -- instance of its class (without parameters: the frame's arguments
   -- are none).
-  let s0 : Store := ⟨[], [⟨P.main.owner, [], [], []⟩], []⟩
+  let s0 : Store := ⟨[], [⟨P.main.owner, [], [], []⟩], [], []⟩
   let names := P.main.locals.map (·.1)
   let Λ := P.main.locals.map fun x => x.2.subst []
   -- The top level's class has no parameters, so no bounds.
@@ -148,8 +148,9 @@ theorem run_sound (h : P.check = true) (horc : OracleOK P orc) (fuel : Nat) :
       simp [hk] at hmp
       rw [hmp] at hb
       simp [ClassTable.boundsOf, hk, List.eq_nil_of_length_eq_zero (Nat.le_zero.mp hb)]
-  have hw : WfStore P Λ (s0.alloc names).1 := ⟨by simp [Store.alloc, Λ, names, s0], fun l o ho => by
-    have : (s0.alloc names).1.objs = [⟨P.main.owner, [], [], []⟩] := rfl
+  have hw : WfStore P Λ (s0.alloc names P.main.body.procAssigned).1 := ⟨by simp [Store.alloc, Λ, names, s0],
+    by simp [Store.alloc, s0], fun l o ho => by
+    have : (s0.alloc names P.main.body.procAssigned).1.objs = [⟨P.main.owner, [], [], []⟩] := rfl
     rw [this] at ho
     cases l with
     | zero =>
@@ -157,13 +158,13 @@ theorem run_sound (h : P.check = true) (horc : OracleOK P orc) (fuel : Nat) :
       exact ⟨hown, rfl, by simp [hmp], by simp [hnf], rfl, fun i v f h1 _ => by simp at h1⟩
     | succ l => simp at ho,
     fun l o ho => by
-      have : (s0.alloc names).1.objs = [⟨P.main.owner, [], [], []⟩] := rfl
+      have : (s0.alloc names P.main.body.procAssigned).1.objs = [⟨P.main.owner, [], [], []⟩] := rfl
       rw [this] at ho
       cases l with
       | zero => simp at ho; subst ho; exact hke
       | succ l => simp at ho,
     fun l o ho => by
-      have : (s0.alloc names).1.objs = [⟨P.main.owner, [], [], []⟩] := rfl
+      have : (s0.alloc names P.main.body.procAssigned).1.objs = [⟨P.main.owner, [], [], []⟩] := rfl
       rw [this] at ho
       cases l with
       | zero => simp at ho; subst ho; show ArgsIn P.classes (P.classes.boundsOf P.main.owner) []; rw [hbm]; exact ArgsIn.nil hwf _
@@ -177,8 +178,8 @@ theorem run_sound (h : P.check = true) (horc : OracleOK P orc) (fuel : Nat) :
     have hp := List.find?_some hf
     simp at hp; subst hp
     exact List.mem_iff_getElem?.mp (List.mem_of_find?_eq_some hf)
-  have hcore : FrameCore P ⟨P, P.main, false, false⟩ Λ (s0.alloc names).2 (.obj 0) []
-      (s0.alloc names).1 := by
+  have hcore : FrameCore P ⟨P, P.main, false, false⟩ Λ (s0.alloc names P.main.body.procAssigned).2 (.obj 0) []
+      (s0.alloc names P.main.body.procAssigned).1 := by
     refine ⟨fun x d hd => ?_, fun x y l hx hy => ?_, fun x l hm => ?_, fun _ => ?_,
       fun _ => ⟨0, ⟨P.main.owner, [], [], []⟩, rfl, rfl, ClassTable.mem_ancestors_self hwf _,
         fun i _ h => by simp at h, fun i f hf _ _ => by
@@ -186,7 +187,9 @@ theorem run_sound (h : P.check = true) (horc : OracleOK P orc) (fuel : Nat) :
           rw [ClassTable.allFieldsAt_length] at this
           simp [hnf] at this⟩,
       ⟨0, rfl, by simp [Store.argsFor, Store.alloc, s0, ClassTable.ancestorArgs_self hwf]⟩, rfl,
-      by show ArgsIn P.classes (P.classes.boundsOf P.main.owner) []; rw [hbm]; exact ArgsIn.nil hwf _⟩
+      by show ArgsIn P.classes (P.classes.boundsOf P.main.owner) []; rw [hbm]; exact ArgsIn.nil hwf _,
+      fun x l hl => (fresh_pins (s := s0) (by simp [s0]) rfl hl).1,
+      fun x l hl => (fresh_pins (s := s0) (by simp [s0]) rfl hl).2⟩
     · obtain ⟨j, hj⟩ := hcl x d hd
       refine ⟨j, by simpa [Store.alloc, s0] using lookupVar_alloc (base := 0) hnd (by simp [names, hj]), ?_⟩
       simp [Λ, hj]
@@ -197,15 +200,15 @@ theorem run_sound (h : P.check = true) (horc : OracleOK P orc) (fuel : Nat) :
     · have := mem_allocVars hm; simp [Store.alloc, s0, names] at this ⊢; omega
     · exact hasTy_iff.mpr ⟨.cls P.main.owner [], typeOf_obj_of (o := ⟨P.main.owner, [], [], []⟩) rfl rfl,
         .cls P.main.owner [], List.mem_singleton.mpr rfl, Atom.le_refl hwf _⟩
-  have hf : FrameOK P ⟨P, P.main, false, false⟩ Λ ⟨(s0.alloc names).2, .obj 0, [], none⟩
-      (s0.alloc names).1 [] :=
+  have hf : FrameOK P ⟨P, P.main, false, false⟩ Λ ⟨(s0.alloc names P.main.body.procAssigned).2, .obj 0, [], none⟩
+      (s0.alloc names P.main.body.procAssigned).1 [] :=
     ⟨hcore, by simp [hblk, ChainAt], fun _ _ _ h => by simp [chainLocs] at h,
       fun _ h => by simp [chainLocs] at h, fun _ _ => rfl⟩
-  have hs : Sat P ⟨P, P.main, false, false⟩ [] ⟨(s0.alloc names).2, .obj 0, [], none⟩ (s0.alloc names).1 :=
+  have hs : Sat P ⟨P, P.main, false, false⟩ [] ⟨(s0.alloc names P.main.body.procAssigned).2, .obj 0, [], none⟩ (s0.alloc names P.main.body.procAssigned).1 :=
     fun _ _ h => by simp [Env.get] at h
   have := (good P orc hP horc fuel).eval ⟨P, P.main, false, false⟩ [] P.main.body o _ _ Λ [] rfl ho hw hf hs
-  have key : ∀ r : Result, Post P ⟨P, P.main, false, false⟩ o ⟨(s0.alloc names).2, .obj 0, [], none⟩ [] Λ
-      (s0.alloc names).1 (evalW ⟨(s0.alloc names).2, .obj 0, [], none⟩ P.main.body) r →
+  have key : ∀ r : Result, Post P ⟨P, P.main, false, false⟩ o ⟨(s0.alloc names P.main.body.procAssigned).2, .obj 0, [], none⟩ [] Λ
+      (s0.alloc names P.main.body.procAssigned).1 (evalW ⟨(s0.alloc names P.main.body.procAssigned).2, .obj 0, [], none⟩ P.main.body) r →
       (match r with
         | .returned v s => Result.ok v s
         | r => r) ≠ .stuck := by

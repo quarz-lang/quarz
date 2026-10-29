@@ -145,8 +145,9 @@ theorem check_typed : ∀ {c : Ctx} {Γ : Env} {e : Expr} {o : Out}, check c Γ 
         exact .callBlkDeadArgs (check_typed hr) (by assumption) (checkArgs_typed (by assumption))
       · simp at h
         obtain ⟨ms, hms, m0, hm0, sig, hsig, hall, hps, ob, hb, hret, rfl⟩ := h
-        exact .callBlk (check_typed hr) (by assumption) (checkArgs_typed (by assumption)) hms
+        have := Typed.callBlk (check_typed hr) (by assumption) (checkArgs_typed (by assumption)) hms
           (by simpa using hm0) hsig (by simpa using hall) hps (check_typed hb) hret
+        simpa [List.append_assoc] using this
   | c, Γ, .yield args, o, h => by
     simp [check] at h
     obtain ⟨sig, hsig, h⟩ := h

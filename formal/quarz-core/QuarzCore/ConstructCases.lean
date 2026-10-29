@@ -34,6 +34,8 @@ theorem frame_default (hwf : WfClasses P.classes) {k : Nat} {t : Ty} {Λ : List 
     decls := fun x d hd => by simp [Ctx.decl, Program.defaultCtx] at hd
     inj := fun x y l h => by simp [lookupVar] at h
     inStore := fun x l h => by simp at h
+    pins := fun x l h => by simp [lookupVar] at h
+    pinsIn := fun x l h => by simp [lookupVar] at h
     self := fun h => by simp [Ctx.inInit, Program.defaultCtx] at h
     selfInit := fun _ => ⟨l, o, rfl, ho, by
         show k ∈ P.classes.ancestors o.cls
@@ -213,7 +215,7 @@ theorem construct_succ (hP : WfProg P) {n : Nat} (ihs : ∀ m, m ≤ n → Good 
   have ho1 : ({ s with objs := s.objs ++ [o0] } : Store).objs[l]? = some o0 := by simp [l]
   have hfslen : fs.length = (P.classes.allFields k).length := by
     rw [← hfs, ClassTable.allFieldsAt_length]
-  have hw1 : WfStore P Λ { s with objs := s.objs ++ [o0] } := ⟨hw.len, fun l' o ho => by
+  have hw1 : WfStore P Λ { s with objs := s.objs ++ [o0] } := ⟨hw.len, hw.pinsLen, fun l' o ho => by
     by_cases hl : l' < s.objs.length
     · rw [show ({ s with objs := s.objs ++ [o0] } : Store).objs = s.objs ++ [o0] from rfl,
         List.getElem?_append_left hl] at ho

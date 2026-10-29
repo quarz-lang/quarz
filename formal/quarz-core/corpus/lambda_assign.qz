@@ -1,0 +1,27 @@
+# Lambdas that assign the locals around them (closures, stage C1): after
+# any call, such a local is read as declared (the Rust checker does not
+# narrow it at all once the lambda is made).
+def count(n: Int) -> Int
+  total = 0
+  add = ->(k: Int) -> Nil { total = total + k; nil }
+  i = 0
+  while i < n
+    add.call(i)
+    i = i + 1
+  end
+  total
+end
+
+def nested -> Int
+  a = 1
+  outer = ->() -> Int {
+    b = 2
+    inner = ->() -> Nil { a = a + b; b = 0; nil }
+    inner.call
+    a + b
+  }
+  outer.call + a
+end
+
+puts count(4)
+puts nested
