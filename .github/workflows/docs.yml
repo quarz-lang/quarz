@@ -1,0 +1,59 @@
+# Publish the standard library's API reference (`quarz doc --std --html`,
+# docs/13-doc-comments.md) to GitHub Pages, at https://api.quarz.dev/, on
+# every push to main. The repository's Pages source must be "GitHub
+# Actions"; the custom domain is in the repository's Pages settings (a
+# site published by Actions needs no CNAME file).
+name: Docs
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Only the deploy job may write Pages.
+permissions:
+  contents: read
+
+# One deployment at a time: a deployment in progress finishes, and the
+# newest push waits for it (the ones in between are skipped).
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build the site
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build quarz
+        run: cargo build --release --bin quarz
+      - name: Check the docs' links
+        run: ./target/release/quarz doc --std --check
+      - name: Generate the site
+        run: ./target/release/quarz doc --std --html -o site
+      - uses: actions/configure-pages@v6
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+
+  deploy:
+    name: Deploy
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5
