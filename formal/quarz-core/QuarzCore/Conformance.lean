@@ -198,6 +198,17 @@ partial def hasRet : Expr → Bool
   | .ite c t e => hasRet c || hasRet t || hasRet e
   | _ => false
 
+/-- Whether an expression tests or loops (what may narrow a path). -/
+partial def narrows : Expr → Bool
+  | .ite .. | .while .. | .isNil _ | .isA .. | .eqNil _ | .neNil _ | .eqTrue _ | .eqFalse _
+  | .and .. | .or .. | .not _ => true
+  | .assign _ e | .setField _ e | .ret e => narrows e
+  | .new _ _ as | .superInit _ as | .yield as | .prim _ as _ _ => as.any narrows
+  | .call r _ as => narrows r || as.any narrows
+  | .callBlk r _ as _ b => narrows r || as.any narrows || narrows b
+  | .seq a b => narrows a || narrows b
+  | _ => false
+
 mutual
 
 partial def expr (T : Tables) (e : Json) : CM Expr := do
@@ -456,6 +467,13 @@ def method (T : Tables) (owner : Nat) (m : Json) (d : Json) : M Method := do
     pure (some (params, sup))
   let w : Where := ⟨owner == 1, init⟩
   let (bd, ls) ← ((body T (← arr (← field d "body"))).run w).run params
+  -- The model narrows without the bounds (a test of a `T <: Shape` value
+  -- keeps `T` where the Rust checker may not): a method of a class with a
+  -- bounded parameter that tests or loops is out of range.
+  let tps ← arr (← field (← T.cls (← nat (← field m "owner"))) "type_params")
+  if narrows bd then
+    if ← tps.anyM (fun p => do pure !(← arr (← field p "bounds")).isEmpty) then
+      throw "a test in a class with a bounded parameter"
   -- `def initialize(@x: T)`: the field assigned from the parameter first.
   let ivars ← (← arr (← field m "params")).toList.filterMapM fun p => do
     if (← field p "assigns_ivar") == .bool true then
@@ -563,9 +581,14 @@ def program (j : Json) : M Program := do
   let some mainUnit := units.back? | throw "no unit"
   let (mainBody, mainLocals) ← ((body T (← arr (← field mainUnit "body"))).run ⟨true, none⟩).run []
   let all : Ty := [.nil, .bool, .int, .str, .cls 0 []]
+  -- A default that tests or loops, with a bounded parameter anywhere (it
+  -- is checked in each inheriting class): out of range, as in `method`.
+  let bounded ← user.anyM fun c => do
+    (← arr (← field c "type_params")).anyM fun p => do pure !(← arr (← field p "bounds")).isEmpty
   let defaults ← fdefs.toList.mapM fun e => do
     let (x, ls) ← ((expr T (← field e "value")).run ⟨false, none⟩).run []
     unless ls.isEmpty do throw "a field default with locals"
+    if bounded && narrows x then throw "a test in a default with a bounded parameter"
     pure x
   -- The user classes' accessors.
   let accessors ← (← arr (← field j "methods")).toList.filterMapM fun m => do
