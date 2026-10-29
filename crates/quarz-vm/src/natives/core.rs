@@ -89,6 +89,48 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     native!(m, "Meta::ClassDef#def_class_method", |i, r, a| {
         def_method(i, r, &a, true)
     });
+    native!(m, "Meta::ClassDef#def_field", |i, r, a| {
+        let class = reflected_class(i, r)?;
+        let Value::Symbol(name) = a.arg(0) else {
+            return Err(i.err_type("def_field takes the field's name as a symbol"));
+        };
+        let Value::Class(ty) = a.arg(1) else {
+            return Err(i.err_type("def_field takes the field's type as a class"));
+        };
+        let default = a.arg(2).clone();
+        if !i.program.world.class_is_a(i.class_of(&default), *ty) {
+            return Err(i.err_type(&format!(
+                "the default of `@{}` is a {}, not a {}",
+                i.symbol_name(*name),
+                i.class_name(&default),
+                i.program.world.class(*ty).name
+            )));
+        }
+        let flag = |key: &str| -> Result<bool, Flow> {
+            match a.kw(i, key) {
+                None => Ok(false),
+                Some(Value::Bool(b)) => Ok(*b),
+                Some(_) => Err(i.err_type(&format!("{key}: takes a Bool"))),
+            }
+        };
+        let (mutable, reader, writer) = (flag("var")?, flag("reader")?, flag("writer")?);
+        if writer && !mutable {
+            return Err(i.err_arg("writer: needs var: true, an assignable field"));
+        }
+        let request = crate::reflect::FieldRequest {
+            class,
+            name: i.symbol_name(*name).to_string(),
+            ty: *ty,
+            default,
+            mutable,
+            reader,
+            writer,
+        };
+        reflect_of(i)?
+            .def_field(i, request)
+            .map_err(|m| i.err_runtime(&m))?;
+        Ok(Value::Nil)
+    });
     native!(m, "Meta::ClassDef#doc", |i, _, a| {
         let Some(text) = a.arg(0).as_str() else {
             return Err(i.err_type("doc takes a string"));

@@ -18,13 +18,13 @@ use quarz_syntax::ast::{ParamKind, Visibility};
 use quarz_syntax::{Diagnostic, SourceFile, Span};
 use quarz_types::declare::SELF_PARAM;
 use quarz_types::{
-    Baked, Checked, Generated, MethodInfo, ParamInfo, StaticFailure, StaticHost, StaticRunner,
-    StaticStmt, Synth, Type, TypeParamId, World,
+    Baked, Checked, FieldInfo, Generated, MethodInfo, ParamInfo, StaticFailure, StaticHost,
+    StaticRunner, StaticStmt, Synth, Type, TypeParamId, World,
 };
 use quarz_vm::interp::{Interp, SharedState, StaticEnd};
 use quarz_vm::natives::{compile_time_allowed, compile_time_denied_class, compile_time_only};
 use quarz_vm::reflect::{
-    GenRequest, Reflect, ReflectField, ReflectKind, ReflectMethod, ReflectParam,
+    FieldRequest, GenRequest, Reflect, ReflectField, ReflectKind, ReflectMethod, ReflectParam,
 };
 use quarz_vm::value::Value;
 
@@ -69,7 +69,7 @@ impl Runner {
         &mut self,
         host: &mut dyn StaticHost,
         stmt: &StaticStmt,
-        pending: Vec<PendingGen>,
+        pending: Vec<Pending>,
     ) -> Result<(), StaticFailure> {
         let mut classes: Vec<ClassId> = Vec::new();
         let result = self.generate_each(host, stmt, pending, &mut classes);
@@ -85,7 +85,7 @@ impl Runner {
         &mut self,
         host: &mut dyn StaticHost,
         stmt: &StaticStmt,
-        pending: Vec<PendingGen>,
+        pending: Vec<Pending>,
         classes: &mut Vec<ClassId>,
     ) -> Result<(), StaticFailure> {
         let fail = |message: String| StaticFailure {
@@ -93,6 +93,101 @@ impl Runner {
             notes: Vec::new(),
         };
         for g in pending {
+            let g = match g {
+                Pending::Method(g) => g,
+                Pending::Field(f) => {
+                    let at = format!("`def_field(:{})`", f.name);
+                    let world = host.world();
+                    if !world.class(f.ty).type_params.is_empty() {
+                        return Err(fail(format!(
+                            "{at}: `{}` takes type arguments, which a `Type` value does not carry: a generated field's type is a class without them",
+                            world.class(f.ty).name
+                        )));
+                    }
+                    let field = FieldInfo {
+                        name: f.name.clone(),
+                        ty: Type::Class(f.ty, Vec::new()),
+                        mutable: f.mutable,
+                        default: None,
+                        baked_default: Some(f.default),
+                        span: stmt.span,
+                    };
+                    host.add_generated_field(f.class, field)
+                        .map_err(|why| fail(format!("{at}: {why}")))?;
+                    // The accessors asked for, as `attr_reader`/`attr_writer`
+                    // make them.
+                    let ty = Type::Class(f.ty, Vec::new());
+                    let accessor =
+                        |name: String, params: Vec<ParamInfo>, synth: Synth| MethodInfo {
+                            id: 0,
+                            name,
+                            owner: f.class,
+                            singleton: false,
+                            type_params: Vec::new(),
+                            params,
+                            block: None,
+                            block_optional: false,
+                            block_usings: Vec::new(),
+                            ret: ty.clone(),
+                            body: None,
+                            is_abstract: false,
+                            is_native: true,
+                            is_static: false,
+                            visibility: Visibility::Public,
+                            span: stmt.span,
+                            extension: None,
+                            frame_size: 0,
+                            checked: true,
+                            synth,
+                            alias_of: None,
+                            file: stmt.file,
+                            generated: None,
+                        };
+                    if f.reader {
+                        let m =
+                            accessor(f.name.clone(), Vec::new(), Synth::FieldGet(f.name.clone()));
+                        host.add_generated(m)
+                            .map_err(|why| fail(format!("{at}: {why}")))?;
+                    }
+                    if f.writer {
+                        let value = ParamInfo {
+                            name: "value".to_string(),
+                            kind: ParamKind::Positional,
+                            ty: ty.clone(),
+                            default: None,
+                            assigns_ivar: false,
+                            span: stmt.span,
+                        };
+                        let m = accessor(
+                            format!("{}=", f.name),
+                            vec![value],
+                            Synth::FieldSet(f.name.clone()),
+                        );
+                        host.add_generated(m)
+                            .map_err(|why| fail(format!("{at}: {why}")))?;
+                    }
+                    // The class and its descendants lay their fields out
+                    // anew: what was lowered with the old layout goes.
+                    let world = host.world();
+                    let affected: Vec<ClassId> = world
+                        .classes
+                        .iter()
+                        .filter(|c| world.class_is_a(c.id, f.class))
+                        .map(|c| c.id)
+                        .collect();
+                    self.lowerer.invalidate_layout(&affected);
+                    // A constant initialized by an earlier statement may
+                    // hold an instance with the old layout: all of them
+                    // initialize again when next read.
+                    if let Some(state) = &self.state {
+                        state.reset_consts();
+                    }
+                    if !classes.contains(&f.class) {
+                        classes.push(f.class);
+                    }
+                    continue;
+                }
+            };
             let at = format!(
                 "`{}(:{})`",
                 if g.singleton {
@@ -260,6 +355,16 @@ impl Runner {
     /// `lower_static`, each followed by the checks it asked for.
     fn lower(&mut self, host: &mut dyn StaticHost, stmt: &StaticStmt, callee: MethodId) -> FuncId {
         loop {
+            // The classes whose statements are still to run, with their
+            // descendants: not reached by name (`Lowerer::static_skip`).
+            let world = host.world();
+            let pending = host.pending_classes();
+            self.lowerer.static_skip = world
+                .classes
+                .iter()
+                .filter(|c| pending.iter().any(|&p| world.class_is_a(c.id, p)))
+                .map(|c| c.id)
+                .collect();
             let round = self.lowerer.lower_static(
                 host.world(),
                 host.output(),
@@ -571,9 +676,26 @@ struct WorldReflect {
     fields: HashMap<ClassId, Vec<Rc<[ReflectField]>>>,
     methods: HashMap<ClassId, Vec<Rc<[ReflectMethod]>>>,
     /// What the statement's run asked to generate, in call order.
-    generated: RefCell<Vec<PendingGen>>,
+    generated: RefCell<Vec<Pending>>,
     /// The `doc` given, for the next generation.
     doc: RefCell<Option<String>>,
+}
+
+/// A generation a statement's run asked for, in call order.
+enum Pending {
+    Method(PendingGen),
+    Field(PendingField),
+}
+
+/// A `def_field` call's request, its default baked.
+struct PendingField {
+    class: ClassId,
+    name: String,
+    ty: ClassId,
+    default: Baked,
+    mutable: bool,
+    reader: bool,
+    writer: bool,
 }
 
 /// A `def_method` call's request, its captured values baked.
@@ -686,7 +808,7 @@ impl WorldReflect {
                     name: f.name.clone(),
                     ty: erase(world, &f.ty),
                     mutable: f.mutable,
-                    default: f.default.is_some(),
+                    default: f.has_default(),
                 })
                 .collect();
             fields.insert(class.id, vec![Rc::from(fs)]);
@@ -836,16 +958,33 @@ impl Reflect for WorldReflect {
             .iter()
             .map(|(d, s, v)| Ok((*d, *s, bake(interp, v)?)))
             .collect::<Result<Vec<_>, String>>()?;
-        self.generated.borrow_mut().push(PendingGen {
-            class: request.class,
-            name: request.name,
-            params: request.params,
-            singleton: request.singleton,
-            visibility: request.visibility,
-            func: request.func,
-            captures,
-            doc: self.doc.borrow_mut().take(),
-        });
+        self.generated
+            .borrow_mut()
+            .push(Pending::Method(PendingGen {
+                class: request.class,
+                name: request.name,
+                params: request.params,
+                singleton: request.singleton,
+                visibility: request.visibility,
+                func: request.func,
+                captures,
+                doc: self.doc.borrow_mut().take(),
+            }));
+        Ok(())
+    }
+    fn def_field(&self, interp: &Interp, request: FieldRequest) -> Result<(), String> {
+        let default = bake(interp, &request.default)?;
+        self.generated
+            .borrow_mut()
+            .push(Pending::Field(PendingField {
+                class: request.class,
+                name: request.name,
+                ty: request.ty,
+                default,
+                mutable: request.mutable,
+                reader: request.reader,
+                writer: request.writer,
+            }));
         Ok(())
     }
     fn doc(&self, text: String) {
@@ -873,8 +1012,10 @@ pub fn compile_time_only_calls(
         return Vec::new();
     }
     // Every static def's reach, lowered as for a compile-time run, by the
-    // runner's lowerer (the generated methods' bodies are in it).
+    // runner's lowerer (the generated methods' bodies are in it). Every
+    // statement ran: no class is left out any more.
     let lowerer = &mut runner.lowerer;
+    lowerer.static_skip.clear();
     let mut rt: Option<RtWorld> = None;
     let dummy = quarz_syntax::ast::Expr {
         id: u32::MAX,

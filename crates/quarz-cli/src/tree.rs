@@ -293,7 +293,7 @@ fn classes(world: &World) -> Vec<Value> {
                     "name": f.name,
                     "type": ty(&f.ty),
                     "var": f.mutable,
-                    "default": f.default.is_some(),
+                    "default": f.has_default(),
                 })).collect::<Vec<_>>(),
             })
         })

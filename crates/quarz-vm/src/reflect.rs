@@ -53,8 +53,22 @@ pub trait Reflect {
     /// recorded for the compiler, or why it cannot be (the message of
     /// the exception raised at the call).
     fn generate(&self, interp: &Interp, request: GenRequest) -> Result<(), String>;
+    /// `Meta::ClassDef#def_field`: a field to generate, with its default.
+    fn def_field(&self, interp: &Interp, request: FieldRequest) -> Result<(), String>;
     /// `Meta::ClassDef#doc`: the documentation of the next generation.
     fn doc(&self, text: String);
+}
+
+/// A field `def_field` asks for: its type is a class (without type
+/// parameters), its default a value made at compile time.
+pub struct FieldRequest {
+    pub class: ClassId,
+    pub name: String,
+    pub ty: ClassId,
+    pub default: Value,
+    pub mutable: bool,
+    pub reader: bool,
+    pub writer: bool,
 }
 
 /// A method `def_method` asks for: the block lifted to it, with the

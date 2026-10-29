@@ -161,13 +161,27 @@ impl Lowerer {
 }
 
 /// Emits the instructions that make a baked value.
-struct Baker<'a> {
+pub(crate) struct Baker<'a> {
     layouts: &'a [crate::layout::Layout],
     nregs: u32,
     consts: Vec<Constant>,
 }
 
-impl Baker<'_> {
+impl<'a> Baker<'a> {
+    /// For a function with `nregs` registers so far and no constants.
+    pub(crate) fn new(layouts: &'a [crate::layout::Layout], nregs: u32) -> Baker<'a> {
+        Baker {
+            layouts,
+            nregs,
+            consts: Vec::new(),
+        }
+    }
+
+    /// The registers used and the constants made.
+    pub(crate) fn finish(self) -> (u32, Vec<Constant>) {
+        (self.nregs, self.consts)
+    }
+
     fn reg(&mut self) -> Reg {
         let r = self.nregs;
         self.nregs += 1;
@@ -185,7 +199,7 @@ impl Baker<'_> {
         out.push(Inst::LoadConst { dst, idx });
     }
 
-    fn bake(&mut self, out: &mut Vec<Inst>, dst: Reg, v: &Baked) {
+    pub(crate) fn bake(&mut self, out: &mut Vec<Inst>, dst: Reg, v: &Baked) {
         match v {
             Baked::Nil => self.constant(out, dst, Constant::Nil),
             Baked::Bool(b) => self.constant(out, dst, Constant::Bool(*b)),

@@ -309,3 +309,208 @@ end
     assert!(ok, "{err}");
     assert_eq!(out, "12345678901234567890123:2\n");
 }
+
+#[test]
+fn generated_fields_and_abstract_implementations() {
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        r##"abstract class Model
+  @id: Int
+  def initialize(@id: Int); end
+  def id -> Int = @id
+  abstract def label -> String
+  abstract def self.describe -> String
+  static def self.counted(name: Symbol, start: Int) -> Void
+    def_field(name, Int, start, var: true, reader: true, writer: true)
+    def_field("#{name}_tag".to_sym, String, "t", reader: true)
+    def_field(:seen, Bool, false)
+  end
+  static def self.labelled(text: String) -> Void
+    def_method(:label) { text }
+  end
+  static def self.touch(target: Type[Model]) -> Void
+    puts target.describe
+  end
+end
+"##,
+    );
+    // `touch Special` reaches `Special.describe` and `Special#more`
+    // (checked and lowered at compile time with `@extra` third), then
+    // `counted` adds fields to `Post`, which moves `@extra`: what comes
+    // after sees the new layout. `Post#initialize` assigns the generated
+    // field (a method the runtime names, checked after the statements).
+    let app = write(
+        &d.0,
+        "app.qz",
+        r##"require_relative "lib"
+class Post < Model
+  @title: String
+  def initialize(@id: Int, @title: String)
+    @hits = 7
+  end
+  def show -> String = "#{@title}/#{@id}/#{@seen}/#{@hits}"
+  def self.describe -> String = "post"
+  labelled "post"
+  touch Special
+  counted :hits, 3
+  touch Special
+  touch Post
+end
+class Special < Post
+  @extra: Int
+  @bonus: Int = 70
+  def initialize(@id: Int, @title: String, @extra: Int); end
+  def more -> Int = @extra + @bonus
+  def self.describe -> String = "special #{Special.new(1, "t", 9).more}"
+end
+s = Special.new(1, "t", 9)
+puts s.show
+puts s.more
+puts Special.describe
+puts s.label
+puts s.hits
+s.hits = 5
+puts s.hits
+puts s.hits_tag
+puts Post.new(1, "t").hits
+"##,
+    );
+    let expected = "t/1/false/3\n79\nspecial 79\npost\n3\n5\nt\n7\n";
+    let cache = d.0.join("cache");
+    let env = [("QUARZ_CACHE_DIR", cache.to_str().unwrap())];
+    let cold = quarz(&d.0, &["run", app.to_str().unwrap()], &env);
+    assert!(cold.0, "{}", cold.2);
+    assert_eq!(cold.1, expected);
+    // The compile-time output of the statements, in order.
+    assert_eq!(cold.2, "special 79\nspecial 79\npost\n");
+    let warm = quarz(&d.0, &["run", app.to_str().unwrap()], &env);
+    assert_eq!(warm, cold);
+    let (ok, _, err) = quarz(
+        &d.0,
+        &["build", app.to_str().unwrap(), "-o", "app.bin"],
+        &env,
+    );
+    assert!(ok, "{err}");
+    let out = std::process::Command::new(d.0.join("app.bin"))
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout), expected);
+    // A class whose ancestor has statements is checked for what it must
+    // implement after they ran; one still lacking a method is reported.
+    let app2 = write(
+        &d.0,
+        "app2.qz",
+        "require_relative \"lib\"\nclass Bare < Model\n  def self.describe -> String = \"bare\"\n  touch Bare\nend\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", app2.to_str().unwrap()], &[]);
+    assert!(!ok);
+    assert!(
+        err.contains("app2.qz:2:1: error: `Bare` must implement `label` (abstract in `Model`)"),
+        "{err}"
+    );
+}
+
+#[test]
+fn what_cannot_be_a_field_or_a_callee() {
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        r##"class Model
+  @id: Int
+  def initialize(@id: Int); end
+  static def self.generic -> Void
+    def_field(:tags, Array, ["t"])
+  end
+  static def self.dup -> Void
+    def_field(:id, Int, 0)
+  end
+  static def self.writer_only -> Void
+    def_field(:w, Int, 0, writer: true)
+  end
+  static def self.clash -> Void
+    def_field(:id2, Int, 0, reader: true)
+  end
+end
+module Macros
+  static def has(x: Int) -> Void; end
+end
+data Point = (x: Int, y: Int)
+"##,
+    );
+    let app = write(
+        &d.0,
+        "app.qz",
+        "require_relative \"lib\"\nclass A < Model\n  def id2 -> Int = 1\n  generic\n  dup\n  writer_only\n  clash\nend\nclass B\n  extend Macros\n  has 1\nend\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", app.to_str().unwrap()], &[]);
+    assert!(!ok);
+    for expected in [
+        "app.qz:4:3: error: `def_field(:tags)`: `Array` takes type arguments, which a `Type` value does not carry",
+        "app.qz:5:3: error: `def_field(:id)`: `A` already has a field `@id`",
+        "app.qz:6:3: error: `writer_only` raised ArgumentError: writer: needs var: true, an assignable field",
+        "app.qz:7:3: error: `def_field(:id2)`: `A` already has a method `id2`",
+        "app.qz:11:3: error: `has` is a `static def` of the module `Macros`, reached through `extend`, which a statement cannot call yet: declare it as a class method (`static def self.has`) of a superclass",
+    ] {
+        assert!(err.contains(expected), "missing {expected:?} in\n{err}");
+    }
+}
+
+#[test]
+fn a_constant_made_before_a_generated_field_is_made_again() {
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        "abstract class Model\n  include Shareable\n  @id: Int\n  def initialize(@id: Int); end\n  static def self.show(x: Int) -> Void = puts x\n  static def self.counted(name: Symbol, start: Int) -> Void\n    def_field(name, Int, start, reader: true)\n  end\nend\n",
+    );
+    // `K` holds a `Special` made with `@extra` second; after `counted`
+    // adds `@hits` to `Post`, `@extra` is third.
+    let app = write(
+        &d.0,
+        "app.qz",
+        "require_relative \"lib\"\nK = Special.new(1, 9)\nclass Post < Model\n  show K.more\n  counted :hits, 3\n  show K.more\n  show K.hits\nend\nclass Special < Post\n  @extra: Int\n  def initialize(@id: Int, @extra: Int); end\n  def more -> Int = @extra\nend\nputs K.more\nputs K.hits\n",
+    );
+    let (ok, out, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(err, "9\n9\n3\n");
+    assert_eq!(out, "9\n3\n");
+}
+
+#[test]
+fn a_pending_class_is_reached_through_calls_and_later_by_name() {
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        "class Model\n  @id: Int\n  def initialize(@id: Int); end\n  def id -> Int = @id\n  def self.build(id: Int) -> Model = new(id)\n  static def self.showi(x: Int) -> Void = puts x\n  static def self.show(x: Object) -> Void = puts x\n  static def self.stringer(text: String) -> Void\n    def_method(:to_s) { text }\n  end\nend\n",
+    );
+    // `Post.build(1)`: `new` in an inherited class method reaches
+    // `Post#initialize` by construction while Post's statements run;
+    // Other's statement prints a Post with the `to_s` Post's statement
+    // generated after the name was first reached.
+    let app = write(
+        &d.0,
+        "app.qz",
+        "require_relative \"lib\"\nclass Post < Model\n  def initialize(@id: Int)\n    @id = @id * 10\n  end\n  showi Post.build(1).id\n  stringer \"a post\"\nend\nclass Other < Model\n  show Post.new(1)\nend\nputs Post.new(2)\n",
+    );
+    let (ok, out, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(err, "10\na post\n");
+    assert_eq!(out, "a post\n");
+    // A dispatch by name to a class whose statements have not run finds
+    // no body, and says so.
+    let app2 = write(
+        &d.0,
+        "app2.qz",
+        "require_relative \"lib\"\nclass Post < Model\n  def to_s -> String = \"written\"\n  show Post.new(1)\nend\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", app2.to_str().unwrap()], &[]);
+    assert!(!ok);
+    assert!(
+        err.contains("`to_s` of `Post` has no body at compile time"),
+        "{err}"
+    );
+}

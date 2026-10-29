@@ -416,9 +416,15 @@ pub trait StaticHost {
     /// The errors reported so far: a run is skipped when the checks it
     /// asked for added some.
     fn error_count(&self) -> usize;
+    /// The classes whose statements have not all run yet (the one
+    /// running included): the lowering reaches their methods, and their
+    /// descendants', only through a call that resolves to one.
+    fn pending_classes(&self) -> Vec<ClassId>;
     /// A member a statement generated (docs/14 §5): declared, or refused
     /// with the reason (a name the class has already).
     fn add_generated(&mut self, info: MethodInfo) -> Result<MethodId, String>;
+    /// A field a statement generated (`def_field`), likewise.
+    fn add_generated_field(&mut self, class: ClassId, field: FieldInfo) -> Result<(), String>;
     /// After a statement's generations: the declaration-time checks of
     /// the classes they went into, again.
     fn recheck_classes(&mut self, classes: &[ClassId]);

@@ -1086,7 +1086,7 @@ impl Checker {
             .world
             .all_fields(cid)
             .into_iter()
-            .filter(|(f, _)| f.default.is_none() && !self.world.field_may_stay_nil(&f.ty))
+            .filter(|(f, _)| !f.has_default() && !self.world.field_may_stay_nil(&f.ty))
             .map(|(f, _)| f.name)
             .collect();
         let own = self
@@ -1094,7 +1094,7 @@ impl Checker {
             .class(cid)
             .fields
             .iter()
-            .filter(|f| f.default.is_none() && !self.world.field_may_stay_nil(&f.ty))
+            .filter(|f| !f.has_default() && !self.world.field_may_stay_nil(&f.ty))
             .map(|f| f.name.clone())
             .collect();
         (all, own)
@@ -1584,26 +1584,57 @@ impl Checker {
         let mut stmts = Vec::new();
         for (i, stmt) in self.world.static_stmts.iter().enumerate() {
             if !self.static_done[i] && in_files(stmt.file) {
-                stmts.push(stmt.clone());
-                self.static_done[i] = true;
+                stmts.push((i, stmt.clone()));
             }
         }
-        for stmt in stmts {
-            let Some(callee) = self.check_static_stmt(&stmt) else {
-                continue;
-            };
-            let Some(r) = runner.as_deref_mut() else {
-                continue;
-            };
-            if let Err(failure) = r.run(self, &stmt, callee) {
-                let mut message = failure.message;
-                for note in failure.notes {
-                    message.push('\n');
-                    message.push_str(&note);
+        for (i, stmt) in stmts {
+            // Done once it ran: until then its class, and the classes
+            // under it, may still get members from it
+            // (`pending_statement_classes`).
+            if let Some(callee) = self.check_static_stmt(&stmt) {
+                if let Some(r) = runner.as_deref_mut() {
+                    if let Err(failure) = r.run(self, &stmt, callee) {
+                        let mut message = failure.message;
+                        for note in failure.notes {
+                            message.push('\n');
+                            message.push_str(&note);
+                        }
+                        self.error_in(stmt.file, message, stmt.span);
+                    }
                 }
-                self.error_in(stmt.file, message, stmt.span);
+            }
+            self.static_done[i] = true;
+        }
+        // The conformance of these files' classes deferred past their
+        // statements (docs/14 §5), which may have generated what they
+        // lacked.
+        let (due, later): (Vec<ClassId>, Vec<ClassId>) =
+            std::mem::take(&mut self.world.conformance_deferred)
+                .into_iter()
+                .partition(|c| in_files(self.world.class(*c).file));
+        self.world.conformance_deferred = later;
+        if !due.is_empty() {
+            let world = std::mem::take(&mut self.world);
+            let mut declarer = crate::declare::Declarer::with_world(world);
+            declarer.recheck_conformance(&due);
+            self.diagnostics.append(&mut declarer.diagnostics);
+            self.world = std::mem::take(&mut declarer.world);
+            self.world.freeze_ancestors(true);
+        }
+    }
+
+    /// The classes whose `static` statements have not all run yet: their
+    /// members, and their descendants', may still be generated, so a
+    /// compile-time run does not check their bodies ahead of a call
+    /// that resolves to one (docs/14 §6).
+    pub fn pending_statement_classes(&self) -> Vec<ClassId> {
+        let mut out: Vec<ClassId> = Vec::new();
+        for (i, stmt) in self.world.static_stmts.iter().enumerate() {
+            if !self.static_done.get(i).copied().unwrap_or(false) && !out.contains(&stmt.class) {
+                out.push(stmt.class);
             }
         }
+        out
     }
 
     /// Type-check one `static` statement and validate what it calls:
@@ -1663,14 +1694,24 @@ impl Checker {
         };
         let m = self.world.method(callee).clone();
         if !m.is_static || !m.singleton || m.is_native {
-            self.error_in(
-                stmt.file,
+            let message = if m.is_static
+                && !m.singleton
+                && self.world.class(m.owner).kind == ClassKind::Module
+            {
+                // Reached through `extend` (docs/14 §2): not yet.
+                format!(
+                    "`{}` is a `static def` of the module `{}`, reached through `extend`, which a statement cannot call yet: declare it as a class method (`static def self.{}`) of a superclass",
+                    m.name,
+                    self.world.class(m.owner).name,
+                    m.name
+                )
+            } else {
                 format!(
                     "a statement in a class body must call a `static def` class method; `{}` is not one",
                     m.name
-                ),
-                stmt.span,
-            );
+                )
+            };
+            self.error_in(stmt.file, message, stmt.span);
             return None;
         }
         if let Err(why) = self.world.static_callee_allowed(stmt.file, m.file) {
@@ -2118,7 +2159,7 @@ impl Checker {
             }
             let fields = self.world.all_fields(owner);
             for (f, _) in fields {
-                if f.default.is_none()
+                if !f.has_default()
                     && !f.mutable
                     && !required.contains(&f.name)
                     && !self.env.assigned_fields.contains(&f.name)
@@ -9923,6 +9964,9 @@ impl crate::StaticHost for Checker {
     fn error_count(&self) -> usize {
         Checker::error_count(self)
     }
+    fn pending_classes(&self) -> Vec<ClassId> {
+        self.pending_statement_classes()
+    }
     fn add_generated(&mut self, info: MethodInfo) -> Result<MethodId, String> {
         // What the name demands (the declarer's rules for a written one).
         if let Some(why) = crate::declare::method_name_rule(
@@ -9956,6 +10000,49 @@ impl crate::StaticHost for Checker {
             ));
         }
         Ok(self.world.add_method(info))
+    }
+    fn add_generated_field(&mut self, class: ClassId, field: FieldInfo) -> Result<(), String> {
+        let info = self.world.class(class);
+        if info.kind != ClassKind::Class {
+            return Err(format!(
+                "`{}` is not a class: fields are generated into classes only",
+                info.name
+            ));
+        }
+        if let Some((existing, _)) = self
+            .world
+            .all_fields(class)
+            .into_iter()
+            .find(|(f, _)| f.name == field.name)
+        {
+            let how = if existing.baked_default.is_some() {
+                " (generated by an earlier `static` statement)"
+            } else {
+                ""
+            };
+            return Err(format!(
+                "`{}` already has a field `@{}`{how}",
+                info.name, field.name
+            ));
+        }
+        self.world.class_mut(class).fields.push(field);
+        // The field comes after the class's own, so what was checked so
+        // far keeps its field indices (`Output::ivar_fields`), except in
+        // the subclasses, whose own fields come after it now: their
+        // methods checked before (a `static` statement reached one) are
+        // checked again when next needed.
+        let count = self.world.methods.len();
+        for mid in 0..count as MethodId {
+            let m = self.world.method(mid);
+            if m.owner != class
+                && m.checked
+                && m.body.is_some()
+                && self.world.class_is_a(m.owner, class)
+            {
+                self.world.method_mut(mid).checked = false;
+            }
+        }
+        Ok(())
     }
     fn recheck_classes(&mut self, classes: &[ClassId]) {
         let world = std::mem::take(&mut self.world);

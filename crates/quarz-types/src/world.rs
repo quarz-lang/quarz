@@ -36,7 +36,19 @@ pub struct FieldInfo {
     pub ty: Type,
     pub mutable: bool,
     pub default: Option<Rc<Expr>>,
+    /// The default of a field a `static` statement generated
+    /// (`Meta::ClassDef#def_field`, docs/14 §5): a value, not an
+    /// expression.
+    pub baked_default: Option<Baked>,
     pub span: Span,
+}
+
+impl FieldInfo {
+    /// Whether the field has a default (written or generated): an
+    /// `initialize` need not assign it.
+    pub fn has_default(&self) -> bool {
+        self.default.is_some() || self.baked_default.is_some()
+    }
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -414,6 +426,11 @@ pub struct World {
     /// the order they are declared: run at compile time, after the
     /// declarations, by the cog they belong to.
     pub static_stmts: Vec<StaticStmt>,
+    /// Classes whose conformance (the abstract methods they must
+    /// implement) is checked after the `static` statements of their file
+    /// ran, not when they are declared: one of their ancestors has
+    /// statements, which may generate the implementations (docs/14 §5).
+    pub conformance_deferred: Vec<ClassId>,
     /// Abstract methods an extension's method implements for a class
     /// (class, abstract method, implementation), found where the class is
     /// declared: conformance holds wherever the value goes.
@@ -1092,7 +1109,7 @@ impl World {
         if matches!(self.class(id).kind, ClassKind::Data | ClassKind::Variant) {
             return true;
         }
-        let needs = |f: &FieldInfo| f.default.is_none() && !self.field_may_stay_nil(&f.ty);
+        let needs = |f: &FieldInfo| !f.has_default() && !self.field_may_stay_nil(&f.ty);
         if inherited {
             self.all_fields(id).iter().any(|(f, _)| needs(f))
         } else {

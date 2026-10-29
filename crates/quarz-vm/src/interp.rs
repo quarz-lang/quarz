@@ -376,6 +376,16 @@ pub struct SharedState {
 }
 
 impl SharedState {
+    /// Forget every constant's value: each initializes again when next
+    /// read. For the compiler's runs of `static` statements, after a
+    /// field was added to a class whose instances a constant may hold
+    /// with the old layout (docs/14 §5).
+    pub fn reset_consts(&self) {
+        for cell in lock(&self.global.consts).iter_mut() {
+            *cell = Default::default();
+        }
+    }
+
     /// State for a program run by one worker (the REPL, a helper thread).
     pub fn new(out: Box<dyn std::io::Write + Send>) -> SharedState {
         SharedState::with_threads(out, 1)
@@ -2939,7 +2949,11 @@ impl Interp {
             if self.deadline.get().is_some() {
                 // A compile-time run: a body not lowered is a bug of the
                 // compiler, not a nil (docs/14).
-                return Err(self.err_runtime(&format!("`{}` has no body at compile time", m.name)));
+                return Err(self.err_runtime(&format!(
+                    "`{}` of `{}` has no body at compile time: a method the runtime calls by name is lowered once the class's `static` statements ran, or when a call resolves to it (docs/14)",
+                    m.name,
+                    self.program.world.class(m.owner).name
+                )));
             }
             return Ok(Value::Nil);
         };

@@ -1715,7 +1715,35 @@ impl<'ast> Declarer<'ast> {
                 }
             }
         }
-        self.check_conformance_of(p.id);
+        // A class with `static` statements in an ancestor (itself
+        // included) may get the implementations it lacks from them
+        // (docs/14 §5): checked after they ran.
+        let with_statements: Vec<ClassId> =
+            self.world.static_stmts.iter().map(|s| s.class).collect();
+        let deferred = !with_statements.is_empty()
+            && self
+                .world
+                .ancestors(p.id, &[])
+                .iter()
+                .any(|(anc, _)| with_statements.contains(anc));
+        if deferred {
+            self.world.conformance_deferred.push(p.id);
+        } else {
+            self.check_conformance_of(p.id);
+        }
+    }
+
+    /// The conformance of `classes`, deferred when they were declared
+    /// (`World::conformance_deferred`), checked now.
+    pub fn recheck_conformance(&mut self, classes: &[ClassId]) {
+        for &id in classes {
+            let class = self.world.class(id);
+            self.file = class.file;
+            let file = class.file;
+            self.world.active_extensions = self.world.group_extensions(file);
+            self.check_conformance_of(id);
+            self.world.active_extensions.clear();
+        }
     }
 
     /// The conformance of class `id` to what it inherits: the abstract
@@ -2152,6 +2180,7 @@ impl<'ast> Declarer<'ast> {
                         ty,
                         mutable: false,
                         default: f.default.as_ref().map(|d| Rc::new(d.clone())),
+                        baked_default: None,
                         span: f.span,
                     });
                 }
@@ -2207,6 +2236,7 @@ impl<'ast> Declarer<'ast> {
                             ty,
                             mutable: f.mutable,
                             default: f.default.as_ref().map(|d| Rc::new(d.clone())),
+                            baked_default: None,
                             span: f.span,
                         });
                     }
