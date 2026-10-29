@@ -2728,3 +2728,49 @@ fn a_class_method_has_no_fields() {
         "instance variables are not available here: `self` is a class",
     );
 }
+
+#[test]
+fn expansive_inheritance_is_refused_at_the_class() {
+    // Kennedy and Pierce: a cycle through an expansive edge would make
+    // subtyping run forever (found by the Lean model).
+    for parent in [
+        "N[N[C[C[X]]]]",
+        "N[N[C[C[X]]] | N[C[X]]]",
+        "N[N[C[Hash[X, X]]]]",
+    ] {
+        err(
+            &format!(
+                "class N[in Z]\nend\nclass C[X] < {parent}\nend\ndef f(x: C[Int]) -> N[C[Int]] = x"
+            ),
+            "expansive inheritance, `X` grows through",
+        );
+    }
+    // Through an extension's include, and through a module.
+    err(
+        "module N[in Z]\nend\nclass C[X]\nend\nextension C[X]\n  include N[N[C[C[X]] | Int] | N[C[X]]]\nend\ndef f(x: C[Int]) -> N[C[Int]] = x",
+        "`extension C[X] includes N[N[C[C[X]] | Int] | N[C[X]]]`: expansive inheritance",
+    );
+    err(
+        "module N[in Z]\nend\nmodule M[Y]\n  include N[N[C[C[Y]]]]\nend\nclass C[X]\n  include M[X]\nend\ndef f(x: C[Int]) -> N[C[Int]] = x",
+        "`M[Y] includes N[N[C[C[Y]]]]`: expansive inheritance",
+    );
+    // Without expansion the questions are finitely many, and one met again
+    // while being answered is answered no: this ends (it hung).
+    err(
+        "class N[in Z]\nend\nclass C[X] < N[N[C[X]] | N[N[N[C[X]]]]]\nend\ndef f(x: C[Int]) -> N[C[Int]] = x",
+        "method `f` returns N[C[Int]] but its body has type C[Int]",
+    );
+    // A union with the parameter as a member does not grow.
+    ok("class Base[out T]\nend\nclass Opt[out T] < Base[Opt[T?]]\nend");
+    // Recursion without growth, and F-bounds, are fine.
+    ok("class L[T]\n  include Comparable[L[T]]\n  def <=>(o: L[T]) -> Int = 0\nend\nclass Tree[T]\n  @kids: Array[Tree[T]]\n  def initialize(@kids: Array[Tree[T]])\n  end\nend");
+    // A deep but finite coercion is checked as before (63 deep in the
+    // CLI's tests, where the stack is the main thread's).
+    let (mut t, mut u, mut v) = ("Int".to_string(), "Int?".to_string(), "1".to_string());
+    for _ in 0..30 {
+        t = format!("Array[{t}]");
+        u = format!("Array[{u}]");
+        v = format!("[{v}]");
+    }
+    ok(&format!("def g(x: {t}) -> {u} = x\np g({v})"));
+}

@@ -387,8 +387,20 @@ pub struct Builtin {
     pub bytes_match_data: ClassId,
 }
 
+/// The deepest `is_subtype` recursion: a defensive limit (expansive
+/// inheritance, which would recurse without end, is refused at the class:
+/// `Declarer::check_expansive_inheritance`).
+const SUBTYPE_DEPTH: u32 = 256;
+
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct World {
+    #[serde(skip)]
+    subtype_depth: std::cell::Cell<u32>,
+    /// The subtype questions being answered: one met again is answered
+    /// no (inductively; without expansive inheritance the questions are
+    /// finitely many, so a search that keeps none open again ends).
+    #[serde(skip)]
+    subtype_open: std::cell::RefCell<Vec<(Type, Type)>>,
     /// The documentation comments of every file, by the line they
     /// document (spans are unique across files), in order. (Not encoded
     /// with the world: `PreludeState` keeps them apart.)
@@ -1235,6 +1247,26 @@ impl World {
     }
 
     pub fn is_subtype(&self, sub: &Type, sup: &Type) -> bool {
+        if sub == sup || sub.is_nothing() {
+            return true;
+        }
+        let depth = self.subtype_depth.get();
+        if depth >= SUBTYPE_DEPTH {
+            return false;
+        }
+        let key = (sub.clone(), sup.clone());
+        if self.subtype_open.borrow().contains(&key) {
+            return false;
+        }
+        self.subtype_open.borrow_mut().push(key);
+        self.subtype_depth.set(depth + 1);
+        let r = self.is_subtype_at(sub, sup);
+        self.subtype_depth.set(depth);
+        self.subtype_open.borrow_mut().pop();
+        r
+    }
+
+    fn is_subtype_at(&self, sub: &Type, sup: &Type) -> bool {
         if sub == sup || sub.is_nothing() {
             return true;
         }
