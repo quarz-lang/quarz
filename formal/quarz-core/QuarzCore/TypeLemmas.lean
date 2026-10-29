@@ -877,6 +877,41 @@ theorem ancestorArgs_subst (ct : ClassTable) (σ : List Ty) {c : Nat} {as : List
     ct.ancestorArgs c (Ty.substArgs σ as) d = some (Ty.substArgs σ bs) :=
   ancestorArgsAux_subst ct σ _ c as d bs h
 
+/-- Above a class itself, how many arguments the chain gives an ancestor
+does not depend on the class's arguments. -/
+theorem ancestorArgsAux_other (ct : ClassTable) :
+    ∀ n c as as' d bs, ancestorArgsAux ct n c as d = some bs → c ≠ d →
+      ∃ bs', ancestorArgsAux ct n c as' d = some bs' ∧ bs'.length = bs.length := by
+  intro n
+  induction n with
+  | zero => intro c as as' d bs h; simp [ancestorArgsAux] at h
+  | succ n ih =>
+    intro c as as' d bs h hcd
+    rw [ancestorArgsAux_succ] at h ⊢
+    rw [if_neg (by simpa using hcd)] at h ⊢
+    cases hk : ct[c]? with
+    | none => simp [hk] at h
+    | some k =>
+      simp only [hk] at h ⊢
+      cases hs : k.super with
+      | none => simp [hs] at h
+      | some p =>
+        simp only [hs] at h ⊢
+        by_cases hp : p = d
+        · subst hp
+          cases n with
+          | zero => simp [ancestorArgsAux] at h
+          | succ m =>
+            rw [ancestorArgsAux_succ] at h ⊢
+            simp at h ⊢; subst h
+            simp [ClassTable.substArgs_length']
+        · exact ih p _ (Ty.substArgs as' k.superArgs) d bs h hp
+
+theorem ancestorArgs_other (ct : ClassTable) {c : Nat} {as : List Ty} {d : Nat} {bs : List Ty}
+    (as' : List Ty) (h : ct.ancestorArgs c as d = some bs) (hcd : c ≠ d) :
+    ∃ bs', ct.ancestorArgs c as' d = some bs' ∧ bs'.length = bs.length :=
+  ancestorArgsAux_other ct _ c as as' d bs h hcd
+
 end ClassTable
 
 

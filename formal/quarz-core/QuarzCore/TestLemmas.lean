@@ -277,7 +277,8 @@ theorem hasTy_isATrueOn_subst (hwf : WfClasses P.classes) {s : Store} {v : Value
   -- `a` itself is in where `t` has an atom above it, of a related class,
   -- or a parameter.
   have hain : (∃ c ∈ t, (a.le P.classes [] c && a != c) ||
-      ((a.classRelated P.classes c || c.isParam) && !(c.le P.classes [] a))) →
+      (((a.classRelated P.classes c && !(c.closed && a.bare)) || c.isParam) &&
+        !(c.le P.classes [] a))) →
       a ∈ Ty.subst σ (isATrueOn P.classes t a) := fun ⟨c, hc, hac⟩ => by
     refine Ty.mem_subst.mpr ⟨a, List.mem_append_right _ ?_, by rw [ha]; simp⟩
     simp only [List.any_eq_true]
@@ -302,9 +303,9 @@ theorem hasTy_isATrueOn_subst (hwf : WfClasses P.classes) {s : Store} {v : Value
          exact absurd (Atom.le_object hwf e bs) hba)
       rename_i cu asu
       rw [Atom.le_cls_iff hwf] at hub hua
-      rcases hua with ⟨rfl, rfl⟩ | ⟨_, hua, _⟩
+      rcases hua with ⟨rfl, rfl⟩ | ⟨xa, hua, hxa⟩
       · exact absurd (Atom.le_object hwf e bs) hba
-      rcases hub with ⟨rfl, hbs⟩ | ⟨_, hub, _⟩
+      rcases hub with ⟨rfl, hbs⟩ | ⟨yb, hub, hyb⟩
       · -- `b` is `Object`: `a` is below it, and not it.
         have hbs' : bs = [] := by cases bs <;> simp_all [Ty.substArgs]
         subst hbs'
@@ -313,14 +314,49 @@ theorem hasTy_isATrueOn_subst (hwf : WfClasses P.classes) {s : Store} {v : Value
         rintro h; cases h
         exact hba (Atom.le_refl hwf _)
       -- Both classes are above the object's: related.
-      right
-      refine ⟨Or.inl ?_, by simpa using hba⟩
       have he := ClassTable.ancestorArgs_mem hwf _ _ _ _ hub
       have hd := ClassTable.ancestorArgs_mem hwf _ _ _ _ hua
-      simp only [Atom.classRelated, Atom.classOf, Bool.or_eq_true, ClassTable.subclass_iff]
-      rcases ClassTable.ancestors_total hwf cu e d he hd with h | h
-      · exact Or.inl h
-      · exact Or.inr h
+      have hrel : Atom.classRelated P.classes (.cls d args) (.cls e bs) = true := by
+        simp only [Atom.classRelated, Atom.classOf, Bool.or_eq_true, ClassTable.subclass_iff]
+        rcases ClassTable.ancestors_total hwf cu e d he hd with h | h
+        · exact Or.inl h
+        · exact Or.inr h
+      by_cases hcb : ((Atom.cls e bs).closed && (Atom.cls d args).bare) = true
+      · -- `b` closed and `a` without arguments: one is below the other.
+        simp only [Bool.and_eq_true] at hcb
+        obtain ⟨hcl, hbare⟩ := hcb
+        have hargs : args = [] := by cases args <;> simp_all [Atom.bare]
+        subst hargs
+        have hsb : Ty.substArgs σ bs = bs := by
+          have := Atom.subst_closed_id σ (.cls e bs) hcl
+          simpa using this
+        rw [hsb] at hyb
+        have hxa' : xa = [] := by cases xa <;> simp_all [argsLeWith]
+        subst hxa'
+        rcases ClassTable.ancestors_total hwf cu e d he hd with h | h
+        · -- `a`'s class below `b`'s: `a ≤ b`.
+          have h1 := ClassTable.ancestorArgs_through hwf cu asu d [] e yb hua hub h
+          left
+          refine ⟨(Atom.le_cls_iff hwf d [] e bs).mpr (Or.inr ⟨yb, h1, hyb⟩), ?_⟩
+          rintro hab; cases hab
+          exact hba (Atom.le_refl hwf _)
+        · -- `b`'s class below `a`'s: `b ≤ a`, which is not.
+          have h1 := ClassTable.ancestorArgs_through hwf cu asu e yb d [] hub hua h
+          exfalso; apply hba
+          by_cases hed : e = d
+          · subst hed
+            rw [ClassTable.ancestorArgs_self hwf] at h1
+            cases h1
+            have : bs = [] := by cases bs <;> simp_all [argsLeWith]
+            subst this
+            exact Atom.le_refl hwf _
+          · obtain ⟨z, hz, hzl⟩ := ClassTable.ancestorArgs_other P.classes bs h1 hed
+            have : z = [] := List.eq_nil_of_length_eq_zero (by simpa using hzl)
+            subst this
+            exact (Atom.le_cls_iff hwf e bs d []).mpr (Or.inr ⟨[], hz, by simp [argsLeWith]⟩)
+      · right
+        refine ⟨Or.inl ⟨hrel, ?_⟩, by simpa using hba⟩
+        cases h1 : (Atom.cls e bs).closed <;> cases h2 : (Atom.cls d args).bare <;> simp_all
     | _ =>
       -- A value atom: the value's atom is it, below a class only if that
       -- class is the root; `a` is below the root and not it.

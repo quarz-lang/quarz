@@ -276,16 +276,24 @@ variants (so that a `case/in` covering them leaves nothing). -/
 def isAFalse (ct : ClassTable) (t : Ty) (a : Atom) : Ty :=
   (Ty.expandEnums ct t).filter fun b => !(b.le ct [] a)
 
+/-- A class without type arguments. -/
+def Atom.bare : Atom → Bool
+  | .cls _ [] => true
+  | _ => false
+
 /-- The table of design §2.1 for one test of a path holding `t`: the
 atoms below `a` stay, and `a` itself comes in where `t` has an atom
 above it, one of a class related to `a`'s (the arguments may be the
 class's parameters, which the run-time class test does not see), or a
 type parameter: the value is an `a`, whatever `T` is (unless that atom
-is below `a` already, kept as it is). -/
+is below `a` already, kept as it is). A related atom with closed
+arguments does not bring in an `a` without arguments: a value of both
+would make one below the other (`Box[String]` and `IntBox <
+Box[Int]`). -/
 def isATrueOn (ct : ClassTable) (t : Ty) (a : Atom) : Ty :=
   t.filter (·.le ct [] a) ++
     (if t.any (fun b => (a.le ct [] b && a != b) ||
-        ((a.classRelated ct b || b.isParam) && !(b.le ct [] a)))
+        (((a.classRelated ct b && !(b.closed && a.bare)) || b.isParam) && !(b.le ct [] a)))
       then [a] else [])
 
 /-- `is_a?` true, an `enum` as its variants (as on the false side, and as

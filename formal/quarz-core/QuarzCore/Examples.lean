@@ -212,6 +212,11 @@ def withLocal (x : String) (t : Ty) (body : Expr) : Expr := .seq (.assign x (.pr
     (.call (.var "b" [.cls 2 []]) "get" []) .nil)) [("b", [.cls 1 [[.int]], .nil])]).check
 #guard !(boxProg (withLocal "b" [.cls 1 [[.int]], .nil] (.isA (.var "b" [.cls 1 [[.int]], .nil]) (.cls 1 [])))
   [("b", [.cls 1 [[.int]], .nil])]).check
+-- A `Box[Str]` is never an `IntBox`: the test's true side has none
+-- (and an `IntBox` from a `Box[Int]`).
+#guard isATrue (boxProg .nil).classes [.cls 1 [[.str]], .nil] (.cls 2 []) == []
+#guard isATrue (boxProg .nil).classes [.cls 1 [[.int]]] (.cls 2 []) == [.cls 2 []]
+#guard isATrue (boxProg .nil).classes [.cls 1 [[.param 0]]] (.cls 2 []) == [.cls 2 []]
 
 /-! ### Variance (G1b)
 

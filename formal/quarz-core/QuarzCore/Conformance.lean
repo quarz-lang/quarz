@@ -396,7 +396,12 @@ partial def caseIn (T : Tables) (id : Nat) (v : Json) : CM Expr := do
       | "class" =>
         let mid ← nat (← field m "id")
         if ← rsub mid pid then out := out ++ (← T.ty m)
-        else if ← rsub pid mid then out := out ++ [a]
+        else if ← rsub pid mid then
+          -- Rust adds the class only when it is below the member with its
+          -- arguments (`IntBox` for `Box[Int]`, not `Box[String]`): out of
+          -- range rather than followed through the chain's arguments.
+          unless (← arr (← field m "args")).isEmpty do throw "a capture on a generic member"
+          out := out ++ [a]
       | t => throw s!"a capture on a {t} subject"
     -- A dead arm: Rust declares the pattern's class (`dead_arm_type`).
     pure (if out.isEmpty then [a] else out.eraseDups)
