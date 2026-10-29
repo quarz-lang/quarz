@@ -117,6 +117,9 @@ pub struct Generated {
     pub captures: Vec<(u32, u32, Baked)>,
     /// The `static` statement: its file and position.
     pub by: (u32, Span),
+    /// The block the body was lifted from (`quarz check --expand` shows
+    /// it in place of the body).
+    pub block: Span,
     /// The `doc` text given before `def_method`.
     pub doc: Option<String>,
 }
@@ -493,6 +496,23 @@ impl World {
 
     pub fn method(&self, id: MethodId) -> &MethodInfo {
         &self.methods[id as usize]
+    }
+
+    /// The span of the `static` statement that generated a method (docs/14
+    /// §5): with `def_method`, or as an accessor of a `def_field`'s field
+    /// (which has a baked default and the statement's span).
+    pub fn generated_by(&self, id: MethodId) -> Option<Span> {
+        let m = self.method(id);
+        if let Some(g) = &m.generated {
+            return Some(g.by.1);
+        }
+        if let Synth::FieldGet(f) | Synth::FieldSet(f) = &m.synth {
+            let field = self.class(m.owner).fields.iter().find(|x| &x.name == f)?;
+            if field.baked_default.is_some() && field.span == m.span {
+                return Some(m.span);
+            }
+        }
+        None
     }
 
     pub fn method_mut(&mut self, id: MethodId) -> &mut MethodInfo {

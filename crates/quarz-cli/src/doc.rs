@@ -165,6 +165,23 @@ impl Loaded {
             .max_by_key(|f| f.base)
     }
 
+    /// The source text of a span, on one line: its first, with `…` when
+    /// it goes on (a `static` statement, for what it generated).
+    pub fn source_line(&self, span: Span) -> String {
+        let Some(f) = self.file_of(span.start) else {
+            return String::new();
+        };
+        let at = |o: u32| (o.saturating_sub(f.base) as usize).min(f.text.len());
+        let text = f.text.get(at(span.start)..at(span.end)).unwrap_or("");
+        let mut lines = text.lines();
+        let first = lines.next().unwrap_or("").trim_end().to_string();
+        if lines.next().is_some() {
+            format!("{first} …")
+        } else {
+            first
+        }
+    }
+
     /// `file:line` of an offset; empty for none (a library's root
     /// module, which has no declaration).
     pub fn location(&self, offset: u32) -> String {
@@ -322,6 +339,8 @@ pub(crate) struct Item {
     /// Where the doc comes from, when not from the item itself: `Base` for
     /// an inherited one.
     pub from: Option<String>,
+    /// The `static` statement that generated the item (docs/14 §5).
+    pub generated_by: Option<Span>,
     pub span: Span,
     /// The extension the method is in (`extension String`), if any.
     pub extension: Option<String>,
@@ -411,6 +430,7 @@ impl Api {
                     signature: format!("{}{ty}", k.name),
                     doc,
                     from: None,
+                    generated_by: None,
                     span: k.span,
                     extension: None,
                 });
@@ -575,13 +595,20 @@ fn method_doc(
         Synth::DataToH => return (Some(generated("The fields as a `Hash`, by name.")), None),
         _ => {}
     }
-    if ditto(&own) {
+    // A generated method's doc is the `doc` given for it (docs/14 §5), not
+    // the comment of the statement, whose span it shares, nor of its
+    // field; else an overridden method's.
+    let made = world.generated_by(mid).is_some();
+    if let Some(text) = m.generated.as_ref().and_then(|g| g.doc.as_ref()) {
+        return (Some(generated_at(text, m.span)), None);
+    }
+    if ditto(&own) && !made {
         return (previous.cloned(), None);
     }
-    if own.is_some() {
+    if own.is_some() && !made {
         return (own, None);
     }
-    if let Synth::FieldGet(f) | Synth::FieldSet(f) = &m.synth {
+    if let (Synth::FieldGet(f) | Synth::FieldSet(f), false) = (&m.synth, made) {
         let owner = world.class(m.owner);
         if let Some(field) = owner.fields.iter().find(|x| &x.name == f) {
             if let Some(d) = world
@@ -606,6 +633,18 @@ fn method_doc(
         };
         if let Some(ids) = table.get(&m.name) {
             for id in ids {
+                // A generated method's doc is its `doc`, never the
+                // comment of the statement it shares its span with.
+                if world.generated_by(*id).is_some() {
+                    let g = world.method(*id).generated.as_ref();
+                    if let Some(text) = g.and_then(|g| g.doc.as_ref()) {
+                        return (
+                            Some(generated_at(text, world.method(*id).span)),
+                            Some(class.name.clone()),
+                        );
+                    }
+                    continue;
+                }
                 if let Some(d) = world.doc_at(world.method(*id).span) {
                     if !ditto(&Some(d.clone())) {
                         return (Some(d.clone()), Some(class.name.clone()));
@@ -615,6 +654,17 @@ fn method_doc(
         }
     }
     (None, None)
+}
+
+/// The `doc` a `static` statement gave a method it generated (docs/14
+/// §5), placed at the statement: where `--check` reports it and where
+/// `quarz test` says its examples are.
+fn generated_at(text: &str, statement: Span) -> Doc {
+    Doc {
+        text: text.to_string(),
+        span: Span::empty(statement.start as usize),
+        line: Span::empty(statement.start as usize),
+    }
 }
 
 /// A doc the generator writes (for a `data`'s generated methods).
@@ -657,7 +707,13 @@ fn page(world: &World, id: ClassId, kind: Kind, doc: Option<Doc>, private: bool)
             methods.extend(ext.methods.values().flatten().copied());
         }
     }
-    methods.sort_by_key(|m| world.method(*m).span.start);
+    // By position, and the methods one statement generated (which share
+    // its span) in the order it generated them; the sort is stable for
+    // the others that share one (a `data`'s).
+    methods.sort_by_key(|m| {
+        let key = world.generated_by(*m).map_or(0, |_| *m);
+        (world.method(*m).span.start, key)
+    });
     ext_methods.sort_by_key(|(m, _)| world.method(*m).span.start);
     let mut members = Vec::new();
     let mut previous: Option<Doc> = None;
@@ -720,6 +776,7 @@ fn page(world: &World, id: ClassId, kind: Kind, doc: Option<Doc>, private: bool)
             signature,
             doc: mdoc,
             from,
+            generated_by: world.generated_by(mid),
             span: m.span,
             extension,
         });
@@ -743,6 +800,7 @@ fn page(world: &World, id: ClassId, kind: Kind, doc: Option<Doc>, private: bool)
                 signature: class_signature(world, *v, Kind::Variant),
                 doc: vdoc,
                 from: None,
+                generated_by: None,
                 span: vc.span,
                 extension: None,
             });
@@ -766,6 +824,7 @@ fn page(world: &World, id: ClassId, kind: Kind, doc: Option<Doc>, private: bool)
                 signature: format!("{}{ty}", k.name),
                 doc: kdoc,
                 from: None,
+                generated_by: None,
                 span: k.span,
                 extension: None,
             });
@@ -1244,6 +1303,15 @@ fn lookup(loaded: &Loaded, api: &Api, name: &str) -> Option<String> {
                     if let Some(f) = &item.from {
                         out.push_str(&format!("  (from {f})\n"));
                     }
+                }
+                if let Some(by) = item.generated_by {
+                    out.push_str(&format!(
+                        "  (generated by `{}` at {})\n",
+                        loaded.source_line(by),
+                        loaded.location(by.start)
+                    ));
+                }
+                if item.doc.is_some() || item.generated_by.is_some() {
                     out.push('\n');
                 }
             }
@@ -1328,7 +1396,9 @@ fn documented<'a>(world: &World, api: &'a Api) -> Vec<(ClassId, String, Option<&
 fn check(loaded: &Loaded, api: &Api, missing: bool) -> Vec<String> {
     let world = &loaded.world;
     let mut problems = Vec::new();
-    let mut seen: Vec<u32> = Vec::new();
+    // By place and text: the generated docs of one statement share its
+    // place, a `data`'s share none.
+    let mut seen: Vec<(u32, &str)> = Vec::new();
     for (scope, path, doc, span) in documented(world, api) {
         let Some(doc) = doc else {
             // A library's root module is documented by its README.
@@ -1341,10 +1411,10 @@ fn check(loaded: &Loaded, api: &Api, missing: bool) -> Vec<String> {
             continue;
         };
         // An overload's or ditto's doc is checked once.
-        if seen.contains(&doc.span.start) {
+        if seen.contains(&(doc.span.start, doc.text.as_str())) {
             continue;
         }
-        seen.push(doc.span.start);
+        seen.push((doc.span.start, doc.text.as_str()));
         let at = loaded.location(doc.span.start);
         let type_params: Vec<String> = world
             .class(scope)
@@ -1420,7 +1490,8 @@ fn json(loaded: &Loaded, api: &Api) -> String {
                 sig: &str,
                 doc: Option<&Doc>,
                 span: Span,
-                from: Option<&String>| {
+                from: Option<&String>,
+                generated_by: Option<Span>| {
         let mut fields: BTreeMap<&str, String> = BTreeMap::new();
         fields.insert("kind", json_string(kind.word()));
         fields.insert("name", json_string(path));
@@ -1431,6 +1502,9 @@ fn json(loaded: &Loaded, api: &Api) -> String {
         }
         if let Some(f) = from {
             fields.insert("from", json_string(f));
+        }
+        if let Some(by) = generated_by {
+            fields.insert("generated_by", json_string(&loaded.source_line(by)));
         }
         let at = loaded.location(span.start);
         if !at.is_empty() {
@@ -1446,7 +1520,15 @@ fn json(loaded: &Loaded, api: &Api) -> String {
     for k in &api.constants {
         entries.push(format!(
             "  {}",
-            item(k.kind, &k.path, &k.signature, k.doc.as_ref(), k.span, None)
+            item(
+                k.kind,
+                &k.path,
+                &k.signature,
+                k.doc.as_ref(),
+                k.span,
+                None,
+                None
+            )
         ));
     }
     for p in &api.pages {
@@ -1462,12 +1544,21 @@ fn json(loaded: &Loaded, api: &Api) -> String {
                         &m.signature,
                         m.doc.as_ref(),
                         m.span,
-                        m.from.as_ref()
+                        m.from.as_ref(),
+                        m.generated_by
                     )
                 )
             })
             .collect();
-        let head = item(p.kind, &p.name, &p.signature, p.doc.as_ref(), p.span, None);
+        let head = item(
+            p.kind,
+            &p.name,
+            &p.signature,
+            p.doc.as_ref(),
+            p.span,
+            None,
+            None,
+        );
         let head = head.trim_end_matches('}').to_string();
         entries.push(format!(
             "  {head}, \"members\": [\n{}\n  ]}}",

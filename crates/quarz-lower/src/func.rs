@@ -600,7 +600,7 @@ impl<'a> FnBuilder<'a> {
         let v = b.body(&block.body);
         b.term(Term::Return(v));
         let f = b.finish();
-        self.lw.block_calls.insert(id, call_id);
+        self.lw.block_calls.insert(id, (call_id, block.span));
         self.lw.set_func(id, f);
         id
     }

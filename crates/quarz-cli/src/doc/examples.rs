@@ -35,7 +35,9 @@ pub(crate) fn gather(world: &World, files: &[SourceFile], own: &[u32]) -> Vec<Ex
             .max_by_key(|f| f.base)
     };
     let mut out = Vec::new();
-    let mut seen: Vec<u32> = Vec::new();
+    // By place and text: the generated docs of one statement share its
+    // place (docs/14 §5).
+    let mut seen: Vec<(u32, &str)> = Vec::new();
     let mut decls: Vec<(String, &quarz_syntax::doc::Doc)> = Vec::new();
     for k in &api.constants {
         if let Some(d) = &k.doc {
@@ -54,10 +56,10 @@ pub(crate) fn gather(world: &World, files: &[SourceFile], own: &[u32]) -> Vec<Ex
     }
     for (decl, doc) in decls {
         // A doc shared by `:ditto:` or by overloads is run once.
-        if seen.contains(&doc.span.start) {
+        if seen.contains(&(doc.span.start, doc.text.as_str())) {
             continue;
         }
-        seen.push(doc.span.start);
+        seen.push((doc.span.start, doc.text.as_str()));
         let Some(file) = file_of(doc.span.start) else {
             continue;
         };

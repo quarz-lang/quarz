@@ -268,8 +268,11 @@ impl<'a> Baker<'a> {
             }
             Baked::Data(class, fields) => {
                 // The data constructor given every physical field copies
-                // them in, without running code (`Interp::construct`).
-                let args = fields
+                // them in, without running code (`Interp::construct`). A
+                // data type whose body has its own `initialize` has none:
+                // the value is allocated without one and its physical
+                // fields stored, still without running code (docs/14 §5).
+                let args: Vec<Reg> = fields
                     .iter()
                     .map(|f| {
                         let r = self.reg();
@@ -278,6 +281,11 @@ impl<'a> Baker<'a> {
                     })
                     .collect();
                 let init = self.layouts.get(*class as usize).and_then(|l| l.init);
+                let stores = if init.is_some() {
+                    Vec::new()
+                } else {
+                    args.clone()
+                };
                 out.push(Inst::Call {
                     dst,
                     kind: CallKind::Construct {
@@ -285,13 +293,21 @@ impl<'a> Baker<'a> {
                         init,
                     },
                     recv: None,
-                    args,
+                    args: if init.is_some() { args } else { Vec::new() },
                     splat: false,
                     kw: Vec::new(),
                     kw_splat: None,
                     block: None,
                     moved: 0,
                 });
+                for (index, src) in stores.into_iter().enumerate() {
+                    out.push(Inst::FieldSet {
+                        obj: dst,
+                        index: index as u32,
+                        src,
+                        class: *class,
+                    });
+                }
             }
         }
     }

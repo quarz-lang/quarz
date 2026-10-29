@@ -147,10 +147,12 @@ pub fn interface(world: &World, file: u32) -> u64 {
         m.checked = false;
         m.frame_size = 0;
         // A generated method's function number depends on what was
-        // lowered before it, not on the interface.
+        // lowered before it, not on the interface; positions are not
+        // part of it either.
         if let Some(g) = &mut m.generated {
             g.func = 0;
             g.by.1 = Default::default();
+            g.block = Default::default();
         }
         for p in &mut m.params {
             p.span = Default::default();

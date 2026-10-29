@@ -19,7 +19,7 @@ mod devirt;
 mod func;
 mod inline;
 mod iter;
-pub(crate) mod layout;
+pub mod layout;
 pub mod lift;
 mod regshare;
 mod release;
@@ -87,9 +87,9 @@ pub struct Lowerer {
     /// of `static` statements hands each round's back): what a lifted
     /// block's function is copied from.
     pub done: Vec<Function>,
-    /// The call each block function was written at, for the generation
-    /// of methods from blocks (docs/14 §5).
-    pub block_calls: HashMap<FuncId, quarz_syntax::ast::NodeId>,
+    /// The call each block function was written at, and the block's
+    /// span, for the generation of methods from blocks (docs/14 §5).
+    pub block_calls: HashMap<FuncId, (quarz_syntax::ast::NodeId, quarz_syntax::Span)>,
     pub(crate) method_funcs: Vec<Option<FuncId>>,
     pub(crate) const_funcs: Vec<Option<FuncId>>,
     pub(crate) field_default_funcs: HashMap<(ClassId, usize), FuncId>,
