@@ -47,6 +47,7 @@ A summary of the things someone who knows Ruby will first stumble on when starti
 | Redefining a method with the same name | Overwrites | Overloading by parameter types. Redefining the same signature is an error |
 | `nil?`, `is_a?`, `equal?`, `==` | Any class may redefine them (`equal?` should not be, by its documentation) | `nil?` and `is_a?` (the checker narrows types by them) and `equal?` (identity) cannot be defined; a class's own `==`/`!=` takes an `Object` (01-syntax.md §3) |
 | Exceptions `rescue => e` | `StandardError` | Same. `Task::Cancelled` is directly under `Exception`, so it is not caught |
+| The variable of `rescue E => e` | A local of the method: it stays after the `begin` (and `ensure`/`else` see it) | The clause's own, as a block's parameter: it shadows an outer local of the name, which is unchanged after; `ensure`, `else` and the code after the `begin` do not see it |
 | `raise e` with `e` kept | Sets `e`'s backtrace and cause | When `e` lacks them, raises a copy given them (exceptions are immutable): `e` keeps none, and the exception rescued is not `equal?` to `e` (06-stdlib.md) |
 
 ## What is added

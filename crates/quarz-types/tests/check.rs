@@ -2679,3 +2679,29 @@ fn shareable_by_arguments_is_not_laundered() {
     ok("class H2[T]\n  include Shareable\n  @t: Type[T]\n  @f: shareable (Int) -> Int\n  def initialize(@t: Type[T], @f: shareable (Int) -> Int)\n  end\nend");
     ok("class Counter\n  var @n: Int = 0\n  def bump -> Int\n    @n += 1\n    @n\n  end\n  def n -> Int = @n\nend\nclass Node[T <: Comparable[T] & Shareable]\n  include Shareable\n  @v: T\n  def initialize(@v: T)\n  end\nend\nclass B[U <: B[U]]\n  include Shareable\n  @x: U?\n  def initialize(@x: U?)\n  end\nend\ndata P = (x: Int)\nclass Bx[T <: P]\n  include Shareable\n  @x: T\n  def initialize(@x: T)\n  end\nend\np 1\n");
 }
+
+#[test]
+fn a_rescue_clauses_variable_is_its_own() {
+    // As a block's parameter (docs/01 §12): separate `begin`s may bind it
+    // to other classes, an outer local of the name is unchanged, and the
+    // code after the clause does not see it.
+    ok("begin\n  raise ArgumentError, \"a\"\nrescue ArgumentError => e\n  p e.message\nend\nbegin\n  raise KeyError, \"b\"\nrescue KeyError => e\n  p e.message\nend");
+    ok("def f(n: Int) -> Int\n  e = 5\n  begin\n    raise ArgumentError, \"x\" if n > 0\n  rescue ArgumentError => e\n    p e.message\n  end\n  e\nend");
+    err(
+        "begin\n  raise ArgumentError, \"a\"\nrescue ArgumentError => e\n  p 1\nend\np e",
+        "undefined local variable or method `e`",
+    );
+    err(
+        "begin\n  raise ArgumentError, \"a\"\nrescue ArgumentError => e\n  p 1\nensure\n  p e\nend",
+        "undefined local variable or method `e`",
+    ); // In a large frame (the index of its names) too.
+    let many: String = (0..35).map(|i| format!("v{i} = {i}\n")).collect();
+    err(
+        &format!(
+            "{many}begin\n  raise ArgumentError, \"a\"\nrescue ArgumentError => e\n  p 1\nend\np e"
+        ),
+        "undefined local variable or method `e`",
+    );
+    // The outer local keeps its narrowing: the clause assigns its own.
+    ok("def r(n: Int | Nil) -> Int\n  e = n\n  return 0 unless e\n  i = 0\n  while i < 2\n    begin\n      raise ArgumentError, \"a\"\n    rescue ArgumentError => e\n      e = ArgumentError.new(\"b\")\n    ensure\n      p e + 1\n    end\n    i += 1\n  end\n  e + 1\nend");
+}

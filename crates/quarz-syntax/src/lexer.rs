@@ -59,6 +59,14 @@ impl LocalTable {
             .insert(name.to_string());
     }
 
+    /// Forget `name` in the innermost scope (a rescue clause's variable,
+    /// out of scope after its clause).
+    pub fn undeclare(&mut self, name: &str) {
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.names.remove(name);
+        }
+    }
+
     pub fn is_declared(&self, name: &str) -> bool {
         for scope in self.scopes.iter().rev() {
             if scope.names.contains(name) {
