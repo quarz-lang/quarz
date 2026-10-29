@@ -2645,3 +2645,37 @@ fn a_data_types_fields_keep_their_narrowing_in_closures() {
         "undefined method `+` for Nil",
     );
 }
+
+#[test]
+fn a_shareable_promise_holds_for_every_instance() {
+    // A class that promises Shareable bounds the parameters its fields
+    // use, so that every instance keeps the promise (docs/03).
+    err("class Counter\n  var @n: Int = 0\n  def bump -> Int\n    @n += 1\n    @n\n  end\n  def n -> Int = @n\nend\nmodule Sendable\n  include Shareable\n  def run -> Int = 0\nend\nclass Holder[S <: Counter]\n  include Sendable\n  @y: S\n  def initialize(@y: S)\n  end\n  def run -> Int = @y.bump\nend\ndef spread(x: Sendable) -> Int\n  ts = (1..4).map { Task.spawn { s = 0; 100000.times { s = x.run }; s } }\n  ts.map(&:await).sum\nend\nk = Counter.new\nspread(Holder[Counter].new(k))\np k.n\n", "its parameter `S` may be a non-Shareable type");
+    err("# A Shareable-promised class whose subclass hides a mutable object behind\n# a type parameter of its own (erased when the promise is checked).\nclass Counter\n  var @n: Int = 0\n  def bump -> Int\n    @n += 1\n    @n\n  end\n  def n -> Int = @n\nend\nclass Cell[T]\n  include Shareable\n  @x: T\n  def initialize(@x: T)\n  end\n  def run -> Int = 0\nend\nclass Sub[S <: Counter] < Cell[Int]\n  @y: S\n  def initialize(@y: S)\n    super(1)\n  end\n  def run -> Int = @y.bump\nend\ndef spread(x: Cell[Int]) -> Int\n  ts = (1..4).map do\n    Task.spawn do\n      s = 0\n      100000.times { s = x.run }\n      s\n    end\n  end\n  ts.map(&:await).sum\nend\nk = Counter.new\nspread(Sub[Counter].new(k))\np k.n\n", "its parameter `T` may be a non-Shareable type");
+    ok("module Sendable\n  include Shareable\nend\nclass Holder[S <: Shareable]\n  include Sendable\n  @y: S\n  def initialize(@y: S)\n  end\nend");
+    // A collection is a `Shareable` only when its elements are.
+    err("n = 0\nx: Shareable = [-> { n += 1; n }]\nch = Channel[Shareable].new(1)\nch.send(x)\np 0\n", "cannot assign Array[() -> Int] to `x` of type Shareable");
+    ok("x: Shareable = [1, 2]\ny: Shareable = {a: [\"s\"]}\np x, y");
+}
+
+#[test]
+fn shareable_by_arguments_is_not_laundered() {
+    // A `data` type or enum taking the promise from a module follows the
+    // class rule: the module's `self` carries no arguments (docs/03).
+    err("class Counter\n  var @n: Int = 0\n  def bump -> Int\n    @n += 1\n    @n\n  end\n  def n -> Int = @n\nend\nmodule Sendable\n  include Shareable\n  abstract def run -> Int\n  def me -> Sendable = self\nend\ndata D[T <: Counter](x: T)\n  include Sendable\n  def run -> Int = x.bump\nend\nk = Counter.new\ns = D[Counter].new(k).me\nts = (1..4).map do\n  Task.spawn do\n    100000.times { s.run }\n    0\n  end\nend\nts.each(&:await)\np k.n\n", "its parameter `T` may be a non-Shareable type");
+    err("class Counter\n  var @n: Int = 0\n  def bump -> Int\n    @n += 1\n    @n\n  end\n  def n -> Int = @n\nend\nmodule Sendable\n  include Shareable\n  def me -> Sendable = self\nend\nenum E[T]\n  include Sendable\n  variant A(x: T)\nend\nv = E::A.new(Counter.new)\ns: Sendable = v\nt = v.me\np 1\n", "its parameter `T` may be a non-Shareable type");
+    // A tuple is a `Shareable` only with Shareable elements.
+    err("class Counter\n  var @n: Int = 0\n  def bump -> Int\n    @n += 1\n    @n\n  end\n  def n -> Int = @n\nend\ndef id(x: Shareable) -> Shareable = x\nk = Counter.new\nt = [k, 1]\ns = id(t)\nts = (1..4).map do\n  Task.spawn do\n    a = s.as(Array[Counter | Int])\n    c = a[0]\n    100000.times { c.bump } if c.is_a?(Counter)\n    0\n  end\nend\nts.each(&:await)\np k.n\n", "expects Shareable but found [Counter, Int]");
+    // A run-time test against `Shareable` sees the class only.
+    err("class Counter\n  var @n: Int = 0\n  def bump -> Int\n    @n += 1\n    @n\n  end\n  def n -> Int = @n\nend\nk = Counter.new\no: Object = [k]\nif o.is_a?(Shareable)\n  s = o\n  ts = (1..4).map do\n    Task.spawn do\n      a = s.as(Array[Counter])\n      100000.times { a[0].bump }\n      0\n    end\n  end\n  ts.each(&:await)\nend\np k.n\n", "`is_a?` cannot be checked at run time against Shareable");
+    err(
+        "def launder(o: Object) -> Shareable?\n  case o\n  when Shareable then o\n  else nil\n  end\nend",
+        "`when` cannot be checked at run time against Shareable",
+    );
+    // A generic `data` type or enum including `Shareable` itself is
+    // Shareable by its arguments, as a collection.
+    ok("data D[T](x: T)\n  include Shareable\nend\nenum E[T]\n  include Shareable\n  variant A(x: T)\nend");
+    // Parameters that cannot make a field non-Shareable, and an F-bound.
+    ok("class H2[T]\n  include Shareable\n  @t: Type[T]\n  @f: shareable (Int) -> Int\n  def initialize(@t: Type[T], @f: shareable (Int) -> Int)\n  end\nend");
+    ok("class Counter\n  var @n: Int = 0\n  def bump -> Int\n    @n += 1\n    @n\n  end\n  def n -> Int = @n\nend\nclass Node[T <: Comparable[T] & Shareable]\n  include Shareable\n  @v: T\n  def initialize(@v: T)\n  end\nend\nclass B[U <: B[U]]\n  include Shareable\n  @x: U?\n  def initialize(@x: U?)\n  end\nend\ndata P = (x: Int)\nclass Bx[T <: P]\n  include Shareable\n  @x: T\n  def initialize(@x: T)\n  end\nend\np 1\n");
+}

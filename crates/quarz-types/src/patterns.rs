@@ -73,6 +73,7 @@ impl Checker {
             PatternKind::Const(path) => match self.resolve_pattern_class(path, pattern.span) {
                 Some(cid) => {
                     let target = self.open_class(cid);
+                    self.check_testable(&value_ty, &target, "in", pattern.span);
                     let (yes, _) = self.split_by_type(&value_ty, &target);
                     if yes.is_nothing() {
                         self.warn(
