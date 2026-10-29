@@ -266,3 +266,18 @@ end
          HTTP::Server (GET /x%0d%0aforged%3Fa): RuntimeError: boom\n"
     );
 }
+
+/// `quarz --version` prints Cargo's version of the workspace, which a
+/// release tag (`v` and the version) names too.
+#[test]
+fn version_prints_the_cargo_version() {
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_quarz"))
+        .arg("--version")
+        .output()
+        .expect("quarz");
+    assert!(out.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        format!("quarz {}\n", env!("CARGO_PKG_VERSION"))
+    );
+}
