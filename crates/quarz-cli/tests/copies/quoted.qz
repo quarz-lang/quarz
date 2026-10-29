@@ -1,0 +1,11 @@
+class R
+  def w(&f: Quoted[(Int) -> Bool]) -> Int = f.captures.size
+end
+r = R.new
+a: Array[Int] = []
+s = 0
+1000.times do |i|
+  s += r.w { |x| a.size > x }
+  a = a.push(i)
+end
+p a.size, s

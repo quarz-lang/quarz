@@ -76,6 +76,7 @@ An array of a comparable element type is `Comparable` (`<=> < <= > >= between? c
 ## 6. Procs
 
 - Proc types `(A...) -> R`. `call`, `()`, `.()`, `[]`, `arity`. `curry`, `>>` and `<<` are *planned* (they need the checker to type the composed signature).
+- `Quoted[out P]`: a block received as a typed tree, for a block parameter declared `&cond: Quoted[P]` (`expr -> Meta::Expr`, `captures`, `proc -> P`, `file`), with the tree's types `Meta::Expr` (an enum of the quotable forms, each with its line) and `Meta::MethodRef` (the method a call resolved to): [14-metaprogramming.md](14-metaprogramming.md) §6.
 - There are no `Method` objects. Instead of `obj.method(:foo)`, use `->(x) { obj.foo(x) }` or `obj.:foo` (method reference syntax; `&obj.:foo` passes it as a block).
 
 ## 7. Control and Errors

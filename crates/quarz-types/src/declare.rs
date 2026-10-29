@@ -984,6 +984,7 @@ impl<'ast> Declarer<'ast> {
             self.check_shareable_promise(p.id);
             self.check_variance(p.id);
             self.check_kept_blocks(p.id);
+            self.check_quoted_overrides(p.id);
             self.check_override_returns(p.id);
             self.check_copied_deinitialize(p.id);
             self.check_eq_with_hash(p.id);
@@ -994,6 +995,7 @@ impl<'ast> Declarer<'ast> {
         self.check_extensions_duplicates();
         self.check_extensions_deinitialize();
         self.check_shareable_extensions();
+        self.check_quoted_extensions();
     }
 
     /// Whether two methods have the same signature: parameters (kinds
@@ -1261,6 +1263,133 @@ impl<'ast> Declarer<'ast> {
                     span,
                 );
             }
+        }
+    }
+
+    /// A method that overrides or implements another takes its block the
+    /// same way, as a `Quoted` or as a procedure (docs/14 §6): a caller
+    /// gives what the method it sees declares.
+    fn check_quoted_overrides(&mut self, id: ClassId) {
+        let quoted = self.world.builtin.quoted;
+        let is_quoted = |t: &Type| matches!(t, Type::Class(c, _) if *c == quoted);
+        // Only the lowering makes a `Quoted`, whose shareability and
+        // `new` the checker trusts: no subclass.
+        if matches!(&self.world.class(id).superclass, Some(Type::Class(c, _)) if *c == quoted) {
+            let span = self.world.class(id).span;
+            self.error(
+                "`Quoted` cannot be subclassed: a `Quoted` is made from a block literal",
+                span,
+            );
+        }
+        let class = self.world.class(id);
+        let mine: Vec<MethodId> = class
+            .methods
+            .values()
+            .chain(class.singleton_methods.values())
+            .flatten()
+            .copied()
+            .collect();
+        let ancestors: Vec<ClassId> = self
+            .world
+            .ancestor_ids(id)
+            .into_iter()
+            .filter(|a| *a != id)
+            .collect();
+        for mid in mine {
+            let m = self.world.method(mid);
+            if m.owner != id {
+                continue;
+            }
+            let mine_quoted = m.block.as_ref().is_some_and(|(_, t)| is_quoted(t));
+            let other = ancestors.iter().find_map(|a| {
+                let c = self.world.class(*a);
+                let table = if m.singleton {
+                    &c.singleton_methods
+                } else {
+                    &c.methods
+                };
+                table.get(&m.name)?.iter().copied().find(|o| {
+                    let o = self.world.method(*o);
+                    o.singleton == m.singleton
+                        && arities_meet(&o.params, &m.params)
+                        && o.block.is_some()
+                        && m.block.is_some()
+                        && o.block.as_ref().is_some_and(|(_, t)| is_quoted(t)) != mine_quoted
+                })
+            });
+            if let Some(o) = other {
+                let owner = self.world.class(self.world.method(o).owner).name.clone();
+                let (mname, span) = (m.name.clone(), m.span);
+                let how = |q: bool| if q { "a `Quoted`" } else { "a procedure" };
+                self.error(
+                    format!(
+                        "`{mname}` takes its block as {}, but `{owner}#{mname}`, which it overrides, takes {}",
+                        how(mine_quoted),
+                        how(!mine_quoted)
+                    ),
+                    span,
+                );
+            }
+        }
+    }
+
+    /// An extension's method that implements a module's method (one it
+    /// includes, or one of its target's ancestors) takes its block as
+    /// that one does, as a `Quoted` or as a procedure (docs/14 §6).
+    fn check_quoted_extensions(&mut self) {
+        let quoted = self.world.builtin.quoted;
+        let is_quoted = |t: &Type| matches!(t, Type::Class(c, _) if *c == quoted);
+        let mut errors: Vec<(String, Span, u32)> = Vec::new();
+        for e in &self.world.extensions {
+            let mut sources: Vec<ClassId> = e
+                .includes
+                .iter()
+                .filter_map(|t| match t {
+                    Type::Class(c, _) => Some(*c),
+                    _ => None,
+                })
+                .collect();
+            sources.extend(self.world.ancestor_ids(e.target));
+            for ids in e.methods.values() {
+                for &mid in ids {
+                    let m = self.world.method(mid);
+                    let Some((_, bt)) = &m.block else { continue };
+                    let mine = is_quoted(bt);
+                    let other = sources.iter().find_map(|c| {
+                        let class = self.world.class(*c);
+                        let table = if m.singleton {
+                            &class.singleton_methods
+                        } else {
+                            &class.methods
+                        };
+                        table.get(&m.name)?.iter().copied().find(|o| {
+                            let o = self.world.method(*o);
+                            o.extension.is_none()
+                                && arities_meet(&o.params, &m.params)
+                                && o.block.as_ref().is_some_and(|(_, t)| is_quoted(t) != mine)
+                        })
+                    });
+                    if let Some(o) = other {
+                        let owner = self.world.class(self.world.method(o).owner).name.clone();
+                        let how = |q: bool| if q { "a `Quoted`" } else { "a procedure" };
+                        errors.push((
+                            format!(
+                                "`{}` takes its block as {}, but `{owner}#{}`, which it implements, takes {}",
+                                m.name,
+                                how(mine),
+                                m.name,
+                                how(!mine)
+                            ),
+                            m.span,
+                            m.file,
+                        ));
+                    }
+                }
+            }
+        }
+        for (message, span, file) in errors {
+            self.file = file;
+            self.error(message, span);
         }
     }
 
@@ -1680,6 +1809,7 @@ impl<'ast> Declarer<'ast> {
             self.check_shareable_promise(id);
             self.check_variance(id);
             self.check_kept_blocks(id);
+            self.check_quoted_overrides(id);
             self.check_override_returns(id);
             self.check_copied_deinitialize(id);
             self.check_eq_with_hash(id);
@@ -1955,16 +2085,24 @@ impl<'ast> Declarer<'ast> {
             Some(Member::Alias(id)) => *id,
             _ => panic!("prelude does not define `type Class`"),
         };
-        let meta_classdef = match w.top.get("Meta") {
-            Some(Member::Class(meta)) => match w.class(*meta).members.get("ClassDef") {
-                Some(Member::Class(id)) => *id,
-                _ => panic!("prelude does not define `Meta::ClassDef`"),
-            },
-            _ => panic!("prelude does not define `Meta`"),
+        let meta = |name: &str| -> ClassId {
+            match w.top.get("Meta") {
+                Some(Member::Class(meta)) => match w.class(*meta).members.get(name) {
+                    Some(Member::Class(id)) => *id,
+                    _ => panic!("prelude does not define `Meta::{name}`"),
+                },
+                _ => panic!("prelude does not define `Meta`"),
+            }
         };
+        let meta_classdef = meta("ClassDef");
+        let meta_expr = meta("Expr");
+        let meta_method_ref = meta("MethodRef");
         let builtin = Builtin {
             class_alias,
             meta_classdef,
+            meta_expr,
+            meta_method_ref,
+            quoted: get(w, "Quoted"),
             object: get(w, "Object"),
             nil: get(w, "Nil"),
             bool_: get(w, "Bool"),
@@ -2786,9 +2924,13 @@ impl<'ast> Declarer<'ast> {
                                     }
                                 }
                             }
-                            if !matches!(ty, Type::Proc(..)) {
+                            // `Quoted[P]`: the block as a tree (docs/14 §6).
+                            let quoted = matches!(&ty, Type::Class(c, args)
+                                if *c == self.world.builtin.quoted
+                                    && matches!(args.as_slice(), [Type::Proc(..)]));
+                            if !matches!(ty, Type::Proc(..)) && !quoted {
                                 self.error(
-                                    "a block parameter must have a procedure type `(A) -> R`",
+                                    "a block parameter must have a procedure type `(A) -> R` (or `Quoted[(A) -> R]`)",
                                     t.span,
                                 );
                             }

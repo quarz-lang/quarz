@@ -59,12 +59,21 @@ pub(crate) fn captured_slots(interp: &Interp, fid: FuncId) -> std::rc::Rc<Vec<Ve
 /// is all it takes.) Only the variables the block reads are copied: the
 /// others, of whatever type, stay with this task.
 fn snapshot(interp: &Interp, b: &Value) -> Value {
+    let block = copy_captures(interp, b);
+    // The block and what it captures pass to the new task.
+    block.share();
+    block
+}
+
+/// The block reading copies of the variables it captures, as they are
+/// now: `snapshot` without making them shared (a quoted block's closure,
+/// docs/14 §6, whose values need not be Shareable and stay with this
+/// task).
+fn copy_captures(interp: &Interp, b: &Value) -> Value {
     let Value::Proc(c) = b else {
-        b.share();
         return b.clone();
     };
     let (ClosureBody::Func(f), Some(frame)) = (&c.body, &c.frame) else {
-        b.share();
         return b.clone();
     };
     fn copy(frame: &Rc<Frame>, depth: usize, caps: &[Vec<u32>]) -> Rc<Frame> {
@@ -83,7 +92,7 @@ fn snapshot(interp: &Interp, b: &Value) -> Value {
         Frame::from_slots(slots, parent)
     }
     let caps = captured_slots(interp, *f);
-    let block = Value::Proc(Rc::new(Closure {
+    Value::Proc(Rc::new(Closure {
         body: ClosureBody::Func(*f),
         frame: if caps.is_empty() {
             None
@@ -97,10 +106,7 @@ fn snapshot(interp: &Interp, b: &Value) -> Value {
         method_block: c.method_block.clone(),
         method_tag: c.method_tag,
         file: c.file,
-    }));
-    // The block and what it captures pass to the new task.
-    block.share();
-    block
+    }))
 }
 
 pub fn register(m: &mut super::Registry<NativeFn>) {
@@ -111,6 +117,8 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     native!(m, "Kernel#loop", kernel_loop);
     // A shareable procedure copies what it captures when it is made.
     native!(m, "Proc#__copy_captures", |i, r, _| Ok(snapshot(i, r)));
+    // A quoted block's closure: a snapshot, not shared (docs/14 §6).
+    native!(m, "Proc#__snapshot", |i, r, _| Ok(copy_captures(i, r)));
     native!(m, "Kernel#sleep", |i, _, a| {
         i.sleep(duration(i, a.arg(0))?)?;
         Ok(Value::Nil)

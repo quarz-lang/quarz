@@ -120,6 +120,15 @@ pub struct Output {
     /// as, from which the generated method takes its signature (docs/14
     /// §5).
     pub lifted_blocks: FxHashMap<NodeId, Type>,
+    /// Calls whose block literal is given as a `Quoted` (docs/14 §6), and
+    /// whether its procedure type has a receiver (the tree's `SelfRef`):
+    /// the lowering builds its tree.
+    #[serde(default)]
+    pub quoted_blocks: FxHashMap<NodeId, bool>,
+    /// The constants read in quoted blocks whose values are literals in
+    /// the tree (`Meta::Expr::Lit`), the others being captures.
+    #[serde(default)]
+    pub quoted_lits: rustc_hash::FxHashSet<NodeId>,
     /// The type arguments a call of a `static def` was resolved with (the
     /// callee's type parameters, bound), for the signatures of what it
     /// generates.
@@ -462,6 +471,9 @@ enum TableUndo {
     ),
     /// A node marked in `Output::varied_types`.
     Varied(NodeId),
+    /// A call's `Output::quoted_blocks` entry and `Checker::quoted_seen`
+    /// before a check changed them (docs/14 §6).
+    Quoted(NodeId, Option<bool>, Option<bool>, Option<(u32, Span)>),
     /// `Checker::logical_seen` of a node before a check changed it.
     Logical(NodeId, Option<LogicalSeen>),
     /// `Output::logical_calls` of a node before a check changed it.
@@ -663,6 +675,14 @@ pub struct Checker {
     logical_seen: HashMap<NodeId, LogicalSeen>,
     /// Files whose checks were read back (`mark_reused`).
     reused_files: rustc_hash::FxHashSet<u32>,
+    /// Whether each check of a call (a union receiver's members, a block
+    /// checked once per type) found its block parameter a `Quoted`: they
+    /// must agree, the call passing one value (docs/14 §6).
+    quoted_seen: HashMap<NodeId, bool>,
+    /// The calls whose checks disagreed on that, with where they are:
+    /// reported once the check ends (`flush_ambiguous`), so that the
+    /// order the checks ran in (a union's members) does not matter.
+    quoted_conflicts: HashMap<NodeId, (u32, Span)>,
     /// How many of `world.static_stmts` have been checked (and run):
     /// the extra units of a test run add theirs later.
     static_done: Vec<bool>,
@@ -790,6 +810,8 @@ impl Checker {
             logical_seen: HashMap::default(),
             reused_files: Default::default(),
             static_done: Vec::new(),
+            quoted_seen: HashMap::default(),
+            quoted_conflicts: HashMap::default(),
             repl_unit: None,
             op_given_up: Default::default(),
             world,
@@ -1408,6 +1430,20 @@ impl Checker {
                         None => map.remove(&key.0),
                     };
                 }
+                TableUndo::Quoted(id, blocks, seen, conflict) => {
+                    match conflict {
+                        Some(c) => self.quoted_conflicts.insert(id, c),
+                        None => self.quoted_conflicts.remove(&id),
+                    };
+                    match blocks {
+                        Some(r) => self.out.quoted_blocks.insert(id, r),
+                        None => self.out.quoted_blocks.remove(&id),
+                    };
+                    match seen {
+                        Some(q) => self.quoted_seen.insert(id, q),
+                        None => self.quoted_seen.remove(&id),
+                    };
+                }
                 TableUndo::Varied(id) => {
                     self.out.varied_types.remove(&id);
                 }
@@ -1477,6 +1513,18 @@ impl Checker {
 
     fn flush_ambiguous(&mut self) {
         self.table_journal.clear();
+        // The calls whose kept checks disagreed on taking a `Quoted`.
+        let mut conflicts: Vec<(u32, Span)> = std::mem::take(&mut self.quoted_conflicts)
+            .into_values()
+            .collect();
+        conflicts.sort_by_key(|(f, s)| (*f, s.start));
+        for (file, span) in conflicts {
+            self.error_in(
+                file,
+                "the methods this call may run take its block differently, one as a `Quoted`, another as a procedure: call them apart",
+                span,
+            );
+        }
         self.body_diagnostics.clear();
         self.diagnostics.append(&mut self.rescued);
         let kept = std::mem::take(&mut self.kept_ambiguous);
@@ -7494,6 +7542,14 @@ impl Checker {
             self.check_args_blindly(call);
             return Type::Nothing;
         }
+        if cid == self.world.builtin.quoted {
+            self.error(
+                "a `Quoted` is made from a block literal given for a `Quoted` block parameter (docs/14 §6), not with `new`",
+                expr.span,
+            );
+            self.check_args_blindly(call);
+            return Type::Nothing;
+        }
         // Instantiate class parameters: explicit args, the expected type, or
         // fresh inference variables.
         let targs: Vec<Type> = if !args.is_empty() {
@@ -8658,7 +8714,42 @@ impl Checker {
                 // becomes a method's body (docs/14 §5).
                 self.env.next_block_lifted =
                     m.is_native && m.owner == self.world.builtin.meta_classdef;
+                // `&cond: Quoted[P]`: the block is checked as a `P` and
+                // given as its tree (docs/14 §6).
+                // Recorded through the journal, so that a trial of an
+                // overload that loses leaves nothing behind and one kept
+                // keeps it (`discard_tables`).
+                let before = (
+                    self.out.quoted_blocks.get(&expr.id).copied(),
+                    self.quoted_seen.get(&expr.id).copied(),
+                    self.quoted_conflicts.get(&expr.id).copied(),
+                );
+                self.table_journal
+                    .push(TableUndo::Quoted(expr.id, before.0, before.1, before.2));
+                let (resolved, quoted) = match &resolved {
+                    Type::Class(c, args) if *c == self.world.builtin.quoted && args.len() == 1 => {
+                        let p = self.infer.resolve(&args[0]);
+                        let receiver = matches!(&p, Type::Proc(Some(_), ..));
+                        self.out.quoted_blocks.insert(expr.id, receiver);
+                        (p, true)
+                    }
+                    _ => {
+                        self.out.quoted_blocks.remove(&expr.id);
+                        (resolved, false)
+                    }
+                };
+                if self
+                    .quoted_seen
+                    .insert(expr.id, quoted)
+                    .is_some_and(|q| q != quoted)
+                {
+                    self.quoted_conflicts
+                        .insert(expr.id, (self.env.file, expr.span));
+                }
                 self.check_block_as(expr.id, b, &resolved, is_task);
+                if quoted {
+                    self.check_quotable_block(b);
+                }
                 self.env.next_block_lifted = false;
                 self.world.active_extensions.truncate(active_len);
             } else if let Some(Arg::BlockPass(e)) =
@@ -8667,7 +8758,18 @@ impl Checker {
                 match &e.kind {
                     ExprKind::Symbol(name) => {
                         // `&:name`: the block calls `name` on its argument.
-                        let Type::Proc(_, params, ret, _) = self.infer.resolve(&block_ty) else {
+                        let resolved = self.infer.resolve(&block_ty);
+                        if matches!(&resolved, Type::Class(c, _) if *c == self.world.builtin.quoted)
+                        {
+                            let msg = format!(
+                                "`&:{name}` cannot be given for a `Quoted` block parameter: write the block (`{{ |x| x.{name} }}`)"
+                            );
+                            if report {
+                                self.error(msg.clone(), e.span);
+                            }
+                            return Err(msg);
+                        }
+                        let Type::Proc(_, params, ret, _) = resolved else {
                             return Err("invalid block type".to_string());
                         };
                         if params.len() != 1 {
@@ -8861,6 +8963,185 @@ impl Checker {
             }
         }
         Ok(ret)
+    }
+
+    /// A block given as a `Quoted` (docs/14 §6) holds only what
+    /// `Meta::Expr` represents: each other construct is an error at its
+    /// node. The constants whose values become literals of the tree are
+    /// noted (`Output::quoted_lits`); checked after the block, so that
+    /// their types are known.
+    fn check_quotable_block(&mut self, b: &Block) {
+        for p in &b.params.list {
+            if p.kind != quarz_syntax::ast::ParamKind::Positional || p.default.is_some() {
+                self.error(
+                    "a quoted block takes plain parameters (no defaults, `*rest`, keywords or `&block`)",
+                    p.span,
+                );
+            }
+        }
+        for e in &b.body {
+            self.check_quotable(e);
+        }
+    }
+
+    fn check_quotable(&mut self, e: &Expr) {
+        let refuse = |what: &str| -> String {
+            format!(
+                "{what} cannot be quoted: a block given as a `Quoted` holds literals, variables, `self`, calls, `&&`, `||`, `!`, `if` and blocks (docs/14 §6)"
+            )
+        };
+        let what: &str = match &e.kind {
+            ExprKind::Nil
+            | ExprKind::True
+            | ExprKind::False
+            | ExprKind::SelfRef
+            | ExprKind::Int(_)
+            | ExprKind::Float(_)
+            | ExprKind::Bytes(_)
+            | ExprKind::Symbol(_)
+            | ExprKind::Local(_)
+            | ExprKind::IVar(_) => return,
+            ExprKind::Str(parts) => {
+                for part in parts {
+                    if let StrPart::Interp(x) = part {
+                        self.check_quotable(x);
+                    }
+                }
+                return;
+            }
+            ExprKind::Regexp { parts, .. } => {
+                if parts.iter().all(|p| matches!(p, StrPart::Lit(_))) {
+                    return;
+                }
+                "an interpolated regexp"
+            }
+            ExprKind::Array(items) => {
+                for a in items {
+                    match a {
+                        Arg::Positional(x) => self.check_quotable(x),
+                        _ => self.error(refuse("a splat"), e.span),
+                    }
+                }
+                return;
+            }
+            ExprKind::Hash(entries) => {
+                for h in entries {
+                    match h {
+                        HashEntry::Pair { key, value } => {
+                            self.check_quotable(key);
+                            self.check_quotable(value);
+                        }
+                        HashEntry::DoubleSplat(_) => self.error(refuse("a double splat"), e.span),
+                    }
+                }
+                return;
+            }
+            ExprKind::Const(_) => {
+                // A constant whose value is a literal, a class or data is
+                // part of the tree; any other is read at the call.
+                let t = self.out.node_types.get(&e.id).cloned();
+                let lit = match self.out.const_targets.get(&e.id) {
+                    Some(ConstTarget::Class(_) | ConstTarget::VariantSingleton(_)) => true,
+                    Some(ConstTarget::Const(_)) => t.is_some_and(|t| self.bakeable_type(&t)),
+                    None => false,
+                };
+                if lit {
+                    self.out.quoted_lits.insert(e.id);
+                }
+                return;
+            }
+            ExprKind::Call(call) => {
+                let ok = matches!(
+                    self.out.calls.get(&e.id),
+                    Some(CallTarget::Method { .. } | CallTarget::Constructor { .. })
+                );
+                if !ok {
+                    let message = refuse(&format!("`{}` here", call.name));
+                    self.error(message, e.span);
+                    return;
+                } else if call.safe_nav {
+                    "`&.`"
+                } else {
+                    if let Some(r) = &call.recv {
+                        self.check_quotable(r);
+                    }
+                    for a in &call.args {
+                        match a {
+                            Arg::Positional(x) => self.check_quotable(x),
+                            // `&:name`: a block calling `name`.
+                            Arg::BlockPass(x) if matches!(x.kind, ExprKind::Symbol(_)) => {}
+                            Arg::BlockPass(_) => {
+                                self.error(refuse("a block passed with `&`"), e.span)
+                            }
+                            Arg::Keyword { span, .. } => {
+                                self.error(refuse("a keyword argument"), *span)
+                            }
+                            Arg::Splat(_) | Arg::DoubleSplat(_) => {
+                                self.error(refuse("a splat"), e.span)
+                            }
+                        }
+                    }
+                    if let Some(b) = &call.block {
+                        self.check_quotable_block(b);
+                    }
+                    return;
+                }
+            }
+            ExprKind::And(a, b) | ExprKind::Or(a, b) => {
+                self.check_quotable(a);
+                self.check_quotable(b);
+                return;
+            }
+            ExprKind::Not(a) => {
+                self.check_quotable(a);
+                return;
+            }
+            ExprKind::If { cond, then, els } => {
+                self.check_quotable(cond);
+                for x in then.iter().chain(els.iter().flatten()) {
+                    self.check_quotable(x);
+                }
+                if then.len() > 1 || els.as_ref().is_some_and(|x| x.len() > 1) {
+                    "a branch of several statements"
+                } else {
+                    return;
+                }
+            }
+            // The expansion the checker chose (`ast::ForExpr`): calls with
+            // blocks.
+            ExprKind::For(f) => {
+                let x = if self.out.for_loops.contains(&e.id) {
+                    &f.each
+                } else {
+                    &f.comprehension
+                };
+                self.check_quotable(x);
+                return;
+            }
+            ExprKind::DSymbol(_) => "an interpolated symbol",
+            ExprKind::Range { .. } => "a range",
+            ExprKind::Lambda(_) => "a lambda",
+            ExprKind::Magic(_) => "a `__FILE__`-style name",
+            ExprKind::TypeApp(_) => "a type",
+            ExprKind::MethodRef { .. } => "a method reference",
+            ExprKind::Yield(_) => "`yield`",
+            ExprKind::Super { .. } => "`super`",
+            ExprKind::Assign { .. }
+            | ExprKind::OpAssign { .. }
+            | ExprKind::MultiAssign { .. }
+            | ExprKind::TypedDecl { .. } => "an assignment",
+            ExprKind::While { .. } => "a loop",
+            ExprKind::Case { .. } | ExprKind::CaseIn { .. } => "`case`",
+            ExprKind::MatchPattern { .. } => "a pattern match",
+            ExprKind::Begin(_) => "`begin`",
+            ExprKind::Return(_) => "`return`",
+            ExprKind::Break(_) => "`break`",
+            ExprKind::Next(_) => "`next`",
+            ExprKind::Retry => "`retry`",
+            ExprKind::Seq(_) => "a sequence",
+            _ => "a declaration",
+        };
+        self.error(refuse(what), e.span);
     }
 
     /// Check a block against the procedure type it is passed as.
@@ -9295,6 +9576,24 @@ impl Checker {
             );
         }
         let bt = self.env.block_type.clone();
+        // A `Quoted` is a value, not run with `yield` (docs/14 §6).
+        let quoted = self.world.builtin.quoted;
+        if matches!(&bt, Some(Type::Class(c, _)) if *c == quoted) {
+            self.error(
+                "`yield` cannot run a `Quoted` block: run its closure with `block.proc.call(...)`",
+                expr.span,
+            );
+            self.check_args_blindly(&Call {
+                recv: None,
+                name: String::new(),
+                args: args.to_vec(),
+                block: None,
+                safe_nav: false,
+                has_parens: true,
+                type_args: Vec::new(),
+            });
+            return Type::Nothing;
+        }
         let Some(bt) = bt.filter(|_| !self.env.block_optional) else {
             if self.env.block_optional {
                 self.error(
