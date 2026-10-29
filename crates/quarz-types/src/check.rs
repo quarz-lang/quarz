@@ -42,8 +42,13 @@ pub enum CallTarget {
     As { ty: Type, optional: bool },
     /// `respond_to?` folded to a constant.
     Constant(bool),
-    /// `raise ...`
-    Raise,
+    /// `raise ...`; with a class written by name (`raise K` or `raise K,
+    /// m`), the class and its `initialize`, which builds the exception
+    /// from the message (`K.new(m)`); without one, `K.new("K")` when the
+    /// flag is set, else `K.new()`.
+    Raise {
+        new: Option<(ClassId, MethodId, bool)>,
+    },
     /// `super(...)` resolved to the superclass method.
     Super { method: MethodId },
 }
@@ -4910,7 +4915,10 @@ impl Checker {
             }
             Retry => {
                 if self.env.in_rescue == 0 {
-                    self.error("`retry` outside of a rescue clause", expr.span);
+                    self.error(
+                        "`retry` outside of a rescue clause (it must be directly in one, not in a block)",
+                        expr.span,
+                    );
                 }
                 Type::Nothing
             }
@@ -9631,6 +9639,9 @@ impl Checker {
         // enclosing `self` stays reachable for calls it alone answers.
         let receiver = recv.as_ref().map(|t| self.resolve(t));
         let saved_self = self.enter_receiver(receiver.as_ref());
+        // `retry` belongs directly in a rescue clause, not in a block or
+        // lambda there (docs/01 §12).
+        let saved_rescue = std::mem::take(&mut self.env.in_rescue);
         self.env.frames.push(Frame {
             vars: Vars::default(),
             is_block: true,
@@ -9771,6 +9782,7 @@ impl Checker {
             );
         }
         let frame = self.env.frames.pop().unwrap();
+        self.env.in_rescue = saved_rescue;
         self.note_frame_vars(&frame);
         let breaks = self.env.blocks.pop().unwrap().breaks;
         if let Some((first, rest)) = breaks.split_first() {
@@ -9917,6 +9929,9 @@ impl Checker {
             .then(|| std::mem::take(&mut self.env.ivar_narrow));
         let mut param_types = Vec::new();
         let saved_self = self.enter_receiver(expected_recv.as_ref());
+        // `retry` belongs directly in a rescue clause, not in a block or
+        // lambda there (docs/01 §12).
+        let saved_rescue = std::mem::take(&mut self.env.in_rescue);
         self.env.frames.push(Frame {
             vars: Vars::default(),
             is_block: true,
@@ -9998,6 +10013,7 @@ impl Checker {
         (self.env.task_frame, self.env.task_shareable_proc) = saved_task_frame;
         (self.env.loop_depth, self.env.loop_exits) = saved_loop;
         let frame = self.env.frames.pop().unwrap();
+        self.env.in_rescue = saved_rescue;
         self.note_frame_vars(&frame);
         self.env.blocks.pop();
         self.leave_receiver(saved_self);
@@ -10298,22 +10314,67 @@ impl Checker {
         }
         let first = self.check_expr(args[0], None);
         let first = self.resolve(&first);
+        let mut new = None;
         match &first {
             Type::ClassObject(cid, _) => {
-                if !self.world.is_exception_class(*cid) {
-                    self.error(
-                        format!(
-                            "`{}` is not an exception class",
-                            self.world.class(*cid).name
-                        ),
-                        args[0].span,
-                    );
-                }
+                let cid = *cid;
                 if let Some(msg) = args.get(1) {
                     let t = self.check_expr(msg, None);
                     let s = self.world.string();
                     if !self.coerce(&t, &s) {
                         self.error("the exception message must be a String", msg.span);
+                    }
+                }
+                if !self.world.is_exception_class(cid) {
+                    self.error(
+                        format!("`{}` is not an exception class", self.world.class(cid).name),
+                        args[0].span,
+                    );
+                } else if !self.names_class(args[0]) {
+                    // A `Type[E]` value may be a subclass whose
+                    // `initialize` takes other arguments (as for `new`).
+                    self.error(
+                        "cannot raise a class value: its `initialize` is not known; raise the class by name or build the exception",
+                        args[0].span,
+                    );
+                } else if self.world.class(cid).is_abstract {
+                    self.error(
+                        format!("cannot instantiate `{}`", self.world.class(cid).name),
+                        args[0].span,
+                    );
+                } else if self.has_own_new(cid) {
+                    // (`raise` builds with `initialize`, not a `new` the
+                    // class defines.)
+                    self.error(
+                        format!(
+                            "`{0}` defines or inherits `self.new`: build the exception (`{0}.new(...)`) and raise it",
+                            self.world.class(cid).name
+                        ),
+                        args[0].span,
+                    );
+                } else {
+                    // Built as `K.new(message)`; without one, as
+                    // `K.new("K")`, or `K.new()` when `initialize` takes
+                    // no String but needs nothing (`SystemExit`).
+                    let with_message = args.len() > 1;
+                    let found = match self.initialize_taking_string(cid) {
+                        Some(init) => Some((cid, init, true)),
+                        None if !with_message => self
+                            .initialize_taking_nothing(cid)
+                            .map(|init| (cid, init, false)),
+                        None => None,
+                    };
+                    let name = self.world.class(cid).name.clone();
+                    match found {
+                        Some(n) => new = Some(n),
+                        None if with_message => self.error(
+                            format!("`raise {name}, message` builds `{name}.new(message)`, but `{name}#initialize` does not take one String: build the exception and raise it"),
+                            args[0].span,
+                        ),
+                        None => self.error(
+                            format!("`raise {name}` builds `{name}.new(\"{name}\")` or `{name}.new`, but `{name}#initialize` takes neither: build the exception and raise it"),
+                            args[0].span,
+                        ),
                     }
                 }
             }
@@ -10346,8 +10407,101 @@ impl Checker {
             }
             _ => self.error(format!("cannot raise {}", self.name(&first)), args[0].span),
         }
-        self.out.calls.insert(expr.id, CallTarget::Raise);
+        self.out.calls.insert(expr.id, CallTarget::Raise { new });
         Type::Nothing
+    }
+
+    /// Whether `e` names a class (or an alias of one), rather than giving
+    /// a class value that may be a subclass.
+    fn names_class(&self, e: &Expr) -> bool {
+        match self.out.const_targets.get(&e.id) {
+            Some(ConstTarget::Class(_)) => true,
+            Some(ConstTarget::Const(c)) => {
+                matches!(
+                    self.world.through_alias(Member::Const(*c)),
+                    Member::Class(_)
+                )
+            }
+            _ => false,
+        }
+    }
+
+    /// The `initialize` a `cid.new()` runs, when one needs no argument.
+    fn initialize_taking_nothing(&self, cid: ClassId) -> Option<MethodId> {
+        let mut cur = Some(cid);
+        while let Some(c) = cur {
+            let class = self.world.class(c);
+            if let Some(ids) = class.methods.get("initialize") {
+                return ids.iter().copied().find(|&m| {
+                    self.world.method(m).params.iter().all(|p| {
+                        p.default.is_some()
+                            || matches!(p.kind, ParamKind::Rest | ParamKind::KeywordRest)
+                    })
+                });
+            }
+            cur = class.superclass.as_ref().and_then(|t| match t {
+                Type::Class(id, _) => Some(*id),
+                _ => None,
+            });
+        }
+        None
+    }
+
+    /// Whether `cid` or a superclass defines a singleton `new`.
+    fn has_own_new(&self, cid: ClassId) -> bool {
+        let mut cur = Some(cid);
+        while let Some(c) = cur {
+            let class = self.world.class(c);
+            if class.singleton_methods.contains_key("new") {
+                return true;
+            }
+            cur = class.superclass.as_ref().and_then(|t| match t {
+                Type::Class(id, _) => Some(*id),
+                _ => None,
+            });
+        }
+        false
+    }
+
+    /// The `initialize` a `cid.new(message)` runs, when one takes a single
+    /// positional String (its other parameters optional): of a class's
+    /// own overloads, one taking exactly a String first, as overload
+    /// resolution picks.
+    fn initialize_taking_string(&self, cid: ClassId) -> Option<MethodId> {
+        let s = self.world.string();
+        let mut cur = Some(cid);
+        while let Some(c) = cur {
+            let class = self.world.class(c);
+            if let Some(ids) = class.methods.get("initialize") {
+                let fits = |m: MethodId| {
+                    let params = &self.world.method(m).params;
+                    params.first().is_some_and(|p| {
+                        p.kind == ParamKind::Positional && self.world.is_subtype(&s, &p.ty)
+                    }) && params[1..].iter().all(|p| {
+                        p.default.is_some()
+                            || matches!(p.kind, ParamKind::Rest | ParamKind::KeywordRest)
+                    })
+                };
+                // The most specific: one whose String parameter's type is
+                // within every other fitting one's (as `new` resolves).
+                let fitting: Vec<MethodId> = ids.iter().copied().filter(|&m| fits(m)).collect();
+                let first_ty = |m: MethodId| self.world.method(m).params[0].ty.clone();
+                return fitting
+                    .iter()
+                    .copied()
+                    .find(|&m| {
+                        fitting
+                            .iter()
+                            .all(|&o| self.world.is_subtype(&first_ty(m), &first_ty(o)))
+                    })
+                    .or_else(|| fitting.first().copied());
+            }
+            cur = class.superclass.as_ref().and_then(|t| match t {
+                Type::Class(id, _) => Some(*id),
+                _ => None,
+            });
+        }
+        None
     }
 
     fn check_type_test(&mut self, expr: &Expr, call: &Call, recv: &Expr) -> Type {

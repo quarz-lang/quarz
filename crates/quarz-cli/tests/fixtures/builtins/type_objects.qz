@@ -50,11 +50,3 @@ def kind(x: Object) -> String
   end
 end
 p kind(Post), kind(1), kind("s")
-def fail(k: Type[StandardError], message: String) -> Nothing
-  raise k, message
-end
-begin
-  fail(ArgumentError, "bad")
-rescue ArgumentError => e
-  p e.class.name, e.message
-end

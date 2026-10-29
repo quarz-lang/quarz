@@ -3145,6 +3145,55 @@ impl<'a> FnBuilder<'a> {
                 return dst;
             }
             Some(CallTarget::Constant(b)) => return self.load_const(Constant::Bool(*b)),
+            // `raise K, m`: `K.new(m)` raised (`K.new("K")` or `K.new()`
+            // without a message), its `initialize` and field defaults run.
+            Some(CallTarget::Raise {
+                new: Some((class, init, named)),
+            }) => {
+                let (class, init, named) = (*class, *init, *named);
+                let msg = match call.args.get(1) {
+                    Some(Arg::Positional(m)) => vec![self.expr(m)],
+                    _ if named => {
+                        let name = self.world.class(class).name.clone();
+                        vec![self.load_const(Constant::Str(name))]
+                    }
+                    _ => Vec::new(),
+                };
+                let exc = self.reg();
+                self.emit_call(
+                    e.id,
+                    Inst::Call {
+                        dst: exc,
+                        kind: CallKind::Construct {
+                            class,
+                            init: Some(init),
+                        },
+                        recv: None,
+                        args: msg,
+                        splat: false,
+                        kw: Vec::new(),
+                        kw_splat: None,
+                        block: None,
+                        moved: 0,
+                    },
+                );
+                let dst = self.reg();
+                self.emit_call(
+                    e.id,
+                    Inst::Call {
+                        dst,
+                        kind: CallKind::Raise,
+                        recv: None,
+                        args: vec![exc],
+                        splat: false,
+                        kw: Vec::new(),
+                        kw_splat: None,
+                        block: None,
+                        moved: 0,
+                    },
+                );
+                return dst;
+            }
             _ => {}
         }
         let mut a = self.args(&call.args);
@@ -3277,7 +3326,7 @@ impl<'a> FnBuilder<'a> {
                 }
             }
             Some(CallTarget::ProcCall) => CallKind::ProcCall,
-            Some(CallTarget::Raise) => CallKind::Raise,
+            Some(CallTarget::Raise { .. }) => CallKind::Raise,
             Some(CallTarget::Super { method }) => CallKind::Super(*method),
             Some(CallTarget::IsA(_))
             | Some(CallTarget::As { .. })
