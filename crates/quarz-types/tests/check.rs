@@ -2502,3 +2502,65 @@ fn static_declarations() {
     // `Type` is not for subclassing outside the prelude.
     err("class K < Type[Int]; end", "cannot inherit from `Type`");
 }
+
+#[test]
+fn narrowing_holds_only_where_the_test_succeeded() {
+    // A `Box[T]` tested with a subclass that fixes its argument
+    // (`IntBox < Box[Int]`): `T` may be `Int`, so the branch is a live
+    // `IntBox`, checked.
+    let boxes = "class Box[T]\n  @v: T\n  def initialize(@v: T)\n  end\nend\nclass IntBox < Box[Int]\nend\n";
+    err(
+        &format!("{boxes}class W[T]\n  def f(b: Box[T]) -> Int\n    if b.is_a?(IntBox)\n      s: String = b\n      return 1\n    end\n    0\n  end\nend"),
+        "cannot assign IntBox to `s` of type String",
+    );
+    ok(&format!("{boxes}class W[T]\n  def f(b: Box[T]) -> Int\n    if b.is_a?(IntBox)\n      i: IntBox = b\n      return 1\n    end\n    0\n  end\nend"));
+    // An existing local an `in` test binds holds the binding's type only
+    // where it matched: elsewhere it may be either.
+    let p = "data P = (a: Int, b: Int)\n";
+    err(
+        &format!("{p}def h(p: P | Int, y: Int | String) -> Int\n  return 0 unless y.is_a?(String)\n  if p in P(y, 9)\n    return 1\n  end\n  y + 1\nend"),
+        "expects String but found Int",
+    );
+    ok(&format!("{p}def h(p: P | Int, y: Int | String) -> Int\n  return 0 unless y.is_a?(String)\n  if p in P(y, 9)\n    return y + 1\n  end\n  0\nend"));
+    // A pattern that rebinds its subject leaves it the binding's type.
+    let l = "enum L\n  variant Cons(h: Int, tail: L)\n  variant E\nend\n";
+    err(
+        &format!("{l}def f(l: L) -> Int\n  case l\n  in L::Cons(_, l) then l.h\n  in L::E then 0\n  end\nend"),
+        "undefined method `h` for L",
+    );
+    err(
+        &format!("{l}def f(l: L) -> Int\n  if l in L::Cons(_, l)\n    return l.h\n  end\n  0\nend"),
+        "undefined method `h` for L",
+    );
+    ok(&format!("{l}def f(l: L) -> Int\n  case l\n  in L::Cons(_, L::Cons => l) then l.h\n  in L::Cons(h, _) then h\n  in L::E then 0\n  end\nend"));
+    // Without a rebinding arm before, the subject narrows as usual.
+    ok(&format!("{l}def f(l: L) -> Int\n  case l\n  in L::Cons(h, _) then h + l.h\n  in L::E then 0\n  end\nend"));
+    // In `case ... in`, an arm may fail after binding (or by its guard):
+    // the later arms, `else` and what follows see either type.
+    let ys =
+        "def h(p: P | Int, y: Int | String) -> Int\n  return 0 unless y.is_a?(String)\n  case p\n";
+    for rest in [
+        "  in P(y, 9) then 1\n  in _ then y.size\n  end\nend",
+        "  in P(y, 9) then 1\n  else y.size\n  end\nend",
+        "  in P(y, _) if y > 100 then 1\n  in _ then y.size\n  end\nend",
+        "  in P(y, 9) then return 1\n  in _ then 0\n  end\n  y.size\nend",
+        "  in P(_, _) if (y = 5) == 0 then 1\n  in _ then y.size\n  end\nend",
+    ] {
+        err(&format!("{p}{ys}{rest}"), "undefined method `size` for Int");
+    }
+    // A guard that only tests a field keeps what it was narrowed to.
+    ok(&format!("{p}class C\n  @x: Int | String | Nil\n  def initialize\n    @x = 1\n  end\n  def takes(v: Int | String) -> Int = 1\n  def k(p: P | Int) -> Int\n    return 0 if @x.nil?\n    case p\n    in P(_, _) if @x.is_a?(String) then 1\n    in _ then takes(@x)\n    end\n  end\nend"));
+    // A field a failing guard assigned.
+    err(
+        &format!("{p}class C\n  @x: Int?\n  def initialize(p: P | Int)\n    @x = 1\n    case p\n    in P(_, _) if (@x = nil).nil? && false then puts 1\n    in _ then puts @x + 1\n    end\n  end\nend"),
+        "undefined method `+` for Nil",
+    );
+    err(
+        "def h(x: Int | Array[Int]) -> Int\n  case x\n  in [x, 1] then 1\n  in Array then x.size\n  in Int then 0\n  end\nend",
+        "undefined method `size` for Int",
+    );
+    err(
+        &format!("{l}def f(l: L) -> Int\n  case l\n  in L::Cons(_, l) if false then 0\n  in L::Cons then l.h\n  in L::E then 0\n  end\nend"),
+        "undefined method `h` for L",
+    );
+}
