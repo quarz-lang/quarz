@@ -270,9 +270,26 @@ structure Where where
   /-- In a method with a named block parameter: it, a procedure (its
   `yield` calls it). -/
   blkProc : Option (String × Ty) := none
+  /-- In a `rescue` clause: its variable, a local of its own (quarz#126),
+  by the model's name for it. -/
+  renames : List (String × String) := []
 
 /-- Converting a body, with the locals so far. -/
 abbrev CM := ReaderT Where (StateT Locals M)
+
+/-- The model's name of a local: a `rescue` clause's variable is its own. -/
+def localName (x : String) : CM String := do
+  pure (((← read).renames.find? (·.1 == x)).map (·.2) |>.getD x)
+
+/-- (A pattern binding a `rescue` clause's variable: out of range.) -/
+def noRenamedBind (names : List (String × Ty)) : CM Unit := do
+  for (x, _) in names do
+    if (← read).renames.any (·.1 == x) then throw s!"a pattern binding the rescue variable {x}"
+
+/-- A block's or a lambda's body: its parameters hide a `rescue`
+clause's variable of their names. -/
+def hidingParams {α} (ps : List String) (k : CM α) : CM α :=
+  withReader (fun w => { w with renames := w.renames.filter fun (x, _) => !ps.contains x }) k
 
 def positional (a : Json) : M Json := do
   match ← variant a with
@@ -406,14 +423,6 @@ partial def daWalk (inBlk : List String) (s : Option (List String)) (e : Expr) :
     pure ⟨ra.out, ra.ff, ra.tt⟩
   | _ => pure (.plain s)
 
-/-- The clause variables of a handler: the locals it assigns the
-exception (held in `x`). -/
-partial def clauseVars (x : String) : Expr → List String
-  | .assign y (.var z _) => if z == x then [y] else []
-  | .seq a b | .and a b | .or a b | .while a b => clauseVars x a ++ clauseVars x b
-  | .ite c t e => clauseVars x c ++ clauseVars x t ++ clauseVars x e
-  | _ => []
-
 /-- The names of a method by where the Rust checker declares them, in
 source order: the method's (`method`: its parameters and the names it
 assigns first), the blocks' own (assigned first in a block), and block
@@ -477,13 +486,7 @@ partial def scopeWalk (inBlock : Bool) (e : Expr) : StateT Scopes M Unit := do
   | .callProc f as => walk f; for a in as do walk a
   | .rescue b x h els =>
     walk b
-    -- In a block, a clause's variable (assigned the exception, `x`) is a
-    -- new local of the block unless the block has one (Rust: at depth 0),
-    -- not the method's of that name.
-    let st ← get
-    for y in clauseVars x h do
-      if inBlock && st.method.contains y && !st.cur.contains y then
-        throw s!"{y}: a rescue variable in a block, named like a local outside it"
+    -- (A clause's variable is a local of its own, named apart.)
     walk (.assign x .nil); walk h; walk els
   | .ensure b e => walk b; walk e
   | _ => pure ()
@@ -803,7 +806,7 @@ partial def expr (T : Tables) (e : Json) : CM Expr := do
     let args ← interps.mapM (expr T)
     let tys ← interps.mapM fun x => do T.nodeTy (← nat (← field x "id"))
     pure (.prim "interpolate" args tys [.str])
-  | "Local" => pure (.var (← str v) (← T.nodeTy id))
+  | "Local" => pure (.var (← localName (← str v)) (← T.nodeTy id))
   | "IVar" =>
     -- A field a built-in exception class declares (`@message`): not one
     -- of the model's.
@@ -823,7 +826,7 @@ partial def expr (T : Tables) (e : Json) : CM Expr := do
     let vt ← T.nodeTy (← nat (← field (← field v "value") "id"))
     match ← variant (← field v "target") with
     | ("Local", l) =>
-      let x ← str (← field l "name")
+      let x ← localName (← str (← field l "name"))
       modify (addLocal · x vt)
       pure (.assign x value)
     | ("IVar", f) => pure (.setField (← str f) value)
@@ -995,25 +998,28 @@ partial def beginE (T : Tables) (id : Nat) (v : Json) (stmt : Bool) : CM Expr :=
             let cj ← T.cls cid
             let some q := T.qclass (← nat (← field cj "id")) | throw "a rescue class out of range"
             pure (Atom.cls q [])
-      -- A variable named in several clauses: one local, of their classes.
-      let vars ← rescues.filterMapM fun r => do
-        match ← field r "var" with
-        | .null => pure none
-        | x => pure (some (← str x, ← clauseAtoms r))
-      for (x, _) in vars do
-        modify (addLocal · x (vars.filter (·.1 == x) |>.flatMap (·.2)).eraseDups)
-      let clauses ← rescues.mapM fun r => do
+      -- A clause's variable: a local of the clause (quarz#126), fresh,
+      -- shadowing one outside, unseen after it.
+      let clauses ← rescues.zipIdx.mapM fun (r, ci) => do
         let atoms ← clauseAtoms r
         let stmts := (← arr (← field r "body")).toList
         if retries then
           unless ← retryTail stmts do throw "a retry not at the end of its clause"
           if stmts.any (fun j => (j.compress.splitOn "\"Begin\"").length > 1) then
             throw "a begin in a clause that retries"
-        let hb ← withReader (fun w => { w with exc := some tmp, retryFlag := if retries then some flag else none })
+        let var ← match ← field r "var" with
+          | .null => pure none
+          | x => do
+            let x ← str x
+            let xr := s!"{x}#r{id}.{ci}"
+            modify (addLocal · xr atoms)
+            pure (some (x, xr))
+        let rf := if retries then some flag else none
+        let hb ← withReader (fun w => { w with exc := some tmp, retryFlag := rf, renames := var.toList ++ w.renames })
           (body T (← arr (← field r "body")))
-        let hb ← match ← field r "var" with
-          | .null => pure hb
-          | x => pure (Expr.seq (.assign (← str x) (.var tmp atoms)) hb)
+        let hb := match var with
+          | none => hb
+          | some (_, xr) => Expr.seq (.assign xr (.var tmp atoms)) hb
         pure (atoms, hb)
       let handler := clauses.foldr (fun (atoms, hb) rest =>
         match atoms.map (fun a => Expr.isA (.var tmp excTy) a) with
@@ -1058,7 +1064,7 @@ partial def subject (T : Tables) (tmp : String) (subjJ : Json) (stTy : Ty) :
     modify (addLocal · tmp stTy)
     pure (Expr.assign tmp e, fun t => Expr.var tmp t, none)
   match ← variant (← field subjJ "kind") with
-  | ("Local", x) => do let x ← str x; pure (Expr.nil, fun t => Expr.var x t, some x)
+  | ("Local", x) => do let x ← localName (← str x); pure (Expr.nil, fun t => Expr.var x t, some x)
   | ("IVar", f) => do
     let f ← str f
     -- (`@f`: a field, which only `initialize` may assign.)
@@ -1087,6 +1093,7 @@ partial def caseIn (T : Tables) (id : Nat) (v : Json) : CM Expr := do
   let armsJ := (← arr (← field v "arms")).toList
   let arms ← (List.range armsJ.length).zip armsJ |>.mapM fun (i, arm) => do
     let c ← compilePat T s!"case#{id}#{i}" rd st stTy (← field arm "pattern")
+    noRenamedBind c.names
     let guard ← match ← field arm "guard" with
       | .null => pure none
       | g =>
@@ -1151,6 +1158,7 @@ partial def matchPattern (T : Tables) (id : Nat) (v : Json) : CM Expr := do
   let before ← get
   let (pre, rd, subjLocal) ← subject T s!"match#{id}" valJ stTy
   let c ← compilePat T s!"match#{id}#0" rd st stTy (← field v "pattern")
+  noRenamedBind c.names
   if let some x := subjLocal then
     if c.names.any (·.1 == x) then throw "a match whose pattern assigns its subject"
   declarePat before c
@@ -1369,7 +1377,7 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
           if (← get).any (fun (y, u) => y == x && u != t) then
             throw s!"block parameter {x} of two types"
           modify (addLocal · x t)
-        let bd ← body T (← arr (← field blk "body"))
+        let bd ← hidingParams ps (body T (← arr (← field blk "body")))
         if hasRet bd then throw "a return in a block"
         let bd := if (← str (← field rj "t")) == "void" then Expr.seq bd .nil else bd
         return .callBlk (.prim ("#builtin " ++ name) pargs pparams pret) name [.prim "#sig" [] tys sret] ps bd
@@ -1518,7 +1526,7 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
             throw s!"block parameter {x} of two types"
           modify (addLocal · x t)
       | _ => throw "a block type"
-      let bd ← body T (← arr (← field b "body"))
+      let bd ← hidingParams ps (body T (← arr (← field b "body")))
       -- A `return` from a block is not in v1.
       if hasRet bd then throw "a return in a block"
       -- `-> Void`: its value discarded, nil.
@@ -1543,7 +1551,7 @@ partial def lambdaOf (T : Tables) (names : List String) (pts : List Ty) (ret : T
   -- then its own (first assigned in it).
   set ((names.zip pts ++ around : Locals))
   let bd ← withReader (fun w => { w with exc := none, retryFlag := none, captured := around })
-    (body T bodyJ)
+    (hidingParams names (body T bodyJ))
   let mine ← get
   set outer
   let own := mine.drop (names.length + around.length)
@@ -1681,7 +1689,7 @@ def method (T : Tables) (owner : Nat) (m : Json) (d : Json) : M Method := do
       | .null => pure 0
       | t => pure (← T.tyClass t).1
     pure (some (params, sup))
-  let w : Where := ⟨owner == 1, init, some (← nat (← field m "owner")), none, none, [], bproc⟩
+  let w : Where := ⟨owner == 1, init, some (← nat (← field m "owner")), none, none, [], bproc, []⟩
   let (bd, ls) ← ((body T (← arr (← field d "body"))).run w).run params
   -- (`yield` runs the block given, whatever the parameter holds later.)
   if let some (n, _) := bproc then
@@ -1896,17 +1904,17 @@ def program (j : Json) : M Program := do
     match ← field k "value" with
     | .null => throw "a constant with no initializer"
     | v =>
-      let (bd, ls) ← ((expr T v).run ⟨true, none, none, none, none, [], none⟩).run []
+      let (bd, ls) ← ((expr T v).run ⟨true, none, none, none, none, [], none, []⟩).run []
       pure (⟨1, "const " ++ (← str (← field k "name")), [], ty, none, ls, bd⟩ : Method)
   let some mainUnit := units.back? | throw "no unit"
-  let (mainBody, mainLocals) ← ((body T (← arr (← field mainUnit "body"))).run ⟨true, none, none, none, none, [], none⟩).run []
+  let (mainBody, mainLocals) ← ((body T (← arr (← field mainUnit "body"))).run ⟨true, none, none, none, none, [], none, []⟩).run []
   let all : Ty := [.nil, .bool, .int, .str, .cls 0 []]
   -- A default that tests or loops, with a bounded parameter anywhere (it
   -- is checked in each inheriting class): out of range, as in `method`.
   let bounded ← user.anyM fun c => do
     (← arr (← field c "type_params")).anyM fun p => do pure !(← arr (← field p "bounds")).isEmpty
   let defaults ← fdefs.toList.mapM fun e => do
-    let (x, ls) ← ((expr T (← field e "value")).run ⟨false, none, none, none, none, [], none⟩).run []
+    let (x, ls) ← ((expr T (← field e "value")).run ⟨false, none, none, none, none, [], none, []⟩).run []
     unless ls.isEmpty do throw "a field default with locals"
     if bounded && narrows x then throw "a test in a default with a bounded parameter"
     pure x

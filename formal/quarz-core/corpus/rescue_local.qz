@@ -1,0 +1,33 @@
+# A rescue clause's variable is a local of the clause (quarz#126): fresh,
+# shadowing one outside, unseen after the clause.
+class E1 < StandardError
+end
+class E2 < StandardError
+end
+def m(k: Int) -> Int
+  e = 5
+  begin
+    raise E1.new("a") if k == 1
+    raise E2.new("b") if k == 2
+    0
+  rescue E1 => e
+    e.message.size
+  rescue E2 => e
+    e.message.size + 10
+  end
+  e
+end
+def n -> Int
+  t = 0
+  [1, 2].each do |x|
+    begin
+      raise "x" if x > 1
+    rescue => err
+      t = t + err.message.size
+    end
+  end
+  t
+end
+puts m(1)
+puts m(2)
+puts n
