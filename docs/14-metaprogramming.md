@@ -6,7 +6,7 @@ The mechanisms:
 
 | Mechanism | Role | Counterpart |
 |---|---|---|
-| `static def` | A method, checked and lowered like any other, that a class body's statement can run at compile time | Zig's `comptime` calls, Scala 3's `inline` |
+| `static def` | A method, checked and lowered like any other, that a class body's statement can run at compile time | D's CTFE, Zig's `comptime` calls, Scala 3's `inline` |
 | `static` statement | A call, in a class body, of a `static def` class method of a dependency | A Rails class macro (`has_many`), run when the class is compiled |
 | `Meta` | What compile-time code sees of the program: `Meta::ClassDef` (the class being declared), `Meta::Field`, `Meta::MethodSig` | `Module#instance_methods` and friends, at compile time only |
 
