@@ -1,0 +1,102 @@
+# Patterns within QCore's range (formal/quarz-core, P3): field patterns
+# on `data` types and variants (positional and named), alternatives,
+# value patterns, guards, captures of any pattern, `in` and `=>` as
+# expressions, and comparisons with a variant without data.
+enum Shape
+  variant Circle(r: Int)
+  variant Rect(w: Int, h: Int)
+  variant Dot
+end
+
+data Pt = (x: Int, y: Int)
+
+def area(s: Shape) -> Int
+  case s
+  in Shape::Circle(r) then 3 * r * r
+  in Shape::Rect(w:, h:) then w * h
+  in Shape::Dot then 0
+  end
+end
+
+def square?(s: Shape) -> Bool
+  case s
+  in Shape::Rect(w, h) if w == h then true
+  in Shape::Rect | Shape::Circle then false
+  in Shape::Dot then true
+  end
+end
+
+def describe(x: Int | String | Nil | Bool) -> String
+  case x
+  in 0 then "zero"
+  in Int => n unless n < 0 then "positive"
+  in Int then "negative"
+  in "" then "empty"
+  in String => t then t
+  in nil then "nil"
+  in Bool then "bool"
+  end
+end
+
+def yes?(b: Bool?) -> String
+  case b
+  in true then "yes"
+  in false | nil then "no"
+  else "?"
+  end
+end
+
+def origin?(p: Pt) -> Bool
+  case p
+  in Pt(x: 0, y: 0) then true
+  else false
+  end
+end
+
+def big(s: Shape) -> Int
+  case s
+  in Shape::Circle(r: Int => q) if q > 2 then q
+  in Shape::Circle(r:) then -r
+  else 0
+  end
+end
+
+def dot?(s: Shape) -> Bool
+  s == Shape::Dot
+end
+
+def width(s: Shape) -> Int
+  if s != Shape::Dot && s in Shape::Rect(w, _)
+    w
+  else
+    0
+  end
+end
+
+def must(s: Shape) -> Int
+  s => Shape::Circle(r)
+  r
+end
+
+puts area(Shape::Circle.new(2))
+puts area(Shape::Rect.new(2, 3))
+puts square?(Shape::Rect.new(2, 2))
+puts square?(Shape::Circle.new(1))
+puts describe(0)
+puts describe(5)
+puts describe(-5)
+puts describe("")
+puts describe("s")
+puts describe(nil)
+puts describe(true)
+puts yes?(true)
+puts yes?(nil)
+puts origin?(Pt.new(0, 0))
+puts origin?(Pt.new(0, 1))
+puts big(Shape::Circle.new(3))
+puts big(Shape::Circle.new(1))
+puts dot?(Shape::Dot)
+puts dot?(Shape::Circle.new(1))
+puts width(Shape::Rect.new(4, 1))
+puts width(Shape::Dot)
+puts must(Shape::Circle.new(7))

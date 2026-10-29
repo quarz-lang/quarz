@@ -106,8 +106,8 @@ undefined), and one whose bound is `Nothing` is vacuous (no value).
 
 Not in v1 (design in `/tmp`, kept by the maintainers): closures (lambdas,
 named blocks, what a closure assigns being un-narrowed from where it is
-made), patterns but class tests and bindings in `case/in`, generic
-`data` types and `enum`s, `rescue`/`ensure`, `super`
+made), array, hash, find, range and pin patterns, generic `data`
+types and `enum`s, `rescue`/`ensure`, `super`
 outside `initialize` (Ruby's `super` in other methods), in a block of
 it, or with a block, Shareable and tasks, extensions and overloads. Of
 generics: method type parameters and lower bounds `U >: T`, the
@@ -229,9 +229,24 @@ stricter, not unsound.
   a `static` statement generated (docs/14 §5: their bodies are not in
   the tree) and `Type[T]` types are out of range; a `data` type without
   type parameters is in range, so is an `enum` (its variants, a
-  variant without data written as its value); `case/in` becomes tests: an
-  arm `in C` (`in C => x`) an `is_a?(C)` (and `x` assigned), `in x` an
-  assignment taking the rest; without `else`, a closed subject (variants,
+  variant without data written as its value); patterns become tests and
+  assignments in the translator, the model having none: `C` an
+  `is_a?(C)`, `C(p, ...)` and `C(k: p, ...)` (a `data` type's or a
+  variant's fields) that test, then each field read into a temporary
+  and matched (a field pattern matching every value of the field's type
+  tests nothing, as the Rust checker's coverage has it), `p | q` an
+  `||` (without bindings), `nil`, `true`, `false` the tests of them, a
+  number `(is_a?(Int) || is_a?(Float)) &&` an opaque equality (another
+  numeric class's equal number matches too, docs/02 §6), a string
+  `is_a?(String) &&` one, `x` and `p => x` assignments, made where the
+  compiled program makes them (a binding before a field test that fails
+  stays made); a guard follows the pattern's test and assignments. The
+  tests read the subject again where the program reads it once: a
+  `case` or match whose pattern or guard may assign its subject is out
+  of range. `case/in` is its arms' tests in
+  order, `v => p` raises where `p`'s test fails, `v in p` is its test,
+  and `x == V` (`!=`) with a variant `V` without data an `is_a?(V)` (out
+  of range if the program defines `==` or `!=`). Without `else`, a closed subject (variants,
   `data`, `nil`, `Bool`, as the Rust checker's `is_closed_type`, or
   more than one member once enums are expanded) ends in `absurd`, so the
   checker requires the arms to cover it (an enum is expanded to its
@@ -244,8 +259,7 @@ stricter, not unsound.
   arm's). Later arms see the subject
   narrowed by the earlier ones' false sides, and arms after an `in x`
   are not checked, where the Rust checker checks each arm with the whole
-  subject type: more lenient, not unsound. Guards and other patterns
-  are out of range. A `data` type without
+  subject type: more lenient, not unsound. A `data` type without
   type parameters is in range (its generated `initialize` assigns each
   field in order; `to_h`, and `with` without keyword arguments, are
   built-in calls); the model's `!=` is `!(==)`, so a program defining
