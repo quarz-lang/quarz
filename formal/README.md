@@ -122,8 +122,7 @@ outside `initialize` (Ruby's `super` in other methods), in a block of
 it, or with a block, Shareable and tasks, extensions and overloads. Of
 generics: method type parameters and lower bounds `U >: T` (but a
 built-in call's, which the translator instantiates), the built-in
-generic classes but `Array` (`Hash`, `Range`, `Set`), a block given to a
-built-in method, and `is_a?(C[args])` where the static type does
+generic classes but `Array` (`Hash`, `Range`, `Set`), and `is_a?(C[args])` where the static type does
 not fix the arguments but for `Object` arguments of covariant
 parameters (docs/02 §7: the Rust checker rejects the rest too, as it
 does `is_a?(C)` of a generic class without arguments).
@@ -308,6 +307,20 @@ stricter, not unsound.
   `Array` is the declaration's, not checked against element reads).
   `xs == nil` of an array narrows nothing (a class atom is not final),
   stricter than the Rust checker.
+  A block given to a built-in method (`each`, `map`, `times`) is the
+  translator's alone (design §14, part B): scoped as a block (its own
+  locals and parameters, the two-locals rule), it becomes the call,
+  its result held in a fresh local, then a loop running the body any
+  number of times (`while` on a built-in `Bool`), its parameters
+  assigned values of their types from built-in calls and its value
+  given to one taking the block's result type, then the result. So
+  `while`'s rule types it: the body starts with what it assigns and the
+  pinned locals un-narrowed, and after it so are they, the rest kept. A
+  `break`, `next` or `return` in such a block is out of range, as are a
+  block the built-in keeps (`at_exit`'s, run later), one in a field
+  default, and an annotated block parameter. (A model
+  construct, `primBlk`, would be the alternative if a proof needs to
+  tell such a block from a loop.)
   A procedure type `(A1, .., An) -> R` is the model's class
   `ProcN[in A1, .., in An, out R]` (kind `proc`: right below `Object`,
   without fields, no method, nothing below it and no `new` of it; its

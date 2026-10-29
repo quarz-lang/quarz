@@ -1233,7 +1233,11 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
     if ← T.methods.anyM (fun m => do
         pure ((← str (← field m "name")) == "!=" && (← field m "native") != .bool true)) then
       throw "a user-defined !="
-    if (← lit a) == "Nil" then return .neNil r
+    match ← lit a with
+    | "Nil" => return .neNil r
+    | "True" => return .not (.eqTrue r)
+    | "False" => return .not (.eqFalse r)
+    | _ => pure ()
   | _, _, _, _ => pure ()
   match ← str (← field target "t") with
   | "is_a" =>
@@ -1333,8 +1337,42 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
       -- A built-in method: its declared types. On the implicit receiver,
       -- it takes `self` (it may read its fields), but a `Kernel`
       -- function.
-      unless blk == .null do throw s!"a block given to built-in {name}"
       if bpass.isSome then throw s!"a block pass to built-in {name}"
+      -- A block given to it (design §14): scoped as a block here, made a
+      -- loop running it any number of times by `unblock`.
+      let withBlock (env : List (Nat × Ty)) (e : Expr) : CM Expr := do
+        if blk == .null then return e
+        let .prim _ pargs pparams pret := e | throw "a built-in call"
+        let ty ← match ← field m "block" with
+          | .null => throw s!"a block given to built-in {name} that takes none"
+          | sig =>
+            -- (One it keeps, `at_exit`'s, runs later: not a loop.)
+            match ← field sig "name" with
+            | .null | .str "&" => field sig "type"
+            | _ => throw s!"a block kept by built-in {name}"
+        unless (← str (← field ty "t")) == "proc" do throw "a block type"
+        let tys ← (← arr (← field ty "params")).toList.mapM fun t => (T.tyIn env t : M Ty)
+        unless tys.all Ty.closed do throw s!"a block of built-in {name} of an open type"
+        let rj ← field ty "ret"
+        let sret ← T.tyIn env rj
+        unless sret.closed do throw s!"a block of built-in {name} of an open type"
+        let pjs := (← arr (← field (← field blk "params") "list")).toList
+        let ps ← pjs.mapM fun p => do
+          unless (← str (← field p "kind")) == "Positional" do throw "a block parameter not positional"
+          str (← field p "name")
+        unless ps.length == tys.length do throw s!"a block of built-in {name}'s parameters"
+        -- (An annotated parameter is declared by its annotation, which the
+        -- tree keeps unresolved: out of range.)
+        for ((x, t), pj) in (ps.zip tys).zip pjs do
+          unless (pj.getObjVal? "ty").toOption.getD .null == .null do
+            throw "an annotated block parameter"
+          if (← get).any (fun (y, u) => y == x && u != t) then
+            throw s!"block parameter {x} of two types"
+          modify (addLocal · x t)
+        let bd ← body T (← arr (← field blk "body"))
+        if hasRet bd then throw "a return in a block"
+        let bd := if (← str (← field rj "t")) == "void" then Expr.seq bd .nil else bd
+        return .callBlk (.prim ("#builtin " ++ name) pargs pparams pret) name [.prim "#sig" [] tys sret] ps bd
       -- A rest parameter (`*args`) takes as many arguments as are given,
       -- each of its element type.
       -- Otherwise the positional parameters the call fills; those it
@@ -1366,7 +1404,7 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
         for p in rest do
           unless (← field p "default") == .bool true do throw "a built-in call leaving a parameter"
         let params ← (ps.take as.length).mapM fun p => do T.tyIn env (← field p "type")
-        return .prim name (r :: as) (rt :: params) (← T.tyIn env (← field m "ret"))
+        return ← withBlock env (.prim name (r :: as) (rt :: params) (← T.tyIn env (← field m "ret")))
       let params ← if ← ps.anyM (fun p => do pure ((← str (← field p "kind")) == "Rest")) then
           match ps with
           | [p] => do
@@ -1390,7 +1428,7 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
         | none =>
           if (← nat (← field m "owner")) == T.kernelId then pure ([], [])
           else pure ([.self], [[.cls 0 []]])
-      return .prim name (rs ++ as) (rps ++ params) ret
+      return ← withBlock [] (.prim name (rs ++ as) (rps ++ params) ret)
     if recv.isNone && T.qclass (← nat (← field m "owner")) == some 1 && !(← read).top then
       throw "a top-level method called from a class"
     let r := recv.getD .self
@@ -1663,6 +1701,67 @@ def method (T : Tables) (owner : Nat) (m : Json) (d : Json) : M Method := do
   let bd := ivars.foldr (fun (x, t) b => .seq (.setField x (.var x t)) b) bd
   pure ⟨owner, name, params, ret, block, ls, bd⟩
 
+/-- A block given to a built-in method (`callBlk` of a `#builtin` call,
+scoped as a block: design §14), made a loop: the call first (its result
+held), then the block's body run any number of times, its parameters
+any values of their types, its value at most the block's result type.
+New locals (the results held) go to the method, or to the lambda the
+call is in. -/
+partial def unblockExpr : Expr → StateM (Nat × List (String × Ty)) Expr
+  | .callBlk r m as ps b => do
+    match r, as with
+    | .prim n pargs pparams pret, [.prim "#sig" [] tys sret] =>
+      if n.startsWith "#builtin " then
+        let pargs ← pargs.mapM unblockExpr
+        let b ← unblockExpr b
+        let (i, ls) ← get
+        let tmp := s!"&b{i}"
+        set (i + 1, ls ++ [(tmp, pret)])
+        let run := (ps.zip tys).foldr (fun (x, t) acc => Expr.seq (.assign x (.prim "arg" [] [] t)) acc)
+          (Expr.prim "result" [b] [sret] [.nil])
+        return .seq (.assign tmp (.prim m pargs pparams pret))
+          (.seq (.while (.prim "again" [] [] [.bool]) run) (.var tmp pret))
+      else pure ()
+    | _, _ => pure ()
+    return .callBlk (← unblockExpr r) m (← as.mapM unblockExpr) ps (← unblockExpr b)
+  | .lambda ps own ret b => do
+    let (i, ls) ← get
+    set (i, ([] : List (String × Ty)))
+    let b ← unblockExpr b
+    let (i', inner) ← get
+    set (i', ls)
+    return .lambda ps (own ++ inner) ret b
+  | .assign x e => return .assign x (← unblockExpr e)
+  | .setField f e => return .setField f (← unblockExpr e)
+  | .new c ts as => return .new c ts (← as.mapM unblockExpr)
+  | .superInit d as => return .superInit d (← as.mapM unblockExpr)
+  | .call r m as => return .call (← unblockExpr r) m (← as.mapM unblockExpr)
+  | .yield as => return .yield (← as.mapM unblockExpr)
+  | .prim n as ps t => return .prim n (← as.mapM unblockExpr) ps t
+  | .seq a b => return .seq (← unblockExpr a) (← unblockExpr b)
+  | .ite c t e => return .ite (← unblockExpr c) (← unblockExpr t) (← unblockExpr e)
+  | .while c b => return .while (← unblockExpr c) (← unblockExpr b)
+  | .ret e => return .ret (← unblockExpr e)
+  | .raise e => return .raise (← unblockExpr e)
+  | .rescue b x h e => return .rescue (← unblockExpr b) x (← unblockExpr h) (← unblockExpr e)
+  | .ensure b e => return .ensure (← unblockExpr b) (← unblockExpr e)
+  | .callProc f as => return .callProc (← unblockExpr f) (← as.mapM unblockExpr)
+  | .isNil e => return .isNil (← unblockExpr e)
+  | .isA e a => return .isA (← unblockExpr e) a
+  | .eqNil e => return .eqNil (← unblockExpr e)
+  | .neNil e => return .neNil (← unblockExpr e)
+  | .eqTrue e => return .eqTrue (← unblockExpr e)
+  | .eqFalse e => return .eqFalse (← unblockExpr e)
+  | .and a b => return .and (← unblockExpr a) (← unblockExpr b)
+  | .or a b => return .or (← unblockExpr a) (← unblockExpr b)
+  | .not a => return .not (← unblockExpr a)
+  | e => return e
+
+/-- A method with its blocks given to built-in methods made loops. -/
+def methodUnblock (mt : Method) : Method :=
+  let (b, (_, ls)) := (unblockExpr mt.body).run (0, [])
+  { mt with body := b, locals := mt.locals ++ ls }
+
 /-- The QCore program of a tree. -/
 def program (j : Json) : M Program := do
   let classes ← arr (← field j "classes")
@@ -1824,6 +1923,15 @@ def program (j : Json) : M Program := do
     own ++ consts,
     ⟨1, "<main>", [], all, none, mainLocals, mainBody⟩, defaults⟩
   for m in P.main :: P.methods do localsInRange (m.params.map (·.1)) m.body
+  let mainU := methodUnblock P.main
+  let methodsU := P.methods.map methodUnblock
+  -- (A default has no locals: one holding a built-in call's result is out
+  -- of range.)
+  let defaultsU ← P.defaults.mapM fun d => do
+    let (d', (_, ls)) := (unblockExpr d).run (0, [])
+    unless ls.isEmpty do throw "a block given to a built-in in a field default"
+    pure d'
+  let P : Program := ⟨P.classes, methodsU, mainU, defaultsU⟩
   -- Two methods of one name in a class, or in a class and its ancestor
   -- with other parameters or block, are overloads (one signature twice in
   -- a class is a Rust error): the Rust checker picks the one that fits,
