@@ -94,14 +94,15 @@ theorem Program.checkDefaults_typed {k : Nat} (h : P.checkDefaults k = true) :
 theorem Program.check_wf (h : P.check = true) :
     WfProg P ∧ P.main.owner < P.classes.length ∧ (P.classes.allFields P.main.owner).isEmpty ∧
       (((P.classes[P.main.owner]?).map (·.params)).getD []) = [] ∧
-      P.main.params = [] ∧ P.main.block = none ∧ P.classes.kindOf P.main.owner ≠ .enumC ∧
+      P.main.params = [] ∧ P.main.block = none ∧
+      (P.classes.kindOf P.main.owner ≠ .enumC ∧ P.classes.kindOf P.main.owner ≠ .proc) ∧
       P.wfMethod P.main = true ∧
       ∃ o, Typed ⟨P, P.main, false, false⟩ [] P.main.body o ∧
         (P.main.name ≠ "initialize" → o.out = none ∨
           o.ty.le P.classes (P.classes.boundsOf P.main.owner) P.main.ret = true) := by
   simp only [Program.check, Bool.and_eq_true, decide_eq_true_eq, List.all_eq_true,
     List.isEmpty_iff, Option.isNone_iff_eq_none, List.mem_range, bne_iff_ne, ne_eq] at h
-  obtain ⟨⟨⟨hc, ⟨⟨⟨⟨⟨hown, hf⟩, hmp⟩, hp⟩, hb⟩, hke⟩⟩, hall⟩, hcls⟩ := h
+  obtain ⟨⟨⟨hc, ⟨⟨⟨⟨⟨⟨hown, hf⟩, hmp⟩, hp⟩, hb⟩, hke⟩, hkp⟩⟩, hall⟩, hcls⟩ := h
   have hm := hall P.main (List.mem_cons_self ..)
   obtain ⟨o, ho, hret, _⟩ := Program.checkMethod_typed hm.2
   rw [hp] at ho
@@ -115,7 +116,7 @@ theorem Program.check_wf (h : P.check = true) :
       ⟨(hall mt (List.mem_cons_of_mem _ hmt)).1,
         Program.checkMethod_typed (hall mt (List.mem_cons_of_mem _ hmt)).2⟩,
       fun k hk => (hcls k hk).1.1, fun k hk => Program.checkDefaults_typed (hcls k hk).1.2⟩,
-    hown, by simpa using hf, hmp, hp, hb, hke, hm.1, o, ho, hret⟩
+    hown, by simpa using hf, hmp, hp, hb, ⟨hke, hkp⟩, hm.1, o, ho, hret⟩
 
 /-- **Soundness** (design §4): a checked program, run with any fuel and
 any oracle giving values of the types asked for, never gets stuck. In
@@ -135,7 +136,7 @@ theorem run_sound (h : P.check = true) (horc : OracleOK P orc) (fuel : Nat) :
   -- The top level's frame: its locals at fresh locations, `self` an
   -- instance of its class (without parameters: the frame's arguments
   -- are none).
-  let s0 : Store := ⟨[], [⟨P.main.owner, [], [], []⟩]⟩
+  let s0 : Store := ⟨[], [⟨P.main.owner, [], [], []⟩], []⟩
   let names := P.main.locals.map (·.1)
   let Λ := P.main.locals.map fun x => x.2.subst []
   -- The top level's class has no parameters, so no bounds.
@@ -166,7 +167,8 @@ theorem run_sound (h : P.check = true) (horc : OracleOK P orc) (fuel : Nat) :
       rw [this] at ho
       cases l with
       | zero => simp at ho; subst ho; show ArgsIn P.classes (P.classes.boundsOf P.main.owner) []; rw [hbm]; exact ArgsIn.nil hwf _
-      | succ l => simp at ho⟩
+      | succ l => simp at ho,
+    fun i p hp => by simp [Store.alloc, s0] at hp⟩
   have hcl : ∀ x d, (⟨P, P.main, false, false⟩ : Ctx).decl x = some d →
       ∃ j, P.main.locals[j]? = some (x, d) := fun x d hd => by
     simp only [Ctx.decl, Option.map_eq_some_iff] at hd

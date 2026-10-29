@@ -179,6 +179,8 @@ def Expr.assigned : Expr → List String
   | .ite c t e => c.assigned ++ t.assigned ++ e.assigned
   | .rescue b x h els => b.assigned ++ x :: h.assigned ++ els.assigned
   | .ensure b e => b.assigned ++ e.assigned
+  -- (Making a lambda assigns nothing; running one, only its own locals.)
+  | .callProc f args => f.assigned ++ assignedArgs args
   | _ => []
 where
   assignedArgs : List Expr → List String
@@ -250,7 +252,8 @@ def Program.resolve (P : Program) (κ : List Ty) (t : Ty) (m : String) : Option 
   (Ty.expand κ t).mapM fun
     -- `Object` holds the value classes' values too, which have no
     -- methods in v1.
-    | .cls c as => if c == 0 then none else P.lookupAt c as m
+    -- A procedures' class has none either (its values are procedures).
+    | .cls c as => if c == 0 || P.classes.kindOf c == .proc then none else P.lookupAt c as m
     | _ => none
 
 /-- Narrowing a path (design §2.1): `p` holds `t` where the test is
@@ -393,6 +396,30 @@ its parameters given. -/
 def blockEnv (c : Ctx) (Δ : Env) (ps : List String) (sig : BlockSig) (body : Expr) : Env :=
   (ps.zip sig.params).foldl (fun g (x, t) => g.set (.local x) t) (c.reset Δ (ps ++ body.assigned))
 
+/-- A lambda's own locals (parameters first): distinct, none a local of
+the method; its body assigns only them (C0: no captured local). -/
+def Ctx.lambdaOk (c : Ctx) (ps own : List (String × Ty)) (body : Expr) : Bool :=
+  decide ((ps ++ own).map (·.1)).Nodup &&
+  ((ps ++ own).all fun (x, _) => (c.meth.locals.find? (·.1 == x)).isNone) &&
+  (body.assigned.all fun x => (ps ++ own).any (·.1 == x))
+
+/-- A lambda's body is checked as a block of its method with the
+lambda's parameters and own locals added, no block and no `return`. -/
+def Ctx.lambdaCtx (c : Ctx) (ps own : List (String × Ty)) : Ctx :=
+  { c with inBlock := true, meth := { c.meth with locals := ps ++ own ++ c.meth.locals, block := none } }
+
+/-- The locals `Γ` has (assigned), each as declared. -/
+def Ctx.declEnv (c : Ctx) (Γ : Env) : Env :=
+  Γ.filterMap fun (p, _) => match p with
+    | .local x => (c.decl x).map ((Path.local x), ·)
+    | .field _ => none
+
+/-- Where a lambda's body starts: the locals assigned where it is made,
+as declared (R2a: it may run when they hold other values), no field
+narrowed (read as declared), its parameters as declared. -/
+def Ctx.lambdaEnv (c : Ctx) (Γ : Env) (ps : List (String × Ty)) : Env :=
+  ps.foldl (fun g (x, t) => g.set (.local x) t) (c.declEnv Γ)
+
 /-- The block's parameters are its method's locals, distinct, declared at
 least as wide as what `yield` gives. -/
 def blockParamsOk (c : Ctx) (ps : List String) (sig : BlockSig) : Bool :=
@@ -408,8 +435,8 @@ def Ctx.argsWf (c : Ctx) (k : Nat) (targs : List Ty) : Bool :=
   | some cl => targs.length == cl.params.length && Ty.argsParamsBelow c.selfArgs.length targs &&
       -- Each argument within its parameter's bound.
       (targs.zipIdx.all fun (t, i) => t.le c.ct c.bounds (Ty.boundOf cl.bounds i)) &&
-      -- No object is of an `enum` itself.
-      cl.kind != .enumC
+      -- No object is of an `enum` itself, nor of a procedures' class.
+      cl.kind != .enumC && cl.kind != .proc
   | none => false
 
 /-- The argument types fit the method's parameters. -/
@@ -577,6 +604,36 @@ def check (c : Ctx) (Γ : Env) : Expr → Option Out
     -- An exception: a value of the program's exception class.
     guard (o.ty.le c.ct c.bounds [.cls c.prog.exn []])
     some .dead
+  | .lambda ps own ret body => do
+    guard (!c.inInit && !c.inDefault)
+    let k ← c.prog.procClass ps.length
+    guard ((c.ct[k]?).map (·.params.length) == some (ps.length + 1))
+    -- Its own locals (parameters first): distinct, none a local of the
+    -- method; the body assigns only them (C0: no captured local).
+    guard (c.lambdaOk ps own body)
+    -- It may run any time later: the captured locals as declared (R2a),
+    -- its parameters as declared; no block (`yield` is an error in it),
+    -- no `return` (`inBlock`).
+    let ob ← check (c.lambdaCtx ps own) (c.lambdaEnv Γ ps) body
+    guard (ob.ty.le c.ct c.bounds ret)
+    some (.plain [.cls k (ps.map (·.2) ++ [ret])] Γ)
+  | .callProc f args => do
+    let o ← check c Γ f
+    match o.out with
+    | none => some .dead
+    | some Δ =>
+      match checkArgs c Δ args with
+      | none => none
+      | some .dead => some .dead
+      | some (.live tys Δ') =>
+        -- A procedure of exactly that class: its parameters, its result.
+        -- It writes none of this frame's locals.
+        match o.ty with
+        | [.cls k as] =>
+          guard (c.prog.procClass (as.length - 1) == some k && as.length == tys.length + 1)
+          guard ((tys.zip as).all fun (t, u) => t.le c.ct c.bounds u)
+          some (.plain (as.getLast?.getD []) Δ')
+        | _ => none
   | .rescue b x h els => do
     -- Not in `initialize` or a default (fields being set: design §12.6 Q3).
     guard (!c.inInit && !c.inDefault)

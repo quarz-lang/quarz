@@ -80,6 +80,22 @@ inductive Typed : Ctx → Env → Expr → Out → Prop where
       c.prog.resolve c.bounds o.ty m = some ms →
       (ms.all fun mt => mt.block.isNone && argsOk c tys mt) = true →
       Typed c Γ (.call r m args) (.plain (ms.flatMap (·.ret)) Δ')
+  /-- A lambda: its body as a block of the method with its own locals,
+  assigning only them (C0), from the locals as declared. -/
+  | lambda : (!c.inInit && !c.inDefault) = true → c.prog.procClass ps.length = some k →
+      (c.ct[k]?).map (·.params.length) = some (ps.length + 1) →
+      c.lambdaOk ps own body = true →
+      Typed (c.lambdaCtx ps own) (c.lambdaEnv Γ ps) body ob → ob.ty.le c.ct c.bounds ret →
+      Typed c Γ (.lambda ps own ret body) (.plain [.cls k (ps.map (·.2) ++ [ret])] Γ)
+  /-- A procedure's call: of its class, the arguments below its
+  parameters, its result; no local of this frame written. -/
+  | callProc : Typed c Γ f o → o.out = some Δ → TypedArgs c Δ args (.live tys Δ') →
+      o.ty = [.cls k as] → c.prog.procClass (as.length - 1) = some k → as.length = tys.length + 1 →
+      ((tys.zip as).all fun (t, u) => t.le c.ct c.bounds u) = true →
+      Typed c Γ (.callProc f args) (.plain (as.getLast?.getD []) Δ')
+  | callProcDeadRecv : Typed c Γ f o → o.out = none → Typed c Γ (.callProc f args) .dead
+  | callProcDeadArgs : Typed c Γ f o → o.out = some Δ → TypedArgs c Δ args .dead →
+      Typed c Γ (.callProc f args) .dead
   | callDeadRecv : Typed c Γ r o → o.out = none → Typed c Γ (.call r m args) .dead
   | callDeadArgs : Typed c Γ r o → o.out = some Δ → TypedArgs c Δ args .dead →
       Typed c Γ (.call r m args) .dead

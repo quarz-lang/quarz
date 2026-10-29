@@ -66,17 +66,6 @@ theorem SendPost.weaken {ret ret' : Ty} {sig : Option BlockSig} {blk : Option Cl
   | raised => trivial
   | timeout => trivial
 
-/-- Setting paths one after another, each holding its type. -/
-theorem Sat.foldl_set {c : Ctx} {fr : Frame} {s : Store} :
-    ∀ (ps : List (String × Ty)) {Γ : Env}, Sat P c Γ fr s →
-      (∀ x t, (x, t) ∈ ps → PathHolds P c fr s (.local x) t) →
-      Sat P c (ps.foldl (fun g (x, t) => g.set (.local x) t) Γ) fr s
-  | [], _, h, _ => h
-  | (x, t) :: ps, Γ, h, hp => by
-    simp only [List.foldl_cons]
-    exact Sat.foldl_set ps (h.set (hp x t (List.mem_cons_self ..)))
-      fun y u hy => hp y u (List.mem_cons_of_mem _ hy)
-
 /-- Arguments for a method, for one overriding it. -/
 theorem AllTy.over (hwf : WfClasses P.classes) {s : Store} :
     ∀ {vs : List Value} {sup sub : List (String × Ty)}, AllTy P s vs (sup.map (·.2)) →
@@ -434,13 +423,15 @@ theorem block_succ : BlockGood P orc (n + 1) := by
   obtain ⟨s1, hb⟩ := bindAll_some (vars := vars) s (by rw [hlen, hvs.length]; simp [BlockSig.subst]) hlook
   simp only [runBlock, hb]
   obtain ⟨hobjs, hlen1, hsame⟩ := bindAll_same hb
+  have hprocs := bindAll_procs hb
   have hval := bindAll_val hcore.inj hb hnd (fun x _ l hl => hcore.inStore x l (lookupVar_mem hl))
   have mono : ∀ {v : Value} {t : Ty}, s.hasTy c.prog v t → s1.hasTy c.prog v t := fun h => by
-    unfold Store.hasTy Store.hasType Store.typeOf at *; rw [hobjs]; exact h
+    unfold Store.hasTy Store.hasType Store.typeOf at *; rw [hobjs, hprocs]; exact h
   -- Binding: each parameter's location gets a value of its declared type.
   have he1 : Ext c.prog (frameW vars ps) (fun _ => False) Λ Λ s s1 := by
     refine ⟨List.prefix_refl Λ, fun l v hv => ?_, fun l o ho => ⟨o, by rw [hobjs]; exact ho, rfl,
-      rfl, rfl, fun _ h => h⟩, fun l o o' ho ho' _ _ _ _ _ => by rw [hobjs, ho] at ho'; cases ho'; rfl⟩
+      rfl, rfl, fun _ h => h⟩, fun l o o' ho ho' _ _ _ _ _ => by rw [hobjs, ho] at ho'; cases ho'; rfl,
+      by rw [hprocs]; exact List.prefix_refl _⟩
     by_cases hl : ∃ x ∈ ps, lookupVar vars x = some l
     · obtain ⟨x, hx, hxl⟩ := hl
       obtain ⟨t, ht⟩ : ∃ t, (x, t) ∈ ps.zip sig0.params := by
@@ -460,7 +451,8 @@ theorem block_succ : BlockGood P orc (n + 1) := by
     obtain ⟨a, a1, a2, b, b2, d⟩ := hw.objs l o ho
     exact ⟨a, a1, a2, b, b2, fun i v f h0 h1 h2 => mono (d i v f h0 h1 h2)⟩,
     fun l o ho => by rw [hobjs] at ho; exact hw.noEnum l o ho,
-    fun l o ho => by rw [hobjs] at ho; exact hw.bounds l o ho⟩
+    fun l o ho => by rw [hobjs] at ho; exact hw.bounds l o ho,
+    fun i p hp => by rw [hprocs] at hp; exact (hw.procs i p hp).stable he1⟩
   have hframe : ∀ l, frameW vars ps l → ¬ chainLocs outer l := fun l ⟨x, _, hxl⟩ hc =>
     Nat.lt_irrefl _ (habove l l ⟨x, lookupVar_mem hxl⟩ hc)
   have hf1 : FrameOK c.prog { c with inBlock := true } Λ ⟨vars, me, sa, outer⟩ s1 ws' :=
@@ -625,8 +617,9 @@ theorem send_succ : SendGood P orc (n + 1) := by
     obtain ⟨j, hj⟩ := hcl y t (decl_param hwfm hm)
     exact ⟨_, hlookj j y t hj⟩
   obtain ⟨s2, hb⟩ := bindAll_some (vars := Store.allocVars s.locs.length (mt'.locals.map (·.1)))
-    ⟨s.locs ++ (mt'.locals.map (·.1)).map fun _ => .nil, s.objs⟩ (by rw [List.length_map, hlen']) hexists
+    ⟨s.locs ++ (mt'.locals.map (·.1)).map fun _ => .nil, s.objs, s.procs⟩ (by rw [List.length_map, hlen']) hexists
   obtain ⟨hobjs, hlen2, hsame⟩ := bindAll_same hb
+  have hprocs := bindAll_procs hb
   have hsa2 : s2.argsFor P.classes l mt'.owner = σ := by simp [Store.argsFor, hobjs, ho, hσ]
   simp only [hb, hsa2]
   simp only [List.length_append, List.length_map] at hlen2
@@ -634,11 +627,12 @@ theorem send_succ : SendGood P orc (n + 1) := by
       s.locs.length ≤ l' ∧ l' < s.locs.length + mt'.locals.length := fun x l' h => by
     have := mem_allocVars (lookupVar_mem h); simpa using this
   have mono : ∀ {v : Value} {t : Ty}, s.hasTy P v t → s2.hasTy P v t := fun h => by
-    unfold Store.hasTy Store.hasType Store.typeOf at *; rw [hobjs]; exact h
+    unfold Store.hasTy Store.hasType Store.typeOf at *; rw [hobjs, hprocs]; exact h
   have he12 : Ext P (fun _ => False) (fun _ => False) Λ (Λ ++ (mt'.locals.map (·.2)).map (Ty.subst σ)) s s2 := by
     refine ⟨List.prefix_append _ _, fun l' v hv => ⟨v, ?_, .inl rfl⟩, fun l' o' ho' =>
       ⟨o', by rw [hobjs]; exact ho', rfl, rfl, rfl, fun _ h => h⟩,
-      fun _ o1 o2 h1 h2 _ _ _ _ _ => by rw [hobjs, h1] at h2; cases h2; rfl⟩
+      fun _ o1 o2 h1 h2 _ _ _ _ _ => by rw [hobjs, h1] at h2; cases h2; rfl,
+      by rw [hprocs]; exact List.prefix_refl _⟩
     have hl' := (List.getElem?_eq_some_iff.mp hv).1
     rw [hsame l' fun x _ hx => by have := (hge x l' hx).1; omega]
     simp [List.getElem?_append_left hl', hv]
@@ -648,7 +642,8 @@ theorem send_succ : SendGood P orc (n + 1) := by
       obtain ⟨a, a1, a2, b, b2, d⟩ := hw.objs l' o' ho'
       exact ⟨a, a1, a2, b, b2, fun i v f h0 h1 h2 => mono (d i v f h0 h1 h2)⟩,
       fun l' o' ho' => by rw [hobjs] at ho'; exact hw.noEnum l' o' ho',
-      fun l' o' ho' => by rw [hobjs] at ho'; exact hw.bounds l' o' ho'⟩
+      fun l' o' ho' => by rw [hobjs] at ho'; exact hw.bounds l' o' ho',
+      fun i p hp => by rw [hprocs] at hp; exact (hw.procs i p hp).stable he12⟩
   have hcore : FrameCore P ⟨P, mt', false, false⟩ (Λ ++ (mt'.locals.map (·.2)).map (Ty.subst σ))
       (Store.allocVars s.locs.length (mt'.locals.map (·.1))) (.obj l) σ s2 := by
     refine ⟨fun x d hd => ?_, fun x y l' hx hy => ?_, fun x l' hm => ?_, fun _ => ?_,
@@ -664,7 +659,8 @@ theorem send_succ : SendGood P orc (n + 1) := by
       subst this; rw [hjx] at hjy; cases hjy; rfl
     · have := mem_allocVars hm; simp [hlen2] at this ⊢; omega
     · refine hasTy_iff.mpr ⟨.cls o.cls o.args, ?_, .cls mt'.owner σ, List.mem_singleton.mpr rfl, ?_⟩
-      · exact typeOf_mono (fun l' o' h => ⟨o', by rw [hobjs]; exact h, rfl, rfl, rfl, fun _ h => h⟩) hmade
+      · exact typeOf_mono (fun l' o' h => ⟨o', by rw [hobjs]; exact h, rfl, rfl, rfl, fun _ h => h⟩)
+          (by rw [hprocs]; exact List.prefix_refl _) hmade
       · exact Atom.le_of_ancestorArgs hwf hσ
   obtain ⟨hch0, hin⟩ := hblk
   have hch := ChainAt.weaken hwf ws blk hch0 hblk'

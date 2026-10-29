@@ -33,6 +33,18 @@ theorem bindAll_same {vars : List (String × Nat)} :
   | [], _ :: _, _, _, h => by simp [bindAll] at h
   | _ :: _, [], _, _, h => by simp [bindAll] at h
 
+/-- Binding leaves the procedures. -/
+theorem bindAll_procs {vars : List (String × Nat)} :
+    ∀ {xs : List String} {vs : List Value} {s s' : Store}, bindAll s vars xs vs = some s' →
+      s'.procs = s.procs
+  | [], [], s, s', h => by simp [bindAll] at h; subst h; rfl
+  | x :: xs, v :: vs, s, s', h => by
+    simp only [bindAll, bind, Option.bind_eq_some_iff] at h
+    obtain ⟨l, _, h⟩ := h
+    rw [bindAll_procs h]; rfl
+  | [], _ :: _, _, _, h => by simp [bindAll] at h
+  | _ :: _, [], _, _, h => by simp [bindAll] at h
+
 /-- Bound to distinct names, at distinct locations: each holds its value. -/
 theorem bindAll_val {vars : List (String × Nat)}
     (hinj : ∀ x y l, lookupVar vars x = some l → lookupVar vars y = some l → x = y) :
@@ -110,6 +122,7 @@ theorem mem_allocVars : ∀ {names : List String} {base l : Nat} {x : String},
 theorem Ext.restrict {W W' Wo : Nat → Prop} {Λ Λ' : List Ty} {s s' : Store} (h : Ext P W Wo Λ Λ' s s')
     (hw : ∀ l, l < s.locs.length → W l → W' l) : Ext P W' Wo Λ Λ' s s' where
   tys := h.tys
+  procs := h.procs
   locs := fun l v hv => by
     obtain ⟨v', h1, h2⟩ := h.locs l v hv
     refine ⟨v', h1, ?_⟩

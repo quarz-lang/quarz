@@ -66,6 +66,10 @@ theorem all_set_grow {o o' : Obj} (hl : o'.set.length = o.set.length)
       simp only [Store.typeOf, Option.bind_eq_some_iff] at h
       obtain ⟨o, _, h⟩ := h
       split at h <;> simp at h
+    case proc i =>
+      simp only [Store.typeOf, Option.bind_eq_some_iff] at h
+      obtain ⟨p, _, h⟩ := h
+      split at h <;> simp at h
     all_goals simp [Store.typeOf] at h
   · intro h; exact h.elim
 
@@ -81,26 +85,40 @@ theorem typeOf_obj_of {s : Store} {l : Nat} {o : Obj} (ho : s.objs[l]? = some o)
     (h : o.set.all id = true) : s.typeOf (.obj l) = some (.cls o.cls o.args) := by
   simp only [Store.typeOf, ho, Option.bind_some, h, if_true]
 
+/-- A procedure's type is of a class. -/
+theorem typeOf_proc {s : Store} {i : Nat} {a : Atom} (h : s.typeOf (.proc i) = some a) :
+    ∃ k as, a = .cls k as := by
+  simp only [Store.typeOf, Option.bind_eq_some_iff] at h
+  obtain ⟨p, _, h⟩ := h
+  split at h
+  · cases h; exact ⟨_, _, rfl⟩
+  · cases h
+
 /-- Objects keeping their classes and the fields set, values keep their
 types. -/
-theorem typeOf_mono {s s' : Store} (h : ObjsGrow s s')
+theorem typeOf_mono {s s' : Store} (h : ObjsGrow s s') (hp : s.procs <+: s'.procs)
     {v : Value} {a : Atom} (hv : s.typeOf v = some a) : s'.typeOf v = some a := by
   cases v with
   | obj l =>
     obtain ⟨o, ho, hall, rfl⟩ := typeOf_obj hv
     obtain ⟨o', ho', hc, ha, hl, hs⟩ := h l o ho
     rw [typeOf_obj_of ho' (all_set_grow hl hs hall), hc, ha]
+  | proc i =>
+    simp only [Store.typeOf, Option.bind_eq_some_iff] at hv ⊢
+    obtain ⟨p, hp', h⟩ := hv
+    obtain ⟨r, hr⟩ := hp
+    exact ⟨p, by rw [← hr, List.getElem?_append_left (List.getElem?_eq_some_iff.mp hp').1]; exact hp', h⟩
   | _ => simpa [Store.typeOf] using hv
 
-theorem hasTy_mono {s s' : Store} (h : ObjsGrow s s')
+theorem hasTy_mono {s s' : Store} (h : ObjsGrow s s') (hp : s.procs <+: s'.procs)
     {v : Value} {t : Ty} (hv : s.hasTy P v t) : s'.hasTy P v t := by
   rw [hasTy_iff] at *
   obtain ⟨a, ha, rest⟩ := hv
-  exact ⟨a, typeOf_mono h ha, rest⟩
+  exact ⟨a, typeOf_mono h hp ha, rest⟩
 
 theorem Ext.hasTy {W Wo : Nat → Prop} {Λ Λ' : List Ty} {s s' : Store} (he : Ext P W Wo Λ Λ' s s')
     {v : Value} {t : Ty} (hv : s.hasTy P v t) : s'.hasTy P v t :=
-  hasTy_mono he.grow hv
+  hasTy_mono he.grow he.procs hv
 
 /-! ### Environments -/
 

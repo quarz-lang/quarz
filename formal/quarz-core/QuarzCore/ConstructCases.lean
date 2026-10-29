@@ -218,7 +218,7 @@ theorem construct_succ (hP : WfProg P) {n : Nat} (ihs : ∀ m, m ≤ n → Good 
     · rw [show ({ s with objs := s.objs ++ [o0] } : Store).objs = s.objs ++ [o0] from rfl,
         List.getElem?_append_left hl] at ho
       obtain ⟨a, a1, a2, b, b2, d⟩ := hw.objs l' o ho
-      exact ⟨a, a1, a2, b, b2, fun i v f h0 h1 h2 => hasTy_mono (objs_append_mono _) (d i v f h0 h1 h2)⟩
+      exact ⟨a, a1, a2, b, b2, fun i v f h0 h1 h2 => hasTy_mono (objs_append_mono _) (List.prefix_refl _) (d i v f h0 h1 h2)⟩
     · have hl' : l' = s.objs.length := by
         have := (List.getElem?_eq_some_iff.mp ho).1
         simp at this; omega
@@ -255,7 +255,8 @@ theorem construct_succ (hP : WfProg P) {n : Nat} (ihs : ∀ m, m ≤ n → Good 
           simp at this; omega
         subst hl'
         simp at ho; subst ho
-        exact hin⟩
+        exact hin,
+    fun i p hp => (hw.procs i p hp).stable (Ext.newObj (W := fun _ => False) (Wo := fun _ => False) o0)⟩
   have he1 : Ext P (fun _ => False) (fun _ => False) Λ Λ s { s with objs := s.objs ++ [o0] } :=
     Ext.newObj _
   have hd := defaults_good (orc := orc) (k := k) (targs := targs) hP ihs hk n (Nat.le_refl n) 0 _ Λ o0
@@ -320,7 +321,7 @@ theorem construct_succ (hP : WfProg P) {n : Nat} (ihs : ∀ m, m ≤ n → Good 
         simp [Store.argsFor, ho2, hc2, ha2, hσ]
       -- Every field set but those `initialize` assigns (past its class: none).
       obtain ⟨hlen', s3, hb, hargs3, hpost⟩ := init_run hP (ihs n (Nat.le_refl n)).eval hw2 hmem'
-        hname' hblk0 (by rw [hsa2]; exact hvs.mono he12.grow) ho2 (by rw [hc2]; exact howner)
+        hname' hblk0 (by rw [hsa2]; exact hvs.mono he12.grow he12.procs) ho2 (by rw [hc2]; exact howner)
         fun i f hf hor => by
           rw [hc2, ha2] at hf
           refine hset2 i f hf ?_

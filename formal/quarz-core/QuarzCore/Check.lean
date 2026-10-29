@@ -103,6 +103,25 @@ theorem check_typed : ∀ {c : Ctx} {Γ : Env} {e : Expr} {o : Out}, check c Γ 
       · rename_i hmi
         simp at h; obtain ⟨hnil, rfl⟩ := h
         exact .superNoInit hg (checkArgs_typed (by assumption)) hmi (by simpa using hnil)
+  | c, Γ, .lambda ps own ret body, o, h => by
+    simp [check] at h
+    obtain ⟨hg, k, hk, hn, hok, ob, hb, hret, rfl⟩ := h
+    exact .lambda (by simp_all) hk (by simpa using hn) hok (check_typed hb) hret
+  | c, Γ, .callProc f args, o, h => by
+    simp [check] at h
+    obtain ⟨orr, hr, h⟩ := h
+    split at h
+    · simp at h; subst h; exact .callProcDeadRecv (check_typed hr) (by assumption)
+    · split at h
+      · simp at h
+      · simp at h; subst h
+        exact .callProcDeadArgs (check_typed hr) (by assumption) (checkArgs_typed (by assumption))
+      · split at h
+        · simp at h
+          obtain ⟨⟨hk, hlen⟩, hall, rfl⟩ := h
+          exact .callProc (check_typed hr) (by assumption) (checkArgs_typed (by assumption)) (by assumption)
+            hk hlen (by simpa using hall)
+        · simp at h
   | c, Γ, .call r m args, o, h => by
     simp [check] at h
     obtain ⟨orr, hr, h⟩ := h

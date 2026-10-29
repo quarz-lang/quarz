@@ -21,6 +21,7 @@ theorem ObjsGrow.trans {s1 s2 s3 : Store} (h1 : ObjsGrow s1 s2) (h2 : ObjsGrow s
 
 theorem Ext.refl (W Wo : Nat → Prop) (Λ : List Ty) (s : Store) : Ext P W Wo Λ Λ s s where
   tys := List.prefix_refl Λ
+  procs := List.prefix_refl _
   locs := fun _ v h => ⟨v, h, .inl rfl⟩
   grow := ObjsGrow.refl s
   imm := fun _ o o' h h' _ _ _ _ _ => by rw [h] at h'; cases h'; rfl
@@ -29,6 +30,7 @@ theorem Ext.mono {W W' Wo Wo' : Nat → Prop} {Λ Λ' : List Ty} {s s' : Store}
     (h : Ext P W Wo Λ Λ' s s') (hw : ∀ l, W l → W' l) (ho : ∀ l, Wo l → Wo' l) :
     Ext P W' Wo' Λ Λ' s s' where
   tys := h.tys
+  procs := h.procs
   locs := fun l v hv => by
     obtain ⟨v', h1, h2⟩ := h.locs l v hv
     refine ⟨v', h1, ?_⟩
@@ -51,6 +53,7 @@ theorem Ext.trans {W1 W2 Wo1 Wo2 : Nat → Prop} {Λ1 Λ2 Λ3 : List Ty} {s1 s2 
     (h1 : Ext P W1 Wo1 Λ1 Λ2 s1 s2) (h2 : Ext P W2 Wo2 Λ2 Λ3 s2 s3) (hw : WfStore P Λ1 s1) :
     Ext P (fun l => W1 l ∨ W2 l) (fun l => Wo1 l ∨ Wo2 l) Λ1 Λ3 s1 s3 where
   tys := h1.tys.trans h2.tys
+  procs := h1.procs.trans h2.procs
   locs := fun l v hv => by
     obtain ⟨v2, hv2, hc2⟩ := h1.locs l v hv
     obtain ⟨v3, hv3, hc3⟩ := h2.locs l v2 hv2
@@ -92,6 +95,7 @@ theorem Ext.fresh {W Wo : Nat → Prop} {Λ Λ' : List Ty} {s s' : Store}
     (h : Ext P W Wo Λ Λ' s s') (hf : ∀ l, Wo l → s.objs.length ≤ l) :
     Ext P W (fun _ => False) Λ Λ' s s' where
   tys := h.tys
+  procs := h.procs
   locs := h.locs
   grow := h.grow
   imm := fun l o o' h1 h2 _ => h.imm l o o' h1 h2 fun hw =>
@@ -107,6 +111,7 @@ theorem Ext.setLoc {W Wo : Nat → Prop} {Λ : List Ty} {s : Store} {l : Nat} {v
     (hl : l < s.locs.length) (ht : Λ[l]? = some t) (hv : s.hasTy P v t) (hw : W l) :
     Ext P W Wo Λ Λ s (s.setLoc l v) where
   tys := List.prefix_refl Λ
+  procs := List.prefix_refl _
   locs := fun l' v' h => by
     by_cases he : l' = l
     · subst he
@@ -116,19 +121,20 @@ theorem Ext.setLoc {W Wo : Nat → Prop} {Λ : List Ty} {s : Store} {l : Nat} {v
   grow := fun _ o h => ⟨o, h, rfl, rfl, rfl, fun _ h => h⟩
   imm := fun _ o o' h h' _ _ _ _ _ => by simp [Store.setLoc] at h'; rw [h] at h'; cases h'; rfl
 
-theorem WfStore.setLoc {Λ : List Ty} {s : Store} (h : WfStore P Λ s) (l : Nat) (v : Value) :
-    WfStore P Λ (s.setLoc l v) where
-  len := by simp [Store.setLoc, h.len]
-  objs := fun l o ho => by
-    obtain ⟨h1, h1a, h1b, h2, h3, h4⟩ := h.objs l o ho
-    exact ⟨h1, h1a, h1b, h2, h3, fun i w f hs hw hf => h4 i w f hs hw hf⟩
-  bounds := fun l o ho => h.bounds l o ho
-  noEnum := fun l o ho => h.noEnum l o ho
+/-- A new procedure at the end. -/
+theorem Ext.newProc {W Wo : Nat → Prop} {Λ : List Ty} {s : Store} (p : ProcV) :
+    Ext P W Wo Λ Λ s { s with procs := s.procs ++ [p] } where
+  tys := List.prefix_refl Λ
+  procs := List.prefix_append _ _
+  locs := fun _ v h => ⟨v, h, .inl rfl⟩
+  grow := fun _ o h => ⟨o, h, rfl, rfl, rfl, fun _ h => h⟩
+  imm := fun _ o o' h h' _ _ _ _ _ => by simp at h'; rw [h] at h'; cases h'; rfl
 
 /-- A new object at the end. -/
 theorem Ext.newObj {W Wo : Nat → Prop} {Λ : List Ty} {s : Store} (o : Obj) :
     Ext P W Wo Λ Λ s { s with objs := s.objs ++ [o] } where
   tys := List.prefix_refl Λ
+  procs := List.prefix_refl _
   locs := fun _ v h => ⟨v, h, .inl rfl⟩
   grow := fun l o' h => ⟨o', by
       rw [List.getElem?_append_left (List.getElem?_eq_some_iff.mp h).1]; exact h,
@@ -140,6 +146,7 @@ theorem Ext.newObj {W Wo : Nat → Prop} {Λ : List Ty} {s : Store} (o : Obj) :
 theorem Ext.alloc {W Wo : Nat → Prop} {Λ : List Ty} {s : Store} (names : List String) (tys : List Ty) :
     Ext P W Wo Λ (Λ ++ tys) s (s.alloc names).1 where
   tys := List.prefix_append Λ tys
+  procs := List.prefix_refl _
   locs := fun l v h => ⟨v, by
       simp only [Store.alloc]
       rw [List.getElem?_append_left (List.getElem?_eq_some_iff.mp h).1]; exact h, .inl rfl⟩

@@ -40,24 +40,6 @@ variable (P : Program)
 
 def Store.hasTy (s : Store) (v : Value) (t : Ty) : Prop := s.hasType P.classes v t = true
 
-structure WfStore (Λ : List Ty) (s : Store) : Prop where
-  len : Λ.length = s.locs.length
-  /-- Each object's class is one, its type arguments (ghost) closed and as
-  many as the class's parameters, and its fields that are set hold values
-  of their declared types given those arguments. -/
-  objs : ∀ (l : Nat) (o : Obj), s.objs[l]? = some o →
-    o.cls < P.classes.length ∧
-    Ty.closedArgs o.args = true ∧
-    o.args.length = (((P.classes[o.cls]?).map (·.params)).getD []).length ∧
-    o.fields.length = (P.classes.allFields o.cls).length ∧
-    o.set.length = o.fields.length ∧
-    ∀ (i : Nat) (v : Value) (f : Field), o.set[i]? = some true → o.fields[i]? = some v →
-      (P.classes.allFieldsAt o.cls o.args)[i]? = some f → s.hasTy P v f.ty
-  /-- No object is of an `enum` itself. -/
-  noEnum : ∀ (l : Nat) (o : Obj), s.objs[l]? = some o → P.classes.kindOf o.cls ≠ .enumC
-  /-- Each object's type arguments are within its class's bounds. -/
-  bounds : ∀ (l : Nat) (o : Obj), s.objs[l]? = some o → ArgsIn P.classes (P.classes.boundsOf o.cls) o.args
-
 /-- Objects keep their classes, their type arguments and the fields set. -/
 def ObjsGrow (s s' : Store) : Prop :=
   ∀ (l : Nat) (o : Obj), s.objs[l]? = some o → ∃ o' : Obj, s'.objs[l]? = some o' ∧ o'.cls = o.cls ∧
@@ -72,6 +54,8 @@ structure Ext (W Wo : Nat → Prop) (Λ Λ' : List Ty) (s s' : Store) : Prop whe
   imm : ∀ (l : Nat) (o o' : Obj), s.objs[l]? = some o → s'.objs[l]? = some o' → ¬ Wo l →
     ∀ (i : Nat) (f : Field), (P.classes.allFields o.cls)[i]? = some f → f.var = false →
       o'.fields[i]? = o.fields[i]?
+  /-- Procedures stay as made. -/
+  procs : s.procs <+: s'.procs
 
 /-- What a path holds in frame `fr` of a method checked in `c`: the types
 the body names (which may name the class's parameters) are read with
@@ -142,6 +126,44 @@ structure FrameCore (c : Ctx) (Λ : List Ty) (vars : List (String × Nat)) (me :
   closed : Ty.closedArgs sa = true
   /-- The arguments are within the method's class's bounds. -/
   bounded : ArgsIn P.classes c.bounds sa
+
+/-- A procedure in the store (design §13.8, C0): a lambda checked in `c`
+where `Γ` held, of the frame it captured (its locals' locations, by
+reference, as `FrameCore` says, those assigned there holding values of
+their declared types), with its own locals fresh at each call. -/
+def ProcOK (Λ : List Ty) (s : Store) (p : ProcV) : Prop :=
+  ∃ (c : Ctx) (Γ : Env) (ps own : List (String × Ty)) (ret : Ty) (body : Expr)
+    (vars : List (String × Nat)) (me : Value) (sa : List Ty) (k : Nat) (ob : Out),
+    c.prog = P ∧
+    p = ⟨.mk vars me sa none (ps.map (·.1)) body, (ps ++ own).map (·.1),
+      .cls k (Ty.substArgs sa (ps.map (·.2) ++ [ret]))⟩ ∧
+    c.inInit = false ∧ c.inDefault = false ∧
+    c.prog.procClass ps.length = some k ∧
+    (P.classes[k]?).map (·.params.length) = some (ps.length + 1) ∧ c.lambdaOk ps own body = true ∧
+    FrameCore P c Λ vars me sa s ∧
+    Sat P c (c.declEnv Γ) ⟨vars, me, sa, none⟩ s ∧
+    Typed (c.lambdaCtx ps own) (c.lambdaEnv Γ ps) body ob ∧ ob.ty.le c.ct c.bounds ret
+
+structure WfStore (Λ : List Ty) (s : Store) : Prop where
+  len : Λ.length = s.locs.length
+  /-- Each object's class is one, its type arguments (ghost) closed and as
+  many as the class's parameters, and its fields that are set hold values
+  of their declared types given those arguments. -/
+  objs : ∀ (l : Nat) (o : Obj), s.objs[l]? = some o →
+    o.cls < P.classes.length ∧
+    Ty.closedArgs o.args = true ∧
+    o.args.length = (((P.classes[o.cls]?).map (·.params)).getD []).length ∧
+    o.fields.length = (P.classes.allFields o.cls).length ∧
+    o.set.length = o.fields.length ∧
+    ∀ (i : Nat) (v : Value) (f : Field), o.set[i]? = some true → o.fields[i]? = some v →
+      (P.classes.allFieldsAt o.cls o.args)[i]? = some f → s.hasTy P v f.ty
+  /-- No object is of an `enum` itself, nor of a procedures' class. -/
+  noEnum : ∀ (l : Nat) (o : Obj), s.objs[l]? = some o →
+    P.classes.kindOf o.cls ≠ .enumC ∧ P.classes.kindOf o.cls ≠ .proc
+  /-- Each object's type arguments are within its class's bounds. -/
+  bounds : ∀ (l : Nat) (o : Obj), s.objs[l]? = some o → ArgsIn P.classes (P.classes.boundsOf o.cls) o.args
+  /-- Each procedure is a lambda as checked, its frame as it was. -/
+  procs : ∀ (i : Nat) (p : ProcV), s.procs[i]? = some p → ProcOK P Λ s p
 
 /-- A frame's block chain as it was checked: for each block (innermost
 first) the context it was written in, the environment at its call and

@@ -1,0 +1,47 @@
+# Lambdas within QCore's range (formal/quarz-core, design §13.8, C0):
+# procedures closed over the method's locals by reference, reading them
+# as declared, assigning only their own locals (fresh at each call);
+# called with `call`, `.()` and `[]`, passed and returned as values of
+# procedure types, nested, and `-> Void`.
+def twice(f: (Int) -> Int, x: Int) -> Int
+  f.call(f.call(x))
+end
+
+def adder(n: Int) -> (Int) -> Int
+  ->(x: Int) -> Int { x + n }
+end
+
+def f(n: Int) -> Int
+  base = n * 2
+  add = ->(x: Int) -> Int { y = x + base; y }
+  add.call(1) + add.(2) + add[3]
+end
+
+def g(name: String?) -> String
+  greet = ->(who: String) -> String { "hi #{who}" }
+  shown = ->() -> String {
+    label = "anon"
+    if name
+      label = name
+    end
+    greet.call(label)
+  }
+  shown.call
+end
+
+def h -> Int
+  count = 0
+  log = ->(m: String) -> Void { puts m }
+  log.call("start")
+  inner = ->(k: Int) -> Int {
+    twice_k = ->(j: Int) -> Int { j * 2 }
+    twice_k.call(k) + 1
+  }
+  inner.call(count + 4)
+end
+
+puts f(1)
+puts twice(adder(3), 1)
+puts g("ann")
+puts g(nil)
+puts h
