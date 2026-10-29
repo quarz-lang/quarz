@@ -2774,3 +2774,48 @@ fn expansive_inheritance_is_refused_at_the_class() {
     }
     ok(&format!("def g(x: {t}) -> {u} = x\np g({v})"));
 }
+
+#[test]
+fn a_data_type_shareable_by_its_fields_is_a_shareable() {
+    // docs/03: the derivation decides, without `include Shareable`.
+    ok("data Point = (x: Int, y: Int)\nenum Col = Red | Green\nx: Shareable = Point.new(1, 2)\ny: Shareable = [Point.new(1, 2)]\nz: Shareable = {\"a\" => [Col::Red]}\nw: Shareable = [Point.new(1, 2), 1]");
+    err(
+        "class Counter\n  var @n: Int = 0\nend\ndata Holds = (c: Counter)\nx: Shareable = Holds.new(Counter.new)",
+        "cannot assign Holds to `x` of type Shareable",
+    );
+    err(
+        "class Counter\n  var @n: Int = 0\nend\ndata Box[T] = (v: T)\nx: Shareable = Box.new(Counter.new)",
+        "of type Shareable",
+    ); // A recursive type's answer leans on its own: kept only once the
+       // outermost is decided (`B` holds an `A` holding a `Counter`).
+    for b in [
+        "data A = (b: B?, c: Counter)\ndata B = (a: A?)\nx: Shareable = B.new(A.new(nil, Counter.new))",
+        "enum E = One(b: B?) | Two(c: Counter)\ndata B = (e: E)\nx: Shareable = B.new(E::Two.new(Counter.new))",
+    ] {
+        err(
+            &format!("class Counter\n  var @n: Int = 0\nend\n{b}"),
+            "to `x` of type Shareable",
+        );
+    }
+    // A negative answer a caller drops (a parameter's other bound) still
+    // undoes what leaned on it: `X` holds a `Y` that holds a `Counter`.
+    err(
+        "data O = (p: P[Nothing]?)\nclass Counter\n  var @n: Int = 0\nend\nclass P[T <: Y & Shareable]\n  include Shareable\n  @t: T\n  def initialize(@t: T)\n  end\nend\ndata Y = (x: X?, k: Counter)\ndata X = (y: Y?)\nx: Shareable = X.new(Y.new(nil, Counter.new))\np x\n",
+        "cannot assign X to `x` of type Shareable",
+    );
+    // Mutually recursive types are decided in polynomial time (each once
+    // per outermost decision; 12 such types took minutes).
+    let n = 12;
+    let mut src = String::new();
+    for i in 0..n {
+        let fields: Vec<String> = (0..n)
+            .filter(|j| *j != i)
+            .map(|j| format!("f{j}: K{j}?"))
+            .collect();
+        src.push_str(&format!("data K{i} = ({})\n", fields.join(", ")));
+    }
+    src.push_str("x: Shareable = K0.new(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)\n");
+    ok(&src);
+    // Known to the declaration's own checks (an override's result).
+    ok("data Point = (x: Int, y: Int)\nclass Base\n  def get -> Shareable = 1\nend\nclass Sub < Base\n  def get -> Point = Point.new(1, 2)\nend");
+}

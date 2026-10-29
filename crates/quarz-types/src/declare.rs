@@ -978,6 +978,13 @@ impl<'ast> Declarer<'ast> {
             self.resolve_extension_members(e);
         }
         self.resolve_usings();
+        // (Before the checks below, which ask whether a `data` type is a
+        // `Shareable`: `World::derived_shareable`.)
+        let mut ids: Vec<ClassId> = pending.iter().map(|p| p.id).collect();
+        for &id in &ids.clone() {
+            ids.extend(self.world.class(id).variants.clone());
+        }
+        self.world.ensure_shareable_known(&ids);
         for p in &pending {
             self.file = self.pending_file(p);
             // The top-level extensions of the class's group are active
@@ -2197,6 +2204,9 @@ impl<'ast> Declarer<'ast> {
             // The shareable promise is checked from scratch: a field may
             // have been added.
             self.world.class_mut(id).shareable = None;
+            // (Known again at once for a `data` type or enum, which
+            // `World::derived_shareable` reads.)
+            self.world.ensure_shareable_known(&[id]);
             let file = self.world.class(id).file;
             self.world.active_extensions = self.world.group_extensions(file);
             // A class whose conformance waits for its file's statements

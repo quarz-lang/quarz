@@ -441,6 +441,16 @@ pub struct World {
     /// them (its negative answer then holds only once they are done).
     observable_pending: Vec<ClassId>,
     observable_tentative: bool,
+    /// The classes `class_shareable` is deciding, and whether an answer
+    /// assumed one of them.
+    #[serde(skip)]
+    shareable_pending: Vec<ClassId>,
+    #[serde(skip)]
+    shareable_tentative: bool,
+    /// The classes decided Shareable in the current outermost run, under
+    /// an assumption (`class_shareable`).
+    #[serde(skip)]
+    shareable_provisional: Vec<ClassId>,
     /// The cogs of the movement (empty for a script).
     pub cogs: Vec<CogInfo>,
     /// Names the application declares or imports at the top level: a
@@ -1218,6 +1228,33 @@ impl World {
 
     // ----- subtyping ---------------------------------------------------------
 
+    /// Whether `a[aargs]`, a `data` type, enum or variant, is Shareable by
+    /// its fields (`class_shareable`, computed when declarations end:
+    /// `ensure_shareable_known`) and its arguments.
+    pub fn derived_shareable(&self, a: ClassId, aargs: &[Type]) -> bool {
+        let class = self.class(a);
+        matches!(
+            class.kind,
+            ClassKind::Data | ClassKind::Enum | ClassKind::Variant
+        ) && class.shareable == Some(true)
+            && aargs
+                .iter()
+                .all(|t| self.is_subtype(t, &Type::class(self.builtin.shareable)))
+    }
+
+    /// Compute `class_shareable` for the `data` types and enums, which
+    /// `derived_shareable` reads.
+    pub fn ensure_shareable_known(&mut self, ids: &[ClassId]) {
+        for &id in ids {
+            if matches!(
+                self.class(id).kind,
+                ClassKind::Data | ClassKind::Enum | ClassKind::Variant
+            ) {
+                self.class_shareable(id);
+            }
+        }
+    }
+
     /// `sub <: sup` for types without unresolved inference variables (a
     /// `Var` is only a subtype of itself).
     /// Whether `a[aargs]` seen as `b` keeps `b`'s Shareable promise: a
@@ -1286,7 +1323,10 @@ impl World {
                             && self.keeps_shareable(*a, aargs, *b);
                     }
                 }
-                false
+                // A `data` type or enum Shareable by its fields is a
+                // `Shareable` without including it (docs/03), given
+                // Shareable arguments.
+                *b == self.builtin.shareable && self.derived_shareable(*a, aargs)
             }
             // `Type[A] <: Type[B]` when `A <: B` (arguments included; the
             // run-time values carry none, `new` is typed only where the
@@ -2148,8 +2188,23 @@ impl World {
         if id == self.builtin.quoted {
             return true;
         }
-        // Provisionally true to handle recursive types.
-        self.class_mut(id).shareable = Some(true);
+        // A type it holds holds it again: Shareable on that account, but a
+        // positive answer that assumed an enclosing type's is kept only
+        // once the outermost is done (as `data_observable`'s negative
+        // ones): `data A = (b: B?, c: Counter)` with `data B = (a: A?)`
+        // must not leave `B` Shareable.
+        if self.shareable_pending.contains(&id) {
+            self.shareable_tentative = true;
+            return true;
+        }
+        // Decided Shareable already in this outermost run (each class once
+        // per run: without this, mutually recursive types take time
+        // exponential in their number).
+        if self.shareable_provisional.contains(&id) {
+            return true;
+        }
+        self.shareable_pending.push(id);
+        let provisional_from = self.shareable_provisional.len();
         let result = match self.class(id).kind {
             ClassKind::Module => self.shareable_promise(id).is_some(),
             ClassKind::Class => {
@@ -2159,7 +2214,30 @@ impl World {
                 self.shareable_violation(id).is_none()
             }
         };
-        self.class_mut(id).shareable = Some(result);
+        self.shareable_pending.pop();
+        // What was decided Shareable while this one was being decided may
+        // have leaned on it: not, if it is not (decided again when next
+        // asked, with this answer known). A caller may drop a negative
+        // answer (a parameter's other bound), so the outermost's answer
+        // alone does not tell.
+        if !result {
+            self.shareable_provisional.truncate(provisional_from);
+        }
+        if !result || self.shareable_pending.is_empty() || !self.shareable_tentative {
+            self.class_mut(id).shareable = Some(result);
+        } else {
+            self.shareable_provisional.push(id);
+        }
+        if self.shareable_pending.is_empty() {
+            // The provisional positives hold if the outermost does: a type
+            // it holds that is not Shareable makes it not Shareable either.
+            for c in std::mem::take(&mut self.shareable_provisional) {
+                if result {
+                    self.class_mut(c).shareable = Some(true);
+                }
+            }
+            self.shareable_tentative = false;
+        }
         result
     }
 
