@@ -4,6 +4,7 @@ use std::process::ExitCode;
 
 mod cog;
 mod doc;
+mod expand;
 mod repl;
 mod test;
 
@@ -15,9 +16,10 @@ usage: quarz <command> [args]
 commands:
   tokens FILE    print the tokens of FILE (for debugging the lexer)
   parse FILE     print the syntax tree of FILE (for debugging the parser)
-  check [--tree] [TARGET]
-                 type-check TARGET (--tree: print the checked tree as JSON,
-                 for formal/'s tests; the format changes without notice)
+  check [--tree | --expand] [TARGET]
+                 type-check TARGET (--expand: print what its `static`
+                 statements generated; --tree: print the checked tree as
+                 JSON, for formal/'s tests; the format changes without notice)
   ir [TARGET]    print the QIR of TARGET (for debugging the lowering)
   build [TARGET] [-o OUT]
                  compile TARGET to a native executable (default: a script
@@ -67,9 +69,14 @@ fn main() -> ExitCode {
             None => usage(),
         },
         Some("check") => {
-            let tree = args.get(1).is_some_and(|a| a == "--tree");
-            match Target::parse(&args[1 + usize::from(tree)..]) {
-                Ok((target, rest)) if rest.is_empty() => check_file(&target, tree),
+            let mode = match args.get(1).map(String::as_str) {
+                Some("--tree") => CheckOutput::Tree,
+                Some("--expand") => CheckOutput::Expand,
+                _ => CheckOutput::None,
+            };
+            let skip = 1 + usize::from(mode != CheckOutput::None);
+            match Target::parse(&args[skip..]) {
+                Ok((target, rest)) if rest.is_empty() => check_file(&target, mode),
                 Ok(_) => usage(),
                 Err(code) => code,
             }
@@ -337,13 +344,24 @@ fn build_file(target: &Target, out: &std::path::Path) -> ExitCode {
     }
 }
 
-/// `quarz check [--tree]`: with `--tree`, the checked program as JSON on
-/// standard output (`quarz_cli::tree`).
-fn check_file(target: &Target, tree: bool) -> ExitCode {
+/// What `quarz check` prints of a program that checks.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CheckOutput {
+    None,
+    /// `--tree`: the checked program as JSON, for the Lean model's tests.
+    Tree,
+    /// `--expand`: what the `static` statements generated (docs/14 §5).
+    Expand,
+}
+
+/// `quarz check [--tree | --expand]`: the output on standard output.
+fn check_file(target: &Target, mode: CheckOutput) -> ExitCode {
     match load_and_check(target) {
-        Some((checked, _, _)) => {
-            if tree {
-                println!("{}", quarz_cli::tree::tree(&checked));
+        Some((checked, sources, _)) => {
+            match mode {
+                CheckOutput::Tree => println!("{}", quarz_cli::tree::tree(&checked)),
+                CheckOutput::Expand => print!("{}", expand::expand(&checked.world, &sources)),
+                CheckOutput::None => {}
             }
             ExitCode::SUCCESS
         }

@@ -212,7 +212,7 @@ impl Runner {
                     "{at}: the block must be written at the call: it becomes the method's body"
                 ))
             };
-            let call_id = *self
+            let (call_id, block_span) = *self
                 .lowerer
                 .block_calls
                 .get(&g.func)
@@ -327,6 +327,7 @@ impl Runner {
                     func: g.func,
                     captures: g.captures,
                     by: (stmt.file, stmt.span),
+                    block: block_span,
                     doc: g.doc,
                 }),
             };
