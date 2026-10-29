@@ -213,4 +213,62 @@ def withLocal (x : String) (t : Ty) (body : Expr) : Expr := .seq (.assign x (.pr
 #guard !(boxProg (withLocal "b" [.cls 1 [[.int]], .nil] (.isA (.var "b" [.cls 1 [[.int]], .nil]) (.cls 1 [])))
   [("b", [.cls 1 [[.int]], .nil])]).check
 
+/-! ### Variance (G1b)
+
+OBox[out T] with `@v : T` and `get`; Cell[T] (invariant) with
+`var @v : T` and `set`; Sink[in T] with `put(x: T)`. -/
+
+def varClasses : ClassTable :=
+  [object,
+   ⟨"OBox", some 0, [⟨"v", [.param 0], false, none⟩], [.co], []⟩,
+   ⟨"Cell", some 0, [⟨"v", [.param 0], true, none⟩], [.inv], []⟩,
+   ⟨"Sink", some 0, [], [.contra], []⟩]
+
+def varProg (body : Expr) (locals : List (String × Ty) := []) (extra : List Method := []) : Program :=
+  ⟨varClasses,
+   [⟨1, "get", [], [.param 0], none, [], .field "v" [.param 0]⟩,
+    ⟨1, "initialize", [("v", [.param 0])], [.nil], none, [("v", [.param 0])],
+      .setField "v" (.var "v" [.param 0])⟩,
+    ⟨2, "get", [], [.param 0], none, [], .field "v" [.param 0]⟩,
+    ⟨2, "set", [("x", [.param 0])], [.param 0], none, [("x", [.param 0])],
+      .seq (.setField "v" (.var "x" [.param 0])) (.var "x" [.param 0])⟩,
+    ⟨2, "initialize", [("v", [.param 0])], [.nil], none, [("v", [.param 0])],
+      .setField "v" (.var "v" [.param 0])⟩,
+    ⟨3, "put", [("x", [.param 0])], [.nil], none, [("x", [.param 0])], .nil⟩] ++ extra,
+   ⟨0, "<main>", [], [.nil, .bool, .int, .str, .cls 0 []], none, locals, body⟩, []⟩
+
+-- Covariant: an `OBox[Int]` is an `OBox[Int?]` and an `OBox[Object]`;
+-- what it gives is then an `Int?`.
+#guard (varProg (.assign "b" (.new 1 [[.int]] [.int 1])) [("b", [.cls 1 [[.int, .nil]]])]).check
+#guard (varProg (.assign "b" (.new 1 [[.int]] [.int 1])) [("b", [.cls 1 [[.cls 0 []]]])]).check
+#guard (varProg (.seq (.assign "b" (.new 1 [[.int]] [.int 1])) (.assign "x" (.call (.var "b" [.cls 1 [[.int, .nil]]]) "get" [])))
+  [("b", [.cls 1 [[.int, .nil]]]), ("x", [.int, .nil])]).check
+#guard match run (varProg (.seq (.assign "b" (.new 1 [[.int]] [.int 1])) (.call (.var "b" [.cls 1 [[.int, .nil]]]) "get" []))
+    [("b", [.cls 1 [[.int, .nil]]])]) noPrim 100 with
+  | .ok (.int 1) _ => true | _ => false
+-- but not the other way.
+#guard !(varProg (.assign "b" (.new 1 [[.int, .nil]] [.int 1])) [("b", [.cls 1 [[.int]]])]).check
+-- Invariant: a `Cell[Int]` is no `Cell[Object]` (its `set` would take a
+-- `Str`), but a `Cell[Int | Nil]` is a `Cell[Nil | Int]`.
+#guard !(varProg (.assign "c" (.new 2 [[.int]] [.int 1])) [("c", [.cls 2 [[.cls 0 []]]])]).check
+#guard (varProg (.assign "c" (.new 2 [[.int, .nil]] [.int 1])) [("c", [.cls 2 [[.nil, .int]]])]).check
+-- Contravariant: a `Sink[Object]` is a `Sink[Int]`, not the other way.
+#guard (varProg (.assign "k" (.new 3 [[.cls 0 []]] [])) [("k", [.cls 3 [[.int]]])]).check
+#guard !(varProg (.assign "k" (.new 3 [[.int]] [])) [("k", [.cls 3 [[.cls 0 []]]])]).check
+-- The variance check: a covariant parameter taken by a method, or a
+-- contravariant one given back, is rejected.
+#guard !(varProg .nil [] [⟨1, "put", [("x", [.param 0])], [.nil], none, [("x", [.param 0])], .nil⟩]).check
+#guard !(varProg .nil [] [⟨3, "back", [], [.param 0, .nil], none, [], .nil⟩]).check
+-- `is_a?(OBox[Object])` holds of every `OBox`: checkable from `Object`;
+-- `is_a?(Cell[Object])` is not.
+#guard (varProg (withLocal "o" [.cls 0 []] (.isA (.var "o" [.cls 0 []]) (.cls 1 [[.cls 0 []]])))
+  [("o", [.cls 0 []])]).check
+#guard !(varProg (withLocal "o" [.cls 0 []] (.isA (.var "o" [.cls 0 []]) (.cls 2 [[.cls 0 []]])))
+  [("o", [.cls 0 []])]).check
+-- The model's range: a superclass's arguments take no arguments.
+#guard !(Program.wfClasses ⟨varClasses ++ [⟨"Deep", some 1, [], [], [[.cls 1 [[.int]]]]⟩],
+  [], ⟨0, "<main>", [], [.nil], none, [], .nil⟩, []⟩)
+#guard (Program.wfClasses ⟨varClasses ++ [⟨"IntOBox", some 1, [], [], [[.int, .nil]]⟩],
+  [], ⟨0, "<main>", [], [.nil], none, [], .nil⟩, []⟩)
+
 end QuarzCore.Examples

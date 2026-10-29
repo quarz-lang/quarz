@@ -120,9 +120,14 @@ theorem Program.wfMethod_overrides {P : Program} {mt : Method} (h : P.wfMethod m
       P.overrides mt sup = true := by
   intro d hd sup hsup
   simp only [Program.wfMethod, Bool.and_eq_true, Bool.or_eq_true, beq_iff_eq, List.all_eq_true] at h
-  have := (h.1.2.resolve_left hi) d hd
+  have := (h.1.2.resolve_left hi).2 d hd
   rw [hsup] at this
   exact this
+
+theorem Program.wfMethod_pos {P : Program} {mt : Method} (h : P.wfMethod mt = true)
+    (hi : mt.name ≠ "initialize") : P.methodPosOk mt = true := by
+  simp only [Program.wfMethod, Bool.and_eq_true, Bool.or_eq_true, beq_iff_eq] at h
+  exact (h.1.2.resolve_left hi).1
 
 theorem Program.lookup_spec {P : Program} {c : Nat} {m : String} {mt : Method}
     (h : P.lookup c m = some mt) :

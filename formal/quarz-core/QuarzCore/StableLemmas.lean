@@ -126,6 +126,67 @@ theorem ChainAt.stable {Λ Λ' : List Ty} {s s' : Store} {W Wo : Nat → Prop}
   | _ :: _, none, _, _, _, h => by simp [ChainAt] at h
   | _ :: _, some (.mk _ _ _ _ _ _), none, _, _, h => by simp [ChainAt] at h
 
+theorem BlockSig.le_refl {ct : ClassTable} (hwf : WfClasses ct) (sig : BlockSig) :
+    BlockSig.le ct sig sig :=
+  ⟨rfl, fun _ t t' h h' => by rw [h] at h'; cases h'; exact Ty.le_refl hwf t, Ty.le_refl hwf _⟩
+
+theorem BlockSig.le_trans {ct : ClassTable} (hwf : WfClasses ct) {a b c : BlockSig}
+    (h1 : BlockSig.le ct a b) (h2 : BlockSig.le ct b c) : BlockSig.le ct a c := by
+  obtain ⟨l1, p1, r1⟩ := h1
+  obtain ⟨l2, p2, r2⟩ := h2
+  refine ⟨l1.trans l2, fun i t t' ht ht' => ?_, Ty.le_trans hwf r2 r1⟩
+  obtain ⟨u, hu⟩ : ∃ u, b.params[i]? = some u :=
+    ⟨_, List.getElem?_eq_getElem (by have := (List.getElem?_eq_some_iff.mp ht).1; omega)⟩
+  exact Ty.le_trans hwf (p1 i t u ht hu) (p2 i u t' hu ht')
+
+/-- A chain checked for a signature is one for any the method may run the
+block with below it. -/
+theorem ChainAt.weaken (hwf : WfClasses P.classes) {Λ : List Ty} {s : Store}
+    (ws : List (Ctx × Env × Out)) (blk : Option Closure) {sig sig' : Option BlockSig}
+    (h : ChainAt P Λ s ws blk sig') (hle : BlockSig.optLe P.classes sig sig') :
+    ChainAt P Λ s ws blk sig := by
+  rcases sig with _ | a <;> rcases sig' with _ | b
+  · exact h
+  · exact (hle : False).elim
+  · exact (hle : False).elim
+  · cases ws with
+    | nil => cases blk <;> simp [ChainAt] at h
+    | cons w ws =>
+      obtain ⟨c, Δ, ob⟩ := w
+      cases blk with
+      | none => simp [ChainAt] at h
+      | some clo =>
+        obtain ⟨vars, me, sa, outer, ps, body⟩ := clo
+        simp only [ChainAt] at h ⊢
+        obtain ⟨hc, hcore, hch, habove, ⟨sig0, hrel, hrest⟩, hR, hJ⟩ := h
+        have hct : c.ct = P.classes := by simp [Ctx.ct, hc]
+        have hwf' : WfClasses c.ct := hct ▸ hwf
+        have hle' : BlockSig.le c.ct a b := hct ▸ hle
+        exact ⟨hc, hcore, hch, habove, ⟨sig0, BlockSig.le_trans hwf' hle' hrel, hrest⟩, hR, hJ⟩
+
+/-- The chain after a run with a signature `sig'`, given it was checked
+for `sig` before: the same for `sig` (the signature's part is static). -/
+theorem ChainAt.restore {Λ Λ' : List Ty} {s s' : Store}
+    (ws : List (Ctx × Env × Out)) (blk : Option Closure) {sig sig' : Option BlockSig}
+    (h' : ChainAt P Λ' s' ws blk sig') (h : ChainAt P Λ s ws blk sig)
+    (hle : BlockSig.optLe P.classes sig' sig) : ChainAt P Λ' s' ws blk sig := by
+  rcases sig with _ | a <;> rcases sig' with _ | b
+  · exact h'
+  · exact (hle : False).elim
+  · exact (hle : False).elim
+  · cases ws with
+    | nil => cases blk <;> simp [ChainAt] at h
+    | cons w ws =>
+      obtain ⟨c, Δ, ob⟩ := w
+      cases blk with
+      | none => simp [ChainAt] at h
+      | some clo =>
+        obtain ⟨vars, me, sa, outer, ps, body⟩ := clo
+        simp only [ChainAt] at h h' ⊢
+        obtain ⟨_, _, _, _, hsig, _, _⟩ := h
+        obtain ⟨hc, hcore, hch, habove, _, hR, hJ⟩ := h'
+        exact ⟨hc, hcore, hch, habove, hsig, hR, hJ⟩
+
 theorem FrameOK.stable {c : Ctx} {Λ Λ' : List Ty} {fr : Frame} {s s' : Store} {W Wo : Nat → Prop}
     {ws : List (Ctx × Env × Out)} (h : FrameOK P c Λ fr s ws) (he : Ext P W Wo Λ Λ' s s')
     (hw : ∀ l, chainLocs fr.blk l → ¬ W l) (hwo : ∀ l, Wo l → fr.blk = none) :

@@ -16,7 +16,10 @@ open Plausible
 Str`; B < A; E < Object, whose `==` says yes to anything; D < A with an
 immutable `@c : Int` to assign, its `initialize` generated (`super`).
 Generic: Box[T] with an immutable `@v : T` and a `var @w : T?`;
-IntBox < Box[Int]; Pair[S, T] with `@a : S` and `@b : T`. -/
+IntBox < Box[Int]; Pair[S, T] with `@a : S` and `@b : T`; OBox[out T]
+with `@v : T`, `get` and `each` (yields `@v`); Cell[T] with `var @v : T`
+and `set`; Sink[in T] with `put(x: T)`; IntOBox < OBox[Int], overriding
+`get`. -/
 def classes : ClassTable :=
   [⟨"Object", none, [], [], []⟩,
    ⟨"A", some 0, [⟨"a", [.int, .nil], false, none⟩, ⟨"v", [.str], true, none⟩], [], []⟩,
@@ -25,13 +28,19 @@ def classes : ClassTable :=
    ⟨"D", some 1, [⟨"c", [.int], false, none⟩], [], []⟩,
    ⟨"Box", some 0, [⟨"v", [.param 0], false, none⟩, ⟨"w", [.param 0, .nil], true, none⟩], [.inv], []⟩,
    ⟨"IntBox", some 5, [], [], [[.int]]⟩,
-   ⟨"Pair", some 0, [⟨"a", [.param 0], false, none⟩, ⟨"b", [.param 1], false, none⟩], [.inv, .inv], []⟩]
+   ⟨"Pair", some 0, [⟨"a", [.param 0], false, none⟩, ⟨"b", [.param 1], false, none⟩], [.inv, .inv], []⟩,
+   ⟨"OBox", some 0, [⟨"v", [.param 0], false, none⟩], [.co], []⟩,
+   ⟨"Cell", some 0, [⟨"v", [.param 0], true, none⟩], [.inv], []⟩,
+   ⟨"Sink", some 0, [], [.contra], []⟩,
+   ⟨"IntOBox", some 8, [], [], [[.int]]⟩]
 
 /-- The atoms of random types and `is_a?` tests (`Box` without its
 argument is ill formed: the checker rejects a test of it). -/
 def atoms : List Atom :=
   [.nil, .bool, .int, .str, .float, .cls 0 [], .cls 1 [], .cls 2 [], .cls 3 [], .cls 4 [],
-   .cls 5 [[.int]], .cls 5 [[.str]], .cls 5 [], .cls 6 [], .cls 7 [[.int], [.str]]]
+   .cls 5 [[.int]], .cls 5 [[.str]], .cls 5 [], .cls 6 [], .cls 7 [[.int], [.str]],
+   .cls 8 [[.cls 0 []]], .cls 8 [[.int]], .cls 9 [[.cls 0 []]], .cls 9 [[.int]],
+   .cls 10 [[.int]], .cls 11 []]
 
 def methods : List Method :=
   [ -- A#get -> Int?: reads and narrows its field.
@@ -66,14 +75,34 @@ def methods : List Method :=
       .new 7 [[.param 1], [.param 0]] [.field "b" [.param 1], .field "a" [.param 0]]⟩,
     ⟨7, "initialize", [("a", [.param 0]), ("b", [.param 1])], [.nil], none,
       [("a", [.param 0]), ("b", [.param 1])],
-      .seq (.setField "a" (.var "a" [.param 0])) (.setField "b" (.var "b" [.param 1]))⟩ ]
+      .seq (.setField "a" (.var "a" [.param 0])) (.setField "b" (.var "b" [.param 1]))⟩,
+    -- OBox#get -> T; OBox#initialize(v: T).
+    ⟨8, "get", [], [.param 0], none, [], .field "v" [.param 0]⟩,
+    ⟨8, "initialize", [("v", [.param 0])], [.nil], none, [("v", [.param 0])],
+      .setField "v" (.var "v" [.param 0])⟩,
+    -- OBox#each { |T| }: yields `@v` (a block's parameter: a positive
+    -- position).
+    ⟨8, "each", [], [.nil], some ⟨[[.param 0]], [.int, .nil, .bool, .str, .cls 0 []]⟩, [],
+      .seq (.yield [.field "v" [.param 0]]) .nil⟩,
+    -- Sink#put(x: T); IntOBox#get -> Int, reading the inherited field.
+    ⟨10, "put", [("x", [.param 0])], [.nil], none, [("x", [.param 0])], .nil⟩,
+    ⟨11, "get", [], [.int], none, [], .field "v" [.int]⟩,
+    -- Cell#get -> T; Cell#set(x: T) -> T; Cell#initialize(v: T).
+    ⟨9, "get", [], [.param 0], none, [], .field "v" [.param 0]⟩,
+    ⟨9, "set", [("x", [.param 0])], [.param 0], none, [("x", [.param 0])],
+      .seq (.setField "v" (.var "x" [.param 0])) (.var "x" [.param 0])⟩,
+    ⟨9, "initialize", [("v", [.param 0])], [.nil], none, [("v", [.param 0])],
+      .setField "v" (.var "v" [.param 0])⟩ ]
 
 /-- The top level's locals. -/
 def locals : List (String × Ty) :=
   [("x", [.int, .nil]), ("y", [.cls 1 [], .nil]), ("z", [.bool, .nil, .int]), ("e", [.cls 3 [], .nil]),
    ("k", [.int]), ("o", [.cls 0 []]), ("f", [.float, .nil]),
    ("bi", [.cls 5 [[.int]], .nil]), ("bs", [.cls 5 [[.str]]]), ("ib", [.cls 6 [], .nil]),
-   ("p", [.cls 7 [[.int], [.str]], .nil])]
+   ("p", [.cls 7 [[.int], [.str]], .nil]),
+   ("oi", [.cls 8 [[.int]], .nil]), ("oo", [.cls 8 [[.cls 0 []]], .nil]),
+   ("ci", [.cls 9 [[.int]], .nil]), ("co", [.cls 9 [[.cls 0 []]], .nil]),
+   ("si", [.cls 10 [[.int]], .nil])]
 
 def genTy : Gen Ty := do
   let n ← Gen.choose Nat 0 3 (by omega)
@@ -186,7 +215,19 @@ partial def genBox : Nat → Gen Expr
        (1, pure (.ite (.isA (.var "bi" [.cls 5 [[.int]], .nil]) (.cls 6 []))
          (.assign "x" (.call (.var "bi" [.cls 6 []]) "get" [])) .nil)),
        (1, pure (.ite (.isNil (.var "bi" [.cls 5 [[.int]], .nil])) .nil
-         (.assign "x" (.call (.var "bi" [.cls 5 [[.int]]]) "get" []))))]
+         (.assign "x" (.call (.var "bi" [.cls 5 [[.int]]]) "get" [])))),
+       -- Variance: an `OBox[Int]` read as an `OBox[Object]`; a `Cell[Int]`
+       -- assigned where a `Cell[Object]` is (rejected unless the order is
+       -- wrong), a `Str` set through it, the `Cell[Int]` read back.
+       (2, pure (.assign "oi" (.new 8 [[.int]] [.int 1]))), (2, pure (.assign "oo" (.var "oi" [.cls 8 [[.int]], .nil]))),
+       (1, pure (.assign "oo" (.new 8 [[.str]] [.str "o"]))),
+       (2, pure (.ite (.isNil (.var "oi" [.cls 8 [[.int]], .nil])) .nil
+         (.assign "x" (.call (.var "oi" [.cls 8 [[.int]]]) "get" [])))),
+       (2, pure (.assign "ci" (.new 9 [[.int]] [.int 1]))),
+       (2, pure (.ite (.isNil (.var "co" [.cls 9 [[.cls 0 []]], .nil])) .nil
+         (.call (.var "co" [.cls 9 [[.cls 0 []]]]) "set" [.str "s"]))),
+       (2, pure (.ite (.isNil (.var "ci" [.cls 9 [[.int]], .nil])) .nil
+         (.assign "x" (.call (.var "ci" [.cls 9 [[.int]]]) "get" []))))]
   | d + 1 => do
     let sub := genBox d
     Gen.frequency (pure .nil)
@@ -197,6 +238,43 @@ partial def genBox : Nat → Gen Expr
        (1, do return .ite (← genTest 1) (← sub) (← sub))]
 
 end
+
+/-- Steps of the variance scenario: boxes and cells made, seen through a
+wider argument, written through it, read back at the narrow one. Only
+a sound order of the arguments keeps a `Str` out of a `Cell[Int]`. -/
+def varSteps : List Expr :=
+  [.assign "ci" (.new 9 [[.int]] [.int 1]),
+   .assign "co" (.var "ci" [.cls 9 [[.int]], .nil]),
+   .ite (.isNil (.var "co" [.cls 9 [[.cls 0 []]], .nil])) .nil
+     (.call (.var "co" [.cls 9 [[.cls 0 []]]]) "set" [.str "s"]),
+   .ite (.isNil (.var "ci" [.cls 9 [[.int]], .nil])) .nil
+     (.assign "x" (.call (.var "ci" [.cls 9 [[.int]]]) "get" [])),
+   .assign "oi" (.new 8 [[.int]] [.int 1]),
+   .assign "oo" (.var "oi" [.cls 8 [[.int]], .nil]),
+   .assign "oi" (.var "oo" [.cls 8 [[.cls 0 []]], .nil]),
+   .ite (.isNil (.var "oi" [.cls 8 [[.int]], .nil])) .nil
+     (.assign "x" (.call (.var "oi" [.cls 8 [[.int]]]) "get" [])),
+   -- Accepted writes and calls through wider views: a `Cell[Object]` set
+   -- to a `Str`; an `OBox[Int]` or an `IntOBox` seen as an
+   -- `OBox[Object]`, its `get` and `each` run there; a `Sink[Object]`
+   -- seen as a `Sink[Int]`.
+   .assign "co" (.new 9 [[.cls 0 []]] [.int 1]),
+   .assign "oo" (.new 11 [] [.int 3]),
+   .assign "oi" (.new 11 [] [.int 4]),
+   .ite (.isNil (.var "oo" [.cls 8 [[.cls 0 []]], .nil])) .nil
+     (.assign "o" (.call (.var "oo" [.cls 8 [[.cls 0 []]]]) "get" [])),
+   .ite (.isNil (.var "oo" [.cls 8 [[.cls 0 []]], .nil])) .nil
+     (.callBlk (.var "oo" [.cls 8 [[.cls 0 []]]]) "each" [] ["o"] .nil),
+   .ite (.isNil (.var "oi" [.cls 8 [[.int]], .nil])) .nil
+     (.callBlk (.var "oi" [.cls 8 [[.int]]]) "each" [] ["k"] (.assign "x" (.var "k" [.int]))),
+   .assign "si" (.new 10 [[.cls 0 []]] []),
+   .ite (.isNil (.var "si" [.cls 10 [[.int]], .nil])) .nil
+     (.call (.var "si" [.cls 10 [[.int]]]) "put" [.int 1])]
+
+/-- `n` steps of the variance scenario, in a random order. -/
+def genVarSeq : Nat → Gen Expr
+  | 0 => pure .nil
+  | n + 1 => do return .seq (← Gen.elements varSteps (by simp [varSteps])) (← genVarSeq n)
 
 /-- Built-in methods answering at random (seeded by the fuel left): a
 value of one of the type's atoms, an existing object for a class (an

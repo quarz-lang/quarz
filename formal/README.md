@@ -12,10 +12,15 @@ A small language with Quarz's core and nothing else (`QuarzCore/`):
 - `Types`: atoms (`Nil`, `Bool`, `Int`, `Str`, `Float`, a class with its
   type arguments, a type parameter of the enclosing class; the value
   classes final, a class never: a subclass may define `==`), unions as
-  lists of atoms, the class table (each class with its parameters and
-  the arguments it gives its superclass), `≤` (a class is below another
-  when its chain gives that class the same arguments: the parameters
-  are invariant), substitution of a class's parameters.
+  lists of atoms, the class table (each class with its parameters'
+  variances and the arguments it gives its superclass), `≤` (a class is
+  below another when its chain gives that class arguments below the
+  other's as the parameters' variances say: `out` as they are, `in` the
+  other way, an invariant one both ways), substitution of a class's
+  parameters, the variance check of where a type names a parameter
+  (docs/02 §3). `≤` recurses into the arguments with fuel, as much as
+  the two atoms are deep, which is enough (LeLemmas.lean) because a
+  superclass's arguments take no arguments themselves (below).
 - `Syntax`: literals, locals and fields, `self`, `new` with the type
   arguments the checker inferred (the fields' defaults, then
   `initialize`), calls (with an anonymous block, live
@@ -39,10 +44,18 @@ A small language with Quarz's core and nothing else (`QuarzCore/`):
   parameters, is checked with those substituted: the theorem holds up to
   type arguments (a value read as a `Box[Int]` was made as one).
 - `Program`: a whole program checked (the class table and the methods
-  well formed: superclass arguments as many as the parameters, overrides
-  take at least and give at most what they override, as the subclass
-  sees the overridden signature; the fields' defaults and each
-  `initialize` checked).
+  well formed: superclass arguments as many as the parameters, in a
+  positive position, overrides take at least and give at most what they
+  override, as the subclass sees the overridden signature; the variance
+  check of each method's signature but `initialize`'s, and of each
+  class's fields; the fields' defaults and each `initialize` checked).
+  The proof needs the method check (a call through a covariant view, a
+  `Box[Object]` holding a `Box[Int]`, runs the method with the object's
+  own arguments: its parameters must take what the view gives, its
+  result and block give what the view says) and the superclass one (the
+  chain keeps arguments' order); the fields' check it does not need (a
+  field is read and written only by its object's methods, which see the
+  exact arguments), the Rust checker has it.
 
 `initialize` (docs/01 §3): a field must be assigned there when it has no
 default and its type does not admit `nil` (`var` or not). In
@@ -82,19 +95,32 @@ named blocks, what a closure assigns being un-narrowed from where it is
 made), patterns, `data`/`enum`, `rescue`/`ensure`, `super`
 outside `initialize` (Ruby's `super` in other methods), in a block of
 it, or with a block, Shareable and tasks, extensions and overloads. Of
-generics: variance and bounds (a class's parameters are invariant and
-unbounded here), method type parameters and lower bounds `U >: T`, the
+generics: bounds `T <: X` (a class's parameters are unbounded here: the
+next stage), method type parameters and lower bounds `U >: T`, the
 built-in generic classes (`Array`, `Hash`: built-in calls' arguments and
 results stay opaque), and `is_a?(C[args])` where the static type does
-not fix the arguments (docs/02 §7: the Rust checker rejects it too, as
-it does `is_a?(C)` of a generic class without arguments).
+not fix the arguments but for `Object` arguments of covariant
+parameters (docs/02 §7: the Rust checker rejects the rest too, as it
+does `is_a?(C)` of a generic class without arguments).
+
+The model's range for generics (a choice of the model, not a language
+rule): a superclass's arguments take no arguments themselves
+(`class IntBox < Box[Int]`, `class Pair[A, B] < Box[A]`,
+`class X[T] < Box[T?]`, not `class X < Box[Box[Int]]`), which bounds the
+types `≤` compares (with such arguments, expansive inheritance and
+variance make subtyping undecidable: Kennedy and Pierce, 2007); the
+conformance translator puts other programs out of range. The variance
+check applies to every method of the model, where the Rust checker
+skips private methods and the accessors `attr_reader`/`attr_writer`
+make (whose signatures pass it anyway): the translator puts a private
+method of a class with a variant parameter out of range. Narrowing
+removes atoms as written (`Ty.remove`, `Ty.keep`, and the class test's
+`a != b`), so where the Rust checker compares two spellings of one type
+(`Box[Int | Nil]`, `Box[Nil | Int]`) by subtyping, the model may keep an
+atom it could drop: stricter, not unsound.
 
 The top level's class has no type parameters (`Program.check`; the Rust
-top level's has none). A class's type arguments are compared as lists
-of atoms, so `Box[Int | Nil]` and `Box[Nil | Int]` are unrelated types
-here where the Rust checker takes the arguments as the same: stricter,
-not unsound (a disagreement a program writing a union's members in two
-orders would show). A field default is checked in each class inheriting
+top level's has none). A field default is checked in each class inheriting
 the field, and run with the object's class's arguments; one whose type
 names a parameter of the declaring class is thus rejected in a subclass
 that fixes it (`class IntBox < Box[Int]` with a default of type `T` in
@@ -111,7 +137,8 @@ stricter, not unsound.
   Rust checker's types as annotations (`conformance.sh`), the types
   compiled code relies on hold, type arguments included (an object's
   ghost arguments are its `new`'s, so a read annotated `Box[Int]` gives
-  an object made as a `Box[Int]`). No field is read before it is set: an
+  an object made as a `Box[Int]`, or as one below it as `Box`'s
+  variance says). No field is read before it is set: an
   object's immutable fields only after its defaults, `initialize` or
   `super` assigned them. (`eval`
   checks reads, not writes: an ill-typed write would show at its read.)
@@ -134,20 +161,29 @@ stricter, not unsound.
   immutable fields change only in its own defaults and `initialize`).
 - `check_typed` (Check.lean): what `check` accepts, `Typed` derives.
 - `lake exe fuzz [N]` makes N random programs over a fixed class table
-  with generic classes (`Box[T]`, `IntBox < Box[Int]`, `Pair[S, T]`; one
-  program in three with a generated `initialize` assigning a field and
-  calling `super` in some order, one in three opening with uses of the
-  boxes: boxes of either argument assigned to the box locals, what they
-  give assigned to an `Int` local, tests of them), runs those `check`
-  accepts, and fails on one that gets stuck: a quick check of rule
-  changes before their proofs are redone. With `≤` made to ignore the
-  type arguments it finds a stuck program (a `Box[Str]` read as a
-  `Box[Int]`) within 20000.
+  with generic classes (`Box[T]`, `IntBox < Box[Int]`, `Pair[S, T]`,
+  `OBox[out T]` with `each`, `Cell[T]` with a `var` field and `set`,
+  `Sink[in T]`, `IntOBox < OBox[Int]`; one program in
+  four with a generated `initialize` assigning a field and calling
+  `super` in some order, one in four opening with uses of the boxes:
+  boxes of either argument assigned to the box locals, what they give
+  assigned to an `Int` local, tests of them; one in four a variance
+  scenario: boxes, cells and sinks seen through a wider argument, called,
+  written and given blocks through it, read back at the narrow one),
+  runs those `check` accepts,
+  and fails on one that gets stuck: a quick check of rule changes before
+  their proofs are redone. With `≤` made to ignore the type arguments it
+  finds a stuck program (a `Box[Str]` read as a `Box[Int]`) within
+  20000, and so it does with invariant parameters compared as covariant
+  ones (a `Str` set through a `Cell[Object]` that is a `Cell[Int]`).
 - `./conformance.sh` turns what `quarz check --tree` prints (docs/05 §1)
   into QCore and checks it with the model, for `corpus/` (in range by
   design) and every fixture and example (mostly out of range for now).
   The program's generic classes are in range when their parameters are
-  invariant and unbounded; a read of a type parameter narrowed by a
+  unbounded and their superclass's arguments take no arguments; methods
+  a `static` statement generated (docs/14 §5: their bodies are not in
+  the tree) and `Type[T]` types are out of range; a read of a type
+  parameter narrowed by a
   class test (`T & C`) is annotated `C`, a larger type than the Rust
   checker's, so a weaker claim.
   A disagreement is the Rust checker narrowing further than the rules
@@ -160,7 +196,10 @@ stricter, not unsound.
   checker takes a value of a type parameter's type as always truthy
   (`if @v ... else @v end` with `@v : T` types the else branch
   `Nothing`), while `T` may be `Bool` or `Int?`; the model keeps `T` on
-  the falsy side.
+  the falsy side. And with variance: expansive inheritance
+  (`class N[in Z]; class C[X] < N[N[C[C[X]]]]`), out of the model's
+  range, makes the Rust checker's subtype check recurse without end on
+  `def f(x: C[Int]) -> N[C[Int]] = x` (a stack overflow).
 
 ## Setup
 

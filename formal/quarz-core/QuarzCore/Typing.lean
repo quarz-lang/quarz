@@ -192,6 +192,21 @@ def Program.lookup (P : Program) (c : Nat) (m : String) : Option Method :=
 def BlockSig.subst (as : List Ty) (sig : BlockSig) : BlockSig :=
   ⟨sig.params.map (·.subst as), sig.ret.subst as⟩
 
+/-- What a method may run a block with (`sig`), given the signature the
+block was checked against (`sig'`): the values it gives are of the
+block's parameters' types, and what the block gives back is of the
+result it takes. -/
+def BlockSig.le (ct : ClassTable) (sig sig' : BlockSig) : Prop :=
+  sig.params.length = sig'.params.length ∧
+  (∀ (i : Nat) (t t' : Ty), sig.params[i]? = some t → sig'.params[i]? = some t' → t.le ct t' = true) ∧
+  sig'.ret.le ct sig.ret = true
+
+/-- `BlockSig.le` on a method's optional block. -/
+def BlockSig.optLe (ct : ClassTable) : Option BlockSig → Option BlockSig → Prop
+  | none, none => True
+  | some a, some b => BlockSig.le ct a b
+  | _, _ => False
+
 /-- A method's signature with its owner's parameters substituted (as a
 receiver of class `c` given `as` sees it). -/
 def Method.inst (mt : Method) (as : List Ty) : Method :=
@@ -255,27 +270,35 @@ def Atom.wf (ct : ClassTable) : Atom → Bool
   | .param _ => false
   | _ => true
 
+/-- `C[Object, ...]`, every parameter of `C` covariant (or none): what
+every instance of `C` is (docs/02 §7), so the run-time test of the class
+alone checks it. -/
+def objectArgs (ct : ClassTable) (c : Nat) (args : List Ty) : Bool :=
+  args.length == (ct.variances c).length &&
+  (args.zip (ct.variances c)).all fun (t, v) => t == [.cls 0 []] && v == .co
+
 /-- Whether `is_a?(a)` can be checked at run time for a value of type `t`
 (docs/02 §7): the run-time test sees the class only, so a class with
-arguments is allowed when each atom of `t` that may pass it already
-carries those arguments (an atom of the class or a subclass), or has
-them trivially (`Object` arguments for covariant parameters: the next
-stage; here a class without parameters). -/
+arguments is allowed when each atom of `t` that may pass it is already
+of the class with those arguments (an atom of the class or a subclass
+whose chain gives arguments below them), or every instance is
+(`objectArgs`: `Object` arguments for covariant parameters, or a class
+without parameters). -/
 def verifiable (ct : ClassTable) (t : Ty) (a : Atom) : Bool :=
   match a with
   | .cls c args =>
     t.all fun b => match b with
-      -- An atom of the class or a subclass: the same arguments. One of a
+      -- An atom of the class or a subclass: arguments below. One of a
       -- superclass (`Object` included) or a parameter: the arguments are
-      -- not known at run time, so only a class without parameters (the
-      -- next stage allows `Object` arguments of covariant parameters). An
-      -- unrelated class never passes the test.
+      -- not known at run time, so only arguments every instance has
+      -- (`objectArgs`: a class without parameters, or `Object` for
+      -- covariant ones). An unrelated class never passes the test.
       | .cls d bs => if ct.subclass d c then
           match ct.ancestorArgs d bs c with
-          | some as' => Ty.beqArgs as' args
+          | some as' => argsLeWith (Atom.le ct) (ct.variances c) as' args || objectArgs ct c args
           | none => false
-        else args.isEmpty || !ct.subclass c d
-      | .param _ => args.isEmpty
+        else objectArgs ct c args || !ct.subclass c d
+      | .param _ => objectArgs ct c args
       | _ => true
   | _ => true
 

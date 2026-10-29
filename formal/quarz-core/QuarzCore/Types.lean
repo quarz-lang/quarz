@@ -1,10 +1,9 @@
 /-
 QCore's types (design §1.1): a type is a finite set of atoms, kept as a
-list (order and repetition do not matter: every definition below goes by
-membership, but for a class's type arguments, which are compared as
-lists: `Box[Int | Nil]` and `Box[Nil | Int]` are unrelated here, where
-the Rust checker takes them as the same argument). The empty type is
-`Nothing`.
+list. Order and repetition do not matter to `≤`, which goes by
+membership and compares a class's type arguments by `≤` as their
+parameters' variances say; narrowing's removals (`Ty.remove`,
+`Ty.keep`) compare atoms as written. The empty type is `Nothing`.
 -/
 
 namespace QuarzCore
@@ -131,6 +130,19 @@ def Ty.closedArgs : List Ty → Bool
   | t :: ts => t.closed && Ty.closedArgs ts
 end
 
+-- How deep the type arguments nest: an atom without arguments is 1.
+mutual
+def Atom.depth : Atom → Nat
+  | .cls _ args => Ty.argsDepth args + 1
+  | _ => 1
+def Ty.depth : Ty → Nat
+  | [] => 0
+  | a :: t => max a.depth (Ty.depth t)
+def Ty.argsDepth : List Ty → Nat
+  | [] => 0
+  | t :: ts => max (Ty.depth t) (Ty.argsDepth ts)
+end
+
 -- Every parameter named, at any depth, is one of the first `n`: what a
 -- class's own declarations (its superclass's arguments) and the type
 -- arguments of a `new` in its methods may name.
@@ -221,6 +233,10 @@ def ancestorArgsAux (ct : ClassTable) : Nat → Nat → List Ty → Nat → Opti
 def ancestorArgs (ct : ClassTable) (c : Nat) (as : List Ty) (d : Nat) : Option (List Ty) :=
   ancestorArgsAux ct ct.length c as d
 
+/-- The variances of class `d`'s parameters. -/
+def variances (ct : ClassTable) (d : Nat) : List Variance :=
+  ((ct[d]?).map (·.params)).getD []
+
 /-- A class's own parameters, as the arguments its body sees itself with. -/
 def selfArgs (ct : ClassTable) (c : Nat) : List Ty :=
   (List.range (((ct[c]?).map (·.params)).getD []).length).map fun i => [.param i]
@@ -237,22 +253,84 @@ def fieldAt? (ct : ClassTable) (c : Nat) (as : List Ty) (f : String) : Option Fi
 
 end ClassTable
 
-/-- Atom order. The value classes are direct subclasses of `Object`
-(class 0) and have no subclasses. A class with arguments is below an
-ancestor given the same arguments, as the chain substitutes them (the
-parameters are invariant here: variance is the next stage), and every
-class is below `Object`. A parameter is only below itself and
-`Object`. -/
-def Atom.le (ct : ClassTable) : Atom → Atom → Bool
-  | .cls c as, .cls d bs => (d == 0 && bs.isEmpty) || match ct.ancestorArgs c as d with
-    | some as' => Ty.beqArgs as' bs
+/-- `S ≤ T` under an order of atoms `f`: each atom of `S` is below one
+of `T`. -/
+def Ty.leWith (f : Atom → Atom → Bool) (s t : Ty) : Bool :=
+  s.all fun a => t.any fun b => f a b
+
+/-- Two type arguments compared as the parameter's variance says: `out`
+(covariant) as they are, `in` (contravariant) the other way, and an
+invariant one both ways (so `Box[Int | Nil]` is `Box[Nil | Int]`). -/
+def Variance.leWith (f : Atom → Atom → Bool) : Variance → Ty → Ty → Bool
+  | .co, s, t => Ty.leWith f s t
+  | .contra, s, t => Ty.leWith f t s
+  | .inv, s, t => Ty.leWith f s t && Ty.leWith f t s
+
+/-- Argument lists compared position by position, each by its
+parameter's variance (invariant past the list's end). -/
+def argsLeWith (f : Atom → Atom → Bool) : List Variance → List Ty → List Ty → Bool
+  | _, [], [] => true
+  | vs, s :: ss, t :: ts => (vs.headD .inv).leWith f s t && argsLeWith f vs.tail ss ts
+  | _, _, _ => false
+
+/-- Atom order with fuel (the arguments' comparison recurses into types
+that the chain may make no smaller: `le` gives it enough). The value
+classes are direct subclasses of `Object` (class 0) and have no
+subclasses. A class is below an ancestor when the chain gives that
+ancestor arguments below the other's, as its parameters' variances say,
+and every class is below `Object`. A parameter is only below itself
+and `Object`. -/
+def Atom.leF (ct : ClassTable) : Nat → Atom → Atom → Bool
+  | 0, _, _ => false
+  | n + 1, .cls c as, .cls d bs => (d == 0 && bs.isEmpty) || match ct.ancestorArgs c as d with
+    | some as' => argsLeWith (Atom.leF ct n) (ct.variances d) as' bs
     | none => false
+  | _ + 1, .cls _ _, _ => false
+  | _ + 1, .param i, .param j => i == j
+  | _ + 1, .param _, .cls d bs => d == 0 && bs.isEmpty
+  | _ + 1, .param _, _ => false
+  | _ + 1, _, .cls d bs => d == 0 && bs.isEmpty
+  | _ + 1, a, b => a == b
+
+/-- Atom order: `leF` with as much fuel as the two atoms are deep, which
+is enough when the superclasses' arguments take no arguments themselves
+(`WfClasses`). -/
+def Atom.le (ct : ClassTable) : Atom → Atom → Bool
+  | .cls c as, .cls d bs =>
+    Atom.leF ct ((Atom.cls c as).depth + (Atom.cls d bs).depth) (.cls c as) (.cls d bs)
   | .cls _ _, _ => false
   | .param i, .param j => i == j
   | .param _, .cls d bs => d == 0 && bs.isEmpty
   | .param _, _ => false
   | _, .cls d bs => d == 0 && bs.isEmpty
   | a, b => a == b
+
+-- The variance check (docs/02 §3): where a type of a class with
+-- parameters `vs` names one, a covariant parameter may stand only in a
+-- positive position (`pos`: where values come out), a contravariant one
+-- only in a negative one; a class's type argument keeps the position for
+-- a covariant parameter of that class, flips it for a contravariant one,
+-- and is both for an invariant one.
+mutual
+def Atom.posOk (ct : ClassTable) (vs : List Variance) (pos : Bool) : Atom → Bool
+  | .param i => match vs[i]? with
+    | some .co => pos
+    | some .contra => !pos
+    | _ => true
+  | .cls d args => Ty.argsPosOk ct vs pos (ct.variances d) args
+  | _ => true
+def Ty.posOk (ct : ClassTable) (vs : List Variance) (pos : Bool) : Ty → Bool
+  | [] => true
+  | a :: t => a.posOk ct vs pos && Ty.posOk ct vs pos t
+def Ty.argsPosOk (ct : ClassTable) (vs : List Variance) (pos : Bool) :
+    List Variance → List Ty → Bool
+  | _, [] => true
+  | ws, t :: ts => (match ws.headD .inv with
+      | .co => t.posOk ct vs pos
+      | .contra => t.posOk ct vs (!pos)
+      | .inv => t.posOk ct vs pos && t.posOk ct vs (!pos)) &&
+    Ty.argsPosOk ct vs pos ws.tail ts
+end
 
 /-- `S ≤ T`: each atom of `S` is below one of `T`. -/
 def Ty.le (ct : ClassTable) (s t : Ty) : Bool :=

@@ -122,6 +122,8 @@ partial def Tables.ty (T : Tables) (j : Json) : M Ty := do
         | [c] => T.ty c
         | _ => throw "a narrowed type parameter without a class"
       | none => throw "a method or extension type parameter"
+  -- `Type[T]` (a class as a value of its type): no class objects here.
+  | "type_of" => throw "a Type[T] type"
   | t => throw s!"a {t} type"
 
 /-- A Rust class type as a QCore class with its arguments. -/
@@ -378,6 +380,19 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
       match ← str (← field (← field sig "type") "t") with
       | "proc" =>
         let tys ← (← arr (← field (← field sig "type") "params")).toList.mapM fun t => (T.ty t : M Ty)
+        -- Types naming the method's class's parameters, as the receiver
+        -- sees them: its own arguments when it is of that class (another
+        -- class's view, through the chain, is out of range here).
+        let tys ← if tys.all Ty.closed then pure tys else do
+          let some rj := recvJ.getObjVal? "id" |>.toOption
+            | throw "a block of a generic method on self"
+          let rt ← T.nodeTy (← nat rj)
+          let owner := T.qclass (← nat (← field m "owner"))
+          match rt with
+          | [.cls k as] =>
+            unless owner == some k do throw "a block of a generic method through a subclass"
+            pure (tys.map (Ty.subst as))
+          | _ => throw "a block of a generic method on a union"
         for (x, t) in ps.zip tys do modify (addLocal · x t)
       | _ => throw "a block type"
       let bd ← body T (← arr (← field b "body"))
@@ -409,11 +424,21 @@ def method (T : Tables) (owner : Nat) (m : Json) (d : Json) : M Method := do
   if (← field m "singleton") == .bool true then throw "a class method"
   unless (← arr (← field m "type_params")).isEmpty do throw "a method type parameter"
   unless (← field m "extension") == .null do throw "an extension's method"
+  -- The Rust variance check skips private methods (docs/02 §3), the
+  -- model's checks every one: a private method of a class with a variant
+  -- parameter is out of range.
+  if (← field d "visibility") == .str "Private" then
+    let tps ← arr (← field (← T.cls (← nat (← field m "owner"))) "type_params")
+    if ← tps.anyM (fun p => do pure ((← str (← field p "variance")) != "Invariant")) then
+      throw "a private method of a variant class"
   let name ← str (← field m "name")
   let params ← (← arr (← field m "params")).toList.mapM fun p => do
     if (← str (← field p "kind")) != "Positional" then throw "a parameter not positional"
     if (← field p "default") == .bool true then throw "a parameter with a default"
     pure (← str (← field p "name"), ← T.ty (← field p "type"))
+  -- A method a `static` statement generated (docs/14 §5): its body is a
+  -- block of the `static def` that made it, not in the tree.
+  if (← field m "generated") == .bool true then throw "a generated method"
   let ret ← T.ty (← field m "ret")
   if (← field m "block_optional") == .bool true then throw "an optional block"
   let block ← match ← field m "block" with
@@ -483,12 +508,18 @@ def program (j : Json) : M Program := do
     let sup ← match ← field c "superclass" with
       | .null => pure (0, [])
       | t => T.tyClass t
+    -- The model's range: a superclass's arguments take no arguments
+    -- themselves (`Box[T]`, `Box[Int?]`, not `Box[Box[T]]`).
+    unless sup.2.all (fun t => decide (t.depth ≤ 1)) do throw "a superclass argument with arguments"
     let cid ← nat (← field c "id")
-    -- The type parameters: invariant and unbounded in this stage.
+    -- The type parameters: their variances; bounds are the next stage.
     let params ← (← arr (← field c "type_params")).toList.mapM fun p => do
-      unless (← str (← field p "variance")) == "Invariant" do throw "a variant type parameter"
       unless (← arr (← field p "bounds")).isEmpty do throw "a bounded type parameter"
-      pure Variance.inv
+      match ← str (← field p "variance") with
+      | "Covariant" => pure Variance.co
+      | "Contravariant" => pure Variance.contra
+      | "Invariant" => pure Variance.inv
+      | v => throw s!"a {v} type parameter"
     let fields ← (← arr (← field c "fields")).toList.mapM fun f => do
       let name ← str (← field f "name")
       -- Its default, by its place in `field_defaults`.

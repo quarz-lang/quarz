@@ -20,7 +20,13 @@ def wfClasses (P : Program) : Bool :=
       (match k.super with
         | some d => decide (d < i) &&
             k.superArgs.length == (((P.classes[d]?).map (·.params)).getD []).length &&
-            Ty.argsParamsBelow k.params.length k.superArgs
+            Ty.argsParamsBelow k.params.length k.superArgs &&
+            -- The model's range (G1b): a superclass's arguments take no
+            -- arguments themselves (`Box[T]`, `Box[Int?]`, not
+            -- `Box[Box[T]]`), which bounds what `≤` compares; and they
+            -- stand in a positive position (docs/02 §3).
+            k.superArgs.all (fun t => decide (t.depth ≤ 1)) &&
+            Ty.argsPosOk P.classes k.params true (P.classes.variances d) k.superArgs
         | none => false)
     | none => true) &&
   -- A class's fields' names distinct, inherited ones included.
@@ -35,6 +41,17 @@ def overrides (P : Program) (sub sup : Method) : Bool :=
   sub.ret.le P.classes sup.ret &&
   sub.block == sup.block
 
+/-- The variance check of a method's signature (docs/02 §3): its
+parameters are negative positions, its result positive, the parameters
+of the block it takes positive and that block's result negative. -/
+def methodPosOk (P : Program) (mt : Method) : Bool :=
+  mt.params.all (fun p => p.2.posOk P.classes (P.classes.variances mt.owner) false) &&
+  mt.ret.posOk P.classes (P.classes.variances mt.owner) true &&
+  match mt.block with
+  | some sig => sig.params.all (·.posOk P.classes (P.classes.variances mt.owner) true) &&
+      sig.ret.posOk P.classes (P.classes.variances mt.owner) false
+  | none => true
+
 /-- A method's signature: its owner a class, its parameters locals of
 those types (first), its locals' names distinct, what it overrides
 overridden as it may be, and an `==` taking `nil` and booleans (what
@@ -46,7 +63,9 @@ def wfMethod (P : Program) (mt : Method) : Bool :=
   (mt.params.zip mt.locals).all (fun (p, l) => p == l) &&
   -- `initialize` is not called by name (`Program.resolve`): its own.
   -- What it overrides is seen with the superclass's arguments.
-  (mt.name == "initialize" || ((P.classes.ancestors mt.owner).drop 1).all (fun d =>
+  -- The variance check too (not for `initialize`, which sees the exact
+  -- type, docs/02 §3).
+  (mt.name == "initialize" || P.methodPosOk mt && ((P.classes.ancestors mt.owner).drop 1).all (fun d =>
     match P.lookupAt d ((P.classes.ancestorArgs mt.owner (P.classes.selfArgs mt.owner) d).getD []) mt.name with
     | some sup => P.overrides mt sup
     | none => true)) &&
@@ -101,6 +120,16 @@ def checkDefaults (P : Program) (k : Nat) : Bool :=
         | none => false
       | none => false
 
+/-- The variance check of a class's own fields (docs/02 §3): an
+immutable field's type is a positive position (it is read), a `var`
+field's both (it is written too). The proof does not need it (a field is
+read and written only by its object's methods, which see their class's
+exact arguments); the Rust checker has it. -/
+def fieldsPosOk (P : Program) (k : Nat) : Bool :=
+  (((P.classes[k]?).map (·.fields)).getD []).all fun f =>
+    f.ty.posOk P.classes (P.classes.variances k) true &&
+    (!f.var || f.ty.posOk P.classes (P.classes.variances k) false)
+
 def check (P : Program) : Bool :=
   P.wfClasses &&
   -- The top level runs with `self` an instance of its class, which has
@@ -109,7 +138,7 @@ def check (P : Program) : Bool :=
     (((P.classes[P.main.owner]?).map (·.params)).getD []).isEmpty &&
     P.main.params.isEmpty && P.main.block.isNone) &&
   (P.main :: P.methods).all (fun mt => P.wfMethod mt && P.checkMethod mt) &&
-  (List.range P.classes.length).all fun k => P.wfInit k && P.checkDefaults k
+  (List.range P.classes.length).all fun k => P.wfInit k && P.checkDefaults k && P.fieldsPosOk k
 
 end Program
 
