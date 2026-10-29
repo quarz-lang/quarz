@@ -23,9 +23,16 @@ Design principles:
 | Bottom | `Nothing` | Type of `raise`, `exit` and infinite loops. Subtype of every type |
 | Discarded result | `Void` | Only as a result (`-> Void`, `(Int) -> Void`): the body's value is discarded and a caller gets `nil`, so a call's type is `Nil`, and `(Int) -> Void` is the same type as `(Int) -> Nil`. Not a value's type: `Void?`, `Array[Void]` or a parameter of type `Void` is an error. A `(T) -> Void` block discards its value (`&:name` too) and `next value` in it is an error (01-syntax.md §9) |
 | Type variable | `T`, `K`, `V` | Declared type parameters |
+| Class object | `Type[Point]`, `Type[T]` | The type of a class written in an expression (`Point`, `Array[Int]`). `Class` is `Type[Object]`. See below |
 | Self type | `Self` | The receiver's class (in a class method, its instances: `def self.build -> Self = new`), where a method hands a value out: `def dup -> Self`, `&: (Self) -> Void`. Not where the caller hands one in (a parameter, a block's result): a subclass would receive its parent's values; use a type parameter (`Comparable[T]`). In the body, `Self` is the class or a subclass, not known which: only `self`, what calls on it return as `Self`, and `new` on a class method's receiver are a `Self` (`Shape.new` is not) |
 
-Writing `Array[Int]` in expression context yields an expression denoting the type itself, so it can be used as in `Array[Int].new` (there is no `Array.[]` constructor as in Ruby).
+Writing `Array[Int]` in expression context yields an expression denoting the type itself, so it can be used as in `Array[Int].new` (there is no `Array.[]` constructor as in Ruby). Its type is `Type[Array[Int]]`:
+
+- A class written in an expression (`Point`, `Array[Int]`) is a value of type `Type[Point]`, `Type[Array[Int]]`; `Type[T]` with a type parameter takes any such class and binds `T` (`def name_of[T](t: Type[T]) -> String = t.name`, called as `name_of(Post)`). The argument of `Type[...]` is a class or a type parameter, not a union or a tuple.
+- `Type[T]` is covariant: `Type[Post]` is a `Type[Model]` when `Post` is a `Model`, the type arguments included (`Type[Array[Int]]` is a `Type[Array[Object]]`, not a `Type[Array[String]]`). `Class` is `Type[Object]`, the type of every class value and of `x.class`; `Type` written alone is `Type[Object]` too. A run-time test (`is_a?`, `as`, `in`) can tell a class value from other values, not the class's arguments: `x.is_a?(Class)` and `case x in Type` test "is a class" and narrow to `Type[Object]`, while `x.is_a?(Type[Int])` is an error.
+- A `Type[T]` value has `name`, `==` and `<=` (whether it is the other class or a subclass of it, or includes it: `Int <= Comparable`), and the class methods of `T`'s upper bound when the bound is a class (a module's singleton methods are not inherited), with `Self` standing for `T` (`def make[T <: Model](t: Type[T]) -> T = t.make`, for `def self.make -> Self` in `Model`).
+- `new` is typed only where the class is written (`Point.new`, `Array[Int].new`) or on the receiver of a class method (`new` in `def self.build -> Self`): a `Type[Point]` held in a variable, a parameter or a field may be a subclass whose `initialize` takes other arguments, and `t.new` on a `Type[T]` has no signature to check against, so both are errors.
+- At run time a class value carries no type arguments: `Array[Int] == Array[String]` is true, `Array[Int] <= Array[String]` is true and `name` is `"Array"`, while the static types `Type[Array[Int]]` and `Type[Array[String]]` differ.
 
 ## 2. Built-in Types
 
@@ -50,7 +57,7 @@ Writing `Array[Int]` in expression context yields an expression denoting the typ
 | `Enumerator[T]`, `Lazy[T]` | Same names | External iterators (`Lazy[T]` is *planned*) |
 | `Channel[T]`, `Task[T]`, `Atom[T]`, `Scope` | - | Concurrency primitives |
 | `Array::Builder[T]`, `Hash::Builder[K, V]`, `String::Builder`, `Bytes::Builder`, `Set::Builder[T]` | Mutable `Array` etc. | Mutable, task-local |
-| `Class` | `Class` | The type of `obj.class` (written without type arguments). Very limited reflection such as `name` |
+| `Type[T]`, `Class` = `Type[Object]` | `Class` | A class as a value (§1): `name`, `==`, `<=`, the bound's class methods; `new` where the class is written. `Class` is a type alias of `Type[Object]`, the type of `obj.class`: a type, not a value; in a pattern or `when`, write `Type` (`case k in Type`) |
 
 Numeric operations have the same meaning as in Ruby: `7 / 2` is `3`, `-7 / 2` is `-4`, `7 % -2` is `-1`, `1 + 1.5` is `2.5`. Mixed operations are defined as overloads such as `Int#+(Float) -> Float`. Fixed-width integers (planned) and `Int` will never be mixed implicitly; conversions will be explicit, with `to_i`/`to_i64` and friends.
 

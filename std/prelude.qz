@@ -57,11 +57,12 @@ class Object
   # Whether the value is `nil`. Narrows the receiver's type in the branch
   # where it is not.
   native def nil? -> Bool
-  # The class of the value, as a `Class` value.
+  # The class of the value, as a `Type[Object]` (`Class`) value.
   #
   # ```
   # 1.class.name        # => "Int"
   # [1].class.name      # => "Array"
+  # 1.class <= Comparable    # => true
   # ```
   native def class -> Class
   # `x.is_a?(klass)` with a class value: whether `x` is an instance of it
@@ -103,13 +104,27 @@ class Object
   def then[U](&: (Self) -> U) -> U = yield(self)
 end
 
-# A class as a value, as `x.class` returns it and `is_a?` takes it.
-class Class
+# A class as a value, as `x.class` returns it and `is_a?` takes it:
+# `Int` written in an expression is a `Type[Int]`, `Array[Int]` a
+# `Type[Array[Int]]`, and `x.class` a `Type[Object]`, also written
+# `Class`. A `Type` of a subclass is a `Type` of its
+# superclass (`Type[StandardError]` is a `Type[Exception]`). A class is
+# constructed with `new` only where it is written (`Array[Int].new`, or
+# `new` in a class method): a `Type[T]` value may hold a subclass whose
+# `initialize` takes other arguments. At run time a class value carries
+# no type arguments: `Array[Int]` and `Array[String]` are the same value.
+class Type[T]
   include Shareable
   # The class's full name, with its namespace (`"Task::Cancelled"`) and
   # without type arguments (`[1].class.name` is `"Array"`).
   native def name -> String
+  # Whether the class is `other` or a subclass of it (or includes it,
+  # for a module): `Int <= Comparable`. Type arguments are not compared.
+  native def <=(other: Type[Object]) -> Bool
 end
+
+# `Type[Object]`, the type of any class value: what `x.class` returns.
+type Class = Type[Object]
 
 # The class of `nil`, the absence of a value. A type `T?` is `T` or `Nil`.
 class Nil

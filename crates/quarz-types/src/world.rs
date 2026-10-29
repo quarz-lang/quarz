@@ -277,6 +277,8 @@ pub struct Builtin {
     pub comparable: ClassId,
     pub enumerable: ClassId,
     pub class_: ClassId,
+    /// The prelude's `type Class = Type[Object]`.
+    pub class_alias: u32,
     pub shareable: ClassId,
     pub task: ClassId,
     pub channel: ClassId,
@@ -521,6 +523,7 @@ impl World {
             Type::ClassObject(id, args) => {
                 Type::ClassObject(*id, args.iter().map(|a| self.erase_narrowed(a)).collect())
             }
+            Type::TypeOf(t) => Type::type_of(self.erase_narrowed(t)),
             Type::Union(ms) => Type::union_of(ms.iter().map(|m| self.erase_narrowed(m)).collect()),
             Type::Tuple(ts) => Type::Tuple(ts.iter().map(|m| self.erase_narrowed(m)).collect()),
             Type::Proc(rc, ps, r, sh) => Type::Proc(
@@ -655,6 +658,7 @@ impl World {
             Type::ClassObject(id, args) => {
                 Type::ClassObject(*id, args.iter().map(|a| self.devoid(a)).collect())
             }
+            Type::TypeOf(t) => Type::type_of(self.devoid(t)),
             Type::Union(ms) => Type::union_of(ms.iter().map(|m| self.devoid(m)).collect()),
             Type::Tuple(ts) => Type::Tuple(ts.iter().map(|m| self.devoid(m)).collect()),
             Type::Proc(rc, ps, r, sh) => Type::Proc(
@@ -700,8 +704,9 @@ impl World {
                 }
             }
             Type::ClassObject(id, args) => {
-                format!("Class[{}]", self.type_name(&Type::Class(*id, args.clone())))
+                format!("Type[{}]", self.type_name(&Type::Class(*id, args.clone())))
             }
+            Type::TypeOf(t) => format!("Type[{}]", self.type_name(t)),
             Type::Union(ms) => {
                 if ms.len() == 2 && self.is_nil_type(&ms[1]) {
                     return format!("{}?", self.type_name(&ms[0]));
@@ -1098,8 +1103,23 @@ impl World {
                 }
                 false
             }
-            (Type::ClassObject(a, _), Type::ClassObject(b, _)) => self.class_is_a(*a, *b),
-            (Type::ClassObject(_, _), Type::Class(b, _)) => *b == self.builtin.class_,
+            // `Type[A] <: Type[B]` when `A <: B` (arguments included; the
+            // run-time values carry none, `new` is typed only where the
+            // class is written).
+            (Type::ClassObject(..) | Type::TypeOf(_), Type::ClassObject(..) | Type::TypeOf(_)) => {
+                match (sub.instance_of(), sup.instance_of()) {
+                    (Some(a), Some(b)) => self.is_subtype(&a, &b),
+                    _ => false,
+                }
+            }
+            (Type::ClassObject(..) | Type::TypeOf(_), Type::Class(b, bargs))
+                if *b == self.builtin.class_ =>
+            {
+                match (sub.instance_of(), bargs.first()) {
+                    (Some(a), Some(arg)) => self.is_subtype(&a, arg),
+                    _ => true,
+                }
+            }
             (Type::Tuple(xs), Type::Tuple(ys)) => {
                 xs.len() == ys.len() && xs.iter().zip(ys).all(|(x, y)| self.is_subtype(x, y))
             }
@@ -1329,8 +1349,39 @@ impl World {
                         }
                     }
                 }
-                // Class objects are objects too.
-                self.lookup_instance_methods(self.builtin.class_, &[], name, &mut out);
+                // Class objects are objects too: `Type[T]`'s methods.
+                let instance = Type::Class(*id, args.clone());
+                self.lookup_instance_methods(self.builtin.class_, &[instance], name, &mut out);
+            }
+            Type::TypeOf(t) => {
+                // For `T <: Bound` with a class bound, the bound's class
+                // methods (`Self` being `T`), before `Type[T]`'s own, as
+                // for a class object and at run time; a module's singleton
+                // methods are not inherited by the classes that include it.
+                if let Type::Param(p) = &**t {
+                    for b in self.param_bounds(*p) {
+                        let Type::Class(bid, bargs) = &b else {
+                            continue;
+                        };
+                        if self.class(*bid).kind == ClassKind::Module {
+                            continue;
+                        }
+                        for found in
+                            self.lookup_methods(&Type::ClassObject(*bid, bargs.clone()), name)
+                        {
+                            if !out.iter().any(|(m, _)| *m == found.0) {
+                                out.push(found);
+                            }
+                        }
+                    }
+                }
+                let mut own = Vec::new();
+                self.lookup_instance_methods(self.builtin.class_, &[(**t).clone()], name, &mut own);
+                for found in own {
+                    if !out.iter().any(|(m, _)| *m == found.0) {
+                        out.push(found);
+                    }
+                }
             }
             Type::Tuple(ts) => {
                 let elem = self.tuple_element(ts);
@@ -1603,7 +1654,7 @@ impl World {
                 // Generic containers are shareable when their arguments are.
                 args.clone().iter().all(|a| self.is_shareable(a))
             }
-            Type::ClassObject(_, _) => true,
+            Type::ClassObject(_, _) | Type::TypeOf(_) => true,
             Type::Union(ms) | Type::Tuple(ms) => ms.clone().iter().all(|m| self.is_shareable(m)),
             Type::Proc(_, _, _, shareable) => *shareable,
             // `Self`: as shareable as the class it stands for.
@@ -1668,7 +1719,11 @@ impl World {
     /// arguments say, and a `data` type or enum what its fields do.
     pub fn release_observable(&mut self, t: &Type) -> bool {
         match t {
-            Type::Nothing | Type::Void | Type::ClassObject(_, _) | Type::Var(_) => false,
+            Type::Nothing
+            | Type::Void
+            | Type::ClassObject(_, _)
+            | Type::TypeOf(_)
+            | Type::Var(_) => false,
             Type::Class(id, args) => {
                 let id = *id;
                 let own = if self.is_value_class(id) {

@@ -585,6 +585,7 @@ impl InferTable {
             Type::ClassObject(id, args) => {
                 Type::ClassObject(*id, args.iter().map(|a| self.resolve(a)).collect())
             }
+            Type::TypeOf(t) => Type::type_of(self.resolve(t)),
             Type::Union(ms) => Type::union_of(ms.iter().map(|m| self.resolve(m)).collect()),
             Type::Tuple(ts) => Type::Tuple(ts.iter().map(|t| self.resolve(t)).collect()),
             Type::Proc(rc, ps, r, sh) => Type::Proc(
@@ -876,6 +877,7 @@ impl Checker {
                 }
                 args.iter().for_each(|a| self.check_bounds_deep(a, span));
             }
+            Type::TypeOf(t) => self.check_bounds_deep(t, span),
             Type::Union(ms) | Type::Tuple(ms) => {
                 ms.iter().for_each(|m| self.check_bounds_deep(m, span))
             }
@@ -2038,10 +2040,21 @@ impl Checker {
                 }
                 true
             }
-            (Type::ClassObject(aid, _), Type::ClassObject(eid, _)) => {
-                self.world.class_is_a(*aid, *eid)
+            // `Type[A]` to `Type[B]`: `A` to `B` (binding `T` in `Type[T]`).
+            (Type::ClassObject(..) | Type::TypeOf(_), Type::ClassObject(..) | Type::TypeOf(_)) => {
+                match (actual.instance_of(), expected.instance_of()) {
+                    (Some(a), Some(e)) => self.coerce(&a, &e),
+                    _ => false,
+                }
             }
-            (Type::ClassObject(_, _), Type::Class(eid, _)) => *eid == self.world.builtin.class_,
+            (Type::ClassObject(..) | Type::TypeOf(_), Type::Class(eid, eargs))
+                if *eid == self.world.builtin.class_ =>
+            {
+                match (actual.instance_of(), eargs.first()) {
+                    (Some(a), Some(e)) => self.coerce(&a, e),
+                    _ => true,
+                }
+            }
             (Type::Tuple(xs), Type::Tuple(ys)) => {
                 if xs.len() != ys.len() {
                     return false;
@@ -2120,6 +2133,12 @@ impl Checker {
             (Type::Tuple(xs), Type::Tuple(ys)) if xs.len() == ys.len() => {
                 let (xs, ys) = (xs.clone(), ys.clone());
                 xs.iter().zip(ys.iter()).all(|(p, q)| self.unify(p, q))
+            }
+            (Type::ClassObject(..) | Type::TypeOf(_), Type::ClassObject(..) | Type::TypeOf(_)) => {
+                match (rx.instance_of(), ry.instance_of()) {
+                    (Some(a), Some(b)) => self.unify(&a, &b),
+                    _ => false,
+                }
             }
             (Type::Union(_), _) | (_, Type::Union(_)) => {
                 self.coerce(&rx, &ry) && self.coerce(&ry, &rx)
@@ -2769,6 +2788,7 @@ impl Checker {
             Type::Class(_, args) | Type::ClassObject(_, args) | Type::Tuple(args) => {
                 args.iter().for_each(|a| self.settle_in(a));
             }
+            Type::TypeOf(t) => self.settle_in(t),
             Type::Proc(rc, ps, r, _) => {
                 if let Some(rc) = rc {
                     self.settle_in(rc);
@@ -3461,6 +3481,7 @@ impl Checker {
     fn self_binding(m: &MethodInfo, recv: &Type) -> Type {
         match recv {
             Type::ClassObject(id, args) if m.singleton => Type::Class(*id, args.clone()),
+            Type::TypeOf(t) if m.singleton => (**t).clone(),
             t => t.clone(),
         }
     }
@@ -4443,8 +4464,16 @@ impl Checker {
                     .insert(expr.id, ConstTarget::Const(cid));
                 self.const_type(cid, expr.span)
             }
-            Member::Alias(_) => {
-                self.error(format!("`{path}` is a type alias, not a value"), expr.span);
+            Member::Alias(aid) => {
+                let hint = if aid == self.world.builtin.class_alias {
+                    "; the class of class values is `Type` (`when Type`, `in Type`)"
+                } else {
+                    ""
+                };
+                self.error(
+                    format!("`{path}` is a type alias, not a value{hint}"),
+                    expr.span,
+                );
                 Type::Nothing
             }
         }
@@ -4827,6 +4856,16 @@ impl Checker {
     /// other members stay as they are.
     pub fn split_by_type(&mut self, t: &Type, target: &Type) -> (Type, Type) {
         let t = self.resolve(t);
+        // `in Type` (or `Type[X]`): the class values, `Type[Object]` when
+        // no argument is given.
+        let target = &match target {
+            Type::Class(id, args) if *id == self.world.builtin.class_ => Type::type_of(
+                args.first()
+                    .cloned()
+                    .unwrap_or_else(|| Type::class(self.world.builtin.object)),
+            ),
+            t => t.clone(),
+        };
         let open = match target {
             Type::Class(id, args)
                 if args.is_empty() && !self.world.class(*id).type_params.is_empty() =>
@@ -4863,6 +4902,10 @@ impl Checker {
                     }
                     // A type parameter may be anything.
                     Type::Param(_) => true,
+                    // A class value is a `Type`.
+                    Type::ClassObject(..) | Type::TypeOf(_) => {
+                        id == self.world.builtin.class_ || id == self.world.builtin.object
+                    }
                     _ => false,
                 };
                 if may {
@@ -6347,9 +6390,57 @@ impl Checker {
                 let arr = self.world.array_of(elem);
                 self.check_call_on(expr, call, &arr, implicit_self, expected)
             }
+            Type::TypeOf(t) if name == "new" => {
+                self.error(
+                    format!(
+                        "cannot construct a `{}`: what `initialize` takes depends on the class",
+                        self.name(&Type::TypeOf(t.clone()))
+                    ),
+                    expr.span,
+                );
+                self.check_args_blindly(call);
+                Type::Nothing
+            }
             Type::ClassObject(cid, args) if name == "new" => {
                 let cid = *cid;
                 let args = args.clone();
+                // `new` constructs the class that is written (`Point.new`,
+                // `Array[Int].new`) or the one a class method was called
+                // on (`new` in `def self.build`): a `Type[Point]` held in
+                // a variable may be a subclass whose `initialize` takes
+                // other arguments.
+                let written = match &call.recv {
+                    None => true,
+                    Some(r) => {
+                        matches!(r.kind, ExprKind::SelfRef)
+                            || match self.out.const_targets.get(&r.id) {
+                                Some(ConstTarget::Class(_)) => true,
+                                // A constant that is an alias of a class
+                                // (`P = Geometry::Point`, docs/01 §8).
+                                Some(ConstTarget::Const(c)) => matches!(
+                                    self.world.through_alias(Member::Const(*c)),
+                                    Member::Class(_)
+                                ),
+                                _ => false,
+                            }
+                    }
+                };
+                if !written {
+                    let hint = if cid == self.world.builtin.object {
+                        String::new()
+                    } else {
+                        format!(" (`{}.new`)", self.world.class(cid).name)
+                    };
+                    self.error(
+                        format!(
+                            "cannot call `new` on a `{}` value: `new` constructs the class that is written{hint} or the receiver of a class method; the value may be a subclass whose `initialize` takes other arguments",
+                            self.name(recv_ty)
+                        ),
+                        expr.span,
+                    );
+                    self.check_args_blindly(call);
+                    return Type::Nothing;
+                }
                 // Prelude singletons named `new` take precedence.
                 let cands = self.world.lookup_methods(recv_ty, "new");
                 let own: Vec<_> = cands
@@ -9096,14 +9187,16 @@ impl Checker {
             Type::Class(id, args) if [b.array, b.set, b.hash, b.range].contains(id) => {
                 args.iter().any(|a| !object(a) && self.unverifiable_arg(a))
             }
-            Type::Class(id, args) | Type::ClassObject(id, args) => args
+            Type::Class(id, args) => args
                 .iter()
                 .enumerate()
                 .any(|(i, a)| !(object(a) && self.world.param_admits_object(*id, i))),
+            // A class value is tested as "a class": `Type[Object]` only.
+            Type::ClassObject(id, _) => *id != b.object,
             Type::Tuple(ts) | Type::Union(ts) => ts.iter().any(|m| self.unverifiable(m)),
             Type::Proc(..) => true,
             // A type parameter is not known at run time (`o.as(T)`).
-            Type::Param(_) => true,
+            Type::Param(_) | Type::TypeOf(_) => true,
             Type::Nothing | Type::Void | Type::Var(_) => false,
         }
     }
@@ -9128,7 +9221,15 @@ impl Checker {
         };
         match (m, t) {
             (Type::Param(_) | Type::Var(_), _) | (_, Type::Param(_)) => true,
-            (Type::ClassObject(..), Type::ClassObject(..)) => true,
+            (Type::ClassObject(..) | Type::TypeOf(_), Type::ClassObject(..) | Type::TypeOf(_)) => {
+                true
+            }
+            // `in Type`: a class value is an instance of `Type`; an
+            // `Object` or a `Type` may hold one.
+            (Type::ClassObject(..) | Type::TypeOf(_), Type::Class(id, _))
+            | (Type::Class(id, _), Type::ClassObject(..) | Type::TypeOf(_)) => {
+                *id == self.world.builtin.class_ || *id == self.world.builtin.object
+            }
             _ => match (class_of(m), class_of(t)) {
                 (Some(mc), Some(tc)) => {
                     self.world.class_is_a(mc, tc)

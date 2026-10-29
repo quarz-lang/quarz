@@ -10,7 +10,7 @@ pub fn rt_type(t: &Type) -> RtType {
     match t {
         Type::Nothing => RtType::Nothing,
         Type::Class(id, _) => RtType::Class(*id),
-        Type::ClassObject(_, _) => RtType::ClassObject,
+        Type::ClassObject(_, _) | Type::TypeOf(_) => RtType::ClassObject,
         Type::Union(ms) => RtType::Union(ms.iter().map(rt_type).collect()),
         Type::Tuple(ts) => RtType::Tuple(vec![RtType::Any; ts.len()]),
         Type::Proc(..) => RtType::Proc,
@@ -424,6 +424,7 @@ fn classes_in(t: &Type, out: &mut Vec<ClassId>) {
                 classes_in(a, out);
             }
         }
+        Type::TypeOf(t) => classes_in(t, out),
         Type::Union(ts) | Type::Tuple(ts) => {
             for t in ts {
                 classes_in(t, out);

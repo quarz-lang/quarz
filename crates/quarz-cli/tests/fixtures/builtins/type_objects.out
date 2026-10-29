@@ -1,0 +1,35 @@
+"Post"
+"Array"
+"Comparable"
+"posts"
+"models"
+"models"
+"Post"
+0
+true
+false
+true
+true
+false
+true
+false
+true
+true
+"Post"
+"Post"
+true
+["Post", "Comment", "Model"]
+["posts", "models", "models"]
+["Post", "Comment", "Model"]
+["Post"]
+"Int"
+true
+true
+true
+false
+["Int", "String", "Nil", "Float"]
+"a class: Post"
+"an int"
+"other"
+"ArgumentError"
+"bad"

@@ -80,6 +80,7 @@ impl Remap for Type {
                 class(m, c);
                 args.remap(m);
             }
+            Type::TypeOf(t) => t.remap(m),
             Type::Union(ts) | Type::Tuple(ts) => ts.remap(m),
             Type::Proc(recv, ps, r, _) => {
                 recv.remap(m);

@@ -27,7 +27,12 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         let b = super::block(i, &a)?;
         i.call_block_on(&b, Some(r.clone()), a.pos)
     });
-    native!(m, "Class#name", class_name);
+    native!(m, "Type#name", class_name);
+    // Classes only: the values carry no type arguments.
+    native!(m, "Type#<=", |i, r, a| match (r, a.arg(0)) {
+        (Value::Class(c), Value::Class(d)) => Ok(Value::Bool(i.program.world.class_is_a(*c, *d))),
+        _ => Err(i.err_type("Type#<= takes a class")),
+    });
     native!(m, "Nil#to_a", |_, _, _| Ok(Value::array(vec![])));
     native!(m, "Nil#&", |_, _, _| Ok(Value::Bool(false)));
     native!(m, "Nil#|", |_, _, a| Ok(Value::Bool(a.arg(0).is_truthy())));

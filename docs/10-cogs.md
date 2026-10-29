@@ -178,7 +178,7 @@ In the application and in a script, `cog` is the top level; `cog.name` is then t
 
 ## 9. Open Questions
 
-- The name a class prints: the diagnostic at a use site can show the name visible there (`AUtil::Table`), while `Class#name` at run time gives the declared one (`Util::Table`); Ruby's `Namespace` has the same question open (Bug #21316).
+- The name a class prints: the diagnostic at a use site can show the name visible there (`AUtil::Table`), while `Type#name` at run time gives the declared one (`Util::Table`); Ruby's `Namespace` has the same question open (Bug #21316).
 - Whether `branch` should be allowed at all outside `[patch]`.
 - Whether `test/` should take part in the hash (it does not: only what is compiled does).
 - Whether an application's files other than `src/main.qz` may hold statements (a `require_relative`d helper that prints at load would stop working).
