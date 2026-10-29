@@ -107,7 +107,13 @@ impl Remap for CallTarget {
                 }
             }
             CallTarget::IsA(t) | CallTarget::As { ty: t, .. } => t.remap(m),
-            CallTarget::ProcCall | CallTarget::Constant(_) | CallTarget::Raise => {}
+            CallTarget::Raise { new } => {
+                if let Some((c, i, _)) = new {
+                    class(m, c);
+                    method(m, i);
+                }
+            }
+            CallTarget::ProcCall | CallTarget::Constant(_) => {}
         }
     }
 }

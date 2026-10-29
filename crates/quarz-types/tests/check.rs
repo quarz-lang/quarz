@@ -2444,7 +2444,12 @@ fn class_values_in_tests_and_patterns() {
         "`Class` is a type alias, not a value; the class of class values is `Type` (`when Type`, `in Type`)",
     );
     // `raise` takes a `Type[E]` value, as it took a `Class`.
-    ok("def fail(k: Type[StandardError], m: String) -> Nothing\n  raise k, m\nend");
+    // A class value may be a subclass whose `initialize` takes other
+    // arguments: raise the class by name (docs/01 §12).
+    err(
+        "def fail(k: Type[StandardError], m: String) -> Nothing\n  raise k, m\nend",
+        "cannot raise a class value",
+    );
     err(
         "def fail[E <: Exception](k: Type[E]) -> Nothing\n  raise k\nend",
         "cannot raise",
@@ -2563,4 +2568,36 @@ fn narrowing_holds_only_where_the_test_succeeded() {
         &format!("{l}def f(l: L) -> Int\n  case l\n  in L::Cons(_, l) if false then 0\n  in L::Cons then l.h\n  in L::E then 0\n  end\nend"),
         "undefined method `h` for L",
     );
+}
+
+#[test]
+fn rescue_and_raise_build_what_they_say() {
+    // `retry` belongs directly in the clause.
+    err(
+        "class Box\n  def once(&: () -> Void) -> Nil\n    yield\n    nil\n  end\nend\ndef f -> Int\n  begin\n    raise ArgumentError, \"x\"\n  rescue ArgumentError\n    Box.new.once do\n      retry\n    end\n  end\n  0\nend",
+        "`retry` outside of a rescue clause",
+    );
+    err(
+        "def f -> Int\n  begin\n    raise ArgumentError, \"x\"\n  rescue ArgumentError\n    -> { retry }.call\n  end\n  0\nend",
+        "`retry` outside of a rescue clause",
+    );
+    // `raise K, m` builds `K.new(m)`: its `initialize` takes one String.
+    err(
+        "class E < StandardError\n  @code: Int\n  def initialize(@code: Int)\n    super(\"e\")\n  end\nend\ndef f -> Nothing = raise E, \"m\"",
+        "`E#initialize` does not take one String",
+    );
+    err(
+        "def f(k: Type[StandardError]) -> Nothing = raise k, \"m\"",
+        "cannot raise a class value",
+    );
+    ok("class E < StandardError\n  @code: Int = 7\nend\ndef f -> Nothing = raise E, \"m\"\ndef g -> Nothing = raise E");
+    err(
+        "abstract class AE < StandardError\n  abstract def code -> Int\nend\ndef f -> Nothing = raise AE, \"x\"",
+        "cannot instantiate `AE`",
+    );
+    err(
+        "class Sn < StandardError\n  def self.new(message: String, n: Int) -> Sn = Sn.allocate_with(message)\nend\ndef f -> Nothing = raise Sn, \"r\"",
+        "defines or inherits `self.new`",
+    );
+    ok("class Sp < StandardError\n  def initialize(message: String, *rest: Int)\n    super(message)\n  end\nend\ndef f -> Nothing = raise Sp, \"x\"");
 }

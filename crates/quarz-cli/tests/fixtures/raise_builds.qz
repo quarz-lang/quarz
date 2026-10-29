@@ -1,0 +1,57 @@
+# `raise K, m` is `raise K.new(m)`, `raise K` is `raise K.new("K")`:
+# the class's `initialize` and its fields' defaults run (docs/01 §12).
+class Coded < StandardError
+  @code: Int = 7
+  def code -> Int = @code
+end
+
+class Tagged < StandardError
+  @tag: String
+  def initialize(message: String, tag: String = "default")
+    @tag = "#{tag}: #{message}"
+    super(message)
+  end
+  def tag -> String = @tag
+end
+
+begin
+  raise Coded, "m"
+rescue Coded => e
+  p e.code + 1, e.message
+end
+
+begin
+  raise Coded
+rescue Coded => e2
+  p e2.code, e2.message
+end
+
+begin
+  raise Tagged, "x"
+rescue Tagged => t
+  p t.tag
+end
+
+def f(n: Int) -> Int
+  begin
+    raise ArgumentError, "n = #{n}" if n > 0
+    0
+  rescue ArgumentError => e
+    p e.message
+    1
+  end
+end
+p f(2)
+
+# Without a message: `K.new("K")`, or `K.new()` when `initialize` takes
+# no String but needs nothing.
+begin
+  raise ArgumentError
+rescue ArgumentError => a
+  p a.message
+end
+begin
+  raise SystemExit
+rescue SystemExit => s
+  p s.status, s.message
+end
