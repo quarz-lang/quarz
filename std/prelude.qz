@@ -172,6 +172,11 @@ module Meta
     static native def def_method[A, B, R](name: Symbol, params: [Symbol, Symbol], *, visibility: Symbol = :public, &body: T.(A, B) -> R) -> Void
     # The same for a class method: the block's `self` is the class.
     static native def def_class_method[R](name: Symbol, *, visibility: Symbol = :public, &body: Type[T].() -> R) -> Void
+    # A field `@name` of the class, of a class type without type
+    # parameters, with `default` (a value made at compile time, baked
+    # into the class), assignable when `var:` is true, with the accessors
+    # `reader:` and `writer:` ask for (as `attr_reader`/`attr_writer`).
+    static native def def_field[U](name: Symbol, type: Type[U], default: U, *, var: Bool = false, reader: Bool = false, writer: Bool = false) -> Void
     # The documentation comment of the next method generated.
     static native def doc(text: String) -> Void
   end

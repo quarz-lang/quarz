@@ -73,6 +73,13 @@ pub struct Lowerer {
     /// the next one, once checked.
     static_retry: Vec<MethodId>,
     static_retry_consts: Vec<ConstId>,
+    /// In a static round: the classes whose `static` statements have not
+    /// all run (and their descendants). A reach by one of the names the
+    /// runtime calls everywhere (`shake::RUNTIME_NAMES`: `to_s`,
+    /// `initialize`, `hash`...) leaves their methods out: their bodies
+    /// may use members not generated yet. A call that resolves to one,
+    /// or a reach by another name, still gets it.
+    pub static_skip: HashSet<ClassId>,
     /// The statement function of the previous static round, reused when
     /// the next round is for the same statement.
     static_stmt_func: Option<(quarz_syntax::ast::NodeId, FuncId)>,
@@ -178,18 +185,31 @@ impl Lowerer {
             let fields = world.all_fields(class.id);
             let own = fields.len().saturating_sub(class.fields.len());
             for (i, (field, _)) in fields.iter().enumerate().skip(own) {
-                let Some(default) = &field.default else {
-                    continue;
-                };
                 if self.field_default_funcs.contains_key(&(class.id, i)) {
                     continue;
                 }
-                let id = self.alloc_func();
-                self.field_default_funcs.insert((class.id, i), id);
                 let name = format!("default of {}#@{}", class.name, field.name);
-                let f =
-                    FnBuilder::init(self, world, out, name, class.file, Some(class.id), default);
-                self.set_func(id, f);
+                let f = if let Some(default) = &field.default {
+                    let id = self.alloc_func();
+                    self.field_default_funcs.insert((class.id, i), id);
+                    let f = FnBuilder::init(
+                        self,
+                        world,
+                        out,
+                        name,
+                        class.file,
+                        Some(class.id),
+                        default,
+                    );
+                    (id, f)
+                } else if let Some(baked) = &field.baked_default {
+                    let id = self.alloc_func();
+                    self.field_default_funcs.insert((class.id, i), id);
+                    (id, self.baked_init(name, class.file, baked))
+                } else {
+                    continue;
+                };
+                self.set_func(f.0, f.1);
             }
         }
         // Unit bodies.
@@ -240,6 +260,99 @@ impl Lowerer {
 }
 
 impl Lowerer {
+    /// An initializer (a field default) that is a baked value (docs/14
+    /// §5): the instructions that make it, returned.
+    fn baked_init(&mut self, name: String, file: u32, baked: &quarz_types::Baked) -> Function {
+        let mut baker = lift::Baker::new(&self.layouts, 1);
+        let mut insts = Vec::new();
+        baker.bake(&mut insts, 0, baked);
+        let (nregs, consts) = baker.finish();
+        let lines = vec![0; insts.len()];
+        Function {
+            name,
+            kind: FuncKind::Init,
+            file,
+            nregs,
+            frame_size: 0,
+            param_kinds: Vec::new(),
+            arity: 0,
+            consts,
+            blocks: vec![Block {
+                insts,
+                lines,
+                term: Term::Return(0),
+                term_line: 0,
+                handler: None,
+            }],
+            inlined: Vec::new(),
+        }
+    }
+
+    /// A field was added to `classes` (a class and its descendants, by
+    /// `def_field` at compile time): what was lowered before assumed
+    /// their layouts without it. Those functions are lowered again when
+    /// next reached: the methods whose functions read or write a field
+    /// of one of them or construct one (and those making a block that
+    /// does), the constant initializers likewise, and the field defaults
+    /// of the classes themselves (kept by field index).
+    pub fn invalidate_layout(&mut self, classes: &[ClassId]) {
+        let touches = |f: &Function| {
+            f.blocks.iter().flat_map(|b| &b.insts).any(|i| match i {
+                Inst::FieldGet { class, .. } | Inst::FieldSet { class, .. } => {
+                    classes.contains(class)
+                }
+                Inst::Call {
+                    kind: CallKind::Construct { class, .. } | CallKind::ConstructRecv { class, .. },
+                    ..
+                } => classes.contains(class),
+                _ => false,
+            })
+        };
+        let mut stale: Vec<bool> = self.done.iter().map(touches).collect();
+        // A block's function is lowered with its method's.
+        loop {
+            let mut changed = false;
+            for (i, f) in self.done.iter().enumerate() {
+                if stale[i] {
+                    continue;
+                }
+                let makes_stale = f.blocks.iter().flat_map(|b| &b.insts).any(|inst| {
+                    matches!(inst, Inst::MakeBlock { func, .. }
+                        if stale.get(*func as usize).copied().unwrap_or(false))
+                });
+                if makes_stale {
+                    stale[i] = true;
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        let is_stale = |id: FuncId| stale.get(id as usize).copied().unwrap_or(false);
+        // Lowered again in the next static round (`static_retry`: the
+        // names they were reached by are not walked again).
+        for (mid, m) in self.method_funcs.iter_mut().enumerate() {
+            if m.is_some_and(is_stale) {
+                *m = None;
+                if let Some(r) = self.reached.get_mut(mid) {
+                    *r = false;
+                }
+                self.static_retry.push(mid as MethodId);
+            }
+        }
+        for (cid, c) in self.const_funcs.iter_mut().enumerate() {
+            if c.is_some_and(is_stale) {
+                *c = None;
+                self.static_retry_consts.push(cid as ConstId);
+            }
+        }
+        // A field default is kept by (class, index): the indices of the
+        // classes' own fields may have moved.
+        self.field_default_funcs
+            .retain(|(class, _), id| !is_stale(*id) && !classes.contains(class));
+    }
+
     /// The function of the default of field `index` of class `cid`
     /// (counting inherited fields first): the declaring class's.
     pub(crate) fn field_default(
@@ -341,6 +454,29 @@ impl Lowerer {
                     quarz_ir::shake::Ref::Const(c) => consts.push(c),
                     _ => {}
                 });
+                // In a static round, a construction whose class the
+                // receiver decides (`new` in an inherited class method)
+                // reaches the `initialize` of every class it may make by
+                // id: the name is one left out for the classes whose
+                // statements are still to run.
+                if self.static_mode {
+                    for inst in f.blocks.iter().flat_map(|b| &b.insts) {
+                        let Inst::Call {
+                            kind: CallKind::ConstructRecv { class, .. },
+                            ..
+                        } = inst
+                        else {
+                            continue;
+                        };
+                        for c in &world.classes {
+                            if world.class_is_a(c.id, *class) {
+                                if let Some(ids) = c.methods.get("initialize") {
+                                    methods.extend(ids.iter().copied());
+                                }
+                            }
+                        }
+                    }
+                }
                 self.pending[i] = Some(f);
                 for m in methods {
                     self.reach_method(world, m, by_name, work);
@@ -413,6 +549,7 @@ impl Lowerer {
         if self.method_funcs.len() < world.methods.len() {
             self.method_funcs.resize(world.methods.len(), None);
         }
+        let known = self.reached.len();
         if self.reached.len() < world.methods.len() {
             self.reached.resize(world.methods.len(), false);
         }
@@ -422,17 +559,25 @@ impl Lowerer {
             let fields = world.all_fields(class_info.id);
             let own = fields.len().saturating_sub(class_info.fields.len());
             for (i, (field, _)) in fields.iter().enumerate().skip(own) {
+                if self.field_default_funcs.contains_key(&(class_info.id, i)) {
+                    continue;
+                }
+                let name = format!("default of {}#@{}", class_info.name, field.name);
+                if let Some(baked) = &field.baked_default {
+                    let id = self.alloc_func();
+                    self.field_default_funcs.insert((class_info.id, i), id);
+                    let f = self.baked_init(name, class_info.file, baked);
+                    self.set_func(id, f);
+                    continue;
+                }
                 let Some(default) = &field.default else {
                     continue;
                 };
-                if self.field_default_funcs.contains_key(&(class_info.id, i))
-                    || !out.node_types.contains_key(&default.id)
-                {
+                if !out.node_types.contains_key(&default.id) {
                     continue;
                 }
                 let id = self.alloc_func();
                 self.field_default_funcs.insert((class_info.id, i), id);
-                let name = format!("default of {}#@{}", class_info.name, field.name);
                 let f = FnBuilder::init(
                     self,
                     world,
@@ -468,6 +613,22 @@ impl Lowerer {
         let mut work: Vec<MethodId> = Vec::new();
         for n in quarz_ir::shake::RUNTIME_NAMES {
             self.reach_name(world, n, &by_name, &mut work);
+        }
+        // Methods new since the previous round (generated by a statement)
+        // whose name an earlier round reached: callable already, unless
+        // the name is one left out for their class, walked again later.
+        for mid in known..world.methods.len() {
+            let m = &world.methods[mid];
+            if !self.reached_names.contains(m.name.as_str()) {
+                continue;
+            }
+            if quarz_ir::shake::RUNTIME_NAMES.contains(&m.name.as_str())
+                && self.static_skip.contains(&m.owner)
+            {
+                self.reached_names.remove(m.name.as_str());
+            } else {
+                self.reach_method(world, mid as MethodId, &by_name, &mut work);
+            }
         }
         self.reach_method(world, callee, &by_name, &mut work);
         // What the previous round could not lower, checked since.
@@ -545,9 +706,22 @@ impl Lowerer {
         if self.reached_names.contains(name) {
             return;
         }
-        self.reached_names.insert(name.to_string());
+        // In a static round, a runtime name leaves out the classes whose
+        // statements are still to run (`static_skip`); the name is walked
+        // again next round.
+        let runtime_name = self.static_mode
+            && !self.static_skip.is_empty()
+            && quarz_ir::shake::RUNTIME_NAMES.contains(&name);
+        let mut skipped = false;
         for &m in by_name.get(name).map(|v| v.as_slice()).unwrap_or(&[]) {
+            if runtime_name && self.static_skip.contains(&world.methods[m as usize].owner) {
+                skipped = true;
+                continue;
+            }
             self.reach_method(world, m, by_name, work);
+        }
+        if !skipped {
+            self.reached_names.insert(name.to_string());
         }
     }
 }
