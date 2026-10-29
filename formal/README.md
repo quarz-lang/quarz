@@ -282,7 +282,8 @@ stricter, not unsound.
   `begin`/`rescue`/`else`/`ensure` (docs/01 §12) becomes `rescue` and
   `ensure`: the exception held in a local no program can spell, each
   clause a class test of it (a clause without a class `StandardError`),
-  its variable assigned, the last raising it again (as a bare `raise` in
+  its variable (a local of the clause, fresh, shadowing one outside:
+  quarz#126) assigned, the last raising it again (as a bare `raise` in
   a clause does); without `else`, the body's value held in a local too.
   The built-in exception classes are classes of the model without
   fields, their methods built-in calls, an exception made (`E.new(m)`,
@@ -383,7 +384,8 @@ stricter, not unsound.
   where its type says otherwise (the translator puts such a `raise` out
   of range); a clause's variable that names an existing local is
   narrowed to the exception's classes whatever its declared type; a
-  `retry` in a block in a clause is accepted and fails at run time. And: in a
+  `retry` in a block in a clause is accepted and fails at run time
+  (these three fixed since: 8ccb796, quarz#126). And: in a
   generic class, `b : Box[T]` tested with `is_a?(IntBox)` (`IntBox <
   Box[Int]`) is narrowed to nothing by the Rust checker, so the branch
   goes unchecked (`s: String = b` checks, and fails at run time); the
