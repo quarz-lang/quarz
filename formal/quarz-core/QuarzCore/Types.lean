@@ -178,6 +178,9 @@ inductive ClassKind where
   | data
   | enumC
   | variant
+  /-- `ProcN[in A1, .., in An, out R]`: the type of procedures of `n`
+  parameters; its values are procedures, not objects (design §13.7). -/
+  | proc
   deriving DecidableEq, Repr, Inhabited
 
 /-- A class: its superclass (none for the root, `Object`) with the type

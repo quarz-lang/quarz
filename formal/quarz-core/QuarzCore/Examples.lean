@@ -406,4 +406,40 @@ def raiseMy : Expr := .raise (.new 2 [] [])
     noPrim 100 with
   | .ok (.int 4) _ => true | _ => false
 
+/-! ### Lambdas (design §13.8, C0)
+
+Proc1[in A, out R] at 1. -/
+
+def procClasses : ClassTable :=
+  [object, ⟨"Proc1", some 0, [], [.contra, .co], [], [], .proc⟩]
+
+def procProg (body : Expr) (locals : List (String × Ty)) (cls : ClassTable := procClasses) : Program :=
+  ⟨cls, [], ⟨0, "<main>", [], [.nil, .bool, .int, .str, .cls 0 []], none, locals, body⟩, []⟩
+
+def incr : Expr := .lambda [("x", [.int])] [] [.int] (.var "x" [.int])
+
+-- Made, called: the argument comes back.
+#guard (procProg (.seq (.assign "f" incr) (.callProc (.var "f" [.cls 1 [[.int], [.int]]]) [.int 4]))
+  [("f", [.cls 1 [[.int], [.int]]])]).check
+#guard match run (procProg (.seq (.assign "f" incr) (.callProc (.var "f" [.cls 1 [[.int], [.int]]]) [.int 4]))
+    [("f", [.cls 1 [[.int], [.int]]])]) noPrim 100 with
+  | .ok (.int 4) _ => true | _ => false
+-- An argument of another type: rejected.
+#guard !(procProg (.seq (.assign "f" incr) (.callProc (.var "f" [.cls 1 [[.int], [.int]]]) [.str "a"]))
+  [("f", [.cls 1 [[.int], [.int]]])]).check
+-- Assigning a local of the method: rejected (C0).
+#guard !(procProg (.seq (.assign "n" (.int 1)) (.assign "f" (.lambda [("x", [.int])] [] [.int]
+    (.seq (.assign "n" (.var "x" [.int])) (.int 0)))))
+  [("n", [.int, .nil]), ("f", [.cls 1 [[.int], [.int]]])]).check
+-- A local of the method read as narrowed where the lambda is made:
+-- rejected (it may run when the local holds another value).
+#guard !(procProg (.seq (.assign "n" (.int 1)) (.assign "f" (.lambda [("x", [.int])] [] [.int]
+    (.var "n" [.int]))))
+  [("n", [.int, .nil]), ("f", [.cls 1 [[.int], [.int]]])]).check
+#guard (procProg (.seq (.assign "n" (.int 1)) (.assign "f" (.lambda [("x", [.int])] [] [.int, .nil]
+    (.var "n" [.int, .nil]))))
+  [("n", [.int, .nil]), ("f", [.cls 1 [[.int], [.int, .nil]]])]).check
+-- A procedures' class must take its parameters in and give its result out.
+#guard !(procProg incr [] [object, ⟨"Proc1", some 0, [], [.co, .co], [], [], .proc⟩]).check
+
 end QuarzCore.Examples

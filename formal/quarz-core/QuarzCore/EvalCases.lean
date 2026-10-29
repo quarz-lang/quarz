@@ -49,6 +49,7 @@ theorem hasTy_truthy {s : Store} {v : Value} {u : Ty} (h : s.hasTy P v u) (ht : 
   cases a <;> simp_all [Atom.le]
   cases v with
   | obj l => obtain ⟨_, _, _, h⟩ := typeOf_obj ha; cases h
+  | proc i => obtain ⟨_, _, h⟩ := typeOf_proc ha; cases h
   | _ => simp_all [Store.typeOf, Value.truthy]
 
 /-- A falsy value of `u` is `nil` or `false`, which `u` holds. -/
@@ -318,10 +319,10 @@ theorem AllTy.get {s : Store} : ∀ {vs : List Value} {ts : List Ty}, AllTy P s 
   | v :: vs, t :: ts, ⟨_, h2⟩, i + 1, w, u, hv, ht => AllTy.get h2 i w u (by simpa using hv)
       (by simpa using ht)
 
-theorem AllTy.mono {s s' : Store} (h : ObjsGrow s s') :
+theorem AllTy.mono {s s' : Store} (h : ObjsGrow s s') (hp : s.procs <+: s'.procs) :
     ∀ {vs : List Value} {ts : List Ty}, AllTy P s vs ts → AllTy P s' vs ts
   | [], [], _ => trivial
-  | _ :: _, _ :: _, ⟨h1, h2⟩ => ⟨hasTy_mono h h1, AllTy.mono h h2⟩
+  | _ :: _, _ :: _, ⟨h1, h2⟩ => ⟨hasTy_mono h hp h1, AllTy.mono h hp h2⟩
 
 theorem objs_append_mono {s : Store} (o : Obj) : ObjsGrow s { s with objs := s.objs ++ [o] } :=
   fun l o' h => ⟨o', by
@@ -466,6 +467,7 @@ theorem Ext.setField {W Wo : Nat → Prop} {Λ : List Ty} {s : Store} {l i : Nat
     {fd : Field} (ho : s.objs[l]? = some o) (hfi : (P.classes.allFields o.cls)[i]? = some fd)
     (hvar : fd.var = false → Wo l) : Ext P W Wo Λ Λ s (s.setField l i v) where
   tys := List.prefix_refl Λ
+  procs := List.prefix_refl _
   locs := fun _ w h => ⟨w, h, .inl rfl⟩
   grow := setField_grow
   imm := fun l' o1 o2 h1 h2 hn j f hj hfv => by
@@ -483,6 +485,10 @@ theorem WfStore.setField {Λ : List Ty} {s : Store} (hw : WfStore P Λ s)
     (hfi : (P.classes.allFieldsAt o.cls o.args)[i]? = some fd)
     (hv : s.hasTy P v fd.ty) : WfStore P Λ (s.setField l i v) where
   len := hw.len
+  procs := fun j p hp => by
+    obtain ⟨_, f0, _, hf0, _⟩ := ClassTable.allFieldsAt_some P.classes hfi
+    exact (hw.procs j p hp).stable
+      (Ext.setField (W := fun _ => False) (Wo := fun _ => True) ho hf0 (fun _ => trivial))
   bounds := fun l' o' h => by
     rw [Store.setField_objs] at h
     by_cases hl : l' = l
@@ -495,7 +501,7 @@ theorem WfStore.setField {Λ : List Ty} {s : Store} (hw : WfStore P Λ s)
     · rw [if_neg hl] at h; exact hw.noEnum l' o' h
   objs := fun l' o' h => by
     have mono : ∀ {w : Value} {t : Ty}, s.hasTy P w t → (s.setField l i v).hasTy P w t :=
-      fun hw' => hasTy_mono setField_grow hw'
+      fun hw' => hasTy_mono setField_grow (List.prefix_refl _) hw'
     rw [Store.setField_objs] at h
     by_cases hl : l' = l
     · subst hl; rw [if_pos rfl, ho] at h; cases h
@@ -557,7 +563,7 @@ theorem PathHolds.setField {c : Ctx} {fr : Frame} {s : Store} {l i : Nat} {o : O
       (p = .field f → fd.var = false → s.hasTy P v (u.subst fr.selfArgs)) →
       PathHolds P c fr (s.setField l i v) p u
   | .local x, u, ⟨l', w, d, h1, h2, h3, h4, h5⟩, _ =>
-    ⟨l', w, d, h1, h2, h3, hasTy_mono setField_grow h4, hasTy_mono setField_grow h5⟩
+    ⟨l', w, d, h1, h2, h3, hasTy_mono setField_grow (List.prefix_refl _) h4, hasTy_mono setField_grow (List.prefix_refl _) h5⟩
   | .field g, u, ⟨l', o', fd', j, h1, h2, h3, h4, h5, h6, h7⟩, hnew => by
     rw [hl] at h1; cases h1; rw [ho] at h2; cases h2
     refine ⟨l, { o with fields := o.fields.set i v, set := o.set.set i true }, fd', j, hl,
@@ -574,10 +580,10 @@ theorem PathHolds.setField {c : Ctx} {fr : Frame} {s : Store} {l i : Nat} {o : O
         rw [hfd] at h3; cases h3
         obtain ⟨_, h8, _⟩ := h7 hv
         have : j < o.fields.length := (List.getElem?_eq_some_iff.mp h8).1
-        exact ⟨v, by simp [this], hasTy_mono setField_grow (hnew rfl hv)⟩
+        exact ⟨v, by simp [this], hasTy_mono setField_grow (List.prefix_refl _) (hnew rfl hv)⟩
       · obtain ⟨w, h8, h9⟩ := h7 hv
         exact ⟨w, by show (o.fields.set i v)[j]? = some w; rw [List.getElem?_set_ne (Ne.symm hji)]; exact h8,
-          hasTy_mono setField_grow h9⟩
+          hasTy_mono setField_grow (List.prefix_refl _) h9⟩
 
 /-- The field assigned: set, holding the value. -/
 theorem PathHolds.setField_self {c : Ctx} {fr : Frame} {s : Store} {l i : Nat} {o : Obj} {v : Value}
@@ -589,7 +595,7 @@ theorem PathHolds.setField_self {c : Ctx} {fr : Frame} {s : Store} {l i : Nat} {
     PathHolds P c fr (s.setField l i v) (.field f) u :=
   ⟨l, { o with fields := o.fields.set i v, set := o.set.set i true }, fd, i, hl,
     by rw [Store.setField_objs, if_pos rfl, ho]; rfl, hfd, hi, hfi, by simp [hsl],
-    fun h => ⟨v, by simp [hfl], hasTy_mono setField_grow (hv h)⟩⟩
+    fun h => ⟨v, by simp [hfl], hasTy_mono setField_grow (List.prefix_refl _) (hv h)⟩⟩
 
 /-- A path's value in a frame. -/
 def PathVal (P : Program) (fr : Frame) (s : Store) : Path → Value → Prop
@@ -743,7 +749,8 @@ theorem testOut_ok (hwf : WfClasses P.classes) {c : Ctx} {e : Expr} {Δ : Env} {
 
 theorem resolve_mem {κ : List Ty} {t : Ty} {m : String} {ms : List Method}
     (h : P.resolve κ t m = some ms) {b : Atom} (hb : b ∈ Ty.expand κ t) :
-    ∃ k as mt, b = .cls k as ∧ k ≠ 0 ∧ P.lookupAt k as m = some mt ∧ mt ∈ ms := by
+    ∃ k as mt, b = .cls k as ∧ (k ≠ 0 ∧ P.classes.kindOf k ≠ .proc) ∧ P.lookupAt k as m = some mt ∧
+      mt ∈ ms := by
   unfold Program.resolve at h
   split at h
   · cases h
@@ -758,9 +765,10 @@ theorem resolve_mem {κ : List Ty} {t : Ty} {m : String} {ms : List Method}
     rcases List.mem_cons.mp hb with rfl | hb
     · cases b with
       | cls k as =>
-        by_cases hk : k = 0
-        · simp [hk] at h0
-        · simp [hk] at h0
+        by_cases hk : k = 0 ∨ P.classes.kindOf k = .proc
+        · rcases hk with hk | hk <;> simp [hk] at h0
+        · simp only [not_or] at hk
+          simp [hk.1, hk.2] at h0
           exact ⟨k, as, mt0, rfl, hk, h0, by simp⟩
       | _ => simp at h0
     · obtain ⟨k, as, mt, h1, h2, h3, h4⟩ := ih h' hb
@@ -820,8 +828,9 @@ theorem hasTy_flatMap {s : Store} {v : Value} {ms : List Method} {mt : Method} (
   exact ⟨a, ha, b, List.mem_flatMap.mpr ⟨mt, hm, hb⟩, hab⟩
 
 /-- A value of a class other than `Object`: an object of a subclass. -/
-theorem obj_of_hasTy_cls (hwf : WfClasses P.classes) {s : Store} {v : Value} {k : Nat} {as : List Ty}
-    (hv : s.hasTy P v [.cls k as]) (hk : k ≠ 0) :
+theorem obj_of_hasTy_cls (hwf : WfClasses P.classes) {Λ : List Ty} {s : Store} (hw : WfStore P Λ s)
+    {v : Value} {k : Nat} {as : List Ty}
+    (hv : s.hasTy P v [.cls k as]) (hk : k ≠ 0 ∧ P.classes.kindOf k ≠ .proc) :
     ∃ l o, v = .obj l ∧ s.objs[l]? = some o ∧ k ∈ P.classes.ancestors o.cls := by
   rw [hasTy_iff] at hv
   obtain ⟨a, ha, b, hb, hab⟩ := hv
@@ -831,9 +840,65 @@ theorem obj_of_hasTy_cls (hwf : WfClasses P.classes) {s : Store} {v : Value} {k 
     obtain ⟨o, ho, _, rfl⟩ := typeOf_obj ha
     rw [Atom.le_cls_iff hwf] at hab
     rcases hab with ⟨h0, _⟩ | ⟨_, hab, _⟩
-    · exact absurd h0 hk
+    · exact absurd h0 hk.1
     · exact ⟨l, o, rfl, ho, ClassTable.ancestorArgs_mem hwf _ _ _ _ hab⟩
-  | _ => simp [Store.typeOf] at ha; subst ha; simp [Atom.le] at hab; exact absurd hab.1 hk
+  | proc i =>
+    -- A procedure is of a procedures' class, right below `Object`.
+    obtain ⟨kp, asp, rfl, hkp⟩ := typeOf_proc_kind hw ha
+    rw [Atom.le_cls_iff hwf] at hab
+    rcases hab with ⟨h0, _⟩ | ⟨_, hab, _⟩
+    · exact absurd h0 hk.1
+    · have hmem := ClassTable.ancestorArgs_mem hwf _ _ _ _ hab
+      rw [proc_ancestors hwf hkp] at hmem
+      simp only [List.mem_cons, List.not_mem_nil, or_false] at hmem
+      rcases hmem with rfl | rfl
+      · exact absurd hkp hk.2
+      · exact absurd rfl hk.1
+  | _ => simp [Store.typeOf] at ha; subst ha; simp [Atom.le] at hab; exact absurd hab.1 hk.1
+
+/-- A value of a procedures' class: a procedure, of that class with
+arguments as its variances allow (no object is of it, nor of a class below
+it: it has none). -/
+theorem proc_of_hasTy (hwf : WfClasses P.classes) {Λ : List Ty} {s : Store} (hw : WfStore P Λ s)
+    {v : Value} {k : Nat} {as : List Ty} (hv : s.hasTy P v [.cls k as])
+    (hk : P.classes.kindOf k = .proc) :
+    ∃ i p, v = .proc i ∧ s.procs[i]? = some p ∧ ∃ args', p.ty = .cls k args' ∧
+      argsLeWith (Atom.le P.classes []) (P.classes.variances k) args' as = true := by
+  have hk0 : k ≠ 0 := by
+    rintro rfl
+    cases h0 : P.classes[0]? with
+    | none => simp [ClassTable.kindOf, h0] at hk
+    | some k0 => simp [ClassTable.kindOf, h0, hwf.rootKind k0 h0] at hk
+  rw [hasTy_iff] at hv
+  obtain ⟨a, ha, b, hb, hab⟩ := hv
+  simp at hb; subst hb
+  cases v with
+  | obj l =>
+    exfalso
+    obtain ⟨o, ho, _, rfl⟩ := typeOf_obj ha
+    rw [Atom.le_cls_iff hwf] at hab
+    rcases hab with ⟨h0, _⟩ | ⟨x, hx, _⟩
+    · exact hk0 h0
+    by_cases hne : o.cls = k
+    · exact (hw.noEnum l o ho).2 (hne ▸ hk)
+    · obtain ⟨V, kv, hkv, hsv, _, _⟩ := ancestorArgs_child hwf o.cls o.args x hx hne
+      exact hwf.procLeaf V kv k hkv hsv hk
+  | proc i =>
+    obtain ⟨kp, asp, rfl, hkp⟩ := typeOf_proc_kind hw ha
+    rw [Atom.le_cls_iff hwf] at hab
+    rcases hab with ⟨h0, _⟩ | ⟨x, hx, hle⟩
+    · exact absurd h0 hk0
+    have hmem := ClassTable.ancestorArgs_mem hwf _ _ _ _ hx
+    rw [proc_ancestors hwf hkp] at hmem
+    simp only [List.mem_cons, List.not_mem_nil, or_false] at hmem
+    rcases hmem with rfl | rfl
+    · rw [ClassTable.ancestorArgs_self hwf] at hx; cases hx
+      simp only [Store.typeOf, Option.bind_eq_some_iff] at ha
+      obtain ⟨p, hp, h⟩ := ha
+      refine ⟨i, p, rfl, hp, asp, ?_, hle⟩
+      revert h; cases p.ty <;> simp
+    · exact absurd rfl hk0
+  | _ => simp [Store.typeOf] at ha; subst ha; simp [Atom.le] at hab; exact absurd hab.1 hk0
 
 /-- The receiver of a call (through the frame's arguments `σ`): of the
 class the method was found in, given the arguments its view of the
@@ -842,7 +907,7 @@ instantiated. -/
 theorem recv_of (hwf : WfClasses P.classes) {κ σ : List Ty} (hσ : ArgsIn P.classes κ σ)
     {s : Store} {v : Value} {t : Ty} {m : String} {ms : List Method}
     (hv : s.hasTy P v (t.subst σ)) (hres : P.resolve κ t m = some ms) :
-    ∃ k as mt, k ≠ 0 ∧ P.lookupAt k (Ty.substArgs σ as) m = some (mt.inst σ) ∧ mt ∈ ms ∧
+    ∃ k as mt, (k ≠ 0 ∧ P.classes.kindOf k ≠ .proc) ∧ P.lookupAt k (Ty.substArgs σ as) m = some (mt.inst σ) ∧ mt ∈ ms ∧
       s.hasTy P v [.cls k (Ty.substArgs σ as)] := by
   rw [hasTy_iff] at hv
   obtain ⟨a, ha, b', hb', hab⟩ := hv
@@ -910,6 +975,296 @@ def InitPost (l : Nat) (Λ : List Ty) (s : Store) : Result → Prop
   | .stuck => False
   | _ => True
 
+/-- Setting paths one after another, each holding its type. -/
+theorem Sat.foldl_set {c : Ctx} {fr : Frame} {s : Store} :
+    ∀ (ps : List (String × Ty)) {Γ : Env}, Sat P c Γ fr s →
+      (∀ x t, (x, t) ∈ ps → PathHolds P c fr s (.local x) t) →
+      Sat P c (ps.foldl (fun g (x, t) => g.set (.local x) t) Γ) fr s
+  | [], _, h, _ => h
+  | (x, t) :: ps, Γ, h, hp => by
+    simp only [List.foldl_cons]
+    exact Sat.foldl_set ps (h.set (hp x t (List.mem_cons_self ..)))
+      fun y u hy => hp y u (List.mem_cons_of_mem _ hy)
+
+/-- Locals looked up in a frame made of two lists: the first's, else the
+second's. -/
+theorem lookupVar_append (a b : List (String × Nat)) (x : String) :
+    lookupVar (a ++ b) x = match lookupVar a x with
+      | some l => some l
+      | none => lookupVar b x := by
+  unfold lookupVar
+  rw [List.find?_append]
+  cases a.find? (·.1 == x) <;> rfl
+
+/-- The first local of a name, in a list of distinct names. -/
+theorem find_local_of_mem {ls rest : List (String × Ty)} (hnd : (ls.map (·.1)).Nodup) {x : String}
+    {t : Ty} (hm : (x, t) ∈ ls) : ((ls ++ rest).find? (·.1 == x)).map (·.2) = some t := by
+  rw [List.find?_append]
+  obtain ⟨j, hj⟩ := List.mem_iff_getElem?.mp hm
+  clear hm
+  have hf : ls.find? (·.1 == x) = some (x, t) := by
+    induction ls generalizing j with
+    | nil => simp at hj
+    | cons y ys ih =>
+      simp only [List.map_cons, List.nodup_cons] at hnd
+      cases j with
+      | zero => simp at hj; subst hj; simp
+      | succ j =>
+        simp at hj
+        have hyx : y.1 ≠ x := fun e => hnd.1 (by
+          rw [e]; exact List.mem_map.mpr ⟨(x, t), List.mem_of_getElem? hj, rfl⟩)
+        simp [hyx, ih hnd.2 j hj]
+  simp [hf]
+
+/-- In a lambda's body, a name not of its own is the method's. -/
+theorem lambdaCtx_decl_outer {c : Ctx} {ps own : List (String × Ty)} {x : String}
+    (hx : x ∉ (ps ++ own).map (·.1)) : (c.lambdaCtx ps own).decl x = c.decl x := by
+  simp only [Ctx.decl, Ctx.lambdaCtx]
+  rw [List.find?_append]
+  rw [List.find?_eq_none.mpr (fun q hq h => hx (by simp at h; exact List.mem_map.mpr ⟨q, hq, h⟩))]
+  rfl
+
+/-- In a lambda's body, its own locals as it declares them. -/
+theorem lambdaCtx_decl_own {c : Ctx} {ps own : List (String × Ty)}
+    (hnd : ((ps ++ own).map (·.1)).Nodup) {x : String} {t : Ty} (hm : (x, t) ∈ ps ++ own) :
+    (c.lambdaCtx ps own).decl x = some t := by
+  simp only [Ctx.decl, Ctx.lambdaCtx]
+  exact find_local_of_mem (rest := c.meth.locals) hnd hm
+
+/-- What a lambda's body declares: one of its own locals, or the method's. -/
+theorem lambdaCtx_decl {c : Ctx} {ps own : List (String × Ty)} {x : String} {d : Ty}
+    (hd : (c.lambdaCtx ps own).decl x = some d) :
+    (∃ j : Nat, (ps ++ own)[j]? = some (x, d)) ∨ (x ∉ (ps ++ own).map (·.1) ∧ c.decl x = some d) := by
+  by_cases hx : x ∈ (ps ++ own).map (·.1)
+  · left
+    simp only [Ctx.decl, Ctx.lambdaCtx, Option.map_eq_some_iff] at hd
+    obtain ⟨q, hf, rfl⟩ := hd
+    rw [List.find?_append] at hf
+    obtain ⟨q0, hq0, hq0x⟩ := List.mem_map.mp hx
+    cases hf1 : (ps ++ own).find? (·.1 == x) with
+    | none =>
+      exact absurd (by simpa using hq0x) (List.find?_eq_none.mp hf1 q0 hq0)
+    | some q' =>
+      rw [hf1] at hf; simp at hf; subst hf
+      have hp := List.find?_some hf1
+      simp at hp
+      obtain ⟨j, hj⟩ := List.mem_iff_getElem?.mp (List.mem_of_find?_eq_some hf1)
+      refine ⟨j, ?_⟩
+      cases q'; simp at hp; subst hp; exact hj
+  · right
+    exact ⟨hx, by rw [← lambdaCtx_decl_outer hx]; exact hd⟩
+
+/-- A procedure run (design §13.8, C0): its parameters and own locals at
+fresh locations, the captured locals as they are; it gives a value of its
+result type (through its frame's arguments), and writes no location there
+before (its body assigns only its own locals). -/
+theorem proc_run (hP : WfProg P) {n : Nat} (ihe : EvalGood P orc n) {Λ : List Ty} {s : Store}
+    (hw : WfStore P Λ s) {c : Ctx} {Γ : Env} {ps own : List (String × Ty)} {ret : Ty} {body : Expr}
+    {vars : List (String × Nat)} {me : Value} {sa : List Ty} {ob : Out}
+    (hc : c.prog = P) (hni : c.inInit = false) (hok : c.lambdaOk ps own body = true)
+    (hcore : FrameCore P c Λ vars me sa s) (hsd : Sat P c (c.declEnv Γ) ⟨vars, me, sa, none⟩ s)
+    (hty : Typed (c.lambdaCtx ps own) (c.lambdaEnv Γ ps) body ob)
+    (hret : ob.ty.le c.ct c.bounds ret = true)
+    {vs : List Value} (hvs : AllTy P s vs ((ps.map (·.2)).map (Ty.subst sa))) :
+    SendPost P (ret.subst sa) none none [] Λ s
+      (match bindAll { s with locs := s.locs ++ ((ps ++ own).map (·.1)).map fun _ => .nil }
+          (Store.allocVars s.locs.length ((ps ++ own).map (·.1))) (ps.map (·.1)) vs with
+       | some s2 =>
+         match eval P orc n ⟨Store.allocVars s.locs.length ((ps ++ own).map (·.1)) ++ vars, me, sa, none⟩
+           s2 body with
+         | .returned _ _ => .stuck
+         | r => r
+       | none => .stuck) := by
+  have hwf := hP.classes
+  -- What `lambdaOk` says.
+  simp only [Ctx.lambdaOk, Bool.and_eq_true, decide_eq_true_eq, List.all_eq_true,
+    Option.isNone_iff_eq_none, List.any_eq_true, beq_iff_eq] at hok
+  obtain ⟨⟨hnd, hdisj⟩, hasg⟩ := hok
+  generalize hnames : (ps ++ own).map (·.1) = names at hnd ⊢
+  have hnot : ∀ x, x ∈ names → ∀ d, c.decl x = some d → False := by
+    intro x hx d hd
+    rw [← hnames] at hx
+    obtain ⟨⟨y, u⟩, hm, rfl⟩ := List.mem_map.mp hx
+    simp only [Ctx.decl, Option.map_eq_some_iff] at hd
+    obtain ⟨_, hf, _⟩ := hd
+    have := hdisj (y, u) hm
+    rw [this] at hf; cases hf
+  -- Fresh locations; the parameters bound.
+  have hlenv : vs.length = ps.length := by
+    have := hvs.length; simpa using this
+  have hpnames : ∀ x ∈ ps.map (·.1), x ∈ names := fun x hx => by
+    rw [← hnames, List.map_append]; exact List.mem_append_left _ hx
+  have hlook : ∀ x ∈ names, ∃ l, lookupVar (Store.allocVars s.locs.length names) x = some l := fun x hx => by
+    obtain ⟨j, hj⟩ := List.mem_iff_getElem?.mp hx
+    exact ⟨_, lookupVar_alloc hnd hj⟩
+  obtain ⟨s2, hb⟩ := bindAll_some (vars := (Store.allocVars s.locs.length names)) (xs := ps.map (·.1)) (vs := vs) ({ s with locs := s.locs ++ names.map fun _ => .nil } : Store) (by simp [hlenv])
+    fun x hx => hlook x (hpnames x hx)
+  obtain ⟨hobjs, hlen2, hsame⟩ := bindAll_same hb
+  have hprocs := bindAll_procs hb
+  simp only [hb]
+  simp only [List.length_append, List.length_map] at hlen2
+  have hge : ∀ x l', lookupVar (Store.allocVars s.locs.length names) x = some l' → s.locs.length ≤ l' ∧ l' < s.locs.length + names.length :=
+    fun x l' h => by have := mem_allocVars (lookupVar_mem h); simpa using this
+  have hnone : ∀ x, x ∉ names → lookupVar (Store.allocVars s.locs.length names) x = none := fun x hx => by
+    cases h : lookupVar (Store.allocVars s.locs.length names) x with
+    | none => rfl
+    | some l => obtain ⟨j, hj, _⟩ := lookupVar_alloc_inv h; exact absurd (List.mem_of_getElem? hj) hx
+  have hlv : ∀ x, x ∉ names → lookupVar ((Store.allocVars s.locs.length names) ++ vars) x = lookupVar vars x := fun x hx => by
+    rw [lookupVar_append, hnone x hx]
+  have hln : ∀ x l, lookupVar (Store.allocVars s.locs.length names) x = some l → lookupVar ((Store.allocVars s.locs.length names) ++ vars) x = some l := fun x l h => by
+    rw [lookupVar_append, h]
+  -- The types of the fresh locations.
+  have mono : ∀ {v : Value} {t : Ty}, s.hasTy P v t → s2.hasTy P v t := fun h => by
+    unfold Store.hasTy Store.hasType Store.typeOf at *; rw [hobjs, hprocs]; exact h
+  have he12 : Ext P (fun _ => False) (fun _ => False) Λ (Λ ++ (ps ++ own).map (fun (p : String × Ty) => Ty.subst sa p.2)) s s2 := by
+    refine ⟨List.prefix_append _ _, fun l' v hv => ⟨v, ?_, .inl rfl⟩, fun l' o' ho' =>
+      ⟨o', by rw [hobjs]; exact ho', rfl, rfl, rfl, fun _ h => h⟩,
+      fun _ o1 o2 h1 h2 _ _ _ _ _ => by rw [hobjs, h1] at h2; cases h2; rfl,
+      by rw [hprocs]; exact List.prefix_refl _⟩
+    have hl' := (List.getElem?_eq_some_iff.mp hv).1
+    rw [hsame l' fun x _ hx => by have := (hge x l' hx).1; omega]
+    simp [List.getElem?_append_left hl', hv]
+  have hlenΛ : (Λ ++ (ps ++ own).map (fun (p : String × Ty) => Ty.subst sa p.2)).length = s2.locs.length := by
+    simp [hw.len, hlen2, ← hnames]
+  have hw2 : WfStore P (Λ ++ (ps ++ own).map (fun (p : String × Ty) => Ty.subst sa p.2)) s2 :=
+    ⟨hlenΛ, fun l' o' ho' => by
+      rw [hobjs] at ho'
+      obtain ⟨a, a1, a2, b, b2, d⟩ := hw.objs l' o' ho'
+      exact ⟨a, a1, a2, b, b2, fun i v f h0 h1 h2 => mono (d i v f h0 h1 h2)⟩,
+      fun l' o' ho' => by rw [hobjs] at ho'; exact hw.noEnum l' o' ho',
+      fun l' o' ho' => by rw [hobjs] at ho'; exact hw.bounds l' o' ho',
+      fun i p hp => by rw [hprocs] at hp; exact (hw.procs i p hp).stable he12⟩
+  -- The body's context: the method's, with the lambda's locals first.
+  have hdecl' : ∀ x d, (c.lambdaCtx ps own).decl x = some d →
+      (∃ j : Nat, (ps ++ own)[j]? = some (x, d)) ∨ (x ∉ names ∧ c.decl x = some d) := by
+    intro x d hd
+    have := lambdaCtx_decl hd
+    rwa [hnames] at this
+  have hfresh : ∀ x d, (ps ++ own).find? (·.1 == x) = some (x, d) ∨ ((x, d) ∈ ps ++ own) →
+      ∃ j : Nat, (ps ++ own)[j]? = some (x, d) := fun x d h => by
+    rcases h with h | h
+    · exact List.mem_iff_getElem?.mp (List.mem_of_find?_eq_some h)
+    · exact List.mem_iff_getElem?.mp h
+  have hjloc : ∀ (j : Nat) x d, (ps ++ own)[j]? = some (x, d) →
+      lookupVar ((Store.allocVars s.locs.length names) ++ vars) x = some (s.locs.length + j) ∧ (Λ ++ (ps ++ own).map (fun (p : String × Ty) => Ty.subst sa p.2))[s.locs.length + j]? = some (d.subst sa) := by
+    intro j x d hj
+    have hnj : names[j]? = some x := by rw [← hnames, List.getElem?_map, hj]; rfl
+    refine ⟨hln x _ (lookupVar_alloc hnd hnj), ?_⟩
+    rw [List.getElem?_append_right (by rw [hw.len]; omega), hw.len, Nat.add_sub_cancel_left,
+      List.getElem?_map, hj]
+    rfl
+  have hcore' : FrameCore P (c.lambdaCtx ps own) (Λ ++ (ps ++ own).map (fun (p : String × Ty) => Ty.subst sa p.2)) ((Store.allocVars s.locs.length names) ++ vars) me sa s2 := by
+    refine ⟨fun x d hd => ?_, fun x y l' hx hy => ?_, fun x l' hm => ?_, fun hi => ?_,
+      fun hi => absurd hi (by simpa [Ctx.lambdaCtx, Ctx.inInit] using hni), ?_, hcore.closed, hcore.bounded⟩
+    · rcases hdecl' x d hd with ⟨j, hj⟩ | ⟨hx, hd0⟩
+      · exact ⟨_, hjloc j x d hj⟩
+      · obtain ⟨l, h1, h2⟩ := hcore.decls x d hd0
+        exact ⟨l, by rw [hlv x hx]; exact h1, prefix_getElem? he12.tys h2⟩
+    · by_cases hxn : x ∈ names <;> by_cases hyn : y ∈ names
+      · obtain ⟨lx, hlx⟩ := hlook x hxn
+        obtain ⟨ly, hly⟩ := hlook y hyn
+        rw [hln x lx hlx] at hx; cases hx
+        rw [hln y ly hly] at hy; cases hy
+        obtain ⟨jx, hjx, rfl⟩ := lookupVar_alloc_inv hlx
+        obtain ⟨jy, hjy, hjj⟩ := lookupVar_alloc_inv hly
+        have : jx = jy := by omega
+        subst this; rw [hjx] at hjy; cases hjy; rfl
+      · obtain ⟨lx, hlx⟩ := hlook x hxn
+        rw [hln x lx hlx] at hx; cases hx
+        rw [hlv y hyn] at hy
+        have := hcore.inStore y _ (lookupVar_mem hy)
+        have := (hge x _ hlx).1; omega
+      · obtain ⟨ly, hly⟩ := hlook y hyn
+        rw [hln y ly hly] at hy; cases hy
+        rw [hlv x hxn] at hx
+        have := hcore.inStore x _ (lookupVar_mem hx)
+        have := (hge y _ hly).1; omega
+      · rw [hlv x hxn] at hx; rw [hlv y hyn] at hy
+        exact hcore.inj x y l' hx hy
+    · rcases List.mem_append.mp hm with hm | hm
+      · have := mem_allocVars hm; omega
+      · have := hcore.inStore x l' hm; omega
+    · exact mono (hcore.self (by simpa [Ctx.lambdaCtx, Ctx.inInit] using hi))
+    · obtain ⟨l, hl, hsa⟩ := hcore.selfObj
+      refine ⟨l, hl, ?_⟩
+      rw [hsa]; simp [Store.argsFor, hobjs]; rfl
+  have hf2 : FrameOK P (c.lambdaCtx ps own) (Λ ++ (ps ++ own).map (fun (p : String × Ty) => Ty.subst sa p.2)) ⟨(Store.allocVars s.locs.length names) ++ vars, me, sa, none⟩ s2 [] :=
+    ⟨hcore', by simp [ChainAt, Ctx.lambdaCtx], fun _ _ _ h => by simp [chainLocs] at h,
+      fun _ h => by simp [chainLocs] at h, fun _ _ => rfl⟩
+  have hs2 : Sat P (c.lambdaCtx ps own) (c.lambdaEnv Γ ps) ⟨(Store.allocVars s.locs.length names) ++ vars, me, sa, none⟩ s2 := by
+    unfold Ctx.lambdaEnv
+    refine Sat.foldl_set ps (fun p t hp => ?_) fun x t hm => ?_
+    · obtain ⟨x, rfl, hd, _⟩ := Ctx.get_declEnv hp
+      have hx : x ∉ names := fun hx => hnot x hx t hd
+      obtain ⟨l, v, d, h1, h2, h3, h4, h5⟩ := (hsd.declStable hcore he12) _ _ hp
+      refine ⟨l, v, d, by rw [hlv x hx]; exact h1, h2, ?_, h4, h5⟩
+      rcases hdecl' x d (by
+        simp only [Ctx.decl, Ctx.lambdaCtx] at h3 ⊢
+        rw [List.find?_append]
+        rw [List.find?_eq_none.mpr (fun q hq h => hx (by
+          rw [← hnames]; simp at h; exact List.mem_map.mpr ⟨q, hq, h⟩))]
+        exact h3) with ⟨j, hj⟩ | ⟨_, hd'⟩
+      · exact absurd (by rw [← hnames]; exact List.mem_map.mpr ⟨(x, d), List.mem_of_getElem? hj, rfl⟩) hx
+      · simp only [Ctx.decl, Ctx.lambdaCtx]
+        rw [List.find?_append]
+        rw [List.find?_eq_none.mpr (fun q hq h => hx (by
+          rw [← hnames]; simp at h; exact List.mem_map.mpr ⟨q, hq, h⟩))]
+        exact hd'
+    · obtain ⟨v, hvm, hvt⟩ := zip_val_subst hvs x t (by rw [zip_fst_snd]; exact hm)
+      have hninj : ∀ x y l, lookupVar (Store.allocVars s.locs.length names) x = some l → lookupVar (Store.allocVars s.locs.length names) y = some l → x = y := by
+        intro x y l hx hy
+        obtain ⟨jx, hjx, rfl⟩ := lookupVar_alloc_inv hx
+        obtain ⟨jy, hjy, hjj⟩ := lookupVar_alloc_inv hy
+        have : jx = jy := by omega
+        subst this; rw [hjx] at hjy; cases hjy; rfl
+      have hpnd : (ps.map (·.1)).Nodup := by
+        rw [← hnames, List.map_append] at hnd; exact hnd.sublist (List.sublist_append_left _ _)
+      obtain ⟨lx, hlx, hv⟩ := bindAll_val hninj hb hpnd
+        (fun y _ l' hl' => by have := hge y l' hl'; simp; omega) x v hvm
+      have hd : (c.lambdaCtx ps own).decl x = some t := by
+        simp only [Ctx.decl, Ctx.lambdaCtx]
+        rw [List.append_assoc]
+        have hnd2 : ((ps ++ own).map (·.1)).Nodup := by rw [hnames]; exact hnd
+        have := find_local_of_mem (rest := c.meth.locals) hnd2 (List.mem_append_left _ hm)
+        rwa [List.append_assoc] at this
+      exact ⟨lx, v, t, hln x lx hlx, hv, hd, mono hvt, mono hvt⟩
+  have := ihe (c.lambdaCtx ps own) _ body ob _ s2 (Λ ++ (ps ++ own).map (fun (p : String × Ty) => Ty.subst sa p.2)) [] hc hty hw2 hf2 hs2
+  revert this
+  generalize eval P orc n _ s2 body = r
+  intro hpost
+  -- Writes: the body's own locals (fresh), nothing before.
+  have hrestrict : ∀ l', l' < s.locs.length →
+      (False ∨ evalW ⟨(Store.allocVars s.locs.length names) ++ vars, me, sa, none⟩ body l') → False := by
+    rintro l' hl' (h | ⟨x, hx, hxl⟩ | h)
+    · simp [blkW] at h
+    · obtain ⟨⟨y, u⟩, hm, rfl⟩ := hasg x hx
+      have hyn : y ∈ names := by rw [← hnames]; exact List.mem_map.mpr ⟨_, hm, rfl⟩
+      obtain ⟨ly, hly⟩ := hlook y hyn
+      rw [hln y ly hly] at hxl; cases hxl
+      have := (hge y _ hly).1; omega
+    · simp [blkW] at h
+  have hnoW : ∀ l, initW (c.lambdaCtx ps own) ⟨(Store.allocVars s.locs.length names) ++ vars, me, sa, none⟩ l → False :=
+    fun _ ⟨hi, _⟩ => by simp [Ctx.lambdaCtx, Ctx.inInit] at hi; simp [Ctx.inInit, hi] at hni
+  cases r with
+  | ok w s3 =>
+    obtain ⟨Λ3, hw3, he3, _, hv3, _⟩ := hpost
+    have he3 := he3.mono (Wo' := fun _ => False) (fun _ h => h) (fun l h => (hnoW l h).elim)
+    refine ⟨Λ3, hw3, ((he12.trans he3 hw).mono (fun _ h => h) (fun _ h => h.elim id id)).restrict
+      (fun l hl h => (hrestrict l hl h).elim), ?_, by simp [BlkGiven, ChainAt, chainLocs]⟩
+    have hct : c.ct = P.classes := by simp [Ctx.ct, hc]
+    rw [hct] at hret
+    exact hasTy_le hwf hv3 (Ty.subst_leK hwf sa hcore.bounded hret)
+  | raised w s3 =>
+    obtain ⟨Λ3, hw3, he3, _, hv3⟩ := hpost
+    have he3 := he3.mono (Wo' := fun _ => False) (fun _ h => h) (fun l h => (hnoW l h).elim)
+    exact ⟨Λ3, hw3, ((he12.trans he3 hw).mono (fun _ h => h) (fun _ h => h.elim id id)).restrict
+      (fun l hl h => (hrestrict l hl h).elim), hv3, by simp [BlkGiven, ChainAt, chainLocs]⟩
+  | returned w s3 =>
+    obtain ⟨_, _, _, _, _, hib, _⟩ := hpost
+    simp [Ctx.lambdaCtx] at hib
+  | timeout => trivial
+  | stuck => exact hpost
+
 /-- `initialize` (`mi`) run on object `l`, every field of which is set but
 those of `mi`'s class to assign: its frame (as `send_succ` builds one),
 then its body. -/
@@ -922,7 +1277,7 @@ theorem init_run (hP : WfProg P) {n : Nat} (ihe : EvalGood P orc n) {s : Store} 
     (hset : ∀ i f, (P.classes.allFieldsAt o.cls o.args)[i]? = some f →
       ((P.classes.allFields mi.owner).length ≤ i ∨ f.required P.classes = false) →
       o.set[i]? = some true) :
-    vs.length = mi.params.length ∧ ∃ s3, bindAll ⟨s.locs ++ (mi.locals.map (·.1)).map fun _ => .nil, s.objs⟩
+    vs.length = mi.params.length ∧ ∃ s3, bindAll ⟨s.locs ++ (mi.locals.map (·.1)).map fun _ => .nil, s.objs, s.procs⟩
         (Store.allocVars s.locs.length (mi.locals.map (·.1))) (mi.params.map (·.1)) vs = some s3 ∧
       s3.argsFor P.classes l mi.owner = s.argsFor P.classes l mi.owner ∧
       InitPost P l Λ s
@@ -972,20 +1327,22 @@ theorem init_run (hP : WfProg P) {n : Nat} (ihe : EvalGood P orc n) {s : Store} 
     obtain ⟨j, hj⟩ := hcl y t (decl_param hwfm hm)
     exact ⟨_, hlookj j y t hj⟩
   obtain ⟨s3, hb⟩ := bindAll_some (vars := Store.allocVars s.locs.length (mi.locals.map (·.1)))
-    ⟨s.locs ++ (mi.locals.map (·.1)).map fun _ => .nil, s.objs⟩ (by rw [List.length_map, hlenv])
+    ⟨s.locs ++ (mi.locals.map (·.1)).map fun _ => .nil, s.objs, s.procs⟩ (by rw [List.length_map, hlenv])
     hexists
   obtain ⟨hobjs, hlen3, hsame⟩ := bindAll_same hb
+  have hprocs := bindAll_procs hb
   refine ⟨s3, hb, by simp only [Store.argsFor, hobjs, ho, Option.bind_some, hσ, Option.getD_some], ?_⟩
   simp only [List.length_append, List.length_map] at hlen3
   have hge : ∀ x l', lookupVar (Store.allocVars s.locs.length (mi.locals.map (·.1))) x = some l' →
       s.locs.length ≤ l' ∧ l' < s.locs.length + mi.locals.length := fun x l' h => by
     have := mem_allocVars (lookupVar_mem h); simpa using this
   have mono : ∀ {v : Value} {t : Ty}, s.hasTy P v t → s3.hasTy P v t := fun h => by
-    unfold Store.hasTy Store.hasType Store.typeOf at *; rw [hobjs]; exact h
+    unfold Store.hasTy Store.hasType Store.typeOf at *; rw [hobjs, hprocs]; exact h
   have he23 : Ext P (fun _ => False) (fun _ => False) Λ (Λ ++ (mi.locals.map (·.2)).map (Ty.subst σ)) s s3 := by
     refine ⟨List.prefix_append _ _, fun l' v hv => ⟨v, ?_, .inl rfl⟩, fun l' o' ho' =>
       ⟨o', by rw [hobjs]; exact ho', rfl, rfl, rfl, fun _ h => h⟩,
-      fun _ o1 o2 h1 h2 _ _ _ _ _ => by rw [hobjs, h1] at h2; cases h2; rfl⟩
+      fun _ o1 o2 h1 h2 _ _ _ _ _ => by rw [hobjs, h1] at h2; cases h2; rfl,
+      by rw [hprocs]; exact List.prefix_refl _⟩
     have hl' := (List.getElem?_eq_some_iff.mp hv).1
     rw [hsame l' fun x _ hx => by have := (hge x l' hx).1; omega]
     simp [List.getElem?_append_left hl', hv]
@@ -995,7 +1352,8 @@ theorem init_run (hP : WfProg P) {n : Nat} (ihe : EvalGood P orc n) {s : Store} 
       obtain ⟨a, a1, a2, b, b2, d⟩ := hw.objs l' o' ho'
       exact ⟨a, a1, a2, b, b2, fun i v f h0 h1 h2 => mono (d i v f h0 h1 h2)⟩,
     fun l' o' ho' => by rw [hobjs] at ho'; exact hw.noEnum l' o' ho',
-    fun l' o' ho' => by rw [hobjs] at ho'; exact hw.bounds l' o' ho'⟩
+    fun l' o' ho' => by rw [hobjs] at ho'; exact hw.bounds l' o' ho',
+    fun i p hp => by rw [hprocs] at hp; exact (hw.procs i p hp).stable he23⟩
   have ho3 : s3.objs[l]? = some o := by rw [hobjs]; exact ho
   obtain ⟨rest, hrest⟩ := allFields_prefix hwf hsub
   have hsa3 : s3.argsFor P.classes l mi.owner = σ := by simp [Store.argsFor, ho3, hσ]
@@ -1292,7 +1650,7 @@ theorem argsWf_in (hwf : WfClasses P.classes) {c : Ctx} (hc : c.prog = P) {k : N
   | some cl =>
     rw [hk] at h
     simp only [Bool.and_eq_true, beq_iff_eq, List.all_eq_true] at h
-    obtain ⟨⟨⟨hlen, _⟩, hall⟩, _⟩ := h
+    obtain ⟨⟨⟨⟨hlen, _⟩, hall⟩, _⟩, _⟩ := h
     have hk' : c.prog.classes[k]? = some cl := hk
     have hb : c.prog.classes.boundsOf k = cl.bounds := by simp [ClassTable.boundsOf, hk']
     rw [hb]
@@ -1311,9 +1669,10 @@ theorem argsWf_in (hwf : WfClasses P.classes) {c : Ctx} (hc : c.prog = P) {k : N
       have := Ty.subst_leK hwf σ hσ (hall (t, i) (List.mem_zipIdx_iff_getElem?.mpr hi))
       rwa [Ty.subst_closed_id σ _ (Ty.boundOf_closed _ _)] at this
 
-/-- `new` makes no object of an `enum` itself. -/
+/-- `new` makes no object of an `enum` itself, nor of a procedures'
+class. -/
 theorem argsWf_kind {c : Ctx} {k : Nat} {targs : List Ty} (h : c.argsWf k targs = true) :
-    c.prog.classes.kindOf k ≠ .enumC := by
+    c.prog.classes.kindOf k ≠ .enumC ∧ c.prog.classes.kindOf k ≠ .proc := by
   unfold Ctx.argsWf at h
   cases hk : c.ct[k]? with
   | none => rw [hk] at h; cases h
@@ -1321,7 +1680,7 @@ theorem argsWf_kind {c : Ctx} {k : Nat} {targs : List Ty} (h : c.argsWf k targs 
     rw [hk] at h
     simp only [Bool.and_eq_true, bne_iff_ne, ne_eq] at h
     have hk' : c.prog.classes[k]? = some cl := hk
-    simp [ClassTable.kindOf, hk', h.2]
+    exact ⟨by simp [ClassTable.kindOf, hk', h.1.2], by simp [ClassTable.kindOf, hk', h.2]⟩
 
 /-- A comparison the checker made (with the method's class's bounds),
 through the frame's arguments (within them). -/
@@ -1472,7 +1831,7 @@ theorem eval_succ : EvalGood P orc (n + 1) := by
             exact absurd (hf.above l' l' ⟨y, hy⟩ (blkW_chain h)) (Nat.lt_irrefl _)
       have hs2 := hR.assign hf1.core hl hx hlen hvd hvd
       have hf2 := hf1.stable he2 (hf1.own_not_chain hl) (fun _ h => h.elim)
-      refine ((ih.eval _ _ _ _ fr _ Λ1 ws rfl hh (hw1.setLoc l v) hf2 hs2).extend
+      refine ((ih.eval _ _ _ _ fr _ Λ1 ws rfl hh (hw1.setLoc hlen hΛ hvd) hf2 hs2).extend
           ((hnoI he1).transF he2 hw |>.mono (fun _ h => h) (fun _ h => h.elim)) hw ?_
           (evalW_mono (by simp [Expr.assigned]; intros; simp_all))).weaken
           (fun _ _ h => (by rw [Ty.subst_append]; exact hasTy_append_right hwf _ h)) (fun _ h => h.join_right hwf)
@@ -1764,7 +2123,7 @@ theorem eval_succ : EvalGood P orc (n + 1) := by
     have hvd := hasTy_le hwf hv1 (hf.substLe hwf hle)
     have he2 : Ext c.prog (fun l' => l' = l) (fun _ => False) Λ1 Λ1 s1 (s1.setLoc l v) :=
       Ext.setLoc hlen hΛ hvd rfl
-    refine ⟨Λ1, hw1.setLoc l v, (he1.transF he2 hw).monoW ?_,
+    refine ⟨Λ1, hw1.setLoc hlen hΛ hvd, (he1.transF he2 hw).monoW ?_,
       hf1.stable he2 (hf1.own_not_chain hl) (fun _ h => h.elim),
       hv1, ⟨_, rfl, hs1.assign hf1.core hl hd hlen hv1 hvd⟩, fun _ => ⟨_, rfl,
       hs1.assign hf1.core hl hd hlen hv1 hvd⟩, fun _ => ⟨_, rfl, hs1.assign hf1.core hl hd hlen hv1 hvd⟩⟩
@@ -2468,7 +2827,7 @@ theorem eval_succ : EvalGood P orc (n + 1) := by
       have hvs' : AllTy c.prog s2 vs ((mt.inst fr.selfArgs).params.map (·.2)) := by
         rw [Method.inst_params_snd]; exact AllTy.le_params_subst hwf hf.core.bounded hvs hok.1 hok.2
       have hsend := ih.send s2 Λ2 v k _ _ (mt.inst fr.selfArgs) vs none [] hw2
-        (obj_of_hasTy_cls hwf hrecv hk) hrecv (resolve_not_init hres) hl hvs'
+        (obj_of_hasTy_cls hwf hw2 hrecv hk) hrecv (resolve_not_init hres) hl hvs'
         (by
           rw [show (mt.inst fr.selfArgs).block = none from (Method.inst_block_none _ _).mpr hblk]
           exact ⟨trivial, fun l h => by simp [chainLocs] at h⟩)
@@ -2507,6 +2866,180 @@ theorem eval_succ : EvalGood P orc (n + 1) := by
     obtain ⟨_, hΔ, _⟩ := ho1
     rw [hout] at hΔ; cases hΔ
   | callDeadArgs hr hout hargs =>
+    simp only [eval]
+    refine (ih.eval _ _ _ _ fr s Λ ws rfl hr hw hf hs).bind
+      (evalW_mono (by simp [Expr.assigned]; intros; simp_all)) ?_
+    intro v s1 Λ1 hw1 he1 hf1 _ ho1 _ _
+    obtain ⟨Δ1, hΔ, hs1⟩ := ho1
+    rw [hout] at hΔ; cases hΔ
+    have := ih.args _ _ _ _ fr s1 Λ1 ws rfl hargs hw1 hf1 hs1
+    revert this
+    generalize evalArgs c.prog orc n fr s1 _ = ar
+    intro this
+    cases ar with
+    | other r =>
+      exact (this.other (evalWs_mono (by simp [Expr.assigned]; intros; simp_all))).extend he1 hw
+        (evalW_mono (by simp [Expr.assigned]; intros; simp_all)) (fun _ h => h)
+    | ok vs s2 => obtain ⟨_, _, hao, _⟩ := this; cases hao
+  | lambda hg hk hn hok hb hret =>
+    rename_i k body ob ret ps own
+    have hni : c.inInit = false := by simp at hg; cases h : c.inInit <;> simp_all
+    have hnd : c.inDefault = false := by simp at hg; cases h : c.inDefault <;> simp_all
+    simp only [eval, hk]
+    -- The procedure, as checked here.
+    have hpo : ProcOK c.prog Λ s ⟨.mk fr.vars fr.self fr.selfArgs none (ps.map (·.1)) body,
+        (ps ++ own).map (·.1), .cls k (Ty.substArgs fr.selfArgs (ps.map (·.2) ++ [ret]))⟩ :=
+      ⟨c, Γ, ps, own, ret, body, fr.vars, fr.self, fr.selfArgs, k, ob, rfl, rfl, hni, hnd, hk, hn, hok,
+        hf.core, hs.toDecl, hb, hret⟩
+    have he := Ext.newProc (P := c.prog) (W := fun _ => False) (Wo := fun _ => False)
+      (Λ := Λ) (s := s) ⟨.mk fr.vars fr.self fr.selfArgs none (ps.map (·.1)) body,
+        (ps ++ own).map (·.1), .cls k (Ty.substArgs fr.selfArgs (ps.map (·.2) ++ [ret]))⟩
+    have hs' := hs.stable he (fun _ _ h => h) (fun _ _ h => h)
+    refine ⟨Λ, hw.newProc hpo, he.mono (fun _ h => h.elim) (fun _ h => h.elim),
+      hf.stable he (fun _ _ h => h) (fun _ h => h.elim), ?_,
+      ⟨_, rfl, hs'⟩, fun _ => ⟨_, rfl, hs'⟩, fun _ => ⟨_, rfl, hs'⟩⟩
+    -- Of its type: `ProcN` with the lambda's types, through the frame's arguments.
+    refine hasTy_iff.mpr ⟨.cls k (Ty.substArgs fr.selfArgs (ps.map (·.2) ++ [ret])), ?_, _,
+      by simp [Out.plain, Ty.subst, Atom.subst], Atom.le_refl hwf _⟩
+    simp [Store.typeOf]
+  | callProc hr hout hargs hty hk hlen hall =>
+    rename_i f o Δ args tys Δ' k as
+    simp only [eval]
+    refine (ih.eval _ _ _ _ fr s Λ ws rfl hr hw hf hs).bind
+      (evalW_mono (by simp [Expr.assigned]; intros; simp_all)) ?_
+    intro v s1 Λ1 hw1 he1 hf1 hv1 ho1 _ _
+    obtain ⟨Δ1, hΔ, hs1⟩ := ho1
+    rw [hout] at hΔ; cases hΔ
+    have := ih.args _ _ _ _ fr s1 Λ1 ws rfl hargs hw1 hf1 hs1
+    revert this
+    generalize evalArgs c.prog orc n fr s1 _ = ar
+    intro this
+    cases ar with
+    | other r =>
+      exact (this.other (evalWs_mono (by simp [Expr.assigned]; intros; simp_all))).extend he1 hw
+        (evalW_mono (by simp [Expr.assigned]; intros; simp_all)) (fun _ h => h)
+    | ok vs s2 =>
+      obtain ⟨tys', Δ2, hao, Λ2, hw2, he2, hf2, hs2, hvs⟩ := this
+      cases hao
+      dsimp only
+      obtain ⟨hkp, hkn⟩ := procClass_kind hk
+      -- The value called: a procedure of that class.
+      have hv2 := he2.hasTy hv1
+      rw [hty] at hv2
+      simp only [Ty.subst, List.flatMap_cons, List.flatMap_nil, Atom.subst, List.append_nil] at hv2
+      obtain ⟨i, p, rfl, hp, args', hpty, hle⟩ := proc_of_hasTy hwf hw2 hv2 hkp
+      obtain ⟨c0, Γ0, ps, own, ret, body, vars, me, sa, k0, ob, hc0, rfl, hni0, _, hk0, hn0, hok0,
+        hcore0, hsd0, hty0, hret0⟩ := hw2.procs i _ hp
+      simp only at hpty
+      cases hpty
+      simp only [hp]
+      -- Its variances: its parameters in, its result out.
+      have hshape : c.prog.classes.variances k = List.replicate ps.length .contra ++ [.co] := by
+        cases hck : c.prog.classes[k]? with
+        | none => simp [ClassTable.kindOf, hck] at hkp
+        | some cl =>
+          have hkind : cl.kind = .proc := by simpa [ClassTable.kindOf, hck] using hkp
+          obtain ⟨_, _, _, hpar⟩ := hwf.procShape k cl hck hkind
+          simp [hck] at hn0
+          simp [ClassTable.variances, hck]
+          rw [hpar, hn0]; simp
+      have hlenas : as.length = ps.length + 1 := by
+        have := argsLeWith_length hle
+        simp [ClassTable.substArgs_length'] at this; omega
+      -- The arguments, of the procedure's parameters' types.
+      have hcmp : ∀ (j : Nat) (x y : Ty), (Ty.substArgs sa (ps.map (·.2) ++ [ret]))[j]? = some x →
+          (Ty.substArgs fr.selfArgs as)[j]? = some y →
+          ((c.prog.classes.variances k)[j]?.getD .inv).leWith (Atom.le c.prog.classes []) x y = true :=
+        fun j x y hx hy => argsLeWith_getElem hle hx hy
+      have hvs0 : AllTy c.prog s2 vs ((ps.map (·.2)).map (Ty.subst sa)) := by
+        refine AllTy.le hwf hvs (by simp; omega) ?_
+        simp only [List.all_eq_true]
+        intro ⟨t, u⟩ hm
+        obtain ⟨j, hj⟩ := List.mem_iff_getElem?.mp hm
+        rw [List.getElem?_zip_eq_some] at hj
+        obtain ⟨htj, huj⟩ := hj
+        rw [List.getElem?_map] at htj huj
+        rw [List.getElem?_map] at huj
+        cases ht0 : tys[j]? with
+        | none => rw [ht0] at htj; cases htj
+        | some t0 =>
+          rw [ht0] at htj; cases htj
+          cases hu0 : ps[j]? with
+          | none => rw [hu0] at huj; cases huj
+          | some q =>
+            rw [hu0] at huj; cases huj
+            have hjp : j < ps.length := (List.getElem?_eq_some_iff.mp hu0).1
+            -- `t0` below `as[j]`, which is below the parameter (in).
+            have hja : j < as.length := by omega
+            have hta : (tys.zip as)[j]? = some (t0, as[j]) := by
+              rw [List.getElem?_zip_eq_some]; exact ⟨ht0, List.getElem?_eq_getElem hja⟩
+            have h1 := List.all_eq_true.mp hall _ (List.mem_of_getElem? hta)
+            have h1' := hf2.substLe hwf h1
+            have hx : (Ty.substArgs sa (ps.map (·.2) ++ [ret]))[j]? = some (Ty.subst sa q.2) := by
+              rw [Ty.substArgs_getElem?, List.getElem?_append_left (by simp; omega)]
+              simp [hu0]
+            have hy : (Ty.substArgs fr.selfArgs as)[j]? = some (Ty.subst fr.selfArgs as[j]) := by
+              rw [Ty.substArgs_getElem?, List.getElem?_eq_getElem hja]; rfl
+            have h2 := hcmp j _ _ hx hy
+            rw [hshape, List.getElem?_append_left (by simp; omega)] at h2
+            simp only [List.getElem?_replicate, hjp, if_true, Option.getD_some,
+              Variance.leWith] at h2
+            exact Ty.le_trans hwf h1' h2
+      -- The result: what the procedure gives, below its class's result
+      -- (out).
+      have hres : ∀ w : Value, ∀ s3 : Store, s3.hasTy c.prog w (Ty.subst sa ret) →
+          s3.hasTy c.prog w ((Out.plain (as.getLast?.getD []) Δ').ty.subst fr.selfArgs) := by
+        intro w s3 hw'
+        have hn1 : ps.length < as.length := by omega
+        have hx : (Ty.substArgs sa (ps.map (·.2) ++ [ret]))[ps.length]? = some (Ty.subst sa ret) := by
+          rw [Ty.substArgs_getElem?, List.getElem?_append_right (by simp)]
+          simp
+        have hy : (Ty.substArgs fr.selfArgs as)[ps.length]? = some (Ty.subst fr.selfArgs as[ps.length]) := by
+          rw [Ty.substArgs_getElem?, List.getElem?_eq_getElem hn1]; rfl
+        have h2 := hcmp ps.length _ _ hx hy
+        rw [hshape, List.getElem?_append_right (by simp)] at h2
+        simp only [List.length_replicate, Nat.sub_self, List.getElem?_cons_zero, Option.getD_some,
+          Variance.leWith] at h2
+        have hlast : as.getLast?.getD [] = as[ps.length] := by
+          rw [List.getLast?_eq_getElem?]; simp [hlenas]
+        simp only [Out.plain, hlast]
+        exact hasTy_le hwf hw' h2
+      have hrun := proc_run hP ih.eval hw2 hc0 hni0 hok0 hcore0 hsd0 hty0 hret0 hvs0
+      simp only [Store.alloc]
+      refine (?_ : ∀ r, SendPost c.prog (Ty.subst sa ret) none none [] Λ2 s2 r →
+        Post c.prog c (Out.plain (as.getLast?.getD []) Δ') fr ws Λ s (evalW fr (f.callProc args)) r) _ hrun
+      intro r hrun
+      have hno : ∀ l, frameLocs fr.vars l → ¬ blkW none l := fun _ _ h => by simp [blkW] at h
+      cases r with
+      | ok w s3 =>
+        obtain ⟨Λ3, hw3, he3, hw', _⟩ := hrun
+        refine ⟨Λ3, hw3, ((he1.transW he2 hw).transF he3 (by exact hw)).monoW ?_,
+          hf2.stable he3 (fun _ _ h => by simp [blkW] at h) (fun _ h => h.elim), hres w s3 hw',
+          ⟨_, rfl, hs2.stable he3 hno (fun _ _ h => h)⟩, fun _ => ⟨_, rfl, hs2.stable he3 hno (fun _ _ h => h)⟩,
+          fun _ => ⟨_, rfl, hs2.stable he3 hno (fun _ _ h => h)⟩⟩
+        rintro l ((h | h) | h)
+        · exact evalW_mono (by simp [Expr.assigned]; intros; simp_all) l h
+        · exact evalWs_mono (by simp [Expr.assigned]; intros; simp_all) l h
+        · simp [blkW] at h
+      | raised w s3 =>
+        obtain ⟨Λ3, hw3, he3, hw', _⟩ := hrun
+        refine ⟨Λ3, hw3, ((he1.transW he2 hw).transF he3 (by exact hw)).monoW ?_,
+          hf2.stable he3 (fun _ _ h => by simp [blkW] at h) (fun _ h => h.elim), hw'⟩
+        rintro l ((h | h) | h)
+        · exact evalW_mono (by simp [Expr.assigned]; intros; simp_all) l h
+        · exact evalWs_mono (by simp [Expr.assigned]; intros; simp_all) l h
+        · simp [blkW] at h
+      | returned => exact hrun.elim
+      | stuck => exact hrun.elim
+      | timeout => trivial
+  | callProcDeadRecv hr hout =>
+    simp only [eval]
+    refine (ih.eval _ _ _ _ fr s Λ ws rfl hr hw hf hs).bind
+      (evalW_mono (by simp [Expr.assigned]; intros; simp_all)) ?_
+    intro v s1 Λ1 _ _ _ _ ho1 _ _
+    obtain ⟨_, hΔ, _⟩ := ho1
+    rw [hout] at hΔ; cases hΔ
+  | callProcDeadArgs hr hout hargs =>
     simp only [eval]
     refine (ih.eval _ _ _ _ fr s Λ ws rfl hr hw hf hs).bind
       (evalW_mono (by simp [Expr.assigned]; intros; simp_all)) ?_
@@ -2651,7 +3184,7 @@ theorem eval_succ : EvalGood P orc (n + 1) := by
         simp [Method.inst, hblk]
       have hsend := ih.send s2 Λ2 v k _ m (mt.inst fr.selfArgs) vs
         (some (.mk fr.vars fr.self fr.selfArgs fr.blk ps body))
-        ((c, Δ', ob) :: ws) hw2 (obj_of_hasTy_cls hwf hrecv hk) hrecv (resolve_not_init hres) hl hvs'
+        ((c, Δ', ob) :: ws) hw2 (obj_of_hasTy_cls hwf hw2 hrecv hk) hrecv (resolve_not_init hres) hl hvs'
         (by rw [hblk']; exact ⟨hat, hin⟩)
       revert hsend
       generalize send c.prog orc n s2 v m vs _ = r

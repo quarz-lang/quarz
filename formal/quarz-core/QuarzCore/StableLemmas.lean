@@ -198,4 +198,104 @@ theorem FrameOK.stable {c : Ctx} {Λ Λ' : List Ty} {fr : Frame} {s s' : Store} 
   chainIn := fun l hl => he.len (h.chainIn l hl)
   initBlk := h.initBlk
 
+/-- What `declEnv` has: locals `Γ` has, each as declared. -/
+theorem Ctx.get_declEnv {c : Ctx} {p : Path} {t : Ty} :
+    ∀ {Γ : Env}, (c.declEnv Γ).get p = some t →
+      ∃ x, p = .local x ∧ c.decl x = some t ∧ ∃ u, Γ.get p = some u
+  | [], h => by simp [Ctx.declEnv, Env.get] at h
+  | (q, u) :: Γ, h => by
+    have ih := @Ctx.get_declEnv c p t Γ
+    simp only [Ctx.declEnv, List.filterMap_cons] at h ih
+    have later : ∀ x, p = .local x → c.decl x = some t → (∃ u', Env.get Γ p = some u') →
+        ∃ x, p = .local x ∧ c.decl x = some t ∧ ∃ u', Env.get ((q, u) :: Γ) p = some u' := by
+      rintro x rfl hd ⟨u', hu'⟩
+      refine ⟨x, rfl, hd, ?_⟩
+      by_cases hq : q = .local x
+      · exact ⟨u, by simp [Env.get, hq]⟩
+      · exact ⟨u', by simp [Env.get, hq, hu']⟩
+    cases q with
+    | field f =>
+      obtain ⟨x, hx, hd, hu⟩ := ih h
+      exact later x hx hd hu
+    | «local» y =>
+      cases hd : c.decl y with
+      | none =>
+        simp only [hd, Option.map_none] at h
+        obtain ⟨x, hx, hd', hu⟩ := ih h
+        exact later x hx hd' hu
+      | some d =>
+        simp only [hd, Option.map_some, Env.get] at h
+        by_cases hq : Path.local y = p
+        · rw [if_pos hq] at h; cases h
+          exact ⟨y, hq.symm, hd, u, by simp [Env.get, hq]⟩
+        · rw [if_neg hq] at h
+          obtain ⟨x, hx, hd', hu⟩ := ih h
+          exact later x hx hd' hu
+
+/-- Where `Γ` held, its locals hold values of their declared types. -/
+theorem Sat.toDecl {c : Ctx} {Γ : Env} {fr : Frame} {s : Store} (hs : Sat P c Γ fr s) :
+    Sat P c (c.declEnv Γ) fr s := by
+  intro p t hp
+  obtain ⟨x, rfl, hd, u, hu⟩ := Ctx.get_declEnv hp
+  obtain ⟨l, v, d, h1, h2, h3, _, h5⟩ := hs _ _ hu
+  rw [hd] at h3; cases h3
+  exact ⟨l, v, t, h1, h2, hd, h5, h5⟩
+
+/-- Locals as declared stay so: a write gives a local a value of its
+declared type. -/
+theorem Sat.declStable {c : Ctx} {Γ : Env} {fr : Frame} {Λ Λ' : List Ty} {s s' : Store}
+    {W Wo : Nat → Prop} (hs : Sat P c (c.declEnv Γ) fr s)
+    (hcore : FrameCore P c Λ fr.vars fr.self fr.selfArgs s) (he : Ext P W Wo Λ Λ' s s') :
+    Sat P c (c.declEnv Γ) fr s' := by
+  intro p t hp
+  obtain ⟨x, rfl, hd, _⟩ := Ctx.get_declEnv hp
+  obtain ⟨l, v, d, h1, h2, h3, _, h5⟩ := hs _ _ hp
+  rw [hd] at h3; cases h3
+  obtain ⟨v', hv', hch⟩ := he.locs l v h2
+  rcases hch with rfl | ⟨_, t', ht', hty⟩
+  · exact ⟨l, _, t, h1, hv', hd, he.hasTy h5, he.hasTy h5⟩
+  · obtain ⟨l', hl', hΛ⟩ := hcore.decls x t hd
+    rw [h1] at hl'; cases hl'
+    rw [hΛ] at ht'; cases ht'
+    exact ⟨l, v', t, h1, hv', hd, hty, hty⟩
+
+/-- A procedure stays as made. -/
+theorem ProcOK.stable {Λ Λ' : List Ty} {s s' : Store} {W Wo : Nat → Prop} {p : ProcV}
+    (h : ProcOK P Λ s p) (he : Ext P W Wo Λ Λ' s s') : ProcOK P Λ' s' p := by
+  obtain ⟨c, Γ, ps, own, ret, body, vars, me, sa, k, ob, hc, hp, hi, hd, hk, hn, hok, hcore, hs, hty, hret⟩ := h
+  exact ⟨c, Γ, ps, own, ret, body, vars, me, sa, k, ob, hc, hp, hi, hd, hk, hn, hok, hcore.stable he,
+    hs.declStable hcore he, hty, hret⟩
+
+theorem WfStore.setLoc {Λ : List Ty} {s : Store} (h : WfStore P Λ s) {l : Nat} {v : Value} {t : Ty}
+    (hl : l < s.locs.length) (ht : Λ[l]? = some t) (hv : s.hasTy P v t) :
+    WfStore P Λ (s.setLoc l v) where
+  len := by simp [Store.setLoc, h.len]
+  objs := fun l o ho => by
+    obtain ⟨h1, h1a, h1b, h2, h3, h4⟩ := h.objs l o ho
+    exact ⟨h1, h1a, h1b, h2, h3, fun i w f hs hw hf => h4 i w f hs hw hf⟩
+  bounds := fun l o ho => h.bounds l o ho
+  noEnum := fun l o ho => h.noEnum l o ho
+  procs := fun i p hp => (h.procs i p hp).stable (Ext.setLoc (W := fun _ => True) (Wo := fun _ => False) hl ht hv trivial)
+
+/-- A new procedure, as checked. -/
+theorem WfStore.newProc {Λ : List Ty} {s : Store} (hw : WfStore P Λ s) {p : ProcV}
+    (hp : ProcOK P Λ s p) : WfStore P Λ { s with procs := s.procs ++ [p] } where
+  len := hw.len
+  objs := fun l o ho => by
+    obtain ⟨h1, h1a, h1b, h2, h3, h4⟩ := hw.objs l o ho
+    exact ⟨h1, h1a, h1b, h2, h3, fun i w f hs hw' hf => (Ext.newProc (W := fun _ => False)
+      (Wo := fun _ => False) (Λ := Λ) p).hasTy (h4 i w f hs hw' hf)⟩
+  noEnum := fun l o ho => hw.noEnum l o ho
+  bounds := fun l o ho => hw.bounds l o ho
+  procs := fun i q hq => by
+    have he := Ext.newProc (P := P) (W := fun _ => False) (Wo := fun _ => False) (Λ := Λ) (s := s) p
+    by_cases hi : i < s.procs.length
+    · rw [List.getElem?_append_left hi] at hq
+      exact (hw.procs i q hq).stable he
+    · have : i = s.procs.length := by
+        have := (List.getElem?_eq_some_iff.mp hq).1; simp at this; omega
+      subst this
+      simp at hq; subst hq
+      exact hp.stable he
+
 end QuarzCore

@@ -51,6 +51,7 @@ theorem hasTy_truthy_subst {s : Store} {v : Value} {σ : List Ty} {u : Ty}
   cases a <;> simp_all [Atom.le]
   cases v with
   | obj l => obtain ⟨_, _, _, h⟩ := typeOf_obj ha; cases h
+  | proc i => obtain ⟨_, _, h⟩ := typeOf_proc ha; cases h
   | _ => simp_all [Store.typeOf, Value.truthy]
 
 /-- A falsy value of `u` (through `σ`): `nil` or `false`, which `u` holds,
@@ -152,11 +153,70 @@ theorem objectArgs_le {ct : ClassTable} (hwf : WfClasses ct) : ∀ {vs : List Va
   | _ :: _, [], _, hl, _, _ => by simp at hl
   | _ :: _, _ :: _, [], _, _, hb => by simp at hb
 
-/-- A value's class and its arguments: the object's. -/
-theorem typeOf_cls {s : Store} {v : Value} {cu : Nat} {asu : List Ty}
-    (hu : s.typeOf v = some (.cls cu asu)) : ∃ l o, v = .obj l ∧ s.objs[l]? = some o ∧ o.cls = cu ∧ o.args = asu := by
+/-- The class `procClass` finds: of kind `proc`, with `n + 1` parameters. -/
+theorem procClass_kind {n k : Nat} (h : P.procClass n = some k) :
+    P.classes.kindOf k = .proc ∧ (P.classes[k]?).map (·.params.length) = some (n + 1) := by
+  simp only [Program.procClass] at h
+  obtain ⟨hk, hp, _⟩ := List.findIdx?_eq_some_iff_getElem.mp h
+  simp only [Bool.and_eq_true, beq_iff_eq] at hp
+  refine ⟨?_, ?_⟩
+  · simp [ClassTable.kindOf, List.getElem?_eq_getElem hk, hp.1]
+  · simp [List.getElem?_eq_getElem hk, hp.2]
+
+/-- A procedures' class is right below `Object`. -/
+theorem proc_ancestors (hwf : WfClasses P.classes) {k : Nat} (hk : P.classes.kindOf k = .proc) :
+    P.classes.ancestors k = [k, 0] := by
+  cases hck : P.classes[k]? with
+  | none => simp [ClassTable.kindOf, hck] at hk
+  | some cl =>
+    have hkind : cl.kind = .proc := by simpa [ClassTable.kindOf, hck] using hk
+    obtain ⟨hs, _⟩ := hwf.procShape k cl hck hkind
+    rw [ClassTable.ancestors_eq hwf k]
+    simp only [ClassTable.superOf, hck, Option.bind_some, hs]
+    rw [ClassTable.ancestors_eq hwf 0]
+    cases h0 : P.classes[0]? with
+    | none => exact absurd (List.getElem?_eq_none_iff.mp h0) (by have := hwf.nonempty; omega)
+    | some k0 => simp [ClassTable.superOf, h0, hwf.root k0 h0]
+
+/-- A procedure's type: of a procedures' class. -/
+theorem typeOf_proc_kind {Λ : List Ty} {s : Store} (hw : WfStore P Λ s) {i : Nat} {u : Atom}
+    (hu : s.typeOf (.proc i) = some u) : ∃ k as, u = .cls k as ∧ P.classes.kindOf k = .proc := by
+  simp only [Store.typeOf, Option.bind_eq_some_iff] at hu
+  obtain ⟨p, hp, h⟩ := hu
+  obtain ⟨c, Γ, ps, own, ret, body, vars, me, sa, k, ob, hc, rfl, _, _, hk, _⟩ := hw.procs i p hp
+  simp only at h
+  cases h
+  rw [hc] at hk
+  exact ⟨_, _, rfl, (procClass_kind hk).1⟩
+
+/-- A value of a class atom: the class is one, its arguments closed and as
+many as its parameters (an object's, or a procedure's: `ProcN`). -/
+theorem typeOf_cls_wf {Λ : List Ty} {s : Store} (hw : WfStore P Λ s) {v : Value} {cu : Nat}
+    {asu : List Ty} (hu : s.typeOf v = some (.cls cu asu)) :
+    cu < P.classes.length ∧ Ty.closedArgs asu = true ∧
+      asu.length = (((P.classes[cu]?).map (·.params)).getD []).length := by
   cases v with
-  | obj l => obtain ⟨o, ho, _, h⟩ := typeOf_obj hu; cases h; exact ⟨l, o, rfl, ho, rfl, rfl⟩
+  | obj l =>
+    obtain ⟨o, ho, _, h⟩ := typeOf_obj hu
+    cases h
+    obtain ⟨hcls, hcl, hlen, _⟩ := hw.objs l o ho
+    exact ⟨hcls, hcl, hlen⟩
+  | proc i =>
+    simp only [Store.typeOf, Option.bind_eq_some_iff] at hu
+    obtain ⟨p, hp, h⟩ := hu
+    obtain ⟨c, Γ, ps, own, ret, body, vars, me, sa, k, ob, hc, rfl, _, _, hk, hn, _, hcore, _⟩ :=
+      hw.procs i p hp
+    simp only at h
+    cases h
+    have hlt : cu < P.classes.length := by
+      rw [hc] at hk
+      simp only [Program.procClass] at hk
+      exact (List.findIdx?_eq_some_iff_getElem.mp hk).1
+    refine ⟨hlt, Ty.substArgs_closed _ hcore.closed _, ?_⟩
+    rw [ClassTable.substArgs_length']
+    cases hck : P.classes[cu]? with
+    | none => rw [hck] at hn; cases hn
+    | some cl => rw [hck] at hn; simp at hn ⊢; simp [hn]
   | _ => simp [Store.typeOf] at hu
 
 /-- The run-time class test answers as `≤` on the value's atom does, for a
@@ -170,8 +230,7 @@ theorem isA_class_test (hwf : WfClasses P.classes) {Λ : List Ty} {s : Store} (h
     P.classes.subclass cu d = (Atom.cls cu asu).le P.classes [] (.cls d args) := by
   simp only [Bool.and_eq_true] at hver
   obtain ⟨⟨hclosed, hwfa⟩, hver⟩ := hver
-  obtain ⟨l, o, rfl, ho, rfl, rfl⟩ := typeOf_cls hu
-  obtain ⟨hcls, hoclosed, holen, _⟩ := hw.objs l o ho
+  obtain ⟨hcls, hoclosed, holen⟩ := typeOf_cls_wf hw hu
   have hd : d < P.classes.length := by
     simp only [Atom.wf] at hwfa
     cases h : P.classes[d]? with
@@ -187,14 +246,14 @@ theorem isA_class_test (hwf : WfClasses P.classes) {Λ : List Ty} {s : Store} (h
   · intro hsub
     rw [Atom.le_cls_iff hwf]
     rw [ClassTable.subclass_iff] at hsub
-    obtain ⟨bs, hbs⟩ := ClassTable.ancestorArgs_of_mem hwf o.cls o.args d hsub
+    obtain ⟨bs, hbs⟩ := ClassTable.ancestorArgs_of_mem hwf cu asu d hsub
     cases hobj : objectArgs P.classes d args
     case true =>
       -- Arguments every instance has.
       right
       simp only [objectArgs, Bool.and_eq_true, beq_iff_eq] at hobj
       refine ⟨bs, hbs, objectArgs_le hwf hobj.1 hobj.2 ?_⟩
-      exact ClassTable.ancestorArgs_length hwf o.cls o.args d bs hbs holen
+      exact ClassTable.ancestorArgs_length hwf cu asu d bs hbs holen
     case false =>
       right
       rw [hasTy_iff] at hv
@@ -231,7 +290,7 @@ theorem isA_class_test (hwf : WfClasses P.classes) {Λ : List Ty} {s : Store} (h
             · rw [hobj] at this; cases this
             rw [Bool.eq_false_iff, ne_eq, ClassTable.subclass_iff] at this
             exact absurd (ClassTable.root_mem_ancestors hwf d hd) this
-        · have he : e ∈ P.classes.ancestors o.cls := ClassTable.ancestorArgs_mem hwf _ _ _ _ hx
+        · have he : e ∈ P.classes.ancestors cu := ClassTable.ancestorArgs_mem hwf _ _ _ _ hx
           cases hed : P.classes.subclass e d with
           | true =>
             -- The static atom's chain gives arguments below the tested
@@ -251,7 +310,7 @@ theorem isA_class_test (hwf : WfClasses P.classes) {Λ : List Ty} {s : Store} (h
             rcases h2 hed with h3 | h3
             · rw [hobj] at h3; cases h3
             rw [Bool.eq_false_iff, ne_eq, ClassTable.subclass_iff] at h3 hed
-            rcases ClassTable.ancestors_total hwf o.cls e d he hsub with h | h
+            rcases ClassTable.ancestors_total hwf cu e d he hsub with h | h
             · exact absurd h h3
             · exact absurd h hed
       | _ => simp at hbb'; subst hbb'; simp [Atom.le] at hab
@@ -457,7 +516,7 @@ theorem enum_variant (hwf : WfClasses P.classes) {Λ : List Ty} {s : Store} (hw 
     rw [Atom.le_cls_iff hwf] at hle
     rcases hle with ⟨h0, _⟩ | ⟨x, hx, _⟩
     · exact absurd h0 hE0
-    have hne : o.cls ≠ E := fun h => hw.noEnum l o ho (h ▸ hE)
+    have hne : o.cls ≠ E := fun h => (hw.noEnum l o ho).1 (h ▸ hE)
     obtain ⟨V, kv, hkv, hsv, ys, hys⟩ := ancestorArgs_child hwf o.cls o.args x hx hne
     obtain ⟨hvar, hpar⟩ := hwf.enumChild V kv E hkv hsv hE
     have hkV : P.classes.kindOf V = .variant := by simp [ClassTable.kindOf, hkv, hvar]
@@ -468,6 +527,18 @@ theorem enum_variant (hwf : WfClasses P.classes) {Λ : List Ty} {s : Store} (hw 
     refine ⟨V, ?_, by rw [hcV, hlen]⟩
     simp only [ClassTable.variantsOf, List.mem_filter, List.mem_range, beq_iff_eq]
     exact ⟨(List.getElem?_eq_some_iff.mp hkv).1, by simp [hkv, hsv]⟩
+  case proc i =>
+    -- A procedures' class is right below `Object`: not below an `enum`.
+    obtain ⟨k, as, rfl, hkp⟩ := typeOf_proc_kind hw hu
+    rw [Atom.le_cls_iff hwf] at hle
+    rcases hle with ⟨h0, _⟩ | ⟨x, hx, _⟩
+    · exact absurd h0 hE0
+    have hmem := ClassTable.ancestorArgs_mem hwf _ _ _ _ hx
+    rw [proc_ancestors hwf hkp] at hmem
+    simp only [List.mem_cons, List.not_mem_nil, or_false] at hmem
+    rcases hmem with rfl | rfl
+    · rw [hkp] at hE; cases hE
+    · exact absurd rfl hE0
   all_goals
     simp [Store.typeOf] at hu; subst hu
     simp [Atom.le, hE0] at hle
@@ -555,6 +626,7 @@ theorem hasTy_remove_nil_subst {s : Store} {v : Value} {σ : List Ty} {u : Ty}
   cases a <;> simp_all [Atom.le]
   cases v with
   | obj l => obtain ⟨_, _, _, h⟩ := typeOf_obj ha; cases h
+  | proc i => obtain ⟨_, _, h⟩ := typeOf_proc ha; cases h
   | _ => simp_all [Store.typeOf]
 
 /-- A value other than `nil`: of its type without `nil`. -/
@@ -567,6 +639,7 @@ theorem hasTy_remove_nil {s : Store} {v : Value} {t : Ty} (hv : s.hasTy P v t) (
   cases a <;> simp_all [Atom.le]
   cases v with
   | obj l => obtain ⟨_, _, _, h⟩ := typeOf_obj ha; cases h
+  | proc i => obtain ⟨_, _, h⟩ := typeOf_proc ha; cases h
   | _ => simp_all [Store.typeOf]
 
 /-- A type of final atoms (the value classes, `data` types without

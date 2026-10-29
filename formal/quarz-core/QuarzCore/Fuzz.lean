@@ -40,7 +40,9 @@ def classes : ClassTable :=
    ⟨"DEq", some 0, [], [], [], [], .data⟩,
    ⟨"Sh", some 0, [], [], [], [], .enumC⟩,
    ⟨"Ci", some 15, [⟨"r", [.int], false, none⟩], [], [], [], .variant⟩,
-   ⟨"Pt", some 15, [], [], [], [], .variant⟩]
+   ⟨"Pt", some 15, [], [], [], [], .variant⟩,
+   ⟨"Proc0", some 0, [], [.co], [], [], .proc⟩,
+   ⟨"Proc1", some 0, [], [.contra, .co], [], [], .proc⟩]
 
 /-- The atoms of random types and `is_a?` tests (`Box` without its
 argument is ill formed: the checker rejects a test of it). -/
@@ -128,7 +130,8 @@ def locals : List (String × Ty) :=
    ("si", [.cls 10 [[.int]], .nil]),
    ("ah", [.cls 12 [[.cls 2 []]], .nil]), ("ae", [.cls 12 [[.cls 3 []]], .nil]),
    ("dp", [.cls 13 [], .nil]), ("de", [.cls 14 [], .nil]),
-   ("sh", [.cls 15 []]), ("cc", [.cls 16 []]), ("ex", [.cls 0 []])]
+   ("sh", [.cls 15 []]), ("cc", [.cls 16 []]), ("ex", [.cls 0 []]),
+   ("pf", [.cls 18 [[.nil]]]), ("pg", [.cls 19 [[.int], [.int, .nil]]])]
 
 def genTy : Gen Ty := do
   let n ← Gen.choose Nat 0 3 (by omega)
@@ -196,6 +199,31 @@ partial def genExpr : Nat → Gen Expr
          "ex" (.assign "x" (.var "x" [.int])) .nil))),
        (1, pure (.seq (.assign "x" (.int 1)) (.ensure (.seq (.assign "x" .nil) (.raise (.str "boom")))
          (.assign "x" (.var "x" [.int]))))),
+       -- Procedures: a lambda that changes `x`, called later; one taking an
+       -- `Int`; `x` read after a call (which may run one).
+       (1, pure (.assign "pf" (.lambda [] [] [.nil] (.assign "x" .nil)))),
+       (1, pure (.assign "pg" (.lambda [("lq", [.int])] [] [.int, .nil] (.var "lq" [.int])))),
+       -- Lambdas C0 accepts: reading `x` as declared into an own local;
+       -- giving `nil`; then called after `x` changed.
+       (2, pure (.seq (.assign "x" (.int 1)) (.assign "pf" (.lambda [] [("lk", [.int, .nil])] [.nil]
+         (.seq (.assign "lk" (.var "x" [.int, .nil])) .nil))))),
+       (1, pure (.assign "pf" (.lambda [] [] [.nil] .nil))),
+       (1, pure (.assign "pg" (.lambda [("lq", [.int])] [] [.int, .nil] (.var "x" [.int, .nil])))),
+       (2, pure (.seq (.assign "x" (.int 1)) (.seq (.assign "pg" (.lambda [("lq", [.int])] [] [.int, .nil]
+         (.var "x" [.int, .nil]))) (.seq (.assign "x" .nil)
+         (.assign "x" (.callProc (.var "pg" [.cls 19 [[.int], [.int, .nil]]]) [.int 1])))))),
+       (1, pure (.callProc (.var "pf" [.cls 18 [[.nil]]]) [])),
+       (1, do return .assign "x" (.callProc (.var "pg" [.cls 19 [[.int], [.int, .nil]]]) [← sub])),
+       (2, pure (.seq (.assign "pf" (.lambda [] [] [.nil] (.assign "x" .nil)))
+         (.seq (.assign "x" (.int 1)) (.seq (.callProc (.var "pf" [.cls 18 [[.nil]]]) [])
+         (.assign "k" (.var "x" [.int])))))),
+       -- A lambda reading `x` as narrowed where it is made, run after `x`
+       -- changed.
+       (2, pure (.seq (.assign "x" (.int 1)) (.seq (.assign "pf" (.lambda [] [("lk", [.int])] [.nil]
+         (.seq (.assign "lk" (.var "x" [.int])) .nil))) (.seq (.assign "x" .nil)
+         (.callProc (.var "pf" [.cls 18 [[.nil]]]) []))))),
+       (1, pure (.seq (.assign "x" (.int 1)) (.seq (.call (.var "y" [.cls 1 []]) "get" [])
+         (.assign "k" (.var "x" [.int]))))),
        -- A block that changes `x` and raises, rescued by the method: `x`
        -- is not as the block's end has it.
        (1, do return .seq (.assign "x" (.int 1)) (.seq (.callBlk (.new 1 [] [.int 1, .str "v"]) "safe_each" [.int 3] ["k"]

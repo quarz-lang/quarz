@@ -59,6 +59,12 @@ inductive Expr where
   | rescue (body : Expr) (x : String) (handler : Expr) (els : Expr)
   /-- `begin body ensure ens end`: `ens` after the body however it ends. -/
   | ensure (body : Expr) (ens : Expr)
+  /-- `->(x: T, ...) -> R { body }`: a procedure, closed over this frame's
+  locals (by reference, read only: design §13.8, C0); its parameters and
+  `own` locals (those first assigned in it) fresh at each call. -/
+  | lambda (ps : List (String × Ty)) (own : List (String × Ty)) (ret : Ty) (body : Expr)
+  /-- `f.call(args)`: run procedure `f`. -/
+  | callProc (f : Expr) (args : List Expr)
   /-- What a `case/in` without `else` reaches when no arm matches, on a
   closed type (docs/01 §11): never, as the checker requires the arms to
   cover the type (it accepts the form only where control cannot get). -/
@@ -112,6 +118,11 @@ structure Program where
 `Object` in a program without it. -/
 def Program.exn (P : Program) : Nat :=
   (P.classes.findIdx? (·.name == "Exception")).getD 0
+
+/-- The class of procedures of `n` parameters (`ProcN[in A1, .., in An,
+out R]`): the first of kind `proc` with `n + 1` parameters. -/
+def Program.procClass (P : Program) (n : Nat) : Option Nat :=
+  P.classes.findIdx? fun cl => cl.kind == .proc && cl.params.length == n + 1
 
 /-- What can be narrowed: a local, or an immutable field of `self`. -/
 inductive Path where

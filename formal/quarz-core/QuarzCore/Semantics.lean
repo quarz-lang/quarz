@@ -29,6 +29,8 @@ inductive Value where
   | flt (s : String)
   /-- An object, by its index in the store's `objs`. -/
   | obj (l : Nat)
+  /-- A procedure, by its index in the store's `procs`. -/
+  | proc (i : Nat)
   deriving DecidableEq, Repr, Inhabited
 
 def Value.truthy : Value → Bool
@@ -49,17 +51,28 @@ structure Obj where
   set : List Bool
   deriving Repr, Inhabited
 
-structure Store where
-  locs : List Value
-  objs : List Obj
-  deriving Repr, Inhabited
-
 /-- An anonymous block, closed over the frame it is written in (the
 names of that method's locals, `self`, and that method's own block, for
 a `yield` in it), with its parameters and body. -/
 inductive Closure where
   | mk (vars : List (String × Nat)) (self : Value) (selfArgs : List Ty) (outer : Option Closure)
       (params : List String) (body : Expr)
+  deriving Repr, Inhabited
+
+/-- A procedure (a lambda), as made: its closure (the frame's locals by
+reference, `self`, no block), and its type, `ProcN[params, result]` as the
+lambda declared it (ghost, as an object's arguments). -/
+structure ProcV where
+  clo : Closure
+  /-- Its parameters and own locals: fresh at each call. -/
+  own : List String
+  ty : Atom
+  deriving Repr, Inhabited
+
+structure Store where
+  locs : List Value
+  objs : List Obj
+  procs : List ProcV := []
   deriving Repr, Inhabited
 
 /-- A method's activation: its locals' locations, `self`, and the
@@ -92,6 +105,9 @@ def typeOf (s : Store) : Value → Option Atom
   | .str _ => some .str
   | .flt _ => some .float
   | .obj l => (s.objs[l]?).bind fun o => if o.set.all id then some (.cls o.cls o.args) else none
+  | .proc i => (s.procs[i]?).bind fun p => match p.ty with
+    | .cls k as => some (.cls k as)
+    | _ => none
 
 def hasType (ct : ClassTable) (s : Store) (v : Value) (t : Ty) : Bool :=
   match s.typeOf v with
@@ -110,7 +126,7 @@ def allocVars : Nat → List String → List (String × Nat)
 
 /-- Fresh locations, one per name, holding `nil`. -/
 def alloc (s : Store) (names : List String) : Store × List (String × Nat) :=
-  (⟨s.locs ++ names.map fun _ => .nil, s.objs⟩, allocVars s.locs.length names)
+  ({ s with locs := s.locs ++ names.map fun _ => .nil }, allocVars s.locs.length names)
 
 end Store
 
@@ -238,6 +254,31 @@ def eval (P : Program) (orc : Oracle) : Nat → Frame → Store → Expr → Res
       | .ok v s => .returned v s
       | r => r
     | .raise e => (eval P orc n fr s e).bind fun v s => .raised v s
+    -- A lambda: its closure, of the frame (no block: it may run after the
+    -- method's has gone), and its type with the frame's arguments.
+    | .lambda ps own ret body => match P.procClass ps.length with
+      | some k =>
+        let a := Atom.cls k (Ty.substArgs fr.selfArgs (ps.map (·.2) ++ [ret]))
+        .ok (.proc s.procs.length)
+          { s with procs := s.procs ++ [⟨.mk fr.vars fr.self fr.selfArgs none (ps.map (·.1)) body,
+            (ps ++ own).map (·.1), a⟩] }
+      | none => .stuck
+    -- Its parameters and own locals at fresh locations, the captured ones
+    -- as they are.
+    | .callProc f args => (eval P orc n fr s f).bind fun v s =>
+      match evalArgs P orc n fr s args with
+      | .other r => r
+      | .ok vs s => match v with
+        | .proc i => match s.procs[i]? with
+          | some ⟨.mk vars me sa _ ps body, own, _⟩ =>
+            let (s, nv) := s.alloc own
+            match bindAll s nv ps vs with
+            | some s => match eval P orc n ⟨nv ++ vars, me, sa, none⟩ s body with
+              | .returned _ _ => .stuck
+              | r => r
+            | none => .stuck
+          | none => .stuck
+        | _ => .stuck
     | .rescue b x h els => match eval P orc n fr s b with
       | .raised v s1 => match lookupVar fr.vars x with
         | some l => eval P orc n fr (s1.setLoc l v) h
@@ -363,7 +404,7 @@ end
 /-- Run the program's top level. -/
 def run (P : Program) (orc : Oracle) (fuel : Nat) : Result :=
   -- `self` is an instance of the top level's class (it has no fields).
-  let (s, vars) := Store.alloc ⟨[], [⟨P.main.owner, [], [], []⟩]⟩ (P.main.locals.map (·.1))
+  let (s, vars) := Store.alloc ⟨[], [⟨P.main.owner, [], [], []⟩], []⟩ (P.main.locals.map (·.1))
   match eval P orc fuel ⟨vars, .obj 0, [], none⟩ s P.main.body with
   | .returned v s => .ok v s
   | r => r
