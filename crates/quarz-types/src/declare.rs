@@ -989,6 +989,7 @@ impl<'ast> Declarer<'ast> {
             self.check_copied_deinitialize(p.id);
             self.check_eq_with_hash(p.id);
             self.check_duplicate_methods(p.id);
+            self.check_static_mixins(p);
             self.world.active_extensions.clear();
         }
         self.check_extensions_kept_blocks();
@@ -996,6 +997,143 @@ impl<'ast> Declarer<'ast> {
         self.check_extensions_deinitialize();
         self.check_shareable_extensions();
         self.check_quoted_extensions();
+        for e in &pending_ext {
+            self.file = e.file;
+            self.check_extension_static(e);
+        }
+    }
+
+    /// A module with `static def`s (docs/14 §2) is extended, not
+    /// included, and as `extend M[C]` with `C` the extending class itself:
+    /// the `static def`s were checked with `self: Meta::ClassDef[T]` (`T`
+    /// the module's first type parameter), which holds only where they
+    /// run on `C` or a class under it.
+    fn check_static_mixins(&mut self, p: &PendingClass<'ast>) {
+        for expr in p.body {
+            let ExprKind::Mixin { kind, types } = &expr.kind else {
+                continue;
+            };
+            for t in types {
+                // Resolved again: reported already if it does not resolve.
+                let Some(Type::Class(mid, args)) = self.resolve_type_quietly(p.id, t) else {
+                    continue;
+                };
+                if !self.has_static_defs(mid) {
+                    continue;
+                }
+                let mname = self.world.class(mid).name.clone();
+                // The class's own instance type, its type parameters as
+                // they are (`Box[E]`, not `Box[Int]`): what is generated
+                // goes into every `Box`.
+                let instance = Type::Class(
+                    p.id,
+                    self.world
+                        .class(p.id)
+                        .type_params
+                        .iter()
+                        .map(|tp| Type::Param(tp.id))
+                        .collect(),
+                );
+                let shown = self.world.type_name(&instance);
+                match kind {
+                    MixinKind::Include => self.error(
+                        format!(
+                            "`{mname}` has `static def`s, which run on a class: extend it (`extend {mname}[{shown}]`) rather than include it"
+                        ),
+                        t.span,
+                    ),
+                    MixinKind::Extend => {
+                        let params = self.world.class(mid).type_params.clone();
+                        if params.is_empty() {
+                            continue;
+                        }
+                        if args.first() != Some(&instance) {
+                            let mut want = args.clone();
+                            want[0] = instance.clone();
+                            let want = self.world.type_name(&Type::Class(mid, want));
+                            self.error(
+                                format!(
+                                    "`{mname}` has `static def`s, which run on the class extending it: extend it as `{want}`"
+                                ),
+                                t.span,
+                            );
+                            continue;
+                        }
+                        // The `static def`s were checked under the bounds:
+                        // the arguments must meet them, with the module's
+                        // parameters taken as the arguments (`T <: Cmp[T]`).
+                        let written = self.world.type_name(&Type::Class(mid, args.clone()));
+                        let map: rustc_hash::FxHashMap<_, _> = params
+                            .iter()
+                            .map(|p| p.id)
+                            .zip(args.iter().cloned())
+                            .collect();
+                        for (p, a) in params.iter().zip(&args) {
+                            for b in &p.bounds {
+                                let b = b.subst(&map);
+                                if !self.world.is_subtype(a, &b) {
+                                    let an = self.world.type_name(a);
+                                    let bn = self.world.type_name(&b);
+                                    self.error(
+                                        format!(
+                                            "`{written}`: `{an}` is not a `{bn}`, which `{mname}`'s `static def`s were checked for (`{}`)",
+                                            p.name
+                                        ),
+                                        t.span,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Whether a module declares `static def`s (docs/14 §2).
+    fn has_static_defs(&self, module: ClassId) -> bool {
+        let m = self.world.class(module);
+        m.kind == ClassKind::Module
+            && m.methods.values().flatten().any(|id| {
+                let info = self.world.method(*id);
+                info.owner == module && info.is_static && !info.is_native
+            })
+    }
+
+    /// An extension declares no `static def` (its `self` would be typed by
+    /// the module it extends, not by the class it runs on), and includes
+    /// no module that has some (docs/14 §2).
+    fn check_extension_static(&mut self, e: &PendingExtension<'ast>) {
+        let ids: Vec<MethodId> = self.world.extensions[e.id as usize]
+            .methods
+            .values()
+            .flatten()
+            .copied()
+            .collect();
+        for id in ids {
+            let m = self.world.method(id);
+            if m.is_static && !m.is_native {
+                let span = m.span;
+                self.error(
+                    "an extension cannot declare a `static def`: declare it in the class or module itself",
+                    span,
+                );
+            }
+        }
+        let includes = self.world.extensions[e.id as usize].includes.clone();
+        for t in includes {
+            if let Type::Class(mid, _) = t {
+                if self.has_static_defs(mid) {
+                    let mname = self.world.class(mid).name.clone();
+                    self.error(
+                        format!(
+                            "`{mname}` has `static def`s, which run on a class: an extension cannot include it"
+                        ),
+                        e.def.target.span,
+                    );
+                }
+            }
+        }
     }
 
     /// Whether two methods have the same signature: parameters (kinds

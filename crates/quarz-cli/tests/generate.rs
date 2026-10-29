@@ -452,7 +452,7 @@ data Point = (x: Int, y: Int)
         "app.qz:5:3: error: `def_field(:id)`: `A` already has a field `@id`",
         "app.qz:6:3: error: `writer_only` raised ArgumentError: writer: needs var: true, an assignable field",
         "app.qz:7:3: error: `def_field(:id2)`: `A` already has a method `id2`",
-        "app.qz:11:3: error: `has` is a `static def` of the module `Macros`, reached through `extend`, which a statement cannot call yet: declare it as a class method (`static def self.has`) of a superclass",
+        "app.qz:11:3: error: `has` is a `static def` of the module `Macros`, which has no type parameter for the class it runs on: declare the module generic (`module Macros[T]`, `self` is then `Meta::ClassDef[T]`) and extend it with the class (`extend Macros[Post]`), or make `has` a class method (`static def self.has`) of a superclass",
     ] {
         assert!(err.contains(expected), "missing {expected:?} in\n{err}");
     }
@@ -792,4 +792,121 @@ fn abstract_methods_implemented_across_statements() {
         1,
         "{err}"
     );
+}
+
+const MODULE_LIB: &str = r##"abstract class Model
+  def id -> Int = 7
+end
+
+class Other < Model
+end
+
+module Macros[T <: Model]
+  static def has(n: Symbol) -> Void
+    tn = name
+    doc "has #{n}"
+    def_method(n) { "#{tn}/#{n}/#{id}" }
+    def_class_method(:table) { tn.downcase }
+  end
+
+  static def label -> String = "#{name}!"
+end
+
+module Plain
+  static def plain(n: Symbol) -> Void
+  end
+end
+"##;
+
+#[test]
+fn a_generic_modules_static_defs_through_extend() {
+    // docs/14 §2: `self` is `Meta::ClassDef[T]`, `T` the class that
+    // extends `Macros[T]`; subclasses run them too.
+    let d = dir();
+    write(&d.0, "lib.qz", MODULE_LIB);
+    write(
+        &d.0,
+        "app.qz",
+        "require_relative \"lib\"\nclass Post < Model\n  extend Macros[Post]\n  has :title\nend\nclass Sub < Post\n  has :more\nend\np Post.new.title\np Post.table\np Sub.new.more\np Sub.label\n",
+    );
+    let expected = "\"Post/title/7\"\n\"post\"\n\"Sub/more/7\"\n\"Sub!\"\n";
+    let (ok, out, err) = quarz(&d.0, &["run", "app.qz"], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(out, expected);
+    let (ok, _, err) = quarz(&d.0, &["build", "app.qz", "-o", "app.bin"], &[]);
+    assert!(ok, "{err}");
+    let run = Command::new(d.0.join("app.bin")).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&run.stdout), expected);
+    // Extended as another class, included, a module without a type
+    // parameter, and a compile-time-only one called at run time.
+    write(
+        &d.0,
+        "bad.qz",
+        "require_relative \"lib\"\nclass A < Model\n  extend Macros[Other]\nend\nclass B < Model\n  include Macros[B]\nend\nclass C < Model\nend\nclass D < C\nend\nclass E < C\n  extend Macros[D]\nend\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", "bad.qz"], &[]);
+    assert!(!ok);
+    for want in [
+        "bad.qz:3:10: error: `Macros` has `static def`s, which run on the class extending it: extend it as `Macros[A]`",
+        "bad.qz:6:11: error: `Macros` has `static def`s, which run on a class: extend it (`extend Macros[B]`) rather than include it",
+        "bad.qz:13:10: error: `Macros` has `static def`s, which run on the class extending it: extend it as `Macros[E]`",
+    ] {
+        assert!(err.contains(want), "{want}\n{err}");
+    }
+    // A bound naming the module's parameter is met with the arguments
+    // substituted.
+    write(
+        &d.0,
+        "fb.qz",
+        "require_relative \"fblib\"\nclass K < Cmp[K]\n  extend F[K]\nend\np K.nm\n",
+    );
+    write(
+        &d.0,
+        "fblib.qz",
+        "class Cmp[X]\nend\nmodule F[T <: Cmp[T]]\n  static def nm -> String = name\nend\n",
+    );
+    let (ok, out, err) = quarz(&d.0, &["run", "fb.qz"], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(out, "\"K\"\n");
+    // Not the class's own instance type, outside the bound, through an
+    // extension: refused at the declaration.
+    write(
+        &d.0,
+        "lib2.qz",
+        "class Base\nend\nmodule Gen[T <: Base]\n  static def gen(n: Symbol) -> Void\n    def_method(n) { self }\n  end\nend\nmodule Plain2[T]\nend\nextension Plain2[T]\n  static def me -> Type[Object] = self\nend\n",
+    );
+    write(
+        &d.0,
+        "bad2.qz",
+        "require_relative \"lib2\"\nclass Box[E] < Base\n  extend Gen[Box[Int]]\nend\nclass NotBase\n  extend Gen[NotBase]\nend\nclass P < Base\nend\nextension P\n  include Gen[P]\nend\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", "bad2.qz"], &[]);
+    assert!(!ok);
+    for want in [
+        "bad2.qz:3:10: error: `Gen` has `static def`s, which run on the class extending it: extend it as `Gen[Box[E]]`",
+        "bad2.qz:6:10: error: `Gen[NotBase]`: `NotBase` is not a `Base`, which `Gen`'s `static def`s were checked for (`T`)",
+        "bad2.qz:10:11: error: `Gen` has `static def`s, which run on a class: an extension cannot include it",
+        "lib2.qz:11:10: error: an extension cannot declare a `static def`",
+    ] {
+        assert!(err.contains(want), "{want}\n{err}");
+    }
+    write(
+        &d.0,
+        "plain.qz",
+        "require_relative \"lib\"\nclass F < Model\n  extend Plain\n  plain :y\nend\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", "plain.qz"], &[]);
+    assert!(!ok);
+    assert!(
+        err.contains("plain.qz:4:3: error: `plain` is a `static def` of the module `Plain`, which has no type parameter for the class it runs on"),
+        "{err}"
+    );
+    write(
+        &d.0,
+        "late.qz",
+        "require_relative \"lib\"\nclass G < Model\n  extend Macros[G]\nend\nG.has(:w)\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", "late.qz"], &[]);
+    assert!(!ok);
+    assert!(err.contains("`has` runs at compile time only"), "{err}");
 }

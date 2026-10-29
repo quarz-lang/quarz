@@ -1905,6 +1905,55 @@ impl Checker {
         out
     }
 
+    /// How a class reaches a module's `static def` (docs/14 §2): through
+    /// `extend M[A]` in the class or an ancestor `A` itself, so that the
+    /// `Meta::ClassDef[A]` the body was checked with holds for the class
+    /// the statement runs on. A module without type parameters, or an
+    /// `extend` naming another class, is refused, with why.
+    fn extend_route(&self, class: ClassId, module: ClassId, name: &str) -> Result<(), String> {
+        let mname = self.world.class(module).name.clone();
+        if self.world.class(module).type_params.is_empty() {
+            return Err(format!(
+                "`{name}` is a `static def` of the module `{mname}`, which has no type parameter for the class it runs on: declare the module generic (`module {mname}[T]`, `self` is then `Meta::ClassDef[T]`) and extend it with the class (`extend {mname}[Post]`), or make `{name}` a class method (`static def self.{name}`) of a superclass"
+            ));
+        }
+        for a in self.world.ancestor_ids(class) {
+            let c = self.world.class(a);
+            if c.kind == ClassKind::Module {
+                continue;
+            }
+            for t in &c.extends {
+                if let Type::Class(id, args) = t {
+                    if *id == module {
+                        return match args.first() {
+                            // The class's own instance type, as `extend`
+                            // requires (declare.rs, `check_static_mixins`).
+                            Some(Type::Class(x, xargs))
+                                if *x == a
+                                    && xargs.len() == c.type_params.len()
+                                    && xargs
+                                        .iter()
+                                        .zip(&c.type_params)
+                                        .all(|(t, p)| *t == Type::Param(p.id)) =>
+                            {
+                                Ok(())
+                            }
+                            _ => Err(format!(
+                                "`{name}` is a `static def` of the module `{mname}`, which `{}` extends as `{}`: a statement runs it only through `extend {mname}[{}]`, the class itself as its first type argument",
+                                c.name,
+                                self.world.type_name(t),
+                                c.name
+                            )),
+                        };
+                    }
+                }
+            }
+        }
+        Err(format!(
+            "`{name}` is a `static def` of the module `{mname}`, which the class reaches only through another module: extend `{mname}` itself"
+        ))
+    }
+
     /// Type-check one `static` statement and validate what it calls:
     /// the `static def` class method, which must belong to a dependency.
     fn check_static_stmt(&mut self, stmt: &StaticStmt) -> Option<MethodId> {
@@ -1961,19 +2010,20 @@ impl Checker {
             }
         };
         let m = self.world.method(callee).clone();
-        if !m.is_static || !m.singleton || m.is_native {
-            let message = if m.is_static
-                && !m.singleton
-                && self.world.class(m.owner).kind == ClassKind::Module
-            {
-                // Reached through `extend` (docs/14 §2): not yet.
-                format!(
-                    "`{}` is a `static def` of the module `{}`, reached through `extend`, which a statement cannot call yet: declare it as a class method (`static def self.{}`) of a superclass",
-                    m.name,
-                    self.world.class(m.owner).name,
-                    m.name
-                )
-            } else {
+        let module_def = m.is_static
+            && !m.singleton
+            && !m.is_native
+            && self.world.class(m.owner).kind == ClassKind::Module;
+        if module_def {
+            // Through `extend M[C]` (docs/14 §2): its `self` is the
+            // module's first type parameter's `Meta::ClassDef`, which the
+            // class must be (or descend from) where it runs.
+            if let Err(message) = self.extend_route(stmt.class, m.owner, &m.name) {
+                self.error_in(stmt.file, message, stmt.span);
+                return None;
+            }
+        } else if !m.is_static || !m.singleton || m.is_native {
+            let message = {
                 format!(
                     "a statement in a class body must call a `static def` class method; `{}` is not one",
                     m.name
@@ -2240,6 +2290,18 @@ impl Checker {
             // A `static` class method runs on the class being declared:
             // `self` is its `Meta::ClassDef` (docs/14).
             Type::Class(self.world.builtin.meta_classdef, vec![instance])
+        } else if info.is_static
+            && !info.is_native
+            && class.kind == ClassKind::Module
+            && !class.type_params.is_empty()
+        {
+            // A generic module's `static def`, which a class reaches
+            // through `extend M[C]`: it runs on that class, the module's
+            // first type parameter (docs/14 §2).
+            Type::Class(
+                self.world.builtin.meta_classdef,
+                vec![Type::Param(class.type_params[0].id)],
+            )
         } else if info.singleton {
             Type::ClassObject(
                 owner,
