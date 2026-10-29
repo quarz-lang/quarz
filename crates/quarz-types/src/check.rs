@@ -3397,7 +3397,81 @@ impl Checker {
             let t = v.narrowed.clone().unwrap_or_else(|| v.declared.clone());
             facts.push((VarKey::Local(v.name.clone()), t));
         }
+        // An existing local the pattern binds holds its new value where it
+        // matched (a fact), and its old one or the new where it did not:
+        // the pattern may fail before binding it, or after.
+        for (fi, slot, name, before, now) in self.rebound_since(snap) {
+            facts.push((VarKey::Local(name), now.clone()));
+            let either = self.join(&before, &now);
+            self.env.frames[fi].vars.set_narrowed(slot, Some(either));
+        }
         self.unset_since(snap);
+    }
+
+    /// The variables that existed at `snap` whose narrowing changed since
+    /// (a pattern bound them): frame, slot, name, type then, type now.
+    fn rebound_since(&self, snap: &Snapshot) -> Vec<(usize, usize, String, Type, Type)> {
+        let mut changed = Vec::new();
+        for (fi, f) in self.env.frames.iter().enumerate() {
+            let Some(saved) = snap.0.get(fi) else {
+                continue;
+            };
+            for slot in 0..saved.len.min(f.vars.len()) {
+                let v = &f.vars[slot];
+                let old = saved.get(slot).flatten();
+                if v.narrowed.as_ref() == old {
+                    continue;
+                }
+                let before = old.cloned().unwrap_or_else(|| v.declared.clone());
+                let now = v.narrowed.clone().unwrap_or_else(|| v.declared.clone());
+                changed.push((fi, slot, v.name.clone(), before, now));
+            }
+        }
+        changed
+    }
+
+    /// The fields whose narrowing changed since `snap` (a guard assigned
+    /// them).
+    fn ivars_changed_since(&self, snap: &Snapshot) -> Vec<String> {
+        let now = &self.env.ivar_narrow;
+        let then = &snap.1;
+        let mut names: Vec<String> = now
+            .keys()
+            .chain(then.keys())
+            .filter(|n| now.get(*n) != then.get(*n))
+            .cloned()
+            .collect();
+        names.sort();
+        names.dedup();
+        names
+    }
+
+    /// Widen each field's narrowing by what a failed guard may have left
+    /// it (`None`: unnarrowed, its declared type).
+    fn widen_ivars(&mut self, changed: &[(String, Option<Type>)]) {
+        for (n, t) in changed {
+            let cur = self.env.ivar_narrow.get(n).cloned();
+            match (cur, t) {
+                (Some(cur), Some(t)) => {
+                    let either = self.join(&cur, t);
+                    self.env.ivar_narrow.insert(n.clone(), either);
+                }
+                _ => {
+                    self.env.ivar_narrow.remove(n);
+                }
+            }
+        }
+    }
+
+    /// Widen each of `rebound` (frame, slot, a type a failed arm's
+    /// pattern may have bound it to) by that type.
+    fn widen_rebound(&mut self, rebound: &[(usize, usize, Type)]) {
+        for (fi, slot, t) in rebound {
+            let v = &self.env.frames[*fi].vars[*slot];
+            let cur = v.narrowed.clone().unwrap_or_else(|| v.declared.clone());
+            let either = self.join(&cur, t);
+            self.env.frames[*fi].vars.set_narrowed(*slot, Some(either));
+        }
     }
 
     /// Take back from `now` the narrowings of the variables declared
@@ -5618,6 +5692,15 @@ impl Checker {
                 no.push(m);
             } else if self.world.is_subtype(&tgt, &m) {
                 // `Object` narrowed to `Int`: the member is a supertype.
+                yes.push(tgt);
+                no.push(m);
+            } else if matches!((&m, &tgt), (Type::Class(mid, margs), Type::Class(tid, _))
+                if self.world.class_is_a(*tid, *mid)
+                    && margs.iter().any(|a| a.mentions_any_param() || a.has_vars()))
+            {
+                // A `Box[T]` that may be an `IntBox < Box[Int]`: its
+                // arguments are not known here (`T` may be `Int`), so the
+                // test can succeed, the value then being a `tgt`.
                 yes.push(tgt);
                 no.push(m);
             } else if let (Type::Class(mid, _), Type::Class(tid, _)) = (&m, &tgt) {
@@ -10452,6 +10535,9 @@ impl Checker {
     fn check_pattern_facts(&mut self, pattern: &Pattern, value_ty: &Type, value: &Expr) -> Facts {
         let narrowed = self.check_pattern(pattern, value_ty);
         match self.var_key(value) {
+            // A pattern that rebinds the subject leaves it the binding's
+            // type (`bound_if_matched`).
+            Some(VarKey::Local(n)) if pattern.binds(&n) => Vec::new(),
             Some(key) => vec![(key, narrowed)],
             None => Vec::new(),
         }
@@ -10570,22 +10656,55 @@ impl Checker {
         let mut snaps = Vec::new();
         let saved_base = self.env.pattern_base;
         self.env.pattern_base = Some(self.env.frames.last().unwrap().vars.len());
+        // Existing locals an earlier arm's pattern bound: that arm may
+        // have failed after binding them (or its guard), so the later arms,
+        // the `else` and what follows see either type.
+        let mut rebound: Vec<(usize, usize, Type)> = Vec::new();
+        // Fields a failed guard changed, with what it left them (none:
+        // their declared types).
+        let mut ivars_assigned: Vec<(String, Option<Type>)> = Vec::new();
+        let mut subject_rebound = false;
         for arm in arms {
             self.restore(&before);
+            self.widen_rebound(&rebound);
+            self.widen_ivars(&ivars_assigned);
+            let at_arm = self.snapshot();
             let on = if names_class(&arm.pattern) {
                 &st_class
             } else {
                 &st
             };
             let narrowed = self.check_pattern(&arm.pattern, on);
-            if let Some(k) = &key {
-                self.narrow_subject(k, Some(narrowed));
+            // (A pattern that rebinds the subject, `in L::Cons(_, l)` on
+            // `l`, leaves it the binding's type; after an arm that may
+            // have, the subject is no longer the value matched.)
+            match &key {
+                Some(VarKey::Local(n)) if subject_rebound || arm.pattern.binds(n) => {
+                    subject_rebound = true;
+                }
+                Some(k) => self.narrow_subject(k, Some(narrowed)),
+                None => {}
             }
             if let Some(g) = &arm.guard {
                 let (_, ft, ff) = self.check_cond(&g.cond);
+                // (Where it fails, as a later arm sees it: what it bound
+                // or assigned too.)
+                let at_guard = self.snapshot();
+                self.apply_facts(if g.negate { &ft } else { &ff });
+                for (fi, slot, _, _, now) in self.rebound_since(&at_arm) {
+                    rebound.push((fi, slot, now));
+                }
+                for n in self.ivars_changed_since(&at_arm) {
+                    let t = self.env.ivar_narrow.get(&n).cloned();
+                    ivars_assigned.push((n, t));
+                }
+                self.restore(&at_guard);
                 self.apply_facts(if g.negate { &ff } else { &ft });
             } else {
                 remaining.retain(|m| !self.pattern_covers(&arm.pattern, m));
+            }
+            for (fi, slot, _, _, now) in self.rebound_since(&at_arm) {
+                rebound.push((fi, slot, now));
             }
             let bt = self.check_body(&arm.body, expected);
             snaps.push((self.snapshot(), bt.is_nothing()));
@@ -10593,9 +10712,11 @@ impl Checker {
         }
         self.env.pattern_base = saved_base;
         self.restore(&before);
+        self.widen_rebound(&rebound);
+        self.widen_ivars(&ivars_assigned);
         let et = match els {
             Some(els) => {
-                if let Some(k) = &key {
+                if let Some(k) = key.as_ref().filter(|_| !subject_rebound) {
                     let rem = Type::union_of(remaining.clone());
                     self.narrow_subject(k, Some(rem));
                 }

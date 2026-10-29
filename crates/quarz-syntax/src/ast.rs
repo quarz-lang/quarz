@@ -433,6 +433,44 @@ pub enum PatternKind {
     },
 }
 
+impl Pattern {
+    /// Whether the pattern binds the variable `name`.
+    pub fn binds(&self, name: &str) -> bool {
+        let array = |a: &ArrayPattern| {
+            a.pre.iter().chain(&a.post).any(|p| p.binds(name))
+                || matches!(&a.rest, Some(Some(r)) if r == name)
+        };
+        let hash = |h: &HashPattern| {
+            h.pairs.iter().any(|pair| match &pair.pattern {
+                Some(p) => p.binds(name),
+                None => pair.key == name,
+            }) || matches!(&h.rest, Some(HashPatternRest::Bind(r)) if r == name)
+        };
+        match &self.kind {
+            PatternKind::Bind(n) => n == name,
+            PatternKind::Capture(p, n) => n == name || p.binds(name),
+            PatternKind::Alt(ps) => ps.iter().any(|p| p.binds(name)),
+            PatternKind::ConstArray(_, a) => array(a),
+            PatternKind::Array(a) => array(a),
+            PatternKind::ConstHash(_, h) => hash(h),
+            PatternKind::Hash(h) => hash(h),
+            PatternKind::Find {
+                pre_rest,
+                middle,
+                post_rest,
+            } => {
+                pre_rest.as_deref() == Some(name)
+                    || post_rest.as_deref() == Some(name)
+                    || middle.iter().any(|p| p.binds(name))
+            }
+            PatternKind::Value(_)
+            | PatternKind::Pin(_)
+            | PatternKind::Const(_)
+            | PatternKind::Range { .. } => false,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ArrayPattern {
     pub pre: Vec<Pattern>,
