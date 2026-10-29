@@ -130,6 +130,7 @@ fn contains_self(t: &Type) -> bool {
         | Type::ClassObject(_, args)
         | Type::Tuple(args)
         | Type::Union(args) => args.iter().any(contains_self),
+        Type::TypeOf(t) => contains_self(t),
         Type::Proc(recv, ps, r, _) => {
             recv.as_deref().is_some_and(contains_self)
                 || ps.iter().any(contains_self)
@@ -1386,6 +1387,8 @@ impl<'ast> Declarer<'ast> {
                     self.variance_walk(m, pol, params, report);
                 }
             }
+            // `Type[T]` is covariant in `T`.
+            Type::TypeOf(t) => self.variance_walk(t, pol, params, report),
             Type::Proc(recv, ps, r, _) => {
                 if let Some(recv) = recv {
                     self.variance_walk(recv, -pol, params, report);
@@ -1846,7 +1849,12 @@ impl<'ast> Declarer<'ast> {
             }
         };
         let w = &self.world;
+        let class_alias = match w.top.get("Class") {
+            Some(Member::Alias(id)) => *id,
+            _ => panic!("prelude does not define `type Class`"),
+        };
         let builtin = Builtin {
+            class_alias,
             object: get(w, "Object"),
             nil: get(w, "Nil"),
             bool_: get(w, "Bool"),
@@ -1866,7 +1874,7 @@ impl<'ast> Declarer<'ast> {
             standard_error: get(w, "StandardError"),
             comparable: get(w, "Comparable"),
             enumerable: get(w, "Enumerable"),
-            class_: get(w, "Class"),
+            class_: get(w, "Type"),
             shareable: get(w, "Shareable"),
             task: get(w, "Task"),
             channel: get(w, "Channel"),
@@ -3005,6 +3013,33 @@ impl<'ast> Declarer<'ast> {
                     resolved_args.push(self.resolve_type(a, scope)?);
                 }
                 match member {
+                    // `Type[X]`: the class object of `X`, which must be a
+                    // class (`Type[Point]`) or a type parameter (`Type[T]`).
+                    Member::Class(id) if id == self.world.builtin.class_ => {
+                        if resolved_args.len() > 1 {
+                            self.error("`Type` takes at most 1 type argument", expr.span);
+                            return None;
+                        }
+                        // `Type` alone is `Type[Object]`, any class.
+                        let inner = resolved_args
+                            .pop()
+                            .unwrap_or_else(|| Type::class(self.world.builtin.object));
+                        match inner {
+                            Type::Class(..) | Type::Param(_) | Type::Var(_) => {
+                                Some(Type::type_of(inner))
+                            }
+                            _ => {
+                                self.error(
+                                    format!(
+                                        "`Type[{}]`: the argument must be a class or a type parameter",
+                                        self.world.type_name(&inner)
+                                    ),
+                                    expr.span,
+                                );
+                                None
+                            }
+                        }
+                    }
                     Member::Class(id) => {
                         let class = self.world.class(id);
                         if class.type_params.len() != resolved_args.len() {

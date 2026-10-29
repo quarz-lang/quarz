@@ -110,7 +110,7 @@ mod string;
 mod text;
 pub mod time;
 
-/// Natives with their keys (`Class#name`) and symbols, in the order they
+/// Natives with their keys (`Type#name`) and symbols, in the order they
 /// are registered (a later one with the same key wins). Only what
 /// interprets builds the registries (`all`): a compiled program has a
 /// table of the natives it uses, made by its build (`symbols`).

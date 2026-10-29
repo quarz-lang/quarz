@@ -16,8 +16,13 @@ pub enum Type {
     /// An instance of a class, module, data, enum or enum variant, with its
     /// type arguments. Primitive types (`Int`, `Nil`, ...) are classes too.
     Class(ClassId, Vec<Type>),
-    /// A class used as a value (`Point` in `Point.new`).
+    /// A class used as a value (`Point` in `Point.new`): `Type[Point]`.
     ClassObject(ClassId, Vec<Type>),
+    /// `Type[T]` for a `T` that is not (yet) a class: a type parameter or
+    /// an inference variable, or a union a parameter was bound to. Once
+    /// the inner type is a class, `Type::type_of` makes it a
+    /// `ClassObject`.
+    TypeOf(Box<Type>),
     /// Normalized: flattened, deduplicated, at least two members, no
     /// `Nothing`.
     Union(Vec<Type>),
@@ -41,6 +46,23 @@ pub enum Type {
 impl Type {
     pub fn class(id: ClassId) -> Type {
         Type::Class(id, Vec::new())
+    }
+
+    /// `Type[inner]`: a `ClassObject` when `inner` is a class.
+    pub fn type_of(inner: Type) -> Type {
+        match inner {
+            Type::Class(id, args) => Type::ClassObject(id, args),
+            t => Type::TypeOf(Box::new(t)),
+        }
+    }
+
+    /// The instances of a class object: `Point` for `Type[Point]`.
+    pub fn instance_of(&self) -> Option<Type> {
+        match self {
+            Type::ClassObject(id, args) => Some(Type::Class(*id, args.clone())),
+            Type::TypeOf(t) => Some((**t).clone()),
+            _ => None,
+        }
     }
 
     pub fn is_nothing(&self) -> bool {
@@ -96,6 +118,7 @@ impl Type {
             Type::ClassObject(id, args) => {
                 Type::ClassObject(*id, args.iter().map(|a| a.subst(map)).collect())
             }
+            Type::TypeOf(t) => Type::type_of(t.subst(map)),
             Type::Union(ms) => Type::union_of(ms.iter().map(|m| m.subst(map)).collect()),
             Type::Tuple(ts) => Type::Tuple(ts.iter().map(|t| t.subst(map)).collect()),
             Type::Proc(rc, ps, r, sh) => Type::Proc(
@@ -117,6 +140,7 @@ impl Type {
             Type::Var(_) => true,
             Type::Nothing | Type::Void | Type::Param(_) => false,
             Type::Class(_, args) | Type::ClassObject(_, args) => args.iter().any(Type::has_vars),
+            Type::TypeOf(t) => t.has_vars(),
             Type::Union(ms) | Type::Tuple(ms) => ms.iter().any(Type::has_vars),
             Type::Proc(rc, ps, r, _) => {
                 rc.as_ref().is_some_and(|t| t.has_vars())
@@ -134,6 +158,7 @@ impl Type {
             Type::Class(_, args) | Type::ClassObject(_, args) => {
                 args.iter().any(|a| a.mentions_var(v))
             }
+            Type::TypeOf(t) => t.mentions_var(v),
             Type::Union(ms) | Type::Tuple(ms) => ms.iter().any(|m| m.mentions_var(v)),
             Type::Proc(rc, ps, r, _) => {
                 rc.as_ref().is_some_and(|t| t.mentions_var(v))
@@ -151,6 +176,7 @@ impl Type {
             Type::Class(_, args) | Type::ClassObject(_, args) => {
                 args.iter().any(Type::mentions_any_param)
             }
+            Type::TypeOf(t) => t.mentions_any_param(),
             Type::Union(ms) | Type::Tuple(ms) => ms.iter().any(Type::mentions_any_param),
             Type::Proc(rc, ps, r, _) => {
                 rc.as_ref().is_some_and(|t| t.mentions_any_param())
@@ -168,6 +194,7 @@ impl Type {
             Type::Class(_, args) | Type::ClassObject(_, args) => {
                 args.iter().any(|a| a.mentions_param(id))
             }
+            Type::TypeOf(t) => t.mentions_param(id),
             Type::Union(ms) | Type::Tuple(ms) => ms.iter().any(|m| m.mentions_param(id)),
             Type::Proc(rc, ps, r, _) => {
                 rc.as_ref().is_some_and(|t| t.mentions_param(id))
@@ -182,6 +209,7 @@ impl Type {
             Type::Param(_) => true,
             Type::Nothing | Type::Void | Type::Var(_) => false,
             Type::Class(_, args) | Type::ClassObject(_, args) => args.iter().any(Type::has_params),
+            Type::TypeOf(t) => t.has_params(),
             Type::Union(ms) | Type::Tuple(ms) => ms.iter().any(Type::has_params),
             Type::Proc(rc, ps, r, _) => {
                 rc.as_ref().is_some_and(|t| t.has_params())
@@ -198,6 +226,7 @@ impl Type {
             Type::Class(_, args) | Type::ClassObject(_, args) => {
                 args.iter().for_each(|a| a.for_each_var(f))
             }
+            Type::TypeOf(t) => t.for_each_var(f),
             Type::Union(ms) | Type::Tuple(ms) => ms.iter().for_each(|m| m.for_each_var(f)),
             Type::Proc(rc, ps, r, _) => {
                 if let Some(t) = rc {

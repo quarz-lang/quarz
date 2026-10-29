@@ -267,6 +267,7 @@ pub(crate) fn collect_narrowed(
                 Type::Class(_, a) | Type::ClassObject(_, a) | Type::Union(a) | Type::Tuple(a) => {
                     stack.extend(a.iter().cloned())
                 }
+                Type::TypeOf(t) => stack.push((**t).clone()),
                 Type::Proc(r, ps, ret, _) => {
                     stack.extend(r.iter().map(|t| (**t).clone()));
                     stack.extend(ps.iter().cloned());

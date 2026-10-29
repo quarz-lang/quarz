@@ -258,6 +258,13 @@ impl Checker {
                 self.out.pattern_classes.insert(span, cid);
                 Some(cid)
             }
+            Some(Member::Alias(aid)) if aid == self.world.builtin.class_alias => {
+                self.report(
+                    "`Class` is a type alias of `Type[Object]`, not a class: write `Type`",
+                    span,
+                );
+                None
+            }
             Some(_) => {
                 self.report(format!("`{path}` is not a class"), span);
                 None
@@ -358,6 +365,8 @@ impl Checker {
                 })
             }
             Type::ClassObject(_, args) => args.iter().all(|a| !a.mentions_param(id)),
+            // `Type[T]` is covariant in `T`.
+            Type::TypeOf(t) => self.only_covariant(t, id, pos, visiting),
             Type::Proc(rc, ps, r, _) => {
                 rc.as_ref()
                     .is_none_or(|t| self.only_covariant(t, id, !pos, visiting))
@@ -633,6 +642,12 @@ impl Checker {
                 let Some(cid) = self.out.pattern_classes.get(&pattern.span) else {
                     return false;
                 };
+                // A class value is a `Type` (and an `Object`).
+                if matches!(member, Type::ClassObject(..) | Type::TypeOf(_)) {
+                    return matches!(&pattern.kind, PatternKind::Const(_))
+                        && (*cid == self.world.builtin.class_
+                            || *cid == self.world.builtin.object);
+                }
                 let Type::Class(mid, _) = member else {
                     return false;
                 };

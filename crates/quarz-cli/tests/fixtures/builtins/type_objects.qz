@@ -1,0 +1,60 @@
+# A class written in an expression is a `Type[C]` value: `name`, `==`,
+# `<=`, and the class methods of a type parameter's bound. At run time a
+# class value carries no type arguments.
+class Model
+  @id: Int
+  def initialize(@id: Int = 0); end
+  attr_reader :id
+  def self.table -> String = "models"
+  def self.make -> Self = new
+end
+class Post < Model
+  def self.table -> String = "posts"
+end
+class Comment < Model
+end
+
+def name_of[T](t: Type[T]) -> String = t.name
+def table_of[T <: Model](t: Type[T]) -> String = t.table
+def make[T <: Model](t: Type[T]) -> T = t.make
+
+p name_of(Post), name_of(Array[Int]), name_of(Comparable)
+p table_of(Post), table_of(Comment), table_of(Model)
+post = make(Post)                      # a Post: `make` returns `T`
+p post.class.name, post.id
+p Post <= Model, Model <= Post, Post <= Post, Int <= Comparable, Post <= Comparable
+p Post == Post, Post == Comment, Array[Int] == Array[String]   # no type arguments at run time
+p Array[Int] <= Array[String]
+
+# Covariance: a `Type[Post]` where a `Type[Model]` or a `Class` is expected.
+m: Type[Model] = Post
+c: Class = Post
+p m.name, c.name, m == c
+models: Array[Type[Model]] = [Post, Comment, Model]
+p models.map(&:name), models.map { |t| table_of(t) }
+p models.map { |t| make(t).class.name }
+p models.select { |t| t <= Post }.map(&:name)
+
+# `x.class` is a `Class`, a `Type[Object]`.
+k = 1.class
+p k.name, k <= Comparable, k == Int, 1.is_a?(k), "s".is_a?(k)
+p [1, "a", nil, 2.5].map { |x| x.class.name }
+
+# A class value is a `Type` in a pattern; `raise` with a `Type[E]` value
+# builds the exception with the message, as `raise E, "m"` does.
+def kind(x: Object) -> String
+  case x
+  in Type then "a class: #{x.name}"
+  in Int then "an int"
+  else "other"
+  end
+end
+p kind(Post), kind(1), kind("s")
+def fail(k: Type[StandardError], message: String) -> Nothing
+  raise k, message
+end
+begin
+  fail(ArgumentError, "bad")
+rescue ArgumentError => e
+  p e.class.name, e.message
+end

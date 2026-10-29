@@ -1397,7 +1397,7 @@ pub struct RtMethod {
     pub params: Vec<RtParam>,
     pub has_block: bool,
     pub func: Option<FuncId>,
-    /// `Class#name` / `Class.name` for natives.
+    /// `Type#name` / `Type.name` for natives.
     pub native_key: Option<String>,
     pub synth: RtSynth,
     pub is_abstract: bool,

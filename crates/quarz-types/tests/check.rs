@@ -2334,3 +2334,87 @@ fn eq_comes_with_hash() {
     );
     no_warnings("class P\n  def ==(o: Object) -> Bool = true\n  def hash -> Int = 0\nend");
 }
+
+#[test]
+fn type_of_classes() {
+    // A class written in an expression is a `Type[C]`; `Type[T]` takes a
+    // class argument and binds `T` to the class.
+    ok("def name_of[T](t: Type[T]) -> String = t.name\np name_of(Int), name_of(Array[Int])");
+    ok("t: Type[Int] = Int\np t.name, t <= Comparable, t == Int");
+    // Covariant: `Type[Sub]` is a `Type[Base]`, and `Class` is `Type[Object]`.
+    ok("class A; end\nclass B < A; end\nt: Type[A] = B\nc: Class = B\nts: Array[Type[A]] = [A, B]\np ts.map(&:name)");
+    err(
+        "t: Type[String] = Int",
+        "cannot assign Type[Int] to `t` of type Type[String]",
+    );
+    // The arguments count: `Type[Array[Int]]` is not a `Type[Array[String]]`.
+    err(
+        "t: Type[Array[String]] = Array[Int]",
+        "cannot assign Type[Array[Int]] to `t` of type Type[Array[String]]",
+    );
+    ok("t: Type[Array[Object]] = Array[Int]");
+    // Only a class or a type parameter.
+    err(
+        "t: Type[Int | String] = Int",
+        "`Type[Int | String]`: the argument must be a class or a type parameter",
+    );
+    // `Type` alone is `Type[Object]`.
+    ok("t: Type = Int\np t.name");
+    err(
+        "t: Type[Int, String] = Int",
+        "`Type` takes at most 1 type argument",
+    );
+    // The class methods of the bound, with `Self` the parameter.
+    ok("class M\n  def initialize; end\n  def self.label -> String = \"m\"\n  def self.make -> Self = new\nend\nclass N < M; end\ndef label_of[T <: M](t: Type[T]) -> String = t.label\ndef make[T <: M](t: Type[T]) -> T = t.make\nn: N = make(N)\np label_of(N)");
+    err(
+        "def label_of[T](t: Type[T]) -> String = t.label",
+        "undefined method `label`",
+    );
+}
+
+#[test]
+fn new_only_where_the_class_is_written() {
+    ok("class P\n  def initialize(x: Int); end\nend\nP.new(1)\nArray[Int].new");
+    ok("class P\n  def initialize(x: Int); end\n  def self.make -> Self = new(1)\n  def self.make2 -> Self = self.new(1)\nend");
+    // A `Type[P]` value may be a subclass with another `initialize`.
+    err(
+        "class P\n  def initialize(x: Int); end\nend\nk = P\nk.new(1)",
+        "cannot call `new` on a `Type[P]` value",
+    );
+    err(
+        "class P\n  def initialize(x: Int); end\n  def copy -> P = self.class.new(1)\nend",
+        "cannot call `new` on a `Type[Object]` value",
+    );
+    err(
+        "def make[T](t: Type[T]) -> T = t.new",
+        "cannot construct a `Type[T]`",
+    );
+}
+
+#[test]
+fn class_values_in_tests_and_patterns() {
+    // Only "a class" is testable at run time: not the class's arguments.
+    err(
+        "def g(y: Object) -> Bool = y.is_a?(Type[Int])",
+        "cannot check at run time that a value of type Object is a Type[Int]",
+    );
+    ok("def g(y: Object) -> Bool = y.is_a?(Class)\ndef g2(y: Object) -> Bool = y.is_a?(Type)\ndef g3(y: Object) -> Class? = y.as?(Type)\ndef h(y: Object) -> String = case y\n  in Type then y.name\n  else \"no\"\nend");
+    // The bound's class methods come before `Type`'s own, as a class
+    // object's do (and as the run time dispatches).
+    ok("class P\n  def self.name -> String = \"p\"\nend\ndef f[T <: P](t: Type[T]) -> String = t.name");
+    // `Class` is a type alias, so a pattern or `when` names `Type`.
+    err(
+        "k = 1.class\ncase k\nin Class then 1\nend",
+        "`Class` is a type alias of `Type[Object]`, not a class: write `Type`",
+    );
+    err(
+        "k = 1.class\ncase k\nwhen Class then 1\nend",
+        "`Class` is a type alias, not a value; the class of class values is `Type` (`when Type`, `in Type`)",
+    );
+    // `raise` takes a `Type[E]` value, as it took a `Class`.
+    ok("def fail(k: Type[StandardError], m: String) -> Nothing\n  raise k, m\nend");
+    err(
+        "def fail[E <: Exception](k: Type[E]) -> Nothing\n  raise k\nend",
+        "cannot raise",
+    );
+}

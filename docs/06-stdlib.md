@@ -12,7 +12,7 @@ Everything listed below exists in the prelude (`std/prelude.qz`) unless it is ma
 
 ## 2. Object
 
-`==`, `!=`, `equal?`, `hash`, `to_s` (as in Ruby, the class name, `#<Point>`, for an instance of a class, an exception's message, and the default `inspect` of a `data` value or an enum variant (`main` for the top-level `self`); it does not call an `inspect` the class defines), `inspect`, `class` (a `Class`, with `name`), `is_a?` (a type written as a constant, which narrows, or a `Class` value, tested at run time), `nil?`, `tap`, `then`, `dup` (returns a built-in immutable value such as an array or a string as it is, and copies builders and objects), `as`, `as?`, `frozen?` (false only for builders), `instance_exec` (runs a block with a receiver, `self.() -> R`, with `self` = the object; see [01-syntax.md](01-syntax.md) §9).
+`==`, `!=`, `equal?`, `hash`, `to_s` (as in Ruby, the class name, `#<Point>`, for an instance of a class, an exception's message, and the default `inspect` of a `data` value or an enum variant (`main` for the top-level `self`); it does not call an `inspect` the class defines), `inspect`, `class` (a `Class`, that is a `Type[Object]`, with `name` and `<=`; [02-types.md](02-types.md) §1), `is_a?` (a type written as a constant, which narrows, or a `Class` value, tested at run time), `nil?`, `tap`, `then`, `dup` (returns a built-in immutable value such as an array or a string as it is, and copies builders and objects), `as`, `as?`, `frozen?` (false only for builders), `instance_exec` (runs a block with a receiver, `self.() -> R`, with `self` = the object; see [01-syntax.md](01-syntax.md) §9).
 
 `Comparable[T]` gives `< <= > >= between? clamp(min, max) clamp(range)` to a class that defines `<=>`.
 

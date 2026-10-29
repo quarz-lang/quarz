@@ -206,7 +206,7 @@ The language and its standard library are tested this way: `std/test/*_test.qz`,
 
 ## 9. Later
 
-- `Class[T]`, the type of a class object with its instance type, for `assert_raise[E](klass: Class[E]) -> E` and for `rescue` on a type parameter; `x.is_a?(klass)` with a `Class[T]` could then narrow to `T`.
+- `assert_raise[E <: Exception](klass: Type[E]) -> E`, now that `Type[T]` exists ([02-types.md](02-types.md) §1), and `rescue` on a type parameter; `x.is_a?(klass)` with a `Type[T]` could then narrow to `T`.
 - `capture_output { }` (what the block printed to STDOUT/STDERR, per task) needs the runtime to redirect a task's standard streams; `assert_output` with it.
 - `helper!` to report a failure at a helper's caller (Go's `t.Helper()`).
 - Benchmarks (`bench_*` methods, `quarz test --bench`, as Go), `--coverage`.

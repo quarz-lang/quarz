@@ -24,7 +24,7 @@ use quarz_types::world::{TypeParamInfo, World};
 use quarz_types::Checked;
 
 /// The version of the format, bumped when it changes.
-const FORMAT: u32 = 2;
+const FORMAT: u32 = 3;
 
 pub fn tree(checked: &Checked) -> Value {
     let world = &checked.world;
@@ -237,6 +237,7 @@ fn ty(t: &Type) -> Value {
         Type::ClassObject(id, args) => {
             json!({ "t": "class_object", "id": id, "args": all(args) })
         }
+        Type::TypeOf(inner) => json!({ "t": "type_of", "of": ty(inner) }),
         Type::Union(ms) => json!({ "t": "union", "members": all(ms) }),
         Type::Tuple(ms) => json!({ "t": "tuple", "members": all(ms) }),
         Type::Proc(recv, params, ret, shareable) => json!({
