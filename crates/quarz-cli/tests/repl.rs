@@ -232,6 +232,93 @@ fn a_failed_inputs_classes_are_checked_with_it() {
 }
 
 #[test]
+fn a_failed_input_is_rolled_back() {
+    // docs/05 §7: what a failed input declared, checked or assigned does
+    // not stay (a method whose body failed its check cannot be called).
+    let (out, _) = values(&[
+        "class Q; def m -> Int = \"s\"; end",
+        "Q.new.m",
+        "class Q; def m -> Int = 1; end",
+        "Q.new.m",
+        "x = 5; y: Int = \"s\"",
+        "x",
+        "class Gen",
+        "  static def self.g(n: Symbol) -> Void",
+        "    def_method(n) { 1 }",
+        "    def_field(:k, Int, 3, reader: true)",
+        "  end",
+        "end",
+        "class A < Gen; g :one; def bad -> Int = \"s\"; end",
+        "class A < Gen; g :two; end",
+        "A.new.two + A.new.k",
+        "A.new.one",
+        "K = 1",
+        "class B; def q -> Nope = 1; end; J = 2",
+        "K + 1",
+    ]);
+    assert!(
+        out[0].contains("method `m` returns Int but its body has type String"),
+        "{out:?}"
+    );
+    assert!(out[1].contains("unknown constant `Q`"), "{out:?}");
+    assert_eq!(out[3], "=> 1", "{out:?}");
+    assert!(out[4].contains("cannot assign String"), "{out:?}");
+    assert!(
+        out[5].contains("undefined local variable or method `x`"),
+        "{out:?}"
+    );
+    assert!(out[12].contains("method `bad` returns Int"), "{out:?}");
+    assert_eq!(out[14], "=> 4", "{out:?}");
+    assert!(out[15].contains("undefined method `one` for A"), "{out:?}");
+    assert!(out[17].contains("unknown constant `Nope`"), "{out:?}");
+    assert_eq!(out[18], "=> 2", "{out:?}");
+}
+
+#[test]
+fn a_failed_inputs_objects_do_not_meet_the_next_ones_classes() {
+    // An object a failed input's `static` statement made, left in a cycle,
+    // is collected when the input is rolled back: the class that reuses
+    // its class's id does not run its `deinitialize` on it.
+    let (out, printed) = values(&[
+        "class Gen; var @other: Gen? = nil; def link(o: Gen) -> Void; @other = o; end; static def self.mk -> Void; x = self.new; x.link(x); end; end",
+        "class X < Gen; @s: String = \"held by X\"; mk; def bad -> Int = \"s\"; end",
+        "class Y < Gen; @n: Int = 5; def deinitialize -> Void; puts \"Y #{@n}\"; end; end",
+        "20000.times { g = Gen.new; g.link(g) }",
+        "1",
+    ]);
+    assert!(out[1].contains("method `bad` returns Int"), "{out:?}");
+    assert_eq!(out[4], "=> 1", "{out:?}");
+    assert!(!printed.contains("held by X"), "{printed}");
+}
+
+#[test]
+fn a_failed_require_can_be_retried() {
+    let dir = std::env::temp_dir().join(format!("quarz-repl-retry-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let lib = dir.join("lib.qz");
+    std::fs::write(&lib, "class L\n  def v -> Int = \"bad\"\nend\n").unwrap();
+    let buffer = Arc::new(Mutex::new(Vec::new()));
+    let mut repl = Repl::new(Box::new(Shared(buffer.clone()))).unwrap();
+    let req = format!("require_relative \"{}\"", dir.join("lib").display());
+    let first = match repl.feed_line(&req) {
+        Outcome::Errors(e) => e.join(""),
+        _ => String::new(),
+    };
+    assert!(
+        first.contains("lib.qz:2:18: error: method `v` returns Int"),
+        "{first}"
+    );
+    std::fs::write(&lib, "class L\n  def v -> Int = 7\nend\n").unwrap();
+    assert!(matches!(repl.feed_line(&req), Outcome::Value(None)));
+    let v = match repl.feed_line("L.new.v") {
+        Outcome::Value(Some(v)) => v,
+        _ => String::new(),
+    };
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(v, "7");
+}
+
+#[test]
 fn state_persists_across_inputs() {
     let (out, printed) = values(&[
         "x = 1",

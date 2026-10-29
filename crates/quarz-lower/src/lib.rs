@@ -127,6 +127,25 @@ pub struct Lowerer {
 }
 
 impl Lowerer {
+    /// Forget what was lowered for the methods, constants and classes
+    /// from `methods`, `consts` and `classes` on: the REPL rolled back a
+    /// failed input (docs/05 §7), whose ids the next input reuses. The
+    /// functions stay (their ids are not reused); nothing refers to them.
+    pub fn forget(&mut self, methods: usize, consts: usize, classes: usize) {
+        self.method_funcs.truncate(methods);
+        self.reached.truncate(methods);
+        self.const_funcs.truncate(consts);
+        let class_ok = |c: &ClassId| (*c as usize) < classes;
+        self.field_default_funcs.retain(|(c, _), _| class_ok(c));
+        self.may_deinitialize.retain(|c, _| class_ok(c));
+        self.overridden.retain(|(c, _)| class_ok(c));
+        self.static_skip.retain(class_ok);
+        self.unchecked.retain(|m| (*m as usize) < methods);
+        self.static_retry.retain(|m| (*m as usize) < methods);
+        self.unchecked_consts.retain(|c| (*c as usize) < consts);
+        self.static_retry_consts.retain(|c| (*c as usize) < consts);
+    }
+
     /// A constant whose initializer `init` builds a quoted block's tree
     /// (docs/14 §6), after the world's constants: its id.
     pub(crate) fn add_quoted_const(

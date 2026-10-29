@@ -120,7 +120,7 @@ Today values are reference counted without atomic operations, and updates copy u
 
 ## 7. REPL and Development Experience
 
-- `quarz repl` type-checks input and then runs it. `class` and `def` can be added interactively. Changing an existing definition, with the REPL recompiling and swapping "everything that uses that definition" (hot reload), is *planned*: today a redefinition is an error (§9). This is a REPL-only feature and does not affect program semantics. A class body's `static` statement ([14-metaprogramming.md](14-metaprogramming.md) §2) runs when its input is entered (or the file holding it is required), on the session's interpreter.
+- `quarz repl` type-checks input and then runs it. An input with errors is discarded: what it declared, checked or assigned does not stay (the session goes back to where it was before it), except a file it required whose top level already ran, which cannot be undone and stays loaded; what its `static` statements printed was printed, and they run again when the input is entered again. `class` and `def` can be added interactively. Changing an existing definition, with the REPL recompiling and swapping "everything that uses that definition" (hot reload), is *planned*: today a redefinition is an error (§9). This is a REPL-only feature and does not affect program semantics. A class body's `static` statement ([14-metaprogramming.md](14-metaprogramming.md) §2) runs when its input is entered (or the file holding it is required), on the session's interpreter.
 - Type errors are shown with Ruby-style location display, along with the expected and actual types. Narrowing hints ("`x` is `String?` here. You can narrow it with `if x`") are *planned*.
 - `quarz run --watch`, re-running on file changes, is *planned*.
 

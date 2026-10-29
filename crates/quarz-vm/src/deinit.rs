@@ -63,6 +63,26 @@ pub fn set_classes(classes: Vec<bool>, program: u64) {
     CLASSES.with(|c| *c.borrow_mut() = classes);
 }
 
+/// The REPL rolled back a failed input whose classes, from `classes` on,
+/// the next input's reuse (docs/05 §7): what that input made at compile
+/// time and left in cycles is collected now, under its own table, and
+/// what that queues for its classes is leaked, as a program's is when
+/// another starts (`set_classes`), so that no later class's
+/// `deinitialize` runs on one of its objects.
+pub fn forget_classes_from(classes: usize) {
+    if crate::cycles::candidates() != 0 {
+        crate::cycles::collect_now();
+    }
+    QUEUE.with(|q| {
+        let mut q = q.borrow_mut();
+        let (keep, stale): (Vec<_>, Vec<_>) = std::mem::take(&mut *q)
+            .into_iter()
+            .partition(|o| (o.class as usize) < classes);
+        *q = keep;
+        std::mem::forget(stale);
+    });
+}
+
 /// Whether releasing an instance of `class` must run its `deinitialize`
 /// (not once the thread is ending: its tables are gone).
 #[inline]

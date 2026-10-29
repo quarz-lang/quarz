@@ -93,6 +93,19 @@ pub struct Checked {
 /// 1.. = units in order).
 pub type FileDiagnostic = (u32, Diagnostic);
 
+/// A session's state to roll back to (`Session::checkpoint`).
+pub struct Checkpoint {
+    checker: check::ReplSnapshot,
+    loaded: Vec<(u32, String, ClassId)>,
+    loaded_keys: rustc_hash::FxHashSet<String>,
+    sources: Vec<(u32, SourceFile)>,
+    next_file: u32,
+    /// The world's sizes then.
+    pub classes: usize,
+    pub methods: usize,
+    pub consts: usize,
+}
+
 /// An interactive session: declarations and variables accumulate across
 /// inputs, which are all part of unit 1. Libraries and files loaded with
 /// `require` become units 2, 3, ...
@@ -179,8 +192,39 @@ impl Session {
     /// Load a library (`require "name"`) or a file (`require_relative`,
     /// resolved against `dir`) requested at `span` in unit `from`. Returns
     /// the newly loaded units in execution order (dependencies first),
+    /// The session as it is, to go back to if what comes next fails
+    /// (docs/05 §7: a failed input is discarded): the checker's state and
+    /// the files loaded, and how many classes, methods and constants
+    /// there are (what the lowering and the interpreter keep by those ids
+    /// is cut back to them, `Lowerer::forget`, `SharedState::forget`).
+    pub fn checkpoint(&self) -> Checkpoint {
+        Checkpoint {
+            checker: self.checker.repl_snapshot(),
+            loaded: self.loaded.clone(),
+            loaded_keys: self.loaded_keys.clone(),
+            sources: self.sources.clone(),
+            next_file: self.next_file,
+            classes: self.checker.world.classes.len(),
+            methods: self.checker.world.methods.len(),
+            consts: self.checker.world.consts.len(),
+        }
+    }
+
+    /// Back to `c`.
+    pub fn rollback(&mut self, c: Checkpoint) {
+        self.checker.repl_restore(c.checker);
+        self.loaded = c.loaded;
+        self.loaded_keys = c.loaded_keys;
+        self.sources = c.sources;
+        self.next_file = c.next_file;
+    }
+
+    /// Load a library (`require "name"`) or a file (`require_relative`,
+    /// resolved against `dir`) requested at `span` in unit `from`. Returns
+    /// the newly loaded units in execution order (dependencies first),
     /// whose top-level statements the caller runs once; an empty list when
-    /// everything was already loaded.
+    /// everything was already loaded. If it fails, the caller rolls back
+    /// (`checkpoint`), so that it can be required again.
     pub fn require(
         &mut self,
         path: &str,

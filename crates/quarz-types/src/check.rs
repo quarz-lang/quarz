@@ -599,7 +599,7 @@ struct BlockCtx {
     lifted: bool,
 }
 
-#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 struct InferTable {
     bindings: Vec<Option<Type>>,
 }
@@ -664,6 +664,19 @@ impl InferTable {
     fn restore(&mut self, saved: Vec<Option<Type>>) {
         self.bindings = saved;
     }
+}
+
+/// The state of a `Checker` before a REPL input (`repl_snapshot`).
+pub struct ReplSnapshot {
+    world: World,
+    out: Output,
+    infer: InferTable,
+    repl_env: Option<Env>,
+    static_done: Vec<bool>,
+    defaults_checked: HashSet<ClassId>,
+    init_checked: HashSet<ClassId>,
+    file_mains: Vec<Option<ClassId>>,
+    self_news: Vec<SelfNew>,
 }
 
 pub struct Checker {
@@ -1429,6 +1442,39 @@ impl Checker {
         // The REPL keeps its inference variables across inputs.
         let env = self.check_top_level(env, file, body, true);
         self.repl_env = Some(env);
+    }
+
+    /// What a REPL input may change, to roll it back if it fails
+    /// (docs/05 §7: a failed input is discarded).
+    pub fn repl_snapshot(&self) -> ReplSnapshot {
+        ReplSnapshot {
+            world: self.world.clone(),
+            out: self.out.clone(),
+            infer: self.infer.clone(),
+            repl_env: self.repl_env.clone(),
+            static_done: self.static_done.clone(),
+            defaults_checked: self.defaults_checked.clone(),
+            init_checked: self.init_checked.clone(),
+            file_mains: self.file_mains.clone(),
+            self_news: self.self_news.clone(),
+        }
+    }
+
+    /// Back to `s`: a failed input leaves no declaration, variable or
+    /// checked body behind.
+    pub fn repl_restore(&mut self, s: ReplSnapshot) {
+        self.world = s.world;
+        self.out = s.out;
+        self.infer = s.infer;
+        self.repl_env = s.repl_env;
+        self.static_done = s.static_done;
+        self.defaults_checked = s.defaults_checked;
+        self.init_checked = s.init_checked;
+        self.file_mains = s.file_mains;
+        self.self_news = s.self_news;
+        self.quoted_seen.clear();
+        self.quoted_conflicts.clear();
+        self.table_journal.clear();
     }
 
     /// Discard the diagnostics of a failed REPL input and forget the
