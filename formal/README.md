@@ -132,6 +132,10 @@ for truthiness of a bounded parameter (`T <: Shape` is never falsy, the
 model keeps `T` on the false side), for a loop's environment, and for
 `is_a?(C[args])` checks, whose arguments compared through bounds the
 model rejects as not checkable (`x : OBox[T]?`, `x.is_a?(OBox[Shape])`).
+So that these do not show as disagreements, the conformance translator
+puts out of range a method of a class with a bounded parameter that
+tests or loops, and a field default that tests or loops in a program
+with a bounded parameter.
 A union bound is compared atom by atom (a `T` is below `X | Y` when the
 whole bound is below `X`, or below `Y`), as the Rust checker does. The variance
 check applies to every method of the model, where the Rust checker
