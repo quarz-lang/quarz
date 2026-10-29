@@ -1926,6 +1926,38 @@ fn checks_the_types_it_cannot_take_on_trust() {
     err("module Addable[T]\n  abstract def add(o: T) -> T\nend\ndata Acc[T <: Addable[T]] = (x: T)\nclass Other\nend\np Acc.new(Other.new)", "type argument Other for `T` of `Acc` must be Addable[Other]");
     err("module Addable[T]\n  abstract def add(o: T) -> T\nend\ndata Acc[T <: Addable[T]] = (x: T)\nclass Other\nend\nx: Acc[Other]? = nil", "type argument Other for `T` of `Acc` must be Addable[Other]");
     err("module Addable[T]\n  abstract def add(o: T) -> T\nend\ndata Acc[T <: Addable[T]] = (x: T)\nclass Other\nend\ndef f(a: Acc[Other]) -> Int = 0", "type argument Other for `T` of `Acc` must be Addable[Other]");
+    // And in a superclass and the modules included and extended, whose
+    // arguments may be the class's parameters, meeting a bound their
+    // own bounds imply.
+    let shape = "abstract class Shape\n  def name -> String = \"s\"\nend\nclass Sq < Shape\nend\nclass H[T <: Shape]\n  def k(x: T) -> String = x.name\nend\n";
+    err(
+        &format!("{shape}class G[U] < H[U]\nend"),
+        "type argument U for `T` of `H` must be Shape",
+    );
+    err(
+        &format!("{shape}class J < H[Int]\nend"),
+        "type argument Int for `T` of `H` must be Shape",
+    );
+    ok(&format!(
+        "{shape}class G[U <: Shape] < H[U]\nend\nclass S2 < H[Sq]\nend\np G[Sq].new.k(Sq.new)"
+    ));
+    err("class Model\n  def id -> Int = 1\nend\nmodule Gen[T <: Model]\n  def run(x: T) -> Int = x.id\nend\nclass NotModel\n  extend Gen[NotModel]\nend", "type argument NotModel for `T` of `Gen` must be Model");
+    err(
+        "class Model\nend\nmodule Gen[T <: Model]\nend\nclass M2\n  include Gen[String]\nend",
+        "type argument String for `T` of `Gen` must be Model",
+    );
+    // An extension's included modules, and the bounds written on type
+    // parameters, meet theirs too.
+    err("class Model\nend\nmodule Gen[T <: Model]\nend\nclass NotModel\nend\nextension NotModel\n  include Gen[NotModel]\nend", "type argument NotModel for `T` of `Gen` must be Model");
+    err(
+        &format!("{shape}class G[U <: H[Int]]\nend"),
+        "type argument Int for `T` of `H` must be Shape",
+    );
+    err(
+        &format!("{shape}def f[V <: H[Int]](x: V) -> Int = 0"),
+        "type argument Int for `T` of `H` must be Shape",
+    );
+    ok("class Cmp[X <: Cmp[X]]\nend\nclass K < Cmp[K]\nend\nmodule Ord[T <: Comparable[T]]\nend\nclass V\n  include Comparable[V]\n  include Ord[V]\n  def <=>(o: V) -> Int = 0\nend");
     // A `T` narrowed by a test is still a `T`.
     ok("def keep[T](x: T) -> T\n  if x.is_a?(String)\n    p x.upcase\n    return x\n  end\n  x\nend");
     ok("data Pair[A, B] = (a: A, b: B)\ndef f[T](x: T) -> T\n  case x\n  in Array then p x.size\n  in Pair(a, b) then p a\n  else\n  end\n  x\nend");

@@ -948,6 +948,10 @@ impl Checker {
             let (file, span) = (m.file, m.span);
             let mut types: Vec<(Type, Span)> =
                 m.params.iter().map(|p| (p.ty.clone(), p.span)).collect();
+            // The bounds of its own type parameters (`[V <: H[Int]]`).
+            for p in &m.type_params {
+                types.extend(p.bounds.iter().map(|b| (b.clone(), span)));
+            }
             types.push((m.ret.clone(), span));
             if let Some((_, t)) = &m.block {
                 types.push((t.clone(), span));
@@ -965,11 +969,65 @@ impl Checker {
             self.env.file = c.file;
             let fields: Vec<(Type, Span)> =
                 c.fields.iter().map(|f| (f.ty.clone(), f.span)).collect();
+            // The superclass and the modules included and extended, whose
+            // arguments may be the class's own parameters (`G[U] < H[U]`):
+            // a parameter meets a bound its own bounds imply.
+            let span = c.span;
+            let heads: Vec<Type> = c
+                .superclass
+                .iter()
+                .chain(&c.includes)
+                .chain(&c.extends)
+                .cloned()
+                .collect();
+            let param_bounds: Vec<Type> = c
+                .type_params
+                .iter()
+                .flat_map(|p| p.bounds.iter().cloned())
+                .collect();
+            for b in param_bounds {
+                self.check_bounds_deep(&b, span);
+            }
             for (t, span) in fields {
                 self.check_bounds_deep(&t, span);
             }
+            self.check_head_bounds(heads, span);
+        }
+        // An extension's included modules and its parameters' bounds.
+        for i in 0..self.world.extensions.len() {
+            let e = &self.world.extensions[i];
+            if e.file == 0 || self.reused_files.contains(&e.file) {
+                continue;
+            }
+            self.env.file = e.file;
+            let span = e.span;
+            let heads = e.includes.clone();
+            let bounds: Vec<Type> = e
+                .type_params
+                .iter()
+                .flat_map(|p| p.bounds.iter().cloned())
+                .collect();
+            for b in bounds {
+                self.check_bounds_deep(&b, span);
+            }
+            self.check_head_bounds(heads, span);
         }
         self.env.file = saved_file;
+    }
+
+    /// The bounds of the classes and modules a class or extension builds
+    /// on (a superclass, the modules included or extended), whose
+    /// arguments may be its own parameters: a parameter meets a bound its
+    /// own bounds imply.
+    fn check_head_bounds(&mut self, heads: Vec<Type>, span: Span) {
+        for t in heads {
+            if let Type::Class(_, args) = &t {
+                if !args.iter().any(|a| a.has_vars()) {
+                    self.check_class_bounds(&t, span);
+                }
+                args.iter().for_each(|a| self.check_bounds_deep(a, span));
+            }
+        }
     }
 
     /// `check_class_bounds` for every class type in `t` whose arguments
