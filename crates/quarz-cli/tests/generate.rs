@@ -658,7 +658,7 @@ fn generated_values_and_docs_in_detail() {
     write(&d.0, "app.qz", VALUES_APP);
     // A data value whose type has its own `initialize` is baked without
     // running it, its physical fields stored (a nested one held in place).
-    let expected = "Outer(s: \"a\", p: Pt(x: 1, y: 2), n: 3.0)\nCust(x: 3)\n/a/b\\/c/i\nHeld(p: Pt(x: 4, y: 8), s: \"n4\")\n";
+    let expected = "Outer(s: \"a\", p: Pt(x: 1, y: 2), n: 3.0)\nCust(x: 3)\n/a\\/b\\/c/i\nHeld(p: Pt(x: 4, y: 8), s: \"n4\")\n";
     let (ok, out, err) = quarz(&d.0, &["run", "app.qz"], &[]);
     assert!(ok, "{err}");
     assert_eq!(out, expected);

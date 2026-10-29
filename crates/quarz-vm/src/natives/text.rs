@@ -402,10 +402,9 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         &re(i, r)?.flags
     )));
     native!(m, "Regexp#inspect", |i, r, _| {
-        Ok(Value::string(format!(
-            "/{}/{}",
-            re(i, r)?.source,
-            re(i, r)?.flags
+        let re = re(i, r)?;
+        Ok(Value::string(crate::value::regexp_literal(
+            &re.source, &re.flags,
         )))
     });
     native!(m, "Regexp#==", |i, r, a| {

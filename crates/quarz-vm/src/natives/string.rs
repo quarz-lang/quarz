@@ -201,10 +201,9 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         &re(i, r)?.source
     )));
     native!(m, "Regexp#to_s", |i, r, _| {
-        Ok(Value::string(format!(
-            "/{}/{}",
-            re(i, r)?.source,
-            re(i, r)?.flags
+        let re = re(i, r)?;
+        Ok(Value::string(crate::value::regexp_literal(
+            &re.source, &re.flags,
         )))
     });
     // MatchData and Bytes::MatchData (a String's or Bytes' pieces).
