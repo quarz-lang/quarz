@@ -9,15 +9,28 @@ use super::*;
 use quarz_types::check::BlockPass;
 
 /// What building one quoted block's tree collects.
-struct Quote {
-    /// The values read from outside the block, by what they read: a
-    /// variable (its place from the call), `self`, a field, a constant.
-    captures: Vec<(String, Reg)>,
+struct Quote<'a> {
+    /// The values read from outside the block, by what they read, and
+    /// where each is read at the call.
+    captures: Vec<(String, Source<'a>)>,
     /// The quoted levels entered (the block itself first): a variable
     /// reference less deep than this is a parameter of one of them.
     levels: u32,
     /// Whether the block's procedure type has a receiver (`SelfRef`).
     receiver: bool,
+}
+
+/// Where a capture's value is read at the call.
+#[derive(Clone, Copy)]
+enum Source<'a> {
+    /// A variable, at its place from the call.
+    Var(VarRef),
+    /// The `self` of the code around the block.
+    SelfValue,
+    /// A field or a constant, as the expression reads it there.
+    Expr(&'a Expr),
+    /// Nothing known: `nil`.
+    Nil,
 }
 
 impl<'a> FnBuilder<'a> {
@@ -35,22 +48,52 @@ impl<'a> FnBuilder<'a> {
             levels: 0,
             receiver,
         };
-        let tree = self.quote_block(
-            &mut q,
-            b,
-            &b.params
-                .list
-                .iter()
-                .map(|p| p.name.as_str())
-                .collect::<Vec<_>>(),
-        );
-        let items: Vec<ArrayItem> = q
+        let params: Vec<&'a str> = b.params.list.iter().map(|p| p.name.as_str()).collect();
+        let tree = if self.lw.quoted_once {
+            // Built once, by a constant of its own that the final lowering
+            // adds after the checker's (docs/14 §6): its initializer only
+            // makes nodes, of literals and constants' values.
+            let id = self.lw.alloc_func();
+            let mut t = FnBuilder::new(
+                &mut *self.lw,
+                self.world,
+                self.out,
+                format!("tree of the block in {}", self.func.name),
+                FuncKind::Init,
+                self.file,
+                &[],
+                Vec::new(),
+                HashSet::default(),
+                false,
+                None,
+                self.class_id,
+            );
+            let tree = t.quote_block(&mut q, b, &params);
+            t.term(Term::Return(tree));
+            let f = t.finish();
+            self.lw.set_func(id, f);
+            let line = self.line_of(b.span);
+            let cid = self.lw.add_quoted_const(self.world, self.file, line, id);
+            let dst = self.reg();
+            self.emit(Inst::ConstGet { dst, id: cid });
+            dst
+        } else {
+            self.quote_block(&mut q, b, &params)
+        };
+        // The captures, read here, at the call.
+        let regs: Vec<Reg> = q
             .captures
             .iter()
-            .map(|(_, reg)| ArrayItem {
-                reg: *reg,
-                splat: false,
+            .map(|(_, source)| match *source {
+                Source::Var(r) => self.load_var(r),
+                Source::SelfValue => self.self_reg_value(),
+                Source::Expr(e) => self.expr(e),
+                Source::Nil => self.nil(),
             })
+            .collect();
+        let items: Vec<ArrayItem> = regs
+            .into_iter()
+            .map(|reg| ArrayItem { reg, splat: false })
             .collect();
         let captures = self.reg();
         self.emit(Inst::MakeArray {
@@ -64,6 +107,8 @@ impl<'a> FnBuilder<'a> {
             .map(|f| f.name.clone())
             .unwrap_or_default();
         let file = self.load_const(Constant::Str(file));
+        // By its `initialize`, which takes the arguments over (field
+        // stores would leave the captures referenced from here).
         let quoted = self.world.builtin.quoted;
         let init = self
             .world
@@ -90,7 +135,7 @@ impl<'a> FnBuilder<'a> {
     }
 
     /// A `Meta::Expr::Block` of `b`'s statements, its parameters `params`.
-    fn quote_block(&mut self, q: &mut Quote, b: &'a AstBlock, params: &[&str]) -> Reg {
+    fn quote_block<'q: 'a>(&mut self, q: &mut Quote<'q>, b: &'q AstBlock, params: &[&str]) -> Reg {
         q.levels += 1;
         let body: Vec<Reg> = b.body.iter().map(|e| self.quote_expr(q, e)).collect();
         q.levels -= 1;
@@ -104,7 +149,7 @@ impl<'a> FnBuilder<'a> {
         self.node("Block", vec![names, body, line])
     }
 
-    fn quote_expr(&mut self, q: &mut Quote, e: &'a Expr) -> Reg {
+    fn quote_expr<'q: 'a>(&mut self, q: &mut Quote<'q>, e: &'q Expr) -> Reg {
         let line = self.line_of(e.span) as i64;
         match &e.kind {
             ExprKind::Nil
@@ -139,8 +184,7 @@ impl<'a> FnBuilder<'a> {
                     let l = self.int(line);
                     self.node("SelfRef", vec![l])
                 } else {
-                    let v = self.self_reg_value();
-                    self.capture(q, "self".to_string(), "self", v, line)
+                    self.capture(q, "self".to_string(), "self", Source::SelfValue, line)
                 }
             }
             ExprKind::Local(name) => match self.var_ref(e.span) {
@@ -158,19 +202,16 @@ impl<'a> FnBuilder<'a> {
                     if let Some(i) = q.captures.iter().position(|(k, _)| *k == key) {
                         return self.capture_node(i, name, line);
                     }
-                    let v = self.load_var(VarRef {
+                    let v = Source::Var(VarRef {
                         depth: r.depth - q.levels,
                         slot: r.slot,
                     });
                     self.capture(q, key, name, v, line)
                 }
-                None => {
-                    let v = self.nil();
-                    self.capture(q, format!("?{name}"), name, v, line)
-                }
+                None => self.capture(q, format!("?{name}"), name, Source::Nil, line),
             },
             ExprKind::IVar(name) => {
-                let v = self.expr(e);
+                let v = Source::Expr(e);
                 let shown = if name.starts_with('@') {
                     name.clone()
                 } else {
@@ -179,8 +220,8 @@ impl<'a> FnBuilder<'a> {
                 self.capture(q, shown.clone(), &shown, v, line)
             }
             ExprKind::Const(path) => {
-                let v = self.expr(e);
                 if self.out.quoted_lits.contains(&e.id) {
+                    let v = self.expr(e);
                     let l = self.int(line);
                     self.node("Lit", vec![v, l])
                 } else {
@@ -189,7 +230,7 @@ impl<'a> FnBuilder<'a> {
                         Some(ConstTarget::Const(c)) => format!("const:{c}"),
                         _ => format!("const@{}", e.id),
                     };
-                    self.capture(q, key, &name, v, line)
+                    self.capture(q, key, &name, Source::Expr(e), line)
                 }
             }
             ExprKind::Array(items) => {
@@ -221,10 +262,23 @@ impl<'a> FnBuilder<'a> {
             ExprKind::And(a, b) | ExprKind::Or(a, b) => {
                 // A type's own `&&`/`||`: the call the checker made of it,
                 // `a.&&() { b }`.
+                // Its method, from the made-up call; its receiver and block
+                // from the operands written.
                 if let Some(c) = self.out.logical_calls.get(&e.id) {
-                    if let ExprKind::Call(call) = &c.kind {
-                        return self.quote_call_with(q, c, call, Some(a), line);
-                    }
+                    let call_id = c.id;
+                    let method = self.method_ref(call_id);
+                    let recv = self.quote_expr(q, a);
+                    q.levels += 1;
+                    let body = self.quote_expr(q, b);
+                    q.levels -= 1;
+                    let names = self.array_of(Vec::new());
+                    let body = self.array_of(vec![body]);
+                    // The block's line is its operand's.
+                    let l = self.int(self.line_of(b.span) as i64);
+                    let block = self.node("Block", vec![names, body, l]);
+                    let args = self.array_of(Vec::new());
+                    let l = self.int(line);
+                    return self.node("Call", vec![recv, method, args, block, l]);
                 }
                 let left = self.quote_expr(q, a);
                 let right = self.quote_expr(q, b);
@@ -277,18 +331,24 @@ impl<'a> FnBuilder<'a> {
 
     /// A `Call` node: what the checker resolved the call to, its
     /// receiver, arguments and block.
-    fn quote_call(&mut self, q: &mut Quote, e: &'a Expr, call: &'a ast::Call, line: i64) -> Reg {
+    fn quote_call<'q: 'a>(
+        &mut self,
+        q: &mut Quote<'q>,
+        e: &'q Expr,
+        call: &'q ast::Call,
+        line: i64,
+    ) -> Reg {
         self.quote_call_with(q, e, call, None, line)
     }
 
     /// `quote_call` with the receiver `recv` given (a logical operator's
     /// left operand, which the made-up call does not hold).
-    fn quote_call_with(
+    fn quote_call_with<'q: 'a>(
         &mut self,
-        q: &mut Quote,
-        e: &'a Expr,
-        call: &'a ast::Call,
-        recv: Option<&'a Expr>,
+        q: &mut Quote<'q>,
+        e: &'q Expr,
+        call: &'q ast::Call,
+        recv: Option<&'q Expr>,
         line: i64,
     ) -> Reg {
         let method = self.method_ref(e.id);
@@ -298,10 +358,7 @@ impl<'a> FnBuilder<'a> {
             // procedure type has a receiver, else the `self` of the code
             // around it, captured as `self` written would be.
             None if q.receiver => self.nil(),
-            None => {
-                let v = self.self_reg_value();
-                self.capture(q, "self".to_string(), "self", v, line)
-            }
+            None => self.capture(q, "self".to_string(), "self", Source::SelfValue, line),
         };
         let mut args = Vec::new();
         let mut block = None;
@@ -423,7 +480,14 @@ impl<'a> FnBuilder<'a> {
     }
 
     /// A `Capture` of the value `v` (read at the call) under `key`.
-    fn capture(&mut self, q: &mut Quote, key: String, name: &str, v: Reg, line: i64) -> Reg {
+    fn capture<'q: 'a>(
+        &mut self,
+        q: &mut Quote<'q>,
+        key: String,
+        name: &str,
+        v: Source<'q>,
+        line: i64,
+    ) -> Reg {
         let index = match q.captures.iter().position(|(k, _)| *k == key) {
             Some(i) => i,
             None => {
