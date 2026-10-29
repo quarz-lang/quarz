@@ -150,6 +150,22 @@
           }
         },
         {
+          "match": "(?<![.\\w])(static)(?=\\s+def\\b)",
+          "captures": {
+            "1": {
+              "name": "storage.modifier.quarz"
+            }
+          }
+        },
+        {
+          "match": "(?<![.\\w])(static)(?=\\()",
+          "captures": {
+            "1": {
+              "name": "keyword.other.static.quarz"
+            }
+          }
+        },
+        {
           "match": "(?<=[\\[,]|, )(out)(?=\\s+[A-Z])",
           "captures": {
             "1": {
