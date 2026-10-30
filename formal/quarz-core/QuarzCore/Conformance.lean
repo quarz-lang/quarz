@@ -77,6 +77,9 @@ structure Tables where
   excIds : List Nat := []
   /-- An op-assignment's target's current type, by node (`x += e`). -/
   opTargets : Json := Json.null
+  /-- A block's declared result type (`do |x| -> T ... end`), by the node
+  of the call it is given to. -/
+  blockResults : Json := Json.null
 
 def Tables.cls (T : Tables) (id : Nat) : M Json := do
   match T.classes.find? fun c => (c.getObjValAs? Nat "id").toOption == some id with
@@ -287,6 +290,17 @@ def localName (x : String) : CM String := do
 def noRenamedBind (names : List (String × Ty)) : CM Unit := do
   for (x, _) in names do
     if (← read).renames.any (·.1 == x) then throw s!"a pattern binding the rescue variable {x}"
+
+/-- A block's body, given the result type it declares (`block_results`)
+for the call `id`, as a `def`'s return type: the body at most `T`, the
+block giving `T`; `-> Void` discards the value. -/
+def Tables.declaredResult (T : Tables) (id : Nat) (bd : Expr) : M Expr := do
+  match T.blockResults.getObjVal? (toString id) with
+  | .error _ => pure bd
+  | .ok tj =>
+    if (tj.getObjValAs? String "t").toOption == some "void" then return .seq bd .nil
+    let t ← T.ty tj
+    pure (.prim "blockResult" [bd] [t] t)
 
 /-- A block's or a lambda's body: its parameters hide a `rescue`
 clause's variable of their names. -/
@@ -1428,7 +1442,7 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
           if (← get).any (fun (y, u) => y == x && u != t) then
             throw s!"block parameter {x} of two types"
           modify (addLocal · x t)
-        let bd ← hidingParams ps (body T (← arr (← field blk "body")))
+        let bd ← T.declaredResult id (← hidingParams ps (body T (← arr (← field blk "body"))))
         if hasRet bd then throw "a return in a block"
         let bd := if (← str (← field rj "t")) == "void" then Expr.seq bd .nil else bd
         return .callBlk (.prim ("#builtin " ++ name) pargs pparams pret) name [.prim "#sig" [] tys sret] ps bd
@@ -1564,6 +1578,7 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
         let rj ← field ty "ret"
         unless (← T.ty rj).closed do throw "a kept block of a generic method"
         let lam ← lambdaOf T ps tys (← T.ty rj) ((← str (← field rj "t")) == "void") (← arr (← field b "body"))
+          (some id)
         return .call r name (as ++ [lam])
       let ps ← (← arr (← field (← field b "params") "list")).toList.mapM fun p => do
         str (← field p "name")
@@ -1594,7 +1609,7 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
             throw s!"block parameter {x} of two types"
           modify (addLocal · x t)
       | _ => throw "a block type"
-      let bd ← hidingParams ps (body T (← arr (← field b "body")))
+      let bd ← T.declaredResult id (← hidingParams ps (body T (← arr (← field b "body"))))
       -- A `return` from a block is not in v1.
       if hasRet bd then throw "a return in a block"
       -- `-> Void`: its value discarded, nil.
@@ -1609,7 +1624,7 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
 `-> Void`), of body `bodyJ` (a block given to a method that may keep it
 too: design §13.10). -/
 partial def lambdaOf (T : Tables) (names : List String) (pts : List Ty) (ret : Ty) (void : Bool)
-    (bodyJ : Array Json) : CM Expr := do
+    (bodyJ : Array Json) (call : Option Nat := none) : CM Expr := do
   let w ← read
   if w.init.isSome then throw "a lambda in initialize"
   if w.rcls.isNone && !w.top then throw "a lambda in a default"
@@ -1620,6 +1635,9 @@ partial def lambdaOf (T : Tables) (names : List String) (pts : List Ty) (ret : T
   set ((names.zip pts ++ around : Locals))
   let bd ← withReader (fun w => { w with exc := none, retryFlag := none, captured := around })
     (hidingParams names (body T bodyJ))
+  let bd ← match call with
+    | some id => T.declaredResult id bd
+    | none => pure bd
   let mine ← get
   set outer
   let own := mine.drop (names.length + around.length)
@@ -1899,7 +1917,8 @@ def program (j : Json) : M Program := do
     (← field j "const_targets"), (← arr (← field j "consts")), qclass, objectId, kernelId,
     fun id => (classParams.find? (·.1 == id)).map (·.2),
     fun id => (narrowedList.find? (·.1 == id)).map (·.2), selfParam, excIds,
-    (j.getObjVal? "op_targets").toOption.getD Json.null⟩
+    (j.getObjVal? "op_targets").toOption.getD Json.null,
+    (j.getObjVal? "block_results").toOption.getD Json.null⟩
   let excClasses ← excs.mapM fun c => do
     let sup ← match ← field c "superclass" with
       | .null => pure 0
