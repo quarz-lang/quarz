@@ -2945,10 +2945,11 @@ impl Checker {
         if matches!(t, Type::Var(_) | Type::Nothing | Type::Param(_)) {
             return None;
         }
-        if t.members()
-            .iter()
-            .any(|m| self.world.is_object(m) || matches!(m, Type::Param(_) | Type::Var(_)))
-        {
+        // (A type `nil` or a `Bool` may be a value of: `Object`, or a
+        // module they include, `Shareable`.)
+        if t.members().iter().any(|m| {
+            matches!(m, Type::Param(_) | Type::Var(_)) || self.may_hold_falsy(m) != (false, false)
+        }) {
             return None;
         }
         if all_nil {
@@ -2973,12 +2974,45 @@ impl Checker {
                 || matches!(&m, Type::Class(id, _) if *id == self.world.builtin.bool_)
             {
                 out.push(m);
-            } else if self.world.is_object(&m) {
-                out.push(self.world.nil());
-                out.push(self.world.bool_());
+            } else if let Type::Var(_) = m {
+                // Not decided yet: it may become `Nil` or `Bool`, so it
+                // stays, as itself (as `is_truthy_type` leaves it open).
+                out.push(m);
+            } else if let Type::Param(p) = m {
+                // `T` may be `Bool` or `Int?`: it stays, as itself.
+                if self.world.param_may_be_falsy(p) {
+                    out.push(m);
+                }
+            } else {
+                // A type `nil` or a `Bool` may be a value of (`Object`, a
+                // module they include): those.
+                let (nil, bool_) = self.may_hold_falsy(&m);
+                if nil {
+                    out.push(self.world.nil());
+                }
+                if bool_ {
+                    out.push(self.world.bool_());
+                }
             }
         }
         Type::union_of(out)
+    }
+
+    /// Whether `nil` and a `Bool` may be values of `m`, a type other than
+    /// `Nil`, `Bool` and a parameter (as the Lean model decides it): by
+    /// the subtype check, so `Object` and a module they include
+    /// (`Shareable`) hold them, and a class does not.
+    fn may_hold_falsy(&self, m: &Type) -> (bool, bool) {
+        if self.world.is_nil_type(m)
+            || matches!(m, Type::Class(id, _) if *id == self.world.builtin.bool_)
+            || matches!(m, Type::Param(_) | Type::Var(_) | Type::Nothing)
+        {
+            return (false, false);
+        }
+        (
+            self.world.is_subtype(&self.world.nil(), m),
+            self.world.is_subtype(&self.world.bool_(), m),
+        )
     }
 
     // ----- variables -------------------------------------------------------------
@@ -6543,6 +6577,12 @@ impl Checker {
                             );
                         }
                         self.env.assigned_fields.insert(name.clone());
+                        // Narrowed to what it now holds, as by `@x = v`
+                        // (`@x &&= nil` leaves no `Int`).
+                        if !f.mutable {
+                            let narrowed = self.resolve(&result);
+                            self.env.ivar_narrow.insert(name.clone(), narrowed);
+                        }
                     }
                 }
             }
@@ -6766,6 +6806,10 @@ impl Checker {
                             );
                         }
                         self.env.assigned_fields.insert(name.clone());
+                        if !f.mutable {
+                            let narrowed = self.resolve(ty);
+                            self.env.ivar_narrow.insert(name.clone(), narrowed);
+                        }
                     }
                     None => self.error(format!("undeclared field `@{name}`"), span),
                 }

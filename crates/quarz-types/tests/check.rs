@@ -1097,6 +1097,46 @@ fn void_followups() {
 }
 
 #[test]
+fn falsy_type_parameters() {
+    let bx = |bound: &str, body: &str| {
+        format!("class Box[T{bound}]\n  @v: T\n  def initialize(v: T)\n    @v = v\n  end\n  def m -> Int\n    {body}\n  end\nend")
+    };
+    // `T` may be `Bool` or `Int?`: the falsy side keeps it.
+    err(
+        &bx("", "if @v then 1 else @v.size end"),
+        "undefined method `size` for T",
+    );
+    err(
+        &bx("", "unless @v\n      return @v.size\n    end\n    1"),
+        "undefined method `size` for T",
+    );
+    err(
+        &bx("", "!@v ? @v.size : 1"),
+        "undefined method `size` for T",
+    );
+    err(
+        &bx("", "x = @v || 3\n    x.size"),
+        "undefined method `size` for T",
+    );
+    ok(&format!(
+        "{}\np Box[Int?].new(nil).m, Box[Bool].new(false).m",
+        bx("", "if @v then 1 else\n      x: T = @v\n      0\n    end")
+    ));
+    // The truthy side is as before.
+    ok(&bx(
+        " <: Comparable[T]",
+        "if @v then (@v <=> @v) else 0 end",
+    ));
+    // A bound that holds neither nil nor false rules them out.
+    ok(&bx(" <: Int", "if @v then @v else @v.size end"));
+    // One naming the parameter does not.
+    err(
+        &bx(" <: Comparable[T]", "if @v then 1 else @v.size end"),
+        "undefined method `size` for T",
+    );
+}
+
+#[test]
 fn nil_results_and_lambda_annotations() {
     // A lambda's declared result is checked like a method's.
     err(
@@ -2818,4 +2858,34 @@ fn a_data_type_shareable_by_its_fields_is_a_shareable() {
     ok(&src);
     // Known to the declaration's own checks (an override's result).
     ok("data Point = (x: Int, y: Int)\nclass Base\n  def get -> Shareable = 1\nend\nclass Sub < Base\n  def get -> Point = Point.new(1, 2)\nend");
+}
+
+#[test]
+fn what_may_be_nil_or_false_is_decided_by_subtyping() {
+    // A module `Nil` and `Bool` include holds them (tmp/repro/lean-falsy-module.qz).
+    err(
+        "def f(x: Shareable) -> Int\n  x && 1\nend",
+        "returns Int but its body has type Nil | Bool | Int",
+    );
+    err(
+        "def g(x: Shareable) -> Int\n  if x\n    1\n  else\n    x.foo\n  end\nend",
+        "undefined method `foo` for Nil",
+    );
+    // A class does not.
+    ok("class K\nend\ndef h(x: K) -> Int\n  x && 1\nend");
+    // A type not decided yet may become `Bool` (an element pushed later).
+    err(
+        "xs = []\ni = 0\ntotal = 0\nwhile i < 2\n  if xs.size > 0\n    total = total + (xs[0] && 1)\n  end\n  xs = xs.push(false)\n  i += 1\nend",
+        "cannot assign Array[Int | Bool] to `xs` of type Array[Int]",
+    );
+    // A field `&&=` or a multiple assignment sets in `initialize`
+    // (tmp/repro/lean-opassign-init-field.qz).
+    err(
+        "class C\n  @x: Int?\n  def initialize\n    @x = 1\n    @x &&= nil\n    p(@x + 1)\n  end\nend",
+        "undefined method `+` for Nil",
+    );
+    err(
+        "class C\n  @x: Int?\n  @y: Int?\n  def initialize\n    @x = 1\n    @x, @y = nil, 2\n    p(@x + 1)\n  end\nend",
+        "undefined method `+` for Nil",
+    );
 }
