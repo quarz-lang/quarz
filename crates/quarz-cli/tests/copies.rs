@@ -107,3 +107,9 @@ fn a_quoted_block_leaves_no_reference_behind() {
     // its closure's copies, is released after its call.
     check("quoted.qz", 0);
 }
+
+#[test]
+fn a_field_read_through_a_handle_copies_nothing() {
+    // docs/14 §5: `ref.get(self)` is the field read `@items` is.
+    check("handles.qz", 0);
+}

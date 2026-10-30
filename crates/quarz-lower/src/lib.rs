@@ -521,7 +521,7 @@ impl Lowerer {
                 if m.singleton { "." } else { "#" },
                 m.name
             );
-            let id = self.lift(mid, name, g);
+            let id = self.lift(world, mid, name, g);
             self.method_funcs[mid as usize] = Some(id);
             return;
         }

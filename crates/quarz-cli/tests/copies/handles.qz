@@ -1,0 +1,8 @@
+# A field read through a handle (docs/14 §5) in a loop copies nothing,
+# as `@items` does.
+require_relative "handles_lib"
+class Box < Bag
+  items_ops
+end
+b = Box.new
+p b.total(1000)

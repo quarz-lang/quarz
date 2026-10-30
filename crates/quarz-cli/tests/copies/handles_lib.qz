@@ -1,0 +1,14 @@
+class Bag
+  var @items: Array[Int] = [0]
+  static def self.items_ops -> Void
+    ref = field_ref[Array[Int]](:items)
+    def_method(:total, :n) do |n: Int| -> Int
+      t = 0
+      n.times { t += ref.get(self).size }
+      t
+    end
+    def_method(:grow, :n) do |n: Int| -> Void
+      n.times { |i| ref.set(self, ref.get(self).push(i)) }
+    end
+  end
+end

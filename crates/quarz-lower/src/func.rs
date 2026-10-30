@@ -3353,6 +3353,19 @@ impl<'a> FnBuilder<'a> {
             _ => {}
         }
         let mut a = self.args(&call.args);
+        // `def_field`/`field_ref` are told their call's node, under a name
+        // no parameter has: the handle they make carries it, for the
+        // runner to find its `U` (`Output::type_args`, docs/14 §5).
+        if let Some(CallTarget::Method { method }) = target {
+            let m = self.world.method(*method);
+            if m.owner == self.world.builtin.meta_classdef
+                && matches!(m.name.as_str(), "def_field" | "field_ref")
+            {
+                let site = self.load_const(Constant::Int(e.id as i64));
+                let s = self.sym_const(quarz_ir::FIELD_REF_SITE);
+                a.kw.push((s, site));
+            }
+        }
         if let Some(b) = &call.block {
             let func = self.block_function(b, e.id, false);
             let destructure = self.out.block_destructure.get(&e.id).map(|n| *n as u32);

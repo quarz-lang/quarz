@@ -176,9 +176,44 @@ module Meta
     # parameters, with `default` (a value made at compile time, baked
     # into the class), assignable when `var:` is true, with the accessors
     # `reader:` and `writer:` ask for (as `attr_reader`/`attr_writer`).
-    static native def def_field[U](name: Symbol, type: Type[U], default: U, *, var: Bool = false, reader: Bool = false, writer: Bool = false) -> Void
+    # Its result is a handle to the field (`Meta::FieldRef`), for the
+    # methods the statement generates to read and write it.
+    static native def def_field[U](name: Symbol, type: Type[U], default: U, *, var: Bool = false, reader: Bool = false, writer: Bool = false) -> FieldRef[T, U]
+    # A handle to the field `@name` of the class, its own, inherited or
+    # generated (by this statement or another), whose declared type is
+    # exactly `U` (written as the type argument: `field_ref[Int](:views)`),
+    # resolved when the statement has run: a missing field or another
+    # type is an error at the statement.
+    static native def field_ref[U](name: Symbol) -> FieldRef[T, U]
     # The documentation comment of the next method generated.
     static native def doc(text: String) -> Void
+  end
+
+  # A field of `T` of type `U` as a value (docs/14 §5): what
+  # `ClassDef#def_field` and `ClassDef#field_ref` give. It is read and
+  # written only in a block given to `def_method` that captures it, where
+  # it is baked: `ref.get(self)` is the field read `@name` and
+  # `ref.set(self, v)` the write (the field must be `var`). The object is
+  # the generated method's `self` (for now: `T` is the `static def`'s view
+  # of the class, the field the class generated into's).
+  # Made only by those two methods: it has its `name` and `owner`, and
+  # nothing else observable.
+  class FieldRef[T, U]
+    # (Set by the native that makes it.)
+    @owner: Type[Object] = Object
+    @name: Symbol = :name
+    @site: Int = 0
+    # The field's name.
+    def name -> Symbol = @name
+    # The class whose field it is.
+    def owner -> Type[Object] = @owner
+    # `#<Meta::FieldRef Post@views>`.
+    def to_s -> String = "#<Meta::FieldRef #{@owner.name}@#{@name}>"
+    def inspect -> String = to_s
+    # The field of `obj`.
+    native def get(obj: T) -> U
+    # Sets the field of `obj` to `value`.
+    native def set(obj: T, value: U) -> Void
   end
 
   # A method a quoted block calls (docs/14 §6): its owner, name and side,

@@ -3673,3 +3673,20 @@ fn a_rescue_variable_reassigned_after_a_closure_captured_it() {
     err("class A < StandardError\n  @n: Int = 41\n  def a -> Int = @n + 1\nend\nclass B < StandardError\n  @s: String = \"str\"\n  def s -> String = @s\nend\ng: (() -> Int)? = nil\ni = 0\nwhile i < 2\n  begin\n    if i == 0\n      raise A.new(\"a\")\n    else\n      raise B.new(\"b\")\n    end\n  rescue A, B => e\n    if e.is_a?(A)\n      g = -> { e.a }\n    end\n    if e.is_a?(B)\n      p g.call if g\n    end\n  end\n  i += 1\nend", "undefined method `a` for B");
     err("class A < StandardError\n  @n: Int = 41\n  def a -> Int = @n + 1\nend\nclass B < StandardError\n  @s: String = \"str\"\n  def s -> String = @s\nend\ni = 0\nf: (() -> Int)? = nil\nbegin\n  i += 1\n  if i == 1\n    raise A.new(\"a\")\n  else\n    raise B.new(\"b\") if i == 2\n  end\nrescue A, B => e\n  if e.is_a?(A)\n    f = -> { e.a }\n  end\n  retry if i < 2\nend\np f.call if f", "undefined method `a` for B");
 }
+
+#[test]
+fn a_field_handle_is_made_by_def_field_or_field_ref_only() {
+    // docs/14 §5: a handle names a field it reads in place.
+    err(
+        "r = Meta::FieldRef[Int, Int].new",
+        "a `Meta::FieldRef` is made by `def_field` or `field_ref`",
+    );
+    err(
+        "class Mine[T, U] < Meta::FieldRef[T, U]\nend",
+        "`Meta::FieldRef` cannot be subclassed",
+    );
+    err(
+        "class B\nend\ndef outside(r: Meta::FieldRef[B, Int], b: B) -> Int = r.get(b)",
+        "a `Meta::FieldRef` is read only in a block given to `def_method`",
+    );
+}

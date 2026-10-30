@@ -129,8 +129,27 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         reflect_of(i)?
             .def_field(i, request)
             .map_err(|m| i.err_runtime(&m))?;
-        Ok(Value::Nil)
+        // (The call's node, which the lowering passes: where the checker
+        // recorded `U`.)
+        field_ref(i, class, *name, a.kw(i, quarz_ir::FIELD_REF_SITE))
     });
+    native!(m, "Meta::ClassDef#field_ref", |i, r, a| {
+        let class = reflected_class(i, r)?;
+        let Value::Symbol(name) = a.arg(0) else {
+            return Err(i.err_type("field_ref takes the field's name as a symbol"));
+        };
+        // (Resolved when the statement has run: the field may be generated
+        // after.)
+        field_ref(i, class, *name, a.kw(i, quarz_ir::FIELD_REF_SITE))
+    });
+    // A handle's field access is rewritten where it is baked (docs/14 §5):
+    // these run only if a handle got elsewhere.
+    native!(m, "Meta::FieldRef#get", |i, _, _| Err(i.err_runtime(
+        "a `Meta::FieldRef` is read only in a block given to `def_method`, where it is baked"
+    )));
+    native!(m, "Meta::FieldRef#set", |i, _, _| Err(i.err_runtime(
+        "a `Meta::FieldRef` is written only in a block given to `def_method`, where it is baked"
+    )));
     native!(m, "Meta::ClassDef#doc", |i, _, a| {
         let Some(text) = a.arg(0).as_str() else {
             return Err(i.err_type("doc takes a string"));
@@ -364,6 +383,19 @@ fn meta_class(interp: &Interp, name: &str) -> Result<ClassId, Flow> {
         .world
         .class_by_name(name)
         .ok_or_else(|| interp.err_runtime(&format!("the prelude has no `{name}`")))
+}
+
+/// A `Meta::FieldRef` to the field `name` of `class`, made at the call
+/// node `site` (where the checker recorded its `U`, docs/14 §5).
+fn field_ref(interp: &Interp, class: ClassId, name: Symbol, site: Option<&Value>) -> EvalResult {
+    let Some(Value::Int(site)) = site else {
+        return Err(interp.err_runtime("internal: a field handle without its call"));
+    };
+    let handle = meta_class(interp, "Meta::FieldRef")?;
+    Ok(Value::Object(Object::new(
+        handle,
+        smallvec![Value::Class(class), Value::Symbol(name), Value::Int(*site)],
+    )))
 }
 
 /// A `Meta::Field` value.

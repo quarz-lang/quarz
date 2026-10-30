@@ -3517,6 +3517,9 @@ impl Checker {
             Type::ClassObject(_, _) | Type::TypeOf(_) => true,
             Type::Union(ms) | Type::Tuple(ms) => ms.clone().iter().all(|m| self.bakeable_type(m)),
             Type::Proc(..) => false,
+            // A field handle names a field: its type arguments are no
+            // values (docs/14 §5).
+            Type::Class(id, _) if *id == self.world.builtin.meta_field_ref => true,
             Type::Class(id, args) => {
                 let id = *id;
                 let b = &self.world.builtin;
@@ -8690,6 +8693,16 @@ impl Checker {
             self.check_args_blindly(call);
             return Type::Nothing;
         }
+        // A handle names a field it reads in place: only `def_field` and
+        // `field_ref` make one, for the field they name (docs/14 §5).
+        if cid == self.world.builtin.meta_field_ref {
+            self.error(
+                "a `Meta::FieldRef` is made by `def_field` or `field_ref` (docs/14 §5), not with `new`",
+                expr.span,
+            );
+            self.check_args_blindly(call);
+            return Type::Nothing;
+        }
         // Instantiate class parameters: explicit args, the expected type, or
         // fresh inference variables.
         let targs: Vec<Type> = if !args.is_empty() {
@@ -9345,6 +9358,63 @@ impl Checker {
         self.out
             .calls
             .insert(expr.id, CallTarget::Method { method: m.id });
+        // A field handle's `get`/`set` is lowered in place where the
+        // handle is baked (docs/14 §5): its receiver is a variable of the
+        // `static def` that a block given to `def_method` captures.
+        if m.owner == self.world.builtin.meta_field_ref && matches!(m.name.as_str(), "get" | "set")
+        {
+            let baked = match (&call.recv, self.env.lifted_frame) {
+                (Some(r), Some(lf)) => match &r.kind {
+                    ExprKind::Local(name) => self
+                        .lookup_var(name)
+                        .is_some_and(|(depth, _)| self.env.frames.len() - 1 - depth < lf),
+                    _ => false,
+                },
+                _ => false,
+            };
+            if !baked {
+                self.error(
+                    format!(
+                        "a `Meta::FieldRef` is {} only in a block given to `def_method` (or `def_class_method`) that captures it from the `static def`, where it is baked",
+                        if m.name == "get" { "read" } else { "written" }
+                    ),
+                    expr.span,
+                );
+            } else if call.args.iter().any(|a| !matches!(a, Arg::Positional(_))) {
+                // (Lowered in place: its arguments by position.)
+                self.error(
+                    format!(
+                        "`{}` on a `Meta::FieldRef` takes its arguments by position",
+                        m.name
+                    ),
+                    expr.span,
+                );
+            } else {
+                // Its object is the generated method's `self`, for now: the
+                // handle's `T` is the `static def`'s view of the class, and
+                // the field belongs to the class generated into, which only
+                // `self` is sure to be (docs/14 §5).
+                let own_self = self
+                    .env
+                    .lifted_frame
+                    .is_some_and(|lf| !self.env.receivers.iter().any(|r| r.outer_frame + 1 > lf));
+                let is_self = matches!(
+                    call.args.first(),
+                    Some(Arg::Positional(e)) if matches!(e.kind, ExprKind::SelfRef)
+                );
+                if !(is_self && own_self) {
+                    self.error(
+                        format!(
+                            "`{}` on a `Meta::FieldRef` takes the generated method's `self` (`ref.{}(self{})`): the handle's class is the `static def`'s view, the field the class generated into's",
+                            m.name,
+                            m.name,
+                            if m.name == "set" { ", value" } else { "" }
+                        ),
+                        expr.span,
+                    );
+                }
+            }
+        }
         self.note_static_call(expr, m.id);
         if m.is_static {
             // The chosen candidate's type arguments.

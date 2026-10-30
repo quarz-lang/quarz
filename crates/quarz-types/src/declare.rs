@@ -2392,7 +2392,17 @@ impl<'ast> Declarer<'ast> {
         let quoted = self.world.builtin.quoted;
         let is_quoted = |t: &Type| matches!(t, Type::Class(c, _) if *c == quoted);
         // Only the lowering makes a `Quoted`, whose shareability and
-        // `new` the checker trusts: no subclass.
+        // `new` the checker trusts: no subclass. Nor of a
+        // `Meta::FieldRef`, which only `def_field`/`field_ref` make (its
+        // `get` reads the field it names in place, docs/14 §5).
+        let field_ref = self.world.builtin.meta_field_ref;
+        if matches!(&self.world.class(id).superclass, Some(Type::Class(c, _)) if *c == field_ref) {
+            let span = self.world.class(id).span;
+            self.error(
+                "`Meta::FieldRef` cannot be subclassed: a handle is made by `def_field` or `field_ref`",
+                span,
+            );
+        }
         if matches!(&self.world.class(id).superclass, Some(Type::Class(c, _)) if *c == quoted) {
             let span = self.world.class(id).span;
             self.error(
@@ -3408,7 +3418,9 @@ impl<'ast> Declarer<'ast> {
         let meta_classdef = meta("ClassDef");
         let meta_expr = meta("Expr");
         let meta_method_ref = meta("MethodRef");
+        let meta_field_ref = meta("FieldRef");
         let builtin = Builtin {
+            meta_field_ref,
             class_alias,
             meta_classdef,
             meta_expr,

@@ -417,6 +417,8 @@ pub struct Builtin {
     pub meta_expr: ClassId,
     pub meta_method_ref: ClassId,
     pub quoted: ClassId,
+    /// `Meta::FieldRef`, a handle to a field (docs/14 §5).
+    pub meta_field_ref: ClassId,
     pub shareable: ClassId,
     pub task: ClassId,
     pub channel: ClassId,
