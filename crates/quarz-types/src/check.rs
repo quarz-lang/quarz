@@ -4182,6 +4182,14 @@ impl Checker {
         }
     }
 
+    /// Whether a rescue clause's body assigns its variable `v` (or rebinds
+    /// it by a bang).
+    fn clause_reassigns(v: &str, body: &[Expr]) -> bool {
+        let mut probe = Assigned::default();
+        Self::assigned_names_scope(body, &mut probe);
+        probe.names.contains(v) || probe.bangs.iter().any(|(n, _)| n == v)
+    }
+
     fn assigned_names_expr(e: &Expr, out: &mut Assigned) {
         use ExprKind::*;
         match &e.kind {
@@ -4305,8 +4313,30 @@ impl Checker {
                 Self::assigned_names(&b.body, out);
                 out.repeat -= retried as u32;
                 for r in &b.rescues {
-                    // (The clause's variable is its own: docs/01 §12.)
+                    // (The clause's variable is its own, docs/01 §12: the
+                    // walk for `widen_assigned` leaves it out, as a
+                    // declaration's; every other walk keeps what it learns
+                    // by name, so a closure capturing it narrowed sees it
+                    // reassigned, `assigned_names_scope`.)
                     match &r.var {
+                        Some(v) if out.widening => {
+                            out.scoped(v, |out| Self::assigned_names_scope(&r.body, out))
+                        }
+                        // Reassigned in its clause: a local the clause
+                        // binds and assigns, so a closure capturing it
+                        // narrowed sees it change. Otherwise the clause's
+                        // own, as a block's parameter (another clause's of
+                        // the name counts nothing against it).
+                        // (So does a clause that runs again, in a loop or by
+                        // `retry`: each run rebinds the one variable.)
+                        Some(v)
+                            if Self::clause_reassigns(v, &r.body) || out.repeat > 0 || retried =>
+                        {
+                            out.repeat += retried as u32;
+                            out.add(v);
+                            Self::assigned_names_scope(&r.body, out);
+                            out.repeat -= retried as u32;
+                        }
                         Some(v) => out.scoped(v, |out| Self::assigned_names_scope(&r.body, out)),
                         None => Self::assigned_names_scope(&r.body, out),
                     }

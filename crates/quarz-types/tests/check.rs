@@ -3662,3 +3662,14 @@ fn class_methods_override_types_methods() {
     );
     ok("extension Object\n  def describe -> String = \"obj\"\nend\nclass A\n  def self.describe -> Int = 3\nend");
 }
+
+#[test]
+fn a_rescue_variable_reassigned_after_a_closure_captured_it() {
+    // tmp/repro/rescue-var-late-closure.qz: the closure reads `e` when
+    // called, after the clause reassigned it.
+    err("class A < StandardError\n  @n: Int = 41\n  def a -> Int = @n + 1\nend\nclass B < StandardError\n  @s: String = \"str\"\n  def s -> String = @s\nend\nbegin\n  raise A.new(\"a\")\nrescue A, B => e\n  if e.is_a?(A)\n    f = -> { e.a }\n    e = B.new(\"b\")\n    p f.call\n  end\nend", "undefined method `a` for B");
+    // A clause that runs again rebinds its one variable: in a loop, or by
+    // `retry`.
+    err("class A < StandardError\n  @n: Int = 41\n  def a -> Int = @n + 1\nend\nclass B < StandardError\n  @s: String = \"str\"\n  def s -> String = @s\nend\ng: (() -> Int)? = nil\ni = 0\nwhile i < 2\n  begin\n    if i == 0\n      raise A.new(\"a\")\n    else\n      raise B.new(\"b\")\n    end\n  rescue A, B => e\n    if e.is_a?(A)\n      g = -> { e.a }\n    end\n    if e.is_a?(B)\n      p g.call if g\n    end\n  end\n  i += 1\nend", "undefined method `a` for B");
+    err("class A < StandardError\n  @n: Int = 41\n  def a -> Int = @n + 1\nend\nclass B < StandardError\n  @s: String = \"str\"\n  def s -> String = @s\nend\ni = 0\nf: (() -> Int)? = nil\nbegin\n  i += 1\n  if i == 1\n    raise A.new(\"a\")\n  else\n    raise B.new(\"b\") if i == 2\n  end\nrescue A, B => e\n  if e.is_a?(A)\n    f = -> { e.a }\n  end\n  retry if i < 2\nend\np f.call if f", "undefined method `a` for B");
+}
