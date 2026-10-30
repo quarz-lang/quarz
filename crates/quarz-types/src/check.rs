@@ -69,6 +69,10 @@ pub type TypeArgs = Vec<(TypeParamId, Type)>;
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Output {
     pub node_types: FxHashMap<NodeId, Type>,
+    /// An op-assignment's target (`x += e`), the type of its current value
+    /// the operator was checked with (for `quarz check --tree`).
+    #[serde(default)]
+    pub op_targets: FxHashMap<NodeId, Type>,
     pub calls: FxHashMap<NodeId, CallTarget>,
     pub const_targets: FxHashMap<NodeId, ConstTarget>,
     /// Variable occurrences (uses and definitions) keyed by their span.
@@ -2264,7 +2268,12 @@ impl Checker {
                 self.out.node_types.insert(id, r);
             }
         }
-        for t in self.out.lifted_blocks.values_mut() {
+        for t in self
+            .out
+            .lifted_blocks
+            .values_mut()
+            .chain(self.out.op_targets.values_mut())
+        {
             if t.has_vars() {
                 *t = self.infer.resolve(t);
             }
@@ -6465,6 +6474,12 @@ impl Checker {
             }
         };
         let current = self.resolve(&current);
+        // (A block checked more than once: what any check saw.)
+        let seen = match self.out.op_targets.get(&expr.id).cloned() {
+            Some(old) if old != current => self.join(&old, &current),
+            _ => current.clone(),
+        };
+        self.out.op_targets.insert(expr.id, seen);
         let result = match op {
             OpAssign::OrOr | OpAssign::AndAnd
                 if self.has_logical_method(&current, op.as_str().trim_end_matches('=')) =>
