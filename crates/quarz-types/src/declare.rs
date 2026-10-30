@@ -4130,6 +4130,22 @@ impl<'ast> Declarer<'ast> {
                 def.span,
             );
         }
+        // Both belong to the class's construction chain (docs/01 §6): a
+        // module's would be reached by `super` in place of the superclass's.
+        if matches!(def.name.as_str(), "initialize" | "deinitialize")
+            && !def.singleton
+            && extension.is_none()
+            && self.world.class(owner).kind == ClassKind::Module
+        {
+            self.error(
+                if def.name == "initialize" {
+                    "a module cannot declare `initialize`: it is the class's; initialize fields in the including class".to_string()
+                } else {
+                    "a module cannot declare `deinitialize`: it is the class's; declare it in the including class".to_string()
+                },
+                def.span,
+            );
+        }
         // An enum has no fields, and its variants their own `initialize`
         // (docs/01 §5).
         if def.name == "initialize"
@@ -4293,7 +4309,7 @@ impl<'ast> Declarer<'ast> {
                 || !matches!(kind, ClassKind::Class | ClassKind::Module)
             {
                 self.error(
-                    "`deinitialize` can only be defined in a class or module (not a built-in value class, `data` type, enum or extension)",
+                    "`deinitialize` can only be defined in a class (not a built-in value class, `data` type, enum or extension)",
                     def.span,
                 );
             }

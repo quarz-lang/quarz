@@ -313,9 +313,13 @@ fn initialize_only_from_new() {
         "class C\n  private def secret -> Int = 1\nend\nx = 1\nputs x&.to_s\nC.new.secret",
         "`secret` is private",
     );
-    // `new`, `super` (with arguments and bare) and a module's `initialize`.
+    // `new` and `super` (with arguments and bare); a module declares no
+    // `initialize`.
     ok("class A\n  @a: Int\n  def initialize(@a: Int); end\n  def initialize(s: String)\n    @a = s.size\n  end\nend\nclass B < A\n  @b: Int\n  def initialize(@b: Int)\n    super(@b)\n  end\nend\nclass D < A\n  def initialize(a: Int)\n    super\n  end\nend\nB.new(1)\nD.new(2)\nA.new(\"ab\")");
-    ok("module M\n  def initialize\n    puts \"m\"\n  end\nend\nclass C\n  include M\nend\nC.new");
+    err(
+        "module M\n  def initialize\n    puts \"m\"\n  end\nend\nclass C\n  include M\nend\nC.new",
+        "a module cannot declare `initialize`",
+    );
 }
 
 #[test]
@@ -563,8 +567,8 @@ fn classes_and_fields() {
         "an enum cannot define `initialize`",
     );
     // A class with fields of its own to assign is made only by its own
-    // `initialize`: not a module's, an extension's or an ancestor's.
-    let m = "module M\n  def initialize\n  end\nend\n";
+    // `initialize`: not an ancestor's (a module declares none).
+    let m = "module M\nend\n";
     for (src, missing) in [
         ("enum Shape\n  include M\n  variant Circle(radius: Float)\nend\nputs Shape::Circle.new.radius", "radius"),
         ("enum Shape\n  variant Circle(radius: Float)\nend\nextension Shape\n  include M\nend\nputs Shape::Circle.new.radius", "radius"),
@@ -1452,18 +1456,21 @@ fn module_contracts() {
 #[test]
 fn deinitialize_declarations() {
     ok("class R\n  def deinitialize\n    puts 1\n  end\nend");
-    ok("module Cleanup\n  def deinitialize -> Void = nil\nend\nclass R\n  include Cleanup\nend");
+    err(
+        "module Cleanup\n  def deinitialize -> Void = nil\nend\nclass R\n  include Cleanup\nend",
+        "a module cannot declare `deinitialize`",
+    );
     err(
         "class R\n  def deinitialize(x: Int) = nil\nend",
         "`deinitialize` takes no parameters",
     );
     err(
         "data D(x: Int)\n  def deinitialize = nil\nend",
-        "`deinitialize` can only be defined in a class or module",
+        "`deinitialize` can only be defined in a class (not",
     );
     err(
         "extension String\n  def deinitialize = nil\nend",
-        "`deinitialize` can only be defined in a class or module",
+        "`deinitialize` can only be defined in a class (not",
     );
 }
 
@@ -3601,4 +3608,20 @@ fn a_generic_module_is_included_with_one_set_of_arguments() {
         "`C` already has `Comparable[Int]` through `M`",
     );
     ok("class A\n  include Comparable[A]\n  def <=>(other: A) -> Int = 0\nend\nclass B < A\n  include Comparable[A]\nend\nputs B.new < A.new");
+}
+
+#[test]
+fn a_module_declares_no_initialize() {
+    // tmp/repro/super-initialize-into-module.qz: `super` in `C#initialize`
+    // reached `M#initialize`, leaving S's field unset (docs/01 §6).
+    err(
+        "module M\n  def initialize(x: Int)\n  end\nend\nclass S\n  @s: String\n  def initialize(x: Int)\n    @s = \"s\"\n  end\n  def s -> String = @s\nend\nclass C < S\n  include M\n  def initialize(x: Int)\n    super(x)\n  end\nend\nputs C.new(4).s + \"!\"",
+        "a module cannot declare `initialize`: it is the class's; initialize fields in the including class",
+    );
+    err(
+        "module M\n  def deinitialize\n  end\nend",
+        "a module cannot declare `deinitialize`",
+    );
+    // A class method of the name is no constructor.
+    ok("module M\n  def self.initialize -> Int = 1\nend");
 }
