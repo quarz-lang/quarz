@@ -419,18 +419,38 @@ fn overridden_methods(
             let pm = world.method(pid);
             // The override may add parameters the parent's callers never
             // pass: with defaults, or rest parameters.
-            let fits = pm.params.len() <= m.params.len()
+            // (Keywords by name: every keyword call the parent takes,
+            // `MethodInfo::keywords_accept`, each of a type at least as
+            // wide.)
+            let (pps, cps) = (pm.positional_params(), m.positional_params());
+            let wider = |pp: &types::ParamInfo, cp: &types::ParamInfo| {
+                let pt = pp.ty.subst(&subst);
+                pt == cp.ty || world.is_subtype(&pt, &cp.ty)
+            };
+            let fits = pps.len() <= cps.len()
                 && pm.block.is_some() == m.block.is_some()
-                && pm.params.iter().zip(&m.params).all(|(pp, cp)| {
-                    let pt = pp.ty.subst(&subst);
-                    pp.kind == cp.kind
-                        && (pp.kind != ParamKind::KeywordOnly || pp.name == cp.name)
-                        && (pt == cp.ty || world.is_subtype(&pt, &cp.ty))
-                })
-                && m.params[pm.params.len()..].iter().all(|cp| {
-                    cp.default.is_some()
-                        || matches!(cp.kind, ParamKind::Rest | ParamKind::KeywordRest)
-                });
+                && pps
+                    .iter()
+                    .zip(&cps)
+                    .all(|(pp, cp)| pp.kind == cp.kind && wider(pp, cp))
+                && cps[pps.len()..]
+                    .iter()
+                    .all(|cp| cp.default.is_some() || cp.kind == ParamKind::Rest)
+                && m.keywords_accept(pm)
+                && pm
+                    .params
+                    .iter()
+                    .filter(|pp| matches!(pp.kind, ParamKind::KeywordOnly | ParamKind::KeywordRest))
+                    .all(|pp| {
+                        // (By name, and `**rest` with `**rest`.)
+                        m.params
+                            .iter()
+                            .find(|cp| {
+                                cp.kind == pp.kind
+                                    && (cp.kind == ParamKind::KeywordRest || cp.name == pp.name)
+                            })
+                            .is_none_or(|cp| wider(pp, cp))
+                    });
             if fits {
                 out.push(pid);
             }

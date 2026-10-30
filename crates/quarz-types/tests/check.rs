@@ -3343,6 +3343,53 @@ fn an_extension_implementing_an_abstract_method_keeps_its_types_anywhere() {
     ok("module Sized\n  abstract def f(x: Int) -> Int\n  def g -> Int = f(1) + 1\nend\nclass Box\nend\nextension Box\n  include Sized\n  def f(x: String) -> String = x\n  def f(x: Int) -> Int = x\nend");
 }
 
+#[test]
+fn keywords_are_part_of_an_overrides_signature() {
+    // tmp/repro/kw-*.qz: a method requiring a keyword the abstract one does
+    // not take, or not taking one it does, does not implement it.
+    let kw = "module Kw\n  abstract def kw(x: Int) -> String\n  def go -> String = kw(1)\nend\n";
+    err(
+        &format!(
+            "{kw}class Pt\n  include Kw\n  def kw(x: Int, *, y: Int) -> String = \"kw#{{y}}\"\nend"
+        ),
+        "`Pt` must implement `kw` (abstract in `Kw`)",
+    );
+    err(
+        &format!("{kw}class Pt\nend\nextension Pt\n  include Kw\n  def kw(x: Int, *, y: Int) -> String = \"kw#{{y}}\"\nend"),
+        "`Pt` must implement `kw` (abstract in `Kw`)",
+    );
+    err(
+        &format!("{kw}extension Int\n  include Kw\n  def kw(x: Int, *, y: Int) -> String = \"kw#{{y}}\"\nend"),
+        "`Int` must implement `kw` (abstract in `Kw`)",
+    );
+    err(
+        "module Kw\n  abstract def kw(x: Int, *, y: Int) -> String\nend\nclass Pt\n  include Kw\n  def kw(x: Int) -> String = \"nokw\"\nend",
+        "`Pt` must implement `kw` (abstract in `Kw`)",
+    );
+    // A `**rest` stands in for no keyword, and a parent's `**rest` takes
+    // an override's `**rest` of a type at least as wide.
+    err(
+        "module M\n  abstract def f(x: Int, *, y: Int) -> String\nend\nclass C\n  include M\n  def f(x: Int, **opts: String) -> String = \"c\"\nend",
+        "`C` must implement `f` (abstract in `M`)",
+    );
+    err(
+        "module M\n  abstract def f(x: Int, **opts: Int) -> String\nend\nclass C\n  include M\n  def f(x: Int, *, k: String = \"d\", **opts: Int) -> String = k\nend",
+        "`C` must implement `f` (abstract in `M`)",
+    );
+    // A concrete method of a module the included one includes implements it.
+    ok("module M1\n  abstract def f -> String\nend\nmodule M2\n  include M1\n  def f -> String = \"M2#f\"\nend\nextension Int\n  include M2\nend\nputs 1.f");
+    // An extra keyword with a default implements it; a keyword's type is
+    // compared as a parameter's (one typed by a type parameter matches
+    // any at run time, so it must take what callers pass).
+    ok(&format!(
+        "{kw}class Pt\n  include Kw\n  def kw(x: Int, *, y: Int = 1) -> String = \"kw\"\nend"
+    ));
+    err(
+        "class A[T]\n  def g(x: Int, *, y: T) -> Int = x\nend\nclass B < A[Int]\n  def g(x: Int, *, y: String) -> Int = 1\nend",
+        "`g` takes String for `y` but `A#g`, which it overrides, is given Int",
+    );
+}
+
 /// `::name(...)` calls a function: the file's top-level `def`s of the
 /// name, then the built-in `Kernel` functions (docs/01 §1); never a
 /// method of `self`, an `Object` method or one an `extension Kernel` adds.

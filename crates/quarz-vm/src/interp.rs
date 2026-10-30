@@ -2618,6 +2618,7 @@ impl Interp {
                 && cmin <= max
                 && cmax >= min
                 && (c == mid || self.same_signature(c, mid) || cm.overrides.contains(&mid))
+                && (c == mid || cm.keywords_accept(m))
         };
         let mut found = None;
         let mut cur = Some(cid);
@@ -2693,7 +2694,11 @@ impl Interp {
         let takes = |i: MethodId| {
             let c = self.program.method(i);
             let (cmin, cmax) = c.positional_arity();
-            !c.is_abstract && c.has_block == m.has_block && cmin <= amin && cmax >= amax
+            !c.is_abstract
+                && c.has_block == m.has_block
+                && cmin <= amin
+                && cmax >= amax
+                && c.keywords_accept(m)
         };
         for ext in &world.extensions {
             if ext.target == anc && world.extension_dispatches(ext, m.owner) {
@@ -2744,10 +2749,12 @@ impl Interp {
             if let Some(ids) = self.program.world.class(anc).methods.get(&m.name) {
                 candidates.extend(ids);
             }
+            // (One with other required keywords is an overload, not an
+            // override: docs/01 §3.)
             candidates.retain(|c| {
                 let cm = self.program.method(*c);
                 let (cmin, cmax) = cm.positional_arity();
-                cm.has_block == m.has_block && cmin <= max && cmax >= min
+                cm.has_block == m.has_block && cmin <= max && cmax >= min && cm.keywords_accept(m)
             });
             if candidates.is_empty() {
                 continue;
@@ -2768,14 +2775,33 @@ impl Interp {
         None
     }
 
+    /// Whether `a` stands in for `b`: the same parameters by position, of
+    /// the same types (where neither is a type parameter), and every
+    /// keyword call `b` takes (`RtMethod::keywords_accept`), each keyword
+    /// they share of the same type.
     fn same_signature(&self, a: MethodId, b: MethodId) -> bool {
         let (a, b) = (self.program.method(a), self.program.method(b));
-        a.params.len() == b.params.len()
-            && a.params.iter().zip(&b.params).all(|(p, q)| {
-                p.kind == q.kind
-                    && (p.kind != RtParamKind::KeywordOnly || p.name == q.name)
-                    && (p.ty == q.ty || p.ty.is_none() || q.ty.is_none())
-            })
+        let same_ty = |p: &quarz_ir::RtParam, q: &quarz_ir::RtParam| {
+            p.ty == q.ty || p.ty.is_none() || q.ty.is_none()
+        };
+        a.positional_params().count() == b.positional_params().count()
+            && a.positional_params()
+                .zip(b.positional_params())
+                .all(|(p, q)| p.kind == q.kind && same_ty(p, q))
+            && a.keywords_accept(b)
+            && a.params
+                .iter()
+                .filter(|p| matches!(p.kind, RtParamKind::KeywordOnly | RtParamKind::KeywordRest))
+                .all(|p| {
+                    // (By name, and `**rest` with `**rest`.)
+                    b.params
+                        .iter()
+                        .find(|q| {
+                            q.kind == p.kind
+                                && (q.kind == RtParamKind::KeywordRest || q.name == p.name)
+                        })
+                        .is_none_or(|q| same_ty(p, q))
+                })
     }
 
     /// Find a method by name on a class (first match in resolution order
