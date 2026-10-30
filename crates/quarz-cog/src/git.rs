@@ -32,6 +32,26 @@ fn run(mut cmd: Command, what: &str) -> Result<String, Error> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+/// The repository of `dir`, when it is in a git working tree with an
+/// `origin` remote: its URL as configured (not as an `insteadOf` rewrites
+/// it) and `dir`'s directory within the tree (`None` at its top).
+pub fn origin(dir: &Path) -> Option<(String, Option<String>)> {
+    let mut cmd = git();
+    cmd.arg("-C")
+        .arg(dir)
+        .args(["config", "--get", "remote.origin.url"]);
+    let url = run(cmd, "reading the origin remote").ok()?;
+    let url = url.trim().to_string();
+    if url.is_empty() {
+        return None;
+    }
+    let mut cmd = git();
+    cmd.arg("-C").arg(dir).args(["rev-parse", "--show-prefix"]);
+    let prefix = run(cmd, "reading the directory in the repository").ok()?;
+    let prefix = prefix.trim().trim_end_matches('/');
+    Some((url, (!prefix.is_empty()).then(|| prefix.to_string())))
+}
+
 /// The refs a remote advertises: (name, commit), with annotated tags
 /// peeled to their commits.
 pub fn ls_remote(url: &str) -> Result<Vec<(String, String)>, Error> {

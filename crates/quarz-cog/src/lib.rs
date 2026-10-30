@@ -282,6 +282,42 @@ impl<'a> Ctx<'a> {
     /// resolution of the current manifests: every cog they reach must be in
     /// it (or patched). The lock returned in the movement is `lock`
     /// restricted to what was reached.
+    /// No cog is a copy of the application (docs/10 §4): one with its
+    /// `[cog] name` that comes from its own repository (its `origin`, at
+    /// its directory), or that declares its module too. `cogs`: (name,
+    /// module, version, source: `None` for a `[patch]`).
+    fn check_app_copy(
+        &self,
+        app: &Manifest,
+        cogs: &[(String, String, String, Option<Source>)],
+    ) -> Result<(), Error> {
+        let module = app.module();
+        let mut origin: Option<Option<Source>> = None;
+        for (name, m, version, source) in cogs {
+            if *name != app.cog.name {
+                continue;
+            }
+            let at = match source {
+                Some(s) => format!("{s} at {version}"),
+                None => format!("the [patch] of {name} {version}"),
+            };
+            let own = origin.get_or_insert_with(|| {
+                git::origin(self.root).map(|(url, subdir)| Source { url, subdir })
+            });
+            if source.is_some() && own.as_ref() == source.as_ref() {
+                return Err(Error::new(format!(
+                    "{at} comes from the application's own repository (its origin): a copy of the application cannot be a dependency"
+                )));
+            }
+            if *m == module {
+                return Err(Error::new(format!(
+                    "{at} declares the application's name `{name}` and module `{module}`: a copy of the application cannot be a dependency (rename one of them)"
+                )));
+            }
+        }
+        Ok(())
+    }
+
     fn movement_from_lock(
         &mut self,
         manifest: &Manifest,
@@ -407,6 +443,19 @@ impl<'a> Ctx<'a> {
                 .cloned()
                 .collect(),
         };
+        let seen: Vec<(String, String, String, Option<Source>)> = cogs[1..]
+            .iter()
+            .map(|c| {
+                (
+                    c.name.clone(),
+                    c.module.clone(),
+                    c.version.clone(),
+                    c.source.clone(),
+                )
+            })
+            .collect();
+        self.check_app_copy(manifest, &seen)
+            .map_err(LockProblem::Fatal)?;
         let names: Vec<String> = cogs.iter().map(|c| c.name.clone()).collect();
         let edges: Vec<Vec<usize>> = cogs
             .iter()
@@ -795,13 +844,33 @@ impl<'a> Ctx<'a> {
                 )));
             }
         }
-        // A chosen cog's `[patch]` with a path, and a cycle among the
-        // cogs (patched ones included), before anything is fetched or
-        // written.
+        // A chosen cog's `[patch]` with a path, a copy of the application,
+        // and a cycle among the cogs (patched ones included), before
+        // anything is fetched or written.
         for source in &reached {
             let rev = &chosen[source].1;
             check_local_patches(source, &nodes[&(source.clone(), rev.clone())].manifest)?;
         }
+        let mut seen: Vec<(String, String, String, Option<Source>)> = reached
+            .iter()
+            .map(|source| {
+                let (version, rev) = &chosen[source];
+                let m = &nodes[&(source.clone(), rev.clone())].manifest;
+                (
+                    m.cog.name.clone(),
+                    m.module(),
+                    version.to_string(),
+                    Some(source.clone()),
+                )
+            })
+            .collect();
+        for source in &patched_seen {
+            if let Some(dir) = self.patches.get(source) {
+                let m = Manifest::read(dir)?;
+                seen.push((m.cog.name.clone(), m.module(), m.cog.version.clone(), None));
+            }
+        }
+        self.check_app_copy(manifest, &seen)?;
         let mut graph: Vec<(Source, Manifest)> = Vec::new();
         for source in &reached {
             let rev = &chosen[source].1;
