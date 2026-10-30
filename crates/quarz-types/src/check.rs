@@ -9773,6 +9773,33 @@ impl Checker {
 
     /// Try to apply a method to the call's arguments. Returns the return type
     /// (with the substitution applied) or a reason for failure.
+    /// Whether the splats of `call` may fill positional parameter `pi`: a
+    /// splatted tuple has a known length (`h(*t, b: 2)` with `t: [Int]`
+    /// fills `a` only), anything else may fill any position.
+    fn splats_may_reach(
+        &self,
+        call: &Call,
+        pre: &HashMap<NodeId, Type>,
+        positional: &[usize],
+        pi: usize,
+    ) -> bool {
+        let mut filled = 0usize;
+        for a in &call.args {
+            match a {
+                Arg::Positional(_) => filled += 1,
+                Arg::Splat(e) => match pre.get(&e.id).map(|t| self.infer.resolve(t)) {
+                    Some(Type::Tuple(ts)) => filled += ts.len(),
+                    _ => return true,
+                },
+                _ => {}
+            }
+        }
+        positional
+            .iter()
+            .position(|p| *p == pi)
+            .is_some_and(|at| at < filled)
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn try_candidate(
         &mut self,
@@ -9804,6 +9831,12 @@ impl Checker {
         let mut bound: HashMap<usize, Vec<MatchedArg>> = HashMap::default();
         let mut next_pos = 0;
         let mut has_splat = false;
+        // A splat anywhere in the call: what it holds is bound first, by
+        // position, whatever its place (docs/01 §9).
+        let splat = call.args.iter().find_map(|a| match a {
+            Arg::Splat(e) => Some(e),
+            _ => None,
+        });
         for a in &call.args {
             match a {
                 Arg::Positional(e) => {
@@ -9851,6 +9884,30 @@ impl Checker {
                         &p.name == name
                             && matches!(p.kind, ParamKind::Positional | ParamKind::KeywordOnly)
                     });
+                    // (Where the method has a `*rest`: without one, a splat
+                    // is refused by itself; one given twice is reported so.)
+                    if let (Some(pi), Some(s), Some(_)) = (found, splat, rest) {
+                        if m.params[pi].kind == ParamKind::Positional
+                            && !bound.contains_key(&pi)
+                            && self.splats_may_reach(call, pre, &positional, pi)
+                        {
+                            let shown = match &s.kind {
+                                ExprKind::Local(n) => format!("`*{n}`"),
+                                _ => "the splat".to_string(),
+                            };
+                            return Err(
+                                if matches!(&expr.kind, ExprKind::Super { args: None, .. }) {
+                                    format!(
+                                        "this `super` passes `{name}:` by keyword beside {shown}, which may fill that position: pass the arguments explicitly, `{name}` by position"
+                                    )
+                                } else {
+                                    format!(
+                                        "`{name}:` names a positional parameter, but {shown} in the call may fill that position; pass it positionally"
+                                    )
+                                },
+                            );
+                        }
+                    }
                     match found {
                         Some(pi) if !bound.contains_key(&pi) => {
                             bound.entry(pi).or_default().push(MatchedArg {
@@ -11266,6 +11323,23 @@ impl Checker {
             return Type::Nothing;
         };
         let m = self.world.method(mid).clone();
+        // An operator's or a setter's takes no keyword argument, in `super`
+        // as in a call (docs/01 §9).
+        if quarz_syntax::positional_only_name(&m.name) {
+            if let Some(Arg::Keyword { value, .. }) = args
+                .unwrap_or(&[])
+                .iter()
+                .find(|a| matches!(a, Arg::Keyword { .. }))
+            {
+                self.error(
+                    format!(
+                        "`{}` takes no keyword arguments: an operator's or a setter's are positional",
+                        m.name
+                    ),
+                    value.span,
+                );
+            }
+        }
         if m.name == "initialize" && !m.singleton && !self.env.blocks.is_empty() {
             // A block or lambda may run after `initialize` (its callee or
             // a field may keep it) and would then assign the immutable

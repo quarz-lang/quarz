@@ -3459,3 +3459,34 @@ fn an_override_keeps_the_names_callers_may_pass_by_keyword() {
         "callers of `A.f` may pass it as `x:`",
     );
 }
+
+#[test]
+fn a_splat_may_fill_a_position_named_by_keyword() {
+    // tmp/repro/splat-then-keyword.qz (docs/01 §9): what a splat holds is
+    // bound by position first, wherever it is in the call.
+    let h =
+        "def h(a: String, *rest: Object) -> String = \"#{a} #{rest}\"\nxs: Array[Object] = [1]\n";
+    err(
+        &format!("{h}puts h(*xs, a: \"x\")"),
+        "`a:` names a positional parameter, but `*xs` in the call may fill that position; pass it positionally",
+    );
+    err(
+        &format!("{h}puts h(a: \"x\", *xs)"),
+        "`a:` names a positional parameter",
+    );
+    err(
+        "xs: Array[Object] = [1]\nputs format(*xs, format: \"%d\")",
+        "`format:` names a positional parameter",
+    );
+    // An operator takes no keyword argument in `super` either.
+    err(
+        "class Foo\n  def ==(other: Object) -> Bool = super(other: other)\n  def hash -> Int = 1\nend",
+        "`==` takes no keyword arguments",
+    );
+    ok("class Foo\n  def ==(other: Object) -> Bool = super(other)\n  def hash -> Int = 1\nend");
+    // A splatted tuple has a known length: it cannot reach `b`.
+    ok("def g(a: Int, b: Int = 0, *r: Int) -> Int = a + b\nt: [Int] = [1]\nputs g(*t, b: 2)");
+    // Positionally, or a keyword-only parameter, it is fine.
+    ok(&format!("{h}puts h(\"y\", *xs)"));
+    ok("def k(*rest: Int, by: Int = 1) -> Int = rest.size * by\nys = [1, 2]\nputs k(*ys, by: 3)");
+}
