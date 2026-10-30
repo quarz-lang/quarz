@@ -9,7 +9,8 @@ use quarz_ir::*;
 use smallvec::{smallvec, SmallVec};
 
 use crate::interp::{
-    float_binop_into, float_operands, int_binop_into, ArgVec, EvalResult, Flow, Interp, SharedState,
+    float_binop_into, float_operands, int_binop_into, ArgVec, EvalResult, Flow, Interp,
+    SharedState, KW_SPLAT,
 };
 use crate::sched;
 use crate::value::MethodCache;
@@ -1043,13 +1044,11 @@ impl Interp {
             .iter()
             .map(|(k, r)| (self.symbol_const(f, pool, *k), regs[*r as usize].clone()))
             .collect();
+        // A `**hash` supplies only the callee's `**kw` (docs/01 §9): passed
+        // whole, under a name no parameter has, for `bind_params`.
         if let Some(h) = kw_splat {
-            if let Value::Hash(h) = &regs[h as usize] {
-                for (k, v) in h.as_map().iter() {
-                    if let Value::Symbol(s) = k {
-                        out.push((*s, v.clone()));
-                    }
-                }
+            if let Value::Hash(_) = &regs[h as usize] {
+                out.push((self.intern(KW_SPLAT), regs[h as usize].clone()));
             }
         }
         out

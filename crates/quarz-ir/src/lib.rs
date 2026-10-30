@@ -186,6 +186,11 @@ impl Function {
     }
 }
 
+/// The name a `**hash` argument is passed under among a call's keywords,
+/// in its place (`Interp::bind_params`): no parameter has it, so only
+/// `**kw` takes its entries (docs/01 §9).
+pub const KW_SPLAT: &str = "**";
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Constant {
     Nil,

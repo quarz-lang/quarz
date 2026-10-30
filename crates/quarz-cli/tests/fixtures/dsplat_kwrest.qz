@@ -1,0 +1,27 @@
+# A `**hash` argument supplies only the callee's `**kw` (docs/01 §9): a
+# named parameter is given by an explicit keyword, so a hash entry of its
+# name never fills it.
+def h(a: Int, b: Int = 7, *, c: Int = 0, **kw: String) -> String = "#{a} #{b + 1} #{c} #{kw}"
+
+hh: Hash[Symbol, String] = {b: "x", c: "y", d: "z"}
+puts h(1, **hh)
+puts h(1, 2, c: 3, **hh)
+puts h(1, b: 5)
+
+def opts(**kw: Int) -> Int = kw.values.sum
+counts: Hash[Symbol, Int] = {a: 1, b: 2}
+puts opts(**counts)
+puts opts(c: 3, **counts)
+# The later one in the call wins.
+puts opts(a: 9, **counts)
+puts opts(**counts, a: 9)
+
+class Base
+  def run(n: Int, **kw: Int) -> String = "#{n} #{kw}"
+end
+
+class Child < Base
+  def run(n: Int, **kw: Int) -> String = "child " + super
+end
+
+puts Child.new.run(1, x: 2)
