@@ -3601,6 +3601,27 @@ impl Value {
     }
 }
 
+impl Value {
+    /// `==` by the default equality (`Object#==`): an object is not
+    /// compared by its class's own `==`, which `super` from it reaches
+    /// this to avoid; its fields still are, by theirs.
+    pub fn default_eq(&self, other: &Value) -> bool {
+        match (self, other) {
+            (Value::Object(a), Value::Object(b)) => {
+                if Rc::ptr_eq(a, b) {
+                    return true;
+                }
+                if let (Some(x), Some(y)) = (a.exc_info(), b.exc_info()) {
+                    return x.id == y.id;
+                }
+                a.class == b.class && is_structural(a) && a.fields_eq(b)
+            }
+            (Value::Object(_), _) => false,
+            _ => self == other,
+        }
+    }
+}
+
 /// Structural equality for immutable values (used for hash keys and as the
 /// default `==`). Mutable objects compare by identity; data types and enum
 /// variants compare field-wise.

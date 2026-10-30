@@ -186,8 +186,11 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     native!(m, "Kernel#String", kernel_string);
 }
 
+/// The default `==`: run where no class's own applies, or by `super`
+/// from one, so it does not look the receiver's up again (which would
+/// find that very method).
 fn obj_eq(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
-    Ok(Value::Bool(interp.values_equal(recv, args.arg(0))?))
+    Ok(Value::Bool(interp.values_equal_default(recv, args.arg(0))?))
 }
 
 fn obj_ne(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
