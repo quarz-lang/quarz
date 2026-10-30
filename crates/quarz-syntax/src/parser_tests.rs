@@ -701,3 +701,52 @@ fn block_result_type() {
         vec!["expected a type after `->` (the block's result type) or a lambda"]
     );
 }
+
+/// `y := e` and `y: T = e` declare a local in the innermost scope, also
+/// where an outer `y` exists; the value is read before the declaration.
+#[test]
+fn local_declarations() {
+    assert_eq!(sexp("y := 1"), "(decl y:= 1)");
+    assert_eq!(sexp("y:=1"), "(decl y:= 1)");
+    assert_eq!(
+        sexp("y = 1\ny := y + 1"),
+        "(= y 1)\n(decl y:= (call y + 1))"
+    );
+    assert_eq!(sexp("y = 1\ny: Int = 2"), "(= y 1)\n(decl y:Int 2)");
+    // Not yet a local in its own value: `y` there is a call.
+    assert_eq!(sexp("y := y"), "(decl y:= (call _ y))");
+    assert_eq!(
+        sexp("f { |x| y := x }"),
+        "(call _ f (block (params x) (decl y:= x)))"
+    );
+    // `:==` and `:=~` stay the operators' symbols.
+    assert_eq!(sexp("p :==, :=~"), "(call _ p :== :\"=~\")");
+    // A name declared in a `case/in` arm or a rescue clause is out of
+    // scope after it (a call there); one assigned there stays.
+    assert_eq!(
+        sexp("case 1\nin Int\n  k := 2\n  j = 3\nend\nk\nj"),
+        "(case-in 1 (in Int (decl k:= 2) (= j 3)))\n(call _ k)\nj"
+    );
+    assert_eq!(
+        sexp("begin\n  1\nrescue\n  k := 2\nend\nk"),
+        "(begin 1 (rescue (decl k:= 2)))\n(call _ k)"
+    );
+    // ... unless it was one before.
+    assert_eq!(
+        sexp("k = 0\ncase 1\nin Int\n  k := 2\nend\nk"),
+        "(= k 0)\n(case-in 1 (in Int (decl k:= 2)))\nk"
+    );
+    assert_eq!(errors("y : = 1"), vec!["expected end of line, found `:`"]);
+    assert_eq!(
+        errors("@x := 1"),
+        vec!["`:=` declares a local variable, not a field: declare `@x` in the class body, or with `@x: T = value` in `initialize`"]
+    );
+    assert_eq!(
+        errors("X := 1"),
+        vec!["`:=` declares a local variable: a constant is assigned with `X = value`"]
+    );
+    assert_eq!(
+        errors("a, b := 1, 2"),
+        vec!["`:=` declares one local variable; assign several with `a, b = ...`"]
+    );
+}

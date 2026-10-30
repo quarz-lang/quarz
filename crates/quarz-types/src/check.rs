@@ -441,6 +441,10 @@ struct Env {
     arm_local: bool,
     /// Inside an alternative pattern, which binds no names.
     in_alternative: u32,
+    /// The innermost scope within a frame (a `case/in` arm, a rescue
+    /// clause) that a declaration (`y := e`, `y: T = e`) is in, when it is
+    /// not the frame's own (`check_typed_decl`).
+    decl_scope: Option<DeclScope>,
     /// Index of the innermost frame that runs on another task (`spawn`
     /// block). Variables from frames below it are captured by value and must
     /// be shareable; they cannot be assigned.
@@ -574,6 +578,10 @@ struct Assigned {
     /// (in `initialize`, it assigns the inherited fields).
     ivars: HashSet<String>,
     supers: bool,
+    /// Walking for `widen_assigned`, which acts at once on the variables
+    /// in scope at the start: a scope's own declarations (`y := e`) are
+    /// left out of it (`Checker::assigned_names_scope`).
+    widening: bool,
 }
 
 impl Assigned {
@@ -658,7 +666,7 @@ impl Assigned {
         // not count as code that runs again, as a loop's does.)
         self.closure_depth += 1;
         self.escaping += escapes as u32;
-        Checker::assigned_names(&block.body, self);
+        Checker::assigned_names_scope(&block.body, self);
         self.closure_depth -= 1;
         self.escaping -= escapes as u32;
         self.known = known;
@@ -675,6 +683,15 @@ struct LoopExits {
     skipped: bool,
     /// The `begin` blocks with an `ensure` around the point being checked.
     ensures: u32,
+}
+
+/// A scope within a frame (`Env::decl_scope`): the frame, its first slot,
+/// and the slots of the variables declared in it, hidden when it ends.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct DeclScope {
+    frame: usize,
+    start: usize,
+    declared: Vec<usize>,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -915,6 +932,7 @@ impl Checker {
             pattern_base: None,
             arm_local: false,
             in_alternative: 0,
+            decl_scope: None,
             task_frame: None,
             task_shareable_proc: false,
             reassigned: None,
@@ -2209,6 +2227,7 @@ impl Checker {
             pattern_base: None,
             arm_local: false,
             in_alternative: 0,
+            decl_scope: None,
             task_frame: None,
             task_shareable_proc: false,
             reassigned: None,
@@ -3501,6 +3520,110 @@ impl Checker {
         v.narrowed.clone().unwrap_or_else(|| v.declared.clone())
     }
 
+    /// `y: T = e` and `y := e`: a new variable in the innermost scope (the
+    /// frame's, or a `case/in` arm's or rescue clause's), hiding one of the
+    /// name in an outer scope; one already in this scope is an error.
+    fn check_typed_decl(
+        &mut self,
+        expr: &Expr,
+        name: &str,
+        ty: Option<&TypeExpr>,
+        value: &Expr,
+    ) -> Type {
+        // The value first: it reads an outer variable of the name.
+        let (declared, narrowed, result) = match ty {
+            Some(ty) => {
+                let scope = self.env.scope.clone();
+                let Some(declared) = self.resolve_type_expr(ty, &scope) else {
+                    self.check_expr(value, None);
+                    return Type::Nothing;
+                };
+                let vt = self.check_expr(value, Some(&declared));
+                if !self.coerce(&vt, &declared) {
+                    self.error(
+                        format!(
+                            "cannot assign {} to `{name}` of type {}",
+                            self.name(&vt),
+                            self.name(&declared)
+                        ),
+                        value.span,
+                    );
+                }
+                let narrowed = self.resolve(&vt);
+                (declared.clone(), narrowed, declared)
+            }
+            // The value's type, as for a new name assigned with `=`.
+            None => {
+                let vt = self.check_expr(value, None);
+                let t = self.resolve(&vt);
+                let t = if t.is_nothing() { self.world.nil() } else { t };
+                // `x := [1, "a"]`: an array of the union, narrowed to the
+                // tuple (as `x = [1, "a"]` is).
+                let declared = match (&t, &value.kind) {
+                    (Type::Tuple(ts), ExprKind::Array(_)) => {
+                        self.world.array_of(self.world.tuple_element(ts))
+                    }
+                    _ => t.clone(),
+                };
+                (declared, t, vt)
+            }
+        };
+        let frame = self.env.frames.len() - 1;
+        let start = match &self.env.decl_scope {
+            Some(s) if s.frame == frame => s.start,
+            _ => 0,
+        };
+        if self.env.frames[frame]
+            .vars
+            .find(name)
+            .is_some_and(|slot| slot >= start)
+        {
+            self.error(
+                format!(
+                    "`{name}` is already declared in this scope; a local variable's type is fixed at its declaration"
+                ),
+                expr.span,
+            );
+        }
+        let slot = self.declare_var(name, declared, expr.span).slot as usize;
+        if let Some(s) = self.env.decl_scope.as_mut().filter(|s| s.frame == frame) {
+            s.declared.push(slot);
+        }
+        self.set_narrowed(&VarKey::Local(name.to_string()), Some(narrowed));
+        result
+    }
+
+    /// Check `f` as a scope within the frame (a `case/in` arm's body, a
+    /// rescue clause's) starting at slot `start`: the variables declared
+    /// in it are hidden after it (their slots stay, for the code that
+    /// refers to them).
+    fn in_decl_scope<R>(&mut self, start: usize, f: impl FnOnce(&mut Self) -> R) -> R {
+        let saved = self.enter_decl_scope(start);
+        let r = f(self);
+        self.leave_decl_scope(saved);
+        r
+    }
+
+    /// Begin a scope within the frame at slot `start` (`in_decl_scope`);
+    /// returns what `leave_decl_scope` restores.
+    fn enter_decl_scope(&mut self, start: usize) -> Option<DeclScope> {
+        let frame = self.env.frames.len() - 1;
+        self.env.decl_scope.replace(DeclScope {
+            frame,
+            start,
+            declared: Vec::new(),
+        })
+    }
+
+    fn leave_decl_scope(&mut self, saved: Option<DeclScope>) {
+        let scope = std::mem::replace(&mut self.env.decl_scope, saved).unwrap();
+        let vars = &mut self.env.frames[scope.frame].vars;
+        for slot in scope.declared {
+            let hidden = format!("{} (declared in a scope that ended)", vars.list[slot].name);
+            vars.rename(slot, hidden);
+        }
+    }
+
     fn declare_var(&mut self, name: &str, ty: Type, span: Span) -> VarRef {
         let frame = self.env.frames.last_mut().unwrap();
         frame.vars.push(VarInfo {
@@ -3864,6 +3987,33 @@ impl Checker {
         }
     }
 
+    /// `assigned_names` over a scope's body (the one `widen_assigned`
+    /// begins with, a block's, a `case/in` arm's, a rescue clause's): in
+    /// the walk for `widen_assigned` (`Assigned::widening`), from a
+    /// declaration directly in it (`y := e`) to its end, `y` is that
+    /// scope's own variable, not the one of the name in scope at the
+    /// start, which is all that walk acts on. Every other walk keeps what
+    /// it learns by name for the whole body (`scan_closures`,
+    /// `prescan_repeated`), the declared variable's own included: there a
+    /// declaration counts against the name, which only widens or pins
+    /// more. (So does a declaration deeper, in an `if`'s body.)
+    fn assigned_names_scope(exprs: &[Expr], out: &mut Assigned) {
+        if !out.widening {
+            return Self::assigned_names(exprs, out);
+        }
+        for (i, e) in exprs.iter().enumerate() {
+            if let ExprKind::TypedDecl { name, value, .. } = &e.kind {
+                Self::assigned_names_expr(value, out);
+                out.scoped(name, |out| {
+                    out.add(name);
+                    Self::assigned_names_scope(&exprs[i + 1..], out);
+                });
+                return;
+            }
+            Self::assigned_names_expr(e, out);
+        }
+    }
+
     fn assigned_names_expr(e: &Expr, out: &mut Assigned) {
         use ExprKind::*;
         match &e.kind {
@@ -3974,7 +4124,7 @@ impl Checker {
                     if let Some(g) = &a.guard {
                         Self::assigned_names_expr(&g.cond, out);
                     }
-                    Self::assigned_names(&a.body, out);
+                    Self::assigned_names_scope(&a.body, out);
                 }
                 if let Some(els) = els {
                     Self::assigned_names(els, out);
@@ -3989,8 +4139,8 @@ impl Checker {
                 for r in &b.rescues {
                     // (The clause's variable is its own: docs/01 §12.)
                     match &r.var {
-                        Some(v) => out.scoped(v, |out| Self::assigned_names(&r.body, out)),
-                        None => Self::assigned_names(&r.body, out),
+                        Some(v) => out.scoped(v, |out| Self::assigned_names_scope(&r.body, out)),
+                        None => Self::assigned_names_scope(&r.body, out),
                     }
                 }
                 if let Some(x) = &b.else_body {
@@ -4126,10 +4276,16 @@ impl Checker {
     /// `widen_assigned`, with `own` a local of the body's own (a rescue
     /// clause's variable), which the outer local of the name is not.
     fn widen_assigned_except(&mut self, body: &[Expr], own: Option<&str>) {
-        let mut assigned = Assigned::default();
+        // What the body assigns un-narrows the variables in scope now, at
+        // its start: one it declares (`y := e`) is not yet, and assigning
+        // it does not change the outer `y` (`assigned_names_scope`).
+        let mut assigned = Assigned {
+            widening: true,
+            ..Assigned::default()
+        };
         match own {
-            Some(v) => assigned.scoped(v, |a| Self::assigned_names(body, a)),
-            None => Self::assigned_names(body, &mut assigned),
+            Some(v) => assigned.scoped(v, |a| Self::assigned_names_scope(body, a)),
+            None => Self::assigned_names_scope(body, &mut assigned),
         }
         self.widen_fields(&assigned);
         for (name, method) in assigned.bangs {
@@ -4854,30 +5010,7 @@ impl Checker {
             Assign { target, value } => self.check_assign(expr, target, value, expected),
             OpAssign { target, op, value } => self.check_op_assign(expr, target, *op, value),
             MultiAssign { targets, value } => self.check_multi_assign(expr, targets, value),
-            TypedDecl { name, ty, value } => {
-                let scope = self.env.scope.clone();
-                let Some(declared) = self.resolve_type_expr(ty, &scope) else {
-                    return Type::Nothing;
-                };
-                let vt = self.check_expr(value, Some(&declared));
-                if !self.coerce(&vt, &declared) {
-                    self.error(
-                        format!(
-                            "cannot assign {} to `{name}` of type {}",
-                            self.name(&vt),
-                            self.name(&declared)
-                        ),
-                        value.span,
-                    );
-                }
-                if self.lookup_var(name).is_some_and(|(d, _)| d == 0) {
-                    self.error(format!("`{name}` is already declared"), expr.span);
-                }
-                self.declare_var(name, declared.clone(), expr.span);
-                let narrowed = self.resolve(&vt);
-                self.set_narrowed(&VarKey::Local(name.clone()), Some(narrowed));
-                declared
-            }
+            TypedDecl { name, ty, value } => self.check_typed_decl(expr, name, ty.as_ref(), value),
             And(a, b) => {
                 let (ta, facts_true, _) = self.check_cond(a);
                 if let Some(t) = self.logical_method(expr, "&&", &ta, b, expected) {
@@ -6182,12 +6315,14 @@ impl Checker {
             // The clause's variable is its own, as a block's parameter:
             // declared fresh with the clause's classes, shadowing an outer
             // local of the name, and gone after the clause (docs/01 §12).
+            let clause_start = self.env.frames.last().unwrap().vars.len();
             let own = r
                 .var
                 .as_ref()
                 .map(|var| self.declare_var(var, exc_ty.clone(), r.span).slot as usize);
             self.env.in_rescue += 1;
-            let rt = self.check_body(&r.body, expected);
+            // (A scope of its own, for what it declares: `y := e`.)
+            let rt = self.in_decl_scope(clause_start, |c| c.check_body(&r.body, expected));
             self.env.in_rescue -= 1;
             if let Some(slot) = own {
                 // (Its slot stays, for the code that refers to it; its name
@@ -11274,6 +11409,9 @@ impl Checker {
                 Some(k) => self.narrow_subject(k, Some(narrowed)),
                 None => {}
             }
+            // (The arm, its pattern's names included, is a scope of its
+            // own for what it declares, `y := e`, in its guard or body.)
+            let saved_scope = self.enter_decl_scope(own_from);
             if let Some(g) = &arm.guard {
                 let (_, ft, ff) = self.check_cond(&g.cond);
                 // (Where it fails, as a later arm sees it: what it bound
@@ -11296,6 +11434,7 @@ impl Checker {
                 rebound.push((fi, slot, now));
             }
             let bt = self.check_body(&arm.body, expected);
+            self.leave_decl_scope(saved_scope);
             snaps.push((self.snapshot(), bt.is_nothing()));
             result = self.join(&result, &bt);
             // The arm's names are out of scope after it (their slots stay,

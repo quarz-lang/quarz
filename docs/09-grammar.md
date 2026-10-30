@@ -76,7 +76,8 @@ const_decl     = const_path "=" expression ;
 const_path     = [ "::" | "cog" "::" ] CONST { "::" CONST } ;   (* "cog": the current cog's root module *)
 
 (* ---- type annotations on variables ---- *)
-typed_assign   = IDENT ":" type "=" expression ;        (* only at the start of a statement *)
+typed_decl     = IDENT ":" type "=" expression         (* only at the start of a statement: *)
+               | IDENT ":=" expression ;                (* a new local in the innermost scope *)
 
 (* ---- procedure literals ---- *)
 lambda         = "->" [ "(" [ param_list ] ")" ] [ "->" type ] ( "{" body "}" | "do" body "end" ) ;

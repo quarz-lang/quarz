@@ -48,6 +48,7 @@ A summary of the things someone who knows Ruby will first stumble on when starti
 | `nil?`, `is_a?`, `equal?`, `==` | Any class may redefine them (`equal?` should not be, by its documentation) | `nil?` and `is_a?` (the checker narrows types by them) and `equal?` (identity) cannot be defined; a class's own `==`/`!=` takes an `Object` (01-syntax.md §3) |
 | Exceptions `rescue => e` | `StandardError` | Same. `Task::Cancelled` is directly under `Exception`, so it is not caught |
 | Pattern variables | Bound as the match reaches them: a pattern that fails partway leaves those bound before; a `case/in` arm's names are locals of the method, seen after the `case` | Bound only once the whole pattern matched; a `case/in` arm's names are the arm's own (shadowing, not seen after it); `in`/`=>` bind into the enclosing scope |
+| Block-local variables `\|x; y\|` | `y` is the block's own, hiding an outer `y` | Not available: declare in the block, `y := nil` or `y: T = ...`, which hides an outer `y` in any scope (01-syntax.md §10) |
 | The variable of `rescue E => e` | A local of the method: it stays after the `begin` (and `ensure`/`else` see it) | The clause's own, as a block's parameter: it shadows an outer local of the name, which is unchanged after; `ensure`, `else` and the code after the `begin` do not see it |
 | `raise e` with `e` kept | Sets `e`'s backtrace and cause | When `e` lacks them, raises a copy given them (exceptions are immutable): `e` keeps none, and the exception rescued is not `equal?` to `e` (06-stdlib.md) |
 

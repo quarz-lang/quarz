@@ -75,6 +75,11 @@ impl LocalTable {
             .insert(name.to_string());
     }
 
+    /// How many scopes are open.
+    pub fn depth(&self) -> usize {
+        self.scopes.len()
+    }
+
     /// Forget `name` in the innermost scope (a rescue clause's variable,
     /// out of scope after its clause).
     pub fn undeclare(&mut self, name: &str) {
@@ -755,6 +760,11 @@ impl<'src> Lexer<'src> {
         if self.peek() == Some(b':') {
             self.pos += 1;
             return TokenKind::ColonColon;
+        }
+        // `y := e`; `:==` and `:=~` are the operators' symbols.
+        if self.peek() == Some(b'=') && !matches!(self.bytes.get(self.pos + 1), Some(b'=' | b'~')) {
+            self.pos += 1;
+            return TokenKind::ColonAssign;
         }
         // `name:` / `"name":` is a label (decided by the parser), so the
         // colon must not swallow what follows as a symbol.

@@ -1558,6 +1558,10 @@
           "name": "keyword.operator.arrow.quarz"
         },
         {
+          "match": ":=",
+          "name": "keyword.operator.assignment.declaration.quarz"
+        },
+        {
           "match": "(?<=[\\w?!)\\]])(:)(?=\\s+[A-Z(])",
           "captures": {
             "1": {

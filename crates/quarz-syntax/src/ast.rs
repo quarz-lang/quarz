@@ -96,10 +96,11 @@ pub enum ExprKind {
         targets: Vec<MultiTarget>,
         value: Box<Expr>,
     },
-    /// `x: Int = value`
+    /// `x: Int = value`, or `x := value` (`ty` is `None`): a new local
+    /// variable in the innermost scope, hiding an outer one of the name.
     TypedDecl {
         name: String,
-        ty: TypeExpr,
+        ty: Option<TypeExpr>,
         value: Box<Expr>,
     },
 
