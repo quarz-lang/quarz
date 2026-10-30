@@ -1456,3 +1456,45 @@ fn cogs_depend_on_each_other_in_no_cycle() {
     let err = w.fails("app", &["check"]);
     assert!(err.contains("in a cycle: c"), "{err}");
 }
+
+#[test]
+fn a_copy_of_the_application_is_no_dependency() {
+    // docs/10 §4: `c1` names the application's own repository (an older
+    // tag of it): a copy of the application would be loaded as a cog.
+    let w = World::new();
+    w.app("", "puts 1\n");
+    w.commit("app", Some("v0.1.0"));
+    publish(&w, "c1", "1.0.0", &[("App", "app", "v0.1.0")]);
+    w.app(
+        &format!("C1 = {{ git = \"{}\", tag = \"v1.0.0\" }}\n", w.url("c1")),
+        "puts C1::V\n",
+    );
+    // Without a remote: the same name and module.
+    let err = w.fails("app", &["check"]);
+    assert!(
+        err.contains("declares the application's name `app` and module `App`"),
+        "{err}"
+    );
+    // With the application's remote: named as a copy of it.
+    w.git("app", &["remote", "add", "origin", &w.url("app")]);
+    let err = w.fails("app", &["check"]);
+    assert!(
+        err.contains("at 0.1.0 comes from the application's own repository (its origin)"),
+        "{err}"
+    );
+    // Another cog that only shares the module stays allowed (§2, §6).
+    w.write(
+        "other/Cog.toml",
+        "[cog]\nname = \"other\"\nversion = \"1.0.0\"\nmodule = \"App\"\n",
+    );
+    w.write("other/src/v.qz", "V = 2\n");
+    w.commit("other", Some("v1.0.0"));
+    w.app(
+        &format!(
+            "Other = {{ git = \"{}\", tag = \"v1.0.0\" }}\n",
+            w.url("other")
+        ),
+        "puts Other::V\n",
+    );
+    assert_eq!(w.ok("app", &["run"]), "2\n");
+}
