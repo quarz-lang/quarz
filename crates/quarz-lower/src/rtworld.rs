@@ -230,6 +230,21 @@ pub fn build(world: &World, lw: &Lowerer, file_names: Vec<String>) -> RtWorld {
                             Type::Param(_) | Type::Var(_) => None,
                             t => Some(world.type_name(&world.devoid(t))),
                         },
+                        default: if m.is_native {
+                            let d = p.default.as_deref().and_then(literal_constant);
+                            // (A call may skip it to name a later one by
+                            // keyword: `Interp::native_positions` passes
+                            // only a literal.)
+                            debug_assert!(
+                                p.default.is_none() || d.is_some() || !later_positional(m, &p.name),
+                                "native `{}`: the default of `{}` is not a literal, though a positional parameter follows it",
+                                m.name,
+                                p.name
+                            );
+                            d
+                        } else {
+                            None
+                        },
                     })
                     .collect(),
                 has_block: m.block.is_some(),
@@ -457,6 +472,29 @@ fn overridden_methods(
         }
     }
     out
+}
+
+/// Whether a positional parameter of `m` follows the one named `name`.
+fn later_positional(m: &types::MethodInfo, name: &str) -> bool {
+    m.params
+        .iter()
+        .skip_while(|p| p.name != name)
+        .skip(1)
+        .any(|p| p.kind == ParamKind::Positional)
+}
+
+/// A default written as a literal, as a constant.
+fn literal_constant(e: &quarz_syntax::ast::Expr) -> Option<Constant> {
+    use quarz_syntax::ast::ExprKind;
+    Some(match &e.kind {
+        ExprKind::Nil => Constant::Nil,
+        ExprKind::True => Constant::Bool(true),
+        ExprKind::False => Constant::Bool(false),
+        ExprKind::Int(i) => Constant::Int(i.value?),
+        ExprKind::Float(f) => Constant::Float(*f),
+        ExprKind::Symbol(s) => Constant::Symbol(s.clone()),
+        _ => return None,
+    })
 }
 
 /// The classes `t` names (as instances or as class objects).
