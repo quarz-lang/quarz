@@ -1,11 +1,26 @@
 # Under --parallel --fail-fast, the tests still running when one fails
-# are cancelled.
+# are cancelled. test_b and test_c wait on a channel nothing sends to,
+# so only the cancel ends them, and test_a fails only once both have
+# started, whenever the tasks are scheduled. Run with --timeout=0: with
+# no test's timer pending, a missed cancel leaves every task waiting,
+# and the run ends at once with DeadlockError.
+STARTED = Channel[Int].new(capacity: 2)
+NEVER = Channel[Int].new
+
 class FastTest < Test::Case
   def test_a
-    sleep(10.ms)
+    STARTED.receive
+    STARTED.receive
     flunk("first")
   end
 
-  def test_b -> Void = sleep(2.seconds)
-  def test_c -> Void = sleep(2.seconds)
+  def test_b -> Void
+    STARTED.send(0)
+    NEVER.receive
+  end
+
+  def test_c -> Void
+    STARTED.send(0)
+    NEVER.receive
+  end
 end

@@ -81,15 +81,21 @@ fn what_fails_around_the_tests_is_reported() {
     }
 }
 
+/// Under `--parallel --fail-fast`, the failure of test_a cancels test_b
+/// and test_c, which are running and would wait forever: the report
+/// counts test_a only. Channels order them, so it holds however the
+/// tasks are scheduled; with `--timeout=0` (no timer pending), a missed
+/// cancel leaves every task waiting and the run ends with DeadlockError,
+/// without the report, at once rather than after the tests' timeout.
 #[test]
 fn fail_fast_cancels_parallel_tests() {
-    let started = std::time::Instant::now();
     let out = Command::new(env!("CARGO_BIN_EXE_quarz"))
         .args([
             "test",
             "test_cmd/fail_fast_test.qz",
             "--parallel",
             "--fail-fast",
+            "--timeout=0",
         ])
         .current_dir(tests_dir())
         .env("QUARZ_THREADS", "4")
@@ -102,7 +108,6 @@ fn fail_fast_cancels_parallel_tests() {
         "{}",
         stdout(&out)
     );
-    assert!(started.elapsed() < std::time::Duration::from_millis(1500));
 }
 
 /// An `exit` in a test is raised in that test, also run in parallel
