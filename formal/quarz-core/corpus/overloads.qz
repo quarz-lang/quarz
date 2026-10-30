@@ -1,0 +1,17 @@
+# Overloads (docs/01 §9): the checker's choice is the call's method; the
+# runtime dispatches by signature, so B overriding f(Int) leaves f(String) to A.
+class A
+  def f(x: Int) -> Int = x + 1
+  def f(x: String) -> String = x + "!"
+  def g -> Int = 0
+end
+class B < A
+  def f(x: Int) -> Int = x + 100
+end
+def m(a: A) -> Int
+  n = a.f(1)
+  s = a.f("s")
+  n + s.size
+end
+puts m(A.new)
+puts m(B.new)

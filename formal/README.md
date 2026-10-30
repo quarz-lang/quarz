@@ -397,6 +397,17 @@ stricter, not unsound.
   it: none in the corpus, the fixtures or the examples does.
   `x.m!` that the checker resolved to `m` (the sugar for `x = x.m`,
   docs/01 §10, on a local) is that assignment.
+  What the translator takes from the Rust checker as given, the model
+  checking only what follows from it: which method a call resolves to,
+  the choice among overloads included (the model checks the chosen
+  signature: an overloaded method's model name is its name and
+  signature, `name#k`, as the runtime dispatches by signature, so a
+  subclass's override of one overload leaves the others to the
+  superclass; one of a generic signature is out of range); a built-in
+  method's type parameters solved from the call's result type (a lower
+  bound widening them, the arguments checked against them); the types
+  of nodes the model has no rule for (a built-in call's result, an
+  op-assignment's target's current value, a block's declared result).
   A disagreement is the Rust checker narrowing further than the rules
   allow, or the model being stricter: either is looked at. The methods
   `attr_reader` and `attr_writer` make are methods of the model; another
