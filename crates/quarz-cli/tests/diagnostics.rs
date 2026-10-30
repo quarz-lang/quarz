@@ -22,8 +22,10 @@ end
 f: (Int) -> Int = -> (x: Int) { x }
 g: Box.() -> Void = f
 Box.new.bump { nothing_here }
-def n -> Int = 42
-Box.new.bump { n }
+class Outer
+  def n -> Int = 42
+  def go -> Void = Box.new.bump { n }
+end
 class Inner
   include DslScope
   def leaf -> Int = 1

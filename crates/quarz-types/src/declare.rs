@@ -71,6 +71,10 @@ impl Default for Declarer<'_> {
     }
 }
 
+/// `include Kernel` / `extend Kernel` (docs/01 §1).
+const KERNEL_MIXIN: &str =
+    "`Kernel` holds functions, not methods: call them as `puts` or `Kernel.puts`";
+
 pub struct Declarer<'ast> {
     pub world: World,
     /// Diagnostics tagged with the file index they refer to.
@@ -1743,6 +1747,35 @@ impl<'ast> Declarer<'ast> {
     /// returns nil, so it overrides none that returns a value.
     fn check_override_returns(&mut self, id: ClassId) {
         let class = self.world.class(id);
+        // A file's top-level `def`s are functions: they override nothing
+        // (docs/01 §1). One an `Object` method of its signature (or an
+        // active `extension Object`'s) hides from an implicit call is
+        // reached as `::name` only: said so.
+        if class.kind == ClassKind::Main {
+            let object = Type::class(self.world.builtin.object);
+            let mut warnings = Vec::new();
+            for (name, ids) in &class.methods {
+                let inherited = self.world.lookup_methods(&object, name);
+                for id in ids {
+                    let m = self.world.method(*id);
+                    if let Some((o, _)) = inherited
+                        .iter()
+                        .find(|(o, _)| self.world.same_signature(self.world.method(*o), m))
+                    {
+                        let owner = self.world.class(self.world.method(*o).owner).name.clone();
+                        warnings.push((
+                            m.file,
+                            Diagnostic::warning(
+                                format!("`{name}` is a method of every object (`{owner}#{name}`), which a call without a receiver finds first: call this `def` as `::{name}`"),
+                                m.span,
+                            ),
+                        ));
+                    }
+                }
+            }
+            self.diagnostics.extend(warnings);
+            return;
+        }
         let args: Vec<Type> = class
             .type_params
             .iter()
@@ -2445,8 +2478,9 @@ impl<'ast> Declarer<'ast> {
     /// values must hash the same (a warning, as Rust's clippy has).
     fn check_eq_with_hash(&mut self, id: ClassId) {
         let class = self.world.class(id);
-        // A module may bring one, the classes including it the other.
-        if class.file == 0 || class.kind == ClassKind::Module {
+        // A module may bring one, the classes including it the other; a
+        // file's top-level `def`s are functions, not its object's.
+        if class.file == 0 || matches!(class.kind, ClassKind::Module | ClassKind::Main) {
             return;
         }
         let own = |name: &str| {
@@ -3272,6 +3306,10 @@ impl<'ast> Declarer<'ast> {
                             continue;
                         };
                         match &ty {
+                            // (docs/01 §1: no object has them as methods.)
+                            Type::Class(mid, _) if *mid == self.world.builtin.kernel => {
+                                self.error(KERNEL_MIXIN, t.span)
+                            }
                             Type::Class(mid, _)
                                 if self.world.class(*mid).kind == ClassKind::Module =>
                             {
@@ -3371,6 +3409,10 @@ impl<'ast> Declarer<'ast> {
                 for t in types {
                     if let Some(ty) = self.resolve_type(t, &scope) {
                         if let Type::Class(mid, _) = &ty {
+                            if *mid == self.world.builtin.kernel {
+                                self.error(KERNEL_MIXIN, t.span);
+                                continue;
+                            }
                             if self.includes_module(*mid, tid) {
                                 let name = self.world.class(tid).name.clone();
                                 self.error(
@@ -3816,6 +3858,17 @@ impl<'ast> Declarer<'ast> {
                     def.span,
                 );
             }
+        }
+        // `Kernel` holds functions only, which no object inherits: an
+        // extension adds module methods (docs/01 §1).
+        if !def.singleton && extension.is_some() && owner == self.world.builtin.kernel {
+            self.error(
+                format!(
+                    "`extension Kernel` declares no instance methods: `Kernel` holds functions, which no object inherits; write `def self.{0}` and call `Kernel.{0}`, or a top-level `def`",
+                    def.name
+                ),
+                def.span,
+            );
         }
         // An enum has no fields, and its variants their own `initialize`
         // (docs/01 §5).

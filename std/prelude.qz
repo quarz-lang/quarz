@@ -21,10 +21,10 @@ module DslScope
 end
 
 # The root of the class hierarchy: every value is an `Object`, and the
-# methods here apply to all of them. It includes `Kernel`, whose private
-# functions (`puts`, `rand`, `exit`) are called without a receiver.
+# methods here apply to all of them. `Kernel`'s functions (`puts`, `rand`,
+# `exit`) are not among them: they are called without a receiver, or as
+# `Kernel.puts(...)`.
 class Object
-  include Kernel
 
   # Whether the value equals `other`. Built-in values (numbers, strings,
   # arrays, hashes, `data` values, enum variants) compare by contents; an
@@ -6788,8 +6788,11 @@ module Math
   native def self.expm1(x: Float) -> Float
 end
 
-# The program's functions (`puts`, `gets`, `rand`, `exit`, ...), included
-# in `Object`: private, so they are called without a receiver, as in Ruby.
+# The program's built-in functions (`puts`, `gets`, `rand`, `exit`, ...),
+# called without a receiver, as in Ruby, or as `Kernel.puts(...)`. No object
+# inherits them: a class's method of one's name is a method of its own,
+# and the call without a receiver finds the class's methods first
+# (docs/01 §1).
 module Kernel
   # Functions, called without a receiver (as in Ruby).
   private

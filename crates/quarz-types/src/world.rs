@@ -1697,7 +1697,14 @@ impl World {
                     }
                 }
                 let mut own = Vec::new();
-                self.lookup_instance_methods(*id, args, name, &mut own);
+                // A file's top-level object answers `Object`'s methods:
+                // its class holds the file's top-level `def`s, which are
+                // functions, not methods (docs/01 §1).
+                if self.class(*id).kind == ClassKind::Main {
+                    self.lookup_instance_methods(self.builtin.object, &[], name, &mut own);
+                } else {
+                    self.lookup_instance_methods(*id, args, name, &mut own);
+                }
                 // A value of a module type is an object too.
                 if self.class(*id).kind == ClassKind::Module {
                     self.lookup_instance_methods(self.builtin.object, &[], name, &mut own);
@@ -1709,6 +1716,13 @@ impl World {
                 }
             }
             Type::ClassObject(id, args) => {
+                let exts = self.active_extension_ids();
+                // Each superclass's type arguments, for its extensions'.
+                let ancs = if exts.is_empty() {
+                    Vec::new()
+                } else {
+                    self.ancestors(*id, args)
+                };
                 for cid in self.superclass_chain(*id) {
                     let class = self.class(cid);
                     let subst = if cid == *id {
@@ -1716,6 +1730,26 @@ impl World {
                     } else {
                         HashMap::default()
                     };
+                    // An active extension's class methods (`def self.x`),
+                    // before the class's own.
+                    for ext_id in &exts {
+                        let ext = &self.extensions[*ext_id as usize];
+                        if ext.target != cid {
+                            continue;
+                        }
+                        if let Some(ids) = ext.methods.get(name) {
+                            // (The extension's own type parameters, for the
+                            // class's arguments.)
+                            let ext_args = ancs
+                                .iter()
+                                .find(|(a, _)| *a == cid)
+                                .map_or(&[][..], |(_, a)| &a[..]);
+                            let esubst = self.extension_subst(ext, ext_args);
+                            for m in ids.iter().filter(|m| self.method(**m).singleton) {
+                                out.push((*m, esubst.clone()));
+                            }
+                        }
+                    }
                     if let Some(ids) = class.singleton_methods.get(name) {
                         for m in ids {
                             out.push((*m, subst.clone()));
@@ -1819,7 +1853,7 @@ impl World {
                 }
                 if let Some(ids) = ext.methods.get(name) {
                     let esubst = self.extension_subst(ext, &anc_args);
-                    for m in ids {
+                    for m in ids.iter().filter(|m| !self.method(**m).singleton) {
                         out.push((*m, esubst.clone()));
                     }
                 }

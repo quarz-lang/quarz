@@ -65,6 +65,10 @@ fn resolve(world: &RtWorld, cid: ClassId, mid: MethodId) -> Option<Option<Method
             .collect()
     };
     for anc in chain {
+        // A file's top-level `def`s are functions: none is a method here.
+        if world.classes[anc as usize].kind == RtClassKind::Main {
+            continue;
+        }
         if world.extensions.iter().any(|e| {
             e.target == anc
                 && e.methods.contains_key(&m.name)

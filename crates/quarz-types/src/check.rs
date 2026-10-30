@@ -5133,13 +5133,14 @@ impl Checker {
                         if !self.world.takes_no_self(method) {
                             let what = format!("calling `{}` uses `self`, which", call.name);
                             self.check_task_self(&what, expr.span);
-                        } else if self.in_static_block()
+                        } else if self.env.static_frame.is_some()
                             && self.world.class(self.world.method(method).owner).kind
                                 == ClassKind::Main
                         {
                             // A top-level `def` takes no `self`, but it is
                             // the surrounding code's, not a constant
-                            // (docs/14 §8).
+                            // (docs/14 §8), also from a block with a
+                            // receiver inside the static block.
                             self.error(
                                 format!("a block in `static(...)` captures nothing: `{}` is a top-level `def` of the code around it, not a `static def` (docs/14 §8)", call.name),
                                 expr.span,
@@ -7327,16 +7328,7 @@ impl Checker {
         // `def`s it sees, its cog's, first, hiding a built-in of the same
         // signature, then the built-in's other overloads), but only the
         // functions.
-        let kernel = self.world.builtin.kernel;
-        let cands: Vec<_> = self
-            .function_candidates(&call.name)
-            .into_iter()
-            .filter(|(m, _)| {
-                let m = self.world.method(*m);
-                self.world.class(m.owner).kind == ClassKind::Main
-                    || (m.is_native && m.owner == kernel)
-            })
-            .collect();
+        let cands = self.function_candidates(&call.name);
         if cands.is_empty() {
             self.error(
                 format!(
@@ -8024,7 +8016,7 @@ impl Checker {
                 // own, inherited or from a module); `Kernel`'s built-in
                 // functions are not methods of it, and come after the
                 // cog's top-level `def`s (docs/01 §1).
-                let no_method = !self.any_method(&cands);
+                let no_method = cands.is_empty();
                 if call.recv.is_none()
                     && implicit_self
                     && !self.env.receivers.is_empty()
@@ -8059,11 +8051,6 @@ impl Checker {
                 if call.recv.is_none() {
                     let found = self.function_candidates(name);
                     if !found.is_empty() {
-                        let kernel = self.world.builtin.kernel;
-                        cands.retain(|(id, _)| {
-                            let m = self.world.method(*id);
-                            !(m.is_native && m.owner == kernel)
-                        });
                         for f in found {
                             let fm = self.world.method(f.0);
                             if !cands.iter().any(|(id, _)| {
@@ -8098,48 +8085,42 @@ impl Checker {
         }
     }
 
-    /// The top-level `def`s of a name the current file sees (its own,
-    /// then its cog's or the files it requires, `World::function_scopes`),
-    /// with what its main object inherits (`Kernel`'s), less those of
-    /// them a `def` of the same signature hides (docs/01 §1).
+    /// The functions of a name the current file sees (docs/01 §1): the
+    /// top-level `def`s (its own, then its cog's or those of the files it
+    /// requires, `World::function_scopes`), then `Kernel`'s built-ins.
     fn function_candidates(&self, name: &str) -> Vec<(MethodId, HashMap<TypeParamId, Type>)> {
         let file = self.env.file;
-        let Some(own) = self.file_main(file) else {
-            return Vec::new();
-        };
-        let mut cands = self.world.lookup_methods(&Type::class(own), name);
-        let mut mains = vec![own];
+        let mut mains: Vec<ClassId> = self.file_main(file).into_iter().collect();
         if let Some(scope) = self.world.function_scopes.get(&file) {
-            for f in scope.iter().filter(|f| **f != file) {
-                if let Some(m) = self.file_main(*f) {
-                    mains.push(m);
-                    cands.extend(
-                        self.world
-                            .lookup_methods(&Type::class(m), name)
-                            .into_iter()
-                            .filter(|(id, _)| self.world.method(*id).owner == m),
-                    );
+            mains.extend(
+                scope
+                    .iter()
+                    .filter(|f| **f != file)
+                    .filter_map(|f| self.file_main(*f)),
+            );
+        }
+        let mut cands: Vec<(MethodId, HashMap<TypeParamId, Type>)> = Vec::new();
+        for m in mains {
+            if let Some(ids) = self.world.class(m).methods.get(name) {
+                cands.extend(ids.iter().map(|id| (*id, HashMap::default())));
+            }
+        }
+        // Then `Kernel`'s built-ins, but those a `def` of their signature
+        // hides (in the prelude, which has no `main`, only they).
+        let ndefs = cands.len();
+        let kernel = self.world.builtin.kernel;
+        if let Some(ids) = self.world.class(kernel).methods.get(name) {
+            for id in ids {
+                let m = self.world.method(*id);
+                if m.is_native
+                    && !cands[..ndefs]
+                        .iter()
+                        .any(|(d, _)| self.world.same_signature(self.world.method(*d), m))
+                {
+                    cands.push((*id, HashMap::default()));
                 }
             }
         }
-        let defs: Vec<MethodId> = cands
-            .iter()
-            .map(|(id, _)| *id)
-            .filter(|id| mains.contains(&self.world.method(*id).owner))
-            .collect();
-        // The `def`s before the inherited methods, which an equally
-        // specific `def` then beats.
-        cands.sort_by_key(|(id, _)| !mains.contains(&self.world.method(*id).owner));
-        // A `def` hides `Kernel`'s built-in of its signature (not a
-        // method of `self`, which comes first).
-        let kernel = self.world.builtin.kernel;
-        cands.retain(|(id, _)| {
-            let m = self.world.method(*id);
-            !(m.is_native && m.owner == kernel)
-                || !defs
-                    .iter()
-                    .any(|d| self.world.same_signature(self.world.method(*d), m))
-        });
         cands
     }
 
@@ -8581,17 +8562,6 @@ impl Checker {
 
     /// The innermost enclosing `self` (outside the blocks with receivers
     /// the call sits in) that answers `name`, with its receiver level.
-    /// Whether `cands` has a method, not only `Kernel`'s built-in
-    /// functions, which an implicit call finds after the cog's top-level
-    /// `def`s (docs/01 §1).
-    fn any_method(&self, cands: &[(MethodId, HashMap<TypeParamId, Type>)]) -> bool {
-        let kernel = self.world.builtin.kernel;
-        cands.iter().any(|(id, _)| {
-            let m = self.world.method(*id);
-            !(m.is_native && m.owner == kernel)
-        })
-    }
-
     fn outer_self_for(&mut self, name: &str) -> Option<(Type, usize)> {
         // `DslScope`: from a block on a marked receiver, the receivers of
         // enclosing blocks that are marked too are not implicit (the
@@ -8606,7 +8576,7 @@ impl Checker {
             if inner_marked && k > 0 && marked(&self.world, &outer) {
                 continue;
             }
-            if self.any_method(&self.world.lookup_methods(&outer, name)) {
+            if !self.world.lookup_methods(&outer, name).is_empty() {
                 return Some((outer, k));
             }
         }
@@ -11403,7 +11373,27 @@ impl Checker {
             cands.push((c, subst));
         }
         if cands.is_empty() {
-            self.error(format!("no superclass method `{}`", m.name), expr.span);
+            // A built-in function is no method to override (docs/01 §1).
+            let kernel = self.world.builtin.kernel;
+            let builtin = !m.singleton
+                && self
+                    .world
+                    .class(kernel)
+                    .methods
+                    .get(&m.name)
+                    .is_some_and(|ms| ms.iter().any(|id| self.world.method(*id).is_native));
+            let hint = if builtin {
+                format!(
+                    ": `{0}` is a built-in function, called as `Kernel.{0}`",
+                    m.name
+                )
+            } else {
+                String::new()
+            };
+            self.error(
+                format!("no superclass method `{}`{hint}", m.name),
+                expr.span,
+            );
             return Type::Nothing;
         }
         let call = Call {
