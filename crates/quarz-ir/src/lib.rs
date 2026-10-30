@@ -605,9 +605,10 @@ pub enum Inst {
         destructure: Option<u32>,
         is_lambda: bool,
     },
-    /// `recv.:name`: a procedure calling `name` on `recv`, found by name
-    /// and arity; with `method` (a method handle's `bind`, docs/14 §5),
-    /// that method as a call of it dispatches (by signature).
+    /// `recv.:name`: a procedure calling `method` on `recv` as a call of
+    /// it dispatches (by signature; the method the checker resolved, or a
+    /// method handle's, docs/14 §5), or, without one, `name` found by
+    /// name and arity.
     MethodRef {
         dst: Reg,
         recv: Reg,

@@ -1,0 +1,51 @@
+# `recv.:name` calls the method the checker typed it by, dispatched as a
+# call of it is: a subclass's overload of other types is not taken, an
+# override is.
+class A
+  def f(x: Int) -> String = "A#f(Int) #{x + 1}"
+  def g -> String = "A#g()"
+  def g(x: Int) -> String = "A#g(Int) #{x}"
+end
+class B < A
+  def f(x: String) -> String = "B#f(String) #{x.upcase}"
+end
+class C < A
+  def f(x: Int) -> String = "C#f(Int) #{x * 10}"
+end
+def via(a: A) -> String
+  m = a.:f
+  m.call(1)
+end
+p via(A.new)
+p via(B.new)
+p via(C.new)
+p B.new.:f.call("b")
+g = A.new.:g
+p g.call
+
+# A block checked once per type of a union's members finds a method for
+# each: the reference finds it by name at run time.
+class P
+  def name -> String = "P"
+  def with(&b: (Self) -> String) -> String = b.call(self)
+end
+class Q
+  def name -> String = "Q"
+  def with(&b: (Self) -> String) -> String = b.call(self)
+end
+def pick(i: Int) -> P | Q = i == 0 ? P.new : Q.new
+p pick(0).with { |v| v.:name.call }
+p pick(1).with { |v| v.:name.call }
+def num_or_str(i: Int) -> Int | String = i == 0 ? 42 : "str"
+p num_or_str(0).then { |v| v.:to_s.call }
+p num_or_str(0).then { |v| v.:inspect.call }
+p num_or_str(1).then { |v| v.:to_s.call }
+
+# Overloads tried for a block: only the chosen one's check counts (a
+# discarded trial found `R#name`).
+class R
+  def name -> Int = 7
+end
+def given(&b: (P) -> String) -> String = b.call(P.new)
+def given(&b: (R) -> String) -> String = b.call(R.new)
+p given { |v| v.:name.call }

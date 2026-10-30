@@ -102,8 +102,9 @@ pub struct Output {
     /// typed them differently: `node_types` holds the last one's, so
     /// nothing is specialized for it.
     pub varied_types: rustc_hash::FxHashSet<NodeId>,
-    /// `&:name` symbols whose checks found different methods: called by
-    /// name.
+    /// `&:name` symbols, and `recv.:name` references, whose checks (a
+    /// block's, once per type of what it is given) found different
+    /// methods: called by name.
     pub varied_symbols: rustc_hash::FxHashSet<NodeId>,
     /// Interpolations checked more than once whose `to_s` differed.
     pub interp_conflicts: rustc_hash::FxHashSet<NodeId>,
@@ -531,6 +532,9 @@ enum TableUndo {
     VariedSymbol(NodeId),
     /// A `&:name` symbol's record before a check recorded another.
     BlockPass(NodeId, Option<BlockPass>),
+    /// A `recv.:name`'s method before a check recorded another (a
+    /// discarded trial's must not count as an earlier check's).
+    MethodRefCall(NodeId, Option<CallTarget>),
     /// A node's type before a check in a block recorded another.
     NodeType(NodeId, Option<Type>),
     /// An integer literal marked in `Output::float_literals` (`true`) or
@@ -1733,6 +1737,12 @@ impl Checker {
                     match b {
                         Some(b) => self.out.block_pass.insert(id, b),
                         None => self.out.block_pass.remove(&id),
+                    };
+                }
+                TableUndo::MethodRefCall(id, c) => {
+                    match c {
+                        Some(c) => self.out.calls.insert(id, c),
+                        None => self.out.calls.remove(&id),
                     };
                 }
                 TableUndo::NodeType(id, t) => {
@@ -5218,6 +5228,32 @@ impl Checker {
                     .map(|p| p.ty.subst(&subst))
                     .collect();
                 let ret = self.method_ret(mid).subst(&subst);
+                // A block checked once per type of what it is given may
+                // find another method each time: the reference then finds
+                // it by name at run time, which reaches no extension.
+                if let Some(CallTarget::Method { method: before }) =
+                    self.out.calls.get(&expr.id).cloned()
+                {
+                    if before != mid && !self.out.varied_symbols.contains(&expr.id) {
+                        self.out.varied_symbols.insert(expr.id);
+                        self.table_journal.push(TableUndo::VariedSymbol(expr.id));
+                        let ext = |m: MethodId| self.world.method(m).extension.is_some();
+                        if ext(before) || ext(mid) {
+                            let (wb, wm) = (self.method_label(before), self.method_label(mid));
+                            let d = Diagnostic::error(
+                                format!(
+                                    "cannot tell at run time which `{name}` `.:{name}` refers to: {wb} or {wm} (give the value one type first)"
+                                ),
+                                expr.span,
+                            );
+                            self.ambiguous
+                                .push((self.env.file, AmbiguousKey::Node(expr.id), d));
+                        }
+                    }
+                }
+                let before = self.out.calls.get(&expr.id).cloned();
+                self.table_journal
+                    .push(TableUndo::MethodRefCall(expr.id, before));
                 self.out
                     .calls
                     .insert(expr.id, CallTarget::Method { method: mid });

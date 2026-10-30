@@ -1448,11 +1448,24 @@ impl<'a> FnBuilder<'a> {
                 let r = self.expr(recv);
                 let name = self.str_const(name);
                 let dst = self.reg();
+                // The method the checker typed it by, dispatched as a call
+                // of it is: by name and arity, a subclass's overload of
+                // other types could be found.
+                // (By name when the checks of a block found different
+                // methods, `Output::varied_symbols`.)
+                let method = match self.out.calls.get(&e.id) {
+                    Some(CallTarget::Method { method })
+                        if !self.out.varied_symbols.contains(&e.id) =>
+                    {
+                        Some(*method)
+                    }
+                    _ => None,
+                };
                 self.emit(Inst::MethodRef {
                     dst,
                     recv: r,
                     name,
-                    method: None,
+                    method,
                 });
                 dst
             }
