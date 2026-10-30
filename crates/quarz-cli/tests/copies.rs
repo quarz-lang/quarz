@@ -92,6 +92,11 @@ fn updates_of_shared_collections_copy_once_each() {
 }
 
 #[test]
+fn an_early_exit_from_any_or_all_leaves_no_reference_behind() {
+    check("early_exit.qz", 0);
+}
+
+#[test]
 fn a_quoted_block_leaves_no_reference_behind() {
     // The `Quoted` given for a block (docs/14 §6), with its captures and
     // its closure's copies, is released after its call.

@@ -1,0 +1,31 @@
+# A block with a receiver (`instance_exec`) inside a block lowered in
+# place as a counted loop (`map`, `each`, `times`, ...) calls the methods
+# of the enclosing `self` on that `self`, not on the loop's element.
+class C
+  def name2 -> String = self.class.name
+  def via_map -> String = [1].map { |_| 5.instance_exec { name2 } }[0]
+  def via_named -> String = [1].map { |y| 5.instance_exec { name2 + y.to_s } }[0]
+  def via_each -> String
+    out = ""
+    [1, 2].each { |_| out = out + 5.instance_exec { name2 } }
+    out
+  end
+  def via_times -> String
+    out = ""
+    2.times { |i| out = out + 5.instance_exec { name2 + i.to_s } }
+    out
+  end
+  def via_select -> Int = [1, 2, 3].select { |x| 5.instance_exec { name2 == "C" } && x > 1 }.size
+  def via_reduce -> String = [1, 2].reduce("") { |acc, x| acc + 5.instance_exec { name2 } + x.to_s }
+  def via_index -> String
+    out = ""
+    ["a"].each_with_index { |s, i| out = out + 5.instance_exec { name2 + s + i.to_s } }
+    out
+  end
+  def nested -> String = [1].map { |_| [2].map { |_| 5.instance_exec { name2 } }[0] }[0]
+end
+c = C.new
+p c.via_map, c.via_named, c.via_each, c.via_times, c.via_select, c.via_reduce, c.via_index, c.nested
+
+def whoami -> String = self.class.name
+p [1].map { |y| 5.instance_exec { whoami + y.to_s } }[0]

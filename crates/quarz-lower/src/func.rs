@@ -3041,6 +3041,10 @@ impl<'a> FnBuilder<'a> {
                 src,
             );
         }
+        // A block with a receiver in the body calls methods of the
+        // enclosing `self` through the block's hidden slot, as in a block
+        // lowered in place by `yield`.
+        self.store_self_slot(SelfOwner::Block(e.id));
         self.loops.push(LoopCtx {
             next: next_b,
             exit: exit_b,
@@ -3153,9 +3157,12 @@ impl<'a> FnBuilder<'a> {
                     dst: result,
                     src: decided,
                 });
+                // The registers the body used, as the loop's normal end
+                // clears them: a reference left there would keep a
+                // collection shared.
                 self.emit(Inst::ClearRegs {
                     from: clear_from,
-                    to: clear_from,
+                    to: clear_to,
                 });
                 self.term(Term::Jump(exit_b));
                 self.switch(go_b);
