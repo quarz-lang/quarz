@@ -507,7 +507,14 @@ pub fn expr_to_sexp(expr: &Expr, out: &mut String) {
             expr_to_sexp(value, o);
         }),
         TypedDecl { name, ty, value } => list(out, "decl", |o| {
-            let _ = write!(o, " {name}:{} ", type_sexp(ty));
+            match ty {
+                Some(ty) => {
+                    let _ = write!(o, " {name}:{} ", type_sexp(ty));
+                }
+                None => {
+                    let _ = write!(o, " {name}:= ");
+                }
+            }
             expr_to_sexp(value, o);
         }),
         And(a, b) => list(out, "and", |o| {

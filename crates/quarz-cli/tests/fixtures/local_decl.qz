@@ -1,0 +1,45 @@
+# Explicit local declarations (docs/01 §10): `y := e` and `y: T = e` make a
+# new variable in the innermost scope, hiding an outer one of the name.
+total = "none"
+[1, 2].each do |x|
+  total := x * 10        # the block's own
+  p total + 1
+end
+p total                  # the outer one, unchanged
+
+# The value reads the outer variable.
+n = 1
+[5].each { |x| n := n + x
+  p n }
+p n
+
+# A case arm and a rescue clause are scopes too.
+z = 5
+case "s"
+in String => s
+  z := s * 2
+  p z
+end
+p z + 1
+begin
+  raise "boom"
+rescue => e
+  z: String? = e.message
+  p z
+end
+p z
+
+# A closure keeps the variable it saw: one per call of an `each` block,
+# one across the iterations of a `while` body.
+each_fs = []
+[0, 1, 2].each { |j| m := j * 10
+  each_fs = each_fs.push(-> { m }) }
+p each_fs.map { |f| f.call }
+while_fs = []
+i = 0
+while i < 3
+  k := i * 10
+  while_fs = while_fs.push(-> { k })
+  i += 1
+end
+p while_fs.map { |f| f.call }

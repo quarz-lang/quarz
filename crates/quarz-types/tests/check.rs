@@ -2977,3 +2977,74 @@ fn alternatives_bind_no_names_and_objects_have_no_rest() {
     // An expression in a pin is no part of the alternative.
     ok("def f(v: Int, w: Array[Int]) -> Bool\n  v in 0 | ^(case w\n             in [y] then y\n             else 1\n             end)\nend");
 }
+
+/// `y := e` and `y: T = e` declare in the innermost scope (docs/01 §10):
+/// an outer `y` is hidden, not changed; one in the same scope is an error.
+#[test]
+fn local_declarations() {
+    // The hidden variable and its type are unchanged after the block.
+    ok("y = \"s\"\n[1].each { |x| y := x }\np y.size");
+    ok("y = \"s\"\n[1].each { |x| y: Int? = x }\np y.size");
+    // The value reads the outer one.
+    ok("y = 1\n[1].each { |x| y := \"#{y}\" }\np y + 1");
+    ok("def f(y: Int) -> String\n  [1].map { |x| y := y.to_s\n    y }[0]\nend");
+    // The outer's narrowing is not affected by the inner's assignments.
+    ok("def f(s: String?) -> Int\n  return 0 unless s\n  [1].each { |x| s: Int? = x\n    s = nil }\n  s.size\nend");
+    ok("def f(s: String?) -> Int\n  return 0 unless s\n  [1].each { |x| s := x\n    s = 2 }\n  s.size\nend");
+    // A case arm and a rescue clause are scopes.
+    ok("z = 5\ncase 3\nin Int => n\n  z := \"arm\"\n  p z.size\nend\np z + 1");
+    ok("z = 5\nbegin\n  p 1\nrescue => e\n  z := e.message\nend\np z + 1");
+    // `y := e` types `y` as `e`; `nil` is Nil.
+    err("y := nil\ny = 1", "cannot assign Int to `y` of type Nil");
+    err("y := [1, \"a\"]\ny = y.push(:s)", "cannot assign");
+    // The same scope: an error, wherever the first one came from.
+    let again = "`y` is already declared in this scope; a local variable's type is fixed at its declaration";
+    err("y = 1\ny := 2", again);
+    err("y := 1\ny: Int = 2", again);
+    err(
+        "def f -> Void\n  y = 1\n  if true\n    y := 2\n  end\nend",
+        again,
+    );
+    err("def f(y: Int) -> Void\n  y := 2\nend", again);
+    err("[1].each { |y| y := 2 }", again);
+    err("case 1\nin Int => y\n  y := 2\nend", again);
+    err("begin\n  p 1\nrescue => y\n  y := 2\nend", again);
+    // Out of scope after the arm.
+    err(
+        "case 1\nin Int\n  k := 2\nend\np k",
+        "undefined local variable or method `k`",
+    );
+    // A closure keeps the variable it saw.
+    ok("fs = []\n[1, 2].each { |j| m := j\n  fs = fs.push(-> { m }) }\np fs");
+    // What is learned of a declared variable after its declaration is
+    // its own: a late closure's read is not narrowed when it is assigned
+    // later, also where the declaration is in an `if`'s body (the scope
+    // is the enclosing one) or the late closure is made in a loop.
+    for decl in ["y: Int? = 5", "y := maybe(5)"] {
+        err(
+            &format!("def maybe(n: Int) -> Int? = n > 100 ? nil : n\nif true\n  {decl}\n  f = -> {{ y + 1 }}\n  y = nil\n  p f.call\nend"),
+            "undefined method `+` for Nil",
+        );
+        err(
+            &format!("def maybe(n: Int) -> Int? = n > 100 ? nil : n\ng = -> {{ nil }}\ni = 0\nwhile i < 2\n  if true\n    {decl}\n  end\n  if y\n    g.call\n    p y + 1\n  end\n  g = -> {{ y = nil\n    nil }}\n  i += 1\nend"),
+            "undefined method `+` for Nil",
+        );
+    }
+    // ... and where the declaration is directly in a block, an arm or a
+    // rescue clause, seen from the method's own scan.
+    for (open, close) in [
+        ("[1].each do |_|", "end"),
+        ("case 1\nin Int", "end"),
+        ("begin\n  raise \"x\"\nrescue", "end"),
+    ] {
+        err(
+            &format!("{open}\n  y: Int? = 5\n  f = -> {{ y + 1 }}\n  y = nil\n  p f.call\n{close}"),
+            "undefined method `+` for Nil",
+        );
+    }
+    // An arm's guard is in its scope.
+    err(
+        "case 3\nin Int => n if (q := n; true)\n  p q\nend\np q",
+        "undefined local variable or method `q`",
+    );
+}

@@ -379,6 +379,7 @@ x = 1                  # inferred as Int
 x = "one"              # error: a local variable's type is fixed at declaration (reassignment must have the same type)
 y: Int? = nil          # with a type annotation
 y = 10                 # OK
+z := compute()         # declared, with the value's type
 a, b = 1, "x"          # multiple assignment (the right-hand side is a tuple [Int, String])
 first, *rest = [1, 2, 3]
 count += 1
@@ -386,7 +387,17 @@ name ||= "anon"        # when name is T?
 xs.push!(4)            # xs = xs.push(4): a method call with `!` rebinds its receiver
 ```
 
-- The type of a local variable is determined by its first assignment. To widen the type, add an annotation (`y: Int? = nil`).
+- The type of a local variable is determined by its first assignment or its declaration.
+- **Explicit declarations.** `y: T = e` declares `y` with the type `T`, and `y := e` with the type of `e` (as `y = e` gives a new name: `y := nil` is `Nil`; widen with an annotation). Either makes a new variable in the innermost scope: the method body, a block, a lambda, a `case/in` arm (its guard and body), a rescue clause or the file's top level (an `if`, `while` or `begin` body is not a scope of its own, so a declaration there is in the enclosing one). A variable of the name already in that scope (declared, assigned, a parameter, an arm's pattern name, a rescue clause's variable) is an error, since a local variable's type is fixed at its declaration. One in an outer scope is hidden until the inner scope ends and is not changed, as a block parameter of its name hides it; the value is read before the declaration, so `y := y + 1` reads the outer `y`. Plain `y = e` keeps Ruby's rule: a new variable when no enclosing scope has `y`, else an assignment to it. A declaration starts a statement (in parentheses too: `p((y := 3))`), for a local only (`@x := e`, `X := e` and `a, b := ...` are errors). A closure keeps the variable it saw: one declared in a `while` body is one variable across iterations, as any local of the loop body, and one in an `each` block is new on each call.
+
+  ```ruby
+  total = "none"
+  [1, 2].each do |x|
+    total := x * 10      # the block's own; the outer `total` is hidden
+    p total + 1          # => 11, 21
+  end
+  p total                # => "none"
+  ```
 - After an assignment the type is narrowed by **flow typing** (after `y = 10`, `y` can be treated as `Int`).
 - The rules for variable declaration and scope (a variable assigned inside an `if` is visible afterwards, block parameters are visible only within the block, etc.) are the same as in Ruby. Where such a variable may not have been assigned (after an `if` that assigns it in one branch only, after a `while` that assigns it in its body, in a `rescue` when the body assigns it), it is `nil` as in Ruby, and its type there is nilable: `y = n if n > 0` followed by `y + 1` is an error, while `y + 1 if y` is not.
 - Assignment to an `@ivar` is only possible inside `initialize` if the field is immutable.

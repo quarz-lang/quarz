@@ -331,6 +331,8 @@ pub enum TokenKind {
     FatArrow,
     Question,
     Colon,
+    /// `:=`, declaring a local variable of the value's type
+    ColonAssign,
     DotDot,
     DotDotDot,
 
@@ -449,6 +451,7 @@ impl TokenKind {
             FatArrow => "=>",
             Question => "?",
             Colon => ":",
+            ColonAssign => ":=",
             DotDot => "..",
             DotDotDot => "...",
             _ => "?",

@@ -128,6 +128,11 @@ pub struct Parser<'src> {
     /// clauses (innermost last), which a bare `raise` re-raises, and
     /// whether one did.
     rescued: Vec<(String, bool)>,
+    /// The `case/in` arms and rescue clauses being parsed (scopes without
+    /// a scope of the local table's own): the depth of the table there and
+    /// the names declared (`y := e`, `y: T = e`) directly in it that were
+    /// not locals before, out of scope after it.
+    decl_scopes: Vec<(usize, Vec<String>)>,
     /// In a block's parameters, where `|` closes the list rather than
     /// joining a union (one in brackets or parentheses still does).
     pipe_ends_type: bool,
@@ -153,6 +158,7 @@ impl<'src> Parser<'src> {
             last_span_end: 0,
             cog: CogMeta::default(),
             rescued: Vec::new(),
+            decl_scopes: Vec::new(),
             pipe_ends_type: false,
         }
     }
@@ -441,11 +447,25 @@ impl<'src> Parser<'src> {
             T::IVar(name) if self.is_adjacent_colon(1) => {
                 return self.parse_field_decl(false, &name);
             }
+            T::IVar(name) if matches!(self.kind_at(1), T::ColonAssign) => {
+                let span = self.peek_at(1).span;
+                return Err(self.error_at(
+                    format!("`:=` declares a local variable, not a field: declare `@{name}` in the class body, or with `@{name}: T = value` in `initialize`"),
+                    span,
+                ));
+            }
+            T::Const(name) if matches!(self.kind_at(1), T::ColonAssign) => {
+                let span = self.peek_at(1).span;
+                return Err(self.error_at(
+                    format!("`:=` declares a local variable: a constant is assigned with `{name} = value`"),
+                    span,
+                ));
+            }
             T::Ident(name) => {
                 if let Some(expr) = self.parse_contextual_declaration(&name)? {
                     return Ok(expr);
                 }
-                if self.is_adjacent_colon(1) && !self.is_local(&name) {
+                if self.is_adjacent_colon(1) || matches!(self.kind_at(1), T::ColonAssign) {
                     return self.parse_typed_decl(&name);
                 }
             }
@@ -643,14 +663,29 @@ impl<'src> Parser<'src> {
         }
     }
 
+    /// `y: T = e` or `y := e`: a new local in the innermost scope, declared
+    /// after its value (`y := y + 1` reads an outer `y`).
     fn parse_typed_decl(&mut self, name: &str) -> PResult<Expr> {
         let start = self.bump().span;
-        self.expect(&T::Colon, "`:`")?;
-        let ty = self.parse_type()?;
-        self.expect(&T::Assign, "`=`")?;
+        let ty = if self.eat(&T::ColonAssign) {
+            None
+        } else {
+            self.expect(&T::Colon, "`:`")?;
+            let ty = self.parse_type()?;
+            self.expect(&T::Assign, "`=`")?;
+            Some(ty)
+        };
         self.skip_newlines();
-        self.declare(name);
         let value = self.parse_expr()?;
+        let depth = self.lexer.locals.depth();
+        if !self.is_local(name) {
+            if let Some((d, names)) = self.decl_scopes.last_mut() {
+                if *d == depth {
+                    names.push(name.to_string());
+                }
+            }
+        }
+        self.declare(name);
         let span = self.span_from(start);
         Ok(self.node(
             span,
@@ -708,6 +743,13 @@ impl<'src> Parser<'src> {
             if !self.eat(&T::Comma) {
                 break;
             }
+        }
+        if self.at(&T::ColonAssign) {
+            let span = self.peek().span;
+            return Err(self.error_at(
+                "`:=` declares one local variable; assign several with `a, b = ...`",
+                span,
+            ));
         }
         self.expect(&T::Assign, "`=`")?;
         self.skip_newlines();
@@ -2790,6 +2832,10 @@ impl<'src> Parser<'src> {
                             return Err(e);
                         }
                     };
+                    // So are the names it declares (`y := e`), in its guard
+                    // or body.
+                    let depth = self.lexer.locals.depth();
+                    self.decl_scopes.push((depth, Vec::new()));
                     let negate = match self.kind() {
                         T::Keyword(K::If) => Some(false),
                         T::Keyword(K::Unless) => Some(true),
@@ -2802,6 +2848,7 @@ impl<'src> Parser<'src> {
                                 Ok(cond) => Some(Guard { cond, negate }),
                                 Err(e) => {
                                     // (The arm's scope ends with it.)
+                                    self.decl_scopes.pop();
                                     self.lexer.locals.pop_scope();
                                     return Err(e);
                                 }
@@ -2811,8 +2858,9 @@ impl<'src> Parser<'src> {
                     };
                     self.eat_then();
                     let body = self.parse_statements(&[K::In, K::Else, K::End]);
+                    let (_, declared) = self.decl_scopes.pop().unwrap();
                     for name in self.lexer.locals.pop_scope_names() {
-                        if !own.contains(&name) {
+                        if !own.contains(&name) && !declared.contains(&name) {
                             self.declare(&name);
                         }
                     }
@@ -2895,9 +2943,14 @@ impl<'src> Parser<'src> {
                 self.declare(&name);
             }
             self.rescued.push((name, false));
+            let depth = self.lexer.locals.depth();
+            self.decl_scopes.push((depth, Vec::new()));
             let body = self.parse_statements(&inner_stop);
+            let (_, declared) = self.decl_scopes.pop().unwrap();
             let (name, used) = self.rescued.pop().unwrap();
-            if let Some(s) = &scoped {
+            // The variable and the names the clause declares (`y := e`)
+            // are its own.
+            for s in scoped.iter().chain(&declared) {
                 self.lexer.locals.undeclare(s);
             }
             if used && var.is_none() {
