@@ -956,3 +956,130 @@ fn a_declared_block_result_is_the_generated_methods() {
         "{err}"
     );
 }
+
+const HANDLES_LIB: &str = r##"class Model
+  var @post_id: Int = 0
+  def post_id=(v: Int) -> Void
+    @post_id = v
+  end
+  static def self.counter(field: Symbol) -> Void
+    ref = def_field(field, Int, 0, var: true, reader: true)
+    bump = "bump_#{field}".to_sym
+    def_method(bump) do -> Void
+      ref.set(self, ref.get(self) + 1)
+    end
+  end
+  # `U` names the static def's own type parameter, the call's `Int`.
+  static def self.slot[V](n: Symbol, t: Type[V], d: V) -> Void
+    ref = def_field(n, t, d, var: true)
+    def_method("get_#{n}".to_sym) do -> V
+      ref.get(self)
+    end
+  end
+  static def self.belongs(name: Symbol) -> Void
+    later = field_ref[Int](:mark)
+    flag = def_field(:flag, Int, 0, var: true)
+    def_method(:toggle, :on) do |on: Bool| -> Int
+      flag.set(self, on ? 1 : 2)
+      3.times { flag.set(self, flag.get(self) + 1) }
+      flag.get(self)
+    end
+    fk = field_ref[Int](:post_id)
+    def_method("#{name}_key".to_sym) do -> Int
+      fk.get(self) * 10 + later.get(self)
+    end
+    def_field(:mark, Int, 7)
+  end
+end
+"##;
+
+const HANDLES_APP: &str = r##"require_relative "lib"
+class Comment < Model
+  counter(:views)
+  belongs(:post)
+  slot :size, Int, 9
+end
+c = Comment.new
+c.bump_views
+c.bump_views
+p c.views
+c.post_id = 4
+p c.post_key
+p c.toggle(false)
+p c.get_size
+"##;
+
+#[test]
+fn field_handles_read_and_write_generated_and_declared_fields() {
+    // docs/14 §5: `def_field` and `field_ref` give handles that the
+    // methods a statement generates read and write, interpreted and
+    // compiled alike, cold and warm.
+    let d = dir();
+    write(&d.0, "lib.qz", HANDLES_LIB);
+    let app = write(&d.0, "app.qz", HANDLES_APP);
+    let cache = d.0.join("cache");
+    let env = [("QUARZ_CACHE_DIR", cache.to_str().unwrap())];
+    let cold = quarz(&d.0, &["check", app.to_str().unwrap()], &env);
+    assert!(cold.0, "{}", cold.2);
+    let warm = quarz(&d.0, &["check", app.to_str().unwrap()], &env);
+    assert_eq!(warm, cold);
+    let (ok, out, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &env);
+    assert!(ok, "{err}");
+    assert_eq!(out, "2\n47\n5\n9\n");
+    let (ok, _, err) = quarz(
+        &d.0,
+        &["build", app.to_str().unwrap(), "-o", "app.bin"],
+        &env,
+    );
+    assert!(ok, "{err}");
+    let out = std::process::Command::new(d.0.join("app.bin"))
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "2\n47\n5\n9\n");
+    // What a handle cannot name, or be used for, is the statement's
+    // error.
+    for (body, expected) in [
+        (
+            "    ref = def_field(:fixed, Int, 0)\n    def_method(:bad) do -> Void\n      ref.set(self, 1)\n    end\n",
+            "`@fixed` is not `var`: `set` through a `Meta::FieldRef` needs a `var` field",
+        ),
+        (
+            "    ref = field_ref[Int](:nope)\n    def_method(:bad) do -> Int\n      ref.get(self)\n    end\n",
+            "the handle to `@nope` names no field of `Comment`",
+        ),
+        (
+            "    ref = field_ref[Int?](:post_id)\n    def_method(:bad) do -> Int?\n      ref.get(self)\n    end\n",
+            "but the field is declared `Int`: a handle's type is the field's exactly",
+        ),
+        // The object is `self`: another `Model` may lack the field the
+        // class generated into has.
+        (
+            "    ref = def_field(:n, Int, 0)\n    def_method(:peek, :o) do |o: Model| -> Int\n      ref.get(o)\n    end\n",
+            "a `Meta::FieldRef`",
+        ),
+        (
+            "    ref = field_ref[Int](:post_id)\n    def_method(:bad) do -> Int\n      ref.get(obj: self)\n    end\n",
+            "takes its arguments by position",
+        ),
+        // `U` a generic helper's type parameter.
+        (
+            "    ref = mk(:post_id, Int)\n    def_method(:bad) do -> Int\n      ref.get(self)\n    end\n  end\n  static def self.mk[V](n: Symbol, t: Type[V]) -> Meta::FieldRef[Model, V]\n    field_ref[V](n)\n",
+            "a type parameter of another method than the `static def` the statement calls",
+        ),
+        // A handle made for another class (here a sibling's).
+        (
+            "    ref = Other.mk\n    def_method(:bad) do -> Int\n      ref.get(self)\n    end\n  end\n  static def self.mk -> Meta::FieldRef[Model, Int]\n    field_ref[Int](:post_id)\n",
+            "which `Comment` does not inherit from",
+        ),
+    ] {
+        write(
+            &d.0,
+            "lib.qz",
+            &format!("class Model\n  var @post_id: Int = 0\n  static def self.gen -> Void\n{body}  end\nend\nclass Other < Model\nend\n"),
+        );
+        write(&d.0, "bad.qz", "require_relative \"lib\"\nclass Comment < Model\n  gen\nend\n");
+        let (ok, _, err) = quarz(&d.0, &["check", "bad.qz"], &[]);
+        assert!(!ok, "{body}");
+        assert!(err.contains(expected), "{body}: {err}");
+    }
+}

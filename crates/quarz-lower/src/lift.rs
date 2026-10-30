@@ -78,10 +78,84 @@ pub fn check(functions: &[Function], root: FuncId) -> Result<Vec<(u32, u32)>, St
     Ok(reads)
 }
 
+/// The captured slots of the block function `root` (and the blocks it
+/// makes) that hold a field handle `set` is called on (docs/14 §5): a
+/// handle must name a `var` field for them. `set` is `Meta::FieldRef#set`.
+pub fn handle_sets(functions: &[Function], root: FuncId, set: MethodId) -> Vec<(u32, u32)> {
+    let mut out: Vec<(u32, u32)> = Vec::new();
+    let mut work: Vec<(FuncId, u32)> = vec![(root, 0)];
+    while let Some((fid, skip)) = work.pop() {
+        let Some(f) = functions.get(fid as usize) else {
+            continue;
+        };
+        let own = u32::from(f.frame_size > 0);
+        // (Over the whole function, as `handle_registers`: a register a
+        // captured `FrameGet` alone writes.)
+        let mut loaded: Vec<(Reg, (u32, u32))> = Vec::new();
+        let mut other: Vec<Reg> = Vec::new();
+        for b in &f.blocks {
+            for inst in &b.insts {
+                match inst {
+                    Inst::FrameGet { dst, depth, slot }
+                        if captured(*depth, own, skip).is_some() =>
+                    {
+                        let d = captured(*depth, own, skip).unwrap();
+                        loaded.push((*dst, (d, *slot)));
+                    }
+                    Inst::MakeBlock { func, .. } => {
+                        other.extend(inst.defs());
+                        work.push((*func, skip + own));
+                    }
+                    // (An inlined block clears its registers before it
+                    // loads them: not a write of a handle register.)
+                    Inst::ClearRegs { .. } => {}
+                    _ => other.extend(inst.defs()),
+                }
+            }
+        }
+        loaded.retain(|(r, _)| !other.contains(r));
+        for b in &f.blocks {
+            for inst in &b.insts {
+                if let Inst::Call {
+                    kind: CallKind::Method(m),
+                    recv: Some(r),
+                    ..
+                } = inst
+                {
+                    if *m == set {
+                        if let Some((_, at)) = loaded.iter().find(|(l, _)| l == r) {
+                            if !out.contains(at) {
+                                out.push(*at);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
 impl Lowerer {
     /// The function of a generated method: the block's, copied with its
     /// captures baked in, and its own blocks likewise.
-    pub(crate) fn lift(&mut self, mid: MethodId, name: String, g: &Generated) -> FuncId {
+    pub(crate) fn lift(
+        &mut self,
+        world: &quarz_types::World,
+        mid: MethodId,
+        name: String,
+        g: &Generated,
+    ) -> FuncId {
+        // A field handle's `get`/`set` (docs/14 §5): the field access, in
+        // place of the call, where the handle is baked.
+        let handle_methods = |n: &str| -> Option<MethodId> {
+            world
+                .class(world.builtin.meta_field_ref)
+                .methods
+                .get(n)
+                .and_then(|ids| ids.first().copied())
+        };
+        let (get, set) = (handle_methods("get"), handle_methods("set"));
         // New ids for the block function and the blocks it makes, first.
         let mut copies: Vec<(FuncId, FuncId, u32)> = Vec::new();
         let mut work: Vec<(FuncId, u32)> = vec![(g.func, 0)];
@@ -117,6 +191,11 @@ impl Lowerer {
                 nregs: f.nregs,
                 consts: std::mem::take(&mut f.consts),
             };
+            // The registers holding a baked handle, with the field it names
+            // (class and declared index), in the whole function: a register
+            // the captured `FrameGet` alone writes (the lowering gives each
+            // value its own).
+            let handles = handle_registers(&f, own, skip, g, world);
             for b in &mut f.blocks {
                 let insts = std::mem::take(&mut b.insts);
                 let lines = std::mem::take(&mut b.lines);
@@ -135,6 +214,24 @@ impl Lowerer {
                             }
                             None => b.insts.push(Inst::FrameGet { dst, depth, slot }),
                         },
+                        Inst::Call {
+                            dst,
+                            kind: CallKind::Method(m),
+                            recv: Some(r),
+                            ref args,
+                            ..
+                        } if (Some(m) == get || Some(m) == set)
+                            && handles.iter().any(|(h, _, _)| *h == r) =>
+                        {
+                            let &(_, class, index) =
+                                handles.iter().find(|(h, _, _)| *h == r).unwrap();
+                            if Some(m) == get {
+                                baker.field_get(&mut b.insts, dst, args[0], class, index);
+                            } else {
+                                baker.field_set(&mut b.insts, args[0], class, index, args[1]);
+                                baker.constant(&mut b.insts, dst, Constant::Nil);
+                            }
+                        }
                         Inst::MakeBlock {
                             dst,
                             func,
@@ -158,6 +255,60 @@ impl Lowerer {
         }
         renamed(g.func)
     }
+}
+
+/// The registers of block function `f` (`own`, `skip` as in `lift`) that
+/// hold a baked field handle, with the field it names: written by a
+/// captured `FrameGet` of a handle and by nothing else.
+fn handle_registers(
+    f: &Function,
+    own: u32,
+    skip: u32,
+    g: &Generated,
+    world: &quarz_types::World,
+) -> Vec<(Reg, ClassId, u32)> {
+    let mut found: Vec<(Reg, ClassId, u32)> = Vec::new();
+    let mut other: Vec<Reg> = Vec::new();
+    for b in &f.blocks {
+        for inst in &b.insts {
+            if let Inst::FrameGet { dst, depth, slot } = inst {
+                if let Some(d) = captured(*depth, own, skip) {
+                    let value = g
+                        .captures
+                        .iter()
+                        .find(|(cd, cs, _)| (*cd, *cs) == (d, *slot))
+                        .map(|(_, _, v)| v);
+                    if let Some((class, index)) = value.and_then(|v| handle_field(world, v)) {
+                        found.push((*dst, class, index));
+                        continue;
+                    }
+                }
+            }
+            // (An inlined block clears its registers before it loads them.)
+            if !matches!(inst, Inst::ClearRegs { .. }) {
+                other.extend(inst.defs());
+            }
+        }
+    }
+    found.retain(|(r, _, _)| !other.contains(r));
+    found
+}
+
+/// The field a baked `Meta::FieldRef` names (docs/14 §5): its class and
+/// declared index, when the class has it.
+fn handle_field(world: &quarz_types::World, v: &Baked) -> Option<(ClassId, u32)> {
+    let Baked::Data(c, fields) = v else {
+        return None;
+    };
+    if *c != world.builtin.meta_field_ref {
+        return None;
+    }
+    let (Some(Baked::Class(owner)), Some(Baked::Symbol(name))) = (fields.first(), fields.get(1))
+    else {
+        return None;
+    };
+    let index = world.field_index(*owner, name)?;
+    Some((*owner, index as u32))
 }
 
 /// Emits the instructions that make a baked value.
@@ -197,6 +348,91 @@ impl<'a> Baker<'a> {
             }
         };
         out.push(Inst::LoadConst { dst, idx });
+    }
+
+    /// Where declared field `index` of `class` is: its slot, and the
+    /// data type held in place there, if any (`FnBuilder::ivar_layout`).
+    fn ivar_layout(&self, class: ClassId, index: u32) -> (u32, Option<ClassId>) {
+        match self
+            .layouts
+            .get(class as usize)
+            .and_then(|l| l.ivars.get(index as usize))
+        {
+            Some(iv) => (iv.slot, iv.flat),
+            None => (index, None),
+        }
+    }
+
+    /// Read declared field `index` of the object in `obj` into `dst`, as
+    /// `@name` in the class's own methods does (`FnBuilder::field_get`).
+    fn field_get(&mut self, out: &mut Vec<Inst>, dst: Reg, obj: Reg, class: ClassId, index: u32) {
+        let (slot, flat) = self.ivar_layout(class, index);
+        let Some(d) = flat else {
+            out.push(Inst::FieldGet {
+                dst,
+                obj,
+                index: slot,
+                class,
+            });
+            return;
+        };
+        let n = self.layouts[d as usize].slots.len() as u32;
+        let args: Vec<Reg> = (0..n)
+            .map(|k| {
+                let r = self.reg();
+                out.push(Inst::FieldGet {
+                    dst: r,
+                    obj,
+                    index: slot + k,
+                    class,
+                });
+                r
+            })
+            .collect();
+        out.push(Inst::Call {
+            dst,
+            kind: CallKind::Construct {
+                class: d,
+                init: self.layouts[d as usize].init,
+            },
+            recv: None,
+            args,
+            splat: false,
+            kw: Vec::new(),
+            kw_splat: None,
+            block: None,
+            moved: 0,
+        });
+    }
+
+    /// Write `src` to declared field `index` of the object in `obj`
+    /// (`FnBuilder::field_set`).
+    fn field_set(&mut self, out: &mut Vec<Inst>, obj: Reg, class: ClassId, index: u32, src: Reg) {
+        let (slot, flat) = self.ivar_layout(class, index);
+        let Some(d) = flat else {
+            out.push(Inst::FieldSet {
+                obj,
+                index: slot,
+                src,
+                class,
+            });
+            return;
+        };
+        for k in 0..self.layouts[d as usize].slots.len() as u32 {
+            let t = self.reg();
+            out.push(Inst::FieldGet {
+                dst: t,
+                obj: src,
+                index: k,
+                class: d,
+            });
+            out.push(Inst::FieldSet {
+                obj,
+                index: slot + k,
+                src: t,
+                class,
+            });
+        }
     }
 
     pub(crate) fn bake(&mut self, out: &mut Vec<Inst>, dst: Reg, v: &Baked) {

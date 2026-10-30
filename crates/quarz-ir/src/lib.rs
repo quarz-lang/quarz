@@ -191,6 +191,10 @@ impl Function {
 /// `**kw` takes its entries (docs/01 §9).
 pub const KW_SPLAT: &str = "**";
 
+/// The keyword the lowering passes `Meta::ClassDef#def_field` and
+/// `#field_ref`, their call's node (docs/14 §5): no parameter has it.
+pub const FIELD_REF_SITE: &str = "__site";
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Constant {
     Nil,
