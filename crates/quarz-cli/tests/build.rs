@@ -163,7 +163,18 @@ fn builtins_match_the_vm() {
     all_same_as_vm(&cases);
 }
 
+/// Every `.qz` directly under `tests/fixtures`: its output and exit code
+/// (control_flow.qz exits with 3).
 #[test]
-fn control_flow_matches_the_vm() {
-    same_as_vm(&fixture("control_flow.qz"), &[]);
+fn top_level_fixtures_match_the_vm() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let mut paths: Vec<PathBuf> = fs::read_dir(&dir)
+        .expect("fixtures directory")
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|e| e == "qz"))
+        .collect();
+    paths.sort();
+    assert!(paths.contains(&fixture("control_flow.qz")), "{paths:?}");
+    let cases: Vec<(PathBuf, Vec<String>)> = paths.into_iter().map(|p| (p, Vec::new())).collect();
+    all_same_as_vm(&cases);
 }

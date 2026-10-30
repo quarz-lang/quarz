@@ -1,0 +1,53 @@
+rescued bad -2
+rescued bad -1
+ok after 3
+ensure 0
+0
+ensure 4
+8
+ensure -1
+outer bad -1
+3
+nil
+30
+[1, 0, 3, 0]
+16
+big 500
+number
+string 3
+ints then 2
+named x
+nil
+other
+p 1 0
+overflow: OverflowError
+9223372036854775807
+8999999999999999999
+2
+index: IndexError
+cleanup
+5000
+7 / 2 = 3, 7 % 2 = 1
+-7 / 2 = -4, -7 % 2 = 1
+7 / -2 = -4, 7 % -2 = -1
+-7 / -2 = 3, -7 % -2 = -1
+6 / 3 = 2, 6 % 3 = 0
+-6 / 3 = -2, -6 % 3 = 0
+overflow: OverflowError
+9223372030926249001
+overflow: OverflowError
+-9223372036854775808
+overflow: OverflowError
+overflow: OverflowError
+-9223372036854775808
+1.5
+0.5
+3.75
+6.0
+30
+-3
+2
+9.5
+zero: divided by 0
+I am Thing
+I am SubThing
