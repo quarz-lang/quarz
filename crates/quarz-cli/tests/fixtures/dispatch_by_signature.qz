@@ -1,0 +1,88 @@
+# Dispatch goes by signature (docs/01 §3), the types seen from the class.
+
+# A call in a module's body reaches the implementation of its signature,
+# not another overload of the name.
+class V
+  include Comparable[V]
+  @n: Int
+  def initialize(@n: Int)
+  end
+  def n -> Int = @n
+  def <=>(other: V) -> Int = n <=> other.n
+end
+
+class W < V
+  @s: String
+  def initialize(@n: Int, @s: String)
+  end
+  def s -> String = @s
+  def <=>(other: W) -> Int = other.s.size
+end
+
+puts W.new(1, "x") < V.new(2)
+puts W.new(1, "x") <=> W.new(9, "abc")
+
+# An abstract method stands in for nothing: a concrete one further up the
+# chain implements it.
+class A
+  @n: Int
+  def initialize(@n: Int)
+  end
+  def n -> Int = @n
+  def <=>(other: A) -> Int = n <=> other.n
+end
+
+class C < A
+  include Comparable[A]
+end
+
+def compare(a: A) -> Int = a <=> A.new(1)
+
+puts C.new(5) > A.new(1)
+puts compare(C.new(0))
+
+# A module's method a class includes over its superclass's of the same
+# signature, seen from the class: it overrides it, through the superclass
+# too.
+class B < A
+  def >(other: A) -> Bool = false
+end
+
+class D < B
+  include Comparable[A]
+end
+
+def above(b: B) -> Bool = b > A.new(1)
+
+puts above(B.new(5))
+puts above(D.new(5))
+
+# An implementation above where the abstract method is declared: in the
+# superclass of the class including the module, and above an abstract
+# class's own abstract stub.
+module Counted
+  abstract def size_of -> Int
+  def plus_one -> Int = size_of + 1
+end
+
+class Sized
+  def size_of -> Int = 5
+end
+
+class Box < Sized
+  include Counted
+end
+
+class Base
+  def count -> Int = 5
+end
+
+abstract class Middle < Base
+  abstract def count -> Int
+end
+
+class Leaf < Middle
+end
+
+p Box.new.plus_one
+p Leaf.new.count

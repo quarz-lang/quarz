@@ -1421,6 +1421,10 @@ pub struct RtMethod {
     pub singleton: bool,
     pub params: Vec<RtParam>,
     pub has_block: bool,
+    /// The block's type as `same_signature` compares it (`None` where it
+    /// mentions the method's own type parameters, or with no block).
+    #[serde(default)]
+    pub block_ty: Option<String>,
     pub func: Option<FuncId>,
     /// `Type#name` / `Type.name` for natives.
     pub native_key: Option<String>,
@@ -1576,6 +1580,10 @@ pub struct RtWorld {
     /// (class, abstract method, implementation): its conformance, which
     /// holds wherever the value goes.
     pub ext_impls: Vec<(ClassId, MethodId, MethodId)>,
+    /// (class, overridden, overriding): a method of a module the class
+    /// includes over its superclass's (`World::include_overrides`).
+    #[serde(default)]
+    pub include_overrides: Vec<(ClassId, MethodId, MethodId)>,
     /// Top-level classes and modules by name.
     #[serde(serialize_with = "sorted")]
     pub top: HashMap<String, ClassId>,
@@ -1660,6 +1668,7 @@ impl Droppable for RtMethod {
             singleton: false,
             params: Vec::new(),
             has_block: false,
+            block_ty: None,
             func: None,
             native_key: None,
             synth: RtSynth::None,

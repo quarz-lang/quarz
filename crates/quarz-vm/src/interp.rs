@@ -2730,7 +2730,9 @@ impl Interp {
         let (min, max) = m.positional_arity();
         for anc in &self.program.world.class(cid).ancestors {
             let anc = *anc;
-            if anc == m.owner {
+            // (An abstract method stands in for none: what implements it
+            // for this class may come later, `World::ext_impls`.)
+            if anc == m.owner && !m.is_abstract {
                 return None;
             }
             // A file's top-level `def`s are functions, not overrides of
@@ -2741,9 +2743,23 @@ impl Interp {
             // An abstract method an extension implements for this class
             // (its conformance), unless the class defines its own.
             let own = self.program.world.class(anc).methods.contains_key(&m.name);
-            if m.is_abstract && !own {
-                if let Some(i) = self.ext_impl(anc, mid) {
-                    return Some(i);
+            if m.is_abstract {
+                // What the checker found implements it for this class by
+                // signature (an inherited method, past an overload of the
+                // name here), then an extension's.
+                if let Some((_, _, i)) = self
+                    .program
+                    .world
+                    .ext_impls
+                    .iter()
+                    .find(|(c, a, _)| *c == anc && *a == mid)
+                {
+                    return Some(*i);
+                }
+                if !own {
+                    if let Some(i) = self.ext_impl(anc, mid) {
+                        return Some(i);
+                    }
                 }
             }
             let mut candidates: Vec<MethodId> = Vec::new();
@@ -2762,22 +2778,40 @@ impl Interp {
             candidates.retain(|c| {
                 let cm = self.program.method(*c);
                 let (cmin, cmax) = cm.positional_arity();
-                cm.has_block == m.has_block && cmin <= max && cmax >= min && cm.keywords_accept(m)
+                // (An abstract one stands in for none, the method's own too.)
+                !cm.is_abstract
+                    && cm.has_block == m.has_block
+                    && cmin <= max
+                    && cmax >= min
+                    && cm.keywords_accept(m)
             });
             if candidates.is_empty() {
                 continue;
             }
-            if let Some(exact) = candidates.iter().find(|c| self.same_signature(**c, mid)) {
-                return Some(*exact);
+            // A module's method over it where a class of the receiver's
+            // includes the module (`World::include_overrides`).
+            let ancestors = &self.program.world.class(cid).ancestors;
+            if let Some(o) = candidates.iter().find(|c| {
+                self.program
+                    .world
+                    .include_overrides
+                    .iter()
+                    .any(|(k, o, by)| *o == mid && by == *c && ancestors.contains(k))
+            }) {
+                return Some(*o);
             }
-            // An override whose parameter types are written differently
-            // (instantiated generics, wider types). A method of the same
-            // name that accepts less is an overload: keep looking.
+            // What overrides it with the types substituted (instantiated
+            // generics, wider types) first, then the same signature as
+            // written (a method's own type parameters match any): one that
+            // is neither is an overload, so keep looking.
             if let Some(o) = candidates
                 .iter()
                 .find(|c| self.program.method(**c).overrides.contains(&mid))
             {
                 return Some(*o);
+            }
+            if let Some(exact) = candidates.iter().find(|c| self.same_signature(**c, mid)) {
+                return Some(*exact);
             }
         }
         None
@@ -2797,6 +2831,7 @@ impl Interp {
                 .zip(b.positional_params())
                 .all(|(p, q)| p.kind == q.kind && same_ty(p, q))
             && a.keywords_accept(b)
+            && (a.block_ty == b.block_ty || a.block_ty.is_none() || b.block_ty.is_none())
             && a.params
                 .iter()
                 .filter(|p| matches!(p.kind, RtParamKind::KeywordOnly | RtParamKind::KeywordRest))
