@@ -397,6 +397,15 @@ const SUBTYPE_DEPTH: u32 = 256;
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct World {
+    /// A type not yet known passes the Shareable checks: set only while
+    /// an overloaded call is tried again as if it were known
+    /// (`Checker::resolve_pretyped`).
+    #[serde(skip)]
+    pub undecided_passes: std::cell::Cell<bool>,
+    /// How many Shareable checks refused a type only because it is not
+    /// yet known (`refuse_undecided`).
+    #[serde(skip)]
+    pub undecided_refusals: std::cell::Cell<u64>,
     #[serde(skip)]
     subtype_depth: std::cell::Cell<u32>,
     /// The subtype questions being answered: one met again is answered
@@ -1264,6 +1273,17 @@ impl World {
     /// type Shareable by its arguments (a built-in collection, a `data`
     /// type, an enum) is a Shareable `b` only when they are (docs/03): an
     /// `Array[() -> Int]` is no `Shareable`.
+    /// Whether a Shareable check refuses a type only because it is not yet
+    /// known (counted, for `Checker::resolve_pretyped`).
+    pub fn refuse_undecided(&self) -> bool {
+        if self.undecided_passes.get() {
+            return false;
+        }
+        self.undecided_refusals
+            .set(self.undecided_refusals.get() + 1);
+        true
+    }
+
     pub fn keeps_shareable(&self, a: ClassId, aargs: &[Type], b: ClassId) -> bool {
         if aargs.is_empty() || self.shareable_promise(b).is_none() {
             return true;
@@ -1281,9 +1301,13 @@ impl World {
             return true;
         }
         let shareable = Type::class(self.builtin.shareable);
-        aargs
-            .iter()
-            .all(|t| !t.has_vars() && self.is_subtype(t, &shareable))
+        aargs.iter().all(|t| {
+            if t.has_vars() {
+                !self.refuse_undecided()
+            } else {
+                self.is_subtype(t, &shareable)
+            }
+        })
     }
 
     pub fn is_subtype(&self, sub: &Type, sup: &Type) -> bool {
