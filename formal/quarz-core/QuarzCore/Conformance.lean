@@ -1678,10 +1678,6 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
       let preludeFile ← nat (← field (← T.cls (← T.arrayInfo).1) "file")
       if ← (T.extensions.toList.anyM fun e => do pure ((← nat (← field e "file")) != preludeFile)) then
         throw s!"a module's method {name} with a program's extension"
-      -- (`Self` in its result: the receiver's class, which a module's `T`
-      -- need not be: the prelude's question, tmp/repro/comparable-clamp-*.)
-      if (T.qclass rcid).isSome && ((← field m "ret").compress.splitOn s!"\"id\":{T.selfParam}").length > 1 then
-        throw s!"a module's method {name} giving Self"
     if (native || synth != "None" || T.excIds.contains owner || arrayEnv.isSome || preludeModule) && !accessor then
       -- A built-in method: its declared types. On the implicit receiver,
       -- it takes `self` (it may read its fields), but a `Kernel`
