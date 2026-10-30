@@ -1,12 +1,18 @@
 # A child failing on one worker cancels its siblings on the others, and
-# the scope raises the failure in its owner.
+# the scope raises the failure in its owner. Channels order it, whatever
+# the scheduling: each sibling has started (inside its `begin`, so its
+# `ensure` runs when it is cancelled) before the child raises, and waits
+# on a channel nothing sends to, which only the cancel ends.
 log = Channel[String].new(16)
+started = Channel[Int].new(3)
+never = Channel[Int].new
 begin
   Task.scope do |s|
     3.times do |i|
       s.spawn do
         begin
-          Task.sleep(5.seconds)
+          started.send(i)
+          never.receive
         ensure
           # Uncancellable: a cancelled task's channel operations raise.
           Task.uncancellable { log.send("sibling #{i} ended") }
@@ -14,7 +20,7 @@ begin
       end
     end
     s.spawn do
-      Task.sleep(20.ms)
+      3.times { started.receive }
       raise ArgumentError, "child failed"
     end
   end
@@ -25,7 +31,7 @@ lines: Array[String] = []
 3.times { lines = lines.push(log.receive) }
 p lines.sort
 
-# An exception from a task on another worker, through await.
+# An exception from a task, through await.
 t = Task.spawn { raise IOError, "far away" }
 begin
   t.await
@@ -33,12 +39,16 @@ rescue IOError => e
   puts "awaited: #{e.message}"
 end
 
-# Cancelling a task on another worker.
+# Cancelling a task on another worker in a timer wait, once it has
+# started (it is sleeping, or about to: the cancel ends the sleep, which
+# is far longer than any run).
+ready = Channel[Int].new(1)
 sleeper = Task.spawn do
-  Task.sleep(5.seconds)
+  ready.send(0)
+  Task.sleep(60.seconds)
   :slept
 end
-Task.sleep(10.ms)
+ready.receive
 sleeper.cancel
 begin
   sleeper.await
