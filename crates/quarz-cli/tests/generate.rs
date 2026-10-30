@@ -424,7 +424,7 @@ fn what_cannot_be_a_field_or_a_callee() {
   static def self.generic -> Void
     def_field(:tags, Array, ["t"])
   end
-  static def self.dup -> Void
+  static def self.again -> Void
     def_field(:id, Int, 0)
   end
   static def self.writer_only -> Void
@@ -443,7 +443,7 @@ data Point = (x: Int, y: Int)
     let app = write(
         &d.0,
         "app.qz",
-        "require_relative \"lib\"\nclass A < Model\n  def id2 -> Int = 1\n  generic\n  dup\n  writer_only\n  clash\nend\nclass B\n  extend Macros\n  has 1\nend\n",
+        "require_relative \"lib\"\nclass A < Model\n  def id2 -> Int = 1\n  generic\n  again\n  writer_only\n  clash\nend\nclass B\n  extend Macros\n  has 1\nend\n",
     );
     let (ok, _, err) = quarz(&d.0, &["check", app.to_str().unwrap()], &[]);
     assert!(!ok);

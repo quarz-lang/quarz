@@ -3625,3 +3625,40 @@ fn a_module_declares_no_initialize() {
     // A class method of the name is no constructor.
     ok("module M\n  def self.initialize -> Int = 1\nend");
 }
+
+/// A class method of the name and signature of a `Type` method replaces
+/// it on the class's value, where a call through `k: Type` reaches it: it
+/// is checked as an override (docs/01 §9).
+#[test]
+fn class_methods_override_types_methods() {
+    err(
+        "class A\n  def self.name -> Int = 3\nend",
+        "`name` returns Int but `Type#name`, which it overrides, returns String",
+    );
+    ok("class A\n  def self.name -> String = \"a\"\n  def self.inspect -> String = \"<A>\"\nend");
+    // Another signature is an overload.
+    ok("class A\n  def self.name(x: Int) -> Int = x\n  def self.<=(o: Object) -> Bool = false\nend");
+    // The rules of `nil?`, `is_a?` and `equal?` hold on the class side; a
+    // `==` of another signature is an overload, which nothing calls with
+    // other values (equality_takes_an_object), and one of `Type#==`'s an
+    // override, checked as such (`Object#==` here).
+    err(
+        "class A\n  def self.==(o: Object) -> Int = 1\nend",
+        "`==` returns Int but `Object#==`",
+    );
+    err(
+        "class A\n  def self.nil? -> Bool = true\nend",
+        "`nil?` cannot be redefined",
+    );
+    err(
+        "class A\n  def self.equal?(o: Object) -> Bool = true\nend",
+        "`equal?` cannot be redefined",
+    );
+    // So is a method of a module the class extends, which the runtime
+    // finds there too; an extension's method takes no part in dispatch.
+    err(
+        "module M\n  def name -> Int = 3\nend\nclass A\n  extend M\nend",
+        "which it overrides in `A`, which extends `M`",
+    );
+    ok("extension Object\n  def describe -> String = \"obj\"\nend\nclass A\n  def self.describe -> Int = 3\nend");
+}

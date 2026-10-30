@@ -88,6 +88,9 @@ pub struct Declarer<'ast> {
     /// Where an override error about a prelude method is reported (the
     /// class whose include brings it: `check_include_overrides`).
     override_span: Option<Span>,
+    /// How the class brings the module whose method `check_override_pair`
+    /// checks (`within`): "includes", or "extends".
+    override_via: &'static str,
     /// The user's compilation units (files), in load order.
     pub units: Vec<UnitDecl<'ast>>,
     class_usings: HashMap<ClassId, Vec<(&'ast ConstPath, u32)>>,
@@ -191,6 +194,7 @@ impl<'ast> Declarer<'ast> {
             pending_ext: Vec::new(),
             override_pairs: HashSet::default(),
             override_span: None,
+            override_via: "includes",
             units: Vec::new(),
             class_usings: HashMap::default(),
             ext_includes: Vec::new(),
@@ -1005,6 +1009,7 @@ impl<'ast> Declarer<'ast> {
             self.check_quoted_overrides(p.id);
             self.check_override_returns(p.id);
             self.check_include_overrides(p.id);
+            self.check_class_side_overrides(p.id);
             self.check_copied_deinitialize(p.id);
             self.check_eq_with_hash(p.id);
             self.check_duplicate_methods(p.id);
@@ -1950,6 +1955,83 @@ impl<'ast> Declarer<'ast> {
         }
     }
 
+    /// A class method of the name and signature of a `Type[Self]` method
+    /// (`name`, `<=`, `to_s`, ...) replaces it on the class's value, where
+    /// a call through `k: Type` reaches it: an override, checked as one
+    /// (docs/01 §9).
+    fn check_class_side_overrides(&mut self, id: ClassId) {
+        let class = self.world.class(id);
+        if class.file == 0 || matches!(class.kind, ClassKind::Main) {
+            return;
+        }
+        let args: Vec<Type> = class
+            .type_params
+            .iter()
+            .map(|p| Type::Param(p.id))
+            .collect();
+        let own = Type::Class(id, args.clone());
+        let on = Type::Class(self.world.builtin.class_, vec![own.clone()]);
+        // Its own class methods, then the methods of the modules it
+        // extends (`Interp::class_side_override` finds those too), each
+        // module's reported once, naming the class.
+        let mut mine: Vec<(MethodId, Option<String>)> = class
+            .singleton_methods
+            .values()
+            .flatten()
+            .filter(|m| self.world.method(**m).owner == id)
+            .map(|m| (*m, None))
+            .collect();
+        for t in &class.extends {
+            if let Type::Class(m, _) = t {
+                for anc in self.world.ancestor_ids(*m) {
+                    let mc = self.world.class(anc);
+                    if mc.file == 0 {
+                        continue;
+                    }
+                    mine.extend(
+                        mc.methods
+                            .values()
+                            .flatten()
+                            .filter(|x| self.world.method(**x).owner == anc)
+                            .map(|x| (*x, Some(class.name.clone()))),
+                    );
+                }
+            }
+        }
+        let mut mine_subst = self.world.class_subst(id, &args);
+        mine_subst.insert(SELF_PARAM, own.clone());
+        for (mid, within) in mine {
+            let m = self.world.method(mid);
+            if m.synth != Synth::None || m.name == "new" {
+                continue;
+            }
+            let name = m.name.clone();
+            for (o, osubst) in self.world.lookup_methods(&on, &name) {
+                let om = self.world.method(o);
+                // (An extension's method takes no part in dispatch.)
+                if om.singleton
+                    || om.extension.is_some()
+                    || !self.same_signature_at_run_time(mid, o)
+                {
+                    continue;
+                }
+                if within.is_some() && !self.override_pairs.insert((mid, o)) {
+                    break;
+                }
+                let mut subst = osubst;
+                subst.insert(SELF_PARAM, on.clone());
+                if within.is_some() {
+                    self.override_span = Some(self.world.class(id).span);
+                    self.override_via = "extends";
+                }
+                self.check_override_pair(mid, o, &subst, &mine_subst, within);
+                self.override_span = None;
+                self.override_via = "includes";
+                break;
+            }
+        }
+    }
+
     /// `check_override_pair` for the overrides class `id`'s includes make
     /// (`World::include_overrides_of`), each reported once.
     fn check_include_overrides(&mut self, id: ClassId) {
@@ -2136,7 +2218,8 @@ impl<'ast> Declarer<'ast> {
         // (`M#f` against `A#f` in `C`, which includes `M`.)
         let context = match within {
             Some(c) => format!(
-                " in `{c}`, which includes `{}`",
+                " in `{c}`, which {} `{}`",
+                self.override_via,
                 self.world.class(m.owner).name
             ),
             None => String::new(),
@@ -2852,6 +2935,7 @@ impl<'ast> Declarer<'ast> {
             self.check_quoted_overrides(id);
             self.check_override_returns(id);
             self.check_include_overrides(id);
+            self.check_class_side_overrides(id);
             self.check_copied_deinitialize(id);
             self.check_eq_with_hash(id);
             self.check_duplicate_methods(id);
