@@ -1,0 +1,17 @@
+# `x.m!` where the receiver's class has no `m!`: `x = x.m` (docs/01 §10).
+class Animal
+  def other -> Animal
+    Cat.new
+  end
+  def name -> String = "animal"
+end
+class Cat < Animal
+  def name -> String = "cat"
+end
+def m -> Int
+  x = Animal.new
+  x.other!
+  f = ->() -> Int { x.other!; 1 }
+  f.call + x.name.size
+end
+puts m

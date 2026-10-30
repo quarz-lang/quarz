@@ -1314,6 +1314,20 @@ partial def matchPattern (T : Tables) (id : Nat) (v : Json) : CM Expr := do
 partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
   let name ← str (← field c "name")
   let recvJ ← field c "recv"
+  -- (`x&.m`: nil when `x` is, not the model's call.)
+  if (c.getObjVal? "safe_nav").toOption == some (.bool true) then throw "a safe navigation call"
+  -- `x.m!` that the checker resolved to `m` (docs/01 §10): `x = x.m`.
+  if name.endsWith "!" then
+    if let .ok t := T.calls.getObjVal? (toString id) then
+      if (t.getObjValAs? String "t").toOption == some "method" then
+        let m ← T.method (← nat (← field t "method"))
+        let base := String.ofList (name.toList.dropLast)
+        if (← str (← field m "name")) == base then
+          if recvJ == .null then throw "a bang sugar without a receiver"
+          let (k, x) ← variant (← field recvJ "kind")
+          unless k == "Local" do throw "a bang sugar on a receiver not a local"
+          let x ← localName (← str x)
+          return .assign x (← call T id (c.setObjVal! "name" (Json.str base)))
   -- (`&p`: a procedure given as the block.)
   let mut args : List Json := []
   let mut bpass : Option Json := none

@@ -385,9 +385,8 @@ stricter, not unsound.
   Closures' stage C2 (pinned locals un-narrowed only once a lambda
   assigning them is made, design §15) is deferred until a program needs
   it: none in the corpus, the fixtures or the examples does.
-  A known translator gap: a bang method's sugar (`x.other!`, which is
-  `x = x.other`) is not translated as the assignment it is, so a
-  program using it disagrees.
+  `x.m!` that the checker resolved to `m` (the sugar for `x = x.m`,
+  docs/01 §10, on a local) is that assignment.
   A disagreement is the Rust checker narrowing further than the rules
   allow, or the model being stricter: either is looked at. The methods
   `attr_reader` and `attr_writer` make are methods of the model; another
