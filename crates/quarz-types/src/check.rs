@@ -4899,7 +4899,18 @@ impl Checker {
     fn self_is_opaque(&self) -> bool {
         // (A class method's `self`, a class, is no `Self`: its instances
         // are; nor is a class's `static def`'s, a `Meta::ClassDef`.)
-        self.env.self_opaque && self.env.receivers.is_empty() && self.env.self_is_self
+        self.env.self_opaque && self.own_self() && self.env.self_is_self
+    }
+
+    /// Whether `self` here is the method's own: no block with a receiver
+    /// is around, or the innermost is a block lifted to a generated
+    /// method, whose receiver is that method's `self` (docs/14 §5).
+    fn own_self(&self) -> bool {
+        match (self.env.receivers.last(), self.env.lifted_frame) {
+            (None, _) => true,
+            (Some(r), Some(lf)) => r.outer_frame + 1 == lf,
+            _ => false,
+        }
     }
 
     /// Whether a call with an implicit or explicit `self` receiver of type
@@ -4910,7 +4921,7 @@ impl Checker {
         // or `build`, whose `Self` is the class's instances; an instance
         // method of `Type` or `Object`, `dup` say, binds it to the class.)
         self.env.self_opaque
-            && self.env.receivers.is_empty()
+            && self.own_self()
             && (*recv == Type::Param(SELF_PARAM) || *recv == self.env.self_type)
             && (self.env.self_is_self || m.singleton)
     }
@@ -8146,7 +8157,7 @@ impl Checker {
                                 .push((cid, init, m, expr.span, self.env.file));
                             // In a class method with `Self` in its
                             // signature, the instance is a `Self`.
-                            if self.env.self_opaque && self.env.receivers.is_empty() {
+                            if self.env.self_opaque && self.own_self() {
                                 return Type::Param(SELF_PARAM);
                             }
                         }
@@ -10861,6 +10872,30 @@ impl Checker {
                 );
             }
         }
+        // A block lifted to a generated method (docs/14 §5): its `self` is
+        // the method's, of the class generated into or a subclass, so it
+        // is the opaque `Self` (bounded by the block's receiver type), and
+        // a `Self` written in it (its declared types included) means that
+        // class, which the generated signature substitutes. On the class
+        // side, as in a class method, `self` is the class, whose `new`
+        // gives a `Self`.
+        let mut saved_lifted_self = None;
+        let mut lifted_instance_side = false;
+        if let (true, Some(r)) = (lifted, recv.as_ref()) {
+            let r = self.resolve(r);
+            let (class_side, instance) = match &r {
+                Type::ClassObject(c, args) => (true, Type::Class(*c, args.clone())),
+                Type::TypeOf(t) => (true, (**t).clone()),
+                t => (false, t.clone()),
+            };
+            lifted_instance_side = !class_side;
+            saved_lifted_self = Some((
+                self.world.self_bound.replace(instance),
+                self.env.scope.self_type.take(),
+                std::mem::replace(&mut self.env.self_opaque, true),
+                std::mem::replace(&mut self.env.self_is_self, !class_side),
+            ));
+        }
         let params = params.clone();
         // `do |x| -> T ... end`: the block's result is `T`, as a `def`'s
         // return type is (checked and used; `-> Void` discards the body's
@@ -10926,6 +10961,11 @@ impl Checker {
         // A block with a receiver runs with `self` = the receiver: the
         // enclosing `self` stays reachable for calls it alone answers.
         let receiver = recv.as_ref().map(|t| self.resolve(t));
+        let receiver = if lifted_instance_side {
+            Some(Type::Param(SELF_PARAM))
+        } else {
+            receiver
+        };
         let saved_self = self.enter_receiver(receiver.as_ref());
         // `retry` belongs directly in a rescue clause, not in a block or
         // lambda there (docs/01 §12).
@@ -11127,6 +11167,12 @@ impl Checker {
         self.env.static_frame = saved_static;
         (self.env.lifted_frame, self.env.is_static) = saved_lifted;
         self.leave_receiver(saved_self);
+        if let Some((bound, scope_self, opaque, is_self)) = saved_lifted_self {
+            self.world.self_bound = bound;
+            self.env.scope.self_type = scope_self;
+            self.env.self_opaque = opaque;
+            self.env.self_is_self = is_self;
+        }
         self.out
             .frame_sizes
             .insert(call_id, frame.vars.len() as u32);
@@ -11153,6 +11199,13 @@ impl Checker {
         let outer_self = std::mem::replace(&mut self.env.self_type, recv.clone());
         let class = match recv {
             Type::Class(id, _) => Some(*id),
+            // (A lifted block's `self`, docs/14 §5: the class it is
+            // bounded by, whose fields and protected methods it reaches as
+            // a method does.)
+            Type::Param(SELF_PARAM) => match &self.world.self_bound {
+                Some(Type::Class(id, _)) => Some(*id),
+                _ => None,
+            },
             _ => None,
         };
         let outer_class = std::mem::replace(&mut self.env.class_id, class);

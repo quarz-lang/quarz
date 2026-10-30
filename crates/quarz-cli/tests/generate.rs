@@ -1274,3 +1274,77 @@ fn method_handles_call_generated_methods() {
     assert!(!ok);
     assert!(err.contains("has no method `nope` of that type"), "{err}");
 }
+
+const LIFTED_SELF_LIB: &str = r##"class Model
+  @n: Int = 5
+  var @m: Int = 0
+  def hello -> Int = 1
+  # `Self` in the blocks is the class generated into, whether the
+  # `static def`'s own signature mentions `Self` or not.
+  static def self.gen -> Void
+    def_method(:me) do -> Self
+      self
+    end
+    def_method(:same, :o) do |o: Self| -> Bool
+      o.hello == hello
+    end
+    def_class_method(:mk) do -> Self
+      new
+    end
+    # Its fields, as a method reads and writes them.
+    def_method(:copy_n) do -> Int
+      @m = @n
+      @m
+    end
+  end
+  static def self.gen2 -> Self
+    def_method(:me2) do -> Self
+      self
+    end
+    new
+  end
+end
+"##;
+
+const LIFTED_SELF_APP: &str = r##"# `Self` in a block given to `def_method` or `def_class_method` is the
+# class generated into (docs/14 §5): `Post#me` gives a `Post`, `Post.mk`
+# makes one, and `same` takes one.
+require_relative "lib"
+class Post < Model
+  def only -> Int = 42
+  gen
+  gen2
+end
+a: Post = Post.new.me
+p a.only
+b: Post = Post.mk
+p b.only
+c: Post = Post.new.me2
+p c.only
+p Post.new.same(Post.new)
+p Post.new.copy_n
+"##;
+
+#[test]
+fn self_in_a_lifted_block_is_the_class_generated_into() {
+    // docs/14 §5: `Self` in a block given to `def_method` or
+    // `def_class_method` is the class generated into, interpreted and
+    // compiled.
+    let d = dir();
+    write(&d.0, "lib.qz", LIFTED_SELF_LIB);
+    let app = write(&d.0, "app.qz", LIFTED_SELF_APP);
+    let expected = "42\n42\n42\ntrue\n5\n";
+    let (ok, out, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(out, expected);
+    let (ok, _, err) = quarz(
+        &d.0,
+        &["build", app.to_str().unwrap(), "-o", "app.bin"],
+        &[],
+    );
+    assert!(ok, "{err}");
+    let out = std::process::Command::new(d.0.join("app.bin"))
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout), expected);
+}
