@@ -256,51 +256,54 @@ pub(crate) fn unit_output(world: &World, out: &Output, base: u32, file: u32) -> 
 }
 
 /// The narrowed type parameters `out` mentions, each after those its
-/// own definition does.
+/// own definition does (its base and its bound: post-order, as
+/// `cache::apply` makes them again in order).
 pub(crate) fn collect_narrowed(
     world: &World,
     out: &Output,
     list: &mut Vec<(TypeParamId, TypeParamId, Type)>,
 ) {
-    let mut seen: HashSet<TypeParamId> = HashSet::default();
-    let mut visit = |t: &Type, list: &mut Vec<(TypeParamId, TypeParamId, Type)>| {
-        let mut stack = vec![t.clone()];
-        while let Some(t) = stack.pop() {
-            match &t {
-                Type::Param(p) => {
-                    if let Some(bounds) = world.narrowed_params.get(p) {
-                        if seen.insert(*p) {
-                            if let [Type::Param(base), bound] = &bounds[..] {
-                                stack.push(Type::Param(*base));
-                                stack.push(bound.clone());
-                                list.push((*p, *base, bound.clone()));
-                            }
+    fn visit(
+        world: &World,
+        t: &Type,
+        seen: &mut HashSet<TypeParamId>,
+        list: &mut Vec<(TypeParamId, TypeParamId, Type)>,
+    ) {
+        match t {
+            Type::Param(p) => {
+                if let Some(bounds) = world.narrowed_params.get(p) {
+                    if seen.insert(*p) {
+                        if let [Type::Param(base), bound] = &bounds[..] {
+                            visit(world, &Type::Param(*base), seen, list);
+                            visit(world, bound, seen, list);
+                            list.push((*p, *base, bound.clone()));
                         }
                     }
                 }
-                Type::Class(_, a) | Type::ClassObject(_, a) | Type::Union(a) | Type::Tuple(a) => {
-                    stack.extend(a.iter().cloned())
-                }
-                Type::TypeOf(t) => stack.push((**t).clone()),
-                Type::Proc(r, ps, ret, _) => {
-                    stack.extend(r.iter().map(|t| (**t).clone()));
-                    stack.extend(ps.iter().cloned());
-                    stack.push((**ret).clone());
-                }
-                _ => {}
             }
+            Type::Class(_, a) | Type::ClassObject(_, a) | Type::Union(a) | Type::Tuple(a) => {
+                for t in a {
+                    visit(world, t, seen, list);
+                }
+            }
+            Type::TypeOf(t) => visit(world, t, seen, list),
+            Type::Proc(r, ps, ret, _) => {
+                for t in r.iter().map(|t| &**t).chain(ps.iter()).chain([&**ret]) {
+                    visit(world, t, seen, list);
+                }
+            }
+            _ => {}
         }
-    };
+    }
+    let mut seen: HashSet<TypeParamId> = HashSet::default();
     for t in out
         .node_types
         .values()
         .chain(out.op_targets.values())
         .chain(out.block_results.values())
     {
-        visit(t, list);
+        visit(world, t, &mut seen, list);
     }
-    // Defined before used, as `cache::apply` makes them again in order.
-    list.reverse();
 }
 
 pub(crate) fn param_table(params: &HashMap<u32, u32>) -> Table {

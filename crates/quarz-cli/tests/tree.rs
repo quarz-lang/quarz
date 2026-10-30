@@ -148,3 +148,77 @@ fn a_declared_block_result_is_in_the_tree() {
         "{t}"
     );
 }
+
+/// A tree checked with the cache off, then twice with a cache of its own
+/// (cold, warm): the same three times. A narrowed parameter whose base is
+/// itself narrowed (`T & Tag & Tug`) must be cached after its base.
+#[test]
+fn the_cache_gives_the_same_tree() {
+    let dir = std::env::temp_dir().join(format!("quarz-tree-{}-cache", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("main.qz");
+    std::fs::write(
+        &path,
+        "module Tag
+  def tag -> Int
+    1
+  end
+end
+module Tug
+  def tug -> Int
+    2
+  end
+end
+\
+         class P
+  include Tag
+  include Tug
+end
+class G[T]
+  @x: T
+  @y: T
+\
+         def initialize(@x: T, @y: T)
+  end
+  def b1 -> Int
+    z = @x
+    if z.is_a?(Tag)
+\
+         t = z.tag
+      if z.is_a?(Tug)
+        u: T = z
+        u = @y
+        return t + z.tug
+\
+         end
+    end
+    1 + 0
+  end
+end
+p G.new(P.new, P.new).b1
+",
+    )
+    .unwrap();
+    let cache = dir.join("cache");
+    let run = |env: (&str, &str)| {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_quarz"))
+            .args(["check", "--tree"])
+            .arg(&path)
+            .env_remove("QUARZ_NO_CACHE")
+            .env(env.0, env.1)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    let off = run(("QUARZ_NO_CACHE", "1"));
+    let cold = run(("QUARZ_CACHE_DIR", cache.to_str().unwrap()));
+    let warm = run(("QUARZ_CACHE_DIR", cache.to_str().unwrap()));
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(off, cold);
+    assert_eq!(off, warm);
+}
