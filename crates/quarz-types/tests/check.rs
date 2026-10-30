@@ -3198,3 +3198,56 @@ fn clamp_gives_the_receiver_or_a_bound() {
     // When `T` is the class itself, it is that class.
     ok("x: Int = 5.clamp(1, 3)\ny: Int = 5.clamp(1..3)");
 }
+
+#[test]
+fn an_override_with_wider_parameters_keeps_the_result_and_block_types() {
+    // The runtime takes a method with wider parameters to override
+    // (`rtworld::overridden_methods`): its result and block type are
+    // checked as a same-parameter override's.
+    err(
+        "class A\n  def f(x: Int) -> Int = x + 1\nend\nclass B < A\n  def f(x: Object) -> String = \"str\"\nend",
+        "`f` returns String but `A#f`, which it overrides, returns Int",
+    );
+    err(
+        "class A\n  def f(x: Int, &blk: (Int) -> Int) -> Int = yield x\nend\nclass B < A\n  def f(x: Int, &blk: (String) -> Int) -> Int = yield \"s\"\nend",
+        "`f` takes a block of type (String) -> Int but `A#f`, which it overrides, is given one of type (Int) -> Int",
+    );
+    // The interpreter also overrides where a parameter is a type
+    // parameter (`same_signature`): the parameters must then take what
+    // the overridden method's callers pass.
+    err(
+        "class A[T]\n  def f(x: T) -> T = x\nend\nclass B < A[Int]\n  def f(x: String) -> String = x\nend",
+        "`f` takes String for `x` but `A#f`, which it overrides, is given Int",
+    );
+    err(
+        "class A\n  def f[U](x: U) -> U = x\nend\nclass B < A\n  def f(x: Int) -> String = \"s\"\nend",
+        "`f` takes Int for `x` but `A#f`, which it overrides, is given U",
+    );
+    err(
+        "class A\n  def f(x: Int) -> Int = x\nend\nclass B < A\n  def f[V](x: Int) -> String = \"s\"\nend",
+        "`f` returns String but `A#f`, which it overrides, returns Int",
+    );
+    // Class methods, a module's method over the superclass's, `Self`.
+    err(
+        "class A\n  def self.make -> Int = 1\nend\nclass B < A\n  def self.make -> String = \"s\"\nend",
+        "`make` returns String but `A#make`, which it overrides, returns Int",
+    );
+    err(
+        "class A\n  def f -> Int = 1\nend\nmodule M\n  def f -> String = \"s\"\nend\nclass B < A\n  include M\nend",
+        "`f` returns String but `A#f`, which it overrides in `B`, which includes `M`, returns Int",
+    );
+    err(
+        "class A\n  def me -> Self = self\nend\nclass B < A\n  def me -> Int = 5\nend",
+        "`me` returns Int but `A#me`, which it overrides, returns B",
+    );
+    // A block the overridden method may go without, the override must too.
+    err(
+        "class A\n  def each(&b: ((Int) -> Void)?) -> Void\n    b.call(1) if b\n  end\nend\nclass B < A\n  def each(&b: (Int) -> Void) -> Void\n    yield 2\n  end\nend",
+        "`each` requires a block but `A#each`, which it overrides, may be called without one",
+    );
+    // A block whose result is dropped takes one of any result.
+    ok("class A\n  def each(&blk: (Int) -> Int) -> Void\n    puts yield 1\n  end\nend\nclass B < A\n  def each(&blk: (Int) -> Void) -> Void\n    yield 2\n  end\nend");
+    // A narrower result, and a block of a wider type (one giving any
+    // Object takes one giving an Int), are fine.
+    ok("class A\n  def f(x: Int, &blk: (Int) -> Int) -> Object = yield x\nend\nclass B < A\n  def f(x: Object, &blk: (Int) -> Object) -> Int = 1\nend");
+}
