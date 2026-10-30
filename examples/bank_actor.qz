@@ -1,4 +1,4 @@
-# Erlang 風のアクター: 状態はタスクのローカル変数に閉じ、メッセージは enum
+# An Erlang-style actor: its state stays in a task's local variables, and its messages are an enum
 
 enum Msg
   variant Deposit(amount: Int)
@@ -28,7 +28,7 @@ def account_actor(inbox: Channel[Msg]) -> Void
   end
 end
 
-# クライアント側の薄いラッパ
+# A thin wrapper for clients
 class Account
   include Shareable
   @inbox: Channel[Msg]
@@ -54,9 +54,9 @@ end
 Task.scope do |scope|
   inbox = Channel[Msg].new(capacity: 64)
   scope.spawn { account_actor(inbox) }
-  account = Account.new(inbox)          # Account は Shareable(不変フィールドだけ)
+  account = Account.new(inbox)          # Account is Shareable (it includes Shareable; its fields are immutable)
 
-  # 複数のタスクから同時に入金しても、状態はアクターが直列に処理する
+  # Deposits from several tasks at once: the actor handles them one at a time
   Task.scope do |s|
     10.times { s.spawn { account.deposit(10) } }
   end

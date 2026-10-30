@@ -1,13 +1,15 @@
-# 不変コレクションと Builder の使い分け
+# When to use immutable collections, and when a Builder
 
-# 1. 不変スタイル: 参照が一意なら push はその場で更新されるので速い
+# 1. Immutable style: when the array has a single reference, push updates it
+#    in place, so this is fast
 def squares(n: Int) -> Array[Int]
   acc: Array[Int] = []
   n.times { |i| acc = acc.push(i * i) }
   acc
 end
 
-# 2. Builder: Ruby の可変 Array と同じ API。ブロックの外には出ない
+# 2. Builder: almost the API of Ruby's mutable Array. In the `Array.build { }` form
+#    it never leaves its block
 def sieve(limit: Int) -> Array[Int]
   flags = Array::Builder[Bool].new(limit + 1, true)
   flags[0] = flags[1] = false
@@ -20,13 +22,14 @@ def sieve(limit: Int) -> Array[Int]
   end
 end
 
-# 3. 構造共有: 大きな配列から派生した値を複数持っても、コピーは差分だけ
+# 3. Values derived from a large array: each is a new array, and `base` is
+#    unchanged (updating an array something else still refers to copies it)
 base = squares(100_000)
 v1 = base.set(0, -1)
 v2 = base.push(1)
 puts base[0], v1[0], v2.size         # => 0, -1, 100001
 
-# 4. 文字列の組み立て
+# 4. Building a string
 def render(rows: Array[Hash[Symbol, String]]) -> String
   String.build do |out|
     rows.each do |row|
@@ -38,8 +41,8 @@ end
 puts sieve(50).inspect
 puts render([{ name: "alice", email: "a@example.com" }, { name: "bob", email: "b@example.com" }])
 
-# 5. Builder は他タスクに渡せない
+# 5. A Builder cannot be passed to another task
 buf = Array::Builder[Int].new
-# Task.spawn { buf << 1 }        # コンパイルエラー: Array::Builder[Int] は Shareable ではない
-frozen = buf.to_a           # O(1) で不変化。以後 buf は使えない
+# Task.spawn { buf << 1 }        # compile error: Array::Builder[Int] is not Shareable
+frozen = buf.to_a           # O(1): hands the contents over, leaving buf empty
 Task.spawn { puts frozen.size }.await

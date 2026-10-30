@@ -1,4 +1,4 @@
-# enum、data、パターンマッチ、Comparable
+# enum, data, pattern matching, Comparable
 
 data Point(x: Float, y: Float)
   def +(other: Point) -> Point = Point.new(x + other.x, y + other.y)
@@ -57,7 +57,7 @@ if largest
   puts "largest: #{moved}"
 end
 
-# ガード付きパターンと合併型
+# Patterns with guards, and union types
 def classify(v: Int | String | Nil) -> String
   case v
   in nil then "nothing"

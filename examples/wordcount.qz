@@ -1,10 +1,10 @@
-# 複数ファイルを並行に読んで単語を数える
+# Read several files concurrently and count their words
 # quarz run examples/wordcount.qz *.txt
 
 data WordCount(word: String, count: Int)
   include Comparable[WordCount]
   def <=>(other: WordCount) -> Int
-    [other.count, word] <=> [count, other.word]   # 出現数の降順、語の昇順
+    [other.count, word] <=> [count, other.word]   # by count descending, then word ascending
   end
 end
 
@@ -12,7 +12,7 @@ def count_words(text: String) -> Hash[String, Int]
   text.downcase.scan(/[a-z']+/).tally
 end
 
-# 各ファイルを別タスクで処理し、全部終わるまで待つ
+# Process each file in a task of its own, and wait until all are done
 counts = Task.scope do |scope|
   ARGV.map { |path| scope.spawn { count_words(File.read(path)) } }
       .map(&:await)
