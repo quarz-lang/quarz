@@ -398,6 +398,11 @@ struct Env {
     /// bounded by the class, so that only those can be returned as `Self`
     /// (`Shape.new` cannot: a subclass's caller expects its own class).
     self_opaque: bool,
+    /// Whether `self` is a `Self` (an instance method's, or a generic
+    /// module's `static def`'s, whose `Self` is its receiver), not a class
+    /// whose instances `Self` stands for (a class method's, a class's
+    /// `static def`'s).
+    self_is_self: bool,
     class_id: Option<ClassId>,
     /// The class whose body this code is lexically in (fields are
     /// reachable only there); `class_id` changes inside receiver blocks.
@@ -927,6 +932,7 @@ impl Checker {
             }],
             self_type: Type::class(file_mains.iter().flatten().next().copied().unwrap_or(0)),
             self_opaque: false,
+            self_is_self: false,
             class_id: None,
             lexical_class: None,
             receivers: Vec::new(),
@@ -2251,6 +2257,7 @@ impl Checker {
             }],
             self_type,
             self_opaque: false,
+            self_is_self: false,
             lexical_class: class_id,
             class_id,
             receivers: Vec::new(),
@@ -2503,14 +2510,27 @@ impl Checker {
             };
         }
         params.extend(info.type_params.iter().map(|p| (p.name.clone(), p.id)));
+        // A signature with `Self`: the body sees `Self` as opaque, and a
+        // `Self` written in it (a block's `-> Self`, a local's type) is
+        // that one, the signature's, not the class.
+        let opaque = Self::mentions_self(&info);
+        // (In a class method, `Self` is its instances, as in its
+        // signature, docs/02 §1.)
+        // (A class's `static def self.`, whose `self` is a
+        // `Meta::ClassDef`, likewise.)
+        let body_self = match &self_type {
+            Type::ClassObject(c, args) if info.singleton => Type::Class(*c, args.clone()),
+            Type::Class(c, args) if info.singleton && *c == self.world.builtin.meta_classdef => {
+                args.first().cloned().unwrap_or_else(|| self_type.clone())
+            }
+            t => t.clone(),
+        };
         let scope = TypeScope {
             namespace,
             params,
-            self_type: Some(self_type.clone()),
+            self_type: (!opaque).then_some(body_self),
         };
         let mut env = self.fresh_env(self_type.clone(), Some(owner), Some(mid), scope, info.file);
-        // A signature with `Self`: the body sees `Self` as opaque.
-        let opaque = Self::mentions_self(&info);
         let self_subst: HashMap<TypeParamId, Type> = if opaque {
             HashMap::default()
         } else {
@@ -2522,6 +2542,7 @@ impl Checker {
             .collect()
         };
         env.self_opaque = opaque;
+        env.self_is_self = Self::self_binding(&self.world, &info, &self_type) == self_type;
         let bound = opaque.then(|| Self::self_binding(&self.world, &info, &self_type));
         let saved_bound = std::mem::replace(&mut self.world.self_bound, bound);
         env.ret_expected = Some(info.ret.subst(&self_subst));
@@ -4876,18 +4897,22 @@ impl Checker {
     /// `Self` (an instance method whose signature mentions `Self`, outside
     /// blocks run with another receiver).
     fn self_is_opaque(&self) -> bool {
-        self.env.self_opaque
-            && self.env.receivers.is_empty()
-            && !matches!(self.env.self_type, Type::ClassObject(..))
+        // (A class method's `self`, a class, is no `Self`: its instances
+        // are; nor is a class's `static def`'s, a `Meta::ClassDef`.)
+        self.env.self_opaque && self.env.receivers.is_empty() && self.env.self_is_self
     }
 
     /// Whether a call with an implicit or explicit `self` receiver of type
     /// `recv` binds `Self` opaquely: an instance method's `self`, or a
     /// class method's receiver (whose instances `Self` stands for).
-    fn self_is_opaque_for(&self, recv: &Type) -> bool {
+    fn self_is_opaque_for(&self, recv: &Type, m: &MethodInfo) -> bool {
+        // (On a class, `Self` stays opaque for a class method of it, `new`
+        // or `build`, whose `Self` is the class's instances; an instance
+        // method of `Type` or `Object`, `dup` say, binds it to the class.)
         self.env.self_opaque
             && self.env.receivers.is_empty()
             && (*recv == Type::Param(SELF_PARAM) || *recv == self.env.self_type)
+            && (self.env.self_is_self || m.singleton)
     }
 
     /// What `Self` stands for in method `m` called on (or run with) `recv`:
@@ -6662,6 +6687,12 @@ impl Checker {
                         exc_ty = self.join(&exc_ty, &t);
                         class_ids.push(id);
                     }
+                    // (`Self` of a method whose signature mentions it: the
+                    // class or a subclass, not known which.)
+                    Some(Type::Param(SELF_PARAM)) => self.error(
+                        "`rescue Self` names no class here: in a method whose signature mentions `Self`, `Self` is the class or a subclass, not known which (name the class)",
+                        c.span,
+                    ),
                     Some(_) => self.error("`rescue` needs exception classes", c.span),
                     None => {}
                 }
@@ -9171,7 +9202,7 @@ impl Checker {
             let mut subst = class_subst.clone();
             // A call on `self` in a method with `Self` in its signature
             // keeps `Self` opaque (`dup` gives a `Self`).
-            let bound_self = if implicit_self && self.self_is_opaque_for(recv_ty) {
+            let bound_self = if implicit_self && self.self_is_opaque_for(recv_ty, &m) {
                 Type::Param(SELF_PARAM)
             } else {
                 Self::self_binding(&self.world, &m, recv_ty)

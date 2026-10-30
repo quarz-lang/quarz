@@ -427,3 +427,26 @@ fn a_discarded_overload_trial_notes_no_compile_time_call() {
     assert!(!ok);
     assert!(err.contains("`k` runs at compile time only"), "{err}");
 }
+
+#[test]
+fn a_static_defs_self_is_no_instance() {
+    // A `static def`'s `self` is a `Meta::ClassDef`: no `Self` (the
+    // class's instances), which a method of the class could be called on.
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        "class C\n  @n: Int = 7\n  def hello -> Int = @n + 1\n  static def self.mk -> Self = self\n  static def self.mk2 -> Self\n    k: Self = self\n    k\n  end\nend\n",
+    );
+    let app = write(&d.0, "app.qz", "require_relative \"lib\"\np 1\n");
+    let (ok, _, err) = quarz(&d.0, &["check", app.to_str().unwrap()], &[]);
+    assert!(!ok);
+    assert!(
+        err.contains("method `mk` returns Self but its body has type Meta::ClassDef[C]"),
+        "{err}"
+    );
+    assert!(
+        err.contains("cannot assign Meta::ClassDef[C] to `k` of type Self"),
+        "{err}"
+    );
+}
