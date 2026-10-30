@@ -620,12 +620,15 @@ pub enum Inst {
     /// is the one the checker resolved for the block's parameter type
     /// (an extension method visible there is only reachable this way).
     /// With `discard`, the procedure gives nil instead of the call's value
-    /// (given to a block whose result is `Void`).
+    /// (given to a block whose result is `Void`). With `among` (the checks
+    /// of a block, once per type, found different methods), the method of
+    /// the first type the argument is (docs/05 §9), a TypeError if none.
     SymbolProc {
         dst: Reg,
         name: u32,
         method: Option<MethodId>,
         discard: bool,
+        among: Vec<(RtType, MethodId)>,
     },
     MakeArray {
         dst: Reg,

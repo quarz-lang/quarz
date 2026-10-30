@@ -551,11 +551,13 @@ pub(crate) fn rewrite_with(
             name,
             method,
             discard,
+            among,
         } => Inst::SymbolProc {
             dst: r(dst),
             name: cst(*name),
             method: *method,
             discard: *discard,
+            among: among.clone(),
         },
         Inst::MakeArray { dst, items } => Inst::MakeArray {
             dst: r(dst),

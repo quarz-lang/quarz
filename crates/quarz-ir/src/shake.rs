@@ -291,8 +291,15 @@ pub fn refs<'a>(f: &'a Function, visit: &mut dyn FnMut(Ref<'a>)) {
                     }
                 }
                 Inst::SymbolProc {
-                    method: Some(m), ..
-                } => visit(Ref::Method(*m)),
+                    method: Some(m),
+                    among,
+                    ..
+                } => {
+                    visit(Ref::Method(*m));
+                    for (_, m) in among {
+                        visit(Ref::Method(*m));
+                    }
+                }
                 // Called by name (the checks found different methods).
                 Inst::SymbolProc {
                     method: None, name, ..

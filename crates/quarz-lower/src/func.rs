@@ -1453,9 +1453,48 @@ impl<'a> FnBuilder<'a> {
                 // other types could be found.
                 // (By name when the checks of a block found different
                 // methods, `Output::varied_symbols`.)
+                // Found differently by the checks of a block (once per
+                // type of what it is given): chosen by the receiver's
+                // class, as a union call is.
+                if let Some(table) = self.varied_table(e.id) {
+                    let join = self.new_block();
+                    for (ty, m) in table {
+                        let test = self.reg();
+                        self.emit(Inst::IsA {
+                            dst: test,
+                            src: r,
+                            ty,
+                        });
+                        let (yes, no) = (self.new_block(), self.new_block());
+                        self.term(Term::Branch {
+                            cond: test,
+                            then: yes,
+                            els: no,
+                        });
+                        self.switch(yes);
+                        self.emit(Inst::MethodRef {
+                            dst,
+                            recv: r,
+                            name,
+                            method: Some(m),
+                        });
+                        self.term(Term::Jump(join));
+                        self.switch(no);
+                    }
+                    let n = match &e.kind {
+                        MethodRef { name, .. } => name.clone(),
+                        _ => unreachable!(),
+                    };
+                    self.unchecked_receiver(r, &n);
+                    self.term(Term::Jump(join));
+                    self.switch(join);
+                    return dst;
+                }
+                // (By name only where the checks could not choose by a
+                // class, natives finding their own overload.)
                 let method = match self.out.calls.get(&e.id) {
                     Some(CallTarget::Method { method })
-                        if !self.out.varied_symbols.contains(&e.id) =>
+                        if !self.out.union_conflicts.contains(&e.id) =>
                     {
                         Some(*method)
                     }
@@ -2263,6 +2302,9 @@ impl<'a> FnBuilder<'a> {
                             };
                             let discard =
                                 matches!(pass, Some(quarz_types::BlockPass::Symbol(_, _, true)));
+                            // Found differently by the checks of a block: by
+                            // the argument's class at run time.
+                            let among = self.varied_table(e.id).unwrap_or_default();
                             let name = self.str_const(name);
                             let dst = self.reg();
                             self.emit(Inst::SymbolProc {
@@ -2270,6 +2312,7 @@ impl<'a> FnBuilder<'a> {
                                 name,
                                 method,
                                 discard,
+                                among,
                             });
                             dst
                         }
@@ -2626,9 +2669,7 @@ impl<'a> FnBuilder<'a> {
         methods.dedup();
         if let [only] = methods[..] {
             if let Inst::Call { kind, .. } = &mut inst {
-                if table.len() > 1 || !matches!(kind, CallKind::Method(_)) {
-                    *kind = CallKind::Method(only);
-                }
+                *kind = CallKind::Method(only);
             }
             self.emit(inst);
             return;
@@ -2663,15 +2704,39 @@ impl<'a> FnBuilder<'a> {
             self.term(Term::Jump(join));
             self.switch(no);
         }
-        // A value of a type the checks did not see as a member here (one
-        // check of a block saw another type): by name, as before.
-        let mut call = inst;
-        if let Inst::Call { kind, .. } = &mut call {
-            *kind = CallKind::Send(name);
-        }
-        self.emit(call);
+        // A value of a class no check saw here: not called by name, which
+        // could find an overload of other types (docs/05 §9).
+        self.unchecked_receiver(recv, &name);
         self.term(Term::Jump(join));
         self.switch(join);
+    }
+
+    /// A receiver of a class none of the checks of a call (or `.:name`,
+    /// `&:name`) saw: a TypeError, where a lookup by name could find a
+    /// method of other types.
+    fn unchecked_receiver(&mut self, recv: Reg, name: &str) {
+        let dst = self.reg();
+        self.emit(Inst::As {
+            dst,
+            src: recv,
+            ty: RtType::Nothing,
+            optional: false,
+            name: format!("a receiver `{name}` was checked for"),
+        });
+    }
+
+    /// The methods the checks of node `id` found by the receiver's type
+    /// (`Output::union_calls`), when they differ: each with the run-time
+    /// test of its type, subclasses first.
+    fn varied_table(&self, id: u32) -> Option<Vec<(RtType, MethodId)>> {
+        if self.out.union_conflicts.contains(&id) {
+            return None;
+        }
+        let table = self.out.union_calls.get(&id)?;
+        if table.iter().all(|(_, m)| *m == table[0].1) {
+            return None;
+        }
+        Some(table.iter().map(|(t, m)| (rt_type(t), *m)).collect())
     }
 
     /// Whether `call` is `Object#nil?` (no arguments, no block, no `&.`):

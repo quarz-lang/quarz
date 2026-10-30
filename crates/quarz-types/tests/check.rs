@@ -3707,3 +3707,23 @@ fn a_method_handle_is_made_by_classdef_only() {
         "a `Meta::Method` is bound only in a block given to `def_method`",
     );
 }
+
+#[test]
+fn class_objects_a_class_test_cannot_tell_apart() {
+    // A class method found differently for two class objects (docs/01
+    // §9): a class test cannot choose, and a lookup by name could find a
+    // subclass's overload of other types.
+    err(
+        "class A\n  def self.k(x: Int) -> String = \"a\"\nend\nclass Q\n  def self.k(x: Int) -> String = \"q\"\nend\ndef u[T <: A](c: Type[T] | Type[Q]) -> String = c.k(1)",
+        "cannot tell at run time which `k` to call",
+    );
+    err(
+        "class P\n  def self.k -> String = \"p\"\nend\nclass Q\n  def self.k -> String = \"q\"\nend\ndef w(c: Type[P] | Type[Q]) -> String = c.then { |x| x.:k.call }",
+        "cannot tell at run time which `k` to call",
+    );
+    // In a block checked once per member, `Type[T]` is a class object too.
+    err(
+        "class A\n  def self.k(x: Int) -> String = \"a\"\nend\nclass Q\n  def self.k(x: Int) -> String = \"q\"\nend\ndef u[T <: A](c: Type[T] | Type[Q]) -> String = c.then { |x| x.k(1) }",
+        "cannot tell at run time which `k` to call for Type[T] and Type[Q]",
+    );
+}

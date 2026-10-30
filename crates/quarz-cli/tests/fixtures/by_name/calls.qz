@@ -1,0 +1,16 @@
+# The calls of `by_name_dispatch.qz`, checked without its subclass `B`.
+class A
+  def f(x: Int) -> String = "A#f(Int) #{x}"
+  def g -> String = "A#g"
+  def with(&b: (Self) -> String) -> String = b.call(self)
+end
+class Q
+  def f(x: Int) -> String = "Q#f(Int) #{x}"
+  def g -> String = "Q#g"
+  def with(&b: (Self) -> String) -> String = b.call(self)
+end
+def call_f(v: A | Q) -> String = v.with { |x| x.f(1) }
+def ref_f(v: A | Q) -> String = v.with { |x| x.:f.call(2) }
+def gs(v: A | Q) -> String = v.with { |x| [x, x].map(&:g).join(",") }
+def keep[T](x: T, &b: (T) -> String) -> (T) -> String = b
+def kept(v: A | Q) -> String = v.with { |x| keep(x, &:g).call(x) }
