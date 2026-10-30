@@ -2860,15 +2860,19 @@ impl<'ast> Declarer<'ast> {
     }
 
     fn check_conformance(&mut self, p: &PendingClass<'ast>) {
+        let mut included: Vec<(ClassId, Vec<Type>, Span)> = Vec::new();
         // Namespace modules used as mixins.
         for expr in p.body {
             let ExprKind::Mixin { kind, types } = &expr.kind else {
                 continue;
             };
             for t in types {
-                let Some(Type::Class(mid, _)) = self.resolve_type_quietly(p.id, t) else {
+                let Some(Type::Class(mid, margs)) = self.resolve_type_quietly(p.id, t) else {
                     continue;
                 };
+                if *kind == MixinKind::Include {
+                    included.push((mid, margs.clone(), t.span));
+                }
                 let module = self.world.class(mid);
                 if module.kind != ClassKind::Module {
                     continue;
@@ -2908,6 +2912,7 @@ impl<'ast> Declarer<'ast> {
         } else {
             self.check_conformance_of(p.id);
         }
+        self.check_reinclude(p.id, &included);
     }
 
     /// The conformance of `classes`, deferred when they were declared
@@ -3150,6 +3155,66 @@ impl<'ast> Declarer<'ast> {
                     let own = Type::Class(id, own_args.clone());
                     self.check_implementation(i, abs, module, &margs, own);
                 }
+            }
+        }
+    }
+
+    /// A generic module is included with one set of type arguments (docs/02
+    /// §3): `include M[X]` in class `id` where an ancestor already has `M`
+    /// (or a module `M[X]` brings) with others, through the superclass
+    /// chain or another include, is an error. One `each` or `<=>` serves
+    /// both at run time, which would hand values of one to the other.
+    fn check_reinclude(&mut self, id: ClassId, included: &[(ClassId, Vec<Type>, Span)]) {
+        if included.is_empty() {
+            return;
+        }
+        let class = self.world.class(id).clone();
+        // What each brings, once: the superclass chain's ancestors, and
+        // each include's (by its module).
+        let mut others: Vec<(ClassId, Vec<Type>, String, Option<ClassId>)> = Vec::new();
+        if let Some(Type::Class(sup, sargs)) = &class.superclass {
+            let through = self.world.class(*sup).name.clone();
+            for (c, a) in self.world.ancestors(*sup, sargs) {
+                others.push((c, a, through.clone(), None));
+            }
+        }
+        for t in &class.includes {
+            if let Type::Class(m, a) = t {
+                let through = self.world.class(*m).name.clone();
+                for (c, ca) in self.world.ancestors(*m, a) {
+                    others.push((c, ca, through.clone(), Some(*m)));
+                }
+            }
+        }
+        for (at, (module, _, span)) in included.iter().enumerate() {
+            // (Against what is there before it: the superclass chain and the
+            // includes declared earlier.)
+            let before: Vec<ClassId> = included[..at].iter().map(|(m, _, _)| *m).collect();
+            let mine = others.iter().filter(|o| o.3 == Some(*module));
+            for (x, xargs, _, _) in mine {
+                if xargs.is_empty() {
+                    continue;
+                }
+                let Some((_, oargs, through, _)) = others.iter().find(|(c, oa, _, by)| {
+                    by.is_none_or(|b| before.contains(&b))
+                        && c == x
+                        && (oa.len() != xargs.len()
+                            || oa
+                                .iter()
+                                .zip(xargs)
+                                .any(|(a, b)| !self.world.same_type(a, b)))
+                }) else {
+                    continue;
+                };
+                let had = self.world.type_name(&Type::Class(*x, oargs.clone()));
+                self.error(
+                    format!(
+                        "`{}` already has `{had}` through `{through}`; a module is included with one set of type arguments (docs/02 §3)",
+                        class.name
+                    ),
+                    *span,
+                );
+                return;
             }
         }
     }
