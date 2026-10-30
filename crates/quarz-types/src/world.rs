@@ -185,6 +185,44 @@ impl MethodInfo {
         format!("{owner}{sep}{}", self.name)
     }
 
+    /// Whether this method takes every keyword call `other` takes (as an
+    /// override or an implementation of it must, docs/01 §3): each of
+    /// `other`'s keywords by name, optional where it is, a `**rest` where
+    /// it has one, and no other keyword it requires (one with a default
+    /// only beside no `**rest`) (`RtMethod::keywords_accept`).
+    pub fn keywords_accept(&self, other: &MethodInfo) -> bool {
+        let kw = |m: &MethodInfo| -> Vec<(String, bool)> {
+            m.params
+                .iter()
+                .filter(|p| p.kind == ParamKind::KeywordOnly)
+                .map(|p| (p.name.clone(), p.default.is_some()))
+                .collect()
+        };
+        let rest = |m: &MethodInfo| m.params.iter().any(|p| p.kind == ParamKind::KeywordRest);
+        let (mine, theirs) = (kw(self), kw(other));
+        // (Each by name: a `**rest` taking one in place of a keyword, or
+        // the other's `**rest` feeding a keyword of this one, would let a
+        // value of another type through.)
+        theirs
+            .iter()
+            .all(|(n, optional)| match mine.iter().find(|(m, _)| m == n) {
+                Some((_, o)) => *o || !optional,
+                None => false,
+            })
+            && mine.iter().all(|(n, optional)| {
+                theirs.iter().any(|(t, _)| t == n) || (*optional && !rest(other))
+            })
+            && rest(other) == rest(self)
+    }
+
+    /// The parameters given by position (and `*rest`), in order.
+    pub fn positional_params(&self) -> Vec<&ParamInfo> {
+        self.params
+            .iter()
+            .filter(|p| matches!(p.kind, ParamKind::Positional | ParamKind::Rest))
+            .collect()
+    }
+
     pub fn positional_arity(&self) -> (usize, usize) {
         let mut min = 0;
         let mut max = 0;

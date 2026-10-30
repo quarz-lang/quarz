@@ -1558,6 +1558,48 @@ impl<'ast> Declarer<'ast> {
         for (mid, o, a, aargs, own) in pairs {
             self.check_implementation(mid, o, a, &aargs, own);
         }
+        // A prelude class has no conformance check of its own: what an
+        // extension makes it include must be implemented there.
+        let mut missing: Vec<(String, String, String, Span)> = Vec::new();
+        for e in &self.world.extensions {
+            if self.world.class(e.target).file != 0 {
+                continue;
+            }
+            let target_ancestors = self.world.ancestor_ids(e.target);
+            for t in &e.includes {
+                let Type::Class(module, _) = t else { continue };
+                // (A concrete method of the included chain, `M2` over its
+                // `M1`, implements it too.)
+                let mut chain = target_ancestors.clone();
+                chain.extend(self.world.ancestor_ids(*module));
+                for anc in self.world.ancestor_ids(*module) {
+                    for ids in self.world.class(anc).methods.values() {
+                        for &o in ids {
+                            let om = self.world.method(o);
+                            if om.is_abstract
+                                && self.ext_impl_of(e, o).is_none()
+                                && self.implementation(&chain, o).is_none()
+                            {
+                                missing.push((
+                                    self.world.class(e.target).name.clone(),
+                                    om.name.clone(),
+                                    self.world.class(anc).name.clone(),
+                                    e.span,
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        missing.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
+        missing.dedup_by(|a, b| a.0 == b.0 && a.1 == b.1);
+        for (class, name, owner, span) in missing {
+            self.error(
+                format!("`{class}` must implement `{name}` (abstract in `{owner}`)"),
+                span,
+            );
+        }
     }
 
     /// The method of extension `e` that the runtime runs for the abstract
@@ -1784,17 +1826,57 @@ impl<'ast> Declarer<'ast> {
     /// (`Interp::class_side_override`).
     fn same_signature_at_run_time(&self, m: MethodId, o: MethodId) -> bool {
         let (m, om) = (self.world.method(m), self.world.method(o));
-        let open = |t: &Type| matches!(t, Type::Param(_) | Type::Var(_));
+        let (ps, qs) = (om.positional_params(), m.positional_params());
         om.block.is_some() == m.block.is_some()
-            && om.params.len() == m.params.len()
-            && om.params.iter().zip(&m.params).all(|(p, q)| {
-                p.kind == q.kind
-                    && (p.kind != ParamKind::KeywordOnly || p.name == q.name)
-                    && (open(&p.ty)
-                        || open(&q.ty)
-                        || self.world.type_name(&self.world.devoid(&p.ty))
-                            == self.world.type_name(&self.world.devoid(&q.ty)))
-            })
+            && ps.len() == qs.len()
+            && ps
+                .iter()
+                .zip(&qs)
+                .all(|(p, q)| p.kind == q.kind && self.same_at_run_time(p, q))
+            && self.keywords_take(m, om, |p, q| self.same_at_run_time(p, q))
+    }
+
+    /// Whether two parameters have the same type for the runtime (a type
+    /// parameter matches anything).
+    fn same_at_run_time(&self, p: &ParamInfo, q: &ParamInfo) -> bool {
+        let open = |t: &Type| matches!(t, Type::Param(_) | Type::Var(_));
+        open(&p.ty)
+            || open(&q.ty)
+            || self.world.type_name(&self.world.devoid(&p.ty))
+                == self.world.type_name(&self.world.devoid(&q.ty))
+    }
+
+    /// Whether `m` takes every keyword call `om` takes
+    /// (`MethodInfo::keywords_accept`), each keyword they share passing
+    /// `fits(om's, m's)`.
+    fn keywords_take(
+        &self,
+        m: &MethodInfo,
+        om: &MethodInfo,
+        fits: impl Fn(&ParamInfo, &ParamInfo) -> bool,
+    ) -> bool {
+        m.keywords_accept(om)
+            && om
+                .params
+                .iter()
+                .filter(|p| matches!(p.kind, ParamKind::KeywordOnly | ParamKind::KeywordRest))
+                .all(|p| {
+                    m.params
+                        .iter()
+                        .find(|q| Self::same_keyword(p, q))
+                        .is_none_or(|q| fits(p, q))
+                })
+    }
+
+    /// Whether `p` and `q` are the same keyword parameter: by name, or both
+    /// `**rest`.
+    fn same_keyword(p: &ParamInfo, q: &ParamInfo) -> bool {
+        p.kind == q.kind
+            && match p.kind {
+                ParamKind::KeywordRest => true,
+                ParamKind::KeywordOnly => p.name == q.name,
+                _ => false,
+            }
     }
 
     /// `overrides_at_run_time` on either side: a class method in place of
@@ -1805,26 +1887,26 @@ impl<'ast> Declarer<'ast> {
             return false;
         }
         let subst = self.world.class_subst(a, aargs);
-        let kinds = |p: &ParamInfo, q: &ParamInfo| {
-            p.kind == q.kind && (p.kind != ParamKind::KeywordOnly || p.name == q.name)
+        let wider_ty = |p: &ParamInfo, q: &ParamInfo| {
+            let pt = p.ty.subst(&subst);
+            pt == q.ty || self.world.is_subtype(&pt, &q.ty)
         };
-        let wider = om.params.len() <= m.params.len()
-            && om.params.iter().zip(&m.params).all(|(p, q)| {
-                let pt = p.ty.subst(&subst);
-                kinds(p, q) && (pt == q.ty || self.world.is_subtype(&pt, &q.ty))
-            })
-            && m.params[om.params.len()..].iter().all(|q| {
-                q.default.is_some() || matches!(q.kind, ParamKind::Rest | ParamKind::KeywordRest)
-            });
-        let open = |t: &Type| matches!(t, Type::Param(_) | Type::Var(_));
-        let same = om.params.len() == m.params.len()
-            && om.params.iter().zip(&m.params).all(|(p, q)| {
-                kinds(p, q)
-                    && (open(&p.ty)
-                        || open(&q.ty)
-                        || self.world.type_name(&self.world.devoid(&p.ty))
-                            == self.world.type_name(&self.world.devoid(&q.ty)))
-            });
+        let (ps, qs) = (om.positional_params(), m.positional_params());
+        let wider = ps.len() <= qs.len()
+            && ps
+                .iter()
+                .zip(&qs)
+                .all(|(p, q)| p.kind == q.kind && wider_ty(p, q))
+            && qs[ps.len()..]
+                .iter()
+                .all(|q| q.default.is_some() || q.kind == ParamKind::Rest)
+            && self.keywords_take(m, om, wider_ty);
+        let same = ps.len() == qs.len()
+            && ps
+                .iter()
+                .zip(&qs)
+                .all(|(p, q)| p.kind == q.kind && self.same_at_run_time(p, q))
+            && self.keywords_take(m, om, |p, q| self.same_at_run_time(p, q));
         wider || same
     }
 
@@ -1858,7 +1940,19 @@ impl<'ast> Declarer<'ast> {
                 t.subst(mine_subst)
             }
         };
-        for (p, q) in om.params.iter().zip(&m.params) {
+        let keyword =
+            |p: &ParamInfo| matches!(p.kind, ParamKind::KeywordOnly | ParamKind::KeywordRest);
+        let pairs: Vec<(&ParamInfo, &ParamInfo)> =
+            om.positional_params()
+                .into_iter()
+                .zip(m.positional_params())
+                .chain(
+                    om.params.iter().filter(|p| keyword(p)).filter_map(|p| {
+                        Some((p, m.params.iter().find(|q| Self::same_keyword(p, q))?))
+                    }),
+                )
+                .collect();
+        for (p, q) in pairs {
             let (theirs, mine) = (p.ty.subst(subst), see(&q.ty));
             if !self.world.is_subtype(&theirs, &mine) {
                 let (mine_s, theirs_s) =
@@ -2840,7 +2934,10 @@ impl<'ast> Declarer<'ast> {
         }
         let (cmin, cmax) = c.positional_arity();
         let (amin, amax) = a.positional_arity();
-        cmin <= amin && cmax >= amax && c.block.is_some() == a.block.is_some()
+        cmin <= amin
+            && cmax >= amax
+            && c.block.is_some() == a.block.is_some()
+            && c.keywords_accept(a)
     }
 
     /// Resolve a type expression without reporting (the mixin was already

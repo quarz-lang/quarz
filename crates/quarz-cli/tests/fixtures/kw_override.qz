@@ -1,0 +1,53 @@
+# Keywords are part of a signature (docs/01 §3): an override or an
+# implementation takes every keyword call the overridden method takes (its
+# keywords, optional where they are, any other with a default); a method
+# requiring another keyword is an overload, not an override.
+class A
+  def f(x: Int) -> String = "A#f #{x}"
+  def g(x: Int, *, y: Int = 1) -> String = "A#g #{x} #{y}"
+end
+
+class B < A
+  # An extra keyword with a default: an override.
+  def f(x: Int, *, scale: Int = 10) -> String = "B#f #{x * scale}"
+  # The parent's optional keyword, still optional: an override.
+  def g(x: Int, *, y: Int = 2) -> String = "B#g #{x} #{y}"
+end
+
+class C < A
+  # Another required keyword: an overload of its own.
+  def f(x: Int, *, z: Int) -> String = "C#f #{x} #{z}"
+end
+
+def call_f(a: A) -> String = a.f(3)
+def call_g(a: A) -> String = a.g(3, y: 5)
+
+puts call_f(A.new)
+puts call_f(B.new)
+puts call_f(C.new)
+puts C.new.f(3, z: 4)
+puts call_g(B.new)
+puts B.new.g(3)
+
+# An abstract method implemented by a class and by an extension, each
+# with an extra optional keyword.
+module Sized
+  abstract def size_of(x: Int) -> Int
+  def doubled -> Int = size_of(4) * 2
+end
+
+class Box
+  include Sized
+  def size_of(x: Int, *, pad: Int = 1) -> Int = x + pad
+end
+
+class Bag
+end
+
+extension Bag
+  include Sized
+  def size_of(x: Int, *, pad: Int = 100) -> Int = x + pad
+end
+
+puts Box.new.doubled
+puts Bag.new.doubled
