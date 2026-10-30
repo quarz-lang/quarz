@@ -878,6 +878,13 @@ pub struct Checker {
     coerce_depth: u32,
     /// The questions `coerce` is answering (`World::subtype_open`).
     coerce_open: Vec<(Type, Type)>,
+    /// The element types of empty literals no variable holds yet: a join
+    /// decides them from the other side, and a task block's literal result
+    /// as `Nothing` (docs/03).
+    literal_vars: HashSet<InferVar>,
+    /// Checking a type argument against its method's bound
+    /// (`decide_literals_for` decides nothing there).
+    checking_bound: bool,
     self_news: Vec<SelfNew>,
     /// Set by `check_body` for the statement it checks next: its value is
     /// not used (a statement before the last, or the last of a body that
@@ -978,6 +985,8 @@ impl Checker {
             int_literals: Default::default(),
             coerce_depth: 0,
             coerce_open: Vec::new(),
+            literal_vars: HashSet::default(),
+            checking_bound: false,
             self_news: Vec::new(),
             stmt_unused: false,
             next_body_void: false,
@@ -2825,7 +2834,9 @@ impl Checker {
                     return *eid == self.world.builtin.shareable
                         && self.world.derived_shareable(*aid, aargs);
                 };
-                if !self.world.keeps_shareable(*aid, aargs, *eid) {
+                self.decide_literals_for(*eid, aargs);
+                let resolved: Vec<Type> = aargs.iter().map(|t| self.infer.resolve(t)).collect();
+                if !self.world.keeps_shareable(*aid, &resolved, *eid) {
                     return false;
                 }
                 if anc_args.len() != eargs.len() {
@@ -2901,10 +2912,10 @@ impl Checker {
                     return self.coerce(&elem, &target);
                 }
                 let array = self.world.builtin.array;
+                self.decide_literals_for(*eid, &[Type::union_of(xs.clone())]);
+                let elems = self.infer.resolve(&Type::union_of(xs.clone()));
                 self.world.class_is_a(array, *eid)
-                    && self
-                        .world
-                        .keeps_shareable(array, &[Type::union_of(xs.clone())], *eid)
+                    && self.world.keeps_shareable(array, &[elems], *eid)
             }
             (Type::Proc(ra, ps, r, sa), Type::Proc(rb, qs, s, sb)) => {
                 // A shareable procedure is a procedure; not the reverse.
@@ -2981,6 +2992,13 @@ impl Checker {
         // used.
         if matches!(ra, Type::Var(_)) || matches!(rb, Type::Var(_)) {
             return Type::union_of(vec![ra, rb]);
+        }
+        // A literal's element types beside decided ones (`cond ? [1] :
+        // []`): of the other's type (`bind_literals`).
+        if !self.literal_vars.is_empty() && (ra.has_vars() || rb.has_vars()) {
+            self.bind_literals(&ra, &rb);
+            let (ra, rb) = (self.infer.resolve(&ra), self.infer.resolve(&rb));
+            return self.world.join(&ra, &rb);
         }
         self.world.join(&ra, &rb)
     }
@@ -3690,7 +3708,86 @@ impl Checker {
         }
     }
 
+    /// A variable holds a value of type `t`: its literals' element types
+    /// are no longer decided where they are joined (`literal_vars`).
+    fn held(&mut self, t: &Type) {
+        if self.literal_vars.is_empty() {
+            return;
+        }
+        let mut found = Vec::new();
+        Self::vars_in(&self.infer.resolve(t), &mut found);
+        for v in found {
+            self.literal_vars.remove(&v);
+        }
+    }
+
+    fn vars_in(t: &Type, out: &mut Vec<InferVar>) {
+        match t {
+            Type::Var(v) => out.push(*v),
+            Type::Class(_, args) | Type::ClassObject(_, args) => {
+                args.iter().for_each(|x| Self::vars_in(x, out))
+            }
+            Type::Union(ms) | Type::Tuple(ms) => ms.iter().for_each(|x| Self::vars_in(x, out)),
+            Type::TypeOf(x) => Self::vars_in(x, out),
+            Type::Proc(rc, ps, r, _) => {
+                rc.iter().for_each(|x| Self::vars_in(x, out));
+                ps.iter().for_each(|x| Self::vars_in(x, out));
+                Self::vars_in(r, out);
+            }
+            _ => {}
+        }
+    }
+
+    /// Decide `a`'s literal element types (`literal_vars`) from `b` where
+    /// both have the same shape: `cond ? [1] : []`, `[[1]]` and `[[]]`.
+    /// Seen as `Shareable` (or a promising module), a literal's element
+    /// types no variable holds are decided as `Nothing`: nothing can add
+    /// to it later (`ch.send(c ? [] : [])`).
+    fn decide_literals_for(&mut self, target: ClassId, args: &[Type]) {
+        if self.literal_vars.is_empty()
+            || self.checking_bound
+            || !self.shareable_target(&Type::class(target))
+        {
+            return;
+        }
+        let mut found = Vec::new();
+        for a in args {
+            Self::vars_in(&self.infer.resolve(a), &mut found);
+        }
+        for v in found {
+            if self.literal_vars.contains(&v) {
+                self.infer.bind(v, Type::Nothing);
+            }
+        }
+    }
+
+    fn bind_literals(&mut self, a: &Type, b: &Type) {
+        let (a, b) = (self.infer.resolve(a), self.infer.resolve(b));
+        match (&a, &b) {
+            (Type::Var(v), t) | (t, Type::Var(v)) if self.literal_vars.contains(v) => {
+                match t {
+                    Type::Var(w) if self.literal_vars.contains(w) && w != v => {
+                        // Two empty literals: one type, decided together.
+                        self.infer.bind(*v, t.clone());
+                    }
+                    t if !t.has_vars() => {
+                        let t = self.world.erase_narrowed(t);
+                        self.infer.bind(*v, t);
+                    }
+                    _ => {}
+                }
+            }
+            (Type::Class(c1, a1), Type::Class(c2, a2)) if c1 == c2 && a1.len() == a2.len() => {
+                for (x, y) in a1.clone().iter().zip(a2.clone().iter()) {
+                    self.bind_literals(x, y);
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn declare_var(&mut self, name: &str, ty: Type, span: Span) -> VarRef {
+        self.held(&ty);
         let frame = self.env.frames.last_mut().unwrap();
         frame.vars.push(VarInfo {
             name: name.to_string(),
@@ -3707,6 +3804,9 @@ impl Checker {
     }
 
     fn set_narrowed(&mut self, key: &VarKey, t: Option<Type>) {
+        if let Some(t) = &t {
+            self.held(t);
+        }
         match key {
             VarKey::Local(name) => {
                 // A closure that may run later assigns it.
@@ -5423,6 +5523,15 @@ impl Checker {
     }
 
     fn check_array(&mut self, items: &[Arg], expected: Option<&Type>, span: Span) -> Type {
+        // Where a `Shareable` (or a module promising it) is expected, an
+        // array of Shareable values: an empty one, or one of empty ones,
+        // is no type left undecided (no variable holds the literal).
+        if let Some(e) = expected {
+            if self.shareable_target(e) {
+                let t = Type::Class(self.world.builtin.array, vec![e.clone()]);
+                return self.check_array(items, Some(&t), span);
+            }
+        }
         let expected = expected.map(|e| self.resolve(e));
         // A tuple expected, alone or among other types (`[Int, String]?`).
         let expected_tuple = match &expected {
@@ -5555,11 +5664,57 @@ impl Checker {
         }
         if elem.is_nothing() {
             elem = self.infer.fresh();
+            // (A literal's own: decided where it is joined or ends a task
+            // block, until a variable holds it.)
+            if let Type::Var(v) = elem {
+                self.literal_vars.insert(v);
+            }
         }
         self.world.array_of(elem)
     }
 
+    /// Decide the variables left in `t` as `Nothing` (a literal's element
+    /// types, when no variable holds it).
+    fn decide_as_nothing(&mut self, t: &Type) {
+        fn vars(t: &Type, out: &mut Vec<InferVar>) {
+            match t {
+                Type::Var(v) => out.push(*v),
+                Type::Class(_, args) | Type::ClassObject(_, args) => {
+                    args.iter().for_each(|x| vars(x, out))
+                }
+                Type::Union(ms) | Type::Tuple(ms) => ms.iter().for_each(|x| vars(x, out)),
+                _ => {}
+            }
+        }
+        let mut found = Vec::new();
+        vars(t, &mut found);
+        for v in found {
+            self.infer.bind(v, Type::Nothing);
+        }
+    }
+
+    /// Whether `t` is `Shareable` or a module promising it: what a literal
+    /// expected there holds must be Shareable (`check_array`,
+    /// `check_hash`).
+    fn shareable_target(&self, t: &Type) -> bool {
+        let t = self.infer.resolve(t).without_nil(self.world.builtin.nil);
+        match t {
+            Type::Class(id, _) => {
+                id == self.world.builtin.shareable
+                    || (self.world.class(id).kind == ClassKind::Module
+                        && self.world.shareable_promise(id).is_some())
+            }
+            _ => false,
+        }
+    }
+
     fn check_hash(&mut self, entries: &[HashEntry], expected: Option<&Type>) -> Type {
+        if let Some(e) = expected {
+            if self.shareable_target(e) {
+                let t = Type::Class(self.world.builtin.hash, vec![e.clone(), e.clone()]);
+                return self.check_hash(entries, Some(&t));
+            }
+        }
         let expected = expected.map(|e| self.resolve(e));
         let (ek, ev) = match &expected {
             Some(Type::Class(id, args)) if *id == self.world.builtin.hash && args.len() == 2 => {
@@ -5617,9 +5772,15 @@ impl Checker {
         }
         if kt.is_nothing() {
             kt = self.infer.fresh();
+            if let Type::Var(v) = kt {
+                self.literal_vars.insert(v);
+            }
         }
         if vt.is_nothing() {
             vt = self.infer.fresh();
+            if let Type::Var(v) = vt {
+                self.literal_vars.insert(v);
+            }
         }
         self.world.hash_of(kt, vt)
     }
@@ -8682,7 +8843,12 @@ impl Checker {
                         }
                         for b in &tp.bounds {
                             let b = b.subst(&subst);
-                            if !self.coerce(&rt, &b) {
+                            // (A bound is no holder: the call's result may
+                            // be, so a literal is not decided here.)
+                            self.checking_bound = true;
+                            let fits = self.coerce(&rt, &b);
+                            self.checking_bound = false;
+                            if !fits {
                                 ok = false;
                                 self.error(
                                     format!(
@@ -10285,6 +10451,19 @@ impl Checker {
         let result = if block.ret.is_some() { &ret } else { &bt };
         if is_task && !void && !result.is_nothing() {
             let rt = self.resolve(result);
+            // A literal the block ends with is held by no variable: its
+            // undecided element types are decided as `Nothing` (nothing can
+            // add to it later).
+            let rt = if rt.has_vars() && {
+                let mut vs = Vec::new();
+                Self::vars_in(&rt, &mut vs);
+                vs.iter().all(|v| self.literal_vars.contains(v))
+            } {
+                self.decide_as_nothing(&rt);
+                self.resolve(&rt)
+            } else {
+                rt
+            };
             if rt.has_vars() {
                 let span = block.body.last().map(|e| e.span).unwrap_or(block.span);
                 self.error(

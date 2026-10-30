@@ -2694,7 +2694,7 @@ fn a_shareable_promise_holds_for_every_instance() {
     err("# A Shareable-promised class whose subclass hides a mutable object behind\n# a type parameter of its own (erased when the promise is checked).\nclass Counter\n  var @n: Int = 0\n  def bump -> Int\n    @n += 1\n    @n\n  end\n  def n -> Int = @n\nend\nclass Cell[T]\n  include Shareable\n  @x: T\n  def initialize(@x: T)\n  end\n  def run -> Int = 0\nend\nclass Sub[S <: Counter] < Cell[Int]\n  @y: S\n  def initialize(@y: S)\n    super(1)\n  end\n  def run -> Int = @y.bump\nend\ndef spread(x: Cell[Int]) -> Int\n  ts = (1..4).map do\n    Task.spawn do\n      s = 0\n      100000.times { s = x.run }\n      s\n    end\n  end\n  ts.map(&:await).sum\nend\nk = Counter.new\nspread(Sub[Counter].new(k))\np k.n\n", "its parameter `T` may be a non-Shareable type");
     ok("module Sendable\n  include Shareable\nend\nclass Holder[S <: Shareable]\n  include Sendable\n  @y: S\n  def initialize(@y: S)\n  end\nend");
     // A collection is a `Shareable` only when its elements are.
-    err("n = 0\nx: Shareable = [-> { n += 1; n }]\nch = Channel[Shareable].new(1)\nch.send(x)\np 0\n", "cannot assign Array[() -> Int] to `x` of type Shareable");
+    err("n = 0\nx: Shareable = [-> { n += 1; n }]\nch = Channel[Shareable].new(1)\nch.send(x)\np 0\n", "array elements have type () -> Int but Shareable was expected");
     ok("x: Shareable = [1, 2]\ny: Shareable = {a: [\"s\"]}\np x, y");
 }
 
@@ -3058,7 +3058,7 @@ fn a_type_not_yet_known_cannot_cross_tasks() {
         ("data Box[T] = (v: T)\nch = Channel[Shareable].new(4)\na = []\nch.send(Box.new(a))\na = a.push(k)", "the type is not yet known here, and it must be Shareable"),
         ("ch = Channel.new(4)\na = []\nch.send(a)\na = a.push(k)", "the type argument for `T` of `Channel` is not yet known here"),
         ("a = []\nt = Task.spawn { a }\na = a.push(k)\np t.await", "the type of `a` is not yet known here"),
-        ("t = Task.spawn { [] }\np t.await", "the type of a task block's result is not yet known here"),
+        ("t = Task.spawn { a = []; a }\np t.await", "the type of a task block's result is not yet known here"),
     ] {
         err(&format!("{c}{src}"), msg);
     }
@@ -3118,5 +3118,25 @@ fn using_is_positional() {
     err(
         &format!("{m}class C\n  using M\nend\nmodule N\n  extension C\n    def g -> String = \"g\".shout\n  end\nend"),
         "undefined method `shout` for String",
+    );
+}
+
+#[test]
+fn a_literal_no_variable_holds_is_decided() {
+    // An empty literal sent, or a join's empty branch, has no holder that
+    // could decide it later (the user's refinement of docs/03's rule).
+    ok("ch = Channel[Shareable].new(4)\nch.send([])\nch.send([[], 1])\nx: Shareable = {}\ny = true ? [1] : []\nch.send(y)\nt = Task.spawn { [] }\np t.await\nt2 = Task.spawn { if true then [1] else [] end }\np t2.await");
+    // Only literals: an empty array a variable holds is still undecided
+    // (it may be pushed to later), whatever it is joined with.
+    ok("c = true\nx = []\ny = c ? [1] : x\nx = x.push(\"s\")");
+    err(
+        "c = true\nch = Channel[Shareable].new(4)\ny = if c then [] else [] end\nch.send(y)",
+        "not yet known",
+    );
+    ok("c = true\nch = Channel[Shareable].new(4)\nch.send(c ? [] : [])\nz = c ? [[1]] : [[]]\nch.send(z)\nw: Shareable? = []");
+    // A non-Shareable element is still refused.
+    err(
+        "class Counter\n  var @n: Int = 0\nend\nch = Channel[Shareable].new(4)\nch.send([Counter.new])",
+        "array elements have type Counter but Shareable was expected",
     );
 }
