@@ -1,0 +1,30 @@
+# Blocks with a declared result type (`do |x| -> T ... end`, tree format 6):
+# the body at most T, the block giving T; `-> Void` discards the value.
+def twice(&: (Int) -> Object) -> Nil
+  yield 1
+  yield 2
+  nil
+end
+def keep(&blk: () -> Object) -> () -> Object
+  blk
+end
+def first(&: (Int) -> Int) -> Int
+  yield 1
+end
+def never -> Int
+  first do |i| -> Nothing
+    raise "never"
+  end
+end
+def m -> Int
+  xs = [1, 2].map { |x| -> Int | String x }
+  n = 0
+  twice do |i| -> Int
+    n = n + i
+    n
+  end
+  [3].each { |x| -> Void x + 1 }
+  f = keep { -> Int 5 }
+  xs.size + n + 1
+end
+puts m

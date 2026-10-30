@@ -365,7 +365,13 @@ stricter, not unsound.
   `x` at the type the checker gave its current value (`op_targets`, the
   tree's format 5), so its narrowing there is checked; `||=` and `&&=`
   with the model's `||` and `&&` (out of range where a program defines
-  them), another operator the method the checker resolved. A generic built-in method's type
+  them), another operator the method the checker resolved.
+  A block that declares its result type (`do |x| -> T ... end`, the
+  tree's `block_results`, format 6) has its body checked against `T`
+  and gives `T`, as a `def`'s return type does (a built-in call taking
+  the body's value at `T` and giving `T`); `-> Void` discards the value.
+  This holds for a block given to a method, to a built-in method, and
+  for one a method keeps. A generic built-in method's type
   parameters are what the call's result type says (the checker's
   instantiation; a lower bound widens it), as an array method's are.
   Closures' stage C2 (pinned locals un-narrowed only once a lambda
