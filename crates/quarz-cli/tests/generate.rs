@@ -595,6 +595,27 @@ end
         .map(|s| out.find(s).unwrap_or_else(|| panic!("{s} in {out}")))
         .collect();
     assert!(order.windows(2).all(|w| w[0] < w[1]), "{out}");
+    // `:nodoc:` above a statement hides what it generates (docs/13 §5).
+    write(
+        &d.0,
+        "hidden.qz",
+        "require_relative \"lib\"\n# A post.\nclass Post < Model\n  # :nodoc:\n  props :secret\nend\n# A page.\nclass Page < Model\n  props :shown\nend\n",
+    );
+    let (ok, out, err) = quarz(&d.0, &["doc", "hidden.qz", "Post"], &[]);
+    assert!(ok, "{err}");
+    assert!(
+        !out.contains("def secret") && !out.contains("def count"),
+        "{out}"
+    );
+    let (ok, out, err) = quarz(&d.0, &["doc", "hidden.qz", "Page"], &[]);
+    assert!(ok, "{err}");
+    assert!(
+        out.contains("def shown") && out.contains("def count"),
+        "{out}"
+    );
+    let (ok, out, err) = quarz(&d.0, &["doc", "--private", "hidden.qz", "Post"], &[]);
+    assert!(ok, "{err}");
+    assert!(out.contains("def secret"), "{out}");
     // A program that generates nothing expands to nothing.
     write(&d.0, "plain.qz", "class A\nend\np A.new\n");
     let (ok, out, err) = quarz(&d.0, &["check", "--expand", "plain.qz"], &[]);

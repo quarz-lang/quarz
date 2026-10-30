@@ -737,6 +737,11 @@ fn page(world: &World, id: ClassId, kind: Kind, doc: Option<Doc>, private: bool)
         if nodoc(&mdoc) && !private {
             continue;
         }
+        // A member a `static` statement generated shares the statement's
+        // span: `:nodoc:` above the statement hides it (docs/13 §5).
+        if world.generated_by(mid).is_some() && nodoc(&world.doc_at(m.span).cloned()) && !private {
+            continue;
+        }
         let is_new = m.name == "initialize" && !m.singleton;
         if m.name == "initialize" && !is_new {
             continue;
