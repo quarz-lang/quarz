@@ -3152,3 +3152,26 @@ fn a_literal_no_variable_holds_is_decided() {
         "array elements have type Counter but Shareable was expected",
     );
 }
+
+#[test]
+fn clamp_gives_the_receiver_or_a_bound() {
+    // `clamp` returns `min` or `max`, a `T`, which need not be `Self`.
+    let include = "class B\n  def b -> String = \"B\"\nend\nclass A\n  include Comparable[B]\n  def <=>(other: B) -> Int = -1\n  def a -> String = \"A\"\nend\n";
+    err(
+        &format!("{include}r = A.new.clamp(B.new, B.new)\nputs r.a"),
+        "undefined method `a`",
+    );
+    ok(&format!(
+        "{include}r = A.new.clamp(B.new, B.new)\nputs r.class"
+    ));
+    let sub = "class P\n  @v: Int\n  include Comparable[P]\n  def initialize(@v: Int)\n  end\n  def <=>(other: P) -> Int = @v <=> other.v\n  def v -> Int = @v\nend\nclass Q < P\n  def name -> String = \"Q\"\nend\n";
+    err(
+        &format!("{sub}r = Q.new(5).clamp(P.new(0), P.new(3))\nputs r.name"),
+        "undefined method `name`",
+    );
+    ok(&format!(
+        "{sub}r = Q.new(5).clamp(P.new(0), P.new(3))\nputs r.v"
+    ));
+    // When `T` is the class itself, it is that class.
+    ok("x: Int = 5.clamp(1, 3)\ny: Int = 5.clamp(1..3)");
+}
