@@ -1,0 +1,33 @@
+# A program's class including a prelude module (Comparable[T]): the module's
+# methods are built-in calls through the receiver's class (`a < b`, `between?`),
+# a class's own `<` its own method (W); on a subclass's object (X), the
+# superclass's include.
+class V
+  include Comparable[V]
+  @n: Int
+  def initialize(@n: Int)
+  end
+  def n -> Int = @n
+  def <=>(other: V) -> Int = n <=> other.n
+end
+class W
+  include Comparable[W]
+  @n: Int
+  def initialize(@n: Int)
+  end
+  def n -> Int = @n
+  def <=>(other: W) -> Int = n <=> other.n
+  def <(other: W) -> Bool = false
+end
+class X < V
+end
+def m -> Int
+  a = V.new(1)
+  b = V.new(2)
+  c = (a < b) ? 1 : 0
+  d = (W.new(1) < W.new(2)) ? 10 : 0
+  e = a.between?(a, b) ? 100 : 0
+  f = (X.new(3) > a) ? 1000 : 0
+  c + d + e + f
+end
+puts m

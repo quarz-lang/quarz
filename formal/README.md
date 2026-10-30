@@ -325,7 +325,22 @@ stricter, not unsound.
   hold as it does a native's. A built-in method's owner's parameters and
   `Self` are what the receiver gives them (its class's arguments, or a
   module's through its class's include: `Comparable[T]#clamp -> Self | T`
-  on an `Int`); `Object`'s methods on an array, and an extension's methods
+  on an `Int`); a program's class may include a module the prelude
+  declares (`Comparable[T]`, `Enumerable[T]`), whose methods are then
+  built-in calls through the receiver's class and its superclasses, under
+  the same assumption. Out of range, where the built-in call would not
+  run what Quarz runs: a call on `self` or a union; a program's class
+  related to the receiver's defining a method of the name, or one of a
+  name the module declares (its prelude extensions' too) with another
+  signature than the module's (its body calls it: tree format 7 lists
+  each class's and extension's method names, and holds the included
+  modules' methods); an include whose module declares a name a program
+  superclass defines (the module's comes first); a program's extension;
+  a result naming `Self` on a program's class; a block with a receiver
+  of its own (`instance_exec`); two related classes including the
+  module (the receiver's view types its body). A module type as a value, and a
+  module the program declares, are out of range too (stage 6a-2);
+  `Object`'s methods on an array, and an extension's methods
   anywhere (which extension applies, and its own parameters, are stage
   6's), are out of range.
   `xs == nil` of an array narrows nothing (a class atom is not final),
