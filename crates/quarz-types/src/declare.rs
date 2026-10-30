@@ -78,6 +78,9 @@ pub struct Declarer<'ast> {
     file: u32,
     pending: Vec<PendingClass<'ast>>,
     pending_ext: Vec<PendingExtension<'ast>>,
+    /// The (method, overridden method) pairs a module's include brought
+    /// and that were reported, once (`check_override_returns`).
+    override_pairs: HashSet<(MethodId, MethodId)>,
     /// The user's compilation units (files), in load order.
     pub units: Vec<UnitDecl<'ast>>,
     class_usings: HashMap<ClassId, Vec<(&'ast ConstPath, u32)>>,
@@ -121,25 +124,6 @@ fn deferred_path(expr: &Expr) -> &ConstPath {
 /// Whether a call could be answered by either of two methods with these
 /// parameters: their numbers of positional arguments meet (an override, at
 /// run time, is chosen by name and number of arguments).
-/// Whether `t` mentions `Self` (the `SELF_PARAM` marker), whose meaning
-/// an override changes.
-fn contains_self(t: &Type) -> bool {
-    match t {
-        Type::Param(p) => *p == SELF_PARAM,
-        Type::Class(_, args)
-        | Type::ClassObject(_, args)
-        | Type::Tuple(args)
-        | Type::Union(args) => args.iter().any(contains_self),
-        Type::TypeOf(t) => contains_self(t),
-        Type::Proc(recv, ps, r, _) => {
-            recv.as_deref().is_some_and(contains_self)
-                || ps.iter().any(contains_self)
-                || contains_self(r)
-        }
-        _ => false,
-    }
-}
-
 fn arities_meet(a: &[ParamInfo], b: &[ParamInfo]) -> bool {
     let range = |ps: &[ParamInfo]| {
         let mut min = 0;
@@ -198,6 +182,7 @@ impl<'ast> Declarer<'ast> {
             file: 0,
             pending: Vec::new(),
             pending_ext: Vec::new(),
+            override_pairs: HashSet::default(),
             units: Vec::new(),
             class_usings: HashMap::default(),
             ext_includes: Vec::new(),
@@ -1560,85 +1545,236 @@ impl<'ast> Declarer<'ast> {
     /// returns nil, so it overrides none that returns a value.
     fn check_override_returns(&mut self, id: ClassId) {
         let class = self.world.class(id);
-        let mine: Vec<MethodId> = class.methods.values().flatten().copied().collect();
         let args: Vec<Type> = class
             .type_params
             .iter()
             .map(|p| Type::Param(p.id))
             .collect();
-        let ancestors: Vec<(ClassId, Vec<Type>)> = self
-            .world
-            .ancestors(id, &args)
-            .into_iter()
-            .filter(|(a, _)| *a != id)
-            .collect();
-        for mid in mine {
-            let m = self.world.method(mid);
-            // (The prelude specializes some of what it overrides, as Ruby:
-            // `Hash#select` and `Hash#filter` give a `Hash`.)
-            if m.owner != id
-                || m.synth != Synth::None
-                || m.file == 0
-                || (!m.singleton && (m.name == "initialize" || m.name == "deinitialize"))
+        let own = Type::Class(id, args.clone());
+        let ancestors: Vec<(ClassId, Vec<Type>)> = self.world.ancestors(id, &args);
+        // What the superclass brings, it checked itself.
+        let inherited: HashSet<ClassId> = match &class.superclass {
+            Some(Type::Class(sup, _)) => self.world.ancestor_ids(*sup).into_iter().collect(),
+            _ => HashSet::default(),
+        };
+        // The class's own methods, and those of the modules it includes
+        // itself, which override its superclass's here (each module
+        // checks its own ancestors).
+        for (pos, (x, xargs)) in ancestors.iter().enumerate() {
+            let x = *x;
+            if x != id && (self.world.class(x).kind != ClassKind::Module || inherited.contains(&x))
             {
                 continue;
             }
-            let mine_ret = m.ret.clone();
-            // The nearest method of the name with the same parameters.
-            let found = ancestors.iter().find_map(|(a, aargs)| {
-                let mut subst = self.world.class_subst(*a, aargs);
-                self.world
-                    .class(*a)
-                    .methods
-                    .get(&m.name)?
-                    .iter()
-                    .copied()
-                    .find(|o| {
-                        let o = self.world.method(*o);
-                        if o.type_params.len() != m.type_params.len() {
-                            return false;
+            let x_own: HashSet<ClassId> = if x == id {
+                HashSet::default()
+            } else {
+                self.world.ancestor_ids(x).into_iter().collect()
+            };
+            let mut x_subst = self.world.class_subst(x, xargs);
+            x_subst.insert(SELF_PARAM, own.clone());
+            let xc = self.world.class(x);
+            let mine: Vec<MethodId> = xc
+                .methods
+                .values()
+                .chain(xc.singleton_methods.values())
+                .flatten()
+                .copied()
+                .collect();
+            for mid in mine {
+                let m = self.world.method(mid).clone();
+                // (The prelude specializes some of what it overrides, as
+                // Ruby: `Hash#select` and `Hash#filter` give a `Hash`.)
+                if m.owner != x
+                    || m.synth != Synth::None
+                    || m.file == 0
+                    || (!m.singleton && (m.name == "initialize" || m.name == "deinitialize"))
+                {
+                    continue;
+                }
+                for (a, aargs) in &ancestors[pos + 1..] {
+                    if x_own.contains(a) || *a == x {
+                        continue;
+                    }
+                    let ac = self.world.class(*a);
+                    let table = if m.singleton {
+                        &ac.singleton_methods
+                    } else {
+                        &ac.methods
+                    };
+                    let Some(ids) = table.get(&m.name).cloned() else {
+                        continue;
+                    };
+                    for o in ids {
+                        if !self.overrides_at_run_time(mid, o, *a, aargs) {
+                            continue;
                         }
-                        // Its type parameters as the override's, in order.
-                        for (p, q) in o.type_params.iter().zip(&m.type_params) {
-                            subst.insert(p.id, Type::Param(q.id));
+                        let mut subst = self.world.class_subst(*a, aargs);
+                        subst.insert(SELF_PARAM, own.clone());
+                        let mine_subst = x_subst.clone();
+                        let (om, m) = (self.world.method(o), self.world.method(mid));
+                        // Its type parameters as the override's, in order
+                        // (with another number of them, they are compared
+                        // as they are: a caller may pick any).
+                        if om.type_params.len() == m.type_params.len() {
+                            for (p, q) in om.type_params.iter().zip(&m.type_params) {
+                                subst.insert(p.id, Type::Param(q.id));
+                            }
                         }
-                        o.singleton == m.singleton
-                            && o.block.is_some() == m.block.is_some()
-                            && o.params.len() == m.params.len()
-                            && o.params.iter().zip(&m.params).all(|(p, q)| {
-                                p.kind == q.kind
-                                    && (p.kind != ParamKind::KeywordOnly || p.name == q.name)
-                                    && self.world.same_type(&p.ty.subst(&subst), &q.ty)
-                            })
-                    })
-                    .map(|o| (o, subst.clone()))
-            });
-            let Some((o, subst)) = found else { continue };
-            let theirs = self.world.method(o).ret.clone();
-            let theirs = theirs.subst(&subst);
-            if contains_self(&theirs) || contains_self(&mine_ret) {
-                continue;
+                        // (One error for each pair a module brings, naming
+                        // the class that includes it.)
+                        let within = if x == id {
+                            None
+                        } else if self.override_pairs.contains(&(mid, o)) {
+                            continue;
+                        } else {
+                            Some(self.world.class(id).name.clone())
+                        };
+                        let module = within.is_some();
+                        if !self.check_override_pair(mid, o, &subst, &mine_subst, within) {
+                            if module {
+                                self.override_pairs.insert((mid, o));
+                            }
+                            break;
+                        }
+                    }
+                }
             }
-            if !self.world.is_subtype(&mine_ret, &theirs) {
-                let owner = self.world.class(self.world.method(o).owner).name.clone();
-                let (mname, span) = (m.name.clone(), m.span);
-                let (mine_s, theirs_s) = (
-                    self.world.type_name(&mine_ret),
-                    self.world.type_name(&theirs),
-                );
-                let hint = if mine_ret == Type::Void {
-                    " (a `-> Void` method, as one without a return type, returns nil)"
-                } else {
-                    ""
-                };
+        }
+    }
+
+    /// Whether the runtime takes `m` to override `o` (of the ancestor `a`
+    /// with `aargs`): `quarz_lower::rtworld::overridden_methods` (the same
+    /// kinds of parameters, each at least as wide, those added optional),
+    /// or the interpreter's `same_signature` (as many, of the same types
+    /// but where either is a type parameter, which matches anything).
+    fn overrides_at_run_time(&self, m: MethodId, o: MethodId, a: ClassId, aargs: &[Type]) -> bool {
+        let (m, om) = (self.world.method(m), self.world.method(o));
+        if om.singleton != m.singleton || om.block.is_some() != m.block.is_some() {
+            return false;
+        }
+        let subst = self.world.class_subst(a, aargs);
+        let kinds = |p: &ParamInfo, q: &ParamInfo| {
+            p.kind == q.kind && (p.kind != ParamKind::KeywordOnly || p.name == q.name)
+        };
+        let wider = om.params.len() <= m.params.len()
+            && om.params.iter().zip(&m.params).all(|(p, q)| {
+                let pt = p.ty.subst(&subst);
+                kinds(p, q) && (pt == q.ty || self.world.is_subtype(&pt, &q.ty))
+            })
+            && m.params[om.params.len()..].iter().all(|q| {
+                q.default.is_some() || matches!(q.kind, ParamKind::Rest | ParamKind::KeywordRest)
+            });
+        let open = |t: &Type| matches!(t, Type::Param(_) | Type::Var(_));
+        let same = om.params.len() == m.params.len()
+            && om.params.iter().zip(&m.params).all(|(p, q)| {
+                kinds(p, q)
+                    && (open(&p.ty)
+                        || open(&q.ty)
+                        || self.world.type_name(&self.world.devoid(&p.ty))
+                            == self.world.type_name(&self.world.devoid(&q.ty)))
+            });
+        wider || same
+    }
+
+    /// An override `m` of `o` (their types seen through `subst` and
+    /// `mine_subst`) takes what callers of `o` pass, returns what they
+    /// expect, and takes their block (docs/01 §3). False after an error.
+    fn check_override_pair(
+        &mut self,
+        mid: MethodId,
+        o: MethodId,
+        subst: &HashMap<TypeParamId, Type>,
+        mine_subst: &HashMap<TypeParamId, Type>,
+        within: Option<String>,
+    ) -> bool {
+        let (m, om) = (self.world.method(mid).clone(), self.world.method(o).clone());
+        let owner = self.world.class(om.owner).name.clone();
+        // (`M#f` against `A#f` in `C`, which includes `M`.)
+        let context = match within {
+            Some(c) => format!(
+                " in `{c}`, which includes `{}`",
+                self.world.class(m.owner).name
+            ),
+            None => String::new(),
+        };
+        let mname = m.name.clone();
+        let span = m.span;
+        let see = |t: &Type| {
+            if mine_subst.is_empty() {
+                t.clone()
+            } else {
+                t.subst(mine_subst)
+            }
+        };
+        for (p, q) in om.params.iter().zip(&m.params) {
+            let (theirs, mine) = (p.ty.subst(subst), see(&q.ty));
+            if !self.world.is_subtype(&theirs, &mine) {
+                let (mine_s, theirs_s) =
+                    (self.world.type_name(&mine), self.world.type_name(&theirs));
                 self.error(
                     format!(
-                        "`{mname}` returns {mine_s} but `{owner}#{mname}`, which it overrides, returns {theirs_s}{hint}"
+                        "`{mname}` takes {mine_s} for `{}` but `{owner}#{mname}`, which it overrides{context}, is given {theirs_s}: an override takes what the method it overrides does",
+                        q.name
                     ),
                     span,
                 );
+                return false;
             }
         }
+        if let (Some((_, theirs)), Some((_, mine))) = (&om.block, &m.block) {
+            let theirs = theirs.subst(subst);
+            let mine = see(mine);
+            // (A block whose result is `Void` takes any: its result is
+            // dropped, as where one is given.)
+            let theirs = match (&theirs, &mine) {
+                (Type::Proc(r, ps, _, sh), Type::Proc(_, _, v, _)) if **v == Type::Void => {
+                    Type::Proc(r.clone(), ps.clone(), Box::new(Type::Void), *sh)
+                }
+                _ => theirs,
+            };
+            if !self.world.is_subtype(&theirs, &mine) {
+                let (mine_s, theirs_s) =
+                    (self.world.type_name(&mine), self.world.type_name(&theirs));
+                self.error(
+                    format!(
+                        "`{mname}` takes a block of type {mine_s} but `{owner}#{mname}`, which it overrides{context}, is given one of type {theirs_s}"
+                    ),
+                    span,
+                );
+                return false;
+            }
+            if om.block_optional && !m.block_optional {
+                self.error(
+                    format!(
+                        "`{mname}` requires a block but `{owner}#{mname}`, which it overrides{context}, may be called without one: make it optional"
+                    ),
+                    span,
+                );
+                return false;
+            }
+        }
+        let theirs = om.ret.subst(subst);
+        let mine_ret = see(&m.ret);
+        if !self.world.is_subtype(&mine_ret, &theirs) {
+            let (mine_s, theirs_s) = (
+                self.world.type_name(&mine_ret),
+                self.world.type_name(&theirs),
+            );
+            let hint = if m.ret == Type::Void {
+                " (a `-> Void` method, as one without a return type, returns nil)"
+            } else {
+                ""
+            };
+            self.error(
+                format!(
+                    "`{mname}` returns {mine_s} but `{owner}#{mname}`, which it overrides{context}, returns {theirs_s}{hint}"
+                ),
+                span,
+            );
+            return false;
+        }
+        true
     }
 
     /// Whether a method may keep its block is part of its signature: an
