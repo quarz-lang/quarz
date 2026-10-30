@@ -1425,10 +1425,7 @@ impl Checker {
         {
             let calls = |id: NodeId| self.out.calls.get(&id).cloned();
             let world = &self.world;
-            let uses_self = |mid: MethodId| {
-                let m = world.method(mid);
-                !(m.is_native && m.owner == world.builtin.kernel)
-            };
+            let uses_self = |mid: MethodId| !world.takes_no_self(mid);
             let diverges = |mid: MethodId| world.method(mid).ret.is_nothing();
             let mut set: Vec<String> = Vec::new();
             for f in &fields {
@@ -2626,12 +2623,10 @@ impl Checker {
                 let calls = |id: NodeId| self.out.calls.get(&id).cloned();
                 let world = &self.world;
                 // Every method on `self` but a built-in `Kernel` function
-                // (which takes no `self`; one an `extension Kernel` adds
-                // does) may read the object's fields.
-                let uses_self = |mid: MethodId| {
-                    let m = world.method(mid);
-                    !(m.is_native && m.owner == world.builtin.kernel)
-                };
+                // or a top-level `def` (which take no `self`; a method an
+                // `extension Kernel` adds does) may read the object's
+                // fields.
+                let uses_self = |mid: MethodId| !world.takes_no_self(mid);
                 let diverges = |mid: MethodId| world.method(mid).ret.is_nothing();
                 let mut c =
                     crate::init::InitCheck::new(&required, &own, &calls, &uses_self, &diverges);
@@ -5126,14 +5121,26 @@ impl Checker {
                 self.check_dup(expr, call);
                 // `bump` in a `Task.spawn` block in a method of a mutable
                 // class: a call on the captured `self` (a call to a
-                // built-in `Kernel` function such as `puts` does not use
-                // it; one an `extension Kernel` adds does).
+                // built-in `Kernel` function such as `puts`, or to a
+                // top-level `def`, does not use it; one an `extension
+                // Kernel` adds does).
                 if call.recv.is_none() {
                     if let Some(CallTarget::Method { method }) = self.out.calls.get(&expr.id) {
-                        let m = self.world.method(*method);
-                        if !(m.is_native && m.owner == self.world.builtin.kernel) {
+                        let method = *method;
+                        if !self.world.takes_no_self(method) {
                             let what = format!("calling `{}` uses `self`, which", call.name);
                             self.check_task_self(&what, expr.span);
+                        } else if self.in_static_block()
+                            && self.world.class(self.world.method(method).owner).kind
+                                == ClassKind::Main
+                        {
+                            // A top-level `def` takes no `self`, but it is
+                            // the surrounding code's, not a constant
+                            // (docs/14 §8).
+                            self.error(
+                                format!("a block in `static(...)` captures nothing: `{}` is a top-level `def` of the code around it, not a `static def` (docs/14 §8)", call.name),
+                                expr.span,
+                            );
                         }
                     }
                 }
@@ -10690,6 +10697,14 @@ impl Checker {
             self.env.in_initialize = in_initialize;
             self.env.ivar_narrow = ivar_narrow;
         }
+    }
+
+    /// Whether the code being checked is in the block of a `static(...)`
+    /// call, which captures nothing (docs/14 §8).
+    fn in_static_block(&self) -> bool {
+        self.self_crosses_task()
+            && self.env.static_frame.is_some()
+            && self.env.static_frame == self.env.task_frame
     }
 
     /// Fields are reachable only from their class's own body: inside a

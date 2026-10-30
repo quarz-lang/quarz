@@ -651,3 +651,52 @@ fn expansive_inheritance_closed_by_a_later_input() {
     ]);
     assert!(out[3].contains("expansive inheritance"), "{out:?}");
 }
+
+/// A top-level `def` runs with the session's top-level object, the same
+/// in every input, wherever it is called from (docs/01 §1).
+#[test]
+fn a_toplevel_def_runs_with_the_sessions_object() {
+    let (out, _) = values(&[
+        "def me -> Object = self",
+        "class C\n  def via -> Object = me\nend",
+        "x = me",
+        "me.equal?(self)",
+        "C.new.via.equal?(self)",
+        "x.equal?(me)",
+        "me.class.name",
+    ]);
+    assert_eq!(
+        out[3..],
+        ["=> true", "=> true", "=> true", "=> \"main\""],
+        "{out:?}"
+    );
+}
+
+/// A rolled-back input's top-level object does not outlive it: a file
+/// that later reuses its index (and a class its main class's id) gets a
+/// new one, at compile time too.
+#[test]
+fn a_rolled_back_inputs_toplevel_object_is_not_reused() {
+    let dir = std::env::temp_dir().join(format!("quarz-repl-unit-self-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = |name: &str, text: &str| std::fs::write(dir.join(name), text).unwrap();
+    file("alib.qz", "def k -> String = \"#{self.class}\"\nclass X\n  static def self.v -> Void\n    k\n  end\nend\n");
+    file(
+        "a.qz",
+        "require_relative \"alib\"\nclass W < X\n  v\nend\noops_undefined_name\n",
+    );
+    file("blib.qz", "def who -> String\n  puts \"who: #{self}\"\n  \"x\"\nend\nclass Y\n  static def self.v -> Void\n    who\n  end\nend\n");
+    file("b.qz", "require_relative \"blib\"\nclass Z < Y\n  v\nend\n");
+    let a = format!("require_relative \"{}\"", dir.join("a").display());
+    let b = format!("require_relative \"{}\"", dir.join("b").display());
+    let (out, printed) = values(&[
+        &a,
+        "class Foo\n  @s: String\n  def initialize(@s: String); end\n  def to_s -> String = @s.upcase\nend",
+        &b,
+    ]);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(out[0].starts_with("error:"), "{out:?}");
+    assert_eq!(out[2], "", "{out:?}");
+    assert_eq!(printed, "who: main\n");
+}

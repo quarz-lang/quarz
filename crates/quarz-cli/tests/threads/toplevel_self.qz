@@ -1,0 +1,7 @@
+# A top-level `def` runs with the file's one top-level object, on every
+# worker (docs/01 §1).
+def me -> Object = self
+top = self
+ts = (0...32).map { |_| Task.spawn { me.equal?(top) } }
+p ts.map(&:await).all?
+p Task.scope { |s| (0...8).map { |_| s.spawn { me.class.name } }.map(&:await) }.uniq

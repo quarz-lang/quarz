@@ -1134,6 +1134,7 @@ impl Interp {
                 name,
             } => self.op_field_get_by_name(f, regs, *dst, *found, *obj, *name),
             Inst::ConstGet { dst, id } => self.op_const_get(regs, *dst, *id)?,
+            Inst::UnitSelf { dst, file, class } => self.op_unit_self(regs, *dst, *file, *class),
             Inst::ClassRef { dst, class } => regs[*dst as usize] = Value::Class(*class),
             Inst::VariantSingleton { dst, class } => self.op_variant_singleton(regs, *dst, *class),
             Inst::Call {

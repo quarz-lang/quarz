@@ -3206,3 +3206,18 @@ fn a_task_blocks_next_value_must_be_shareable() {
     err("# A task block's `next` value reaches the task that awaits it, so it must\n# be Shareable, as the body's last value must be. When the body ends in\n# `raise`, only the last value is checked (it is Nothing): this program is\n# accepted, and a mutable Box crosses tasks. Expected: an error at `next`,\n# \"a task block returns the non-shareable type Box\".\nclass Box\n  var @v: Int\n  def initialize(@v: Int); end\nend\nc = true\nt = Task.spawn do\n  next Box.new(1) if c\n  raise \"unreachable\"\nend\np t.await\n", "a task block returns the non-shareable type Box");
     ok("c = true\nt = Task.spawn do\n  next 1 if c\n  raise \"x\"\nend\np t.await");
 }
+
+/// A top-level `def` runs with its file's top-level object, not the
+/// caller's `self` (docs/01 §1): calling it does not use the object, so
+/// it is allowed before `initialize` has assigned the fields, in a
+/// field's default, and in a task's block in a mutable class.
+#[test]
+fn toplevel_defs_take_no_self() {
+    ok("def label -> String = \"x\"\nclass D\n  @a: String = label\n  @b: String\n  def initialize\n    @b = label\n  end\nend");
+    ok("def work -> Int = 1\nclass Counter\n  var @n: Int = 0\n  def go -> Int = Task.spawn { work }.await\nend");
+    // A method of the class still uses it.
+    err(
+        "class Counter\n  var @n: Int = 0\n  def work -> Int = @n\n  def go -> Int = Task.spawn { work }.await\nend",
+        "calling `work` uses `self`",
+    );
+}

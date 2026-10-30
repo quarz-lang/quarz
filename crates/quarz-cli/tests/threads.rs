@@ -95,6 +95,11 @@ fn scopes_cancellation_and_exceptions_between_workers() {
 }
 
 #[test]
+fn a_toplevel_defs_self_is_one_object_on_every_worker() {
+    prints_its_out("toplevel_self.qz");
+}
+
+#[test]
 fn atoms_and_constants_from_every_worker() {
     prints_its_out("atoms.qz");
 }

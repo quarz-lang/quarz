@@ -1,0 +1,5 @@
+# Calls of a top-level `def` from tasks: 4 tasks, 3M calls each. One that
+# does not use `self` costs a plain call (and inlines in compiled code).
+def inc(x: Int) -> Int = x + 1
+ts = (0...4).map { |_| Task.spawn { s = 0; i = 0; while i < 3_000_000; s = inc(s); i += 1; end; s } }
+p ts.map(&:await).sum

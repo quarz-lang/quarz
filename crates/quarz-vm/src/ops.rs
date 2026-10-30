@@ -116,6 +116,10 @@ impl Interp {
         regs[found as usize] = Value::Bool(ok);
     }
 
+    pub fn op_unit_self(&self, regs: &mut [Value], dst: Reg, file: u32, class: ClassId) {
+        regs[dst as usize] = self.unit_self_of(file, class);
+    }
+
     pub fn op_const_get(&self, regs: &mut [Value], dst: Reg, id: u32) -> Result<(), Flow> {
         regs[dst as usize] = self.const_value(id)?;
         Ok(())

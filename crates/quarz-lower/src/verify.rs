@@ -342,7 +342,8 @@ impl Checker<'_> {
             Inst::ClassRef { class: c, .. }
             | Inst::ClassIsA { class: c, .. }
             | Inst::ClassIs { class: c, .. }
-            | Inst::VariantSingleton { class: c, .. } => class(*c, &mut bad),
+            | Inst::VariantSingleton { class: c, .. }
+            | Inst::UnitSelf { class: c, .. } => class(*c, &mut bad),
             Inst::MakeBlock { func, .. } if *func as usize >= nfuncs => {
                 bad.push(format!("function {func} out of range"))
             }

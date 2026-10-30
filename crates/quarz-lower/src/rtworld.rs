@@ -351,6 +351,15 @@ pub fn build(world: &World, lw: &Lowerer, file_names: Vec<String>) -> RtWorld {
         standard_error,
     };
     let _ = types::ClassId::default();
+    let mut file_mains: Vec<Option<ClassId>> = Vec::new();
+    for (id, c) in world.classes.iter().enumerate() {
+        if c.kind == ClassKind::Main {
+            if file_mains.len() <= c.file as usize {
+                file_mains.resize(c.file as usize + 1, None);
+            }
+            file_mains[c.file as usize] = Some(id as ClassId);
+        }
+    }
     RtWorld {
         classes,
         methods,
@@ -360,6 +369,7 @@ pub fn build(world: &World, lw: &Lowerer, file_names: Vec<String>) -> RtWorld {
         top,
         builtin,
         file_names,
+        file_mains,
     }
 }
 
