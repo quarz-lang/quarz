@@ -267,7 +267,9 @@ pub fn refs<'a>(f: &'a Function, visit: &mut dyn FnMut(Ref<'a>)) {
         for inst in &blk.insts {
             match inst {
                 Inst::Call { kind, .. } => match kind {
-                    CallKind::Method(m) | CallKind::Super(m) => visit(Ref::Method(*m)),
+                    CallKind::Method(m) | CallKind::Super(m) | CallKind::Function(m) => {
+                        visit(Ref::Method(*m))
+                    }
                     CallKind::Send(name) => visit(Ref::Name(name)),
                     // By name: the receiver's class may be a subclass,
                     // with an `initialize` of its own.

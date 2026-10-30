@@ -196,11 +196,14 @@ fn inline_into(
                         other => {
                             let mut copied = rewrite(other, base_reg, &const_map);
                             // An implicit-self call in the callee is a
-                            // call on the receiver here.
+                            // call on the receiver here (a function's too:
+                            // it ignores it, but holds it to the call's end,
+                            // as the callee's activation would).
                             if let (
                                 Some(r),
                                 Inst::Call {
-                                    kind: CallKind::Method(_) | CallKind::Send(_),
+                                    kind:
+                                        CallKind::Method(_) | CallKind::Send(_) | CallKind::Function(_),
                                     recv: recv @ None,
                                     ..
                                 },

@@ -6777,6 +6777,7 @@ impl Checker {
                     args: vec![Arg::Positional(value.clone())],
                     block: None,
                     safe_nav: *safe_nav,
+                    function: false,
                     has_parens: true,
                     type_args: vec![],
                 };
@@ -6796,6 +6797,7 @@ impl Checker {
                     args: all,
                     block: None,
                     safe_nav: false,
+                    function: false,
                     has_parens: true,
                     type_args: vec![],
                 };
@@ -6867,6 +6869,7 @@ impl Checker {
                     args: vec![],
                     block: None,
                     safe_nav: false,
+                    function: false,
                     has_parens: false,
                     type_args: vec![],
                 };
@@ -6884,6 +6887,7 @@ impl Checker {
                     args: args.clone(),
                     block: None,
                     safe_nav: false,
+                    function: false,
                     has_parens: true,
                     type_args: vec![],
                 };
@@ -7257,6 +7261,91 @@ impl Checker {
         }
     }
 
+    /// `Kernel.name(...)`: the built-in `Kernel` function, called as a
+    /// function wherever it is written, a file's top-level `def` of the
+    /// name notwithstanding (docs/01 §1). `None` for any other call.
+    fn check_kernel_call(
+        &mut self,
+        expr: &Expr,
+        call: &Call,
+        expected: Option<&Type>,
+    ) -> Option<Type> {
+        let recv = call.recv.as_ref()?;
+        if !matches!(&recv.kind, ExprKind::Const(path) if path.names.last().map(String::as_str) == Some("Kernel"))
+        {
+            return None;
+        }
+        let kernel = self.world.builtin.kernel;
+        // (No `extension Kernel` declares a module method of a built-in
+        // function's name: `Declarer::declare_method` refuses it.)
+        let on = Type::class(kernel);
+        let cands: Vec<_> = self
+            .world
+            .lookup_methods(&on, &call.name)
+            .into_iter()
+            .filter(|(m, _)| {
+                let m = self.world.method(*m);
+                m.is_native && m.owner == kernel
+            })
+            .collect();
+        // (Another name is a method of the module object, `Kernel.inspect`,
+        // found as usual.)
+        if cands.is_empty() {
+            return None;
+        }
+        let rt = self.check_expr(recv, None);
+        let rt = self.resolve(&rt);
+        if !matches!(rt, Type::ClassObject(c, _) if c == kernel) {
+            // A constant `Kernel` of another namespace: an ordinary call,
+            // whose receiver is checked again (a constant read, recorded
+            // the same).
+            return None;
+        }
+        let t = self.resolve_overloads(expr, call, &on, cands, true, expected);
+        // In a block checked once per type, the overload may differ
+        // (`union_calls`, as for any call).
+        if !self.env.blocks.is_empty() && self.test_class(&rt).is_some() {
+            if let Some(CallTarget::Method { method }) = self.out.calls.get(&expr.id) {
+                let m = *method;
+                self.note_union_table(expr.id, vec![(rt, m)], expr.span);
+            }
+        }
+        Some(t)
+    }
+
+    /// `::name(...)`: a function, the file's top-level `def`s of the name
+    /// first, then the built-in `Kernel` functions, wherever it is written
+    /// (docs/01 §1); never a method of `self`, an `Object` method or one an
+    /// `extension Kernel` adds.
+    fn check_function_call(&mut self, expr: &Expr, call: &Call, expected: Option<&Type>) -> Type {
+        let fm = self.file_main(self.env.file);
+        let on = Type::class(fm.unwrap_or(self.world.builtin.object));
+        let all = self.world.lookup_methods(&on, &call.name);
+        // As an implicit call at the file's top level finds them (its
+        // `def`s first, hiding a built-in of the same signature, then the
+        // built-in's other overloads), but only the functions.
+        let kernel = self.world.builtin.kernel;
+        let cands: Vec<_> = all
+            .into_iter()
+            .filter(|(m, _)| {
+                let m = self.world.method(*m);
+                Some(m.owner) == fm || (m.is_native && m.owner == kernel)
+            })
+            .collect();
+        if cands.is_empty() {
+            self.error(
+                format!(
+                    "`::{}` calls a built-in function or a top-level `def` of this file, and there is none named `{}`",
+                    call.name, call.name
+                ),
+                expr.span,
+            );
+            self.check_args_blindly(call);
+            return Type::Nothing;
+        }
+        self.resolve_overloads(expr, call, &on, cands, true, expected)
+    }
+
     fn check_call(&mut self, expr: &Expr, call: &Call, expected: Option<&Type>) -> Type {
         self.check_call_with_types(expr, call, expected, false)
     }
@@ -7273,6 +7362,12 @@ impl Checker {
         // Special forms.
         if call.recv.is_none() && call.name == "raise" {
             return self.check_raise(expr, call);
+        }
+        if call.function {
+            return self.check_function_call(expr, call, expected);
+        }
+        if let Some(t) = self.check_kernel_call(expr, call, expected) {
+            return t;
         }
         if let Some(recv) = &call.recv {
             match call.name.as_str() {
@@ -8243,6 +8338,7 @@ impl Checker {
                 ret: None,
             }),
             safe_nav: false,
+            function: false,
             has_parens: true,
             type_args: vec![],
         };
@@ -8293,6 +8389,7 @@ impl Checker {
                     args: vec![],
                     block: None,
                     safe_nav: false,
+                    function: false,
                     has_parens: true,
                     type_args: vec![],
                 };
@@ -8318,6 +8415,7 @@ impl Checker {
             args: vec![],
             block: None,
             safe_nav: false,
+            function: false,
             has_parens: true,
             type_args: vec![],
         };
@@ -10943,6 +11041,7 @@ impl Checker {
                 args: args.to_vec(),
                 block: None,
                 safe_nav: false,
+                function: false,
                 has_parens: true,
                 type_args: Vec::new(),
             });
@@ -10963,6 +11062,7 @@ impl Checker {
                 args: args.to_vec(),
                 block: None,
                 safe_nav: false,
+                function: false,
                 has_parens: true,
                 type_args: vec![],
             });
@@ -10982,6 +11082,7 @@ impl Checker {
                 args: args.to_vec(),
                 block: None,
                 safe_nav: false,
+                function: false,
                 has_parens: true,
                 type_args: vec![],
             });
@@ -11044,6 +11145,7 @@ impl Checker {
                 args: args.map(|a| a.to_vec()).unwrap_or_default(),
                 block: block.cloned(),
                 safe_nav: false,
+                function: false,
                 has_parens: true,
                 type_args: vec![],
             });
@@ -11141,6 +11243,7 @@ impl Checker {
             },
             block: block.cloned(),
             safe_nav: false,
+            function: false,
             has_parens: true,
             type_args: vec![],
         };

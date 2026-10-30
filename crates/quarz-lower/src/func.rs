@@ -870,6 +870,20 @@ impl<'a> FnBuilder<'a> {
         self.load_const(Constant::Nil)
     }
 
+    /// Whether `call` is written `Kernel.name(...)`: a call of the built-in
+    /// function (`Checker::check_kernel_call`).
+    fn kernel_receiver(&self, call: &ast::Call) -> bool {
+        // (By its type, as the checker decides: an alias of the constant
+        // too.)
+        call.recv.as_ref().is_some_and(|r| {
+            matches!(&r.kind, ast::ExprKind::Const(_))
+                && matches!(
+                    self.out.node_types.get(&r.id),
+                    Some(quarz_types::Type::ClassObject(c, _)) if *c == self.world.builtin.kernel
+                )
+        })
+    }
+
     /// The file and main class of the top-level `def` a call goes to, if
     /// it does and uses its `self` (one that does not is called as before,
     /// which costs nothing and lets it inline into a loop).
@@ -3342,6 +3356,19 @@ impl<'a> FnBuilder<'a> {
                 CallKind::Send(call.name.clone())
             }
             Some(CallTarget::Method { method }) if varies => CallKind::Method(*method),
+            // A built-in `Kernel` function called on the implicit receiver:
+            // this one, which a method of the receiver's class of the same
+            // signature does not take over (docs/01 §3).
+            Some(CallTarget::Method { method })
+                if (call.recv.is_none() || self.kernel_receiver(call)) && {
+                    let m = self.world.method(*method);
+                    m.is_native && m.owner == self.world.builtin.kernel
+                } =>
+            {
+                // (`Kernel.puts`: the module is no receiver.)
+                recv = None;
+                CallKind::Function(*method)
+            }
             Some(CallTarget::Method { method }) => {
                 let m = self.world.method(*method);
                 // A generated field reader: a call, which `cha::rewrite`
