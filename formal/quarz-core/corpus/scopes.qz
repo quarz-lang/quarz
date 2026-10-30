@@ -1,0 +1,45 @@
+# Scopes (docs/01 §10, §11): a declaration (`y: T = e`, `y := e`) makes a
+# new variable in the innermost scope, hiding an outer one; a case/in arm's
+# names are its own; a pattern binds only once it matched whole.
+data P = (a: Int, b: Int)
+
+def decls -> Int
+  total = "none"
+  n = 0
+  [1, 2].each do |x|
+    total := x * 10
+    n = n + total
+  end
+  z = 5
+  begin
+    raise "boom"
+  rescue => e
+    z: String? = e.message
+    n = n + (z || "").size
+  end
+  n + total.size + z
+end
+
+def arms(p: P, y0: Int | String) -> Int
+  y = y0
+  return 0 unless y.is_a?(String)
+  r = case p
+  in P(y, 9) then y
+  in P(a, b) if a > b then a - b
+  in P(_, _) then y.size
+  end
+  if p in P(_, 1)
+    r + y.size
+  else
+    r
+  end
+end
+
+def binds(p: P) -> Int
+  p => P(a, b)
+  a + b
+end
+
+puts decls
+puts arms(P.new(7, 1), "s")
+puts binds(P.new(1, 2))

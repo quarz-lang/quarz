@@ -268,10 +268,18 @@ stricter, not unsound.
   variants on a test's false side), an open one in `raise`; a capture
   is declared with the type the match narrows the subject to (an enum
   as its variants, on both sides of a test), a `var` field subject is
-  read once into a local, and a name bound in two arms, or bound in one
-  and assigned in the `case` besides, is out of range (the Rust checker
-  declares it afresh in each arm, and after the `case` it is the last
-  arm's). Later arms see the subject
+  read once into a local. An arm's names are its own (docs/01 §11):
+  fresh locals of the arm, shadowing an outer one, its guard and body a
+  scope; `v in p` and `v => p` bind into the enclosing scope only once
+  the whole pattern matched (into temporaries while it tests; a `v in p`
+  rebinding an existing local is out of range, as the model's `&&`
+  cannot keep the local as it was on the false side). A local declaration
+  (`y: T = e`, `y := e`, docs/01 §10) at the top of a block's, a
+  lambda's, an arm's or a `rescue` clause's body is a fresh local for
+  the rest of it, as is one at the method's top hiding nothing but in an
+  enclosing scope; inside an `if`, a loop or a guard of such a scope it
+  is out of range; elsewhere it declares the method's local with its
+  declared type. Later arms see the subject
   narrowed by the earlier ones' false sides, and arms after an `in x`
   are not checked, where the Rust checker checks each arm with the whole
   subject type: more lenient, not unsound. A `data` type without
