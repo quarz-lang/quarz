@@ -196,6 +196,11 @@ op_entry!(
     }
 );
 
+op_entry!(qz_op_unit_self(dst: u32, file: u32, class: u32) |rt, act, f, pool, regs| {
+    rt.op_unit_self(regs, dst, file, class);
+    Ok(())
+});
+
 op_entry!(qz_op_const_get(dst: u32, id: u32) |rt, act, f, pool, regs| {
     rt.op_const_get(regs, dst, id)
 });

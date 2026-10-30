@@ -1101,6 +1101,16 @@ impl World {
             .collect()
     }
 
+    /// Whether a call of `mid` with an implicit receiver passes no `self`
+    /// of the caller: a built-in `Kernel` function (one an `extension
+    /// Kernel` adds is a method), or a top-level `def`, which runs with
+    /// its file's top-level object (docs/01 §1).
+    pub fn takes_no_self(&self, mid: MethodId) -> bool {
+        let m = self.method(mid);
+        (m.is_native && m.owner == self.builtin.kernel)
+            || self.class(m.owner).kind == ClassKind::Main
+    }
+
     /// The extensions active throughout `file`: those declared at the top
     /// level of its group's files.
     pub fn group_extensions(&self, file: u32) -> Vec<ExtensionId> {

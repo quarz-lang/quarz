@@ -304,6 +304,11 @@ pub struct Global {
     consts: std::sync::Mutex<Vec<std::sync::Arc<ConstCell>>>,
     /// The values of the enum variants without fields, by class.
     variant_singletons: std::sync::Mutex<HashMap<ClassId, SharedValue>>,
+    /// The top-level object of each file (the `self` of its top level and
+    /// of its top-level `def`s), by file index: one for every worker, the
+    /// REPL's inputs and the compiler's compile-time runs
+    /// (`Interp::unit_self_of`).
+    unit_selfs: std::sync::Mutex<HashMap<u32, SharedValue>>,
     at_exit: std::sync::Mutex<Vec<SharedValue>>,
     stdout: std::sync::Mutex<Box<dyn std::io::Write + Send>>,
     /// The status of an `exit` in a task nobody waits for, which the root
@@ -331,6 +336,7 @@ impl Global {
             symbols: std::sync::RwLock::new(SymbolTable::default()),
             consts: std::sync::Mutex::new(Vec::new()),
             variant_singletons: std::sync::Mutex::new(HashMap::new()),
+            unit_selfs: std::sync::Mutex::new(HashMap::new()),
             at_exit: std::sync::Mutex::new(Vec::new()),
             stdout: std::sync::Mutex::new(out),
             exit_request: std::sync::atomic::AtomicI64::new(NO_EXIT),
@@ -355,6 +361,24 @@ fn same_object(a: &Value, b: &Value) -> bool {
 
 /// The name of the task `Task.timeout` runs its block in.
 pub(crate) const TIMEOUT_TASK: &str = "timeout";
+
+/// The top-level object of file `file`, whose main pseudo-class is
+/// `class`, in `global`: one for all the workers, made by the first that
+/// asks (a compile-time run runs no unit's top level), and made again where
+/// the one kept is of another class (the REPL rolled back the input that
+/// made it, whose ids the next one reuses). Immortal: every task calling a
+/// top-level `def` of the file uses it.
+fn unit_self_in(global: &Global, file: u32, class: ClassId) -> Value {
+    let mut selfs = lock(&global.unit_selfs);
+    let kept = selfs
+        .get(&file)
+        .is_some_and(|v| matches!(v.get(), Value::Object(o) if o.class == class));
+    if !kept {
+        let v = Value::Object(Object::new(class, Fields::new()));
+        selfs.insert(file, SharedValue::immortal(v));
+    }
+    selfs[&file].get().clone()
+}
 
 /// Run-time state that outlives one interpreter instance (the REPL creates
 /// an interpreter per input over the same state).
@@ -391,6 +415,8 @@ impl SharedState {
     pub fn forget(&self, consts: usize, classes: usize) {
         self.reset_consts_from(consts);
         lock(&self.global.variant_singletons).retain(|c, _| (*c as usize) < classes);
+        lock(&self.global.unit_selfs)
+            .retain(|_, v| matches!(v.get(), Value::Object(o) if (o.class as usize) < classes));
     }
 
     /// `reset_consts` for the constants from `first` on (the REPL keeps
@@ -752,10 +778,12 @@ const _: () = {
 pub struct Interp {
     pub hot: Hot,
     pub program: std::sync::Arc<Program>,
-    /// The `self` object of each unit's top level, by file index.
-    unit_selfs: Vec<Value>,
     /// The frame of the REPL's top level, kept across inputs.
     pub repl_frame: Option<Rc<Frame>>,
+    /// The top-level objects this interpreter has used, by file index: a
+    /// copy of `Global::unit_selfs`'s, read without its lock
+    /// (`Interp::unit_self_of`).
+    unit_selfs: RefCell<Vec<Value>>,
     pub funcs: Rc<RefCell<Vec<Rc<FuncInfo>>>>,
     pub bodies: std::rc::Rc<std::cell::OnceCell<std::rc::Rc<dyn std::any::Any>>>,
     pub pools: Pools,
@@ -971,17 +999,10 @@ impl Interp {
             result_err: class_by_name("Result::Err"),
             socket_address: library_class("Socket::Address"),
         };
-        let n_files = world
-            .file_names
-            .len()
-            .max(units.iter().map(|u| u.file as usize + 1).max().unwrap_or(0));
-        let mut unit_selfs = vec![Value::Nil; n_files];
+        // Each unit's top-level object, made now if no worker, earlier
+        // REPL input or compile-time run made it.
         for u in &units {
-            // Every task calling a top-level method uses it: immortal, so
-            // that workers do not contend for its count.
-            let v = Value::Object(Object::new(u.main_class, Fields::new()));
-            v.make_immortal();
-            unit_selfs[u.file as usize] = v;
+            unit_self_in(&state.global, u.file, u.main_class);
         }
         let consts: Vec<std::sync::Arc<ConstCell>> = {
             let mut all = lock(&state.global.consts);
@@ -1048,8 +1069,8 @@ impl Interp {
         let interp = std::rc::Rc::new(Interp {
             hot: Hot::new(),
             program,
-            unit_selfs,
             repl_frame,
+            unit_selfs: RefCell::new(Vec::new()),
             funcs: state.funcs,
             bodies: state.bodies,
             pools: state.pools,
@@ -1216,7 +1237,7 @@ impl Interp {
         let body: Box<dyn FnOnce() -> TaskExit> = Box::new(move || {
             let mut result = Ok(Value::Nil);
             for unit in me.program.units.iter() {
-                let self_val = me.unit_selfs[unit.file as usize].clone();
+                let self_val = me.unit_self(unit.file);
                 if let Err(f) = me.run_top_level(unit.body, unit.file, self_val) {
                     result = Err(f);
                     break;
@@ -1300,6 +1321,32 @@ impl Interp {
         }
     }
 
+    /// The top-level object of file `file` (nil for a file without one).
+    pub fn unit_self(&self, file: u32) -> Value {
+        match self.program.world.file_mains.get(file as usize) {
+            Some(Some(class)) => self.unit_self_of(file, *class),
+            _ => Value::Nil,
+        }
+    }
+
+    /// The top-level object of file `file`, whose main pseudo-class is
+    /// `class` (`unit_self_in`), from this interpreter's copy: a call of
+    /// a top-level `def` takes no lock.
+    pub fn unit_self_of(&self, file: u32, class: ClassId) -> Value {
+        let mut mine = self.unit_selfs.borrow_mut();
+        if let Some(v @ Value::Object(o)) = mine.get(file as usize) {
+            if o.class == class {
+                return v.clone();
+            }
+        }
+        let v = unit_self_in(&self.global, file, class);
+        if mine.len() <= file as usize {
+            mine.resize(file as usize + 1, Value::Nil);
+        }
+        mine[file as usize] = v.clone();
+        v
+    }
+
     /// Evaluate REPL input: run the function `fid` in the persistent REPL
     /// frame as the top level of unit `file`. Returns the value of the
     /// last statement, or `None` after an uncaught exception (which is
@@ -1311,11 +1358,7 @@ impl Interp {
     ) -> Result<Option<Value>, i32> {
         let me = self.clone();
         let run_body: Box<dyn FnOnce() -> TaskExit> = Box::new(move || {
-            let self_val = me
-                .unit_selfs
-                .get(file as usize)
-                .cloned()
-                .unwrap_or(Value::Nil);
+            let self_val = me.unit_self(file);
             let result = me.run_top_level(fid, file, self_val);
             task_exit(&me, result)
         });
@@ -2485,11 +2528,7 @@ impl Interp {
         }
         let self_val = match info.owner {
             Some(o) => Value::Class(o),
-            None => self
-                .unit_selfs
-                .get(info.file as usize)
-                .cloned()
-                .unwrap_or(Value::Nil),
+            None => self.unit_self(info.file),
         };
         let r = self.run_init(init, self_val, info.file);
         // A constant is visible from every task. One whose initializer

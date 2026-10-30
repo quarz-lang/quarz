@@ -478,6 +478,14 @@ pub enum Inst {
         dst: Reg,
         id: ConstId,
     },
+    /// The top-level object of file `file` (its `main`, immortal, an
+    /// instance of its main pseudo-class `class`): the `self` a top-level
+    /// `def` of that file runs with.
+    UnitSelf {
+        dst: Reg,
+        file: u32,
+        class: ClassId,
+    },
     ClassRef {
         dst: Reg,
         class: ClassId,
@@ -852,6 +860,7 @@ impl Inst {
             | Inst::FrameGet { dst, .. }
             | Inst::FieldGet { dst, .. }
             | Inst::ConstGet { dst, .. }
+            | Inst::UnitSelf { dst, .. }
             | Inst::ClassRef { dst, .. }
             | Inst::VariantSingleton { dst, .. }
             | Inst::Call { dst, .. }
@@ -920,6 +929,7 @@ impl Inst {
             | Inst::BlockParam { .. }
             | Inst::FrameGet { .. }
             | Inst::ConstGet { .. }
+            | Inst::UnitSelf { .. }
             | Inst::ClassRef { .. }
             | Inst::VariantSingleton { .. }
             | Inst::MakeBlock { .. }
@@ -1075,6 +1085,7 @@ impl Inst {
             | Inst::BlockParam { .. }
             | Inst::FrameGet { .. }
             | Inst::ConstGet { .. }
+            | Inst::UnitSelf { .. }
             | Inst::ClassRef { .. }
             | Inst::VariantSingleton { .. }
             | Inst::MakeBlock { .. }
@@ -1520,6 +1531,10 @@ pub struct RtWorld {
     pub builtin: RtBuiltin,
     /// Display names by file index (0 = the prelude).
     pub file_names: Vec<String>,
+    /// Each file's main pseudo-class (its top-level object's class), by
+    /// file index.
+    #[serde(default)]
+    pub file_mains: Vec<Option<ClassId>>,
 }
 
 impl RtWorld {

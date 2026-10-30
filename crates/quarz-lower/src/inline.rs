@@ -399,6 +399,11 @@ pub(crate) fn rewrite_with(
             dst: r(dst),
             id: *id,
         },
+        Inst::UnitSelf { dst, file, class } => Inst::UnitSelf {
+            dst: r(dst),
+            file: *file,
+            class: *class,
+        },
         Inst::ClassRef { dst, class } => Inst::ClassRef {
             dst: r(dst),
             class: *class,

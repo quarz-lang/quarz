@@ -17,6 +17,9 @@ use quarz_types::{Output, VarRef, World};
 pub enum Site {
     Var(Span),
     ZSuper,
+    /// A use of the function's `self`: `self`, a field, `super`, a call on
+    /// the implicit receiver that passes it.
+    SelfUse,
 }
 
 /// How deep a reference sits: `actual` counts every block level the way
@@ -92,6 +95,7 @@ pub fn captured_slots(
                     captured.insert(i);
                 }
             }
+            Site::SelfUse => {}
         }
     };
     let mut cx = Cx {
@@ -107,6 +111,24 @@ pub fn captured_slots(
         walk_expr(e, Nest::TOP, &mut cx);
     }
     captured
+}
+
+/// Whether a method whose body is `body` (with `extra`, its parameters'
+/// defaults) uses its `self`, here or in a block: a call of a top-level
+/// `def` that does not need not pass it one (`FnBuilder::toplevel_def`).
+pub fn uses_self(body: &[Expr], extra: &[&Expr], out: &Output, world: &World) -> bool {
+    let mut used = false;
+    let mut visit = |site: Site, _: Nest| used |= matches!(site, Site::SelfUse);
+    let mut cx = Cx {
+        out,
+        world,
+        visit: &mut visit,
+        real_blocks: 0,
+    };
+    for e in body.iter().chain(extra.iter().copied()) {
+        walk_expr(e, Nest::TOP, &mut cx);
+    }
+    used
 }
 
 pub fn walk_body(body: &[Expr], nest: Nest, cx: &mut Cx) {
@@ -259,16 +281,15 @@ pub fn walk_expr(e: &Expr, nest: Nest, cx: &mut Cx) {
             };
             walk_expr(chosen, nest, cx);
         }
+        SelfRef | IVar(_) => (cx.visit)(Site::SelfUse, nest),
         Nil
         | True
         | False
-        | SelfRef
         | Int(_)
         | Float(_)
         | Bytes(_)
         | Symbol(_)
         | Magic(_)
-        | IVar(_)
         | Const(_)
         | TypeApp(_)
         | Retry
@@ -303,6 +324,17 @@ pub fn walk_expr(e: &Expr, nest: Nest, cx: &mut Cx) {
             } else if cx.out.outer_self_calls.contains(&e.id) {
                 // Reads an enclosing function's `self` from its hidden slot.
                 (cx.visit)(Site::Var(e.span), nest);
+                if !matches!(
+                    cx.out.calls.get(&e.id),
+                    Some(quarz_types::CallTarget::Method { method }) if cx.world.takes_no_self(*method)
+                ) {
+                    (cx.visit)(Site::SelfUse, nest);
+                }
+            } else if !matches!(
+                cx.out.calls.get(&e.id),
+                Some(quarz_types::CallTarget::Method { method }) if cx.world.takes_no_self(*method)
+            ) {
+                (cx.visit)(Site::SelfUse, nest);
             }
             walk_args(&call.args, nest, cx);
             if let Some(b) = &call.block {
@@ -316,6 +348,7 @@ pub fn walk_expr(e: &Expr, nest: Nest, cx: &mut Cx) {
         MethodRef { recv, .. } => walk_expr(recv, nest, cx),
         Yield(args) => walk_args(args, nest, cx),
         Super { args, block } => {
+            (cx.visit)(Site::SelfUse, nest);
             match args {
                 Some(args) => walk_args(args, nest, cx),
                 None => (cx.visit)(Site::ZSuper, nest),

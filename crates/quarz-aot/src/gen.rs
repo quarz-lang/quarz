@@ -54,6 +54,7 @@ pub(crate) const OPS: &[(&str, &[Ty])] = {
         ("qz_op_has_arg", &[I, I]),
         ("qz_op_field_get_by_name", &[I, I, I, I]),
         ("qz_op_const_get", &[I, I]),
+        ("qz_op_unit_self", &[I, I, I]),
         ("qz_op_variant_singleton", &[I, I]),
         ("qz_op_call", &[P, P, I]),
         ("qz_op_owned_call", &[P]),
@@ -2959,6 +2960,10 @@ impl<B: Builder> Gen<'_, B> {
                 ],
             ),
             Inst::ConstGet { dst, id } => ("qz_op_const_get", vec![w(self, *dst), w(self, *id)]),
+            Inst::UnitSelf { dst, file, class } => (
+                "qz_op_unit_self",
+                vec![w(self, *dst), w(self, *file), w(self, *class)],
+            ),
             Inst::VariantSingleton { dst, class } => (
                 "qz_op_variant_singleton",
                 vec![w(self, *dst), w(self, *class)],
