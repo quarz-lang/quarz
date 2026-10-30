@@ -1,0 +1,10 @@
+# `any?` and `all?` leave their loop at the first element that decides,
+# like its normal end clearing the registers the block's body used: a
+# temporary still holding `acc` would keep it shared, and the update
+# after the loop would copy it (the test expects 0 copies).
+acc: Array[Int] = [5]
+hit = [1, 2].any? { |x| [acc, [x]].size > 1 }
+acc = acc.push(1)
+all = [1, 2].all? { |x| (x > 5 ? [x] : acc).size > 5 }
+acc = acc.push(2)
+p hit, all, acc
