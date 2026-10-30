@@ -750,3 +750,23 @@ fn local_declarations() {
         vec!["`:=` declares one local variable; assign several with `a, b = ...`"]
     );
 }
+
+/// `::name(...)`: a function call (docs/01 §1). `foo ::bar` passes it,
+/// as `foo ::Bar` passes the constant; `x::bar` is a method call.
+#[test]
+fn function_calls() {
+    assert_eq!(sexp("::puts \"x\""), "(call :: puts (str \"x\"))");
+    assert_eq!(sexp("::f(1, 2)"), "(call :: f 1 2)");
+    assert_eq!(sexp("::loop { 1 }"), "(call :: loop (block (params) 1))");
+    assert_eq!(sexp("p ::f"), "(call _ p (call :: f))");
+    assert_eq!(sexp("p ::Foo"), "(call _ p ::Foo)");
+    assert_eq!(sexp("x = 1\nx::abs"), "(= x 1)\n(call x abs)");
+    assert_eq!(sexp("::Integer(\"3\")"), "(call :: Integer (str \"3\"))");
+    assert_eq!(sexp("Integer(\"3\")"), "(call _ Integer (str \"3\"))");
+    assert_eq!(sexp("p ::Integer"), "(call _ p ::Integer)");
+    assert_eq!(sexp("::Foo::Bar"), "::Foo::Bar");
+    // A function call is no variable to assign.
+    for src in ["::foo = 1", "::x += 1", "::q ||= 4", "::a, ::b = 1, 2"] {
+        assert!(!errors(src).is_empty(), "{src}");
+    }
+}

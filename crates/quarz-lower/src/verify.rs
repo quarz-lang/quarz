@@ -325,7 +325,9 @@ impl Checker<'_> {
                 }
             }
             Inst::Call { kind, .. } => match kind {
-                CallKind::Method(m) | CallKind::Super(m) => method(*m, &mut bad),
+                CallKind::Method(m) | CallKind::Super(m) | CallKind::Function(m) => {
+                    method(*m, &mut bad)
+                }
                 CallKind::Construct { class: c, init }
                 | CallKind::ConstructRecv { class: c, init } => {
                     class(*c, &mut bad);

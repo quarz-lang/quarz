@@ -545,6 +545,10 @@ pub unsafe extern "C" fn qz_field_set(
     }
 }
 
+/// The bit of `qz_call_static`'s method id that makes the call a
+/// function's (`CallKind::Function`).
+pub const STATIC_FUNCTION: u32 = 1 << 31;
+
 /// A statically resolved call of a method that nothing overrides, with
 /// positional arguments only (and possibly a block): natives are called
 /// directly, bodies get their parameters bound without the generic path
@@ -553,7 +557,8 @@ pub unsafe extern "C" fn qz_field_set(
 /// # Safety
 /// As for `qz_raise`; `arg_regs` must point to `nargs` register indices;
 /// `recv` and `block` are register indices or `u32::MAX` for `self` /
-/// no block.
+/// no block. `mid` with `STATIC_FUNCTION` set is a function's: called as
+/// is, not looked up on the receiver.
 #[no_mangle]
 pub unsafe extern "C" fn qz_call_static(
     rt: *const Interp,
@@ -568,8 +573,11 @@ pub unsafe extern "C" fn qz_call_static(
 ) -> u32 {
     let rt = &*rt;
     let act = &*act;
-    // A method some class overrides: the receiver's class decides.
-    let mid = if rt.program.method(mid).overridden {
+    // A method some class overrides: the receiver's class decides, but
+    // for a function (`CallKind::Function`, the top bit of `mid`).
+    let function = mid & STATIC_FUNCTION != 0;
+    let mid = mid & !STATIC_FUNCTION;
+    let mid = if !function && rt.program.method(mid).overridden {
         let recv_ref: &Value = if recv == u32::MAX {
             &act.self_val
         } else {

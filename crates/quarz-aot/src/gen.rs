@@ -1149,6 +1149,9 @@ fn emit_retain<B: Builder>(b: &mut B, own: B::Func, home: B::Value, rc: B::Value
 /// A call compiled to `qz_call_static`.
 struct StaticCall {
     mid: MethodId,
+    /// A function's call (`CallKind::Function`): not looked up on the
+    /// receiver.
+    function: bool,
     recv: Option<Reg>,
     args: Vec<Reg>,
     block: Option<Reg>,
@@ -2263,7 +2266,7 @@ impl<B: Builder> Gen<'_, B> {
     fn static_target(&self, inst: &Inst) -> Option<StaticCall> {
         let Inst::Call {
             dst,
-            kind: CallKind::Method(mid),
+            kind: kind @ (CallKind::Method(mid) | CallKind::Function(mid)),
             recv,
             args,
             splat: false,
@@ -2295,6 +2298,7 @@ impl<B: Builder> Gen<'_, B> {
         }
         Some(StaticCall {
             mid: *mid,
+            function: matches!(kind, CallKind::Function(_)),
             recv: *recv,
             args: args.clone(),
             block: *block,
@@ -2986,7 +2990,8 @@ impl<B: Builder> Gen<'_, B> {
                     CallKind::ConstructRecv { class, init } => (3, *class, opt(*init), ""),
                     CallKind::ProcCall => (4, 0, 0, ""),
                     CallKind::Yield => (5, 0, 0, ""),
-                    CallKind::Super(m) => (6, *m, 0, ""),
+                    // (Invoked as is, as `super` is.)
+                    CallKind::Super(m) | CallKind::Function(m) => (6, *m, 0, ""),
                     CallKind::Raise => (7, 0, 0, ""),
                 };
                 let mut desc = vec![
@@ -4841,6 +4846,7 @@ impl<B: Builder> Gen<'_, B> {
             Inst::Call { .. } => match self.static_target(inst) {
                 Some(StaticCall {
                     mid,
+                    function,
                     recv,
                     args,
                     block: blk,
@@ -4851,14 +4857,24 @@ impl<B: Builder> Gen<'_, B> {
                         let v = self.i32(*r);
                         self.b.store(v, self.scratch, 4 * k as i32);
                     }
-                    let mid_v = self.i32(mid);
+                    // (A function's call carries `STATIC_FUNCTION` in its
+                    // id: called as is.)
+                    let mid_v = self.i32(if function {
+                        mid | quarz_vm::ffi::STATIC_FUNCTION
+                    } else {
+                        mid
+                    });
                     let recv_v = self.i32(recv.unwrap_or(u32::MAX));
                     let nargs = self.i32(args.len() as u32);
                     let blk_v = self.i32(blk.unwrap_or(u32::MAX));
                     let d = self.i32(dst);
                     {
                         let m = &self.methods[mid as usize];
-                        if m.overridden && !m.singleton && !m.is_extension && m.native_key.is_none()
+                        if !function
+                            && m.overridden
+                            && !m.singleton
+                            && !m.is_extension
+                            && m.native_key.is_none()
                         {
                             self.virtual_call(
                                 inst, mid, recv, &args, blk, dst, block, index, unwind,

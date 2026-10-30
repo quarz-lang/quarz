@@ -29,6 +29,8 @@ pub enum CallOp<'a> {
     ProcCall,
     Yield,
     Super(MethodId),
+    /// `CallKind::Function`: this method, not looked up on the receiver.
+    Function(MethodId),
     Raise,
 }
 
@@ -48,6 +50,7 @@ impl<'a> CallOp<'a> {
             CallKind::ProcCall => CallOp::ProcCall,
             CallKind::Yield => CallOp::Yield,
             CallKind::Super(m) => CallOp::Super(*m),
+            CallKind::Function(m) => CallOp::Function(*m),
             CallKind::Raise => CallOp::Raise,
         }
     }
@@ -141,13 +144,22 @@ impl Interp {
         // arguments from the registers directly. The method it resolves
         // to is kept for the call below.
         let mut resolved: Option<MethodId> = None;
-        if let CallOp::Method(mid) = c.kind {
+        let target = match c.kind {
+            CallOp::Method(mid) => Some((mid, true)),
+            CallOp::Function(mid) => Some((mid, false)),
+            _ => None,
+        };
+        if let Some((mid, dispatch)) = target {
             if !c.splat && c.kw.is_empty() && c.kw_splat.is_none() && c.block.is_none() {
                 let recv_ref = match c.recv {
                     Some(r) => &regs[r as usize],
                     None => &act.self_val,
                 };
-                let mid = self.resolve_dynamic(recv_ref, mid);
+                let mid = if dispatch {
+                    self.resolve_dynamic(recv_ref, mid)
+                } else {
+                    mid
+                };
                 resolved = Some(mid);
                 if c.args.len() <= 3 {
                     if let Some(fast) = self.program.fast_natives[mid as usize] {
@@ -255,7 +267,7 @@ impl Interp {
                     self.call_block(&act.block, pos)
                 }
             }
-            CallOp::Super(mid) => {
+            CallOp::Super(mid) | CallOp::Function(mid) => {
                 let r = self.invoke(mid, recv, pos, kw, block.clone());
                 self.catch_break(&block, r)
             }

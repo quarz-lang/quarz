@@ -447,6 +447,7 @@ pub fn expr_to_sexp(expr: &Expr, out: &mut String) {
                 o.push(' ');
                 match &call.recv {
                     Some(r) => expr_to_sexp(r, o),
+                    None if call.function => o.push_str("::"),
                     None => o.push('_'),
                 }
                 let _ = write!(o, " {}", call.name);

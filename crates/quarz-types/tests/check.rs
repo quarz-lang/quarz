@@ -3342,3 +3342,48 @@ fn an_extension_implementing_an_abstract_method_keeps_its_types_anywhere() {
     // Of overloads, the one of the same signature implements it.
     ok("module Sized\n  abstract def f(x: Int) -> Int\n  def g -> Int = f(1) + 1\nend\nclass Box\nend\nextension Box\n  include Sized\n  def f(x: String) -> String = x\n  def f(x: Int) -> Int = x\nend");
 }
+
+/// `::name(...)` calls a function: the file's top-level `def`s of the
+/// name, then the built-in `Kernel` functions (docs/01 §1); never a
+/// method of `self`, an `Object` method or one an `extension Kernel` adds.
+#[test]
+fn function_calls() {
+    ok("def f -> Int = 1\nclass C\n  def f -> String = \"m\"\n  def g -> Int = ::f\nend");
+    ok("class C\n  def puts(*values: Object) -> Void = nil\n  def g -> Void = ::puts(\"x\")\nend");
+    let none =
+        "calls a built-in function or a top-level `def` of this file, and there is none named";
+    err("::inspect", none);
+    err("::nosuch(1)", none);
+    err(
+        "class C\n  def m -> Int = 1\n  def g -> Int = ::m\nend",
+        none,
+    );
+    err(
+        "extension Kernel\n  def shout -> String = \"S\"\nend\n::shout",
+        none,
+    );
+    // A top-level `def` comes before the built-in for `::` as for an
+    // implicit call at the top level, whose other overloads stay.
+    ok("def puts(s: String) -> Void = nil\nclass D\n  def g -> Void = ::puts(\"b\")\nend");
+    ok("def puts(s: String) -> Void = nil\nclass D\n  def g -> Void = ::puts(2)\nend");
+    ok("class D\n  def Integer(s: String) -> Int = 99\n  def g -> Int = ::Integer(\"3\")\nend");
+    // It takes no `self`: allowed before the fields are assigned.
+    ok("class D\n  @a: Int\n  def initialize\n    ::puts(\"early\")\n    @a = 1\n  end\nend");
+}
+
+/// `Kernel.name(...)` is the built-in function, wherever it is written
+/// (docs/01 §1); another name is a method of the module object.
+#[test]
+fn kernel_functions_by_name() {
+    ok("def puts(s: String) -> Void = Kernel.puts(\"[mine] \" + s)\nputs \"a\"");
+    ok("class W\n  def self.run -> Void\n    Kernel.sleep(1.ms)\n    Kernel.exit(3)\n  end\nend");
+    ok("x: String = Kernel.inspect");
+    err("Kernel.nosuch(1)", "undefined method `nosuch`");
+    // So no module method may take a built-in's name, overloads included;
+    // other names and the instance side are as before.
+    err(
+        "extension Kernel\n  def self.puts(n: Int) -> Void = nil\nend",
+        "`puts` is a built-in function: `Kernel.puts` always calls it; name the method otherwise",
+    );
+    ok("extension Kernel\n  def self.shout -> String = \"S\"\nend\nx: String = Kernel.shout");
+}
