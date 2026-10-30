@@ -1,0 +1,30 @@
+# A parameter before `*` may be passed by keyword (docs/01 §9): natives
+# and prelude methods bind it by name too, a skipped optional parameter
+# before it taking its default.
+
+# A native function.
+puts Integer(text: "12") + 1
+puts Integer(text: "ff", base: 16)
+
+# A native method, and the prelude's on it.
+p [3, 1, 2].take(n: 2)
+p "abc".include?(other: "b")
+puts 5.clamp(min: 1, max: 3)
+
+# A native class method, an optional parameter skipped.
+t = Time.utc(2024, hour: 5)
+puts "#{t.year} #{t.month} #{t.day} #{t.hour}"
+puts Time.utc(year: 2023, day: 9).day
+
+# A method of the program, an optional parameter skipped.
+def f(a: Int = 1, b: Int = 2) -> Int = a * 10 + b
+puts f(b: 3)
+puts f(a: 4)
+
+# An update in place, by keyword.
+a = [1, 2]
+a = a.push(value: 3)
+p a
+h = {1 => 2}
+h = h.put(key: 3, value: 4)
+p h

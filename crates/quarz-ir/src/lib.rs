@@ -1392,6 +1392,11 @@ pub struct RtParam {
     /// The declared type, for telling overloads apart (`None` for a type
     /// parameter, which matches anything).
     pub ty: Option<String>,
+    /// A native's default when it is a literal: a call that names a later
+    /// parameter by keyword passes it in its place (`Time.utc(2024, hour:
+    /// 5)`), the native reading its arguments by position.
+    #[serde(default)]
+    pub default: Option<Constant>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

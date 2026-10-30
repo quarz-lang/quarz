@@ -2939,6 +2939,13 @@ impl Interp {
                     }
                 }
             }
+            // A native reads its arguments by position: those passed by
+            // keyword take their places (docs/01 §9).
+            let (args, kw) = if kw.is_empty() {
+                (args, kw)
+            } else {
+                self.native_positions(m, args, kw)?
+            };
             return native(
                 self,
                 &recv,
@@ -3129,6 +3136,15 @@ impl Interp {
     ) -> Result<Value, (Flow, Value)> {
         let mid = self.resolve_dynamic(&recv, mid);
         if let Some(native) = self.program.natives_owned[mid as usize] {
+            // (As `invoke` binds them for a native.)
+            let (args, kw) = if kw.is_empty() {
+                (args, kw)
+            } else {
+                match self.native_positions(self.program.method(mid), args, kw) {
+                    Ok(bound) => bound,
+                    Err(e) => return Err((e, recv)),
+                }
+            };
             return native(
                 self,
                 recv,
@@ -3180,6 +3196,52 @@ impl Interp {
             }
         }
         Ok(values)
+    }
+
+    /// For a native: the keyword arguments that name positional
+    /// parameters, moved to their positions, a skipped optional parameter
+    /// before one taking its literal default (`RtParam::default`); the
+    /// other keywords stay keywords.
+    fn native_positions(
+        &self,
+        m: &quarz_ir::RtMethod,
+        mut args: ArgVec,
+        mut kw: Vec<(Symbol, Value)>,
+    ) -> Result<(ArgVec, Vec<(Symbol, Value)>), Flow> {
+        let positional: Vec<&quarz_ir::RtParam> = m
+            .params
+            .iter()
+            .take_while(|p| p.kind == RtParamKind::Positional)
+            .collect();
+        for (i, p) in positional.iter().enumerate() {
+            let Some(k) = kw
+                .iter()
+                .position(|(s, _)| *self.symbol_name(*s) == *p.name)
+            else {
+                continue;
+            };
+            if i < args.len() {
+                continue;
+            }
+            for skipped in &positional[args.len()..i] {
+                let value = match &skipped.default {
+                    Some(Constant::Nil) => Value::Nil,
+                    Some(Constant::Bool(b)) => Value::Bool(*b),
+                    Some(Constant::Int(n)) => Value::Int(*n),
+                    Some(Constant::Float(f)) => Value::Float(*f),
+                    Some(Constant::Symbol(s)) => Value::Symbol(self.intern(s)),
+                    _ => {
+                        return Err(self.err_runtime(&format!(
+                            "`{}` takes `{}` by keyword, but its parameter `{}` before it has no literal default to pass",
+                            m.name, p.name, skipped.name
+                        )))
+                    }
+                };
+                args.push(value);
+            }
+            args.push(kw.remove(k).1);
+        }
+        Ok((args, kw))
     }
 
     /// Bind call arguments to parameter slots: positional parameters take
