@@ -336,7 +336,7 @@ stricter, not unsound.
   each class's and extension's method names, and holds the included
   modules' methods); an include whose module declares a name a program
   superclass defines (the module's comes first); a program's extension;
-  a result naming `Self` on a program's class; a block with a receiver
+  a block with a receiver
   of its own (`instance_exec`); two related classes including the
   module (the receiver's view types its body). A module type as a value, and a
   module the program declares, are out of range too (stage 6a-2);

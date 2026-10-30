@@ -28,6 +28,8 @@ def m -> Int
   d = (W.new(1) < W.new(2)) ? 10 : 0
   e = a.between?(a, b) ? 100 : 0
   f = (X.new(3) > a) ? 1000 : 0
-  c + d + e + f
+  # `clamp -> Self | T`: an X or a V.
+  g = X.new(3).clamp(a, b).n * 10000
+  c + d + e + f + g
 end
 puts m
