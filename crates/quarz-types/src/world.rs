@@ -1416,6 +1416,20 @@ impl World {
         self.lower_bounds.get(&id)
     }
 
+    /// Whether a value of type parameter `id` may be `nil` or `false`:
+    /// unless one of its bounds holds neither (`T <: Int`). A bound that
+    /// names type parameters is not decided here (`Comparable[T]` may be
+    /// what `Bool` includes), so it does not rule them out.
+    pub fn param_may_be_falsy(&self, id: TypeParamId) -> bool {
+        let (nil, bool_) = (self.nil(), self.bool_());
+        !self.param_bounds(id).iter().any(|b| {
+            !b.mentions_any_param()
+                && !b.has_vars()
+                && !self.is_subtype(&nil, b)
+                && !self.is_subtype(&bool_, b)
+        })
+    }
+
     fn param_bounds(&self, id: TypeParamId) -> Vec<Type> {
         if let Some(bounds) = self.narrowed_params.get(&id) {
             return bounds.clone();
