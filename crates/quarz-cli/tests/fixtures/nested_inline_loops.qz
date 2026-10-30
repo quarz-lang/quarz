@@ -1,0 +1,17 @@
+# A loop lowered in place inside another, over an array of counted
+# elements: the inner loop keeps its array to its end and releases it
+# then, which must not release the variable the outer loop reads again
+# on its next pass (a debug build's QIR verifier caught the read after
+# the release; without it the second pass saw an empty array).
+b = ["p", "q"]
+[1, 2].each { |x| p b.map { |s| s.size } }
+
+def f(a: Array[String], b: Array[String]) -> Array[Int]
+  a.map { |x| b.map { |s| s.size }.size }
+end
+p f(["z", "q", "y"], ["p", "q"])
+
+rows = [["a"], ["b", "c"]]
+total = 0
+3.times { |i| rows.each { |r| total += r.select { |s| s != "" }.size } }
+p total

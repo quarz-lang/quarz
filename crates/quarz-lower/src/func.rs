@@ -42,6 +42,8 @@ struct LoopCtx {
     /// on (the loop's target releases the others it leaves).
     break_from: usize,
     next_from: usize,
+    /// Whether a `break` jumps to `exit`.
+    broken: bool,
 }
 
 /// A block lowered in place (see `iter`): its variables are registers of
@@ -1675,6 +1677,7 @@ impl<'a> FnBuilder<'a> {
                     next_value: None,
                     break_from: self.inline.len(),
                     next_from: self.inline.len(),
+                    broken: false,
                 });
                 self.body(body);
                 self.loops.pop();
@@ -1842,7 +1845,8 @@ impl<'a> FnBuilder<'a> {
                     Some(x) => self.expr(x),
                     None => self.nil(),
                 };
-                if let Some(l) = self.loops.last() {
+                if let Some(l) = self.loops.last_mut() {
+                    l.broken = true;
                     let (result, exit, depth, from) = (l.result, l.exit, l.depth, l.break_from);
                     self.emit(Inst::Move {
                         dst: result,
@@ -2732,6 +2736,7 @@ impl<'a> FnBuilder<'a> {
             next_value: Some(result),
             break_from: self.inline.len(),
             next_from: self.inline.len(),
+            broken: false,
         });
         let v = self.body(&block.body);
         self.loops.pop();
@@ -3045,14 +3050,18 @@ impl<'a> FnBuilder<'a> {
         // enclosing `self` through the block's hidden slot, as in a block
         // lowered in place by `yield`.
         self.store_self_slot(SelfOwner::Block(e.id));
+        // `break` leaves through a block that clears the registers the
+        // body used, as the loop's end does.
+        let break_b = self.new_block();
         self.loops.push(LoopCtx {
             next: next_b,
-            exit: exit_b,
+            exit: break_b,
             result,
             depth: self.handlers.len(),
             next_value: Some(val),
             break_from: self.inline.len() - 1,
             next_from: self.inline.len(),
+            broken: false,
         });
         let v = match (block, shape.symbol) {
             (Some(block), _) => self.body(&block.body),
@@ -3074,7 +3083,7 @@ impl<'a> FnBuilder<'a> {
             }
             (None, None) => unreachable!("an inlined iteration without a block"),
         };
-        self.loops.pop();
+        let broken = self.loops.pop().is_some_and(|l| l.broken);
         self.emit(Inst::Move { dst: val, src: v });
         self.term(Term::Jump(next_b));
         let level = self.inline.pop().expect("the inline level");
@@ -3083,6 +3092,16 @@ impl<'a> FnBuilder<'a> {
             &mut self.func.blocks[clear_at.0 as usize].insts[clear_at.1]
         {
             *to = clear_to;
+        }
+        // (Left unreachable when nothing breaks: no predecessor of
+        // `exit_b`, which would hold copies across it.)
+        if broken {
+            self.switch(break_b);
+            self.emit(Inst::ClearRegs {
+                from: clear_from,
+                to: clear_to,
+            });
+            self.term(Term::Jump(exit_b));
         }
         self.switch(next_b);
         self.release_inline(level);

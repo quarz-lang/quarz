@@ -1,0 +1,10 @@
+# `break` out of a loop lowered in place clears the registers the body
+# used, as the loop's end does: a temporary still holding `acc` would
+# keep it shared, and the update after the loop would copy it (the test
+# expects 0 copies).
+acc: Array[Int] = [5]
+hit = [1, 2].any? { |x| break false if [acc, [x]].size > 1; true }
+acc = acc.push(1)
+m = [1, 2].map { |x| break [0] if [acc, [x]].size > 1; x }
+acc = acc.push(2)
+p hit, m, acc

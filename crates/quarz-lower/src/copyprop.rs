@@ -86,6 +86,8 @@ fn propagate_in(f: &mut Function, only: Option<&HashSet<Reg>>) -> Option<HashSet
     // reads redirected to it leave its definitions as they were.
     let mut removed: HashSet<Reg> = HashSet::default();
     let mut sources: HashSet<Reg> = HashSet::default();
+    // Liveness, when a `Release` needs it.
+    let mut live: Option<Vec<Vec<Vec<bool>>>> = None;
     for (site, dst, src) in moves {
         if removed.contains(&dst) || sources.contains(&dst) || removed.contains(&src) {
             continue;
@@ -107,10 +109,14 @@ fn propagate_in(f: &mut Function, only: Option<&HashSet<Reg>>) -> Option<HashSet
             let inst = &f.blocks[ubi].insts[uii];
             // A `Release` of the copy may release the source instead when
             // the copy is all that reads the source (the variable a loop
-            // element goes into, say).
+            // element goes into, say) and nothing reads the source after
+            // it: in a loop around both, the copy is made again from it.
             let is_release = matches!(inst, Inst::Release { .. });
-            let releases_only_src =
-                is_release && uses[src as usize].len() == 1 && term_uses[src as usize].is_empty();
+            let releases_only_src = is_release
+                && uses[src as usize].len() == 1
+                && term_uses[src as usize].is_empty()
+                && !live.get_or_insert_with(|| quarz_ir::live::liveness(f))[ubi][uii + 1]
+                    [src as usize];
             if here.len() != 1
                 || (consumes(inst, dst) && !is_release)
                 || defs_at(&reach, ubi, uii, src) != src_defs
