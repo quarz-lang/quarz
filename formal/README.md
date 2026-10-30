@@ -338,9 +338,30 @@ stricter, not unsound.
   superclass defines (the module's comes first); a program's extension;
   a block with a receiver
   of its own (`instance_exec`); two related classes including the
-  module (the receiver's view types its body). A module type as a value, and a
-  module the program declares, are out of range too (stage 6a-2);
-  `Object`'s methods on an array, and an extension's methods
+  module (the receiver's view types its body); a prelude module's type
+  as a value. A module the program declares (stage 6a-2, design §16.4)
+  is copied into each class that includes it: the copy, a class of the
+  model with the class's parameters and no fields, goes between the
+  class and its superclass, in the order of the checker's linearization
+  (the tree's `ancestors`, format 8), so a call dispatches as Quarz's
+  does, and the module's type is the union of its copies. Each copy's
+  methods are checked with the class's view of the module, once per
+  class: stricter than the Rust checker's one check of a module's
+  body, so an agreement there is sound, and a disagreement where the
+  model refuses a copy is looked at as a Rust hole (a body accepted
+  for every class that the check of one class refuses) before it is
+  put down to the model's strictness. Out of range there: a generic
+  module, a field or an `initialize` in a module, a module no class
+  includes, or one a generic class includes, used as a type, an enum
+  including one, a class with both a program's module and a prelude's
+  in its chain (its own or a superclass's), a program's module defining
+  a name a prelude class or module in the chain defines (`to_s`,
+  `Kernel#rand`: a call the checker resolved there is a built-in call,
+  which does not dispatch), and a program's extension
+  with a program's module (it may include it in a class the copies do
+  not cover);
+  `super` in a module, `extend`, and modules' class methods are out of
+  range as elsewhere. `Object`'s methods on an array, and an extension's methods
   anywhere (which extension applies, and its own parameters, are stage
   6's), are out of range.
   `xs == nil` of an array narrows nothing (a class atom is not final),
@@ -414,7 +435,11 @@ stricter, not unsound.
   docs/01 §10, on a local) is that assignment.
   What the translator takes from the Rust checker as given, the model
   checking only what follows from it: which method a call resolves to,
-  the choice among overloads included (the model checks the chosen
+  each class's linearization, the order its methods are looked up in
+  (`ancestors`, which `tests/tree.rs` compares with the run time's for
+  each shape of includes: two includes, a diamond, a module included
+  again below a superclass that includes it); the choice among
+  overloads included (the model checks the chosen
   signature: an overloaded method's model name is its name and
   signature, `name#k`, as the runtime dispatches by signature, so a
   subclass's override of one overload leaves the others to the

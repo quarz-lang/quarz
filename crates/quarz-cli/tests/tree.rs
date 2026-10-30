@@ -53,7 +53,7 @@ fn a_narrowed_read_has_the_narrowed_type() {
         "def f(x: Int?) -> Int\n  if x\n    x + 1\n  else\n    0\n  end\nend\np f(1)\n",
     );
     assert!(ok);
-    assert_eq!(v["format"], 7);
+    assert_eq!(v["format"], 8);
     let mut all = Vec::new();
     nodes(&v["definitions"], &mut all);
     let int = class_id(&v, "Int");
@@ -174,6 +174,94 @@ fn each_class_lists_its_method_names() {
     assert_eq!(names("A"), vec!["f", "g"]);
     let comparable = names("Comparable");
     assert!(comparable.iter().any(|n| n == "between?"), "{comparable:?}");
+}
+
+/// Each class's `ancestors` is the order the run time looks methods up in
+/// (formal/'s translator takes it as given: design §16.4): for each shape
+/// of includes, the first class or module in it that defines `who` is the
+/// one the program runs.
+#[test]
+fn the_ancestors_are_the_lookup_order() {
+    let source = "\
+module G
+  def who -> String = \"G\"
+end
+module P
+  include G
+  def who -> String = \"P\"
+end
+module Q
+  def who -> String = \"Q\"
+end
+class A
+  include G
+  def who -> String = \"A\"
+end
+class C1
+  include P
+  include Q
+end
+class C2
+  include G
+  include P
+end
+class C3
+  include P
+  include G
+end
+class B < A
+  include G
+end
+class D < A
+  include Q
+end
+class E < B
+end
+puts C1.new.who
+puts C2.new.who
+puts C3.new.who
+puts B.new.who
+puts D.new.who
+puts E.new.who
+";
+    let (ok, out, v) = tree("ancestors", source);
+    assert!(ok, "{out}");
+    let classes = v["classes"].as_array().unwrap();
+    let by_id = |id: u64| classes.iter().find(|c| c["id"] == id).unwrap();
+    let first_who = |name: &str| -> String {
+        let c = classes.iter().find(|c| c["name"] == name).unwrap();
+        c["ancestors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| by_id(a["id"].as_u64().unwrap()))
+            .find(|k| {
+                k["method_names"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|n| n == "who")
+            })
+            .map(|k| k["name"].as_str().unwrap().to_string())
+            .unwrap()
+    };
+    let dir = std::env::temp_dir().join(format!("quarz-tree-{}-ancestors-run", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("main.qz");
+    std::fs::write(&path, source).unwrap();
+    let run = std::process::Command::new(env!("CARGO_BIN_EXE_quarz"))
+        .arg("run")
+        .arg(&path)
+        .output()
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    let printed = String::from_utf8_lossy(&run.stdout).into_owned();
+    let expected: Vec<String> = ["C1", "C2", "C3", "B", "D", "E"]
+        .iter()
+        .map(|c| first_who(c))
+        .collect();
+    assert_eq!(printed.lines().collect::<Vec<_>>(), expected);
+    assert_eq!(expected, ["Q", "P", "P", "A", "Q", "A"]);
 }
 
 /// A tree checked with the cache off, then twice with a cache of its own

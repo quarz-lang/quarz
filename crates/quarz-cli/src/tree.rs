@@ -12,7 +12,7 @@
 //! (`block_results`, by its call's id), the expansion each `for` was checked as, what each call resolved to and
 //! each constant read names, every class (the
 //! built-in ones included: types refer to classes by id, with the names
-//! of their instance methods), and the
+//! of their instance methods and their linearization), and the
 //! methods the units define or call, with their type parameters (and the
 //! parameters a class test made, `T & C`: `narrowed_params`; the
 //! extensions' too, and the id `Self` goes by). Which
@@ -23,11 +23,11 @@ use serde_json::{json, Map, Value};
 use quarz_types::check::{CallTarget, ConstTarget};
 use quarz_types::declare::SELF_PARAM;
 use quarz_types::types::{MethodId, Type};
-use quarz_types::world::{TypeParamInfo, World};
+use quarz_types::world::{ClassInfo, TypeParamInfo, World};
 use quarz_types::Checked;
 
 /// The version of the format, bumped when it changes.
-const FORMAT: u32 = 7;
+const FORMAT: u32 = 8;
 
 pub fn tree(checked: &Checked) -> Value {
     let world = &checked.world;
@@ -318,6 +318,7 @@ fn classes(world: &World) -> Vec<Value> {
                 "superclass": c.superclass.as_ref().map(ty),
                 "includes": c.includes.iter().map(ty).collect::<Vec<_>>(),
                 "method_names": method_names(&c.methods),
+                "ancestors": ancestors(world, c),
                 "fields": c.fields.iter().map(|f| json!({
                     "name": f.name,
                     "type": ty(&f.ty),
@@ -326,6 +327,18 @@ fn classes(world: &World) -> Vec<Value> {
                 })).collect::<Vec<_>>(),
             })
         })
+        .collect()
+}
+
+/// The order a class's methods are looked up in (the class first, then
+/// its modules and superclasses), each with the arguments it is given in
+/// terms of the class's own parameters.
+fn ancestors(world: &World, c: &ClassInfo) -> Vec<Value> {
+    let own: Vec<Type> = c.type_params.iter().map(|p| Type::Param(p.id)).collect();
+    world
+        .ancestors(c.id, &own)
+        .iter()
+        .map(|(id, args)| json!({ "id": id, "args": args.iter().map(ty).collect::<Vec<_>>() }))
         .collect()
 }
 
@@ -343,6 +356,8 @@ fn method(world: &World, id: MethodId) -> Value {
         "name": m.name,
         "owner": m.owner,
         "singleton": m.singleton,
+        // (An abstract method has no definition to read it from.)
+        "visibility": format!("{:?}", m.visibility),
         "file": m.file,
         "native": m.is_native,
         // Made by the checker (a data constructor, a field reader...):
