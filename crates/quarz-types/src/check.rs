@@ -885,6 +885,9 @@ pub struct Checker {
     /// Checking a type argument against its method's bound
     /// (`decide_literals_for` decides nothing there).
     checking_bound: bool,
+    /// The method an overloaded call chose, by the call's node
+    /// (`resolve_pretyped`).
+    last_winner: Option<(NodeId, MethodId)>,
     self_news: Vec<SelfNew>,
     /// Set by `check_body` for the statement it checks next: its value is
     /// not used (a statement before the last, or the last of a body that
@@ -987,6 +990,7 @@ impl Checker {
             coerce_open: Vec::new(),
             literal_vars: HashSet::default(),
             checking_bound: false,
+            last_winner: None,
             self_news: Vec::new(),
             stmt_unused: false,
             next_body_void: false,
@@ -3566,7 +3570,7 @@ impl Checker {
             // other task has it.)
             let lifted =
                 self.env.lifted_frame.is_some() && self.env.lifted_frame == self.env.task_frame;
-            if !lifted {
+            if !lifted && self.world.refuse_undecided() {
                 self.error(
                     format!("the type of `{name}` is not yet known here, but {} must have a Shareable one: annotate it (as `{name}: Array[Int] = []`)", self.task_capture_name()),
                     span,
@@ -8576,6 +8580,7 @@ impl Checker {
                 if p.bounds
                     .iter()
                     .any(|b| matches!(b, Type::Class(bid, _) if *bid == shareable))
+                    && self.world.refuse_undecided()
                 {
                     let class = self.world.class(cid).name.clone();
                     let param = self.world.type_param_name(p.id);
@@ -8674,9 +8679,105 @@ impl Checker {
     }
 
     /// `resolve_overloads_as` once the arguments that need no expected
-    /// type are typed (`pre`).
+    /// type are typed (`pre`). A candidate refused only because a type is
+    /// not yet known where a Shareable is required must not let the call
+    /// silently take another (`a = []; f(a)` with `f(x: Shareable)` and
+    /// `f(x: Object)`): when a check refused one so, the choice is made
+    /// again as if the types were known, and a different winner is an
+    /// error asking for an annotation.
     #[allow(clippy::too_many_arguments)]
     fn resolve_pretyped(
+        &mut self,
+        expr: &Expr,
+        call: &Call,
+        recv_ty: &Type,
+        cands: Vec<(MethodId, HashMap<TypeParamId, Type>)>,
+        implicit_self: bool,
+        expected: Option<&Type>,
+        is_init: bool,
+        pre: &HashMap<NodeId, Type>,
+    ) -> Type {
+        if cands.len() < 2 || self.world.undecided_passes.get() {
+            return self.resolve_pretyped_once(
+                expr,
+                call,
+                recv_ty,
+                cands,
+                implicit_self,
+                expected,
+                is_init,
+                pre,
+            );
+        }
+        let (infer, diags, tables) = (self.infer.save(), self.diagnostics.len(), self.table_mark());
+        let refusals = self.world.undecided_refusals.get();
+        self.last_winner = None;
+        let t = self.resolve_pretyped_once(
+            expr,
+            call,
+            recv_ty,
+            cands.clone(),
+            implicit_self,
+            expected,
+            is_init,
+            pre,
+        );
+        if self.world.undecided_refusals.get() == refusals {
+            return t;
+        }
+        // (What this call refused, it deals with here: the count goes
+        // back, so the calls around it do not choose again.)
+        let winner = self.last_winner.filter(|w| w.0 == expr.id).map(|w| w.1);
+        // As if known: what it chooses is all that is kept.
+        self.infer.restore(infer.clone());
+        self.truncate_diagnostics(diags);
+        self.discard_tables(tables);
+        self.world.undecided_passes.set(true);
+        self.last_winner = None;
+        self.resolve_pretyped_once(
+            expr,
+            call,
+            recv_ty,
+            cands.clone(),
+            implicit_self,
+            expected,
+            is_init,
+            pre,
+        );
+        self.world.undecided_passes.set(false);
+        let known = self.last_winner.filter(|w| w.0 == expr.id).map(|w| w.1);
+        self.infer.restore(infer);
+        self.truncate_diagnostics(diags);
+        self.discard_tables(tables);
+        let t = self.resolve_pretyped_once(
+            expr,
+            call,
+            recv_ty,
+            cands,
+            implicit_self,
+            expected,
+            is_init,
+            pre,
+        );
+        self.world.undecided_refusals.set(refusals);
+        if let (Some(w), Some(k)) = (winner, known) {
+            if w == k {
+                return t;
+            }
+            let sig = self.signature(self.world.method(k));
+            self.error(
+                format!(
+                    "which overload this call takes depends on a type not yet known here, which must be Shareable for {sig}: annotate it (as `a: Array[Int] = []`)"
+                ),
+                expr.span,
+            );
+        }
+        t
+    }
+
+    /// `resolve_pretyped` for one choice.
+    #[allow(clippy::too_many_arguments)]
+    fn resolve_pretyped_once(
         &mut self,
         expr: &Expr,
         call: &Call,
@@ -8955,7 +9056,7 @@ impl Checker {
                         self.discard_tables(tables);
                     }
                     let cand = cands.iter().find(|(m, _)| *m == winner).cloned().unwrap();
-                    self.resolve_pretyped(
+                    self.resolve_pretyped_once(
                         expr,
                         call,
                         recv_ty,
@@ -8967,6 +9068,7 @@ impl Checker {
                     )
                 }
             };
+            self.last_winner = Some((expr.id, winner));
             if !rivals.is_empty() {
                 let mut names: Vec<String> = std::iter::once(winner)
                     .chain(rivals)
@@ -10465,11 +10567,13 @@ impl Checker {
                 rt
             };
             if rt.has_vars() {
-                let span = block.body.last().map(|e| e.span).unwrap_or(block.span);
-                self.error(
-                    "the type of a task block's result is not yet known here, but it passes to the task that awaits it and must be Shareable: annotate what the block returns",
-                    span,
-                );
+                if self.world.refuse_undecided() {
+                    let span = block.body.last().map(|e| e.span).unwrap_or(block.span);
+                    self.error(
+                        "the type of a task block's result is not yet known here, but it passes to the task that awaits it and must be Shareable: annotate what the block returns",
+                        span,
+                    );
+                }
             } else if !self.world.is_shareable(&rt) {
                 let span = block.body.last().map(|e| e.span).unwrap_or(block.span);
                 self.error(
@@ -10605,6 +10709,9 @@ impl Checker {
         }
         let t = self.resolve(&self.env.self_type.clone());
         if t.has_vars() {
+            if !self.world.refuse_undecided() {
+                return;
+            }
             self.error(
                 format!("the type of {what} is not yet known here, but {} must have a Shareable one: annotate it", self.task_capture_name()),
                 span,

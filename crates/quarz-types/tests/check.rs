@@ -3154,6 +3154,29 @@ fn a_literal_no_variable_holds_is_decided() {
 }
 
 #[test]
+fn an_overload_is_not_dropped_for_a_type_not_yet_known() {
+    // `f(a)` would take the Shareable overload once `a` is known: rather
+    // than silently taking the other one, an error asks to annotate.
+    let defs = "def f(x: Shareable) -> Int\n  1\nend\ndef f(x: Object) -> Int\n  2\nend\n";
+    err(
+        &format!("{defs}a = []\np f(a)"),
+        "which overload this call takes depends on a type not yet known here, which must be Shareable for f(x: Shareable) -> Int",
+    );
+    ok(&format!(
+        "{defs}a: Array[Int] = []\np f(a)\np f([1])\np f(1)"
+    ));
+    // A block's result, too.
+    err(
+        "def m(x: Int, &blk: () -> Shareable) -> Int\n  1\nend\ndef m(x: Object, &blk: () -> Object) -> Int\n  2\nend\na = []\np m(1) { a }",
+        "depends on a type not yet known here",
+    );
+    // Not when the candidate fails for another reason as well.
+    ok("def h(x: Shareable, &blk: () -> Int) -> Int\n  1\nend\ndef h(x: Object, &blk: () -> String) -> Int\n  2\nend\na = []\np h(a) { \"s\" }");
+    // An overload that does not fit for another reason is dropped as before.
+    ok("def g(x: Int) -> Int\n  1\nend\ndef g(x: Object) -> Int\n  2\nend\na = []\np g(a)");
+}
+
+#[test]
 fn clamp_gives_the_receiver_or_a_bound() {
     // `clamp` returns `min` or `max`, a `T`, which need not be `Self`.
     let include = "class B\n  def b -> String = \"B\"\nend\nclass A\n  include Comparable[B]\n  def <=>(other: B) -> Int = -1\n  def a -> String = \"A\"\nend\n";
