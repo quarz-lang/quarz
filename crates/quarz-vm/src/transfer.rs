@@ -105,7 +105,12 @@ pub enum Transfer {
 #[derive(Clone, Debug)]
 pub enum ProcBody {
     Func(FuncId),
-    MethodName(String, Option<MethodId>, bool),
+    MethodName(
+        String,
+        Option<MethodId>,
+        bool,
+        Vec<(quarz_ir::RtType, MethodId)>,
+    ),
     BoundMethod {
         recv: Box<Transfer>,
         name: String,
@@ -207,7 +212,12 @@ pub fn export(interp: &Interp, v: &Value) -> Result<Transfer, Flow> {
             };
             let body = match &c.body {
                 ClosureBody::Func(id) => ProcBody::Func(*id),
-                ClosureBody::MethodName(n, _, m, d) => ProcBody::MethodName(n.to_string(), *m, *d),
+                ClosureBody::MethodName(n, _, m, d, among) => ProcBody::MethodName(
+                    n.to_string(),
+                    *m,
+                    *d,
+                    among.as_deref().cloned().unwrap_or_default(),
+                ),
                 ClosureBody::BoundMethod { recv, name, method } => ProcBody::BoundMethod {
                     recv: Box::new(export(interp, recv)?),
                     name: name.to_string(),
@@ -398,9 +408,13 @@ pub fn import(interp: &Interp, t: Transfer) -> Value {
         } => Value::Proc(Rc::new(Closure {
             body: match body {
                 ProcBody::Func(id) => ClosureBody::Func(id),
-                ProcBody::MethodName(n, m, d) => {
-                    ClosureBody::MethodName(Rc::from(n), std::cell::Cell::new(None), m, d)
-                }
+                ProcBody::MethodName(n, m, d, among) => ClosureBody::MethodName(
+                    Rc::from(n),
+                    std::cell::Cell::new(None),
+                    m,
+                    d,
+                    (!among.is_empty()).then(|| Rc::new(among)),
+                ),
                 ProcBody::BoundMethod { recv, name, method } => ClosureBody::BoundMethod {
                     recv: import(interp, *recv),
                     name: Rc::from(name),

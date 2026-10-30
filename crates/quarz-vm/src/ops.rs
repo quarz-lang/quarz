@@ -538,6 +538,7 @@ impl Interp {
         name: u32,
         method: Option<MethodId>,
         discard: bool,
+        among: Option<Rc<Vec<(RtType, MethodId)>>>,
     ) {
         let tag = self.new_tag();
         regs[dst as usize] = Value::Proc(Rc::new(Closure {
@@ -546,6 +547,7 @@ impl Interp {
                 Cell::new(None),
                 method,
                 discard,
+                among,
             ),
             frame: None,
             self_val: Value::Nil,

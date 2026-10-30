@@ -535,6 +535,9 @@ enum TableUndo {
     /// A `recv.:name`'s method before a check recorded another (a
     /// discarded trial's must not count as an earlier check's).
     MethodRefCall(NodeId, Option<CallTarget>),
+    /// A call noted in `Output::static_calls` (a discarded trial's must
+    /// not be reported).
+    StaticCall((u32, Span, MethodId)),
     /// A node's type before a check in a block recorded another.
     NodeType(NodeId, Option<Type>),
     /// An integer literal marked in `Output::float_literals` (`true`) or
@@ -1739,6 +1742,11 @@ impl Checker {
                         None => self.out.block_pass.remove(&id),
                     };
                 }
+                TableUndo::StaticCall(entry) => {
+                    if let Some(i) = self.out.static_calls.iter().rposition(|e| *e == entry) {
+                        self.out.static_calls.remove(i);
+                    }
+                }
                 TableUndo::MethodRefCall(id, c) => {
                     match c {
                         Some(c) => self.out.calls.insert(id, c),
@@ -1889,6 +1897,7 @@ impl Checker {
         // A block checked once per overload notes its call once.
         if !self.out.static_calls.contains(&entry) {
             self.out.static_calls.push(entry);
+            self.table_journal.push(TableUndo::StaticCall(entry));
         }
     }
 
@@ -3128,9 +3137,45 @@ impl Checker {
         // one the value has).
         let mut by_class: Vec<(ClassId, Type, MethodId)> = Vec::new();
         for (t, m) in &merged {
-            let Some(c) = self.test_class(t) else {
-                self.out.union_conflicts.insert(id);
-                return;
+            // A member a class test cannot tell (a type parameter) is
+            // tested by the class whose method it found (its bound's).
+            let tested;
+            let (c, t) = match self.test_class(t) {
+                Some(c) => (c, t),
+                None if matches!(t, Type::Param(_)) && !self.world.method(*m).singleton => {
+                    let owner = self.world.method(*m).owner;
+                    tested = Type::Class(owner, Vec::new());
+                    (owner, &tested)
+                }
+                // (A member no class test tells, an unresolved type: an
+                // error where the checks found different methods and a
+                // lookup by name would not find the right one, as for two
+                // members of one class.)
+                None => {
+                    // (The pair `ambiguous_call` reports, if any.)
+                    let wrong = |n: MethodId, m: MethodId| {
+                        let (ni, mi) = (self.world.method(n), self.world.method(m));
+                        ni.extension.is_some()
+                            || mi.extension.is_some()
+                            || (!ni.is_native && !mi.is_native)
+                    };
+                    let other = merged
+                        .iter()
+                        .filter(|(_, n)| n != m)
+                        .find(|(_, n)| wrong(*n, *m))
+                        .or_else(|| merged.iter().find(|(_, n)| n != m));
+                    match other {
+                        Some((u, n)) => {
+                            let (u, n) = (u.clone(), *n);
+                            let t = t.clone();
+                            self.ambiguous_call(id, &u, &t, n, *m, span);
+                        }
+                        None => {
+                            self.out.union_conflicts.insert(id);
+                        }
+                    }
+                    return;
+                }
             };
             let ext = |k: MethodId| self.world.method(k).extension.is_some();
             let clash = by_class.iter().find(|(d, _, n)| {
@@ -3259,13 +3304,23 @@ impl Checker {
     }
 
     /// The class a run-time class test sees for a value of type `t`.
+    /// Whether a check of a block (once per type) records its method for
+    /// receiver type `t` (`note_union_table`): a class a run-time test
+    /// tells, or a type parameter (tested by the class whose method it
+    /// found).
+    fn union_testable(&self, t: &Type) -> bool {
+        self.test_class(t).is_some() || matches!(t, Type::Param(_))
+    }
+
     fn test_class(&self, t: &Type) -> Option<ClassId> {
         let b = &self.world.builtin;
         match t {
             Type::Class(c, _) => Some(*c),
             Type::Tuple(_) => Some(b.array),
             Type::Proc(..) => Some(b.proc_),
-            Type::ClassObject(..) => Some(b.class_),
+            // (`Type[T]` is a class object as `Type[Foo]` is: two of them
+            // a test cannot tell apart.)
+            Type::ClassObject(..) | Type::TypeOf(_) => Some(b.class_),
             _ => None,
         }
     }
@@ -5229,27 +5284,11 @@ impl Checker {
                     .collect();
                 let ret = self.method_ret(mid).subst(&subst);
                 // A block checked once per type of what it is given may
-                // find another method each time: the reference then finds
-                // it by name at run time, which reaches no extension.
-                if let Some(CallTarget::Method { method: before }) =
-                    self.out.calls.get(&expr.id).cloned()
-                {
-                    if before != mid && !self.out.varied_symbols.contains(&expr.id) {
-                        self.out.varied_symbols.insert(expr.id);
-                        self.table_journal.push(TableUndo::VariedSymbol(expr.id));
-                        let ext = |m: MethodId| self.world.method(m).extension.is_some();
-                        if ext(before) || ext(mid) {
-                            let (wb, wm) = (self.method_label(before), self.method_label(mid));
-                            let d = Diagnostic::error(
-                                format!(
-                                    "cannot tell at run time which `{name}` `.:{name}` refers to: {wb} or {wm} (give the value one type first)"
-                                ),
-                                expr.span,
-                            );
-                            self.ambiguous
-                                .push((self.env.file, AmbiguousKey::Node(expr.id), d));
-                        }
-                    }
+                // find another method each time: the reference chooses by
+                // the receiver's class at run time (`union_calls`, as a
+                // call does).
+                if !self.env.blocks.is_empty() && self.union_testable(&rt) {
+                    self.note_union_table(expr.id, vec![(rt.clone(), mid)], expr.span);
                 }
                 let before = self.out.calls.get(&expr.id).cloned();
                 self.table_journal
@@ -7088,7 +7127,7 @@ impl Checker {
                     self.out
                         .calls
                         .insert(expr.id, CallTarget::Method { method: cands[0].0 });
-                    if !self.env.blocks.is_empty() && self.test_class(&rt).is_some() {
+                    if !self.env.blocks.is_empty() && self.union_testable(&rt) {
                         self.note_union_table(expr.id, vec![(rt.clone(), cands[0].0)], expr.span);
                     }
                 }
@@ -7106,7 +7145,7 @@ impl Checker {
                     self.out
                         .calls
                         .insert(expr.id, CallTarget::Method { method: cands[0].0 });
-                    if !self.env.blocks.is_empty() && self.test_class(&rt).is_some() {
+                    if !self.env.blocks.is_empty() && self.union_testable(&rt) {
                         self.note_union_table(expr.id, vec![(rt.clone(), cands[0].0)], expr.span);
                     }
                 }
@@ -7382,7 +7421,7 @@ impl Checker {
         let t = self.resolve_overloads(expr, call, &on, cands, true, expected);
         // In a block checked once per type, the overload may differ
         // (`union_calls`, as for any call).
-        if !self.env.blocks.is_empty() && self.test_class(&rt).is_some() {
+        if !self.env.blocks.is_empty() && self.union_testable(&rt) {
             if let Some(CallTarget::Method { method }) = self.out.calls.get(&expr.id) {
                 let m = *method;
                 self.note_union_table(expr.id, vec![(rt, m)], expr.span);
@@ -7558,7 +7597,7 @@ impl Checker {
         // In a block, checked again for each type of what it is given: a
         // call may resolve differently each time (`union_calls`).
         let rt = self.resolve(&recv_ty);
-        if !self.env.blocks.is_empty() && self.test_class(&rt).is_some() {
+        if !self.env.blocks.is_empty() && self.union_testable(&rt) {
             if let (Some(CallTarget::Method { method }), false) = (
                 self.out.calls.get(&expr.id),
                 self.out.dynamic_calls.contains(&expr.id),
@@ -10322,7 +10361,14 @@ impl Checker {
                                 self.out.varied_symbols.insert(e.id);
                                 self.table_journal.push(TableUndo::VariedSymbol(e.id));
                                 let ext = |m: MethodId| self.world.method(m).extension.is_some();
-                                if ext(before) || ext(mid) {
+                                // Both checks in the table (`union_calls`), the
+                                // procedure chooses by its argument's class,
+                                // which reaches an extension's method too;
+                                // otherwise it goes by name, which does not.
+                                let tabled = !self.env.blocks.is_empty()
+                                    && self.union_testable(&recv)
+                                    && self.out.union_calls.contains_key(&e.id);
+                                if (ext(before) || ext(mid)) && !tabled {
                                     let (wb, wm) =
                                         (self.method_label(before), self.method_label(mid));
                                     let d = Diagnostic::error(
@@ -10338,6 +10384,11 @@ impl Checker {
                                     ));
                                 }
                             }
+                        }
+                        // Checked once per type (a block's), the procedure
+                        // chooses by its argument's class at run time.
+                        if !self.env.blocks.is_empty() && self.union_testable(&recv) {
+                            self.note_union_table(e.id, vec![(recv.clone(), mid)], e.span);
                         }
                         let before = self.out.block_pass.get(&e.id).cloned();
                         self.table_journal.push(TableUndo::BlockPass(e.id, before));

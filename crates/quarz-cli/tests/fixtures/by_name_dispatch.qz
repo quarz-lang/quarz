@@ -1,0 +1,39 @@
+# Calls whose checks found a method per class (a block checked once per
+# member of `A | Q`): an ordinary call, `.:f` and `&:g`, in a file that
+# does not know `B`. `B`'s `f(String)`, of the same arity, is an overload,
+# never chosen for them; its `g` overrides `A#g` and is (docs/05 §9).
+require_relative "by_name/calls"
+class B < A
+  def f(x: String) -> String = "B#f(String) #{x.upcase}"
+  def g -> String = "B#g"
+end
+p call_f(B.new)
+p ref_f(B.new)
+p call_f(Q.new)
+p ref_f(Q.new)
+p gs(B.new)
+p gs(Q.new)
+p kept(B.new)
+p kept(Q.new)
+
+# A member that is a type parameter is told by the class whose method it
+# found (its bound's): `T`'s `g` for an `A`, `Q#g` for a `Q`.
+def via_param[T <: A](v: T | Q) -> String = v.with { |x| "#{x.g} #{x.:g.call} #{[x].map(&:g).join}" }
+p via_param(A.new)
+p via_param(B.new)
+p via_param(Q.new)
+
+# A class object of a type parameter beside an instance: told apart by a
+# class test, the class method found for `T` dispatched on the class.
+class Kind
+  def self.k -> String = "Kind.k"
+end
+class SubKind < Kind
+  def self.k -> String = "SubKind.k"
+end
+class Thing
+  def k -> String = "Thing#k"
+end
+def kind_of[T <: Kind](c: Type[T] | Thing) -> String = c.then { |x| x.k }
+p kind_of(SubKind)
+p kind_of(Thing.new)

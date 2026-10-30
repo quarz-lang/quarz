@@ -1845,7 +1845,15 @@ pub enum ClosureBody {
     /// extension method is only reachable through it). With `true`, the
     /// call's value is discarded: the procedure gives nil (`&:name` for a
     /// `Void` block).
-    MethodName(Rc<str>, MethodCache, Option<MethodId>, bool),
+    /// With a table (the checks of a block found different methods by the
+    /// argument's type), the method of the first type the argument is.
+    MethodName(
+        Rc<str>,
+        MethodCache,
+        Option<MethodId>,
+        bool,
+        Option<Rc<Vec<(quarz_ir::RtType, MethodId)>>>,
+    ),
     /// `obj.:name`: call `name` on a captured receiver.
     BoundMethod {
         recv: Value,
@@ -3259,8 +3267,11 @@ impl Value {
                         if mark_rc(immortal, r) {
                             match &r.body {
                                 ClosureBody::Func(_) | ClosureBody::Native(_) => {}
-                                ClosureBody::MethodName(name, _, _, _) => {
+                                ClosureBody::MethodName(name, _, _, _, among) => {
                                     mark_rc(immortal, name);
+                                    if let Some(among) = among {
+                                        mark_rc(immortal, among);
+                                    }
                                 }
                                 ClosureBody::BoundMethod { recv, name, .. } => {
                                     push(&mut work, recv);

@@ -401,3 +401,29 @@ fn a_statement_reaching_code_with_errors_does_not_run() {
     );
     assert!(!err.contains("raised"), "{err}");
 }
+
+#[test]
+fn a_discarded_overload_trial_notes_no_compile_time_call() {
+    // A block tried with each overload: the `P` trial reaches `P.k`, which
+    // is compile-time only, and fails; the `Q` overload is chosen, and
+    // nothing of the discarded trial is reported.
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        "class P\n  @n: Int = 0\n  static def self.k -> Int = fields.size\nend\nclass Q\n  def self.k -> Int = 1\nend\n",
+    );
+    let app = write(
+        &d.0,
+        "app.qz",
+        "require_relative \"lib\"\ndef f(&b: (Type[P]) -> String) -> String = b.call(P)\ndef f(&b: (Type[Q]) -> Int) -> Int = b.call(Q)\np f { |c| c.k }\n",
+    );
+    let (ok, out, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(out, "1\n");
+    // The call itself is still reported where it is made.
+    let bad = write(&d.0, "bad.qz", "require_relative \"lib\"\np P.k\n");
+    let (ok, _, err) = quarz(&d.0, &["run", bad.to_str().unwrap()], &[]);
+    assert!(!ok);
+    assert!(err.contains("`k` runs at compile time only"), "{err}");
+}

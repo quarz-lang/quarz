@@ -296,6 +296,36 @@ impl Interp {
     /// `recv.name(*args)` for a `&:name` proc: the method found for the
     /// last (receiver class, argument count) is cached in the proc, and a
     /// by-reference native is called without an argument list.
+    /// The method an `&:name` procedure calls on `recv`: with `among`
+    /// (the checks of a block found different methods by the argument's
+    /// type), that of the first type `recv` is, a TypeError if none
+    /// (docs/05 §9); else `method`.
+    pub fn among_method(
+        &self,
+        recv: &Value,
+        name: &str,
+        method: Option<MethodId>,
+        among: Option<&[(RtType, MethodId)]>,
+    ) -> Result<Option<MethodId>, Flow> {
+        let Some(among) = among else {
+            return Ok(method);
+        };
+        match among.iter().find(|(t, _)| self.is_a(recv, t)) {
+            Some((_, m)) => Ok(Some(*m)),
+            None if crate::verify::enabled() => {
+                self.violated(format!(
+                    "a {} given to `&:{name}`, a class no check saw",
+                    self.class_name(recv)
+                ));
+                unreachable!()
+            }
+            None => Err(self.err_type(&format!(
+                "cannot cast {} to a receiver `{name}` was checked for",
+                self.class_name(recv)
+            ))),
+        }
+    }
+
     pub fn call_named(
         &self,
         recv: &Value,
@@ -367,13 +397,16 @@ impl BlockCaller {
                 nparams,
             } => (closure, *fid, act, *compiled, *nparams),
             CallerKind::Named { closure } => {
-                let ClosureBody::MethodName(name, cache, method, discard) = &closure.body else {
+                let ClosureBody::MethodName(name, cache, method, discard, among) = &closure.body
+                else {
                     unreachable!()
                 };
                 let Some((recv, rest)) = args.split_first() else {
                     return Err(interp.err_arg("block needs an argument"));
                 };
-                let v = interp.call_named(recv, rest, name, own_cache(closure, cache), *method)?;
+                let method =
+                    interp.among_method(recv, name, *method, among.as_deref().map(|v| &v[..]))?;
+                let v = interp.call_named(recv, rest, name, own_cache(closure, cache), method)?;
                 return Ok(if *discard { Value::Nil } else { v });
             }
         };
@@ -1233,7 +1266,17 @@ impl Interp {
                 name,
                 method,
                 discard,
-            } => self.op_symbol_proc(f, act, regs, *dst, *name, *method, *discard),
+                among,
+            } => self.op_symbol_proc(
+                f,
+                act,
+                regs,
+                *dst,
+                *name,
+                *method,
+                *discard,
+                (!among.is_empty()).then(|| Rc::new(among.clone())),
+            ),
             Inst::MakeArray { dst, items } => {
                 self.op_make_array(regs, *dst, items.iter().map(|i| (i.reg, i.splat)))
             }
@@ -1347,12 +1390,14 @@ impl Interp {
             return Err(self.err_type("not a procedure"));
         };
         match &closure.body {
-            ClosureBody::MethodName(name, cache, method, discard) => {
+            ClosureBody::MethodName(name, cache, method, discard, among) => {
                 if args.is_empty() {
                     return Err(self.err_arg("block needs an argument"));
                 }
                 let recv = args.remove(0);
-                let v = self.call_named(&recv, &args, name, own_cache(closure, cache), *method)?;
+                let method =
+                    self.among_method(&recv, name, *method, among.as_deref().map(|v| &v[..]))?;
+                let v = self.call_named(&recv, &args, name, own_cache(closure, cache), method)?;
                 Ok(if *discard { Value::Nil } else { v })
             }
             ClosureBody::BoundMethod {

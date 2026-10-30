@@ -66,7 +66,7 @@ pub(crate) const OPS: &[(&str, &[Ty])] = {
         ("qz_op_as", &[I, I, P, I, P, I, P, I]),
         ("qz_op_make_block", &[I, I, I, I]),
         ("qz_op_method_ref", &[I, I, I, I]),
-        ("qz_op_symbol_proc", &[I, I, I, I]),
+        ("qz_op_symbol_proc", &[I, I, I, I, P, I]),
         ("qz_op_make_array", &[I, P, I]),
         ("qz_op_make_hash", &[I, P, I]),
         ("qz_op_make_range", &[I, I, I, I]),
@@ -3139,15 +3139,23 @@ impl<B: Builder> Gen<'_, B> {
                 name,
                 method,
                 discard,
-            } => (
-                "qz_op_symbol_proc",
-                vec![
-                    w(self, *dst),
-                    w(self, *name),
-                    w(self, opt(*method)),
-                    w(self, u32::from(*discard)),
-                ],
-            ),
+                among,
+            } => {
+                let words = quarz_vm::ffi_ops::encode_among(among);
+                let n = w(self, words.len() as u32);
+                let t = self.b.data_words(&words);
+                (
+                    "qz_op_symbol_proc",
+                    vec![
+                        w(self, *dst),
+                        w(self, *name),
+                        w(self, opt(*method)),
+                        w(self, u32::from(*discard)),
+                        t,
+                        n,
+                    ],
+                )
+            }
             Inst::MakeArray { dst, items } => {
                 let words: Vec<u32> = items
                     .iter()

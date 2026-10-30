@@ -114,6 +114,14 @@ impl Interp {
     /// Check what `inst` trusts about its operands, before it runs.
     pub(crate) fn verify_before(&self, regs: &[Value], inst: &Inst) {
         match inst {
+            // A receiver of a class no check of the call saw (docs/05 §9):
+            // the checks should have covered every class it can have.
+            Inst::As {
+                src,
+                ty: quarz_ir::RtType::Nothing,
+                name,
+                ..
+            } => self.violated(format!("{} is not {name}", describe(&regs[*src as usize]))),
             Inst::ArrayGetWord {
                 arr, index, float, ..
             } => {
@@ -389,7 +397,7 @@ impl Interp {
     /// Report a violated fact and stop: it is a bug in the checker or in
     /// lowering, which the program must not go on past (nor rescue).
     #[cold]
-    fn violated(&self, what: String) {
+    pub(crate) fn violated(&self, what: String) {
         self.flush();
         let mut msg = format!("quarz: internal error: QIR fact violated: {what}\n");
         for frame in self.capture_backtrace() {

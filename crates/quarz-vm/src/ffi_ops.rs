@@ -84,6 +84,32 @@ fn decode_type(w: &[u32], at: &mut usize) -> RtType {
     }
 }
 
+/// An `&:name` procedure's table (`Inst::SymbolProc::among`) as words:
+/// its length, then each method and its type.
+pub fn encode_among(among: &[(RtType, quarz_ir::MethodId)]) -> Vec<u32> {
+    let mut out = Vec::new();
+    if among.is_empty() {
+        return out;
+    }
+    out.push(among.len() as u32);
+    for (t, m) in among {
+        out.push(*m);
+        encode_type(t, &mut out);
+    }
+    out
+}
+
+fn decode_among(w: &[u32]) -> crate::rc::Rc<Vec<(RtType, quarz_ir::MethodId)>> {
+    let mut at = 1;
+    let mut out = Vec::with_capacity(w[0] as usize);
+    for _ in 0..w[0] {
+        let m = w[at];
+        at += 1;
+        out.push((decode_type(w, &mut at), m));
+    }
+    crate::rc::Rc::new(out)
+}
+
 /// `ty` as words (what compiled code passes to `qz_op_is_a`/`qz_op_as`).
 pub fn encode_type(ty: &RtType, out: &mut Vec<u32>) {
     match ty {
@@ -346,10 +372,15 @@ op_entry!(qz_op_method_ref(dst: u32, recv: u32, name: u32, method: u32) |rt, act
     Ok(())
 });
 
-op_entry!(qz_op_symbol_proc(dst: u32, name: u32, method: u32, discard: u32) |rt, act, f, pool, regs| {
-    rt.op_symbol_proc(f, act, regs, dst, name, opt(method), discard != 0);
-    Ok(())
-});
+op_entry!(
+    /// `among`: `n` words of `encode_among`.
+    qz_op_symbol_proc(dst: u32, name: u32, method: u32, discard: u32, among: *const u32, n: u32)
+    |rt, act, f, pool, regs| {
+        let among = (n > 0).then(|| decode_among(unsafe { words(among, n) }));
+        rt.op_symbol_proc(f, act, regs, dst, name, opt(method), discard != 0, among);
+        Ok(())
+    }
+);
 
 op_entry!(
     /// `items`: `n` pairs of register and splat flag.
