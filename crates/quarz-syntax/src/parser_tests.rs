@@ -592,3 +592,112 @@ fn type_param_bounds() {
         "(def f (tparams U>:cog::A) (params x:U) -> U x)"
     );
 }
+
+/// A block's result type after its parameters, and the `->` that starts
+/// a lambda instead (`parse_block_result_type`'s table).
+#[test]
+fn block_result_type() {
+    assert_eq!(
+        sexp("xs.map do |x: Int| -> String\n  x.to_s\nend"),
+        "(call (call _ xs) map (block (params x:Int) -> String (call x to_s)))"
+    );
+    assert_eq!(
+        sexp("xs.map { |x| -> Int x + 1 }"),
+        "(call (call _ xs) map (block (params x) -> Int (call x + 1)))"
+    );
+    assert_eq!(
+        sexp("f do -> Void\n  1\nend"),
+        "(call _ f (block (params) -> Void 1))"
+    );
+    assert_eq!(
+        sexp("f { -> Void 1 }"),
+        "(call _ f (block (params) -> Void 1))"
+    );
+    assert_eq!(
+        sexp("f { |x| -> Int | String x }"),
+        "(call _ f (block (params x) -> Int | String x))"
+    );
+    assert_eq!(
+        sexp("f { |x| -> Foo [1] }"),
+        "(call _ f (block (params x) -> Foo (array 1)))"
+    );
+    assert_eq!(
+        sexp("f { -> ::Foo 1 }"),
+        "(call _ f (block (params) -> ::Foo 1))"
+    );
+    assert_eq!(
+        sexp("f { -> [Int, String] [1, \"a\"] }"),
+        "(call _ f (block (params) -> [Int, String] (array 1 (str \"a\"))))"
+    );
+    assert_eq!(
+        sexp("f { -> (Int) -> Bool nil }"),
+        "(call _ f (block (params) -> (Int) -> Bool nil))"
+    );
+    assert_eq!(
+        sexp("f { -> () -> Int nil }"),
+        "(call _ f (block (params) -> () -> Int nil))"
+    );
+    assert_eq!(
+        sexp("f { -> shareable (Int) -> Int nil }"),
+        "(call _ f (block (params) -> shareable (Int) -> Int nil))"
+    );
+    assert_eq!(
+        sexp("f { -> ((Int) -> Int)? nil }"),
+        "(call _ f (block (params) -> (Int) -> Int? nil))"
+    );
+    // The body's first statement is a lambda.
+    assert_eq!(
+        sexp("f do ->(y) { y } end"),
+        "(call _ f (block (params) (lambda (params y) y)))"
+    );
+    assert_eq!(
+        sexp("f do -> x { x } end"),
+        "(call _ f (block (params) (lambda (params x) x)))"
+    );
+    assert_eq!(
+        sexp("f do -> { 1 } end"),
+        "(call _ f (block (params) (lambda (params) 1)))"
+    );
+    assert_eq!(
+        sexp("f do -> do 1 end end"),
+        "(call _ f (block (params) (lambda (params) 1)))"
+    );
+    assert_eq!(
+        sexp("f do -> shareable { shareable } end"),
+        "(call _ f (block (params) (lambda (params shareable) shareable)))"
+    );
+    assert_eq!(
+        sexp("f do ->() -> Int { 1 } end"),
+        "(call _ f (block (params) (lambda (params) -> Int 1)))"
+    );
+    assert_eq!(
+        sexp("f do ->(*a) { a } end"),
+        "(call _ f (block (params) (lambda (params *a) a)))"
+    );
+    assert_eq!(
+        sexp("f do |x| ->() { x } end"),
+        "(call _ f (block (params x) (lambda (params) x)))"
+    );
+    // A `->` beginning a line begins the body, with or without
+    // parameters.
+    assert_eq!(
+        sexp("f do\n  -> { 1 }\nend"),
+        "(call _ f (block (params) (lambda (params) 1)))"
+    );
+    assert_eq!(
+        sexp("f do |x|\n  -> { x }\nend"),
+        "(call _ f (block (params x) (lambda (params) x)))"
+    );
+    assert_eq!(
+        sexp("f do ->(shareable) { shareable } end"),
+        "(call _ f (block (params) (lambda (params shareable) shareable)))"
+    );
+    assert_eq!(
+        sexp("f { -> (shareable (Int) -> Int) nil }"),
+        "(call _ f (block (params) -> shareable (Int) -> Int nil))"
+    );
+    assert_eq!(
+        errors("f { -> 1 }"),
+        vec!["expected a type after `->` (the block's result type) or a lambda"]
+    );
+}

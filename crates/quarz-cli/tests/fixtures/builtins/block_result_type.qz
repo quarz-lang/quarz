@@ -1,0 +1,37 @@
+# A block's declared result type (`do |x| -> T ... end`), as a `def`'s.
+xs = [1, 2, 3]
+
+names = xs.map do |x: Int| -> String
+  "n#{x}"
+end
+p names
+
+p xs.map { |x| -> Int | String x > 1 ? x : "one" }
+
+# `-> Void`: the body's value is discarded.
+r = xs.each do |x| -> Void
+  x * 2
+end
+p r
+
+def counted(&blk: (Int) -> Void) -> Int
+  blk.call(1)
+  1
+end
+p counted { |x| -> Void x + 100 }
+
+# `-> Nothing`: the block only raises.
+def try_it(&blk: () -> Int) -> Int
+  begin
+    blk.call
+  rescue => e
+    puts "rescued: #{e.message}"
+    0
+  end
+end
+p try_it { -> Nothing raise "gave up" }
+
+p xs.map { |x| -> Int
+  next 0 if x == 2
+  x * 10
+}

@@ -2889,3 +2889,54 @@ fn what_may_be_nil_or_false_is_decided_by_subtyping() {
         "undefined method `+` for Nil",
     );
 }
+
+/// A block's declared result type (`do |x| -> T ... end`) is its result,
+/// as a `def`'s return type is: the body and `next` are checked against
+/// it, it binds the callee's result type, and the callee must take it.
+#[test]
+fn block_result_type() {
+    ok("names: Array[String] = [1, 2].map { |x| -> String x.to_s }");
+    ok("u: Array[Int | String] = [1, 2].map { |x| -> Int | String x > 1 ? x : \"one\" }");
+    ok("[1].each { |x| -> Void x + 1 }");
+    ok("def keep(&blk: (Int) -> Bool) -> Bool = blk.call(1)\nkeep { |x| -> Bool x > 0 }");
+    // Declared `-> Int` where the callee expects `Void`: Void takes any.
+    ok("def run(&blk: (Int) -> Void) -> Void = blk.call(1)\nrun { |x| -> Int x }");
+    ok("def try_it(&blk: () -> Int) -> Int = blk.call\ntry_it { -> Nothing raise \"no\" }");
+    ok("p([1, 2].map { |x| -> Int\n  next 0 if x == 2\n  x\n})");
+    err(
+        "a = [1, 2].map { |x| -> String\n  x\n}",
+        "block returns Int but is declared `-> String`",
+    );
+    err(
+        "a = [1, 2].map { |x| -> String\n  next 1 if x == 2\n  \"s\"\n}",
+        "`next` has type Int but the block returns String",
+    );
+    // Without overloads to try, at the expression.
+    err_at(
+        "def one(&blk: (Int) -> String) -> String = blk.call(1)\none { |x| -> String\n  x\n}",
+        "block returns Int but is declared `-> String`",
+        3,
+    );
+    err(
+        "[1].each { |x| -> Void next x }",
+        "`next` gives a Int but the block's result is `Void`",
+    );
+    err(
+        "def try_it(&blk: () -> Int) -> Int = blk.call\ntry_it { -> Nothing 1 }",
+        "block returns Int but is declared `-> Nothing`",
+    );
+    err(
+        "def keep(&blk: (Int) -> Bool) -> Bool = blk.call(1)\nkeep { |x| -> String \"s\" }",
+        "the block is declared `-> String` but `keep` expects (Int) -> Bool",
+    );
+    // A task's declared result reaches the awaiting task.
+    err(
+        "class Box\n  @v: Int\n  def initialize(@v: Int); end\nend\nc = true\nt = Task.spawn { -> Int | Box\n  next Box.new(1) if c\n  1\n}\np t.await",
+        "a task block returns the non-shareable type",
+    );
+    // The declared type, not the body's, is the block's result.
+    err(
+        "a: Array[Int] = [1, 2].map { |x| -> Int | String x }",
+        "the block is declared `-> Int | String` but `map` expects (Int) -> Int",
+    );
+}

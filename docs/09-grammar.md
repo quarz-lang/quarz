@@ -82,7 +82,8 @@ typed_assign   = IDENT ":" type "=" expression ;        (* only at the start of 
 lambda         = "->" [ "(" [ param_list ] ")" ] [ "->" type ] ( "{" body "}" | "do" body "end" ) ;
 for_comp       = "for" for_iter { "," for_iter } ( "do" | NEWLINE ) statements "end" ;
 for_iter       = IDENT { "," IDENT } "in" arg_expr [ "when" arg_expr ] ;
-block          = "{" [ "|" block_params "|" ] body "}" | "do" [ "|" block_params "|" ] body "end" ;
+block          = "{" [ "|" block_params "|" ] [ "->" type ] body "}"
+               | "do" [ "|" block_params "|" ] [ "->" type ] body "end" ;
 block_params   = param_list ;                           (* types may be omitted; they are inferred *)
 method_ref     = expression ".:" method_name ;
 
@@ -115,7 +116,7 @@ extern_decl    = "extern" STRING NEWLINE { "def" IDENT "(" [ param_list ] ")" "-
 - **`name: Type` vs. `name: value`**: always a type inside a parameter list; always a value inside hash literals and method calls. `ident: Type = expr` at the start of a statement is a type-annotated assignment. Labels are recognized by the parser, not the lexer, by the rule "an identifier (or string) immediately followed by `:` with no intervening whitespace". This avoids conflicts with the ternary operator `a ? b : c` (if written tightly as `a ? b:c`, `b:` is taken as a label and is an error).
 - **Arguments of command calls (no parentheses) vs. binary operators**: in `foo -x`, `foo *x`, `foo &x`, `foo [1]`, `foo /re/`, `foo %w[a]`, `foo <<EOS`, if there is whitespace after the identifier and none after the symbol, it is an argument (unary operator or literal); otherwise it is a binary operator (the same rule as Ruby; the lexer records for each token whether it was preceded by whitespace).
 - **`/`, `%` and `<<`**: if the previous token is a value (identifier, constant, literal, `)`/`]`/`}`, `end`, `self`, etc.) it is an operator; otherwise it starts a regexp, a `%` literal or a heredoc. The command-call rule above takes precedence.
-- **The two meanings of `->`**: `->` in a `def` signature is the return type; `->` in expression position is a lambda. In `->(x: Int) -> Int { }`, the first is the lambda and the second is the return type.
+- **The two meanings of `->`**: `->` in a `def` signature is the return type; `->` in expression position is a lambda. In `->(x: Int) -> Int { }`, the first is the lambda and the second is the return type. Right after a block's parameters (or its `{`/`do`), `->` is the block's result type when a type starts there (a constant, `::`, `cog`, `[`, `shareable (`, a `(` followed by a constant, `::`, `cog`, `[`, `(` or `shareable`, or `() -> R` not followed by `{` or `do`), and otherwise a lambda beginning the body (`do ->(y) { y } end`, `do -> x { x } end`). The result type is on the line of the parameters (or of `{`/`do`): a `->` that begins a line begins the body. It is read greedily, so a body that would continue it (`::Foo`, `.(...)`) goes on the next line.
 - **`Const[...]`**: in type position, type arguments. In expression position, a type expression (`Array[Int].new`) if the contents of `[` can be interpreted as types, otherwise a call to `Const.[](...)` (a user-defined `self.[]`). The built-in `Array`/`Hash`/`Set` have no `self.[]`, so they are always type expressions.
 - **`{ }` as block vs. hash**: the same rule as Ruby.
 - **Contextual keywords**: `data`/`enum`/`var`/`abstract`/`extension`/`using`/`type`/`extern`/`variant`/`for` are keywords only in the declaration positions above, when the following tokens take the form of a declaration.

@@ -21,7 +21,7 @@ Design principles:
 | Procedure | `(Int, String) -> Bool`, `() -> Void` | Type of blocks and lambdas |
 | Top | `Object` | Supertype of every type |
 | Bottom | `Nothing` | Type of `raise`, `exit` and infinite loops. Subtype of every type |
-| Discarded result | `Void` | Only as a result (`-> Void`, `(Int) -> Void`): the body's value is discarded and a caller gets `nil`, so a call's type is `Nil`, and `(Int) -> Void` is the same type as `(Int) -> Nil`. Not a value's type: `Void?`, `Array[Void]` or a parameter of type `Void` is an error. A `(T) -> Void` block discards its value (`&:name` too) and `next value` in it is an error (01-syntax.md §9) |
+| Discarded result | `Void` | Only as a result (`-> Void`, `(Int) -> Void`): the body's value is discarded and a caller gets `nil`, so a call's type is `Nil`, and `(Int) -> Void` is the same type as `(Int) -> Nil`. Not a value's type: `Void?`, `Array[Void]` or a parameter of type `Void` is an error. A `(T) -> Void` block (`&:name` too) discards its value, as does a block declared `-> Void` (01-syntax.md §9), and `next value` in it is an error (01-syntax.md §9) |
 | Type variable | `T`, `K`, `V` | Declared type parameters |
 | Class object | `Type[Point]`, `Type[T]` | The type of a class written in an expression (`Point`, `Array[Int]`). `Class` is `Type[Object]`. See below |
 | Quoted block | `Quoted[(Int) -> Bool]` | A block received as a typed tree and a closure, by a block parameter of that type ([14-metaprogramming.md](14-metaprogramming.md) §6). Shareable when its procedure type is `shareable` |
