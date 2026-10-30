@@ -2859,7 +2859,8 @@ impl<'ast> Declarer<'ast> {
             let mut order: Vec<(ClassId, Option<Vec<Type>>)> = Vec::new();
             for cid in &chain {
                 order.push((*cid, None));
-                for ext in &self.world.class(*cid).extends {
+                // (The last module extended first, as the runtime.)
+                for ext in self.world.class(*cid).extends.iter().rev() {
                     if let Type::Class(m, margs) = ext {
                         for (anc, aargs) in self.world.ancestors(*m, margs) {
                             if !order.iter().any(|(c, a)| *c == anc && a.is_some()) {

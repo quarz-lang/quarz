@@ -3547,3 +3547,14 @@ fn a_double_splat_supplies_only_kwrest() {
     // default, and the hash's `b:` entry goes to `**kw`.
     ok("def h(a: Int, b: Int = 7, **kw: String) -> String = \"#{a} #{b + 1} #{kw}\"\nhh: Hash[Symbol, String] = {b: \"x\"}\nputs h(1, **hh)");
 }
+
+#[test]
+fn the_module_extended_last_comes_first() {
+    // docs/01 §6: as with include, the last module extended is looked up
+    // first, statically as at run time.
+    ok("class Animal\nend\nclass Dog < Animal\n  def bark -> String = \"woof\"\nend\nmodule First\n  def make -> Animal = Animal.new\nend\nmodule Second\n  def make -> Dog = Dog.new\nend\nclass Both\n  extend First\n  extend Second\nend\nputs Both.make.bark");
+    err(
+        "module First\n  def label -> Int = 1\nend\nmodule Second\n  def label -> String = \"s\"\nend\nclass Both\n  extend First\n  extend Second\nend",
+        "`label` returns String but `First#label`, which it overrides, returns Int",
+    );
+}
