@@ -407,6 +407,12 @@ impl<'a> Ctx<'a> {
                 .cloned()
                 .collect(),
         };
+        let names: Vec<String> = cogs.iter().map(|c| c.name.clone()).collect();
+        let edges: Vec<Vec<usize>> = cogs
+            .iter()
+            .map(|c| c.imports.iter().map(|(_, j)| *j).collect())
+            .collect();
+        check_cycle(&names, &edges).map_err(LockProblem::Fatal)?;
         Ok(Movement {
             root: self.root.to_path_buf(),
             cogs,
@@ -789,6 +795,40 @@ impl<'a> Ctx<'a> {
                 )));
             }
         }
+        // A chosen cog's `[patch]` with a path, and a cycle among the
+        // cogs (patched ones included), before anything is fetched or
+        // written.
+        for source in &reached {
+            let rev = &chosen[source].1;
+            check_local_patches(source, &nodes[&(source.clone(), rev.clone())].manifest)?;
+        }
+        let mut graph: Vec<(Source, Manifest)> = Vec::new();
+        for source in &reached {
+            let rev = &chosen[source].1;
+            graph.push((
+                source.clone(),
+                nodes[&(source.clone(), rev.clone())].manifest.clone(),
+            ));
+        }
+        for source in &patched_seen {
+            if let Some(dir) = self.patches.get(source) {
+                graph.push((source.clone(), Manifest::read(dir)?));
+            }
+        }
+        let names: Vec<String> = graph.iter().map(|(_, m)| m.cog.name.clone()).collect();
+        let edges: Vec<Vec<usize>> = graph
+            .iter()
+            .map(|(_, m)| {
+                m.dependencies
+                    .values()
+                    .filter_map(|d| {
+                        let to = d.source();
+                        graph.iter().position(|(s, _)| *s == to)
+                    })
+                    .collect()
+            })
+            .collect();
+        check_cycle(&names, &edges)?;
         let mut cogs = Vec::new();
         for source in &reached {
             let (version, rev) = &chosen[source];
@@ -826,6 +866,54 @@ impl<'a> Ctx<'a> {
     }
 }
 
+/// Cogs depend on each other in no cycle (docs/10 §4): a `static def`
+/// runs only from a cog that depends on its own, which would be both.
+/// `edges[i]`: the cogs cog `i` depends on.
+fn check_cycle(names: &[String], edges: &[Vec<usize>]) -> Result<(), Error> {
+    // 0: not visited, 1: on the path, 2: done.
+    fn visit(
+        i: usize,
+        edges: &[Vec<usize>],
+        state: &mut [u8],
+        path: &mut Vec<usize>,
+    ) -> Option<usize> {
+        state[i] = 1;
+        path.push(i);
+        for &j in &edges[i] {
+            if state[j] == 1 {
+                return Some(j);
+            }
+            if state[j] == 0 {
+                if let Some(c) = visit(j, edges, state, path) {
+                    return Some(c);
+                }
+            }
+        }
+        path.pop();
+        state[i] = 2;
+        None
+    }
+    let mut state = vec![0u8; names.len()];
+    for i in 0..names.len() {
+        let mut path = Vec::new();
+        if state[i] == 0 {
+            if let Some(j) = visit(i, edges, &mut state, &mut path) {
+                let from = path.iter().position(|k| *k == j).unwrap_or(0);
+                let cycle: Vec<&str> = path[from..]
+                    .iter()
+                    .chain([&j])
+                    .map(|k| names[*k].as_str())
+                    .collect();
+                return Err(Error::new(format!(
+                    "the cogs depend on each other in a cycle: {}; a cog's dependencies cannot lead back to it",
+                    cycle.join(" -> ")
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn describe_ref(r: &Ref) -> String {
     match r {
         Ref::Tag(t) => format!("tag {t}"),
@@ -847,7 +935,24 @@ fn check_local_deps(source: &Source, m: &Manifest) -> Result<(), Error> {
             return Err(local_dep_error(&m.cog.name, &d.source()));
         }
     }
-    Ok(())
+    check_local_patches(source, m)
+}
+
+/// A `[patch]` names a directory on this machine, which a cog fetched from
+/// elsewhere may not; only the application's patches apply in any case.
+fn check_local_patches(source: &Source, m: &Manifest) -> Result<(), Error> {
+    if git::is_local_url(&source.url) {
+        return Ok(());
+    }
+    match m.patch.iter().next() {
+        Some((key, p)) => Err(Error::new(format!(
+            "{} {} has a [patch] `{key}` naming {}, a directory on this machine, which a cog fetched from elsewhere may not name (and only the application's [patch] applies)",
+            m.cog.name,
+            m.cog.version,
+            p.path.display()
+        ))),
+        None => Ok(()),
+    }
 }
 
 fn local_dep_error(from: &str, dep: &Source) -> Error {
