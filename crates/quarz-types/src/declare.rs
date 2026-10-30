@@ -1922,6 +1922,12 @@ impl<'ast> Declarer<'ast> {
         within: Option<String>,
     ) -> bool {
         let (m, om) = (self.world.method(mid).clone(), self.world.method(o).clone());
+        // A `Kernel` function is private and bound where it is called (a
+        // function, docs/01 §1): no call through it reaches a method of the
+        // name, so it constrains none.
+        if om.owner == self.world.builtin.kernel {
+            return true;
+        }
         let owner = self.world.class(om.owner).name.clone();
         // (`M#f` against `A#f` in `C`, which includes `M`.)
         let context = match within {
@@ -1952,6 +1958,26 @@ impl<'ast> Declarer<'ast> {
                     }),
                 )
                 .collect();
+        // A parameter before `*` may be passed by keyword (`f(x: 3)`): an
+        // override keeps its name (docs/01 §3). (An operator's may not:
+        // it takes no keyword argument.)
+        let named = !quarz_syntax::positional_only_name(&mname);
+        for (p, q) in om
+            .positional_params()
+            .into_iter()
+            .zip(m.positional_params())
+        {
+            if named && p.kind == ParamKind::Positional && p.name != q.name {
+                self.error(
+                    format!(
+                        "`{mname}` renames parameter `{}` to `{}`; callers of `{owner}{}{mname}` may pass it as `{}:`",
+                        p.name, q.name, if om.singleton { "." } else { "#" }, p.name
+                    ),
+                    span,
+                );
+                return false;
+            }
+        }
         for (p, q) in pairs {
             let (theirs, mine) = (p.ty.subst(subst), see(&q.ty));
             if !self.world.is_subtype(&theirs, &mine) {
