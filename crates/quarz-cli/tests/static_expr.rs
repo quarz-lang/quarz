@@ -54,6 +54,8 @@ class Q
   static def self.twice(s: Sql) -> String = s.text + "; " + s.text
   static def self.fields_of(t: Type[Object]) -> Int = t.fields.size
   static def self.count(&f: (Int) -> Bool) -> Int = [1, 2, 3, 4].count { |x| f.call(x) }
+  static def self.count2(&f: shareable (Int) -> Bool) -> Int = [1, 2, 3, 4].count { |x| f.call(x) }
+  static def self.on5(&f: Int.() -> Int) -> Int = 5.instance_exec(&f)
   static def self.boom(n: Int) -> Int
     raise ArgumentError, "bad #{n}" if n > 1
     n
@@ -223,6 +225,11 @@ fn a_block_in_static_captures_nothing() {
         "y = n; x > y",
         "-> { n }.call > x",
         "helper(x)",
+        // Nor does a block with a receiver or a shareable one inside it
+        // (tmp/repro/static-block-nested-instance-exec*.qz).
+        "5.instance_exec { helper(x) }",
+        "Q.count2 { |y| y > n } > x",
+        "Q.count2 { |y| helper(y) } > x",
     ] {
         write(
             &d.0,
@@ -236,6 +243,51 @@ fn a_block_in_static_captures_nothing() {
             "{body}: {err}"
         );
     }
+}
+
+#[test]
+fn a_block_in_static_neither_yields_nor_calls_super() {
+    // The method's block and its `self` are outside `static(...)`.
+    let d = dir();
+    write(&d.0, "lib.qz", LIB);
+    for (body, what) in [
+        ("def f(&: (Int) -> Bool) -> Int = static(Q.count { |x| yield x })", "`yield`"),
+        ("def f(&: (Int) -> Bool) -> Int = static(Q.count { |x| Q.count2 { |y| yield y } > x })", "`yield`"),
+        ("class A\n  def g -> Int = 4\nend\nclass B < A\n  def g -> Int = static(Q.count { |x| super > x })\nend", "`super`"),
+    ] {
+        write(&d.0, "bad.qz", &format!("require_relative \"lib\"\n{body}\n"));
+        let (ok, _, err) = quarz(&d.0, &["check", "bad.qz"], &[]);
+        assert!(!ok, "{body}");
+        assert!(
+            err.contains(&format!("a block in `static(...)` captures nothing: {what}")),
+            "{body}: {err}"
+        );
+    }
+}
+
+#[test]
+fn a_block_with_a_receiver_in_static_uses_its_own_self() {
+    // Its receiver is no capture: `self` in it is the value it runs on.
+    let d = dir();
+    write(&d.0, "lib.qz", LIB);
+    write(
+        &d.0,
+        "good.qz",
+        "require_relative \"lib\"\ndef f -> Int = static(Q.count { |x| 2.instance_exec { self > x } })\np f\n",
+    );
+    let (ok, out, err) = quarz(&d.0, &["run", "good.qz"], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(out, "1\n");
+    // So does the block of the call itself when the `static def` gives it
+    // a receiver.
+    write(
+        &d.0,
+        "own.qz",
+        "require_relative \"lib\"\np static(Q.on5 { self + 1 })\np static(Q.on5 { \"ab\".instance_exec { size + abs } })\n",
+    );
+    let (ok, out, err) = quarz(&d.0, &["run", "own.qz"], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(out, "6\n7\n");
 }
 
 #[test]

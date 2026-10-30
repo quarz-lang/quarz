@@ -3550,7 +3550,10 @@ impl Checker {
         if !self.captured_across_task(depth) {
             return;
         }
-        if self.env.static_frame.is_some() && self.env.static_frame == self.env.task_frame {
+        // (From outside the block of `static(...)`, whatever task or
+        // shareable block inside it captures it.)
+        let at = self.env.frames.len() - 1 - depth;
+        if self.env.static_frame.is_some_and(|sf| at < sf) {
             self.error(
                 format!("a block in `static(...)` captures nothing: `{name}` is not a constant (docs/14 §8)"),
                 span,
@@ -8523,6 +8526,24 @@ impl Checker {
     /// reads like a captured variable.
     fn bind_outer_self(&mut self, expr: &Expr, k: usize) {
         let owner_frame = self.env.receivers[k].outer_frame;
+        // (A block with a receiver inside `static(...)` reaching a `self`
+        // set outside it, the lexical one or an outer block's receiver:
+        // captured as a variable would be.)
+        // (The static block's own receiver, entered just before its frame,
+        // is the `static def`'s to give.)
+        let outside = |sf: usize| k == 0 || self.env.receivers[k - 1].outer_frame + 1 < sf;
+        if self.env.static_frame.is_some_and(outside) {
+            let name = match &expr.kind {
+                ExprKind::Call(c) => c.name.clone(),
+                _ => String::new(),
+            };
+            self.error(
+                format!(
+                    "a block in `static(...)` captures nothing: calling `{name}` uses `self`, which is not a constant (docs/14 §8)"
+                ),
+                expr.span,
+            );
+        }
         if self.env.lifted_frame.is_some_and(|lf| owner_frame < lf) {
             let name = match &expr.kind {
                 ExprKind::Call(c) => c.name.clone(),
@@ -10799,10 +10820,13 @@ impl Checker {
 
     /// Whether the code being checked is in the block of a `static(...)`
     /// call, which captures nothing (docs/14 §8).
+    /// Inside the block of `static(...)`, with its `self` the code around
+    /// it's (no block with a receiver inside it gives another), whatever
+    /// task or shareable block inside it the code sits in.
     fn in_static_block(&self) -> bool {
-        self.self_crosses_task()
-            && self.env.static_frame.is_some()
-            && self.env.static_frame == self.env.task_frame
+        self.env
+            .static_frame
+            .is_some_and(|sf| !self.env.receivers.iter().any(|r| r.outer_frame + 1 >= sf))
     }
 
     /// Fields are reachable only from their class's own body: inside a
@@ -10814,9 +10838,12 @@ impl Checker {
         match self.env.task_frame {
             // A block given to `def_method` has a receiver: its `self` is
             // the generated method's, not captured.
+            // So has the block of `static(...)`'s call when its parameter
+            // takes one: the `static def` gives it.
             Some(tf) => !self.env.receivers.iter().any(|r| {
                 r.outer_frame >= tf
-                    || (self.env.lifted_frame == Some(tf) && r.outer_frame + 1 == tf)
+                    || ((self.env.lifted_frame == Some(tf) || self.env.static_frame == Some(tf))
+                        && r.outer_frame + 1 == tf)
             }),
             None => false,
         }
@@ -10827,7 +10854,7 @@ impl Checker {
         if !self.self_crosses_task() {
             return;
         }
-        if self.env.static_frame.is_some() && self.env.static_frame == self.env.task_frame {
+        if self.in_static_block() {
             self.error(
                 format!("a block in `static(...)` captures nothing: {what} is not a constant (docs/14 §8)"),
                 span,
@@ -11014,6 +11041,13 @@ impl Checker {
     }
 
     fn check_yield(&mut self, expr: &Expr, args: &[Arg]) -> Type {
+        // (The method's block, outside the block of `static(...)`.)
+        if self.env.static_frame.is_some() {
+            self.error(
+                "a block in `static(...)` captures nothing: `yield` uses the method's block (docs/14 §8)",
+                expr.span,
+            );
+        }
         if self.env.lifted_frame.is_some() {
             self.error(
                 "`yield` in a block given to `def_method`: the generated method has no block to yield to",
@@ -11126,6 +11160,13 @@ impl Checker {
     }
 
     fn check_super(&mut self, expr: &Expr, args: Option<&[Arg]>, block: Option<&Block>) -> Type {
+        // (The method's `self`, outside the block of `static(...)`.)
+        if self.env.static_frame.is_some() {
+            self.error(
+                "a block in `static(...)` captures nothing: `super` uses the method's `self` (docs/14 §8)",
+                expr.span,
+            );
+        }
         let Some(mid) = self.env.method else {
             self.error("`super` outside of a method", expr.span);
             return Type::Nothing;
