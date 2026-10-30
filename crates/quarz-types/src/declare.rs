@@ -1528,9 +1528,20 @@ impl<'ast> Declarer<'ast> {
                             continue;
                         };
                         for &o in os {
-                            if !self.world.method(o).is_abstract
-                                && self.overrides_at_run_time(mid, o, *a, aargs)
-                            {
+                            // For an abstract method, unless the target
+                            // defines the name, what `Interp::ext_impl`
+                            // runs: the extension's method that takes what
+                            // its callers pass, one of the same signature
+                            // first (also for a prelude class, and in a
+                            // module, where `using` activates it);
+                            // otherwise, as for any, `find_override`'s.
+                            let owned = self.world.class(e.target).methods.contains_key(&m.name);
+                            let replaces = if self.world.method(o).is_abstract && !owned {
+                                self.ext_impl_of(e, o) == Some(mid)
+                            } else {
+                                self.overrides_at_run_time(mid, o, *a, aargs)
+                            };
+                            if replaces {
                                 pairs.push((
                                     mid,
                                     o,
@@ -1547,6 +1558,19 @@ impl<'ast> Declarer<'ast> {
         for (mid, o, a, aargs, own) in pairs {
             self.check_implementation(mid, o, a, &aargs, own);
         }
+    }
+
+    /// The method of extension `e` that the runtime runs for the abstract
+    /// method `abs` (`Interp::ext_impl`).
+    fn ext_impl_of(&self, e: &ExtensionInfo, abs: MethodId) -> Option<MethodId> {
+        let a = self.world.method(abs);
+        let ids = e.methods.get(&a.name)?;
+        let exact = ids
+            .iter()
+            .find(|i| self.implements(**i, abs) && self.same_signature_at_run_time(**i, abs));
+        exact
+            .or_else(|| ids.iter().find(|i| self.implements(**i, abs)))
+            .copied()
     }
 
     /// An extension's view of its target's ancestors and of what it
@@ -2768,10 +2792,9 @@ impl<'ast> Declarer<'ast> {
                 if ext.target != *anc {
                     continue;
                 }
-                if let Some(ids) = ext.methods.get(name) {
-                    if let Some(i) = ids.iter().find(|i| self.implements(**i, abstract_id)) {
-                        return Some(*i);
-                    }
+                // (As the runtime picks it: `ext_impl_of`.)
+                if let Some(i) = self.ext_impl_of(ext, abstract_id) {
+                    return Some(i);
                 }
             }
         }
