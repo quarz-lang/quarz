@@ -7362,6 +7362,21 @@ impl Checker {
         expected: Option<&Type>,
         _quiet: bool,
     ) -> Type {
+        // An operator method takes no keyword argument (docs/01 §9): its
+        // parameters' names are not part of what callers write.
+        if quarz_syntax::positional_only_name(&call.name) {
+            if let Some(Arg::Keyword { value, .. }) =
+                call.args.iter().find(|a| matches!(a, Arg::Keyword { .. }))
+            {
+                self.error(
+                    format!(
+                        "`{}` takes no keyword arguments: an operator's are positional",
+                        call.name
+                    ),
+                    value.span,
+                );
+            }
+        }
         // Special forms.
         if call.recv.is_none() && call.name == "raise" {
             return self.check_raise(expr, call);

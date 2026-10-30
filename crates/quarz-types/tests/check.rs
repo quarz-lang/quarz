@@ -3434,3 +3434,28 @@ fn kernel_functions_by_name() {
     );
     ok("extension Kernel\n  def self.shout -> String = \"S\"\nend\nx: String = Kernel.shout");
 }
+
+#[test]
+fn an_override_keeps_the_names_callers_may_pass_by_keyword() {
+    // tmp/repro/override-renames-positional.qz (docs/01 §3): a parameter
+    // before `*` may be passed by keyword through the overridden method.
+    err("class A\n  def f(x: Int, *, k: Int = 0) -> String = \"A#f #{x}\"\nend\nclass B < A\n  def f(y: Int, *, k: Int = 0) -> String = \"B#f #{y}\"\nend\ndef call(a: A) -> String = a.f(x: 3)\nputs call(B.new)", "`f` renames parameter `x` to `y`; callers of `A#f` may pass it as `x:`");
+    // An implementation too.
+    err(
+        "module M\n  abstract def size_of(item: Int) -> Int\nend\nclass C\n  include M\n  def size_of(x: Int) -> Int = x\nend",
+        "`size_of` renames parameter `item` to `x`",
+    );
+    // An operator takes no keyword argument (docs/01 §9), so its
+    // parameters may be named anything.
+    ok("class P\n  @v: Int\n  def initialize(@v: Int)\n  end\n  def v -> Int = @v\n  def ==(o: Object) -> Bool = o.is_a?(P) && o.v == @v\n  def hash -> Int = @v\nend\np P.new(1) == P.new(1)");
+    err("p 1.==(other: 1)", "`==` takes no keyword arguments");
+    // A setter is called by assignment, and a `Kernel` function is bound
+    // where it is called: neither's parameters are passed by name.
+    ok("class A\n  var @x: Int = 0\n  def x=(value: Int) -> Void\n    @x = value\n  end\nend\nclass B < A\n  def x=(v: Int) -> Void\n    @x = v\n  end\nend");
+    ok("class Logger\n  def rand(n: Int) -> Int = 4\n  def p(v: Int) -> Int = v\nend\nputs Logger.new.rand(3)");
+    // A class method is named as one.
+    err(
+        "class A\n  def self.f(x: Int) -> Int = x\nend\nclass B < A\n  def self.f(y: Int) -> Int = y\nend",
+        "callers of `A.f` may pass it as `x:`",
+    );
+}

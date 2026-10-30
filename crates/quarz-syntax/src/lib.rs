@@ -29,3 +29,14 @@ pub fn reserved_type_name(name: &str) -> Option<&'static str> {
         _ => None,
     }
 }
+
+/// Whether a method of this name takes no keyword argument (docs/01 §9):
+/// an operator's (`==`, `<=>`, `+`, `[]`, `[]=`, `-@`, `!`, a name that
+/// does not start as an identifier does) or a setter's (`x=`, called by
+/// assignment).
+pub fn positional_only_name(name: &str) -> bool {
+    name.chars()
+        .next()
+        .is_some_and(|c| !(c.is_alphabetic() || c == '_'))
+        || name.ends_with('=')
+}

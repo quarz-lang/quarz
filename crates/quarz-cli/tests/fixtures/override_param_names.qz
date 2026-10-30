@@ -1,0 +1,15 @@
+# An override keeps the names of the parameters callers may pass by
+# keyword (docs/01 §3): a call through the base type reaches it by name.
+class A
+  def f(x: Int, *, k: Int = 0) -> String = "A#f #{x} #{k}"
+end
+
+class B < A
+  def f(x: Int, *, k: Int = 1) -> String = "B#f #{x * 10} #{k}"
+end
+
+def call(a: A) -> String = a.f(x: 3)
+
+puts call(A.new)
+puts call(B.new)
+puts B.new.f(x: 2, k: 5)
