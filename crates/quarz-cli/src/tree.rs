@@ -240,7 +240,7 @@ pub fn tree(checked: &Checked) -> Value {
 
 /// The extensions, with their type parameters (an extension's method
 /// names them: `methods[].extension`), what they extend, the file that
-/// declares each, and their method names.
+/// declares each, what each includes, and their method names.
 fn extensions(world: &World) -> Vec<Value> {
     world
         .extensions
@@ -252,6 +252,7 @@ fn extensions(world: &World) -> Vec<Value> {
                 "type_params": e.type_params.iter().map(type_param).collect::<Vec<_>>(),
                 "target_args": e.target_args.iter().map(ty).collect::<Vec<_>>(),
                 "file": e.file,
+                "includes": e.includes.iter().map(ty).collect::<Vec<_>>(),
                 "method_names": method_names(&e.methods),
             })
         })
@@ -419,6 +420,7 @@ fn method(world: &World, id: MethodId) -> Value {
         "singleton": m.singleton,
         // (An abstract method has no definition to read it from.)
         "visibility": format!("{:?}", m.visibility),
+        "abstract": m.is_abstract,
         "file": m.file,
         "native": m.is_native,
         // Made by the checker (a data constructor, a field reader...):

@@ -361,9 +361,18 @@ stricter, not unsound.
   with a program's module (it may include it in a class the copies do
   not cover);
   `super` in a module, `extend`, and modules' class methods are out of
-  range as elsewhere. `Object`'s methods on an array, and an extension's methods
-  anywhere (which extension applies, and its own parameters, are stage
-  6's), are out of range.
+  range as elsewhere. `Object`'s methods on an array are out of range.
+  An extension's methods are in range on a program's class (stage 6c,
+  above), its type parameters when they are the class's own, in order,
+  unbounded and invariant (the Rust checker does not check an
+  extension's methods for variance); out of range: an extension of a
+  value or built-in type (`String`, `Int`, `Array`, the built-in
+  exceptions), other type parameters, `include`, `super` or
+  `initialize` in an extension, a call of one on a union receiver, and
+  one named like an abstract method in the chain of its class or of a
+  class below it, or like a prelude ancestor's method (the run time
+  dispatches to an extension's implementation of an abstract method by
+  its name: `World::ext_impls`).
   `xs == nil` of an array narrows nothing (a class atom is not final),
   stricter than the Rust checker.
   A block given to a built-in method (`each`, `map`, `times`) is the
@@ -435,7 +444,14 @@ stricter, not unsound.
   docs/01 §10, on a local) is that assignment.
   What the translator takes from the Rust checker as given, the model
   checking only what follows from it: which method a call resolves to,
-  each class's linearization, the order its methods are looked up in
+  which extension's method a call resolves to, with the `using`s in
+  effect (the model checks the chosen method's body, as a method of its
+  class, and the call against its signature: an extension's method of a
+  program's class is that class's method of a name of its own,
+  `name@ext<k>`, which nothing overrides or hides, so the call is
+  static as Quarz's is, design §16.5; reports show its own name; a
+  `using` statement does nothing in the model); each class's
+  linearization, the order its methods are looked up in
   (`ancestors`, which `tests/tree.rs` compares with the run time's for
   each shape of includes: two includes, a diamond, a module included
   again below a superclass that includes it); the choice among
