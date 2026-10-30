@@ -3738,3 +3738,36 @@ fn object_methods_once_on_a_type_parameter_with_a_class_bound() {
     // Narrowed: `T`'s methods and the class's share `Object`'s.
     ok("class Th\nend\ndef f[T](v: T) -> Int\n  if v in Th\n    v.then { |x| 1 }\n  else\n    0\n  end\nend");
 }
+
+#[test]
+fn self_in_a_body_is_the_signatures_self() {
+    // In a method whose signature mentions `Self`, `Self` written in the
+    // body is that `Self`, not the class: a subclass's receiver is one.
+    ok("class Node\n  def again -> Self\n    self.then { |x| -> Self\n      x\n    }\n  end\nend");
+    err(
+        "class Node\n  def fresh -> Self\n    n: Self = Node.new\n    n\n  end\nend",
+        "cannot assign Node to `n` of type Self",
+    );
+    // `rescue Self` there names no class known at run time.
+    err(
+        "class E < StandardError\n  def again -> Self\n    begin\n      self\n    rescue Self => e\n      self\n    end\n  end\nend",
+        "`rescue Self` names no class here",
+    );
+    // On a class, `dup` (an instance method of `Object`) gives the class,
+    // no instance; `new` gives an instance.
+    err(
+        "class C\n  def self.mk -> Self = dup\nend",
+        "method `mk` returns Self but its body has type Type[C]",
+    );
+    ok("class C\n  def self.mk -> Self = new\nend");
+    // A generic module's `static def`'s `self` is its `Self` (the
+    // receiver).
+    ok("abstract class Model\nend\nmodule Macros[T <: Model]\n  static def me -> Self = self\nend");
+    // A class's `static def`: `Self` is the class's instances, as in any
+    // class method; its `self` (a `Meta::ClassDef`) is none.
+    ok("class C\n  def hello -> Int = 1\n  static def self.mk -> Int\n    k: Self = new\n    k.hello\n  end\nend");
+    err(
+        "class C\n  static def self.mk -> Int\n    k: Self = self\n    1\n  end\nend",
+        "cannot assign Meta::ClassDef[C] to `k` of type C",
+    );
+}

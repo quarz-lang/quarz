@@ -1,0 +1,41 @@
+# `Self` written in a type inside a method body (a block's `-> Self`, an
+# annotated local, a lambda's parameter) is the `Self` the method's own
+# signature means, the receiver's class at run time.
+class Node
+  def again -> Self
+    self.then { |x| -> Self
+      x
+    }
+  end
+  def kept -> Self
+    me: Self = self
+    me
+  end
+  def via -> Self
+    f = ->(x: Self) { x }
+    f.call(self)
+  end
+  # A signature without `Self`: `Self` in the body is the class.
+  def plain -> Node
+    n: Self = Node.new
+    n
+  end
+  # In a class method, `Self` is its instances, with `Self` in the
+  # signature or not.
+  def self.build -> Self
+    s: Self = new
+    s
+  end
+  def self.made -> Node
+    s: Self = Node.new
+    s
+  end
+end
+class Leaf < Node
+end
+p Leaf.new.again.class.name
+p Leaf.new.kept.class.name
+p Leaf.new.via.class.name
+p Leaf.new.plain.class.name
+p Leaf.build.class.name
+p Leaf.made.class.name
