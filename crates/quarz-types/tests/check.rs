@@ -3119,6 +3119,18 @@ fn using_is_positional() {
         &format!("{m}class C\n  using M\nend\nmodule N\n  extension C\n    def g -> String = \"g\".shout\n  end\nend"),
         "undefined method `shout` for String",
     );
+    // Lexical: `class M::D` written at the top level is not in M's body,
+    // nor in N's: neither M's own extensions nor N's `using` reach it,
+    // though M's names do.
+    for d in [
+        "class M::D\n  def f -> String = \"a\".shout\nend",
+        "class M::D\n  @g: String = \"a\".shout\nend",
+        "class M::D\n  X = \"a\".shout\nend",
+        "module N\n  using M\nend\nclass N::Inner\n  def f -> String = \"a\".shout\nend",
+    ] {
+        err(&format!("{m}{d}"), "undefined method `shout` for String");
+    }
+    ok("module M\n  extension String\n    def shout -> String = upcase + \"!\"\n  end\n  K = 7\nend\nclass M::D\n  using M\n  def f -> String = \"a\".shout + K.to_s\nend");
 }
 
 #[test]

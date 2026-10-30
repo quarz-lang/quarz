@@ -3432,7 +3432,7 @@ impl Checker {
         let mut ns = lexical;
         while let Some(n) = ns {
             active.extend(self.usings_at(n, file, pos));
-            ns = self.world.class(n).parent;
+            ns = self.world.class(n).lexical;
         }
         active.extend(self.file_extensions(file, pos));
         active.extend(self.own_extensions(lexical));
@@ -3450,7 +3450,7 @@ impl Checker {
         while let Some(n) = ns {
             let c = self.world.class(n);
             out.extend(c.extensions.iter().copied());
-            ns = c.parent;
+            ns = c.lexical;
         }
         out
     }
