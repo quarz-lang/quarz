@@ -361,6 +361,16 @@ stricter, not unsound.
   may run later while the method it is given to is not known
   (`prescan_repeated`); the model resolves the call first, so it is only
   more precise there.
+  `x op= e` (a local or a field of `self`) is `x = x op e`, the read of
+  `x` at the type the checker gave its current value (`op_targets`, the
+  tree's format 5), so its narrowing there is checked; `||=` and `&&=`
+  with the model's `||` and `&&` (out of range where a program defines
+  them), another operator the method the checker resolved. A generic built-in method's type
+  parameters are what the call's result type says (the checker's
+  instantiation; a lower bound widens it), as an array method's are.
+  Closures' stage C2 (pinned locals un-narrowed only once a lambda
+  assigning them is made, design §15) is deferred until a program needs
+  it: none in the corpus, the fixtures or the examples does.
   A known translator gap: a bang method's sugar (`x.other!`, which is
   `x = x.other`) is not translated as the assignment it is, so a
   program using it disagrees.

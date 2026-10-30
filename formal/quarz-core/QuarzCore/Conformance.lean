@@ -75,6 +75,8 @@ structure Tables where
   /-- The built-in exception classes (`Exception` and below it): classes
   of the model without fields, their methods built-in calls. -/
   excIds : List Nat := []
+  /-- An op-assignment's target's current type, by node (`x += e`). -/
+  opTargets : Json := Json.null
 
 def Tables.cls (T : Tables) (id : Nat) : M Json := do
   match T.classes.find? fun c => (c.getObjValAs? Nat "id").toOption == some id with
@@ -187,8 +189,8 @@ def Tables.tyClass (T : Tables) (j : Json) : M (Nat × List Ty) := do
 
 /-- A built-in method's parameter or result: a type QCore has no atoms
 for (a type parameter, a generic class) is any value here. -/
-def Tables.tyOrTop (T : Tables) (j : Json) : M Ty :=
-  match T.ty j with
+def Tables.tyOrTop (T : Tables) (j : Json) (env : List (Nat × Ty) := []) : M Ty :=
+  match T.tyIn env j with
   | .ok t => pure t
   | .error _ => pure [.nil, .bool, .int, .str, .cls 0 []]
 
@@ -831,6 +833,55 @@ partial def expr (T : Tables) (e : Json) : CM Expr := do
       pure (.assign x value)
     | ("IVar", f) => pure (.setField (← str f) value)
     | (t, _) => throw s!"assigning a {t}"
+  -- `x op= e` (a local, or a field of `self`): `x = x op e`, the read of
+  -- `x` at the type the checker gave its current value. `||=`, `&&=` with
+  -- the model's `||`, `&&`; another operator the method the checker
+  -- resolved, a built-in one a built-in call.
+  | "OpAssign" =>
+    let (tk, tv) ← variant (← field v "target")
+    -- The target: a local, or a field of `self`, read at the type the
+    -- checker gave its current value (`op_targets`), assigned as the
+    -- model's `setField` checks.
+    let cur ← match T.opTargets.getObjVal? (toString id) with
+      | .ok t => T.ty t
+      | .error _ => throw "an op-assign's target not typed"
+    if T.varied.contains (.num id) then throw s!"node {id} checked with different types"
+    let (rd, wr) ← match tk with
+      | "Local" =>
+        let x ← localName (← str (← field tv "name"))
+        unless (← get).any (·.1 == x) do throw "an op-assign to a local not yet assigned"
+        pure (Expr.var x cur, Expr.assign x)
+      | "IVar" =>
+        let f ← str tv
+        if (← read).rcls.isNone then throw "an op-assign to a field outside a class"
+        pure (Expr.field f cur, Expr.setField f)
+      | _ => throw s!"an op-assign to a {tk}"
+    let d := cur
+    let value ← expr T (← field v "value")
+    let op ← str (← field v "op")
+    -- (A class may define `||`, `&&`: a call, which the model's are not.)
+    if op == "OrOr" || op == "AndAnd" then
+      if ← T.methods.anyM (fun m => do
+          let n ← str (← field m "name")
+          pure ((n == "||" || n == "&&") && (← field m "native") != .bool true)) then
+        throw "an op-assign with a program's || or &&"
+    match op with
+    | "OrOr" => pure (wr (.or rd value))
+    | "AndAnd" => pure (wr (.and rd value))
+    | _ =>
+      let target ← match T.calls.getObjVal? (toString id) with
+        | .ok t => pure t
+        | .error _ => throw "an op-assign not resolved"
+      unless (← str (← field target "t")) == "method" do throw "an op-assign not to a method"
+      let m ← T.method (← nat (← field target "method"))
+      let name ← str (← field m "name")
+      if (← field m "native") == .bool true then
+        if (← nat (← field m "owner")) == (← T.arrayInfo).1 then throw "an op-assign of an array"
+        unless (← arr (← field m "type_params")).isEmpty do throw "an op-assign of a generic method"
+        let [p] := (← arr (← field m "params")).toList | throw "an op-assign's parameters"
+        unless (← str (← field p "kind")) == "Positional" do throw "an op-assign's parameters"
+        pure (wr (.prim name [rd, value] [d, ← T.tyOrTop (← field p "type")] (← T.tyOrTop (← field m "ret"))))
+      else pure (wr (.call rd name [value]))
   | "And" => match v with
     | .arr #[a, b] => pure (.and (← expr T a) (← expr T b))
     | _ => throw "And"
@@ -1413,11 +1464,28 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
           unless (← field p "default") == .bool true do throw "a built-in call leaving a parameter"
         let params ← (ps.take as.length).mapM fun p => do T.tyIn env (← field p "type")
         return ← withBlock env (.prim name (r :: as) (rt :: params) (← T.tyIn env (← field m "ret")))
+      -- (A generic one's type parameters: what the call's result type
+      -- says, where it says it; a lower bound widens it.)
+      let tps ← arr (← field m "type_params")
+      let env ← if tps.isEmpty then pure [] else do
+        let env ← match T.nodeTy id with
+          | .ok rt => T.solve [] (← field m "ret") rt
+          | .error _ => pure []
+        let mut env := env
+        for tp in tps do
+          let tid ← nat (← field tp "id")
+          if env.any (·.1 == tid) then
+            match ← field tp "lower" with
+            | .null => pure ()
+            | lj =>
+              let lo ← T.tyOrTop lj env
+              env := env.map fun (i, t) => if i == tid then (i, t ++ lo.filter (!t.contains ·)) else (i, t)
+        pure env
       let params ← if ← ps.anyM (fun p => do pure ((← str (← field p "kind")) == "Rest")) then
           match ps with
           | [p] => do
             -- (Its declared type, `Array[E]`: each argument an `E`.)
-            let t ← match ← T.tyOrTop (← field p "type") with
+            let t ← match ← T.tyOrTop (← field p "type") env with
               | [.cls k [e]] => pure (if k == arrIdx then e else [.cls k [e]])
               | t => pure t
             pure (as.map fun _ => t)
@@ -1427,8 +1495,8 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
           let rest := ps.filter fun p => !(pos.take as.length).contains p
           for p in rest do
             unless (← field p "default") == .bool true do throw "a built-in call leaving a parameter"
-          (pos.take as.length).mapM fun p => do T.tyOrTop (← field p "type")
-      let ret ← T.tyOrTop (← field m "ret")
+          (pos.take as.length).mapM fun p => do T.tyOrTop (← field p "type") env
+      let ret ← T.tyOrTop (← field m "ret") env
       let (rs, rps) ← match recv with
         | some r => do
           let rt ← T.nodeTy (← nat (← field recvJ "id"))
@@ -1830,7 +1898,8 @@ def program (j : Json) : M Program := do
     ← field j "node_types", ← arr (← field j "varied_types"), ← field j "calls",
     (← field j "const_targets"), (← arr (← field j "consts")), qclass, objectId, kernelId,
     fun id => (classParams.find? (·.1 == id)).map (·.2),
-    fun id => (narrowedList.find? (·.1 == id)).map (·.2), selfParam, excIds⟩
+    fun id => (narrowedList.find? (·.1 == id)).map (·.2), selfParam, excIds,
+    (j.getObjVal? "op_targets").toOption.getD Json.null⟩
   let excClasses ← excs.mapM fun c => do
     let sup ← match ← field c "superclass" with
       | .null => pure 0

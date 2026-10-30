@@ -7,7 +7,8 @@
 //! checker gave each of their nodes (a variable read's
 //! is the type it is narrowed to there; constants' initializers and field
 //! defaults are there too), the nodes checked more than once with
-//! different types, the expansion each `for` was checked as, what each call resolved to and
+//! different types, the type of an op-assignment's target's current
+//! value (`op_targets`), the expansion each `for` was checked as, what each call resolved to and
 //! each constant read names, every class (the
 //! built-in ones included: types refer to classes by id), and the
 //! methods the units define or call, with their type parameters (and the
@@ -24,7 +25,7 @@ use quarz_types::world::{TypeParamInfo, World};
 use quarz_types::Checked;
 
 /// The version of the format, bumped when it changes.
-const FORMAT: u32 = 4;
+const FORMAT: u32 = 5;
 
 pub fn tree(checked: &Checked) -> Value {
     let world = &checked.world;
@@ -99,6 +100,7 @@ pub fn tree(checked: &Checked) -> Value {
     ids.sort_unstable();
     ids.dedup();
     let mut node_types = Map::new();
+    let mut op_targets = Map::new();
     let mut calls = Map::new();
     let mut const_targets = Map::new();
     let mut methods: Vec<MethodId> = Vec::new();
@@ -106,6 +108,9 @@ pub fn tree(checked: &Checked) -> Value {
         let id32 = id as u32;
         if let Some(t) = out.node_types.get(&id32) {
             node_types.insert(id.to_string(), ty(t));
+        }
+        if let Some(t) = out.op_targets.get(&id32) {
+            op_targets.insert(id.to_string(), ty(t));
         }
         if let Some(c) = out.calls.get(&id32) {
             calls.insert(id.to_string(), call(c, &mut methods));
@@ -139,6 +144,7 @@ pub fn tree(checked: &Checked) -> Value {
         "format": FORMAT,
         "units": units,
         "node_types": node_types,
+        "op_targets": op_targets,
         "varied_types": varied,
         "for_each": for_each,
         "calls": calls,

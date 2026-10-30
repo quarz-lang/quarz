@@ -53,7 +53,7 @@ fn a_narrowed_read_has_the_narrowed_type() {
         "def f(x: Int?) -> Int\n  if x\n    x + 1\n  else\n    0\n  end\nend\np f(1)\n",
     );
     assert!(ok);
-    assert_eq!(v["format"], 4);
+    assert_eq!(v["format"], 5);
     let mut all = Vec::new();
     nodes(&v["definitions"], &mut all);
     let int = class_id(&v, "Int");

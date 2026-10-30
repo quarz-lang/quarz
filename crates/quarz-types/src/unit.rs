@@ -188,6 +188,7 @@ pub(crate) fn unit_output(world: &World, out: &Output, base: u32, file: u32) -> 
     }
     Output {
         node_types: map!(node_types),
+        op_targets: map!(op_targets),
         lifted_blocks: map!(lifted_blocks),
         quoted_blocks: map!(quoted_blocks),
         quoted_lits: set!(quoted_lits),
@@ -289,7 +290,7 @@ pub(crate) fn collect_narrowed(
             }
         }
     };
-    for t in out.node_types.values() {
+    for t in out.node_types.values().chain(out.op_targets.values()) {
         visit(t, list);
     }
     // Defined before used, as `cache::apply` makes them again in order.
@@ -307,6 +308,7 @@ pub(crate) fn param_table(params: &HashMap<u32, u32>) -> Table {
 
 pub(crate) fn merge_output(out: &mut Output, o: Output) {
     out.node_types.extend(o.node_types);
+    out.op_targets.extend(o.op_targets);
     out.calls.extend(o.calls);
     out.const_targets.extend(o.const_targets);
     out.var_refs.extend(o.var_refs);

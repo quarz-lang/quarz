@@ -1,0 +1,23 @@
+# Op-assignments (`x += e`, `x ||= e`, `@n += e`): `x = x op e`, the
+# read of the target at the type the checker gave its current value.
+class Counter
+  var @n: Int = 0
+  def bump(by: Int) -> Int
+    @n += by
+    @n
+  end
+end
+
+def m(y0: Int?) -> Int
+  x = 1
+  x += 2
+  x *= 3
+  y = y0
+  y ||= 5
+  s = "a"
+  s += "b"
+  x + y + s.size + Counter.new.bump(4)
+end
+
+puts m(nil)
+p m(1)
