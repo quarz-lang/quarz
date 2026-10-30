@@ -865,6 +865,10 @@ impl<'ast> Declarer<'ast> {
         };
         let mut info = World::blank_class(full, kind, ns, span);
         info.file = self.file;
+        // (`class A::B` is written in the file's top level, not in A.)
+        if path.names.len() > 1 {
+            info.lexical = namespace;
+        }
         let id = self.world.add_class(info);
         self.register_member(ns, &short, Member::Class(id), span);
         Some(id)

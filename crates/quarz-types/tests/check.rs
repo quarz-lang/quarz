@@ -3119,6 +3119,18 @@ fn using_is_positional() {
         &format!("{m}class C\n  using M\nend\nmodule N\n  extension C\n    def g -> String = \"g\".shout\n  end\nend"),
         "undefined method `shout` for String",
     );
+    // Lexical: `class M::D` written at the top level is not in M's body,
+    // nor in N's: neither M's own extensions nor N's `using` reach it,
+    // though M's names do.
+    for d in [
+        "class M::D\n  def f -> String = \"a\".shout\nend",
+        "class M::D\n  @g: String = \"a\".shout\nend",
+        "class M::D\n  X = \"a\".shout\nend",
+        "module N\n  using M\nend\nclass N::Inner\n  def f -> String = \"a\".shout\nend",
+    ] {
+        err(&format!("{m}{d}"), "undefined method `shout` for String");
+    }
+    ok("module M\n  extension String\n    def shout -> String = upcase + \"!\"\n  end\n  K = 7\nend\nclass M::D\n  using M\n  def f -> String = \"a\".shout + K.to_s\nend");
 }
 
 #[test]
@@ -3162,4 +3174,27 @@ fn an_overload_is_not_dropped_for_a_type_not_yet_known() {
     ok("def h(x: Shareable, &blk: () -> Int) -> Int\n  1\nend\ndef h(x: Object, &blk: () -> String) -> Int\n  2\nend\na = []\np h(a) { \"s\" }");
     // An overload that does not fit for another reason is dropped as before.
     ok("def g(x: Int) -> Int\n  1\nend\ndef g(x: Object) -> Int\n  2\nend\na = []\np g(a)");
+}
+
+#[test]
+fn clamp_gives_the_receiver_or_a_bound() {
+    // `clamp` returns `min` or `max`, a `T`, which need not be `Self`.
+    let include = "class B\n  def b -> String = \"B\"\nend\nclass A\n  include Comparable[B]\n  def <=>(other: B) -> Int = -1\n  def a -> String = \"A\"\nend\n";
+    err(
+        &format!("{include}r = A.new.clamp(B.new, B.new)\nputs r.a"),
+        "undefined method `a`",
+    );
+    ok(&format!(
+        "{include}r = A.new.clamp(B.new, B.new)\nputs r.class"
+    ));
+    let sub = "class P\n  @v: Int\n  include Comparable[P]\n  def initialize(@v: Int)\n  end\n  def <=>(other: P) -> Int = @v <=> other.v\n  def v -> Int = @v\nend\nclass Q < P\n  def name -> String = \"Q\"\nend\n";
+    err(
+        &format!("{sub}r = Q.new(5).clamp(P.new(0), P.new(3))\nputs r.name"),
+        "undefined method `name`",
+    );
+    ok(&format!(
+        "{sub}r = Q.new(5).clamp(P.new(0), P.new(3))\nputs r.v"
+    ));
+    // When `T` is the class itself, it is that class.
+    ok("x: Int = 5.clamp(1, 3)\ny: Int = 5.clamp(1..3)");
 }

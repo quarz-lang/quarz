@@ -324,8 +324,8 @@ stricter, not unsound.
   checker's to check, not the model's, which assumes their declarations
   hold as it does a native's. A built-in method's owner's parameters and
   `Self` are what the receiver gives them (its class's arguments, or a
-  module's through its class's include: `Comparable[T]#clamp -> Self` on
-  an `Int`); `Object`'s methods on an array, and an extension's methods
+  module's through its class's include: `Comparable[T]#clamp -> Self | T`
+  on an `Int`); `Object`'s methods on an array, and an extension's methods
   anywhere (which extension applies, and its own parameters, are stage
   6's), are out of range.
   `xs == nil` of an array narrows nothing (a class atom is not final),
