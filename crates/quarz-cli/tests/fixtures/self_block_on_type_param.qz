@@ -1,0 +1,30 @@
+# `Object`'s methods on a value of a type parameter with a class bound:
+# found once (through the bound's ancestors), a call of `then`, which
+# takes a `(Self)` block, is not ambiguous.
+class Thing
+  def k -> String = "Thing#k"
+end
+class Sub < Thing
+  def k -> String = "Sub#k"
+end
+def plain[T](v: T) -> String = v.then { |x| "plain" }
+def opt[T](v: T?) -> Int = v.then { |x| 1 }
+def bounded[T <: Int](v: T) -> Int = v.then { |x| x + 1 }
+def classed[T <: Thing](v: T) -> String = v.then { |x| x.k }
+def tapped[T <: Thing](v: T) -> T = v.tap { |x| p x.k }
+p plain(5)
+p opt(nil)
+p bounded(1)
+p classed(Thing.new)
+p classed(Sub.new)
+p tapped(Sub.new).k
+# Narrowed by a pattern: `T`'s methods and the class's, each once.
+def narrowed[T](v: T) -> String
+  if v in Thing
+    v.then { |x| x.k }
+  else
+    "other"
+  end
+end
+p narrowed(Sub.new)
+p narrowed(3)

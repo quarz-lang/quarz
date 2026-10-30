@@ -3727,3 +3727,14 @@ fn class_objects_a_class_test_cannot_tell_apart() {
         "cannot tell at run time which `k` to call for Type[T] and Type[Q]",
     );
 }
+
+#[test]
+fn object_methods_once_on_a_type_parameter_with_a_class_bound() {
+    // A class bound's ancestors have `Object`'s methods: found once, so a
+    // call of one taking a `(Self)` block is not ambiguous.
+    ok("def f[T <: Object](v: T) -> String = v.then { |x| \"s\" }");
+    ok("class Th\nend\ndef f[T <: Th](v: T) -> String = v.then { |x| \"s\" }");
+    ok("def f[T <: Int](v: T) -> Int = v.then { |x| x + 1 }");
+    // Narrowed: `T`'s methods and the class's share `Object`'s.
+    ok("class Th\nend\ndef f[T](v: T) -> Int\n  if v in Th\n    v.then { |x| 1 }\n  else\n    0\n  end\nend");
+}

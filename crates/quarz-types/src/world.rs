@@ -2006,8 +2006,16 @@ impl World {
             Type::Param(p) => {
                 for b in self.param_bounds(*p) {
                     match &b {
+                        // (Each method once: a narrowed `T`'s class and
+                        // `T` itself, or two bounds, share ancestors.)
                         Type::Class(bid, bargs) => {
-                            self.lookup_instance_methods(*bid, bargs, name, &mut out)
+                            let mut found = Vec::new();
+                            self.lookup_instance_methods(*bid, bargs, name, &mut found);
+                            for f in found {
+                                if !out.iter().any(|(m, _)| *m == f.0) {
+                                    out.push(f);
+                                }
+                            }
                         }
                         // A narrowed `T` has `T`'s methods too.
                         Type::Param(_) => {
@@ -2023,7 +2031,16 @@ impl World {
                 if !out.is_empty() && self.narrowed_params.contains_key(p) {
                     return out;
                 }
-                self.lookup_instance_methods(self.builtin.object, &[], name, &mut out);
+                // A value of any type is an object: `Object`'s methods, but
+                // once (a class bound's ancestors have them already, and the
+                // same method twice made a call ambiguous).
+                let mut object = Vec::new();
+                self.lookup_instance_methods(self.builtin.object, &[], name, &mut object);
+                for found in object {
+                    if !out.iter().any(|(m, _)| *m == found.0) {
+                        out.push(found);
+                    }
+                }
             }
             Type::Void => return self.lookup_methods(&self.nil(), name),
             Type::Union(_) | Type::Nothing | Type::Var(_) => {}
