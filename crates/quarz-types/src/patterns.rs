@@ -24,19 +24,28 @@ impl Checker {
                 narrowed
             }
             PatternKind::Alt(alts) => {
+                // (No names inside: `declare_pattern_var`.)
+                self.enter_alternative(true);
                 let mut result = Type::Nothing;
                 for a in alts {
                     let t = self.check_pattern(a, &value_ty);
                     result = self.join_types(&result, &t);
                 }
+                self.enter_alternative(false);
                 result
             }
             PatternKind::Pin(expr) => {
+                // (An expression in a pin is no part of the alternative: its
+                // own patterns bind.)
+                let saved = self.leave_alternatives();
                 self.check_expr_pub(expr, None);
+                self.restore_alternatives(saved);
                 value_ty
             }
             PatternKind::Value(expr) => {
+                let saved = self.leave_alternatives();
                 let t = self.check_expr_pub(expr, None);
+                self.restore_alternatives(saved);
                 let t = self.resolve_ty(&t);
                 // `1 === 1.0`: a value of a type not decided yet is not
                 // narrowed to the literal's class.
@@ -58,11 +67,15 @@ impl Checker {
                 yes
             }
             PatternKind::Range { lo, hi, .. } => {
+                // (The bounds are no part of an alternative: an
+                // interpolated string's own patterns bind.)
+                let saved = self.leave_alternatives();
                 let mut t = Type::Nothing;
                 for side in [lo, hi].into_iter().flatten() {
                     let st = self.check_expr_pub(side, None);
                     t = self.join_types(&t, &st);
                 }
+                self.restore_alternatives(saved);
                 if Self::undecided(&value_ty) {
                     return value_ty;
                 }
@@ -142,9 +155,13 @@ impl Checker {
                         None => self.declare_pattern_var(&pair.key, fty, pair.span),
                     }
                 }
+                // An object's fields have no rest of keys (a hash pattern
+                // keeps `**rest`; docs/01 §11).
                 if let Some(HashPatternRest::Bind(name)) = &hp.rest {
-                    let t = self.world.hash_of(self.world.symbol(), self.world.object());
-                    self.declare_pattern_var(name, t, pattern.span);
+                    self.report(
+                        format!("`**{name}` in a class pattern: an object has no rest of keys to bind (match the fields by name, or deconstruct a Hash)"),
+                        pattern.span,
+                    );
                 }
                 narrowed
             }
@@ -243,6 +260,14 @@ impl Checker {
                     }
                 }
                 if let Some(HashPatternRest::Bind(name)) = &hp.rest {
+                    // (Of a `data` value, as of a class pattern's: an object
+                    // has no rest of keys.)
+                    if !data_members.is_empty() {
+                        self.report(
+                            format!("`**{name}` on a `data` value: an object has no rest of keys to bind (match the fields by name)"),
+                            pattern.span,
+                        );
+                    }
                     let t = self.world.hash_of(self.world.symbol(), self.world.object());
                     self.declare_pattern_var(name, t, pattern.span);
                 }
