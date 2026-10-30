@@ -450,3 +450,24 @@ fn a_static_defs_self_is_no_instance() {
         "{err}"
     );
 }
+
+#[test]
+fn self_in_a_lifted_block_is_the_class_generated_into() {
+    // docs/14 §5: a parameter typed `Self` in a block given to
+    // `def_method` takes the class generated into, not the `static
+    // def`'s class.
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        "class Model\n  def hello -> Int = 1\n  static def self.gen -> Void\n    def_method(:same, :o) do |o: Self| -> Bool\n      o.hello == hello\n    end\n  end\nend\n",
+    );
+    let app = write(
+        &d.0,
+        "app.qz",
+        "require_relative \"lib\"\nclass Post < Model\n  gen\nend\np Post.new.same(Model.new)\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", app.to_str().unwrap()], &[]);
+    assert!(!ok);
+    assert!(err.contains("expects Post but found Model"), "{err}");
+}
