@@ -1,0 +1,23 @@
+# A rescue clause's variable captured narrowed by a closure: the narrowing
+# holds while nothing reassigns it, and another clause's variable of the
+# name is its own.
+class A < StandardError
+  @n: Int = 41
+  def a -> Int = @n + 1
+end
+class B < StandardError
+end
+begin
+  raise A.new("a")
+rescue A, B => e
+  if e.is_a?(A)
+    f = -> { e.a }
+    p f.call
+  end
+end
+begin
+  raise B.new("b")
+rescue => e
+  g = -> { e.message }
+  p g.call
+end
