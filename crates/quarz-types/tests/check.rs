@@ -3198,3 +3198,11 @@ fn clamp_gives_the_receiver_or_a_bound() {
     // When `T` is the class itself, it is that class.
     ok("x: Int = 5.clamp(1, 3)\ny: Int = 5.clamp(1..3)");
 }
+
+#[test]
+fn a_task_blocks_next_value_must_be_shareable() {
+    // tmp/repro/task-next-shareable.qz: the body ends in `raise`, so a
+    // `next` value is all that passes to the awaiting task.
+    err("# A task block's `next` value reaches the task that awaits it, so it must\n# be Shareable, as the body's last value must be. When the body ends in\n# `raise`, only the last value is checked (it is Nothing): this program is\n# accepted, and a mutable Box crosses tasks. Expected: an error at `next`,\n# \"a task block returns the non-shareable type Box\".\nclass Box\n  var @v: Int\n  def initialize(@v: Int); end\nend\nc = true\nt = Task.spawn do\n  next Box.new(1) if c\n  raise \"unreachable\"\nend\np t.await\n", "a task block returns the non-shareable type Box");
+    ok("c = true\nt = Task.spawn do\n  next 1 if c\n  raise \"x\"\nend\np t.await");
+}

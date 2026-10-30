@@ -10550,7 +10550,21 @@ impl Checker {
         self.mark_discarded(block.body.last(), void);
         // A task's result reaches the task that awaits it: the declared
         // result, when there is one (a `next` may give any of it).
-        let result = if block.ret.is_some() { &ret } else { &bt };
+        // Without one, what the body ends with and what a `next` gave (the
+        // result variable it was coerced to): when the body ends in
+        // `raise`, a `next` value is all that passes.
+        let joined;
+        let result = if block.ret.is_some() {
+            &ret
+        } else {
+            let r = self.resolve(&ret);
+            if matches!(r, Type::Var(_)) {
+                &bt
+            } else {
+                joined = self.join(&bt, &r);
+                &joined
+            }
+        };
         if is_task && !void && !result.is_nothing() {
             let rt = self.resolve(result);
             // A literal the block ends with is held by no variable: its
