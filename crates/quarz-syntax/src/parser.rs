@@ -1407,10 +1407,12 @@ impl<'src> Parser<'src> {
         let mut has_parens = false;
         let mut args = Vec::new();
 
-        // Explicit type arguments: `name[Int, String](...)`.
+        // Explicit type arguments: `name[Int, String](...)`, or
+        // `name[(Int) -> Int](...)` (a procedure type; kept only if `(`
+        // follows the `]`, else an index such as `a[(1 + 2)]`).
         if self.at(&T::LBracket)
             && !self.peek().space_before
-            && matches!(self.kind_at(1), T::Const(_))
+            && matches!(self.kind_at(1), T::Const(_) | T::LParen)
         {
             let mark = self.mark();
             let diag_mark = self.diagnostics.len();

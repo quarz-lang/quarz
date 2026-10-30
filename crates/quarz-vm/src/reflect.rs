@@ -51,12 +51,16 @@ pub trait Reflect {
     fn methods(&self, class: ClassId) -> Vec<ReflectMethod>;
     /// `Meta::ClassDef#def_method` (docs/14 §5): a method to generate,
     /// recorded for the compiler, or why it cannot be (the message of
-    /// the exception raised at the call).
-    fn generate(&self, interp: &Interp, request: GenRequest) -> Result<(), String>;
+    /// the exception raised at the call). Its result is the generation's
+    /// position among the statement's (for the method's handle).
+    fn generate(&self, interp: &Interp, request: GenRequest) -> Result<usize, String>;
     /// `Meta::ClassDef#def_field`: a field to generate, with its default.
     fn def_field(&self, interp: &Interp, request: FieldRequest) -> Result<(), String>;
     /// `Meta::ClassDef#doc`: the documentation of the next generation.
     fn doc(&self, text: String);
+    /// A handle `field_ref`/`method_ref` made (docs/14 §5), checked when
+    /// the statement has run whether or not a generated method captures it.
+    fn made_handle(&self, interp: &Interp, handle: &Value) -> Result<(), String>;
 }
 
 /// A field `def_field` asks for: its type is a class (without type

@@ -166,12 +166,14 @@ module Meta
     # is the block (its `self` an instance; the values it captures are
     # baked into the method). The block's parameters take the names
     # given, in order; the block cannot assign what it captures, leave
-    # the enclosing method or use its `self`.
-    static native def def_method[R](name: Symbol, *, visibility: Symbol = :public, &body: T.() -> R) -> Void
-    static native def def_method[A, R](name: Symbol, param: Symbol, *, visibility: Symbol = :public, &body: T.(A) -> R) -> Void
-    static native def def_method[A, B, R](name: Symbol, params: [Symbol, Symbol], *, visibility: Symbol = :public, &body: T.(A, B) -> R) -> Void
+    # the enclosing method or use its `self`. Its result is a handle to
+    # the method (`Meta::Method`), for the methods the statement
+    # generates to call it.
+    static native def def_method[R](name: Symbol, *, visibility: Symbol = :public, &body: T.() -> R) -> Method[T, () -> R]
+    static native def def_method[A, R](name: Symbol, param: Symbol, *, visibility: Symbol = :public, &body: T.(A) -> R) -> Method[T, (A) -> R]
+    static native def def_method[A, B, R](name: Symbol, params: [Symbol, Symbol], *, visibility: Symbol = :public, &body: T.(A, B) -> R) -> Method[T, (A, B) -> R]
     # The same for a class method: the block's `self` is the class.
-    static native def def_class_method[R](name: Symbol, *, visibility: Symbol = :public, &body: Type[T].() -> R) -> Void
+    static native def def_class_method[R](name: Symbol, *, visibility: Symbol = :public, &body: Type[T].() -> R) -> Method[Type[T], () -> R]
     # A field `@name` of the class, of a class type without type
     # parameters, with `default` (a value made at compile time, baked
     # into the class), assignable when `var:` is true, with the accessors
@@ -185,6 +187,15 @@ module Meta
     # resolved when the statement has run: a missing field or another
     # type is an error at the statement.
     static native def field_ref[U](name: Symbol) -> FieldRef[T, U]
+    # A handle to the method `name` of the class, its own, inherited or
+    # generated (by this statement or another), whose parameters (all
+    # positional) and result are exactly `P`'s (written as the type
+    # argument: `method_ref[(Int) -> Int](:fact)`), resolved when the
+    # statement has run: a generated method can call itself, or one
+    # generated after it, through it.
+    static native def method_ref[P](name: Symbol) -> Method[T, P]
+    # The same for a class method.
+    static native def class_method_ref[P](name: Symbol) -> Method[Type[T], P]
     # The documentation comment of the next method generated.
     static native def doc(text: String) -> Void
   end
@@ -214,6 +225,34 @@ module Meta
     native def get(obj: T) -> U
     # Sets the field of `obj` to `value`.
     native def set(obj: T, value: U) -> Void
+  end
+
+  # A method of `T` (an instance's, or the class's when `T` is a
+  # `Type`) of procedure type `P` as a value (docs/14 §5): what
+  # `ClassDef#def_method`, `ClassDef#def_class_method`,
+  # `ClassDef#method_ref` and `ClassDef#class_method_ref` give. It is called only in a block given to
+  # `def_method` (or `def_class_method`) that captures it, where it is
+  # baked: `ref.bind(self)` is the method bound to the generated method's
+  # `self`, a `P`, which dispatches as a call of the method does (an
+  # override in a subclass is taken). Made only by those methods: it has
+  # its `name` and `owner`, and nothing else observable.
+  class Method[T, P]
+    # (Set by the native that makes it, and when the statement has run.)
+    @owner: Type[Object] = Object
+    @name: Symbol = :name
+    @site: Int = 0
+    @singleton: Bool = false
+    @method: Int = 0
+    @at: Type[Object] = Object
+    # The method's name.
+    def name -> Symbol = @name
+    # The class whose method it is.
+    def owner -> Type[Object] = @owner
+    # `#<Meta::Method Post#bump>`, `#<Meta::Method Post.find>`.
+    def to_s -> String = "#<Meta::Method #{@owner.name}#{@singleton ? "." : "#"}#{@name}>"
+    def inspect -> String = to_s
+    # The method bound to `obj`.
+    native def bind(obj: T) -> P
   end
 
   # A method a quoted block calls (docs/14 §6): its owner, name and side,

@@ -605,11 +605,14 @@ pub enum Inst {
         destructure: Option<u32>,
         is_lambda: bool,
     },
-    /// `recv.:name`
+    /// `recv.:name`: a procedure calling `name` on `recv`, found by name
+    /// and arity; with `method` (a method handle's `bind`, docs/14 §5),
+    /// that method as a call of it dispatches (by signature).
     MethodRef {
         dst: Reg,
         recv: Reg,
         name: u32,
+        method: Option<MethodId>,
     },
     /// `&:name`
     /// `&:name`: a procedure calling `name` on its argument; `method`

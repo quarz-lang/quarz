@@ -1222,9 +1222,12 @@ impl Interp {
                 destructure,
                 is_lambda,
             } => self.op_make_block(act, regs, *dst, *func, *destructure, *is_lambda),
-            Inst::MethodRef { dst, recv, name } => {
-                self.op_method_ref(f, act, regs, *dst, *recv, *name)
-            }
+            Inst::MethodRef {
+                dst,
+                recv,
+                name,
+                method,
+            } => self.op_method_ref(f, act, regs, *dst, *recv, *name, *method),
             Inst::SymbolProc {
                 dst,
                 name,
@@ -1352,7 +1355,18 @@ impl Interp {
                 let v = self.call_named(&recv, &args, name, own_cache(closure, cache), *method)?;
                 Ok(if *discard { Value::Nil } else { v })
             }
-            ClosureBody::BoundMethod { recv, name } => self.send(recv, name, args, None),
+            ClosureBody::BoundMethod {
+                recv,
+                method: Some(m),
+                ..
+            } => self.invoke(
+                self.resolve_dynamic(recv, *m),
+                recv.clone(),
+                args,
+                Vec::new(),
+                None,
+            ),
+            ClosureBody::BoundMethod { recv, name, .. } => self.send(recv, name, args, None),
             ClosureBody::Native(f) => f(self, args),
             ClosureBody::Func(fid) => {
                 if sched::stack_exhausted() {

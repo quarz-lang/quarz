@@ -341,8 +341,8 @@ op_entry!(
     }
 );
 
-op_entry!(qz_op_method_ref(dst: u32, recv: u32, name: u32) |rt, act, f, pool, regs| {
-    rt.op_method_ref(f, act, regs, dst, recv, name);
+op_entry!(qz_op_method_ref(dst: u32, recv: u32, name: u32, method: u32) |rt, act, f, pool, regs| {
+    rt.op_method_ref(f, act, regs, dst, recv, name, opt(method));
     Ok(())
 });
 

@@ -1083,3 +1083,173 @@ fn field_handles_read_and_write_generated_and_declared_fields() {
         assert!(err.contains(expected), "{body}: {err}");
     }
 }
+
+const METHOD_HANDLES_LIB: &str = r##"class Model
+  # Overridden by the generated `fact`, which its handle names.
+  def fact(n: Int) -> Int = 0
+  static def self.counter(field: Symbol) -> Void
+    ref = def_field(field, Int, 0, var: true, reader: true)
+    bump = def_method("bump_#{field}".to_sym) do -> Void
+      ref.set(self, ref.get(self) + 1)
+    end
+    def_method("bump_#{field}_twice".to_sym) do -> Void
+      bump.bind(self).call
+      bump.bind(self).call
+    end
+  end
+  static def self.arith -> Void
+    fact = method_ref[(Int) -> Int](:fact)
+    def_method(:fact, :n) do |n: Int| -> Int
+      n <= 1 ? 1 : n * fact.bind(self).call(n - 1)
+    end
+    add = def_method(:add, [:a, :b]) do |a: Int, b: Int| -> Int
+      a + b
+    end
+    def_method(:add3, :x) do |x: Int| -> Int
+      f = add.bind(self)
+      [1, 2].sum { |i| f.call(x, i) }
+    end
+    hidden = def_method(:secret, visibility: :private) do -> String
+      "s"
+    end
+    def_method(:reveal) do -> String
+      hidden.bind(self).call
+    end
+    mk = def_class_method(:make) do -> Model
+      new
+    end
+    def_class_method(:make2) do -> Model
+      mk.bind(self).call
+    end
+  end
+end
+"##;
+
+const METHOD_HANDLES_APP: &str = r##"require_relative "lib"
+class Post < Model
+  counter(:views)
+  arith
+end
+class Sub < Post
+  def add(a: Int, b: Int) -> Int = a * b
+end
+q = Post.new
+q.bump_views_twice
+p q.views
+p q.fact(5)
+p q.add3(4)
+p Sub.new.add3(4)
+p q.reveal
+p Post.make2.class
+"##;
+
+const METHOD_HANDLES_OUT: &str = "2\n120\n11\n12\n\"s\"\nPost\n";
+
+#[test]
+fn method_handles_call_generated_methods() {
+    // docs/14 §5: `def_method`'s result and `method_ref` are handles that
+    // the methods a statement generates call through `bind(self)`, as a
+    // call dispatches (an override is taken), interpreted and compiled,
+    // cold and warm.
+    let d = dir();
+    write(&d.0, "lib.qz", METHOD_HANDLES_LIB);
+    let app = write(&d.0, "app.qz", METHOD_HANDLES_APP);
+    let cache = d.0.join("cache");
+    let env = [("QUARZ_CACHE_DIR", cache.to_str().unwrap())];
+    let cold = quarz(&d.0, &["check", app.to_str().unwrap()], &env);
+    assert!(cold.0, "{}", cold.2);
+    let warm = quarz(&d.0, &["check", app.to_str().unwrap()], &env);
+    assert_eq!(warm, cold);
+    for _ in 0..2 {
+        let (ok, out, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &env);
+        assert!(ok, "{err}");
+        assert_eq!(out, METHOD_HANDLES_OUT);
+    }
+    let (ok, _, err) = quarz(
+        &d.0,
+        &["build", app.to_str().unwrap(), "-o", "app.bin"],
+        &env,
+    );
+    assert!(ok, "{err}");
+    let out = std::process::Command::new(d.0.join("app.bin"))
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout), METHOD_HANDLES_OUT);
+    // The cached `lib.qz` in a program whose methods are numbered
+    // otherwise (a file declaring methods required first): a handle keeps
+    // its method by class and place, not by id.
+    write(
+        &d.0,
+        "extra.qz",
+        "class Extra\n  def a(x: Int) -> Int = x\n  def b(x: Int) -> Int = x\nend\n",
+    );
+    let app2 = write(
+        &d.0,
+        "app2.qz",
+        &format!("require_relative \"extra\"\n{METHOD_HANDLES_APP}"),
+    );
+    let (ok, out, err) = quarz(&d.0, &["run", app2.to_str().unwrap()], &env);
+    assert!(ok, "{err}");
+    assert_eq!(out, METHOD_HANDLES_OUT);
+    // What a handle cannot name, or be bound to, is the statement's
+    // error.
+    for (body, expected) in [
+        (
+            "    m = method_ref[IntFn](:nope)\n    def_method(:bad) do -> Int\n      m.bind(self).call(1)\n    end\n",
+            "has no method `nope` of that type",
+        ),
+        (
+            "    m = method_ref[IntFn](:twice)\n    def_method(:bad) do -> Int\n      m.bind(self).call(1)\n    end\n",
+            "has no method `twice` of that type",
+        ),
+        // Checked though nothing captures it.
+        (
+            "    m = method_ref[IntFn](:nope)\n",
+            "has no method `nope` of that type",
+        ),
+        (
+            "    f = field_ref[Int](:nope)\n",
+            "names no field of `Comment`",
+        ),
+        (
+            "    m = def_method(:one) do -> Int\n      1\n    end\n    def_method(:bad, :o) do |o: Model| -> Int\n      m.bind(o).call\n    end\n",
+            "takes the generated method's `self`",
+        ),
+        (
+            "    m = Other.mk\n    def_method(:bad) do -> Int\n      m.bind(self).call(1)\n    end\n  end\n  static def self.mk -> Meta::Method[Model, IntFn]\n    method_ref[IntFn](:thrice)\n",
+            "which `Comment` does not inherit from",
+        ),
+    ] {
+        write(
+            &d.0,
+            "lib.qz",
+            &format!("type IntFn = (Int) -> Int\nclass Model\n  def twice(s: String) -> Int = 2\n  def thrice(x: Int) -> Int = 3\n  static def self.gen -> Void\n{body}  end\nend\nclass Other < Model\nend\n"),
+        );
+        write(&d.0, "bad.qz", "require_relative \"lib\"\nclass Comment < Model\n  gen\nend\n");
+        let (ok, _, err) = quarz(&d.0, &["check", "bad.qz"], &[]);
+        assert!(!ok, "{body}");
+        assert!(err.contains(expected), "{body}: {err}");
+    }
+    // A handle `static(...)` gives is checked as a statement's is.
+    write(
+        &d.0,
+        "lib.qz",
+        "class Model\n  def one(x: Int) -> Int = 1\n  static def self.mk(n: Symbol) -> Meta::Method[Model, (Int) -> Int] = method_ref[(Int) -> Int](n)\nend\n",
+    );
+    write(
+        &d.0,
+        "ok.qz",
+        "require_relative \"lib\"\np static(Model.mk(:one))\n",
+    );
+    let (ok, out, err) = quarz(&d.0, &["run", "ok.qz"], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(out, "#<Meta::Method Model#one>\n");
+    write(
+        &d.0,
+        "bad.qz",
+        "require_relative \"lib\"\np static(Model.mk(:nope))\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", "bad.qz"], &[]);
+    assert!(!ok);
+    assert!(err.contains("has no method `nope` of that type"), "{err}");
+}
