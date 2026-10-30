@@ -1478,17 +1478,13 @@ impl Checker {
             let saved_touched = std::mem::take(&mut self.touched);
             let saved_frame_vars = std::mem::take(&mut self.frame_vars);
             let saved_temp_stmts = std::mem::take(&mut self.temp_stmts);
-            let mut active = class.usings.clone();
-            for e in self.file_extensions(class.file) {
-                if !active.contains(&e) {
-                    active.push(e);
-                }
-            }
-            let saved_active = std::mem::replace(&mut self.world.active_extensions, active);
+            let saved_active = std::mem::take(&mut self.world.active_extensions);
             for f in &class.fields {
                 let Some(d) = &f.default else {
                     continue;
                 };
+                self.world.active_extensions =
+                    self.extensions_at(Some(cid), class.file, d.span.start);
                 self.scan_closures([&**d], std::iter::empty());
                 let t = self.check_expr(d, Some(&f.ty));
                 if !self.coerce(&t, &f.ty) {
@@ -1539,8 +1535,9 @@ impl Checker {
         if last_used {
             self.env.reassigned = None;
         }
-        self.world.active_extensions = self.file_extensions(file);
         for (i, expr) in body.iter().enumerate() {
+            // (A `using` is in effect from its statement on.)
+            self.world.active_extensions = self.file_extensions(file, expr.span.start);
             self.stmt_unused = !(last_used && i + 1 == body.len());
             let t = self.check_expr(expr, None);
             if i + 1 < body.len() {
@@ -2113,7 +2110,7 @@ impl Checker {
         let saved_frame_vars = std::mem::take(&mut self.frame_vars);
         let saved_temp_stmts = std::mem::take(&mut self.temp_stmts);
         self.scan_closures([&*stmt.expr], std::iter::empty());
-        let active = self.file_extensions(stmt.file);
+        let active = self.extensions_at(Some(stmt.class), stmt.file, stmt.expr.span.start);
         let saved_active = std::mem::replace(&mut self.world.active_extensions, active);
         let t = self.check_expr(&stmt.expr, None);
         let _ = self.settle_vars(&t);
@@ -2411,7 +2408,6 @@ impl Checker {
             OwnerInfo {
                 type_params: c.type_params.clone(),
                 kind: c.kind,
-                usings: c.usings.clone(),
                 parent: c.parent,
             }
         };
@@ -2526,24 +2522,13 @@ impl Checker {
                 listed: false,
             });
         }
-        // Active extensions: the class's `using`s plus those of the file's
-        // top level, and its group's top-level extensions.
-        let mut active = class.usings.clone();
-        for e in self.file_extensions(info.file) {
-            if !active.contains(&e) {
-                active.push(e);
-            }
-        }
-        // Usings of enclosing namespaces.
-        let mut ns = class.parent;
-        while let Some(n) = ns {
-            for e in &self.world.class(n).usings {
-                if !active.contains(e) {
-                    active.push(*e);
-                }
-            }
-            ns = self.world.class(n).parent;
-        }
+        // Active extensions: those where the method is written (an
+        // extension's method: in the extension's module).
+        let lexical = match info.extension {
+            Some(e) => self.world.extensions[e as usize].module,
+            None => Some(owner),
+        };
+        let active = self.extensions_at(lexical, info.file, info.span.start);
 
         let saved_env = std::mem::replace(&mut self.env, env);
         let saved_infer = std::mem::take(&mut self.infer);
@@ -2721,7 +2706,7 @@ impl Checker {
         let saved_frame_vars = std::mem::take(&mut self.frame_vars);
         let saved_temp_stmts = std::mem::take(&mut self.temp_stmts);
         self.scan_closures([&*value], std::iter::empty());
-        let active = self.file_extensions(info.file);
+        let active = self.extensions_at(info.owner, info.file, value.span.start);
         let saved_active = std::mem::replace(&mut self.world.active_extensions, active);
         let t = self.check_expr(&value, None);
         self.world.active_extensions = saved_active;
@@ -3405,10 +3390,59 @@ impl Checker {
 
     /// The extensions active throughout a file: its top level's `using`s
     /// and the top-level extensions of its group (`World::group_extensions`).
-    fn file_extensions(&self, file: u32) -> Vec<ExtensionId> {
+    /// The extensions of `class`'s `using`s (in its body; for a file's
+    /// main pseudo-class, at the top level) in effect at `pos` in `file`:
+    /// those written before it, a `using` being in effect from its
+    /// statement to the end of the body (docs/01 §7). (Code of another
+    /// file, a generated method's body, has them all.)
+    fn usings_at(&self, class: ClassId, file: u32, pos: u32) -> Vec<ExtensionId> {
+        let c = self.world.class(class);
+        c.usings
+            .iter()
+            .filter(|(at, _)| c.file != file || *at < pos)
+            .map(|(_, e)| *e)
+            .collect()
+    }
+
+    /// The extensions active in code written at `pos` in `file`, in the
+    /// body of `lexical` (a class or module; `None`: the top level): the
+    /// `using`s before `pos` there, in the namespaces it is nested in and
+    /// at the file's top level, its group's top-level extensions, and the
+    /// extensions the modules it is in declare (`own_extensions`).
+    fn extensions_at(&self, lexical: Option<ClassId>, file: u32, pos: u32) -> Vec<ExtensionId> {
+        let mut active = Vec::new();
+        let mut ns = lexical;
+        while let Some(n) = ns {
+            active.extend(self.usings_at(n, file, pos));
+            ns = self.world.class(n).parent;
+        }
+        active.extend(self.file_extensions(file, pos));
+        active.extend(self.own_extensions(lexical));
+        let mut seen = HashSet::default();
+        active.retain(|e| seen.insert(*e));
+        active
+    }
+
+    /// The extensions a module declares are in effect inside its body
+    /// (so they see each other, as a `super` in one reaching another):
+    /// those of `class` and of the modules it is nested in.
+    fn own_extensions(&self, class: Option<ClassId>) -> Vec<ExtensionId> {
+        let mut out = Vec::new();
+        let mut ns = class;
+        while let Some(n) = ns {
+            let c = self.world.class(n);
+            out.extend(c.extensions.iter().copied());
+            ns = c.parent;
+        }
+        out
+    }
+
+    /// The extensions active at `pos` in `file` from its top level: its
+    /// `using`s before `pos`, and its group's top-level extensions.
+    fn file_extensions(&self, file: u32, pos: u32) -> Vec<ExtensionId> {
         let mut active = self
             .file_main(file)
-            .map(|fm| self.world.class(fm).usings.clone())
+            .map(|fm| self.usings_at(fm, file, pos))
             .unwrap_or_default();
         for e in self.world.group_extensions(file) {
             if !active.contains(&e) {
@@ -11595,7 +11629,6 @@ impl Checker {
 struct OwnerInfo {
     type_params: Vec<crate::world::TypeParamInfo>,
     kind: ClassKind,
-    usings: Vec<ExtensionId>,
     parent: Option<ClassId>,
 }
 

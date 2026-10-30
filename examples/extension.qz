@@ -32,5 +32,5 @@ show("quarz")
 puts [1, 2, 3].describe_all
 puts "hello".shout
 
-# `using` applies to this file only: in a file without `using Describing`,
-# "x".shout is a compile error.
+# `using` applies from its statement to the end of this file only: above
+# `using Describing`, or in a file without it, "x".shout is a compile error.

@@ -3065,3 +3065,58 @@ fn a_type_not_yet_known_cannot_cross_tasks() {
     // Annotated, it is checked as any type.
     ok("a: Array[Int] = []\nch = Channel[Shareable].new(4)\nch.send(a)\nch2 = Channel[Int].new(4)\nch2.send(1)");
 }
+
+/// `using` is in effect from its statement to the end of the statement
+/// list it appears in (docs/01 §7): at a file's top level and in a class
+/// body as in a method body, what is above it does not see it.
+#[test]
+fn using_is_positional() {
+    let m = "module M\n  extension String\n    def shout -> String = upcase + \"!\"\n  end\nend\n";
+    for above in [
+        "puts \"a\".shout",
+        "def early -> String = \"a\".shout",
+        "X = \"a\".shout",
+        "class Before\n  def f -> String = \"a\".shout\nend",
+        "class Before\n  @g: String = \"a\".shout\nend",
+    ] {
+        err(
+            &format!("{m}{above}\nusing M\n"),
+            "undefined method `shout` for String",
+        );
+    }
+    ok(&format!(
+        "{m}using M\nputs \"a\".shout\ndef late -> String = \"a\".shout\nY = \"a\".shout\nclass After\n  @g: String = \"a\".shout\n  def f -> String = \"a\".shout\nend"
+    ));
+    err(
+        &format!("{m}class C\n  def a -> String = \"a\".shout\n  using M\nend"),
+        "undefined method `shout` for String",
+    );
+    ok(&format!(
+        "{m}class C\n  using M\n  def b -> String = \"b\".shout\nend"
+    ));
+    err(
+        &format!("{m}def f -> String\n  x = \"a\".shout\n  using M\n  x\nend"),
+        "undefined method `shout` for String",
+    );
+    // A module's own extensions are in effect in its body, without `using`.
+    ok("module M\n  extension String\n    def shout -> String = upcase + \"!\"\n    def twice -> String = shout + shout\n  end\n  X = \"k\".shout\n  def self.m -> String = \"m\".shout\nend\nputs M.m, M::X");
+    err(
+        &format!("{m}puts \"a\".shout"),
+        "undefined method `shout` for String",
+    );
+    // In a class or module body, to its end: constants, field defaults
+    // of nested classes, `static` statements.
+    ok(&format!("{m}class C\n  using M\n  X = \"a\".shout\nend"));
+    ok(&format!(
+        "{m}module N\n  using M\n  class C\n    @g: String = \"a\".shout\n  end\nend"
+    ));
+    // An extension's method is written in the extension's module: its
+    // `using`s, not the extended class's.
+    ok(&format!(
+        "{m}module N\n  using M\n  extension Int\n    def g -> String = \"g\".shout\n  end\nend"
+    ));
+    err(
+        &format!("{m}class C\n  using M\nend\nmodule N\n  extension C\n    def g -> String = \"g\".shout\n  end\nend"),
+        "undefined method `shout` for String",
+    );
+}

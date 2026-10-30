@@ -80,7 +80,7 @@ pub struct Declarer<'ast> {
     pending_ext: Vec<PendingExtension<'ast>>,
     /// The user's compilation units (files), in load order.
     pub units: Vec<UnitDecl<'ast>>,
-    class_usings: HashMap<ClassId, Vec<&'ast ConstPath>>,
+    class_usings: HashMap<ClassId, Vec<(&'ast ConstPath, u32)>>,
     builtins_resolved: bool,
     /// The modules extensions include, where (extension, module, span,
     /// file), checked once fields are known (`check_shareable_extensions`).
@@ -177,7 +177,8 @@ pub struct UnitDecl<'ast> {
     pub file: u32,
     pub main: ClassId,
     pub body: Vec<&'ast Expr>,
-    pub usings: Vec<&'ast ConstPath>,
+    /// The `using`s at the file's top level, with their positions.
+    pub usings: Vec<(&'ast ConstPath, u32)>,
 }
 
 impl<'ast> Declarer<'ast> {
@@ -320,7 +321,12 @@ impl<'ast> Declarer<'ast> {
         for expr in &program.body {
             match &expr.kind {
                 // A file's `using`s and requires are its own.
-                ExprKind::Using(path) => self.units.last_mut().unwrap().usings.push(path),
+                ExprKind::Using(path) => self
+                    .units
+                    .last_mut()
+                    .unwrap()
+                    .usings
+                    .push((path, expr.span.start)),
                 ExprKind::Require { .. } => {}
                 _ => {
                     if !self.collect_item(expr, Some(root), false) {
@@ -583,10 +589,14 @@ impl<'ast> Declarer<'ast> {
                 self.register_member(namespace, name, Member::Alias(id), expr.span);
             }
             ExprKind::Using(path) => match namespace {
-                Some(ns) => self.class_usings.entry(ns).or_default().push(path),
+                Some(ns) => self
+                    .class_usings
+                    .entry(ns)
+                    .or_default()
+                    .push((path, expr.span.start)),
                 None => {
                     if let Some(unit) = self.units.last_mut() {
-                        unit.usings.push(path);
+                        unit.usings.push((path, expr.span.start));
                     }
                 }
             },
@@ -3484,7 +3494,8 @@ impl<'ast> Declarer<'ast> {
     }
 
     fn resolve_usings(&mut self) {
-        let unit_usings: Vec<(u32, ClassId, Vec<&'ast ConstPath>)> = self
+        #[allow(clippy::type_complexity)]
+        let unit_usings: Vec<(u32, ClassId, Vec<(&'ast ConstPath, u32)>)> = self
             .units
             .iter_mut()
             .map(|u| (u.file, u.main, std::mem::take(&mut u.usings)))
@@ -3492,9 +3503,9 @@ impl<'ast> Declarer<'ast> {
         for (file, main, paths) in unit_usings {
             self.file = file;
             let mut ids = Vec::new();
-            for path in paths {
+            for (path, pos) in paths {
                 if let Some(found) = self.resolve_using(None, path, Span::empty(0)) {
-                    ids.extend(found);
+                    ids.extend(found.into_iter().map(|e| (pos, e)));
                 }
             }
             self.world.class_mut(main).usings.extend(ids);
@@ -3502,9 +3513,9 @@ impl<'ast> Declarer<'ast> {
         let per_class = std::mem::take(&mut self.class_usings);
         for (cid, paths) in per_class {
             let mut ids = Vec::new();
-            for path in paths {
+            for (path, pos) in paths {
                 if let Some(found) = self.resolve_using(Some(cid), path, Span::empty(0)) {
-                    ids.extend(found);
+                    ids.extend(found.into_iter().map(|e| (pos, e)));
                 }
             }
             self.world.class_mut(cid).usings = ids;
