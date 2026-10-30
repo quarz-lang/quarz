@@ -101,7 +101,14 @@ fn fail_fast_cancels_parallel_tests() {
         .env("QUARZ_THREADS", "4")
         .output()
         .unwrap();
-    assert_eq!(out.status.code(), Some(1));
+    // (A DeadlockError, on a missed cancel, is on stderr.)
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "{}{}",
+        stdout(&out),
+        stderr(&out)
+    );
     assert!(stdout(&out).contains("\nF\n"), "{}", stdout(&out));
     assert!(
         stdout(&out).contains("1 tests, 1 assertions, 1 failures"),
@@ -284,20 +291,35 @@ fn fail_fast_and_junit() {
     );
 }
 
+/// Under `--parallel=8` the eight tests run at the same time: each waits
+/// until all eight have arrived (channels, not sleeps, so it holds however
+/// the tasks are scheduled). With `--timeout=0` (no timer pending), fewer
+/// at once would leave every task waiting, and the run would end with
+/// DeadlockError, without the report, at once rather than after the
+/// tests' timeout.
 #[test]
 fn parallel_tests_wait_together() {
-    let started = std::time::Instant::now();
     let out = Command::new(env!("CARGO_BIN_EXE_quarz"))
-        .args(["test", "test_cmd/parallel_test.qz", "--parallel=8"])
+        .args([
+            "test",
+            "test_cmd/parallel_test.qz",
+            "--parallel=8",
+            "--timeout=0",
+        ])
         .current_dir(tests_dir())
         .env("QUARZ_THREADS", "4")
         .output()
         .unwrap();
-    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    // (A DeadlockError, with fewer at once, is on stderr.)
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}{}",
+        stdout(&out),
+        stderr(&out)
+    );
     assert!(stdout(&out).contains("\n........\n"), "{}", stdout(&out));
     assert!(stdout(&out).contains("8 tests, 0 assertions, 0 failures, 0 errors"));
-    // Eight sleeps of 500 ms one after another would take 4 s.
-    assert!(started.elapsed() < std::time::Duration::from_secs(3));
 }
 
 #[test]
