@@ -87,6 +87,7 @@ block          = "{" [ "|" block_params "|" ] [ "->" type ] body "}"
                | "do" [ "|" block_params "|" ] [ "->" type ] body "end" ;
 block_params   = param_list ;                           (* types may be omitted; they are inferred *)
 method_ref     = expression ".:" method_name ;
+function_call  = "::" IDENT ... ;   (* then the arguments and block of a call on the implicit receiver; a top-level def or a built-in Kernel function; no space after "::" *)
 
 (* ---- casts and type expressions ---- *)
 cast           = expression "." ( "as" | "as?" ) "(" type ")" ;

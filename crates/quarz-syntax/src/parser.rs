@@ -839,7 +839,7 @@ impl<'src> Parser<'src> {
                     return None;
                 }
                 match (&call.recv, call.name.as_str()) {
-                    (None, name) if call.args.is_empty() && !call.has_parens => {
+                    (None, name) if call.args.is_empty() && !call.has_parens && !call.function => {
                         Some(LValue::Local {
                             name: name.to_string(),
                             span: expr.span,
@@ -1271,6 +1271,7 @@ impl<'src> Parser<'src> {
                 safe_nav,
                 has_parens,
                 type_args: vec![],
+                function: false,
             })),
         )
     }
@@ -1843,6 +1844,28 @@ impl<'src> Parser<'src> {
                 self.bump();
                 Ok(self.node(start, ExprKind::IVar(name)))
             }
+            // `::name(...)`: a function (a built-in `Kernel` function or a
+            // top-level `def`), not a method of `self` (docs/01 §1).
+            // (`::Integer("3")` too: a constant name with `(` right after it;
+            // `::Integer` alone is the constant.)
+            T::ColonColon
+                if !self.peek_at(1).space_before
+                    && (matches!(self.kind_at(1), T::Ident(_))
+                        || (matches!(self.kind_at(1), T::Const(_))
+                            && matches!(self.kind_at(2), T::LParen)
+                            && !self.peek_at(2).space_before)) =>
+            {
+                self.bump();
+                let name = match self.bump().kind {
+                    T::Ident(name) | T::Const(name) => name,
+                    _ => unreachable!(),
+                };
+                let mut expr = self.finish_call(None, name, false, start)?;
+                if let ExprKind::Call(call) = &mut expr.kind {
+                    call.function = true;
+                }
+                Ok(expr)
+            }
             T::ColonColon | T::Const(_) => {
                 let path = self.parse_const_path()?;
                 let span = self.span_from(start);
@@ -2393,6 +2416,7 @@ impl<'src> Parser<'src> {
                             ret: None,
                         }),
                         safe_nav: false,
+                        function: false,
                         has_parens: false,
                         type_args: vec![],
                     })),
@@ -2417,6 +2441,7 @@ impl<'src> Parser<'src> {
                         ret: None,
                     }),
                     safe_nav: false,
+                    function: false,
                     has_parens: false,
                     type_args: vec![],
                 })),
@@ -2480,6 +2505,7 @@ impl<'src> Parser<'src> {
                         ret: None,
                     }),
                     safe_nav: false,
+                    function: false,
                     has_parens: false,
                     type_args: vec![],
                 })),

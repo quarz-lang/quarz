@@ -6,6 +6,8 @@ Everything listed below exists in the prelude (`std/prelude.qz`) unless it is ma
 
 ## 1. Kernel (functions available at the top level)
 
+These are functions, not methods of `self` (01-syntax.md §1): a class's method of the same name does not take a call of them over, and `::puts` calls the function where such a method hides it.
+
 `puts`, `print`, `printf`, `p`, `pp`, `warn`, `raise`, `loop`, `sleep` (= `Task.sleep`), `Task.spawn`, `exit` (raises `SystemExit`, so `ensure` clauses run, as in Ruby; in another task, the main task raises it too, as Ruby does a thread's, or the `Task.timeout` block the task was spawned in), `exit!`, `abort`, `at_exit`, `require`, `require_relative`, `gets`/`gets?`, `readline`, `readlines`, `rand`/`srand`, `format`/`sprintf`, `Integer(text, base = 10)`/`Float(...)`/`String(...)` (conversion; raises on failure).
 
 `eval`, `send`, `binding`, `method`, `instance_eval`, `define_method`, `ObjectSpace`, `fork`, `system`/backticks (moved to `Process.run`/`Process.sh`) do not exist.

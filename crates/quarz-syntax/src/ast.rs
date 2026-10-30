@@ -288,6 +288,10 @@ pub struct Call {
     pub has_parens: bool,
     /// Explicit method type arguments: `max_by[Person, Int](...)`.
     pub type_args: Vec<TypeExpr>,
+    /// `::name(...)`: a function, a built-in `Kernel` function or a
+    /// top-level `def` of the file, not a method of `self`.
+    #[serde(default)]
+    pub function: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

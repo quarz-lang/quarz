@@ -3742,6 +3742,25 @@ impl<'ast> Declarer<'ast> {
                 def.span,
             );
         }
+        // `Kernel.puts` always calls the built-in function (docs/01 §1):
+        // no method of the module object may take its name.
+        if def.singleton && extension.is_some() && owner == self.world.builtin.kernel {
+            let builtin = self
+                .world
+                .class(owner)
+                .methods
+                .get(&def.name)
+                .is_some_and(|ms| ms.iter().any(|m| self.world.method(*m).is_native));
+            if builtin {
+                self.error(
+                    format!(
+                        "`{0}` is a built-in function: `Kernel.{0}` always calls it; name the method otherwise",
+                        def.name
+                    ),
+                    def.span,
+                );
+            }
+        }
         // An enum has no fields, and its variants their own `initialize`
         // (docs/01 §5).
         if def.name == "initialize"

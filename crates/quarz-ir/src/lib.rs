@@ -289,6 +289,10 @@ pub enum CallKind {
     Yield,
     /// `super`: the superclass method, on `self`.
     Super(MethodId),
+    /// A function: this method, never looked up again on the receiver
+    /// (a built-in `Kernel` function called on the implicit receiver,
+    /// which no method of the receiver's class takes over).
+    Function(MethodId),
     /// `raise(...)`.
     Raise,
 }

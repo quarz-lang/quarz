@@ -1,11 +1,32 @@
-# Eight tests that each wait: with --parallel=8 they wait together.
+# Eight tests that each wait: with --parallel=8 they wait together. Each
+# one arrives, then waits to be let go; test_1 lets them all go once all
+# eight have arrived, which only tests running at the same time can do.
+# Run with --timeout=0: if fewer ran at once, every task would be left
+# waiting, no test's timer pending, and the run ends at once with
+# DeadlockError. (Run without --parallel=8, it reports the tests' timeout
+# errors rather than passing.)
+ARRIVED = Channel[Int].new(capacity: 8)
+GO = Channel[Int].new(capacity: 8)
+
+def arrive_and_wait -> Void
+  ARRIVED.send(0)
+  GO.receive
+  nil
+end
+
 class WaitTest < Test::Case
-  def test_1 -> Void = sleep(500.ms)
-  def test_2 -> Void = sleep(500.ms)
-  def test_3 -> Void = sleep(500.ms)
-  def test_4 -> Void = sleep(500.ms)
-  def test_5 -> Void = sleep(500.ms)
-  def test_6 -> Void = sleep(500.ms)
-  def test_7 -> Void = sleep(500.ms)
-  def test_8 -> Void = sleep(500.ms)
+  def test_1 -> Void
+    ARRIVED.send(0)
+    8.times { ARRIVED.receive }
+    8.times { GO.send(0) }
+    GO.receive
+    nil
+  end
+  def test_2 -> Void = arrive_and_wait
+  def test_3 -> Void = arrive_and_wait
+  def test_4 -> Void = arrive_and_wait
+  def test_5 -> Void = arrive_and_wait
+  def test_6 -> Void = arrive_and_wait
+  def test_7 -> Void = arrive_and_wait
+  def test_8 -> Void = arrive_and_wait
 end
