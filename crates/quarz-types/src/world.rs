@@ -517,6 +517,10 @@ pub struct World {
     pub std_files: rustc_hash::FxHashSet<u32>,
     /// Each user file's group (`UnitGroup`); the prelude has none.
     pub file_groups: HashMap<u32, UnitGroup>,
+    /// The files whose top-level `def`s each file sees, its own first
+    /// (docs/01 §1): every file of its cog, or a script's and those it
+    /// requires (transitively). A file without an entry sees its own.
+    pub function_scopes: HashMap<u32, Vec<u32>>,
     /// The `static` statements of class and module bodies (docs/14), in
     /// the order they are declared: run at compile time, after the
     /// declarations, by the cog they belong to.
@@ -1137,6 +1141,37 @@ impl World {
             .into_iter()
             .map(|(c, _)| c)
             .collect()
+    }
+
+    /// Whether two methods have the same signature: parameters (kinds
+    /// and types) and block, their own type parameters renamed in order.
+    pub fn same_signature(&self, a: &MethodInfo, b: &MethodInfo) -> bool {
+        if a.type_params.len() != b.type_params.len() {
+            return false;
+        }
+        let rename: HashMap<TypeParamId, Type> = b
+            .type_params
+            .iter()
+            .zip(&a.type_params)
+            .map(|(q, p)| (q.id, Type::Param(p.id)))
+            .collect();
+        let same = |t: &Type, u: &Type| self.same_type(t, &u.subst(&rename));
+        a.type_params.iter().zip(&b.type_params).all(|(p, q)| {
+            p.bounds.len() == q.bounds.len()
+                && p.bounds.iter().zip(&q.bounds).all(|(x, y)| same(x, y))
+        }) && match (&a.block, &b.block) {
+            (Some((_, t)), Some((_, u))) => same(t, u),
+            (None, None) => true,
+            _ => false,
+        } && a.block_optional == b.block_optional
+            && a.params.len() == b.params.len()
+            && a.params.iter().zip(&b.params).all(|(p, q)| {
+                // A call binds keyword-only parameters by name, so
+                // their names tell overloads apart.
+                p.kind == q.kind
+                    && same(&p.ty, &q.ty)
+                    && (p.kind != ParamKind::KeywordOnly || p.name == q.name)
+            })
     }
 
     /// Whether a call of `mid` with an implicit receiver passes no `self`

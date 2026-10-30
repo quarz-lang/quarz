@@ -566,6 +566,190 @@ fn top_level_extensions_stay_in_their_cog() {
 }
 
 #[test]
+fn top_level_defs_are_cog_wide() {
+    let w = World::new();
+    w.write("lib/Cog.toml", "[cog]\nname = \"lib\"\n");
+    // A library's top-level `def` is callable from its other files, with
+    // its own file's top-level object as `self`; not from the application.
+    w.write(
+        "lib/src/a.qz",
+        "def helper(x: Int) -> Int = x * 10\ndef where_am_i -> Object = self\n",
+    );
+    w.write(
+        "lib/src/b.qz",
+        "module Calc\n  def self.k -> Int = helper(4) + ::helper(0)\n  def self.same -> Bool = where_am_i.equal?(where_am_i)\nend\n",
+    );
+    w.commit("lib", Some("v0.1.0"));
+    let dep = format!("Lib = {{ git = \"{}\", tag = \"v0.1.0\" }}\n", w.url("lib"));
+    w.app(&dep, "p Lib::Calc.k, Lib::Calc.same\n");
+    assert_eq!(w.ok("app", &["run"]), "40\ntrue\n");
+    w.app(&dep, "p helper(1)\n");
+    let err = w.fails("app", &["check"]);
+    assert!(err.contains("undefined method `helper`"), "{err}");
+    // The application's files see each other's; a function's `self` is
+    // its own file's object, not the caller's.
+    w.write(
+        "app/src/util.qz",
+        "def twice(x: Int) -> Int = x * 2\ndef util_self -> Object = self\n",
+    );
+    w.app(
+        &dep,
+        "class C\n  def go -> Int = twice(5)\nend\nu = util_self\np twice(2), C.new.go, u.equal?(util_self), u.equal?(self)\n",
+    );
+    assert_eq!(w.ok("app", &["run"]), "4\n10\ntrue\nfalse\n");
+    // One set per name: the same signature in two files is an error.
+    w.write("app/src/again.qz", "def twice(x: Int) -> Int = x\n");
+    let err = w.fails("app", &["check"]);
+    assert!(
+        err.contains("`twice` is already defined with the same parameters in"),
+        "{err}"
+    );
+    std::fs::remove_file(w.path("app/src/again.qz")).unwrap();
+    // A changed signature in one file checks the others again: with the
+    // cache, cold then warm, as without it.
+    let cache = w.path("checks").display().to_string();
+    let run = |env: &[(&str, &str)]| {
+        let out = w.quarz_env("app", &["check"], env);
+        (out.ok, out.stderr)
+    };
+    let cached = [("QUARZ_CACHE_DIR", cache.as_str())];
+    assert!(run(&cached).0);
+    w.write(
+        "app/src/util.qz",
+        "def twice(x: String) -> String = x + x\ndef util_self -> Object = self\n",
+    );
+    let warm = run(&cached);
+    let off = run(&[("QUARZ_NO_CACHE", "1")]);
+    assert!(!warm.0, "{}", warm.1);
+    assert_eq!(warm, off);
+}
+
+#[test]
+fn a_scripts_functions_reach_what_requires_it() {
+    // A script sees the top-level `def`s of the files it requires, not
+    // the other way round; each runs with its own file's object.
+    let w = World::new();
+    w.write(
+        "s/lib.qz",
+        "def helper(x: Int) -> Int = x * 10\ndef lib_self -> Object = self\ndef puts(s: String) -> Void = print(\"[lib] \", s, \"\\n\")\n",
+    );
+    w.write(
+        "s/main.qz",
+        "require_relative \"lib\"\nclass C\n  def go -> Int = helper(4)\nend\na = lib_self\np helper(1), C.new.go, a.equal?(lib_self), a.equal?(self)\nputs \"hi\"\nputs 2\n::puts \"via\"\n::puts 3\nKernel.puts \"built-in\"\n",
+    );
+    assert_eq!(
+        w.ok("s", &["run", "main.qz"]),
+        "10\n40\ntrue\nfalse\n[lib] hi\n2\n[lib] via\n3\nbuilt-in\n"
+    );
+    w.write("s/back.qz", "def back -> Int = only_main\n");
+    w.write(
+        "s/main2.qz",
+        "require_relative \"back\"\ndef only_main -> Int = 3\np back\n",
+    );
+    let err = w.fails("s", &["check", "main2.qz"]);
+    assert!(err.contains("`only_main`"), "{err}");
+    // With a standard library module loaded without `require` (loaded
+    // first, before the files).
+    w.write(
+        "s/main3.qz",
+        "require_relative \"lib\"\np helper(2)\np JSON.generate([1])\n",
+    );
+    assert_eq!(w.ok("s", &["run", "main3.qz"]), "20\n\"[1]\"\n");
+    // Another file's `require_relative`s decide what a file sees: the
+    // cache sees a change of them (warm as without it).
+    w.write("s/d.qz", "def dfun -> Int = 7\n");
+    w.write("s/c.qz", "require_relative \"d\"\ndef cfun -> Int = 1\n");
+    w.write(
+        "s/y.qz",
+        "require_relative \"c\"\ndef yfun -> Int = dfun + cfun\n",
+    );
+    w.write(
+        "s/x.qz",
+        "require_relative \"d\"\nrequire_relative \"y\"\np yfun\n",
+    );
+    let cache = w.path("checks").display().to_string();
+    let run = |env: &[(&str, &str)]| {
+        let out = w.quarz_env("s", &["run", "x.qz"], env);
+        (out.ok, out.stdout, out.stderr)
+    };
+    let cached = [("QUARZ_CACHE_DIR", cache.as_str())];
+    assert_eq!(run(&cached).1, "8\n");
+    w.write("s/c.qz", "def cfun -> Int = 1\n");
+    let warm = run(&cached);
+    assert!(!warm.0, "{}", warm.1);
+    assert_eq!(warm, run(&[("QUARZ_NO_CACHE", "1")]));
+}
+
+#[test]
+fn test_files_see_the_cogs_functions_one_way() {
+    // A cog's test files see its top-level `def`s, their own and what
+    // they require; the cog and the other test files do not see theirs.
+    let w = World::new();
+    w.write("lib/Cog.toml", "[cog]\nname = \"lib\"\n");
+    w.write(
+        "lib/src/a.qz",
+        "def base -> Int = 100\ndef show(x: Object) -> String = \"obj\"\ndef self.which -> String = show(1)\n",
+    );
+    for (f, n) in [("one", 1), ("two", 2)] {
+        w.write(
+            &format!("lib/test/{f}_test.qz"),
+            &format!("require \"test\"\ndef make -> Int = base + {n}\ndef show(x: Int) -> String = \"int\"\nclass T{n} < Test::Case\n  def test_make -> Void\n    assert_equal(100 + {n}, make)\n    assert_equal(\"int\", show(1))\n    assert_equal(\"obj\", Lib.which)\n  end\nend\n"),
+        );
+    }
+    let out = w.ok("lib", &["test"]);
+    assert!(out.contains("2 tests, 6 assertions, 0 failures"), "{out}");
+    // Its own `def` of a cog's signature is a duplicate.
+    w.write("lib/test/three_test.qz", "def base -> Int = 0\n");
+    let err = w.fails("lib", &["test"]);
+    assert!(
+        err.contains("`base` is already defined with the same parameters"),
+        "{err}"
+    );
+}
+
+#[test]
+fn a_def_in_another_file_ties_as_in_its_own() {
+    // An equally specific `def` beats `Kernel`'s built-in in every file
+    // that sees it, and two files' `def`s that fit equally are ambiguous,
+    // as two of one file are.
+    let w = World::new();
+    w.write(
+        "app/src/util.qz",
+        "def puts[T](*args: T) -> Void = Kernel.puts(\"mine\")\n",
+    );
+    w.app(
+        "",
+        "puts 1\n::puts 2\nclass D\n  def go -> Void = puts(3)\nend\nD.new.go\n",
+    );
+    assert_eq!(w.ok("app", &["run"]), "mine\nmine\nmine\n");
+    w.write("app/src/a.qz", "def f[T](x: T) -> String = \"a\"\n");
+    w.write("app/src/b.qz", "def f(x: Object) -> String = \"b\"\n");
+    w.app("", "p f(1)\n");
+    let err = w.fails("app", &["check"]);
+    assert!(err.contains("the call of `f` is ambiguous"), "{err}");
+}
+
+#[test]
+fn a_cogs_functions_come_after_selfs_methods_and_before_kernels() {
+    // docs/01 §1: an implicit call finds a method of `self`, then the
+    // cog's top-level `def`s, then `Kernel`'s built-in functions, inside
+    // a class as at the top level, one set of overloads.
+    let w = World::new();
+    w.write(
+        "app/src/out.qz",
+        "def puts(s: String) -> Void = Kernel.puts(\"[cog] \" + s)\n",
+    );
+    w.app(
+        "",
+        "class A\n  def hi -> Void = puts(\"A\")\n  def blk -> Void = [1].each { |_| puts(\"block\") }\n  def exe -> Void = 5.instance_exec { puts(\"exec\") }\n  def int -> Void = puts(3)\nend\nclass B < A\n  def puts(s: String) -> Void = Kernel.puts(\"[B] \" + s)\n  def own -> Void = puts(\"B\")\nend\nclass N\n  def puts(n: Int) -> Void = Kernel.puts(\"[N] #{n}\")\n  def go -> Void\n    puts(1)\n    puts(\"s\")\n    puts(1.5)\n  end\nend\nN.new.go\na = A.new\na.hi\na.blk\na.exe\na.int\nB.new.own\nB.new.hi\nputs(\"top\")\nKernel.puts(\"built-in\")\n",
+    );
+    assert_eq!(
+        w.ok("app", &["run"]),
+        "[N] 1\n[cog] s\n1.5\n[cog] A\n[cog] block\n[cog] exec\n3\n[B] B\n[cog] A\n[cog] top\nbuilt-in\n"
+    );
+}
+
+#[test]
 fn versions_follow_minimal_version_selection() {
     let w = World::new();
     let untagged = w.libraries();

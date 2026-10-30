@@ -113,6 +113,14 @@ pub struct LoadedUnit {
     /// Whether its statements are left out (an application's main file
     /// under `quarz test`).
     pub declarations_only: bool,
+    /// The units it `require_relative`s, by index (loaded before it):
+    /// a script's top-level `def`s are visible in what requires it
+    /// (docs/01 §1).
+    pub requires: Vec<usize>,
+    /// For a test file of a cog (`quarz test`), the cog it tests: it sees
+    /// its own top-level `def`s, those of what it requires and that cog's,
+    /// and neither that cog nor the other test files see its.
+    pub tests: Option<u32>,
 }
 
 /// A cog of a movement to load: where its files are and what it calls its
@@ -144,6 +152,7 @@ pub fn load(path: &Path) -> (Vec<LoadedUnit>, Vec<LoadDiagnostic>) {
         visited: HashSet::default(),
         in_progress: Vec::new(),
         next_unit: 0,
+        index_of: Default::default(),
     };
     let key = canonical(path);
     loader.load_file(path, &key, None);
@@ -162,6 +171,7 @@ pub fn load_files(paths: &[PathBuf], std: &[&str]) -> (Vec<LoadedUnit>, Vec<Load
         visited: HashSet::default(),
         in_progress: Vec::new(),
         next_unit: 0,
+        index_of: Default::default(),
     };
     for name in std {
         let key = format!("<std:{name}>");
@@ -210,6 +220,7 @@ fn load_cogs(
         visited: HashSet::default(),
         in_progress: Vec::new(),
         next_unit: 0,
+        index_of: Default::default(),
     };
     // Dependencies before the cogs that need them.
     let mut order = Vec::new();
@@ -280,6 +291,12 @@ fn load_cogs(
         }
     }
     if let Some(tests) = tests {
+        // The application, or a library under the tests' own root, which
+        // has no `src/` and imports it first.
+        let tested = match cogs.first() {
+            Some(root) if !root.src.is_dir() => root.imports.first().map_or(0, |(_, j)| *j),
+            _ => 0,
+        };
         let first = loader.units.len();
         let key = "<std:test>".to_string();
         if !loader.visited.contains(&key) {
@@ -295,6 +312,7 @@ fn load_cogs(
         for u in &mut loader.units[first..] {
             if !u.name.starts_with("<std:") {
                 u.cog = Some(0);
+                u.tests = Some(tested);
             }
         }
     }
@@ -381,6 +399,8 @@ struct Loader {
     visited: HashSet<String>,
     in_progress: Vec<String>,
     next_unit: u32,
+    /// The index in `units` of each file loaded, by key.
+    index_of: rustc_hash::FxHashMap<String, usize>,
 }
 
 /// Span/node-id base of the n-th loaded unit (4M ids each, `UNIT_BITS`; the
@@ -421,6 +441,18 @@ fn std_first(units: &mut [LoadedUnit]) {
             None => STD_MODULES.len(),
         }
     };
+    // (`requires` are positions: they move with the units.)
+    let mut order: Vec<usize> = (0..units.len()).collect();
+    order.sort_by_key(|i| rank(&units[*i]));
+    let mut new_of = vec![0; units.len()];
+    for (new, old) in order.iter().enumerate() {
+        new_of[*old] = new;
+    }
+    for u in units.iter_mut() {
+        for r in u.requires.iter_mut() {
+            *r = new_of[*r];
+        }
+    }
     units.sort_by_key(|u| rank(u));
 }
 
@@ -450,7 +482,15 @@ impl Loader {
             let text = STD_MODULES.iter().find(|(n, _)| *n == module).unwrap().1;
             self.load_text(&key, text.to_string(), Path::new("."), key.clone(), None);
         }
-        self.units.extend(rest);
+        // (The units loaded before move after these: their `requires`
+        // positions with them.)
+        let added = self.units.len();
+        self.units.extend(rest.into_iter().map(|mut u| {
+            for r in u.requires.iter_mut() {
+                *r += added;
+            }
+            u
+        }));
     }
 
     /// Load one file of cog `cog`: its `require`s of the standard library
@@ -518,6 +558,8 @@ impl Loader {
             cog: Some(cog),
             statements,
             declarations_only: false,
+            requires: Vec::new(),
+            tests: None,
         });
     }
 
@@ -604,6 +646,7 @@ impl Loader {
             failed |= d.is_error();
             self.diagnostics.push((source.clone(), d));
         }
+        let mut requires = Vec::new();
         if !failed {
             // Dependencies first.
             for expr in &parsed.program.body {
@@ -615,6 +658,9 @@ impl Loader {
                         }
                         let tkey = canonical(&target);
                         self.load_file(&target, &tkey, Some((&source, expr)));
+                        if let Some(i) = self.index_of.get(&tkey) {
+                            requires.push(*i);
+                        }
                     } else {
                         self.load_std(path, &source, expr);
                     }
@@ -622,6 +668,7 @@ impl Loader {
             }
         }
         self.in_progress.pop();
+        self.index_of.insert(key, self.units.len());
         self.units.push(LoadedUnit {
             name: name.to_string(),
             source,
@@ -629,6 +676,8 @@ impl Loader {
             cog: None,
             statements: true,
             declarations_only: false,
+            requires,
+            tests: None,
         });
     }
 

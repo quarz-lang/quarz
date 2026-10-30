@@ -23,7 +23,8 @@ p D.new.both
 ::p ::twice(21)
 
 # `Kernel.name` is always the built-in, also inside a file's own `def`
-# of the name, where `name` and `::name` are the file's.
+# of the name, where `name` and `::name` are the file's (in its classes
+# too: `C#puts` above prints through this `print`).
 def print(*values: Object) -> Void = Kernel.print("[mine] ", *values)
 print "a\n"
 ::print "b\n"

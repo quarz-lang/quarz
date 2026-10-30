@@ -7323,22 +7323,24 @@ impl Checker {
     fn check_function_call(&mut self, expr: &Expr, call: &Call, expected: Option<&Type>) -> Type {
         let fm = self.file_main(self.env.file);
         let on = Type::class(fm.unwrap_or(self.world.builtin.object));
-        let all = self.world.lookup_methods(&on, &call.name);
-        // As an implicit call at the file's top level finds them (its
-        // `def`s first, hiding a built-in of the same signature, then the
-        // built-in's other overloads), but only the functions.
+        // As an implicit call at the file's top level finds them (the
+        // `def`s it sees, its cog's, first, hiding a built-in of the same
+        // signature, then the built-in's other overloads), but only the
+        // functions.
         let kernel = self.world.builtin.kernel;
-        let cands: Vec<_> = all
+        let cands: Vec<_> = self
+            .function_candidates(&call.name)
             .into_iter()
             .filter(|(m, _)| {
                 let m = self.world.method(*m);
-                Some(m.owner) == fm || (m.is_native && m.owner == kernel)
+                self.world.class(m.owner).kind == ClassKind::Main
+                    || (m.is_native && m.owner == kernel)
             })
             .collect();
         if cands.is_empty() {
             self.error(
                 format!(
-                    "`::{}` calls a built-in function or a top-level `def` of this file, and there is none named `{}`",
+                    "`::{}` calls a built-in function or a top-level `def` of this cog, and there is none named `{}`",
                     call.name, call.name
                 ),
                 expr.span,
@@ -8018,6 +8020,11 @@ impl Checker {
             }
             _ => {
                 let mut cands = self.world.lookup_methods(recv_ty, name);
+                // An implicit call finds a method of `self` first (its
+                // own, inherited or from a module); `Kernel`'s built-in
+                // functions are not methods of it, and come after the
+                // cog's top-level `def`s (docs/01 §1).
+                let no_method = !self.any_method(&cands);
                 if call.recv.is_none()
                     && implicit_self
                     && !self.env.receivers.is_empty()
@@ -8026,7 +8033,7 @@ impl Checker {
                     // Inside a block with a receiver: the enclosing selves,
                     // innermost first, answer what the receiver does not.
                     match self.outer_self_for(name) {
-                        Some((outer, k)) if cands.is_empty() => {
+                        Some((outer, k)) if no_method => {
                             self.bind_outer_self(expr, k);
                             self.in_outer_self = true;
                             let t = self.check_call_on(expr, call, &outer, true, expected);
@@ -8046,11 +8053,25 @@ impl Checker {
                         _ => {}
                     }
                 }
-                if cands.is_empty() && call.recv.is_none() {
-                    // Top-level functions of the file.
-                    if let Some(fm) = self.file_main(self.env.file) {
-                        let main = Type::class(fm);
-                        cands = self.world.lookup_methods(&main, name);
+                // Top-level functions of the cog, then `Kernel`'s built-in
+                // functions, after the methods of `self` (docs/01 §1): one
+                // set of overloads, the first of each signature kept.
+                if call.recv.is_none() {
+                    let found = self.function_candidates(name);
+                    if !found.is_empty() {
+                        let kernel = self.world.builtin.kernel;
+                        cands.retain(|(id, _)| {
+                            let m = self.world.method(*id);
+                            !(m.is_native && m.owner == kernel)
+                        });
+                        for f in found {
+                            let fm = self.world.method(f.0);
+                            if !cands.iter().any(|(id, _)| {
+                                *id == f.0 || self.world.same_signature(self.world.method(*id), fm)
+                            }) {
+                                cands.push(f);
+                            }
+                        }
                     }
                 }
                 if cands.is_empty() && !implicit_self {
@@ -8075,6 +8096,51 @@ impl Checker {
                 self.resolve_overloads(expr, call, recv_ty, cands, implicit_self, expected)
             }
         }
+    }
+
+    /// The top-level `def`s of a name the current file sees (its own,
+    /// then its cog's or the files it requires, `World::function_scopes`),
+    /// with what its main object inherits (`Kernel`'s), less those of
+    /// them a `def` of the same signature hides (docs/01 §1).
+    fn function_candidates(&self, name: &str) -> Vec<(MethodId, HashMap<TypeParamId, Type>)> {
+        let file = self.env.file;
+        let Some(own) = self.file_main(file) else {
+            return Vec::new();
+        };
+        let mut cands = self.world.lookup_methods(&Type::class(own), name);
+        let mut mains = vec![own];
+        if let Some(scope) = self.world.function_scopes.get(&file) {
+            for f in scope.iter().filter(|f| **f != file) {
+                if let Some(m) = self.file_main(*f) {
+                    mains.push(m);
+                    cands.extend(
+                        self.world
+                            .lookup_methods(&Type::class(m), name)
+                            .into_iter()
+                            .filter(|(id, _)| self.world.method(*id).owner == m),
+                    );
+                }
+            }
+        }
+        let defs: Vec<MethodId> = cands
+            .iter()
+            .map(|(id, _)| *id)
+            .filter(|id| mains.contains(&self.world.method(*id).owner))
+            .collect();
+        // The `def`s before the inherited methods, which an equally
+        // specific `def` then beats.
+        cands.sort_by_key(|(id, _)| !mains.contains(&self.world.method(*id).owner));
+        // A `def` hides `Kernel`'s built-in of its signature (not a
+        // method of `self`, which comes first).
+        let kernel = self.world.builtin.kernel;
+        cands.retain(|(id, _)| {
+            let m = self.world.method(*id);
+            !(m.is_native && m.owner == kernel)
+                || !defs
+                    .iter()
+                    .any(|d| self.world.same_signature(self.world.method(*d), m))
+        });
+        cands
     }
 
     /// For a destructive method missing on an immutable built-in type,
@@ -8515,6 +8581,17 @@ impl Checker {
 
     /// The innermost enclosing `self` (outside the blocks with receivers
     /// the call sits in) that answers `name`, with its receiver level.
+    /// Whether `cands` has a method, not only `Kernel`'s built-in
+    /// functions, which an implicit call finds after the cog's top-level
+    /// `def`s (docs/01 §1).
+    fn any_method(&self, cands: &[(MethodId, HashMap<TypeParamId, Type>)]) -> bool {
+        let kernel = self.world.builtin.kernel;
+        cands.iter().any(|(id, _)| {
+            let m = self.world.method(*id);
+            !(m.is_native && m.owner == kernel)
+        })
+    }
+
     fn outer_self_for(&mut self, name: &str) -> Option<(Type, usize)> {
         // `DslScope`: from a block on a marked receiver, the receivers of
         // enclosing blocks that are marked too are not implicit (the
@@ -8529,7 +8606,7 @@ impl Checker {
             if inner_marked && k > 0 && marked(&self.world, &outer) {
                 continue;
             }
-            if !self.world.lookup_methods(&outer, name).is_empty() {
+            if self.any_method(&self.world.lookup_methods(&outer, name)) {
                 return Some((outer, k));
             }
         }
@@ -9383,7 +9460,9 @@ impl Checker {
         if a.owner == b.owner && a.extension.is_some() != b.extension.is_some() {
             return a.extension.is_some();
         }
-        a.owner != b.owner && x.0 < y.0
+        // (Two files' top-level `def`s are one set: neither comes first.)
+        let main = |c: ClassId| self.world.class(c).kind == ClassKind::Main;
+        a.owner != b.owner && !(main(a.owner) && main(b.owner)) && x.0 < y.0
     }
 
     /// Whether `a` is at least as specific as `b`: every call `a` takes,
