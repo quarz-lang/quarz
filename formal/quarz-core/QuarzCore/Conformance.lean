@@ -278,6 +278,16 @@ structure Where where
   /-- In a `rescue` clause: its variable, a local of its own (quarz#126),
   by the model's name for it. -/
   renames : List (String × String) := []
+  /-- The names of the scopes around the current one (the method's
+  locals around a block, a lambda, a `case/in` arm or a `rescue` clause):
+  a declaration (`y: T = e`, `y := e`) of one of them hides it. -/
+  outer : List String := []
+  /-- Whether the statements being converted are a scope's own (not an
+  `if`'s or a `while`'s inside it). -/
+  scopeTop : Bool := false
+  /-- Whether the current scope is a block's, a lambda's, an arm's or a
+  `rescue` clause's (not the method's). -/
+  inner : Bool := false
 
 /-- Converting a body, with the locals so far. -/
 abbrev CM := ReaderT Where (StateT Locals M)
@@ -285,11 +295,6 @@ abbrev CM := ReaderT Where (StateT Locals M)
 /-- The model's name of a local: a `rescue` clause's variable is its own. -/
 def localName (x : String) : CM String := do
   pure (((← read).renames.find? (·.1 == x)).map (·.2) |>.getD x)
-
-/-- (A pattern binding a `rescue` clause's variable: out of range.) -/
-def noRenamedBind (names : List (String × Ty)) : CM Unit := do
-  for (x, _) in names do
-    if (← read).renames.any (·.1 == x) then throw s!"a pattern binding the rescue variable {x}"
 
 /-- A block's body, given the result type it declares (`block_results`)
 for the call `id`, as a `def`'s return type: the body at most `T`, the
@@ -302,10 +307,16 @@ def Tables.declaredResult (T : Tables) (id : Nat) (bd : Expr) : M Expr := do
     let t ← T.ty tj
     pure (.prim "blockResult" [bd] [t] t)
 
+/-- A scope's body (a block's, a lambda's, a `case/in` arm's, a `rescue`
+clause's): the names around it are outer, its statements its own. -/
+def inScope {α} (k : CM α) : CM α := do
+  let names := (← get).map (·.1) ++ (← read).renames.map (·.1)
+  withReader (fun w => { w with outer := names ++ w.outer, scopeTop := true, inner := true }) k
+
 /-- A block's or a lambda's body: its parameters hide a `rescue`
 clause's variable of their names. -/
 def hidingParams {α} (ps : List String) (k : CM α) : CM α :=
-  withReader (fun w => { w with renames := w.renames.filter fun (x, _) => !ps.contains x }) k
+  withReader (fun w => { w with renames := w.renames.filter fun (x, _) => !ps.contains x }) (inScope k)
 
 def positional (a : Json) : M Json := do
   match ← variant a with
@@ -533,6 +544,23 @@ structure PatC where
   names : List (String × Ty)
   tmps : List (String × Ty)
   yes : Ty
+
+/-- An expression's assignments renamed (a pattern's test and
+assignments: the bindings made before a later part's test are in it). -/
+def renameAssigns (r : String → String) : Expr → Expr
+  | .assign x e => .assign (r x) (renameAssigns r e)
+  | .seq a b => .seq (renameAssigns r a) (renameAssigns r b)
+  | .and a b => .and (renameAssigns r a) (renameAssigns r b)
+  | .or a b => .or (renameAssigns r a) (renameAssigns r b)
+  | .not a => .not (renameAssigns r a)
+  | .ite c t e => .ite (renameAssigns r c) (renameAssigns r t) (renameAssigns r e)
+  | e => e
+
+/-- The names a pattern binds, renamed (`m`), in its assignments too. -/
+def PatC.rename (c : PatC) (m : List (String × String)) : PatC :=
+  let r (x : String) : String := ((m.find? (·.1 == x)).map (·.2)).getD x
+  let names := c.names.map fun (x, t) => (r x, t)
+  { c with test := c.test.map (renameAssigns r), post := renameAssigns r c.post, names := names }
 
 /-- `x` then `y`, as one match: `x`'s bindings after its test come before
 `y`'s test. -/
@@ -851,6 +879,17 @@ partial def expr (T : Tables) (e : Json) : CM Expr := do
   -- `x` at the type the checker gave its current value. `||=`, `&&=` with
   -- the model's `||`, `&&`; another operator the method the checker
   -- resolved, a built-in one a built-in call.
+  -- `y: T = e`, `y := e` (docs/01 §10), not hiding an outer `y` (`body`
+  -- converts the ones that do, at a scope's top): a local of its
+  -- declared type.
+  | "TypedDecl" =>
+    let y ← str (← field v "name")
+    if (← read).inner || (← read).outer.contains y then
+      throw "a declaration of a block's, an arm's or a clause's own inside an if, a loop or a guard"
+    let value ← expr T (← field v "value")
+    let y ← localName y
+    modify (addLocal · y (← T.nodeTy id))
+    pure (.assign y value)
   | "OpAssign" =>
     let (tk, tv) ← variant (← field v "target")
     -- The target: a local, or a field of `self`, read at the type the
@@ -979,17 +1018,40 @@ partial def expr (T : Tables) (e : Json) : CM Expr := do
   | k => throw s!"a {k} expression"
 
 partial def body (T : Tables) (es : Array Json) : CM Expr := do
+  let top := (← read).scopeTop
   -- A statement (not the body's value): a `begin` whose `rescue` retries
-  -- is in range there (a loop, its value unused).
-  let stmt (x : Json) (last : Bool) : CM Expr := do
+  -- is in range there (a loop, its value unused). (Within it, nested
+  -- bodies are not the scope's own.)
+  let stmt (x : Json) (last : Bool) : CM Expr := withReader (fun w => { w with scopeTop := false }) do
     match ← variant (← field x "kind") with
     | ("Begin", v) => if last then expr T x else beginE T (← nat (← field x "id")) v true
     | _ => expr T x
   match es.toList with
   | [] => pure .nil
   | e :: rest =>
+    -- A declaration (`y: T = e`, `y := e`) at the top of a scope within
+    -- the method (hiding an outer `y` or not, it is the scope's own): a new
+    -- local for the rest of the scope (its value read before, so
+    -- `y := y + 1` reads the outer one).
+    if top then
+      if let .ok ("TypedDecl", v) := variant (← field e "kind") then
+        let y ← str (← field v "name")
+        if (← read).inner || (← read).outer.contains y then
+          let id ← nat (← field e "id")
+          let value ← withReader (fun w => { w with scopeTop := false }) (expr T (← field v "value"))
+          let fresh := s!"{y}#d{id}"
+          modify (addLocal · fresh (← T.nodeTy id))
+          let decl := Expr.assign fresh value
+          if rest.isEmpty then return .seq decl (.var fresh (← T.nodeTy id))
+          let more ← withReader (fun w => { w with renames := (y, fresh) :: w.renames })
+            (body T rest.toArray)
+          return .seq decl more
     let n := rest.length
     let first ← stmt e (n == 0)
+    -- (After a statement, the rest at the scope's top again.)
+    if top then
+      if rest.isEmpty then return first
+      return .seq first (← body T rest.toArray)
     (rest.zipIdx).foldlM (fun acc (x, i) => do pure (.seq acc (← stmt x (i + 1 == n)))) first
 
 /-- Whether a body (in a `rescue` clause) has `retry` only where it ends
@@ -1081,7 +1143,7 @@ partial def beginE (T : Tables) (id : Nat) (v : Json) (stmt : Bool) : CM Expr :=
             pure (some (x, xr))
         let rf := if retries then some flag else none
         let hb ← withReader (fun w => { w with exc := some tmp, retryFlag := rf, renames := var.toList ++ w.renames })
-          (body T (← arr (← field r "body")))
+          (inScope (body T (← arr (← field r "body"))))
         let hb := match var with
           | none => hb
           | some (_, xr) => Expr.seq (.assign xr (.var tmp atoms)) hb
@@ -1156,33 +1218,29 @@ partial def caseIn (T : Tables) (id : Nat) (v : Json) : CM Expr := do
   -- A name no program can spell.
   let (pre, rd, subjLocal) ← subject T s!"case#{id}" subjJ stTy
   let armsJ := (← arr (← field v "arms")).toList
+  -- An arm's names are its own (docs/01 §11): fresh, shadowing an outer
+  -- local, gone after the arm; its guard and body a scope.
   let arms ← (List.range armsJ.length).zip armsJ |>.mapM fun (i, arm) => do
     let c ← compilePat T s!"case#{id}#{i}" rd st stTy (← field arm "pattern")
-    noRenamedBind c.names
-    let guard ← match ← field arm "guard" with
-      | .null => pure none
-      | g =>
-        let e ← expr T (← field g "cond")
-        pure (some (if (← field g "negate") == .bool true then Expr.not e else e))
-    let bd ← body T (← arr (← field arm "body"))
-    pure (c, guard, bd)
+    let m := c.names.map fun (x, _) => (x, s!"{x}#p{id}.{i}")
+    let c := c.rename m
+    for (x, t) in c.names do modify (addLocal · x t)
+    withReader (fun w => { w with renames := m ++ w.renames }) (inScope do
+      let guard ← match ← field arm "guard" with
+        | .null => pure none
+        | g =>
+          let e ← withReader (fun w => { w with scopeTop := false }) (expr T (← field g "cond"))
+          pure (some (if (← field g "negate") == .bool true then Expr.not e else e))
+      let bd ← body T (← arr (← field arm "body"))
+      pure (c, guard, bd))
   -- The subject is read again by each test (the path the model narrows),
   -- where the program reads it once: out of range when a pattern or a
   -- guard may assign it.
   if let some x := subjLocal then
-    if arms.any (fun (c, g, _) => c.names.any (·.1 == x) || (g.map (·.assigned.contains x)).getD false) then
-      throw "a case whose pattern or guard assigns its subject"
+    if arms.any (fun (_, g, _) => (g.map (·.assigned.contains x)).getD false) then
+      throw "a case whose guard assigns its subject"
     if x.startsWith "@" && (← read).init.isSome && arms.any (fun (_, g, _) => g.isSome) then
       throw "a case on a field with a guard in initialize"
-  -- Rust declares a bound name afresh in each arm (after the `case`, the
-  -- name is the last arm's): one bound in two arms, or assigned in the
-  -- `case` besides, is out of range.
-  let binds := arms.flatMap fun (c, _, _) => c.names.map (·.1)
-  let mid ← get
-  for x in binds do
-    unless before.any (·.1 == x) do
-      if (binds.filter (· == x)).length > 1 || mid.any (·.1 == x) then
-        throw "a name bound in a case arm and assigned in another"
   for (c, _, _) in arms do declarePat before c
   let els ← match ← field v "els" with
     | .null => pure none
@@ -1223,7 +1281,20 @@ partial def matchPattern (T : Tables) (id : Nat) (v : Json) : CM Expr := do
   let before ← get
   let (pre, rd, subjLocal) ← subject T s!"match#{id}" valJ stTy
   let c ← compilePat T s!"match#{id}#0" rd st stTy (← field v "pattern")
-  noRenamedBind c.names
+  -- It binds into the enclosing scope once it matched whole (docs/01
+  -- §11): into temporaries while it tests, then the names (a name a
+  -- `rescue` clause or an arm has is theirs).
+  let tmpOf (x : String) : String := s!"{x}#m{id}"
+  let real ← c.names.mapM fun (x, t) => do pure (x, ← localName x, t)
+  let c := c.rename (c.names.map fun (x, _) => (x, tmpOf x))
+  -- (`v in p` rebinding a local: its false side keeps the local as it
+  -- was, which the model's `&&` cannot say.)
+  if (← field v "raises") != .bool true && real.any (fun (_, r, _) => before.any (·.1 == r)) then
+    throw "an in rebinding a local"
+  let c := { c with
+    post := real.foldl (fun acc (x, r, t) => Expr.seq acc (.assign r (.var (tmpOf x) t))) c.post,
+    tmps := c.tmps ++ c.names,
+    names := real.map fun (_, r, t) => (r, t) }
   if let some x := subjLocal then
     if c.names.any (·.1 == x) then throw "a match whose pattern assigns its subject"
   declarePat before c
@@ -1775,7 +1846,7 @@ def method (T : Tables) (owner : Nat) (m : Json) (d : Json) : M Method := do
       | .null => pure 0
       | t => pure (← T.tyClass t).1
     pure (some (params, sup))
-  let w : Where := ⟨owner == 1, init, some (← nat (← field m "owner")), none, none, [], bproc, []⟩
+  let w : Where := ⟨owner == 1, init, some (← nat (← field m "owner")), none, none, [], bproc, [], [], true, false⟩
   let (bd, ls) ← ((body T (← arr (← field d "body"))).run w).run params
   -- (`yield` runs the block given, whatever the parameter holds later.)
   if let some (n, _) := bproc then
@@ -1992,17 +2063,17 @@ def program (j : Json) : M Program := do
     match ← field k "value" with
     | .null => throw "a constant with no initializer"
     | v =>
-      let (bd, ls) ← ((expr T v).run ⟨true, none, none, none, none, [], none, []⟩).run []
+      let (bd, ls) ← ((expr T v).run ⟨true, none, none, none, none, [], none, [], [], false, false⟩).run []
       pure (⟨1, "const " ++ (← str (← field k "name")), [], ty, none, ls, bd⟩ : Method)
   let some mainUnit := units.back? | throw "no unit"
-  let (mainBody, mainLocals) ← ((body T (← arr (← field mainUnit "body"))).run ⟨true, none, none, none, none, [], none, []⟩).run []
+  let (mainBody, mainLocals) ← ((body T (← arr (← field mainUnit "body"))).run ⟨true, none, none, none, none, [], none, [], [], true, false⟩).run []
   let all : Ty := [.nil, .bool, .int, .str, .cls 0 []]
   -- A default that tests or loops, with a bounded parameter anywhere (it
   -- is checked in each inheriting class): out of range, as in `method`.
   let bounded ← user.anyM fun c => do
     (← arr (← field c "type_params")).anyM fun p => do pure !(← arr (← field p "bounds")).isEmpty
   let defaults ← fdefs.toList.mapM fun e => do
-    let (x, ls) ← ((expr T (← field e "value")).run ⟨false, none, none, none, none, [], none, []⟩).run []
+    let (x, ls) ← ((expr T (← field e "value")).run ⟨false, none, none, none, none, [], none, [], [], false, false⟩).run []
     unless ls.isEmpty do throw "a field default with locals"
     if bounded && narrows x then throw "a test in a default with a bounded parameter"
     pure x
