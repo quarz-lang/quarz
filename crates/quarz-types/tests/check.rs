@@ -3314,3 +3314,31 @@ fn an_extension_or_class_method_in_place_of_a_modules_keeps_its_types() {
         "`label` returns String but `Named#label`, which it overrides, returns Int",
     );
 }
+
+#[test]
+fn an_extension_implementing_an_abstract_method_keeps_its_types_anywhere() {
+    // What `ext_impl` runs for an abstract method is checked for a prelude
+    // class's extension and for one in a module, active through `using`.
+    let describable = "module Describable\n  abstract def describe -> String\n  def shout -> String = describe.upcase\nend\n";
+    err(
+        &format!(
+            "{describable}extension Int\n  include Describable\n  def describe -> Int = 3\nend"
+        ),
+        "`describe` returns Int but `Describable#describe`, which it overrides, returns String",
+    );
+    err(
+        &format!("{describable}class Pt\nend\nmodule Describing\n  extension Pt\n    include Describable\n    def describe -> Int = 3\n  end\nend\nusing Describing"),
+        "`describe` returns Int but `Describable#describe`, which it overrides, returns String",
+    );
+    // A target with a method of the name (`Int#abs()`) still runs the
+    // extension's in its place (`find_override`).
+    err(
+        "module Absy\n  abstract def abs(x: Int) -> String\n  def shout -> String = abs(1).upcase\nend\nextension Int\n  include Absy\n  def abs(x: Int) -> Int = x + 41\nend",
+        "`abs` returns Int but `Absy#abs`, which it overrides, returns String",
+    );
+    // tmp/repro/extension-implements-abstract.qz: an extension's method
+    // implementing a superclass's abstract one.
+    err("abstract class Base\n  abstract def describe -> String\nend\nextension Shape\n  def describe -> Int = 3\nend\nclass Shape < Base\nend\ndef f(b: Base) -> String = b.describe\nputs f(Shape.new).size", "`describe` returns Int but `Base#describe`, which it overrides, returns String");
+    // Of overloads, the one of the same signature implements it.
+    ok("module Sized\n  abstract def f(x: Int) -> Int\n  def g -> Int = f(1) + 1\nend\nclass Box\nend\nextension Box\n  include Sized\n  def f(x: String) -> String = x\n  def f(x: Int) -> Int = x\nend");
+}

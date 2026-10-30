@@ -2686,10 +2686,22 @@ impl Interp {
     fn ext_impl(&self, anc: ClassId, abs: MethodId) -> Option<MethodId> {
         let world = &self.program.world;
         let m = self.program.method(abs);
+        // (Of the extension's methods of the name, one that takes what the
+        // abstract method's callers pass, as the checker's `implements`; an
+        // overload of another arity is not it.)
+        let (amin, amax) = m.positional_arity();
+        let takes = |i: MethodId| {
+            let c = self.program.method(i);
+            let (cmin, cmax) = c.positional_arity();
+            !c.is_abstract && c.has_block == m.has_block && cmin <= amin && cmax >= amax
+        };
         for ext in &world.extensions {
             if ext.target == anc && world.extension_dispatches(ext, m.owner) {
                 if let Some(ids) = ext.methods.get(&m.name) {
-                    if let Some(i) = ids.iter().find(|i| !self.program.method(**i).is_abstract) {
+                    let exact = ids
+                        .iter()
+                        .find(|i| takes(**i) && self.same_signature(**i, abs));
+                    if let Some(i) = exact.or_else(|| ids.iter().find(|i| takes(**i))) {
                         return Some(*i);
                     }
                 }
