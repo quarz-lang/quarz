@@ -61,6 +61,14 @@ pub trait Reflect {
     /// A handle `field_ref`/`method_ref` made (docs/14 §5), checked when
     /// the statement has run whether or not a generated method captures it.
     fn made_handle(&self, interp: &Interp, handle: &Value) -> Result<(), String>;
+    /// Entering (`true`) or leaving a `static(...)` run inside a
+    /// compile-time run (docs/14 §8).
+    fn static_scope(&self, enter: bool);
+    /// Why reflecting on `class` here is an error, if it is: inside a
+    /// `static(...)` run, a class whose `static` statements (or an
+    /// ancestor's) have not all run, whose members the value would see
+    /// otherwise than the program's (docs/14 §8).
+    fn reflect_refusal(&self, class: ClassId) -> Option<String>;
 }
 
 /// A field `def_field` asks for: its type is a class (without type

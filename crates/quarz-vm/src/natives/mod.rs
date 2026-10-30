@@ -235,6 +235,8 @@ pub fn compile_time_only(key: &str) -> bool {
             | "Meta::ClassDef#method_ref"
             | "Meta::ClassDef#class_method_ref"
             | "Meta::ClassDef#doc"
+            | "Meta.__static_enter"
+            | "Meta.__static_leave"
     )
 }
 

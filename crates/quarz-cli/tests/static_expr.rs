@@ -399,3 +399,72 @@ fn a_toplevel_def_runs_with_main_at_compile_time() {
     let run = Command::new(d.0.join("app.bin")).output().unwrap();
     assert_eq!(String::from_utf8_lossy(&run.stdout), expected);
 }
+
+#[test]
+fn a_compile_time_static_call_may_not_read_a_pending_class() {
+    // docs/14 §8: `static(...)` made in a compile-time run (here a
+    // statement's argument) reflecting on a class whose statements have
+    // not all run: its value would be the class's as declared so far,
+    // the program's when they have run.
+    let d = dir();
+    write(
+        &d.0,
+        "base.qz",
+        "class Counter\n  static def self.count(c: Type[Object]) -> Int = c.fields.size\n  static def self.one -> Int = 1\n  static def self.plus(k: Int, c: Type[Object]) -> Int = k + c.fields.size\nend\n",
+    );
+    write(
+        &d.0,
+        "lib.qz",
+        "require_relative \"base\"\nclass Model\n  @m: Int = 0\n  static def self.gen(n: Int) -> Void\n    def_method(:n) do -> Int\n      n\n    end\n  end\n  static def self.add(f: Symbol) -> Void\n    def_field(f, Int, 0)\n  end\nend\n",
+    );
+    let bad = write(
+        &d.0,
+        "bad.qz",
+        "require_relative \"lib\"\nclass Post < Model\n  @x: Int = 1\n  gen(static(Counter.count(Post)))\n  add :a\nend\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", bad.to_str().unwrap()], &[]);
+    assert!(!ok);
+    assert!(
+        err.contains("reflects on a class whose `static` statements have not all run (`gen` in `Post`, `add` in `Post`)"),
+        "{err}"
+    );
+    // Nested in another `static(...)`'s arguments.
+    let nested = write(
+        &d.0,
+        "nested.qz",
+        "require_relative \"lib\"\nclass Post < Model\n  @x: Int = 1\n  gen(static(Counter.plus(static(Counter.one), Post)))\n  add :a\nend\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", nested.to_str().unwrap()], &[]);
+    assert!(!ok);
+    assert!(
+        err.contains("reflects on a class whose `static` statements have not all run"),
+        "{err}"
+    );
+    // Rescued where it is refused, it still fails the statement.
+    write(
+        &d.0,
+        "base.qz",
+        "class Counter\n  static def self.count(c: Type[Object]) -> Int = c.fields.size\n  static def self.safe(c: Type[Object]) -> Int\n    begin\n      c.fields.size\n    rescue\n      -1\n    end\n  end\nend\n",
+    );
+    let rescued = write(
+        &d.0,
+        "rescued.qz",
+        "require_relative \"lib\"\nclass Post < Model\n  @x: Int = 1\n  gen(static(Counter.safe(Post)))\n  add :a\nend\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", rescued.to_str().unwrap()], &[]);
+    assert!(!ok);
+    assert!(
+        err.contains("reflects on a class whose `static` statements have not all run"),
+        "{err}"
+    );
+    // A class whose statements have run (none here) reads as the program
+    // will.
+    let good = write(
+        &d.0,
+        "good.qz",
+        "require_relative \"lib\"\nclass Post < Model\n  @x: Int = 1\n  gen(static(Counter.count(Model)))\n  add :a\nend\np Post.new.n\n",
+    );
+    let (ok, out, err) = quarz(&d.0, &["run", good.to_str().unwrap()], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(out, "1\n");
+}

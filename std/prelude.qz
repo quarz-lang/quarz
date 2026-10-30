@@ -145,6 +145,10 @@ type Class = Type[Object]
 # `Meta::ClassDef` exists at compile time only; the `data` types are
 # ordinary values.
 module Meta
+  # (Around a `static(...)` run inside a compile-time run, docs/14 §8: the
+  # reflection it does may not read a class whose statements are pending.)
+  static native def self.__static_enter -> Void
+  static native def self.__static_leave -> Void
   # A field of a class: its name, declared type (type arguments erased),
   # whether it is `var`, and whether it has a default.
   data Field = (name: Symbol, type: Type[Object], mutable: Bool, default: Bool)

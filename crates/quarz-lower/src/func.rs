@@ -1597,9 +1597,42 @@ impl<'a> FnBuilder<'a> {
                     self.baked_value(v)
                 }
                 None => {
-                    // Lowered again once the value is known.
+                    // Lowered again once the value is known; its run here
+                    // may not reflect on a class whose statements are
+                    // pending (`Meta.__static_enter`, docs/14 §8).
                     self.lw.static_fallback = true;
-                    self.expr(inner)
+                    self.meta_static_scope("__static_enter");
+                    // Left whichever way the call ends, as an `ensure`
+                    // would: a rescued exception leaves no scope open.
+                    let res = self.reg();
+                    let join = self.new_block();
+                    let leave = self.new_block();
+                    self.handlers.push(Region {
+                        handler: Some(Handler {
+                            block: leave,
+                            kind: HandlerKind::Ensure,
+                        }),
+                        ensure: None,
+                        rescuing: None,
+                    });
+                    let entry = self.new_block();
+                    self.term(Term::Jump(entry));
+                    self.switch(entry);
+                    let v = self.expr(inner);
+                    self.emit(Inst::Move { dst: res, src: v });
+                    self.handlers.pop();
+                    let after = self.new_block();
+                    self.term(Term::Jump(after));
+                    self.switch(after);
+                    self.meta_static_scope("__static_leave");
+                    self.term(Term::Jump(join));
+                    self.switch(leave);
+                    let flow = self.reg();
+                    self.emit(Inst::CatchAny { dst: flow });
+                    self.meta_static_scope("__static_leave");
+                    self.term(Term::Resume(flow));
+                    self.switch(join);
+                    res
                 }
             },
             Not(a) => {
@@ -2709,6 +2742,46 @@ impl<'a> FnBuilder<'a> {
         self.unchecked_receiver(recv, &name);
         self.term(Term::Jump(join));
         self.switch(join);
+    }
+
+    /// A call of `Meta.__static_enter` or `__static_leave`, which bracket a
+    /// `static(...)` run inside a compile-time run (docs/14 §8).
+    fn meta_static_scope(&mut self, name: &str) {
+        let Some(meta) = self
+            .world
+            .classes
+            .iter()
+            .find(|c| c.name == "Meta")
+            .map(|c| c.id)
+        else {
+            return;
+        };
+        let Some(&mid) = self
+            .world
+            .class(meta)
+            .singleton_methods
+            .get(name)
+            .and_then(|ids| ids.first())
+        else {
+            return;
+        };
+        let recv = self.reg();
+        self.emit(Inst::ClassRef {
+            dst: recv,
+            class: meta,
+        });
+        let dst = self.reg();
+        self.emit(Inst::Call {
+            dst,
+            kind: CallKind::Method(mid),
+            recv: Some(recv),
+            args: Vec::new(),
+            splat: false,
+            kw: Vec::new(),
+            kw_splat: None,
+            block: None,
+            moved: 0,
+        });
     }
 
     /// A receiver of a class none of the checks of a call (or `.:name`,
