@@ -66,8 +66,14 @@ data P = (x: Int, y: Int = 0)
 case P.new(1)
 in P(x:, y:) then puts "p #{x} #{y}"
 end
-big = 2 ** 62 + 2 ** 62
-p big + 1
+# An Int that overflows raises (an Integer holds any size).
+def overflows(&blk: () -> Int) -> Void
+  p blk.call
+rescue OverflowError => e
+  puts "overflow: #{e.class.name}"
+end
+overflows { 2 ** 62 + 2 ** 62 }
+p 4_611_686_018_427_387_903 + 4_611_686_018_427_387_904
 p 9_000_000_000_000_000_000 - 1
 f = ->(a: Int) { return a + 1 }
 p f.call(1)
@@ -87,10 +93,13 @@ p deep(5000)
   puts "#{a} / #{b} = #{a / b}, #{a} % #{b} = #{a % b}"
 end
 big = 3_037_000_500
-p big * big
-p (-big) * big
-p 9_223_372_036_854_775_807 + 1
-p -9_223_372_036_854_775_807 - 2
+overflows { big * big }
+p (big - 1) * (big - 1)
+overflows { (-big) * big }
+p -4_611_686_018_427_387_904 * 2
+overflows { 9_223_372_036_854_775_807 + 1 }
+overflows { -9_223_372_036_854_775_807 - 2 }
+p -9_223_372_036_854_775_807 - 1
 p 7.5 % 2.0, -7.5 % 2.0, 7.5 / 2.0, 1.5 * 4.0
 p 10 * 3, -10 / 4, -10 % 4, 10.0 - 0.5
 begin
@@ -98,8 +107,6 @@ begin
 rescue ZeroDivisionError => e
   puts "zero: #{e.message}"
 end
-exit 3
-
 # Module default methods on the class side (`extend`) dispatch to the
 # class's own singleton methods.
 module Named
@@ -114,3 +121,4 @@ class SubThing < Thing
   def self.label -> String = "SubThing"
 end
 puts Thing.greeting, SubThing.greeting
+exit 3

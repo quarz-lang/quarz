@@ -1,5 +1,6 @@
-//! The built-in classes: each fixture under `tests/fixtures/builtins` runs
-//! on the VM and must print the contents of its `.out` file.
+//! The built-in classes: each fixture under `tests/fixtures/builtins`, and
+//! each one directly under `tests/fixtures` with a `.out` file, runs on the
+//! VM and must print the contents of its `.out` file.
 
 mod common;
 
@@ -7,7 +8,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 fn fixtures() -> Vec<PathBuf> {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/builtins");
+    fixtures_in("tests/fixtures/builtins")
+}
+
+/// The `.qz` files directly in `dir` (relative to the crate), sorted.
+fn fixtures_in(dir: &str) -> Vec<PathBuf> {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join(dir);
     let mut paths: Vec<PathBuf> = fs::read_dir(&dir)
         .expect("fixtures directory")
         .map(|e| e.unwrap().path())
@@ -24,6 +30,33 @@ fn builtins_print_their_expected_output() {
         let expected = fs::read_to_string(path.with_extension("out")).expect("expected output");
         let (code, out) = common::run_path(&path, &[]);
         assert_eq!(code, 0, "{} exited with {code}:\n{out}", path.display());
+        assert_eq!(out, expected, "output of {}", path.display());
+    }
+}
+
+/// The fixtures directly under `tests/fixtures` (language behavior outside
+/// the built-in classes: `exit`, flows through `rescue`, `raise K`), each
+/// with its `.out`, and exiting with 0 (control_flow.qz with 3: it ends
+/// with `exit 3`).
+#[test]
+fn top_level_fixtures_print_their_expected_output() {
+    let paths = fixtures_in("tests/fixtures");
+    assert!(paths.len() >= 4, "{paths:?}");
+    for path in paths {
+        let expected = fs::read_to_string(path.with_extension("out"))
+            .unwrap_or_else(|e| panic!("{}: {e}", path.with_extension("out").display()));
+        let (code, out) = common::run_path(&path, &[]);
+        let status = if path.ends_with("control_flow.qz") {
+            3
+        } else {
+            0
+        };
+        assert_eq!(
+            code,
+            status,
+            "{} exited with {code}:\n{out}",
+            path.display()
+        );
         assert_eq!(out, expected, "output of {}", path.display());
     }
 }
