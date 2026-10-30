@@ -306,14 +306,14 @@ module Comparable[T]
   # 0.clamp(1, 3)   # => 1
   # 2.clamp(1, 3)   # => 2
   # ```
-  native def clamp(min: T, max: T) -> Self
+  native def clamp(min: T, max: T) -> Self | T
   # The receiver limited to `range`, whose ends may be open (`1..`,
   # `..3`).
   #
   # ## Raises
   #
   # `ArgumentError` for an exclusive range (`1...3`).
-  native def clamp(range: Range[T]) -> Self
+  native def clamp(range: Range[T]) -> Self | T
 end
 
 # A 64-bit integer: arithmetic that leaves the range raises
