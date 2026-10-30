@@ -1,0 +1,92 @@
+# Weekly: the path a new user takes first, against the real cogs on
+# GitHub (quarz-lang/greet and greet-more), with no credentials, so that
+# fetching over the network is exercised too. `cargo test` walks the
+# same path against local repositories (cogs::a_new_users_walk).
+name: Cogs over the network
+
+on:
+  schedule:
+    - cron: "17 3 * * 1"   # Mondays, 03:17 UTC
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  walk:
+    name: A new user's walk
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      # (No build cache: a weekly run would find it evicted.)
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build
+        run: cargo build --release
+      # An application depending on quarz-lang/greet v1.0.0, with
+      # greet-more (which needs greet v1.1.0) as a dev-dependency: check,
+      # run, build and the executable, test, the lock, and a second run
+      # that looks nothing up. A clean HOME and no git configuration: no
+      # credentials, as for a new user.
+      - name: Walk
+        shell: bash
+        run: |
+          set -euo pipefail
+          QUARZ="$PWD/target/release/quarz"
+          DIR=$(mktemp -d)
+          trap 'rm -rf "$DIR"' EXIT
+          export HOME="$DIR/home" QUARZ_CACHE="$DIR/cache" QUARZ_CACHE_DIR="$DIR/checks"
+          export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0
+          unset GH_TOKEN GITHUB_TOKEN 2>/dev/null || true
+          mkdir -p "$HOME" "$DIR/app/src" "$DIR/app/test"
+          cd "$DIR/app"
+          cat > Cog.toml <<'T'
+          [cog]
+          name = "hello"
+          version = "0.1.0"
+
+          [dependencies]
+          Greet = { git = "https://github.com/quarz-lang/greet", tag = "v1.0.0" }
+
+          [dev-dependencies]
+          GreetMore = { git = "https://github.com/quarz-lang/greet-more", tag = "v1.0.0" }
+          T
+          cat > src/main.qz <<'T'
+          class Team < Greet::Greeter
+            def initialize; super("team"); end
+            greets :world
+          end
+          puts Greet::Greeter.new("Quarz").hello
+          puts Team.new.greet_world
+          T
+          cat > test/team_test.qz <<'T'
+          require "test"
+          class TeamTest < Test::Case
+            def test_world -> Void = assert_equal("Hello, world!", Team.new.greet_world)
+            def test_more -> Void = assert_equal("Goodbye, Ann. (greet-more 1.0.0)", GreetMore.farewell("Ann"))
+          end
+          T
+          expected="Hello, Quarz!
+          Hello, world!"
+          fail() { echo "cogs-network: $*" >&2; exit 1; }
+          "$QUARZ" check
+          out=$("$QUARZ" run)
+          [ "$out" = "$expected" ] || fail "quarz run printed: $out"
+          "$QUARZ" build -o hello
+          out=$(./hello)
+          [ "$out" = "$expected" ] || fail "the executable printed: $out"
+          out=$("$QUARZ" test)
+          case $out in
+            *"2 tests, 2 assertions, 0 failures, 0 errors"*) ;;
+            *) fail "quarz test: $out" ;;
+          esac
+          grep -q 'source = "git+https://github.com/quarz-lang/greet"' Cog.lock || fail "the lock has no greet"
+          # greet-more's need lifts greet to 1.1.0 (minimal version selection).
+          awk '/name = "greet"$/ { f = 1 } f && /^version/ { print; exit }' Cog.lock | grep -q '"1.1.0"' \
+            || fail "greet is not locked at 1.1.0"
+          # Nothing on stderr either: no lookup, fetch or new resolution.
+          second=$("$QUARZ" run 2>&1)
+          [ "$second" = "$expected" ] || fail "the second run printed: $second"
+          echo "cogs-network: ok"
