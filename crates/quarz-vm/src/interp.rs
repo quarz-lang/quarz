@@ -2632,7 +2632,8 @@ impl Interp {
                     break;
                 }
             }
-            for module in &class.extends {
+            // The last module extended first (docs/01 §6), as for include.
+            for module in class.extends.iter().rev() {
                 for anc in &self.program.world.class(*module).ancestors {
                     if let Some(ids) = self.program.world.class(*anc).methods.get(&m.name) {
                         if let Some(id) = ids.iter().copied().find(|id| accepts(*id)) {

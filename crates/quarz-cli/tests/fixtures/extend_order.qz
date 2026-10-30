@@ -1,0 +1,29 @@
+# With several `extend`s, the module extended last comes first (docs/01
+# §6), as with `include`; the class's own class methods come before both.
+module First
+  def label -> String = "first"
+  def twice -> String = "#{label} #{label}"
+end
+
+module Second
+  def label -> String = "second"
+end
+
+class Both
+  extend First
+  extend Second
+end
+
+class Own
+  extend First
+  extend Second
+  def self.label -> String = "own"
+end
+
+class Sub < Both
+end
+
+puts Both.label
+puts Both.twice
+puts Own.twice
+puts Sub.twice

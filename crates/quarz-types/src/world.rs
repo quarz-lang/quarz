@@ -1721,7 +1721,8 @@ impl World {
                             out.push((*m, subst.clone()));
                         }
                     }
-                    for ext in class.extends.iter() {
+                    // (The last module extended first, docs/01 §6.)
+                    for ext in class.extends.iter().rev() {
                         if let Type::Class(mid, margs) = ext {
                             let msubst = self.class_subst(*mid, margs);
                             if let Some(ids) = self.class(*mid).methods.get(name) {
