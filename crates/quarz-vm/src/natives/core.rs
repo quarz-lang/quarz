@@ -33,13 +33,13 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     // Reflection, at compile time only (docs/14 §4): the natives read the
     // declarations the compiler hands the interpreter (`Interp::reflect`).
     native!(m, "Type#fields", |i, r, _| {
-        let class = reflected_class(i, r)?;
+        let class = read_class(i, r)?;
         let fields = reflect_of(i)?.fields(class);
         let out: Result<Vec<Value>, Flow> = fields.iter().map(|f| meta_field(i, f)).collect();
         Ok(Value::array(out?))
     });
     native!(m, "Type#field", |i, r, a| {
-        let class = reflected_class(i, r)?;
+        let class = read_class(i, r)?;
         let Value::Symbol(name) = a.arg(0) else {
             return Err(i.err_type("field takes a symbol"));
         };
@@ -51,13 +51,13 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         }
     });
     native!(m, "Type#methods", |i, r, _| {
-        let class = reflected_class(i, r)?;
+        let class = read_class(i, r)?;
         let methods = reflect_of(i)?.methods(class);
         let out: Result<Vec<Value>, Flow> = methods.iter().map(|m| meta_method(i, m)).collect();
         Ok(Value::array(out?))
     });
     native!(m, "Type#method?", |i, r, a| {
-        let class = reflected_class(i, r)?;
+        let class = read_class(i, r)?;
         let Value::Symbol(name) = a.arg(0) else {
             return Err(i.err_type("method? takes a symbol"));
         };
@@ -70,7 +70,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         ))
     });
     native!(m, "Type#includes?", |i, r, a| {
-        let class = reflected_class(i, r)?;
+        let class = read_class(i, r)?;
         let Value::Class(m) = a.arg(0) else {
             return Err(i.err_type("includes? takes a class"));
         };
@@ -163,6 +163,14 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     native!(m, "Meta::FieldRef#set", |i, _, _| Err(i.err_runtime(
         "a `Meta::FieldRef` is written only in a block given to `def_method`, where it is baked"
     )));
+    native!(m, "Meta.__static_enter", |i, _, _| {
+        reflect_of(i)?.static_scope(true);
+        Ok(Value::Nil)
+    });
+    native!(m, "Meta.__static_leave", |i, _, _| {
+        reflect_of(i)?.static_scope(false);
+        Ok(Value::Nil)
+    });
     native!(m, "Meta::ClassDef#doc", |i, _, a| {
         let Some(text) = a.arg(0).as_str() else {
             return Err(i.err_type("doc takes a string"));
@@ -305,6 +313,16 @@ fn reflected_class(interp: &Interp, recv: &Value) -> Result<ClassId, Flow> {
         Value::Class(c) => Ok(*c),
         _ => Err(interp.err_type("reflection takes a class")),
     }
+}
+
+/// The class a reflection native reads (`fields`, `methods`, ...), unless
+/// a `static(...)` run may not read it (`Reflect::reflect_refusal`).
+fn read_class(interp: &Interp, recv: &Value) -> Result<ClassId, Flow> {
+    let class = reflected_class(interp, recv)?;
+    if let Some(why) = reflect_of(interp)?.reflect_refusal(class) {
+        return Err(interp.err_runtime(&why));
+    }
+    Ok(class)
 }
 
 /// `def_method(name, params?, *, visibility:) { }` and

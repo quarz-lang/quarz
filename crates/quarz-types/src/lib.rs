@@ -644,6 +644,9 @@ pub trait StaticHost {
     /// running included): the lowering reaches their methods, and their
     /// descendants', only through a call that resolves to one.
     fn pending_classes(&self) -> Vec<ClassId>;
+    /// The `static` statements still to run (`World::static_stmts`
+    /// indices), the running one included.
+    fn pending_statements(&self) -> Vec<usize>;
     /// A member a statement generated (docs/14 §5): declared, or refused
     /// with the reason (a name the class has already).
     fn add_generated(&mut self, info: MethodInfo) -> Result<MethodId, String>;

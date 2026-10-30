@@ -12479,6 +12479,11 @@ impl crate::StaticHost for Checker {
     fn pending_classes(&self) -> Vec<ClassId> {
         self.pending_statement_classes()
     }
+    fn pending_statements(&self) -> Vec<usize> {
+        (0..self.world.static_stmts.len())
+            .filter(|i| !self.static_done.get(*i).copied().unwrap_or(false))
+            .collect()
+    }
     fn set_generated_captures(&mut self, method: MethodId, captures: Vec<(u32, u32, Baked)>) {
         if let Some(g) = &mut self.world.method_mut(method).generated {
             g.captures = captures;

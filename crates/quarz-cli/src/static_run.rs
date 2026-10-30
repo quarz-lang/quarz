@@ -1011,7 +1011,25 @@ impl Runner {
                 notes: Vec::new(),
             });
         }
-        let reflect = Rc::new(WorldReflect::snapshot(host.world()));
+        let mut reflect = WorldReflect::snapshot(host.world());
+        let world = host.world();
+        for i in host.pending_statements() {
+            let s = &world.static_stmts[i];
+            let call = match &s.expr.kind {
+                quarz_syntax::ast::ExprKind::Call(c) => c.name.clone(),
+                _ => "static".to_string(),
+            };
+            let label = format!("`{call}` in `{}`", world.class(s.class).name);
+            for c in &world.classes {
+                if world.class_is_a(c.id, s.class) {
+                    let labels = reflect.pending.entry(c.id).or_default();
+                    if !labels.contains(&label) {
+                        labels.push(label.clone());
+                    }
+                }
+            }
+        }
+        let reflect = Rc::new(reflect);
         let world = self.world.clone().expect("lowered");
         let interp = Interp::with_state(
             world,
@@ -1026,6 +1044,13 @@ impl Runner {
             .deadline
             .set(Some(std::time::Instant::now() + limit()));
         let result = interp.run_static(fid, Value::Class(stmt.class), stmt.file);
+        // A refused reflection fails the run, though the code rescued it.
+        if let Some(why) = reflect.refused.borrow_mut().take() {
+            return Err(StaticFailure {
+                message: why,
+                notes: Vec::new(),
+            });
+        }
         match result {
             Ok(value) => {
                 let pending = std::mem::take(&mut *reflect.generated.borrow_mut());
@@ -1115,6 +1140,15 @@ struct WorldReflect {
     generated: RefCell<Vec<Pending>>,
     /// The `doc` given, for the next generation.
     doc: RefCell<Option<String>>,
+    /// The classes whose `static` statements, or an ancestor's, are still
+    /// to run, with those statements as a message names them.
+    pending: HashMap<ClassId, Vec<String>>,
+    /// How many `static(...)` runs inside this compile-time run are under
+    /// way (docs/14 §8).
+    in_static: std::cell::Cell<u32>,
+    /// The first refusal (`reflect_refusal`), which fails the statement
+    /// whatever its run rescued.
+    refused: RefCell<Option<String>>,
 }
 
 /// A generation a statement's run asked for, in call order.
@@ -1309,6 +1343,9 @@ impl WorldReflect {
             methods,
             generated: RefCell::new(Vec::new()),
             doc: RefCell::new(None),
+            pending: HashMap::new(),
+            in_static: std::cell::Cell::new(0),
+            refused: RefCell::new(None),
         }
     }
 }
@@ -1433,6 +1470,23 @@ impl Reflect for WorldReflect {
                 writer: request.writer,
             }));
         Ok(())
+    }
+    fn static_scope(&self, enter: bool) {
+        let n = self.in_static.get();
+        self.in_static
+            .set(if enter { n + 1 } else { n.saturating_sub(1) });
+    }
+    fn reflect_refusal(&self, class: ClassId) -> Option<String> {
+        if self.in_static.get() == 0 {
+            return None;
+        }
+        let statements = self.pending.get(&class)?;
+        let why = format!(
+            "`static(...)` in a compile-time run reflects on a class whose `static` statements have not all run ({}): the program's value, computed when they have, could differ (docs/14 §8)",
+            statements.join(", ")
+        );
+        self.refused.borrow_mut().get_or_insert_with(|| why.clone());
+        Some(why)
     }
     fn made_handle(&self, interp: &Interp, handle: &Value) -> Result<(), String> {
         let handle = bake(interp, handle)?;
