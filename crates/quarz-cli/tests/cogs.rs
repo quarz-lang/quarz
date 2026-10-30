@@ -1196,3 +1196,263 @@ fn annotated_tags_give_versions_too() {
     let v = w.locked_version("app", "q");
     assert!(v.starts_with("1.2.1-0."), "{v}");
 }
+
+/// The path a new user takes first (tmp/instructions-cog-e2e.md): an
+/// application depending on a library cog by its https URL (here a
+/// repository of this test's, through git's `insteadOf`), with a
+/// `static def` macro, its tests and a second library that needs a newer
+/// version; then the errors a user meets.
+#[test]
+fn a_new_users_walk() {
+    let w = World::new();
+    // (`w.url("")` ends with the directory's `/`.)
+    let key = format!("url.{}.insteadOf", w.url(""));
+    assert!(!key.contains("//."), "{key}");
+    // (No global or system git configuration: an `insteadOf` there could
+    // take over the redirection.)
+    let env = [
+        ("GIT_CONFIG_GLOBAL", "/dev/null"),
+        ("GIT_CONFIG_NOSYSTEM", "1"),
+        ("GIT_CONFIG_COUNT", "1"),
+        ("GIT_CONFIG_KEY_0", key.as_str()),
+        ("GIT_CONFIG_VALUE_0", "https://github.com/quarz-lang/"),
+    ];
+    let run = |cwd: &str, args: &[&str]| w.quarz_env(cwd, args, &env);
+    // greet v1.0.0, then v1.1.0 with `bye`.
+    let greeter = |bye: &str| {
+        format!("class Greeter\n  @name: String\n  def initialize(@name: String); end\n  def hello -> String = \"Hello, #{{@name}}!\"\n{bye}\n  static def self.greets(name: Symbol) -> Void\n    def_method(\"greet_#{{name}}\".to_sym) do -> String\n      Greeter.new(name.to_s).hello\n    end\n  end\nend\n")
+    };
+    w.write(
+        "greet/Cog.toml",
+        "[cog]\nname = \"greet\"\nversion = \"1.0.0\"\nmodule = \"Greet\"\n",
+    );
+    w.write("greet/src/greeter.qz", &greeter(""));
+    w.write(
+        "greet/test/greeter_test.qz",
+        "require \"test\"\nclass GreeterTest < Test::Case\n  def test_hello -> Void = assert_equal(\"Hello, Ann!\", Greet::Greeter.new(\"Ann\").hello)\nend\n",
+    );
+    w.commit("greet", Some("v1.0.0"));
+    w.write(
+        "greet/Cog.toml",
+        "[cog]\nname = \"greet\"\nversion = \"1.1.0\"\nmodule = \"Greet\"\n",
+    );
+    w.write(
+        "greet/src/greeter.qz",
+        &greeter("  def bye -> String = \"Goodbye, #{@name}.\""),
+    );
+    let v110 = w.commit("greet", Some("v1.1.0"));
+    let out = run("greet", &["test"]);
+    assert!(
+        out.ok && out.stdout.contains("1 tests, 1 assertions, 0 failures"),
+        "{}{}",
+        out.stdout,
+        out.stderr
+    );
+    // The application: check, run, build, test, the lock.
+    let greet = "Greet = { git = \"https://github.com/quarz-lang/greet\", tag = \"v1.0.0\" }\n";
+    w.app(
+        greet,
+        "class Team < Greet::Greeter\n  def initialize; super(\"team\"); end\n  greets :world\nend\nputs Greet::Greeter.new(\"Quarz\").hello\nputs Team.new.greet_world\n",
+    );
+    w.write(
+        "app/test/team_test.qz",
+        "require \"test\"\nclass TeamTest < Test::Case\n  def test_world -> Void = assert_equal(\"Hello, world!\", Team.new.greet_world)\nend\n",
+    );
+    let out = run("app", &["check"]);
+    assert!(out.ok, "{}", out.stderr);
+    let expected = "Hello, Quarz!\nHello, world!\n";
+    assert_eq!(run("app", &["run"]).stdout, expected);
+    let out = run("app", &["build", "-o", "hello"]);
+    assert!(out.ok, "{}", out.stderr);
+    let exe = Command::new(w.path("app/hello")).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&exe.stdout), expected);
+    let out = run("app", &["test"]);
+    assert!(
+        out.stdout.contains("1 tests, 1 assertions, 0 failures"),
+        "{}{}",
+        out.stdout,
+        out.stderr
+    );
+    let lock = std::fs::read_to_string(w.path("app/Cog.lock")).unwrap();
+    assert!(
+        lock.contains("source = \"git+https://github.com/quarz-lang/greet\""),
+        "{lock}"
+    );
+    assert_eq!(w.locked_version("app", "greet"), "1.0.0");
+    // A second run fetches nothing: it works with the repository gone.
+    std::fs::rename(w.path("greet"), w.path("greet.away")).unwrap();
+    let out = run("app", &["run"]);
+    assert_eq!(out.stdout, expected, "{}", out.stderr);
+    assert!(!out.stderr.contains("fetching"), "{}", out.stderr);
+    std::fs::rename(w.path("greet.away"), w.path("greet")).unwrap();
+    // greet-more needs greet v1.1.0: the version chosen (minimal version
+    // selection), under the application's key, which may be another.
+    w.write(
+        "greet-more/Cog.toml",
+        "[cog]\nname = \"greet-more\"\nversion = \"1.0.0\"\nmodule = \"GreetMore\"\n\n[dependencies]\nGreet = { git = \"https://github.com/quarz-lang/greet\", tag = \"v1.1.0\" }\n",
+    );
+    w.write(
+        "greet-more/src/farewell.qz",
+        "def self.farewell(name: String) -> String = Greet::Greeter.new(name).bye + \" (#{cog.name} #{cog.version})\"\n",
+    );
+    w.commit("greet-more", Some("v1.0.0"));
+    let more =
+        "GreetMore = { git = \"https://github.com/quarz-lang/greet-more\", tag = \"v1.0.0\" }\n";
+    w.app(
+        &format!("{}{more}", greet.replace("Greet = ", "Hi = ")),
+        "puts Hi::Greeter.new(\"Quarz\").bye\nputs GreetMore.farewell(\"Quarz\")\n",
+    );
+    let out = run("app", &["run"]);
+    assert_eq!(
+        out.stdout, "Goodbye, Quarz.\nGoodbye, Quarz. (greet-more 1.0.0)\n",
+        "{}",
+        out.stderr
+    );
+    assert_eq!(w.locked_version("app", "greet"), "1.1.0");
+    // A `rev` in the application's manifest pins: greet-more's need is
+    // then an error naming both.
+    let v100 = w.git("greet", &["rev-parse", "v1.0.0"]);
+    assert_ne!(v100, v110);
+    w.app(
+        &format!(
+            "Greet = {{ git = \"https://github.com/quarz-lang/greet\", rev = \"{v100}\" }}\n{more}"
+        ),
+        "puts GreetMore.farewell(\"Quarz\")\n",
+    );
+    let err = run("app", &["check"]).stderr;
+    assert!(
+        err.contains("the application pins https://github.com/quarz-lang/greet to 1.0.0 with `rev`, but greet-more 1.0.0 needs 1.1.0"),
+        "{err}"
+    );
+    // A test's own dependency is a `[dev-dependencies]` entry.
+    w.write(
+        "app/Cog.toml",
+        &format!("[cog]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n{greet}\n[dev-dependencies]\n{more}"),
+    );
+    w.write(
+        "app/src/main.qz",
+        "puts Greet::Greeter.new(\"Quarz\").hello\n",
+    );
+    w.write(
+        "app/test/team_test.qz",
+        "require \"test\"\nclass FarewellTest < Test::Case\n  def test_farewell -> Void = assert_equal(\"Goodbye, Ann. (greet-more 1.0.0)\", GreetMore.farewell(\"Ann\"))\nend\n",
+    );
+    let out = run("app", &["test"]);
+    assert!(
+        out.stdout.contains("1 tests, 1 assertions, 0 failures"),
+        "{}{}",
+        out.stdout,
+        out.stderr
+    );
+    assert_eq!(run("app", &["run"]).stdout, "Hello, Quarz!\n");
+    std::fs::remove_file(w.path("app/test/team_test.qz")).unwrap();
+    // Errors a user meets: a missing tag, a mistyped URL, a fetched cog
+    // patching with a path.
+    w.app(&greet.replace("v1.0.0", "v9.9.9"), "puts 1\n");
+    let err = run("app", &["check"]).stderr;
+    assert!(
+        err.contains(
+            "https://github.com/quarz-lang/greet has no tag `v9.9.9` (required by the application)"
+        ),
+        "{err}"
+    );
+    w.app(&greet.replace("/greet\"", "/gret\""), "puts 1\n");
+    let err = run("app", &["check"]).stderr;
+    assert!(
+        err.contains("listing https://github.com/quarz-lang/gret")
+            && err.contains("(required by the application)"),
+        "{err}"
+    );
+    w.write(
+        "pathy/Cog.toml",
+        "[cog]\nname = \"pathy\"\nversion = \"1.0.0\"\n\n[dependencies]\nGreet = { git = \"https://github.com/quarz-lang/greet\", tag = \"v1.0.0\" }\n\n[patch]\nGreet = { path = \"../greet\" }\n",
+    );
+    w.write("pathy/src/z.qz", "Z = 1\n");
+    w.commit("pathy", Some("v1.0.0"));
+    w.app(greet, "puts 1\n");
+    assert!(run("app", &["check"]).ok);
+    let lock = std::fs::read_to_string(w.path("app/Cog.lock")).unwrap();
+    let out = run(
+        "app",
+        &[
+            "cog",
+            "add",
+            "https://github.com/quarz-lang/pathy",
+            "--tag",
+            "v1.0.0",
+        ],
+    );
+    assert!(
+        !out.ok
+            && out.stderr.contains(
+                "pathy 1.0.0 has a [patch] `Greet` naming ../greet, a directory on this machine"
+            ),
+        "{}",
+        out.stderr
+    );
+    // Refused before anything is written.
+    assert_eq!(
+        std::fs::read_to_string(w.path("app/Cog.lock")).unwrap(),
+        lock
+    );
+    // The application may patch with a path.
+    w.app(
+        &format!("{greet}\n[patch]\nGreet = {{ path = \"../greet\" }}\n"),
+        "puts Greet::Greeter.new(\"dev\").bye\n",
+    );
+    let out = run("app", &["run"]);
+    assert_eq!(out.stdout, "Goodbye, dev.\n", "{}", out.stderr);
+}
+
+#[test]
+fn cogs_depend_on_each_other_in_no_cycle() {
+    // docs/10 §4: with a cycle, each cog's `static` statements could run
+    // the other's `static def`s, neither cog complete before the other.
+    let w = World::new();
+    publish(&w, "c1", "1.0.0", &[("C2", "c2", "v1.0.0")]);
+    publish(&w, "c2", "1.0.0", &[("C1", "c1", "v1.0.0")]);
+    w.app(
+        &format!("C1 = {{ git = \"{}\", tag = \"v1.0.0\" }}\n", w.url("c1")),
+        "puts C1::V\n",
+    );
+    let err = w.fails("app", &["check"]);
+    assert!(
+        err.contains("the cogs depend on each other in a cycle: c1 -> c2 -> c1")
+            || err.contains("the cogs depend on each other in a cycle: c2 -> c1 -> c2"),
+        "{err}"
+    );
+    assert!(!w.path("app/Cog.lock").exists());
+    // Also when the cycle spells a repository otherwise (a trailing `/`),
+    // and through a patched cog.
+    w.write(
+        "c2/Cog.toml",
+        &format!(
+            "[cog]\nname = \"c2\"\nversion = \"1.1.0\"\n\n[dependencies]\nC1 = {{ git = \"{}/\", tag = \"v1.0.0\" }}\n",
+            w.url("c1")
+        ),
+    );
+    w.commit("c2", Some("v1.1.0"));
+    w.write(
+        "c1/Cog.toml",
+        &format!(
+            "[cog]\nname = \"c1\"\nversion = \"1.1.0\"\n\n[dependencies]\nC2 = {{ git = \"{}\", tag = \"v1.1.0\" }}\n",
+            w.url("c2")
+        ),
+    );
+    w.commit("c1", Some("v1.1.0"));
+    w.app(
+        &format!("C1 = {{ git = \"{}\", tag = \"v1.1.0\" }}\n", w.url("c1")),
+        "puts C1::V\n",
+    );
+    let err = w.fails("app", &["check"]);
+    assert!(err.contains("in a cycle: c"), "{err}");
+    w.write(
+        "app/Cog.toml",
+        &format!(
+            "[cog]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\nC1 = {{ git = \"{}\", tag = \"v1.0.0\" }}\n\n[patch]\nC1 = {{ path = \"../c1\" }}\n",
+            w.url("c1")
+        ),
+    );
+    let err = w.fails("app", &["check"]);
+    assert!(err.contains("in a cycle: c"), "{err}");
+}
