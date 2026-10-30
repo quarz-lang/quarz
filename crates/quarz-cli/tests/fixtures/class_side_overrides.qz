@@ -1,0 +1,20 @@
+# A class method of the name and signature of a `Type` method replaces it
+# on the class's value, also through a parameter typed `Type` (docs/01
+# §9), compiled as on the VM.
+class A
+  def self.name -> String = "Custom"
+  def self.inspect -> String = "<A>"
+  def self.name(x: Int) -> Int = x
+end
+class B < A
+end
+module Named
+  def name -> String = "from Named"
+end
+class C
+  extend Named
+end
+def name_of(k: Type) -> String = k.name
+def shown(k: Type) -> String = k.inspect
+p name_of(A), name_of(B), name_of(String), name_of(C)
+p shown(A), shown(Integer), A.name(2)

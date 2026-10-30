@@ -909,6 +909,34 @@ fn overridden_methods(world: &World) -> HashSet<(ClassId, String)> {
             }
         }
     }
+    // A class method replaces, on the class's value, the `Type` method of
+    // its name and signature (`Interp::class_side_override`): a call
+    // through `k: Type` dispatches (docs/01 §9).
+    let type_side = &ancestors[world.builtin.class_ as usize];
+    for c in &world.classes {
+        if c.kind == quarz_types::ClassKind::Main {
+            continue;
+        }
+        // (And the methods of the modules it extends, which the runtime
+        // finds there too.)
+        let extended = c.extends.iter().flat_map(|t| match t {
+            quarz_types::Type::Class(m, _) => ancestors[*m as usize].clone(),
+            _ => Vec::new(),
+        });
+        let names: Vec<String> = c
+            .singleton_methods
+            .keys()
+            .cloned()
+            .chain(
+                extended.flat_map(|m| world.class(m).methods.keys().cloned().collect::<Vec<_>>()),
+            )
+            .collect();
+        for name in names {
+            for anc in type_side {
+                out.insert((*anc, name.clone()));
+            }
+        }
+    }
     // A module a class extends runs on the class object, where the class's
     // own class methods (its superclasses' too), and the methods of the
     // other modules it extends, override the module's (docs/01 §6).
