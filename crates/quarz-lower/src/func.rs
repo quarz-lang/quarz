@@ -1085,6 +1085,73 @@ impl<'a> FnBuilder<'a> {
         self.resolve(r)
     }
 
+    /// The variables a pattern binds, with their values now: what a
+    /// failed match puts back. (Its binding sites only, where the pattern
+    /// code stores: not the variables read in a pin or a value, which it
+    /// does not change and which a nested block may refer to from a frame
+    /// of its own.)
+    fn save_pattern_vars(&mut self, pat: &ast::Pattern) -> Vec<(VarRef, Reg)> {
+        fn sites(p: &ast::Pattern, out: &mut Vec<Span>) {
+            use ast::PatternKind as K;
+            let array = |ap: &ast::ArrayPattern, span: Span, out: &mut Vec<Span>| {
+                for q in ap.pre.iter().chain(&ap.post) {
+                    sites(q, out);
+                }
+                if matches!(ap.rest, Some(Some(_))) {
+                    out.push(span);
+                }
+            };
+            let hash = |hp: &ast::HashPattern, span: Span, out: &mut Vec<Span>| {
+                for pair in &hp.pairs {
+                    match &pair.pattern {
+                        Some(q) => sites(q, out),
+                        None => out.push(pair.span),
+                    }
+                }
+                if matches!(hp.rest, Some(ast::HashPatternRest::Bind(_))) {
+                    out.push(span);
+                }
+            };
+            match &p.kind {
+                K::Bind(_) => out.push(p.span),
+                K::Capture(inner, _) => {
+                    sites(inner, out);
+                    out.push(p.span);
+                }
+                K::Alt(ps) => ps.iter().for_each(|q| sites(q, out)),
+                K::ConstArray(_, ap) => array(ap, p.span, out),
+                K::Array(ap) => array(ap, p.span, out),
+                K::ConstHash(_, hp) => hash(hp, p.span, out),
+                K::Hash(hp) => hash(hp, p.span, out),
+                K::Find {
+                    pre_rest,
+                    middle,
+                    post_rest,
+                } => {
+                    if pre_rest.is_some() {
+                        out.push(p.span);
+                    }
+                    middle.iter().for_each(|q| sites(q, out));
+                    if post_rest.is_some() {
+                        out.push(Span::empty(p.span.end as usize));
+                    }
+                }
+                K::Value(_) | K::Pin(_) | K::Const(_) | K::Range { .. } => {}
+            }
+        }
+        let mut spans = Vec::new();
+        sites(pat, &mut spans);
+        let mut refs: Vec<VarRef> = spans.iter().filter_map(|s| self.var_ref(*s)).collect();
+        refs.sort_by_key(|r| (r.depth, r.slot));
+        refs.dedup();
+        refs.into_iter()
+            .map(|r| {
+                let old = self.load_var(r);
+                (r, old)
+            })
+            .collect()
+    }
+
     fn store_site(&mut self, span: Span, src: Reg) {
         if let Some(r) = self.var_ref(span) {
             self.store_var(r, src);
@@ -1672,10 +1739,20 @@ impl<'a> FnBuilder<'a> {
                 raises,
             } => {
                 let v = self.expr(value);
+                // A failed match leaves the variables as they were (docs/01
+                // §11): those its pattern names are kept aside, and put back
+                // where it fails.
+                let saved = self.save_pattern_vars(pattern);
                 let fail = self.new_block();
                 let ok = self.new_block();
-                self.pattern(pattern, v, fail);
+                let failed = self.new_block();
+                self.pattern(pattern, v, failed);
                 self.term(Term::Jump(ok));
+                self.switch(failed);
+                for (r, old) in &saved {
+                    self.store_var(*r, *old);
+                }
+                self.term(Term::Jump(fail));
                 if *raises {
                     self.switch(fail);
                     self.emit(Inst::NoMatch {

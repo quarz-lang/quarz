@@ -48,6 +48,22 @@ impl LocalTable {
         self.scopes.pop();
     }
 
+    /// The names declared in the innermost scope so far.
+    pub fn innermost_names(&self) -> Vec<String> {
+        self.scopes
+            .last()
+            .map(|s| s.names.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// Pop the innermost scope, giving the names declared in it.
+    pub fn pop_scope_names(&mut self) -> Vec<String> {
+        self.scopes
+            .pop()
+            .map(|s| s.names.into_iter().collect())
+            .unwrap_or_default()
+    }
+
     pub fn declare(&mut self, name: &str) {
         if self.scopes.is_empty() {
             self.push_scope(true);

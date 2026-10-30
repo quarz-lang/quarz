@@ -436,6 +436,9 @@ struct Env {
     /// frame had before the `case`. Pattern variables declared by earlier
     /// arms (at or past this index) are re-declared rather than re-bound.
     pattern_base: Option<usize>,
+    /// Checking a `case/in` arm's pattern: the names it binds are the
+    /// arm's own (`declare_pattern_var`).
+    arm_local: bool,
     /// Index of the innermost frame that runs on another task (`spawn`
     /// block). Variables from frames below it are captured by value and must
     /// be shareable; they cannot be assigned.
@@ -908,6 +911,7 @@ impl Checker {
             in_rescue: 0,
             file: 1,
             pattern_base: None,
+            arm_local: false,
             task_frame: None,
             task_shareable_proc: false,
             reassigned: None,
@@ -2200,6 +2204,7 @@ impl Checker {
             in_rescue: 0,
             file,
             pattern_base: None,
+            arm_local: false,
             task_frame: None,
             task_shareable_proc: false,
             reassigned: None,
@@ -3617,12 +3622,12 @@ impl Checker {
             facts.push((VarKey::Local(v.name.clone()), t));
         }
         // An existing local the pattern binds holds its new value where it
-        // matched (a fact), and its old one or the new where it did not:
-        // the pattern may fail before binding it, or after.
+        // matched (a fact), and its old one where it did not: a failed
+        // match leaves it as it was (the run time puts back what it bound,
+        // docs/01 §11).
         for (fi, slot, name, before, now) in self.rebound_since(snap) {
-            facts.push((VarKey::Local(name), now.clone()));
-            let either = self.join(&before, &now);
-            self.env.frames[fi].vars.set_narrowed(slot, Some(either));
+            facts.push((VarKey::Local(name), now));
+            self.env.frames[fi].vars.set_narrowed(slot, Some(before));
         }
         self.unset_since(snap);
     }
@@ -11091,8 +11096,10 @@ pub(crate) use VarKey as PatternVarKey;
 
 impl Checker {
     pub(crate) fn declare_pattern_var(&mut self, name: &str, ty: Type, span: Span) {
+        // (A `case/in` arm's names are its own: always fresh.)
         let existing = self.lookup_var(name).filter(|(depth, slot)| {
-            !(*depth == 0 && self.env.pattern_base.is_some_and(|base| *slot >= base))
+            !self.env.arm_local
+                && !(*depth == 0 && self.env.pattern_base.is_some_and(|base| *slot >= base))
         });
         if let Some((depth, slot)) = existing {
             // Re-binding an existing variable: it must accept the type.
@@ -11205,7 +11212,6 @@ impl Checker {
         // Fields a failed guard changed, with what it left them (none:
         // their declared types).
         let mut ivars_assigned: Vec<(String, Option<Type>)> = Vec::new();
-        let mut subject_rebound = false;
         for arm in arms {
             self.restore(&before);
             self.widen_rebound(&rebound);
@@ -11216,14 +11222,18 @@ impl Checker {
             } else {
                 &st
             };
+            // The names the pattern binds are the arm's own, as a block's
+            // parameters (docs/01 §11): fresh, shadowing outer locals of
+            // the names, which a failed arm so never changes.
+            let own_from = self.env.frames.last().unwrap().vars.len();
+            let saved_arm_local = std::mem::replace(&mut self.env.arm_local, true);
             let narrowed = self.check_pattern(&arm.pattern, on);
-            // (A pattern that rebinds the subject, `in L::Cons(_, l)` on
-            // `l`, leaves it the binding's type; after an arm that may
-            // have, the subject is no longer the value matched.)
+            self.env.arm_local = saved_arm_local;
+            let own_to = self.env.frames.last().unwrap().vars.len();
+            // (Where the pattern binds the subject's name, `in
+            // L::Cons(_, l)` on `l`, that name is the binding in the arm.)
             match &key {
-                Some(VarKey::Local(n)) if subject_rebound || arm.pattern.binds(n) => {
-                    subject_rebound = true;
-                }
+                Some(VarKey::Local(n)) if arm.pattern.binds(n) => {}
                 Some(k) => self.narrow_subject(k, Some(narrowed)),
                 None => {}
             }
@@ -11251,6 +11261,13 @@ impl Checker {
             let bt = self.check_body(&arm.body, expected);
             snaps.push((self.snapshot(), bt.is_nothing()));
             result = self.join(&result, &bt);
+            // The arm's names are out of scope after it (their slots stay,
+            // for the code that refers to them).
+            let frame = self.env.frames.last_mut().unwrap();
+            for slot in own_from..own_to.min(frame.vars.len()) {
+                let hidden = format!("{} (case arm)", frame.vars.list[slot].name);
+                frame.vars.rename(slot, hidden);
+            }
         }
         self.env.pattern_base = saved_base;
         self.restore(&before);
@@ -11258,7 +11275,7 @@ impl Checker {
         self.widen_ivars(&ivars_assigned);
         let et = match els {
             Some(els) => {
-                if let Some(k) = key.as_ref().filter(|_| !subject_rebound) {
+                if let Some(k) = &key {
                     let rem = Type::union_of(remaining.clone());
                     self.narrow_subject(k, Some(rem));
                 }

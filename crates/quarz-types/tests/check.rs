@@ -2574,7 +2574,8 @@ fn narrowing_holds_only_where_the_test_succeeded() {
     );
     ok(&format!("{boxes}class W[T]\n  def f(b: Box[T]) -> Int\n    if b.is_a?(IntBox)\n      i: IntBox = b\n      return 1\n    end\n    0\n  end\nend"));
     // An existing local an `in` test binds holds the binding's type only
-    // where it matched: elsewhere it may be either.
+    // where it matched: elsewhere it keeps its old one (a failed match puts
+    // it back, docs/01 §11).
     let p = "data P = (a: Int, b: Int)\n";
     err(
         &format!("{p}def h(p: P | Int, y: Int | String) -> Int\n  return 0 unless y.is_a?(String)\n  if p in P(y, 9)\n    return 1\n  end\n  y + 1\nend"),
@@ -2594,8 +2595,8 @@ fn narrowing_holds_only_where_the_test_succeeded() {
     ok(&format!("{l}def f(l: L) -> Int\n  case l\n  in L::Cons(_, L::Cons => l) then l.h\n  in L::Cons(h, _) then h\n  in L::E then 0\n  end\nend"));
     // Without a rebinding arm before, the subject narrows as usual.
     ok(&format!("{l}def f(l: L) -> Int\n  case l\n  in L::Cons(h, _) then h + l.h\n  in L::E then 0\n  end\nend"));
-    // In `case ... in`, an arm may fail after binding (or by its guard):
-    // the later arms, `else` and what follows see either type.
+    // In `case ... in`, the names an arm's pattern binds are its own: a
+    // failed arm leaves the outer `y` as it was (docs/01 §11).
     let ys =
         "def h(p: P | Int, y: Int | String) -> Int\n  return 0 unless y.is_a?(String)\n  case p\n";
     for rest in [
@@ -2603,10 +2604,14 @@ fn narrowing_holds_only_where_the_test_succeeded() {
         "  in P(y, 9) then 1\n  else y.size\n  end\nend",
         "  in P(y, _) if y > 100 then 1\n  in _ then y.size\n  end\nend",
         "  in P(y, 9) then return 1\n  in _ then 0\n  end\n  y.size\nend",
-        "  in P(_, _) if (y = 5) == 0 then 1\n  in _ then y.size\n  end\nend",
     ] {
-        err(&format!("{p}{ys}{rest}"), "undefined method `size` for Int");
+        ok(&format!("{p}{ys}{rest}"));
     }
+    // A guard that assigns an outer local does change it.
+    err(
+        &format!("{p}{ys}  in P(_, _) if (y = 5) == 0 then 1\n  in _ then y.size\n  end\nend"),
+        "undefined method `size` for Int",
+    );
     // A guard that only tests a field keeps what it was narrowed to.
     ok(&format!("{p}class C\n  @x: Int | String | Nil\n  def initialize\n    @x = 1\n  end\n  def takes(v: Int | String) -> Int = 1\n  def k(p: P | Int) -> Int\n    return 0 if @x.nil?\n    case p\n    in P(_, _) if @x.is_a?(String) then 1\n    in _ then takes(@x)\n    end\n  end\nend"));
     // A field a failing guard assigned.
@@ -2614,14 +2619,9 @@ fn narrowing_holds_only_where_the_test_succeeded() {
         &format!("{p}class C\n  @x: Int?\n  def initialize(p: P | Int)\n    @x = 1\n    case p\n    in P(_, _) if (@x = nil).nil? && false then puts 1\n    in _ then puts @x + 1\n    end\n  end\nend"),
         "undefined method `+` for Nil",
     );
-    err(
-        "def h(x: Int | Array[Int]) -> Int\n  case x\n  in [x, 1] then 1\n  in Array then x.size\n  in Int then 0\n  end\nend",
-        "undefined method `size` for Int",
-    );
-    err(
-        &format!("{l}def f(l: L) -> Int\n  case l\n  in L::Cons(_, l) if false then 0\n  in L::Cons then l.h\n  in L::E then 0\n  end\nend"),
-        "undefined method `h` for L",
-    );
+    // An arm's own `x` or `l` is not the subject: later arms narrow it.
+    ok("def h(x: Int | Array[Int]) -> Int\n  case x\n  in [x, 1] then 1\n  in Array then x.size\n  in Int then 0\n  end\nend");
+    ok(&format!("{l}def f(l: L) -> Int\n  case l\n  in L::Cons(_, l) if false then 0\n  in L::Cons then l.h\n  in L::E then 0\n  end\nend"));
 }
 
 #[test]
@@ -2939,4 +2939,16 @@ fn block_result_type() {
         "a: Array[Int] = [1, 2].map { |x| -> Int | String x }",
         "the block is declared `-> Int | String` but `map` expects (Int) -> Int",
     );
+}
+
+#[test]
+fn a_case_arms_names_are_its_own() {
+    // docs/01 §11: as a block's parameters; not seen after the `case`.
+    err(
+        "def h(v: Int) -> Int\n  case v\n  in Int => n then 1\n  end\n  n\nend",
+        "undefined local variable or method `n`",
+    );
+    // Two arms may bind one name to different types; an outer local of
+    // the name is shadowed, unchanged.
+    ok("def g(v: Int | String) -> Int\n  x = \"outer\"\n  r = case v\n      in Int => x then x + 1\n      in String => x then x.size\n      end\n  r + x.size\nend");
 }

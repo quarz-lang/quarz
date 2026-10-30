@@ -2777,26 +2777,45 @@ impl<'src> Parser<'src> {
                 };
                 let mut arms = Vec::new();
                 while self.eat_kw(K::In) {
-                    let pattern = self.parse_pattern_top()?;
-                    let guard = match self.kind() {
-                        T::Keyword(K::If) => {
-                            self.bump();
-                            Some(Guard {
-                                cond: self.parse_cond()?,
-                                negate: false,
-                            })
+                    // The names the pattern binds are the arm's own (docs/01
+                    // §11): out of scope after it, unlike the arm's other
+                    // new locals.
+                    self.lexer.locals.push_scope(false);
+                    let pattern = self.parse_pattern_top();
+                    let own = self.lexer.locals.innermost_names();
+                    let pattern = match pattern {
+                        Ok(p) => p,
+                        Err(e) => {
+                            self.lexer.locals.pop_scope();
+                            return Err(e);
                         }
-                        T::Keyword(K::Unless) => {
-                            self.bump();
-                            Some(Guard {
-                                cond: self.parse_cond()?,
-                                negate: true,
-                            })
-                        }
+                    };
+                    let negate = match self.kind() {
+                        T::Keyword(K::If) => Some(false),
+                        T::Keyword(K::Unless) => Some(true),
                         _ => None,
+                    };
+                    let guard = match negate {
+                        Some(negate) => {
+                            self.bump();
+                            match self.parse_cond() {
+                                Ok(cond) => Some(Guard { cond, negate }),
+                                Err(e) => {
+                                    // (The arm's scope ends with it.)
+                                    self.lexer.locals.pop_scope();
+                                    return Err(e);
+                                }
+                            }
+                        }
+                        None => None,
                     };
                     self.eat_then();
                     let body = self.parse_statements(&[K::In, K::Else, K::End]);
+                    for name in self.lexer.locals.pop_scope_names() {
+                        if !own.contains(&name) {
+                            self.declare(&name);
+                        }
+                    }
                     arms.push(InArm {
                         pattern,
                         guard,

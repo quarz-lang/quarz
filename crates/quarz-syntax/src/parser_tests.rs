@@ -258,8 +258,8 @@ fn control_flow() {
 #[test]
 fn patterns() {
     assert_eq!(
-        sexp("case v\nin Int => n if n > 0 then 1\nin [a, *rest] then 2\nin {name: String => s, age:} then 3\nin Point(x:, y: 0) then 4\nin Foo[a, b] then 5\nin ^x | nil then 6\nin 1..5 then 7\nin [*, :x, *post] then 8\nend"),
-        "(case-in (call _ v) (in (capture Int n) (if (call n > 0)) 1) (in (arr a *rest) 2) (in (hash name: (capture String s) age:) 3) (in (Point x: y: 0) 4) (in (Foo a b) 5) (in (alt ^x nil) 6) (in (range 1 .. 5) 7) (in (find * :x *post) 8))"
+        sexp("x = 1\ncase v\nin Int => n if n > 0 then 1\nin [a, *rest] then 2\nin {name: String => s, age:} then 3\nin Point(x:, y: 0) then 4\nin Foo[a, b] then 5\nin ^x | nil then 6\nin 1..5 then 7\nin [*, :x, *post] then 8\nend"),
+        "(= x 1)\n(case-in (call _ v) (in (capture Int n) (if (call n > 0)) 1) (in (arr a *rest) 2) (in (hash name: (capture String s) age:) 3) (in (Point x: y: 0) 4) (in (Foo a b) 5) (in (alt ^x nil) 6) (in (range 1 .. 5) 7) (in (find * :x *post) 8))"
     );
     assert_eq!(sexp("v => [a, b]"), "(=> (call _ v) (arr a b))");
     assert_eq!(sexp("v => Point(x:, y:)"), "(=> (call _ v) (Point x: y:))");
