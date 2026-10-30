@@ -1,0 +1,38 @@
+# Extensions of a program's classes (stage 6c, design §16.5): the method the
+# checker chose is called statically, whatever the receiver's class; outside
+# `using`, a class's own methods dispatch as usual.
+class Shape
+  def name -> String = "shape"
+end
+class Circle < Shape
+  def name -> String = "circle"
+end
+class Box[T]
+  @v: T
+  def initialize(@v: T)
+  end
+  def v -> T = @v
+end
+module Loud
+  extension Shape
+    # Hides Shape#name where `Loud` is used, without overriding Circle's.
+    def name -> String = "LOUD"
+    def shout -> String = name + "!"
+  end
+  extension Box[T]
+    def twice -> Array[T] = [v, v]
+  end
+end
+def plain(s: Shape) -> String = s.name
+def loud(s: Shape) -> String
+  using Loud
+  s.name + " " + s.shout
+end
+using Loud
+def m -> String
+  c = Circle.new
+  s: Shape = Shape.new
+  plain(c) + " " + s.name + " " + c.name + " " + c.shout + " " + loud(c)
+end
+puts m
+puts Box.new(3).twice.size

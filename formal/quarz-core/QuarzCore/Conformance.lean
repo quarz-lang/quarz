@@ -323,6 +323,12 @@ The checker's choice among overloads is taken as given (the call's
 method), the model checks the chosen signature. -/
 def Tables.modelName (T : Tables) (m : Json) : M String := do
   let name ← str (← field m "name")
+  -- An extension's method on a program's class (stage 6c, design §16.5):
+  -- a name of its own, which nothing overrides nor hides, so a call the
+  -- checker resolved to it runs it whatever the receiver's class (a
+  -- static call), as Quarz's does.
+  if let .num _ := ← field m "extension" then
+    return s!"{name}@ext{← nat (← field m "extension")}"
   match T.overloads.find? (·.1 == name) with
   | none => pure name
   | some (_, keys) =>
@@ -947,6 +953,9 @@ partial def expr (T : Tables) (e : Json) : CM Expr := do
   | "True" => pure .tru
   | "False" => pure .fls
   | "SelfRef" => pure .self
+  -- (Which extensions a `using` makes active is the checker's, taken as
+  -- given in the calls it resolved: the statement itself does nothing.)
+  | "Using" => pure .nil
   | "Float" => pure (.flt v.compress)
   -- A constant: not narrowed (docs/02 §6), a value of its own type. The
   -- type the Rust checker gave the read must be that one.
@@ -1618,9 +1627,15 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
     -- typed by their declarations (the prelude's bodies are the Rust
     -- checker's to check, not the model's); `Object`'s are out of range.
     let onArray (rt : Ty) : Bool := rt.any fun a => match a with | .cls k _ => k == arrIdx | _ => false
-    -- (An extension's method: which extension applies, and its own
-    -- parameters, are stage 6's.)
-    if (← field m "extension") != .null then throw s!"an extension's method {name}"
+    -- (An extension's method: one on a program's class is that class's
+    -- method of its own name (`modelName`); a prelude extension's, out of
+    -- range. On a union, Rust may choose per member: out of range.)
+    if (← field m "extension") != .null then
+      let o ← nat (← field m "owner")
+      if (T.qclass o).all (· < 2) || (T.qclass o) == some arrIdx || T.excIds.contains o then
+        throw s!"an extension's method {name}"
+      if let some rj := (recvJ.getObjVal? "id").toOption then
+        if (← T.nodeTy (← nat rj)).length > 1 then throw s!"an extension's method {name} on a union"
     -- The receiver's view of the method's owner (its parameters, `Self`).
     let recvEnv : Option (List (Nat × Ty)) ← match (recvJ.getObjVal? "id").toOption with
       | none => pure none
@@ -1694,7 +1709,8 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
           unless ok do throw s!"a module's method {name}: a program's {n'} of another signature than its module's"
       -- (A program's extension may add an include the tree does not show.)
       let preludeFile ← nat (← field (← T.cls (← T.arrayInfo).1) "file")
-      if ← (T.extensions.toList.anyM fun e => do pure ((← nat (← field e "file")) != preludeFile)) then
+      if ← (T.extensions.toList.anyM fun e => do
+          pure ((← nat (← field e "file")) != preludeFile && !(← arr (← field e "includes")).isEmpty)) then
         throw s!"a module's method {name} with a program's extension"
     if (native || synth != "None" || T.excIds.contains owner || arrayEnv.isSome || preludeModule) && !accessor then
       -- A built-in method: its declared types. On the implicit receiver,
@@ -2035,7 +2051,13 @@ def accessor (T : Tables) (owner : Nat) (m : Json) : M (Option Method) := do
 def method (T : Tables) (owner : Nat) (m : Json) (d : Json) : M Method := do
   if (← field m "singleton") == .bool true then throw "a class method"
   unless (← arr (← field m "type_params")).isEmpty do throw "a method type parameter"
-  unless (← field m "extension") == .null do throw "an extension's method"
+  if (← field m "extension") != .null then
+    let o ← nat (← field m "owner")
+    if (T.qclass o).all (· < 2) || (T.qclass o) == some arrIdx || T.excIds.contains o then
+      throw "an extension's method"
+    -- (`super` in it calls the method it hides: out of range.)
+    if d != .null && ((d.compress.splitOn "\"Super\"").length > 1) then throw "super in an extension"
+    if (← str (← field m "name")) == "initialize" then throw "an initialize in an extension"
   -- The Rust variance check skips private methods (docs/02 §3), the
   -- model's checks every one: a private method of a class with a variant
   -- parameter is out of range.
@@ -2246,9 +2268,11 @@ def program (j : Json) : M Program := do
   let some arrayJ := classes.find? fun c => (c.getObjValAs? String "name").toOption == some "Array"
     | throw "no Array"
   let preludeFile ← nat (← field arrayJ "file")
-  if !progModIds.isEmpty then
-    for e in ← arr (← field j "extensions") do
-      if (← nat (← field e "file")) != preludeFile then throw "a program's module with a program's extension"
+  -- (An extension the program declares that includes a module: a later
+  -- conformance, which the model's classes do not show.)
+  for e in ← arr (← field j "extensions") do
+    if (← nat (← field e "file")) != preludeFile && !(← arr (← field e "includes")).isEmpty then
+      throw "an include in an extension"
   -- The user classes, each after its copies (a superclass comes first).
   let seq : List (Nat × Option Nat) := excIds.map (·, none) ++
     ownMods.flatMap fun (cid, ms) => ms.reverse.map (·, some cid) ++ [(cid, none)]
@@ -2277,6 +2301,26 @@ def program (j : Json) : M Program := do
     let cid ← nat (← field c "id")
     (← arr (← field c "type_params")).toList.zipIdx.mapM fun (p, i) => do
       pure (← nat (← field p "id"), (cid, i))
+  -- An extension's type parameters, when they are its target class's own
+  -- (`extension Box[T]`, in order, unbounded as the class's are): that
+  -- class's (bounds beyond the class's are a later stage).
+  let extParams ← (← arr (← field j "extensions")).toList.flatMapM fun e => do
+    let cid ← nat (← field e "target")
+    let some cj := classes.find? fun c => (c.getObjValAs? Nat "id").toOption == some cid | pure []
+    let tps := (← arr (← field e "type_params")).toList
+    let ids ← tps.mapM fun p => do nat (← field p "id")
+    let args := (← arr (← field e "target_args")).toList
+    let own ← args.mapM fun a => do
+      if (← str (← field a "t")) == "param" then pure (some (← nat (← field a "id"))) else pure none
+    let unbounded ← tps.allM fun p => do pure (← arr (← field p "bounds")).isEmpty
+    -- (The Rust checker does not check an extension's methods for
+    -- variance, the model's would: a variant class's are not mapped.)
+    let classUnbounded ← (← arr (← field cj "type_params")).allM fun p => do
+      pure ((← arr (← field p "bounds")).isEmpty && (← str (← field p "variance")) == "Invariant")
+    if own == ids.map some && unbounded && classUnbounded then
+      pure (ids.zipIdx.map fun (id, i) => (id, (cid, i)))
+    else pure []
+  let classParams := classParams ++ extParams
   let narrowedList ← (← arr (← field j "narrowed_params")).toList.mapM fun p => do
     pure (← nat (← field p "id"), ← arr (← field p "bounds"))
   let selfParam ← nat (← field j "self_param")
@@ -2291,6 +2335,26 @@ def program (j : Json) : M Program := do
   -- `super` take the nearest of).
   let mine ← (← arr (← field j "methods")).toList.filterM fun m => do
     pure (files.contains (← nat (← field m "file")))
+  -- An extension's method implementing an abstract method of its target's
+  -- chain, or of a class's below it, is dispatched to by its name at run
+  -- time (`World::ext_impls`), not called statically: out of range. (A
+  -- prelude ancestor's methods are not all in the tree: a name one has.)
+  for m in mine do
+    if (← field m "extension") == .null then continue
+    let n ← str (← field m "name")
+    let target ← nat (← field m "owner")
+    for c in user do
+      let chain ← (← arr (← field c "ancestors")).toList.mapM fun a => do nat (← field a "id")
+      unless chain.contains target do continue
+      for aid in chain do
+        let some aj := classes.find? fun x => (x.getObjValAs? Nat "id").toOption == some aid | continue
+        if files.contains (← nat (← field aj "file")) then
+          if ← mine.anyM (fun m' => do
+              pure ((← nat (← field m' "owner")) == aid && (← str (← field m' "name")) == n &&
+                (← field m' "abstract") == .bool true)) then
+            throw s!"an extension's method {n} implementing an abstract one"
+        else if (← (← arr (← field aj "method_names")).toList.anyM fun x => do pure ((← str x) == n)) then
+          throw s!"an extension's method {n} named like a prelude's"
   let mut overloads : List (String × List String) := []
   for m in mine do
     let n ← str (← field m "name")

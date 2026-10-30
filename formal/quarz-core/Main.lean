@@ -25,7 +25,8 @@ def main (args : List String) : IO UInt32 := do
     else
       -- Which method the model rejects.
       let bad := (P.main :: P.methods).filter fun mt => !(P.wfMethod mt && P.checkMethod mt)
-      IO.println s!"disagrees: {bad.map fun mt => mt.name}"
+      -- (An extension's method by its own name: `name@ext<k>`.)
+      IO.println s!"disagrees: {bad.map fun mt => (mt.name.splitOn "@ext").headD mt.name}"
       if args.contains "--dump" then
         for mt in bad do IO.println (repr mt)
       return 1
