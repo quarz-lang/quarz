@@ -1,0 +1,44 @@
+# `Object` does not include `Kernel`, and a top-level `def` is a function
+# of the cog, not a method of the file's top-level object, in its own file
+# too (docs/01 §1).
+def inspect -> String = "def-inspect"
+def to_s -> String = "def-to_s"
+def ==(other: Object) -> Bool = true
+def hash -> String = "def-hash"
+
+# The top-level object answers `Object`'s methods, at run time too.
+p inspect, self.inspect, ::inspect
+puts self
+puts "#{self}"
+p [self]
+o: Object = self
+p o == 1, [o] == [2]
+h: Hash[Object, Int] = {}
+h = h.put(self, 1)
+p h.size
+p 1.respond_to?(:puts), self.respond_to?(:to_s)
+
+# A class's method of a built-in's name is its own, of any signature.
+class Dice
+  def rand -> Int = 4
+  def roll -> Int = rand
+end
+p Dice.new.roll
+
+# An extension's module methods, also generic and bounded.
+extension Kernel
+  def self.shout(s: String) -> String = s.upcase + "!"
+end
+p Kernel.shout("hi")
+class Box[T]
+  @v: T
+  def initialize(@v: T); end
+  def v -> T = @v
+end
+extension Box[T]
+  def self.of(x: T) -> Box[T] = Box[T].new(x)
+end
+extension Box[T <: Int]
+  def self.zero -> Int = 0
+end
+p Box[Int].of(3).v, Box.of("s").v, Box[Int].zero

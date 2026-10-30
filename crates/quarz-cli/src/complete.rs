@@ -143,6 +143,7 @@ impl Completions {
             world
                 .ancestor_ids(main)
                 .iter()
+                .chain([&world.builtin.kernel])
                 .flat_map(|a| world.class(*a).methods.keys().cloned()),
         );
         let constants = sorted(world.top.keys().cloned());

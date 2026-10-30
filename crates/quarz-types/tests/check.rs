@@ -270,9 +270,9 @@ fn definite_initialization() {
         "class C\n  @x: Int\n  def initialize\n    puts inspect\n    @x = 1\n  end\nend",
         "the object is used before field `@x` is assigned",
     );
-    // A method an extension adds to `Kernel` does take `self`.
+    // A method of a module the class includes does take `self`.
     err(
-        "extension Kernel\n  def leak -> String = inspect\nend\nclass C\n  @x: Int\n  def initialize\n    puts leak\n    @x = 1\n  end\nend",
+        "module Leaky\n  def leak -> String = inspect\nend\nclass C\n  include Leaky\n  @x: Int\n  def initialize\n    puts leak\n    @x = 1\n  end\nend",
         "the object is used before field `@x` is assigned",
     );
 }
@@ -840,11 +840,13 @@ fn captured_self_in_task_blocks() {
     ok("class P\n  include Shareable\n  @x: Int\n  def initialize(@x: Int); end\n  def twice -> Int = @x * 2\n  def run -> Int = Task.spawn { twice + @x + self.twice }.await\nend\nputs P.new(2).run");
     ok("class B\n  var @v: Int = 1\n  def run -> Int = Task.spawn { puts \"hi\"; 5 }.await\n  def html -> String\n    Task.spawn do\n      b = String::Builder.new\n      b.instance_exec { self << \"ok\" }\n      b.to_s\n    end.await\n  end\nend\nputs B.new.run");
     ok("def helper(x: Int) -> Int = x + 1\nputs Task.spawn { helper(1) }.await");
-    // A method an extension adds to `Kernel` takes `self`.
+    // A method of a module the class includes takes `self`.
     err(
         &format!(
-            "extension Kernel\n  def leak -> Int = 1\nend\n{}",
-            counter.replace("BODY", "Task.spawn { leak }.await")
+            "module Leaky\n  def leak -> Int = 1\nend\n{}",
+            counter
+                .replace("class Counter", "class Counter\n  include Leaky")
+                .replace("BODY", "Task.spawn { leak }.await")
         ),
         "calling `leak` uses `self`",
     );
@@ -1524,7 +1526,8 @@ fn reraise_block_params_narrowing() {
         "class A\n  protected def f -> Int = 1\n  def g(xs: Array[A]) -> Array[Int] = xs.map(&:f)\nend",
         "`f` is protected for A: `&:f` calls only public methods",
     );
-    err("[1].each(&:puts)", "`puts` is private");
+    // A built-in function is no method of the element.
+    err("[1].each(&:puts)", "undefined method `puts` for Int");
     // `&:name` chooses as a call does: by the bounds of an extension's
     // parameters, and only a method callable with no argument or block.
     ok("p [[1.5]].map(&:sum), [[1]].map(&:sum), [1..3].map(&:size)");
@@ -1548,7 +1551,7 @@ fn reraise_block_params_narrowing() {
         "p (\"a\"..\"b\").size",
         "`size` requires T to be Int (found String)",
     );
-    err("1.puts", "`puts` is private");
+    err("1.puts", "undefined method `puts` for Int");
     warns(
         "xs = [1]\nxs.push(2)\np xs",
         "the result of `push` is discarded; Array is immutable",
@@ -3392,7 +3395,7 @@ fn keywords_are_part_of_an_overrides_signature() {
 
 /// `::name(...)` calls a function: the file's top-level `def`s of the
 /// name, then the built-in `Kernel` functions (docs/01 §1); never a
-/// method of `self`, an `Object` method or one an `extension Kernel` adds.
+/// method of `self` or an `Object` method.
 #[test]
 fn function_calls() {
     ok("def f -> Int = 1\nclass C\n  def f -> String = \"m\"\n  def g -> Int = ::f\nend");
@@ -3405,9 +3408,10 @@ fn function_calls() {
         "class C\n  def m -> Int = 1\n  def g -> Int = ::m\nend",
         none,
     );
+    // `Kernel` holds functions only: an extension adds module methods.
     err(
-        "extension Kernel\n  def shout -> String = \"S\"\nend\n::shout",
-        none,
+        "extension Kernel\n  def shout -> String = \"S\"\nend",
+        "`extension Kernel` declares no instance methods",
     );
     // A top-level `def` comes before the built-in for `::` as for an
     // implicit call at the top level, whose other overloads stay.
@@ -3433,6 +3437,52 @@ fn kernel_functions_by_name() {
         "`puts` is a built-in function: `Kernel.puts` always calls it; name the method otherwise",
     );
     ok("extension Kernel\n  def self.shout -> String = \"S\"\nend\nx: String = Kernel.shout");
+}
+
+/// `Kernel`'s functions are no object's methods (docs/01 §1): a class's
+/// method of one's name is its own, `super` does not reach the built-in,
+/// and the prelude, which has no top-level object, calls them too.
+#[test]
+fn kernel_functions_are_no_methods() {
+    ok("class C\n  def rand -> Int = 4\n  def go -> Int = rand\nend");
+    ok("class C\n  def exit(status: Int = 0) -> Void = nil\nend");
+    ok("x: Bool = 1.respond_to?(:puts)");
+    err(
+        "class C\n  def puts(*values: Object) -> Void = super\nend",
+        "no superclass method `puts`: `puts` is a built-in function, called as `Kernel.puts`",
+    );
+    err("x: Kernel = 3", "");
+    // A class extension's module methods are found on the class object,
+    // with the extension's type parameters and their bounds.
+    ok("class K\nend\nextension K\n  def self.foo -> Int = 1\nend\nclass L < K\nend\nx: Int = K.foo + L.foo");
+    let g = "class G[T]\n  @v: T\n  def initialize(@v: T); end\nend\nextension G[T]\n  def self.of(x: T) -> G[T] = G[T].new(x)\nend\nextension G[T <: Int]\n  def self.z -> Int = 1\nend\n";
+    ok(&format!(
+        "{g}a: G[Int] = G[Int].of(3)\nb: G[String] = G.of(\"s\")\nn: Int = G[Int].z"
+    ));
+    err(
+        &format!("{g}n: Int = G[String].z"),
+        "`z` requires T to be Int (found String)",
+    );
+    // Through a subclass, with the arguments it gives its superclass.
+    let sub = "class SubI < G[Int]\n  def initialize; super(1); end\nend\nclass SubS < G[String]\n  def initialize; super(\"s\"); end\nend\n";
+    ok(&format!("{g}{sub}a: G[Int] = SubI.of(3)\nn: Int = SubI.z"));
+    err(
+        &format!("{g}{sub}n: Int = SubS.z"),
+        "`z` requires T to be Int (found String)",
+    );
+    // A top-level `def` an `Object` method of its signature hides from an
+    // implicit call is said to be reached as `::name`; another overload
+    // is not.
+    warns(
+        "def inspect -> String = \"x\"\np ::inspect",
+        "call this `def` as `::inspect`",
+    );
+    ok("def inspect(n: Int) -> String = \"y\"\np inspect(1)");
+    // No class or extension includes or extends `Kernel`.
+    let mixin = "`Kernel` holds functions, not methods: call them as `puts` or `Kernel.puts`";
+    err("class F\n  include Kernel\nend", mixin);
+    err("class F\n  extend Kernel\nend", mixin);
+    err("module M\nend\nextension M\n  include Kernel\nend", mixin);
 }
 
 #[test]

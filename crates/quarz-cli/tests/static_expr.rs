@@ -383,7 +383,7 @@ fn a_toplevel_def_runs_with_main_at_compile_time() {
     write(
         &d.0,
         "lib.qz",
-        "def zz -> Int = 5\nM = self.class.name\ndef k -> String = \"#{self.zz} #{self.class} #{self.nil?} #{M}\"\nclass Model\n  static def self.v -> String = k\nend\n",
+        "def zz -> Int = 5\nM = self.class.name\ndef k -> String = \"#{zz} #{self.class} #{self.nil?} #{M}\"\nclass Model\n  static def self.v -> String = k\nend\n",
     );
     write(
         &d.0,

@@ -850,6 +850,10 @@ fn overridden_methods(world: &World) -> HashSet<(ClassId, String)> {
     let mut declared: HashMap<ClassId, Vec<String>> = HashMap::default();
     for c in &world.classes {
         let names = declared.entry(c.id).or_default();
+        // (A file's top-level `def`s are functions: they override nothing.)
+        if c.kind == quarz_types::ClassKind::Main {
+            continue;
+        }
         names.extend(c.methods.keys().cloned());
         names.extend(c.singleton_methods.keys().map(|n| format!("self.{n}")));
     }

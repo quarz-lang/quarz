@@ -2730,6 +2730,11 @@ impl Interp {
             if anc == m.owner {
                 return None;
             }
+            // A file's top-level `def`s are functions, not overrides of
+            // `Object`'s methods (docs/01 §1).
+            if self.program.world.class(anc).kind == quarz_ir::RtClassKind::Main {
+                continue;
+            }
             // An abstract method an extension implements for this class
             // (its conformance), unless the class defines its own.
             let own = self.program.world.class(anc).methods.contains_key(&m.name);
@@ -2821,6 +2826,11 @@ impl Interp {
         let mut fallback = None;
         'outer: for anc in &self.program.world.class(cid).ancestors {
             let anc = *anc;
+            // A file's top-level `def`s are functions, which nothing finds
+            // by name on its top-level object (docs/01 §1).
+            if self.program.world.class(anc).kind == quarz_ir::RtClassKind::Main {
+                continue;
+            }
             let mut lists: Vec<&Vec<MethodId>> = Vec::new();
             // Always-active extensions on this ancestor come first (a
             // module's extension applies only where `using` makes it

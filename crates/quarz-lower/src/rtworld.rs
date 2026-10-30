@@ -161,14 +161,17 @@ pub fn build(world: &World, lw: &Lowerer, file_names: Vec<String>) -> RtWorld {
                 variants: c.variants.clone(),
                 variant_of: c.variant_of,
                 structural: matches!(c.kind, ClassKind::Data | ClassKind::Variant),
-                declares_eq_hash: ["==", "hash"].iter().any(|n| {
-                    c.methods.get(*n).is_some_and(|ms| {
-                        ms.iter().any(|m| {
-                            let m = world.method(*m);
-                            !m.singleton && !m.is_native && m.body.is_some()
+                // (A file's top-level `def`s are functions, not its
+                // object's `==`.)
+                declares_eq_hash: c.kind != ClassKind::Main
+                    && ["==", "hash"].iter().any(|n| {
+                        c.methods.get(*n).is_some_and(|ms| {
+                            ms.iter().any(|m| {
+                                let m = world.method(*m);
+                                !m.singleton && !m.is_native && m.body.is_some()
+                            })
                         })
-                    })
-                }),
+                    }),
                 is_exception: world.is_exception_class(c.id),
                 is_abstract: c.is_abstract,
                 objects: world.instances_are_objects(c.id),
@@ -398,6 +401,10 @@ fn overridden_methods(
     m: &types::MethodInfo,
     ancestors: &mut HashMap<ClassId, Vec<(ClassId, Vec<Type>)>>,
 ) -> Vec<MethodId> {
+    // A top-level `def` is a function: it overrides nothing (docs/01 §1).
+    if world.class(m.owner).kind == types::ClassKind::Main {
+        return Vec::new();
+    }
     // The owner's ancestors with its own type parameters, once per class
     // (the world does not change while the runtime one is built).
     let ancs = ancestors.entry(m.owner).or_insert_with(|| {
