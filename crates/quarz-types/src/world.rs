@@ -297,8 +297,14 @@ pub struct ClassInfo {
     pub singleton_methods: HashMap<String, Vec<MethodId>>,
     /// Nested classes, constants and type aliases.
     pub members: HashMap<String, Member>,
-    /// The lexically enclosing namespace.
+    /// The enclosing namespace (`class A::B`: A).
     pub parent: Option<ClassId>,
+    /// The namespace whose body holds the declaration: the parent, but for
+    /// a qualified declaration (`class A::B` at a file's top level), whose
+    /// code sees A's names but not its `using`s nor its own extensions
+    /// (`Checker::extensions_at`).
+    #[serde(default)]
+    pub lexical: Option<ClassId>,
     pub is_abstract: bool,
     pub variants: Vec<ClassId>,
     pub variant_of: Option<ClassId>,
@@ -729,6 +735,7 @@ impl World {
             singleton_methods: HashMap::default(),
             members: HashMap::default(),
             parent,
+            lexical: parent,
             is_abstract: false,
             variants: Vec::new(),
             variant_of: None,
