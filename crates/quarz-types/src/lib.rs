@@ -649,6 +649,9 @@ pub trait StaticHost {
     fn add_generated(&mut self, info: MethodInfo) -> Result<MethodId, String>;
     /// A field a statement generated (`def_field`), likewise.
     fn add_generated_field(&mut self, class: ClassId, field: FieldInfo) -> Result<(), String>;
+    /// A generated method's captures, its method handles resolved
+    /// (docs/14 §5).
+    fn set_generated_captures(&mut self, method: MethodId, captures: Vec<(u32, u32, world::Baked)>);
     /// After a statement's generations: the declaration-time checks of
     /// the classes they went into, again.
     fn recheck_classes(&mut self, classes: &[ClassId]);

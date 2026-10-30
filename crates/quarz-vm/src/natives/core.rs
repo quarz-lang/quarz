@@ -140,8 +140,21 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         };
         // (Resolved when the statement has run: the field may be generated
         // after.)
-        field_ref(i, class, *name, a.kw(i, quarz_ir::FIELD_REF_SITE))
+        let handle = field_ref(i, class, *name, a.kw(i, quarz_ir::FIELD_REF_SITE))?;
+        reflect_of(i)?
+            .made_handle(i, &handle)
+            .map_err(|m| i.err_runtime(&m))?;
+        Ok(handle)
     });
+    native!(m, "Meta::ClassDef#method_ref", |i, r, a| method_ref(
+        i, r, &a, false
+    ));
+    native!(m, "Meta::ClassDef#class_method_ref", |i, r, a| {
+        method_ref(i, r, &a, true)
+    });
+    native!(m, "Meta::Method#bind", |i, _, _| Err(i.err_runtime(
+        "a `Meta::Method` is bound only in a block given to `def_method`, where it is baked"
+    )));
     // A handle's field access is rewritten where it is baked (docs/14 §5):
     // these run only if a handle got elsewhere.
     native!(m, "Meta::FieldRef#get", |i, _, _| Err(i.err_runtime(
@@ -304,10 +317,11 @@ fn def_method(interp: &Interp, recv: &Value, a: &Args, singleton: bool) -> EvalR
         "def_method"
     };
     let class = reflected_class(interp, recv)?;
-    let Value::Symbol(name) = a.arg(0) else {
+    let Value::Symbol(symbol_name) = a.arg(0) else {
         return Err(interp.err_type(&format!("{what} takes the method's name as a symbol")));
     };
-    let name = interp.symbol_name(*name).to_string();
+    let symbol_name = *symbol_name;
+    let name = interp.symbol_name(symbol_name).to_string();
     let symbol = |v: &Value| -> Result<String, Flow> {
         match v {
             Value::Symbol(s) => Ok(interp.symbol_name(*s).to_string()),
@@ -363,10 +377,57 @@ fn def_method(interp: &Interp, recv: &Value, a: &Args, singleton: bool) -> EvalR
         func: *func,
         captures,
     };
-    reflect_of(interp)?
+    let at = reflect_of(interp)?
         .generate(interp, request)
         .map_err(|m| interp.err_runtime(&m))?;
-    Ok(Value::Nil)
+    // The method's handle, resolved to the method when the statement has
+    // run (by its generation's position).
+    method_handle(interp, class, symbol_name, 0, singleton, -(at as i64) - 1)
+}
+
+/// `Meta::ClassDef#method_ref`/`#class_method_ref` (docs/14 §5): resolved
+/// when the statement has run (the method may be generated after).
+fn method_ref(interp: &Interp, recv: &Value, a: &Args, singleton: bool) -> EvalResult {
+    let class = reflected_class(interp, recv)?;
+    let Value::Symbol(name) = a.arg(0) else {
+        return Err(interp.err_type("a method handle takes the method's name as a symbol"));
+    };
+    let Some(Value::Int(site)) = a.kw(interp, quarz_ir::FIELD_REF_SITE) else {
+        return Err(interp.err_runtime("internal: a method handle without its call"));
+    };
+    let handle = method_handle(interp, class, *name, *site, singleton, 0)?;
+    reflect_of(interp)?
+        .made_handle(interp, &handle)
+        .map_err(|m| interp.err_runtime(&m))?;
+    Ok(handle)
+}
+
+/// A `Meta::Method` to the method `name` of `class` (docs/14 §5): made
+/// at the call node `site` (where the checker recorded its `P`; 0 for
+/// `def_method`'s), with `method` saying which (`-(i + 1)`: the
+/// statement's generation `i`; 0: by name and `P`, once the statement has
+/// run; `k + 1` when resolved, with the class whose method it is: its
+/// `k`th method of that name, which a cached file keeps).
+fn method_handle(
+    interp: &Interp,
+    class: ClassId,
+    name: Symbol,
+    site: i64,
+    singleton: bool,
+    method: i64,
+) -> EvalResult {
+    let handle = meta_class(interp, "Meta::Method")?;
+    Ok(Value::Object(Object::new(
+        handle,
+        smallvec![
+            Value::Class(class),
+            Value::Symbol(name),
+            Value::Int(site),
+            Value::Bool(singleton),
+            Value::Int(method),
+            Value::Class(class)
+        ],
+    )))
 }
 
 fn reflect_of(interp: &Interp) -> Result<std::rc::Rc<dyn crate::reflect::Reflect>, Flow> {

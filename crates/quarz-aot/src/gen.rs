@@ -65,7 +65,7 @@ pub(crate) const OPS: &[(&str, &[Ty])] = {
         ("qz_op_is_a", &[I, I, P, I, P]),
         ("qz_op_as", &[I, I, P, I, P, I, P, I]),
         ("qz_op_make_block", &[I, I, I, I]),
-        ("qz_op_method_ref", &[I, I, I]),
+        ("qz_op_method_ref", &[I, I, I, I]),
         ("qz_op_symbol_proc", &[I, I, I, I]),
         ("qz_op_make_array", &[I, P, I]),
         ("qz_op_make_hash", &[I, P, I]),
@@ -3120,9 +3120,19 @@ impl<B: Builder> Gen<'_, B> {
                     w(self, u32::from(*is_lambda)),
                 ],
             ),
-            Inst::MethodRef { dst, recv, name } => (
+            Inst::MethodRef {
+                dst,
+                recv,
+                name,
+                method,
+            } => (
                 "qz_op_method_ref",
-                vec![w(self, *dst), w(self, *recv), w(self, *name)],
+                vec![
+                    w(self, *dst),
+                    w(self, *recv),
+                    w(self, *name),
+                    w(self, opt(*method)),
+                ],
             ),
             Inst::SymbolProc {
                 dst,

@@ -301,6 +301,9 @@ pub fn refs<'a>(f: &'a Function, visit: &mut dyn FnMut(Ref<'a>)) {
                         visit(Ref::Name(n));
                     }
                 }
+                Inst::MethodRef {
+                    method: Some(m), ..
+                } => visit(Ref::Method(*m)),
                 Inst::MakeBlock { func, .. } => visit(Ref::Func(*func)),
                 Inst::ConstGet { id, .. } => visit(Ref::Const(*id)),
                 Inst::ClassRef { class, .. } | Inst::VariantSingleton { class, .. } => {

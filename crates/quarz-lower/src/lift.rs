@@ -146,16 +146,22 @@ impl Lowerer {
         name: String,
         g: &Generated,
     ) -> FuncId {
-        // A field handle's `get`/`set` (docs/14 §5): the field access, in
-        // place of the call, where the handle is baked.
-        let handle_methods = |n: &str| -> Option<MethodId> {
+        // A handle's `get`/`set`/`bind` (docs/14 §5): the field access or
+        // the bound method, in place of the call, where the handle is
+        // baked.
+        let handle_methods = |class: ClassId, n: &str| -> Option<MethodId> {
             world
-                .class(world.builtin.meta_field_ref)
+                .class(class)
                 .methods
                 .get(n)
                 .and_then(|ids| ids.first().copied())
         };
-        let (get, set) = (handle_methods("get"), handle_methods("set"));
+        let field_ref = world.builtin.meta_field_ref;
+        let (get, set) = (
+            handle_methods(field_ref, "get"),
+            handle_methods(field_ref, "set"),
+        );
+        let bind = handle_methods(world.builtin.meta_method, "bind");
         // New ids for the block function and the blocks it makes, first.
         let mut copies: Vec<(FuncId, FuncId, u32)> = Vec::new();
         let mut work: Vec<(FuncId, u32)> = vec![(g.func, 0)];
@@ -191,8 +197,8 @@ impl Lowerer {
                 nregs: f.nregs,
                 consts: std::mem::take(&mut f.consts),
             };
-            // The registers holding a baked handle, with the field it names
-            // (class and declared index), in the whole function: a register
+            // The registers holding a baked handle, with what it names, in
+            // the whole function: a register
             // the captured `FrameGet` alone writes (the lowering gives each
             // value its own).
             let handles = handle_registers(&f, own, skip, g, world);
@@ -220,16 +226,26 @@ impl Lowerer {
                             recv: Some(r),
                             ref args,
                             ..
-                        } if (Some(m) == get || Some(m) == set)
-                            && handles.iter().any(|(h, _, _)| *h == r) =>
+                        } if (Some(m) == get || Some(m) == set || Some(m) == bind)
+                            && handles.iter().any(|(h, _)| *h == r) =>
                         {
-                            let &(_, class, index) =
-                                handles.iter().find(|(h, _, _)| *h == r).unwrap();
-                            if Some(m) == get {
-                                baker.field_get(&mut b.insts, dst, args[0], class, index);
-                            } else {
-                                baker.field_set(&mut b.insts, args[0], class, index, args[1]);
-                                baker.constant(&mut b.insts, dst, Constant::Nil);
+                            match &handles.iter().find(|(h, _)| *h == r).unwrap().1 {
+                                Handle::Field(class, index) if Some(m) == get => {
+                                    baker.field_get(&mut b.insts, dst, args[0], *class, *index);
+                                }
+                                Handle::Field(class, index) => {
+                                    baker.field_set(&mut b.insts, args[0], *class, *index, args[1]);
+                                    baker.constant(&mut b.insts, dst, Constant::Nil);
+                                }
+                                Handle::Method(method, name) => {
+                                    let name = baker.const_index(Constant::Str(name.clone()));
+                                    b.insts.push(Inst::MethodRef {
+                                        dst,
+                                        recv: args[0],
+                                        name,
+                                        method: Some(*method),
+                                    });
+                                }
                             }
                         }
                         Inst::MakeBlock {
@@ -257,17 +273,25 @@ impl Lowerer {
     }
 }
 
+/// What a baked handle names (docs/14 §5).
+enum Handle {
+    /// A field: its class and declared index.
+    Field(ClassId, u32),
+    /// A method, resolved when its statement had run, and its name.
+    Method(MethodId, String),
+}
+
 /// The registers of block function `f` (`own`, `skip` as in `lift`) that
-/// hold a baked field handle, with the field it names: written by a
-/// captured `FrameGet` of a handle and by nothing else.
+/// hold a baked handle, with what it names: written by a captured
+/// `FrameGet` of a handle and by nothing else.
 fn handle_registers(
     f: &Function,
     own: u32,
     skip: u32,
     g: &Generated,
     world: &quarz_types::World,
-) -> Vec<(Reg, ClassId, u32)> {
-    let mut found: Vec<(Reg, ClassId, u32)> = Vec::new();
+) -> Vec<(Reg, Handle)> {
+    let mut found: Vec<(Reg, Handle)> = Vec::new();
     let mut other: Vec<Reg> = Vec::new();
     for b in &f.blocks {
         for inst in &b.insts {
@@ -278,8 +302,8 @@ fn handle_registers(
                         .iter()
                         .find(|(cd, cs, _)| (*cd, *cs) == (d, *slot))
                         .map(|(_, _, v)| v);
-                    if let Some((class, index)) = value.and_then(|v| handle_field(world, v)) {
-                        found.push((*dst, class, index));
+                    if let Some(h) = value.and_then(|v| handle_of(world, v)) {
+                        found.push((*dst, h));
                         continue;
                     }
                 }
@@ -290,25 +314,44 @@ fn handle_registers(
             }
         }
     }
-    found.retain(|(r, _, _)| !other.contains(r));
+    found.retain(|(r, _)| !other.contains(r));
     found
 }
 
-/// The field a baked `Meta::FieldRef` names (docs/14 §5): its class and
-/// declared index, when the class has it.
-fn handle_field(world: &quarz_types::World, v: &Baked) -> Option<(ClassId, u32)> {
+/// What a baked `Meta::FieldRef` or `Meta::Method` names (docs/14 §5):
+/// a field when its class has it, a method once resolved.
+fn handle_of(world: &quarz_types::World, v: &Baked) -> Option<Handle> {
     let Baked::Data(c, fields) = v else {
         return None;
     };
-    if *c != world.builtin.meta_field_ref {
-        return None;
-    }
     let (Some(Baked::Class(owner)), Some(Baked::Symbol(name))) = (fields.first(), fields.get(1))
     else {
         return None;
     };
-    let index = world.field_index(*owner, name)?;
-    Some((*owner, index as u32))
+    if *c == world.builtin.meta_field_ref {
+        let index = world.field_index(*owner, name)?;
+        Some(Handle::Field(*owner, index as u32))
+    } else if *c == world.builtin.meta_method {
+        // (Its class's `k`th method of that name,
+        // `Runner::resolve_method_handles`.)
+        let (Some(Baked::Bool(singleton)), Some(Baked::Int(k)), Some(Baked::Class(at))) =
+            (fields.get(3), fields.get(4), fields.get(5))
+        else {
+            return None;
+        };
+        let class = world.class(*at);
+        let table = if *singleton {
+            &class.singleton_methods
+        } else {
+            &class.methods
+        };
+        let m = table
+            .get(name)?
+            .get(usize::try_from(*k).ok()?.checked_sub(1)?)?;
+        Some(Handle::Method(*m, name.clone()))
+    } else {
+        None
+    }
 }
 
 /// Emits the instructions that make a baked value.
@@ -340,14 +383,18 @@ impl<'a> Baker<'a> {
     }
 
     fn constant(&mut self, out: &mut Vec<Inst>, dst: Reg, c: Constant) {
-        let idx = match self.consts.iter().position(|k| *k == c) {
+        let idx = self.const_index(c);
+        out.push(Inst::LoadConst { dst, idx });
+    }
+
+    fn const_index(&mut self, c: Constant) -> u32 {
+        match self.consts.iter().position(|k| *k == c) {
             Some(i) => i as u32,
             None => {
                 self.consts.push(c);
                 self.consts.len() as u32 - 1
             }
-        };
-        out.push(Inst::LoadConst { dst, idx });
+        }
     }
 
     /// Where declared field `index` of `class` is: its slot, and the

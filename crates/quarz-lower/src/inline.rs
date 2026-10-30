@@ -535,10 +535,16 @@ pub(crate) fn rewrite_with(
             destructure: *destructure,
             is_lambda: *is_lambda,
         },
-        Inst::MethodRef { dst, recv, name } => Inst::MethodRef {
+        Inst::MethodRef {
+            dst,
+            recv,
+            name,
+            method,
+        } => Inst::MethodRef {
             dst: r(dst),
             recv: r(recv),
             name: cst(*name),
+            method: *method,
         },
         Inst::SymbolProc {
             dst,

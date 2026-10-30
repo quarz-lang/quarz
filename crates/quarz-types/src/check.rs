@@ -3519,7 +3519,12 @@ impl Checker {
             Type::Proc(..) => false,
             // A field handle names a field: its type arguments are no
             // values (docs/14 §5).
-            Type::Class(id, _) if *id == self.world.builtin.meta_field_ref => true,
+            Type::Class(id, _)
+                if *id == self.world.builtin.meta_field_ref
+                    || *id == self.world.builtin.meta_method =>
+            {
+                true
+            }
             Type::Class(id, args) => {
                 let id = *id;
                 let b = &self.world.builtin;
@@ -8695,9 +8700,13 @@ impl Checker {
         }
         // A handle names a field it reads in place: only `def_field` and
         // `field_ref` make one, for the field they name (docs/14 §5).
-        if cid == self.world.builtin.meta_field_ref {
+        if cid == self.world.builtin.meta_field_ref || cid == self.world.builtin.meta_method {
             self.error(
-                "a `Meta::FieldRef` is made by `def_field` or `field_ref` (docs/14 §5), not with `new`",
+                if cid == self.world.builtin.meta_field_ref {
+                    "a `Meta::FieldRef` is made by `def_field` or `field_ref` (docs/14 §5), not with `new`"
+                } else {
+                    "a `Meta::Method` is made by `def_method`, `def_class_method`, `method_ref` or `class_method_ref` (docs/14 §5), not with `new`"
+                },
                 expr.span,
             );
             self.check_args_blindly(call);
@@ -9358,11 +9367,18 @@ impl Checker {
         self.out
             .calls
             .insert(expr.id, CallTarget::Method { method: m.id });
-        // A field handle's `get`/`set` is lowered in place where the
+        // A handle's `get`/`set`/`bind` is lowered in place where the
         // handle is baked (docs/14 §5): its receiver is a variable of the
         // `static def` that a block given to `def_method` captures.
-        if m.owner == self.world.builtin.meta_field_ref && matches!(m.name.as_str(), "get" | "set")
-        {
+        let b = &self.world.builtin;
+        let handle = if m.owner == b.meta_field_ref && matches!(m.name.as_str(), "get" | "set") {
+            Some("Meta::FieldRef")
+        } else if m.owner == b.meta_method && m.name == "bind" {
+            Some("Meta::Method")
+        } else {
+            None
+        };
+        if let Some(class) = handle {
             let baked = match (&call.recv, self.env.lifted_frame) {
                 (Some(r), Some(lf)) => match &r.kind {
                     ExprKind::Local(name) => self
@@ -9373,10 +9389,14 @@ impl Checker {
                 _ => false,
             };
             if !baked {
+                let what = match m.name.as_str() {
+                    "get" => "read",
+                    "set" => "written",
+                    _ => "bound",
+                };
                 self.error(
                     format!(
-                        "a `Meta::FieldRef` is {} only in a block given to `def_method` (or `def_class_method`) that captures it from the `static def`, where it is baked",
-                        if m.name == "get" { "read" } else { "written" }
+                        "a `{class}` is {what} only in a block given to `def_method` (or `def_class_method`) that captures it from the `static def`, where it is baked"
                     ),
                     expr.span,
                 );
@@ -9384,7 +9404,7 @@ impl Checker {
                 // (Lowered in place: its arguments by position.)
                 self.error(
                     format!(
-                        "`{}` on a `Meta::FieldRef` takes its arguments by position",
+                        "`{}` on a `{class}` takes its arguments by position",
                         m.name
                     ),
                     expr.span,
@@ -9392,8 +9412,8 @@ impl Checker {
             } else {
                 // Its object is the generated method's `self`, for now: the
                 // handle's `T` is the `static def`'s view of the class, and
-                // the field belongs to the class generated into, which only
-                // `self` is sure to be (docs/14 §5).
+                // the member belongs to the class generated into, which
+                // only `self` is sure to be (docs/14 §5).
                 let own_self = self
                     .env
                     .lifted_frame
@@ -9405,7 +9425,7 @@ impl Checker {
                 if !(is_self && own_self) {
                     self.error(
                         format!(
-                            "`{}` on a `Meta::FieldRef` takes the generated method's `self` (`ref.{}(self{})`): the handle's class is the `static def`'s view, the field the class generated into's",
+                            "`{}` on a `{class}` takes the generated method's `self` (`ref.{}(self{})`): the handle's class is the `static def`'s view, the member the class generated into's",
                             m.name,
                             m.name,
                             if m.name == "set" { ", value" } else { "" }
@@ -12371,6 +12391,11 @@ impl crate::StaticHost for Checker {
     }
     fn pending_classes(&self) -> Vec<ClassId> {
         self.pending_statement_classes()
+    }
+    fn set_generated_captures(&mut self, method: MethodId, captures: Vec<(u32, u32, Baked)>) {
+        if let Some(g) = &mut self.world.method_mut(method).generated {
+            g.captures = captures;
+        }
     }
     fn add_generated(&mut self, info: MethodInfo) -> Result<MethodId, String> {
         // What the name demands (the declarer's rules for a written one).

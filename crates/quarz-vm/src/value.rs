@@ -1850,6 +1850,9 @@ pub enum ClosureBody {
     BoundMethod {
         recv: Value,
         name: Rc<str>,
+        /// A method handle's (docs/14 §5): called as a call of it
+        /// dispatches, not by name.
+        method: Option<MethodId>,
     },
     Native(NativeBlock),
 }
@@ -3259,7 +3262,7 @@ impl Value {
                                 ClosureBody::MethodName(name, _, _, _) => {
                                     mark_rc(immortal, name);
                                 }
-                                ClosureBody::BoundMethod { recv, name } => {
+                                ClosureBody::BoundMethod { recv, name, .. } => {
                                     push(&mut work, recv);
                                     mark_rc(immortal, name);
                                 }

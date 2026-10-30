@@ -28,10 +28,13 @@ use quarz_vm::reflect::{
 };
 use quarz_vm::value::Value;
 
-/// A method a statement generated, for its field handles' check
-/// (`Runner::check_handles`): its function, its class, its captures, and
-/// the call that made it, for messages.
-type GeneratedHandles = (FuncId, ClassId, Vec<(u32, u32, Baked)>, String);
+/// A method a statement generated, for its handles' check
+/// (`Runner::check_handles`): its function, its class, the method, its
+/// captures, and the call that made it, for messages.
+type GeneratedHandles = (Option<FuncId>, ClassId, Option<MethodId>, Captures, String);
+
+/// A generated method's captured values: frame depth, slot, value.
+type Captures = Vec<(u32, u32, Baked)>;
 
 /// The time a `static` statement may run (docs/14 §5): 10 seconds, or
 /// `QUARZ_STATIC_LIMIT_MS` (for the tests of the limit).
@@ -101,9 +104,32 @@ impl Runner {
             notes: Vec::new(),
         };
         let mut generated: Vec<GeneratedHandles> = Vec::new();
-        for g in pending {
+        // The method each generation declared, by its position (what a
+        // `def_method`'s handle names).
+        let mut declared: Vec<Option<MethodId>> = vec![None; pending.len()];
+        for (index, g) in pending.into_iter().enumerate() {
             let g = match g {
                 Pending::Method(g) => g,
+                // Checked with the class it names (the statement's own).
+                Pending::Handle(h) => {
+                    let world = host.world();
+                    if let Baked::Data(c, fields) = &h {
+                        if let (Some(Baked::Class(owner)), Some(Baked::Symbol(name))) =
+                            (fields.first(), fields.get(1))
+                        {
+                            let call = if *c == world.builtin.meta_field_ref {
+                                "field_ref"
+                            } else if matches!(fields.get(3), Some(Baked::Bool(true))) {
+                                "class_method_ref"
+                            } else {
+                                "method_ref"
+                            };
+                            let at = format!("`{call}(:{name})`");
+                            generated.push((None, *owner, None, vec![(0, 0, h.clone())], at));
+                        }
+                    }
+                    continue;
+                }
                 Pending::Field(f) => {
                     let at = format!("`def_field(:{})`", f.name);
                     let world = host.world();
@@ -309,7 +335,7 @@ impl Runner {
                     span: stmt.span,
                 })
                 .collect();
-            generated.push((g.func, g.class, g.captures.clone(), at.clone()));
+            let (func, class, captures) = (g.func, g.class, g.captures.clone());
             let info = MethodInfo {
                 id: 0,
                 name: g.name.clone(),
@@ -341,13 +367,226 @@ impl Runner {
                     doc: g.doc,
                 }),
             };
-            host.add_generated(info)
+            let mid = host
+                .add_generated(info)
                 .map_err(|why| fail(format!("{at}: {why}")))?;
+            declared[index] = Some(mid);
+            generated.push((Some(func), class, Some(mid), captures, at.clone()));
             if !classes.contains(&g.class) {
                 classes.push(g.class);
             }
         }
-        self.check_handles(host, stmt, &generated).map_err(fail)
+        self.check_handles(host, stmt, &generated).map_err(fail)?;
+        self.resolve_method_handles(host, stmt, &generated, &declared)
+            .map_err(fail)
+    }
+
+    /// The method handles the methods a statement generated captured
+    /// (docs/14 §5), resolved now that every member it generates is
+    /// declared: a `def_method`'s to the method it made, a `method_ref`'s
+    /// to the method of its class by that name whose parameters (all
+    /// positional) and result are exactly its `P`'s. The method is written
+    /// into the baked handle, for `bind` to be lowered to it
+    /// (`lift::handle_registers`).
+    fn resolve_method_handles(
+        &self,
+        host: &mut dyn StaticHost,
+        stmt: &StaticStmt,
+        generated: &[GeneratedHandles],
+        declared: &[Option<MethodId>],
+    ) -> Result<(), String> {
+        let call_args: rustc_hash::FxHashMap<TypeParamId, Type> = host
+            .output()
+            .type_args
+            .get(&stmt.expr.id)
+            .map(|args| args.iter().cloned().collect())
+            .unwrap_or_default();
+        let world = host.world();
+        let handle = world.builtin.meta_method;
+        // `P` of `method_ref[P]` and `class_method_ref[P]`, as recorded.
+        let own_p: Vec<TypeParamId> = ["method_ref", "class_method_ref"]
+            .iter()
+            .filter_map(|n| world.class(world.builtin.meta_classdef).methods.get(*n))
+            .flatten()
+            .filter_map(|m| world.method(*m).type_params.first().map(|p| p.id))
+            .collect();
+        let mut updates: Vec<(MethodId, Captures)> = Vec::new();
+        for (_, into, mid, captures, at) in generated {
+            let mut captures = captures.clone();
+            let mut changed = false;
+            for (_, _, value) in &mut captures {
+                let Baked::Data(c, fields) = value else {
+                    continue;
+                };
+                if *c != handle {
+                    continue;
+                }
+                let (
+                    Some(Baked::Class(owner)),
+                    Some(Baked::Symbol(name)),
+                    Some(Baked::Int(site)),
+                    Some(Baked::Bool(singleton)),
+                    Some(Baked::Int(method)),
+                ) = (
+                    fields.first(),
+                    fields.get(1),
+                    fields.get(2),
+                    fields.get(3),
+                    fields.get(4),
+                )
+                else {
+                    continue;
+                };
+                let (owner, singleton) = (*owner, *singleton);
+                let class = &world.class(owner).name;
+                let shown = format!("{class}{}{name}", if singleton { "." } else { "#" });
+                // The method is called on the generated method's `self`, an
+                // instance of the class generated into (or a subclass), or
+                // that class: the handle's class must be it or an ancestor.
+                if !world.superclass_chain(*into).contains(&owner) {
+                    return Err(format!(
+                        "{at}: the handle to `{shown}` is of `{class}`, which `{}` does not inherit from: a generated method calls a method of its own class only",
+                        world.class(*into).name
+                    ));
+                }
+                let found = if *method < 0 {
+                    // `def_method`'s: the method that generation declared.
+                    let i = (-*method - 1) as usize;
+                    match declared.get(i).copied().flatten() {
+                        Some(m) => m,
+                        None => {
+                            return Err(format!(
+                                "{at}: the handle to `{shown}` names a method another statement generates: a `def_method`'s handle is used by the statement that made it"
+                            ))
+                        }
+                    }
+                } else if *method > 0 {
+                    // (Resolved by an earlier statement's check.)
+                    continue;
+                } else {
+                    let p = host
+                        .output()
+                        .type_args
+                        .get(&(*site as quarz_syntax::ast::NodeId))
+                        .and_then(|args| args.iter().find(|(p, _)| own_p.contains(p)))
+                        .map(|(_, t)| t.subst(&call_args));
+                    let Some(p) = p else {
+                        return Err(format!(
+                            "{at}: the handle to `{shown}` has no recorded type"
+                        ));
+                    };
+                    let fixed: Vec<TypeParamId> = world
+                        .class(owner)
+                        .type_params
+                        .iter()
+                        .map(|p| p.id)
+                        .collect();
+                    if let Some(t) = free_param(&p, &fixed) {
+                        return Err(format!(
+                            "{at}: the handle to `{shown}` is made with `{}`, a type parameter of another method than the `static def` the statement calls: a handle's type is written as a type or one of that `static def`'s type parameters",
+                            world.type_name(&Type::Param(t))
+                        ));
+                    }
+                    let Type::Proc(None, ps, ret, _) = &p else {
+                        return Err(format!(
+                            "{at}: the handle to `{shown}` is made with `{}`, which is not a procedure type (`(A, B) -> R`)",
+                            world.type_name(&p)
+                        ));
+                    };
+                    let own = Type::Class(
+                        owner,
+                        world
+                            .class(owner)
+                            .type_params
+                            .iter()
+                            .map(|p| Type::Param(p.id))
+                            .collect(),
+                    );
+                    let recv = if singleton {
+                        Type::ClassObject(
+                            owner,
+                            match &own {
+                                Type::Class(_, args) => args.clone(),
+                                _ => Vec::new(),
+                            },
+                        )
+                    } else {
+                        own.clone()
+                    };
+                    let matching: Vec<_> = world
+                        .lookup_methods(&recv, name)
+                        .into_iter()
+                        .filter(|(m, subst)| {
+                            let info = world.method(*m);
+                            if info.singleton != singleton
+                                || info.block.is_some()
+                                || !info.type_params.is_empty()
+                                || info.params.len() != ps.len()
+                                || info.params.iter().any(|q| q.kind != ParamKind::Positional)
+                            {
+                                return false;
+                            }
+                            let mut subst = subst.clone();
+                            subst.insert(SELF_PARAM, own.clone());
+                            info.params
+                                .iter()
+                                .zip(ps)
+                                .all(|(q, t)| world.same_type(&q.ty.subst(&subst), t))
+                                && world.same_type(&info.ret.subst(&subst), ret)
+                        })
+                        .collect();
+                    // The most derived first, as dispatch takes it: a match
+                    // of an ancestor is a method it overrides, but two of
+                    // one class are as an ambiguous call.
+                    let ambiguous = matching.iter().enumerate().any(|(i, (a, _))| {
+                        matching[i + 1..]
+                            .iter()
+                            .any(|(b, _)| world.method(*a).owner == world.method(*b).owner)
+                    });
+                    if ambiguous {
+                        return Err(format!(
+                            "{at}: the handle to `{shown}` names two methods of that type of one class: as an ambiguous call, it is an error"
+                        ));
+                    }
+                    let Some((m, _)) = matching.into_iter().next() else {
+                        return Err(format!(
+                            "{at}: the handle to `{shown}` is a `Meta::Method[{}, {}]`, but `{class}` has no {} `{name}` of that type (by the end of the statement): a handle's type is the method's exactly, its parameters positional",
+                            world.type_name(&recv),
+                            world.type_name(&p),
+                            if singleton { "class method" } else { "method" }
+                        ));
+                    };
+                    m
+                };
+                // Which method, as a cached file keeps it (a method's id
+                // does not stay): its class, and its place among the
+                // class's methods of that name.
+                let info = world.method(found);
+                let table = if info.singleton {
+                    &world.class(info.owner).singleton_methods
+                } else {
+                    &world.class(info.owner).methods
+                };
+                let Some(k) = table
+                    .get(name)
+                    .and_then(|ids| ids.iter().position(|i| *i == found))
+                else {
+                    return Err(format!(
+                        "{at}: the handle to `{shown}` names a method of an extension, which a handle cannot call"
+                    ));
+                };
+                fields[4] = Baked::Int(k as i64 + 1);
+                fields[5] = Baked::Class(info.owner);
+                changed = true;
+            }
+            if let (true, Some(mid)) = (changed, mid) {
+                updates.push((*mid, captures));
+            }
+        }
+        for (mid, captures) in updates {
+            host.set_generated_captures(mid, captures);
+        }
+        Ok(())
     }
 
     /// The field handles the methods a statement generated captured
@@ -386,8 +625,10 @@ impl Runner {
             .flatten()
             .filter_map(|m| world.method(*m).type_params.first().map(|p| p.id))
             .collect();
-        for (func, into, captures, at) in generated {
-            let sets = quarz_lower::lift::handle_sets(&self.lowerer.done, *func, set);
+        for (func, into, _, captures, at) in generated {
+            let sets = func
+                .map(|f| quarz_lower::lift::handle_sets(&self.lowerer.done, f, set))
+                .unwrap_or_default();
             for (d, s, value) in captures {
                 let Baked::Data(c, fields) = value else {
                     continue;
@@ -835,11 +1076,15 @@ impl StaticRunner for Runner {
             message,
             notes: Vec::new(),
         };
-        if !pending.is_empty() {
+        // (A handle made by name generates nothing.)
+        if pending.iter().any(|p| !matches!(p, Pending::Handle(_))) {
             return Err(fail(
                 "`static(...)` gives a value: what it calls cannot generate members (`def_method`, `def_field`)".to_string(),
             ));
         }
+        // The handles it made are checked as a statement's are.
+        let mut classes = Vec::new();
+        self.generate_each(host, stmt, pending, &mut classes)?;
         bake(&interp, &value).map_err(|why| {
             fail(format!(
                 "`static(...)` gives a value that cannot be baked into the program: {why}"
@@ -876,6 +1121,9 @@ struct WorldReflect {
 enum Pending {
     Method(PendingGen),
     Field(PendingField),
+    /// A handle made by name (`field_ref`, `method_ref`), checked as a
+    /// captured one is.
+    Handle(Baked),
 }
 
 /// A `def_field` call's request, its default baked.
@@ -957,7 +1205,7 @@ fn bake(interp: &Interp, v: &Value) -> Result<Baked, String> {
                 RtClassKind::Variant if o.field_count() == 0 => Baked::Variant(o.class),
                 // A field handle (docs/14 §5): what it names, made again
                 // where it is baked (its `get`/`set` lowered in place).
-                _ if class.name == "Meta::FieldRef" => Baked::Data(
+                _ if class.name == "Meta::FieldRef" || class.name == "Meta::Method" => Baked::Data(
                     o.class,
                     o.fields()
                         .iter()
@@ -1152,25 +1400,24 @@ impl Reflect for WorldReflect {
             })
             .unwrap_or_default()
     }
-    fn generate(&self, interp: &Interp, request: GenRequest) -> Result<(), String> {
+    fn generate(&self, interp: &Interp, request: GenRequest) -> Result<usize, String> {
         let captures = request
             .captures
             .iter()
             .map(|(d, s, v)| Ok((*d, *s, bake(interp, v)?)))
             .collect::<Result<Vec<_>, String>>()?;
-        self.generated
-            .borrow_mut()
-            .push(Pending::Method(PendingGen {
-                class: request.class,
-                name: request.name,
-                params: request.params,
-                singleton: request.singleton,
-                visibility: request.visibility,
-                func: request.func,
-                captures,
-                doc: self.doc.borrow_mut().take(),
-            }));
-        Ok(())
+        let mut generated = self.generated.borrow_mut();
+        generated.push(Pending::Method(PendingGen {
+            class: request.class,
+            name: request.name,
+            params: request.params,
+            singleton: request.singleton,
+            visibility: request.visibility,
+            func: request.func,
+            captures,
+            doc: self.doc.borrow_mut().take(),
+        }));
+        Ok(generated.len() - 1)
     }
     fn def_field(&self, interp: &Interp, request: FieldRequest) -> Result<(), String> {
         let default = bake(interp, &request.default)?;
@@ -1185,6 +1432,11 @@ impl Reflect for WorldReflect {
                 reader: request.reader,
                 writer: request.writer,
             }));
+        Ok(())
+    }
+    fn made_handle(&self, interp: &Interp, handle: &Value) -> Result<(), String> {
+        let handle = bake(interp, handle)?;
+        self.generated.borrow_mut().push(Pending::Handle(handle));
         Ok(())
     }
     fn doc(&self, text: String) {

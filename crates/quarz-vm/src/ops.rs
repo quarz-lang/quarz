@@ -499,6 +499,7 @@ impl Interp {
         }));
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn op_method_ref(
         &self,
         f: &FuncInfo,
@@ -507,12 +508,14 @@ impl Interp {
         dst: Reg,
         recv: Reg,
         name: u32,
+        method: Option<MethodId>,
     ) {
         let tag = self.new_tag();
         regs[dst as usize] = Value::Proc(Rc::new(Closure {
             body: ClosureBody::BoundMethod {
                 recv: regs[recv as usize].clone(),
                 name: Rc::from(self.str_const(f, name)),
+                method,
             },
             frame: None,
             self_val: Value::Nil,

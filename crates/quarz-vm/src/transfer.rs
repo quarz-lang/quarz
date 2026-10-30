@@ -106,7 +106,11 @@ pub enum Transfer {
 pub enum ProcBody {
     Func(FuncId),
     MethodName(String, Option<MethodId>, bool),
-    BoundMethod { recv: Box<Transfer>, name: String },
+    BoundMethod {
+        recv: Box<Transfer>,
+        name: String,
+        method: Option<MethodId>,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -204,9 +208,10 @@ pub fn export(interp: &Interp, v: &Value) -> Result<Transfer, Flow> {
             let body = match &c.body {
                 ClosureBody::Func(id) => ProcBody::Func(*id),
                 ClosureBody::MethodName(n, _, m, d) => ProcBody::MethodName(n.to_string(), *m, *d),
-                ClosureBody::BoundMethod { recv, name } => ProcBody::BoundMethod {
+                ClosureBody::BoundMethod { recv, name, method } => ProcBody::BoundMethod {
                     recv: Box::new(export(interp, recv)?),
                     name: name.to_string(),
+                    method: *method,
                 },
                 ClosureBody::Native(_) => return Err(not_transferable(interp, v)),
             };
@@ -396,9 +401,10 @@ pub fn import(interp: &Interp, t: Transfer) -> Value {
                 ProcBody::MethodName(n, m, d) => {
                     ClosureBody::MethodName(Rc::from(n), std::cell::Cell::new(None), m, d)
                 }
-                ProcBody::BoundMethod { recv, name } => ClosureBody::BoundMethod {
+                ProcBody::BoundMethod { recv, name, method } => ClosureBody::BoundMethod {
                     recv: import(interp, *recv),
                     name: Rc::from(name),
+                    method,
                 },
             },
             frame: frame.map(|f| import_frame(interp, *f)),

@@ -3690,3 +3690,20 @@ fn a_field_handle_is_made_by_def_field_or_field_ref_only() {
         "a `Meta::FieldRef` is read only in a block given to `def_method`",
     );
 }
+
+#[test]
+fn a_method_handle_is_made_by_classdef_only() {
+    // docs/14 §5: a handle is bound only where it is baked.
+    err(
+        "r = Meta::Method[Int, () -> Int].new",
+        "a `Meta::Method` is made by `def_method`",
+    );
+    err(
+        "class Mine[T, P] < Meta::Method[T, P]\nend",
+        "`Meta::Method` cannot be subclassed",
+    );
+    err(
+        "class B\nend\ndef outside(r: Meta::Method[B, () -> Int], b: B) -> Int = r.bind(b).call",
+        "a `Meta::Method` is bound only in a block given to `def_method`",
+    );
+}

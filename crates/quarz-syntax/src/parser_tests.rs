@@ -770,3 +770,21 @@ fn function_calls() {
         assert!(!errors(src).is_empty(), "{src}");
     }
 }
+
+#[test]
+fn procedure_types_as_explicit_type_arguments() {
+    // A `(` after a call's `[` starts types when `(` follows the `]`
+    // (`method_ref[(Int) -> Int](:fact)`, docs/14 §5); otherwise an index.
+    assert_eq!(
+        sexp("f[(Int) -> Int](x)"),
+        "(call _ f[(Int) -> Int] (call _ x))"
+    );
+    assert_eq!(
+        sexp("f[(Int) -> Int, String](x)"),
+        "(call _ f[(Int) -> Int, String] (call _ x))"
+    );
+    assert_eq!(sexp("a[(1 + 2)]"), "(call (call _ a) [] (call 1 + 2))");
+    assert_eq!(sexp("a[(1 + 2)]"), sexp("a[1 + 2]"));
+    assert_eq!(sexp("h[(k)]"), sexp("h[k]"));
+    assert!(errors("x = a[(1 + 2)]\ny = h[(k)]").is_empty());
+}

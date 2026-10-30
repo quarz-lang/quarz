@@ -1448,7 +1448,12 @@ impl<'a> FnBuilder<'a> {
                 let r = self.expr(recv);
                 let name = self.str_const(name);
                 let dst = self.reg();
-                self.emit(Inst::MethodRef { dst, recv: r, name });
+                self.emit(Inst::MethodRef {
+                    dst,
+                    recv: r,
+                    name,
+                    method: None,
+                });
                 dst
             }
             Yield(args) => {
@@ -3359,7 +3364,10 @@ impl<'a> FnBuilder<'a> {
         if let Some(CallTarget::Method { method }) = target {
             let m = self.world.method(*method);
             if m.owner == self.world.builtin.meta_classdef
-                && matches!(m.name.as_str(), "def_field" | "field_ref")
+                && matches!(
+                    m.name.as_str(),
+                    "def_field" | "field_ref" | "method_ref" | "class_method_ref"
+                )
             {
                 let site = self.load_const(Constant::Int(e.id as i64));
                 let s = self.sym_const(quarz_ir::FIELD_REF_SITE);
