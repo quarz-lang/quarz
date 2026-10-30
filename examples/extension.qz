@@ -1,4 +1,4 @@
-# extension / using: 既存の型にメソッドとモジュール適合を字句スコープで追加する
+# extension / using: add methods and module conformance to existing types, in a lexical scope
 
 module Describable
   abstract def describe -> String
@@ -27,11 +27,10 @@ end
 
 using Describing
 
-show(42)                 # Int は Describable に適合した
+show(42)                 # Int now conforms to Describable
 show("quarz")
 puts [1, 2, 3].describe_all
 puts "hello".shout
 
-module Other
-  # ここでは using が効いていないので "x".shout はコンパイルエラー
-end
+# `using` applies to this file only: in a file without `using Describing`,
+# "x".shout is a compile error.
