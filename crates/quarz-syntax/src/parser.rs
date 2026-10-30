@@ -136,6 +136,13 @@ pub struct Parser<'src> {
     /// In a block's parameters, where `|` closes the list rather than
     /// joining a union (one in brackets or parentheses still does).
     pipe_ends_type: bool,
+    /// In a block parameter's default, the bracket depth (`depth`) where
+    /// `|` closes the parameters rather than calling `|` (one in brackets,
+    /// parentheses, a block or an interpolation still does).
+    pipe_ends_expr: Option<u32>,
+    /// `depths[i]`: how many brackets, parentheses, braces and
+    /// interpolations are open before token `i` (filled as far as needed).
+    depths: Vec<u32>,
 }
 
 impl<'src> Parser<'src> {
@@ -160,6 +167,8 @@ impl<'src> Parser<'src> {
             rescued: Vec::new(),
             decl_scopes: Vec::new(),
             pipe_ends_type: false,
+            pipe_ends_expr: None,
+            depths: Vec::new(),
         }
     }
 
@@ -251,6 +260,29 @@ impl<'src> Parser<'src> {
         }
     }
 
+    /// How many brackets, parentheses, braces and interpolations are open
+    /// here.
+    fn depth(&mut self) -> u32 {
+        while self.depths.len() <= self.idx {
+            let i = self.depths.len();
+            let d = match i {
+                0 => 0,
+                _ => {
+                    let prev = self.depths[i - 1];
+                    match self.tokens[i - 1].kind {
+                        T::LParen | T::LBracket | T::LBrace | T::EmbExprBegin => prev + 1,
+                        T::RParen | T::RBracket | T::RBrace | T::EmbExprEnd => {
+                            prev.saturating_sub(1)
+                        }
+                        _ => prev,
+                    }
+                }
+            };
+            self.depths.push(d);
+        }
+        self.depths[self.idx]
+    }
+
     fn mark(&self) -> usize {
         self.idx
     }
@@ -335,6 +367,15 @@ impl<'src> Parser<'src> {
     /// Parse statements until one of `stop` keywords (or a closing bracket /
     /// EOF) is reached. The stop token is not consumed.
     fn parse_statements(&mut self, stop: &[K]) -> Vec<Expr> {
+        // A body (`do ... end`, `begin ... end`, parentheses) inside a
+        // block parameter's default: `|` is the operator there.
+        let saved_pipe = self.pipe_ends_expr.take();
+        let stmts = self.parse_statements_in(stop);
+        self.pipe_ends_expr = saved_pipe;
+        stmts
+    }
+
+    fn parse_statements_in(&mut self, stop: &[K]) -> Vec<Expr> {
         let mut stmts = Vec::new();
         loop {
             self.skip_newlines();
@@ -1003,7 +1044,11 @@ impl<'src> Parser<'src> {
         }
         self.bump();
         self.skip_newlines();
-        let then = self.parse_ternary()?;
+        // (Between `?` and `:`, `|` cannot end a block's parameters.)
+        let saved_pipe = self.pipe_ends_expr.take();
+        let then = self.parse_ternary();
+        self.pipe_ends_expr = saved_pipe;
+        let then = then?;
         self.skip_newlines();
         self.expect(&T::Colon, "`:` of the conditional operator")?;
         self.skip_newlines();
@@ -1112,6 +1157,12 @@ impl<'src> Parser<'src> {
         while let Some((prec, op)) = binary_op(self.kind()) {
             if prec < min_prec {
                 break;
+            }
+            if self.at(&T::Pipe) && self.pipe_ends_expr.is_some() {
+                let here = self.depth();
+                if self.pipe_ends_expr == Some(here) {
+                    break;
+                }
             }
             self.bump();
             self.skip_newlines();
@@ -1707,7 +1758,33 @@ impl<'src> Parser<'src> {
         self.pipe_ends_type = saved;
         let params = params?;
         self.expect(&T::Pipe, "`|`")?;
+        self.refuse_defaults(&params, true);
         Ok(params)
+    }
+
+    /// `f` where `|` is an operator, not the end of a block's parameters.
+    fn without_pipe_end<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        let saved = self.pipe_ends_expr.take();
+        let r = f(self);
+        self.pipe_ends_expr = saved;
+        r
+    }
+
+    /// A block's or a lambda's parameters take no default: the procedure
+    /// type it is given for decides how many arguments it gets, and of
+    /// which types (docs/01 §9).
+    fn refuse_defaults(&mut self, params: &Params, block: bool) {
+        let message = if block {
+            "a block's parameters take no default: the block's type gives every argument"
+        } else {
+            "a lambda's parameters take no default: each call gives every argument"
+        };
+        for p in &params.list {
+            if let Some(d) = &p.default {
+                let span = d.span;
+                self.error_at(message, span);
+            }
+        }
     }
 
     /// A block's result type, after its parameters (`do |x: Int| -> Bool`,
@@ -1787,7 +1864,7 @@ impl<'src> Parser<'src> {
         let tok = self.peek().clone();
         let start = tok.span;
         if self.at_for_comprehension() {
-            return self.parse_for_comprehension();
+            return self.without_pipe_end(Self::parse_for_comprehension);
         }
         match tok.kind {
             T::Int { digits, base } => {
@@ -2531,6 +2608,7 @@ impl<'src> Parser<'src> {
         } else {
             Params::empty()
         };
+        self.refuse_defaults(&params, false);
         let ret = if self.eat(&T::Arrow) {
             Some(self.parse_type()?)
         } else {
@@ -2633,9 +2711,11 @@ impl<'src> Parser<'src> {
                 self.bump();
                 Ok(self.node(start, ExprKind::Magic(Magic::Method)))
             }
-            K::If | K::Unless => self.parse_if(),
-            K::While | K::Until => self.parse_while(),
-            K::Case => self.parse_case(),
+            // (Closed by `end`: `|` in their conditions too is the
+            // operator, inside a block parameter's default.)
+            K::If | K::Unless => self.without_pipe_end(Self::parse_if),
+            K::While | K::Until => self.without_pipe_end(Self::parse_while),
+            K::Case => self.without_pipe_end(Self::parse_case),
             K::Begin => self.parse_begin(),
             K::Def => self.parse_def(None, false, false, false),
             K::Class => self.parse_class(false),
@@ -4343,7 +4423,20 @@ impl<'src> Parser<'src> {
         };
         let default = if self.at(&T::Assign) {
             self.bump();
-            Some(self.parse_ternary()?)
+            // In a block's parameters, `|` at this level ends them.
+            let ends = if self.pipe_ends_type {
+                Some(self.depth())
+            } else {
+                None
+            };
+            // (Its own types and parameters are not the block's: `|` is a
+            // union there.)
+            let saved = std::mem::replace(&mut self.pipe_ends_expr, ends);
+            let saved_type = std::mem::replace(&mut self.pipe_ends_type, false);
+            let e = self.parse_ternary();
+            self.pipe_ends_expr = saved;
+            self.pipe_ends_type = saved_type;
+            Some(e?)
         } else {
             None
         };

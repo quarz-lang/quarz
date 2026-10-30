@@ -5276,13 +5276,13 @@ end
 # `call`, `()` or `[]`.
 class Proc
   include Unshareable
-  # The number of parameters: `-n - 1` when there are optional ones or a
-  # rest parameter after `n` required ones, as in Ruby. A method reference
-  # (`obj.:name`) gives `-1`.
+  # The number of parameters: `-n - 1` when there is a rest parameter
+  # after `n` required ones, as in Ruby. A method reference (`obj.:name`)
+  # gives `-1`.
   #
   # ```
   # ->(a: Int, b: Int) { a + b }.arity          # => 2
-  # ->(a: Int, b: Int = 2) { a + b }.arity      # => -2
+  # ->(a: Int, *bs: Int) { a }.arity            # => -2
   # ```
   native def arity -> Int
   # Lowering calls it on a block or lambda made as a shareable procedure.
