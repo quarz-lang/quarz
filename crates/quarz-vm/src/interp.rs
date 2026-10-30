@@ -45,6 +45,8 @@ pub type EvalResult = Result<Value, Flow>;
 /// Positional arguments, stored inline when there are at most four.
 pub type ArgVec = SmallVec<[Value; 4]>;
 
+pub use quarz_ir::KW_SPLAT;
+
 /// Arguments to a native method.
 #[derive(Default)]
 pub struct Args {
@@ -3282,6 +3284,17 @@ impl Interp {
             let mut kwrest: Vec<(Symbol, Value)> = Vec::new();
             for (sym, v) in kw {
                 let name = self.symbol_name(sym);
+                // A `**hash` argument: its entries go to `**kw` only.
+                if *name == *KW_SPLAT {
+                    if let Value::Hash(h) = &v {
+                        for (k, x) in h.as_map().iter() {
+                            if let Value::Symbol(s) = k {
+                                kwrest.push((*s, x.clone()));
+                            }
+                        }
+                    }
+                    continue;
+                }
                 let found = m.params.iter().position(|p| {
                     *p.name == *name
                         && matches!(p.kind, RtParamKind::Positional | RtParamKind::KeywordOnly)

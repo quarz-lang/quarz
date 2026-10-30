@@ -2198,7 +2198,6 @@ impl<'a> FnBuilder<'a> {
         let has_splat = args.iter().any(|a| matches!(a, Arg::Splat(_)));
         let mut items = Vec::new();
         let mut kw = Vec::new();
-        let mut kw_splats = Vec::new();
         let mut block = None;
         for a in args {
             match a {
@@ -2221,9 +2220,12 @@ impl<'a> FnBuilder<'a> {
                     let s = self.sym_const(name);
                     kw.push((s, v));
                 }
+                // In its place among the keywords: when one of them and an
+                // entry name the same key, the later wins (docs/01 §9).
                 Arg::DoubleSplat(e) => {
                     let h = self.expr(e);
-                    kw_splats.push(HashItem::Splat(h));
+                    let s = self.sym_const(quarz_ir::KW_SPLAT);
+                    kw.push((s, h));
                 }
                 Arg::BlockPass(e) => {
                     block = Some(match &e.kind {
@@ -2261,16 +2263,7 @@ impl<'a> FnBuilder<'a> {
         } else {
             (items.into_iter().map(|i| i.reg).collect(), false)
         };
-        let kw_splat = if kw_splats.is_empty() {
-            None
-        } else {
-            let dst = self.reg();
-            self.emit(Inst::MakeHash {
-                dst,
-                items: kw_splats,
-            });
-            Some(dst)
-        };
+        let kw_splat = None;
         Args {
             pos,
             splat,

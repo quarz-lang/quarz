@@ -3490,3 +3490,10 @@ fn a_splat_may_fill_a_position_named_by_keyword() {
     ok(&format!("{h}puts h(\"y\", *xs)"));
     ok("def k(*rest: Int, by: Int = 1) -> Int = rest.size * by\nys = [1, 2]\nputs k(*ys, by: 3)");
 }
+
+#[test]
+fn a_double_splat_supplies_only_kwrest() {
+    // tmp/repro/dsplat-fills-named.qz (docs/01 §9): `b` stays an `Int`, its
+    // default, and the hash's `b:` entry goes to `**kw`.
+    ok("def h(a: Int, b: Int = 7, **kw: String) -> String = \"#{a} #{b + 1} #{kw}\"\nhh: Hash[Symbol, String] = {b: \"x\"}\nputs h(1, **hh)");
+}
