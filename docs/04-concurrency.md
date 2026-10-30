@@ -77,7 +77,7 @@ ch.each { |m| ... }  # keeps receiving until closed
 
 `try_receive`, `closed?`, `empty?` and `size` are also available, and a channel is `Enumerable`.
 
-- The `T` of `Channel[T]` must be Shareable.
+- The `T` of `Channel[T]` must be Shareable, and known where it is required: a value of a type not yet known cannot be sent (annotate it; [03-data-model.md](03-data-model.md)).
 - A channel with capacity 0 is a rendezvous between sender and receiver and can be used for synchronization.
 - `send`/`receive` establish happens-before. Updates made before a `send` are visible after the corresponding `receive`. This is the entirety of Quarz's memory model (since there is no shared mutable state, there is nothing else to specify).
 - If every task is waiting on a channel and the program deadlocks, the runtime stops the program with `DeadlockError` (the same as Go's "all goroutines are asleep"). It prints the blocked tasks, on every worker (`name (number)`, the number prefixed with the worker's on other workers than the main one: `task (1:0)`), and exits with status 1; it is not an exception that can be rescued, and `ensure` and `at_exit` do not run.

@@ -987,6 +987,26 @@ impl Checker {
     // ----- diagnostics -----------------------------------------------------
 
     fn error(&mut self, message: impl Into<String>, span: Span) {
+        let mut message = message.into();
+        // A type not decided yet (`?0`) where a Shareable is required is
+        // an error (docs/03): say what to write.
+        // (Only where a Shareable is what was expected, and the type found
+        // is the one not decided.)
+        let expected_shareable = [
+            "expects Shareable but found ",
+            "of type Shareable",
+            "but Shareable was expected",
+            "does not satisfy the bound Shareable",
+        ]
+        .iter()
+        .any(|p| message.contains(p));
+        let undecided = message
+            .as_bytes()
+            .windows(2)
+            .any(|w| w[0] == b'?' && w[1].is_ascii_digit());
+        if undecided && expected_shareable && !message.contains("not yet known") {
+            message.push_str(" (the type is not yet known here, and it must be Shareable: annotate it, as `a: Array[Int] = []`)");
+        }
         self.diagnostics
             .push((self.env.file, Diagnostic::error(message, span)));
     }
@@ -3487,7 +3507,19 @@ impl Checker {
             return;
         }
         let rt = self.resolve(t);
+        // Not decided yet: what decides it later may not be Shareable,
+        // and the task has it already (docs/03).
         if rt.has_vars() {
+            // (A block given to `def_method` bakes what it captures: no
+            // other task has it.)
+            let lifted =
+                self.env.lifted_frame.is_some() && self.env.lifted_frame == self.env.task_frame;
+            if !lifted {
+                self.error(
+                    format!("the type of `{name}` is not yet known here, but {} must have a Shareable one: annotate it (as `{name}: Array[Int] = []`)", self.task_capture_name()),
+                    span,
+                );
+            }
             return;
         }
         if self.env.lifted_frame.is_some() && self.env.lifted_frame == self.env.task_frame {
@@ -8345,6 +8377,18 @@ impl Checker {
         let params = self.world.class(cid).type_params.clone();
         for (p, a) in params.iter().zip(args.iter()) {
             if a.has_vars() {
+                let shareable = self.world.builtin.shareable;
+                if p.bounds
+                    .iter()
+                    .any(|b| matches!(b, Type::Class(bid, _) if *bid == shareable))
+                {
+                    let class = self.world.class(cid).name.clone();
+                    let param = self.world.type_param_name(p.id);
+                    self.error(
+                        format!("the type argument for `{param}` of `{class}` is not yet known here, but it must be Shareable: write it (as `{class}[Int].new`)"),
+                        span,
+                    );
+                }
                 continue;
             }
             // A bound may name the parameters (`T <: Addable[T]`).
@@ -10207,7 +10251,13 @@ impl Checker {
         let result = if block.ret.is_some() { &ret } else { &bt };
         if is_task && !void && !result.is_nothing() {
             let rt = self.resolve(result);
-            if !rt.has_vars() && !self.world.is_shareable(&rt) {
+            if rt.has_vars() {
+                let span = block.body.last().map(|e| e.span).unwrap_or(block.span);
+                self.error(
+                    "the type of a task block's result is not yet known here, but it passes to the task that awaits it and must be Shareable: annotate what the block returns",
+                    span,
+                );
+            } else if !self.world.is_shareable(&rt) {
                 let span = block.body.last().map(|e| e.span).unwrap_or(block.span);
                 self.error(
                     format!(
@@ -10341,7 +10391,14 @@ impl Checker {
             return;
         }
         let t = self.resolve(&self.env.self_type.clone());
-        if t.has_vars() || self.world.is_shareable(&t) {
+        if t.has_vars() {
+            self.error(
+                format!("the type of {what} is not yet known here, but {} must have a Shareable one: annotate it", self.task_capture_name()),
+                span,
+            );
+            return;
+        }
+        if self.world.is_shareable(&t) {
             return;
         }
         self.error(
