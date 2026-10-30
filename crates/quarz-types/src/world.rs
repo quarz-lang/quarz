@@ -313,8 +313,11 @@ pub struct ClassInfo {
     pub auto_initialize: bool,
     /// Source file index (0 = prelude, 1 = the user program).
     pub file: u32,
-    /// Extensions activated by `using` inside the class body.
-    pub usings: Vec<ExtensionId>,
+    /// Extensions activated by `using` inside the class body (for a
+    /// file's main pseudo-class, at its top level), each with the
+    /// position of its `using`: in effect from there to the end of the
+    /// body (`Checker::usings_at`).
+    pub usings: Vec<(u32, ExtensionId)>,
     /// For the root module of a library cog: the cog's index in
     /// `World::cogs`.
     pub cog: Option<u32>,

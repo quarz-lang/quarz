@@ -134,6 +134,11 @@ pub fn interface(world: &World, file: u32) -> u64 {
         c.span = Default::default();
         c.shareable = None;
         c.observable = None;
+        // (A `using`'s position matters to its own file only, whose key
+        // has its source: `Checker::usings_at`.)
+        for u in &mut c.usings {
+            u.0 = 0;
+        }
         for f in &mut c.fields {
             f.span = Default::default();
             f.default = f.default.as_ref().map(|_| dummy());
