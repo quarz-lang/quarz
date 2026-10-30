@@ -44,6 +44,11 @@ pub struct Unit {
     /// Whether its statements are left out, unchecked and not run (an
     /// application's main file under `quarz test`).
     pub declarations_only: bool,
+    /// The units (by index) it `require_relative`s: a script sees their
+    /// top-level `def`s (docs/01 §1).
+    pub requires: Vec<usize>,
+    /// For a test file of a cog, the cog it tests (`LoadedUnit::tests`).
+    pub tests: Option<u32>,
 }
 
 impl Unit {
@@ -55,6 +60,8 @@ impl Unit {
             cog: None,
             statements: true,
             declarations_only: false,
+            requires: Vec::new(),
+            tests: None,
         }
     }
 }
@@ -67,6 +74,8 @@ impl From<LoadedUnit> for Unit {
             cog: u.cog,
             statements: u.statements,
             declarations_only: u.declarations_only,
+            requires: u.requires,
+            tests: u.tests,
         }
     }
 }
@@ -97,7 +106,7 @@ pub type FileDiagnostic = (u32, Diagnostic);
 pub struct Checkpoint {
     checker: check::ReplSnapshot,
     loaded: Vec<(u32, String, ClassId)>,
-    loaded_keys: rustc_hash::FxHashSet<String>,
+    loaded_keys: rustc_hash::FxHashMap<String, u32>,
     sources: Vec<(u32, SourceFile)>,
     next_file: u32,
     /// The world's sizes then.
@@ -115,7 +124,7 @@ pub struct Session {
     inputs: u32,
     /// Units loaded by `require`: file index, name and pseudo-class.
     loaded: Vec<(u32, String, ClassId)>,
-    loaded_keys: rustc_hash::FxHashSet<String>,
+    loaded_keys: rustc_hash::FxHashMap<String, u32>,
     /// The file index the next required file takes (a file's own
     /// requires are loaded after it took one: `loaded` is pushed to only
     /// once they are).
@@ -165,7 +174,7 @@ impl Session {
             main,
             inputs: 0,
             loaded: Vec::new(),
-            loaded_keys: rustc_hash::FxHashSet::default(),
+            loaded_keys: rustc_hash::FxHashMap::default(),
             next_file: 2,
             sources: Vec::new(),
         })
@@ -174,7 +183,7 @@ impl Session {
     /// Whether standard library module `module` is loaded, or one of its
     /// names is taken (so that loading it implicitly would clash).
     pub fn std_loaded(&self, module: &str) -> bool {
-        self.loaded_keys.contains(&format!("<std:{module}>"))
+        self.loaded_keys.contains_key(&format!("<std:{module}>"))
             || load::std_exports()
                 .iter()
                 .filter(|(m, _)| *m == module)
@@ -261,11 +270,21 @@ impl Session {
             };
             (key.clone(), key, text.to_string(), PathBuf::from("."))
         };
-        if !self.loaded_keys.insert(key) {
+        if let Some(to) = self.loaded_keys.get(&key).copied() {
+            // (Its top-level `def`s become visible in `from` all the same.)
+            if relative {
+                self.see_functions_of(from, to);
+                let dups = self.function_duplicates(from);
+                if !dups.is_empty() {
+                    return Err(dups);
+                }
+            }
             return Ok(Vec::new());
         }
         let file = self.next_file;
         self.next_file += 1;
+        self.loaded_keys.insert(key, file);
+        self.checker.world.function_scopes.insert(file, vec![file]);
         let base = self.next_base();
         self.inputs += 1;
         let source = SourceFile::with_base(name.clone(), text, base);
@@ -314,6 +333,8 @@ impl Session {
         self.checker.world.freeze_ancestors(true);
         self.checker.add_file_main(file, main);
         self.loaded.push((file, name.clone(), main));
+        // (Before its `static` statements run, as in `feed`.)
+        diagnostics.extend(self.function_duplicates(file));
         if diagnostics.iter().any(|(_, d)| d.is_error()) {
             self.checker.drop_static_stmts(file, base);
             diagnostics.append(&mut self.checker.take_diagnostics());
@@ -337,6 +358,17 @@ impl Session {
         if diagnostics.iter().any(|(_, d)| d.is_error()) {
             return Err(diagnostics);
         }
+        if relative {
+            self.see_functions_of(from, file);
+        }
+        for d in self.function_duplicates(from) {
+            if !diagnostics.contains(&d) {
+                diagnostics.push(d);
+            }
+        }
+        if diagnostics.iter().any(|(_, d)| d.is_error()) {
+            return Err(diagnostics);
+        }
         units.push(CheckedUnit {
             file,
             name,
@@ -344,6 +376,72 @@ impl Session {
             body,
         });
         Ok(units)
+    }
+
+    /// File `from` required `to` (`require_relative`): it sees the
+    /// top-level `def`s `to` sees (docs/01 §1).
+    fn see_functions_of(&mut self, from: u32, to: u32) {
+        let scopes = &mut self.checker.world.function_scopes;
+        let theirs = scopes.get(&to).cloned().unwrap_or_else(|| vec![to]);
+        let mine = scopes.entry(from).or_insert_with(|| vec![from]);
+        for f in theirs {
+            if !mine.contains(&f) {
+                mine.push(f);
+            }
+        }
+    }
+
+    /// Two top-level `def`s of one name and the same signature in the
+    /// files `file` sees: an error, as in a program's files
+    /// (`Declarer::check_function_duplicates`).
+    fn function_duplicates(&self, file: u32) -> Vec<FileDiagnostic> {
+        let world = &self.checker.world;
+        let main_of = |f: u32| -> Option<(ClassId, String)> {
+            if f == 1 {
+                return Some((self.main, "<repl>".to_string()));
+            }
+            self.loaded
+                .iter()
+                .find(|(g, _, _)| *g == f)
+                .map(|(_, n, m)| (*m, n.clone()))
+        };
+        let scope = world
+            .function_scopes
+            .get(&file)
+            .cloned()
+            .unwrap_or_default();
+        let mains: Vec<(ClassId, String)> = scope.iter().filter_map(|f| main_of(*f)).collect();
+        let mut out = Vec::new();
+        for (k, (a, _)) in mains.iter().enumerate() {
+            for (b, _) in &mains[k + 1..] {
+                for (name, xs) in &world.class(*a).methods {
+                    let Some(ys) = world.class(*b).methods.get(name) else {
+                        continue;
+                    };
+                    for x in xs {
+                        for y in ys {
+                            let (old, new) = if x < y { (*x, *y) } else { (*y, *x) };
+                            let (mo, mn) = (world.method(old), world.method(new));
+                            if world.same_signature(mo, mn) {
+                                let other = mains
+                                    .iter()
+                                    .find(|(c, _)| *c == mo.owner)
+                                    .map(|(_, n)| n.clone())
+                                    .unwrap_or_default();
+                                out.push((
+                                    mn.file,
+                                    Diagnostic::error(
+                                        format!("`{name}` is already defined with the same parameters in {other}: the top-level `def`s a file sees are one set"),
+                                        mn.span,
+                                    ),
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        out
     }
 
     pub fn world(&self) -> &World {
@@ -403,6 +501,7 @@ impl Session {
             .collect();
         self.checker.world = std::mem::take(&mut declarer.world);
         self.checker.world.freeze_ancestors(true);
+        diagnostics.extend(self.function_duplicates(1));
         if diagnostics.iter().any(|(_, d)| d.is_error()) {
             // Its statements do not run, now or with a later input.
             self.checker.drop_static_stmts(1, base);
@@ -845,7 +944,46 @@ pub fn check_with_extra(
             _ => declarer.collect_unit(&unit.program, file),
         }
     }
+    // The top-level `def`s each file sees (docs/01 §1): its cog's, or a
+    // script's and what it requires (and, for a cog's test file, its
+    // cog's).
+    for (i, unit) in units.iter().enumerate().skip(std_units.len()) {
+        let file = i as u32 + 1;
+        let mut scope = vec![file];
+        match unit.cog {
+            Some(cog) if !cogs.is_empty() && unit.tests.is_none() => {
+                for (j, other) in units.iter().enumerate() {
+                    if j != i && other.cog == Some(cog) && other.tests.is_none() {
+                        scope.push(j as u32 + 1);
+                    }
+                }
+            }
+            _ => {
+                let mut stack = unit.requires.clone();
+                // A cog's test file sees its cog's too (the cog does not
+                // see its).
+                if let Some(cog) = unit.tests {
+                    stack.extend(
+                        (0..units.len())
+                            .filter(|j| units[*j].cog == Some(cog) && units[*j].tests.is_none()),
+                    );
+                }
+                while let Some(j) = stack.pop() {
+                    let f = j as u32 + 1;
+                    if !scope.contains(&f) {
+                        scope.push(f);
+                        stack.extend(units[j].requires.iter().copied());
+                    }
+                }
+            }
+        }
+        declarer.world.function_scopes.insert(file, scope);
+    }
     declarer.resolve_headers();
+    let names: Vec<String> = std::iter::once("<prelude>".to_string())
+        .chain(units.iter().map(|u| u.name.clone()))
+        .collect();
+    declarer.check_function_duplicates(&names);
     let mut diagnostics = std::mem::take(&mut declarer.diagnostics);
     let mut file_mains: Vec<Option<ClassId>> = vec![None; units.len() + 1];
     for u in &std_units {
@@ -934,7 +1072,22 @@ pub fn check_with_extra(
             if (file as usize) <= std_units.len() || u.declarations_only {
                 continue;
             }
-            let Some(key) = cache::key(&u.program, cache::hash(&(all, u.cog, u.statements))) else {
+            // (Which files' top-level `def`s it sees: another file's
+            // `require_relative`s decide that too.)
+            let scope_names: Vec<String> = checker
+                .world
+                .function_scopes
+                .get(&file)
+                .map(|fs| {
+                    let mut ns: Vec<String> = fs.iter().map(|f| key_of(*f)).collect();
+                    ns.sort();
+                    ns
+                })
+                .unwrap_or_default();
+            let Some(key) = cache::key(
+                &u.program,
+                cache::hash(&(all, u.cog, u.statements, &scope_names)),
+            ) else {
                 continue;
             };
             keys[file as usize] = Some(key);

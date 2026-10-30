@@ -38,7 +38,7 @@ A summary of the things someone who knows Ruby will first stumble on when starti
 | `require` | Loads at runtime | Resolved at compile time (same syntax) |
 | RubyGems, Bundler (`Gemfile`) | Packages installed from rubygems.org, then `require`d | Cogs: git repositories pinned to a commit in `Cog.lock`, each under its own module, visible without `require` ([10-cogs.md](10-cogs.md)) |
 | `puts`, `p` and the other `Kernel` functions | Private methods of every object: a subclass's `def puts` takes over its superclass's calls of `puts` | Functions: a call is resolved where it is written, and a subclass's `def puts` does not take it over. `::puts` calls the function where a method `puts` of `self` hides it, and `Kernel.puts` (private in Ruby) always the built-in |
-| Top-level `def` | Private method of `Object`: `self` in it is the caller's | A function within that file, run with the file's top-level object (`main`) as `self` wherever it is called from |
+| Top-level `def` | Private method of `Object`: `self` in it is the caller's | A function of its cog (in a script, of the file and those that require it), run with its own file's top-level object (`main`) as `self` wherever it is called from |
 | Arbitrary expressions in a class body | Executed | Declarations only (constant initializers are allowed) |
 | `respond_to?` | Runtime | Compile-time constant |
 | `obj.method(:foo)` | `Method` | `obj.:foo` (a procedure) |

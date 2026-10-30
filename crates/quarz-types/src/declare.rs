@@ -1405,35 +1405,8 @@ impl<'ast> Declarer<'ast> {
         }
     }
 
-    /// Whether two methods have the same signature: parameters (kinds
-    /// and types) and block, their own type parameters renamed in order.
     fn same_signature(&self, a: &MethodInfo, b: &MethodInfo) -> bool {
-        if a.type_params.len() != b.type_params.len() {
-            return false;
-        }
-        let rename: HashMap<TypeParamId, Type> = b
-            .type_params
-            .iter()
-            .zip(&a.type_params)
-            .map(|(q, p)| (q.id, Type::Param(p.id)))
-            .collect();
-        let same = |t: &Type, u: &Type| self.world.same_type(t, &u.subst(&rename));
-        a.type_params.iter().zip(&b.type_params).all(|(p, q)| {
-            p.bounds.len() == q.bounds.len()
-                && p.bounds.iter().zip(&q.bounds).all(|(x, y)| same(x, y))
-        }) && match (&a.block, &b.block) {
-            (Some((_, t)), Some((_, u))) => same(t, u),
-            (None, None) => true,
-            _ => false,
-        } && a.block_optional == b.block_optional
-            && a.params.len() == b.params.len()
-            && a.params.iter().zip(&b.params).all(|(p, q)| {
-                // A call binds keyword-only parameters by name, so
-                // their names tell overloads apart.
-                p.kind == q.kind
-                    && same(&p.ty, &q.ty)
-                    && (p.kind != ParamKind::KeywordOnly || p.name == q.name)
-            })
+        self.world.same_signature(a, b)
     }
 
     /// Two methods of one name and the same signature (`same_signature`)
@@ -1459,6 +1432,63 @@ impl<'ast> Declarer<'ast> {
                 ));
             }
         }
+    }
+
+    /// Two top-level `def`s of one name and the same signature in files
+    /// one file sees (its cog's, or a script's and what it requires,
+    /// `World::function_scopes`): a call could not tell them apart.
+    /// `names`: the files' names, by file index.
+    pub fn check_function_duplicates(&mut self, names: &[String]) {
+        let mains: HashMap<u32, ClassId> = self.units.iter().map(|u| (u.file, u.main)).collect();
+        // Each distinct scope once (all a cog's files share one), its
+        // `def`s gathered by name.
+        let mut scopes: Vec<Vec<u32>> = self
+            .world
+            .function_scopes
+            .values()
+            .map(|s| {
+                let mut s = s.clone();
+                s.sort();
+                s
+            })
+            .collect();
+        scopes.sort();
+        scopes.dedup();
+        let mut seen: HashSet<(MethodId, MethodId)> = HashSet::default();
+        let mut errors = Vec::new();
+        for scope in scopes {
+            let mut by_name: std::collections::BTreeMap<&str, Vec<MethodId>> = Default::default();
+            for m in scope.iter().filter_map(|f| mains.get(f)) {
+                for (name, ids) in &self.world.class(*m).methods {
+                    by_name
+                        .entry(name.as_str())
+                        .or_default()
+                        .extend(ids.iter().copied());
+                }
+            }
+            for (name, mut ids) in by_name {
+                ids.sort();
+                for (k, p) in ids.iter().enumerate() {
+                    for q in &ids[k + 1..] {
+                        let (mp, mq) = (self.world.method(*p), self.world.method(*q));
+                        // (Two of one file are `check_duplicate_methods`'.)
+                        if mp.owner == mq.owner
+                            || !seen.insert((*p, *q))
+                            || !self.same_signature(mp, mq)
+                        {
+                            continue;
+                        }
+                        let other = names.get(mp.file as usize).cloned().unwrap_or_default();
+                        errors.push((
+                            format!("`{name}` is already defined with the same parameters in {other}: the top-level `def`s a file sees are one set"),
+                            mq.span,
+                            mq.file,
+                        ));
+                    }
+                }
+            }
+        }
+        self.report_at(errors);
     }
 
     fn check_duplicate_methods(&mut self, cid: ClassId) {

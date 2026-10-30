@@ -118,7 +118,7 @@ def self.get(url: String) -> Response        # a module function: `Httpx.get`
   Client.new.get(url)
 end
 
-def helper(…) … end                          # a top-level `def` stays private to its file, as always
+def helper(…) … end                          # a function of the cog: its other files (and its tests) call it, other cogs do not see it
 ```
 
 The user of the cog names it in `[dependencies]` and sees it under the key:

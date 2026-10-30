@@ -3398,7 +3398,7 @@ fn function_calls() {
     ok("def f -> Int = 1\nclass C\n  def f -> String = \"m\"\n  def g -> Int = ::f\nend");
     ok("class C\n  def puts(*values: Object) -> Void = nil\n  def g -> Void = ::puts(\"x\")\nend");
     let none =
-        "calls a built-in function or a top-level `def` of this file, and there is none named";
+        "calls a built-in function or a top-level `def` of this cog, and there is none named";
     err("::inspect", none);
     err("::nosuch(1)", none);
     err(

@@ -319,6 +319,39 @@ fn a_failed_require_can_be_retried() {
 }
 
 #[test]
+fn top_level_defs_of_required_files_are_one_set() {
+    // docs/01 §1: the input's top-level `def`s and those of the files it
+    // required are one set of overloads, in whichever order they come.
+    let dir = std::env::temp_dir().join(format!("quarz-repl-defs-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("lib.qz"), "def helper(x: Int) -> Int = x * 10\n").unwrap();
+    std::fs::write(dir.join("lib2.qz"), "def helper(x: Int) -> Int = x\n").unwrap();
+    let req = |f: &str| format!("require_relative \"{}\"", dir.join(f).display());
+    let (out, _) = values(&[
+        &req("lib"),
+        "def helper(x: Int) -> Int = x + 1",
+        "def helper(s: String) -> String = s",
+        "[helper(1), helper(\"a\")]",
+        "def other(x: Int) -> Int = x",
+        &req("lib2"),
+        "other(4)",
+    ]);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(out[0], "");
+    assert!(
+        out[1].contains("`helper` is already defined with the same parameters in")
+            && out[1].contains("lib.qz"),
+        "{out:?}"
+    );
+    assert_eq!(out[2..5], ["", "=> [10, \"a\"]", ""], "{out:?}");
+    assert!(
+        out[5].contains("lib2.qz:1:1: error: `helper` is already defined"),
+        "{out:?}"
+    );
+    assert_eq!(out[6], "=> 4");
+}
+
+#[test]
 fn a_task_suspended_in_a_call_outlives_inputs() {
     // A task an earlier input started, suspended in a call, while later
     // inputs load their functions into the interpreter's tables.
