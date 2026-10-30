@@ -450,6 +450,8 @@ end
 - `case/in` on `data`/`enum`/union types checks exhaustiveness. If the patterns are not exhaustive, an `else` is required; without either exhaustiveness or `else` it is a compile error. A subject of type `Self` (`case self` in a method returning `Self`) is matched as a value of the receiver's class where a pattern names a class or variant (an enum's `case self` covers its variants); a binding keeps `Self`. `case/in` on a class hierarchy is open, so without an `else` it raises `NoMatchingPatternError` at runtime (with a warning).
 - The variables bound by a pattern and the narrowed type of the receiver are statically known within that branch.
 - `expr => Point(x:, y:)` raises on failure; `expr in Point` returns a `Bool` and narrows.
+- A pattern binds its names only when it matches whole (with its guard): one that fails partway leaves every variable as it was (in Ruby, the names bound before the failure keep their new values). The names a `case/in` arm's pattern binds are the arm's own, as a block's parameters: declared there, shadowing an outer local of the same name, which the arm does not change, and not visible after the arm (after the `case`, the name is the outer local, a method, or undefined). So two arms may bind one name to different types. `expr in pattern` and `expr => pattern` bind into the enclosing scope, as in Ruby, once the whole pattern matched.
+- Exhaustiveness is by type, not by value: `in true | false` does not cover `Bool` (write `in Bool`, or add an `else`).
 
 ## 12. Exceptions
 

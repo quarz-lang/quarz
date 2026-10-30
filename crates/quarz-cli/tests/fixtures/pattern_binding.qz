@@ -1,0 +1,59 @@
+# A pattern binds its names only when it matches whole (docs/01 §11): a
+# `case/in` arm's names are its own, and a failed `in` or `=>` leaves
+# the variables as they were.
+data P = (a: Int, b: Int)
+def ha(p: P, y: Int | String) -> Int
+  return 0 unless y.is_a?(String)
+  case p
+  in P(y, 9) then return 0
+  in P(_, _) then y.size
+  end
+end
+puts ha(P.new(7, 1), "s")
+
+def f(v: P | String | Int) -> String
+  x = "outer"
+  r = case v
+      in P(x, _) then "P #{x + 1}"
+      in String => x then "S #{x.size}"
+      in Int then "I #{x}"
+      end
+  "#{r} / #{x}"
+end
+p f(P.new(1, 2)), f("ab"), f(3)
+def g(v: Int | String) -> Int
+  case v
+  in Int => n then n
+  in String => n then n.size
+  end
+end
+p g(5), g("abc")
+
+def h(p: P | Int, y: Int | String) -> Int
+  return 0 unless y.is_a?(String)
+  if p in P(y, 9)
+    return 1
+  end
+  y.size
+end
+p h(P.new(3, 5), "s")
+def k(p: P, y: Int | String) -> Int
+  return 0 unless y.is_a?(String)
+  begin
+    p => P(y, 9)
+  rescue NoMatchingPatternError
+  end
+  y.is_a?(String) ? 10 : 20
+end
+p k(P.new(3, 5), "s")
+x = 1
+p([5, 6] in [x, 7] | [_, x])
+p x
+# A block in a pin reads the frame's variables from its own: only what
+# the pattern binds is kept aside.
+def pinned(v: Array[Int]) -> String
+  a = 0
+  r = v in [^([3].map { |q| q + a }.first), x]
+  "#{r} #{a}"
+end
+p pinned([3, 4]), pinned([5, 4])
