@@ -2574,7 +2574,9 @@ impl Interp {
         }
         if let Value::Class(cid) = recv {
             // A module method running on a class object (`extend`): the
-            // class's own `def self.` methods override the module's.
+            // class's own `def self.` methods override the module's, and
+            // the module's own is the one (not `Type`'s of its name,
+            // which the class object's class would find).
             if let Some(found) = self.class_side_override(*cid, mid) {
                 return found;
             }
@@ -2603,7 +2605,8 @@ impl Interp {
 
     /// The implementation of a module instance method `mid` for the class
     /// object `cid`: a singleton method of the class (or a superclass), or
-    /// a concrete method of another module the class extends.
+    /// a concrete method of a module the class extends (`mid` itself when
+    /// that module's is the one).
     fn class_side_override(&self, cid: ClassId, mid: MethodId) -> Option<MethodId> {
         if let Some(found) = self.class_dispatch_cache.borrow().get(&(cid, mid)) {
             return *found;
@@ -2645,7 +2648,6 @@ impl Interp {
             }
             cur = class.superclass;
         }
-        let found = found.filter(|f| *f != mid);
         self.class_dispatch_cache
             .borrow_mut()
             .insert((cid, mid), found);

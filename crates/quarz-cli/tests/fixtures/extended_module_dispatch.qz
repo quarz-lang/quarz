@@ -1,0 +1,26 @@
+# A method of a module a class `extend`s runs on the class object, before
+# `Type`'s method of its name, whether called directly or through a value
+# typed `Type`; the class's own class method comes before it, and the
+# module extended last before the others (docs/01 §6, §9).
+module Named
+  def name -> String = "Named(#{to_s})"
+end
+module Loud
+  def name -> String = "LOUD"
+end
+class A
+  extend Named
+end
+class B < A
+end
+class C
+  extend Named
+  def self.name -> String = "C itself"
+end
+class D
+  extend Named
+  extend Loud
+end
+def name_of(k: Type) -> String = k.name
+p A.name, B.name, C.name, D.name
+p name_of(A), name_of(B), name_of(C), name_of(D), name_of(String)
