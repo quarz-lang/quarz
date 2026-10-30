@@ -3141,6 +3141,7 @@ fn a_literal_no_variable_holds_is_decided() {
     );
 }
 
+#[test]
 fn clamp_gives_the_receiver_or_a_bound() {
     // `clamp` returns `min` or `max`, a `T`, which need not be `Self`.
     let include = "class B\n  def b -> String = \"B\"\nend\nclass A\n  include Comparable[B]\n  def <=>(other: B) -> Int = -1\n  def a -> String = \"A\"\nend\n";
