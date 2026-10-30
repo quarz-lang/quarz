@@ -3806,6 +3806,14 @@ impl Interp {
         Ok(eq)
     }
 
+    /// `a == b` by the default equality (`Object#==`), not a class's own
+    /// for `a`: its elements' and fields' own still apply (`crate::keys`).
+    pub fn values_equal_default(&self, a: &Value, b: &Value) -> Result<bool, Flow> {
+        let eq = a.default_eq(b);
+        crate::keys::check()?;
+        Ok(eq)
+    }
+
     /// `a <=> b` as an ordering, raising when incomparable.
     pub fn compare(&self, a: &Value, b: &Value) -> Result<std::cmp::Ordering, Flow> {
         use std::cmp::Ordering;

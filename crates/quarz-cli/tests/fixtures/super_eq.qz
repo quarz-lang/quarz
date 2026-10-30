@@ -1,0 +1,24 @@
+# `super` in a class's own `==` reaches the default equality (identity,
+# or the fields of a data-like object), not that `==` again.
+class Foo
+  def ==(other: Object) -> Bool
+    puts "Foo=="
+    super(other)
+  end
+  def hash -> Int = 1
+end
+
+class Bar < Foo
+  def ==(other: Object) -> Bool
+    puts "Bar=="
+    super
+  end
+end
+
+f = Foo.new
+puts f == f
+puts f == Foo.new
+b = Bar.new
+puts b == b
+puts b == Bar.new
+puts f != Foo.new
