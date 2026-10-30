@@ -80,6 +80,9 @@ structure Tables where
   /-- A block's declared result type (`do |x| -> T ... end`), by the node
   of the call it is given to. -/
   blockResults : Json := Json.null
+  /-- The program's overloaded method names, each with its signatures
+  (`Tables.sigKey`), in the order first met. -/
+  overloads : List (String × List String) := []
 
 def Tables.cls (T : Tables) (id : Nat) : M Json := do
   match T.classes.find? fun c => (c.getObjValAs? Nat "id").toOption == some id with
@@ -227,6 +230,37 @@ def Tables.method (T : Tables) (id : Nat) : M Json := do
   match T.methods.find? fun m => (m.getObjValAs? Nat "id").toOption == some id with
   | some m => pure m
   | none => throw s!"method {id}"
+
+/-- A method's signature: its parameters' kinds and types, and its
+block's type (names aside). -/
+def sigKey (m : Json) : M String := do
+  let ps ← (← arr (← field m "params")).toList.mapM fun p => do
+    pure ((← field p "kind").compress ++ ":" ++ (← field p "type").compress)
+  let b ← match ← field m "block" with
+    | .null => pure "none"
+    | b => pure (← field b "type").compress
+  pure (",".intercalate ps ++ "|" ++ b)
+
+/-- The model's name of a program's method: an overloaded one's name and
+signature (`name#k`), as the runtime dispatches by signature (docs/05:
+a subclass overriding one overload leaves the others to the
+superclass's), so an override, of the same signature, has the same name.
+The checker's choice among overloads is taken as given (the call's
+method), the model checks the chosen signature. -/
+def Tables.modelName (T : Tables) (m : Json) : M String := do
+  let name ← str (← field m "name")
+  match T.overloads.find? (·.1 == name) with
+  | none => pure name
+  | some (_, keys) =>
+    if (← str (← field m "synth")) != "None" then throw s!"an overloaded accessor {name}"
+    let key ← sigKey m
+    -- (A signature naming a type parameter may equal another once
+    -- substituted.)
+    if (key.splitOn "\"t\":\"param\"").length > 1 then
+      throw s!"an overload of {name} of a generic signature"
+    match keys.idxOf? key with
+    | some i => pure s!"{name}#{i}"
+    | none => throw s!"an overload of {name} not the program's"
 
 /-- The `initialize` the model's `new` of Rust class `id` runs: the
 nearest one, in the class or a superclass (`Program.lookup`), by Rust
@@ -814,6 +848,7 @@ partial def fieldsPat (T : Tables) (base : String) (rd : Ty → Expr) (st : Json
     i := i + 1
     let irr ← if byType then irrefutable T q ftyJ else pure false
     let c ← compilePat T tmp (fun t => .var tmp t) ftyJ fty q irr
+    if T.overloads.any (·.1 == fname) then throw s!"a field pattern reading an overloaded {fname}"
     acc := PatC.conj acc (none, .assign tmp (.call (rd [a]) fname []))
     acc := PatC.conj acc (c.test, c.post)
     names := names ++ c.names
@@ -948,13 +983,14 @@ partial def expr (T : Tables) (e : Json) : CM Expr := do
       unless (← str (← field target "t")) == "method" do throw "an op-assign not to a method"
       let m ← T.method (← nat (← field target "method"))
       let name ← str (← field m "name")
+      let mname ← T.modelName m
       if (← field m "native") == .bool true then
         if (← nat (← field m "owner")) == (← T.arrayInfo).1 then throw "an op-assign of an array"
         unless (← arr (← field m "type_params")).isEmpty do throw "an op-assign of a generic method"
         let [p] := (← arr (← field m "params")).toList | throw "an op-assign's parameters"
         unless (← str (← field p "kind")) == "Positional" do throw "an op-assign's parameters"
         pure (wr (.prim name [rd, value] [d, ← T.tyOrTop (← field p "type")] (← T.tyOrTop (← field m "ret"))))
-      else pure (wr (.call rd name [value]))
+      else pure (wr (.call rd mname [value]))
   | "And" => match v with
     | .arr #[a, b] => pure (.and (← expr T a) (← expr T b))
     | _ => throw "And"
@@ -1641,6 +1677,13 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
           if (← nat (← field m "owner")) == T.kernelId then pure ([], [])
           else pure ([.self], [[.cls 0 []]])
       return ← withBlock [] (.prim name (rs ++ as) (rps ++ params) ret)
+    -- (A program's method: by its model name, an overload's its own; on
+    -- a union, the members' overloads may differ.)
+    let rawName := name
+    let name ← T.modelName m
+    if name != rawName then
+      if let some rj := (recvJ.getObjVal? "id").toOption then
+        if (← T.nodeTy (← nat rj)).length > 1 then throw s!"an overload of {rawName} on a union receiver"
     if recv.isNone && T.qclass (← nat (← field m "owner")) == some 1 && !(← read).top then
       throw "a top-level method called from a class"
     let r := recv.getD .self
@@ -1652,7 +1695,7 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
       if let some rj := (recvJ.getObjVal? "id").toOption then
         let classes := (← T.nodeTy (← nat rj)).filter fun a => match a with | .cls .. => true | _ => false
         let keeps ← T.methods.anyM fun m' => do
-          if (← str (← field m' "name")) != name then return false
+          if (← str (← field m' "name")) != rawName then return false
           match ← field m' "block" with
           | .null => pure false
           | b => pure (match ← field b "name" with | .null | .str "&" => false | _ => true)
@@ -1865,7 +1908,7 @@ def method (T : Tables) (owner : Nat) (m : Json) (d : Json) : M Method := do
     let tps ← arr (← field (← T.cls (← nat (← field m "owner"))) "type_params")
     if ← tps.anyM (fun p => do pure ((← str (← field p "variance")) != "Invariant")) then
       throw "a private method of a variant class"
-  let name ← str (← field m "name")
+  let name ← T.modelName m
   let params ← (← arr (← field m "params")).toList.mapM fun p => do
     if (← str (← field p "kind")) != "Positional" then throw "a parameter not positional"
     if (← field p "default") == .bool true then throw "a parameter with a default"
@@ -2040,7 +2083,32 @@ def program (j : Json) : M Program := do
     fun id => (classParams.find? (·.1 == id)).map (·.2),
     fun id => (narrowedList.find? (·.1 == id)).map (·.2), selfParam, excIds,
     (j.getObjVal? "op_targets").toOption.getD Json.null,
-    (j.getObjVal? "block_results").toOption.getD Json.null⟩
+    (j.getObjVal? "block_results").toOption.getD Json.null, []⟩
+  -- The program's overloaded names (but `initialize`, which `new` and
+  -- `super` take the nearest of).
+  let mine ← (← arr (← field j "methods")).toList.filterM fun m => do
+    pure (files.contains (← nat (← field m "file")))
+  let mut overloads : List (String × List String) := []
+  for m in mine do
+    let n ← str (← field m "name")
+    if n == "initialize" then continue
+    let key ← sigKey m
+    overloads := match overloads.find? (·.1 == n) with
+      | some (_, ks) => if ks.contains key then overloads
+          else overloads.map fun (n', ks') => if n' == n then (n', ks' ++ [key]) else (n', ks')
+      | none => overloads ++ [(n, [key])]
+  let T := { T with overloads := overloads.filter fun (_, ks) => ks.length > 1 }
+  -- (The runtime dispatches without the block's type: overloads of one
+  -- class differing in their block only are out of range.)
+  for a in mine do
+    for b in mine do
+      let n ← str (← field a "name")
+      if n == "initialize" || n != (← str (← field b "name")) then continue
+      let ka ← sigKey a
+      let kb ← sigKey b
+      if ka != kb && (← nat (← field a "owner")) == (← nat (← field b "owner")) &&
+          (ka.splitOn "|").head? == (kb.splitOn "|").head? then
+        throw s!"overloads of {n} differing in their block only"
   let excClasses ← excs.mapM fun c => do
     let sup ← match ← field c "superclass" with
       | .null => pure 0
@@ -2141,6 +2209,30 @@ def program (j : Json) : M Program := do
     own ++ consts,
     ⟨1, "<main>", [], all, none, mainLocals, mainBody⟩, defaults⟩
   for m in P.main :: P.methods do localsInRange (m.params.map (·.1)) m.body
+  -- The runtime takes a subclass's method for an override of an
+  -- ancestor's of other parameters when it accepts them (as many, the
+  -- same kinds, each at least the ancestor's; a block or none, whatever
+  -- its type): such a pair of other signatures, which the model calls
+  -- apart, is out of range.
+  for a in mine do
+    for b in mine do
+      let n ← str (← field a "name")
+      if n == "initialize" || n != (← str (← field b "name")) then continue
+      if (← sigKey a) == (← sigKey b) then continue
+      let ao ← nat (← field a "owner")
+      let bo ← nat (← field b "owner")
+      unless ao != bo && (← rsub T ao bo) do continue
+      let pa := (← arr (← field a "params")).toList
+      let pb := (← arr (← field b "params")).toList
+      let blocks := ((← field a "block") == .null) == ((← field b "block") == .null)
+      let kinds ← (pa.zip pb).allM fun (x, y) => do
+        pure ((← field x "kind") == (← field y "kind"))
+      if pa.length == pb.length && blocks && kinds then
+        let accepts ← (pa.zip pb).allM fun (x, y) => do
+          match T.ty (← field x "type"), T.ty (← field y "type") with
+          | .ok tx, .ok ty => pure (Ty.le P.classes [] ty tx)
+          | _, _ => pure true
+        if accepts then throw s!"overloads of {n}: an override of other parameters"
   let mainU := methodUnblock P.main
   let methodsU := P.methods.map methodUnblock
   -- (A default has no locals: one holding a built-in call's result is out
@@ -2158,6 +2250,8 @@ def program (j : Json) : M Program := do
   -- a `new` taking another than the model's is out of range there.)
   for a in own do
     for b in own do
+      -- (An overload's own name differs: two methods of one model name
+      -- are an override, of one signature.)
       if a.name == b.name && a.name != "initialize" && a.owner != b.owner &&
           P.classes.subclass a.owner b.owner &&
           (a.params.map (·.2) != b.params.map (·.2) || a.block != b.block) then
