@@ -318,6 +318,16 @@ stricter, not unsound.
   not keep elements: an element read gives a value of the declared
   type, which the theorem assumes of built-in calls (so the variance of
   `Array` is the declaration's, not checked against element reads).
+  The methods an array has from the modules `Array` includes
+  (`Enumerable[T]`) or that the prelude writes in Quarz are built-in
+  calls too, as any built-in method's: the prelude's bodies are the Rust
+  checker's to check, not the model's, which assumes their declarations
+  hold as it does a native's. A built-in method's owner's parameters and
+  `Self` are what the receiver gives them (its class's arguments, or a
+  module's through its class's include: `Comparable[T]#clamp -> Self` on
+  an `Int`); `Object`'s methods on an array, and an extension's methods
+  anywhere (which extension applies, and its own parameters, are stage
+  6's), are out of range.
   `xs == nil` of an array narrows nothing (a class atom is not final),
   stricter than the Rust checker.
   A block given to a built-in method (`each`, `map`, `times`) is the

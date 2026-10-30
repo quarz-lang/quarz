@@ -165,6 +165,26 @@ partial def Tables.tyIn (T : Tables) (env : List (Nat × Ty)) (j : Json) : M Ty 
 
 def Tables.ty (T : Tables) (j : Json) : M Ty := T.tyIn [] j
 
+/-- A built-in method's owner's parameters on a receiver of Rust type
+`rj` (one class): the class's own (its arguments), or those of a module
+it includes (`Enumerable[T]`, `Comparable[T]`), as its include gives
+them; and `Self`, the receiver's type. `none` when the owner is neither. -/
+def Tables.receiverEnv (T : Tables) (rj : Json) (owner : Nat) : M (Option (List (Nat × Ty))) := do
+  unless (← str (← field rj "t")) == "class" do return none
+  let cid ← nat (← field rj "id")
+  let c ← T.cls cid
+  let ps ← (← arr (← field c "type_params")).toList.mapM fun q => do nat (← field q "id")
+  let args ← (← arr (← field rj "args")).toList.mapM T.ty
+  let base : List (Nat × Ty) := ps.zip args
+  let me : List (Nat × Ty) := [(T.selfParam, ← T.ty rj)]
+  if cid == owner then return some (base ++ me)
+  for inc in (← arr (← field c "includes")) do
+    if (← nat (← field inc "id")) == owner then
+      let iargs ← (← arr (← field inc "args")).toList.mapM (T.tyIn base)
+      let ips ← (← arr (← field (← T.cls owner) "type_params")).toList.mapM fun q => do nat (← field q "id")
+      return some (ips.zip iargs ++ me)
+  pure none
+
 /-- The type parameters a declared type (`j`) binds against a type (`t`),
 added to `env`: what a call's result type tells of the method's
 instantiation. -/
@@ -1478,20 +1498,37 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
   | "method" =>
     let m ← T.method (← nat (← field target "method"))
     let native := (← field m "native") == .bool true
-    -- On an array: `Array`'s own native methods only (the inherited ones,
-    -- `Enumerable`'s and `Object`'s, and those `Array` defines in Quarz
-    -- are out of range).
-    if let some rj := (recvJ.getObjVal? "id").toOption then
-      if (← T.nodeTy (← nat rj)).any (fun a => match a with | .cls k _ => k == arrIdx | _ => false) then
-        unless native && (← nat (← field m "owner")) == (← T.arrayInfo).1 do
-          throw s!"an array's method {name} not Array's own native one"
+    -- On an array: `Array`'s methods and those of the modules it includes
+    -- (`Enumerable[T]`), native or written in Quarz, are built-in calls
+    -- typed by their declarations (the prelude's bodies are the Rust
+    -- checker's to check, not the model's); `Object`'s are out of range.
+    let onArray (rt : Ty) : Bool := rt.any fun a => match a with | .cls k _ => k == arrIdx | _ => false
+    -- (An extension's method: which extension applies, and its own
+    -- parameters, are stage 6's.)
+    if (← field m "extension") != .null then throw s!"an extension's method {name}"
+    -- The receiver's view of the method's owner (its parameters, `Self`).
+    let recvEnv : Option (List (Nat × Ty)) ← match (recvJ.getObjVal? "id").toOption with
+      | none => pure none
+      | some rid => do
+        match T.nodeTypes.getObjVal? (toString (← nat rid)) with
+        | .ok rj => T.receiverEnv rj (← nat (← field m "owner"))
+        | .error _ => pure none
+    let arrayEnv : Option (List (Nat × Ty)) ← match (recvJ.getObjVal? "id").toOption with
+      | none => pure none
+      | some rj => do
+        let rt ← T.nodeTy (← nat rj)
+        if !onArray rt then pure none else
+        match rt, recvEnv with
+        | [.cls _ [_]], some env => pure (some env)
+        | [.cls _ [_]], none => throw s!"an array's method {name} of another class"
+        | _, _ => throw "an array method on a union"
     let synth ← str (← field m "synth")
     let as ← args.mapM (expr T)
     -- An accessor `attr_*` makes is a method of the model (`accessor`).
     let owner ← nat (← field m "owner")
     let accessor := (synth.startsWith "FieldGet(" || synth.startsWith "FieldSet(") &&
       (T.qclass owner).any (· ≥ 2) && !T.excIds.contains owner
-    if (native || synth != "None" || T.excIds.contains owner) && !accessor then
+    if (native || synth != "None" || T.excIds.contains owner || arrayEnv.isSome) && !accessor then
       -- A built-in method: its declared types. On the implicit receiver,
       -- it takes `self` (it may read its fields), but a `Kernel`
       -- function.
@@ -1539,11 +1576,10 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
       -- An array's method: its declared types, the receiver's element type
       -- for `Array`'s parameter, the method's own from the call's result
       -- type (the checker's instantiation).
-      if (← T.arrayInfo).1 == (← nat (← field m "owner")) then
+      if let some env0 := arrayEnv then
         let some r := recv | throw "an array method without a receiver"
         let rt ← T.nodeTy (← nat (← field recvJ "id"))
-        let [.cls _ [e]] := rt | throw "an array method on a union"
-        let env ← T.solve [((← T.arrayInfo).2, e)] (← field m "ret") (← T.nodeTy id)
+        let env ← T.solve env0 (← field m "ret") (← T.nodeTy id)
         -- (A lower bound, `U >: T`, widens what the checker chose: a
         -- result it narrowed below the bound disagrees.)
         let mut env := env
@@ -1566,10 +1602,11 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
       -- (A generic one's type parameters: what the call's result type
       -- says, where it says it; a lower bound widens it.)
       let tps ← arr (← field m "type_params")
-      let env ← if tps.isEmpty then pure [] else do
+      let env0 := recvEnv.getD []
+      let env ← if tps.isEmpty then pure env0 else do
         let env ← match T.nodeTy id with
-          | .ok rt => T.solve [] (← field m "ret") rt
-          | .error _ => pure []
+          | .ok rt => T.solve env0 (← field m "ret") rt
+          | .error _ => pure env0
         let mut env := env
         for tp in tps do
           let tid ← nat (← field tp "id")

@@ -1,0 +1,14 @@
+# Methods an array has from the modules Array includes (`Enumerable[T]`)
+# or that the prelude writes in Quarz, and a module's method through its
+# include (`Comparable[T]#clamp -> Self`): built-in calls typed by their
+# declarations, the owner's parameters and `Self` as the receiver gives them.
+def m(xs: Array[Int]) -> Int
+  c = xs.count { |x| x > 1 }
+  any = xs.any? { |x| x > 2 }
+  u = xs.union([9])
+  r = xs.reduce(0) { |acc, x| acc + x }
+  w = 5.clamp(0, 3)
+  t = c + u.size + r + w
+  any ? t : 0
+end
+puts m([3, 1, 2])
