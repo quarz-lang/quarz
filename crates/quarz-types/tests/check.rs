@@ -3587,3 +3587,18 @@ fn methods_are_implemented_and_overridden_by_signature() {
     ok("class A\n  @n: Int\n  def initialize(@n: Int)\n  end\n  def n -> Int = @n\n  def <=>(other: A) -> Int = n <=> other.n\nend\nclass C < A\n  include Comparable[A]\nend\ndef m -> Int\n  x = C.new(5)\n  y: A = x\n  (y <=> A.new(1)) + (x <=> A.new(1))\nend\nputs m");
     ok("class V\n  include Comparable[V]\n  @n: Int\n  def initialize(@n: Int)\n  end\n  def n -> Int = @n\n  def <=>(other: V) -> Int = n <=> other.n\nend\nclass W < V\n  @s: String\n  def initialize(@n: Int, @s: String)\n  end\n  def s -> String = @s\n  def <=>(other: W) -> Int = other.s.size\nend\ndef m -> Bool\n  a = V.new(1)\n  b = W.new(1, \"x\")\n  b < a\nend\nputs m");
 }
+
+#[test]
+fn a_generic_module_is_included_with_one_set_of_arguments() {
+    // tmp/repro/reinclude-other-args.qz (docs/02 §3).
+    err(
+        "abstract class P\n  include Enumerable[Int]\nend\nclass Q < P\n  include Enumerable[String]\n  def each(&: (String) -> Void) -> Void\n    yield \"x\"\n  end\nend",
+        "`Q` already has `Enumerable[Int]` through `P`; a module is included with one set of type arguments",
+    );
+    // Through another include too; the same arguments again do nothing.
+    err(
+        "module M\n  include Comparable[Int]\nend\nclass C\n  include M\n  include Comparable[String]\n  def <=>(other: Int) -> Int = 0\n  def <=>(other: String) -> Int = 0\nend",
+        "`C` already has `Comparable[Int]` through `M`",
+    );
+    ok("class A\n  include Comparable[A]\n  def <=>(other: A) -> Int = 0\nend\nclass B < A\n  include Comparable[A]\nend\nputs B.new < A.new");
+}
