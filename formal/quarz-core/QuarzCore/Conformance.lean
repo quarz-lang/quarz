@@ -83,6 +83,9 @@ structure Tables where
   /-- The program's overloaded method names, each with its signatures
   (`Tables.sigKey`), in the order first met. -/
   overloads : List (String × List String) := []
+  /-- The extensions (the prelude's and the program's), with their
+  targets. -/
+  extensions : Array Json := #[]
 
 def Tables.cls (T : Tables) (id : Nat) : M Json := do
   match T.classes.find? fun c => (c.getObjValAs? Nat "id").toOption == some id with
@@ -180,13 +183,72 @@ def Tables.receiverEnv (T : Tables) (rj : Json) (owner : Nat) : M (Option (List 
   let args ← (← arr (← field rj "args")).toList.mapM T.ty
   let base : List (Nat × Ty) := ps.zip args
   let me : List (Nat × Ty) := [(T.selfParam, ← T.ty rj)]
-  if cid == owner then return some (base ++ me)
-  for inc in (← arr (← field c "includes")) do
-    if (← nat (← field inc "id")) == owner then
-      let iargs ← (← arr (← field inc "args")).toList.mapM (T.tyIn base)
-      let ips ← (← arr (← field (← T.cls owner) "type_params")).toList.mapM fun q => do nat (← field q "id")
-      return some (ips.zip iargs ++ me)
+  -- (Up the superclass chain, each class's arguments through the one
+  -- below: the first class or include of the owner, as the checker's
+  -- linearization finds a class's own includes before its superclass's.)
+  let mut c := c
+  let mut cid := cid
+  let mut base := base
+  for _ in [0:T.classes.size] do
+    if cid == owner then return some (base ++ me)
+    for inc in (← arr (← field c "includes")) do
+      if (← nat (← field inc "id")) == owner then
+        let iargs ← (← arr (← field inc "args")).toList.mapM (T.tyIn base)
+        let ips ← (← arr (← field (← T.cls owner) "type_params")).toList.mapM fun q => do nat (← field q "id")
+        return some (ips.zip iargs ++ me)
+    match ← field c "superclass" with
+    | .null => return none
+    | sj =>
+      let sargs ← (← arr (← field sj "args")).toList.mapM (T.tyIn base)
+      cid ← nat (← field sj "id")
+      c ← T.cls cid
+      let sps ← (← arr (← field c "type_params")).toList.mapM fun q => do nat (← field q "id")
+      base := sps.zip sargs
   pure none
+
+/-- The names a module declares, its prelude extensions' included (always
+active: `minmax` on `Enumerable`). -/
+def Tables.moduleNames (T : Tables) (mid : Nat) : M (List String) := do
+  let own ← (← arr (← field (← T.cls mid) "method_names")).toList.mapM fun x => str x
+  let mut out := own
+  for e in T.extensions do
+    if (← nat (← field e "target")) == mid then
+      out := out ++ (← (← arr (← field e "method_names")).toList.mapM fun x => str x)
+  pure out
+
+/-- Whether a program's method (`m'`, of a class that includes the module
+`mid`, directly or through a superclass) has the signature the module
+declares for its name, with the module's parameters and `Self` as the
+class sees them: a module's body calls it by that signature. -/
+def Tables.matchesModule (T : Tables) (mid : Nat) (m' : Json) : M Bool := do
+  let n ← str (← field m' "name")
+  let o ← nat (← field m' "owner")
+  unless (← arr (← field (← T.cls o) "type_params")).isEmpty do return false
+  let some m0 ← T.methods.findM? (fun m0 => do
+      pure ((← nat (← field m0 "owner")) == mid && (← str (← field m0 "name")) == n)) | return false
+  let some env ← T.receiverEnv (Json.mkObj [("t", "class"), ("id", o), ("args", Json.arr #[])]) mid
+    | return false
+  let same (a b : Json) : M Bool := do
+    match ← str (← field a "t"), ← str (← field b "t") with
+    | "proc", "proc" =>
+      let pa ← arr (← field a "params")
+      let pb ← arr (← field b "params")
+      unless pa.size == pb.size do return false
+      for (x, y) in pa.toList.zip pb.toList do
+        unless (← T.tyIn env x) == (← T.tyIn [] y) do return false
+      pure ((← T.tyIn env (← field a "ret")) == (← T.tyIn [] (← field b "ret")))
+    | _, _ => pure ((← T.tyIn env a) == (← T.tyIn [] b))
+  let p0 := (← arr (← field m0 "params")).toList
+  let p1 := (← arr (← field m' "params")).toList
+  unless p0.length == p1.length do return false
+  for (x, y) in p0.zip p1 do
+    unless (← field x "kind") == (← field y "kind") do return false
+    unless ← same (← field x "type") (← field y "type") do return false
+  match ← field m0 "block", ← field m' "block" with
+  | .null, .null => pure ()
+  | .null, _ | _, .null => return false
+  | b0, b1 => unless ← same (← field b0 "type") (← field b1 "type") do return false
+  same (← field m0 "ret") (← field m' "ret")
 
 /-- The type parameters a declared type (`j`) binds against a type (`t`),
 added to `env`: what a call's result type tells of the method's
@@ -1555,7 +1617,13 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
         let rt ← T.nodeTy (← nat rj)
         if !onArray rt then pure none else
         match rt, recvEnv with
-        | [.cls _ [_]], some env => pure (some env)
+        | [.cls _ [_]], some env =>
+          -- (Array's own methods, or its includes': not `Object`'s.)
+          let owner ← nat (← field m "owner")
+          let (aid, _) ← T.arrayInfo
+          let incs ← (← arr (← field (← T.cls aid) "includes")).toList.mapM fun i => do nat (← field i "id")
+          unless owner == aid || incs.contains owner do throw s!"an array's method {name} of another class"
+          pure (some env)
         | [.cls _ [_]], none => throw s!"an array's method {name} of another class"
         | _, _ => throw "an array method on a union"
     let synth ← str (← field m "synth")
@@ -1564,7 +1632,57 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
     let owner ← nat (← field m "owner")
     let accessor := (synth.startsWith "FieldGet(" || synth.startsWith "FieldSet(") &&
       (T.qclass owner).any (· ≥ 2) && !T.excIds.contains owner
-    if (native || synth != "None" || T.excIds.contains owner || arrayEnv.isSome) && !accessor then
+    -- A method of a module the prelude declares (`Comparable`,
+    -- `Enumerable`), which a program's class includes: a built-in call, its
+    -- module's parameters and `Self` through the receiver's class.
+    let ownerJ ← T.cls owner
+    let preludeModule := (← str (← field ownerJ "kind")) == "Module" && (T.qclass owner).isNone
+    let preludeModule := preludeModule && owner != T.kernelId
+    if preludeModule && recvEnv.isNone then
+      throw s!"a method {name} of a module, its receiver's view unknown"
+    -- (A built-in call does not dispatch: a program's method of the name,
+    -- which a subclass's object would run instead, puts it out of range.)
+    if preludeModule then
+      let rcid ← match (recvJ.getObjVal? "id").toOption with
+        | none => throw s!"a module's method {name} on self"
+        | some rid => do
+          let rj ← field T.nodeTypes (toString (← nat rid))
+          unless (← str (← field rj "t")) == "class" do throw s!"a module's method {name} on a union"
+          nat (← field rj "id")
+      -- A program's class related to the receiver's (above it: the
+      -- module may hide its method, or an abstract stub may hide it;
+      -- below: a subclass's object would run its own) defining the name,
+      -- or overloading a name the module declares (its body may call it):
+      -- the built-in call does not dispatch as Quarz does.
+      let modNames ← T.moduleNames owner
+      let related ← T.methods.toList.filterM fun m' => do
+        let o ← nat (← field m' "owner")
+        if (T.qclass o).isNone then return false
+        pure ((← rsub T o rcid) || (← rsub T rcid o))
+      -- (A related class including the module again, with other
+      -- arguments, sees it otherwise than the receiver's, whose view
+      -- types the module's body.)
+      let includers ← T.classes.toList.filterM fun c => do
+        let cid ← nat (← field c "id")
+        if (T.qclass cid).isNone then return false
+        unless (← rsub T cid rcid) || (← rsub T rcid cid) do return false
+        (← arr (← field c "includes")).toList.anyM fun i => do pure ((← nat (← field i "id")) == owner)
+      if includers.length > 1 then throw s!"a module's method {name}, its module included twice"
+      for m' in related do
+        let n' ← str (← field m' "name")
+        if n' == name then throw s!"a module's method {name} a program's class defines"
+        if modNames.contains n' then
+          let ok ← try T.matchesModule owner m' catch _ => pure false
+          unless ok do throw s!"a module's method {name}: a program's {n'} of another signature than its module's"
+      -- (A program's extension may add an include the tree does not show.)
+      let preludeFile ← nat (← field (← T.cls (← T.arrayInfo).1) "file")
+      if ← (T.extensions.toList.anyM fun e => do pure ((← nat (← field e "file")) != preludeFile)) then
+        throw s!"a module's method {name} with a program's extension"
+      -- (`Self` in its result: the receiver's class, which a module's `T`
+      -- need not be: the prelude's question, tmp/repro/comparable-clamp-*.)
+      if (T.qclass rcid).isSome && ((← field m "ret").compress.splitOn s!"\"id\":{T.selfParam}").length > 1 then
+        throw s!"a module's method {name} giving Self"
+    if (native || synth != "None" || T.excIds.contains owner || arrayEnv.isSome || preludeModule) && !accessor then
       -- A built-in method: its declared types. On the implicit receiver,
       -- it takes `self` (it may read its fields), but a `Kernel`
       -- function.
@@ -1582,6 +1700,9 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
             | .null | .str "&" => field sig "type"
             | _ => throw s!"a block kept by built-in {name}"
         unless (← str (← field ty "t")) == "proc" do throw "a block type"
+        -- (A block with a receiver of its own, `Self.() -> R`: `self` is not
+        -- the enclosing one.)
+        unless (← field ty "recv") == .null do throw s!"a block of built-in {name} with a receiver"
         let tys ← (← arr (← field ty "params")).toList.mapM fun t => (T.tyIn env t : M Ty)
         unless tys.all Ty.closed do throw s!"a block of built-in {name} of an open type"
         let rj ← field ty "ret"
@@ -1676,7 +1797,7 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
         | none =>
           if (← nat (← field m "owner")) == T.kernelId then pure ([], [])
           else pure ([.self], [[.cls 0 []]])
-      return ← withBlock [] (.prim name (rs ++ as) (rps ++ params) ret)
+      return ← withBlock env (.prim name (rs ++ as) (rps ++ params) ret)
     -- (A program's method: by its model name, an overload's its own; on
     -- a union, the members' overloads may differ.)
     let rawName := name
@@ -2083,7 +2204,7 @@ def program (j : Json) : M Program := do
     fun id => (classParams.find? (·.1 == id)).map (·.2),
     fun id => (narrowedList.find? (·.1 == id)).map (·.2), selfParam, excIds,
     (j.getObjVal? "op_targets").toOption.getD Json.null,
-    (j.getObjVal? "block_results").toOption.getD Json.null, []⟩
+    (j.getObjVal? "block_results").toOption.getD Json.null, [], ← arr (← field j "extensions")⟩
   -- The program's overloaded names (but `initialize`, which `new` and
   -- `super` take the nearest of).
   let mine ← (← arr (← field j "methods")).toList.filterM fun m => do
@@ -2115,8 +2236,22 @@ def program (j : Json) : M Program := do
       | t => pure (← T.tyClass t).1
     pure (⟨← str (← field c "name"), some sup, [], [], [], [], .cls⟩ : Class)
   let qclasses ← user.mapM fun c => do
-    -- An included module's methods are not the model's.
-    unless (← arr (← field c "includes")).isEmpty do throw "an include"
+    -- A module the program declares is not the model's (stage 6a-2); one of
+    -- the prelude's, its methods are built-in calls.
+    for inc in (← arr (← field c "includes")) do
+      let mid ← nat (← field inc "id")
+      if files.contains (← nat (← field (← T.cls mid) "file")) then
+        throw "an include of a program's module"
+      -- (The module's methods come before the superclass's: a program
+      -- superclass's method of one's name, which a call resolved to the
+      -- superclass would run in the model, is out of range.)
+      let modNames ← T.moduleNames mid
+      let cid ← nat (← field c "id")
+      for m in (← arr (← field j "methods")).toList do
+        let o ← nat (← field m "owner")
+        if o != cid && files.contains (← nat (← field m "file")) && (← rsub T cid o) &&
+            modNames.contains (← str (← field m "name")) then
+          throw "an include hiding a superclass's method"
     let sup ← match ← field c "superclass" with
       | .null => pure (0, [])
       | t => T.tyClass t

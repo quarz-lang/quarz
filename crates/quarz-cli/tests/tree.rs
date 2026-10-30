@@ -53,7 +53,7 @@ fn a_narrowed_read_has_the_narrowed_type() {
         "def f(x: Int?) -> Int\n  if x\n    x + 1\n  else\n    0\n  end\nend\np f(1)\n",
     );
     assert!(ok);
-    assert_eq!(v["format"], 6);
+    assert_eq!(v["format"], 7);
     let mut all = Vec::new();
     nodes(&v["definitions"], &mut all);
     let int = class_id(&v, "Int");
@@ -147,6 +147,33 @@ fn a_declared_block_result_is_in_the_tree() {
         vec![class_id(&v, "Int"), class_id(&v, "String")],
         "{t}"
     );
+}
+
+#[test]
+fn each_class_lists_its_method_names() {
+    // A module's methods, whether or not the program calls them.
+    let (ok, out, v) = tree(
+        "method_names",
+        "class A\n  def g -> Int = 1\n  def f -> Int = 2\nend\np A.new.f\n",
+    );
+    assert!(ok, "{out}");
+    let names = |name: &str| -> Vec<String> {
+        let c = v["classes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["name"] == name)
+            .unwrap();
+        c["method_names"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|n| n.as_str().unwrap().to_string())
+            .collect()
+    };
+    assert_eq!(names("A"), vec!["f", "g"]);
+    let comparable = names("Comparable");
+    assert!(comparable.iter().any(|n| n == "between?"), "{comparable:?}");
 }
 
 /// A tree checked with the cache off, then twice with a cache of its own

@@ -11,7 +11,8 @@
 //! value (`op_targets`), the result type a block literal declares
 //! (`block_results`, by its call's id), the expansion each `for` was checked as, what each call resolved to and
 //! each constant read names, every class (the
-//! built-in ones included: types refer to classes by id), and the
+//! built-in ones included: types refer to classes by id, with the names
+//! of their instance methods), and the
 //! methods the units define or call, with their type parameters (and the
 //! parameters a class test made, `T & C`: `narrowed_params`; the
 //! extensions' too, and the id `Self` goes by). Which
@@ -26,7 +27,7 @@ use quarz_types::world::{TypeParamInfo, World};
 use quarz_types::Checked;
 
 /// The version of the format, bumped when it changes.
-const FORMAT: u32 = 6;
+const FORMAT: u32 = 7;
 
 pub fn tree(checked: &Checked) -> Value {
     let world = &checked.world;
@@ -141,8 +142,17 @@ pub fn tree(checked: &Checked) -> Value {
         .zip(defs)
         .map(|(id, d)| json!({ "method": id, "def": d }))
         .collect();
-    // The methods the units define, and those they call.
+    // The methods the units define, those they call, and those of every
+    // included module (a class's own method of a module's name must
+    // match the module's signature, which calls it).
     methods.extend(&defined);
+    for c in &world.classes {
+        for inc in &c.includes {
+            if let Type::Class(mid, _) = inc {
+                methods.extend(world.class(*mid).methods.values().flatten());
+            }
+        }
+    }
     methods.sort_unstable();
     methods.dedup();
     json!({
@@ -168,7 +178,8 @@ pub fn tree(checked: &Checked) -> Value {
 }
 
 /// The extensions, with their type parameters (an extension's method
-/// names them: `methods[].extension`) and what they extend.
+/// names them: `methods[].extension`), what they extend, the file that
+/// declares each, and their method names.
 fn extensions(world: &World) -> Vec<Value> {
     world
         .extensions
@@ -179,6 +190,8 @@ fn extensions(world: &World) -> Vec<Value> {
                 "target": e.target,
                 "type_params": e.type_params.iter().map(type_param).collect::<Vec<_>>(),
                 "target_args": e.target_args.iter().map(ty).collect::<Vec<_>>(),
+                "file": e.file,
+                "method_names": method_names(&e.methods),
             })
         })
         .collect()
@@ -304,6 +317,7 @@ fn classes(world: &World) -> Vec<Value> {
                 "type_params": c.type_params.iter().map(type_param).collect::<Vec<_>>(),
                 "superclass": c.superclass.as_ref().map(ty),
                 "includes": c.includes.iter().map(ty).collect::<Vec<_>>(),
+                "method_names": method_names(&c.methods),
                 "fields": c.fields.iter().map(|f| json!({
                     "name": f.name,
                     "type": ty(&f.ty),
@@ -313,6 +327,13 @@ fn classes(world: &World) -> Vec<Value> {
             })
         })
         .collect()
+}
+
+/// A class's method names, sorted (the map's order is not the program's).
+fn method_names<V, S>(methods: &std::collections::HashMap<String, V, S>) -> Vec<&String> {
+    let mut names: Vec<&String> = methods.keys().collect();
+    names.sort_unstable();
+    names
 }
 
 fn method(world: &World, id: MethodId) -> Value {
