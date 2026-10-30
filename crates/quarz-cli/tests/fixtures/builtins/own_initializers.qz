@@ -1,10 +1,7 @@
 # `new` takes a class's own `initialize` when the class has fields of its
-# own to assign; a module's, an extension's or an ancestor's is not a
-# constructor there.
+# own to assign; an ancestor's is not a constructor there. (A module
+# declares no `initialize`: docs/01 §6.)
 module Greeter
-  def initialize
-    puts "Greeter#initialize"
-  end
   def greet -> String = "hello"
 end
 
@@ -42,14 +39,14 @@ class Derived < Base
 end
 p Derived.new(21).twice
 
-# A class with no fields at all still takes an included module's.
+# A class with no fields at all is made by a `new` without arguments.
 class Plain
   include Greeter
 end
-Plain.new
+puts Plain.new.greet
 
-# `new` in an inherited class method passes over a module's `initialize`
-# too.
+# `new` in an inherited class method makes the subclass, with its
+# fields' initializers.
 class Built
   @x: Int
   def initialize(@x: Int)
@@ -57,12 +54,7 @@ class Built
   def x -> Int = @x
   def self.build -> Built = new(1)
 end
-module Takes
-  def initialize(a: Int)
-  end
-end
 class BuiltMore < Built
-  include Takes
   @y: String = "d"
 end
 p BuiltMore.build.x
@@ -74,21 +66,15 @@ class Failure < StandardError
 end
 p Failure.new("boom").message
 
-# A class with no fields to assign takes an included module's
-# `initialize`, through `new` and through an inherited class method alike.
+# A class with no fields to assign takes its superclass's `initialize`,
+# through `new` and through an inherited class method alike.
 class Logged
   def initialize(n: Int)
     puts "Logged#initialize"
   end
   def self.build -> Logged = new(1)
 end
-module Announces
-  def initialize(n: Int)
-    puts "Announces#initialize"
-  end
-end
 class LoggedMore < Logged
-  include Announces
 end
 LoggedMore.new(1)
 LoggedMore.build
