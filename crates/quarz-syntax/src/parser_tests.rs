@@ -154,8 +154,8 @@ fn blocks_and_do_binding() {
     assert_eq!(sexp("f({})"), "(call _ f (hash))");
     assert_eq!(sexp("map(&:to_s)"), "(call _ map (blockpass :to_s))");
     assert_eq!(
-        sexp("xs.each { |x: Int, *rest, k: Int = 1, &b| }"),
-        "(call (call _ xs) each (block (params x:Int *rest kw:k:Int=1 &b)))"
+        sexp("xs.each { |x: Int, *rest, k: Int, &b| }"),
+        "(call (call _ xs) each (block (params x:Int *rest kw:k:Int &b)))"
     );
     assert_eq!(
         sexp("f = ->(x: Int) { x }\nf.(1)\nf.call(2)"),
@@ -787,4 +787,46 @@ fn procedure_types_as_explicit_type_arguments() {
     assert_eq!(sexp("a[(1 + 2)]"), sexp("a[1 + 2]"));
     assert_eq!(sexp("h[(k)]"), sexp("h[k]"));
     assert!(errors("x = a[(1 + 2)]\ny = h[(k)]").is_empty());
+}
+
+#[test]
+fn block_parameter_defaults_end_at_the_pipe() {
+    // A block's parameters take no default (docs/01 §9): the error is that,
+    // at the default, whatever it holds. A `|` at the default's own level
+    // closes the parameters; inside brackets, parentheses, a block, an
+    // interpolation, a body or a ternary's middle it is the operator, and
+    // in the default's own parameters and types a union.
+    let refused = "a block's parameters take no default: the block's type gives every argument";
+    for src in [
+        "f { |x = 1| x }",
+        "f { |x = (1 | 2)| x }",
+        "f { |x = [1 | 2].first| x }",
+        "f { |x = g { |y| y | 1 }| x | 8 }",
+        "f { |x = \"#{1 | 2}\"| x }",
+        "f { |x = 3 > 2 ? 1 : 0| x }",
+        "f { |x = foo do |y| y | 1 end| x }",
+        "f { |x = -> do 1 | 2 end| x }",
+        "f { |x = if c then 1 | 2 else 3 end| x }",
+        "f { |x = begin 1 | 2 end| x }",
+        "f { |x = true ? 1 | 2 : 3| 1 }",
+        "f { |x = [1].map { |y| z: Int | Nil = y; z }| 1 }",
+        "f { |x = if a | 2 == 3 then 1 else 2 end| x }",
+        "f { |x = case a | 2 when 3 then 1 else 2 end| x }",
+        "f { |x = while a | 2 == 0 do end| x }",
+        "f { |x = for y in [a | 2] do y end| x }",
+    ] {
+        let errs = errors(src);
+        assert!(
+            errs.len() == 1 && errs[0].contains(refused),
+            "{src}: {errs:?}"
+        );
+    }
+    assert_eq!(errors("f do |x = 1, y = 2| x end").len(), 2);
+    assert!(errors("l = ->(x: Int = 7) { x }")[0]
+        .contains("a lambda's parameters take no default: each call gives every argument"));
+    // A method's default keeps `|` as the operator, and a block without
+    // defaults is as before.
+    assert!(errors("def f(x: Int = 1 | 2) -> Int = x").is_empty());
+    assert!(errors("f { |x| x | 2 }").is_empty());
+    assert_eq!(sexp("a | b"), "(call (call _ a) | (call _ b))");
 }

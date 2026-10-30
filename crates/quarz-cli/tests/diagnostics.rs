@@ -195,3 +195,24 @@ fn a_deep_coercion_is_checked() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+/// A block's or a lambda's parameters take no default (docs/01 §9): the
+/// error is at the default, also one holding a `|` or a block.
+#[test]
+fn block_and_lambda_parameters_take_no_default() {
+    let out = common::diagnostics(
+        "def f(&b: (Int) -> Int) -> Int = b.call(5)\np f { |x = 1| x }\np f { |x = [1].map { |y| y | 1 }.first| x | 8 }\nl = ->(x: Int = 7) { x }\np [1, 2].map { |x| x | 4 }\n",
+    )
+    .join("\n");
+    assert_eq!(
+        out.matches("a block's parameters take no default: the block's type gives every argument")
+            .count(),
+        2,
+        "{out}"
+    );
+    assert!(
+        out.contains("a lambda's parameters take no default: each call gives every argument"),
+        "{out}"
+    );
+    assert!(!out.contains("expected"), "{out}");
+}
