@@ -3274,3 +3274,43 @@ fn toplevel_defs_take_no_self() {
         "calling `work` uses `self`",
     );
 }
+
+#[test]
+fn an_extension_or_class_method_in_place_of_a_modules_keeps_its_types() {
+    // An extension's method the runtime dispatches to in place of a
+    // module's (abstract or not), and a class method implementing an
+    // extended module's abstract one, take and return what it declares.
+    let sized = |body: &str| {
+        format!("module Sized\n  {body}\n  def plus -> Int = size2 + 1\nend\nclass Box\nend\nextension Box\n  include Sized\n  def size2 -> String = \"s\"\nend")
+    };
+    err(
+        &sized("abstract def size2 -> Int"),
+        "`size2` returns String but `Sized#size2`, which it overrides, returns Int",
+    );
+    err(
+        &sized("def size2 -> Int = 3"),
+        "`size2` returns String but `Sized#size2`, which it overrides, returns Int",
+    );
+    err(
+        "module Named\n  abstract def label -> Int\n  def twice -> Int = label + 1\nend\nclass Thing\n  extend Named\n  def self.label -> String = \"s\"\nend",
+        "`label` returns String but `Named#label`, which it overrides, returns Int",
+    );
+    // Another extended module's method found first runs in its place.
+    err(
+        "module Named\n  abstract def label -> Int\n  def twice -> Int = label + 1\nend\nmodule Other\n  def label -> String = \"o\"\nend\nclass A\n  extend Named\n  extend Other\nend",
+        "`label` returns String but `Named#label`, which it overrides, returns Int",
+    );
+    // Generic extensions and extended modules are seen with their own
+    // type arguments.
+    ok("class Bag[T]\n  @items: Array[T]\n  def initialize(@items: Array[T])\n  end\n  def items -> Array[T] = @items\nend\nextension Bag[T]\n  include Enumerable[T]\n  def each(&: (T) -> Void) -> Void\n    items.each { |x| yield x }\n  end\nend\np Bag.new([1, 2]).map { |x| x * 2 }");
+    ok("module Factory[T]\n  abstract def make -> T\nend\nclass Foo\n  extend Factory[Foo]\n  def self.make -> Foo = Foo.new\nend");
+    // A superclass's class method is not found before a module the class
+    // extends, nor is a wider parameter the same signature there.
+    ok("module Named\n  def label -> Int = 1\nend\nclass A\n  def self.label -> String = \"a\"\nend\nclass B < A\n  extend Named\nend");
+    ok("module Named\n  def f(x: Int) -> Int = x\nend\nclass A\n  extend Named\n  def self.f(x: Object) -> String = \"a\"\nend");
+    // A class method overrides an extended module's concrete method too.
+    err(
+        "module Named\n  def label -> Int = 1\nend\nclass Thing\n  extend Named\n  def self.label -> String = \"s\"\nend",
+        "`label` returns String but `Named#label`, which it overrides, returns Int",
+    );
+}

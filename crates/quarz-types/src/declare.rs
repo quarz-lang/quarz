@@ -1003,6 +1003,7 @@ impl<'ast> Declarer<'ast> {
             self.world.active_extensions.clear();
         }
         self.check_extensions_kept_blocks();
+        self.check_extensions_overrides();
         self.check_extensions_duplicates();
         self.check_extensions_deinitialize();
         self.check_shareable_extensions();
@@ -1490,6 +1491,107 @@ impl<'ast> Declarer<'ast> {
         }
     }
 
+    /// `check_override_returns` for the methods of extensions: one the
+    /// runtime dispatches to in place of a module's method (the extension
+    /// makes its target include the module, or is always active) takes
+    /// what that method takes and returns what it returns (docs/01 §3).
+    /// The abstract methods an extension implements are checked with the
+    /// conformance (`check_conformance_of`).
+    fn check_extensions_overrides(&mut self) {
+        let mut pairs: Vec<(MethodId, MethodId, ClassId, Vec<Type>, Type)> = Vec::new();
+        for e in &self.world.extensions {
+            let dispatches = |owner: ClassId| {
+                e.always_active
+                    || e.includes.iter().any(|t| {
+                        matches!(t, Type::Class(m, _)
+                            if *m == owner || self.world.ancestor_ids(*m).contains(&owner))
+                    })
+            };
+            let ancestors = self.extension_ancestors(e);
+            for ids in e.methods.values() {
+                for &mid in ids {
+                    let m = self.world.method(mid);
+                    if m.file == 0 || m.synth != Synth::None {
+                        continue;
+                    }
+                    for (a, aargs) in &ancestors {
+                        if *a == e.target || !dispatches(*a) {
+                            continue;
+                        }
+                        let ac = self.world.class(*a);
+                        let table = if m.singleton {
+                            &ac.singleton_methods
+                        } else {
+                            &ac.methods
+                        };
+                        let Some(os) = table.get(&m.name) else {
+                            continue;
+                        };
+                        for &o in os {
+                            if !self.world.method(o).is_abstract
+                                && self.overrides_at_run_time(mid, o, *a, aargs)
+                            {
+                                pairs.push((
+                                    mid,
+                                    o,
+                                    *a,
+                                    aargs.clone(),
+                                    Type::Class(e.target, e.target_args.clone()),
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for (mid, o, a, aargs, own) in pairs {
+            self.check_implementation(mid, o, a, &aargs, own);
+        }
+    }
+
+    /// An extension's view of its target's ancestors and of what it
+    /// includes, with type arguments in the extension's own parameters.
+    fn extension_ancestors(&self, e: &ExtensionInfo) -> Vec<(ClassId, Vec<Type>)> {
+        let mut ancestors = self.world.ancestors(e.target, &e.target_args);
+        for t in &e.includes {
+            if let Type::Class(m, margs) = t {
+                for anc in self.world.ancestors(*m, margs) {
+                    if !ancestors.iter().any(|(c, _)| *c == anc.0) {
+                        ancestors.push(anc);
+                    }
+                }
+            }
+        }
+        ancestors
+    }
+
+    /// `check_override_pair` for `mid`, which the runtime runs in place of
+    /// `o` (of the ancestor `a`, with `aargs`) for values of type `own`
+    /// (`Self`), all in the type parameters `mid` is written in.
+    fn check_implementation(
+        &mut self,
+        mid: MethodId,
+        o: MethodId,
+        a: ClassId,
+        aargs: &[Type],
+        own: Type,
+    ) {
+        if !self.override_pairs.insert((mid, o)) {
+            return;
+        }
+        let mut subst = self.world.class_subst(a, aargs);
+        subst.insert(SELF_PARAM, own.clone());
+        let (om, m) = (self.world.method(o), self.world.method(mid));
+        if om.type_params.len() == m.type_params.len() {
+            for (p, q) in om.type_params.iter().zip(&m.type_params) {
+                subst.insert(p.id, Type::Param(q.id));
+            }
+        }
+        let mut mine_subst = HashMap::default();
+        mine_subst.insert(SELF_PARAM, own);
+        self.check_override_pair(mid, o, &subst, &mine_subst, None);
+    }
+
     /// `check_kept_blocks` for the methods of extensions: an extension's
     /// method found before its target's own may not keep a block the one
     /// it hides only yields to.
@@ -1649,8 +1751,33 @@ impl<'ast> Declarer<'ast> {
     /// or the interpreter's `same_signature` (as many, of the same types
     /// but where either is a type parameter, which matches anything).
     fn overrides_at_run_time(&self, m: MethodId, o: MethodId, a: ClassId, aargs: &[Type]) -> bool {
+        self.world.method(m).singleton == self.world.method(o).singleton
+            && self.replaces_at_run_time(m, o, a, aargs)
+    }
+
+    /// The interpreter's `same_signature` (with the same block presence):
+    /// what replaces a method on the class side
+    /// (`Interp::class_side_override`).
+    fn same_signature_at_run_time(&self, m: MethodId, o: MethodId) -> bool {
         let (m, om) = (self.world.method(m), self.world.method(o));
-        if om.singleton != m.singleton || om.block.is_some() != m.block.is_some() {
+        let open = |t: &Type| matches!(t, Type::Param(_) | Type::Var(_));
+        om.block.is_some() == m.block.is_some()
+            && om.params.len() == m.params.len()
+            && om.params.iter().zip(&m.params).all(|(p, q)| {
+                p.kind == q.kind
+                    && (p.kind != ParamKind::KeywordOnly || p.name == q.name)
+                    && (open(&p.ty)
+                        || open(&q.ty)
+                        || self.world.type_name(&self.world.devoid(&p.ty))
+                            == self.world.type_name(&self.world.devoid(&q.ty)))
+            })
+    }
+
+    /// `overrides_at_run_time` on either side: a class method in place of
+    /// an extended module's (`Interp::class_side_override`).
+    fn replaces_at_run_time(&self, m: MethodId, o: MethodId, a: ClassId, aargs: &[Type]) -> bool {
+        let (m, om) = (self.world.method(m), self.world.method(o));
+        if om.block.is_some() != m.block.is_some() {
             return false;
         }
         let subst = self.world.class_subst(a, aargs);
@@ -2461,6 +2588,7 @@ impl<'ast> Declarer<'ast> {
                 .collect();
             let mut missing: Vec<(String, ClassId)> = Vec::new();
             let mut impls: Vec<(ClassId, MethodId, MethodId)> = Vec::new();
+            let mut found_impls: Vec<(MethodId, MethodId, ClassId)> = Vec::new();
             for anc in &ancestors {
                 for ids in self.world.class(*anc).methods.values() {
                     for mid in ids {
@@ -2475,6 +2603,7 @@ impl<'ast> Declarer<'ast> {
                             // the value goes (`World::ext_impls`).
                             Some(i) if self.world.method(i).extension.is_some() => {
                                 impls.push((id, *mid, i));
+                                found_impls.push((i, *mid, *anc));
                             }
                             Some(_) => {}
                         }
@@ -2482,6 +2611,22 @@ impl<'ast> Declarer<'ast> {
                 }
             }
             self.world.ext_impls.extend(impls);
+            // (An extension's method implements it whatever its signature,
+            // at run time: it must take and return what it declares.)
+            for (i, abs, anc) in found_impls {
+                let im = self.world.method(i);
+                let Some(ext) = im.extension else { continue };
+                if im.file == 0 {
+                    continue;
+                }
+                let e = self.world.extensions[ext as usize].clone();
+                let view = self.extension_ancestors(&e);
+                if let Some((_, aargs)) = view.iter().find(|(c, _)| *c == anc) {
+                    let aargs = aargs.clone();
+                    let own = Type::Class(e.target, e.target_args.clone());
+                    self.check_implementation(i, abs, anc, &aargs, own);
+                }
+            }
             missing.sort();
             missing.dedup();
             for (name, owner) in missing {
@@ -2499,43 +2644,82 @@ impl<'ast> Declarer<'ast> {
         // implemented as singleton methods (or by another extended module).
         if class.kind != ClassKind::Module {
             let chain = self.world.superclass_chain(id);
-            let mut extended: Vec<ClassId> = Vec::new();
+            // Where the runtime looks for a method of the class object
+            // (`Interp::class_side_override`), in order: each class's own
+            // class methods, then the modules it extends (each with its
+            // ancestors), then its superclass's.
+            let mut order: Vec<(ClassId, Option<Vec<Type>>)> = Vec::new();
             for cid in &chain {
+                order.push((*cid, None));
                 for ext in &self.world.class(*cid).extends {
-                    if let Type::Class(mid, _) = ext {
-                        for (anc, _) in self.world.ancestors(*mid, &[]) {
-                            if !extended.contains(&anc) {
-                                extended.push(anc);
+                    if let Type::Class(m, margs) = ext {
+                        for (anc, aargs) in self.world.ancestors(*m, margs) {
+                            if !order.iter().any(|(c, a)| *c == anc && a.is_some()) {
+                                order.push((anc, Some(aargs)));
                             }
                         }
                     }
                 }
             }
+            let extended: Vec<ClassId> = order
+                .iter()
+                .filter(|(_, a)| a.is_some())
+                .map(|(c, _)| *c)
+                .collect();
             let mut missing: Vec<(String, ClassId)> = Vec::new();
-            for mid in &extended {
-                for ids in self.world.class(*mid).methods.values() {
-                    for abs in ids {
-                        let m = self.world.method(*abs);
-                        if !m.is_abstract {
-                            continue;
-                        }
-                        let on_class = chain.iter().any(|cid| {
-                            self.world
-                                .class(*cid)
-                                .singleton_methods
-                                .get(&m.name)
-                                .is_some_and(|ids| ids.iter().any(|i| self.implements(*i, *abs)))
-                        });
-                        let on_module = extended.iter().any(|other| {
-                            self.world
-                                .class(*other)
-                                .methods
-                                .get(&m.name)
-                                .is_some_and(|ids| ids.iter().any(|i| self.implements(*i, *abs)))
-                        });
-                        if !on_class && !on_module {
-                            missing.push((m.name.clone(), *mid));
-                        }
+            let mut class_impls: Vec<(MethodId, MethodId, ClassId, Vec<Type>)> = Vec::new();
+            let modules: Vec<(ClassId, Vec<Type>)> = order
+                .iter()
+                .filter_map(|(c, a)| Some((*c, a.clone()?)))
+                .collect();
+            for (mid, margs) in modules {
+                let ids: Vec<MethodId> = self
+                    .world
+                    .class(mid)
+                    .methods
+                    .values()
+                    .flatten()
+                    .copied()
+                    .collect();
+                for abs in ids {
+                    let m = self.world.method(abs);
+                    // What runs in its place: the first method found in
+                    // that order taking the same arguments.
+                    let found = order.iter().find_map(|(c, a)| {
+                        let k = self.world.class(*c);
+                        let table = if a.is_some() {
+                            &k.methods
+                        } else {
+                            &k.singleton_methods
+                        };
+                        table.get(&m.name)?.iter().copied().find(|i| {
+                            // (An abstract one is passed over, its own too.)
+                            !self.world.method(*i).is_abstract
+                                && (*i == abs || self.same_signature_at_run_time(*i, abs))
+                        })
+                    });
+                    if let Some(i) = found.filter(|i| *i != abs) {
+                        class_impls.push((i, abs, mid, margs.clone()));
+                    }
+                    if !m.is_abstract {
+                        continue;
+                    }
+                    let on_class = chain.iter().any(|cid| {
+                        self.world
+                            .class(*cid)
+                            .singleton_methods
+                            .get(&m.name)
+                            .is_some_and(|ids| ids.iter().any(|i| self.implements(*i, abs)))
+                    });
+                    let on_module = extended.iter().any(|other| {
+                        self.world
+                            .class(*other)
+                            .methods
+                            .get(&m.name)
+                            .is_some_and(|ids| ids.iter().any(|i| self.implements(*i, abs)))
+                    });
+                    if !on_class && !on_module {
+                        missing.push((m.name.clone(), mid));
                     }
                 }
             }
@@ -2550,6 +2734,19 @@ impl<'ast> Declarer<'ast> {
                     ),
                     class.span,
                 );
+            }
+            // (What runs in place of an extended module's method must take
+            // and return what that one declares.)
+            let own_args: Vec<Type> = class
+                .type_params
+                .iter()
+                .map(|p| Type::Param(p.id))
+                .collect();
+            for (i, abs, module, margs) in class_impls {
+                if self.world.method(i).file != 0 {
+                    let own = Type::Class(id, own_args.clone());
+                    self.check_implementation(i, abs, module, &margs, own);
+                }
             }
         }
     }

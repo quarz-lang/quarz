@@ -905,6 +905,33 @@ fn overridden_methods(world: &World) -> HashSet<(ClassId, String)> {
             }
         }
     }
+    // A module a class extends runs on the class object, where the class's
+    // own class methods (its superclasses' too), and the methods of the
+    // other modules it extends, override the module's (docs/01 §6).
+    for c in &world.classes {
+        let chain = world.superclass_chain(c.id);
+        let extended: Vec<ClassId> = chain
+            .iter()
+            .flat_map(|k| world.class(*k).extends.iter())
+            .filter_map(|t| match t {
+                quarz_types::Type::Class(m, _) => Some(*m),
+                _ => None,
+            })
+            .flat_map(|m| ancestors[m as usize].clone())
+            .collect();
+        if extended.is_empty() {
+            continue;
+        }
+        let mut names: Vec<String> = c.singleton_methods.keys().cloned().collect();
+        for m in &extended {
+            names.extend(world.class(*m).methods.keys().cloned());
+        }
+        for m in &extended {
+            for name in &names {
+                out.insert((*m, name.clone()));
+            }
+        }
+    }
     out
 }
 

@@ -1,0 +1,36 @@
+# `extend` mixes a module into the class side (docs/01 §6): a class
+# method overrides the module's concrete method as a class's own method
+# overrides an included module's, and the module's other methods reach it.
+module Named
+  def label -> String = "named"
+  def greeting -> String = "I am #{label}"
+end
+
+class Plain
+  extend Named
+end
+
+class Thing
+  extend Named
+  def self.label -> String = "thing"
+end
+
+class Gadget < Thing
+  def self.label -> String = "gadget"
+end
+
+module Counted
+  def count -> Int = 1
+  def twice -> Int = count * 2
+end
+
+class Box
+  extend Counted
+  def self.count -> Int = 21
+end
+
+puts Plain.greeting
+puts Thing.greeting
+puts Gadget.greeting
+puts Thing.label
+puts Box.twice
