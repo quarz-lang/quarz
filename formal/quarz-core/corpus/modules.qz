@@ -1,0 +1,57 @@
+# Modules the program declares (design §16.4): each class including one
+# has a copy of it between it and its superclass, in the checker's order.
+module G
+  def who -> String = "G"
+  def g -> String = "G#g " + who
+end
+module P
+  include G
+  def who -> String = "P"
+end
+module Q
+  def who -> String = "Q"
+end
+# A contract: the class implements it, the module's methods call it.
+module Named
+  abstract def name -> String
+  def greeting -> String = "hello " + name
+end
+class A
+  include G
+  def who -> String = "A"
+end
+# Two includes: the later first.
+class C1
+  include P
+  include Q
+end
+# A diamond: G below P.
+class C2
+  include G
+  include P
+end
+# Included again below a superclass that includes it: the superclass's place.
+class B < A
+  include G
+end
+class D < A
+  include Q
+end
+class Person
+  include Named
+  @n: String
+  def initialize(@n: String)
+  end
+  def name -> String = @n
+end
+# A module as a type: any class that includes it.
+def w(x: G) -> String = x.who
+def hi(x: Named) -> String = x.greeting
+puts C1.new.who
+puts w(C2.new)
+puts B.new.who
+puts w(B.new)
+puts D.new.who
+puts D.new.g
+puts C1.new.g
+puts hi(Person.new("Ann"))

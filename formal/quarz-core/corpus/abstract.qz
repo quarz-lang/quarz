@@ -1,0 +1,11 @@
+# An abstract method (no body): what a call reaching it does at run time, raise a
+# NotImplementedError; a concrete method calling it is checked against it.
+abstract class S
+  abstract def f -> Int
+  def g -> Int = f + 1
+end
+class C < S
+  def f -> Int = 1
+end
+def m -> Int = C.new.g
+puts m

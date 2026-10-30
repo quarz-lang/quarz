@@ -86,6 +86,10 @@ structure Tables where
   /-- The extensions (the prelude's and the program's), with their
   targets. -/
   extensions : Array Json := #[]
+  /-- A module the program declares (by Rust id) ↦ its copies, one per
+  class that includes it (design §16.4): their QCore classes, and whether
+  that class has type parameters. -/
+  modCopies : Nat → Option (List (Nat × Bool)) := fun _ => none
 
 def Tables.cls (T : Tables) (id : Nat) : M Json := do
   match T.classes.find? fun c => (c.getObjValAs? Nat "id").toOption == some id with
@@ -139,7 +143,15 @@ partial def Tables.tyIn (T : Tables) (env : List (Nat × Ty)) (j : Json) : M Ty 
     | "Float" => if args.isEmpty then pure [.float] else throw "a generic type"
     | _ => match T.qclass id with
       | some k => pure [.cls k (← args.toList.mapM (T.tyIn env))]
-      | none => throw s!"type {← T.className id}"
+      | none => match T.modCopies id with
+        -- A module the program declares: the union of its copies (its
+        -- values are objects of the classes that include it).
+        | some copies =>
+          unless args.isEmpty do throw "a generic module"
+          if copies.isEmpty then throw s!"a module no class includes"
+          if copies.any (·.2) then throw s!"a module a generic class includes"
+          pure (copies.map fun (k, _) => Atom.cls k [])
+        | none => throw s!"type {← T.className id}"
   | "param" =>
     let id ← nat (← field j "id")
     if let some t := (env.find? (·.1 == id)).map (·.2) then return t
@@ -699,6 +711,11 @@ def rsub (T : Tables) (c d : Nat) : M Bool := do
     | .null => return false
     | sj => x ← nat (← field sj "id")
   pure false
+
+/-- Whether `d` is in `c`'s linearization (a superclass, or a module it
+includes, by Rust ids). -/
+def Tables.inChain (T : Tables) (c d : Nat) : M Bool := do
+  (← arr (← field (← T.cls c) "ancestors")).anyM fun a => do pure ((← nat (← field a "id")) == d)
 
 /-- The variants of an enum (by Rust ids). -/
 def variantsOf (T : Tables) (cid : Nat) : M (List Json) :=
@@ -1636,7 +1653,8 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
     -- `Enumerable`), which a program's class includes: a built-in call, its
     -- module's parameters and `Self` through the receiver's class.
     let ownerJ ← T.cls owner
-    let preludeModule := (← str (← field ownerJ "kind")) == "Module" && (T.qclass owner).isNone
+    let preludeModule := (← str (← field ownerJ "kind")) == "Module" && (T.qclass owner).isNone &&
+      (T.modCopies owner).isNone
     let preludeModule := preludeModule && owner != T.kernelId
     if preludeModule && recvEnv.isNone then
       throw s!"a method {name} of a module, its receiver's view unknown"
@@ -2021,7 +2039,7 @@ def method (T : Tables) (owner : Nat) (m : Json) (d : Json) : M Method := do
   -- The Rust variance check skips private methods (docs/02 §3), the
   -- model's checks every one: a private method of a class with a variant
   -- parameter is out of range.
-  if (← field d "visibility") == .str "Private" then
+  if (← field m "visibility") == .str "Private" then
     let tps ← arr (← field (← T.cls (← nat (← field m "owner"))) "type_params")
     if ← tps.anyM (fun p => do pure ((← str (← field p "variance")) != "Invariant")) then
       throw "a private method of a variant class"
@@ -2058,7 +2076,13 @@ def method (T : Tables) (owner : Nat) (m : Json) (d : Json) : M Method := do
       | t => pure (← T.tyClass t).1
     pure (some (params, sup))
   let w : Where := ⟨owner == 1, init, some (← nat (← field m "owner")), none, none, [], bproc, [], [], true, false⟩
-  let (bd, ls) ← ((body T (← arr (← field d "body"))).run w).run params
+  -- (An abstract method, `d` null: what the run time does when a call
+  -- reaches it, raise a `NotImplementedError`.)
+  let (bd, ls) ← if d == .null then do
+      let some cid ← T.classId "NotImplementedError" | throw "no NotImplementedError"
+      let some q := T.qclass cid | throw "NotImplementedError out of range"
+      pure (Expr.raise (.prim "new" [] [] [.cls q []]), [])
+    else ((body T (← arr (← field d "body"))).run w).run params
   -- (`yield` runs the block given, whatever the parameter holds later.)
   if let some (n, _) := bproc then
     if (bd.assigned ++ bd.procAssigned).contains n then throw "a named block parameter assigned"
@@ -2173,7 +2197,61 @@ def program (j : Json) : M Program := do
   let excs ← classes.toList.filterM fun c => do
     pure (!files.contains (← nat (← field c "file")) && (← below c))
   let excIds ← excs.mapM fun c => do nat (← field c "id")
-  let userIds := excIds ++ (← user.mapM fun c => do nat (← field c "id"))
+  -- The modules the program declares, and each class's own (those its
+  -- linearization puts between it and its superclass), nearest first: a
+  -- class's copy of each goes between it and its superclass (design
+  -- §16.4), in the order the checker's `ancestors` gives, taken as given.
+  let progModIds ← (← classes.toList.filterM fun c => do
+      pure (files.contains (← nat (← field c "file")) && (← str (← field c "kind")) == "Module")).mapM
+    fun c => do nat (← field c "id")
+  let classById (id : Nat) : M Json := match classes.find? fun c => (c.getObjValAs? Nat "id").toOption == some id with
+    | some c => pure c
+    | none => throw s!"no class {id}"
+  let ownMods ← user.mapM fun c => do
+    let cid ← nat (← field c "id")
+    let mut out : List Nat := []
+    for a in (← arr (← field c "ancestors")).toList.drop 1 do
+      let aid ← nat (← field a "id")
+      unless (← str (← field (← classById aid) "kind")) == "Module" do break
+      if progModIds.contains aid then
+        unless (← arr (← field a "args")).isEmpty do throw "a generic module"
+        out := out ++ [aid]
+    unless out.isEmpty do
+      let kind ← str (← field c "kind")
+      unless kind == "Class" || kind == "Data" do throw "a module included by an enum"
+    -- (A prelude module's methods are built-in calls, which do not
+    -- dispatch: with a program's module anywhere in the same chain, its
+    -- own or a superclass's, out of range.)
+    let chain ← (← arr (← field c "ancestors")).toList.mapM fun a => do nat (← field a "id")
+    if chain.any progModIds.contains then
+      -- (A program's module's method overriding one of a prelude class or
+      -- module in the chain, `Object` and `Kernel` included: a call the
+      -- checker resolved there is a built-in call, which does not
+      -- dispatch to it.)
+      let mut progNames : List String := []
+      let mut otherNames : List String := []
+      for aid in chain do
+        let names ← (← arr (← field (← classById aid) "method_names")).toList.mapM fun x => str x
+        if progModIds.contains aid then progNames := progNames ++ names
+        else if !files.contains (← nat (← field (← classById aid) "file")) then otherNames := otherNames ++ names
+      if progNames.any otherNames.contains then throw "a program's module overriding a prelude's method"
+      for aid in chain do
+        let aj ← classById aid
+        if (← str (← field aj "kind")) == "Module" && aid != kernelId && !progModIds.contains aid &&
+            !(← arr (← field aj "method_names")).isEmpty then
+          throw "a program's module and a prelude's"
+    pure (cid, out)
+  -- (An extension the program declares may include a program's module in
+  -- a class the copies do not cover: out of range.)
+  let some arrayJ := classes.find? fun c => (c.getObjValAs? String "name").toOption == some "Array"
+    | throw "no Array"
+  let preludeFile ← nat (← field arrayJ "file")
+  if !progModIds.isEmpty then
+    for e in ← arr (← field j "extensions") do
+      if (← nat (← field e "file")) != preludeFile then throw "a program's module with a program's extension"
+  -- The user classes, each after its copies (a superclass comes first).
+  let seq : List (Nat × Option Nat) := excIds.map (·, none) ++
+    ownMods.flatMap fun (cid, ms) => ms.reverse.map (·, some cid) ++ [(cid, none)]
   -- `Object` is 0, the files' main classes (the top level and its
   -- methods) 1, the user classes from 2.
   let arrayId ← match classes.find? fun c => (c.getObjValAs? String "name").toOption == some "Array" with
@@ -2183,7 +2261,15 @@ def program (j : Json) : M Program := do
     if id == objectId then some 0
     else if mainClasses.contains id then some 1
     else if id == arrayId then some arrIdx
-    else (userIds.idxOf? id).map (· + 4 + procMax)
+    else (seq.idxOf? (id, none)).map (· + 4 + procMax)
+  let copyOf (mid cid : Nat) : Option Nat := (seq.idxOf? (mid, some cid)).map (· + 4 + procMax)
+  let generic ← user.filterMapM fun c => do
+    if (← arr (← field c "type_params")).isEmpty then pure none else pure (some (← nat (← field c "id")))
+  let modCopies : Nat → Option (List (Nat × Bool)) := fun mid =>
+    if progModIds.contains mid then
+      some (ownMods.filterMap fun (cid, ms) =>
+        if ms.contains mid then (copyOf mid cid).map (·, generic.contains cid) else none)
+    else none
   unless units.size == 1 do throw "a required file"
   let fdefs ← arr (← field j "field_defaults")
   -- The classes' type parameters by id, and the narrowed ones.
@@ -2200,7 +2286,7 @@ def program (j : Json) : M Program := do
     fun id => (classParams.find? (·.1 == id)).map (·.2),
     fun id => (narrowedList.find? (·.1 == id)).map (·.2), selfParam, excIds,
     (j.getObjVal? "op_targets").toOption.getD Json.null,
-    (j.getObjVal? "block_results").toOption.getD Json.null, [], ← arr (← field j "extensions")⟩
+    (j.getObjVal? "block_results").toOption.getD Json.null, [], ← arr (← field j "extensions"), modCopies⟩
   -- The program's overloaded names (but `initialize`, which `new` and
   -- `super` take the nearest of).
   let mine ← (← arr (← field j "methods")).toList.filterM fun m => do
@@ -2236,8 +2322,8 @@ def program (j : Json) : M Program := do
     -- the prelude's, its methods are built-in calls.
     for inc in (← arr (← field c "includes")) do
       let mid ← nat (← field inc "id")
-      if files.contains (← nat (← field (← T.cls mid) "file")) then
-        throw "an include of a program's module"
+      -- (A program's module: its copy, in the chain.)
+      if progModIds.contains mid then continue
       -- (The module's methods come before the superclass's: a program
       -- superclass's method of one's name, which a call resolved to the
       -- superclass would run in the model, is out of range.)
@@ -2293,15 +2379,36 @@ def program (j : Json) : M Program := do
         unless params.isEmpty do throw "a generic enum"
         pure ClassKind.variant
       | _ => pure ClassKind.cls
-    pure (⟨← str (← field c "name"), some sup.1, fields, params, sup.2, pbs.map (·.2), kind⟩ : Class)
-  let methods ← T.defs.toList.filterMapM fun d => do
+    -- Its own modules' copies between it and its superclass: each with the
+    -- class's parameters, no fields, the next one (or the superclass) above.
+    let ms := ((ownMods.find? (·.1 == cid)).map (·.2)).getD []
+    let selfArgs : List Ty := (List.range params.length).map fun i => [.param i]
+    let mut above := (sup.1, sup.2)
+    let mut copies : List Class := []
+    for mid in ms.reverse do
+      let some k := copyOf mid cid | throw "a module's copy"
+      copies := copies ++ [⟨← str (← field (← classById mid) "name"), some above.1, [], params, above.2,
+        pbs.map (·.2), .cls⟩]
+      above := (k, selfArgs)
+    pure (copies ++ [⟨← str (← field c "name"), some above.1, fields, params, above.2, pbs.map (·.2), kind⟩])
+  let qclasses := qclasses.flatten
+  let methods ← T.defs.toList.flatMapM fun d => do
     let m ← T.method (← nat (← field d "method"))
-    match ← field d "def" with
-    | .null => pure none
-    | def_ =>
-      match qclass (← nat (← field m "owner")) with
-      | some owner => pure (some (← method T owner m def_))
-      | none => throw "a method of a class out of range"
+    -- (No definition: an abstract method.)
+    let def_ ← field d "def"
+    if def_ == .null then
+      if (← field m "native") == .bool true || (← str (← field m "synth")) != "None" then return []
+    let owner ← nat (← field m "owner")
+    -- A program's module's method: one for each copy (no fields to read).
+    if let some copies := modCopies owner then
+      if ((def_.compress.splitOn "\"IVar\"").length > 1) then throw "a field in a module"
+      -- (`new` and `super` reach a module's `initialize` otherwise than the
+      -- model's chain of copies would.)
+      if (← str (← field m "name")) == "initialize" then throw "an initialize in a module"
+      return ← copies.mapM fun (k, _) => method T k m def_
+    match qclass owner with
+    | some k => pure [← method T k m def_]
+    | none => throw "a method of a class out of range"
   -- Each constant's initializer, checked as a method of the top level's
   -- class giving the constant's type.
   let consts ← (← arr (← field j "consts")).toList.mapM fun k => do
@@ -2352,7 +2459,7 @@ def program (j : Json) : M Program := do
       if (← sigKey a) == (← sigKey b) then continue
       let ao ← nat (← field a "owner")
       let bo ← nat (← field b "owner")
-      unless ao != bo && (← rsub T ao bo) do continue
+      unless ao != bo && (← T.inChain ao bo) do continue
       let pa := (← arr (← field a "params")).toList
       let pb := (← arr (← field b "params")).toList
       let blocks := ((← field a "block") == .null) == ((← field b "block") == .null)
