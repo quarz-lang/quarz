@@ -3048,3 +3048,20 @@ fn local_declarations() {
         "undefined local variable or method `q`",
     );
 }
+
+#[test]
+fn a_type_not_yet_known_cannot_cross_tasks() {
+    // docs/03: what decides it later might not be Shareable.
+    let c = "class Counter\n  var @n: Int = 0\nend\nk = Counter.new\n";
+    for (src, msg) in [
+        ("ch = Channel[Shareable].new(4)\na = []\nch.send(a)\na = a.push(k)", "the type is not yet known here, and it must be Shareable"),
+        ("data Box[T] = (v: T)\nch = Channel[Shareable].new(4)\na = []\nch.send(Box.new(a))\na = a.push(k)", "the type is not yet known here, and it must be Shareable"),
+        ("ch = Channel.new(4)\na = []\nch.send(a)\na = a.push(k)", "the type argument for `T` of `Channel` is not yet known here"),
+        ("a = []\nt = Task.spawn { a }\na = a.push(k)\np t.await", "the type of `a` is not yet known here"),
+        ("t = Task.spawn { [] }\np t.await", "the type of a task block's result is not yet known here"),
+    ] {
+        err(&format!("{c}{src}"), msg);
+    }
+    // Annotated, it is checked as any type.
+    ok("a: Array[Int] = []\nch = Channel[Shareable].new(4)\nch.send(a)\nch2 = Channel[Int].new(4)\nch2.send(1)");
+}

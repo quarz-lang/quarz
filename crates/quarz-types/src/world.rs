@@ -1280,7 +1280,7 @@ impl World {
         let shareable = Type::class(self.builtin.shareable);
         aargs
             .iter()
-            .all(|t| t.has_vars() || self.is_subtype(t, &shareable))
+            .all(|t| !t.has_vars() && self.is_subtype(t, &shareable))
     }
 
     pub fn is_subtype(&self, sub: &Type, sup: &Type) -> bool {
