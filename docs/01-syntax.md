@@ -452,6 +452,8 @@ end
 - `expr => Point(x:, y:)` raises on failure; `expr in Point` returns a `Bool` and narrows.
 - A pattern binds its names only when it matches whole (with its guard): one that fails partway leaves every variable as it was (in Ruby, the names bound before the failure keep their new values). The names a `case/in` arm's pattern binds are the arm's own, as a block's parameters: declared there, shadowing an outer local of the same name, which the arm does not change, and not visible after the arm (after the `case`, the name is the outer local, a method, or undefined). So two arms may bind one name to different types. `expr in pattern` and `expr => pattern` bind into the enclosing scope, as in Ruby, once the whole pattern matched.
 - Exhaustiveness is by type, not by value: `in true | false` does not cover `Bool` (write `in Bool`, or add an `else`).
+- An alternative pattern (`a | b`) binds no names, as in Ruby ("illegal variable in alternative pattern"): which alternative matched, and so what it bound, is not known after it. `_` there is a wildcard. Match the alternatives in arms of their own to bind in each.
+- A class pattern (`Point(x:, **rest)`) takes no `**rest`: an object has fields, not a rest of keys. A hash pattern keeps it (`{a: 1, **rest}`), on a `Hash` (not on a `data` value, for the same reason).
 
 ## 12. Exceptions
 

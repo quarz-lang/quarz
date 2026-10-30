@@ -2952,3 +2952,28 @@ fn a_case_arms_names_are_its_own() {
     // the name is shadowed, unchanged.
     ok("def g(v: Int | String) -> Int\n  x = \"outer\"\n  r = case v\n      in Int => x then x + 1\n      in String => x then x.size\n      end\n  r + x.size\nend");
 }
+
+#[test]
+fn alternatives_bind_no_names_and_objects_have_no_rest() {
+    // docs/01 §11 (tmp/repro/pattern-alt-binding*.qz).
+    for src in [
+        "# Hole on main (found in the pattern-binding review, 2026-10-31): a name bound in only some alternatives of `|` is typed as bound whichever matched; here `a` is still a String at run time (VM: QIR fact violated). Ruby refuses names in alternatives.\ndata P = (a: Int, b: Int)\ndef ob(p: P, a: Int | String) -> Int\n  return 0 unless a.is_a?(String)\n  if p in P(b: 7, a:) | P(b: 1)\n    return a + 1\n  end\n  -1\nend\np ob(P.new(5, 1), \"str\")\ndef oc(p: P, a: Int | String) -> Int\n  case p\n  in P(b: 7, a:) | P(b: 1) then a + 1\n  else -1\n  end\nend\np oc(P.new(5, 1), \"str\")\n",
+        "# Same as pattern-alt-binding.qz in a case/in arm: the arm's own `a` is nil when the other alternative matched.\ndata P = (a: Int, b: Int)\ndef oc(p: P, a: Int | String) -> Int\n  case p\n  in P(b: 7, a:) | P(b: 1) then a + 1\n  else -1\n  end\nend\np oc(P.new(5, 1), \"str\")\n",
+        "# A failed alternative's partial bindings are seen by a later alternative's pin (`^a` reads the 1 the failed one bound).\ndata P = (a: Int, b: Int)\ndef ob(p: P | Int) -> String\n  a = -1\n  r = p in P(a:, b: 7) | P[_, ^a]\n  \"#{r} #{a}\"\nend\nputs ob(P.new(1, 1))\nputs ob(P.new(5, -1))\ndef oc(p: P | Int) -> String\n  a = -1\n  r = case p\n      in P(a:, b: 7) | P[_, ^a] then \"arm #{a}\"\n      else \"else\"\n      end\n  \"#{r} #{a}\"\nend\nputs oc(P.new(1, 1))\nputs oc(P.new(5, -1))\n",
+    ] {
+        err(src, "is bound in an alternative pattern");
+    }
+    ok("def f(v: Array[Int]) -> Bool = v in [_, 7] | [_, 6]");
+    // tmp/repro/pattern-object-rest.qz; a hash pattern keeps `**rest`.
+    err("# Hole on main (2026-10-31): `**rest` in a class's hash pattern type-checks as a Hash but is never bound (object_hash_pattern stores no rest): nil at run time.\ndata P = (a: Int, b: Int)\ndef oh(p: P | Int) -> Int\n  if p in P(a: 1, **rest)\n    return rest.size\n  end\n  -1\nend\np oh(P.new(1, 2))\n", "in a class pattern: an object has no rest of keys");
+    ok("def g(h: Hash[Symbol, Int]) -> Int\n  case h\n  in {a: 1, **rest} then rest.size\n  else 0\n  end\nend");
+    // Nor a hash pattern on a `data` value.
+    err(
+        "data P = (a: Int, b: Int)\ndef g5(p: P) -> Int\n  case p\n  in {a: 1, **r} then r.size\n  else -1\n  end\nend",
+        "on a `data` value: an object has no rest of keys",
+    );
+    // Nor is a range's bound.
+    ok("def k(v: String, w: Array[Int]) -> Bool\n  v in \"a\" | \"a\"..\"#{w.map { |e| (e in Int => z) ? z : 0 }.sum}\"\nend");
+    // An expression in a pin is no part of the alternative.
+    ok("def f(v: Int, w: Array[Int]) -> Bool\n  v in 0 | ^(case w\n             in [y] then y\n             else 1\n             end)\nend");
+}

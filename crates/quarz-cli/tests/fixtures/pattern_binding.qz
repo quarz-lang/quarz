@@ -47,7 +47,7 @@ def k(p: P, y: Int | String) -> Int
 end
 p k(P.new(3, 5), "s")
 x = 1
-p([5, 6] in [x, 7] | [_, x])
+p([5, 6] in [_, 7] | [_, 6])
 p x
 # A block in a pin reads the frame's variables from its own: only what
 # the pattern binds is kept aside.

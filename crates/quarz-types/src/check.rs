@@ -439,6 +439,8 @@ struct Env {
     /// Checking a `case/in` arm's pattern: the names it binds are the
     /// arm's own (`declare_pattern_var`).
     arm_local: bool,
+    /// Inside an alternative pattern, which binds no names.
+    in_alternative: u32,
     /// Index of the innermost frame that runs on another task (`spawn`
     /// block). Variables from frames below it are captured by value and must
     /// be shareable; they cannot be assigned.
@@ -912,6 +914,7 @@ impl Checker {
             file: 1,
             pattern_base: None,
             arm_local: false,
+            in_alternative: 0,
             task_frame: None,
             task_shareable_proc: false,
             reassigned: None,
@@ -2205,6 +2208,7 @@ impl Checker {
             file,
             pattern_base: None,
             arm_local: false,
+            in_alternative: 0,
             task_frame: None,
             task_shareable_proc: false,
             reassigned: None,
@@ -11095,7 +11099,40 @@ impl Checker {
 pub(crate) use VarKey as PatternVarKey;
 
 impl Checker {
+    /// Out of any alternative pattern (for an expression in one, a pin's),
+    /// giving back what to restore.
+    pub(crate) fn leave_alternatives(&mut self) -> u32 {
+        std::mem::take(&mut self.env.in_alternative)
+    }
+
+    pub(crate) fn restore_alternatives(&mut self, saved: u32) {
+        self.env.in_alternative = saved;
+    }
+
+    /// Entering (`true`) or leaving an alternative pattern (`a | b`).
+    pub(crate) fn enter_alternative(&mut self, enter: bool) {
+        if enter {
+            self.env.in_alternative += 1;
+        } else {
+            self.env.in_alternative -= 1;
+        }
+    }
+
     pub(crate) fn declare_pattern_var(&mut self, name: &str, ty: Type, span: Span) {
+        // An alternative binds no name (as Ruby's "illegal variable in
+        // alternative pattern"): which alternative matched, and so what was
+        // bound, is not known after it (docs/01 §11). `_` there is a
+        // wildcard, binding nothing.
+        if self.env.in_alternative > 0 {
+            if name == "_" {
+                return;
+            }
+            // (Declared all the same, so that its reads add no error.)
+            self.error(
+                format!("`{name}` is bound in an alternative pattern: an alternative binds no names (match the alternatives apart, or bind outside the `|`)"),
+                span,
+            );
+        }
         // (A `case/in` arm's names are its own: always fresh.)
         let existing = self.lookup_var(name).filter(|(depth, slot)| {
             !self.env.arm_local
