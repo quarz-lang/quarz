@@ -85,6 +85,9 @@ pub struct Declarer<'ast> {
     /// The (method, overridden method) pairs a module's include brought
     /// and that were reported, once (`check_override_returns`).
     override_pairs: HashSet<(MethodId, MethodId)>,
+    /// Where an override error about a prelude method is reported (the
+    /// class whose include brings it: `check_include_overrides`).
+    override_span: Option<Span>,
     /// The user's compilation units (files), in load order.
     pub units: Vec<UnitDecl<'ast>>,
     class_usings: HashMap<ClassId, Vec<(&'ast ConstPath, u32)>>,
@@ -187,6 +190,7 @@ impl<'ast> Declarer<'ast> {
             pending: Vec::new(),
             pending_ext: Vec::new(),
             override_pairs: HashSet::default(),
+            override_span: None,
             units: Vec::new(),
             class_usings: HashMap::default(),
             ext_includes: Vec::new(),
@@ -1000,6 +1004,7 @@ impl<'ast> Declarer<'ast> {
             self.check_kept_blocks(p.id);
             self.check_quoted_overrides(p.id);
             self.check_override_returns(p.id);
+            self.check_include_overrides(p.id);
             self.check_copied_deinitialize(p.id);
             self.check_eq_with_hash(p.id);
             self.check_duplicate_methods(p.id);
@@ -1692,6 +1697,68 @@ impl<'ast> Declarer<'ast> {
         self.check_override_pair(mid, o, &subst, &mine_subst, None);
     }
 
+    /// The method that implements the abstract `abs` (of the ancestor
+    /// `anc`) for class `id` by signature: the first, up the ancestors, that
+    /// takes every call `abs` takes there (`World::takes_calls_of`), or of
+    /// the same signature for the runtime (a method's own type parameters).
+    fn implementation_by_signature(
+        &self,
+        typed: &[(ClassId, Vec<Type>)],
+        anc: ClassId,
+        abs: MethodId,
+    ) -> Option<MethodId> {
+        let (_, aargs) = typed.iter().find(|(c, _)| *c == anc)?;
+        let asubst = self.world.class_subst(anc, aargs);
+        let a = self.world.method(abs);
+        for (k, kargs) in typed {
+            let Some(ids) = self.world.class(*k).methods.get(&a.name) else {
+                continue;
+            };
+            let ksubst = self.world.class_subst(*k, kargs);
+            for &j in ids {
+                let jm = self.world.method(j);
+                if jm.is_abstract || jm.singleton != a.singleton {
+                    continue;
+                }
+                let fits = if jm.type_params.is_empty() && a.type_params.is_empty() {
+                    self.world.takes_calls_of(jm, &ksubst, a, &asubst)
+                } else {
+                    self.same_signature_at_run_time(j, abs)
+                };
+                if fits {
+                    return Some(j);
+                }
+            }
+        }
+        None
+    }
+
+    /// `check_implementation` for `mid`, a method of `owner` seen from the
+    /// class through `oargs` (its owner's arguments there).
+    #[allow(clippy::too_many_arguments)]
+    fn check_implementation_seen(
+        &mut self,
+        mid: MethodId,
+        o: MethodId,
+        a: ClassId,
+        aargs: &[Type],
+        own: Type,
+        owner: ClassId,
+        oargs: Option<Vec<Type>>,
+    ) {
+        if !self.override_pairs.insert((mid, o)) {
+            return;
+        }
+        let mut subst = self.world.class_subst(a, aargs);
+        subst.insert(SELF_PARAM, own.clone());
+        let mut mine_subst = match oargs {
+            Some(args) => self.world.class_subst(owner, &args),
+            None => HashMap::default(),
+        };
+        mine_subst.insert(SELF_PARAM, own);
+        self.check_override_pair(mid, o, &subst, &mine_subst, None);
+    }
+
     /// `check_kept_blocks` for the methods of extensions: an extension's
     /// method found before its target's own may not keep a block the one
     /// it hides only yields to.
@@ -1837,7 +1904,16 @@ impl<'ast> Declarer<'ast> {
                         continue;
                     };
                     for o in ids {
-                        if !self.overrides_at_run_time(mid, o, *a, aargs) {
+                        // (A module's method over the superclass's: by the
+                        // signature as written here, by the substituted
+                        // one in `World::include_overrides`, below.)
+                        let replaces = if x == id {
+                            self.overrides_at_run_time(mid, o, *a, aargs)
+                        } else {
+                            self.world.method(mid).singleton == self.world.method(o).singleton
+                                && self.same_signature_at_run_time(mid, o)
+                        };
+                        if !replaces {
                             continue;
                         }
                         let mut subst = self.world.class_subst(*a, aargs);
@@ -1874,6 +1950,39 @@ impl<'ast> Declarer<'ast> {
         }
     }
 
+    /// `check_override_pair` for the overrides class `id`'s includes make
+    /// (`World::include_overrides_of`), each reported once.
+    fn check_include_overrides(&mut self, id: ClassId) {
+        let own_args: Vec<Type> = self
+            .world
+            .class(id)
+            .type_params
+            .iter()
+            .map(|p| Type::Param(p.id))
+            .collect();
+        let own = Type::Class(id, own_args);
+        for io in self.world.include_overrides_of(id) {
+            let (o, by) = (io.overridden, io.by);
+            if self.world.method(by).file == 0 && self.world.method(o).file == 0 {
+                continue;
+            }
+            if self.override_pairs.contains(&(by, o)) {
+                continue;
+            }
+            let mut subst = io.overridden_subst;
+            subst.insert(SELF_PARAM, own.clone());
+            let mut mine_subst = io.by_subst;
+            mine_subst.insert(SELF_PARAM, own.clone());
+            let within = Some(self.world.class(id).name.clone());
+            self.override_span = Some(self.world.class(id).span);
+            let ok = self.check_override_pair(by, o, &subst, &mine_subst, within);
+            self.override_span = None;
+            if !ok {
+                self.override_pairs.insert((by, o));
+            }
+        }
+    }
+
     /// Whether the runtime takes `m` to override `o` (of the ancestor `a`
     /// with `aargs`): `quarz_lower::rtworld::overridden_methods` (the same
     /// kinds of parameters, each at least as wide, those added optional),
@@ -1890,23 +1999,51 @@ impl<'ast> Declarer<'ast> {
     fn same_signature_at_run_time(&self, m: MethodId, o: MethodId) -> bool {
         let (m, om) = (self.world.method(m), self.world.method(o));
         let (ps, qs) = (om.positional_params(), m.positional_params());
-        om.block.is_some() == m.block.is_some()
+        let same = |p: &ParamInfo, q: &ParamInfo| self.same_at_run_time(om, &p.ty, m, &q.ty);
+        let blocks = match (&om.block, &m.block) {
+            (Some((_, b)), Some((_, c))) => self.same_at_run_time(om, b, m, c),
+            (None, None) => true,
+            _ => false,
+        };
+        blocks
             && ps.len() == qs.len()
             && ps
                 .iter()
                 .zip(&qs)
-                .all(|(p, q)| p.kind == q.kind && self.same_at_run_time(p, q))
-            && self.keywords_take(m, om, |p, q| self.same_at_run_time(p, q))
+                .all(|(p, q)| p.kind == q.kind && same(p, q))
+            && self.keywords_take(m, om, same)
     }
 
-    /// Whether two parameters have the same type for the runtime (a type
-    /// parameter matches anything).
-    fn same_at_run_time(&self, p: &ParamInfo, q: &ParamInfo) -> bool {
-        let open = |t: &Type| matches!(t, Type::Param(_) | Type::Var(_));
-        open(&p.ty)
-            || open(&q.ty)
-            || self.world.type_name(&self.world.devoid(&p.ty))
-                == self.world.type_name(&self.world.devoid(&q.ty))
+    /// Whether `t` of `om` and `u` of `m` are the same type for the runtime
+    /// (`RtParam::ty`): one that mentions its method's own type parameters
+    /// or `Self` matches anything, any other is compared as written.
+    fn same_at_run_time(&self, om: &MethodInfo, t: &Type, m: &MethodInfo, u: &Type) -> bool {
+        fn open(m: &MethodInfo, t: &Type) -> bool {
+            match t {
+                Type::Param(p) => *p == SELF_PARAM || m.type_params.iter().any(|tp| tp.id == *p),
+                Type::Var(_) => true,
+                Type::Class(_, args) | Type::ClassObject(_, args) => {
+                    args.iter().any(|a| open(m, a))
+                }
+                Type::Union(ts) | Type::Tuple(ts) => ts.iter().any(|a| open(m, a)),
+                Type::TypeOf(t) => open(m, t),
+                Type::Proc(r, ps, ret, _) => {
+                    r.as_deref().is_some_and(|r| open(m, r))
+                        || ps.iter().any(|a| open(m, a))
+                        || open(m, ret)
+                }
+                Type::Nothing | Type::Void => false,
+            }
+        }
+        let (t, u) = (self.world.devoid(t), self.world.devoid(u));
+        open(om, &t)
+            || open(m, &u)
+            // (A class's type parameter by its id, as `rtworld::rt_sig_type`.)
+            || if t.mentions_any_param() || u.mentions_any_param() {
+                t == u
+            } else {
+                self.world.type_name(&t) == self.world.type_name(&u)
+            }
     }
 
     /// Whether `m` takes every keyword call `om` takes
@@ -1950,12 +2087,22 @@ impl<'ast> Declarer<'ast> {
             return false;
         }
         let subst = self.world.class_subst(a, aargs);
+        // (A block of the overridden method's type, substituted, must do,
+        // as `rtworld::overridden_methods` has it.)
+        let block_fits = match (&om.block, &m.block) {
+            (Some((_, b)), Some((_, c))) => {
+                let bt = b.subst(&subst);
+                bt == *c || self.world.is_subtype(&bt, c)
+            }
+            _ => true,
+        };
         let wider_ty = |p: &ParamInfo, q: &ParamInfo| {
             let pt = p.ty.subst(&subst);
             pt == q.ty || self.world.is_subtype(&pt, &q.ty)
         };
         let (ps, qs) = (om.positional_params(), m.positional_params());
-        let wider = ps.len() <= qs.len()
+        let wider = block_fits
+            && ps.len() <= qs.len()
             && ps
                 .iter()
                 .zip(&qs)
@@ -1964,13 +2111,7 @@ impl<'ast> Declarer<'ast> {
                 .iter()
                 .all(|q| q.default.is_some() || q.kind == ParamKind::Rest)
             && self.keywords_take(m, om, wider_ty);
-        let same = ps.len() == qs.len()
-            && ps
-                .iter()
-                .zip(&qs)
-                .all(|(p, q)| p.kind == q.kind && self.same_at_run_time(p, q))
-            && self.keywords_take(m, om, |p, q| self.same_at_run_time(p, q));
-        wider || same
+        wider || self.same_signature_at_run_time(m.id, om.id)
     }
 
     /// An override `m` of `o` (their types seen through `subst` and
@@ -2001,7 +2142,11 @@ impl<'ast> Declarer<'ast> {
             None => String::new(),
         };
         let mname = m.name.clone();
-        let span = m.span;
+        // (A prelude method's own span is in no file of the program.)
+        let span = match self.override_span {
+            Some(class) if m.file == 0 => class,
+            _ => m.span,
+        };
         let see = |t: &Type| {
             if mine_subst.is_empty() {
                 t.clone()
@@ -2706,6 +2851,7 @@ impl<'ast> Declarer<'ast> {
             self.check_kept_blocks(id);
             self.check_quoted_overrides(id);
             self.check_override_returns(id);
+            self.check_include_overrides(id);
             self.check_copied_deinitialize(id);
             self.check_eq_with_hash(id);
             self.check_duplicate_methods(id);
@@ -2797,6 +2943,15 @@ impl<'ast> Declarer<'ast> {
             let mut missing: Vec<(String, ClassId)> = Vec::new();
             let mut impls: Vec<(ClassId, MethodId, MethodId)> = Vec::new();
             let mut found_impls: Vec<(MethodId, MethodId, ClassId)> = Vec::new();
+            let mut inherited_impls: Vec<(MethodId, MethodId, ClassId)> = Vec::new();
+            // (The ancestors with their arguments, once for every abstract
+            // method: `implementation_by_signature`.)
+            let own_args: Vec<Type> = class
+                .type_params
+                .iter()
+                .map(|p| Type::Param(p.id))
+                .collect();
+            let typed = self.world.ancestors(id, &own_args);
             for anc in &ancestors {
                 for ids in self.world.class(*anc).methods.values() {
                     for mid in ids {
@@ -2813,12 +2968,51 @@ impl<'ast> Declarer<'ast> {
                                 impls.push((id, *mid, i));
                                 found_impls.push((i, *mid, *anc));
                             }
-                            Some(_) => {}
+                            // A concrete method further up the chain than
+                            // the abstract one (`A#<=>` for `Comparable`
+                            // included in `C < A`): the runtime passes over
+                            // the abstract one to it (`World::ext_impls`).
+                            Some(i)
+                                if ancestors
+                                    .iter()
+                                    .position(|a| *a == self.world.method(i).owner)
+                                    > ancestors.iter().position(|a| a == anc) =>
+                            {
+                                impls.push((id, *mid, i));
+                                inherited_impls.push((i, *mid, *anc));
+                            }
+                            // Implemented by signature, as the runtime finds
+                            // it: a method of the name taking other arguments
+                            // is an overload, and one of the signature may
+                            // come further up (all seen from this class).
+                            Some(i) => match self.implementation_by_signature(&typed, *anc, *mid) {
+                                None => missing.push((m.name.clone(), *anc)),
+                                Some(j) if j != i => {
+                                    impls.push((id, *mid, j));
+                                    inherited_impls.push((j, *mid, *anc));
+                                }
+                                Some(_) => {}
+                            },
                         }
                     }
                 }
             }
             self.world.ext_impls.extend(impls);
+            for (i, abs, anc) in inherited_impls {
+                let Some((_, aargs)) = typed.iter().find(|(c, _)| *c == anc) else {
+                    continue;
+                };
+                let aargs = aargs.clone();
+                let own = Type::Class(id, own_args.clone());
+                let ims = self.world.method(i);
+                // (`i` is written in its owner's parameters: seen from here.)
+                let owner = ims.owner;
+                let iargs = typed
+                    .iter()
+                    .find(|(c, _)| *c == owner)
+                    .map(|(_, a)| a.clone());
+                self.check_implementation_seen(i, abs, anc, &aargs, own, owner, iargs);
+            }
             // (An extension's method implements it whatever its signature,
             // at run time: it must take and return what it declares.)
             for (i, abs, anc) in found_impls {

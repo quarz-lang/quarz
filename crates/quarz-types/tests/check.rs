@@ -3211,17 +3211,17 @@ fn an_override_with_wider_parameters_keeps_the_result_and_block_types() {
         "class A\n  def f(x: Int) -> Int = x + 1\nend\nclass B < A\n  def f(x: Object) -> String = \"str\"\nend",
         "`f` returns String but `A#f`, which it overrides, returns Int",
     );
-    err(
-        "class A\n  def f(x: Int, &blk: (Int) -> Int) -> Int = yield x\nend\nclass B < A\n  def f(x: Int, &blk: (String) -> Int) -> Int = yield \"s\"\nend",
-        "`f` takes a block of type (String) -> Int but `A#f`, which it overrides, is given one of type (Int) -> Int",
-    );
+    // (Not an override: a block or a class's type parameter of another
+    // type makes an overload, which a call through the parent does not
+    // reach.)
+    ok("class A\n  def f(x: Int, &blk: (Int) -> Int) -> Int = yield x\nend\nclass B < A\n  def f(x: Int, &blk: (String) -> Int) -> Int = yield \"s\"\nend");
     // The interpreter also overrides where a parameter is a type
     // parameter (`same_signature`): the parameters must then take what
     // the overridden method's callers pass.
-    err(
-        "class A[T]\n  def f(x: T) -> T = x\nend\nclass B < A[Int]\n  def f(x: String) -> String = x\nend",
-        "`f` takes String for `x` but `A#f`, which it overrides, is given Int",
-    );
+    // (Not an override: a block or a class's type parameter of another
+    // type makes an overload, which a call through the parent does not
+    // reach.)
+    ok("class A[T]\n  def f(x: T) -> T = x\nend\nclass B < A[Int]\n  def f(x: String) -> String = x\nend");
     err(
         "class A\n  def f[U](x: U) -> U = x\nend\nclass B < A\n  def f(x: Int) -> String = \"s\"\nend",
         "`f` takes Int for `x` but `A#f`, which it overrides, is given U",
@@ -3387,10 +3387,10 @@ fn keywords_are_part_of_an_overrides_signature() {
     ok(&format!(
         "{kw}class Pt\n  include Kw\n  def kw(x: Int, *, y: Int = 1) -> String = \"kw\"\nend"
     ));
-    err(
-        "class A[T]\n  def g(x: Int, *, y: T) -> Int = x\nend\nclass B < A[Int]\n  def g(x: Int, *, y: String) -> Int = 1\nend",
-        "`g` takes String for `y` but `A#g`, which it overrides, is given Int",
-    );
+    // (Not an override: a block or a class's type parameter of another
+    // type makes an overload, which a call through the parent does not
+    // reach.)
+    ok("class A[T]\n  def g(x: Int, *, y: T) -> Int = x\nend\nclass B < A[Int]\n  def g(x: Int, *, y: String) -> Int = 1\nend");
 }
 
 /// `::name(...)` calls a function: the file's top-level `def`s of the
@@ -3557,4 +3557,33 @@ fn the_module_extended_last_comes_first() {
         "module First\n  def label -> Int = 1\nend\nmodule Second\n  def label -> String = \"s\"\nend\nclass Both\n  extend First\n  extend Second\nend",
         "`label` returns String but `First#label`, which it overrides, returns Int",
     );
+}
+
+#[test]
+fn methods_are_implemented_and_overridden_by_signature() {
+    // tmp/repro/include-hides-superclass-*.qz: a module's method a class
+    // includes over its superclass's of the same signature overrides it.
+    err(
+        "class A\n  @n: Int\n  def initialize(@n: Int)\n  end\n  def n -> Int = @n\nend\nclass B < A\n  def <(other: A) -> Int = 7\nend\nclass C < B\n  include Comparable[A]\n  def <=>(other: A) -> Int = 0\nend\ndef id(b: B) -> B = b\ndef m -> Int\n  x = id(C.new(5))\n  (x < A.new(1)) + 1\nend\nputs m",
+        "`<` returns Bool but `B#<`, which it overrides in `C`, which includes `Comparable`, returns Int",
+    );
+    err(
+        "class P\n  def sum -> String = \"p\"\nend\nclass X < P\n  include Enumerable[Int]\n  def each(&: (Int) -> Void) -> Void\n    yield(1)\n    yield(2)\n  end\nend\ndef id(p: P) -> P = p\ndef m -> Int\n  id(X.new).sum.size\nend\nputs m",
+        "`sum` returns Int but `P#sum`, which it overrides in `X`, which includes `Enumerable`, returns String",
+    );
+    // tmp/repro/abstract-impl-*.qz: an abstract method is implemented by
+    // signature, not by name.
+    err("class V\n  include Comparable[V]\n  @n: Int\n  def initialize(@n: Int)\n  end\n  def n -> Int = @n\n  def <=>(other: Int) -> Int = n <=> other\nend\ndef m -> Int\n  a = V.new(1)\n  b = V.new(2)\n  (a < b) ? 1 : 0\nend\nputs m", "`V` must implement `<=>` (abstract in `Comparable`)");
+    err("class Bag\n  include Enumerable[String]\n  def each(&: (Int) -> Void) -> Void\n    yield(1)\n  end\nend\ndef m -> Int\n  s = Bag.new.first\n  if s\n    s.size\n  else\n    0\n  end\nend\nputs m", "`Bag` must implement `each` (abstract in `Enumerable`)");
+    // tmp/repro/module-body-typed-by-own-order.qz,
+    // module-overrides-prelude-method.qz and
+    // superclass-module-hidden-by-prelude.qz: a module's method over one
+    // its includer's ancestors already have, `Object#to_s` among them.
+    err("module G\n  def who -> String = \"G\"\nend\nmodule R\n  def who -> Int = 1\nend\nmodule H\n  include R\n  include G\n  def g -> String = who + \"!\"\nend\nclass X\n  include G\n  include H\nend\nputs X.new.g", "`who` returns String but `R#who`, which it overrides in `H`, which includes `G`");
+    err("module M\n  def to_s -> Int = 3\nend\nclass C\n  include M\nend\ndef f(x: Object) -> String = x.to_s + \"!\"\nputs f(C.new)", "`to_s` returns Int but `Object#to_s`, which it overrides in `C`, which includes `M`");
+    err("module G\n  def between?(min: E, max: E) -> String = \"g\"\nend\nclass B\n  include G\nend\nclass E < B\n  include Comparable[E]\n  def <=>(other: E) -> Int = 0\nend\ndef id(v: B) -> B = v\ndef k -> String = id(E.new).between?(E.new, E.new) + \"!\"\nputs k", "`between?` returns Bool but `G#between?`, which it overrides in `E`, which includes `Comparable`");
+    // An abstract method passes over to a concrete one further up, and a
+    // module body's call reaches the implementation of its signature.
+    ok("class A\n  @n: Int\n  def initialize(@n: Int)\n  end\n  def n -> Int = @n\n  def <=>(other: A) -> Int = n <=> other.n\nend\nclass C < A\n  include Comparable[A]\nend\ndef m -> Int\n  x = C.new(5)\n  y: A = x\n  (y <=> A.new(1)) + (x <=> A.new(1))\nend\nputs m");
+    ok("class V\n  include Comparable[V]\n  @n: Int\n  def initialize(@n: Int)\n  end\n  def n -> Int = @n\n  def <=>(other: V) -> Int = n <=> other.n\nend\nclass W < V\n  @s: String\n  def initialize(@n: Int, @s: String)\n  end\n  def s -> String = @s\n  def <=>(other: W) -> Int = other.s.size\nend\ndef m -> Bool\n  a = V.new(1)\n  b = W.new(1, \"x\")\n  b < a\nend\nputs m");
 }
