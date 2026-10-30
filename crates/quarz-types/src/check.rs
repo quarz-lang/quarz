@@ -73,6 +73,10 @@ pub struct Output {
     /// the operator was checked with (for `quarz check --tree`).
     #[serde(default)]
     pub op_targets: FxHashMap<NodeId, Type>,
+    /// A block literal's declared result type (`do |x| -> T ... end`), by
+    /// the node id of the call it is given to (for `quarz check --tree`).
+    #[serde(default)]
+    pub block_results: FxHashMap<NodeId, Type>,
     pub calls: FxHashMap<NodeId, CallTarget>,
     pub const_targets: FxHashMap<NodeId, ConstTarget>,
     /// Variable occurrences (uses and definitions) keyed by their span.
@@ -780,6 +784,9 @@ pub struct Checker {
     /// The call of the `static(...)` being checked: it runs at compile
     /// time, so it may be compile-time only (docs/14 §8).
     static_expr_call: Option<NodeId>,
+    /// The method a block literal is being checked for, named in the
+    /// error when the block's declared result does not fit it.
+    block_callee: Option<String>,
     /// The calls whose checks disagreed on that, with where they are:
     /// reported once the check ends (`flush_ambiguous`), so that the
     /// order the checks ran in (a union's members) does not matter.
@@ -918,6 +925,7 @@ impl Checker {
             static_done: Vec::new(),
             quoted_seen: HashMap::default(),
             static_expr_call: None,
+            block_callee: None,
             quoted_conflicts: HashMap::default(),
             repl_unit: None,
             op_given_up: Default::default(),
@@ -2273,6 +2281,7 @@ impl Checker {
             .lifted_blocks
             .values_mut()
             .chain(self.out.op_targets.values_mut())
+            .chain(self.out.block_results.values_mut())
         {
             if t.has_vars() {
                 *t = self.infer.resolve(t);
@@ -9284,6 +9293,7 @@ impl Checker {
                     self.quoted_conflicts
                         .insert(expr.id, (self.env.file, expr.span));
                 }
+                self.block_callee = Some(call.name.clone());
                 self.check_block_as(expr.id, b, &resolved, is_task);
                 if quoted {
                     self.check_quotable_block(b);
@@ -9851,11 +9861,12 @@ impl Checker {
     }
 
     fn check_block_as(&mut self, call_id: NodeId, block: &Block, proc_ty: &Type, is_task: bool) {
-        let Type::Proc(recv, params, ret, shareable) = proc_ty else {
+        let callee = self.block_callee.take();
+        let Type::Proc(recv, params, ret, shareable0) = proc_ty else {
             self.error("internal: block type is not a procedure", block.span);
             return;
         };
-        let shareable = *shareable && !is_task;
+        let shareable = *shareable0 && !is_task;
         if shareable {
             self.out.shareable_procs.insert(call_id);
         }
@@ -9876,7 +9887,56 @@ impl Checker {
             }
         }
         let params = params.clone();
-        let ret = (**ret).clone();
+        // `do |x| -> T ... end`: the block's result is `T`, as a `def`'s
+        // return type is (checked and used; `-> Void` discards the body's
+        // value), and it must fit the callee's (an expected `Void` takes
+        // any).
+        let expected_ret = (**ret).clone();
+        let ret = match &block.ret {
+            Some(te) => {
+                let scope = self.env.scope.clone();
+                let declared = self
+                    .resolve_result_type_expr(te, &scope)
+                    .unwrap_or(Type::Nothing);
+                let expected_void = self.infer.resolve(&expected_ret) == Type::Void;
+                if !expected_void && !self.coerce(&declared, &expected_ret) {
+                    let expected_proc = Type::Proc(
+                        recv.clone(),
+                        params.clone(),
+                        Box::new(expected_ret.clone()),
+                        shareable,
+                    );
+                    self.error(
+                        format!(
+                            "the block is declared `-> {}` but {} expects {}",
+                            self.name(&declared),
+                            callee.map_or("the method".to_string(), |c| format!("`{c}`")),
+                            self.name(&expected_proc)
+                        ),
+                        te.span,
+                    );
+                }
+                // (A block checked more than once: what any check saw.)
+                let seen = match self.out.block_results.get(&call_id).cloned() {
+                    Some(old) if old != declared => self.join(&old, &declared),
+                    _ => declared.clone(),
+                };
+                self.out.block_results.insert(call_id, seen);
+                if lifted {
+                    self.out.lifted_blocks.insert(
+                        call_id,
+                        Type::Proc(
+                            recv.clone(),
+                            params.clone(),
+                            Box::new(declared.clone()),
+                            *shareable0,
+                        ),
+                    );
+                }
+                declared
+            }
+            None => expected_ret,
+        };
         self.widen_assigned(&block.body);
         self.prescan_repeated(&block.body, true);
         // A block the method may keep may run later, as a lambda may.
@@ -9998,9 +10058,11 @@ impl Checker {
         self.next_body_void = void;
         let bt = self.check_body(&block.body, if void { None } else { Some(&ret) });
         self.mark_discarded(block.body.last(), void);
-        // A task's result reaches the task that awaits it.
-        if is_task && !void && !bt.is_nothing() {
-            let rt = self.resolve(&bt);
+        // A task's result reaches the task that awaits it: the declared
+        // result, when there is one (a `next` may give any of it).
+        let result = if block.ret.is_some() { &ret } else { &bt };
+        if is_task && !void && !result.is_nothing() {
+            let rt = self.resolve(result);
             if !rt.has_vars() && !self.world.is_shareable(&rt) {
                 let span = block.body.last().map(|e| e.span).unwrap_or(block.span);
                 self.error(
@@ -10025,14 +10087,20 @@ impl Checker {
         }
         if !void && !bt.is_nothing() && !self.coerce(&bt, &ret) {
             let span = block.body.last().map(|e| e.span).unwrap_or(block.span);
-            self.error(
+            let message = if block.ret.is_some() {
+                format!(
+                    "block returns {} but is declared `-> {}`",
+                    self.name(&bt),
+                    self.name(&ret)
+                )
+            } else {
                 format!(
                     "block returns {} but {} was expected",
                     self.name(&bt),
                     self.name(&ret)
-                ),
-                span,
-            );
+                )
+            };
+            self.error(message, span);
         }
         let frame = self.env.frames.pop().unwrap();
         self.env.in_rescue = saved_rescue;

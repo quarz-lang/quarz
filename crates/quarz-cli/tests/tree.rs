@@ -53,7 +53,7 @@ fn a_narrowed_read_has_the_narrowed_type() {
         "def f(x: Int?) -> Int\n  if x\n    x + 1\n  else\n    0\n  end\nend\np f(1)\n",
     );
     assert!(ok);
-    assert_eq!(v["format"], 5);
+    assert_eq!(v["format"], 6);
     let mut all = Vec::new();
     nodes(&v["definitions"], &mut all);
     let int = class_id(&v, "Int");
@@ -112,4 +112,39 @@ fn constants_and_field_defaults_are_there() {
             assert!(v["node_types"].get(id.to_string()).is_some(), "{key} {id}");
         }
     }
+}
+
+/// A block literal's declared result type (`{ |x| -> T ... }`) is in
+/// `block_results`, by the id of the call it is given to: the body is
+/// checked against it, not against the callee's result.
+#[test]
+fn a_declared_block_result_is_in_the_tree() {
+    let (ok, out, v) = tree(
+        "block_result",
+        "p([1, 2].map { |x| -> Int | String x })\n[1].each { |x| x }\n",
+    );
+    assert!(ok, "{out}");
+    let results = v["block_results"].as_object().unwrap();
+    assert_eq!(results.len(), 1, "{results:?}");
+    let mut all = Vec::new();
+    nodes(&v["definitions"], &mut all);
+    nodes(&v["units"], &mut all);
+    let (id, t) = results.iter().next().unwrap();
+    let call = all
+        .iter()
+        .find(|(n, _)| n.to_string() == *id)
+        .map(|(_, n)| *n)
+        .unwrap();
+    assert_eq!(call["kind"]["Call"]["name"], "map", "{call}");
+    let members: Vec<u64> = t["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["id"].as_u64().unwrap())
+        .collect();
+    assert_eq!(
+        members,
+        vec![class_id(&v, "Int"), class_id(&v, "String")],
+        "{t}"
+    );
 }

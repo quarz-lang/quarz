@@ -910,3 +910,49 @@ fn a_generic_modules_static_defs_through_extend() {
     assert!(!ok);
     assert!(err.contains("`has` runs at compile time only"), "{err}");
 }
+
+#[test]
+fn a_declared_block_result_is_the_generated_methods() {
+    // docs/14 §5: `def_method(n) do -> T ... end` gives the method the
+    // result type `T`, checked against the body; an empty array's element
+    // type, which nothing settles otherwise, comes from it.
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        "class Base\n  static def self.labelled(n: Symbol) -> Void\n    def_method(n) do -> String | Int\n      \"label\"\n    end\n  end\n  static def self.none(n: Symbol) -> Void\n    def_method(n) { -> Array[Int] [] }\n  end\n  static def self.never(n: Symbol) -> Void\n    def_method(n) { -> Nothing raise \"never\" }\n  end\nend\n",
+    );
+    write(
+        &d.0,
+        "app.qz",
+        "require_relative \"lib\"\nclass A < Base\n  labelled :tag\n  none :ids\n  never :boom\nend\nv: String | Int = A.new.tag\np v, A.new.ids.push(1)\nbegin\n  A.new.boom\nrescue => e\n  p e.message\nend\n",
+    );
+    let expected = "\"label\"\n[1]\n\"never\"\n";
+    let (ok, out, err) = quarz(&d.0, &["run", "app.qz"], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(out, expected);
+    let (ok, _, err) = quarz(&d.0, &["build", "app.qz", "-o", "app.bin"], &[]);
+    assert!(ok, "{err}");
+    let run = Command::new(d.0.join("app.bin")).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&run.stdout), expected);
+    let (ok, out, err) = quarz(&d.0, &["check", "--expand", "app.qz"], &[]);
+    assert!(ok, "{err}");
+    for line in [
+        "  def tag -> String | Int = <block at lib.qz:3>\n",
+        "  def ids -> Array[Int] = <block at lib.qz:8>\n",
+        "  def boom -> Nothing = <block at lib.qz:11>\n",
+    ] {
+        assert!(out.contains(line), "{line:?} in {out}");
+    }
+    write(
+        &d.0,
+        "bad.qz",
+        "class Bad\n  static def self.wrong(n: Symbol) -> Void\n    def_method(n) do -> Int\n      \"not an int\"\n    end\n  end\nend\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", "bad.qz"], &[]);
+    assert!(!ok);
+    assert!(
+        err.contains("block returns String but is declared `-> Int`"),
+        "{err}"
+    );
+}

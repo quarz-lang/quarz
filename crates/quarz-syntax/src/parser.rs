@@ -1607,6 +1607,7 @@ impl<'src> Parser<'src> {
         self.push_scope(false);
         self.skip_newlines();
         let params = self.parse_block_params()?;
+        let ret = self.parse_block_result_type()?;
         let body = self.parse_statements(&[]);
         self.pop_scope();
         self.no_do = saved;
@@ -1618,7 +1619,7 @@ impl<'src> Parser<'src> {
             body,
             span,
             braces: true,
-            ret: None,
+            ret,
         })
     }
 
@@ -1631,6 +1632,7 @@ impl<'src> Parser<'src> {
         self.push_scope(false);
         self.skip_newlines();
         let params = self.parse_block_params()?;
+        let ret = self.parse_block_result_type()?;
         let body = self.parse_body_with_rescue(&[K::End])?;
         self.pop_scope();
         self.no_do = saved;
@@ -1642,7 +1644,7 @@ impl<'src> Parser<'src> {
             body,
             span,
             braces: false,
-            ret: None,
+            ret,
         })
     }
 
@@ -1661,6 +1663,77 @@ impl<'src> Parser<'src> {
         let params = params?;
         self.expect(&T::Pipe, "`|`")?;
         Ok(params)
+    }
+
+    /// A block's result type, after its parameters (`do |x: Int| -> Bool`,
+    /// `{ -> Void ... }`), when the `->` there starts a type rather than a
+    /// lambda that begins the body. What follows the `->` decides:
+    ///
+    /// | after `->` | reading |
+    /// |---|---|
+    /// | a constant, `::`, `cog`, `[` | type |
+    /// | `{`, `do`, `->`, an identifier but `shareable` | lambda |
+    /// | `shareable` | type if `(` follows it, else lambda (a parameter named `shareable`) |
+    /// | `(` then an identifier (`shareable` too, unless `(` or a constant follows it), `*`, `**`, `&` or an `@ivar` | lambda |
+    /// | `(` then a constant, `::`, `cog`, `[`, `(`, or `shareable` and `(` or a constant | type |
+    /// | `(` then `)` | `() -> R` read as a type: a type unless `{` or `do` follows (then a lambda `->() -> R { }`, read again) |
+    ///
+    /// The type is on the line of the parameters (or of `{`/`do`): a `->`
+    /// that begins a line begins the body. Newlines after the type are
+    /// skipped, as after the parameters. `|` is a union in it wherever the
+    /// block is (as in brackets: `parse_nested_type`).
+    fn parse_block_result_type(&mut self) -> PResult<Option<TypeExpr>> {
+        if !self.at(&T::Arrow) {
+            return Ok(None);
+        }
+        let after_newline = self.idx > 0 && matches!(self.tokens[self.idx - 1].kind, T::Newline);
+        if after_newline {
+            return Ok(None);
+        }
+        let ty_start = |k: &T| {
+            matches!(
+                k,
+                T::Const(_) | T::ColonColon | T::Keyword(K::Cog) | T::LBracket
+            )
+        };
+        let is_type = match self.kind_at(1).clone() {
+            k if ty_start(&k) => true,
+            T::Ident(w) if w == "shareable" => matches!(self.kind_at(2), T::LParen),
+            T::LParen => match self.kind_at(2).clone() {
+                k if ty_start(&k) || matches!(k, T::LParen) => true,
+                T::Ident(w) => {
+                    w == "shareable" && matches!(self.kind_at(3), T::LParen | T::Const(_))
+                }
+                T::RParen => {
+                    let mark = self.mark();
+                    let errors = self.diagnostics.len();
+                    self.bump();
+                    let lambda = match self.parse_type() {
+                        Ok(_) => self.at(&T::LBrace) || self.at_kw(K::Do),
+                        Err(_) => true,
+                    };
+                    self.reset(mark);
+                    self.diagnostics.truncate(errors);
+                    !lambda
+                }
+                _ => false,
+            },
+            T::LBrace | T::Keyword(K::Do) | T::Arrow | T::Ident(_) => false,
+            _ => {
+                let span = self.peek_at(1).span;
+                return Err(self.error_at(
+                    "expected a type after `->` (the block's result type) or a lambda",
+                    span,
+                ));
+            }
+        };
+        if !is_type {
+            return Ok(None);
+        }
+        self.bump();
+        let ty = self.parse_nested_type()?;
+        self.skip_newlines();
+        Ok(Some(ty))
     }
 
     // ----- primary expressions ---------------------------------------------

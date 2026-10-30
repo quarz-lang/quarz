@@ -83,8 +83,16 @@ fn block(out: &mut String, b: &Block) {
     out.push(' ');
     list(out, "block", |o| {
         params(o, &b.params);
+        block_ret(o, b);
         body(o, &b.body);
     });
+}
+
+/// A block's or lambda's declared result type, ` -> T`.
+fn block_ret(out: &mut String, b: &Block) {
+    if let Some(ret) = &b.ret {
+        let _ = write!(out, " -> {}", type_sexp(ret));
+    }
 }
 
 fn params(out: &mut String, ps: &Params) {
@@ -418,6 +426,7 @@ pub fn expr_to_sexp(expr: &Expr, out: &mut String) {
         }),
         Lambda(b) => list(out, "lambda", |o| {
             params(o, &b.params);
+            block_ret(o, b);
             body(o, &b.body);
         }),
         Magic(m) => {

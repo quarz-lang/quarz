@@ -154,6 +154,7 @@ impl Remap for Output {
     fn remap(&mut self, m: &IdMap) {
         values(&mut self.node_types, |t| t.remap(m));
         values(&mut self.op_targets, |t| t.remap(m));
+        values(&mut self.block_results, |t| t.remap(m));
         values(&mut self.calls, |t| t.remap(m));
         for (_, _, x) in &mut self.static_calls {
             method(m, x);
