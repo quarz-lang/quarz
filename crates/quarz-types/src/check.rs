@@ -69,6 +69,15 @@ pub type TypeArgs = Vec<(TypeParamId, Type)>;
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Output {
     pub node_types: FxHashMap<NodeId, Type>,
+    /// For a subclass that inherits a class method calling `new`: the
+    /// `initialize` of its own (of the first class from it that has one)
+    /// that takes what `new` passes for the parent's `init` (`None`:
+    /// nothing), the first of its overloads that does
+    /// (`check_inherited_constructors`): `(subclass, init, chosen)`. The
+    /// runtime builds the subclass with it (`RtClass::inherited_inits`).
+    /// Computed for the whole program on every check, not kept per file.
+    #[serde(default)]
+    pub inherited_inits: Vec<(ClassId, Option<MethodId>, MethodId)>,
     /// An op-assignment's target (`x += e`), the type of its current value
     /// the operator was checked with (for `quarz check --tree`).
     #[serde(default)]
@@ -1381,22 +1390,24 @@ impl Checker {
                 // The class methods and initialize between the subclass
                 // and the class that calls `new`.
                 let mut overrides = false;
-                let mut own_init = None;
+                let mut own_init: Option<Vec<MethodId>> = None;
                 let mut cur = Some(sid);
                 while let Some(c) = cur {
                     if c == cid {
                         break;
                     }
                     let class = self.world.class(c);
-                    if class.singleton_methods.contains_key(&mname) {
-                        overrides = true;
-                        break;
-                    }
                     if own_init.is_none() {
                         own_init = class
                             .methods
                             .get("initialize")
-                            .and_then(|ids| ids.first().copied());
+                            .filter(|ids| !ids.is_empty())
+                            .cloned();
+                    }
+                    // (Overridden, the method may still be reached through
+                    // `super`: its `initialize` is still looked for.)
+                    if class.singleton_methods.contains_key(&mname) {
+                        overrides = true;
                     }
                     cur = class.superclass.as_ref().and_then(|t| match t {
                         Type::Class(id, _) => Some(*id),
@@ -1406,12 +1417,33 @@ impl Checker {
                 let Some(sinit) = own_init else {
                     continue;
                 };
-                if overrides || reported.contains(&(sid, method)) {
+                // An override that calls `super` runs the method's `new` on
+                // the subclass: its choice is recorded where one fits (no
+                // error where none does: the override need not call it).
+                if overrides {
+                    if let Some(&chosen) = sinit
+                        .iter()
+                        .find(|&&o| self.inherited_init_fits(sid, init, o))
+                    {
+                        self.record_inherited_init(sid, init, chosen);
+                    }
                     continue;
                 }
-                let s = self.world.method(sinit).clone();
+                if reported.contains(&(sid, method)) {
+                    continue;
+                }
+                let s = self.world.method(sinit[0]).clone();
+                // The first of its overloads that takes the arguments: the
+                // one `new` runs for it (recorded for the runtime).
+                if let Some(&chosen) = sinit
+                    .iter()
+                    .find(|&&o| self.inherited_init_fits(sid, init, o))
+                {
+                    self.record_inherited_init(sid, init, chosen);
+                    continue;
+                }
                 // (Each `new` of the method is checked; one error each.)
-                if !self.inherited_init_fits(sid, init, sinit) && reported.insert((sid, method)) {
+                if reported.insert((sid, method)) {
                     let (sname, cname) = (
                         self.world.class(sid).name.clone(),
                         self.world.class(cid).name.clone(),
@@ -1430,6 +1462,15 @@ impl Checker {
                 }
             }
         }
+    }
+
+    /// Record that `sub` is built with `chosen` where `new` passes what
+    /// `init` takes (`Output::inherited_inits`), once.
+    fn record_inherited_init(&mut self, sub: ClassId, init: Option<MethodId>, chosen: MethodId) {
+        let entry = (sub, init, chosen);
+        let list = &mut self.out.inherited_inits;
+        list.retain(|(c, i, _)| (*c, *i) != (sub, init));
+        list.push(entry);
     }
 
     /// The fields `initialize` must assign (see `init`): every field and
@@ -12998,19 +13039,15 @@ impl crate::StaticHost for Checker {
         // The class generated into builds itself with the first
         // `initialize` from it up to (not including) `from`, the class
         // `new` was checked for, given what `new` passes for `init`.
-        let mut own = None;
+        let mut own: Option<Vec<MethodId>> = None;
         let mut cur = Some(class);
         while let Some(c) = cur {
             if c == from {
                 break;
             }
             let k = self.world.class(c);
-            if let Some(i) = k
-                .methods
-                .get("initialize")
-                .and_then(|ids| ids.first().copied())
-            {
-                own = Some(i);
+            if let Some(ids) = k.methods.get("initialize").filter(|ids| !ids.is_empty()) {
+                own = Some(ids.clone());
                 break;
             }
             cur = k.superclass.as_ref().and_then(|t| match t {
@@ -13018,9 +13055,17 @@ impl crate::StaticHost for Checker {
                 _ => None,
             });
         }
-        if let Some(own) = own.filter(|o| Some(*o) != init) {
-            let s = self.world.method(own).clone();
-            if !self.inherited_init_fits(class, init, own) {
+        if let Some(own) = own.filter(|o| !init.is_some_and(|i| o.contains(&i))) {
+            let s = self.world.method(own[0]).clone();
+            // The first of its overloads that takes the arguments (recorded
+            // for the runtime), else an error.
+            let chosen = own
+                .iter()
+                .copied()
+                .find(|&o| self.inherited_init_fits(class, init, o));
+            if let Some(chosen) = chosen {
+                self.record_inherited_init(class, init, chosen);
+            } else {
                 let cname = self.world.class(class).name.clone();
                 let mname = self.world.method(method).name.clone();
                 let oname = self.world.class(s.owner).name.clone();

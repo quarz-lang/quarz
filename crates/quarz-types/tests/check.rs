@@ -4107,3 +4107,15 @@ fn a_handle_cannot_pass_a_required_keyword() {
     // A defaulted keyword: the handle calls with the default.
     ok("class C\n  def k(*, x: Int = 4) -> Int = x\nend\np C.new.:k.call");
 }
+
+#[test]
+fn an_inherited_constructor_takes_the_first_overload_that_fits() {
+    // Any of the subclass's overloads may take what `new` passes: the
+    // first that does is the one the runtime builds it with.
+    let two = "class Two\n  @n: Int\n  def initialize(@n: Int); end\n  def self.mk(n: Int) -> Self = new(n)\nend\n";
+    ok(&format!("{two}class TwoSub < Two\n  def initialize(s: String)\n    @n = s.size\n  end\n  def initialize(@n: Int); end\nend"));
+    err(
+        &format!("{two}class TwoSub < Two\n  def initialize(s: String)\n    @n = s.size\n  end\n  def initialize(f: Float)\n    @n = 1\n  end\nend"),
+        "`TwoSub#initialize` does not take the arguments of `new` in `Two.mk`",
+    );
+}

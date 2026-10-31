@@ -360,7 +360,7 @@ impl Lowerer {
             .map(|f| f.expect("function lowered"))
             .collect();
         let file_names = self.files.iter().map(|f| f.name.clone()).collect();
-        let world = rtworld::build(world, self, file_names);
+        let world = rtworld::build(world, out, self, file_names);
         Delta {
             world,
             base: self.round_base,
@@ -763,7 +763,7 @@ impl Lowerer {
             .map(|f| f.expect("function lowered"))
             .collect();
         let file_names = self.files.iter().map(|f| f.name.clone()).collect();
-        let rt = rtworld::build(world, self, file_names);
+        let rt = rtworld::build(world, out, self, file_names);
         self.static_mode = false;
         self.static_retry = self.unchecked.clone();
         self.static_retry_consts = self.unchecked_consts.clone();

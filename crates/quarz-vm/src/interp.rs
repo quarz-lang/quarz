@@ -3386,8 +3386,10 @@ impl Interp {
 
     /// Allocate an instance and run its initializer.
     /// For `new` on a class method's receiver: the class the receiver
-    /// names (`class` or a subclass) and the `initialize` to run, the
-    /// nearest one declared between it and `class`, else `init`.
+    /// names (`class` or a subclass) and the `initialize` to run: the one
+    /// the checker chose among the subclass's overloads for `init`
+    /// (`RtClass::inherited_inits`), else the nearest one declared between
+    /// it and `class` (of `init`'s signature, or the first), else `init`.
     pub fn receiver_class_init(
         &self,
         recv: &Value,
@@ -3400,6 +3402,17 @@ impl Interp {
         };
         if cid == class {
             return (cid, init);
+        }
+        // The checker's choice among the subclass's overloads.
+        if let Some((_, chosen)) = self
+            .program
+            .world
+            .class(cid)
+            .inherited_inits
+            .iter()
+            .find(|(i, _)| *i == init)
+        {
+            return (cid, Some(*chosen));
         }
         for anc in &self.program.world.class(cid).ancestors {
             if *anc == class {

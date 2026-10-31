@@ -56,7 +56,7 @@ fn param_kind(k: ParamKind) -> RtParamKind {
     }
 }
 
-pub fn build(world: &World, lw: &Lowerer, file_names: Vec<String>) -> RtWorld {
+pub fn build(world: &World, out: &types::Output, lw: &Lowerer, file_names: Vec<String>) -> RtWorld {
     let classes: Vec<RtClass> = world
         .classes
         .iter()
@@ -139,6 +139,12 @@ pub fn build(world: &World, lw: &Lowerer, file_names: Vec<String>) -> RtWorld {
                 fields,
                 ivars,
                 module_init: !world.has_fields_to_assign(c.id, true),
+                inherited_inits: out
+                    .inherited_inits
+                    .iter()
+                    .filter(|(sub, _, _)| *sub == c.id)
+                    .map(|(_, init, chosen)| (*init, *chosen))
+                    .collect(),
                 methods: c
                     .methods
                     .iter()
