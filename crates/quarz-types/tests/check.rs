@@ -3886,3 +3886,32 @@ fn a_return_in_a_block_inside_a_lambda_leaves_the_lambda() {
         "lambda returns String but `return` has type Int",
     );
 }
+
+#[test]
+fn a_task_block_cannot_return() {
+    // It runs in another task, where the method around it is not running.
+    err(
+        "def m -> Int\n  Task.spawn { return 5 }.await\nend",
+        "`return` in a task's block",
+    );
+    err(
+        "def m -> Int\n  f = -> { Task.spawn { [1].each { |z| return z }\n  0 }.await }\n  f.call\nend",
+        "`return` in a task's block",
+    );
+    // `Task.timeout`'s block runs in a child task too.
+    err(
+        "def m -> Int\n  Task.timeout(1.second) { return 5 }\nend",
+        "`return` in a task's block",
+    );
+    // A lambda in the task's block is left by its own `return`.
+    ok("def m -> Int\n  Task.spawn { g = ->(y: Int) -> Int { [1].each { |z| return y + z }\n  0 }\n  g.call(2) }.await\nend");
+}
+
+#[test]
+fn a_return_in_a_lambda_in_initialize_leaves_the_lambda() {
+    ok("class C\n  @a: Int\n  def initialize\n    f = ->(y: Int) -> Int {\n      return 1 if y == 0\n      [1, 2].each { |z| return z + y if z == 2 }\n      0\n    }\n    @a = f.call(0)\n  end\nend");
+    err(
+        "class D\n  @a: Int\n  def initialize(n: Int)\n    return if n == 0\n    @a = n\n  end\nend",
+        "field `@a` is not assigned when `initialize` returns",
+    );
+}

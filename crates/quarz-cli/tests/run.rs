@@ -267,6 +267,55 @@ end
     );
 }
 
+/// A `return` from a kept block called after its method returned has no
+/// method to leave: the program ends with an error that says so.
+#[test]
+fn a_return_from_a_block_whose_method_returned() {
+    let dir = std::env::temp_dir().join(format!("quarz-run-late-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("late.qz");
+    std::fs::write(
+        &path,
+        r#"class K
+  var @b: ((Int) -> Int)? = nil
+  def keep(&b: (Int) -> Int) -> Void
+    @b = b
+  end
+  def fire -> Int
+    if (b = @b)
+      b.call(1)
+    else
+      0
+    end
+  end
+end
+def m(k: K) -> Int
+  k.keep { |x| return x + 12 }
+  0
+end
+k = K.new
+p m(k)
+p k.fire
+"#,
+    )
+    .unwrap();
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_quarz"))
+        .arg("run")
+        .arg(&path)
+        .output()
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "0\n");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains(
+            "RuntimeError: `return` from a block whose method or lambda has already returned"
+        ),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
 /// `quarz --version` prints Cargo's version of the workspace, which a
 /// release tag (`v` and the version) names too.
 #[test]
