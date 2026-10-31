@@ -1260,16 +1260,53 @@ impl Checker {
     /// of each subclass it is called on: a subclass that inherits the
     /// method must accept the same arguments in its `initialize` (keep
     /// it, or add only optional parameters), or override the method.
+    ///
+    /// Whether `own`, the `initialize` `sub` builds itself with, takes
+    /// what `new` passes for `init`, both seen from `sub` (the
+    /// superclasses' type arguments substituted: `IntBox < Box[Int]`
+    /// takes `Int` where `Box#initialize` takes `T`).
+    fn inherited_init_fits(&self, sub: ClassId, init: Option<MethodId>, own: MethodId) -> bool {
+        let params: Vec<Type> = self
+            .world
+            .class(sub)
+            .type_params
+            .iter()
+            .map(|p| Type::Param(p.id))
+            .collect();
+        let ancestors = self.world.ancestors(sub, &params);
+        let seen = |m: MethodId| -> MethodInfo {
+            let mut m = self.world.method(m).clone();
+            let Some((_, args)) = ancestors.iter().find(|(c, _)| *c == m.owner) else {
+                return m;
+            };
+            let map: HashMap<TypeParamId, Type> = self
+                .world
+                .class(m.owner)
+                .type_params
+                .iter()
+                .zip(args)
+                .map(|(p, a)| (p.id, a.clone()))
+                .collect();
+            for x in &mut m.params {
+                x.ty = x.ty.subst(&map);
+            }
+            if let Some((_, b)) = &mut m.block {
+                *b = b.subst(&map);
+            }
+            m
+        };
+        self.initialize_fits(init.map(seen).as_ref(), &seen(own))
+    }
+
     /// Whether `initialize` `s` takes what `new` passes for `init` (`None`:
     /// nothing): `init`'s positional parameters, by name too (a call may
     /// pass them by keyword), as types that hold them and optional where
     /// they were; its keywords by name; its `*rest`, `**opts` and block
     /// (`MethodInfo::block`); and only optional parameters besides.
-    fn initialize_fits(&self, init: Option<MethodId>, s: &MethodInfo) -> bool {
-        let Some(i) = init else {
+    fn initialize_fits(&self, init: Option<&MethodInfo>, s: &MethodInfo) -> bool {
+        let Some(p) = init else {
             return s.params.iter().all(|b| b.default.is_some());
         };
-        let p = self.world.method(i);
         let holds = |a: &ParamInfo, b: &ParamInfo| {
             a.name == b.name
                 && (a.ty == b.ty || self.world.is_subtype(&a.ty, &b.ty))
@@ -1369,7 +1406,7 @@ impl Checker {
                 }
                 let s = self.world.method(sinit).clone();
                 // (Each `new` of the method is checked; one error each.)
-                if !self.initialize_fits(init, &s) && reported.insert((sid, method)) {
+                if !self.inherited_init_fits(sid, init, sinit) && reported.insert((sid, method)) {
                     let (sname, cname) = (
                         self.world.class(sid).name.clone(),
                         self.world.class(cid).name.clone(),
@@ -12907,7 +12944,7 @@ impl crate::StaticHost for Checker {
         }
         if let Some(own) = own.filter(|o| Some(*o) != init) {
             let s = self.world.method(own).clone();
-            if !self.initialize_fits(init, &s) {
+            if !self.inherited_init_fits(class, init, own) {
                 let cname = self.world.class(class).name.clone();
                 let mname = self.world.method(method).name.clone();
                 let oname = self.world.class(s.owner).name.clone();

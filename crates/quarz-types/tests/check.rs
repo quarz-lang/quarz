@@ -3931,3 +3931,17 @@ fn a_task_block_cannot_break() {
     // inside the task's block leaves that.
     ok("a: Task[Int] = Task.spawn { next 5 }\nb: Int = Task.spawn { [1, 2].each { |z| break if z == 2 }\n  while true\n    break\n  end\n  7 }.await");
 }
+
+#[test]
+fn an_inherited_constructor_is_checked_with_the_superclass_arguments() {
+    // `IntBox < Box[Int]`: `initialize(@x: Int)` takes what `Box.mk`'s
+    // `new(v: T)` passes, with `T` = `Int`.
+    let base = "class Box[T]\n  @x: T\n  def initialize(@x: T); end\n  def self.mk(v: T) -> Self = new(v)\nend\n";
+    ok(&format!(
+        "{base}class IntBox < Box[Int]\n  def initialize(@x: Int); end\nend"
+    ));
+    err(
+        &format!("{base}class StrBox < Box[Int]\n  def initialize(s: String)\n    @x = s.size\n  end\nend"),
+        "`StrBox#initialize` does not take the arguments of `new` in `Box.mk`",
+    );
+}
