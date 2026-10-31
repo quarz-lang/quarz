@@ -60,6 +60,8 @@ Writing `Array[Int]` in expression context yields an expression denoting the typ
 | `Array::Builder[T]`, `Hash::Builder[K, V]`, `String::Builder`, `Bytes::Builder`, `Set::Builder[T]` | Mutable `Array` etc. | Mutable, task-local |
 | `Type[T]`, `Class` = `Type[Object]` | `Class` | A class as a value (§1): `name`, `==`, `<=`, the bound's class methods; `new` where the class is written. `Class` is a type alias of `Type[Object]`, the type of `obj.class`: a type, not a value; in a pattern or `when`, write `Type` (`case k in Type`) |
 
+The values of `Nil`, `Bool`, `Int`, `Float`, `String`, `Symbol` and `Range` are made by their literals (`String::Builder.new` builds a string), not with `new`, which is a compile error for them; `Array`, `Hash` and `Set` have `new`, and so have the other built-in classes that declare a `self.new`.
+
 Numeric operations have the same meaning as in Ruby: `7 / 2` is `3`, `-7 / 2` is `-4`, `7 % -2` is `-1`, `1 + 1.5` is `2.5`. Mixed operations are defined as overloads such as `Int#+(Float) -> Float`. Fixed-width integers (planned) and `Int` will never be mixed implicitly; conversions will be explicit, with `to_i`/`to_i64` and friends.
 
 ## 3. Generics

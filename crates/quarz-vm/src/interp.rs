@@ -3436,6 +3436,19 @@ impl Interp {
         block: Option<Value>,
     ) -> EvalResult {
         let info = self.program.world.class(class);
+        // (A value the runtime makes itself is no object of its class: the
+        // checker refuses `new` on such a class, this guards against it.
+        // Such classes have no fields, which most others pass by.)
+        if info.fields.is_empty() {
+            let b = &self.program.world.builtin;
+            let own = [
+                b.nil, b.bool_, b.int, b.integer, b.float, b.string, b.symbol, b.range, b.regexp,
+                b.proc_, b.task, b.channel, b.atom,
+            ];
+            if own.contains(&class) || self.program.world.class_is_a(class, b.class_) {
+                return Err(self.err_type(&format!("`{}` is not built with `new`", info.name)));
+            }
+        }
         // A data constructor given every physical field: copied in.
         if let Some(i) = init {
             if self.program.method(i).synth == RtSynth::DataInit
