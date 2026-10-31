@@ -7,7 +7,7 @@ import (
 
 func main() {
 	var b strings.Builder
-	for i := 0; i < 200000; i++ {
+	for i := 0; i < 1200000; i++ {
 		fmt.Fprintf(&b, "item %d, ", i)
 	}
 	s := b.String()

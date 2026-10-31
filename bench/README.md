@@ -1,6 +1,6 @@
 # Benchmarks
 
-Small programs used to profile the interpreter. Run them with a release build:
+Small programs used to profile the interpreter and compiled code; `fib`, `loop`, `collections`, `objects`, `strings` and `dispatch` take 20–125 ms each compiled (`quarz build`) and up to seconds interpreted. Run them with a release build:
 
 ```sh
 cargo build --release
@@ -11,13 +11,14 @@ done
 
 | Program | What it measures |
 | --- | --- |
-| `fib.qz` | method calls and integer arithmetic (`fib(27)`) |
-| `loop.qz` | `while` loops, local variables and `+=` (3 M iterations) |
+| `fib.qz` | method calls and integer arithmetic (`fib(37)`) |
+| `loop.qz` | `while` loops, local variables and `+=` (120 M iterations) |
 | `collections.qz` | `Array`/`Hash` building, `map`/`select`/`reduce` with blocks |
 | `objects.qz` | object construction, field access and dynamic dispatch |
 | `strings.qz` | string concatenation, interpolation and splitting |
-| `dispatch.qz` | calls to a method three classes override (900k dispatched calls) |
+| `dispatch.qz` | calls to a method three classes override (45 M dispatched calls) |
 | `toplevel_calls.qz` | calls of a top-level `def` from 4 tasks (12M calls), with `QUARZ_THREADS` workers |
-| `tak.qz` | recursive calls: the Takeuchi function `tak(3n, 2n, n)`, `n` from the command line (`quarz run bench/tak.qz 8`) |
+| `tak.qz` | recursive calls: the Takeuchi function `tak(3n, 2n, n)`, `n` from the command line (`quarz run bench/tak.qz 10`) |
+| `startup.qz` | one line printed: the start-up every other row includes |
 
 `compare/` holds the same programs in Go, Rust, Crystal and Ruby (which Spinel also compiles) and a script that times all of them side by side; see `compare/README.md` for the latest numbers.

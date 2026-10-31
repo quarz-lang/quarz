@@ -24,7 +24,7 @@ fn main() {
     let mut ps: Vec<Box<Particle>> = (0..1000)
         .map(|i| Box::new(Particle { pos: Vec2 { x: i as f64, y: 0.0 }, vel: Vec2 { x: 1.0, y: 0.5 } }))
         .collect();
-    for _ in 0..300 {
+    for _ in 0..15_000 {
         for p in ps.iter_mut() {
             p.step(0.01);
         }
