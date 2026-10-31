@@ -1,0 +1,66 @@
+# A class method calling `new`, inherited by a subclass with several
+# `initialize` overloads: the checker takes the first that fits what `new`
+# passes, and the runtime builds the subclass with it (not the first of the
+# same signature, nor the first declared).
+class Two
+  @n: Int
+  def initialize(@n: Int); end
+  def self.mk(n: Int) -> Self = new(n)
+  def n -> Int = @n
+end
+class TwoSub < Two
+  def initialize(n: String)
+    puts "str"
+    @n = n.size
+  end
+  def initialize(n: Object, &blk: (() -> Int)?)
+    puts "obj"
+    @n = 9
+  end
+end
+p TwoSub.mk(6).n
+# The parent passes a String; the subclass's first overload takes an Int
+# field (which a String would break), its second takes it.
+class Base
+  def initialize(s: String); end
+  def self.mk(s: String) -> Self = new(s)
+end
+class Sub < Base
+  @n: Int
+  def initialize(@n: Int); end
+  def initialize(s: Object, &blk: (() -> Int)?)
+    @n = s.to_s.size
+  end
+  def n -> Int = @n
+end
+p Sub.mk("hello").n
+# Through a generic superclass: `T` is `Int` for the subclass.
+class Box[T]
+  @x: T
+  def initialize(@x: T); end
+  def self.mk(v: T) -> Self = new(v)
+  def get -> T = @x
+end
+class IntBox < Box[Int]
+  def initialize(s: String)
+    @x = s.size
+  end
+  def initialize(@x: Int); end
+end
+p IntBox.mk(7).get
+# Overridden, the class method may still be reached through `super`: the
+# subclass's choice is recorded all the same.
+class TwoOver < Two
+  def initialize(s: String)
+    puts "over str"
+    @n = s.size
+  end
+  def initialize(@n: Int)
+    puts "over int"
+  end
+  def self.mk(n: Int) -> Self
+    puts "override"
+    super
+  end
+end
+p TwoOver.mk(8).n

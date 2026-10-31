@@ -188,6 +188,8 @@ pub(crate) fn unit_output(world: &World, out: &Output, base: u32, file: u32) -> 
     }
     Output {
         node_types: map!(node_types),
+        // (The whole program's, computed again on every check.)
+        inherited_inits: Vec::new(),
         op_targets: map!(op_targets),
         block_results: map!(block_results),
         lifted_blocks: map!(lifted_blocks),
