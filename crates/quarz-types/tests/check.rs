@@ -4243,3 +4243,24 @@ fn implicit_it() {
     // A parameterless block that does not say `it` still fits any block.
     ok("[1].each_with_index { puts 1 }\n[1].map { 2 }");
 }
+
+#[test]
+fn an_extensions_fields_have_its_parameters() {
+    // `extension Box[U]` of `class Box[T]`: `@x: T` is a `U` there.
+    let base = "class Box[T]\n  var @x: T\n  def initialize(@x: T); end\nend\n";
+    ok(&format!("{base}module E\n  extension Box[U]\n    def same -> U = @x\n    def put(v: U) -> Void\n      @x = v\n    end\n  end\nend"));
+    err(
+        &format!("{base}module E\n  extension Box[U]\n    def bad -> Int = @x\n  end\nend"),
+        "method `bad` returns Int but its body has type U",
+    );
+    // In a block run with another `Box[String]` for `self`, a `String`
+    // (in the class's methods too).
+    let peek = |ret: &str| {
+        format!("class Box[T]\n  var @x: T\n  def initialize(@x: T); end\n  def peek(o: Box[String]) -> {ret} = o.instance_exec {{ @x }}\nend")
+    };
+    err(
+        &peek("T"),
+        "no overload of `instance_exec` on Box[String] matches",
+    );
+    ok(&peek("String"));
+}

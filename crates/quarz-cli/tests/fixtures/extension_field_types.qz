@@ -1,0 +1,33 @@
+# In an extension of a generic class, a field is typed by the extension's
+# parameters (`extension Box[U]`: `@x: T` is a `U`), matched by position.
+class Box[T]
+  var @x: T
+  def initialize(@x: T); end
+  def get -> T = @x
+end
+class Pair[A, B]
+  @a: A
+  @b: B
+  def initialize(@a: A, @b: B); end
+end
+module E
+  extension Box[U]
+    def same -> U = @x
+    def replace(v: U) -> U
+      old = @x
+      @x = v
+      old
+    end
+  end
+  extension Pair[B, A]
+    def first -> B = @a
+    def second -> A = @b
+  end
+end
+using E
+b = Box.new(3)
+p b.same
+p b.replace(4)
+p b.get
+p Pair.new("s", 1).first
+p Pair.new("s", 1).second
