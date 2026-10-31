@@ -3979,3 +3979,34 @@ fn a_narrowed_type_parameter_has_the_classs_overrides() {
     // method: the tested module, included below the class, first.
     ok("module First\n  def fm -> Object = 1\nend\nclass C\n  include First\nend\nmodule M\n  def fm -> Int = 7\nend\ndef f[T <: C](v: T) -> Int\n  if v in M\n    v.fm + 1\n  else\n    0\n  end\nend");
 }
+
+#[test]
+fn a_type_parameter_cannot_have_a_builtin_types_name() {
+    // `extension Array[Int]`, `class Box[Int]` meant a type argument.
+    err(
+        "module E\n  extension Array[Int]\n    def total -> Int = 0\n  end\nend",
+        "`Int` cannot be a type parameter name: it is a built-in type (an extension's brackets declare type parameters, `extension Array[T]`; an extension for one instantiation is not supported)",
+    );
+    err(
+        "module E\n  extension Hash[String, V]\n    def any_value -> V? = nil\n  end\nend",
+        "`String` cannot be a type parameter name: it is a built-in type (an extension's brackets declare type parameters, `extension Hash[T, V]`",
+    );
+    err(
+        "class Box[Int]\nend",
+        "`Int` cannot be a type parameter name: it is a built-in type (name it `T`)",
+    );
+    err(
+        "def f[T, String](x: String) -> String = x",
+        "`String` cannot be a type parameter name: it is a built-in type (name it `U`)",
+    );
+    // A type the program declares is hidden, as any outer name (seen
+    // from where the parameter is declared).
+    ok("module Lib\n  class Time\n  end\n  class Q[Time]\n  end\nend");
+    // An extension's method: seen from the extension's namespace.
+    ok("module Lib\n  class Box\n  end\nend\nmodule App\n  class Time\n  end\n  extension Lib::Box\n    def foo[Time](x: Time) -> Time = x\n  end\nend");
+    err(
+        "module Lib\n  class Time\n  end\n  class Box\n  end\nend\nextension Lib::Box\n  def foo[Time](x: Time) -> Time = x\nend",
+        "`Time` cannot be a type parameter name",
+    );
+    ok("class T\nend\nmodule E\n  extension Array[T]\n    def second -> T? = self[1]?\n  end\nend\nclass Box[T]\nend\ndef id[T](x: T) -> T = x");
+}
