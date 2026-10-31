@@ -52,6 +52,29 @@ pub fn origin(dir: &Path) -> Option<(String, Option<String>)> {
     Some((url, (!prefix.is_empty()).then(|| prefix.to_string())))
 }
 
+/// The tags on the commit checked out in `dir`'s working tree; `None`
+/// when `dir` is in none (or git fails).
+pub fn tags_at_head(dir: &Path) -> Option<Vec<String>> {
+    let mut cmd = git();
+    cmd.arg("-C").arg(dir).args(["tag", "--points-at", "HEAD"]);
+    let out = run(cmd, "listing the tags at HEAD").ok()?;
+    Some(out.lines().map(str::to_string).collect())
+}
+
+/// The file `name` of `dir` as committed at HEAD; `None` when HEAD has
+/// none there (`dir` untracked, or in no working tree).
+pub fn at_head(dir: &Path, name: &str) -> Option<String> {
+    let mut cmd = git();
+    cmd.arg("-C").arg(dir).args(["rev-parse", "--show-prefix"]);
+    let prefix = run(cmd, "reading the directory in the repository").ok()?;
+    let mut cmd = git();
+    cmd.arg("-C")
+        .arg(dir)
+        .args(["show", &format!("HEAD:{}{name}", prefix.trim())])
+        .stderr(Stdio::null());
+    run(cmd, "reading a file at HEAD").ok()
+}
+
 /// The refs a remote advertises: (name, commit), with annotated tags
 /// peeled to their commits.
 pub fn ls_remote(url: &str) -> Result<Vec<(String, String)>, Error> {

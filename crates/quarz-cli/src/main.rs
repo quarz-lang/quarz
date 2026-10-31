@@ -362,6 +362,12 @@ enum CheckOutput {
 
 /// `quarz check [--tree | --expand]`: the output on standard output.
 fn check_file(target: &Target, mode: CheckOutput) -> ExitCode {
+    // For the cog's author: its tag and its manifest's version.
+    if let Target::App { root, .. } = target {
+        if let Some(warning) = quarz_cog::author_version_warning(root) {
+            eprintln!("quarz: {warning}");
+        }
+    }
     match load_and_check(target) {
         Some((checked, sources, _)) => {
             match mode {
