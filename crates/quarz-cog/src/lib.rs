@@ -850,8 +850,42 @@ impl<'a> Ctx<'a> {
         // and a cycle among the cogs (patched ones included), before
         // anything is fetched or written.
         for source in &reached {
-            let rev = &chosen[source].1;
-            check_local_patches(source, &nodes[&(source.clone(), rev.clone())].manifest)?;
+            let (version, rev) = &chosen[source];
+            let m = &nodes[&(source.clone(), rev.clone())].manifest;
+            check_local_patches(source, m)?;
+            // A version tag on a commit whose manifest writes another
+            // version: the tag decides, which its author may not know.
+            // (Printed whether or not the progress is: a warning.)
+            if m.cog.version_written
+                && Version::parse(&m.cog.version).is_some_and(|said| said != *version)
+            {
+                let said = Version::parse(&m.cog.version);
+                let url = source.url.clone();
+                // The commit's version tags (`vX.Y.Z`, build metadata
+                // and all).
+                let on_commit: Vec<(String, Version)> = self
+                    .remote_refs(&url)?
+                    .iter()
+                    .filter(|(_, c)| c == rev)
+                    .filter_map(|(n, _)| {
+                        let t = n.strip_prefix("refs/tags/")?;
+                        Some((t.to_string(), Version::parse_tag(t)?))
+                    })
+                    .collect();
+                // (Another version tag on the commit that agrees: silent.)
+                let agrees = on_commit.iter().any(|(_, v)| Some(v) == said.as_ref());
+                let tag = on_commit
+                    .into_iter()
+                    .find(|(_, v)| v == version)
+                    .map(|(t, _)| t)
+                    .filter(|_| !agrees);
+                if let Some(tag) = tag {
+                    eprintln!(
+                        "quarz: warning: {}'s Cog.toml says version = \"{}\", but its tag {tag} makes it {version} ({source}); the tag decides, so its author may want to correct the manifest",
+                        m.cog.name, m.cog.version
+                    );
+                }
+            }
         }
         let mut seen: Vec<(String, String, String, Option<Source>)> = reached
             .iter()
