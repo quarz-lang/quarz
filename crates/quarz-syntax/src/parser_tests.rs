@@ -832,3 +832,90 @@ fn block_parameter_defaults_end_at_the_pipe() {
     assert!(errors("f { |x| x | 2 }").is_empty());
     assert_eq!(sexp("a | b"), "(call (call _ a) | (call _ b))");
 }
+
+fn warnings(src: &str) -> Vec<String> {
+    parse(src)
+        .diagnostics
+        .into_iter()
+        .filter(|d| !d.is_error())
+        .map(|d| d.message)
+        .collect()
+}
+
+#[test]
+fn implicit_it() {
+    // A block declaring no parameters whose body says `it` takes it as
+    // its one parameter.
+    assert_eq!(
+        sexp("xs.map { it * 2 }"),
+        "(call (call _ xs) map (block (params it) (call it * 2)))"
+    );
+    assert_eq!(
+        sexp("xs.each do puts it end"),
+        "(call (call _ xs) each (block (params it) (call _ puts it)))"
+    );
+    let parsed = parse("xs.map { it }");
+    let ast = format!("{:?}", parsed.program);
+    assert!(ast.contains("implicit: true"), "{ast}");
+    // Without `it`, no parameter; outside a block, `it` is a call; a local
+    // `it` wins; `it(...)` and `it x` are calls.
+    assert_eq!(
+        sexp("xs.map { 1 }"),
+        "(call (call _ xs) map (block (params) 1))"
+    );
+    assert_eq!(sexp("it"), "(call _ it)");
+    assert!(sexp("xs.map { def f\n  it\nend }").contains("(call _ it)"));
+    assert_eq!(
+        sexp("it = 1\nxs.map { it }"),
+        "(= it 1)\n(call (call _ xs) map (block (params) it))"
+    );
+    assert_eq!(
+        sexp("xs.map { it(1) }"),
+        "(call (call _ xs) map (block (params) (call _ it 1)))"
+    );
+    // A nested block's `it` is its own.
+    assert_eq!(
+        sexp("a.each { |x| b.map { it + x } }"),
+        "(call (call _ a) each (block (params x) (call (call _ b) map (block (params it) (call it + x)))))"
+    );
+    assert!(warnings("a.each { |x| b.map { it + x } }").is_empty());
+    // Not in a block with parameters, nor in a lambda.
+    assert_eq!(
+        errors("xs.each { |x| p it }"),
+        ["`it` is not available in a block with parameters; use `x`"]
+    );
+    assert_eq!(
+        errors("f = -> { it }"),
+        ["`it` is not available in a lambda: a lambda declares its parameters (`->(x) { ... }`)"]
+    );
+    assert_eq!(
+        errors("a.each { f = -> { it } }"),
+        ["`it` is not available in a lambda: a lambda declares its parameters (`->(x) { ... }`)"]
+    );
+    // An inner block's `it` hides an enclosing block's, wherever the
+    // enclosing one says it.
+    let hidden = "`it` here is the inner block's argument and hides the enclosing block's `it`; give one of them a parameter";
+    assert_eq!(warnings("a.each { p it; b.each { p it } }"), [hidden]);
+    assert_eq!(warnings("a.each { b.each { p it }; p it }"), [hidden]);
+    assert_eq!(
+        warnings("a.each { b.each { |y| c.each { p it } }; p it }"),
+        [hidden]
+    );
+    assert!(warnings("a.each { b.each { p it } }").is_empty());
+    // `||` declares the block parameterless: no `it`.
+    assert_eq!(
+        errors("xs.map { || it }"),
+        ["`it` is not available in a block declared with `||`: declare its parameter (`|x|`)"]
+    );
+    // The shorthands `f(it:)`, `{it:}` and a pin `^it` say `it` too.
+    assert_eq!(
+        sexp("xs.map { f(it:) }"),
+        "(call (call _ xs) map (block (params it) (call _ f it: it)))"
+    );
+    assert!(sexp("xs.map { {it:} }").contains("(params it)"));
+    assert!(sexp("xs.map { case 1\nin ^it then 2\nend }").contains("(params it)"));
+    // A syntax error in a `def` inside a block leaves no scope behind.
+    let _ = parse("xs.map { def f(\n }\nit");
+    // A `def` inside starts afresh.
+    assert!(errors("a.each { p it; class C\n  def f\n    it\n  end\nend }").is_empty());
+}

@@ -584,6 +584,10 @@ pub struct Param {
     /// passed for this (block) parameter.
     pub usings: Vec<ConstPath>,
     pub span: Span,
+    /// `it`, the parameter of a block written without any that uses
+    /// `it` (docs/01 §9): the parser adds it.
+    #[serde(default)]
+    pub implicit: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

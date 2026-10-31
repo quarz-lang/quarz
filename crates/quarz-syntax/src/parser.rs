@@ -148,6 +148,27 @@ pub struct Parser<'src> {
     /// `depths[i]`: how many brackets, parentheses, braces and
     /// interpolations are open before token `i` (filled as far as needed).
     depths: Vec<u32>,
+    /// The blocks and lambdas being parsed, innermost last, for `it`;
+    /// a `Barrier` for each hard scope (a `def`, a class body), which
+    /// no `it` reaches through.
+    it_scopes: Vec<ItScope>,
+    /// For each local scope pushed, whether it is hard.
+    scope_hard: Vec<bool>,
+}
+
+/// What a bare `it` means in a block or lambda being parsed.
+enum ItScope {
+    Barrier,
+    Lambda,
+    /// A block declaring parameters (the first's name; `None` for `||`).
+    Params(Option<String>),
+    /// A block declaring none: `uses` is where its body first says `it`
+    /// (it then takes the parameter `it`); `inner` where blocks inside it
+    /// did, which hide it if it uses `it` too.
+    Bare {
+        uses: Option<Span>,
+        inner: Vec<Span>,
+    },
 }
 
 impl<'src> Parser<'src> {
@@ -174,6 +195,8 @@ impl<'src> Parser<'src> {
             pipe_ends_type: false,
             pipe_ends_expr: None,
             depths: Vec::new(),
+            it_scopes: Vec::new(),
+            scope_hard: Vec::new(),
         }
     }
 
@@ -361,10 +384,105 @@ impl<'src> Parser<'src> {
 
     fn push_scope(&mut self, hard: bool) {
         self.lexer.locals.push_scope(hard);
+        self.scope_hard.push(hard);
+        if hard {
+            self.it_scopes.push(ItScope::Barrier);
+        }
     }
 
     fn pop_scope(&mut self) {
         self.lexer.locals.pop_scope();
+        if self.scope_hard.pop() == Some(true) {
+            self.it_scopes.pop();
+        }
+    }
+
+    // ----- `it` ------------------------------------------------------------
+
+    /// A bare `it` that is no local: the argument of the innermost block,
+    /// if it declares no parameters (docs/01 §9); `None` where it is an
+    /// ordinary call (outside any block).
+    fn implicit_it(&mut self, span: Span) -> Option<Expr> {
+        let message = match self.it_scopes.last_mut()? {
+            ItScope::Barrier => return None,
+            ItScope::Bare { uses, .. } => {
+                uses.get_or_insert(span);
+                return Some(self.node(span, ExprKind::Local("it".to_string())));
+            }
+            ItScope::Params(Some(first)) => format!(
+                "`it` is not available in a block with parameters; use `{first}`"
+            ),
+            ItScope::Params(None) => {
+                "`it` is not available in a block declared with `||`: declare its parameter (`|x|`)"
+                    .to_string()
+            }
+            ItScope::Lambda => {
+                "`it` is not available in a lambda: a lambda declares its parameters (`->(x) { ... }`)"
+                    .to_string()
+            }
+        };
+        self.error_at(message, span);
+        Some(self.node(span, ExprKind::Local("it".to_string())))
+    }
+
+    /// Enter a block's body: `params` as declared, `listed` if written
+    /// between pipes (`||` too). The depth to leave it at.
+    fn enter_block_it(&mut self, params: &Params, listed: bool) -> usize {
+        let depth = self.it_scopes.len();
+        self.it_scopes.push(match params.list.first() {
+            Some(p) => ItScope::Params(Some(p.name.clone())),
+            None if listed => ItScope::Params(None),
+            None => ItScope::Bare {
+                uses: None,
+                inner: Vec::new(),
+            },
+        });
+        depth
+    }
+
+    /// Leave a block's body: a block declaring no parameters whose body
+    /// used `it` takes it as its one parameter.
+    fn leave_block_it(&mut self, params: &mut Params, depth: usize) {
+        // (A scope a syntax error left open inside is dropped.)
+        self.it_scopes.truncate(depth + 1);
+        let Some(ItScope::Bare { uses, inner }) = self.it_scopes.pop() else {
+            return;
+        };
+        let passed = match uses {
+            Some(span) => {
+                for s in inner {
+                    self.diagnostics.push(Diagnostic::warning(
+                        "`it` here is the inner block's argument and hides the enclosing block's `it`; give one of them a parameter",
+                        s,
+                    ));
+                }
+                params.list.push(Param {
+                    name: "it".to_string(),
+                    kind: ParamKind::Positional,
+                    ty: None,
+                    default: None,
+                    assigns_ivar: false,
+                    usings: Vec::new(),
+                    span,
+                    implicit: true,
+                });
+                vec![span]
+            }
+            None => inner,
+        };
+        // The nearest enclosing block declaring no parameters, if it uses
+        // `it`, is hidden there (through blocks with parameters and
+        // lambdas, not through a `def`).
+        for scope in self.it_scopes.iter_mut().rev() {
+            match scope {
+                ItScope::Barrier => break,
+                ItScope::Bare { inner, .. } => {
+                    inner.extend(passed);
+                    break;
+                }
+                ItScope::Params(_) | ItScope::Lambda => {}
+            }
+        }
     }
 
     // ----- statements ------------------------------------------------------
@@ -1669,6 +1787,8 @@ impl<'src> Parser<'src> {
     fn ident_value(&mut self, name: &str, span: Span) -> Expr {
         if self.is_local(name) {
             self.node(span, ExprKind::Local(name.to_string()))
+        } else if let Some(it) = (name == "it").then(|| self.implicit_it(span)).flatten() {
+            it
         } else {
             self.call_node(span, None, name.to_string(), vec![], None, false, false)
         }
@@ -1707,9 +1827,12 @@ impl<'src> Parser<'src> {
         self.in_comprehension = false;
         self.push_scope(false);
         self.skip_newlines();
-        let params = self.parse_block_params()?;
+        let listed = self.at(&T::Pipe) || self.at(&T::OrOr);
+        let mut params = self.parse_block_params()?;
         let ret = self.parse_block_result_type()?;
+        let it_depth = self.enter_block_it(&params, listed);
         let body = self.parse_statements(&[]);
+        self.leave_block_it(&mut params, it_depth);
         self.pop_scope();
         self.no_do = saved;
         self.in_comprehension = saved_comp;
@@ -1732,9 +1855,13 @@ impl<'src> Parser<'src> {
         self.in_comprehension = false;
         self.push_scope(false);
         self.skip_newlines();
-        let params = self.parse_block_params()?;
+        let listed = self.at(&T::Pipe) || self.at(&T::OrOr);
+        let mut params = self.parse_block_params()?;
         let ret = self.parse_block_result_type()?;
-        let body = self.parse_body_with_rescue(&[K::End])?;
+        let it_depth = self.enter_block_it(&params, listed);
+        let body = self.parse_body_with_rescue(&[K::End]);
+        self.leave_block_it(&mut params, it_depth);
+        let body = body?;
         self.pop_scope();
         self.no_do = saved;
         self.in_comprehension = saved_comp;
@@ -1986,7 +2113,23 @@ impl<'src> Parser<'src> {
                 if self.is_local(&name) && !(self.at(&T::LParen) && !self.peek().space_before) {
                     return Ok(self.node(start, ExprKind::Local(name)));
                 }
-                self.finish_call(None, name, false, start)
+                let call = self.finish_call(None, name, false, start)?;
+                // A bare `it`: a block's implicit parameter.
+                if let ExprKind::Call(c) = &call.kind {
+                    if c.name == "it"
+                        && c.recv.is_none()
+                        && c.args.is_empty()
+                        && c.block.is_none()
+                        && !c.has_parens
+                        && c.type_args.is_empty()
+                        && !c.function
+                    {
+                        if let Some(e) = self.implicit_it(call.span) {
+                            return Ok(e);
+                        }
+                    }
+                }
+                Ok(call)
             }
             T::Keyword(kw) => self.parse_keyword_expr(kw),
             T::DotDot | T::DotDotDot => self.parse_range(),
@@ -2478,6 +2621,7 @@ impl<'src> Parser<'src> {
                         ty: None,
                         default: None,
                         assigns_ivar: false,
+                        implicit: false,
                         usings: Vec::new(),
                         span: *span,
                     })
@@ -2570,6 +2714,7 @@ impl<'src> Parser<'src> {
                         ty: None,
                         default: None,
                         assigns_ivar: false,
+                        implicit: false,
                         usings: Vec::new(),
                         span: *span,
                     })
@@ -2619,25 +2764,17 @@ impl<'src> Parser<'src> {
         } else {
             None
         };
-        let (body, braces) = if self.at(&T::LBrace) {
-            let saved = self.no_do;
-            self.no_do = false;
-            self.bump();
-            let body = self.parse_statements(&[]);
-            self.expect(&T::RBrace, "`}`")?;
-            self.no_do = saved;
-            (body, true)
-        } else if self.at_kw(K::Do) {
-            let saved = self.no_do;
-            self.no_do = false;
-            self.bump();
-            let body = self.parse_body_with_rescue(&[K::End])?;
-            self.expect_kw(K::End)?;
-            self.no_do = saved;
-            (body, false)
-        } else {
-            self.pop_scope();
-            return Err(self.error_expected("`{` or `do` for the lambda body"));
+        let it_depth = self.it_scopes.len();
+        self.it_scopes.push(ItScope::Lambda);
+        let body = self.parse_lambda_body();
+        self.it_scopes.truncate(it_depth);
+        let (body, braces) = match body {
+            Ok(Some(b)) => b,
+            Ok(None) => {
+                self.pop_scope();
+                return Err(self.error_expected("`{` or `do` for the lambda body"));
+            }
+            Err(e) => return Err(e),
         };
         self.pop_scope();
         let span = self.span_from(start);
@@ -2651,6 +2788,30 @@ impl<'src> Parser<'src> {
                 ret,
             })),
         ))
+    }
+
+    /// A lambda's body and whether it is in braces; `None` before neither
+    /// `{` nor `do`.
+    fn parse_lambda_body(&mut self) -> PResult<Option<(Vec<Expr>, bool)>> {
+        if self.at(&T::LBrace) {
+            let saved = self.no_do;
+            self.no_do = false;
+            self.bump();
+            let body = self.parse_statements(&[]);
+            self.expect(&T::RBrace, "`}`")?;
+            self.no_do = saved;
+            Ok(Some((body, true)))
+        } else if self.at_kw(K::Do) {
+            let saved = self.no_do;
+            self.no_do = false;
+            self.bump();
+            let body = self.parse_body_with_rescue(&[K::End])?;
+            self.expect_kw(K::End)?;
+            self.no_do = saved;
+            Ok(Some((body, false)))
+        } else {
+            Ok(None)
+        }
     }
 
     fn parse_keyword_expr(&mut self, kw: K) -> PResult<Expr> {
@@ -3213,8 +3374,13 @@ impl<'src> Parser<'src> {
                 let expr = match self.kind().clone() {
                     T::Ident(name) => {
                         self.bump();
+                        let span = self.span_from(start);
                         if self.is_local(&name) {
                             self.node(start, ExprKind::Local(name))
+                        } else if let Some(it) =
+                            (name == "it").then(|| self.implicit_it(span)).flatten()
+                        {
+                            it
                         } else {
                             return Err(self.error_at(
                                 format!("`^{name}` must refer to a local variable"),
@@ -4467,6 +4633,7 @@ impl<'src> Parser<'src> {
             assigns_ivar,
             usings,
             span,
+            implicit: false,
         }))
     }
 }

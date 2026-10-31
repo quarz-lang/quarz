@@ -29,6 +29,24 @@ use quarz_types::Checked;
 /// The version of the format, bumped when it changes.
 const FORMAT: u32 = 8;
 
+/// An AST node as JSON, a block's implicit `it` (docs/01 §9) shown as the
+/// parameter it is.
+fn ast(node: Result<Value, serde_json::Error>) -> Value {
+    fn strip(v: &mut Value) {
+        match v {
+            Value::Object(o) => {
+                o.remove("implicit");
+                o.values_mut().for_each(strip);
+            }
+            Value::Array(a) => a.iter_mut().for_each(strip),
+            _ => {}
+        }
+    }
+    let mut v = node.unwrap_or(Value::Null);
+    strip(&mut v);
+    v
+}
+
 /// `Key.f(...)` (or `cog.f(...)`), a cog's public function (docs/10 §6),
 /// shown as the function call it is: `"function": true` and no receiver,
 /// as `::f(...)` is (the module is not evaluated, nor passed).
@@ -83,7 +101,7 @@ pub fn tree(checked: &Checked) -> Value {
                 "file": u.file,
                 "name": u.name,
                 "main_class": u.main_class,
-                "body": functions_as_such(world, out, serde_json::to_value(&u.body).unwrap_or(Value::Null)),
+                "body": functions_as_such(world, out, ast(serde_json::to_value(&u.body))),
             })
         })
         .collect();
@@ -99,11 +117,7 @@ pub fn tree(checked: &Checked) -> Value {
     let defs: Vec<Value> = defined
         .iter()
         .map(|id| match &world.method(*id).body {
-            Some(def) => functions_as_such(
-                world,
-                out,
-                serde_json::to_value(&**def).unwrap_or(Value::Null),
-            ),
+            Some(def) => functions_as_such(world, out, ast(serde_json::to_value(&**def))),
             None => Value::Null,
         })
         .collect();
@@ -119,7 +133,7 @@ pub fn tree(checked: &Checked) -> Value {
                 "name": c.name,
                 "owner": c.owner,
                 "type": c.ty.as_ref().map(ty),
-                "value": c.value.as_deref().map(|e| serde_json::to_value(e).unwrap_or(Value::Null)),
+                "value": c.value.as_deref().map(|e| ast(serde_json::to_value(e))),
             })
         })
         .collect();
@@ -133,7 +147,7 @@ pub fn tree(checked: &Checked) -> Value {
                 Some(json!({
                     "class": c.id,
                     "field": f.name,
-                    "value": serde_json::to_value(d).unwrap_or(Value::Null),
+                    "value": ast(serde_json::to_value(d)),
                 }))
             })
         })

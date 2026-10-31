@@ -4173,3 +4173,35 @@ fn the_both_receivers_warning_is_for_different_declarations() {
         "`label` is a method of both the block's receiver Named and the enclosing Lab",
     );
 }
+
+#[test]
+fn implicit_it() {
+    // `it` (docs/01 §9) is typed as the block's one argument.
+    ok("xs: Array[Int] = [1, 2].map { it * 2 }\nys: Array[String] = [1].map { it.to_s }");
+    err("[1].map { it.upcase }", "undefined method `upcase` for Int");
+    // A block type taking none, or two or more: an error.
+    err(
+        "[1].each_with_index { puts it }",
+        "`it` is the single argument of a one-parameter block; this block takes 2: write `|a, b|`",
+    );
+    err(
+        "loop { p it }",
+        "`it` is the single argument of a one-parameter block; this block takes none",
+    );
+    // A block with a receiver takes no argument either.
+    err(
+        "def f(&b: String.() -> Int) -> Void\nend\nf { it }",
+        "`it` is the single argument of a one-parameter block; this block takes none",
+    );
+    // A local `it` wins; a method `it` is called with parentheses.
+    ok("it = \"s\"\n[1].each { puts it.upcase }");
+    ok("class C\n  def it(n: Int) -> Int = n\n  def f -> Array[Int] = [1].map { it(2) + it }\nend");
+    // An inner block's `it` is its own, an enclosing block's parameter
+    // stays reachable.
+    ok("[[1]].each { |xs| xs.each { puts it + xs.size } }");
+    ok("[[1]].each { it.each { puts it + 1 } }");
+    // `||` stays a block of no parameters for overloads.
+    ok("class K\n  def run(&: () -> Void) -> Int\n    1\n  end\n  def run(&: (Int) -> Void) -> String\n    \"s\"\n  end\nend\nn: Int = K.new.run { || p 0 }\ns: String = K.new.run { p it }");
+    // A parameterless block that does not say `it` still fits any block.
+    ok("[1].each_with_index { puts 1 }\n[1].map { 2 }");
+}

@@ -11576,7 +11576,24 @@ impl Checker {
                 _ => {}
             }
         }
-        if declared.len() > param_types.len() {
+        // `it` (docs/01 §9): the argument of a one-parameter block.
+        let implicit = declared.first().filter(|p| p.implicit).map(|p| p.span);
+        if let Some(span) = implicit.filter(|_| params.len() != 1) {
+            let takes = match params.len() {
+                0 => "none".to_string(),
+                n => format!(
+                    "{n}: write `|{}|`",
+                    (0..n)
+                        .map(|i| ((b'a' + (i % 26) as u8) as char).to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            };
+            self.error(
+                format!("`it` is the single argument of a one-parameter block; this block takes {takes}"),
+                span,
+            );
+        } else if declared.len() > param_types.len() {
             self.error(
                 format!(
                     "block takes {} parameter(s) but {} are declared",
