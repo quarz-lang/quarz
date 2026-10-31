@@ -1582,13 +1582,13 @@ fn a_cogs_public_functions() {
     w.write("lib/src/e.qz", "public def inspect -> String = \"x\"\n");
     let err = w.fails("lib", &["test"]);
     assert!(
-        err.contains("a public function cannot be named `inspect`"),
+        err.contains("a public function cannot be named like a method of `Cog`: `Lib.inspect` is `Object#inspect`"),
         "{err}"
     );
     w.write("lib/src/e.qz", "public def version -> String = \"x\"\n");
     let err = w.fails("lib", &["test"]);
     assert!(
-        err.contains("a public function cannot be named `version`"),
+        err.contains("a public function cannot be named like a method of `Cog`: `Lib.version` is `Cog#version`"),
         "{err}"
     );
     std::fs::remove_file(w.path("lib/src/e.qz")).unwrap();
@@ -1622,4 +1622,65 @@ fn a_cog_is_a_dependency_or_a_dev_dependency() {
     w.write("app/Cog.toml", &format!("[cog]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\nT = {{ git = \"{}\", tag = \"v1.0.0\" }}\n\n[patch]\nT = {{ path = \"../t\" }}\n", w.url("t")));
     let tree = w.ok("app", &["cog", "tree"]);
     assert!(!tree.contains(".."), "{tree}");
+}
+
+#[test]
+fn a_cogs_root_module_is_a_cog() {
+    // docs/10 §6: a dependency's key (and `cog` inside it) is a `Cog`,
+    // which tells the manifest's name and version and the module's name.
+    let w = World::new();
+    w.write(
+        "lib/Cog.toml",
+        "[cog]\nname = \"greet-more\"\nversion = \"1.1.0\"\nmodule = \"GreetMore\"\n",
+    );
+    w.write(
+        "lib/src/a.qz",
+        "public def info -> String = \"#{cog.name} #{cog.version} #{cog.module_name}\"\npublic def me -> Cog = cog\n",
+    );
+    w.commit("lib", Some("v1.1.0"));
+    w.app(
+        &format!("GM = {{ git = \"{}\", tag = \"v1.1.0\" }}\n", w.url("lib")),
+        "p GM.info, GM.name, GM.version, GM.module_name\nx: Cog = GM\np x.name, x, GM.me.version\np cog.name, cog.module_name\n",
+    );
+    let expected = "\"greet-more 1.1.0 GreetMore\"\n\"greet-more\"\n\"1.1.0\"\n\"GreetMore\"\n\"greet-more\"\nGreetMore\n\"1.1.0\"\n\"app\"\n\"App\"\n";
+    assert_eq!(w.ok("app", &["run"]), expected);
+    let out = w.ok("app", &["build", "-o", "app.bin"]);
+    let _ = out;
+    let exe = Command::new(w.path("app/app.bin")).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&exe.stdout), expected);
+    // A `Cog` at run time too: through `Type`, in a type test, in a
+    // `case` over a union.
+    w.app(
+        &format!("GM = {{ git = \"{}\", tag = \"v1.1.0\" }}\n", w.url("lib")),
+        "def f(t: Type) -> String = t.name\np f(GM), f(Int), GM.is_a?(Cog), Int.is_a?(Cog), GM.class\ndef pick(n: Int) -> Cog | Int = n > 0 ? GM : n\nu = pick(1)\nr = case u\n    in Int then \"int\"\n    in Cog then \"cog \" + u.name\n    end\np r\n",
+    );
+    let expected = "\"greet-more\"\n\"Int\"\ntrue\nfalse\nCog\n\"cog greet-more\"\n";
+    assert_eq!(w.ok("app", &["run"]), expected);
+    w.ok("app", &["build", "-o", "app.bin"]);
+    let exe = Command::new(w.path("app/app.bin")).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&exe.stdout), expected);
+    // A script's `cog` is its file's; an application's test files read
+    // the application's.
+    w.write(
+        "s/my-tool_x.qz",
+        "p cog.name, cog.version, cog.module_name\n",
+    );
+    assert_eq!(
+        w.ok("s", &["run", "my-tool_x.qz"]),
+        "\"my-tool_x\"\n\"0.0.0\"\n\"MyToolX\"\n"
+    );
+    w.app("", "puts 1\n");
+    w.write(
+        "app/test/meta_test.qz",
+        "require \"test\"\nclass MetaTest < Test::Case\n  def test_meta -> Void = assert_equal(\"app 0.1.0 App\", \"#{cog.name} #{cog.version} #{cog.module_name}\")\nend\n",
+    );
+    let out = w.ok("app", &["test"]);
+    assert!(out.contains("1 tests, 1 assertions, 0 failures"), "{out}");
+    std::fs::remove_file(w.path("app/test/meta_test.qz")).unwrap();
+    w.app("", "x = Cog.new\nclass MyCog < Cog\nend\n");
+    let err = w.fails("app", &["check"]);
+    assert!(
+        err.contains("Cog") && err.contains("cannot inherit from `Cog`"),
+        "{err}"
+    );
 }

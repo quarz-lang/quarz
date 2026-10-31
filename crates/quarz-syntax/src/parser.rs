@@ -39,6 +39,10 @@ pub fn parse_with_bases(src: &str, span_base: u32, id_base: NodeId) -> Parsed {
 pub struct CogMeta {
     pub name: String,
     pub version: String,
+    /// What `cog.module_name` reads: the module the cog's declarations
+    /// live in (a library's root module), or would (the application's,
+    /// a script's).
+    pub module: String,
 }
 
 impl Default for CogMeta {
@@ -46,6 +50,7 @@ impl Default for CogMeta {
         CogMeta {
             name: "main".to_string(),
             version: "0.0.0".to_string(),
+            module: "Main".to_string(),
         }
     }
 }
@@ -2675,13 +2680,14 @@ impl<'src> Parser<'src> {
                     return self.maybe_type_app(expr);
                 }
                 self.bump();
-                // `cog.name` and `cog.version` are the manifest's, as
-                // literals.
+                // `cog.name`, `cog.version` and `cog.module_name` are the
+                // manifest's, as literals.
                 if self.at(&T::Dot) && !matches!(self.kind_at(2), T::LParen) {
                     if let T::Ident(field) = self.kind_at(1).clone() {
                         let value = match field.as_str() {
                             "name" => Some(self.cog.name.clone()),
                             "version" => Some(self.cog.version.clone()),
+                            "module_name" => Some(self.cog.module.clone()),
                             _ => None,
                         };
                         if let Some(value) = value {

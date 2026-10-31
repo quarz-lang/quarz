@@ -370,7 +370,9 @@ pub struct ClassInfo {
 /// A cog (package) of the movement being checked.
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct CogInfo {
+    /// `[cog] name` and `version`, what `Cog#name` and `Cog#version` give.
     pub name: String,
+    pub version: String,
     /// The module its declarations live in; `None` for the application,
     /// whose declarations are at the top level.
     pub root: Option<ClassId>,
@@ -388,6 +390,8 @@ impl ClassInfo {
 /// Ids of the classes the checker needs to know by name.
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Builtin {
+    /// `Cog`: the type of a cog's root module as a value (docs/10 §6).
+    pub cog: ClassId,
     pub object: ClassId,
     pub nil: ClassId,
     pub bool_: ClassId,
@@ -1649,6 +1653,12 @@ impl World {
                     _ => false,
                 }
             }
+            // A cog's root module as a value is a `Cog` (docs/10 §6).
+            (Type::ClassObject(a, _), Type::Class(b, _))
+                if *b == self.builtin.cog && self.class(*a).cog.is_some() =>
+            {
+                true
+            }
             (Type::ClassObject(..) | Type::TypeOf(_), Type::Class(b, bargs))
                 if *b == self.builtin.class_ =>
             {
@@ -1964,6 +1974,12 @@ impl World {
                             }
                         }
                     }
+                }
+                // A cog's root module: `Cog`'s methods (its `name`, its
+                // `version`), before `Type`'s (docs/10 §6).
+                if self.class(*id).cog.is_some() {
+                    let own = self.class(self.builtin.cog).methods.get(name);
+                    out.extend(own.into_iter().flatten().map(|m| (*m, HashMap::default())));
                 }
                 // Class objects are objects too: `Type[T]`'s methods.
                 let instance = Type::Class(*id, args.clone());

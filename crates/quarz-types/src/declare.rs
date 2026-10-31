@@ -159,6 +159,8 @@ fn arities_meet(a: &[ParamInfo], b: &[ParamInfo]) -> bool {
 #[derive(Clone, Debug)]
 pub struct CogDecl {
     pub name: String,
+    /// `[cog] version`: what `Cog#version` gives.
+    pub version: String,
     /// The module its declarations live in; `None` for the application.
     pub module: Option<String>,
     /// Dependencies: the key of the manifest and the index of the cog.
@@ -241,6 +243,7 @@ impl<'ast> Declarer<'ast> {
             });
             self.world.cogs.push(CogInfo {
                 name: cog.name.clone(),
+                version: cog.version.clone(),
                 root,
                 imports: HashMap::default(),
             });
@@ -3441,6 +3444,7 @@ impl<'ast> Declarer<'ast> {
             meta_expr,
             meta_method_ref,
             quoted: get(w, "Quoted"),
+            cog: get(w, "Cog"),
             object: get(w, "Object"),
             nil: get(w, "Nil"),
             bool_: get(w, "Bool"),
@@ -3556,7 +3560,13 @@ impl<'ast> Declarer<'ast> {
                         if matches!(&t, Type::Class(sid, _) if self.world.class_is_a(*sid, class_))
                             && self.world.class(id).file != 0
                         {
-                            self.error("cannot inherit from `Type`", sup.span);
+                            let named = if matches!(&t, Type::Class(sid, _) if *sid == self.world.builtin.cog)
+                            {
+                                "Cog"
+                            } else {
+                                "Type"
+                            };
+                            self.error(format!("cannot inherit from `{named}`"), sup.span);
                         } else {
                             match &t {
                                 Type::Class(sid, _)
@@ -3867,33 +3877,28 @@ impl<'ast> Declarer<'ast> {
                 }
                 ExprKind::MethodDef(def) => {
                     let vis = def.visibility.unwrap_or(visibility);
-                    // `Lib.name` is the class object's method of the name
-                    // (`Type#name`): a public function cannot take it.
+                    // `Lib.name` is the root module's own method of the
+                    // name, a `Cog`'s (docs/10 §6): a public function cannot
+                    // take it.
                     if in_cog_file && vis == Visibility::Public {
-                        let class_ = self.world.builtin.class_;
+                        let cog = self.world.builtin.cog;
                         let taken = self
                             .world
-                            .ancestor_ids(class_)
+                            .ancestor_ids(cog)
                             .into_iter()
                             .find(|a| self.world.class(*a).methods.contains_key(&def.name));
-                        let module = self
-                            .world
-                            .class(self.world.cog_root(Some(id)).unwrap_or(id))
-                            .name
-                            .clone();
                         if let Some(owner) = taken {
+                            let module = self
+                                .world
+                                .class(self.world.cog_root(Some(id)).unwrap_or(id))
+                                .name
+                                .clone();
                             self.error(
                                 format!(
-                                    "a public function cannot be named `{0}`: `{module}.{0}` is `{1}#{0}`, the module's own; name it otherwise",
+                                    "a public function cannot be named like a method of `Cog`: `{module}.{0}` is `{1}#{0}`; name it otherwise",
                                     def.name,
                                     self.world.class(owner).name
                                 ),
-                                def.span,
-                            );
-                        } else if def.name == "version" {
-                            // (`cog.version` is the manifest's, docs/10 §6.)
-                            self.error(
-                                "a public function cannot be named `version`: `cog.version` is the cog's version, from its manifest; name it otherwise",
                                 def.span,
                             );
                         }

@@ -1383,6 +1383,10 @@ pub struct RtClass {
     #[serde(default)]
     pub objects: bool,
     pub file: u32,
+    /// A library cog's root module: the cog's `[cog] name` and `version`,
+    /// what `Cog#name` and `Cog#version` give.
+    #[serde(default)]
+    pub cog: Option<(String, String)>,
 }
 
 impl RtClass {
@@ -1563,6 +1567,9 @@ pub struct RtBuiltin {
     pub regexp: ClassId,
     pub proc_: ClassId,
     pub class_: ClassId,
+    /// `Cog`: the class of a cog's root module as a value (docs/10 §6).
+    #[serde(default)]
+    pub cog: ClassId,
     pub task: ClassId,
     pub channel: ClassId,
     pub atom: ClassId,
