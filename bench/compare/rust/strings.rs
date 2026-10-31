@@ -1,7 +1,7 @@
 use std::fmt::Write;
 fn main() {
     let mut s = String::new();
-    for i in 0..200_000 {
+    for i in 0..1_200_000 {
         write!(s, "item {i}, ").unwrap();
     }
     println!("{}", s.chars().count());

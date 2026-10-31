@@ -1,5 +1,5 @@
 s = String.build do |b|
-  200_000.times { |i| b << "item #{i}, " }
+  1_200_000.times { |i| b << "item #{i}, " }
 end
 puts s.size
 words = s.split(", ")

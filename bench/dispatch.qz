@@ -25,5 +25,5 @@ shapes: Array[Shape] = []
   shapes = shapes.push(Tri.new(i.to_f, 3.0))
 end
 total = 0.0
-1000.times { shapes.each { |s| total += s.area } }
+50_000.times { shapes.each { |s| total += s.area } }
 puts total.round(1)

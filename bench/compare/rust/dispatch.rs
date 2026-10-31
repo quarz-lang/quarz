@@ -36,7 +36,7 @@ fn main() {
         shapes.push(Box::new(Tri { b: f, h: 3.0 }));
     }
     let mut total = 0.0;
-    for _ in 0..1000 {
+    for _ in 0..50_000 {
         for s in &shapes {
             total += s.area();
         }

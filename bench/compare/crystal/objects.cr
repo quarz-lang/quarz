@@ -17,5 +17,5 @@ class Particle
   end
 end
 ps = Array.new(1000) { |i| Particle.new(Vec2.new(i.to_f, 0.0), Vec2.new(1.0, 0.5)) }
-300.times { ps.each { |p| p.step(0.01) } }
+15_000.times { ps.each { |p| p.step(0.01) } }
 puts ps[0].pos.x.round(2)

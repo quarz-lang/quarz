@@ -22,7 +22,7 @@ func main() {
 		shapes = append(shapes, &Circle{f}, &Rect{f, 2.0}, &Tri{f, 3.0})
 	}
 	total := 0.0
-	for k := 0; k < 1000; k++ {
+	for k := 0; k < 50000; k++ {
 		for _, s := range shapes {
 			total += s.Area()
 		}

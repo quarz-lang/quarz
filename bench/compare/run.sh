@@ -1,10 +1,12 @@
 #!/bin/sh
 # Compare Quarz (VM and compiled) with Go, Rust, Crystal, Spinel and
 # Ruby on bench/*.qz and their transcriptions here. Prints the best
-# wall-clock time of several runs for each program, in milliseconds.
+# wall-clock time of several runs for each program, in milliseconds,
+# then how many runs each took: after a first run of t ms,
+# clamp(round(20000 / t), 3, 20) in all (RUNS=n makes it n everywhere).
 #
 #   cargo build --release
-#   PATH="$HOME/go-sdk/bin:$PATH" RUNS=10 taskset -c 3 bench/compare/run.sh
+#   PATH="$HOME/go-sdk/bin:$PATH" taskset -c 3 bench/compare/run.sh
 #
 # Go, rustc and ruby must be on the path. Crystal and Spinel are used
 # when found: CRYSTAL names the compiler (default `crystal`, with
@@ -14,12 +16,13 @@
 set -e
 cd "$(dirname "$0")/../.."
 out=$(mktemp -d)
-runs=${RUNS:-5}
+counts=$(mktemp)
+trap 'rm -rf "$out" "$counts"' EXIT
 quarz=./target/release/quarz
 crystal=${CRYSTAL:-crystal}
 spinel=${SPINEL:-spinel}
 have() { command -v "$1" >/dev/null 2>&1; }
-programs="fib loop collections objects strings dispatch tak"
+programs="startup fib loop collections objects strings dispatch tak"
 mkdir -p "$out/bin"
 for b in $programs; do
   $quarz build bench/$b.qz -o "$out/bin/aot_$b"
@@ -37,28 +40,37 @@ for b in $programs; do
     "$spinel" bench/compare/ruby/$b.rb -o "$out/bin/spinel_$b" >/dev/null 2>&1
   fi
 done
-# Best wall-clock time of `runs` runs of a command, in milliseconds; `-`
-# when its program was not built.
+# Best wall-clock time of a command's runs, in milliseconds, and their
+# number (`TIME RUNS`); `- -` when its program was not built.
 best() {
   if [ ! -x "$1" ] && ! have "$1"; then
-    printf -- "-"
+    printf -- "- -"
     return
   fi
   min=
-  for _ in $(seq "$runs"); do
+  runs=${RUNS:-}
+  i=0
+  while [ -z "$runs" ] || [ "$i" -lt "$runs" ]; do
     start=$(date +%s%N)
     "$@" >/dev/null
     end=$(date +%s%N)
     t=$(( (end - start) / 100000 ))
     if [ -z "$min" ] || [ "$t" -lt "$min" ]; then min=$t; fi
+    i=$((i + 1))
+    if [ -z "$runs" ]; then
+      # About 20 s of runs in all, from the first one's time (in 0.1 ms).
+      runs=$(( (200000 + t / 2) / (t > 0 ? t : 1) ))
+      [ "$runs" -lt 3 ] && runs=3
+      [ "$runs" -gt 20 ] && runs=20
+    fi
   done
-  printf "%d.%d" $((min / 10)) $((min % 10))
+  printf "%d.%d %d" $((min / 10)) $((min % 10)) "$runs"
 }
-# The same output everywhere (numbers compared as numbers: `3.0` and
-# `3.00` agree).
+# The same output everywhere (numbers with a decimal point compared as
+# numbers to 15 digits: `3.0` and `3.00` agree; integers as written).
 norm() {
   awk '{ for (i = 1; i <= NF; i++) {
-           if ($i ~ /^-?[0-9]+(\.[0-9]+)?$/) printf "%.10g\n", $i; else print $i } }'
+           if ($i ~ /^-?[0-9]+\.[0-9]+$/) printf "%.15g\n", $i; else print $i } }'
 }
 check() {
   want=$("$out/bin/aot_$1" $2 | norm)
@@ -76,14 +88,17 @@ check() {
     fi
   done
 }
-printf "%-13s %9s %9s %7s %7s %7s %7s %8s %8s\n" program quarz-vm quarz-aot \
-  go rust crystal spinel ruby ruby-yjit
+header() {
+  printf "%-14s %9s %9s %7s %7s %7s %7s %8s %8s\n" "$1" quarz-vm quarz-aot \
+    go rust crystal spinel ruby ruby-yjit
+}
+# A row of times, and its run counts kept for the second table.
 row() {
   name=$1
   b=$2
   arg=$3
   check "$b" "$arg"
-  printf "%-13s %9s %9s %7s %7s %7s %7s %8s %8s\n" "$name" \
+  set -- \
     "$(best $quarz run bench/$b.qz $arg)" \
     "$(best "$out/bin/aot_$b" $arg)" \
     "$(best "$out/bin/go_$b" $arg)" \
@@ -92,11 +107,17 @@ row() {
     "$(best "$out/bin/spinel_$b" $arg)" \
     "$(best ruby bench/compare/ruby/$b.rb $arg)" \
     "$(best ruby --yjit bench/compare/ruby/$b.rb $arg)"
+  printf "%-14s %9s %9s %7s %7s %7s %7s %8s %8s\n" "$name" \
+    "${1% *}" "${2% *}" "${3% *}" "${4% *}" "${5% *}" "${6% *}" "${7% *}" "${8% *}"
+  printf "%-14s %9s %9s %7s %7s %7s %7s %8s %8s\n" "$name" \
+    "${1#* }" "${2#* }" "${3#* }" "${4#* }" "${5#* }" "${6#* }" "${7#* }" "${8#* }" >>"$counts"
 }
-for b in fib loop collections objects strings dispatch; do
+header program
+for b in startup fib loop collections objects strings dispatch; do
   row "$b" "$b" ""
 done
-row "tak(24,16,8)" tak 8
-row "tak(27,18,9)" tak 9
-echo "(milliseconds; best of $runs runs)"
-rm -rf "$out"
+row "tak(30,20,10)" tak 10
+echo "(milliseconds, best of the runs below; process start-up included)"
+echo
+header runs
+cat "$counts"

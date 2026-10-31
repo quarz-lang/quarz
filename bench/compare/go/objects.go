@@ -16,7 +16,7 @@ func main() {
 	for i := range ps {
 		ps[i] = &Particle{Vec2{float64(i), 0}, Vec2{1, 0.5}}
 	}
-	for t := 0; t < 300; t++ {
+	for t := 0; t < 15000; t++ {
 		for _, p := range ps {
 			p.Step(0.01)
 		}

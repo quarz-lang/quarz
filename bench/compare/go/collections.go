@@ -4,7 +4,7 @@ import "fmt"
 
 func main() {
 	acc := []int{}
-	for i := 0; i < 1000000; i++ {
+	for i := 0; i < 8000000; i++ {
 		acc = append(acc, i)
 	}
 	fmt.Println(len(acc))
@@ -24,12 +24,12 @@ func main() {
 	}
 	fmt.Println(total)
 	h := map[int]int{}
-	for i := 0; i < 200000; i++ {
+	for i := 0; i < 1600000; i++ {
 		h[i] = i * 2
 	}
 	fmt.Println(len(h))
 	s := 0
-	for x := 1; x <= 1000000; x++ {
+	for x := 1; x <= 8000000; x++ {
 		s += x
 	}
 	fmt.Println(s)
