@@ -1,0 +1,78 @@
+# A class method called on class objects no class test tells apart
+# (`Type[Kind] | Type[T]`, in a block checked once per member), whose
+# methods override one: the receiver's own runs, a deeper override too.
+class Kind
+  def initialize; end
+  def self.k -> String = "kind"
+  def self.k(x: Int) -> String = "kind #{x}"
+end
+class SubKind < Kind
+  def self.k -> String = "sub"
+end
+class Deeper < SubKind
+  def self.k -> String = "deeper"
+end
+class Plain < SubKind
+end
+def f[T <: SubKind](c: Type[Kind] | Type[T]) -> String = c.then { |x| x.k }
+def g[T <: SubKind](c: Type[Kind] | Type[T]) -> String = c.then { |x| x.k(2) }
+def h[T <: SubKind](c: Type[Kind] | Type[T]) -> String = c.then { |x| x.:k.call }
+p f(Kind)
+p f(SubKind)
+p f(Deeper)
+p f(Plain)
+p g(Deeper)
+p h(Deeper)
+p h(Kind)
+# With no override below the subclass's: `.:k` and `&:k` name the base, so a
+# base receiver runs its own.
+class Base2
+  def initialize; end
+  def self.k -> String = "base2"
+end
+class Sub2 < Base2
+  def self.k -> String = "sub2"
+end
+def by_ref[T <: Sub2](c: Type[Base2] | Type[T]) -> String = c.then { |x| x.:k.call }
+def by_symbol[T <: Sub2](c: Type[Base2] | Type[T]) -> String = c.then(&:k)
+p by_ref(Base2)
+p by_ref(Sub2)
+p by_symbol(Base2)
+p by_symbol(Sub2)
+# Checked again in an outer block's checks: the same.
+def nested[T <: Sub2](v: Int | String, c: Type[Base2] | Type[T]) -> String = v.then { |y| c.then { |x| x.k } }
+p nested(1, Base2)
+p nested("s", Sub2)
+# Two siblings' overrides of the base's, the base itself too, in any order.
+class Left < Base2
+  def self.k -> String = "left"
+end
+class Right < Base2
+  def self.k -> String = "right"
+end
+def siblings[T <: Left, U <: Right](t: Type[T], u: Type[U], which: Int) -> String
+  c: Type[T] | Type[U] | Type[Base2] = if which == 0
+    t
+  elsif which == 1
+    u
+  else
+    Base2
+  end
+  c.then { |x| x.k }
+end
+p siblings(Left, Right, 0)
+p siblings(Left, Right, 1)
+p siblings(Left, Right, 2)
+# `&:k` outside a block, the type parameter first, and on two siblings.
+def symbol_first[T <: Sub2](t: Type[T], base: Bool) -> String
+  c: Type[T] | Type[Base2] = base ? Base2 : t
+  c.then(&:k)
+end
+def symbol_siblings[T <: Left, U <: Right](t: Type[T], u: Type[U], left: Bool) -> String
+  c: Type[T] | Type[U] = left ? t : u
+  c.then(&:k)
+end
+p symbol_first(Sub2, false)
+p symbol_first(Sub2, true)
+p symbol_siblings(Left, Right, true)
+p symbol_siblings(Left, Right, false)
