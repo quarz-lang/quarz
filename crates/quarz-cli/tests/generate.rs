@@ -1348,3 +1348,74 @@ fn self_in_a_lifted_block_is_the_class_generated_into() {
         .unwrap();
     assert_eq!(String::from_utf8_lossy(&out.stdout), expected);
 }
+
+#[test]
+fn new_in_a_generated_class_method_is_checked_against_its_initializes() {
+    // `new` in a block given to `def_class_method` builds an instance of
+    // the receiver: the class generated into, and its subclasses (which
+    // inherit the generated method, not the `static def`), must take
+    // what it passes.
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        "class Model\n  static def self.gen -> Void\n    def_class_method(:mk) do -> Model\n      new\n    end\n  end\nend\n",
+    );
+    let sub = write(
+        &d.0,
+        "sub.qz",
+        "require_relative \"lib\"\nclass Post < Model\n  gen\nend\nclass Sub < Post\n  @x: Int\n  def initialize(x: Int)\n    @x = x\n  end\n  def self.gen -> Void\n  end\nend\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", sub.to_str().unwrap()], &[]);
+    assert!(!ok);
+    assert!(
+        err.contains("`Sub#initialize` does not take the arguments of `new` in `Post.mk`, which `Sub` inherits")
+            && err.contains("override `self.mk` in `Sub`"),
+        "{err}"
+    );
+    let own = write(
+        &d.0,
+        "own.qz",
+        "require_relative \"lib\"\nclass Post < Model\n  @x: Int\n  def initialize(x: Int)\n    @x = x\n  end\n  gen\nend\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", own.to_str().unwrap()], &[]);
+    assert!(!ok);
+    assert!(
+        err.contains(
+            "`Post#initialize` does not take the arguments of `new` in the generated `Post.mk`"
+        ),
+        "{err}"
+    );
+    // An `initialize` inherited from between the two classes.
+    let mid = write(
+        &d.0,
+        "mid.qz",
+        "require_relative \"lib\"\nclass Mid < Model\n  @x: Int\n  def initialize(x: Int)\n    @x = x\n  end\nend\nclass Post < Mid\n  gen\nend\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", mid.to_str().unwrap()], &[]);
+    assert!(!ok);
+    assert!(
+        err.contains(
+            "`Mid#initialize`, which `Post` builds with, does not take the arguments of `new` in the generated `Post.mk`"
+        ),
+        "{err}"
+    );
+    let good = write(
+        &d.0,
+        "good.qz",
+        "require_relative \"lib\"\nclass Post < Model\n  gen\nend\nclass Sub < Post\n  @y: Int = 3\n  def initialize(y: Int = 3)\n    @y = y\n  end\nend\np Sub.mk.class.name\n",
+    );
+    let (ok, out, err) = quarz(&d.0, &["run", good.to_str().unwrap()], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(out, "\"Sub\"\n");
+    let (ok, _, err) = quarz(
+        &d.0,
+        &["build", good.to_str().unwrap(), "-o", "good.bin"],
+        &[],
+    );
+    assert!(ok, "{err}");
+    let out = std::process::Command::new(d.0.join("good.bin"))
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "\"Sub\"\n");
+}

@@ -28,6 +28,40 @@ use quarz_vm::reflect::{
 };
 use quarz_vm::value::Value;
 
+/// The calls of `new` on the receiver (`CallKind::ConstructRecv`) in block
+/// function `root` and the blocks it makes: the class each was checked
+/// for and the `initialize` it passes arguments for.
+fn receiver_news(
+    functions: &[quarz_ir::Function],
+    root: FuncId,
+) -> Vec<(ClassId, Option<MethodId>)> {
+    let mut out = Vec::new();
+    let mut work = vec![root];
+    let mut seen = Vec::new();
+    while let Some(fid) = work.pop() {
+        if seen.contains(&fid) {
+            continue;
+        }
+        seen.push(fid);
+        let Some(f) = functions.get(fid as usize) else {
+            continue;
+        };
+        for b in &f.blocks {
+            for inst in &b.insts {
+                match inst {
+                    quarz_ir::Inst::Call {
+                        kind: quarz_ir::CallKind::ConstructRecv { class, init },
+                        ..
+                    } if !out.contains(&(*class, *init)) => out.push((*class, *init)),
+                    quarz_ir::Inst::MakeBlock { func, .. } => work.push(*func),
+                    _ => {}
+                }
+            }
+        }
+    }
+    out
+}
+
 /// A method a statement generated, for its handles' check
 /// (`Runner::check_handles`): its function, its class, the method, its
 /// captures, and the call that made it, for messages.
@@ -335,7 +369,8 @@ impl Runner {
                     span: stmt.span,
                 })
                 .collect();
-            let (func, class, captures) = (g.func, g.class, g.captures.clone());
+            let (func, class, captures, singleton) =
+                (g.func, g.class, g.captures.clone(), g.singleton);
             let info = MethodInfo {
                 id: 0,
                 name: g.name.clone(),
@@ -371,6 +406,15 @@ impl Runner {
                 .add_generated(info)
                 .map_err(|why| fail(format!("{at}: {why}")))?;
             declared[index] = Some(mid);
+            // A class method that builds an instance of its receiver
+            // (`new` in the block): the class's `initialize` and its
+            // subclasses' must take what `new` passes.
+            if singleton {
+                for (from, init) in receiver_news(&self.lowerer.done, func) {
+                    host.generated_new(class, from, mid, init, (stmt.file, stmt.span))
+                        .map_err(|why| fail(format!("{at}: {why}")))?;
+                }
+            }
             generated.push((Some(func), class, Some(mid), captures, at.clone()));
             if !classes.contains(&g.class) {
                 classes.push(g.class);
