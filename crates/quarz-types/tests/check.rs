@@ -3865,3 +3865,14 @@ fn an_inherited_class_method_takes_the_superclass_type_arguments() {
     // An extended module's methods, through `extend M[U]` in `F[U]`.
     ok("module M[X]\n  def mk(x: X) -> X = x\nend\nclass F[U]\n  extend M[U]\nend\nclass E < F[Int]\nend\na: Int = F[Int].mk(1)\nb: Int = E.mk(2)");
 }
+
+#[test]
+fn a_generic_extensions_class_method_sees_the_extensions_parameters() {
+    // `extension Box[T]`: `self` and `new` in its class method are of
+    // `Box[T]` with the extension's `T`.
+    ok("class Box[T]\n  @x: T\n  def initialize(@x: T); end\nend\nmodule Ext\n  extension Box[T]\n    def self.mk(v: T) -> Box[T] = new(v)\n  end\nend\nusing Ext\nb: Box[Int] = Box.mk(3)");
+    err(
+        "class Box[T]\n  @x: T\n  def initialize(@x: T); end\nend\nmodule Ext\n  extension Box[T]\n    def self.mk(v: T) -> Box[T] = new(v)\n  end\nend\nusing Ext\nb: Box[String] = Box[Int].mk(3)",
+        "Box[String]",
+    );
+}

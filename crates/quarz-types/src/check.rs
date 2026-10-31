@@ -2521,6 +2521,11 @@ impl Checker {
                 self.world.builtin.meta_classdef,
                 vec![Type::Param(class.type_params[0].id)],
             )
+        } else if let (true, Some(ext)) = (info.singleton, info.extension) {
+            // An extension's class method: the class as the extension
+            // names it (`extension Box[T]`: its `T`, not the class's).
+            let e = &self.world.extensions[ext as usize];
+            Type::ClassObject(e.target, e.target_args.clone())
         } else if info.singleton {
             Type::ClassObject(
                 owner,
