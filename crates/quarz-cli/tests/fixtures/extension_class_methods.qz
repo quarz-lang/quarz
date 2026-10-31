@@ -1,0 +1,27 @@
+# Class methods of a generic extension see the class as the extension
+# names it (`extension Box[T]`: its `T`).
+class Box[T]
+  @x: T
+  def initialize(@x: T); end
+  def get -> T = @x
+end
+class Plain
+  def initialize; end
+  def hi -> Int = 7
+end
+module Ext
+  extension Box[T <: Int]
+    def self.made(v: T) -> Self = new(v)
+  end
+  extension Plain
+    def self.mk -> Plain = new
+  end
+  extension Array[T]
+    def self.pair(a: T, b: T) -> Array[T] = [a, b]
+  end
+end
+using Ext
+p Box[Int].made(4).get
+p Plain.mk.hi
+p Array[String].pair("a", "b")
+p Box.made(9).get
