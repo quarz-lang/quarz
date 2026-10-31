@@ -886,6 +886,21 @@ impl<'a> FnBuilder<'a> {
         })
     }
 
+    /// Whether `call` is written `Foo.bar(...)` (or `cog.bar(...)`) and
+    /// goes to a top-level `def`: a cog's public function.
+    fn cog_function_call(&self, call: &ast::Call, target: Option<&CallTarget>) -> bool {
+        let Some(CallTarget::Method { method }) = target else {
+            return false;
+        };
+        !call.safe_nav
+            && call
+                .recv
+                .as_ref()
+                .is_some_and(|r| matches!(r.kind, ast::ExprKind::Const(_)))
+            && self.world.class(self.world.method(*method).owner).kind
+                == quarz_types::world::ClassKind::Main
+    }
+
     /// The file and main class of the top-level `def` a call goes to, if
     /// it does and uses its `self` (one that does not is called as before,
     /// which costs nothing and lets it inline into a loop).
@@ -2410,11 +2425,17 @@ impl<'a> FnBuilder<'a> {
             return dst;
         }
         let target = self.out.calls.get(&e.id);
-        let toplevel = match call.recv {
+        // `Foo.bar(...)`, a cog's public function: called as its own files
+        // call it, the module no receiver (docs/10 §6).
+        let explicit = call
+            .recv
+            .as_ref()
+            .filter(|_| !self.cog_function_call(call, target));
+        let toplevel = match explicit {
             None => self.toplevel_def(target),
             Some(_) => None,
         };
-        let recv = match call.recv.as_ref() {
+        let recv = match explicit {
             Some(r) => Some(self.expr(r)),
             // A top-level `def` runs with its file's top-level object as
             // `self`, wherever it is called from (docs/01 §1), in a block

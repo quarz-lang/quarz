@@ -274,7 +274,7 @@ fn a_library_example_names_the_module() {
     d.write("Cog.toml", "[cog]\nname = \"mathx\"\nversion = \"0.1.0\"\n");
     d.write(
         "src/mathx.qz",
-        "# The square of `x`.\n#\n# ```\n# Mathx.square(3)   # => 9\n# ```\ndef self.square(x: Int) -> Int = x * x\n\n# A pair.\n#\n# ```\n# Mathx::Pair.new(1, 2).b   # => 2\n# ```\ndata Pair = (a: Int, b: Int)\n",
+        "# The square of `x`.\n#\n# ```\n# Mathx.square(3)   # => 9\n# ```\npublic def square(x: Int) -> Int = x * x\n\n# A pair.\n#\n# ```\n# Mathx::Pair.new(1, 2).b   # => 2\n# ```\ndata Pair = (a: Int, b: Int)\n",
     );
     d.write("test/mathx_test.qz", "class MathxTest < Test::Case\n  def test_square\n    assert_equal(4, Mathx.square(2))\n  end\nend\n");
     let out = quarz_in(&d.0, &["test"]);
@@ -450,7 +450,7 @@ fn a_librarys_root_and_extension_methods() {
     d.write("README.md", "# mathx\n\nSquares.\n");
     d.write(
         "src/mathx.qz",
-        "# The square.\ndef self.square(x: Int) -> Int = x * x\n",
+        "# The square.\npublic def square(x: Int) -> Int = x * x\n",
     );
     // The root module has no declaration to document: not missing.
     let out = quarz_in(&d.0, &["doc", "--missing"]);

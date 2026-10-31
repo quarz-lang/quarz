@@ -29,6 +29,49 @@ use quarz_types::Checked;
 /// The version of the format, bumped when it changes.
 const FORMAT: u32 = 8;
 
+/// `Key.f(...)` (or `cog.f(...)`), a cog's public function (docs/10 §6),
+/// shown as the function call it is: `"function": true` and no receiver,
+/// as `::f(...)` is (the module is not evaluated, nor passed).
+fn functions_as_such(world: &World, out: &quarz_types::Output, mut v: Value) -> Value {
+    fn walk(world: &World, out: &quarz_types::Output, v: &mut Value) {
+        match v {
+            Value::Object(o) => {
+                let id = o.get("id").and_then(Value::as_u64);
+                if let (Some(id), Some(Value::Object(kind))) = (id, o.get_mut("kind")) {
+                    if let Some(Value::Object(call)) = kind.get_mut("Call") {
+                        let by_name = call.get("safe_nav") == Some(&Value::Bool(false))
+                            && call
+                                .get("recv")
+                                .and_then(|r| r.get("kind"))
+                                .is_some_and(|k| k.get("Const").is_some());
+                        let to_function = matches!(
+                            out.calls.get(&(id as u32)),
+                            Some(CallTarget::Method { method })
+                                if world.class(world.method(*method).owner).kind
+                                    == quarz_types::world::ClassKind::Main
+                        );
+                        if by_name && to_function {
+                            call.insert("recv".to_string(), Value::Null);
+                            call.insert("function".to_string(), Value::Bool(true));
+                        }
+                    }
+                }
+                for (_, x) in o.iter_mut() {
+                    walk(world, out, x);
+                }
+            }
+            Value::Array(a) => {
+                for x in a {
+                    walk(world, out, x);
+                }
+            }
+            _ => {}
+        }
+    }
+    walk(world, out, &mut v);
+    v
+}
+
 pub fn tree(checked: &Checked) -> Value {
     let world = &checked.world;
     let out = &checked.output;
@@ -40,7 +83,7 @@ pub fn tree(checked: &Checked) -> Value {
                 "file": u.file,
                 "name": u.name,
                 "main_class": u.main_class,
-                "body": serde_json::to_value(&u.body).unwrap_or(Value::Null),
+                "body": functions_as_such(world, out, serde_json::to_value(&u.body).unwrap_or(Value::Null)),
             })
         })
         .collect();
@@ -56,7 +99,11 @@ pub fn tree(checked: &Checked) -> Value {
     let defs: Vec<Value> = defined
         .iter()
         .map(|id| match &world.method(*id).body {
-            Some(def) => serde_json::to_value(&**def).unwrap_or(Value::Null),
+            Some(def) => functions_as_such(
+                world,
+                out,
+                serde_json::to_value(&**def).unwrap_or(Value::Null),
+            ),
             None => Value::Null,
         })
         .collect();

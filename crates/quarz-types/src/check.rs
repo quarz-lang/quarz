@@ -8223,6 +8223,42 @@ impl Checker {
             }
             _ => {
                 let mut cands = self.world.lookup_methods(recv_ty, name);
+                // `Foo.bar(args)`: a public function of the cog whose root
+                // module `Foo` is (docs/10 §6), called as a function.
+                // (Written so: a constant path or `cog`, not a value of the
+                // module's type, which the call would not evaluate.)
+                let by_name = !call.safe_nav
+                    && call
+                        .recv
+                        .as_ref()
+                        .is_some_and(|r| matches!(r.kind, ExprKind::Const(_)));
+                if let Type::ClassObject(root, _) = recv_ty {
+                    if by_name && self.world.class(*root).cog.is_some() {
+                        let (public, private) = self.cog_functions(*root, name);
+                        if !public.is_empty() {
+                            cands = public
+                                .into_iter()
+                                .map(|m| (m, HashMap::default()))
+                                .collect();
+                        } else if cands.is_empty() {
+                            let module = self.world.class(*root).name.clone();
+                            let msg = if private {
+                                format!("`{name}` is private to cog `{module}`; declare it `public def {name}`")
+                            } else {
+                                let names = self.cog_public_names(*root);
+                                let listed = if names.is_empty() {
+                                    "it has none".to_string()
+                                } else {
+                                    format!("its public functions: {}", names.join(", "))
+                                };
+                                format!("no function `{name}` in cog `{module}` ({listed})")
+                            };
+                            self.error(msg, expr.span);
+                            self.check_args_blindly(call);
+                            return Type::Nothing;
+                        }
+                    }
+                }
                 // An implicit call finds a method of `self` first (its
                 // own, inherited or from a module); `Kernel`'s built-in
                 // functions are not methods of it, and come after the
@@ -8294,6 +8330,68 @@ impl Checker {
                 self.resolve_overloads(expr, call, recv_ty, cands, implicit_self, expected)
             }
         }
+    }
+
+    /// The top-level `def`s named `name` of the library cog whose root
+    /// module is `root`: its public ones, and whether it has others
+    /// (docs/10 §6).
+    fn cog_functions(&self, root: ClassId, name: &str) -> (Vec<MethodId>, bool) {
+        let Some(cog) = self.world.cogs.iter().position(|c| c.root == Some(root)) else {
+            return (Vec::new(), false);
+        };
+        let mut files: Vec<u32> = self
+            .world
+            .file_groups
+            .iter()
+            .filter(|(_, g)| matches!(g, UnitGroup::Cog(c) if *c as usize == cog))
+            .map(|(f, _)| *f)
+            .collect();
+        files.sort();
+        let (mut public, mut private) = (Vec::new(), false);
+        for f in files {
+            let Some(main) = self.file_main(f) else {
+                continue;
+            };
+            for id in self
+                .world
+                .class(main)
+                .methods
+                .get(name)
+                .into_iter()
+                .flatten()
+            {
+                if self.world.method(*id).visibility == Visibility::Public {
+                    public.push(*id);
+                } else {
+                    private = true;
+                }
+            }
+        }
+        (public, private)
+    }
+
+    /// The names of the public top-level `def`s of the library cog whose
+    /// root module is `root`, sorted.
+    fn cog_public_names(&self, root: ClassId) -> Vec<String> {
+        let Some(cog) = self.world.cogs.iter().position(|c| c.root == Some(root)) else {
+            return Vec::new();
+        };
+        let mut names: Vec<String> = self
+            .world
+            .file_groups
+            .iter()
+            .filter(|(_, g)| matches!(g, UnitGroup::Cog(c) if *c as usize == cog))
+            .filter_map(|(f, _)| self.file_main(*f))
+            .flat_map(|main| self.world.class(main).methods.iter())
+            .filter(|(_, ids)| {
+                ids.iter()
+                    .any(|id| self.world.method(*id).visibility == Visibility::Public)
+            })
+            .map(|(n, _)| n.clone())
+            .collect();
+        names.sort();
+        names.dedup();
+        names
     }
 
     /// The functions of a name the current file sees (docs/01 §1): the
