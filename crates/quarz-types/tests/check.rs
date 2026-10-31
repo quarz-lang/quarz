@@ -4157,3 +4157,19 @@ fn super_in_a_class_method_override_reaches_the_parents_new() {
     ok(&format!("{two}class Sub < Two\n  def initialize(s: String); @n = 0; end\n  def initialize(@n: Int); end\n  def self.mk(n: Int) -> Self = super\nend"));
     ok(&format!("{two}class Sub < Two\n  def initialize(s: String); @n = 0; end\n  def self.mk(n: Int) -> Self = new(\"m\")\n  def self.build(n: Int) -> Self = new(\"b\")\n  def self.via(n: Int) -> Self = new(\"v\")\nend"));
 }
+
+#[test]
+fn the_both_receivers_warning_is_for_different_declarations() {
+    // `to_s` both inherit from `Object`: the same method, nothing hidden.
+    no_warnings("class Outer\n  def run -> String\n    \"abc\".instance_exec { to_s }\n  end\nend");
+    // The enclosing class's own `to_s` is hidden by the receiver's.
+    warns(
+        "class Holder\n  def to_s -> String = \"holder\"\n  def go -> String = \"s\".instance_exec { to_s }\nend",
+        "`to_s` is a method of both the block's receiver String and the enclosing Holder",
+    );
+    // Two classes' own methods of one name.
+    warns(
+        "class Named\n  def label -> String = \"n\"\nend\nclass Lab\n  def label -> String = \"l\"\n  def go(n: Named) -> String = n.instance_exec { label }\nend",
+        "`label` is a method of both the block's receiver Named and the enclosing Lab",
+    );
+}
