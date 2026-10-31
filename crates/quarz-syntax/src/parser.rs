@@ -86,8 +86,14 @@ impl Parser<'_> {
         diagnostics.sort_by_key(|d| (d.span.start, d.span.end));
         let comments = self.lexer.comments().to_vec();
         let docs = crate::doc::extract(src, span_base, &comments);
+        let it_hints = std::mem::take(&mut self.it_hints);
         Parsed {
-            program: Program { body, span, docs },
+            program: Program {
+                body,
+                span,
+                docs,
+                it_hints,
+            },
             diagnostics,
             comments,
             data_offset: self.lexer.data_offset(),
@@ -154,6 +160,51 @@ pub struct Parser<'src> {
     it_scopes: Vec<ItScope>,
     /// For each local scope pushed, whether it is hard.
     scope_hard: Vec<bool>,
+    /// `Program::it_hints`.
+    it_hints: Vec<(Span, String)>,
+}
+
+/// The operator `it`'s one argument may begin with when `it OP x` was
+/// meant as the binary operator (`it -1`, `it -x`, `it *2`, `it **2`,
+/// `it [0]`): a negative number, a unary minus or plus, a splat, an array.
+fn it_operator(arg: &Arg) -> Option<&'static str> {
+    match arg {
+        Arg::Splat(_) => Some("*"),
+        Arg::DoubleSplat(_) => Some("**"),
+        Arg::Positional(e) => match &e.kind {
+            ExprKind::Int(_) | ExprKind::Float(_) => Some("-"),
+            ExprKind::Call(c) if c.recv.is_some() && c.args.is_empty() && c.name == "-@" => {
+                Some("-")
+            }
+            ExprKind::Call(c) if c.recv.is_some() && c.args.is_empty() && c.name == "+@" => {
+                Some("+")
+            }
+            ExprKind::Array(_) => Some("["),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// `it -1` (`it`, a space, then `op` touching what follows, on one line):
+/// the block's argument written as meant, `it - 1` (`it[0]`).
+fn it_operator_hint(text: &str, op: &str) -> Option<String> {
+    if text.contains('\n') {
+        return None;
+    }
+    let rest = text.strip_prefix("it")?;
+    let arg = rest.trim_start();
+    if arg.len() == rest.len() {
+        return None;
+    }
+    let operand = arg.strip_prefix(op)?;
+    if op == "[" {
+        return Some(format!("it{arg}"));
+    }
+    if operand.is_empty() || operand.starts_with(char::is_whitespace) || operand.starts_with('*') {
+        return None;
+    }
+    Some(format!("it {op} {operand}"))
 }
 
 /// What a bare `it` means in a block or lambda being parsed.
@@ -197,6 +248,7 @@ impl<'src> Parser<'src> {
             depths: Vec::new(),
             it_scopes: Vec::new(),
             scope_hard: Vec::new(),
+            it_hints: Vec::new(),
         }
     }
 
@@ -2116,6 +2168,22 @@ impl<'src> Parser<'src> {
                 let call = self.finish_call(None, name, false, start)?;
                 // A bare `it`: a block's implicit parameter.
                 if let ExprKind::Call(c) = &call.kind {
+                    if c.name == "it"
+                        && c.recv.is_none()
+                        && c.args.len() == 1
+                        && matches!(self.it_scopes.last(), Some(ItScope::Bare { .. }))
+                    {
+                        // `it -1`: a call of `it`, the operator read as
+                        // its argument's sign (or `it [0]` an array).
+                        let text = self.lexer.text(call.span);
+                        let op = it_operator(&c.args[0]).filter(|_| c.block.is_none());
+                        if let Some(meant) = op.and_then(|op| it_operator_hint(text, op)) {
+                            let hint = format!(
+                                "`{text}` calls a method `it`; for the block's argument write `{meant}`"
+                            );
+                            self.it_hints.push((call.span, hint));
+                        }
+                    }
                     if c.name == "it"
                         && c.recv.is_none()
                         && c.args.is_empty()

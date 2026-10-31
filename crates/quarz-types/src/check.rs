@@ -8594,6 +8594,11 @@ impl Checker {
                             "undefined local variable or method `{name}` for {}",
                             self.name(recv_ty)
                         )
+                    } else if let Some(it) =
+                        self.world.it_hints.get(&(expr.span.start, expr.span.end))
+                    {
+                        // `it -1` in a block declaring no parameters.
+                        format!("undefined method `it` for {}: {it}", self.name(recv_ty))
                     } else {
                         let hint = self.immutable_hint(recv_ty, name, call.recv.as_ref());
                         format!("undefined method `{name}` for {}{hint}", self.name(recv_ty))

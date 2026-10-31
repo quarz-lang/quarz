@@ -138,6 +138,7 @@ impl Session {
             body: Vec::new(),
             span: quarz_syntax::Span::empty(0),
             docs: Vec::new(),
+            it_hints: Vec::new(),
         };
         let cached = PRELUDE_CACHE.get().map(|bytes| PreludeState::decode(bytes));
         let mut prelude_output = None;

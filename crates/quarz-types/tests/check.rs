@@ -4202,6 +4202,12 @@ fn implicit_it() {
     ok("[[1]].each { it.each { puts it + 1 } }");
     // `||` stays a block of no parameters for overloads.
     ok("class K\n  def run(&: () -> Void) -> Int\n    1\n  end\n  def run(&: (Int) -> Void) -> String\n    \"s\"\n  end\nend\nn: Int = K.new.run { || p 0 }\ns: String = K.new.run { p it }");
+    // `it -1` calls a method `it`: the error says how to write the
+    // block's argument.
+    err(
+        "p [1].map { it -1 }",
+        "`it -1` calls a method `it`; for the block's argument write `it - 1`",
+    );
     // A parameterless block that does not say `it` still fits any block.
     ok("[1].each_with_index { puts 1 }\n[1].map { 2 }");
 }

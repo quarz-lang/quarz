@@ -919,3 +919,41 @@ fn implicit_it() {
     // A `def` inside starts afresh.
     assert!(errors("a.each { p it; class C\n  def f\n    it\n  end\nend }").is_empty());
 }
+
+#[test]
+fn it_operator_hints() {
+    // `it -1` in a block declaring no parameters calls a method `it`: a
+    // hint for the error if there is none.
+    let hints = |src: &str| -> Vec<String> {
+        parse(src)
+            .program
+            .it_hints
+            .into_iter()
+            .map(|(_, h)| h)
+            .collect()
+    };
+    assert_eq!(
+        hints("xs.map { it -1 }"),
+        ["`it -1` calls a method `it`; for the block's argument write `it - 1`"]
+    );
+    assert_eq!(
+        hints("xs.map { it [0] }"),
+        ["`it [0]` calls a method `it`; for the block's argument write `it[0]`"]
+    );
+    assert_eq!(
+        hints("xs.map { it *2 }"),
+        ["`it *2` calls a method `it`; for the block's argument write `it * 2`"]
+    );
+    // Not for `it - 1`, `it(1)`, `it x`, nor outside such a block.
+    assert!(hints("xs.map { it - 1 }\nxs.map { it(1) }\nxs.map { it x }").is_empty());
+    assert!(hints("it -1\nxs.each { |y| it -1 }").is_empty());
+    assert_eq!(
+        hints("xs.map { it -x }"),
+        ["`it -x` calls a method `it`; for the block's argument write `it - x`"]
+    );
+    // Nor when the argument is no operand (a lambda, a regexp, `%w[]`, a
+    // block pass), spans lines, or the call takes a block.
+    assert!(hints("xs.map { it ->(x: Int) { x } }\nxs.map { it /2/ }\nxs.map { it %w[a b] }\nxs.map { it &:to_s }").is_empty());
+    assert!(hints("xs.map { it -foo(1,\n  2) }\nxs.map { it -1 do\n  3\nend }").is_empty());
+    assert!(hints("xs.map { it <<~EOS }\n  text\nEOS\n").is_empty());
+}
