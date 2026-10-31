@@ -1,0 +1,29 @@
+# An override of a class method that calls `new`, calling `super`: the
+# subclass is built with an `initialize` of its own that fits (the first
+# that does); an override without `super` is free of it.
+class Two
+  @n: Int
+  def initialize(@n: Int); end
+  def self.mk(n: Int) -> Self = new(n)
+  def n -> Int = @n
+end
+class Fits < Two
+  def initialize(s: String); @n = s.size; end
+  def initialize(@n: Int); puts "fits int"; end
+  def self.mk(n: Int) -> Self = super
+end
+class NoSuper < Two
+  def initialize(s: String); @n = s.size; end
+  def self.mk(n: Int) -> Self = new("abc")
+end
+class Mid < Two
+  def self.mk(n: Int) -> Self = super
+end
+class Leaf < Mid
+  def initialize(s: String); @n = s.size; end
+  def self.mk(n: Int) -> Self = new("xy")
+end
+p Fits.mk(5).n
+p NoSuper.mk(5).n
+p Mid.mk(4).n
+p Leaf.mk(9).n

@@ -426,78 +426,7 @@ fn overridden_methods(
             .collect();
         world.ancestors(m.owner, &own_args)
     });
-    let mut out = Vec::new();
-    for (anc, anc_args) in ancs.iter() {
-        let anc = *anc;
-        if anc == m.owner {
-            continue;
-        }
-        let ac = world.class(anc);
-        let table = if m.singleton {
-            &ac.singleton_methods
-        } else {
-            &ac.methods
-        };
-        let Some(ids) = table.get(&m.name) else {
-            continue;
-        };
-        let subst: rustc_hash::FxHashMap<_, _> = ac
-            .type_params
-            .iter()
-            .map(|tp| tp.id)
-            .zip(anc_args.iter().cloned())
-            .collect();
-        for &pid in ids {
-            let pm = world.method(pid);
-            // The override may add parameters the parent's callers never
-            // pass: with defaults, or rest parameters.
-            // (Keywords by name: every keyword call the parent takes,
-            // `MethodInfo::keywords_accept`, each of a type at least as
-            // wide.)
-            let (pps, cps) = (pm.positional_params(), m.positional_params());
-            let wider = |pp: &types::ParamInfo, cp: &types::ParamInfo| {
-                let pt = pp.ty.subst(&subst);
-                pt == cp.ty || world.is_subtype(&pt, &cp.ty)
-            };
-            // (A block of the parent's type, substituted, must do.)
-            let block_fits = match (&pm.block, &m.block) {
-                (Some((_, pb)), Some((_, cb))) => {
-                    let pt = pb.subst(&subst);
-                    pt == *cb || world.is_subtype(&pt, cb)
-                }
-                (None, None) => true,
-                _ => false,
-            };
-            let fits = pps.len() <= cps.len()
-                && block_fits
-                && pps
-                    .iter()
-                    .zip(&cps)
-                    .all(|(pp, cp)| pp.kind == cp.kind && wider(pp, cp))
-                && cps[pps.len()..]
-                    .iter()
-                    .all(|cp| cp.default.is_some() || cp.kind == ParamKind::Rest)
-                && m.keywords_accept(pm)
-                && pm
-                    .params
-                    .iter()
-                    .filter(|pp| matches!(pp.kind, ParamKind::KeywordOnly | ParamKind::KeywordRest))
-                    .all(|pp| {
-                        // (By name, and `**rest` with `**rest`.)
-                        m.params
-                            .iter()
-                            .find(|cp| {
-                                cp.kind == pp.kind
-                                    && (cp.kind == ParamKind::KeywordRest || cp.name == pp.name)
-                            })
-                            .is_none_or(|cp| wider(pp, cp))
-                    });
-            if fits {
-                out.push(pid);
-            }
-        }
-    }
-    out
+    world.overridden_methods_in(m, ancs)
 }
 
 /// Whether a positional parameter of `m` follows the one named `name`.
