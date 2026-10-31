@@ -5,7 +5,7 @@
 use std::fmt::Write as _;
 use std::path::Path;
 
-use pulldown_cmark::{html, CowStr, Event, Options, Parser, Tag};
+use pulldown_cmark::{html, CowStr, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
 use super::{first_line, Api, Item, Kind, Loaded, Page, Target};
 use quarz_types::ClassId;
@@ -89,14 +89,36 @@ fn safe_url(url: CowStr) -> CowStr {
 }
 
 /// A doc's Markdown as HTML: raw HTML shown as text, code spans that name
-/// a documented declaration linked, `NOTE:`-style paragraphs set off.
-fn markdown_html(loaded: &Loaded, api: &Api, scope: Option<ClassId>, md: &str) -> String {
+/// a documented declaration linked, `NOTE:`-style paragraphs set off, and
+/// headings `shift` levels down (`##` is an `<h4>` in a member's doc,
+/// which sits under the member's `<h3>`).
+fn markdown_html(
+    loaded: &Loaded,
+    api: &Api,
+    scope: Option<ClassId>,
+    md: &str,
+    shift: usize,
+) -> String {
     let world = &loaded.world;
     let events: Vec<Event> = Parser::new_ext(md, Options::ENABLE_TABLES).collect();
     let mut out: Vec<Event> = Vec::with_capacity(events.len());
     for (i, e) in events.iter().enumerate() {
         match e.clone() {
             Event::Html(t) | Event::InlineHtml(t) => out.push(Event::Text(t)),
+            Event::Start(Tag::Heading {
+                level,
+                id,
+                classes,
+                attrs,
+            }) => out.push(Event::Start(Tag::Heading {
+                level: shifted(level, shift),
+                id,
+                classes,
+                attrs,
+            })),
+            Event::End(TagEnd::Heading(level)) => {
+                out.push(Event::End(TagEnd::Heading(shifted(level, shift))))
+            }
             Event::Code(code) => {
                 let target = if super::name_shaped(&code) {
                     api.resolve(world, scope, &code)
@@ -160,6 +182,14 @@ fn markdown_html(loaded: &Loaded, api: &Api, scope: Option<ClassId>, md: &str) -
     s
 }
 
+/// A heading `shift` levels down, at most `<h6>`, and when shifted below
+/// what it is in (a `#` in a member's doc is still an `<h4>`).
+fn shifted(level: HeadingLevel, shift: usize) -> HeadingLevel {
+    let floor = if shift > 0 { shift + 2 } else { 1 };
+    let n = (level as usize + shift).max(floor).min(6);
+    HeadingLevel::try_from(n).unwrap_or(HeadingLevel::H6)
+}
+
 const STYLE: &str = r#":root { --fg: #1d1f21; --bg: #ffffff; --muted: #5f6368; --rule: #e0e0e0; --code-bg: #f4f4f5; --link: #0b57d0; --note: #fff8e1; --warn: #fdecea; }
 @media (prefers-color-scheme: dark) { :root { --fg: #e6e6e6; --bg: #17181a; --muted: #a0a4a8; --rule: #33363a; --code-bg: #24262a; --link: #8ab4f8; --note: #3a3320; --warn: #3d2422; } }
 body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; }
@@ -179,6 +209,8 @@ pre code, h1 code, h3 code { background: none; padding: 0; }
 h1 { overflow-wrap: anywhere; }
 .member { border-top: 1px solid var(--rule); padding-top: 0.5rem; margin-top: 1.2rem; }
 .member h3 { font-size: 1rem; margin: 0.3rem 0; overflow-wrap: anywhere; }
+.member h4 { font-size: 0.95rem; color: var(--muted); }
+.member h5, .member h6 { font-size: 0.9rem; color: var(--muted); }
 .loc, .from { color: var(--muted); font-size: 0.85rem; }
 .summary { color: var(--muted); }
 .admonition { padding: 0.5rem 0.8rem; border-radius: 6px; background: var(--note); }
@@ -243,7 +275,7 @@ fn member_html(loaded: &Loaded, api: &Api, page: &Page, m: &Item) -> String {
         let _ = writeln!(s, "<p class=\"from\">in <code>{}</code></p>", escape(ext));
     }
     if let Some(d) = &m.doc {
-        s.push_str(&markdown_html(loaded, api, Some(page.id), &d.text));
+        s.push_str(&markdown_html(loaded, api, Some(page.id), &d.text, 2));
     }
     if let Some(f) = &m.from {
         let from = match api.page(f) {
@@ -310,10 +342,10 @@ fn page_html(loaded: &Loaded, api: &Api, page: &Page) -> String {
         let _ = writeln!(s, "<p>include {}</p>", names.join(", "));
     }
     match (&page.doc, &loaded.readme) {
-        (Some(d), _) => s.push_str(&markdown_html(loaded, api, Some(page.id), &d.text)),
+        (Some(d), _) => s.push_str(&markdown_html(loaded, api, Some(page.id), &d.text, 1)),
         // A library's root module: its README.
         (None, Some(readme)) if page.span.start == 0 => {
-            s.push_str(&markdown_html(loaded, api, Some(page.id), readme))
+            s.push_str(&markdown_html(loaded, api, Some(page.id), readme, 1))
         }
         _ => {}
     }
@@ -383,7 +415,7 @@ fn page_html(loaded: &Loaded, api: &Api, page: &Page) -> String {
 fn index_html(loaded: &Loaded, api: &Api) -> String {
     let mut s = String::new();
     match &loaded.readme {
-        Some(md) => s.push_str(&markdown_html(loaded, api, None, md)),
+        Some(md) => s.push_str(&markdown_html(loaded, api, None, md, 0)),
         None => {
             let _ = writeln!(s, "<h1>{}</h1>", escape(&loaded.title));
         }
@@ -391,13 +423,16 @@ fn index_html(loaded: &Loaded, api: &Api) -> String {
     s.push_str("<h2>Classes and modules</h2>\n");
     let all: Vec<&Page> = api.pages.iter().collect();
     s.push_str(&summary_list(api, &all));
-    if !api.constants.is_empty() {
-        s.push_str("<h2>Constants</h2>\n");
-        for k in &api.constants {
+    for (title, items) in [("Constants", &api.constants), ("Functions", &api.functions)] {
+        if items.is_empty() {
+            continue;
+        }
+        let _ = writeln!(s, "<h2>{title}</h2>");
+        for k in items {
             let _ = writeln!(s, "<section class=\"member\" id=\"{}\">", anchor(k));
             let _ = writeln!(s, "<h3><code>{}</code></h3>", escape(&k.signature));
             if let Some(d) = &k.doc {
-                s.push_str(&markdown_html(loaded, api, None, &d.text));
+                s.push_str(&markdown_html(loaded, api, None, &d.text, 2));
             }
             let _ = writeln!(
                 s,
@@ -411,6 +446,14 @@ fn index_html(loaded: &Loaded, api: &Api) -> String {
 
 fn search_index(api: &Api) -> String {
     let mut entries: Vec<String> = Vec::new();
+    // A script's functions, on the index page.
+    for f in &api.functions {
+        entries.push(format!(
+            "[{},{}]",
+            super::json_string(&f.path),
+            super::json_string(&format!("index.html#{}", anchor(f)))
+        ));
+    }
     for p in &api.pages {
         entries.push(format!(
             "[{},{}]",

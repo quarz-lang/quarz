@@ -347,6 +347,10 @@ pub(crate) struct Item {
     pub span: Span,
     /// The extension the method is in (`extension String`), if any.
     pub extension: Option<String>,
+    /// An abstract method (`abstract def`).
+    pub is_abstract: bool,
+    /// A `static def`, run while the program is compiled (docs/14).
+    pub is_static: bool,
 }
 
 /// A class, module, data or enum, with its members.
@@ -368,6 +372,9 @@ pub(crate) struct Api {
     /// The top-level constants (of the cog's root, a script, the
     /// prelude).
     pub constants: Vec<Item>,
+    /// The top-level functions of a script or an application, named
+    /// `bar` (a library's are on its root module's page).
+    pub functions: Vec<Item>,
 }
 
 fn nodoc(doc: &Option<Doc>) -> bool {
@@ -436,11 +443,56 @@ impl Api {
                     generated_by: None,
                     span: k.span,
                     extension: None,
+                    is_abstract: false,
+                    is_static: false,
                 });
             }
         }
         constants.sort_by(|a, b| a.name.cmp(&b.name));
-        Api { pages, constants }
+        // A script's or an application's top-level `def`s: its own, and
+        // documented as such, with no API beyond the program.
+        let mut functions = Vec::new();
+        for k in &world.classes {
+            if k.kind != ClassKind::Main
+                || !own.contains(&k.file)
+                || world.file_groups.get(&k.file) != Some(&quarz_types::UnitGroup::App)
+            {
+                continue;
+            }
+            let mut ids: Vec<MethodId> = k
+                .methods
+                .values()
+                .flatten()
+                .copied()
+                .filter(|m| world.method(*m).owner == k.id)
+                .collect();
+            ids.sort_by_key(|m| world.method(*m).span.start);
+            for mid in ids {
+                let m = world.method(mid);
+                let doc = world.doc_at(m.span).cloned();
+                if (nodoc(&doc) || m.name.starts_with("__")) && !private {
+                    continue;
+                }
+                functions.push(Item {
+                    kind: Kind::Function,
+                    path: m.name.clone(),
+                    name: m.name.clone(),
+                    signature: method_signature(world, mid, None),
+                    doc,
+                    from: None,
+                    generated_by: None,
+                    span: m.span,
+                    extension: None,
+                    is_abstract: false,
+                    is_static: m.is_static,
+                });
+            }
+        }
+        Api {
+            pages,
+            constants,
+            functions,
+        }
     }
 
     pub fn page(&self, name: &str) -> Option<&Page> {
@@ -528,7 +580,14 @@ pub(crate) fn method_signature(world: &World, mid: MethodId, as_new: Option<&str
         None => {
             let ret = format!(" -> {}", world.type_name(&m.ret));
             let recv = if m.singleton { "self." } else { "" };
-            format!("def {recv}{}{tps}{params}{ret}", m.name)
+            let abs = match (m.is_abstract, m.is_static) {
+                (true, _) => "abstract ",
+                // (A `static native def` too: whether a method is native
+                // is not part of its signature.)
+                (_, true) => "static ",
+                _ => "",
+            };
+            format!("{abs}def {recv}{}{tps}{params}{ret}", m.name)
         }
     }
 }
@@ -780,7 +839,9 @@ fn page(world: &World, id: ClassId, kind: Kind, doc: Option<Doc>, private: bool)
                 m.name.clone(),
                 method_signature(world, mid, None),
             )
-        } else if world.class(m.owner).kind == ClassKind::Main {
+        } else if world.class(m.owner).kind == ClassKind::Main || kernel {
+            // A cog's top-level `def`, and Kernel's built-in functions
+            // (`Kernel.puts`): functions, not methods.
             (
                 Kind::Function,
                 m.name.clone(),
@@ -802,9 +863,15 @@ fn page(world: &World, id: ClassId, kind: Kind, doc: Option<Doc>, private: bool)
             Some(e) => e.trim_start_matches("extension ").to_string(),
             None => c.name.clone(),
         };
+        // A cog's private function is called by its name alone.
+        let path = if kind == Kind::Function && !kernel && m.visibility != Visibility::Public {
+            name.clone()
+        } else {
+            format!("{on}{sep}{name}")
+        };
         members.push(Item {
             kind,
-            path: format!("{on}{sep}{name}"),
+            path,
             name,
             signature,
             doc: mdoc,
@@ -812,6 +879,8 @@ fn page(world: &World, id: ClassId, kind: Kind, doc: Option<Doc>, private: bool)
             generated_by: world.generated_by(mid),
             span: m.span,
             extension,
+            is_abstract: m.is_abstract,
+            is_static: m.is_static,
         });
     }
     // Variants of an enum.
@@ -836,6 +905,8 @@ fn page(world: &World, id: ClassId, kind: Kind, doc: Option<Doc>, private: bool)
                 generated_by: None,
                 span: vc.span,
                 extension: None,
+                is_abstract: false,
+                is_static: false,
             });
         }
     }
@@ -860,6 +931,8 @@ fn page(world: &World, id: ClassId, kind: Kind, doc: Option<Doc>, private: bool)
                 generated_by: None,
                 span: k.span,
                 extension: None,
+                is_abstract: false,
+                is_static: false,
             });
         }
     }
@@ -1031,7 +1104,12 @@ impl Api {
                 Some(Target::Page(p, Some(member)))
             }
             Some((sep, m)) => {
-                let mid = find_method(world, class, m, sep == '.')?;
+                // `Kernel.puts`: a function of Kernel, its instance method.
+                let mid = find_method(world, class, m, sep == '.').or_else(|| {
+                    (sep == '.' && world.class(class).name == "Kernel")
+                        .then(|| find_method(world, class, m, false))
+                        .flatten()
+                })?;
                 let info = world.method(mid);
                 let owner = if info.name == "initialize" {
                     class
@@ -1040,7 +1118,7 @@ impl Api {
                 };
                 let kernel = world.class(info.owner).name == "Kernel";
                 let private = info.visibility != Visibility::Public && !kernel;
-                let member_sep = if sep == '.' || info.name == "initialize" {
+                let member_sep = if sep == '.' || info.name == "initialize" || kernel {
                     "."
                 } else {
                     "#"
@@ -1182,6 +1260,15 @@ fn listing(loaded: &Loaded, api: &Api) -> String {
             k.signature, summary
         ));
     }
+    for f in &api.functions {
+        let summary = f
+            .doc
+            .as_ref()
+            .map(|d| first_line(d.summary()))
+            .unwrap_or_default();
+        let mark = if f.is_static { "(static) " } else { "" };
+        out.push_str(&format!("{}  {mark}{}\n", f.path, summary));
+    }
     for p in &api.pages {
         let summary = p
             .doc
@@ -1195,7 +1282,12 @@ fn listing(loaded: &Loaded, api: &Api) -> String {
                 .as_ref()
                 .map(|d| first_line(d.summary()))
                 .unwrap_or_default();
-            out.push_str(&format!("  {}  {}\n", m.path, summary));
+            let mark = match (m.is_abstract, m.is_static) {
+                (true, _) => "(abstract) ",
+                (_, true) => "(static) ",
+                _ => "",
+            };
+            out.push_str(&format!("  {}  {mark}{}\n", m.path, summary));
         }
     }
     let _ = loaded;
@@ -1215,13 +1307,51 @@ pub(crate) fn first_line(s: &str) -> String {
 
 fn lookup(loaded: &Loaded, api: &Api, name: &str) -> Option<String> {
     let world = &loaded.world;
+    // A function by its name alone (`puts`, `::puts`, as a call says
+    // it): the program's own first (a script's or an application's, or a
+    // library's, `Lib.f`), then Kernel's (`Kernel.puts`); `::name` is no
+    // method of `Object`'s. `Kernel#puts` is the old spelling of
+    // `Kernel.puts`. A capitalized name is a class or a constant
+    // (`String` and `::String`, not `Kernel.String`), as `::Integer` is
+    // in code.
+    let bare = name.strip_prefix("::").unwrap_or(name);
+    let simple = !bare.contains(['#', '.', ':']);
+    let capitalized = bare.chars().next().is_some_and(|c| c.is_ascii_uppercase());
+    let own =
+        |i: &&Item| i.kind == Kind::Function && i.name == bare && !i.path.starts_with("Kernel.");
+    let kernel = world.top_class("Kernel");
+    let normalized = match name.strip_prefix("Kernel#") {
+        Some(f) => format!("Kernel.{f}"),
+        None if simple && capitalized => bare.to_string(),
+        None if simple => {
+            match api
+                .functions
+                .iter()
+                .chain(api.pages.iter().flat_map(|p| &p.members))
+                .find(own)
+            {
+                Some(i) => i.path.clone(),
+                None if kernel.is_some_and(|k| find_method(world, k, bare, false).is_some()) => {
+                    format!("Kernel.{bare}")
+                }
+                None if name.starts_with("::") => return None,
+                None => bare.to_string(),
+            }
+        }
+        None => name.to_string(),
+    };
+    let name = normalized.as_str();
     // An extension's method, by the name of the class it extends, and a
     // cog's public function (`Lib.shout`), by its page's path.
     let ext: Vec<&Item> = api
         .pages
         .iter()
         .flat_map(|p| &p.members)
-        .filter(|i| (i.extension.is_some() || i.kind == Kind::Function) && i.path == name)
+        .chain(&api.functions)
+        .filter(|i| {
+            (i.extension.is_some() || (i.kind == Kind::Function && !(simple && capitalized)))
+                && i.path == name
+        })
         .collect();
     if !ext.is_empty() {
         let mut out = String::new();
@@ -1424,7 +1554,7 @@ pub(crate) fn fence_kind(info: &str) -> Option<bool> {
 fn documented<'a>(world: &World, api: &'a Api) -> Vec<(ClassId, String, Option<&'a Doc>, Span)> {
     let mut out = Vec::new();
     if let Some(object) = world.top_class("Object") {
-        for k in &api.constants {
+        for k in api.constants.iter().chain(&api.functions) {
             out.push((object, k.path.clone(), k.doc.as_ref(), k.span));
         }
     }
@@ -1530,6 +1660,17 @@ pub(crate) fn json_string(s: &str) -> String {
     out
 }
 
+/// An item's JSON object with `"abstract": true` or `"static": true`
+/// first when it is so.
+fn flagged(object: String, i: &Item) -> String {
+    let flag = match (i.is_abstract, i.is_static) {
+        (true, _) => "{\"abstract\": true, ",
+        (_, true) => "{\"static\": true, ",
+        _ => return object,
+    };
+    object.replacen('{', flag, 1)
+}
+
 fn json(loaded: &Loaded, api: &Api) -> String {
     let item = |kind: Kind,
                 path: &str,
@@ -1563,17 +1704,20 @@ fn json(loaded: &Loaded, api: &Api) -> String {
         format!("{{{}}}", body.join(", "))
     };
     let mut entries: Vec<String> = Vec::new();
-    for k in &api.constants {
+    for k in api.constants.iter().chain(&api.functions) {
         entries.push(format!(
             "  {}",
-            item(
-                k.kind,
-                &k.path,
-                &k.signature,
-                k.doc.as_ref(),
-                k.span,
-                None,
-                None
+            flagged(
+                item(
+                    k.kind,
+                    &k.path,
+                    &k.signature,
+                    k.doc.as_ref(),
+                    k.span,
+                    None,
+                    None
+                ),
+                k
             )
         ));
     }
@@ -1584,14 +1728,17 @@ fn json(loaded: &Loaded, api: &Api) -> String {
             .map(|m| {
                 format!(
                     "    {}",
-                    item(
-                        m.kind,
-                        &m.path,
-                        &m.signature,
-                        m.doc.as_ref(),
-                        m.span,
-                        m.from.as_ref(),
-                        m.generated_by
+                    flagged(
+                        item(
+                            m.kind,
+                            &m.path,
+                            &m.signature,
+                            m.doc.as_ref(),
+                            m.span,
+                            m.from.as_ref(),
+                            m.generated_by
+                        ),
+                        m
                     )
                 )
             })
