@@ -6254,6 +6254,47 @@ impl Checker {
         self.world.hash_of(kt, vt)
     }
 
+    /// `World::find_field` as seen from where it is read: the class's type
+    /// parameters are the arguments of `self`'s type when that is the class
+    /// (in a method of an extension of it, `extension Box[U]` of `class
+    /// Box[T]`, the extension's: `@x: T` is a `U` there; in a block run
+    /// with another `Box[String]` for `self`, `String`), else the method's
+    /// own (its class's, or an extension's for an opaque `Self`).
+    fn find_field_here(
+        &self,
+        cid: ClassId,
+        name: &str,
+    ) -> Option<(FieldInfo, HashMap<TypeParamId, Type>)> {
+        let (field, subst) = self.world.find_field(cid, name)?;
+        let args = match &self.env.self_type {
+            Type::Class(c, args) if *c == cid => Some(args.clone()),
+            _ => self
+                .env
+                .method
+                .and_then(|m| self.world.method(m).extension)
+                .map(|e| &self.world.extensions[e as usize])
+                .filter(|e| e.target == cid)
+                .map(|e| e.target_args.clone()),
+        };
+        let Some(args) = args else {
+            return Some((field, subst));
+        };
+        let map: HashMap<TypeParamId, Type> = self
+            .world
+            .class(cid)
+            .type_params
+            .iter()
+            .map(|p| p.id)
+            .zip(args)
+            .collect();
+        let mut composed: HashMap<TypeParamId, Type> =
+            subst.iter().map(|(k, v)| (*k, v.subst(&map))).collect();
+        for (k, v) in map {
+            composed.entry(k).or_insert(v);
+        }
+        Some((field, composed))
+    }
+
     fn check_ivar_read(&mut self, expr: &Expr, name: &str) -> Type {
         if !self.check_ivar_access(expr.span) {
             return Type::Nothing;
@@ -6269,7 +6310,7 @@ impl Checker {
             );
             return Type::Nothing;
         }
-        let Some((field, subst)) = self.world.find_field(cid, name) else {
+        let Some((field, subst)) = self.find_field_here(cid, name) else {
             self.error(
                 format!(
                     "undeclared field `@{name}` in `{}`",
@@ -7191,7 +7232,7 @@ impl Checker {
                     self.error("instance variables are not available here", expr.span);
                     return self.check_expr(value, None);
                 };
-                let Some((field, subst)) = self.world.find_field(cid, name) else {
+                let Some((field, subst)) = self.find_field_here(cid, name) else {
                     self.error(format!("undeclared field `@{name}`"), expr.span);
                     return self.check_expr(value, None);
                 };
@@ -7317,7 +7358,7 @@ impl Checker {
                 };
                 let t = self.check_ivar_read(&read, name);
                 if let Some(cid) = self.env.class_id {
-                    if let Some((f, _)) = self.world.find_field(cid, name) {
+                    if let Some((f, _)) = self.find_field_here(cid, name) {
                         if !f.mutable && (!self.env.in_initialize || self.in_late_closure()) {
                             self.error(format!("field `@{name}` is immutable"), expr.span);
                         }
@@ -7438,7 +7479,7 @@ impl Checker {
             }
             LValue::IVar(name) => {
                 if let Some(cid) = self.env.class_id {
-                    if let Some((f, subst)) = self.world.find_field(cid, name) {
+                    if let Some((f, subst)) = self.find_field_here(cid, name) {
                         let fty = f.ty.subst(&subst);
                         if !self.coerce(&result, &fty) {
                             self.error(
@@ -7663,7 +7704,7 @@ impl Checker {
                     self.error("instance variables are not available here", span);
                     return;
                 };
-                match self.world.find_field(cid, name) {
+                match self.find_field_here(cid, name) {
                     Some((f, subst)) => {
                         let fty = f.ty.subst(&subst);
                         if !f.mutable && (!self.env.in_initialize || self.in_late_closure()) {
@@ -8902,7 +8943,7 @@ impl Checker {
                 let Some(cid) = self.env.class_id else {
                     return Some(vt);
                 };
-                let Some((field, subst)) = self.world.find_field(cid, name) else {
+                let Some((field, subst)) = self.find_field_here(cid, name) else {
                     return Some(vt);
                 };
                 if !field.mutable && (!self.env.in_initialize || self.in_late_closure()) {
