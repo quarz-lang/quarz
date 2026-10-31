@@ -26,10 +26,10 @@ jobs:
       - name: Build
         run: cargo build --release
       # An application depending on quarz-lang/greet v1.0.0, with
-      # greet-more (which needs greet v1.1.0) as a dev-dependency: check,
-      # run, build and the executable, test, the lock, and a second run
-      # that looks nothing up. A clean HOME and no git configuration: no
-      # credentials, as for a new user.
+      # greet-more v1.1.0 (which needs greet v1.1.0) as a
+      # dev-dependency: check, run, build and the executable, test, the
+      # lock, and a second run that looks nothing up. A clean HOME and
+      # no git configuration: no credentials, as for a new user.
       - name: Walk
         shell: bash
         run: |
@@ -51,7 +51,7 @@ jobs:
           Greet = { git = "https://github.com/quarz-lang/greet", tag = "v1.0.0" }
 
           [dev-dependencies]
-          GreetMore = { git = "https://github.com/quarz-lang/greet-more", tag = "v1.0.0" }
+          GreetMore = { git = "https://github.com/quarz-lang/greet-more", tag = "v1.1.0" }
           T
           cat > src/main.qz <<'T'
           class Team < Greet::Greeter
@@ -65,7 +65,7 @@ jobs:
           require "test"
           class TeamTest < Test::Case
             def test_world -> Void = assert_equal("Hello, world!", Team.new.greet_world)
-            def test_more -> Void = assert_equal("Goodbye, Ann. (greet-more 1.0.0)", GreetMore.farewell("Ann"))
+            def test_more -> Void = assert_equal("Goodbye, Ann. (greet-more 1.1.0)", GreetMore.farewell("Ann"))
           end
           T
           expected="Hello, Quarz!
