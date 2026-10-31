@@ -1912,18 +1912,19 @@ impl World {
             }
             Type::ClassObject(id, args) => {
                 let exts = self.active_extension_ids();
-                // Each superclass's type arguments, for its extensions'.
-                let ancs = if exts.is_empty() {
-                    Vec::new()
-                } else {
-                    self.ancestors(*id, args)
-                };
+                // Each superclass's type arguments, for its class methods
+                // (`E < G[Int]`: `G.mk(x: T)` takes an `Int` on `E`) and
+                // its extensions'.
+                let ancs = self.ancestors(*id, args);
                 for cid in self.superclass_chain(*id) {
                     let class = self.class(cid);
                     let subst = if cid == *id {
                         self.class_subst(cid, args)
                     } else {
-                        HashMap::default()
+                        match ancs.iter().find(|(a, _)| *a == cid) {
+                            Some((_, aargs)) => self.class_subst(cid, aargs),
+                            None => HashMap::default(),
+                        }
                     };
                     // An active extension's class methods (`def self.x`),
                     // before the class's own.
@@ -1953,7 +1954,9 @@ impl World {
                     // (The last module extended first, docs/01 §6.)
                     for ext in class.extends.iter().rev() {
                         if let Type::Class(mid, margs) = ext {
-                            let msubst = self.class_subst(*mid, margs);
+                            // (`extend M[U]` in `F[U]`: `U` is the class's.)
+                            let margs: Vec<Type> = margs.iter().map(|t| t.subst(&subst)).collect();
+                            let msubst = self.class_subst(*mid, &margs);
                             if let Some(ids) = self.class(*mid).methods.get(name) {
                                 for m in ids {
                                     out.push((*m, msubst.clone()));

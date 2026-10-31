@@ -1419,3 +1419,35 @@ fn new_in_a_generated_class_method_is_checked_against_its_initializes() {
         .unwrap();
     assert_eq!(String::from_utf8_lossy(&out.stdout), "\"Sub\"\n");
 }
+
+#[test]
+fn a_modules_static_def_calls_another_of_the_module() {
+    // In a module's `static def`, `self` is the class extending the module
+    // (docs/14 §2), whose class object has the module's methods.
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        "abstract class Model\nend\nmodule Macros[T <: Model]\n  static def helper -> Int = 1\n  static def go -> Void\n    p name\n    p helper\n  end\nend\n",
+    );
+    let app = write(
+        &d.0,
+        "app.qz",
+        "require_relative \"lib\"\nclass Post < Model\n  extend Macros[Post]\n  go\nend\nPost.go\n",
+    );
+    // At compile time (the statement), then at run time.
+    let (ok, out, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(out, "\"Post\"\n1\n");
+    assert!(err.contains("\"Post\"\n1\n"), "{err}");
+    let (ok, _, err) = quarz(
+        &d.0,
+        &["build", app.to_str().unwrap(), "-o", "app.bin"],
+        &[],
+    );
+    assert!(ok, "{err}");
+    let out = std::process::Command::new(d.0.join("app.bin"))
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "\"Post\"\n1\n");
+}

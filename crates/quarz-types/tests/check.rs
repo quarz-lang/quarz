@@ -3807,3 +3807,61 @@ fn an_inherited_new_is_checked_against_each_initialize_in_full() {
         msg,
     );
 }
+
+#[test]
+fn built_in_values_are_not_built_with_new() {
+    // `new` built an object of the class, no value of it (`Int.new` an
+    // `#<Int>`, `String.new` failing at run time): their literals make
+    // them.
+    for (src, hint) in [
+        ("p Int.new", "`Int` is not built with `new`: write `0`"),
+        (
+            "p Float.new",
+            "`Float` is not built with `new`: write `0.0`",
+        ),
+        (
+            "p Bool.new",
+            "`Bool` is not built with `new`: write `true` or `false`",
+        ),
+        ("p Nil.new", "`Nil` is not built with `new`: write `nil`"),
+        (
+            "p Symbol.new",
+            "`Symbol` is not built with `new`: write `:name`",
+        ),
+        (
+            "p Range.new",
+            "`Range` is not built with `new`: write `a..b`",
+        ),
+        (
+            "p String.new",
+            "`String` is not built with `new`: write `\"\"`, or `String::Builder.new` to build one",
+        ),
+        (
+            "p Type.new",
+            "`Type` is not built with `new`: a class is a value by its name",
+        ),
+        (
+            "p Meta::ClassDef[Int].new",
+            "`Meta::ClassDef` is not built with `new`: a class is a value by its name",
+        ),
+        ("p Proc.new", "`Proc` is not built with `new`"),
+        ("p Integer.new", "`Integer` is not built with `new`"),
+        ("p IO.new", "`IO` is not built with `new`"),
+        ("p File.new", "`File` is not built with `new`"),
+    ] {
+        err(src, hint);
+    }
+    ok("p Array[Int].new\np Hash[Int, Int].new\np Set[Int].new\np String::Builder.new.to_s");
+}
+
+#[test]
+fn an_inherited_class_method_takes_the_superclass_type_arguments() {
+    // `E < G[Int]`: `G.mk(x: T)` takes an `Int` on `E`.
+    ok("class G[T]\n  @x: T\n  def initialize(@x: T); end\n  def self.mk(x: T) -> Self = new(x)\n  def get -> T = @x\nend\nclass E < G[Int]\nend\nn: Int = E.mk(1).get");
+    err(
+        "class G[T]\n  @x: T\n  def initialize(@x: T); end\n  def self.mk(x: T) -> Self = new(x)\nend\nclass E < G[Int]\nend\nE.mk(\"s\")",
+        "expects Int but found String",
+    );
+    // An extended module's methods, through `extend M[U]` in `F[U]`.
+    ok("module M[X]\n  def mk(x: X) -> X = x\nend\nclass F[U]\n  extend M[U]\nend\nclass E < F[Int]\nend\na: Int = F[Int].mk(1)\nb: Int = E.mk(2)");
+}

@@ -8292,6 +8292,29 @@ impl Checker {
                         _ => {}
                     }
                 }
+                // In a module's `static def`, `self` is the class that
+                // extends the module (docs/14 §2: through `extend M[C]`, C
+                // itself), whose class object has the module's methods: an
+                // implicit call finds them.
+                if cands.is_empty() && call.recv.is_none() && implicit_self {
+                    if let (Type::Class(c, _), Some(m)) = (&self.env.self_type, self.env.method) {
+                        let owner = self.world.method(m).owner;
+                        if *c == self.world.builtin.meta_classdef
+                            && self.world.class(owner).kind == ClassKind::Module
+                        {
+                            let own = Type::Class(
+                                owner,
+                                self.world
+                                    .class(owner)
+                                    .type_params
+                                    .iter()
+                                    .map(|p| Type::Param(p.id))
+                                    .collect(),
+                            );
+                            cands = self.world.lookup_methods(&own, name);
+                        }
+                    }
+                }
                 // Top-level functions of the cog, then `Kernel`'s built-in
                 // functions, after the methods of `self` (docs/01 §1): one
                 // set of overloads, the first of each signature kept.
@@ -8958,6 +8981,48 @@ impl Checker {
         let class = self.world.class(cid).clone();
         if class.is_abstract || matches!(class.kind, ClassKind::Module | ClassKind::Enum) {
             self.error(format!("cannot instantiate `{}`", class.name), expr.span);
+            self.check_args_blindly(call);
+            return Type::Nothing;
+        }
+        // A built-in value is the runtime's own: one without a `self.new`
+        // of its own is made by its literal (or a builder), not with `new`
+        // (which built an object of its class, no value of it).
+        let b = &self.world.builtin;
+        let class_object = self.world.class_is_a(cid, b.class_);
+        // (And the prelude's `IO`, `File` and `Selector`, which the runtime
+        // opens, `Proc`, `Integer`: what the runtime's guard refuses too.)
+        let runtime_made = [b.proc_, b.integer].contains(&cid)
+            || (class.file == 0 && ["IO", "File", "Selector"].contains(&class.name.as_str()));
+        if (self.world.is_value_class(cid) || class_object || runtime_made)
+            && ![b.array, b.hash, b.set].contains(&cid)
+        {
+            let hint = if cid == b.string {
+                ": write `\"\"`, or `String::Builder.new` to build one".to_string()
+            } else if cid == b.int {
+                ": write `0`".to_string()
+            } else if cid == b.float {
+                ": write `0.0`".to_string()
+            } else if cid == b.bool_ {
+                ": write `true` or `false`".to_string()
+            } else if cid == b.nil {
+                ": write `nil`".to_string()
+            } else if cid == b.symbol {
+                ": write `:name`".to_string()
+            } else if cid == b.range {
+                ": write `a..b`".to_string()
+            } else if class_object {
+                ": a class is a value by its name".to_string()
+            } else if cid == b.proc_ {
+                ": write a lambda, `->(x: Int) { ... }`".to_string()
+            } else if cid == b.integer {
+                ": write a number where an `Integer` is expected, or `to_integer`".to_string()
+            } else {
+                String::new()
+            };
+            self.error(
+                format!("`{}` is not built with `new`{hint}", class.name),
+                expr.span,
+            );
             self.check_args_blindly(call);
             return Type::Nothing;
         }
