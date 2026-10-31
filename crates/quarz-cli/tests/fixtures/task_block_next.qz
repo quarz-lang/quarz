@@ -1,0 +1,17 @@
+# A task's block gives its result with `next` (or its last expression);
+# `break` cannot leave it (it runs in another task), but a `break` in a
+# loop or a plain block inside it works as usual.
+t = Task.spawn do
+  next 5 if true
+  0
+end
+p t.await
+p Task.spawn { [1, 2, 3].each { |z| break if z == 2 }; while true; break; end; 7 }.await
+p Task.timeout(1.second) { next 8 }
+p Task.blocking { next 9 }
+r = Task.scope do |s|
+  c = s.spawn { next 10 }
+  c.await
+end
+p r
+p [1, 2].map { |z| break z * 100 }

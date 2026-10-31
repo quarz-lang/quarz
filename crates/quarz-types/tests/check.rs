@@ -3915,3 +3915,19 @@ fn a_return_in_a_lambda_in_initialize_leaves_the_lambda() {
         "field `@a` is not assigned when `initialize` returns",
     );
 }
+
+#[test]
+fn a_task_block_cannot_break() {
+    // It runs in another task: no call around it to leave.
+    for (src, name) in [
+        ("t = Task.spawn { break 5 }", "Task.spawn"),
+        ("Task.scope { |s| s.spawn { break 1 }\n  0 }", "Scope#spawn"),
+        ("x = Task.timeout(1.second) { break 2 }", "Task.timeout"),
+        ("y = Task.blocking { break 3 }", "Task.blocking"),
+    ] {
+        err(src, &format!("`break` cannot leave `{name}`: its block runs in another task; use `next value` for the task's result"));
+    }
+    // `next` gives the task's result; a `break` in a loop or a plain block
+    // inside the task's block leaves that.
+    ok("a: Task[Int] = Task.spawn { next 5 }\nb: Int = Task.spawn { [1, 2].each { |z| break if z == 2 }\n  while true\n    break\n  end\n  7 }.await");
+}

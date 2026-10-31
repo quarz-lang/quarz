@@ -484,7 +484,7 @@ struct Env {
     next_block_escapes: bool,
     /// The next block runs in another task: a task's block, or
     /// `Task.timeout`'s (the caller's, for captures, but run in a child).
-    next_block_elsewhere: bool,
+    next_block_elsewhere: Option<String>,
 }
 
 /// What the checks of a block found for `a && b` (`Checker::logical_seen`).
@@ -722,9 +722,10 @@ struct BlockCtx {
     /// The block of the call in `static(...)`, run at compile time
     /// (docs/14 §8).
     static_call: bool,
-    /// A block run in another task (`Task.spawn`, `Task.timeout`): a
-    /// `return` cannot leave the code around it.
-    task: bool,
+    /// A block run in another task (`Task.spawn`, `Task.timeout`), with
+    /// the call's name: `return` and `break` cannot leave the code
+    /// around it.
+    task: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -971,7 +972,7 @@ impl Checker {
             late_assigned: Rc::default(),
             never_narrow: Rc::default(),
             next_block_escapes: false,
-            next_block_elsewhere: false,
+            next_block_elsewhere: None,
             lifted_frame: None,
             static_frame: None,
             next_block_lifted: false,
@@ -2347,7 +2348,7 @@ impl Checker {
             late_assigned: Rc::default(),
             never_narrow: Rc::default(),
             next_block_escapes: false,
-            next_block_elsewhere: false,
+            next_block_elsewhere: None,
             lifted_frame: None,
             static_frame: None,
             next_block_lifted: false,
@@ -5559,7 +5560,7 @@ impl Checker {
                 };
                 let past_lifted = left(self.env.blocks.iter().rposition(|b| b.lifted));
                 let past_static = left(self.env.blocks.iter().rposition(|b| b.static_call));
-                let past_task = left(self.env.blocks.iter().rposition(|b| b.task));
+                let past_task = left(self.env.blocks.iter().rposition(|b| b.task.is_some()));
                 if past_lifted {
                     self.error(
                         "`return` in a block given to `def_method`: the block becomes the generated method's body, whose value is its last expression",
@@ -5680,6 +5681,19 @@ impl Checker {
                         "`break` in a block given to `def_method`: the block becomes the generated method's body, which `break` cannot leave",
                         expr.span,
                     );
+                }
+                // A task's block runs in another task: there is no call
+                // around it to leave (its value is the task's result).
+                let task = self.env.blocks.last().and_then(|b| b.task.clone());
+                if let (0, Some(name)) = (self.env.loop_depth, task) {
+                    self.error(
+                        format!("`break` cannot leave `{name}`: its block runs in another task; use `next value` for the task's result"),
+                        expr.span,
+                    );
+                    if let Some(v) = value {
+                        self.check_expr(v, None);
+                    }
+                    return Type::Nothing;
                 }
                 let t = match value {
                     Some(v) => self.check_expr(v, None),
@@ -10509,8 +10523,15 @@ impl Checker {
                 // A named `&block` may be kept (an anonymous one is only
                 // yielded to; a native that keeps its block names it).
                 self.env.next_block_escapes = m.block.as_ref().is_some_and(|(n, _)| n != "&");
-                self.env.next_block_elsewhere = Self::runs_block_in_task(&self.world, m)
-                    || (m.name == "timeout" && m.owner == self.world.builtin.task);
+                self.env.next_block_elsewhere = (Self::runs_block_in_task(&self.world, m)
+                    || (m.name == "timeout" && m.owner == self.world.builtin.task))
+                    .then(|| {
+                        if m.owner == self.world.builtin.task {
+                            format!("Task.{}", m.name)
+                        } else {
+                            format!("{}#{}", self.world.classes[m.owner as usize].name, m.name)
+                        }
+                    });
                 // A block given to `Meta::ClassDef`'s generating natives
                 // becomes a method's body (docs/14 §5).
                 self.env.next_block_lifted =
@@ -11284,7 +11305,7 @@ impl Checker {
             escapes: escapes || is_task || shareable || lifted,
             lifted,
             static_call: in_static,
-            task: is_task || elsewhere,
+            task: elsewhere.or_else(|| is_task.then(|| "the task's method".to_string())),
         });
         // `break` and `next` in a block leave the block, not a loop
         // around it.
@@ -11666,7 +11687,7 @@ impl Checker {
             escapes: true,
             lifted: false,
             static_call: false,
-            task: false,
+            task: None,
         });
         // `break` and `next` here do not leave a loop around the lambda.
         let saved_loop = (
