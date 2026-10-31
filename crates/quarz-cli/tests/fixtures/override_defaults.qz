@@ -1,0 +1,18 @@
+# An override keeps the defaults of the method it overrides, with its own
+# values, and may add one: a call through the base without the argument
+# runs the override with its default.
+class A
+  def k(x: Int = 1) -> Int = x
+end
+class B < A
+  def k(x: Int = 7) -> Int = x * 10
+end
+class D
+  def k(x: Int) -> Int = x
+end
+class E < D
+  def k(x: Int = 4) -> Int = x
+end
+a: A = B.new
+p a.k
+p E.new.k
