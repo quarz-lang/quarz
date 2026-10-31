@@ -1249,12 +1249,71 @@ impl Checker {
     /// of each subclass it is called on: a subclass that inherits the
     /// method must accept the same arguments in its `initialize` (keep
     /// it, or add only optional parameters), or override the method.
+    /// Whether `initialize` `s` takes what `new` passes for `init` (`None`:
+    /// nothing): `init`'s positional parameters, by name too (a call may
+    /// pass them by keyword), as types that hold them and optional where
+    /// they were; its keywords by name; its `*rest`, `**opts` and block
+    /// (`MethodInfo::block`); and only optional parameters besides.
+    fn initialize_fits(&self, init: Option<MethodId>, s: &MethodInfo) -> bool {
+        let Some(i) = init else {
+            return s.params.iter().all(|b| b.default.is_some());
+        };
+        let p = self.world.method(i);
+        let holds = |a: &ParamInfo, b: &ParamInfo| {
+            a.name == b.name
+                && (a.ty == b.ty || self.world.is_subtype(&a.ty, &b.ty))
+                && (a.default.is_none() || b.default.is_some())
+        };
+        let of = |m: &MethodInfo, k: ParamKind| -> Vec<ParamInfo> {
+            m.params.iter().filter(|x| x.kind == k).cloned().collect()
+        };
+        let (pp, sp) = (of(p, ParamKind::Positional), of(s, ParamKind::Positional));
+        if pp.len() > sp.len()
+            || !pp.iter().zip(&sp).all(|(a, b)| holds(a, b))
+            || !sp[pp.len()..].iter().all(|b| b.default.is_some())
+        {
+            return false;
+        }
+        let (pk, sk) = (of(p, ParamKind::KeywordOnly), of(s, ParamKind::KeywordOnly));
+        if !pk.iter().all(|a| sk.iter().any(|b| holds(a, b)))
+            || !sk
+                .iter()
+                .all(|b| b.default.is_some() || pk.iter().any(|a| a.name == b.name))
+        {
+            return false;
+        }
+        // A block: a required one only where `new` must give one; one
+        // `new` may give (`init` takes one), a subclass's of a type that
+        // holds it, optional where `init`'s is (a subclass taking none
+        // ignores it).
+        match (&p.block, &s.block) {
+            (None, Some(_)) if !s.block_optional => return false,
+            (Some((_, a)), Some((_, b)))
+                if !(a == b || self.world.is_subtype(a, b))
+                    || (p.block_optional && !s.block_optional) =>
+            {
+                return false
+            }
+            _ => {}
+        }
+        // (What `*rest` or `**opts` passes, the subclass's takes.)
+        [ParamKind::Rest, ParamKind::KeywordRest]
+            .into_iter()
+            .all(|k| {
+                of(p, k).first().is_none_or(|a| {
+                    of(s, k)
+                        .first()
+                        .is_some_and(|b| a.ty == b.ty || self.world.is_subtype(&a.ty, &b.ty))
+                })
+            })
+    }
+
     fn check_inherited_constructors(&mut self) {
         // (Kept: a later unit's subclasses inherit them too, as the
         // prelude's do a program's, `PreludeState::self_news`.)
         let mut sites = self.self_news.clone();
-        sites.sort_by_key(|s| (s.0, s.2, s.3.start));
-        sites.dedup_by_key(|s| (s.0, s.2, s.3.start));
+        sites.sort_by_key(|s| (s.0, s.2, s.3.start, s.1));
+        sites.dedup_by_key(|s| (s.0, s.2, s.3.start, s.1));
         let mut reported = HashSet::default();
         for (cid, init, method, _, _) in sites {
             let mname = self.world.method(method).name.clone();
@@ -1294,33 +1353,24 @@ impl Checker {
                 let Some(sinit) = own_init else {
                     continue;
                 };
-                if overrides || !reported.insert((sid, method)) {
+                if overrides || reported.contains(&(sid, method)) {
                     continue;
                 }
                 let s = self.world.method(sinit).clone();
-                let fits = match init {
-                    Some(i) => {
-                        let p = self.world.method(i).clone();
-                        p.params.len() <= s.params.len()
-                            && p.params.iter().zip(&s.params).all(|(a, b)| {
-                                a.kind == b.kind
-                                    && (a.ty == b.ty || self.world.is_subtype(&a.ty, &b.ty))
-                            })
-                            && s.params[p.params.len()..]
-                                .iter()
-                                .all(|b| b.default.is_some())
-                    }
-                    None => s.params.iter().all(|b| b.default.is_some()),
-                };
-                if !fits {
+                // (Each `new` of the method is checked; one error each.)
+                if !self.initialize_fits(init, &s) && reported.insert((sid, method)) {
                     let (sname, cname) = (
                         self.world.class(sid).name.clone(),
                         self.world.class(cid).name.clone(),
                     );
+                    // (Whose `initialize` `new` was checked against.)
+                    let iname = init
+                        .map(|i| self.world.class(self.world.method(i).owner).name.clone())
+                        .unwrap_or_else(|| cname.clone());
                     self.diagnostics.push((
                         s.file,
                         Diagnostic::error(
-                            format!("`{sname}#initialize` does not take the arguments of `new` in `{cname}.{mname}`, which `{sname}` inherits: keep the parameters of `{cname}#initialize` (adding only optional ones) or override `self.{mname}` in `{sname}`"),
+                            format!("`{sname}#initialize` does not take the arguments of `new` in `{cname}.{mname}`, which `{sname}` inherits: keep the parameters of `{iname}#initialize`, their names and whether they are optional (adding only optional ones), or override `self.{mname}` in `{sname}`"),
                             s.span,
                         ),
                     ));
@@ -8153,8 +8203,14 @@ impl Checker {
                     {
                         if self.world.method(m).singleton {
                             self.out.self_new.insert(expr.id);
-                            self.self_news
-                                .push((cid, init, m, expr.span, self.env.file));
+                            // (In a block lifted to a generated class
+                            // method, the method the subclasses inherit is
+                            // that one, not the `static def`: recorded when
+                            // it is generated, `StaticHost::generated_new`.)
+                            if self.env.lifted_frame.is_none() {
+                                self.self_news
+                                    .push((cid, init, m, expr.span, self.env.file));
+                            }
                             // In a class method with `Self` in its
                             // signature, the instance is a `Self`.
                             if self.env.self_opaque && self.own_self() {
@@ -12567,6 +12623,57 @@ impl crate::StaticHost for Checker {
         (0..self.world.static_stmts.len())
             .filter(|i| !self.static_done.get(*i).copied().unwrap_or(false))
             .collect()
+    }
+    fn generated_new(
+        &mut self,
+        class: ClassId,
+        from: ClassId,
+        method: MethodId,
+        init: Option<MethodId>,
+        at: (u32, Span),
+    ) -> Result<(), String> {
+        // The class generated into builds itself with the first
+        // `initialize` from it up to (not including) `from`, the class
+        // `new` was checked for, given what `new` passes for `init`.
+        let mut own = None;
+        let mut cur = Some(class);
+        while let Some(c) = cur {
+            if c == from {
+                break;
+            }
+            let k = self.world.class(c);
+            if let Some(i) = k
+                .methods
+                .get("initialize")
+                .and_then(|ids| ids.first().copied())
+            {
+                own = Some(i);
+                break;
+            }
+            cur = k.superclass.as_ref().and_then(|t| match t {
+                Type::Class(id, _) => Some(*id),
+                _ => None,
+            });
+        }
+        if let Some(own) = own.filter(|o| Some(*o) != init) {
+            let s = self.world.method(own).clone();
+            if !self.initialize_fits(init, &s) {
+                let cname = self.world.class(class).name.clone();
+                let mname = self.world.method(method).name.clone();
+                let oname = self.world.class(s.owner).name.clone();
+                let which = if oname == cname {
+                    format!("`{cname}#initialize`")
+                } else {
+                    format!("`{oname}#initialize`, which `{cname}` builds with,")
+                };
+                return Err(format!(
+                    "{which} does not take the arguments of `new` in the generated `{cname}.{mname}`"
+                ));
+            }
+        }
+        // Its subclasses inherit `method`: checked as a written one's `new`.
+        self.self_news.push((class, init, method, at.1, at.0));
+        Ok(())
     }
     fn set_generated_captures(&mut self, method: MethodId, captures: Vec<(u32, u32, Baked)>) {
         if let Some(g) = &mut self.world.method_mut(method).generated {

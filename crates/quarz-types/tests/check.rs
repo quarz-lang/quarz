@@ -3771,3 +3771,39 @@ fn self_in_a_body_is_the_signatures_self() {
         "cannot assign Meta::ClassDef[C] to `k` of type C",
     );
 }
+
+#[test]
+fn an_inherited_new_is_checked_against_each_initialize_in_full() {
+    // `new` in a class method that a subclass inherits: the subclass's
+    // `initialize` keeps the parameters' names (a call may pass them by
+    // keyword) and optional ones optional; every `new` is checked.
+    let msg = "`Sub#initialize` does not take the arguments of `new` in `Model.mk`";
+    err(
+        "class Model\n  def initialize(x: Int = 0); end\n  def self.mk -> Model = new\nend\nclass Sub < Model\n  def initialize(x: Int); end\nend",
+        msg,
+    );
+    err(
+        "class Model\n  def initialize(*, x: Int); end\n  def self.mk -> Model = new(x: 1)\nend\nclass Sub < Model\n  def initialize(*, y: Int); end\nend",
+        msg,
+    );
+    err(
+        "class Model\n  def initialize(x: Int = 0); end\n  def self.mk -> Model\n    new(5)\n    new\n  end\nend\nclass Sub < Model\n  def initialize(x: Int); end\nend",
+        msg,
+    );
+    ok("class Model\n  def initialize(x: Int); end\n  def self.mk -> Model = new(1)\nend\nclass Sub < Model\n  def initialize(x: Int, y: Int = 2); end\nend");
+    // A block of a type the subclass's does not hold, and an optional one
+    // made required.
+    err(
+        "class Model\n  def initialize(&b: (Int) -> Int); end\n  def self.mk -> Model = new { |x| x }\nend\nclass Sub < Model\n  def initialize(&b: (Object) -> Int); end\nend",
+        msg,
+    );
+    err(
+        "class Model\n  def initialize(&b: (() -> Int)?); end\n  def self.mk -> Model = new\nend\nclass Sub < Model\n  def initialize(&b: () -> Int); end\nend",
+        msg,
+    );
+    // A block the subclass requires, which `new` gives none of.
+    err(
+        "class Model\n  def initialize(x: Int); end\n  def self.mk -> Model = new(1)\nend\nclass Sub < Model\n  def initialize(x: Int, &blk: () -> Int); end\nend",
+        msg,
+    );
+}

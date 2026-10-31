@@ -655,6 +655,21 @@ pub trait StaticHost {
     /// A generated method's captures, its method handles resolved
     /// (docs/14 §5).
     fn set_generated_captures(&mut self, method: MethodId, captures: Vec<(u32, u32, world::Baked)>);
+    /// A generated class method `method` of `class` whose body builds an
+    /// instance of its receiver (`new` in a block given to
+    /// `def_class_method`, checked for class `from`), with `init`'s
+    /// arguments: the `initialize` `class` builds with (its own or
+    /// inherited, below `from`)
+    /// `initialize` must take them (else why), and its subclasses', which
+    /// inherit `method`, are checked as for a written one.
+    fn generated_new(
+        &mut self,
+        class: ClassId,
+        from: ClassId,
+        method: MethodId,
+        init: Option<MethodId>,
+        at: (u32, quarz_syntax::Span),
+    ) -> Result<(), String>;
     /// After a statement's generations: the declaration-time checks of
     /// the classes they went into, again.
     fn recheck_classes(&mut self, classes: &[ClassId]);
