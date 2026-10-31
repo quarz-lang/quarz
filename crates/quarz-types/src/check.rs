@@ -8535,15 +8535,26 @@ impl Checker {
                             return t;
                         }
                         // Nested blocks on the same class shadow each
-                        // other on purpose; a different class is worth a word.
-                        Some((outer, _)) if outer != *recv_ty => self.warning(
+                        // other on purpose; a different class is worth a word,
+                        // where its method is another declaration than the
+                        // receiver's (not one both inherit: `to_s`, `hash`).
+                        Some((outer, _))
+                            if outer != *recv_ty
+                                && !self
+                                    .world
+                                    .lookup_methods(&outer, name)
+                                    .iter()
+                                    .all(|(m, _)| cands.iter().any(|(c, _)| c == m)) =>
+                        {
+                            self.warning(
                             format!(
                                 "`{name}` is a method of both the block's receiver {} and the enclosing {}; the receiver's is called",
                                 self.name(recv_ty),
                                 self.name(&outer)
                             ),
                             expr.span,
-                        ),
+                        )
+                        }
                         _ => {}
                     }
                 }
