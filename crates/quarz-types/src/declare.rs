@@ -576,7 +576,7 @@ impl<'ast> Declarer<'ast> {
                 type_params,
                 ty,
             } => {
-                let params = self.new_type_params(type_params);
+                let params = self.new_type_params(type_params, None, namespace);
                 let id = self.world.aliases.len() as u32;
                 self.world.aliases.push(TypeAliasInfo {
                     name: name.clone(),
@@ -953,7 +953,8 @@ impl<'ast> Declarer<'ast> {
                 PendingDef::Enum(d) => (&d.type_params, ()),
                 PendingDef::Variant(_) | PendingDef::Main | PendingDef::CogRoot(_) => continue,
             };
-            let infos: Vec<TypeParamInfo> = self.new_type_params(params);
+            self.file = self.pending_file(p);
+            let infos: Vec<TypeParamInfo> = self.new_type_params(params, None, Some(p.id));
             self.world.class_mut(p.id).type_params = infos;
         }
         // Variants share the enum's parameters.
@@ -966,7 +967,13 @@ impl<'ast> Declarer<'ast> {
         }
         let pending_ext = std::mem::take(&mut self.pending_ext);
         for e in &pending_ext {
-            let infos: Vec<TypeParamInfo> = self.new_type_params(&e.def.type_params);
+            let target = match &e.def.target.kind {
+                TypeExprKind::Named { path, .. } => path.to_string(),
+                _ => String::new(),
+            };
+            self.file = e.file;
+            let infos: Vec<TypeParamInfo> =
+                self.new_type_params(&e.def.type_params, Some(&target), e.namespace);
             self.world.extensions[e.id as usize].type_params = infos;
         }
 
@@ -4341,7 +4348,10 @@ impl<'ast> Declarer<'ast> {
                 def.span,
             );
         }
-        let type_params: Vec<TypeParamInfo> = self.new_type_params(&def.type_params);
+        // (Seen from where the signature's types are: an extension's
+        // namespace for its methods.)
+        let type_params: Vec<TypeParamInfo> =
+            self.new_type_params(&def.type_params, None, class_scope.namespace);
         let mut scope = class_scope.with_params(&type_params);
         scope.self_type = None;
         let _ = class_self;
@@ -4647,16 +4657,59 @@ impl<'ast> Declarer<'ast> {
     }
 
     /// The type parameters `tps` declare (`Self`, `Void` and `Nothing`
-    /// cannot name one).
-    fn new_type_params(&mut self, tps: &[TypeParam]) -> Vec<TypeParamInfo> {
+    /// cannot name one, nor a type of the prelude or the standard library:
+    /// `class Box[Int]`, `extension Array[Int]` meant a type argument).
+    /// `extension`: the extension's target, for the message; `scope`: where
+    /// the names are declared. A type the program declares (seen from
+    /// there before the prelude's) is shadowed, as any outer name.
+    fn new_type_params(
+        &mut self,
+        tps: &[TypeParam],
+        extension: Option<&str>,
+        scope: Option<ClassId>,
+    ) -> Vec<TypeParamInfo> {
+        let names: Vec<&str> = tps.iter().map(|p| p.name.as_str()).collect();
         tps.iter()
             .map(|tp| {
                 if let Some(msg) = quarz_syntax::reserved_type_name(&tp.name) {
+                    self.error(msg, tp.span);
+                } else if self.is_builtin_type_name(&tp.name, scope) {
+                    // A fresh name to suggest.
+                    let fresh = ["T", "U", "V", "W", "S", "R"]
+                        .into_iter()
+                        .find(|c| !names.contains(c) && !self.is_builtin_type_name(c, scope))
+                        .unwrap_or("T");
+                    let mut msg = format!(
+                        "`{}` cannot be a type parameter name: it is a built-in type (name it `{fresh}`)",
+                        tp.name
+                    );
+                    if let Some(target) = extension {
+                        let meant: Vec<&str> = names
+                            .iter()
+                            .map(|n| if *n == tp.name { fresh } else { n })
+                            .collect();
+                        msg = format!(
+                            "`{}` cannot be a type parameter name: it is a built-in type (an extension's brackets declare type parameters, `extension {target}[{}]`; an extension for one instantiation is not supported)",
+                            tp.name,
+                            meant.join(", ")
+                        );
+                    }
                     self.error(msg, tp.span);
                 }
                 self.world.new_type_param(&tp.name, tp.variance)
             })
             .collect()
+    }
+
+    /// Whether `name`, seen from `scope`, is a type of the prelude or the
+    /// standard library (a class, module or alias).
+    fn is_builtin_type_name(&self, name: &str, scope: Option<ClassId>) -> bool {
+        let std = |file: u32| file == 0 || self.world.std_files.contains(&file);
+        match self.world.resolve_member(scope, name) {
+            Some(Member::Class(c)) => std(self.world.class(c).file),
+            Some(Member::Alias(a)) => std(self.world.aliases[a as usize].file),
+            _ => false,
+        }
     }
 
     pub fn resolve_type(&mut self, expr: &TypeExpr, scope: &TypeScope) -> Option<Type> {

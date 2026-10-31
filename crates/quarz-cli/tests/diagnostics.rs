@@ -165,6 +165,29 @@ fn expansive_inheritance_across_files() {
     assert!(err.contains("expansive inheritance"), "{err}");
 }
 
+/// An error in a required file's type parameters is reported in that
+/// file (they are declared before the headers, file by file).
+#[test]
+fn a_type_parameter_error_in_a_required_file() {
+    let dir = std::env::temp_dir().join(format!("quarz-tparam-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("lib.qz"), "class Box[Int]\nend\n").unwrap();
+    std::fs::write(dir.join("app.qz"), "require_relative \"lib\"\np 1\n").unwrap();
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_quarz"))
+        .args(["check", "app.qz"])
+        .current_dir(&dir)
+        .env("QUARZ_NO_CACHE", "1")
+        .output()
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success());
+    assert!(
+        err.contains("lib.qz:1:11: error: `Int` cannot be a type parameter name"),
+        "{err}"
+    );
+}
+
 /// A 63-deep covariant coercion (the subtype checks' defensive depth
 /// limit is far above it).
 #[test]
