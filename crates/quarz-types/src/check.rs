@@ -8407,22 +8407,8 @@ impl Checker {
                 // itself), whose class object has the module's methods: an
                 // implicit call finds them.
                 if cands.is_empty() && call.recv.is_none() && implicit_self {
-                    if let (Type::Class(c, _), Some(m)) = (&self.env.self_type, self.env.method) {
-                        let owner = self.world.method(m).owner;
-                        if *c == self.world.builtin.meta_classdef
-                            && self.world.class(owner).kind == ClassKind::Module
-                        {
-                            let own = Type::Class(
-                                owner,
-                                self.world
-                                    .class(owner)
-                                    .type_params
-                                    .iter()
-                                    .map(|p| Type::Param(p.id))
-                                    .collect(),
-                            );
-                            cands = self.world.lookup_methods(&own, name);
-                        }
+                    if let Some(own) = self.module_static_self(&self.env.self_type.clone()) {
+                        cands = self.world.lookup_methods(&own, name);
                     }
                 }
                 // Top-level functions of the cog, then `Kernel`'s built-in
@@ -9021,8 +9007,38 @@ impl Checker {
             if !self.world.lookup_methods(&outer, name).is_empty() {
                 return Some((outer, k));
             }
+            // A module's `static def`'s `self`: the module's methods too.
+            if let Some(own) = self.module_static_self(&outer) {
+                if !self.world.lookup_methods(&own, name).is_empty() {
+                    return Some((own, k));
+                }
+            }
         }
         None
+    }
+
+    /// In a module's `static def`, `self` (`t`) is the class that extends
+    /// the module (docs/14 §2: through `extend M[C]`, C itself), whose
+    /// class object has the module's methods: the module's type, for an
+    /// implicit call to find them.
+    fn module_static_self(&self, t: &Type) -> Option<Type> {
+        let (Type::Class(c, _), Some(m)) = (t, self.env.method) else {
+            return None;
+        };
+        let owner = self.world.method(m).owner;
+        (*c == self.world.builtin.meta_classdef
+            && self.world.class(owner).kind == ClassKind::Module)
+            .then(|| {
+                Type::Class(
+                    owner,
+                    self.world
+                        .class(owner)
+                        .type_params
+                        .iter()
+                        .map(|p| Type::Param(p.id))
+                        .collect(),
+                )
+            })
     }
 
     /// Route an implicit-self call to the `self` of receiver level `k`:

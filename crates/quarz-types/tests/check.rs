@@ -3945,3 +3945,9 @@ fn an_inherited_constructor_is_checked_with_the_superclass_arguments() {
         "`StrBox#initialize` does not take the arguments of `new` in `Box.mk`",
     );
 }
+
+#[test]
+fn a_modules_static_def_reaches_its_methods_from_a_block_with_another_receiver() {
+    // Through the enclosing `self`, the class extending the module.
+    ok("abstract class Model\nend\nmodule Macros[T <: Model]\n  static def helper -> Int = 1\n  static def go -> Int = \"s\".instance_exec { helper + size }\nend");
+}
