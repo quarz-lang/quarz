@@ -132,6 +132,25 @@ impl Completions {
             if matches!(class.kind, ClassKind::Class | ClassKind::Data) && !class.is_abstract {
                 singles.push("new".to_string());
             }
+            // A library cog's root module: its public functions
+            // (docs/10 §6).
+            if let Some(cog) = class.cog {
+                for (f, g) in &world.file_groups {
+                    if *g != quarz_types::UnitGroup::Cog(cog) {
+                        continue;
+                    }
+                    for k in &world.classes {
+                        if k.kind == ClassKind::Main && k.file == *f {
+                            singles.extend(
+                                k.methods
+                                    .iter()
+                                    .filter(|(_, ids)| public(ids))
+                                    .map(|(n, _)| n.clone()),
+                            );
+                        }
+                    }
+                }
+            }
             singleton_methods.push(sorted(singles));
             members.push(sorted(class.members.keys().cloned()));
         }

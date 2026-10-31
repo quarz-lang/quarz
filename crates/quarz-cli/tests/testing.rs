@@ -391,7 +391,7 @@ impl Dir {
         );
         self.write(
             "fixtures/src/f.qz",
-            "def self.numbers -> Array[Int] = [1, 2, 3]\n",
+            "public def numbers -> Array[Int] = [1, 2, 3]\n",
         );
         self.git("fixtures", &["init", "-q", "-b", "main"]);
         self.git("fixtures", &["add", "-A"]);
@@ -482,7 +482,7 @@ fn a_library_is_tested_under_its_module() {
     );
     d.write(
         "mathx/src/mathx.qz",
-        "def self.square(x: Int) -> Int = x * x\ndata Vec = (x: Int)\n",
+        "public def square(x: Int) -> Int = x * x\ndata Vec = (x: Int)\n",
     );
     d.write(
         "mathx/test/mathx_test.qz",

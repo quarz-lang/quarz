@@ -20,6 +20,7 @@ fn anchor(item: &Item) -> String {
     let prefix = match item.kind {
         Kind::Method => "method",
         Kind::ClassMethod => "class-method",
+        Kind::Function => "function",
         Kind::Const => "const",
         Kind::Variant => "variant",
         _ => "item",
@@ -330,6 +331,18 @@ fn page_html(loaded: &Loaded, api: &Api, page: &Page) -> String {
                 .is_some_and(|rest| !rest.contains("::"))
         })
         .collect();
+    // A cog's public functions first, before its classes.
+    let functions: Vec<&Item> = page
+        .members
+        .iter()
+        .filter(|m| m.kind == Kind::Function)
+        .collect();
+    if !functions.is_empty() {
+        s.push_str("<h2>Functions</h2>\n");
+        for m in functions {
+            s.push_str(&member_html(loaded, api, page, m));
+        }
+    }
     if !nested.is_empty() {
         s.push_str("<h2>Classes and modules</h2>\n");
         s.push_str(&summary_list(api, &nested));

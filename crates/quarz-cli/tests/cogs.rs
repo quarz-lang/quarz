@@ -160,7 +160,7 @@ impl World {
         );
         self.write(
             "tomlz/src/value.qz",
-            "class Value\n  @text: String\n  def initialize(@text: String)\n  end\n  def to_s -> String = \"Value(#{@text})\"\nend\n\ndef self.parse(text: String) -> Value = Value.new(text.strip)\n",
+            "class Value\n  @text: String\n  def initialize(@text: String)\n  end\n  def to_s -> String = \"Value(#{@text})\"\nend\n\npublic def parse(text: String) -> Value = Value.new(text.strip)\n",
         );
         self.commit("tomlz", Some("v0.8.1"));
         self.write(
@@ -184,7 +184,7 @@ impl World {
         );
         self.write(
             "httpx/src/client.qz",
-            "class Client\n  def get(url: String) -> Response = Response.new(url, Tomlz.parse(\" body \"))\nend\n\ndef self.get(url: String) -> Response = Client.new.get(url)\n",
+            "class Client\n  def get(url: String) -> Response = Response.new(url, Tomlz.parse(\" body \"))\nend\n\npublic def get(url: String) -> Response = Client.new.get(url)\n",
         );
         self.write(
             "httpx/src/response.qz",
@@ -345,7 +345,7 @@ fn keys_name_cogs_and_scopes_are_closed() {
     // The patch is used, and is not locked.
     w.write(
         "httpx-dev/src/peek.qz",
-        "def self.patched -> String = \"patched\"\n",
+        "public def patched -> String = \"patched\"\n",
     );
     w.write("app/src/main.qz", "puts Httpx.patched\n");
     assert_eq!(w.ok("app", &["run"]), "patched\n");
@@ -688,7 +688,7 @@ fn test_files_see_the_cogs_functions_one_way() {
     w.write("lib/Cog.toml", "[cog]\nname = \"lib\"\n");
     w.write(
         "lib/src/a.qz",
-        "def base -> Int = 100\ndef show(x: Object) -> String = \"obj\"\ndef self.which -> String = show(1)\n",
+        "def base -> Int = 100\ndef show(x: Object) -> String = \"obj\"\npublic def which -> String = show(1)\n",
     );
     for (f, n) in [("one", 1), ("two", 2)] {
         w.write(
@@ -1293,7 +1293,7 @@ fn a_new_users_walk() {
     );
     w.write(
         "greet-more/src/farewell.qz",
-        "def self.farewell(name: String) -> String = Greet::Greeter.new(name).bye + \" (#{cog.name} #{cog.version})\"\n",
+        "public def farewell(name: String) -> String = Greet::Greeter.new(name).bye + \" (#{cog.name} #{cog.version})\"\n",
     );
     w.commit("greet-more", Some("v1.0.0"));
     let more =
@@ -1497,4 +1497,129 @@ fn a_copy_of_the_application_is_no_dependency() {
         "puts Other::V\n",
     );
     assert_eq!(w.ok("app", &["run"]), "2\n");
+}
+
+#[test]
+fn a_cogs_public_functions() {
+    // docs/10 §6: `public def f` is called `Key.f` from the cogs that
+    // depend on the cog (and `cog.f` inside it); a `def` is private to it.
+    let w = World::new();
+    w.write(
+        "lib/Cog.toml",
+        "[cog]\nname = \"lib\"\nversion = \"1.0.0\"\nmodule = \"Lib\"\n",
+    );
+    w.write(
+        "lib/src/a.qz",
+        "# Shouts `s`.\npublic def shout(s: String) -> String = helper(s) + \"!\"\npublic def shout(n: Int) -> String = \"#{n}!\"\npublic def tag -> String = \"#{self.class.name} #{TAG}\"\ndef helper(s: String) -> String = s.upcase\nTAG = \"lib\"\nclass Box\n  def go -> String = cog.shout(\"box\") + \" \" + shout(\"in\")\nend\n",
+    );
+    w.commit("lib", Some("v1.0.0"));
+    let dep = format!("L = {{ git = \"{}\", tag = \"v1.0.0\" }}\n", w.url("lib"));
+    w.app(
+        &dep,
+        "p L.shout(\"hi\"), L.shout(3), L.tag, L::Box.new.go\n",
+    );
+    let expected = "\"HI!\"\n\"3!\"\n\"main lib\"\n\"BOX! IN!\"\n";
+    assert_eq!(w.ok("app", &["run"]), expected);
+    let out = w.ok("app", &["build", "-o", "app.bin"]);
+    let _ = out;
+    let exe = Command::new(w.path("app/app.bin")).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&exe.stdout), expected);
+    // A private function, and none of the name.
+    w.app(&dep, "p L.helper(\"x\")\n");
+    let err = w.fails("app", &["check"]);
+    assert!(
+        err.contains("`helper` is private to cog `Lib`; declare it `public def helper`"),
+        "{err}"
+    );
+    w.app(&dep, "p L.nope\n");
+    let err = w.fails("app", &["check"]);
+    assert!(
+        err.contains("no function `nope` in cog `Lib` (its public functions: shout, tag)"),
+        "{err}"
+    );
+    // `quarz doc` lists them under the module, private ones left out.
+    let doc = w.ok("lib", &["doc"]);
+    assert!(
+        doc.contains("Lib.shout") && doc.contains("Lib.tag") && !doc.contains("helper"),
+        "{doc}"
+    );
+    let doc = w.ok("lib", &["doc", "Lib.shout"]);
+    assert!(
+        doc.contains("(function)") && doc.contains("Shouts s."),
+        "{doc}"
+    );
+    // Called by name only: `&.` or a value of the module's type is no
+    // function call (the call would not evaluate it).
+    w.app(&dep, "p L&.shout(\"x\")\n");
+    let err = w.fails("app", &["check"]);
+    assert!(
+        err.contains("undefined method `shout` for Type[Lib]"),
+        "{err}"
+    );
+    w.app(&dep, "p (puts(\"side\"); L).shout(\"y\")\n");
+    let err = w.fails("app", &["check"]);
+    assert!(
+        err.contains("undefined method `shout` for Type[Lib]"),
+        "{err}"
+    );
+    // `quarz doc --check` resolves a link to one.
+    w.write(
+        "lib/src/c.qz",
+        "# See `Lib.shout`.\npublic def linked -> Int = 1\n",
+    );
+    let out = w.quarz("lib", &["doc", "--check"]);
+    assert!(!out.stderr.contains("names nothing"), "{}", out.stderr);
+    // `def self.f` in a cog's file, a visibility line, and `protected def`,
+    // are errors.
+    // `--tree` shows `L.shout(...)` as the function call it is.
+    w.app(&dep, "p L.shout(\"t\")\n");
+    let tree = w.ok("app", &["check", "--tree"]);
+    assert!(
+        tree.contains("\"function\":true") || tree.contains("\"function\": true"),
+        "{tree}"
+    );
+    // A public function cannot take a name of the module's own methods.
+    w.write("lib/src/e.qz", "public def inspect -> String = \"x\"\n");
+    let err = w.fails("lib", &["test"]);
+    assert!(
+        err.contains("a public function cannot be named `inspect`"),
+        "{err}"
+    );
+    w.write("lib/src/e.qz", "public def version -> String = \"x\"\n");
+    let err = w.fails("lib", &["test"]);
+    assert!(
+        err.contains("a public function cannot be named `version`"),
+        "{err}"
+    );
+    std::fs::remove_file(w.path("lib/src/e.qz")).unwrap();
+    w.write("lib/src/d.qz", "def v -> Int = 1\npublic :v\n");
+    let err = w.fails("lib", &["test"]);
+    assert!(
+        err.contains("a cog's file has no visibility lines"),
+        "{err}"
+    );
+    std::fs::remove_file(w.path("lib/src/d.qz")).unwrap();
+    w.write(
+        "lib/src/b.qz",
+        "def self.old -> Int = 1\nprotected def p -> Int = 2\n",
+    );
+    let err = w.fails("lib", &["test"]);
+    assert!(err.contains("a cog's file declares no `def self.old`: a function other cogs call is written `public def old`"), "{err}");
+    assert!(err.contains("`protected` does not apply to `p`"), "{err}");
+}
+
+#[test]
+fn a_cog_is_a_dependency_or_a_dev_dependency() {
+    let w = World::new();
+    publish(&w, "t", "1.0.0", &[]);
+    w.app(
+        &format!("T = {{ git = \"{}\", tag = \"v1.0.0\" }}\n", w.url("t")),
+        "puts T::V\n",
+    );
+    let err = w.fails("app", &["cog", "add", &w.url("t"), "--dev"]);
+    assert!(err.contains("is already in [dependencies] as `T`: a cog is a dependency or a dev-dependency, not both"), "{err}");
+    // A patch's path shows without `..`.
+    w.write("app/Cog.toml", &format!("[cog]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\nT = {{ git = \"{}\", tag = \"v1.0.0\" }}\n\n[patch]\nT = {{ path = \"../t\" }}\n", w.url("t")));
+    let tree = w.ok("app", &["cog", "tree"]);
+    assert!(!tree.contains(".."), "{tree}");
 }

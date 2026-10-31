@@ -3822,8 +3822,9 @@ impl<'ast> Declarer<'ast> {
         if is_main {
             visibility = Visibility::Private;
         }
-        // In a library cog's file, `def self.name` is a method of the
-        // cog's root module and every other top-level method is the file's.
+        // In a library cog's file, every top-level `def` is the file's (a
+        // function of the cog); a `def self.name` there is an error, given
+        // the root module's pass (it has no class methods).
         let cog_root = matches!(p.def, PendingDef::CogRoot(_));
         let in_cog_file = is_main && self.world.cog_root(Some(id)).is_some();
         if cog_root {
@@ -3837,9 +3838,75 @@ impl<'ast> Declarer<'ast> {
                 }
             }
             match &expr.kind {
+                // A cog's exported function is a `public def` (docs/10
+                // §6): the root module has no class methods.
+                ExprKind::MethodDef(def) if cog_root => {
+                    self.error(
+                        format!(
+                            "a cog's file declares no `def self.{0}`: a function other cogs call is written `public def {0}` (called `{1}.{0}`)",
+                            def.name,
+                            self.world.class(id).name
+                        ),
+                        def.span,
+                    );
+                }
+                // A top-level `def` is a function of its cog: private to it
+                // (the default, or `private def`) or `public def` (docs/10
+                // §6); `protected` is for methods.
+                ExprKind::MethodDef(def)
+                    if is_main && def.visibility == Some(Visibility::Protected) =>
+                {
+                    self.error(
+                        format!(
+                            "a top-level `def` is a function, not a method: `protected` does not apply to `{}`; write `def` (private to the cog) or `public def`",
+                            def.name
+                        ),
+                        def.span,
+                    );
+                    self.declare_method(id, None, def, visibility, &scope, &class_self);
+                }
                 ExprKind::MethodDef(def) => {
                     let vis = def.visibility.unwrap_or(visibility);
+                    // `Lib.name` is the class object's method of the name
+                    // (`Type#name`): a public function cannot take it.
+                    if in_cog_file && vis == Visibility::Public {
+                        let class_ = self.world.builtin.class_;
+                        let taken = self
+                            .world
+                            .ancestor_ids(class_)
+                            .into_iter()
+                            .find(|a| self.world.class(*a).methods.contains_key(&def.name));
+                        let module = self
+                            .world
+                            .class(self.world.cog_root(Some(id)).unwrap_or(id))
+                            .name
+                            .clone();
+                        if let Some(owner) = taken {
+                            self.error(
+                                format!(
+                                    "a public function cannot be named `{0}`: `{module}.{0}` is `{1}#{0}`, the module's own; name it otherwise",
+                                    def.name,
+                                    self.world.class(owner).name
+                                ),
+                                def.span,
+                            );
+                        } else if def.name == "version" {
+                            // (`cog.version` is the manifest's, docs/10 §6.)
+                            self.error(
+                                "a public function cannot be named `version`: `cog.version` is the cog's version, from its manifest; name it otherwise",
+                                def.span,
+                            );
+                        }
+                    }
                     self.declare_method(id, None, def, vis, &scope, &class_self);
+                }
+                // A library cog's file: a function is exported by `public
+                // def` alone (docs/10 §6).
+                ExprKind::Visibility { .. } if in_cog_file => {
+                    self.error(
+                        "a cog's file has no visibility lines: write `public def name` for a function other cogs call",
+                        expr.span,
+                    );
                 }
                 ExprKind::Visibility {
                     visibility: v,

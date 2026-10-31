@@ -307,6 +307,8 @@ pub(crate) enum Kind {
     Variant,
     Method,
     ClassMethod,
+    /// A cog's public function (`public def`), on its root module's page.
+    Function,
     Const,
 }
 
@@ -320,6 +322,7 @@ impl Kind {
             Kind::Variant => "variant",
             Kind::Method => "method",
             Kind::ClassMethod => "class method",
+            Kind::Function => "function",
             Kind::Const => "constant",
         }
     }
@@ -624,6 +627,11 @@ fn method_doc(
             return (Some(d.clone()), None);
         }
     }
+    // A top-level `def` is a function: it overrides nothing, and takes no
+    // ancestor's documentation (docs/01 §1).
+    if world.class(m.owner).kind == ClassKind::Main {
+        return (None, None);
+    }
     for a in world.ancestor_ids(m.owner).into_iter().skip(1) {
         let class = world.class(a);
         let table = if m.singleton {
@@ -687,6 +695,20 @@ fn page(world: &World, id: ClassId, kind: Kind, doc: Option<Doc>, private: bool)
         .copied()
         .filter(|m| world.method(*m).owner == id)
         .collect();
+    // A library's root module: its cog's public functions, the top-level
+    // `def`s of its files (docs/10 §6).
+    if let Some(cog) = c.cog {
+        for (f, g) in &world.file_groups {
+            if *g != quarz_types::UnitGroup::Cog(cog) {
+                continue;
+            }
+            for k in &world.classes {
+                if k.kind == ClassKind::Main && k.file == *f {
+                    methods.extend(k.methods.values().flatten().copied());
+                }
+            }
+        }
+    }
     // An extension's methods, on its module's page.
     let mut ext_methods: Vec<(MethodId, String)> = Vec::new();
     for ext in &world.extensions {
@@ -755,6 +777,12 @@ fn page(world: &World, id: ClassId, kind: Kind, doc: Option<Doc>, private: bool)
         } else if m.singleton {
             (
                 Kind::ClassMethod,
+                m.name.clone(),
+                method_signature(world, mid, None),
+            )
+        } else if world.class(m.owner).kind == ClassKind::Main {
+            (
+                Kind::Function,
                 m.name.clone(),
                 method_signature(world, mid, None),
             )
@@ -989,6 +1017,19 @@ impl Api {
                 Some(p) => Target::Page(p, None),
                 None => Target::Elsewhere { private: false },
             }),
+            // A cog's public function, `Lib.f` (docs/10 §6), on the root
+            // module's page.
+            Some(('.', m))
+                if self.page(&world.class(class).name).is_some_and(|p| {
+                    p.members
+                        .iter()
+                        .any(|i| i.kind == Kind::Function && i.name == m)
+                }) =>
+            {
+                let p = world.class(class).name.clone();
+                let member = format!("{p}.{m}");
+                Some(Target::Page(p, Some(member)))
+            }
             Some((sep, m)) => {
                 let mid = find_method(world, class, m, sep == '.')?;
                 let info = world.method(mid);
@@ -1174,21 +1215,21 @@ pub(crate) fn first_line(s: &str) -> String {
 
 fn lookup(loaded: &Loaded, api: &Api, name: &str) -> Option<String> {
     let world = &loaded.world;
-    // An extension's method, by the name of the class it extends.
+    // An extension's method, by the name of the class it extends, and a
+    // cog's public function (`Lib.shout`), by its page's path.
     let ext: Vec<&Item> = api
         .pages
         .iter()
         .flat_map(|p| &p.members)
-        .filter(|i| i.extension.is_some() && i.path == name)
+        .filter(|i| (i.extension.is_some() || i.kind == Kind::Function) && i.path == name)
         .collect();
     if !ext.is_empty() {
         let mut out = String::new();
         for item in ext {
+            let whose = item.extension.as_deref().unwrap_or("function");
             out.push_str(&format!(
-                "{}  {}\n  ({})\n\n",
-                item.path,
-                item.signature,
-                item.extension.as_deref().unwrap_or_default()
+                "{}  {}\n  ({whose})\n\n",
+                item.path, item.signature
             ));
             if let Some(d) = &item.doc {
                 out.push_str(&markdown_text(&d.text, "  "));

@@ -115,11 +115,11 @@ class Client
   def get(url: String) -> Response … end     # `Response` is in response.qz: no require
 end
 
-def self.get(url: String) -> Response        # a module function: `Httpx.get`
+public def get(url: String) -> Response      # a public function: other cogs call `Httpx.get`
   Client.new.get(url)
 end
 
-def helper(…) … end                          # a function of the cog: its other files (and its tests) call it, other cogs do not see it
+def helper(…) … end                          # a function private to the cog: its other files (and its tests) call it
 ```
 
 The user of the cog names it in `[dependencies]` and sees it under the key:
@@ -133,6 +133,7 @@ client = Httpx::Client.new
 - **No `require`.** Declarations are hoisted across every loaded file, so `require` only ever chose which files are loaded and in which order their statements run; the manifest answers the first, and §6's rule on statements the second. `require "json"` is accepted as a no-op, as `require "time"` is today, so Ruby code moves over unchanged: the standard library's modules (`JSON`, `Socket`, …) are visible without it. `require_relative` remains for scripts, which have no manifest.
 - **A cog has no statements.** Its files hold declarations and constants only; a statement at the top level of a cog file is an error. Loading a cog therefore has no effect, and there is no order of loading to define. The application's statements are in `src/main.qz`, the one file of a movement that may have them, and they run after every constant is initialized.
 - **Constants are initialized in dependency order.** Each constant is initialized at its first use, so the constants an initializer reads come first and a constant used by its own initializer raises `RuntimeError` ([01-syntax.md](01-syntax.md) §8); no load order is needed for that either.
+- **A cog's API is its classes, modules and public functions.** A top-level `def` is a function of the cog ([01-syntax.md](01-syntax.md) §1), private to it by default; `public def f` is also called `Httpx.f(args)` by the cogs that depend on it (under their key for it) and `cog.f(args)` inside it: a static call, as `Kernel.puts`, with the defining file's top-level object as `self`. Its overloads are the cog's public functions of the name; a private one is not called that way ("`f` is private to cog `Httpx`; declare it `public def f`"). The root module has no class methods: `def self.f` in a cog's file is an error that says to write `public def f`, and a public function cannot take the name of a method the module itself has as a value (`name`, `inspect`, `to_s`, `==`, ...: `Httpx.name` is `Type#name`), nor `version` (`cog.version` is the manifest's). It is called by name (a constant path or `cog`, not `&.` nor a value of the module's type), and `quarz check --tree` shows such a call as a function call, without the module as a receiver. `quarz doc` lists the public functions on the root module's page, before its classes.
 - **The root module is an ordinary module** and follows the ordinary rules: it cannot be reopened (no `module Httpx` anywhere, inside or outside the cog, since classes and modules are never reopened), including or extending it warns as including any namespace module does ([01-syntax.md](01-syntax.md) §6), and `extension`s a cog defines take effect only where a file says `using Httpx::StringExt`. A cog cannot monkey-patch its users.
 - **The key is the name, and an alias when it differs.** The key under which a manifest lists a cog is bound, in that cog's scope, to the dependency's root module, as a constant `AUtil = Util` would be. When two dependencies declare the same `module`, their keys tell them apart; a key equal to the declared module is the common case and says nothing. The dependency's own code is unaffected: what it compiles to does not depend on what its users call it. (Swift PM's `moduleAliases`, .NET's `extern alias` and Cabal's `mixins` solve the same collision the same way.)
 - **The dependencies of a cog are resolved by its own manifest.** When `httpx`'s code says `Tomlz::Parser`, the name is `httpx`'s key for that dependency, whatever the application calls it. A class is the same class under every name, so a `Tomlz::Value` built by `httpx` and one built by the application have one type.
@@ -144,7 +145,7 @@ Inside a cog its own declarations are visible by their bare names, so the root i
 
 ```ruby
 cog::Response        # the root's `Response`, when a nested scope shadows the name
-cog.get(url)         # the root's module function, from inside a class
+cog.get(url)         # the cog's public function, from inside a class (or `get(url)`)
 cog.name             # "httpx", from the manifest
 cog.version          # "1.4.0", from the manifest: no second copy in the source
 ```
@@ -160,7 +161,7 @@ A class body's `static` statement ([14-metaprogramming.md](14-metaprogramming.md
 | Command | Behavior |
 |---|---|
 | `quarz cog init` | Write a `Cog.toml` for the current directory |
-| `quarz cog add <git-url> [--tag v1.4.0 \| --rev <hash>] [--as Key] [--subdir dir] [--dev]` | Add a dependency and resolve; the key is the module the cog declares unless `--as` says otherwise, and a `--tag` or the default branch's head is recorded as a `tag` or `rev` |
+| `quarz cog add <git-url> [--tag v1.4.0 \| --rev <hash>] [--as Key] [--subdir dir] [--dev]` | Add a dependency and resolve; the key is the module the cog declares unless `--as` says otherwise, and a `--tag` or the default branch's head is recorded as a `tag` or `rev`; a cog already in the other table (`[dependencies]` for `--dev`, `[dev-dependencies]` without it) is refused, naming the table |
 | `quarz cog update [Key]` | Re-resolve (one cog or all) and rewrite the lock |
 | `quarz cog fetch` | Fetch and verify everything the lock names, compiling nothing |
 | `quarz cog vendor` | Copy the locked cogs into `vendor/` |
@@ -189,4 +190,3 @@ A class body's `static` statement ([14-metaprogramming.md](14-metaprogramming.md
 - Whether an application's files other than `src/main.qz` may hold statements (a `require_relative`d helper that prints at load would stop working).
 - What `[cog] link` looks like once FFI exists.
 - Repositories that use SHA-256 object ids (64 hexadecimal digits) are not supported yet: commit ids are SHA-1's 40 digits, and a longer one is refused as not a commit id (*not yet*).
-- `[dev-dependencies]` are read and validated, but nothing uses them until `quarz test` exists (*not yet*).

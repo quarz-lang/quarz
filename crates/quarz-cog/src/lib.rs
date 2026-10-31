@@ -258,7 +258,9 @@ impl<'a> Ctx<'a> {
                 .get(key)
                 .or_else(|| manifest.dev_dependencies.get(key))
                 .unwrap();
+            // (Without `..` and links, as `cog tree` shows it.)
             let dir = root.join(&patch.path);
+            let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
             if !dir.join(MANIFEST).is_file() {
                 return Err(Error::new(format!(
                     "[patch] `{key}`: {} has no Cog.toml",
@@ -1203,6 +1205,19 @@ pub fn add(root: &Path, req: &AddRequest, opts: &Options) -> Result<(String, Str
     } else {
         "dependencies"
     };
+    // A cog is a dependency or a dev-dependency, not both (docs/10 §7).
+    let mine = Manifest::read(root)?;
+    let (other, deps) = if req.dev {
+        ("dependencies", &mine.dependencies)
+    } else {
+        ("dev-dependencies", &mine.dev_dependencies)
+    };
+    if let Some((k, _)) = deps.iter().find(|(_, d)| d.source() == source) {
+        return Err(Error::new(format!(
+            "{} is already in [{other}] as `{k}`: a cog is a dependency or a dev-dependency, not both",
+            req.url
+        )));
+    }
     let path = root.join(MANIFEST);
     let text = std::fs::read_to_string(&path)
         .map_err(|e| Error::new(format!("{}: {e}", path.display())))?;
