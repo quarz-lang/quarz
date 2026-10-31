@@ -3951,3 +3951,31 @@ fn a_modules_static_def_reaches_its_methods_from_a_block_with_another_receiver()
     // Through the enclosing `self`, the class extending the module.
     ok("abstract class Model\nend\nmodule Macros[T <: Model]\n  static def helper -> Int = 1\n  static def go -> Int = \"s\".instance_exec { helper + size }\nend");
 }
+
+#[test]
+fn a_narrowed_type_parameter_has_the_classs_overrides() {
+    // `T & Sub`: `v.k` is `Sub#k` (an `Int`), not the bound's (`Object`).
+    let classes =
+        "class Kind\n  def k -> Object = 1\nend\nclass Sub < Kind\n  def k -> Int = 2\nend\n";
+    ok(&format!("{classes}def f[T <: Kind](v: T) -> Int\n  if v in Sub\n    v.k + 1\n  else\n    0\n  end\nend"));
+    err(
+        &format!("{classes}def f[T <: Kind](v: T) -> Int\n  v.k + 1\nend"),
+        "undefined method `+` for Object",
+    );
+    // A module test on a class bound: the module's override first (a
+    // value's class includes it below the bound).
+    ok("module Sized\n  def size -> Int = 3\nend\nclass Kind\n  def size -> Object = 1\nend\ndef f[T <: Kind](v: T) -> Int\n  if v in Sized\n    v.size + 1\n  else\n    0\n  end\nend");
+    // A class test on a module bound the class does not include: the
+    // module's methods first (a value's class includes it below the class).
+    ok("module M\n  def m -> Int = 7\nend\nclass Foo\n  def m -> Object = 1\nend\ndef f[T <: M](v: T) -> Int\n  if v in Foo\n    v.m + 1\n  else\n    0\n  end\nend");
+    // The tested module includes one the bound class includes and
+    // overrides: the class's override before the shared module's method.
+    ok("module Y\n  def m -> Object = 1\nend\nmodule C\n  include Y\nend\nclass X\n  include Y\n  def m -> Int = 5\nend\ndef f[T <: X](v: T) -> Int\n  if v in C\n    v.m + 1\n  else\n    0\n  end\nend");
+    // Two modules the tested class includes, in its order; and `Object`
+    // including a module (not below `Object` for the order).
+    ok("module M1\n  def m -> Object = 1\nend\nmodule M2\n  def m -> Int = 2\nend\nclass C\n  include M1\n  include M2\nend\ndef f[T <: M1](v: T) -> Int\n  if v in C\n    v.m + 1\n  else\n    0\n  end\nend");
+    ok("module Mo\n  def zz -> Object = 1\nend\nextension Object\n  include Mo\n  def zz -> Int = 5\nend\nclass Kind\nend\ndef f[T <: Mo](v: T) -> Int\n  if v in Kind\n    v.zz + 1\n  else\n    0\n  end\nend");
+    // A module test on a class bound including another module with the
+    // method: the tested module, included below the class, first.
+    ok("module First\n  def fm -> Object = 1\nend\nclass C\n  include First\nend\nmodule M\n  def fm -> Int = 7\nend\ndef f[T <: C](v: T) -> Int\n  if v in M\n    v.fm + 1\n  else\n    0\n  end\nend");
+}

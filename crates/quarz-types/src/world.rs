@@ -1752,6 +1752,65 @@ impl World {
         })
     }
 
+    /// The classes (not modules) a type parameter is bounded by, through
+    /// narrowed ones.
+    fn bound_classes(&self, id: TypeParamId, out: &mut Vec<ClassId>) {
+        for b in self.param_bounds(id) {
+            match b {
+                Type::Class(c, _) if self.class(c).kind == ClassKind::Class => out.push(c),
+                Type::Param(q) => self.bound_classes(q, out),
+                _ => {}
+            }
+        }
+    }
+
+    /// A narrowed `T & C`'s methods, gathered from its bounds, ordered as
+    /// the class of every value that passes the test orders their owners
+    /// (overrides before what they override): a class before its
+    /// ancestors, a module before a class that does not include it (a
+    /// value's class includes the module below that class); owners neither
+    /// orders keep the order found (a stable topological sort). Then the
+    /// ancestors of the most derived class among the bounds in its own
+    /// order (a value's class orders them so: two modules it includes),
+    /// after the others (modules a value's class includes below it).
+    fn most_derived_first(
+        &self,
+        param: TypeParamId,
+        mut found: Vec<(MethodId, HashMap<TypeParamId, Type>)>,
+    ) -> Vec<(MethodId, HashMap<TypeParamId, Type>)> {
+        // (By the ancestors themselves: `class_is_a` has every module
+        // below `Object`, which may include one.)
+        let is_a = |a: ClassId, b: ClassId| a != b && self.ancestor_ids(a).contains(&b);
+        let before = |a: ClassId, b: ClassId| {
+            is_a(a, b)
+                || (self.class(a).kind == ClassKind::Module
+                    && self.class(b).kind != ClassKind::Module
+                    && !is_a(b, a))
+        };
+        let owner = |m: &(MethodId, HashMap<TypeParamId, Type>)| self.method(m.0).owner;
+        let mut out = Vec::with_capacity(found.len());
+        while !found.is_empty() {
+            let i = (0..found.len())
+                .find(|&i| !found.iter().any(|y| before(owner(y), owner(&found[i]))))
+                .unwrap_or(0);
+            out.push(found.remove(i));
+        }
+        // The most derived class among the bounds (through narrowed ones):
+        // a value's class is below it, and orders its ancestors as it does,
+        // after the modules it includes below it.
+        let mut classes = Vec::new();
+        self.bound_classes(param, &mut classes);
+        let derived = classes
+            .iter()
+            .copied()
+            .find(|&c| classes.iter().all(|&x| c == x || is_a(c, x)));
+        if let Some(c) = derived {
+            let order = self.ancestor_ids(c);
+            out.sort_by_key(|m| order.iter().position(|x| *x == self.method(m.0).owner));
+        }
+        out
+    }
+
     fn param_bounds(&self, id: TypeParamId) -> Vec<Type> {
         if let Some(bounds) = self.narrowed_params.get(&id) {
             return bounds.clone();
@@ -2023,7 +2082,8 @@ impl World {
                 self.lookup_instance_methods(self.builtin.proc_, &[], name, &mut out);
             }
             Type::Param(p) => {
-                for b in self.param_bounds(*p) {
+                let bounds = self.param_bounds(*p);
+                for b in bounds {
                     match &b {
                         // (Each method once: a narrowed `T`'s class and
                         // `T` itself, or two bounds, share ancestors.)
@@ -2048,7 +2108,7 @@ impl World {
                     }
                 }
                 if !out.is_empty() && self.narrowed_params.contains_key(p) {
-                    return out;
+                    return self.most_derived_first(*p, out);
                 }
                 // A value of any type is an object: `Object`'s methods, but
                 // once (a class bound's ancestors have them already, and the
