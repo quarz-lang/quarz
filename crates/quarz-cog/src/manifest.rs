@@ -29,6 +29,10 @@ pub struct CogSection {
     pub name: String,
     #[serde(default = "default_version")]
     pub version: String,
+    /// Whether `version` is written (it defaults to "0.0.0"; tags may be
+    /// all that versions a cog, as in Go).
+    #[serde(skip)]
+    pub version_written: bool,
     pub module: Option<String>,
     /// The minimum language version.
     pub quarz: Option<String>,
@@ -197,7 +201,12 @@ impl Manifest {
     }
 
     pub fn parse(text: &str) -> Result<Manifest, Error> {
-        let m: Manifest = toml::from_str(text).map_err(|e| Error::new(e.message().to_string()))?;
+        let mut m: Manifest =
+            toml::from_str(text).map_err(|e| Error::new(e.message().to_string()))?;
+        m.cog.version_written = toml::from_str::<toml::Table>(text)
+            .ok()
+            .and_then(|t| t.get("cog").and_then(|c| c.get("version")).map(|_| ()))
+            .is_some();
         m.validate()?;
         Ok(m)
     }

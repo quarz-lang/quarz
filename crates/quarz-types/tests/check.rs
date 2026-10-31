@@ -3867,6 +3867,17 @@ fn an_inherited_class_method_takes_the_superclass_type_arguments() {
 }
 
 #[test]
+fn a_generic_extensions_class_method_sees_the_extensions_parameters() {
+    // `extension Box[T]`: `self` and `new` in its class method are of
+    // `Box[T]` with the extension's `T`.
+    ok("class Box[T]\n  @x: T\n  def initialize(@x: T); end\nend\nmodule Ext\n  extension Box[T]\n    def self.mk(v: T) -> Box[T] = new(v)\n  end\nend\nusing Ext\nb: Box[Int] = Box.mk(3)");
+    err(
+        "class Box[T]\n  @x: T\n  def initialize(@x: T); end\nend\nmodule Ext\n  extension Box[T]\n    def self.mk(v: T) -> Box[T] = new(v)\n  end\nend\nusing Ext\nb: Box[String] = Box[Int].mk(3)",
+        "Box[String]",
+    );
+}
+
+#[test]
 fn a_return_in_a_block_inside_a_lambda_leaves_the_lambda() {
     // As at run time: typed against the lambda's result, not the method's.
     ok("def m -> String\n  f = ->(y: Int) -> Int {\n    [1, 2].each { |z| return z + y if z == 2 }\n    0\n  }\n  f.call(0).to_s\nend");

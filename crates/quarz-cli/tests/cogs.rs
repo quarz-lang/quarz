@@ -1684,3 +1684,75 @@ fn a_cogs_root_module_is_a_cog() {
         "{err}"
     );
 }
+
+#[test]
+fn a_tag_and_a_manifest_that_disagree_warn() {
+    // The tag decides a cog's version; a manifest writing another one is
+    // said so (its author may not know), but nothing fails.
+    let w = World::new();
+    w.write("t/Cog.toml", "[cog]\nname = \"t\"\nversion = \"1.0.0\"\n");
+    w.write("t/src/v.qz", "V = 1\n");
+    let tagged = w.commit("t", Some("v1.0.1"));
+    let warning =
+        "warning: t's Cog.toml says version = \"1.0.0\", but its tag v1.0.1 makes it 1.0.1";
+    // By the tag, and by `rev` on the tagged commit.
+    for dep in [
+        format!("T = {{ git = \"{}\", tag = \"v1.0.1\" }}\n", w.url("t")),
+        format!("T = {{ git = \"{}\", rev = \"{tagged}\" }}\n", w.url("t")),
+    ] {
+        w.app(&dep, "puts T::V\n");
+        let _ = std::fs::remove_file(w.path("app/Cog.lock"));
+        let out = w.quarz("app", &["run"]);
+        assert!(out.ok && out.stderr.contains(warning), "{}", out.stderr);
+    }
+    // A tag with build metadata decides as well; a tag without `v` is
+    // no version tag, and agrees with nothing.
+    w.git("t", &["tag", "v1.0.1+b1", &tagged]);
+    w.git("t", &["tag", "1.0.0", &tagged]);
+    w.app(
+        &format!("T = {{ git = \"{}\", tag = \"v1.0.1+b1\" }}\n", w.url("t")),
+        "puts T::V\n",
+    );
+    let _ = std::fs::remove_file(w.path("app/Cog.lock"));
+    let out = w.quarz("app", &["run"]);
+    assert!(
+        out.ok
+            && out
+                .stderr
+                .contains("warning: t's Cog.toml says version = \"1.0.0\", but its tag v1.0.1"),
+        "{}",
+        out.stderr
+    );
+    // Another version tag on the commit that agrees silences it.
+    w.git("t", &["tag", "v1.0.0", &tagged]);
+    w.app(
+        &format!("T = {{ git = \"{}\", rev = \"{tagged}\" }}\n", w.url("t")),
+        "puts T::V\n",
+    );
+    let _ = std::fs::remove_file(w.path("app/Cog.lock"));
+    let out = w.quarz("app", &["run"]);
+    assert!(out.ok && !out.stderr.contains("warning"), "{}", out.stderr);
+    // A tag that agrees, a manifest with no `version`, and a commit no
+    // tag names, say nothing.
+    w.write("t/Cog.toml", "[cog]\nname = \"t\"\nversion = \"1.0.2\"\n");
+    w.commit("t", Some("v1.0.2"));
+    w.write("t/Cog.toml", "[cog]\nname = \"t\"\n");
+    w.commit("t", Some("v1.0.3"));
+    w.write("t/Cog.toml", "[cog]\nname = \"t\"\nversion = \"9.0.0\"\n");
+    w.write("t/src/w.qz", "W = 2\n");
+    let later = w.commit("t", None);
+    for dep in [
+        format!("T = {{ git = \"{}\", tag = \"v1.0.2\" }}\n", w.url("t")),
+        format!("T = {{ git = \"{}\", tag = \"v1.0.3\" }}\n", w.url("t")),
+        format!("T = {{ git = \"{}\", rev = \"{later}\" }}\n", w.url("t")),
+    ] {
+        w.app(&dep, "puts T::V\n");
+        let _ = std::fs::remove_file(w.path("app/Cog.lock"));
+        let out = w.quarz("app", &["run"]);
+        assert!(
+            out.ok && !out.stderr.contains("warning"),
+            "{dep}: {}",
+            out.stderr
+        );
+    }
+}
