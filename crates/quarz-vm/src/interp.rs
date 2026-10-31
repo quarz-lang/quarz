@@ -985,7 +985,7 @@ impl Interp {
             system_stack: class_by_name("SystemStackError"),
         };
         let rt = RtClasses {
-            selector: class_by_name("Selector"),
+            selector: class_by_name("Channel::Selector"),
             enumerator: class_by_name("Enumerator"),
             io: class_by_name("IO"),
             tcp_socket: library_class("TCPSocket"),
@@ -3822,12 +3822,12 @@ impl Interp {
             }
             Value::Channel(c) => format!("#<Channel capacity={}>", c.capacity),
             Value::Task(t) => format!("#<Task {}>", t.id),
-            Value::Scope(_) => "#<Scope>".to_string(),
+            Value::Scope(_) => "#<Task::Scope>".to_string(),
             Value::Atom(a) => {
                 let v = sched::lock(a).clone();
                 format!("#<Atom {}>", self.inspect(&v)?)
             }
-            Value::Selector(_) => "#<Selector>".to_string(),
+            Value::Selector(_) => "#<Channel::Selector>".to_string(),
             Value::Duration(ns) => format_duration(*ns),
             Value::Enumerator(e) => format!("#<Enumerator {}>", e.method),
             Value::Io(io) => match &io.kind {

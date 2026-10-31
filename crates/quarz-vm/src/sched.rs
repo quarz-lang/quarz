@@ -546,7 +546,7 @@ pub struct ScopeInner {
     pub children: Mutex<std::collections::VecDeque<Rc<TaskHandle>>>,
     cancelled: AtomicBool,
     /// Set (under the children's lock) when `Task.scope` has waited for
-    /// the last child: one spawned into it from then on (a `Scope` kept
+    /// the last child: one spawned into it from then on (a `Task::Scope` kept
     /// past its block) is waited for by nobody.
     ended: AtomicBool,
 }

@@ -57,7 +57,7 @@ Writing `Array[Int]` in expression context yields an expression denoting the typ
 | `Regexp`, `MatchData` | Same names | |
 | `Proc` = `(A...) -> R` | `Proc` | Generic name for procedure types |
 | `Enumerator[T]`, `Lazy[T]` | Same names | External iterators (`Lazy[T]` is *planned*) |
-| `Channel[T]`, `Task[T]`, `Atom[T]`, `Scope` | - | Concurrency primitives |
+| `Channel[T]`, `Task[T]`, `Atom[T]`, `Task::Scope`, `Channel::Selector` | - | Concurrency primitives |
 | `Array::Builder[T]`, `Hash::Builder[K, V]`, `String::Builder`, `Bytes::Builder`, `Set::Builder[T]` | Mutable `Array` etc. | Mutable, task-local |
 | `Type[T]`, `Class` = `Type[Object]` | `Class` | A class as a value (§1): `name`, `==`, `<=`, the bound's class methods; `new` where the class is written. `Class` is a type alias of `Type[Object]`, the type of `obj.class`: a type, not a value; in a pattern or `when`, write `Type` (`case k in Type`) |
 

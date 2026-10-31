@@ -167,8 +167,6 @@ pub fn compile_time_denied_class(class: &str) -> bool {
         "Dir",
         "Process",
         "Task",
-        "Scope",
-        "Selector",
         "Channel",
         "Atom",
         "Signal",

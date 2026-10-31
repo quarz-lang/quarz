@@ -1,4 +1,4 @@
-//! Task, Scope, Channel, Selector, Atom and the Kernel entry points.
+//! Task, Task::Scope, Channel, Channel::Selector, Atom and the Kernel entry points.
 
 use crate::rc::Rc;
 use std::cell::RefCell;
@@ -202,7 +202,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     native!(m, "Task#cancelled?", |i, r, _| {
         Ok(Value::Bool(task(i, r)?.cancel_requested()))
     });
-    native!(m, "Scope#spawn", |i, r, a| {
+    native!(m, "Task::Scope#spawn", |i, r, a| {
         let b = snapshot(i, &block(i, &a)?);
         let s = scope(i, r)?.clone();
         let t = i.spawn_task(b, Some(s.clone()), "task");
@@ -212,7 +212,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         }
         Ok(Value::Task(t))
     });
-    native!(m, "Scope#cancel", |i, r, _| {
+    native!(m, "Task::Scope#cancel", |i, r, _| {
         let s = scope(i, r)?.clone();
         cancel_children(i, &s);
         Ok(Value::Nil)
@@ -241,30 +241,30 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         Ok(Value::Int(chan(i, r)?.lock().buffer.len() as i64))
     });
     native!(m, "Channel#each", channel_each);
-    native!(m, "Selector#receive", |i, r, a| {
+    native!(m, "Channel::Selector#receive", |i, r, a| {
         let c = chan(i, a.arg(0))?.clone();
         let b = block(i, &a)?;
         sel(i, r)?.borrow_mut().receives.push((c, b));
         Ok(Value::Nil)
     });
-    native!(m, "Selector#send", |i, r, a| {
+    native!(m, "Channel::Selector#send", |i, r, a| {
         let c = chan(i, a.arg(0))?.clone();
         let b = block(i, &a)?;
         sel(i, r)?.borrow_mut().sends.push((c, a.arg(1).clone(), b));
         Ok(Value::Nil)
     });
-    native!(m, "Selector#after", |i, r, a| {
+    native!(m, "Channel::Selector#after", |i, r, a| {
         let d = duration(i, a.arg(0))?;
         let b = block(i, &a)?;
         sel(i, r)?.borrow_mut().after = Some((d, b));
         Ok(Value::Nil)
     });
-    native!(m, "Selector#default", |i, r, a| {
+    native!(m, "Channel::Selector#default", |i, r, a| {
         let b = block(i, &a)?;
         sel(i, r)?.borrow_mut().default = Some(b);
         Ok(Value::Nil)
     });
-    native!(m, "Selector#stop", |i, r, _| {
+    native!(m, "Channel::Selector#stop", |i, r, _| {
         sel(i, r)?.borrow_mut().stopped = true;
         Ok(Value::Nil)
     });
@@ -323,7 +323,7 @@ fn task<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Rc<TaskHandle>, Flow> {
 fn scope<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Rc<ScopeInner>, Flow> {
     match v {
         Value::Scope(s) => Ok(s),
-        _ => Err(interp.err_type("expected a Scope")),
+        _ => Err(interp.err_type("expected a Task::Scope")),
     }
 }
 
@@ -337,7 +337,7 @@ fn chan<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Rc<ChannelInner>, Flow>
 fn sel<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Rc<RefCell<SelectorState>>, Flow> {
     match v {
         Value::Selector(s) => Ok(s),
-        _ => Err(interp.err_type("expected a Selector")),
+        _ => Err(interp.err_type("expected a Channel::Selector")),
     }
 }
 
@@ -367,7 +367,7 @@ fn kernel_loop(interp: &Interp, _: &Value, args: Args) -> EvalResult {
 
 /// Cancel the scope's children, once (cancellation is a state: again would
 /// only wake them for nothing; one spawned later is cancelled by
-/// `Scope#spawn`).
+/// `Task::Scope#spawn`).
 fn cancel_children(interp: &Interp, scope: &Rc<ScopeInner>) {
     if !scope.cancel() {
         return;
