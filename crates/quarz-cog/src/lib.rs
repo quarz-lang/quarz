@@ -139,6 +139,42 @@ struct Ctx<'a> {
     remotes: HashMap<String, Vec<(String, String)>>,
 }
 
+/// For the author of the cog in `root`: a warning when the commit checked
+/// out carries version tags and none is the `version` the manifest
+/// committed there writes (those who depend on a tag get that manifest,
+/// and the tag's version, docs/10 §4); `None` when they agree, the
+/// manifest writes no `version`, nothing is tagged, or the cog is not
+/// committed at HEAD.
+pub fn author_version_warning(root: &Path) -> Option<String> {
+    // (Read first from the working tree: no git process for a manifest
+    // that writes no version.)
+    if !Manifest::read(root).ok()?.cog.version_written {
+        return None;
+    }
+    let tags = git::tags_at_head(root)?;
+    if tags.is_empty() {
+        return None;
+    }
+    let manifest = Manifest::parse(&git::at_head(root, MANIFEST)?).ok()?;
+    if !manifest.cog.version_written {
+        return None;
+    }
+    let said = Version::parse(&manifest.cog.version)?;
+    let tags: Vec<(String, Version)> = tags
+        .into_iter()
+        .filter_map(|t| Version::parse_tag(&t).map(|v| (t, v)))
+        .collect();
+    if tags.is_empty() || tags.iter().any(|(_, v)| *v == said) {
+        return None;
+    }
+    let names: Vec<&str> = tags.iter().map(|(t, _)| t.as_str()).collect();
+    Some(format!(
+        "warning: HEAD is tagged {} but its Cog.toml says version = \"{}\": who depends on a tag gets the tag's version; make them agree",
+        names.join(", "),
+        manifest.cog.version,
+    ))
+}
+
 /// Open the movement whose application is in `root`: use `Cog.lock` when
 /// it matches the manifests, resolve and write it otherwise, and fetch and
 /// verify every cog.

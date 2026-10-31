@@ -1756,3 +1756,62 @@ fn a_tag_and_a_manifest_that_disagree_warn() {
         );
     }
 }
+
+#[test]
+fn the_author_sees_a_tag_that_disagrees_with_the_manifest() {
+    // `quarz test` (and `check`) in a cog whose checked-out commit has a
+    // version tag that is not its manifest's `version`: a warning for its
+    // author, before anyone depends on the tag.
+    let w = World::new();
+    w.write("t/Cog.toml", "[cog]\nname = \"t\"\nversion = \"1.0.0\"\n");
+    w.write("t/src/v.qz", "V = 1\n");
+    w.write(
+        "t/test/v_test.qz",
+        "require \"test\"\nclass VTest < Test::Case\n  def test_v -> Void = assert_equal(1, T::V)\nend\n",
+    );
+    let warning = "warning: HEAD is tagged v1.0.1 but its Cog.toml says version = \"1.0.0\"";
+    // Not tagged yet: nothing.
+    w.commit("t", None);
+    let out = w.quarz("t", &["test"]);
+    assert!(out.ok && !out.stderr.contains("warning"), "{}", out.stderr);
+    w.git("t", &["tag", "v1.0.1"]);
+    let out = w.quarz("t", &["test"]);
+    assert!(out.ok && out.stderr.contains(warning), "{}", out.stderr);
+    // The manifest compared is the one committed there, which is what
+    // those who depend on the tag get: an edit not committed changes
+    // nothing either way.
+    w.write("t/Cog.toml", "[cog]\nname = \"t\"\nversion = \"1.0.1\"\n");
+    let out = w.quarz("t", &["test"]);
+    assert!(out.stderr.contains(warning), "{}", out.stderr);
+    w.write("t/Cog.toml", "[cog]\nname = \"t\"\nversion = \"1.0.0\"\n");
+    // Another version tag on the commit that agrees, or no `version`
+    // written: nothing.
+    w.git("t", &["tag", "v1.0.0"]);
+    let out = w.quarz("t", &["test"]);
+    assert!(!out.stderr.contains("warning"), "{}", out.stderr);
+    w.git("t", &["tag", "-d", "v1.0.0"]);
+    w.write("t/Cog.toml", "[cog]\nname = \"t\"\n");
+    let out = w.quarz("t", &["test"]);
+    assert!(!out.stderr.contains("warning"), "{}", out.stderr);
+    // A cog not committed in the (tagged) repository it lies in: nothing.
+    w.write(
+        "t/inner/Cog.toml",
+        "[cog]\nname = \"inner\"\nversion = \"0.1.0\"\n",
+    );
+    w.write("t/inner/src/main.qz", "puts 1\n");
+    let out = w.quarz("t/inner", &["check"]);
+    assert!(out.ok && !out.stderr.contains("warning"), "{}", out.stderr);
+    // An application's `quarz check` says it too.
+    w.write("a/Cog.toml", "[cog]\nname = \"a\"\nversion = \"0.1.0\"\n");
+    w.write("a/src/main.qz", "puts 1\n");
+    w.commit("a", Some("v0.2.0"));
+    let out = w.quarz("a", &["check"]);
+    assert!(
+        out.ok
+            && out.stderr.contains(
+                "warning: HEAD is tagged v0.2.0 but its Cog.toml says version = \"0.1.0\""
+            ),
+        "{}",
+        out.stderr
+    );
+}

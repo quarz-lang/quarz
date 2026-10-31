@@ -252,6 +252,9 @@ fn load_and_check(
             1
         }
     });
+    if let Some(warning) = cog.and_then(quarz_cog::author_version_warning) {
+        eprintln!("quarz: {warning}");
+    }
     let (units, decls, diagnostics) = match cog {
         Some(root) => match test_specs(root, opts) {
             Ok(specs) => quarz_types::load_movement_tests(&specs, files),
