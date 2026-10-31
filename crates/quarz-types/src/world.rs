@@ -1752,6 +1752,162 @@ impl World {
         })
     }
 
+    /// The interpreter's `same_signature` (with the same block presence):
+    /// what replaces a method on the class side
+    /// (`Interp::class_side_override`).
+    pub fn same_signature_at_run_time(&self, m: MethodId, o: MethodId) -> bool {
+        let (m, om) = (self.method(m), self.method(o));
+        let (ps, qs) = (om.positional_params(), m.positional_params());
+        let same = |p: &ParamInfo, q: &ParamInfo| self.same_at_run_time(om, &p.ty, m, &q.ty);
+        let blocks = match (&om.block, &m.block) {
+            (Some((_, b)), Some((_, c))) => self.same_at_run_time(om, b, m, c),
+            (None, None) => true,
+            _ => false,
+        };
+        blocks
+            && ps.len() == qs.len()
+            && ps
+                .iter()
+                .zip(&qs)
+                .all(|(p, q)| p.kind == q.kind && same(p, q))
+            // (`Declarer::keywords_take`: each keyword shared, the same.)
+            && m.keywords_accept(om)
+            && om
+                .params
+                .iter()
+                .filter(|p| matches!(p.kind, ParamKind::KeywordOnly | ParamKind::KeywordRest))
+                .all(|p| {
+                    m.params
+                        .iter()
+                        .find(|q| {
+                            q.kind == p.kind
+                                && (p.kind == ParamKind::KeywordRest || q.name == p.name)
+                        })
+                        .is_none_or(|q| same(p, q))
+                })
+    }
+
+    /// Whether `t` of `om` and `u` of `m` are the same type for the runtime
+    /// (`RtParam::ty`): one that mentions its method's own type parameters
+    /// or `Self` matches anything, any other is compared as written.
+    fn same_at_run_time(&self, om: &MethodInfo, t: &Type, m: &MethodInfo, u: &Type) -> bool {
+        fn open(m: &MethodInfo, t: &Type) -> bool {
+            match t {
+                Type::Param(p) => {
+                    *p == crate::declare::SELF_PARAM || m.type_params.iter().any(|tp| tp.id == *p)
+                }
+                Type::Var(_) => true,
+                Type::Class(_, args) | Type::ClassObject(_, args) => {
+                    args.iter().any(|a| open(m, a))
+                }
+                Type::Union(ts) | Type::Tuple(ts) => ts.iter().any(|a| open(m, a)),
+                Type::TypeOf(t) => open(m, t),
+                Type::Proc(r, ps, ret, _) => {
+                    r.as_deref().is_some_and(|r| open(m, r))
+                        || ps.iter().any(|a| open(m, a))
+                        || open(m, ret)
+                }
+                Type::Nothing | Type::Void => false,
+            }
+        }
+        let (t, u) = (self.devoid(t), self.devoid(u));
+        open(om, &t)
+            || open(m, &u)
+            // (A class's type parameter by its id, as `rtworld::rt_sig_type`.)
+            || if t.mentions_any_param() || u.mentions_any_param() {
+                t == u
+            } else {
+                self.type_name(&t) == self.type_name(&u)
+            }
+    }
+
+    /// The methods of `m`'s ancestors that `m` overrides, as the runtime
+    /// dispatches (`RtMethod::overrides`): same name and kind, parameters
+    /// at least as wide as the ancestor's, substituted (`ancs`: `m`'s
+    /// owner's ancestors with its own type parameters), any added optional
+    /// or rest, a block that holds the ancestor's, every keyword call it
+    /// takes. (`rtworld::overridden_methods`, which skips functions.)
+    pub fn overridden_methods_in(
+        &self,
+        m: &MethodInfo,
+        ancs: &[(ClassId, Vec<Type>)],
+    ) -> Vec<MethodId> {
+        let mut out = Vec::new();
+        for (anc, anc_args) in ancs {
+            let anc = *anc;
+            if anc == m.owner {
+                continue;
+            }
+            let ac = self.class(anc);
+            let table = if m.singleton {
+                &ac.singleton_methods
+            } else {
+                &ac.methods
+            };
+            let Some(ids) = table.get(&m.name) else {
+                continue;
+            };
+            let subst: rustc_hash::FxHashMap<_, _> = ac
+                .type_params
+                .iter()
+                .map(|tp| tp.id)
+                .zip(anc_args.iter().cloned())
+                .collect();
+            for &pid in ids {
+                let pm = self.method(pid);
+                // The override may add parameters the parent's callers never
+                // pass: with defaults, or rest parameters.
+                // (Keywords by name: every keyword call the parent takes,
+                // `MethodInfo::keywords_accept`, each of a type at least as
+                // wide.)
+                let (pps, cps) = (pm.positional_params(), m.positional_params());
+                let wider = |pp: &ParamInfo, cp: &ParamInfo| {
+                    let pt = pp.ty.subst(&subst);
+                    pt == cp.ty || self.is_subtype(&pt, &cp.ty)
+                };
+                // (A block of the parent's type, substituted, must do.)
+                let block_fits = match (&pm.block, &m.block) {
+                    (Some((_, pb)), Some((_, cb))) => {
+                        let pt = pb.subst(&subst);
+                        pt == *cb || self.is_subtype(&pt, cb)
+                    }
+                    (None, None) => true,
+                    _ => false,
+                };
+                let fits = pps.len() <= cps.len()
+                    && block_fits
+                    && pps
+                        .iter()
+                        .zip(&cps)
+                        .all(|(pp, cp)| pp.kind == cp.kind && wider(pp, cp))
+                    && cps[pps.len()..]
+                        .iter()
+                        .all(|cp| cp.default.is_some() || cp.kind == ParamKind::Rest)
+                    && m.keywords_accept(pm)
+                    && pm
+                        .params
+                        .iter()
+                        .filter(|pp| {
+                            matches!(pp.kind, ParamKind::KeywordOnly | ParamKind::KeywordRest)
+                        })
+                        .all(|pp| {
+                            // (By name, and `**rest` with `**rest`.)
+                            m.params
+                                .iter()
+                                .find(|cp| {
+                                    cp.kind == pp.kind
+                                        && (cp.kind == ParamKind::KeywordRest || cp.name == pp.name)
+                                })
+                                .is_none_or(|cp| wider(pp, cp))
+                        });
+                if fits {
+                    out.push(pid);
+                }
+            }
+        }
+        out
+    }
+
     /// For a call's table (`Output::union_calls`) whose members are all
     /// class objects, which no class test tells apart (`Type[Kind] |
     /// Type[T]`): the class method all the methods found override, if any

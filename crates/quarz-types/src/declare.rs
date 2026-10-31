@@ -2085,57 +2085,9 @@ impl<'ast> Declarer<'ast> {
             && self.replaces_at_run_time(m, o, a, aargs)
     }
 
-    /// The interpreter's `same_signature` (with the same block presence):
-    /// what replaces a method on the class side
-    /// (`Interp::class_side_override`).
+    /// The interpreter's `same_signature` (`World::same_signature_at_run_time`).
     fn same_signature_at_run_time(&self, m: MethodId, o: MethodId) -> bool {
-        let (m, om) = (self.world.method(m), self.world.method(o));
-        let (ps, qs) = (om.positional_params(), m.positional_params());
-        let same = |p: &ParamInfo, q: &ParamInfo| self.same_at_run_time(om, &p.ty, m, &q.ty);
-        let blocks = match (&om.block, &m.block) {
-            (Some((_, b)), Some((_, c))) => self.same_at_run_time(om, b, m, c),
-            (None, None) => true,
-            _ => false,
-        };
-        blocks
-            && ps.len() == qs.len()
-            && ps
-                .iter()
-                .zip(&qs)
-                .all(|(p, q)| p.kind == q.kind && same(p, q))
-            && self.keywords_take(m, om, same)
-    }
-
-    /// Whether `t` of `om` and `u` of `m` are the same type for the runtime
-    /// (`RtParam::ty`): one that mentions its method's own type parameters
-    /// or `Self` matches anything, any other is compared as written.
-    fn same_at_run_time(&self, om: &MethodInfo, t: &Type, m: &MethodInfo, u: &Type) -> bool {
-        fn open(m: &MethodInfo, t: &Type) -> bool {
-            match t {
-                Type::Param(p) => *p == SELF_PARAM || m.type_params.iter().any(|tp| tp.id == *p),
-                Type::Var(_) => true,
-                Type::Class(_, args) | Type::ClassObject(_, args) => {
-                    args.iter().any(|a| open(m, a))
-                }
-                Type::Union(ts) | Type::Tuple(ts) => ts.iter().any(|a| open(m, a)),
-                Type::TypeOf(t) => open(m, t),
-                Type::Proc(r, ps, ret, _) => {
-                    r.as_deref().is_some_and(|r| open(m, r))
-                        || ps.iter().any(|a| open(m, a))
-                        || open(m, ret)
-                }
-                Type::Nothing | Type::Void => false,
-            }
-        }
-        let (t, u) = (self.world.devoid(t), self.world.devoid(u));
-        open(om, &t)
-            || open(m, &u)
-            // (A class's type parameter by its id, as `rtworld::rt_sig_type`.)
-            || if t.mentions_any_param() || u.mentions_any_param() {
-                t == u
-            } else {
-                self.world.type_name(&t) == self.world.type_name(&u)
-            }
+        self.world.same_signature_at_run_time(m, o)
     }
 
     /// Whether `m` takes every keyword call `om` takes

@@ -4119,3 +4119,41 @@ fn an_inherited_constructor_takes_the_first_overload_that_fits() {
         "`TwoSub#initialize` does not take the arguments of `new` in `Two.mk`",
     );
 }
+
+#[test]
+fn super_in_a_class_method_override_reaches_the_parents_new() {
+    // `super` runs the parent's `new` with the subclass for `self`.
+    let two = "class Two\n  @n: Int\n  def initialize(@n: Int); end\n  def self.mk(n: Int) -> Self = new(n)\n  def self.via(n: Int) -> Self = build(n)\n  def self.build(n: Int) -> Self = new(n)\nend\n";
+    err(
+        &format!("{two}class Sub < Two\n  def initialize(s: String); @n = 0; end\n  def self.mk(n: Int) -> Self = super\n  def self.build(n: Int) -> Self = new(\"b\")\n  def self.via(n: Int) -> Self = new(\"v\")\nend"),
+        "`super` in `Sub.mk` runs `new` in `Two.mk` with `Sub` for `self`, but `Sub#initialize` does not take its arguments",
+    );
+    // Inside a block too.
+    err(
+        &format!("{two}class Sub < Two\n  def initialize(s: String); @n = 0; end\n  def self.mk(n: Int) -> Self\n    f = -> {{ super(n) }}\n    f.call\n  end\n  def self.build(n: Int) -> Self = new(\"b\")\n  def self.via(n: Int) -> Self = new(\"v\")\nend"),
+        "`super` in `Sub.mk`",
+    );
+    // Through another class method (`via` calls `build`): `build`'s `new`.
+    err(
+        &format!("{two}class Sub < Two\n  def initialize(s: String); @n = 0; end\n  def self.mk(n: Int) -> Self = new(\"m\")\n  def self.via(n: Int) -> Self = super\nend"),
+        "`Sub#initialize` does not take the arguments of `new` in `Two.build`",
+    );
+    // The override among overloads: by signature, any `super` of them.
+    err(
+        &format!("{two}class Sub < Two\n  def initialize(s: String); @n = 0; end\n  def self.mk(s: String) -> Self = new(s)\n  def self.mk(n: Int) -> Self = super\n  def self.build(n: Int) -> Self = new(\"b\")\n  def self.via(n: Int) -> Self = new(\"v\")\nend"),
+        "`super` in `Sub.mk`",
+    );
+    // Another signature only: no override, the method is reached.
+    err(
+        &format!("{two}class Sub < Two\n  def initialize(s: String); @n = 0; end\n  def self.mk(s: String) -> Self = new(s)\n  def self.build(n: Int) -> Self = new(\"b\")\n  def self.via(n: Int) -> Self = new(\"v\")\nend"),
+        "`Sub#initialize` does not take the arguments of `new` in `Two.mk`",
+    );
+    // An override as the runtime has one (a generic parent's `T`
+    // substituted, a wider parameter, one added with a default): the
+    // method is not reached, no `super`: accepted.
+    ok("class Box[T]\n  @x: T\n  def initialize(@x: T); end\n  def self.mk(v: T) -> Self = new(v)\nend\nclass IntBox < Box[Int]\n  def initialize(s: String, v: Int); @x = v; end\n  def self.mk(v: Int) -> Self = new(\"i\", v)\nend");
+    ok(&format!("{two}class Sub < Two\n  def initialize(s: String); @n = 0; end\n  def self.mk(n: Int | String, k: Int = 1) -> Self = new(\"w\")\n  def self.build(n: Int) -> Self = new(\"b\")\n  def self.via(n: Int) -> Self = new(\"v\")\nend"));
+    // An overload that fits, or no `super`: accepted.
+    ok(&format!("{two}class Sub < Two\n  def initialize(s: String); @n = 0; end\n  def initialize(@n: Int); end\n  def self.mk(n: Int) -> Self = super\nend"));
+    ok(&format!("{two}class Sub < Two\n  def initialize(s: String); @n = 0; end\n  def self.mk(n: Int) -> Self = new(\"m\")\n  def self.build(n: Int) -> Self = new(\"b\")\n  def self.via(n: Int) -> Self = new(\"v\")\nend"));
+}

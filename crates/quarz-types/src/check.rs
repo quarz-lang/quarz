@@ -602,6 +602,8 @@ struct Assigned {
     /// (in `initialize`, it assigns the inherited fields).
     ivars: HashSet<String>,
     supers: bool,
+    /// Where the first `super` is (`Checker::first_super`).
+    super_span: Option<Span>,
     /// Walking for `widen_assigned`, which acts at once on the variables
     /// in scope at the start: a scope's own declarations (`y := e`) are
     /// left out of it (`Checker::assigned_names_scope`).
@@ -1390,6 +1392,9 @@ impl Checker {
                 // The class methods and initialize between the subclass
                 // and the class that calls `new`.
                 let mut overrides = false;
+                // The overrides on the way, nearest first: a `super` in each
+                // reaches the method's `new` with `sid` for `self`.
+                let mut chain: Vec<MethodId> = Vec::new();
                 let mut own_init: Option<Vec<MethodId>> = None;
                 let mut cur = Some(sid);
                 while let Some(c) = cur {
@@ -1406,8 +1411,21 @@ impl Checker {
                     }
                     // (Overridden, the method may still be reached through
                     // `super`: its `initialize` is still looked for.)
-                    if class.singleton_methods.contains_key(&mname) {
-                        overrides = true;
+                    // An override is an overload of the method's signature
+                    // (another signature leaves the method reached). Its
+                    // `super` is any `super` of the class's methods of that
+                    // name (`super(args)` may choose another overload of
+                    // the parent's: counted, conservatively).
+                    let site = self.world.method(method);
+                    if let Some(ids) = class.singleton_methods.get(&mname) {
+                        if ids.iter().any(|&o| self.replaces_at_run_time(o, site.id)) {
+                            overrides = true;
+                            let with_super = ids
+                                .iter()
+                                .copied()
+                                .find(|&o| Self::first_super(self.world.method(o)).is_some());
+                            chain.push(with_super.unwrap_or(ids[0]));
+                        }
                     }
                     cur = class.superclass.as_ref().and_then(|t| match t {
                         Type::Class(id, _) => Some(*id),
@@ -1426,6 +1444,35 @@ impl Checker {
                         .find(|&&o| self.inherited_init_fits(sid, init, o))
                     {
                         self.record_inherited_init(sid, init, chosen);
+                        continue;
+                    }
+                    // None fits: refused at the `super` that would reach it,
+                    // if every override on the way calls `super`.
+                    let supers: Vec<Option<Span>> = chain
+                        .iter()
+                        .map(|&o| Self::first_super(self.world.method(o)))
+                        .collect();
+                    if let (Some(Some(at)), true) =
+                        (supers.first(), supers.iter().all(|s| s.is_some()))
+                    {
+                        if reported.insert((sid, method)) {
+                            let near = self.world.method(chain[0]).clone();
+                            let (sname, cname, oname) = (
+                                self.world.class(sid).name.clone(),
+                                self.world.class(cid).name.clone(),
+                                self.world.class(near.owner).name.clone(),
+                            );
+                            let iname = init
+                                .map(|i| self.world.class(self.world.method(i).owner).name.clone())
+                                .unwrap_or_else(|| cname.clone());
+                            self.diagnostics.push((
+                                near.file,
+                                Diagnostic::error(
+                                    format!("`super` in `{oname}.{mname}` runs `new` in `{cname}.{mname}` with `{sname}` for `self`, but `{sname}#initialize` does not take its arguments: keep the parameters of `{iname}#initialize` in an `initialize` of `{sname}`, or do not call `super`"),
+                                    *at,
+                                ),
+                            ));
+                        }
                     }
                     continue;
                 }
@@ -1462,6 +1509,33 @@ impl Checker {
                 }
             }
         }
+    }
+
+    /// Whether class method `o` takes the place of `site` for its class at
+    /// run time: the same signature (`Interp::same_signature`), or an
+    /// override of it (`RtMethod::overrides`).
+    fn replaces_at_run_time(&self, o: MethodId, site: MethodId) -> bool {
+        if self.world.same_signature_at_run_time(o, site) {
+            return true;
+        }
+        let m = self.world.method(o);
+        let own: Vec<Type> = self
+            .world
+            .class(m.owner)
+            .type_params
+            .iter()
+            .map(|tp| Type::Param(tp.id))
+            .collect();
+        let ancs = self.world.ancestors(m.owner, &own);
+        self.world.overridden_methods_in(m, &ancs).contains(&site)
+    }
+
+    /// Where the first `super` in `m`'s body is, if any.
+    fn first_super(m: &MethodInfo) -> Option<Span> {
+        let body = m.body.as_ref()?.body.as_ref()?;
+        let mut a = Assigned::default();
+        Self::assigned_names(body, &mut a);
+        a.super_span
     }
 
     /// Record that `sub` is built with `chosen` where `new` passes what
@@ -4612,6 +4686,7 @@ impl Checker {
             Array(items) | Yield(items) => Self::assigned_names_args(items, out),
             Super { args, block } => {
                 out.supers = true;
+                out.super_span.get_or_insert(e.span);
                 if let Some(args) = args {
                     Self::assigned_names_args(args, out);
                 }
