@@ -1,0 +1,162 @@
+# A type parameter narrowed by a class test (`T & Sub`) has the class's
+# overrides first: `v.k` is typed (and runs) as `Sub#k`; what only the
+# bound declares stays reachable.
+class Kind
+  def k -> Object = 1
+  def k(x: Int) -> Object = x
+  def only -> String = "kind"
+  def size -> Object = "kind"
+end
+class Sub < Kind
+  def k -> Int = 2
+end
+class SubSub < Sub
+  def k -> Int = 3
+end
+module Named
+  def label -> String = "named"
+end
+class NSub < Kind
+  include Named
+  def k -> Int = 4
+end
+def f[T <: Kind](v: T) -> String
+  if v in SubSub
+    "#{v.k + 100} #{v.only}"
+  elsif v in Sub
+    "#{v.k + 10} #{v.k(5)} #{v.only}"
+  elsif v in Named
+    "#{v.label} #{v.k}"
+  else
+    v.only
+  end
+end
+def g[T <: Kind](v: T) -> Int
+  if v in Sub
+    if v in SubSub
+      return v.k + 1000
+    end
+    return v.k
+  end
+  0
+end
+p f(Sub.new)
+p f(SubSub.new)
+p f(NSub.new)
+p f(Kind.new)
+p g(SubSub.new)
+p g(Sub.new)
+# A module test on a class-bounded `T`: a value's class includes the module
+# below the bound, so the module's override comes first.
+module Sized
+  def size -> Int = 3
+end
+class SizedKind < Kind
+  include Sized
+end
+def sized[T <: Kind](v: T) -> Int
+  if v in Sized
+    v.size + 1
+  else
+    0
+  end
+end
+p sized(SizedKind.new)
+p sized(Kind.new)
+# A class test on a module-bounded `T`: a value's class is below the class
+# and includes the module, whose methods override the class's.
+module M
+  def m -> Int = 7
+end
+class Foo
+  def m -> Object = "foo"
+end
+class Bar < Foo
+  include M
+end
+def mod_bound[T <: M](v: T) -> Int
+  if v in Foo
+    v.m + 1
+  else
+    0
+  end
+end
+p mod_bound(Bar.new)
+# A module test whose module includes another the bound class includes and
+# overrides: the class's override comes before the shared module's method.
+module Base0
+  def bm -> Object = "base0"
+end
+module Tested
+  include Base0
+end
+class Over
+  include Base0
+  def bm -> Int = 5
+end
+class OverSub < Over
+  include Tested
+end
+def shared[T <: Over](v: T) -> Int
+  if v in Tested
+    v.bm + 1
+  else
+    0
+  end
+end
+p shared(OverSub.new)
+# Two bounds, a class test below one of them: its override comes first.
+def two[T <: Kind & Named](v: T) -> Int
+  if v in Sub
+    v.k + 1
+  else
+    0
+  end
+end
+class NamedSub < Sub
+  include Named
+end
+p two(NamedSub.new)
+# Two modules a tested class includes: the class orders them (the last
+# included first).
+module First
+  def fm -> Object = "first"
+end
+module Second
+  def fm -> Int = 2
+end
+class Both
+  include First
+  include Second
+end
+def ordered[T <: First](v: T) -> Int
+  if v in Both
+    v.fm + 1
+  else
+    0
+  end
+end
+p ordered(Both.new)
+# A module test on a class bound including another module with the method:
+# a value's class includes the tested module below the class, and so below
+# what the class includes.
+module Included
+  def im -> Object = "included"
+end
+class Includer
+  include Included
+end
+module Later
+  def im -> Int = 7
+end
+class IncluderSub < Includer
+  include Later
+end
+def through[T <: Includer](v: T) -> Int
+  if v in Later
+    v.im + 1
+  else
+    0
+  end
+end
+p through(IncluderSub.new)
