@@ -4034,3 +4034,26 @@ fn class_objects_whose_class_methods_override_one() {
         "cannot tell at run time which `e` to call",
     );
 }
+
+#[test]
+fn an_override_keeps_the_defaults() {
+    // A call through the overridden method may leave the argument out.
+    err(
+        "class A\n  def k(x: Int = 1) -> Int = x\nend\nclass B < A\n  def k(x: Int) -> Int = x\nend",
+        "`k(x: Int)` overrides `A#k(x: Int = ...)` but drops the default of `x`",
+    );
+    err(
+        "class A\n  def self.c(y: String = \"s\") -> String = y\nend\nclass B < A\n  def self.c(y: String) -> String = y\nend",
+        "`c(y: String)` overrides `A.c(y: String = ...)` but drops the default of `y`",
+    );
+    err(
+        "abstract class Abs\n  abstract def m(x: Int = 1) -> Int\nend\nclass Impl < Abs\n  def m(x: Int) -> Int = x\nend",
+        "`m(x: Int)` overrides `Abs#m(x: Int = ...)` but drops the default of `x`",
+    );
+    err(
+        "module Ext\n  def e(x: Int = 1) -> Int = x\nend\nclass Ex\n  extend Ext\n  def self.e(x: Int) -> Int = x\nend",
+        "`e(x: Int)` overrides `Ext#e(x: Int = ...)` but drops the default of `x`",
+    );
+    // Another value, or a default added: kept.
+    ok("class A\n  def k(x: Int = 1) -> Int = x\nend\nclass B < A\n  def k(x: Int = 7) -> Int = x\nend\nclass D\n  def k(x: Int) -> Int = x\nend\nclass E < D\n  def k(x: Int = 4) -> Int = x\nend");
+}

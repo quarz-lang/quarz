@@ -2279,6 +2279,24 @@ impl<'ast> Declarer<'ast> {
                 return false;
             }
         }
+        // A default is kept: a call through the method it overrides may
+        // leave the argument out (the override's default is its own).
+        for (p, q) in &pairs {
+            if p.default.is_some() && q.default.is_none() {
+                let sep = if om.singleton { "." } else { "#" };
+                self.error(
+                    format!(
+                        "`{}` overrides `{owner}{sep}{}`{context}{} but drops the default of `{}`",
+                        self.params_text(&m, &see),
+                        self.params_text(&om, &|t: &Type| t.subst(subst)),
+                        if context.is_empty() { "" } else { "," },
+                        q.name
+                    ),
+                    span,
+                );
+                return false;
+            }
+        }
         for (p, q) in pairs {
             let (theirs, mine) = (p.ty.subst(subst), see(&q.ty));
             if !self.world.is_subtype(&theirs, &mine) {
@@ -3405,6 +3423,44 @@ impl<'ast> Declarer<'ast> {
             && cmax >= amax
             && c.block.is_some() == a.block.is_some()
             && c.keywords_accept(a)
+    }
+
+    /// `name(x: T, *, y: U = ...)`, for a message: the parameters' types
+    /// as `see` shows them (`*r: T` and `**o: T` by their element types,
+    /// as declared).
+    fn params_text(&self, m: &MethodInfo, see: &dyn Fn(&Type) -> Type) -> String {
+        let mut params: Vec<String> = Vec::new();
+        let mut starred = false;
+        for p in &m.params {
+            let prefix = match p.kind {
+                ParamKind::Rest => {
+                    starred = true;
+                    "*"
+                }
+                ParamKind::KeywordRest => "**",
+                ParamKind::KeywordOnly if !starred => {
+                    starred = true;
+                    params.push("*".to_string());
+                    ""
+                }
+                _ => "",
+            };
+            let ty = see(&p.ty);
+            let ty = match (&p.kind, &ty) {
+                (ParamKind::Rest, Type::Class(_, args)) if args.len() == 1 => args[0].clone(),
+                (ParamKind::KeywordRest, Type::Class(_, args)) if args.len() == 2 => {
+                    args[1].clone()
+                }
+                _ => ty,
+            };
+            let default = if p.default.is_some() { " = ..." } else { "" };
+            params.push(format!(
+                "{prefix}{}: {}{default}",
+                p.name,
+                self.world.type_name(&ty)
+            ));
+        }
+        format!("{}({})", m.name, params.join(", "))
     }
 
     /// Resolve a type expression without reporting (the mixin was already
