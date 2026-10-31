@@ -1508,6 +1508,7 @@ impl<'a> FnBuilder<'a> {
                 // (By name only where the checks could not choose by a
                 // class, natives finding their own overload.)
                 let method = match self.out.calls.get(&e.id) {
+                    _ if self.class_object_base(e.id).is_some() => self.class_object_base(e.id),
                     Some(CallTarget::Method { method })
                         if !self.out.union_conflicts.contains(&e.id) =>
                     {
@@ -2341,6 +2342,9 @@ impl<'a> FnBuilder<'a> {
                         ExprKind::Symbol(name) => {
                             let pass = self.out.block_pass.get(&e.id);
                             let method = match pass {
+                                _ if self.class_object_base(e.id).is_some() => {
+                                    self.class_object_base(e.id)
+                                }
                                 Some(quarz_types::BlockPass::Symbol(_, m, _))
                                     if !self.out.varied_symbols.contains(&e.id) =>
                                 {
@@ -2704,6 +2708,15 @@ impl<'a> FnBuilder<'a> {
                 return;
             }
         };
+        // Class objects whose class methods override one: a call of it,
+        // dispatched on the receiver's class.
+        if let Some(base) = self.class_object_base(id) {
+            if let Inst::Call { kind, .. } = &mut inst {
+                *kind = CallKind::Method(base);
+            }
+            self.emit(inst);
+            return;
+        }
         // Checks of the call (a block's, once per type) that disagree, or
         // members a class test cannot tell apart: by name, as before.
         if self.out.union_conflicts.contains(&id) {
@@ -2819,11 +2832,20 @@ impl<'a> FnBuilder<'a> {
         });
     }
 
+    /// For node `id`'s table on class objects whose class methods override
+    /// one (`World::class_object_base`): that one, to call (or name) it.
+    fn class_object_base(&self, id: u32) -> Option<MethodId> {
+        if self.out.union_conflicts.contains(&id) {
+            return None;
+        }
+        self.world.class_object_base(self.out.union_calls.get(&id)?)
+    }
+
     /// The methods the checks of node `id` found by the receiver's type
     /// (`Output::union_calls`), when they differ: each with the run-time
     /// test of its type, subclasses first.
     fn varied_table(&self, id: u32) -> Option<Vec<(RtType, MethodId)>> {
-        if self.out.union_conflicts.contains(&id) {
+        if self.out.union_conflicts.contains(&id) || self.class_object_base(id).is_some() {
             return None;
         }
         let table = self.out.union_calls.get(&id)?;

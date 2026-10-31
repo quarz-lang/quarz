@@ -3266,6 +3266,14 @@ impl Checker {
         // extension's method: a value may be both, and its class decides
         // which comes first (with the classes' own methods, the test finds
         // one the value has).
+        // Class objects, which no class test tells apart, whose class
+        // methods all override one: the table is kept as found, and the
+        // call is lowered as a call of that one, which runs the receiver's
+        // own (`World::overridden_class_method`).
+        if self.world.class_object_base(&merged).is_some() {
+            self.out.union_calls.insert(id, merged);
+            return;
+        }
         let mut by_class: Vec<(ClassId, Type, MethodId)> = Vec::new();
         for (t, m) in &merged {
             // A member a class test cannot tell (a type parameter) is
@@ -10734,6 +10742,17 @@ impl Checker {
                             }
                             return Err(msg);
                         }
+                        // Checked again with another class method on a class
+                        // object, both overriding one: the procedure calls
+                        // that one, which runs the receiver's own
+                        // (`World::overridden_class_method`).
+                        let base = match self.out.block_pass.get(&e.id) {
+                            Some(BlockPass::Symbol(_, before, _)) if *before != mid => {
+                                self.world.overridden_class_method(&[*before, mid])
+                            }
+                            _ => None,
+                        };
+                        let mid = base.unwrap_or(mid);
                         // Checked again (a union receiver's members, a block
                         // once per type) with another method: called by
                         // name, which an extension's is not found by.
@@ -10753,7 +10772,10 @@ impl Checker {
                                 self.ambiguous
                                     .push((self.env.file, AmbiguousKey::Node(e.id), d));
                             }
-                            if before != mid && !self.out.varied_symbols.contains(&e.id) {
+                            if before != mid
+                                && base.is_none()
+                                && !self.out.varied_symbols.contains(&e.id)
+                            {
                                 self.out.varied_symbols.insert(e.id);
                                 self.table_journal.push(TableUndo::VariedSymbol(e.id));
                                 let ext = |m: MethodId| self.world.method(m).extension.is_some();

@@ -1752,6 +1752,67 @@ impl World {
         })
     }
 
+    /// For a call's table (`Output::union_calls`) whose members are all
+    /// class objects, which no class test tells apart (`Type[Kind] |
+    /// Type[T]`): the class method all the methods found override, if any
+    /// (`overridden_class_method`). A call of it dispatches on the
+    /// receiver's class, so the receiver's own runs.
+    pub fn class_object_base(&self, table: &[(Type, MethodId)]) -> Option<MethodId> {
+        if table.is_empty()
+            || !table
+                .iter()
+                .all(|(t, _)| matches!(t, Type::ClassObject(..) | Type::TypeOf(_)))
+        {
+            return None;
+        }
+        let mut methods: Vec<MethodId> = table.iter().map(|(_, k)| *k).collect();
+        methods.sort_unstable();
+        methods.dedup();
+        if methods.len() < 2 {
+            return None;
+        }
+        self.overridden_class_method(&methods)
+    }
+
+    /// The class method that each of `methods` is or overrides (an
+    /// ancestor's of the same signature; class methods, none an
+    /// extension's), the most derived such one: `Kind.k` for `Kind.k` and
+    /// `SubKind.k`, and for two siblings' overrides of it.
+    pub fn overridden_class_method(&self, methods: &[MethodId]) -> Option<MethodId> {
+        let plain = |k: MethodId| {
+            let i = self.method(k);
+            i.singleton && i.extension.is_none()
+        };
+        if !methods.iter().all(|&k| plain(k)) {
+            return None;
+        }
+        let name = &self.method(methods[0]).name;
+        let mut candidates: Vec<MethodId> = Vec::new();
+        for &k in methods {
+            let owner = self.method(k).owner;
+            for (c, _) in self.lookup_methods(&Type::ClassObject(owner, Vec::new()), name) {
+                if plain(c) && !candidates.contains(&c) {
+                    candidates.push(c);
+                }
+            }
+        }
+        let overrides = |k: MethodId, base: MethodId| {
+            k == base
+                || (self.class_is_a(self.method(k).owner, self.method(base).owner)
+                    && self.same_signature(self.method(k), self.method(base)))
+        };
+        let bases: Vec<MethodId> = candidates
+            .into_iter()
+            .filter(|&b| methods.iter().all(|&k| overrides(k, b)))
+            .collect();
+        // The most derived (each base's owner is an ancestor of the others').
+        bases.iter().copied().find(|&b| {
+            bases
+                .iter()
+                .all(|&o| self.class_is_a(self.method(b).owner, self.method(o).owner))
+        })
+    }
+
     /// The classes (not modules) a type parameter is bounded by, through
     /// narrowed ones.
     fn bound_classes(&self, id: TypeParamId, out: &mut Vec<ClassId>) {

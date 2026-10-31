@@ -4010,3 +4010,27 @@ fn a_type_parameter_cannot_have_a_builtin_types_name() {
     );
     ok("class T\nend\nmodule E\n  extension Array[T]\n    def second -> T? = self[1]?\n  end\nend\nclass Box[T]\nend\ndef id[T](x: T) -> T = x");
 }
+
+#[test]
+fn class_objects_whose_class_methods_override_one() {
+    // `Type[Kind] | Type[T]` in a block checked per member: called as
+    // `Kind.k`, which the receiver's own overrides.
+    let classes = "class Kind\n  def self.k -> String = \"kind\"\nend\nclass SubKind < Kind\n  def self.k -> String = \"sub\"\nend\n";
+    ok(&format!(
+        "{classes}def f[T <: SubKind](c: Type[Kind] | Type[T]) -> String = c.then {{ |x| x.k }}"
+    ));
+    // Not an override (another signature), an unrelated class: refused.
+    err(
+        "class Kind\n  def self.k -> String = \"kind\"\nend\nclass Other\n  def self.k -> String = \"other\"\nend\ndef f(c: Type[Kind] | Type[Other]) -> String = c.then { |x| x.k }",
+        "cannot tell at run time which `k` to call for Type[Kind] and Type[Other]",
+    );
+    err(
+        "class Kind\n  def self.k -> String = \"kind\"\nend\nclass SubKind < Kind\n  def self.k(x: Int = 1) -> String = \"sub\"\nend\ndef f[T <: SubKind](c: Type[Kind] | Type[T]) -> String = c.then { |x| x.k }",
+        "cannot tell at run time which `k` to call",
+    );
+    // Extensions' class methods (found by name only where active): refused.
+    err(
+        "class Kind\nend\nclass SubKind < Kind\nend\nmodule Ext\n  extension Kind\n    def self.e -> String = \"k\"\n  end\n  extension SubKind\n    def self.e -> String = \"s\"\n  end\nend\nusing Ext\ndef f[T <: SubKind](c: Type[Kind] | Type[T]) -> String = c.then { |x| x.e }",
+        "cannot tell at run time which `e` to call",
+    );
+}
