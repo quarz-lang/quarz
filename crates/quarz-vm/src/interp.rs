@@ -1765,10 +1765,8 @@ impl Interp {
                 Err(Flow::Raise(e)) => TaskExit::Result(TaskResult::Error(e)),
                 Err(Flow::Exit(c)) => TaskExit::Exit(c),
                 Err(other) => {
-                    let e = me.make_exception(
-                        me.program.exc.runtime_error,
-                        &format!("unexpected control flow in task: {other:?}"),
-                    );
+                    let e = me
+                        .make_exception(me.program.exc.runtime_error, &stray_flow_message(&other));
                     TaskExit::Result(TaskResult::Error(e))
                 }
             }
@@ -3964,13 +3962,28 @@ impl Interp {
     }
 }
 
-/// Convert the result of a task body into its exit.
+/// The error for a `return` or `break` that reached a task's top: its
+/// block ran after the method (or call) it would leave had returned
+/// (a kept block called later), or in another task.
+fn stray_flow_message(flow: &Flow) -> String {
+    match flow {
+        Flow::Return(..) => {
+            "`return` from a block whose method or lambda has already returned (or that runs in another task)".to_string()
+        }
+        Flow::Break(..) => {
+            "`break` from a block whose call has already returned (or that runs in another task)".to_string()
+        }
+        other => format!("unexpected control flow: {other:?}"),
+    }
+}
+
 /// How a compile-time run ended other than normally (`Interp::run_static`).
 pub enum StaticEnd {
     Raised(Value),
     Exited(i32),
 }
 
+/// Convert the result of a task body into its exit.
 pub(crate) fn task_exit(interp: &Interp, result: EvalResult) -> TaskExit {
     match result {
         Ok(v) => TaskExit::Result(TaskResult::Value(v)),
@@ -3986,7 +3999,7 @@ pub(crate) fn task_exit(interp: &Interp, result: EvalResult) -> TaskExit {
         Err(other) => {
             let e = interp.make_exception(
                 interp.program.exc.runtime_error,
-                &format!("unexpected control flow: {other:?}"),
+                &stray_flow_message(&other),
             );
             TaskExit::Result(TaskResult::Error(e))
         }

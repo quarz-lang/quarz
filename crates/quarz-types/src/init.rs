@@ -51,6 +51,9 @@ pub struct InitCheck<'a> {
     /// For each enclosing loop or block (innermost last): the states
     /// where a `break` or `next` leaves it (joined).
     exits: Vec<St>,
+    /// Lambdas around the expression: a `return` there leaves the
+    /// innermost one, not `initialize`.
+    lambdas: u32,
     /// One "used before" error is enough.
     reported: HashSet<&'static str>,
 }
@@ -74,6 +77,7 @@ impl<'a> InitCheck<'a> {
             usable_on_entry: false,
             in_default: false,
             exits: Vec::new(),
+            lambdas: 0,
             reported: HashSet::default(),
         }
     }
@@ -376,7 +380,9 @@ impl<'a> InitCheck<'a> {
                 st
             }
             ExprKind::Lambda(b) => {
+                self.lambdas += 1;
                 self.block(b, &st);
+                self.lambdas -= 1;
                 st
             }
             ExprKind::Call(call) => {
@@ -598,7 +604,9 @@ impl<'a> InitCheck<'a> {
                     Some(v) => self.expr(v, st),
                     None => st,
                 };
-                self.check_complete(&st, e.span, "is not assigned when `initialize` returns");
+                if self.lambdas == 0 {
+                    self.check_complete(&st, e.span, "is not assigned when `initialize` returns");
+                }
                 None
             }
             ExprKind::Break(v) | ExprKind::Next(v) => {

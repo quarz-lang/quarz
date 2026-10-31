@@ -482,6 +482,9 @@ struct Env {
     never_narrow: Rc<HashSet<String>>,
     /// The next block checked is given to a method that may keep it.
     next_block_escapes: bool,
+    /// The next block runs in another task: a task's block, or
+    /// `Task.timeout`'s (the caller's, for captures, but run in a child).
+    next_block_elsewhere: bool,
 }
 
 /// What the checks of a block found for `a && b` (`Checker::logical_seen`).
@@ -719,6 +722,9 @@ struct BlockCtx {
     /// The block of the call in `static(...)`, run at compile time
     /// (docs/14 §8).
     static_call: bool,
+    /// A block run in another task (`Task.spawn`, `Task.timeout`): a
+    /// `return` cannot leave the code around it.
+    task: bool,
 }
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -965,6 +971,7 @@ impl Checker {
             late_assigned: Rc::default(),
             never_narrow: Rc::default(),
             next_block_escapes: false,
+            next_block_elsewhere: false,
             lifted_frame: None,
             static_frame: None,
             next_block_lifted: false,
@@ -2340,6 +2347,7 @@ impl Checker {
             late_assigned: Rc::default(),
             never_narrow: Rc::default(),
             next_block_escapes: false,
+            next_block_elsewhere: false,
             lifted_frame: None,
             static_frame: None,
             next_block_lifted: false,
@@ -5551,6 +5559,7 @@ impl Checker {
                 };
                 let past_lifted = left(self.env.blocks.iter().rposition(|b| b.lifted));
                 let past_static = left(self.env.blocks.iter().rposition(|b| b.static_call));
+                let past_task = left(self.env.blocks.iter().rposition(|b| b.task));
                 if past_lifted {
                     self.error(
                         "`return` in a block given to `def_method`: the block becomes the generated method's body, whose value is its last expression",
@@ -5566,6 +5575,18 @@ impl Checker {
                 if past_static {
                     self.error(
                         "`return` in the block of `static(...)`'s call: it runs at compile time, where the code around it is not running to return from (give the value as the block's last expression, or `next` it)",
+                        expr.span,
+                    );
+                    if let Some(v) = value {
+                        self.check_expr(v, None);
+                    }
+                    return Type::Nothing;
+                }
+                // A task's block runs in another task, where the method
+                // (or lambda) around it is not running.
+                if past_task {
+                    self.error(
+                        "`return` in a task's block: it runs in another task, where the method around it is not running to return from (give the value as the block's last expression, or `next` it)",
                         expr.span,
                     );
                     if let Some(v) = value {
@@ -10488,6 +10509,8 @@ impl Checker {
                 // A named `&block` may be kept (an anonymous one is only
                 // yielded to; a native that keeps its block names it).
                 self.env.next_block_escapes = m.block.as_ref().is_some_and(|(n, _)| n != "&");
+                self.env.next_block_elsewhere = Self::runs_block_in_task(&self.world, m)
+                    || (m.name == "timeout" && m.owner == self.world.builtin.task);
                 // A block given to `Meta::ClassDef`'s generating natives
                 // becomes a method's body (docs/14 §5).
                 self.env.next_block_lifted =
@@ -11208,6 +11231,7 @@ impl Checker {
         self.prescan_repeated(&block.body, true);
         // A block the method may keep may run later, as a lambda may.
         let escapes = std::mem::take(&mut self.env.next_block_escapes);
+        let elsewhere = std::mem::take(&mut self.env.next_block_elsewhere);
         let late =
             (escapes && !shareable && !is_task).then(|| self.enter_late_closure(&block.body));
         // A task's block copies the locals it captures, but reads `self`'s
@@ -11260,6 +11284,7 @@ impl Checker {
             escapes: escapes || is_task || shareable || lifted,
             lifted,
             static_call: in_static,
+            task: is_task || elsewhere,
         });
         // `break` and `next` in a block leave the block, not a loop
         // around it.
@@ -11641,6 +11666,7 @@ impl Checker {
             escapes: true,
             lifted: false,
             static_call: false,
+            task: false,
         });
         // `break` and `next` here do not leave a loop around the lambda.
         let saved_loop = (
