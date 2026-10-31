@@ -4175,6 +4175,38 @@ fn the_both_receivers_warning_is_for_different_declarations() {
 }
 
 #[test]
+fn type_parameter_bounds_cannot_form_a_cycle() {
+    // Refused where declared, so that method lookup never goes round it.
+    err(
+        "def f[U <: T, T <: U](v: T) -> String = v.to_s",
+        "type parameter bounds form a cycle: U <: T <: U",
+    );
+    err(
+        "def f[A <: B, B <: C, C <: A](v: A) -> String = v.to_s",
+        "type parameter bounds form a cycle: A <: B <: C <: A",
+    );
+    err(
+        "def f[T <: T](v: T) -> String = v.to_s",
+        "type parameter bounds form a cycle: T <: T",
+    );
+    err(
+        "class Box[P <: Q, Q <: P]\nend",
+        "type parameter bounds form a cycle: P <: Q <: P",
+    );
+    err(
+        "module E\n  extension Hash[K <: V, V <: K]\n  end\nend",
+        "type parameter bounds form a cycle: K <: V <: K",
+    );
+    // A cycle made of the edges between two others: found too.
+    err(
+        "def f[A <: B, B <: A & C, C <: D & B, D <: C](v: C) -> String = v.to_s",
+        "type parameter bounds form a cycle: B <: C <: B",
+    );
+    // A chain ending in a type, an F-bound: accepted.
+    ok("def f[U <: T, T <: Int](u: U, t: T) -> Int = u + t\ndef g[T <: Comparable[T]](a: T, b: T) -> Bool = a < b");
+}
+
+#[test]
 fn implicit_it() {
     // `it` (docs/01 §9) is typed as the block's one argument.
     ok("xs: Array[Int] = [1, 2].map { it * 2 }\nys: Array[String] = [1].map { it.to_s }");

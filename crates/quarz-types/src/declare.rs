@@ -3401,6 +3401,80 @@ impl<'ast> Declarer<'ast> {
             && c.keywords_accept(a)
     }
 
+    /// Type parameters bounded by one another in a cycle (`U <: T, T <:
+    /// U`, `T <: T`, longer ones): an error at the first of each cycle,
+    /// whose bounds by the others are dropped, so that nothing following
+    /// bounds (method lookup) goes round it.
+    fn refuse_bound_cycles(&mut self, params: &mut [TypeParamInfo], spans: &[Span]) {
+        let index =
+            |id: TypeParamId, params: &[TypeParamInfo]| params.iter().position(|p| p.id == id);
+        // (Until a pass finds none: the edges between two cycles found may
+        // make another. Each cycle found drops at least one edge.)
+        let mut found = true;
+        while found {
+            found = false;
+            let mut done = vec![false; params.len()];
+            for start in 0..params.len() {
+                if done[start] {
+                    continue;
+                }
+                // Follow the bounds that are parameters of this list, depth
+                // first, with the path from `start`.
+                let mut path = vec![start];
+                let mut seen = vec![false; params.len()];
+                seen[start] = true;
+                let mut stack: Vec<(usize, usize)> = vec![(start, 0)];
+                let mut cycle: Option<Vec<usize>> = None;
+                while let Some(&mut (at, ref mut next)) = stack.last_mut() {
+                    let targets: Vec<usize> = params[at]
+                        .bounds
+                        .iter()
+                        .filter_map(|b| match b {
+                            Type::Param(q) => index(*q, params),
+                            _ => None,
+                        })
+                        .collect();
+                    if *next >= targets.len() {
+                        stack.pop();
+                        path.pop();
+                        continue;
+                    }
+                    let to = targets[*next];
+                    *next += 1;
+                    if let Some(k) = path.iter().position(|&p| p == to) {
+                        cycle = Some(path[k..].to_vec());
+                        break;
+                    }
+                    if !seen[to] {
+                        seen[to] = true;
+                        path.push(to);
+                        stack.push((to, 0));
+                    }
+                }
+                let Some(cycle) = cycle else {
+                    done[start] = true;
+                    continue;
+                };
+                let names: Vec<&str> = cycle
+                    .iter()
+                    .chain(std::iter::once(&cycle[0]))
+                    .map(|&i| params[i].name.as_str())
+                    .collect();
+                let msg = format!("type parameter bounds form a cycle: {}", names.join(" <: "));
+                let at = spans.get(cycle[0]).copied().unwrap_or_default();
+                self.error(msg, at);
+                let ids: Vec<TypeParamId> = cycle.iter().map(|&i| params[i].id).collect();
+                for &i in &cycle {
+                    params[i]
+                        .bounds
+                        .retain(|b| !matches!(b, Type::Param(q) if ids.contains(q)));
+                    done[i] = true;
+                }
+                found = true;
+            }
+        }
+    }
+
     /// `name(x: T, *, y: U = ...)`, for a message: the parameters' types
     /// as `see` shows them (`*r: T` and `**o: T` by their element types,
     /// as declared).
@@ -3580,6 +3654,10 @@ impl<'ast> Declarer<'ast> {
                 }
                 self.world.class_mut(id).type_params[i].bounds = bounds;
             }
+            let mut params = self.world.class(id).type_params.clone();
+            let spans: Vec<Span> = tps.iter().map(|tp| tp.span).collect();
+            self.refuse_bound_cycles(&mut params, &spans);
+            self.world.class_mut(id).type_params = params;
         }
         match p.def {
             PendingDef::Class(d) => {
@@ -3807,6 +3885,10 @@ impl<'ast> Declarer<'ast> {
             }
             self.world.extensions[e.id as usize].type_params[i].bounds = bounds;
         }
+        let mut params = self.world.extensions[e.id as usize].type_params.clone();
+        let spans: Vec<Span> = e.def.type_params.iter().map(|tp| tp.span).collect();
+        self.refuse_bound_cycles(&mut params, &spans);
+        self.world.extensions[e.id as usize].type_params = params;
         let Some(target) = self.resolve_type(&e.def.target, &scope) else {
             return;
         };
@@ -4399,6 +4481,8 @@ impl<'ast> Declarer<'ast> {
                 self.world.lower_bounds.insert(type_params[i].id, l.clone());
             }
         }
+        let spans: Vec<Span> = def.type_params.iter().map(|tp| tp.span).collect();
+        self.refuse_bound_cycles(&mut type_params, &spans);
         let mut params = Vec::new();
         let mut block = None;
         let mut block_optional = false;
