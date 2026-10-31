@@ -5541,6 +5541,18 @@ impl Checker {
                     }
                     return Type::Nothing;
                 }
+                // The block of `static(...)`'s call runs at compile time,
+                // where the code around it is not running (docs/14 §8).
+                if !in_lambda && self.env.static_frame.is_some() {
+                    self.error(
+                        "`return` in the block of `static(...)`'s call: it runs at compile time, where the code around it is not running to return from (give the value as the block's last expression, or `next` it)",
+                        expr.span,
+                    );
+                    if let Some(v) = value {
+                        self.check_expr(v, None);
+                    }
+                    return Type::Nothing;
+                }
                 if in_lambda {
                     let ret = self.env.blocks.last().unwrap().ret.clone();
                     let void = self.resolve(&ret) == Type::Void;
