@@ -145,10 +145,11 @@ when the local one is older.
   `git worktree` with its own `CARGO_TARGET_DIR` (and
   `QUARZ_RT_LIB=<that target>/release/libquarz_vm.a` for its AOT
   builds).
-- Compiled benchmarks in `bench/` last only milliseconds: lengthen them
-  before concluding. AOT cycles can differ by several percent between
-  builds with identical instruction counts (code layout): identical
-  instructions with different cycles is not a regression in itself.
+- Compiled benchmarks in `bench/` take 20–200 ms (start-up is about
+  1 ms of that): still short enough that AOT cycles can differ by several
+  percent between builds with identical instruction counts (code layout):
+  identical instructions with different cycles is not a regression in
+  itself.
 - For start-up, use `valgrind --tool=callgrind`: sampling misattributes
   short runs.
 - `bench/compare/run.sh` compares with Go, Rust, Crystal, Spinel and
