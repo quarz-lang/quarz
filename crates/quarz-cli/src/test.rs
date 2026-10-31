@@ -185,6 +185,7 @@ pub(crate) fn test_specs(
         name: c.name.clone(),
         version: c.version.clone(),
         module,
+        module_name: c.module.clone(),
         src: c.dir.join("src"),
         imports: c
             .imports
@@ -217,6 +218,7 @@ pub(crate) fn test_specs(
         name: format!("{}-test", app.name),
         version: app.version.clone(),
         module: None,
+        module_name: app.module.clone(),
         // No src/: the root has only the test files.
         src: PathBuf::new(),
         imports,

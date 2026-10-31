@@ -276,6 +276,7 @@ fn load_and_check(
                     name: c.name.clone(),
                     version: c.version.clone(),
                     module: (i > 0).then(|| c.module.clone()),
+                    module_name: c.module.clone(),
                     src: c.dir.join("src"),
                     imports: c
                         .imports

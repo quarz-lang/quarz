@@ -176,6 +176,10 @@ pub fn build(world: &World, lw: &Lowerer, file_names: Vec<String>) -> RtWorld {
                 is_abstract: c.is_abstract,
                 objects: world.instances_are_objects(c.id),
                 file: c.file,
+                cog: c.cog.map(|i| {
+                    let info = &world.cogs[i as usize];
+                    (info.name.clone(), info.version.clone())
+                }),
             }
         })
         .collect();
@@ -350,6 +354,7 @@ pub fn build(world: &World, lw: &Lowerer, file_names: Vec<String>) -> RtWorld {
         regexp: b.regexp,
         proc_: b.proc_,
         class_: b.class_,
+        cog: b.cog,
         task: b.task,
         channel: b.channel,
         atom: b.atom,

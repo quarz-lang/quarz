@@ -402,6 +402,10 @@ pub fn shake(module: &mut Module) -> usize {
         if c.is_exception || c.kind == RtClassKind::Main {
             s.class(i as ClassId);
         }
+        // A cog's root module is a `Cog` value (docs/10 §6).
+        if c.cog.is_some() {
+            s.class(b.cog);
+        }
     }
     for u in &module.units {
         s.func(u.body);

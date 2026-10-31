@@ -2300,6 +2300,8 @@ impl Interp {
             Value::MatchData(m) if m.data.is_some() => b.bytes_match_data,
             Value::MatchData(_) => b.match_data,
             Value::Object(o) => o.class,
+            // A cog's root module is a `Cog` (docs/10 §6).
+            Value::Class(c) if self.program.world.class(*c).cog.is_some() => b.cog,
             Value::Class(_) => b.class_,
             Value::Proc(_) => b.proc_,
             Value::ArrayBuilder(_) => b.array_builder,

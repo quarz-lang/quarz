@@ -133,6 +133,9 @@ pub struct CogSpec {
     pub version: String,
     /// The module its declarations live in; `None` for the application.
     pub module: Option<String>,
+    /// What `cog.module_name` reads: `module`, or for the application the
+    /// one its manifest names (or the CamelCase of its name).
+    pub module_name: String,
     /// Its `src/` directory: every `.qz` file under it is part of the cog.
     pub src: PathBuf,
     /// The dependency keys of its manifest and the cogs they name (indices
@@ -153,6 +156,7 @@ pub fn load(path: &Path) -> (Vec<LoadedUnit>, Vec<LoadDiagnostic>) {
         in_progress: Vec::new(),
         next_unit: 0,
         index_of: Default::default(),
+        meta: script_meta(path),
     };
     let key = canonical(path);
     loader.load_file(path, &key, None);
@@ -172,6 +176,7 @@ pub fn load_files(paths: &[PathBuf], std: &[&str]) -> (Vec<LoadedUnit>, Vec<Load
         in_progress: Vec::new(),
         next_unit: 0,
         index_of: Default::default(),
+        meta: None,
     };
     for name in std {
         let key = format!("<std:{name}>");
@@ -180,6 +185,7 @@ pub fn load_files(paths: &[PathBuf], std: &[&str]) -> (Vec<LoadedUnit>, Vec<Load
             loader.load_text(&key, text.to_string(), Path::new("."), key.clone(), None);
         }
     }
+    loader.meta = paths.first().and_then(|p| script_meta(p));
     for path in paths {
         let key = canonical(path);
         if !loader.visited.contains(&key) {
@@ -221,6 +227,7 @@ fn load_cogs(
         in_progress: Vec::new(),
         next_unit: 0,
         index_of: Default::default(),
+        meta: None,
     };
     // Dependencies before the cogs that need them.
     let mut order = Vec::new();
@@ -243,6 +250,7 @@ fn load_cogs(
         let meta = CogMeta {
             name: cog.name.clone(),
             version: cog.version.clone(),
+            module: cog.module_name.clone(),
         };
         let mut files = Vec::new();
         if i == 0 && tests.is_some() && !cog.src.is_dir() {
@@ -291,6 +299,13 @@ fn load_cogs(
         }
     }
     if let Some(tests) = tests {
+        // The test files read the root cog's `cog.name` (the
+        // application's, or the tests' own root for a library).
+        loader.meta = cogs.first().map(|c| CogMeta {
+            name: c.name.clone(),
+            version: c.version.clone(),
+            module: c.module_name.clone(),
+        });
         // The application, or a library under the tests' own root, which
         // has no `src/` and imports it first.
         let tested = match cogs.first() {
@@ -321,6 +336,7 @@ fn load_cogs(
         .iter()
         .map(|c| CogDecl {
             name: c.name.clone(),
+            version: c.version.clone(),
             module: c.module.clone(),
             imports: c.imports.clone(),
         })
@@ -401,6 +417,10 @@ struct Loader {
     next_unit: u32,
     /// The index in `units` of each file loaded, by key.
     index_of: rustc_hash::FxHashMap<String, usize>,
+    /// What `cog.name`, `cog.version` and `cog.module_name` read in the
+    /// files loaded outside a cog's `src/` (a script and the files it
+    /// requires, an application's test files); the defaults when `None`.
+    meta: Option<CogMeta>,
 }
 
 /// Span/node-id base of the n-th loaded unit (4M ids each, `UNIT_BITS`; the
@@ -640,7 +660,12 @@ impl Loader {
             return;
         }
         let source = SourceFile::with_base(name, text, base);
-        let parsed = parse_with_bases(&source.text, base, base);
+        let parsed = match &self.meta {
+            Some(meta) if !key.starts_with("<std:") => {
+                parse_cog_file(&source.text, base, base, meta)
+            }
+            _ => parse_with_bases(&source.text, base, base),
+        };
         let mut failed = false;
         for d in parsed.diagnostics {
             failed |= d.is_error();
@@ -701,4 +726,32 @@ impl Loader {
             Some(from.name.clone()),
         );
     }
+}
+
+/// A script's `cog.name` is its file's name without the extension
+/// (docs/10 §6), for the files it requires too.
+fn script_meta(path: &Path) -> Option<CogMeta> {
+    path.file_stem().map(|stem| {
+        let name = stem.to_string_lossy().into_owned();
+        CogMeta {
+            module: camel_case(&name),
+            name,
+            version: "0.0.0".to_string(),
+        }
+    })
+}
+
+/// `my-tool_x` as a module name: `MyToolX` (as `quarz_cog`'s
+/// `Manifest::module` makes one).
+fn camel_case(name: &str) -> String {
+    name.split(['-', '_'])
+        .filter(|p| !p.is_empty())
+        .map(|p| {
+            let mut cs = p.chars();
+            match cs.next() {
+                Some(c) => c.to_ascii_uppercase().to_string() + cs.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect()
 }

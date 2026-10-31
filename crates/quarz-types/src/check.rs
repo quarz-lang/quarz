@@ -2951,6 +2951,12 @@ impl Checker {
                     _ => false,
                 }
             }
+            // A cog's root module as a value is a `Cog` (docs/10 §6).
+            (Type::ClassObject(c, _), Type::Class(eid, _))
+                if *eid == self.world.builtin.cog && self.world.class(*c).cog.is_some() =>
+            {
+                true
+            }
             (Type::ClassObject(..) | Type::TypeOf(_), Type::Class(eid, eargs))
                 if *eid == self.world.builtin.class_ =>
             {

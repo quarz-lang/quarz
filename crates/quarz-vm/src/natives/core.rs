@@ -30,6 +30,13 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         i.call_block_on(&b, Some(r.clone()), a.pos)
     });
     native!(m, "Type#name", class_name);
+    // A cog's root module (docs/10 §6): its manifest's name and version,
+    // and the module's name.
+    native!(m, "Cog#name", |i, r, _| Ok(Value::str(&cog_info(i, r).0)));
+    native!(m, "Cog#version", |i, r, _| Ok(Value::str(
+        &cog_info(i, r).1
+    )));
+    native!(m, "Cog#module_name", class_name);
     // Reflection, at compile time only (docs/14 §4): the natives read the
     // declarations the compiler hands the interpreter (`Interp::reflect`).
     native!(m, "Type#fields", |i, r, _| {
@@ -523,6 +530,21 @@ fn meta_method(interp: &Interp, m: &crate::reflect::ReflectMethod) -> EvalResult
             Value::Bool(m.is_static)
         ],
     )))
+}
+
+/// The manifest's name and version of the cog whose root module `recv`
+/// is (a `Cog` value is one: `Cog` has no instances of its own).
+fn cog_info(interp: &Interp, recv: &Value) -> (String, String) {
+    match recv {
+        Value::Class(c) => interp
+            .program
+            .world
+            .class(*c)
+            .cog
+            .clone()
+            .unwrap_or_default(),
+        _ => Default::default(),
+    }
 }
 
 fn class_name(interp: &Interp, recv: &Value, _: Args) -> EvalResult {

@@ -482,9 +482,11 @@ fn cog_keyword() {
     // `cog.name` and `cog.version` are the manifest's, as literals.
     assert_eq!(sexp("cog.name"), "(str \"main\")");
     assert_eq!(sexp("cog.version.size"), "(call (str \"0.0.0\") size)");
+    assert_eq!(sexp("cog.module_name"), "(str \"Main\")");
     let meta = crate::parser::CogMeta {
         name: "httpx".into(),
         version: "1.4.0".into(),
+        module: "Httpx".into(),
     };
     let parsed = crate::parser::parse_cog_file("puts cog.name + cog.version", 0, 0, &meta);
     assert_eq!(

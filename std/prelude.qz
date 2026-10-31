@@ -13,6 +13,18 @@ end
 module Unshareable
 end
 
+# A cog's root module as a value: the key a manifest names a dependency
+# by and, in a library cog, `cog`. It is a `Type` (its `inspect` and `to_s` are the
+# module's), and it tells the cog's manifest (docs/10 §6).
+abstract class Cog < Type[Object]
+  # The cog's `[cog] name`, from its manifest (`"greet-more"`).
+  native def name -> String
+  # The cog's `[cog] version`, from its manifest (`"1.1.0"`).
+  native def version -> String
+  # The name of the cog's root module (`"GreetMore"`).
+  native def module_name -> String
+end
+
 # A marker for DSL receivers: inside a block whose receiver includes it,
 # the receivers of enclosing blocks that include it are not implicit
 # (a call must name them), so nested builders do not leak into each
