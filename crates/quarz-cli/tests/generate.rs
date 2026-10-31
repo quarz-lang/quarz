@@ -1428,8 +1428,10 @@ fn a_modules_static_def_calls_another_of_the_module() {
     write(
         &d.0,
         "lib.qz",
-        "abstract class Model\nend\nmodule Macros[T <: Model]\n  static def helper -> Int = 1\n  static def go -> Void\n    p name\n    p helper\n  end\nend\n",
+        "abstract class Model\nend\nmodule Macros[T <: Model]\n  static def helper -> Int = 1\n  static def go -> Void\n    p name\n    p helper\n    [10].each { |x| p helper + x }\n    p(\"s\".instance_exec { helper + size })\n  end\nend\n",
     );
+    // (From blocks too: one with another receiver reaches them through
+    // the enclosing `self`.)
     let app = write(
         &d.0,
         "app.qz",
@@ -1438,8 +1440,8 @@ fn a_modules_static_def_calls_another_of_the_module() {
     // At compile time (the statement), then at run time.
     let (ok, out, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &[]);
     assert!(ok, "{err}");
-    assert_eq!(out, "\"Post\"\n1\n");
-    assert!(err.contains("\"Post\"\n1\n"), "{err}");
+    assert_eq!(out, "\"Post\"\n1\n11\n2\n");
+    assert!(err.contains("\"Post\"\n1\n11\n2\n"), "{err}");
     let (ok, _, err) = quarz(
         &d.0,
         &["build", app.to_str().unwrap(), "-o", "app.bin"],
@@ -1449,5 +1451,5 @@ fn a_modules_static_def_calls_another_of_the_module() {
     let out = std::process::Command::new(d.0.join("app.bin"))
         .output()
         .unwrap();
-    assert_eq!(String::from_utf8_lossy(&out.stdout), "\"Post\"\n1\n");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "\"Post\"\n1\n11\n2\n");
 }
