@@ -8635,6 +8635,11 @@ impl Checker {
                             "undefined local variable or method `{name}` for {}",
                             self.name(recv_ty)
                         )
+                    } else if let Some(it) =
+                        self.world.it_hints.get(&(expr.span.start, expr.span.end))
+                    {
+                        // `it -1` in a block declaring no parameters.
+                        format!("undefined method `it` for {}: {it}", self.name(recv_ty))
                     } else {
                         let hint = self.immutable_hint(recv_ty, name, call.recv.as_ref());
                         format!("undefined method `{name}` for {}{hint}", self.name(recv_ty))
@@ -11617,7 +11622,24 @@ impl Checker {
                 _ => {}
             }
         }
-        if declared.len() > param_types.len() {
+        // `it` (docs/01 §9): the argument of a one-parameter block.
+        let implicit = declared.first().filter(|p| p.implicit).map(|p| p.span);
+        if let Some(span) = implicit.filter(|_| params.len() != 1) {
+            let takes = match params.len() {
+                0 => "none".to_string(),
+                n => format!(
+                    "{n}: write `|{}|`",
+                    (0..n)
+                        .map(|i| ((b'a' + (i % 26) as u8) as char).to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            };
+            self.error(
+                format!("`it` is the single argument of a one-parameter block; this block takes {takes}"),
+                span,
+            );
+        } else if declared.len() > param_types.len() {
             self.error(
                 format!(
                     "block takes {} parameter(s) but {} are declared",

@@ -483,6 +483,9 @@ pub struct World {
     /// with the world: `PreludeState` keeps them apart.)
     #[serde(skip)]
     pub docs: Vec<quarz_syntax::doc::Doc>,
+    /// `Program::it_hints` of every file, by the call's span.
+    #[serde(skip)]
+    pub it_hints: HashMap<(u32, u32), String>,
     pub classes: Vec<ClassInfo>,
     pub methods: Vec<MethodInfo>,
     pub consts: Vec<ConstInfo>,

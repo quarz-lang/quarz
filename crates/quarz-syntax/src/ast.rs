@@ -16,6 +16,11 @@ pub struct Program {
     pub span: Span,
     /// The documentation comments, by the line they document, in order.
     pub docs: Vec<crate::doc::Doc>,
+    /// For a call `it x` in a block declaring no parameters (`it -1`), by
+    /// the call's span: a hint on writing the block's argument instead
+    /// (`it - 1`), for the error if no method `it` is found.
+    #[serde(default)]
+    pub it_hints: Vec<(Span, String)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -584,6 +589,10 @@ pub struct Param {
     /// passed for this (block) parameter.
     pub usings: Vec<ConstPath>,
     pub span: Span,
+    /// `it`, the parameter of a block written without any that uses
+    /// `it` (docs/01 §9): the parser adds it.
+    #[serde(default)]
+    pub implicit: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

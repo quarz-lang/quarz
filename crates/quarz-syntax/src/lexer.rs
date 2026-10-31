@@ -275,6 +275,15 @@ impl<'src> Lexer<'src> {
         }
     }
 
+    /// The source text of a span of this lexer's.
+    pub fn text(&self, span: Span) -> &'src str {
+        let (start, end) = (
+            (span.start - self.base) as usize,
+            (span.end - self.base) as usize,
+        );
+        self.src.get(start..end).unwrap_or("")
+    }
+
     pub fn diagnostics(&self) -> &[Diagnostic] {
         &self.diagnostics
     }

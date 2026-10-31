@@ -1453,3 +1453,48 @@ fn a_modules_static_def_calls_another_of_the_module() {
         .unwrap();
     assert_eq!(String::from_utf8_lossy(&out.stdout), "\"Post\"\n1\n11\n2\n");
 }
+
+#[test]
+fn it_in_a_static_def() {
+    // `it` (docs/01 §9) in a `static def`'s blocks: run at compile time,
+    // and in the generated method's body (a block of one parameter).
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        r##"class Base
+  static def self.flags(names: Array[Symbol]) -> Void
+    names.select { it != :skip }.each do
+      def_method("#{it}?".to_sym) { true }
+    end
+    def_method(:doubled, :x) { |x: Int| [x].map { it * 2 }.first }
+  end
+end
+"##,
+    );
+    let app = write(
+        &d.0,
+        "app.qz",
+        "require_relative \"lib\"\nclass Item < Base\n  flags [:new, :skip, :hot]\nend\nputs Item.new.new?, Item.new.hot?, Item.new.doubled(21)\n",
+    );
+    let expected = "true\ntrue\n42\n";
+    let (ok, out, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(out, expected);
+    let (ok, _, err) = quarz(
+        &d.0,
+        &["build", app.to_str().unwrap(), "-o", "app.bin"],
+        &[],
+    );
+    assert!(ok, "{err}");
+    let out = Command::new(d.0.join("app.bin")).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout), expected);
+    // `skip?` was not generated.
+    write(
+        &d.0,
+        "app.qz",
+        "require_relative \"lib\"\nclass Item < Base\n  flags [:new, :skip]\nend\nItem.new.skip?\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", app.to_str().unwrap()], &[]);
+    assert!(!ok && err.contains("undefined method `skip?`"), "{err}");
+}
