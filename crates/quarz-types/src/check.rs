@@ -843,6 +843,10 @@ pub struct Checker {
     /// an earlier input or of a required file, not of its own unit.
     pub repl_unit: Option<(u32, u32)>,
     op_given_up: rustc_hash::FxHashSet<(NodeId, bool)>,
+    /// `&:name` nodes some check of which had a class object for the
+    /// receiver: found differently by another check, they cannot be called
+    /// by name (whichever check came first).
+    symbol_on_class_object: rustc_hash::FxHashSet<NodeId>,
     pub world: World,
     pub diagnostics: Vec<(u32, Diagnostic)>,
     /// Calls a run-time class test cannot choose a method for
@@ -988,6 +992,7 @@ impl Checker {
             quoted_conflicts: HashMap::default(),
             repl_unit: None,
             op_given_up: Default::default(),
+            symbol_on_class_object: Default::default(),
             world,
             diagnostics: Vec::new(),
             ambiguous: Vec::new(),
@@ -5427,6 +5432,22 @@ impl Checker {
                         expr.span,
                     );
                     return Type::Nothing;
+                }
+                // A handle passes positional arguments only: a required
+                // keyword would be left out (a defaulted one takes its
+                // default).
+                if let Some(k) = m
+                    .params
+                    .iter()
+                    .find(|p| p.kind == ParamKind::KeywordOnly && p.default.is_none())
+                {
+                    self.error(
+                        format!(
+                            "`{name}` needs the keyword `{}`: a handle cannot pass keywords; wrap it in a block",
+                            k.name
+                        ),
+                        expr.span,
+                    );
                 }
                 let mut subst = subst;
                 subst.insert(SELF_PARAM, Self::self_binding(&self.world, &m, &rt));
@@ -10742,6 +10763,9 @@ impl Checker {
                             }
                             return Err(msg);
                         }
+                        if matches!(self.resolve(&recv), Type::ClassObject(..) | Type::TypeOf(_)) {
+                            self.symbol_on_class_object.insert(e.id);
+                        }
                         // Checked again with another class method on a class
                         // object, both overriding one: the procedure calls
                         // that one, which runs the receiver's own
@@ -10778,6 +10802,14 @@ impl Checker {
                             {
                                 self.out.varied_symbols.insert(e.id);
                                 self.table_journal.push(TableUndo::VariedSymbol(e.id));
+                            }
+                            // (On every check that finds another method, not
+                            // only the first: the class object, or the
+                            // extension's method, may come later.)
+                            if before != mid
+                                && base.is_none()
+                                && self.out.varied_symbols.contains(&e.id)
+                            {
                                 let ext = |m: MethodId| self.world.method(m).extension.is_some();
                                 // Both checks in the table (`union_calls`), the
                                 // procedure chooses by its argument's class,
@@ -10786,7 +10818,13 @@ impl Checker {
                                 let tabled = !self.env.blocks.is_empty()
                                     && self.union_testable(&recv)
                                     && self.out.union_calls.contains_key(&e.id);
-                                if (ext(before) || ext(mid)) && !tabled {
+                                // A class object's methods (its class's, or an
+                                // `extend`ed module's) are never found by name
+                                // on it (no class test tells class objects
+                                // apart either): as the block `{ |c| c.name }`
+                                // on them is.
+                                let class_methods = self.symbol_on_class_object.contains(&e.id);
+                                if (ext(before) || ext(mid) || class_methods) && !tabled {
                                     let (wb, wm) =
                                         (self.method_label(before), self.method_label(mid));
                                     let d = Diagnostic::error(

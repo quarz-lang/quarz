@@ -4057,3 +4057,53 @@ fn an_override_keeps_the_defaults() {
     // Another value, or a default added: kept.
     ok("class A\n  def k(x: Int = 1) -> Int = x\nend\nclass B < A\n  def k(x: Int = 7) -> Int = x\nend\nclass D\n  def k(x: Int) -> Int = x\nend\nclass E < D\n  def k(x: Int = 4) -> Int = x\nend");
 }
+
+#[test]
+fn a_symbol_procedure_on_class_objects_follows_the_blocks_rule() {
+    // `&:k` on class objects whose class methods differ, with none they
+    // all override: refused (a call by name finds no class method on a
+    // class object), as the block `{ |x| x.k }` is.
+    let classes = "class Left\n  def self.k -> String = \"l\"\nend\nclass Other\n  def self.k -> String = \"o\"\nend\n";
+    err(
+        &format!("{classes}def f(c: Type[Left] | Type[Other]) -> String = c.then(&:k)"),
+        "cannot tell at run time which `k` `&:k` calls: Left.k or Other.k",
+    );
+    err(
+        &format!("{classes}def f(c: Type[Left] | Type[Other]) -> String = c.then {{ |x| x.k }}"),
+        "cannot tell at run time which `k` to call",
+    );
+    // A class object and an instance, in either order.
+    for u in ["Type[A] | A", "A | Type[A]"] {
+        err(
+            &format!("class A\n  def k -> String = \"i\"\n  def self.k -> String = \"c\"\nend\ndef f(c: {u}) -> String = c.then(&:k)"),
+            "cannot tell at run time which `k` `&:k` calls",
+        );
+    }
+    // A class object after two instances whose methods already differ.
+    err(
+        "class A\n  def k -> String = \"a\"\nend\nclass B\n  def k -> String = \"b\"\nend\nclass C\n  def self.k -> String = \"c\"\nend\ndef f(c: A | B | Type[C]) -> String = c.then(&:k)",
+        "cannot tell at run time which `k` `&:k` calls: B#k or C.k",
+    );
+    // An `extend`ed module's method on a class object: the same.
+    err(
+        "module M\n  def k -> String = \"m\"\nend\nclass A\n  extend M\nend\nclass B\n  def self.k -> String = \"b\"\nend\ndef f(c: Type[A] | Type[B]) -> String = c.then(&:k)",
+        "cannot tell at run time which `k` `&:k` calls: M#k or B.k",
+    );
+    // One they all override: called as it.
+    ok("class Base\n  def self.k -> String = \"b\"\nend\nclass Sub < Base\n  def self.k -> String = \"s\"\nend\ndef f[T <: Sub](t: Type[T], base: Bool) -> String\n  c: Type[T] | Type[Base] = base ? Base : t\n  c.then(&:k)\nend");
+}
+
+#[test]
+fn a_handle_cannot_pass_a_required_keyword() {
+    err(
+        "class C\n  def k(*, x: Int) -> Int = x\nend\np C.new.:k.call",
+        "`k` needs the keyword `x`: a handle cannot pass keywords; wrap it in a block",
+    );
+    // Through an overload whose keyword is required.
+    err(
+        "class A\n  def k(*, x: Int = 1) -> Int = x\nend\nclass B < A\n  def k(*, x: Int) -> Int = x\nend\nb = B.new\np b.:k.call",
+        "`k` needs the keyword `x`",
+    );
+    // A defaulted keyword: the handle calls with the default.
+    ok("class C\n  def k(*, x: Int = 4) -> Int = x\nend\np C.new.:k.call");
+}
