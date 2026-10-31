@@ -337,3 +337,29 @@ p G.new(P.new, P.new).b1
     assert_eq!(off, cold);
     assert_eq!(off, warm);
 }
+
+/// A block that says `it` (docs/01 §9) is in the tree as a block with
+/// one parameter `it`, like `{ |it| ... }`: nothing marks it implicit.
+#[test]
+fn an_implicit_it_is_a_plain_parameter() {
+    let (ok, out, v) = tree("implicit_it", "p([1, 2].map { it * 2 })\n");
+    assert!(ok, "{out}");
+    let (_, out2, w) = tree("explicit_it", "p([1, 2].map { |it| it * 2 })\n");
+    assert!(!out.contains("\"implicit\""), "{out}");
+    let block = |v: &Value| {
+        let mut all = Vec::new();
+        nodes(&v["units"], &mut all);
+        all.iter()
+            .find(|(_, n)| n["kind"]["Call"]["name"] == "map")
+            .map(|(_, n)| n["kind"]["Call"]["block"]["params"].clone())
+            .unwrap()
+    };
+    let (implicit, explicit) = (block(&v), block(&w));
+    assert_eq!(implicit["list"][0]["name"], "it", "{out}");
+    let strip_spans = |p: &Value| {
+        let mut p = p.clone();
+        p["list"][0]["span"] = Value::Null;
+        p
+    };
+    assert_eq!(strip_spans(&implicit), strip_spans(&explicit), "{out2}");
+}

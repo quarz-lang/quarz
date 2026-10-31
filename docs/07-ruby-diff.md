@@ -32,6 +32,7 @@ A summary of the things someone who knows Ruby will first stumble on when starti
 | Global variables `$x`, class variables `@@x` | Exist | Do not exist. Constants + `Atom` |
 | Constants | Reassignment is a warning | Cannot be reassigned; must be Shareable |
 | `Proc.new`, `proc` | Exist | Only `->` and blocks. Procedures always have lambda semantics |
+| `it`, numbered parameters | `it` (3.4) in any parameterless block or lambda; `_1`, `_2` | `it` in a parameterless block whose type takes one argument (`xs.map { it * 2 }`); an error in a lambda, a block with parameters, or a block type taking none or two or more; a nested block's `it` hiding an enclosing one warns. No numbered parameters (01-syntax.md §9) |
 | Block and lambda parameter defaults | `{ \|x, y = 1\| }`, `->(x, y = 1) { }` | None: the procedure type decides how many arguments a block gets and their types |
 | `for x in xs` | A loop; the variable stays visible after it | A comprehension returning the body's values (`map`, `flat_map` for several iterators, `filter` for `when` guards); the variables stay inside. For a loop, use `each` |
 | `Thread`, `Mutex`, `Queue`, `Fiber` | Exist | `Task.spawn`, `Task.scope`, `Channel`, `Atom` |

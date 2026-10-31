@@ -292,6 +292,12 @@ impl<'ast> Declarer<'ast> {
             return;
         };
         self.world.add_docs(&program.docs);
+        self.world.it_hints.extend(
+            program
+                .it_hints
+                .iter()
+                .map(|(span, hint)| ((span.start, span.end), hint.clone())),
+        );
         self.file = file;
         self.world.file_groups.insert(file, UnitGroup::Cog(cog));
         let mut main = World::blank_class(
@@ -351,6 +357,12 @@ impl<'ast> Declarer<'ast> {
     pub fn collect_prelude(&mut self, program: &'ast Program) {
         self.file = 0;
         self.world.add_docs(&program.docs);
+        self.world.it_hints.extend(
+            program
+                .it_hints
+                .iter()
+                .map(|(span, hint)| ((span.start, span.end), hint.clone())),
+        );
         for expr in &program.body {
             self.collect_item(expr, None, true);
         }
@@ -361,6 +373,12 @@ impl<'ast> Declarer<'ast> {
     pub fn collect_unit(&mut self, program: &'ast Program, file: u32) {
         self.file = file;
         self.world.add_docs(&program.docs);
+        self.world.it_hints.extend(
+            program
+                .it_hints
+                .iter()
+                .map(|(span, hint)| ((span.start, span.end), hint.clone())),
+        );
         let group = if self.world.std_files.contains(&file) {
             UnitGroup::Std(file)
         } else {
@@ -394,6 +412,12 @@ impl<'ast> Declarer<'ast> {
     pub fn collect_into_unit(&mut self, program: &'ast Program, file: u32, main: ClassId) {
         self.file = file;
         self.world.add_docs(&program.docs);
+        self.world.it_hints.extend(
+            program
+                .it_hints
+                .iter()
+                .map(|(span, hint)| ((span.start, span.end), hint.clone())),
+        );
         self.world.file_groups.insert(file, UnitGroup::App);
         self.pending.push(PendingClass {
             id: main,

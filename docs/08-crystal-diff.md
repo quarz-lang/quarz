@@ -26,6 +26,7 @@ Crystal is the closest relative of Quarz: a statically typed, compiled language 
 | `struct` | Mutable value type, copied on assignment | No user value types: `data` is immutable, so copying and sharing cannot be told apart |
 | `enum` | Named integer constants (with flags); sum types are written as unions of types or an abstract struct hierarchy | Algebraic data types: `enum Shape = Circle(r: Float) \| Rect(w: Float, h: Float)`, matched exhaustively with `case/in` |
 | `&.method` shorthand | `xs.map(&.upcase)` | `xs.map(&:upcase)` (Ruby's spelling) |
+| Implicit block parameter | None (`&.method` covers a call on the argument) | `it`, in a block written without parameters whose type takes one argument: `xs.map { it * 2 }` (01-syntax.md §9) |
 | Block parameter types | `&block : Int32 -> Int32` | `&block: (Int) -> Int`; a method that yields declares its block (`&: (Int) -> Void`) |
 | Reopening classes | Allowed anywhere, for the whole program | Not allowed. Methods are added to existing types with `extension`, active where `using` is in effect |
 | Making an existing type conform to a module | Reopen it and include the module (`struct Int32; include M; ...; end`), everywhere; untyped parameters also accept anything with the right methods (duck typing) | `extension Int; include M; ...; end`: active in its program (or cog) when written at the top level, or where `using` brings in the module that declares it; the conformance holds wherever the value goes; parameters are typed, so a value must conform |

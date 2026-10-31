@@ -1,0 +1,28 @@
+# `it`: the argument of a block that declares no parameters (docs/01 §9).
+xs = [3, 1, 4, 1, 5, 9, 2, 6]
+p xs.map { it * 2 }
+p xs.select { it.odd? }.map { it * it }.sum
+p xs.sort_by { -it }.first(3)
+p(%w[pear fig apple].map { it.upcase }.select { it.size > 3 })
+
+class Tree
+  @items: Array[Int]
+  def initialize(@items: Array[Int]); end
+  def each_leaf(&block: (Int) -> Void)
+    @items.each { |i| block.call(i) }
+  end
+  def total_by(&f: (Int) -> Int) -> Int = @items.sum { |i| f.call(i) }
+end
+
+t = Tree.new([10, 20, 30])
+t.each_leaf { puts "leaf #{it}" }
+p t.total_by { it / 10 }
+
+# An inner block's `it` is its own; an enclosing parameter stays reachable.
+[[1, 2], [3]].each do |row|
+  p row.map { it + row.size }
+end
+
+# A local `it` wins over the block's argument.
+it = 100
+p xs.first(2).map { it + 1 }
