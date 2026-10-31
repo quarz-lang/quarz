@@ -1,0 +1,23 @@
+# A class method calling `new`, inherited by a subclass: the subclass's
+# `initialize` is checked with the superclass's type arguments
+# substituted.
+class Box[T]
+  @x: T
+  def initialize(@x: T); end
+  def self.mk(v: T) -> Self = new(v)
+  def get -> T = @x
+end
+class IntBox < Box[Int]
+  def initialize(@x: Int); end
+end
+class Pair[A, B]
+  @a: A
+  def initialize(@a: A); end
+  def self.of(v: A) -> Self = new(v)
+  def first -> A = @a
+end
+class Swapped[B, A] < Pair[A, B]
+  def initialize(@a: A); end
+end
+p IntBox.mk(4).get
+p Swapped[String, Int].of(5).first
