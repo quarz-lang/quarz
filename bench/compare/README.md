@@ -55,7 +55,8 @@ Runs per cell:
 | dispatch      |        5 |        20 | 20 |   20 |      20 |     20 |    6 |          20 |
 | tak(30,20,10) |        4 |        20 | 20 |   20 |      20 |     20 |   10 |          20 |
 
-Compiled Quarz runs in Go's range, ahead of Go on most rows and of Rust
-on `dispatch` and `tak`. The VM is an interpreter, slower than Ruby's on
-most rows (`fib` 2.8×). Every row includes the start-up of the first: 1
-ms compiled, 5.5 ms for `quarz run`, 44 ms for Ruby.
+Compiled Quarz runs in the range of Go and Crystal: from about half of
+Go's time to twice it, depending on the program. The VM is an
+interpreter, slower than Ruby's on most rows (`fib` 2.8×). Every row
+includes the start-up of the first: 1 ms compiled, 5.5 ms for
+`quarz run`, 44 ms for Ruby.
