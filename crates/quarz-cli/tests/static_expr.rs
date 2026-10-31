@@ -468,3 +468,34 @@ fn a_compile_time_static_call_may_not_read_a_pending_class() {
     assert!(ok, "{err}");
     assert_eq!(out, "1\n");
 }
+
+#[test]
+fn the_block_of_a_static_call_cannot_return() {
+    // docs/14 §8: the block runs at compile time, where the code around
+    // it is not running; `break` leaves the call with its value.
+    let d = dir();
+    write(
+        &d.0,
+        "base.qz",
+        "class K\n  static def self.blk(&b: (Int) -> Int) -> Int = b.call(1) + 1\nend\n",
+    );
+    let bad = write(
+        &d.0,
+        "bad.qz",
+        "require_relative \"base\"\ndef f -> Int\n  static(K.blk { |x| return 5 })\nend\np f\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", bad.to_str().unwrap()], &[]);
+    assert!(!ok);
+    assert!(
+        err.contains("`return` in the block of `static(...)`'s call"),
+        "{err}"
+    );
+    let good = write(
+        &d.0,
+        "good.qz",
+        "require_relative \"base\"\np static(K.blk { |x| x + 4 })\np static(K.blk { |x| break 7 })\n",
+    );
+    let (ok, out, err) = quarz(&d.0, &["run", good.to_str().unwrap()], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(out, "6\n7\n");
+}
