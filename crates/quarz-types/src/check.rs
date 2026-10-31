@@ -716,6 +716,9 @@ struct BlockCtx {
     /// A block given to `def_method`: `break` would leave the generated
     /// method's body.
     lifted: bool,
+    /// The block of the call in `static(...)`, run at compile time
+    /// (docs/14 §8).
+    static_call: bool,
 }
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -5530,8 +5533,20 @@ impl Checker {
             }
             Begin(block) => self.check_begin(block, expected),
             Return(value) => {
-                let in_lambda = self.env.blocks.last().is_some_and(|b| b.is_lambda);
-                if !in_lambda && self.env.lifted_frame.is_some() {
+                // A `return` leaves the innermost lambda around it, through
+                // the blocks inside that lambda (as at run time); else the
+                // method. A block given to `def_method` or to `static(...)`'s
+                // call with no lambda inside it around the `return` cannot
+                // be left that way.
+                let lambda_at = self.env.blocks.iter().rposition(|b| b.is_lambda);
+                let left = |pos: Option<usize>| match (pos, lambda_at) {
+                    (Some(p), Some(l)) => l < p,
+                    (Some(_), None) => true,
+                    (None, _) => false,
+                };
+                let past_lifted = left(self.env.blocks.iter().rposition(|b| b.lifted));
+                let past_static = left(self.env.blocks.iter().rposition(|b| b.static_call));
+                if past_lifted {
                     self.error(
                         "`return` in a block given to `def_method`: the block becomes the generated method's body, whose value is its last expression",
                         expr.span,
@@ -5543,7 +5558,7 @@ impl Checker {
                 }
                 // The block of `static(...)`'s call runs at compile time,
                 // where the code around it is not running (docs/14 §8).
-                if !in_lambda && self.env.static_frame.is_some() {
+                if past_static {
                     self.error(
                         "`return` in the block of `static(...)`'s call: it runs at compile time, where the code around it is not running to return from (give the value as the block's last expression, or `next` it)",
                         expr.span,
@@ -5553,8 +5568,8 @@ impl Checker {
                     }
                     return Type::Nothing;
                 }
-                if in_lambda {
-                    let ret = self.env.blocks.last().unwrap().ret.clone();
+                if let Some(l) = lambda_at {
+                    let ret = self.env.blocks[l].ret.clone();
                     let void = self.resolve(&ret) == Type::Void;
                     let t = match value {
                         Some(v) => self.check_expr(v, if void { None } else { Some(&ret) }),
@@ -11239,6 +11254,7 @@ impl Checker {
             // not be live there either.
             escapes: escapes || is_task || shareable || lifted,
             lifted,
+            static_call: in_static,
         });
         // `break` and `next` in a block leave the block, not a loop
         // around it.
@@ -11619,6 +11635,7 @@ impl Checker {
             is_lambda: true,
             escapes: true,
             lifted: false,
+            static_call: false,
         });
         // `break` and `next` here do not leave a loop around the lambda.
         let saved_loop = (

@@ -3865,3 +3865,13 @@ fn an_inherited_class_method_takes_the_superclass_type_arguments() {
     // An extended module's methods, through `extend M[U]` in `F[U]`.
     ok("module M[X]\n  def mk(x: X) -> X = x\nend\nclass F[U]\n  extend M[U]\nend\nclass E < F[Int]\nend\na: Int = F[Int].mk(1)\nb: Int = E.mk(2)");
 }
+
+#[test]
+fn a_return_in_a_block_inside_a_lambda_leaves_the_lambda() {
+    // As at run time: typed against the lambda's result, not the method's.
+    ok("def m -> String\n  f = ->(y: Int) -> Int {\n    [1, 2].each { |z| return z + y if z == 2 }\n    0\n  }\n  f.call(0).to_s\nend");
+    err(
+        "def m -> Int\n  f = ->(y: Int) -> String {\n    [1, 2].each { |z| return z if z == 2 }\n    \"\"\n  }\n  1\nend",
+        "lambda returns String but `return` has type Int",
+    );
+}
