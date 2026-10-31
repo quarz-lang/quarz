@@ -36,7 +36,7 @@ results = Task.scope do |scope|
 end
 ```
 
-- When leaving the `Task.scope` block, it waits for every task created with `scope.spawn` to complete. The value of the block is the value of `Task.scope`.
+- The block gets a `Task::Scope`. When leaving the `Task.scope` block, it waits for every task created with `scope.spawn` to complete. The value of the block is the value of `Task.scope`.
 - If a task in the scope ends with an exception, **the remaining tasks are cancelled**, and after waiting for them to complete, the exception is re-raised to the caller of `Task.scope`. If multiple tasks failed, the first exception is raised and the rest are attached as a `cause` chain (currently the others are discarded).
 - If the block body itself raises, the same thing happens: child tasks are cancelled and waited for before the exception propagates.
 - Scopes can be nested. Cancellation propagates inward through nested scopes. A scope whose own task is cancelled cancels its children and still waits for them, so their `ensure` bodies run before the cancellation leaves the scope.
@@ -59,7 +59,7 @@ Task.timeout(5.seconds) { slow_call }     # raises Task::Timeout when exceeded; 
 - Cleanup that must wait goes in `Task.uncancellable { }` (Trio's shielded cancel scope, Kotlin's `NonCancellable`): its waits do not raise `Task::Cancelled` (an `exit` from another task still reaches it), and the cancellation applies again after it. Without it, a wait in an `ensure` of a cancelled task is interrupted at once, which keeps `Task.timeout` and a failing scope within their bounds. A scope or `Task.timeout` waits uncancellably for the children it has cancelled, so that their `ensure` clauses run before it ends.
 - `Task::Cancelled` is a direct subclass of `Exception`, not `StandardError`, so `rescue => e` does not catch it. `ensure` runs as usual, so cleanup goes there.
 - Cancellation is a request, not a force. Scheduling is cooperative, as in Kotlin and Trio: a task gives way to others only where it waits, at `Task.yield` (Kotlin's `yield()`) and in a `Channel.select_loop` that does not wait (after each select that takes `default`, every 64 that find a case ready), and is cancelled (or reached by an `exit` from another task) there, at `Task.check_cancel`, which does not give way, and at every `send`, `receive` and `select` of a channel, which check even when they need not wait, as Kotlin's do (`try_send` and `try_receive` do not). No loop does so by itself, `loop` and `while` alike, so one that only computes calls `Task.yield` now and then, or it keeps the other tasks of its worker from running and cannot be cancelled. Preemption (as Go's since 1.14, by a signal) is an open question. Likewise `Task.timeout` interrupts its block only at a wait; cancelling the task that waits in `Task.timeout` cancels the block too.
-- `Task#done?` tells whether a task has finished; `Scope#cancel` cancels the scope's children, and the scope then returns normally.
+- `Task#done?` tells whether a task has finished; `Task::Scope#cancel` cancels the scope's children, and the scope then returns normally.
 
 ## 3. Channels
 
@@ -96,7 +96,7 @@ Channel.select do |s|
 end
 ```
 
-(A class method of `Channel` rather than a function: Ruby's `Kernel#select` and `IO.select` wait for IO, and `select` is also `Enumerable#select`.) Since `Channel.select` is often used in the same shape inside a `loop`, `Channel.select_loop` is provided as well. Calling `s.stop` inside a handler exits the loop (each handler is a separate block, so by Ruby's rules `break` only exits `s.receive` and does not stop the loop).
+The block gets a `Channel::Selector`, on which `receive`, `send`, `after` and `default` register the cases. (A class method of `Channel` rather than a function: Ruby's `Kernel#select` and `IO.select` wait for IO, and `select` is also `Enumerable#select`.) Since `Channel.select` is often used in the same shape inside a `loop`, `Channel.select_loop` is provided as well. Calling `s.stop` inside a handler exits the loop (each handler is a separate block, so by Ruby's rules `break` only exits `s.receive` and does not stop the loop).
 
 ## 4. Atom
 

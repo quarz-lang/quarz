@@ -5000,7 +5000,7 @@ impl Checker {
     /// Entering a closure that may run later: the narrowings of outer
     /// locals that may change before it runs do not hold in it. Returns
     /// what `leave_late_closure` restores.
-    /// Whether `m` runs its block in a task (`Task.spawn`, `Scope#spawn`,
+    /// Whether `m` runs its block in a task (`Task.spawn`, `Task::Scope#spawn`,
     /// `Task.blocking`): the block is checked as a task's.
     fn runs_block_in_task(world: &World, m: &MethodInfo) -> bool {
         (m.name == "spawn" && (m.owner == world.builtin.task || m.owner == world.builtin.scope))
@@ -9320,7 +9320,8 @@ impl Checker {
         // (And the prelude's `IO`, `File` and `Selector`, which the runtime
         // opens, `Proc`, `Integer`: what the runtime's guard refuses too.)
         let runtime_made = [b.proc_, b.integer].contains(&cid)
-            || (class.file == 0 && ["IO", "File", "Selector"].contains(&class.name.as_str()));
+            || (class.file == 0
+                && ["IO", "File", "Channel::Selector"].contains(&class.name.as_str()));
         if (self.world.is_value_class(cid) || class_object || runtime_made)
             && ![b.array, b.hash, b.set].contains(&cid)
         {

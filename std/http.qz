@@ -1340,7 +1340,7 @@ module HTTP
       nil
     end
 
-    protected def accept_loop(scope: Scope) -> Void
+    protected def accept_loop(scope: Task::Scope) -> Void
       server = self
       loop do
         @tokens.send(nil)

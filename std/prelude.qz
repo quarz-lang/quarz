@@ -5873,8 +5873,8 @@ class Task[out T <: Shareable]
   # task belongs to the program's root scope and is dropped when the main
   # code finishes; `#await` it, or use `Task.scope`, to wait for it.
   native def self.spawn[R](&: () -> R) -> Task[R]
-  # Runs the block with a `Scope`, waits for every task started with
-  # `Scope#spawn` to finish, and returns the block's value.
+  # Runs the block with a `Task::Scope`, waits for every task started with
+  # `Task::Scope#spawn` to finish, and returns the block's value.
   #
   # When a task of the scope or the block itself raises, the remaining
   # tasks are cancelled and waited for, and the first exception is raised
@@ -6030,7 +6030,7 @@ class Task[out T <: Shareable]
   # `Task.timeout`): it stays so.
   native def cancelled? -> Bool
 
-  # Raised in a cancelled task (`Task#cancel`, `Scope#cancel`, a failing
+  # Raised in a cancelled task (`Task#cancel`, `Task::Scope#cancel`, a failing
   # `Task.scope`). A direct subclass of `Exception`: `rescue => e` does not
   # catch it, and `ensure` runs as usual.
   class Cancelled < Exception
@@ -6039,21 +6039,21 @@ class Task[out T <: Shareable]
   # Raised by `Task.timeout` when the block has not finished in time.
   class Timeout < StandardError
   end
-end
 
-# The scope a `Task.scope` block is given: the tasks started with `#spawn`
-# are waited for when the block ends.
-class Scope
-  include Shareable
+  # The scope a `Task.scope` block is given: the tasks started with `#spawn`
+  # are waited for when the block ends.
+  class Scope
+    include Shareable
 
-  # Starts a task in the scope running the block, as `Task.spawn` does, and
-  # returns it.
-  #
-  # `Task.scope` waits for it before it returns.
-  native def spawn[T](&: () -> T) -> Task[T]
-  # Cancels the scope's tasks (`Task#cancel`); `Task.scope` then waits for
-  # them and returns the block's value normally.
-  native def cancel -> Void
+    # Starts a task in the scope running the block, as `Task.spawn` does, and
+    # returns it.
+    #
+    # `Task.scope` waits for it before it returns.
+    native def spawn[T](&: () -> T) -> Task[T]
+    # Cancels the scope's tasks (`Task#cancel`); `Task.scope` then waits for
+    # them and returns the block's value normally.
+    native def cancel -> Void
+  end
 end
 
 # A typed queue between tasks: all communication and synchronization
@@ -6084,18 +6084,18 @@ class Channel[T <: Shareable]
   # buffers none; a negative capacity is taken as 0).
   native def self.new(capacity: Int = 0) -> Channel[T]
   # Performs exactly one of the operations the block registers on the
-  # `Selector` (`Selector#receive`, `Selector#send`, `Selector#after`,
-  # `Selector#default`), the first that can go on, and then runs that
+  # `Channel::Selector` (`Channel::Selector#receive`, `Channel::Selector#send`, `Channel::Selector#after`,
+  # `Channel::Selector#default`), the first that can go on, and then runs that
   # operation's block.
   #
   # When several are ready, the first registered wins. Without
-  # `Selector#default`, it waits until one is ready, suspending only the
+  # `Channel::Selector#default`, it waits until one is ready, suspending only the
   # calling task.
   #
   # ## Raises
   #
   # `Channel::Closed` when a registered channel is closed (and, for a
-  # receive, empty), even with a `Selector#default`; `ArgumentError` when
+  # receive, empty), even with a `Channel::Selector#default`; `ArgumentError` when
   # the block registers nothing.
   #
   # ```
@@ -6110,7 +6110,7 @@ class Channel[T <: Shareable]
   # ```
   native def self.select(&: (Selector) -> Void) -> Void
   # `.select` in a loop, until a handler (or the block) calls
-  # `Selector#stop`. When it polls (`Selector#default` taken) it lets other
+  # `Channel::Selector#stop`. When it polls (`Channel::Selector#default` taken) it lets other
   # tasks run after each select, as `Task.yield` does, so that it does not
   # keep its senders from running; when its cases are ready every time,
   # every 64 selects.
@@ -6177,34 +6177,34 @@ class Channel[T <: Shareable]
   # that is closed and empty.
   class Closed < StandardError
   end
-end
 
-# What a `Channel.select` or `Channel.select_loop` block registers its
-# operations on. Each method only registers an operation and its block;
-# the chosen operation's block runs after the `Channel.select` block
-# returns.
-class Selector
-  include Unshareable
+  # What a `Channel.select` or `Channel.select_loop` block registers its
+  # operations on. Each method only registers an operation and its block;
+  # the chosen operation's block runs after the `Channel.select` block
+  # returns.
+  class Selector
+    include Unshareable
 
-  # These keep their blocks, run after the `Channel.select` block returns.
+    # These keep their blocks, run after the `Channel.select` block returns.
 
-  # Receive from `channel`: the block gets the value, if this case is the
-  # one chosen.
-  native def receive[T](channel: Channel[T], &blk: (T) -> Void) -> Void
-  # Send `value` on `channel`: the block runs once it is sent, if this case
-  # is the one chosen.
-  native def send[T](channel: Channel[T], value: T, &blk: () -> Void) -> Void
-  # A timeout: the block runs if no other case is ready within `duration`
-  # (with several, the shortest wins).
-  native def after(duration: Duration, &blk: () -> Void) -> Void
-  # The case chosen when no other is ready at once: it makes the select
-  # not wait.
-  native def default(&blk: () -> Void) -> Void
-  # Ends a `Channel.select_loop` after this round.
-  #
-  # Called in the `Channel.select` block itself, before any operation is
-  # chosen, it ends the select without performing one.
-  native def stop -> Void
+    # Receive from `channel`: the block gets the value, if this case is the
+    # one chosen.
+    native def receive[T](channel: Channel[T], &blk: (T) -> Void) -> Void
+    # Send `value` on `channel`: the block runs once it is sent, if this case
+    # is the one chosen.
+    native def send[T](channel: Channel[T], value: T, &blk: () -> Void) -> Void
+    # A timeout: the block runs if no other case is ready within `duration`
+    # (with several, the shortest wins).
+    native def after(duration: Duration, &blk: () -> Void) -> Void
+    # The case chosen when no other is ready at once: it makes the select
+    # not wait.
+    native def default(&blk: () -> Void) -> Void
+    # Ends a `Channel.select_loop` after this round.
+    #
+    # Called in the `Channel.select` block itself, before any operation is
+    # chosen, it ends the select without performing one.
+    native def stop -> Void
+  end
 end
 
 # A shared cell holding an immutable value, which any task can read and

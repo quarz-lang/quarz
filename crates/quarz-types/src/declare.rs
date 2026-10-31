@@ -3582,7 +3582,7 @@ impl<'ast> Declarer<'ast> {
             task: get(w, "Task"),
             channel: get(w, "Channel"),
             atom: get(w, "Atom"),
-            scope: get(w, "Scope"),
+            scope: 0,
             duration: get(w, "Duration"),
             bytes: get(w, "Bytes"),
             time: get(w, "Time"),
@@ -3606,6 +3606,7 @@ impl<'ast> Declarer<'ast> {
         };
         self.world.builtin.array_builder = nested(&self.world, self.world.builtin.array, "Builder");
         self.world.builtin.hash_builder = nested(&self.world, self.world.builtin.hash, "Builder");
+        self.world.builtin.scope = nested(&self.world, self.world.builtin.task, "Scope");
         self.world.builtin.string_builder =
             nested(&self.world, self.world.builtin.string, "Builder");
         self.world.builtin.set_builder = nested(&self.world, self.world.builtin.set, "Builder");

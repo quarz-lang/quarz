@@ -3921,7 +3921,10 @@ fn a_task_block_cannot_break() {
     // It runs in another task: no call around it to leave.
     for (src, name) in [
         ("t = Task.spawn { break 5 }", "Task.spawn"),
-        ("Task.scope { |s| s.spawn { break 1 }\n  0 }", "Scope#spawn"),
+        (
+            "Task.scope { |s| s.spawn { break 1 }\n  0 }",
+            "Task::Scope#spawn",
+        ),
         ("x = Task.timeout(1.second) { break 2 }", "Task.timeout"),
         ("y = Task.blocking { break 3 }", "Task.blocking"),
     ] {
