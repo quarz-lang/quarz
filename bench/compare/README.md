@@ -8,12 +8,12 @@ to C) compiles the `ruby/` programs as they are. `tak` is
 one line: the start-up every row includes.
 
 `run.sh` builds everything, checks that the outputs agree, and prints
-the best wall-clock time of each, then how many runs it took: about
-20 s of runs per cell, 3 to 20 (`RUNS=n` fixes it). Each run is a fresh
-process, so Ruby's YJIT warms up inside it. It needs a release build of
-Quarz and `go`, `rustc` and `ruby` on the path; Crystal and Spinel are
-used when found (`CRYSTAL`, `CRYSTAL_LINK_FLAGS`, `SPINEL`). A full run
-takes about 10 minutes:
+the best wall-clock time of each, then how many runs it took: aiming at
+about 20 s per cell, at least 3 and at most 20 (`RUNS=n` fixes it). Each
+run is a fresh process, so Ruby's YJIT warms up inside it. It needs a
+release build of Quarz and `go`, `rustc` and `ruby` on the path; Crystal
+and Spinel are used when found (`CRYSTAL`, `CRYSTAL_LINK_FLAGS`,
+`SPINEL`). A full run takes about 10 minutes:
 
 ```sh
 cargo build --release
@@ -27,7 +27,9 @@ machine; Go 1.27.2, rustc 1.99.1 (`-O`), Crystal 1.22.0 (`--release`),
 Spinel `78f436e06` with gcc 14.2.0, Ruby 4.0.5, clang 19.1.7.
 quarz-vm is `quarz run`, quarz-aot is `quarz build`. Milliseconds, best
 of the runs in the second table, start-up included. Not comparable with
-earlier tables (in git history), whose programs did 6–120× less work.
+earlier tables (in git history), whose programs did 6–125× less work.
+Spinel's `fib` (in parentheses) does far less work: gcc merges the pure
+function's duplicate calls.
 
 | program       | quarz-vm | quarz-aot |    go |  rust | crystal | spinel |    ruby | ruby --yjit |
 |---------------|---------:|----------:|------:|------:|--------:|-------:|--------:|------------:|
@@ -53,20 +55,7 @@ Runs per cell:
 | dispatch      |        5 |        20 | 20 |   20 |      20 |     20 |    6 |          20 |
 | tak(30,20,10) |        4 |        20 | 20 |   20 |      20 |     20 |   10 |          20 |
 
-## Reading the numbers
-
-- Compiled Quarz is mostly between Go and Rust: faster than both on calls
-  (`dispatch`, `tak`: a call that returns at once is inlined as a test,
-  and the class tests before an inlined `area` cost less than an
-  indirect call), slower on `objects`, where every Quarz object is on
-  the heap and Go's and Rust's particles are plain structs.
-- Spinel's `fib` (in parentheses) is not a call benchmark: gcc merges
-  the duplicate calls of the pure function, so the work is far from
-  exponential.
-- Compiled Quarz is 5–560× faster than Ruby (3–425× with YJIT). The VM
-  is faster than Ruby's interpreter on `objects` and `strings` and
-  slower on calls (`fib`, `tak`: 2.4–2.8×).
-- What separates compiled Quarz from Rust is mostly the value
-  representation: 16-byte tagged values, reference counts, and objects
-  always on the heap. A one-word
-  representation was tried and set aside (branch `value-8byte`).
+Compiled Quarz runs in Go's range, ahead of Go on most rows and of Rust
+on `dispatch` and `tak`. The VM is an interpreter, slower than Ruby's on
+most rows (`fib` 2.8×). Every row includes the start-up of the first: 1
+ms compiled, 5.5 ms for `quarz run`, 44 ms for Ruby.
