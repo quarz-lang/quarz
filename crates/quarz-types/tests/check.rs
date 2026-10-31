@@ -3876,3 +3876,13 @@ fn a_generic_extensions_class_method_sees_the_extensions_parameters() {
         "Box[String]",
     );
 }
+
+#[test]
+fn a_return_in_a_block_inside_a_lambda_leaves_the_lambda() {
+    // As at run time: typed against the lambda's result, not the method's.
+    ok("def m -> String\n  f = ->(y: Int) -> Int {\n    [1, 2].each { |z| return z + y if z == 2 }\n    0\n  }\n  f.call(0).to_s\nend");
+    err(
+        "def m -> Int\n  f = ->(y: Int) -> String {\n    [1, 2].each { |z| return z if z == 2 }\n    \"\"\n  }\n  1\nend",
+        "lambda returns String but `return` has type Int",
+    );
+}

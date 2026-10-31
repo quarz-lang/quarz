@@ -493,9 +493,10 @@ fn the_block_of_a_static_call_cannot_return() {
     let good = write(
         &d.0,
         "good.qz",
-        "require_relative \"base\"\np static(K.blk { |x| x + 4 })\np static(K.blk { |x| break 7 })\n",
+        "require_relative \"base\"\np static(K.blk { |x| x + 4 })\np static(K.blk { |x| break 7 })\np static(K.blk { |x| g = ->(y: Int) -> Int {\n  [1, 2].each { |z| return z + y if z == 2 }\n  0\n}\ng.call(x) })\n",
     );
+    // (A `return` in a lambda in the block leaves the lambda.)
     let (ok, out, err) = quarz(&d.0, &["run", good.to_str().unwrap()], &[]);
     assert!(ok, "{err}");
-    assert_eq!(out, "6\n7\n");
+    assert_eq!(out, "6\n7\n4\n");
 }
