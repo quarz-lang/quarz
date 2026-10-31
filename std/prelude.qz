@@ -19,7 +19,8 @@ end
 abstract class Cog < Type[Object]
   # The cog's `[cog] name`, from its manifest (`"greet-more"`).
   native def name -> String
-  # The cog's `[cog] version`, from its manifest (`"1.1.0"`).
+  # The cog's version (`"1.1.0"`): its tag's for a fetched cog, else
+  # its manifest's `[cog] version` (docs/10 §4).
   native def version -> String
   # The name of the cog's root module (`"GreetMore"`).
   native def module_name -> String
@@ -1345,7 +1346,7 @@ class Duration
 end
 
 # A pseudo-random number generator with its own state; `Random.rand` and
-# `Kernel#rand` draw from a default generator that `srand` seeds.
+# `Kernel.rand` draw from a default generator that `srand` seeds.
 #
 # Two generators made with the same seed give the same numbers. A
 # `Random` belongs to the task that made it (`Unshareable`); the default
@@ -2108,7 +2109,7 @@ class String
   # ```
   native def *(count: Int) -> String
   # The string as a format, with `args` as the values of its
-  # conversions, as `Kernel#format` formats them: `%d %i %s %f %e %g %x
+  # conversions, as `Kernel.format` formats them: `%d %i %s %f %e %g %x
   # %X %o %b %c %%`, with the flags `-`, `0`, `+` and space, a width and
   # a precision. A conversion without a value formats `nil`.
   #
@@ -5953,7 +5954,7 @@ class Task[out T <: Shareable]
   # `Task::Cancelled` at every wait, and would be interrupted again. Once
   # the block ends, the cancellation applies again. Give the wait its own
   # limit (`Task.timeout`), or a stuck peer holds the task forever. An
-  # `exit` from another task still reaches it (`Kernel#exit`).
+  # `exit` from another task still reaches it (`Kernel.exit`).
   #
   # ```
   # started = Channel[Nil].new(capacity: 1)
@@ -6287,7 +6288,7 @@ class IO
   native def puts(*args: Object) -> Void
   # Writes each argument's `to_s`, with no separator or newline.
   native def print(*args: Object) -> Void
-  # Writes `format` filled with `args`, as `format` (`Kernel#format`)
+  # Writes `format` filled with `args`, as `format` (`Kernel.format`)
   # does.
   native def printf(format: String, *args: Object) -> Void
   # Writes each argument's `to_s` (or a `Bytes`' bytes) in one write, and

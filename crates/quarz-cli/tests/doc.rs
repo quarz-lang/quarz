@@ -471,3 +471,221 @@ fn a_librarys_root_and_extension_methods() {
         stdout(&out)
     );
 }
+
+#[test]
+fn abstract_methods_and_headings_in_docs() {
+    let d = Dir::new();
+    d.write(
+        "s.qz",
+        "# A shape.\n#\n# ## Kinds\n#\n# Circles.\nabstract class Shape\n  # The area.\n  #\n  # ## Raises\n  #\n  # Nothing.\n  abstract def area -> Float\nend\n# A circle.\nclass Circle < Shape\n  def area -> Float = 1.0\nend\n",
+    );
+    // The signature says `abstract`, the listing marks it.
+    let out = quarz_in(&d.0, &["doc", "s.qz"]);
+    assert!(
+        stdout(&out).contains("  Shape#area  (abstract) The area.\n"),
+        "{}",
+        stdout(&out)
+    );
+    let out = quarz_in(&d.0, &["doc", "s.qz", "Shape#area"]);
+    assert!(
+        stdout(&out).contains("abstract def area -> Float"),
+        "{}",
+        stdout(&out)
+    );
+    let out = quarz_in(&d.0, &["doc", "--json", "s.qz"]);
+    assert!(
+        stdout(&out).contains("\"abstract\": true, \"doc\": \"The area."),
+        "{}",
+        stdout(&out)
+    );
+    let site = d.0.join("site");
+    quarz_in(
+        &d.0,
+        &["doc", "--html", "-o", site.to_str().unwrap(), "s.qz"],
+    );
+    let shape = std::fs::read_to_string(site.join("Shape.html")).unwrap();
+    assert!(
+        shape.contains("<code>abstract def area -&gt; Float</code>"),
+        "{shape}"
+    );
+    // A heading in a member's doc is below its signature (`<h4>`), one in
+    // the page's own doc below the page's sections (`<h3>`).
+    assert!(shape.contains("<h4>Raises</h4>"), "{shape}");
+    assert!(shape.contains("<h3>Kinds</h3>"), "{shape}");
+    // The implementation without a doc shows the abstract one's, from Shape.
+    let circle = std::fs::read_to_string(site.join("Circle.html")).unwrap();
+    assert!(
+        circle.contains("<p>The area.</p>")
+            && circle.contains("from <a href=\"Shape.html\">Shape</a>"),
+        "{circle}"
+    );
+}
+
+#[test]
+fn functions_are_not_methods() {
+    // Kernel's functions: `Kernel.puts`, found by every spelling.
+    for name in ["Kernel.puts", "Kernel#puts", "::puts", "puts"] {
+        let out = quarz_in(&app(), &["doc", name]);
+        assert!(
+            stdout(&out).starts_with("Kernel.puts  def puts(*args: Object) -> Void\n  (function)"),
+            "{name}: {}",
+            stdout(&out)
+        );
+    }
+    let out = quarz_in(&app(), &["doc", "--std"]);
+    assert!(
+        stdout(&out).contains("\n  Kernel.puts  ") && !stdout(&out).contains("Kernel#"),
+        "{}",
+        stdout(&out)
+    );
+    // A library's public functions, `Mathx.square`, under Functions; a
+    // private one only with `--private`, by its name alone.
+    let d = Dir::new();
+    d.write("Cog.toml", "[cog]\nname = \"mathx\"\nversion = \"0.1.0\"\n");
+    d.write(
+        "src/mathx.qz",
+        "# The square.\npublic def square(x: Int) -> Int = helper(x) * x\n# A helper.\ndef helper(x: Int) -> Int = x\n",
+    );
+    let out = quarz_in(&d.0, &["doc"]);
+    assert!(
+        stdout(&out).contains("  Mathx.square  The square.") && !stdout(&out).contains("helper"),
+        "{}",
+        stdout(&out)
+    );
+    let out = quarz_in(&d.0, &["doc", "--private"]);
+    assert!(
+        stdout(&out).contains("\n  helper  A helper."),
+        "{}",
+        stdout(&out)
+    );
+    let site = d.0.join("site");
+    quarz_in(&d.0, &["doc", "--html", "-o", site.to_str().unwrap()]);
+    let page = std::fs::read_to_string(site.join("Mathx.html")).unwrap();
+    assert!(
+        page.contains("<h2>Functions</h2>") && !page.contains("<h2>Methods</h2>"),
+        "{page}"
+    );
+    // A script's top-level `def`s, on the index page.
+    let s = Dir::new();
+    s.write(
+        "f.qz",
+        "# Doubles `n`.\ndef twice(n: Int) -> Int = n * 2\nputs twice(2)\n",
+    );
+    let out = quarz_in(&s.0, &["doc", "f.qz"]);
+    assert!(
+        stdout(&out).contains("twice  Doubles n.\n"),
+        "{}",
+        stdout(&out)
+    );
+    let out = quarz_in(&s.0, &["doc", "f.qz", "twice"]);
+    assert!(
+        stdout(&out).starts_with("twice  def twice(n: Int) -> Int"),
+        "{}",
+        stdout(&out)
+    );
+    let site = s.0.join("site");
+    quarz_in(
+        &s.0,
+        &["doc", "--html", "-o", site.to_str().unwrap(), "f.qz"],
+    );
+    let index = std::fs::read_to_string(site.join("index.html")).unwrap();
+    assert!(
+        index.contains("<h2>Functions</h2>") && index.contains("def twice"),
+        "{index}"
+    );
+    // A program's function before Kernel's of its name, a class before
+    // Kernel's `String()`; `Kernel.puts` in a doc is a link outside the
+    // standard library too; a function's example does not break `quarz
+    // test`.
+    s.write(
+        "g.qz",
+        "# My own format.\ndef format(x: Int) -> String\n  \"n=#{x}\"\nend\n# Twice, unlike `Kernel.puts`.\n#\n# ```\n# twice(2)   # => 4\n# ```\ndef twice(x: Int) -> Int = x * 2\n",
+    );
+    for (name, shown) in [
+        ("format", "format  def format(x: Int) -> String"),
+        ("::format", "format  def format(x: Int) -> String"),
+        ("String", "class String"),
+        ("puts", "Kernel.puts  def puts"),
+    ] {
+        let out = quarz_in(&s.0, &["doc", "g.qz", name]);
+        assert!(stdout(&out).starts_with(shown), "{name}: {}", stdout(&out));
+    }
+    // A capitalized name is a class even beside a function of its name,
+    // `::String` too; `::name` is no method of `Object`'s.
+    s.write(
+        "h.qz",
+        "# My String.\ndef String(x: Int) -> String\n  \"s\"\nend\nputs \"x\"\n",
+    );
+    for name in ["String", "::String"] {
+        let out = quarz_in(&s.0, &["doc", "h.qz", name]);
+        assert!(
+            stdout(&out).starts_with("class String"),
+            "{name}: {}",
+            stdout(&out)
+        );
+    }
+    let out = quarz_in(&s.0, &["doc", "h.qz", "::to_s"]);
+    assert!(!out.status.success(), "{}", stdout(&out));
+    // A top-level `static def` is marked as a class's is.
+    s.write("st.qz", "# Top static.\nstatic def topf -> Int = 1\n");
+    let out = quarz_in(&s.0, &["doc", "st.qz"]);
+    assert!(
+        stdout(&out).contains("topf  (static) Top static."),
+        "{}",
+        stdout(&out)
+    );
+    let out = quarz_in(&s.0, &["doc", "--json", "st.qz"]);
+    assert!(
+        stdout(&out).contains("{\"static\": true, \"doc\": \"Top static."),
+        "{}",
+        stdout(&out)
+    );
+    let out = quarz_in(&s.0, &["doc", "g.qz", "--check"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let out = quarz_in(&s.0, &["test", "g.qz"]);
+    assert!(out.status.success(), "{}{}", stdout(&out), stderr(&out));
+}
+
+#[test]
+fn a_static_def_says_so() {
+    // A `static def` (docs/14) stays among the class methods, its
+    // signature saying `static`; here in a file the script requires.
+    let d = Dir::new();
+    d.write(
+        "lib.qz",
+        "# A base.\nclass Base\n  # Defines a counter.\n  static def self.counter(name: Symbol) -> Void\n    def_method(name) { 1 }\n  end\nend\n",
+    );
+    d.write(
+        "app.qz",
+        "require_relative \"lib\"\n# An item.\nclass Item < Base\n  counter :hits\nend\np Item.new.hits\n",
+    );
+    let out = quarz_in(&d.0, &["doc", "app.qz"]);
+    assert!(
+        stdout(&out).contains("  Base.counter  (static) Defines a counter.\n"),
+        "{}",
+        stdout(&out)
+    );
+    let out = quarz_in(&d.0, &["doc", "app.qz", "Base.counter"]);
+    assert!(
+        stdout(&out).starts_with("Base.counter  static def self.counter(name: Symbol) -> Void"),
+        "{}",
+        stdout(&out)
+    );
+    let out = quarz_in(&d.0, &["doc", "--json", "app.qz"]);
+    assert!(
+        stdout(&out).contains("\"static\": true, \"doc\": \"Defines a counter."),
+        "{}",
+        stdout(&out)
+    );
+    let site = d.0.join("site");
+    quarz_in(
+        &d.0,
+        &["doc", "--html", "-o", site.to_str().unwrap(), "app.qz"],
+    );
+    let page = std::fs::read_to_string(site.join("Base.html")).unwrap();
+    assert!(
+        page.contains("<h2>Class methods</h2>")
+            && page.contains("<code>static def self.counter(name: Symbol) -&gt; Void</code>"),
+        "{page}"
+    );
+}

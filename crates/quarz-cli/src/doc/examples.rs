@@ -39,6 +39,7 @@ pub(crate) fn gather(world: &World, files: &[SourceFile], own: &[u32]) -> Vec<Ex
     // place (docs/14 §5).
     let mut seen: Vec<(u32, &str)> = Vec::new();
     let mut decls: Vec<(String, &quarz_syntax::doc::Doc)> = Vec::new();
+    // (Not a script's functions' yet: an example's unit cannot call them.)
     for k in &api.constants {
         if let Some(d) = &k.doc {
             decls.push((k.path.clone(), d));
