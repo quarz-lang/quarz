@@ -1,0 +1,67 @@
+# A `case` evaluates its subject once: a later arm sees the value without
+# what the earlier unguarded arms matched, whatever the subject expression.
+class Box
+  @x: Int?
+
+  def initialize(x: Int?)
+    @x = x
+  end
+
+  def x -> Int? = @x
+
+  # A field read.
+  def show -> Int
+    case @x
+    in nil then 0
+    in v then v + 1
+    end
+  end
+end
+
+enum Shape
+  variant Dot
+  variant Circle(r: Int)
+  variant Square(side: Int)
+end
+
+def area(s: Shape) -> Int
+  case s
+  in Shape::Dot then 0
+  in Shape::Circle(r) then 3 * r * r
+  # `rest` is a `Shape::Square` here.
+  in rest then rest.side * rest.side
+  end
+end
+
+def label(v: Int | String | Nil) -> String
+  case v
+  in Int if v > 9 then "big"
+  # The guard may fail: `n` may still be an `Int`.
+  in n if n.nil? then "none"
+  in String then "a string"
+  in other then "int #{other.to_s}"
+  end
+end
+
+p Box.new(3).show
+p Box.new(nil).show
+b = Box.new(5)
+# A method call on another object.
+r = case b.x
+    in nil then -1
+    in n then n * 2
+    end
+p r
+p area(Shape::Dot)
+p area(Shape::Circle.new(2))
+p area(Shape::Square.new(3))
+p label(12)
+p label(nil)
+p label("s")
+p label(4)
+# A pair: `[nil, _]` takes no whole member away, so the binding keeps the type.
+pair: [Int?, Int] = [nil, 1]
+case pair
+in [nil, _] then p "no first"
+in [a, b] then p a
+end

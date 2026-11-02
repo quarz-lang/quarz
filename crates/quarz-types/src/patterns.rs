@@ -682,8 +682,13 @@ impl Checker {
                 }
                 match &pattern.kind {
                     PatternKind::Const(_) => true,
+                    // (Positionally, of a class whose fields are its own:
+                    // a subclass with more fields does not match.)
                     PatternKind::ConstArray(_, ap) => {
-                        ap.post.is_empty()
+                        matches!(
+                            self.world.class(*mid).kind,
+                            ClassKind::Data | ClassKind::Variant
+                        ) && ap.post.is_empty()
                             && ap
                                 .pre
                                 .iter()

@@ -4403,3 +4403,30 @@ fn an_extensions_fields_have_its_parameters() {
     );
     ok(&peek("String"));
 }
+
+#[test]
+fn a_case_arm_sees_the_subject_without_the_earlier_arms_matches() {
+    // Whatever the subject expression: a field read, a call.
+    ok("class B\n  @x: Int?\n  def initialize(@x: Int?); end\n  def s -> Int\n    case @x\n    in nil then 0\n    in v then v + 1\n    end\n  end\nend\np B.new(1).s");
+    ok("def g -> Int? = 1\nr = case g\n    in nil then 0\n    in v then v + 1\n    end\np r");
+    // A guard that may have assigned the subject variable: the variable
+    // is no longer narrowed by the later patterns (the binding still is).
+    err(
+        "def g(x0: Int?) -> Int\n  x = x0\n  case x\n  in nil then 0\n  in Int if (x = nil; false) then 1\n  in v then x + 1\n  end\nend\np g(3)",
+        "undefined method `+` for Nil",
+    );
+    err(
+        "def g(x0: Int?) -> Int\n  x = x0\n  case x\n  in nil then 0\n  in Int if (x = nil; false) then 1\n  in Int then x + 1\n  end\nend\np g(3)",
+        "undefined method `+` for Nil",
+    );
+    err(
+        "def g(x0: Int?) -> Int\n  x = x0\n  case x\n  in nil then 0\n  in ^((x = nil) || 5) then 1\n  in v then x + 1\n  end\nend\np g(3)",
+        "undefined method `+` for Nil",
+    );
+    // A positional pattern on a class a subclass with more fields extends
+    // takes nothing away.
+    err(
+        "class Base\n  @a: Int\n  def initialize(@a: Int); end\nend\nclass Sub < Base\n  @b: Int\n  def initialize(a: Int, @b: Int)\n    super(a)\n  end\nend\ndef f(x: Base | Int) -> Int\n  case x\n  in Base(a) then a\n  in n then n * 3\n  end\nend\np f(Sub.new(1, 2))",
+        "undefined method `*` for Base",
+    );
+}
