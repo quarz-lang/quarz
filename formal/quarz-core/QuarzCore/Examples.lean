@@ -442,4 +442,44 @@ def incr : Expr := .lambda [("x", [.int])] [] [.int] (.var "x" [.int])
 -- A procedures' class must take its parameters in and give its result out.
 #guard !(procProg incr [] [object, ⟨"Proc1", some 0, [], [.co, .co], [], [], .proc⟩]).check
 
+/-! `break` and `next` in `while` (design §17). The top level with
+locals `x: Int?` and `y: Int`; `b` a built-in `Bool`. -/
+
+def loopProg (body : Expr) (ret : Ty := [.int, .nil]) : Program :=
+  ⟨[object], [], ⟨0, "<main>", [], ret, none, [("x", [.int, .nil]), ("y", [.int])], body⟩, []⟩
+
+def someBool : Expr := .prim "b" [] [] [.bool]
+
+/-- `x = nil; while true; x = 1 if b; break if x; end; x`: after the loop
+`x` is what it is at the `break`, an `Int`. -/
+def breakJoin (ann : Ty) : Expr :=
+  .seq (.assign "x" .nil)
+    (.seq (.while .tru (.seq (.ite someBool (.assign "x" (.int 1)) .nil)
+        (.ite (.var "x" [.int, .nil]) .brk .nil)))
+      (.var "x" ann))
+
+#guard (loopProg (breakJoin [.int])).check
+-- (Without the `break`'s narrowing, `nil` too: `Int` is rejected.)
+#guard !(loopProg (.seq (.assign "x" .nil) (.seq (.while someBool (.assign "x" (.int 1)))
+  (.var "x" [.int])))).check
+
+-- `y = 1; while b; next if b; y = 2; end; y`: `y` stays an `Int`.
+#guard (loopProg (.seq (.assign "y" (.int 1)) (.seq (.while someBool
+  (.seq (.ite someBool .nxt .nil) (.assign "y" (.int 2)))) (.var "y" [.int])))).check
+
+-- `break` and `next` outside a loop, and in a block or `ensure` body in
+-- one: rejected.
+#guard !(loopProg .brk).check
+#guard !(loopProg .nxt).check
+#guard !(loopProg (.while someBool (.ensure .brk .nil))).check
+
+-- `while true` without a `break`: no value, so any result type.
+#guard (loopProg (.while .tru .nil) [.str]).check
+#guard !(loopProg (.while someBool .nil) [.str]).check
+
+-- A built-in returning `Nothing` ends the path: `x` is an `Int` after
+-- `exit if x.nil?`.
+#guard (loopProg (.seq (.assign "x" .nil) (.seq (.ite (.isNil (.var "x" [.int, .nil]))
+  (.prim "exit" [] [] []) .nil) (.var "x" [.int])))).check
+
 end QuarzCore.Examples

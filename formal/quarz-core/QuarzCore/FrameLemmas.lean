@@ -210,7 +210,7 @@ theorem find_nodup : ∀ {l : List (String × Ty)} {x : String} {t : Ty}, (l.map
 
 /-- A method's parameter: a local of its type (`wfMethod`). -/
 theorem decl_param {mt : Method} (h : P.wfMethod mt = true) {x : String} {t : Ty}
-    (hm : (x, t) ∈ mt.params) : (⟨P, mt, false, false⟩ : Ctx).decl x = some t := by
+    (hm : (x, t) ∈ mt.params) : (⟨P, mt, false, false, none⟩ : Ctx).decl x = some t := by
   simp only [Program.wfMethod, Bool.and_eq_true, decide_eq_true_eq, List.all_eq_true,
     beq_iff_eq] at h
   obtain ⟨⟨⟨⟨⟨_, hlen⟩, hnd⟩, hpre⟩, _⟩, _⟩ := h

@@ -432,6 +432,13 @@ structure Where where
   /-- Whether the current scope is a block's, a lambda's, an arm's or a
   `rescue` clause's (not the method's). -/
   inner : Bool := false
+  /-- In a `while`'s body, not in a block or a lambda in it, nor in a
+  `begin` with an `ensure` or a `retry` (design §17): `break` and `next`
+  are the model's there. -/
+  loopOk : Bool := false
+  /-- In statement position in that body (through statements and `if`
+  branches only): where the model's checker looks for the `break`s. -/
+  stmtPos : Bool := false
 
 /-- Converting a body, with the locals so far. -/
 abbrev CM := ReaderT Where (StateT Locals M)
@@ -465,7 +472,8 @@ def inScope {α} (k : CM α) : CM α := do
 /-- A block's or a lambda's body: its parameters hide a `rescue`
 clause's variable of their names. -/
 def hidingParams {α} (ps : List String) (k : CM α) : CM α :=
-  withReader (fun w => { w with renames := w.renames.filter fun (x, _) => !ps.contains x }) (inScope k)
+  withReader (fun w => { w with loopOk := false, renames := w.renames.filter fun (x, _) => !ps.contains x })
+    (inScope k)
 
 def positional (a : Json) : M Json := do
   match ← variant a with
@@ -963,6 +971,9 @@ mutual
 partial def expr (T : Tables) (e : Json) : CM Expr := do
   let id ← nat (← field e "id")
   let (k, v) ← variant (← field e "kind")
+  -- (Statement position goes on through `if` branches and `(a; b)` only.)
+  let sp := (← read).stmtPos
+  withReader (fun w => { w with stmtPos := sp && ["If", "Seq", "Break", "Next"].contains k }) do
   match k with
   | "Nil" => pure .nil
   | "True" => pure .tru
@@ -1109,8 +1120,18 @@ partial def expr (T : Tables) (e : Json) : CM Expr := do
     if (← T.nodeTy (← nat (← field v "id"))).any (fun a => match a with | .cls .. => true | _ => false) then
       throw "a ! of an object"
     pure (.not (← expr T v))
+  | "Break" | "Next" =>
+    -- Bare, in a `while`'s body (design §17); a `break` where the model's
+    -- checker sees it (statement position).
+    unless v == .null do throw s!"a {k} with a value"
+    let w ← read
+    unless w.loopOk do throw s!"a {k} outside a while's body"
+    if k == "Break" then
+      unless w.stmtPos do throw "a Break in an expression"
+      pure .brk
+    else pure .nxt
   | "If" =>
-    let c ← expr T (← field v "cond")
+    let c ← withReader (fun w => { w with stmtPos := false }) (expr T (← field v "cond"))
     let t ← body T (← arr (← field v "then"))
     let e ← match ← field v "els" with
       | .null => pure .nil
@@ -1118,9 +1139,10 @@ partial def expr (T : Tables) (e : Json) : CM Expr := do
     pure (.ite c t e)
   | "While" =>
     if (← field v "do_while") == .bool true then throw "a do-while loop"
-    let c ← expr T (← field v "cond")
+    let c ← withReader (fun w => { w with loopOk := false }) (expr T (← field v "cond"))
     let c := if (← field v "negate") == .bool true then .not c else c
-    pure (.while c (← body T (← arr (← field v "body"))))
+    pure (.while c (← withReader (fun w => { w with loopOk := true, stmtPos := true })
+      (body T (← arr (← field v "body")))))
   | "Return" => match v with
     | .null => pure (.ret .nil)
     | x => pure (.ret (← expr T x))
@@ -1187,7 +1209,10 @@ partial def body (T : Tables) (es : Array Json) : CM Expr := do
   -- bodies are not the scope's own.)
   let stmt (x : Json) (last : Bool) : CM Expr := withReader (fun w => { w with scopeTop := false }) do
     match ← variant (← field x "kind") with
-    | ("Begin", v) => if last then expr T x else beginE T (← nat (← field x "id")) v true
+    -- (A `begin`'s bodies are not in statement position: the model's
+    -- checker does not look for `break`s in them.)
+    | ("Begin", v) => if last then expr T x else
+      withReader (fun w => { w with stmtPos := false }) (beginE T (← nat (← field x "id")) v true)
     | _ => expr T x
   match es.toList with
   | [] => pure .nil
@@ -1201,7 +1226,7 @@ partial def body (T : Tables) (es : Array Json) : CM Expr := do
         let y ← str (← field v "name")
         if (← read).inner || (← read).outer.contains y then
           let id ← nat (← field e "id")
-          let value ← withReader (fun w => { w with scopeTop := false }) (expr T (← field v "value"))
+          let value ← withReader (fun w => { w with scopeTop := false, stmtPos := false }) (expr T (← field v "value"))
           let fresh := s!"{y}#d{id}"
           modify (addLocal · fresh (← T.nodeTy id))
           let decl := Expr.assign fresh value
@@ -1245,6 +1270,10 @@ partial def beginE (T : Tables) (id : Nat) (v : Json) (stmt : Bool) : CM Expr :=
   let w ← read
   if w.init.isSome then throw "a begin in initialize"
   if w.rcls.isNone && !w.top then throw "a begin in a default"
+  -- (No `break` or `next` out of a body an `ensure` follows, nor out of a
+  -- `begin` that retries, a loop of its own: design §17.)
+  if w.loopOk && ((← field v "ensure") != .null || (v.compress.splitOn "\"Retry\"").length > 1) then
+    return ← withReader (fun w => { w with loopOk := false }) (beginE T id v stmt)
   let rescues := (← arr (← field v "rescues")).toList
   let bodyJ := (← arr (← field v "body"))
   let bd ← body T bodyJ
@@ -1468,8 +1497,7 @@ partial def matchPattern (T : Tables) (id : Nat) (v : Json) : CM Expr := do
       | none => .seq c.post .nil)
   else
     -- (`in`'s value: its bindings after the test made where it is true,
-    -- as an `&&`; the model's `true` keeps the false side alive, which
-    -- only makes it stricter.)
+    -- as an `&&`.)
     return .seq pre (match c.test with
       | some t => .and t (.seq c.post .tru)
       | none => .seq c.post .tru)
@@ -1744,6 +1772,9 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
       let withBlock (env : List (Nat × Ty)) (e : Expr) : CM Expr := do
         if blk == .null then return e
         let .prim _ pargs pparams pret := e | throw "a built-in call"
+        -- (One returning `Nothing` is dead to the model, its block too,
+        -- which Rust runs.)
+        if pret.isEmpty then throw s!"a block given to built-in {name} returning Nothing"
         let ty ← match ← field m "block" with
           | .null => throw s!"a block given to built-in {name} that takes none"
           | sig =>
@@ -1842,9 +1873,6 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
             unless (← field p "default") == .bool true do throw "a built-in call leaving a parameter"
           (pos.take as.length).mapM fun p => do T.tyOrTop (← field p "type") env
       let ret ← T.tyOrTop (← field m "ret") env
-      -- (One that never returns, `exit`, `abort`: the model's call does
-      -- not end the path, the Rust checker's does.)
-      if ret.isEmpty then throw s!"built-in {name} returning Nothing"
       let (rs, rps) ← match recv with
         | some r => do
           let rt ← T.nodeTy (← nat (← field recvJ "id"))
@@ -2127,7 +2155,7 @@ def method (T : Tables) (owner : Nat) (m : Json) (d : Json) : M Method := do
       | .null => pure 0
       | t => pure (← T.tyClass t).1
     pure (some (params, sup))
-  let w : Where := ⟨T.qclass (← nat (← field m "owner")) == some 1, init, some (← nat (← field m "owner")), none, none, [], bproc, [], [], true, false⟩
+  let w : Where := ⟨T.qclass (← nat (← field m "owner")) == some 1, init, some (← nat (← field m "owner")), none, none, [], bproc, [], [], true, false, false, false⟩
   -- (An abstract method, `d` null: what the run time does when a call
   -- reaches it, raise a `NotImplementedError`.)
   let (bd, ls) ← if d == .null then do
@@ -2525,17 +2553,17 @@ def program (j : Json) : M Program := do
     match ← field k "value" with
     | .null => throw "a constant with no initializer"
     | v =>
-      let (bd, ls) ← ((expr T v).run ⟨true, none, none, none, none, [], none, [], [], false, false⟩).run []
+      let (bd, ls) ← ((expr T v).run ⟨true, none, none, none, none, [], none, [], [], false, false, false, false⟩).run []
       pure (⟨1, "const " ++ (← str (← field k "name")), [], ty, none, ls, bd⟩ : Method)
   let some mainUnit := units.back? | throw "no unit"
-  let (mainBody, mainLocals) ← ((body T (← arr (← field mainUnit "body"))).run ⟨true, none, none, none, none, [], none, [], [], true, false⟩).run []
+  let (mainBody, mainLocals) ← ((body T (← arr (← field mainUnit "body"))).run ⟨true, none, none, none, none, [], none, [], [], true, false, false, false⟩).run []
   let all : Ty := [.nil, .bool, .int, .str, .cls 0 []]
   -- A default that tests or loops, with a bounded parameter anywhere (it
   -- is checked in each inheriting class): out of range, as in `method`.
   let bounded ← user.anyM fun c => do
     (← arr (← field c "type_params")).anyM fun p => do pure !(← arr (← field p "bounds")).isEmpty
   let defaults ← fdefs.toList.mapM fun e => do
-    let (x, ls) ← ((expr T (← field e "value")).run ⟨false, none, none, none, none, [], none, [], [], false, false⟩).run []
+    let (x, ls) ← ((expr T (← field e "value")).run ⟨false, none, none, none, none, [], none, [], [], false, false, false, false⟩).run []
     unless ls.isEmpty do throw "a field default with locals"
     if bounded && narrows x then throw "a test in a default with a bounded parameter"
     pure x

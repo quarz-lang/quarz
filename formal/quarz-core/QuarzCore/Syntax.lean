@@ -69,6 +69,10 @@ inductive Expr where
   closed type (docs/01 §11): never, as the checker requires the arms to
   cover the type (it accepts the form only where control cannot get). -/
   | absurd
+  /-- `break` and `next` (no value) in a `while` (design §17): out of the
+  innermost loop, or on to its next pass. -/
+  | brk
+  | nxt
   /-- `e.nil?`, `e.is_a?(a)`, `e == nil`, `e != nil`, `e == true`,
   `e == false`: forms, not calls (`nil?` and `is_a?` cannot be
   redefined, e63bc57; `==` is the built-in one). `is_a?` names a class

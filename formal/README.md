@@ -30,7 +30,9 @@ A small language with Quarz's core and nothing else (`QuarzCore/`):
   `initialize`), calls (with an anonymous block, live
   during the call: `yield`), built-in calls
   (`prim`: opaque, typed by their declarations; one may raise, as the
-  oracle says), `if`, `while`, `return`,
+  oracle says; one returning `Nothing`, `exit`, ends the path), `if`,
+  `while` (with bare `break` and `next` in its body: design §17),
+  `return`,
   `raise e` (an exception: a value of the class named `Exception`, or any
   value in a program without it), `rescue body x handler els` (an
   exception the body raises in `x`, then the handler; otherwise `els`),
@@ -104,7 +106,13 @@ assigns before the test and the body, a field included: in `initialize`,
 a field set before the loop and assigned again in its body counts as
 unset after the loop, so `@x = 1; while c; @x = nil; ...; end` is
 rejected where the Rust checker accepts it (it widens the field to its
-declared type): stricter than the Rust checker, not unsound.
+declared type): stricter than the Rust checker, not unsound. A `next`
+holds at least what a pass starts with; after the loop holds what the
+test's false side and the `break`s hold (their join, which the checker
+finds through the body's statements and `if` branches and checks at
+each `break`); `while true` without a `break` has no value (`Nothing`).
+A `break` or `next` out of a block, a lambda or a body an `ensure`
+follows is rejected.
 The model
 accepts more than the Rust checker where soundness does not need the
 Rust rule: an immutable field that admits `nil` and that `initialize`
@@ -375,9 +383,7 @@ stricter, not unsound.
   `xs == nil` of an array narrows nothing (a class atom is not final),
   stricter than the Rust checker.
   `Kernel.name(args)` is the built-in function, as `name(args)` on the
-  implicit receiver is; a built-in that returns `Nothing` (`exit`,
-  `abort`) is out of range, as the model's call of it does not end the
-  path.
+  implicit receiver is.
   A top-level `def` is a function (docs/01 §2): it runs with its file's
   top-level object as `self`, wherever it is called from. The model
   has it as a method `name@fn`, copied into each class right below

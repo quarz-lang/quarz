@@ -178,6 +178,20 @@ partial def genExpr : Nat → Gen Expr
        (3, do return .seq (← sub) (← sub)),
        (4, do return .ite (← genTest d) (← sub) (← sub)),
        (1, do return .while (← genTest d) (← sub)),
+       -- `break` and `next` (design §17): where the loop ends, where the
+       -- next pass starts (outside a loop, rejected).
+       (1, do return .while (← genTest d) (.seq (← sub) (.ite (← genTest d) .brk (← sub)))),
+       (1, do return .while (← genTest d) (.seq (.ite (← genTest d) .nxt (← sub)) (← sub))),
+       (1, do return .seq (.while .tru (.seq (← sub) (.ite (← genTest d) .brk .nil))) (← sub)),
+       -- A read right after a loop left by its `break`s: what they say.
+       (2, do
+         let l := Expr.while (← genTest d) (.seq (← sub) (.ite (← genTest d) .brk (← sub)))
+         return .seq l (.var x narrowed)),
+       (2, do
+         let l := Expr.while .tru (.seq (← sub) (.ite (← genTest d) .brk (← sub)))
+         return .seq l (.var x narrowed)),
+       (1, pure .brk),
+       (1, pure .nxt),
        (2, do return .call (← sub) "get" []),
        (1, do return .call (← sub) "set" [.str "t"]),
        (1, do return .call (← sub) "put" [.int 1]),

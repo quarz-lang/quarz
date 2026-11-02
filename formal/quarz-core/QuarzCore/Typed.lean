@@ -14,8 +14,9 @@ mutual
 
 inductive Typed : Ctx → Env → Expr → Out → Prop where
   | nil : Typed c Γ .nil (.plain [.nil] Γ)
-  | tru : Typed c Γ .tru (.plain [.bool] Γ)
-  | fls : Typed c Γ .fls (.plain [.bool] Γ)
+  /-- `true` is never falsy, nor `false` truthy (`while true`, design §17). -/
+  | tru : Typed c Γ .tru ⟨[.bool], some Γ, some Γ, none⟩
+  | fls : Typed c Γ .fls ⟨[.bool], some Γ, none, some Γ⟩
   | int : Typed c Γ (.int k) (.plain [.int] Γ)
   | str : Typed c Γ (.str t) (.plain [.str] Γ)
   | flt : Typed c Γ (.flt t) (.plain [.float] Γ)
@@ -108,7 +109,7 @@ inductive Typed : Ctx → Env → Expr → Out → Prop where
       c.prog.resolve c.bounds o.ty m = some ms → ms.head? = some m0 → m0.block = some sig →
       (ms.all fun mt' => mt'.block == some sig && argsOk c tys mt') = true →
       blockParamsOk c ps sig = true →
-      Typed { c with inBlock := true } (blockEnv c Δ' ps sig body) body ob →
+      Typed { c with inBlock := true, loop := none } (blockEnv c Δ' ps sig body) body ob →
       ob.ty.le c.ct c.bounds sig.ret →
       Typed c Γ (.callBlk r m args ps body) (.plain (ms.flatMap (·.ret))
         (c.reset Δ' (ps ++ body.assigned ++ c.pinned)))
@@ -122,7 +123,7 @@ inductive Typed : Ctx → Env → Expr → Out → Prop where
       Typed c Γ (.yield args) .dead
   | prim : TypedArgs c Γ args (.live tys Δ) → tys.length = params.length →
       ((tys.zip params).all fun (t, u) => t.le c.ct c.bounds u) = true → c.builtinOk ret = true →
-      Typed c Γ (.prim f args params ret) (.plain ret (c.afterCall Δ))
+      Typed c Γ (.prim f args params ret) (primOut c ret Δ)
   | primDead : TypedArgs c Γ args .dead → Typed c Γ (.prim f args params ret) .dead
   | seq : Typed c Γ a oa → oa.out = some Δ → Typed c Δ b ob → Typed c Γ (.seq a b) ob
   | seqDead : Typed c Γ a oa → oa.out = none → Typed c Γ (.seq a b) .dead
@@ -134,9 +135,16 @@ inductive Typed : Ctx → Env → Expr → Out → Prop where
   un-narrowed; the body ends with at least `Γ0`. -/
   | whileNever : c.reset Γ (Expr.assigned (.while cnd b) ++ c.pinned) = Γ0 → Typed c Γ0 cnd oc →
       oc.tt = none → Typed c Γ (.while cnd b) ⟨[.nil], oc.ff, oc.ff, oc.ff⟩
+  /-- The body knows where each pass starts (`Γ0`: each `next` holds at
+  least that) and where its `break`s go on (`Ψ`: each holds at least
+  that); the loop ends where the test is false or where it breaks, with
+  no value if neither can happen (design §17). -/
   | while : c.reset Γ (Expr.assigned (.while cnd b) ++ c.pinned) = Γ0 → Typed c Γ0 cnd oc →
-      oc.tt = some Δ → Typed c Δ b ob → (ob.out.all (·.implies c.ct Γ0)) = true →
-      Typed c Γ (.while cnd b) ⟨[.nil], oc.ff, oc.ff, oc.ff⟩
+      oc.tt = some Δ → Typed { c with loop := some (Γ0, Ψ) } Δ b ob →
+      (ob.out.all (·.implies c.ct Γ0)) = true → ojoin oc.ff Ψ = g →
+      Typed c Γ (.while cnd b) ⟨if g.isSome then [.nil] else [], g, g, g⟩
+  | brk : c.loop = some (Γ0, some Ψ) → Γ.implies c.ct Ψ = true → Typed c Γ .brk .dead
+  | nxt : c.loop = some (Γ0, Ψ) → Γ.implies c.ct Γ0 = true → Typed c Γ .nxt .dead
   | ret : c.inBlock = false → Typed c Γ e o → o.ty.le c.ct c.bounds c.meth.ret →
       (!c.inInit || o.out.all (c.allSet ·)) = true → Typed c Γ (.ret e) .dead
   | raise : Typed c Γ e o → o.ty.le c.ct c.bounds [.cls c.prog.exn []] → Typed c Γ (.raise e) .dead
@@ -147,14 +155,15 @@ inductive Typed : Ctx → Env → Expr → Out → Prop where
       Typed c ((c.reset Γ (b.assigned ++ c.pinned)).set (.local x) [.cls c.prog.exn []]) h oh →
       Typed c Γ (.rescue b x h els) ⟨oe.ty ++ oh.ty, ojoin oe.out oh.out, ojoin oe.tt oh.tt,
         ojoin oe.ff oh.ff⟩
-  /-- `ensure`: from what held before the body, what it assigns and the
+  /-- `ensure`: from what held before the body (no `break` or `next` out
+  of it: the ensure clause would run after, design §17), what it assigns and the
   pinned locals un-narrowed; after it, those and what it assigns as at
   its end. -/
-  | ensure : (!c.inInit && !c.inDefault) = true → Typed c Γ b ob →
+  | ensure : (!c.inInit && !c.inDefault) = true → Typed { c with loop := none } Γ b ob →
       Typed c (c.reset Γ (b.assigned ++ c.pinned)) e oe → oe.out = some Δe →
       Typed c Γ (.ensure b e) ⟨ob.ty, ob.out.map (·.takeFrom Δe (e.assigned ++ c.pinned)),
         ob.out.map (·.takeFrom Δe (e.assigned ++ c.pinned)), ob.out.map (·.takeFrom Δe (e.assigned ++ c.pinned))⟩
-  | ensureDead : (!c.inInit && !c.inDefault) = true → Typed c Γ b ob →
+  | ensureDead : (!c.inInit && !c.inDefault) = true → Typed { c with loop := none } Γ b ob →
       Typed c (c.reset Γ (b.assigned ++ c.pinned)) e oe → oe.out = none → Typed c Γ (.ensure b e) .dead
   /-- The tests (design §2.1), each of a value: of a path, they narrow
   it (`testOut`). -/

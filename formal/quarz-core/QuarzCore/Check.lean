@@ -32,6 +32,19 @@ theorem check_typed : ∀ {c : Ctx} {Γ : Env} {e : Expr} {o : Out}, check c Γ 
     obtain ⟨oe, he, hle, rfl⟩ := h
     exact .raise (check_typed he) hle
   | c, Γ, .absurd, o, h => by simp [check] at h
+  | c, Γ, .brk, o, h => by
+    simp only [check, bind, Option.bind_eq_some_iff, guard_eq] at h
+    obtain ⟨⟨Γ0, Ψ⟩, hl, Ψ', hΨ, _, hg, h⟩ := h
+    subst hΨ
+    split at hg
+    · cases hg; cases h; exact .brk hl (by assumption)
+    · cases hg
+  | c, Γ, .nxt, o, h => by
+    simp only [check, bind, Option.bind_eq_some_iff, guard_eq] at h
+    obtain ⟨⟨Γ0, Ψ⟩, hl, _, hg, h⟩ := h
+    split at hg
+    · cases hg; cases h; exact .nxt hl (by assumption)
+    · cases hg
   | c, Γ, .rescue b x hd els, o, h => by
     simp [check] at h
     obtain ⟨hg, hx, ob, hb, oe, hoe, oh, hoh, rfl⟩ := h
@@ -180,7 +193,7 @@ theorem check_typed : ∀ {c : Ctx} {Γ : Env} {e : Expr} {o : Out}, check c Γ 
     · simp at h; subst h; exact .whileNever rfl (check_typed hc) (by assumption)
     · simp at h; obtain ⟨ob, hb, hall, rfl⟩ := h
       exact .while rfl (check_typed hc) (by assumption) (check_typed hb)
-        (by cases hob : ob.out <;> simp_all)
+        (by cases hob : ob.out <;> simp_all) rfl
   | c, Γ, .ret e, o, h => by
     simp [check] at h
     obtain ⟨hib, oe, he, hle, hall, rfl⟩ := h

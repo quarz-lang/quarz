@@ -98,6 +98,10 @@ inductive Result where
   | ok (v : Value) (s : Store)
   | raised (exc : Value) (s : Store)
   | returned (v : Value) (s : Store)
+  /-- Out of the innermost `while` (`break`), or on to its next pass
+  (`next`). -/
+  | broke (s : Store)
+  | nexted (s : Store)
   | timeout
   | stuck
   deriving Repr, Inhabited
@@ -169,6 +173,8 @@ def Result.bind (r : Result) (k : Value → Store → Result) : Result :=
   | .ok v s => k v s
   | .raised e s => .raised e s
   | .returned v s => .returned v s
+  | .broke s => .broke s
+  | .nexted s => .nexted s
   | .timeout => .timeout
   | .stuck => .stuck
 
@@ -231,6 +237,8 @@ def eval (P : Program) (orc : Oracle) : Nat → Frame → Store → Expr → Res
           | .obj l, some s =>
             match eval P orc n ⟨vars, fr.self, s.argsFor P.classes l mt.owner, none⟩ s mt.body with
             | .ok _ s | .returned _ s => .ok .nil s
+            -- (No `break` or `next` out of a method's body.)
+            | .broke _ | .nexted _ => .stuck
             | r => r
           | _, _ => .stuck
         | none => if vs.isEmpty then .ok .nil s else .stuck
@@ -266,8 +274,13 @@ def eval (P : Program) (orc : Oracle) : Nat → Frame → Store → Expr → Res
     | .ite c t e => (eval P orc n fr s c).bind fun v s =>
       if v.truthy then eval P orc n fr s t else eval P orc n fr s e
     | .while c b => (eval P orc n fr s c).bind fun v s =>
-      if v.truthy then (eval P orc n fr s b).bind fun _ s => eval P orc n fr s (.while c b)
+      if v.truthy then match eval P orc n fr s b with
+        | .ok _ s | .nexted s => eval P orc n fr s (.while c b)
+        | .broke s => .ok .nil s
+        | r => r
       else .ok .nil s
+    | .brk => .broke s
+    | .nxt => .nexted s
     | .ret e => match eval P orc n fr s e with
       | .ok v s => .returned v s
       | r => r
@@ -292,7 +305,7 @@ def eval (P : Program) (orc : Oracle) : Nat → Frame → Store → Expr → Res
             let (s, nv) := s.alloc own own
             match bindAll s nv ps vs with
             | some s => match eval P orc n ⟨nv ++ vars, me, sa, none⟩ s body with
-              | .returned _ _ => .stuck
+              | .returned _ _ | .broke _ | .nexted _ => .stuck
               | r => r
             | none => .stuck
           | none => .stuck
@@ -307,6 +320,8 @@ def eval (P : Program) (orc : Oracle) : Nat → Frame → Store → Expr → Res
       | .ok v s1 => (eval P orc n fr s1 e).bind fun _ s2 => .ok v s2
       | .returned v s1 => (eval P orc n fr s1 e).bind fun _ s2 => .returned v s2
       | .raised v s1 => (eval P orc n fr s1 e).bind fun _ s2 => .raised v s2
+      | .broke s1 => (eval P orc n fr s1 e).bind fun _ s2 => .broke s2
+      | .nexted s1 => (eval P orc n fr s1 e).bind fun _ s2 => .nexted s2
       | r => r
     | .absurd => .stuck
     | .isNil e => (eval P orc n fr s e).bind fun v s => .ok (.bool (v == .nil)) s
@@ -351,6 +366,7 @@ def send (P : Program) (orc : Oracle) : Nat → Store → Value → String → L
         | some s =>
           match eval P orc n ⟨vars, recv, s.argsFor P.classes l mt.owner, blk⟩ s mt.body with
           | .ok v s | .returned v s => .ok v s
+          | .broke _ | .nexted _ => .stuck
           | r => r
         | none => .stuck
       | none => .stuck
@@ -363,7 +379,7 @@ def runBlock (P : Program) (orc : Oracle) : Nat → Store → Closure → List V
   | n + 1, s, .mk vars self selfArgs outer ps body, vs =>
     match bindAll s vars ps vs with
     | some s => match eval P orc n ⟨vars, self, selfArgs, outer⟩ s body with
-      | .returned _ _ => .stuck
+      | .returned _ _ | .broke _ | .nexted _ => .stuck
       | r => r
     | none => .stuck
 
@@ -387,10 +403,11 @@ def construct (P : Program) (orc : Oracle) : Nat → Store → Nat → List Ty �
         | some s =>
           match eval P orc n ⟨vars, .obj l, s.argsFor P.classes l mt.owner, none⟩ s mt.body with
           | .ok _ s | .returned _ s => .ok (.obj l) s
+          | .broke _ | .nexted _ => .stuck
           | r => r
         | none => .stuck
       | none => if vs.isEmpty then .ok (.obj l) s else .stuck
-    | .returned _ _ => .stuck
+    | .returned _ _ | .broke _ | .nexted _ => .stuck
     | r => r
 
 /-- The defaults of the fields `fs` (with their indices) of object `l`,
@@ -426,6 +443,7 @@ def run (P : Program) (orc : Oracle) (fuel : Nat) : Result :=
     P.main.body.procAssigned
   match eval P orc fuel ⟨vars, .obj 0, [], none⟩ s P.main.body with
   | .returned v s => .ok v s
+  | .broke _ | .nexted _ => .stuck
   | r => r
 
 end QuarzCore

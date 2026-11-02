@@ -30,6 +30,10 @@ def ArgsPost (c : Ctx) (ao : ArgsOut) (fr : Frame) (ws : List (Ctx × Env × Out
       (c.inInit = true → (s'.typeOf fr.self).isSome)
   | .other (.raised v s') => ∃ Λ', WfStore P Λ' s' ∧ Ext P W (initW c fr) Λ Λ' s s' ∧
       FrameOK P c Λ' fr s' ws ∧ s'.hasTy P v [.cls P.exn []]
+  | .other (.broke s') => ∃ Λ', WfStore P Λ' s' ∧ Ext P W (initW c fr) Λ Λ' s s' ∧
+      FrameOK P c Λ' fr s' ws ∧ ∃ Γ0 Ψ, c.loop = some (Γ0, some Ψ) ∧ Sat P c Ψ fr s'
+  | .other (.nexted s') => ∃ Λ', WfStore P Λ' s' ∧ Ext P W (initW c fr) Λ Λ' s s' ∧
+      FrameOK P c Λ' fr s' ws ∧ ∃ Γ0 Ψ, c.loop = some (Γ0, Ψ) ∧ Sat P c Γ0 fr s'
   | .other _ => True
 
 /-- The writes of evaluating `es` in `fr`. -/
@@ -62,7 +66,7 @@ def SendPost (ret : Ty) (sig : Option BlockSig) (blk : Option Closure) (w : List
       BlkGiven P Λ' s' w sig blk
   | .raised v s' => ∃ Λ', WfStore P Λ' s' ∧ Ext P (blkW blk) (fun _ => False) Λ Λ' s s' ∧
       s'.hasTy P v [.cls P.exn []] ∧ BlkGiven P Λ' s' w sig blk
-  | .stuck | .returned _ _ => False
+  | .stuck | .returned _ _ | .broke _ | .nexted _ => False
   | _ => True
 
 /-- A call on a receiver seen as `k[as]` (a class above its own, given
@@ -99,7 +103,7 @@ def ConstructPost (k : Nat) (targs : List Ty) (Λ : List Ty) (s : Store) : Resul
       s'.hasTy P v [.cls k targs]
   | .raised v s' => ∃ Λ', WfStore P Λ' s' ∧ Ext P (fun _ => False) (fun _ => False) Λ Λ' s s' ∧
       s'.hasTy P v [.cls P.exn []]
-  | .stuck | .returned _ _ => False
+  | .stuck | .returned _ _ | .broke _ | .nexted _ => False
   | _ => True
 
 /-- `C[targs].new(args)`, the arguments closed and as many as `C`'s
@@ -144,6 +148,58 @@ theorem Post.extend {c : Ctx} {o : Out} {fr : Frame} {ws : List (Ctx × Env × O
     obtain ⟨Λ', a, e, f, g⟩ := h
     exact ⟨Λ', a, (he.trans e hw).mono (fun l hl => hl.elim (h1 l) (h2 l)) (fun l hl => hl.elim id id),
       f, g⟩
+  | broke s' =>
+    obtain ⟨Λ', a, e, f, g⟩ := h
+    exact ⟨Λ', a, (he.trans e hw).mono (fun l hl => hl.elim (h1 l) (h2 l)) (fun l hl => hl.elim id id),
+      f, g⟩
+  | nexted s' =>
+    obtain ⟨Λ', a, e, f, g⟩ := h
+    exact ⟨Λ', a, (he.trans e hw).mono (fun l hl => hl.elim (h1 l) (h2 l)) (fun l hl => hl.elim id id),
+      f, g⟩
+  | timeout => trivial
+  | stuck => exact h
+
+/-! The loop a context is in (`Ctx.loop`) is not a fact about the frame:
+the frame's invariants hold in the context with another. -/
+
+theorem FrameCore.withLoop {c : Ctx} {Λ : List Ty} {vars : List (String × Nat)} {me : Value}
+    {sa : List Ty} {s : Store} (l : Option (Env × Option Env)) (h : FrameCore P c Λ vars me sa s) :
+    FrameCore P { c with loop := l } Λ vars me sa s :=
+  ⟨h.decls, h.inj, h.inStore, h.self, h.selfInit, h.selfObj, h.closed, h.bounded, h.pins, h.pinsIn⟩
+
+theorem FrameOK.withLoop {c : Ctx} {Λ : List Ty} {fr : Frame} {s : Store} {ws : List (Ctx × Env × Out)}
+    (l : Option (Env × Option Env)) (h : FrameOK P c Λ fr s ws) : FrameOK P { c with loop := l } Λ fr s ws :=
+  ⟨h.core.withLoop l, h.chain, h.above, h.chainIn, h.initBlk⟩
+
+theorem FrameCore.ofLoop {c : Ctx} {Λ : List Ty} {vars : List (String × Nat)} {me : Value}
+    {sa : List Ty} {s : Store} {l : Option (Env × Option Env)} (h : FrameCore P { c with loop := l } Λ vars me sa s) :
+    FrameCore P c Λ vars me sa s :=
+  ⟨h.decls, h.inj, h.inStore, h.self, h.selfInit, h.selfObj, h.closed, h.bounded, h.pins, h.pinsIn⟩
+
+theorem FrameOK.ofLoop {c : Ctx} {Λ : List Ty} {fr : Frame} {s : Store} {ws : List (Ctx × Env × Out)}
+    {l : Option (Env × Option Env)} (h : FrameOK P { c with loop := l } Λ fr s ws) : FrameOK P c Λ fr s ws :=
+  ⟨h.core.ofLoop, h.chain, h.above, h.chainIn, h.initBlk⟩
+
+/-- What a body checked outside any loop gives, in the context around it. -/
+theorem Post.ofNoLoop {c : Ctx} {o : Out} {fr : Frame} {ws : List (Ctx × Env × Out)} {Λ : List Ty}
+    {s : Store} {W : Nat → Prop} {r : Result} (h : Post P { c with loop := none } o fr ws Λ s W r) :
+    Post P c o fr ws Λ s W r := by
+  cases r with
+  | ok v s' =>
+    obtain ⟨Λ', a, e, f, g, i, j, k⟩ := h
+    exact ⟨Λ', a, e, f.ofLoop, g, i, j, k⟩
+  | returned v s' =>
+    obtain ⟨Λ', a, e, f, g, i⟩ := h
+    exact ⟨Λ', a, e, f.ofLoop, g, i⟩
+  | raised v s' =>
+    obtain ⟨Λ', a, e, f, g⟩ := h
+    exact ⟨Λ', a, e, f.ofLoop, g⟩
+  | broke s' =>
+    obtain ⟨_, _, _, _, _, _, hl, _⟩ := h
+    simp at hl
+  | nexted s' =>
+    obtain ⟨_, _, _, _, _, _, hl, _⟩ := h
+    simp at hl
   | timeout => trivial
   | stuck => exact h
 
@@ -165,6 +221,12 @@ theorem Post.bind {c : Ctx} {o o' : Out} {fr : Frame} {ws : List (Ctx × Env × 
     obtain ⟨Λ', a, e, f, g, i⟩ := h
     exact ⟨Λ', a, e.mono hW (fun _ h => h), f, g, i⟩
   | raised v s' =>
+    obtain ⟨Λ', a, e, f, g⟩ := h
+    exact ⟨Λ', a, e.mono hW (fun _ h => h), f, g⟩
+  | broke s' =>
+    obtain ⟨Λ', a, e, f, g⟩ := h
+    exact ⟨Λ', a, e.mono hW (fun _ h => h), f, g⟩
+  | nexted s' =>
     obtain ⟨Λ', a, e, f, g⟩ := h
     exact ⟨Λ', a, e.mono hW (fun _ h => h), f, g⟩
   | timeout => trivial
@@ -189,6 +251,12 @@ theorem Post.bindEq {c : Ctx} {o o' : Out} {fr : Frame} {ws : List (Ctx × Env �
     obtain ⟨Λ', a, e, f, g, i⟩ := h
     exact ⟨Λ', a, e.mono hW (fun _ h => h), f, g, i⟩
   | raised v s' =>
+    obtain ⟨Λ', a, e, f, g⟩ := h
+    exact ⟨Λ', a, e.mono hW (fun _ h => h), f, g⟩
+  | broke s' =>
+    obtain ⟨Λ', a, e, f, g⟩ := h
+    exact ⟨Λ', a, e.mono hW (fun _ h => h), f, g⟩
+  | nexted s' =>
     obtain ⟨Λ', a, e, f, g⟩ := h
     exact ⟨Λ', a, e.mono hW (fun _ h => h), f, g⟩
   | timeout => trivial
