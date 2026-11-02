@@ -1,0 +1,38 @@
+# Parameters with defaults: a call leaving them runs its receiver's class's
+# defaults (an override's are its own), evaluated in the callee (earlier
+# parameters, fields); `initialize`'s literal defaults at `new`.
+class Greeter
+  def greet(name: String, punct: String = "!") -> String = name + punct
+end
+class Loud < Greeter
+  def greet(name: String, punct: String = "!!!") -> String = name.upcase + punct
+end
+g: Greeter = Loud.new
+p g.greet("a")
+p Greeter.new.greet("b", "?")
+def pad(s: String, width: Int = 4, fill: String = " ") -> String
+  r = s
+  while r.size < width
+    r = fill + r
+  end
+  r
+end
+class Counter
+  @n: Int
+  def initialize(n: Int)
+    @n = n
+  end
+  def step(by: Int = @n) -> Int = @n + by
+end
+p pad("a"), pad("b", 3), pad("c", 2, "*")
+p Counter.new(5).step, Counter.new(5).step(1)
+class Pt
+  @x: Int
+  @y: Int
+  def initialize(x: Int, y: Int = 7)
+    @x = x
+    @y = y
+  end
+  def sum -> Int = @x + @y
+end
+p Pt.new(1).sum, Pt.new(1, 2).sum

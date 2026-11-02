@@ -465,6 +465,13 @@ stricter, not unsound.
   Closures' stage C2 (pinned locals un-narrowed only once a lambda
   assigning them is made, design §15) is deferred until a program needs
   it: none in the corpus, the fixtures or the examples does.
+  A parameter with a default: a call leaving it calls its callee's
+  class's wrapper of that arity (`name@d<k>`), which gives the rest
+  their defaults (evaluated in the callee, the earlier parameters set)
+  and calls the method, so the receiver's class's defaults are used (an
+  override's are its own, docs/01 §3); `initialize`'s literal defaults
+  are given at `new`. Out of range: other defaults of `initialize`, a
+  `super` leaving parameters, defaults in a method with a block.
   `x.m!` that the checker resolved to `m` (the sugar for `x = x.m`,
   docs/01 §10, on a local) is that assignment.
   What the translator takes from the Rust checker as given, the model
