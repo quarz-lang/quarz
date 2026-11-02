@@ -321,7 +321,7 @@ a subclass overriding one overload leaves the others to the
 superclass's), so an override, of the same signature, has the same name.
 The checker's choice among overloads is taken as given (the call's
 method), the model checks the chosen signature. -/
-def Tables.modelName (T : Tables) (m : Json) : M String := do
+def Tables.methodName (T : Tables) (m : Json) : M String := do
   let name ← str (← field m "name")
   -- An extension's method on a program's class (stage 6c, design §16.5):
   -- a name of its own, which nothing overrides nor hides, so a call the
@@ -341,6 +341,16 @@ def Tables.modelName (T : Tables) (m : Json) : M String := do
     match keys.idxOf? key with
     | some i => pure s!"{name}#{i}"
     | none => throw s!"an overload of {name} not the program's"
+
+/-- The model's name of a program's method (`methodName`); a top-level
+`def`, a function (docs/01 §2), is a method of a name of its own,
+`name@fn`, copied into each class right below `Object` (`program`), so a
+call the checker resolved to it runs it from any class, statically, as Quarz's does (with the file's top-level object as
+`self`, which its body may not observe: `method`, `call`). -/
+def Tables.modelName (T : Tables) (m : Json) : M String := do
+  let base ← T.methodName m
+  if T.qclass (← nat (← field m "owner")) == some 1 then return s!"{base}@fn"
+  pure base
 
 /-- The `initialize` the model's `new` of Rust class `id` runs: the
 nearest one, in the class or a superclass (`Program.lookup`), by Rust
@@ -425,6 +435,11 @@ structure Where where
 
 /-- Converting a body, with the locals so far. -/
 abbrev CM := ReaderT Where (StateT Locals M)
+
+/-- Whether code being converted is a top-level `def`'s (its class is a
+file's top-level one). -/
+def Tables.inFunction (T : Tables) : CM Bool := do
+  pure ((← read).rcls.any fun c => T.qclass c == some 1)
 
 /-- The model's name of a local: a `rescue` clause's variable is its own. -/
 def localName (x : String) : CM String := do
@@ -952,7 +967,11 @@ partial def expr (T : Tables) (e : Json) : CM Expr := do
   | "Nil" => pure .nil
   | "True" => pure .tru
   | "False" => pure .fls
-  | "SelfRef" => pure .self
+  | "SelfRef" =>
+    -- (In a function, `self` is the file's top-level object, the model's
+    -- the caller's.)
+    if (← T.inFunction) then throw "self in a function"
+    pure .self
   -- (Which extensions a `using` makes active is the checker's, taken as
   -- given in the calls it resolved: the statement itself does nothing.)
   | "Using" => pure .nil
@@ -1633,6 +1652,11 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
     return .new q targs (← args.mapM (expr T))
   | "method" =>
     let m ← T.method (← nat (← field target "method"))
+    -- (In a function, a method of `self` is the file's top-level
+    -- object's, `Object`'s: the model's would run on the caller's.)
+    if recv.isNone && (← T.inFunction) then
+      let o ← nat (← field m "owner")
+      unless T.qclass o == some 1 || o == T.kernelId do throw s!"{name}, a method of self, in a function"
     let native := (← field m "native") == .bool true
     -- On an array: `Array`'s methods and those of the modules it includes
     -- (`Enumerable[T]`), native or written in Quarz, are built-in calls
@@ -1836,8 +1860,11 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
     if name != rawName then
       if let some rj := (recvJ.getObjVal? "id").toOption then
         if (← T.nodeTy (← nat rj)).length > 1 then throw s!"an overload of {rawName} on a union receiver"
-    if recv.isNone && T.qclass (← nat (← field m "owner")) == some 1 && !(← read).top then
-      throw "a top-level method called from a class"
+    -- (A function called in `initialize` or a field's default: the
+    -- model's call is a use of the object, Quarz's is not, docs/01 §3.)
+    if T.qclass (← nat (← field m "owner")) == some 1 then
+      let w ← read
+      if w.init.isSome || (w.rcls.isNone && !w.top) then throw s!"a function {rawName} called in initialize or a field's default"
     let r := recv.getD .self
     -- A named block parameter: the method takes a procedure (its last
     -- parameter), the block given made a lambda.
@@ -2100,7 +2127,7 @@ def method (T : Tables) (owner : Nat) (m : Json) (d : Json) : M Method := do
       | .null => pure 0
       | t => pure (← T.tyClass t).1
     pure (some (params, sup))
-  let w : Where := ⟨owner == 1, init, some (← nat (← field m "owner")), none, none, [], bproc, [], [], true, false⟩
+  let w : Where := ⟨T.qclass (← nat (← field m "owner")) == some 1, init, some (← nat (← field m "owner")), none, none, [], bproc, [], [], true, false⟩
   -- (An abstract method, `d` null: what the run time does when a call
   -- reaches it, raise a `NotImplementedError`.)
   let (bd, ls) ← if d == .null then do
@@ -2459,6 +2486,16 @@ def program (j : Json) : M Program := do
       above := (k, selfArgs)
     pure (copies ++ [⟨← str (← field c "name"), some above.1, fields, params, above.2, pbs.map (·.2), kind⟩])
   let qclasses := qclasses.flatten
+  let allClasses : ClassTable := ⟨"Object", none, [], [], [], [], .cls⟩ :: ⟨"<main>", some 0, [], [], [], [], .cls⟩ ::
+      ((List.range (procMax + 1)).map procClassOf ++ [⟨"Array", some 0, [], [.co], [], [], .builtin⟩] ++
+        excClasses ++ qclasses)
+  -- The classes right below `Object` whose objects may be a method's
+  -- `self`: each holds a copy of every function (`modelName`), which a
+  -- call reaches from any class (the model's `Object` holds the value
+  -- classes' values, without methods).
+  let roots := (List.range allClasses.length).filter fun i => match allClasses[i]? with
+    | some c => i ≥ 1 && c.super == some 0 && !(match c.kind with | .proc | .builtin => true | _ => false)
+    | none => false
   let methods ← T.defs.toList.flatMapM fun d => do
     let m ← T.method (← nat (← field d "method"))
     -- (No definition: an abstract method.)
@@ -2474,6 +2511,7 @@ def program (j : Json) : M Program := do
       if (← str (← field m "name")) == "initialize" then throw "an initialize in a module"
       return ← copies.mapM fun (k, _) => method T k m def_
     match qclass owner with
+    | some 1 => roots.mapM fun k => method T k m def_
     | some k => pure [← method T k m def_]
     | none => throw "a method of a class out of range"
   -- Each constant's initializer, checked as a method of the top level's
@@ -2508,10 +2546,7 @@ def program (j : Json) : M Program := do
     | some q => if q ≥ 2 && !excIds.contains o then accessor T q m else pure none
     | none => pure none
   let own := methods ++ accessors
-  let P : Program := ⟨⟨"Object", none, [], [], [], [], .cls⟩ :: ⟨"<main>", some 0, [], [], [], [], .cls⟩ ::
-      ((List.range (procMax + 1)).map procClassOf ++ [⟨"Array", some 0, [], [.co], [], [], .builtin⟩] ++
-        excClasses ++ qclasses),
-    own ++ consts,
+  let P : Program := ⟨allClasses, own ++ consts,
     ⟨1, "<main>", [], all, none, mainLocals, mainBody⟩, defaults⟩
   for m in P.main :: P.methods do localsInRange (m.params.map (·.1)) m.body
   -- The runtime takes a subclass's method for an override of an

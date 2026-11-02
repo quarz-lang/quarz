@@ -25,8 +25,15 @@ def main (args : List String) : IO UInt32 := do
     else
       -- Which method the model rejects.
       let bad := (P.main :: P.methods).filter fun mt => !(P.wfMethod mt && P.checkMethod mt)
-      -- (An extension's method by its own name: `name@ext<k>`.)
-      IO.println s!"disagrees: {bad.map fun mt => (mt.name.splitOn "@ext").headD mt.name}"
+      -- (An extension's method or a function by its own name, the
+      -- suffix after the last `@`, `name@ext<k>` or `name@fn`, dropped (a
+      -- function once, not per copy); `-@` is a name.)
+      let shown (n : String) : String :=
+        match (n.splitOn "@").reverse with
+        | last :: rest@(_ :: _) =>
+          if last == "fn" || last.startsWith "ext" then "@".intercalate rest.reverse else n
+        | _ => n
+      IO.println s!"disagrees: {(bad.map fun mt => shown mt.name).eraseDups}"
       if args.contains "--dump" then
         for mt in bad do IO.println (repr mt)
       return 1
