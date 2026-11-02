@@ -13042,6 +13042,7 @@ impl Checker {
         };
         let before = self.snapshot();
         let mut remaining: Vec<Type> = self.expand_members(&st_class);
+        let members = remaining.len();
         let mut result = Type::Nothing;
         let mut snaps = Vec::new();
         let saved_base = self.env.pattern_base;
@@ -13053,15 +13054,24 @@ impl Checker {
         // Fields a failed guard changed, with what it left them (none:
         // their declared types).
         let mut ivars_assigned: Vec<(String, Option<Type>)> = Vec::new();
+        // Whether an earlier arm's guard may have assigned the subject
+        // variable: it no longer holds the value matched, so is not
+        // narrowed by the later patterns.
+        let mut subject_rebound = false;
         for arm in arms {
             self.restore(&before);
             self.widen_rebound(&rebound);
             self.widen_ivars(&ivars_assigned);
             let at_arm = self.snapshot();
-            let on = if names_class(&arm.pattern) {
-                &st_class
-            } else {
-                &st
+            // The subject is evaluated once: an arm sees its value as what
+            // the earlier unguarded arms left (`in nil` then `in v` binds
+            // `v` without `nil`), whatever the subject expression.
+            let left = (remaining.len() < members && !remaining.is_empty())
+                .then(|| Type::union_of(remaining.clone()));
+            let on = match &left {
+                Some(t) if names_class(&arm.pattern) || st_class == st => t,
+                _ if names_class(&arm.pattern) => &st_class,
+                _ => &st,
             };
             // The names the pattern binds are the arm's own, as a block's
             // parameters (docs/01 §11): fresh, shadowing outer locals of
@@ -13071,10 +13081,15 @@ impl Checker {
             let narrowed = self.check_pattern(&arm.pattern, on);
             self.env.arm_local = saved_arm_local;
             let own_to = self.env.frames.last().unwrap().vars.len();
+            // (A pinned expression in the pattern may assign it too.)
+            for (_, _, name, _, _) in self.rebound_since(&at_arm) {
+                subject_rebound |= key == Some(VarKey::Local(name));
+            }
             // (Where the pattern binds the subject's name, `in
             // L::Cons(_, l)` on `l`, that name is the binding in the arm.)
             match &key {
                 Some(VarKey::Local(n)) if arm.pattern.binds(n) => {}
+                _ if subject_rebound => {}
                 Some(k) => self.narrow_subject(k, Some(narrowed)),
                 None => {}
             }
@@ -13087,11 +13102,13 @@ impl Checker {
                 // or assigned too.)
                 let at_guard = self.snapshot();
                 self.apply_facts(if g.negate { &ft } else { &ff });
-                for (fi, slot, _, _, now) in self.rebound_since(&at_arm) {
+                for (fi, slot, name, _, now) in self.rebound_since(&at_arm) {
+                    subject_rebound |= key == Some(VarKey::Local(name));
                     rebound.push((fi, slot, now));
                 }
                 for n in self.ivars_changed_since(&at_arm) {
                     let t = self.env.ivar_narrow.get(&n).cloned();
+                    subject_rebound |= key.as_ref() == Some(&VarKey::IVar(n.clone()));
                     ivars_assigned.push((n, t));
                 }
                 self.restore(&at_guard);
@@ -13120,7 +13137,7 @@ impl Checker {
         self.widen_ivars(&ivars_assigned);
         let et = match els {
             Some(els) => {
-                if let Some(k) = &key {
+                if let (Some(k), false) = (&key, subject_rebound) {
                     let rem = Type::union_of(remaining.clone());
                     self.narrow_subject(k, Some(rem));
                 }
