@@ -1,0 +1,22 @@
+# Class methods and class objects of a program's classes (design §19): a
+# class method runs on the class it is called on (its implicit calls and
+# `new` are that class's), through a `Type[Shape]` too; `x.class.name`.
+class Shape
+  def self.label -> String = "shape"
+  def self.describe -> String = "a " + label
+  def self.build -> Self = new
+  def area -> Int = 0
+end
+class Circle < Shape
+  def self.label -> String = "circle"
+  def area -> Int = 3
+end
+p Circle.describe
+k: Type[Shape] = Circle
+p k.describe
+c = Circle.new
+p c.class.name
+q = Shape.build
+p q.area
+def make(t: Type[Shape]) -> String = t.describe
+p make(Circle)

@@ -505,6 +505,22 @@ stricter, not unsound.
   its parameters is unknown (a union), `==`/`!=` against `nil`, `true` or
   `false` of a built-in class's value (the Rust checker narrows it as a
   final class's), and `require_relative`.
+  A program's class without type parameters has a metaclass in the
+  model (design §19): the class of its class object, below its
+  superclass's, its class methods its methods, so a class method runs
+  on the class it is called on (its implicit calls go to that class's
+  class methods, through a `Type[C]` value too) by the model's dispatch.
+  A class written as a value is a new object of its metaclass (class
+  values have no state; their identity is not compared); `Type[C]` is
+  the metaclass's type, `Class` (what `x.class` is) any value, whose
+  methods are built-in calls. `new` in a class method makes the
+  receiver's class's object through the metaclasses' `new@meta`, each
+  class's taking its `initialize`'s parameters (a subclass's of other
+  parameters is out of range). Out of range there: a generic class's
+  class methods and objects, a class method returning `Self` called on
+  a subclass (the model's result is the method's class's instance), an
+  `extend`ed module's methods on a class object, and an extension's
+  class methods.
   A disagreement is the Rust checker narrowing further than the rules
   allow, or the model being stricter: either is looked at. The methods
   `attr_reader` and `attr_writer` make are methods of the model; another
