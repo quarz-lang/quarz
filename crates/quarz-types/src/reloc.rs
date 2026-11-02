@@ -181,6 +181,12 @@ impl Remap for Output {
                 method(m, x);
             }
         });
+        values(&mut self.op_getter_tables, |(t, _)| {
+            for (ty, x) in t {
+                ty.remap(m);
+                method(m, x);
+            }
+        });
         values(&mut self.interp_to_s, |t| {
             for (c, x) in t {
                 class(m, c);

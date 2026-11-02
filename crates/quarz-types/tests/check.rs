@@ -2393,6 +2393,18 @@ fn calls_a_class_test_cannot_choose_are_errors() {
         "class A\n  def self.make -> String = \"A\"\nend\nclass B < A\n  def self.make -> String = \"B\"\nend\nclass C < A\n  def self.make -> String = \"C\"\nend\nclass D\n  def self.make -> String = \"D\"\nend\ndef pick(i: Int) -> Array[Array[Type[B] | Type[C]]] | Array[Array[Type[D]]] = i > 0 ? [[B, C]] : [[D]]\npick(1).each { |xs| p xs.map { |c| c.make } }",
         "cannot tell at run time which `make` to call for Type[B] and Type[C]",
     );
+    // A compound assignment on a union: refused as `o.w = o.w + 1` is,
+    // where a member has no writer.
+    err(
+        "class A\n  var @w: Int = 1\n  def w -> Int = @w\n  def w=(v: Int) -> Int\n    @w = v\n  end\nend\nclass B\n  def w -> Int = 2\nend\ndef pick(i: Int) -> A | B = i > 0 ? A.new : B.new\no = pick(1)\no.w += 1",
+        "undefined method `w=` for A | B",
+    );
+    // `o.c ||= v` through the value's own `||` on a union whose writers
+    // differ: the node's record cannot serve both (refused, not crashed).
+    err(
+        "class Cond\n  def ||(&rhs: () -> Cond) -> Cond = rhs.call\nend\nclass A\n  var @c: Cond = Cond.new\n  def c -> Cond = @c\n  def c=(x: Cond) -> Cond\n    @c = x\n  end\nend\nclass B\n  var @c: Cond = Cond.new\n  def c -> Cond = @c\n  def c=(x: Cond) -> Cond\n    @c = x\n  end\nend\ndef pick(i: Int) -> A | B = i > 0 ? A.new : B.new\no = pick(1)\no.c ||= Cond.new",
+        "cannot tell at run time which `c=` to call for A | B after the value's own logical operator",
+    );
     // A compound assignment's reader from two extensions.
     err(
         "class A\nend\nclass B\nend\nextension A\n  def w -> Int = 1\n  def w=(x: Int) -> Int = x\nend\nextension B\n  def w -> Int = 2\n  def w=(x: Int) -> Int = x\nend\ndef pk(i: Int) -> Array[A] | Array[B] = i > 0 ? [A.new] : [B.new]\npk(1).each { |o| o.w += 1 }",
