@@ -239,3 +239,16 @@ fn block_and_lambda_parameters_take_no_default() {
     );
     assert!(!out.contains("expected"), "{out}");
 }
+
+/// A positional argument after a keyword argument is a syntax error: it
+/// would bind to the keyword's parameter, dropping the keyword's value.
+#[test]
+fn positional_after_keyword() {
+    let out = common::diagnostics(
+        "def g(a: Int, b: String = \"d\") -> String = \"#{a} #{b}\"\nputs g(a: 1, 2)\nTime.utc(year: 2020, 3)\nputs g(2, b: \"x\")\n",
+    )
+    .join("\n");
+    let msg = "error: positional argument after a keyword argument; keyword arguments go last";
+    assert_eq!(out.matches(msg).count(), 2, "{out}");
+    assert!(out.contains(":2:14:") && out.contains(":3:22:"), "{out}");
+}
