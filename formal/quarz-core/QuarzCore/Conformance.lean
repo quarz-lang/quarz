@@ -90,6 +90,9 @@ structure Tables where
   class that includes it (design §16.4): their QCore classes, and whether
   that class has type parameters. -/
   modCopies : Nat → Option (List (Nat × Bool)) := fun _ => none
+  /-- The built-in classes the program's types name (design §18): opaque
+  classes of the model (kind `builtin`), their methods built-in calls. -/
+  builtins : List Nat := []
 
 def Tables.cls (T : Tables) (id : Nat) : M Json := do
   match T.classes.find? fun c => (c.getObjValAs? Nat "id").toOption == some id with
@@ -113,6 +116,16 @@ def Tables.arrayInfo (T : Tables) : M (Nat × Nat) := do
     | throw "no Array"
   let [p] := (← arr (← field c "type_params")).toList | throw "Array's parameters"
   pure (← nat (← field c "id"), ← nat (← field p "id"))
+
+/-- The classes named in the types a tree holds (`{"t": "class", ...}`). -/
+partial def classRefs : Json → List Nat
+  | .obj kvs =>
+    let here := match kvs.get? "t", kvs.get? "id" with
+      | some (.str "class"), some (.num n) => if n.exponent == 0 && n.mantissa ≥ 0 then [n.mantissa.toNat] else []
+      | _, _ => []
+    here ++ kvs.toList.flatMap fun (_, v) => classRefs v
+  | .arr xs => xs.toList.flatMap classRefs
+  | _ => []
 
 /-- `ProcN[in A1, .., in An, out R]` (design §13.7). -/
 def procClassOf (n : Nat) : Class :=
@@ -158,7 +171,8 @@ partial def Tables.tyIn (T : Tables) (env : List (Nat × Ty)) (j : Json) : M Ty 
     if id == T.selfParam then throw "a Self type"
     match T.classParam id with
     | some (cid, i) =>
-      unless (T.qclass cid).any (· ≥ 2) do throw "a type parameter of a class out of range"
+      unless (T.qclass cid).any (· ≥ 2) && !T.builtins.contains cid do
+        throw "a type parameter of a class out of range"
       pure [.param i]
     | none => match T.narrowed id with
       | some bounds =>
@@ -986,6 +1000,34 @@ partial def expr (T : Tables) (e : Json) : CM Expr := do
   -- (Which extensions a `using` makes active is the checker's, taken as
   -- given in the calls it resolved: the statement itself does nothing.)
   | "Using" => pure .nil
+  -- A literal of a built-in class (design §18): a built-in call making
+  -- the value, of the type the checker gave it, its parts of theirs.
+  | "Symbol" | "Range" | "Hash" | "Regexp" =>
+    let tj ← field T.nodeTypes (toString id)
+    unless (← str (← field tj "t")) == "class" && T.builtins.contains (← nat (← field tj "id")) do
+      throw s!"a {k} expression"
+    if T.varied.contains (.num id) then throw s!"node {id} checked with different types"
+    let parts : List Json ← match k with
+      | "Range" => pure ([← field v "lo", ← field v "hi"].filter (· != .null))
+      | "Hash" => (← arr v).toList.flatMapM fun e => do
+          match ← variant e with
+          | ("Pair", pr) => pure [← field pr "key", ← field pr "value"]
+          | (pk, _) => throw s!"a {pk} in a hash literal"
+      | "Regexp" => do
+          for pt in (← arr (← field v "parts")) do
+            unless (← variant pt).1 == "Lit" do throw "an interpolated regexp"
+          pure []
+      | _ => pure []
+    let args ← parts.mapM (expr T)
+    let lt ← T.ty tj
+    -- (Each part of the literal's type's arguments: a range's bounds `T`,
+    -- a hash's keys `K` and values `V`.)
+    let tys : List Ty ← match k, lt with
+      | "Range", [.cls _ [t]] => pure (parts.map fun _ => t)
+      | "Hash", [.cls _ [kt, vt]] => pure ((List.range parts.length).map fun i => if i % 2 == 0 then kt else vt)
+      | "Range", _ | "Hash", _ => throw s!"a {k} expression's type"
+      | _, _ => pure []
+    pure (.prim k.toLower args tys lt)
   | "Float" => pure (.flt v.compress)
   -- A constant: not narrowed (docs/02 §6), a value of its own type. The
   -- type the Rust checker gave the read must be that one.
@@ -1505,7 +1547,10 @@ partial def matchPattern (T : Tables) (id : Nat) (v : Json) : CM Expr := do
 partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
   let name ← str (← field c "name")
   -- (`Kernel.name(args)`: the built-in function, which takes no
-  -- receiver, as a call of it on the implicit one.)
+  -- receiver, as a call of it on the implicit one; so a built-in class's
+  -- or module's class method, `File.open(path)`, `Math.hypot(a, b)`:
+  -- design §18.)
+  let implicitRecv := (← field c "recv") == .null
   let recvJ ← do
     let r ← field c "recv"
     if r == .null then pure r else
@@ -1513,7 +1558,10 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
     | .ok t =>
       if (t.getObjValAs? String "t").toOption != some "method" then pure r else
       let m ← T.method (← nat (← field t "method"))
-      if (← nat (← field m "owner")) == T.kernelId && (← variant (← field r "kind")).1 == "Const" then
+      let o ← nat (← field m "owner")
+      let builtinSide := (← field m "singleton") == .bool true &&
+        (((T.qclass o).isNone && (T.modCopies o).isNone) || T.builtins.contains o) && !T.excIds.contains o
+      if (o == T.kernelId || builtinSide) && (← variant (← field r "kind")).1 == "Const" then
         pure .null
       else pure r
     | .error _ => pure r
@@ -1578,6 +1626,17 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
         let some q := T.qclass (← nat (← field target "id")) | throw "a variant out of range"
         let test := Expr.isA (← expr T x) (.cls q [])
         return if name == "==" then test else .not test
+  -- (`==`/`!=` against `nil`, `true`, `false` of a built-in class's value:
+  -- the Rust checker narrows, as a final class's; the model's atom of it
+  -- is not final.)
+  if (name == "==" || name == "!=") && args.length == 1 then
+    if let some rid := (recvJ.getObjVal? "id").toOption.bind (·.getNat?.toOption) then
+      if let .ok rtj := T.nodeTypes.getObjVal? (toString rid) then
+        let tops := match rtj.getObjValAs? String "t" with
+          | .ok "union" => (rtj.getObjValAs? (Array Json) "members").toOption.getD #[]
+          | _ => #[rtj]
+        if tops.any (fun m => ((m.getObjValAs? Nat "id").toOption.map T.builtins.contains) == some true) then
+          if ["Nil", "True", "False"].contains (← lit args[0]!) then throw s!"a {name} of a built-in class's value"
   -- The tests: forms of their own (design §1.3).
   match name, recv, args, blk with
   | "nil?", some r, [], .null => return .isNil r
@@ -1661,6 +1720,24 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
     unless blk == .null do throw "a block given to new"
     let k ← nat (← field target "class")
     let some q := T.qclass k | throw s!"new of {← T.className k}"
+    -- A built-in class's (design §18): a built-in call making the value,
+    -- its arguments of its `initialize`'s declared types.
+    if T.builtins.contains k then
+      if T.varied.contains (.num id) then throw s!"node {id} checked with different types"
+      let (q', targs) ← T.tyClass (← field T.nodeTypes (toString id))
+      unless q' == q do throw "a new of another class than its type"
+      let ips ← (← arr (← field (← T.cls k) "type_params")).toList.mapM fun p => do nat (← field p "id")
+      let params ← match ← field target "init" with
+        | .null => if args.isEmpty then pure [] else throw "a built-in new with arguments and no initialize"
+        | ij => do
+          let mi ← T.method (← nat ij)
+          unless (← nat (← field mi "owner")) == k do throw "a built-in new taking an initialize further up"
+          let ps := (← arr (← field mi "params")).toList
+          unless ps.length == args.length do throw "a built-in new leaving a parameter"
+          ps.mapM fun p => do
+            unless (← str (← field p "kind")) == "Positional" do throw "a built-in new's parameters"
+            T.tyIn (ips.zip targs) (← field p "type")
+      return .prim "new" (← args.mapM (expr T)) params [.cls q targs]
     -- An exception made: what the built-in `initialize` gives, opaque.
     if ← T.excInit k then
       unless ← T.excPlain k do throw "new of an exception class with fields"
@@ -1682,7 +1759,7 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
     let m ← T.method (← nat (← field target "method"))
     -- (In a function, a method of `self` is the file's top-level
     -- object's, `Object`'s: the model's would run on the caller's.)
-    if recv.isNone && (← T.inFunction) then
+    if implicitRecv && (← T.inFunction) then
       let o ← nat (← field m "owner")
       unless T.qclass o == some 1 || o == T.kernelId do throw s!"{name}, a method of self, in a function"
     let native := (← field m "native") == .bool true
@@ -1727,14 +1804,15 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
     -- An accessor `attr_*` makes is a method of the model (`accessor`).
     let owner ← nat (← field m "owner")
     let accessor := (synth.startsWith "FieldGet(" || synth.startsWith "FieldSet(") &&
-      (T.qclass owner).any (· ≥ 2) && !T.excIds.contains owner
+      (T.qclass owner).any (· ≥ 2) && !T.excIds.contains owner && !T.builtins.contains owner
     -- A method of a module the prelude declares (`Comparable`,
     -- `Enumerable`), which a program's class includes: a built-in call, its
     -- module's parameters and `Self` through the receiver's class.
     let ownerJ ← T.cls owner
     let preludeModule := (← str (← field ownerJ "kind")) == "Module" && (T.qclass owner).isNone &&
       (T.modCopies owner).isNone
-    let preludeModule := preludeModule && owner != T.kernelId
+    let classSide := (← field m "singleton") == .bool true
+    let preludeModule := preludeModule && owner != T.kernelId && !classSide
     if preludeModule && recvEnv.isNone then
       throw s!"a method {name} of a module, its receiver's view unknown"
     -- (A built-in call does not dispatch: a program's method of the name,
@@ -1762,7 +1840,13 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
         if modNames.contains n' then
           let ok ← try T.matchesModule owner m' catch _ => pure false
           unless ok do throw s!"a module's method {name}: a program's {n'} of another signature than its module's"
-    if (native || synth != "None" || T.excIds.contains owner || arrayEnv.isSome || preludeModule) && !accessor then
+    -- (A built-in class's method on its values: the receiver's view of the
+    -- class's parameters, design §18.)
+    let builtinOwner := T.builtins.contains owner
+    if builtinOwner && recvEnv.isNone && !classSide then throw s!"a method {name} of a built-in class, its receiver's view unknown"
+    if (native || synth != "None" || T.excIds.contains owner || arrayEnv.isSome || preludeModule || builtinOwner ||
+        (classSide && (T.qclass owner).isNone && (T.modCopies owner).isNone)) &&
+        !accessor then
       -- A built-in method: its declared types. On the implicit receiver,
       -- it takes `self` (it may read its fields), but a `Kernel`
       -- function.
@@ -1842,7 +1926,12 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
       -- (A generic one's type parameters: what the call's result type
       -- says, where it says it; a lower bound widens it.)
       let tps ← arr (← field m "type_params")
-      let env0 := recvEnv.getD []
+      -- (A class method's class parameters too: what its result type
+      -- says, the checker's instantiation.)
+      let retJ ← field m "ret"
+      let env0 ← if classSide then (match T.nodeTy id with
+          | .ok rt => T.solve [] retJ rt
+          | .error _ => pure []) else pure (recvEnv.getD [])
       let env ← if tps.isEmpty then pure env0 else do
         let env ← match T.nodeTy id with
           | .ok rt => T.solve env0 (← field m "ret") rt
@@ -1878,7 +1967,7 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
           let rt ← T.nodeTy (← nat (← field recvJ "id"))
           pure ([r], [rt])
         | none =>
-          if (← nat (← field m "owner")) == T.kernelId then pure ([], [])
+          if (← nat (← field m "owner")) == T.kernelId || classSide then pure ([], [])
           else pure ([.self], [[.cls 0 []]])
       return ← withBlock env (.prim name (rs ++ as) (rps ++ params) ret)
     -- (A program's method: by its model name, an overload's its own; on
@@ -2163,6 +2252,9 @@ def method (T : Tables) (owner : Nat) (m : Json) (d : Json) : M Method := do
       let some q := T.qclass cid | throw "NotImplementedError out of range"
       pure (Expr.raise (.prim "new" [] [] [.cls q []]), [])
     else ((body T (← arr (← field d "body"))).run w).run params
+  -- (`-> Void`: the body's value discarded, nil returned, docs/01 §9.)
+  let void := ((← field m "ret").getObjValAs? String "t").toOption == some "void"
+  let bd := if void then Expr.seq bd .nil else bd
   -- (`yield` runs the block given, whatever the parameter holds later.)
   if let some (n, _) := bproc then
     if (bd.assigned ++ bd.procAssigned).contains n then throw "a named block parameter assigned"
@@ -2245,7 +2337,10 @@ def methodUnblock (mt : Method) : Method :=
 /-- The QCore program of a tree. -/
 def program (j : Json) : M Program := do
   let classes ← arr (← field j "classes")
-  let units ← arr (← field j "units")
+  -- (A standard library module the program loads is as the prelude: its
+  -- classes built-in, its bodies the Rust checker's, design §18.)
+  let units := (← arr (← field j "units")).filter fun u =>
+    !((u.getObjValAs? String "name").toOption.getD "").startsWith "<std:"
   let files ← units.toList.mapM fun u => do nat (← field u "file")
   let mainClasses ← units.toList.mapM fun u => do nat (← field u "main_class")
   let some objectJ := classes.find? fun c => (c.getObjValAs? String "name").toOption == some "Object"
@@ -2277,6 +2372,23 @@ def program (j : Json) : M Program := do
   let excs ← classes.toList.filterM fun c => do
     pure (!files.contains (← nat (← field c "file")) && (← below c))
   let excIds ← excs.mapM fun c => do nat (← field c "id")
+  -- The built-in classes the program's types name (design §18): right
+  -- below `Object`, outside the program's files, not a value class, `Array`
+  -- or an exception (those the model has otherwise).
+  let refs := (classRefs j).eraseDups
+  let builtJs ← classes.toList.filterM fun c => do
+    let id ← nat (← field c "id")
+    if !refs.contains id || files.contains (← nat (← field c "file")) then return false
+    unless ["Class", "Data"].contains (← str (← field c "kind")) do return false
+    -- (`Proc` and `Type` relate to the model's procedures' classes and to
+    -- every class: not opaque.)
+    if ["Object", "Nil", "Bool", "Int", "String", "Float", "Array", "Proc", "Type"].contains (← str (← field c "name")) then
+      return false
+    if excIds.contains id || mainClasses.contains id then return false
+    match ← field c "superclass" with
+    | .null => pure true
+    | sj => pure ((← nat (← field sj "id")) == (← nat (← field objectJ "id")))
+  let builtIds ← builtJs.mapM fun c => do nat (← field c "id")
   -- The modules the program declares, and each class's own (those its
   -- linearization puts between it and its superclass), nearest first: a
   -- class's copy of each goes between it and its superclass (design
@@ -2323,16 +2435,13 @@ def program (j : Json) : M Program := do
     pure (cid, out)
   -- (An extension the program declares may include a program's module in
   -- a class the copies do not cover: out of range.)
-  let some arrayJ := classes.find? fun c => (c.getObjValAs? String "name").toOption == some "Array"
-    | throw "no Array"
-  let preludeFile ← nat (← field arrayJ "file")
-  -- (An extension outside the prelude that includes a module: a later
+  -- (An extension of the program's that includes a module: a later
   -- conformance, which the model's classes do not show.)
   for e in ← arr (← field j "extensions") do
-    if (← nat (← field e "file")) != preludeFile && !(← arr (← field e "includes")).isEmpty then
+    if files.contains (← nat (← field e "file")) && !(← arr (← field e "includes")).isEmpty then
       throw "an include in an extension"
   -- The user classes, each after its copies (a superclass comes first).
-  let seq : List (Nat × Option Nat) := excIds.map (·, none) ++
+  let seq : List (Nat × Option Nat) := excIds.map (·, none) ++ builtIds.map (·, none) ++
     ownMods.flatMap fun (cid, ms) => ms.reverse.map (·, some cid) ++ [(cid, none)]
   -- `Object` is 0, the files' main classes (the top level and its
   -- methods) 1, the user classes from 2.
@@ -2388,7 +2497,8 @@ def program (j : Json) : M Program := do
     fun id => (classParams.find? (·.1 == id)).map (·.2),
     fun id => (narrowedList.find? (·.1 == id)).map (·.2), selfParam, excIds,
     (j.getObjVal? "op_targets").toOption.getD Json.null,
-    (j.getObjVal? "block_results").toOption.getD Json.null, [], ← arr (← field j "extensions"), modCopies⟩
+    (j.getObjVal? "block_results").toOption.getD Json.null, [], ← arr (← field j "extensions"), modCopies,
+    builtIds⟩
   -- The program's overloaded names (but `initialize`, which `new` and
   -- `super` take the nearest of).
   let mine ← (← arr (← field j "methods")).toList.filterM fun m => do
@@ -2439,6 +2549,20 @@ def program (j : Json) : M Program := do
       | .null => pure 0
       | t => pure (← T.tyClass t).1
     pure (⟨← str (← field c "name"), some sup, [], [], [], [], .cls⟩ : Class)
+  -- The built-in classes: opaque, their declared variances (their bounds,
+  -- which the Rust checker checks, dropped: more permissive).
+  let builtClasses ← builtJs.mapM fun c => do
+    let vs ← (← arr (← field c "type_params")).toList.mapM fun p => do
+      match ← str (← field p "variance") with
+      | "Covariant" => pure Variance.co
+      | "Contravariant" => pure Variance.contra
+      | "Invariant" => pure Variance.inv
+      | v => throw s!"a {v} type parameter"
+    pure (⟨← str (← field c "name"), some 0, [], vs, [], [], .builtin⟩ : Class)
+  for c in user do
+    if let .ok sj := c.getObjVal? "superclass" then
+      if let .ok sid := sj.getObjValAs? Nat "id" then
+        if builtIds.contains sid then throw "a class below a built-in class"
   let qclasses ← user.mapM fun c => do
     -- A module the program declares is not the model's (stage 6a-2); one of
     -- the prelude's, its methods are built-in calls.
@@ -2516,7 +2640,7 @@ def program (j : Json) : M Program := do
   let qclasses := qclasses.flatten
   let allClasses : ClassTable := ⟨"Object", none, [], [], [], [], .cls⟩ :: ⟨"<main>", some 0, [], [], [], [], .cls⟩ ::
       ((List.range (procMax + 1)).map procClassOf ++ [⟨"Array", some 0, [], [.co], [], [], .builtin⟩] ++
-        excClasses ++ qclasses)
+        excClasses ++ builtClasses ++ qclasses)
   -- The classes right below `Object` whose objects may be a method's
   -- `self`: each holds a copy of every function (`modelName`), which a
   -- call reaches from any class (the model's `Object` holds the value
@@ -2526,6 +2650,8 @@ def program (j : Json) : M Program := do
     | none => false
   let methods ← T.defs.toList.flatMapM fun d => do
     let m ← T.method (← nat (← field d "method"))
+    -- (A standard library module's: not the model's.)
+    unless files.contains (← nat (← field m "file")) do return []
     -- (No definition: an abstract method.)
     let def_ ← field d "def"
     if def_ == .null then
@@ -2544,7 +2670,10 @@ def program (j : Json) : M Program := do
     | none => throw "a method of a class out of range"
   -- Each constant's initializer, checked as a method of the top level's
   -- class giving the constant's type.
-  let consts ← (← arr (← field j "consts")).toList.mapM fun k => do
+  let consts ← (← arr (← field j "consts")).toList.filterMapM fun k => do
+    -- (A standard library class's or module's: not the model's.)
+    if let .ok oid := k.getObjValAs? Nat "owner" then
+      unless files.contains (← nat (← field (← classById oid) "file")) do return none
     -- A class's constant is checked with that class as `self`: not here.
     unless (← field k "owner") == .null do throw "a class constant"
     let ty ← match ← field k "type" with
@@ -2554,7 +2683,7 @@ def program (j : Json) : M Program := do
     | .null => throw "a constant with no initializer"
     | v =>
       let (bd, ls) ← ((expr T v).run ⟨true, none, none, none, none, [], none, [], [], false, false, false, false⟩).run []
-      pure (⟨1, "const " ++ (← str (← field k "name")), [], ty, none, ls, bd⟩ : Method)
+      pure (some (⟨1, "const " ++ (← str (← field k "name")), [], ty, none, ls, bd⟩ : Method))
   let some mainUnit := units.back? | throw "no unit"
   let (mainBody, mainLocals) ← ((body T (← arr (← field mainUnit "body"))).run ⟨true, none, none, none, none, [], none, [], [], true, false, false, false⟩).run []
   let all : Ty := [.nil, .bool, .int, .str, .cls 0 []]
@@ -2571,7 +2700,7 @@ def program (j : Json) : M Program := do
   let accessors ← (← arr (← field j "methods")).toList.filterMapM fun m => do
     let o ← nat (← field m "owner")
     match qclass o with
-    | some q => if q ≥ 2 && !excIds.contains o then accessor T q m else pure none
+    | some q => if q ≥ 2 && !excIds.contains o && !builtIds.contains o then accessor T q m else pure none
     | none => pure none
   let own := methods ++ accessors
   let P : Program := ⟨allClasses, own ++ consts,

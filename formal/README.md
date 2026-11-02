@@ -485,7 +485,23 @@ stricter, not unsound.
   method's type parameters solved from the call's result type (a lower
   bound widening them, the arguments checked against them); the types
   of nodes the model has no rule for (a built-in call's result, an
-  op-assignment's target's current value, a block's declared result).
+  op-assignment's target's current value, a block's declared result);
+  the built-in classes' declarations (design §18): a class outside the
+  program's files that the tree names, right below `Object` (not a value
+  class, `Array`, `Proc`, `Type` or an exception), is an opaque class of the model (kind
+  `builtin`: no fields, no methods, its declared variances, its bounds
+  dropped), its values made by built-in calls (its literals, `new`), its
+  methods and class methods (and a built-in module's, `Math.sqrt`)
+  built-in calls typed by their declarations, a class method's class
+  parameters solved from the call's result type; a standard library
+  module the program loads (`require "json"`, or one it names) is as
+  the prelude, its bodies the Rust checker's to check, not the model's.
+  Out of range there: a built-in class below another (`TCPSocket < IO`),
+  a built-in `enum` (`JSON::Value`, `Result`), a program's class below a
+  built-in class, a built-in class's method on a receiver whose view of
+  its parameters is unknown (a union), `==`/`!=` against `nil`, `true` or
+  `false` of a built-in class's value (the Rust checker narrows it as a
+  final class's), and `require_relative`.
   A disagreement is the Rust checker narrowing further than the rules
   allow, or the model being stricter: either is looked at. The methods
   `attr_reader` and `attr_writer` make are methods of the model; another
