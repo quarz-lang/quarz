@@ -827,6 +827,10 @@ pub struct ReplSnapshot {
 const COERCE_DEPTH: u32 = 256;
 
 pub struct Checker {
+    /// While a bare `super`'s call is resolved: how many variables it
+    /// forwards (the parameters, then the block), read as the method's
+    /// own (`zsuper_local`).
+    zsuper_forwards: Option<usize>,
     /// A compound assignment's reader (`false`) and operator (`true`)
     /// found by each check, and those given up (`note_op_method`).
     op_seen: HashMap<(NodeId, bool), Option<MethodId>>,
@@ -996,6 +1000,7 @@ impl Checker {
             next_block_lifted: false,
         };
         Checker {
+            zsuper_forwards: None,
             op_seen: HashMap::default(),
             logical_seen: HashMap::default(),
             reused_files: Default::default(),
@@ -3796,6 +3801,16 @@ impl Checker {
         active
     }
 
+    /// A variable a bare `super` forwards: the method's parameter (or
+    /// block) itself, whatever hides its name where the `super` is (a
+    /// block's parameter or `:=`, a pattern's binding), as the lowering
+    /// forwards it. Its slots are the method frame's first.
+    fn zsuper_local(&self, id: NodeId) -> Option<(usize, usize)> {
+        let count = self.zsuper_forwards?;
+        let i = (u32::MAX - 1).checked_sub(id)? as usize;
+        (i < count).then(|| (self.env.frames.len() - 1, i))
+    }
+
     fn lookup_var(&self, name: &str) -> Option<(usize, usize)> {
         let n = self.env.frames.len();
         for (i, frame) in self.env.frames.iter().enumerate().rev() {
@@ -5464,7 +5479,7 @@ impl Checker {
                 Type::Class(self.world.builtin.range, vec![t])
             }
             Lambda(block) => self.check_lambda(expr.id, block, expected),
-            Local(name) => match self.lookup_var(name) {
+            Local(name) => match self.zsuper_local(expr.id).or_else(|| self.lookup_var(name)) {
                 Some((depth, slot)) => {
                     self.out.var_refs.insert(
                         expr.span,
@@ -12358,6 +12373,10 @@ impl Checker {
             has_parens: true,
             type_args: vec![],
         };
+        let zsuper = args
+            .is_none()
+            .then(|| m.params.len() + usize::from(m.block.is_some()));
+        let saved = std::mem::replace(&mut self.zsuper_forwards, zsuper);
         let t = self.resolve_overloads_as(
             expr,
             &call,
@@ -12367,6 +12386,7 @@ impl Checker {
             None,
             m.name == "initialize",
         );
+        self.zsuper_forwards = saved;
         if let Some(CallTarget::Method { method }) = self.out.calls.get(&expr.id).cloned() {
             self.out.calls.insert(expr.id, CallTarget::Super { method });
         }
