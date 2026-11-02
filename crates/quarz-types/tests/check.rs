@@ -2397,7 +2397,7 @@ fn calls_a_class_test_cannot_choose_are_errors() {
     // where a member has no writer.
     err(
         "class A\n  var @w: Int = 1\n  def w -> Int = @w\n  def w=(v: Int) -> Int\n    @w = v\n  end\nend\nclass B\n  def w -> Int = 2\nend\ndef pick(i: Int) -> A | B = i > 0 ? A.new : B.new\no = pick(1)\no.w += 1",
-        "undefined method `w=` for A | B",
+        "undefined method `w=` for B",
     );
     // `o.c ||= v` through the value's own `||` on a union whose writers
     // differ: the node's record cannot serve both (refused, not crashed).
@@ -2405,6 +2405,25 @@ fn calls_a_class_test_cannot_choose_are_errors() {
         "class Cond\n  def ||(&rhs: () -> Cond) -> Cond = rhs.call\nend\nclass A\n  var @c: Cond = Cond.new\n  def c -> Cond = @c\n  def c=(x: Cond) -> Cond\n    @c = x\n  end\nend\nclass B\n  var @c: Cond = Cond.new\n  def c -> Cond = @c\n  def c=(x: Cond) -> Cond\n    @c = x\n  end\nend\ndef pick(i: Int) -> A | B = i > 0 ? A.new : B.new\no = pick(1)\no.c ||= Cond.new",
         "cannot tell at run time which `c=` to call for A | B after the value's own logical operator",
     );
+    // A compound assignment's writer is checked as the call it is: the
+    // value must be what it takes, as for `a.w = a.w`.
+    err(
+        "class A\n  var @w: Int = 1\n  def w -> Int? = nil\n  def w=(v: Int) -> Int\n    @w = v\n  end\nend\na = A.new\na.w ||= nil",
+        "argument `v` of w=(v: Int) -> Int expects Int but found Int?",
+    );
+    err(
+        "class A\n  var @w: Int = 1\n  def [](i: Int) -> Int? = nil\n  def []=(i: Int, v: Int) -> Int\n    @w = v\n  end\nend\na = A.new\na[0] ||= nil",
+        "expects Int but found Int?",
+    );
+    // A block in an index assignment's target is refused (lowering would
+    // drop it); an index read takes one.
+    for src in ["g[0, &f] = 1", "g[0, &f] += 1", "g[0, &:succ] ||= 2"] {
+        err(
+            &format!("class G\n  var @n: Int = 0\n  def [](i: Int, &b: (Int) -> Int) -> Int = b.call(@n)\n  def []=(i: Int, v: Int, &b: (Int) -> Int) -> Int\n    @n = b.call(v)\n  end\nend\ng = G.new\nf = ->(x: Int) {{ x + 10 }}\n{src}"),
+            "a block cannot be given in an index assignment",
+        );
+    }
+    ok("class G\n  def [](i: Int, &b: (Int) -> Int) -> Int = b.call(i)\nend\ng = G.new\nf = ->(x: Int) { x + 10 }\np g[1, &f]");
     // A compound assignment's reader from two extensions.
     err(
         "class A\nend\nclass B\nend\nextension A\n  def w -> Int = 1\n  def w=(x: Int) -> Int = x\nend\nextension B\n  def w -> Int = 2\n  def w=(x: Int) -> Int = x\nend\ndef pk(i: Int) -> Array[A] | Array[B] = i > 0 ? [A.new] : [B.new]\npk(1).each { |o| o.w += 1 }",
