@@ -3273,7 +3273,7 @@ fn an_override_with_wider_parameters_keeps_the_result_and_block_types() {
     // Class methods, a module's method over the superclass's, `Self`.
     err(
         "class A\n  def self.make -> Int = 1\nend\nclass B < A\n  def self.make -> String = \"s\"\nend",
-        "`make` returns String but `A#make`, which it overrides, returns Int",
+        "`make` returns String but `A.make`, which it overrides, returns Int",
     );
     err(
         "class A\n  def f -> Int = 1\nend\nmodule M\n  def f -> String = \"s\"\nend\nclass B < A\n  include M\nend",
@@ -3348,8 +3348,12 @@ fn an_extension_or_class_method_in_place_of_a_modules_keeps_its_types() {
     ok("class Bag[T]\n  @items: Array[T]\n  def initialize(@items: Array[T])\n  end\n  def items -> Array[T] = @items\nend\nextension Bag[T]\n  include Enumerable[T]\n  def each(&: (T) -> Void) -> Void\n    items.each { |x| yield x }\n  end\nend\np Bag.new([1, 2]).map { |x| x * 2 }");
     ok("module Factory[T]\n  abstract def make -> T\nend\nclass Foo\n  extend Factory[Foo]\n  def self.make -> Foo = Foo.new\nend");
     // A superclass's class method is not found before a module the class
-    // extends, nor is a wider parameter the same signature there.
-    ok("module Named\n  def label -> Int = 1\nend\nclass A\n  def self.label -> String = \"a\"\nend\nclass B < A\n  extend Named\nend");
+    // extends, whose method overrides it (docs/01 §6), nor is a wider
+    // parameter the same signature there.
+    err(
+        "module Named\n  def label -> Int = 1\nend\nclass A\n  def self.label -> String = \"a\"\nend\nclass B < A\n  extend Named\nend",
+        "`label` returns Int but `A.label`, which it overrides in `B`, which extends `Named`, returns String",
+    );
     ok("module Named\n  def f(x: Int) -> Int = x\nend\nclass A\n  extend Named\n  def self.f(x: Object) -> String = \"a\"\nend");
     // A class method overrides an extended module's concrete method too.
     err(
@@ -3694,6 +3698,32 @@ fn class_methods_override_types_methods() {
         "which it overrides in `A`, which extends `M`",
     );
     ok("extension Object\n  def describe -> String = \"obj\"\nend\nclass A\n  def self.describe -> Int = 3\nend");
+}
+
+#[test]
+fn an_extended_module_overrides_the_superclass_class_method() {
+    // On the class side an extended module's method comes before the
+    // superclass's class methods (docs/01 §6): an override, checked.
+    err(
+        "module M\n  def label -> Int = 42\nend\nclass Shape\n  def self.label -> String = \"shape\"\nend\nclass A < Shape\n  extend M\nend",
+        "`label` returns Int but `Shape.label`, which it overrides in `A`, which extends `M`, returns String",
+    );
+    err(
+        "module M[X]\n  def none(n: Int) -> X? = nil\nend\nclass Shape\n  def self.none(n: Int) -> Int? = nil\nend\nclass A < Shape\n  extend M[String]\nend",
+        "`none` returns String? but `Shape.none`, which it overrides in `A`, which extends `M`, returns Int?",
+    );
+    ok("module M\n  def label -> String = \"m\"\nend\nclass Shape\n  def self.label -> String = \"shape\"\nend\nclass A < Shape\n  extend M\nend\nk: Type[Shape] = A\ns: String = k.label");
+    ok("module M[X]\n  def make(x: X) -> X = x\nend\nclass Shape\n  def self.make(x: Int) -> Int = 0\nend\nclass A < Shape\n  extend M[Int]\nend");
+    // One that takes other arguments is an overload.
+    ok("module M\n  def size(s: String) -> String = s\nend\nclass Shape\n  def self.size(n: Int) -> Int = n\nend\nclass A < Shape\n  extend M\nend");
+    // An own class method of the name that is an overload does not.
+    err(
+        "module M\n  def label -> Int = 42\nend\nclass Shape\n  def self.label -> String = \"shape\"\nend\nclass A < Shape\n  extend M\n  def self.label(n: Int) -> String = \"a\"\nend",
+        "`label` returns Int but `Shape.label`, which it overrides in `A`, which extends `M`",
+    );
+    // The class's own class method that overrides comes first: the
+    // module's is not it.
+    ok("module M\n  def label -> Object = 42\nend\nclass Shape\n  def self.label -> String = \"shape\"\nend\nclass A < Shape\n  extend M\n  def self.label -> String = \"a\"\nend");
 }
 
 #[test]

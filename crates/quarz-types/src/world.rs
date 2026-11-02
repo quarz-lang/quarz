@@ -448,7 +448,8 @@ pub struct Builtin {
 const SUBTYPE_DEPTH: u32 = 256;
 
 /// A method of a module a class includes over one of its superclass's
-/// (`World::include_overrides_of`).
+/// (`World::include_overrides_of`), or one of a module it extends over a
+/// superclass's class method (`World::extend_overrides_of`).
 pub struct IncludeOverride {
     pub class: ClassId,
     pub overridden: MethodId,
@@ -1330,6 +1331,109 @@ impl World {
                                 by_subst: msubst.clone(),
                                 module: *x,
                             });
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// The overrides a class's `extend` makes on its class side: a method
+    /// of a module the class extends comes after the class's own class
+    /// methods and before its superclass's (docs/01 §6), and overrides
+    /// a superclass's class method whose calls it takes, both seen
+    /// through the class's ancestors, as (class, overridden, overriding).
+    /// The runtime dispatches by it (`Interp::class_method_override`) and
+    /// the checker checks it.
+    pub fn extend_overrides(&self) -> Vec<(ClassId, MethodId, MethodId)> {
+        self.classes
+            .iter()
+            .flat_map(|c| self.extend_overrides_of(c.id))
+            .map(|o| (o.class, o.overridden, o.by))
+            .collect()
+    }
+
+    /// `extend_overrides` for class `id`, each side with how it is seen
+    /// from the class (`module` is the extended module, or the ancestor of
+    /// it, that declares `by`).
+    pub fn extend_overrides_of(&self, id: ClassId) -> Vec<IncludeOverride> {
+        let mut out: Vec<IncludeOverride> = Vec::new();
+        let c = self.class(id);
+        if c.kind == ClassKind::Module || c.extends.is_empty() || c.superclass.is_none() {
+            return out;
+        }
+        let own: Vec<Type> = c.type_params.iter().map(|p| Type::Param(p.id)).collect();
+        // The superclasses, with their arguments as the class sees them.
+        let supers: Vec<(ClassId, Vec<Type>)> = self
+            .ancestors(id, &own)
+            .into_iter()
+            .filter(|(s, _)| *s != id && self.class(*s).kind != ClassKind::Module)
+            .collect();
+        // The class's own class methods come first: one that overrides `o`
+        // as the runtime takes it (`Interp::class_method_override`) is the
+        // one, an overload of the name is not.
+        let ancs = self.ancestors(id, &own);
+        let overridden_by_own = |o: MethodId| {
+            c.singleton_methods
+                .get(&self.method(o).name)
+                .is_some_and(|mine| {
+                    mine.iter().any(|&a| {
+                        let am = self.method(a);
+                        am.owner == id
+                            && (self.same_signature_at_run_time(a, o)
+                                || self.overridden_methods_in(am, &ancs).contains(&o))
+                    })
+                })
+        };
+        // (The last module extended first, as the runtime.)
+        for ext in c.extends.iter().rev() {
+            let Type::Class(m, margs) = ext else {
+                continue;
+            };
+            for (x, xargs) in self.ancestors(*m, margs) {
+                let msubst = self.class_subst(x, &xargs);
+                for ids in self.class(x).methods.values() {
+                    for &mm in ids {
+                        let m = self.method(mm);
+                        if m.owner != x || m.is_abstract || m.extension.is_some() {
+                            continue;
+                        }
+                        for (s, sargs) in &supers {
+                            let Some(os) = self.class(*s).singleton_methods.get(&m.name) else {
+                                continue;
+                            };
+                            let base = self.class_subst(*s, sargs);
+                            for &o in os {
+                                let om = self.method(o);
+                                if om.owner != *s
+                                    || om.extension.is_some()
+                                    || om.synth != Synth::None
+                                    || om.name == "new"
+                                    || om.type_params.len() != m.type_params.len()
+                                {
+                                    continue;
+                                }
+                                // (Their type parameters as the overriding
+                                // one's, in order.)
+                                let mut ssubst = base.clone();
+                                for (p, q) in om.type_params.iter().zip(&m.type_params) {
+                                    ssubst.insert(p.id, Type::Param(q.id));
+                                }
+                                if self.takes_calls_of(m, &msubst, om, &ssubst)
+                                    && !out.iter().any(|e| e.overridden == o)
+                                    && !overridden_by_own(o)
+                                {
+                                    out.push(IncludeOverride {
+                                        class: id,
+                                        overridden: o,
+                                        overridden_subst: ssubst,
+                                        by: mm,
+                                        by_subst: msubst.clone(),
+                                        module: x,
+                                    });
+                                }
+                            }
                         }
                     }
                 }

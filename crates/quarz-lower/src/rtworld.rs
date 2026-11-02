@@ -394,6 +394,7 @@ pub fn build(world: &World, out: &types::Output, lw: &Lowerer, file_names: Vec<S
         extensions,
         ext_impls: world.ext_impls.clone(),
         include_overrides: world.include_overrides(),
+        extend_overrides: world.extend_overrides(),
         top,
         builtin,
         file_names,

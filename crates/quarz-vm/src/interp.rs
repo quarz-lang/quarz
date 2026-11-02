@@ -2677,6 +2677,18 @@ impl Interp {
                     break;
                 }
             }
+            // Then a method of a module it extends (docs/01 §6,
+            // `World::extend_overrides`).
+            if let Some(&(_, _, by)) = self
+                .program
+                .world
+                .extend_overrides
+                .iter()
+                .find(|(k, o, _)| *k == c && *o == mid)
+            {
+                found = Some(by);
+                break;
+            }
             cur = class.superclass;
         }
         self.class_method_cache

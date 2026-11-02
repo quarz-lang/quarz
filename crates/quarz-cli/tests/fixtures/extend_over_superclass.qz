@@ -1,0 +1,56 @@
+# On the class side, a module the class extends comes after the class's
+# own class methods and before its superclass's (docs/01 §6), wherever
+# the call comes from.
+module Labeled
+  def label -> String = "labeled"
+  def weight(n: Object) -> Int = 1
+end
+
+module Maker[X]
+  def make(x: X) -> X = x
+end
+
+class Shape
+  def self.label -> String = "shape"
+  def self.weight(n: Int) -> Int = 0
+  def self.make(x: Int) -> Int = 0
+  def self.describe -> String = "#{label}/#{weight(5)}"
+end
+
+class Circle < Shape
+  extend Labeled
+  extend Maker[Int]
+end
+
+class Disc < Circle
+end
+
+class Square < Shape
+  extend Labeled
+  def self.label -> String = "square"
+end
+
+# An own class method of the name that takes other arguments is an
+# overload: the module's still comes before the superclass's.
+class Oval < Shape
+  extend Labeled
+  def self.label(n: Int) -> String = "oval #{n}"
+end
+
+# The static call, and the implicit one from the superclass's method.
+p Circle.label
+p Circle.describe
+p Disc.describe
+p Square.describe
+p Shape.describe
+p Oval.describe
+p Oval.label(2)
+
+# Through a `Type[Shape]`.
+k: Type[Shape] = Disc
+p k.label
+p k.weight(2)
+p k.make(3)
+p k.:label.call
+p [Circle, Disc, Square, Oval, Shape].map(&:label)
+p [Circle, Shape].map { |c| c.make(9) }
