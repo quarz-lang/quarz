@@ -472,6 +472,12 @@ stricter, not unsound.
   override's are its own, docs/01 §3); `initialize`'s literal defaults
   are given at `new`. Out of range: other defaults of `initialize`, a
   `super` leaving parameters, defaults in a method with a block.
+  Keyword arguments: to a built-in call, each typed by the parameter of
+  its name; to the program's method, given to the parameters of their
+  names (a keyword-only parameter has its place, its name part of the
+  method's signature), the ones a call leaves through the wrapper for
+  the set it gives (`name@k<i..>`). Out of range: keyword arguments out
+  of their parameters' order or after a positional one, `**`.
   `x.m!` that the checker resolved to `m` (the sugar for `x = x.m`,
   docs/01 §10, on a local) is that assignment.
   What the translator takes from the Rust checker as given, the model

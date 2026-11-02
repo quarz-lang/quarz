@@ -1,0 +1,21 @@
+# Keyword arguments to the program's methods: a parameter before `*` may
+# be passed by keyword too, a keyword-only one only so; the parameters a
+# call leaves take their defaults in the receiver's class (an override's
+# own), through a wrapper for the ones it gives.
+class A
+  def f(x: Int, *, k: Int = 0) -> String = "A#f #{x} #{k}"
+  def g(a: Int = 1, b: Int = 2, *, c: Int = 3) -> Int = a * 100 + b * 10 + c
+end
+
+class B < A
+  def f(x: Int, *, k: Int = 1) -> String = "B#f #{x * 10} #{k}"
+  def g(a: Int = 4, b: Int = 5, *, c: Int = 6) -> Int = a * 100 + b * 10 + c
+end
+
+def call(a: A) -> String = a.f(x: 3)
+
+puts call(A.new)
+puts call(B.new)
+puts B.new.f(x: 2, k: 5)
+o: A = B.new
+p o.g(b: 9), o.g(c: 0), o.g(7, c: 8), A.new.g(a: 1, c: 2)
