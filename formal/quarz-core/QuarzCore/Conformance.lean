@@ -93,6 +93,9 @@ structure Tables where
   /-- The built-in classes the program's types name (design §18): opaque
   classes of the model (kind `builtin`), their methods built-in calls. -/
   builtins : List Nat := []
+  /-- A program's class (without type parameters) ↦ its metaclass (design
+  §19): the class of its class object, its class methods its. -/
+  metaOf : Nat → Option Nat := fun _ => none
 
 def Tables.cls (T : Tables) (id : Nat) : M Json := do
   match T.classes.find? fun c => (c.getObjValAs? Nat "id").toOption == some id with
@@ -184,6 +187,15 @@ partial def Tables.tyIn (T : Tables) (env : List (Nat × Ty)) (j : Json) : M Ty 
       | none => throw "a method or extension type parameter"
   -- `Type[T]` (a class as a value of its type): no class objects here.
   | "type_of" => throw "a Type[T] type"
+  -- A program's class's object: its metaclass's (design §19); `Class`,
+  -- what `x.class` is, any value (calls on it are built-in ones).
+  | "class_object" =>
+    let id ← nat (← field j "id")
+    unless (← arr (← field j "args")).isEmpty do throw "a class_object type with arguments"
+    if id == T.objectId then return [.cls 0 []]
+    match T.metaOf id with
+    | some m => pure [.cls m []]
+    | none => throw "a class_object type"
   -- A procedure type: `ProcN[params, result]` (design §13.7), the model's
   -- classes 2 to 2 + `procMax`.
   | "proc" =>
@@ -456,6 +468,9 @@ structure Where where
   /-- In a block's body (not a lambda's), outside a loop: `next` leaves the
   block with its value (design §17.7). -/
   blockNext : Bool := false
+  /-- In a class method (design §19): `self` is the class's object, `new`
+  makes the receiver's class's. -/
+  classSide : Bool := false
 
 /-- Converting a body, with the locals so far. -/
 abbrev CM := ReaderT Where (StateT Locals M)
@@ -549,6 +564,20 @@ partial def renameLocals (m : List (String × String)) : Expr → Expr
   | .ensure a b => .ensure (renameLocals m a) (renameLocals m b)
   | .ite c t e => .ite (renameLocals m c) (renameLocals m t) (renameLocals m e)
   | e => e
+
+/-- Whether an expression calls a method of the name `n`. -/
+partial def callsName (n : String) : Expr → Bool
+  | .call r f as => f == n || callsName n r || as.any (callsName n)
+  | .callBlk r f as _ b => f == n || callsName n r || as.any (callsName n) || callsName n b
+  | .assign _ e | .setField _ e | .ret e | .raise e | .brk e | .nxt e | .isNil e | .isA e _ | .eqNil e
+  | .neNil e | .eqTrue e | .eqFalse e | .not e => callsName n e
+  | .new _ _ as | .superInit _ as | .yield as | .prim _ as _ _ => as.any (callsName n)
+  | .callProc f as => callsName n f || as.any (callsName n)
+  | .lambda _ _ _ b => callsName n b
+  | .seq a b | .while a b | .and a b | .or a b | .ensure a b => callsName n a || callsName n b
+  | .ite c t e => callsName n c || callsName n t || callsName n e
+  | .rescue b _ h e => callsName n b || callsName n h || callsName n e
+  | _ => false
 
 /-- Each lambda's own names (its parameters and its own locals) made its
 own (`x@λk`): a block's parameter of the method met after a lambda that
@@ -1121,6 +1150,10 @@ partial def expr (T : Tables) (e : Json) : CM Expr := do
     if (← str (← field target "t")) == "variant" then
       let some q := T.qclass (← nat (← field target "id")) | throw "a variant out of range"
       return .new q [] []
+    -- A program's class as a value: an object of its metaclass (design §19;
+    -- no state, so a new one each time: class values are not compared).
+    if (← str (← field target "t")) == "class" then
+      if let some m := T.metaOf (← nat (← field target "id")) then return .new m [] []
     unless (← str (← field target "t")) == "const" do throw "a class as a value"
     let cid ← nat (← field target "id")
     let some k := T.consts.find? fun k => (k.getObjValAs? Nat "id").toOption == some cid
@@ -1753,7 +1786,11 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
   match ← str (← field target "t") with
   | "is_a" =>
     let some r := recv | throw "is_a? without a receiver"
-    match ← T.ty (← field target "type") with
+    -- (`Type`, `Class`: the model's `Object`, which every value is.)
+    let tj ← field target "type"
+    if (tj.getObjValAs? String "t").toOption == some "class_object" &&
+        (tj.getObjValAs? Nat "id").toOption == some T.objectId then throw "is_a? Type"
+    match ← T.ty tj with
     | [.cls k as] =>
       -- (The Rust checker tests an array's elements: docs/02 §7.)
       if k == arrIdx then throw "is_a? of an array type"
@@ -1810,6 +1847,11 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
     -- `C.new(args)`: the fields' defaults, then `initialize`.
     unless blk == .null do throw "a block given to new"
     let k ← nat (← field target "class")
+    -- (`new` in a class method, on its receiver: the receiver's class's,
+    -- through its metaclass's `new@meta`, design §19.)
+    let onSelf ← if recvJ == .null then pure true else do pure ((← variant (← field recvJ "kind")).1 == "SelfRef")
+    if (← read).classSide && onSelf then
+      return .call .self "new@meta" (← args.mapM (expr T))
     let some q := T.qclass k | throw s!"new of {← T.className k}"
     -- A built-in class's (design §18): a built-in call making the value,
     -- its arguments of its `initialize`'s declared types.
@@ -1848,6 +1890,39 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
     return .new q targs (← args.mapM (expr T))
   | "method" =>
     let m ← T.method (← nat (← field target "method"))
+    -- (On a class's object: its class methods (its metaclass's) or a
+    -- built-in one; an `extend`ed module's, out of range, design §19.)
+    let classMeth := (← field m "singleton") == .bool true && (T.metaOf (← nat (← field m "owner"))).isSome
+    -- (In a class method, an implicit call: its class's class method (a
+    -- `-> Self` one of its own class), a function or a built-in one.)
+    if recvJ == .null && (← read).classSide then
+      let o ← nat (← field m "owner")
+      unless classMeth || (← field m "native") == .bool true || T.qclass o == some 1 || o == T.kernelId do
+        throw s!"{name} in a class method, not a class method"
+      if classMeth then
+        let rj ← field m "ret"
+        if (rj.getObjValAs? String "t").toOption == some "param" &&
+            (rj.getObjValAs? Nat "id").toOption == some T.selfParam && (← read).rcls != some o then
+          throw s!"{name}, a class method returning Self, of another class"
+    if let some rid := (recvJ.getObjVal? "id").toOption.bind (·.getNat?.toOption) then
+      if let .ok rtj := T.nodeTypes.getObjVal? (toString rid) then
+        if (rtj.getObjValAs? String "t").toOption == some "union" then
+          if ((rtj.getObjValAs? (Array Json) "members").toOption.getD #[]).any fun mj =>
+              (mj.getObjValAs? String "t").toOption == some "class_object" then
+            throw s!"{name} on a union of class objects"
+        if (rtj.getObjValAs? String "t").toOption == some "class_object" then
+          let classSide := (← field m "singleton") == .bool true &&
+            (T.metaOf (← nat (← field m "owner"))).isSome
+          unless classSide || (← field m "native") == .bool true do
+            throw s!"{name} on a class's object, not a class method"
+          -- (`-> Self`: the model's result is the method's class's instance,
+          -- the Rust checker's the receiver's.)
+          if classSide then
+            let rj ← field m "ret"
+            if (rj.getObjValAs? String "t").toOption == some "param" &&
+                (rj.getObjValAs? Nat "id").toOption == some T.selfParam &&
+                (rtj.getObjValAs? Nat "id").toOption != some (← nat (← field m "owner")) then
+              throw s!"{name}, a class method returning Self, on a subclass"
     -- (In a function, a method of `self` is the file's top-level
     -- object's, `Object`'s: the model's would run on the caller's.)
     if implicitRecv && (← T.inFunction) then
@@ -2287,7 +2362,10 @@ def accessor (T : Tables) (owner : Nat) (m : Json) : M (Option Method) := do
 
 /-- A Rust method as a QCore one. -/
 def method (T : Tables) (owner : Nat) (m : Json) (d : Json) : M Method := do
-  if (← field m "singleton") == .bool true then throw "a class method"
+  -- (A class method: its class's metaclass's, design §19.)
+  let classSide := (← field m "singleton") == .bool true
+  if classSide && ((T.metaOf (← nat (← field m "owner"))).isNone || (← field m "extension") != .null) then
+    throw "a class method"
   unless (← arr (← field m "type_params")).isEmpty do throw "a method type parameter"
   if (← field m "extension") != .null then
     let o ← nat (← field m "owner")
@@ -2313,7 +2391,15 @@ def method (T : Tables) (owner : Nat) (m : Json) (d : Json) : M Method := do
   -- A method a `static` statement generated (docs/14 §5): its body is a
   -- block of the `static def` that made it, not in the tree.
   if (← field m "generated") == .bool true then throw "a generated method"
-  let ret ← T.ty (← field m "ret")
+  -- (`-> Self` of a class method: an instance of the class, design §19.)
+  let rj ← field m "ret"
+  let isSelf := classSide && (rj.getObjValAs? String "t").toOption == some "param" &&
+    (rj.getObjValAs? Nat "id").toOption == some T.selfParam
+  let q := T.qclass (← nat (← field m "owner"))
+  let ret ← if isSelf then (match q with
+      | some q => pure [Atom.cls q []]
+      | none => throw "a Self of a class out of range")
+    else T.ty rj
   if (← field m "block_optional") == .bool true then throw "an optional block"
   let (block, bproc) ← match ← field m "block" with
     | .null => pure (none, none)
@@ -2337,7 +2423,7 @@ def method (T : Tables) (owner : Nat) (m : Json) (d : Json) : M Method := do
       | .null => pure 0
       | t => pure (← T.tyClass t).1
     pure (some (params, sup))
-  let w : Where := ⟨T.qclass (← nat (← field m "owner")) == some 1, init, some (← nat (← field m "owner")), none, none, [], bproc, [], [], true, false, false, false, false⟩
+  let w : Where := ⟨T.qclass (← nat (← field m "owner")) == some 1, init, some (← nat (← field m "owner")), none, none, [], bproc, [], [], true, false, false, false, false, classSide⟩
   -- (An abstract method, `d` null: what the run time does when a call
   -- reaches it, raise a `NotImplementedError`.)
   let (bd, ls) ← if d == .null then do
@@ -2552,6 +2638,13 @@ def program (j : Json) : M Program := do
   let copyOf (mid cid : Nat) : Option Nat := (seq.idxOf? (mid, some cid)).map (· + 4 + procMax)
   let generic ← user.filterMapM fun c => do
     if (← arr (← field c "type_params")).isEmpty then pure none else pure (some (← nat (← field c "id")))
+  -- The metaclasses (design §19), after all the other classes: one for each
+  -- program's class without type parameters, below its superclass's.
+  let metaJs ← user.filterM fun c => do
+    pure ((← str (← field c "kind")) == "Class" && (← arr (← field c "type_params")).isEmpty)
+  let metaIds ← metaJs.mapM fun c => do nat (← field c "id")
+  let metaBase := 4 + procMax + seq.length
+  let metaOf : Nat → Option Nat := fun id => (metaIds.idxOf? id).map (· + metaBase)
   let modCopies : Nat → Option (List (Nat × Bool)) := fun mid =>
     if progModIds.contains mid then
       some (ownMods.filterMap fun (cid, ms) =>
@@ -2594,7 +2687,7 @@ def program (j : Json) : M Program := do
     fun id => (narrowedList.find? (·.1 == id)).map (·.2), selfParam, excIds,
     (j.getObjVal? "op_targets").toOption.getD Json.null,
     (j.getObjVal? "block_results").toOption.getD Json.null, [], ← arr (← field j "extensions"), modCopies,
-    builtIds⟩
+    builtIds, metaOf⟩
   -- The program's overloaded names (but `initialize`, which `new` and
   -- `super` take the nearest of).
   let mine ← (← arr (← field j "methods")).toList.filterM fun m => do
@@ -2734,9 +2827,25 @@ def program (j : Json) : M Program := do
       above := (k, selfArgs)
     pure (copies ++ [⟨← str (← field c "name"), some above.1, fields, params, above.2, pbs.map (·.2), kind⟩])
   let qclasses := qclasses.flatten
+  -- (Each metaclass below its nearest ancestor's; a class without one in
+  -- between, generic, with class methods of its own: out of range.)
+  let metaSuper (c : Json) : M (Option Nat) := do
+    for a in (← arr (← field c "ancestors")).toList.drop 1 do
+      let aid ← nat (← field a "id")
+      if (metaOf aid).isSome then return some aid
+      if ← (← arr (← field j "methods")).anyM (fun m => do
+          pure ((m.getObjValAs? Nat "owner").toOption == some aid && (m.getObjVal? "singleton").toOption == some (.bool true))) then
+        if (← str (← field (← classById aid) "kind")) == "Class" && files.contains (← nat (← field (← classById aid) "file")) then
+          throw "a class without a metaclass, with class methods, between metaclasses"
+    pure none
+  let metaClasses ← metaJs.mapM fun c => do
+    let sup := match ← metaSuper c with
+      | some sid => (metaOf sid).getD 0
+      | none => 0
+    pure (⟨(← str (← field c "name")) ++ ".class", some sup, [], [], [], [], .cls⟩ : Class)
   let allClasses : ClassTable := ⟨"Object", none, [], [], [], [], .cls⟩ :: ⟨"<main>", some 0, [], [], [], [], .cls⟩ ::
       ((List.range (procMax + 1)).map procClassOf ++ [⟨"Array", some 0, [], [.co], [], [], .builtin⟩] ++
-        excClasses ++ builtClasses ++ qclasses)
+        excClasses ++ builtClasses ++ qclasses ++ metaClasses)
   -- The classes right below `Object` whose objects may be a method's
   -- `self`: each holds a copy of every function (`modelName`), which a
   -- call reaches from any class (the model's `Object` holds the value
@@ -2760,6 +2869,10 @@ def program (j : Json) : M Program := do
       -- model's chain of copies would.)
       if (← str (← field m "name")) == "initialize" then throw "an initialize in a module"
       return ← copies.mapM fun (k, _) => method T k m def_
+    if (← field m "singleton") == .bool true then
+      match metaOf owner with
+      | some k => return [← method T k m def_]
+      | none => throw "a class method"
     match qclass owner with
     | some 1 => roots.mapM fun k => method T k m def_
     | some k => pure [← method T k m def_]
@@ -2778,17 +2891,17 @@ def program (j : Json) : M Program := do
     match ← field k "value" with
     | .null => throw "a constant with no initializer"
     | v =>
-      let (bd, ls) ← ((expr T v).run ⟨true, none, none, none, none, [], none, [], [], false, false, false, false, false⟩).run []
+      let (bd, ls) ← ((expr T v).run ⟨true, none, none, none, none, [], none, [], [], false, false, false, false, false, false⟩).run []
       pure (some (⟨1, "const " ++ (← str (← field k "name")), [], ty, none, ls, bd⟩ : Method))
   let some mainUnit := units.back? | throw "no unit"
-  let (mainBody, mainLocals) ← ((body T (← arr (← field mainUnit "body"))).run ⟨true, none, none, none, none, [], none, [], [], true, false, false, false, false⟩).run []
+  let (mainBody, mainLocals) ← ((body T (← arr (← field mainUnit "body"))).run ⟨true, none, none, none, none, [], none, [], [], true, false, false, false, false, false⟩).run []
   let all : Ty := [.nil, .bool, .int, .str, .cls 0 []]
   -- A default that tests or loops, with a bounded parameter anywhere (it
   -- is checked in each inheriting class): out of range, as in `method`.
   let bounded ← user.anyM fun c => do
     (← arr (← field c "type_params")).anyM fun p => do pure !(← arr (← field p "bounds")).isEmpty
   let defaults ← fdefs.toList.mapM fun e => do
-    let (x, ls) ← ((expr T (← field e "value")).run ⟨false, none, none, none, none, [], none, [], [], false, false, false, false, false⟩).run []
+    let (x, ls) ← ((expr T (← field e "value")).run ⟨false, none, none, none, none, [], none, [], [], false, false, false, false, false, false⟩).run []
     unless ls.isEmpty do throw "a field default with locals"
     if bounded && narrows x then throw "a test in a default with a bounded parameter"
     pure x
@@ -2798,7 +2911,38 @@ def program (j : Json) : M Program := do
     match qclass o with
     | some q => if q ≥ 2 && !excIds.contains o && !builtIds.contains o then accessor T q m else pure none
     | none => pure none
-  let own := methods ++ accessors
+  -- The metaclasses' `new@meta` (`new` on a class method's receiver makes
+  -- the receiver's class's), where the program calls it (design §19). A subclass's `new@meta` overrides
+  -- its superclass's: of the same parameters (the Rust checker requires its
+  -- `initialize` to take the same arguments), else out of range.
+  let uses (n : String) := (methods ++ consts).any fun mt => callsName n mt.body
+  let mut metaMethods : List Method := []
+  let mut newSigs : List (Nat × List Ty) := []
+  if uses "new@meta" then
+    for c in metaJs do
+      let cid ← nat (← field c "id")
+      let some mk := metaOf cid | throw "a metaclass"
+      let some q := qclass cid | throw "a class out of range"
+      let tys ← match ← T.nearestInit cid with
+        | none => pure []
+        | some ii => do
+          let mi ← T.method ii
+          -- (Its parameters as the class sees them: an inherited one's of the
+          -- superclass's arguments.)
+          let rj := Json.mkObj [("t", "class"), ("id", cid), ("args", Json.arr #[])]
+          let some env ← T.receiverEnv rj (← nat (← field mi "owner")) | throw "new@meta: an initialize's view"
+          (← arr (← field mi "params")).toList.mapM fun p => do
+            unless (← str (← field p "kind")) == "Positional" && (← field p "default") != .bool true do
+              throw "new@meta: an initialize's parameter not plain"
+            T.tyIn env (← field p "type")
+      if let some sid ← metaSuper c then
+        if let some (_, stys) := newSigs.find? (·.1 == sid) then
+          unless stys == tys do throw "new@meta: a subclass's initialize of other parameters"
+      newSigs := newSigs ++ [(cid, tys)]
+      let ps := tys.zipIdx.map fun (t, i) => (s!"a{i}", t)
+      metaMethods := metaMethods ++ [⟨mk, "new@meta", ps, [.cls q []], none, ps,
+        .new q [] (ps.map fun (x, t) => .var x t)⟩]
+  let own := methods ++ accessors ++ metaMethods
   let P : Program := ⟨allClasses, own ++ consts,
     ⟨1, "<main>", [], all, none, mainLocals, mainBody⟩, defaults⟩
   for m in P.main :: P.methods do localsInRange (m.params.map (·.1)) m.body
