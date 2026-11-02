@@ -1,0 +1,65 @@
+# Top-level `def`s are functions (docs/01 §2): called from any class, by
+# name or as `::name` past a method of the class that hides it, from a
+# subclass, an exception class, an enum and a data type, and from one
+# another; their bodies do not observe `self` (the file's top-level
+# object), so the model's copy of each in every class below `Object`
+# runs as Quarz's does.
+def twice(x: Int) -> Int = x * 2
+def quad(x: Int) -> Int = twice(twice(x))
+
+def hello(name: String) -> String
+  puts "hello"
+  "hi " + name
+end
+
+def sum_twice(xs: Array[Int]) -> Int
+  t = 0
+  i = 0
+  while i < xs.size
+    t += twice(xs[i])
+    i += 1
+  end
+  t
+end
+
+class Shape
+  def area -> Int = 1
+  def double_area -> Int = ::twice(area)
+  def twice(x: Int) -> Int = x + 100
+  def both -> Int = twice(1) + ::twice(1)
+end
+
+class Square < Shape
+  @side: Int
+
+  def initialize(side: Int)
+    @side = side
+  end
+
+  def area -> Int = quad(@side)
+  def greet -> String = hello("square")
+end
+
+class Oops < Exception
+  def code -> Int = twice(21)
+end
+
+enum Color
+  variant Red
+  variant Green
+
+  def score -> Int = sum_twice([1, 2])
+end
+
+data P(x: Int)
+  def y -> Int = twice(x)
+end
+
+s = Square.new(3)
+puts s.double_area
+puts s.both
+puts s.greet
+puts Oops.new("x").code
+puts Color::Red.score
+puts P.new(4).y
+puts quad(1)
