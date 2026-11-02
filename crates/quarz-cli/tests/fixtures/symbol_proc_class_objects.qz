@@ -1,0 +1,33 @@
+# `&:name` on class objects of a union (`Type[A] | Type[B]`) calls what the
+# block `{ |k| k.name }` does: the common class method, or the method of a
+# module a common superclass extends, running each receiver's own.
+class Shape
+  def self.label -> String = "shape"
+end
+class Circle < Shape
+  def self.label -> String = "circle"
+end
+class Square < Shape
+  def self.label -> String = "square"
+end
+module Named
+  def name_of -> String = "unnamed"
+end
+class Thing
+  extend Named
+end
+class Cup < Thing
+  def self.name_of -> String = "cup"
+end
+class Pot < Thing
+end
+class Pan < Thing
+end
+kinds: Array[Type[Circle] | Type[Square]] = [Circle, Square]
+p kinds.map(&:label)
+p kinds.map { |k| k.label }
+things: Array[Type[Cup] | Type[Pot]] = [Cup, Pot]
+p things.map(&:name_of)
+p things.map { |k| k.name_of }
+plain: Array[Type[Pot] | Type[Pan]] = [Pot, Pan]
+p plain.map(&:name_of)

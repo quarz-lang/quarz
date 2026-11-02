@@ -288,6 +288,10 @@ pub(crate) enum VarKey {
 
 pub(crate) type Facts = Vec<(VarKey, Type)>;
 
+/// `Checker::class_object_union_symbol`'s answer: the common method, and
+/// each member with its own method and substitution.
+type ClassObjectSymbol = (MethodId, Vec<(Type, MethodId, HashMap<TypeParamId, Type>)>);
+
 /// Narrowed types of all variables and immutable fields at a point.
 /// The narrowings at a point: per frame, its number of variables and
 /// the narrowed ones (by slot), and the fields'.
@@ -10945,7 +10949,11 @@ impl Checker {
                             return Err(format!("`&:{name}` needs a block with one parameter"));
                         }
                         let recv = self.infer.resolve(&params[0]);
-                        let cands = self.world.lookup_methods(&recv, name);
+                        let class_objects = self.class_object_union_symbol(&recv, name);
+                        let cands = match &class_objects {
+                            Some((_, each)) => vec![(each[0].1, each[0].2.clone())],
+                            None => self.world.lookup_methods(&recv, name),
+                        };
                         // The first callable with no argument or block whose
                         // extension's bounds the receiver satisfies, as a
                         // call chooses (`sum` of an `Enumerable[T <: Int]` or
@@ -10993,8 +11001,17 @@ impl Checker {
                             }
                             return Err(msg);
                         }
-                        // As Ruby's `Symbol#to_proc`, only a public method.
-                        let visibility = self.world.method(mid).visibility;
+                        // As Ruby's `Symbol#to_proc`, only a public method
+                        // (each member's own, for class objects of a union).
+                        let each = match &class_objects {
+                            Some((_, each)) => each.clone(),
+                            None => vec![(recv.clone(), mid, msubst.clone())],
+                        };
+                        let visibility = each
+                            .iter()
+                            .map(|(_, k, _)| self.world.method(*k).visibility)
+                            .find(|v| *v != Visibility::Public)
+                            .unwrap_or(Visibility::Public);
                         if visibility != Visibility::Public {
                             let msg = format!(
                                 "`{name}` is {} for {}: `&:{name}` calls only public methods",
@@ -11010,9 +11027,17 @@ impl Checker {
                             }
                             return Err(msg);
                         }
-                        let mut msubst = msubst;
-                        msubst.insert(SELF_PARAM, recv.clone());
-                        let r = self.world.unvoid(&self.method_ret(mid)).subst(&msubst);
+                        // The result: each member's method's (joined, as
+                        // the block's), `Self` as a call binds it.
+                        let mut r = Type::Nothing;
+                        for (member, k, mut ksubst) in each {
+                            let this =
+                                Self::self_binding(&self.world, self.world.method(k), &member);
+                            ksubst.insert(SELF_PARAM, this);
+                            let kr = self.world.unvoid(&self.method_ret(k)).subst(&ksubst);
+                            r = self.join(&r, &kr);
+                        }
+                        let mid = class_objects.as_ref().map_or(mid, |(base, _)| *base);
                         // Given where a `Void` result is expected, the
                         // call's value is discarded, as the block's would be.
                         let discard = self.infer.resolve(&ret) == Type::Void;
@@ -11027,7 +11052,12 @@ impl Checker {
                             }
                             return Err(msg);
                         }
-                        if matches!(self.resolve(&recv), Type::ClassObject(..) | Type::TypeOf(_)) {
+                        if class_objects.is_some()
+                            || matches!(
+                                self.resolve(&recv),
+                                Type::ClassObject(..) | Type::TypeOf(_)
+                            )
+                        {
                             self.symbol_on_class_object.insert(e.id);
                         }
                         // Checked again with another class method on a class
@@ -11517,6 +11547,46 @@ impl Checker {
             _ => "a declaration",
         };
         self.error(refuse(what), e.span);
+    }
+
+    /// `&:name` on a union of class objects (`Type[A] | Type[B]`): the
+    /// class method (or extended module method) each member's own
+    /// overrides (`World::class_object_base`), as the block `{ |c| c.name }`
+    /// calls, with each member's own method and substitution (which the
+    /// block's result and visibility go by); `None` for any other receiver.
+    fn class_object_union_symbol(&mut self, recv: &Type, name: &str) -> Option<ClassObjectSymbol> {
+        let members = recv.members();
+        if members.len() < 2 || !members.iter().all(|m| matches!(m, Type::ClassObject(..))) {
+            return None;
+        }
+        let mut table = Vec::new();
+        let mut substs = Vec::new();
+        for m in &members {
+            // (The first callable one, as for one class object.)
+            let found = self
+                .world
+                .lookup_methods(m, name)
+                .into_iter()
+                .find(|(k, ks)| {
+                    let saved = self.infer.save();
+                    let ok = self.symbol_callable(*k, ks, name).is_ok();
+                    self.infer.restore(saved);
+                    ok
+                })?;
+            table.push((m.clone(), found.0));
+            substs.push(found);
+        }
+        // (One method for every member: that one.)
+        let base = match table.iter().all(|(_, k)| *k == table[0].1) {
+            true => table[0].1,
+            false => self.world.class_object_base(&table)?,
+        };
+        let each = members
+            .into_iter()
+            .zip(substs)
+            .map(|(m, (k, ks))| (m, k, ks))
+            .collect();
+        Some((base, each))
     }
 
     /// Check a block against the procedure type it is passed as.
