@@ -1,0 +1,41 @@
+# An override's own type parameters take what the overridden method's do:
+# a call through the overridden method may pass any type its bounds admit.
+class Shape
+  def area -> Int = 1
+end
+
+class Square < Shape
+  def area -> Int = 4
+end
+
+class A
+  def f[T <: Square](x: T) -> Int = x.area
+  def g[T <: Comparable[T]](x: T, y: T) -> Bool = x < y
+  def k[U >: Square](x: U) -> String = "A"
+end
+
+class B < A
+  def f[T <: Shape](x: T) -> Int = x.area + 10
+  def g[T <: Comparable[T]](x: T, y: T) -> Bool = x > y
+  def k[U](x: U) -> String = "B"
+end
+
+module Sized
+  abstract def size_of[T <: Shape](x: T) -> Int
+end
+
+class Box
+  include Sized
+  def size_of[T](x: T) -> Int = 3
+end
+
+def mk(b: Bool) -> A = b ? B.new : A.new
+[true, false].each do |b|
+  a = mk(b)
+  p a.f(Square.new)
+  p a.g(1, 2)
+  p a.k(Square.new)
+end
+s: Sized = Box.new
+p s.size_of(Square.new)
+p B.new.f(Shape.new)

@@ -1791,6 +1791,13 @@ impl<'ast> Declarer<'ast> {
         }
         let mut subst = self.world.class_subst(a, aargs);
         subst.insert(SELF_PARAM, own.clone());
+        // (Their type parameters as the implementation's, in order.)
+        let (om, m) = (self.world.method(o), self.world.method(mid));
+        if om.type_params.len() == m.type_params.len() {
+            for (p, q) in om.type_params.iter().zip(&m.type_params) {
+                subst.insert(p.id, Type::Param(q.id));
+            }
+        }
         let mut mine_subst = match oargs {
             Some(args) => self.world.class_subst(owner, &args),
             None => HashMap::default(),
@@ -1923,10 +1930,14 @@ impl<'ast> Declarer<'ast> {
                 let m = self.world.method(mid).clone();
                 // (The prelude specializes some of what it overrides, as
                 // Ruby: `Hash#select` and `Hash#filter` give a `Hash`.)
+                // (An included module's abstract method never runs in place
+                // of the superclass's: the runtime goes on to it, which
+                // implements it, `check_implementation_seen`.)
                 if m.owner != x
                     || m.synth != Synth::None
                     || m.file == 0
                     || (!m.singleton && (m.name == "initialize" || m.name == "deinitialize"))
+                    || (m.is_abstract && x != id)
                 {
                     continue;
                 }
@@ -2055,6 +2066,13 @@ impl<'ast> Declarer<'ast> {
                 }
                 let mut subst = osubst;
                 subst.insert(SELF_PARAM, on.clone());
+                // (Their type parameters as the class method's, in order.)
+                let (om, cm) = (self.world.method(o), self.world.method(mid));
+                if om.type_params.len() == cm.type_params.len() {
+                    for (p, q) in om.type_params.iter().zip(&cm.type_params) {
+                        subst.insert(p.id, Type::Param(q.id));
+                    }
+                }
                 if within.is_some() {
                     self.override_span = Some(self.world.class(id).span);
                     self.override_via = "extends";
@@ -2290,6 +2308,46 @@ impl<'ast> Declarer<'ast> {
                     ),
                     span,
                 );
+                return false;
+            }
+        }
+        // Its own type parameters take what the overridden method's do
+        // (as its parameters, contravariantly): each bound at least as
+        // wide, a lower bound at most as narrow. A call through the
+        // overridden method may pass any type its bounds admit.
+        if om.type_params.len() == m.type_params.len() {
+            for (p, q) in om.type_params.iter().zip(&m.type_params) {
+                let theirs: Vec<Type> = p.bounds.iter().map(|b| b.subst(subst)).collect();
+                // (A bound every type meets, `Object?`, narrows nothing.)
+                let top = self.world.nilable(Type::class(self.world.builtin.object));
+                let narrowed = q.bounds.iter().map(&see).find(|c| {
+                    !self.world.is_subtype(&top, c)
+                        && !theirs.iter().any(|b| b == c || self.world.is_subtype(b, c))
+                });
+                let lower_narrowed = q.lower.as_ref().map(see).filter(|l| {
+                    !p.lower
+                        .as_ref()
+                        .map(|pl| pl.subst(subst))
+                        .is_some_and(|pl| pl == *l || self.world.is_subtype(l, &pl))
+                });
+                let message = match (narrowed, lower_narrowed) {
+                    (Some(c), _) => format!(
+                        "`{mname}` bounds its type parameter `{}` by {}, but `{owner}{sep}{mname}`, which it overrides{context}, admits {}: an override's type parameters take what the method it overrides does",
+                        q.name,
+                        self.world.type_name(&c),
+                        match theirs.as_slice() {
+                            [] => "any type".to_string(),
+                            bs => bs.iter().map(|b| self.world.type_name(b)).collect::<Vec<_>>().join(" & "),
+                        }
+                    ),
+                    (None, Some(l)) => format!(
+                        "`{mname}` gives its type parameter `{}` the lower bound {}, but `{owner}{sep}{mname}`, which it overrides{context}, admits types below it: an override's type parameters take what the method it overrides does",
+                        q.name,
+                        self.world.type_name(&l),
+                    ),
+                    (None, None) => continue,
+                };
+                self.error(message, span);
                 return false;
             }
         }

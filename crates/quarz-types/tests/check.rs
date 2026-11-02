@@ -3760,6 +3760,46 @@ fn a_bare_super_forwards_the_parameters_themselves() {
 }
 
 #[test]
+fn an_override_keeps_its_type_parameters_bounds_as_wide() {
+    // A call through the overridden method may pass any type its bounds
+    // admit.
+    let shapes = "class Shape\n  def area -> Int = 1\nend\nclass Square < Shape\nend\n";
+    err(
+        &format!("{shapes}class A\n  def f[T](x: T) -> Int = 0\nend\nclass B < A\n  def f[T <: Shape](x: T) -> Int = x.area + 10\nend"),
+        "`f` bounds its type parameter `T` by Shape, but `A#f`, which it overrides, admits any type",
+    );
+    err(
+        &format!("{shapes}class A\n  def f[T <: Shape](x: T) -> Int = 0\nend\nclass B < A\n  def f[T <: Square](x: T) -> Int = 1\nend"),
+        "`f` bounds its type parameter `T` by Square, but `A#f`, which it overrides, admits Shape",
+    );
+    err(
+        &format!("{shapes}class A\n  def k[U >: Square](x: U) -> Int = 0\nend\nclass B < A\n  def k[U >: Shape](x: U) -> Int = 1\nend"),
+        "`k` gives its type parameter `U` the lower bound Shape",
+    );
+    // An implementation of an abstract method too.
+    err(
+        &format!("{shapes}module Sized\n  abstract def size_of[T](x: T) -> Int\nend\nclass C\n  include Sized\n  def size_of[T <: Shape](x: T) -> Int = 3\nend"),
+        "`size_of` bounds its type parameter `T` by Shape",
+    );
+    // A bound every type meets narrows nothing.
+    ok("class A\n  def f[T](x: T) -> Int = 0\nend\nclass B < A\n  def f[T <: Object?](x: T) -> Int = 1\nend");
+    // A superclass's method implementing an included module's abstract
+    // one: their type parameters are matched in order.
+    ok("module M\n  abstract def h[T <: Comparable[T]](x: T, y: T) -> Bool\nend\nclass A\n  def h[T <: Comparable[T]](x: T, y: T) -> Bool = x < y\nend\nclass C < A\n  include M\nend");
+    ok("module M\n  abstract def h[T](x: T, y: T) -> Bool\nend\nclass A\n  def h[T](x: T, y: T) -> Bool = true\nend\nclass C < A\n  include M\nend");
+    // An included module's abstract method does not replace the
+    // superclass's that implements it: a wider bound there is fine, a
+    // narrower one is refused at the implementation.
+    ok("module Picker\n  abstract def pick[T <: Comparable[T]](x: T, y: T) -> T\nend\nclass First\n  def pick[T](x: T, y: T) -> T = x\nend\nclass C < First\n  include Picker\nend\np C.new.pick(1, 2)");
+    err(
+        &format!("{shapes}module M\n  abstract def f[T <: Shape](x: T) -> Int\nend\nclass A\n  def f[T <: Square](x: T) -> Int = x.area\nend\nclass C < A\n  include M\nend"),
+        "`f` bounds its type parameter `T` by Square, but `M#f`, which it overrides, admits Shape",
+    );
+    // A wider bound, the same one (renamed), F-bounded, or none.
+    no_warnings(&format!("{shapes}class A\n  def f[T <: Square](x: T) -> Int = x.area\n  def g[T <: Shape](x: T) -> Int = x.area\n  def h[T <: Comparable[T]](x: T, y: T) -> Bool = x < y\n  def k[U >: Square](x: U) -> Int = 0\nend\nclass B < A\n  def f[T <: Shape](x: T) -> Int = x.area + 1\n  def g[U <: Shape](x: U) -> Int = x.area + 2\n  def h[T <: Comparable[T]](x: T, y: T) -> Bool = x > y\n  def k[U](x: U) -> Int = 1\nend"));
+}
+
+#[test]
 fn a_rescue_variable_reassigned_after_a_closure_captured_it() {
     // tmp/repro/rescue-var-late-closure.qz: the closure reads `e` when
     // called, after the clause reassigned it.
