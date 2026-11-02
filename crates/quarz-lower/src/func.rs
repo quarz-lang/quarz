@@ -2691,7 +2691,22 @@ impl<'a> FnBuilder<'a> {
     /// for each member and calls its method: an extension's, active where
     /// the call is, would not be found by name at run time, nor through
     /// a common ancestor's method.
-    fn emit_call(&mut self, id: u32, mut inst: Inst) {
+    fn emit_call(&mut self, id: u32, inst: Inst) {
+        let base = self.class_object_base(id);
+        let conflict = self.out.union_conflicts.contains(&id);
+        let table = self.out.union_calls.get(&id).cloned();
+        self.emit_call_by(base, conflict, table, inst);
+    }
+
+    /// `emit_call` with the node's record given: the common class method
+    /// of class objects, whether the checks conflict, and the table.
+    fn emit_call_by(
+        &mut self,
+        base: Option<MethodId>,
+        conflict: bool,
+        table: Option<Vec<(Type, MethodId)>>,
+        mut inst: Inst,
+    ) {
         let name = match &inst {
             Inst::Call {
                 kind: CallKind::Send(n),
@@ -2710,7 +2725,7 @@ impl<'a> FnBuilder<'a> {
         };
         // Class objects whose class methods override one: a call of it,
         // dispatched on the receiver's class.
-        if let Some(base) = self.class_object_base(id) {
+        if let Some(base) = base {
             if let Inst::Call { kind, .. } = &mut inst {
                 *kind = CallKind::Method(base);
             }
@@ -2719,14 +2734,14 @@ impl<'a> FnBuilder<'a> {
         }
         // Checks of the call (a block's, once per type) that disagree, or
         // members a class test cannot tell apart: by name, as before.
-        if self.out.union_conflicts.contains(&id) {
+        if conflict {
             if let Inst::Call { kind, .. } = &mut inst {
                 *kind = CallKind::Send(name);
             }
             self.emit(inst);
             return;
         }
-        let Some(table) = self.out.union_calls.get(&id).cloned() else {
+        let Some(table) = table else {
             self.emit(inst);
             return;
         };
@@ -4111,6 +4126,31 @@ impl<'a> FnBuilder<'a> {
             None => CallKind::Send(name.to_string()),
         };
         let dst = self.reg();
+        // On a union whose members answer differently: by the receiver's
+        // class, as a call (`Output::op_getter_tables`).
+        if let Some((table, conflict)) = self.out.op_getter_tables.get(&id).cloned() {
+            let base = (!conflict)
+                .then(|| self.world.class_object_base(&table))
+                .flatten();
+            let table = (!table.is_empty()).then_some(table);
+            self.emit_call_by(
+                base,
+                conflict,
+                table,
+                Inst::Call {
+                    dst,
+                    kind,
+                    recv: Some(recv),
+                    args,
+                    splat,
+                    kw: Vec::new(),
+                    kw_splat: None,
+                    block: None,
+                    moved: 0,
+                },
+            );
+            return dst;
+        }
         self.emit(Inst::Call {
             dst,
             kind,

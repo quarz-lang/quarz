@@ -125,6 +125,10 @@ pub struct Output {
     /// `+`); its writer is the node's `calls` entry.
     pub op_getters: HashMap<NodeId, MethodId>,
     pub op_operators: HashMap<NodeId, MethodId>,
+    /// A compound assignment's reader on a union receiver (`o.w += 1` on
+    /// `Cat | Dog`): its table and conflict flag, as `union_calls` and
+    /// `union_conflicts` are for a call (which hold the writer's).
+    pub op_getter_tables: HashMap<NodeId, (Vec<(Type, MethodId)>, bool)>,
     /// `as`/`as?`/`is_a?` calls whose run-time test must check elements:
     /// the value may be of the class without being of the type.
     pub element_tests: rustc_hash::FxHashSet<NodeId>,
@@ -572,6 +576,9 @@ enum TableUndo {
     StaticCall((u32, Span, MethodId)),
     /// A node's type before a check in a block recorded another.
     NodeType(NodeId, Option<Type>),
+    /// A compound assignment's reader record (`Output::op_getter_tables`)
+    /// before a check changed it.
+    OpGetterTable(NodeId, Option<(Vec<(Type, MethodId)>, bool)>),
     /// A `def_method` block's `Output::lifted_blocks` entry before a check
     /// recorded another (and `Checker::lifted_seen` got one more).
     Lifted(NodeId, Option<Type>),
@@ -2012,6 +2019,12 @@ impl Checker {
                     match t {
                         Some(t) => self.out.node_types.insert(id, t),
                         None => self.out.node_types.remove(&id),
+                    };
+                }
+                TableUndo::OpGetterTable(id, t) => {
+                    match t {
+                        Some(t) => self.out.op_getter_tables.insert(id, t),
+                        None => self.out.op_getter_tables.remove(&id),
                     };
                 }
                 TableUndo::Lifted(id, t) => {
@@ -3702,8 +3715,32 @@ impl Checker {
         self.out.interp_to_s.insert(id, table);
     }
 
+    /// Check a compound assignment's reader (`w` of `o.w += 1`) on the
+    /// node, whose `union_calls` record (the writer's) is set aside: its
+    /// own record from earlier checks (`Output::op_getter_tables`) is put
+    /// there for the check to merge into, and kept after it.
+    fn check_op_reader(&mut self, expr: &Expr, getter: &Call) -> Type {
+        let id = expr.id;
+        let before = self.out.op_getter_tables.remove(&id);
+        self.table_journal
+            .push(TableUndo::OpGetterTable(id, before.clone()));
+        if let Some((table, conflict)) = before {
+            self.restore_union_record(id, ((!table.is_empty()).then_some(table), conflict));
+        }
+        let t = self.check_call_with_types(expr, getter, None, true);
+        let (table, conflict) = self.take_union_record(id);
+        if table.is_some() || conflict {
+            self.out
+                .op_getter_tables
+                .insert(id, (table.unwrap_or_default(), conflict));
+        }
+        self.note_op_getter(id, expr.span);
+        t
+    }
+
     /// A compound assignment's reader, resolved just now (a union's
-    /// members answering differently are called by name).
+    /// members answering differently are chosen by the receiver's class,
+    /// `Output::op_getter_tables`).
     fn note_op_getter(&mut self, id: NodeId, span: Span) {
         let found = match (
             self.out.calls.get(&id),
@@ -7465,8 +7502,7 @@ impl Checker {
                 };
                 let _ = rt;
                 let saved = self.take_union_record(expr.id);
-                let t = self.check_call_with_types(expr, &getter, None, true);
-                self.note_op_getter(expr.id, expr.span);
+                let t = self.check_op_reader(expr, &getter);
                 self.restore_union_record(expr.id, saved);
                 t
             }
@@ -7482,8 +7518,7 @@ impl Checker {
                     type_args: vec![],
                 };
                 let saved = self.take_union_record(expr.id);
-                let t = self.check_call_with_types(expr, &getter, None, true);
-                self.note_op_getter(expr.id, expr.span);
+                let t = self.check_op_reader(expr, &getter);
                 self.restore_union_record(expr.id, saved);
                 t
             }
@@ -7590,42 +7625,79 @@ impl Checker {
                 // Check that the setter accepts the result type.
                 let rt = self.resolve(&self.out.node_types[&recv.id]);
                 let setter = format!("{name}=");
-                let cands = self.world.lookup_methods(&rt, &setter);
-                if cands.is_empty() {
+                if !self.note_op_writer(expr, &rt, &setter) {
                     self.error(
                         format!("undefined method `{setter}` for {}", self.name(&rt)),
                         expr.span,
                     );
-                } else {
-                    self.out
-                        .calls
-                        .insert(expr.id, CallTarget::Method { method: cands[0].0 });
-                    if !self.env.blocks.is_empty() && self.union_testable(&rt) {
-                        self.note_union_table(expr.id, vec![(rt.clone(), cands[0].0)], expr.span);
-                    }
                 }
             }
             LValue::Index { recv, .. } => {
                 let rt = self.resolve(&self.out.node_types[&recv.id]);
-                let cands = self.world.lookup_methods(&rt, "[]=");
-                if cands.is_empty() {
+                if !self.note_op_writer(expr, &rt, "[]=") {
                     let hint = self.immutable_hint(&rt, "[]=", Some(recv));
                     self.error(
                         format!("undefined method `[]=` for {}{hint}", self.name(&rt)),
                         expr.span,
                     );
-                } else {
-                    self.out
-                        .calls
-                        .insert(expr.id, CallTarget::Method { method: cands[0].0 });
-                    if !self.env.blocks.is_empty() && self.union_testable(&rt) {
-                        self.note_union_table(expr.id, vec![(rt.clone(), cands[0].0)], expr.span);
-                    }
                 }
             }
             LValue::Const(_) => {}
         }
         result
+    }
+
+    /// Record a compound assignment's writer (`w=`, `[]=`) on `rt`, the
+    /// node's `calls` entry: on a union, each member's own, chosen by the
+    /// receiver's class as a call's are (`union_calls`). False where a
+    /// member has none.
+    fn note_op_writer(&mut self, expr: &Expr, rt: &Type, setter: &str) -> bool {
+        let members = match rt {
+            Type::Union(ms) => ms.clone(),
+            t => vec![t.clone()],
+        };
+        let mut table = Vec::new();
+        for m in &members {
+            let Some((k, _)) = self.world.lookup_methods(m, setter).into_iter().next() else {
+                return false;
+            };
+            table.push((m.clone(), k));
+        }
+        self.out
+            .calls
+            .insert(expr.id, CallTarget::Method { method: table[0].1 });
+        let differ = table.iter().any(|(_, k)| *k != table[0].1);
+        if members.len() > 1 && (differ || !self.env.blocks.is_empty()) {
+            self.note_union_table(expr.id, table, expr.span);
+        } else if !self.env.blocks.is_empty() && self.union_testable(rt) {
+            self.note_union_table(expr.id, vec![(rt.clone(), table[0].1)], expr.span);
+        }
+        // (`o.c ||= v` through the value's own `||`, whose call the node's
+        // record also holds: one table of different writers, this check's
+        // or merged with earlier ones', cannot serve both.)
+        let recorded = self.out.union_calls.get(&expr.id);
+        let writers_differ = recorded.is_some_and(|t| t.iter().any(|(_, k)| *k != t[0].1));
+        if writers_differ && self.out.logical_calls.contains_key(&expr.id) {
+            // (Found by merging the checks: reported at the node, as
+            // `ambiguous_call` does, not as a failure of this check.)
+            let types: Vec<String> = self.out.union_calls[&expr.id]
+                .iter()
+                .map(|(t, _)| t.clone())
+                .collect::<Vec<_>>()
+                .iter()
+                .map(|t| self.name(t))
+                .collect();
+            let d = Diagnostic::error(
+                format!(
+                    "cannot tell at run time which `{setter}` to call for {} after the value's own logical operator (write the assignment out)",
+                    types.join(" | ")
+                ),
+                expr.span,
+            );
+            self.ambiguous
+                .push((self.env.file, AmbiguousKey::Node(expr.id), d));
+        }
+        true
     }
 
     /// Type of `lhs <op> rhs` given the operand types (for compound

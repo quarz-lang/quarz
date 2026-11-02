@@ -1,0 +1,71 @@
+# A compound assignment on a union receiver whose members each have the
+# reader and the writer (`o.w += 1`, `o[i] += 1`, `||=`): accepted where
+# `o.w = o.w + 1` is, each member's own reader and writer chosen by the
+# receiver's class.
+class Counter
+  var @n: Int = 1
+
+  def n -> Int = @n
+
+  def n=(v: Int) -> Int
+    @n = v
+  end
+
+  def [](i: Int) -> Int = @n * i
+
+  def []=(i: Int, v: Int) -> Int
+    @n = v
+  end
+end
+
+class Slot
+  var @v: Int = 50
+  var @label: String? = nil
+
+  def n -> Int = @v
+
+  def n=(v: Int) -> Int
+    @v = v * 2
+  end
+
+  def [](i: Int) -> Int = 100 + i
+
+  def []=(i: Int, v: Int) -> Int
+    @v = v
+  end
+
+  def label -> String? = @label
+
+  def label=(s: String?) -> String?
+    @label = s
+  end
+end
+
+class Tag
+  var @label: String? = "tag"
+
+  def label -> String? = @label
+
+  def label=(s: String?) -> String?
+    @label = s
+  end
+end
+
+def pick(i: Int) -> Counter | Slot = i > 0 ? Counter.new : Slot.new
+
+c = pick(1)
+s = pick(0)
+c.n += 1
+p c.n
+s.n += 1
+p s.n
+c[3] += 1
+p c.n
+s[2] += 1
+p s.n
+items: Array[Counter | Slot] = [Counter.new, Slot.new]
+items.each { |o| o[1] += 1 }
+p items.map { |o| o.n }
+labels: Array[Slot | Tag] = [Slot.new, Tag.new]
+labels.each { |o| o.label ||= "none" }
+p labels.map { |o| o.label }

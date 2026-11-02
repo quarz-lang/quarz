@@ -212,6 +212,7 @@ pub(crate) fn unit_output(world: &World, out: &Output, base: u32, file: u32) -> 
         interp_to_s: map!(interp_to_s),
         op_getters: map!(op_getters),
         op_operators: map!(op_operators),
+        op_getter_tables: map!(op_getter_tables),
         element_tests: set!(element_tests),
         bang_assign: set!(bang_assign),
         self_slots: out
@@ -335,6 +336,7 @@ pub(crate) fn merge_output(out: &mut Output, o: Output) {
     out.interp_to_s.extend(o.interp_to_s);
     out.op_getters.extend(o.op_getters);
     out.op_operators.extend(o.op_operators);
+    out.op_getter_tables.extend(o.op_getter_tables);
     out.element_tests.extend(o.element_tests);
     out.bang_assign.extend(o.bang_assign);
     out.self_slots.extend(o.self_slots);
