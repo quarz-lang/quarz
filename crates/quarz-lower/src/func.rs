@@ -4198,6 +4198,9 @@ impl<'a> FnBuilder<'a> {
             Attr(Reg, String),
             Index(Reg, Vec<Reg>, bool),
         }
+        // `o&.w += 1`: nil, and nothing else done, when `o` is nil (the
+        // result register and the block both paths join in).
+        let mut safe: Option<(Reg, BlockId)> = None;
         let (current, place) = match target {
             LValue::Local { span, .. } => {
                 let r = self.var_ref(*span);
@@ -4214,8 +4217,34 @@ impl<'a> FnBuilder<'a> {
                 let dst = self.field_get(obj, class, index);
                 (dst, Place::IVar(index))
             }
-            LValue::Attr { recv, name, .. } => {
+            LValue::Attr {
+                recv,
+                name,
+                safe_nav,
+            } => {
                 let r = self.expr(recv);
+                if *safe_nav {
+                    let out = self.reg();
+                    let is_nil = self.reg();
+                    self.emit(Inst::IsNil {
+                        dst: is_nil,
+                        src: r,
+                    });
+                    let nil_b = self.new_block();
+                    let go = self.new_block();
+                    let done = self.new_block();
+                    self.term(Term::Branch {
+                        cond: is_nil,
+                        then: nil_b,
+                        els: go,
+                    });
+                    self.switch(nil_b);
+                    let n = self.nil();
+                    self.emit(Inst::Move { dst: out, src: n });
+                    self.term(Term::Jump(done));
+                    self.switch(go);
+                    safe = Some((out, done));
+                }
                 let cur = self.op_read(e.id, r, name, Vec::new(), false);
                 (cur, Place::Attr(r, name.clone()))
             }
@@ -4356,7 +4385,15 @@ impl<'a> FnBuilder<'a> {
         }
         self.term(Term::Jump(join));
         self.switch(join);
-        res
+        match safe {
+            Some((out, done)) => {
+                self.emit(Inst::Move { dst: out, src: res });
+                self.term(Term::Jump(done));
+                self.switch(done);
+                out
+            }
+            None => res,
+        }
     }
 
     /// A block or lambda made where a shareable procedure is expected

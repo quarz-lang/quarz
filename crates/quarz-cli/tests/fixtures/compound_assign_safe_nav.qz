@@ -1,0 +1,47 @@
+# `o&.w += 1` (and `||=`, `&&=`) as in Ruby: nothing is done, and the value
+# is nil, when `o` is nil; otherwise `o.w += 1`. Its type has Nil added.
+class Counter
+  var @n: Int = 1
+  def n -> Int = @n
+  def n=(v: Int) -> Int
+    @n = v
+  end
+  var @label: String? = nil
+  def label -> String? = @label
+  def label=(s: String?) -> String?
+    @label = s
+  end
+end
+def pick(i: Int) -> Counter? = i > 0 ? Counter.new : nil
+c = pick(1)
+z = pick(0)
+r: Int? = (c&.n += 4)
+p r
+p c&.n
+q: Int? = (z&.n += 4)
+p q
+c&.label ||= "set"
+p c&.label
+z&.label ||= "never"
+p z&.label
+x = c&.n
+p x
+c&.label &&= "and"
+p c&.label
+# The receiver is evaluated once.
+class Box
+  var @hits: Int = 0
+  var @c: Counter? = Counter.new
+
+  def get -> Counter?
+    @hits = @hits + 1
+    @c
+  end
+
+  def hits -> Int = @hits
+end
+
+b = Box.new
+b.get&.n += 1
+p b.hits
+p b.get&.n

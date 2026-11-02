@@ -2427,6 +2427,14 @@ fn calls_a_class_test_cannot_choose_are_errors() {
         "class Cond\n  def ||(&rhs: () -> Cond) -> Cond = rhs.call\nend\ndef pk(i: Int) -> Array[Cond] | Array[Int?] = i > 0 ? [Cond.new] : [nil]\npk(0).each { |x| z = x; z ||= x; p z }",
         "cannot tell at run time whether `||` is a method of",
     );
+    // `o&.w += 1`: nil when `o` is nil, so its type has Nil added.
+    err(
+        "class C\n  var @n: Int = 1\n  def n -> Int = @n\n  def n=(v: Int) -> Int\n    @n = v\n  end\nend\ndef pick(i: Int) -> C? = i > 0 ? C.new : nil\nr: Int = (pick(1)&.n += 4)",
+        "cannot assign Int? to `r` of type Int",
+    );
+    ok("class C\n  var @n: Int = 1\n  def n -> Int = @n\n  def n=(v: Int) -> Int\n    @n = v\n  end\nend\ndef pick(i: Int) -> C? = i > 0 ? C.new : nil\nr: Int? = (pick(1)&.n += 4)\np r");
+    // Always nil: nothing is read or written.
+    ok("class C\n  var @n: Int = 1\n  def n -> Int = @n\n  def n=(v: Int) -> Int\n    @n = v\n  end\nend\nx = nil\nr = (x&.n += 1)\np r");
     // A compound assignment's reader from two extensions.
     err(
         "class A\nend\nclass B\nend\nextension A\n  def w -> Int = 1\n  def w=(x: Int) -> Int = x\nend\nextension B\n  def w -> Int = 2\n  def w=(x: Int) -> Int = x\nend\ndef pk(i: Int) -> Array[A] | Array[B] = i > 0 ? [A.new] : [B.new]\npk(1).each { |o| o.w += 1 }",
