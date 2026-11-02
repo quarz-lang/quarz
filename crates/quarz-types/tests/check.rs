@@ -2341,6 +2341,32 @@ fn calls_a_class_test_cannot_choose_are_errors() {
         "module M\n  def k -> String = \"M\"\nend\nclass S\n  def self.k -> String = \"S\"\nend\nclass A < S\n  extend M\nend\nclass T < S\n  def self.k -> String = \"T\"\nend\nclass Z\n  extend M\nend\ndef f(t: Type[T] | Type[Z]) -> String = t.k\np f(Z)",
         "cannot tell at run time which `k` to call for Type[T] and Type[Z]: T.k or M#k",
     );
+    // `&:k` on class objects whose class methods override no common one,
+    // as the block `{ |c| c.k }`.
+    err(
+        "class A\n  def self.k -> Int = 1\nend\nclass B\n  def self.k -> Int = 2\nend\nxs: Array[Type[A] | Type[B]] = [A, B]\np xs.map(&:k)",
+        "undefined method `k` for Type[A] | Type[B] (in `&:k`)",
+    );
+    err(
+        "class A\n  def self.k -> Int = 1\nend\nclass B\n  def self.k -> Int = 2\nend\nxs: Array[Type[A] | Type[B]] = [A, B]\np xs.map { |c| c.k }",
+        "cannot tell at run time which `k` to call for Type[A] and Type[B]",
+    );
+    // Each member's own result, as the block's: a generic module reached
+    // with different arguments, and `Self` in a class method (instances).
+    err(
+        "module M[T]\n  def get -> T = raise \"x\"\nend\nclass A\n  extend M[Int]\nend\nclass B\n  extend M[String]\nend\nxs: Array[Type[A] | Type[B]] = [A, B]\nys: Array[Int] = xs.map(&:get)",
+        "`&:get` returns Int | String but Int was expected",
+    );
+    err(
+        "class S\n  def self.build -> Self = new\nend\nclass A < S\nend\nxs: Array[Type[A]] = [A]\nys: Array[Type[A]] = xs.map(&:build)",
+        "`&:build` returns A but Type[A] was expected",
+    );
+    // (An extended module's `Self` is the class object it runs on.)
+    err(
+        "module M\n  def me -> Self = self\nend\nclass A\n  extend M\nend\nxs: Array[Type[A]] = [A]\nys: Array[A] = xs.map(&:me)",
+        "`&:me` returns Type[A] but A was expected",
+    );
+    ok("class S\n  def self.make -> S? = nil\n  private def self.k -> Int = 0\nend\nclass A < S\n  def self.make -> A = A.new\n  def self.k -> Int = 1\nend\nclass B < S\n  def self.make -> B = B.new\n  def self.k -> Int = 2\nend\nxs: Array[Type[A] | Type[B]] = [A, B]\nys: Array[A | B] = xs.map(&:make)\np xs.map(&:k)");
     // A compound assignment's reader from two extensions.
     err(
         "class A\nend\nclass B\nend\nextension A\n  def w -> Int = 1\n  def w=(x: Int) -> Int = x\nend\nextension B\n  def w -> Int = 2\n  def w=(x: Int) -> Int = x\nend\ndef pk(i: Int) -> Array[A] | Array[B] = i > 0 ? [A.new] : [B.new]\npk(1).each { |o| o.w += 1 }",
