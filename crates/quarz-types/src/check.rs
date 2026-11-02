@@ -2582,52 +2582,52 @@ impl Checker {
                 }
             }
         }
+        // Only what this frame recorded: its variables are its own table's
+        // (a frame checked inside another one, a constant checked lazily,
+        // numbers its variables from 0 too, and an entry another frame
+        // left with a variable unbound must not take this one's binding).
         let touched = std::mem::take(&mut self.touched);
         for id in touched {
             if let Some(t) = self.out.node_types.get(&id) {
                 let r = self.infer.resolve(t);
                 self.out.node_types.insert(id, r);
             }
-            // (A generic call's type arguments, this frame's only: another
-            // frame's may hold variables of its own inference table.)
-            if let Some(args) = self.out.call_type_args.get_mut(&id) {
+            for t in [
+                self.out.lifted_blocks.get_mut(&id),
+                self.out.op_targets.get_mut(&id),
+                self.out.block_results.get_mut(&id),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                if t.has_vars() {
+                    *t = self.infer.resolve(t);
+                }
+            }
+            for args in [
+                self.out.call_type_args.get_mut(&id),
+                self.out.type_args.get_mut(&id),
+            ]
+            .into_iter()
+            .flatten()
+            {
                 for (_, t) in args.iter_mut() {
                     if t.has_vars() {
                         *t = self.infer.resolve(t);
                     }
                 }
             }
-        }
-        for t in self
-            .out
-            .lifted_blocks
-            .values_mut()
-            .chain(self.out.op_targets.values_mut())
-            .chain(self.out.block_results.values_mut())
-        {
-            if t.has_vars() {
-                *t = self.infer.resolve(t);
-            }
-        }
-        for args in self.out.type_args.values_mut() {
-            for (_, t) in args.iter_mut() {
-                if t.has_vars() {
-                    *t = self.infer.resolve(t);
-                }
-            }
-        }
-        // Call targets with types (is_a?, as) are resolved too.
-        let keys: Vec<NodeId> = self.out.calls.keys().copied().collect();
-        for k in keys {
-            let target = self.out.calls.get(&k).cloned();
-            match target {
+            // Call targets with types (is_a?, as) are resolved too.
+            match self.out.calls.get(&id).cloned() {
                 Some(CallTarget::IsA(t)) => {
                     let r = self.infer.resolve(&t);
-                    self.out.calls.insert(k, CallTarget::IsA(r));
+                    self.out.calls.insert(id, CallTarget::IsA(r));
                 }
                 Some(CallTarget::As { ty, optional }) => {
                     let r = self.infer.resolve(&ty);
-                    self.out.calls.insert(k, CallTarget::As { ty: r, optional });
+                    self.out
+                        .calls
+                        .insert(id, CallTarget::As { ty: r, optional });
                 }
                 _ => {}
             }
