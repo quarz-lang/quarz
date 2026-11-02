@@ -213,7 +213,7 @@ theorem run_sound (h : P.check = true) (horc : OracleOK P orc) (fuel : Nat) :
       (s0.alloc names P.main.body.procAssigned).1 (evalW ⟨(s0.alloc names P.main.body.procAssigned).2, .obj 0, [], none⟩ P.main.body) r →
       (match r with
         | .returned v s => Result.ok v s
-        | .broke _ | .nexted _ => Result.stuck
+        | .broke _ _ | .nexted _ => Result.stuck
         | r => r) ≠ .stuck := by
     intro r hr
     cases r <;> simp_all [Post]

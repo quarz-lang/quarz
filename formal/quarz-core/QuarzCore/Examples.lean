@@ -455,7 +455,7 @@ def someBool : Expr := .prim "b" [] [] [.bool]
 def breakJoin (ann : Ty) : Expr :=
   .seq (.assign "x" .nil)
     (.seq (.while .tru (.seq (.ite someBool (.assign "x" (.int 1)) .nil)
-        (.ite (.var "x" [.int, .nil]) .brk .nil)))
+        (.ite (.var "x" [.int, .nil]) (.brk .nil) .nil)))
       (.var "x" ann))
 
 #guard (loopProg (breakJoin [.int])).check
@@ -469,10 +469,16 @@ def breakJoin (ann : Ty) : Expr :=
 
 -- `break` and `next` outside a loop, and in a block or `ensure` body in
 -- one: rejected.
-#guard !(loopProg .brk).check
+#guard !(loopProg (.brk .nil)).check
 #guard !(loopProg .nxt).check
-#guard !(loopProg (.while someBool (.ensure .brk .nil))).check
+#guard !(loopProg (.while someBool (.ensure (.brk .nil) .nil))).check
 
+-- `break v`: the loop's value, `nil` where the test is false.
+#guard (loopProg (.while someBool (.ite someBool (.brk (.int 1)) .nil)) [.int, .nil]).check
+#guard !(loopProg (.while someBool (.ite someBool (.brk (.int 1)) .nil)) [.int]).check
+-- (`while true`: only the breaks' values.)
+#guard (loopProg (.while .tru (.ite someBool (.brk (.int 1)) .nil)) [.int]).check
+#guard !(loopProg (.while .tru (.ite someBool (.brk (.str "a")) .nil)) [.int]).check
 -- `while true` without a `break`: no value, so any result type.
 #guard (loopProg (.while .tru .nil) [.str]).check
 #guard !(loopProg (.while someBool .nil) [.str]).check

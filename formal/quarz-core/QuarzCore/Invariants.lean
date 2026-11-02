@@ -268,9 +268,9 @@ def Post (c : Ctx) (o : Out) (fr : Frame) (ws : List (Ctx × Env × Out)) (Λ : 
   -- Out of the innermost loop, or on to its next pass (in its body only):
   -- with where its `break`s go on (`Ψ`) or where each pass starts (`Γ0`)
   -- holding (design §17).
-  | .broke s' => ∃ Λ', WfStore P Λ' s' ∧ Ext P W (initW c fr) Λ Λ' s s' ∧ FrameOK P c Λ' fr s' ws ∧
-      ∃ Γ0 Ψ, c.loop = some (Γ0, some Ψ) ∧ Sat P c Ψ fr s'
+  | .broke v s' => ∃ Λ', WfStore P Λ' s' ∧ Ext P W (initW c fr) Λ Λ' s s' ∧ FrameOK P c Λ' fr s' ws ∧
+      ∃ Γ0 Ψ τ, c.loop = some (Γ0, some Ψ, τ) ∧ Sat P c Ψ fr s' ∧ s'.hasTy P v (τ.subst fr.selfArgs)
   | .nexted s' => ∃ Λ', WfStore P Λ' s' ∧ Ext P W (initW c fr) Λ Λ' s s' ∧ FrameOK P c Λ' fr s' ws ∧
-      ∃ Γ0 Ψ, c.loop = some (Γ0, Ψ) ∧ Sat P c Γ0 fr s'
+      ∃ Γ0 Ψ τ, c.loop = some (Γ0, Ψ, τ) ∧ Sat P c Γ0 fr s'
 
 end QuarzCore

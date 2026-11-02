@@ -140,11 +140,15 @@ inductive Typed : Ctx → Env → Expr → Out → Prop where
   that); the loop ends where the test is false or where it breaks, with
   no value if neither can happen (design §17). -/
   | while : c.reset Γ (Expr.assigned (.while cnd b) ++ c.pinned) = Γ0 → Typed c Γ0 cnd oc →
-      oc.tt = some Δ → Typed { c with loop := some (Γ0, Ψ) } Δ b ob →
+      oc.tt = some Δ → Typed { c with loop := some (Γ0, Ψ, τ) } Δ b ob →
       (ob.out.all (·.implies c.ct Γ0)) = true → ojoin oc.ff Ψ = g →
-      Typed c Γ (.while cnd b) ⟨if g.isSome then [.nil] else [], g, g, g⟩
-  | brk : c.loop = some (Γ0, some Ψ) → Γ.implies c.ct Ψ = true → Typed c Γ .brk .dead
-  | nxt : c.loop = some (Γ0, Ψ) → Γ.implies c.ct Γ0 = true → Typed c Γ .nxt .dead
+      Typed c Γ (.while cnd b) ⟨loopTy oc.ff Ψ τ, g, g, g⟩
+  /-- `break e`: its value of the loop's break type, where it is at least
+  what the loop's exit holds. -/
+  | brk : c.loop = some (Γ0, some Ψ, τ) → Typed c Γ e o → o.out = some Δ → Δ.implies c.ct Ψ = true →
+      o.ty.le c.ct c.bounds τ = true → Typed c Γ (.brk e) .dead
+  | brkDead : c.loop = some (Γ0, Ψ, τ) → Typed c Γ e o → o.out = none → Typed c Γ (.brk e) .dead
+  | nxt : c.loop = some (Γ0, Ψ, τ) → Γ.implies c.ct Γ0 = true → Typed c Γ .nxt .dead
   | ret : c.inBlock = false → Typed c Γ e o → o.ty.le c.ct c.bounds c.meth.ret →
       (!c.inInit || o.out.all (c.allSet ·)) = true → Typed c Γ (.ret e) .dead
   | raise : Typed c Γ e o → o.ty.le c.ct c.bounds [.cls c.prog.exn []] → Typed c Γ (.raise e) .dead

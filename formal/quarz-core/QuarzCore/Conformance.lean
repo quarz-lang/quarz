@@ -497,7 +497,7 @@ def positional (a : Json) : M Json := do
 /-- Whether an expression has a `return` (in a block of it too). -/
 partial def hasRet : Expr → Bool
   | .ret _ => true
-  | .assign _ e | .setField _ e | .raise e | .isNil e | .isA e _ | .eqNil e | .neNil e | .eqTrue e
+  | .assign _ e | .setField _ e | .raise e | .brk e | .isNil e | .isA e _ | .eqNil e | .neNil e | .eqTrue e
   | .eqFalse e | .not e => hasRet e
   | .new _ _ as | .superInit _ as | .yield as | .prim _ as _ _ => as.any hasRet
   | .call r _ as => hasRet r || as.any hasRet
@@ -561,7 +561,7 @@ partial def daWalk (inBlk : List String) (s : Option (List String)) (e : Expr) :
     pure (.plain (r.out.map (fun S => if S.contains x then S else x :: S)))
   | .setField _ v | .isNil v | .isA v _ | .eqNil v | .neNil v | .eqTrue v | .eqFalse v =>
     pure (.plain (← daWalk inBlk s v).out)
-  | .ret v | .raise v => let _ ← daWalk inBlk s v; pure (.plain none)
+  | .ret v | .raise v | .brk v => let _ ← daWalk inBlk s v; pure (.plain none)
   -- A lambda: its body where it may run (the locals assigned here, its
   -- parameters); making it assigns nothing.
   | .lambda ps _ _ b =>
@@ -660,7 +660,7 @@ partial def scopeWalk (inBlock : Bool) (e : Expr) : StateT Scopes M Unit := do
     scopeWalk true b
     modify fun st' => { st' with cur := st.cur }
   | .setField _ v | .isNil v | .isA v _ | .eqNil v | .neNil v | .eqTrue v | .eqFalse v | .ret v
-  | .raise v | .not v => walk v
+  | .raise v | .brk v | .not v => walk v
   | .new _ _ as | .superInit _ as | .yield as | .prim _ as _ _ => for a in as do walk a
   | .call r _ as => walk r; for a in as do walk a
   | .seq a b | .while a b | .and a b | .or a b => walk a; walk b
@@ -1165,13 +1165,17 @@ partial def expr (T : Tables) (e : Json) : CM Expr := do
   | "Break" | "Next" =>
     -- Bare, in a `while`'s body (design §17); a `break` where the model's
     -- checker sees it (statement position).
-    unless v == .null do throw s!"a {k} with a value"
     let w ← read
     unless w.loopOk do throw s!"a {k} outside a while's body"
     if k == "Break" then
       unless w.stmtPos do throw "a Break in an expression"
-      pure .brk
-    else pure .nxt
+      -- (`break v`: the loop's value, design §17.)
+      match v with
+      | .null => pure (.brk .nil)
+      | x => pure (.brk (← withReader (fun w => { w with stmtPos := false }) (expr T x)))
+    else
+      unless v == .null do throw "a Next with a value"
+      pure .nxt
   | "If" =>
     let c ← withReader (fun w => { w with stmtPos := false }) (expr T (← field v "cond"))
     let t ← body T (← arr (← field v "then"))
@@ -2121,7 +2125,7 @@ partial def lambdaOf (T : Tables) (names : List String) (pts : List Ty) (ret : T
   let rec reads : Expr → List (Bool × String × Ty)
     | .var x t => [(true, x, t)]
     | .field f t => [(false, f, t)]
-    | .assign _ e | .setField _ e | .ret e | .raise e | .isNil e | .isA e _ | .eqNil e | .neNil e
+    | .assign _ e | .setField _ e | .ret e | .raise e | .brk e | .isNil e | .isA e _ | .eqNil e | .neNil e
     | .eqTrue e | .eqFalse e | .not e => reads e
     | .new _ _ as | .superInit _ as | .yield as | .prim _ as _ _ => as.flatMap reads
     | .call r _ as | .callProc r as => reads r ++ as.flatMap reads
@@ -2139,7 +2143,7 @@ partial def lambdaOf (T : Tables) (names : List String) (pts : List Ty) (ret : T
   let rec tested : Expr → List String
     | .isNil (.var x _) | .isA (.var x _) _ | .eqNil (.var x _) | .neNil (.var x _)
     | .eqTrue (.var x _) | .eqFalse (.var x _) => [x]
-    | .assign _ e | .setField _ e | .ret e | .raise e | .isNil e | .isA e _ | .eqNil e | .neNil e
+    | .assign _ e | .setField _ e | .ret e | .raise e | .brk e | .isNil e | .isA e _ | .eqNil e | .neNil e
     | .eqTrue e | .eqFalse e => tested e
     | .new _ _ as | .superInit _ as | .yield as | .prim _ as _ _ => as.flatMap tested
     | .call r _ as | .callProc r as => tested r ++ as.flatMap tested
@@ -2314,6 +2318,7 @@ partial def unblockExpr : Expr → StateM (Nat × List (String × Ty)) Expr
   | .ite c t e => return .ite (← unblockExpr c) (← unblockExpr t) (← unblockExpr e)
   | .while c b => return .while (← unblockExpr c) (← unblockExpr b)
   | .ret e => return .ret (← unblockExpr e)
+  | .brk e => return .brk (← unblockExpr e)
   | .raise e => return .raise (← unblockExpr e)
   | .rescue b x h e => return .rescue (← unblockExpr b) x (← unblockExpr h) (← unblockExpr e)
   | .ensure b e => return .ensure (← unblockExpr b) (← unblockExpr e)

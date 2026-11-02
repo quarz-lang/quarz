@@ -31,7 +31,8 @@ A small language with Quarz's core and nothing else (`QuarzCore/`):
   during the call: `yield`), built-in calls
   (`prim`: opaque, typed by their declarations; one may raise, as the
   oracle says; one returning `Nothing`, `exit`, ends the path), `if`,
-  `while` (with bare `break` and `next` in its body: design §17),
+  `while` (with `break`, giving the loop its value, and `next` in its
+  body: design §17),
   `return`,
   `raise e` (an exception: a value of the class named `Exception`, or any
   value in a program without it), `rescue body x handler els` (an
@@ -110,7 +111,9 @@ declared type): stricter than the Rust checker, not unsound. A `next`
 holds at least what a pass starts with; after the loop holds what the
 test's false side and the `break`s hold (their join, which the checker
 finds through the body's statements and `if` branches and checks at
-each `break`); `while true` without a `break` has no value (`Nothing`).
+each `break`); the loop's value is `nil` where the test is false and a
+`break`'s value; `while true` without a `break` has no value
+(`Nothing`).
 A `break` or `next` out of a block, a lambda or a body an `ensure`
 follows is rejected.
 The model

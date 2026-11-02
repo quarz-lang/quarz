@@ -46,3 +46,23 @@ end
 p first_big([1, 20, 30])
 p first_str([nil, "abc"])
 p countdown(10)
+
+# `break v`: the loop's value (`nil` where the test is false).
+def find(xs: Array[Int], k: Int) -> Int?
+  i = 0
+  while i < xs.size
+    break xs[i] if xs[i] > k
+    i += 1
+  end
+end
+
+def first(xs: Array[String]) -> String
+  i = 0
+  while true
+    s = xs[i]
+    break s if s.size > 1
+    i += 1
+  end
+end
+p find([1, 5, 9], 4), find([1], 4)
+p first(["a", "bc"])
