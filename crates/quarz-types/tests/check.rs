@@ -2326,6 +2326,21 @@ fn calls_a_class_test_cannot_choose_are_errors() {
         "class A\n  def foo(o: Int) -> String = \"i\"\nend\nclass B < A\n  def foo(o: String) -> String = o\nend\ndef pk(i: Int) -> Array[Int] | Array[String] = i > 0 ? [1] : [\"a\"]\nb = B.new\npk(1).each { |x| puts b.foo(x) }",
         "cannot tell at run time which `foo` to call on B: A#foo(Int) or B#foo(String)",
     );
+    // Class objects whose class methods override no common one: two
+    // unrelated extended modules', or one of a different signature.
+    err(
+        "module M\n  def k -> Int = 1\nend\nmodule N\n  def k -> Int = 2\nend\nclass A\n  extend M\nend\nclass B\n  extend N\nend\ndef f(t: Type[A] | Type[B]) -> Int = t.k\np f(A)",
+        "cannot tell at run time which `k` to call for Type[A] and Type[B]: M#k or N#k",
+    );
+    err(
+        "module M\n  def k -> Int = 1\nend\nclass A\n  extend M\nend\nclass B < A\n  def self.k(x: Int = 0) -> Int = 2\nend\nclass C < A\nend\ndef f(t: Type[B] | Type[C]) -> Int = t.k\np f(C)",
+        "cannot tell at run time which `k` to call for Type[B] and Type[C]",
+    );
+    // `M#k` overrides `S.k` on `A`, not on `Z`, which `S.k` does not reach.
+    err(
+        "module M\n  def k -> String = \"M\"\nend\nclass S\n  def self.k -> String = \"S\"\nend\nclass A < S\n  extend M\nend\nclass T < S\n  def self.k -> String = \"T\"\nend\nclass Z\n  extend M\nend\ndef f(t: Type[T] | Type[Z]) -> String = t.k\np f(Z)",
+        "cannot tell at run time which `k` to call for Type[T] and Type[Z]: T.k or M#k",
+    );
     // A compound assignment's reader from two extensions.
     err(
         "class A\nend\nclass B\nend\nextension A\n  def w -> Int = 1\n  def w=(x: Int) -> Int = x\nend\nextension B\n  def w -> Int = 2\n  def w=(x: Int) -> Int = x\nend\ndef pk(i: Int) -> Array[A] | Array[B] = i > 0 ? [A.new] : [B.new]\npk(1).each { |o| o.w += 1 }",

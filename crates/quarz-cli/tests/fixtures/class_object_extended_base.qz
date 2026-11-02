@@ -1,0 +1,148 @@
+# Class objects whose class methods all override a method of a module a
+# common superclass extends: a call on their union runs the receiver's own.
+module Named
+  def label -> String = "unnamed"
+end
+
+class Shape
+  extend Named
+end
+
+class Circle < Shape
+  def self.label -> String = "circle"
+end
+
+class Square < Shape
+  def self.label -> String = "square"
+end
+
+# No `label` of its own: `Named#label` runs.
+class Blob < Shape
+end
+
+def both(t: Type[Circle] | Type[Square]) -> String
+  t.label
+end
+
+def with_module(t: Type[Circle] | Type[Blob]) -> String
+  t.label
+end
+
+p both(Circle)
+p both(Square)
+p with_module(Circle)
+p with_module(Blob)
+kinds: Array[Type[Circle] | Type[Blob]] = [Circle, Blob]
+kinds.each { |k| p k.label }
+
+# An abstract module method, which every class gives.
+module Sized
+  abstract def size -> Int
+end
+
+class Part
+  extend Sized
+  def self.size -> Int = 0
+end
+
+class Bolt < Part
+  def self.size -> Int = 1
+end
+
+class Nut < Part
+  def self.size -> Int = 2
+end
+
+def size_of(t: Type[Bolt] | Type[Nut]) -> Int
+  t.size
+end
+
+p size_of(Bolt) + size_of(Nut)
+
+# A module extended below the class whose class method it overrides
+# (docs/01 §6): its method is the common one.
+module Loud
+  def sound -> String = "LOUD"
+end
+
+class Animal
+  def self.sound -> String = "..."
+end
+
+class Pet < Animal
+  extend Loud
+end
+
+class Dog < Pet
+  def self.sound -> String = "woof"
+end
+
+class Cat < Pet
+end
+
+def sound(t: Type[Dog] | Type[Cat]) -> String
+  t.sound
+end
+
+p sound(Dog)
+p sound(Cat)
+
+# A class method overriding one that overrides the module's (with an
+# optional parameter of its own): found from the module's method too.
+module Greets
+  def greet -> String = "hello"
+end
+
+class Person
+  extend Greets
+end
+
+class Child < Person
+  def self.greet -> String = "hi"
+end
+
+class Baby < Child
+  def self.greet(times: Int = 1) -> String = "goo" * times
+end
+
+class Adult < Person
+end
+
+def greet_as(t: Type[Person]) -> String
+  t.greet
+end
+
+def greet_either(t: Type[Child] | Type[Adult]) -> String
+  t.greet
+end
+
+p greet_as(Baby)
+p greet_either(Baby)
+p greet_either(Child)
+p greet_either(Adult)
+
+# One overriding a class method above the class that extends the module
+# (with an optional parameter, so not the module's signature) does not
+# replace the module's method.
+class Vehicle
+  def self.wheels -> Int = 0
+end
+
+module FourWheeled
+  def wheels -> Int = 4
+end
+
+class Car < Vehicle
+  extend FourWheeled
+end
+
+class Toy < Car
+  def self.wheels(scale: Int = 1) -> Int = 3 * scale
+end
+
+def wheels_of(t: Type[Car]) -> Int
+  t.wheels
+end
+
+p wheels_of(Car)
+p wheels_of(Toy)
