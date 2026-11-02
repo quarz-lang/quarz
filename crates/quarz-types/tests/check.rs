@@ -3727,6 +3727,15 @@ fn an_extended_module_overrides_the_superclass_class_method() {
 }
 
 #[test]
+fn a_method_with_a_block_does_not_override_one_without() {
+    // Overloads, not overrides: their types need not agree, and a call
+    // without a block runs the one without (the runtime's relation too).
+    no_warnings("class Shape\n  def self.label -> String = \"shape\"\n  def self.d -> String = label\nend\nclass A < Shape\n  def self.label(&b: () -> Int) -> Int = b.call\nend\np A.d");
+    no_warnings("class Shape\n  def name -> String = \"s\"\nend\nclass A < Shape\n  def name(&b: (Int) -> Int) -> Int = b.call(1)\nend\np A.new.name");
+    no_warnings("class Shape\n  def self.label(&b: () -> Int) -> Int = b.call\nend\nclass A < Shape\n  def self.label -> String = \"a\"\nend\np A.label");
+}
+
+#[test]
 fn a_rescue_variable_reassigned_after_a_closure_captured_it() {
     // tmp/repro/rescue-var-late-closure.qz: the closure reads `e` when
     // called, after the clause reassigned it.
