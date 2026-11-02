@@ -292,6 +292,11 @@ pub(crate) enum VarKey {
 
 pub(crate) type Facts = Vec<(VarKey, Type)>;
 
+/// The nodes of the arguments a compound assignment's writer is checked
+/// with (`[]=(index..., value)`), counting down from this one, outside
+/// every file's range and the zsuper locals'.
+const OP_VALUE_ID: NodeId = u32::MAX - 0x10000;
+
 /// `Checker::union_symbol`'s answer: the method the procedure calls (the
 /// common one, or the first member's where a table chooses), each member
 /// with its own method and substitution, and the table of the members'
@@ -856,6 +861,9 @@ pub struct Checker {
     /// forwards (the parameters, then the block), read as the method's
     /// own (`zsuper_local`).
     zsuper_forwards: Option<usize>,
+    /// The arguments a compound assignment's writer is checked with,
+    /// already typed: `OP_VALUE_ID - i` is the `i`th's node.
+    op_values: Vec<Type>,
     /// A compound assignment's reader (`false`) and operator (`true`)
     /// found by each check, and those given up (`note_op_method`).
     op_seen: HashMap<(NodeId, bool), Option<MethodId>>,
@@ -1030,6 +1038,7 @@ impl Checker {
         };
         Checker {
             zsuper_forwards: None,
+            op_values: Vec::new(),
             op_seen: HashMap::default(),
             logical_seen: HashMap::default(),
             reused_files: Default::default(),
@@ -5361,6 +5370,14 @@ impl Checker {
     // ----- expressions --------------------------------------------------------
 
     pub fn check_expr(&mut self, expr: &Expr, expected: Option<&Type>) -> Type {
+        // An argument of a compound assignment's writer, already typed
+        // (nothing is recorded for its node).
+        if let Some(t) = OP_VALUE_ID
+            .checked_sub(expr.id)
+            .and_then(|i| self.op_values.get(i as usize))
+        {
+            return t.clone();
+        }
         let unused = std::mem::take(&mut self.stmt_unused);
         let t = match &expr.kind {
             ExprKind::For(f) => self.check_for(expr, f, expected, unused),
@@ -7286,6 +7303,7 @@ impl Checker {
         value: &Expr,
         _expected: Option<&Type>,
     ) -> Type {
+        self.refuse_index_block(target);
         match target {
             LValue::Local { name, span } => {
                 if let Some((depth, slot)) = self.lookup_var(name) {
@@ -7438,6 +7456,19 @@ impl Checker {
         }
     }
 
+    /// A block given in an index assignment's target (`g[0, &f] = v`,
+    /// `g[0, &f] += 1`): refused, as Ruby does (it was dropped).
+    fn refuse_index_block(&mut self, target: &LValue) {
+        if let LValue::Index { args, .. } = target {
+            if let Some(a) = args.iter().find(|a| matches!(a, Arg::BlockPass(_))) {
+                self.error(
+                    "a block cannot be given in an index assignment (`[]=` takes none here): call a method of another name with it",
+                    a.span(),
+                );
+            }
+        }
+    }
+
     fn check_op_assign(
         &mut self,
         expr: &Expr,
@@ -7445,6 +7476,7 @@ impl Checker {
         op: OpAssign,
         value: &Expr,
     ) -> Type {
+        self.refuse_index_block(target);
         // Type the current value of the target.
         let current = match target {
             LValue::Local { name, span } => match self.lookup_var(name) {
@@ -7625,21 +7657,19 @@ impl Checker {
                 // Check that the setter accepts the result type.
                 let rt = self.resolve(&self.out.node_types[&recv.id]);
                 let setter = format!("{name}=");
-                if !self.note_op_writer(expr, &rt, &setter) {
-                    self.error(
-                        format!("undefined method `{setter}` for {}", self.name(&rt)),
-                        expr.span,
-                    );
-                }
+                self.check_op_writer(expr, recv, &rt, &setter, &[], &result);
             }
-            LValue::Index { recv, .. } => {
+            LValue::Index { recv, args } => {
                 let rt = self.resolve(&self.out.node_types[&recv.id]);
-                if !self.note_op_writer(expr, &rt, "[]=") {
+                if self.world.lookup_methods(&rt, "[]=").is_empty() && !matches!(rt, Type::Union(_))
+                {
                     let hint = self.immutable_hint(&rt, "[]=", Some(recv));
                     self.error(
                         format!("undefined method `[]=` for {}{hint}", self.name(&rt)),
                         expr.span,
                     );
+                } else {
+                    self.check_op_writer(expr, recv, &rt, "[]=", args, &result);
                 }
             }
             LValue::Const(_) => {}
@@ -7647,30 +7677,84 @@ impl Checker {
         result
     }
 
-    /// Record a compound assignment's writer (`w=`, `[]=`) on `rt`, the
-    /// node's `calls` entry: on a union, each member's own, chosen by the
-    /// receiver's class as a call's are (`union_calls`). False where a
-    /// member has none.
-    fn note_op_writer(&mut self, expr: &Expr, rt: &Type, setter: &str) -> bool {
-        let members = match rt {
-            Type::Union(ms) => ms.clone(),
-            t => vec![t.clone()],
+    /// Check a compound assignment's writer as the call it is
+    /// (`w=(value)`, `[]=(args..., value)`, the value already typed), on
+    /// `rt`: overloads, defaults, rest parameters and type parameters as
+    /// for `o.w = v`, and on a union each member's own, chosen by the
+    /// receiver's class (`union_calls`). The node's `calls` entry is the
+    /// writer.
+    #[allow(clippy::too_many_arguments)]
+    fn check_op_writer(
+        &mut self,
+        expr: &Expr,
+        recv: &Expr,
+        rt: &Type,
+        setter: &str,
+        args: &[Arg],
+        value: &Type,
+    ) {
+        // The index arguments as the reader's check typed them (evaluated
+        // once, before the value), then the value.
+        let mut types: Vec<Type> = Vec::new();
+        let mut typed = |e: &Expr, t: Type| {
+            types.push(t);
+            Expr {
+                id: OP_VALUE_ID - (types.len() as u32 - 1),
+                span: e.span,
+                kind: ExprKind::Nil,
+            }
         };
-        let mut table = Vec::new();
-        for m in &members {
-            let Some((k, _)) = self.world.lookup_methods(m, setter).into_iter().next() else {
-                return false;
-            };
-            table.push((m.clone(), k));
+        let ty = |e: &Expr| {
+            self.out
+                .node_types
+                .get(&e.id)
+                .map(|t| self.infer.resolve(t))
+                .unwrap_or(Type::Nothing)
+        };
+        let mut all: Vec<Arg> = Vec::new();
+        for a in args {
+            all.push(match a {
+                Arg::Positional(e) => Arg::Positional(typed(e, ty(e))),
+                Arg::Splat(e) => Arg::Splat(typed(e, ty(e))),
+                Arg::DoubleSplat(e) => Arg::DoubleSplat(typed(e, ty(e))),
+                Arg::Keyword {
+                    name,
+                    value: e,
+                    span,
+                } => Arg::Keyword {
+                    name: name.clone(),
+                    value: typed(e, ty(e)),
+                    span: *span,
+                },
+                other => other.clone(),
+            });
         }
-        self.out
-            .calls
-            .insert(expr.id, CallTarget::Method { method: table[0].1 });
-        let differ = table.iter().any(|(_, k)| *k != table[0].1);
-        if members.len() > 1 && (differ || !self.env.blocks.is_empty()) {
-            self.note_union_table(expr.id, table, expr.span);
-        } else if !self.env.blocks.is_empty() && self.union_testable(rt) {
-            self.note_union_table(expr.id, vec![(rt.clone(), table[0].1)], expr.span);
+        all.push(Arg::Positional(typed(expr, value.clone())));
+        let call = Call {
+            recv: Some(recv.clone()),
+            name: setter.to_string(),
+            args: all,
+            block: None,
+            safe_nav: false,
+            function: false,
+            has_parens: true,
+            type_args: vec![],
+        };
+        let saved = std::mem::replace(&mut self.op_values, types);
+        self.out.calls.remove(&expr.id);
+        // (`self.w += 1` may call a private writer, as `self.w = v`.)
+        let implicit_self = matches!(recv.kind, ExprKind::SelfRef);
+        self.check_call_on(expr, &call, rt, implicit_self, None);
+        self.op_values = saved;
+        // In a block checked once per type, as a call's (`check_call`).
+        if !self.env.blocks.is_empty() && self.union_testable(rt) {
+            if let (Some(CallTarget::Method { method }), false) = (
+                self.out.calls.get(&expr.id),
+                self.out.dynamic_calls.contains(&expr.id),
+            ) {
+                let m = *method;
+                self.note_union_table(expr.id, vec![(rt.clone(), m)], expr.span);
+            }
         }
         // (`o.c ||= v` through the value's own `||`, whose call the node's
         // record also holds: one table of different writers, this check's
@@ -7697,7 +7781,6 @@ impl Checker {
             self.ambiguous
                 .push((self.env.file, AmbiguousKey::Node(expr.id), d));
         }
-        true
     }
 
     /// Type of `lhs <op> rhs` given the operand types (for compound

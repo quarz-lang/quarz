@@ -1,0 +1,89 @@
+# A compound assignment's writer is checked as the call it is
+# (`w=(value)`, `[]=(args..., value)`): overloads chosen by the index's
+# arity, optional and rest parameters, and the writer's type parameters.
+class Grid
+  var @n: Int = 1
+
+  def [](i: Int) -> Int = @n
+
+  def [](i: Int, j: Int) -> Int = @n * 10
+
+  # Declared first, with more indices.
+  def []=(i: Int, j: Int, v: Int) -> Int
+    @n = v + 1000
+  end
+
+  def []=(i: Int, v: Int) -> Int
+    @n = v
+  end
+end
+
+g = Grid.new
+g[0] += 1
+p g[0]
+g[0, 1] += 1
+p g[0]
+
+class Tally
+  var @n: Int = 0
+
+  def n -> Int = @n
+
+  # An optional parameter after the value.
+  def n=(v: Int, scale: Int = 2) -> Int
+    @n = v * scale
+  end
+
+  def [](*at: Int) -> Int = @n + at.size
+
+  # A rest parameter before the value.
+  def []=(*at: Int) -> Int
+    @n = at.sum
+  end
+end
+
+t = Tally.new
+t.n += 3
+p t.n
+t[1, 2] += 4
+p t.n
+
+class Cell
+  var @v: Object = 0
+
+  def [](i: Int) -> Int = 5
+
+  # A type parameter of the writer, inferred from the value.
+  def []=[U](i: Int, x: U) -> U
+    @v = x
+    x
+  end
+
+  def v -> Object = @v
+end
+
+c = Cell.new
+c[0] += 1
+p c.v
+
+# The index is evaluated once, before the value: the writer is chosen by
+# its type then, not as the value's assignment leaves the variable.
+class Shelf
+  def [](i: Int | String) -> Int = 1
+
+  def []=(i: Int, v: Int) -> Int
+    p ["int", i + 1]
+    v
+  end
+
+  def []=(i: String, v: Int) -> Int
+    p ["str", i.upcase]
+    v
+  end
+end
+
+shelf = Shelf.new
+key: Int | String = 5
+key = 5
+shelf[key] += (key = "s").size
+p key
