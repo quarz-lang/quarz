@@ -1,0 +1,53 @@
+# `x.c ||= v` through the value's own `||` (a query DSL): the logical
+# call and the writer each have a record of their own, on one type and on a
+# union whose members' writers differ.
+abstract class Cond
+  abstract def to_s -> String
+  def &&(&rhs: () -> Cond) -> Cond = Both.new(self, rhs.call)
+  def ||(&rhs: () -> Cond) -> Cond = Either.new(self, rhs.call)
+end
+class Eq < Cond
+  @col: String
+  @val: Int
+  def initialize(@col: String, @val: Int); end
+  def to_s -> String = "#{@col} = #{@val}"
+end
+class Both < Cond
+  @l: Cond
+  @r: Cond
+  def initialize(@l: Cond, @r: Cond); end
+  def to_s -> String = "(#{@l} AND #{@r})"
+end
+class Either < Cond
+  @l: Cond
+  @r: Cond
+  def initialize(@l: Cond, @r: Cond); end
+  def to_s -> String = "(#{@l} OR #{@r})"
+end
+def col(name: String, v: Int) -> Cond = Eq.new(name, v)
+class A
+  var @c: Cond = Eq.new("a", 1)
+  def c -> Cond = @c
+  def c=(x: Cond) -> Cond
+    @c = x
+  end
+end
+class B
+  var @c: Cond = Eq.new("b", 2)
+  def c -> Cond = @c
+  def c=(x: Cond) -> Cond
+    @c = x
+  end
+end
+a = A.new
+a.c ||= col("d", 4)
+puts a.c
+def pk(i: Int) -> A | B = i > 0 ? A.new : B.new
+o = pk(0)
+o.c ||= col("e", 5)
+puts o.c
+o.c &&= col("f", 6)
+puts o.c
+items: Array[A | B] = [A.new, B.new]
+items.each { |x| x.c ||= col("g", 7) }
+items.each { |x| puts x.c }

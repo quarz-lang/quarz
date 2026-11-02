@@ -2400,11 +2400,8 @@ fn calls_a_class_test_cannot_choose_are_errors() {
         "undefined method `w=` for B",
     );
     // `o.c ||= v` through the value's own `||` on a union whose writers
-    // differ: the node's record cannot serve both (refused, not crashed).
-    err(
-        "class Cond\n  def ||(&rhs: () -> Cond) -> Cond = rhs.call\nend\nclass A\n  var @c: Cond = Cond.new\n  def c -> Cond = @c\n  def c=(x: Cond) -> Cond\n    @c = x\n  end\nend\nclass B\n  var @c: Cond = Cond.new\n  def c -> Cond = @c\n  def c=(x: Cond) -> Cond\n    @c = x\n  end\nend\ndef pick(i: Int) -> A | B = i > 0 ? A.new : B.new\no = pick(1)\no.c ||= Cond.new",
-        "cannot tell at run time which `c=` to call for A | B after the value's own logical operator",
-    );
+    // differ: the logical call and the writer have records of their own.
+    ok("class Cond\n  def ||(&rhs: () -> Cond) -> Cond = rhs.call\nend\nclass A\n  var @c: Cond = Cond.new\n  def c -> Cond = @c\n  def c=(x: Cond) -> Cond\n    @c = x\n  end\nend\nclass B\n  var @c: Cond = Cond.new\n  def c -> Cond = @c\n  def c=(x: Cond) -> Cond\n    @c = x\n  end\nend\ndef pick(i: Int) -> A | B = i > 0 ? A.new : B.new\no = pick(1)\no.c ||= Cond.new");
     // A compound assignment's writer is checked as the call it is: the
     // value must be what it takes, as for `a.w = a.w`.
     err(
@@ -2424,6 +2421,12 @@ fn calls_a_class_test_cannot_choose_are_errors() {
         );
     }
     ok("class G\n  def [](i: Int, &b: (Int) -> Int) -> Int = b.call(i)\nend\ng = G.new\nf = ->(x: Int) { x + 10 }\np g[1, &f]");
+    // `x ||= v` in a block checked once per type: a type's own `||` in one
+    // check, the built-in operator in another (as `a || b`).
+    err(
+        "class Cond\n  def ||(&rhs: () -> Cond) -> Cond = rhs.call\nend\ndef pk(i: Int) -> Array[Cond] | Array[Int?] = i > 0 ? [Cond.new] : [nil]\npk(0).each { |x| z = x; z ||= x; p z }",
+        "cannot tell at run time whether `||` is a method of",
+    );
     // A compound assignment's reader from two extensions.
     err(
         "class A\nend\nclass B\nend\nextension A\n  def w -> Int = 1\n  def w=(x: Int) -> Int = x\nend\nextension B\n  def w -> Int = 2\n  def w=(x: Int) -> Int = x\nend\ndef pk(i: Int) -> Array[A] | Array[B] = i > 0 ? [A.new] : [B.new]\npk(1).each { |o| o.w += 1 }",

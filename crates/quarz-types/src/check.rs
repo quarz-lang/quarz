@@ -23,6 +23,18 @@ pub struct VarRef {
     pub slot: u32,
 }
 
+/// A call's record kept apart from its node's own (`calls`,
+/// `union_calls`, `union_conflicts`, `dynamic_calls`): a compound
+/// assignment's logical call (`o.c ||= v` through the value's own `||`),
+/// whose node's record is the writer's.
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct CallRecord {
+    pub target: Option<CallTarget>,
+    pub table: Option<Vec<(Type, MethodId)>>,
+    pub conflict: bool,
+    pub dynamic: bool,
+}
+
 /// What a call expression was resolved to.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum CallTarget {
@@ -129,6 +141,9 @@ pub struct Output {
     /// `Cat | Dog`): its table and conflict flag, as `union_calls` and
     /// `union_conflicts` are for a call (which hold the writer's).
     pub op_getter_tables: HashMap<NodeId, (Vec<(Type, MethodId)>, bool)>,
+    /// A compound assignment's logical call (`o.c ||= v` through the
+    /// value's own `||`): its record, apart from the writer's.
+    pub op_logical_calls: HashMap<NodeId, CallRecord>,
     /// `as`/`as?`/`is_a?` calls whose run-time test must check elements:
     /// the value may be of the class without being of the type.
     pub element_tests: rustc_hash::FxHashSet<NodeId>,
@@ -584,6 +599,9 @@ enum TableUndo {
     /// A compound assignment's reader record (`Output::op_getter_tables`)
     /// before a check changed it.
     OpGetterTable(NodeId, Option<(Vec<(Type, MethodId)>, bool)>),
+    /// A compound assignment's logical call record
+    /// (`Output::op_logical_calls`) before a check changed it.
+    OpLogicalCall(NodeId, Option<CallRecord>),
     /// A `def_method` block's `Output::lifted_blocks` entry before a check
     /// recorded another (and `Checker::lifted_seen` got one more).
     Lifted(NodeId, Option<Type>),
@@ -2034,6 +2052,12 @@ impl Checker {
                     match t {
                         Some(t) => self.out.op_getter_tables.insert(id, t),
                         None => self.out.op_getter_tables.remove(&id),
+                    };
+                }
+                TableUndo::OpLogicalCall(id, t) => {
+                    match t {
+                        Some(t) => self.out.op_logical_calls.insert(id, t),
+                        None => self.out.op_logical_calls.remove(&id),
                     };
                 }
                 TableUndo::Lifted(id, t) => {
@@ -3722,6 +3746,49 @@ impl Checker {
         }
         self.subclasses_first(&mut table, |e| e.0);
         self.out.interp_to_s.insert(id, table);
+    }
+
+    /// Check a compound assignment's logical call (`x.||() { v }` of
+    /// `x ||= v`, the value's own `||`) on the node, whose record (the
+    /// writer's) is set aside: its own record from earlier checks
+    /// (`Output::op_logical_calls`) is put there for the check, and kept
+    /// apart after it.
+    fn check_op_logical(&mut self, expr: &Expr, name: &str, current: &Type, value: &Expr) -> Type {
+        let id = expr.id;
+        let writer = self.take_union_record(id);
+        let writer_call = self.out.calls.remove(&id);
+        let writer_dynamic = self.out.dynamic_calls.remove(&id);
+        let before = self.out.op_logical_calls.remove(&id);
+        self.table_journal
+            .push(TableUndo::OpLogicalCall(id, before.clone()));
+        if let Some(r) = &before {
+            self.restore_union_record(id, (r.table.clone(), r.conflict));
+            if let Some(t) = &r.target {
+                self.out.calls.insert(id, t.clone());
+            }
+            if r.dynamic {
+                self.out.dynamic_calls.insert(id);
+            }
+        }
+        let t = self
+            .logical_method(expr, name, current, value, None)
+            .unwrap_or(Type::Nothing);
+        let (table, conflict) = self.take_union_record(id);
+        let record = CallRecord {
+            target: self.out.calls.remove(&id),
+            table,
+            conflict,
+            dynamic: self.out.dynamic_calls.remove(&id),
+        };
+        self.out.op_logical_calls.insert(id, record);
+        self.restore_union_record(id, writer);
+        if let Some(c) = writer_call {
+            self.out.calls.insert(id, c);
+        }
+        if writer_dynamic {
+            self.out.dynamic_calls.insert(id);
+        }
+        t
     }
 
     /// Check a compound assignment's reader (`w` of `o.w += 1`) on the
@@ -7566,14 +7633,22 @@ impl Checker {
             _ => current.clone(),
         };
         self.out.op_targets.insert(expr.id, seen);
+        // The built-in `||=`/`&&=` in a block checked once per type, where
+        // another check may take a type's own operator: noted, as `a || b`
+        // is (`note_logical`).
+        if let OpAssign::OrOr | OpAssign::AndAnd = op {
+            let name = op.as_str().trim_end_matches('=');
+            if !self.env.blocks.is_empty() && !self.has_logical_method(&current, name) {
+                self.note_logical(expr, name, &current, None);
+            }
+        }
         let result = match op {
             OpAssign::OrOr | OpAssign::AndAnd
                 if self.has_logical_method(&current, op.as_str().trim_end_matches('=')) =>
             {
                 // `x ||= v` is `x = x.||() { v }`: stored whatever it gives.
                 let name = op.as_str().trim_end_matches('=');
-                self.logical_method(expr, name, &current, value, None)
-                    .unwrap_or(Type::Nothing)
+                self.check_op_logical(expr, name, &current, value)
             }
             OpAssign::OrOr => {
                 // `x ||= v`: v is evaluated only when x is falsy.
@@ -7755,31 +7830,6 @@ impl Checker {
                 let m = *method;
                 self.note_union_table(expr.id, vec![(rt.clone(), m)], expr.span);
             }
-        }
-        // (`o.c ||= v` through the value's own `||`, whose call the node's
-        // record also holds: one table of different writers, this check's
-        // or merged with earlier ones', cannot serve both.)
-        let recorded = self.out.union_calls.get(&expr.id);
-        let writers_differ = recorded.is_some_and(|t| t.iter().any(|(_, k)| *k != t[0].1));
-        if writers_differ && self.out.logical_calls.contains_key(&expr.id) {
-            // (Found by merging the checks: reported at the node, as
-            // `ambiguous_call` does, not as a failure of this check.)
-            let types: Vec<String> = self.out.union_calls[&expr.id]
-                .iter()
-                .map(|(t, _)| t.clone())
-                .collect::<Vec<_>>()
-                .iter()
-                .map(|t| self.name(t))
-                .collect();
-            let d = Diagnostic::error(
-                format!(
-                    "cannot tell at run time which `{setter}` to call for {} after the value's own logical operator (write the assignment out)",
-                    types.join(" | ")
-                ),
-                expr.span,
-            );
-            self.ambiguous
-                .push((self.env.file, AmbiguousKey::Node(expr.id), d));
         }
     }
 
