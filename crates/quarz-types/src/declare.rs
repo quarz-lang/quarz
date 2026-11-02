@@ -1043,6 +1043,7 @@ impl<'ast> Declarer<'ast> {
             self.check_quoted_overrides(p.id);
             self.check_override_returns(p.id);
             self.check_include_overrides(p.id);
+            self.check_extend_overrides(p.id);
             self.check_class_side_overrides(p.id);
             self.check_copied_deinitialize(p.id);
             self.check_eq_with_hash(p.id);
@@ -2099,6 +2100,42 @@ impl<'ast> Declarer<'ast> {
         }
     }
 
+    /// `check_override_pair` for the overrides class `id`'s extends make on
+    /// its class side (`World::extend_overrides_of`), each reported once.
+    fn check_extend_overrides(&mut self, id: ClassId) {
+        let own_args: Vec<Type> = self
+            .world
+            .class(id)
+            .type_params
+            .iter()
+            .map(|p| Type::Param(p.id))
+            .collect();
+        let own = Type::Class(id, own_args);
+        for eo in self.world.extend_overrides_of(id) {
+            let (o, by) = (eo.overridden, eo.by);
+            if self.world.method(by).file == 0 && self.world.method(o).file == 0 {
+                continue;
+            }
+            if self.override_pairs.contains(&(by, o)) {
+                continue;
+            }
+            // (`Self` as in `check_class_side_overrides`.)
+            let mut subst = eo.overridden_subst;
+            subst.insert(SELF_PARAM, own.clone());
+            let mut mine_subst = eo.by_subst;
+            mine_subst.insert(SELF_PARAM, own.clone());
+            let within = Some(self.world.class(id).name.clone());
+            self.override_span = Some(self.world.class(id).span);
+            self.override_via = "extends";
+            let ok = self.check_override_pair(by, o, &subst, &mine_subst, within);
+            self.override_span = None;
+            self.override_via = "includes";
+            if !ok {
+                self.override_pairs.insert((by, o));
+            }
+        }
+    }
+
     /// Whether the runtime takes `m` to override `o` (of the ancestor `a`
     /// with `aargs`): `quarz_lower::rtworld::overridden_methods` (the same
     /// kinds of parameters, each at least as wide, those added optional),
@@ -2201,6 +2238,7 @@ impl<'ast> Declarer<'ast> {
             return true;
         }
         let owner = self.world.class(om.owner).name.clone();
+        let sep = if om.singleton { "." } else { "#" };
         // (`M#f` against `A#f` in `C`, which includes `M`.)
         let context = match within {
             Some(c) => format!(
@@ -2259,7 +2297,6 @@ impl<'ast> Declarer<'ast> {
         // leave the argument out (the override's default is its own).
         for (p, q) in &pairs {
             if p.default.is_some() && q.default.is_none() {
-                let sep = if om.singleton { "." } else { "#" };
                 self.error(
                     format!(
                         "`{}` overrides `{owner}{sep}{}`{context}{} but drops the default of `{}`",
@@ -2280,7 +2317,7 @@ impl<'ast> Declarer<'ast> {
                     (self.world.type_name(&mine), self.world.type_name(&theirs));
                 self.error(
                     format!(
-                        "`{mname}` takes {mine_s} for `{}` but `{owner}#{mname}`, which it overrides{context}, is given {theirs_s}: an override takes what the method it overrides does",
+                        "`{mname}` takes {mine_s} for `{}` but `{owner}{sep}{mname}`, which it overrides{context}, is given {theirs_s}: an override takes what the method it overrides does",
                         q.name
                     ),
                     span,
@@ -2304,7 +2341,7 @@ impl<'ast> Declarer<'ast> {
                     (self.world.type_name(&mine), self.world.type_name(&theirs));
                 self.error(
                     format!(
-                        "`{mname}` takes a block of type {mine_s} but `{owner}#{mname}`, which it overrides{context}, is given one of type {theirs_s}"
+                        "`{mname}` takes a block of type {mine_s} but `{owner}{sep}{mname}`, which it overrides{context}, is given one of type {theirs_s}"
                     ),
                     span,
                 );
@@ -2313,7 +2350,7 @@ impl<'ast> Declarer<'ast> {
             if om.block_optional && !m.block_optional {
                 self.error(
                     format!(
-                        "`{mname}` requires a block but `{owner}#{mname}`, which it overrides{context}, may be called without one: make it optional"
+                        "`{mname}` requires a block but `{owner}{sep}{mname}`, which it overrides{context}, may be called without one: make it optional"
                     ),
                     span,
                 );
@@ -2334,7 +2371,7 @@ impl<'ast> Declarer<'ast> {
             };
             self.error(
                 format!(
-                    "`{mname}` returns {mine_s} but `{owner}#{mname}`, which it overrides{context}, returns {theirs_s}{hint}"
+                    "`{mname}` returns {mine_s} but `{owner}{sep}{mname}`, which it overrides{context}, returns {theirs_s}{hint}"
                 ),
                 span,
             );
@@ -2962,6 +2999,7 @@ impl<'ast> Declarer<'ast> {
             self.check_quoted_overrides(id);
             self.check_override_returns(id);
             self.check_include_overrides(id);
+            self.check_extend_overrides(id);
             self.check_class_side_overrides(id);
             self.check_copied_deinitialize(id);
             self.check_eq_with_hash(id);

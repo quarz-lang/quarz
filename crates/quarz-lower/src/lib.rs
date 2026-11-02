@@ -964,6 +964,12 @@ fn overridden_methods(world: &World) -> HashSet<(ClassId, String)> {
             }
         }
     }
+    // A superclass's class method that a module a class extends overrides
+    // (`World::extend_overrides`).
+    for (_, o, _) in world.extend_overrides() {
+        let om = world.method(o);
+        out.insert((om.owner, format!("self.{}", om.name)));
+    }
     out
 }
 
