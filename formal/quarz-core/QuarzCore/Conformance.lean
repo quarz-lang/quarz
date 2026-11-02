@@ -1693,7 +1693,8 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
       let o ← nat (← field m "owner")
       let builtinSide := (← field m "singleton") == .bool true &&
         (((T.qclass o).isNone && (T.modCopies o).isNone) || T.builtins.contains o) && !T.excIds.contains o
-      if (o == T.kernelId || builtinSide) && (← variant (← field r "kind")).1 == "Const" then
+      let rk := (← variant (← field r "kind")).1
+      if (o == T.kernelId && rk == "Const") || (builtinSide && (rk == "Const" || rk == "TypeApp")) then
         pure .null
       else pure r
     | .error _ => pure r
@@ -1714,11 +1715,39 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
   -- (`&p`: a procedure given as the block.)
   let mut args : List Json := []
   let mut bpass : Option Json := none
+  let mut kws0 : List (String × Json) := []
   for a in (← arr (← field c "args")) do
     match ← variant a with
     | ("BlockPass", e) => bpass := some e
-    | _ => args := args ++ [← positional a]
+    | ("Keyword", kv) => kws0 := kws0 ++ [(← str (← field kv "name"), ← field kv "value")]
+    | _ =>
+      -- (A positional argument after a keyword one: evaluated in source
+      -- order, which the built-in call's argument list would not keep.)
+      unless kws0.isEmpty do throw "a positional argument after a keyword one"
+      args := args ++ [← positional a]
   let blk ← field c "block"
+  -- A built-in call's parameters, filled by the positional arguments in
+  -- order and the keyword ones by name (each typed by its parameter: the
+  -- built-in call takes them in source order), the rest with defaults.
+  let kws := kws0
+  let fillParams (ps : List Json) (tyOf : Json → M Ty) : M (List Ty) := do
+    let pos ← ps.filterM fun p => do pure ((← str (← field p "kind")) == "Positional")
+    unless args.length ≤ pos.length do throw "more arguments than positional parameters"
+    -- (`**opts` takes the keywords no parameter names: out of range.)
+    if ← (pure !kws.isEmpty) <&&> ps.anyM (fun p => do pure ((← str (← field p "kind")) == "KeywordRest")) then
+      throw "a keyword argument to a method with **"
+    let given := pos.take args.length
+    let mut used := given
+    let mut tys ← given.mapM tyOf
+    for (k, _) in kws do
+      let some p ← ps.findM? (fun p => do pure ((← str (← field p "name")) == k && !used.contains p))
+        | throw s!"a keyword argument {k} of no parameter"
+      used := used ++ [p]
+      tys := tys ++ [← tyOf p]
+    for p in ps do
+      unless used.contains p || (← field p "default") == .bool true do throw "a built-in call leaving a parameter"
+    pure tys
+  let kwArgs : CM (List Expr) := kws.mapM fun (_, e) => expr T e
   -- (The receiver of `new`, a class, is not an expression here.)
   let isNew := match T.calls.getObjVal? (toString id) with
     | .ok t => (t.getObjValAs? String "t").toOption == some "constructor"
@@ -1791,6 +1820,13 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
     | "False" => return .not (.eqFalse r)
     | _ => pure ()
   | _, _, _, _ => pure ()
+  -- (Keyword arguments: to a built-in method or a built-in class's `new`.)
+  unless kws.isEmpty do
+    let tt ← str (← field target "t")
+    let ok ← if tt == "method" then pure true
+      else if tt == "constructor" then do pure (T.builtins.contains (← nat (← field target "class")))
+      else pure false
+    unless ok do throw "a Keyword argument"
   match ← str (← field target "t") with
   | "is_a" =>
     let some r := recv | throw "is_a? without a receiver"
@@ -1869,16 +1905,13 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
       unless q' == q do throw "a new of another class than its type"
       let ips ← (← arr (← field (← T.cls k) "type_params")).toList.mapM fun p => do nat (← field p "id")
       let params ← match ← field target "init" with
-        | .null => if args.isEmpty then pure [] else throw "a built-in new with arguments and no initialize"
+        | .null => if args.isEmpty && kws.isEmpty then pure [] else throw "a built-in new with arguments and no initialize"
         | ij => do
           let mi ← T.method (← nat ij)
           unless (← nat (← field mi "owner")) == k do throw "a built-in new taking an initialize further up"
           let ps := (← arr (← field mi "params")).toList
-          unless ps.length == args.length do throw "a built-in new leaving a parameter"
-          ps.mapM fun p => do
-            unless (← str (← field p "kind")) == "Positional" do throw "a built-in new's parameters"
-            T.tyIn (ips.zip targs) (← field p "type")
-      return .prim "new" (← args.mapM (expr T)) params [.cls q targs]
+          fillParams ps fun p => do T.tyIn (ips.zip targs) (← field p "type")
+      return .prim "new" ((← args.mapM (expr T)) ++ (← kwArgs)) params [.cls q targs]
     -- An exception made: what the built-in `initialize` gives, opaque.
     if ← T.excInit k then
       unless ← T.excPlain k do throw "new of an exception class with fields"
@@ -2039,7 +2072,7 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
     let builtinOwner := T.builtins.contains owner
     if builtinOwner && recvEnv.isNone && !classSide then throw s!"a method {name} of a built-in class, its receiver's view unknown"
     if (native || synth != "None" || T.excIds.contains owner || arrayEnv.isSome || preludeModule || builtinOwner ||
-        (classSide && (T.qclass owner).isNone && (T.modCopies owner).isNone)) &&
+        (classSide && (T.qclass owner).isNone && (T.modCopies owner).isNone) || owner == T.kernelId) &&
         !accessor then
       -- A built-in method: its declared types. On the implicit receiver,
       -- it takes `self` (it may read its fields), but a `Kernel`
@@ -2111,13 +2144,10 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
           | lj =>
             let lo ← T.tyIn env lj
             env := env.map fun (i, t) => if i == tid then (i, t ++ lo.filter (!t.contains ·)) else (i, t)
-        if ← ps.anyM (fun p => do pure ((← str (← field p "kind")) != "Positional")) then
+        if ← ps.anyM (fun p => do pure ((← str (← field p "kind")) == "Rest" || (← str (← field p "kind")) == "KeywordRest")) then
           throw "an array method's parameters"
-        let rest := ps.drop as.length
-        for p in rest do
-          unless (← field p "default") == .bool true do throw "a built-in call leaving a parameter"
-        let params ← (ps.take as.length).mapM fun p => do T.tyIn env (← field p "type")
-        return ← withBlock env (.prim name (r :: as) (rt :: params) (← T.tyIn env (← field m "ret")))
+        let params ← fillParams ps fun p => do T.tyIn env (← field p "type")
+        return ← withBlock env (.prim name (r :: as ++ (← kwArgs)) (rt :: params) (← T.tyIn env (← field m "ret")))
       -- (A generic one's type parameters: what the call's result type
       -- says, where it says it; a lower bound widens it.)
       let tps ← arr (← field m "type_params")
@@ -2142,6 +2172,7 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
               env := env.map fun (i, t) => if i == tid then (i, t ++ lo.filter (!t.contains ·)) else (i, t)
         pure env
       let params ← if ← ps.anyM (fun p => do pure ((← str (← field p "kind")) == "Rest")) then
+          unless kws.isEmpty do throw "a keyword argument with a rest parameter"
           match ps with
           | [p] => do
             -- (Its declared type, `Array[E]`: each argument an `E`.)
@@ -2150,12 +2181,7 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
               | t => pure t
             pure (as.map fun _ => t)
           | _ => throw "a rest parameter with others"
-        else do
-          let pos ← ps.filterM fun p => do pure ((← str (← field p "kind")) == "Positional")
-          let rest := ps.filter fun p => !(pos.take as.length).contains p
-          for p in rest do
-            unless (← field p "default") == .bool true do throw "a built-in call leaving a parameter"
-          (pos.take as.length).mapM fun p => do T.tyOrTop (← field p "type") env
+        else fillParams ps fun p => do T.tyOrTop (← field p "type") env
       let ret ← T.tyOrTop (← field m "ret") env
       let (rs, rps) ← match recv with
         | some r => do
@@ -2164,9 +2190,10 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
         | none =>
           if (← nat (← field m "owner")) == T.kernelId || classSide then pure ([], [])
           else pure ([.self], [[.cls 0 []]])
-      return ← withBlock env (.prim name (rs ++ as) (rps ++ params) ret)
+      return ← withBlock env (.prim name (rs ++ as ++ (← kwArgs)) (rps ++ params) ret)
     -- (A program's method: by its model name, an overload's its own; on
     -- a union, the members' overloads may differ.)
+    unless kws.isEmpty do throw "a Keyword argument"
     let rawName := name
     let name ← T.modelName m
     -- (A call leaving parameters with defaults: the callee's class's
