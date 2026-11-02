@@ -1,0 +1,48 @@
+# A bare `super` forwards the method's parameters themselves, with their
+# values and types where it is: a name hidden by a block's parameter, a
+# `:=` or a pattern binding is not what it forwards.
+class A
+  def f(x: Int) -> Int = x + 1
+  def g(x: Int, &b: (Int) -> Int) -> Int = b.call(x)
+end
+class B < A
+  def f(x: Int?) -> Int
+    if x
+      super
+    else
+      0
+    end
+  end
+  def g(x: Int, &b: (Int) -> Int) -> Int
+    r = 0
+    [1].each do |x|
+      r = super
+    end
+    r
+  end
+end
+class C < A
+  def f(x: Int?) -> Int
+    x = 5
+    super
+  end
+end
+class D < A
+  # A hiding local of another type is fine: `super` forwards the parameter.
+  def f(x: Int) -> Int
+    r = 0
+    [1].each do |i|
+      x := "hidden"
+      r = super
+    end
+    case "s"
+    in String => x then r += super
+    end
+    r
+  end
+end
+p B.new.f(3)
+p B.new.f(nil)
+p B.new.g(4) { |v| v * 10 }
+p C.new.f(nil)
+p D.new.f(7)

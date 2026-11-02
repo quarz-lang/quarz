@@ -3733,6 +3733,33 @@ fn a_method_with_a_block_does_not_override_one_without() {
 }
 
 #[test]
+fn a_bare_super_forwards_the_parameters_themselves() {
+    let a = "class A\n  def f(x: Int) -> Int = x + 1\nend\n";
+    // Not a variable hiding the parameter's name where the `super` is.
+    err(
+        &format!("{a}class B < A\n  def f(x: Int?) -> Int\n    r = 0\n    [1].each do |i|\n      x := 50\n      r = super\n    end\n    r\n  end\nend"),
+        "argument `x` of f(x: Int) -> Int expects Int but found Int?",
+    );
+    err(
+        &format!("{a}class B < A\n  def f(x: Int?) -> Int\n    case 5\n    in Int => x then super\n    end\n  end\nend"),
+        "argument `x` of f(x: Int) -> Int expects Int but found Int?",
+    );
+    err(
+        &format!(
+            "{a}class B < A\n  def f(x: Int?) -> Int\n    [1].sum {{ |x| super }}\n  end\nend"
+        ),
+        "argument `x` of f(x: Int) -> Int expects Int but found Int?",
+    );
+    // So one of another type there is fine.
+    ok(&format!("{a}class B < A\n  def f(x: Int) -> Int\n    r = 0\n    [1].each do |i|\n      x := \"s\"\n      r = super\n    end\n    r\n  end\nend"));
+    // The parameter as assigned and narrowed there.
+    ok(&format!(
+        "{a}class B < A\n  def f(x: Int?) -> Int\n    x = 5\n    super\n  end\nend"
+    ));
+    ok(&format!("{a}class B < A\n  def f(x: Int?) -> Int\n    if x\n      super\n    else\n      0\n    end\n  end\nend"));
+}
+
+#[test]
 fn a_rescue_variable_reassigned_after_a_closure_captured_it() {
     // tmp/repro/rescue-var-late-closure.qz: the closure reads `e` when
     // called, after the clause reassigned it.
