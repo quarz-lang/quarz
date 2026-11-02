@@ -205,7 +205,7 @@ def ChainAt (Λ : List Ty) (s : Store) : List (Ctx × Env × Out) → Option Clo
       (∀ l l', frameLocs vars l → chainLocs outer l' → l' < l) ∧
       (∃ sig0, BlockSig.le c.ct sig (sig0.subst sa) ∧
         blockParamsOk c ps sig0 = true ∧
-        Typed { c with inBlock := true, loop := none } (blockEnv c Δ ps sig0 body) body ob ∧
+        Typed { c with inBlock := true, loop := none, nextTy := some sig0.ret } (blockEnv c Δ ps sig0 body) body ob ∧
         ob.ty.le c.ct c.bounds sig0.ret = true) ∧
       Sat P c (c.reset Δ (ps ++ body.assigned ++ c.pinned)) ⟨vars, self, sa, outer⟩ s
   | _, _, _ => False
@@ -226,11 +226,11 @@ def OracleOK (orc : Oracle) : Prop := ∀ n s t v, orc n s t = some v → s.hasT
 structure WfProg : Prop where
   classes : WfClasses P.classes
   methods : ∀ mt ∈ P.methods, P.wfMethod mt = true ∧
-    ∃ o, Typed ⟨P, mt, false, false, none⟩ (mt.params.map (fun (x, t) => (.local x, t)) ++
-        (if mt.name == "initialize" then Program.heldEnv P.classes (Ctx.fields ⟨P, mt, false, false, none⟩) else []))
+    ∃ o, Typed ⟨P, mt, false, false, none, none⟩ (mt.params.map (fun (x, t) => (.local x, t)) ++
+        (if mt.name == "initialize" then Program.heldEnv P.classes (Ctx.fields ⟨P, mt, false, false, none, none⟩) else []))
       mt.body o ∧
       (mt.name ≠ "initialize" → o.out = none ∨ o.ty.le P.classes (P.classes.boundsOf mt.owner) mt.ret = true) ∧
-      (mt.name = "initialize" → o.out.all (Ctx.allSet ⟨P, mt, false, false, none⟩ ·) = true)
+      (mt.name = "initialize" → o.out.all (Ctx.allSet ⟨P, mt, false, false, none, none⟩ ·) = true)
   inits : ∀ k, k < P.classes.length → P.wfInit k = true
   /-- Each field default, checked in its class's view of the fields. -/
   defaults : ∀ k, k < P.classes.length → ∀ j f d,
@@ -243,6 +243,17 @@ structure WfProg : Prop where
 /-- Where an environment holds after an expression, if control gets there. -/
 def OutOK (c : Ctx) (g : Option Env) (fr : Frame) (s : Store) : Prop :=
   ∃ Γ, g = some Γ ∧ Sat P c Γ fr s
+
+/-- Where a `next` goes on: a loop's next pass, with what each pass starts
+with holding, or out of a block with its value, of the block's result
+type (design §17.7). -/
+def NextOK (c : Ctx) (fr : Frame) (s : Store) (v : Value) : Prop :=
+  (∃ Γ0 Ψ τ, c.loop = some (Γ0, Ψ, τ) ∧ Sat P c Γ0 fr s) ∨
+  (c.loop = none ∧ ∃ τ, c.nextTy = some τ ∧ s.hasTy P v (τ.subst fr.selfArgs))
+
+theorem NextOK.none {c : Ctx} {fr : Frame} {s : Store} {v : Value} (hl : c.loop = none)
+    (hn : c.nextTy = none) : ¬ NextOK P c fr s v := by
+  rintro (⟨_, _, _, h, _⟩ | ⟨_, _, h, _⟩) <;> simp_all
 
 /-- What evaluating an expression checked as `o` in context `c`, frame
 `fr`, may give: never stuck; a value of its type, with the environments
@@ -270,7 +281,7 @@ def Post (c : Ctx) (o : Out) (fr : Frame) (ws : List (Ctx × Env × Out)) (Λ : 
   -- holding (design §17).
   | .broke v s' => ∃ Λ', WfStore P Λ' s' ∧ Ext P W (initW c fr) Λ Λ' s s' ∧ FrameOK P c Λ' fr s' ws ∧
       ∃ Γ0 Ψ τ, c.loop = some (Γ0, some Ψ, τ) ∧ Sat P c Ψ fr s' ∧ s'.hasTy P v (τ.subst fr.selfArgs)
-  | .nexted s' => ∃ Λ', WfStore P Λ' s' ∧ Ext P W (initW c fr) Λ Λ' s s' ∧ FrameOK P c Λ' fr s' ws ∧
-      ∃ Γ0 Ψ τ, c.loop = some (Γ0, Ψ, τ) ∧ Sat P c Γ0 fr s'
+  | .nexted v s' => ∃ Λ', WfStore P Λ' s' ∧ Ext P W (initW c fr) Λ Λ' s s' ∧ FrameOK P c Λ' fr s' ws ∧
+      NextOK P c fr s' v
 
 end QuarzCore

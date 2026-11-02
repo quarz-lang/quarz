@@ -72,7 +72,7 @@ inductive Expr where
   /-- `break` and `next` (no value) in a `while` (design §17): out of the
   innermost loop, or on to its next pass. -/
   | brk (e : Expr)
-  | nxt
+  | nxt (e : Expr)
   /-- `e.nil?`, `e.is_a?(a)`, `e == nil`, `e != nil`, `e == true`,
   `e == false`: forms, not calls (`nil?` and `is_a?` cannot be
   redefined, e63bc57; `==` is the built-in one). `is_a?` names a class

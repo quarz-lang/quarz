@@ -109,7 +109,7 @@ inductive Typed : Ctx → Env → Expr → Out → Prop where
       c.prog.resolve c.bounds o.ty m = some ms → ms.head? = some m0 → m0.block = some sig →
       (ms.all fun mt' => mt'.block == some sig && argsOk c tys mt') = true →
       blockParamsOk c ps sig = true →
-      Typed { c with inBlock := true, loop := none } (blockEnv c Δ' ps sig body) body ob →
+      Typed { c with inBlock := true, loop := none, nextTy := some sig.ret } (blockEnv c Δ' ps sig body) body ob →
       ob.ty.le c.ct c.bounds sig.ret →
       Typed c Γ (.callBlk r m args ps body) (.plain (ms.flatMap (·.ret))
         (c.reset Δ' (ps ++ body.assigned ++ c.pinned)))
@@ -148,7 +148,13 @@ inductive Typed : Ctx → Env → Expr → Out → Prop where
   | brk : c.loop = some (Γ0, some Ψ, τ) → Typed c Γ e o → o.out = some Δ → Δ.implies c.ct Ψ = true →
       o.ty.le c.ct c.bounds τ = true → Typed c Γ (.brk e) .dead
   | brkDead : c.loop = some (Γ0, Ψ, τ) → Typed c Γ e o → o.out = none → Typed c Γ (.brk e) .dead
-  | nxt : c.loop = some (Γ0, Ψ, τ) → Γ.implies c.ct Γ0 = true → Typed c Γ .nxt .dead
+  /-- `next e`: in a loop, on to its next pass (at least what a pass starts
+  with); in a block, its value (of the block's result type). -/
+  | nxt : Typed c Γ e o → o.out = some Δ → c.loop = some (Γ0, Ψ, τ) → Δ.implies c.ct Γ0 = true →
+      Typed c Γ (.nxt e) .dead
+  | nxtBlock : Typed c Γ e o → o.out = some Δ → c.loop = none → c.nextTy = some τ →
+      o.ty.le c.ct c.bounds τ = true → Typed c Γ (.nxt e) .dead
+  | nxtDead : Typed c Γ e o → o.out = none → Typed c Γ (.nxt e) .dead
   | ret : c.inBlock = false → Typed c Γ e o → o.ty.le c.ct c.bounds c.meth.ret →
       (!c.inInit || o.out.all (c.allSet ·)) = true → Typed c Γ (.ret e) .dead
   | raise : Typed c Γ e o → o.ty.le c.ct c.bounds [.cls c.prog.exn []] → Typed c Γ (.raise e) .dead
@@ -163,11 +169,11 @@ inductive Typed : Ctx → Env → Expr → Out → Prop where
   of it: the ensure clause would run after, design §17), what it assigns and the
   pinned locals un-narrowed; after it, those and what it assigns as at
   its end. -/
-  | ensure : (!c.inInit && !c.inDefault) = true → Typed { c with loop := none } Γ b ob →
+  | ensure : (!c.inInit && !c.inDefault) = true → Typed { c with loop := none, nextTy := none } Γ b ob →
       Typed c (c.reset Γ (b.assigned ++ c.pinned)) e oe → oe.out = some Δe →
       Typed c Γ (.ensure b e) ⟨ob.ty, ob.out.map (·.takeFrom Δe (e.assigned ++ c.pinned)),
         ob.out.map (·.takeFrom Δe (e.assigned ++ c.pinned)), ob.out.map (·.takeFrom Δe (e.assigned ++ c.pinned))⟩
-  | ensureDead : (!c.inInit && !c.inDefault) = true → Typed { c with loop := none } Γ b ob →
+  | ensureDead : (!c.inInit && !c.inDefault) = true → Typed { c with loop := none, nextTy := none } Γ b ob →
       Typed c (c.reset Γ (b.assigned ++ c.pinned)) e oe → oe.out = none → Typed c Γ (.ensure b e) .dead
   /-- The tests (design §2.1), each of a value: of a path, they narrow
   it (`testOut`). -/

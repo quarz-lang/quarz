@@ -465,12 +465,12 @@ def breakJoin (ann : Ty) : Expr :=
 
 -- `y = 1; while b; next if b; y = 2; end; y`: `y` stays an `Int`.
 #guard (loopProg (.seq (.assign "y" (.int 1)) (.seq (.while someBool
-  (.seq (.ite someBool .nxt .nil) (.assign "y" (.int 2)))) (.var "y" [.int])))).check
+  (.seq (.ite someBool (.nxt .nil) .nil) (.assign "y" (.int 2)))) (.var "y" [.int])))).check
 
 -- `break` and `next` outside a loop, and in a block or `ensure` body in
 -- one: rejected.
 #guard !(loopProg (.brk .nil)).check
-#guard !(loopProg .nxt).check
+#guard !(loopProg (.nxt .nil)).check
 #guard !(loopProg (.while someBool (.ensure (.brk .nil) .nil))).check
 
 -- `break v`: the loop's value, `nil` where the test is false.
@@ -487,5 +487,19 @@ def breakJoin (ann : Ty) : Expr :=
 -- `exit if x.nil?`.
 #guard (loopProg (.seq (.assign "x" .nil) (.seq (.ite (.isNil (.var "x" [.int, .nil]))
   (.prim "exit" [] [] []) .nil) (.var "x" [.int])))).check
+
+/-! `next v` in a block (design §17.7): the block's value, of its result
+type. `A#sum(n) { |Int| -> Int }` reads what the block gives as an `Int`. -/
+
+def sumProg (blk : Expr) : Program :=
+  ⟨[object, ⟨"A", some 0, [], [], [], [], .cls⟩],
+    [⟨1, "sum", [("n", [.int])], [.int], some ⟨[[.int]], [.int]⟩, [("n", [.int]), ("t", [.int])],
+      .seq (.assign "t" (.yield [.var "n" [.int]])) (.var "t" [.int])⟩],
+    ⟨0, "<main>", [], [.int], none, [("k", [.int])], .callBlk (.new 1 [] []) "sum" [.int 3] ["k"] blk⟩, []⟩
+
+#guard (sumProg (.seq (.ite someBool (.nxt (.int 1)) .nil) (.var "k" [.int]))).check
+#guard !(sumProg (.seq (.ite someBool (.nxt (.str "s")) .nil) (.var "k" [.int]))).check
+#guard match run (sumProg (.seq (.nxt (.int 5)) (.var "k" [.int]))) noPrim 100 with
+  | .ok (.int 5) _ => true | _ => false
 
 end QuarzCore.Examples
