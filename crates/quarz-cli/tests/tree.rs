@@ -363,3 +363,61 @@ fn an_implicit_it_is_a_plain_parameter() {
     };
     assert_eq!(strip_spans(&implicit), strip_spans(&explicit), "{out2}");
 }
+
+#[test]
+fn a_generic_methods_call_has_its_type_arguments() {
+    // The checker's instantiation, not what the expected type would give.
+    let (ok, out, v) = tree(
+        "call_type_args",
+        "class Box\n  def wrap[T](x: T) -> Array[T] = [x]\nend\nys: Array[Int | String] = Box.new.wrap(1)\np ys\n",
+    );
+    assert!(ok, "{out}");
+    let int = class_id(&v, "Int");
+    let wrap = v["calls"]
+        .as_object()
+        .unwrap()
+        .values()
+        .find(|c| {
+            c.get("type_args").is_some() && c["t"] == "method" && {
+                let m = c["method"].as_u64().unwrap();
+                v["methods"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|x| x["id"].as_u64() == Some(m) && x["name"] == "wrap")
+            }
+        })
+        .expect("wrap's call");
+    let args = wrap["type_args"].as_array().unwrap();
+    assert_eq!(args.len(), 1);
+    assert_eq!(args[0]["type"]["t"], "class");
+    assert_eq!(args[0]["type"]["id"].as_u64(), Some(int));
+}
+
+#[test]
+fn a_calls_type_arguments_are_its_own_frames() {
+    // `A`'s initializer checks `B`'s in the middle: its call keeps `Int`.
+    let (ok, out, v) = tree(
+        "call_type_args_frames",
+        "class Util\n  def self.id[T](x: T) -> T = x\nend\nA = Util.id(1) + B.size\nB = Util.id(\"s\")\np A\n",
+    );
+    assert!(ok, "{out}");
+    let (int, string) = (class_id(&v, "Int"), class_id(&v, "String"));
+    let mut found: Vec<u64> = v["calls"]
+        .as_object()
+        .unwrap()
+        .values()
+        .filter(|c| {
+            v["methods"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|m| m["id"] == c["method"] && m["name"] == "id")
+        })
+        .map(|c| c["type_args"][0]["type"]["id"].as_u64().unwrap())
+        .collect();
+    found.sort();
+    let mut want = vec![int, string];
+    want.sort();
+    assert_eq!(found, want);
+}

@@ -168,6 +168,12 @@ impl Remap for Output {
                 t.remap(m);
             }
         });
+        values(&mut self.call_type_args, |args| {
+            for (p, t) in args {
+                *p = m.type_params.get(*p);
+                t.remap(m);
+            }
+        });
         values(&mut self.const_targets, |t| t.remap(m));
         values(&mut self.union_calls, |t| {
             for (ty, x) in t {
