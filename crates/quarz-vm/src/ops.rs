@@ -156,7 +156,7 @@ impl Interp {
                     None => &act.self_val,
                 };
                 let mid = if dispatch {
-                    self.resolve_dynamic(recv_ref, mid)
+                    self.resolve_dynamic(recv_ref, mid)?
                 } else {
                     mid
                 };
@@ -239,7 +239,10 @@ impl Interp {
         let block = c.block.map(|b| regs[b as usize].clone());
         let r = match c.kind {
             CallOp::Method(mid) => {
-                let mid = resolved.unwrap_or_else(|| self.resolve_dynamic(&recv, mid));
+                let mid = match resolved {
+                    Some(mid) => mid,
+                    None => self.resolve_dynamic(&recv, mid)?,
+                };
                 let r = self.invoke(mid, recv, pos, kw, block.clone());
                 self.catch_break(&block, r)
             }
@@ -413,7 +416,7 @@ impl Interp {
                 let r = regs[rhs as usize].clone();
                 match method {
                     Some(mid) => {
-                        let mid = self.resolve_dynamic(&l, mid);
+                        let mid = self.resolve_dynamic(&l, mid)?;
                         self.invoke(mid, l, smallvec![r], Vec::new(), None)?
                     }
                     None => self.send(&l, op.name(), smallvec![r], None)?,

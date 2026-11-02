@@ -341,7 +341,7 @@ impl Interp {
         // there, or a module's method a value conforms to through an
         // extension, is not found by name).
         let mid = match (method, cache.and_then(Cell::get)) {
-            (Some(m), _) => self.resolve_dynamic(recv, m),
+            (Some(m), _) => self.resolve_dynamic(recv, m)?,
             (None, Some((c, n, mid))) if c == cid && n == argc => mid,
             _ => match self.find_method(cid, name, argc, false) {
                 Some(mid) => {
@@ -1405,7 +1405,7 @@ impl Interp {
                 method: Some(m),
                 ..
             } => self.invoke(
-                self.resolve_dynamic(recv, *m),
+                self.resolve_dynamic(recv, *m)?,
                 recv.clone(),
                 args,
                 Vec::new(),

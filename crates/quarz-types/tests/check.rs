@@ -2386,6 +2386,13 @@ fn calls_a_class_test_cannot_choose_are_errors() {
         "class A\n  def label -> String = \"a\"\nend\nclass B\n  def label -> Int = 1\nend\nxs: Array[A | B] = [A.new]\nys: Array[String] = xs.map(&:label)",
         "`&:label` returns String | Int but String was expected",
     );
+    // A call on class objects in a block checked once per type: a check on
+    // `Type[B] | Type[C]` (common base `A.make`) and one on `Type[D]`,
+    // outside A's hierarchy: no class method all of them override.
+    err(
+        "class A\n  def self.make -> String = \"A\"\nend\nclass B < A\n  def self.make -> String = \"B\"\nend\nclass C < A\n  def self.make -> String = \"C\"\nend\nclass D\n  def self.make -> String = \"D\"\nend\ndef pick(i: Int) -> Array[Array[Type[B] | Type[C]]] | Array[Array[Type[D]]] = i > 0 ? [[B, C]] : [[D]]\npick(1).each { |xs| p xs.map { |c| c.make } }",
+        "cannot tell at run time which `make` to call for Type[B] and Type[C]",
+    );
     // A compound assignment's reader from two extensions.
     err(
         "class A\nend\nclass B\nend\nextension A\n  def w -> Int = 1\n  def w=(x: Int) -> Int = x\nend\nextension B\n  def w -> Int = 2\n  def w=(x: Int) -> Int = x\nend\ndef pk(i: Int) -> Array[A] | Array[B] = i > 0 ? [A.new] : [B.new]\npk(1).each { |o| o.w += 1 }",

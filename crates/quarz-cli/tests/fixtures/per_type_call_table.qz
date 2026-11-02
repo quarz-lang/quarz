@@ -1,0 +1,45 @@
+# A call in a block checked once per type: a check on a union whose
+# members found different methods, then a check on another type. Each
+# check's method is in the call's table, chosen by the value's class (a
+# value of the later check's type used to find none: a TypeError).
+class Cat
+  def speak(times: Int) -> String = "meow" * times
+end
+
+class Dog
+  def speak(times: Int) -> String = "woof" * times
+end
+
+class Parrot
+  def speak(x: Object) -> String = "hello"
+  def speak(times: Int) -> Int = times
+end
+
+def flock(i: Int) -> Array[Array[Cat | Dog]] | Array[Array[Parrot]]
+  i > 0 ? [[Cat.new, Dog.new]] : [[Parrot.new]]
+end
+
+flock(1).each { |xs| xs.each { |x| p x.speak(2) } }
+flock(0).each { |xs| xs.each { |x| p x.speak(2) } }
+
+# Nested: the outer block once per array type, the inner one per element
+# type; each check's methods are in the inner call's table.
+class Coin
+  def worth -> Int = 1
+end
+
+class Note
+  def worth -> Int = 50
+end
+
+class Gold
+  def worth -> Float = 1.5
+end
+
+def purse(i: Int) -> Array[Coin | Note] | Array[Gold]
+  i > 0 ? [Coin.new, Note.new] : [Gold.new]
+end
+
+[purse(1), purse(0)].each do |xs|
+  xs.each { |x| p x.worth }
+end
