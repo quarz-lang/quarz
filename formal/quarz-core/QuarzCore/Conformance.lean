@@ -2288,7 +2288,8 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
         let ps ← pjs.mapM fun p => do
           unless (← str (← field p "kind")) == "Positional" do throw "a block parameter not positional"
           str (← field p "name")
-        unless ps.length == tys.length do throw s!"a block of built-in {name}'s parameters"
+        -- (Fewer than it gives: the rest dropped, `3.times { ... }`.)
+        unless ps.length ≤ tys.length do throw s!"a block of built-in {name}'s parameters"
         -- (An annotated parameter is declared by its annotation, which the
         -- tree keeps unresolved: out of range.)
         for ((x, t), pj) in (ps.zip tys).zip pjs do

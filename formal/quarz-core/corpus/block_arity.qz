@@ -1,0 +1,6 @@
+# A block given to a built-in may take fewer parameters than it gives: the
+# rest are dropped.
+n = 0
+3.times { n += 1 }
+p n
+[1, 2].each_with_index { |x| p x }
