@@ -32,16 +32,23 @@ theorem check_typed : ∀ {c : Ctx} {Γ : Env} {e : Expr} {o : Out}, check c Γ 
     obtain ⟨oe, he, hle, rfl⟩ := h
     exact .raise (check_typed he) hle
   | c, Γ, .absurd, o, h => by simp [check] at h
-  | c, Γ, .brk, o, h => by
+  | c, Γ, .brk e, o, h => by
     simp only [check, bind, Option.bind_eq_some_iff, guard_eq] at h
-    obtain ⟨⟨Γ0, Ψ⟩, hl, Ψ', hΨ, _, hg, h⟩ := h
-    subst hΨ
-    split at hg
-    · cases hg; cases h; exact .brk hl (by assumption)
-    · cases hg
+    obtain ⟨⟨Γ0, Ψ, τ⟩, hl, oe, he, h⟩ := h
+    split at h
+    · cases h; exact .brkDead hl (check_typed he) (by assumption)
+    · rename_i Δ hΔ
+      simp only [Option.bind_eq_some_iff] at h
+      obtain ⟨Ψ', hΨ, _, hg, h⟩ := h
+      subst hΨ
+      split at hg
+      · rename_i hc; cases hg; cases h
+        simp only [Bool.and_eq_true] at hc
+        exact .brk hl (check_typed he) hΔ hc.1 hc.2
+      · cases hg
   | c, Γ, .nxt, o, h => by
     simp only [check, bind, Option.bind_eq_some_iff, guard_eq] at h
-    obtain ⟨⟨Γ0, Ψ⟩, hl, _, hg, h⟩ := h
+    obtain ⟨⟨Γ0, Ψ, τ⟩, hl, _, hg, h⟩ := h
     split at hg
     · cases hg; cases h; exact .nxt hl (by assumption)
     · cases hg

@@ -66,7 +66,7 @@ def DefaultsPost (l k : Nat) (targs : List Ty) (Λ : List Ty) (s : Store) : Resu
           f.required P.classes = false → o'.set[i]? = some true
   | .raised v s' => ∃ Λ', WfStore P Λ' s' ∧ Ext P (fun _ => False) (· = l) Λ Λ' s s' ∧
       s'.hasTy P v [.cls P.exn []]
-  | .stuck | .returned _ _ | .broke _ | .nexted _ => False
+  | .stuck | .returned _ _ | .broke _ _ | .nexted _ => False
   | _ => True
 
 theorem defaults_good (hP : WfProg P) {N : Nat} (ihs : ∀ m, m ≤ N → Good P orc m) {k l : Nat}
@@ -190,11 +190,11 @@ theorem defaults_good (hP : WfProg P) {N : Nat} (ihs : ∀ m, m ≤ N → Good P
         | returned v s1 =>
           obtain ⟨_, _, _, _, _, hib, _⟩ := this
           simp [Program.defaultCtx] at hib
-        | broke s1 =>
-          obtain ⟨_, _, _, _, _, _, hl, _⟩ := this
+        | broke _ s1 =>
+          obtain ⟨_, _, _, _, _, _, _, hl, _⟩ := this
           simp [Program.defaultCtx] at hl
         | nexted s1 =>
-          obtain ⟨_, _, _, _, _, _, hl, _⟩ := this
+          obtain ⟨_, _, _, _, _, _, _, hl, _⟩ := this
           simp [Program.defaultCtx] at hl
         | stuck => exact (this : False).elim
         | raised v s1 =>

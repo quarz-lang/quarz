@@ -71,7 +71,7 @@ inductive Expr where
   | absurd
   /-- `break` and `next` (no value) in a `while` (design §17): out of the
   innermost loop, or on to its next pass. -/
-  | brk
+  | brk (e : Expr)
   | nxt
   /-- `e.nil?`, `e.is_a?(a)`, `e == nil`, `e != nil`, `e == true`,
   `e == false`: forms, not calls (`nil?` and `is_a?` cannot be

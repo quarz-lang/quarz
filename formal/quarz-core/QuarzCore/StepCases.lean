@@ -25,7 +25,7 @@ theorem ArgsPost.extend_other {c : Ctx} {ao ao' : ArgsOut} {fr : Frame}
   | raised v s' =>
     obtain ⟨Λ', a, e, f, g⟩ := h
     exact ⟨Λ', a, (he.transW e hw).monoW fun l hl => hl.elim (h1 l) (h2 l), f, g⟩
-  | broke s' =>
+  | broke _ s' =>
     obtain ⟨Λ', a, e, f, g⟩ := h
     exact ⟨Λ', a, (he.transW e hw).monoW fun l hl => hl.elim (h1 l) (h2 l), f, g⟩
   | nexted s' =>
@@ -249,7 +249,7 @@ theorem args_succ : ArgsGood P orc (n + 1) := by
     | raised v s1 =>
       obtain ⟨Λ1, a, e, f, g⟩ := this
       exact ⟨Λ1, a, e.monoW evalWs_cons_left, f, g⟩
-    | broke s1 =>
+    | broke _ s1 =>
       obtain ⟨Λ1, a, e, f, g⟩ := this
       exact ⟨Λ1, a, e.monoW evalWs_cons_left, f, g⟩
     | nexted s1 =>
@@ -274,7 +274,7 @@ theorem args_succ : ArgsGood P orc (n + 1) := by
     | raised v s1 =>
       obtain ⟨Λ1, a, e, f, g⟩ := this
       exact ⟨Λ1, a, e.monoW evalWs_cons_left, f, g⟩
-    | broke s1 =>
+    | broke _ s1 =>
       obtain ⟨Λ1, a, e, f, g⟩ := this
       exact ⟨Λ1, a, e.monoW evalWs_cons_left, f, g⟩
     | nexted s1 =>
@@ -307,7 +307,7 @@ theorem args_succ : ArgsGood P orc (n + 1) := by
     | raised v s1 =>
       obtain ⟨Λ1, a, e, f, g⟩ := this
       exact ⟨Λ1, a, e.monoW evalWs_cons_left, f, g⟩
-    | broke s1 =>
+    | broke _ s1 =>
       obtain ⟨Λ1, a, e, f, g⟩ := this
       exact ⟨Λ1, a, e.monoW evalWs_cons_left, f, g⟩
     | nexted s1 =>
@@ -559,11 +559,11 @@ theorem block_succ : BlockGood P orc (n + 1) := by
       · exact hf2.chainIn l hl
   | timeout => trivial
   | stuck => exact this
-  | broke _ =>
-    obtain ⟨_, _, _, _, _, _, hl, _⟩ := this
+  | broke _ _ =>
+    obtain ⟨_, _, _, _, _, _, _, hl, _⟩ := this
     simp at hl
   | nexted _ =>
-    obtain ⟨_, _, _, _, _, _, hl, _⟩ := this
+    obtain ⟨_, _, _, _, _, _, _, hl, _⟩ := this
     simp at hl
 
 theorem send_succ : SendGood P orc (n + 1) := by
@@ -761,11 +761,11 @@ theorem send_succ : SendGood P orc (n + 1) := by
     exact ChainAt.restore ws blk hf3.chain hch0 hblk'
   | timeout => trivial
   | stuck => exact this
-  | broke _ =>
-    obtain ⟨_, _, _, _, _, _, hl, _⟩ := this
+  | broke _ _ =>
+    obtain ⟨_, _, _, _, _, _, _, hl, _⟩ := this
     simp at hl
   | nexted _ =>
-    obtain ⟨_, _, _, _, _, _, hl, _⟩ := this
+    obtain ⟨_, _, _, _, _, _, _, hl, _⟩ := this
     simp at hl
 
 end QuarzCore

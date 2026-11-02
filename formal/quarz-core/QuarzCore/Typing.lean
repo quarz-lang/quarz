@@ -57,6 +57,15 @@ def ojoin : Option Env → Option Env → Option Env
   | g, none => g
   | some g, some d => some (g.join d)
 
+/-- Any value (what a candidate loop's `break` may give while the
+checker looks for the `break`s). -/
+def anyTy : Ty := [.nil, .bool, .int, .str, .float, .cls 0 []]
+
+/-- A loop's value: `nil` where its test is false (`ff`), what its
+`break`s give (`τ`) if it has any (`Ψ`). -/
+def loopTy (ff Ψ : Option Env) (τ : Ty) : Ty :=
+  (if ff.isSome then [.nil] else []) ++ (if Ψ.isSome then τ else [])
+
 /-- The join of environments (none of none). -/
 def joinAll (gs : List Env) : Option Env := gs.foldl (fun acc g => ojoin acc (some g)) none
 
@@ -91,10 +100,10 @@ structure Ctx where
   /-- A field's default: the object may not be used at all (docs/01 §3). -/
   inDefault : Bool
   /-- In a `while`'s body (not in a block or lambda in it): where each
-  pass starts (`Γ0`, what `next` must hold) and where `break` goes on
-  (`Ψ`, what the loop's exit holds besides the condition's false side;
-  none: no `break`) (design §17). -/
-  loop : Option (Env × Option Env)
+  pass starts (`Γ0`, what `next` must hold), where `break` goes on (`Ψ`,
+  what the loop's exit holds besides the condition's false side; none:
+  no `break`), and what its values are (`τ`) (design §17). -/
+  loop : Option (Env × Option Env × Ty)
   deriving Inhabited
 
 namespace Ctx
@@ -178,7 +187,7 @@ def Expr.path? : Expr → Option Path
 those a loop, or a block that may run again, starts with un-narrowed. -/
 def Expr.assigned : Expr → List String
   | .assign x e => x :: e.assigned
-  | .setField _ e | .ret e | .raise e | .isNil e | .isA e _ | .eqNil e | .neNil e
+  | .setField _ e | .ret e | .raise e | .brk e | .isNil e | .isA e _ | .eqNil e | .neNil e
   | .eqTrue e | .eqFalse e | .not e => e.assigned
   | .new _ _ args | .superInit _ args | .yield args | .prim _ args _ _ => assignedArgs args
   | .call r _ args => r.assigned ++ assignedArgs args
@@ -201,7 +210,7 @@ parameters included), wherever they are: what any call may change once
 one is made (design §13.10, C1). -/
 def Expr.procAssigned : Expr → List String
   | .lambda ps own _ b => (ps ++ own).map (·.1) ++ b.assigned ++ b.procAssigned
-  | .assign _ e | .setField _ e | .ret e | .raise e | .isNil e | .isA e _ | .eqNil e | .neNil e
+  | .assign _ e | .setField _ e | .ret e | .raise e | .brk e | .isNil e | .isA e _ | .eqNil e | .neNil e
   | .eqTrue e | .eqFalse e | .not e => e.procAssigned
   | .new _ _ args | .superInit _ args | .yield args | .prim _ args _ _ => procArgs args
   | .call r _ args | .callProc r args => r.procAssigned ++ procArgs args
@@ -674,19 +683,27 @@ def check (c : Ctx) (Γ : Env) : Expr → Option Out
     | some Δ =>
       -- Where the `break`s go on: the join of where they are (a candidate
       -- each `break` is checked against).
-      let Ψ := joinAll (brkEnvs { c with loop := some (Γ0, some []) } Δ b)
-      let ob ← check { c with loop := some (Γ0, Ψ) } Δ b
+      let bs := brkEnvs { c with loop := some (Γ0, some [], anyTy) } Δ b
+      let Ψ := joinAll (bs.map (·.1))
+      let τ := bs.flatMap (·.2)
+      let ob ← check { c with loop := some (Γ0, Ψ, τ) } Δ b
       guard (ob.out.all (·.implies c.ct Γ0))
-      -- (No way out, `while true` without `break`: no value.)
+      -- (Its value: `nil` where the test is false, a `break`'s; none if
+      -- there is no way out, `while true` without `break`.)
       let g := ojoin oc.ff Ψ
-      some ⟨if g.isSome then [.nil] else [], g, g, g⟩
-  | .brk => do
-    let (_, Ψ) ← c.loop
-    let Ψ ← Ψ
-    guard (Γ.implies c.ct Ψ)
-    some .dead
+      some ⟨loopTy oc.ff Ψ τ, g, g, g⟩
+  | .brk e => do
+    let (_, Ψ, τ) ← c.loop
+    let o ← check c Γ e
+    match o.out with
+    -- (A value that does not complete: no `break` here.)
+    | none => some .dead
+    | some Δ =>
+      let Ψ ← Ψ
+      guard (Δ.implies c.ct Ψ && o.ty.le c.ct c.bounds τ)
+      some .dead
   | .nxt => do
-    let (Γ0, _) ← c.loop
+    let (Γ0, _, _) ← c.loop
     guard (Γ.implies c.ct Γ0)
     some .dead
   | .ret e => do
@@ -806,8 +823,12 @@ def check (c : Ctx) (Γ : Env) : Expr → Option Out
 
 /-- Where a loop's body (in statement position: through `seq` and `if`)
 breaks: what holds at each `break`. -/
-def brkEnvs (c : Ctx) (Γ : Env) : Expr → List Env
-  | .brk => [Γ]
+def brkEnvs (c : Ctx) (Γ : Env) : Expr → List (Env × Ty)
+  | .brk e => match check c Γ e with
+    | some o => match o.out with
+      | some Δ => [(Δ, o.ty)]
+      | none => []
+    | none => []
   | .seq a b => brkEnvs c Γ a ++ match check c Γ a with
     | some oa => match oa.out with
       | some Δ => brkEnvs c Δ b
