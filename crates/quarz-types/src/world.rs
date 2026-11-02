@@ -2035,6 +2035,106 @@ impl World {
             return None;
         }
         self.overridden_class_method(&methods)
+            .or_else(|| self.extended_class_object_base(table))
+    }
+
+    /// For class objects only (`Type[A] | Type[B]`): a class method or a
+    /// method of a module a class extends (docs/01 §6) that the run-time
+    /// lookup from each member's class reaches as that member's method
+    /// (`Interp::class_method_override`, `Interp::class_side_override`):
+    /// `M#k` for `A.k` and `C.k` on two subclasses of a class that extends
+    /// `M`, or for `A.k` and `M#k` itself on a subclass without its own.
+    fn extended_class_object_base(&self, table: &[(Type, MethodId)]) -> Option<MethodId> {
+        let mut entries: Vec<(ClassId, MethodId)> = Vec::new();
+        for (t, k) in table {
+            let Type::ClassObject(c, _) = t else {
+                return None;
+            };
+            let i = self.method(*k);
+            let module_side = !i.singleton && self.class(i.owner).kind == ClassKind::Module;
+            if i.extension.is_some() || !(i.singleton || module_side) {
+                return None;
+            }
+            entries.push((*c, *k));
+        }
+        let name = &self.method(entries[0].1).name;
+        // Candidates in the first member's lookup order, the most derived
+        // first.
+        self.lookup_methods(&Type::ClassObject(entries[0].0, Vec::new()), name)
+            .into_iter()
+            .map(|(b, _)| b)
+            .find(|&b| {
+                let bi = self.method(b);
+                let module_side = !bi.singleton && self.class(bi.owner).kind == ClassKind::Module;
+                bi.extension.is_none()
+                    && (bi.singleton || module_side)
+                    && entries.iter().all(|&(c, k)| {
+                        let ki = self.method(k);
+                        // (Not another module's method of the signature,
+                        // which the lookup would also find.)
+                        let related = k == b
+                            || bi.singleton
+                            || ki.singleton
+                            || self.class_is_a(ki.owner, bi.owner);
+                        related
+                            && self.same_signature(ki, bi)
+                            && self.class_side_dispatch(c, b) == Some(k)
+                    })
+            })
+    }
+
+    /// What a call of class method (or extended module method) `b` on the
+    /// class object `c` runs, as the runtime finds it: the class's own
+    /// class method of `b`'s signature, then a method of a module it
+    /// extends (last extended first), then the superclass's; `None` where
+    /// `b` is not on `c`'s class side.
+    fn class_side_dispatch(&self, c: ClassId, b: MethodId) -> Option<MethodId> {
+        let bi = self.method(b);
+        let hit = |m: MethodId| m == b || self.same_signature_at_run_time(m, b);
+        let chain = self.superclass_chain(c);
+        // (A class method is looked for below its owner only.)
+        if bi.singleton && !chain.contains(&bi.owner) {
+            return None;
+        }
+        for cur in chain {
+            if bi.singleton && cur == bi.owner {
+                return Some(b);
+            }
+            let class = self.class(cur);
+            if let Some(ids) = class.singleton_methods.get(&bi.name) {
+                if let Some(&m) = ids.iter().find(|&&m| self.method(m).owner == cur && hit(m)) {
+                    return Some(m);
+                }
+            }
+            if bi.singleton {
+                // (An extended module's method overriding it,
+                // `World::extend_overrides`.)
+                if let Some(o) = self
+                    .extend_overrides_of(cur)
+                    .into_iter()
+                    .find(|o| o.overridden == b)
+                {
+                    return Some(o.by);
+                }
+                continue;
+            }
+            for ext in class.extends.iter().rev() {
+                let Type::Class(m, margs) = ext else {
+                    continue;
+                };
+                for (anc, _) in self.ancestors(*m, margs) {
+                    if let Some(ids) = self.class(anc).methods.get(&bi.name) {
+                        if let Some(&f) = ids.iter().find(|&&f| {
+                            let fi = self.method(f);
+                            fi.owner == anc && !fi.is_abstract && hit(f)
+                        }) {
+                            return Some(f);
+                        }
+                    }
+                }
+            }
+        }
+        None
     }
 
     /// The class method that each of `methods` is or overrides (an

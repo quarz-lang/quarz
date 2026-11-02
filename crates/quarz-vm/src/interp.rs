@@ -2626,14 +2626,34 @@ impl Interp {
                 && (c == mid || cm.keywords_accept(m))
         };
         let mut found = None;
+        // Class methods of the name below the one found that it does not
+        // take (`D.k(x: Int = 0)`), the lowest first: one overriding a
+        // class method found (`B.k`, which overrides the module's) is the
+        // one, as a call of `B.k` would find (not one overriding a class
+        // method above the extending class, unchecked against the module's).
+        let mut below: Vec<MethodId> = Vec::new();
         let mut cur = Some(cid);
         'chain: while let Some(c) = cur {
             let class = self.program.world.class(c);
             if let Some(ids) = class.singleton_methods.get(&m.name) {
                 if let Some(id) = ids.iter().copied().find(|id| accepts(*id)) {
-                    found = Some(id);
+                    let mut reached = vec![id];
+                    let mut lowest = id;
+                    for &b in below.iter().rev() {
+                        let bm = self.program.method(b);
+                        if bm.overrides.iter().any(|o| reached.contains(o)) {
+                            reached.push(b);
+                            lowest = b;
+                        }
+                    }
+                    found = Some(lowest);
                     break;
                 }
+                below.extend(
+                    ids.iter()
+                        .copied()
+                        .filter(|&id| self.program.method(id).owner == c),
+                );
             }
             // The last module extended first (docs/01 §6), as for include.
             for module in class.extends.iter().rev() {
