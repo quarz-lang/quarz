@@ -1,0 +1,22 @@
+# A block pass to a built-in (design §22): `&:name`, the block calling the
+# method of the name on its parameter (dispatched by the name, so a
+# subclass's override runs); `&f`, the block calling the procedure.
+class Shape
+  def area -> Int = 1
+end
+
+class Square < Shape
+  @s: Int
+  def initialize(s: Int)
+    @s = s
+  end
+  def area -> Int = @s * @s
+end
+
+shapes: Array[Shape] = [Shape.new, Square.new(3)]
+p shapes.map(&:area)
+double = ->(x: Shape) { x.area * 2 }
+p shapes.map(&double)
+ns = [1, 2, 3]
+p ns.map(&:to_s)
+p 5.to_s

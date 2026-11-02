@@ -605,6 +605,66 @@ partial def callsName (n : String) : Expr → Bool
   | .rescue b _ h e => callsName n b || callsName n h || callsName n e
   | _ => false
 
+/-- What `&:name` on a value of `t` calls (design §22): the method the name
+finds on its class (its ancestors in order), a built-in one (a built-in
+call, its declared result through the receiver's view) or the program's
+(called by its model name, dispatched by it as Quarz's). -/
+inductive SymTarget where
+  | builtin (name : String) (ret : Ty)
+  | program (name : String)
+
+def Tables.symTarget (T : Tables) (t : Ty) (mn : String) : M SymTarget := do
+  let vname : Option String := match t with
+    | [.int] => some "Int" | [.str] => some "String" | [.float] => some "Float"
+    | [.bool] => some "Bool" | _ => none
+  let cj ← match vname, t with
+    | some vn, _ => do
+      let some cj := T.classes.find? fun c => (c.getObjValAs? String "name").toOption == some vn
+        | throw s!"no {vn}"
+      pure cj
+    | none, [.cls q []] => do
+      let some cj ← T.classes.toList.findM? (fun c => do pure (T.qclass (← nat (← field c "id")) == some q))
+        | throw "&:name on a class out of range"
+      pure cj
+    | _, _ => throw "&:name on a type not a class without arguments"
+  let cid ← nat (← field cj "id")
+  if T.overloads.any (·.1 == mn) then throw s!"&:{mn} of an overloaded name"
+  let mut found : Option Json := none
+  for a in (← arr (← field (← T.cls cid) "ancestors")).toList do
+    let aid ← nat (← field a "id")
+    if let some mj := T.methods.find? (fun mj => (mj.getObjValAs? Nat "owner").toOption == some aid &&
+        (mj.getObjValAs? String "name").toOption == some mn &&
+        (mj.getObjVal? "singleton").toOption != some (.bool true) &&
+        (mj.getObjVal? "extension").toOption.getD .null == .null) then
+      found := some mj
+      break
+  let some mj := found | throw s!"&:{mn}'s method not found"
+  unless (← arr (← field mj "params")).isEmpty && (← field mj "block") == .null &&
+      (← arr (← field mj "type_params")).isEmpty do throw s!"&:{mn} of a method taking arguments"
+  -- (An extension of the name could be the one Quarz finds.)
+  if ← T.methods.anyM (fun mj' => do pure ((mj'.getObjValAs? String "name").toOption == some mn &&
+      (mj'.getObjVal? "extension").toOption.getD .null != .null)) then
+    throw s!"&:{mn} with an extension's method of the name"
+  let o ← nat (← field mj "owner")
+  if (T.qclass o).all (· < 2) || T.builtins.contains o || T.excIds.contains o ||
+      (← field mj "native") == .bool true then
+    -- (A built-in call does not dispatch: a program's method of the name
+    -- in a class below, which its objects would run, or a module's, out of
+    -- range, as on the call path.)
+    if (← str (← field (← T.cls o) "kind")) == "Module" then throw s!"&:{mn} of a module's method"
+    if ← T.methods.anyM (fun mj' => do
+        if (mj'.getObjValAs? String "name").toOption != some mn then return false
+        let o' ← nat (← field mj' "owner")
+        let below ← (← arr (← field (← T.cls o') "ancestors")).anyM fun a => do pure ((← nat (← field a "id")) == cid)
+        pure ((T.qclass o').any (· ≥ 2) && below)) then
+      throw s!"&:{mn}, a built-in method a program's class defines"
+    let rjson := Json.mkObj [("t", "class"), ("id", cid), ("args", Json.arr #[])]
+    let some renv ← T.receiverEnv rjson o | throw s!"&:{mn}: the receiver's view unknown"
+    return .builtin mn (← T.tyOrTop (← field mj "ret") renv)
+  unless (T.qclass o).any (· ≥ 2) && (T.modCopies o).isNone && (← str (← field mj "synth")) == "None" do
+    throw s!"&:{mn} of a method out of range"
+  pure (.program (← T.modelName mj))
+
 /-- The calls a tree has that pass keyword arguments: their nodes' ids,
 their positional arguments' count and their keywords. -/
 partial def kwCalls : Json → List (Nat × Nat × List String)
@@ -2163,11 +2223,10 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
       -- A built-in method: its declared types. On the implicit receiver,
       -- it takes `self` (it may read its fields), but a `Kernel`
       -- function.
-      if bpass.isSome then throw s!"a block pass to built-in {name}"
       -- A block given to it (design §14): scoped as a block here, made a
       -- loop running it any number of times by `unblock`.
       let withBlock (env : List (Nat × Ty)) (e : Expr) : CM Expr := do
-        if blk == .null then return e
+        if blk == .null && bpass.isNone then return e
         let .prim _ pargs pparams pret := e | throw "a built-in call"
         -- (One returning `Nothing` is dead to the model, its block too,
         -- which Rust runs.)
@@ -2188,6 +2247,43 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
         let rj ← field ty "ret"
         let sret ← T.tyIn env rj
         unless sret.closed do throw s!"a block of built-in {name} of an open type"
+        -- A block pass: the block it stands for (design §22). `&:name`, the
+        -- block `{ |x| x.name }` (the method the name finds on the block
+        -- parameter's class, called on it by name, as Quarz's); `&f`, a
+        -- local holding a procedure of the block's parameters, the block
+        -- `{ |a..| f.call(a..) }`.
+        if let some pe := bpass then
+          let ps := (List.range tys.length).map fun i => s!"&{id}.{i}"
+          for (x, t) in ps.zip tys do modify (addLocal · x t)
+          let bd ← match ← variant (← field pe "kind") with
+            | ("Symbol", sv) => do
+              let [t] := tys | throw s!"&:name to built-in {name}, a block of other parameters"
+              match ← T.symTarget t (← str sv) with
+              | .builtin mn ret =>
+                let bd := Expr.prim mn [.var (ps.headD "") t] [t] ret
+                let bd := if (← str (← field rj "t")) == "void" then Expr.seq bd .nil else bd
+                return .callBlk (.prim ("#builtin " ++ name) pargs pparams pret) name [.prim "#sig" [] tys sret] ps bd
+              | .program n => pure (Expr.call (.var (ps.headD "") t) n [])
+            | ("Local", _) => do
+              let f ← expr T pe
+              let pt ← T.nodeTy (← nat (← field pe "id"))
+              let [.cls k as] := pt | throw "&f of a type not a procedure's"
+              unless 2 ≤ k && k ≤ 2 + procMax && as.length == tys.length + 1 do throw "&f of another arity"
+              -- (The procedure read once, before the call, as Quarz's: the
+              -- arguments plain, so the order does not matter.)
+              let plain : Expr → Bool := fun x => match x with
+                | .var .. | .self | .nil | .tru | .fls | .int _ | .str _ | .flt _ => true
+                | _ => false
+              unless pargs.all plain do throw "&f after arguments not plain"
+              let tmp := s!"&{id}"
+              modify (addLocal · tmp pt)
+              let bd := Expr.callProc (.var tmp pt) ((ps.zip tys).map fun (x, t) => .var x t)
+              let bd := if (← str (← field rj "t")) == "void" then Expr.seq bd .nil else bd
+              return .seq (.assign tmp f)
+                (.callBlk (.prim ("#builtin " ++ name) pargs pparams pret) name [.prim "#sig" [] tys sret] ps bd)
+            | (k, _) => throw s!"a block pass of a {k}"
+          let bd := if (← str (← field rj "t")) == "void" then Expr.seq bd .nil else bd
+          return .callBlk (.prim ("#builtin " ++ name) pargs pparams pret) name [.prim "#sig" [] tys sret] ps bd
         let pjs := (← arr (← field (← field blk "params") "list")).toList
         let ps ← pjs.mapM fun p => do
           unless (← str (← field p "kind")) == "Positional" do throw "a block parameter not positional"
