@@ -96,6 +96,10 @@ structure Tables where
   /-- A program's class (without type parameters) ↦ its metaclass (design
   §19): the class of its class object, its class methods its. -/
   metaOf : Nat → Option Nat := fun _ => none
+  /-- A program's method's model name ↦ the sets of its parameters (by
+  index) that calls by keyword give, other than a first few: each a
+  wrapper `name@k<i_j>` giving the others their defaults. -/
+  kwMasks : List (String × List Nat) := []
 
 def Tables.cls (T : Tables) (id : Nat) : M Json := do
   match T.classes.find? fun c => (c.getObjValAs? Nat "id").toOption == some id with
@@ -335,7 +339,10 @@ def Tables.method (T : Tables) (id : Nat) : M Json := do
 block's type (names aside). -/
 def sigKey (m : Json) : M String := do
   let ps ← (← arr (← field m "params")).toList.mapM fun p => do
-    pure ((← field p "kind").compress ++ ":" ++ (← field p "type").compress)
+    -- (A keyword-only parameter's name is part of it: overloads may differ
+    -- in it alone, and an override keeps it, docs/01 §3.)
+    let nm ← if (← field p "kind") == .str "KeywordOnly" then do pure (":" ++ (← str (← field p "name"))) else pure ""
+    pure ((← field p "kind").compress ++ nm ++ ":" ++ (← field p "type").compress)
   let b ← match ← field m "block" with
     | .null => pure "none"
     | b => pure (← field b "type").compress
@@ -578,6 +585,38 @@ partial def callsName (n : String) : Expr → Bool
   | .ite c t e => callsName n c || callsName n t || callsName n e
   | .rescue b _ h e => callsName n b || callsName n h || callsName n e
   | _ => false
+
+/-- The calls a tree has that pass keyword arguments: their nodes' ids,
+their positional arguments' count and their keywords. -/
+partial def kwCalls : Json → List (Nat × Nat × List String)
+  | .obj kvs =>
+    let here : List (Nat × Nat × List String) := match kvs.get? "id", kvs.get? "kind" with
+      | some (.num n), some (.obj k) => match k.get? "Call" with
+        | some (.obj c) => match c.get? "args" with
+          | some (.arr as) =>
+            let kws := as.toList.filterMap fun a => match a.getObjVal? "Keyword" with
+              | .ok kv => (kv.getObjValAs? String "name").toOption
+              | .error _ => none
+            let npos := (as.toList.filter fun a => (a.getObjVal? "Positional").toOption.isSome).length
+            if kws.isEmpty then [] else [(n.mantissa.toNat, npos, kws)]
+          | _ => []
+        | _ => []
+      | _, _ => []
+    here ++ kvs.toList.flatMap fun (_, v) => kwCalls v
+  | .arr xs => xs.toList.flatMap kwCalls
+  | _ => []
+
+/-- Which of a method's parameters a call gives: its positional arguments
+the first ones, its keyword ones by name; none if the keywords are not in
+the parameters' order (the call would evaluate them in another). -/
+def givenParams (pjs : List Json) (npos : Nat) (kws : List String) : M (Option (List Nat)) := do
+  let names ← pjs.mapM fun p => do str (← field p "name")
+  let mut out := List.range npos
+  for k in kws do
+    let some i := names.idxOf? k | throw s!"a keyword argument {k} of no parameter"
+    if out.any (· ≥ i) then return none
+    out := out ++ [i]
+  pure (some out)
 
 /-- Each lambda's own names (its parameters and its own locals) made its
 own (`x@λk`): a block's parameter of the method met after a lambda that
@@ -2193,17 +2232,26 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
       return ← withBlock env (.prim name (rs ++ as ++ (← kwArgs)) (rps ++ params) ret)
     -- (A program's method: by its model name, an overload's its own; on
     -- a union, the members' overloads may differ.)
-    unless kws.isEmpty do throw "a Keyword argument"
     let rawName := name
     let name ← T.modelName m
     -- (A call leaving parameters with defaults: the callee's class's
-    -- wrapper of that arity, which gives them their defaults.)
+    -- wrapper for the ones it gives, which gives the others their
+    -- defaults; keyword arguments in their parameters' order.)
     let pjs := (← arr (← field m "params")).toList
-    let name ← if as.length < pjs.length then do
-        unless ← (pjs.drop as.length).allM (fun p => do pure ((← field p "default") == .bool true)) do
-          throw s!"a call of {rawName} leaving a parameter without a default"
-        pure s!"{name}@d{as.length}"
-      else pure name
+    -- (On a union, each member's method binds the keywords by its own
+    -- parameters' names.)
+    unless kws.isEmpty do
+      if let some rj := (recvJ.getObjVal? "id").toOption then
+        if (← T.nodeTy (← nat rj)).length > 1 then throw s!"keyword arguments to {rawName} on a union receiver"
+    let some given ← givenParams pjs as.length (kws.map (·.1))
+      | throw "keyword arguments out of their parameters' order"
+    for (p, i) in pjs.zipIdx do
+      unless given.contains i || (← field p "default") == .bool true do
+        throw s!"a call of {rawName} leaving a parameter without a default"
+    let name := if given.length == pjs.length then name
+      else if given == List.range given.length then s!"{name}@d{given.length}"
+      else name ++ "@k" ++ "_".intercalate (given.map toString)
+    let as := as ++ (← kwArgs)
     if name != rawName then
       if let some rj := (recvJ.getObjVal? "id").toOption then
         if (← T.nodeTy (← nat rj)).length > 1 then throw s!"an overload of {rawName} on a union receiver"
@@ -2448,7 +2496,8 @@ def method (T : Tables) (owner : Nat) (m : Json) (d : Json) : M Method := do
       throw "a private method of a variant class"
   let name ← T.modelName m
   let params ← (← arr (← field m "params")).toList.mapM fun p => do
-    if (← str (← field p "kind")) != "Positional" then throw "a parameter not positional"
+    -- (A keyword-only one: in its place, calls by keyword given it there.)
+    unless ["Positional", "KeywordOnly"].contains (← str (← field p "kind")) do throw "a parameter not positional"
     if (← field p "default") == .bool true then
       if (← field m "block") != .null then throw "a parameter with a default in a method with a block"
     pure (← str (← field p "name"), ← T.ty (← field p "type"))
@@ -2523,6 +2572,7 @@ calls the method; an override's, its own defaults (docs/01 §3). -/
 def defaultWrappers (T : Tables) (owner : Nat) (m : Json) (d : Json) : M (List Method) := do
   let pjs := (← arr (← field m "params")).toList
   let some k := pjs.findIdx? (fun p => (p.getObjVal? "default").toOption == some (.bool true)) | return []
+
   -- (An abstract one's defaults are not in the tree: out of range.)
   if d == .null then throw "an abstract method with a default"
   -- (`initialize`'s: at `new`, literals only.)
@@ -2534,10 +2584,18 @@ def defaultWrappers (T : Tables) (owner : Nat) (m : Json) (d : Json) : M (List M
   let rcls ← nat (← field m "owner")
   let w : Where := ⟨T.qclass rcls == some 1, none, some rcls, none, none, [], none, [], [], false, false, false, false,
     false, (← field m "singleton") == .bool true⟩
-  (List.range (pjs.length - k)).mapM fun i => do
-    let j := k + i
+  -- (A prefix of the parameters given, `name@d<j>`; a set, by keyword,
+  -- `name@k<i_..>`.)
+  let sets : List (String × List Nat) :=
+    (List.range (pjs.length - k)).map (fun i => (s!"@d{k + i}", List.range (k + i))) ++
+    ((T.kwMasks.filter (·.1 == name)).map fun (_, g) => ("@k" ++ "_".intercalate (g.map toString), g))
+  -- (A set this method has no defaults for: another method of the name's.)
+  let sets ← sets.filterM fun (_, given) => do
+    (pjs.zipIdx).allM fun (p, i) => do pure (given.contains i || (← field p "default") == .bool true)
+  sets.mapM fun (suffix, given) => do
     let mut body : Expr := .call .self name (ps.map fun (x, t) => .var x t)
-    for (x, t, dj) in ((ps.zip dps).drop j).reverse.map (fun ((x, t), dj) => (x, t, dj)) do
+    for ((x, t), dj, i) in ((ps.zip dps).zipIdx.map (fun ((pt, dj), i) => (pt, dj, i))).reverse do
+      if given.contains i then continue
       let dv ← field dj "default"
       if dv == .null then throw "a default missing"
       let (e, ls) ← ((expr T dv).run w).run ps
@@ -2548,7 +2606,9 @@ def defaultWrappers (T : Tables) (owner : Nat) (m : Json) (d : Json) : M (List M
     if narrows body then
       if ← (← arr (← field (← T.cls rcls) "type_params")).anyM (fun p => do pure !(← arr (← field p "bounds")).isEmpty) then
         throw "a test in a default in a class with a bounded parameter"
-    pure ⟨owner, s!"{name}@d{j}", ps.take j, ret, none, ps, body⟩
+    -- (Its locals: its parameters first.)
+    let mine := given.filterMap (ps[·]?)
+    pure ⟨owner, name ++ suffix, mine, ret, none, mine ++ ps.filter (!mine.contains ·), body⟩
 
 /-- A block given to a built-in method (`callBlk` of a `#builtin` call,
 scoped as a block: design §14), made a loop: the call first (its result
@@ -2785,7 +2845,7 @@ def program (j : Json) : M Program := do
     fun id => (narrowedList.find? (·.1 == id)).map (·.2), selfParam, excIds,
     (j.getObjVal? "op_targets").toOption.getD Json.null,
     (j.getObjVal? "block_results").toOption.getD Json.null, [], ← arr (← field j "extensions"), modCopies,
-    builtIds, metaOf⟩
+    builtIds, metaOf, []⟩
   -- The program's overloaded names (but `initialize`, which `new` and
   -- `super` take the nearest of).
   let mine ← (← arr (← field j "methods")).toList.filterM fun m => do
@@ -2820,6 +2880,22 @@ def program (j : Json) : M Program := do
           else overloads.map fun (n', ks') => if n' == n then (n', ks' ++ [key]) else (n', ks')
       | none => overloads ++ [(n, [key])]
   let T := { T with overloads := overloads.filter fun (_, ks) => ks.length > 1 }
+  -- The parameter sets calls by keyword give the program's methods, by
+  -- model name (each class's method of the name has its wrapper).
+  let mut kwMasks : List (String × List Nat) := []
+  for (cid, npos, kws) in kwCalls (Json.arr #[← field j "definitions", ← field j "units", ← field j "consts",
+      ← field j "field_defaults"]) do
+    let .ok tj := T.calls.getObjVal? (toString cid) | continue
+    unless (tj.getObjValAs? String "t").toOption == some "method" do continue
+    let m ← T.method (← nat (← field tj "method"))
+    unless files.contains (← nat (← field m "file")) do continue
+    if (← field m "native") == .bool true || (← str (← field m "synth")) != "None" then continue
+    let pjs := (← arr (← field m "params")).toList
+    let some given ← givenParams pjs npos kws | continue
+    if given == List.range given.length then continue
+    let mn ← T.modelName m
+    unless kwMasks.contains (mn, given) do kwMasks := kwMasks ++ [(mn, given)]
+  let T := { T with kwMasks := kwMasks }
   -- (The runtime dispatches without the block's type: overloads of one
   -- class differing in their block only are out of range.)
   for a in mine do
@@ -3070,6 +3146,14 @@ def program (j : Json) : M Program := do
           | .ok tx, .ok ty => pure (Ty.le P.classes [] ty tx)
           | _, _ => pure true
         if accepts then throw s!"overloads of {n}: an override of other parameters"
+      -- (Keyword-only parameters of the same names in another order: an
+      -- override for the runtime, two overloads in the model.)
+      let kwNames (ps : List Json) : M (List String) := ps.filterMapM fun p => do
+        if (← field p "kind") == .str "KeywordOnly" then pure (some (← str (← field p "name"))) else pure none
+      let ka ← kwNames pa
+      let kb ← kwNames pb
+      if !ka.isEmpty && ka != kb && ka.length == kb.length && ka.all kb.contains then
+        throw s!"overloads of {n}: an override with its keyword parameters reordered"
       -- (One taking more parameters, the extra ones with defaults, that
       -- accepts the other's: an override for the runtime (docs/01 §3), two
       -- overloads in the model.)
