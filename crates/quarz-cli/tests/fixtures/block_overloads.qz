@@ -1,0 +1,23 @@
+# A method that takes a block and one that does not are overloads, not
+# overrides (docs/01 §3): a call that passes no block runs the one
+# without, whatever the receiver's class.
+class Shape
+  def self.label -> String = "shape"
+  def self.describe -> String = label
+  def name -> String = "a shape"
+  def show -> String = name
+end
+
+class Circle < Shape
+  def self.label(&b: () -> String) -> String = "circle #{b.call}"
+  def name(&b: (Int) -> String) -> String = "circle #{b.call(2)}"
+end
+
+p Circle.describe
+p Circle.label { "block" }
+k: Type[Shape] = Circle
+p k.label
+s: Shape = Circle.new
+p s.show
+p s.name
+p Circle.new.name { |n| "r#{n}" }

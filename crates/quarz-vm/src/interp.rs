@@ -2845,6 +2845,9 @@ impl Interp {
                 .zip(b.positional_params())
                 .all(|(p, q)| p.kind == q.kind && same_ty(p, q))
             && a.keywords_accept(b)
+            // (Both with a block or neither, as the checker has it:
+            // `block_ty` is `None` for no block too.)
+            && a.has_block == b.has_block
             && (a.block_ty == b.block_ty || a.block_ty.is_none() || b.block_ty.is_none())
             && a.params
                 .iter()
