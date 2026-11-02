@@ -1,0 +1,15 @@
+# Tasks and blocks a built-in keeps (design §23): a task's block is checked
+# as a block run any number of times; one a built-in keeps (`at_exit`'s)
+# is a procedure given to it; `shareable` procedures are procedures; a
+# Shareable value is any value. (The Shareable and capture rules are the
+# Rust checker's.)
+n = 5
+t = Task.spawn { n * 2 }
+p t.await
+count = 0
+at_exit { puts "bye #{count}" }
+count = 3
+double: shareable (Int) -> Int = ->(x: Int) { x * 2 }
+p double.call(4)
+s: Shareable = 42
+p s
