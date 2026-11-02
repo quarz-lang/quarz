@@ -1,0 +1,72 @@
+# A `break v` gives a `while`/`until` loop the value v; a loop its
+# condition ends is `nil`.
+def find(xs: Array[Int], v: Int) -> Int?
+  i = 0
+  while i < xs.size
+    break i if xs[i] == v
+    i += 1
+  end
+end
+p find([4, 5, 6], 5)
+p find([4, 5, 6], 7)
+
+def first_over(n: Int) -> String
+  i = 0
+  while true
+    i += 1
+    break "over #{i}" if i * i > n
+  end
+end
+puts first_over(10)
+
+def countdown(n: Int) -> Int | Float | Nil
+  until n == 0
+    break 1.5 if n == 2
+    break n if n == 7
+    n -= 1
+  end
+end
+p countdown(9)
+p countdown(7)
+p countdown(5)
+p countdown(1)
+
+def stop(n: Int) -> Nil
+  while n > 0
+    break if n == 2
+    n -= 1
+  end
+end
+p stop(5)
+
+r = begin
+  0
+end while false
+p r
+
+# A `begin ... end while` body runs once, and its breaks give the value.
+def once(n: Int) -> Int?
+  begin
+    break n * 10 if n > 0
+    n += 1
+  end while n < 0
+end
+p once(2)
+p once(-3)
+
+# An inner loop's breaks are its own; the outer one's leave through ensure.
+def nested(n: Int) -> String?
+  i = 0
+  while i < n
+    j = while true
+      break i * 2
+    end
+    begin
+      break "at #{j}" if j > 2
+    ensure
+      i += 1
+    end
+  end
+end
+p nested(5)
+p nested(1)
