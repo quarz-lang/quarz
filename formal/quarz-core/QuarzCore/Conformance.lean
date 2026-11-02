@@ -103,6 +103,16 @@ structure Tables where
   /-- The methods a `super` outside `initialize` reaches (by Rust id): each
   has an alias `name@of<id>` in its class, which nothing overrides. -/
   superTargets : List Nat := []
+  /-- A generic method's model name ↦ the instantiations its calls have
+  (the checker's type arguments, in the method's order): each a copy
+  `name@t<i>` with its type parameters bound (design §21). -/
+  insts : List (String × List (List Ty)) := []
+  /-- Each instantiation's calls' targets' owners (by model name and index):
+  a class's copy only where a call can reach it. -/
+  instOwners : List ((String × Nat) × List Nat) := []
+  /-- While a copy of a generic method is translated: its type parameters,
+  bound. -/
+  mtEnv : List (Nat × Ty) := []
 
 def Tables.cls (T : Tables) (id : Nat) : M Json := do
   match T.classes.find? fun c => (c.getObjValAs? Nat "id").toOption == some id with
@@ -178,6 +188,7 @@ partial def Tables.tyIn (T : Tables) (env : List (Nat × Ty)) (j : Json) : M Ty 
   | "param" =>
     let id ← nat (← field j "id")
     if let some t := (env.find? (·.1 == id)).map (·.2) then return t
+    if let some t := (T.mtEnv.find? (·.1 == id)).map (·.2) then return t
     if id == T.selfParam then throw "a Self type"
     match T.classParam id with
     | some (cid, i) =>
@@ -349,7 +360,12 @@ def sigKey (m : Json) : M String := do
   let b ← match ← field m "block" with
     | .null => pure "none"
     | b => pure (← field b "type").compress
-  pure (",".intercalate ps ++ "|" ++ b)
+  -- (The method's own type parameters by their places: an override's are
+  -- its own, design §21.)
+  let tps ← (← arr (← field m "type_params")).toList.mapM fun tp => do nat (← field tp "id")
+  let key := ",".intercalate ps ++ "|" ++ b
+  pure (tps.zipIdx.foldl (fun k (pid, i) =>
+    k.replace s!"\"id\":{pid},\"t\":\"param\"" s!"\"mt\":{i},\"t\":\"param\"") key)
 
 /-- The model's name of a program's method: an overloaded one's name and
 signature (`name#k`), as the runtime dispatches by signature (docs/05:
@@ -1381,6 +1397,8 @@ partial def expr (T : Tables) (e : Json) : CM Expr := do
       unless (tj.getObjValAs? String "t").toOption == some "super" do throw "a super not to a method"
       let tid ← nat (← field tj "method")
       let m ← T.method tid
+      -- (A generic one's, or in a generic one's copy: no alias per copy.)
+      if !(← arr (← field m "type_params")).isEmpty || !T.mtEnv.isEmpty then throw "super in or to a generic method"
       let o ← nat (← field m "owner")
       unless (T.qclass o).any (· ≥ 2) && !T.builtins.contains o && !T.excIds.contains o &&
           (T.modCopies o).isNone && (← field m "native") != .bool true && (← str (← field m "synth")) == "None" &&
@@ -2280,6 +2298,19 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
     let name := if given.length == pjs.length then name
       else if given == List.range given.length then s!"{name}@d{given.length}"
       else name ++ "@k" ++ "_".intercalate (given.map toString)
+    -- (A generic method's call: its instantiation's copy, design §21. A
+    -- node checked more than once, or a union receiver, keeps one
+    -- instantiation in the tree: out of range.)
+    let name ← if (← arr (← field m "type_params")).isEmpty then pure name else do
+      if T.varied.contains (.num id) then throw s!"a generic call {rawName} checked with different types"
+      if let some rj := (recvJ.getObjVal? "id").toOption then
+        if (← T.nodeTy (← nat rj)).length > 1 then throw s!"a generic call {rawName} on a union receiver"
+      let targs ← arr (← field target "type_args")
+      let tys ← targs.toList.mapM fun a => do T.ty (← field a "type")
+      unless tys.all Ty.closed do throw s!"a generic call {rawName} with an open instantiation"
+      let insts := ((T.insts.find? (·.1 == name)).map (·.2)).getD []
+      let some i := insts.idxOf? tys | throw s!"a generic call {rawName}'s instantiation"
+      pure s!"{name}@t{i}"
     let as := as ++ (← kwArgs)
     if name != rawName then
       if let some rj := (recvJ.getObjVal? "id").toOption then
@@ -2506,7 +2537,9 @@ def method (T : Tables) (owner : Nat) (m : Json) (d : Json) : M Method := do
   let classSide := (← field m "singleton") == .bool true
   if classSide && ((T.metaOf (← nat (← field m "owner"))).isNone || (← field m "extension") != .null) then
     throw "a class method"
-  unless (← arr (← field m "type_params")).isEmpty do throw "a method type parameter"
+  -- (A generic method: only its copies, each with its type parameters
+  -- bound, design §21.)
+  unless (← arr (← field m "type_params")).isEmpty || !T.mtEnv.isEmpty do throw "a method type parameter"
   if (← field m "extension") != .null then
     let o ← nat (← field m "owner")
     if (T.qclass o).all (· < 2) || (T.qclass o) == some arrIdx || T.excIds.contains o then
@@ -2873,7 +2906,7 @@ def program (j : Json) : M Program := do
     fun id => (narrowedList.find? (·.1 == id)).map (·.2), selfParam, excIds,
     (j.getObjVal? "op_targets").toOption.getD Json.null,
     (j.getObjVal? "block_results").toOption.getD Json.null, [], ← arr (← field j "extensions"), modCopies,
-    builtIds, metaOf, [], []⟩
+    builtIds, metaOf, [], [], [], [], []⟩
   -- The program's overloaded names (but `initialize`, which `new` and
   -- `super` take the nearest of).
   let mine ← (← arr (← field j "methods")).toList.filterM fun m => do
@@ -2934,6 +2967,29 @@ def program (j : Json) : M Program := do
           if (← str (← field m "name")) != "initialize" && !superTargets.contains tid then
             superTargets := superTargets ++ [tid]
   let T := { T with superTargets := superTargets }
+  -- The instantiations of the program's generic methods their calls have.
+  let mut insts : List (String × List (List Ty)) := []
+  let mut instOwners : List ((String × Nat) × List Nat) := []
+  if let .obj kvs := T.calls then
+    for (_, tj) in kvs.toList do
+      let .ok targs := tj.getObjValAs? (Array Json) "type_args" | continue
+      unless (tj.getObjValAs? String "t").toOption == some "method" do continue
+      let m ← T.method (← nat (← field tj "method"))
+      unless files.contains (← nat (← field m "file")) do continue
+      if (← field m "native") == .bool true then continue
+      let some tys ← (try some <$> targs.toList.mapM (fun a => do T.ty (← field a "type")) catch _ => pure none)
+        | continue
+      unless tys.all Ty.closed do continue
+      let mn ← T.modelName m
+      let cur := ((insts.find? (·.1 == mn)).map (·.2)).getD []
+      unless cur.contains tys do
+        insts := (insts.filter (·.1 != mn)) ++ [(mn, cur ++ [tys])]
+      let some i := (((insts.find? (·.1 == mn)).map (·.2)).getD []).idxOf? tys | continue
+      let o ← nat (← field m "owner")
+      let os := ((instOwners.find? (·.1 == (mn, i))).map (·.2)).getD []
+      unless os.contains o do
+        instOwners := (instOwners.filter (·.1 != (mn, i))) ++ [((mn, i), os ++ [o])]
+  let T := { T with insts := insts, instOwners := instOwners }
   -- (The runtime dispatches without the block's type: overloads of one
   -- class differing in their block only are out of range.)
   for a in mine do
@@ -3082,6 +3138,24 @@ def program (j : Json) : M Program := do
       if (← str (← field m "name")) == "initialize" then throw "an initialize in a module"
       return ← copies.flatMapM fun (k, _) => do pure ((← method T k m def_) :: (← defaultWrappers T k m def_))
     let withDefaults (k : Nat) : M (List Method) := do
+      let tps ← (← arr (← field m "type_params")).toList.mapM fun tp => do nat (← field tp "id")
+      if !tps.isEmpty then
+        -- A generic method: a copy for each instantiation its calls have
+        -- (by position: an override's type parameters are its own).
+        if (← arr (← field m "params")).toList.any (fun p => (p.getObjVal? "default").toOption == some (.bool true)) then
+          throw "a generic method with a default"
+        if (← str (← field m "name")) == "initialize" then throw "a generic initialize"
+        let mn ← T.modelName m
+        let mo ← nat (← field m "owner")
+        let insts := ((T.insts.find? (·.1 == mn)).map (·.2)).getD []
+        -- (Those of calls that can reach it: of its class's chain.)
+        let mine ← insts.zipIdx.filterM fun (_, i) => do
+          let os := ((T.instOwners.find? (·.1 == (mn, i))).map (·.2)).getD []
+          os.anyM fun o => do pure ((← T.inChain mo o) || (← T.inChain o mo))
+        return ← mine.mapM fun (tys, i) => do
+          unless tys.length == tps.length do throw "a generic method's instantiation"
+          let mt ← method { T with mtEnv := tps.zip tys } k m def_
+          pure { mt with name := s!"{mn}@t{i}" }
       let mt ← method T k m def_
       -- (One a `super` reaches: also by its alias, design §20.)
       let mid ← nat (← field m "id")
@@ -3188,9 +3262,14 @@ def program (j : Json) : M Program := do
     for b in mine do
       let n ← str (← field a "name")
       if n == "initialize" || n != (← str (← field b "name")) then continue
-      if (← sigKey a) == (← sigKey b) then continue
       let ao ← nat (← field a "owner")
       let bo ← nat (← field b "owner")
+      -- (A generic method and another of its key, its type parameters only
+      -- in its result: an override for the runtime, apart in the model.)
+      if (← sigKey a) == (← sigKey b) && ao != bo && (← T.inChain ao bo) &&
+          (← arr (← field a "type_params")).isEmpty != (← arr (← field b "type_params")).isEmpty then
+        throw s!"overloads of {n}: a generic method and another of its signature"
+      if (← sigKey a) == (← sigKey b) then continue
       unless ao != bo && (← T.inChain ao bo) do continue
       let pa := (← arr (← field a "params")).toList
       let pb := (← arr (← field b "params")).toList

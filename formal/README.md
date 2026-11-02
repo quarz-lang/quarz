@@ -483,6 +483,13 @@ stricter, not unsound.
   statically, as Quarz's `super` (design §20); a bare one passes the
   method's parameters. Out of range: a target in a module, a built-in
   target, `super` in a class method or with a block.
+  A generic method (its own type parameters) is translated once for each
+  instantiation the checker gave its calls (`calls[id].type_args` in the
+  tree, taken as given): a copy `name@t<i>` with the type parameters
+  bound, in each class that has a method of its model name (design §21).
+  Out of range: a call checked more than once (with different types) or
+  on a union receiver (the tree keeps one instantiation), an open
+  instantiation, a generic method with a default.
   `x.m!` that the checker resolved to `m` (the sugar for `x = x.m`,
   docs/01 §10, on a local) is that assignment.
   What the translator takes from the Rust checker as given, the model

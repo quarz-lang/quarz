@@ -28,11 +28,13 @@ def main (args : List String) : IO UInt32 := do
       -- (An extension's method or a function by its own name, the
       -- suffix after the last `@`, `name@ext<k>` or `name@fn`, dropped (a
       -- function once, not per copy); `-@` is a name.)
-      let shown (n : String) : String :=
-        match (n.splitOn "@").reverse with
-        | last :: rest@(_ :: _) =>
-          if last == "fn" || last.startsWith "ext" then "@".intercalate rest.reverse else n
-        | _ => n
+      let rec shown (n : String) (fuel : Nat := 8) : String :=
+        match fuel, (n.splitOn "@").reverse with
+        | k + 1, last :: rest@(_ :: _) =>
+          if last == "fn" || ["ext", "t", "d", "k", "of", "f", "λ"].any (last.startsWith ·) then
+            shown ("@".intercalate rest.reverse) k
+          else n
+        | _, _ => n
       IO.println s!"disagrees: {(bad.map fun mt => shown mt.name).eraseDups}"
       if args.contains "--dump" then
         for mt in bad do IO.println (repr mt)
