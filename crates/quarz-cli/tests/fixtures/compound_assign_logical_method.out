@@ -1,0 +1,5 @@
+(a = 1 OR d = 4)
+(b = 2 OR e = 5)
+((b = 2 OR e = 5) AND f = 6)
+(a = 1 OR g = 7)
+(b = 2 OR g = 7)

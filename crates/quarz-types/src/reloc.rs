@@ -181,6 +181,15 @@ impl Remap for Output {
                 method(m, x);
             }
         });
+        values(&mut self.op_logical_calls, |r| {
+            if let Some(t) = &mut r.target {
+                t.remap(m);
+            }
+            for (ty, x) in r.table.iter_mut().flatten() {
+                ty.remap(m);
+                method(m, x);
+            }
+        });
         values(&mut self.op_getter_tables, |(t, _)| {
             for (ty, x) in t {
                 ty.remap(m);

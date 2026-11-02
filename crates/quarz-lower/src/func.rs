@@ -101,6 +101,9 @@ pub struct FnBuilder<'a> {
     lw: &'a mut Lowerer,
     world: &'a World,
     out: &'a Output,
+    /// A node lowered with a record apart from its own: a compound
+    /// assignment's logical call (`Output::op_logical_calls`).
+    record_for: Option<(u32, &'a quarz_types::CallRecord)>,
     func: Function,
     cur: BlockId,
     dead: bool,
@@ -171,6 +174,7 @@ impl<'a> FnBuilder<'a> {
             lw,
             world,
             out,
+            record_for: None,
             func,
             cur: 0,
             dead: false,
@@ -2518,12 +2522,33 @@ impl<'a> FnBuilder<'a> {
     /// it is given, or a union receiver's members) found different
     /// methods: the recorded one is the last check's.
     fn varies(&self, id: u32) -> bool {
-        self.out.union_conflicts.contains(&id)
+        self.conflict_of(id)
             || self
-                .out
-                .union_calls
-                .get(&id)
+                .table_of(id)
                 .is_some_and(|t| t.iter().any(|(_, m)| *m != t[0].1))
+    }
+
+    /// Node `id`'s call table (`union_calls`), or the record it is
+    /// lowered with (`record_for`).
+    fn table_of(&self, id: u32) -> Option<&'a Vec<(quarz_types::Type, MethodId)>> {
+        match self.record_for {
+            Some((r, rec)) if r == id => rec.table.as_ref(),
+            _ => self.out.union_calls.get(&id),
+        }
+    }
+
+    fn conflict_of(&self, id: u32) -> bool {
+        match self.record_for {
+            Some((r, rec)) if r == id => rec.conflict,
+            _ => self.out.union_conflicts.contains(&id),
+        }
+    }
+
+    fn dynamic_of(&self, id: u32) -> bool {
+        match self.record_for {
+            Some((r, rec)) if r == id => rec.dynamic,
+            _ => self.out.dynamic_calls.contains(&id),
+        }
     }
 
     /// The type the checker gave node `id`, unless its checks gave it
@@ -2693,8 +2718,8 @@ impl<'a> FnBuilder<'a> {
     /// a common ancestor's method.
     fn emit_call(&mut self, id: u32, inst: Inst) {
         let base = self.class_object_base(id);
-        let conflict = self.out.union_conflicts.contains(&id);
-        let table = self.out.union_calls.get(&id).cloned();
+        let conflict = self.conflict_of(id);
+        let table = self.table_of(id).cloned();
         self.emit_call_by(base, conflict, table, inst);
     }
 
@@ -2850,10 +2875,10 @@ impl<'a> FnBuilder<'a> {
     /// For node `id`'s table on class objects whose class methods override
     /// one (`World::class_object_base`): that one, to call (or name) it.
     fn class_object_base(&self, id: u32) -> Option<MethodId> {
-        if self.out.union_conflicts.contains(&id) {
+        if self.conflict_of(id) {
             return None;
         }
-        self.world.class_object_base(self.out.union_calls.get(&id)?)
+        self.world.class_object_base(self.table_of(id)?)
     }
 
     /// The methods the checks of node `id` found by the receiver's type
@@ -3601,7 +3626,7 @@ impl<'a> FnBuilder<'a> {
         // `emit_call` tests the receiver.
         let varies = self.varies(e.id);
         let kind = match target {
-            Some(CallTarget::Method { .. }) if self.out.dynamic_calls.contains(&e.id) => {
+            Some(CallTarget::Method { .. }) if self.dynamic_of(e.id) => {
                 CallKind::Send(call.name.clone())
             }
             Some(CallTarget::Method { method }) if varies => CallKind::Method(*method),
@@ -4351,6 +4376,14 @@ impl<'a> FnBuilder<'a> {
         let ExprKind::Call(call) = &c.kind else {
             unreachable!("a logical call is a call")
         };
+        // A compound assignment's (`x ||= v`): its own record, the node's
+        // being the writer's.
+        if let Some(rec) = self.out.op_logical_calls.get(&e.id) {
+            let saved = self.record_for.replace((e.id, rec));
+            let v = self.call_value(e, call, rec.target.as_ref(), Some(recv));
+            self.record_for = saved;
+            return v;
+        }
         let target = self.out.calls.get(&e.id);
         self.call_value(e, call, target, Some(recv))
     }
