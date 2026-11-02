@@ -205,7 +205,7 @@ def ChainAt (Λ : List Ty) (s : Store) : List (Ctx × Env × Out) → Option Clo
       (∀ l l', frameLocs vars l → chainLocs outer l' → l' < l) ∧
       (∃ sig0, BlockSig.le c.ct sig (sig0.subst sa) ∧
         blockParamsOk c ps sig0 = true ∧
-        Typed { c with inBlock := true } (blockEnv c Δ ps sig0 body) body ob ∧
+        Typed { c with inBlock := true, loop := none } (blockEnv c Δ ps sig0 body) body ob ∧
         ob.ty.le c.ct c.bounds sig0.ret = true) ∧
       Sat P c (c.reset Δ (ps ++ body.assigned ++ c.pinned)) ⟨vars, self, sa, outer⟩ s
   | _, _, _ => False
@@ -226,11 +226,11 @@ def OracleOK (orc : Oracle) : Prop := ∀ n s t v, orc n s t = some v → s.hasT
 structure WfProg : Prop where
   classes : WfClasses P.classes
   methods : ∀ mt ∈ P.methods, P.wfMethod mt = true ∧
-    ∃ o, Typed ⟨P, mt, false, false⟩ (mt.params.map (fun (x, t) => (.local x, t)) ++
-        (if mt.name == "initialize" then Program.heldEnv P.classes (Ctx.fields ⟨P, mt, false, false⟩) else []))
+    ∃ o, Typed ⟨P, mt, false, false, none⟩ (mt.params.map (fun (x, t) => (.local x, t)) ++
+        (if mt.name == "initialize" then Program.heldEnv P.classes (Ctx.fields ⟨P, mt, false, false, none⟩) else []))
       mt.body o ∧
       (mt.name ≠ "initialize" → o.out = none ∨ o.ty.le P.classes (P.classes.boundsOf mt.owner) mt.ret = true) ∧
-      (mt.name = "initialize" → o.out.all (Ctx.allSet ⟨P, mt, false, false⟩ ·) = true)
+      (mt.name = "initialize" → o.out.all (Ctx.allSet ⟨P, mt, false, false, none⟩ ·) = true)
   inits : ∀ k, k < P.classes.length → P.wfInit k = true
   /-- Each field default, checked in its class's view of the fields. -/
   defaults : ∀ k, k < P.classes.length → ∀ j f d,
@@ -265,5 +265,12 @@ def Post (c : Ctx) (o : Out) (fr : Frame) (ws : List (Ctx × Env × Out)) (Λ : 
   -- frame and the store as here).
   | .raised v s' => ∃ Λ', WfStore P Λ' s' ∧ Ext P W (initW c fr) Λ Λ' s s' ∧ FrameOK P c Λ' fr s' ws ∧
       s'.hasTy P v [.cls P.exn []]
+  -- Out of the innermost loop, or on to its next pass (in its body only):
+  -- with where its `break`s go on (`Ψ`) or where each pass starts (`Γ0`)
+  -- holding (design §17).
+  | .broke s' => ∃ Λ', WfStore P Λ' s' ∧ Ext P W (initW c fr) Λ Λ' s s' ∧ FrameOK P c Λ' fr s' ws ∧
+      ∃ Γ0 Ψ, c.loop = some (Γ0, some Ψ) ∧ Sat P c Ψ fr s'
+  | .nexted s' => ∃ Λ', WfStore P Λ' s' ∧ Ext P W (initW c fr) Λ Λ' s s' ∧ FrameOK P c Λ' fr s' ws ∧
+      ∃ Γ0 Ψ, c.loop = some (Γ0, Ψ) ∧ Sat P c Γ0 fr s'
 
 end QuarzCore

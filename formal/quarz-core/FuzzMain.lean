@@ -31,6 +31,9 @@ def main (args : List String) : IO UInt32 := do
         IO.eprintln s!"stuck: {repr P.main.body}\n{repr ((P.methods.find? (·.owner == 4)).map (·.body))}"
         return 1
       | .ok .. | .raised .. | .returned .. => ended := ended + 1
+      | .broke .. | .nexted .. =>
+        IO.eprintln s!"a break out of the program: {repr P.main.body}"
+        return 1
       | .timeout => pure ()
   IO.println s!"{n} programs, {checked} checked ({inits} with a generated initialize, {boxes} with the boxes, {variance} variance scenarios), {ended} of them ended; none stuck"
   return 0

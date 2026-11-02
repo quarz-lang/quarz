@@ -1,0 +1,48 @@
+# `break` and `next` in `while` (design §17): after the loop, what holds
+# where the test is false or at a `break`; `while true` without one is
+# `Nothing`, so a method may end with it whatever it returns.
+def first_big(xs: Array[Int]) -> Int?
+  i = 0
+  found: Int? = nil
+  while i < xs.size
+    x = xs[i]
+    i += 1
+    next if x < 10
+    found = x
+    break
+  end
+  found
+end
+
+def first_str(xs: Array[String?]) -> Int
+  i = 0
+  s: String? = nil
+  while true
+    s = xs[i]
+    break if s
+    i += 1
+  end
+  s.size
+end
+
+def forever -> Int
+  while true
+  end
+end
+
+def countdown(n: Int) -> Int
+  k = n
+  while true
+    k -= 1
+    if k < 3
+      break
+    else
+      next
+    end
+  end
+  k
+end
+
+p first_big([1, 20, 30])
+p first_str([nil, "abc"])
+p countdown(10)

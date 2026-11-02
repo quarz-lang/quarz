@@ -57,6 +57,9 @@ def ojoin : Option Env → Option Env → Option Env
   | g, none => g
   | some g, some d => some (g.join d)
 
+/-- The join of environments (none of none). -/
+def joinAll (gs : List Env) : Option Env := gs.foldl (fun acc g => ojoin acc (some g)) none
+
 /-- What checking an expression gives (see the module doc). -/
 structure Out where
   ty : Ty
@@ -87,6 +90,11 @@ structure Ctx where
   inBlock : Bool
   /-- A field's default: the object may not be used at all (docs/01 §3). -/
   inDefault : Bool
+  /-- In a `while`'s body (not in a block or lambda in it): where each
+  pass starts (`Γ0`, what `next` must hold) and where `break` goes on
+  (`Ψ`, what the loop's exit holds besides the condition's false side;
+  none: no `break`) (design §17). -/
+  loop : Option (Env × Option Env)
   deriving Inhabited
 
 namespace Ctx
@@ -458,7 +466,7 @@ def Ctx.lambdaOk (c : Ctx) (ps own : List (String × Ty)) (body : Expr) : Bool :
 /-- A lambda's body is checked as a block of its method with the
 lambda's parameters and own locals added, no block and no `return`. -/
 def Ctx.lambdaCtx (c : Ctx) (ps own : List (String × Ty)) : Ctx :=
-  { c with inBlock := true, meth := { c.meth with locals := ps ++ own ++ c.meth.locals, block := none } }
+  { c with inBlock := true, loop := none, meth := { c.meth with locals := ps ++ own ++ c.meth.locals, block := none } }
 
 /-- The locals `Γ` has (assigned), each as declared. -/
 def Ctx.declEnv (c : Ctx) (Γ : Env) : Env :=
@@ -502,6 +510,12 @@ def Ctx.argsWf (c : Ctx) (k : Nat) (targs : List Ty) : Bool :=
       cl.kind != .enumC && cl.kind != .proc && cl.kind != .builtin
   | none => false
 
+/-- After a built-in call returning `ret`: its value, the pinned locals
+un-narrowed (it may call a method of the program); none if it returns
+`Nothing` (`exit`, `abort`: the oracle gives no value of no type). -/
+def primOut (c : Ctx) (ret : Ty) (Δ : Env) : Out :=
+  if ret.isEmpty then .dead else .plain ret (c.afterCall Δ)
+
 /-- The argument types fit the method's parameters. -/
 def argsOk (c : Ctx) (tys : List Ty) (mt : Method) : Bool :=
   tys.length == mt.params.length && (tys.zip mt.params).all fun (t, (_, u)) => t.le c.ct c.bounds u
@@ -511,7 +525,9 @@ mutual
 /-- `check c Γ e`: `e` checked where `Γ` holds; `none` if it is rejected. -/
 def check (c : Ctx) (Γ : Env) : Expr → Option Out
   | .nil => some (.plain [.nil] Γ)
-  | .tru | .fls => some (.plain [.bool] Γ)
+  -- (`true` is never falsy, nor `false` truthy.)
+  | .tru => some ⟨[.bool], some Γ, some Γ, none⟩
+  | .fls => some ⟨[.bool], some Γ, none, some Γ⟩
   | .int _ => some (.plain [.int] Γ)
   | .str _ => some (.plain [.str] Γ)
   | .flt _ => some (.plain [.float] Γ)
@@ -611,7 +627,7 @@ def check (c : Ctx) (Γ : Env) : Expr → Option Out
         guard (blockParamsOk c ps sig)
         -- The block runs 0 or more times, during the call: its body starts
         -- with what it assigns un-narrowed, its parameters given.
-        let ob ← check { c with inBlock := true } (blockEnv c Δ' ps sig body) body
+        let ob ← check { c with inBlock := true, loop := none } (blockEnv c Δ' ps sig body) body
         guard (ob.ty.le c.ct c.bounds sig.ret)
         -- After the call, what the block assigns un-narrowed: it may have
         -- stopped anywhere (an exception the method rescued), as the Rust
@@ -636,7 +652,7 @@ def check (c : Ctx) (Γ : Env) : Expr → Option Out
       guard (c.builtinOk ret)
       -- (A built-in method may call one of the program: `to_s` in an
       -- interpolation, `puts`'s.)
-      some (.plain ret (c.afterCall Δ))
+      some (primOut c ret Δ)
   | .seq a b => do
     let oa ← check c Γ a
     match oa.out with
@@ -650,15 +666,29 @@ def check (c : Ctx) (Γ : Env) : Expr → Option Out
   | .while cnd b => do
     -- Each pass starts with what the loop assigns un-narrowed (docs/02
     -- §6), and the pinned locals (a call in it un-narrows them): the body
-    -- must end with at least that.
+    -- must end with at least that, as must each `next`.
     let Γ0 := c.reset Γ (Expr.assigned (.while cnd b) ++ c.pinned)
     let oc ← check c Γ0 cnd
     match oc.tt with
     | none => some { Out.plain [.nil] Γ with out := oc.ff, tt := oc.ff, ff := oc.ff }
     | some Δ =>
-      let ob ← check c Δ b
+      -- Where the `break`s go on: the join of where they are (a candidate
+      -- each `break` is checked against).
+      let Ψ := joinAll (brkEnvs { c with loop := some (Γ0, some []) } Δ b)
+      let ob ← check { c with loop := some (Γ0, Ψ) } Δ b
       guard (ob.out.all (·.implies c.ct Γ0))
-      some ⟨[.nil], oc.ff, oc.ff, oc.ff⟩
+      -- (No way out, `while true` without `break`: no value.)
+      let g := ojoin oc.ff Ψ
+      some ⟨if g.isSome then [.nil] else [], g, g, g⟩
+  | .brk => do
+    let (_, Ψ) ← c.loop
+    let Ψ ← Ψ
+    guard (Γ.implies c.ct Ψ)
+    some .dead
+  | .nxt => do
+    let (Γ0, _) ← c.loop
+    guard (Γ.implies c.ct Γ0)
+    some .dead
   | .ret e => do
     guard (!c.inBlock)
     let o ← check c Γ e
@@ -713,7 +743,8 @@ def check (c : Ctx) (Γ : Env) : Expr → Option Out
     some ⟨oe.ty ++ oh.ty, ojoin oe.out oh.out, ojoin oe.tt oh.tt, ojoin oe.ff oh.ff⟩
   | .ensure b e => do
     guard (!c.inInit && !c.inDefault)
-    let ob ← check c Γ b
+    -- (No `break` or `next` out of the body: the clause would run after.)
+    let ob ← check { c with loop := none } Γ b
     -- It runs however the body ends: with what the body assigns
     -- un-narrowed.
     let oe ← check c (c.reset Γ (b.assigned ++ c.pinned)) e
@@ -772,6 +803,24 @@ def check (c : Ctx) (Γ : Env) : Expr → Option Out
   | .not a => do
     let oa ← check c Γ a
     some ⟨[.bool], oa.out, oa.ff, oa.tt⟩
+
+/-- Where a loop's body (in statement position: through `seq` and `if`)
+breaks: what holds at each `break`. -/
+def brkEnvs (c : Ctx) (Γ : Env) : Expr → List Env
+  | .brk => [Γ]
+  | .seq a b => brkEnvs c Γ a ++ match check c Γ a with
+    | some oa => match oa.out with
+      | some Δ => brkEnvs c Δ b
+      | none => []
+    | none => []
+  | .ite cnd t e => match check c Γ cnd with
+    | some oc => (match oc.tt with
+        | some Δ => brkEnvs c Δ t
+        | none => []) ++ (match oc.ff with
+        | some Δ => brkEnvs c Δ e
+        | none => [])
+    | none => []
+  | _ => []
 
 /-- Code reached where `Γ` holds, or (`none`) not at all: dead code is
 not checked. -/

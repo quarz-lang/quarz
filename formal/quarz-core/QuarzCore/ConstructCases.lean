@@ -66,7 +66,7 @@ def DefaultsPost (l k : Nat) (targs : List Ty) (Λ : List Ty) (s : Store) : Resu
           f.required P.classes = false → o'.set[i]? = some true
   | .raised v s' => ∃ Λ', WfStore P Λ' s' ∧ Ext P (fun _ => False) (· = l) Λ Λ' s s' ∧
       s'.hasTy P v [.cls P.exn []]
-  | .stuck | .returned _ _ => False
+  | .stuck | .returned _ _ | .broke _ | .nexted _ => False
   | _ => True
 
 theorem defaults_good (hP : WfProg P) {N : Nat} (ihs : ∀ m, m ≤ N → Good P orc m) {k l : Nat}
@@ -177,6 +177,8 @@ theorem defaults_good (hP : WfProg P) {N : Nat} (ihs : ∀ m, m ≤ N → Good P
               (fun _ h => h), rest⟩
           | stuck => exact (hrest : False).elim
           | returned => exact (hrest : False).elim
+          | broke => exact (hrest : False).elim
+          | nexted => exact (hrest : False).elim
           | raised w s3 =>
             obtain ⟨Λ3, hw3, he3, hv3⟩ := hrest
             have he1' : Ext P (fun _ => False) (· = l) Λ Λ1 s s1 := he1.mono
@@ -188,6 +190,12 @@ theorem defaults_good (hP : WfProg P) {N : Nat} (ihs : ∀ m, m ≤ N → Good P
         | returned v s1 =>
           obtain ⟨_, _, _, _, _, hib, _⟩ := this
           simp [Program.defaultCtx] at hib
+        | broke s1 =>
+          obtain ⟨_, _, _, _, _, _, hl, _⟩ := this
+          simp [Program.defaultCtx] at hl
+        | nexted s1 =>
+          obtain ⟨_, _, _, _, _, _, hl, _⟩ := this
+          simp [Program.defaultCtx] at hl
         | stuck => exact (this : False).elim
         | raised v s1 =>
           obtain ⟨Λ1, hw1, he1, _, hv1⟩ := this
@@ -356,12 +364,16 @@ theorem construct_succ (hP : WfProg P) {n : Nat} (ihs : ∀ m, m ≤ n → Good 
       | ok v s4 => obtain ⟨Λ4, hw4, he4, hmade⟩ := hpost; exact hfin hw4 he4 hmade
       | returned v s4 => obtain ⟨Λ4, hw4, he4, hmade⟩ := hpost; exact hfin hw4 he4 hmade
       | stuck => exact (hpost : False).elim
+      | broke => exact (hpost : False).elim
+      | nexted => exact (hpost : False).elim
       | raised v s4 =>
         obtain ⟨Λ4, hw4, he4, hv⟩ := hpost
         exact ⟨Λ4, hw4, hfresh (he12.transW he4 hw) (fun _ _ h => h.elim id id), hv⟩
       | timeout => exact trivial
   | stuck => exact (hd : False).elim
   | returned => exact (hd : False).elim
+  | broke => exact (hd : False).elim
+  | nexted => exact (hd : False).elim
   | raised v s2 =>
     obtain ⟨Λ2, hw2, he2, hv⟩ := hd
     have he12 : Ext P (fun _ => False) (· = l) Λ Λ2 s s2 :=
