@@ -1,0 +1,14 @@
+# Required by required_main.qz (O4): its top level runs first, its locals
+# its own; its classes and functions visible there.
+class Counter
+  @n: Int
+  def initialize(n: Int)
+    @n = n
+  end
+  def n -> Int = @n
+end
+
+def bump(c: Counter) -> Counter = Counter.new(c.n + 1)
+
+x = 10
+puts "lib #{x}"

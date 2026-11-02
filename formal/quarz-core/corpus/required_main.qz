@@ -1,0 +1,7 @@
+# A file requiring another (O4): the required file's top-level statements
+# first, each file's locals its own (`x` here is another local).
+require_relative "required_lib"
+
+x = "main"
+c = bump(Counter.new(1))
+puts x, c.n
