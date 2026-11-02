@@ -2550,27 +2550,46 @@ impl Interp {
     // ----- dispatch --------------------------------------------------------------------
 
     /// Find the implementation of a statically resolved method for the
-    /// receiver's run-time class (subclass overrides).
-    pub fn resolve_dynamic(&self, recv: &Value, mid: MethodId) -> MethodId {
+    /// receiver's run-time class (subclass overrides). A class method
+    /// called on a class object not below its owner (one no check saw,
+    /// docs/05 §3) is a TypeError.
+    pub fn resolve_dynamic(&self, recv: &Value, mid: MethodId) -> Result<MethodId, Flow> {
         let m = self.program.method(mid);
         if m.singleton {
             // A class method some subclass overrides: the class it is
             // called on decides.
             return match recv {
                 Value::Class(cid) if m.overridden && *cid != m.owner => {
-                    self.class_method_override(*cid, mid).unwrap_or(mid)
+                    if !self.program.world.class(*cid).ancestors.contains(&m.owner) {
+                        let what = format!(
+                            "{} given to a call of `{}.{}`, a class no check saw",
+                            self.program.world.class(*cid).name,
+                            self.program.world.class(m.owner).name,
+                            m.name
+                        );
+                        if crate::verify::enabled() {
+                            self.violated(what);
+                            unreachable!()
+                        }
+                        return Err(self.err_type(&format!(
+                            "cannot cast {} to a receiver `{}` was checked for",
+                            self.program.world.class(*cid).name,
+                            m.name
+                        )));
+                    }
+                    Ok(self.class_method_override(*cid, mid).unwrap_or(mid))
                 }
-                _ => mid,
+                _ => Ok(mid),
             };
         }
         if m.is_extension {
-            return mid;
+            return Ok(mid);
         }
         // Nothing overrides it, and the receiver is not a class object
         // (whose own class methods may stand in for a module's): the
         // method is the one.
         if self.program.vslots[mid as usize] == u32::MAX && !matches!(recv, Value::Class(_)) {
-            return mid;
+            return Ok(mid);
         }
         if let Value::Class(cid) = recv {
             // A module method running on a class object (`extend`): the
@@ -2578,29 +2597,29 @@ impl Interp {
             // the module's own is the one (not `Type`'s of its name,
             // which the class object's class would find).
             if let Some(found) = self.class_side_override(*cid, mid) {
-                return found;
+                return Ok(found);
             }
         }
         let cid = self.class_of(recv);
         if cid == m.owner {
-            return mid;
+            return Ok(mid);
         }
         let slot = self.program.vslots[mid as usize];
         if slot == u32::MAX {
             // Nothing overrides it: the method is the one.
-            return mid;
+            return Ok(mid);
         }
         let at = cid as usize * self.program.nvslots + slot as usize;
         if let Some(&hit) = self.vtable.borrow().get(at) {
             if hit != 0 {
-                return hit - 1;
+                return Ok(hit - 1);
             }
         }
         let found = self.find_override(cid, mid).unwrap_or(mid);
         if let Some(cell) = self.vtable.borrow_mut().get_mut(at) {
             *cell = found + 1;
         }
-        found
+        Ok(found)
     }
 
     /// The implementation of a module instance method `mid` for the class
@@ -3219,7 +3238,10 @@ impl Interp {
         args: ArgVec,
         kw: Vec<(Symbol, Value)>,
     ) -> Result<Value, (Flow, Value)> {
-        let mid = self.resolve_dynamic(&recv, mid);
+        let mid = match self.resolve_dynamic(&recv, mid) {
+            Ok(mid) => mid,
+            Err(flow) => return Err((flow, recv)),
+        };
         if let Some(native) = self.program.natives_owned[mid as usize] {
             // (As `invoke` binds them for a native.)
             let (args, kw) = if kw.is_empty() {

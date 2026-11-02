@@ -247,7 +247,10 @@ pub unsafe extern "C" fn qz_enter_virtual(
         &*regs.add(recv as usize)
     };
     let declared = &rt.program.method(mid);
-    let target = rt.resolve_dynamic(recv_ref, mid);
+    let target = match rt.resolve_dynamic(recv_ref, mid) {
+        Ok(target) => target,
+        Err(flow) => return rt.park_flow(flow),
+    };
     let m = &rt.program.method(target);
     let total = nparams + u32::from(declared.has_block);
     let same_shape = m.native_key.is_none()
@@ -583,7 +586,10 @@ pub unsafe extern "C" fn qz_call_static(
         } else {
             &*regs.add(recv as usize)
         };
-        rt.resolve_dynamic(recv_ref, mid)
+        match rt.resolve_dynamic(recv_ref, mid) {
+            Ok(mid) => mid,
+            Err(flow) => return rt.park_flow(flow),
+        }
     } else {
         mid
     };

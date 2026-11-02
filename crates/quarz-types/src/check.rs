@@ -8066,15 +8066,19 @@ impl Checker {
             (recv_ty, false)
         };
 
+        // (Called by name after an earlier check of the call, on a union
+        // whose members found different methods: this check's method is
+        // still one the table must choose for its type.)
+        let dynamic_before = self.out.dynamic_calls.contains(&expr.id);
         let result = self.check_call_on(expr, call, &recv_ty, implicit_self, expected);
         // In a block, checked again for each type of what it is given: a
         // call may resolve differently each time (`union_calls`).
         let rt = self.resolve(&recv_ty);
         if !self.env.blocks.is_empty() && self.union_testable(&rt) {
-            if let (Some(CallTarget::Method { method }), false) = (
-                self.out.calls.get(&expr.id),
-                self.out.dynamic_calls.contains(&expr.id),
-            ) {
+            let dynamic = self.out.dynamic_calls.contains(&expr.id) && !dynamic_before;
+            if let (Some(CallTarget::Method { method }), false) =
+                (self.out.calls.get(&expr.id), dynamic)
+            {
                 let m = *method;
                 self.note_union_table(expr.id, vec![(rt, m)], expr.span);
             }
