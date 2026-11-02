@@ -1558,6 +1558,7 @@ impl<'src> Parser<'src> {
                     self.no_do = false;
                     self.skip_newlines();
                     let args = self.parse_call_args_until(&T::RBracket)?;
+                    self.keywords_last(&args);
                     self.no_do = saved;
                     self.expect(&T::RBracket, "`]`")?;
                     // `xs[i]?` calls `[]?`.
@@ -1719,6 +1720,7 @@ impl<'src> Parser<'src> {
         self.no_do = false;
         self.skip_newlines();
         let args = self.parse_call_args_until(&T::RParen)?;
+        self.keywords_last(&args);
         self.skip_newlines();
         self.no_do = saved;
         self.expect(&T::RParen, "`)`")?;
@@ -1738,7 +1740,28 @@ impl<'src> Parser<'src> {
             self.skip_newlines();
         }
         self.no_do = saved;
+        self.keywords_last(&args);
         Ok(args)
+    }
+
+    /// A positional argument (or `*splat`) after a keyword argument (or
+    /// `**splat`) is an error, as in Ruby: `g(a: 1, 2)` would bind 2 to
+    /// `a`.
+    fn keywords_last(&mut self, args: &[Arg]) {
+        let mut keyword = false;
+        for arg in args {
+            match arg {
+                Arg::Keyword { .. } | Arg::DoubleSplat(_) => keyword = true,
+                Arg::Positional(_) | Arg::Splat(_) if keyword => {
+                    self.error_at(
+                        "positional argument after a keyword argument; keyword arguments go last",
+                        arg.span(),
+                    );
+                    return;
+                }
+                _ => {}
+            }
+        }
     }
 
     fn parse_call_args_until(&mut self, close: &T) -> PResult<Vec<Arg>> {

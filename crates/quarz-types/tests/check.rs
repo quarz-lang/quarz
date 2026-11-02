@@ -3564,10 +3564,7 @@ fn a_splat_may_fill_a_position_named_by_keyword() {
         &format!("{h}puts h(*xs, a: \"x\")"),
         "`a:` names a positional parameter, but `*xs` in the call may fill that position; pass it positionally",
     );
-    err(
-        &format!("{h}puts h(a: \"x\", *xs)"),
-        "`a:` names a positional parameter",
-    );
+    // (`h(a: "x", *xs)` is a syntax error: keyword arguments go last.)
     err(
         "xs: Array[Object] = [1]\nputs format(*xs, format: \"%d\")",
         "`format:` names a positional parameter",

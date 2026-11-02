@@ -957,3 +957,34 @@ fn it_operator_hints() {
     assert!(hints("xs.map { it -foo(1,\n  2) }\nxs.map { it -1 do\n  3\nend }").is_empty());
     assert!(hints("xs.map { it <<~EOS }\n  text\nEOS\n").is_empty());
 }
+
+#[test]
+fn keyword_arguments_go_last() {
+    // A positional argument or `*splat` after a keyword argument or
+    // `**splat` is an error, as in Ruby.
+    let msg = "positional argument after a keyword argument; keyword arguments go last";
+    for src in [
+        "g(a: 1, 2)",
+        "g a: 1, 2",
+        "g(b: 1, *xs)",
+        "g(**h, 1)",
+        "x.g(1, a: 2, 3)",
+        "h[a: 1, 2]",
+        "super(a: 1, 2)",
+        "yield a: 1, 2",
+    ] {
+        let errs = errors(src);
+        assert_eq!(errs.len(), 1, "for {src:?}: {errs:?}");
+        assert!(errs[0].contains(msg), "for {src:?}: {errs:?}");
+    }
+    // Keywords, `**splat` and a block after the positional ones are fine.
+    for src in [
+        "g(2, b: \"x\")",
+        "g 2, b: 1",
+        "g(*xs, **h, &blk)",
+        "g(1, a: 2, **h)",
+        "g(a: 1) { 2 }",
+    ] {
+        assert!(errors(src).is_empty(), "for {src:?}: {:?}", errors(src));
+    }
+}
