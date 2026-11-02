@@ -288,9 +288,15 @@ pub(crate) enum VarKey {
 
 pub(crate) type Facts = Vec<(VarKey, Type)>;
 
-/// `Checker::class_object_union_symbol`'s answer: the common method, and
-/// each member with its own method and substitution.
-type ClassObjectSymbol = (MethodId, Vec<(Type, MethodId, HashMap<TypeParamId, Type>)>);
+/// `Checker::union_symbol`'s answer: the method the procedure calls (the
+/// common one, or the first member's where a table chooses), each member
+/// with its own method and substitution, and the table of the members'
+/// methods to choose by the argument's class when they differ.
+type UnionSymbol = (
+    MethodId,
+    Vec<(Type, MethodId, HashMap<TypeParamId, Type>)>,
+    Option<Vec<(Type, MethodId)>>,
+);
 
 /// Narrowed types of all variables and immutable fields at a point.
 /// The narrowings at a point: per frame, its number of variables and
@@ -10949,9 +10955,9 @@ impl Checker {
                             return Err(format!("`&:{name}` needs a block with one parameter"));
                         }
                         let recv = self.infer.resolve(&params[0]);
-                        let class_objects = self.class_object_union_symbol(&recv, name);
-                        let cands = match &class_objects {
-                            Some((_, each)) => vec![(each[0].1, each[0].2.clone())],
+                        let union = self.union_symbol(&recv, name);
+                        let cands = match &union {
+                            Some((_, each, _)) => vec![(each[0].1, each[0].2.clone())],
                             None => self.world.lookup_methods(&recv, name),
                         };
                         // The first callable with no argument or block whose
@@ -11003,8 +11009,8 @@ impl Checker {
                         }
                         // As Ruby's `Symbol#to_proc`, only a public method
                         // (each member's own, for class objects of a union).
-                        let each = match &class_objects {
-                            Some((_, each)) => each.clone(),
+                        let each = match &union {
+                            Some((_, each, _)) => each.clone(),
                             None => vec![(recv.clone(), mid, msubst.clone())],
                         };
                         let visibility = each
@@ -11037,7 +11043,7 @@ impl Checker {
                             let kr = self.world.unvoid(&self.method_ret(k)).subst(&ksubst);
                             r = self.join(&r, &kr);
                         }
-                        let mid = class_objects.as_ref().map_or(mid, |(base, _)| *base);
+                        let mid = union.as_ref().map_or(mid, |(base, ..)| *base);
                         // Given where a `Void` result is expected, the
                         // call's value is discarded, as the block's would be.
                         let discard = self.infer.resolve(&ret) == Type::Void;
@@ -11052,14 +11058,32 @@ impl Checker {
                             }
                             return Err(msg);
                         }
-                        if class_objects.is_some()
-                            || matches!(
-                                self.resolve(&recv),
-                                Type::ClassObject(..) | Type::TypeOf(_)
-                            )
-                        {
+                        let on_class_objects = recv
+                            .members()
+                            .iter()
+                            .all(|m| matches!(m, Type::ClassObject(..) | Type::TypeOf(_)));
+                        if on_class_objects {
                             self.symbol_on_class_object.insert(e.id);
                         }
+                        // Values of a union: each member with its method, in
+                        // the table choosing by the argument's class where
+                        // they differ, and in a block (another check of it
+                        // may find others), as the block's call notes them.
+                        let union_table: Option<Vec<(Type, MethodId)>> = match &union {
+                            Some((_, each, differ))
+                                if !on_class_objects
+                                    && (differ.is_some() || !self.env.blocks.is_empty()) =>
+                            {
+                                Some(each.iter().map(|(m, k, _)| (m.clone(), *k)).collect())
+                            }
+                            _ => None,
+                        };
+                        let union_varied = matches!(union, Some((_, _, Some(_))));
+                        // (A compile-time-only method is any member's.)
+                        let union_methods: Vec<MethodId> = match &union {
+                            Some((_, each, _)) => each.iter().map(|(_, k, _)| *k).collect(),
+                            None => Vec::new(),
+                        };
                         // Checked again with another class method on a class
                         // object, both overriding one: the procedure calls
                         // that one, which runs the receiver's own
@@ -11109,9 +11133,10 @@ impl Checker {
                                 // procedure chooses by its argument's class,
                                 // which reaches an extension's method too;
                                 // otherwise it goes by name, which does not.
-                                let tabled = !self.env.blocks.is_empty()
+                                let tabled = (!self.env.blocks.is_empty()
                                     && self.union_testable(&recv)
-                                    && self.out.union_calls.contains_key(&e.id);
+                                    && self.out.union_calls.contains_key(&e.id))
+                                    || union_table.is_some();
                                 // A class object's methods (its class's, or an
                                 // `extend`ed module's) are never found by name
                                 // on it (no class test tells class objects
@@ -11137,7 +11162,17 @@ impl Checker {
                         }
                         // Checked once per type (a block's), the procedure
                         // chooses by its argument's class at run time.
-                        if !self.env.blocks.is_empty() && self.union_testable(&recv) {
+                        // The members' methods differ (not class objects):
+                        // chosen by the argument's class, as the block's
+                        // call on the union is.
+                        // (Not one method, so not called, nor lowered in
+                        // place, as one: `varied_symbols`.)
+                        if let Some(table) = union_table {
+                            self.note_union_table(e.id, table, e.span);
+                            if union_varied && self.out.varied_symbols.insert(e.id) {
+                                self.table_journal.push(TableUndo::VariedSymbol(e.id));
+                            }
+                        } else if !self.env.blocks.is_empty() && self.union_testable(&recv) {
                             self.note_union_table(e.id, vec![(recv.clone(), mid)], e.span);
                         }
                         let before = self.out.block_pass.get(&e.id).cloned();
@@ -11150,6 +11185,11 @@ impl Checker {
                             .block_pass
                             .insert(e.id, BlockPass::Symbol(name.clone(), mid, discard));
                         self.note_static_call(e, mid);
+                        for k in union_methods {
+                            if k != mid {
+                                self.note_static_call(e, k);
+                            }
+                        }
                         self.record(e.id, &self.world.symbol());
                     }
                     // The method's anonymous block, passed on: only to a
@@ -11549,14 +11589,18 @@ impl Checker {
         self.error(refuse(what), e.span);
     }
 
-    /// `&:name` on a union of class objects (`Type[A] | Type[B]`): the
-    /// class method (or extended module method) each member's own
-    /// overrides (`World::class_object_base`), as the block `{ |c| c.name }`
-    /// calls, with each member's own method and substitution (which the
-    /// block's result and visibility go by); `None` for any other receiver.
-    fn class_object_union_symbol(&mut self, recv: &Type, name: &str) -> Option<ClassObjectSymbol> {
+    /// `&:name` on a union (`A | B`, `Type[A] | Type[B]`), as the block
+    /// `{ |x| x.name }` calls it: each member's own method (the first
+    /// callable one, as for one type), whose results and visibility the
+    /// block's go by. One method for every member is called; class objects
+    /// call the class method (or extended module method) each member's own
+    /// overrides (`World::class_object_base`); other members' methods are
+    /// chosen by the argument's class, as the block's call is
+    /// (`note_union_table`). `None` for any other receiver, or a member
+    /// without the method.
+    fn union_symbol(&mut self, recv: &Type, name: &str) -> Option<UnionSymbol> {
         let members = recv.members();
-        if members.len() < 2 || !members.iter().all(|m| matches!(m, Type::ClassObject(..))) {
+        if members.len() < 2 || members.iter().any(|m| matches!(m, Type::Var(_))) {
             return None;
         }
         let mut table = Vec::new();
@@ -11577,16 +11621,20 @@ impl Checker {
             substs.push(found);
         }
         // (One method for every member: that one.)
-        let base = match table.iter().all(|(_, k)| *k == table[0].1) {
-            true => table[0].1,
-            false => self.world.class_object_base(&table)?,
+        let class_objects = members.iter().all(|m| matches!(m, Type::ClassObject(..)));
+        let (base, table) = if table.iter().all(|(_, k)| *k == table[0].1) {
+            (table[0].1, None)
+        } else if class_objects {
+            (self.world.class_object_base(&table)?, None)
+        } else {
+            (table[0].1, Some(table))
         };
         let each = members
             .into_iter()
             .zip(substs)
             .map(|(m, (k, ks))| (m, k, ks))
             .collect();
-        Some((base, each))
+        Some((base, each, table))
     }
 
     /// Check a block against the procedure type it is passed as.

@@ -2367,6 +2367,25 @@ fn calls_a_class_test_cannot_choose_are_errors() {
         "`&:me` returns Type[A] but A was expected",
     );
     ok("class S\n  def self.make -> S? = nil\n  private def self.k -> Int = 0\nend\nclass A < S\n  def self.make -> A = A.new\n  def self.k -> Int = 1\nend\nclass B < S\n  def self.make -> B = B.new\n  def self.k -> Int = 2\nend\nxs: Array[Type[A] | Type[B]] = [A, B]\nys: Array[A | B] = xs.map(&:make)\np xs.map(&:k)");
+    // `&:name` on values of a union, as the block: refused where a class
+    // test cannot choose (two extensions of one class), or a member has
+    // no such method; each member's visibility; the result any member's.
+    err(
+        "extension Array[T <: Int]\n  def label -> String = \"ints\"\nend\nextension Array[T <: String]\n  def label -> String = \"strs\"\nend\nxs: Array[Array[Int] | Array[String]] = [[1], [\"a\"]]\np xs.map(&:label)",
+        "cannot tell at run time which `label` to call for Array[Int] and Array[String]",
+    );
+    err(
+        "class A\n  def label -> String = \"a\"\nend\nclass B\nend\nxs: Array[A | B] = [A.new]\np xs.map(&:label)",
+        "undefined method `label` for A | B (in `&:label`)",
+    );
+    err(
+        "class A\n  def label -> String = \"a\"\nend\nclass B\n  private def label -> String = \"b\"\nend\nxs: Array[A | B] = [A.new]\np xs.map(&:label)",
+        "`label` is private for A | B",
+    );
+    err(
+        "class A\n  def label -> String = \"a\"\nend\nclass B\n  def label -> Int = 1\nend\nxs: Array[A | B] = [A.new]\nys: Array[String] = xs.map(&:label)",
+        "`&:label` returns String | Int but String was expected",
+    );
     // A compound assignment's reader from two extensions.
     err(
         "class A\nend\nclass B\nend\nextension A\n  def w -> Int = 1\n  def w=(x: Int) -> Int = x\nend\nextension B\n  def w -> Int = 2\n  def w=(x: Int) -> Int = x\nend\ndef pk(i: Int) -> Array[A] | Array[B] = i > 0 ? [A.new] : [B.new]\npk(1).each { |o| o.w += 1 }",
